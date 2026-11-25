@@ -18,6 +18,8 @@ import { isArticleDate, pageArticle, todayArticleDate } from '@shared/articles';
 import { catalogueComponent } from '@catalogue/index';
 import { pageStarterComponents, type PageStarter } from '@engine/page-starters';
 import { headerOrderPlan, inHeaderMenu } from '../lib/page-navigation';
+import { followsPageOrder } from '@engine/header-order';
+import { setHeaderMenuOrder } from '../lib/header-menu-order';
 import { listPageClicks, pageClicks } from '../lib/page-clicks';
 
 /** Addresses are at most four levels deep, so a page four levels down cannot have pages inside it. */
@@ -291,12 +293,15 @@ export function PagesPanel() {
   const standing = !!lastMove && !!movedIn && movedIn.state.site.pageOrder.length === lastMove.order.length && movedIn.state.site.pageOrder.every((id, i) => id === lastMove.order[i]);
   // A section moves with its pages: any of them in the menu (at the top level or in a submenu) has a place to follow.
   const inMenu = standing && lastMove!.pages.some((id) => inHeaderMenu(movedIn!.state, id));
-  const orderPlan = inMenu ? headerOrderPlan(movedIn!.state) : null;
+  // A menu that follows the pages moved with them, in the same change: there is nothing to say or offer.
+  const following = !!movedIn && followsPageOrder(movedIn.state);
+  const orderPlan = inMenu && !following ? headerOrderPlan(movedIn!.state) : null;
   useEffect(() => {
     if (!lastMove) return;
     if (snap?.workspaceKey !== lastMove.opening) return setLastMove(null);
     // Not shown in the project yet.
     if (!movedIn) return;
+    if (following) return setLastMove(null);
     if (orderPlan) {
       if (!lastMove.shown) setLastMove({ ...lastMove, shown: true });
       return;
@@ -671,6 +676,13 @@ export function PagesPanel() {
     if (!r || getState().snapshot?.workspaceKey !== r.workspaceKey) return;
     if (lastMove) endNote(lastMove.pageId);
     toast('The header menu now lists its pages in the same order as Pages.', 'info', undoAction(r));
+  };
+  /** Make the header menu follow Pages from now on: its page links move into that order once the lists are shown. */
+  const followPages = async () => {
+    setMatching(true);
+    const done = await setHeaderMenuOrder('follow');
+    setMatching(false);
+    if (done && lastMove) endNote(lastMove.pageId);
   };
   const endDrag = () => (setDragId(null), setDropAt(null));
   const endRename = (id: string, value?: string) => {
@@ -1203,6 +1215,9 @@ export function PagesPanel() {
             <div className="pages-order-actions">
               <button className="btn btn-sm btn-primary" disabled={matching} onClick={() => void matchMenu()} title={`The menu would list ${orderPlan.after.join(' · ')}. Other links stay where they are.`}>
                 Match header menu
+              </button>
+              <button className="btn btn-sm btn-ghost" disabled={matching} onClick={() => void followPages()} title="The menu’s links to pages will move with Pages from now on. Other links stay where they are.">
+                Always follow page order
               </button>
               <button className="btn btn-sm btn-ghost" disabled={matching} onClick={editMenu}>
                 Edit menu

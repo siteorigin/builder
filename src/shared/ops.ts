@@ -611,6 +611,10 @@ export const OPERATION_SCHEMAS = {
     llmsFull: z.boolean().optional().describe('llms-full.txt, every listed page in one file. Default false.'),
     markdownMirrors: z.boolean().optional().describe('A Markdown copy beside each listed page. Default false.'),
     llmsSummary: limited(TEXT_LIMITS.siteDescription).optional().describe('llms.txt summary; "" uses the description.'),
+    headerMenuOrder: z
+      .enum(['own', 'follow'])
+      .optional()
+      .describe('The header menu\'s order. "own" (default): its links keep the order the author gave them, whatever the page order. "follow": its links to pages stay in the page order through every edit (a page.reorder, a page added to the menu), a deleted page\'s menu links are removed rather than pointed at its replacement, and its links cannot be moved by hand. Other links and submenus keep their places.'),
     webmcp: z.boolean().optional().describe('WebMCP: declare each contact form, and site search, as tools AI agents in visitors\' browsers can use. Default false.'),
     redirectHost: z
       .enum(['cloudflare', 'netlify', 'vercel'])

@@ -4,6 +4,9 @@
 // author changed is left out. Moving a page in Pages leaves the header menu's order alone and says so, with a way to
 // match it that keeps an external link in its place and adds no page that is not in the menu.
 // The footer's links take the header menu's top-level links in one step from the inspector, and Undo gives them back.
+// The menu then follows the page order (#749): chosen from the order note, after its lists are shown (Cancel keeps its
+// own order), the Inspector shows the choice and offers no move of its own, and a move in Pages moves the menu with it
+// in one undo step.
 import assert from 'node:assert/strict';
 import { join } from 'node:path';
 import { MOD, createProject, eventually, launch, scratch, step } from './harness.mjs';
@@ -178,6 +181,63 @@ await win.keyboard.press(`${MOD}+z`);
 await eventually(async () => assert.deepEqual(await stored(), before, 'Undo brings back the footer’s own rows, destinations and IDs'));
 await eventually(async () => assert.deepEqual(await footerLinks(), footerOwn), 30000);
 assert.deepEqual(await menu(), headerNow, 'the header menu is unchanged');
+
+step('Always follow page order, from the order note: the menu’s lists are shown first, and Cancel keeps its own order (#749)');
+const following = async () => (await snapshot()).state.site.headerMenuOrder === 'follow';
+const byTitle = async (titles) => {
+  const st = (await snapshot()).state;
+  return titles.map((t) => st.site.pageOrder.find((id) => st.pages[id].title === t));
+};
+assert.ok((await apply([{ type: 'page.reorder', pageIds: await byTitle(['Home', 'About', 'Contact', 'Works', 'Notes']) }], 'Reorder pages')).ok);
+await pageMenu('Works', 'Move up');
+await note.waitFor();
+assert.deepEqual(await menu(), ['Home', 'About', 'Contact', 'Shop', 'Lookbook']);
+const followButton = note.getByRole('button', { name: 'Always follow page order' });
+await followButton.click();
+const ask = win.getByRole('dialog', { name: 'Make the header menu follow the page order?' });
+await ask.waitFor();
+assert.match(await ask.innerText(), /Now: Home · About · Contact · Shop · Lookbook/);
+assert.match(await ask.innerText(), /After: Home · About · Lookbook · Shop · Contact/);
+await ask.getByRole('button', { name: 'Keep own order' }).click();
+await ask.waitFor({ state: 'detached' });
+assert.equal(await following(), false, 'Cancel keeps the menu’s own order');
+assert.deepEqual(await menu(), ['Home', 'About', 'Contact', 'Shop', 'Lookbook']);
+await note.waitFor();
+
+step('confirmed, the menu follows Pages at once, and the note goes');
+await followButton.click();
+await ask.getByRole('button', { name: 'Follow page order' }).click();
+await ask.waitFor({ state: 'detached' });
+await eventually(async () => assert.deepEqual(await menu(), ['Home', 'About', 'Lookbook', 'Shop', 'Contact']), 30000);
+assert.equal(await following(), true, 'the setting is saved with the site');
+await note.waitFor({ state: 'detached' });
+
+step('the header menu’s Inspector shows the choice, and its links offer no move of their own');
+await win.locator('.pages-head-menu').click();
+const headerList = win.locator('#dock-panel-inspect [data-list="links"]');
+const order = headerList.getByRole('combobox', { name: 'Order' });
+await order.waitFor({ timeout: 10000 });
+assert.equal(await order.inputValue(), 'follow');
+const moveUp = headerList.getByRole('button', { name: /^Move .+ up$/ }).nth(1);
+assert.equal(await moveUp.getAttribute('aria-disabled'), 'true', 'a link cannot be moved by hand while the menu follows Pages');
+assert.match(await headerList.innerText(), /To move a link here, choose Own order/);
+
+step('moving a page in Pages moves the menu with it, with no note, and one Undo takes both back');
+await pageMenu('Contact', 'Move up');
+await eventually(async () => assert.deepEqual(await pagesOrder(), ['Home', 'About', 'Contact', 'Works', 'Notes']), 30000);
+await eventually(async () => assert.deepEqual(await menu(), ['Home', 'About', 'Contact', 'Shop', 'Lookbook']), 30000);
+assert.equal(await note.count(), 0, 'no “Moved in Pages only” note while the menu follows Pages');
+assert.equal(await win.locator('.toast', { hasText: 'already lists these pages this way' }).count(), 0);
+assert.equal((await win.evaluate(() => window.builder.project.undo())).ok, true);
+await eventually(async () => assert.deepEqual(await pagesOrder(), ['Home', 'About', 'Works', 'Contact', 'Notes']), 30000);
+await eventually(async () => assert.deepEqual(await menu(), ['Home', 'About', 'Lookbook', 'Shop', 'Contact']), 30000);
+assert.equal(await following(), true);
+
+step('choosing Own order in the Inspector gives the links their moves back');
+await order.selectOption('own');
+await eventually(async () => assert.equal(await following(), false));
+await eventually(async () => assert.equal(await moveUp.getAttribute('aria-disabled'), null));
+assert.deepEqual(await menu(), ['Home', 'About', 'Lookbook', 'Shop', 'Contact'], 'switching back moves nothing');
 
 assert.deepEqual(errors, [], 'no uncaught errors in the editor');
 await app.close();

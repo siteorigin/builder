@@ -2,6 +2,7 @@ import type { ProjectState } from '@shared/types';
 import type { EditOperation } from '@shared/ops';
 import { applyOperations } from '@engine/apply';
 import { pageLinkUses, type PageLinkUse } from '@engine/page-links';
+import { dropHeaderLinks, followsPageOrder } from '@engine/header-order';
 import { elementIds, pageIds, planSectionPick } from '@generator/checks';
 import { SECTION_NODE } from './sections';
 
@@ -26,6 +27,8 @@ export interface PageRemovalReview {
   uses: PageLinkUse[];
   /** Cards for the page in page lists: they are removed from their lists with the page. */
   cards: PageLinkUse[];
+  /** The header menu's links to the page, by label, taken out of a menu that follows the pages rather than moved. */
+  menu: string[];
   /** Sections those links jump to that the replacement page lacks: each needs a section there, or the top. */
   missing: MissingSection[];
 }
@@ -36,16 +39,29 @@ export interface PageRemovalReview {
  * does have are kept without asking.
  */
 export function reviewPageRemoval(state: ProjectState, pageId: string, replacementId: PageReplacement): PageRemovalReview {
-  const all = pageLinkUses(state, pageId);
+  // A new blank Home has no sections: every link, the header menu's too, opens its top, with nothing to choose.
+  if (replacementId === NEW_HOME) {
+    const all = pageLinkUses(state, pageId);
+    return { uses: all.filter((u) => !u.card), cards: all.filter((u) => u.card), menu: [], missing: [] };
+  }
+  // A header menu that follows the pages lets go of its links to the page first, as the engine does: they need no replacement.
+  const { view: base, menu } = withoutMenuLinks(state, pageId);
+  const all = pageLinkUses(base, pageId);
   const uses = all.filter((u) => !u.card);
   const cards = all.filter((u) => u.card);
-  // A new blank Home has no sections: every link opens its top, with nothing to choose.
-  if (replacementId === NEW_HOME) return { uses, cards, missing: [] };
-  const view = cards.length ? withoutCards(state, pageId) : state;
+  const view = cards.length ? withoutCards(base, pageId) : base;
   const ids = replacementId && Object.hasOwn(view.pages, replacementId) ? pageIds(view, replacementId) : new Set<string>();
   const missing = new Map<string, PageLinkUse[]>();
   for (const u of uses) if (u.link.anchor && !ids.has(u.link.anchor)) missing.set(u.link.anchor, [...(missing.get(u.link.anchor) ?? []), u]);
-  return { uses, cards, missing: [...missing].map(([fragment, list]) => ({ fragment, uses: list })) };
+  return { uses, cards, menu, missing: [...missing].map(([fragment, list]) => ({ fragment, uses: list })) };
+}
+
+/** The project once a header menu that follows the pages has let go of its links to the page, and their labels. */
+function withoutMenuLinks(state: ProjectState, pageId: string): { view: ProjectState; menu: string[] } {
+  if (!followsPageOrder(state)) return { view: state, menu: [] };
+  const view = structuredClone(state);
+  const menu = dropHeaderLinks(view, pageId);
+  return menu.length ? { view, menu } : { view: state, menu: [] };
 }
 
 /**
@@ -82,8 +98,9 @@ export function planPageRemoval(state: ProjectState, pageId: string, replacement
   const review = reviewPageRemoval(state, pageId, replacementId);
   if (!review.uses.length && pageId !== state.site.homePageId) return { operations: [{ type: 'page.remove', pageId }], lost: [] };
   if (!replacementId || !Object.hasOwn(state.pages, replacementId) || replacementId === pageId) return none;
-  // Sections are the ones the replacement page still has once the cards are gone, as the engine finds them.
-  const view = review.cards.length ? withoutCards(state, pageId) : state;
+  // Sections are the ones the replacement page still has once the menu's links and the cards are gone, as the engine finds them.
+  const base = withoutMenuLinks(state, pageId).view;
+  const view = review.cards.length ? withoutCards(base, pageId) : base;
   const ids = pageIds(view, replacementId);
   const operations: EditOperation[] = [];
   const sectionReplacements: Array<{ from: string; to: string }> = [];

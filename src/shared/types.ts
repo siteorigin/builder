@@ -979,6 +979,12 @@ export interface SiteDoc {
   twitterSite?: string;
   homePageId: string;
   pageOrder: string[];
+  /**
+   * The order of the header menu's links (src/engine/header-order.ts): `follow` keeps its page links in `pageOrder`
+   * through every edit, so a reorder, a page added to the menu and a page deleted keep them in step. Absent: the menu
+   * has its own order, which only the author changes.
+   */
+  headerMenuOrder?: 'follow';
   themeId: string;
   /** Shared header and footer instances. */
   shell: { header: NodeTree; footer: NodeTree };

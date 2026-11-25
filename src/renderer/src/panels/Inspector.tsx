@@ -106,6 +106,9 @@ import { LengthMeter, SeoPreview, subjectKey, useDocumentPreview, useTypedSeo } 
 import { defaultReach, designContent, designContentOp, forwardedBinding, propDefaultOp, reachText, type ContentField, type DesignContent } from '../lib/design-content';
 import { pickImagesField, pickOperations, planChoice } from '../lib/gallery-picks';
 import { footerCopyPlan } from '../lib/page-navigation';
+import { followsPageOrder } from '@engine/header-order';
+import { FOLLOWING_MOVE_NOTE } from '../lib/header-menu-order';
+import { HeaderMenuOrderSelect } from '../components/HeaderMenuOrder';
 import { appliesLanded } from '../lib/pending';
 import { BindingControl, PartSection, PropertiesSection, SlotsSection, StyleTargetField, TagBindingControl, VariantsSection, styleVariant, useVariantStyle } from './ContractControls';
 import { PlacedSlotsSection } from './PlacedSlotsSection';
@@ -1150,6 +1153,8 @@ function InstanceInspector({ state, owner, node, tokens, selection }: { state: P
   const video = isVideoContract(def.componentId) ? videoFieldNotes(node.props) : undefined;
   // The shared footer's menu takes the header menu's links in one step (#575).
   const footerMenuId = owner.kind === 'shell' && owner.id === 'footer' ? shellMenu(state, 'footer')?.node.id : undefined;
+  // The shared header's menu chooses its order over its links: its own, or the Pages order (#749).
+  const headerMenuId = owner.kind === 'shell' && owner.id === 'header' ? shellMenu(state, 'header')?.node.id : undefined;
   const videoNote = (key: string) => (key === 'url' || key === 'title' ? video?.[key as keyof VideoFieldNotes] : undefined);
   const videoEmpty = !!video && !String(node.props.url ?? '').trim();
   // A renamed section still says what it is: the name is the author's, the kind line the component's.
@@ -1247,6 +1252,7 @@ function InstanceInspector({ state, owner, node, tokens, selection }: { state: P
                   place={schema.type === 'list' ? { ref: selection, list: key } : undefined}
                   pickImages={pickImagesField(def, key, schema)}
                   fill={key === 'links' && footerMenuId === node.id ? footerCopyFill(state) : undefined}
+                  order={key === 'links' && headerMenuId === node.id ? { control: <HeaderMenuOrderSelect state={state} />, locked: followsPageOrder(state) ? FOLLOWING_MOVE_NOTE : null } : undefined}
                 />
               );
             }}
