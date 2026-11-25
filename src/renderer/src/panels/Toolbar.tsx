@@ -12,7 +12,7 @@ import { pageChoices } from '../lib/page-switch';
 import { toolbarAnnouncement, useTransitionAnnouncement, type SaveStatus } from '../lib/announce';
 import { VIEWPORT_LIMITS, ZOOM_LEVELS, toolbarTier } from '../lib/layout';
 import { closeProject } from '../lib/leave';
-import { runPhase, settledState } from '../lib/savestate';
+import { runPhase, saveFailureNotice, settledState } from '../lib/savestate';
 import { postShown } from '../lib/posts';
 import { activeWorkspace, canvasCovered } from '../lib/workspace';
 import { shortcutLabel } from '../lib/shortcut-keys';
@@ -41,6 +41,8 @@ export function Toolbar() {
   const definitionMode = useStore((s) => s.definitionMode);
   const dockOpen = useStore((s) => s.dockOpen);
   const hasConflict = useStore((s) => (s.snapshot?.conflicts.length ?? 0) > 0);
+  // A save that failed, until one succeeds again (or, when it did not finish, until the project is reopened).
+  const saveFailure = useStore((s) => s.snapshot?.saveFailure ?? null);
   // An edit made while the AI worked: being applied (after stopping the AI), or waiting for the author.
   const handoff = useStore((s) => s.heldEdits.some((h) => h.phase === 'applying'));
   const stoppingForEdit = useStore((s) => s.heldEdits.some((h) => h.phase === 'applying' && !!h.stopping));
@@ -48,7 +50,7 @@ export function Toolbar() {
   const menu = useMenu();
   // Screen readers hear settled changes only. When the AI finishes they hear how it really ended, and what
   // became of an edit held meanwhile.
-  const settled: SaveStatus = settledState({ conflict: hasConflict, runStatus, stopping: stoppingForEdit, handoff, held, drafting, pending: pending > 0 });
+  const settled: SaveStatus = settledState({ failed: !!saveFailure, conflict: hasConflict, runStatus, stopping: stoppingForEdit, handoff, held, drafting, pending: pending > 0 });
   // A save in flight when the AI finishes is a step on the way, not where it came from: what settles
   // after it is announced from the state before it, so the AI's real outcome is not lost.
   const beforeBusy = useRef<SaveStatus>(settled);
@@ -119,7 +121,7 @@ export function Toolbar() {
   // The status is a button while it leads somewhere (the AI panel, held edits, Project health). When it settles
   // back to plain text a keyboard user on it lands on the page switcher beside it, not on the page body.
   const runNow = runPhase(runStatus);
-  const statusActs = hasConflict || runNow === 'stopping' || stoppingForEdit || runNow === 'asking' || (!handoff && (!!runNow || held));
+  const statusActs = !!saveFailure || hasConflict || runNow === 'stopping' || stoppingForEdit || runNow === 'asking' || (!handoff && (!!runNow || held));
   useLayoutEffect(() => {
     const was = focused.current;
     const active = document.activeElement;
@@ -137,10 +139,14 @@ export function Toolbar() {
   // Each state names itself in words and a glyph, never by hue alone. `kind` sets its weight: quiet (saved), pending
   // (on its way), ai (the AI at work: its Sparkles in the accent, which is the AI's colour), ask (the AI is waiting
   // on the author), wait (an edit of the author's on hold) and error. Every AI state opens the AI panel, an edit on
-  // hold goes to its row in the held-edits tray, and a conflict opens Project health.
+  // hold goes to its row in the held-edits tray, and a failed save or a conflict opens Project health, which says what
+  // failed and what to do. A failed save leads: until a save succeeds again, the screen is ahead of the disk.
   type Save = { kind: 'saved' | 'pending' | 'ai' | 'ask' | 'wait' | 'error'; icon: ReactNode; text: string; title: string };
   const ai = <Sparkles className="ai-glyph" />;
-  const save: Save = conflicts
+  const failure = saveFailure ? saveFailureNotice(saveFailure) : null;
+  const save: Save = failure
+    ? { kind: 'error', icon: <CircleAlert />, text: failure.text, title: failure.title }
+    : conflicts
     ? { kind: 'error', icon: <CircleAlert />, text: 'File conflict', title: 'A project file was changed outside SiteOrigin Builder. Review it in Project health' }
     : phase === 'stopping' || stoppingForEdit
       ? { kind: 'ai', icon: ai, text: 'Stopping AI…', title: stoppingForEdit ? 'Your edit is applied once the AI’s changes are undone. Open the AI panel' : 'Anything the AI changed in this request is undone. Open the AI panel' }

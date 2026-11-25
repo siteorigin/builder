@@ -244,6 +244,8 @@ describe('project session', () => {
     const r = await s.apply({ operations: [{ type: 'page.update', pageId: home, description: 'Typed' }] }, { label: 'Change description' });
     expect(r).toMatchObject({ ok: false, error: { code: 'CONFLICT', recoverable: true } });
     expect(JSON.parse(readFileSync(file, 'utf8')).title).toBe('Saved in another editor');
+    // A change stopped cleanly by a file saved outside the app is a conflict, not a failed save (#753).
+    expect(s.saveFailure).toBeNull();
     // Nothing of the change reached disk, so nothing waits on a reopen: the external save is read, and edits go on.
     expect(existsSync(join(dir, '.siteorigin', 'journal.json'))).toBe(false);
     expect((await s.reloadFromDisk()).ok).toBe(true);
@@ -272,6 +274,34 @@ describe('project session', () => {
     expect(r).toMatchObject({ ok: false, error: { code: 'CONFLICT', recoverable: false, message: expect.stringMatching(/reopen/) } });
     // The journal stays for reopening to finish.
     expect(existsSync(join(dir, '.siteorigin', 'journal.json'))).toBe(true);
+    // The save indicator shows it until the project is reopened (#753).
+    expect(s.saveFailure).toEqual({ kind: 'unfinished', label: 'Two pages', message: expect.stringMatching(/reopen/) });
+  });
+
+  it('keeps a save that failed to write for the save indicator until a later save succeeds (#753)', async () => {
+    const { s } = await make();
+    const home = s.state.site.homePageId;
+    const failed: number[] = [];
+    s.on('save-failed', () => failed.push(s.revision));
+    const session = s as unknown as { putBlob: (content: string) => Promise<string> };
+    const putBlob = session.putBlob.bind(s);
+    session.putBlob = async () => {
+      session.putBlob = putBlob;
+      throw new Error('ENOSPC: no space left on device');
+    };
+    const revision = s.revision;
+    await expect(s.apply({ operations: [{ type: 'page.update', pageId: home, description: 'Lost' }] }, { label: 'Change description' })).rejects.toThrow(/ENOSPC/);
+    // Said at once, at the revision it failed at: nothing of it was written.
+    expect(failed).toEqual([revision]);
+    expect(s.saveFailure).toEqual({ kind: 'failed', label: 'Change description', message: 'ENOSPC: no space left on device' });
+    expect(s.saveUnfinished).toBe(false);
+    // A refused edit saves nothing, so the failure still stands.
+    const refused = await s.apply({ operations: [{ type: 'page.update', pageId: 'no-such-page', description: 'x' }] }, { label: 'Nothing' });
+    expect(refused.ok).toBe(false);
+    expect(s.saveFailure?.kind).toBe('failed');
+    // The next save that reaches the disk clears it.
+    expect((await s.apply({ operations: [{ type: 'page.update', pageId: home, description: 'Saved' }] }, { label: 'Change description' })).ok).toBe(true);
+    expect(s.saveFailure).toBeNull();
   });
 
   it('preserves an externally edited generated file and reports a conflict (I02)', async () => {

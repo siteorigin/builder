@@ -338,6 +338,9 @@ describe('toolbar save state', () => {
     expect(settledState({ ...base, runStatus: 'running', handoff: true })).toBe('working');
     expect(runPhase('awaiting-input')).toBe('asking');
     expect(settledState({ ...base, runStatus: 'awaiting-input', conflict: true })).toBe('conflict');
+    // A failed save leads every other state until a save succeeds again (#753).
+    expect(settledState({ ...base, failed: true, conflict: true, runStatus: 'running', pending: true })).toBe('failed');
+    expect(settledState({ ...base, failed: false })).toBe('saved');
   });
 
   it('says who has to act as the AI asks, resumes and checks', () => {

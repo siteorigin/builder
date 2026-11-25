@@ -36,9 +36,9 @@ export function announcementText(msg: string | null, count: number): { text: str
 
 /**
  * The toolbar's save status, as screen readers hear it settle. `working`, `asking`, `checking` and `stopping` are the AI's
- * phases (see `runPhase`). `held`: an edit typed while the AI worked waits.
+ * phases (see `runPhase`). `held`: an edit typed while the AI worked waits. `failed`: a save failed, and none has succeeded since.
  */
-export type SaveStatus = 'conflict' | 'working' | 'asking' | 'checking' | 'stopping' | 'held' | 'busy' | 'saved';
+export type SaveStatus = 'failed' | 'conflict' | 'working' | 'asking' | 'checking' | 'stopping' | 'held' | 'busy' | 'saved';
 
 /** How the last AI request ended (`run`), and what became of an edit held while it worked (`edit`). */
 export interface AiEnding {
@@ -62,6 +62,7 @@ const RUN_ENDED: Partial<Record<RunStatus, string>> = {
  * is not "AI changes saved"), and a held edit as saved only once it was.
  */
 export function saveStatusAnnouncement(prev: SaveStatus, next: SaveStatus, ending?: AiEnding | null): string {
+  if (next === 'failed') return 'Save failed. Your last change is not saved. Project health says what to do.';
   if (next === 'conflict') return 'File conflict. A project file was changed outside SiteOrigin Builder.';
   if (next === 'asking') return 'AI is waiting for your answer';
   if (next === 'checking') return 'AI is checking its changes';
@@ -75,6 +76,7 @@ export function saveStatusAnnouncement(prev: SaveStatus, next: SaveStatus, endin
     return [ran, edit].filter(Boolean).join('. ');
   }
   if (prev === 'conflict') return 'File conflict resolved. All changes saved';
+  if (prev === 'failed') return 'Saved again. All changes saved';
   if (prev === 'held' && ending?.edit === 'saved') return 'Your edit was saved';
   if (fromAi && ending?.edit === 'saved') return [ran, 'Your edit was saved'].filter(Boolean).join('. ');
   if (fromAi) return ran ?? 'All changes saved';

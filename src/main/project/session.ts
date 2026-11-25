@@ -9,7 +9,7 @@ import { SCHEMA_VERSION } from '@shared/types';
 import { BRIEF_FILE } from '@shared/brief';
 import { collectionGrantRefusal, type CollectionWriteGrant } from '@shared/collection-grant';
 import type { ApplyResult, EditBatch, EditOperation } from '@shared/ops';
-import type { AiTurnReview, FileText, RestoreVersionResult, SavedCopy, StorageInfo, TurnLaterChange, VersionReview, VersionsInfo } from '@shared/api';
+import type { AiTurnReview, FileText, RestoreVersionResult, SavedCopy, SaveFailure, StorageInfo, TurnLaterChange, VersionReview, VersionsInfo } from '@shared/api';
 import { validateOperation } from '@shared/ops';
 import { choicesLost } from '@shared/variants';
 import { AXES_FORMAT, formatOf } from '@shared/migrations';
@@ -562,7 +562,18 @@ export class ProjectSession extends EventEmitter {
    *  few are kept so a paste pressed before a later copy finished still finds the copy it followed. */
   private clipboards: Clipboard[] = [];
   /** A save failed after its journal was written: only reopening the project can finish it, so nothing else is written. */
-  private unsettled = false;
+  private settledLost = false;
+  private get unsettled(): boolean {
+    return this.settledLost;
+  }
+  private set unsettled(on: boolean) {
+    const news = on && !this.settledLost;
+    this.settledLost = on;
+    // The editor shows it at once, whatever the command that found it goes on to do.
+    if (news) this.emit('save-failed');
+  }
+  /** The last save that failed with nothing of it written, until a later save succeeds. */
+  private failedSave: { label: string; message: string } | null = null;
   /** Named versions of the site, kept apart from history until the author deletes them (issue 260). */
   private versions: VersionStore;
 
@@ -712,6 +723,8 @@ export class ProjectSession extends EventEmitter {
       // the next reload, which updates the format then; nothing is lost, so the session is not held back for it.
       if (e instanceof DiskConflictError && approved) return;
       this.migrationFailed = !(e instanceof DiskConflictError);
+      // Nothing more is written until the project is reopened: the save indicator says so, not that it can be retried.
+      if (this.migrationFailed) this.emit('save-failed');
       throw e;
     }
     this.migrationDue = false;
@@ -1526,9 +1539,22 @@ export class ProjectSession extends EventEmitter {
 
   /**
    * Persist a new canonical state, regenerate derived files and record history. `cursor` moves the undo position
-   * instead of recording a new step (undo and redo).
+   * instead of recording a new step (undo and redo). A save that fails is kept for the editor to show until a later one
+   * succeeds; one stopped cleanly by a file saved outside the app is a conflict instead, which Project health lists.
    */
   private async persist(next: ProjectState, opts: CommitOptions & { runId?: string; cursor?: number; wholeProject?: boolean }): Promise<SessionEvent> {
+    try {
+      return await this.writeState(next, opts);
+    } catch (e) {
+      if (!(e instanceof DiskConflictError) || this.unsettled) {
+        this.failedSave = { label: opts.label, message: e instanceof Error && e.message ? e.message : String(e) };
+        this.emit('save-failed');
+      }
+      throw e;
+    }
+  }
+
+  private async writeState(next: ProjectState, opts: CommitOptions & { runId?: string; cursor?: number; wholeProject?: boolean }): Promise<SessionEvent> {
     // A state whose theme is not available here would be generated from the wrong pack.
     const pin = themePinProblem(next);
     if (pin) throw new Error(pin);
@@ -1622,6 +1648,8 @@ export class ProjectSession extends EventEmitter {
       if (journaled) this.unsettled = true;
       throw e;
     }
+    // This save reached the disk, so an earlier one that failed no longer describes the project.
+    this.failedSave = null;
     if (planned && (planned.pruned || --this.gcCountdown <= 0)) await this.sweep();
     const event: SessionEvent = { revision: this.revision, changedDocs: Object.keys(changed), changedFiles, label: opts.label, source: opts.source ?? 'user', entryId: planned?.entryId };
     this.emit('changed', event);
@@ -2025,6 +2053,12 @@ export class ProjectSession extends EventEmitter {
   /** A save did not finish (see persist): nothing more is written until the project is reopened. */
   get saveUnfinished(): boolean {
     return this.unsettled;
+  }
+
+  /** A save that failed, for the editor's save indicator: an unfinished one until reopening, a failed one until a later save succeeds. */
+  get saveFailure(): SaveFailure | null {
+    if (this.unsettled || this.migrationFailed) return { kind: 'unfinished', ...(this.failedSave ? { label: this.failedSave.label } : {}), message: UNSETTLED };
+    return this.failedSave ? { kind: 'failed', ...this.failedSave } : null;
   }
 
   /** Run `fn` while holding the writer lock, so no edit or regeneration lands while it reads the project. */

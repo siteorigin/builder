@@ -28,6 +28,11 @@ export async function saveNow() {
   const { problems, finish } = await settleEdits(undefined, () => api.project.flush(opening));
   finish();
   const s = getState();
+  // A save that failed earlier still stands (the toolbar shows it): this one saved nothing to make it untrue.
+  if (s.snapshot?.saveFailure && s.snapshot.workspaceKey === opening) {
+    if (!problems.length) toast(s.snapshot.saveFailure.kind === 'unfinished' ? 'A save did not finish. Close and reopen the project to finish it.' : 'A change could not be saved. Project health says what to do.', 'error');
+    return;
+  }
   if (!problems.length && !s.drafting && !s.leaving && !savesInFlight() && !editRunStatus(s) && s.snapshot?.workspaceKey === opening) toast('All changes are saved on this computer.', 'success');
 }
 

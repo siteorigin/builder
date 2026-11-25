@@ -1,4 +1,4 @@
-import type { RunStatus } from '@shared/api';
+import type { RunStatus, SaveFailure } from '@shared/api';
 import type { SaveStatus } from './announce';
 
 /**
@@ -14,10 +14,12 @@ export function runPhase(runStatus: RunStatus | null): 'working' | 'asking' | 'c
 }
 
 /**
- * Where the toolbar's save state settles. `stopping`: the AI is being stopped to apply a held edit.
- * `handoff`: a held edit is being checked or saved. `held`: one waits for the author.
+ * Where the toolbar's save state settles. `failed`: a save failed, and none has succeeded since. `stopping`: the AI is
+ * being stopped to apply a held edit. `handoff`: a held edit is being checked or saved. `held`: one waits for the author.
  */
-export function settledState(s: { conflict: boolean; runStatus: RunStatus | null; stopping: boolean; handoff: boolean; held: boolean; drafting: boolean; pending: boolean }): SaveStatus {
+export function settledState(s: { failed?: boolean; conflict: boolean; runStatus: RunStatus | null; stopping: boolean; handoff: boolean; held: boolean; drafting: boolean; pending: boolean }): SaveStatus {
+  // Leads every other state: until a save succeeds again, what is on screen is not what is on disk.
+  if (s.failed) return 'failed';
   if (s.conflict) return 'conflict';
   if (s.stopping) return 'stopping';
   const phase = runPhase(s.runStatus);
@@ -26,4 +28,25 @@ export function settledState(s: { conflict: boolean; runStatus: RunStatus | null
   if (s.handoff) return 'busy';
   if (s.held) return 'held';
   return s.drafting || s.pending ? 'busy' : 'saved';
+}
+
+/**
+ * What the save indicator says about a save that failed: its words beside the glyph, its hover title, and, in Project
+ * health (where activating it leads), what failed and what to do about it.
+ */
+export function saveFailureNotice(f: SaveFailure): { text: string; title: string; what: string; next: string } {
+  const named = f.label ? `“${f.label}”` : null;
+  if (f.kind === 'unfinished')
+    return {
+      text: 'Save not finished',
+      title: 'A save did not finish, so nothing more is saved. Open Project health for what to do',
+      what: `${named ? `Saving ${named}` : 'A save'} did not finish, so nothing more is saved for now.`,
+      next: 'Close and reopen the project to recover it. Changes made before then are not saved.'
+    };
+  return {
+    text: 'Save failed',
+    title: 'Your last change was not saved. Open Project health for what to do',
+    what: `${named ?? 'A change'} could not be saved to this computer. Everything saved before it is unchanged.`,
+    next: 'Check that the disk has room and the project folder can be written to, then make the change again. This clears once a change is saved.'
+  };
 }

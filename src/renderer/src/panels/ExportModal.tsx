@@ -8,6 +8,8 @@ import { api, editRunStatus, getState, saveLocal, setState, toast, useStore } fr
 import { Modal, Segmented, Spinner, openSection } from '../components/ui';
 import { goToShellPart, openAsset, pageOutOfSight, selectPage, openLayout } from '../lib/actions';
 import { treeFor } from '../lib/model';
+import { settleEdits } from '../lib/leave';
+import { afterEditsSettle } from '../lib/pending';
 import { sampleContactMatches, type ContentField, type SampleContactGroup } from '../lib/find-content';
 import { openContentMatch } from './FindReplace';
 import { diagnosticKey, websiteFormNotes, websiteTrees } from '@engine/validate';
@@ -28,6 +30,7 @@ const LONG_LINK_LIST = 3;
 /** More notes than this fold into the export's own row, so a success keeps its next step in view. */
 const MANY_NOTES = 2;
 const UNEXPECTED_FAILURE = 'The export could not be completed.';
+const NOT_STARTED = 'The export didn’t start, because a change isn’t saved yet. Save or discard it, then export again.';
 let reports = 0;
 /** A new export report's id: unique for this editor's lifetime, across every opening of the dialog. */
 const newReportId = () => `${Date.now().toString(36)}-${++reports}`;
@@ -590,9 +593,23 @@ export function ExportModal() {
   const run = async (kind: ExportKind) => {
     if (busy || blocked || (kind === 'static' && draftLinks.length)) return;
     setBusy(kind);
+    const opening = getState().snapshot?.workspaceKey;
     try {
-      // The website is built only if it still publishes the pages and entries counted here.
-      const r = kind === 'static' ? await api.project.exportStatic(format, plan ? publicationIds(plan) : undefined) : await api.project.exportSource(format);
+      // What is still being typed (an edit on the canvas, a field) is saved first, so the export holds what is on
+      // screen. Something that can't be saved stops it before anything is asked or written, and is said here.
+      const started = await afterEditsSettle(
+        () => settleEdits(),
+        // The website is built only if it still publishes the pages and entries counted here.
+        async () => (getState().snapshot?.workspaceKey !== opening ? null : kind === 'static' ? await api.project.exportStatic(format, plan ? publicationIds(plan) : undefined) : await api.project.exportSource(format))
+      );
+      if (!started.ok) {
+        settle.current = 'result';
+        setResult({ ok: false, message: NOT_STARTED, warnings: started.problems, report: newReportId() });
+        return;
+      }
+      const r = started.value;
+      // The project closed while its edits were being saved: nothing was exported.
+      if (!r) return;
       if (r.message) setResult({ ...r, report: newReportId() });
       settle.current = r.message ? 'result' : kind;
     } catch (e) {
