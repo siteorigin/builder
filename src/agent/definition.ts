@@ -6,7 +6,7 @@
  * what may change.
  */
 import { z } from 'zod';
-import { STYLE_STATES, isBinding, type ComponentDefinition, type GraphNode, type NodeTree, type ProjectState, type PropSchema, type StateAction } from '@shared/types';
+import { DIVIDER_SHAPES, STYLE_STATES, isBinding, type ComponentDefinition, type GraphNode, type NodeTree, type ProjectState, type PropSchema, type StateAction } from '@shared/types';
 import { STYLE_TOKEN_REF, type EditOperation } from '@shared/ops';
 import { STYLE_PROPS, isStateStyleProp, stateStyleError } from '@shared/styles';
 import { axesOf } from '@shared/variants';
@@ -46,7 +46,7 @@ const UNOFFERED_BINDINGS = new Set(['prop', 'variant', 'list', 'action', 'filter
 /** Above this many, node IDs are checked when a call arrives instead of listed in the grammar. */
 const MAX_LISTED_NODES = 80;
 /** What a small model adds to a design: elements and layout. Repeats and slots need a list or slot of their own first. */
-const INSERTED = ['container', 'stack', 'row', 'grid', 'heading', 'paragraph', 'richtext', 'image', 'button', 'icon', 'divider'] as const;
+const INSERTED = ['container', 'stack', 'row', 'grid', 'heading', 'paragraph', 'richtext', 'image', 'button', 'icon', 'divider', 'badge', 'figure'] as const;
 
 export const DEFINITION_ARGS = {
   edit_definition_node: z
@@ -124,7 +124,16 @@ export const DEFINITION_ARGS = {
     })
     .strict(),
   add_definition_variant: z.object({ axis: z.string(), option: z.string(), label: z.string().min(1).max(60) }).strict(),
-  insert_definition_node: z.object({ parentId: z.string(), primitive: z.enum(INSERTED), text: z.string().max(2000).optional(), index: z.number().int().min(0).optional() }).strict(),
+  insert_definition_node: z
+    .object({
+      parentId: z.string(),
+      primitive: z.enum(INSERTED),
+      text: z.string().max(2000).optional(),
+      shape: z.enum(DIVIDER_SHAPES).optional(),
+      icon: z.string().optional(),
+      index: z.number().int().min(0).optional()
+    })
+    .strict(),
   remove_definition_node: z.object({ nodeId: z.string() }).strict()
 } as const;
 
@@ -143,7 +152,7 @@ export const DEFINITION_DESCRIPTIONS: Record<DefinitionToolName, string> = {
     'Style a node of the design, by nodeId or by one of its parts. Without variant this is the base style every placement starts from; with variant { axis, option } it is that option\'s rule, which applies only to placements that choose it. scope "phone", "tablet" or "desktop" styles one screen size, "base" all; state "hover", "focus" or "active" styles that state only (colors, background, border, radius, shadow, opacity). Prefer token values such as {"token":"space.lg"}; null clears a value.',
   add_definition_variant: 'Add a variant option that placements can choose, on an axis such as tone or layout. Then style it with style_definition_element and its variant.',
   insert_definition_node:
-    "Add an element to the design inside one of its containers (at index among its children, by default the end): a heading, paragraph, button, image, icon, divider or a layout container. The result names the new node's nodeId, to bind, style or expose in the next step.",
+    "Add an element to the design inside one of its containers (at index among its children, by default the end): a heading, paragraph, button, image, icon, divider (a plain line, or a decorative angle, wave or icon band), badge (a pill label with an optional leading icon), figure (an image with a caption) or a layout container. The result names the new node's nodeId, to bind, style or expose in the next step.",
   remove_definition_node: 'Remove a node, and everything inside it, from the design: every placement loses it.'
 };
 
@@ -396,7 +405,9 @@ export function definitionTools(state: ProjectState, target: DefinitionTarget): 
         {
           parentId: idSchema(containers, 'The container to add it to.'),
           primitive: { type: 'string', enum: [...INSERTED] },
-          text: { type: 'string', maxLength: 2000, description: 'Its text, for a heading, paragraph or button.' },
+          text: { type: 'string', maxLength: 2000, description: 'Its text, for a heading, paragraph, button or badge, or a figure\'s caption ("" leaves the caption out).' },
+          shape: { type: 'string', enum: [...DIVIDER_SHAPES], description: 'A divider only: "line" (default), "angle", "wave" or "icon".' },
+          icon: { type: 'string', description: 'A badge\'s leading icon, or the icon of a divider of shape "icon", by name.' },
           index: { type: 'integer', minimum: 0, description: 'Its position among the container\'s children. Omit for the end.' }
         },
         ['parentId', 'primitive']
@@ -572,7 +583,16 @@ export async function runDefinitionTool(name: DefinitionToolName, args: unknown,
     const a = args as z.infer<(typeof DEFINITION_ARGS)['insert_definition_node']>;
     const parent = namedNode(s, a.parentId, s.nodes.filter((id) => tree.nodes[id]?.kind === 'element'), issues, 'parentId', 'holds no children: name a container');
     if (!parent) return fieldError(issues, NOTHING_APPLIED);
-    const op: EditOperation = { type: 'node.insert', owner, parentId: parent.id, primitive: a.primitive, ...(a.text !== undefined ? { text: a.text } : {}), ...(a.index !== undefined ? { index: a.index } : {}) };
+    const op: EditOperation = {
+      type: 'node.insert',
+      owner,
+      parentId: parent.id,
+      primitive: a.primitive,
+      ...(a.text !== undefined ? { text: a.text } : {}),
+      ...(a.shape !== undefined ? { shape: a.shape } : {}),
+      ...(a.icon !== undefined ? { icon: a.icon } : {}),
+      ...(a.index !== undefined ? { index: a.index } : {})
+    };
     const res = await applySelected([op], host, `Add ${a.primitive}`, callId);
     // The new node's ID, for the next step that binds, styles or exposes it.
     const made = res.ok ? (res.results?.[0] as { nodeId?: string } | undefined)?.nodeId : undefined;

@@ -2,7 +2,7 @@ import { z } from 'zod';
 import { FONT_FAMILY_RE, FONT_WEIGHT_RE } from './fonts';
 import { DOCUMENT_EXTENSIONS, DOCUMENT_FORMATS } from './document-files';
 import { sha256Hex } from './sha256';
-import { COMPONENT_CATEGORIES, LINK_RELS, OVERLAY_MODES, SLOT_PRIMITIVES } from './types';
+import { COMPONENT_CATEGORIES, DIVIDER_SHAPES, LINK_RELS, OVERLAY_MODES, SLOT_PRIMITIVES } from './types';
 import { TEXT_LIMITS, tooLongMessage } from './text-limits';
 import { CANONICAL_URL_MAX } from './seo';
 import { VISITOR_TEXT_KEYS, VISITOR_TEXT_LIMIT } from './visitor-text';
@@ -84,6 +84,9 @@ const uiStateDecl = z.object({
     .describe('enum only: 2 to 50 options, in the order next and prev step through.'),
   initial: z.union([z.boolean(), z.string()]).optional().describe('What every placement starts with: true or false, or one of the options. Defaults to false, or the first option.')
 });
+/** How a divider's shape is offered: the same words wherever one can be set. */
+export const DIVIDER_SHAPE_TEXT =
+  'How the divider is drawn: "line" (default) is a plain rule; "angle" and "wave" are decorative section-edge bands and "icon" a hairline either side of an icon, drawn in the divider\'s text color (its "color" style) and hidden from screen readers.';
 const link = z.object({
   type: z.enum(['none', 'page', 'url', 'email', 'tel', 'anchor', 'document']),
   target: z.string().describe('Page ID for page links, https URL, email address, phone number, anchor ID or a document asset ID.'),
@@ -161,7 +164,14 @@ const DESIGN_NODE = z.discriminatedUnion('kind', [
     })
     .strict(),
   z.object({ kind: z.literal('icon'), ...DESIGN_NODE_BASE, icon: bindable(z.string()), ariaLabel: bindable(z.string()).optional() }).strict(),
-  z.object({ kind: z.literal('divider'), ...DESIGN_NODE_BASE }).strict(),
+  z
+    .object({
+      kind: z.literal('divider'),
+      ...DESIGN_NODE_BASE,
+      shape: z.enum(DIVIDER_SHAPES).optional().describe(DIVIDER_SHAPE_TEXT),
+      icon: z.string().optional().describe('Shape "icon" only: the icon between the hairlines.')
+    })
+    .strict(),
   z
     .object({
       kind: z.literal('repeat'),
@@ -326,12 +336,17 @@ export const OPERATION_SCHEMAS = {
     index: z.number().int().min(0).optional().describe('Position among siblings. Defaults to the end.'),
     componentId: z.string().optional().describe('Catalogue component ID such as "features.grid".'),
     definitionId: z.string().optional().describe('An installed project component definition ID.'),
-    primitive: z.enum(['container', 'stack', 'row', 'grid', 'heading', 'paragraph', 'richtext', 'image', 'button', 'icon', 'divider', 'slot', 'repeat']).optional(),
+    primitive: z
+      .enum(['container', 'stack', 'row', 'grid', 'heading', 'paragraph', 'richtext', 'image', 'button', 'icon', 'divider', 'badge', 'figure', 'slot', 'repeat'])
+      .optional()
+      .describe('"badge" is a compact pill label (an eyebrow) with an optional leading icon; "figure" is an image with a caption beneath it.'),
     bind: z.string().optional().describe('Component definitions only: the list property a "repeat" repeats, or the declared slot a "slot" renders.'),
     props: z.record(z.string(), z.unknown()).optional().describe('Initial property values for a component.'),
     variant: z.string().optional().describe('One variant option, found on whichever axis has it.'),
     variants: z.record(z.string(), z.string()).optional().describe('Options by axis, e.g. { "tone": "inverse", "layout": "two-columns" }.'),
-    text: z.string().optional().describe('Initial text for heading, paragraph or button primitives.')
+    text: z.string().optional().describe('Initial text for heading, paragraph, button or badge primitives, or a figure\'s caption ("" leaves the caption out).'),
+    shape: z.enum(DIVIDER_SHAPES).optional().describe(`Divider only. ${DIVIDER_SHAPE_TEXT}`),
+    icon: z.string().optional().describe('A badge\'s leading icon, or the icon of a divider of shape "icon", by name.')
   }),
   'node.remove': z.object({ type: z.literal('node.remove'), owner, nodeId: z.string() }),
   'node.move': z.object({
@@ -416,8 +431,8 @@ export const OPERATION_SCHEMAS = {
     owner,
     nodeId: z.string(),
     field: z
-      .enum(['text', 'image', 'link', 'label', 'appearance', 'icon', 'iconPosition', 'ariaLabel', 'tag', 'action', 'anchor', 'collapseEmpty', 'appear', 'appearStagger', 'overlay', 'webmcpToolName', 'webmcpToolDescription'])
-      .describe('"webmcpToolName" / "webmcpToolDescription" (contact form placements): the name and description AI agents in visitors\' browsers know the form by while the site has WebMCP on; "" or null goes back to the default. "collapseEmpty" (definition containers): true hides it when all children are hidden. "overlay" (a plain div in a definition whose one condition reads a yes/no UI state): "dialog", "drawer-start", "drawer-end" or "drawer-bottom" shows it over the page while that condition holds, opened and closed by the state\'s buttons; null shows it in its place again. "tag" must fit where the node sits: li in ul/ol, dt/dd in dl, figcaption in figure, summary in details, only inline content in a p or span. "appear": a section or container enters as "fade", "lift" or "scale-subtle"; null clears, "none" turns a design\'s off. "appearStagger" (repeats): true staggers item entrances.'),
+      .enum(['text', 'image', 'link', 'label', 'appearance', 'icon', 'iconPosition', 'ariaLabel', 'tag', 'action', 'anchor', 'collapseEmpty', 'appear', 'appearStagger', 'overlay', 'webmcpToolName', 'webmcpToolDescription', 'shape'])
+      .describe('"shape" (dividers): "line", "angle", "wave" or "icon"; "icon" on a divider of shape "icon" picks its icon. "webmcpToolName" / "webmcpToolDescription" (contact form placements): the name and description AI agents in visitors\' browsers know the form by while the site has WebMCP on; "" or null goes back to the default. "collapseEmpty" (definition containers): true hides it when all children are hidden. "overlay" (a plain div in a definition whose one condition reads a yes/no UI state): "dialog", "drawer-start", "drawer-end" or "drawer-bottom" shows it over the page while that condition holds, opened and closed by the state\'s buttons; null shows it in its place again. "tag" must fit where the node sits: li in ul/ol, dt/dd in dl, figcaption in figure, summary in details, only inline content in a p or span. "appear": a section or container enters as "fade", "lift" or "scale-subtle"; null clears, "none" turns a design\'s off. "appearStagger" (repeats): true staggers item entrances.'),
     value: z.unknown().describe(RICH_TEXT_VALUE)
   }),
   'node.setBinding': z.object({

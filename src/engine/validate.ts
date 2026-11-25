@@ -16,7 +16,7 @@ import { normalizeTable } from './table';
 import { normalizeObject } from './values';
 import { slotAccepts, slotDecl, slotDeclProblem, slotFill } from './slots';
 import { nestingChecker } from './semantic-tags';
-import { MAX_UI_STATES, acceptedTypes, bindingProblem, bindingSlots, boundSchema, overlayProblem, repeatFilterProblem, stateActionProblem, stateRefProblem, uiStateProblem } from './schema';
+import { MAX_UI_STATES, acceptedTypes, bindingProblem, bindingSlots, boundSchema, dividerProblem, overlayProblem, repeatFilterProblem, stateActionProblem, stateRefProblem, uiStateProblem } from './schema';
 import { cardLinkProblems, isCarouselTrack } from '@generator/card-links';
 import { declaredTokens, findTokenCycle, forEachTokenPropRef } from './tokens';
 import { darkValue } from '@shared/color-scheme';
@@ -875,6 +875,8 @@ function structureDiagnostics(state: ProjectState): Diagnostic[] {
     for (const n of Object.values(tree.nodes)) {
       if (n.kind === 'element' && !isBinding(n.tag) && !ELEMENT_TAG_SET.has(n.tag)) out.push({ severity: 'error', code: 'TAG_INVALID', message: `${label}: "${String(n.tag)}" is not a supported element tag.`, owner, nodeId: n.id });
       if (n.kind === 'text' && !isBinding(n.tag) && !TEXT_TAG_SET.has(n.tag)) out.push({ severity: 'error', code: 'TAG_INVALID', message: `${label}: "${String(n.tag)}" is not a supported text tag.`, owner, nodeId: n.id });
+      const divider = dividerProblem(n);
+      if (divider) out.push({ severity: 'error', code: 'DIVIDER_INVALID', message: `${label}: ${nodeLabel(n)} ${divider}`, owner, nodeId: n.id, site: `${n.id}|shape` });
       // A carousel's buttons go beside its list, which only a plain list can have.
       if ((n as { carousel?: unknown }).carousel !== undefined && !isCarouselTrack(n))
         out.push({ severity: 'error', code: 'CAROUSEL_INVALID', message: `${label}: ${nodeLabel(n)} is marked as a carousel, which only a bulleted list (ul) that is not itself a link can be.`, owner, nodeId: n.id });

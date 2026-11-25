@@ -1,5 +1,6 @@
 import { propBindingSchema, withProp } from '@shared/bindings';
 import type {
+  DividerNode,
   AltReview,
   AssetRecord,
   ComponentDefinition,
@@ -28,7 +29,7 @@ import type {
 } from '@shared/types';
 import type { Binding, EntryDoc } from '@shared/types';
 import { withAuthoredRel } from '@shared/link-rel';
-import { APPEAR_PRESETS, ELEMENT_ACTIONS, ICON_POSITIONS, OVERLAY_MODES, SCHEMA_VERSION, conditionRef, parseStyleScopeKey, styleScopeKey, isAppearPreset, isBinding, isBindingRef, isComparison, isEntryBinding, slotChildren, type AppearPreset, type ElementAction, type ElementTag, type IconPosition, type OverlayMode, type TextTag } from '@shared/types';
+import { APPEAR_PRESETS, DIVIDER_SHAPES, ELEMENT_ACTIONS, ICON_POSITIONS, OVERLAY_MODES, SCHEMA_VERSION, conditionRef, parseStyleScopeKey, styleScopeKey, isAppearPreset, isBinding, isBindingRef, isComparison, isEntryBinding, slotChildren, type AppearPreset, type ElementAction, type ElementTag, type IconPosition, type OverlayMode, type TextTag } from '@shared/types';
 import { propertiesHash, type EditOperation, type Op } from '@shared/ops';
 import { STYLE_PROP_MAP, canonicalStyleValue, isSafeCssValue, stateStyleError, isTokenLength, linkOf, partStyleControls, styleSetFor, textStyleValue, textWeight, tokenVar, validateStyleValue } from '@shared/styles';
 import { normalizeRoute, slugify, suggestRoute, validateRoute } from '@shared/routes';
@@ -54,6 +55,7 @@ import { teaserFields } from '@shared/page-teasers';
 import { dropFontFamily, familyUses, fontAssetUsages, isValidFontAsset, projectFontFamilies, renameFontFamily, sameFontFamily, siteChoosesFamily, stackLeadsWith, withoutFamily } from '@shared/fonts';
 import { documentFormat, isDocumentMime } from '@shared/document-files';
 import { getTheme, listThemes, themeLockEntry } from '@catalogue/index';
+import { ICONS } from '@catalogue/foundation/icons';
 import { resolveFontStack } from '@catalogue/fonts';
 import { codeTakesBlocks, effectiveTokens, generateStandaloneComponent, CUSTOM_DIR } from '@generator/index';
 import { slotsInsideCards } from '@generator/card-links';
@@ -1203,9 +1205,27 @@ export function planHomeChange(state: ProjectState, pageId: string, keepOldAddre
 // Nodes
 // ---------------------------------------------------------------------------
 
-function primitiveNode(state: ProjectState, kind: NonNullable<Op<'node.insert'>['primitive']>, text?: string): GraphNode[] {
+/** What a basic element starts with besides its kind: its text, a divider's shape, and a badge's or divider's icon. */
+type PrimitiveStart = Pick<Op<'node.insert'>, 'text' | 'shape' | 'icon'>;
+
+/** An icon named for a basic element: one of the bundled icons, or none when the name is empty. */
+function startIcon(icon: string | undefined): string | undefined {
+  const name = icon?.trim();
+  if (!name) return undefined;
+  if (!Object.hasOwn(ICONS, name)) fail(`"${name.slice(0, 40)}" is not an available icon. Use one of: ${Object.keys(ICONS).join(', ')}.`);
+  return name;
+}
+
+/**
+ * A basic element as it is inserted: the node itself first, then any nodes inside it (a badge's icon and label, a
+ * figure's image and caption), each with an ID of its own.
+ */
+function primitiveNode(state: ProjectState, kind: NonNullable<Op<'node.insert'>['primitive']>, start: PrimitiveStart = {}): GraphNode[] {
   const id = newId('n');
   const space = (t: string) => ({ token: t });
+  const { text } = start;
+  if (start.shape !== undefined && kind !== 'divider') fail('Only a divider has a shape.');
+  if (start.icon !== undefined && kind !== 'badge' && !(kind === 'divider' && start.shape === 'icon')) fail('Only a badge, or a divider of shape "icon", starts with an icon.');
   switch (kind) {
     case 'container':
       return [{ id, kind: 'element', tag: 'div', children: [], styles: { base: { layout: 'stack', gap: space('space.md'), paddingBlock: space('space.lg') } } }];
@@ -1230,8 +1250,45 @@ function primitiveNode(state: ProjectState, kind: NonNullable<Op<'node.insert'>[
       return [{ id, kind: 'link', link: { type: 'none', target: '' }, label: text ?? 'Button', appearance: 'primary' }];
     case 'icon':
       return [{ id, kind: 'icon', icon: 'sparkles', styles: { base: { color: space('color.brand'), fontSize: '1.5rem' } } }];
-    case 'divider':
-      return [{ id, kind: 'divider' }];
+    case 'divider': {
+      const shape = start.shape ?? 'line';
+      if (shape === 'line') return [{ id, kind: 'divider' }];
+      const icon = startIcon(start.icon);
+      // A band takes the alternate background, so it leads into a section of that color; the hairlines around an
+      // icon are drawn fainter than the icon, in muted text.
+      const color = space(shape === 'icon' ? 'color.muted' : 'color.surface-alt');
+      return [{ id, kind: 'divider', shape, ...(icon ? { icon } : {}), styles: { base: { color } } }];
+    }
+    case 'badge': {
+      // A pill that sits in a line of text as well as above a heading: inline, as wide as its label.
+      const icon = startIcon(start.icon);
+      const label: GraphNode = { id: newId('n'), kind: 'text', tag: 'span', text: text ?? 'New', name: 'Label', styles: { base: { textStyle: space('text.eyebrow') } } };
+      const lead: GraphNode[] = icon ? [{ id: newId('n'), kind: 'icon', icon, styles: { base: { fontSize: '1em' } } }] : [];
+      const styles = {
+        base: {
+          layout: 'row',
+          align: 'center',
+          gap: space('space.2xs'),
+          width: 'fit',
+          maxWidth: '100%',
+          paddingBlock: space('space.2xs'),
+          paddingInline: space('space.sm'),
+          radius: space('radius.pill'),
+          background: space('color.surface-alt'),
+          color: space('color.text'),
+          customCss: 'display: inline-flex'
+        }
+      };
+      return [{ id, kind: 'element', tag: 'span', name: 'Badge', children: [...lead.map((n) => n.id), label.id], styles }, ...lead, label];
+    }
+    case 'figure': {
+      const image: GraphNode = { id: newId('n'), kind: 'image', image: { assetId: null, alt: '' }, styles: { base: { radius: space('radius.md') } } };
+      // An empty caption leaves it out; one can be added (or removed) later like any text.
+      const caption: GraphNode[] =
+        text === '' ? [] : [{ id: newId('n'), kind: 'text', tag: 'figcaption', name: 'Caption', text: text ?? 'Add a caption.', styles: { base: { textStyle: space('text.small'), color: space('color.muted') } } }];
+      const children = [image.id, ...caption.map((n) => n.id)];
+      return [{ id, kind: 'element', tag: 'figure', name: 'Figure', children, styles: { base: { layout: 'stack', gap: space('space.xs') } } }, image, ...caption];
+    }
   }
 }
 
@@ -1291,10 +1348,11 @@ function nodeInsert(state: ProjectState, op: Op<'node.insert'>): OpResult {
   }
   const landed = slotLanding(state, op.owner, tree, op.parentId, list);
   let nodes: GraphNode[];
+  if ((op.shape !== undefined || op.icon !== undefined) && (!op.primitive || op.primitive === 'slot' || op.primitive === 'repeat')) fail('Only a divider has a shape, and only a badge or a divider of shape "icon" starts with an icon.');
   if (op.primitive === 'slot' || op.primitive === 'repeat') {
     nodes = [structuralNode(state, op.owner, op.primitive, op.bind)];
   } else if (op.primitive) {
-    nodes = primitiveNode(state, op.primitive, op.text);
+    nodes = primitiveNode(state, op.primitive, { text: op.text, shape: op.shape, icon: op.icon });
     // A paragraph or span container holds only inline content, so text inserted there is inline text.
     const text = nodes[0];
     const holder = op.parentId && Object.hasOwn(tree.nodes, op.parentId) ? tree.nodes[op.parentId] : undefined;
@@ -2096,7 +2154,24 @@ function nodeSetContent(state: ProjectState, op: Op<'node.setContent'>): OpResul
       node.appearance = String(v);
       return {};
     }
+    case 'shape': {
+      if (node.kind !== 'divider') fail('Only dividers have a shape.');
+      const shape = v === null || v === undefined ? 'line' : v;
+      if (typeof shape !== 'string' || !(DIVIDER_SHAPES as readonly string[]).includes(shape)) fail(`A divider's shape must be ${DIVIDER_SHAPES.join(', ')}.`);
+      // A plain rule is stored without a shape; only an icon divider keeps its icon.
+      if (shape === 'line') delete node.shape;
+      else node.shape = shape as NonNullable<DividerNode['shape']>;
+      if (shape !== 'icon') delete node.icon;
+      return {};
+    }
     case 'icon': {
+      if (node.kind === 'divider') {
+        if (node.shape !== 'icon') fail('Only a divider of shape "icon" shows an icon.');
+        const icon = startIcon(typeof v === 'string' ? v : undefined);
+        if (icon) node.icon = icon;
+        else delete node.icon;
+        return {};
+      }
       if (node.kind !== 'icon' && node.kind !== 'link') fail('Only icons, buttons and links have an icon.');
       if (setBound(node.icon, () => String(v ?? ''))) return {};
       // A button without an icon simply leaves it out.

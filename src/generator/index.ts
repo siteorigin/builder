@@ -39,7 +39,7 @@ import type {
   TokenValue,
   UiStateSchema
 } from '@shared/types';
-import { ELEMENT_TAGS, GENERATOR_VERSION, LIST_FEEDS, RESPONSIVE_SCOPES, STYLE_STATES, TEXT_TAGS, conditionRef, isAppearPreset, isBinding, isBindingRef, isComparison, isStateRef, slotChildren, stateInitial, styleScopeKey, type Condition } from '@shared/types';
+import { DIVIDER_ICON, ELEMENT_TAGS, GENERATOR_VERSION, LIST_FEEDS, RESPONSIVE_SCOPES, STYLE_STATES, TEXT_TAGS, conditionRef, isAppearPreset, isBinding, isBindingRef, isComparison, isStateRef, slotChildren, stateInitial, styleScopeKey, type Condition } from '@shared/types';
 import {
   MEDIA_QUERIES,
   REDUCED_MOTION_QUERY,
@@ -64,6 +64,7 @@ import {
 } from '@shared/styles';
 import { getTheme } from '@catalogue/index';
 import { usedPackFonts } from '@catalogue/fonts';
+import { ICONS } from '@catalogue/foundation/icons';
 import { ACTION_SVELTE, DRAFTS_JS, IMAGE_SVELTE, NOT_FOUND_JS, RICHTEXT_SVELTE, UTIL_JS, iconSvelte, iconsJs, linkSvelte } from './runtime-files';
 import { routeDir, routeUrl, validateRoute, validateSegment } from '@shared/routes';
 import { sha256Hex } from '@shared/sha256';
@@ -939,6 +940,26 @@ function filterCss(global = false): string {
   ].join('\n');
 }
 
+/** The decorative divider bands, in a 100 × 24 box stretched to the band's size: filled along the bottom edge. */
+const BAND_PATHS = { angle: 'M0 24 L100 0 V24 Z', wave: 'M0 12 Q25 0 50 12 T100 12 V24 H0 Z' } as const;
+
+/**
+ * The decorative divider shapes' own layout, whatever the theme's CSS has: a band as wide as its container, an icon
+ * between two hairlines drawn fainter than it, both in the divider's text color. Sizes and colors stay the design's
+ * own (zero specificity).
+ */
+const BAND_CSS = `/* Decorative divider shapes. */
+:where(.so-band) { display: block; width: 100%; height: 3rem; }
+:where(.so-band-icon) { display: flex; align-items: center; gap: 0.75rem; width: 100%; }
+:where(.so-band-icon__rule) { flex: 1 1 0; min-width: 0; border-top: 1px solid currentColor; opacity: 0.35; }
+:where(.so-band-icon > .so-icon) { flex: none; width: 1.25em; height: 1.25em; }`;
+
+/** Whether any page, layout, shared header or footer, or design shows a decorative divider shape. */
+function usesDividerShapes(state: ProjectState): boolean {
+  const trees = [...treeOwners(state).map((t) => t.tree), ...sortedDefs(state).flatMap((d) => (d.kind === 'managed' && d.tree ? [d.tree] : []))];
+  return trees.some((t) => Object.values(t.nodes ?? {}).some((n) => n?.kind === 'divider' && (n.shape === 'angle' || n.shape === 'wave' || n.shape === 'icon')));
+}
+
 /** Whether a design has a dialog or drawer that works (see stateWidgets). */
 function hasOverlays(def: ComponentDefinition): boolean {
   return def.kind === 'managed' && !!def.tree && Object.values(def.tree.nodes).some((n) => n?.kind === 'element' && n.overlay !== undefined && !overlayProblem(def, n));
@@ -975,6 +996,8 @@ export function generateComponentsCss(state: ProjectState): string {
   // Items a list's category filter hides stay in the page, hidden on screen only, so printing shows them all; the
   // row of category buttons is left out of print.
   if (sortedDefs(state).some((def) => def.kind === 'managed' && repeatFilters(def).length)) parts.push(filterCss());
+  // Asked as one answer, so a change to a page's content makes this file again only when the answer changes.
+  if (derived(state, 'dividerShapes', usesDividerShapes)) parts.push(BAND_CSS);
   for (const def of sortedDefs(state)) {
     if (def.kind !== 'managed' || !def.tree) continue;
     const css = emitRules(definitionRules(state, def));
@@ -2487,8 +2510,19 @@ function emitNodeInner(ctx: EmitCtx, node: GraphNode): string {
       useImport(ctx, 'SoIcon', `${RUNTIME_DIR}/Icon.svelte`);
       return `${p}<SoIcon name={${bindExpr(ctx, node.icon)}}${nameAttr(ctx, 'label', node.ariaLabel)} class=${classExpr(ctx, node)}${anchorAttr(ctx, node)}${ids} />`;
     }
-    case 'divider':
+    case 'divider': {
+      // A decorative band is drawn, not read: hidden from assistive technology, in the divider's own text color.
+      const shape = node.shape;
+      if (shape === 'angle' || shape === 'wave')
+        return `${p}<svg class=${classExpr(ctx, node, [js('so-band'), js(`so-band--${shape}`)])} viewBox="0 0 100 24" preserveAspectRatio="none" aria-hidden="true" focusable="false"${anchorAttr(ctx, node)}${ids}><path d="${BAND_PATHS[shape]}" fill="currentColor" /></svg>`;
+      if (shape === 'icon') {
+        useImport(ctx, 'SoIcon', `${RUNTIME_DIR}/Icon.svelte`);
+        const icon = typeof node.icon === 'string' && Object.hasOwn(ICONS, node.icon) ? node.icon : DIVIDER_ICON;
+        return `${p}<div class=${classExpr(ctx, node, [js('so-band-icon')])} aria-hidden="true"${anchorAttr(ctx, node)}${ids}><span class="so-band-icon__rule"></span><SoIcon name={${js(icon)}} /><span class="so-band-icon__rule"></span></div>`;
+      }
+      // A plain rule is a real separator; a shape there is no drawing for (validation reports it) shows as one.
       return `${p}<hr class=${classExpr(ctx, node, [js('so-divider')])}${anchorAttr(ctx, node)}${ids} />`;
+    }
     case 'repeat': {
       const v = `item${ctx.items.length ? ctx.items.length + 1 : ''}`;
       const list = bindExpr(ctx, node.list);

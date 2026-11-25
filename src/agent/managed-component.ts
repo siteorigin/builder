@@ -12,14 +12,14 @@ import { z } from 'zod';
 import type { EditOperation, Op } from '@shared/ops';
 import type { ComponentDefinition, LinkValue, PropSchema, ProjectState, TokenGroup, UiStateSchema } from '@shared/types';
 import { linkRels, withRels } from '@shared/link-rel';
-import { APPEAR_PRESETS, COMPONENT_CATEGORIES, ELEMENT_ACTIONS, OVERLAY_MODES, SLOT_PRIMITIVES } from '@shared/types';
+import { APPEAR_PRESETS, COMPONENT_CATEGORIES, DIVIDER_SHAPES, ELEMENT_ACTIONS, OVERLAY_MODES, SLOT_PRIMITIVES } from '@shared/types';
 import { TABLE_LIMITS } from '@engine/table';
 import { MAX_CHOICES } from '@engine/values';
 import { STYLE_PROP_MAP } from '@shared/styles';
 import { newId } from '@shared/ids';
 import { projectDefinitionId } from '@shared/component-ids';
 import { normalizeRoute } from '@shared/routes';
-import { STYLE_TOKEN_REF, validateOperation } from '@shared/ops';
+import { DIVIDER_SHAPE_TEXT, STYLE_TOKEN_REF, validateOperation } from '@shared/ops';
 import { sha256Hex } from '@shared/sha256';
 import { applyOperations } from '@engine/apply';
 import type { EngineError } from '@engine/tree';
@@ -138,7 +138,16 @@ const NODE = z.discriminatedUnion('kind', [
     })
     .strict(),
   z.object({ kind: z.literal('icon'), ...NODE_HEAD, icon: bindable(z.string()), ariaLabel: bindable(z.string()).optional(), styles: STYLES, ...CONDITIONS }).strict(),
-  z.object({ kind: z.literal('divider'), ...NODE_HEAD, styles: STYLES, ...CONDITIONS }).strict(),
+  z
+    .object({
+      kind: z.literal('divider'),
+      ...NODE_HEAD,
+      shape: z.enum(DIVIDER_SHAPES).optional().describe(DIVIDER_SHAPE_TEXT),
+      icon: z.string().optional().describe('Shape "icon" only: the icon between the hairlines.'),
+      styles: STYLES,
+      ...CONDITIONS
+    })
+    .strict(),
   z
     .object({
       kind: z.literal('repeat'),

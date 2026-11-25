@@ -2,7 +2,7 @@
  * Property schema validation for component definitions, and where a managed definition binds its properties.
  */
 import type { BindingRef, ComponentDefinition, Comparison, GraphNode, ListFeed, ListProp, NodeTree, PageTeaser, ProjectState, PropSchema, RepeatFilter, ScalarPropSchema, StateRef, TokenGroup, UiStateSchema } from '@shared/types';
-import { ELEMENT_ACTIONS, ELEMENT_TAGS, ICON_POSITIONS, LIST_FEEDS, OVERLAY_MODES, RICH_CODE_FORMS, STATE_ACTION_OPS, TEXT_TAGS, UI_STATE_TYPES, conditionRef, isBinding, isBindingRef, isComparison, isStateRef } from '@shared/types';
+import { DIVIDER_SHAPES, ELEMENT_ACTIONS, ELEMENT_TAGS, ICON_POSITIONS, LIST_FEEDS, OVERLAY_MODES, RICH_CODE_FORMS, STATE_ACTION_OPS, TEXT_TAGS, UI_STATE_TYPES, conditionRef, isBinding, isBindingRef, isComparison, isStateRef } from '@shared/types';
 import { feedRowFields } from '@shared/entry-feed';
 import { PAGE_TEASER_TYPES, type PageTeaserValue } from '@shared/page-teasers';
 import { axesOf } from '@shared/variants';
@@ -10,6 +10,7 @@ import { propBindingSchema } from '@shared/bindings';
 import { fail, findParent } from './tree';
 import { normalizeProp } from './values';
 import { declaredTokens } from './tokens';
+import { ICONS } from '@catalogue/foundation/icons';
 
 const PROP_TYPES = ['string', 'richtext', 'number', 'boolean', 'enum', 'link', 'image', 'icon', 'choices', 'token', 'list', 'table', 'object'] as const;
 /** Token groups a token property can choose from. A text style is several values at once, so no style can bind one. */
@@ -730,6 +731,21 @@ export function booleanStateGuard(def: Pick<ComponentDefinition, 'state' | 'prop
   const value = 'eq' in c ? c.eq : c.ne;
   if (typeof value !== 'boolean') return null;
   return { state: ref.$state, shows: 'eq' in c !== negate ? value : !value };
+}
+
+/**
+ * What is wrong with a divider's shape and icon as stored, or null: a hand-edited document can name a shape there is
+ * no drawing for, or an icon the bundled set lacks. The site still shows a plain rule, or the default icon.
+ */
+export function dividerProblem(node: GraphNode): string | null {
+  if (node.kind !== 'divider') return null;
+  const { shape, icon } = node as { shape?: unknown; icon?: unknown };
+  if (shape !== undefined && (typeof shape !== 'string' || !(DIVIDER_SHAPES as readonly string[]).includes(shape)))
+    return `has a shape that is not one of ${DIVIDER_SHAPES.join(', ')}, so it shows as a plain line.`;
+  if (icon === undefined) return null;
+  if (shape !== 'icon') return 'names an icon, which only a divider of shape "icon" shows.';
+  if (typeof icon !== 'string' || !Object.hasOwn(ICONS, icon)) return 'names an icon that is not available, so it shows the default icon.';
+  return null;
 }
 
 /**
