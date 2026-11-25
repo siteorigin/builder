@@ -448,8 +448,9 @@ describe('the exported site', () => {
 
   it('bundles the icon a collection layout’s divider or badge names', () => {
     const { s } = blank();
-    const next = structuredClone(s) as ProjectState & { collections: Record<string, unknown> };
-    next.collections = { posts: { settings: { template: { rootIds: ['edge'], nodes: { edge: { id: 'edge', kind: 'divider', shape: 'icon', icon: 'trees' } } } } } };
+    const next = structuredClone(s);
+    // Only the layout matters here: a collection reduced to its settings' template.
+    next.collections = { posts: { settings: { template: { rootIds: ['edge'], nodes: { edge: { id: 'edge', kind: 'divider', shape: 'icon', icon: 'trees' } } } } } } as never;
     expect(usedIcons(s)).not.toContain('trees');
     expect(usedIcons(next)).toContain('trees');
   });
