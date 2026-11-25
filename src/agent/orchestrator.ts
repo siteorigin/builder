@@ -14,7 +14,8 @@ import { diagnosticKey, type Diagnostic } from '@engine/validate';
 import type { AgentModelAdapter, CanonicalItem, ContextOverflow, ModelEvent, ToolCall, ToolDefinition } from './types';
 import { describeOps, InspectionLog, pagesTouched } from './report';
 import { asksForComponent, assetSummary, CODE_OPERATIONS, executeTool, imageAnswer, imageLabel, imageRef, libraryImage, MUTATING_TOOLS, REVISION_BOUND_TOOLS, serializeResult, toolsForRun, type RunTools, type ToolHost } from './tools';
-import { compactProjectSummary, describeSelection, pageGlance, pageGlanceChars, pageIdFor, projectSummary, withoutSlotInfo } from './context';
+import { compactProjectSummary, describeSelection, pageGlance, pageGlanceChars, pageIdFor, projectSummary, withoutSlotInfo, withThemeUpdates } from './context';
+import { outsideOffer, themeUpdateNote } from './theme-update';
 import { canEditContracts, checkAuthority, liveEntry, requestAuthority, widenChoices, type Authority } from './scope';
 import { connectPendingLinks, newMacroMemory } from './macros';
 import { developerModeRefusal } from '@engine/developer-mode';
@@ -162,6 +163,13 @@ function editingComponent(state: ProjectState, component: { id: string; name: st
 }
 
 /** The component a request edits everywhere, as the renderer sends it: absent, or its ID and name. */
+/** Whether a definition is placed on a page (its sections and what they hold). */
+function placedOnPage(state: ProjectState, pageId: string): (definitionId: string) => boolean {
+  const page = Object.hasOwn(state.pages, pageId) ? state.pages[pageId] : undefined;
+  const ids = new Set(Object.values(page?.nodes ?? {}).flatMap((n) => (n.kind === 'instance' ? [n.definitionId] : [])));
+  return (id) => ids.has(id);
+}
+
 function readableComponent(c: unknown): boolean {
   if (c === undefined || c === null) return true;
   return typeof c === 'object' && !Array.isArray(c) && typeof (c as { id?: unknown }).id === 'string' && typeof (c as { name?: unknown }).name === 'string';
@@ -363,12 +371,24 @@ ${themeGuidance(theme)}`;
  * Where a notice for every page goes. A project keeps its own copy of the header, so one installed before the
  * header had a notice (or a customised copy) has no such fields until its theme components are updated.
  */
-function headerNoticeGuidance(state: ProjectState): string {
+function headerNoticeGuidance(state: ProjectState, tools: RunTools['tools']): string {
   const root = state.site.shell.header.nodes[state.site.shell.header.rootIds[0]];
   const def = root?.kind === 'instance' ? state.components[root.definitionId] : undefined;
   const never = 'Never add a page section for it, which shows on that page only.';
   if (def && Object.hasOwn(def.properties, 'notice'))
     return `A notice for every page (a closure, holiday hours, an announcement) is the header's "notice" text, with an optional "noticeLabel" and "noticeLink"; set "notice" to "" to remove it. ${never}`;
+  // The theme's newer header has one: taken here when this project can, explained when it cannot.
+  const update = themeUpdateNote(state, def);
+  if (update?.newVersionAdds?.properties && Object.hasOwn(update.newVersionAdds.properties, 'notice')) {
+    if (update.status === 'held') return `This project's header has no notice field. The theme's newer header has one, but this project cannot take it: ${update.heldBecause} When the user wants a notice on every page, say so. ${never}`;
+    const before = "This project's header was installed before the header had a notice field, which the theme's newer header has.";
+    // Offered only to a run that may change the header everywhere it shows.
+    const updater = tools.find((t) => t.name === 'update_theme_component');
+    const offered = (updater?.parameters as { properties?: { definitionId?: { enum?: string[] } } } | undefined)?.properties?.definitionId?.enum?.includes(def!.id);
+    return offered
+      ? `${before} When the user wants a notice on every page (a closure, an announcement), update the header with update_theme_component (definitionId "${def!.id}"), then set its "notice" text. ${never}`
+      : `${before} When the user wants a notice on every page (a closure, an announcement), ask them to allow a wider change: updating the header changes every page that shows it. Then update it with update_theme_component and set its "notice" text. ${never}`;
+  }
   return `This project's header has no notice field. When the user wants a notice on every page (a closure, an announcement), say that updating the theme's components (Update, in the status bar's problems panel) adds one to the header, unless the header was customised. ${never}`;
 }
 
@@ -452,7 +472,7 @@ function basePrompt(state: ProjectState, run: RunTools, constrained: boolean): s
 How the website is modelled:
 - Pages (IDs like "pg_…") have a route and an ordered list of sections. Most sections are component instances: { kind: "instance", componentId, props, variants } (variants holds one option per axis, such as tone and layout, and they combine).
 - Props are typed. Lists (cards, FAQs, plans, links) have items with stable "id" values; edit one item with instance.setProp using itemId + field, add with instance.listInsert, remove with instance.listRemove.
-- The shared header and footer are owned by { kind: "shell", id: "header" | "footer" }. Each already has exactly one component instance (its node ID is in the project summary's "shell" section). Never insert, remove or replace them: edit that instance with instance.setProp / instance.listInsert. Navigation links live in the header's "links" list and the footer's "links" list. ${headerNoticeGuidance(state)} Each page shows or hides the header and the footer on its own: page.update showHeader / showFooter (false hides it on that page only).
+- The shared header and footer are owned by { kind: "shell", id: "header" | "footer" }. Each already has exactly one component instance (its node ID is in the project summary's "shell" section). Never insert, remove or replace them: edit that instance with instance.setProp / instance.listInsert. Navigation links live in the header's "links" list and the footer's "links" list. ${headerNoticeGuidance(state, run.tools)} Each page shows or hides the header and the footer on its own: page.update showHeader / showFooter (false hides it on that page only).
 - A component may have named slots, where each placement holds content of its own. currentPage and read_page list them as slotInfo, empty ones included: by slot name, its label, how many children it holds and, when restricted, a contract (it takes any of the listed categories, componentIds or primitives, at most max; read_component lists the IDs moreComponentIds counts). Fill one with node.insert, parentId = that placement's node ID and slot = the slot name, plus a componentId, definitionId or primitive; node.move and node.copy take the same parentId and slot. A plain container (an element) takes parentId without slot. So build columns and card layouts from a component with slots, or a container, holding subcomponents.
 - Links are objects: { "type": "page", "target": "<pageId>" } for internal pages (never use a URL for an internal page), { "type": "url", "target": "https://…" }, { "type": "email", "target": "name@example.com" }, { "type": "tel", "target": "+1…" }.
 - Images are { "assetId": "<asset id>" | null, "alt": "…" }. You cannot see images: use an image the user attached by its assetId, choose by name/description, or let the user pick between images by sight with request_clarification assetIds. Two images can share a name; the assetId tells them apart.
@@ -1156,6 +1176,8 @@ export class Orchestrator {
       toolsForRun({
         state: session.state,
         selection: authority.kind === 'selection' ? selected : null,
+        // A part of a placement (as the run's authority reads it) never changes its component's design.
+        ...(authority.kind === 'selection' ? { selectionPart: !!authority.part } : {}),
         widened: authority.kind === 'site' ? selected : null,
         capabilities,
         codeEnabled,
@@ -1277,6 +1299,8 @@ export class Orchestrator {
                   : `only ${authority.label} (owner ${authority.owner.kind}:${authority.owner.id}, node ${authority.nodeId}) unless the user approves more via ${current.tools.some((t) => t.name === 'request_wider_scope') ? 'request_wider_scope' : 'request_clarification with widenScope'}`,
           // A selection, page or component edit needs that, not the whole site; the rest is one read away if it is widened.
           project: authority.kind !== 'site' ? compactProjectSummary(readState(), readRevision()) : projectSummary(readState(), readRevision()),
+          // A page's sections whose installed components the theme has a newer version of (a site run's are in project).
+          ...(authority.kind === 'page' && !ask ? withThemeUpdates(readState(), placedOnPage(readState(), authority.pageId)) : {}),
           ...(examples.length ? { workedExamples: examples } : {}),
           ...(blueprints.length ? { componentBlueprints: blueprints } : {})
         },
@@ -1911,9 +1935,13 @@ export class Orchestrator {
           const activity = addActivity(activityLabel(call, readState()), call.name);
           // Only tools offered for this run can be called.
           const offered = tools.some((t) => t.name === call.name);
-          const outcome = offered
-            ? await executeTool(call.name, call.arguments, host, call.id)
-            : { ok: false, content: { error: 'INVALID_ARGUMENT', message: `Unknown tool "${call.name}".` } };
+          // A component the update tool does not offer this run is refused, even from a model that ignored its choices.
+          const outside = offered && call.name === 'update_theme_component' ? outsideOffer(tools.find((t) => t.name === call.name), call.arguments) : null;
+          const outcome = !offered
+            ? { ok: false, content: { error: 'INVALID_ARGUMENT', message: `Unknown tool "${call.name}".` } }
+            : outside
+              ? { ok: false, content: { error: 'SCOPE_MISMATCH', message: outside } }
+              : await executeTool(call.name, call.arguments, host, call.id);
           // Record a landed edit before honouring Stop, so the stopped result reports the rollback truthfully.
           if (outcome.mutated) {
             // Whatever comes later in this turn was planned against the revision this just moved.
@@ -2045,6 +2073,11 @@ function activityLabel(call: ToolCall, state: ProjectState): string {
       return 'Updating site search settings';
     case 'upsert_managed_component':
       return `${args.definitionId ? 'Rebuilding' : 'Building'} the ${String(args.name ?? '').trim() || 'new'} component`;
+    case 'update_theme_component': {
+      const id = typeof args.definitionId === 'string' ? args.definitionId : undefined;
+      const def = id && Object.hasOwn(state.components, id) ? state.components[id] : undefined;
+      return `Updating ${def?.name ?? 'a component'} to the theme's newer version`;
+    }
     case 'update_selected_props':
     case 'edit_selected_list':
     case 'edit_selected_table':

@@ -422,8 +422,15 @@ export function describeOps(ops: EditOperation[], before: ProjectState, after: P
         }
         return plain(op, `Applied the ${quoted(theme)} theme`);
       }
-      case 'theme.refresh':
-        return plain(op, 'Updated components to the latest theme version');
+      case 'theme.refresh': {
+        // The components it updated, by name: one the request needed, or every one Project health could.
+        const updated = (results[i] as { updated?: unknown } | undefined)?.updated;
+        const names = Array.isArray(updated) ? updated.filter((id): id is string => typeof id === 'string').map((id) => quoted(componentName(id))) : [];
+        if (!names.length) return plain(op, 'Updated components to the latest theme version');
+        if (names.length > 3) return plain(op, `Updated ${names.length} components to the theme's newer version`);
+        const list = names.length === 1 ? names[0] : `${names.slice(0, -1).join(', ')} and ${names[names.length - 1]}`;
+        return plain(op, `Updated the ${list} component${names.length === 1 ? '' : 's'} to the theme's newer version`);
+      }
       case 'asset.add':
         return plain(op, `Added the ${op.asset.kind === 'font' ? 'font' : 'image'} ${quoted(op.asset.name)} to the library`);
       case 'asset.update':

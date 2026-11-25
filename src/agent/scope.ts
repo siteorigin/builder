@@ -10,7 +10,7 @@ import type { ChatContext } from '@shared/api';
 import type { ComponentDefinition, ElementRef, GraphNode, InstanceNode, OwnerRef, ProjectState } from '@shared/types';
 import { isBinding } from '@shared/types';
 import type { EditOperation, OperationType } from '@shared/ops';
-import { enclosingRepeatProp, findParent, getTree, itemLinkPairs, settledRoot, subtreeIds } from '@engine/tree';
+import { enclosingRepeatProp, findParent, getTree, instancesOf, itemLinkPairs, settledRoot, subtreeIds } from '@engine/tree';
 import { repeatedPartList } from '@shared/item-styles';
 import { bindingSites } from '@engine/schema';
 import { walkOperations } from '@engine/apply';
@@ -523,6 +523,23 @@ export interface AuthorityGrants {
   /** The one post (and the categories it is filed under) the post tool's call writes: the project refuses every other
    *  collection change from a run (see shared/collection-grant). */
   collectionWrite?: CollectionWriteGrant;
+  /** The one installed theme component the theme update tool's call updates (see agent/theme-update.ts). */
+  themeRefresh?: string;
+}
+
+/**
+ * Whether a theme update the update tool asked for stays within what a page or a selection may change. An update
+ * changes how every placement of the component shows, so it is theirs only when every placement is: on the page, or
+ * inside the selected element (a selected shared header, say). Anything else (a raw or bulk update, or a component
+ * placed elsewhere too) needs the user to approve a wider change.
+ */
+function themeRefreshWithin(state: ProjectState, op: Extract<EditOperation, { type: 'theme.refresh' }>, grants: AuthorityGrants, label: string, inside: (owner: OwnerRef, nodeId: string) => boolean): string | null {
+  const id = op.definitionIds?.length === 1 ? op.definitionIds[0] : undefined;
+  if (!id || id !== grants.themeRefresh) return `theme.refresh changes more than ${label}.`;
+  const name = Object.hasOwn(state.components, id) ? state.components[id].name : id;
+  const placed = instancesOf(state, id);
+  if (!placed.length || !placed.every((p) => inside(p.owner, p.node.id))) return `Updating "${name}" changes every placement of it, and some are outside ${label}: ask the user to approve a wider change first.`;
+  return null;
 }
 
 const sameOp = (a: EditOperation, b: EditOperation) => a === b || JSON.stringify(a) === JSON.stringify(b);
@@ -546,6 +563,8 @@ function checkPageOne(state: ProjectState, op: EditOperation, authority: Extract
       // A menu link to this page, added because the page tool was asked to add it.
       if (op.owner.kind === 'shell' && (grants.navigation ?? []).some((g) => sameOp(g, op))) return null;
       break;
+    case 'theme.refresh':
+      return themeRefreshWithin(state, op, grants, label, (o) => mine(o));
   }
   switch (OP_REACH[op.type] ?? 'wider') {
     case 'node':
@@ -573,10 +592,10 @@ export function checkAuthority(state: ProjectState, ops: EditOperation[], author
   if (authority.kind === 'component') return checkComponentAuthority(state, ops, authority);
   if (authority.kind === 'entry') return checkEntryAuthority(state, ops, authority);
   if (authority.kind === 'page') return walkOperations(state, ops, (draft, op) => checkPageOne(draft, op, authority, grants));
-  return walkOperations(state, ops, (draft, op) => checkOne(draft, op, authority));
+  return walkOperations(state, ops, (draft, op) => checkOne(draft, op, authority, grants));
 }
 
-function checkOne(state: ProjectState, op: EditOperation, authority: Extract<Authority, { kind: 'selection' }>): string | null {
+function checkOne(state: ProjectState, op: EditOperation, authority: Extract<Authority, { kind: 'selection' }>, grants: AuthorityGrants = {}): string | null {
   let allowed: Set<string>;
   try {
     const tree = getTree(state, authority.owner);
@@ -588,6 +607,8 @@ function checkOne(state: ProjectState, op: EditOperation, authority: Extract<Aut
   if (!allowed.size) return 'The selected element no longer exists.';
   const sameOwner = (o: OwnerRef) => o.kind === authority.owner.kind && o.id === authority.owner.id;
   const part = selectedPart(state, authority);
+  // A selected part reaches only what that part shows, never the component's design.
+  if (op.type === 'theme.refresh') return authority.part ? `theme.refresh changes the design of the component the selected part is in, which is more than the part.` : themeRefreshWithin(state, op, grants, authority.label, (o, id) => sameOwner(o) && allowed.has(id));
   // Inside a component's design, a placement made unique or turned into code adds a new component to the site.
   if (authority.owner.kind === 'component' && (op.type === 'component.makeUnique' || op.type === 'component.convertToCode')) return `${op.type} adds a new component to the site, which changes more than ${authority.label}.`;
   // Siblings wrapped or ungrouped where they are: every one inside the selection, never the selected element itself (a

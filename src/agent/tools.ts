@@ -31,6 +31,7 @@ import { isReusabilityWarning } from '@engine/reusability';
 import { OP_REACH, type AuthorityGrants } from './scope';
 import { digestComponentInspection, inspectionSteps, MAX_CASES, planComponentInspection, resolveInspectTarget } from './component-inspection';
 import type { ComponentPreviewResult, ComponentPreviewStep } from '@shared/component-preview';
+import { runUpdateThemeComponent, themeUpdateNote, UPDATE_THEME_COMPONENT_ARGS, UPDATE_THEME_COMPONENT_BRIEF, UPDATE_THEME_COMPONENT_DESCRIPTION, updateThemeComponentTool, wholeSelection, type UpdateReach } from './theme-update';
 
 const owner = z.object({ kind: z.enum(['page', 'shell', 'component', 'template']), id: z.string() });
 
@@ -103,6 +104,7 @@ export const TOOL_ARGS = {
   list_collection_entries: LIST_ENTRIES_ARGS,
   read_collection_entry: READ_ENTRY_ARGS,
   upsert_collection_entry: UPSERT_ENTRY_ARGS,
+  update_theme_component: UPDATE_THEME_COMPONENT_ARGS,
   ...SELECTION_ARGS,
   ...DEFINITION_ARGS
 } as const;
@@ -142,6 +144,7 @@ const DESCRIPTIONS: Record<ToolName, string> = {
   list_collection_entries: LIST_ENTRIES_DESCRIPTION,
   read_collection_entry: READ_ENTRY_DESCRIPTION,
   upsert_collection_entry: UPSERT_ENTRY_DESCRIPTION,
+  update_theme_component: UPDATE_THEME_COMPONENT_DESCRIPTION,
   ...SELECTION_DESCRIPTIONS,
   ...DEFINITION_DESCRIPTIONS
 };
@@ -174,6 +177,7 @@ const BRIEFS: Partial<Record<ToolName, string>> = {
   list_collection_entries: LIST_ENTRIES_BRIEF,
   read_collection_entry: READ_ENTRY_BRIEF,
   upsert_collection_entry: UPSERT_ENTRY_BRIEF,
+  update_theme_component: UPDATE_THEME_COMPONENT_BRIEF,
   ...SELECTION_BRIEFS,
   ...DEFINITION_BRIEFS
 };
@@ -182,7 +186,7 @@ const BRIEFS: Partial<Record<ToolName, string>> = {
 const describe = (name: ToolName) => ({ description: DESCRIPTIONS[name], ...(BRIEFS[name] !== undefined ? { brief: BRIEFS[name] } : {}) });
 
 /** Operations the assistant never sends: images and component packages are added only by the verified importer,
- *  theme updates by the user, pastes come from the editor's own Copy, and a component's properties are reordered
+ *  a theme update one component at a time through update_theme_component, pastes come from the editor's own Copy, and a component's properties are reordered
  *  in Edit everywhere, where its placement role is chosen too. A post is written with upsert_collection_entry, the only way a run reaches a collection. */
 const NEVER_OFFERED = new Set<OperationType>([
   // A whole design in one call reaches the assistant through a tool of its own, never as a raw operation.
@@ -345,14 +349,14 @@ const ENTRY_READS: ToolName[] = ['list_collection_entries', 'read_collection_ent
 const SELECTION_TOOLS = Object.keys(SELECTION_ARGS) as ToolName[];
 const DEFINITION_TOOLS = Object.keys(DEFINITION_ARGS) as DefinitionToolName[];
 /** Offered by task mode (see toolsForRun), never as part of the general set. */
-const TASK_TOOLS = new Set<ToolName>([...MACRO_TOOLS, ...ENTRY_READS, ...SELECTION_TOOLS, ...DEFINITION_TOOLS, 'locate_field']);
+const TASK_TOOLS = new Set<ToolName>([...MACRO_TOOLS, ...ENTRY_READS, ...SELECTION_TOOLS, ...DEFINITION_TOOLS, 'locate_field', 'update_theme_component']);
 /**
  * Everything a read-only question may use: reads of the project, the catalogue and images, its SEO audit, finding a
  * field, and a plain question to the author. Nothing that changes the site, measures the live preview or builds the
  * project.
  */
 export const ASK_TOOLS: readonly ToolName[] = ['read_project', 'read_page', 'inspect_element', 'read_component', 'search_components', 'search_assets', 'audit_seo', 'locate_field', 'request_clarification'];
-export const MUTATING_TOOLS = new Set<ToolName>([...REVISION_BOUND_TOOLS, ...MACRO_TOOLS, 'update_selected_props', 'edit_selected_list', 'edit_selected_table', 'style_selected_element', ...DEFINITION_TOOLS]);
+export const MUTATING_TOOLS = new Set<ToolName>([...REVISION_BOUND_TOOLS, ...MACRO_TOOLS, 'update_theme_component', 'update_selected_props', 'edit_selected_list', 'edit_selected_table', 'style_selected_element', ...DEFINITION_TOOLS]);
 
 /** Below this window a model only gets the focused tools: the general operation schema alone would crowd it out. */
 export { FOCUSED_WINDOW_TOKENS };
@@ -428,6 +432,9 @@ export function toolsForRun(opts: {
   focused?: boolean;
   /** The selection a run started from, once the user has let it change more. */
   widened?: SelectionTarget | null;
+  /** The selection is a part of a placement, as the run's authority reads it (see scope.ts authorityFor). Unset, it is
+   *  worked out from the selection, which cannot tell a bound element inside a placement from the whole of it. */
+  selectionPart?: boolean;
   /** The page a run is limited to: its page tool builds only that page, and nothing site-wide is offered. */
   page?: { route: string } | null;
   /** The request asks for a new component (the Create component dialog). */
@@ -474,17 +481,24 @@ export function toolsForRun(opts: {
     return { tools: [...micro, definitionRead(opts.definitionTarget.definitionId), ...reads, plainTool('search_assets'), plainTool('request_clarification')], mode: 'definition', focused };
   }
   const general = toolDefinitions({ codeEnabled, definitionOps });
+  // An installed theme component the run needs a newer version of is updated first: offered while there is one this run
+  // may update and then change with the tools it has.
+  const update = (reach: UpdateReach) => themeUpdateTools(state, reach);
   if (selection) {
     const micro = selectionTools(state, selection);
-    if (!micro) return { tools: general, mode: 'general', focused: false };
+    // A part of a placement never changes its component; a small model's selection tools change the selected placement alone.
+    const whole = opts.selectionPart === undefined ? wholeSelection(state, selection) : !opts.selectionPart;
+    const mine = (ownOnly: boolean) => (whole ? update({ kind: 'selection', owner: selection.owner, nodeId: selection.nodeId, ownOnly }) : []);
+    if (!micro) return { tools: [...mine(false), ...general], mode: 'general', focused: false };
     // An image can only be chosen by its asset ID, so a selection with one (a background image included), or a request that attached images, can
     // also look them up and ask the user to choose between them by sight.
     const assets = usesImage(micro) || selectionTakesBackground(state, selection) || opts.attachedImages ? general.filter((t) => t.name === 'search_assets' || t.name === 'request_clarification') : [];
     // Content too long to show whole in the selection can still be read whole, a part at a time, before it is changed.
     const reads = selectionAbridged(state, selection) ? general.filter((t) => t.name === 'inspect_element') : [];
-    return { tools: focused ? [...micro, ...reads, ...assets] : [...micro, ...general], mode: 'selection', focused };
+    return { tools: focused ? [...micro, ...mine(true), ...reads, ...assets] : [...micro, ...mine(false), ...general], mode: 'selection', focused };
   }
-  if (opts.definition) return { tools: general, mode: 'general', focused: false };
+  // A component's own design changes no placement; once the user lets the run change more, it may update one.
+  if (opts.definition) return { tools: opts.definitionTarget ? general : [...update({ kind: 'site' }), ...general], mode: 'general', focused: false };
   if (opts.page) {
     // Operations only for the page's own sections and settings, and no code edits: a component's source shows on every
     // page. A small model gets the few that address one section by its ID, which the page tool cannot.
@@ -494,7 +508,8 @@ export function toolsForRun(opts: {
     const pageId = pageIdFor(state, opts.page.route);
     const seo: ToolDefinition[] = pageId ? [{ name: 'update_page_seo', ...describe('update_page_seo'), parameters: pageSeoToolSchema(pageId) }] : [];
     // A feed of posts is placed with the page tool; the posts themselves can be read, and are changed once widened.
-    return { tools: [upsert, ...seo, ...own, ...entryReads(state)], mode: 'page', focused };
+    const updates = pageId ? update({ kind: 'page', pageId, sectionsOnly: focused }) : [];
+    return { tools: [upsert, ...seo, ...own, ...updates, ...entryReads(state)], mode: 'page', focused };
   }
   const macros: ToolDefinition[] = [
     { name: 'upsert_page_with_sections', ...describe('upsert_page_with_sections'), parameters: upsertToolSchema(state, undefined, focused) },
@@ -510,7 +525,8 @@ export function toolsForRun(opts: {
   const kept = focused && opts.widened ? (selectionTools(state, opts.widened, { widened: true }) ?? []).filter((t) => t.name === 'style_selected_element') : [];
   // A small run asked for a component reads a design whole, which a rebuild has to describe again in full.
   const reads = (t: ToolDefinition) => (opts.componentRequest && t.name === 'read_component' ? t : contractRead(t));
-  return { tools: [...macros, ...kept, ...(focused ? general.filter((t) => t.name !== 'apply_operations' && t.name !== COMPONENT_CHECK).map(reads) : general)], mode: 'site', focused };
+  // A small model's page tool changes top-level sections alone: it may update only what it can then change.
+  return { tools: [...macros, ...kept, ...update(focused ? { kind: 'sections' } : { kind: 'site' }), ...(focused ? general.filter((t) => t.name !== 'apply_operations' && t.name !== COMPONENT_CHECK).map(reads) : general)], mode: 'site', focused };
 }
 
 /**
@@ -521,6 +537,12 @@ export function toolsForRun(opts: {
 export const asksForComponent = (text: string): boolean => /\b(?:components?|reusable|re-usable)\b/i.test(text);
 
 const managedComponentTool = (): ToolDefinition => ({ name: 'upsert_managed_component', ...describe('upsert_managed_component'), parameters: managedComponentSchema() });
+
+/** The theme update tool, while the project has an installed theme component this run can update. */
+const themeUpdateTools = (state: ProjectState, reach: UpdateReach): ToolDefinition[] => {
+  const t = updateThemeComponentTool(state, describe('update_theme_component'), reach);
+  return t ? [t] : [];
+};
 
 /** How well a component matches a search: 3 for each word in its name, 1 for each found only in the rest. */
 function searchScore(query: string, name: string, rest: string): number {
@@ -801,7 +823,12 @@ export async function executeTool(name: string, rawArgs: string, host: ToolHost,
           displayName: displayName(state, n),
           parent: parent ? { parentId: parent.parentId, slot: parent.slot, index: parent.index, siblings: parent.list.length } : null
         };
-        if (n.kind === 'instance' && state.components[n.definitionId]) out.component = componentDetail(state.components[n.definitionId]);
+        if (n.kind === 'instance' && state.components[n.definitionId]) {
+          out.component = componentDetail(state.components[n.definitionId]);
+          // What a newer theme version adds, and whether this project can take it.
+          const update = themeUpdateNote(state, state.components[n.definitionId]);
+          if (update) out.themeUpdate = update;
+        }
         return { ok: true, content: out };
       } catch (e) {
         return { ok: false, content: { error: 'INVALID_ARGUMENT', message: (e as Error).message } };
@@ -823,23 +850,26 @@ export async function executeTool(name: string, rawArgs: string, host: ToolHost,
     case 'read_component': {
       const a = args as z.infer<(typeof TOOL_ARGS)['read_component']>;
       // A theme component already in the project is described as installed: a newer theme's properties (a heading
-      // level, say) are not there until Project health updates it, and placing it uses the installed one.
+      // level, say) are not there until it is updated, and placing it uses the installed one. What the newer version
+      // adds is said beside it (themeUpdate), with whether this project can take it.
       const themed = a.componentId ? catalogueComponent(state.site.themeId, a.componentId) : undefined;
       const installed = themed && Object.hasOwn(state.components, themed.id) ? state.components[themed.id] : undefined;
       const def = a.definitionId ? state.components[a.definitionId] : (installed ?? themed);
       if (!def) return { ok: false, content: { error: 'INVALID_ARGUMENT', message: 'Component not found. Use search_components.' } };
       // A design read part by part: the contract came with the first part.
       if (a.structure && a.offset) return { ok: true, content: { definitionId: def.id, structure: componentStructure(state, def, a.offset) } };
+      const update = themeUpdateNote(state, Object.hasOwn(state.components, def.id) && state.components[def.id] === def ? def : undefined);
+      const updateNote = update ? { themeUpdate: update } : {};
       if (a.structure) {
         // The first part shares one result with the contract. When the two would not fit one result whole (and so
         // lose the next part's offset), the design is read alone and the contract is left to a read without structure.
-        const contract = componentDetail(def);
+        const contract = { ...componentDetail(def), ...updateNote };
         const both = { ...contract, structure: componentStructure(state, def, 0, MAX_RESULT_CHARS - 1000 - JSON.stringify(contract).length) };
         if (JSON.stringify(both).length <= MAX_RESULT_CHARS - 200) return { ok: true, content: both };
         return { ok: true, content: { definitionId: def.id, note: 'Its contract is long: read_component without structure shows it.', structure: componentStructure(state, def, 0, MAX_RESULT_CHARS - 1000) } };
       }
       const examples = examplesFor(state, def.componentId).map(exampleSection);
-      return { ok: true, content: { ...componentDetail(def), ...(examples.length ? { workedExamples: examples } : {}) } };
+      return { ok: true, content: { ...componentDetail(def), ...updateNote, ...(examples.length ? { workedExamples: examples } : {}) } };
     }
     case 'search_assets': {
       const a = args as z.infer<(typeof TOOL_ARGS)['search_assets']>;
@@ -863,6 +893,9 @@ export async function executeTool(name: string, rawArgs: string, host: ToolHost,
       // A whole design is built through a tool of its own; the raw operation is never offered.
       if (ops.some((o) => o.type === 'component.upsert'))
         return { ok: false, content: { error: 'INVALID_ARGUMENT', message: 'component.upsert is not available here. Build or rebuild a whole component with upsert_managed_component where it is offered, or with component.create and the node and component operations.' } };
+      // A theme update is one component the request needs, through its own tool: never every outdated one at once.
+      if (ops.some((o) => o.type === 'theme.refresh'))
+        return { ok: false, content: { error: 'INVALID_ARGUMENT', message: 'theme.refresh is not available here. Update one installed theme component the request needs with update_theme_component, then make the change.' } };
       // The copy goes right after the original; placing it elsewhere is a node.move of the copy it returns.
       if (ops.some((o) => o.type === 'node.duplicate' && o.index !== undefined)) return { ok: false, content: { error: 'INVALID_ARGUMENT', message: 'node.duplicate does not take an index.' } };
       // Keeping every use's alt text is for the app's own web-sized copies, which are the same picture.
@@ -1013,6 +1046,8 @@ export async function executeTool(name: string, rawArgs: string, host: ToolHost,
       return runReadEntry(args as z.infer<typeof READ_ENTRY_ARGS>, host);
     case 'upsert_collection_entry':
       return runUpsertEntry(args as z.infer<typeof UPSERT_ENTRY_ARGS>, host, callId);
+    case 'update_theme_component':
+      return runUpdateThemeComponent(args as z.infer<typeof UPDATE_THEME_COMPONENT_ARGS>, host, callId);
     case 'update_selected_props':
     case 'edit_selected_list':
     case 'edit_selected_table':
