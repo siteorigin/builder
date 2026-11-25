@@ -150,6 +150,8 @@ export function themeUpdateNote(state: ProjectState, def: ComponentDefinition | 
 
 /** Most changes one entry of the list of every update names; read_component shows them all. */
 const LINES = 6;
+/** Most entries each list names: the rest are counted. */
+const ENTRIES = 12;
 
 /**
  * Every installed theme definition the theme has a newer version of, for the project summary: those this project can
@@ -162,15 +164,23 @@ export function themeUpdatesSummary(state: ProjectState, only?: (definitionId: s
   const available = u.available.filter((a) => wanted(a.id));
   const held = u.kept.filter((k) => wanted(k.id));
   if (!available.length && !held.length) return undefined;
+  // What each adds to set, when it adds anything: a version that only changes its design adds nothing to ask for.
   const adds = (id: string) => {
     const next = newerVersion(state, state.components[id]);
     const lines = next ? changeLines(themeUpdateChanges(state.components[id], next)) : [];
-    return lines.length > LINES ? [...lines.slice(0, LINES), `and ${lines.length - LINES} more (read_component shows them)`] : lines;
+    if (!lines.length) return {};
+    return { adds: lines.length > LINES ? [...lines.slice(0, LINES), `and ${lines.length - LINES} more (read_component shows them)`] : lines };
   };
+  // A long list is cut, saying how many more there are: read_component names any component's update.
+  const cut = <T>(list: T[]) => (list.length > ENTRIES ? { list: list.slice(0, ENTRIES), more: list.length - ENTRIES } : { list, more: 0 });
+  const a = cut(available);
+  const h = cut(held);
   return {
     note: 'Installed theme components the theme has a newer version of. available: update_theme_component brings one up to date when a request needs what it adds. held: this project cannot take it, for the reason given.',
-    ...(available.length ? { available: available.map((a) => ({ definitionId: a.id, name: a.name, adds: adds(a.id) })) } : {}),
-    ...(held.length ? { held: held.map((k) => ({ definitionId: k.id, name: k.name, reason: k.reason, adds: adds(k.id) })) } : {})
+    ...(a.list.length ? { available: a.list.map((u) => ({ definitionId: u.id, name: u.name, ...adds(u.id) })) } : {}),
+    ...(a.more ? { moreAvailable: a.more } : {}),
+    ...(h.list.length ? { held: h.list.map((k) => ({ definitionId: k.id, name: k.name, reason: k.reason, ...adds(k.id) })) } : {}),
+    ...(h.more ? { moreHeld: h.more } : {})
   };
 }
 

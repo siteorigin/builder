@@ -2236,7 +2236,10 @@ describe('read_component and installed theme components', () => {
     delete old.properties.headingLevel;
     old.tree!.nodes.heading = { ...old.tree!.nodes.heading, tag: 'h1' } as never;
     s.components[old.id] = old;
-    expect(await read()).not.toContain('headingLevel');
+    const installed = JSON.parse(await read()) as { properties: Record<string, unknown>; themeUpdate?: { newVersionAdds: { properties: Record<string, unknown> } } };
+    expect(installed.properties).not.toHaveProperty('headingLevel');
+    // The newer version's heading level is named apart, as what an update would add (#692).
+    expect(installed.themeUpdate?.newVersionAdds.properties).toHaveProperty('headingLevel');
   });
 });
 

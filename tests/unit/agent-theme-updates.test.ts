@@ -127,6 +127,25 @@ describe('where the assistant reads it', () => {
       expect((describeSelection(s, ref) as { themeUpdate?: { status: string } }).themeUpdate?.status).toBe('available');
   });
 
+  it('keeps the summary short: nothing to add is not listed as an addition, and a long list says how many more', () => {
+    const s = beforeActionStyle({ hero: true });
+    const summary = projectSummary(s, 1) as { themeUpdates: { available: Array<{ definitionId: string; adds?: string[] }> } };
+    // The hero's newer version changes only its description: nothing a request could ask for.
+    expect(summary.themeUpdates.available.find((a) => a.definitionId === HERO)).toEqual({ definitionId: HERO, name: s.components[HERO].name });
+    // Every theme component a version behind, as in a project made a while ago.
+    const old = structuredClone(s);
+    for (const d of Object.values(old.components)) {
+      if (d.owner !== 'theme') continue;
+      d.description = `${d.description ?? ''} (older)`;
+      old.themeLock.components[d.id].hash = definitionHash(d);
+    }
+    const all = themeUpdates(old).available.length;
+    expect(all).toBeGreaterThan(12);
+    const long = projectSummary(old, 1) as { themeUpdates: { available: unknown[]; moreAvailable?: number } };
+    expect(long.themeUpdates.available).toHaveLength(12);
+    expect(long.themeUpdates.moreAvailable).toBe(all - 12);
+  });
+
   it('says nothing for a project whose components are all current', async () => {
     const s = createStarterState('business', 'Test', false);
     expect(projectSummary(s, 1)).not.toHaveProperty('themeUpdates');
