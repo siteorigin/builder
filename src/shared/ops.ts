@@ -489,8 +489,9 @@ export const OPERATION_SCHEMAS = {
           .record(z.string().max(CRAWLER_LIMITS.token), z.enum(['allow', 'disallow']).nullable())
           .optional()
           .describe('Custom only: crawlers by robots.txt product token (e.g. "GPTBot"), let in or kept out of the whole site whatever the base does; null drops one. Only the tokens given change.'),
+        alsoBlock: z.array(z.string().max(CRAWLER_LIMITS.token)).max(CRAWLER_LIMITS.overrides).optional().describe('Custom only: every unlisted crawler to keep out (replaces those); applied before overrides.'),
         disallowPaths: z.array(z.string().max(CRAWLER_LIMITS.path)).max(CRAWLER_LIMITS.paths).optional().describe('Custom only: paths no crawler may fetch, from the site root ("/private/", "/*.pdf$"). Replaces the list.'),
-        noAiMeta: z.boolean().nullable().optional().describe('Pages carry <meta name="robots" content="noai, noimageai">. Defaults on while the (base) preset blocks AI training; null restores that.')
+        noAiMeta: z.boolean().nullable().optional().describe('Pages carry <meta name="robots" content="noai, noimageai">. Kept through presets; null: on while the (base) preset blocks AI training.')
       })
       .strict()
       .superRefine((policy, ctx) => {
@@ -498,6 +499,10 @@ export const OPERATION_SCHEMAS = {
           const c = checkCrawlerToken(token);
           if (!c.ok) ctx.addIssue({ code: 'custom', path: ['overrides', token], message: c.message });
         }
+        (policy.alsoBlock ?? []).forEach((token, i) => {
+          const c = checkCrawlerToken(token);
+          if (!c.ok) ctx.addIssue({ code: 'custom', path: ['alsoBlock', i], message: c.message });
+        });
         (policy.disallowPaths ?? []).forEach((path, i) => {
           const c = checkCrawlerPath(path);
           if (!c.ok) ctx.addIssue({ code: 'custom', path: ['disallowPaths', i], message: c.message });

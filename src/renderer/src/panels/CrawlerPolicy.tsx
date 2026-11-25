@@ -11,9 +11,9 @@ import {
   KNOWN_CRAWLERS,
   knownCrawler,
   NOAI_META,
+  patchCrawlerPolicy,
   patchedCrawlerRules,
   presetAction,
-  presetNoAiMeta,
   siteMount,
   siteRobotsTxt,
   type CrawlerAction,
@@ -24,6 +24,7 @@ import {
   type FixedCrawlerPreset
 } from '@shared/crawler-policy';
 import { publicUrl } from '@shared/public-url';
+import type { Checked } from '@shared/site-identity';
 import { DraftInput, Field, SwitchRow, openSection, type DraftProblem } from '../components/ui';
 import { openSiteStyles } from '../lib/actions';
 
@@ -34,7 +35,8 @@ const PRESET_HINTS: Record<CrawlerPreset, string> = {
   custom: 'Start from a preset, then let crawlers in or keep them out by name, and close paths to every crawler.'
 };
 
-const KIND_LABELS: Record<CrawlerKind, string> = { search: 'Search engines', 'ai-search': 'AI search and assistants', 'ai-training': 'AI training' };
+const KIND_LABELS: Record<CrawlerKind, string> = { search: 'Search engines', 'ai-search': 'AI search', 'ai-assistant': 'AI assistants', 'ai-training': 'AI training' };
+const KINDS: readonly CrawlerKind[] = ['search', 'ai-search', 'ai-assistant', 'ai-training'];
 const ACTION_LABELS: Record<CrawlerAction, string> = { allow: 'Allowed', disallow: 'Blocked' };
 
 const isPreset = (v: string): v is CrawlerPreset => (CRAWLER_PRESETS as readonly string[]).includes(v);
@@ -53,8 +55,11 @@ const extraTokens = (rules: CrawlerRules) =>
     .map((o) => o.token)
     .join('\n');
 
-/** A field of lines checked as they are typed: text it can't take stays in it with the reason, unsaved. */
-function CheckedLines({ id, label, hint, value, placeholder, check, onLive, onCommit }: { id: string; label: string; hint: string; value: string; placeholder: string; check: (v: string) => { ok: true } | { ok: false; message: string }; onLive: (v: string | null) => void; onCommit: (v: string) => unknown }) {
+/**
+ * A field of lines that saves as one part of the policy, checked as it is typed against the policy it would leave:
+ * text it can't take stays in it with the reason, unsaved.
+ */
+function CheckedLines({ id, label, hint, value, placeholder, toPatch, onLive, onSave }: { id: string; label: string; hint: string; value: string; placeholder: string; toPatch: (v: string) => Checked<CrawlerPolicyPatch>; onLive: (v: string | null) => void; onSave: (patch: CrawlerPolicyPatch) => unknown }) {
   const [problem, setProblem] = useState<DraftProblem | null>(null);
   const settled = useCallback((dirty: boolean) => void (dirty || onLive(null)), [onLive]);
   const error = problem && (
@@ -71,14 +76,20 @@ function CheckedLines({ id, label, hint, value, placeholder, check, onLive, onCo
         value={value}
         placeholder={placeholder}
         check={(v) => {
-          const c = check(v);
+          const c = toPatch(v);
           return c.ok ? null : { message: c.message };
         }}
         onProblem={setProblem}
         onLive={onLive}
         onDirty={settled}
         reveal={revealCrawlers}
-        onCommit={onCommit}
+        onCommit={(v) => {
+          const c = toPatch(v);
+          if (!c.ok) return false;
+          // The preview shows the saved policy from here, whether or not the field's text changes with it.
+          onLive(null);
+          return onSave(c.value);
+        }}
       />
     </Field>
   );
@@ -98,28 +109,25 @@ export function CrawlerPolicyFields({ state, onChange }: { state: ProjectState; 
   // Custom's lines as they are typed, until they are saved or put back.
   const [typedPaths, setTypedPaths] = useState<string | null>(null);
   const [typedTokens, setTypedTokens] = useState<string | null>(null);
-  const tokensPatch = (text: string): CrawlerPolicyPatch | null => {
-    const c = checkCrawlerTokenLines(text);
-    if (!c.ok) return null;
-    const keep = new Set(c.value.map(foldToken));
-    const overrides: Record<string, CrawlerAction | null> = {};
-    // Those taken off the list go; those on it are kept out (a listed crawler typed here is set as its row would be).
-    for (const o of rules.overrides.values()) if (o.action === 'disallow' && !knownCrawler(o.token) && !keep.has(foldToken(o.token))) overrides[o.token] = null;
-    for (const t of c.value) overrides[t] = 'disallow';
-    return { overrides };
+  // Each field's lines replace its whole list, so a save never depends on what the panel last heard of the policy.
+  // They are checked against the policy they would leave (its limits among them) before anything is sent.
+  const linesPatch = (part: 'alsoBlock' | 'disallowPaths', text: string): Checked<CrawlerPolicyPatch> => {
+    const lines = part === 'alsoBlock' ? checkCrawlerTokenLines(text) : checkCrawlerPathLines(text);
+    if (!lines.ok) return lines;
+    const patch: CrawlerPolicyPatch = { [part]: lines.value };
+    const next = patchCrawlerPolicy(site.crawlerPolicy, patch);
+    return next.ok ? { ok: true, value: patch } : next;
   };
   // The preview shows the lines being typed once they can be saved.
   const typed: CrawlerPolicyPatch = {};
-  if (custom && typedPaths !== null) {
-    const c = checkCrawlerPathLines(typedPaths);
-    if (c.ok) typed.disallowPaths = c.value;
-  }
-  if (custom && typedTokens !== null) {
-    const patch = tokensPatch(typedTokens);
-    if (patch) typed.overrides = patch.overrides;
+  for (const [part, text] of [['disallowPaths', typedPaths], ['alsoBlock', typedTokens]] as const) {
+    const c = custom && text !== null ? linesPatch(part, text) : null;
+    if (c?.ok) Object.assign(typed, c.value);
   }
   const preview = siteRobotsTxt(site, (Object.keys(typed).length ? patchedCrawlerRules(site, typed) : null) ?? rules);
   const mount = siteMount(site);
+  const url = publicUrl(site);
+  const origin = url ? new URL(url).origin : '';
   return (
     <>
       <Field label="Crawler policy" hint={PRESET_HINTS[rules.preset]}>
@@ -142,7 +150,7 @@ export function CrawlerPolicyFields({ state, onChange }: { state: ProjectState; 
               ))}
             </select>
           </Field>
-          {(['search', 'ai-search', 'ai-training'] as const).map((kind) => (
+          {KINDS.map((kind) => (
             <div key={kind} className="ss-group" role="group" aria-labelledby={`${uid}-${kind}`}>
               <div className="ss-group-label" id={`${uid}-${kind}`}>
                 {KIND_LABELS[kind]}
@@ -177,12 +185,9 @@ export function CrawlerPolicyFields({ state, onChange }: { state: ProjectState; 
             hint="Other crawlers to keep out of the whole site, by the name robots.txt gives them, one per line."
             value={extraTokens(rules)}
             placeholder="ExampleBot"
-            check={checkCrawlerTokenLines}
+            toPatch={(v) => linesPatch('alsoBlock', v)}
             onLive={setTypedTokens}
-            onCommit={(v) => {
-              const patch = tokensPatch(v);
-              return patch ? save(patch) : false;
-            }}
+            onSave={save}
           />
           <CheckedLines
             id="site-crawler-paths"
@@ -190,23 +195,27 @@ export function CrawlerPolicyFields({ state, onChange }: { state: ProjectState; 
             hint="Paths of the site no crawler may fetch, one per line, from the site’s root: /private/ closes everything under it, /*.pdf$ every PDF. Pages hidden from search engines need none: they already say so."
             value={rules.paths.join('\n')}
             placeholder="/private/"
-            check={checkCrawlerPathLines}
+            toPatch={(v) => linesPatch('disallowPaths', v)}
             onLive={setTypedPaths}
-            onCommit={(v) => {
-              const c = checkCrawlerPathLines(v);
-              return c.ok ? save({ disallowPaths: c.value }) : false;
-            }}
+            onSave={save}
           />
         </>
       )}
       <SwitchRow
         id="site-crawler-noai"
         checked={rules.noAiMeta}
-        onChange={(v) => save({ noAiMeta: v === presetNoAiMeta(rules.base) ? null : v })}
+        onChange={(v) => save({ noAiMeta: v })}
         label="Ask AI services not to train on pages"
         hint={`Adds ${NOAI_META} to every page. Some AI services honour it; it keeps no crawler out.`}
       />
-      <Field label="robots.txt preview" hint={mount ? `Crawlers read robots.txt only at the root of the domain (${new URL(publicUrl(site)!).origin}/robots.txt). Put these lines in that file for them to apply.` : undefined}>
+      <Field
+        label="robots.txt preview"
+        hint={
+          mount
+            ? `Crawlers read robots.txt only at the root of the domain (${origin}/robots.txt), so these lines apply once they are merged into that file. A crawler named there follows only its own group: give each group here the domain’s own rules for that crawler too.`
+            : undefined
+        }
+      >
         <pre className="code-view crawler-preview" tabIndex={0} aria-label="robots.txt as the website writes it" data-testid="robots-txt-preview">
           {preview}
         </pre>

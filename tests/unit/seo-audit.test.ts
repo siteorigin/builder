@@ -323,7 +323,7 @@ describe('baseline rules', () => {
     const { state, services } = seoSite();
     let s = run(
       state,
-      { type: 'site.update', socialImage: null, favicon: null, identity: { sameAs: null }, llmsTxt: false },
+      { type: 'site.update', socialImage: null, favicon: null, identity: { sameAs: null }, llmsTxt: false, crawlerPolicy: { preset: 'custom', overrides: { 'OAI-SearchBot': 'disallow' } } },
       { type: 'page.update', pageId: state.site.homePageId, noindex: true },
       { type: 'page.update', pageId: services, seoTitle: 'Short', description: '' },
       { type: 'page.create', pageId: 'pg_lost', title: 'Lost', route: '/lost/' },
@@ -339,7 +339,7 @@ describe('baseline rules', () => {
     const ranks = found.map((f) => order.indexOf(f.pillar) * 3 + ['error', 'warning', 'info'].indexOf(f.severity));
     expect(ranks).toEqual([...ranks].sort((a, b) => a - b));
     expect(new Set(found.map((f) => f.code))).toEqual(
-      new Set(['SEO_HOME_NOINDEX', 'SEO_ENTITY_SAME_AS_MISSING', 'SEO_ENTRY_HEADING_SKIP', 'ALT_MISSING', 'SEO_LLMS_TXT_OFF', 'SEO_TITLE_LENGTH', 'SEO_DESCRIPTION_DUPLICATE', 'SEO_PAGE_UNLINKED', 'SEO_LINK_TEXT_GENERIC', 'SEO_SOCIAL_IMAGE_MISSING', 'SEO_FAVICON_MISSING'])
+      new Set(['SEO_HOME_NOINDEX', 'SEO_ENTITY_SAME_AS_MISSING', 'SEO_ENTRY_HEADING_SKIP', 'ALT_MISSING', 'SEO_LLMS_TXT_OFF', 'SEO_AI_SEARCH_CRAWLERS_BLOCKED', 'SEO_TITLE_LENGTH', 'SEO_DESCRIPTION_DUPLICATE', 'SEO_PAGE_UNLINKED', 'SEO_LINK_TEXT_GENERIC', 'SEO_SOCIAL_IMAGE_MISSING', 'SEO_FAVICON_MISSING'])
     );
     for (const f of found) expect(f.explanation.length, f.code).toBeGreaterThan(20);
     expect(JSON.stringify(runSeoAudit(structuredClone(s)))).toBe(JSON.stringify(found));

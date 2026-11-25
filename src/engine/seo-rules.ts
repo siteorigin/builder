@@ -444,7 +444,7 @@ const crawlerPolicy: SeoAuditRule = {
         })
       );
     };
-    report('search', 'technical', 'SEO_SEARCH_CRAWLERS_BLOCKED', 'search engines', 'A search engine kept out of every page can’t read the website, so its pages drop out of that engine’s results. Let it in, or close only the paths you mean to.');
+    report('search', 'technical', 'SEO_SEARCH_CRAWLERS_BLOCKED', 'search engines', 'A search engine kept out of every page can’t crawl the website: its results show the pages without their titles and descriptions, if at all. Let it in, or close only the paths you mean to.');
     report('ai-search', 'agentic', 'SEO_AI_SEARCH_CRAWLERS_BLOCKED', 'AI search engines', 'AI answer engines kept out of every page can’t read or cite the website when people ask about what it covers. Let them in, or choose “Traditional search engines only” if keeping them out is the intent.');
     return found;
   }

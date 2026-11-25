@@ -86,15 +86,25 @@ function identityRead(state: ProjectState, patch: Record<string, unknown> | null
   return keys.length === 1 ? own(keys[0]) : Object.fromEntries(keys.map((k) => [k, own(k)]));
 }
 
+/** The crawlers no list names that a stored policy keeps out, as "Also block" lists them. */
+function alsoBlocked(overrides: unknown): string[] {
+  if (!overrides || typeof overrides !== 'object') return [];
+  return Object.entries(overrides)
+    .filter(([token, action]) => action === 'disallow' && !knownCrawler(token))
+    .map(([token]) => token)
+    .sort();
+}
+
 /**
  * The parts of the crawler policy an edit writes, as stored, with the preset they belong to (leaving Custom drops its
- * rules); the whole policy when the edit resets it.
+ * rules); the whole policy when the edit resets it. "Also block" reads only the crawlers it lists, so a listed
+ * crawler's row changed meanwhile is no conflict.
  */
 function crawlerPolicyRead(state: ProjectState, patch: Record<string, unknown> | null): unknown {
   const stored: unknown = state.site.crawlerPolicy;
   if (!patch) return stored;
   const own = (k: string) => (stored && typeof stored === 'object' && Object.hasOwn(stored, k) ? (stored as Record<string, unknown>)[k] : undefined);
-  return { preset: own('preset'), ...Object.fromEntries(identityKeys(patch).map((k) => [k, own(k)])) };
+  return { preset: own('preset'), ...Object.fromEntries(identityKeys(patch).map((k) => [k, k === 'alsoBlock' ? alsoBlocked(own('overrides')) : own(k)])) };
 }
 
 /** The kind of publisher the site has chosen; null when none is chosen (or the identity is cleared). */
@@ -399,19 +409,9 @@ const listText = (v: unknown) => {
   return geo && typeof geo.latitude === 'number' && typeof geo.longitude === 'number' ? coordinatesText(geo as { latitude: number; longitude: number }) : v;
 };
 
-/**
- * A part of the crawler policy as the field it is typed in shows it: the paths, or the crawlers kept out that no list
- * names, one per line.
- */
+/** A part of the crawler policy as the field it is typed in shows it: the paths, or the crawlers it also blocks, one per line. */
 function crawlerPartText(key: string, v: unknown): string | null {
-  if (key === 'disallowPaths') return Array.isArray(v) ? v.filter((x) => typeof x === 'string').join('\n') : '';
-  if (key === 'overrides')
-    return v && typeof v === 'object'
-      ? Object.entries(v)
-          .filter(([token, action]) => action === 'disallow' && !knownCrawler(token))
-          .map(([token]) => token)
-          .join('\n')
-      : '';
+  if (key === 'disallowPaths' || key === 'alsoBlock') return Array.isArray(v) ? v.filter((x) => typeof x === 'string').join('\n') : '';
   return shownValue(v);
 }
 

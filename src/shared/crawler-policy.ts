@@ -9,13 +9,14 @@
  * closes the whole site to all of them.
  *
  * The site keeps only what differs from the default (`SiteDoc.crawlerPolicy`, see `storedCrawlerPolicy`), and reads a
- * hand-edited value it can't use as no choice (`crawlerRules`), so a damaged entry never crashes the website.
+ * hand-edited value as far as it can be used (`crawlerRules`), keeping a crawler out when in doubt, so a damaged entry
+ * never crashes the website or lets in a crawler the rest of the policy keeps out.
  */
 import type { SiteDoc } from './types';
 import type { Checked } from './site-identity';
 import { publicUrl } from './public-url';
 
-export type CrawlerKind = 'search' | 'ai-search' | 'ai-training';
+export type CrawlerKind = 'search' | 'ai-search' | 'ai-assistant' | 'ai-training';
 export type CrawlerAction = 'allow' | 'disallow';
 
 export interface KnownCrawler {
@@ -30,8 +31,8 @@ export interface KnownCrawler {
 
 /**
  * The crawlers the presets name, and Site settings lists. Search engines first, then the crawlers AI answer engines
- * cite pages from (and the fetchers AI assistants visit a page with when a person asks), then those that gather pages
- * to train AI models.
+ * cite pages from, the fetchers AI assistants open a page with when a person asks them to, and those that gather
+ * pages to train AI models.
  */
 export const KNOWN_CRAWLERS: readonly KnownCrawler[] = [
   { token: 'Googlebot', operator: 'Google', kind: 'search', purpose: 'Google Search' },
@@ -39,11 +40,11 @@ export const KNOWN_CRAWLERS: readonly KnownCrawler[] = [
   { token: 'DuckDuckBot', operator: 'DuckDuckGo', kind: 'search', purpose: 'DuckDuckGo' },
   { token: 'Applebot', operator: 'Apple', kind: 'search', purpose: 'Spotlight, Siri and Safari suggestions' },
   { token: 'OAI-SearchBot', operator: 'OpenAI', kind: 'ai-search', purpose: 'ChatGPT search results' },
-  { token: 'ChatGPT-User', operator: 'OpenAI', kind: 'ai-search', purpose: 'Pages ChatGPT opens when a person asks it to' },
   { token: 'Claude-SearchBot', operator: 'Anthropic', kind: 'ai-search', purpose: 'Claude search results' },
-  { token: 'Claude-User', operator: 'Anthropic', kind: 'ai-search', purpose: 'Pages Claude opens when a person asks it to' },
   { token: 'PerplexityBot', operator: 'Perplexity', kind: 'ai-search', purpose: 'Perplexity search results' },
-  { token: 'Perplexity-User', operator: 'Perplexity', kind: 'ai-search', purpose: 'Pages Perplexity opens when a person asks it to' },
+  { token: 'ChatGPT-User', operator: 'OpenAI', kind: 'ai-assistant', purpose: 'Pages ChatGPT opens when a person asks it to' },
+  { token: 'Claude-User', operator: 'Anthropic', kind: 'ai-assistant', purpose: 'Pages Claude opens when a person asks it to' },
+  { token: 'Perplexity-User', operator: 'Perplexity', kind: 'ai-assistant', purpose: 'Pages Perplexity opens when a person asks it to' },
   { token: 'GPTBot', operator: 'OpenAI', kind: 'ai-training', purpose: 'Training OpenAI’s models' },
   { token: 'ClaudeBot', operator: 'Anthropic', kind: 'ai-training', purpose: 'Training Anthropic’s models' },
   { token: 'Google-Extended', operator: 'Google', kind: 'ai-training', purpose: 'Training Gemini models, and grounding their answers' },
@@ -69,7 +70,7 @@ export const CRAWLER_PRESET_LABELS: Record<CrawlerPreset, string> = {
 const PRESET_BLOCKS: Record<FixedCrawlerPreset, readonly CrawlerKind[]> = {
   'allow-all': [],
   'block-ai-training': ['ai-training'],
-  'search-engines-only': ['ai-search', 'ai-training']
+  'search-engines-only': ['ai-search', 'ai-assistant', 'ai-training']
 };
 
 /** The most named crawlers and paths a policy keeps, and the longest of each: far inside what crawlers read of a robots.txt. */
@@ -84,7 +85,7 @@ export interface CrawlerPolicy {
   overrides?: Record<string, CrawlerAction>;
   /** Custom: paths of the website no crawler may fetch, from its root ("/private/"), in robots.txt's pattern syntax. */
   disallowPaths?: string[];
-  /** Whether pages carry the noai meta, when it differs from the default: on while the base keeps AI training out. */
+  /** Whether pages carry the noai meta, once the author says. Absent: on while the base keeps AI training out. */
   noAiMeta?: boolean;
 }
 
@@ -95,9 +96,14 @@ export interface CrawlerPolicyPatch {
   base?: FixedCrawlerPreset | null;
   /** Each crawler named, let in or kept out; null takes it off the list. */
   overrides?: Record<string, CrawlerAction | null>;
+  /**
+   * The crawlers no list names that are kept out, as Site settings' "Also block" lists them: replaces that list. A
+   * listed crawler given here is kept out by name. Applied before `overrides`.
+   */
+  alsoBlock?: string[];
   /** Replaces the list. */
   disallowPaths?: string[];
-  /** null: back to the default. */
+  /** Kept through later presets; null: back to the default, which follows the base. */
   noAiMeta?: boolean | null;
 }
 
@@ -111,6 +117,8 @@ export interface CrawlerRules {
   /** Custom's paths, checked and in order. */
   paths: readonly string[];
   noAiMeta: boolean;
+  /** Whether the author chose the noai meta, rather than it following the base. */
+  noAiMetaSet: boolean;
 }
 
 const ok = <T>(value: T): Checked<T> => ({ ok: true, value });
@@ -125,6 +133,8 @@ export const knownCrawler = (token: string): KnownCrawler | undefined => KNOWN_B
 const isFixed = (v: unknown): v is FixedCrawlerPreset => (FIXED_CRAWLER_PRESETS as readonly unknown[]).includes(v);
 const isPreset = (v: unknown): v is CrawlerPreset => (CRAWLER_PRESETS as readonly unknown[]).includes(v);
 const isAction = (v: unknown): v is CrawlerAction => v === 'allow' || v === 'disallow';
+/** Names an object's own machinery uses, which no crawler is called. */
+const RESERVED_TOKENS = new Set(['__proto__', 'constructor', 'prototype']);
 /** Tokens in the order robots.txt lists them: by their letters, whatever the case. */
 const byToken = (a: string, b: string) => (foldToken(a) < foldToken(b) ? -1 : foldToken(a) > foldToken(b) ? 1 : a < b ? -1 : a > b ? 1 : 0);
 
@@ -148,6 +158,7 @@ export function checkCrawlerToken(input: string): Checked<string> {
   if (/^user-agent\s*:/i.test(token)) return no('Give the crawler’s name alone, without “User-agent:”.');
   if (token.length > CRAWLER_LIMITS.token) return no(`A crawler’s name is at most ${CRAWLER_LIMITS.token} characters.`);
   if (!/^[A-Za-z_-]+$/.test(token)) return no(`“${token}” is not a crawler’s name as robots.txt takes it: letters, hyphens and underscores only, with no version or spaces (GPTBot, not GPTBot/1.2).`);
+  if (RESERVED_TOKENS.has(foldToken(token))) return no(`“${token}” is not a crawler’s name.`);
   return ok(knownCrawler(token)?.token ?? token);
 }
 
@@ -162,9 +173,10 @@ const PATH_CHARS = /^[A-Za-z0-9\-._~!&'()+,;=:@/?*$%]*$/;
  * can't hold are refused.
  */
 export function checkCrawlerPath(input: string): Checked<string> {
-  const raw = input.trim();
+  // Only the spaces and tabs around a line go: a space of another alphabet is part of the path, and encoded with it.
+  const raw = input.replace(/^[ \t\r\n]+|[ \t\r\n]+$/g, '');
   if (!raw) return no('Give the path, starting with “/”.');
-  if (/\s/.test(raw)) return no(`“${raw}” has a space in it: write a space in an address as %20.`);
+  if (/[ \t\r\n\f\v]/.test(raw)) return no(`“${raw}” has a space in it: write a space in an address as %20.`);
   if (!raw.startsWith('/')) return no(`“${raw}” is not a path of the website: start it with “/”, as in /private/.`);
   if (raw.startsWith('//')) return no(`“${raw}” starts with “//”, which names another site: give the path from this site’s root.`);
   if (raw.includes('#')) return no(`“${raw}” has a “#” in it: crawlers never send the part of an address after “#”.`);
@@ -231,46 +243,55 @@ export function checkCrawlerTokenLines(text: string): Checked<string[]> {
 }
 
 /** The default policy, as the website follows it: every crawler let in, no paths closed, no noai meta. */
-const DEFAULT_RULES: CrawlerRules = { preset: 'allow-all', base: 'allow-all', overrides: new Map(), paths: [], noAiMeta: false };
+const DEFAULT_RULES: CrawlerRules = { preset: 'allow-all', base: 'allow-all', overrides: new Map(), paths: [], noAiMeta: false, noAiMetaSet: false };
 
 /**
- * The policy as the website follows it. A value of another kind (written by hand) is no choice: an unknown preset is
- * the default, an unknown base is Allow search and AI, and a path or a crawler's entry that can't be used is left
- * out on its own, so one damaged line never opens the site to every crawler the rest keeps out. A crawler named twice
- * (in two spellings) with different actions is left to its base.
+ * The policy as the website follows it. A value written by hand is read as far as it can be used: an unknown base is
+ * Allow search and AI, a path or a crawler's entry that can't be used is left out on its own, and the lists stop at
+ * their limits, so one damaged line never opens the site to a crawler the rest keeps out. An unknown preset with rules
+ * of Custom's beside it is Custom; without them, the default. A crawler named twice (in two spellings) with different
+ * actions is kept out.
  */
 export function crawlerRules(site: Pick<SiteDoc, 'crawlerPolicy'>): CrawlerRules {
   const raw: unknown = site.crawlerPolicy;
-  if (!isRecord(raw) || !isPreset(raw.preset)) return isRecord(raw) && typeof raw.noAiMeta === 'boolean' ? { ...DEFAULT_RULES, noAiMeta: raw.noAiMeta } : DEFAULT_RULES;
-  const preset = raw.preset;
+  if (!isRecord(raw)) return DEFAULT_RULES;
+  const hasRules = isFixed(raw.base) || (isRecord(raw.overrides) && Object.keys(raw.overrides).length > 0) || (Array.isArray(raw.disallowPaths) && raw.disallowPaths.length > 0);
+  const preset: CrawlerPreset = isPreset(raw.preset) ? raw.preset : hasRules ? 'custom' : 'allow-all';
   const custom = preset === 'custom';
-  const base: FixedCrawlerPreset = custom ? (isFixed(raw.base) ? raw.base : 'allow-all') : preset;
-  const overrides = new Map<string, { token: string; action: CrawlerAction }>();
-  const conflicting = new Set<string>();
+  const base: FixedCrawlerPreset = custom ? (isFixed(raw.base) ? raw.base : 'allow-all') : (preset as FixedCrawlerPreset);
+  const named = new Map<string, { token: string; action: CrawlerAction }>();
   if (custom && isRecord(raw.overrides))
     for (const [name, action] of Object.entries(raw.overrides)) {
       const token = checkCrawlerToken(name);
       if (!token.ok || !isAction(action)) continue;
       const key = foldToken(token.value);
-      const had = overrides.get(key);
-      if (had && had.action !== action) conflicting.add(key);
-      else if (!had) overrides.set(key, { token: token.value, action });
+      const had = named.get(key);
+      if (!had || (had.action !== action && action === 'disallow')) named.set(key, { token: had?.token ?? token.value, action });
     }
-  for (const key of conflicting) overrides.delete(key);
-  const paths: string[] = [];
+  const overrides = new Map([...named].sort((a, b) => byToken(a[1].token, b[1].token)).slice(0, CRAWLER_LIMITS.overrides));
+  const found = new Set<string>();
   if (custom && Array.isArray(raw.disallowPaths))
     for (const p of raw.disallowPaths) {
       const c = typeof p === 'string' ? checkCrawlerPath(p) : null;
-      if (c?.ok && !paths.includes(c.value)) paths.push(c.value);
+      if (c?.ok) found.add(c.value);
     }
-  paths.sort((a, b) => (a < b ? -1 : a > b ? 1 : 0));
-  return { preset, base, overrides, paths, noAiMeta: typeof raw.noAiMeta === 'boolean' ? raw.noAiMeta : presetNoAiMeta(base) };
+  const paths = [...found].sort((a, b) => (a < b ? -1 : a > b ? 1 : 0)).slice(0, CRAWLER_LIMITS.paths);
+  const set = typeof raw.noAiMeta === 'boolean';
+  return { preset, base, overrides, paths, noAiMeta: set ? (raw.noAiMeta as boolean) : presetNoAiMeta(base), noAiMetaSet: set };
 }
 
 /** What the policy does with a crawler, and whether that is its base's doing or Custom names it. */
 export function crawlerAction(rules: CrawlerRules, token: string): { action: CrawlerAction; named: boolean } {
   const own = rules.overrides.get(foldToken(token));
   return own ? { action: own.action, named: true } : { action: presetAction(rules.base, token), named: false };
+}
+
+/** The crawlers Custom lets in by name, whatever its base would do: each has a group of its own, with Custom's paths. */
+export function allowedCrawlers(rules: CrawlerRules): string[] {
+  return [...rules.overrides.values()]
+    .filter((o) => o.action === 'allow')
+    .map((o) => o.token)
+    .sort(byToken);
 }
 
 /** The crawlers kept out of the whole site by name: the base's, less those Custom lets in, with those it keeps out. */
@@ -283,18 +304,17 @@ export function blockedCrawlers(rules: CrawlerRules): string[] {
 
 /**
  * The policy as the site keeps it (see CrawlerPolicy): nothing for the default, and for Custom only the base, the
- * crawlers it names and its paths, each in the order robots.txt lists them. A crawler Custom lets in that only Custom
- * could keep out (one no preset names) is no rule, and is left out.
+ * crawlers it names and its paths, each in the order robots.txt lists them, and the noai meta once the author chose it.
  */
 export function storedCrawlerPolicy(rules: CrawlerRules): CrawlerPolicy | undefined {
   const policy: CrawlerPolicy = { preset: rules.preset };
   if (rules.preset === 'custom') {
     if (rules.base !== 'allow-all') policy.base = rules.base;
-    const named = [...rules.overrides.values()].filter((o) => o.action === 'disallow' || knownCrawler(o.token)).sort((a, b) => byToken(a.token, b.token));
+    const named = [...rules.overrides.values()].sort((a, b) => byToken(a.token, b.token));
     if (named.length) policy.overrides = Object.fromEntries(named.map((o) => [o.token, o.action]));
     if (rules.paths.length) policy.disallowPaths = [...rules.paths];
   }
-  if (rules.noAiMeta !== presetNoAiMeta(rules.base)) policy.noAiMeta = rules.noAiMeta;
+  if (rules.noAiMetaSet) policy.noAiMeta = rules.noAiMeta;
   return policy.preset === 'allow-all' && policy.noAiMeta === undefined ? undefined : policy;
 }
 
@@ -309,13 +329,22 @@ export function patchCrawlerPolicy(stored: unknown, patch: CrawlerPolicyPatch | 
   const current = crawlerRules({ crawlerPolicy: stored as SiteDoc['crawlerPolicy'] });
   const preset = patch.preset ?? current.preset;
   const custom = preset === 'custom';
-  if (!custom && (patch.base !== undefined || patch.overrides !== undefined || patch.disallowPaths !== undefined))
+  if (!custom && (patch.base !== undefined || patch.overrides !== undefined || patch.alsoBlock !== undefined || patch.disallowPaths !== undefined))
     return no('Only a Custom crawler policy has a base, crawlers named on their own and paths: set preset to "custom" with them.');
   // Leaving Custom drops its rules; coming to it starts from the preset left.
   const was = current.preset === 'custom';
   let base: FixedCrawlerPreset = custom ? (was ? current.base : (current.preset as FixedCrawlerPreset)) : (preset as FixedCrawlerPreset);
   if (patch.base !== undefined) base = patch.base ?? 'allow-all';
   const overrides = new Map(custom && was ? current.overrides : []);
+  if (patch.alsoBlock) {
+    // The crawlers no list names that were kept out make way for the new list.
+    for (const [key, o] of overrides) if (o.action === 'disallow' && !knownCrawler(o.token)) overrides.delete(key);
+    for (const name of patch.alsoBlock) {
+      const token = checkCrawlerToken(name);
+      if (!token.ok) return token;
+      overrides.set(foldToken(token.value), { token: token.value, action: 'disallow' });
+    }
+  }
   if (patch.overrides) {
     const seen = new Set<string>();
     const entries = Object.entries(patch.overrides);
@@ -338,9 +367,8 @@ export function patchCrawlerPolicy(stored: unknown, patch: CrawlerPolicyPatch | 
     paths = checked.value;
   }
   // The noai meta follows the base until the author says otherwise, and the author's choice stays through presets.
-  const explicit = isRecord(stored) && typeof stored.noAiMeta === 'boolean' ? stored.noAiMeta : undefined;
-  const meta = patch.noAiMeta === null ? undefined : (patch.noAiMeta ?? explicit);
-  return ok(storedCrawlerPolicy({ preset, base, overrides, paths, noAiMeta: meta ?? presetNoAiMeta(base) }));
+  const meta = patch.noAiMeta === null ? undefined : (patch.noAiMeta ?? (current.noAiMetaSet ? current.noAiMeta : undefined));
+  return ok(storedCrawlerPolicy({ preset, base, overrides, paths, noAiMeta: meta ?? presetNoAiMeta(base), noAiMetaSet: meta !== undefined }));
 }
 
 /** The policy a patch leaves, as the website would follow it: for a preview of a change before it is saved. */
@@ -358,24 +386,30 @@ function wholeSite(mount: string): string[] {
   return mount ? [`${mount}$`, `${mount}/`, `${mount}?`] : ['/'];
 }
 
-/** A path of the website as robots.txt names it: from the domain's root, under the site's sub-path. */
+/**
+ * A path of the website as robots.txt names it: from the domain's root, under the site's sub-path. The home page
+ * there has two addresses ("/studio" and "/studio/"), so a pattern for it alone ("/$") or for a query on it ("/?q=")
+ * names both.
+ */
 function sitePattern(path: string, mount: string): string[] {
   if (!mount) return [path];
-  return isWholeSitePattern(path) ? wholeSite(mount) : [mount + path];
+  if (isWholeSitePattern(path)) return wholeSite(mount);
+  return path.startsWith('/$') || path.startsWith('/?') ? [mount + path.slice(1), mount + path] : [mount + path];
 }
 
 /**
  * The website's robots.txt (RFC 9309). Every crawler not named follows `User-agent: *`, which lets it in, or keeps it
- * off Custom's paths. Those kept out of the whole site share one group after it, by name. Under a sub-path every
- * pattern starts with it. The sitemap's address ends it when the site has a public URL. Without a policy it is the
- * robots.txt the website always had: `User-agent: *` and `Allow: /`.
+ * off Custom's paths. Those Custom lets in by name share a group with the same rules, so none of them falls back on
+ * another crawler's group (Applebot follows Googlebot's when it has none of its own). Those kept out of the whole site
+ * share the last group. Under a sub-path every pattern starts with it. The sitemap's address ends it when the site has
+ * a public URL. Without a policy it is the robots.txt the website always had: `User-agent: *` and `Allow: /`.
  */
 export function robotsTxt(rules: CrawlerRules, opts: { mount?: string; sitemap?: string } = {}): string {
   const mount = opts.mount ?? '';
-  const unique = (lines: string[]) => [...new Set(lines)];
-  const lines = ['User-agent: *'];
-  if (rules.paths.length) for (const p of unique(rules.paths.flatMap((p) => sitePattern(p, mount)))) lines.push(`Disallow: ${p}`);
-  else lines.push('Allow: /');
+  const open = rules.paths.length ? [...new Set(rules.paths.flatMap((p) => sitePattern(p, mount)))].map((p) => `Disallow: ${p}`) : ['Allow: /'];
+  const lines = ['User-agent: *', ...open];
+  const allowed = allowedCrawlers(rules);
+  if (allowed.length) lines.push('', ...allowed.map((t) => `User-agent: ${t}`), ...open);
   const blocked = blockedCrawlers(rules);
   if (blocked.length) {
     lines.push('');

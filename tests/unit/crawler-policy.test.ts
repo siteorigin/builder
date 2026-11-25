@@ -12,7 +12,7 @@ import { applyOperations } from '@engine/apply';
 import { runSeoAudit } from '@engine/seo-audit';
 import { generateProject } from '@generator/index';
 import { GenerationCache } from '@generator/cache';
-import { checkCrawlerPath, checkCrawlerPathLines, checkCrawlerToken, checkCrawlerTokenLines, crawlerRules, NOAI_META, patchCrawlerPolicy, robotsTxt, siteRobotsTxt, storedCrawlerPolicy } from '@shared/crawler-policy';
+import { checkCrawlerPath, checkCrawlerPathLines, checkCrawlerToken, checkCrawlerTokenLines, crawlerRules, NOAI_META, patchCrawlerPolicy, patchedCrawlerRules, robotsTxt, siteRobotsTxt, storedCrawlerPolicy } from '@shared/crawler-policy';
 import { projectSummary } from '../../src/agent/context';
 import { checkHeld, fieldKey, readField, readFields, shownField, typedText } from '../../src/renderer/src/lib/held';
 import { destinationLabel } from '../../src/renderer/src/lib/destinations';
@@ -45,7 +45,7 @@ const invalid = (crawlerPolicy: unknown) => {
  * it: the groups naming the crawler (whatever the case), else the `*` group; then the longest matching rule, an allow
  * winning a tie; `*` matches any characters and a final `$` the end.
  */
-function mayFetch(file: string, agent: string, path: string): boolean {
+function mayFetch(file: string, agent: string, path: string, fallback?: string): boolean {
   const groups: Array<{ agents: string[]; rules: Array<{ allow: boolean; pattern: string }> }> = [];
   let open = false;
   for (const raw of file.split('\n')) {
@@ -62,6 +62,8 @@ function mayFetch(file: string, agent: string, path: string): boolean {
     }
   }
   let applies = groups.filter((g) => g.agents.includes(agent.toLowerCase()));
+  // Some crawlers follow another's group when they have none of their own: Applebot follows Googlebot's.
+  if (!applies.length && fallback) applies = groups.filter((g) => g.agents.includes(fallback.toLowerCase()));
   if (!applies.length) applies = groups.filter((g) => g.agents.includes('*'));
   const matches = (pattern: string) => {
     const end = pattern.endsWith('$');
@@ -120,22 +122,37 @@ describe('robots.txt for each preset', () => {
   it('writes the same file for the same policy however it was typed, with each rule once', () => {
     const a = policy(rootSite(), { preset: 'custom', base: 'block-ai-training', overrides: { gptbot: 'allow', ExampleBot: 'disallow' }, disallowPaths: ['/private/', '/downloads/*.zip$', '/private/'] });
     const b = policy(rootSite(), { preset: 'custom', base: 'block-ai-training', overrides: { ExampleBot: 'disallow', GPTBot: 'allow' }, disallowPaths: ['/downloads/*.zip$', '/private/'] });
-    expect(a.site.crawlerPolicy).toEqual(b.site.crawlerPolicy);
-    expect(a.site.crawlerPolicy).toEqual({ preset: 'custom', base: 'block-ai-training', overrides: { ExampleBot: 'disallow', GPTBot: 'allow' }, disallowPaths: ['/downloads/*.zip$', '/private/'] });
+    // Stored the same way, in the same order, so site.json and robots.txt are the same bytes.
+    expect(JSON.stringify(a.site.crawlerPolicy)).toBe(JSON.stringify(b.site.crawlerPolicy));
+    expect(JSON.stringify(a.site.crawlerPolicy)).toBe(JSON.stringify({ preset: 'custom', base: 'block-ai-training', overrides: { ExampleBot: 'disallow', GPTBot: 'allow' }, disallowPaths: ['/downloads/*.zip$', '/private/'] }));
     expect(robots(a)).toBe(robots(b));
   });
 });
 
 describe('Custom', () => {
   it('lets a crawler its base keeps out in by name, keeps another out, and closes paths to every crawler', () => {
-    const s = policy(rootSite(), { preset: 'custom', base: 'block-ai-training', overrides: { GPTBot: 'allow', Googlebot: 'allow' }, disallowPaths: ['/private/', '/downloads/*.zip$'] });
+    const s = policy(rootSite(), { preset: 'custom', base: 'block-ai-training', overrides: { GPTBot: 'allow', Googlebot: 'allow', ExampleBot: 'disallow' }, disallowPaths: ['/private/', '/downloads/*.zip$'] });
     const file = robots(s)!;
-    expect(file).toBe(['User-agent: *', 'Disallow: /downloads/*.zip$', 'Disallow: /private/', '', ...TRAINING.filter((t) => t !== 'GPTBot').map((t) => `User-agent: ${t}`), 'Disallow: /', ''].join('\n'));
+    const closed = ['Disallow: /downloads/*.zip$', 'Disallow: /private/'];
+    expect(file).toBe(['User-agent: *', ...closed, '', 'User-agent: Googlebot', 'User-agent: GPTBot', ...closed, '', ...[...TRAINING.filter((t) => t !== 'GPTBot'), 'ExampleBot'].sort((a, b) => a.toLowerCase().localeCompare(b.toLowerCase())).map((t) => `User-agent: ${t}`), 'Disallow: /', ''].join('\n'));
     expect(mayFetch(file, 'GPTBot', '/about/')).toBe(true);
     expect(mayFetch(file, 'GPTBot', '/private/notes')).toBe(false);
     expect(mayFetch(file, 'Googlebot', '/downloads/a.zip')).toBe(false);
     expect(mayFetch(file, 'Googlebot', '/downloads/a.zip?v=2')).toBe(true);
     expect(mayFetch(file, 'ClaudeBot', '/about/')).toBe(false);
+    expect(mayFetch(file, 'examplebot', '/about/')).toBe(false);
+    expect(mayFetch(file, 'Twitterbot', '/about/')).toBe(true);
+  });
+
+  it('gives a crawler let in by name a group of its own, so it never falls back on a blocked crawler’s', () => {
+    const file = robots(policy(rootSite(), { preset: 'custom', overrides: { Googlebot: 'disallow', Applebot: 'allow', 'Googlebot-Image': 'allow' }, disallowPaths: ['/private/'] }))!;
+    expect(file).toContain('User-agent: Applebot\nUser-agent: Googlebot-Image\nDisallow: /private/\n');
+    expect(mayFetch(file, 'Applebot', '/about/', 'Googlebot')).toBe(true);
+    expect(mayFetch(file, 'Applebot', '/private/a', 'Googlebot')).toBe(false);
+    expect(mayFetch(file, 'Googlebot-Image', '/about/', 'Googlebot')).toBe(true);
+    expect(mayFetch(file, 'Googlebot', '/about/')).toBe(false);
+    // Without paths, the group lets it in everywhere.
+    expect(robots(policy(rootSite(), { preset: 'custom', base: 'block-ai-training', overrides: { GPTBot: 'allow' } }))).toContain('\nUser-agent: GPTBot\nAllow: /\n');
   });
 
   it('starts from the preset it was chosen from, and drops its rules when another preset is chosen', () => {
@@ -161,8 +178,20 @@ describe('Custom', () => {
     // A crawler named in another case is the same crawler, kept in the list's spelling.
     s = policy(s, { overrides: { gptbot: 'allow' } });
     expect(s.site.crawlerPolicy?.overrides).toEqual({ ClaudeBot: 'disallow', GPTBot: 'allow' });
-    // Letting in a crawler no preset keeps out is no rule at all.
-    expect(policy(s, { overrides: { ExampleBot: 'allow' } }).site.crawlerPolicy).toEqual(s.site.crawlerPolicy);
+    // A listed crawler's explicit choice outlasts a change of base, where Default follows it.
+    const moved = policy(s, { base: 'block-ai-training' });
+    expect(crawlerRules(moved.site).overrides.get('gptbot')?.action).toBe('allow');
+    expect(robots(moved)).toContain('User-agent: GPTBot\nAllow: /');
+    expect(robots(moved)).toMatch(/User-agent: CCBot\n(User-agent: .*\n)*Disallow: \//);
+  });
+
+  it('replaces the crawlers “Also block” lists with each save, leaving listed crawlers’ rows and allows alone', () => {
+    let s = policy(rootSite(), { preset: 'custom', overrides: { GPTBot: 'allow', 'Googlebot-Image': 'allow', OldBot: 'disallow' } });
+    s = policy(s, { alsoBlock: ['NewBot'] });
+    s = policy(s, { alsoBlock: ['FinalBot', 'claudebot'] });
+    expect(JSON.stringify(s.site.crawlerPolicy?.overrides)).toBe(JSON.stringify({ ClaudeBot: 'disallow', FinalBot: 'disallow', 'Googlebot-Image': 'allow', GPTBot: 'allow' }));
+    expect(policy(s, { alsoBlock: [] }).site.crawlerPolicy?.overrides).toEqual({ ClaudeBot: 'disallow', 'Googlebot-Image': 'allow', GPTBot: 'allow' });
+    expect(refusal(policy(rootSite(), { preset: 'block-ai-training' }), { alsoBlock: ['X'] })).toMatch(/Only a Custom crawler policy/);
   });
 
   it('keeps a crawler let in by name out of a path closed to every crawler, and closing "/" closes the whole site', () => {
@@ -179,7 +208,21 @@ describe('Custom', () => {
     const s = policy(seoSite().state, { preset: 'custom', base: 'block-ai-training', overrides: { GPTBot: 'allow' }, disallowPaths: ['/private/'] });
     const file = robots(s)!;
     expect(file).toBe(
-      ['User-agent: *', 'Disallow: /studio/private/', '', ...TRAINING.filter((t) => t !== 'GPTBot').map((t) => `User-agent: ${t}`), 'Disallow: /studio$', 'Disallow: /studio/', 'Disallow: /studio?', '', 'Sitemap: https://example.com/studio/sitemap.xml', ''].join('\n')
+      [
+        'User-agent: *',
+        'Disallow: /studio/private/',
+        '',
+        'User-agent: GPTBot',
+        'Disallow: /studio/private/',
+        '',
+        ...TRAINING.filter((t) => t !== 'GPTBot').map((t) => `User-agent: ${t}`),
+        'Disallow: /studio$',
+        'Disallow: /studio/',
+        'Disallow: /studio?',
+        '',
+        'Sitemap: https://example.com/studio/sitemap.xml',
+        ''
+      ].join('\n')
     );
     expect(mayFetch(file, 'GPTBot', '/studio/about/')).toBe(true);
     expect(mayFetch(file, 'GPTBot', '/studio/private/a')).toBe(false);
@@ -187,10 +230,19 @@ describe('Custom', () => {
     expect(mayFetch(file, 'ClaudeBot', '/studio-next/')).toBe(true);
     expect(mayFetch(file, 'ClaudeBot', '/')).toBe(true);
     // A path closing the whole site closes the sub-path alone.
-    const all = robots(policy(s, { disallowPaths: ['/'] }))!;
-    expect(all).toContain('User-agent: *\nDisallow: /studio$\nDisallow: /studio/\nDisallow: /studio?\n');
-    expect(mayFetch(all, 'Googlebot', '/studio/about/')).toBe(false);
-    expect(mayFetch(all, 'Googlebot', '/studio-next/')).toBe(true);
+    for (const universal of ['/', '/*', '/*$']) {
+      const all = robots(policy(s, { disallowPaths: [universal] }))!;
+      expect(all, universal).toContain('User-agent: *\nDisallow: /studio$\nDisallow: /studio/\nDisallow: /studio?\n');
+      expect(mayFetch(all, 'Googlebot', '/studio/about/'), universal).toBe(false);
+      expect(mayFetch(all, 'Googlebot', '/studio-next/'), universal).toBe(true);
+    }
+    // The home page alone, and a query on it, at both of its addresses.
+    const home = robots(policy(s, { disallowPaths: ['/$', '/?q='] }))!;
+    expect(home).toContain('User-agent: *\nDisallow: /studio$\nDisallow: /studio/$\nDisallow: /studio?q=\nDisallow: /studio/?q=\n');
+    for (const p of ['/studio', '/studio/', '/studio?q=pots', '/studio/?q=pots']) expect(mayFetch(home, 'Googlebot', p), p).toBe(false);
+    for (const p of ['/studio/about/', '/studio-next/', '/studio?page=2']) expect(mayFetch(home, 'Googlebot', p), p).toBe(true);
+    // Escaped characters stay escapes, never wildcards, ends or new lines.
+    expect(robots(policy(s, { disallowPaths: ['/a%2A', '/b%24', '/c%0A'] }))).toContain('Disallow: /studio/a%2A\nDisallow: /studio/b%24\nDisallow: /studio/c%0A\n');
     // Reset, the sub-path site has the robots.txt it always had.
     expect(robots(policy(s, null))).toBe('User-agent: *\nAllow: /\n\nSitemap: https://example.com/studio/sitemap.xml\n');
   });
@@ -200,7 +252,7 @@ describe('checking what is typed', () => {
   it('takes product tokens alone, in a listed crawler’s own spelling', () => {
     expect(checkCrawlerToken(' gptbot ')).toEqual({ ok: true, value: 'GPTBot' });
     expect(checkCrawlerToken('Example_Bot')).toEqual({ ok: true, value: 'Example_Bot' });
-    for (const bad of ['', '*', 'GPTBot/1.2', 'Bot 2', 'User-agent: GPTBot', 'Bot9', 'x'.repeat(129), 'Bot\nDisallow: /']) expect(checkCrawlerToken(bad).ok, JSON.stringify(bad)).toBe(false);
+    for (const bad of ['', '*', 'GPTBot/1.2', 'Bot 2', 'User-agent: GPTBot', 'Bot9', 'x'.repeat(129), 'Bot\nDisallow: /', '__proto__', 'constructor', 'Prototype']) expect(checkCrawlerToken(bad).ok, JSON.stringify(bad)).toBe(false);
     expect(checkCrawlerTokenLines('ExampleBot\n\nexamplebot\nAnotherBot')).toEqual({ ok: true, value: ['AnotherBot', 'ExampleBot'] });
   });
 
@@ -210,6 +262,8 @@ describe('checking what is typed', () => {
     expect(checkCrawlerPath('/a%2fb%41%7e')).toEqual({ ok: true, value: '/a%2FbA~' });
     expect(checkCrawlerPath('/café/')).toEqual({ ok: true, value: '/caf%C3%A9/' });
     expect(checkCrawlerPath('/search?q=*')).toEqual({ ok: true, value: '/search?q=*' });
+    // A space of another alphabet is part of the path, never trimmed away to widen it.
+    expect(checkCrawlerPath(' /offers\u00a0 ')).toEqual({ ok: true, value: '/offers%C2%A0' });
     for (const bad of ['private/', '//evil.example/', '/a b', '/a#b', '/a$b', '/a%zz', '/a/../b', '/a/%2E%2E/b', '/a\\b', '/a"b', '/' + 'a'.repeat(512), '/\ud800'])
       expect(checkCrawlerPath(bad).ok, JSON.stringify(bad)).toBe(false);
     expect(checkCrawlerPathLines('/b/\n\n/a/\n/b/')).toEqual({ ok: true, value: ['/a/', '/b/'] });
@@ -224,11 +278,14 @@ describe('checking what is typed', () => {
     expect(invalid({ preset: 'custom', disallowPaths: ['/ok/', 'nope'] })).toMatch(/disallowPaths\.1: .*start it with/);
     expect(invalid({ preset: 'custom', disallowPaths: ['/a/\nDisallow: /'] })).toMatch(/disallowPaths\.0/);
     expect(invalid({ preset: 'custom', base: 'custom' })).toMatch(/base/);
+    expect(invalid({ preset: 'custom', alsoBlock: ['Good', 'Bad Bot'] })).toMatch(/alsoBlock\.1: /);
     expect(invalid({ preset: 'custom', overrides: { GPTBot: 'allow' }, disallowPaths: ['/a/'], base: 'search-engines-only', noAiMeta: null })).toBeNull();
     const state = rootSite();
     expect(refusal(state, { preset: 'block-ai-training', disallowPaths: ['/a/'] })).toMatch(/Only a Custom crawler policy/);
     expect(refusal(policy(state, { preset: 'block-ai-training' }), { overrides: { GPTBot: 'allow' } })).toMatch(/Only a Custom crawler policy/);
     expect(refusal(state, { preset: 'custom', overrides: { GPTBot: 'allow', gptbot: 'disallow' } })).toMatch(/named twice/);
+    expect(refusal(state, { preset: 'custom', overrides: { GPTBot: 'disallow', gptbot: 'disallow' } })).toMatch(/named twice/);
+    expect(refusal(policy(state, { preset: 'custom', overrides: { GPTBot: 'allow' } }), { alsoBlock: Array.from({ length: 64 }, (_, i) => `Bot${'x'.repeat(i)}`) })).toMatch(/at most 64/);
     expect(refusal(state, { preset: 'custom', overrides: Object.fromEntries(Array.from({ length: 65 }, (_, i) => [`Bot${'x'.repeat(i)}`, 'disallow'])) })).toMatch(/at most 64/);
     // A refused change leaves the batch, and the site, as they were.
     const before = structuredClone(state.site);
@@ -241,16 +298,31 @@ describe('checking what is typed', () => {
     const damaged = (crawlerPolicy: unknown) => ({ ...state, site: { ...state.site, crawlerPolicy } }) as ProjectState;
     expect(robots(damaged('block'))).toBe('User-agent: *\nAllow: /\n');
     expect(robots(damaged({ preset: 'nobody' }))).toBe('User-agent: *\nAllow: /\n');
-    const rules = crawlerRules({ crawlerPolicy: { preset: 'custom', base: 'nonsense', overrides: { GPTBot: 'disallow', gptbot: 'allow', ClaudeBot: 'disallow', 'Bad Bot': 'disallow', CCBot: 7 }, disallowPaths: ['/a/', 'b', 3, '/a/'], noAiMeta: 'yes' } as never });
+    const rules = crawlerRules({ crawlerPolicy: { preset: 'custom', base: 'nonsense', overrides: { gptbot: 'allow', GPTBot: 'disallow', ClaudeBot: 'disallow', 'Bad Bot': 'disallow', CCBot: 7 }, disallowPaths: ['/a/', 'b', 3, '/a/'], noAiMeta: 'yes' } as never });
     expect(rules.base).toBe('allow-all');
-    // GPTBot is named both ways, so its base decides; the rest that can be used stands.
-    expect([...rules.overrides.values()]).toEqual([{ token: 'ClaudeBot', action: 'disallow' }]);
+    // GPTBot is named both ways, so it is kept out; the rest that can be used stands.
+    expect([...rules.overrides.values()]).toEqual([
+      { token: 'ClaudeBot', action: 'disallow' },
+      { token: 'GPTBot', action: 'disallow' }
+    ]);
     expect(rules.paths).toEqual(['/a/']);
     expect(rules.noAiMeta).toBe(false);
+    // An unreadable preset with Custom's rules beside it keeps them, and its training base.
+    const unnamed = robots(damaged({ preset: 7, base: 'block-ai-training', disallowPaths: ['/private/', 'nope'] }))!;
+    expect(unnamed).toContain('User-agent: *\nDisallow: /private/\n');
+    for (const t of TRAINING) expect(mayFetch(unnamed, t, '/about/'), t).toBe(false);
+    // The lists stop at their limits, however many a hand edit wrote.
+    const flooded = crawlerRules({ crawlerPolicy: { preset: 'custom', disallowPaths: Array.from({ length: 1100 }, (_, i) => `/p${i}/`), overrides: Object.fromEntries(Array.from({ length: 200 }, (_, i) => [`Bot${'x'.repeat(i % 100)}${'y'.repeat(Math.floor(i / 100))}`, 'disallow'])) } as never });
+    expect(flooded.paths).toHaveLength(64);
+    expect(flooded.overrides.size).toBe(64);
     expect(() => generateProject(damaged({ preset: 'custom', overrides: [1, 2], disallowPaths: 'all' }))).not.toThrow();
     expect(runSeoAudit(damaged({ preset: 'custom', overrides: null, disallowPaths: [null] })).filter((f) => f.site === 'crawlerPolicy')).toEqual([]);
     // One damaged path never opens the site to the crawlers the rest keeps out.
-    expect(robots(damaged({ preset: 'block-ai-training', disallowPaths: 'x' }))).toBe(robots(policy(state, { preset: 'block-ai-training' })));
+    const mixed = robots(damaged({ preset: 'custom', base: 'block-ai-training', disallowPaths: ['/private/', 'x y'] }))!;
+    expect(mixed).toContain('Disallow: /private/');
+    for (const t of TRAINING) expect(mayFetch(mixed, t, '/about/'), t).toBe(false);
+    // The AI is told the policy as the website follows it, never the damaged entries.
+    expect(projectSummary(damaged({ preset: 'custom', base: 'nonsense', overrides: { 'Bad Bot': 'disallow', ExampleBot: 'disallow' }, disallowPaths: [1] }), 1).site).toMatchObject({ crawlerPolicy: { preset: 'custom', overrides: { ExampleBot: 'disallow' } } });
   });
 });
 
@@ -262,6 +334,12 @@ describe('the noai meta', () => {
     expect(off.site.crawlerPolicy).toEqual({ preset: 'block-ai-training', noAiMeta: false });
     expect(layout(off)).not.toContain('noai');
     expect(policy(off, { preset: 'search-engines-only' }).site.crawlerPolicy).toEqual({ preset: 'search-engines-only', noAiMeta: false });
+    // Put back to the default, it follows the preset again.
+    expect(layout(policy(off, { noAiMeta: null }))).toContain(NOAI_META);
+    // An explicit choice outlasts a preset whose default agrees with it.
+    const kept = policy(policy(policy(state, { noAiMeta: true }), { preset: 'block-ai-training' }), { preset: 'allow-all' });
+    expect(kept.site.crawlerPolicy).toEqual({ preset: 'allow-all', noAiMeta: true });
+    expect(layout(kept)).toContain(NOAI_META);
     // On while every crawler is let in, robots.txt is unchanged and only the pages ask.
     const on = policy(state, { noAiMeta: true });
     expect(on.site.crawlerPolicy).toEqual({ preset: 'allow-all', noAiMeta: true });
@@ -294,6 +372,14 @@ describe('the audit', () => {
     expect(destinationLabel(f.destination!)).toBe('Go to Crawlers');
   });
 
+  it('warns when Custom keeps an AI search engine out by name, but not an assistant’s fetcher', () => {
+    const [f, ...rest] = blocked(policy(seoSite().state, { preset: 'custom', overrides: { PerplexityBot: 'disallow', 'ChatGPT-User': 'disallow' } }));
+    expect(rest).toEqual([]);
+    expect(f).toMatchObject({ code: 'SEO_AI_SEARCH_CRAWLERS_BLOCKED', pillar: 'agentic', severity: 'warning', aiFixable: true, destination: { kind: 'site', field: 'crawlerPolicy' } });
+    expect(f.message).toBe('robots.txt keeps AI search engines out of the whole website (PerplexityBot): Custom keeps them out by name.');
+    expect(blocked(policy(seoSite().state, { preset: 'custom', overrides: { 'ChatGPT-User': 'disallow', 'Claude-User': 'disallow' } }))).toEqual([]);
+  });
+
   it('warns about search engines and AI search engines alike when a path closes the whole site, even to one let in by name', () => {
     const s = policy(seoSite().state, { preset: 'custom', base: 'search-engines-only', overrides: { 'OAI-SearchBot': 'allow' }, disallowPaths: ['/*'] });
     const found = blocked(s);
@@ -321,10 +407,13 @@ describe('the editor and the AI', () => {
     const paths: EditOperation = { type: 'site.update', crawlerPolicy: { disallowPaths: ['/private/'] } };
     const tokens: EditOperation = { type: 'site.update', crawlerPolicy: { overrides: { ExampleBot: 'disallow' } } };
     expect(fieldKey([paths])).not.toBe(fieldKey([tokens]));
+    const also: EditOperation = { type: 'site.update', crawlerPolicy: { alsoBlock: ['ExampleBot'] } };
+    expect(fieldKey([also])).not.toBe(fieldKey([paths]));
+    expect(fieldKey([also])).toBe(fieldKey([{ type: 'site.update', crawlerPolicy: { alsoBlock: ['OtherBot', 'ThirdBot'] } }]));
     expect(fieldKey([paths])).toBe(fieldKey([{ type: 'site.update', crawlerPolicy: { disallowPaths: ['/b/'] } }]));
     expect(readField(s, paths)).toEqual({ found: true, value: { crawlerPolicy: { preset: 'custom', disallowPaths: ['/a/'] } } });
     expect(typedText(paths)).toBe('/private/');
-    expect(typedText(tokens)).toBe('ExampleBot');
+    expect(typedText(also)).toBe('ExampleBot');
     const read = readField(s, paths)!;
     expect(read.found && shownField(paths, read.value)).toBe('/a/');
     // A held path list still applies once the crawlers are changed; not once the preset leaves Custom.
@@ -332,17 +421,32 @@ describe('the editor and the AI', () => {
     expect(checkHeld(policy(s, { overrides: { ExampleBot: 'disallow' } }), [paths], base).kind).toBe('apply');
     expect(checkHeld(policy(s, { preset: 'block-ai-training' }), [paths], base).kind).toBe('changed');
     expect(checkHeld(policy(s, { disallowPaths: ['/c/'] }), [paths], base).kind).toBe('changed');
+    // “Also block” reads only the crawlers it lists: a listed crawler's row or the paths changed meanwhile is no conflict.
+    const blocking = policy(s, { alsoBlock: ['OldBot'] });
+    const alsoBase = readFields(blocking, [also])!.map((r) => (r.found ? r.value : undefined));
+    expect(alsoBase).toEqual([{ crawlerPolicy: { preset: 'custom', alsoBlock: ['OldBot'] } }]);
+    const alsoRead = readField(blocking, also)!;
+    expect(alsoRead.found && shownField(also, alsoRead.value)).toBe('OldBot');
+    expect(checkHeld(policy(blocking, { overrides: { GPTBot: 'disallow' }, disallowPaths: ['/z/'] }), [also], alsoBase).kind).toBe('apply');
+    expect(checkHeld(policy(blocking, { alsoBlock: ['NewBot'] }), [also], alsoBase).kind).toBe('changed');
   });
 
-  it('previews exactly the file the website writes', () => {
+  it('previews exactly the file the website writes, and a change before it is saved', () => {
     const s = policy(seoSite().state, { preset: 'custom', base: 'search-engines-only', disallowPaths: ['/x/'] });
     expect(siteRobotsTxt(s.site)).toBe(robots(s));
     expect(robotsTxt(crawlerRules(s.site), { mount: '/studio', sitemap: 'https://example.com/studio/sitemap.xml' })).toBe(robots(s));
+    const preview = siteRobotsTxt(s.site, patchedCrawlerRules(s.site, { disallowPaths: ['/y/'], alsoBlock: ['ExampleBot'] })!);
+    expect(preview).toMatch(/^User-agent: \*\nDisallow: \/studio\/y\/\n\n/);
+    expect(preview).toContain('User-agent: ExampleBot\n');
+    expect(preview).toBe(robots(policy(s, { disallowPaths: ['/y/'], alsoBlock: ['ExampleBot'] })));
+    expect(patchedCrawlerRules(s.site, { disallowPaths: ['nope'] })).toBeNull();
   });
 
   it('gives a cached run the same robots.txt and layout as a fresh one as the policy changes', () => {
     const cache = new GenerationCache();
     let s = seoSite().state;
+    // Warmed on the site as it was, before it had any policy.
+    generateProject(s, {}, cache);
     const steps: Array<Record<string, unknown> | null> = [{ preset: 'block-ai-training' }, { preset: 'custom' }, { overrides: { GPTBot: 'allow' }, disallowPaths: ['/a/'] }, { noAiMeta: false }, { preset: 'search-engines-only' }, null];
     for (const step of steps) {
       s = policy(s, step);
@@ -355,7 +459,9 @@ describe('the editor and the AI', () => {
 
   it('keeps only what differs from the default', () => {
     expect(storedCrawlerPolicy(crawlerRules({}))).toBeUndefined();
-    expect(patchCrawlerPolicy(undefined, { preset: 'allow-all', noAiMeta: false })).toEqual({ ok: true, value: undefined });
+    expect(patchCrawlerPolicy(undefined, { preset: 'allow-all', noAiMeta: null })).toEqual({ ok: true, value: undefined });
+    // An explicit choice is kept even where it agrees with the default.
+    expect(patchCrawlerPolicy(undefined, { preset: 'allow-all', noAiMeta: false })).toEqual({ ok: true, value: { preset: 'allow-all', noAiMeta: false } });
     expect(patchCrawlerPolicy({ preset: 'custom', base: 'allow-all', overrides: {}, disallowPaths: [] }, {})).toEqual({ ok: true, value: { preset: 'custom' } });
   });
 });
