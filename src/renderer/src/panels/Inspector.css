@@ -106,6 +106,13 @@
   .contract-row-main { display: flex; flex: 1 1 auto; flex-direction: column; gap: 2px; min-width: 0; }
   .contract-row-main .input { width: 100%; }
   .contract-meta { font-size: 11px; line-height: 1.4; overflow-wrap: anywhere; }
+  .contract-required { display: inline-flex; align-items: center; gap: 6px; font-size: 11px; }
+  .contract-missing { margin: 0; }
+  .contract-fields > summary { cursor: pointer; width: fit-content; }
+  .contract-fields > .contract-list { margin: 4px 0 2px 8px; }
+  .contract-field { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 2px 8px; font-size: 12px; }
+  .contract-field-name { min-width: 0; overflow-wrap: anywhere; }
+  .contract-field > .contract-missing { flex-basis: 100%; }
   .contract-group { display: flex; flex-direction: column; gap: 8px; padding-top: 10px; border-top: 1px solid var(--border); }
   .contract-preview { overflow: hidden; max-width: 100%; }
   /* A slot's contract: the kinds it takes, as two columns of checkboxes. */
