@@ -45,8 +45,16 @@ export interface ShareCardLayout {
   note: string | null;
 }
 
-/** The picture's own size, as the library measured it (either side can be unknown). */
-export type ShareImageSize = Pick<AssetRecord, 'width' | 'height'>;
+/** The picture's own size, as the library measured it (either side can be unknown), and its file's size in bytes. */
+export type ShareImageSize = Pick<AssetRecord, 'width' | 'height'> & Partial<Pick<AssetRecord, 'bytes'>>;
+
+/** What stands between this picture and every platform's card, whatever its shape. */
+export function pictureWarning(picture: Pick<AssetRecord, 'mime'> | undefined, originalMissing: boolean): string | null {
+  if (!picture) return null;
+  // The shared page names the original alone, whatever copies of it are left.
+  if (originalMissing) return 'Its file is missing from the project.';
+  return picture.mime === 'image/svg+xml' ? 'It is an SVG, which link cards generally can’t show. Choose a JPEG or PNG.' : null;
+}
 
 /** Slack's attachment bounds for a picture. */
 const CHAT_IMAGE = { width: 360, height: 500 } as const;
@@ -98,7 +106,8 @@ export function shareCardLayout(platform: SharePlatform, picture: ShareImageSize
       const base = { width: 280, titleLines: 2, descriptionLines: 2, host: 'below', overlay: false } as const;
       if (!picture) return { ...base, image: null, note: null };
       if (under(w, 100) || under(h, 100)) return { ...base, image: null, note: 'Under 100 × 100 pixels, WhatsApp leaves the picture out.' };
-      if (measured(w) && w >= 300) return { ...base, image: top(280, 1.91), note: null };
+      if (sized && Math.max(w / h, h / w) > 4) return { ...base, image: side(64), note: 'Beyond 4:1, WhatsApp may show the picture as a small thumbnail, or not at all.' };
+      if (measured(w) && w >= 300) return { ...base, image: top(280, 1.91), note: (picture.bytes ?? 0) > 600_000 ? 'Over 600 KB, WhatsApp may show the picture smaller, or not at all.' : null };
       return {
         ...base,
         image: side(64),

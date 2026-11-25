@@ -313,7 +313,10 @@ const cardDrawn = (platform) =>
       fit: img ? getComputedStyle(img).objectFit : null,
       loaded: !!img && img.complete && img.naturalWidth > 0,
       src: img?.getAttribute('src') ?? '',
-      background: getComputedStyle(q('.share-card-frame')).backgroundColor,
+      // Where the card's parts sit, and whether the picture fills its slot.
+      places: Object.fromEntries(Object.entries({ picture, img, title: q('.share-card-title'), desc: q('.share-card-desc'), host: q('.share-card-host') }).map(([k, n]) => [k, n?.getBoundingClientRect().toJSON() ?? null])),
+      position: img ? getComputedStyle(img).objectPosition : null,
+      colours: [q('.share-card-frame'), q('.share-card-title'), q('.share-card-host')].map((n) => `${getComputedStyle(n).color} on ${getComputedStyle(n).backgroundColor}`),
       title: line(q('.share-card-title')),
       desc: line(q('.share-card-desc'))
     };
@@ -329,13 +332,21 @@ const checkCards = async (d) => {
     assert.equal(await sample(platform).locator('.share-card-host').innerText(), 'riverside.example', `${where}: host`);
     assert.equal(await sample(platform).locator('.share-card-title').innerText(), d.seoTitle, `${where}: title`);
     if (platform === 'X') assert.equal(await sample(platform).locator('.share-card-desc').count(), 0, `${where}: no description beside a large picture`);
-    else assert.ok((await sample(platform).locator('.share-card-desc').textContent()).includes(d.description), `${where}: description`);
+    else assert.ok((await sample(platform).locator('.share-card-desc').innerText()).includes(d.description), `${where}: description`);
     await eventually(async () => assert.ok((await cardDrawn(platform)).loaded, `${where}: its picture loads`));
     const v = await cardDrawn(platform);
     assert.ok(v.src.includes(asset.file.split('/').pop().replace(/\.[^.]+$/, '')), `${where}: the effective picture (${v.src})`);
     const expected = { Facebook: 1.91, X: 2, WhatsApp: 1.91, Slack: shape }[platform];
     assert.ok(Math.abs(v.ratio - expected) < 0.03, `${where}: the picture’s box is ${expected}:1 (${v.ratio})`);
     assert.equal(v.fit, platform === 'Slack' ? 'contain' : 'cover', `${where}: cropped or whole`);
+    assert.equal(v.position, '50% 50%', `${where}: cropped about its centre`);
+    const at = v.places;
+    assert.ok(Math.abs(at.img.width - at.picture.width) < 1 && Math.abs(at.img.height - at.picture.height) < 1, `${where}: the picture fills its slot`);
+    if (platform === 'Slack') assert.ok(at.picture.top >= at.desc.bottom, `${where}: the picture is under the text`);
+    else if (platform === 'X') assert.ok(at.title.top > at.picture.top && at.title.bottom < at.picture.bottom, `${where}: the title is over the picture`);
+    else assert.ok(at.title.top >= at.picture.bottom, `${where}: the text is under the picture`);
+    if (platform === 'WhatsApp') assert.ok(at.host.top >= at.desc.bottom, `${where}: the host is under the description`);
+    if (platform === 'Facebook') assert.ok(at.host.bottom <= at.title.top + 1, `${where}: the host is over the title`);
     assert.ok(Math.abs(v.card - Math.min(v.natural, v.room)) < 1, `${where}: the card is drawn at its width, or the room there is (${v.card} of ${v.natural} in ${v.room})`);
     if (platform === 'Slack') assert.ok(Math.abs(v.width / v.card - Math.min(360, 500 * shape, asset.width) / v.natural) < 0.01, `${where}: shrunk within its bounds`);
   }
@@ -451,38 +462,6 @@ for (const d of documents) {
   }, 20000);
 }
 await win.screenshot({ path: join(SHOTS, 'seo-view-structured-data.png') });
-// An overlong title and description are cut after each platform's own number of lines, in Chinese and in a word too
-// long for a line too.
-await row('About').click();
-await eventually(async () => assert.equal(await surfaceShown('Search result'), true));
-for (const long of ['WHEEL THROWING, HAND BUILDING AND GLAZING CLASSES FOR EVERY LEVEL, ALL YEAR ROUND. '.repeat(4), '河畔陶艺工作室全年开设拉坯与手工成型课程'.repeat(15), 'MWPottery'.repeat(35)]) {
-  // A search title has a shorter limit than a description.
-  const seoTitle = long.slice(0, 120).trim();
-  await apply([{ type: 'page.update', pageId: about.id, seoTitle, description: long.slice(0, 300).trim() }], 'Long text');
-  await surface('Link preview').click();
-  await eventually(async () => assert.equal(await card('Facebook').locator('.share-card-title').textContent(), seoTitle));
-  for (const [platform, titleLines, descLines] of [['Facebook', 2, 1], ['X', 1, 0], ['WhatsApp', 2, 2], ['Slack', 2, 3]]) {
-    const v = await cardDrawn(platform);
-    const lines = (t) => Math.round(t.height / t.line);
-    assert.equal(lines(v.title), titleLines, `${platform}: the title keeps ${titleLines} (${JSON.stringify(v.title)})`);
-    assert.ok(v.title.cut, `${platform}: and is cut`);
-    if (descLines) assert.equal(lines(v.desc), descLines, `${platform}: the description keeps ${descLines} (${JSON.stringify(v.desc)})`);
-  }
-  const across = await view.locator('.seo-scroll').evaluate((el) => ({ scroll: el.scrollWidth, client: el.clientWidth }));
-  assert.ok(across.scroll <= across.client, `long text in the link preview: nothing scrolls sideways (${JSON.stringify(across)})`);
-}
-await win.screenshot({ path: join(SHOTS, 'seo-view-cards-long.png') });
-// The cards are samples of other apps: the editor's appearance doesn't colour them.
-const grounds = () => Promise.all(['Facebook', 'X', 'WhatsApp', 'Slack'].map(async (p) => (await cardDrawn(p)).background));
-const groundsBefore = await grounds();
-const appearance = await win.evaluate(() => document.documentElement.getAttribute('data-appearance'));
-await win.evaluate((t) => document.documentElement.setAttribute('data-appearance', t === 'dark' ? 'light' : 'dark'), appearance);
-await win.screenshot({ path: join(SHOTS, 'seo-view-cards-other-appearance.png') });
-assert.deepEqual(await grounds(), groundsBefore, 'the cards keep their own colours');
-await win.evaluate((t) => (t === null ? document.documentElement.removeAttribute('data-appearance') : document.documentElement.setAttribute('data-appearance', t)), appearance);
-// The Inspector shows one platform at a time, shrunk as one piece to the room it has.
-await apply([{ type: 'page.update', pageId: about.id, seoTitle: documents[0].seoTitle, description: 'A pottery studio by the river, with wheel and hand-building classes for every level.' }], 'Short text again');
-await surface('Search result').click();
 // Back to the page: its search result, never the post's preview or surface.
 await row('About').click();
 await eventually(async () => assert.equal(await surfaceShown('Search result'), true, 'About opens on its search result again'));
@@ -505,6 +484,44 @@ await surface('Structured data').click();
 await eventually(async () => assert.ok((await view.locator('.seo-graph-none').innerText()).trim(), 'the draft’s structured data says why it has none'));
 // Optimize with AI is in the view, on the chosen document.
 assert.equal(await view.getByRole('button', { name: 'Optimize with AI' }).count(), 1, 'Optimize with AI is in the view');
+// An overlong title and description are cut after each platform's own number of lines, in Chinese and in a word too
+// long for a line too.
+await row('About').click();
+await eventually(async () => assert.equal(await surfaceShown('Search result'), true));
+for (const long of ['WHEEL THROWING, HAND BUILDING AND GLAZING CLASSES FOR EVERY LEVEL, ALL YEAR ROUND. '.repeat(4), '河畔陶艺工作室全年开设拉坯与手工成型课程'.repeat(15), 'MWPottery'.repeat(35)]) {
+  // A search title has a shorter limit than a description.
+  const seoTitle = long.slice(0, 120).trim();
+  await apply([{ type: 'page.update', pageId: about.id, seoTitle, description: long.slice(0, 300).trim() }], 'Long text');
+  await surface('Link preview').click();
+  await eventually(async () => assert.equal(await card('Facebook').locator('.share-card-title').textContent(), seoTitle));
+  for (const [platform, titleLines, descLines] of [['Facebook', 2, 1], ['X', 1, 0], ['WhatsApp', 2, 2], ['Slack', 2, 3]]) {
+    const v = await cardDrawn(platform);
+    const lines = (t) => Math.round(t.height / t.line);
+    assert.equal(lines(v.title), titleLines, `${platform}: the title keeps ${titleLines} (${JSON.stringify(v.title)})`);
+    assert.ok(v.title.cut, `${platform}: and is cut`);
+    if (descLines) {
+      assert.equal(lines(v.desc), descLines, `${platform}: the description keeps ${descLines} (${JSON.stringify(v.desc)})`);
+      assert.ok(v.desc.cut, `${platform}: and the description is cut`);
+    }
+  }
+  const across = await view.locator('.seo-scroll').evaluate((el) => ({ scroll: el.scrollWidth, client: el.clientWidth }));
+  assert.ok(across.scroll <= across.client, `long text in the link preview: nothing scrolls sideways (${JSON.stringify(across)})`);
+}
+await win.screenshot({ path: join(SHOTS, 'seo-view-cards-long.png') });
+// The cards are samples of other apps: the editor's appearance doesn't colour them.
+const grounds = () => Promise.all(['Facebook', 'X', 'WhatsApp', 'Slack'].map(async (p) => (await cardDrawn(p)).colours));
+const editorGround = () => win.evaluate(() => getComputedStyle(document.body).backgroundColor);
+const editorBefore = await editorGround();
+const groundsBefore = await grounds();
+const appearance = await win.evaluate(() => document.documentElement.getAttribute('data-appearance'));
+await win.evaluate((t) => document.documentElement.setAttribute('data-appearance', t === 'dark' ? 'light' : 'dark'), appearance);
+await win.screenshot({ path: join(SHOTS, 'seo-view-cards-other-appearance.png') });
+await eventually(async () => assert.notEqual(await editorGround(), editorBefore, 'the editor’s own colours change'));
+assert.deepEqual(await grounds(), groundsBefore, 'the cards keep their own colours');
+await win.evaluate((t) => (t === null ? document.documentElement.removeAttribute('data-appearance') : document.documentElement.setAttribute('data-appearance', t)), appearance);
+// The Inspector shows one platform at a time, shrunk as one piece to the room it has.
+await apply([{ type: 'page.update', pageId: about.id, seoTitle: documents[0].seoTitle, description: 'A pottery studio by the river, with wheel and hand-building classes for every level.' }], 'Short text again');
+await surface('Search result').click();
 // In a 1280px window, with both side panels open, the computer's result still fits whole, laid out at the width it is
 // measured against.
 await row('About').click();

@@ -5,7 +5,7 @@ import { AssetImage } from '../components/AssetImage';
 import { openSection, Segmented } from '../components/ui';
 import { openSiteStyles } from '../lib/actions';
 import type { LinkCard } from '../lib/seo-preview';
-import { SHARE_PLATFORMS, shareCardLayout, type ShareImageBox, type SharePlatform } from '../lib/share-card-layout';
+import { fitWithin, pictureWarning, SHARE_PLATFORMS, shareCardLayout, type ShareImageBox, type SharePlatform } from '../lib/share-card-layout';
 import { missingKey } from './ImagesPicker';
 
 /** Site details, with the cursor on the site's sharing image (the one a page without an image of its own follows) or its public URL. */
@@ -18,8 +18,10 @@ export function openSiteSharing(field: 'socialImage' | 'baseUrl') {
 const px = (n: number) => `calc(var(--u) * ${n})`;
 
 /** The picture in its slot, cropped or whole as the platform shows it; an icon where it can't be shown (yet). */
-function CardPicture({ picture, box, devUrl }: { picture: LinkCard['image']; box: ShareImageBox; devUrl: string | null }) {
+function CardPicture({ picture, alt, box, devUrl }: { picture: LinkCard['image']; alt: string; box: ShareImageBox; devUrl: string | null }) {
   const [failed, setFailed] = useState(false);
+  // The size of a picture the library hasn't measured, once it loads, so it shrinks with its card like any other.
+  const [loadedWidth, setLoadedWidth] = useState<number | null>(null);
   const show = picture && devUrl && !failed;
   // A picture whose own height isn't known takes its own shape, up to the platform's bounds.
   const natural = !!show && box.height === null;
@@ -27,7 +29,18 @@ function CardPicture({ picture, box, devUrl }: { picture: LinkCard['image']; box
   return (
     <span className={`share-card-image ${box.at} ${box.fit}${natural ? ' natural' : ''}${picture ? '' : ' empty'}`} style={style}>
       {show ? (
-        <AssetImage asset={picture} devUrl={devUrl} cover={!natural} alt="" style={natural ? { maxHeight: px(box.maxHeight) } : undefined} onError={() => setFailed(true)} />
+        <AssetImage
+          asset={picture}
+          devUrl={devUrl}
+          cover={!natural}
+          alt={alt}
+          style={natural ? { maxHeight: px(box.maxHeight), width: loadedWidth === null ? undefined : px(loadedWidth) } : undefined}
+          onLoad={(e) => {
+            const { naturalWidth, naturalHeight } = e.currentTarget;
+            if (natural && naturalWidth > 0 && naturalHeight > 0) setLoadedWidth(fitWithin(naturalWidth, naturalHeight, box.width, box.maxHeight).width);
+          }}
+          onError={() => setFailed(true)}
+        />
       ) : picture ? (
         <ImageOff aria-hidden="true" />
       ) : (
@@ -38,7 +51,7 @@ function CardPicture({ picture, box, devUrl }: { picture: LinkCard['image']; box
 }
 
 /** One platform's card, with what that platform does with this picture said under it. */
-function PlatformCard({ platform, card, labelled }: { platform: (typeof SHARE_PLATFORMS)[number]; card: LinkCard; labelled: boolean }) {
+function PlatformCard({ platform, card, gone, labelled }: { platform: (typeof SHARE_PLATFORMS)[number]; card: LinkCard; gone: boolean; labelled: boolean }) {
   const runtime = useStore((s) => s.runtime);
   const snapshot = useStore((s) => s.snapshot);
   const devUrl = runtime.state === 'ready' ? runtime.url : null;
@@ -47,7 +60,7 @@ function PlatformCard({ platform, card, labelled }: { platform: (typeof SHARE_PL
   const box = layout.image;
   const image = box && (
     // A repaired or replaced file, or a restarted preview, gets another try.
-    <CardPicture key={picture ? `${picture.id}\n${picture.file}\n${devUrl}\n${missingKey(snapshot, picture.id)}` : 'none'} picture={picture} box={box} devUrl={devUrl} />
+    <CardPicture key={picture ? `${picture.id}\n${picture.file}\n${devUrl}\n${missingKey(snapshot, picture.id)}` : 'none'} picture={picture} alt={card.imageAlt} box={box} devUrl={gone ? null : devUrl} />
   );
   const lang = card.language || undefined;
   const host = <span className="share-card-host">{card.host ?? 'No usable public URL'}</span>;
@@ -111,16 +124,17 @@ export function SharingPreview({ card, all = false }: { card: LinkCard; all?: bo
   const snapshot = useStore((s) => s.snapshot);
   const [chosen, setChosen] = useState<SharePlatform>('feed');
   const gone = !!card.image && !!snapshot?.missingAssets.some((m) => m.assetId === card.image!.id && m.original);
+  const warning = pictureWarning(card.image, gone);
   const shown = all ? SHARE_PLATFORMS : SHARE_PLATFORMS.filter((p) => p.id === chosen);
   return (
     <div className="share-preview">
       {!all && <Segmented<SharePlatform> full radio label="Platform" value={chosen} onChange={setChosen} options={SHARE_PLATFORMS.map((p) => ({ value: p.id, label: p.name }))} />}
       <p className="field-hint share-preview-image">
         {card.imageSaid}
-        {gone && ' Its file is missing from the project.'}
+        {warning && ` ${warning}`}
       </p>
       {shown.map((p) => (
-        <PlatformCard key={p.id} platform={p} card={card} labelled={all} />
+        <PlatformCard key={p.id} platform={p} card={card} gone={gone} labelled={all} />
       ))}
       <p className="field-hint share-preview-note">How each platform likely crops the picture and cuts the text short. Their apps change, and differ between devices.</p>
       {card.addressNote && (

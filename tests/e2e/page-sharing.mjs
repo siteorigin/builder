@@ -137,6 +137,13 @@ await openPage('About');
 assert.equal(await imageName().innerText(), 'No sharing image', 'About has none, and the site has none');
 assert.equal(await card().locator('.share-card-image').count(), 0, 'the card has no picture');
 assert.equal(await section().locator('.share-preview-image').innerText(), 'No sharing image.', 'and the preview says there is none');
+// Without a picture X draws its small card: a square placeholder beside the text, with a description.
+await section().getByRole('radio', { name: 'X', exact: true }).click();
+await eventually(async () => assert.equal(await card().getAttribute('data-platform'), 'x'));
+const placeholder = await card().locator('.share-card-image.empty').boundingBox();
+assert.ok(Math.abs(placeholder.width - placeholder.height) < 1, 'a square placeholder');
+assert.equal(await card().locator('.share-card-desc').count(), 1, 'with a description');
+await section().getByRole('radio', { name: 'Facebook', exact: true }).click();
 await choose('Bedroom');
 await eventually(() => assert.equal(pageFile(about).seo.socialImage, 'a_bedroom', 'About is saved with the Bedroom photo'));
 await eventually(async () => assert.equal(await imageName().innerText(), 'Bedroom'));

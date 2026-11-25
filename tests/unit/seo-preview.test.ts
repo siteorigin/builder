@@ -82,7 +82,18 @@ describe('previewDocument', () => {
     const card = preview(lost, PAGE).card;
     expect(card.image).toBeUndefined();
     expect(card.imageSaid).toBe('No sharing image: the one chosen (this page’s own) isn’t a picture in Assets.');
+    expect(card.imageAlt).toBe('');
     expect(card.language).toBe('en');
+    // The site's own choice is named as the site's, and a file that isn't a picture counts as none.
+    const notPicture = copy(state);
+    delete notPicture.pages.pg_services.seo.socialImage;
+    notPicture.assets.assets.a_file = { ...notPicture.assets.assets.img_share, id: 'a_file', kind: 'document' };
+    notPicture.site.socialImage = 'a_file';
+    expect(preview(notPicture, PAGE).card.imageSaid).toBe('No sharing image: the one chosen (the site’s) isn’t a picture in Assets.');
+    const french = copy(state);
+    french.site.language = 'fr';
+    french.assets.assets.img_share.altSuggestion = 'Un tour de potier';
+    expect(preview(french, PAGE).card).toMatchObject({ language: 'fr', imageAlt: 'Un tour de potier' });
   });
 
   it('gives a post its branded title in results, its own title on the card, and its date before the description', () => {

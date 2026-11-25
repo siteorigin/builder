@@ -3,7 +3,7 @@
  * out, and how many lines of title and description it keeps.
  */
 import { describe, expect, it } from 'vitest';
-import { fitWithin, SHARE_PLATFORMS, shareCardLayout } from '../../src/renderer/src/lib/share-card-layout';
+import { fitWithin, pictureWarning, SHARE_PLATFORMS, shareCardLayout } from '../../src/renderer/src/lib/share-card-layout';
 
 const size = (width?: number, height?: number) => ({ width, height });
 const slot = (platform: Parameters<typeof shareCardLayout>[0], width?: number, height?: number) => shareCardLayout(platform, size(width, height)).image;
@@ -43,16 +43,32 @@ describe('shareCardLayout', () => {
 
   it('gives X the large card for any picture, warning of one under its minimum, and a square placeholder without', () => {
     expect(shareCardLayout('x', size(300, 157))).toMatchObject({ overlay: true, host: 'outside', note: 'With a large picture, X shows no description.' });
-    for (const [w, h] of [[299, 157], [300, 156]]) expect(shareCardLayout('x', size(w, h)).note, `${w} × ${h}`).toMatch(/may leave the picture out/);
+    // Under it, the card is laid out the same, as the exported page still asks for it.
+    for (const [w, h] of [[299, 157], [300, 156]]) {
+      expect(shareCardLayout('x', size(w, h)), `${w} × ${h}`).toMatchObject({ overlay: true, descriptionLines: 0, image: { at: 'top', width: 500, height: 250 } });
+      expect(shareCardLayout('x', size(w, h)).note, `${w} × ${h}`).toMatch(/may leave the picture out/);
+    }
     expect(shareCardLayout('x', null)).toMatchObject({ overlay: false, image: { at: 'side', width: 96, height: 96 }, note: null });
   });
 
   it('shrinks a message’s picture to a thumbnail under 300 wide, and leaves it out under 100', () => {
     expect(slot('messages', 300, 100)).toMatchObject({ at: 'top' });
-    expect(slot('messages', 299, 100)).toMatchObject({ at: 'side', width: 64, height: 64 });
+    expect(slot('messages', 299, 100)).toMatchObject({ at: 'side', width: 64, height: 64, fit: 'cover' });
+    expect(shareCardLayout('messages', size(299, 100)).note).toMatch(/Under 300 pixels wide/);
+    expect(shareCardLayout('messages', size(99, 900)).note).toMatch(/leaves the picture out/);
     expect(slot('messages', 100, 100)).toMatchObject({ at: 'side' });
     expect(slot('messages', 99, 900)).toBeNull();
     expect(slot('messages', 900, 99)).toBeNull();
+  });
+
+  it('doubts a message’s large picture beyond 4:1 either way, or over 600 KB', () => {
+    expect(slot('messages', 1200, 300)).toMatchObject({ at: 'top' });
+    for (const [w, h] of [[1201, 300], [300, 1201]]) {
+      expect(slot('messages', w, h), `${w} × ${h}`).toMatchObject({ at: 'side' });
+      expect(shareCardLayout('messages', size(w, h)).note).toMatch(/Beyond 4:1/);
+    }
+    expect(shareCardLayout('messages', { ...size(1200, 630), bytes: 600_000 }).note).toBeNull();
+    expect(shareCardLayout('messages', { ...size(1200, 630), bytes: 600_001 })).toMatchObject({ image: { at: 'top' }, note: expect.stringMatching(/Over 600 KB/) });
   });
 
   it('shows a chat’s picture whole under the text, shrunk to fit and never grown', () => {
@@ -70,6 +86,7 @@ describe('shareCardLayout', () => {
       expect(slot('chat', unknown.width, unknown.height)).toMatchObject({ at: 'below', width: 360, height: null, maxHeight: 500 });
     }
     expect(slot('messages')).toMatchObject({ at: 'side' });
+    for (const platform of ['feed', 'messages'] as const) expect(shareCardLayout(platform, size()).note).toMatch(/size isn’t known/);
     expect(slot('messages', 1200)).toMatchObject({ at: 'top' });
     expect(shareCardLayout('x', size()).note).toBe('With a large picture, X shows no description.');
   });
@@ -83,5 +100,15 @@ describe('fitWithin', () => {
   it('keeps the shape and respects both bounds', () => {
     expect(fitWithin(720, 720, 360, 500)).toEqual({ width: 360, height: 360 });
     expect(fitWithin(200, 100, 360, 500)).toEqual({ width: 200, height: 100 });
+    expect(fitWithin(100, 1000, 360, 500)).toEqual({ width: 50, height: 500 });
+  });
+});
+
+describe('pictureWarning', () => {
+  it('says when the shared page’s file is gone, or is one cards can’t show', () => {
+    expect(pictureWarning({ mime: 'image/png' }, false)).toBeNull();
+    expect(pictureWarning(undefined, true)).toBeNull();
+    expect(pictureWarning({ mime: 'image/png' }, true)).toBe('Its file is missing from the project.');
+    expect(pictureWarning({ mime: 'image/svg+xml' }, false)).toMatch(/SVG/);
   });
 });

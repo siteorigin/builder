@@ -110,7 +110,9 @@
     color-scheme: light; display: flex; flex-direction: column; gap: calc(var(--u) * 4); width: calc(var(--u) * var(--w));
     font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif; text-align: left; color: var(--card-text);
   }
-  .share-card-frame { position: relative; display: flex; flex-direction: column; overflow: hidden; border: 1px solid var(--card-line); background: var(--card-bg); }
+  .share-card-frame { position: relative; display: flex; flex-direction: column; overflow: hidden; background: var(--card-bg); }
+  /* Drawn over the frame's edge, taking no room: a border of a whole pixel on a shrunk card would move its line breaks. */
+  .share-card-frame::after { content: ''; position: absolute; inset: 0; border: 1px solid var(--card-line); border-radius: inherit; pointer-events: none; }
   .share-card-frame.beside { flex-direction: row; align-items: center; }
   .share-card-image { position: relative; display: flex; flex: none; align-items: center; justify-content: center; overflow: hidden; background: var(--card-soft); color: var(--card-muted); }
   .share-card-image.top { max-width: 100%; }
@@ -130,7 +132,7 @@
   .share-card-feed .share-card-image { background: var(--card-line); }
   /* A timeline's large card: the picture alone, the title in a chip over it and the host under the card. */
   .share-card-x .share-card-frame { border-radius: calc(var(--u) * 16); }
-  .share-card.overlay .share-card-title { position: absolute; left: calc(var(--u) * 12); bottom: calc(var(--u) * 12); display: block; max-width: calc(100% - var(--u) * 24); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; padding: 0 calc(var(--u) * 6); border-radius: calc(var(--u) * 4); background: rgb(0 0 0 / 0.77); color: #ffffff; font-size: calc(var(--u) * 14); font-weight: 400; line-height: calc(var(--u) * 20); }
+  .share-card.overlay .share-card-title { z-index: 1; position: absolute; left: calc(var(--u) * 12); bottom: calc(var(--u) * 12); display: block; max-width: calc(100% - var(--u) * 24); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; padding: 0 calc(var(--u) * 6); border-radius: calc(var(--u) * 4); background: rgb(0 0 0 / 0.77); color: #ffffff; font-size: calc(var(--u) * 14); font-weight: 400; line-height: calc(var(--u) * 20); }
   .share-card-x { background: var(--card-bg); border-radius: calc(var(--u) * 16) calc(var(--u) * 16) calc(var(--u) * 4) calc(var(--u) * 4); }
   .share-card-from { display: flex; gap: 0.3em; min-width: 0; padding: 0 calc(var(--u) * 8) calc(var(--u) * 4); font-size: calc(var(--u) * 12); line-height: calc(var(--u) * 16); color: var(--card-muted); }
   /* A message thread: a bubble that holds the card. */
@@ -140,7 +142,8 @@
   .share-card-messages .share-card-title { font-size: calc(var(--u) * 14); line-height: calc(var(--u) * 18); }
   .share-card-messages .share-card-desc { font-size: calc(var(--u) * 12); line-height: calc(var(--u) * 16); }
   /* A team chat: an unfurl behind a bar, the whole picture under its text. */
-  .share-card-chat .share-card-frame { border-width: 0 0 0 calc(var(--u) * 4); border-radius: calc(var(--u) * 2); padding: calc(var(--u) * 4) calc(var(--u) * 8); }
+  .share-card-chat .share-card-frame { border-left: calc(var(--u) * 4) solid var(--card-line); border-radius: calc(var(--u) * 2); padding: calc(var(--u) * 4) calc(var(--u) * 8); }
+  .share-card-chat .share-card-frame::after { content: none; }
   .share-card-chat .share-card-frame.beside { align-items: flex-start; }
   .share-card-chat .share-card-text { flex: none; padding: 0 0 calc(var(--u) * 6); }
   .share-card-chat .share-card-title { color: var(--card-link); }
