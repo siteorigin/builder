@@ -14,7 +14,7 @@ import { diagnosticKey, type Diagnostic } from '@engine/validate';
 import type { AgentModelAdapter, CanonicalItem, ContextOverflow, ModelEvent, ToolCall, ToolDefinition } from './types';
 import { describeOps, InspectionLog, pagesTouched } from './report';
 import { asksForComponent, assetSummary, CODE_OPERATIONS, executeTool, imageAnswer, imageLabel, imageRef, libraryImage, MUTATING_TOOLS, REVISION_BOUND_TOOLS, serializeResult, toolsForRun, type RunTools, type ToolHost } from './tools';
-import { compactProjectSummary, describeSelection, pageGlance, pageGlanceChars, pageIdFor, projectSummary } from './context';
+import { compactProjectSummary, describeSelection, pageGlance, pageGlanceChars, pageIdFor, projectSummary, withoutSlotInfo } from './context';
 import { canEditContracts, checkAuthority, liveEntry, requestAuthority, widenChoices, type Authority } from './scope';
 import { connectPendingLinks, newMacroMemory } from './macros';
 import { developerModeRefusal } from '@engine/developer-mode';
@@ -1281,7 +1281,7 @@ export class Orchestrator {
           ...(blueprints.length ? { componentBlueprints: blueprints } : {})
         },
         // Wherever a placement is summarized: the page, a selection, the shared header and footer.
-        slotDetails ? undefined : (key: string, value: unknown) => (key === 'slotInfo' ? undefined : value),
+        slotDetails ? undefined : withoutSlotInfo,
         indent
       )}\n</editor_context>`;
     const requestItem: Extract<CanonicalItem, { kind: 'user' }> = { kind: 'user', text: requestMessage() };

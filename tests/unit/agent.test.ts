@@ -1085,6 +1085,9 @@ describe('slots in the page context (#670)', () => {
 
   it('leaves slot details out of a selection when only that keeps it inside a known window', async () => {
     const f = slotted();
+    // An author's own property by that name is content, not a slot summary.
+    f.state.components[f.split].properties.slotInfo = { type: 'string', label: 'Note', default: '' };
+    (f.state.pages[f.home].nodes[f.outer] as InstanceNode).props.slotInfo = 'The author’s own words';
     const caps = { contextWindowKnown: true, maxOutputTokens: 2000 } as const;
     const text = `Tidy this. ${'Keep the tone warm, the copy short and every heading plain. '.repeat(1800)}`;
     const ctx = { pageId: f.home, pageTitle: 'Home', scope: 'selection' as const, selection: { owner: { kind: 'page' as const, id: f.home }, instancePath: [], nodeId: f.outer }, selectionLabel: 'Split' };
@@ -1099,7 +1102,9 @@ describe('slots in the page context (#670)', () => {
     const sent = editorContext(env.adapter.requests[0]).selection.node;
     expect(sent).not.toHaveProperty('slotInfo');
     expect(sent.slots.left).toHaveLength(2);
-    expect(JSON.stringify(sent)).not.toContain('slotInfo');
+    expect(sent.props.slotInfo).toBe('The author’s own words');
+    // No summary is left on it or on anything inside it.
+    expect(JSON.stringify(sent)).not.toContain('"count"');
   });
 
   it('sends the page without its slots, words and all, when that is what fits a known window', async () => {

@@ -295,6 +295,12 @@ function placementSlots(state: ProjectState, tree: NodeTree, n: InstanceNode): A
   });
 }
 
+/** The `slotInfo` objects compactNode has made, told apart from anything an author named that. */
+const slotSummaries = new WeakSet<object>();
+
+/** A JSON.stringify replacer that leaves those out, and nothing else. */
+export const withoutSlotInfo = (_key: string, value: unknown) => (value && typeof value === 'object' && slotSummaries.has(value) ? undefined : value);
+
 export function compactNode(state: ProjectState, tree: NodeTree, id: string, depth = 0): Record<string, unknown> {
   const n = tree.nodes[id];
   if (!n) return { id, missing: true };
@@ -318,7 +324,11 @@ export function compactNode(state: ProjectState, tree: NodeTree, id: string, dep
       const nested = depth < 4;
       const info = placementSlots(state, tree, n);
       // Where the children follow in `slots` they name themselves; past that depth their IDs are listed here.
-      if (info.length) base.slotInfo = Object.fromEntries(info.map(([name, { childIds, ...slot }]) => [name, nested ? slot : { ...slot, childIds }]));
+      if (info.length) {
+        const summary = Object.fromEntries(info.map(([name, { childIds, ...slot }]) => [name, nested ? slot : { ...slot, childIds }]));
+        slotSummaries.add(summary);
+        base.slotInfo = summary;
+      }
       if (n.slots && nested) base.slots = Object.fromEntries(Object.keys(n.slots).map((k) => [k, slotChildren(n, k).map((c) => compactNode(state, tree, c, depth + 1))]));
       break;
     }
