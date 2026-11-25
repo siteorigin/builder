@@ -328,6 +328,11 @@ async function checkComponents(m: PackManifest, source: PackRoot['source'], revi
       }
     }
   }
+  // A collection's layout is copied from the article template as it is, so a divider there is checked as in a design.
+  for (const [id, n] of Object.entries(m.articleTemplate?.nodes ?? {})) {
+    const divider = dividerProblem(n as GraphNode);
+    if (divider) refuse(`Article template: node "${id}" ${divider}`);
+  }
 }
 
 /** Is this a WOFF2 font or a WebP image, by its first bytes? */

@@ -945,17 +945,18 @@ const BAND_PATHS = { angle: 'M0 24 L100 0 V24 Z', wave: 'M0 12 Q25 0 50 12 T100 
 
 /**
  * The decorative divider shapes' own layout, whatever the theme's CSS has: a band as wide as its container, an icon
- * between two hairlines drawn fainter than it, both in the divider's text color. Sizes and colors stay the design's
- * own (zero specificity). `global` for a component's own <style> block, where the icon a helper renders is outside its
+ * between two hairlines drawn fainter than it, both in the divider's text color, the site's brand color until the
+ * design gives it another. Sizes and colors stay the design's own (zero specificity). `global` for a component's own <style> block, where the icon a helper renders is outside its
  * scope.
  */
 function bandCss(global = false): string {
   const g = (sel: string) => (global ? `:global(${sel})` : sel);
   return [
     '/* Decorative divider shapes. */',
-    `${g(':where(.so-band)')} { display: block; width: 100%; height: 3rem; }`,
-    `${g(':where(.so-band-icon)')} { display: flex; align-items: center; gap: 0.75rem; width: 100%; }`,
-    `${g(':where(.so-band-icon__rule)')} { flex: 1 1 0; min-width: 0; border-top: 1px solid currentColor; opacity: 0.35; }`,
+    `${g(':where(.so-band)')} { display: block; width: 100%; height: 3rem; color: var(--so-color-brand, currentColor); }`,
+    `${g(':where(.so-band-icon)')} { display: flex; align-items: center; gap: 0.75rem; width: 100%; color: var(--so-color-brand, currentColor); }`,
+    // The hairlines are the band's own, never styled by the design: a theme's resets of plain spans leave them be.
+    `${g('.so-band-icon > .so-band-icon__rule')} { display: block; flex: 1 1 0; min-width: 0; height: 0; border: 0; border-top: 1px solid currentColor; opacity: 0.35; }`,
     `${g(':where(.so-band-icon > .so-icon)')} { flex: none; width: 1.25em; height: 1.25em; }`
   ].join('\n');
 }

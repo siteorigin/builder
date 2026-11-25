@@ -1224,6 +1224,14 @@ function primitiveNode(state: ProjectState, kind: NonNullable<Op<'node.insert'>[
   const id = newId('n');
   const space = (t: string) => ({ token: t });
   const { text } = start;
+  // A badge's and a figure's site styles: those the site's theme (or its own tokens) declare, so a theme without one
+  // still takes them, with the rest of their styles.
+  let tokens: Set<string> | undefined;
+  const declared = <T extends Record<string, unknown>>(styles: T): T => {
+    tokens ??= new Set(declaredTokens(state).map((t) => t.id));
+    const known = tokens;
+    return Object.fromEntries(Object.entries(styles).filter(([, v]) => !(v && typeof v === 'object' && 'token' in v) || known.has((v as { token: string }).token))) as T;
+  };
   if (start.shape !== undefined && kind !== 'divider') fail('Only a divider has a shape.');
   if (start.icon !== undefined && kind !== 'badge' && !(kind === 'divider' && start.shape === 'icon')) fail('Only a badge, or a divider of shape "icon", starts with an icon.');
   switch (kind) {
@@ -1253,19 +1261,18 @@ function primitiveNode(state: ProjectState, kind: NonNullable<Op<'node.insert'>[
     case 'divider': {
       const shape = start.shape ?? 'line';
       if (shape === 'line') return [{ id, kind: 'divider' }];
+      // Drawn in the site's brand color until the author picks another (see the generator's band styles), so it shows
+      // on any section's background a theme gives it.
       const icon = startIcon(start.icon);
-      // A band takes the alternate background, so it leads into a section of that color; the hairlines around an
-      // icon are drawn fainter than the icon, in muted text.
-      const color = space(shape === 'icon' ? 'color.muted' : 'color.surface-alt');
-      return [{ id, kind: 'divider', shape, ...(icon ? { icon } : {}), styles: { base: { color } } }];
+      return [{ id, kind: 'divider', shape, ...(icon ? { icon } : {}) }];
     }
     case 'badge': {
       // A pill that sits in a line of text as well as above a heading: inline, as wide as its label.
       const icon = startIcon(start.icon);
-      const label: GraphNode = { id: newId('n'), kind: 'text', tag: 'span', text: text ?? 'New', name: 'Label', styles: { base: { textStyle: space('text.eyebrow') } } };
+      const label: GraphNode = { id: newId('n'), kind: 'text', tag: 'span', text: text ?? 'New', name: 'Label', styles: { base: declared({ textStyle: space('text.eyebrow') }) } };
       const lead: GraphNode[] = icon ? [{ id: newId('n'), kind: 'icon', icon, styles: { base: { fontSize: '1em' } } }] : [];
       const styles = {
-        base: {
+        base: declared({
           layout: 'row',
           align: 'center',
           gap: space('space.2xs'),
@@ -1277,17 +1284,17 @@ function primitiveNode(state: ProjectState, kind: NonNullable<Op<'node.insert'>[
           background: space('color.surface-alt'),
           color: space('color.text'),
           customCss: 'display: inline-flex'
-        }
+        })
       };
       return [{ id, kind: 'element', tag: 'span', name: 'Badge', children: [...lead.map((n) => n.id), label.id], styles }, ...lead, label];
     }
     case 'figure': {
-      const image: GraphNode = { id: newId('n'), kind: 'image', image: { assetId: null, alt: '' }, styles: { base: { radius: space('radius.md') } } };
+      const image: GraphNode = { id: newId('n'), kind: 'image', image: { assetId: null, alt: '' }, styles: { base: declared({ radius: space('radius.md') }) } };
       // An empty caption leaves it out; one can be added (or removed) later like any text.
       const caption: GraphNode[] =
-        text === '' ? [] : [{ id: newId('n'), kind: 'text', tag: 'figcaption', name: 'Caption', text: text ?? 'Add a caption.', styles: { base: { textStyle: space('text.small'), color: space('color.muted') } } }];
+        text === '' ? [] : [{ id: newId('n'), kind: 'text', tag: 'figcaption', name: 'Caption', text: text ?? 'Add a caption.', styles: { base: declared({ textStyle: space('text.small'), color: space('color.muted') }) } }];
       const children = [image.id, ...caption.map((n) => n.id)];
-      return [{ id, kind: 'element', tag: 'figure', name: 'Figure', children, styles: { base: { layout: 'stack', gap: space('space.xs') } } }, image, ...caption];
+      return [{ id, kind: 'element', tag: 'figure', name: 'Figure', children, styles: { base: declared({ layout: 'stack', gap: space('space.xs') }) } }, image, ...caption];
     }
   }
 }
@@ -2167,6 +2174,8 @@ function nodeSetContent(state: ProjectState, op: Op<'node.setContent'>): OpResul
     case 'icon': {
       if (node.kind === 'divider') {
         if (node.shape !== 'icon') fail('Only a divider of shape "icon" shows an icon.');
+        // An icon divider's icon is part of the design: a name, or nothing for the default, never bound.
+        if (v !== null && v !== undefined && typeof v !== 'string') fail('A divider\'s icon is the name of an icon.');
         const icon = startIcon(typeof v === 'string' ? v : undefined);
         if (icon) node.icon = icon;
         else delete node.icon;

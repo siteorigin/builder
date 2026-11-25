@@ -188,6 +188,10 @@ function scheduleRects() {
     if (keepHold) scheduleRects();
   });
 }
+/** A divider the page renders: a plain rule, or one of the decorative bands drawn in its place. */
+function isSeparator(el) {
+  return el.tagName === 'HR' || el.classList.contains('so-band') || el.classList.contains('so-band-icon');
+}
 function sendRects() {
   const selEls = selected ? findAll(selected) : [];
   const selBoxes = selEls.map(rectOf);
@@ -195,7 +199,7 @@ function sendRects() {
   const sel = selBoxes.filter(Boolean);
   const hov = hovered && mode === 'edit' ? findAll(hovered).slice(0, 1).map(rectOf).filter(Boolean) : [];
   // A divider between items is not part of the item it follows.
-  const rev = revealRoots().filter((el) => el.tagName !== 'HR').map(rectOf).filter(Boolean);
+  const rev = revealRoots().filter((el) => !isSeparator(el)).map(rectOf).filter(Boolean);
   // The padding, border and margin of the first selected box the editor outlines, for its spacing handles, with
   // what it measured so a report from before a new selection is never taken for it.
   const first = selBoxes.findIndex(Boolean);
@@ -910,7 +914,7 @@ function unfilter(roots) {
 function placeReveal(roots = revealRoots()) {
   revealPlace = false;
   if (revealScroll) {
-    const el = roots.find((r) => r.tagName !== 'HR' && rectOf(r));
+    const el = roots.find((r) => !isSeparator(r) && rectOf(r));
     if (el) {
       // Scrolling never moves focus: the author keeps typing in the inspector.
       // 'instant', not 'auto': a site's own smooth scrolling would otherwise animate it.

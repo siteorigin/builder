@@ -451,6 +451,12 @@ export const MIGRATIONS: Migration[] = [
     description:
       'A project can keep a private brief, a description and working notes, in siteorigin/brief.json, which exports leave out. Nothing in the documents changes; the new version only keeps an older editor, which would neither show nor undo the brief and would copy it into every source export, from opening the project for editing.',
     migrate() {}
+  },
+  {
+    id: 'divider-shapes',
+    description:
+      'A divider can be drawn as a decorative band (shape: "angle" | "wave" | "icon", with the icon an "icon" divider shows), hidden from screen readers. Nothing in the documents changes; the new version only keeps an older editor, which would export those bands as plain separator lines and drop their shape from designs it rebuilds, from opening the project for editing.',
+    migrate() {}
   }
 ];
 

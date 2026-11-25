@@ -39,7 +39,7 @@ import {
   Download
 } from 'lucide-react';
 import type { ComponentDefinition, DividerNode, ElementNode, ElementRef, GraphNode, ImageValue, InstanceNode, LinkValue, ListItem, ListProp, OwnerRef, PageDoc, ProjectState, PropSchema, ResponsiveScope, ResponsiveStyles, ScalarPropSchema, StyleState, StyleValue, TextNode } from '@shared/types';
-import { DIVIDER_ICON, isBinding, parseStyleScopeKey, styleScopeKey } from '@shared/types';
+import { DIVIDER_ICON, DIVIDER_SHAPES, isBinding, parseStyleScopeKey, styleScopeKey } from '@shared/types';
 import { followNote } from '@shared/site-name';
 import { headerHiddenProps } from '@shared/header-logo';
 import { showsPart } from '@shared/page-shell';
@@ -1992,19 +1992,22 @@ function PrimitiveInspector({ state, owner, node, tokens, selection }: { state: 
 function DividerShapeFields({ node, onChange }: { node: DividerNode; onChange: (field: 'shape' | 'icon', value: string) => void }) {
   const shapeId = useId();
   const iconId = useId();
+  // As the site shows it: a shape or icon a hand-edited document names that cannot be drawn shows as a line, or the
+  // default icon (validation reports it).
+  const shape = (DIVIDER_SHAPES as readonly unknown[]).includes(node.shape) ? (node.shape ?? 'line') : 'line';
   return (
     <>
-      <Field label="Shape" controlId={shapeId} hint={node.shape ? 'Decorative: drawn in this divider’s text color, and hidden from screen readers.' : 'A plain line, which screen readers announce as a separator.'}>
-        <select id={shapeId} className="select" value={node.shape ?? 'line'} onChange={(e) => onChange('shape', e.target.value)}>
+      <Field label="Shape" controlId={shapeId} hint={shape !== 'line' ? 'Decorative: drawn in this divider’s text color, and hidden from screen readers.' : 'A plain line, which screen readers announce as a separator.'}>
+        <select id={shapeId} className="select" value={shape} onChange={(e) => onChange('shape', e.target.value)}>
           <option value="line">Line</option>
           <option value="angle">Angle</option>
           <option value="wave">Wave</option>
           <option value="icon">Line with icon</option>
         </select>
       </Field>
-      {node.shape === 'icon' && (
+      {shape === 'icon' && (
         <Field label="Icon" controlId={iconId}>
-          <IconPicker id={iconId} value={node.icon ?? DIVIDER_ICON} onChange={(v) => onChange('icon', v)} />
+          <IconPicker id={iconId} value={typeof node.icon === 'string' ? node.icon : DIVIDER_ICON} onChange={(v) => onChange('icon', v)} />
         </Field>
       )}
     </>

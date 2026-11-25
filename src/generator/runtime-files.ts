@@ -434,8 +434,8 @@ export const ICON_NOTICE = `/*
 export const FALLBACK_ICON = 'sparkles';
 
 /**
- * Icon names a project can show: any string in its pages, shell and component definitions that names a
- * bundled icon, plus quoted names in code component source. Over-inclusion is harmless; omission is not.
+ * Icon names a project can show: any string in its pages, shell, collection layouts and component definitions that
+ * names a bundled icon, plus quoted names in code component source. Over-inclusion is harmless; omission is not.
  */
 export function usedIcons(state: ProjectState): string[] {
   const found = new Set<string>([FALLBACK_ICON]);
@@ -447,6 +447,8 @@ export function usedIcons(state: ProjectState): string[] {
   };
   visit(state.pages);
   visit(state.site.shell);
+  // Each collection's layout shows on every entry's page.
+  for (const c of Object.values(state.collections ?? {})) visit(c?.settings?.template);
   for (const def of Object.values(state.components)) {
     if (def.kind === 'code') {
       for (const m of (def.source ?? '').matchAll(/['"`]([a-z0-9-]+)['"`]/g)) if (Object.hasOwn(ICONS, m[1])) found.add(m[1]);

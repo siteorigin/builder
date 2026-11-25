@@ -3,7 +3,7 @@
  * saying where it goes, and a drop on the canvas all read it from here, so they agree on the place.
  */
 import type { EditOperation } from '@shared/ops';
-import type { ElementRef, OwnerRef, ProjectState } from '@shared/types';
+import type { ElementNode, ElementRef, NodeTree, OwnerRef, ProjectState } from '@shared/types';
 import { newId } from '@shared/ids';
 import { childLists, findParent } from '@engine/tree';
 import { ownerLabel, refLabel, treeFor } from './model';
@@ -128,6 +128,16 @@ function slotCounts(state: ProjectState, definitionId: string, done: Map<string,
 }
 
 /**
+ * Inside a figure whose caption ends it, new content goes before the caption, which must stay its first or last child.
+ * Anywhere else, at the end (no index).
+ */
+function beforeCaption(tree: NodeTree, node: ElementNode): { index?: number } {
+  if (node.tag !== 'figure' || !node.children.length) return {};
+  const last = own(tree.nodes, node.children[node.children.length - 1]);
+  return last?.kind === 'text' && last.tag === 'figcaption' ? { index: node.children.length - 1 } : {};
+}
+
+/**
  * Where something placed as `role` goes in `owner`, relative to `sel` (a node of the owner's own tree, see
  * structuralTarget). An element goes inside a selected container or a placed component's slot, else just after the
  * selection, in its own list; with nothing selected on a page it goes into the last section that holds content. A
@@ -142,7 +152,7 @@ export function placeFor(state: ProjectState, owner: OwnerRef, role: InsertRole,
     const node = own(tree.nodes, sel.nodeId);
     const same = node?.kind === 'instance' && !!definitionId && node.definitionId === definitionId;
     if (role === 'element' && node && !same) {
-      if (node.kind === 'element') return { owner, parentId: node.id };
+      if (node.kind === 'element') return { owner, parentId: node.id, ...beforeCaption(tree, node) };
       const slot = node.kind === 'instance' ? (held ?? slotFor(state, node.definitionId)) : undefined;
       if (slot) return { owner, parentId: node.id, slot };
     }

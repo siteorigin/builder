@@ -261,9 +261,12 @@ describe('running the definition tools', () => {
     const added = async (args: Record<string, unknown>) => ((await run(host, 'insert_definition_node', { parentId: 'content', ...args })).content as { nodeId: string }).nodeId;
     const badge = await added({ primitive: 'badge', text: 'New season', icon: 'leaf' });
     expect(nodes()[badge]).toMatchObject({ kind: 'element', tag: 'span', name: 'Badge' });
-    expect((nodes()[badge] as { children: string[] }).children.map((c) => nodes()[c].kind)).toEqual(['icon', 'text']);
+    expect((nodes()[badge] as { children: string[] }).children.map((c) => nodes()[c])).toMatchObject([
+      { kind: 'icon', icon: 'leaf' },
+      { kind: 'text', tag: 'span', text: 'New season' }
+    ]);
     const figure = await added({ primitive: 'figure', text: 'Our studio.' });
-    expect((nodes()[figure] as { children: string[] }).children.map((c) => (nodes()[c] as { tag?: string }).tag ?? nodes()[c].kind)).toEqual(['image', 'figcaption']);
+    expect((nodes()[figure] as { children: string[] }).children.map((c) => nodes()[c])).toMatchObject([{ kind: 'image' }, { kind: 'text', tag: 'figcaption', text: 'Our studio.' }]);
     const divider = await added({ primitive: 'divider', shape: 'wave' });
     expect(nodes()[divider]).toMatchObject({ kind: 'divider', shape: 'wave' });
     // Its shape first, then the icon an icon divider shows: offered only once the shape shows one.

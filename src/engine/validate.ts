@@ -298,6 +298,9 @@ export function validateState(state: ProjectState, opts: { sectionLinks?: boolea
     };
     visit(tree.rootIds);
     for (const n of Object.values(tree.nodes)) {
+      // Every tree, a theme's copy too: the site shows a plain line, or the default icon, for what cannot be drawn.
+      const divider = dividerProblem(n);
+      if (divider) out.push({ severity: 'error', code: 'DIVIDER_INVALID', message: `${label}: ${nodeLabel(n)} ${divider}`, owner, nodeId: n.id, site: `${n.id}|shape` });
       if (n.kind === 'instance') {
         const def = state.components[n.definitionId];
         if (!def) out.push({ severity: 'error', code: 'DEF_MISSING', message: `${label}: ${n.definitionId} is not installed.`, owner, nodeId: n.id });
@@ -875,8 +878,6 @@ function structureDiagnostics(state: ProjectState): Diagnostic[] {
     for (const n of Object.values(tree.nodes)) {
       if (n.kind === 'element' && !isBinding(n.tag) && !ELEMENT_TAG_SET.has(n.tag)) out.push({ severity: 'error', code: 'TAG_INVALID', message: `${label}: "${String(n.tag)}" is not a supported element tag.`, owner, nodeId: n.id });
       if (n.kind === 'text' && !isBinding(n.tag) && !TEXT_TAG_SET.has(n.tag)) out.push({ severity: 'error', code: 'TAG_INVALID', message: `${label}: "${String(n.tag)}" is not a supported text tag.`, owner, nodeId: n.id });
-      const divider = dividerProblem(n);
-      if (divider) out.push({ severity: 'error', code: 'DIVIDER_INVALID', message: `${label}: ${nodeLabel(n)} ${divider}`, owner, nodeId: n.id, site: `${n.id}|shape` });
       // A carousel's buttons go beside its list, which only a plain list can have.
       if ((n as { carousel?: unknown }).carousel !== undefined && !isCarouselTrack(n))
         out.push({ severity: 'error', code: 'CAROUSEL_INVALID', message: `${label}: ${nodeLabel(n)} is marked as a carousel, which only a bulleted list (ul) that is not itself a link can be.`, owner, nodeId: n.id });
