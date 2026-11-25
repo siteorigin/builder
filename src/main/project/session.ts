@@ -2093,7 +2093,7 @@ export class ProjectSession extends EventEmitter {
       // So is the order of a component's properties, set in Edit everywhere's property list.
       if ((opts.source === 'ai' || opts.runId) && ops.some((o) => o.type === 'component.orderProperties'))
         return { ok: false, revision: this.revision, error: { code: 'INVALID_ARGUMENT', message: 'component.orderProperties is only for the editor.', recoverable: true } };
-      // The project brief is the author's own (#518): the assistant neither sees nor changes it.
+      // The project brief is the author's own (#518): the assistant reads it as background (#519) but never changes it.
       if ((opts.source === 'ai' || opts.runId) && ops.some((o) => o.type === 'brief.update'))
         return { ok: false, revision: this.revision, error: { code: 'SCOPE_MISMATCH', message: 'The project brief can only be changed in the editor.', recoverable: true } };
       // Collections have no tools of their own yet: the assistant neither sees nor changes them.

@@ -24,6 +24,7 @@ import { completenessNudge, describePage, findStubPages, missingPages, pageCreat
 import { blueprintSection, exampleSection, retrieveBlueprints, retrieveExamples } from './examples';
 import { changedComponents, introducedReusability, reusabilityNudge } from './reusability';
 import { modelInfo } from './models';
+import { withBrief } from './brief';
 import { MAX_REPLAYED_ANSWER, readRecipient, replayedHistory, turnModelText, type Recipient } from '@shared/turn-model';
 
 /**
@@ -388,8 +389,16 @@ Theme guidance for ${theme.name} (reference data):
 ${theme.aiProfile.guidance.map((g) => `- ${g}`).join('\n')}`;
 }
 
-/** `constrained`: the model answers in grammar-constrained JSON, reading each tool's signature in the prompt. */
+/**
+ * `constrained`: the model answers in grammar-constrained JSON, reading each tool's signature in the prompt. Every run,
+ * a question included, reads the project brief after its instructions when the project has one (#519).
+ */
 function systemPrompt(state: ProjectState, run: RunTools, constrained = false): string {
+  return withBrief(instructions(state, run, constrained), state, constrained);
+}
+
+/** The instructions for a run, by what it may do and the model it goes to. */
+function instructions(state: ProjectState, run: RunTools, constrained: boolean): string {
   if (run.mode === 'ask') return askPrompt(state, constrained);
   if (run.focused && run.task === 'component') return componentPrompt(state);
   if (run.focused)
