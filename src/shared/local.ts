@@ -27,6 +27,9 @@ export const LOCAL_PRESETS = [
 
 export const DEFAULT_LOCAL_SETTINGS: LocalProviderSettings = { baseURL: LOCAL_PRESETS[0].baseURL, allowRemote: false, toolMode: 'auto', contextWindow: null, modelsByServer: {} };
 
+/** The context size assumed for a local model when neither Settings nor the server says, as the default profile has it. */
+export const DEFAULT_LOCAL_CONTEXT_WINDOW = 32_768;
+
 /** The range a typed context size may take. Below the minimum no request the assistant makes can fit. */
 export const LOCAL_CONTEXT_MIN = 1024;
 export const LOCAL_CONTEXT_MAX = 10_000_000;

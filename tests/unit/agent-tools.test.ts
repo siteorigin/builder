@@ -2599,6 +2599,41 @@ describe('a run limited to one page (#513)', () => {
     expect(JSON.stringify(adapter.requests[3].items.at(-1))).toMatch(/SCOPE_MISMATCH.*instance\.listInsert changes something outside the Team page/);
   });
 
+  it('tells every model to keep pasted copy as written, and to replace only placeholder sections', async () => {
+    const draft = '# The people behind North Quay Cycles\nWe are a worker-owned workshop under the railway arches in Hull.';
+    const firstRequest = async (caps: Partial<ModelCapabilities>, scope: 'page' | 'site') => {
+      const { session, adapter, run } = await setup([() => finish()], caps);
+      const about = pageAt(session.state, '/about/')!;
+      await run(draft, null, { pageId: about.id, pageTitle: about.title, scope });
+      return adapter.requests[0];
+    };
+    const general = await firstRequest({ toolCalling: 'native', contextWindowTokens: 400_000 }, 'page');
+    const focused = await firstRequest({ toolCalling: 'native', contextWindowTokens: 32_000 }, 'page');
+    const constrained = await firstRequest({ toolCalling: 'constrained-json', contextWindowTokens: 32_000 }, 'page');
+    // Invented copy is for a short request; supplied copy is kept, block by block, with no filler.
+    for (const req of [general, focused]) {
+      expect(req.system).toContain('When you write copy yourself, from a short request');
+      expect(req.system).toContain('Copy the user supplies (pasted text, notes or a draft) is the source: keep its wording, headings, figures, lists, quotes and links as written, add no filler');
+      expect(req.system).toContain('put every distinct block of it, in reading order, in the theme catalogue section that fits it');
+      expect(req.system).toContain('pass it when the page holds only its title-only introduction or starter sample sections, or the user asks to replace the page, and keep sections the author wrote otherwise');
+      expect(req.system).not.toContain('fictional-but-plausible');
+    }
+    expect(constrained.system).toContain('keep copy the user supplies (its words, figures, lists, quotes and links) as written, with no filler');
+    expect(constrained.system).toContain('For pasted page copy or notes, put every block in reading order in a fitting section');
+    expect(constrained.system).toContain('use it to replace a title-only introduction or starter samples, and keep sections the author wrote unless asked');
+    // The page tool says the same wherever a model reads about it: its description, its brief and its flag.
+    const upsert = (req: CanonicalModelRequest) => req.tools.find((t) => t.name === 'upsert_page_with_sections')!;
+    expect(upsert(general).description).toContain('keeping its wording, figures, lists, quotes and links, and set or clear each sample text the section shows');
+    expect(upsert(general).description).toContain('Pass it to replace a page that holds only its title-only introduction or starter sample sections');
+    expect(upsert(constrained).brief).toContain('Supplied copy: every block in reading order in a fitting section');
+    expect(upsert(constrained).brief).toContain('use it to replace a title-only introduction or starter samples, never sections the author wrote unless asked');
+    expect((upsert(general).parameters as { properties: Record<string, { description?: string }> }).properties.removeOtherSections.description).toContain('Use it to replace a title-only introduction or starter sample sections');
+    // A pasted draft is not given a call to action it did not have: the usual page shape is for a short request.
+    const site = await firstRequest({ toolCalling: 'native', contextWindowTokens: 32_000 }, 'site');
+    expect(site.system).toContain('from a short request, an opening section, the content the page is for, and usually a closing call to action');
+    expect(site.system).not.toMatch(/several sections: an opening section/);
+  });
+
   /** A project session's apply, for one authority, without the rest of a run. */
   const hostFor = (start: ProjectState, authority: Extract<Authority, { kind: 'page' }> | { kind: 'site' }) => {
     let state = start;

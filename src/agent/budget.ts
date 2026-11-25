@@ -6,8 +6,11 @@
  * Nothing changes until the context is half full, and a collapsed result stays collapsed, so the start of
  * the conversation stays stable for prompt caches on providers and local runtimes.
  */
+import { estimateTokens } from '@shared/tokens';
 import type { CanonicalItem, ContextOverflow, ModelCapabilities, ToolDefinition } from './types';
 import { envelopeInstructions } from './constrained';
+
+export { estimateTokens };
 
 /** Above this share of the usable window, reads that a newer read of the same thing replaced are collapsed. */
 export const SOFT_LIMIT = 0.5;
@@ -19,15 +22,6 @@ const TOMBSTONE = '[Superseded ';
 /** The smallest reply worth asking for: a request that leaves less room than this cannot be answered usefully. */
 export const MIN_OUTPUT_TOKENS = 1024;
 
-/**
- * About four characters to a token. Chinese, Japanese and Korean characters are often a token each, so they count as
- * one: at a quarter, such text could slip past a window it overflows.
- */
-const WIDE = /[\u2e80-\u9fff\uac00-\ud7af\uf900-\ufaff\uff00-\uffef]/g;
-export const estimateTokens = (text: string) => {
-  const wide = text.match(WIDE)?.length ?? 0;
-  return Math.ceil((text.length - wide) / 4) + wide;
-};
 
 function itemTokens(item: CanonicalItem): number {
   if (item.kind === 'user') return estimateTokens(item.text);

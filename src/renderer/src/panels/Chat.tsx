@@ -8,10 +8,11 @@ import { refLabel } from '../lib/model';
 import { api, getState, saveLocal, setState, toast, useStore, confirmDialog, selectChatDraft, selectChatImages, setChatDraft, inspectorFocusRequest } from '../store';
 import { afterSendMessage, draftFor, imagesFor, moveDraft, moveImages, unsentDrafts, withDraft, withImages } from '../lib/chatDrafts';
 import { nextRecipient, recipientText, sameRecipient, switchNotice, switchNoticeText, turnRecipient } from '../lib/chatRecipient';
-import { PROVIDER_LABELS, turnModelText } from '@shared/turn-model';
+import { PROVIDER_LABELS, replayedHistory, turnModelText } from '@shared/turn-model';
 import { chatContextFor, composerScope, editScope, retryView, targetOf, uneditableDesign } from '../lib/chatTarget';
 import { chatFocusStep } from '../lib/page-start';
 import { chatSuggestions } from '../lib/chatSuggestions';
+import { headroomWarning } from '../lib/chatHeadroom';
 import { selectPage } from '../lib/actions';
 import { canOpen, changeTarget, changeText, checksOf, continueContext, locationTarget, resumableId, retryableId, reviewEntryId, reviewNote, standingNote, undoableId as undoableTurn } from '../lib/result';
 import { summaryNow, turnState } from '@shared/turns';
@@ -242,6 +243,13 @@ export function Chat() {
   // A message to a model that has not seen this conversation's recent messages says so before it is sent.
   const notice = asking ? null : switchNotice(msgs, next);
   const noticeId = useId();
+  // A message too long for the local model's context (a whole page's copy, pasted) says so while it is written, so it
+  // can be split, or the model loaded with more room, before it is sent.
+  const headroom =
+    configured && provider?.id === 'local' && !asking && settings
+      ? headroomWarning({ draft, history: replayedHistory(msgs).map((m) => m.text), contextWindow: settings.ai.local.contextWindow, toolMode: settings.ai.local.toolMode })
+      : null;
+  const headroomId = useId();
   const freshing = useRef(false);
   const answerElsewhere = !!(asking && inFlight && next && !sameRecipient(inFlight, next));
   // Undo turn is offered only while that turn is the newest step in the project's undo history: history
@@ -979,6 +987,23 @@ export function Chat() {
           </span>
         </div>
       )}
+      {headroom && (
+        <div className="scope-note headroom-note" role="status">
+          <TriangleAlert />
+          <span>
+            <span id={headroomId}>{headroom.text}</span>{' '}
+            {headroom.kind === 'history' ? (
+              <button className="link" disabled={pending || sending} title={pending ? 'Available when the current request finishes' : 'Start a new conversation with your unsent message, without the earlier ones'} onClick={startFresh}>
+                Start fresh
+              </button>
+            ) : (
+              <button className="link" onClick={openSettings}>
+                Open AI settings
+              </button>
+            )}
+          </span>
+        </div>
+      )}
       {/* Shown whenever a question waits, even if the provider was changed meanwhile: the run still needs it. */}
       {asking && (
         // The question waiting for an answer sits by the composer, which answers it; a choice answers it in one click.
@@ -1066,7 +1091,7 @@ export function Chat() {
                       : 'What would you like to change?'
             }
             aria-label={asking ? 'Your answer' : 'Message'}
-            aria-describedby={asking ? `ai-question-text${asking.question.widen ? ' ai-question-scope' : ''} ai-question-hint` : undefined}
+            aria-describedby={asking ? `ai-question-text${asking.question.widen ? ' ai-question-scope' : ''} ai-question-hint` : headroom ? headroomId : undefined}
             rows={1}
             // Until the project's conversation has loaded, there is no thread to write in.
             readOnly={!conversation}

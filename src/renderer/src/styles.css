@@ -2628,7 +2628,8 @@ iframe { color-scheme: light dark; }
    puts the caret in the text, so the whole box takes the text cursor, and focus is the house ring around the box. */
 .composer { flex: none; margin: 8px 12px 12px; border-radius: var(--r-md); border: 1px solid var(--border-control); background: var(--raised); box-shadow: var(--shadow-sm); cursor: text; transition: border-color 120ms; }
 .composer:hover:not(:has(button:hover, textarea:read-only)) { border-color: var(--text-3); }
-.composer textarea { display: block; width: 100%; min-height: 56px; max-height: 240px; padding: 10px 12px 4px; border: 0; background: transparent; resize: none; outline: none; font-size: 14px; line-height: 1.45; user-select: text; }
+/* A long paste (a page's whole copy) grows the box to its cap, then scrolls inside it without scrolling the chat behind. */
+.composer textarea { display: block; width: 100%; min-height: 56px; max-height: 240px; overflow-y: auto; overscroll-behavior-y: contain; padding: 10px 12px 4px; border: 0; background: transparent; resize: none; outline: none; font-size: 14px; line-height: 1.45; user-select: text; }
 .composer-foot { display: flex; align-items: center; gap: 2px; padding: 2px 6px 6px; cursor: default; }
 /* Answering a question: the reply and its Send on one row, with no empty footer under it. */
 .composer.answering { display: flex; align-items: flex-end; }
@@ -2728,6 +2729,10 @@ iframe { color-scheme: light dark; }
 /* Before a message goes to a model that has not seen the recent messages of the conversation. */
 .switch-note { background: var(--panel-2); }
 .switch-note .link:disabled { color: var(--text-3); text-decoration: none; cursor: default; }
+/* Before a message that may not fit the local model's context: an advisory, so amber; Send stays available. */
+.headroom-note { background: var(--amber-soft); }
+.headroom-note > svg { color: var(--amber); }
+.headroom-note .link:disabled { color: var(--text-3); text-decoration: none; cursor: default; }
 .run-actions { flex: none; display: flex; gap: 6px; }
 .run-stop svg { width: 10px; height: 10px; }
 /* The waiting question below carries the accent ring; the strip only names the pause, so one box draws the eye.

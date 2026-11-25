@@ -5,10 +5,12 @@
 import type { ComponentDefinition, InstanceNode, LinkValue, ListItem, PageDoc, ProjectState } from '@shared/types';
 import type { ModelEvent } from '@agent/types';
 import { applyOperations } from '@engine/apply';
+import { richTextToPlain, type RichText } from '@shared/richtext';
+import { renderedContent } from '@generator/checks';
 import type { Check, EvalCase, ScriptTurn } from './harness';
 
 /** Bump when cases are added, removed or re-graded. */
-export const SUITE_VERSION = 1;
+export const SUITE_VERSION = 2;
 
 let nextCall = 0;
 const call = (name: string, args: unknown): ModelEvent => ({ type: 'done', stopReason: 'tool_use', text: '', toolCalls: [{ id: `call_${++nextCall}`, name, arguments: JSON.stringify(args) }] });
@@ -44,6 +46,117 @@ const BROKEN_SOURCE = `<script>
 </style>
 `;
 const WORKING_SOURCE = BROKEN_SOURCE.replace('{quote<', '{quote}<');
+
+/**
+ * Grading a page built from pasted copy, by what a visitor sees on it: its sections' words, a piece per field, list
+ * item and paragraph, and where its links go. Compared without case, runs of spaces, curly quotes or dash styles, and
+ * nothing else: a changed word, figure or punctuation mark is a change.
+ */
+const plain = (t: string) => t.replace(/[‘’]/g, "'").replace(/[“”]/g, '"').replace(/[–—]/g, '-').replace(/\s+/g, ' ').trim().toLowerCase();
+interface Shown {
+  texts: string[];
+  links: string[];
+}
+const shownOn = (s: ProjectState, p: PageDoc | undefined): Shown[] =>
+  (p?.rootIds ?? []).map((root) => {
+    const shown: Shown = { texts: [], links: [] };
+    for (const c of p ? renderedContent(s, p) : []) {
+      if (c.nodeId !== root) continue;
+      if (c.kind === 'link') {
+        const l = c.value as Partial<LinkValue> | undefined;
+        if (l?.target) shown.links.push(l.type === 'page' ? `page:${l.target}` : l.target);
+        continue;
+      }
+      const words = Array.isArray(c.value) ? richTextToPlain(c.value as RichText).split(/\n+/) : typeof c.value === 'string' ? [c.value] : [];
+      // A quote may keep the quotation marks the draft had around it.
+      shown.texts.push(...words.map((w) => plain(w).replace(/^"(.*)"$/, '$1')).filter(Boolean));
+    }
+    return shown;
+  });
+/** The first section showing all of `texts`, or -1. */
+const sectionWith = (shown: Shown[], ...texts: string[]) => shown.findIndex((x) => texts.every((t) => x.texts.includes(plain(t))));
+/** Each block of the draft is shown whole, in a section of its own, in the draft's order. */
+const pastedChecks = (before: ProjectState, s: ProjectState, route: string, draft: string, blocks: Array<{ id: string; texts: string[]; link?: [string, string] }>): Check[] => {
+  const was = pageAt(before, route);
+  const p = pageAt(s, route);
+  const shown = shownOn(s, p);
+  // The draft is the whole page: a section still exactly as it was is a placeholder left behind.
+  const left = (p?.rootIds ?? []).filter((id) => was?.rootIds.includes(id) && same(was.nodes[id], p!.nodes[id]));
+  const at = blocks.map((b) => sectionWith(shown, ...b.texts, ...(b.link ? [b.link[0]] : [])));
+  const source = plain(draft);
+  const extra = shown.flatMap((x) => x.texts).filter((t) => !source.includes(t));
+  return [
+    ...blocks.map((b, i) => {
+      const where = at[i];
+      const linked = !b.link || (where >= 0 && shown[where].links.includes(b.link[1]));
+      return check(b.id, where >= 0 && linked, where < 0 ? `missing: ${b.texts.find((t) => sectionWith(shown, t) < 0) ?? b.link?.[0] ?? 'a block split across sections'}` : `link: ${shown[where].links.join(', ')}`);
+    }),
+    // Each block its own section, so a draft poured whole into one text section is not a layout.
+    check('reading-order', at.every((x, i) => x >= 0 && (i === 0 || x > at[i - 1])), at.join(', ')),
+    check('placeholders-removed', !!p && left.length === 0, left.map((id) => componentId(s, p!.nodes[id])).join(', ')),
+    // Every word shown is the draft's: no sample text left behind, no section the draft did not ask for, no filler.
+    check('only-supplied-copy', extra.length === 0, extra.slice(0, 3).join(' | '))
+  ];
+};
+/** Nothing outside the page changed: every other page, the header and footer, and the site's styles. */
+const restUntouched = (before: ProjectState, after: ProjectState, route: string): Check[] => {
+  const target = pageAt(before, route)?.id;
+  const others = Object.keys(before.pages).filter((id) => id !== target);
+  return [
+    check('same-pages', same(Object.keys(before.pages).sort(), Object.keys(after.pages).sort()) && same(before.site.pageOrder, after.site.pageOrder)),
+    check('other-pages-untouched', others.every((id) => same(before.pages[id], after.pages[id])), others.filter((id) => !same(before.pages[id], after.pages[id])).join(', ')),
+    check('shell-untouched', shellUntouched(before, after))
+  ];
+};
+
+const CLINIC_DRAFT = `Here is the copy for this page. Please lay it out.
+
+# Give your kettle another winter
+Bring one broken household appliance to the Saturday repair clinic and fix it with a volunteer.
+Button: Reserve a bench (https://bench.example/book)
+
+## What to bring
+- The appliance, even if it no longer switches on.
+- Its plug, cable and any loose screws.
+
+## Last winter at the clinic
+- 146 appliances assessed
+- 73% repaired on the day
+
+## Before you visit
+Q: Can I bring a lamp?
+A: Yes. Bring the shade separately so it travels safely.
+Q: What does it cost?
+A: Assessment is free. We agree the price of parts with you first.`;
+const CLINIC_BLOCKS = [
+  { id: 'opening', texts: ['Give your kettle another winter', 'Bring one broken household appliance to the Saturday repair clinic and fix it with a volunteer.'], link: ['Reserve a bench', 'https://bench.example/book'] as [string, string] },
+  { id: 'what-to-bring', texts: ['What to bring', 'The appliance, even if it no longer switches on.', 'Its plug, cable and any loose screws.'] },
+  { id: 'figures', texts: ['Last winter at the clinic', '146', 'appliances assessed', '73%', 'repaired on the day'] },
+  { id: 'questions', texts: ['Before you visit', 'Can I bring a lamp?', 'Yes. Bring the shade separately so it travels safely.', 'What does it cost?', 'Assessment is free. We agree the price of parts with you first.'] }
+];
+
+const CYCLES_DRAFT = `Here is our real About copy for this page, in place of the sample text:
+
+# The people behind North Quay Cycles
+We are a worker-owned workshop under the railway arches in Hull.
+
+## Two ways we can help
+- Bench repair: Bring us a fault you can show us. We quote before we order parts.
+- Cargo-bike check: We check the stand, steering linkage and brakes under load.
+
+## From a rider
+"They found the rattle I'd been chasing for 18 months."
+Jo Bell, school-run rider
+
+## Visit the workshop
+The blue door is beside arch 17. Ring once and bring your bike inside.
+Button: Find our opening hours (link to our Contact page, /contact/)`;
+const cyclesBlocks = (s: ProjectState) => [
+  { id: 'opening', texts: ['The people behind North Quay Cycles', 'We are a worker-owned workshop under the railway arches in Hull.'] },
+  { id: 'services', texts: ['Two ways we can help', 'Bench repair', 'Bring us a fault you can show us. We quote before we order parts.', 'Cargo-bike check', 'We check the stand, steering linkage and brakes under load.'] },
+  { id: 'testimonial', texts: ['From a rider', "They found the rattle I'd been chasing for 18 months.", 'Jo Bell', 'school-run rider'] },
+  { id: 'closing', texts: ['Visit the workshop', 'The blue door is beside arch 17. Ring once and bring your bike inside.'], link: ['Find our opening hours', `page:${pageAt(s, '/contact/')?.id}`] as [string, string] }
+];
 
 const page = (slug: string, title: string, sections: unknown[], nav = true) => ({ slug, title, addToHeaderNav: nav, sections });
 const intro = (heading: string) => ({ componentId: 'intro.page', props: { heading, lead: `${heading}, explained simply.` } });
@@ -266,6 +379,66 @@ export const EVAL_CASES: EvalCase[] = [
       () => [call('request_wider_scope', { question: 'The footer is outside this selection. May I change it too?' })],
       () => [call('update_selected_props', { props: { heading: 'Calm, considered spaces' } })],
       finish('Shortened the headline and left the footer alone, as you asked.')
+    ]
+  },
+  {
+    id: 'paste-copy-onto-intro-page',
+    version: 1,
+    category: 'page',
+    prompt: CLINIC_DRAFT,
+    // A page just made with only its introduction (the page's title), as Add page's Page introduction starter makes it.
+    setup: (state) => Object.assign(state, applyOperations(state, [{ type: 'page.create', title: 'Repair café', route: '/repair-cafe/', starter: 'intro' }]).state),
+    pageScope: '/repair-cafe/',
+    grade: ({ before, after }) => [...pastedChecks(before, after, '/repair-cafe/', CLINIC_DRAFT, CLINIC_BLOCKS), ...restUntouched(before, after, '/repair-cafe/')],
+    script: () => [
+      () => [
+        call('upsert_page_with_sections', {
+          slug: 'repair-cafe',
+          removeOtherSections: true,
+          sections: [
+            { componentId: 'hero.centered', props: { eyebrow: '', heading: 'Give your kettle another winter', lead: 'Bring one broken household appliance to the Saturday repair clinic and fix it with a volunteer.', primaryLabel: 'Reserve a bench', primaryLink: 'https://bench.example/book', secondaryLabel: '' } },
+            { componentId: 'content.text', props: { heading: 'What to bring', body: '- The appliance, even if it no longer switches on.\n- Its plug, cable and any loose screws.' } },
+            { componentId: 'stats.row', props: { heading: 'Last winter at the clinic', items: [{ value: '146', label: 'appliances assessed' }, { value: '73%', label: 'repaired on the day' }] } },
+            { componentId: 'faq.list', props: { eyebrow: '', heading: 'Before you visit', lead: '', items: [{ question: 'Can I bring a lamp?', answer: 'Yes. Bring the shade separately so it travels safely.' }, { question: 'What does it cost?', answer: 'Assessment is free. We agree the price of parts with you first.' }] } }
+          ]
+        })
+      ],
+      finish('Laid out the Repair café page from your copy.')
+    ]
+  },
+  {
+    id: 'paste-copy-onto-starter-page',
+    version: 1,
+    category: 'page',
+    prompt: CYCLES_DRAFT,
+    // The starter's About page, still holding the theme's sample story, team and call to action.
+    pageScope: '/about/',
+    grade: ({ before, after }) => [...pastedChecks(before, after, '/about/', CYCLES_DRAFT, cyclesBlocks(after)), ...restUntouched(before, after, '/about/')],
+    script: () => [
+      () => [
+        call('upsert_page_with_sections', {
+          slug: 'about',
+          removeOtherSections: true,
+          sections: [
+            { componentId: 'intro.page', props: { eyebrow: '', heading: 'The people behind North Quay Cycles', lead: 'We are a worker-owned workshop under the railway arches in Hull.' } },
+            {
+              componentId: 'features.grid',
+              props: {
+                eyebrow: '',
+                heading: 'Two ways we can help',
+                lead: '',
+                items: [
+                  { icon: 'hammer', title: 'Bench repair', description: 'Bring us a fault you can show us. We quote before we order parts.' },
+                  { icon: 'compass', title: 'Cargo-bike check', description: 'We check the stand, steering linkage and brakes under load.' }
+                ]
+              }
+            },
+            { componentId: 'testimonials.grid', props: { eyebrow: '', heading: 'From a rider', lead: '', items: [{ quote: "They found the rattle I'd been chasing for 18 months.", name: 'Jo Bell', role: 'school-run rider' }] } },
+            { componentId: 'cta.banner', props: { heading: 'Visit the workshop', lead: 'The blue door is beside arch 17. Ring once and bring your bike inside.', primaryLabel: 'Find our opening hours', primaryLink: '/contact/', secondaryLabel: '' } }
+          ]
+        })
+      ],
+      finish('Replaced the sample About copy with yours.')
     ]
   },
   {

@@ -5,6 +5,7 @@ import type { EditOperation } from '@shared/ops';
 import { EditOperationSchema, legacyShellError, OPERATION_SCHEMAS, PROP_OR_ITEM_BINDING, type OperationType } from '@shared/ops';
 import { BLUR_LIMITS, MAX_GRID_TRACKS, STYLE_PROPS, TRANSLATE_LIMITS, type StylePropDef } from '@shared/styles';
 import { addressSlug, normalizeRoute } from '@shared/routes';
+import { FOCUSED_WINDOW_TOKENS } from '@shared/tokens';
 import { catalogueComponent, searchCatalogue } from '@catalogue/index';
 import { ICONS } from '@catalogue/foundation/icons';
 import { sourceHash } from '@engine/apply';
@@ -322,7 +323,7 @@ export const ASK_TOOLS: readonly ToolName[] = ['read_project', 'read_page', 'ins
 export const MUTATING_TOOLS = new Set<ToolName>([...REVISION_BOUND_TOOLS, ...MACRO_TOOLS, 'update_selected_props', 'edit_selected_list', 'edit_selected_table', 'style_selected_element', ...DEFINITION_TOOLS]);
 
 /** Below this window a model only gets the focused tools: the general operation schema alone would crowd it out. */
-export const FOCUSED_WINDOW_TOKENS = 64_000;
+export { FOCUSED_WINDOW_TOKENS };
 
 export type ToolMode = 'selection' | 'page' | 'site' | 'definition' | 'general' | 'ask';
 

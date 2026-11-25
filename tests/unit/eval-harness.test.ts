@@ -92,6 +92,83 @@ describe('agent benchmark', () => {
     expect(JSON.parse(lines[0].turns[0].toolCalls[0].result).ok).toBe(true);
   }, 60000);
 
+  it('sends a pasted page draft from that page, limited to it', async () => {
+    for (const [id, route] of [
+      ['paste-copy-onto-intro-page', '/repair-cafe/'],
+      ['paste-copy-onto-starter-page', '/about/']
+    ] as const) {
+      const c = byId(id);
+      let allowed = '';
+      let target: string | undefined;
+      const seen: EvalCase = {
+        ...c,
+        script: (state) => {
+          const [first, ...rest] = c.script(state);
+          return [
+            (req) => {
+              target = Object.values(state().pages).find((p) => p.route === route)?.id;
+              allowed = /"allowedScope": "([^"]*)"/.exec((req.items[0] as { text: string }).text)?.[1] ?? '';
+              return first(req);
+            },
+            ...rest
+          ];
+        }
+      };
+      const { result } = await runCase(seen, scripted);
+      expect(result.pass, id).toBe(true);
+      expect(target, id).toBeTruthy();
+      expect(allowed, id).toContain(`(page ${target})`);
+    }
+    await expect(runCase({ ...byId('paste-copy-onto-starter-page'), pageScope: '/nowhere/' }, scripted)).rejects.toThrow('No page at /nowhere/');
+  }, 60000);
+
+  it('grades a pasted draft by each block in its own section, nothing else shown and the rest of the site untouched', async () => {
+    const clinic = byId('paste-copy-onto-intro-page');
+    const about = byId('paste-copy-onto-starter-page');
+    /** The case's scripted page, changed by `edit` before it is sent. */
+    const edited = (c: EvalCase, edit: (args: any) => void): EvalCase => ({
+      ...c,
+      script: (state) => {
+        const [first, ...rest] = c.script(state);
+        const send = (t: { arguments: string }) => {
+          const a = JSON.parse(t.arguments);
+          edit(a);
+          return { ...t, arguments: JSON.stringify(a) };
+        };
+        return [(req) => first(req).map((e) => (e.type === 'done' ? { ...e, toolCalls: e.toolCalls.map(send) } : e)), ...rest];
+      }
+    });
+    const failing = async (c: EvalCase) => {
+      const { result } = await runCase(c, scripted);
+      expect(result.pass).toBe(false);
+      return result.checks.filter((x) => !x.pass).map((x) => x.id);
+    };
+    // The placeholders left beside the copy: the title-only introduction, and the starter's story and team.
+    expect(await failing(edited(clinic, (a) => delete a.removeOtherSections))).toEqual(['placeholders-removed', 'only-supplied-copy']);
+    expect(await failing(edited(about, (a) => delete a.removeOtherSections))).toEqual(['placeholders-removed', 'only-supplied-copy']);
+    // A section updated in place keeps the sample text it was not sent.
+    expect(await failing(edited(about, (a) => delete a.sections[3].props.lead))).toContain('only-supplied-copy');
+    // A figure changed, an answer left out, a button sent elsewhere.
+    expect(await failing(edited(clinic, (a) => (a.sections[2].props.items[1].value = '75%')))).toContain('figures');
+    expect(await failing(edited(clinic, (a) => a.sections[3].props.items.pop()))).toContain('questions');
+    expect(await failing(edited(clinic, (a) => (a.sections[0].props.primaryLink = 'https://bench.example/')))).toContain('opening');
+    // Blocks out of order, and the whole draft poured into one text section.
+    expect(await failing(edited(clinic, (a) => a.sections.reverse()))).toEqual(['reading-order']);
+    const poured = (a: any) => {
+      const [hero, list, stats, faq] = a.sections;
+      const lines = [hero.props.lead, ...list.props.body.split('\n'), stats.props.heading, ...stats.props.items.flatMap((i: any) => [`${i.value}`, i.label]), faq.props.heading, ...faq.props.items.flatMap((i: any) => [i.question, i.answer])];
+      a.sections = [{ ...hero, props: { ...hero.props, lead: '' } }, { componentId: 'content.text', props: { heading: list.props.heading, body: lines.join('\n\n') } }];
+    };
+    expect(await failing(edited(clinic, poured))).toContain('reading-order');
+    // Another page changed, which only a request allowed the whole site could do.
+    const wider: EvalCase = {
+      ...clinic,
+      pageScope: undefined,
+      script: (state) => [() => [{ type: 'done', stopReason: 'tool_use', text: '', toolCalls: [{ id: 'w1', name: 'upsert_page_with_sections', arguments: JSON.stringify({ slug: 'about', sections: [{ componentId: 'cta.banner', props: { heading: 'Changed' } }] }) }] }], ...clinic.script(state)]
+    };
+    expect(await failing(wider)).toEqual(['other-pages-untouched']);
+  }, 120000);
+
   it('summarizes and estimates cost', () => {
     const base = { version: 1, category: 'copy', status: 'completed', checks: [], tokensEstimated: false, validationErrors: [], compileErrors: [] } as unknown as CaseResult;
     const s = summarize([

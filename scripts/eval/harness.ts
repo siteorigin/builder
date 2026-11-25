@@ -45,6 +45,11 @@ export interface EvalCase {
   /** Answers to questions the assistant asks, in order. After these it is told to use its judgement. */
   answers?: string[];
   setup?(state: ProjectState): void;
+  /**
+   * The route of the page the request is sent from with "This page" chosen in the composer, so the run may change only
+   * that page. Without it the request comes from Home, limited to its selection when the case has one.
+   */
+  pageScope?: string;
   selection?(state: ProjectState): { ref: ElementRef; label: string };
   grade(ctx: GradeContext): Check[];
   /** The scripted run for the free fake adapter. It proves the harness and the case, not a model. */
@@ -258,7 +263,11 @@ export async function runCase(c: EvalCase, opts: RunOptions): Promise<{ result: 
       codeEnabled: async () => true
     });
     const picked = c.selection?.(session.state) ?? null;
-    const ctx: ChatContext = { pageId: session.state.site.homePageId, pageTitle: 'Home', selection: picked?.ref ?? null, selectionLabel: picked?.label ?? null, viewport: 1280 };
+    const scoped = c.pageScope === undefined ? undefined : Object.values(session.state.pages).find((p) => p.route === c.pageScope);
+    if (c.pageScope !== undefined && !scoped) throw new Error(`No page at ${c.pageScope} to send the request from.`);
+    const ctx: ChatContext = scoped
+      ? { pageId: scoped.id, pageTitle: scoped.title, selection: null, selectionLabel: null, viewport: 1280, scope: 'page' }
+      : { pageId: session.state.site.homePageId, pageTitle: 'Home', selection: picked?.ref ?? null, selectionLabel: picked?.label ?? null, viewport: 1280 };
     const started = Date.now();
     const sent = await orch.send(c.prompt, ctx);
     if (!sent.ok) throw new Error(sent.message ?? 'The run did not start.');
