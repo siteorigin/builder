@@ -1,4 +1,4 @@
-import type { HistoryInfo } from '@shared/api';
+import { HISTORY_LIMIT, type HistoryInfo } from '@shared/api';
 import type { ComponentDefinition } from '@shared/types';
 import { defFile } from '@generator/index';
 
@@ -89,27 +89,36 @@ export function appliedSteps(history: HistoryInfo | undefined): string[] {
 const stepKey = (e: Entry) => `${e.id}@${e.revision}`;
 
 /**
- * The history step a preview error can be put down to (#738): the one change made since the page was last seen
- * working (`healthy`), already in place when the error happened (`then`), both from appliedSteps. A step that later
- * edits joined (typing that went on) still counts as that one change, and steps History has let go of since (it keeps
- * so many) are no change. Null with no such sighting (the error was there when the page opened), with nothing
- * changed since (the error came from something the visitor did), with more than one change since (which of them
- * broke the page is unknown, and undoing the wrong one loses an edit for nothing), after an Undo (undoing it again is
- * a Redo, not a revert), or for a change that came after the error (a Redo, an edit, the AI's step recorded late).
+ * The history step a preview error can be put down to (#738), worked out from History as it is when the error
+ * happens: the one change made since the page was last seen working (`healthy`, from appliedSteps). A step that later
+ * edits joined (typing that went on) still counts as that one change, and steps a full History has let go of since
+ * are no change. Null with no such sighting (the error was there when the page opened), with nothing changed since
+ * (the error came from something the visitor did), with more than one change since (which of them broke the page is
+ * unknown, and undoing the wrong one loses an edit for nothing), or after an Undo (undoing it again is a Redo).
  */
-export function revertStep(history: HistoryInfo | undefined, healthy: readonly string[] | null, then: readonly string[]): { id: string; label: string } | null {
+export function revertStep(history: HistoryInfo | undefined, healthy: readonly string[] | null): { id: string; label: string; key: string } | null {
   if (!history || !healthy) return null;
   const applied = history.entries.filter((e) => e.applied);
   const newest = applied[applied.length - 1];
-  if (!newest || !then.includes(stepKey(newest)) || healthy.includes(stepKey(newest))) return null;
-  const kept = new Set(history.entries.map((e) => e.id));
+  if (!newest || healthy.includes(stepKey(newest))) return null;
   const idOf = (key: string) => key.slice(0, key.lastIndexOf('@'));
-  // History lets its oldest steps go; a step undone and replaced by a later edit is gone too, but from the end.
   let before = healthy.slice();
-  while (before.length && !kept.has(idOf(before[0]))) before = before.slice(1);
+  // A full History lets its oldest steps go as new ones come. Anywhere else, a step gone from History was undone and
+  // replaced, which is a change of its own.
+  if (history.entries.length >= HISTORY_LIMIT) {
+    const kept = new Set(history.entries.map((e) => e.id));
+    while (before.length && !kept.has(idOf(before[0]))) before = before.slice(1);
+  }
   // What the page showed then, but for the newest step: the same step joined by later edits since is the change.
   if (before.length && idOf(before[before.length - 1]) === newest.id) before = before.slice(0, -1);
   const rest = applied.slice(0, -1).map(stepKey);
   if (rest.length !== before.length || rest.some((k, i) => k !== before[i])) return null;
-  return { id: newest.id, label: newest.label };
+  return { id: newest.id, label: newest.label, key: stepKey(newest) };
+}
+
+/** Whether History's newest applied step is still `key` (see revertStep): nothing was undone, redone or added since. */
+export function stillNewest(history: HistoryInfo | undefined, key: string): boolean {
+  const applied = (history?.entries ?? []).filter((e) => e.applied);
+  const newest = applied[applied.length - 1];
+  return !!newest && stepKey(newest) === key;
 }

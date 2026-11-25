@@ -108,6 +108,9 @@ export interface MissingAssetFiles {
   variants: string[];
 }
 
+/** How many steps History keeps: past this, each new step lets the oldest go. */
+export const HISTORY_LIMIT = 100;
+
 export interface HistoryInfo {
   canUndo: boolean;
   canRedo: boolean;

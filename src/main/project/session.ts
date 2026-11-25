@@ -25,6 +25,7 @@ import { blocksSaving, diagnosticKey, introducedDiagnostics, validateState, type
 import { developerModeRefusal } from '@engine/developer-mode';
 import { findMissingAssetFiles } from './asset-files';
 import type { MissingAssetFiles } from '@shared/api';
+import { HISTORY_LIMIT } from '@shared/api';
 import { DOCUMENT_EXTENSIONS } from '@shared/document-files';
 import { defFile, GENERATED_DIR, generateManagedComponent, generateProject, GENERATOR_VERSION, packFileCopies, SERVER_HOOK_FILE, webMcpFormFile } from '@generator/index';
 import { sendsFormMessages, type ComponentImport } from '@engine/component-package';
@@ -157,7 +158,6 @@ export function statTrusted(st: Pick<BigIntStats, 'mtimeNs' | 'ctimeNs'>, now: n
   const settled = (ns: bigint) => now - Number(ns / 1_000_000n) > settleMs;
   return settled(st.mtimeNs) && settled(st.ctimeNs);
 }
-const HISTORY_LIMIT = 100;
 /** How many let-go AI runs History remembers the standing of (see HistoryFile.droppedRuns). */
 const DROPPED_RUN_LIMIT = 200;
 /** How often an open project refreshes its lock, and how long an unrefreshed lock is still trusted. */

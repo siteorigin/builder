@@ -12,7 +12,7 @@ import { editLabel } from '../lib/edit-label';
 import type { ElementRef, OwnerRef, ProjectState } from '@shared/types';
 import { refKey, sameRef } from '@shared/types';
 import { aiActivity, api, commitDraft, confirmDialog, errorText, getState, markDraft, saveLocal, setState, setViewport, stepHistory, toast, useStore, type Rect } from '../store';
-import { appliedSteps, errorComponent, revertStep } from '../lib/preview-error';
+import { appliedSteps, errorComponent, revertStep, stillNewest } from '../lib/preview-error';
 import { acceptMessage, newSessionId, postToFrame, staleFor, viewAfter, type FrameView } from '../lib/bridge';
 import { chainOf, descOrNull, measuredRects, pointedAt, rectList, slotBoxes, spaceSizes, spacingOf, type FrameSpacing, type SlotBox } from '../lib/payload';
 import { blocksFromDom, richDom } from '../lib/richtext';
@@ -165,10 +165,10 @@ export function Canvas() {
   const timedOut = useRef(false);
   /**
    * What the page's own error can be put down to (#738), for the message it came with: the component it was thrown in
-   * (Open source), and for Revert, what History held when the page was last seen working (`seen`) and when the error
-   * happened (`then`). Revert is worked out from History as it is now (see revertStep).
+   * (Open source), and the change that could have caused it (Revert), worked out from History as it was when the error
+   * happened and offered only while that change is still History's newest.
    */
-  const [issueCause, setIssueCause] = useState<{ message: string; definitionId: string | null; seen: string[] | null; then: string[] } | null>(null);
+  const [issueCause, setIssueCause] = useState<{ message: string; definitionId: string | null; revert: { id: string; label: string; key: string } | null } | null>(null);
   /** The change the page had been told of, or the editor had made, when its error happened: showing it does not mend it. */
   const errorAt = useRef<number | null>(null);
   /**
@@ -179,8 +179,13 @@ export function Canvas() {
   const healthyTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   /** Undoing the change Revert names: Try again and Revert wait for it, whatever else the page reports meanwhile. */
   const [reverting, setReverting] = useState(false);
-  /** What the frame shows, for the page-working baseline: the component in Component Studio, or the page's path. */
-  const previewTarget = () => (showsStudio() ? `studio:${studioAt.current!.definitionId}` : frameAt.current);
+  /** What the frame shows, for the page-working baseline: the component in Component Studio, with its sample and
+   *  variant, or the page's path. */
+  const previewTarget = () => {
+    if (!showsStudio()) return frameAt.current;
+    const s = getState();
+    return `studio:${JSON.stringify([studioAt.current!.definitionId, s.definitionMode?.studio, s.variantStyle])}`;
+  };
   /**
    * The page loaded, arrived or showed a change, with nothing wrong: once it has gone a moment without an error it
    * counts as working with the project as it is now, for Revert to name what changed after. The moment matters,
@@ -217,7 +222,7 @@ export function Canvas() {
     const base = healthy.current;
     const current = !studio || studio.revision === snap?.revision;
     const seen = current && base && snap && base.workspaceKey === snap.workspaceKey && base.target === previewTarget() ? base.steps : null;
-    setIssueCause(snap ? { message, definitionId: studio?.definitionId ?? errorComponent(texts, snap.state.components, snap.dir), seen, then: appliedSteps(snap.history) } : null);
+    setIssueCause(snap ? { message, definitionId: studio?.definitionId ?? errorComponent(texts, snap.state.components, snap.dir), revert: revertStep(snap.history, seen) } : null);
   };
   useEffect(
     () => () => {
@@ -2623,7 +2628,7 @@ export function Canvas() {
   // What the page's error can be put down to, while it still holds: the same error, the change still History's newest
   // and undoable (not while the AI works), the component still in the project.
   const cause = issueCause && issueCause.message === frameError && !slowPage ? issueCause : null;
-  const revertOffered = cause && snapshot?.history.canUndo && !snapshot.aiBusy && !snapshot.readOnly ? revertStep(snapshot.history, cause.seen, cause.then) : null;
+  const revertOffered = cause?.revert && snapshot?.history.canUndo && !snapshot.aiBusy && !snapshot.readOnly && stillNewest(snapshot.history, cause.revert.key) ? cause.revert : null;
   const sourceOffered = cause?.definitionId && snapshot?.state.components[cause.definitionId] ? cause.definitionId : null;
   /** Load the page again, as Try again does. In Component Studio the preview is prepared again, from the project as it is now. */
   const restartPreview = () => {
