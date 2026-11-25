@@ -4837,13 +4837,14 @@ if (import.meta.hot) {
   // revision even when a later one arrives before the page has painted it.
   import.meta.hot.on('siteorigin:revision', (data) => {
     const applied = data.revision;
+    const batch = data.batch;
     revision = applied;
     requestAnimationFrame(() =>
       requestAnimationFrame(() => {
         settleDrafts();
         send('revisionApplied', { revision: applied });
         // The preview server waits for this before the editor replaces the files of the next save.
-        import.meta.hot.send('siteorigin:applied', { revision: applied });
+        import.meta.hot.send('siteorigin:applied', { revision: applied, batch });
       })
     );
   });

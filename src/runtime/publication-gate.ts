@@ -11,6 +11,7 @@
  * Kept apart from the worker so it can be tested without a dev server.
  */
 import { AsyncLocalStorage } from 'node:async_hooks';
+import { existsSync } from 'node:fs';
 import { join } from 'node:path';
 
 /** The watcher's file events: these wait while a batch is held. */
@@ -21,7 +22,7 @@ const UPDATE_EVENTS = new Set(['add', 'change', 'unlink']);
 export const GATE_LIMITS = {
   /** A hold the editor never releases (it stopped part way) ends on its own after this. */
   holdMs: 60000,
-  /** How long a released batch waits for the watcher to report files it has not reported yet. */
+  /** How long a released batch waits for the watcher to report files it has not reported yet (then they are reported for it). */
   settleMs: 1000,
   /** How long the updates of a batch's files are gathered before the page is reloaded instead. */
   collectMs: 3000,
@@ -100,10 +101,12 @@ export function createPublicationGate(opts: { root: string; ignored: (path: stri
   const expected = new Set<string>();
   let settleTimer: ReturnType<typeof setTimeout> | null = null;
   /**
-   * The waiting events are not a whole batch: a hold ran out, or files the batch changed were never reported. The page
-   * is then reloaded once they are handed over, rather than shown part of a batch.
+   * The waiting events may not be a whole batch: a hold ran out with the batch maybe still landing. The page is then
+   * reloaded once they are handed over, rather than shown part of a batch.
    */
   let partial = false;
+  /** Updates of files Vite was already working on when a batch was held: they go with that batch. */
+  let waiting: Array<() => void> = [];
   /**
    * While the updates of handed-over events are gathered: how many of them are still on their way, the updates that
    * have arrived (theirs, and any other file's that arrives meanwhile), the holds they cover (every hold opened before
@@ -122,9 +125,12 @@ export function createPublicationGate(opts: { root: string; ignored: (path: stri
   let delivered = 0;
   /** What waits for the holds opened before it to reach the page, in order. */
   const after: Array<{ fn: () => void; holds: number }> = [];
-  /** The latest revision sent to the pages, and the latest a page has said it shows. */
-  let sentRevision = 0;
-  let appliedRevision = 0;
+  /**
+   * The batches whose revision has been sent to the pages, and the latest a page has said it shows. Counted apart from
+   * the project's revision, which a restored file is sent again under.
+   */
+  let sentBatch = 0;
+  let appliedBatch = 0;
   let server: GateServer | null = null;
   let emit: Emit | null = null;
 
@@ -134,7 +140,7 @@ export function createPublicationGate(opts: { root: string; ignored: (path: stri
    */
   const closed = () => holds.size > 0 || settleTimer !== null || buffer.length > 0;
   /** Nothing held, gathered or waiting to be sent. */
-  const idle = () => !closed() && !collecting && delivered >= opened && !after.length;
+  const idle = () => !closed() && !collecting && !waiting.length && delivered >= opened && !after.length;
 
   function runAfter() {
     while (after.length && after[0].holds <= delivered) {
@@ -146,36 +152,63 @@ export function createPublicationGate(opts: { root: string; ignored: (path: stri
     }
   }
 
-  function reloadPage() {
+  /**
+   * Run the updates Vite made of a batch's files with each environment's sends caught, then send them as one update
+   * per environment, or have the page load the whole batch from disk when `reload`.
+   */
+  function sendReady(ready: Array<() => void>, reload: boolean) {
+    const envs = Object.entries(server?.environments ?? {}).filter((e): e is [string, { hot: { send: Send } }] => !!e[1]?.hot);
+    const sent = new Map<object, unknown[][]>();
+    const sends = envs.map(([, env]) => {
+      const own = env.hot.send;
+      sent.set(env, []);
+      env.hot.send = (...args: unknown[]) => void sent.get(env)!.push(args);
+      return own;
+    });
     try {
-      server?.environments.client?.hot.send(RELOAD);
-    } catch {
-      // A page that cannot be told keeps what it shows.
+      for (const run of ready) run();
+    } finally {
+      envs.forEach(([, env], i) => (env.hot.send = sends[i]));
     }
+    envs.forEach(([name, env], i) => {
+      // Part of a batch is never applied to the page: it loads the whole batch from disk instead.
+      const payloads = reload && name === 'client' ? [[RELOAD]] : mergeHotPayloads(sent.get(env)!);
+      for (const args of payloads) {
+        try {
+          sends[i].apply(env.hot, args);
+        } catch {
+          // A page that cannot be told keeps what it shows.
+        }
+      }
+    });
   }
 
   /** Every file of the released batches has been reported (or waited for long enough): hand the events to Vite. */
   function settle() {
     if (settleTimer) clearTimeout(settleTimer);
     settleTimer = null;
-    // Reported, or waited for long enough: a file still missing makes the batch partial.
-    if (expected.size) partial = true;
-    expected.clear();
-    // One batch's updates at a time: the next waits for the page to get this one.
+    // One batch's updates at a time: the next waits for the page to get this one, and a batch held meanwhile joins.
     if (collecting || holds.size) return;
-    seen.clear();
     const events = buffer;
     buffer = [];
+    // A file the watcher has not reported (a change it dropped as a repeat of one just before, say) is reported
+    // here, so Vite reads it again with the rest of the batch; it saying so later only repeats an update.
+    for (const abs of expected) {
+      const event = existsSync(abs) ? 'change' : 'unlink';
+      events.push([event, abs], ['all', event, abs]);
+    }
+    expected.clear();
+    seen.clear();
     const reload = partial;
     partial = false;
     const due = events.filter(([event]) => typeof event === 'string' && UPDATE_EVENTS.has(event)).length;
     if (!due || !emit || !server) {
       if (emit) for (const args of events) emit(...args);
-      if (reload) reloadPage();
+      if (waiting.length || reload) sendReady(waiting.splice(0), reload);
       delivered = opened;
       return runAfter();
     }
-    const c: Collecting = { due, ready: [], timer: setTimeout(() => ((c.reload = true), sendUpdates()), GATE_LIMITS.collectMs), covers: opened, reload };
+    const c: Collecting = { due, ready: waiting.splice(0), timer: setTimeout(() => ((c.reload = true), sendUpdates()), GATE_LIMITS.collectMs), covers: opened, reload };
     collecting = c;
     for (const args of events) {
       const event = args[0];
@@ -196,24 +229,7 @@ export function createPublicationGate(opts: { root: string; ignored: (path: stri
     if (!c) return;
     clearTimeout(c.timer);
     collecting = null;
-    const envs = Object.entries(server?.environments ?? {}).filter((e): e is [string, { hot: { send: Send } }] => !!e[1]?.hot);
-    const sent = new Map<object, unknown[][]>();
-    const sends = envs.map(([, env]) => {
-      const own = env.hot.send;
-      sent.set(env, []);
-      env.hot.send = (...args: unknown[]) => void sent.get(env)!.push(args);
-      return own;
-    });
-    try {
-      for (const run of c.ready) run();
-    } finally {
-      envs.forEach(([, env], i) => (env.hot.send = sends[i]));
-    }
-    envs.forEach(([name, env], i) => {
-      // Part of a batch is never applied to the page: it loads the whole batch from disk instead.
-      const payloads = c.reload && name === 'client' ? [[RELOAD]] : mergeHotPayloads(sent.get(env)!);
-      for (const args of payloads) sends[i].apply(env.hot, args);
-    });
+    sendReady(c.ready, c.reload);
     delivered = Math.max(delivered, c.covers);
     runAfter();
     // Events held for the next batch while this one was gathered, or a batch released with nothing to hand over.
@@ -242,10 +258,13 @@ export function createPublicationGate(opts: { root: string; ignored: (path: stri
     hotUpdateEnvironments(viteServer: unknown, hmr: Hmr): Promise<void> {
       const all = () => Promise.all(Object.values((viteServer as GateServer).environments).map((env) => hmr(env as never))).then(() => undefined);
       const c = collecting;
-      if (!c) return all();
+      if (!c && !closed()) return all();
       return new Promise<void>((resolve, reject) => {
-        // Vite's hmr() sends synchronously when called, so every file's update is sent inside sendUpdates.
-        c.ready.push(() => void all().then(resolve, reject));
+        // Vite's hmr() sends synchronously when called, so every file's update is sent inside sendReady.
+        const run = () => void all().then(resolve, reject);
+        // Worked on since before a batch was held: sent now, the page could fetch files the batch is replacing.
+        if (!c) return void waiting.push(run);
+        c.ready.push(run);
         if (handedOver.getStore() === c && --c.due <= 0) sendUpdates();
       });
     },
@@ -296,22 +315,17 @@ export function createPublicationGate(opts: { root: string; ignored: (path: stri
       runAfter();
     },
 
-    /** Send `revision` to the pages with `send`, once every batch held so far has reached them. */
-    revision(revision: number, send: () => void) {
-      this.afterBatch(() => {
-        sentRevision = Math.max(sentRevision, revision);
-        send();
-      });
+    /**
+     * Send a revision to the pages with `send`, once every batch held so far has reached them. `send` is given the
+     * batch's number, which a page hands back to `applied` once it shows the batch.
+     */
+    revision(send: (batch: number) => void) {
+      this.afterBatch(() => send(++sentBatch));
     },
 
-    /** A page says it shows `revision`. */
-    applied(revision: number) {
-      if (Number.isSafeInteger(revision)) appliedRevision = Math.max(appliedRevision, revision);
-    },
-
-    /** A page connected: it loaded what is on disk now, so it shows every revision sent so far. */
-    connected() {
-      appliedRevision = Math.max(appliedRevision, sentRevision);
+    /** A page says it shows `batch`. */
+    applied(batch: number) {
+      if (Number.isSafeInteger(batch) && batch <= sentBatch) appliedBatch = Math.max(appliedBatch, batch);
     },
 
     /**
@@ -322,7 +336,7 @@ export function createPublicationGate(opts: { root: string; ignored: (path: stri
       const end = Date.now() + capMs;
       return new Promise<void>((resolve) => {
         const look = () => {
-          if ((idle() && (appliedRevision >= sentRevision || pages() === 0)) || Date.now() >= end) return resolve();
+          if ((idle() && (appliedBatch >= sentBatch || pages() === 0)) || Date.now() >= end) return resolve();
           setTimeout(look, GATE_LIMITS.pollMs);
         };
         look();
@@ -340,6 +354,7 @@ export function createPublicationGate(opts: { root: string; ignored: (path: stri
       const events = buffer;
       buffer = [];
       if (emit) for (const args of events) emit(...args);
+      if (waiting.length) sendReady(waiting.splice(0), false);
       delivered = opened;
       runAfter();
     }

@@ -93,9 +93,8 @@ async function start(dir: string, wantedPort = 0, packaged = true) {
   held.attach(s as unknown as GateServer);
   gate = held;
   const ws = (s as unknown as { ws: Ws }).ws;
-  // The bridge says which revision its page shows once it has applied it; a page that loads shows what is on disk.
-  ws.on('siteorigin:applied', (data) => held.applied(Number((data as { revision?: unknown } | null)?.revision)));
-  ws.on('connection', () => held.connected());
+  // The bridge says which batch its page shows once it has applied it.
+  ws.on('siteorigin:applied', (data) => held.applied(Number((data as { batch?: unknown } | null)?.batch)));
   await s.listen();
   server = s as never;
   const addr = (s.httpServer as { address(): { port: number } | string | null } | null)?.address();
@@ -171,8 +170,8 @@ port.on('message', async (ev) => {
     if (m.type === 'start') await start(useRealProjectDir(m.dir), m.port, m.packaged !== false);
     // The editor waits for this, so it never runs ahead of the batch's own update.
     else if (m.type === 'revision') {
-      const send = () => server?.ws.send({ type: 'custom', event: 'siteorigin:revision', data: { revision: m.revision } });
-      if (gate) gate.revision(m.revision, send);
+      const send = (batch = 0) => server?.ws.send({ type: 'custom', event: 'siteorigin:revision', data: { revision: m.revision, batch } });
+      if (gate) gate.revision(send);
       else send();
     }
     // Answered once held, so the editor replaces no file before the watcher's events wait here; and once the pages

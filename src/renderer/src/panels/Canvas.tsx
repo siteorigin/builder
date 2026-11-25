@@ -1912,6 +1912,8 @@ export function Canvas() {
       setInsertDrop(null);
       if (!commit || !aim.over) return;
       if (aim.refused) return void d.refuse(aim.refused);
+      // Aimed on a page a save had not reached yet: where it would go was read from the page before the save.
+      if (aim.at && pageBehind()) return void d.refuse('the page was still updating. Drag it again.');
       if (aim.at) d.drop(aim.at);
     };
     /** Measure the page's lists, in batches the page answers (it reads at most 200 at a time); a node it can't show

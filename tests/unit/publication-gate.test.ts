@@ -114,7 +114,7 @@ describe('publication gate', () => {
     expect(vite.messages()).toEqual([[abs('src/lib/X.svelte'), abs('src/lib/A.svelte')]]);
   });
 
-  it('reloads the page rather than show part of a batch when a file is never reported', async () => {
+  it('reports a file the watcher never reported itself, so the batch still goes as one update', async () => {
     const gate = createPublicationGate({ root: ROOT, ignored });
     const vite = fakeVite(gate);
     const ran = vi.fn();
@@ -122,10 +122,11 @@ describe('publication gate', () => {
     vite.watcher.emit('change', abs('src/lib/A.svelte'));
     gate.release('1', ['src/lib/A.svelte', 'src/routes/+page.svelte']);
     gate.afterBatch(ran);
-    await vi.advanceTimersByTimeAsync(GATE_LIMITS.settleMs + 10);
-    // The page loads the whole batch from disk; the server's own modules are still brought up to date.
-    expect(vite.messages()).toEqual(['full-reload']);
-    expect(vite.messages('ssr')).toEqual([[abs('src/lib/A.svelte')]]);
+    await vi.advanceTimersByTimeAsync(GATE_LIMITS.settleMs - 10);
+    expect(vite.messages()).toEqual([]);
+    await vi.advanceTimersByTimeAsync(30);
+    // Vite reads the page's file again with the component's, as if the watcher had reported it.
+    expect(vite.messages()).toEqual([[abs('src/lib/A.svelte'), abs('src/routes/+page.svelte')]]);
     expect(ran).toHaveBeenCalledOnce();
   });
 
@@ -208,11 +209,11 @@ describe('publication gate', () => {
     gate.hold('1');
     vite.watcher.emit('change', abs('src/lib/A.svelte'));
     gate.release('1', ['src/lib/A.svelte']);
-    gate.revision(1, () => order.push(`1 after ${vite.sent.client.length}`));
+    gate.revision(() => order.push(`1 after ${vite.sent.client.length}`));
     await vi.advanceTimersByTimeAsync(10);
     gate.hold('2');
     gate.release('2', ['siteorigin/site.json']);
-    gate.revision(2, () => order.push(`2 after ${vite.sent.client.length}`));
+    gate.revision(() => order.push(`2 after ${vite.sent.client.length}`));
     await vi.advanceTimersByTimeAsync(100);
     expect(vite.messages()).toEqual([[abs('src/lib/A.svelte')]]);
     expect(order).toEqual(['1 after 1', '2 after 1']);
@@ -250,39 +251,71 @@ describe('publication gate', () => {
     const gate = createPublicationGate({ root: ROOT, ignored });
     const vite = fakeVite(gate);
     let pages = 1;
+    const batches: number[] = [];
     const ready = vi.fn();
     gate.hold('1');
     vite.watcher.emit('change', abs('src/lib/A.svelte'));
     gate.release('1', ['src/lib/A.svelte']);
-    gate.revision(1, () => undefined);
+    gate.revision((batch) => batches.push(batch));
     void gate.caughtUp(600, () => pages).then(ready);
     await vi.advanceTimersByTimeAsync(100);
     // Sent, but the page is still fetching and applying it.
     expect(vite.messages()).toHaveLength(1);
+    expect(batches).toEqual([1]);
     expect(ready).not.toHaveBeenCalled();
     gate.applied(1);
     await vi.advanceTimersByTimeAsync(GATE_LIMITS.pollMs);
     expect(ready).toHaveBeenCalledOnce();
-    // A page that does not say so is waited for no longer than the cap; with no page open, not at all.
-    gate.revision(2, () => undefined);
+    // The same revision sent again (a restored file) is a batch of its own: the page saying it showed the last one
+    // does not cover it, and a page is waited for no longer than the cap.
+    gate.revision((batch) => batches.push(batch));
+    expect(batches).toEqual([1, 2]);
+    gate.applied(1);
+    gate.applied(7);
     const capped = vi.fn();
     void gate.caughtUp(600, () => pages).then(capped);
     await vi.advanceTimersByTimeAsync(590);
     expect(capped).not.toHaveBeenCalled();
     await vi.advanceTimersByTimeAsync(20);
     expect(capped).toHaveBeenCalledOnce();
+    // With no page open, nothing is waited for.
     pages = 0;
     const none = vi.fn();
     void gate.caughtUp(600, () => pages).then(none);
     await vi.advanceTimersByTimeAsync(0);
     expect(none).toHaveBeenCalledOnce();
-    // A page that loads now shows what is on disk.
-    pages = 1;
-    gate.connected();
-    const loaded = vi.fn();
-    void gate.caughtUp(600, () => pages).then(loaded);
-    await vi.advanceTimersByTimeAsync(0);
-    expect(loaded).toHaveBeenCalledOnce();
+  });
+
+  it('sends an update Vite was working on when the batch was held with the batch, never during it', async () => {
+    const gate = createPublicationGate({ root: ROOT, ignored });
+    const vite = fakeVite(gate, { [abs('src/lib/X.svelte')]: 30 });
+    vite.watcher.emit('change', abs('src/lib/X.svelte'));
+    await vi.advanceTimersByTimeAsync(10);
+    gate.hold('1');
+    await vi.advanceTimersByTimeAsync(50);
+    // X's update is ready while the batch's files are being replaced: the page must not fetch now.
+    expect(vite.messages()).toEqual([]);
+    vite.watcher.emit('change', abs('src/lib/A.svelte'));
+    gate.release('1', ['src/lib/A.svelte']);
+    await vi.advanceTimersByTimeAsync(20);
+    expect(vite.messages()).toEqual([[abs('src/lib/X.svelte'), abs('src/lib/A.svelte')]]);
+  });
+
+  it('keeps waiting for a late file while the next batch is held, and never reloads for it', async () => {
+    const gate = createPublicationGate({ root: ROOT, ignored });
+    const vite = fakeVite(gate);
+    gate.hold('1');
+    vite.watcher.emit('change', abs('src/lib/A.svelte'));
+    gate.release('1', ['src/lib/A.svelte', 'src/routes/+page.svelte']);
+    await vi.advanceTimersByTimeAsync(100);
+    gate.hold('2');
+    // The first batch's deadline passes while the second is held; its late file is reported meanwhile.
+    await vi.advanceTimersByTimeAsync(GATE_LIMITS.settleMs);
+    vite.watcher.emit('change', abs('src/routes/+page.svelte'));
+    vite.watcher.emit('change', abs('src/lib/B.svelte'));
+    gate.release('2', ['src/lib/B.svelte']);
+    await vi.advanceTimersByTimeAsync(20);
+    expect(vite.messages()).toEqual([[abs('src/lib/A.svelte'), abs('src/routes/+page.svelte'), abs('src/lib/B.svelte')]]);
   });
 
   it('lets everything through when closed', async () => {
