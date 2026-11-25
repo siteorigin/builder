@@ -218,6 +218,21 @@ describe('exporting a project with a draft', () => {
     session.unsettled = false;
   });
 
+  it('#753: refuses to export while a change that failed to save stands, and exports once a later save succeeds', async () => {
+    const { c } = await projectWithDraft();
+    const session = (c as unknown as { session: { putBlob: (content: string) => Promise<string> } }).session;
+    const putBlob = session.putBlob.bind(session);
+    session.putBlob = async () => {
+      session.putBlob = putBlob;
+      throw new Error('ENOSPC: no space left on device');
+    };
+    await expect(c.apply({ operations: [{ type: 'site.update', name: 'Lost name' }] })).rejects.toThrow(/ENOSPC/);
+    const refused = await c.exportSourceTo(join(temp('out'), 'handoff'));
+    expect(refused).toMatchObject({ ok: false, message: expect.stringMatching(/could not be saved, so the export would leave it out/) });
+    expect((await c.apply({ operations: [{ type: 'site.update', name: 'Saved name' }] })).ok).toBe(true);
+    expect((await c.exportSourceTo(join(temp('out'), 'handoff-2'))).ok).toBe(true);
+  });
+
   it('issue 66: publishes the generated not-found page, and refuses a 404.html of the author’s own in static/', async () => {
     const { c, dir } = await projectWithDraft();
     const ok = await c.buildStaticTo(join(temp('out'), 'site'));

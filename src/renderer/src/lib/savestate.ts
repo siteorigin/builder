@@ -41,7 +41,7 @@ export function saveFailureNotice(f: SaveFailure): { text: string; title: string
       text: 'Save not finished',
       title: 'A save did not finish, so nothing more is saved. Open Project health for what to do',
       what: `${named ? `Saving ${named}` : 'A save'} did not finish, so nothing more is saved for now.`,
-      next: 'Close and reopen the project: reopening finishes that save. Changes made before then are not saved.'
+      next: 'Close and reopen the project to recover it. Changes made before then are not saved.'
     };
   return {
     text: 'Save failed',

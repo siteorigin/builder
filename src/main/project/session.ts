@@ -707,6 +707,8 @@ export class ProjectSession extends EventEmitter {
       // the next reload, which updates the format then; nothing is lost, so the session is not held back for it.
       if (e instanceof DiskConflictError && approved) return;
       this.migrationFailed = !(e instanceof DiskConflictError);
+      // Nothing more is written until the project is reopened: the save indicator says so, not that it can be retried.
+      if (this.migrationFailed) this.emit('save-failed');
       throw e;
     }
     this.migrationDue = false;
@@ -2039,7 +2041,7 @@ export class ProjectSession extends EventEmitter {
 
   /** A save that failed, for the editor's save indicator: an unfinished one until reopening, a failed one until a later save succeeds. */
   get saveFailure(): SaveFailure | null {
-    if (this.unsettled) return { kind: 'unfinished', ...(this.failedSave ? { label: this.failedSave.label } : {}), message: UNSETTLED };
+    if (this.unsettled || this.migrationFailed) return { kind: 'unfinished', ...(this.failedSave ? { label: this.failedSave.label } : {}), message: UNSETTLED };
     return this.failedSave ? { kind: 'failed', ...this.failedSave } : null;
   }
 
