@@ -26,9 +26,9 @@
 // session's replay.json and app.log, redacted the same way), proof.txt and summary.json. No screenshot is kept unless
 // asked for (--keep-screens): pixels cannot be redacted, and a dialog can show a folder path.
 //
-// The Builder tools can do whatever a person can in the app, which includes turning on Developer mode, where the app runs
-// code a person writes with the permissions of whoever runs the test. The model is told not to, and a record that shows
-// it did fails the run; run this only on a machine and account you would let such code run on.
+// The Builder tools can do whatever a person can in the app. Developer mode, where the app runs code a person writes with
+// the permissions of whoever runs it, is locked off in every session the server starts (SITEORIGIN_DEVELOPER_MODE); the
+// model is also told to leave it alone, and a record that shows it reached for it fails the run and is not replayed.
 import { execFileSync, spawn, spawnSync } from 'node:child_process';
 import { copyFileSync, createWriteStream, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, rmSync, writeFileSync } from 'node:fs';
 import { createHash } from 'node:crypto';
@@ -126,7 +126,8 @@ function codexArgs() {
     '-c',
     `${server}.cwd=${toml(ROOT)}`,
     '-c',
-    `${server}.env={ WORK = ${toml(SESSIONS)} }`,
+    // Developer mode locked off in every session the server starts (src/main/settings.ts developerModeLocked).
+    `${server}.env={ WORK = ${toml(SESSIONS)}, SITEORIGIN_DEVELOPER_MODE = "locked-off" }`,
     ...(process.platform === 'linux' ? ['-c', `${server}.env_vars=["DISPLAY","XAUTHORITY"]`] : []),
     '-c',
     `${server}.startup_timeout_sec=30`,
@@ -246,7 +247,9 @@ function leftovers() {
   for (const line of r.stdout.split('\n')) {
     const m = /^\s*(\d+)\s(.*)$/.exec(line);
     if (!m || Number(m[1]) === process.pid) continue;
-    if (m[2].includes(RUN) || m[2].includes(CLIENT)) pids.push(Number(m[1]));
+    // Its apps and hosts, by the session folders they run in (on their command line, or as WORK in their environment);
+    // not anything that merely mentions the run, such as a viewer of its transcript.
+    if ([SESSIONS, REPLAY_DIR, CLIENT].some((dir) => m[2].includes(`${dir}/`) || m[2].includes(`${dir} `) || m[2].endsWith(dir))) pids.push(Number(m[1]));
   }
   return pids;
 }
@@ -292,7 +295,7 @@ try {
   const final = events.filter((e) => e.item?.type === 'agent_message').at(-1)?.item?.text ?? '';
   writeFileSync(join(RUN, 'report.md'), `${final}\n`);
   if (code !== 0) console.error(`model-smoke: Codex exited ${code}\n${stderrTail}`);
-  if (foreign.length) console.error(`model-smoke: the model used tools other than the Builder's: ${foreign.join('; ')}`);
+  if (foreign.length) console.error(`model-smoke: the model used tools other than the Builder's: ${foreign.map(text).join('; ')}`);
   checks.transcript = code === 0 && !foreign.length && !unreadable && !interrupted;
 
   if (PROBE) {
@@ -303,7 +306,8 @@ try {
     if (!kept.length) throw new Error('The session kept no replay.json: did the model close it with keepArtifacts "always"?');
     const { path: recordPath, record } = kept.at(-1);
     summary.evidence = keepEvidence(resolve(recordPath, '..'), record);
-    summary.record = { file: 'evidence/replay.json', sha256: createHash('sha256').update(readFileSync(recordPath)).digest('hex'), steps: record.steps.length, complete: record.complete, fixture: record.scenario.fixture, build: record.build?.fingerprint ?? null };
+    // The hash of the copy kept, as redacted, so it can be checked against the evidence folder.
+    summary.record = { file: 'evidence/replay.json', sha256: createHash('sha256').update(readFileSync(join(EVIDENCE, 'replay.json'))).digest('hex'), steps: record.steps.length, complete: record.complete, fixture: record.scenario.fixture, build: record.build?.fingerprint ?? null };
     const proof = proveJourney(record, EXPECT);
     const proofText = describeProof(proof);
     writeFileSync(join(RUN, 'proof.txt'), `${proofText}\n`);
@@ -315,9 +319,10 @@ try {
     if (forbidden.length) console.error(`model-smoke: the model turned on Developer mode (steps ${forbidden.join(', ')})`);
     console.log(`\nThe session's record:\n${proofText}`);
 
-    if (NO_REPLAY || interrupted) {
-      summary.replay = { outcome: 'skipped', why: interrupted ? 'interrupted' : '--no-replay' };
-      checks.replay = !interrupted;
+    if (NO_REPLAY || interrupted || forbidden.length) {
+      // A run that reached for Developer mode is not sent to the app again.
+      summary.replay = { outcome: 'skipped', why: interrupted ? 'interrupted' : forbidden.length ? 'Developer mode' : '--no-replay' };
+      checks.replay = NO_REPLAY && !interrupted && !forbidden.length;
     } else {
       mkdirSync(REPLAY_DIR, { recursive: true });
       // The replay's session is held before it starts, so it is closed whatever the replay does.
@@ -332,8 +337,7 @@ try {
       } else {
         const reason = r.divergence?.reason ?? '';
         // A step the record itself marks as one it cannot repeat (screenshot pixels, text left out) ends the replay early.
-        const at = record.steps.find((st) => st.seq === r.divergence?.seq);
-        const unreplayable = !!at && (!!at.unreplayable || (at.targets ?? []).some((t) => !t.replayable));
+        const unreplayable = r.divergence?.unreplayable === true;
         summary.replay = { outcome: unreplayable ? 'partial' : 'diverged', ...counts, at: r.divergence?.seq, op: r.divergence?.op, reason: text(reason) };
         checks.replay = unreplayable;
       }

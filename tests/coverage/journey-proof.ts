@@ -13,6 +13,7 @@
  * The Node journey (tests/e2e/journeys.mjs) and the model-driven smoke test (scripts/model-smoke.mjs) are both held to
  * it, so the external model is judged by the same rules as the deterministic replay.
  */
+import { createHash } from 'node:crypto';
 import type { JournalEntry } from '../driver/evidence.ts';
 
 /** The part of a replay record the proof reads. */
@@ -89,16 +90,17 @@ const isRedo = (e: JournalEntry) =>
 const present = (e: JournalEntry) =>
   looked(e) && (e.op === 'ui.locate' || (e.op === 'wait.for' && arg(e, 'condition') === 'ui.present') || (e.op === 'ui.waitFor' && arg(e, 'state') !== 'absent'));
 
-/** A look that found the site under `name`: its brand in the preview by that whole name, or the project's documents. */
+/** A look that found the site under `name`: its brand link in the preview by that whole name, or the project's documents. */
 function showsName(e: JournalEntry, name: string): boolean {
   if (looked(e) && e.op === 'project.summary') return summary(e).site === name;
   if (!present(e) || arg(e, 'scope') !== 'preview') return false;
+  if ((summary(e).role ?? arg(e, 'role')) !== 'link') return false;
   return summary(e).name === name || (e.args?.exact !== false && arg(e, 'name') === name);
 }
 
-/** A look at the preview: a snapshot that takes it in, a search in it, or a wait for it to be ready. */
+/** A look at the preview: a snapshot that takes it in, something found in it, or a wait for it to be ready. */
 const looksAtPreview = (e: JournalEntry) =>
-  looked(e) && ((e.op === 'ui.snapshot' && arg(e, 'scope') !== 'editor') || (['ui.locate', 'ui.waitFor', 'wait.for'].includes(e.op) && arg(e, 'scope') === 'preview') || (e.op === 'wait.for' && arg(e, 'condition') === 'preview.ready'));
+  looked(e) && ((e.op === 'ui.snapshot' && arg(e, 'scope') !== 'editor') || (present(e) && arg(e, 'scope') === 'preview') || (e.op === 'wait.for' && arg(e, 'condition') === 'preview.ready'));
 
 export function proveJourney(record: JourneyRecord, expect: JourneyExpectations): JourneyProof {
   const steps = [...record.steps].sort((a, b) => a.seq - b.seq);
@@ -137,6 +139,7 @@ export function proveJourney(record: JourneyRecord, expect: JourneyExpectations)
     `no project.summary found “${expect.edit}” after it was typed into the site`
   );
 
+  const answerSha = expect.answer === undefined ? null : createHash('sha256').update(expect.answer).digest('hex');
   const askMode = find('ask-mode', 'Ask chosen for the next message', edited, (e) => activates(e, 'menuitemradio', /^Ask\b/), 'Ask was never chosen in the chat after the edit');
   const asked = find('asked', 'a question sent to the assistant', askMode, sendsMessage, 'no message was sent after Ask was chosen');
   find(
@@ -147,10 +150,11 @@ export function proveJourney(record: JourneyRecord, expect: JourneyExpectations)
       if (!looked(e)) return false;
       if (e.op === 'assistant.wait') {
         const s = summary(e);
-        return s.reason === 'terminal' && s.ask === true && (expect.answer === undefined ? typeof s.text === 'string' && !!s.text : s.text === expect.answer);
+        return s.reason === 'terminal' && s.ask === true && (answerSha === null ? (s.textLength as number) > 0 : s.textSha256 === answerSha);
       }
-      // The heading a finished question's reply carries, found there (its full name goes on with the steps it took).
-      return present(e) && (/^Answered · site unchanged/.test(arg(e, 'name')) || /^Answered · site unchanged/.test(String(summary(e).name ?? '')));
+      // With no expected answer, the heading a finished question's reply carries, found there (its full name goes on with
+      // the steps it took); with one, only the run's own answer, which the card does not say, will do.
+      return answerSha === null && present(e) && (/^Answered · site unchanged/.test(arg(e, 'name')) || /^Answered · site unchanged/.test(String(summary(e).name ?? '')));
     },
     expect.answer === undefined ? 'no wait saw the question answered' : `no wait saw the question answered with “${expect.answer}”`
   );

@@ -327,6 +327,9 @@ describe('the app environment', () => {
       SITEORIGIN_HEADLESS: '1'
     });
     expect(sessionEnv(paths, { base, headed: true })).toMatchObject({ SITEORIGIN_HEADED: '1' });
+    // Developer mode locked off reaches the app; no other value of that variable does.
+    expect(sessionEnv(paths, { base: { ...base, SITEORIGIN_DEVELOPER_MODE: 'locked-off' } }).SITEORIGIN_DEVELOPER_MODE).toBe('locked-off');
+    expect(sessionEnv(paths, { base: { ...base, SITEORIGIN_DEVELOPER_MODE: 'on' } }).SITEORIGIN_DEVELOPER_MODE).toBeUndefined();
     expect(sessionEnv(paths, { base, headed: true }).SITEORIGIN_HEADLESS).toBeUndefined();
   });
 });

@@ -46,11 +46,12 @@ describe('what the readers find in the app', () => {
     const redo = (p: NodeJS.Platform) => (appMenuTemplate(p, true, { command: () => undefined, history: () => () => undefined }).find((m) => m.label === 'Edit')!.submenu as MenuItemConstructorOptions[]).find((i) => i.id === 'edit-redo')!.accelerator;
     expect([redo('win32'), redo('darwin'), redo('linux')]).toEqual(['Control+Y', 'Shift+CommandOrControl+Z', 'Shift+CommandOrControl+Z']);
     // Export and Close Project are offered only with a project open.
-    const file = (open: boolean) => (appMenuTemplate('darwin', open, { command: () => undefined, history: () => () => undefined }).find((m) => m.label === 'File')!.submenu as MenuItemConstructorOptions[]).filter((i) => i.id).map((i) => [i.id, i.enabled]);
-    expect([file(true), file(false)]).toEqual([
-      [['export', true], ['close-project', true]],
-      [['export', false], ['close-project', false]]
-    ]);
+    const file = (p: NodeJS.Platform, open: boolean) => (appMenuTemplate(p, open, { command: () => undefined, history: () => () => undefined }).find((m) => m.label === 'File')!.submenu as MenuItemConstructorOptions[]).filter((i) => i.id).map((i) => [i.id, i.enabled]);
+    for (const p of ['darwin', 'win32', 'linux'] as const)
+      expect([file(p, true), file(p, false)], p).toEqual([
+        [['export', true], ['close-project', true]],
+        [['export', false], ['close-project', false]]
+      ]);
   });
 
   it('lists the writing menu, the command menu, the sidebar and the shortcut keys', () => {

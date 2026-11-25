@@ -1,7 +1,8 @@
+import { createHash } from 'node:crypto';
 import { describe, expect, it } from 'vitest';
 import type { JournalEntry } from '../driver/evidence';
 import { describeProof, forbiddenSteps, proveJourney } from '../coverage/journey-proof';
-import type { JourneyRecord } from '../coverage/journey-proof';
+import type { JourneyExpectations, JourneyRecord } from '../coverage/journey-proof';
 
 type Step = Omit<JournalEntry, 'seq' | 'id' | 't' | 'window'>;
 /** An input, with the element the app reported reaching. */
@@ -18,6 +19,9 @@ const press = (key: string, role?: string, name?: string): Step => ({ op: 'ui.pr
 /** Enter sent to the composer that has the focus: the driver reports it by tag and name, with no role. */
 const enter: Step = { op: 'ui.press', class: 'input', args: { key: 'Enter' }, outcome: { ok: true, summary: { dispatched: 'complete', target: { surface: 'editor', name: 'Message', tag: 'textarea' } } } };
 const inPreview = (name: string) => look('wait.for', { condition: 'ui.present', role: 'link', name, scope: 'preview' }, { condition: 'ui.present', met: true });
+const sha = (t: string) => createHash('sha256').update(t).digest('hex');
+/** How the journal keeps a wait for a run: its end, and its answer by hash and length. */
+const waited = (text: string, o: Record<string, unknown> = {}) => look('assistant.wait', { runId: 'run_1' }, { reason: 'terminal', status: 'no-changes', ask: true, textSha256: sha(text), textLength: text.length, ...o });
 
 const EXPECT = { edit: 'Harbour light in every season', oldName: 'Harbour Lane Studio', newName: 'Quayside Rooms', answer: 'It says the heading.' };
 const ALLOW = 'Yes, allow changes across the whole site';
@@ -35,7 +39,7 @@ const JOURNEY: Step[] = [
   click('menuitemradio', 'Ask, a read-only question'),
   input('ui.fill', { target: { ref: 'e4' }, text: 'What does the hero say?' }, 'textbox', 'Message'),
   enter,
-  look('assistant.wait', { runId: 'run_1' }, { reason: 'terminal', status: 'no-changes', ask: true, text: EXPECT.answer }),
+  waited('It says the heading.'),
   click('menuitemradio', 'Edit, change the site'),
   input('ui.fill', { target: { ref: 'e5' }, text: 'Rename the site' }, 'textbox', 'Message'),
   enter,
@@ -54,7 +58,7 @@ const record = (steps: Step[], over: Partial<JourneyRecord> = {}): JourneyRecord
   steps: steps.map((s, i) => ({ seq: i + 1, id: `r${i + 1}`, t: i, window: 1, ...s })),
   ...over
 });
-const missing = (r: JourneyRecord, expect = EXPECT) => proveJourney(r, expect).witnesses.filter((w) => w.seq === null).map((w) => w.id);
+const missing = (r: JourneyRecord, expect: JourneyExpectations = EXPECT) => proveJourney(r, expect).witnesses.filter((w) => w.seq === null).map((w) => w.id);
 const without = (match: (s: Step) => boolean) => JOURNEY.filter((s) => !match(s));
 const replace = (match: (s: Step) => boolean, by: Step) => JOURNEY.map((s) => (match(s) ? by : s));
 const named = (s: Step, re: RegExp) => re.test(s.targets?.[0]?.name ?? '');
@@ -113,10 +117,15 @@ describe('proveJourney (issue #498)', () => {
     // A look while the run was still working is no answer, nor is another answer than the scripted one.
     expect(missing(record(replace((s) => s.op === 'assistant.wait', look('assistant.wait', { runId: 'run_1' }, { reason: 'input', status: 'awaiting-input' }))))).toEqual(['answer']);
     expect(missing(record(replace((s) => s.op === 'assistant.wait', look('assistant.observe', { after: 0 }, {}))))).toEqual(['answer']);
-    expect(missing(record(replace((s) => s.op === 'assistant.wait', look('assistant.wait', { runId: 'run_1' }, { reason: 'terminal', ask: true, text: 'Something else.' }))))).toEqual(['answer']);
-    // The finished question's own heading on screen is an answer seen; waiting for it to go is not.
-    expect(missing(record(replace((s) => s.op === 'assistant.wait', look('wait.for', { condition: 'ui.present', role: 'button', name: 'Answered · site unchanged', exact: false }, { met: true }))))).toEqual([]);
-    expect(missing(record(replace((s) => s.op === 'assistant.wait', look('wait.for', { condition: 'ui.absent', role: 'button', name: 'Answered · site unchanged', exact: false }, { met: true }))))).toEqual(['answer']);
+    expect(missing(record(replace((s) => s.op === 'assistant.wait', waited('Something else.'))))).toEqual(['answer']);
+    // An edit run that happened to say the same is not the question's answer.
+    expect(missing(record(replace((s) => s.op === 'assistant.wait', waited(EXPECT.answer, { ask: false }))))).toEqual(['answer']);
+    // The finished question's own heading on screen does not say which answer it gave: it counts only with none expected.
+    const card = replace((s) => s.op === 'assistant.wait', look('wait.for', { condition: 'ui.present', role: 'button', name: 'Answered · site unchanged', exact: false }, { met: true }));
+    expect(missing(record(card))).toEqual(['answer']);
+    const { answer: _none, ...noAnswer } = EXPECT;
+    expect(missing(record(card), noAnswer)).toEqual([]);
+    expect(missing(record(replace((s) => s.op === 'assistant.wait', look('wait.for', { condition: 'ui.absent', role: 'button', name: 'Answered · site unchanged', exact: false }, { met: true }))), noAnswer)).toEqual(['answer']);
     expect(missing(record(without((s) => named(s, /^Edit/))))).toContain('requested');
   });
 
@@ -137,6 +146,9 @@ describe('proveJourney (issue #498)', () => {
     expect(missing(record(absent))).toEqual(['undone', 'redo', 'redone', 'exported', 'export-read']);
     const partial = replace((s) => s.args?.name === EXPECT.oldName, look('wait.for', { condition: 'ui.present', role: 'link', name: 'Harbour', exact: false, scope: 'preview' }, { met: true }));
     expect(missing(record(partial))).toEqual(['undone', 'redo', 'redone', 'exported', 'export-read']);
+    // The name on a heading in the preview is not the site's brand link.
+    const heading = replace((s) => s.args?.name === EXPECT.oldName, look('wait.for', { condition: 'ui.present', role: 'heading', name: EXPECT.oldName, scope: 'preview' }, { met: true }));
+    expect(missing(record(heading))).toEqual(['undone', 'redo', 'redone', 'exported', 'export-read']);
     // The name the app reported reaching counts over the words searched for: "allow" found the whole choice.
     const searched = replace((s) => named(s, /^Yes/), { ...click('button', ALLOW), targets: [{ at: 'target', role: 'button', name: 'allow', exact: false, replayable: true }] });
     expect(missing(record(searched))).toEqual([]);
@@ -168,11 +180,18 @@ describe('proveJourney (issue #498)', () => {
   it('names the inputs a smoke run must not make: turning on Developer mode', () => {
     expect(forbiddenSteps(record(JOURNEY))).toEqual([]);
     expect(forbiddenSteps(record([...JOURNEY, click('switch', 'Developer mode')]))).toEqual([JOURNEY.length + 1]);
+    expect(forbiddenSteps(record([...JOURNEY, click('checkbox', 'Turn on developer mode')]))).toEqual([JOURNEY.length + 1]);
   });
 
   it('gives no credit for a step that failed', () => {
     const refused = (re: RegExp) => JOURNEY.map((s) => (named(s, re) ? { ...s, outcome: { ok: false, code: 'NOT_ACTIONABLE' } } : s));
     expect(missing(record(refused(/^Create project$/)))[0]).toBe('created');
     expect(missing(record(refused(/^Undo/)))).toEqual(['undo', 'undone', 'redo', 'redone', 'exported', 'export-read']);
+    expect(missing(record(refused(/^Redo/)))).toEqual(['redo', 'redone', 'exported', 'export-read']);
+  });
+
+  it('reads the record in the order of its steps, however they are listed', () => {
+    const r = record(JOURNEY);
+    expect(proveJourney({ ...r, steps: [...r.steps].reverse() }, EXPECT).ok).toBe(true);
   });
 });

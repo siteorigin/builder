@@ -46,6 +46,7 @@ describe('the model-driven smoke test’s transcript (issue #498)', () => {
     };
     for (const [kind, secret] of Object.entries(samples)) expect(redactText(`the ${kind} key ${secret} here`, hide, 'ada'), kind).toMatch(/\[redacted\] here$/);
     expect(redactText('a picture data:image/png;base64,iVBORw0KGgoAAAANSUhEUg== inline', hide, 'ada')).toBe('a picture [image data left out] inline');
+    expect(redactText('DATA:IMAGE/JPEG;BASE64,/9j/4AAQSkZJRg== too', hide, 'ada')).toBe('[image data left out] too');
     expect(redactText('ordinary words, Lantern Lane Kitchen, stay', hide, 'ada')).toBe('ordinary words, Lantern Lane Kitchen, stay');
   });
 
@@ -56,6 +57,7 @@ describe('the model-driven smoke test’s transcript (issue #498)', () => {
       { type: 'item.started', item: { type: 'mcp_tool_call', server: 'siteorigin_builder', tool: 'session_start' } },
       { type: 'item.completed', item: { type: 'mcp_tool_call', server: 'siteorigin_builder', tool: 'session_start', status: 'completed' } },
       { type: 'item.completed', item: { type: 'mcp_tool_call', server: 'siteorigin_builder', tool: 'ui_click', status: 'failed', error: { message: 'NOT_ACTIONABLE' } } },
+      { type: 'item.completed', item: { type: 'mcp_tool_call', server: 'siteorigin_builder', tool: 'ui_fill', status: 'completed', error: { message: 'STALE_REF' } } },
       { type: 'item.started', item: { type: 'command_execution', command: 'cat tests/driver/session.ts' } },
       { type: 'item.completed', item: { type: 'command_execution', command: 'cat tests/driver/session.ts', status: 'failed' } },
       { type: 'item.completed', item: { type: 'mcp_tool_call', server: 'filesystem', tool: 'read_file' } },
@@ -71,7 +73,8 @@ describe('the model-driven smoke test’s transcript (issue #498)', () => {
     const audit = auditTranscript(events, 'siteorigin_builder');
     expect(audit.calls).toEqual([
       { tool: 'session_start', ok: true },
-      { tool: 'ui_click', ok: false }
+      { tool: 'ui_click', ok: false },
+      { tool: 'ui_fill', ok: false }
     ]);
     expect(audit.foreign).toEqual(['command_execution: cat tests/driver/session.ts', 'mcp_tool_call filesystem read_file', 'web_search', 'file_change', 'collab_tool_call spawn_agent']);
     expect(audit.started).toBe(1);

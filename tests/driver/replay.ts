@@ -36,6 +36,8 @@ export interface ReplayStep {
   reason?: string;
   /** The reply that diverged, or the last one of the step. */
   reply?: Reply;
+  /** Set when it diverged because the record itself marks the step as one it cannot repeat (pixels, text left out). */
+  unreplayable?: true;
 }
 
 export interface ReplayReport {
@@ -64,7 +66,8 @@ const REFUSED_BEFORE_INPUT = new Set(['BAD_REQUEST', 'UNKNOWN_OP', 'BUSY', 'NOT_
  */
 export const SNAPSHOT_NAME_CHARS = 200;
 function clipped(s: string | undefined): s is string {
-  return typeof s === 'string' && s.endsWith('…') && [...s].length >= Math.min(SNAPSHOT_NAME_CHARS, CLIP.string + 1);
+  // Counted both ways: one cut counts UTF-16 units, the other characters.
+  return typeof s === 'string' && s.endsWith('…') && Math.max(s.length, [...s].length) >= Math.min(SNAPSHOT_NAME_CHARS, CLIP.string + 1);
 }
 
 export function isReplayRecord(v: unknown): v is ReplayRecord {
@@ -76,19 +79,19 @@ export function isReplayRecord(v: unknown): v is ReplayRecord {
 function factsOf(op: string, result: unknown): Record<string, unknown> {
   const r = result as Record<string, any> | null; // eslint-disable-line @typescript-eslint/no-explicit-any
   if (!r) return {};
-  if (op === 'project.summary') return r.project?.find ? { found: r.project.find.matches.length, complete: r.project.find.complete } : {};
+  if (op === 'project.summary') return { ...(r.project ? { site: r.project.site?.name ?? null } : {}), ...(r.project?.find ? { found: r.project.find.matches.length, complete: r.project.find.complete } : {}) };
   if (op === 'exports.inspect') return { ...(typeof r.files === 'number' ? { files: r.files } : {}), ...(r.find ? { found: r.find.matches.length, complete: r.find.complete } : typeof r.complete === 'boolean' ? { complete: r.complete } : {}) };
-  if (op === 'wait.for') return { ...(r.outcome ? { outcome: r.outcome } : {}), ...(typeof r.count === 'number' ? { count: r.count } : {}) };
+  if (op === 'wait.for') return { ...(r.outcome ? { outcome: r.outcome } : {}), ...(typeof r.export?.kind === 'string' ? { kind: r.export.kind } : {}), ...(typeof r.count === 'number' ? { count: r.count } : {}) };
   return {};
 }
 
 
-/** Where a repeat differs from the recording: the same matches found, as completely; the same way an export ended. */
+/** Where a repeat differs from the recording: the same matches found, as completely; the same site name; the same way, and kind, an export ended. */
 function differs(e: JournalEntry, reply: Reply): string | null {
   if (!reply.ok) return null;
   const was = e.outcome?.summary ?? {};
   const now = factsOf(e.op, reply.result);
-  for (const k of ['found', 'complete', 'outcome', 'count', 'files'] as const) if (k in was && was[k] !== now[k]) return `its ${k} is ${String(now[k])} where the recording had ${String(was[k])}`;
+  for (const k of ['found', 'complete', 'outcome', 'kind', 'count', 'files', 'site'] as const) if (k in was && was[k] !== now[k]) return `its ${k} is ${String(now[k])} where the recording had ${String(was[k])}`;
   return null;
 }
 
@@ -99,8 +102,8 @@ export async function replay(record: unknown, opts: ReplayOptions = {}): Promise
   let n = 0;
   const call = (op: string, args?: Record<string, unknown>, extra: { timeoutMs?: number; expectWindow?: number } = {}) => session.call({ v: 1, id: `replay-${++n}`, op, ...(args ? { args } : {}), ...extra });
   const report = (ok: boolean): ReplayReport => ({ ok, steps, divergence: steps.find((s) => s.status === 'diverged') ?? null, session });
-  const diverge = (e: JournalEntry, reason: string, reply?: Reply) => {
-    steps.push({ seq: e.seq, op: e.op, status: 'diverged', reason, ...(reply ? { reply } : {}) });
+  const diverge = (e: JournalEntry, reason: string, reply?: Reply, unreplayable = false) => {
+    steps.push({ seq: e.seq, op: e.op, status: 'diverged', reason, ...(reply ? { reply } : {}), ...(unreplayable ? { unreplayable: true as const } : {}) });
     return report(false);
   };
 
@@ -133,7 +136,13 @@ export async function replay(record: unknown, opts: ReplayOptions = {}): Promise
     if (!there.ok) return there;
     const located = await call('ui.locate', query, on(e));
     if (!located.ok) return located;
-    return { ref: (located.result as { node: { ref: string } }).node.ref };
+    const node = (located.result as { node: { ref: string; name?: string } }).node;
+    // Found by part of a name cut short: the one found must begin with that part, not merely hold it.
+    if (clipped(d.name) && !(node.name ?? '').startsWith(d.name.slice(0, -1))) {
+      const { v, id, op, sessionId, window: w, elapsedMs, events } = located;
+      return { v, id, op, ok: false, sessionId, window: w, elapsedMs, events, error: { code: 'TARGET_NOT_FOUND', message: `The ${d.role} found does not begin with the part of its name the record kept.`, retryable: false } };
+    }
+    return { ref: node.ref };
   };
 
   for (const e of [...record.steps].sort((a, b) => a.seq - b.seq)) {
@@ -163,11 +172,11 @@ export async function replay(record: unknown, opts: ReplayOptions = {}): Promise
       return diverge(e, `it failed in the recording (${e.outcome.code}) after it may have sent input`);
     }
     // The session marks a step whose arguments it scrubbed or hid: what it holds is not what was sent.
-    if (e.unreplayable) return diverge(e, `it cannot be replayed: ${e.unreplayable}`);
+    if (e.unreplayable) return diverge(e, `it cannot be replayed: ${e.unreplayable}`, undefined, true);
     const args: Record<string, unknown> = { ...(e.args ?? {}) };
     if (e.class === 'input') {
       for (const d of e.targets ?? []) {
-        if (!d.replayable) return diverge(e, `its ${d.at} cannot be found again: ${d.reason ?? 'no description'}`);
+        if (!d.replayable) return diverge(e, `its ${d.at} cannot be found again: ${d.reason ?? 'no description'}`, undefined, true);
         const got = await resolve(e, d);
         if ('ok' in got) return diverge(e, `its ${d.at} (${d.role}${d.name !== undefined ? ` "${d.name}"` : ''}${d.region ? ` in "${d.region}"` : ''}) was not found as one element`, got);
         args[d.at] = { ref: got.ref, ...(d.position ? { position: d.position } : {}) };

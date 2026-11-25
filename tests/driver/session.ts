@@ -257,6 +257,8 @@ export function sessionEnv(paths: SessionPaths, { headed = false, base = process
   });
   if (headed) env.SITEORIGIN_HEADED = '1';
   else env.SITEORIGIN_HEADLESS = '1';
+  // Developer mode locked off for a session an external model drives (scripts/model-smoke.mjs): only that value passes.
+  if (base.SITEORIGIN_DEVELOPER_MODE === 'locked-off') env.SITEORIGIN_DEVELOPER_MODE = 'locked-off';
   return env;
 }
 
@@ -1337,8 +1339,14 @@ export class Session {
       case 'project.summary':
         return { revision: r.revision, ...(r.project ? { site: r.project.site?.name ?? null } : {}), ...(r.project?.find ? { found: r.project.find.matches.length, complete: r.project.find.complete } : {}) };
       case 'assistant.wait':
-        // How the run's wait ended, and what it answered: the record says an answer was read, not only that someone looked.
-        return { reason: r.reason, status: r.run?.status, ...(typeof r.run?.result?.ask === 'boolean' ? { ask: r.run.result.ask } : {}), ...(typeof r.run?.text === 'string' ? { text: r.run.text } : {}) };
+        // How the run's wait ended, and what it answered, by its hash and length: the record says which answer was read
+        // without keeping what the assistant wrote, which can be anything the project holds.
+        return {
+          reason: r.reason,
+          status: r.run?.status,
+          ...(typeof r.run?.result?.ask === 'boolean' ? { ask: r.run.result.ask } : {}),
+          ...(typeof r.run?.text === 'string' ? { textSha256: createHash('sha256').update(r.run.text).digest('hex'), textLength: [...r.run.text].length } : {})
+        };
       case 'exports.inspect':
         return { type: r.type, ...(typeof r.files === 'number' ? { files: r.files } : {}), ...(r.find ? { found: r.find.matches.length, complete: r.find.complete } : typeof r.complete === 'boolean' ? { complete: r.complete } : {}) };
       case 'evidence.save':
