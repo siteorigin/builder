@@ -322,13 +322,33 @@ describe('what each Add button offers', () => {
     expect(items.findIndex((it) => it.kind === 'component')).toBeGreaterThan(items.findLastIndex((it) => it.kind === 'section'));
   });
 
-  it('inside a container: the basic elements, then the project’s inner components', () => {
+  it('inside a container: the basic elements, the theme’s blocks, then the project’s inner components', () => {
     const p = page();
     const items = quickItems(p.state, 'element');
     expect(items.find((it) => it.name === 'Button')?.spec).toEqual({ primitive: 'button' });
     expect(items.filter((it) => it.kind === 'component').map((it) => it.spec.definitionId)).toEqual([p.cardDef]);
     expect(items.some((it) => it.kind === 'section')).toBe(false);
-    expect(items.findIndex((it) => it.kind === 'component')).toBeGreaterThan(items.findLastIndex((it) => it.kind === 'element'));
+    // The blocks (#664), in a group of their own between the basic elements and the project's components.
+    const blocks = items.filter((it) => it.kind === 'block');
+    expect(blocks.map((it) => it.spec.componentId)).toEqual(['block.feature', 'block.stat', 'block.testimonial', 'block.callout', 'block.signup', 'block.video']);
+    expect(new Set(blocks.map((it) => it.group))).toEqual(new Set(['Blocks']));
+    expect(items.findIndex((it) => it.kind === 'block')).toBeGreaterThan(items.findLastIndex((it) => it.kind === 'element'));
+    expect(items.findIndex((it) => it.kind === 'component')).toBeGreaterThan(items.findLastIndex((it) => it.kind === 'block'));
+    // Between sections they are not offered: they go inside one.
+    expect(quickItems(p.state, 'section').some((it) => it.kind === 'block' || it.spec.componentId?.startsWith('block.'))).toBe(false);
+  });
+
+  it('inside an empty Stack in a Section, every block fits and inserts there in one change (#664)', () => {
+    const p = page();
+    const [inside] = addPoints(p.state, p.owner, ref(p.owner, p.empty));
+    const at = resolvePoint(p.state, inside)!;
+    const offered = offeredAt(p.state, at, 'element').filter((it) => it.kind === 'block');
+    expect(offered).toHaveLength(6);
+    for (const it of offered) {
+      const { state } = applyOperations(p.state, insertOps(at, it.spec, 'element', 'n_block'));
+      expect((home(state).nodes[p.empty] as ElementNode).children).toEqual(['n_block']);
+      expect(home(state).rootIds).toEqual(home(p.state).rootIds);
+    }
   });
 
   it('leaves out what the place would refuse: a Button inside a card that links somewhere', () => {

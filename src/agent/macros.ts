@@ -194,10 +194,23 @@ export function variantsJsonSchema(def: ComponentDefinition, describe = false): 
 // Section checks
 // ---------------------------------------------------------------------------
 
-/** The definition a section's componentId names: a theme component, or a project component by definition ID. */
+/** Whether a theme component is a block (a feature card, a stat card), which goes inside a layout rather than among a page's sections. */
+const isThemeBlock = (def: ComponentDefinition | undefined): boolean => def?.owner === 'theme' && def.insertAs === 'element';
+
+/**
+ * The theme's design of `componentId` as the project has it: its installed copy, else the theme's own. Whether it is a
+ * block is read from this one definition when the tool lists it, takes it and leaves it on a page, so a newer release
+ * that changes the role cannot have one call refuse what another removes.
+ */
+function themeDesign(state: ProjectState, componentId: string): ComponentDefinition | undefined {
+  const themed = catalogueComponent(state.site.themeId, componentId);
+  return themed && Object.hasOwn(state.components, themed.id) ? state.components[themed.id] : themed;
+}
+
+/** The definition a section's componentId names: a theme section, or a project component by definition ID. */
 function sectionDefinition(state: ProjectState, id: string): { def: ComponentDefinition; ref: { componentId: string } | { definitionId: string } } | null {
-  const themed = catalogueComponent(state.site.themeId, id);
-  if (themed && themed.category !== 'shell') return { def: Object.hasOwn(state.components, themed.id) ? state.components[themed.id] : themed, ref: { componentId: id } };
+  const themed = themeDesign(state, id);
+  if (themed && themed.category !== 'shell' && !isThemeBlock(themed)) return { def: themed, ref: { componentId: id } };
   const own = Object.hasOwn(state.components, id) ? state.components[id] : undefined;
   if (own && own.owner === 'project' && own.category !== 'shell') return { def: own, ref: { definitionId: id } };
   return null;
@@ -528,13 +541,14 @@ function findPage(state: ProjectState, slug: string): { route: string; page?: Pa
 
 /**
  * Whether a root is a section the macro could place: a theme section, or a project section (a fork, a unique
- * copy, a custom or code component) the tool lists. Anything else, such as hand-built layout, is never removed by it.
+ * copy, a custom or code component) the tool lists. Anything else, such as hand-built layout or a theme's block
+ * placed there by hand, is never removed by it.
  */
 function expressible(state: ProjectState, page: PageDoc, id: string): boolean {
   const n = page.nodes[id];
   if (n?.kind !== 'instance') return false;
   const def = Object.hasOwn(state.components, n.definitionId) ? state.components[n.definitionId] : undefined;
-  return def?.owner === 'theme' || (def?.owner === 'project' && def.category !== 'shell');
+  return (def?.owner === 'theme' && !isThemeBlock(def)) || (def?.owner === 'project' && def.category !== 'shell');
 }
 
 /**
@@ -775,7 +789,11 @@ async function compileAndApply(rawArgs: UpsertArgs, host: ToolHost, callId: stri
     const at = `sections[${i}]`;
     const r = resolved[i];
     if (!r) {
-      const names = catalogueEntries(state.site.themeId).map((e) => e.componentId).join(', ');
+      if (isThemeBlock(themeDesign(scratch, s.componentId))) {
+        issues.push({ field: `${at}.componentId`, message: `"${s.componentId}" is a block, not a section: it goes inside a section, a column or a component's slot. Send the page's sections again without it (not as a repair), then place it with apply_operations node.insert (into a Section's "content" slot, or a column).` });
+        return null;
+      }
+      const names = catalogueEntries(state.site.themeId).filter((e) => !e.block).map((e) => e.componentId).join(', ');
       issues.push({ field: `${at}.componentId`, message: `unknown component "${s.componentId}". Components: ${names}` });
       return null;
     }
@@ -794,7 +812,10 @@ async function compileAndApply(rawArgs: UpsertArgs, host: ToolHost, callId: stri
     const { props, deferred } = checkProps(def, s.props ?? {}, scratch, `${at}.props`, issues, node?.props, itemIds);
     return { def, ref, props, deferred, variants, defId: def.id, publicId: publicIdOf(r) };
   });
-  const repairNote = 'Nothing was applied. Call again with repair: true and only the named sections, each with its index; the other sections are kept.';
+  // A block sent as a section cannot be repaired away (a repair replaces an index, never removes one): the page is sent again.
+  const repairNote = compiled.some((c, i) => !c && isThemeBlock(themeDesign(scratch, sections[i].componentId)))
+    ? 'Nothing was applied. Call again without repair, with the page’s sections and no block among them.'
+    : 'Nothing was applied. Call again with repair: true and only the named sections, each with its index; the other sections are kept.';
   if (issues.length) {
     keepDraft();
     return fieldError(issues, repairNote);
@@ -994,8 +1015,9 @@ export function upsertToolSchema(state: ProjectState, only?: string, focused = f
     // A theme component already in the project is typed as installed, as the section check reads it: a newer
     // theme's properties (a heading level, say) are not there until Project health updates it.
     ...catalogueEntries(state.site.themeId).flatMap((e) => {
-      const d = catalogueComponent(state.site.themeId, e.componentId);
-      return d && offered(d) ? listed(Object.hasOwn(state.components, d.id) ? state.components[d.id] : d) : [];
+      const d = themeDesign(state, e.componentId);
+      // A block goes inside a section, not among the page's sections.
+      return d && offered(d) && !isThemeBlock(d) ? listed(d) : [];
     }),
     ...Object.values(state.components).filter((d) => d.owner === 'project' && d.category !== 'shell').flatMap(listed)
   ];

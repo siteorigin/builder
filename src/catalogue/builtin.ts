@@ -10,10 +10,11 @@ import { blogFeatured, blogGrid, blogList } from './foundation/blog';
 import { logoStrip, team, testimonials } from './foundation/people';
 import { contact, cta, faq, pricing, pricingToggle } from './foundation/conversion';
 import { footer, header } from './foundation/shell';
-import { contactForm } from './foundation/form';
+import { contactForm, signupForm } from './foundation/form';
 import { dataTable } from './foundation/table';
 import { siteSearch } from './foundation/search';
-import { video } from './foundation/video';
+import { video, videoBlock } from './foundation/video';
+import { calloutBox, featureCard, statCard, testimonialCard } from './foundation/blocks';
 import { makeAltPack } from './foundation-alt';
 import { makeEditorialPack } from './editorial';
 import { makeSignalPack } from './signal/pack';
@@ -50,7 +51,14 @@ export const FOUNDATION_PACK: AuthoredPack = FOUNDATION.define([
   contact,
   contactForm,
   siteSearch,
-  container
+  container,
+  // Blocks: compact components that go inside a column, a grid cell or a component's slot.
+  featureCard,
+  statCard,
+  testimonialCard,
+  calloutBox,
+  signupForm,
+  videoBlock
 ]);
 
 /** Editorial: the same contracts with magazine typography, hairline rules and asymmetric layouts. */

@@ -31,7 +31,7 @@ import { SHELL_PARTS, showsPart } from '@shared/page-shell';
 import { effectiveTokens, isDraftEntry, isDraftPage, publishedState, siteEntries } from '@generator/index';
 import { componentReusabilityDiagnostics } from './reusability';
 import { layoutGuardrailDiagnostics } from './layout-guardrails';
-import { FORM_SERVICES, formConnectionProblem, formFieldTitles, formFieldsAsSent, formKeyClashes, formRefusesClashes, formRefusesUnchoosable, formUnchoosable, namesFormFields, offersFormChoices } from '@catalogue/foundation/form';
+import { FORM_SERVICES, formConnectionProblem, formNoun, isFormContract, formFieldTitles, formFieldsAsSent, formKeyClashes, formRefusesClashes, formRefusesUnchoosable, formUnchoosable, namesFormFields, offersFormChoices } from '@catalogue/foundation/form';
 
 export interface Diagnostic {
   severity: 'error' | 'warning' | 'info';
@@ -440,7 +440,7 @@ export function validateState(state: ProjectState, opts: { sectionLinks?: boolea
     const inTheme = owner.kind === 'component' && state.components[owner.id]?.owner === 'theme';
     for (const n of Object.values(tree.nodes)) {
       const def = n.kind === 'instance' ? state.components[n.definitionId] : undefined;
-      if (inTheme || n.kind !== 'instance' || def?.componentId !== 'contact.form' || def.kind !== 'code') continue;
+      if (inTheme || n.kind !== 'instance' || !def || !isFormContract(def.componentId) || def.kind !== 'code') continue;
       const props = Object.fromEntries(Object.entries(def.properties).map(([k, sch]) => [k, k in n.props ? n.props[k] : sch.default]));
       const unconnected = formConnectionDiagnostic(state, owner, label, n);
       if (unconnected) out.push(unconnected);
@@ -453,12 +453,12 @@ export function validateState(state: ProjectState, opts: { sectionLinks?: boolea
           const what = formFieldTitles(fields, clash.indexes, fields.map((_, i) => i));
           const outcome = formRefusesClashes(def) ? 'so visitors cannot send the form' : 'so the form service cannot tell those answers apart';
           const all = clash.indexes.length === 2 ? 'both' : 'all';
-          out.push({ severity: 'warning', code: 'FORM_FIELD_KEYS', message: `${label}: the contact form's ${what} fields are ${all} sent as “${clash.key}”, ${outcome}. Give each field its own field name.`, owner, nodeId: n.id, ...row(clash.indexes[1]) });
+          out.push({ severity: 'warning', code: 'FORM_FIELD_KEYS', message: `${label}: the ${formNoun(def)}'s ${what} fields are ${all} sent as “${clash.key}”, ${outcome}. Give each field its own field name.`, owner, nodeId: n.id, ...row(clash.indexes[1]) });
         }
         for (const i of offersFormChoices(def) ? formUnchoosable(fields) : []) {
           const what = formFieldTitles(fields, [i], fields.map((_, j) => j));
           const outcome = formRefusesUnchoosable(def) ? 'so visitors cannot send the form' : 'so visitors cannot answer it';
-          out.push({ severity: 'warning', code: 'FORM_NO_CHOICES', message: `${label}: the contact form's ${what} field has no choices to pick from, ${outcome}. Add its choices, or change its type.`, owner, nodeId: n.id, ...row(i) });
+          out.push({ severity: 'warning', code: 'FORM_NO_CHOICES', message: `${label}: the ${formNoun(def)}'s ${what} field has no choices to pick from, ${outcome}. Add its choices, or change its type.`, owner, nodeId: n.id, ...row(i) });
         }
       }
     }
@@ -607,12 +607,18 @@ export function runtimeFontDiagnostics(state: ProjectState): Diagnostic[] {
 const formPlace = (state: ProjectState, f: FormNameClash['forms'][number]) =>
   f.owner.kind === 'shell' ? (f.owner.id === 'header' ? 'the shared header' : 'the shared footer') : (state.pages[f.owner.id]?.title ?? 'a page');
 
-/** What is wrong with contact forms that send to Netlify under one form name, said once for all of them. */
+/** What is wrong with forms that send to Netlify under one form name, said once for all of them. */
 export function formNameClashMessage(state: ProjectState, clash: FormNameClash): string {
   const counts = new Map<string, number>();
   for (const f of clash.forms) counts.set(formPlace(state, f), (counts.get(formPlace(state, f)) ?? 0) + 1);
   const places = listed([...counts].map(([place, n]) => (n > 1 ? `${n} on ${place}` : place)));
-  return `${clash.forms.length} contact forms send to the Netlify form “${clash.name}” (${places}), so Netlify files their messages together. Give each form its own Netlify form name.`;
+  // Contact forms, signup forms, or forms of both kinds.
+  const nouns = new Set(clash.forms.map((f) => {
+    const n = allTrees(state).find((t) => t.owner.kind === f.owner.kind && t.owner.id === f.owner.id)?.tree.nodes[f.nodeId];
+    return formNoun(n?.kind === 'instance' ? state.components[n.definitionId] : undefined);
+  }));
+  const kind = nouns.size === 1 ? `${[...nouns][0]}s` : 'forms';
+  return `${clash.forms.length} ${kind} send to the Netlify form “${clash.name}” (${places}), so Netlify files their messages together. Give each form its own Netlify form name.`;
 }
 
 /**
@@ -641,9 +647,10 @@ const FORM_CONNECTION_PROPS = new Set(['provider', ...Object.values(FORM_SERVICE
 export function formConnectionDiagnostic(state: ProjectState, owner: OwnerRef, label: string, node: GraphNode): Diagnostic | undefined {
   if (owner.kind === 'component' || node.kind !== 'instance') return undefined;
   const def = state.components[node.definitionId];
-  if (def?.componentId !== 'contact.form' || def.kind !== 'code') return undefined;
+  if (!def || !isFormContract(def.componentId) || def.kind !== 'code') return undefined;
+  const what = formNoun(def);
   const found = (problem: string | undefined, where = ''): Diagnostic | undefined =>
-    problem ? { severity: 'warning', code: 'FORM_UNCONNECTED', message: `${label}: the contact form is not connected to a form service${where}, so visitors cannot send it${where ? ' there' : ''}. ${problem}`, owner, nodeId: node.id } : undefined;
+    problem ? { severity: 'warning', code: 'FORM_UNCONNECTED', message: `${label}: the ${what} is not connected to a form service${where}, so visitors cannot send it${where ? ' there' : ''}. ${problem}`, owner, nodeId: node.id } : undefined;
   // A setting written by hand that cannot be read as text is not this check's to report, and must not stop the others.
   const problemOf = (props: () => Record<string, unknown>) => {
     try {

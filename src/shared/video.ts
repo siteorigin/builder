@@ -207,3 +207,6 @@ export function videoFieldNotes(props: Record<string, unknown>): VideoFieldNotes
     notes.title = { error: `Add a title that says what the video is. Without one, screen readers announce only “Video from ${name}”.` };
   return notes;
 }
+
+/** The theme's videos: the Video section and the Compact video block, which show the same player. */
+export const isVideoContract = (componentId: string | undefined): boolean => componentId === 'media.video' || componentId === 'block.video';

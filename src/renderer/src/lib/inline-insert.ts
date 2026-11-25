@@ -9,7 +9,7 @@ import type { Diagnostic } from '@engine/validate';
 import { childLists } from '@engine/tree';
 import { slotDecl } from '@engine/slots';
 import { catalogueEntries, CATEGORY_LABELS, getTheme } from '@catalogue/index';
-import { definitionRole, heldSlots, insertOps, shownOnceSlots, type InsertAt, type InsertRole } from './insert-at';
+import { catalogueRole, definitionRole, heldSlots, insertOps, shownOnceSlots, type InsertAt, type InsertRole } from './insert-at';
 import { dropRefusal, savingProblems } from './insert-drop';
 import { BASICS, basicHay, basicSpec, projectInsertDefinitions, type InsertSpec } from './insert-search';
 import { refLabel, treeFor } from './model';
@@ -112,14 +112,17 @@ export function pointLabel(p: AddPoint): string {
   return `Add a section ${p.side === 'before' ? 'above' : 'below'} ${p.name}`;
 }
 
-/** Something a +'s list offers: a section of the theme, a basic element, or one of the project's own components. */
+/**
+ * Something a +'s list offers: a section of the theme, one of its blocks (a feature card, a stat card), a basic element,
+ * or one of the project's own components.
+ */
 export interface QuickItem {
   key: string;
-  kind: 'section' | 'element' | 'component';
+  kind: 'section' | 'block' | 'element' | 'component';
   name: string;
   /** What search reads: the name, then its description, tags and kind. */
   hay: string;
-  /** Its group, said beside it: "Sections", "Basic elements", "Your components". */
+  /** Its group, said beside it: "Sections", "Blocks", "Basic elements", "Your components". */
   group: string;
   spec: InsertSpec;
   /** A Lucide icon name. */
@@ -128,17 +131,17 @@ export interface QuickItem {
 
 /**
  * What a + offers, in the order it lists them: between sections, the theme's sections and then the project's
- * components that go in as sections; inside a container, the basic elements and then the project's components made
- * from something inside a layout (a card), as Insert places each (insertRole). The shared header and footer are not
- * offered, nor code components outside Developer mode, as in the Insert panel.
+ * components that go in as sections; inside a container, the basic elements, the theme's blocks and then the
+ * project's components made from something inside a layout (a card), as Insert places each (insertRole). The shared
+ * header and footer are not offered, nor code components outside Developer mode, as in the Insert panel.
  */
 export function quickItems(state: ProjectState, role: InsertRole, dev = false): QuickItem[] {
   const mine = projectInsertDefinitions(state, dev)
     .filter((d) => definitionRole(state, d.id) === role)
     .map(componentItem);
   if (role === 'element')
-    return [...BASICS.map((b): QuickItem => ({ key: `e:${b.id}`, kind: 'element', name: b.name, hay: basicHay(b), group: 'Basic elements', spec: basicSpec(b), icon: b.icon })), ...mine];
-  return [...themeItems(state), ...mine];
+    return [...BASICS.map((b): QuickItem => ({ key: `e:${b.id}`, kind: 'element', name: b.name, hay: basicHay(b), group: 'Basic elements', spec: basicSpec(b), icon: b.icon })), ...themeItems(state, 'element'), ...mine];
+  return [...themeItems(state, 'section'), ...mine];
 }
 
 /** A project component as a + item. */
@@ -146,21 +149,26 @@ function componentItem(d: ComponentDefinition): QuickItem {
   return { key: `c:${d.id}`, kind: 'component', name: d.name, hay: `${d.name} ${d.description ?? ''} ${d.kind === 'code' ? 'code ' : ''}component`.toLowerCase(), group: 'Your components', spec: { definitionId: d.id } };
 }
 
-/** The theme's sections as + items, or only those `only` names. */
-function themeItems(state: ProjectState, only?: readonly string[]): QuickItem[] {
-  return catalogueEntries(state.site.themeId)
-    .filter((e) => !only || only.includes(e.componentId))
-    .map(
-      (e): QuickItem => ({
+/**
+ * The theme's components as + items: those that go in as `role` (its sections, or its blocks), or those of either role
+ * that `only` names.
+ */
+function themeItems(state: ProjectState, role: InsertRole | null, only?: readonly string[]): QuickItem[] {
+  return catalogueEntries(state.site.themeId).flatMap((e): QuickItem[] => {
+    const block = catalogueRole(state, e.componentId) === 'element';
+    if ((only && !only.includes(e.componentId)) || (role && block !== (role === 'element'))) return [];
+    return [
+      {
         key: `s:${e.componentId}`,
-        kind: 'section',
+        kind: block ? 'block' : 'section',
         name: e.name,
-        hay: `${e.name} ${e.description} ${e.tags.join(' ')} ${CATEGORY_LABELS[e.category] ?? e.category} section`.toLowerCase(),
-        group: 'Sections',
+        hay: `${e.name} ${e.description} ${e.tags.join(' ')} ${CATEGORY_LABELS[e.category] ?? e.category} ${block ? 'block' : 'section'}`.toLowerCase(),
+        group: block ? 'Blocks' : 'Sections',
         spec: { componentId: e.componentId },
         icon: e.icon
-      })
-    );
+      }
+    ];
+  });
 }
 
 /**
@@ -178,7 +186,7 @@ function namedItems(state: ProjectState, at: InsertAt, dev: boolean): QuickItem[
     return d ? (d.owner === 'theme' ? d.componentId : undefined) : id;
   });
   const mine = projectInsertDefinitions(state, dev).filter((d) => ids.includes(d.id) || ids.includes(d.componentId));
-  return [...themeItems(state, contracts.filter((c): c is string => !!c)), ...mine.map(componentItem)];
+  return [...themeItems(state, null, contracts.filter((c): c is string => !!c)), ...mine.map(componentItem)];
 }
 
 /**

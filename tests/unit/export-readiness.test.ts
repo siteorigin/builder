@@ -12,7 +12,8 @@ import { FORM_SERVICES } from '@catalogue/foundation/form';
 import { installComponent, makeInstance } from '@engine/install';
 import { applyOperations } from '@engine/apply';
 import { formNameDiagnostics, validateState, websiteFormNotes, websiteFormProblems } from '@engine/validate';
-import { siteEntries } from '@generator/index';
+import { generateProject, siteEntries } from '@generator/index';
+import { headingOutline } from '@generator/checks';
 import { publicUrlNote, publicUrlWarning } from '../../src/main/export';
 import { destinationForDiagnostic, destinationLabel, formDestinationField, noteState } from '../../src/renderer/src/lib/destinations';
 
@@ -155,6 +156,65 @@ describe('the public URL note', () => {
     );
     s.site.baseUrl = 'https://example.com';
     expect(publicUrlNote(s)).toBeNull();
+  });
+});
+
+describe('the signup form block (#664)', () => {
+  it('is checked as a form: it cannot send until connected, and its finding leads to its settings', () => {
+    const s = fresh();
+    const owner: OwnerRef = { kind: 'page', id: s.site.homePageId };
+    const next = apply(s, [
+      { type: 'node.insert', newNodeId: 'n_signsec', owner, parentId: null, componentId: 'layout.section' },
+      { type: 'node.insert', newNodeId: 'n_signup', owner, parentId: 'n_signsec', slot: 'content', componentId: 'block.signup' }
+    ]);
+    const found = healthForms(next).filter((d) => d.nodeId === 'n_signup');
+    expect(found).toHaveLength(1);
+    expect(found[0].message).toMatch(/the signup form is not connected to a form service, so visitors cannot send it\. /);
+    expect(destinationForDiagnostic(next, found[0])).toEqual({ kind: 'form', owner, nodeId: 'n_signup', setting: 'connection' });
+    // Listed before an export, leading to its endpoint.
+    const signupNote = (s: ProjectState) => websiteFormNotes(s).find((n) => n.destination?.kind === 'form' && n.destination.nodeId === 'n_signup');
+    const note = signupNote(next);
+    expect(note?.message).toBe(found[0].message);
+    expect(note?.destination?.kind === 'form' ? formDestinationField(next, note.destination) : null).toMatchObject({ prop: 'endpoint' });
+    // With Web3Forms chosen, it leads to the access key instead.
+    const web3 = apply(next, [{ type: 'instance.setProp', owner, nodeId: 'n_signup', prop: 'provider', value: 'web3forms' }]);
+    const keyNote = signupNote(web3);
+    expect(keyNote?.destination?.kind === 'form' ? formDestinationField(web3, keyNote.destination) : null).toMatchObject({ prop: 'accessKey' });
+    const connected = apply(next, [{ type: 'instance.setProp', owner, nodeId: 'n_signup', prop: 'endpoint', value: 'https://formspree.io/f/abc123' }]);
+    expect(healthForms(connected).filter((d) => d.nodeId === 'n_signup')).toEqual([]);
+    expect(signupNote(connected)).toBeUndefined();
+  });
+
+  it('shows its heading as a Heading 3, in the page outline and its Markdown copy alike', () => {
+    const s = fresh();
+    const owner: OwnerRef = { kind: 'page', id: s.site.homePageId };
+    const next = apply(s, [
+      { type: 'site.update', markdownMirrors: true },
+      { type: 'node.insert', newNodeId: 'n_signsec', owner, parentId: null, componentId: 'layout.section' },
+      { type: 'node.insert', newNodeId: 'n_signup', owner, parentId: 'n_signsec', slot: 'content', componentId: 'block.signup' }
+    ]);
+    expect(headingOutline(next, s.site.homePageId).filter((h) => h.text === 'Get our newsletter').map((h) => h.level)).toEqual([3]);
+    // The copy's headings sit one below its own title (#): a Heading 3 is ####, as a section's Heading 2 is ###.
+    expect(generateProject(next).get('static/index.html.md')).toMatch(/^#### Get our newsletter$/m);
+  });
+
+  it('names the kind of form in a Netlify name clash: signup forms, or forms of both kinds', () => {
+    const s = fresh();
+    const owner: OwnerRef = { kind: 'page', id: s.site.homePageId };
+    const netlify = (nodeId: string, name: string): Parameters<typeof applyOperations>[1] => [
+      { type: 'instance.setProp', owner, nodeId, prop: 'provider', value: 'netlify' },
+      { type: 'instance.setProp', owner, nodeId, prop: 'formName', value: name }
+    ];
+    const base = apply(s, [
+      { type: 'node.insert', newNodeId: 'n_signsec', owner, parentId: null, componentId: 'layout.section' },
+      { type: 'node.insert', newNodeId: 'n_signup1', owner, parentId: 'n_signsec', slot: 'content', componentId: 'block.signup' },
+      { type: 'node.insert', newNodeId: 'n_signup2', owner, parentId: 'n_signsec', slot: 'content', componentId: 'block.signup' },
+      { type: 'node.insert', newNodeId: 'n_contact', owner, parentId: null, componentId: 'contact.form' }
+    ]);
+    const signups = apply(base, [...netlify('n_signup1', 'newsletter'), ...netlify('n_signup2', 'newsletter'), ...netlify('n_contact', 'contact')]);
+    expect(formNameDiagnostics(signups).map((d) => d.message)).toEqual(expect.arrayContaining([expect.stringContaining('2 signup forms send to the Netlify form “newsletter”')]));
+    const mixed = apply(base, [...netlify('n_signup1', 'contact'), ...netlify('n_contact', 'contact')]);
+    expect(formNameDiagnostics(mixed).map((d) => d.message)).toEqual(expect.arrayContaining([expect.stringContaining('2 forms send to the Netlify form “contact”')]));
   });
 });
 

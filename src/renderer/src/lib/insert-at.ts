@@ -12,12 +12,12 @@ import { restrictsKinds, slotAccepts, slotDecl, slotFill, takesComponent } from 
 import { getTheme } from '@catalogue/index';
 import { ownerLabel, refLabel, treeFor } from './model';
 import type { InsertSpec, LayoutStarter, Primitive } from './insert-search';
-import { definitionRole, type InsertRole } from '@engine/insert-role';
+import { catalogueRole, definitionRole, type InsertRole } from '@engine/insert-role';
 import { insertsInline } from '@engine/semantic-tags';
 import { slotLabel, slotTargetHolds, type SlotTarget } from './slot-target';
 
 /** How a new thing is placed (as one of a page's sections, or as an element inside a layout), and how a component is. */
-export { definitionRole, type InsertRole };
+export { catalogueRole, definitionRole, type InsertRole };
 
 /** Where an inserted node goes: into a parent's list (or one of an instance's slots), or the owner's top level. */
 export type InsertAt = { owner: OwnerRef; parentId: string | null; slot?: string; index?: number };
@@ -64,11 +64,8 @@ export function slotRefusal(state: ProjectState, at: InsertAt | null, spec: Inse
   if (spec.primitive === 'slot') return null;
   if (spec.primitive) return (decl.primitives ?? []).includes(PRIMITIVE_KINDS[spec.primitive]) ? null : takes;
   // A theme component goes in as the site's theme has it (installing it, or using the copy installed from it).
-  const def: ComponentDefinition | undefined = spec.definitionId
-    ? own(state.components, spec.definitionId)
-    : spec.componentId
-      ? getTheme(state.site.themeId).components.find((d) => d.componentId === spec.componentId)
-      : undefined;
+  const themed = !spec.definitionId && spec.componentId ? getTheme(state.site.themeId).components.find((d) => d.componentId === spec.componentId) : undefined;
+  const def: ComponentDefinition | undefined = spec.definitionId ? own(state.components, spec.definitionId) : themed ? (own(state.components, themed.id) ?? themed) : undefined;
   return def && !takesComponent(decl, def) ? takes : null;
 }
 
@@ -84,10 +81,14 @@ export function slotFor(state: ProjectState, definitionId: string): string | und
   return names.find((name) => nodes.some((n) => n.kind === 'slot' && n.slot === name)) ?? names[0];
 }
 
-/** How `spec` is placed: a basic element as an element, a theme section as a section, a project component as it was made. */
+/**
+ * How `spec` is placed: a basic element as an element, a theme component as the theme ships it (a section, or a block
+ * that goes inside a layout), a project component as it was made.
+ */
 export function insertRole(state: ProjectState, spec: InsertSpec): InsertRole {
   if (spec.primitive) return 'element';
   if (spec.definitionId) return definitionRole(state, spec.definitionId);
+  if (spec.componentId) return catalogueRole(state, spec.componentId);
   return 'section';
 }
 

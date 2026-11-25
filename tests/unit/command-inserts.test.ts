@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import type { EditOperation } from '@shared/ops';
-import type { ComponentDefinition, ElementRef, GraphNode, OwnerRef, ProjectState } from '@shared/types';
+import type { ComponentDefinition, ElementRef, GraphNode, InstanceNode, OwnerRef, ProjectState } from '@shared/types';
 import { catalogueEntries } from '@catalogue/index';
 import { createStarterState } from '@catalogue/starters';
 import { applyOperations } from '@engine/apply';
@@ -113,6 +113,37 @@ describe('where an insert from the command menu lands', () => {
     // Nothing selected: an element goes into the last section that takes content, a section at the end of the page.
     expect(insertLanding(state, owner, null, { primitive: 'heading' })).toEqual({ where: 'inside Outro' });
     expect(insertLanding(state, owner, null, { componentId: 'layout.section' })).toEqual({ where: 'at the end of Home' });
+  });
+
+  it('names a theme’s block as a block, and puts it where an element goes (#664)', () => {
+    const { state, owner, intro } = site();
+    const feature = insertChoices(state, false).find((c) => c.id === 'ins:block.feature');
+    expect(feature).toMatchObject({ name: 'Feature card', kind: 'Block', spec: { componentId: 'block.feature' } });
+    expect(insertChoices(state, false).find((c) => c.id === 'ins:features.grid')?.kind).toBe('Section');
+    const selected: ElementRef = { owner, instancePath: [], nodeId: intro };
+    expect(insertLanding(state, owner, selected, { componentId: 'block.feature' })).toEqual({ where: 'inside Intro' });
+    expect(insertLanding(state, owner, null, { componentId: 'block.feature' })).toEqual({ where: 'inside Outro' });
+  });
+
+  it('says before it is chosen that a slot does not take a block, as the Insert tile does', () => {
+    const state = createStarterState('blank', 'Proof', false);
+    const owner: OwnerRef = { kind: 'page', id: state.site.homePageId };
+    const placed = applyOperations(state, [{ type: 'node.insert', owner, parentId: null, componentId: 'layout.section' }]);
+    const intro = placed.results[0].nodeId as string;
+    const named = applyOperations(placed.state, [{ type: 'node.rename', owner, nodeId: intro, name: 'Intro' }]).state;
+    const sectionDef = (named.pages[owner.id].nodes[intro] as InstanceNode).definitionId;
+    // A copy of the Section's design, which the page's Section then shows, whose slot takes social proof only.
+    const fork = applyOperations(named, [{ type: 'component.fork', definitionId: sectionDef }]);
+    const proof = fork.results[0].definitionId as string;
+    const s = applyOperations(fork.state, [{ type: 'component.setSlot', definitionId: proof, slot: 'content', label: 'Proof', categories: ['social-proof'] }]).state;
+    const selected: ElementRef = { owner, instancePath: [], nodeId: intro };
+    expect(insertLanding(s, owner, selected, { componentId: 'block.feature' })).toEqual({ refused: 'Not taken by that slot' });
+    expect(insertLanding(s, owner, selected, { componentId: 'block.stat' })).toEqual({ where: 'inside Intro' });
+    expect(insertLanding(s, owner, selected, { primitive: 'heading' })).toEqual({ refused: 'Not taken by that slot' });
+    // The same for the slot picked for Insert, with nothing selected.
+    const picked = { owner, parentId: intro, slot: 'content' };
+    expect(insertLanding(s, owner, null, { componentId: 'block.feature' }, picked)).toEqual({ refused: 'Not taken by that slot' });
+    expect(insertLanding(s, owner, null, { componentId: 'block.testimonial' }, picked)).toEqual({ where: expect.stringContaining('Intro') });
   });
 
   it('refuses a component inside itself, or inside one that holds it however deep, while it is edited everywhere', () => {

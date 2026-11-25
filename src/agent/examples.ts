@@ -17,6 +17,8 @@ export function checkExample(state: ProjectState, ex: AiExample, focused = false
   // A small model's page tool may leave the section, or the option the example picks, out (focusedListing).
   const def = installed && focused ? focusedListing(state, installed) : installed;
   if (!def || def.category === 'shell') return [{ field: 'componentId', message: `unknown component "${ex.componentId}"` }];
+  // An example is a ready-to-send page section; a block goes inside one.
+  if (themed?.insertAs === 'element') return [{ field: 'componentId', message: `"${ex.componentId}" is a block, not a section` }];
   const issues: FieldIssue[] = [];
   chooseVariants(def, ex.variant, ex.variants, '', issues);
   checkProps(def, ex.props, state, 'props', issues);

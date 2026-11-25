@@ -78,7 +78,7 @@ await openPage(homeTitle, '/');
 await win.getByRole('button', { name: 'Export', exact: true }).click();
 const review = modal.getByTestId('export-form-review');
 await review.waitFor();
-assert.match(await review.innerText(), /A contact form on the website can’t send messages yet\./);
+assert.match(await review.innerText(), /A form on the website can’t send messages yet\./);
 assert.match(await review.innerText(), /You can still export the website\./);
 assert.match(await review.innerText(), /Lookbook: the contact form is not connected to a form service, so visitors cannot send it\./);
 const siteCard = modal.getByRole('button', { name: /Website files, ready to upload/ });

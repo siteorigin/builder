@@ -14,12 +14,12 @@ import { archivePages } from '@shared/archives';
 import { entryQuery, feedRows } from '@shared/entry-feed';
 import { anchorCapable, anchorsInUse, displayName, findParent, shownUnder } from '@engine/tree';
 import { declaredState } from '@engine/schema';
-import { formFieldSettingsHidden, namesFormFields, netlifyFormName, offersFormChoices } from '@catalogue/foundation/form';
+import { formFieldSettingsHidden, isFormContract, namesFormFields, netlifyFormName, offersFormChoices } from '@catalogue/foundation/form';
 import { codeTakesBlocks, defFile, isDraftEntry, isDraftPage, keptPanels, liveRedirects, optionalTabGates, publishedState, resolveLink, siteEntries, stateActionWorks } from './index';
 import { effectiveItem, teaserFields } from '@shared/page-teasers';
 import { pagesShowing, partsShown, SHELL_PARTS, showsPart, type ShellPart } from '@shared/page-shell';
 import { actionWraps } from './card-links';
-import { parseVideoUrl } from '@shared/video';
+import { isVideoContract, parseVideoUrl } from '@shared/video';
 import { derived } from './cache';
 import { entryNeighbours, materializeTemplate, showsBody } from './entry-template';
 import { selectedVariantStyles, startingVariants } from '@shared/variants';
@@ -1040,12 +1040,12 @@ export interface RenderedContent {
 
 /**
  * The shipped code component a definition is, or a header copied from it (Make unique keeps its code and
- * properties). A copied contact form is not: the project keeps its answers' submission keys only for the theme's own
- * form (`namesFormFields`), so a copy's fields are left to the inspector.
+ * properties). A copied form is not: the project keeps its answers' submission keys only for the theme's own forms
+ * (`namesFormFields`), so a copy's fields are left to the inspector.
  */
 export function shippedCode(state: ProjectState, def: ComponentDefinition): string | undefined {
   if (def.owner === 'theme')
-    return def.componentId === 'shell.header' || def.componentId === 'data.table' || def.componentId === 'media.video' || (def.componentId === 'contact.form' && namesFormFields(def)) ? def.componentId : undefined;
+    return def.componentId === 'shell.header' || def.componentId === 'data.table' || isVideoContract(def.componentId) || (isFormContract(def.componentId) && namesFormFields(def)) ? def.componentId : undefined;
   // Back through every copy (a copy of a copy) to where it started.
   let from = def.provenance?.forkedFrom;
   for (let guard = 0; from && guard < 20; guard++) {
@@ -1069,12 +1069,14 @@ const headerNoticeLinkNamed = (props: Record<string, unknown>) => headerNoticeSh
  * a label and somewhere to go; the form's words, never its service settings or the names answers are sent under.
  */
 function shippedCodeShows(state: ProjectState, which: string, props: Record<string, unknown>): Set<string> {
-  if (which === 'contact.form') return new Set(['eyebrow', 'heading', 'lead', 'fields.label', 'fields.placeholder', 'submitLabel', 'successMessage', 'errorMessage']);
+  if (isFormContract(which)) return new Set(['eyebrow', 'heading', 'lead', 'fields.label', 'fields.placeholder', 'submitLabel', 'successMessage', 'errorMessage']);
   // The table's words around it. Its cells are a table value, edited in the inspector's table editor.
   if (which === 'data.table') return new Set(['eyebrow', 'heading', 'lead', 'caption']);
   // The video's words around it, and its title on the Play button, which shows only for a video it can play. The
   // address is a setting: visitors never read it.
   if (which === 'media.video') return new Set(['eyebrow', 'heading', 'lead', ...(parseVideoUrl(props.url) ? ['title'] : [])]);
+  // The compact video's caption under it, and the same title on its Play button.
+  if (which === 'block.video') return new Set(['caption', ...(parseVideoUrl(props.url) ? ['title'] : [])]);
   // As the header's markup reads them: `!!name && (showSiteName || !logo?.src)`, `ctaLabel && ctaLink?.href`, the
   // notice's words once they are more than spaces, and its link beside them with a label and somewhere to go.
   const out = new Set(['links.label', 'links.link']);
@@ -1137,7 +1139,7 @@ export function renderedContent(state: ProjectState, tree: NodeTree): RenderedCo
       // The placement's own field each property is: directly, or through the binding a design hands it.
       const fieldOf = (key: string): PlacementField | undefined => (inDef ? placementField(n.props[key], scope) : { prop: key });
       // A form's fields handed in by a design are edited on that design's list, where their submission keys are not kept.
-      const keyless = (key: string) => which === 'contact.form' && inDef && key === 'fields';
+      const keyless = (key: string) => isFormContract(which) && inDef && key === 'fields';
       /** A field this code may read as a setting (or in ways its markup alone decides): never changed from here. */
       const guard = (f: PlacementField | undefined) => {
         if (!f) return;
@@ -1182,7 +1184,7 @@ export function renderedContent(state: ProjectState, tree: NodeTree): RenderedCo
           // A computed list's rows are pages, not items of the placement: their words are not its fields.
           const itemId = typeof item.id === 'string' && item.id && !schema.feed ? item.id : undefined;
           // A form field's setting its type never shows (a checkbox's placeholder) is not on the page.
-          const unused = which === 'contact.form' && key === 'fields' && offersFormChoices(def) ? formFieldSettingsHidden(item) : [];
+          const unused = isFormContract(which) && key === 'fields' && offersFormChoices(def) ? formFieldSettingsHidden(item) : [];
           for (const f of Object.keys(schema.fields)) {
             const source = field && !field.itemId && itemId ? { prop: field.prop, itemId, field: f } : undefined;
             if ((shows && !shows.has(`${key}.${f}`)) || unused.includes(f)) guard(source);
@@ -2434,9 +2436,10 @@ function collectHeadings(state: ProjectState, pageId: string, shell: boolean): {
         const which = shippedCode(state, def);
         // Other code's headings are not known here: the page's review cannot say it has no title.
         if (!which) uninspected ||= owner.kind === 'page';
-        // The shipped contact form, data table and video show their heading as an `<h2>`.
-        if ((which !== 'contact.form' && which !== 'data.table' && which !== 'media.video') || typeof props.heading !== 'string' || !props.heading.trim()) return;
-        add({ level: 2, text: props.heading.replace(/\s+/g, ' ').trim(), owner, nodeId: reportId, ...(inDef ? { direct: false } : {}) }, scope);
+        // The shipped contact form, data table and video show their heading as an `<h2>`; the signup form, a block, as an `<h3>`.
+        const level = which === 'block.signup' ? 3 : which === 'contact.form' || which === 'data.table' || which === 'media.video' ? 2 : 0;
+        if (!level || typeof props.heading !== 'string' || !props.heading.trim()) return;
+        add({ level, text: props.heading.replace(/\s+/g, ' ').trim(), owner, nodeId: reportId, ...(inDef ? { direct: false } : {}) }, scope);
       }
     });
   }

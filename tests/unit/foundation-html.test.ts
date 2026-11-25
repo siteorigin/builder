@@ -39,7 +39,13 @@ const COMPONENTS = [
   'media.video',
   'media.carousel',
   'tabs.showcase',
-  'pricing.toggle'
+  'pricing.toggle',
+  'block.feature',
+  'block.stat',
+  'block.testimonial',
+  'block.callout',
+  'block.signup',
+  'block.video'
 ] as const;
 type ComponentId = (typeof COMPONENTS)[number];
 
@@ -211,6 +217,85 @@ describe('stats.row', () => {
     // The figure is a column flex stack, so `order: -1` on the value shows it above its label.
     expect(componentsCss()).toMatch(/\.so-foundation-stats-row__value\s*\{[^}]*order:\s*-1/);
     expect(componentsCss()).toMatch(/\.so-foundation-stats-row__figure\s*\{[^}]*display:\s*flex[^}]*flex-direction:\s*column/);
+  });
+});
+
+describe('the blocks (#664)', () => {
+  it('render one card each, with no section around it and no page-width container', () => {
+    for (const id of ['block.feature', 'block.stat', 'block.testimonial', 'block.callout', 'block.signup', 'block.video'] as const) {
+      const out = authoredHtml(id, {});
+      expect(out, id).not.toMatch(/<section\b/);
+      // The signup card keeps the form's inner column, at the card's full width.
+      if (id !== 'block.signup') expect(out, id).not.toContain('__inner');
+    }
+    expect(bundle.files.get(defFile(bundle.defs['block.signup'])) ?? '').toMatch(/\.so-form--block \.so-form__inner \{[^}]*max-width: none;/);
+    const css = componentsCss();
+    for (const id of ['block.feature', 'block.stat', 'block.testimonial', 'block.callout']) {
+      const root = css.match(new RegExp(`\\.${nodeClass(id, 'root')}\\s*\\{([^}]*)\\}`))?.[1] ?? '';
+      expect(root, id).toContain('var(--so-radius-lg)');
+      expect(root, id).not.toMatch(/space-section|container-content|container-gutter/);
+    }
+  });
+
+  it('feature card: an icon, its title at the heading level chosen, a description and a link only with a label', () => {
+    const out = html('block.feature');
+    expect(tags(out, 'h3')).toEqual(['Thoughtful planning']);
+    expect(out).toMatch(classed(nodeClass('block.feature', 'icon-badge')));
+    expect(out).not.toMatch(classed(nodeClass('block.feature', 'link')));
+    // Somewhere to go is not enough: the link shows only with its label.
+    expect(html('block.feature', { linkLabel: '', link: { href: '/services/' } })).not.toMatch(classed(nodeClass('block.feature', 'link')));
+    const linked = html('block.feature', { headingLevel: 'h2', linkLabel: 'Read more', link: { href: '/services/' } });
+    expect(tags(linked, 'h2')).toEqual(['Thoughtful planning']);
+    expect(linked).toContain('Read more');
+  });
+
+  it('stat card: its label (dt) before its figure (dd), and a note only when it has one', () => {
+    const out = html('block.stat');
+    expect(tags(out, 'dl')[0].replace(/\s+/g, '')).toMatch(/^<dt[^>]*>Clientswhoreturn<\/dt><dd[^>]*>98%<\/dd>$/);
+    expect(out).not.toMatch(classed(nodeClass('block.stat', 'note')));
+    expect(html('block.stat', { note: 'Since 2015' })).toContain('Since 2015');
+  });
+
+  it('callout box: its heading, text and button, with the bar down its leading edge on every tone', () => {
+    const out = html('block.callout', { actionLink: { href: '/contact/' } });
+    expect(tags(out, 'h3')).toEqual(['Free first consultation']);
+    expect(out).toContain('Tell us what you have in mind');
+    expect(out).toContain('Book a call');
+    const css = componentsCss();
+    expect(css).toMatch(new RegExp(`\\.${nodeClass('block.callout', 'root')}\\s*\\{[^}]*border-inline-start:\\s*4px solid var\\(--so-color-brand\\)`));
+    // The filled tones change its background, never its border.
+    const tones = [...css.matchAll(/\.so-foundation-block-callout--tone-(muted|inverse)[^{]*\{([^}]*)\}/g)];
+    expect(new Set(tones.map((m) => m[1]))).toEqual(new Set(['muted', 'inverse']));
+    for (const [, , rule] of tones) expect(rule).not.toMatch(/border/);
+  });
+
+  it('testimonial card: a figure whose quote comes first and whose caption, last, names the client', () => {
+    const out = html('block.testimonial');
+    const figure = tags(out, 'figure')[0];
+    expect(figure.trim()).toMatch(/^<blockquote\b[\s\S]*<\/figcaption>$/);
+    expect(tags(figure, 'cite')).toEqual(['Amelia Hart']);
+  });
+
+  it('signup form: a compact form with one required email field, which cannot send until it is connected', () => {
+    const out = authoredHtml('block.signup', {});
+    expect(out).toMatch(/<div class="so-form so-form--block so-form--default[^"]*"/);
+    expect(tags(out, 'h3')).toEqual(['Get our newsletter']);
+    expect(out).toMatch(/<input[^>]*type="email"[^>]*name="email"[^>]*required/);
+    expect(out).toMatch(/<button class="so-btn so-btn--primary[^"]*" type="submit" disabled[^>]*>Sign up<\/button>/);
+    expect(authoredHtml('block.signup', { endpoint: 'https://formspree.io/f/abc123' })).toMatch(/<form[^>]*action="https:\/\/formspree\.io\/f\/abc123"/);
+  });
+
+  it('compact video: a figure with the player, which loads nothing from the host before Play, and a caption only when set', () => {
+    const out = authoredHtml('block.video', { url: 'https://www.youtube.com/watch?v=dQw4w9WgXcQ', title: 'Studio tour' });
+    expect(out).toMatch(/^\s*<figure class="so-video-block so-video-block--default/);
+    expect(out).not.toContain('<iframe');
+    expect(out).toContain('Studio tour');
+    expect(out).not.toContain('<figcaption');
+    expect(tags(authoredHtml('block.video', { caption: 'Our studio, filmed in spring' }), 'figcaption')).toEqual(['Our studio, filmed in spring']);
+    // Plain has no background of its own, so its caption takes the colour of the text around it (a dark section's too).
+    const source = bundle.files.get(defFile(bundle.defs['block.video']))!;
+    expect(source).toMatch(/\.so-video-block__caption \{[^}]*color: inherit;/);
+    expect(source.match(/\.so-video-block \{([^}]*)\}/)?.[1]).not.toMatch(/color:/);
   });
 });
 

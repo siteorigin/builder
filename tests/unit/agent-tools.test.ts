@@ -372,6 +372,10 @@ describe('upsert_page_with_sections', () => {
         layoutId = 'n_layout';
         home.nodes[layoutId] = { id: layoutId, kind: 'text', tag: 'p', text: 'Hand-made note' };
         home.rootIds.push(layoutId);
+        // A theme block put at the root by hand (#664): the macro cannot place one there, so it never removes one.
+        const block = makeInstance(s.components[installComponent(s, 'block.feature')], { title: 'Kept by hand' });
+        home.nodes[block.id] = block;
+        home.rootIds.push(block.id);
       }
     );
     const home = () => pageAt(session.state, '/')!;
@@ -388,7 +392,7 @@ describe('upsert_page_with_sections', () => {
     expect(defs.filter((d) => d.owner === 'project').map((d) => d.kind).sort()).toEqual(['code', 'managed', 'managed']);
 
     await run('Rebuild the home page with just a hero');
-    expect(home().rootIds.map((id) => (home().nodes[id].kind === 'instance' ? session.state.components[(home().nodes[id] as InstanceNode).definitionId].componentId : id))).toEqual(['hero.split', layoutId]);
+    expect(home().rootIds.map((id) => (home().nodes[id].kind === 'instance' ? session.state.components[(home().nodes[id] as InstanceNode).definitionId].componentId : id))).toEqual(['hero.split', layoutId, 'block.feature']);
     expect(((home().nodes[home().rootIds[0]] as InstanceNode).props.heading as string)).toBe('Only this');
   });
 
@@ -2137,9 +2141,15 @@ describe('ai-profile examples', () => {
       const examples = theme.aiProfile.examples ?? [];
       for (const ex of examples) expect(checkExample(scoped, ex), `${theme.id}/${ex.id}`).toEqual([]);
       const covered = new Set(examples.map((e) => e.componentId));
-      for (const c of theme.components) if (c.category !== 'shell' && c.componentId !== 'layout.section') expect(covered.has(c.componentId), `${theme.id} is missing an example for ${c.componentId}`).toBe(true);
+      // Examples are ready-to-send page sections: a block goes inside one, so it has none.
+      for (const c of theme.components) if (c.category !== 'shell' && c.componentId !== 'layout.section' && c.insertAs !== 'element') expect(covered.has(c.componentId), `${theme.id} is missing an example for ${c.componentId}`).toBe(true);
       expect(new Set(examples.map((e) => e.id)).size).toBe(examples.length);
     }
+  });
+
+  it('are page sections: a block, which goes inside one, is refused as an example (#664)', () => {
+    const state = createStarterState('business', 'Test', false);
+    expect(checkExample(state, { id: 'x', componentId: 'block.feature', keywords: [], description: '', props: { title: 'Planning' } })).toEqual([{ field: 'componentId', message: '"block.feature" is a block, not a section' }]);
   });
 
   it('notices an example that has gone stale', () => {
@@ -2967,6 +2977,36 @@ describe('a run limited to one page (#513)', () => {
     };
     return { host, state: () => state, applied };
   };
+
+  it('keeps the theme’s blocks out of a page’s sections, and says where they go instead (#664)', async () => {
+    const state = createStarterState('business', 'Test', false);
+    const listed = ((upsertToolSchema(state) as { properties: { sections: { items: { oneOf: Array<{ properties: { componentId: { enum: string[] } } }> } } } }).properties.sections.items.oneOf).map((o) => o.properties.componentId.enum[0]);
+    expect(listed).toContain('features.grid');
+    expect(listed.filter((id) => id.startsWith('block.'))).toEqual([]);
+    const { host, state: now } = hostFor(state, { kind: 'site' });
+    const out = await runUpsert({ slug: 'services', sections: [{ componentId: 'intro.page', props: { heading: 'Services' } }, { componentId: 'block.feature', props: { title: 'Planning' } }] }, host, 'c1', newMacroMemory());
+    expect(out.ok).toBe(false);
+    expect(JSON.stringify(out.content)).toContain('\\"block.feature\\" is a block, not a section');
+    // A repair cannot take a section away, so it is not what the call is told to send.
+    expect(JSON.stringify(out.content)).toContain('Call again without repair');
+    expect(JSON.stringify(out.content)).not.toContain('repair: true');
+    expect(pageAt(now(), '/services/')).toBeUndefined();
+    // The project's installed copy decides, as Insert reads it: one set to insert inside layouts is a block here too.
+    const installed = structuredClone(state);
+    installed.components['foundation.features.grid'] = { ...structuredClone(catalogueComponent(state.site.themeId, 'features.grid')!), insertAs: 'element' };
+    const relisted = ((upsertToolSchema(installed) as { properties: { sections: { items: { oneOf: Array<{ properties: { componentId: { enum: string[] } } }> } } } }).properties.sections.items.oneOf).map((o) => o.properties.componentId.enum[0]);
+    expect(relisted).not.toContain('features.grid');
+    // The catalogue and a search say which components are blocks.
+    const catalogue = (await executeTool('read_project', JSON.stringify({ sections: ['catalogue'] }), host, 'r1')).content as { catalogue: Array<{ componentId: string; block?: boolean }> };
+    expect(catalogue.catalogue.filter((c) => c.block).map((c) => c.componentId)).toEqual(['block.feature', 'block.stat', 'block.testimonial', 'block.callout', 'block.signup', 'block.video']);
+    const found = (await executeTool('search_components', JSON.stringify({ query: 'stat card statistics' }), host, 's1')).content as { results: Array<{ componentId?: string; block?: boolean }> };
+    expect(found.results.find((r) => r.componentId === 'block.stat')).toMatchObject({ block: true });
+    expect(found.results.find((r) => r.componentId === 'stats.row')).toBeDefined();
+    expect(found.results.find((r) => r.componentId === 'stats.row')!.block).toBeUndefined();
+    const detail = async (componentId: string) => ((await executeTool('read_component', JSON.stringify({ componentId }), host, `d-${componentId}`)).content as { component?: { block?: boolean }; block?: boolean });
+    expect(JSON.stringify(await detail('block.stat'))).toContain('"block":true');
+    expect(JSON.stringify(await detail('stats.row'))).not.toContain('"block":true');
+  });
 
   it('leaves a link waiting on another page for a run that may change that page', async () => {
     let state = createStarterState('business', 'Test', false);

@@ -4,6 +4,7 @@
  * component is saved so a project that has never seen the component places it the same way.
  */
 import type { OwnerRef, ProjectState } from '@shared/types';
+import { catalogueComponent } from '@catalogue/index';
 import { allTrees, findParent } from './tree';
 
 export type InsertRole = 'section' | 'element';
@@ -39,6 +40,18 @@ export function definitionRole(state: ProjectState, definitionId: string, seen =
   if (root.kind === 'instance') return definitionRole(state, root.definitionId, seen);
   if (root.kind === 'element' && root.tag === 'section') return 'section';
   return 'element';
+}
+
+/**
+ * How the site's theme component `componentId` goes into a page: as the project has it once installed (see
+ * definitionRole), else as the theme ships it. A theme's block (a feature card, a stat card) ships to insert as an
+ * element; every other theme component is a section.
+ */
+export function catalogueRole(state: ProjectState, componentId: string): InsertRole {
+  const def = catalogueComponent(state.site.themeId, componentId);
+  if (!def) return 'section';
+  if (own(state.components, def.id)) return definitionRole(state, def.id);
+  return def.insertAs === 'element' ? 'element' : 'section';
 }
 
 /** The role the editor tells from the design alone, as if the author had not chosen one: what Automatic means. */

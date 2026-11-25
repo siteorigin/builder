@@ -79,7 +79,8 @@ describe('authoring a pack', () => {
   it('builds Foundation and its development fixture from their own identities', () => {
     expect(FOUNDATION_PACK.components.map((c) => c.componentId)).toEqual([
       'shell.header', 'shell.footer', 'hero.centered', 'hero.split', 'intro.page', 'content.article', 'logos.strip', 'features.grid', 'content.media', 'tabs.showcase', 'content.steps-media', 'content.text', 'stats.row',
-      'testimonials.grid', 'team.grid', 'pricing.plans', 'pricing.toggle', 'data.table', 'faq.list', 'content.pages', 'content.news', 'blog.featured', 'blog.grid', 'blog.list', 'media.gallery', 'media.carousel', 'media.video', 'cta.banner', 'contact.details', 'contact.form', 'site.search', 'layout.section'
+      'testimonials.grid', 'team.grid', 'pricing.plans', 'pricing.toggle', 'data.table', 'faq.list', 'content.pages', 'content.news', 'blog.featured', 'blog.grid', 'blog.list', 'media.gallery', 'media.carousel', 'media.video', 'cta.banner', 'contact.details', 'contact.form', 'site.search', 'layout.section',
+      'block.feature', 'block.stat', 'block.testimonial', 'block.callout', 'block.signup', 'block.video'
     ]);
     expect(FOUNDATION_ALT_PACK.components.map((c) => c.componentId)).toEqual(FOUNDATION_PACK.components.map((c) => c.componentId));
     for (const pack of [FOUNDATION_PACK, FOUNDATION_ALT_PACK]) {
@@ -96,6 +97,10 @@ describe('authoring a pack', () => {
       // The fixture keeps Foundation's contracts; only the split hero's layout differs.
       if (c.componentId !== 'hero.split') expect(JSON.stringify({ ...c, id: '', provenance: {} })).toBe(JSON.stringify({ ...FOUNDATION_PACK.components[i], id: '', provenance: {} }));
     }
+    // The blocks (#664) insert as elements in every theme, so a theme switch keeps where Insert puts them.
+    for (const pack of BUILTIN_PACKS)
+      expect(pack.components.filter((c) => c.insertAs === 'element').map((c) => c.componentId), pack.id).toEqual(['block.feature', 'block.stat', 'block.testimonial', 'block.callout', 'block.signup', 'block.video']);
+    expect(FOUNDATION_PACK.components.filter((c) => c.insertAs !== undefined && c.insertAs !== 'element')).toEqual([]);
     expect(BUILTIN_PACKS.map((p) => [p.id, !!p.devOnly])).toEqual([
       ['foundation', false],
       ['editorial', false],

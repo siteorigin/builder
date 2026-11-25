@@ -57,7 +57,8 @@ describe('generated Svelte compiles', () => {
     expect(compileAll(generateProject(createStarterState('blank', 'Blank', false), { instrument: true }))).toEqual([]);
   });
 
-  it('compiles and validates an Editorial site with every section, and exports it unchanged after a trip to Foundation (#390)', () => {
+  // Every section and block of two themes, compiled: seconds of work, more under a busy machine.
+  it('compiles and validates an Editorial site with every section, and exports it unchanged after a trip to Foundation (#390)', { timeout: 30_000 }, () => {
     const s = createStarterState('business', 'Magazine', false, 'editorial');
     const entries = catalogueEntries('editorial');
     expect(entries.length).toBeGreaterThan(25);
