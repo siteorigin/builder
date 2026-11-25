@@ -276,6 +276,14 @@ details[open] > summary .so-icon { transform: rotate(45deg); }
     margin-block-end: 0.5em; font-weight: 600;
   }
   [role='tabpanel'] + [role='tabpanel'] { margin-block-start: 1.5em; }
+  /* What stays in view on screen while content beside it scrolls (a section's heading beside its cards, steps beside
+     their picture) prints in its place, the columns one after the other, however wide the sheet: in any copy of the
+     section, by the option's and the elements' class endings. */
+  :is([class$='--layout-sticky-split'], [class*='--layout-sticky-split ']):is([class$='__inner'], [class*='__inner ']):not(#so-print),
+  :is([class$='__steps-layout'], [class*='__steps-layout ']):not(#so-print) { grid-template-columns: minmax(0, 1fr) !important; }
+  :is([class$='--layout-sticky-split'], [class*='--layout-sticky-split ']):is([class$='__intro'], [class*='__intro ']):not(#so-print),
+  :is([class$='__media-stage'], [class*='__media-stage ']):not(#so-print) { position: static !important; inset: auto !important; }
+  :is([class$='__steps-stage'], [class*='__steps-stage ']):not(#so-print) { order: 0 !important; }
   /* Where the sheet has room: a heading, or a section's heading group (eyebrow, heading and lead, in any copy of
      the section), stays with what follows it, and short units (a plan, a contact method, a question and its
      answer, a gallery image and its caption, the contact form) stay whole. */

@@ -1,11 +1,20 @@
 import { tokenVar } from '@shared/styles';
-import { P, item, tok } from '../dsl';
+import { P, item, tok, uiState } from '../dsl';
 import { FOUNDATION } from './pack';
 import { eyebrowStyles, headingBlock, headingLevel, layoutAxis, mutedStyles, sectionShell, toneAxis } from './common';
 
 const { managed } = FOUNDATION;
 
 const card = { layout: 'stack', gap: tok('space.md'), paddingBlock: tok('space.xl'), paddingInline: tok('space.xl'), background: tok('color.surface'), color: tok('color.text'), border: tok('border.default'), radius: tok('radius.lg') } as const;
+
+/**
+ * Pinned in view while the content beside it scrolls past, clear of the site's sticky header: the header publishes the
+ * height it takes up as --so-header-offset (0 when it does not stick), and 1.5rem more keeps the two apart. Released
+ * at the end of its section. Print shows it in its place (base.css).
+ */
+const STICKY_BELOW_HEADER = { position: 'sticky', inset: 'calc(var(--so-header-offset, 4.5rem) + 1.5rem) auto auto auto', alignSelf: 'start' } as const;
+/** Two columns side by side, a narrower one for what stays pinned and a wider one for what scrolls. */
+const STICKY_SPLIT_LAYOUT = { layout: 'grid', gridTemplate: '1fr 1.5fr', align: 'start', columnGap: tok('space.2xl') } as const;
 
 export const featuresGrid = managed({
   componentId: 'features.grid',
@@ -50,7 +59,17 @@ export const featuresGrid = managed({
     layout: layoutAxis({
       default: { label: 'Three columns' },
       'two-columns': { label: 'Two columns', styles: { grid: { desktop: { columns: 2 } } } },
-      'four-columns': { label: 'Four columns', styles: { grid: { desktop: { columns: 4 } } } }
+      'four-columns': { label: 'Four columns', styles: { grid: { desktop: { columns: 4 } } } },
+      // From tablet width up: the heading group stays in view, below the site's sticky header, while the cards scroll
+      // past beside it. Phones (and print, see base.css) show the heading above the cards as usual.
+      'sticky-split': {
+        label: 'Heading pinned beside cards',
+        styles: {
+          inner: { tablet: STICKY_SPLIT_LAYOUT, desktop: { ...STICKY_SPLIT_LAYOUT, columnGap: tok('space.3xl') } },
+          intro: { tablet: STICKY_BELOW_HEADER, desktop: STICKY_BELOW_HEADER },
+          grid: { tablet: { columns: 1 }, desktop: { columns: 1 } }
+        }
+      }
     })
   },
   build: (b) =>
@@ -119,6 +138,84 @@ export const mediaSplit = managed({
           b.text('heading', { $prop: 'headingLevel' }, { $prop: 'heading' }, { name: 'Heading', when: { $prop: 'heading' }, styles: { textStyle: tok('text.h2') } }),
           b.rich('body', { $prop: 'body' }, { name: 'Text', styles: { ...mutedStyles, textStyle: tok('text.body') } }),
           b.link('action', { $prop: 'actionLink' }, { $prop: 'actionLabel' }, 'secondary', { name: 'Action', when: { $prop: 'actionLabel' }, styles: { marginBlockStart: tok('space.xs') } })
+        ])
+      ])
+    ])
+});
+
+/** A step's button: its title, as wide as its column, read as a heading-sized line. */
+const stepTrigger = { width: 'fill', textAlign: 'start', justify: 'start', textStyle: tok('text.h3'), color: tok('color.text'), paddingBlock: tok('space.xs') } as const;
+
+/**
+ * Numbered steps beside a picture: clicking a step opens its description and shows its own picture, both read from
+ * one list, so a step's words and picture never drift apart. Each placement starts at the step it is set to (the
+ * first); every description and picture stays in the page, so printing shows them all, one after another. From tablet
+ * width up the picture stays in view, below the sticky site header, while a long list of steps scrolls.
+ */
+export const stepsMedia = managed({
+  componentId: 'content.steps-media',
+  name: 'Steps with pictures',
+  description: 'A list of steps beside a picture: choosing a step opens its description and shows its own picture. Use for a process, how it works, or a product tour.',
+  category: 'content',
+  tags: ['steps', 'process', 'how it works', 'accordion', 'tabs', 'tour', 'media', 'split', 'showcase'],
+  icon: 'list-ordered',
+  properties: {
+    ...P.group('Text', {
+      eyebrow: P.str('Eyebrow', 'How it works'),
+      heading: P.str('Heading', 'From first call to finished project'),
+      headingLevel: headingLevel('h2'),
+      lead: P.text('Supporting text', 'Three clear stages, each with a picture of what it looks like in practice.')
+    }),
+    steps: P.list(
+      'Steps',
+      'Step',
+      {
+        title: P.str('Title', 'Step'),
+        description: P.text('Description', 'Describe what happens at this step and what the client gets from it.'),
+        image: P.image('Picture', 'A picture of this step')
+      },
+      [
+        { title: 'Plan together', description: 'We walk the site with you, agree priorities and a budget, and set a schedule everyone understands.', image: { assetId: null, alt: 'Planning a project at a table' } },
+        { title: 'Design the details', description: 'Layouts, materials and finishes take shape through a few focused reviews, so nothing surprises you later.', image: { assetId: null, alt: 'Material samples laid out for review' } },
+        { title: 'Build and hand over', description: 'Trusted specialists build it while we keep you informed, then we walk you through every finished detail.', image: { assetId: null, alt: 'A finished room ready for handover' } }
+      ],
+      { titleField: 'title', max: 8 }
+    )
+  },
+  state: { activeStep: { type: 'item', label: 'Active step', list: 'steps', initial: 0 } },
+  parts: {
+    root: { nodeId: 'root', label: 'Section', styleControls: ['paddingBlock', 'background'] },
+    heading: { nodeId: 'heading', label: 'Heading', styleControls: ['textStyle', 'color'] },
+    step: { nodeId: 'step', label: 'Step', styleControls: ['background', 'border', 'radius', 'paddingBlock', 'paddingInline'] },
+    stepTitle: { nodeId: 'step-trigger', label: 'Step title', styleControls: ['textStyle', 'color'] },
+    stepText: { nodeId: 'step-text', label: 'Step description', styleControls: ['textStyle', 'color'] },
+    picture: { nodeId: 'step-image', label: 'Picture', styleControls: ['aspectRatio', 'radius', 'shadow'] }
+  },
+  variantAxes: {
+    tone: toneAxis(['lead']),
+    layout: layoutAxis({
+      default: { label: 'Steps first' },
+      'media-first': { label: 'Picture first', styles: { 'steps-stage': { tablet: { order: 2 }, desktop: { order: 2 } } } }
+    })
+  },
+  build: (b) =>
+    sectionShell(b, [
+      headingBlock(b),
+      b.el('steps-layout', 'div', { name: 'Layout', styles: { base: { layout: 'grid', columns: 1, gap: tok('space.xl') }, tablet: { columns: 2, align: 'start', gap: tok('space.2xl') }, desktop: { columns: 2, align: 'start', gap: tok('space.3xl') } } }, [
+        b.el('steps-stage', 'ol', { name: 'Steps', styles: { layout: 'stack', gap: tok('space.sm') } }, [
+          b.repeat('step-items', 'steps', [
+            b.el('step', 'li', { name: 'Step', styles: { layout: 'stack', gap: tok('space.xs'), paddingBlock: tok('space.md'), paddingInline: tok('space.lg'), border: tok('border.default'), radius: tok('radius.lg'), background: tok('color.surface') } }, [
+              b.link('step-trigger', { type: 'none', target: '' }, { $item: 'title' }, 'plain', { name: 'Step title', stateAction: { state: 'activeStep', op: 'select' }, styles: stepTrigger }),
+              b.el('step-details', 'div', { name: 'Step details', when: uiState('activeStep') }, [b.text('step-text', 'p', { $item: 'description' }, { name: 'Description', styles: { ...mutedStyles, textStyle: tok('text.body') } })])
+            ])
+          ])
+        ]),
+        b.el('media-stage', 'div', { name: 'Picture', styles: { tablet: STICKY_BELOW_HEADER, desktop: STICKY_BELOW_HEADER } }, [
+          b.repeat('media-items', 'steps', [
+            b.el('step-media', 'figure', { name: 'Step picture', when: uiState('activeStep') }, [
+              b.image('step-image', { $item: 'image' }, { name: 'Picture', styles: { aspectRatio: '4/3', radius: tok('radius.lg'), objectFit: 'cover' } })
+            ])
+          ])
         ])
       ])
     ])

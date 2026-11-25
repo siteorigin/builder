@@ -12,6 +12,7 @@ import { entryRoute, findEntry, type SiteEntry } from '@shared/collections';
 import { archivePages } from '@shared/archives';
 import { entryQuery, feedRows } from '@shared/entry-feed';
 import { anchorCapable, anchorsInUse, displayName, findParent, shownUnder } from '@engine/tree';
+import { declaredState } from '@engine/schema';
 import { formFieldSettingsHidden, namesFormFields, netlifyFormName, offersFormChoices } from '@catalogue/foundation/form';
 import { codeTakesBlocks, defFile, isDraftEntry, isDraftPage, keptPanels, liveRedirects, publishedState, resolveLink, siteEntries, stateActionWorks } from './index';
 import { effectiveItem, teaserFields } from '@shared/page-teasers';
@@ -75,13 +76,34 @@ export interface Scope {
 }
 
 export function evaluate(v: unknown, scope: Scope): unknown {
-  if (isStateRef(v)) return scope.ui && Object.hasOwn(scope.ui, v.$state) ? scope.ui[v.$state] : undefined;
+  if (isStateRef(v)) {
+    const at = scope.ui && Object.hasOwn(scope.ui, v.$state) ? scope.ui[v.$state] : undefined;
+    // An item state reads as whether the item walked is the active one.
+    return at instanceof ActiveItem ? at.id !== null && scope.item?.id === at.id : at;
+  }
   if (!isBinding(v)) return v;
   const b = v as Binding;
   if ('$prop' in b) return propBindingValue(scope.props[b.$prop], b);
   if (!('$item' in b)) return undefined;
   const item = scope.item ?? {};
   return Object.hasOwn(item, b.$item) ? item[b.$item] : (scope.fields?.[b.$item] as { default?: unknown } | undefined)?.default;
+}
+
+/** The item an item state starts at in one placement, by ID (null for an empty list), as the scope's `ui` holds it. */
+class ActiveItem {
+  constructor(readonly id: unknown) {}
+}
+
+/**
+ * Where a placement's UI state starts: its declared starting value, or for an item state the item at its starting
+ * position in the placement's list (the last when the list is shorter), as the generated site's activeItem works it out.
+ */
+function startingState(def: ComponentDefinition, name: string, props: Record<string, unknown>): unknown {
+  const declared = declaredState(def, name);
+  if (declared?.type !== 'item') return stateInitial(def, name);
+  const rows = Array.isArray(props[declared.list]) ? (props[declared.list] as unknown[]) : [];
+  const row = rows.length ? rows[Math.min(declared.initial, rows.length - 1)] : undefined;
+  return new ActiveItem(row && typeof row === 'object' ? ((row as { id?: unknown }).id ?? null) : null);
 }
 
 /** Mirrors the generated `has()` helper, on unresolved values. */
@@ -417,7 +439,7 @@ export function walkRendered(state: ProjectState, tree: NodeTree, visit: Visit) 
           const feedProps = new Set(Object.entries(def.properties).filter(([, p]) => isFeed(p)).map(([k]) => k));
           const carried = { multiple: frame.scope.multiple, slots: frame.scope.slots, codeSlot: frame.scope.codeSlot, ...(frame.scope.keptHidden ? { keptHidden: true } : {}) };
           const where = frame.def ? { forwarded, repeats: frame.scope.repeats, occurrence: frame.scope.occurrence, ...carried } : { placement: n.id, ...carried };
-          const ui = def.state ? Object.fromEntries(Object.keys(def.state).map((k) => [k, stateInitial(def, k)])) : undefined;
+          const ui = def.state ? Object.fromEntries(Object.keys(def.state).map((k) => [k, startingState(def, k, props)])) : undefined;
           const chosen = startingVariants(n.variants, frame.def);
           const child: Frame = { tree: def.tree, def, ...(visit.kept ? { kept: keptOf(def) } : {}), scope: { props, trail, instance: n, instances: [...(frame.scope.instances ?? []), n.id], ...(ui ? { ui } : {}), ...(visit.everyState ? { everyState: true } : {}), ...(chosen !== n.variants ? { chosen } : {}), ...where, ...(feedProps.size ? { feedProps } : {}), ...(fedLists.size ? { fedLists } : {}) }, soId: ownId, slots: { content: n.slots ?? {}, frame, owner: n.id }, reportId, n: ++frames, defs: new Set(frame.defs).add(def.id) };
           for (const r of def.tree.rootIds) walk(child, r, inner);
@@ -816,7 +838,7 @@ export function unlinkedButtons(state: ProjectState, tree: NodeTree): UnlinkedBu
       const label = String(evaluate(n.label, scope) ?? '').trim();
       const link = evaluate(n.link, scope) as LinkValue | undefined;
       // A button that changes its component's state is a real button with nowhere to go.
-      if (!BUTTONS.has(appearance) || !label || resolveLink(link, { state }) || stateActionWorks(def, n.stateAction)) return;
+      if (!BUTTONS.has(appearance) || !label || resolveLink(link, { state }) || stateActionWorks(def, n.stateAction, n.id)) return;
       if (!inDef) return void out.push({ nodeId: reportId, label });
       const found: UnlinkedButton = { nodeId: reportId, label, defNodeId: n.id };
       if (scope.placement && scope.path?.length) found.itemPath = scope.path;
@@ -1007,7 +1029,7 @@ export function renderedContent(state: ProjectState, tree: NodeTree): RenderedCo
       const goes = !!resolveLink(link, { state });
       // A styled button with nowhere to go is left out of the site, unless it changes its component's state; a plain
       // link still shows its words.
-      if (!goes && BUTTONS.has(String(evaluate(n.appearance, scope) ?? '')) && !stateActionWorks(def, n.stateAction)) return;
+      if (!goes && BUTTONS.has(String(evaluate(n.appearance, scope) ?? '')) && !stateActionWorks(def, n.stateAction, n.id)) return;
       push({ nodeId: reportId, kind: 'text', value: label, ...from(n.label, 'label', scope, n.id, inDef), ...(fromRow(n.label, scope) ? { computed: true } : {}) });
       if (goes && isLinkValue(link)) push({ nodeId: reportId, kind: 'link', value: link, ...from(n.link, 'link', scope, n.id, inDef), ...(fromRow(n.link, scope) ? { computed: true } : {}) });
     },

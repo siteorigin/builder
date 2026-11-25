@@ -58,9 +58,10 @@ const STATE_ACTION = z
     z.object({ op: z.literal('set'), state: z.string(), value: z.union([z.string(), z.boolean()]).describe('true or false for a yes/no state; an option value of a choice.') }).strict(),
     z.object({ op: z.literal('toggle'), state: z.string() }).strict(),
     z.object({ op: z.literal('next'), state: z.string(), wrap: z.boolean().optional() }).strict(),
-    z.object({ op: z.literal('prev'), state: z.string(), wrap: z.boolean().optional() }).strict()
+    z.object({ op: z.literal('prev'), state: z.string(), wrap: z.boolean().optional() }).strict(),
+    z.object({ op: z.literal('select'), state: z.string() }).strict()
   ])
-  .describe('Sets a state, toggles a yes/no one, or steps a choice to its next or prev option (wrap: round to the other end).');
+  .describe("Sets a state, toggles a yes/no one, steps a choice or a list's active item to its next or prev (wrap: round to the other end), or (select, a button in a repeat of an item state's list) makes the button's own item the active one.");
 /** One UI state variable: yes/no, or a choice between options. */
 const STATE = z.discriminatedUnion('type', [
   z.object({ type: z.literal('boolean'), name: NAME.describe('camelCase, such as "open"; not a property name.'), label: z.string().min(1).max(80), initial: z.boolean().optional().describe('Defaults to false.') }).strict(),
@@ -71,6 +72,15 @@ const STATE = z.discriminatedUnion('type', [
       label: z.string().min(1).max(80),
       options: z.array(z.object({ value: z.string().min(1).max(60), label: z.string().min(1).max(80) }).strict()).min(2).max(50),
       initial: z.string().optional().describe('An option value; defaults to the first.')
+    })
+    .strict(),
+  z
+    .object({
+      type: z.literal('item'),
+      name: NAME.describe('camelCase, such as "activeStep"; not a property name.'),
+      label: z.string().min(1).max(80),
+      list: NAME.describe('The list property whose active item it holds.'),
+      initial: z.number().int().min(0).optional().describe('The position of the item each placement starts at, from 0; defaults to the first.')
     })
     .strict()
 ]);
@@ -305,10 +315,10 @@ export function managedComponentSchema(): JsonSchema {
 }
 
 export const MANAGED_COMPONENT_DESCRIPTION =
-  'Create a reusable managed component, or rebuild one (definitionId), in one call: its properties (what authors fill in on each placement), its design as a flat list of nodes that name their children by ID, the parts authors can style, slots, variant options and UI state. Bind a node to a property with {"$prop": name} ({"$prop": name, "field": f} for one field of an object property); inside a repeat of a list property, bind to each item\'s field with {"$item": field}. Style with site tokens such as {"token": "space.lg"} and add phone/tablet/desktop rules with scope. Interactive parts work in the published site with no code: declare UI state (a choice such as "plan" with options, or a yes/no "open"), give buttons a stateAction and link "", and show content only for one value with when. Tabs: a div holding nothing but one button per option (stateAction {"op": "set", "state": "plan", "value": option}), and one div panel per option with when {"ref": {"$state": "plan"}, "eq": option}. A toggle: a button with stateAction {"op": "toggle", "state": "open"} and content with when {"$state": "open"}; add overlay "dialog" or "drawer-end" to that div to show it over the page. A rebuild replaces the whole design and its UI state; placements keep the values the new properties still take. placeOnPage places it on a page in the same step. If anything is invalid nothing is applied and the error names each field by its path: call again with repair: true and only the corrected nodes (by id) and properties (by name).';
+  'Create a reusable managed component, or rebuild one (definitionId), in one call: its properties (what authors fill in on each placement), its design as a flat list of nodes that name their children by ID, the parts authors can style, slots, variant options and UI state. Bind a node to a property with {"$prop": name} ({"$prop": name, "field": f} for one field of an object property); inside a repeat of a list property, bind to each item\'s field with {"$item": field}. Style with site tokens such as {"token": "space.lg"} and add phone/tablet/desktop rules with scope. Interactive parts work in the published site with no code: declare UI state (a choice such as "plan" with options, or a yes/no "open"), give buttons a stateAction and link "", and show content only for one value with when. Tabs: a div holding nothing but one button per option (stateAction {"op": "set", "state": "plan", "value": option}), and one div panel per option with when {"ref": {"$state": "plan"}, "eq": option}. A toggle: a button with stateAction {"op": "toggle", "state": "open"} and content with when {"$state": "open"}; add overlay "dialog" or "drawer-end" to that div to show it over the page. Steps whose button shows their own text and picture from one list: an item state {"type": "item", "name": "active", "list": "steps"}; in a repeat of steps, a button with stateAction {"op": "select", "state": "active"} and a div with when {"$state": "active"}; a second repeat of steps (the picture side) whose div also has when {"$state": "active"}. A rebuild replaces the whole design and its UI state; placements keep the values the new properties still take. placeOnPage places it on a page in the same step. If anything is invalid nothing is applied and the error names each field by its path: call again with repair: true and only the corrected nodes (by id) and properties (by name).';
 
 export const MANAGED_COMPONENT_BRIEF =
-  'A whole reusable component in one call: properties authors fill in, nodes (a flat list; children name node IDs; one root element), parts, slots, variant options and UI state; definitionId rebuilds one whole. Bind with {"$prop": name}, or {"$item": field} inside a repeat of a list. Tabs: declare an enum state; a div holding only one button per option (stateAction set to the option, link ""); one div panel per option with when {"ref":{"$state":name},"eq":option}. A toggle: a toggle button and when {"$state":name}; overlay makes that div a dialog or drawer. Style with tokens such as {"token":"space.lg"}; scope adds phone/tablet/desktop rules. placeOnPage also places it. On an error nothing is applied: call again with repair: true and only the corrected nodes (by id) and properties (by name).';
+  'A whole reusable component in one call: properties authors fill in, nodes (a flat list; children name node IDs; one root element), parts, slots, variant options and UI state; definitionId rebuilds one whole. Bind with {"$prop": name}, or {"$item": field} inside a repeat of a list. Tabs: declare an enum state; a div holding only one button per option (stateAction set to the option, link ""); one div panel per option with when {"ref":{"$state":name},"eq":option}. A toggle: a toggle button and when {"$state":name}; overlay makes that div a dialog or drawer. Steps from one list: an item state (type "item", list); in each repeat of that list, a select button and divs with when {"$state":name}. Style with tokens such as {"token":"space.lg"}; scope adds phone/tablet/desktop rules. placeOnPage also places it. On an error nothing is applied: call again with repair: true and only the corrected nodes (by id) and properties (by name).';
 
 // ---------------------------------------------------------------------------
 // Running the tool
@@ -616,7 +626,7 @@ function compile(state: ProjectState, args: ManagedComponentArgs): Compiled {
     } catch (e) {
       refusedStates.add(st.name);
       const message = (e as Error).message;
-      issues.push({ field: /starts as/.test(message) ? `${at}.initial` : /option/.test(message) ? `${at}.options` : at, message });
+      issues.push({ field: /starts (as|at)/.test(message) ? `${at}.initial` : /option/.test(message) ? `${at}.options` : /"list"/.test(message) ? `${at}.list` : at, message });
     }
   });
   // Left out of a rebuild, the component keeps the state its design does not use, which the new design may read; state
@@ -636,6 +646,7 @@ function compile(state: ProjectState, args: ManagedComponentArgs): Compiled {
     const s = Object.hasOwn(known, name) ? known[name] : undefined;
     if (refusedStates.has(name)) return;
     if (!s) return issues.push({ field: at, message: `"${id}" reads the UI state "${name}", which is not one of the state${stateNames()}` });
+    if (s.type === 'item' && isRecord(v) && 'ref' in v) return issues.push({ field: at, message: `"${name}" is the active item of a list: read it plainly, {"$state": "${name}"}, as whether this item is the active one` });
     if (!isRecord(v) || !('ref' in v)) return;
     const key = 'eq' in v ? 'eq' : 'ne';
     const value = v[key];
@@ -744,7 +755,7 @@ function compile(state: ProjectState, args: ManagedComponentArgs): Compiled {
     }
     // A button's state action changes state the call declares, in a way that state can change.
     if (n.kind === 'link' && n.stateAction && !refusedStates.has(n.stateAction.state)) {
-      const problem = stateActionProblem({ state: known, properties: {} } as unknown as ComponentDefinition, n.stateAction);
+      const problem = stateActionProblem({ state: known, properties } as unknown as ComponentDefinition, n.stateAction);
       if (problem) issues.push({ field: `${at}.stateAction`, message: `"${n.id}" ${problem}` });
     }
     if (n.kind === 'repeat') {
