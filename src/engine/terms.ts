@@ -15,6 +15,7 @@ import { assignedTermIds, entriesWithTerm, isTermId, termIdFor } from '@shared/c
 import { codeEntryQueries, entryQuery, entryQueryKey, feedCollection, listsEntries, termsNamed, type EntryQuery } from '@shared/entry-feed';
 import { allTrees, displayName, fail } from './tree';
 import { normalizeScalar } from './values';
+import { defFile } from '@generator/index';
 import { MAX_TAXONOMIES, MAX_TERMS, getCollection } from './collections';
 
 type OpResult = Record<string, unknown>;
@@ -39,11 +40,16 @@ function termOf(t: CollectionTaxonomy, termId: string): { label: string } {
   return own(t.terms, termId) ?? fail(`${t.label} has no term "${termId.slice(0, 60)}".`);
 }
 
-/** A term's name as stored: trimmed, and one no other term of the grouping has (ignoring case), as readers tell them apart. */
+/**
+ * A term's name as stored: trimmed, and one no other term of the grouping has (ignoring case), as readers tell them
+ * apart. Never with a comma: a list of posts reads a post's terms as their names between commas ("News, Craft"),
+ * which a name with commas of its own could be taken for.
+ */
 function checkLabel(t: CollectionTaxonomy, raw: string, except?: string): string {
   const label = raw.trim();
   if (!label) fail(`${t.label}: every term needs a name.`);
   if (label.length > MAX_LABEL) fail(`${t.label}: a term's name can be at most ${MAX_LABEL} characters.`);
+  if (label.includes(',')) fail(`${t.label}: a term's name can't have a comma in it. Lists of posts read commas as between names.`);
   const clash = Object.entries(t.terms).find(([id, x]) => id !== except && typeof x?.label === 'string' && x.label.trim().toLowerCase() === label.toLowerCase());
   if (clash) fail(`${t.label}: there is already a term called “${clash[1].label}”.`);
   return label;
@@ -113,10 +119,15 @@ function designPlaces(state: ProjectState): (defId: string) => string[] {
     if (owner.kind === 'component') continue;
     for (const id of placed(tree.nodes)) add(id, owner.kind === 'template' ? owner.id : '');
   }
-  const designs = Object.values(state.components ?? {}).filter((d) => d.tree);
+  // What each design renders inside it: the designs its tree places, and, for code, those it imports by file name.
+  const designs = Object.values(state.components ?? {});
+  const files = designs.map((d) => ({ id: d.id, file: `/${defFile(d).split('/').pop()}` }));
+  const inside = new Map(
+    designs.map((d) => [d.id, [...placed(d.tree?.nodes), ...(typeof d.source === 'string' ? files.filter((f) => f.id !== d.id && d.source!.includes(f.file)).map((f) => f.id) : [])]])
+  );
   for (let changed = true, rounds = 0; changed && rounds <= designs.length; rounds++) {
     changed = false;
-    for (const d of designs) for (const place of [...(out.get(d.id) ?? [])]) for (const id of placed(d.tree!.nodes)) changed = add(id, place) || changed;
+    for (const d of designs) for (const place of [...(out.get(d.id) ?? [])]) for (const id of inside.get(d.id) ?? []) changed = add(id, place) || changed;
   }
   const anywhere = ['', ...Object.keys(state.collections ?? {}).sort()];
   return (defId) => {
@@ -145,9 +156,12 @@ function feedUses(state: ProjectState): FeedUse[] {
       const layout = owner.kind === 'template' ? owner.id : undefined;
       const contexts = layout ? [layout] : owner.kind === 'component' ? placesOf(owner.id) : [''];
       const collectionChoice = own(n.props, 'collection');
-      // A collection read where the list renders may be any of them.
+      // Only a layout reads a property from each entry; the site reads any other bound choice as unset, the design's
+      // default deciding (see entryQuery), as this file reads it too.
+      const fromEntry = (v: unknown) => !!layout && isEntryBinding(v);
+      // A collection read from each entry may be any of them.
       const read = (): string[] => {
-        if (isBindingRef(collectionChoice)) return collections;
+        if (fromEntry(collectionChoice)) return collections;
         const query = entryQuery(def.properties, n.props ?? {});
         return [...new Set(contexts.flatMap((place) => feedCollection(state, query, at(place))?.settings.id ?? []))];
       };
@@ -155,20 +169,22 @@ function feedUses(state: ProjectState): FeedUse[] {
       const readsLabels = (v: unknown, collectionId: string, taxonomyId: string) => !!layout && collectionId === layout && isEntryBinding(v) && termField(v.$entry) === taxonomyId;
       // A collection read from the entry's terms may become another collection when one of them is renamed. (A choice of
       // terms stored beside it is read in every collection below.)
-      if (isBindingRef(collectionChoice)) out.push({ where, readings: () => [], blocks: (collectionId, taxonomyId) => readsLabels(collectionChoice, collectionId, taxonomyId) });
+      if (fromEntry(collectionChoice)) out.push({ where, readings: () => [], blocks: (collectionId, taxonomyId) => readsLabels(collectionChoice, collectionId, taxonomyId) });
       for (const prop of FEED_PROP_NAMES) {
         const taxonomyId = FEED_PROPS[prop];
         const v = own(n.props, prop);
-        if (isBindingRef(v)) {
+        if (fromEntry(v)) {
           // Each entry's own terms of this grouping, in its own collection's layout: it follows them.
-          if (readsLabels(v, layout ?? '', taxonomyId) && !isBindingRef(collectionChoice) && read().every((c) => c === layout)) continue;
+          if (readsLabels(v, layout ?? '', taxonomyId) && !fromEntry(collectionChoice) && read().every((c) => c === layout)) continue;
           out.push({ where, readings: () => [], blocks: (collectionId, changed) => (changed === taxonomyId && read().includes(collectionId)) || readsLabels(v, collectionId, changed) });
           continue;
         }
-        if (v !== undefined && typeof v !== 'string') continue;
+        // Bound to anything else, it reads its design's default, which it cannot be given words over.
+        const bound = isBindingRef(v);
+        if (v !== undefined && typeof v !== 'string' && !bound) continue;
         out.push({
           where,
-          stored: placementChoice(n, def, prop),
+          stored: bound ? undefined : placementChoice(n, def, prop),
           readings: () => {
             const words = entryQuery(def.properties, n.props ?? {})[prop];
             return read().map((collectionId) => ({ collectionId, taxonomyId, words }));
@@ -208,7 +224,7 @@ function placementChoice(n: InstanceNode, def: ComponentDefinition, prop: FeedPr
 /**
  * The feeds code converted from a design reads, by the keys its source names. The project's own code is rewritten
  * with new keys when its choices must change, every key in one pass once all are settled (see `writeCode`), so the
- * rows the site hands it follow; other code is never changed.
+ * rows the site hands it follow; other code, and a key the code also names some other way, are never changed.
  */
 function codeUses(state: ProjectState, def: ComponentDefinition, contexts: string[]): FeedUse[] {
   const out: FeedUse[] = [];
@@ -218,10 +234,14 @@ function codeUses(state: ProjectState, def: ComponentDefinition, contexts: strin
     seen.add(q.raw);
     // Shared by the key's category and tag: a rewrite of one is the key the other is then read from.
     const read: { query: EntryQuery } = { query: q.query };
+    // A key the code also names some other way (kept in a variable, quoted in a comment) is not rewritten: that use
+    // would be left reading a key the site no longer hands it rows for.
+    const literal = q.raw.slice('so_pages?.entries?.['.length, -1);
+    const alone = def.source!.split(literal).length === def.source!.split(q.raw).length;
     for (const prop of FEED_PROP_NAMES) {
       if (!read.query[prop]) continue;
       const stored: Stored | undefined =
-        def.owner === 'project'
+        def.owner === 'project' && alone
           ? {
               words: () => read.query[prop],
               store: (w) => {
@@ -249,7 +269,7 @@ function writeCode() {
   }
   rewrittenKeys.clear();
 }
-const CODE_KEY = /(?<![\w$.])so_pages\?\.entries\?\.\[("(?:[^"\\]|\\.)*")\]/g;
+const CODE_KEY = /so_pages\?\.entries\?\.\[("(?:[^"\\]|\\.)*")\]/g;
 
 /** What a reading lists: every entry (no choice), or those with any of the terms its words name (none, for words no term has). */
 function listed(state: ProjectState, r: Reading): string {

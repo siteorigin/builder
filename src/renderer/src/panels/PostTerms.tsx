@@ -64,25 +64,35 @@ export function PostTermFields({
 }) {
   const revision = useStore((s) => s.snapshot?.revision ?? 0);
   const chain = useRef<Promise<unknown>>(Promise.resolve());
-  /** The revision the last change of this writer made: the next is worked out from a copy of the project that has it. */
-  const landed = useRef(0);
+  /**
+   * What this writer last filed the post under in each grouping, and the revision that change made: the next change
+   * is worked out from it while the project's copy with it is still on its way.
+   */
+  const sent = useRef<Record<string, { ids: string[]; revision: number }>>({});
   /**
    * Send the change `make` works out from the post's terms of a grouping as the project has them, again if the project
    * moved on meanwhile. Undefined when there was nothing to change; null when it was refused.
    */
   const change = (taxonomyId: string, make: (c: Collection, ids: string[]) => { ops: EditOperation[]; label: string } | null): Promise<Sent | undefined> => {
-    const run = async (): Promise<Sent | undefined> => {
-      for (let wait = 0; wait < 40 && (getState().snapshot?.revision ?? 0) < landed.current; wait++) await new Promise((done) => setTimeout(done, 25));
+    const attempt = async (): Promise<Sent | undefined> => {
       for (let tries = 0; tries < 4; tries++) {
         const now = getState().snapshot;
         const c = now?.state.collections[post.collectionId];
         const e = now ? postAt(now.state, post) : undefined;
         if (!now || !c || !e) return null;
-        const ids: unknown = e.terms && Object.hasOwn(e.terms, taxonomyId) ? e.terms[taxonomyId] : [];
-        const planned = make(c, Array.isArray(ids) ? (ids as string[]) : []);
+        const stored: unknown = e.terms && Object.hasOwn(e.terms, taxonomyId) ? e.terms[taxonomyId] : [];
+        // The project's copy without this writer's last change yet: worked out from that change, at the revision it made.
+        const mine = sent.current[taxonomyId];
+        const behind = !!mine && now.revision < mine.revision;
+        const ids = behind ? mine.ids : Array.isArray(stored) ? (stored as string[]) : [];
+        const planned = make(c, ids);
         if (!planned) return undefined;
-        const r = await sendAt(planned.ops, planned.label, now.revision);
-        if (r?.ok) landed.current = Math.max(landed.current, r.revision);
+        const r = await sendAt(planned.ops, planned.label, behind ? mine.revision : now.revision);
+        if (r?.ok) {
+          const update = planned.ops.find((o) => o.type === 'entry.update');
+          const next = update?.type === 'entry.update' ? update.terms?.[taxonomyId] : undefined;
+          if (next) sent.current[taxonomyId] = { ids: next, revision: r.revision };
+        }
         if (!r || r.ok) return r;
         // The project moved on (its copy may still be on its way here): worked out again from it.
         await new Promise((done) => setTimeout(done, 50 * (tries + 1)));
@@ -91,11 +101,20 @@ export function PostTermFields({
       toast('The post kept changing while its categories were being saved. Try again.', 'error');
       return null;
     };
+    const run = async (): Promise<Sent | undefined> => {
+      try {
+        return await attempt();
+      } catch {
+        refused();
+        toast('That category or tag change could not be saved.', 'error');
+        return null;
+      }
+    };
     const p = chain.current.then(run, run);
     chain.current = p.catch(() => undefined);
-    // Followed from the moment it is asked for: Publish, Save draft and closing the project wait for it. A refusal has
-    // already said why.
-    trackApply(p.then(() => ({ ok: true }), () => ({ ok: true })));
+    // Followed from the moment it is asked for: Publish, Save draft and closing the project wait for it, and closing
+    // hears when it was not saved.
+    trackApply(p.then((r) => (r === null ? { ok: false, message: 'A category or tag change was not saved.' } : { ok: true }), () => ({ ok: false, message: 'A category or tag change was not saved.' })));
     return track(p.catch(() => null));
   };
   const toggle = (taxonomyId: string, termId: string, on: boolean, label: string) =>

@@ -92,7 +92,7 @@ export function entryQueryKey(query: EntryQuery, max?: number): string {
  */
 export function codeEntryQueries(source: string): Array<{ key: string; query: EntryQuery; max?: number; raw: string }> {
   const out: Array<{ key: string; query: EntryQuery; max?: number; raw: string }> = [];
-  for (const m of source.matchAll(/(?<![\w$.])so_pages\?\.entries\?\.\[("(?:[^"\\]|\\.)*")\]/g)) {
+  for (const m of source.matchAll(/so_pages\?\.entries\?\.\[("(?:[^"\\]|\\.)*")\]/g)) {
     try {
       const key: unknown = JSON.parse(m[1]);
       const parts: unknown = typeof key === 'string' ? JSON.parse(key) : null;

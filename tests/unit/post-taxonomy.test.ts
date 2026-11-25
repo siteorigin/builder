@@ -14,7 +14,7 @@ import { EngineError } from '@engine/tree';
 import { entriesWithTerm, termIdFor } from '@shared/collections';
 import { archivePages } from '@shared/archives';
 import { codeEntryQueries, entryQuery, entryRows } from '@shared/entry-feed';
-import { publishedState } from '@generator/index';
+import { defFile, publishedState } from '@generator/index';
 import { toolDefinitions } from '@agent/tools';
 
 const run = (s: ProjectState, ...ops: EditOperation[]) => applyOperations(s, ops).state;
@@ -309,28 +309,79 @@ describe('lists of posts wherever they render', () => {
     expect(refused(s, { type: 'collection.renameTerm', collectionId: 'posts', taxonomyId: 'categories', termId: 'news', label: 'Studio updates' })).toMatch(/“Post grid” in Posts layout lists entries by “news”, which renaming “News” would change/);
   });
 
-  it('refuses where a list reads its choice where it is shown: a neighbour’s title, or the design’s own property', () => {
+  it('renames a category on a site with lists of posts on its pages and related posts under each post', () => {
+    let { s, nodeId } = onHome(blog(), { category: 'News' });
+    s = boundGrid(s, 'category', 'categories').s;
+    const before = listed(s, nodeId);
+    const r = applyOperations(s, [{ type: 'collection.renameTerm', collectionId: 'posts', taxonomyId: 'categories', termId: 'news', label: 'Studio updates' }]);
+    expect(r.results[0]).toMatchObject({ termId: 'studio-updates', feeds: 1 });
+    expect(listed(r.state, nodeId)).toEqual(before);
+    // Only the list on Home holds a delete back; the related posts follow.
+    expect(termFeedUses(r.state, 'posts', 'categories', 'studio-updates')).toEqual([{ where: '“Post grid” in Home' }]);
+    expect(termFeedUses(r.state, 'posts', 'categories', 'craft')).toEqual([]);
+    expect(run(r.state, { type: 'collection.removeTerm', collectionId: 'posts', taxonomyId: 'categories', termId: 'craft' }).collections.posts.settings.taxonomies.categories.terms).not.toHaveProperty('craft');
+  });
+
+  it('refuses where a list reads its choice from each post, as a neighbour’s title, and reads one bound to a design’s property as the site does', () => {
     const neighbour = boundGrid(blog(), 'category', 'prevEntry.title').s;
     expect(refused(neighbour, { type: 'collection.renameTerm', collectionId: 'posts', taxonomyId: 'categories', termId: 'news', label: 'Updates' })).toMatch(/“Post grid” in Posts layout reads its choice of entries where it is shown/);
     expect(termFeedUses(neighbour, 'posts', 'categories', 'news')).toEqual([{ where: '“Post grid” in Posts layout' }]);
     // A tag rename never reaches a choice of category.
     expect(run(neighbour, { type: 'collection.renameTerm', collectionId: 'posts', taxonomyId: 'tags', termId: 'glaze', label: 'Glazes' }).collections.posts.settings.taxonomies.tags.terms).toHaveProperty('glazes');
-    let s = onHome(blog(), {}).s;
+    // Bound to a design's own property, a grid's choice is its default where the site lists its rows: here the grid of
+    // a design reading the journal, whose default "News" names the journal's News too.
+    let s = run(
+      onHome(blog(), {}).s,
+      { type: 'collection.create', collectionId: 'journal', route: '/journal/', taxonomies: { categories: { label: 'Categories', terms: { notes: { label: 'News' } } } } },
+      { type: 'entry.create', collectionId: 'journal', entryId: 'en_note', title: 'A note', publishedAt: '2026-01-01', draft: false, terms: { categories: ['notes'] } }
+    );
     s = structuredClone(s);
-    const grid = gridDef(s);
+    const custom: ComponentDefinition = { ...structuredClone(gridDef(s)), id: 'project.news-grid', componentId: 'project.news-grid', owner: 'project', name: 'News grid' };
+    (custom.properties.category as { default: string }).default = 'News';
+    s.components[custom.id] = custom;
     s.components['project.strip'] = {
-      ...structuredClone(grid),
+      ...structuredClone(custom),
       id: 'project.strip',
       componentId: 'project.strip',
       kind: 'managed',
-      owner: 'project',
       name: 'Topic strip',
-      properties: { topic: { type: 'string', label: 'Topic', default: 'News' } },
+      properties: { topic: { type: 'string', label: 'Topic', default: 'Craft' } },
       parts: { root: { nodeId: 'root', label: 'Root' } },
-      tree: { rootIds: ['root'], nodes: { root: { id: 'root', kind: 'element', tag: 'div', children: ['inner'] }, inner: { id: 'inner', kind: 'instance', definitionId: grid.id, props: { category: { $prop: 'topic' } } } } }
+      tree: { rootIds: ['root'], nodes: { root: { id: 'root', kind: 'element', tag: 'div', children: ['inner'] }, inner: { id: 'inner', kind: 'instance', definitionId: custom.id, props: { collection: 'journal', category: { $prop: 'topic' } } } } }
     } as ComponentDefinition;
     s = run(s, { type: 'node.insert', owner: page(s.site.homePageId), parentId: null, definitionId: 'project.strip' } as EditOperation);
-    expect(refused(s, { type: 'collection.renameTerm', collectionId: 'posts', taxonomyId: 'categories', termId: 'news', label: 'Updates' })).toMatch(/“Post grid” in Topic strip reads its choice of entries where it is shown/);
+    // The blog's News renamed would rewrite the default the journal's grid lists its News by: refused.
+    expect(refused(s, { type: 'collection.renameTerm', collectionId: 'posts', taxonomyId: 'categories', termId: 'news', label: 'Studio updates' })).toMatch(/“News grid” in Topic strip lists entries by “News”/);
+  });
+
+  it('reads a design wherever code that imports it is placed, as well as where it is placed itself', () => {
+    let s = run(
+      onHome(blog(), {}).s,
+      { type: 'collection.create', collectionId: 'journal', route: '/journal/', taxonomies: { categories: { label: 'Categories', terms: { news: { label: 'News' } } } } }
+    );
+    s = structuredClone(s);
+    const grid = gridDef(s);
+    s.components['project.inner'] = {
+      ...structuredClone(grid),
+      id: 'project.inner',
+      componentId: 'project.inner',
+      kind: 'managed',
+      owner: 'project',
+      name: 'Inner',
+      properties: {},
+      parts: { root: { nodeId: 'root', label: 'Root' } },
+      tree: { rootIds: ['root'], nodes: { root: { id: 'root', kind: 'element', tag: 'div', children: ['g'] }, g: { id: 'g', kind: 'instance', definitionId: grid.id, props: { category: 'news' } } } }
+    } as ComponentDefinition;
+    s.components['project.outer'] = codeDesign('project.outer', 'Outer', `<script>\n\timport Inner from '.${defFile(s.components['project.inner']).slice(defFile(s.components['project.inner']).lastIndexOf('/'))}';\n\tlet { so_pages } = $props();\n</script>\n<Inner {so_pages} />\n`);
+    s = run(s, { type: 'node.insert', owner: page(s.site.homePageId), parentId: null, definitionId: 'project.inner' } as EditOperation);
+    s = run(s, { type: 'node.insert', owner: { kind: 'template', id: 'journal' }, parentId: null, definitionId: 'project.outer' } as EditOperation);
+    // On Home "news" is the blog's News, in the journal's layout (through Outer) the journal's: one word for both.
+    expect(refused(s, { type: 'collection.renameTerm', collectionId: 'journal', taxonomyId: 'categories', termId: 'news', label: 'Notes' })).toMatch(/“Post grid” in Inner lists entries by “news”/);
+  });
+
+  it('refuses a name with a comma, which a list of posts would read as two', () => {
+    expect(refused(blog(), { type: 'collection.createTerm', collectionId: 'posts', taxonomyId: 'categories', label: 'News, Craft' })).toMatch(/can't have a comma/);
+    expect(refused(blog(), { type: 'collection.renameTerm', collectionId: 'posts', taxonomyId: 'categories', termId: 'craft', label: 'Arts, Culture' })).toMatch(/can't have a comma/);
   });
 
   it('rewrites each key of a design’s code once, never one rewrite over another', () => {
@@ -339,17 +390,22 @@ describe('lists of posts wherever they render', () => {
     s = run(s, { type: 'entry.update', collectionId: 'posts', entryId: 'en_wheel', terms: { categories: ['craft', 'bulletin'] } });
     s = structuredClone(s);
     const key = (category: string) => JSON.stringify(JSON.stringify(['', category, '', 3, 24]));
-    s.components['project.code'] = codeDesign('project.code', 'Two lists', `<script>\n\tlet { so_pages } = $props();\n\tconst a = so_pages?.entries?.[${key('news')}];\n\tconst b = so_pages?.entries?.[${key('updates')}];\n\tconst other_so_pages = {};\n\tconst c = other_so_pages?.entries?.[${key('news')}];\n</script>\n`);
+    s.components['project.code'] = codeDesign('project.code', 'Two lists', `<script>\n\tlet { so_pages } = $props();\n\tconst a = so_pages?.entries?.[${key('news')}];\n\tconst b = so_pages?.entries?.[${key('updates')}];\n\tconst c = [...so_pages?.entries?.[${key('news')}] ?? []];\n</script>\n`);
     const before = codeEntryQueries(s.components['project.code'].source!).map((q) => entryRows(s, q.query).map((r) => r.id));
-    expect(before).toEqual([['en_kiln', 'en_glaze'], ['en_wheel']]);
+    expect(before).toEqual([['en_kiln', 'en_glaze'], ['en_wheel'], ['en_kiln', 'en_glaze']]);
     const after = run(s, { type: 'collection.renameTerm', collectionId: 'posts', taxonomyId: 'categories', termId: 'news', label: 'Latest', newTermId: 'updates' });
     const source = after.components['project.code'].source!;
     expect(codeEntryQueries(source).map((q) => [q.query.category, entryRows(after, q.query).map((r) => r.id)])).toEqual([
       ['updates', ['en_kiln', 'en_glaze']],
-      ['bulletin', ['en_wheel']]
+      ['bulletin', ['en_wheel']],
+      ['updates', ['en_kiln', 'en_glaze']]
     ]);
-    // Text that only looks like a read of the site's rows is left as written.
-    expect(source).toContain(`other_so_pages?.entries?.[${key('news')}]`);
+    // Every read of a key is rewritten with it, a copy of its rows included.
+    expect(source).toContain(`[...so_pages?.entries?.[${key('updates')}] ?? []]`);
+    // A key the code also keeps some other way is never rewritten from under that use.
+    const kept = structuredClone(s);
+    kept.components['project.code'] = codeDesign('project.code', 'Two lists', `<script>\n\tlet { so_pages } = $props();\n\tconst a = so_pages?.entries?.[${key('news')}];\n\tconst feeds = so_pages?.entries;\n\tconst b = feeds?.[${key('news')}];\n</script>\n`);
+    expect(refused(kept, { type: 'collection.renameTerm', collectionId: 'posts', taxonomyId: 'categories', termId: 'news', label: 'Latest' })).toMatch(/the code of “Two lists” lists entries by “news”/);
   });
 
   it('never lets a new term’s name pick up another collection’s posts for a list that reads both', () => {
