@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
-import { OPERATION_SCHEMAS } from '@shared/ops';
-import { canCall, canEditOperation, checkEditBatch, checkRpcRequest, COLLABORATOR_METHODS, COLLABORATOR_OPERATIONS, LIVE_BATCH_MAX_OPERATIONS, VIEWER_METHODS } from '@shared/live/capabilities';
+import { OPERATION_SCHEMAS, validateOperation } from '@shared/ops';
+import { FORM_DESTINATIONS } from '@catalogue/foundation/form';
+import { canCall, canEditOperation, checkEditBatch, checkRpcRequest, COLLABORATOR_METHODS, COLLABORATOR_OPERATIONS, HOST_ONLY_PROPS, LIVE_BATCH_MAX_OPERATIONS, VIEWER_METHODS } from '@shared/live/capabilities';
 import { GUEST_ROLES } from '@shared/live/limits';
 
 const page = { kind: 'page', id: 'pg_home' } as const;
@@ -150,9 +151,48 @@ describe('role operations', () => {
 });
 
 describe('checking a batch', () => {
-  it('accepts a collaborator’s visual edits and returns them parsed', () => {
-    const result = checkEditBatch('collaborator', { operations: [setText, setStyle], expectedRevision: 4, label: 'Edit text' });
-    expect(result).toEqual({ ok: true, value: { operations: [expect.objectContaining({ type: 'node.setContent' }), expect.objectContaining({ type: 'node.setStyle' })], expectedRevision: 4, label: 'Edit text' } });
+  it('accepts a collaborator’s visual edits and returns them as parsed, not as sent', () => {
+    const result = checkEditBatch('collaborator', { operations: [{ ...setText, note: 'dropped' }, setStyle], expectedRevision: 4, label: 'Edit text' });
+    expect(result).toEqual({ ok: true, value: { operations: [setText, setStyle], expectedRevision: 4, label: 'Edit text' } });
+  });
+
+  it('keeps edits on pages and the shared header and footer', () => {
+    expect(checkEditBatch('collaborator', { operations: [{ ...setText, owner: { kind: 'shell', id: 'header' } }] })).toMatchObject({ ok: true });
+    // The same operations on a page are ordinary edits, so the refusals below are for where they land.
+    for (const op of [{ type: 'node.setStateAction', owner: page, nodeId: 'n_button', action: null }, { type: 'node.setBinding', owner: page, nodeId: 'n_title', field: 'text', binding: { $entry: 'title' } }])
+      expect(checkEditBatch('collaborator', { operations: [op] }), op.type).toMatchObject({ ok: true });
+    // Component definitions and collection layouts are shared designs, whatever operation would reach them.
+    for (const owner of [{ kind: 'component', id: 'cmp_hero' }, { kind: 'template', id: 'posts' }]) {
+      for (const op of [
+        { ...setText, owner },
+        { ...setStyle, owner },
+        { type: 'node.setStateAction', owner, nodeId: 'n_button', action: null },
+        { type: 'node.setBinding', owner, nodeId: 'n_title', field: 'text', binding: { $entry: 'title' } }
+      ])
+        expect(checkEditBatch('collaborator', { operations: [op] }), `${op.type} in ${owner.kind}`).toMatchObject({ ok: false, error: { code: 'PERMISSION_DENIED', operationIndex: 0 } });
+      expect(checkEditBatch('collaborator', { operations: [{ type: 'node.copy', owner: page, nodeId: 'n_card', toOwner: owner }] })).toMatchObject({ ok: false, error: { code: 'PERMISSION_DENIED', operationIndex: 0 } });
+    }
+  });
+
+  it('leaves where a contact form sends its messages to the host', () => {
+    // Every setting that sends a form's messages to someone's account is protected.
+    for (const prop of FORM_DESTINATIONS) expect(HOST_ONLY_PROPS).toContain(prop);
+    for (const prop of HOST_ONLY_PROPS) {
+      expect(checkEditBatch('collaborator', { operations: [{ type: 'instance.setProp', owner: page, nodeId: 'n_form', prop, value: 'https://elsewhere.example/f/1' }] }), prop).toMatchObject({ ok: false, error: { code: 'PERMISSION_DENIED', operationIndex: 0 } });
+      expect(checkEditBatch('collaborator', { operations: [{ type: 'node.insert', owner: page, parentId: null, componentId: 'contact.form', props: { heading: 'Write to us', [prop]: 'x' } }] }), prop).toMatchObject({ ok: false, error: { code: 'PERMISSION_DENIED', operationIndex: 0 } });
+    }
+    // The form's other properties, and inserting one without its settings, are ordinary edits.
+    expect(checkEditBatch('collaborator', { operations: [{ type: 'instance.setProp', owner: page, nodeId: 'n_form', prop: 'heading', value: 'Say hello' }] })).toMatchObject({ ok: true });
+    expect(checkEditBatch('collaborator', { operations: [{ type: 'node.insert', owner: page, parentId: null, componentId: 'contact.form', props: { heading: 'Write to us' } }] })).toMatchObject({ ok: true });
+  });
+
+  it('lets a collaborator rename, move and lay out a page, but not publish, hide or redirect it', () => {
+    expect(checkEditBatch('collaborator', { operations: [{ type: 'page.update', pageId: 'pg_about', title: 'About us', route: '/about-us/', navLabel: 'About', showHeader: false }] })).toMatchObject({ ok: true });
+    for (const field of [{ draft: false }, { draft: true }, { noindex: true }, { searchHidden: true }, { canonical: 'https://elsewhere.example/' }, { newsHidden: true }])
+      expect(checkEditBatch('collaborator', { operations: [{ type: 'page.update', pageId: 'pg_about', title: 'About', ...field }] }), Object.keys(field)[0]).toMatchObject({
+        ok: false,
+        error: { code: 'PERMISSION_DENIED', message: expect.stringContaining(Object.keys(field)[0]), operationIndex: 0 }
+      });
   });
 
   it('refuses any edit from a viewer', () => {
@@ -181,6 +221,12 @@ describe('checking a batch', () => {
     expect(checkEditBatch('collaborator', { operations: [{ ...setText, nodeId: '__proto__' }] })).toMatchObject({ ok: false, error: { code: 'INVALID_ARGUMENT', operationIndex: 0 } });
     expect(checkEditBatch('collaborator', { operations: [{ nodeId: 'n_1' }] })).toMatchObject({ ok: false, error: { code: 'INVALID_ARGUMENT', operationIndex: 0 } });
     expect(checkEditBatch('collaborator', { operations: [null] })).toMatchObject({ ok: false, error: { code: 'INVALID_ARGUMENT', operationIndex: 0 } });
+    expect(checkEditBatch('collaborator', { operations: [setText, [setText]] })).toMatchObject({ ok: false, error: { code: 'INVALID_ARGUMENT', operationIndex: 1 } });
+    expect(checkEditBatch('collaborator', { operations: [JSON.parse('{"type":"node.setContent","__proto__":{"x":1},"owner":{"kind":"page","id":"pg_home"},"nodeId":"n","field":"text","value":"x"}')] })).toMatchObject({ ok: false, error: { code: 'INVALID_ARGUMENT', operationIndex: 0 } });
+    // A reserved name inside a list of IDs is refused too, before the engine looks it up.
+    expect(checkEditBatch('collaborator', { operations: [{ type: 'page.reorder', pageIds: ['pg_home', '__proto__'] }] })).toMatchObject({ ok: false, error: { code: 'INVALID_ARGUMENT', operationIndex: 0 } });
+    expect(validateOperation({ type: 'node.wrap', owner: page, nodeIds: ['n_1', 'constructor'] })).toMatchObject({ ok: false });
+    expect(validateOperation({ type: 'page.reorder', pageIds: ['pg_home', 'pg_about'] })).toMatchObject({ ok: true });
   });
 
   it('refuses a batch that is not exactly a guest’s batch', () => {

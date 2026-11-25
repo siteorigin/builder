@@ -74,13 +74,16 @@ describe('preview response streams', () => {
     expect(run(new PreviewStream('GET'), [head([['content-length', '123']], 204), end(0)]).at(-1)).toEqual({ ok: true, done: true });
     expect(run(new PreviewStream('HEAD'), [head(), chunkOf(1, 0)]).at(-1)).toMatchObject({ ok: false, code: 'INVALID_RESPONSE' });
     expect(run(new PreviewStream('GET'), [head([], 304), end(0)]).at(-1)).toEqual({ ok: true, done: true });
-    expect(run(new PreviewStream('GET'), [head([], 204), chunkOf(1, 0)]).at(-1)).toMatchObject({ ok: false });
+    for (const status of [204, 205, 304]) expect(run(new PreviewStream('GET'), [head([], status), chunkOf(1, 0)]).at(-1), String(status)).toMatchObject({ ok: false, code: 'INVALID_RESPONSE' });
+    // A 304 that describes its cached body still sends none.
+    expect(run(new PreviewStream('GET'), [head([['content-length', '40']], 304), end(0)]).at(-1)).toEqual({ ok: true, done: true });
   });
 
   it('end on an abort, before the head or midway', () => {
     expect(new PreviewStream('GET').accept(abort)).toEqual({ ok: true, done: true });
     expect(run(new PreviewStream('GET'), [head(), chunkOf(1, 0), abort]).at(-1)).toEqual({ ok: true, done: true });
     expect(run(new PreviewStream('GET'), [abort, chunkOf(1, 0)]).at(-1)).toMatchObject({ ok: false });
+    expect(run(new PreviewStream('GET'), [head(), end(0), abort]).at(-1)).toMatchObject({ ok: false });
   });
 });
 

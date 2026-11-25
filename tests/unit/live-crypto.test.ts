@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import { createPrivateKey, sign as nodeSign } from 'node:crypto';
 import {
   fromBase64Url,
@@ -44,7 +44,7 @@ describe('base64url', () => {
   it('refuses padding, other alphabets, impossible lengths and stray trailing bits', () => {
     expect(fromBase64Url('YQ==')).toBeNull();
     expect(fromBase64Url('a+b/')).toBeNull();
-    expect(fromBase64Url('abcde')).toBeNull();
+    expect(fromBase64Url('abcdA')).toBeNull(); // a length no byte string has, whatever its last bits
     expect(fromBase64Url('YR')).toBeNull(); // "YQ" is the one spelling of "a"
     expect(fromBase64Url('YQ')).toEqual(new Uint8Array([0x61]));
     expect(fromBase64Url(' YQ')).toBeNull();
@@ -52,6 +52,20 @@ describe('base64url', () => {
 });
 
 describe('room IDs and nonces', () => {
+  it('draw room IDs from the whole alphabet, a random byte at a time', () => {
+    const spy = vi.spyOn(globalThis.crypto, 'getRandomValues').mockImplementation(<T extends ArrayBufferView | null>(array: T): T => {
+      const bytes = array as unknown as Uint8Array;
+      // 0..23 for the first ID; the high bits are ignored.
+      bytes.forEach((_, i) => (bytes[i] = i + 32 * (i % 3)));
+      return array;
+    });
+    try {
+      expect(newRoomId()).toBe('23456789abcdefghijkmnpqr');
+    } finally {
+      spy.mockRestore();
+    }
+  });
+
   it('are fresh, well-formed and unguessable', () => {
     const rooms = new Set(Array.from({ length: 200 }, newRoomId));
     expect(rooms.size).toBe(200);

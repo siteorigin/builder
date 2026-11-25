@@ -44,6 +44,8 @@ const isTime = (value: unknown): value is number => typeof value === 'number' &&
  */
 export function checkSessionExpiry(expiresAt: unknown, session: { startedAt: number; currentExpiresAt?: number }, now: number): ExpiryCheck {
   if (!isTime(expiresAt)) return { ok: false, code: 'INVALID', message: 'The end of the session is not a time.' };
+  // The session's own times come from the relay's state; one that is not a time decides nothing.
+  if (!isTime(session.startedAt) || !isTime(now) || (session.currentExpiresAt !== undefined && !isTime(session.currentExpiresAt))) return { ok: false, code: 'INVALID', message: 'The session’s times are not valid.' };
   if (session.currentExpiresAt !== undefined && isExpired(session.currentExpiresAt, now)) return { ok: false, code: 'ENDED', message: 'The session has already ended.' };
   if (expiresAt <= now) return { ok: false, code: 'PAST', message: 'The session cannot end in the past.' };
   if (expiresAt > sessionDeadline(session.startedAt)) return { ok: false, code: 'TOO_LONG', message: 'A live session can last at most 24 hours.' };
@@ -59,6 +61,7 @@ export function checkSessionExpiry(expiresAt: unknown, session: { startedAt: num
  */
 export function checkGuestExpiry(expiresAt: unknown, sessionExpiresAt: number, now: number, currentExpiresAt?: number | null): { ok: true; expiresAt: number | null } | ExpiryProblem {
   if (expiresAt !== null && !isTime(expiresAt)) return { ok: false, code: 'INVALID', message: 'The end of the guest’s access is not a time.' };
+  if (!isTime(sessionExpiresAt) || !isTime(now) || (currentExpiresAt !== undefined && currentExpiresAt !== null && !isTime(currentExpiresAt))) return { ok: false, code: 'INVALID', message: 'The session’s times are not valid.' };
   if (isExpired(sessionExpiresAt, now)) return { ok: false, code: 'ENDED', message: 'The session has already ended.' };
   if (currentExpiresAt !== undefined && isGuestExpired(currentExpiresAt, sessionExpiresAt, now)) return { ok: false, code: 'ENDED', message: 'The guest’s access has already ended.' };
   if (expiresAt === null) return { ok: true, expiresAt: null };

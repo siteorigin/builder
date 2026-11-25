@@ -54,6 +54,8 @@ describe('relay URL resolution', () => {
       'https://live.\nsiteorigin.com',
       'https://live.siteorigin.com/a b',
       'https:\\\\live.siteorigin.com',
+      // Matches the address grammar, but a URL parser would read the backslash as a slash.
+      'https://relay.example\\extra',
       'https://live%2esiteorigin.com',
       'https://',
       'https://:8787'

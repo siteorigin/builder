@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { checkFrame, encodeFrame, FRAME_TYPES, frameLimit, normalizeDisplayName, parseFrame, utf8Length, type Direction, type Frame, type FrameOf, type Presence } from '@shared/live/messages';
 import { toBase64Url } from '@shared/live/crypto';
+import { canCall } from '@shared/live/roles';
 import { GUEST_FRAME_HEADROOM_BYTES, MAX_FRAME_BYTES, PREVIEW_CHUNK_BYTES } from '@shared/live/limits';
 
 const T = Date.UTC(2026, 10, 25, 9, 0, 0);
@@ -154,7 +155,9 @@ describe('refused frames', () => {
     expect(refused('guest-to-relay', { type: 'rpc:request', guestId: 'g_other', requestId, method: 'project.apply', args: [] })).toMatchObject({ code: 'INVALID' });
     expect(refused('guest-to-relay', { type: 'guest:join', version: 1, displayName: 'Sam', role: 'collaborator' })).toMatchObject({ code: 'INVALID' });
     expect(refused('host-to-relay', { type: 'room:create', version: 1, duration: '2h', projectName: 'Acme' })).toMatchObject({ code: 'INVALID', path: 'publicKey' });
-    expect(refused('relay-to-guest', { type: 'guest:status', status: 'admitted', guestId })).toMatchObject({ code: 'INVALID' });
+    // An admitted status missing only its session's end.
+    expect(refused('relay-to-guest', { type: 'guest:status', status: 'admitted', guestId, role: 'viewer', guestExpiresAt: null, projectName: 'Acme', now: T })).toMatchObject({ code: 'INVALID', path: 'sessionExpiresAt' });
+    expect(refused('relay-to-guest', { type: 'guest:status', status: 'pending', guestId })).toMatchObject({ code: 'INVALID', path: 'resumeToken' });
     expect(refused('relay-to-guest', { type: 'guest:status', status: 'banished' })).toMatchObject({ code: 'INVALID', path: 'status' });
     expect(refused('relay-to-guest', { type: 'rpc:response', requestId, method: 'project.snapshot', ok: true, result: 1, error: rpcError })).toMatchObject({ code: 'INVALID' });
     expect(refused('host-to-relay', { type: 'rpc:response', requestId, method: 'project.snapshot', ok: true, result: 1 })).toMatchObject({ code: 'INVALID', path: 'guestId' });
@@ -169,6 +172,18 @@ describe('refused frames', () => {
   it('take a usable Ed25519 key only', () => {
     const identity = toBase64Url(new Uint8Array(32).map((_, i) => (i === 0 ? 1 : 0)));
     expect(refused('host-to-relay', { type: 'room:create', version: 1, publicKey: identity, duration: '2h', projectName: 'Acme' })).toMatchObject({ path: 'publicKey' });
+  });
+
+  it('carry any method a guest names, but pass on and answer only those a guest may call', () => {
+    // A guest's call to a host-only method is well-formed, so the relay can refuse it with its request ID...
+    const call = { type: 'rpc:request', requestId, method: 'ai.providers', args: [] };
+    expect(parseFrame('guest-to-relay', json(call))).toMatchObject({ ok: true });
+    expect(canCall('collaborator', 'ai.providers')).toBe(false);
+    expect(parseFrame('relay-to-guest', json({ type: 'rpc:response', requestId, method: 'ai.providers', ok: false, error: rpcError }))).toMatchObject({ ok: true });
+    // ...but it never reaches the host, and nothing answers it as a success.
+    expect(refused('relay-to-host', { ...call, guestId })).toMatchObject({ code: 'INVALID', path: 'method' });
+    expect(refused('relay-to-guest', { type: 'rpc:response', requestId, method: 'ai.providers', ok: true, result: [] })).toMatchObject({ code: 'INVALID', path: 'method' });
+    expect(refused('host-to-relay', { type: 'rpc:response', guestId, requestId, method: 'ai.providers', ok: false, error: rpcError })).toMatchObject({ code: 'INVALID', path: 'method' });
   });
 
   it('use the current protocol version, valid IDs and real times', () => {
@@ -234,7 +249,7 @@ describe('refused frames', () => {
     const fromGuest = parseFrame('guest-to-relay', atGuestLimit);
     expect(fromGuest).toMatchObject({ ok: true });
     // Passed on with the longest guest ID, it still fits.
-    const forwarded = { ...(fromGuest as { frame: Frame<'guest-to-relay', 'rpc:request'> }).frame, guestId: 'g'.repeat(64) };
+    const forwarded = { ...(fromGuest as { frame: Frame<'guest-to-relay', 'rpc:request'> }).frame, method: 'project.apply' as const, guestId: 'g'.repeat(64) };
     expect(encodeFrame('relay-to-host', forwarded)).toMatchObject({ ok: true });
     expect(parseFrame('guest-to-relay', request(frameLimit('guest-to-relay') + 1))).toMatchObject({ ok: false, error: { code: 'TOO_LARGE' } });
   });
@@ -262,10 +277,22 @@ describe('preview frames', () => {
 
   it('pass on only the headers a read-only preview needs', () => {
     expect(parseFrame('relay-to-host', json(request('/', [['range', 'bytes=0-99']])))).toMatchObject({ ok: true });
-    for (const header of [['cookie', 'a=b'], ['authorization', 'Bearer x'], ['host', '127.0.0.1'], ['Accept', 'text/html'], ['accept', 'a\r\nset-cookie: x'], ['accept', 'a\u0001b'], ['accept', 'snow \u2603'], ['accept', 'a\u007fb']] as Array<[string, string]>)
-      expect(parseFrame('relay-to-host', json(request('/', [header]))), header[0]).toMatchObject({ ok: false });
-    for (const header of [['set-cookie', 'a=b'], ['connection', 'close'], ['transfer-encoding', 'chunked'], ['cache-control', 'public, max-age=3600'], ['location', '//evil.example/'], ['location', 'http://127.0.0.1:5173/'], ['location', '/__open-in-editor']] as Array<[string, string]>)
-      expect(parseFrame('host-to-relay', json(head([header]))), header.join(': ')).toMatchObject({ ok: false });
+    for (const [header, path] of [
+      [['cookie', 'a=b'], 'headers.0.0'],
+      [['authorization', 'Bearer x'], 'headers.0.0'],
+      [['host', '127.0.0.1'], 'headers.0.0'],
+      [['Accept', 'text/html'], 'headers.0.0'],
+      [['accept', 'a\r\nset-cookie: x'], 'headers.0.1'],
+      [['accept', 'a\u0001b'], 'headers.0.1'],
+      [['accept', 'snow \u2603'], 'headers.0.1'],
+      [['accept', 'a\u007fb'], 'headers.0.1']
+    ] as Array<[[string, string], string]>)
+      expect(parseFrame('relay-to-host', json(request('/', [header]))), header[0]).toMatchObject({ ok: false, error: { code: 'INVALID', path } });
+    for (const header of [['set-cookie', 'a=b'], ['connection', 'close'], ['transfer-encoding', 'chunked'], ['cache-control', 'public, max-age=3600']] as Array<[string, string]>)
+      expect(parseFrame('host-to-relay', json(head([header]))), header[0]).toMatchObject({ ok: false, error: { code: 'INVALID', path: 'headers.0.0' } });
+    // A redirect that would leave the preview, on a real redirect status.
+    for (const location of ['//evil.example/', 'http://127.0.0.1:5173/', '/__open-in-editor'])
+      expect(parseFrame('host-to-relay', json(head([['location', location]], 302))), location).toMatchObject({ ok: false, error: { code: 'INVALID', path: 'headers' } });
     expect(parseFrame('host-to-relay', json(head([], 101)))).toMatchObject({ ok: false, error: { path: 'status' } });
   });
 });

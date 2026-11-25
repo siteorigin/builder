@@ -3,6 +3,7 @@ import type { BuilderApi } from '../api';
 import type { ElementRef } from '../types';
 import { validateOperation, type EditOperation, type OperationType, type ToolErrorCode } from '../ops';
 import type { GuestRole } from './limits';
+import { canCall, LIVE_METHODS } from './roles';
 import type { Presence, RpcError, RpcErrorCode } from './messages';
 
 /**
@@ -12,20 +13,12 @@ import type { Presence, RpcError, RpcErrorCode } from './messages';
  * dialogs, settings, API keys, AI, source code, versions, conflicts and history) appears in no list.
  */
 
+export { canCall, COLLABORATOR_METHODS, LIVE_METHODS, VIEWER_METHODS, type LiveMethod } from './roles';
+
+// Every method a guest may call is one the app's API has.
 type ProjectMethod = `project.${keyof BuilderApi['project'] & string}`;
-
-/** A viewer reads the project as it is now; the preview, presence and the editor events come with admission. */
-export const VIEWER_METHODS = ['project.snapshot'] as const satisfies readonly ProjectMethod[];
-/** A collaborator also makes visual edits. */
-export const COLLABORATOR_METHODS = [...VIEWER_METHODS, 'project.apply'] as const satisfies readonly ProjectMethod[];
-export type LiveMethod = (typeof COLLABORATOR_METHODS)[number];
-
-const METHODS: Record<GuestRole, readonly string[]> = { viewer: VIEWER_METHODS, collaborator: COLLABORATOR_METHODS };
-
-/** Whether a guest holding `role` may call the dotted `BuilderApi` method. Unknown names are refused. */
-export function canCall(role: GuestRole, method: string): method is LiveMethod {
-  return Object.hasOwn(METHODS, role) && METHODS[role].includes(method);
-}
+const _methodsExist: readonly ProjectMethod[] = LIVE_METHODS;
+void _methodsExist;
 
 /**
  * The edits a collaborator may make: page structure, the content, styles and layout of what is on a page, placements
@@ -73,6 +66,42 @@ export const COLLABORATOR_OPERATIONS = [
 
 const OPERATIONS: Record<GuestRole, readonly string[]> = { viewer: [], collaborator: COLLABORATOR_OPERATIONS };
 
+/**
+ * Where a guest's edits may land: pages, and the shared header and footer. Component definitions and collection
+ * layout templates are shared designs every placement or entry shows, outside a collaborator's grant, whichever
+ * operation would reach them.
+ */
+export const GUEST_OWNER_KINDS = ['page', 'shell'] as const;
+
+/**
+ * Component properties only the host sets, wherever they are placed: a contact form's service settings, which decide
+ * whose account receives the site's messages.
+ */
+export const HOST_ONLY_PROPS = ['provider', 'endpoint', 'accessKey', 'formName'] as const;
+
+/** The page settings a collaborator may change: its name, address, search text and image, and its shared parts. */
+export const COLLABORATOR_PAGE_FIELDS = ['title', 'navLabel', 'route', 'seoTitle', 'description', 'socialImage', 'showHeader', 'showFooter'] as const;
+
+const isHostOnlyProp = (prop: string) => (HOST_ONLY_PROPS as readonly string[]).includes(prop);
+
+/** Why an allowed operation type still reaches past a guest's grant, or null when it does not. */
+function beyondGuestGrant(op: EditOperation): string | null {
+  for (const key of ['owner', 'toOwner'] as const) {
+    const owner = (op as Partial<Record<typeof key, { kind: string }>>)[key];
+    if (owner && !(GUEST_OWNER_KINDS as readonly string[]).includes(owner.kind)) return `Guests edit pages and the shared header and footer, not a ${owner.kind}.`;
+  }
+  if (op.type === 'instance.setProp' && isHostOnlyProp(op.prop)) return `Only the host can change "${op.prop}".`;
+  if (op.type === 'node.insert' && op.props) {
+    const prop = Object.keys(op.props).find(isHostOnlyProp);
+    if (prop) return `Only the host can set "${prop}".`;
+  }
+  if (op.type === 'page.update') {
+    const fields = Object.keys(op).filter((k) => k !== 'type' && k !== 'pageId' && !(COLLABORATOR_PAGE_FIELDS as readonly string[]).includes(k));
+    if (fields.length) return `Only the host can change a page’s ${fields.join(', ')}.`;
+  }
+  return null;
+}
+
 /** Whether a guest holding `role` may make an edit of this operation type. Viewers make none. */
 export function canEditOperation(role: GuestRole, type: string): boolean {
   return Object.hasOwn(OPERATIONS, role) && OPERATIONS[role].includes(type);
@@ -117,8 +146,9 @@ const invalid = (message: string, operationIndex?: number): { ok: false; error: 
 
 /**
  * Check a guest's batch before any of it runs: its shape, then each operation's type against the role, then the
- * operation itself, as the local pipeline validates it. One refused operation refuses the whole batch, naming it.
- * Only the parsed operations come back, so what runs is exactly what was checked.
+ * operation itself, as the local pipeline validates it, then where it lands and what it sets (beyondGuestGrant).
+ * One refused operation refuses the whole batch, naming it. Only the parsed operations come back, so what runs is
+ * exactly what was checked.
  */
 export function checkEditBatch(role: GuestRole, input: unknown): CapabilityResult<LiveEditBatch> {
   if (!canCall(role, 'project.apply')) return denied('Only collaborators can edit this project.');
@@ -134,6 +164,8 @@ export function checkEditBatch(role: GuestRole, input: unknown): CapabilityResul
     if (!canEditOperation(role, type)) return denied(`A ${role} cannot make "${type.slice(0, 60)}" edits.`, index);
     const checked = validateOperation(raw);
     if (!checked.ok) return invalid(checked.message, index);
+    const beyond = beyondGuestGrant(checked.op);
+    if (beyond) return denied(beyond, index);
     operations.push(checked.op);
   }
   const { expectedRevision, label } = batch.data;

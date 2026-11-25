@@ -57,6 +57,9 @@ describe('session expiry', () => {
     expect(checkSessionExpiry(start, { startedAt: start }, start)).toMatchObject({ ok: false, code: 'PAST' });
     expect(checkSessionExpiry(start + HOUR, { startedAt: start, currentExpiresAt: start + 8 * HOUR }, start + 2 * HOUR)).toMatchObject({ ok: false, code: 'PAST' });
     for (const bad of [NaN, Infinity, 1.5 + start, 2 ** 60, '1', null, undefined]) expect(checkSessionExpiry(bad, { startedAt: start }, start)).toMatchObject({ ok: false, code: 'INVALID' });
+    // Nor from session times that are not times: the cap is never skipped.
+    expect(checkSessionExpiry(start + 30 * HOUR, { startedAt: NaN }, start)).toMatchObject({ ok: false, code: 'INVALID' });
+    expect(checkSessionExpiry(start + HOUR, { startedAt: start, currentExpiresAt: NaN }, start)).toMatchObject({ ok: false, code: 'INVALID' });
   });
 });
 
@@ -70,8 +73,9 @@ describe('guest expiry', () => {
   });
 
   it('grants nothing once the session or the guest’s own access has ended', () => {
-    // Not even clearing a deadline, at the moment the session ends.
+    // Not even clearing a deadline, at the moment the session ends, whatever the guest's own grant.
     expect(checkGuestExpiry(null, sessionEnds, sessionEnds)).toMatchObject({ ok: false, code: 'ENDED' });
+    expect(checkGuestExpiry(null, sessionEnds, sessionEnds, sessionEnds + HOUR)).toMatchObject({ ok: false, code: 'ENDED' });
     expect(checkGuestExpiry(start + HOUR, sessionEnds, start + 30 * MIN, start + 30 * MIN)).toMatchObject({ ok: false, code: 'ENDED' });
     expect(checkGuestExpiry(null, sessionEnds, start + 30 * MIN, start + 30 * MIN)).toMatchObject({ ok: false, code: 'ENDED' });
     // A grant still running may be extended or cleared.
@@ -101,5 +105,14 @@ describe('guest expiry', () => {
     expect(isGuestExpired(start + MIN, sessionEnds, start)).toBe(false);
     expect(isGuestExpired(null, sessionEnds, sessionEnds - 1)).toBe(false);
     expect(isGuestExpired(null, sessionEnds, sessionEnds)).toBe(true);
+    // A session shortened below a guest's own deadline ends the guest with it.
+    expect(isGuestExpired(sessionEnds + HOUR, sessionEnds, sessionEnds)).toBe(true);
+    expect(isGuestExpired(sessionEnds + HOUR, sessionEnds, sessionEnds - 1)).toBe(false);
+  });
+
+  it('decides nothing from times that are not times', () => {
+    expect(checkGuestExpiry(null, NaN, start)).toMatchObject({ ok: false, code: 'INVALID' });
+    expect(checkGuestExpiry(start + MIN, sessionEnds, NaN)).toMatchObject({ ok: false, code: 'INVALID' });
+    expect(checkGuestExpiry(start + MIN, sessionEnds, start, 1.5)).toMatchObject({ ok: false, code: 'INVALID' });
   });
 });

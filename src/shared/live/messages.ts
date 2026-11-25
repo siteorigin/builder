@@ -21,6 +21,7 @@ import {
 } from './limits';
 import { fromBase64Url, isHostPublicKey, NONCE_BYTES, NONCE_RE, SIGNATURE_BYTES, SIGNATURE_RE } from './crypto';
 import { SESSION_DURATION_IDS } from './expiry';
+import { LIVE_METHODS } from './roles';
 import { isPreviewHeaderName, isPreviewHeaderValue, isPreviewLocation, isPreviewTarget, PREVIEW_ABORT_CODES, PREVIEW_METHODS } from './preview';
 
 /**
@@ -197,10 +198,12 @@ const previewReload = msg('preview:reload', {});
 // Remote BuilderApi calls
 
 /**
- * A `BuilderApi` method by its dotted name (`project.apply`). The frame carries any such name; the role decides what
- * runs (capabilities.ts), so a method no role may call is refused with a reason rather than as a malformed frame.
+ * A `BuilderApi` method by its dotted name (`project.apply`). A guest's frame may name any such method, so the relay
+ * can refuse one no guest may call with a reason, answering the request it came with; only the methods a guest may
+ * call (roles.ts) are ever passed on to the host or answered by it.
  */
 const method = z.string().regex(/^[a-z][A-Za-z]{0,31}\.[a-z][A-Za-z]{0,63}$/);
+const liveMethod = z.enum(LIVE_METHODS);
 /** Arguments travel as given; the host checks them against the method before anything runs. */
 const args = z.array(z.unknown()).max(8);
 
@@ -229,10 +232,11 @@ export type RpcErrorCode = (typeof RPC_ERROR_CODES)[number];
 const rpcError = z.object({ code: z.enum(RPC_ERROR_CODES), message, recoverable: z.boolean(), operationIndex: z.number().int().nonnegative().optional() }).strict();
 export type RpcError = z.infer<typeof rpcError>;
 
-const rpcResponse = <E extends z.ZodRawShape>(extra: E) =>
+/** The host answers only the methods it was passed; the relay may also refuse any method a guest named. */
+const rpcResponse = <E extends z.ZodRawShape>(extra: E, named: typeof method | typeof liveMethod) =>
   z.discriminatedUnion('ok', [
-    msg('rpc:response', { ...extra, requestId, method, ok: z.literal(true), result: z.unknown() }),
-    msg('rpc:response', { ...extra, requestId, method, ok: z.literal(false), error: rpcError })
+    msg('rpc:response', { ...extra, requestId, method: liveMethod, ok: z.literal(true), result: z.unknown() }),
+    msg('rpc:response', { ...extra, requestId, method: named, ok: z.literal(false), error: rpcError })
   ]);
 
 /** The host's editor events guests follow. Payloads are the host's own, made safe to share before they are sent. */
@@ -283,7 +287,7 @@ const HOST_TO_RELAY = z.discriminatedUnion('type', [
   previewAbort,
   previewReload,
   // The host answers the guest that asked, and sends events to one guest or, with no guest ID, to all admitted.
-  rpcResponse({ guestId }),
+  rpcResponse({ guestId }, liveMethod),
   rpcEvent({ guestId: guestId.optional() }),
   presenceUpdate
 ]);
@@ -296,14 +300,14 @@ const RELAY_TO_HOST = z.discriminatedUnion('type', [
   previewRequest,
   previewAbort,
   // The relay names the guest a request came from; the host never takes a guest's word for it.
-  msg('rpc:request', { guestId, requestId, method, args }),
+  msg('rpc:request', { guestId, requestId, method: liveMethod, args }),
   presenceChanged,
   protocolError
 ]);
 
 const GUEST_TO_RELAY = z.discriminatedUnion('type', [guestJoin, msg('rpc:request', { requestId, method, args }), presenceUpdate]);
 
-const RELAY_TO_GUEST = z.discriminatedUnion('type', [guestStatus, roomState, guestRoster, previewReload, rpcResponse({}), rpcEvent({}), presenceChanged, protocolError]);
+const RELAY_TO_GUEST = z.discriminatedUnion('type', [guestStatus, roomState, guestRoster, previewReload, rpcResponse({}, method), rpcEvent({}), presenceChanged, protocolError]);
 
 export const FRAME_SCHEMAS = { 'host-to-relay': HOST_TO_RELAY, 'relay-to-host': RELAY_TO_HOST, 'guest-to-relay': GUEST_TO_RELAY, 'relay-to-guest': RELAY_TO_GUEST } as const;
 export type Direction = keyof typeof FRAME_SCHEMAS;
