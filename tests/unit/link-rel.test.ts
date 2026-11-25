@@ -9,12 +9,13 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import type { InstanceNode, LinkValue, ProjectState } from '@shared/types';
 import { validateOperation } from '@shared/ops';
-import { canonicalRels, linkRels, linkTitle, relAttribute, relsFromAttribute, withRels } from '@shared/link-rel';
+import { canonicalRels, linkRels, linkTitle, relAttribute, relsFromAttribute, withAuthoredRel, withRels } from '@shared/link-rel';
 import { linkFromTarget, linkTokens, parseRichText, richTextToMarkdown } from '@shared/richtext';
 import { blocksFromDom } from '@shared/richtext-tree';
 import { createStarterState } from '@catalogue/starters';
 import { normalizeLink, normalizeRichText } from '@engine/values';
-import { defFile, generateProject, resolveLink, withAuthoredRel } from '@generator/index';
+import { defFile, generateProject, resolveLink } from '@generator/index';
+import { applyOperations } from '@engine/apply';
 import { linkAt, setLink, typedLink } from '../../src/renderer/src/lib/richtext-commands';
 import { richDom } from '../../src/renderer/src/lib/richtext';
 import { emptyReport, htmlToRichText } from '../../src/main/posts-import/html';
@@ -73,6 +74,8 @@ describe('the stored relationships', () => {
     // An HTML attribute: any case, any whitespace, the security tokens left to the site.
     expect(relsFromAttribute(' UGC\tnoopener  Sponsored noreferrer\n')).toEqual(['sponsored', 'ugc']);
     expect(relsFromAttribute(null)).toEqual([]);
+    // Only spaces separate an attribute's words, as a browser reads it.
+    expect(relsFromAttribute('nofollow,ugc')).toEqual([]);
   });
 
   it('belong to a web address alone', () => {
@@ -290,6 +293,19 @@ describe('a theme header installed before links had relationships', () => {
     // Nothing else in it changes, and the current header is left as it is.
     expect(now.replace(/[\w.?]+\.rel \?\? \(([^)]*)\)/g, '$1')).toBe(old);
     expect(withAuthoredRel(now)).toBe(now);
+    // The notice, which came later, and nothing that only ends in rel.
+    expect(withAuthoredRel(`\t\trel={noticeLink.newTab ? 'noopener noreferrer' : undefined}`)).toBe(`\t\trel={noticeLink.rel ?? (noticeLink.newTab ? 'noopener noreferrer' : undefined)}`);
+    const unrelated = `<b data-rel={options.newTab ? 'noopener noreferrer' : undefined}></b>`;
+    expect(withAuthoredRel(unrelated)).toBe(unrelated);
+  });
+
+  it('is what a copy of it starts from', () => {
+    const s = fresh();
+    s.components['foundation.shell.header'].source = old;
+    const r = applyOperations(s, [{ type: 'component.duplicate', definitionId: 'foundation.shell.header', name: 'My header' }]);
+    const copy = r.state.components[(r.results[0] as { definitionId: string }).definitionId];
+    expect(copy).toMatchObject({ kind: 'code', owner: 'project' });
+    expect(copy.source).toBe(withAuthoredRel(old));
   });
 
   it('is given them when the site is generated, while a component of the author’s own is left as written', () => {

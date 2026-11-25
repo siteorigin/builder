@@ -16,8 +16,16 @@ export function canonicalRels(v: unknown): LinkRel[] {
   return LINK_RELS.filter((t) => KNOWN.has(t) && has.has(t));
 }
 
-/** The authored tokens of an HTML rel attribute (`noopener`, `noreferrer` and the rest left out). */
-export const relsFromAttribute = (attr: string | null | undefined): LinkRel[] => canonicalRels(attr ?? '');
+/** The authored tokens of an HTML rel attribute, whose words only spaces separate (`noopener` and the rest left out). */
+export const relsFromAttribute = (attr: string | null | undefined): LinkRel[] => canonicalRels((attr ?? '').split(/[ \t\n\f\r]+/));
+
+/**
+ * A theme component's code from before links could say what they are (#582), which renders a link's rel from its new
+ * tab alone, given the resolved link's own rel instead. That holds the same tokens when the author said nothing, so
+ * what the site shows stays exactly as it was until a relationship is set. The theme's current code needs none of it.
+ */
+export const withAuthoredRel = (source: string): string =>
+  source.replace(/(\s)rel=\{([\w$.?]+)\.newTab \? 'noopener noreferrer' : undefined\}/g, (_, space: string, link: string) => `${space}rel={${link}.rel ?? (${link}.newTab ? 'noopener noreferrer' : undefined)}`);
 
 /** The relationships a link carries: only a web address has any. */
 export const linkRels = (link: unknown): LinkRel[] => (link && typeof link === 'object' && (link as LinkValue).type === 'url' ? canonicalRels((link as LinkValue).rel) : []);

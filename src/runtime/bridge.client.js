@@ -1905,7 +1905,7 @@ function linkChecked(payload) {
   // or a web address, and keeps what the author said about a web address while it still goes to one.
   const touched = [...editing.el.querySelectorAll('a[href]')].filter((a) => ed.range.intersectsNode(a));
   const was = touched[0];
-  const one = !!was && touched.every((a) => a.getAttribute('href') === was.getAttribute('href') && a.getAttribute('target') === was.getAttribute('target') && authoredRels(a).join() === authoredRels(was).join());
+  const one = !!was && touched.every((a) => a.getAttribute('href') === was.getAttribute('href') && a.getAttribute('target') === was.getAttribute('target') && authoredRels(a).join() === authoredRels(was).join()) && allLinked(ed.range);
   const newTab = one && was.getAttribute('target') === '_blank' && /^(https?:|\/)/i.test(href);
   const rels = one && /^https?:/i.test(href) && /^https?:/i.test(was.getAttribute('href')) ? authoredRels(was) : [];
   closeLinkEditor(true);
@@ -1918,6 +1918,17 @@ function linkChecked(payload) {
       if (newTab) a.setAttribute('target', '_blank');
       if (rels.length) a.setAttribute('rel', rels.join(' '));
     }
+}
+/** Whether every word the range covers is already linked: words beside a link that join it say nothing of its own. */
+function allLinked(range) {
+  const walker = document.createTreeWalker(editing.el, NodeFilter.SHOW_TEXT);
+  for (let t = walker.nextNode(); t; t = walker.nextNode()) {
+    if (!range.intersectsNode(t)) continue;
+    const from = t === range.startContainer ? range.startOffset : 0;
+    const to = t === range.endContainer ? range.endOffset : t.nodeValue.length;
+    if (t.nodeValue.slice(from, to).trim() && !t.parentElement.closest('a[href]')) return false;
+  }
+  return true;
 }
 /** Whether the words the field links are still there to link (the text can change underneath the field). */
 function linkRangeLive() {

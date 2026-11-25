@@ -392,7 +392,7 @@ function PostEditor({ post, hidden }: { post: PostRef; hidden: boolean }) {
       // The anchor's own rel, which is what the post keeps (see post-dom), and whether it opens a new tab, which the
       // browser's new link for the words would otherwise lose.
       rel: a && root.current?.contains(a) ? relsFromAttribute(a.getAttribute('rel')) : [],
-      newTab: !!a && !!root.current?.contains(a) && a.getAttribute('target') === '_blank'
+      newTab: range && root.current ? opensNewTab(root.current, range) : false
     });
   };
   const applyLink = (d: Extract<Dialog, { kind: 'link' }>) => {
@@ -797,6 +797,24 @@ function allPosts(state: ProjectState) {
   return Object.keys(state.collections ?? {})
     .sort()
     .flatMap((id) => orderedEntries(state.collections[id]).map((e) => ({ id: e.id, title: e.title, collection: state.collections[id].settings.name })));
+}
+
+/**
+ * Whether the words chosen for a link are all in links that open a new tab (the one at the caret, with none chosen):
+ * words beside such a link, or in one that does not, keep a new link to the tab it opens in.
+ */
+function opensNewTab(root: HTMLElement, range: Range): boolean {
+  const touched = [...root.querySelectorAll('a[href]')].filter((a) => range.intersectsNode(a));
+  if (!touched.length || touched.some((a) => a.getAttribute('target') !== '_blank')) return false;
+  const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT);
+  for (let t = walker.nextNode(); t; t = walker.nextNode()) {
+    if (!range.intersectsNode(t)) continue;
+    const text = t.nodeValue ?? '';
+    const from = t === range.startContainer ? range.startOffset : 0;
+    const to = t === range.endContainer ? range.endOffset : text.length;
+    if (text.slice(from, to).trim() && !t.parentElement?.closest('a[href]')) return false;
+  }
+  return true;
 }
 
 function LinkDialog({ dialog, state, self, onChange, onApply }: { dialog: Extract<Dialog, { kind: 'link' }>; state: ProjectState; self: string; onChange: (d: Dialog) => void; onApply: (d: Extract<Dialog, { kind: 'link' }>) => void }) {

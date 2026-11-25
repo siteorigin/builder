@@ -156,6 +156,29 @@ describe.skipIf(!browserInstalled)('the link field on the canvas', () => {
     expect(await pointAt('hi@example.com')).toEqual([['mailto:hi@example.com', null, null]]);
   });
 
+  it('gives words beside a link that join it in a new one nothing of what that link said (#582)', async () => {
+    const shop = '<p>Read <a href="https://shop.example/" target="_blank" rel="noopener noreferrer sponsored">about us</a> today</p>';
+    await openField(shop, 'https://shop.example/');
+    await page.keyboard.press('Escape');
+    // The end of the link and the plain word after it.
+    await frame.evaluate(`(() => {
+      const a = document.querySelector('[data-so-node="r"] a');
+      const r = document.createRange();
+      r.setStart(a.firstChild, 6);
+      r.setEnd(a.nextSibling, 6);
+      getSelection().removeAllRanges();
+      getSelection().addRange(r);
+    })()`);
+    await page.keyboard.press(`${MOD}+k`);
+    await expect.poll(async () => (await field()).open).toBe(true);
+    await page.keyboard.type('https://other.example/');
+    await page.keyboard.press('Enter');
+    const { check } = await nextCheck(0);
+    await toFrame('linkChecked', { check });
+    await expect.poll(async () => (await field()).open).toBe(false);
+    expect((await rels()).find(([href]) => href === 'https://other.example/')).toEqual(['https://other.example/', null, null]);
+  });
+
   it('re-points only the link the caret is in when its neighbour goes to the same address but says something else (#582)', async () => {
     const pair = '<p><a href="https://shop.example/" rel="sponsored"><strong>Paid</strong></a><a href="https://shop.example/" rel="ugc"><em>review</em></a> today</p>';
     edits++;

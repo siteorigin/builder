@@ -76,7 +76,7 @@ import { stableHash } from '@shared/ids';
 import { fontFaceCss } from '@shared/fonts';
 import { colorSchemeMode, darkValue, withDarkPalette, type PaletteScheme } from '@shared/color-scheme';
 import { asParagraphList, isImageBlock, isListBlock, isTelephone, richTextToParagraphs, richTextToPlain, toRichText, type RichListType, type RichSpan, type RichText } from '@shared/richtext';
-import { linkRels, relAttribute } from '@shared/link-rel';
+import { linkRels, relAttribute, withAuthoredRel } from '@shared/link-rel';
 import { axesOf, selectedVariants, selectedVariantStyles } from '@shared/variants';
 import { itemOverrideClass, liveItemStyles, repeatedPartList } from '@shared/item-styles';
 import { effectiveItem } from '@shared/page-teasers';
@@ -4141,17 +4141,11 @@ function addLibrary(state: ProjectState, opts: GenerateOptions, files: FileMap, 
   files.set(`${STYLES_DIR}/site.css`, file('site.css', generateSiteCss));
   for (const def of sortedDefs(state)) {
     if (def.kind === 'managed' && def.tree) files.set(defFile(def), file(`component:${def.id}${mode}`, (s) => generateManagedComponent(s, s.components[def.id], opts)));
+    // A theme component installed before links had relationships renders them too (see withAuthoredRel).
     else if (def.kind === 'code' && def.source) files.set(defFile(def), def.owner === 'theme' ? withAuthoredRel(def.source) : def.source);
   }
 }
 
-/**
- * A theme component installed before links could say what they are (#582) renders a link's rel from its new tab
- * alone. Its anchors are given the resolved link's own rel, which holds the same tokens when the author said nothing,
- * so what the site shows stays exactly as it was until a relationship is set. Updating the theme brings the same.
- */
-export const withAuthoredRel = (source: string): string =>
-  source.replace(/rel=\{([\w$.?]+)\.newTab \? 'noopener noreferrer' : undefined\}/g, (_, link: string) => `rel={${link}.rel ?? (${link}.newTab ? 'noopener noreferrer' : undefined)}`);
 
 /** The library alone (see addLibrary), as generateProject makes it, without the routes that use it. */
 export function generateLibrary(state: ProjectState, opts: GenerateOptions = {}): FileMap {
