@@ -2,7 +2,7 @@
 // to the same part in the card before or after, without wrapping and without changing the list.
 import { describe, expect, it } from 'vitest';
 import { createStarterState } from '@catalogue/starters';
-import type { ElementRef, InstanceNode, ListItem, ProjectState } from '@shared/types';
+import type { ElementRef, GraphNode, InstanceNode, ListItem, ProjectState } from '@shared/types';
 import { itemStep, refExists, stepItem } from '../../src/renderer/src/lib/model';
 
 const fresh = () => createStarterState('business', 'Step Studio', false);
@@ -132,8 +132,8 @@ describe('stepping the selection between repeated items (#552)', () => {
     const def = s.components[g.definitionId];
     // Each card lists the same tags: a repeat inside the card's repeat.
     def.properties.tags = { ...def.properties.items, default: [{ id: 't1', title: 'Fast' }, { id: 't2', title: 'Tidy' }, { id: 't3', title: 'Fair' }] } as typeof def.properties.items;
-    def.tree!.nodes['tag-text'] = { id: 'tag-text', kind: 'text', tag: 'span', text: { $item: 'title' } } as (typeof def.tree.nodes)[string];
-    def.tree!.nodes.tags = { id: 'tags', kind: 'repeat', list: { $prop: 'tags' }, children: ['tag-text'] } as (typeof def.tree.nodes)[string];
+    def.tree!.nodes['tag-text'] = { id: 'tag-text', kind: 'text', tag: 'span', text: { $item: 'title' } } as GraphNode;
+    def.tree!.nodes.tags = { id: 'tags', kind: 'repeat', list: { $prop: 'tags' }, children: ['tag-text'] } as GraphNode;
     (def.tree!.nodes.card as { children: string[] }).children.push('tags');
     const ids = cards(s).map((c) => c.id as string);
     const tag = (item: string, t: string): ElementRef => ({ owner: owner(s), instancePath: [g.id], nodeId: 'tag-text', itemPath: [item, t] });
