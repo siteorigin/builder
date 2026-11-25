@@ -285,13 +285,14 @@ export function themeLayoutRules(css: string): ThemeLayoutRules {
   }
   // So many class rules that matching each box against them all would slow every validation: read as reaching any box.
   if (hooks.length > MAX_HOOKS) tags.add('*');
+  const anyElement = [...tags].some((t) => ANY_ELEMENT.has(t));
   const matches = (classes: string[], t: Token) =>
     t.op === '^' ? classes.join(' ').startsWith(t.value) : classes.some((c) => (t.op === '.' || t.op === '=' ? c === t.value : t.op === '*' ? c.includes(t.value) : c.endsWith(t.value)));
   const rules: ThemeLayoutRules = {
     page,
     reaches: (classes, as) =>
       tags.has('*') ||
-      (as === undefined ? [...tags].some((t) => ANY_ELEMENT.has(t)) : as.some((t) => tags.has(t.toLowerCase()))) ||
+      (as === undefined ? anyElement : as.some((t) => tags.has(t.toLowerCase()))) ||
       (classes.length > 0 && hooks.some((r) => (r.any.length === 0 || r.any.some((t) => matches(classes, t))) && r.all.every((t) => matches(classes, t))))
   };
   cache.set(css, rules);
