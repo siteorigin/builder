@@ -78,6 +78,12 @@
   /* A branch hidden by the layer that holds it says so once, at its top. */
   .layers-sublabel.with-icon { display: flex; align-items: center; gap: 4px; min-width: 0; font-weight: 500; }
   .layers-sublabel.with-icon svg { flex: none; width: 11px; height: 11px; }
+  /* A slot of a placed component heads its content as a row of its own: quiet like the labels (small, muted), with a
+     quieter "Empty" while it holds nothing. Picked for Insert, it takes the selection's fill and colour. */
+  .layers-tree .layer-slot :is(.layer-name, .layer-kind) { color: var(--text-3); }
+  .layers-tree .layer-slot .layer-name { font-size: 11px; font-weight: 600; }
+  .layers-tree .layer-slot-empty { flex: none; padding-right: 6px; font-size: 11px; font-style: italic; color: var(--text-3); }
+  .layers-tree .layer-slot.selected :is(.layer-name, .layer-kind, .layer-slot-empty) { color: inherit; }
   /* A truncated row reached by keys shows its full name and place just below it. */
   .layers-peek { position: fixed; z-index: 50; display: flex; flex-direction: column; gap: 1px; padding: 6px 10px; border-radius: var(--r-md); background: var(--raised); box-shadow: var(--shadow-md), inset 0 0 0 1px var(--border-strong); font-size: 12px; font-weight: 500; color: var(--text); overflow-wrap: anywhere; pointer-events: none; }
   .layers-peek-path { font-size: 11px; font-weight: 400; color: var(--text-2); }

@@ -70,7 +70,7 @@ export async function removeFromLibrary(entry: Pick<SavedComponent, 'id' | 'dige
 export async function insertSaved(entry: SavedComponent): Promise<string | undefined> {
   const start = getState();
   const snap = start.snapshot;
-  const at = snap ? insertionPoint(entry.role, start.selection, snap) : null;
+  const at = snap ? insertionPoint(entry.role, start.selection, snap, undefined, start.slotTarget) : null;
   if (!snap || !at) return;
   const place = { owner: at.owner, parentId: at.parentId, ...(at.slot !== undefined ? { slot: at.slot } : {}), ...(at.index !== undefined ? { index: at.index } : {}) };
   const r: SavedInsertResult = await api.project.insertSavedComponent(entry.id, entry.digest, place, snap.workspaceKey, snap.revision).catch((e: Error) => ({ ok: false, message: `${entry.name} couldn’t be inserted: ${e.message}` }));

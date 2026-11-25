@@ -29,6 +29,7 @@ import { duplicateOps, groupOf, layerRef, liveSet, moveIntoOps, moveStepOps, mov
 import { editLabel, placeWords } from './edit-label';
 import { draftFor, imagesFor, withDraft } from './chatDrafts';
 import type { SeoHandoff } from './seoHandoff';
+import type { SlotTarget } from './slot-target';
 
 export type { InsertSpec, Primitive } from './insert-search';
 
@@ -477,16 +478,18 @@ export { elementWhere, nodeBefore, nodeLabel } from './insert-at';
 
 /** Work out where an inserted section or element should go, relative to the selection (or to `from`; a part of a
  *  placed component counts as the placement, see insertAt), in the project as this window has it (or as `snapshot`
- *  has it). `definitionId`: the component being inserted (see placeFor). */
-export function insertionPoint(kind: InsertRole, from: ElementRef | null = getState().selection, snapshot: ProjectSnapshot | null = getState().snapshot, definitionId?: string): InsertAt | null {
+ *  has it). `definitionId`: the component being inserted (see placeFor). `target`: a slot picked for Insert to fill,
+ *  which takes everything (see insertAt). */
+export function insertionPoint(kind: InsertRole, from: ElementRef | null = getState().selection, snapshot: ProjectSnapshot | null = getState().snapshot, definitionId?: string, target: SlotTarget | null = null): InsertAt | null {
   const owner = currentOwner();
   if (!snapshot || !owner) return null;
-  return insertAt(snapshot.state, owner, kind, from, definitionId);
+  return insertAt(snapshot.state, owner, kind, from, definitionId, target);
 }
 
 /**
- * Where `spec` goes when its tile is clicked now: how it is placed, and the place. A slot's placeholder goes where
- * the Slots section puts a new one (see slotInsertAt), in the design being edited only.
+ * Where `spec` goes when its tile is clicked now: how it is placed, and the place (a slot picked for Insert, if one
+ * is). A slot's placeholder goes where the Slots section puts a new one (see slotInsertAt), in the design being edited
+ * only.
  */
 export function insertPlan(spec: InsertSpec, snapshot: ProjectSnapshot | null = getState().snapshot): { role: InsertRole; at: InsertAt | null } {
   if (spec.primitive === 'slot') {
@@ -494,7 +497,7 @@ export function insertPlan(spec: InsertSpec, snapshot: ProjectSnapshot | null = 
     return { role: 'element', at: snapshot && owner?.kind === 'component' ? slotInsertAt(snapshot.state, owner.id, getState().selection) : null };
   }
   const role = snapshot ? insertRole(snapshot.state, spec) : spec.primitive ? 'element' : 'section';
-  return { role, at: insertionPoint(role, getState().selection, snapshot, spec.definitionId) };
+  return { role, at: insertionPoint(role, getState().selection, snapshot, spec.definitionId, getState().slotTarget) };
 }
 
 /**

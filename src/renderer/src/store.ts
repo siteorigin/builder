@@ -13,6 +13,7 @@ import { checkHeld, fieldKey, placeOf, readFields, shownField, tableRowNameEdit,
 import type { RevealedItem } from './lib/reveal';
 import type { StyleCopy } from './lib/style-copy';
 import type { LayerSet } from './lib/layer-set';
+import { slotTargetHolds, type SlotTarget } from './lib/slot-target';
 import type { PostRef } from './lib/posts';
 import { notePlace, type PagePlaces } from './lib/page-place';
 import type { TemplateMode } from './lib/template-view';
@@ -161,6 +162,8 @@ export interface State {
   selection: ElementRef | null;
   /** Sibling layers selected in Layers together with `selection`, which is always one of them (lib/layer-set). */
   layerSet: LayerSet | null;
+  /** A slot of a placed component picked as where Insert puts things, while nothing is selected (lib/slot-target). */
+  slotTarget: SlotTarget | null;
   /** The element last selected on each page, resumed when the page is opened again (lib/page-place). Never in the site. */
   pagePlaces: PagePlaces;
   /**
@@ -289,6 +292,22 @@ function savedAssetSort(): AssetSort {
  * even of the same layer) selects that one layer, so the layers picked with it are let go.
  */
 const oneSelection = (p: Partial<State>): Partial<State> => ('selection' in p && !('layerSet' in p) ? { ...p, layerSet: null } : p);
+/**
+ * A slot picked for Insert to fill is let go by any selection (of an element, or of nothing), by another page,
+ * component or layout on the canvas, and by a change to the project that takes away its placement or the slot.
+ */
+const slotFollows = (p: Partial<State>): Partial<State> => {
+  const s = useStore.getState();
+  const t = s.slotTarget;
+  if (!t || 'slotTarget' in p) return p;
+  const gone =
+    'selection' in p ||
+    ('pageId' in p && p.pageId !== s.pageId) ||
+    ('definitionMode' in p && (p.definitionMode?.definitionId ?? null) !== (s.definitionMode?.definitionId ?? null)) ||
+    ('templateMode' in p && (p.templateMode?.collectionId ?? null) !== (s.templateMode?.collectionId ?? null)) ||
+    ('snapshot' in p && !slotTargetHolds(p.snapshot?.state, t));
+  return gone ? { ...p, slotTarget: null } : p;
+};
 /** Opening a page, or editing a component everywhere, closes a collection's layout: the canvas shows one thing. */
 const oneView = (p: Partial<State>): Partial<State> => {
   const s = useStore.getState();
@@ -314,6 +333,7 @@ export const useStore = create<State>((set) => ({
   seoSubject: null,
   selection: null,
   layerSet: null,
+  slotTarget: null,
   pagePlaces: {},
   previewReturn: null,
   hover: null,
@@ -364,7 +384,7 @@ export const useStore = create<State>((set) => ({
   styleCopy: null,
   renameOffer: null,
   copyNote: null,
-  setState: (p) => set(oneSelection(p))
+  setState: (p) => set(slotFollows(oneSelection(p)))
 }));
 
 /** Lists images in this order everywhere at once, and remembers it where storage allows. */
@@ -402,7 +422,7 @@ export const inspectorFocusRequest = (f: Omit<InspectorFocus, 'seq' | 'at'>): In
 export const editRunStatus = (s: Pick<State, 'runStatus' | 'runMode'>) => (s.runMode === 'ask' ? null : s.runStatus);
 
 export const getState = () => useStore.getState();
-export const setState = (p: Partial<State>) => useStore.setState(oneSelection(scopeFollows(oneView(p))));
+export const setState = (p: Partial<State>) => useStore.setState(slotFollows(oneSelection(scopeFollows(oneView(p)))));
 
 /**
  * What the next AI message may change starts again from the selected element (or, with none, the page) whenever what
@@ -427,6 +447,11 @@ function scopeFollows(p: Partial<State>): Partial<State> {
     ('templateMode' in p && (p.templateMode?.collectionId ?? null) !== (s.templateMode?.collectionId ?? null)) ||
     ('selection' in p && key(p.selection) !== key(s.selection));
   return moved ? { ...p, chatContextEnabled: { ...s.chatContextEnabled, scope: 'selection' } } : p;
+}
+
+/** Picks a slot of a placed component as where Insert puts things: the selection, and any layers picked with it, go. */
+export function selectSlot(target: SlotTarget) {
+  setState({ slotTarget: target, selection: null, layerSet: null });
 }
 
 /** Selects one layer from Layers and scrolls the page to it, also when it is selected already and has scrolled away. */

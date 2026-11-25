@@ -14,6 +14,7 @@ import { ownerLabel, refLabel, treeFor } from './model';
 import type { InsertSpec, LayoutStarter, Primitive } from './insert-search';
 import { definitionRole, type InsertRole } from '@engine/insert-role';
 import { insertsInline } from '@engine/semantic-tags';
+import { slotLabel, slotTargetHolds, type SlotTarget } from './slot-target';
 
 /** How a new thing is placed (as one of a page's sections, or as an element inside a layout), and how a component is. */
 export { definitionRole, type InsertRole };
@@ -313,10 +314,24 @@ function shownOnceIn(state: ProjectState, tree: NodeTree, nodeId: string): boole
 
 /**
  * Where something placed as `role` goes in `owner`, for the selection as the editor holds it: a part of a placed
- * component counts as the placement (placementOf), and one that holds a slot of it picks that slot (heldSlot).
+ * component counts as the placement (placementOf), and one that holds a slot of it picks that slot (heldSlot). A slot
+ * picked as the target (`target`, see lib/slot-target) is where anything goes, at its end, whatever it is: the slot's
+ * contract says what it takes. One that has gone, or is in another tree, is nowhere: what was clicked for it never goes
+ * somewhere else.
  */
-export const insertAt = (state: ProjectState, owner: OwnerRef, role: InsertRole, from: ElementRef | null, definitionId?: string): InsertAt | null =>
-  insideComponent(state, placeFor(state, owner, role, placementOf(from), definitionId, heldSlot(state, from)));
+export const insertAt = (state: ProjectState, owner: OwnerRef, role: InsertRole, from: ElementRef | null, definitionId?: string, target?: SlotTarget | null): InsertAt | null =>
+  target ? slotPlace(state, owner, target) : insideComponent(state, placeFor(state, owner, role, placementOf(from), definitionId, heldSlot(state, from)));
+
+/** The end of the slot `target` picks, when it is one of `owner`'s that its placement still shows. */
+export function slotPlace(state: ProjectState, owner: OwnerRef, target: SlotTarget): InsertAt | null {
+  if (target.owner.kind !== owner.kind || target.owner.id !== owner.id || !slotTargetHolds(state, target)) return null;
+  return { owner, parentId: target.parentId, slot: target.slot };
+}
+
+/** Where what goes into a picked slot lands, in words: "inside Sidebar in Split". */
+export function slotWhere(st: ProjectState, target: SlotTarget): Where {
+  return { lead: 'inside', target: slotLabel(st, target), node: true, within: nodeLabel(st, target.owner, target.parentId) };
+}
 
 /**
  * The operations that insert `spec` at `at`, as one change: an element placed on a page's top level goes into a new

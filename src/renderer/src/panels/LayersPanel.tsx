@@ -7,7 +7,7 @@ import { refKey, sameRef, slotChildren, slotFallback } from '@shared/types';
 import { showsPart } from '@shared/page-shell';
 import { scopeForWidth } from '@shared/styles';
 import { childLists, codeTakesOverrides, displayName, findParent, subtreeIds } from '@engine/tree';
-import { aiActivity, api, applyOps, commitDraft, getState, markDraft, setState, showLayer, toast, useStore } from '../store';
+import { aiActivity, api, applyOps, commitDraft, getState, markDraft, selectSlot, setState, showLayer, toast, useStore } from '../store';
 import { rovingKeys, useMenu, useRovingTabStop } from '../components/ui';
 import { isImeComposing } from '../lib/ime';
 import { askAiAbout, asPlanned, deleteLayers, deleteSelection, detachable, detachPlacement, duplicateLayers, duplicateSelection, focusSelectedRow, groupCount, liveGroup, moveLayers, moveLayersInto, moveSelection, moveToPage, otherPages, planLayers, ungroupLayers, wrapLayers, WRAP_NAMES, type LayersPlan } from '../lib/actions';
@@ -24,6 +24,9 @@ import { placeWords } from '../lib/edit-label';
 import { describeConditions } from '../lib/conditions';
 import { OutlinePanel } from './OutlinePanel';
 import { templateOwner } from '../lib/template-view';
+import { layerSlots, placeOps } from '../lib/layer-drop';
+import { sameSlotTarget, type SlotTarget } from '../lib/slot-target';
+import { slotFor } from '../lib/insert-at';
 
 /*
  * The Layers panel: the current page's outline (shared header, page content, shared footer), or a
@@ -76,35 +79,6 @@ function kindIcon(n: GraphNode) {
 /** The layer being dragged (only nodes owned directly by a page or definition tree), with the layers selected
  *  together with it when it is one of them: they move as one, in their order. */
 let dragging: { owner: OwnerRef; nodeId: string; ids: string[] } | null = null;
-
-/** Where a drop puts the dragged layers: a list (a parent and slot), and the layer they go before (null: its end). */
-type Place = { parentId: string | null; slot?: string; before: string | null };
-
-/**
- * The moves that put `ids` (siblings, in their list's order) together at `to`, as one change: each one taken out
- * and put back after the one before it, the first before `to.before`. The engine takes a layer out before it puts
- * it back, so each index is counted in the list as it stands without that layer. Null when nothing would move.
- */
-function placeOps(tree: NodeTree, owner: OwnerRef, ids: string[], to: Place): EditOperation[] | null {
-  const from = findParent(tree, ids[0]);
-  if (!from) return null;
-  const target = to.parentId === null ? tree.rootIds : (() => {
-    const n = tree.nodes[to.parentId!];
-    return n?.kind === 'instance' ? slotChildren(n, to.slot!) : n?.kind === 'slot' ? slotFallback(n) : n && 'children' in n ? n.children : [];
-  })();
-  const same = from.list === target;
-  const source = [...from.list];
-  const list = same ? source : [...target];
-  const ops: EditOperation[] = [];
-  ids.forEach((id, i) => {
-    source.splice(source.indexOf(id), 1);
-    const at = i === 0 ? (to.before ? list.indexOf(to.before) : list.length) : list.indexOf(ids[i - 1]) + 1;
-    list.splice(at, 0, id);
-    ops.push({ type: 'node.move', owner, nodeId: id, parentId: to.parentId, ...(to.slot !== undefined ? { slot: to.slot } : {}), index: at });
-  });
-  if (same && list.join() === from.list.join()) return null;
-  return ops;
-}
 
 /** A small badge under the pointer while several layers are dragged: "3 sections". */
 function dragBadge(e: React.DragEvent, text: string) {
@@ -697,7 +671,7 @@ export function LayersPanel() {
       const owner = ownerOfRow(row);
       const id = row.dataset.node;
       const tree = owner ? treeFor(st, owner) : undefined;
-      if (!owner || !id || !tree) return void refuse('Parts of a component are selected one at a time.');
+      if (!owner || !id || !tree) return void refuse(row.dataset.slot ? SLOT_ALONE : 'Parts of a component are selected one at a time.');
       const list = findParent(tree, id)?.list ?? [];
       // A layer that can't be one of several says why, whichever key asked.
       const cannot = cannotGroup(tree, layerRef(owner, id));
@@ -719,7 +693,7 @@ export function LayersPanel() {
         const owner = ownerOfRow(row);
         const id = row.dataset.node;
         // A part of a placed component has no layers beside it to select with it.
-        if (!id) return void refuse('Parts of a component are selected one at a time.');
+        if (!id) return void refuse(row.dataset.slot ? SLOT_ALONE : 'Parts of a component are selected one at a time.');
         const tree = owner ? treeFor(st, owner) : undefined;
         const cannot = tree && owner ? cannotGroup(tree, layerRef(owner, id)) : null;
         if (cannot) return void refuse(cannot);
@@ -1055,17 +1029,16 @@ function LayerRow({ state, owner, tree, id, depth, onMenu, path, parentId }: Lis
   const ref: ElementRef = { owner, instancePath: [], nodeId: id };
   const def = n?.kind === 'instance' ? state.components[n.definitionId] : undefined;
   const parts = def ? Object.entries(def.parts).filter(([pid]) => pid !== 'root') : [];
-  // Slot content, per slot in the definition's order (an element has one unnamed list).
-  const slotLists: Array<{ slot?: string; label?: string; ids: string[] }> =
-    n?.kind === 'instance'
-      ? Object.entries(def?.slots ?? {}).map(([slot, info]) => ({ slot, label: info.label, ids: slotChildren(n, slot) })).filter((l) => l.ids.length)
-      : n
-        ? childLists(n)
-        : [];
+  // Slot content, per slot in the definition's order, each slot the component shows listed even while empty (an
+  // element has one unnamed list).
+  const slotLists: Array<{ slot?: string; label?: string; ids: string[]; shown?: boolean }> = n?.kind === 'instance' ? layerSlots(state, n) : n ? childLists(n) : [];
   const childCount = slotLists.reduce((c, l) => c + l.ids.length, 0);
-  const expandable = parts.length > 0 || childCount > 0;
+  const expandable = parts.length > 0 || childCount > 0 || slotLists.some((l) => l.shown);
+  // The slot a layer dropped onto a placed component's own row goes into: the one Insert fills, the first it shows.
+  const intoSlot = n?.kind === 'instance' ? slotFor(state, n.definitionId) : undefined;
+  const intoLabel = intoSlot ? def?.slots?.[intoSlot]?.label : undefined;
   // A design's slot outlet holds its fallback, shown while a placement leaves the slot empty.
-  const canHold = n?.kind === 'element' || (n?.kind === 'instance' && Object.keys(def?.slots ?? {}).length > 0) || (n?.kind === 'slot' && owner.kind === 'component');
+  const canHold = n?.kind === 'element' || !!intoSlot || (n?.kind === 'slot' && owner.kind === 'component');
   // In component editing the canvas selects the definition's root through the placement; match it here. A part
   // of a component placed in the design is never that root, whatever its node is called inside that component.
   const isDefRoot = owner.kind === 'component' && state.components[owner.id]?.tree?.rootIds[0] === id;
@@ -1078,7 +1051,10 @@ function LayerRow({ state, owner, tree, id, depth, onMenu, path, parentId }: Lis
   // Holds the selection: a part of this component (at any depth), or anything nested inside this container,
   // judged by where the selection's outermost component sits in this tree.
   const anchor = selection && selection.owner.id === owner.id ? (selection.instancePath[0] ?? selection.nodeId) : null;
-  const containsSel = !!n && !!anchor && (anchor === id ? !!selection!.instancePath.length : subtreeIds(tree, id).includes(anchor));
+  // Or a slot picked for Insert: of this component, or of one nested inside it.
+  const slotTarget = useStore((s) => s.slotTarget);
+  const slotAt = slotTarget && slotTarget.owner.kind === owner.kind && slotTarget.owner.id === owner.id ? slotTarget.parentId : null;
+  const containsSel = !!n && ((!!anchor && (anchor === id ? !!selection!.instancePath.length : subtreeIds(tree, id).includes(anchor))) || (!!slotAt && (slotAt === id || subtreeIds(tree, id).includes(slotAt))));
   // Opening to reveal a selected part latches, so moving the selection back to the parent keeps the branch open.
   useEffect(() => {
     if (containsSel) setOpen(true);
@@ -1132,8 +1108,8 @@ function LayerRow({ state, owner, tree, id, depth, onMenu, path, parentId }: Lis
     if (!dragging) return null;
     const moving = dragging.ids;
     if (where === 'inside' || where === 'first') {
-      const slot = n.kind === 'instance' ? Object.keys(def?.slots ?? {})[0] : undefined;
-      const list = n.kind === 'element' ? n.children : n.kind === 'instance' ? slotChildren(n, slot!) : n.kind === 'slot' ? slotFallback(n) : [];
+      const slot = n.kind === 'instance' ? intoSlot : undefined;
+      const list = n.kind === 'element' ? n.children : n.kind === 'instance' && slot ? slotChildren(n, slot) : n.kind === 'slot' ? slotFallback(n) : [];
       const before = where === 'first' ? (list.find((c) => !moving.includes(c)) ?? null) : null;
       return placeOps(tree, owner, moving, { parentId: id, slot, before });
     }
@@ -1197,8 +1173,9 @@ function LayerRow({ state, owner, tree, id, depth, onMenu, path, parentId }: Lis
           if (dragging.ids.some((m) => subtreeIds(tree, m).includes(id))) return;
           const r = e.currentTarget.getBoundingClientRect();
           const rel = (e.clientY - r.top) / r.height;
-          // An open component with parts takes its whole lower part as "into its slot": there is no clean edge there.
-          const insideTo = isOpen && canHold && parts.length > 0 ? 1.01 : 0.7;
+          // An open component takes its whole lower part as "into its slot": its parts and slot rows follow, so there is
+          // no clean edge there (each slot row takes a drop into that slot).
+          const insideTo = isOpen && canHold && (parts.length > 0 || n.kind === 'instance') ? 1.01 : 0.7;
           let where: Drop['where'] = canHold && rel > 0.3 && rel < insideTo ? 'inside' : rel < 0.5 ? 'before' : 'after';
           // Below an open branch the next row is its first child, so "after" there means "first inside". When the
           // next rows are the component's parts, the slot starts further down: its own first row takes that drop.
@@ -1209,8 +1186,7 @@ function LayerRow({ state, owner, tree, id, depth, onMenu, path, parentId }: Lis
           if (!dropMove(where)) return setDrop(null);
           e.preventDefault();
           e.dataTransfer.dropEffect = 'move';
-          const slotLabel = n.kind === 'instance' ? Object.values(def?.slots ?? {})[0]?.label : undefined;
-          const next: Drop = { where, depth: where === 'first' ? depth + 1 : depth, label: where === 'inside' ? (slotLabel ? `Into ${slotLabel}` : 'Inside') : undefined };
+          const next: Drop = { where, depth: where === 'first' ? depth + 1 : depth, label: where === 'inside' ? (intoLabel ? `Into ${intoLabel}` : 'Inside') : undefined };
           if (next.where !== drop?.where || next.depth !== drop?.depth) setDrop(next);
         }}
         onDragLeave={(e) => {
@@ -1225,8 +1201,7 @@ function LayerRow({ state, owner, tree, id, depth, onMenu, path, parentId }: Lis
           dragging = null;
           if (!d || !ops) return;
           const what = d.ids.length > 1 && picked ? groupCount(picked) : tree.nodes[d.nodeId] ? layerLabel(state, tree.nodes[d.nodeId]).label : 'Layer';
-          const slotName = n.kind === 'instance' ? Object.values(def?.slots ?? {})[0]?.label : undefined;
-          const into = slotName ? `${slotName} in ${name}` : name;
+          const into = intoLabel ? `${intoLabel} in ${name}` : name;
           const to = where === 'inside' ? `to the end of ${into}` : where === 'first' ? `to the top of ${into}` : `${where} ${name}`;
           void applyOps(ops, `Move ${what} ${placeWords(state, owner)}`).then((r) => r && say(`Moved ${what} ${to}`));
         }}
@@ -1517,7 +1492,18 @@ function LayerRow({ state, owner, tree, id, depth, onMenu, path, parentId }: Lis
           })}
           {slotLists.map((l) => (
             <Fragment key={l.slot ?? 'children'}>
-              {(parts.length > 0 || slotLists.length > 1) && l.label && <SubLabel depth={depth + 1} label={l.label} />}
+              {/* Each slot the component shows heads its content, empty or not: a row to pick for Insert and to drop
+                  layers onto (not in a shared header or footer, which Insert does not fill). A slot its design no longer
+                  shows still heads what it holds, which is never seen. */}
+              {n.kind === 'instance' && l.slot && l.label ? (
+                l.shown && owner.kind !== 'shell' ? (
+                  <SlotRow state={state} owner={owner} tree={tree} placementId={id} placementName={name} slot={l.slot} label={l.label} ids={l.ids} depth={depth + 1} />
+                ) : (
+                  <SubLabel depth={depth + 1} label={l.shown ? (l.ids.length ? l.label : `${l.label} · Empty`) : `${l.label} · Not in the design`} />
+                )
+              ) : (
+                (parts.length > 0 || slotLists.length > 1) && l.label && <SubLabel depth={depth + 1} label={l.label} />
+              )}
               {(() => {
                 // Slot content hidden by a part of this component (a wrapper with no row of its own here).
                 const first = !hidden && l.ids[0] ? tree.nodes[l.ids[0]] : undefined;
@@ -1533,6 +1519,99 @@ function LayerRow({ state, owner, tree, id, depth, onMenu, path, parentId }: Lis
         </div>
       )}
     </>
+  );
+}
+
+/** Why a slot row never joins layers picked together: it is not a layer. */
+const SLOT_ALONE = 'A slot is picked on its own, not with layers.';
+
+/**
+ * A slot of a placed component, heading its content (in the same column, after the component's parts): its name, and
+ * a quiet "Empty" while it holds nothing. Picking it makes it where Insert puts the next thing; nothing is selected
+ * meanwhile, since a slot is not an element (see lib/slot-target). Layers dropped onto it go to its end, as one change
+ * the slot's contract can refuse.
+ */
+function SlotRow({ state, owner, tree, placementId, placementName, slot, label, ids, depth }: { state: ProjectState; owner: OwnerRef; tree: NodeTree; placementId: string; placementName: string; slot: string; label: string; ids: string[]; depth: number }) {
+  const target: SlotTarget = { owner, parentId: placementId, slot };
+  const selected = useStore((s) => sameSlotTarget(s.slotTarget, target));
+  const picked = useContext(Picked);
+  const [drop, setDrop] = useState(false);
+  const empty = ids.length === 0;
+  // The moves a drop here makes (the dragged layers, in their order, to the end of the slot); null when it takes none.
+  const dropMove = (): EditOperation[] | null => {
+    if (!dragging || dragging.owner.kind !== owner.kind || dragging.owner.id !== owner.id) return null;
+    // Never into the component itself, or into one inside a layer being dragged.
+    if (dragging.ids.some((m) => m === placementId || subtreeIds(tree, m).includes(placementId))) return null;
+    return placeOps(tree, owner, dragging.ids, { parentId: placementId, slot, before: null });
+  };
+  return (
+    <div
+      className={['list-item', 'layer-row', 'layer-slot', selected && 'selected', empty && 'is-empty', drop && 'drop-inside'].filter(Boolean).join(' ')}
+      data-slot={slot}
+      data-placement={placementId}
+      data-owner={`${owner.kind}:${owner.id}`}
+      data-primary={selected || undefined}
+      data-name={label}
+      aria-label={`${label}, slot of ${placementName}, ${empty ? 'empty' : `${ids.length} ${ids.length === 1 ? 'layer' : 'layers'}`}`}
+      style={depthVar(depth)}
+      role="treeitem"
+      aria-selected={selected}
+      aria-level={depth + 1}
+      tabIndex={-1}
+      onClick={(e) => {
+        if (e.shiftKey || additive(e)) return void refuse(SLOT_ALONE);
+        selectSlot(target);
+      }}
+      onKeyDown={(e) => {
+        if (e.target !== e.currentTarget) return;
+        // Back to its component, as from any layer in it.
+        if (e.key === 'ArrowLeft') {
+          e.preventDefault();
+          const up = rowFor(placementId);
+          up?.focus();
+          up?.click();
+        }
+        if (e.key === 'Enter' || e.key === ' ') {
+          e.preventDefault();
+          // Space lets a picked slot go, as on any row; Enter picks it.
+          if (e.key === ' ' && selected) setState({ slotTarget: null });
+          else selectSlot(target);
+        }
+      }}
+      onDragOver={(e) => {
+        if (!dropMove()) return setDrop(false);
+        e.preventDefault();
+        e.dataTransfer.dropEffect = 'move';
+        if (!drop) setDrop(true);
+      }}
+      onDragLeave={(e) => {
+        if (!e.currentTarget.contains(e.relatedTarget as Node | null)) setDrop(false);
+      }}
+      onDrop={(e) => {
+        e.preventDefault();
+        const d = dragging;
+        const ops = dropMove();
+        setDrop(false);
+        dragging = null;
+        if (!d || !ops) return;
+        const what = d.ids.length > 1 && picked ? groupCount(picked) : tree.nodes[d.nodeId] ? layerLabel(state, tree.nodes[d.nodeId]).label : 'Layer';
+        void applyOps(ops, `Move ${what} ${placeWords(state, owner)}`).then((r) => r && say(`Moved ${what} to the end of ${label} in ${placementName}`));
+      }}
+    >
+      <span className="tree-spacer" />
+      <span className="layer-kind slot">
+        <SquareDashed />
+      </span>
+      <span className="grow ellipsis layer-name" title={`${label}: a slot of ${placementName}${empty ? '. Empty: pick it, then a tile in Insert, or drop layers here' : ''}`}>
+        {label}
+      </span>
+      {empty && !drop && <span className="layer-slot-empty">Empty</span>}
+      {drop && (
+        <span className="layer-drop-tag" aria-hidden="true">
+          Into {label}
+        </span>
+      )}
+    </div>
   );
 }
 
