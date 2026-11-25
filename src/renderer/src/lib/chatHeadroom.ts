@@ -17,6 +17,8 @@ import { MAX_REPLAYED_ANSWER, replayedHistory } from '@shared/turn-model';
  * starter's Home page and rounded up (tests/unit/chat-headroom.test.ts keeps them honest).
  */
 export const LOCAL_OVERHEAD_TOKENS = { constrained: 3584, focused: 10_240 } as const;
+/** About what a request without the page tools takes before its message: a selection's, a component's or a question's. */
+export const SMALL_OVERHEAD_TOKENS = 3072;
 /** The smallest reply worth asking for, as the assistant keeps it free (budget.ts MIN_OUTPUT_TOKENS). */
 const REPLY_TOKENS = 1024;
 
@@ -46,14 +48,12 @@ export interface HeadroomWarning {
 }
 
 /**
- * The share of the window the messages may take: half, or less where the page tools leave less. A request about a
- * selection, a component or a question carries far smaller tools, and gets the half.
+ * The share of the window the messages may take: half, or less where the instructions and tools leave less. A request
+ * about a selection, a component or a question carries far smaller tools than one that may build pages.
  */
 export function messageRoom(windowTokens: number, toolMode: LocalToolMode, pageTools = true): number {
   const half = Math.floor(windowTokens / 2);
-  if (!pageTools) return half;
-  if (toolMode === 'native' && windowTokens >= FOCUSED_WINDOW_TOKENS) return half;
-  const overhead = toolMode === 'native' ? LOCAL_OVERHEAD_TOKENS.focused : LOCAL_OVERHEAD_TOKENS.constrained;
+  const overhead = !pageTools ? SMALL_OVERHEAD_TOKENS : toolMode !== 'native' ? LOCAL_OVERHEAD_TOKENS.constrained : windowTokens < FOCUSED_WINDOW_TOKENS ? LOCAL_OVERHEAD_TOKENS.focused : 0;
   return Math.max(0, Math.min(half, windowTokens - overhead - REPLY_TOKENS));
 }
 

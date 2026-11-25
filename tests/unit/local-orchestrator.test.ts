@@ -674,7 +674,8 @@ describe('what a constrained local run sends first (#364)', () => {
    *
    * Keeping pasted copy as written (#515) is another: every edit run is told to keep the copy the user supplies, and
    * a run with the page tool reads in its brief how a pasted draft becomes the page's sections and when the sections
-   * already there go. Their `copy` bytes are made room for in the same way.
+   * already there go, and that the theme's guidance is for the copy it writes. Their `copy` bytes are made room for in
+   * the same way.
    */
   /** What audit_seo adds to a run that offers it, with a little room. */
   const AUDIT_BYTES = 850;
@@ -685,9 +686,9 @@ describe('what a constrained local run sends first (#364)', () => {
    */
   const FROSTED_BYTES = 170;
   const PAGE_AUDIT_BYTES = 650;
-  /** The supplied-copy rule every edit run is given (45 bytes), and with the page tool its brief's rules (274 more). */
+  /** The supplied-copy rule every edit run is given (45 bytes), and with the page tool its brief's rules (328 more). */
   const COPY_BYTES = 50;
-  const PAGE_COPY_BYTES = COPY_BYTES + 280;
+  const PAGE_COPY_BYTES = COPY_BYTES + 335;
   const BUDGETS = {
     // The site runs offer every catalogue section to insert, so a new section (the Carousel's ~830 bytes) grows them.
     // They also start with the open page's sections (#513): about 1 KB for the starter's eight-section home page.

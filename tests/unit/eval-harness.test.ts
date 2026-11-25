@@ -169,7 +169,13 @@ describe('agent benchmark', () => {
     expect(await failing(edited(clinic, (a) => a.sections.splice(1, 0, { componentId: 'content.text', props: { heading: '', body: a.sections[0].props.lead } })))).toEqual(['only-supplied-copy']);
     // The button sent elsewhere, with a decoy that goes where it should; and a link the draft never had, inside text.
     const decoy = (a: any) => Object.assign(a.sections[0].props, { primaryLink: 'https://bench.example/', secondaryLabel: '146', secondaryLink: 'https://bench.example/book' });
-    expect(await failing(edited(clinic, decoy))).toEqual(['opening', 'reading-order', 'only-supplied-links']);
+    expect(await failing(edited(clinic, decoy))).toEqual(['opening', 'reading-order', 'only-supplied-copy', 'only-supplied-links']);
+    // A second button to the same place, and a figure shown again as an eyebrow.
+    expect(await failing(edited(clinic, (a) => Object.assign(a.sections[0].props, { secondaryLabel: 'Reserve a bench', secondaryLink: 'https://bench.example/book' })))).toEqual(['only-supplied-copy', 'only-supplied-links']);
+    expect(await failing(edited(clinic, (a) => (a.sections[0].props.eyebrow = '146')))).toEqual(['only-supplied-copy']);
+    // A figure and its label in neighbouring cards are not shown together.
+    const split = (a: any) => (a.sections[2].props.items = [{ value: '146', label: '' }, { value: 'appliances assessed', label: '73%' }, { value: 'repaired on the day', label: '' }]);
+    expect(await failing(edited(clinic, split))).toEqual(['figures', 'reading-order']);
     expect(await failing(edited(clinic, (a) => (a.sections[1].props.body = '- The appliance, even if it no longer switches on.\n- [Its plug, cable and any loose screws.](https://elsewhere.example/)')))).toEqual(['only-supplied-links']);
     // The introduction emptied rather than removed still sits on the page.
     expect(await failing(edited(clinic, (a) => (delete a.removeOtherSections, a.sections.unshift({ componentId: 'intro.page', props: { eyebrow: '', heading: '', lead: '' } }))))).toEqual(['placeholders-removed']);
@@ -181,6 +187,9 @@ describe('agent benchmark', () => {
       a.sections = [hero, { componentId: 'content.text', props: { heading: list.props.heading, body: rest.join('\n') } }];
     };
     expect(await failing(edited(clinic, poured))).toEqual(['reading-order']);
+    // A faithful layout of another shape passes: each question with its answer as one point of a text section.
+    const points = (a: any) => (a.sections[3] = { componentId: 'content.text', props: { heading: 'Before you visit', body: '- Can I bring a lamp? Yes. Bring the shade separately so it travels safely.\n- What does it cost? Assessment is free. We agree the price of parts with you first.' } });
+    expect((await runCase(edited(clinic, points), scripted)).result.checks.filter((x) => !x.pass)).toEqual([]);
     // Another page changed, a page added and a menu link with it, which only a request allowed the whole site could do.
     const wider: EvalCase = {
       ...clinic,

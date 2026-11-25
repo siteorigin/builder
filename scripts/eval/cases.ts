@@ -97,8 +97,18 @@ const shownOn = (s: ProjectState, p: PageDoc | undefined): Shown[] => {
       }
       if (Array.isArray(c.value)) {
         const blocks = c.value as RichText;
-        // A link inside text goes where its words say, and counts like any other.
-        for (const b of blocks) for (const span of 'spans' in b ? b.spans : 'items' in b ? b.items.flat() : []) if (span.link) shown.links.push({ target: linkTarget(span.link), label: plain(span.text) });
+        // A link inside text goes where its words say, and counts like any other: its words are the label, whatever
+        // their emphasis.
+        for (const b of blocks)
+          for (const spans of 'spans' in b ? [b.spans] : 'items' in b ? b.items : []) {
+            let last: { target: string; label: string } | null = null;
+            for (const span of spans) {
+              const target = span.link ? linkTarget(span.link) : '';
+              if (target && last?.target === target) last.label = plain(`${last.label}${span.text}`);
+              else if (target) shown.links.push((last = { target, label: plain(span.text) }));
+              else last = null;
+            }
+          }
         shown.pieces.push(...richTextToPlain(blocks).split(/\n+/).map((w) => ({ text: plain(w), item })).filter((x) => x.text));
       } else if (typeof c.value === 'string' && plain(c.value)) shown.pieces.push({ text: plain(c.value), item });
     }
@@ -115,7 +125,8 @@ const together = (x: Shown, members: string[]) => {
   const pieces = x.pieces;
   const items = new Set(pieces.map((p) => p.item).filter(Boolean));
   if ([...items].some((item) => want.every((m) => pieces.some((p) => p.item === item && p.text === m)))) return true;
-  if (pieces.some((_, i) => want.every((m, j) => pieces[i + j]?.text === m))) return true;
+  // Consecutive pieces count only within one list item, or outside any: two cards side by side are not one.
+  if (pieces.some((first, i) => want.every((m, j) => pieces[i + j]?.text === m && pieces[i + j].item === first.item))) return true;
   return pieces.some((p) => want.every((m) => wordsIn(p.text, m)) && want.every((m, j) => j === 0 || p.text.indexOf(m) > p.text.indexOf(want[j - 1])));
 };
 interface Block {
@@ -145,11 +156,16 @@ const pastedChecks = (before: ProjectState, s: ProjectState, route: string, body
   const at = blocks.map((b) => shown.findIndex((x) => blockMet(x, b)));
   // The draft's own lines, without their Markdown or "Q:" markers. The request around the draft is not copy.
   const lines = body.split('\n').map((l) => plain(l.replace(/^\s*(#+|[-*]|Q:|A:|Button:)\s*/i, ''))).filter(Boolean);
+  // Two lines of the draft may be shown as one piece: a question with its answer, a name with its role.
+  const joined = lines.slice(1).map((l, i) => `${lines[i]} ${l}`);
   const all = shown.flatMap((x) => x.pieces.map((q) => q.text));
-  const twice = (t: string) => t.split(' ').length >= 4 && all.indexOf(t) !== all.lastIndexOf(t);
-  const extra = [...new Set(all.filter((t) => !lines.some((l) => wordsIn(l, t)) || twice(t)))];
-  const allowed = new Set(blocks.flatMap((b) => (b.link ? [b.link[1]] : [])));
-  const strayLinks = shown.flatMap((x) => x.links.map((l) => l.target)).filter((t) => !allowed.has(t));
+  // Each piece is shown at most as often as the draft has it, so a figure repeated as an eyebrow is extra.
+  const inDraft = (t: string) => lines.filter((l) => wordsIn(l, t)).length || joined.filter((l) => wordsIn(l, t)).length;
+  const extra = [...new Set(all.filter((t) => all.filter((x) => x === t).length > inDraft(t)))];
+  // Each link is one of the draft's, with its label: no other destination, and no second way to the same one.
+  const wanted = blocks.flatMap((b) => (b.link ? [{ label: plain(b.link[0]), target: b.link[1] }] : []));
+  const links = shown.flatMap((x) => x.links);
+  const strayLinks = links.filter((l, i) => !wanted.some((w) => w.target === l.target && w.label === l.label) || links.findIndex((o) => o.target === l.target && o.label === l.label) !== i).map((l) => `${l.label || '(no label)'} → ${l.target}`);
   // A section still exactly as it was, or one showing nothing at all, is a placeholder left behind.
   const left = (p?.rootIds ?? []).filter((id, i) => (was?.rootIds.includes(id) && same(was.nodes[id], p!.nodes[id])) || (!shown[i].pieces.length && !shown[i].links.length));
   return [

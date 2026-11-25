@@ -4,12 +4,17 @@ import { FOCUSED_WINDOW_TOKENS } from '@shared/tokens';
 import type { CanonicalModelRequest, ModelCapabilities } from '@agent/types';
 import { runCase, ScriptedAdapter, type EvalCase } from '../../scripts/eval/harness';
 import type { ChatMessage } from '@shared/api';
-import { headroomWarning, LOCAL_OVERHEAD_TOKENS, messageRoom, replayedWords } from '../../src/renderer/src/lib/chatHeadroom';
+import type { ProjectState } from '@shared/types';
+import { headroomWarning, LOCAL_OVERHEAD_TOKENS, messageRoom, replayedWords, SMALL_OVERHEAD_TOKENS } from '../../src/renderer/src/lib/chatHeadroom';
 
-/** What the first request of a page edit really takes besides its one-word message, with the tools a local model gets. */
-async function overhead(caps: Partial<ModelCapabilities>, route: string): Promise<number> {
+/**
+ * What the first request of a page edit (or, with `selected`, an edit of Home's first section) really takes besides
+ * its one-word message, with the tools a local model gets.
+ */
+async function overhead(caps: Partial<ModelCapabilities>, route: string, selected = false): Promise<number> {
   let first: CanonicalModelRequest | undefined;
-  const c: EvalCase = { id: 'measure', version: 1, category: 'page', prompt: 'x', pageScope: route, grade: () => [], script: () => [] };
+  const select = (s: ProjectState) => ({ ref: { owner: { kind: 'page' as const, id: s.site.homePageId }, instancePath: [], nodeId: s.pages[s.site.homePageId].rootIds[0] }, label: 'Hero' });
+  const c: EvalCase = { id: 'measure', version: 1, category: 'page', prompt: 'x', ...(selected ? { selection: select } : { pageScope: route }), grade: () => [], script: () => [] };
   const capture = new ScriptedAdapter(
     [
       (req) => {
@@ -43,6 +48,10 @@ describe('composer headroom for a local model', () => {
       const full = await overhead({ toolCalling: 'native', contextWindowTokens: FOCUSED_WINDOW_TOKENS }, route);
       expect(full + 1024, route).toBeLessThanOrEqual(FOCUSED_WINDOW_TOKENS / 2);
     }
+    // An edit of a selection carries the small tools: the reserve holds the larger of the two kinds of model.
+    const selection = Math.max(...(await Promise.all(modes.map(([, caps]) => overhead(caps, '/', true)))));
+    expect(selection).toBeLessThanOrEqual(SMALL_OVERHEAD_TOKENS);
+    expect(SMALL_OVERHEAD_TOKENS - selection).toBeLessThan(1536);
   }, 60000);
 
   it('gives the messages half the window, or less where the instructions leave less', () => {
@@ -59,9 +68,12 @@ describe('composer headroom for a local model', () => {
     expect(messageRoom(FOCUSED_WINDOW_TOKENS, 'native')).toBe(FOCUSED_WINDOW_TOKENS / 2);
     expect(messageRoom(20_000, 'native')).toBe(20_000 - 10_240 - 1024);
     expect(messageRoom(20_000, 'auto')).toBe(10_000);
-    // A request without the page tools (a selection, a component, a question) gets the half, whatever the tools.
+    // A request without the page tools (a selection, a component, a question) is charged its small tools only.
     expect(messageRoom(8192, 'native', false)).toBe(4096);
+    expect(messageRoom(8193, 'native', false)).toBe(4096);
     expect(messageRoom(12_288, 'native', false)).toBe(6144);
+    expect(messageRoom(6144, 'auto', false)).toBe(6144 - 3072 - 1024);
+    expect(messageRoom(1024, 'native', false)).toBe(0);
   });
 
   it('charges the page tools only to a request that may build pages', () => {
@@ -70,6 +82,8 @@ describe('composer headroom for a local model', () => {
     expect(warn('Change this heading to Services', { contextWindow: 8192, toolMode: 'native' })?.kind).toBe('setup');
     expect(warn(a(1500), { contextWindow: 12_288, toolMode: 'native', pageTools: false })).toBeNull();
     expect(warn(a(1500), { contextWindow: 12_288, toolMode: 'native' })?.kind).toBe('draft');
+    // A window too small for any request says so, whatever the request is about.
+    expect(warn('Hello', { contextWindow: 1024, pageTools: false })?.kind).toBe('setup');
   });
 
   it('replays what the assistant replays: the last messages, and the questions asked with their answers', () => {
@@ -84,6 +98,8 @@ describe('composer headroom for a local model', () => {
     // Only the messages a request replays count: the oldest beyond them do not.
     const many = Array.from({ length: 30 }, (_, i) => msg(i % 2 ? 'assistant' : 'user', `message ${i}`));
     expect(replayedWords(many)).toEqual(many.slice(-12).map((m) => m.text));
+    // A conversation saved before several questions existed asked its one question in `question`.
+    expect(replayedWords([msg('assistant', 'Done.', { question: { id: 'q', text: 'Which page?', choices: ['Home'], answered: 'Home' } as never })])).toEqual(['Which page?', 'Home', 'Home', 'Done.']);
     // An answer long enough to tip a follow-up over is counted.
     const history = replayedWords([msg('assistant', 'Done.', { questions: [{ id: 'q', text: 'Paste it?', choices: [], answered: answer } as never] })]);
     expect(warn(a(3000), { contextWindow: 8192 })).toBeNull();
