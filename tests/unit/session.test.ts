@@ -323,6 +323,24 @@ describe('project session', () => {
     expect(Object.values(s.state.components).some((d) => d.name === 'Bad')).toBe(false);
   });
 
+  it('declares the parts and slots saved code shows, and refuses code that would hide content placed in a slot (#379)', async () => {
+    const { s } = await make();
+    const source = `<script>\n\tlet { so_o = undefined, slot_content = undefined } = $props();\n\t// let { slot_ghost } = $props();\n</script>\n\n<section><output class={so_o?.total} data-so-part="total">1</output>{@render slot_content?.()}</section>\n`;
+    const made = await s.apply({ operations: [{ type: 'component.createCode', name: 'Calc', source }] }, { label: 'x' });
+    expect(made.ok).toBe(true);
+    const defId = made.results![0].definitionId as string;
+    expect(s.state.components[defId].parts.total).toEqual({ nodeId: 'total', label: 'Total' });
+    expect(s.state.components[defId].slots).toEqual({ content: { label: 'Content' } });
+    const owner = { kind: 'page' as const, id: s.state.site.homePageId };
+    const placed = await s.apply({ operations: [{ type: 'node.insert', owner, parentId: null, index: 0, definitionId: defId }] }, { label: 'x' });
+    const calc = placed.results![0].nodeId as string;
+    expect((await s.apply({ operations: [{ type: 'node.insert', owner, parentId: calc, slot: 'content', primitive: 'button', text: 'Go' }] }, { label: 'x' })).ok).toBe(true);
+    const hidden = await s.apply({ operations: [{ type: 'component.updateSource', definitionId: defId, source: source.replace('{@render slot_content?.()}', '') }] }, { label: 'x' });
+    expect(hidden.error?.code).toBe('VALIDATION_FAILED');
+    expect(hidden.error?.message).toMatch(/“Content” slot holds content on the site/);
+    expect(s.state.components[defId].source).toBe(source);
+  });
+
   it('rejects path traversal for authored sources (I06)', async () => {
     const { s } = await make();
     const r = await s.apply({ operations: [{ type: 'component.createCode', name: 'X', source: '<p>x</p>' }] }, { label: 'x' });

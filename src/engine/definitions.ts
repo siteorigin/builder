@@ -455,48 +455,16 @@ export function setPart(state: ProjectState, op: Op<'component.setPart'>): OpRes
 /** A part or slot name as its label: "priceTotal" is "Price total". */
 const labelOf = (id: string) => id.replace(/([A-Z])/g, ' $1').toLowerCase().replace(/^./, (c) => c.toUpperCase());
 
-/** Each `{ … } = $props()` pattern of a script, braces inside it (an object default) included. */
-function propsPatterns(script: string): string[] {
-  const out: string[] = [];
-  for (const m of script.matchAll(/\}\s*=\s*\$props\(\s*\)/g)) {
-    let depth = 0;
-    for (let i = m.index!; i >= 0; i--) {
-      if (script[i] === '}') depth++;
-      else if (script[i] === '{' && --depth === 0) {
-        out.push(script.slice(i + 1, m.index));
-        break;
-      }
-    }
-  }
-  return out;
-}
-
 /**
- * Declares the parts and slots a code component's code shows that its contract does not have yet, each under its own
- * name. A part is an element the code marks with data-so-part="total", or gives the part's class (class={so_o?.total});
- * a slot is a snippet the code takes from $props() as slot_content. Nothing is taken away: a part or slot the code no
- * longer shows keeps its placements' styles and content until it is removed, and the code check names it. Read from
- * the code's text, its comments left out: the code check, which parses it, reports a marker or slot this cannot read.
+ * Declares the parts and slots a code component's code shows (as the code check reads them from its syntax tree) that
+ * its contract does not have yet, each under its own name: "total" is the "Total" part, "content" the "Content" slot.
+ * Names that are not plain camelCase words are left to the code check to report. Nothing is taken away: a part or slot
+ * the code no longer shows keeps its placements' styles and content until it is removed.
  */
-export function declareCodeContract(def: Pick<ComponentDefinition, 'kind' | 'source' | 'parts' | 'slots'>): void {
+export function declareCodeNames(def: Pick<ComponentDefinition, 'kind' | 'parts' | 'slots'>, names: { parts: readonly string[]; slots: readonly string[] }): void {
   if (def.kind !== 'code') return;
-  const src = (def.source ?? '').replace(/<!--[\s\S]*?-->/g, '');
-  // Comments in scripts are left out; a "//" inside a string can only hide what follows it on that line.
-  const scripts = [...src.matchAll(/<script\b[^>]*>([\s\S]*?)<\/script>/g)].map((m) => m[1].replace(/\/\*[\s\S]*?\*\//g, '').replace(/(^|[^:'"`\\])\/\/[^\n]*/g, '$1')).join('\n');
-  const markup = src.replace(/<script\b[^>]*>[\s\S]*?<\/script>/g, '').replace(/<style\b[^>]*>[\s\S]*?<\/style>/g, '');
-  const parts = new Set<string>();
-  for (const m of markup.matchAll(/\sdata-so-part\s*=\s*(?:"([^"]*)"|'([^']*)'|\{\s*(["'`])([^"'`{}]*)\3\s*\}|([^\s"'=<>`{}/]+))/g)) parts.add(m[1] ?? m[2] ?? m[4] ?? m[5] ?? '');
-  for (const m of `${markup}\n${scripts}`.matchAll(/\bso_o\s*(?:\?\.\s*|\.\s*)(?:([A-Za-z_$][\w$]*)|\[\s*(["'`])([^"'`]+)\2\s*\])/g)) parts.add(m[1] ?? m[3] ?? '');
-  for (const id of parts) {
-    if (id === 'root' || !validId(id) || own(def.parts, id)) continue;
-    def.parts[id] = { nodeId: id, label: labelOf(id) };
-  }
-  for (const pattern of propsPatterns(scripts))
-    for (const m of pattern.matchAll(/(?:^|[\s,{])slot_([A-Za-z][A-Za-z0-9]*)\s*(?=[:,=}]|$)/g)) {
-      const name = m[1];
-      if (!validId(name) || own(def.slots, name)) continue;
-      (def.slots ??= {})[name] = { label: labelOf(name) };
-    }
+  for (const id of names.parts) if (id !== 'root' && validId(id) && !own(def.parts, id)) def.parts[id] = { nodeId: id, label: labelOf(id) };
+  for (const name of names.slots) if (validId(name) && !own(def.slots, name)) (def.slots ??= {})[name] = { label: labelOf(name) };
 }
 
 /** The declared slots of a component that hold content in at least one of its placements. */

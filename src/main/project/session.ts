@@ -16,7 +16,7 @@ import { listThemes, themePinProblem } from '@catalogue/index';
 import { anchorsInUse, displayName, EngineError } from '@engine/tree';
 import { findRemoval, restoreRemoval } from '@engine/restore';
 import { pageLinkUses } from '@engine/page-links';
-import { codeNeeds, filledSlots } from '@engine/definitions';
+import { codeNeeds, declareCodeNames, filledSlots } from '@engine/definitions';
 import { publicationPlan } from '@generator/checks';
 import { blocksSaving, diagnosticKey, introducedDiagnostics, validateState, type Diagnostic } from '@engine/validate';
 import { developerModeRefusal } from '@engine/developer-mode';
@@ -29,7 +29,7 @@ import { GenerationCache } from '@generator/cache';
 import { themeUpdates, type ThemeUpdates } from '@engine/theme-updates';
 import { packFileInfo, readPackFile } from '../packs/files';
 import { ownServerHook } from './server-hook';
-import { checkSvelteSource, componentSources } from '../codecheck';
+import { checkSvelteSource, codeContractNames, componentSources } from '../codecheck';
 import { asRoute, COMPONENT_DOC, componentCycle, linksInto, ownUrlLinks, placementsOf, siteAddresses, siteBases, stepChanges, type DocVersions } from './turn-review';
 import { isDiscoveryPath } from '@shared/llms';
 import { atomicWrite, ensureDir, readBytesIfExists, readIfExists, readJson, removeDurable, removeEmptyDirs, safeJoin, sha, syncDir, toJson } from './fsutil';
@@ -2009,6 +2009,12 @@ export class ProjectSession extends EventEmitter {
       // A form decides in its code where visitors' messages go, so a package's code may never place one.
       const guarded = new Set(results.flatMap((r) => (Array.isArray(r?.guarded) ? (r.guarded as string[]) : [])));
       const files = brought ? new Set(brought.filter((d) => !sendsFormMessages(d) && !guarded.has(d.id)).map(defFile)) : null;
+      // A project's code that is new or changed declares the parts and slots it shows, read from its syntax tree.
+      for (const def of Object.values(next.components)) {
+        if (def.kind !== 'code' || def.owner !== 'project' || def.source === undefined || this.state.components[def.id]?.source === def.source) continue;
+        const names = await codeContractNames(def.source);
+        if (names) declareCodeNames(def, names);
+      }
       for (const def of Object.values(next.components)) {
         if (def.kind !== 'code' || def.source === undefined || this.state.components[def.id]?.source === def.source) continue;
         // Placing a theme's own component (the contact form, say) authors no code when it is code the app ships,
@@ -3748,7 +3754,9 @@ export class ProjectSession extends EventEmitter {
       if (lost.length) return { ok: false, message: `The changed files were not loaded: ${lost[0]} Put back the matching page files too, or choose another option first.` };
       for (const def of Object.values(next.components)) {
         if (def.kind !== 'code' || def.source === this.state.components[def.id]?.source) continue;
-        const bad = (await checkSvelteSource(def.source ?? '')).filter((p) => p.severity === 'error');
+        // Held to its contract as an edit in the app is, so a slot it shows still renders safely while left empty.
+        const contract = def.owner === 'project' ? { contract: { slots: def.slots, parts: def.parts, filled: filledSlots(next, def) } } : {};
+        const bad = (await checkSvelteSource(def.source ?? '', contract)).filter((p) => p.severity === 'error');
         if (bad.length) return { ok: false, message: `The edited code for "${def.name}" has problems, so it was not loaded: ${bad[0].message}` };
       }
       this.migrationDue = migrated;

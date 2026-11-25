@@ -23,7 +23,7 @@ const FRAME = `<!doctype html><html><head><style>body{margin:0;font:16px/1.4 san
   </section>
 </div>
 <div style="display: contents" data-so-ctx="page:p" data-so-node="calc2" data-so-code="true">
-  <section id="s2"><output id="t2" data-so-part="total">$20</output><p id="n2" class="note so-part--note">Named by its class</p></section>
+  <section id="s2"><output id="t2" data-so-part="total">$20</output><p id="n2" class="so-part--theme note so-part--note">Named by its class</p><b id="both" data-so-part="total" class="so-part--note">Both</b></section>
 </div>
 <script type="module" src="/bridge.js"></script></body></html>`;
 
@@ -75,6 +75,11 @@ describe.skipIf(!browserInstalled)('marked parts of a code component in the prev
     const n2 = await boxOf('n2');
     await page.mouse.click(n2.x + 3, n2.y + 3);
     await expect.poll(async () => (await messages()).find((m) => m.type === 'select')?.payload.chain?.[0]).toEqual({ ctx: 'page:p', node: 'calc2', items: '', part: 'note', tag: 'p' });
+    // The author's own marker names the part over any class.
+    await page.evaluate(`window.seen = []`);
+    const both = await boxOf('both');
+    await page.mouse.click(both.x + 3, both.y + 3);
+    await expect.poll(async () => (await messages()).find((m) => m.type === 'select')?.payload.chain?.[0]?.part).toBe('total');
   });
 
   it('outlines the selected part of one placement only, and moving between parts is news to the editor', async () => {

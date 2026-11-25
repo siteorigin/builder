@@ -2470,7 +2470,7 @@ function emitInstance(ctx: EmitCtx, node: InstanceNode): string {
     const map: Record<string, string> = {};
     // A code placement shows a part its code hides through classes, since its stylesheet cannot see those hides.
     for (const partId of Object.keys(node.overrides ?? {}).sort()) map[partId] = overrideClass(node.id, partId) + shownClasses(def, node.overrides![partId]);
-    for (const pid of partMarks) map[pid] = map[pid] ? `${map[pid]} so-part--${pid}` : `so-part--${pid}`;
+    for (const pid of partMarks) map[pid] = Object.hasOwn(map, pid) ? `${map[pid]} so-part--${pid}` : `so-part--${pid}`;
     attrs.push(`so_o={${js(Object.fromEntries(Object.keys(map).sort().map((k) => [k, map[k]])))}}`);
     if (def.kind === 'code' && map.root && !Object.hasOwn(def.properties, 'class')) pageClasses.unshift(map.root);
   }

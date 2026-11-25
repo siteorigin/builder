@@ -79,8 +79,10 @@ const PART_CLASS = 'so-part--';
  */
 function partIdOf(el) {
   if (el.hasAttribute('data-so-part')) return el.getAttribute('data-so-part') || '';
-  for (const c of el.classList || []) if (c.startsWith(PART_CLASS)) return c.slice(PART_CLASS.length);
-  return '';
+  // The placement's class comes after any the code writes itself, so the last one is the part's.
+  let part = '';
+  for (const c of el.classList || []) if (c.startsWith(PART_CLASS) && c.length > PART_CLASS.length) part = c.slice(PART_CLASS.length);
+  return part;
 }
 /** A marked part of a code placement: its placement's descriptor and the part's ID, or null for anything else. */
 function partDesc(el) {

@@ -10,7 +10,8 @@ import type { ElementRef, InstanceNode, ProjectState } from '@shared/types';
 import { createStarterState } from '@catalogue/starters';
 import { applyOperations } from '@engine/apply';
 import { generateProject } from '@generator/index';
-import { checkSvelteSource, withoutPartMarkers, type CodeContract } from '../../src/main/codecheck';
+import { checkSvelteSource, codeContractNames, withoutPartMarkers, type CodeContract } from '../../src/main/codecheck';
+import { declareCodeNames } from '@engine/definitions';
 import { carriesPartMarker } from '../../src/main/export';
 import { descOf, isCodePart, selectionFromChain } from '../../src/renderer/src/lib/model';
 
@@ -24,14 +25,15 @@ const SOURCE = `<script>
 </section>
 `;
 
-/** A page with a placed code component whose code marks a "total" part and shows a "content" slot. */
-function calculator(source = SOURCE) {
+/** A page with a placed code component whose code marks a "total" part and shows a "content" slot, declared as saving it declares them. */
+async function calculator(source = SOURCE) {
   let s: ProjectState = createStarterState('business', 'Code Parts', false);
   const pageId = s.site.homePageId;
   const owner = { kind: 'page' as const, id: pageId };
   const made = applyOperations(s, [{ type: 'component.createCode', name: 'Price calculator', source, properties: { title: { type: 'string', label: 'Title', default: 'Total' } } }]);
   const defId = made.results[0].definitionId as string;
   s = made.state;
+  declareCodeNames(s.components[defId], (await codeContractNames(source))!);
   const placed = applyOperations(s, [{ type: 'node.insert', owner, parentId: null, index: 0, definitionId: defId } as EditOperation]);
   s = placed.state;
   const calc = placed.results[0].nodeId as string;
@@ -39,16 +41,21 @@ function calculator(source = SOURCE) {
 }
 
 const homeFile = (s: ProjectState, pageId: string) => (s.pages[pageId].route === '/' ? 'src/routes/+page.svelte' : `src/routes${s.pages[pageId].route}+page.svelte`);
-const save = (s: ProjectState, defId: string, source: string) => applyOperations(s, [{ type: 'component.updateSource', definitionId: defId, source }]).state.components[defId];
+/** The component as saving `source` leaves it: the code, and what it declares. */
+async function save(s: ProjectState, defId: string, source: string) {
+  const def = applyOperations(s, [{ type: 'component.updateSource', definitionId: defId, source }]).state.components[defId];
+  declareCodeNames(def, (await codeContractNames(source))!);
+  return def;
+}
 
 describe('a code component declares what its code shows', () => {
-  it('declares the parts it marks or hooks and the slots it takes from $props() when it is saved, and keeps them when they go', () => {
-    const { s, defId } = calculator();
+  it('declares the parts it marks or hooks and the slots it takes from $props() when it is saved, and keeps them when they go', async () => {
+    const { s, defId } = await calculator();
     const def = s.components[defId];
     expect(def.parts.total).toEqual({ nodeId: 'total', label: 'Total' });
     expect(def.slots).toEqual({ content: { label: 'Content' } });
     // A slot taken under an alias, after an object default; a part only hooked, and one marked without quotes.
-    const next = save(
+    const next = await save(
       s,
       defId,
       `<script>\n\tlet { options = { a: {} }, slot_sidebarItems: items } = $props();\n</script>\n\n<aside class={so_o?.["footNote"]}>{@render items?.()}</aside>\n<p data-so-part=badge>x</p>\n`
@@ -56,17 +63,21 @@ describe('a code component declares what its code shows', () => {
     expect(next.slots).toEqual({ content: { label: 'Content' }, sidebarItems: { label: 'Sidebar items' } });
     expect(next.parts.footNote).toEqual({ nodeId: 'footNote', label: 'Foot note' });
     expect(next.parts.badge).toEqual({ nodeId: 'badge', label: 'Badge' });
+    // A typed $props() pattern, and a hook written with a plain dot.
+    const typed = await save(s, defId, `<script lang="ts">\n\tlet { slot_aside, so_o }: { slot_aside?: () => unknown; so_o?: Record<string, string> } = $props();\n</script>\n\n<p class={so_o.lede}>{@render slot_aside?.()}</p>\n`);
+    expect(typed.slots?.aside).toEqual({ label: 'Aside' });
+    expect(typed.parts.lede).toEqual({ nodeId: 'lede', label: 'Lede' });
     // Nothing is taken away: the "total" part keeps its placements' styles until it is removed.
     expect(next.parts.total).toBeDefined();
   });
 
-  it('declares nothing from comments, from a snippet of its own, or from a name that is not a part’s', () => {
-    const { s, defId } = calculator();
+  it('declares nothing from comments, from a snippet of its own, or from a name that is not a part’s', async () => {
+    const { s, defId } = await calculator();
     const before = s.components[defId];
-    const next = save(
+    const next = await save(
       s,
       defId,
-      `<script>\n\t// let { slot_ghost } = $props();\n\t/* so_o?.phantom */\n\tlet { slot_content } = $props();\n</script>\n\n<!-- <p data-so-part="hidden"></p> -->\n{#snippet slot_badge()}<b>!</b>{/snippet}\n{@render slot_badge()}\n<p data-so-part=" padded ">x</p>\n{@render slot_content?.()}\n`
+      `<script>\n\t// let { slot_ghost } = $props();\n\t/* so_o?.phantom */\n\tlet { slot_content, so_o, options = { slot_inner: null, note: '}' } } = $props();\n\tconst debug = so_o?.debugOnly;\n</script>\n\n<!-- <p data-so-part="hidden"></p> -->\n{#snippet slot_badge()}<b>!</b>{/snippet}\n{@render slot_badge()}\n<p data-so-part=" padded " title='docs // data-so-part="ghost"'>x</p>\n{@render slot_content?.()}\n`
     );
     expect(Object.keys(next.slots ?? {})).toEqual(Object.keys(before.slots ?? {}));
     expect(Object.keys(next.parts).sort()).toEqual(Object.keys(before.parts).sort());
@@ -78,12 +89,12 @@ describe('the code check holds code to its contract', () => {
   const errors = async (source: string, c: CodeContract) => (await checkSvelteSource(source, { contract: c })).filter((p) => p.severity === 'error').map((p) => p.message);
 
   it('accepts code that renders its slots safely and marks its parts with their classes', async () => {
-    const { s, defId } = calculator();
+    const { s, defId } = await calculator();
     expect(await checkSvelteSource(SOURCE, { contract: contract(s, defId) })).toEqual([]);
   });
 
   it('refuses a slot rendered where a placement with nothing in it fails on the server, and only there', async () => {
-    const { s, defId } = calculator();
+    const { s, defId } = await calculator();
     const c = contract(s, defId);
     const with_ = (render: string) => SOURCE.replace('{@render slot_content?.()}', render);
     const plain = await checkSvelteSource(with_('{@render slot_content()}'), { contract: c });
@@ -96,12 +107,14 @@ describe('the code check holds code to its contract', () => {
     expect(await errors(with_('{#if !slot_content}{@render slot_content()}{/if}'), c)).toHaveLength(1);
     expect(await errors(with_('{#if slot_content}<i></i>{:else}{@render slot_content()}{/if}'), c)).toHaveLength(1);
     expect(await errors(with_('{#if slot_content || open}{@render slot_content()}{/if}'), c)).toHaveLength(1);
+    // A default that may itself be missing is no fallback.
+    expect(await errors(SOURCE.replace('slot_content = undefined', 'slot_content = open ? fallback : undefined').replace('{@render slot_content?.()}', '{@render slot_content()}'), c)).toHaveLength(1);
     // A fallback of the code's own is never missing.
     expect(await errors(SOURCE.replace('slot_content = undefined', 'slot_content = fallback').replace('{@render slot_content?.()}', '{@render slot_content()}').replace('<section', '{#snippet fallback()}<i>none</i>{/snippet}\n<section'), c)).toEqual([]);
   });
 
   it('follows a slot taken under another name, and says when one is not taken from $props() or never shown', async () => {
-    const { s, defId } = calculator();
+    const { s, defId } = await calculator();
     const c = contract(s, defId);
     const aliased = SOURCE.replace('slot_content = undefined', 'slot_content: body').replace('{@render slot_content?.()}', '{@render body?.()}');
     expect(await errors(aliased, c)).toEqual([]);
@@ -112,14 +125,17 @@ describe('the code check holds code to its contract', () => {
   });
 
   it('refuses code that stops showing a slot holding content, which would hide that content', async () => {
-    const { s, defId } = calculator();
+    const { s, defId } = await calculator();
     const gone = SOURCE.replace('{@render slot_content?.()}', '');
     expect(await errors(gone, contract(s, defId))).toEqual([]);
-    expect(await errors(gone, contract(s, defId, { filled: ['content'] }))).toEqual([expect.stringContaining('holds content on the site')]);
+    expect(await errors(gone, contract(s, defId, { filled: ['other', 'content'] }))).toEqual([expect.stringContaining('holds content on the site')]);
+    // Handed on to a snippet of its own that renders it, the slot is still shown.
+    const handed = SOURCE.replace('{@render slot_content?.()}', '{#snippet frame(inner)}<i>{@render inner?.()}</i>{/snippet}{@render frame(slot_content)}');
+    expect(await errors(handed, contract(s, defId, { filled: ['content'] }))).toEqual([]);
   });
 
   it('names a part marked without its class, one not in the code, a marker it cannot read, and one in a spread', async () => {
-    const { s, defId } = calculator();
+    const { s, defId } = await calculator();
     const c = { slots: s.components[defId].slots, parts: { ...s.components[defId].parts, note: { nodeId: 'note', label: 'Note' } } };
     const said = async (source: string) => (await checkSvelteSource(source, { contract: c })).map((p) => `${p.severity}: ${p.message}`);
     const warnsUnhooked = (m: string[]) => m.some((x) => /^warning: Give the element marked “total” the part's class/.test(x));
@@ -133,13 +149,15 @@ describe('the code check holds code to its contract', () => {
     // A part given only its class is in the code.
     expect(await said(SOURCE.replace('<div class="extras">', '<div class={["extras", so_o?.note]}>'))).not.toContainEqual(expect.stringMatching(/“Note” part is not in the code/));
     expect(await errors(SOURCE.replace('data-so-part="total"', 'data-so-part=" total "'), c)).toEqual([expect.stringContaining('camelCase')]);
-    expect(await errors(SOURCE.replace('<div class="extras">', `<div class="extras" {...{ 'data-so-part': 'note' }}>`), c)).toEqual([expect.stringContaining('not in a spread')]);
+    expect(await errors(SOURCE.replace('<div class="extras">', `<div class="extras" {...{ "data-so-part": 'note' }}>`), c)).toEqual([expect.stringContaining('not in a spread')]);
+    // Words that only mention a marker are not one.
+    expect(await errors(SOURCE.replace('<div class="extras">', `<div class="extras" {...{ title: 'data-so-part' }}>`), c)).toEqual([]);
   });
 });
 
 describe('a code placement takes managed content in its slot', () => {
-  it('passes what is placed as the slot’s snippet, and in the editor marks an empty slot only while editing', () => {
-    const { s, pageId, owner, calc } = calculator();
+  it('passes what is placed as the slot’s snippet, and in the editor marks an empty slot only while editing', async () => {
+    const { s, pageId, owner, calc } = await calculator();
     const dev = generateProject(s, { instrument: true }).get(homeFile(s, pageId))!;
     // Empty: the placeholder is given only while editing, so the code's own {:else} still shows in Preview.
     expect(dev).toMatch(/\{#snippet (so_slot_empty_\d+)\(\)\}\s*<span class="so-slot-empty" data-so-editor-only="" data-so-slot-empty=\{"content"\}>[\s\S]*slot_content=\{so_editing \? \1 : undefined\}/);
@@ -156,8 +174,8 @@ describe('a code placement takes managed content in its slot', () => {
     expect(filled).not.toContain('so_slot_empty');
   });
 
-  it('names each declared part through its class in the editor’s preview only', () => {
-    const { s, pageId } = calculator();
+  it('names each declared part through its class in the editor’s preview only', async () => {
+    const { s, pageId } = await calculator();
     const so = (file: string) => JSON.parse(file.match(/so_o=\{(\{[^}]*\})\}/)?.[1] ?? 'null') as Record<string, string> | null;
     expect(so(generateProject(s, { instrument: true }).get(homeFile(s, pageId))!)).toEqual({ total: 'so-part--total' });
     expect(so(generateProject(s, { instrument: false }).get(homeFile(s, pageId))!)).toBeNull();
@@ -165,8 +183,8 @@ describe('a code placement takes managed content in its slot', () => {
 });
 
 describe('a marked part of a code placement is picked and styled', () => {
-  it('names the part from the preview’s descriptor and finds it again by the same descriptor', () => {
-    const t = calculator();
+  it('names the part from the preview’s descriptor and finds it again by the same descriptor', async () => {
+    const t = await calculator();
     const { owner, calc } = t;
     // A part declared under another node name than its ID (as a converted design's are) is still named by its ID.
     const s = structuredClone(t.s);
@@ -185,8 +203,8 @@ describe('a marked part of a code placement is picked and styled', () => {
     for (const other of ['gone', 'root']) expect(selectionFromChain(s, [{ ...desc, part: other }, { ...placement, code: true }], first, false)).toEqual(first);
   });
 
-  it('goes from the placement straight to content placed in its slot, past the part around it', () => {
-    const { s, owner, pageId, calc } = calculator();
+  it('goes from the placement straight to content placed in its slot, past the part around it', async () => {
+    const { s, owner, pageId, calc } = await calculator();
     const next = applyOperations(s, [{ type: 'node.insert', owner, parentId: calc, slot: 'content', primitive: 'button', text: 'Book' }]).state;
     const button = (next.pages[pageId].nodes[calc] as InstanceNode).slots!.content[0];
     const placement = descOf(next, { owner, instancePath: [], nodeId: calc });
@@ -198,8 +216,8 @@ describe('a marked part of a code placement is picked and styled', () => {
     expect(selectionFromChain(next, [{ ...part, tag: 'output' }, { ...placement, code: true }], first, false)).toEqual({ owner, instancePath: [calc], nodeId: 'total', partId: 'total' });
   });
 
-  it('applies the part’s phone and hover styles through the class the code places', () => {
-    const { s, owner, calc } = calculator();
+  it('applies the part’s phone and hover styles through the class the code places', async () => {
+    const { s, owner, calc } = await calculator();
     const styled = applyOperations(s, [
       { type: 'node.setStyle', owner, nodeId: calc, partId: 'total', scope: 'phone', property: 'color', value: '#ff0000' },
       { type: 'node.setStyle', owner, nodeId: calc, partId: 'total', scope: 'base', state: 'hover', property: 'color', value: '#00ff00' }
@@ -216,7 +234,7 @@ describe('a marked part of a code placement is picked and styled', () => {
 });
 
 describe('converting a design to code keeps its parts and slots', () => {
-  it('keeps every part’s class hook and the slots, writes no marker, and the preview still names each part', () => {
+  it('keeps every part’s class hook and the slots, writes no marker, and the preview still names each part', async () => {
     let s: ProjectState = createStarterState('business', 'Convert', false);
     const owner = { kind: 'page' as const, id: s.site.homePageId };
     s = applyOperations(s, [{ type: 'node.insert', owner, parentId: null, index: 0, componentId: 'layout.section' }]).state;
@@ -256,7 +274,7 @@ describe('the website’s build carries no part marker', () => {
     expect(await withoutPartMarkers('<p data-so-part="total"class="x">a</p>\n')).toBe('<p class="x">a</p>\n');
   });
 
-  it('finds a marker left in a built page or script, never words that only mention one', () => {
+  it('finds a marker left in a built page or script, never words that only mention one', async () => {
     expect(carriesPartMarker('<output class="amount" data-so-part="total">10</output>')).toBe(true);
     expect(carriesPartMarker('const t = $.from_html(`<div data-so-part="extras"><b></b></div>`);')).toBe(true);
     expect(carriesPartMarker('<div title="Example data-so-part=total">x</div>')).toBe(false);
