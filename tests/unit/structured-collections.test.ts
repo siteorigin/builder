@@ -13,17 +13,32 @@ import { applyOperations } from '@engine/apply';
 import { EngineError } from '@engine/tree';
 import { validateState } from '@engine/validate';
 import { generateProject, publishedState, resolveLink } from '@generator/index';
-import { entryNeighbours, materializeTemplate } from '@generator/entry-template';
+import { entryNeighbours, materializeTemplate, showsBody } from '@generator/entry-template';
+import { publicationPlan } from '@generator/checks';
 import { archivePages } from '@shared/archives';
 import { collectionHasBody, collectionKind, hasArchivePages, hasDetailPages, isDataOnly, siteEntries } from '@shared/collections';
 import { entryFieldSchemas, entryFieldValue } from '@shared/entry-fields';
 import { collectionsFromDocs, stateToDocs } from '../../src/main/project/documents';
+import { planPostImport } from '../../src/main/posts-import/plan';
+import type { ParsedSource } from '../../src/main/posts-import/source';
 
 const apply = (s: ProjectState, ops: EditOperation[]) => applyOperations(s, ops);
 const run = (s: ProjectState, ...ops: EditOperation[]) => apply(s, ops).state;
 const errors = (s: ProjectState) => validateState(s).filter((d) => d.severity === 'error');
 const routeFiles = (s: ProjectState) => [...generateProject(publishedState(s)).keys()].filter((f) => f.startsWith('src/routes/')).sort();
 const pageAt = (s: ProjectState, route: string) => Object.values(s.pages).find((p) => p.route === route)!;
+/** The node IDs a tree shows, from its roots down. */
+function shownIds(tree: { rootIds: string[]; nodes: Record<string, unknown> }): Set<string> {
+  const out = new Set<string>();
+  const visit = (id: string) => {
+    if (out.has(id) || !Object.hasOwn(tree.nodes, id)) return;
+    out.add(id);
+    const n = tree.nodes[id] as { children?: string[]; slots?: Record<string, string[]> };
+    for (const c of [...(n.children ?? []), ...Object.values(n.slots ?? {}).flat()]) visit(c);
+  };
+  tree.rootIds.forEach(visit);
+  return out;
+}
 
 /** The engine error an operation is refused with. */
 function refusal(s: ProjectState, ops: EditOperation[]): EngineError {
@@ -74,7 +89,8 @@ function studio() {
 
 describe('a data-only structured collection', () => {
   it('is created without an address, validates cleanly and generates no routes', () => {
-    const before = site();
+    // With a public URL, so the sitemap and the site's feeds and indexes are written too.
+    const before = run(site(), { type: 'site.update', baseUrl: 'https://example.com' });
     const r = apply(before, [
       { type: 'collection.create', collectionId: 'team', kind: 'structured', singularName: 'Team member', hasBody: false, pages: { detail: false, archive: false } },
       { type: 'entry.create', collectionId: 'team', entryId: 'en_ruiz', title: 'Ana Ruiz', draft: false },
@@ -100,8 +116,18 @@ describe('a data-only structured collection', () => {
     // Nothing under src/routes/ that the same site without it lacks, and its records in no sitemap, feed or index.
     expect(routeFiles(s)).toEqual(routeFiles(before));
     for (const [file, text] of generateProject(publishedState(s))) expect(text.includes('ana-ruiz'), file).toBe(false);
+    expect([...generateProject(publishedState(s)).keys()]).toContain('static/sitemap.xml');
     // An old address can send visitors to no page of it.
     expect(() => apply(s, [{ type: 'entry.create', collectionId: 'team', title: 'Cara', draft: false, redirectFrom: '/staff/cara/' }])).toThrow(/have no pages/);
+    // An address it keeps for when it has pages claims nothing meanwhile: a page can have it, and no file is written there.
+    const kept = run(before, { type: 'collection.create', collectionId: 'team', route: '/team/', pages: { detail: false, archive: false } }, { type: 'entry.create', collectionId: 'team', entryId: 'en_ruiz', title: 'Ana Ruiz', draft: false });
+    expect(kept.collections.team.settings.route).toBe('/team/');
+    expect(routeFiles(kept)).toEqual(routeFiles(before));
+    expect(run(kept, { type: 'page.create', title: 'Ana', route: '/team/ana-ruiz/' }).pages).toBeDefined();
+    // Two records with one slug are told apart: they would share an address once the collection had pages.
+    const twins = structuredClone(s);
+    twins.collections.team.entries.en_about2.slug = 'about';
+    expect(validateState(twins).find((d) => d.code === 'SLUG_DUPLICATE')).toMatchObject({ severity: 'warning', owner: { id: 'en_about2' } });
   });
 
   it('refuses an archive without entry pages, and pages without an address', () => {
@@ -114,21 +140,31 @@ describe('a data-only structured collection', () => {
     const routed = run(s, { type: 'collection.update', collectionId: 'team', route: '/people/', pages: { detail: true, archive: false } });
     expect(siteEntries(routed).filter((e) => e.collection.settings.id === 'team').map((e) => e.route).sort()).toEqual(['/people/ana-ruiz/', '/people/ben-okafor/']);
     expect(routeFiles(routed)).toContain('src/routes/people/ana-ruiz/+page.svelte');
+    // Entry pages without an archive: nothing at the collection's own address.
+    expect(routeFiles(routed)).not.toContain('src/routes/people/+page.svelte');
+    // Turned off and on again at another address in one change, a published record's address keeps working.
+    const work = run(s, { type: 'collection.update', collectionId: 'projects', pages: { detail: false, archive: false } }, { type: 'collection.update', collectionId: 'projects', route: '/projects/', pages: { detail: true, archive: false } });
+    expect(work.site.redirects).toEqual([{ from: '/work/town-hall/', entryId: 'en_hall' }]);
     // A hand edit asking for an archive without entry pages is reported, and has neither.
     const hand = structuredClone(s);
+    hand.collections.team.settings.route = '/team/';
     hand.collections.team.settings.pages = { detail: false, archive: true };
     expect(hasArchivePages(hand.collections.team.settings)).toBe(false);
     expect(errors(hand).map((d) => d.message)).toEqual([expect.stringMatching(/an archive without entry pages/)]);
+    expect(routeFiles(hand)).toEqual(routeFiles(s));
   });
 });
 
 describe('a collection without the new settings', () => {
   it('is an editorial collection with entry pages, an archive and text, as every blog has been', () => {
-    const s = run(site(), { type: 'collection.create', collectionId: 'posts' }, { type: 'entry.create', collectionId: 'posts', entryId: 'en_spring', title: 'Spring', draft: false });
+    const s = run(site(), { type: 'collection.create', collectionId: 'posts' }, { type: 'entry.create', collectionId: 'posts', entryId: 'en_spring', title: 'Spring', draft: false, body: ['Words.'] });
     const settings = s.collections.posts.settings;
     for (const k of ['kind', 'singularName', 'hasBody', 'pages', 'sourceId']) expect(settings).not.toHaveProperty(k);
     expect([collectionKind(settings), hasDetailPages(settings), hasArchivePages(settings), collectionHasBody(settings)]).toEqual(['editorial', true, true, true]);
     expect(Object.keys(entryFieldSchemas(s.collections.posts))).toEqual(expect.arrayContaining(['body', 'readingTime']));
+    const read = { state: s, collection: s.collections.posts, entry: s.collections.posts.entries.en_spring, neighbours: {} };
+    expect(entryFieldValue(read, 'body')).toEqual([{ type: 'p', spans: [{ text: 'Words.' }] }]);
+    expect(entryFieldValue(read, 'readingTime', 'raw')).toBe(1);
     expect(routeFiles(s)).toEqual(expect.arrayContaining(['src/routes/blog/+page.svelte', 'src/routes/blog/spring/+page.svelte']));
   });
 });
@@ -151,6 +187,7 @@ describe('rich custom fields', () => {
     expect(errors(s)).toEqual([]);
     // Written as documents and read back, entries before their settings, exactly as they were.
     const synced = structuredClone(s);
+    synced.collections.team.settings.sourceId = 'people-api';
     synced.collections.team.entries.en_ruiz.source = { sourceId: 'people-api', externalId: '42', syncedAt: '2026-11-01T10:00:00.000Z', contentHash: 'abc123' };
     const docs = [...stateToDocs(synced)].filter(([p]) => p.startsWith('siteorigin/collections/')).reverse();
     const back = collectionsFromDocs(docs.map(([p, text]) => [p, JSON.parse(text)]));
@@ -190,6 +227,8 @@ describe('rich custom fields', () => {
       { type: 'node.setBinding', owner, nodeId: excerpt.id, field: 'text', binding: { $entry: 'field.lead' } },
       { type: 'node.setBinding', owner, nodeId: excerpt.id, field: 'when', binding: { $entry: 'field.crew' } },
       { type: 'node.setBinding', owner, nodeId: body.id, field: 'text', binding: { $entry: 'field.summary' } },
+      // The theme's layout shows the text only for an entry with some: the summary shows whatever the text.
+      { type: 'node.setBinding', owner, nodeId: body.id, field: 'when', binding: null },
       { type: 'node.setBinding', owner, nodeId: cta, field: 'prop', prop: 'heading', binding: { $entry: 'field.crew' } },
       { type: 'node.setBinding', owner, nodeId: cta, field: 'prop', prop: 'primaryLink', binding: { $entry: 'field.website' } }
     );
@@ -197,19 +236,21 @@ describe('rich custom fields', () => {
     const page = materializeTemplate(s, s.collections.projects, s.collections.projects.entries.en_hall, entryNeighbours(s, 'projects', 'en_hall'));
     expect(page.nodes[date.id]).toMatchObject({ text: 'April 30, 2026', datetime: '2026-04-30' });
     expect(page.nodes[excerpt.id]).toMatchObject({ text: 'Ana Ruiz' });
-    expect(page.rootIds.length).toBeGreaterThan(0);
+    expect([date.id, excerpt.id, body.id, cta].every((id) => shownIds(page).has(id))).toBe(true);
     expect((page.nodes[body.id] as TextNode).text).toEqual(s.collections.projects.entries.en_hall.values.summary);
     expect((page.nodes[cta] as InstanceNode).props).toMatchObject({ heading: 'Ben Okafor, Ana Ruiz', primaryLink: { type: 'url', target: 'https://hall.example.com' } });
     const html = generateProject(publishedState(s)).get('src/routes/work/town-hall/+page.svelte')!;
     expect(html).toContain('<time datetime={"2026-04-30"}>{"April 30, 2026"}</time>');
     expect(html).toContain('Ana Ruiz');
     expect(html).toContain('https://hall.example.com');
+    expect(html).toContain('civic');
     // Entry pages, no archive: nothing at the collection's own address.
     expect(routeFiles(s)).not.toContain('src/routes/work/+page.svelte');
     // An entry naming nobody leaves out what shows its crew.
     const nobody = run(s, { type: 'entry.update', collectionId: 'projects', entryId: 'en_hall', values: { crew: [] } });
-    expect(materializeTemplate(nobody, nobody.collections.projects, nobody.collections.projects.entries.en_hall, {}).nodes[excerpt.id]).toBeDefined();
-    expect(JSON.stringify(materializeTemplate(nobody, nobody.collections.projects, nobody.collections.projects.entries.en_hall, {}).rootIds)).not.toContain(excerpt.id);
+    const without = materializeTemplate(nobody, nobody.collections.projects, nobody.collections.projects.entries.en_hall, {});
+    expect(shownIds(without).has(excerpt.id)).toBe(false);
+    expect(shownIds(without).has(date.id)).toBe(true);
     // A date's machine form is a date's alone; a list of entries equals no one value; one entry can be compared.
     expect(() => apply(s, [{ type: 'node.setBinding', owner, nodeId: date.id, field: 'datetime', binding: { $entry: 'field.lead' } }])).toThrow(/not a date/);
     expect(() => apply(s, [{ type: 'node.setBinding', owner, nodeId: excerpt.id, field: 'when', binding: { $entry: 'field.crew' }, eq: 'en_ruiz' }])).toThrow(/names several entries/);
@@ -228,11 +269,26 @@ describe('rich custom fields', () => {
     expect(() => set({ crew: Array.from({ length: 51 }, () => 'en_ruiz') })).toThrow(/at most 50/);
     expect(() => set({ summary: [{ type: 'h2', spans: [{ text: 'Heading' }] }] })).toThrow(/section headings \(h2\) can only be placed in a collection entry's text/);
     expect(() => set({ summary: [{ type: 'image', assetId: 'img_a', alt: '' }] })).toThrow(/pictures can only be placed in a collection entry's text/);
+    // Written as Markdown, a heading of an entry's text is no heading here.
+    expect(set({ summary: '## Heading' }).state.collections.projects.entries.en_hall.values.summary).not.toEqual(expect.arrayContaining([expect.objectContaining({ type: 'h2' })]));
+    // Nor is one a hand edit saved: it is left out where the field shows, reported, and refused when sent back as it is.
+    const hand = structuredClone(s);
+    const figure = { type: 'h2', spans: [{ text: 'Heading' }] };
+    hand.collections.projects.entries.en_hall.values.summary = [figure, { type: 'p', spans: [{ text: 'Kept.' }] }] as never;
+    expect(entryFieldValue({ state: hand, collection: hand.collections.projects, entry: hand.collections.projects.entries.en_hall, neighbours: {} }, 'field.summary')).toEqual([{ type: 'p', spans: [{ text: 'Kept.' }] }]);
+    expect(validateState(hand).find((d) => d.code === 'FIELD_VALUE_INVALID')?.message).toMatch(/Summary is not a value the field takes/);
+    expect(() => apply(hand, [{ type: 'entry.update', collectionId: 'projects', entryId: 'en_hall', values: { summary: hand.collections.projects.entries.en_hall.values.summary } }])).toThrow(/section headings \(h2\)/);
     // A link field may go to another entry, as the entry's text may.
     expect(set({ website: { type: 'entry', target: 'en_ruiz' } }).state.collections.projects.entries.en_hall.values.website).toEqual({ type: 'entry', target: 'en_ruiz' });
     // A reference names an existing collection (its own included, as it is created) and starts empty.
     expect(() => apply(site(), [{ type: 'collection.create', collectionId: 'events', fields: { venue: { type: 'reference', label: 'Venue', collection: 'venues' } } }])).toThrow(/name the collection whose entries it refers to/);
     expect(() => apply(s, [{ type: 'collection.create', collectionId: 'events', fields: { host: { type: 'reference', label: 'Host', collection: 'team', default: 'en_ruiz' } } }])).toThrow(/its default is ""/);
+    // One a hand edit gave a default is damaged, and names nobody.
+    const named = structuredClone(s);
+    (named.collections.projects.settings.fields.lead as { default: unknown }).default = 'en_okafor';
+    delete named.collections.projects.entries.en_hall.values.lead;
+    expect(errors(named).map((d) => d.message)).toEqual([expect.stringMatching(/custom fields are damaged/)]);
+    expect(entryFieldValue({ state: named, collection: named.collections.projects, entry: named.collections.projects.entries.en_hall, neighbours: {} }, 'field.lead')).toBe('');
     expect(() => apply(s, [{ type: 'collection.create', collectionId: 'events', fields: { when: { type: 'date', label: 'When', default: 'soon' } } }])).toThrow(/default must be a calendar date/);
     // A reference retargeted, or made a list, would read each entry's value differently: refused while one has one.
     expect(() => apply(s, [{ type: 'collection.update', collectionId: 'projects', fields: { ...s.collections.projects.settings.fields, lead: { type: 'reference', label: 'Lead', collection: 'projects' } } }])).toThrow(/value for Lead/);
@@ -249,6 +305,9 @@ describe('rich custom fields', () => {
     const moved = run(s, { type: 'page.remove', pageId: contact.id, replacementPageId: about.id });
     expect(JSON.stringify(moved.collections.projects.entries.en_hall.values.summary)).toContain(`{"type":"page","target":"${about.id}"}`);
     expect(errors(moved)).toEqual([]);
+    // A link field's own link follows the page too.
+    const direct = run(s, { type: 'entry.update', collectionId: 'projects', entryId: 'en_hall', values: { website: { type: 'page', target: contact.id } } }, { type: 'page.remove', pageId: contact.id, replacementPageId: about.id });
+    expect(direct.collections.projects.entries.en_hall.values.website).toEqual({ type: 'page', target: about.id });
     // Fields of other kinds are plain values, whatever they hold.
     const plain = run(s, { type: 'entry.update', collectionId: 'team', entryId: 'en_ruiz', values: { role: contact.id } });
     expect(run(plain, { type: 'page.remove', pageId: contact.id, replacementPageId: about.id }).collections.team.entries.en_ruiz.values.role).toBe(contact.id);
@@ -269,6 +328,9 @@ describe('references when an entry goes', () => {
     const r = apply(s, [{ type: 'entry.remove', collectionId: 'team', entryId: 'en_ruiz', replacementEntryId: 'en_okafor' }]);
     expect(r.results[0]).toMatchObject({ referencesRepointed: 2 });
     expect(r.state.collections.projects.entries.en_hall.values).toMatchObject({ lead: 'en_okafor', crew: ['en_okafor'] });
+    // Where the list does not name the replacement yet, it takes the removed entry's place in it.
+    const third = run(s, { type: 'entry.create', collectionId: 'team', entryId: 'en_cara', title: 'Cara' }, { type: 'entry.remove', collectionId: 'team', entryId: 'en_okafor', replacementEntryId: 'en_cara' });
+    expect(third.collections.projects.entries.en_hall.values.crew).toEqual(['en_cara', 'en_ruiz']);
     expect(r.state.collections.team.entries).not.toHaveProperty('en_ruiz');
     expect(errors(r.state)).toEqual([]);
     // Cleared first, it goes.
@@ -282,11 +344,19 @@ describe('references when an entry goes', () => {
   it('refuses removing a collection another collection’s reference field names, and reports one naming nothing', () => {
     const s = studio();
     expect(() => apply(s, [{ type: 'collection.remove', collectionId: 'team' }])).toThrow(/Lead of the Projects collection refers to entries of Team\. Remove that field first/);
+    // Even while no entry names one.
+    const unnamed = run(s, { type: 'entry.update', collectionId: 'projects', entryId: 'en_hall', values: { lead: null, crew: null } });
+    expect(() => apply(unnamed, [{ type: 'collection.remove', collectionId: 'team' }])).toThrow(/refers to entries of Team/);
     // Its own references go with it.
     expect(run(s, { type: 'collection.remove', collectionId: 'projects' }).collections).not.toHaveProperty('projects');
     const hand = structuredClone(s);
     hand.collections.projects.entries.en_hall.values.lead = 'en_gone';
-    expect(validateState(hand).find((d) => d.code === 'FIELD_VALUE_INVALID')).toMatchObject({ severity: 'warning', message: expect.stringMatching(/Lead names "en_gone", which the Team collection has no entry for/) });
+    // Broken, as a link to an entry that is gone is: nothing else (an undo of one change, say) may leave one.
+    expect(validateState(hand).find((d) => d.code === 'REFERENCE_BROKEN')).toMatchObject({ severity: 'error', message: expect.stringMatching(/Lead names "en_gone", which the Team collection has no entry for/) });
+    // A collection whose own layout links to its own entries goes with them.
+    const linked = structuredClone(s);
+    linked.collections.projects.settings.template.nodes.n_self = { id: 'n_self', kind: 'link', label: 'Self', link: { type: 'entry', target: 'en_hall' } } as never;
+    expect(run(linked, { type: 'collection.remove', collectionId: 'projects' }).collections).not.toHaveProperty('projects');
   });
 });
 
@@ -320,8 +390,25 @@ describe('a synced collection', () => {
     expect(local.collections.team.settings).not.toHaveProperty('sourceId');
     expect(local.collections.team.entries.en_okafor).toMatchObject({ title: 'Ben O.', source: { ...SOURCE, externalId: 'en_okafor' } });
     expect(run(local, { type: 'entry.create', collectionId: 'team', entryId: 'en_cara', title: 'Cara' }).collections.team.entries).toHaveProperty('en_cara');
+    // Removing one of them too, its provenance notwithstanding.
+    expect(run(local, { type: 'entry.remove', collectionId: 'team', entryId: 'en_okafor', replacementEntryId: 'en_ruiz' }).collections.team.entries).not.toHaveProperty('en_okafor');
     // Only detaching is an operation: a sync attaches.
     expect(validateOperation({ type: 'collection.update', collectionId: 'team', sourceId: 'other' })).not.toMatchObject({ ok: true });
+  });
+
+  it('refuses any other change to its entries while it stays synced: fields, groupings, its removal', () => {
+    const s = studio();
+    const team = run(s, { type: 'collection.update', collectionId: 'team', taxonomies: { office: { label: 'Office', terms: { cpt: { label: 'Cape Town' } } } } }, { type: 'entry.update', collectionId: 'team', entryId: 'en_ruiz', terms: { office: ['cpt'] } });
+    team.collections.team.settings.sourceId = 'people-api';
+    const synced = /entries of the Team collection, which is synced from an external source, so they are read-only here/;
+    // A field taken away would take its value from an entry; a term, its filing.
+    expect(() => apply(team, [{ type: 'collection.update', collectionId: 'team', fields: {} }])).toThrow(synced);
+    expect(() => apply(team, [{ type: 'collection.removeTerm', collectionId: 'team', taxonomyId: 'office', termId: 'cpt' }])).toThrow(synced);
+    expect(() => apply(team, [{ type: 'collection.remove', collectionId: 'projects' }, { type: 'collection.remove', collectionId: 'team' }])).toThrow(/remove the entries of the Team collection/);
+    // What leaves them as they are goes ahead: a field added, a label changed.
+    expect(run(team, { type: 'collection.update', collectionId: 'team', name: 'People', fields: { role: { type: 'string', label: 'Role' }, phone: { type: 'string', label: 'Phone' } } }).collections.team.settings.name).toBe('People');
+    // Detached first, in the same change, anything goes.
+    expect(run(team, { type: 'collection.update', collectionId: 'team', sourceId: null }, { type: 'collection.update', collectionId: 'team', fields: {} }).collections.team.entries.en_ruiz.values).toEqual({});
   });
 
   it('refuses pointing its entries’ links or references elsewhere, as removing what they go to would', () => {
@@ -329,15 +416,20 @@ describe('a synced collection', () => {
     const contact = pageAt(s, '/contact/');
     const about = pageAt(s, '/about/');
     expect(() => apply(s, [{ type: 'page.remove', pageId: contact.id, replacementPageId: about.id }])).toThrow(/Town hall \(Projects\) links to "Contact".*synced from an external source/);
+    // A link field's own link too.
+    const direct = structuredClone(s);
+    direct.collections.projects.entries.en_hall.values = { website: { type: 'page', target: contact.id } };
+    expect(() => apply(direct, [{ type: 'page.remove', pageId: contact.id, replacementPageId: about.id }])).toThrow(/Town hall \(Projects\) links to "Contact".*synced/);
     expect(() => apply(s, [{ type: 'entry.remove', collectionId: 'team', entryId: 'en_ruiz', replacementEntryId: 'en_okafor' }])).toThrow(/Town hall \(Projects\) links to “Ana Ruiz”.*synced/);
   });
 
   it('reports damaged provenance', () => {
     const s = synced();
-    s.collections.team.entries.en_ruiz.source = { sourceId: 'people-api', externalId: '', syncedAt: 'yesterday', contentHash: 'abc' };
+    s.collections.team.entries.en_ruiz.source = { sourceId: 'people-api', externalId: '42', syncedAt: 'yesterday', contentHash: 'abc' };
+    expect(validateState(s).find((d) => d.code === 'ENTRY_SOURCE_INVALID')).toMatchObject({ severity: 'warning', owner: { id: 'en_ruiz' } });
+    expect(validateState(s).filter((d) => d.code === 'ENTRY_SOURCE_INVALID')).toHaveLength(1);
     s.collections.team.settings.sourceId = '  ';
     const found = validateState(s);
-    expect(found.find((d) => d.code === 'ENTRY_SOURCE_INVALID')).toMatchObject({ severity: 'warning' });
     expect(found.find((d) => d.code === 'COLLECTION_INVALID')?.message).toMatch(/external source it is synced from is damaged/);
   });
 });
@@ -354,6 +446,47 @@ describe('entry text', () => {
     const empty = run(blog, { type: 'entry.update', collectionId: 'posts', entryId: 'en_spring', body: [] });
     expect(() => apply(empty, [{ type: 'collection.update', collectionId: 'posts', hasBody: false }])).toThrow(/The Posts layout shows the entries' (text|reading time)\. Unbind it/);
   });
+
+  it('is never shown, searched or mirrored for records without it, whatever a hand edit left', () => {
+    const blog = run(site(), { type: 'site.update', baseUrl: 'https://example.com' }, { type: 'collection.create', collectionId: 'posts' }, { type: 'entry.create', collectionId: 'posts', entryId: 'en_spring', title: 'Spring', draft: false, body: ['Secret words.'] });
+    const hand = structuredClone(blog);
+    hand.collections.posts.settings.hasBody = false;
+    const read = { state: hand, collection: hand.collections.posts, entry: hand.collections.posts.entries.en_spring, neighbours: {} };
+    expect(entryFieldValue(read, 'body')).toBeUndefined();
+    expect(entryFieldValue(read, 'readingTime', 'raw')).toBeUndefined();
+    const article = materializeTemplate(hand, hand.collections.posts, hand.collections.posts.entries.en_spring, {});
+    expect(showsBody(blog.collections.posts, materializeTemplate(blog, blog.collections.posts, blog.collections.posts.entries.en_spring, {}))).toBe(true);
+    expect(showsBody(hand.collections.posts, article)).toBe(false);
+    expect(validateState(hand).find((d) => d.code === 'ENTRY_TEXT_HIDDEN')).toMatchObject({ severity: 'warning', owner: { id: 'en_spring' } });
+    for (const [file, text] of generateProject(publishedState(hand))) expect(text.includes('Secret words'), file).toBe(false);
+  });
+});
+
+describe('checks before the website goes out', () => {
+  it('follow links a layout shows from an entry’s link and rich text fields', () => {
+    let s = run(studio(), { type: 'site.update', baseUrl: 'https://example.com' }, { type: 'entry.create', collectionId: 'projects', entryId: 'en_plan', title: 'Plans', draft: true });
+    const owner = { kind: 'template' as const, id: 'projects' };
+    const body = Object.values(s.collections.projects.settings.template.nodes).find((n) => JSON.stringify(n).includes('{"$entry":"body"}'))!;
+    s = run(
+      s,
+      { type: 'node.setBinding', owner, nodeId: body.id, field: 'text', binding: { $entry: 'field.summary' } },
+      { type: 'node.setBinding', owner, nodeId: body.id, field: 'when', binding: null },
+      { type: 'entry.update', collectionId: 'projects', entryId: 'en_hall', values: { summary: 'See [the plans](entry:en_plan).' } }
+    );
+    expect(publicationPlan(s).draftLinks).toEqual([expect.objectContaining({ entryId: 'en_plan', owner })]);
+  });
+});
+
+describe('importing posts into a Posts collection without an archive', () => {
+  it('keeps an old address its archive would have kept', () => {
+    const s = run(site(), { type: 'collection.create', collectionId: 'posts', pages: { detail: true, archive: false } });
+    const post = { key: 'p1', from: 'news.md', title: 'News', slug: 'news', date: '2026-01-01', draft: false, categories: [], tags: [], body: [], oldPath: '/blog/category/news/', notes: [] };
+    const source: ParsedSource = { kind: 'markdown', label: 'posts', root: '/x', realRoot: '/x', posts: [post], media: [], skipped: [] };
+    expect(planPostImport(s, source, '2026-11-24').posts[0]).toMatchObject({ redirectFrom: '/blog/category/news/' });
+    // With an archive, that address is the archive's.
+    const archived = run(site(), { type: 'collection.create', collectionId: 'posts' });
+    expect(planPostImport(archived, source, '2026-11-24').posts[0].redirectFrom).toBeUndefined();
+  });
 });
 
 describe('the pages a collection asks for', () => {
@@ -367,6 +500,10 @@ describe('the pages a collection asks for', () => {
     expect(archivePages(s).filter((p) => p.collectionId === 'people')).toEqual([]);
     // Its archive would take the page's address.
     expect(() => apply(s, [{ type: 'collection.update', collectionId: 'people', pages: { detail: true, archive: true } }])).toThrow(/already the address of the page “Team”/);
+    // The other way round: a page can take the address of a collection with no archive there.
+    const first = run(site(), { type: 'collection.create', collectionId: 'people', route: '/team/', pages: { detail: true, archive: false } });
+    expect(pageAt(run(first, { type: 'page.create', title: 'Team', route: '/team/' }), '/team/')).toBeDefined();
+    expect(() => apply(run(site(), { type: 'collection.create', collectionId: 'people', route: '/team/' }), [{ type: 'page.create', title: 'Team', route: '/team/' }])).toThrow();
   });
 
   it('keeps entry pages out of another collection’s archive folders, in either order', () => {
@@ -376,6 +513,11 @@ describe('the pages a collection asks for', () => {
     expect(() => apply(notes, [{ type: 'collection.create', collectionId: 'posts', route: '/journal/' }])).toThrow(/kept for the collection's archive pages/);
     // Without an archive of its own, it reserves no folders.
     expect(() => apply(notes, [{ type: 'collection.create', collectionId: 'posts', route: '/journal/', pages: { detail: true, archive: false } }])).not.toThrow();
+    // Moving, or turning an archive on, is held to the same.
+    const both = run(site(), { type: 'collection.create', collectionId: 'posts' }, { type: 'collection.create', collectionId: 'notes', route: '/notes/', pages: { detail: true, archive: false } });
+    expect(() => apply(both, [{ type: 'collection.update', collectionId: 'notes', route: '/blog/category/notes/' }])).toThrow(/kept for the Posts collection's archive pages/);
+    const nested = run(site(), { type: 'collection.create', collectionId: 'notes', route: '/journal/page/', pages: { detail: true, archive: false } }, { type: 'collection.create', collectionId: 'posts', route: '/journal/', pages: { detail: true, archive: false } });
+    expect(() => apply(nested, [{ type: 'collection.update', collectionId: 'posts', pages: { detail: true, archive: true } }])).toThrow(/kept for the collection's archive pages/);
   });
 
   it('turns entry pages off, leaving links to them as their words until they are on again', () => {
@@ -387,8 +529,12 @@ describe('the pages a collection asks for', () => {
     expect(errors(off)).toEqual([]);
     expect(routeFiles(off).some((f) => f.startsWith('src/routes/work/'))).toBe(false);
     expect(resolveLink({ type: 'entry', target: 'en_hall' }, { state: off } as never)).toBeNull();
+    const news = (state: ProjectState) => generateProject(publishedState(state)).get('src/routes/blog/news/+page.svelte')!;
+    expect(news(off)).toContain('the hall');
+    expect(news(off)).not.toContain('/work/town-hall/');
     const on = run(off, { type: 'collection.update', collectionId: 'projects', pages: { detail: true, archive: false } });
     expect(resolveLink({ type: 'entry', target: 'en_hall' }, { state: on } as never)).toEqual({ href: '/work/town-hall/' });
+    expect(news(on)).toContain('/work/town-hall/');
   });
 
   it('takes every new setting through the shared validator', () => {
@@ -397,7 +543,8 @@ describe('the pages a collection asks for', () => {
       { type: 'collection.update', collectionId: 'team', kind: 'editorial', singularName: null, hasBody: true, pages: { detail: true, archive: true }, sourceId: null, route: '/team/' },
       { type: 'entry.update', collectionId: 'team', entryId: 'en_ruiz', values: { lead: 'en_okafor', crew: ['en_ruiz'], completed: '2026-01-01' } }
     ])
-      expect(validateOperation(op), op.type).toMatchObject({ ok: true });
+      // Taken whole: nothing of it dropped on the way.
+      expect(validateOperation(op), op.type).toEqual({ ok: true, op });
     expect(validateOperation({ type: 'collection.create', collectionId: 'team', kind: 'gallery' })).not.toMatchObject({ ok: true });
     expect(validateOperation({ type: 'collection.create', collectionId: 'team', pages: { detail: false } })).not.toMatchObject({ ok: true });
   });

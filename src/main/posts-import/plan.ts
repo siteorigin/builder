@@ -6,7 +6,7 @@
  */
 import type { AssetRecord, CollectionTaxonomy, LinkValue, ProjectState, RichBlock, RichSpan, RichText } from '@shared/types';
 import { validateOperation, type EditOperation } from '@shared/ops';
-import { POSTS_COLLECTION_ID, archiveRouteOwner, findEntry, hasDetailPages, isTermId, routeOwners, underArchiveFolder } from '@shared/collections';
+import { POSTS_COLLECTION_ID, archiveRouteOwner, findEntry, hasArchivePages, hasDetailPages, isTermId, routeOwners, underArchiveFolder } from '@shared/collections';
 import { todayArticleDate } from '@shared/articles';
 import { addressSlug, numberedSlug, slugify, validateRoute, validateSegment } from '@shared/routes';
 import { cleanBlocks, isImageBlock, isListBlock, spanRuns } from '@shared/richtext';
@@ -86,6 +86,8 @@ export function planPostImport(state: ProjectState, source: ParsedSource, today 
   const name = existing?.settings.name ?? 'Posts';
   const owners = routeOwners(state);
   const taken = new Map(owners.map((o) => [lower(o.route), o.label]));
+  // A new Posts collection has an archive at its address; an existing one, only when it says so.
+  const archived = !existing || hasArchivePages(existing.settings);
   // Imported posts keep their old permalinks working, which needs pages of their own to send visitors to.
   if (existing && !hasDetailPages(existing.settings)) problems.push(`The ${name} collection has no entry pages, so the posts would have no addresses. Turn its entry pages on, then import again.`);
   if (!existing) {
@@ -226,7 +228,7 @@ export function planPostImport(state: ProjectState, source: ParsedSource, today 
         ? null
         : from === '/' || validateRoute(from)
           ? `${validateRoute(from) ?? 'it is the Home page'}`
-          : lower(from) === lower(route)
+          : archived && lower(from) === lower(route)
             ? `it is the address of the ${name} collection`
             : taken.has(lower(from))
             ? `it is the address of ${taken.get(lower(from))}`
@@ -234,7 +236,7 @@ export function planPostImport(state: ProjectState, source: ParsedSource, today 
               ? 'another imported post has that address'
               : (oldClaims.get(lower(from)) ?? 0) > 1 || redirects.has(lower(from))
                 ? 'another imported post had it too'
-                : underArchiveFolder(route, from) || archiveRouteOwner(state, from)
+                : (archived && underArchiveFolder(route, from)) || archiveRouteOwner(state, from)
                   ? 'it is kept for a collection’s archive pages'
                   : '';
       if (why === '') {

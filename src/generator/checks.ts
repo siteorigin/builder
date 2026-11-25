@@ -1785,9 +1785,13 @@ export function missingSectionLinks(state: ProjectState): SectionLinkIssue[] {
   const hasSectionLinks = (collectionId: string) => {
     if (!layoutLinks.has(collectionId)) {
       const template = storedLayout(state, collectionId);
-      // A placed section's links can depend on the words each entry gives it: a layout with one is always read.
+      // A placed section's links can depend on the words each entry gives it, and a link or rich text field's are each
+      // entry's own: a layout with either is always read.
       const placed = !!template?.nodes && Object.values(template.nodes).some((n) => n?.kind === 'instance');
-      layoutLinks.set(collectionId, placed || (!!template?.nodes && renderedLinks(state, template, false, true).some(({ link }) => (link.type === 'page' && !!link.anchor) || link.type === 'anchor')));
+      layoutLinks.set(
+        collectionId,
+        placed || showsLinkingField(state, collectionId) || (!!template?.nodes && renderedLinks(state, template, false, true).some(({ link }) => (link.type === 'page' && !!link.anchor) || link.type === 'anchor'))
+      );
     }
     return layoutLinks.get(collectionId)!;
   };
@@ -1984,7 +1988,10 @@ export function publicationPlan(state: ProjectState): PublicationPlan {
     if (!mayLink.has(collectionId)) {
       const t = state.collections[collectionId]?.settings?.template;
       const placed = !!t?.nodes && Object.values(t.nodes).some((n) => n?.kind === 'instance');
-      mayLink.set(collectionId, !!t?.nodes && (draftIds.size > 0 || draftEntryIds.size > 0 || withheld.size > 0) && (placed || /"type":"(page|entry|url)"/.test(JSON.stringify(t.nodes))));
+      mayLink.set(
+        collectionId,
+        !!t?.nodes && (draftIds.size > 0 || draftEntryIds.size > 0 || withheld.size > 0) && (placed || showsLinkingField(state, collectionId) || /"type":"(page|entry|url)"/.test(JSON.stringify(t.nodes)))
+      );
     }
     return mayLink.get(collectionId)!;
   };
@@ -2132,6 +2139,16 @@ export function describeDraftLink(state: ProjectState, l: DraftLink): string {
   const draft = draftTarget(state, l);
   const to = draft ? `${draft.title} (${draft.route}${l.anchor ? `#${l.anchor}` : ''})` : 'a draft page';
   return `${where}: ${l.label ? `“${l.label}”` : l.inText ? 'a link in the text' : 'a link'} goes to ${to}`;
+}
+
+/** Whether a collection's stored layout shows one of its link or rich text fields, whose links are each entry's own. */
+function showsLinkingField(state: ProjectState, collectionId: string): boolean {
+  const c = Object.hasOwn(state.collections ?? {}, collectionId) ? state.collections[collectionId] : undefined;
+  const nodes = c?.settings?.template?.nodes;
+  const linking = Object.entries(c?.settings?.fields ?? {}).filter(([, f]) => f?.type === 'link' || f?.type === 'richtext');
+  if (!nodes || !linking.length) return false;
+  const json = JSON.stringify(nodes);
+  return linking.some(([name]) => json.includes(JSON.stringify({ $entry: `field.${name}` })));
 }
 
 /** The draft page or collection entry a draft link goes to, by its title and address, while it is there. */

@@ -265,7 +265,10 @@ export function entryFieldValue(ctx: EntryReadContext, field: string, form: Entr
     const value = v === undefined ? schema.default : v;
     if (schema.type === 'image') return storedPicture(state, value);
     if (schema.type === 'date') return date(value);
-    if (schema.type === 'reference') return referenceValue(state, schema, value, form);
+    // A reference names no entry unless the entry chooses one, whatever a damaged default says.
+    if (schema.type === 'reference') return referenceValue(state, schema, v, form);
+    // A rich text field's text is no article: a section heading or a picture a hand edit put there is left out.
+    if (schema.type === 'richtext') return Array.isArray(value) ? value.filter((b) => b && typeof b === 'object' && b.type !== 'h2' && b.type !== 'image') : [];
     return value;
   }
   return undefined;

@@ -9,6 +9,7 @@ import type { Collection, EntryDoc, GraphNode, ImageValue, InstanceNode, LinkVal
 import { conditionHolds, conditionRef, isBindingRef, isEntryBinding } from '@shared/types';
 import { ENTRY_CONTENT_FIELDS, entryFieldSchema, entryFieldValue, entryValuePresent, isEntryDateField, type EntryNeighbours, type EntryReadContext } from '@shared/entry-fields';
 import { isDraftEntry, siteEntries } from './index';
+import { collectionHasBody } from '@shared/collections';
 import { derived } from './cache';
 
 const own = <T>(rec: Record<string, T> | undefined, key: string): T | undefined => (rec && Object.hasOwn(rec, key) ? rec[key] : undefined);
@@ -222,9 +223,11 @@ export function materializeTemplate(state: ProjectState, collection: Collection,
 
 /**
  * Whether an entry's page shows its text: an element (or placed section) of its layout that shows the text is on the
- * page for it. `article` is the layout read for the entry (materializeTemplate), with its node IDs.
+ * page for it. `article` is the layout read for the entry (materializeTemplate), with its node IDs. Never for entries
+ * without text of their own, whatever a stale binding says.
  */
 export function showsBody(collection: Collection, article: NodeTree): boolean {
+  if (!collectionHasBody(collection.settings)) return false;
   const nodes = collection.settings.template?.nodes ?? {};
   const placed = new Set(
     Object.values(nodes)

@@ -255,6 +255,17 @@ describe('collections on disk', () => {
     expect(r.error?.code).toBe('CONFLICT');
     expect(read(dir, `${POSTS}/entries/en_winter.json`).title).toBe('Winter hours');
     expect(s.state.collections.posts.entries.en_winter.title).toBe('Winter hours');
+    // Any change that would rewrite one of its entries waits for it, whatever else it is: a page removed, say, whose
+    // links an entry holds.
+    const { dir: other, s: second } = await make();
+    await ok(second.apply({ operations: blog }, { label: 'Start' }));
+    const contact = Object.values(second.state.pages).find((p) => p.route === '/contact/')!;
+    const about = Object.values(second.state.pages).find((p) => p.route === '/about/')!;
+    await ok(second.apply({ operations: [{ type: 'entry.update', collectionId: 'posts', entryId: 'en_winter', body: ['[Contact us](/contact/).'] }] }, { label: 'Link' }));
+    writeFileSync(join(other, `${POSTS}/collection.json`), JSON.stringify({ ...read(other, `${POSTS}/collection.json`), sourceId: 'wordpress' }, null, 2));
+    const removed = await second.apply({ operations: [{ type: 'page.remove', pageId: contact.id, replacementPageId: about.id }] }, { label: 'Remove Contact' });
+    expect(removed.error?.code).toBe('CONFLICT');
+    expect(second.state.pages[contact.id]).toBeDefined();
   });
 
   it('writes a structured collection’s settings and fields and reads them back exactly (#673)', async () => {
@@ -274,7 +285,12 @@ describe('collections on disk', () => {
     );
     expect(read(dir, 'siteorigin/collections/team/collection.json')).toMatchObject({ kind: 'structured', singularName: 'Team member', hasBody: false, pages: { detail: false, archive: false } });
     expect(read(dir, 'siteorigin/collections/team/collection.json')).not.toHaveProperty('route');
-    expect(read(dir, 'siteorigin/collections/events/entries/en_open.json').values).toMatchObject({ on: '2027-05-01', host: 'en_ruiz', tickets: { type: 'url', target: 'https://tickets.example.com' } });
+    expect(read(dir, 'siteorigin/collections/events/entries/en_open.json').values).toEqual({
+      on: '2027-05-01',
+      host: 'en_ruiz',
+      notes: [{ type: 'p', spans: [{ text: 'Bring ' }, { text: 'friends', strong: true }, { text: '.' }] }],
+      tickets: { type: 'url', target: 'https://tickets.example.com' }
+    });
     const state = s.state;
     await s.close();
     const again = await ProjectSession.open(dir, 'reopen');
