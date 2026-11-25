@@ -2,8 +2,8 @@
 // photo (set here or by the AI) is visible in its panel with the picture, the title and the description a link
 // preview would carry; a page without one shows the site's, labelled as the site's; Use the site's image clears the
 // override; and the exported pages carry the same og:image addresses, after the project is closed and opened again.
-// Beside the link card, the page's search result on a computer and a phone, its structured data and the meters under
-// its title and description follow what is typed before it is saved (#597).
+// The Inspector's Search & sharing section has no previews of its own (#708): each page is opened from it in the SEO
+// view, where the link card sits beside the same settings. How the previews follow typing is seo-view.mjs's to show.
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
@@ -23,21 +23,37 @@ const pageBy = async (title) => Object.values((await snapshot()).state.pages).fi
 const openRail = async (name) => {
   if ((await win.locator(`.rail [aria-label="${name}"]`).getAttribute('aria-pressed')) !== 'true') await win.locator(`.rail [aria-label="${name}"]`).click();
 };
-const openPage = async (title) => {
-  const before = await win.locator('.toolbar .project-title').innerText();
+const view = win.getByRole('region', { name: 'SEO view' });
+/** The page shown in the Inspector, its Search & sharing section open there. */
+const inspectPage = async (title) => {
   await openRail('Pages');
   await win.locator('.pages-list [role="option"]', { hasText: title }).first().click();
   await eventually(async () => assert.match(await win.locator('.toolbar .project-title').innerText(), new RegExp(title), `${title} is open`));
   await win.locator('.dock-tab', { hasText: 'Inspector' }).click();
-  // Each page's previews open on its search result (#597); the link card is a tab away.
-  const searchTab = section().getByRole('tab', { name: 'Search result' });
-  await searchTab.waitFor();
-  if (!before.includes(title)) assert.equal(await searchTab.getAttribute('aria-selected'), 'true', `${title} opens on its search result`);
-  await section().getByRole('tab', { name: 'Link preview' }).click();
-  await section().locator('.share-card').waitFor();
+  await inspectorSection().waitFor();
 };
-const section = () => win.locator('#dock-panel-inspect .section', { has: win.locator('button.section-head', { hasText: 'Search & sharing' }) });
-const card = () => section().locator('.share-card');
+/** The page opened in the SEO view from its Inspector section (#708), on its link preview. */
+const openPage = async (title) => {
+  // The view's document, read while the view is put away (its region is then out of the accessibility tree).
+  const shownTitle = win.locator('.seo-view .seo-title');
+  const before = (await shownTitle.count()) ? await shownTitle.textContent() : '';
+  await inspectPage(title);
+  assert.equal(await inspectorSection().getByRole('tab').count(), 0, 'the Inspector shows no previews of its own');
+  await inspectorSection().getByRole('button', { name: 'Open in SEO view' }).click();
+  await eventually(async () => assert.equal(await view.locator('.seo-title').innerText(), title, `the SEO view opens on ${title}`));
+  // Each page's previews open on its search result (#597); the link card is a tab away.
+  const searchTab = view.getByRole('tab', { name: 'Search result', exact: true });
+  if (before !== title) await eventually(async () => assert.equal(await searchTab.getAttribute('aria-selected'), 'true', `${title} opens on its search result`));
+  else await searchTab.waitFor();
+  await view.getByRole('tab', { name: 'Link preview', exact: true }).click();
+  await card().waitFor();
+};
+const inspectorSection = () => win.locator('#dock-panel-inspect .section', { has: win.locator('button.section-head', { hasText: 'Search & sharing' }) });
+/** The page's Search & sharing settings in the SEO view. */
+const section = () => view.locator('.seo-settings-group', { has: win.locator('h3', { hasText: 'Search & sharing' }) });
+const card = () => view.locator('.share-card');
+/** The link card with the note under it, beside the settings in the SEO view. */
+const sharePreview = () => view.locator('.share-preview');
 const picker = () => section().locator('.insp-image');
 const chooser = () => picker().locator('.insp-image-top .btn', { hasText: /Choose image…|Change…/ });
 const back = () => picker().locator('.insp-image-top .btn:not([aria-expanded])', { hasText: /Use the site’s image|Remove image/ });
@@ -79,6 +95,8 @@ const about = (await pageBy('About')).id;
 const set = await apply([{ type: 'page.update', pageId: kitchens, socialImage: 'a_kitchen' }], 'Use the Kitchen photo for Kitchens');
 assert.ok(set.ok, JSON.stringify(set));
 assert.equal(siteFile().socialImage ?? null, null, 'the site-wide image stays unset');
+await inspectPage('Kitchens');
+assert.match(await inspectorSection().locator('.scope').innerText(), /Own sharing image/, 'the section’s heading says the page has its own image');
 await openPage('Kitchens');
 await eventually(async () => assert.equal(await imageName().innerText(), 'Kitchen', 'the picker names the page’s own photo'));
 await loaded(cardImage(), /kitchen/);
@@ -102,11 +120,10 @@ for (const [name, platform, ratio] of [['X', 'x', 2], ['WhatsApp', 'messages', 1
 const siteDescription = (await snapshot()).state.site.description;
 assert.ok(siteDescription, 'the starter site has a description');
 assert.deepEqual(await cardText(), { host: 'No usable public URL', title: 'Kitchens · Harbour Lane Studio', description: siteDescription }, 'the preview shows the page’s title and the site’s description');
-assert.match(await section().locator('.scope').innerText(), /Own sharing image/, 'the closed heading says the page has its own image');
 assert.match(await section().innerText(), /This page’s own choice/, 'it says the image is this page’s own');
 assert.equal(await picker().getByLabel('Image description').count(), 0, 'a sharing image has no description to write');
 assert.equal(await picker().getByRole('switch', { name: 'Decorative image' }).count(), 0, 'and is never decorative');
-assert.match(await section().innerText(), /no usable public URL/, 'it says the image address needs a public URL');
+assert.match(await sharePreview().innerText(), /no usable public URL/, 'it says the image address needs a public URL');
 assert.equal(await back().innerText(), 'Remove image', 'with no site image there is nothing to return to, so it offers Remove');
 await section().scrollIntoViewIfNeeded();
 await win.screenshot({ path: join(SHOTS, 'page-sharing-own.png') });
@@ -128,7 +145,7 @@ await eventually(async () => assert.deepEqual(await cardText(), { host: 'No usab
 await eventually(() => assert.deepEqual([pageFile(kitchens).seo.title, pageFile(kitchens).seo.description], [undefined, undefined], 'and cleared'));
 
 step('Open Site details under the address note goes to the Public URL');
-await section().getByRole('button', { name: 'Open Site details' }).click();
+await sharePreview().getByRole('button', { name: 'Open Site details' }).click();
 await eventually(async () => assert.equal(await win.evaluate(() => document.activeElement?.id), 'site-public-url', 'the Public URL field has the cursor'));
 await win.locator('.dock-tab', { hasText: 'Inspector' }).click();
 
@@ -188,7 +205,7 @@ assert.equal(await imageName().innerText(), 'Kitchen');
 await loaded(cardImage(), /kitchen/);
 assert.equal(await back().innerText(), 'Use the site’s image', 'Kitchens can return to the site’s image');
 assert.match(await section().innerText(), /Pages without their own image show the site’s sharing image, Studio table\./);
-assert.equal(await section().getByText(/no usable public URL/).count(), 0, 'the address note goes once the site has a public URL');
+assert.equal(await sharePreview().getByText(/no usable public URL/).count(), 0, 'the address note goes once the site has a public URL');
 
 step('replacing a page’s own photo with another from the library');
 await choose('Dining room');
@@ -236,7 +253,6 @@ await eventually(() => assert.equal(pageFile(kitchens).seo.socialImage, undefine
 await eventually(async () => assert.equal(await imageName().innerText(), 'Studio table', 'Kitchens now shows the site’s image'));
 await loaded(cardImage(), /studio/);
 await eventually(async () => assert.equal(await focusedLabel(), 'Choose image…', 'focus lands on the chooser when the button goes'));
-assert.equal(await section().locator('.scope').count(), 0, 'the closed heading no longer mentions an own image');
 assert.equal(pageFile(about).seo.socialImage, 'a_bedroom', 'About keeps Bedroom');
 assert.equal(siteFile().socialImage, 'a_studio', 'the site keeps its image');
 const undone = await win.evaluate(() => window.builder.project.undo());
@@ -249,115 +265,12 @@ assert.ok(redone.ok, JSON.stringify(redone));
 await eventually(async () => assert.equal(await imageName().innerText(), 'Studio table', 'redo clears it again'));
 await loaded(cardImage(), /studio/);
 assert.equal(pageFile(kitchens).seo.socialImage, undefined);
+await inspectPage('Kitchens');
+assert.equal(await inspectorSection().locator('.scope').count(), 0, 'the section’s heading no longer mentions an own image');
 // Left with its own image again, as the closing checks expect.
+await openPage('Kitchens');
 await choose('Kitchen');
 await eventually(() => assert.equal(pageFile(kitchens).seo.socialImage, 'a_kitchen'));
-
-step('the search result and the title meter follow the browser title as it is typed, before it is saved (#597)');
-const tab = (name) => section().getByRole('tab', { name });
-const result = (device) => section().locator(`.serp-${device}`);
-/** Chooses whose results show. Pressing it takes focus from a field, which saves it: choose before typing. */
-const resultsOn = (name) => section().getByRole('radio', { name, exact: true }).click();
-const meter = (kind) => section().locator(`.seo-meter[data-meter="${kind}"]`);
-const titleBox = () => field('Browser title').getByRole('textbox');
-await openPage('Kitchens');
-await tab('Search result').click();
-await eventually(async () => assert.equal(await result('desktop').locator('.serp-title').innerText(), 'Kitchens · Harbour Lane Studio', 'a page without a title of its own is listed by its default'));
-assert.equal(await result('desktop').locator('.serp-url').innerText(), 'studio.example › work › kitchens', 'under its public address');
-assert.match(await meter('title').innerText(), /^Default title: 30 characters · fits on computers and phones$/, 'the meter measures the default title');
-assert.match(await meter('description').innerText(), /^From the fallback: \d+ characters/, 'and the site’s description, which the page falls back to');
-const longTitle = 'Kitchens in oak, steel and stone, designed and built by hand in our Harbour Lane workshop';
-await titleBox().fill(longTitle);
-await eventually(async () => assert.match(await result('desktop').locator('.serp-title').innerText(), /^Kitchens in oak, .*…$/, 'the title being typed is cut short with an ellipsis'));
-assert.equal(await meter('title').innerText(), `${longTitle.length} characters · likely cut short on computers and phones`);
-assert.equal(await meter('title').getAttribute('data-tone'), 'cut');
-assert.equal(pageFile(kitchens).seo.title, undefined, 'nothing is saved while it is typed');
-await titleBox().press('Escape');
-await eventually(async () => assert.match(await meter('title').innerText(), /^Default title:/, 'Escape puts the default back'));
-await resultsOn('Phone');
-const phoneTitle = () => result('mobile').locator('.serp-title').innerText();
-await eventually(async () => assert.equal(await phoneTitle(), 'Kitchens · Harbour Lane Studio'));
-await titleBox().fill(longTitle);
-await eventually(async () => assert.match(await phoneTitle(), /^Kitchens in oak, [\s\S]*…$/, 'cut short on a phone too'));
-await titleBox().press('Escape');
-await eventually(async () => assert.equal(await phoneTitle(), 'Kitchens · Harbour Lane Studio', 'Escape puts the default back on a phone too'));
-await allSaved();
-assert.equal(pageFile(kitchens).seo.title, undefined, 'nothing was saved while it was typed');
-await resultsOn('Computer');
-// The Inspector is narrower than a computer's results: the page is scaled to fit it, and follows its height when the
-// previews come back from another tab.
-const fitted = () =>
-  section().evaluate((el) => {
-    const fit = el.querySelector('.serp-fit').getBoundingClientRect();
-    const slot = el.querySelector('.serp-slot').getBoundingClientRect();
-    const box = el.querySelector('.serp-scaled').getBoundingClientRect();
-    return { scaled: box.width < 640, width: el.querySelector('.serp-page').offsetWidth, fits: box.left >= fit.left - 0.5 && box.right <= fit.right + 0.5, slotHolds: Math.abs(slot.height - box.height) <= 1 && box.height > 0 };
-  });
-await eventually(async () => assert.deepEqual(await fitted(), { scaled: true, width: 640, fits: true, slotHolds: true }, 'a computer’s results fit the Inspector'));
-await tab('Link preview').click();
-await tab('Search result').click();
-await eventually(async () => assert.deepEqual(await fitted(), { scaled: true, width: 640, fits: true, slotHolds: true }, 'and still do when they show again'));
-assert.equal(await result('desktop').locator('.serp-title').innerText(), 'Kitchens · Harbour Lane Studio');
-const descriptionBox = () => field('Description').getByRole('textbox');
-await descriptionBox().fill('Oak, steel and stone kitchens, drawn and built by hand.');
-await eventually(async () => assert.equal(await result('desktop').locator('.serp-desc').innerText(), 'Oak, steel and stone kitchens, drawn and built by hand.', 'the description being typed shows in the result'));
-assert.equal(await meter('description').innerText(), '55 characters · fits on computers and phones', 'and is what the meter measures');
-assert.equal(pageFile(kitchens).seo.description, undefined, 'nothing is saved while it is typed');
-await descriptionBox().press('Escape');
-await eventually(async () => assert.match(await meter('description').innerText(), /^From the fallback:/, 'Escape puts the fallback back'));
-await section().scrollIntoViewIfNeeded();
-await win.screenshot({ path: join(SHOTS, 'page-sharing-search-result.png') });
-
-step('the structured data follows the title and canonical URL as they are typed (#597)');
-await tab('Structured data').click();
-const graph = async () => JSON.parse(await section().getByTestId('seo-graph').textContent());
-const webPage = async () => (await graph())['@graph'].find((n) => n['@type'] === 'WebPage');
-await eventually(async () => assert.deepEqual(await webPage().then((n) => ({ url: n.url, name: n.name })), { url: 'https://studio.example/work/kitchens/', name: 'Kitchens · Harbour Lane Studio' }));
-assert.equal(await section().getByRole('region', { name: 'This page', exact: true }).isVisible(), true, 'the Inspector says it in words');
-const status = (id) => section().locator(`[data-status="${id}"] dd`);
-assert.equal(await status('canonical').innerText(), 'https://studio.example/work/kitchens/');
-assert.equal(await status('search').innerText(), 'May list it');
-assert.equal(await status('sitemap').innerText(), 'Listed');
-await titleBox().fill('Oak and steel kitchens · Harbour Lane');
-await eventually(async () => assert.equal((await webPage()).name, 'Oak and steel kitchens · Harbour Lane', 'the graph names the page by the title being typed'));
-assert.equal(pageFile(kitchens).seo.title, undefined, 'still unsaved');
-await titleBox().press('Enter');
-await eventually(() => assert.equal(pageFile(kitchens).seo.title, 'Oak and steel kitchens · Harbour Lane', 'Enter saves it'));
-await allSaved();
-const canonicalBox = field('Canonical URL').getByRole('textbox');
-await canonicalBox.fill('https://journal.example/kitchens/');
-await eventually(async () => assert.equal(await status('canonical').innerText(), 'https://journal.example/kitchens/ (another address)', 'the canonical URL being typed shows in the status'));
-assert.match(await status('sitemap').innerText(), /canonical URL names another address/, 'a copy leaves the sitemap to the original');
-assert.equal(await status('structured').innerText(), 'Written into its page', 'and still carries its structured data');
-assert.equal((await webPage()).url, 'https://studio.example/work/kitchens/', 'its graph names the page by its own address');
-assert.equal(pageFile(kitchens).seo.canonical, undefined, 'nothing is saved while it is typed');
-await canonicalBox.press('Escape');
-await eventually(async () => assert.equal(await status('canonical').innerText(), 'https://studio.example/work/kitchens/', 'Escape puts the page’s own address back'));
-// Text that is no address is never previewed as one: the status keeps the saved address.
-await canonicalBox.fill('journal.example/kitchens');
-await win.waitForTimeout(500);
-assert.equal(await status('canonical').innerText(), 'https://studio.example/work/kitchens/', 'an unusable address leaves the status as saved');
-await canonicalBox.press('Escape');
-await win.screenshot({ path: join(SHOTS, 'page-sharing-structured-data.png') });
-
-step('a title refused for being too long is measured when the page is opened again, until Escape puts the saved one back (#597)');
-const refused = `${'Oak kitchens '.repeat(10)}x`.slice(0, 121);
-assert.equal(refused.length, 121);
-await allSaved();
-await openPage('Kitchens');
-await tab('Search result').click();
-await titleBox().fill(refused);
-await titleBox().press('Tab');
-await eventually(async () => assert.equal(await titleBox().getAttribute('aria-invalid'), 'true', 'the title over the limit is refused and kept'));
-await openPage('About');
-await openPage('Kitchens');
-await tab('Search result').click();
-await eventually(async () => assert.equal(await titleBox().inputValue(), refused, 'the refused title is shown again'));
-await eventually(async () => assert.equal(await meter('title').innerText(), `${refused.trim().length} characters · likely cut short on computers and phones`, 'and the meter measures what the field shows'));
-await titleBox().click();
-await titleBox().press('Escape');
-await eventually(async () => assert.match(await meter('title').innerText(), /^\d+ characters · fits on computers and phones$/, 'Escape puts the saved title back in the meter'));
-assert.equal(await result('desktop').locator('.serp-title').innerText(), 'Oak and steel kitchens · Harbour Lane');
 
 step('the project closed and opened again: every page still says the same');
 const closed = await win.evaluate(() => window.builder.projects.close());
