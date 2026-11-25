@@ -98,11 +98,15 @@ export function adaptFormSource(source: string): string | null {
 \tlet so_told = null;
 \tlet so_sent = null;
 \tlet so_answering = $state(false);
-\tconst so_values = (form) => JSON.stringify([...form.elements].map((el) => (el.type === 'checkbox' || el.type === 'radio' ? el.checked : el.value)));
+\t// The form's controls through the prototype, in case a field is named "elements".
+\tconst so_controls = (form) => [...Object.getOwnPropertyDescriptor(HTMLFormElement.prototype, 'elements').get.call(form)];
+\tconst so_values = (form) => JSON.stringify(so_controls(form).map((el) => (el.type === 'checkbox' || el.type === 'radio' ? el.checked : el.value)));
 \tfunction so_reset(form) {
 \t\tconst expected = so_sent;
 \t\tconst reset = () => {
 \t\t\tif (expected === null || so_values(form) === expected) HTMLFormElement.prototype.reset.call(form);
+\t\t\t// Kept as typed, the message sent is still done with: the page's draft keeper hears so, as from a reset.
+\t\t\telse EventTarget.prototype.dispatchEvent.call(form, new Event('reset', { bubbles: true }));
 \t\t};
 \t\t// After the browser has taken the answer in, never before.
 \t\tif (so_told) so_told.then(() => setTimeout(reset));
@@ -123,9 +127,8 @@ export function adaptFormSource(source: string): string | null {
 \t\tso_told = told;
 \t\tso_sent = so_values(form);
 \t\tso_answering = true;
-\t\t// Read from the field itself, so nothing that adds to a form's data runs twice for one send.
-\t\tconst trap = form.elements.namedItem(honeypot);
-\t\tconst trapped = !!trap && (trap.type === 'checkbox' ? trap.checked : !!trap.value);
+\t\t// Read from the fields as the form's data would hold them, so nothing that adds to that data runs twice for one send.
+\t\tconst trapped = so_controls(form).some((el) => el.name === honeypot && !el.matches(':disabled') && (el.type === 'checkbox' || el.type === 'radio' ? el.checked : !!el.value));
 \t\tconst answer = () => {
 \t\t\tif (trapped) return { sent: false, message: 'The message was discarded: the spam trap was filled in.' };
 \t\t\tif (status === 'sent') return { sent: true, message: 'The message was sent.' };

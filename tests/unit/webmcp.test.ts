@@ -639,6 +639,7 @@ describe.skipIf(!existsSync(chromium.executablePath()))('a contact form an agent
   it('keeps what the visitor typed while the agent waited', async () => {
     const { browser, page, posts } = await open();
     try {
+      await page.evaluate("document.addEventListener('reset', () => (window.heardReset = true))");
       await page.evaluate(agentSubmit(true));
       await expect.poll(() => posts.length).toBe(1);
       await page.fill('input[name="name"]', 'Bo');
@@ -649,6 +650,8 @@ describe.skipIf(!existsSync(chromium.executablePath()))('a contact form an agent
       expect(await page.inputValue('input[name="name"]')).toBe('Bo');
       // The message that went is the one the agent filled in.
       expect(posts[0].request().postDataBuffer()?.toString()).toContain('Ana');
+      // The page heard the sent message was done with, as from a reset, though nothing was emptied.
+      expect(await page.evaluate('window.heardReset')).toBe(true);
     } finally {
       await browser.close();
     }
