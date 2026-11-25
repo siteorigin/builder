@@ -461,6 +461,11 @@ export interface Conflict {
   kind: 'canonical' | 'generated';
   /** SiteOrigin Builder's version has no such file: using it removes the file. */
   builderMissing?: boolean;
+  /**
+   * Left by an AI request rolled back around an external edit: SiteOrigin Builder's version is the one from before the
+   * request, and the version the request tried to save is kept beside it for inspection.
+   */
+  aiRun?: boolean;
 }
 
 /**
@@ -530,6 +535,12 @@ export class ProjectSession extends EventEmitter {
    * exist). The in-memory state uses these versions; the external version stays on disk until the user chooses.
    */
   private pending = new Map<string, string | null>();
+  /**
+   * For each canonical document in conflict that an AI request's rollback left, the version that request tried to save
+   * (null = it removed the file). Shown when comparing, and kept under Saved copies once the conflict is settled; never
+   * offered as a choice. A conflict marked `aiRun` without one here had an attempted version that could not be read.
+   */
+  private attempts = new Map<string, string | null>();
   /** Holds read back from conflicts.json when the project opened. */
   private loadedHolds = new Set<string>();
   recoveryNotes: string[] = [];
@@ -948,15 +959,21 @@ export class ProjectSession extends EventEmitter {
   // Canonical conflicts
   // -------------------------------------------------------------------------
 
-  /** Hold Builder's version of a document whose file was changed outside the app, replacing any earlier hold. */
-  private holdConflict(path: string, builder: string | null, reason: string) {
+  /**
+   * Hold Builder's version of a document whose file was changed outside the app, replacing any earlier hold. `run`:
+   * the hold an AI request's rollback leaves, with the version it tried to save (undefined: it could not be read).
+   */
+  private holdConflict(path: string, builder: string | null, reason: string, run?: { attempted: string | null | undefined }) {
     this.pending.set(path, builder);
+    this.attempts.delete(path);
+    if (run && run.attempted !== undefined) this.attempts.set(path, run.attempted);
     this.conflicts = this.conflicts.filter((c) => c.path !== path);
-    this.conflicts.push({ path, reason, kind: 'canonical', ...(builder === null ? { builderMissing: true } : {}) });
+    this.conflicts.push({ path, reason, kind: 'canonical', ...(builder === null ? { builderMissing: true } : {}), ...(run ? { aiRun: true } : {}) });
   }
 
   private releaseConflict(path: string) {
     this.pending.delete(path);
+    this.attempts.delete(path);
     this.conflicts = this.conflicts.filter((c) => c.path !== path);
   }
 
@@ -966,8 +983,12 @@ export class ProjectSession extends EventEmitter {
     if (!this.pending.size) return void (await fs.rm(file, { force: true }));
     const list = [];
     for (const [path, builder] of this.pending) {
-      const reason = this.conflicts.find((c) => c.path === path)?.reason ?? 'Changed outside SiteOrigin Builder.';
-      list.push({ path, reason, builder: builder === null ? null : await this.putBlob(builder) });
+      const held = this.conflicts.find((c) => c.path === path);
+      const reason = held?.reason ?? 'Changed outside SiteOrigin Builder.';
+      // The attempted version is stored like Builder's, so garbage collection keeps it while the conflict is held.
+      const attempted = this.attempts.get(path);
+      const run = held?.aiRun ? { aiRun: true, ...(attempted === undefined ? {} : { attempted: attempted === null ? null : await this.putBlob(attempted) }) } : {};
+      list.push({ path, reason, builder: builder === null ? null : await this.putBlob(builder), ...run });
     }
     await atomicWrite(file, toJson({ conflicts: list }));
   }
@@ -975,7 +996,7 @@ export class ProjectSession extends EventEmitter {
   private async loadConflicts() {
     const text = await readIfExists(this.local('conflicts.json'));
     if (!text) return;
-    let list: Array<{ path: string; reason: string; builder: string | null }> = [];
+    let list: Array<{ path: string; reason: string; builder: string | null; aiRun?: unknown; attempted?: unknown }> = [];
     try {
       list = JSON.parse(text).conflicts ?? [];
     } catch {
@@ -991,7 +1012,8 @@ export class ProjectSession extends EventEmitter {
         settled = true;
         continue;
       }
-      this.holdConflict(c.path, builder, String(c.reason ?? 'Changed outside SiteOrigin Builder.'));
+      const run = c.aiRun === true ? { attempted: c.attempted === null ? null : typeof c.attempted === 'string' ? await this.getBlob(c.attempted).catch(() => undefined) : undefined } : undefined;
+      this.holdConflict(c.path, builder, String(c.reason ?? 'Changed outside SiteOrigin Builder.'), run);
       this.loadedHolds.add(c.path);
     }
     // Forgotten on disk too, or a later change to that file would bring the old choice back.
@@ -1024,6 +1046,7 @@ export class ProjectSession extends EventEmitter {
         const disk = await readFileAt(abs);
         if (disk === 'failed' || disk === 'changed') return { ok: false, message: `${path} could not be read, so it was not replaced. Check that it is a file you can open, then try again.` };
         if (disk !== 'missing') await this.saveCopy(path, 'canonical', 'external', disk.bytes);
+        await this.saveAttempt(conflict);
         // Saved again while the copy was kept: that save is not replaced unkept either.
         const unchanged = async () => {
           // A file that was missing must still be missing, not merely one that cannot be looked at now.
@@ -1057,6 +1080,7 @@ export class ProjectSession extends EventEmitter {
         const pin = themePinProblem(next);
         if (pin) return { ok: false, message: `The external version of ${path} was not kept: ${pin}` };
         if (builder !== null) await this.saveCopy(path, 'canonical', 'builder', builder);
+        await this.saveAttempt(conflict);
         const nextDocs = stateToDocs(next);
         changed = await this.diffDocs(this.docs, nextDocs);
         this.state = next;
@@ -1080,8 +1104,11 @@ export class ProjectSession extends EventEmitter {
   // Comparing conflict versions, and saved copies
   // -------------------------------------------------------------------------
 
-  /** Both versions of a file in conflict, as text to compare: SiteOrigin Builder's, and the one on disk now. */
-  async compareConflict(path: string): Promise<{ ok: boolean; builder?: FileText; disk?: FileText; message?: string }> {
+  /**
+   * The versions of a file in conflict, as text to compare: SiteOrigin Builder's, and the one on disk now. A conflict an
+   * AI request's rollback left also shows the version that request tried to save.
+   */
+  async compareConflict(path: string): Promise<{ ok: boolean; builder?: FileText; disk?: FileText; attempted?: FileText; message?: string }> {
     const conflict = this.conflicts.find((c) => c.path === path);
     if (!conflict) return { ok: false, message: 'That file is no longer in conflict.' };
     let builder: string | Buffer | null | undefined;
@@ -1091,7 +1118,8 @@ export class ProjectSession extends EventEmitter {
       builder = undefined;
     }
     const disk = await readText(safeJoin(this.dir, path));
-    return { ok: true, builder: builder === undefined ? { state: 'unreadable' } : builder === null ? { state: 'missing' } : textOf(builder), disk };
+    const shown = (v: string | Buffer | null | undefined): FileText => (v === undefined ? { state: 'unreadable' } : v === null ? { state: 'missing' } : textOf(v));
+    return { ok: true, builder: shown(builder), disk, ...(conflict.aiRun ? { attempted: shown(this.attempts.get(path)) } : {}) };
   }
 
   /** What a saved copy holds. Only a copy on the list is read, and only as the plain file it was saved as. */
@@ -1126,6 +1154,12 @@ export class ProjectSession extends EventEmitter {
       this.savedCopies = this.savedCopies.filter((c) => c.id !== id);
       return { ok: true };
     });
+  }
+
+  /** List the version an AI request tried to save under Saved copies, as its conflict is settled either way. */
+  private async saveAttempt(conflict: Conflict) {
+    const attempted = this.attempts.get(conflict.path);
+    if (conflict.aiRun && typeof attempted === 'string') await this.saveCopy(conflict.path, 'canonical', 'attempted', attempted);
   }
 
   /**
@@ -1477,7 +1511,9 @@ export class ProjectSession extends EventEmitter {
       if (!runWrote || before === undefined) {
         conflicts.push(path);
         // The pre-run version is what the project is restored to, so it is the version held for the user.
-        if (before !== undefined) this.holdConflict(path, before, 'Changed outside SiteOrigin Builder during an interrupted AI run.');
+        // The latest version the run recorded for it (stored with the marker) is shown beside it.
+        const attempted = d.after === null ? null : await this.getBlob(String(d.after)).catch(() => undefined);
+        if (before !== undefined) this.holdConflict(path, before, 'Changed outside SiteOrigin Builder during an interrupted AI run.', { attempted });
         continue;
       }
       if (before === null) await this.removeCanonical(path);
@@ -2420,7 +2456,7 @@ export class ProjectSession extends EventEmitter {
   private pinnedBlobs(): Set<string> {
     const pinned = new Set<string>();
     for (const c of this.activeRun?.before.values() ?? []) pinned.add(sha(c));
-    for (const c of this.pending.values()) if (c !== null) pinned.add(sha(c));
+    for (const c of [...this.pending.values(), ...this.attempts.values()]) if (c !== null) pinned.add(sha(c));
     return pinned;
   }
 
@@ -3711,7 +3747,8 @@ export class ProjectSession extends EventEmitter {
   }
 
   /**
-   * Record exactly which files the run has changed (or is about to change), with before and after hashes.
+   * Record exactly which files the run has changed (or is about to change), with before and after hashes. Both are
+   * stored blobs, so recovery can hold the pre-run version and show the version the run last attempted.
    * `written` lists every version the run has put in each file, so a crash between writing this marker and
    * publishing the batch (the file still holds the previous batch) is still recognised as the run's own work.
    */
@@ -3723,7 +3760,8 @@ export class ProjectSession extends EventEmitter {
     for (const path of all) {
       const b = run.before.get(path);
       const a = docs.get(path);
-      const after = a === undefined ? null : sha(a);
+      // A version the run changed is stored, so it is still there to show if the run is rolled back around an edit.
+      const after = a === undefined ? null : b === a ? sha(a) : await this.putBlob(a);
       const written = run.written.get(path) ?? new Set<string | null>();
       if (b !== a) written.add(after);
       if (written.size) run.written.set(path, written);
@@ -3845,7 +3883,8 @@ export class ProjectSession extends EventEmitter {
       const disk = await this.diskContent(p);
       // Checked again right before replacing it: a file saved elsewhere since the first check is held too.
       if (changedOutside.includes(p) || (disk !== before && disk !== (this.docs.get(p) ?? null))) {
-        this.holdConflict(p, before, 'Changed outside SiteOrigin Builder during an AI run.');
+        // What the run last wrote to it is kept beside the pre-run version, for the user to see what was at stake.
+        this.holdConflict(p, before, 'Changed outside SiteOrigin Builder during an AI run.', { attempted: this.docs.get(p) ?? null });
         continue;
       }
       if (disk === before) continue;
@@ -4271,7 +4310,7 @@ function isSavedCopy(c: unknown): c is SavedCopy {
     /^[0-9a-f]{16}$/.test(o.id) &&
     typeof o.path === 'string' &&
     (o.kind === 'canonical' || o.kind === 'generated') &&
-    (o.side === 'external' || o.side === 'builder') &&
+    (o.side === 'external' || o.side === 'builder' || o.side === 'attempted') &&
     typeof o.savedAt === 'number' &&
     Number.isFinite(o.savedAt) &&
     typeof o.file === 'string' &&

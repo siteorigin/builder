@@ -708,15 +708,16 @@ describe('comparing conflict versions and saved copies (#82)', () => {
     expect(compared.builder).toMatchObject({ state: 'text' });
     expect(compared.builder).not.toEqual(compared.disk);
     expect(await restored.s.resolveConflict(SITE, 'restore')).toEqual({ ok: true });
-    expect(restored.s.savedCopies).toEqual([expect.objectContaining({ path: SITE, kind: 'canonical', side: 'external' })]);
-    expect(readFileSync(join(restored.dir, restored.s.savedCopies[0].file), 'utf8')).toBe(external);
+    // An AI run's conflict also keeps the version the run attempted (#739).
+    expect(restored.s.savedCopies).toEqual([expect.objectContaining({ path: SITE, kind: 'canonical', side: 'attempted' }), expect.objectContaining({ path: SITE, kind: 'canonical', side: 'external' })]);
+    expect(readFileSync(join(restored.dir, restored.s.savedCopies[1].file), 'utf8')).toBe(external);
 
     const kept = await runWithExternalEdit();
     await kept.s.abortRun();
     const builder = (await kept.s.compareConflict(SITE)).builder;
     expect(await kept.s.resolveConflict(SITE, 'keep')).toEqual({ ok: true });
-    expect(kept.s.savedCopies).toEqual([expect.objectContaining({ path: SITE, kind: 'canonical', side: 'builder' })]);
-    expect(await kept.s.readSavedCopy(kept.s.savedCopies[0].id)).toEqual({ ok: true, content: builder });
+    expect(kept.s.savedCopies).toEqual([expect.objectContaining({ path: SITE, kind: 'canonical', side: 'attempted' }), expect.objectContaining({ path: SITE, kind: 'canonical', side: 'builder' })]);
+    expect(await kept.s.readSavedCopy(kept.s.savedCopies[1].id)).toEqual({ ok: true, content: builder });
   });
 
   it('never puts back SiteOrigin Builder’s version over a file it cannot read, and keeps the conflict', async () => {
@@ -859,5 +860,153 @@ describe('comparing conflict versions and saved copies (#82)', () => {
     expect((await ro.dismissSavedCopy(copy.id)).ok).toBe(false);
     expect(ro.savedCopies).toEqual([copy]);
     expect(readFileSync(join(dir, '.siteorigin/recovery/copies.json'), 'utf8')).toBe(listed);
+  });
+});
+
+describe('the version an AI run attempted, when it rolled back around a conflict (#739)', () => {
+  const text = (v: unknown) => (v as { state: string; text?: string }).text ?? '';
+  const nameIn = (v: unknown) => JSON.parse(text(v)).name as string;
+
+  it('shows the file on disk, the pre-run version and the version the run tried to save', async () => {
+    const { dir, s } = await runWithExternalEdit();
+    await s.abortRun();
+    expect(s.conflicts).toEqual([expect.objectContaining({ path: SITE, kind: 'canonical', aiRun: true })]);
+    const compared = await s.compareConflict(SITE);
+    expect(compared.disk).toEqual({ state: 'text', text: readFileSync(join(dir, SITE), 'utf8') });
+    expect(nameIn(compared.builder)).toBe('Persist');
+    expect(nameIn(compared.attempted)).toBe('AI name');
+    expect(JSON.parse(text(compared.attempted)).description).not.toBe('Edited in another editor');
+  });
+
+  it('shows the latest version the run saved, not an earlier batch', async () => {
+    const { dir, s } = await make();
+    await s.beginRun('run_b');
+    for (const name of ['First batch', 'Second batch']) expect((await s.apply({ operations: [{ type: 'site.update', name }] }, { label: 'AI', source: 'ai', runId: 'run_b', history: false })).ok).toBe(true);
+    const site = read(dir, SITE);
+    site.description = 'Edited in another editor';
+    write(dir, SITE, site);
+    await s.abortRun();
+    expect(nameIn((await s.compareConflict(SITE)).attempted)).toBe('Second batch');
+  });
+
+  it('shows a file the run created as missing before the run, and one it deleted as missing in its attempt', async () => {
+    const created = await runWithExternalEdit(true);
+    const page = Object.values(created.s.state.pages).find((p) => p.title === 'AI page')!;
+    const pagePath = `siteorigin/pages/${page.id}.json`;
+    const edited = read(created.dir, pagePath);
+    edited.title = 'AI page, edited by hand';
+    write(created.dir, pagePath, edited);
+    await created.s.abortRun();
+    const newFile = await created.s.compareConflict(pagePath);
+    expect(newFile.builder).toEqual({ state: 'missing' });
+    expect(JSON.parse(text(newFile.attempted)).title).toBe('AI page');
+
+    const { dir, s } = await make();
+    expect((await s.apply({ operations: [{ type: 'page.create', title: 'Spare' }] }, { label: 'Add' })).ok).toBe(true);
+    const about = Object.values(s.state.pages).find((p) => p.title === 'Spare')!.id;
+    const aboutPath = `siteorigin/pages/${about}.json`;
+    const original = readFileSync(join(dir, aboutPath), 'utf8');
+    await s.beginRun('run_d');
+    expect((await s.apply({ operations: [{ type: 'page.remove', pageId: about }] }, { label: 'AI', source: 'ai', runId: 'run_d', history: false })).ok).toBe(true);
+    expect(existsSync(join(dir, aboutPath))).toBe(false);
+    // Put back by hand, with an edit, while the run is still going.
+    writeFileSync(join(dir, aboutPath), original.replace('"title"', '"note": "by hand",\n  "title"'));
+    await s.abortRun();
+    const removed = await s.compareConflict(aboutPath);
+    expect(removed.attempted).toEqual({ state: 'missing' });
+    expect(removed.builder).toEqual({ state: 'text', text: original });
+  });
+
+  it('recovers the attempted version after a crash in the middle of the run', async () => {
+    const { dir } = await runWithExternalEdit();
+    // Crash: the run never completed or aborted.
+    const again = await reopen(dir);
+    expect(again.conflicts).toEqual([expect.objectContaining({ path: SITE, aiRun: true })]);
+    const compared = await again.compareConflict(SITE);
+    expect(nameIn(compared.builder)).toBe('Persist');
+    expect(nameIn(compared.attempted)).toBe('AI name');
+  });
+
+  it('recovers the latest attempted version after a crash between two batches', async () => {
+    const { dir, s } = await make();
+    await s.beginRun('run_c');
+    expect((await s.apply({ operations: [{ type: 'site.update', name: 'First batch' }] }, { label: 'AI', source: 'ai', runId: 'run_c', history: false })).ok).toBe(true);
+    // The second batch is recorded in the run's marker, then the app dies before it is saved.
+    const real = fsp.rename.bind(fsp);
+    vi.spyOn(fsp, 'rename').mockImplementation(async (from, to) => {
+      if (String(to).endsWith('journal.json')) throw Object.assign(new Error('injected crash'), { code: 'EIO' });
+      return real(from, to);
+    });
+    await s.apply({ operations: [{ type: 'site.update', name: 'Second batch' }] }, { label: 'AI', source: 'ai', runId: 'run_c', history: false }).catch(() => undefined);
+    vi.restoreAllMocks();
+    const site = read(dir, SITE);
+    expect(site.name).toBe('First batch');
+    site.description = 'Edited in another editor';
+    write(dir, SITE, site);
+    const again = await reopen(dir, 'test', { force: true });
+    const compared = await again.compareConflict(SITE);
+    expect(nameIn(compared.builder)).toBe('Persist');
+    expect(nameIn(compared.attempted)).toBe('Second batch');
+  });
+
+  it('keeps the attempted version across closing and reopening the project, and through garbage collection', async () => {
+    const { dir, s } = await runWithExternalEdit();
+    await s.abortRun();
+    s.historyByteLimit = 0;
+    await s.collectGarbage();
+    await s.close();
+    const again = await reopen(dir);
+    expect(again.conflicts).toEqual([expect.objectContaining({ path: SITE, aiRun: true })]);
+    await again.collectGarbage();
+    const compared = await again.compareConflict(SITE);
+    expect(nameIn(compared.builder)).toBe('Persist');
+    expect(nameIn(compared.attempted)).toBe('AI name');
+  });
+
+  it('lists the attempted version under Saved copies once the conflict is settled, either way', async () => {
+    const restored = await runWithExternalEdit();
+    await restored.s.abortRun();
+    const attempted = (await restored.s.compareConflict(SITE)).attempted;
+    expect(await restored.s.resolveConflict(SITE, 'restore')).toEqual({ ok: true });
+    expect(restored.s.savedCopies.map((c) => c.side).sort()).toEqual(['attempted', 'external']);
+    const copy = restored.s.savedCopies.find((c) => c.side === 'attempted')!;
+    expect(copy).toMatchObject({ path: SITE, kind: 'canonical' });
+    expect(await restored.s.readSavedCopy(copy.id)).toEqual({ ok: true, content: attempted });
+    await restored.s.close();
+    expect((await reopen(restored.dir)).savedCopies.some((c) => c.id === copy.id && c.side === 'attempted')).toBe(true);
+
+    const kept = await runWithExternalEdit();
+    await kept.s.abortRun();
+    const tried = (await kept.s.compareConflict(kept.s.conflicts[0].path)).attempted;
+    expect(await kept.s.resolveConflict(SITE, 'keep')).toEqual({ ok: true });
+    expect(kept.s.savedCopies.map((c) => c.side).sort()).toEqual(['attempted', 'builder']);
+    expect(await kept.s.readSavedCopy(kept.s.savedCopies.find((c) => c.side === 'attempted')!.id)).toEqual({ ok: true, content: tried });
+  });
+
+  it('compares a conflict no AI run left as before: two versions, and no attempted copy when settled', async () => {
+    const { dir, s } = await make();
+    const HOME = 'src/routes/+page.svelte';
+    writeFileSync(join(dir, HOME), '<h1>Hero edited by hand</h1>\n');
+    expect((await s.apply({ operations: [{ type: 'site.update', name: 'Touch' }] }, { label: 'Touch' })).ok).toBe(true);
+    expect(s.conflicts).toEqual([expect.not.objectContaining({ aiRun: true })]);
+    expect(Object.keys(await s.compareConflict(HOME)).sort()).toEqual(['builder', 'disk', 'ok']);
+    await s.resolveConflict(HOME, 'restore');
+    expect(s.savedCopies.map((c) => c.side)).toEqual(['external']);
+
+    // A project document an interrupted save (not an AI run) left in conflict.
+    const other = await make();
+    await other.s.close();
+    const sitePath = join(other.dir, SITE);
+    const site = JSON.parse(readFileSync(sitePath, 'utf8'));
+    const content = toJson({ ...site, name: 'Saved by the app' });
+    writeFileSync(join(other.dir, '.siteorigin/history/blobs', `${sha(content)}.json`), content);
+    writeFileSync(join(other.dir, '.siteorigin/journal.json'), JSON.stringify({ writes: [{ path: SITE, blob: sha(content), before: sha(readFileSync(sitePath, 'utf8')) }], deletes: [] }));
+    write(other.dir, SITE, { ...site, description: 'Edited by hand' });
+    const again = await reopen(other.dir);
+    expect(again.conflicts).toEqual([expect.objectContaining({ path: SITE, kind: 'canonical' })]);
+    expect(again.conflicts[0].aiRun).toBeUndefined();
+    expect(Object.keys(await again.compareConflict(SITE)).sort()).toEqual(['builder', 'disk', 'ok']);
+    expect(await again.resolveConflict(SITE, 'restore')).toEqual({ ok: true });
+    expect(again.savedCopies.map((c) => c.side)).toEqual(['external']);
   });
 });
