@@ -5,7 +5,7 @@ import assert from 'node:assert/strict';
 import { join } from 'node:path';
 import { createProject, eventually, launch, scratch, step } from './harness.mjs';
 
-const { WORK, cleanup } = scratch('item-step');
+const { WORK, SHOTS, cleanup } = scratch('item-step');
 const { app, win, errors } = await launch(WORK);
 const frame = await createProject(win, { name: 'Step Studio', parentDir: join(WORK, 'sites'), starter: 'business', sampleImages: false });
 
@@ -44,8 +44,10 @@ await win.getByRole('button', { name: 'Phone', exact: true }).first().click();
 await win.waitForTimeout(800);
 const before = await cards();
 await title(0).scrollIntoViewIfNeeded();
-await title(0).dispatchEvent('click');
+// Alt-click picks the title itself, not the card or the section around it.
+await title(0).click({ modifiers: ['Alt'] });
 await chip.waitFor();
+await eventually(async () => assert.match(await chip.locator('.label').innerText(), /title/i, 'the card title is selected'));
 await selectedIs(0);
 assert.equal(await prev.getAttribute('aria-disabled'), 'true', 'the first card has no Previous');
 assert.equal(await next.getAttribute('aria-disabled'), null, 'but it has a Next');
@@ -54,6 +56,7 @@ step('Next selects the title in the next card');
 await next.click();
 await selectedIs(1);
 assert.equal(await prev.getAttribute('aria-disabled'), null, 'the second card has a Previous');
+await chip.screenshot({ path: join(SHOTS, 'item-step-chip.png') });
 
 step('from the keyboard: Next on the last card stays put, and the arrow keys reach Previous');
 await next.focus();
@@ -75,9 +78,8 @@ await selectedIs(1);
 step('Previous scrolls a card out of sight back into view');
 await frame.locator('html').evaluate(() => window.scrollTo(0, 0));
 await eventually(async () => {
-  const b = await title(0).evaluate((el) => el.getBoundingClientRect().bottom);
-  const h = await title(0).evaluate(() => innerHeight);
-  assert.ok(b < 0 || b > h, 'the first card is out of sight');
+  const r = await title(0).evaluate((el) => ({ top: el.getBoundingClientRect().top, bottom: el.getBoundingClientRect().bottom, h: innerHeight }));
+  assert.ok(r.bottom <= 0 || r.top >= r.h, `the first card is wholly out of sight (${JSON.stringify(r)})`);
 });
 await prev.click();
 await eventually(async () => {
