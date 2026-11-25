@@ -241,6 +241,8 @@ describe('what the site gets in each mode', () => {
     const [light, dark] = [siteColors(effectiveTokens(s)).brand, siteColors(effectiveTokens(s, 'dark')).brand];
     expect(light).not.toBe(dark);
     expect(layout).toContain(`<meta name="theme-color" content={chosenScheme === 'light' ? "${light}" : "${dark}"} media="(prefers-color-scheme: dark)" />\n\t<meta name="theme-color" content={chosenScheme === 'dark' ? "${dark}" : "${light}"} />`);
+    // Read at once (a remembered choice is already on <html>), then whenever it changes.
+    expect(layout).toContain('\t\tread();\n\t\tconst watch = new MutationObserver(read);');
     expect(layout).toContain("watch.observe(root, { attributes: true, attributeFilter: ['data-so-theme'] });");
     expect(layout).toContain('return () => watch.disconnect();');
     expect(clean.get(`${RUNTIME_DIR}/${THEME_TOGGLE_FILE}`)).toContain('localStorage.setItem(KEY, next)');

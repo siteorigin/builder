@@ -335,7 +335,7 @@ describe('issue 584: the web app manifest and home-screen icons through the expo
   /** The icons drawn in this process, as the app's media worker draws them, and waited for however busy the machine is. */
   const drawHere = () => {
     siteIconTiming.budgetMs = 60_000;
-    setSiteIconRenderer(async (data, mime, icons) => ({ ok: true, icons: await renderSiteIcons(data, mime, icons) }));
+    setSiteIconRenderer(async (data, mime, icons, opts) => ({ ok: true, icons: await renderSiteIcons(data, mime, icons, opts) }));
   };
   const centre = async (png: Buffer) => {
     const { data, info } = await sharp(png).ensureAlpha().raw().toBuffer({ resolveWithObject: true });

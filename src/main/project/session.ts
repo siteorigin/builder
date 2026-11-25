@@ -482,11 +482,15 @@ export class ProjectSession extends EventEmitter {
   private contentHashes = new Map<string, { content: string | Buffer; hash: string }>();
   /**
    * The website's PNG icons, made from the favicon or the monogram, kept while nothing they are made from changes. A
-   * set a save stopped waiting for is published on its own once it is ready.
+   * set a save stopped waiting for is published on its own once it is ready, while this app holds the project's lock
+   * (a new project's session has none until the app takes it; the set is then published as the project opens).
    */
-  private siteIcons = new SiteIconMaker(() => void this.refreshSiteIcons().catch(() => null));
-  /** The key of the icons the last finished publication carried, and of those the last publication asked for. */
-  private iconsPublished: string | null = null;
+  private siteIcons = new SiteIconMaker(() => {
+    if (this.lockState === 'held') void this.refreshSiteIcons().catch(() => null);
+  });
+  /** The icons the last finished publication carried (what they were made from, and which drawing made them). */
+  private iconsPublished: { key: string; id: number | null } | null = null;
+  /** What the icons the last publication asked for are made from. */
   private iconsAsked: string | null = null;
   /**
    * How long a file must have been left alone before its stat alone is trusted to show a later change: well past the
@@ -546,9 +550,6 @@ export class ProjectSession extends EventEmitter {
     s.state = state;
     await s.ensureLocalDirs();
     await s.writeAllDocs();
-    // The icons are drawn in full first: a new project holds no lock yet, so nothing waits on it, and no set is left to
-    // be published later by a session that may never get the project's lock.
-    await s.siteIcons.make(dir, state, Infinity);
     await s.publishGenerated(true);
     await s.saveLocalState();
     return s;
@@ -1189,12 +1190,15 @@ export class ProjectSession extends EventEmitter {
     return this.serialize(async () => {
       if (this.readOnly || this.unsettled || !(await this.stillOwner())) return null;
       const key = await this.siteIconSource();
-      if (key === this.iconsPublished) return { key, published: true, drawing: false };
+      // Published already, unless a newer drawing of the same input has been made since (a picture tried again after
+      // the monogram stood in for it).
+      const made = this.siteIcons.madeId(key);
+      if (this.iconsPublished?.key === key && (made === null || made === this.iconsPublished.id)) return { key, published: true, drawing: false };
       const before = JSON.stringify(this.conflicts);
       const changedFiles = await this.publishInstalled();
       if (changedFiles.length || JSON.stringify(this.conflicts) !== before) this.emit('changed', { revision: this.revision, changedDocs: [], changedFiles, label: 'Update site icons', source: 'system' } satisfies SessionEvent);
       const asked = this.iconsAsked ?? key;
-      const published = asked === this.iconsPublished;
+      const published = asked === this.iconsPublished?.key;
       return { key: asked, published, drawing: !published && this.siteIcons.drawing(asked) };
     });
   }
@@ -1212,9 +1216,14 @@ export class ProjectSession extends EventEmitter {
     return (await this.siteIcons.input(dir, this.state)).key;
   }
 
-  /** The key of the icons the last finished publication carried, or null before any could be made. */
+  /** What the icons the last finished publication carried are made from, or null before any could be made. */
   get siteIconsPublished(): string | null {
-    return this.iconsPublished;
+    return this.iconsPublished?.key ?? null;
+  }
+
+  /** Whether the icons made from `key` are being drawn, or waiting to be. */
+  siteIconsDrawing(key: string): boolean {
+    return this.siteIcons.drawing(key);
   }
 
   /**
@@ -1692,8 +1701,12 @@ export class ProjectSession extends EventEmitter {
       // A file there that this app never wrote is someone else's, whatever it holds: named, never read.
       const abs = safeJoin(this.dir, path);
       if (!known(path)) {
-        if (!initial && (await fs.lstat(abs).catch(() => null)))
-          this.conflicts.push({ path, reason: 'Generated file would replace a file that SiteOrigin Builder did not create. Move or delete that file, then restore.', kind: 'generated' });
+        // Anything there but nothing at all, including what cannot be looked at, counts as there.
+        const there = await fs.lstat(abs).then(
+          () => true,
+          (e: NodeJS.ErrnoException) => e.code !== 'ENOENT'
+        );
+        if (!initial && there) this.conflicts.push({ path, reason: 'Generated file would replace a file that SiteOrigin Builder did not create. Move or delete that file, then restore.', kind: 'generated' });
         continue;
       }
       // One of this app's is kept as it is: claimed as whichever of its own versions is there (a publication that
@@ -1854,7 +1867,7 @@ export class ProjectSession extends EventEmitter {
     }
     await this.writeManifest(nextFiles);
     // The icons count as published only now, once every file and the manifest claiming them are in place.
-    if (icons.files) this.iconsPublished = icons.key;
+    if (icons.files) this.iconsPublished = { key: icons.key, id: icons.id };
     this.contentHashes = hashes;
     // Only files still generated are worth remembering.
     for (const abs of this.seenOnDisk.keys()) if (!hashes.has(abs)) this.seenOnDisk.delete(abs);

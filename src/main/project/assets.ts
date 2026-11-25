@@ -740,7 +740,7 @@ const mediaWorker = createVariantClient(spawnMediaWorker);
 const iconWorker = createVariantClient(spawnMediaWorker);
 
 /** Draws the website's icons in the media worker: the renderer the app registers with setSiteIconRenderer. */
-export const renderSiteIconsInWorker: SiteIconRenderer = (data, mime, icons) => iconWorker.icons(data, mime, icons);
+export const renderSiteIconsInWorker: SiteIconRenderer = (data, mime, icons, opts) => iconWorker.icons(data, mime, icons, opts);
 
 /** Stop the media workers (when the app quits). */
 export const stopMediaWorker = () => {

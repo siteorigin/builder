@@ -48,10 +48,10 @@ const pngsIn = (dir: string) => (existsSync(dir) ? readdirSync(dir, { recursive:
 /** Draws in this process, counting each set it is asked for; `fail` makes it fail as a stuck worker does. */
 function renderer() {
   const r = { calls: 0, fail: false };
-  const fn: SiteIconRenderer = async (data, mime, icons) => {
+  const fn: SiteIconRenderer = async (data, mime, icons, opts) => {
     r.calls++;
     if (r.fail) return { ok: false, unreadable: false };
-    return { ok: true, icons: await renderSiteIcons(data, mime, icons) };
+    return { ok: true, icons: await renderSiteIcons(data, mime, icons, opts) };
   };
   setSiteIconRenderer(fn);
   return r;
@@ -136,7 +136,9 @@ describe('the website’s icons in a project', () => {
   it('are published on their own once ready when a save stopped waiting for them', async () => {
     renderer();
     const d = tmp();
-    const s = await create(d);
+    await (await create(d)).close();
+    // Held under this app's lock, as the editor holds a project.
+    const s = await open(d);
     const before = readFileSync(join(d, SITE_ICON_PATHS[2]));
     let release!: () => void;
     const gate = new Promise<void>((r) => (release = r));
@@ -155,18 +157,39 @@ describe('the website’s icons in a project', () => {
     expect(s.siteIconsPublished).toBe(await s.siteIconSource());
   });
 
-  it('are drawn in full before a new project is first published', async () => {
+  it('wait, for a new project not yet under this app’s lock, until it is opened before they are published late', async () => {
     let release!: () => void;
     const gate = new Promise<void>((r) => (release = r));
     setSiteIconRenderer(async (data, mime, icons) => (await gate, { ok: true, icons: await renderSiteIcons(data, mime, icons) }));
-    // Far longer than a save would wait.
     siteIconTiming.budgetMs = 50;
     const d = tmp();
-    const made = create(d);
-    setTimeout(release, 300);
-    const s = await made;
+    const s = await create(d);
+    for (const p of SITE_ICON_PATHS) expect(existsSync(join(d, p))).toBe(false);
+    release();
+    const key = await s.siteIconSource();
+    await vi.waitFor(() => expect(s.siteIconsDrawing(key)).toBe(false));
+    await new Promise((r) => setTimeout(r, 100));
+    // Ready, but not written by a session that has no lock: another app may have opened the project meanwhile.
+    for (const p of SITE_ICON_PATHS) expect(existsSync(join(d, p))).toBe(false);
+    // The editor publishes them as the project opens under its lock (here, asked for directly).
+    expect(await s.refreshSiteIcons()).toEqual({ key, published: true, drawing: false });
     for (const p of SITE_ICON_PATHS) expect(manifest(d)[p]).toBe(sha(readFileSync(join(d, p))));
-    expect(s.siteIconsPublished).toBe(await s.siteIconSource());
+  });
+
+  it('take the picture drawn once more after the monogram stood in for it', async () => {
+    let refuse = true;
+    setSiteIconRenderer(async (data, mime, icons, opts) => (refuse && mime === 'image/png' ? { ok: false, unreadable: true } : { ok: true, icons: await renderSiteIcons(data, mime, icons, opts) }));
+    const d = tmp();
+    const s = await create(d, await withFavicon(d, '#ff0000'));
+    expect(await at(readFileSync(join(d, 'static/icon-192.png')), 1, 1)).toEqual({ r: 0x1f, g: 0x5a, b: 0x4c });
+    refuse = false;
+    vi.spyOn(Date, 'now').mockReturnValue(Date.now() + 61_000);
+    // An export waits for the icons and publishes them: the same input as before, but the picture this time.
+    await s.prepareSiteIcons();
+    expect(await s.refreshSiteIcons()).toMatchObject({ published: true });
+    expect(await centre(readFileSync(join(d, 'static/icon-192.png')))).toEqual({ r: 255, g: 0, b: 0 });
+    expect(manifest(d)['static/icon-192.png']).toBe(sha(readFileSync(join(d, 'static/icon-192.png'))));
+    vi.restoreAllMocks();
   });
 
   it('are made from the favicon picture once one is chosen, and follow its file put back or replaced with no document changing', async () => {

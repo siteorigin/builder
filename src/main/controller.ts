@@ -866,6 +866,8 @@ export class Controller {
     this.watchExternalChanges(session);
     // Project health lists missing image files from the first moment the project shows.
     await session.refreshAssetFiles().catch(() => false);
+    // Icons a save stopped waiting for before this app held the project's lock (a new project's) are published now.
+    void session.refreshSiteIcons().catch(() => null);
     this.broadcast();
     if (runtimeError) this.send('runtime:status', runtimeError);
     else await this.startRuntime();
@@ -2494,8 +2496,12 @@ export class Controller {
       // The icons go out with the favicon they were made from: one replaced since would go out beside icons of the
       // picture it replaced. Only while icons cannot be made at all do those the project has go out as they are.
       const iconSource = await s.siteIconSource(dest);
-      const unmade = icons && !icons.published && !icons.drawing && iconSource === icons.key;
-      if (iconSource !== s.siteIconsPublished && !unmade) return stop('The project changed on disk while it was being exported. Export again.');
+      if (iconSource !== s.siteIconsPublished) {
+        // Being drawn again by now (a save meanwhile tried once more): the icons are ready to export in a moment.
+        if (s.siteIconsDrawing(iconSource)) return stop('The site’s icons are still being made. Export again in a moment.');
+        const unmade = icons && !icons.published && !icons.drawing && iconSource === icons.key;
+        if (!unmade) return stop('The project changed on disk while it was being exported. Export again.');
+      }
       // Both exports carry the published site's generated files; the drafts stay in the canonical documents.
       await leaveOutDrafts(dest, s.state);
       if (opts.forBuild) {

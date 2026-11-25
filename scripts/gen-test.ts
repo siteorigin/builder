@@ -16,6 +16,6 @@ const files = generateProject(state, { instrument: process.argv[4] === 'dev' });
 for (const [p, c] of files) { mkdirSync(dirname(join(out, p)), { recursive: true }); writeFileSync(join(out, p), c); }
 for (const c of packFileCopies(state)) { mkdirSync(dirname(join(out, c.path)), { recursive: true }); writeFileSync(join(out, c.path), await readPackFile(c.pack, c.file)); }
 // The home-screen icons, drawn here in this process (the app draws them in its media worker).
-setSiteIconRenderer(async (data, mime, icons) => ({ ok: true, icons: await renderSiteIcons(data, mime, icons) }));
-for (const [p, c] of (await new SiteIconMaker().make(out, state)).files ?? []) writeFileSync(join(out, p), c);
+setSiteIconRenderer(async (data, mime, icons, opts) => ({ ok: true, icons: await renderSiteIcons(data, mime, icons, opts) }));
+for (const [p, c] of (await new SiteIconMaker().make(out, state, Infinity)).files ?? []) writeFileSync(join(out, p), c);
 console.log('wrote', files.size, 'files');

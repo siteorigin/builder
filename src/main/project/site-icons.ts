@@ -16,10 +16,13 @@ import type { AssetRecord, ProjectState } from '@shared/types';
 import { APP_ICONS } from '@shared/site-icons';
 import { siteIconSet } from '@generator/site-icons';
 import type { IconSpec, IconsResult } from './media-client';
-import { sanitizeSvg } from './svg';
+import { heifBrands } from './media';
 
-/** Draws square PNG icons of a picture, one for each spec, in order. Never rejects. */
-export type SiteIconRenderer = (data: Buffer, mime: string, icons: IconSpec[]) => Promise<IconsResult>;
+/**
+ * Draws square PNG icons of a picture, one for each spec, in order. `untrusted` says the picture is a file of the
+ * project's, to be cleaned first when it is SVG (the renderer does that, away from the editor). Never rejects.
+ */
+export type SiteIconRenderer = (data: Buffer, mime: string, icons: IconSpec[], opts?: { untrusted?: boolean }) => Promise<IconsResult>;
 
 let renderer: SiteIconRenderer | null = null;
 
@@ -38,8 +41,8 @@ const KEEP_SETS = 4;
 
 /**
  * The longest a save waits for its icons while it holds the project's lock (`budgetMs`): far inside the time another
- * app's Unlock waits on a claim that stopped changing. A set still being drawn then is published on its own once it
- * is ready. Tests lengthen it, so a busy machine never makes them depend on that later publication, or shorten it.
+ * app's Unlock waits on a claim that stopped changing. A set still being drawn then is published once it is ready.
+ * Tests lengthen it, so a busy machine never makes them depend on that later publication, or shorten it.
  */
 export const siteIconTiming = { budgetMs: 2_000 };
 
@@ -53,16 +56,16 @@ function rasterType(b: Buffer): string | null {
   if (b.length >= 3 && b[0] === 0xff && b[1] === 0xd8 && b[2] === 0xff) return 'image/jpeg';
   if (b.length >= 6 && /^GIF8[79]a$/.test(b.toString('latin1', 0, 6))) return 'image/gif';
   if (b.length >= 12 && b.toString('latin1', 0, 4) === 'RIFF' && b.toString('latin1', 8, 12) === 'WEBP') return 'image/webp';
-  return b.length >= 12 && b.toString('latin1', 4, 8) === 'ftyp' && /avi[fs]/.test(b.toString('latin1', 8, Math.min(b.length, 40))) ? 'image/avif' : null;
+  return heifBrands(b).some((brand) => brand === 'avif' || brand === 'avis') ? 'image/avif' : null;
 }
 
 /**
  * A favicon picture's bytes and what they are, or null. The path comes from the documents, which can be edited by hand,
  * so only a regular file directly in the project's own static/assets/ is read: not through a linked folder (checked
- * again once the file is open, so a folder swapped meanwhile is caught), not a link itself, and not a pipe or device,
- * whose opening could hold up a save indefinitely. The file may have been replaced outside the app since it was
- * imported, whatever its record says: SVG content is cleaned as an import cleans it, and anything that is neither SVG
- * nor a picture the library takes is not used. The decoder looks at the bytes, never the record's type.
+ * again once the file is open), not a link itself, and not a pipe or device, whose opening could hold up a save
+ * indefinitely. The file may have been replaced outside the app since it was imported, whatever its record says, so
+ * the decoder is told what its bytes are: SVG markup is drawn only once the renderer has cleaned it as an import
+ * cleans one, and anything that is neither SVG nor a picture the library takes is not used.
  */
 async function readFavicon(dir: string, a: AssetRecord): Promise<{ data: Buffer; mime: string } | null> {
   if (a.kind !== 'image' || !LIBRARY_FILE.test(a.file) || a.file.includes('..')) return null;
@@ -89,12 +92,8 @@ async function readFavicon(dir: string, a: AssetRecord): Promise<{ data: Buffer;
   const raster = rasterType(bytes);
   if (raster) return { data: bytes, mime: raster };
   // Neither a picture nor (compressed or otherwise) anything but plain SVG markup is given to the decoder.
-  if (a.mime !== 'image/svg+xml' && !/^\s*</.test(bytes.toString('utf8', 0, Math.min(bytes.length, 256)).replace(/^\uFEFF/, ''))) return null;
-  try {
-    return { data: Buffer.from(sanitizeSvg(bytes)), mime: 'image/svg+xml' };
-  } catch {
-    return null;
-  }
+  if (a.mime !== 'image/svg+xml' && !/^\s*</.test(bytes.toString('utf8', 0, Math.min(bytes.length, 256)).replace(/^﻿/, ''))) return null;
+  return { data: bytes, mime: 'image/svg+xml' };
 }
 
 /** What a set of icons is made from now, and the key that names it. */
@@ -102,6 +101,8 @@ interface IconInput {
   key: string;
   data: Buffer;
   mime: string;
+  /** A file of the project's rather than the generated monogram. */
+  untrusted: boolean;
   /** The monogram's SVG, drawn instead when the favicon picture cannot be decoded; null when the input is the monogram. */
   monogram: Buffer | null;
   icons: Array<{ path: string } & IconSpec>;
@@ -109,24 +110,36 @@ interface IconInput {
 
 const sha = (b: Buffer | string) => createHash('sha256').update(b).digest('hex');
 
-/** The icons of one set, by project path, or null when none could be made for it. */
+/** The icons of one set, by project path, with the number of the drawing that made them; null when there are none yet. */
 export interface MadeIcons {
   key: string;
   files: Map<string, Buffer> | null;
+  id: number | null;
+}
+
+/** One set asked of the renderer, and everyone waiting for it. */
+interface Draw {
+  input: IconInput;
+  done: Promise<void>;
+  finish: () => void;
+  /** A save stopped waiting for it: it is announced once it is ready. */
+  late: boolean;
 }
 
 /**
  * Makes and keeps one project's icons. Each set is named by everything it is made from: the bytes of the picture as
  * they are now (never the asset's id or recorded hash, which say nothing of a file replaced in place), the monogram it
- * falls back to, and each icon's size and background. A save that changes none of it draws nothing. Sets are drawn
- * and kept by name, so a set drawn for one input never takes the place of another's.
+ * falls back to, and each icon's size and background. A save that changes none of it draws nothing. One set is drawn
+ * at a time; of those asked for meanwhile only the newest waits its turn, so a run of quick changes never piles up
+ * work, or pictures, behind a slow one.
  */
 export class SiteIconMaker {
   /** The sets made lately, newest last; one made from the monogram instead of the picture is tried again after a while. */
-  private made = new Map<string, { files: Map<string, Buffer>; retryAt?: number }>();
+  private made = new Map<string, { files: Map<string, Buffer>; id: number; retryAt?: number }>();
   private failed = new Map<string, number>();
-  /** The sets being drawn, and whether a save stopped waiting for each (it is then announced once ready). */
-  private drawings = new Map<string, { done: Promise<void>; late: boolean }>();
+  private active: Draw | null = null;
+  private queued: Draw | null = null;
+  private drawn = 0;
   private last: string | null = null;
 
   /** `onLate` is told when a set a save stopped waiting for is ready, so it can be published. */
@@ -142,7 +155,7 @@ export class SiteIconMaker {
     const data = picture?.data ?? monogram;
     const mime = picture?.mime ?? 'image/svg+xml';
     const key = sha(JSON.stringify({ mime, data: sha(data), monogram: sha(monogram), icons: set.icons }));
-    return { key, data, mime, monogram: picture ? monogram : null, icons: set.icons };
+    return { key, data, mime, untrusted: !!picture, monogram: picture ? monogram : null, icons: set.icons };
   }
 
   /** The key of the set made last, or null before one is. */
@@ -150,9 +163,14 @@ export class SiteIconMaker {
     return this.last;
   }
 
-  /** Whether the set named `key` is still being drawn. */
+  /** The number of the drawing that made the set kept for `key`, or null when none is kept. */
+  madeId(key: string): number | null {
+    return this.made.get(key)?.id ?? null;
+  }
+
+  /** Whether the set named `key` is being drawn, or waiting to be. */
   drawing(key: string): boolean {
-    return this.drawings.has(key);
+    return this.active?.input.key === key || this.queued?.input.key === key;
   }
 
   /**
@@ -163,54 +181,81 @@ export class SiteIconMaker {
    */
   async make(dir: string, state: ProjectState, budgetMs = siteIconTiming.budgetMs): Promise<MadeIcons> {
     const input = await this.input(dir, state);
+    const kept = (): MadeIcons => {
+      const m = this.made.get(input.key);
+      return { key: input.key, files: m?.files ?? null, id: m?.id ?? null };
+    };
     const hit = this.made.get(input.key);
-    if (hit && !(hit.retryAt && Date.now() >= hit.retryAt)) return { key: input.key, files: hit.files };
+    if (hit && !(hit.retryAt && Date.now() >= hit.retryAt)) return kept();
     const failedAt = this.failed.get(input.key);
-    const draw = renderer;
-    if (!draw || (!hit && failedAt !== undefined && Date.now() - failedAt < RETRY_MS)) return { key: input.key, files: hit?.files ?? null };
-    let drawing = this.drawings.get(input.key);
-    if (!drawing) {
-      const entry = { done: Promise.resolve(), late: false };
-      entry.done = this.draw(input, draw, entry);
-      this.drawings.set(input.key, (drawing = entry));
-    }
+    if (!renderer || (!hit && failedAt !== undefined && Date.now() - failedAt < RETRY_MS)) return kept();
+    const draw = this.ask(input);
     let timer: ReturnType<typeof setTimeout> | undefined;
     // An endless budget waits for the drawing itself (a timer cannot wait that long: it would fire at once).
-    const done = drawing.done.then(() => true);
+    const done = draw.done.then(() => true);
     const ready = Number.isFinite(budgetMs) ? await Promise.race([done, new Promise<false>((r) => (timer = setTimeout(() => r(false), budgetMs)))]) : await done;
     clearTimeout(timer);
-    if (!ready) drawing.late = true;
-    return { key: input.key, files: this.made.get(input.key)?.files ?? hit?.files ?? null };
+    if (!ready) draw.late = true;
+    return kept();
   }
 
-  private async draw(input: IconInput, draw: SiteIconRenderer, entry: { late: boolean }): Promise<void> {
+  /** The drawing for `input`: the one under way or waiting for it, or a new one, which takes the waiting one's place. */
+  private ask(input: IconInput): Draw {
+    if (this.active?.input.key === input.key) return this.active;
+    if (this.queued?.input.key === input.key) return this.queued;
+    let finish!: () => void;
+    const draw: Draw = { input, done: new Promise<void>((r) => (finish = r)), finish, late: false };
+    // An older set still waiting is no longer wanted: those waiting for it are told it is not ready.
+    this.queued?.finish();
+    this.queued = draw;
+    if (!this.active) this.next();
+    return draw;
+  }
+
+  private next(): void {
+    const draw = this.queued;
+    this.queued = null;
+    this.active = draw;
+    if (!draw) return;
+    const owner = renderer;
+    void (owner ? this.draw(draw.input, owner).catch(() => false) : Promise.resolve(false)).then((made) => {
+      this.active = null;
+      draw.finish();
+      if (made && draw.late) this.onLate?.();
+      this.next();
+    });
+  }
+
+  /** Draws one set, keeping it, or noting that it could not be made. Says whether it was made. */
+  private async draw(input: IconInput, draw: SiteIconRenderer): Promise<boolean> {
     const specs = input.icons.map(({ size, background }) => (background ? { size, background } : { size }));
-    let r = await draw(input.data, input.mime, specs).catch((): IconsResult => ({ ok: false, unreadable: false }));
+    let r = await draw(input.data, input.mime, specs, { untrusted: input.untrusted }).catch((): IconsResult => ({ ok: false, unreadable: false }));
     const standIn = !r.ok && r.unreadable && !!input.monogram;
     if (standIn) r = await draw(input.monogram!, 'image/svg+xml', specs).catch((): IconsResult => ({ ok: false, unreadable: false }));
-    // Forgotten meanwhile (the project closed): nothing of it is kept or announced.
-    if (this.drawings.get(input.key) !== entry) return;
-    this.drawings.delete(input.key);
     const now = Date.now();
     for (const [k, at] of this.failed) if (now - at >= RETRY_MS) this.failed.delete(k);
     if (!r.ok || r.icons.length !== input.icons.length) {
       this.failed.set(input.key, now);
-      return;
+      // A stand-in already kept waits another while before the picture is tried again.
+      const kept = this.made.get(input.key);
+      if (kept?.retryAt) kept.retryAt = now + RETRY_MS;
+      return false;
     }
     const icons = r.icons;
     this.failed.delete(input.key);
     this.made.delete(input.key);
-    this.made.set(input.key, { files: new Map(input.icons.map((i, n) => [i.path, icons[n]])), ...(standIn ? { retryAt: now + RETRY_MS } : {}) });
+    this.made.set(input.key, { files: new Map(input.icons.map((i, n) => [i.path, icons[n]])), id: ++this.drawn, ...(standIn ? { retryAt: now + RETRY_MS } : {}) });
     for (const k of this.made.keys()) if (this.made.size > KEEP_SETS) this.made.delete(k);
     this.last = input.key;
-    if (entry.late) this.onLate?.();
+    return true;
   }
 
   /** Forget every set, and announce none still being drawn (the project is closing). */
   clear(): void {
     this.made.clear();
     this.failed.clear();
-    this.drawings.clear();
+    this.queued?.finish();
+    this.queued = null;
     this.last = null;
     this.onLate = null;
   }

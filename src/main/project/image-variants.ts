@@ -6,6 +6,7 @@ import { readFile } from 'node:fs/promises';
 import sharp from 'sharp';
 import { MAX_VARIANT_PIXELS, WEB_EDGE, webCopySize, type IconSpec, type VariantReply, type VariantRequest } from './media-client';
 import { isAnimatedPng } from './media';
+import { sanitizeSvg } from './svg';
 
 /**
  * Widths of the smaller copies, each made only when it is meaningfully smaller than the picture. The 160px copy
@@ -120,9 +121,12 @@ export async function isOpaque(buf: Buffer): Promise<boolean> {
  * the way its orientation says, its first frame if it moves, fitted whole inside the square (enlarged when it is
  * smaller) and centred. An icon with a background has every see-through pixel filled with it, as the one iOS shows
  * must be; the others keep their transparency. An SVG is drawn at the size of the largest icon, never enlarged from a
- * small raster. Written as sRGB without metadata; the same picture always makes the same bytes here.
+ * small raster. Written as sRGB without metadata; the same picture always makes the same bytes here. An `untrusted`
+ * SVG (a file of the project's, maybe replaced outside the app since it was imported) is cleaned first, as an import
+ * cleans one: here, in the worker, so a file that takes long to clean never holds up the editor.
  */
-export async function renderSiteIcons(buf: Buffer, mime: string, icons: IconSpec[]): Promise<Buffer[]> {
+export async function renderSiteIcons(buf: Buffer, mime: string, icons: IconSpec[], opts: { untrusted?: boolean } = {}): Promise<Buffer[]> {
+  if (opts.untrusted && mime === 'image/svg+xml') buf = Buffer.from(sanitizeSvg(buf));
   let density: number | undefined;
   if (mime === 'image/svg+xml') {
     const meta = await sharp(buf, { limitInputPixels: MAX_VARIANT_PIXELS, failOn: 'error' }).metadata();
@@ -152,8 +156,9 @@ export async function handleVariantRequest(m: VariantRequest): Promise<VariantRe
       // Whatever stops the drawing here (a picture the decoder refuses, or too many pixels to decode) is the picture's
       // doing, and would be the same every time: the icons are then made from the monogram instead.
       const unreadable = (e?: unknown) => ({ id: m.id, ok: false as const, error: e ? (e as Error).message : 'The picture could not be decoded.', unreadable: true });
-      if (!(await isReadable(buf, m.mime))) return unreadable();
-      const icons = await renderSiteIcons(buf, m.mime, m.icons ?? []).catch((e: unknown) => e as Error);
+      // An SVG is cleaned before anything decodes it, so it is checked as it is drawn.
+      if (!(m.untrusted && m.mime === 'image/svg+xml') && !(await isReadable(buf, m.mime))) return unreadable();
+      const icons = await renderSiteIcons(buf, m.mime, m.icons ?? [], { untrusted: m.untrusted }).catch((e: unknown) => e as Error);
       if (icons instanceof Error) return unreadable(icons);
       return { id: m.id, ok: true, variants: [], icons: icons.map((d) => new Uint8Array(d.buffer, d.byteOffset, d.byteLength)) };
     }

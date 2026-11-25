@@ -46,6 +46,8 @@ export interface VariantRequest {
   maxEdge?: number;
   /** For icons: each one's square size, and the opaque colour behind it when it has one. */
   icons?: IconSpec[];
+  /** For icons: the picture is a file of the project's, cleaned here first when it is SVG (see renderSiteIcons). */
+  untrusted?: boolean;
 }
 
 /** One square PNG icon made from a picture: its size, and the colour see-through parts are filled with, if any. */
@@ -97,7 +99,7 @@ export interface VariantClient {
   /** Whether every pixel of a picture with an alpha channel is opaque; null when the worker could not tell. Never rejects. */
   opaque(buf: Buffer, mime: string): Promise<boolean | null>;
   /** Square PNG icons of a picture, one for each of `icons`, or why there are none. Never rejects. */
-  icons(buf: Buffer, mime: string, icons: IconSpec[]): Promise<IconsResult>;
+  icons(buf: Buffer, mime: string, icons: IconSpec[], opts?: { untrusted?: boolean }): Promise<IconsResult>;
   /** Stop the worker for good (the app is quitting): requests in flight or still to come get no copies. */
   stop(): void;
 }
@@ -192,8 +194,8 @@ export function createVariantClient(spawn: () => WorkerHandle, opts: { timeoutMs
         r?.ok && r.web ? { ok: true, copy: { ...r.web, data: toBuffer(r.web.data) } } : { ok: false, unreadable: !!(r && !r.ok && r.unreadable) }
       ),
     opaque: (buf, mime) => request({ kind: 'opaque', data: bytes(buf), mime, width: 0 }).then((r) => (r?.ok && typeof r.opaque === 'boolean' ? r.opaque : null)),
-    icons: (buf, mime, icons) =>
-      request({ kind: 'icons', data: bytes(buf), mime, width: 0, icons }).then((r): IconsResult =>
+    icons: (buf, mime, icons, opts) =>
+      request({ kind: 'icons', data: bytes(buf), mime, width: 0, icons, ...(opts?.untrusted ? { untrusted: true } : {}) }).then((r): IconsResult =>
         // A reply without exactly one icon for each asked for is the worker failing, not the picture.
         r?.ok && r.icons?.length === icons.length ? { ok: true, icons: r.icons.map(toBuffer) } : { ok: false, unreadable: !!(r && !r.ok && r.unreadable) }
       ),

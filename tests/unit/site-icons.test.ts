@@ -101,9 +101,9 @@ function hugePng(): Buffer {
   return Buffer.concat([Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]), chunk('IHDR', ihdr), chunk('IDAT', Buffer.from([0x78, 0x9c, 0x03, 0x00, 0x00, 0x00, 0x00, 0x01])), chunk('IEND', Buffer.alloc(0))]);
 }
 
-const inProcess: SiteIconRenderer = async (data, mime, icons) => {
+const inProcess: SiteIconRenderer = async (data, mime, icons, opts) => {
   try {
-    return { ok: true, icons: await renderSiteIcons(data, mime, icons) };
+    return { ok: true, icons: await renderSiteIcons(data, mime, icons, opts) };
   } catch {
     return { ok: false, unreadable: true };
   }
@@ -209,6 +209,10 @@ describe('the head of every page', () => {
     expect(head).toContain('<meta name="theme-color" content="#1f5a4c" />');
     expect(themeColorMeta(fresh())).toBe('<meta name="theme-color" content="#1f5a4c" />');
     expect(() => compile(layout, { filename: 'src/routes/+layout.svelte', generate: 'server' })).not.toThrow();
+    // The editor's preview has them too.
+    const dev = generateProject(fresh(), { instrument: true }).get('src/routes/+layout.svelte')!;
+    expect(dev).toContain('<link rel="manifest" href={asset("manifest.webmanifest")} />');
+    expect(dev).toContain('<meta name="theme-color" content="#1f5a4c" />');
   });
 });
 
@@ -236,6 +240,8 @@ describe('what the icons are made from', () => {
     expect(siteIconSet(chosen).source.kind).toBe('svg');
     (chosen.site as { name: unknown }).name = 7;
     expect(siteIconSet(chosen).monogram).toContain('>S</text>');
+    chosen.site.name = '&Co';
+    expect(siteIconSet(chosen).monogram).toContain('>&amp;</text>');
   });
 
   it('keeps every generated file’s address from pages and from saved versions', () => {
@@ -305,7 +311,7 @@ describe('a project’s icons', () => {
   /** The renderer, counting what it is asked to draw. */
   const counting = (inner: SiteIconRenderer = inProcess) => {
     const calls: string[] = [];
-    const fn: SiteIconRenderer = (data, mime, icons) => (calls.push(mime), inner(data, mime, icons));
+    const fn: SiteIconRenderer = (data, mime, icons, opts) => (calls.push(mime), inner(data, mime, icons, opts));
     setSiteIconRenderer(fn);
     return calls;
   };
@@ -389,7 +395,7 @@ describe('a project’s icons', () => {
     const disguised = withFavicon(dir, Buffer.from(svg));
     const read = await new SiteIconMaker().input(dir, disguised);
     expect(read.mime).toBe('image/svg+xml');
-    expect(read.data.toString()).not.toContain('script');
+    expect(read.untrusted).toBe(true);
     const gzipped = withFavicon(dir, Buffer.from([0x1f, 0x8b, 0x08, 0x00, 0x00]));
     expect((await new SiteIconMaker().input(dir, gzipped)).key).toBe(await monogram(gzipped));
     // A JPEG kept under a PNG's record is drawn as the JPEG it is.
@@ -407,29 +413,62 @@ describe('a project’s icons', () => {
     }
   });
 
-  it('keep a set drawn for one input apart from another’s, however the draws finish', async () => {
+  it('draw one set at a time, with only the newest asked for meanwhile waiting its turn', async () => {
     const dir = tmp();
     const gates: Array<() => void> = [];
-    let calls = 0;
-    setSiteIconRenderer(async (data, mime, icons) => (calls++, await new Promise<void>((r) => gates.push(r)), inProcess(data, mime, icons)));
+    const drawn: string[] = [];
+    setSiteIconRenderer(async (data, mime, icons) => (drawn.push(data.toString().match(/>(.)<\/text>/)![1]), await new Promise<void>((r) => gates.push(r)), inProcess(data, mime, icons)));
     const maker = new SiteIconMaker();
-    const a = fresh();
-    const b = fresh();
-    b.site.name = 'Bravo';
-    // A, then B, then A again while A is still being drawn: A is drawn once, and neither draw displaces the other.
-    const first = maker.make(dir, a, Infinity);
+    const named = (name: string) => {
+      const s = fresh();
+      s.site.name = name;
+      return s;
+    };
+    // A is drawn; B waits; C takes B's place; A asked again shares A's drawing.
+    const a = maker.make(dir, named('Alpha'), Infinity);
     await vi.waitFor(() => expect(gates).toHaveLength(1));
-    const second = maker.make(dir, b, Infinity);
-    const again = maker.make(dir, a, Infinity);
+    const b = maker.make(dir, named('Bravo'), Infinity);
+    const c = maker.make(dir, named('Charlie'), Infinity);
+    const again = maker.make(dir, named('Alpha'), Infinity);
+    expect(maker.drawing((await maker.input(dir, named('Bravo'))).key)).toBe(false);
+    // B is no longer wanted: told at once that it is not ready.
+    expect((await b).files).toBeNull();
+    gates[0]();
+    expect((await a).files?.size).toBe(3);
+    expect((await again).files).toBe((await a).files);
     await vi.waitFor(() => expect(gates).toHaveLength(2));
     gates[1]();
-    expect((await second).files?.size).toBe(3);
-    gates[0]();
-    expect((await first).files?.size).toBe(3);
-    expect((await again).files).toBe((await first).files);
-    expect(calls).toBe(2);
-    expect((await maker.make(dir, b)).files).toBe((await second).files);
-    expect(calls).toBe(2);
+    expect((await c).files?.size).toBe(3);
+    expect(drawn).toEqual(['A', 'C']);
+    // Both sets are kept: asked for again, neither is drawn again.
+    expect((await maker.make(dir, named('Alpha'))).files).toBe((await a).files);
+    expect(drawn).toHaveLength(2);
+  });
+
+  it('count a picture drawn once more after the monogram stood in for it as a new set', async () => {
+    const dir = tmp();
+    let refuse = true;
+    const calls = counting(async (data, mime, icons, opts) => (refuse && mime === 'image/png' ? { ok: false, unreadable: true } : inProcess(data, mime, icons, opts)));
+    const maker = new SiteIconMaker();
+    const s = withFavicon(dir, await wideLogo());
+    const standIn = await maker.make(dir, s);
+    expect(hex(await pixel(standIn.files!.get('static/icon-192.png')!, 1, 1))).toBe('#1f5a4c');
+    // Tried again after a while, failing on the worker: the stand-in waits another while.
+    refuse = false;
+    const now = Date.now();
+    vi.spyOn(Date, 'now').mockReturnValue(now + 61_000);
+    counting(async () => ({ ok: false, unreadable: false }));
+    expect((await maker.make(dir, s)).id).toBe(standIn.id);
+    counting(async (data, mime, icons, opts) => inProcess(data, mime, icons, opts));
+    expect((await maker.make(dir, s)).id).toBe(standIn.id);
+    // Once that while is over, the picture is drawn: the same input, a new set.
+    vi.spyOn(Date, 'now').mockReturnValue(now + 125_000);
+    const picture = await maker.make(dir, s);
+    expect(picture.key).toBe(standIn.key);
+    expect(picture.id).toBeGreaterThan(standIn.id!);
+    expect(maker.madeId(picture.key)).toBe(picture.id);
+    expect(await pixel(picture.files!.get('static/icon-192.png')!, 96, 96)).toMatchObject({ r: 255, g: 0, b: 0 });
+    expect(calls.length).toBeGreaterThan(0);
   });
 
   it('stop holding up a save that takes too long for them, and say so once they are ready', async () => {
@@ -452,15 +491,24 @@ describe('a project’s icons', () => {
     expect(late).toHaveBeenCalledTimes(1);
   });
 
-  it('draw an SVG favicon only once it has been cleaned, as an import would clean it', async () => {
-    const seen: string[] = [];
-    counting(async (data, mime, icons) => (seen.push(data.toString()), inProcess(data, mime, icons)));
+  it('draw an SVG favicon only once it has been cleaned, as an import would clean it, away from the editor', async () => {
+    const seen: Array<{ untrusted?: boolean }> = [];
+    counting(async (data, mime, icons, opts) => (seen.push(opts ?? {}), inProcess(data, mime, icons, opts)));
     const dir = tmp();
     const svg = '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 10 10"><script>alert(1)</script><rect width="10" height="10" fill="#00f"/></svg>';
     const s = withFavicon(dir, Buffer.from(svg), 'image/svg+xml', 'mark-1a2b3c4d.svg');
     const made = await new SiteIconMaker().make(dir, s);
-    expect(seen[0]).not.toContain('script');
+    expect(seen).toEqual([{ untrusted: true }]);
     expect(await pixel(made.files!.get('static/icon-192.png')!, 96, 96)).toMatchObject({ r: 0, g: 0, b: 255 });
+    // The worker cleans it: one the importer would refuse is not drawn, and the monogram stands in for it.
+    const bytes = (b: Buffer) => new Uint8Array(b.buffer, b.byteOffset, b.byteLength);
+    const entities = Buffer.from('<?xml version="1.0"?><!DOCTYPE svg [<!ENTITY x "y">]><svg xmlns="http://www.w3.org/2000/svg"/>');
+    expect(await handleVariantRequest({ id: 1, kind: 'icons', data: bytes(entities), mime: 'image/svg+xml', width: 0, icons: [{ size: 192 }], untrusted: true })).toMatchObject({ ok: false, unreadable: true });
+    expect(await handleVariantRequest({ id: 2, kind: 'icons', data: bytes(Buffer.from(svg)), mime: 'image/svg+xml', width: 0, icons: [{ size: 192 }], untrusted: true })).toMatchObject({ ok: true });
+    // The monogram is the app's own, and is drawn as it is.
+    seen.length = 0;
+    await new SiteIconMaker().make(dir, fresh());
+    expect(seen).toEqual([{ untrusted: false }]);
   });
 
   it('are left undrawn, and not asked for again for a while, when they cannot be made', async () => {
