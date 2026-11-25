@@ -788,16 +788,6 @@ export function HealthModal() {
     heading?.focus({ preventScroll: true });
   };
 
-  /** Make a diagnostic's one-step fix, held like the dialog's other actions so a second press sends nothing. */
-  const applyFix = async (key: string, fix: NonNullable<Diagnostic['fix']>) => {
-    setBusy(key);
-    try {
-      await applyOps(fix.operations, fix.label, undefined, snap.revision);
-    } finally {
-      setBusy(null);
-    }
-  };
-
   const diagnosticRow = (d: Diagnostic, i: number, rest?: string) => {
     // An image whose files are missing keeps its uses: say how many, and open it where it can be fixed.
     const asset = d.code === 'ASSET_FILE_MISSING' && d.owner?.kind === 'asset' ? d.owner.id : null;
@@ -808,27 +798,13 @@ export function HealthModal() {
     const dest = asset || outlinePage ? null : (destinationForDiagnostic(st, d) ?? seoDestinations.get(diagnosticKey(d)) ?? null);
     const target = asset || outlinePage || dest ? null : diagnosticTarget(st, d);
     const lead = rest === undefined ? assetLead(st, d) : null;
-    // A change that resolves it in one step, made to the project this list was worked out from; the next list says
-    // whether it worked.
-    const fix = d.fix && !readOnly ? d.fix : null;
     return (
       <HealthRow
-        key={`${d.code}:${d.owner?.id ?? ''}:${d.nodeId ?? ''}:${d.site ?? ''}:${i}`}
+        key={`${d.code}:${d.owner?.id ?? ''}:${d.nodeId ?? ''}:${i}`}
         tone={d.severity === 'error' ? 'danger' : d.severity === 'warning' ? 'warn' : 'quiet'}
         icon={d.severity === 'error' ? <CircleAlert /> : d.severity === 'warning' ? <TriangleAlert /> : <Info />}
         actions={
-          fix ? (
-            <>
-              <button className="btn btn-sm" aria-disabled={!!busy || undefined} onClick={() => !busy && void applyFix(`fix:${diagnosticKey(d)}`, fix)}>
-                {fix.label}
-              </button>
-              {target && (
-                <button className="btn btn-sm" onClick={() => showElement(target)}>
-                  Show on page
-                </button>
-              )}
-            </>
-          ) : asset ? (
+          asset ? (
             <button className="btn btn-sm" onClick={() => openAsset(asset)}>
               Open in Assets
             </button>

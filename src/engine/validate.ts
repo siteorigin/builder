@@ -1,4 +1,4 @@
-import type { DiagnosticFix, ExportNote } from '@shared/api';
+import type { ExportNote } from '@shared/api';
 import { isArticleDate, pageArticle } from '@shared/articles';
 import { storedCanonical } from '@shared/seo';
 import { findEntry } from '@shared/collections';
@@ -45,8 +45,6 @@ export interface Diagnostic {
    * message names a line that moves), or which of several links in one placement it is.
    */
   site?: string;
-  /** A change that resolves it in one step, where one is safe: Project health offers it beside the problem. */
-  fix?: DiagnosticFix;
 }
 
 /**

@@ -1,8 +1,9 @@
 /**
  * What a theme's own stylesheet may decide about the layouts the guardrails read (engine/layout-guardrails): which
- * classes its layout rules hook (a design's element, or a detached copy of one, by its class), and whether a rule that
- * names no class at all may make the page itself, or every element of a tag, what an absolutely positioned element is
- * placed in. Read once per stylesheet, in one pass over its text.
+ * boxes its layout rules reach, by the classes they name (a design's element, a detached copy of one, a page's
+ * element) or by tag, and whether a rule may make the page itself what an absolutely positioned element is placed in.
+ * Read once per stylesheet, in passes that each look at every character a bounded number of times, so no stylesheet a
+ * theme can ship slows validation down.
  */
 
 /** Properties a theme rule can set that decide what the guardrails read. */
@@ -35,82 +36,97 @@ const containingDecl = (prop: string, value: string) => {
   return !!inert && !['initial', 'unset', 'revert', 'revert-layer'].includes(v) && !inert(v);
 };
 
-/** Each part of a text between top-level separators, passing over quoted strings and parentheses. */
-function splitTop(text: string, sep: string): string[] {
-  const out: string[] = [];
-  let depth = 0;
+/** The most selectors one is read as once its `:is(…)` and `:where(…)` alternatives are apart. */
+const MAX_BRANCHES = 32;
+
+/**
+ * Walk a text outside quoted strings: `visit` sees each character's index and whether it is quoted (or escaped).
+ * Linear.
+ */
+function scan(text: string, visit: (i: number, quoted: boolean) => void): void {
   let quote = '';
-  let start = 0;
   for (let i = 0; i < text.length; i++) {
     const ch = text[i];
     if (quote) {
-      if (ch === '\\') i++;
+      visit(i, true);
+      if (ch === '\\' && i + 1 < text.length) visit(++i, true);
       else if (ch === quote) quote = '';
-    } else if (ch === '"' || ch === "'") quote = ch;
-    else if (ch === '(') depth++;
-    else if (ch === ')') depth--;
+    } else if (ch === '"' || ch === "'") {
+      quote = ch;
+      visit(i, true);
+    } else visit(i, false);
+  }
+}
+
+/** Each part of a text between top-level separators, passing over quoted strings, parentheses and brackets. */
+function splitTop(text: string, sep: string): string[] {
+  const out: string[] = [];
+  let depth = 0;
+  let start = 0;
+  scan(text, (i, quoted) => {
+    if (quoted) return;
+    const ch = text[i];
+    if (ch === '(' || ch === '[') depth++;
+    else if (ch === ')' || ch === ']') depth = Math.max(0, depth - 1);
     else if (ch === sep && depth === 0) {
       out.push(text.slice(start, i));
       start = i + 1;
     }
-  }
+  });
   out.push(text.slice(start));
   return out;
 }
 
-/** Where the parenthesis opened at `open` closes, passing over quoted strings; the text's end if it never does. */
-function closing(text: string, open: number): number {
-  let depth = 0;
-  let quote = '';
-  for (let i = open; i < text.length; i++) {
-    const ch = text[i];
-    if (quote) {
-      if (ch === '\\') i++;
-      else if (ch === quote) quote = '';
-    } else if (ch === '"' || ch === "'") quote = ch;
-    else if (ch === '(') depth++;
-    else if (ch === ')' && --depth === 0) return i;
-  }
-  return text.length;
-}
-
-/** Where a pseudo-class taking a selector list starts outside quoted strings, from `from`; -1 for none. */
-function findCall(text: string, names: RegExp, from = 0): { at: number; open: number } | null {
-  let quote = '';
-  for (let i = from; i < text.length; i++) {
-    const ch = text[i];
-    if (quote) {
-      if (ch === '\\') i++;
-      else if (ch === quote) quote = '';
-      continue;
-    }
-    if (ch === '"' || ch === "'") quote = ch;
-    else if (ch === ':') {
-      const m = names.exec(text.slice(i));
-      if (m) return { at: i, open: i + m[0].length - 1 };
-    }
-  }
-  return null;
-}
-
-/** A selector without its conditions on other elements (`:has(…)`, `:not(…)`), which never name the box itself. */
+/** A selector without its conditions on other elements (`:has(…)`, `:not(…)`), which never name the box itself. Linear. */
 function withoutConditions(selector: string): string {
-  let out = selector;
-  for (let call = findCall(out, /^:(has|not)\(/); call; call = findCall(out, /^:(has|not)\(/, call.at)) out = out.slice(0, call.at) + out.slice(closing(out, call.open) + 1);
+  let out = '';
+  let skipping = 0;
+  let depth = 0;
+  scan(selector, (i, quoted) => {
+    const ch = selector[i];
+    if (!quoted && !skipping && ch === ':' && /^:(has|not)\(/i.test(selector.slice(i, i + 5))) {
+      skipping = depth + 1;
+      return;
+    }
+    if (!quoted && ch === '(') depth++;
+    if (!quoted && ch === ')') {
+      depth = Math.max(0, depth - 1);
+      if (skipping && depth < skipping) return void (skipping = 0);
+    }
+    if (!skipping) out += ch;
+  });
   return out;
 }
 
-/** The most selectors one is read as; beyond it, every class it names is read as one that may hook a box. */
-const MAX_BRANCHES = 32;
+/** The first `:is(` or `:where(` outside quoted strings, and where its parenthesis closes. */
+function firstAlternatives(selector: string): { at: number; open: number; close: number } | null {
+  let found: { at: number; open: number; close: number } | null = null;
+  let depth = 0;
+  scan(selector, (i, quoted) => {
+    if (quoted || (found && found.close >= 0)) return;
+    const ch = selector[i];
+    if (!found && ch === ':') {
+      const m = /^:(is|where)\(/i.exec(selector.slice(i, i + 7));
+      if (m) found = { at: i, open: i + m[0].length - 1, close: -1 };
+      return;
+    }
+    if (!found) return;
+    if (ch === '(') depth++;
+    else if (ch === ')' && --depth === 0) found.close = i;
+  });
+  if (!found) return null;
+  const f = found as { at: number; open: number; close: number };
+  return { ...f, close: f.close < 0 ? selector.length : f.close };
+}
 
-/** A selector as the plain selectors its `:is(…)` and `:where(…)` alternatives make, or null for too many. */
-function branches(selector: string, budget = { left: MAX_BRANCHES }): string[] | null {
-  const call = findCall(selector, /^:(is|where)\(/);
-  if (!call) return --budget.left >= 0 ? [selector] : null;
-  const end = closing(selector, call.open);
+/** A selector as the plain selectors its `:is(…)` and `:where(…)` alternatives make, or null for too many to read. */
+function branches(selector: string, budget = { calls: MAX_BRANCHES * 4, leaves: MAX_BRANCHES }): string[] | null {
+  if (--budget.calls < 0) return null;
+  const call = firstAlternatives(selector);
+  if (!call) return --budget.leaves >= 0 ? [selector] : null;
   const out: string[] = [];
-  for (const alt of splitTop(selector.slice(call.open + 1, end), ',')) {
-    const more = branches(selector.slice(0, call.at) + alt.trim() + selector.slice(end + 1), budget);
+  for (const alt of splitTop(selector.slice(call.open + 1, call.close), ',')) {
+    const more = branches(selector.slice(0, call.at) + alt.trim() + selector.slice(call.close + 1), budget);
     if (!more) return null;
     out.push(...more);
   }
@@ -122,8 +138,37 @@ interface Token {
   op: string;
   value: string;
 }
-const TOKEN = /\[\s*class\s*([$*^]?)=\s*(?:'([^']*)'|"([^"]*)"|([\w-]+))\s*\]|\.(-?[_a-zA-Z][\w-]*)/g;
-const tokensOf = (selector: string): Token[] => [...selector.matchAll(TOKEN)].map((t) => (t[5] !== undefined ? { op: '.', value: t[5] } : { op: t[1] || '=', value: (t[2] ?? t[3] ?? t[4]).trim() }));
+const TOKEN = /\[\s*class\s*([$*^~]?)=\s*(?:'([^']*)'|"([^"]*)"|([\w-]+))\s*[is]?\s*\]|\.(-?[_a-zA-Z][\w-]*)/g;
+const tokensOf = (selector: string): Token[] =>
+  [...selector.matchAll(TOKEN)].map((t) => (t[5] !== undefined ? { op: '.', value: t[5] } : { op: t[1] === '~' ? '=' : t[1] || '=', value: (t[2] ?? t[3] ?? t[4]).trim() }));
+
+/** Pseudo-elements: a rule for one styles a box of the browser's making, never the element itself. */
+const PSEUDO_ELEMENT = /::|:(before|after|first-line|first-letter|marker)\b/i;
+
+/**
+ * The element a selector styles, by tag: the tag its last compound names, '*' for any element, or null when it styles
+ * a pseudo-element (a box of the browser's making).
+ */
+function subjectTag(selector: string): string | null {
+  const parts: string[] = [];
+  let depth = 0;
+  let start = 0;
+  scan(selector, (i, quoted) => {
+    if (quoted) return;
+    const ch = selector[i];
+    if (ch === '(' || ch === '[') depth++;
+    else if (ch === ')' || ch === ']') depth = Math.max(0, depth - 1);
+    else if (depth === 0 && /[\s>+~]/.test(ch)) {
+      parts.push(selector.slice(start, i));
+      start = i + 1;
+    }
+  });
+  parts.push(selector.slice(start));
+  const last = parts.map((p) => p.trim()).filter(Boolean).pop() ?? '';
+  if (PSEUDO_ELEMENT.test(last)) return null;
+  const tag = /^[a-zA-Z][\w-]*/.exec(last)?.[0];
+  return tag ? tag.toLowerCase() : '*';
+}
 
 /** One rule that may decide a layout, by the classes it names: any one element class, and every modifier. */
 interface HookRule {
@@ -132,38 +177,52 @@ interface HookRule {
 }
 
 export interface ThemeLayoutRules {
-  /** A rule names no class at all (`main`, `li`) yet may make a box something an element is placed in. */
+  /** A rule may make the page itself (`main`, `body`) something an absolutely positioned element is placed in. */
   page: boolean;
-  /** Whether a rule may reach a box with these classes, or what is inside it. */
-  reaches(classes: string[]): boolean;
+  /** Whether a rule may reach a box with these classes and tag, or what is inside it. */
+  reaches(classes: string[], tag?: string): boolean;
 }
 
-/** Every rule of a stylesheet with its selector list and declarations, passing over comments and quoted strings. */
+/**
+ * Every rule of a stylesheet: its selector list and its own declarations (those of rules nested inside it are their
+ * own rules), without comments. One pass, passing over comments and quoted strings.
+ */
 function rulesOf(css: string): Array<{ selector: string; body: string }> {
   const out: Array<{ selector: string; body: string }> = [];
-  const open: Array<{ prelude: number; at: number; nested: boolean }> = [];
-  let prelude = 0;
+  // Each open block: its selector, and the statements written directly inside it.
+  const open: Array<{ selector: string; text: string }> = [];
+  // The statement being read: a declaration once a semicolon or the block's end closes it, a selector once a brace opens.
+  let pending = '';
   let quote = '';
+  const flush = () => {
+    if (open.length) open[open.length - 1].text += pending;
+    pending = '';
+  };
   for (let i = 0; i < css.length; i++) {
     const ch = css[i];
     if (quote) {
-      if (ch === '\\') i++;
+      pending += ch;
+      if (ch === '\\' && i + 1 < css.length) pending += css[++i];
       else if (ch === quote) quote = '';
       continue;
     }
-    if (ch === '"' || ch === "'") quote = ch;
-    else if (ch === '/' && css[i + 1] === '*') {
+    if (ch === '"' || ch === "'") {
+      quote = ch;
+      pending += ch;
+    } else if (ch === '/' && css[i + 1] === '*') {
       const end = css.indexOf('*/', i + 2);
       i = end < 0 ? css.length : end + 1;
     } else if (ch === '{') {
-      if (open.length) open[open.length - 1].nested = true;
-      open.push({ prelude, at: i, nested: false });
-      prelude = i + 1;
+      open.push({ selector: pending.trim(), text: '' });
+      pending = '';
     } else if (ch === '}') {
+      flush();
       const block = open.pop();
-      if (block && !block.nested) out.push({ selector: css.slice(block.prelude, block.at).replace(/\/\*[\s\S]*?\*\//g, '').trim(), body: css.slice(block.at + 1, i) });
-      prelude = i + 1;
-    } else if (ch === ';') prelude = i + 1;
+      if (block) out.push({ selector: block.selector, body: block.text });
+    } else {
+      pending += ch;
+      if (ch === ';') flush();
+    }
   }
   return out;
 }
@@ -174,34 +233,38 @@ export function themeLayoutRules(css: string): ThemeLayoutRules {
   const cached = cache.get(css);
   if (cached) return cached;
   let page = false;
+  /** Tags a rule naming no class may lay out ('*' for any element). */
+  const tags = new Set<string>();
   const hooks: HookRule[] = [];
   for (const { selector, body } of rulesOf(css)) {
-    // An at-rule's own block (a font face), or a keyframe of an animation, styles no element at rest.
+    // An at-rule's own block (a font face, a media query's wrapper), or a keyframe of an animation, styles no element.
     if (!selector || selector.startsWith('@') || splitTop(selector, ',').every((s) => /^(from|to|[\d.]+%)$/.test(s.trim()))) continue;
-    const decls = splitTop(body.replace(/\/\*[\s\S]*?\*\//g, ''), ';').flatMap((d) => {
+    const decls = splitTop(body, ';').flatMap((d) => {
       const colon = d.indexOf(':');
       return colon > 0 ? [{ prop: d.slice(0, colon).trim().toLowerCase(), value: d.slice(colon + 1).trim().toLowerCase() }] : [];
     });
     if (!decls.some((d) => DECIDING.test(d.prop))) continue;
     const containing = decls.some((d) => containingDecl(d.prop, d.value));
     for (const one of splitTop(selector, ',')) {
-      const plain = withoutConditions(one);
-      const each = branches(plain);
-      // Too many alternatives to read apart: every class named may hook a box, and an element named by its tag may be one.
+      // Too many alternatives to read apart: it may reach any box, and the page.
+      const each = branches(withoutConditions(one));
       if (!each) {
-        hooks.push({ any: tokensOf(plain), all: [] });
+        tags.add('*');
         if (containing) page = true;
         continue;
       }
       for (const branch of each) {
         const tokens = tokensOf(branch);
-        if (!tokens.length) {
-          if (containing) page = true;
+        if (tokens.length) {
+          // A modifier (`--layout-sticky-split`) narrows the rule to boxes that carry it; a detached copy's prefix is none.
+          const modifier = (t: Token) => t.value.replace(/^so--d-/, '').includes('--');
+          hooks.push({ any: tokens.filter((t) => !modifier(t)), all: tokens.filter(modifier) });
           continue;
         }
-        // A modifier (`--layout-sticky-split`) narrows the rule to boxes that carry it; a detached copy's prefix is none.
-        const modifier = (t: Token) => t.value.replace(/^so--d-/, '').includes('--');
-        hooks.push({ any: tokens.filter((t) => !modifier(t)), all: tokens.filter(modifier) });
+        const tag = subjectTag(branch);
+        if (tag === null) continue;
+        if (tag === 'html' || tag === 'body' || tag === 'main' || tag === '*' || /#main\b/.test(branch)) page ||= containing;
+        if (tag !== 'html' && tag !== 'body') tags.add(tag);
       }
     }
   }
@@ -209,7 +272,10 @@ export function themeLayoutRules(css: string): ThemeLayoutRules {
     t.op === '^' ? classes.join(' ').startsWith(t.value) : classes.some((c) => (t.op === '.' || t.op === '=' ? c === t.value : t.op === '*' ? c.includes(t.value) : c.endsWith(t.value)));
   const rules: ThemeLayoutRules = {
     page,
-    reaches: (classes) => classes.length > 0 && hooks.some((r) => (r.any.length === 0 || r.any.some((t) => matches(classes, t))) && r.all.every((t) => matches(classes, t)))
+    reaches: (classes, tag) =>
+      tags.has('*') ||
+      (tag !== undefined && tags.has(tag.toLowerCase())) ||
+      (classes.length > 0 && hooks.some((r) => (r.any.length === 0 || r.any.some((t) => matches(classes, t))) && r.all.every((t) => matches(classes, t))))
   };
   cache.set(css, rules);
   return rules;

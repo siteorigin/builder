@@ -1,12 +1,10 @@
-import type { DiagnosticFix } from '@shared/api';
-import type { EditOperation } from '@shared/ops';
-import type { ComponentDefinition, GraphNode, InstanceNode, NodeTree, OwnerRef, ProjectState, ResponsiveScope, ResponsiveStyles, StyleProps } from '@shared/types';
+import type { ComponentDefinition, GraphNode, InstanceNode, NodeTree, OwnerRef, ProjectState, ResponsiveStyles, StyleProps } from '@shared/types';
 import { isBinding, isBindingRef } from '@shared/types';
 import { cascadeStyles, parseCustomCss, parseGridTemplate, styleToCss, type StyleLayer } from '@shared/styles';
 import { axesOf, designLayers, selectedVariants } from '@shared/variants';
 import { getTheme } from '@catalogue/index';
 import { isCarouselTrack } from '@generator/card-links';
-import { detachedClasses, nodeAxes, nodeClass, variantClass } from '@generator/index';
+import { detachedClasses, nodeAxes, nodeClass, pageNodeClass, variantClass } from '@generator/index';
 import { allTrees, childLists, displayName } from './tree';
 import { themeLayoutRules, type ThemeLayoutRules } from './theme-layout-rules';
 import type { Diagnostic } from './validate';
@@ -15,7 +13,9 @@ import type { Diagnostic } from './validate';
  * Layout guardrails (#668): three CSS combinations that quietly break a layout, said in plain words.
  *
  * - A sticky element inside a container that hides overflow stops sticking: that container becomes what it sticks
- *   to, and it never scrolls. Overflow Clip trims what spills over its edges without becoming one.
+ *   to, and it never scrolls. Overflow Clip trims what spills over its edges without becoming one, which the warning
+ *   suggests; it offers no one-step change, since Clip also differs in ways a check cannot see (a box that no longer
+ *   scrolls may take its content's size as its least, and a link to something clipped no longer scrolls it into view).
  * - A grid child that spans more columns than its grid has makes the grid add columns of its own to fit it.
  * - An absolutely positioned element with no positioned container around it is placed against the whole page.
  *
@@ -47,8 +47,6 @@ interface KnownBox {
   inline: boolean | 'maybe';
   /** Its tag, when fixed. */
   tag?: string;
-  /** An authored element whose own styles are its only rules, so one change to them changes what shows. */
-  own?: { owner: OwnerRef; nodeId: string; styles: ResponsiveStyles };
 }
 
 /**
@@ -96,9 +94,8 @@ function spanOf(props: StyleProps): number | undefined {
   return Number.isInteger(n) && n > 1 ? n : undefined;
 }
 
-/** An offset a browser surely keeps: a length, a percentage, zero, or math over at least one length. */
-const LENGTH = /^-?(\d+(\.\d+)?|\.\d+)(px|r?em|%|ch|ex|vh|vw|vmin|vmax|[sld]vh|[sld]vw)$/;
-const offsetKept = (side: string | undefined) => side !== undefined && (side === '0' || LENGTH.test(side) || (/^(calc|min|max|clamp)\(/.test(side) && /\d(px|r?em|%|ch|ex|vh|vw)\b/.test(side) && !/var\(/.test(side)));
+/** An offset a browser surely keeps: zero, a length or a percentage (math is not read, since it may not type-check). */
+const LENGTH = /^(0|-?(\d+(\.\d+)?|\.\d+)(px|r?em|%|ch|ex|vh|vw|vmin|vmax|[sld]vh|[sld]vw))$/;
 
 /** Whether a sticky box has an offset from the top or bottom, without which it never sticks as the page scrolls. */
 function sticksVertically(props: StyleProps): boolean {
@@ -114,8 +111,10 @@ function sticksVertically(props: StyleProps): boolean {
       word = '';
     } else word += ch;
   }
+  // The browser drops the whole shorthand for one side it cannot read.
+  if (sides.length < 1 || sides.length > 4 || !sides.every((side) => side === 'auto' || LENGTH.test(side))) return false;
   // One value is every side; two are top-and-bottom then the sides; three and four give the bottom third.
-  return offsetKept(sides[0]) || offsetKept(sides.length >= 3 ? sides[2] : sides[0]);
+  return sides[0] !== 'auto' || (sides.length >= 3 ? sides[2] : sides[0]) !== 'auto';
 }
 
 /** Custom CSS that may make a box what an absolutely positioned element inside it is placed in. */
@@ -138,11 +137,14 @@ const OVERFLOW_CSS = /^overflow(-x|-y|-block|-inline)?$/;
 
 /**
  * Whether overflow applies to a box at a size: not to an inline one, unless a layout of its own or its parent's (whose
- * children are blocks) makes it a block. Null when that is not known.
+ * children are blocks), or absolute positioning, makes it a block. Null when that is not known.
  */
 function blockAt(chain: Box[], i: number, size: Size): boolean | null {
   const b = chain[i] as KnownBox;
-  if (b.inline === false || written(b.at[size], 'layout') !== undefined) return true;
+  if (b.custom.has('position')) return null;
+  // Placed absolutely, it is a block too.
+  const position = written(b.at[size], 'position');
+  if (b.inline === false || written(b.at[size], 'layout') !== undefined || position === 'absolute' || position === 'fixed') return true;
   const parent = chain[i - 1];
   if (parent?.kind === 'box' && FLEX_OR_GRID.has(written(parent.at[size], 'layout') ?? '')) return true;
   return b.inline === true && parent?.kind !== 'unknown' ? false : null;
@@ -162,16 +164,6 @@ function clipAt(chain: Box[], size: Size, from = chain.length - 1): number {
     if (block) return i;
   }
   return -1;
-}
-
-/** Whether every box from `from` out to the page is known and hides no overflow at a size. */
-function clearToPage(chain: Box[], size: Size, from: number): boolean {
-  for (let i = from; i >= 0; i--) {
-    const b = chain[i];
-    if (b.kind === 'page') return true;
-    if (b.kind !== 'box' || customSets(b, OVERFLOW_CSS) || written(b.at[size], 'overflow') === 'hidden') return false;
-  }
-  return false;
 }
 
 /** Whether nothing around an element is positioned at a size, all the way out to the page. */
@@ -194,35 +186,6 @@ interface Finding {
   site: string;
   sizes: Size[];
   message: (where: string) => string;
-  /** Sticky only: the box that hides overflow, what it sits in, the scope each size takes its overflow from, and
-   * whether everything further out is known to hide none. */
-  clip?: { box: KnownBox; parent: Box; from: Map<Size, ResponsiveScope>; clear: boolean };
-}
-
-/**
- * Overflow Clip in place of Hidden, in one step, where that changes nothing but the sticking: on an element whose own
- * styles are its only rules (on a page, the header or footer, or a collection's layout), at the scopes the hidden
- * overflow comes from, with every box further out known to hide no overflow. At every size those scopes reach, it must
- * lay out its content as a stack or grid (a flow box would stop holding its children's margins in) and sit in plain
- * flow (in a stack, row or grid, a box that no longer scrolls takes its content's size as its least, and may grow).
- */
-function clipFix(clip: NonNullable<Finding['clip']>): DiagnosticFix | undefined {
-  const own = clip.box.own;
-  // A design's own tree never reaches the page (it may be placed anywhere), so a box there is never clear to it.
-  if (!own || !clip.clear) return undefined;
-  const scopes = [...new Set(clip.from.values())];
-  const reach = (scope: ResponsiveScope): Size[] => (scope === 'base' ? SIZES.filter((s) => own.styles[s]?.overflow === undefined) : [scope]);
-  const parent = clip.parent;
-  const safe = (s: Size) => {
-    if (!FLEX_OR_GRID.has(written(clip.box.at[s], 'layout') ?? '')) return false;
-    if (parent.kind === 'page') return true;
-    if (parent.kind !== 'box') return false;
-    const layout = written(parent.at[s], 'layout');
-    return layout === undefined || layout === 'block';
-  };
-  if (!scopes.every((scope) => reach(scope).every(safe))) return undefined;
-  const operations: EditOperation[] = scopes.map((scope) => ({ type: 'node.setStyle', owner: own.owner, nodeId: own.nodeId, scope, property: 'overflow', value: 'clip' }));
-  return { label: 'Set Overflow to Clip', operations };
 }
 
 /** The node a declared part names: only a declared part's changes reach the markup (see the generator's classExpr). */
@@ -317,8 +280,9 @@ function treeGuardrails(state: ProjectState, owner: OwnerRef, tree: NodeTree, la
    * reach it or what it holds, or custom CSS may change what it displays as (none, contents). Unknown, with the sizes
    * it hides at, when the generator writes a display of its own for it (a rule that shows it again).
    */
-  const boxOf = (layers: StyleLayer[] | null, n: GraphNode, key: string, name: string, classes: string[], own?: KnownBox['own']): Box | null => {
-    if (!layers || theme.reaches(classes)) return null;
+  const boxOf = (layers: StyleLayer[] | null, n: GraphNode, key: string, name: string, classes: string[]): Box | null => {
+    const tag = (n as { tag?: unknown }).tag;
+    if (!layers || theme.reaches(classes, typeof tag === 'string' ? tag : undefined)) return null;
     const custom = new Set<string>();
     for (const layer of layers)
       for (const scope of RESTING) {
@@ -329,9 +293,8 @@ function treeGuardrails(state: ProjectState, owner: OwnerRef, tree: NodeTree, la
     const won = cascadeStyles(layers);
     const at = { phone: won.phone ?? {}, tablet: won.tablet ?? {}, desktop: won.desktop ?? {} };
     if (layers.length > 1 && layers.some((l) => showsAgain(l.styles))) return { kind: 'unknown', hidden: new Set(SIZES.filter((s) => at[s].hidden === true)) };
-    const tag = (n as { tag?: unknown }).tag;
     const inline = typeof tag !== 'string' || isBinding(tag) ? 'maybe' : INLINE_TAGS.has(tag);
-    return { kind: 'box', key, name, at, custom, inline, tag: typeof tag === 'string' ? tag : undefined, own };
+    return { kind: 'box', key, name, at, custom, inline, tag: typeof tag === 'string' ? tag : undefined };
   };
   /** A box read as a runtime helper's markup: unknown, though still hidden where its own styles hide it. */
   const asHelper = (b: Box): Box => ({ kind: 'unknown', hidden: new Set(SIZES.filter((s) => hiddenAt(b, s))) });
@@ -346,17 +309,13 @@ function treeGuardrails(state: ProjectState, owner: OwnerRef, tree: NodeTree, la
       const clip = position === 'sticky' && sticksVertically(b.at[size]) ? clipAt(chain, size) : -1;
       if (clip >= 0) {
         const box = chain[clip] as KnownBox;
-        const f = record(JSON.stringify(['sticky', subject.id, box.key]), size, () => ({
+        record(JSON.stringify(['sticky', subject.id, box.key]), size, () => ({
           code: 'LAYOUT_STICKY_CLIPPED',
           nodeId: subject.id,
           site: JSON.stringify([subject.id, box.key]),
-          clip: { box, parent: chain[clip - 1] ?? OPEN, from: new Map(), clear: true },
           message: (where) =>
             `${label}: ${where}${subject.name} is set to stick while the page scrolls, but ${box.name} around it hides overflow, so it scrolls away with everything else. Set the Overflow of ${box.name} to Clip: it still trims what spills over its edges, and lets ${subject.name} stick.`
         }));
-        f.clip!.from.set(size, box.own?.styles[size]?.overflow !== undefined ? size : 'base');
-        // Anything further out that hides overflow, or may, would take its place: one step would not make it stick.
-        if (!clearToPage(chain, size, clip - 1)) f.clip!.clear = false;
       }
       if (position === 'absolute' && unanchored(chain, size))
         record(JSON.stringify(['absolute', subject.id]), size, () => ({
@@ -441,8 +400,7 @@ function treeGuardrails(state: ProjectState, owner: OwnerRef, tree: NodeTree, la
       const children = n.kind === 'element' ? n.children : [];
       // In a design, what shows is its default look: the options chosen when a placement chooses none.
       const layers = def ? designLayers(def, n.id, undefined) : [{ styles: n.styles, strength: 1 }];
-      const own = layers.length === 1 && n.styles && typeof n.styles === 'object' ? { owner, nodeId: n.id, styles: n.styles } : undefined;
-      const box = boxOf(layers, n, n.id, quoted(n, def), def ? designClasses(def, n, undefined) : detachedClasses(n), own);
+      const box = boxOf(layers, n, n.id, quoted(n, def), def ? designClasses(def, n, undefined) : [pageNodeClass(n.id), ...detachedClasses(n)]);
       if (!box) return;
       // Inside a carousel's frame or a dialog, the boxes around are the runtime helper's.
       if (helped(n)) return children.forEach((c) => visit(c, [...chain, asHelper(box)]));
@@ -471,9 +429,6 @@ function treeGuardrails(state: ProjectState, owner: OwnerRef, tree: NodeTree, la
   tree.rootIds.forEach((id) => visit(id, [start]));
 
   const out: Diagnostic[] = [];
-  for (const f of found.values()) {
-    const fix = f.clip ? clipFix(f.clip) : undefined;
-    out.push({ severity: 'warning', code: f.code, message: f.message(onSizes(f.sizes)), owner, nodeId: f.nodeId, site: f.site, ...(fix ? { fix } : {}) });
-  }
+  for (const f of found.values()) out.push({ severity: 'warning', code: f.code, message: f.message(onSizes(f.sizes)), owner, nodeId: f.nodeId, site: f.site });
   return out;
 }
