@@ -12,8 +12,18 @@ import type { InspectionChecks, InspectionIssue } from '../../src/shared/inspect
 const bridge = readFileSync(resolve('src/runtime/bridge.client.js'), 'utf8');
 const browserInstalled = existsSync(chromium.executablePath());
 
+/** One element a narrowed inspection was asked for, as the bridge reports it. */
+interface TargetReport {
+  visible: boolean;
+  elements: Array<{ box: { x: number; y: number; width: number; height: number } | null; scrollWidth: number; scrollHeight: number; visible: boolean }>;
+  omittedElements?: number;
+}
+
 interface Report {
   viewportWidth: number;
+  targets?: TargetReport[];
+  runtimeErrors?: string[];
+  images?: { total: number };
   checks?: InspectionChecks;
   issues: InspectionIssue[];
   /** Elements the inspection left in the page that the page did not have (a colour probe, say). */
@@ -39,7 +49,7 @@ body{margin:0;font:16px/1.5 sans-serif;color:#111;background:#fff}
 </style></head><body><main ${so('main')}><h1 ${so('title')}>Readable page</h1>${body}</main><script type="module" src="/bridge.js"></script></body></html>`;
 
 /** Inspect `body` (inside a page with one h1) at `width`, twice when asked, and count what the inspection left behind. */
-async function inspect(body: string, width = 390): Promise<Report> {
+async function inspect(body: string, width = 390, targets?: Array<{ ctx: string; node: string; items: string }>): Promise<Report> {
   const page = await browser.newPage();
   try {
     await page.route(`${ORIGIN}/**`, (route) => {
@@ -60,7 +70,7 @@ async function inspect(body: string, width = 390): Promise<Report> {
         if (e.data?.sessionId !== 'so-test') return;
         if (e.data.type === 'ready') {
           before = frame.contentDocument.querySelectorAll('*').length;
-          frame.contentWindow.postMessage({ protocolVersion: 1, sessionId: 'so-test', type: 'inspect', payload: { requestId: 'r' } }, '*');
+          frame.contentWindow.postMessage({ protocolVersion: 1, sessionId: 'so-test', type: 'inspect', payload: { requestId: 'r'${targets ? `, targets: ${JSON.stringify(targets)}` : ''} } }, '*');
         }
         if (e.data.type === 'inspectResult') done({ ...e.data.payload.report, leftovers: frame.contentDocument.querySelectorAll('*').length - before });
       });
@@ -387,5 +397,61 @@ describe('text over a background image', () => {
       ].join('')
     );
     expect(of(r, 'contrast-unverified').map((i) => [i.desc?.node, i.reason]).sort()).toEqual([['below', 'image'], ['blend', 'image'], ['card', 'image'], ['faint', 'image'], ['half', 'image'], ['inBorder', 'image'], ['inset', 'image'], ['moved', 'image']]);
+  }, 30000);
+});
+
+describe('layout inspection of chosen elements (#743)', () => {
+  const at = (node: string, items = '') => ({ ctx: 'page:p', node, items });
+  // A hero with a small link and a pale caption, a card list with one overflowing card, a band hidden on phones, and
+  // elsewhere on the page a low-contrast line, an image without alt text and a box too wide for the page.
+  const PAGE_BODY = `
+    <style>@media (max-width: 600px) { .desktop-only { display: none } }</style>
+    <section ${so('hero')} style="padding:20px"><p ${so('caption')} style="color:#bbb">Pale caption in the hero</p><a ${so('heroLink')} href="/go" style="display:inline-block;padding:2px">Go</a></section>
+    <ul ${so('cards')}>${['a', 'b'].map((i) => `<li ${so('card', i)} style="width:${i === 'b' ? 600 : 100}px">Card ${i}</li>`).join('')}</ul>
+    <section ${so('band')} class="desktop-only"><p ${so('bandText')}>Only on large screens</p></section>
+    <section ${so('elsewhere')}><p ${so('faint')} style="color:#ccc">Faint words elsewhere</p><img ${so('photo')} src="data:image/gif;base64,R0lGODlhAQABAAAAACw="><div ${so('wide')} style="width:800px">Too wide</div></section>
+    <script>addEventListener('load', () => setTimeout(() => { throw new Error('boom') }, 0))</script>`;
+
+  it.skipIf(!browserInstalled)('measures each element asked for, with only the findings inside it beside what belongs to the page', async () => {
+    const r = await inspect(PAGE_BODY, 390, [at('hero'), at('card', 'b'), at('band'), at('nowhere')]);
+    const [hero, card, band, nowhere] = r.targets!;
+    // The hero: its box, its content's size, and that it shows.
+    expect(hero.visible).toBe(true);
+    expect(hero.elements).toHaveLength(1);
+    expect(hero.elements[0].box).toMatchObject({ x: 0, width: 390 });
+    expect(hero.elements[0].box!.height).toBeGreaterThan(40);
+    expect(hero.elements[0].scrollWidth).toBe(390);
+    // One card of the list, by its item: the wide one, whose box runs past the screen.
+    expect(card.elements).toHaveLength(1);
+    expect(card.elements[0].box!.width).toBe(600);
+    // Rendered but hidden at this width, and not rendered at all: both a result, neither an error.
+    expect(band).toEqual({ visible: false, elements: [{ box: null, scrollWidth: 0, scrollHeight: 0, visible: false }] });
+    expect(nowhere).toEqual({ visible: false, elements: [] });
+    // Findings inside the elements asked for, and none from the rest of the page.
+    const nodes = (kind: string) => of(r, kind).map((i) => i.desc?.node);
+    expect(nodes('low-contrast')).toEqual(['caption']);
+    expect(nodes('small-tap-target')).toEqual(['heroLink']);
+    expect(nodes('element-overflow')).toEqual(['card']);
+    expect(of(r, 'element-overflow')[0].desc?.items).toBe('b');
+    expect(of(r, 'missing-alt')).toEqual([]);
+    expect(r.images?.total).toBe(0);
+    // Counted over the elements asked for alone: the caption, the link and card b.
+    expect(r.checks!.contrast.checked).toBe(3);
+    // The page's own width and its runtime errors are still said.
+    expect(of(r, 'horizontal-overflow')).toHaveLength(1);
+    expect(r.runtimeErrors?.join(' ')).toContain('boom');
+    expect(r.leftovers).toBe(0);
+  }, 30000);
+
+  it.skipIf(!browserInstalled)('shows the element hidden on phones at desktop width, and measures the whole page when nothing is asked for', async () => {
+    const wide = await inspect(PAGE_BODY, 1280, [at('band'), at('card')]);
+    expect(wide.targets![0].visible).toBe(true);
+    expect(wide.targets![0].elements[0].box!.height).toBeGreaterThan(0);
+    // Without an item, every card of the list.
+    expect(wide.targets![1].elements).toHaveLength(2);
+    const whole = await inspect(PAGE_BODY, 390);
+    expect(whole.targets).toBeUndefined();
+    expect(of(whole, 'low-contrast').map((i) => i.desc?.node).sort()).toEqual(['caption', 'faint']);
+    expect(of(whole, 'missing-alt')).toHaveLength(1);
   }, 30000);
 });

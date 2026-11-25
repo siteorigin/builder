@@ -14,6 +14,7 @@ export const MAX_LAYOUT_TARGETS = 10;
 
 /** A finding's ref as the model sends it back; what it adds to explain a finding (match, definition) is not needed. */
 export const LAYOUT_TARGET = z.object({
+  // The same shape as every other owner, so a grammar can share it; only a page's own or its header or footer resolves.
   owner: z.object({ kind: z.enum(['page', 'shell', 'component', 'template']), id: z.string() }),
   nodeId: z.string(),
   partId: z.string().optional(),

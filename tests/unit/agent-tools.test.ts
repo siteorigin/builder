@@ -1823,6 +1823,38 @@ describe('context budget', () => {
       expect(at(refused, 'e1')).not.toContain('Superseded');
     });
 
+    it('never lets a check of chosen elements replace a check of the whole page, and lets a whole-page check replace it', () => {
+      const hero = { owner: { kind: 'page', id: 'pg_a' }, nodeId: 'n_hero' };
+      const card = { owner: { kind: 'page', id: 'pg_a' }, nodeId: 'n_grid', partId: 'card', itemId: 'i1' };
+      const narrowed: CanonicalItem[] = [
+        ...read('w1', { pageId: 'pg_a', viewport: 'phone' }, layout('pg_a', 'phone'), 'inspect_layout'),
+        ...read('n1', { pageId: 'pg_a', viewport: 'phone', refs: [hero, card] }, layout('pg_a', 'phone'), 'inspect_layout'),
+        // The same elements in another order (and named twice) are the same check.
+        ...read('n2', { pageId: '/', viewport: 'phone', refs: [card, hero, hero] }, layout('pg_a', 'phone'), 'inspect_layout'),
+        // Other elements are another check.
+        ...read('n3', { pageId: 'pg_a', viewport: 'phone', refs: [hero] }, layout('pg_a', 'phone'), 'inspect_layout'),
+        ...filler('f1'),
+        ...filler('f2')
+      ];
+      const kept = structuredClone(narrowed);
+      applyContextBudget(narrowed, optsWith(8000));
+      expect(at(narrowed, 'n1')).toBe('[Superseded inspect_layout pg_a phone, 2 elements only. Measure it again if you need it.]');
+      for (const id of ['w1', 'n2', 'n3']) expect(at(narrowed, id), id).toBe(at(kept, id));
+      // A whole-page check replaces every earlier check of that page at that width, narrowed or not.
+      const whole: CanonicalItem[] = [
+        ...read('w1', { pageId: 'pg_a', viewport: 'phone' }, layout('pg_a', 'phone'), 'inspect_layout'),
+        ...read('n1', { pageId: 'pg_a', viewport: 'phone', refs: [hero] }, layout('pg_a', 'phone'), 'inspect_layout'),
+        ...read('w2', { pageId: 'pg_a', viewport: 'phone' }, layout('pg_a', 'phone'), 'inspect_layout'),
+        ...filler('f1'),
+        ...filler('f2')
+      ];
+      const before = structuredClone(whole);
+      applyContextBudget(whole, optsWith(4000));
+      expect(at(whole, 'w1')).toContain('[Superseded inspect_layout pg_a phone.');
+      expect(at(whole, 'n1')).toBe('[Superseded inspect_layout pg_a phone, 1 element only. Measure it again if you need it.]');
+      expect(at(whole, 'w2')).toBe(at(before, 'w2'));
+    });
+
     it('records the revision a layout check was made at', async () => {
       const { session, adapter, run } = await setup([() => [call('i1', 'inspect_layout', { pageId: '/', viewport: 'phone' })], () => finish()]);
       await run('Check the home page on phones');
