@@ -5,11 +5,12 @@
 // page holds content there is refused with the engine's reason, and that content stays.
 import assert from 'node:assert/strict';
 import { join } from 'node:path';
-import { createProject, eventually, launch, MOD, scratch, step } from './harness.mjs';
+import { createProject, eventually, launch, MOD, openInspector, scratch, step } from './harness.mjs';
 
 const { WORK, SHOTS, cleanup } = scratch('slot-authoring');
 const { app, win, errors } = await launch(WORK);
 const frame = await createProject(win, { name: 'Slot Works', parentDir: join(WORK, 'sites'), starter: 'blank', sampleImages: false });
+await openInspector(win);
 
 const snapshot = () => win.evaluate(async () => window.builder.project.snapshot());
 const apply = (operations, label) =>
