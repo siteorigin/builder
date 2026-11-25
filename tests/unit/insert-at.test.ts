@@ -5,6 +5,7 @@ import { createStarterState } from '@catalogue/starters';
 import { applyOperations } from '@engine/apply';
 import { validateState } from '@engine/validate';
 import { inferredRole, placementRole } from '@engine/insert-role';
+import { findParent } from '@engine/tree';
 import { quickItems } from '../../src/renderer/src/lib/inline-insert';
 import { definitionRole, elementWhere, heldSlot, insertAt, insertOps, insertRole, insertSelection, nodeBefore, nodeLabel, placeFor, placementOf, sectionWhere, whereFor, type InsertAt } from '../../src/renderer/src/lib/insert-at';
 
@@ -463,8 +464,10 @@ describe('A component’s placement role, chosen in Component Studio (#661)', ()
     expect(insertRole(out.state, { definitionId: p.cardDef })).toBe('section');
     expect(offered(out.state, 'section')).toBe(true);
     expect(offered(out.state, 'element')).toBe(false);
-    // With a card in the grid selected, it now goes after the section holding the grid, not beside the card.
-    expect(insertAt(out.state, p.owner, 'section', ref(p.owner, p.card), p.cardDef)).toEqual({ owner: p.owner, parentId: null, index: home(out.state).rootIds.indexOf(p.section) + 1 });
+    // With a card in the grid selected, it went beside the card; now it goes after the section holding the grid.
+    const at = (st: ProjectState) => insertAt(st, p.owner, insertRole(st, { definitionId: p.cardDef }), ref(p.owner, p.card), p.cardDef);
+    expect(at(p.state)).toMatchObject({ owner: p.owner, parentId: p.grid });
+    expect(at(out.state)).toEqual({ owner: p.owner, parentId: null, index: home(out.state).rootIds.indexOf(p.section) + 1 });
   });
 
   it('null hands it back to the editor, which tells it from the design (Automatic)', () => {
@@ -477,6 +480,19 @@ describe('A component’s placement role, chosen in Component Studio (#661)', ()
     expect(Object.hasOwn(cleared.components[p.cardDef], 'insertAs')).toBe(false);
     expect(definitionRole(cleared, p.cardDef)).toBe('element');
     expect(inferredRole(cleared, p.bandDef)).toBe('section');
+  });
+
+  it('Automatic reads the design even with no placement to go on', () => {
+    const p = exhibitors();
+    const unplaced = apply(p.state, [
+      { type: 'node.remove', owner: p.owner, nodeId: p.card },
+      { type: 'component.setInsertAs', definitionId: p.cardDef, insertAs: null }
+    ]).state;
+    // A design rooted in a stack, not a section element: inside layouts.
+    expect(inferredRole(unplaced, p.cardDef)).toBe('element');
+    const chosen = apply(unplaced, [{ type: 'component.setInsertAs', definitionId: p.cardDef, insertAs: 'section' }]).state;
+    expect(inferredRole(chosen, p.cardDef)).toBe('element');
+    expect(definitionRole(chosen, p.cardDef)).toBe('section');
   });
 
   it('is the project’s own components only', () => {
@@ -503,6 +519,24 @@ describe('What the Inspector calls a placement (#661)', () => {
     expect(definitionRole(state, p.bandDef)).toBe('section');
     expect(placementRole(state, p.owner, nested.nodeId as string)).toBe('element');
     expect(placementRole(state, p.owner, p.band)).toBe('section');
+    // And as a plain child of the grid, beside the card.
+    const inGrid = apply(state, [{ type: 'node.insert', owner: p.owner, parentId: p.grid, definitionId: p.bandDef }]);
+    expect(placementRole(inGrid.state, p.owner, inGrid.results[0].nodeId as string)).toBe('element');
+  });
+
+  it('reads the shared header’s own tree', () => {
+    const p = exhibitors();
+    const header: OwnerRef = { kind: 'shell', id: 'header' };
+    const top = p.state.site.shell.header.rootIds[0];
+    expect(placementRole(p.state, header, top)).toBe('section');
+    // The band, a section by choice, inside a section of the header.
+    const holder = apply(p.state, [{ type: 'node.insert', owner: header, parentId: null, componentId: 'layout.section' }]);
+    const holderId = holder.results[0].nodeId as string;
+    const out = apply(holder.state, [{ type: 'node.insert', owner: header, parentId: holderId, slot: 'content', definitionId: p.bandDef }]);
+    const inner = out.results[0].nodeId as string;
+    expect(findParent(out.state.site.shell.header, inner)?.parentId).toBe(holderId);
+    expect(placementRole(out.state, header, inner)).toBe('element');
+    expect(placementRole(out.state, header, holderId)).toBe('section');
   });
 
   it('a component set to insert inside layouts is a component even at the top of the page', () => {

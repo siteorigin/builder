@@ -161,14 +161,24 @@ step('its placement role is chosen in Component Studio, in one undoable step (#6
 const role = win.locator('#dock-panel-inspect [data-placement-role]');
 await role.waitFor();
 const insertAs = async () => (await snapshot()).state.components[defId].insertAs;
-const appliedLabels = () => win.evaluate(async () => (await window.builder.project.snapshot()).history.entries.filter((e) => e.applied).map((e) => e.label));
+const appliedIds = () => win.evaluate(async () => (await window.builder.project.snapshot()).history.entries.filter((e) => e.applied).map((e) => e.id));
+/** Chooses a role and waits for the design to record it as one new change. */
+const chooseRole = async (value, expected) => {
+  const before = await appliedIds();
+  await role.selectOption(value);
+  await eventually(async () => {
+    assert.equal(await insertAs(), expected, `the design records ${value || 'Automatic'}`);
+    const after = await appliedIds();
+    assert.deepEqual(after.slice(0, before.length), before, 'nothing undone');
+    assert.equal(after.length, before.length + 1, 'one change');
+  }, 15000);
+};
 assert.equal(await insertAs(), undefined, 'the copy has no role of its own yet');
 assert.equal(await role.inputValue(), '', 'Automatic is chosen');
 assert.equal((await role.locator('option:checked').innerText()).trim(), 'Automatic (page section)', 'and says what the editor tells from the design');
-const labelsBefore = await appliedLabels();
-await role.selectOption('element');
-await eventually(async () => assert.equal(await insertAs(), 'element', 'the design records the role'), 15000);
-assert.deepEqual(await appliedLabels(), [...labelsBefore, `Insert ${def.name} as a subcomponent`], 'one change');
+await chooseRole('section', 'section');
+await chooseRole('', undefined);
+await chooseRole('element', 'element');
 await win.locator('.canvas').focus();
 await win.keyboard.press(`${MOD}+z`);
 await eventually(async () => assert.equal(await insertAs(), undefined, 'Undo takes the role back'), 15000);
@@ -200,6 +210,10 @@ await eventually(async () => assert.equal(await inspector.locator('.insp-kind-la
 const styleScope = inspector.locator('.section-head', { hasText: /^Style/ }).locator('.scope');
 assert.equal(await styleScope.first().innerText(), 'Whole component', 'and so does Style');
 await win.screenshot({ path: join(SHOTS, 'component-studio-nested-inspector.png') });
+// The section holding it is still one of the page's sections.
+await openRail('Layers');
+await win.locator(`[role="treeitem"][data-owner="page:${pageId}"][data-node="${holder}"]`).click();
+await eventually(async () => assert.match(await inspector.locator('.insp-kind-label').first().innerText(), /^Section · /, 'a section of the page is still a section'));
 
 assert.deepEqual(errors, [], 'no uncaught errors in the editor');
 await app.close();

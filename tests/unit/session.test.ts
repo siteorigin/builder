@@ -568,11 +568,13 @@ describe('placement role (#661)', () => {
     const themed = home.rootIds.map((id) => home.nodes[id] as InstanceNode).find((n) => s.state.components[n.definitionId]?.componentId === 'features.grid')!;
     const fork = await s.apply({ operations: [{ type: 'component.fork', definitionId: themed.definitionId }] }, { label: 'Make a project copy', source: 'user' });
     const definitionId = fork.results![0].definitionId as string;
+    const entries = s.historyInfo().entries.length;
+    const revision = s.revision;
     const refused = await s.apply({ operations: [{ type: 'component.setInsertAs', definitionId, insertAs: 'element' }] }, { label: 'Set role', source: 'ai' });
     expect(refused.ok).toBe(false);
     expect(refused.error?.message).toMatch(/only for the editor/);
     expect(s.state.components[definitionId].insertAs).toBeUndefined();
-    const entries = s.historyInfo().entries.length;
+    expect([s.revision, s.historyInfo().entries.length]).toEqual([revision, entries]);
     const r = await s.apply({ operations: [{ type: 'component.setInsertAs', definitionId, insertAs: 'element' }] }, { label: 'Insert as a subcomponent', source: 'user' });
     expect(r.ok).toBe(true);
     expect(s.state.components[definitionId].insertAs).toBe('element');

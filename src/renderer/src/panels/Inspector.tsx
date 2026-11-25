@@ -1015,7 +1015,7 @@ function InstanceInspector({ state, owner, node, tokens, selection }: { state: P
   const entrance = anchorCapable(state, def);
   const origin = def.owner === 'project' ? (def.kind === 'code' ? 'Code component' : 'Your component') : 'From the theme';
   // Inside a column, container or slot, or made to go inside layouts, a placement is a component, not a section (#661).
-  const noun = placementRole(state, owner, node.id) === 'element' ? 'component' : 'section';
+  const noun = placementNoun(state, selection);
   const here = refTo(owner, node.id);
   const set = (prop: string, value: unknown, edit?: PendingEdit) => applyWith(edit, [{ type: 'instance.setProp', owner, nodeId: node.id, prop, value }], fieldLabel(state, def.properties[prop]?.label ?? prop, here), `${node.id}:${prop}`);
   const onStyle = (partId: string) => (property: string, value: StyleValue | null, expectedRevision?: number, inState?: StyleState) =>
@@ -1052,7 +1052,7 @@ function InstanceInspector({ state, owner, node, tokens, selection }: { state: P
     title,
     [
       ...(def.kind === 'managed' ? [{ label: 'Edit everywhere…', icon: <Pencil />, onSelect: editEverywhere }] : []),
-      ...(swappable ? [{ label: top ? 'Change section design…' : 'Change design…', icon: <ArrowRightLeft />, hint: 'Keeps its content', onSelect: swapDesign }] : []),
+      ...(swappable ? [{ label: top && noun === 'section' ? 'Change section design…' : 'Change design…', icon: <ArrowRightLeft />, hint: 'Keeps its content', onSelect: swapDesign }] : []),
       ...(canMakeUnique ? [{ label: 'Make unique…', icon: <Split />, onSelect: makeUnique }] : []),
       ...(create ? [{ label: 'Create component…', icon: <Component />, hint: 'With its content', onSelect: () => setState({ modal: { kind: 'create-component', ref: create } }) }] : []),
       ...(detachable(state, selection) ? [{ label: 'Detach component', icon: <Unlink />, hint: 'Into elements', onSelect: () => void detachPlacement(selection) }] : []),
@@ -1385,6 +1385,14 @@ function renderedCode(state: ProjectState, node: GraphNode): ComponentDefinition
  * A part of a placed component. `everywhere` is the component being edited everywhere when the part belongs to a
  * component placed in its design: changes then go to that design, for every placement of it.
  */
+/**
+ * What the placement a selection belongs to is called (#661): a component when it sits inside another component, a
+ * layout or a slot, or is made to go inside layouts; otherwise one of the page's sections.
+ */
+function placementNoun(state: ProjectState, sel: ElementRef): 'section' | 'component' {
+  return sel.instancePath.length > 1 || placementRole(state, sel.owner, sel.instancePath[0] ?? sel.nodeId) === 'element' ? 'component' : 'section';
+}
+
 function PartInspector({ state, selection, tokens, everywhere }: { state: ProjectState; selection: ElementRef; tokens: Tokens; everywhere?: ComponentDefinition }) {
   const templateMode = useStore((s) => s.templateMode);
   const scope = useStore((s) => s.styleScope);
@@ -1399,6 +1407,7 @@ function PartInspector({ state, selection, tokens, everywhere }: { state: Projec
   const partId = selection.partId;
   const part = partId ? def.parts[partId] : undefined;
   const parent = parentOf(selection);
+  const noun = placementNoun(state, selection);
   const itemId = selection.itemPath?.[selection.itemPath.length - 1];
   const title = part?.label ?? refLabel(state, selection);
 
@@ -1480,7 +1489,7 @@ function PartInspector({ state, selection, tokens, everywhere }: { state: Projec
   const parentLink = (
     <>
       Part of{' '}
-      <button className="link-btn" onClick={() => selectAndFocus(parent)} title="Select the whole section (Esc)">
+      <button className="link-btn" onClick={() => selectAndFocus(parent)} title={`Select the whole ${noun} (Esc)`}>
         {parentName}
       </button>
       {itemPos ? (
@@ -1578,7 +1587,7 @@ function PartInspector({ state, selection, tokens, everywhere }: { state: Projec
         )}
         {unlinked && !unlinked.link && !everywhere && (
           <Problem onGo={def.kind === 'managed' ? () => setState({ modal: { kind: 'edit-definition', ref: parent } }) : undefined} go="Edit everywhere…">
-            <strong>Visitors won’t see this button.</strong> Its link is set in the section’s design: edit it everywhere and select the button to give it one.
+            <strong>Visitors won’t see this button.</strong> Its link is set in the {noun}’s design: edit it everywhere and select the button to give it one.
           </Problem>
         )}
       </Problems>
@@ -1669,7 +1678,7 @@ function PartInspector({ state, selection, tokens, everywhere }: { state: Projec
           <p className="muted insp-note">
             {everywhere
               ? `This is fixed in the ${def.name} design. To change it, click Done editing, then edit ${def.name} everywhere.`
-              : `This is fixed in the section’s design. To change it, select ${parentName} and choose Edit everywhere, or Make unique for just this placement.`}
+              : `This is fixed in the ${noun}’s design. To change it, select ${parentName} and choose Edit everywhere, or Make unique for just this placement.`}
           </p>
         </Section>
       )}
@@ -1814,6 +1823,7 @@ function CodePartInspector({ state, selection, tokens }: { state: ProjectState; 
   const part = def.parts[partId];
   const parent: ElementRef = { owner, instancePath: [], nodeId: inst.id };
   const parentName = inst.name ?? def.name;
+  const noun = placementNoun(state, parent);
   const here = refTo(owner, inst.id);
   // Styles reach the part only through the classes the code places on it (so_o).
   const codeStyled = codeTakesOverrides(def);
@@ -1828,7 +1838,7 @@ function CodePartInspector({ state, selection, tokens }: { state: ProjectState; 
         kind={
           <>
             Part of{' '}
-            <button className="link-btn" onClick={() => selectAndFocus(parent)} title="Select the whole section (Esc)">
+            <button className="link-btn" onClick={() => selectAndFocus(parent)} title={`Select the whole ${noun} (Esc)`}>
               {parentName}
             </button>
           </>

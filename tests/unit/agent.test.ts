@@ -1777,6 +1777,8 @@ describe('tool definitions', () => {
     expect(withCode.types).not.toContain('node.paste');
     // A component package is read and checked by the editor's import, never sent as an operation (#371).
     expect(withCode.types).not.toContain('component.import');
+    // A component's placement role is chosen in Component Studio (#661).
+    expect(withCode.types).not.toContain('component.setInsertAs');
     expect(withCode.required).not.toContain('scope');
     const noCode = applySchema(toolDefinitions({ codeEnabled: false }));
     for (const t of ['component.createCode', 'component.updateSource', 'component.convertToCode', 'node.paste', 'asset.relink', 'component.import']) expect(noCode.types).not.toContain(t);
