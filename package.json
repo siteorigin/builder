@@ -21,7 +21,8 @@
     "eval:agent": "tsx --tsconfig tsconfig.node.json scripts/eval-agent.ts",
     "pack": "npm run build:packs -- --require-previews && electron-vite build && electron-builder --dir",
     "dist": "npm run build:packs -- --require-previews && electron-vite build && electron-builder",
-    "test:packaged": "node tests/e2e/packaged.mjs"
+    "test:packaged": "node tests/e2e/packaged.mjs",
+    "test:model-smoke": "node scripts/model-smoke.mjs"
   },
   "devDependencies": {
     "@codemirror/commands": "6.11.1",
