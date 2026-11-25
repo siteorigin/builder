@@ -18,6 +18,7 @@ import { styleCopyItems } from './StylePaste';
 import { clip, contentText, everySizeEdits, eyeAction, hiddenAncestor, hideHereEdits, layerLabel, rowVisibility, showHereEdits, sizesText, type HiddenBy, type RowVisibility, type Size, type VisibilityEdit } from '../lib/layers';
 import { besideOf, cannotGroup, extendTo, inGroup, layerRef, NOT_SIBLINGS, toggle, type Group } from '../lib/layer-set';
 import { createComponentTarget, resolveRef, treeFor } from '../lib/model';
+import { repeatAsListTarget } from '../lib/repeat-as-list';
 import { placeWords } from '../lib/edit-label';
 import { describeConditions } from '../lib/conditions';
 import { OutlinePanel } from './OutlinePanel';
@@ -627,6 +628,8 @@ export function LayersPanel() {
     };
     // Elements and basic elements, and a section together with its content: the same as the canvas and the inspector.
     const create = createComponentTarget(getState().snapshot, ref);
+    // A container of the design edited everywhere: the same as the canvas and the inspector.
+    const repeat = repeatAsListTarget(getState().snapshot, ref);
     const kept = definitionMode ? undefined : placedDefinition(st, ref, !!getState().settings?.developerMode);
     const items = [
       { heading: name },
@@ -650,6 +653,7 @@ export function LayersPanel() {
             ...copyPasteItems({ copy: ref.owner.kind === 'page' && !definitionMode ? () => void copySelection(plan) : null, paste: pasteAfter }),
             { label: 'Duplicate', icon: <Copy />, shortcut: '⌘D', onSelect: () => void duplicateSelection() },
             ...(create ? [{ label: 'Create component…', icon: <Component />, onSelect: () => setState({ modal: { kind: 'create-component' as const, ref: create } }) }] : []),
+            ...(repeat ? [{ label: 'Repeat as list…', icon: <Repeat />, onSelect: () => setState({ modal: { kind: 'repeat-as-list' as const, ref: repeat } }) }] : []),
             ...(!definitionMode && detachable(st, ref) ? [{ label: 'Detach component', icon: <Unlink />, onSelect: () => void detachPlacement(ref) }] : []),
             // Kept for every project, or sent as a file (#372).
             ...(kept ? [{ label: 'Save to personal library', icon: <BookmarkPlus />, onSelect: () => void saveToLibrary(kept) }, { label: 'Export component…', icon: <Download />, onSelect: () => void exportComponentFile(kept) }] : []),

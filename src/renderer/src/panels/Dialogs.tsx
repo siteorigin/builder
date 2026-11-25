@@ -32,7 +32,7 @@ const WHERE_NAMES_SHOW = 'Shown in Insert under Your components.';
 /** The note under a name field: where the name shows, until it reaches the limit. */
 const nameHint = (name: string, hint: string) => (name.length >= NAME_MAX ? `Names can be up to ${NAME_MAX} characters.` : hint);
 
-const GONE_ID = 'component-dialog-gone';
+export const GONE_ID = 'component-dialog-gone';
 const plural = (n: number, word: string) => `${n} ${word}${n === 1 ? '' : 's'}`;
 
 /*
@@ -42,7 +42,7 @@ const plural = (n: number, word: string) => `${n} ${word}${n === 1 ? '' : 's'}`;
  */
 
 /** The title's badge: the action's glyph in a tinted disc. `caution` once the dialog's subject has gone. */
-function Badge({ icon, tone = 'neutral' }: { icon: React.ReactNode; tone?: 'neutral' | 'definition' | 'caution' }) {
+export function Badge({ icon, tone = 'neutral' }: { icon: React.ReactNode; tone?: 'neutral' | 'definition' | 'caution' }) {
   return (
     <span className="confirm-icon authoring-badge" data-tone={tone} aria-hidden="true">
       {icon}
@@ -51,7 +51,7 @@ function Badge({ icon, tone = 'neutral' }: { icon: React.ReactNode; tone?: 'neut
 }
 
 /** What the dialog acts on, with how far it reaches. */
-function Subject({ id, icon, name, note, tone }: { id?: string; icon: React.ReactNode; name: React.ReactNode; note?: React.ReactNode; tone?: 'definition' }) {
+export function Subject({ id, icon, name, note, tone }: { id?: string; icon: React.ReactNode; name: React.ReactNode; note?: React.ReactNode; tone?: 'definition' }) {
   return (
     <div id={id} className="confirm-subject authoring-subject" data-tone={tone}>
       {icon}
@@ -63,13 +63,13 @@ function Subject({ id, icon, name, note, tone }: { id?: string; icon: React.Reac
   );
 }
 
-interface Detail {
+export interface Detail {
   /** `change`: what the action does. `keep`: what stays as it is. `lose`: what goes with it. `risk`: what may break. `note`: anything else worth knowing. */
   kind: 'change' | 'keep' | 'note' | 'lose' | 'risk';
   icon: React.ReactNode;
   text: React.ReactNode;
 }
-function Details({ id, items }: { id?: string; items: Detail[] }) {
+export function Details({ id, items }: { id?: string; items: Detail[] }) {
   return (
     <ul id={id} className="confirm-details authoring-details">
       {items.map((d, i) => (
@@ -83,7 +83,7 @@ function Details({ id, items }: { id?: string; items: Detail[] }) {
 }
 
 /** A name field's length beside its label, once it is close to the limit. The hint says the limit in words. */
-function Count({ length, max }: { length: number; max: number }) {
+export function Count({ length, max }: { length: number; max: number }) {
   if (length < max * 0.8) return null;
   return (
     <span className="authoring-count" data-full={length >= max || undefined} aria-hidden="true">
@@ -116,7 +116,7 @@ function whereItShows(st: ProjectState, owner: OwnerRef): string {
 }
 
 /** Said aloud once a field reaches its limit, since the counter beside it is only seen. */
-const limitSaid = (length: number, max: number, what: string) => (length >= max ? `${what} can be up to ${max} characters.` : undefined);
+export const limitSaid = (length: number, max: number, what: string) => (length >= max ? `${what} can be up to ${max} characters.` : undefined);
 
 /** Where a placement or element is: a page, a shared part, or inside another component. */
 function placeOf(st: ProjectState, owner: OwnerRef): string {
@@ -193,7 +193,7 @@ function useHeldFocus(ref: React.RefObject<HTMLElement | null>) {
 }
 
 /** Says a required-name error or a save in progress aloud, since neither moves focus. */
-function FormStatus({ text }: { text?: string }) {
+export function FormStatus({ text }: { text?: string }) {
   return (
     <span className="sr-only" role="status">
       {text ?? ''}
@@ -202,7 +202,7 @@ function FormStatus({ text }: { text?: string }) {
 }
 
 /** Why a dialog can no longer do what it was opened for. It replaces the form, so nothing dead stays editable. */
-function GoneNotice({ children }: { children: React.ReactNode }) {
+export function GoneNotice({ children }: { children: React.ReactNode }) {
   return (
     <div id={GONE_ID} className="scope-note danger authoring-gone" role="alert">
       <CircleAlert />
@@ -212,7 +212,7 @@ function GoneNotice({ children }: { children: React.ReactNode }) {
 }
 
 /** The only way out of a dialog whose subject has gone. It takes focus, because the field that had it is removed. */
-function GoneClose({ onClose }: { onClose: () => void }) {
+export function GoneClose({ onClose }: { onClose: () => void }) {
   return <SafeButton onClick={onClose}>Close</SafeButton>;
 }
 
@@ -486,7 +486,7 @@ export function NewComponentModal() {
 }
 
 /** A name field that opens with its text selected, so typing replaces the suggestion. */
-function useSelectedOnOpen() {
+export function useSelectedOnOpen() {
   const ref = useRef<HTMLInputElement>(null);
   useEffect(() => ref.current?.select(), []);
   useHeldFocus(ref);
@@ -494,7 +494,7 @@ function useSelectedOnOpen() {
 }
 
 /** Close this dialog, and only this one: a save that lands after it was dismissed leaves the next dialog open. */
-function useCloseOwn() {
+export function useCloseOwn() {
   const [own] = useState(() => getState().modal);
   return () => {
     if (getState().modal === own) setState({ modal: null });

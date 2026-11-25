@@ -26,6 +26,7 @@ import { LEFT_TABS } from './panels/LeftTabs';
 import { FindReplaceModal } from './panels/FindReplace';
 import { SourceModal, PageSourceModal, NewCodeComponentModal } from './panels/SourceModal';
 import { CreateComponentModal, DeletePageModal, EditDefinitionModal, HistoryModal, MakeUniqueModal, NewComponentModal, RenameComponentModal, SetHomeModal, SwapComponentModal } from './panels/Dialogs';
+import { RepeatAsListModal } from './panels/RepeatAsList';
 import { ImportReviewModal } from './panels/ImportReview';
 import { PostImportReviewModal } from './panels/PostImportReview';
 import { PasteStyleModal } from './panels/StylePaste';
@@ -714,6 +715,7 @@ export function Editor() {
       {modal?.kind === 'new-code' && <NewCodeComponentModal />}
       {modal?.kind === 'new-component' && <NewComponentModal />}
       {modal?.kind === 'create-component' && <CreateComponentModal target={modal.ref} />}
+      {modal?.kind === 'repeat-as-list' && <RepeatAsListModal target={modal.ref} />}
       {modal?.kind === 'make-unique' && <MakeUniqueModal owner={modal.owner} nodeId={modal.nodeId} definitionId={modal.definitionId} />}
       {modal?.kind === 'swap-component' && <SwapComponentModal owner={modal.owner} nodeId={modal.nodeId} definitionId={modal.definitionId} />}
       {modal?.kind === 'rename-component' && <RenameComponentModal definitionId={modal.definitionId} />}
