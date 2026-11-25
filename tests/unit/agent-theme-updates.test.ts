@@ -472,48 +472,55 @@ describe('asking for an outlined header button on a header that predates it', ()
   });
 
   it('refuses a component the update tool does not offer this run, even when the model sends it', async () => {
-    let session!: ProjectSession;
+    // Read in the turns, checked after the run: a failed check inside a turn would only end the run.
+    let offered: string[] | null = null;
+    let answer: ReturnType<typeof lastResult>;
     const s = await setup(
       beforeActionStyle({ hero: true }),
       [
         (req) => {
-          // A small whole-site run's page tool cannot set the header's Action style, so it is not offered the header.
-          expect(enumOf(req.tools.find((t) => t.name === 'update_theme_component'))).toEqual([HERO]);
+          offered = enumOf(req.tools.find((t) => t.name === 'update_theme_component'));
           return [call('u1', 'update_theme_component', { definitionId: HEADER })];
         },
         (req) => {
-          const r = lastResult(req)!;
-          expect(r.isError).toBe(true);
-          expect(r.parsed).toMatchObject({ error: 'SCOPE_MISMATCH', message: expect.stringMatching(/cannot update/) });
+          answer = lastResult(req);
           return finish('Select the header to have its newer version with an outlined button.');
         }
       ],
       { contextWindowTokens: 32000 }
     );
-    session = s.session;
-    const before = JSON.stringify(session.state.components[HEADER]);
+    const before = JSON.stringify(s.session.state.components[HEADER]);
     const { result } = await s.run("Make the header's Book a call button outlined");
-    expect(JSON.stringify(session.state.components[HEADER])).toBe(before);
+    // A small whole-site run's page tool cannot set the header's Action style, so it is not offered the header.
+    expect(offered).toEqual([HERO]);
+    expect(answer!.isError).toBe(true);
+    expect(answer!.parsed).toMatchObject({ error: 'SCOPE_MISMATCH', message: expect.stringMatching(/cannot update/) });
+    expect(result?.status).not.toBe('failed');
+    expect(JSON.stringify(s.session.state.components[HEADER])).toBe(before);
     expect(result?.changes ?? []).toEqual([]);
   });
 
   it('explains a held update instead of saying the header cannot do it', async () => {
     let session!: ProjectSession;
+    let tools: string[] = [];
+    let note: { status?: string; heldBecause?: string } | undefined;
     const s = await setup(beforeActionStyle({ held: true }), [
       (req) => {
-        expect(req.tools.map((t) => t.name)).not.toContain('update_theme_component');
+        tools = req.tools.map((t) => t.name);
         return [call('r1', 'inspect_element', { owner: { kind: 'shell', id: 'header' }, nodeId: headerNode(session.state).id })];
       },
       (req) => {
-        const note = lastResult(req)!.parsed.themeUpdate as { status: string; heldBecause: string };
-        expect(note.status).toBe('held');
-        expect(note.heldBecause).toMatch(/changed outside the theme/);
+        note = lastResult(req)?.parsed.themeUpdate as typeof note;
         return finish("The theme's newer header has an Outlined button style, but this project's header was changed outside the theme, so it cannot be updated here.");
       }
     ]);
     session = s.session;
     const before = JSON.stringify(session.state.components[HEADER]);
     const { result } = await s.run("Make the header's Book a call button outlined");
+    expect(tools).not.toContain('update_theme_component');
+    expect(note?.status).toBe('held');
+    expect(note?.heldBecause).toMatch(/changed outside the theme/);
+    expect(result?.status).not.toBe('failed');
     expect(result?.changes ?? []).toEqual([]);
     expect(JSON.stringify(session.state.components[HEADER])).toBe(before);
   });
