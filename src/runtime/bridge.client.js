@@ -1900,8 +1900,15 @@ function linkChecked(payload) {
   ed.check = null;
   if (typeof payload.problem === 'string') return linkProblem(payload.problem.slice(0, 300));
   if (!linkRangeLive()) return linkProblem('The words to link have changed. Close this and select them again.');
+  // The browser replaces the link it re-points, attributes and all: what the author said about a web address stays
+  // with it while it still goes to one.
+  const was = /^https?:/i.test(href) ? [...editing.el.querySelectorAll('a[href]')].find((a) => /^https?:/i.test(a.getAttribute('href')) && ed.range.intersectsNode(a)) : null;
+  const rels = was ? authoredRels(was) : [];
   closeLinkEditor(true);
   document.execCommand('createLink', false, href);
+  const sel = getSelection();
+  const now = rels.length && sel.rangeCount ? sel.getRangeAt(0) : null;
+  if (now) for (const a of editing.el.querySelectorAll('a[href]')) if (a.getAttribute('href') === href && now.intersectsNode(a)) a.setAttribute('rel', rels.join(' '));
 }
 /** Whether the words the field links are still there to link (the text can change underneath the field). */
 function linkRangeLive() {
@@ -2354,11 +2361,19 @@ function pastedHref(raw) {
   return storable && href.length <= 2000 ? href : '';
 }
 
+/** The relationships an author can declare on a link (LINK_RELS in the editor), in their order. */
+const LINK_RELS = ['nofollow', 'sponsored', 'ugc'];
+/** The authored relationships an anchor's rel holds: the security tokens a new tab adds are the site's, not the author's. */
+function authoredRels(a) {
+  const has = new Set(String(a.getAttribute('rel') || '').toLowerCase().split(/[ \t\n\f\r]+/));
+  return LINK_RELS.filter((t) => has.has(t));
+}
+
 /**
  * Copied HTML as markup the rich text can hold, or '' when it holds no words. It is read in one pass, in reading
  * order, as lines: each block (a paragraph, heading, quote or list item) is a line of its own, a block inside a list item, quote or heading is another line of that kind, and the items
  * of a list inside a list join the outer one, as the rich text holds them. Every element written is a new one:
- * only these blocks, bold, italic, line breaks, and a link's address and new tab.
+ * only these blocks, bold, italic, line breaks, and a link's address, new tab and relationships.
  */
 function pastedRich(html) {
   if (!html || html.length > 2000000) return '';
@@ -2400,7 +2415,11 @@ function pastedRich(html) {
       if (href) {
         inner.href = href;
         inner.newTab = n.getAttribute('target') === '_blank';
-      } else delete inner.href;
+        inner.rel = authoredRels(n).join(' ');
+      } else {
+        delete inner.href;
+        delete inner.rel;
+      }
     }
     if (n.tagName === 'PRE') inner.pre = true;
     const kind = PASTE_BLOCKS[n.tagName];
@@ -2436,13 +2455,14 @@ function pastedRich(html) {
     const wraps = [m.href !== undefined && 'A', m.strong && 'STRONG', m.em && 'EM'].filter(Boolean);
     for (const tag of wraps) {
       const last = host.lastChild;
-      const same = last && last.nodeType === Node.ELEMENT_NODE && last.tagName === tag && (tag !== 'A' || (last.getAttribute('href') === m.href && last.hasAttribute('target') === !!m.newTab));
+      const same = last && last.nodeType === Node.ELEMENT_NODE && last.tagName === tag && (tag !== 'A' || (last.getAttribute('href') === m.href && last.hasAttribute('target') === !!m.newTab && (last.getAttribute('rel') || '') === (m.rel || '')));
       if (same) host = last;
       else {
         const w = document.createElement(tag);
         if (tag === 'A') {
           w.setAttribute('href', m.href);
           if (m.newTab) w.setAttribute('target', '_blank');
+          if (m.rel) w.setAttribute('rel', m.rel);
         }
         host.appendChild(w);
         host = w;
@@ -2549,6 +2569,8 @@ function richCopy(root) {
       out.href = n.getAttribute('href');
       if (out.href.length > 2100) throw new Error('too large');
       if (n.getAttribute('target') === '_blank') out.newTab = true;
+      const rel = authoredRels(n);
+      if (rel.length) out.rel = rel;
     }
     for (const c of n.childNodes) {
       const v = copy(c, depth + 1);

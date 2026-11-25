@@ -1,11 +1,13 @@
 import { useEffect, useId, useRef, useState } from 'react';
 import { ArrowDown, ArrowUp, Link, List, ListOrdered, Minus, Plus } from 'lucide-react';
 import type { RichListType, RichPages } from '@shared/richtext';
+import type { LinkRel } from '@shared/types';
 import { linkFromTarget, parseRichText, sameRichText } from '@shared/richtext';
 import { addItem, linkAt, listState, moveItem, removeItem, removeLink, setLink, toggleList, typedLink, type TextAt, type TextEdit } from '../lib/richtext-commands';
 import { isImeComposing } from '../lib/ime';
 import { appliesLanded, isSettling, reportRefused } from '../lib/pending';
 import { DraftInput, type DraftHandle } from './ui';
+import { LinkRelControls } from './LinkRelControls';
 import { markDraft, type PendingEdit } from '../store';
 
 type Command = 'link' | 'ul' | 'ol' | 'add' | 'remove' | 'up' | 'down';
@@ -26,6 +28,9 @@ interface LinkDraft {
   /** The destination when the field opened, and as typed since. */
   from: string;
   target: string;
+  /** What the link says about a web address when the field opened, and as ticked since. */
+  fromRel: LinkRel[];
+  rel: LinkRel[];
   error?: string;
 }
 
@@ -47,7 +52,7 @@ export function RichTextField({ value, onCommit, pages, plainAs, id, describedBy
   valueNow.current = value;
   // A destination typed but not applied is an edit still to be made: Save and Close say so, rather than drop it.
   const linkKey = useId();
-  const linkDirty = !!link && link.target.trim() !== link.from;
+  const linkDirty = !!link && (link.target.trim() !== link.from || link.rel.join() !== link.fromRel.join());
   useEffect(() => void markDraft(linkKey, linkDirty), [linkKey, linkDirty]);
   useEffect(() => () => markDraft(linkKey, false), [linkKey]);
 
@@ -102,7 +107,7 @@ export function RichTextField({ value, onCommit, pages, plainAs, id, describedBy
 
   /** Whether two texts are the same rich text, however they are laid out. */
   const same = (a: string, b: string) => {
-    const read = (t: string) => parseRichText(t, { markdown: true, link: (to, n) => linkFromTarget(to, pages, n), plainAs });
+    const read = (t: string) => parseRichText(t, { markdown: true, link: (to, n, r) => linkFromTarget(to, pages, n, r), plainAs });
     return a === b || sameRichText(read(a), read(b));
   };
   /**
@@ -143,7 +148,8 @@ export function RichTextField({ value, onCommit, pages, plainAs, id, describedBy
       const f = linkAt(before, pages);
       if (!f) return;
       const target = f.kind === 'link' ? f.tokens[0].target : '';
-      setLinkDraft({ at: before, existing: f.kind === 'link', from: target, target });
+      const rel = f.kind === 'link' ? f.tokens[0].rel : [];
+      setLinkDraft({ at: before, existing: f.kind === 'link', from: target, target, fromRel: rel, rel });
       return;
     }
     const edit = cmd === 'ul' || cmd === 'ol' ? toggleList(before, cmd) : cmd === 'add' ? addItem(before) : cmd === 'remove' ? removeItem(before) : moveItem(before, cmd === 'up' ? -1 : 1);
@@ -185,7 +191,7 @@ export function RichTextField({ value, onCommit, pages, plainAs, id, describedBy
     }
     const to = typedLink(link.target, pages);
     if (!to) return setLinkDraft({ ...link, error: 'Use a page address such as /about/, a web address, an email address or a phone number.' });
-    const edit = setLink(link.at, pages, to);
+    const edit = setLink(link.at, pages, to, link.rel);
     if (typeof edit === 'string') return setLinkDraft({ ...link, error: edit });
     setLinkDraft(null);
     apply(edit, null);
@@ -279,6 +285,8 @@ export function RichTextField({ value, onCommit, pages, plainAs, id, describedBy
           <button type="button" className="btn btn-sm btn-ghost" onClick={() => closeLink(true)}>
             Cancel
           </button>
+          {/* Only a web address says anything about the site it goes to. */}
+          {typedLink(link.target, pages)?.type === 'url' && <LinkRelControls value={link.rel} onChange={(rel) => setLinkDraft({ ...link, rel, error: undefined })} />}
           {link.error ? (
             <div className="field-error" id={`${uid}-link-error`} role="alert">
               {link.error}

@@ -54,6 +54,9 @@ export type StyleProps = Record<string, StyleValue>;
 export type ResponsiveStyles = Partial<Record<StyleScopeKey, StyleProps>>;
 
 export type LinkType = 'none' | 'page' | 'url' | 'email' | 'tel' | 'anchor' | 'document' | 'entry';
+/** The relationships an author can declare on a link to another site, in the order they are stored and written. */
+export const LINK_RELS = ['nofollow', 'sponsored', 'ugc'] as const;
+export type LinkRel = (typeof LINK_RELS)[number];
 export interface LinkValue {
   type: LinkType;
   /**
@@ -64,6 +67,12 @@ export interface LinkValue {
   /** Optional in-page anchor for page links. */
   anchor?: string;
   newTab?: boolean;
+  /**
+   * What a web address link says about where it goes (a paid placement, an untrusted citation): kept on `url` links
+   * only, each token once, in LINK_RELS order, and left out when there are none. The site adds `noopener noreferrer`
+   * itself when the link opens a new tab; those are never stored.
+   */
+  rel?: LinkRel[];
 }
 
 export interface ImageValue {

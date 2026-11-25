@@ -26,6 +26,8 @@ import { AssetOrderControls, useAssetSeries } from '../components/AssetOrder';
 import { assetLabels, inSeries, sortAssets } from '@shared/asset-order';
 import { richTextToMarkdown, toRichText } from '@shared/richtext';
 import { RichTextField } from '../components/RichTextField';
+import { LinkRelControls } from '../components/LinkRelControls';
+import { withRels } from '@shared/link-rel';
 import { pageIds, planSectionPick, sharedPageIds } from '@generator/checks';
 import { contactMismatch } from '@shared/contact-links';
 import { SECTION_NODE, sectionOptions } from '../lib/sections';
@@ -395,7 +397,8 @@ export function LinkEditor({ value, onChange, state, label, everywhere, invalid,
           placeholder={type === 'url' ? 'https://example.com' : type === 'email' ? 'hello@example.com' : '+1 555 0100'}
           onCommit={(t) => {
             if (!t.trim()) return;
-            onChange({ type, target: t.trim(), newTab: type === 'url' ? v.newTab : undefined });
+            // A web address typed over another keeps what the author said about the site; any other kind has none.
+            onChange(withRels({ type, target: t.trim(), newTab: type === 'url' ? v.newTab : undefined }, v.type === type ? v.rel : undefined));
           }}
         />
       ) : null}
@@ -425,6 +428,7 @@ export function LinkEditor({ value, onChange, state, label, everywhere, invalid,
       )}
       {/* A new tab only means something for pages and web addresses; mail and phone links open their own apps. */}
       {!pending && (v.type === 'page' || v.type === 'url') && <SwitchRow checked={!!v.newTab} onChange={(n) => onChange({ ...v, newTab: n })} label="Open in a new tab" />}
+      {!pending && v.type === 'url' && <LinkRelControls value={v.rel} onChange={(rel) => onChange(withRels(v, rel))} />}
     </div>
   );
 }

@@ -10,7 +10,8 @@
  */
 import { z } from 'zod';
 import type { EditOperation, Op } from '@shared/ops';
-import type { ComponentDefinition, PropSchema, ProjectState, TokenGroup, UiStateSchema } from '@shared/types';
+import type { ComponentDefinition, LinkValue, PropSchema, ProjectState, TokenGroup, UiStateSchema } from '@shared/types';
+import { linkRels, withRels } from '@shared/link-rel';
 import { APPEAR_PRESETS, COMPONENT_CATEGORIES, ELEMENT_ACTIONS, OVERLAY_MODES, SLOT_PRIMITIVES } from '@shared/types';
 import { TABLE_LIMITS } from '@engine/table';
 import { MAX_CHOICES } from '@engine/values';
@@ -305,6 +306,15 @@ export const MANAGED_COMPONENT_BRIEF =
 // ---------------------------------------------------------------------------
 
 const isRecord = (v: unknown): v is Record<string, unknown> => !!v && typeof v === 'object' && !Array.isArray(v);
+
+/**
+ * A link a rebuild sends back in the string form read_component shows keeps what that form cannot say (a new tab, a
+ * web address's relationships) while it still goes to the same place.
+ */
+function keptLinkOptions(link: LinkValue, was: unknown): LinkValue {
+  if (!isRecord(was) || was.type !== link.type || was.target !== link.target || (was.anchor || undefined) !== link.anchor) return link;
+  return withRels(was.newTab === true ? { ...link, newTab: true } : link, linkRels(was));
+}
 
 /** A zod issue path as the arguments are written: `nodes[3].text`. */
 function pathOf(path: readonly PropertyKey[]): string {
@@ -710,7 +720,7 @@ function compile(state: ProjectState, args: ManagedComponentArgs): Compiled {
       // A link is written as a route, URL or address here, and stored as the link it names.
       if (field === 'link' && typeof v === 'string') {
         try {
-          out.link = normalizeLink(v, state, `${at}.link`);
+          out.link = keptLinkOptions(normalizeLink(v, state, `${at}.link`), prev?.kind === 'link' ? prev.link : undefined);
         } catch (e) {
           issues.push({ field: `${at}.link`, message: (e as Error).message });
         }

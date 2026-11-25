@@ -8,8 +8,8 @@ import { cleanBlocks, linkFromTarget, mergeLists, type RichPages } from './richt
 
 /** A text node, or an element by tag name with its children. `b` and `i` carry an inline style's bold or
  *  italic (true) or its explicit removal (false), as the browser's own commands can leave them. `check` marks a
- *  check list, `href` and `newTab` a link. */
-export type RichDomNode = string | { tag: string; b?: boolean; i?: boolean; check?: boolean; href?: string; newTab?: boolean; image?: RichDomImage; children: RichDomNode[] };
+ *  check list, `href`, `newTab` and `rel` (its authored relationships, see LINK_RELS) a link. */
+export type RichDomNode = string | { tag: string; b?: boolean; i?: boolean; check?: boolean; href?: string; newTab?: boolean; rel?: string[]; image?: RichDomImage; children: RichDomNode[] };
 /** A picture placed in an article's text (the Posts writer's figures): read only in article mode. */
 export interface RichDomImage {
   assetId: string;
@@ -20,7 +20,7 @@ export interface RichDomImage {
 
 /** How the Posts writer reads its text: section headings (h2) and pictures are an article's, and links can go to entries. */
 export interface ArticleRead {
-  link: (href: string, newTab: boolean) => LinkValue | null;
+  link: (href: string, newTab: boolean, rel: string[]) => LinkValue | null;
 }
 
 const BLOCK = new Set(['p', 'div', 'section', 'article', 'header', 'footer']);
@@ -89,7 +89,8 @@ export function blocksFromDom(nodes: RichDomNode[], pages: RichPages, article?: 
       return;
     }
     if (tag === 'a' && n.href !== undefined) {
-      const link = article ? article.link(n.href, !!n.newTab) : linkFromTarget(n.href, pages, !!n.newTab);
+      const rel = Array.isArray(n.rel) ? n.rel : [];
+      const link = article ? article.link(n.href, !!n.newTab, rel) : linkFromTarget(n.href, pages, !!n.newTab, rel);
       if (link) inner.link = link;
       else droppedLinks++;
     }

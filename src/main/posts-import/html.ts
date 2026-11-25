@@ -11,6 +11,7 @@
 import type { LinkValue, RichText } from '@shared/types';
 import { richTextToPlain } from '@shared/richtext';
 import { blocksFromDom, type RichDomNode } from '@shared/richtext-tree';
+import { relsFromAttribute } from '@shared/link-rel';
 
 /** What reading a post's HTML left out or changed, for the import's report. */
 export interface HtmlReport {
@@ -41,7 +42,7 @@ export interface ReadHtmlOptions {
   /** The key a picture is known by in the import, or null to leave it out (the caller says why). */
   image: (img: HtmlImage) => string | null;
   /** Where a link goes, or null when its address cannot be kept. */
-  link: (href: string, newTab: boolean) => LinkValue | null;
+  link: (href: string, newTab: boolean, rel: string[]) => LinkValue | null;
   /** WordPress's classic editor: blank lines separate paragraphs and a single line break is a break. */
   autop?: boolean;
   /** WordPress shortcodes: [caption] becomes a captioned picture, [embed] a link, and the rest are removed. */
@@ -437,7 +438,8 @@ function convert(nodes: HNode[], opts: ReadHtmlOptions, report: HtmlReport, pre 
     } else if (tag === 'iframe') noteEmbed(report, node.attrs.src ?? '');
     else if (tag === 'a') {
       const href = node.attrs.href;
-      out.push({ tag: 'a', ...(href !== undefined ? { href } : {}), ...(node.attrs.target === '_blank' ? { newTab: true } : {}), children: kids() });
+      const rel = relsFromAttribute(node.attrs.rel);
+      out.push({ tag: 'a', ...(href !== undefined ? { href } : {}), ...(node.attrs.target === '_blank' ? { newTab: true } : {}), ...(rel.length ? { rel } : {}), children: kids() });
     } else if (tag === 'table') {
       report.tables++;
       out.push({ tag: 'div', children: kids() });

@@ -25,7 +25,7 @@ export function richDom(v: unknown): RichDomNode[] | null {
     if (typeof n === 'string') return n.length <= MAX_TEXT;
     if (!n || typeof n !== 'object') return false;
     const e = n as Record<string, unknown>;
-    return typeof e.tag === 'string' && e.tag.length <= 20 && (e.b === undefined || typeof e.b === 'boolean') && (e.i === undefined || typeof e.i === 'boolean') && (e.check === undefined || typeof e.check === 'boolean') && (e.newTab === undefined || typeof e.newTab === 'boolean') && (e.href === undefined || (typeof e.href === 'string' && e.href.length <= MAX_HREF)) && list(e.children, depth + 1);
+    return typeof e.tag === 'string' && e.tag.length <= 20 && (e.b === undefined || typeof e.b === 'boolean') && (e.i === undefined || typeof e.i === 'boolean') && (e.check === undefined || typeof e.check === 'boolean') && (e.newTab === undefined || typeof e.newTab === 'boolean') && (e.rel === undefined || (Array.isArray(e.rel) && e.rel.length <= 3 && e.rel.every((t) => typeof t === 'string' && t.length <= 20))) && (e.href === undefined || (typeof e.href === 'string' && e.href.length <= MAX_HREF)) && list(e.children, depth + 1);
   };
   // Every index, holes included (every() would skip a hole and leave it to throw later).
   const list = (a: unknown, depth: number) => Array.isArray(a) && a.length <= MAX_NODES && Array.from(a).every((n) => ok(n, depth));

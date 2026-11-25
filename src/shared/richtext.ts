@@ -1,5 +1,6 @@
-import type { LinkValue } from './types';
+import type { LinkRel, LinkValue } from './types';
 import { readablePath } from './routes';
+import { canonicalRels, linkRels, linkTitle } from './link-rel';
 
 /**
  * Structured rich text: the canonical stored form of every rich text value.
@@ -171,12 +172,17 @@ export const isTelephone = (t: string): boolean => TEL_RE.test(t) && (t.match(/\
 
 /**
  * A link written as text or read from an href: a full http(s) URL, mailto:, tel:, #anchor, a page route (with an
- * optional #anchor) or a page ID. Null for anything else, javascript: and other schemes included.
+ * optional #anchor) or a page ID. Null for anything else, javascript: and other schemes included. `rel` is kept only
+ * on a web address.
  */
-export function linkFromTarget(raw: string, pages: RichPages, newTab = false): LinkValue | null {
+export function linkFromTarget(raw: string, pages: RichPages, newTab = false, rel?: readonly string[]): LinkValue | null {
   const t = raw.trim();
   const tab = newTab ? { newTab: true } : {};
-  if (/^https?:/i.test(t)) return URL_RE.test(t) ? { type: 'url', target: t, ...tab } : null;
+  if (/^https?:/i.test(t)) {
+    if (!URL_RE.test(t)) return null;
+    const rels = canonicalRels(rel);
+    return { type: 'url', target: t, ...tab, ...(rels.length ? { rel: rels } : {}) };
+  }
   if (/^mailto:/i.test(t)) return EMAIL_RE.test(t.slice(7)) ? { type: 'email', target: t.slice(7), ...tab } : null;
   if (/^tel:/i.test(t)) return isTelephone(t.slice(4)) ? { type: 'tel', target: t.slice(4), ...tab } : null;
   if (t.startsWith('#')) return ANCHOR_RE.test(t.slice(1)) ? { type: 'anchor', target: t.slice(1), ...tab } : null;
@@ -222,8 +228,8 @@ export const ENTRY_LINK_PREFIX = 'entry:';
 export interface ParseOptions {
   /** Read list, heading and quote markers, links and backslash escapes. Without it only ** and * are read. */
   markdown?: boolean;
-  /** Resolves a [label](target); null leaves the text as written. */
-  link?: (target: string, newTab: boolean) => LinkValue | null;
+  /** Resolves a [label](target "new tab rel=nofollow"); null leaves the text as written. */
+  link?: (target: string, newTab: boolean, rel: LinkRel[]) => LinkValue | null;
   /** Lines without a block marker become items of this kind of list. */
   plainAs?: RichListType;
   /** Read "## " as a section heading (h2), as a collection entry's text has them. */
@@ -234,8 +240,13 @@ const ESCAPABLE = '\\*[]#>+-.)';
 /** `\|` reads as nothing: it separates two marked runs that touch, and at a line's start means "a plain paragraph". */
 const SEPARATOR = '\\|';
 const MAX_MARK_DEPTH = 4;
-// An address in <…> may hold spaces (a phone number written with them) or brackets.
-const LINK_RE = /\[((?:\\.|[^[\]\\])+)\]\(\s*(?:<([^<>\n]+)>|((?:[^\s()]|\([^\s()]*\))+))(\s+"new tab")?\s*\)/y;
+// An address in <…> may hold spaces (a phone number written with them) or brackets. After it, a link's options:
+// "new tab", "rel=nofollow,sponsored" (any of nofollow, sponsored and ugc) or both, "new tab rel=…".
+const REL_LIST = '(?:nofollow|sponsored|ugc)(?:,(?:nofollow|sponsored|ugc))*';
+const LINK_RE = new RegExp(`\\[((?:\\\\.|[^[\\]\\\\])+)\\]\\(\\s*(?:<([^<>\\n]+)>|((?:[^\\s()]|\\([^\\s()]*\\))+))(?:\\s+"(?:(new tab)(?: rel=(${REL_LIST}))?|rel=(${REL_LIST}))")?\\s*\\)`, 'y');
+
+/** The options written after a link's destination: whether it opens a new tab, and its relationships. */
+const linkOptions = (m: RegExpExecArray): { newTab: boolean; rel: LinkRel[] } => ({ newTab: !!m[4], rel: canonicalRels((m[5] ?? m[6] ?? '').split(',')) });
 
 /** Where the closing run for an opening run of `n` asterisks starts, or -1. */
 function findClose(text: string, from: number, n: number, escapes: boolean): number {
@@ -309,7 +320,8 @@ function parseInline(text: string, marks: Partial<RichSpan>, opts: ParseOptions,
     if (c === '[' && opts.markdown && opts.link && depth < MAX_MARK_DEPTH) {
       LINK_RE.lastIndex = i;
       const m = LINK_RE.exec(text);
-      const link = m ? opts.link(m[2] ?? m[3], !!m[4]) : null;
+      const options = m ? linkOptions(m) : null;
+      const link = m && options ? opts.link(m[2] ?? m[3], options.newTab, options.rel) : null;
       if (m && link) {
         flush();
         const end = i + m[0].length;
@@ -376,13 +388,14 @@ export interface LinkToken {
   /** The destination as written, without angle brackets. */
   target: string;
   newTab: boolean;
+  rel: LinkRel[];
 }
 
 /**
  * The links in one line of the text form, read as parseRichText reads them: escaped characters are skipped, and
  * `[label](target)` is a link only when `resolve` accepts its target (anything else stays text as written).
  */
-export function linkTokens(line: string, resolve: (target: string, newTab: boolean) => LinkValue | null): LinkToken[] {
+export function linkTokens(line: string, resolve: (target: string, newTab: boolean, rel: LinkRel[]) => LinkValue | null): LinkToken[] {
   const out: LinkToken[] = [];
   for (let i = 0; i < line.length; ) {
     if (line[i] === '\\' && i + 1 < line.length && (ESCAPABLE.includes(line[i + 1]) || line[i + 1] === '|')) {
@@ -393,8 +406,9 @@ export function linkTokens(line: string, resolve: (target: string, newTab: boole
       LINK_RE.lastIndex = i;
       const m = LINK_RE.exec(line);
       const target = m ? (m[2] ?? m[3]) : '';
-      if (m && resolve(target, !!m[4])) {
-        out.push({ start: i, end: i + m[0].length, labelStart: i + 1, labelEnd: i + 1 + m[1].length, target, newTab: !!m[4] });
+      const options = m ? linkOptions(m) : null;
+      if (m && options && resolve(target, options.newTab, options.rel)) {
+        out.push({ start: i, end: i + m[0].length, labelStart: i + 1, labelEnd: i + 1 + m[1].length, target, ...options });
         i += m[0].length;
         continue;
       }
@@ -504,7 +518,7 @@ function spansToMarkdown(spans: RichSpan[], pages: RichPages): string {
       const gap = marked(s) && marked(spans[i - 1]) ? SEPARATOR : '';
       if (!s.link) return gap + body;
       const target = linkToTarget(s.link, pages);
-      return `[${body}](${targetToMarkdown(target)}${s.link.newTab ? ' "new tab"' : ''})`;
+      return `[${body}](${targetToMarkdown(target)}${linkTitle(s.link.newTab, linkRels(s.link))})`;
     })
     .join('');
 }

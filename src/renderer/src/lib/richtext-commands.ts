@@ -3,7 +3,8 @@
  * links on selected words, bulleted and numbered lists, and adding, removing and moving list items. Each command
  * is one replacement of part of the text, so the field can apply it as one step its own Undo can take back.
  */
-import type { LinkValue } from '@shared/types';
+import type { LinkRel, LinkValue } from '@shared/types';
+import { canonicalRels, linkTitle } from '@shared/link-rel';
 import { cleanBlocks, endsWithBreak, escapeLineStart, isImageBlock, isListBlock, linkFromTarget, linkTokens, linkToTarget, parseRichText, sameRichText, targetToMarkdown, type LinkToken, type RichBlock, type RichListType, type RichPages, type RichSpan } from '@shared/richtext';
 
 /** One replacement of `text.slice(from, to)` by `insert`, and the selection to show after it. */
@@ -323,24 +324,24 @@ export type LinkAt = { kind: 'link'; tokens: LinkToken[]; line: number } | { kin
  * address of four dotted numbers stays a web address), and a bare domain https://. Null when it is nothing a link
  * can go to.
  */
-export function typedLink(raw: string, pages: RichPages, newTab = false): LinkValue | null {
+export function typedLink(raw: string, pages: RichPages, newTab = false, rel?: readonly string[]): LinkValue | null {
   const text = raw.trim();
   if (!text) return null;
   const href = /^[^\s@/:]+@[^\s@/]+\.[^\s@/]+$/.test(text) ? `mailto:${text}` : /^\+?\(?\d[\d ().-]{5,}$/.test(text) && !/^\d{1,3}(\.\d{1,3}){3}$/.test(text) ? `tel:${text}` : /^[a-z0-9-]+(\.[a-z0-9-]+)+([/?#]\S*)?$/i.test(text) ? `https://${text}` : text;
-  return linkFromTarget(href, pages, newTab);
+  return linkFromTarget(href, pages, newTab, rel);
 }
 
 export function linkAt({ text, start, end, plainAs }: TextAt, pages: RichPages): LinkAt {
   const ls = lines(text, plainAs);
   const l = lineAt(ls, start);
   // A line break inside a link (a backslash ending a line) is read as the parser reads it: part of the words.
-  const tokens = linkTokens(l.text.replace(/\\(?=\n)/g, '\u0000'), (t, n) => linkFromTarget(t, pages, n));
+  const tokens = linkTokens(l.text.replace(/\\(?=\n)/g, '\u0000'), (t, n, r) => linkFromTarget(t, pages, n, r));
   const i = tokens.findIndex((t) => start - l.from < t.end && end - l.from > t.start && (start === end ? start - l.from > t.start : true));
   if (i >= 0) {
     // Which marks a link's words carry: one link over words with the same marks is a single token, so neighbouring
     // tokens with the same marks are two links.
     const marks = (t: LinkToken) => l.text.slice(t.labelStart, t.labelEnd).replace(/\\./g, '').replace(/[^*]/g, '');
-    const same = (a: LinkToken, b: LinkToken, gap: string) => a.target === b.target && a.newTab === b.newTab && !gap.trim() && marks(a) !== marks(b);
+    const same = (a: LinkToken, b: LinkToken, gap: string) => a.target === b.target && a.newTab === b.newTab && a.rel.join() === b.rel.join() && !gap.trim() && marks(a) !== marks(b);
     let a = i;
     let b = i;
     while (a > 0 && same(tokens[a - 1], tokens[a], l.text.slice(tokens[a - 1].end, tokens[a].start))) a--;
@@ -359,7 +360,7 @@ export function linkAt({ text, start, end, plainAs }: TextAt, pages: RichPages):
 /** A line's blocks with their words and marks, links left out: what a link command must never change. */
 function words(line: string, pages: RichPages, plainAs?: RichListType) {
   const strip = (spans: RichSpan[]) => spans.map(({ link: _link, ...rest }) => rest);
-  const blocks = parseRichText(line, { markdown: true, link: (t, n) => linkFromTarget(t, pages, n), plainAs });
+  const blocks = parseRichText(line, { markdown: true, link: (t, n, r) => linkFromTarget(t, pages, n, r), plainAs });
   return cleanBlocks(blocks.map((b): RichBlock => (isListBlock(b) ? { type: b.type, items: b.items.map(strip) } : isImageBlock(b) ? b : { type: b.type, spans: strip(b.spans) })));
 }
 
@@ -372,24 +373,26 @@ function lineEdit(l: Line, from: number, to: number, insert: string, pages: Rich
 
 /**
  * The selected words linked to `link`, or the link the selection is in pointed at `link` instead (its words and
- * "new tab" kept). A string says why it can't be done.
+ * "new tab" kept). `rel` is what the link says about the site it goes to: without it, a link that is re-pointed keeps
+ * its own; either way only a web address has any. A string says why it can't be done.
  */
-export function setLink(at: TextAt, pages: RichPages, link: LinkValue): TextEdit | string {
+export function setLink(at: TextAt, pages: RichPages, link: LinkValue, rel?: readonly LinkRel[]): TextEdit | string {
   const found = linkAt(at, pages);
   if (!found) return 'Select the words to link first.';
   const target = targetToMarkdown(linkToTarget(link, pages));
+  const options = (newTab: boolean, own: LinkRel[]) => linkTitle(newTab, link.type !== 'url' ? [] : rel ? canonicalRels(rel) : own);
   const ls = lines(at.text, at.plainAs);
   if (found.kind === 'link') {
     const l = ls[found.line];
     const run = found.tokens;
-    const insert = run.map((t, k) => `${k ? l.text.slice(run[k - 1].end, t.start) : ''}${l.text.slice(t.start, t.labelEnd)}](${target}${t.newTab ? ' "new tab"' : ''})`).join('');
+    const insert = run.map((t, k) => `${k ? l.text.slice(run[k - 1].end, t.start) : ''}${l.text.slice(t.start, t.labelEnd)}](${target}${options(t.newTab, t.rel)})`).join('');
     return lineEdit(l, run[0].start, run[run.length - 1].end, insert, pages, at.plainAs) ?? 'That link can’t be changed here. Edit its text instead.';
   }
   const l = lineAt(ls, found.from);
-  const insert = `[${at.text.slice(found.from, found.to)}](${target})`;
+  const insert = `[${at.text.slice(found.from, found.to)}](${target}${options(false, [])})`;
   const edit = lineEdit(l, found.from - l.from, found.to - l.from, insert, pages, at.plainAs);
   // The words must be linked and read the same: a selection that cuts through bold or italic would not.
-  const linked = edit && linkTokens(applyTextEdit(l.text, { ...edit, from: edit.from - l.from, to: edit.to - l.from }), (t, n) => linkFromTarget(t, pages, n)).some((t) => t.start === found.from - l.from && t.end === found.from - l.from + insert.length);
+  const linked = edit && linkTokens(applyTextEdit(l.text, { ...edit, from: edit.from - l.from, to: edit.to - l.from }), (t, n, r) => linkFromTarget(t, pages, n, r)).some((t) => t.start === found.from - l.from && t.end === found.from - l.from + insert.length);
   return edit && linked ? edit : 'Select words inside one line, without cutting through bold or italic.';
 }
 

@@ -111,7 +111,7 @@ function mapAssetRefs(def: ComponentDefinition, visit: (assetId: string) => stri
 }
 
 const SITE_LINKS = new Set(['page', 'entry', 'document']);
-const LINK_KEYS = new Set(['type', 'target', 'anchor', 'newTab']);
+const LINK_KEYS = new Set(['type', 'target', 'anchor', 'newTab', 'rel']);
 const isSiteLink = (v: unknown): boolean => isRecord(v) && SITE_LINKS.has(v.type as string) && typeof v.target === 'string' && Object.keys(v).every((k) => LINK_KEYS.has(k));
 
 /**

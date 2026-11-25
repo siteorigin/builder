@@ -44,7 +44,7 @@ export function linkSvelte(instrument = false): string {
 			{download}
 			class={['so-card-link', className]}
 			target={link?.newTab ? '_blank' : undefined}
-			rel={link?.newTab ? 'noopener noreferrer' : undefined}
+			rel={link?.rel ?? (link?.newTab ? 'noopener noreferrer' : undefined)}
 			{...rest}>{@render children?.()}</a
 		>
 	{:else}
@@ -56,7 +56,7 @@ export function linkSvelte(instrument = false): string {
 		{download}
 		class={[kind, className]}
 		target={link?.newTab ? '_blank' : undefined}
-		rel={link?.newTab ? 'noopener noreferrer' : undefined}
+		rel={link?.rel ?? (link?.newTab ? 'noopener noreferrer' : undefined)}
 		{...rest}>{@render children?.()}</a
 	>
 {:else if (button || so_control) && typeof rest.onclick === 'function'}
@@ -286,7 +286,7 @@ export const ACTION_SVELTE = `<script>
 		{href}
 		class="so-card-link so-action"
 		target={link?.newTab ? '_blank' : undefined}
-		rel={link?.newTab ? 'noopener noreferrer' : undefined}>{@render children?.()}</a
+		rel={link?.rel ?? (link?.newTab ? 'noopener noreferrer' : undefined)}>{@render children?.()}</a
 	>
 {:else}
 	{@render children?.()}

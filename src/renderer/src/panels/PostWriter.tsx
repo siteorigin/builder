@@ -1,11 +1,12 @@
 import { useEffect, useId, useMemo, useRef, useState, type KeyboardEvent as ReactKeyboardEvent } from 'react';
 import { Bold, Eye, Heading2, Heading3, Heading4, ImagePlus, Italic, Link, List, ListChecks, ListOrdered, Newspaper, Pilcrow, Quote, Send, Unlink, Undo2 } from 'lucide-react';
-import type { AssetRecord, EntryDoc, EntrySeo, ImageValue, LinkValue, ProjectState, RichText } from '@shared/types';
+import type { AssetRecord, EntryDoc, EntrySeo, ImageValue, LinkRel, LinkValue, ProjectState, RichText } from '@shared/types';
 import type { ProjectSnapshot } from '@shared/api';
 import type { SeoSubject } from '@shared/seo';
 import { entryRoute, findEntry, orderedEntries } from '@shared/collections';
 import { formatArticleDate, isArticleDate } from '@shared/articles';
 import { linkFromTarget, linkToTarget, sameRichText } from '@shared/richtext';
+import { relsFromAttribute } from '@shared/link-rel';
 import { newId } from '@shared/ids';
 import { normalizeRichText } from '@engine/values';
 import { EngineError } from '@engine/tree';
@@ -13,6 +14,7 @@ import { assetLabels, sortAssets } from '@shared/asset-order';
 import { applyOps, commitIfUnchanged, commitOps, getState, markDraft, projectHistory, setState, toast, useStore, type CheckedOutcome, type PostRef } from '../store';
 import { DraftInput, Field, Modal, SwitchRow } from '../components/ui';
 import { CanonicalUrlField, RevisionDateField } from '../components/SeoFields';
+import { LinkRelControls } from '../components/LinkRelControls';
 import { seoSummary } from '../lib/sharing';
 import { publicUrl } from '@shared/public-url';
 import { routeUrl } from '@shared/routes';
@@ -97,7 +99,7 @@ export function PostWriter({ hidden }: { hidden: boolean }) {
   );
 }
 
-type Dialog = null | { kind: 'image'; fig: HTMLElement | null; value: ImageValue; caption: string; at: HTMLElement | null } | { kind: 'link'; range: Range | null; text: string; to: 'page' | 'post' | 'url'; page: string; entry: string; url: string; error?: string };
+type Dialog = null | { kind: 'image'; fig: HTMLElement | null; value: ImageValue; caption: string; at: HTMLElement | null } | { kind: 'link'; range: Range | null; text: string; to: 'page' | 'post' | 'url'; page: string; entry: string; url: string; rel: LinkRel[]; error?: string };
 
 function PostEditor({ post, hidden }: { post: PostRef; hidden: boolean }) {
   const snap = useStore((s) => s.snapshot)!;
@@ -386,11 +388,14 @@ function PostEditor({ post, hidden }: { post: PostRef; hidden: boolean }) {
       to: entryLink ? 'post' : pageLink?.type === 'page' ? 'page' : href ? 'url' : 'page',
       page: pageLink?.type === 'page' ? pageLink.target : firstPage,
       entry: entryLink || posts[0]?.id || '',
-      url: pageLink || entryLink ? '' : kept ? linkToTarget(kept, state.pages) : href
+      url: pageLink || entryLink ? '' : kept ? linkToTarget(kept, state.pages) : href,
+      // The anchor's own rel, which is what the post keeps (see post-dom).
+      rel: a && root.current?.contains(a) ? relsFromAttribute(a.getAttribute('rel')) : []
     });
   };
   const applyLink = (d: Extract<Dialog, { kind: 'link' }>) => {
     let href = '';
+    let rels: LinkRel[] = [];
     if (d.to === 'page') href = Object.hasOwn(state.pages, d.page) ? state.pages[d.page].route : '';
     else if (d.to === 'post') href = findEntry(state, d.entry) ? `entry:${d.entry}` : '';
     else {
@@ -398,6 +403,7 @@ function PostEditor({ post, hidden }: { post: PostRef; hidden: boolean }) {
       const link: LinkValue | null = linkFromTarget(/^[a-z0-9-]+(\.[a-z0-9-]+)+([/?#]\S*)?$/i.test(t) ? `https://${t}` : t, state.pages);
       if (!link || link.type === 'page' || link.type === 'anchor') return setDialog({ ...d, error: 'Use a full web address, such as https://example.com, or mailto: or tel:.' });
       href = /^https?:/i.test(t) || t.startsWith('mailto:') || t.startsWith('tel:') ? t : `https://${t}`;
+      if (link.type === 'url') rels = d.rel;
     }
     if (!href) return setDialog({ ...d, error: 'Choose where the link goes.' });
     const words = d.range && !d.range.collapsed ? '' : d.text.trim();
@@ -406,9 +412,16 @@ function PostEditor({ post, hidden }: { post: PostRef; hidden: boolean }) {
       if (words) {
         const a = document.createElement('a');
         a.setAttribute('href', href);
+        if (rels.length) a.setAttribute('rel', rels.join(' '));
         a.textContent = words;
         document.execCommand('insertHTML', false, a.outerHTML);
-      } else document.execCommand('createLink', false, href);
+        return;
+      }
+      document.execCommand('createLink', false, href);
+      // The browser makes new links for the words, without a rel: the ticked relationships go on each of them.
+      const sel = document.getSelection();
+      const now = rels.length && sel?.rangeCount ? sel.getRangeAt(0) : null;
+      if (now) root.current?.querySelectorAll('a[href]').forEach((a) => a.getAttribute('href') === href && now.intersectsNode(a) && a.setAttribute('rel', rels.join(' ')));
     });
   };
 
@@ -847,6 +860,8 @@ function LinkDialog({ dialog, state, self, onChange, onApply }: { dialog: Extrac
             <input id={`${uid}-url`} className="input" placeholder="https://example.com" value={dialog.url} onChange={(e) => set({ url: e.target.value })} />
           </Field>
         )}
+        {/* An email or phone link goes to no site to say anything about. */}
+        {dialog.to === 'url' && !/^(mailto|tel):/i.test(dialog.url.trim()) && <LinkRelControls value={dialog.rel} onChange={(rel) => set({ rel })} />}
         {dialog.error && (
           <p className="field-error" role="alert">
             {dialog.error}

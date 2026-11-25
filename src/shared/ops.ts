@@ -2,7 +2,7 @@ import { z } from 'zod';
 import { FONT_FAMILY_RE, FONT_WEIGHT_RE } from './fonts';
 import { DOCUMENT_EXTENSIONS, DOCUMENT_FORMATS } from './document-files';
 import { sha256Hex } from './sha256';
-import { COMPONENT_CATEGORIES, OVERLAY_MODES, SLOT_PRIMITIVES } from './types';
+import { COMPONENT_CATEGORIES, LINK_RELS, OVERLAY_MODES, SLOT_PRIMITIVES } from './types';
 import { TEXT_LIMITS, tooLongMessage } from './text-limits';
 import { CANONICAL_URL_MAX } from './seo';
 import { VISITOR_TEXT_KEYS, VISITOR_TEXT_LIMIT } from './visitor-text';
@@ -14,7 +14,7 @@ import { checkCrawlerPath, checkCrawlerToken, CRAWLER_LIMITS, CRAWLER_PRESETS, F
  * Tool schemas and runtime validators are both derived from these definitions.
  */
 /** What rich text accepts, for models writing a value. */
-const RICH_TEXT_VALUE = 'For richtext: a string or string[] with **bold**, *italic*, [label](/route/ or URL), and line prefixes "- ", "1. ", "- [x] ", "### ", "#### ", "> ". Each line is a block; a line ending in \\ continues the same block after a line break (an address).';
+const RICH_TEXT_VALUE = 'For richtext: a string or string[] with **bold**, *italic*, [label](/route/ or URL) (a URL may end with "new tab", "rel=nofollow,sponsored,ugc" or both: [label](https://… "new tab rel=sponsored")), and line prefixes "- ", "1. ", "- [x] ", "### ", "#### ", "> ". Each line is a block; a line ending in \\ continues the same block after a line break (an address).';
 /** What a table property accepts, for models writing a whole table. */
 const TABLE_VALUE = 'For table: { "columns": ["Day", "Workshop"], "rows": [["Monday", "Clay basics"]] }; to change one cell, row or column use instance.editTable.';
 
@@ -87,7 +87,8 @@ const link = z.object({
   type: z.enum(['none', 'page', 'url', 'email', 'tel', 'anchor', 'document']),
   target: z.string().describe('Page ID for page links, https URL, email address, phone number, anchor ID or a document asset ID.'),
   anchor: z.string().optional(),
-  newTab: z.boolean().optional()
+  newTab: z.boolean().optional(),
+  rel: z.array(z.enum(LINK_RELS)).optional().describe('url only: what the link says about the site it goes to (a paid link is sponsored).')
 });
 
 /**

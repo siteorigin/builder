@@ -224,6 +224,7 @@ p { text-wrap: pretty; }
 .rich-link { display: flex; flex-wrap: wrap; align-items: center; gap: 4px; }
 .rich-link .input { flex: 1 1 140px; min-width: 0; }
 .rich-link .field-error { flex-basis: 100%; }
+.rich-link .link-rels { flex-basis: 100%; margin-top: 2px; }
 
 /* ---------- Inputs ---------- */
 .input, .select, .textarea {
@@ -4324,6 +4325,12 @@ button.asset-use:hover svg.go { color: var(--text); }
 .insp-link-file { margin: 0; font-size: 12px; line-height: 1.4; color: var(--text-2); overflow-wrap: anywhere; }
 .insp-link-fixed { font-size: 12px; color: var(--text-2); overflow-wrap: anywhere; }
 .insp-link-typing { display: flex; flex-direction: column; gap: 4px; min-width: 0; }
+/* What a link to another site tells search engines: a quiet list of ticks under where it goes. */
+.link-rels { display: flex; flex-direction: column; gap: 4px; min-width: 0; margin: 0; padding: 0; border: 0; }
+.link-rels legend { margin: 0 0 2px; padding: 0; font-size: 12px; color: var(--text-2); }
+.link-rel { display: flex; align-items: center; gap: 6px; min-width: 0; font-size: 12px; color: var(--text); }
+.link-rel input { flex: none; margin: 0; }
+.link-rel span { min-width: 0; color: var(--text-2); }
 .insp-image { display: flex; flex-direction: column; gap: 8px; padding: 8px 10px 10px; border: 1px solid var(--border); border-radius: var(--r-md); background: var(--panel-2); }
 .insp-group .insp-image { padding: 0; border: 0; background: none; }
 .insp-image-top { display: flex; align-items: center; gap: 10px; }

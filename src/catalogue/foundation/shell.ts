@@ -289,7 +289,7 @@ const HEADER_SOURCE = `<script>
 					<a
 						href={href(noticeLink)}
 						target={noticeLink.newTab ? '_blank' : undefined}
-						rel={noticeLink.newTab ? 'noopener noreferrer' : undefined}
+						rel={noticeLink.rel ?? (noticeLink.newTab ? 'noopener noreferrer' : undefined)}
 						onclick={chose}>{noticeLinkText}</a
 					>
 				{/if}
@@ -355,7 +355,7 @@ const HEADER_SOURCE = `<script>
 					href={href(ctaLink)}
 					download={download(ctaLink)}
 					target={ctaLink.newTab ? '_blank' : undefined}
-					rel={ctaLink.newTab ? 'noopener noreferrer' : undefined}
+					rel={ctaLink.rel ?? (ctaLink.newTab ? 'noopener noreferrer' : undefined)}
 					onclick={chose}>{ctaLabel}</a
 				>
 			{/if}
@@ -370,7 +370,7 @@ const HEADER_SOURCE = `<script>
 		href={href(item.link)}
 		download={download(item.link)}
 		target={item.link?.newTab ? '_blank' : undefined}
-		rel={item.link?.newTab ? 'noopener noreferrer' : undefined}
+		rel={item.link?.rel ?? (item.link?.newTab ? 'noopener noreferrer' : undefined)}
 		aria-current={isCurrent(item.link) ? 'page' : undefined}
 		onclick={href(item.link) ? chose : undefined}>{item.label}</a
 	>

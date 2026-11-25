@@ -6,6 +6,7 @@
  * These are the plans both offers make, as edits that keep every label and link the author chose.
  */
 import { isBinding, type InstanceNode, type LinkValue, type OwnerRef, type ProjectState } from '@shared/types';
+import { canonicalRels, linkRels } from '@shared/link-rel';
 import type { EditOperation } from '@shared/ops';
 import { headerMenu, isSubItem, menuGroups, shellMenu, shownUnder } from '@engine/tree';
 import { pageHeadings } from '@generator/checks';
@@ -180,7 +181,7 @@ export interface FooterCopyPlan {
 }
 
 /**
- * A link's type, target, section and new-tab choice, for comparing: as the engine would save it (`saved`, for the
+ * A link's type, target, section, new-tab choice and relationships, for comparing: as the engine would save it (`saved`, for the
  * header link a copy is made from) or exactly as it is stored (for the footer's own link), so a footer link written
  * outside the app that goes nowhere never passes for its header link.
  */
@@ -190,17 +191,17 @@ const linkKey = (v: unknown, saved: boolean): string => {
     // that is not text, a link that is not an object) matches no header link.
     if (!v || typeof v !== 'object' || Array.isArray(v)) return JSON.stringify({ stored: v ?? null });
     const l = v as Record<string, unknown>;
-    return JSON.stringify([l.type ?? 'none', l.target ?? '', l.anchor || '', l.newTab === true]);
+    return JSON.stringify([l.type ?? 'none', l.target ?? '', l.anchor || '', l.newTab === true, linkRels(l)]);
   }
-  if (v === null || v === undefined || v === '') return JSON.stringify(['none', '', '', false]);
+  if (v === null || v === undefined || v === '') return JSON.stringify(['none', '', '', false, []]);
   if (typeof v !== 'object') return JSON.stringify({ shorthand: v });
   const l = v as Record<string, unknown>;
   // Saved, as normalizeLink writes it: no link has nothing else; a download has no section and opens no tab of its own.
   const type = typeof l.type === 'string' ? l.type : 'none';
-  if (type === 'none') return JSON.stringify(['none', '', '', false]);
+  if (type === 'none') return JSON.stringify(['none', '', '', false, []]);
   const target = String(l.target ?? '').trim();
-  if (type === 'document') return JSON.stringify([type, target, '', false]);
-  return JSON.stringify([type, type === 'anchor' ? target.replace(/^#/, '') : target, l.anchor ? String(l.anchor).replace(/^#/, '') : '', !!l.newTab]);
+  if (type === 'document') return JSON.stringify([type, target, '', false, []]);
+  return JSON.stringify([type, type === 'anchor' ? target.replace(/^#/, '') : target, l.anchor ? String(l.anchor).replace(/^#/, '') : '', !!l.newTab, type === 'url' ? canonicalRels(l.rel) : []]);
 };
 
 /**
