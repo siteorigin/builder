@@ -1491,7 +1491,16 @@ export interface ListFill {
   run: (refused: () => boolean) => Promise<unknown>;
 }
 
-export function PropField({ name, schema, value, onChange, onField, onList, onTable, read, alive, itemAlive, state, focusItem, openItem, label, hint, annotate, hiddenFields, linkPairs, error, action, place, everywhere, pickImages, fill }: {
+/**
+ * A list whose order is chosen elsewhere (the header menu, which can follow the Pages order): the control for that
+ * choice, shown over its rows, and while the order is not the author's to set here, why its rows offer no move.
+ */
+export interface ListOrder {
+  control: ReactNode;
+  locked: string | null;
+}
+
+export function PropField({ name, schema, value, onChange, onField, onList, onTable, read, alive, itemAlive, state, focusItem, openItem, label, hint, annotate, hiddenFields, linkPairs, error, action, place, everywhere, pickImages, fill, order }: {
   name: string;
   schema: PropSchema;
   value: unknown;
@@ -1531,13 +1540,15 @@ export function PropField({ name, schema, value, onChange, onField, onList, onTa
   pickImages?: string | null;
   /** For a list: a way to fill it from elsewhere in the project in one step. */
   fill?: ListFill;
+  /** For a list: its order, when that is chosen elsewhere. */
+  order?: ListOrder;
 }) {
   if (schema.type === 'list' && schema.feed) return <ComputedList name={name} schema={schema} state={state} place={place} />;
   // Fields inside belong to this property of the node around them (see FieldHome).
   if (schema.type === 'list')
     return (
       <FieldHome part={`prop:${name}`} alive={alive}>
-        <ListEditor name={name} schema={schema} items={Array.isArray(value) ? (value as ListItem[]) : []} onList={onList} itemAlive={itemAlive} state={state} focusItem={focusItem} openItem={openItem} annotate={annotate} hiddenFields={hiddenFields} linkPairs={linkPairs} place={place} read={read} everywhere={everywhere} pickImages={pickImages ?? undefined} fill={fill} />
+        <ListEditor name={name} schema={schema} items={Array.isArray(value) ? (value as ListItem[]) : []} onList={onList} itemAlive={itemAlive} state={state} focusItem={focusItem} openItem={openItem} annotate={annotate} hiddenFields={hiddenFields} linkPairs={linkPairs} place={place} read={read} everywhere={everywhere} pickImages={pickImages ?? undefined} fill={fill} order={order} />
       </FieldHome>
     );
   if (schema.type === 'table') return <TableEditor name={name} schema={schema} value={value} onTable={onTable} />;
@@ -1847,7 +1858,7 @@ export function useRevealedItem(place: ListPlace | undefined, item: ListItem | u
  * announced. The limits are stated where they bite: the count shows the maximum, and Add and Remove stay focusable
  * with the reason once the list is full or at its minimum.
  */
-function ListEditor({ name, schema, items, onList, read, itemAlive, state, focusItem, openItem, annotate, hiddenFields, linkPairs, place, everywhere, pickImages, fill }: { name: string; schema: ListProp; items: ListItem[]; onList: (op: ListOp) => unknown; read?: () => ReadValue | undefined; itemAlive?: (itemId: string, field: string) => () => boolean; state: ProjectState; focusItem?: string; openItem?: ListReveal; annotate?: (item: ListItem, index: number) => ListItemNote | undefined; hiddenFields?: (item: ListItem) => readonly string[]; linkPairs?: LinkPairs; place?: ListPlace; everywhere?: boolean; pickImages?: string; fill?: ListFill }) {
+function ListEditor({ name, schema, items, onList, read, itemAlive, state, focusItem, openItem, annotate, hiddenFields, linkPairs, place, everywhere, pickImages, fill, order }: { name: string; schema: ListProp; items: ListItem[]; onList: (op: ListOp) => unknown; read?: () => ReadValue | undefined; itemAlive?: (itemId: string, field: string) => () => boolean; state: ProjectState; focusItem?: string; openItem?: ListReveal; annotate?: (item: ListItem, index: number) => ListItemNote | undefined; hiddenFields?: (item: ListItem) => readonly string[]; linkPairs?: LinkPairs; place?: ListPlace; everywhere?: boolean; pickImages?: string; fill?: ListFill; order?: ListOrder }) {
   // Opens on the item of this list already revealed on the page (a part of it was selected, and the list is shown
   // now), so the page keeps that item open while the list takes it over.
   const [open, setOpen] = useState<string | null>(() => {
@@ -1867,6 +1878,9 @@ function ListEditor({ name, schema, items, onList, read, itemAlive, state, focus
   const addNoteId = useId();
   const removeNoteId = useId();
   const fillNoteId = useId();
+  const lockedNoteId = useId();
+  // Rows whose order is set elsewhere stay where they are, and their move buttons say why.
+  const locked = order?.locked ?? null;
   // While a fill is being applied it can't be asked for again.
   const [filling, setFilling] = useState(false);
   const fillId = fill?.id;
@@ -2001,6 +2015,7 @@ function ListEditor({ name, schema, items, onList, read, itemAlive, state, focus
   const adding = addable.includes(toAdd) ? toAdd : (addable[0] ?? '');
   const L = onList;
   const move = (it: ListItem, i: number, direction: MoveDirection) => {
+    if (locked) return;
     const index = direction === 'up' ? i - 1 : i + 1;
     after.current = { kind: 'moved', id: it.id, direction, index, from: i, title: titleOf(it, i), at: Date.now() };
     L({ kind: 'move', itemId: it.id, index });
@@ -2025,6 +2040,16 @@ function ListEditor({ name, schema, items, onList, read, itemAlive, state, focus
         </span>
       </div>
       <div className="list-editor">
+        {order && (
+          <div className="list-editor-order">
+            {order.control}
+            {locked && (
+              <p className="insp-note muted" id={lockedNoteId}>
+                {locked}
+              </p>
+            )}
+          </div>
+        )}
         {pickImages && (
           <>
             {!picking && (items.length === 0 || samplesOnly) && <p className="insp-note muted">{items.length ? `These are sample ${schema.itemLabel.toLowerCase()}s. Choose images from Assets to replace them.` : emptyPickNote(schema)}</p>}
@@ -2092,10 +2117,10 @@ function ListEditor({ name, schema, items, onList, read, itemAlive, state, focus
                   {flag}
                 </span>
               )}
-              <button className="icon-btn sm" aria-label={`Move ${titleOf(it, i)} up`} id={`list-up-${it.id}`} disabled={i === 0} onClick={() => move(it, i, 'up')}>
+              <button className="icon-btn sm" aria-label={`Move ${titleOf(it, i)} up`} id={`list-up-${it.id}`} disabled={!locked && i === 0} aria-disabled={locked ? true : undefined} aria-describedby={locked ? lockedNoteId : undefined} title={locked ?? undefined} onClick={() => move(it, i, 'up')}>
                 <ArrowUp />
               </button>
-              <button className="icon-btn sm" aria-label={`Move ${titleOf(it, i)} down`} id={`list-down-${it.id}`} disabled={i === items.length - 1} onClick={() => move(it, i, 'down')}>
+              <button className="icon-btn sm" aria-label={`Move ${titleOf(it, i)} down`} id={`list-down-${it.id}`} disabled={!locked && i === items.length - 1} aria-disabled={locked ? true : undefined} aria-describedby={locked ? lockedNoteId : undefined} title={locked ?? undefined} onClick={() => move(it, i, 'down')}>
                 <ArrowDown />
               </button>
               <button className="icon-btn sm list-editor-remove" aria-label={`Remove ${titleOf(it, i)}`} aria-disabled={removeNote ? true : undefined} aria-describedby={removeNote ? (removeNoteShared ? addNoteId : removeNoteId) : undefined} title={removeNote ?? undefined} onClick={() => {

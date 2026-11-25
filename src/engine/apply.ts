@@ -66,6 +66,7 @@ import { isPictureAsset } from '@shared/background-image';
 import { NO_SHELL_IDS, labelKeyFor, pageIds } from '@generator/checks';
 import { pageLinkUses, type PageLinkUse } from './page-links';
 import { batchTagProblem, insertsInline, tagKindProblem } from './semantic-tags';
+import { dropHeaderLinks, followingSlot, followsPageOrder, keepHeaderOrder, sortedRowIds } from './header-order';
 import { EngineError, RESERVED_ANCHORS, anchorCapable, anchorsInUse, childLists, codePlacesClass, displayName, enclosingRepeatProp, fail, findParent, getNode, getTree, headerMenu, headerMenuSlot, instancesOf, itemLinkPairs, settledRoot, subtreeIds, allTrees, type ParentInfo } from './tree';
 import { definitionRole } from './insert-role';
 import { itemStyleRecords, liveItemStyles, placementItems, repeatedPartList } from '@shared/item-styles';
@@ -173,8 +174,18 @@ function own<T>(rec: Record<string, T>, key: string): T | undefined {
   return Object.hasOwn(rec, key) ? rec[key] : undefined;
 }
 
-/** Apply one operation to a mutable draft. Throws EngineError on invalid input. */
+/**
+ * Apply one operation to a mutable draft. Throws EngineError on invalid input. A header menu that follows the pages
+ * is put back in Pages order after it, so the edit and the menu's new order are one change.
+ */
 export function applyOperation(state: ProjectState, op: EditOperation, ctx: ApplyContext = {}): OpResult {
+  const before = sortedRowIds(state);
+  const result = applyOne(state, op, ctx);
+  keepHeaderOrder(state, before);
+  return result;
+}
+
+function applyOne(state: ProjectState, op: EditOperation, ctx: ApplyContext): OpResult {
   switch (op.type) {
     case 'page.create':
       return pageCreate(state, op);
@@ -252,6 +263,9 @@ export function applyOperation(state: ProjectState, op: EditOperation, ctx: Appl
     case 'instance.listMove':
       return keepingFormKeys(state, op, () => {
         const { node, schema } = listTarget(state, op.owner, op.nodeId, op.prop);
+        // A link moved by hand in a menu that follows the pages would be put back by the next edit: it is refused.
+        if (followsPageOrder(state) && op.owner.kind === 'shell' && op.owner.id === 'header' && op.prop === 'links' && headerMenu(state)?.node.id === node.id)
+          fail('The header menu follows the page order, so its links move with the pages. Set the header menu order to "own" (site.update headerMenuOrder) to move its links by hand.');
         const list = [...((node.props[op.prop] as ListItem[]) ?? [])];
         const from = placedItemIndex(list, op.owner, node.id, op.itemId);
         if (from < 0) fail(`Item "${op.itemId}" not found in ${schema.label}.`);
@@ -945,8 +959,10 @@ function addToHeaderNavigation(state: ProjectState, page: PageDoc): boolean {
   if (schema.max !== undefined && list.length >= schema.max) return false;
   // A page inside another goes under the link to that page, when the menu has one and groups links.
   const slot = headerMenuSlot(state, list, page.id);
+  // A menu that follows the pages takes it at its place in their order, at that level.
+  const at = followsPageOrder(state) ? followingSlot(state, list, page.id, slot) : slot.index;
   const item = normalizeItem(schema, { label: page.navLabel || page.title, link: { type: 'page', target: page.id }, ...(slot.sub ? { sub: true } : {}) }, state, schema.label);
-  node.props.links = [...list.slice(0, slot.index), item, ...list.slice(slot.index)];
+  node.props.links = [...list.slice(0, at), item, ...list.slice(at)];
   return true;
 }
 
@@ -1235,6 +1251,9 @@ function pageRemove(state: ProjectState, op: Op<'page.remove'>): OpResult {
   }
   // A blank Home takes the removed Home's place, so even the only page can go.
   if (state.site.pageOrder.length <= 1 && !op.newHome) fail('A site needs at least one page.');
+  // A header menu that follows the pages loses its links to the page rather than pointing them at another. A new
+  // blank Home stands in the removed Home's place in the pages, so its menu links follow to it like every other link.
+  if (followsPageOrder(state) && !op.newHome) dropHeaderLinks(state, page.id);
   const all = pageLinkUses(state, page.id);
   // Page lists' cards for this page go with it; every other link is pointed at the replacement.
   const cards = all.filter((u) => u.card);
@@ -3089,6 +3108,11 @@ function siteUpdate(state: ProjectState, op: Op<'site.update'>): OpResult {
   if (op.webmcp !== undefined) {
     if (op.webmcp) s.webmcp = true;
     else delete s.webmcp;
+  }
+  // The header menu keeps its own order unless it follows the pages (engine/header-order.ts): stored only then.
+  if (op.headerMenuOrder !== undefined) {
+    if (op.headerMenuOrder === 'follow') s.headerMenuOrder = 'follow';
+    else delete s.headerMenuOrder;
   }
   // The host redirect rules are written for (generator/host-redirects.ts), stored only while it is not the default.
   if (op.redirectHost !== undefined) {

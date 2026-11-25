@@ -150,6 +150,8 @@
   .insp-link-row { display: flex; align-items: flex-start; gap: 6px; min-width: 0; }
   .insp-link-row .select.grow { min-width: 0; }
   .insp-link-row > .btn { flex: none; }
+  /* The header menu's order, over its links. */
+  .list-editor-order { display: flex; flex-direction: column; gap: 4px; min-width: 0; }
   .insp-link-sub { flex: none; font-size: 12px; line-height: 26px; color: var(--text-2); }
   .insp-link-import { align-self: flex-start; }
   /* A destination that goes nowhere is marked on the control itself, as well as said under it. */

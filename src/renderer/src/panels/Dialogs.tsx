@@ -1066,6 +1066,25 @@ export function DeletePageModal({ pageId }: { pageId: string }) {
         </>
       )
     });
+  if (review.menu.length)
+    details.push({
+      kind: 'lose',
+      icon: <CircleMinus />,
+      text: (
+        <>
+          <span id="delete-page-menu">{review.menu.length === 1 ? 'Its link is removed from the header menu, which follows the page order.' : `Its ${review.menu.length} links are removed from the header menu, which follows the page order.`}</span>
+          <ScrollList className="page-dialog-list" labelledBy="delete-page-menu">
+            {review.menu.map((label, i) => (
+              <li key={i}>
+                {holderIcon({ kind: 'shell', id: 'header' })}
+                <span className="page-dialog-where">Header</span>
+                <span className="page-dialog-label">“{label}”</span>
+              </li>
+            ))}
+          </ScrollList>
+        </>
+      )
+    });
   if (under.length)
     details.push({
       kind: 'keep',
