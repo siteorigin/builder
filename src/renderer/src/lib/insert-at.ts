@@ -208,13 +208,21 @@ function captionSafe(tree: NodeTree, parentId: string | null | undefined, index:
  * selection, in its own list; with nothing selected on a page it goes into the last section that holds content. A
  * section goes after the top-level section that holds the selection. `definitionId`: the component being inserted,
  * whose own selected placement asks for another beside it (a second card), never one inside it. `held`: the slot of
- * the selected placement that the selection picked (see heldSlot), in place of its first.
+ * the selected placement that the selection picked (see heldSlot), in place of its first. A slot picked on the canvas
+ * (ElementRef.slot) takes an element itself, whatever it is; one its placement no longer declares takes nothing.
  */
 export function placeFor(state: ProjectState, owner: OwnerRef, role: InsertRole, sel: ElementRef | null, definitionId?: string, held?: string): InsertAt | null {
   const tree = treeFor(state, owner);
   if (!tree) return null;
+  // A slot picked in the shared header or footer is not on the page Insert adds to: what is added goes nowhere, rather
+  // than somewhere the author did not pick.
+  if (sel?.slot !== undefined && role === 'element' && (sel.owner.kind !== owner.kind || sel.owner.id !== owner.id)) return null;
   if (sel && sel.owner.kind === owner.kind && sel.owner.id === owner.id) {
     const node = own(tree.nodes, sel.nodeId);
+    if (sel.slot !== undefined && role === 'element') {
+      const def = node?.kind === 'instance' ? own(state.components, node.definitionId) : undefined;
+      return node && def?.slots && Object.hasOwn(def.slots, sel.slot) ? { owner, parentId: node.id, slot: sel.slot } : null;
+    }
     const same = node?.kind === 'instance' && !!definitionId && node.definitionId === definitionId;
     if (role === 'element' && node && !same) {
       if (node.kind === 'element') return { owner, parentId: node.id, ...beforeCaption(tree, node) };
@@ -453,8 +461,20 @@ export function elementWhere(st: ProjectState, at: InsertAt | null): Where {
   if (at.owner.kind === 'page' && !at.parentId)
     return before ? { lead: 'in a new section after', target: nodeLabel(st, at.owner, before), node: true } : { lead: at.index === 0 ? 'in a new section at the top of' : 'in a new section at the end of', target: ownerLabel(st, at.owner) };
   if (before) return { lead: 'after', target: nodeLabel(st, at.owner, before), node: true, ...(at.parentId ? { within: nodeLabel(st, at.owner, at.parentId) } : {}) };
+  // One of several slots is named by its label, in its component: "inside Sidebar in Split".
+  const slot = at.parentId && at.slot ? namedSlot(st, at.owner, at.parentId, at.slot) : undefined;
+  if (slot) return { lead: 'inside', target: slot, node: true, within: nodeLabel(st, at.owner, at.parentId!) };
   if (at.parentId) return { lead: 'inside', target: nodeLabel(st, at.owner, at.parentId), node: true };
   return { lead: 'at the end of', target: ownerLabel(st, at.owner) };
+}
+
+/** The label of a placement's slot, when its component declares more than one: one alone is the placement's content. */
+function namedSlot(st: ProjectState, owner: OwnerRef, parentId: string, slot: string): string | undefined {
+  const node = own(treeFor(st, owner)?.nodes, parentId);
+  const slots = node?.kind === 'instance' ? own(st.components, node.definitionId)?.slots : undefined;
+  if (!slots || Object.keys(slots).length < 2) return undefined;
+  const label = own(slots, slot)?.label;
+  return typeof label === 'string' && label.trim() ? label.trim() : slot;
 }
 
 /** Where a section inserted at `at` goes: after the section before it, else at the top or end of the page. */

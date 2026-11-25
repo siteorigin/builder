@@ -3403,7 +3403,7 @@ function emitInstance(ctx: EmitCtx, node: InstanceNode): string {
         // component shows there of its own: a code component's `{#if slot_x}…{:else}…`, a design's fallback.
         // Component Studio's preview of a design shows that fallback while editing too, where it is edited.
         const studio = ctx.fallbackShown === node.id && designFallback(def, slotName);
-        const marker = ctx.instrument && !studio ? emptySlotMarker(def.slots[slotName], slotName) : '';
+        const marker = ctx.instrument && !studio ? emptySlotMarker(def.slots[slotName], slotName, ctx.def ? '' : slotAddress(ctx, node.id)) : '';
         if (!marker) continue;
         // Given only while editing, so Preview shows what visitors see.
         ctx.usesEditing = true;
@@ -3454,14 +3454,25 @@ function handedSlot(ctx: EmitCtx, ids: string[]): string | undefined {
 /**
  * The placeholder an empty slot shows in the editor: its label, and what belongs there. Editor-only (rendered only
  * while editing, and styled by the bridge), and never written into a clean file. A slot closed to content (max 0)
- * shows none.
+ * shows none. `address` names the placement it belongs to (see slotAddress), so the canvas can pick it and drop into it.
  */
-function emptySlotMarker(decl: SlotDef | undefined, slotName: string): string {
+function emptySlotMarker(decl: SlotDef | undefined, slotName: string, address = ''): string {
   if (!decl || decl.max === 0) return '';
   const label = typeof decl.label === 'string' && decl.label.trim() ? decl.label.trim() : slotName;
   const description = typeof decl.description === 'string' ? decl.description.trim() : '';
   // Phrasing content only, so it is valid wherever the slot sits (a paragraph included); the bridge lays it out as a box.
-  return `<span class="so-slot-empty" data-so-editor-only="" data-so-slot-empty={${js(slotName)}}><strong>{${js(label)}}</strong>${description ? `<span>{${js(description)}}</span>` : ''}</span>`;
+  return `<span class="so-slot-empty" data-so-editor-only="" data-so-slot-empty={${js(slotName)}}${address}><strong>{${js(label)}}</strong>${description ? `<span>{${js(description)}}</span>` : ''}</span>`;
+}
+
+/**
+ * Where an empty slot's placeholder says it belongs (#652): the placement, in the context it is placed in, and the
+ * list items it is shown for. Its own attributes, never the editor's element markers, so the placeholder is never
+ * taken for the placement itself. Only for a placement of a page, the shared header or footer, or a layout: one in a
+ * component's design is filled in that design, not where the component is placed.
+ */
+function slotAddress(ctx: EmitCtx, nodeId: string): string {
+  const items = itemsExpr(ctx, nodeId);
+  return ` data-so-slot-ctx=${attrJs(ctx.ctxExpr)} data-so-slot-node=${attrJs(nodeId)}${items ? ` data-so-slot-items={${items}}` : ''}`;
 }
 
 /** The tags a hiding list may have for its placeholder to stand in its place: block content, valid where a list is. */

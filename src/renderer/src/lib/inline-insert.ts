@@ -53,7 +53,8 @@ const keyOf = (at: InsertAt) => JSON.stringify([at.parentId, at.slot ?? null, at
  * header or footer, a component being edited, or anything else.
  */
 export function addPoints(state: ProjectState, owner: OwnerRef, ref: ElementRef | null, hovered = false): AddPoint[] {
-  if (!ref || ref.itemPath?.length || !sameOwner(ref.owner, owner) || (owner.kind !== 'page' && owner.kind !== 'template')) return [];
+  // A slot picked by its empty box is not the placement: none of the placement's Add buttons go on it.
+  if (!ref || ref.itemPath?.length || ref.slot !== undefined || !sameOwner(ref.owner, owner) || (owner.kind !== 'page' && owner.kind !== 'template')) return [];
   const tree = treeFor(state, owner);
   if (!tree) return [];
   const points: AddPoint[] = [];

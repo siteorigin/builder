@@ -1262,6 +1262,11 @@ export interface ElementRef {
   partId?: string;
   /** Repeated item IDs from outermost to innermost. */
   itemPath?: string[];
+  /**
+   * One slot of the placement `nodeId` names, a placement in the owner's own tree: the place its content goes, picked
+   * on the canvas by its empty box, rather than the placement itself.
+   */
+  slot?: string;
 }
 
 export function refKey(ref: ElementRef): string {
@@ -1269,7 +1274,9 @@ export function refKey(ref: ElementRef): string {
     `${ref.owner.kind}:${ref.owner.id}`,
     ...ref.instancePath,
     ref.nodeId,
-    ref.itemPath?.length ? `#${ref.itemPath.join(',')}` : ''
+    ref.itemPath?.length ? `#${ref.itemPath.join(',')}` : '',
+    // A slot is told apart from its placement, and from the placement's other slots.
+    ...(ref.slot !== undefined ? [`@${ref.slot}`] : [])
   ].join('|');
 }
 

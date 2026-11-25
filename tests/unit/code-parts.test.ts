@@ -187,11 +187,14 @@ describe('a code placement takes managed content in its slot', () => {
   it('passes what is placed as the slot’s snippet, and in the editor marks an empty slot only while editing', async () => {
     const { s, pageId, owner, calc } = await calculator();
     const dev = generateProject(s, { instrument: true }).get(homeFile(s, pageId))!;
-    // Empty: the placeholder is given only while editing, so the code's own {:else} still shows in Preview.
-    expect(dev).toMatch(/\{#snippet (so_slot_empty_\d+)\(\)\}\s*<span class="so-slot-empty" data-so-editor-only="" data-so-slot-empty=\{"content"\}>[\s\S]*slot_content=\{so_editing \? \1 : undefined\}/);
+    // Empty: the placeholder is given only while editing, so the code's own {:else} still shows in Preview. It names the
+    // code placement it belongs to, as a managed placement's does (#652).
+    expect(dev).toMatch(/\{#snippet (so_slot_empty_\d+)\(\)\}\s*<span class="so-slot-empty" data-so-editor-only="" data-so-slot-empty=\{"content"\} data-so-slot-ctx=\{"page:[^"]+"\} data-so-slot-node=\{"[^"]+"\}>[\s\S]*slot_content=\{so_editing \? \1 : undefined\}/);
+    expect(dev).toContain(`data-so-slot-node={"${calc}"}`);
     const clean = generateProject(s, { instrument: false }).get(homeFile(s, pageId))!;
     expect(clean).not.toContain('slot_content');
     expect(clean).not.toContain('so-slot-empty');
+    expect(clean).not.toContain('data-so-slot-');
 
     // A Stack placed in the slot, holding a Button.
     let next = applyOperations(s, [{ type: 'node.insert', owner, parentId: calc, slot: 'content', primitive: 'stack' }]).state;

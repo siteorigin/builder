@@ -51,7 +51,15 @@ function descOf(el) {
   return { ctx: el.getAttribute('data-so-ctx') || '', node: el.getAttribute('data-so-node') || '', items: el.getAttribute('data-so-items') || '' };
 }
 function sameDesc(a, b) {
-  return a === b || (!!a && !!b && a.ctx === b.ctx && a.node === b.node && a.items === b.items && (a.part || '') === (b.part || ''));
+  return a === b || (!!a && !!b && a.ctx === b.ctx && a.node === b.node && a.items === b.items && (a.part || '') === (b.part || '') && a.slot === b.slot);
+}
+/**
+ * The slot an empty slot's placeholder stands for, as the editor names it: its placement's descriptor and the slot's
+ * name. Null for anything else, and for a placeholder that names no placement (one in a component's design).
+ */
+function slotDescOf(el) {
+  if (!el.hasAttribute('data-so-slot-empty') || !el.hasAttribute('data-so-slot-node')) return null;
+  return { ctx: el.getAttribute('data-so-slot-ctx') || '', node: el.getAttribute('data-so-slot-node') || '', items: el.getAttribute('data-so-slot-items') || '', slot: el.getAttribute('data-so-slot-empty') || '' };
 }
 /** The innermost of the editor's elements at `target` (itself or the nearest one around it), or null. */
 function innermost(target) {
@@ -98,6 +106,8 @@ function partDesc(el) {
 function pointedAt(target) {
   for (let el = target instanceof Element ? target : target?.parentElement; el && el !== document.documentElement; el = el.parentElement) {
     if (el.hasAttribute('data-so-node')) return { el, desc: descOf(el) };
+    const slot = slotDescOf(el);
+    if (slot) return { el, desc: slot };
     const desc = partDesc(el);
     if (desc) return { el, desc };
   }
@@ -113,7 +123,8 @@ function chainFrom(target, parts = false) {
   for (let el = parts ? target instanceof Element ? target : target?.parentElement : innermost(target); el && el !== document.documentElement; el = el.parentElement) {
     if (el.hasAttribute('data-so-node')) chain.push({ ...descOf(el), tag: el.tagName.toLowerCase(), code: el.hasAttribute('data-so-code') });
     else if (parts) {
-      const desc = partDesc(el);
+      // An empty slot's placeholder names that slot of its placement, innermost.
+      const desc = slotDescOf(el) || partDesc(el);
       if (desc) chain.push({ ...desc, tag: el.tagName.toLowerCase() });
     }
   }
@@ -128,6 +139,11 @@ function cssEscape(s) {
 }
 function findAll(desc) {
   if (!desc) return [];
+  // A placement's empty slot: its placeholder, wherever the placement's component shows the slot.
+  if (typeof desc.slot === 'string') {
+    const sel = `[data-so-slot-empty="${cssEscape(desc.slot)}"][data-so-slot-ctx="${cssEscape(desc.ctx)}"][data-so-slot-node="${cssEscape(desc.node)}"]`;
+    return [...document.querySelectorAll(sel)].filter((el) => !desc.items || (el.getAttribute('data-so-slot-items') || '') === desc.items);
+  }
   const sel = `[data-so-ctx="${cssEscape(desc.ctx)}"][data-so-node="${cssEscape(desc.node)}"]`;
   const els = [...document.querySelectorAll(sel)].filter((el) => !desc.items || (el.getAttribute('data-so-items') || '') === desc.items);
   if (typeof desc.part !== 'string' || !desc.part) return els;
@@ -197,14 +213,18 @@ function sendRects() {
   const selBoxes = selEls.map(rectOf);
   sampleSelection(selEls, selBoxes);
   const sel = selBoxes.filter(Boolean);
-  const hov = hovered && mode === 'edit' ? findAll(hovered).slice(0, 1).map(rectOf).filter(Boolean) : [];
+  // A slot's placeholder is outlined where it first shows: a copy hidden at this width (a layout's mobile copy on
+  // desktop) has no box to outline.
+  const hovEls = hovered && mode === 'edit' ? findAll(hovered) : [];
+  const hov = (typeof hovered?.slot === 'string' ? hovEls : hovEls.slice(0, 1)).map(rectOf).filter(Boolean).slice(0, 1);
   // A divider between items is not part of the item it follows.
   const rev = revealRoots().filter((el) => !isSeparator(el)).map(rectOf).filter(Boolean);
   // The padding, border and margin of the first selected box the editor outlines, for its spacing handles, with
   // what it measured so a report from before a new selection is never taken for it.
   const first = selBoxes.findIndex(Boolean);
-  // A code component's marked part has no spacing handles: its author's code lays it out.
-  const box = mode === 'edit' && first >= 0 && !selected.part ? spacingOf(selEls[first]) : null;
+  // A code component's marked part has no spacing handles: its author's code lays it out. Nor has a placement's empty
+  // slot: its placeholder is the editor's own.
+  const box = mode === 'edit' && first >= 0 && !selected.part && selected.slot === undefined ? spacingOf(selEls[first]) : null;
   // Read in the same pass, after the boxes above have brought the page's layout up to date: no further reflow.
   const spacing = box && { ...box, layout: layoutReport(selEls[first]), ctx: selected.ctx, node: selected.node, items: selected.items || '' };
   send('rects', { selected: sel, selectedDesc: selected, hovered: hov, hoveredDesc: hovered, revealed: rev, spacing, viewport: { width: innerWidth, height: innerHeight, scrollY } });
@@ -4599,10 +4619,14 @@ window.addEventListener('message', async (e) => {
       // the box is only the first copy's.
       send('measured', { requestId: m.payload.requestId, rects: descs.map((d) => {
         const all = findAll(d);
-        const el = all[0];
-        const r = el && rectOf(el);
-        if (!r) return null;
-        const shown = all.filter((c) => { const b = rectOf(c); return !!b && (b.width > 0 || b.height > 0); }).length;
+        // A slot's placeholder is measured where it first shows: a copy hidden at this width (one a component shows
+        // only on phones) is skipped. Any other element is measured where it first is.
+        const boxes = all.map(rectOf);
+        const first = d && typeof d.slot === 'string' ? boxes.findIndex(Boolean) : boxes[0] ? 0 : -1;
+        if (first < 0) return null;
+        const el = all[first];
+        const r = boxes[first];
+        const shown = boxes.filter(Boolean).length;
         const out = { ...r, order: layoutOrder(el) };
         if (layoutItem(el).ordered) out.ordered = true;
         if (shown > 1) out.many = true;

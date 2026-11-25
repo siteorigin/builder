@@ -1452,7 +1452,7 @@ describe('empty slots in the editor preview (issue #96)', () => {
     return { s: r.state, id: r.results[0].nodeId as string, page: { kind: 'page' as const, id: base.site.homePageId } };
   }
   const homeFile = 'src/routes/+page.svelte';
-  const MARKER = /data-so-slot-empty|so-slot-empty/;
+  const MARKER = /data-so-slot-|so-slot-empty/;
 
   it('marks only an empty slot, with its label and description, and only where the editor shows it', () => {
     const { s, id, page } = emptySection();
@@ -1484,8 +1484,32 @@ describe('empty slots in the editor preview (issue #96)', () => {
     s.components[def] = { ...s.components[def], slots: { content: { label: 'Content', max: 0 } } };
     expect(generateProject(s, { instrument: true }).get(homeFile)).not.toMatch(MARKER);
     s.components[def] = { ...s.components[def], slots: { content: { label: 'Body', max: 3 } } };
-    // Phrasing content only, so a slot inside a paragraph keeps the paragraph whole.
-    expect(generateProject(s, { instrument: true }).get(homeFile)).toContain('<span class="so-slot-empty" data-so-editor-only="" data-so-slot-empty={"content"}><strong>{"Body"}</strong></span>');
+    // Phrasing content only, so a slot inside a paragraph keeps the paragraph whole. It names its placement where it
+    // is placed, so the canvas can pick it and drop into it (#652).
+    expect(generateProject(s, { instrument: true }).get(homeFile)).toContain(
+      `<span class="so-slot-empty" data-so-editor-only="" data-so-slot-empty={"content"} data-so-slot-ctx={"page:${s.site.homePageId}"} data-so-slot-node={"${id}"}><strong>{"Body"}</strong></span>`
+    );
+  });
+
+  it('names the placement an empty slot belongs to only where the page fills it, never inside a component’s design (#652)', () => {
+    const { s, id, page } = emptySection();
+    // A component whose design places an empty Section of its own, placed in the empty section on the page.
+    const made = applyOperations(s, [
+      { type: 'component.upsert', name: 'Framed', insertAs: 'element', properties: {}, nodes: [{ kind: 'element', id: 'root', children: [] }] }
+    ]);
+    const def = made.results[0].definitionId as string;
+    const inner = applyOperations(made.state, [
+      { type: 'node.insert', owner: { kind: 'component', id: def }, parentId: 'root', componentId: 'layout.section' },
+      { type: 'node.insert', owner: page, parentId: id, slot: 'content', definitionId: def }
+    ]).state;
+    const files = generateProject(inner, { instrument: true });
+    const home = files.get(homeFile)!;
+    // The page's section is filled now; the design's section shows an empty slot, in the design's own file, with no
+    // placement named.
+    expect(home).not.toMatch(/data-so-slot-empty=/);
+    const design = [...files.entries()].filter(([path, src]) => path.endsWith('.svelte') && src.includes('data-so-slot-empty='));
+    expect(design.length).toBeGreaterThan(0);
+    for (const [path, src] of design) expect(src, path).not.toMatch(/data-so-slot-(ctx|node|items)/);
   });
 });
 

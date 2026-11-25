@@ -17,7 +17,7 @@ import { chainOf, descOrNull, measuredRects, pointedAt, rectList, spaceSizes, sp
 import { blocksFromDom, richDom } from '../lib/richtext';
 import { dropAt, dropReaches, moveIndex, shownOrder } from '../lib/reorder';
 import { insertOps, insertRole, whereText, type InsertAt } from '../lib/insert-at';
-import { dropRefusal, incomingOrder, insertDestination, measureIds, savingProblems, type DropList, type Measured } from '../lib/insert-drop';
+import { dropRefusal, incomingOrder, insertDestination, measureIds, savingProblems, slotOfKey, type DropList, type Measured, type SlotSurface } from '../lib/insert-drop';
 import { setInsertDropTarget, type InsertDrag } from '../lib/insert-drag';
 import { setAssetDropTarget, type AssetDrag } from '../lib/asset-drag';
 import { aimKey, assetAim, descKey, imageDropTargets, imageInsertOps, resolveImageDrop, type AssetAim, type ImageTarget } from '../lib/image-drop';
@@ -29,7 +29,7 @@ import { externalLink } from '@shared/links';
 import { richTextToMarkdown } from '@shared/richtext';
 import { hasDarkPalette } from '@shared/color-scheme';
 import { repeatAsListTarget } from '../lib/repeat-as-list';
-import { boundaryOf, computedAt, createComponentTarget, definitionPick, descOf, designCtx, inDefinition, itemStep, needsStudio, placementsOn, refExists, refLabel, resolveRef, selectionFromChain, stepItem, studioDescOf, studioDesignCtx, studioPick, throughPlacement, toDefinitionRef, type BridgeDesc } from '../lib/model';
+import { boundaryOf, computedAt, createComponentTarget, definitionPick, descOf, designCtx, inDefinition, itemStep, needsStudio, placementsOn, refExists, refLabel, resolveRef, selectionFromChain, stepItem, studioDescOf, studioDesignCtx, studioPick, throughPlacement, toDefinitionRef, withoutSlot, type BridgeDesc } from '../lib/model';
 import { NEW_STUDIO, StudioLoads, studioSpec } from '../lib/studio';
 import { titleOnlyPage } from '../lib/page-start';
 import { askAiAbout, writePageWithAi, canInlineEdit, commitText, dropAsset, dropAssetAt, deleteSelection, detachable, detachPlacement, duplicateLayers, duplicateSelection, insertHere, liveGroup, moveLayers, moveSelection, planOne, setMode, showsInlineText, structuralTarget, takeUnscrolled, ungroupLayers, wrapLayers } from '../lib/actions';
@@ -270,7 +270,7 @@ export function Canvas() {
   const [reorder, setReorder] = useState<{ line: Rect | null; name: string } | null>(null);
   /** While a tile from Insert is dragged: where the pointer is, and what dropping there does (in page pixels, the gap's
    *  line and the outline of the container it goes into; `refused` says why it can't go there). */
-  const [insertDrop, setInsertDrop] = useState<{ name: string; x: number; y: number; over: boolean; line: Rect | null; outline: Rect | null; label: string; refused: string | null } | null>(null);
+  const [insertDrop, setInsertDrop] = useState<{ name: string; x: number; y: number; over: boolean; line: Rect | null; outline: Rect | null; label: string; refused: string | null; surfaces: SlotSurface[] } | null>(null);
   const insertDrag = useRef<{ end: (commit: boolean) => void; remeasure: () => void } | null>(null);
   /** What the page measured the selected and hovered boxes for, so an Add button is drawn only on the box of what it
    *  belongs to, never on one measured for the selection before. */
@@ -1414,7 +1414,12 @@ export function Canvas() {
     const create = createComponentTarget(getState().snapshot, t);
     // A container of the design edited everywhere: the same as Layers and the inspector.
     const repeat = repeatAsListTarget(getState().snapshot, t);
-    const parent = ref.instancePath.length ? { owner: ref.owner, instancePath: ref.instancePath.slice(0, -1), nodeId: ref.instancePath[ref.instancePath.length - 1] } : null;
+    const parent =
+      ref.slot !== undefined
+        ? withoutSlot(ref)
+        : ref.instancePath.length
+          ? { owner: ref.owner, instancePath: ref.instancePath.slice(0, -1), nodeId: ref.instancePath[ref.instancePath.length - 1] }
+          : null;
     const locked = !t || t.owner.kind === 'shell';
     const kept = definitionMode ? undefined : placedDefinition(state, t, devMode);
     const sib = siblings(state, t);
@@ -1596,7 +1601,7 @@ export function Canvas() {
               batch.forEach((_, i) => (out[from + i] = rects?.[i] ?? null));
               resolve();
             });
-            post('measure', { requestId, descs: batch.map((d) => ({ ctx: d.ctx, node: d.node, items: d.items })) });
+            post('measure', { requestId, descs: batch.map((d) => ({ ctx: d.ctx, node: d.node, items: d.items, ...(d.slot !== undefined ? { slot: d.slot } : {}) })) });
           })
       )
     ).then(() => out);
@@ -1657,8 +1662,13 @@ export function Canvas() {
     const at = itemStep(st, to, s.templateMode ?? undefined);
     if (at) setAnnouncement(`${refLabel(st, to)}, ${at.n} of ${at.count}.`);
   }
-  /** The elements the page shows for nodes of `owner`'s own tree (a drop's lists), one that shows none named so. */
-  const listDescs = (owner: OwnerRef, ids: string[]): BridgeDesc[] => ids.map((id) => descFor({ owner, instancePath: [], nodeId: id }) ?? { ctx: '', node: '', items: '' });
+  /** The elements the page shows for nodes of `owner`'s own tree (a drop's lists), and for a placement's empty slot (a
+   *  slot key, see insert-drop) its placeholder; one that shows none named so. */
+  const listDescs = (owner: OwnerRef, ids: string[]): BridgeDesc[] =>
+    ids.map((id) => {
+      const slot = slotOfKey(id);
+      return descFor(slot ? { owner, instancePath: [], nodeId: slot.parentId, slot: slot.slot } : { owner, instancePath: [], nodeId: id }) ?? { ctx: '', node: '', items: '' };
+    });
 
   /**
    * Drag a new section or element from Insert onto the page. The lists on the page that can take it are measured (and
@@ -1679,6 +1689,8 @@ export function Canvas() {
     const specs = dest.specs;
     if (!specs.length) return false;
     let lists: DropList[] | null = null;
+    // The empty slots it can go into, drawn while it runs at the size a drop finds them (#652).
+    let surfaces: SlotSurface[] = [];
     let point = { x: start.x, y: start.y };
     let done = false;
     // Released while the page was still being measured: the drop waits for the measure, at the release point.
@@ -1705,7 +1717,7 @@ export function Canvas() {
           label = t.refused ? `Can’t place ${drag.name} here` : t.where ? `${drag.name} ${whereText(t.where)}` : label;
         }
       }
-      setInsertDrop({ name: drag.name, x: point.x, y: point.y, over, line, outline, label, refused: aim.refused });
+      setInsertDrop({ name: drag.name, x: point.x, y: point.y, over, line, outline, label, refused: aim.refused, surfaces: lists ? surfaces : [] });
     };
     // Planned on the project as the drag found it (see insertHere).
     const drop = (at: InsertAt) => void insertHere(drag.spec, drag.name, role, at, snap);
@@ -1765,6 +1777,7 @@ export function Canvas() {
         if (again) return measure();
         clearTimeout(timer);
         lists = dest.lists(new Map(ids.map((id, i) => [id, rects[i]])));
+        surfaces = dest.surfaces(lists);
         show();
         if (released) end(true);
       });
@@ -1809,7 +1822,14 @@ export function Canvas() {
     window.addEventListener('keydown', key, true);
     window.addEventListener('wheel', wheel, { capture: true, passive: false });
     document.documentElement.classList.add('insert-dragging');
-    insertDrag.current = { end, remeasure: measure };
+    // Measured again, what was drawn from the old measures goes until the new ones land.
+    insertDrag.current = {
+      end,
+      remeasure: () => {
+        measure();
+        show();
+      }
+    };
     setDragging(true);
     show();
     measure();
@@ -2385,14 +2405,14 @@ export function Canvas() {
   const spaceDesc = selection ? descFor(selection) : null;
   // The page's report must be for this selection: one from before it changed measured something else.
   // A code component's marked part has no spacing handles: a report for its placement is never one for the part.
-  const spaceFor = !!spacing && !!spaceDesc && !spaceDesc.part && spacing.desc.ctx === spaceDesc.ctx && spacing.desc.node === spaceDesc.node && spacing.desc.items === spaceDesc.items;
+  const spaceFor = !!spacing && !!spaceDesc && !spaceDesc.part && spaceDesc.slot === undefined && spacing.desc.ctx === spaceDesc.ctx && spacing.desc.node === spaceDesc.node && spacing.desc.items === spaceDesc.items;
   const spaceShown = selBoxes.length > 0 && spaceFor && !!state && !editing && !reorder && !resizing && !definitionMode && !snapshot?.aiBusy && !snapshot?.readOnly;
   // The canvas's Add buttons (#387), on the box of the selection and of what is hovered, each only on a box the page
   // measured for it (one copy: a repeated item's place would be every item's). Below one section and above the next
   // are one place, drawn once, the selection's first. While a list is open, only its own button is drawn, where it was.
   const addOwner: OwnerRef | null = templateMode ? templateOwner(templateMode) : pageId ? { kind: 'page', id: pageId } : null;
   const addReady = mode === 'edit' && !!state && !!addOwner && frameReady && !staleFrame && !stylesOpen && !definitionMode && !editing && !reorder && !resizing && !insertDrop && !dragging && !snapshot?.readOnly && !snapshot?.aiBusy && !menu.isOpen;
-  const measuredFor = (a: BridgeDesc | null, b: BridgeDesc | null) => !!a && !!b && a.ctx === b.ctx && a.node === b.node && (a.items || '') === (b.items || '') && (a.part || '') === (b.part || '');
+  const measuredFor = (a: BridgeDesc | null, b: BridgeDesc | null) => !!a && !!b && a.ctx === b.ctx && a.node === b.node && (a.items || '') === (b.items || '') && (a.part || '') === (b.part || '') && a.slot === b.slot;
   const addButtons: Array<{ p: AddPoint; box: AddBox }> = adding
     ? [{ p: adding.point, box: adding.box }]
     : !addReady
@@ -2797,7 +2817,17 @@ export function Canvas() {
                     const d = dropBox(reorder.line);
                     return <div className={`ov-drop${d.vertical ? ' vertical' : ''}`} style={{ left: d.left, top: d.top, width: d.width, height: d.height }} role="presentation" />;
                   })()}
-                {between?.outline && <div className={`ov-box ov-drop-target${between.refused ? ' refused' : ''}`} style={toBox(between.outline)} data-testid="insert-drop-target" />}
+                {insertDrop?.surfaces.map((sf) => (
+                  <div key={sf.key} className="ov-box ov-slot-surface" style={toBox(sf.box)} data-testid="insert-slot-surface" data-slot={sf.label}>
+                    <span>{sf.label}</span>
+                  </div>
+                ))}
+                {between?.outline && (
+                  <div className={`ov-box ov-drop-target${between.refused ? ' refused' : ''}`} style={toBox(between.outline)} data-testid="insert-drop-target">
+                    {/* Why it can't go here, said on the place itself while the drag holds it (#652). */}
+                    {between.refused && insertDrop && <span className="ov-drop-reason" data-testid="insert-drop-reason">{between.refused}</span>}
+                  </div>
+                )}
                 {imageDrop?.outline && <div className="ov-box ov-image-drop" style={toBox(imageDrop.outline)} data-testid="image-drop-target" />}
                 {between?.line &&
                   (() => {
@@ -2910,12 +2940,13 @@ function addListHolds(list: { opening: string; revision: number; view: string },
 
 /** The name the canvas chrome uses: the shared header and footer say so, since the green alone cannot. */
 function chromeLabel(state: ProjectState, ref: ElementRef): string {
-  if (ref.owner.kind === 'shell' && !ref.instancePath.length && boundaryOf(state, ref).nodeId === ref.nodeId) return ref.owner.id === 'header' ? 'Shared header' : 'Shared footer';
+  if (ref.owner.kind === 'shell' && !ref.instancePath.length && ref.slot === undefined && boundaryOf(state, ref).nodeId === ref.nodeId) return ref.owner.id === 'header' ? 'Shared header' : 'Shared footer';
   return refLabel(state, ref);
 }
 
 /** The same glyphs Layers uses for each kind of part. */
 function kindIcon(state: ProjectState, ref: ElementRef) {
+  if (ref.slot !== undefined) return <Box />;
   if (ref.owner.kind === 'shell' && !ref.instancePath.length) return <Users />;
   switch (resolveRef(state, ref).node?.kind) {
     case 'instance':

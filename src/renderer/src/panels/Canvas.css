@@ -289,6 +289,12 @@
   /* A tile dragged from Insert onto the page (#52): the container it goes into, outlined, and what it carries beside the pointer. */
   .ov-drop-target { outline: 2px dashed var(--select); outline-offset: -3px; background: color-mix(in srgb, var(--select) 6%, transparent); }
   .ov-drop-target.refused { outline-color: var(--red); background: var(--red-soft); }
+  /* Why the place under the pointer can't take it, on the place itself (#652). */
+  .ov-drop-reason { position: absolute; left: 4px; bottom: 4px; width: max-content; max-width: max(calc(100% - 8px), 220px); padding: 3px 6px; border-radius: var(--r-xs); background: var(--red); color: #fff; font-size: 11px; font-weight: 600; line-height: 1.3; }
+  /* Each empty slot a dragged tile can go into, while the drag runs (#652): drawn over the page at the size a drop finds
+     it, so a collapsed or narrow column is still a place to drop. */
+  .ov-slot-surface { display: flex; align-items: flex-start; justify-content: center; padding-top: 6px; outline: 2px dashed color-mix(in srgb, var(--select) 70%, transparent); outline-offset: -3px; background: color-mix(in srgb, var(--select) 10%, transparent); }
+  .ov-slot-surface span { max-width: calc(100% - 8px); padding: 1px 6px; border-radius: var(--r-xs); overflow: hidden; background: var(--select); color: #fff; font-size: 11px; font-weight: 600; text-overflow: ellipsis; white-space: nowrap; }
   .ov-moving.ov-placing.refused { background: var(--red); }
   /* The image a drop from Assets would change: filled in, so it stands out from the outlines around it. */
   .ov-image-drop { outline: 3px solid var(--select); outline-offset: -3px; background: color-mix(in srgb, var(--select) 22%, transparent); box-shadow: 0 0 0 1px rgb(255 255 255 / 0.7) inset; }

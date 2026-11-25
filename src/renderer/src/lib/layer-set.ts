@@ -54,7 +54,7 @@ export function groupOf(tree: NodeTree, owner: OwnerRef, ids: string[]): Group |
  * left out; a set left with one layer is no set.
  */
 export function liveSet(tree: NodeTree | undefined, selection: ElementRef | null, set: LayerSet | null): Group | null {
-  if (!tree || !set || !selection || selection.instancePath.length || !sameOwner(selection.owner, set.owner)) return null;
+  if (!tree || !set || !selection || selection.instancePath.length || selection.slot !== undefined || !sameOwner(selection.owner, set.owner)) return null;
   if (!set.ids.includes(selection.nodeId)) return null;
   const here = findParent(tree, selection.nodeId);
   if (!here) return null;
@@ -158,7 +158,8 @@ export const NOT_SIBLINGS = 'Only layers side by side in the same place can be s
 function current(tree: NodeTree, selection: ElementRef | null, set: LayerSet | null, owner: OwnerRef): { ids: string[]; anchor: string } | null {
   const live = liveSet(tree, selection, set);
   if (live && set) return { ids: live.ids, anchor: live.ids.includes(set.anchor) ? set.anchor : selection!.nodeId };
-  if (selection && !selection.instancePath.length && sameOwner(selection.owner, owner) && Object.hasOwn(tree.nodes, selection.nodeId)) return { ids: [selection.nodeId], anchor: selection.nodeId };
+  // A slot picked by its empty box is not its placement's layer: it is never taken into a range.
+  if (selection && !selection.instancePath.length && selection.slot === undefined && sameOwner(selection.owner, owner) && Object.hasOwn(tree.nodes, selection.nodeId)) return { ids: [selection.nodeId], anchor: selection.nodeId };
   return null;
 }
 
@@ -168,7 +169,7 @@ const setOf = (owner: OwnerRef, ids: string[], anchor: string): LayerSet | null 
  * A pick that can't add `ref` to what is selected: refused, saying why, while a layer is selected (so the pick never
  * silently replaces it); with nothing selected, or only a part, `ref` alone.
  */
-const cannot = (selection: ElementRef | null, ref: ElementRef, why: string): PickResult => (selection && !selection.instancePath.length ? { refused: why } : { selection: ref, layerSet: null });
+const cannot = (selection: ElementRef | null, ref: ElementRef, why: string): PickResult => (selection && !selection.instancePath.length && selection.slot === undefined ? { refused: why } : { selection: ref, layerSet: null });
 
 /**
  * Shift: select every layer from the anchor (the layer picked before) to `ref`, which becomes the selection. With

@@ -1427,6 +1427,12 @@ export function AssetsPanel({ narrow }: { narrow: boolean }) {
             ) : placement.at ? (
               <>
                 Goes {placement.where.lead} <b>{placement.where.target}</b>
+                {placement.where.within ? (
+                  <>
+                    {' in '}
+                    <b>{placement.where.within}</b>
+                  </>
+                ) : null}
                 {placement.where.node ? ` on ${placement.page}` : ''}. Select something on the page to put it elsewhere.
               </>
             ) : (
