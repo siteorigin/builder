@@ -1597,28 +1597,49 @@ export function Canvas() {
    * to. A page that doesn't answer leaves the plain neighbour. Presses take turns, each from where the last one went,
    * so a held key steps once per press. Only the selection changes; the new position is announced.
    */
-  const stepping = useRef<Promise<void>>(Promise.resolve());
-  const onStep = (dir: -1 | 1) => (stepping.current = stepping.current.then(() => stepItemSelection(dir)).catch(() => {}));
+  /** Presses waiting their turn, and what the next one steps from: where the press that started them was, then where
+   *  each step went. Another selection meanwhile (a click, an Undo) drops the rest. */
+  const stepping = useRef({ chain: Promise.resolve(), waiting: 0, from: '' });
+  const onStep = (dir: -1 | 1) => {
+    const q = stepping.current;
+    if (!q.waiting) q.from = stepKey(getState());
+    q.waiting++;
+    q.chain = q.chain
+      .then(() => stepItemSelection(dir))
+      .catch(() => {})
+      .finally(() => q.waiting--);
+  };
   async function stepItemSelection(dir: -1 | 1) {
+    const q = stepping.current;
     const s = getState();
     const st = s.snapshot?.state;
     const from = s.selection;
+    const asked = stepKey(s);
+    if (asked !== q.from) return;
     const info = st && from ? itemStep(st, from, s.templateMode ?? undefined) : null;
     if (!st || !from || !info || !stepItem(info.parts, info.n, dir)) return;
-    const asked = stepKey(s);
     const requests: string[] = [];
     const descs = info.parts.map((p) => (p && descFor(p)) ?? { ctx: '', node: '', items: '' });
     let timer: ReturnType<typeof setTimeout> | undefined;
-    const measured = await Promise.race([measureDescs(descs, requests), new Promise<null>((resolve) => (timer = setTimeout(() => resolve(null), 1500)))]);
-    clearTimeout(timer);
-    for (const id of requests) measureWaiters.current.delete(id);
+    let measured: Array<Measured | null> | null;
+    try {
+      measured = await Promise.race([measureDescs(descs, requests), new Promise<null>((resolve) => (timer = setTimeout(() => resolve(null), 1500)))]);
+    } finally {
+      clearTimeout(timer);
+      for (const id of requests) measureWaiters.current.delete(id);
+    }
     // A step answered after the selection, the project or what the page shows moved on (another click, an Undo, another
-    // entry for a layout) is dropped.
+    // entry for a layout) is dropped. A page still showing an older version of the project tells nothing.
     const now = getState();
     if (stepKey(now) !== asked) return;
+    if (shownRevision.current < (now.snapshot?.revision ?? 0)) measured = null;
     const to = stepItem(info.parts, info.n, dir, measured?.map((m) => !!m));
-    if (!to) return void setStepBlocked((b) => ({ key: asked, prev: dir === -1 || (b?.key === asked && b.prev), next: dir === 1 || (b?.key === asked && b.next) }));
+    if (!to) {
+      if (measured) setStepBlocked((b) => ({ key: asked, prev: dir === -1 || (b?.key === asked && b.prev), next: dir === 1 || (b?.key === asked && b.next) }));
+      return;
+    }
     setState({ selection: to });
+    q.from = stepKey(getState());
     const at = itemStep(st, to, s.templateMode ?? undefined);
     if (at) setAnnouncement(`${refLabel(st, to)}, ${at.n} of ${at.count}.`);
   }
