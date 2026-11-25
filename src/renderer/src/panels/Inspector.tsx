@@ -60,6 +60,7 @@ import { catalogueComponent } from '@catalogue/index';
 import { formFieldSettingsHidden, formFieldsAsSent, formKeyNote, formServiceSetup, namesFormFields, offersFormChoices, type FormServiceSetup } from '@catalogue/foundation/form';
 import { anchorCapable, codeImportantProps, codeTakesOverrides, designAppear, enclosingRepeatProp, instancesOf, itemLinkPairs, shellMenu } from '@engine/tree';
 import type { TableEdit } from '@engine/table';
+import { stateActionProblem } from '@engine/schema';
 import { listEditLabel } from '../lib/list-editor';
 import { contentLabel, editLabel, fieldLabel, forLabel, refTo, styleLabel, styleWords, subjectWords } from '../lib/edit-label';
 import { applyOps, applyWith, commitOps, getState, renamePage, setState, toast, undoAction, useStore, type InspectorFocus, type PendingEdit } from '../store';
@@ -2377,11 +2378,13 @@ function DefinitionNodeInspector({ state, def, node, tokens }: { state: ProjectS
         }
       : undefined;
   const placedDef = node.kind === 'instance' ? state.components[node.definitionId] : undefined;
-  // A button with words and no destination in the design: the site leaves it out of every placement.
+  // A button with words and no destination in the design: the site leaves it out of every placement, unless it changes
+  // the component's UI state (a tab, a toggle), which makes it a real button.
   const fixedLink = node.kind === 'link' && !isBinding(node.link) ? (node.link as LinkValue | null | undefined) : undefined;
   const designUnlinked =
     node.kind === 'link' &&
     !isBinding(node.link) &&
+    (!node.stateAction || !!stateActionProblem(def, node.stateAction)) &&
     (node.appearance === 'primary' || node.appearance === 'secondary') &&
     typeof node.label === 'string' &&
     !!node.label.trim() &&
