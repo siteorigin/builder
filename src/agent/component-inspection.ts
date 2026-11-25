@@ -240,7 +240,8 @@ export function planComponentInspection(target: InspectTarget): InspectCase[] {
   const empty = clone(shown);
   let empties = 0;
   eachScalar(def, empty, (s, v, set, w) => {
-    if (s.type !== 'link' && !optional.has(fieldKey(w))) return;
+    // A required value is never empty on any placement, so there is no such case to measure.
+    if (s.required || (s.type !== 'link' && !optional.has(fieldKey(w)))) return;
     const e = emptied(s);
     if (e === undefined || JSON.stringify(e) === JSON.stringify(v)) return;
     set(e);

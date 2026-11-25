@@ -12,6 +12,7 @@ import { blocksSaving, introducedDiagnostics, validateState } from '@engine/vali
 import { guaranteesValue, isEmptyPropValue, requiredGap } from '@shared/required';
 import { compactPropsSchema, propsJsonSchema } from '../../src/agent/propschema';
 import { catalogueIndex, propSchemaSummary } from '../../src/agent/context';
+import { planComponentInspection } from '../../src/agent/component-inspection';
 
 const PHOTO = 'as_photo';
 function project(): ProjectState {
@@ -232,6 +233,17 @@ describe('required properties: what the AI reads', () => {
     expect(summary.title).toMatchObject({ required: true, requires: 'it needs some text' });
     expect(summary.note).not.toHaveProperty('required');
     expect(summary.cards).toMatchObject({ required: true, itemFields: { title: { type: 'string', required: true } } });
+  });
+});
+
+describe('required properties in a design inspection', () => {
+  it('never measures a case that empties a required link, which no placement can show', () => {
+    const s = project();
+    const { state, definitionId } = placed(s, { go: { type: 'link', label: 'Go', default: 'https://example.com/', required: true }, more: { type: 'link', label: 'More', default: 'https://example.com/more' } });
+    const def = state.components[definitionId];
+    const values = { go: def.properties.go.default, more: def.properties.more.default };
+    const empty = planComponentInspection({ def, select: { definitionId }, values, variants: {}, notes: [] }).find((c) => c.label.split(' + ').includes('empty'))!;
+    expect(empty.props).toMatchObject({ go: { type: 'url' }, more: { type: 'none' } });
   });
 });
 
