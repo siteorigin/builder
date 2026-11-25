@@ -179,9 +179,12 @@ export interface FooterCopyPlan {
   matches: boolean;
 }
 
-/** A value as JSON with its keys in order, so two links that say the same compare equal however they were written. */
-const canonical = (v: unknown): string =>
-  JSON.stringify(v, (_k, x: unknown) => (x && typeof x === 'object' && !Array.isArray(x) ? Object.fromEntries(Object.entries(x).sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0))) : x));
+/** A link as the engine saves it, so two that go to the same place compare equal however they were written. */
+const linkKey = (v: unknown): string => {
+  if (!v || typeof v !== 'object') return JSON.stringify(v ?? null);
+  const l = v as Partial<LinkValue>;
+  return JSON.stringify([l.type ?? 'none', String(l.target ?? '').trim(), l.anchor ? String(l.anchor).replace(/^#/, '') : '', l.newTab === true]);
+};
 
 /**
  * Copy the header menu's top-level links into the footer's links, replacing the footer's own: each keeps its label and
@@ -196,13 +199,13 @@ export function footerCopyPlan(state: ProjectState): FooterCopyPlan | null {
   const now = footer && menuItems(footer);
   if (!header || !footer || !from || !now) return null;
   const under = menuGroups(header.schema) ? shownUnder(from) : from.map(() => false);
-  const top = from.filter((it, i) => !under[i] && !!it && typeof it === 'object');
+  const top = from.filter((it, i) => !under[i] && !!it && typeof it === 'object' && !Array.isArray(it));
   if (!top.length) return null;
   // Each link as the header shows it: a field it leaves out reads as the header's default for that field.
   const shown = (it: MenuItem, menu: NonNullable<ReturnType<typeof shellMenu>>, key: 'label' | 'link') => (Object.hasOwn(it, key) ? it[key] : (menu.schema.fields[key] as { default?: unknown }).default);
   const copied = top.slice(0, footer.schema.max ?? top.length).map((it) => ({ label: structuredClone(shown(it, header, 'label')), link: structuredClone(shown(it, header, 'link')) }));
   if (footer.schema.min !== undefined && copied.length < footer.schema.min) return null;
-  const same = (want: (typeof copied)[number], have: MenuItem) => !!have && typeof have === 'object' && (['label', 'link'] as const).every((key) => canonical(want[key]) === canonical(shown(have, footer, key)));
+  const same = (want: (typeof copied)[number], have: MenuItem) => !!have && typeof have === 'object' && want.label === shown(have, footer, 'label') && linkKey(want.link) === linkKey(shown(have, footer, 'link'));
   return {
     op: { type: 'instance.setProp', owner: { kind: 'shell', id: 'footer' }, nodeId: footer.node.id, prop: 'links', value: copied },
     count: copied.length,

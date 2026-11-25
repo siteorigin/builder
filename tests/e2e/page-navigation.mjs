@@ -142,28 +142,40 @@ assert.equal(await note.count(), 0, 'no menu order to offer for a page outside t
 step('Copy from header menu fills the footer’s links with the header’s top-level links, and Undo brings its own back (#575)');
 /** The footer's Explore links as visitors read them, in the canvas. */
 const footerLinks = async () => (await frame.locator('footer:not(main footer) nav').first().locator('a').allInnerTexts()).map((t) => t.trim());
+/** The shared header's and footer's stored links: label and destination of each top-level one, and every row's ID. */
+const stored = async () => {
+  const st = (await snapshot()).state;
+  const rows = (part) => st.site.shell[part].nodes[st.site.shell[part].rootIds[0]].props.links;
+  const shown = (part) => rows(part).filter((l, i) => !(i > 0 && l.sub)).map((l) => [l.label, JSON.stringify(l.link)]);
+  return { header: shown('header'), footer: shown('footer'), footerIds: rows('footer').map((l) => l.id) };
+};
 const footerOwn = await footerLinks();
 const headerNow = await menu();
-assert.notDeepEqual(footerOwn, headerNow, 'the footer starts with links of its own');
+const before = await stored();
+assert.notDeepEqual(before.footer, before.header, 'the footer starts with links of its own');
 // The canvas is scaled to fit beside the panels, so the footer is selected with a click on its site name.
 await frame.locator('footer:not(main footer) p').first().dispatchEvent('click');
 await win.locator('.dock-tab', { hasText: 'Inspector' }).click();
 const footerList = win.locator('#dock-panel-inspect [data-list="links"]');
 const copy = footerList.getByRole('button', { name: 'Copy from header menu' });
 await copy.waitFor({ timeout: 10000 });
+// Offered for the footer's links only, not for its contact links.
+assert.equal(await win.locator('#dock-panel-inspect [data-list="contact"]').getByRole('button', { name: 'Copy from header menu' }).count(), 0);
 assert.match(await footerList.locator('.insp-note', { hasText: 'Replaces' }).innerText(), new RegExp(`Replaces the ${footerOwn.length} links here`));
 await copy.click();
+await eventually(async () => {
+  const now = await stored();
+  assert.deepEqual(now.footer, now.header, 'each footer link has its header link’s label and destination');
+});
+await win.locator('.toast', { hasText: 'The footer now lists' }).getByRole('button', { name: 'Undo' }).waitFor();
+await eventually(async () => {
+  assert.equal(await copy.getAttribute('aria-disabled'), 'true', 'nothing more to copy');
+  assert.equal(await footerList.locator('.insp-note', { hasText: 'already match the header menu' }).count(), 1);
+});
 await eventually(async () => assert.deepEqual(await footerLinks(), headerNow), 30000);
-const footerTargets = async () => {
-  const st = (await snapshot()).state;
-  const of = (part) => st.site.shell[part].nodes[st.site.shell[part].rootIds[0]].props.links.filter((l) => !l.sub).map((l) => [l.label, JSON.stringify(l.link)]);
-  return { header: of('header'), footer: of('footer') };
-};
-const both = await footerTargets();
-assert.deepEqual(both.footer, both.header, 'each footer link has its header link’s label and destination');
-await eventually(async () => assert.equal(await copy.getAttribute('aria-disabled'), 'true', 'nothing more to copy'));
-assert.equal(await footerList.locator('.insp-note', { hasText: 'already match the header menu' }).count(), 1);
-await win.locator('.toast', { hasText: 'The footer now lists' }).getByRole('button', { name: 'Undo' }).click();
+// Undo from the keyboard: the focus is on the button, not in a field.
+await win.keyboard.press(`${MOD}+z`);
+await eventually(async () => assert.deepEqual(await stored(), before, 'Undo brings back the footer’s own rows, destinations and IDs'));
 await eventually(async () => assert.deepEqual(await footerLinks(), footerOwn), 30000);
 assert.deepEqual(await menu(), headerNow, 'the header menu is unchanged');
 

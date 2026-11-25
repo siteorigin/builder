@@ -90,6 +90,7 @@ import { LengthMeter, SeoPreview, subjectKey, useDocumentPreview, useTypedSeo } 
 import { defaultReach, designContent, designContentOp, forwardedBinding, propDefaultOp, reachText, type ContentField, type DesignContent } from '../lib/design-content';
 import { pickImagesField, pickOperations, planChoice } from '../lib/gallery-picks';
 import { footerCopyPlan } from '../lib/page-navigation';
+import { appliesLanded } from '../lib/pending';
 import { BindingControl, PartSection, PropertiesSection, StyleTargetField, TagBindingControl, VariantsSection, styleVariant, useVariantStyle } from './ContractControls';
 import { LivePreview } from './InsertPanel';
 import { EntryBoundNote, EntryFieldsSection } from './EntryFields';
@@ -166,14 +167,24 @@ function footerCopyFill(state: ProjectState): ListFill | undefined {
   };
 }
 
-/** Copy the header menu into the footer's links, planned on the project as it is now and applied only to it. */
-async function copyHeaderMenuToFooter() {
-  const now = getState().snapshot;
-  const plan = now && footerCopyPlan(now.state);
-  if (!now || !plan || plan.matches) return;
-  const r = await commitOps([plan.op], COPY_HEADER_MENU, undefined, now.revision);
-  if (!r || getState().snapshot?.workspaceKey !== r.workspaceKey) return;
-  toast(`The footer now lists the header menu’s ${linkCount(plan.count)}.`, 'info', undoAction(r));
+/** A copy on its way: asked for again (from a list editor shown again meanwhile), it is the same copy. */
+let copying: Promise<void> | null = null;
+
+/**
+ * Copy the header menu into the footer's links. A row edit saved as the author left it for the button lands first;
+ * the copy is then planned on the project as it is and applied only to it.
+ */
+function copyHeaderMenuToFooter(): Promise<void> {
+  copying ??= (async () => {
+    await appliesLanded();
+    const now = getState().snapshot;
+    const plan = now && footerCopyPlan(now.state);
+    if (!now || !plan || plan.matches) return;
+    const r = await commitOps([plan.op], COPY_HEADER_MENU, undefined, now.revision);
+    if (!r || getState().snapshot?.workspaceKey !== r.workspaceKey) return;
+    toast(`The footer now lists the header menu’s ${linkCount(plan.count)}.`, 'info', undoAction(r));
+  })().finally(() => (copying = null));
+  return copying;
 }
 
 function listOps(owner: OwnerRef, nodeId: string, prop: string, op: Exclude<ListOp, { kind: 'pick' }>): EditOperation {

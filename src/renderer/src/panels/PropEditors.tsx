@@ -10,7 +10,7 @@ import { readNumberDraft } from '../lib/number-draft';
 import type { ListPlace } from '../lib/reveal';
 import { DraftInput, Field, FieldHome, openSection, Switch, SwitchRow, useFieldHome } from '../components/ui';
 import { TEXT_LIMITS } from '@shared/text-limits';
-import { isSettling, savesInFlight } from '../lib/pending';
+import { isSettling, refusedWithin, savesInFlight } from '../lib/pending';
 import { announcementText } from '../lib/announce';
 import { MAX_CHOICES as MAX_CHOICE_ROWS } from '@engine/values';
 import { declaredTokens } from '@engine/tokens';
@@ -2172,6 +2172,12 @@ function ListEditor({ name, schema, items, onList, read, itemAlive, state, focus
               aria-describedby={(fill.blocked ?? fill.note) ? fillNoteId : undefined}
               onClick={() => {
                 if (fill.blocked || filling) return;
+                // Text a row's field refused would go with the rows it replaces: it is corrected or discarded first.
+                const refused = rootRef.current && refusedWithin(rootRef.current);
+                if (refused) {
+                  toast(`${refused.message} Correct it or press Escape in it, then ${fill.label.toLowerCase()} again.`, 'error');
+                  return refused.field.focus();
+                }
                 setFilling(true);
                 void fill.run().finally(() => setFilling(false));
               }}

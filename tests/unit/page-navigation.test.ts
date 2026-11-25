@@ -404,6 +404,7 @@ describe('the footer’s links copied from the header menu (#575)', () => {
   it('copies a first link marked for a submenu, which the header shows at the top level', () => {
     let s = scratchSite();
     s = apply(s, [{ type: 'instance.setProp', owner: shell('header'), nodeId: menuOf(s, 'header').id, prop: 'links', itemId: links(s, 'header')[0].id, field: 'sub', value: true }]).state;
+    expect((links(s, 'header')[0] as { sub?: boolean }).sub).toBe(true);
     expect(labels(apply(s, [footerCopyPlan(s)!.op]).state, 'footer')).toEqual(['Home', 'About', 'Contact']);
   });
 
@@ -435,6 +436,38 @@ describe('the footer’s links copied from the header menu (#575)', () => {
     expect(footerCopyPlan(moved)!.matches).toBe(false);
     const renamed = apply(copied, [{ type: 'instance.setProp', owner: shell('footer'), nodeId: footer.id, prop: 'links', itemId: links(copied, 'footer')[1].id, field: 'label', value: 'Who we are' }]).state;
     expect(footerCopyPlan(renamed)!.matches).toBe(false);
+    // The same labels in the same order, but one goes somewhere else.
+    const elsewhere = apply(copied, [{ type: 'instance.setProp', owner: shell('footer'), nodeId: footer.id, prop: 'links', itemId: links(copied, 'footer')[1].id, field: 'link', value: { type: 'page', target: 'pg_contact1' } }]).state;
+    expect(labels(elsewhere, 'footer')).toEqual(labels(s, 'header'));
+    expect(footerCopyPlan(elsewhere)!.matches).toBe(false);
+  });
+
+  it('counts a link written with options it does not use as the same link once copied', () => {
+    // A header written outside the app, its link saying newTab: false and an empty section.
+    const s = structuredClone(scratchSite());
+    (links(s, 'header')[1].link as Record<string, unknown>).newTab = false;
+    (links(s, 'header')[1].link as Record<string, unknown>).anchor = '';
+    const after = apply(s, [footerCopyPlan(s)!.op]).state;
+    expect(links(after, 'footer')[1].link).toEqual({ type: 'page', target: 'pg_about001' });
+    expect(footerCopyPlan(after)!.matches).toBe(true);
+  });
+
+  it('reads a header without a list of its own, and a link without a label, as the header shows them', () => {
+    const s = structuredClone(scratchSite());
+    const header = menuOf(s, 'header');
+    const schema = s.components[header.definitionId].properties.links as { default: unknown; fields: Record<string, { default?: unknown }> };
+    // The header's own list is unset: it shows its design's links.
+    delete header.props.links;
+    schema.default = [
+      { id: 'd1', label: 'Shop', link: { type: 'url', target: 'https://shop.example.com' } },
+      { id: 'd2', link: { type: 'page', target: 'pg_about001' } }
+    ];
+    const plan = footerCopyPlan(s)!;
+    expect(plan).toMatchObject({ count: 2, replaces: 1 });
+    expect(shown(apply(s, [plan.op]).state, 'footer')).toEqual([
+      { label: 'Shop', link: { type: 'url', target: 'https://shop.example.com' } },
+      { label: schema.fields.label.default, link: { type: 'page', target: 'pg_about001' } }
+    ]);
   });
 
   it('takes the first links a footer can hold when the header shows more', () => {
@@ -443,6 +476,16 @@ describe('the footer’s links copied from the header menu (#575)', () => {
     footer.max = 2;
     const plan = footerCopyPlan(s)!;
     expect(plan).toMatchObject({ count: 2, left: 1 });
+    expect(labels(apply(s, [plan.op]).state, 'footer')).toEqual(['Home', 'About']);
+  });
+
+  it('replaces a footer that is already full', () => {
+    let s = structuredClone(scratchSite());
+    (s.components[menuOf(s, 'footer').definitionId].properties.links as { max?: number }).max = 2;
+    s = apply(s, [{ type: 'instance.listInsert', owner: shell('footer'), nodeId: menuOf(s, 'footer').id, prop: 'links', item: { label: 'Press', link: { type: 'url', target: 'https://press.example.com' } } }]).state;
+    expect(labels(s, 'footer')).toEqual(['Home', 'Press']);
+    const plan = footerCopyPlan(s)!;
+    expect(plan).toMatchObject({ count: 2, replaces: 2, left: 1, matches: false });
     expect(labels(apply(s, [plan.op]).state, 'footer')).toEqual(['Home', 'About']);
   });
 
@@ -498,6 +541,8 @@ describe('the footer’s links copied from the header menu (#575)', () => {
       expect((await s.apply({ operations: [{ type: 'instance.setProp', owner: shell('footer'), nodeId: footer.id, prop: 'links', itemId: links(s.state, 'footer')[0].id, field: 'label', value: 'Start' }] }, { label: 'Edit Footer link' })).ok).toBe(true);
       const r = await s.apply({ operations: [plan.op], expectedRevision: planned }, { label: LABEL });
       expect(r.ok).toBe(false);
+      expect(r.error?.code).toBe('STALE_REVISION');
+      expect(applied(s).at(-1)?.label).toBe('Edit Footer link');
       expect(labels(s.state, 'footer')).toEqual(['Start']);
     });
   });
