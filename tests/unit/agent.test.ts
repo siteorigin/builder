@@ -4461,3 +4461,22 @@ describe('the project diagnostics in the editor context (#757)', () => {
     expect(ctx.diagnostics === undefined || ctx.diagnostics.errors.length < listed.errors.length || ctx.diagnostics.warnings.length < listed.warnings.length).toBe(true);
   });
 });
+
+describe('the preview check before a changed run finishes (#742)', () => {
+  /** A style change on the home page's first section, against the current revision. */
+  const restyle = (session: ProjectSession, scope = 'base') => {
+    const homeId = session.state.site.homePageId;
+    return call('s1', 'apply_operations', { expectedRevision: session.revision, operations: [{ type: 'node.setStyle', owner: { kind: 'page', id: homeId }, nodeId: session.state.pages[homeId].rootIds[0], scope, property: 'paddingBlock', value: { token: 'space.lg' } }] });
+  };
+
+  it('inspects a page whose layout changed when the model never did', async () => {
+    const inspected: Array<[string, number]> = [];
+    const env = await setup([() => [restyle(env.session)], () => finish('Gave the hero more room.')], { inspectLayout: async (pageId, width) => (inspected.push([pageId, width]), { issues: [] }) });
+    const homeId = env.session.state.site.homePageId;
+    const { result } = await env.run('Give the hero more room');
+    expect(result?.status).toBe('completed');
+    expect(inspected.length).toBeGreaterThan(0);
+    expect(inspected.every(([p]) => p === homeId)).toBe(true);
+    expect(result!.validation.join(' | ')).toMatch(/Fits the screen at \w+ width on Home/);
+  });
+});

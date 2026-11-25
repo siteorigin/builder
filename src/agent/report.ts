@@ -503,7 +503,7 @@ interface ImageSummary {
 interface InspectionContent {
   pageId?: string;
   viewport?: string;
-  report?: { issues?: Array<{ kind: string; message?: string }>; images?: ImageSummary; documentWidth?: number; viewportWidth?: number; checks?: Partial<InspectionChecks> };
+  report?: { issues?: Array<{ kind: string; message?: string }>; images?: ImageSummary; documentWidth?: number; viewportWidth?: number; checks?: Partial<InspectionChecks>; runtimeErrors?: unknown[] };
 }
 
 /** How each readability check's failures read on the result card, one and many. */
@@ -569,6 +569,12 @@ export function inspectionChecks(ok: boolean, content: unknown, onPage = ''): Ch
     out.push({ status: 'unverified', text: `Couldn't confirm that ${images.unverified === 1 ? 'an image' : `${images.unverified} images`} loaded ${at}.` });
   } else if (images.total > 0) {
     out.push({ status: 'pass', text: images.total === 1 ? `The image loads ${at}.` : `All ${images.total} images load ${at}.` });
+  }
+  // A script that failed in the page is a problem whatever the layout measured.
+  const errors = Array.isArray(c.report.runtimeErrors) ? c.report.runtimeErrors.map(String).filter((e) => e.trim()) : [];
+  if (errors.length) {
+    const first = errors[0].trim().replace(/\.$/, '');
+    out.push({ status: 'issue', text: `Found ${errors.length === 1 ? 'a script error' : `${errors.length} script errors`} ${at} (${first.length > 120 ? `${first.slice(0, 119)}…` : first}).` });
   }
   out.push(...readabilityChecks(c.report.checks, at));
   return out;
