@@ -72,47 +72,62 @@ const history = (entries: Array<[string, boolean, number?]>): HistoryInfo => ({
 });
 
 describe('revertStep', () => {
-  it('offers the one change made since the page worked, made no later than the error', () => {
-    const before = history([['a', true, 1]]);
+  const steps = (entries: Array<[string, boolean, number?]>) => appliedSteps(history(entries));
+
+  it('offers the one change made since the page worked, when it was in place at the error', () => {
     const after = history([['a', true, 1], ['b', true, 2]]);
-    expect(revertStep(after, appliedSteps(before), 2)).toEqual({ id: 'b', label: 'Edit b' });
-    // The page's update arrived before the editor's word of the change: the editor's revision is the error's.
-    expect(revertStep(after, appliedSteps(before), 1)).toBeNull();
+    expect(revertStep(after, steps([['a', true, 1]]), appliedSteps(after))).toEqual({ id: 'b', label: 'Edit b' });
   });
 
   it('offers nothing when the page was never seen working (an error there on open)', () => {
-    expect(revertStep(history([['a', true, 1]]), null, 1)).toBeNull();
+    const h = history([['a', true, 1]]);
+    expect(revertStep(h, null, appliedSteps(h))).toBeNull();
   });
 
   it('offers nothing when no change came since the page last worked', () => {
     const h = history([['a', true, 1], ['b', true, 2]]);
-    expect(revertStep(h, appliedSteps(h), 2)).toBeNull();
+    expect(revertStep(h, appliedSteps(h), appliedSteps(h))).toBeNull();
   });
 
-  it('offers nothing when two changes came since, nor for a change made after the error', () => {
-    const before = history([['a', true, 1]]);
-    expect(revertStep(history([['a', true, 1], ['b', true, 2], ['c', true, 3]]), appliedSteps(before), 3)).toBeNull();
+  it('offers nothing when two changes came since, or one was swapped for another', () => {
+    const three = history([['a', true, 1], ['b', true, 2], ['c', true, 3]]);
+    expect(revertStep(three, steps([['a', true, 1]]), appliedSteps(three))).toBeNull();
     // Undone and replaced: the page lost one change and gained another.
-    const both = history([['a', true, 1], ['b', true, 2]]);
-    expect(revertStep(history([['a', true, 1], ['c', true, 4]]), appliedSteps(both), 4)).toBeNull();
+    const swapped = history([['a', true, 1], ['c', true, 4]]);
+    expect(revertStep(swapped, steps([['a', true, 1], ['b', true, 2]]), appliedSteps(swapped))).toBeNull();
+    // As many steps as before, but not the same ones.
+    const other = history([['x', true, 1], ['c', true, 4]]);
+    expect(revertStep(other, steps([['a', true, 1]]), appliedSteps(other))).toBeNull();
   });
 
-  it('offers nothing after an Undo, and the redone change after a Redo', () => {
+  it('offers nothing after an Undo, and the redone change after a Redo that came before the error', () => {
     const both = history([['a', true, 1], ['b', true, 2]]);
     const undone = history([['a', true, 1], ['b', false, 2]]);
-    expect(revertStep(undone, appliedSteps(both), 3)).toBeNull();
-    expect(revertStep(both, appliedSteps(undone), 4)?.id).toBe('b');
+    expect(revertStep(undone, appliedSteps(both), appliedSteps(undone))).toBeNull();
+    expect(revertStep(both, appliedSteps(undone), appliedSteps(both))?.id).toBe('b');
+  });
+
+  it('offers nothing for a change that came after the error: a Redo, an edit, or the AI’s step recorded late', () => {
+    const both = history([['a', true, 1], ['b', true, 2]]);
+    const atError = steps([['a', true, 1], ['b', false, 2]]);
+    expect(revertStep(both, steps([['a', true, 1]]), atError)).toBeNull();
   });
 
   it('offers a step that later edits joined after the page last worked, until it is joined after the error', () => {
-    const typing = history([['a', true, 1], ['b', true, 2]]);
+    const typing = steps([['a', true, 1], ['b', true, 2]]);
     const more = history([['a', true, 1], ['b', true, 5]]);
-    expect(revertStep(more, appliedSteps(typing), 5)).toMatchObject({ id: 'b', label: 'Edit b' });
-    expect(revertStep(history([['a', true, 1], ['b', true, 6]]), appliedSteps(typing), 5)).toBeNull();
+    expect(revertStep(more, typing, appliedSteps(more))).toMatchObject({ id: 'b', label: 'Edit b' });
+    expect(revertStep(history([['a', true, 1], ['b', true, 6]]), typing, appliedSteps(more))).toBeNull();
+  });
+
+  it('reads steps History has let go of since as no change', () => {
+    // History keeps so many steps: the change that broke the page pushed the oldest out.
+    const full = history([['b', true, 2], ['c', true, 3]]);
+    expect(revertStep(full, steps([['a', true, 1], ['b', true, 2]]), appliedSteps(full))?.id).toBe('c');
   });
 
   it('offers nothing with an empty history', () => {
-    expect(revertStep(history([]), [], 1)).toBeNull();
+    expect(revertStep(history([]), [], [])).toBeNull();
   });
 });
 
@@ -132,6 +147,7 @@ describe('projectPath', () => {
   it('refuses a package’s file and a file outside the project', () => {
     expect(projectPath('/other/node_modules/pkg/.siteorigin/cache/dev/src/lib/x.svelte', DIR)).toBeNull();
     expect(projectPath('http://h/node_modules/ui/src/lib/x.svelte', DIR)).toBeNull();
+    expect(projectPath('http://h/%6Eode_modules/ui/src/lib/x.svelte', DIR)).toBeNull();
     expect(projectPath('/Users/me/Sites/other/src/lib/x.svelte', DIR)).toBeNull();
   });
 });

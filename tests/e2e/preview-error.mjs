@@ -42,6 +42,15 @@ const textProps = Object.entries(heroNode.props).filter(([, v]) => typeof v === 
 assert.ok(textProps.length >= 2, 'the hero has two text properties to edit');
 const [[keptProp], [brokenProp, brokenBefore]] = textProps;
 
+step('the first edit after the page opens, followed by an error, offers to revert it');
+// The page loaded and went a moment without an error: that is the sighting Revert works from.
+await settle();
+const early = await apply(keptProp, 'Early edit', 'Early edit');
+await bridge('runtimeError', { message: 'Broken by the first edit', revision: early.revision });
+await issue.getByRole('button', { name: 'Revert “Early edit”' }).waitFor({ timeout: 10000 });
+await bridge('revisionApplied', {});
+await issue.waitFor({ state: 'detached' });
+
 step('an error with no edit before it offers no Revert, and Open source opens the generated component read only');
 await settle();
 await bridge('runtimeError', { message: 'Cannot read properties of undefined (reading "title")', file: `http://127.0.0.1:5173/src/lib/siteorigin/generated/${defKey}.svelte?t=1`, revision: s0.revision });

@@ -200,6 +200,8 @@ describe.skipIf(!browserInstalled)('a visitor’s journey through the preview fr
     await fresh();
     await reported('/');
     await page.evaluate(`window.errorReports = []`);
+    // The change the editor last told the page of.
+    await command('revision', { revision: 7 });
     await frame().evaluate(`(() => { const s = document.createElement('script'); s.src = '${THROWER}?t=1'; document.body.append(s); })()`);
     const report = await vi.waitFor(async () => {
       const [r] = await page.evaluate<Array<{ message: string; stack?: string; file?: string; revision: unknown }>>(`window.errorReports`);
@@ -209,7 +211,7 @@ describe.skipIf(!browserInstalled)('a visitor’s journey through the preview fr
     expect(report.message).toContain('boom in the hero');
     expect(report.file).toContain(THROWER);
     expect(report.stack).toContain(THROWER);
-    expect(report.revision).toBe(0);
+    expect(report.revision).toBe(7);
     // Leave on a page that works.
     await fresh();
     await reported('/');

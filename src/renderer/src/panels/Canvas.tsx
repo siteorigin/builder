@@ -165,10 +165,10 @@ export function Canvas() {
   const timedOut = useRef(false);
   /**
    * What the page's own error can be put down to (#738), for the message it came with: the component it was thrown in
-   * (Open source), and for Revert, what History held when the page was last seen working (`seen`) and the revision the
-   * project was at when the error happened (`at`). Revert is worked out from History as it is now (see revertStep).
+   * (Open source), and for Revert, what History held when the page was last seen working (`seen`) and when the error
+   * happened (`then`). Revert is worked out from History as it is now (see revertStep).
    */
-  const [issueCause, setIssueCause] = useState<{ message: string; definitionId: string | null; seen: string[] | null; at: number } | null>(null);
+  const [issueCause, setIssueCause] = useState<{ message: string; definitionId: string | null; seen: string[] | null; then: string[] } | null>(null);
   /** The change the page had been told of, or the editor had made, when its error happened: showing it does not mend it. */
   const errorAt = useRef<number | null>(null);
   /**
@@ -206,17 +206,18 @@ export function Canvas() {
   /**
    * The page reported a problem: it has not been seen working with the project as it is now, and what the problem can
    * be put down to is kept with it. `revision` is the change the page had been told of; the editor's own may be newer
-   * (a change's update can reach the page before word of the change does), and either may be the cause.
+   * (a change's update can reach the page before word of the change does), and either may be the cause. A component
+   * preview names its own (`studio`): one prepared before the latest change cannot be put down to it.
    */
-  const noteIssue = (message: string, texts: Array<string | undefined>, revision: number | null, definitionId?: string) => {
+  const noteIssue = (message: string, texts: Array<string | undefined>, revision: number | null, studio?: { definitionId: string; revision: number | undefined }) => {
     if (healthyTimer.current) clearTimeout(healthyTimer.current);
     healthyTimer.current = null;
     const snap = getState().snapshot;
-    const at = Math.max(revision ?? 0, snap?.revision ?? 0);
-    errorAt.current = at;
+    errorAt.current = Math.max(revision ?? 0, snap?.revision ?? 0);
     const base = healthy.current;
-    const seen = base && snap && base.workspaceKey === snap.workspaceKey && base.target === previewTarget() ? base.steps : null;
-    setIssueCause(snap ? { message, definitionId: definitionId ?? errorComponent(texts, snap.state.components, snap.dir), seen, at } : null);
+    const current = !studio || studio.revision === snap?.revision;
+    const seen = current && base && snap && base.workspaceKey === snap.workspaceKey && base.target === previewTarget() ? base.steps : null;
+    setIssueCause(snap ? { message, definitionId: studio?.definitionId ?? errorComponent(texts, snap.state.components, snap.dir), seen, then: appliedSteps(snap.history) } : null);
   };
   useEffect(
     () => () => {
@@ -743,7 +744,7 @@ export function Canvas() {
               const name = studioDefName() ?? 'The component';
               const failed = `${name} couldn’t be shown${typeof shown?.error === 'string' && shown.error ? `: ${shown.error.slice(0, 300)}` : '.'}`;
               // The component shown is the one that failed, and the change that failed it can be reverted.
-              noteIssue(failed, [], null, studioAt.current!.definitionId);
+              noteIssue(failed, [], null, studioAt.current!);
               setFrameError(failed);
               setRetrying(false);
               markTimedOut(false);
@@ -770,9 +771,10 @@ export function Canvas() {
             setRetrying(false);
             markTimedOut(false);
             errorAt.current = null;
-            notePageWorking();
           }
           frameAt.current = path;
+          // Scheduled once the frame's page is known, which the baseline belongs to.
+          if (!elsewhere) notePageWorking();
           // A page loaded in full while the frame was already up (Try again, a load that could not go in place) shows the
           // selection, as an arrival in place does (`navigated`); the first load scrolls to it once the frame is ready.
           if ((studio || ready) && getState().mode !== 'preview' && (studio || (view?.route && samePath(view.route, path)))) {
@@ -2621,7 +2623,7 @@ export function Canvas() {
   // What the page's error can be put down to, while it still holds: the same error, the change still History's newest
   // and undoable (not while the AI works), the component still in the project.
   const cause = issueCause && issueCause.message === frameError && !slowPage ? issueCause : null;
-  const revertOffered = cause && snapshot?.history.canUndo && !snapshot.aiBusy && !snapshot.readOnly ? revertStep(snapshot.history, cause.seen, cause.at) : null;
+  const revertOffered = cause && snapshot?.history.canUndo && !snapshot.aiBusy && !snapshot.readOnly ? revertStep(snapshot.history, cause.seen, cause.then) : null;
   const sourceOffered = cause?.definitionId && snapshot?.state.components[cause.definitionId] ? cause.definitionId : null;
   /** Load the page again, as Try again does. In Component Studio the preview is prepared again, from the project as it is now. */
   const restartPreview = () => {
