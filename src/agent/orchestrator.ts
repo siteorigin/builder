@@ -14,7 +14,7 @@ import { diagnosticKey, type Diagnostic } from '@engine/validate';
 import type { AgentModelAdapter, CanonicalItem, ContextOverflow, ModelEvent, ToolCall, ToolDefinition } from './types';
 import { describeOps, InspectionLog, pagesTouched } from './report';
 import { asksForComponent, assetSummary, CODE_OPERATIONS, executeTool, imageAnswer, imageLabel, imageRef, libraryImage, MUTATING_TOOLS, REVISION_BOUND_TOOLS, serializeResult, toolsForRun, type RunTools, type ToolHost } from './tools';
-import { compactProjectSummary, describeSelection, pageGlance, pageGlanceChars, pageIdFor, projectSummary, withoutSlotInfo } from './context';
+import { compactProjectSummary, describeSelection, pageGlance, pageGlanceChars, pageIdFor, projectSummary, withoutSlotInfo, withThemeUpdates } from './context';
 import { canEditContracts, checkAuthority, liveEntry, requestAuthority, widenChoices, type Authority } from './scope';
 import { connectPendingLinks, newMacroMemory } from './macros';
 import { developerModeRefusal } from '@engine/developer-mode';
@@ -162,6 +162,13 @@ function editingComponent(state: ProjectState, component: { id: string; name: st
 }
 
 /** The component a request edits everywhere, as the renderer sends it: absent, or its ID and name. */
+/** Whether a definition is placed on a page (its sections and what they hold). */
+function placedOnPage(state: ProjectState, pageId: string): (definitionId: string) => boolean {
+  const page = Object.hasOwn(state.pages, pageId) ? state.pages[pageId] : undefined;
+  const ids = new Set(Object.values(page?.nodes ?? {}).flatMap((n) => (n.kind === 'instance' ? [n.definitionId] : [])));
+  return (id) => ids.has(id);
+}
+
 function readableComponent(c: unknown): boolean {
   if (c === undefined || c === null) return true;
   return typeof c === 'object' && !Array.isArray(c) && typeof (c as { id?: unknown }).id === 'string' && typeof (c as { name?: unknown }).name === 'string';
@@ -1277,6 +1284,8 @@ export class Orchestrator {
                   : `only ${authority.label} (owner ${authority.owner.kind}:${authority.owner.id}, node ${authority.nodeId}) unless the user approves more via ${current.tools.some((t) => t.name === 'request_wider_scope') ? 'request_wider_scope' : 'request_clarification with widenScope'}`,
           // A selection, page or component edit needs that, not the whole site; the rest is one read away if it is widened.
           project: authority.kind !== 'site' ? compactProjectSummary(readState(), readRevision()) : projectSummary(readState(), readRevision()),
+          // A page's sections whose installed components the theme has a newer version of (a site run's are in project).
+          ...(authority.kind === 'page' && !ask ? withThemeUpdates(readState(), placedOnPage(readState(), authority.pageId)) : {}),
           ...(examples.length ? { workedExamples: examples } : {}),
           ...(blueprints.length ? { componentBlueprints: blueprints } : {})
         },
@@ -2045,6 +2054,11 @@ function activityLabel(call: ToolCall, state: ProjectState): string {
       return 'Updating site search settings';
     case 'upsert_managed_component':
       return `${args.definitionId ? 'Rebuilding' : 'Building'} the ${String(args.name ?? '').trim() || 'new'} component`;
+    case 'update_theme_component': {
+      const id = typeof args.definitionId === 'string' ? args.definitionId : undefined;
+      const def = id && Object.hasOwn(state.components, id) ? state.components[id] : undefined;
+      return `Updating ${def?.name ?? 'a component'} to the theme's newer version`;
+    }
     case 'update_selected_props':
     case 'edit_selected_list':
     case 'edit_selected_table':

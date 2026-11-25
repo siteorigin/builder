@@ -22,6 +22,7 @@ import { isLanguageCode, pageLanguage, siteDirection, translationPeers } from '@
 import { ownVisitorTextFor } from '@shared/visitor-text';
 import { normalizeRoute } from '@shared/routes';
 import { seoText } from '@shared/seo';
+import { themeUpdateNote, themeUpdatesSummary } from './theme-update';
 
 const clip = (s: string, n = 160) => (s.length > n ? s.slice(0, n - 1) + '…' : s);
 
@@ -222,10 +223,18 @@ export function projectSummary(state: ProjectState, revision: number) {
     projectComponents: Object.values(state.components)
       .filter((d) => d.owner === 'project')
       .map((d) => ({ definitionId: d.id, name: d.name, kind: d.kind, description: d.description })),
+    // Installed theme components the theme has a newer version of: what each adds, and whether this project can take it.
+    ...withThemeUpdates(state),
     // What a post section's collection, category and tag can name.
     ...(hasCollections(state) ? { collections: collectionsSummary(state) } : {}),
     assets: Object.keys(state.assets.assets).length
   };
+}
+
+/** The project's theme updates, under themeUpdates, while it has any; `only` narrows them to some definitions. */
+export function withThemeUpdates(state: ProjectState, only?: (definitionId: string) => boolean): { themeUpdates?: Record<string, unknown> } {
+  const u = themeUpdatesSummary(state, only);
+  return u ? { themeUpdates: u } : {};
 }
 
 /** Each collection by ID, with its address, how many entries it publishes, and its categories' and tags' IDs and names. */
@@ -908,7 +917,8 @@ export function describeSelection(state: ProjectState, ref: ElementRef | null, o
     const node = compactNode(state, tree, ref.nodeId);
     const selected = tree.nodes[ref.nodeId];
     if (selected?.kind === 'instance') node.props = selectedProps(state.components[selected.definitionId], selected.props, state.pages);
-    return { owner: ref.owner, nodeId: ref.nodeId, node };
+    const update = selected?.kind === 'instance' ? themeUpdateNote(state, state.components[selected.definitionId]) : undefined;
+    return { owner: ref.owner, nodeId: ref.nodeId, node, ...(update ? { themeUpdate: update } : {}) };
   }
   const instId = ref.instancePath[0];
   const inst = tree.nodes[instId];
@@ -940,11 +950,14 @@ export function describeSelection(state: ProjectState, ref: ElementRef | null, o
   const shown = defNode?.kind === 'text' ? defNode.text : defNode?.kind === 'link' ? defNode.label : defNode?.kind === 'image' ? defNode.image : undefined;
   const feed = repeated && fromRow(shown) && def?.properties[repeated]?.type === 'list' ? (def.properties[repeated] as { feed?: string }).feed : undefined;
   const itemId = ref.itemPath?.[ref.itemPath.length - 1];
+  // What a newer theme version of the selected component adds, and whether this project can take it.
+  const update = themeUpdateNote(state, def);
   return {
     owner: ref.owner,
     instanceNodeId: instId,
     component: def?.name,
     definitionId: def?.id,
+    ...(update ? { themeUpdate: update } : {}),
     partId: ref.partId ?? null,
     innerNodeId: ref.nodeId,
     itemId: ref.itemPath?.[ref.itemPath.length - 1] ?? null,
