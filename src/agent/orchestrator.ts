@@ -1176,6 +1176,8 @@ export class Orchestrator {
       toolsForRun({
         state: session.state,
         selection: authority.kind === 'selection' ? selected : null,
+        // A part of a placement (as the run's authority reads it) never changes its component's design.
+        ...(authority.kind === 'selection' ? { selectionPart: !!authority.part } : {}),
         widened: authority.kind === 'site' ? selected : null,
         capabilities,
         codeEnabled,

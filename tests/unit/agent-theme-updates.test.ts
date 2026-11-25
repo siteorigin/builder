@@ -244,7 +244,7 @@ describe('update_theme_component', () => {
     const { h, applied } = host(s);
     expect((await tool(h, 'update_theme_component', { definitionId: HEADER })).content).toMatchObject({ message: expect.stringMatching(/no newer theme version/) });
     const edit = { type: 'instance.setProp', owner: { kind: 'shell', id: 'header' }, nodeId: headerNode(s).id, prop: 'ctaLabel', value: 'Call us' };
-    for (const ops of [[{ type: 'theme.refresh' }], [{ type: 'theme.refresh', definitionIds: [HEADER] }], [edit, { type: 'theme.refresh', definitionIds: [HEADER] }]]) {
+    for (const ops of [[{ type: 'theme.refresh' }], [{ type: 'theme.refresh', definitionIds: [HEADER] }], [{ type: 'theme.refresh', definitionIds: [HEADER, HERO] }], [edit, { type: 'theme.refresh', definitionIds: [HEADER] }]]) {
       const raw = await tool(h, 'apply_operations', { expectedRevision: 1, operations: ops });
       expect(raw.content).toMatchObject({ error: 'INVALID_ARGUMENT', message: expect.stringMatching(/update_theme_component/) });
     }
@@ -298,6 +298,20 @@ describe('update_theme_component', () => {
     expect(offered(small, { route: '/' })).toBeNull();
     expect(offered(big)).toContain(HERO);
     expect(offered(small)).toBeNull();
+    // Widened from the nested hero itself, a small run keeps its style tool for it, and so may update it.
+    const widened = toolsForRun({ state: nested, selection: null, widened: { owner: { kind: 'page', id: home }, nodeId: heroNode }, capabilities: small, codeEnabled: false, definitionOps: false });
+    expect(names(widened.tools)).toContain('style_selected_element');
+    expect(enumOf(widened.tools.find((x) => x.name === 'update_theme_component'))).toEqual([HERO]);
+  });
+
+  it('offers no update to a part of a placement, as the run’s authority reads it', () => {
+    const s = beforeActionStyle();
+    const selection = { owner: { kind: 'shell' as const, id: 'header' }, nodeId: headerNode(s).id };
+    const offered = (selectionPart?: boolean) =>
+      enumOf(toolsForRun({ state: s, selection, capabilities: { toolCalling: 'native', contextWindowTokens: 200000 }, codeEnabled: false, definitionOps: false, ...(selectionPart === undefined ? {} : { selectionPart }) }).tools.find((x) => x.name === 'update_theme_component')) ?? null;
+    expect(offered()).toEqual([HEADER]);
+    expect(offered(false)).toEqual([HEADER]);
+    expect(offered(true)).toBeNull();
   });
 
   it('gives a small selection run the new property to set once the header is updated', async () => {

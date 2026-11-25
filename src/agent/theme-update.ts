@@ -212,7 +212,8 @@ export const UPDATE_THEME_COMPONENT_BRIEF = 'Update one installed theme componen
 /**
  * What a run may update, and change afterwards with the tools it has:
  * - site: anything (a whole-site run has the operations to change any placement);
- * - sections: a small whole-site run, whose page tool changes a page's top-level sections and nothing else;
+ * - sections: a small whole-site run, whose page tool changes a page's top-level sections and nothing else (and
+ *   `also`, the component of the element it was widened from, which its style tool still changes);
  * - page: a page's run, every placement on that page (only its top-level sections for a small model's page tool);
  * - selection: every placement inside the selected element (for a small model's selection tools, which change the
  *   selected placement alone, only the selected component's own).
@@ -220,7 +221,7 @@ export const UPDATE_THEME_COMPONENT_BRIEF = 'Update one installed theme componen
  */
 export type UpdateReach =
   | { kind: 'site' }
-  | { kind: 'sections' }
+  | { kind: 'sections'; also?: string }
   | { kind: 'page'; pageId: string; sectionsOnly: boolean }
   | { kind: 'selection'; owner: OwnerRef; nodeId: string; ownOnly: boolean };
 
@@ -229,7 +230,7 @@ function withinReach(state: ProjectState, id: string, reach: UpdateReach): boole
   const placed = instancesOf(state, id);
   const section = (o: OwnerRef, nodeId: string) => o.kind === 'page' && Object.hasOwn(state.pages, o.id) && state.pages[o.id].rootIds.includes(nodeId);
   // Placed nowhere yet: a whole-site run may update it before placing it.
-  if (reach.kind === 'sections') return placed.every((p) => section(p.owner, p.node.id));
+  if (reach.kind === 'sections') return id === reach.also || placed.every((p) => section(p.owner, p.node.id));
   if (reach.kind === 'page') return placed.length > 0 && placed.every((p) => p.owner.kind === 'page' && p.owner.id === reach.pageId && (!reach.sectionsOnly || section(p.owner, p.node.id)));
   let inside: Set<string>;
   try {
