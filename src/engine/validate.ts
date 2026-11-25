@@ -115,7 +115,7 @@ export function validateState(state: ProjectState, opts: { sectionLinks?: boolea
     if (p.article !== undefined && !pageArticle(p))
       out.push({ severity: 'warning', code: 'ARTICLE_DATE_INVALID', message: `${p.title}: its publication date is not a calendar date written YYYY-MM-DD, so news lists leave it out.`, owner: { kind: 'page', id } });
     if (p.updatedAt !== undefined && !isArticleDate(p.updatedAt))
-      out.push({ severity: 'warning', code: 'PAGE_DATE_INVALID', message: `${p.title}: its revision date is not a calendar date written YYYY-MM-DD, so the sitemap gives none.`, owner: { kind: 'page', id }, site: 'updatedAt' });
+      out.push({ severity: 'warning', code: 'PAGE_DATE_INVALID', message: `${p.title}: its revision date is not a calendar date written YYYY-MM-DD, so the sitemap gives none (an article gives its publication date instead).`, owner: { kind: 'page', id }, site: 'updatedAt' });
     const canonical = p.seo && typeof p.seo === 'object' ? p.seo.canonical : undefined;
     if (canonical !== undefined && !storedCanonical(canonical))
       out.push({ severity: 'warning', code: 'CANONICAL_INVALID', message: `${p.title}: its canonical URL is not a full http(s) address, so its own public URL is used.`, owner: { kind: 'page', id }, site: 'canonical' });

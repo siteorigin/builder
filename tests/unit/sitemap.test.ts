@@ -6,7 +6,7 @@
 import { describe, expect, it } from 'vitest';
 import type { ProjectState } from '@shared/types';
 import { generateProject, generateSitemap } from '@generator/index';
-import { run, seoSite } from './fixtures/seo-site';
+import { copy, run, seoSite } from './fixtures/seo-site';
 
 const SITE = 'https://example.com/studio';
 const XHTML = 'http://www.w3.org/1999/xhtml';
@@ -14,14 +14,17 @@ const XHTML = 'http://www.w3.org/1999/xhtml';
 /**
  * Check a document is well-formed XML, strictly enough for what a sitemap holds: one root element, every tag closed in
  * order, quoted attributes named once each, text and values with no bare "<" or "&" outside a known entity, and every
- * namespace prefix declared on the element or one around it. Throws with the reason when it is not.
+ * namespace prefix declared on the element or one around it. Gives back the root element's name; throws with the
+ * reason when the document is not well-formed.
  */
-function assertWellFormed(xml: string): void {
-  const entity = /&(?!(?:amp|lt|gt|quot|apos|#\d+|#x[0-9a-f]+);)/i;
+function assertWellFormed(xml: string): string {
+  // Named entities, or a character reference to anything but character zero.
+  const entity = /&(?!(?:amp|lt|gt|quot|apos|#0*[1-9]\d*|#x0*[1-9a-f][0-9a-f]*);)/i;
   let rest = xml.replace(/^<\?xml version="1\.0" encoding="UTF-8"\?>\n/, '');
   if (rest === xml) throw new Error('No XML declaration at the start.');
   const stack: Array<{ name: string; prefixes: Set<string> }> = [];
   let roots = 0;
+  let root = '';
   const declared = (prefix: string) => prefix === 'xml' || stack.some((e) => e.prefixes.has(prefix));
   while (rest) {
     const lt = rest.indexOf('<');
@@ -29,7 +32,8 @@ function assertWellFormed(xml: string): void {
     if (entity.test(text) || text.includes('>')) throw new Error(`Bad text: ${text}`);
     if (!stack.length && text.trim()) throw new Error(`Text outside the root: ${text}`);
     if (lt < 0) break;
-    const tag = rest.slice(lt).match(/^<(\/?)([A-Za-z_][\w.:-]*)((?:\s+[A-Za-z_][\w.:-]*="[^"<]*")*)\s*(\/?)>/);
+    // XML white space is space, tab, CR and LF only.
+    const tag = rest.slice(lt).match(/^<(\/?)([A-Za-z_][\w.:-]*)((?:[ \t\r\n]+[A-Za-z_][\w.:-]*="[^"<]*")*)[ \t\r\n]*(\/?)>/);
     if (!tag) throw new Error(`Bad tag at: ${rest.slice(lt, lt + 80)}`);
     rest = rest.slice(lt + tag[0].length);
     const [, close, name, attrText, selfClose] = tag;
@@ -43,6 +47,7 @@ function assertWellFormed(xml: string): void {
     if (attrs.some((a) => entity.test(a[2]))) throw new Error(`Bad attribute value on <${name}>`);
     const prefixes = new Set(names.filter((n) => n.startsWith('xmlns:')).map((n) => n.slice(6)));
     if (!stack.length && roots++) throw new Error('More than one root element.');
+    if (!stack.length) root = name;
     stack.push({ name, prefixes });
     for (const n of [name, ...names.filter((n) => !n.startsWith('xmlns'))]) {
       const prefix = n.includes(':') ? n.split(':')[0] : null;
@@ -51,18 +56,27 @@ function assertWellFormed(xml: string): void {
     if (selfClose) stack.pop();
   }
   if (stack.length || roots !== 1) throw new Error('The document does not close its root element.');
+  return root;
 }
 
 /** Each listed address with its date and alternate links, in sitemap order; the sitemap checked well-formed first. */
 function sitemapOf(s: ProjectState) {
   const xml = generateSitemap(s);
   expect(xml).not.toBeNull();
-  assertWellFormed(xml!);
-  const urls = [...xml!.matchAll(/<url>([\s\S]*?)<\/url>/g)].map(([, body]) => ({
+  expect(assertWellFormed(xml!)).toBe('urlset');
+  expect(xml).toMatch(/^<\?xml version="1\.0" encoding="UTF-8"\?>\n<urlset xmlns="http:\/\/www\.sitemaps\.org\/schemas\/sitemap\/0\.9"(?: xmlns:xhtml="http:\/\/www\.w3\.org\/1999\/xhtml")?>\n/);
+  const urls = [...xml!.matchAll(/<url>([\s\S]*?)<\/url>/g)].map(([, body]) => {
+    // One address and at most one date each.
+    expect(body.match(/<loc>/g)).toHaveLength(1);
+    expect((body.match(/<lastmod>/g) ?? []).length).toBeLessThan(2);
+    expect((body.match(/<xhtml:link /g) ?? []).length).toBe([...body.matchAll(/<xhtml:link rel="alternate" hreflang="[^"]+" href="[^"]+"\/>/g)].length);
+    return body;
+  }).map((body) => ({
     loc: body.match(/<loc>([^<]*)<\/loc>/)![1],
     lastmod: body.match(/<lastmod>([^<]*)<\/lastmod>/)?.[1] ?? null,
     links: [...body.matchAll(/<xhtml:link rel="alternate" hreflang="([^"]+)" href="([^"]+)"\/>/g)].map((m) => [m[1], m[2]])
   }));
+  expect(new Set(urls.map((u) => u.loc)).size, 'each address is listed once').toBe(urls.length);
   return { xml: xml!, urls, at: (loc: string) => urls.find((u) => u.loc === SITE + loc) };
 }
 
@@ -160,6 +174,59 @@ describe('sitemap.xml', () => {
     expect(alone.xml).not.toContain('xmlns:xhtml');
   });
 
+  it('dates a translated page and links its versions on the same entry', () => {
+    const { s } = multiLanguage();
+    const dated = sitemapOf(run(s, { type: 'page.update', pageId: 'pg_french', updatedAt: '2027-04-01' }));
+    expect(dated.at('/fr/services/')).toMatchObject({ lastmod: '2027-04-01', links: [expect.anything(), expect.anything(), expect.anything(), expect.anything()] });
+    expect(dated.at('/de/leistungen/')?.lastmod).toBeNull();
+  });
+
+  it('names the version in the site’s language as x-default, whatever that language is', () => {
+    const { s, services } = multiLanguage();
+    // Edited by hand: the site in German, Services in English by its own choice.
+    const german = copy(s);
+    german.site.language = 'de';
+    german.pages[services].language = 'en';
+    const { at } = sitemapOf(german);
+    expect(at('/services/')?.links).toEqual([
+      ['fr', `${SITE}/fr/services/`],
+      ['de', `${SITE}/de/leistungen/`],
+      ['en', `${SITE}/services/`],
+      ['x-default', `${SITE}/de/leistungen/`]
+    ]);
+    // Language codes compare without regard to case.
+    const upper = copy(s);
+    upper.site.language = 'EN';
+    expect(sitemapOf(upper).at('/fr/services/')?.links.at(-1)).toEqual(['x-default', `${SITE}/services/`]);
+  });
+
+  it('keeps each translation set to itself, and links none of a set whose listed versions share a language', () => {
+    const { s, home } = multiLanguage();
+    const two = run(
+      s,
+      { type: 'page.create', pageId: 'pg_accueil', title: 'Accueil', route: '/fr/' },
+      { type: 'page.update', pageId: 'pg_accueil', language: 'fr', linkTranslationTo: home }
+    );
+    const both = sitemapOf(two);
+    const homeSet = [
+      ['en', `${SITE}/`],
+      ['fr', `${SITE}/fr/`],
+      ['x-default', `${SITE}/`]
+    ];
+    expect(both.at('/')?.links).toEqual(homeSet);
+    expect(both.at('/fr/')?.links).toEqual(homeSet);
+    expect(both.at('/services/')?.links).toHaveLength(4);
+    expect(both.at('/services/')?.links.map(([, href]) => href)).not.toContain(`${SITE}/fr/`);
+
+    // Edited by hand: German retagged "FR", the same language as the French version in other letters.
+    const clash = copy(two);
+    clash.pages.pg_german.language = 'FR';
+    const clashed = sitemapOf(clash);
+    for (const loc of ['/services/', '/fr/services/', '/de/leistungen/']) expect(clashed.at(loc)?.links, loc).toEqual([]);
+    // The other set is not affected.
+    expect(clashed.at('/')?.links).toEqual(homeSet);
+  });
+
   it('ships the same sitemap in the exported project, for a single-language and a multi-language site', () => {
     for (const { s } of [singleLanguage(), multiLanguage()]) {
       const file = generateProject(s).get('static/sitemap.xml')!;
@@ -177,7 +244,12 @@ describe('sitemap.xml', () => {
       ok.replace('</a>', '</b>'),
       ok.replace('</a>\n', '</a>\n<a/>'),
       ok.replace('<x:b c="1"/>', '<x:b c="1" c="2"/>'),
-      ok.replace('<?xml version="1.0" encoding="UTF-8"?>\n', '')
+      ok.replace('<?xml version="1.0" encoding="UTF-8"?>\n', ''),
+      ok.replace('<x:b c="1"/>', '<x:b c="1"/>a & b'),
+      ok.replace('<x:b c="1"/>', '<x:b c="1"/>&#0;'),
+      ok.replace('</a>\n', '</a>\njunk'),
+      ok.replace('</a>\n', ''),
+      ok.replace('</a>', '</a\u00a0>')
     ])
       expect(() => assertWellFormed(bad), bad).toThrow();
   });
