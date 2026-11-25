@@ -2,17 +2,22 @@
  * The graded prompts. IDs are stable: reports from different models and dates are compared by them. Grading looks
  * only at the resulting project, so any model may get there its own way; the scripts exist for the free fake run.
  */
-import type { ComponentDefinition, EntryDoc, InstanceNode, LinkValue, ListItem, PageDoc, ProjectState } from '@shared/types';
+import type { ComponentDefinition, EntryDoc, InstanceNode, LinkValue, ListItem, PageDoc, ProjectState, PropSchema } from '@shared/types';
 import type { EditOperation } from '@shared/ops';
 import type { CanonicalModelRequest, ModelEvent } from '@agent/types';
+import type { ManagedComponentArgs } from '@agent/managed-component';
 import { applyOperations } from '@engine/apply';
+import { makeInstance } from '@engine/install';
 import { richTextToPlain, type RichText } from '@shared/richtext';
+import { axesOf, designStyles, selectedVariants } from '@shared/variants';
 import { renderedContent, type RenderedContent } from '@generator/checks';
-import { childLists } from '@engine/tree';
+import { effectiveTokens } from '@generator/index';
+import { childLists, findParent } from '@engine/tree';
+import { lengthOf, measureComponent } from './component-diagnostics';
 import type { Check, EvalCase, ScriptTurn } from './harness';
 
 /** Bump when cases are added, removed or re-graded. */
-export const SUITE_VERSION = 3;
+export const SUITE_VERSION = 4;
 
 let nextCall = 0;
 const call = (name: string, args: unknown): ModelEvent => ({ type: 'done', stopReason: 'tool_use', text: '', toolCalls: [{ id: `call_${++nextCall}`, name, arguments: JSON.stringify(args) }] });
@@ -311,6 +316,111 @@ const lastResult = (req: CanonicalModelRequest) => {
     return null;
   }
 };
+// ---------------------------------------------------------------------------
+// Components (#365): graded by what a placement of the design shows and how it is styled, never by the tools used
+// ---------------------------------------------------------------------------
+
+/** A project component by its name, as an author would call it. */
+const defNamed = (s: ProjectState, name: string) => Object.values(s.components).find((d) => d.owner === 'project' && plain(d.name) === plain(name));
+/** A project component the run made, by its name. */
+const madeNamed = (before: ProjectState, after: ProjectState, name: string) => Object.values(after.components).find((d) => !Object.hasOwn(before.components, d.id) && d.owner === 'project' && plain(d.name) === plain(name));
+const editedEverywhere = (name: string) => (s: ProjectState) => {
+  const d = defNamed(s, name);
+  return { id: d?.id ?? `missing ${name}`, name };
+};
+/** Seeds a managed component, placed on Home once per entry of `placements` (its property values). */
+const seedComponent = (state: ProjectState, op: Record<string, unknown>, placements: Array<Record<string, unknown>> = [{}]) => {
+  const made = applyOperations(state, [{ type: 'component.upsert', ...op } as EditOperation]);
+  const definitionId = String(made.results[0].definitionId);
+  const placed = applyOperations(made.state, placements.map((props) => ({ type: 'node.insert', owner: { kind: 'page', id: made.state.site.homePageId }, definitionId, props }) as EditOperation));
+  Object.assign(state, placed.state);
+};
+/** What one placement of a design renders with these property values and variant choices, as the generator does. */
+const placementShows = (s: ProjectState, def: ComponentDefinition, props: Record<string, unknown> = {}, variants?: Record<string, string>): RenderedContent[] => {
+  const node = makeInstance(def, props, variants);
+  return renderedContent(s, { rootIds: [node.id], nodes: { [node.id]: node } });
+};
+const textOf = (c: RenderedContent): string[] => (c.kind !== 'text' ? [] : typeof c.value === 'string' ? [plain(c.value)] : Array.isArray(c.value) ? richTextToPlain(c.value as RichText).split(/\n+/).map(plain) : []).filter(Boolean);
+const textsShown = (list: RenderedContent[]) => list.flatMap(textOf);
+/** A value for a text property that shows `text`. */
+const textValue = (schema: PropSchema, text: string) => (schema.type === 'richtext' ? [{ type: 'p', spans: [{ text }] }] : text);
+const TEXT_TYPES = new Set(['string', 'richtext']);
+/**
+ * The text property an author edits to change what the design shows as `wanted`: setting it shows the new words in
+ * place of those. Undefined when nothing does (the words are fixed in the design, or not shown at all).
+ */
+const editedBy = (s: ProjectState, def: ComponentDefinition, wanted: string, base: Record<string, unknown> = {}): string | undefined => {
+  if (!textsShown(placementShows(s, def, base)).includes(plain(wanted))) return undefined;
+  return Object.entries(def.properties).find(([name, schema]) => {
+    if (!TEXT_TYPES.has(schema.type)) return false;
+    const marker = `Edited ${name} for the benchmark`;
+    const shown = textsShown(placementShows(s, def, { ...base, [name]: textValue(schema, marker) }));
+    return shown.includes(plain(marker)) && !shown.includes(plain(wanted));
+  })?.[0];
+};
+/** The design node that renders `wanted` with these property values. */
+const nodeShowing = (s: ProjectState, def: ComponentDefinition, wanted: string, props: Record<string, unknown> = {}) => placementShows(s, def, props).find((c) => textOf(c).includes(plain(wanted)))?.defNodeId;
+/** The texts each list item shows, by item. */
+const itemTexts = (list: RenderedContent[]) => {
+  const items = new Map<string, string[]>();
+  for (const c of list) {
+    if (c.source?.kind !== 'prop' || !c.source.itemId) continue;
+    const key = `${c.nodeId}|${c.source.itemId}`;
+    items.set(key, [...(items.get(key) ?? []), ...textOf(c)]);
+  }
+  return [...items.values()];
+};
+/** The new definition is placed once, after Home's sections, which are all kept in order. */
+const placedLastOnHome = (before: ProjectState, after: ProjectState, def: ComponentDefinition | undefined) => {
+  const h = home(after);
+  const last = h.nodes[h.rootIds.at(-1) ?? ''] as InstanceNode | undefined;
+  return !!def && last?.kind === 'instance' && last.definitionId === def.id && same(home(before).rootIds, h.rootIds.slice(0, -1));
+};
+const tokenOf = (v: unknown) => (v && typeof v === 'object' && typeof (v as { token?: unknown }).token === 'string' && (v as { alpha?: unknown }).alpha === undefined ? (v as { token: string }).token : undefined);
+const SIZES = ['phone', 'desktop'] as const;
+type Size = (typeof SIZES)[number];
+/** A style property's value on a design node at one size, as the generated CSS cascades it. */
+const styleAt = (def: ComponentDefinition, nodeId: string, size: Size, prop: string, variants?: Record<string, string>) => designStyles(def, nodeId, variants)[size]?.[prop];
+/** The node and the containers around it, innermost first. */
+const lineage = (def: ComponentDefinition, nodeId: string) => {
+  const out: string[] = [];
+  for (let at: string | null | undefined = nodeId; at && def.tree && !out.includes(at); at = findParent(def.tree, at)?.parentId) out.push(at);
+  return out;
+};
+/** The nearest value of a style property on a node or the containers around it: its text color, or what it sits on. */
+const nearestStyle = (def: ComponentDefinition, nodeId: string, size: Size, prop: string, variants?: Record<string, string>) => {
+  for (const at of lineage(def, nodeId)) {
+    const v = styleAt(def, at, size, prop, variants);
+    if (v !== undefined && v !== null) return v;
+  }
+  return undefined;
+};
+/** Padding on all four sides of a node at one size, longhands over their shorthands as the stylesheet writes them. */
+const paddingEdges = (def: ComponentDefinition, nodeId: string, size: Size) => {
+  const at = (p: string) => styleAt(def, nodeId, size, p);
+  return [at('paddingBlockStart') ?? at('paddingBlock'), at('paddingBlockEnd') ?? at('paddingBlock'), at('paddingInlineStart') ?? at('paddingInline'), at('paddingInlineEnd') ?? at('paddingInline')];
+};
+/** Every style value a design sets, at every size and state and in every variant option. */
+const everyStyle = (def: ComponentDefinition) => {
+  const out: Array<{ nodeId: string; prop: string; value: unknown }> = [];
+  const add = (nodeId: string, styles: Record<string, Record<string, unknown> | undefined> | undefined) => {
+    for (const scoped of Object.values(styles ?? {})) for (const [prop, value] of Object.entries(scoped ?? {})) out.push({ nodeId, prop, value });
+  };
+  for (const n of Object.values(def.tree?.nodes ?? {})) add(n.id, n.styles as Record<string, Record<string, unknown>> | undefined);
+  for (const [, axis] of axesOf(def)) for (const o of Object.values(axis.options)) for (const [nodeId, styles] of Object.entries(o.styles ?? {})) add(nodeId, styles as Record<string, Record<string, unknown>>);
+  return out;
+};
+const COLOR_PROPS = new Set(['color', 'background']);
+const SPACING_PROP = /^(padding|margin|gap|rowGap|columnGap)/;
+/** A color or spacing value that is not one of the site's styles: a hex, a pixel length. */
+const offToken = (prop: string, value: unknown) => {
+  if (value === undefined || value === null || tokenOf(value)) return false;
+  if (COLOR_PROPS.has(prop)) return !['transparent', 'inherit', 'currentcolor'].includes(String(value).toLowerCase());
+  if (SPACING_PROP.test(prop)) return !['0', '0px', 'auto'].includes(String(value).toLowerCase());
+  return false;
+};
+const textNodes = (def: ComponentDefinition) => Object.values(def.tree?.nodes ?? {}).filter((n) => n.kind === 'text').map((n) => n.id);
+
 const intro = (heading: string) => ({ componentId: 'intro.page', props: { heading, lead: `${heading}, explained simply.` } });
 const closing = { componentId: 'cta.banner', props: { heading: 'Ready when you are', primaryLabel: 'Get in touch', primaryLink: '/contact/' } };
 
@@ -732,6 +842,367 @@ export const EVAL_CASES: EvalCase[] = [
         return [call('upsert_collection_entry', { collectionId: 'posts', entryId: 'en_history', excerpt: 'How a riverside studio grew from one wheel into a cooperative of twelve potters.' })];
       };
       return [() => [call('read_collection_entry', { collectionId: 'posts', entryId: 'en_history' })], ...Array.from({ length: 40 }, () => step)];
+    }
+  },
+  {
+    id: 'create-workshop-notice',
+    version: 1,
+    category: 'component',
+    prompt: 'Create a component called "Workshop notice" with an editable heading that starts as "Saturday workshop" and an editable message that starts as "Doors open at nine." Put one at the end of the home page.',
+    task: 'component',
+    scriptedProfile: 'cloud',
+    grade: ({ before, after }) => {
+      const def = madeNamed(before, after, 'Workshop notice');
+      const heading = def && editedBy(after, def, 'Saturday workshop');
+      const message = def && editedBy(after, def, 'Doors open at nine.');
+      return [
+        check('component-created', !!def, Object.values(after.components).filter((d) => !Object.hasOwn(before.components, d.id)).map((d) => d.name).join(', ') || 'none'),
+        check('managed', def?.kind === 'managed', def?.kind),
+        check('heading-editable', !!heading),
+        check('message-editable', !!message && message !== heading),
+        check('placed-last-on-home', placedLastOnHome(before, after, def)),
+        check('rest-untouched', shellUntouched(before, after) && Object.keys(before.pages).every((id) => id === before.site.homePageId || same(before.pages[id], after.pages[id])))
+      ];
+    },
+    script: () => [
+      () => [
+        call('upsert_managed_component', {
+          name: 'Workshop notice',
+          description: 'A short notice: a heading and a message.',
+          properties: [
+            { type: 'string', name: 'heading', label: 'Heading', default: 'Saturday workshop' },
+            { type: 'string', name: 'message', label: 'Message', default: 'Doors open at nine.' }
+          ],
+          nodes: [
+            { kind: 'element', id: 'panel', tag: 'section', children: ['title', 'body'], styles: [{ property: 'paddingBlock', value: { token: 'space.xl' } }] },
+            { kind: 'text', id: 'title', tag: 'h2', text: { $prop: 'heading' } },
+            { kind: 'text', id: 'body', tag: 'p', text: { $prop: 'message' } }
+          ],
+          placeOnPage: { pageId: '/' }
+        } satisfies ManagedComponentArgs)
+      ],
+      finish('Made Workshop notice and put one at the end of the home page.')
+    ]
+  },
+  {
+    id: 'create-repeated-workshop-cards',
+    version: 1,
+    category: 'component',
+    prompt: 'Create a component called "Workshop cards": a set of cards authors edit as one list, each card with a title and a room. Start it with two cards, Glazing in the Kiln room and Weaving in the Loom room, and put one at the end of the home page.',
+    task: 'component',
+    scriptedProfile: 'constrained-json',
+    grade: ({ before, after }) => {
+      const def = madeNamed(before, after, 'Workshop cards');
+      const lists = def ? Object.entries(def.properties).filter(([, p]) => p.type === 'list' && !p.feed) : [];
+      const starts = def ? itemTexts(placementShows(after, def)) : [];
+      const card = (title: string, room: string) => starts.some((t) => t.includes(plain(title)) && t.includes(plain(room)));
+      // A third item in the list shows a third card, with each of its fields in it: the card repeats per item.
+      const repeats = !!def && lists.some(([name, p]) => {
+        const fields = Object.entries(p.type === 'list' ? p.fields : {}).filter(([, f]) => TEXT_TYPES.has(f.type));
+        const items = [1, 2, 3].map((i) => Object.fromEntries(fields.map(([f, schema]) => [f, textValue(schema as PropSchema, `${f} ${i} for the benchmark`)])));
+        const shown = itemTexts(placementShows(after, def, { [name]: items }));
+        return shown.length === 3 && [1, 2, 3].every((i) => shown.some((t) => fields.filter(([f]) => t.includes(plain(`${f} ${i} for the benchmark`))).length >= 2));
+      });
+      return [
+        check('component-created', !!def),
+        check('one-list', lists.length >= 1),
+        check('starts-with-two-cards', starts.length === 2 && card('Glazing', 'Kiln room') && card('Weaving', 'Loom room'), JSON.stringify(starts)),
+        check('card-per-item', repeats),
+        check('placed-last-on-home', placedLastOnHome(before, after, def))
+      ];
+    },
+    script: () => [
+      () => [
+        call('upsert_managed_component', {
+          name: 'Workshop cards',
+          description: 'A card per workshop: its title and the room it is in.',
+          properties: [
+            {
+              type: 'list',
+              name: 'cards',
+              label: 'Cards',
+              itemLabel: 'Card',
+              titleField: 'title',
+              fields: [
+                { type: 'string', name: 'title', label: 'Title', default: 'Workshop' },
+                { type: 'string', name: 'room', label: 'Room', default: 'Studio' }
+              ],
+              default: [
+                { values: [{ field: 'title', value: 'Glazing' }, { field: 'room', value: 'Kiln room' }] },
+                { values: [{ field: 'title', value: 'Weaving' }, { field: 'room', value: 'Loom room' }] }
+              ]
+            }
+          ],
+          nodes: [
+            { kind: 'element', id: 'panel', tag: 'section', children: ['grid'], styles: [{ property: 'paddingBlock', value: { token: 'space.xl' } }] },
+            { kind: 'element', id: 'grid', tag: 'ul', children: ['each'], styles: [{ property: 'layout', value: 'grid' }, { property: 'columns', value: 1 }, { property: 'columns', value: 2, scope: 'desktop' }, { property: 'gap', value: { token: 'space.lg' } }] },
+            { kind: 'repeat', id: 'each', list: 'cards', children: ['card'] },
+            { kind: 'element', id: 'card', tag: 'li', children: ['title', 'room'] },
+            { kind: 'text', id: 'title', tag: 'h3', text: { $item: 'title' } },
+            { kind: 'text', id: 'room', tag: 'p', text: { $item: 'room' } }
+          ],
+          parts: [{ id: 'card', nodeId: 'card', label: 'Card' }],
+          placeOnPage: { pageId: '/' }
+        } satisfies ManagedComponentArgs)
+      ],
+      finish('Made Workshop cards, a card per item of its list, and put one at the end of the home page.')
+    ]
+  },
+  {
+    id: 'add-panel-tone-axis',
+    version: 1,
+    category: 'component',
+    prompt: "Give Studio panel a Tone choice that each placement can pick. Keep how it looks now as the default, and add an Inverse option that uses the site's dark section background with the text color meant for dark sections.",
+    setup: (state) =>
+      seedComponent(state, {
+        name: 'Studio panel',
+        properties: { title: { type: 'string', label: 'Title', default: 'Visit the studio' }, note: { type: 'string', label: 'Note', default: 'Open every weekday.' } },
+        nodes: [
+          { kind: 'element', id: 'panel', tag: 'section', children: ['title', 'note'], styles: { base: { background: { token: 'color.surface' }, color: { token: 'color.text' }, paddingBlock: { token: 'space.xl' }, paddingInline: { token: 'space.lg' } } } },
+          { kind: 'text', id: 'title', tag: 'h2', text: { $prop: 'title' } },
+          { kind: 'text', id: 'note', tag: 'p', text: { $prop: 'note' } }
+        ]
+      }),
+    component: editedEverywhere('Studio panel'),
+    scriptedProfile: 'constrained-json',
+    grade: ({ before, after }) => {
+      const was = defNamed(before, 'Studio panel')!;
+      const def = after.components[was.id];
+      const found = def && axesOf(def).flatMap(([axis, a]) => Object.entries(a.options).filter(([id, o]) => /inverse/i.test(`${id} ${o.label}`)).map(([option]) => ({ axis, option, isDefault: a.default === option })))[0];
+      const inverse = found ? { [found.axis]: found.option } : undefined;
+      const texts = def ? textNodes(def) : [];
+      const placement = Object.values(home(after).nodes).find((n) => n.kind === 'instance' && n.definitionId === was.id) as InstanceNode | undefined;
+      return [
+        check('inverse-option', !!found),
+        check('default-unchanged', !!def && !found?.isDefault && Object.keys(was.tree!.nodes).every((n) => same(designStyles(def, n, undefined), designStyles(was, n, undefined)))),
+        check('inverse-background', !!inverse && texts.length > 0 && texts.every((n) => SIZES.every((size) => tokenOf(nearestStyle(def, n, size, 'background', inverse)) === 'color.inverse'))),
+        check('inverse-text', !!inverse && texts.length > 0 && texts.every((n) => SIZES.every((size) => tokenOf(nearestStyle(def, n, size, 'color', inverse)) === 'color.on-inverse'))),
+        check('placement-keeps-default', !!found && !!placement && selectedVariants(def, placement.variants)[found.axis] !== found.option),
+        check('rest-untouched', shellUntouched(before, after) && same(Object.keys(before.components).sort(), Object.keys(after.components).sort()))
+      ];
+    },
+    script: () => [
+      () => [call('add_definition_variant', { axis: 'tone', option: 'inverse', label: 'Inverse' })],
+      () => [
+        call('style_definition_element', {
+          nodeId: 'panel',
+          variant: { axis: 'tone', option: 'inverse' },
+          scope: 'base',
+          styles: [
+            { property: 'background', value: { token: 'color.inverse' } },
+            { property: 'color', value: { token: 'color.on-inverse' } }
+          ]
+        })
+      ],
+      finish('Added a Tone choice to Studio panel: Inverse uses the dark section colors, and every placement keeps its current look.')
+    ]
+  },
+  {
+    id: 'show-booking-status-conditionally',
+    version: 1,
+    category: 'component',
+    prompt: 'Create a component called "Booking status" with a yes/no setting "Bookings open" that starts off. While it is on, show only "Taking bookings"; while it is off, show only "Waitlist only". Authors should be able to edit both messages.',
+    task: 'component',
+    scriptedProfile: 'cloud',
+    grade: ({ before, after }) => {
+      const def = madeNamed(before, after, 'Booking status');
+      const switches = def ? Object.entries(def.properties).filter(([, p]) => p.type === 'boolean').map(([name]) => name) : [];
+      const shows = (props: Record<string, unknown>) => (def ? textsShown(placementShows(after, def, props)) : []);
+      const only = (props: Record<string, unknown>, yes: string, no: string) => shows(props).includes(plain(yes)) && !shows(props).includes(plain(no));
+      // The setting that switches between the two messages, whatever it is called.
+      const open = switches.find((b) => only({ [b]: true }, 'Taking bookings', 'Waitlist only') && only({ [b]: false }, 'Waitlist only', 'Taking bookings'));
+      const onEdit = def && open && editedBy(after, def, 'Taking bookings', { [open]: true });
+      const offEdit = def && open && editedBy(after, def, 'Waitlist only', { [open]: false });
+      return [
+        check('component-created', !!def),
+        check('yes-no-setting', !!open, switches.join(', ') || 'none'),
+        check('starts-off', !!def && only({}, 'Waitlist only', 'Taking bookings'), shows({}).join(' | ')),
+        check('open-message-editable', !!onEdit),
+        check('closed-message-editable', !!offEdit && offEdit !== onEdit),
+        check('shell-and-tokens-untouched', shellUntouched(before, after))
+      ];
+    },
+    script: () => [
+      () => [
+        call('upsert_managed_component', {
+          name: 'Booking status',
+          description: 'Whether bookings are open, in the words of each placement.',
+          properties: [
+            { type: 'boolean', name: 'open', label: 'Bookings open', default: false },
+            { type: 'string', name: 'openMessage', label: 'Open message', default: 'Taking bookings' },
+            { type: 'string', name: 'closedMessage', label: 'Closed message', default: 'Waitlist only' }
+          ],
+          nodes: [
+            { kind: 'element', id: 'panel', tag: 'div', children: ['open', 'closed'] },
+            { kind: 'text', id: 'open', tag: 'p', text: { $prop: 'openMessage' }, when: { $prop: 'open' } },
+            { kind: 'text', id: 'closed', tag: 'p', text: { $prop: 'closedMessage' }, unless: { $prop: 'open' } }
+          ]
+        } satisfies ManagedComponentArgs)
+      ],
+      finish('Made Booking status: it shows the open message while Bookings open is on, and the closed one while it is off.')
+    ]
+  },
+  {
+    id: 'style-component-with-site-tokens',
+    version: 1,
+    category: 'component',
+    prompt: 'Create a reusable component called "Collection notice" with an editable line that starts as "Collect at reception". Give it the site\'s Cards and panels background, its Primary text color and Large padding on every side, using the site\'s own styles so it follows any change to them.',
+    scriptedProfile: 'constrained-json',
+    grade: ({ before, after }) => {
+      const def = madeNamed(before, after, 'Collection notice');
+      const line = def && nodeShowing(after, def, 'Collect at reception');
+      // The container around the line (or the line itself) that carries the padding.
+      const padded = def && line && lineage(def, line).find((n) => SIZES.every((size) => paddingEdges(def, n, size).every((v) => tokenOf(v) === 'space.lg')));
+      const off = def ? everyStyle(def).filter((x) => offToken(x.prop, x.value)) : [];
+      return [
+        check('component-created', !!def),
+        check('line-editable', !!def && !!editedBy(after, def, 'Collect at reception')),
+        check('surface-background', !!line && SIZES.every((size) => tokenOf(nearestStyle(def, line, size, 'background')) === 'color.surface')),
+        // Set to the token, or left to the page's own text color, which is that token.
+        check('text-color', !!line && SIZES.every((size) => ((v) => v === undefined || tokenOf(v) === 'color.text')(nearestStyle(def, line, size, 'color')))),
+        check('large-padding', !!padded),
+        check('only-site-styles', !!def && off.length === 0, off.map((x) => `${x.nodeId}.${x.prop}=${JSON.stringify(x.value)}`).join(', ')),
+        check('site-styles-untouched', same(before.tokens, after.tokens))
+      ];
+    },
+    script: () => [
+      () => [
+        call('upsert_managed_component', {
+          name: 'Collection notice',
+          description: 'A one-line notice on a panel.',
+          properties: [{ type: 'string', name: 'message', label: 'Message', default: 'Collect at reception' }],
+          nodes: [
+            {
+              kind: 'element',
+              id: 'panel',
+              tag: 'aside',
+              children: ['line'],
+              styles: [
+                { property: 'background', value: { token: 'color.surface' } },
+                { property: 'color', value: { token: 'color.text' } },
+                { property: 'paddingBlock', value: { token: 'space.lg' } },
+                { property: 'paddingInline', value: { token: 'space.lg' } }
+              ]
+            },
+            { kind: 'text', id: 'line', tag: 'p', text: { $prop: 'message' } }
+          ]
+        } satisfies ManagedComponentArgs)
+      ],
+      finish("Made Collection notice on the site's panel background, text color and large padding.")
+    ]
+  },
+  {
+    id: 'make-panel-caption-editable',
+    version: 1,
+    category: 'component',
+    prompt: 'Make the caption of Service panel editable on each placement: a field labelled "Caption" that starts as "Ask at reception". Also let authors style the caption on each placement. Keep both placements\' headings as they are.',
+    setup: (state) =>
+      seedComponent(
+        state,
+        {
+          name: 'Service panel',
+          properties: { heading: { type: 'string', label: 'Heading', default: 'Our services' } },
+          nodes: [
+            { kind: 'element', id: 'panel', tag: 'section', children: ['heading', 'caption'], styles: { base: { paddingBlock: { token: 'space.xl' } } } },
+            { kind: 'text', id: 'heading', tag: 'h2', text: { $prop: 'heading' } },
+            { kind: 'text', id: 'caption', tag: 'p', text: 'Ask at reception' }
+          ]
+        },
+        [{ heading: 'Repairs' }, { heading: 'Fittings' }]
+      ),
+    component: editedEverywhere('Service panel'),
+    scriptedProfile: 'constrained-json',
+    grade: ({ before, after }) => {
+      const was = defNamed(before, 'Service panel')!;
+      const def = after.components[was.id];
+      const field = def && editedBy(after, def, 'Ask at reception');
+      const schema = field ? def.properties[field] : undefined;
+      const caption = def && nodeShowing(after, def, 'Ask at reception');
+      const placements = Object.values(home(before).nodes).filter((n): n is InstanceNode => n.kind === 'instance' && n.definitionId === was.id);
+      const now = placements.map((p) => home(after).nodes[p.id] as InstanceNode | undefined);
+      const shownOnHome = textsShown(renderedContent(after, home(after)));
+      return [
+        check('caption-editable', !!field),
+        // Editable, and showing the words to start with: so they are its default.
+        check('caption-field', !!schema && /caption/i.test(schema.label ?? ''), schema?.label),
+        check('caption-part', !!caption && Object.entries(def.parts ?? {}).some(([id, part]) => id !== 'root' && part.nodeId === caption)),
+        check('placements-kept', placements.length === 2 && now.every((n, i) => n?.kind === 'instance' && n.definitionId === was.id && same(n.props.heading, placements[i].props.heading))),
+        check('placements-show-caption', shownOnHome.filter((t) => t === plain('Ask at reception')).length === 2 && ['repairs', 'fittings'].every((h) => shownOnHome.includes(h))),
+        check('rest-untouched', shellUntouched(before, after) && Object.keys(before.pages).every((id) => id === before.site.homePageId || same(before.pages[id], after.pages[id])))
+      ];
+    },
+    script: () => [
+      () => [call('manage_component_prop', { change: { action: 'add', prop: 'caption', label: 'Caption', type: 'string', default: 'Ask at reception' } })],
+      () => [call('bind_definition_field', { nodeId: 'caption', field: 'text', binding: { $prop: 'caption' } })],
+      () => [call('edit_definition_node', { nodeId: 'caption', exposeAsPart: { partId: 'caption', label: 'Caption' } })],
+      finish('The caption of Service panel is now a Caption field on each placement, and a part authors can style.')
+    ]
+  },
+  {
+    id: 'repair-component-on-phones',
+    version: 1,
+    category: 'component',
+    prompt: 'Counter hours looks broken on phones. Inspect it at phone and desktop width and fix anything that does not fit or is hard to read, without changing how it looks on desktop.',
+    setup: (state) =>
+      seedComponent(state, {
+        name: 'Counter hours',
+        properties: { message: { type: 'string', label: 'Message', default: 'Counter closes at four' } },
+        nodes: [
+          { kind: 'element', id: 'panel', tag: 'aside', children: ['line'], styles: { base: { width: '720px', background: { token: 'color.surface' }, paddingBlock: { token: 'space.lg' }, paddingInline: { token: 'space.lg' } } } },
+          // On phones its text takes the panel's own color: it cannot be read.
+          { kind: 'text', id: 'line', tag: 'p', text: { $prop: 'message' }, styles: { base: { color: { token: 'color.text' } }, phone: { color: { token: 'color.surface' } } } }
+        ]
+      }),
+    component: editedEverywhere('Counter hours'),
+    measureComponents: true,
+    scriptedProfile: 'cloud',
+    grade: ({ before, after }) => {
+      const was = defNamed(before, 'Counter hours')!;
+      const def = after.components[was.id];
+      const line = def && nodeShowing(after, def, 'Counter closes at four');
+      const measure = (width: number) => {
+        const m = def ? measureComponent(after, { definitionId: def.id }, width) : { error: 'gone' };
+        return 'error' in m ? null : m;
+      };
+      const phone = measure(390);
+      const desktop = measure(1280);
+      // Its own text, shown and readable: a hidden line, or another copy of it, does not count.
+      const readable = (m: ReturnType<typeof measure>) => !!m && !!line && (m.texts.find((t) => t.nodeId === line)?.ratio ?? 0) >= 4.5 && !m.findings.some((f) => f.kind === 'low-contrast');
+      const fits = (m: ReturnType<typeof measure>) => !!m && m.widths.checked > 0 && !m.widths.unmeasured.length && !m.findings.some((f) => f.kind === 'element-overflow');
+      const root = def?.tree?.rootIds[0];
+      const desktopWidth = root ? lengthOf(effectiveTokens(after), styleAt(def, root, 'desktop', 'width')) : 'unknown';
+      return [
+        check('message-editable', !!def && !!editedBy(after, def, 'Counter closes at four')),
+        check('fits-on-phone', fits(phone), JSON.stringify(phone?.findings ?? phone?.widths)),
+        check('readable-on-phone', readable(phone), JSON.stringify(phone?.texts)),
+        check('desktop-kept', fits(desktop) && readable(desktop) && typeof desktopWidth === 'object' && desktopWidth.px === 720 && !!line && tokenOf(nearestStyle(def, line, 'desktop', 'background')) === 'color.surface', JSON.stringify(desktopWidth)),
+        check('site-styles-untouched', shellUntouched(before, after))
+      ];
+    },
+    script: (state) => {
+      const id = () => defNamed(state(), 'Counter hours')!.id;
+      type Inspected = { revision?: number; findings?: Array<{ kind: string; at?: { nodeId?: string } }> } | null;
+      const found = (r: Inspected, kind: string, nodeId: string) => !!r?.findings?.some((f) => f.kind === kind && f.at?.nodeId === nodeId);
+      return [
+        () => [call('inspect_component', { definitionId: id() })],
+        (req) => {
+          const r = lastResult(req) as Inspected;
+          // The fix follows what the inspection found: without the findings nothing is changed, and the case fails.
+          if (!found(r, 'element-overflow', 'panel') || !found(r, 'low-contrast', 'line')) return finish('The inspection found nothing to fix.')(req);
+          const owner = { kind: 'component', id: id() };
+          return [
+            call('apply_operations', {
+              expectedRevision: r!.revision,
+              operations: [
+                { type: 'node.setStyle', owner, nodeId: 'panel', scope: 'phone', property: 'width', value: 'fill' },
+                { type: 'node.setStyle', owner, nodeId: 'line', scope: 'phone', property: 'color', value: null }
+              ]
+            })
+          ];
+        },
+        () => [call('inspect_component', { definitionId: id() })],
+        (req) => finish((lastResult(req) as Inspected)?.findings?.length ? 'Counter hours still has problems on phones.' : 'Counter hours now fills a phone screen and its text is readable there; desktop is unchanged.')(req)
+      ];
     }
   }
 ];

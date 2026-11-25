@@ -2,12 +2,12 @@ import { describe, expect, it } from 'vitest';
 import type { InstanceNode } from '@shared/types';
 import { LIMITS } from '@agent/orchestrator';
 import { EVAL_CASES, SUITE_VERSION } from '../../scripts/eval/cases';
-import { estimateCostUsd, REPORT_SCHEMA_VERSION, runCase, runSuite, ScriptedAdapter, summarize, tracesToJsonl, type CaseResult, type EvalCase, type RunOptions } from '../../scripts/eval/harness';
+import { estimateCostUsd, REPORT_SCHEMA_VERSION, runCase, runSuite, SCRIPTED_PROFILES, ScriptedAdapter, scriptedAdapter, summarize, tracesToJsonl, type CaseResult, type EvalCase, type RunOptions } from '../../scripts/eval/harness';
 
-const scripted: RunOptions = { adapterName: 'scripted-fake', model: 'scripted', adapter: (c, state) => new ScriptedAdapter(c.script(state)) };
+const scripted: RunOptions = { adapterName: 'scripted-fake', model: 'scripted', adapter: scriptedAdapter };
 const byId = (id: string) => EVAL_CASES.find((c) => c.id === id)!;
-/** A model that answers immediately without doing anything. */
-const idle: RunOptions = { adapterName: 'idle', model: 'idle', adapter: () => new ScriptedAdapter([]) };
+/** A model that answers immediately without doing anything, as the model each case's script plays. */
+const idle: RunOptions = { adapterName: 'idle', model: 'idle', adapter: (c) => new ScriptedAdapter([], c.scriptedProfile ? SCRIPTED_PROFILES[c.scriptedProfile] : {}) };
 
 describe('agent benchmark', () => {
   it('has around ten cases with stable, unique IDs across the promised task types', () => {
