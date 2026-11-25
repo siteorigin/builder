@@ -88,12 +88,22 @@ const picture = (format: 'jpeg' | 'png' | 'webp' | 'gif' | 'avif', width = 64, h
 /** A record's copies in one format (by their files' extension), as their widths. */
 const widthsIn = (r: { variants?: Array<{ width: number; file: string }> }, ext: string) => (r.variants ?? []).filter((v) => v.file.endsWith(`.${ext}`)).map((v) => v.width);
 
-/** A picture's copies in its own format, and its WebP set reaching `full`; its AVIF set is the same widths or left out. */
-function expectCopies(r: { variants?: Array<{ width: number; file: string }> }, ext: string, smaller: number[], full: number) {
-  expect(widthsIn(r, ext), ext).toEqual(smaller);
-  if (ext !== 'webp') expect(widthsIn(r, 'webp'), 'webp').toEqual([...smaller, full]);
-  if (ext !== 'avif') expect([[], [...smaller, full]], 'avif').toContainEqual(widthsIn(r, 'avif'));
-  else expect(widthsIn(r, 'webp'), 'webp').toEqual([...smaller, full]);
+/**
+ * A picture's copies, exactly: `smaller` in its own format (`ext`), a WebP set reaching `full` (a WebP's own copies are
+ * its set), and an AVIF set the same widths, which only an AVIF always has; any other picture has it or not
+ * (`avif`, when the test knows). Nothing else.
+ */
+function expectCopies(r: { variants?: Array<{ width: number; file: string }> }, ext: string, smaller: number[], full: number, avif?: boolean) {
+  const listed = (r.variants ?? []).map((v) => `${v.width} ${v.file.split('.').pop()}`);
+  const set = (e: string) => [...smaller, full].map((w) => `${w} ${e}`);
+  const own = smaller.map((w) => `${w} ${ext}`);
+  const without = ext === 'webp' ? own : ext === 'avif' ? [...own, ...set('webp')] : [...own, ...set('webp')];
+  const withAvif = ext === 'avif' ? without : [...without, ...set('avif')];
+  const sorted = (l: string[]) => [...l].sort();
+  const expected = ext === 'avif' || avif === true ? [withAvif] : avif === false ? [without] : [without, withAvif];
+  expect(expected.map(sorted), `${ext} copies`).toContainEqual(sorted(listed));
+  // Narrowest first.
+  expect((r.variants ?? []).map((v) => v.width), 'narrowest first').toEqual([...(r.variants ?? [])].map((v) => v.width).sort((a, b) => a - b));
 }
 
 /** Write `data` as `name` in a fresh folder, and return its path. */
@@ -205,7 +215,9 @@ describe('importing a picture no browser can show', () => {
       expectCopies(record, ext, [], 64);
     }
     // A GIF may move: it is left to the browser as it is.
-    expect((await importFile('d.gif', await picture('gif'))).record.variants).toBeUndefined();
+    const gif = (await importFile('d.gif', await picture('gif'))).record;
+    expect(gif).toMatchObject({ kind: 'image', width: 64, height: 48 });
+    expect(gif.variants).toBeUndefined();
     const { record } = await importFile('f.svg', Buffer.from('<svg xmlns="http://www.w3.org/2000/svg"><rect width="10" height="10"/></svg>'));
     expect(record).toMatchObject({ kind: 'image', mime: 'image/svg+xml' });
     // A WebP gets smaller WebP copies, the original serving its full width.
@@ -242,7 +254,8 @@ async function photoProject(): Promise<{ dir: string; record: AssetRecord; sourc
 describe('finding image files that left the project folder', () => {
   it('reports a missing original, missing copies, or both, and nothing for files that are there', async () => {
     const { dir, record } = await photoProject();
-    expectCopies(record, 'jpg', [160, 480, 960], 1200);
+    // A flat colour picture: its AVIF set is the smaller.
+    expectCopies(record, 'jpg', [160, 480, 960], 1200, true);
     const assets = { [record.id]: record };
     expect(await findMissingAssetFiles(dir, assets)).toEqual([]);
     const original = readFileSync(join(dir, record.file));
@@ -382,6 +395,16 @@ describe('bringing missing files back', () => {
     expect(await sharp(join(dir, webp.file)).metadata()).toMatchObject({ format: 'webp', width: 480 });
     // The same bytes the import made, and every other copy left as it was.
     for (const [file, bytes] of Object.entries(kept)) expect(readFileSync(join(dir, file)).equals(bytes), file).toBe(true);
+  });
+
+  it('leaves a copy in a format it cannot make alone while it is there, and says so once it is gone', async () => {
+    const { dir, record } = await photoProject();
+    const gif = `${record.file.replace(/\.jpg$/, '')}-480w.gif`;
+    writeFileSync(join(dir, gif), 'GIF89a');
+    const odd: AssetRecord = { ...record, variants: [...record.variants!, { width: 480, file: gif }] };
+    expect(await restoreAssetFiles(dir, odd)).toEqual({ written: [], failed: [] });
+    unlinkSync(join(dir, gif));
+    expect(await restoreAssetFiles(dir, odd)).toEqual({ written: [], failed: [gif] });
   });
 
   it('makes no copies when another picture sits where the original belongs, even if the original is located', async () => {
@@ -611,6 +634,12 @@ describe('exporting with missing image files', () => {
     writeFileSync(join(dir, 'src/routes/+page.svelte'), `<img src="/assets/${name(used.variants![0].file)}" alt="">`);
     unlinkSync(join(dir, used.file));
     expect((await missingWebsiteAssets(dir, state)).map((m) => [m.asset.name, m.used])).toEqual([['Reading nook', true]]);
+    // A WebP or AVIF copy carries its own credits: naming only those, the missing original stops nothing.
+    const modern = used.variants!.filter((v) => /\.(webp|avif)$/.test(v.file)).map((v) => `/assets/${name(v.file)} ${v.width}w`);
+    expect(modern.length).toBeGreaterThan(0);
+    writeFileSync(join(dir, 'src/routes/+page.svelte'), `<picture><source type="image/webp" srcset="${modern.join(', ')}"></picture>`);
+    expect((await missingWebsiteAssets(dir, state)).map((m) => [m.asset.name, m.used])).toEqual([['Reading nook', false]]);
+    writeFileSync(join(dir, 'src/routes/+page.svelte'), `<img src="/assets/${name(used.variants![0].file)}" alt="">`);
     // A longer file name that starts with this one is another file.
     writeFileSync(join(dir, 'src/routes/+page.svelte'), `<a href="/downloads/${name(used.file)}.webp">Download</a> <img src="/assets/${name(used.file)}-old.jpg" alt="">`);
     expect((await missingWebsiteAssets(dir, state)).map((m) => m.used)).toEqual([false]);

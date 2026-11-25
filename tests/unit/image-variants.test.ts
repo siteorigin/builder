@@ -4,8 +4,8 @@ import sharp from 'sharp';
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { handleVariantRequest, isOpaque, isReadable, renderVariants, renderWebCopy } from '../../src/main/project/image-variants';
-import { cleanPhoto, creditText } from '../../src/main/project/photo-metadata';
+import { handleVariantRequest, isOpaque, isReadable, keepsAvif, renderVariants, renderWebCopy } from '../../src/main/project/image-variants';
+import { cleanPhoto, creditText, textCreditsAsTiff } from '../../src/main/project/photo-metadata';
 import { createVariantClient, webCopySize, type VariantReply, type VariantRequest, type WorkerHandle } from '../../src/main/project/media-client';
 
 const u32 = (n: number) => {
@@ -81,10 +81,11 @@ describe('responsive copies', () => {
       expect(m.exif, `${v.width} ${v.mime}`).toBeUndefined();
       expect(m.xmp, `${v.width} ${v.mime}`).toBeUndefined();
     }
-    // A copy is made only when it is under 90% of the picture's width: 1440 is not, at 1600.
-    const at1600 = await renderVariants(await halves(1600, 800, 'jpeg'), 'image/jpeg', 1600);
+    // A copy is made only when it is under 90% of the picture's width: 1440 is not, at 1600, in any format.
+    const at1600 = await renderVariants(await photo(1600, 800), 'image/jpeg', 1600);
     expect(widthsOf(at1600, 'image/jpeg')).toEqual([160, 480, 960]);
     expect(widthsOf(at1600, 'image/webp')).toEqual([160, 480, 960, 1600]);
+    expect(widthsOf(at1600, 'image/avif')).toEqual([160, 480, 960, 1600]);
     expect(widthsOf(await renderVariants(await halves(1602, 800, 'jpeg'), 'image/jpeg', 1602), 'image/jpeg')).toEqual([160, 480, 960, 1440]);
     // A header that overstates the width gets copies for the picture's real width, each labelled as it is.
     const small = await renderVariants(await halves(600, 300, 'jpeg'), 'image/jpeg', 2000);
@@ -99,9 +100,10 @@ describe('responsive copies', () => {
     const variants = await renderVariants(await halves(1200, 600, 'jpeg', 6), 'image/jpeg', 600);
     expect(widthsOf(variants, 'image/jpeg')).toEqual([160, 480]);
     expect(widthsOf(variants, 'image/webp')).toEqual([160, 480, 600]);
-    for (const copy of variants.filter((v) => v.width === 480 || v.width === 600)) {
+    for (const copy of variants) {
       const m = await sharp(copy.data).metadata();
-      expect([m.width, m.height, m.orientation ?? 1], copy.mime).toEqual([copy.width, copy.width * 2, 1]);
+      // A JPEG copy carries no orientation; a WebP or AVIF one may say "as stored", which turns nothing.
+      expect([m.width, m.height, copy.mime === 'image/jpeg' ? m.orientation : (m.orientation ?? 1)], `${copy.width} ${copy.mime}`).toEqual([copy.width, copy.width * 2, copy.mime === 'image/jpeg' ? undefined : 1]);
       const top = await pixel(copy.data, copy.width / 2, copy.width / 5);
       const bottom = await pixel(copy.data, copy.width / 2, copy.width * 2 - copy.width / 5);
       expect(top.r, copy.mime).toBeGreaterThan(200);
@@ -109,10 +111,13 @@ describe('responsive copies', () => {
       expect(bottom.b, copy.mime).toBeGreaterThan(200);
       expect(bottom.r, copy.mime).toBeLessThan(60);
     }
-    // Orientation 2 mirrors: red ends up on the right.
-    const mirrored = (await renderVariants(await halves(1200, 600, 'jpeg', 2), 'image/jpeg', 1200)).find((v) => v.width === 480)!;
-    expect((await pixel(mirrored.data, 400, 100)).r).toBeGreaterThan(200);
-    expect((await pixel(mirrored.data, 80, 100)).b).toBeGreaterThan(200);
+    // Orientation 2 mirrors: red ends up on the right, in every format.
+    const mirrored = await renderVariants(await halves(1200, 600, 'jpeg', 2), 'image/jpeg', 1200, (['image/jpeg', 'image/webp', 'image/avif'] as const).map((mime) => ({ width: 480, mime })));
+    expect(pairs(mirrored)).toEqual(['480 jpeg', '480 webp', '480 avif']);
+    for (const m of mirrored) {
+      expect((await pixel(m.data, 400, 100)).r, m.mime).toBeGreaterThan(200);
+      expect((await pixel(m.data, 80, 100)).b, m.mime).toBeGreaterThan(200);
+    }
   });
 
   it('keeps a PNG a PNG, transparency included, in every format', async () => {
@@ -124,6 +129,9 @@ describe('responsive copies', () => {
     const webp = variants.find((c) => c.width === 480 && c.mime === 'image/webp')!;
     expect(await sharp(webp.data).metadata()).toMatchObject({ format: 'webp', hasAlpha: true });
     expect((await pixel(webp.data, 10, 10)).a).toBe(0);
+    const [avif] = await renderVariants(clear, 'image/png', 1200, [{ width: 480, mime: 'image/avif' }]);
+    expect(await sharp(avif.data).metadata()).toMatchObject({ format: 'heif', hasAlpha: true });
+    expect((await pixel(avif.data, 10, 10)).a).toBe(0);
   });
 
   it('gives a WebP smaller WebP copies, the original serving its full width, and an AVIF its AVIF copies and a WebP set', async () => {
@@ -134,10 +142,11 @@ describe('responsive copies', () => {
     const avif = await renderVariants(await photo(1600, 800, 'avif'), 'image/avif', 1600);
     expect(widthsOf(avif, 'image/avif')).toEqual([160, 480, 960]);
     expect(widthsOf(avif, 'image/webp')).toEqual([160, 480, 960, 1600]);
-    for (const v of [...webp, ...avif]) expect((await sharp(v.data).metadata()).width, `${v.width} ${v.mime}`).toBe(v.width);
+    for (const v of [...webp, ...avif]) expect(await sharp(v.data).metadata(), `${v.width} ${v.mime}`).toMatchObject({ width: v.width, format: v.mime === 'image/avif' ? 'heif' : 'webp' });
   });
 
   it('keeps an AVIF set only when it is at least 10% smaller than the WebP one', async () => {
+    expect([keepsAvif(90, 100), keepsAvif(91, 100), keepsAvif(9, 10), keepsAvif(0, 0)]).toEqual([true, false, true, true]);
     // A photo: AVIF is far smaller.
     const photoCopies = await renderVariants(await photo(1200, 800), 'image/jpeg', 1200);
     const bytes = (list: typeof photoCopies, mime: string) => list.filter((v) => v.mime === mime).reduce((n, v) => n + v.data.length, 0);
@@ -169,11 +178,44 @@ describe('responsive copies', () => {
       }
     }
     // A PNG's Author text, an IPTC by-line and an XMP creator are carried the same way.
-    expect(creditText({ text: [Buffer.from('tEXtAuthor\0Bo Lens', 'latin1')] })).toEqual({ artist: 'Bo Lens' });
+    expect(creditText({ text: [Buffer.from('tEXtAuthor\0Bo Lens', 'latin1')] })).toEqual({ artist: 'Bo Lens', xmp: expect.stringContaining('<dc:creator><rdf:Seq><rdf:li>Bo Lens</rdf:li></rdf:Seq></dc:creator>') });
     const iptc = Buffer.concat([Buffer.from([0x1c, 2, 80, 0, 7]), Buffer.from('Cy Shot'), Buffer.from([0x1c, 2, 116, 0, 8]), Buffer.from('Shot Ltd')]);
     const block = Buffer.concat([Buffer.from('8BIM', 'latin1'), Buffer.from([4, 4, 0, 0]), u32(iptc.length), iptc]);
-    expect(creditText({ iptc: block })).toEqual({ artist: 'Cy Shot', copyright: 'Shot Ltd' });
+    expect(creditText({ iptc: block })).toEqual({ artist: 'Cy Shot', copyright: 'Shot Ltd', xmp: expect.stringContaining('<dc:rights><rdf:Alt><rdf:li xml:lang="x-default">Shot Ltd</rdf:li></rdf:Alt></dc:rights>') });
+    // The photo's own XMP is its credit packet as it is.
     expect(creditText({ tiff: Buffer.from('MM\0*\0\0\0\x08\0\0\0\0\0\0', 'latin1'), xmp: Buffer.from('<x:xmpmeta/>') })).toEqual({ xmp: '<x:xmpmeta/>' });
+    // EXIF first, IPTC where EXIF has nothing; IPTC is UTF-8 only when its character set says so.
+    const exifArtist = textCreditsAsTiff([Buffer.from('tEXtAuthor\0Ana Field', 'latin1')])!;
+    const mixed = creditText({ tiff: exifArtist, iptc: block });
+    expect([mixed.artist, mixed.copyright]).toEqual(['Ana Field', 'Shot Ltd']);
+    const latin = Buffer.concat([Buffer.from([0x1c, 2, 80, 0, 3]), Buffer.from('Zo\xeb', 'latin1')]);
+    const latinBlock = Buffer.concat([Buffer.from('8BIM', 'latin1'), Buffer.from([4, 4, 0, 0]), u32(latin.length), latin]);
+    expect(creditText({ iptc: latinBlock }).artist).toBe('Zoë');
+    const utf = Buffer.concat([Buffer.from([0x1c, 1, 90, 0, 3, 0x1b, 0x25, 0x47, 0x1c, 2, 80, 0, 4]), Buffer.from('Zoë', 'utf8'), Buffer.from([0x1c, 2, 110, 0, 5]), Buffer.from('Fotos')]);
+    const utfBlock = Buffer.concat([Buffer.from('8BIM', 'latin1'), Buffer.from([4, 4, 0, 0]), u32(utf.length), utf]);
+    const utfCredits = creditText({ iptc: utfBlock });
+    expect(utfCredits.artist).toBe('Zoë');
+    // A photo with no XMP credits gets a packet saying them exactly, the IPTC credit line too.
+    expect(utfCredits.xmp).toContain('<dc:creator><rdf:Seq><rdf:li>Zoë</rdf:li></rdf:Seq></dc:creator>');
+    expect(utfCredits.xmp).toContain('<photoshop:Credit>Fotos</photoshop:Credit>');
+  });
+
+  it('keeps a credit’s own words in the copies: brackets in the EXIF, every letter in the XMP', async () => {
+    const png = await photo(800, 400, 'png');
+    const text = (keyword: string, value: string) => chunk('tEXt', Buffer.from(`${keyword}\0${value}`, 'latin1'));
+    // After the header chunk: Author and Copyright text, in Latin-1 as tEXt holds it.
+    const credited = Buffer.concat([png.subarray(0, 33), text('Author', 'José Núñez (Studio)'), text('Copyright', '© 2026 Núñez & Co'), png.subarray(33)]);
+    const [webp, avif] = await renderVariants(credited, 'image/png', 800, [
+      { width: 480, mime: 'image/webp' },
+      { width: 480, mime: 'image/avif' }
+    ]);
+    for (const copy of [webp, avif]) {
+      const c = cleanPhoto(copy.data)!.credits;
+      // EXIF text is ASCII only, but nothing of it is dropped.
+      expect(c.tiff?.toString('latin1'), copy.mime).toContain('Jose Nunez (Studio)');
+      expect(c.xmp?.toString('utf8'), copy.mime).toContain('<rdf:li>José Núñez (Studio)</rdf:li>');
+      expect(c.xmp?.toString('utf8'), copy.mime).toContain('© 2026 Núñez &amp; Co');
+    }
   });
 
   it('makes no copies of a moving picture, whose resized copies would each be one still frame', async () => {
@@ -192,6 +234,11 @@ describe('responsive copies', () => {
     const sequence = Buffer.from(await photo(1200, 600, 'avif'));
     sequence.write('avis', 8, 'latin1');
     expect(await renderVariants(sequence, 'image/avif', 1200)).toEqual([]);
+    // A sequence brand among the compatible ones says the same, whatever the major brand.
+    const listed = Buffer.from(await photo(1200, 600, 'avif'));
+    expect(listed.toString('latin1', 8, 12)).toBe('avif');
+    listed.write('avis', 16, 'latin1');
+    expect(await renderVariants(listed, 'image/avif', 1200)).toEqual([]);
   });
 
   it('leaves an AVIF image sequence to the browser, but not an AVIF whose brands nothing knows', async () => {
@@ -218,16 +265,37 @@ describe('responsive copies', () => {
       { width: 960, mime: 'image/jpeg' as const },
       { width: 1000, mime: 'image/webp' as const },
       { width: 480, mime: 'image/avif' as const },
-      { width: 1440, mime: 'image/webp' as const }
+      { width: 1440, mime: 'image/webp' as const },
+      { width: 0, mime: 'image/jpeg' as const },
+      { width: 480.5, mime: 'image/webp' as const }
     ];
     const variants = await renderVariants(await halves(1000, 500, 'jpeg'), 'image/jpeg', 1000, asked);
     expect(pairs(variants)).toEqual(['960 jpeg', '1000 webp', '480 avif']);
     for (const v of variants) expect(await sharp(v.data).metadata(), `${v.width} ${v.mime}`).toMatchObject({ width: v.width, format: v.mime === 'image/avif' ? 'heif' : v.mime.slice(6) });
   });
 
+  it('leaves out only the copies an encoder cannot make: a whole modern set, or one copy asked for', async () => {
+    const proto = Object.getPrototypeOf(sharp()) as { avif: () => unknown };
+    const broken = vi.spyOn(proto, 'avif').mockImplementation(() => {
+      throw new Error('no AV1 encoder');
+    });
+    try {
+      const picture = await photo(1200, 600);
+      const all = await renderVariants(picture, 'image/jpeg', 1200);
+      expect(widthsOf(all, 'image/jpeg')).toEqual([160, 480, 960]);
+      expect(widthsOf(all, 'image/webp')).toEqual([160, 480, 960, 1200]);
+      expect(widthsOf(all, 'image/avif')).toEqual([]);
+      const asked = await renderVariants(picture, 'image/jpeg', 1200, [{ width: 480, mime: 'image/jpeg' }, { width: 480, mime: 'image/avif' }, { width: 960, mime: 'image/webp' }]);
+      expect(pairs(asked)).toEqual(['480 jpeg', '960 webp']);
+    } finally {
+      broken.mockRestore();
+    }
+  });
+
   it('is deterministic, and leaves other formats alone', async () => {
     const picture = await photo(2000, 1000);
     const [a, b] = [await renderVariants(picture, 'image/jpeg', 2000), await renderVariants(picture, 'image/jpeg', 2000)];
+    expect(pairs(a)).toHaveLength(14);
     expect(pairs(a)).toEqual(pairs(b));
     expect(a.every((v, i) => v.data.equals(b[i].data))).toBe(true);
     for (const mime of ['image/gif', 'image/svg+xml', 'image/heic']) expect(await renderVariants(picture, mime, 2000)).toEqual([]);
@@ -369,12 +437,12 @@ describe('media worker client', () => {
   it('asks for exactly the copies a library image lists when making them again, and returns each with its format', async () => {
     const { workers, spawn } = spawner();
     const client = createVariantClient(spawn);
-    const p = client.variants(Buffer.from('a'), 'image/jpeg', 1000, [{ width: 960, mime: 'image/webp' }]);
+    const p = client.variants(Buffer.from('a'), 'image/jpeg', 1000, [{ width: 960, mime: 'image/webp' }, { width: 960, mime: 'image/jpeg' }]);
     await tick();
-    expect(workers[0].sent[0]).toMatchObject({ targets: [{ width: 960, mime: 'image/webp' }] });
+    expect(workers[0].sent[0]).toMatchObject({ targets: [{ width: 960, mime: 'image/webp' }, { width: 960, mime: 'image/jpeg' }] });
     expect(workers[0].sent[0].check).toBeUndefined();
-    workers[0].reply({ id: workers[0].sent[0].id, ok: true, variants: [{ width: 960, mime: 'image/webp', data: new Uint8Array([5]) }] });
-    expect((await p).map((v) => [v.width, v.mime, [...v.data]])).toEqual([[960, 'image/webp', [5]]]);
+    workers[0].reply({ id: workers[0].sent[0].id, ok: true, variants: [{ width: 960, mime: 'image/jpeg', data: new Uint8Array([4]) }, { width: 960, mime: 'image/webp', data: new Uint8Array([5]) }] });
+    expect((await p).map((v) => [v.width, v.mime, [...v.data]])).toEqual([[960, 'image/jpeg', [4]], [960, 'image/webp', [5]]]);
     client.stop();
   });
 

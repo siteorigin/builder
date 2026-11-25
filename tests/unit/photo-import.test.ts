@@ -97,11 +97,22 @@ const noisy = async (width: number, height: number, format: 'jpeg' | 'png', alph
 /** A record's copies in one format (by their files' extension), as their widths. */
 const widthsIn = (r: { variants?: Array<{ width: number; file: string }> }, ext: string) => (r.variants ?? []).filter((v) => v.file.endsWith(`.${ext}`)).map((v) => v.width);
 
-/** A picture's copies in its own format, and its WebP set reaching `full`; its AVIF set is the same widths or left out. */
-function expectCopies(r: { variants?: Array<{ width: number; file: string }> }, ext: string, smaller: number[], full: number) {
-  expect(widthsIn(r, ext)).toEqual(smaller);
-  expect(widthsIn(r, 'webp')).toEqual([...smaller, full]);
-  expect([[], [...smaller, full]]).toContainEqual(widthsIn(r, 'avif'));
+/**
+ * A picture's copies, exactly: `smaller` in its own format (`ext`), a WebP set reaching `full` (a WebP's own copies are
+ * its set), and an AVIF set the same widths, which only an AVIF always has; any other picture has it or not
+ * (`avif`, when the test knows). Nothing else.
+ */
+function expectCopies(r: { variants?: Array<{ width: number; file: string }> }, ext: string, smaller: number[], full: number, avif?: boolean) {
+  const listed = (r.variants ?? []).map((v) => `${v.width} ${v.file.split('.').pop()}`);
+  const set = (e: string) => [...smaller, full].map((w) => `${w} ${e}`);
+  const own = smaller.map((w) => `${w} ${ext}`);
+  const without = ext === 'webp' ? own : ext === 'avif' ? [...own, ...set('webp')] : [...own, ...set('webp')];
+  const withAvif = ext === 'avif' ? without : [...without, ...set('avif')];
+  const sorted = (l: string[]) => [...l].sort();
+  const expected = ext === 'avif' || avif === true ? [withAvif] : avif === false ? [without] : [without, withAvif];
+  expect(expected.map(sorted), `${ext} copies`).toContainEqual(sorted(listed));
+  // Narrowest first.
+  expect((r.variants ?? []).map((v) => v.width), 'narrowest first').toEqual([...(r.variants ?? [])].map((v) => v.width).sort((a, b) => a - b));
 }
 
 async function pixel(buf: Buffer, x: number, y: number) {

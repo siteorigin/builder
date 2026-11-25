@@ -226,7 +226,7 @@ describe('ZIP export', () => {
 });
 
 describe('website export assets', () => {
-  const image = (id: string, file: string, variants: string[] = []): AssetRecord => ({ id, name: `${id}.${file.split('.').pop()}`, file, mime: file.endsWith('.jpg') ? 'image/jpeg' : 'image/svg+xml', bytes: 1, width: 1000, height: 500, hash: 'x', kind: 'image', variants: variants.map((f, i) => ({ width: 480 * (i + 1), file: f })), createdAt: '' });
+  const image = (id: string, file: string, variants: string[] = []): AssetRecord => ({ id, name: `${id}.${file.split('.').pop()}`, file, mime: file.endsWith('.jpg') ? 'image/jpeg' : 'image/svg+xml', bytes: 1, width: 1000, height: 500, hash: 'x', kind: 'image', variants: variants.map((f, i) => ({ width: Number(/-(\d+)w\./.exec(f)?.[1] ?? 480 * (i + 1)), file: f })), createdAt: '' });
   /** Put an asset into the first image slot of the home page. */
   const place = (state: ProjectState, assetId: string) => {
     const home = state.pages[state.site.homePageId];
@@ -245,9 +245,10 @@ describe('website export assets', () => {
     const state = createStarterState('business', 'Test', false);
     state.site.baseUrl = 'https://example.com';
     const assets: AssetRecord[] = [
-      image('placed', 'static/assets/big-sketch-12345678.jpg', ['static/assets/big-sketch-12345678-480w.jpg']),
+      // Its WebP set, which the page offers before the JPEG copies, ships with it.
+      image('placed', 'static/assets/big-sketch-12345678.jpg', ['static/assets/big-sketch-12345678-480w.jpg', 'static/assets/big-sketch-12345678-480w.webp', 'static/assets/big-sketch-12345678-1000w.webp']),
       // Never placed: its name is part of the placed file's name, which must not count as a use.
-      image('draft', 'static/assets/sketch-12345678.jpg', ['static/assets/sketch-12345678-480w.jpg']),
+      image('draft', 'static/assets/sketch-12345678.jpg', ['static/assets/sketch-12345678-480w.jpg', 'static/assets/sketch-12345678-1000w.webp']),
       image('favicon', 'static/assets/mark-aaaaaaaa.svg'),
       image('social', 'static/assets/share-bbbbbbbb.svg'),
       image('coded', 'static/assets/gallery-cccccccc.svg'),
@@ -278,11 +279,13 @@ describe('website export assets', () => {
     const omitted = await pruneWebsiteAssets(dir, state);
     const left = (f: string) => existsSync(join(dir, f));
     expect(omitted.map((a) => a.id).sort()).toEqual(['draft', 'legacy']);
-    for (const f of ['static/assets/sketch-12345678.jpg', 'static/assets/sketch-12345678-480w.jpg', 'static/assets/old-draft.svg', 'static/assets/deleted-99999999.svg', 'static/assets/banner-77777777.svg'])
+    for (const f of ['static/assets/sketch-12345678.jpg', 'static/assets/sketch-12345678-480w.jpg', 'static/assets/sketch-12345678-1000w.webp', 'static/assets/old-draft.svg', 'static/assets/deleted-99999999.svg', 'static/assets/banner-77777777.svg'])
       expect(left(f), f).toBe(false);
     for (const f of [
       'static/assets/big-sketch-12345678.jpg',
       'static/assets/big-sketch-12345678-480w.jpg',
+      'static/assets/big-sketch-12345678-480w.webp',
+      'static/assets/big-sketch-12345678-1000w.webp',
       'static/assets/mark-aaaaaaaa.svg',
       'static/assets/share-bbbbbbbb.svg',
       'static/assets/gallery-cccccccc.svg',
@@ -313,7 +316,7 @@ describe('website export assets', () => {
 });
 
 describe('website photo privacy', () => {
-  const photo = (id: string, name: string, file: string, variants: string[] = []): AssetRecord => ({ id, name, file, mime: 'image/jpeg', bytes: 1, width: 2000, height: 1200, hash: 'x', kind: 'image', variants: variants.map((f, i) => ({ width: 480 * (i + 1), file: f })), createdAt: '' });
+  const photo = (id: string, name: string, file: string, variants: string[] = []): AssetRecord => ({ id, name, file, mime: 'image/jpeg', bytes: 1, width: 2000, height: 1200, hash: 'x', kind: 'image', variants: variants.map((f, i) => ({ width: Number(/-(\d+)w\./.exec(f)?.[1] ?? 480 * (i + 1)), file: f })), createdAt: '' });
   const plainJpeg = () => Buffer.concat([SOI, JFIF, IMAGE_DATA, EOI]);
   const writeBytes = (root: string, rel: string, data: Buffer) => {
     mkdirSync(join(root, rel, '..'), { recursive: true });

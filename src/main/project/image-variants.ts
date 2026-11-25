@@ -44,8 +44,11 @@ const ENCODE: Record<CopyMime, (img: sharp.Sharp) => sharp.Sharp> = {
 /** Formats in the order a record lists copies of one width: the picture's own first, then the modern ones. */
 const rank = (mime: CopyMime, own: CopyMime) => (mime === own ? 0 : mime === 'image/webp' ? 1 : 2);
 
-/** An AVIF set is kept only when it is at least this much smaller than the WebP set of the same widths. */
-const AVIF_GAIN = 0.9;
+/** Whether an AVIF set is worth offering: at least 10% smaller than the WebP set of the same widths. */
+export const keepsAvif = (avifBytes: number, webpBytes: number) => avifBytes * 10 <= webpBytes * 9;
+
+/** The type note libvips writes after EXIF text when it reads it back, which it drops again when it writes the text. */
+const EXIF_TEXT_NOTE = '(ASCII, 1 components, 1 bytes)';
 
 /**
  * Deterministic responsive copies of a still JPEG, PNG, WebP or AVIF. `width` is the displayed width; the copies are
@@ -53,15 +56,15 @@ const AVIF_GAIN = 0.9;
  *
  * - its own format at each of VARIANT_WIDTHS meaningfully smaller than it, the original serving its full width;
  * - WebP at those widths and its full width (none for a WebP, whose own set is that);
- * - AVIF the same way, kept only when the whole set is at least 10% smaller than the WebP one (an AVIF's own set is
- *   always kept). AVIF is not always the smaller: flat graphics and small pictures often favour WebP.
+ * - AVIF the same way, kept only when the whole set is at least 10% smaller than the WebP one (keepsAvif; an AVIF's
+ *   own set is always kept). AVIF is not always the smaller: flat graphics and small pictures often favour WebP.
  *
  * JPEG and PNG copies are written without metadata (an export gives them the original's credits); WebP and AVIF ones
  * carry the original's credits, which an export cannot add to them, and nothing else. A modern set that cannot be
  * made is left out whole, so a page never offers a set missing its widest copy. A moving picture (animated PNG or
  * WebP, an AVIF sequence) gets none: a resized copy would be a single frame, and its srcset would mix the moving
  * original with stills. `targets` asks for exactly those copies (making again the ones a library image already
- * lists), each never wider than the picture, with no choosing between sets.
+ * lists), each never wider than the picture, with no choosing between sets; one that fails is left out alone.
  */
 export async function renderVariants(buf: Buffer, mime: string, width: number, targets?: VariantTarget[]): Promise<Variant[]> {
   if (!isCopyMime(mime)) return [];
@@ -78,14 +81,18 @@ export async function renderVariants(buf: Buffer, mime: string, width: number, t
     let img = sharp(buf, { limitInputPixels: MAX_VARIANT_PIXELS }).autoOrient().resize({ width: t.width, withoutEnlargement: true });
     if (t.mime === 'image/webp' || t.mime === 'image/avif') {
       credits ??= creditText(cleanPhoto(buf)?.credits ?? {});
-      if (credits.artist || credits.copyright) img = img.withExif({ IFD0: { ...(credits.artist ? { Artist: credits.artist } : {}), ...(credits.copyright ? { Copyright: credits.copyright } : {}) } });
+      // libvips reads a trailing " (…)" in EXIF text as its own type note and drops it: one is added for it to drop, so a
+      // credit such as "Ana Field (Studio)" keeps its own.
+      const exif = (v: string) => `${v} ${EXIF_TEXT_NOTE}`;
+      if (credits.artist || credits.copyright) img = img.withExif({ IFD0: { ...(credits.artist ? { Artist: exif(credits.artist) } : {}), ...(credits.copyright ? { Copyright: exif(credits.copyright) } : {}) } });
       if (credits.xmp) img = img.withXmp(credits.xmp);
     }
     return { ...t, data: await ENCODE[t.mime](img).toBuffer() };
   };
   const out: Variant[] = [];
   if (targets) {
-    for (const t of targets) if (isCopyMime(t.mime) && Number.isInteger(t.width) && t.width > 0 && t.width <= displayed) out.push(await encode(t));
+    // Each copy on its own: one that cannot be made is left out (and reported missing), never the others with it.
+    for (const t of targets) if (isCopyMime(t.mime) && Number.isInteger(t.width) && t.width > 0 && t.width <= displayed) out.push(...(await encode(t).then((v) => [v], () => [])));
     return out;
   }
   const smaller = VARIANT_WIDTHS.filter((w) => w < displayed * 0.9);
@@ -107,7 +114,7 @@ export async function renderVariants(buf: Buffer, mime: string, width: number, t
   if (webp && mime !== 'image/webp') out.push(...webp);
   if (mime !== 'image/avif') {
     const avif = await set('image/avif');
-    if (avif && webpBytes !== null && bytes(avif) <= webpBytes * AVIF_GAIN) out.push(...avif);
+    if (avif && webpBytes !== null && keepsAvif(bytes(avif), webpBytes)) out.push(...avif);
   }
   return out.sort((a, b) => a.width - b.width || rank(a.mime, mime) - rank(b.mime, mime));
 }

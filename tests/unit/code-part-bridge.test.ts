@@ -25,6 +25,9 @@ const FRAME = `<!doctype html><html><head><style>body{margin:0;font:16px/1.4 san
 <div style="display: contents" data-so-ctx="page:p" data-so-node="calc2" data-so-code="true">
   <section id="s2"><output id="t2" data-so-part="total">$20</output><p id="n2" class="so-part--theme note so-part--note">Named by its class</p><b id="both" data-so-part="total" class="so-part--note">Both</b></section>
 </div>
+<div style="display: contents" data-so-ctx="page:p" data-so-node="photo" data-so-code="true">
+  <picture style="display: contents"><source type="image/webp" srcset="data:image/gif;base64,R0lGODlhAQABAAAAACw= 1w" /><img id="pic" alt="" src="data:image/gif;base64,R0lGODlhAQABAAAAACw=" style="display:block;width:120px;height:60px" /></picture>
+</div>
 <script type="module" src="/bridge.js"></script></body></html>`;
 
 let browser: Browser;
@@ -100,5 +103,14 @@ describe.skipIf(!browserInstalled)('marked parts of a code component in the prev
     await page.mouse.move(s2.x + s2.width - 5, s2.y + s2.height - 3);
     await page.mouse.move(n2.x + 5, n2.y + 5);
     await expect.poll(async () => (await messages()).filter((m) => m.type === 'hover').map((m) => m.payload.chain?.[0]?.part ?? m.payload.chain?.[0]?.node)).toEqual(['total', 'calc2', 'note']);
+  });
+
+  it('outlines a placement whose only content is an image in a <picture>, which lays out no box of its own', async () => {
+    await post('setMode', { mode: 'edit' });
+    await page.evaluate(`window.seen = []`);
+    await post('track', { selected: { ctx: 'page:p', node: 'photo', items: '' } });
+    const pic = await boxOf('pic');
+    expect(pic.width).toBe(120);
+    await expect.poll(async () => (await messages()).filter((m) => m.type === 'rects').at(-1)?.payload.selected).toEqual([pic]);
   });
 });

@@ -106,7 +106,9 @@ export interface VariantClient {
 }
 
 export function createVariantClient(spawn: () => WorkerHandle, opts: { timeoutMs?: number; webTimeoutMs?: number; idleMs?: number } = {}): VariantClient {
-  const timeoutMs = opts.timeoutMs ?? 30_000;
+  // A picture's copies come in three formats, each to its full width: a 100-megapixel original (the most copies are
+  // made of) takes about 17 seconds on a fast machine, which a slower one must still finish.
+  const timeoutMs = opts.timeoutMs ?? 120_000;
   // A web-sized copy decodes the whole photo, which for a 48-megapixel camera original takes a while.
   const webTimeoutMs = opts.webTimeoutMs ?? 60_000;
   const idleMs = opts.idleMs ?? 30_000;

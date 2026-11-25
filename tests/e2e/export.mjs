@@ -122,10 +122,11 @@ async function photoMetadata(buf) {
  * Assert a published copy of the photo carries no location or device details, and keeps its credits. A copy's pixels
  * are already upright: it has no orientation tag, or (a WebP or AVIF, whose encoder always writes one) one that turns nothing.
  */
-async function assertPublicPhoto(buf, label, { original }) {
+async function assertPublicPhoto(buf, label, { original, file }) {
   const text = buf.toString('latin1');
   assert.ok(!text.includes(SERIAL) && !text.includes(MAKE) && !text.includes('Pocket 9'), `${label} has no camera make, model or serial`);
   const m = await photoMetadata(buf);
+  assert.equal(m.format, { jpg: 'jpeg', webp: 'webp', avif: 'heif' }[file.split('.').pop()], `${label} is the format its name says`);
   assert.ok(!m.tags.includes(0x8825), `${label} has no GPS directory`);
   assert.ok(!/GPS/.test(m.xmp), `${label} has no GPS in its XMP`);
   assert.equal(m.artist, 'Jane Doe Photography', `${label} keeps the photographer credit`);
@@ -159,7 +160,15 @@ function checkHomePictures(root, photo, base = '') {
   const img = attrsOf(picture.match(/<img\b[^>]*>/)[0]);
   assert.deepEqual([img.width, img.height, img.alt, img.loading, img.fetchpriority], ['2000', '1200', 'The front of the house', 'eager', 'high'], `${base || '/'}: the hero's <img> keeps its size, words and priority`);
   for (const x of sources) assert.equal(x.sizes, img.sizes, `${base || '/'}: every source is sized as the <img> is`);
-  const preloads = [...html.matchAll(/<link\b[^>]*rel="preload"[^>]*>/g)].map((m) => attrsOf(m[0])).filter((l) => l.as === 'image');
+  // Each set names the photo's files at the widths its record lists: the <img> its JPEGs and original, each source its format's.
+  const named = (set) => set.split(/,\s+/).map((c) => c.trim().split(/\s+/)).map(([u, w]) => [basename(decodeURIComponent(new URL(u, `https://example.test${base}/`).pathname)), w]);
+  const recorded = (ext) => [...photo.variants.filter((v) => v.file.endsWith(`.${ext}`)).map((v) => [basename(v.file), `${v.width}w`]), ...(ext === 'jpg' ? [[basename(photo.file), '2000w']] : [])];
+  assert.deepEqual(named(img.srcset), recorded('jpg'), `${base || '/'}: the <img> offers the JPEG copies and the original`);
+  for (const x of sources) assert.deepEqual(named(x.srcset), recorded(x.type === 'image/avif' ? 'avif' : 'webp'), `${base || '/'}: the ${x.type} source offers its set`);
+  const head = html.slice(html.indexOf('<head'), html.indexOf('</head>'));
+  assert.ok(head.length > 0, `${base || '/'}: the page has a head`);
+  const preloads = [...head.matchAll(/<link\b[^>]*rel="preload"[^>]*>/g)].map((m) => attrsOf(m[0])).filter((l) => l.as === 'image');
+  assert.equal([...html.matchAll(/rel="preload" as="image"/g)].length, 1, `${base || '/'}: one picture is asked for`);
   assert.deepEqual(preloads, [{ rel: 'preload', as: 'image', fetchpriority: 'high', type: sources[0].type, imagesrcset: sources[0].srcset, imagesizes: sources[0].sizes }], `${base || '/'}: the head asks for the hero's first set`);
   assert.ok(html.indexOf('rel="preload" as="image"') < html.indexOf('<picture'), `${base || '/'}: the request comes before the body`);
   const candidates = (set) => (set ? set.split(/,\s+/).map((c) => c.trim().split(/\s+/)[0]) : []);
@@ -1009,7 +1018,7 @@ if (!siteList.error) {
     const served = f.replace(/^static\//, '');
     const entry = spawnSync('unzip', ['-p', staticZip, served], { maxBuffer: 64 * 1024 * 1024 });
     assert.equal(entry.status, 0, `the site ZIP holds ${served}`);
-    await assertPublicPhoto(entry.stdout, `the site ZIP's ${served}`, { original: f === photo.file });
+    await assertPublicPhoto(entry.stdout, `the site ZIP's ${served}`, { original: f === photo.file, file: f });
   }
   const sourceEntry = spawnSync('unzip', ['-p', sourceZip, `harbour-lane-studio-source/${photo.file}`], { maxBuffer: 64 * 1024 * 1024 });
   assert.equal(createHash('sha256').update(sourceEntry.stdout).digest('hex'), photoHash, 'the editable project ZIP keeps the original photo as imported');
@@ -1034,7 +1043,7 @@ const red = ([r, g, b]) => r > 180 && g < 90 && b < 90;
 const blue = ([r, g, b]) => r < 90 && b > 150;
 for (const f of photoFiles) {
   const published = readFileSync(join(staticOut, f.replace(/^static\//, '')));
-  await assertPublicPhoto(published, `the website's ${basename(f)}`, { original: f === photo.file });
+  await assertPublicPhoto(published, `the website's ${basename(f)}`, { original: f === photo.file, file: f });
   const shown = await pixels(published, mimeOf(f));
   const width = f === photo.file ? 2000 : photo.variants.find((v) => v.file === f).width;
   assert.deepEqual([shown.width, shown.height], [width, Math.round((width * 1200) / 2000)], `${basename(f)} is shown upright at its size`);

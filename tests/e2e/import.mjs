@@ -11,12 +11,17 @@ import { createProject, eventually, launch, openInspector, scratch, step, withTi
 
 /** A record's copies in one format, as their widths. */
 const widthsIn = (record, ext) => (record.variants ?? []).filter((v) => v.file.endsWith(`.${ext}`)).map((v) => v.width);
-/** A picture's copies: `smaller` in its own format, a WebP set to its `full` width, and an AVIF set of those widths or none. */
+/**
+ * A picture's copies, exactly: `smaller` in its own format, a WebP set to its `full` width, and an AVIF set of those
+ * widths or none, narrowest first and nothing else.
+ */
 function assertCopies(record, ext, smaller, full, what) {
   assert.deepEqual(widthsIn(record, ext), smaller, `${what}: its smaller ${ext} copies`);
   assert.deepEqual(widthsIn(record, 'webp'), [...smaller, full], `${what}: its WebP set`);
   const avif = JSON.stringify(widthsIn(record, 'avif'));
   assert.ok(avif === '[]' || avif === JSON.stringify([...smaller, full]), `${what}: its AVIF set is whole or left out (${avif})`);
+  assert.equal(record.variants.length, widthsIn(record, ext).length + widthsIn(record, 'webp').length + widthsIn(record, 'avif').length, `${what}: no copy in any other format`);
+  assert.deepEqual(record.variants.map((v) => v.width), [...record.variants.map((v) => v.width)].sort((a, b) => a - b), `${what}: narrowest first`);
 }
 
 /**
@@ -153,9 +158,9 @@ const imported = onDisk();
 const importedBytes = diskBytes();
 const mb = (b) => `${(b / (1024 * 1024)).toFixed(1)} MB`;
 // Each photo is its original and its copies: four smaller JPEGs, a WebP set and an AVIF set (when it is the smaller).
-const FILES = run.result.assetIds.reduce((n, id) => n + 1 + snap.state.assets.assets[id].variants.length, 0);
-assert.ok(FILES >= PHOTOS * 10, `each photo has its copies in every format (${FILES} files)`);
-assert.equal(imported.length, FILES, 'each photo is an original and its responsive copies');
+const recordedFiles = run.result.assetIds.flatMap((id) => [snap.state.assets.assets[id].file, ...snap.state.assets.assets[id].variants.map((v) => v.file)]).map((f) => basename(f));
+const FILES = recordedFiles.length;
+assert.deepEqual([...imported].sort(), [...recordedFiles].sort(), 'the folder holds each photo’s original and the copies its record lists, and nothing else');
 
 step('remove every unused image: the files stay, and the Assets panel says they are kept for Undo');
 await win.getByRole('button', { name: 'Assets', exact: true }).click();

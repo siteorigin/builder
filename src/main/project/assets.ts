@@ -621,8 +621,11 @@ export async function restoreAssetFiles(projectDir: string, record: AssetRecord,
   const missing: Array<{ width: number; file: string; mime: CopyMime }> = [];
   for (const v of record.variants ?? []) {
     const mime = copyMime(v.file);
-    if (!LIBRARY_FILE.test(v.file) || !mime) failed.push(v.file);
-    else if (!(await isFile(safeJoin(projectDir, v.file)))) missing.push({ ...v, mime });
+    if (!LIBRARY_FILE.test(v.file)) failed.push(v.file);
+    else if (await isFile(safeJoin(projectDir, v.file))) continue;
+    // A copy in a format no copy is made in cannot be made again.
+    else if (!mime) failed.push(v.file);
+    else missing.push({ ...v, mime });
   }
   if (missing.length) {
     const info = imageInfo(buf, record.mime);

@@ -112,7 +112,7 @@ import { generateWebManifest, siteColors, siteIconLinks, themeColorMeta } from '
 import { WEB_MANIFEST } from '@shared/site-icons';
 import { elementKind, isEmptyLayout } from '@engine/tree';
 // checks imports this module too: only its functions are used here, at generation time, never while loading.
-import { evaluate, notFoundSectionRoutes, walkRendered } from './checks';
+import { evaluate, firstSectionImages, notFoundSectionRoutes } from './checks';
 import { webMcpOn } from '@shared/webmcp';
 import { adaptedForm, declaresFormTool, formTool, pageToolNames, shellToolNames, showsSiteSearch, WEBMCP_SEARCH_FILE, webMcpSearchJs } from './webmcp';
 import { graphScript, inGenerationRun } from './structured-data';
@@ -365,7 +365,7 @@ export interface ImageSource {
 export function pictureSets(asset: AssetRecord): { srcset?: string; sources: ImageSource[] } {
   const own = asset.mime;
   const full = asset.width;
-  if (typeof full !== 'number' || !(full > 0) || !Array.isArray(asset.variants) || !asset.variants.length) return { sources: [] };
+  if (typeof full !== 'number' || !Number.isInteger(full) || full <= 0 || !Array.isArray(asset.variants) || !asset.variants.length) return { sources: [] };
   const url = (file: string) => `/${file.replace(/^static\//, '')}`;
   const sets = new Map<string, Map<number, string>>();
   const add = (mime: string, width: number, file: string) => {
@@ -373,9 +373,10 @@ export function pictureSets(asset: AssetRecord): { srcset?: string; sources: Ima
     if (!set.has(width)) set.set(width, url(file));
   };
   add(own, full, asset.file);
+  // A width a browser would not read, or one wider than the picture itself, is no copy of it.
   for (const v of asset.variants) {
     const mime = copyMime(v?.file);
-    if (mime && typeof v.width === 'number' && v.width > 0) add(mime, v.width, v.file);
+    if (mime && Number.isInteger(v.width) && v.width > 0 && v.width <= full) add(mime, v.width, v.file);
   }
   const listed = (set: Map<number, string>) =>
     [...set]
@@ -385,7 +386,7 @@ export function pictureSets(asset: AssetRecord): { srcset?: string; sources: Ima
   const ownSet = sets.get(own)!;
   const sources: ImageSource[] = MODERN_FORMATS.flatMap((type) => {
     const set = sets.get(type);
-    return set && Math.max(...set.keys()) >= full ? [{ type, srcset: listed(set) }] : [];
+    return set?.has(full) ? [{ type, srcset: listed(set) }] : [];
   });
   while (sources.at(-1)?.type === own) sources.pop();
   return { ...(ownSet.size > 1 ? { srcset: listed(ownSet) } : {}), sources };
@@ -3784,36 +3785,55 @@ const HERO_ASSET_IMPORT = `\timport { asset as so_asset } from '$app/paths';`;
 
 /**
  * The picture a page's first section loads first, as the body renders it: the image (resolved as the body resolves
- * it) and the `sizes` its <img> and <source>s carry. It is the first image there, in the order the page renders, that
- * shows a library picture: a placeholder loads nothing, so the next image is looked at. Only what the generator can
- * read for certain counts: the walk leaves out lists (their images load lazily), code components (their markup is
- * their own) and whatever a component's starting state hides, and an image whose picture is not decided here (one a
- * thumbnail stands in for until it opens) ends it with none, rather than asking for a picture the page may not show.
+ * it) and the `sizes` its <img> and <source>s carry. It is the first image there that shows a library picture and that
+ * the body loads eagerly (see firstSectionImages): a placeholder loads nothing, so the next image is looked at. An
+ * image that opens full size shows its thumbnail (see `thumbnail` in the runtime's util), as the emitter decides it for
+ * this placement; where the body decides which picture that is only as it renders (two images one card opens), the
+ * walk ends with none rather than asking for a picture the page may not show.
  */
 function heroImage(ctx: EmitCtx): { image: Record<string, unknown>; sizes: string } | null {
   const { state, tree } = ctx;
-  const first = tree.rootIds[0];
-  if (!first) return null;
-  // Undefined while still looking; null when there is none to ask for.
-  let hero: { image: Record<string, unknown>; sizes: string } | null | undefined;
+  let hero: { image: Record<string, unknown>; sizes: string } | null = null;
   const sizingParents: EmitCtx['sizingParents'] = new Map();
-  walkRendered(state, tree, {
-    roots: [first],
-    prune: (n) => hero !== undefined || n.kind === 'repeat' || (n.kind === 'instance' && state.components[n.definitionId]?.kind !== 'managed'),
-    node: (n, scope, _reportId, _inDef, def) => {
-      if (hero !== undefined || n.kind !== 'image') return;
-      const value = evaluate(n.image, scope) as ImageValue | null | undefined;
-      const id = value && typeof value === 'object' ? value.assetId : null;
-      const asset = typeof id === 'string' && Object.hasOwn(state.assets.assets, id) ? state.assets.assets[id] : undefined;
-      if (asset?.kind !== 'image') return;
-      // The image as its own design (or the page) emits it, so its sizes are the ones its markup carries.
-      const owner: EmitCtx = { state, file: '', imports: new Map(), instrument: false, def: def ?? null, tree: def?.tree ?? tree, ctxExpr: def ? `component:${def.id}` : ctx.ctxExpr, items: [], rctx: ctx.rctx, indent: 0, locals: new Map(), sizingParents };
-      if (actionOwner(owner, n.id)) return void (hero = null);
-      const image = resolveImage(value, ctx.rctx);
-      hero = image?.src ? { image, sizes: imageSizes(owner, n) ?? '100vw' } : null;
+  firstSectionImages(state, tree, ctx.rctx.entry, (n, scope, def) => {
+    let value = evaluate(n.image, scope) as ImageValue | null | undefined;
+    // A placement's empty value shows the property's default, as the placement passes it (see resolveValue).
+    if (value == null && def && isBinding(n.image) && '$prop' in n.image) value = def.properties[n.image.$prop]?.default as ImageValue | undefined;
+    const id = value && typeof value === 'object' ? value.assetId : null;
+    if (typeof id !== 'string' || !Object.hasOwn(state.assets.assets, id) || state.assets.assets[id]?.kind !== 'image') return false;
+    let image = resolveImage(value, ctx.rctx);
+    if (!image?.src) return false;
+    // The image as its own design (or the page) emits it, so its sizes are the ones its markup carries.
+    const owner: EmitCtx = { state, file: '', imports: new Map(), instrument: false, def: def ?? null, tree: def?.tree ?? tree, ctxExpr: def ? `component:${def.id}` : ctx.ctxExpr, items: [], rctx: ctx.rctx, indent: 0, locals: new Map(), sizingParents };
+    const card = actionOwner(owner, n.id);
+    if (card && rendersAsCard(owner, card) && (isBinding(card.action) ? evaluate(card.action, scope) : card.action) === 'image') {
+      // Which of two images the card opens, and so which shows as a thumbnail, the page works out as it renders.
+      if (actionImages(owner, card).length > 1) return true;
+      image = thumbnailOf(image);
     }
+    hero = { image, sizes: imageSizes(owner, n) ?? '100vw' };
+    return true;
   });
-  return hero ?? null;
+  return hero;
+}
+
+/** The runtime's `thumbnail` (see runtime-files.ts), on a resolved image: what a card that opens it full size shows. */
+function thumbnailOf(image: Record<string, unknown>): Record<string, unknown> {
+  const width = typeof image.width === 'number' ? image.width : NaN;
+  const smaller = (set: string) =>
+    set
+      .split(', ')
+      .map((c) => c.split(' '))
+      .filter(([path, w]) => path !== image.src && !(parseInt(w, 10) >= width));
+  if (typeof image.srcset !== 'string' || !image.srcset) return image;
+  const own = smaller(image.srcset);
+  if (!own.length) return image;
+  const largest = own.reduce((a, b) => (parseInt(b[1], 10) > parseInt(a[1], 10) ? b : a));
+  const { sources, ...rest } = image;
+  const kept = Array.isArray(sources)
+    ? (sources as ImageSource[]).map((x) => ({ ...x, srcset: smaller(x.srcset).map((c) => c.join(' ')).join(', ') })).filter((x) => x.srcset)
+    : [];
+  return { ...rest, src: largest[0], srcset: own.map((c) => c.join(' ')).join(', '), ...(kept.length ? { sources: kept } : {}) };
 }
 
 /**

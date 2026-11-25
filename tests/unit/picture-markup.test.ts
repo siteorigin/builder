@@ -92,6 +92,11 @@ describe('a library image’s sets', () => {
         { type: 'image/webp', srcset: set('webp', [160, 480, 960, 1440, 2000]) }
       ]
     });
+    // Listed in any order, a width twice, or a width no browser reads or wider than the picture: the same sets.
+    const shuffled = picture('hero');
+    shuffled.variants = [...shuffled.variants!].reverse();
+    shuffled.variants.push({ width: 480, file: 'static/assets/other-1a2b3c4d-480w.avif' }, { width: 700.5, file: 'static/assets/hero-1a2b3c4d-700w.avif' }, { width: 2400, file: 'static/assets/hero-1a2b3c4d-2400w.webp' });
+    expect(pictureSets(shuffled)).toEqual(sets);
   });
 
   it('gives an image imported before WebP and AVIF copies the srcset it always had, and no <picture>', () => {
@@ -132,8 +137,11 @@ describe('the image a page renders', () => {
     const pic = body.match(/<picture\b[^>]*>[\s\S]*?<\/picture>/)?.[0];
     expect(pic).toBeDefined();
     const sources = [...pic!.matchAll(/<source\b[^>]*>/g)].map((m) => attrs(m[0]));
+    // The sources first, best first, then the one <img>.
+    expect([...pic!.matchAll(/<(source|img)\b/g)].map((m) => m[1])).toEqual(['source', 'source', 'img']);
     expect(sources.map((x) => x.type)).toEqual(['image/avif', 'image/webp']);
     expect(sources[0].srcset).toBe([160, 480, 960, 1440, 2000].map((w) => `/studio/assets/hero-1a2b3c4d-${w}w.avif ${w}w`).join(', '));
+    expect(sources[1].srcset).toBe([160, 480, 960, 1440, 2000].map((w) => `/studio/assets/hero-1a2b3c4d-${w}w.webp ${w}w`).join(', '));
     const img = attrs(pic!.match(/<img\b[^>]*>/)![0]);
     expect(img).toMatchObject({
       src: '/studio/assets/hero-1a2b3c4d.jpg',
@@ -171,7 +179,7 @@ describe('the hero’s preload', () => {
     const { head, body } = await renderHome(site(picture('hero')));
     const first = attrs(body.match(/<picture\b[^>]*>\s*<source\b[^>]*>/)![0].replace(/^<picture\b[^>]*>\s*/, ''));
     expect(preloads(head)).toEqual([{ rel: 'preload', as: 'image', fetchpriority: 'high', type: 'image/avif', imagesrcset: first.srcset, imagesizes: first.sizes }]);
-    // Asked for once, before anything else the page's head says.
+    // Asked for once, before anything else the page's head says (the title, which Svelte writes on its own, aside).
     expect(head.indexOf('rel="preload"')).toBeLessThan(head.indexOf('name="description"'));
   });
 
@@ -197,14 +205,33 @@ describe('the hero’s preload', () => {
     expect(preloads((await renderHome(lower)).head)).toEqual([]);
   });
 
+  it('passes over a placeholder and an image hidden at every size to the first picture the section shows', async () => {
+    const s = site(picture('hero'));
+    s.assets.assets.a_other = { ...picture('other'), id: 'a_other' };
+    const home = homeOf(s);
+    home.nodes.box = { id: 'box', kind: 'element', tag: 'div', children: ['empty', 'hidden', 'shown'] } as (typeof home.nodes)[string];
+    home.nodes.empty = { id: 'empty', kind: 'image', image: { assetId: null, alt: '' } };
+    home.nodes.hidden = { id: 'hidden', kind: 'image', image: { assetId: 'a_other', alt: '' }, styles: { base: { hidden: true } } };
+    home.nodes.shown = { id: 'shown', kind: 'image', image: { assetId: 'a_hero', alt: 'Ours' } };
+    home.rootIds = ['box', ...home.rootIds];
+    const { head } = await renderHome(s);
+    expect(preloads(head).map((l) => l.imagesrcset.split(', ')[0])).toEqual(['/studio/assets/hero-1a2b3c4d-160w.avif 160w']);
+  });
+
   it('asks for nothing for a picture in a list, which loads lazily, and follows a page’s own literal image', async () => {
     const s = site(picture('hero'));
     const home = homeOf(s);
     // The gallery (a list of pictures) first: its pictures are list items, never eager.
     const gallery = home.rootIds.find((id) => (home.nodes[id] as InstanceNode).definitionId === Object.values(s.components).find((d) => d.componentId === 'media.gallery')!.id)!;
     for (const it of (home.nodes[gallery] as InstanceNode).props.images as Array<{ image: ImageValue }>) it.image = { assetId: 'a_hero', alt: '' };
+    // Nothing on its photos opens them, so only being in a list keeps them out.
+    const def = s.components[(home.nodes[gallery] as InstanceNode).definitionId];
+    for (const n of Object.values(def.tree!.nodes)) if (n.kind === 'element') delete (n as { action?: unknown }).action;
     home.rootIds = [gallery, ...home.rootIds.filter((id) => id !== gallery)];
-    expect(preloads((await renderHome(s)).head)).toEqual([]);
+    const listed = await renderHome(s);
+    expect(listed.body).toContain('hero-1a2b3c4d.jpg');
+    expect(listed.body).not.toContain('fetchpriority="high"');
+    expect(preloads(listed.head)).toEqual([]);
     // A picture placed straight on the page, in its first section.
     const own = site(picture('hero'));
     const page = homeOf(own);
@@ -219,7 +246,9 @@ describe('the hero’s preload', () => {
     const { state } = seoSite();
     state.assets.assets.img_bowls = { ...picture('bowls'), id: 'img_bowls' };
     const page = generateEntry(run(state, { type: 'entry.update', collectionId: 'posts', entryId: 'en_spring', featuredImage: 'img_bowls' }), 'posts', 'en_spring');
-    const link = page.match(/<link rel="preload" as="image"[^\n]*/)?.[0];
+    const head = page.slice(page.indexOf('<svelte:head>'), page.indexOf('</svelte:head>'));
+    expect(page.match(/rel="preload"/g)).toHaveLength(1);
+    const link = head.match(/<link rel="preload" as="image"[^\n]*/)?.[0];
     expect(link).toContain('type="image/avif"');
     // The same widths and sizes as the image the layout renders.
     const shown = page.match(/<SoImage image=\{(\{"src":"\/assets\/bowls[^\n]*?\})\} eager sizes="([^"]+)"/);
@@ -232,7 +261,7 @@ describe('the hero’s preload', () => {
     expect(generateEntry(state, 'posts', 'en_spring')).not.toContain('rel="preload"');
   });
 
-  it('asks for nothing when the first picture opens full size, its thumbnail decided only on the page', async () => {
+  it('asks for the thumbnail a first picture that opens full size shows, and nothing when the card decides it only as it renders', async () => {
     const s = site(picture('hero'));
     const home = homeOf(s);
     // A figure on the page that opens its picture full size: the page shows a thumbnail of it.
@@ -241,7 +270,17 @@ describe('the hero’s preload', () => {
     home.rootIds = ['card', ...home.rootIds];
     const { head, body } = await renderHome(s);
     expect(body).toContain('<a href="/studio/assets/hero-1a2b3c4d.jpg"');
-    expect(preloads(head)).toEqual([]);
+    const first = attrs(body.match(/<picture\b[^>]*>\s*<source\b[^>]*>/)![0].replace(/^<picture\b[^>]*>\s*/, ''));
+    expect(first.srcset).not.toContain('2000w');
+    expect(preloads(head)).toEqual([{ rel: 'preload', as: 'image', fetchpriority: 'high', type: 'image/avif', imagesrcset: first.srcset, imagesizes: first.sizes }]);
+    // A card holding two pictures opens the first one that shows, which the page works out as it renders: nothing is
+    // asked for, not even an ordinary picture after it.
+    home.nodes.card = { ...home.nodes.card, children: ['pic', 'pic2'] } as (typeof home.nodes)[string];
+    home.nodes.pic2 = { id: 'pic2', kind: 'image', image: { assetId: 'a_hero', alt: 'Again' } };
+    home.nodes.after = { id: 'after', kind: 'image', image: { assetId: 'a_hero', alt: 'After' } };
+    home.nodes.wrap = { id: 'wrap', kind: 'element', tag: 'div', children: ['card', 'after'] } as (typeof home.nodes)[string];
+    home.rootIds = ['wrap', ...home.rootIds.filter((id) => id !== 'card')];
+    expect(preloads((await renderHome(s)).head)).toEqual([]);
   });
 
   it('shows a thumbnail that opens full size with only copies narrower than the picture, in every format', async () => {
@@ -255,14 +294,18 @@ describe('the hero’s preload', () => {
       ['image/avif', ['160w', '480w', '960w', '1440w']],
       ['image/webp', ['160w', '480w', '960w', '1440w']]
     ]);
-    expect(attrs(pic.match(/<img\b[^>]*>/)![0])).toMatchObject({ src: '/studio/assets/kitchen-1a2b3c4d-1440w.jpg' });
+    expect(attrs(pic.match(/<img\b[^>]*>/)![0])).toMatchObject({
+      src: '/studio/assets/kitchen-1a2b3c4d-1440w.jpg',
+      srcset: [160, 480, 960, 1440].map((w) => `/studio/assets/kitchen-1a2b3c4d-${w}w.jpg ${w}w`).join(', ')
+    });
   });
 
   it('is written into the page’s own file, which imports the address helper only then', () => {
     const files = generateProject(site(picture('hero')));
     const page = files.get(pageFile(homeOf(site(null))))!;
     expect(page).toContain(`import { asset as so_asset } from '$app/paths';`);
-    expect(page).toMatch(/<link rel="preload" as="image" fetchpriority="high" type="image\/avif" imagesrcset=\{\[so_asset\("assets\/hero-1a2b3c4d-160w\.avif"\) \+ " 160w", /);
+    // Straight after the title.
+    expect(page).toMatch(/<svelte:head>\n\t<title>[^\n]*<\/title>\n\t<link rel="preload" as="image" fetchpriority="high" type="image\/avif" imagesrcset=\{\[so_asset\("assets\/hero-1a2b3c4d-160w\.avif"\) \+ " 160w", /);
     expect(generateProject(site(null)).get(pageFile(homeOf(site(null))))).not.toContain('so_asset');
   });
 });

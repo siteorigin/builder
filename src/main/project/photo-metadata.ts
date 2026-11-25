@@ -1310,7 +1310,9 @@ export interface CreditText {
 /**
  * A photo's credits as words, for a copy in a format they cannot be copied into byte for byte (a WebP or AVIF copy of
  * a JPEG, which the encoder writes them into). The artist and copyright come from its EXIF, else its PNG Author and
- * Copyright text, else its IPTC by-line and copyright notice.
+ * Copyright text, else its IPTC by-line and copyright notice. The XMP is the photo's own credit packet; a photo without
+ * one gets a packet saying its artist, copyright and IPTC credit line, so the copy holds them exactly as written, in
+ * any script (an encoder may write EXIF text as ASCII only).
  */
 export function creditText(credits: PhotoCredits): CreditText {
   const tiff = textCreditsAsTiff(credits.text ?? [], credits.tiff);
@@ -1319,23 +1321,44 @@ export function creditText(credits: PhotoCredits): CreditText {
   const iptc = credits.iptc ? iptcCredits(credits.iptc) : {};
   const artist = word(values.get(TAG.artist)) || iptc.artist;
   const copyright = word(values.get(TAG.copyright)) || iptc.copyright;
-  const xmp = credits.xmp?.toString('utf8');
+  let xmp = credits.xmp?.toString('utf8');
+  if (!xmp && (artist || copyright || iptc.credit)) {
+    const esc = (v: string) => v.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+    const body = [
+      artist ? `<dc:creator><rdf:Seq><rdf:li>${esc(artist)}</rdf:li></rdf:Seq></dc:creator>` : '',
+      copyright ? `<dc:rights><rdf:Alt><rdf:li xml:lang="x-default">${esc(copyright)}</rdf:li></rdf:Alt></dc:rights>` : '',
+      iptc.credit ? `<photoshop:Credit>${esc(iptc.credit)}</photoshop:Credit>` : ''
+    ].join('');
+    xmp = packet(new Set(['dc', ...(iptc.credit ? ['photoshop'] : [])]), '', body).toString('utf8');
+  }
   return { ...(artist ? { artist } : {}), ...(copyright ? { copyright } : {}), ...(xmp ? { xmp } : {}) };
 }
 
-/** The by-line (2:80) and copyright notice (2:116) of a filtered Photoshop IPTC block (see filterPhotoshop), first of each. */
-function iptcCredits(block: Buffer): { artist?: string; copyright?: string } {
-  const out: { artist?: string; copyright?: string } = {};
+/**
+ * The by-line (2:80), credit line (2:110) and copyright notice (2:116) of a filtered Photoshop IPTC block (see
+ * filterPhotoshop), first of each. Text is UTF-8 when the block's character set (1:90) says so, and Latin-1 otherwise.
+ */
+function iptcCredits(block: Buffer): { artist?: string; credit?: string; copyright?: string } {
+  const out: { artist?: string; credit?: string; copyright?: string } = {};
   // Its one resource: "8BIM", the IPTC resource ID, an empty name and its size, then the datasets (5-byte heads).
   if (block.length < 12 || block.toString('latin1', 0, 4) !== '8BIM' || block.readUInt16BE(4) !== 0x0404) return out;
   const end = Math.min(block.length, 12 + block.readUInt32BE(8));
+  const datasets: Array<[string, Buffer]> = [];
   for (let p = 12; p + 5 <= end && block[p] === 0x1c; ) {
     const len = block.readUInt16BE(p + 3);
     if (len & 0x8000 || p + 5 + len > end) break;
-    const value = block.toString('utf8', p + 5, p + 5 + len).replace(/\0/g, '').trim();
-    if (block[p + 1] === 2 && block[p + 2] === 80 && value) out.artist ??= value;
-    if (block[p + 1] === 2 && block[p + 2] === 116 && value) out.copyright ??= value;
+    datasets.push([`${block[p + 1]}:${block[p + 2]}`, block.subarray(p + 5, p + 5 + len)]);
     p += 5 + len;
+  }
+  // ESC % G: UTF-8.
+  const utf8 = datasets.some(([id, v]) => id === '1:90' && v.equals(Buffer.from([0x1b, 0x25, 0x47])));
+  const text = (v: Buffer) => v.toString(utf8 ? 'utf8' : 'latin1').replace(/\0/g, '').trim();
+  for (const [id, v] of datasets) {
+    const value = text(v);
+    if (!value) continue;
+    if (id === '2:80') out.artist ??= value;
+    if (id === '2:110') out.credit ??= value;
+    if (id === '2:116') out.copyright ??= value;
   }
   return out;
 }

@@ -127,6 +127,8 @@ export function shown(v: unknown, state: ProjectState): boolean {
 export interface Visit {
   /** The tree's top-level nodes to walk, in order (all of them when absent): `[rootIds[0]]` walks its first section. */
   roots?: readonly string[];
+  /** The entry whose page the tree is, for its feeds (see generateEntry); otherwise as these checks registered the tree. */
+  entry?: { collectionId: string; entryId: string };
   /**
    * Walk what a visitor can reach by changing a component's UI state too (a tab not chosen at first, a closed
    * disclosure), not only what shows at first.
@@ -345,7 +347,7 @@ export function walkRendered(state: ProjectState, tree: NodeTree, visit: Visit) 
   const treeId = (tree as Partial<PageDoc>).id;
   const pageId = typeof treeId === 'string' && 'route' in tree && Object.hasOwn(state.pages, treeId) ? treeId : undefined;
   // An entry's page: its feeds default to its collection and leave it out, as the generator writes them.
-  const entry = entryTrees.get(tree);
+  const entry = visit.entry ?? entryTrees.get(tree);
   // A slot a definition renders once per list item shows the same content, in the same frame, each time: it is
   // walked once per frame, which keeps nested placements of such a component from multiplying the walk.
   const slotsWalked = new WeakMap<Frame, Set<string>>();
@@ -561,6 +563,38 @@ function hiddenInDesign(def: ComponentDefinition, nodeId: string, scope: Scope, 
  */
 export function hiddenInDesignEverywhere(def: ComponentDefinition, nodeId: string, scope: Scope): boolean {
   return hiddenEverySize(hiddenInDesign(def, nodeId, scope, false)) && hiddenEverySize(hiddenInDesign(def, nodeId, scope));
+}
+
+/**
+ * The images the first section of a page (or an entry's page, `entry`) renders where its markup loads them eagerly, in
+ * the order the page renders them, until `each` returns true. Left out: images authored inside a list, which load
+ * lazily (an image the page supplies to a slot a design shows inside its list is not one of those), images inside a
+ * code component, whose markup is its own, whatever a component's starting state does not render, and images hidden
+ * at every size by themselves or what is around them. `def` is the design the image belongs to (none for the page's).
+ */
+export function firstSectionImages(
+  state: ProjectState,
+  tree: NodeTree,
+  entry: { collectionId: string; entryId: string } | undefined,
+  each: (n: GraphNode & { kind: 'image' }, scope: Scope, def: ComponentDefinition | undefined) => boolean
+): void {
+  const first = tree.rootIds[0];
+  if (!first) return;
+  let done = false;
+  // The sizes each page node around what renders hides it at, from the outermost one in.
+  const hiding: Array<Set<Size>> = [];
+  walkRendered(state, tree, {
+    roots: [first],
+    ...(entry ? { entry } : {}),
+    enter: (n) => void hiding.push(hiddenSizes([n.styles, n.kind === 'instance' ? n.overrides?.root : undefined])),
+    leave: () => void hiding.pop(),
+    prune: (n) => done || (n.kind === 'instance' && state.components[n.definitionId]?.kind !== 'managed'),
+    node: (n, scope, _reportId, _inDef, def) => {
+      if (done || n.kind !== 'image' || (scope.repeats ?? 0) > 0) return;
+      if (hiddenEverySize([...hiding, ...(def ? hiddenInDesign(def, n.id, scope) : [])])) return;
+      done = each(n, scope, def);
+    }
+  });
 }
 
 /**
