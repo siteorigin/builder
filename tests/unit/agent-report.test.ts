@@ -256,6 +256,27 @@ describe('check results', () => {
     expect(inspectionChecks(false, { viewport: 'tablet', error: 'VALIDATION_FAILED' })).toEqual([{ status: 'unverified', text: "Couldn't check the layout at tablet width." }]);
   });
 
+  it('puts the script errors a page reported on the card, whatever its layout measured (#742)', () => {
+    const withErrors = (runtimeErrors: unknown[]) => ({ pageId: 'p', viewport: 'phone', report: { issues: [], runtimeErrors } });
+    expect(inspectionChecks(true, withErrors(['ReferenceError: price is not defined.']), ' on Pricing')).toEqual([
+      { status: 'pass', text: 'Fits the screen at phone width on Pricing.' },
+      { status: 'issue', text: 'Found a script error at phone width on Pricing (ReferenceError: price is not defined).' }
+    ]);
+    const long = `TypeError: ${'x'.repeat(300)}`;
+    const rows = inspectionChecks(true, withErrors([long, 'Second']));
+    expect(rows[1].status).toBe('issue');
+    expect(rows[1].text).toMatch(/^Found 2 script errors at phone width \(TypeError: x+…\)\.$/);
+    expect(rows[1].text.length).toBeLessThan(180);
+    // A page too wide and failing a script has both rows.
+    expect(inspectionChecks(true, { pageId: 'p', viewport: 'phone', report: { issues: [], documentWidth: 520, viewportWidth: 390, runtimeErrors: ['Boom'] } })).toEqual([
+      { status: 'issue', text: 'Content is wider than the screen at phone width.' },
+      { status: 'issue', text: 'Found a script error at phone width (Boom).' }
+    ]);
+    // No errors, or only blank ones: no row, and no pass claimed for scripts.
+    expect(inspectionChecks(true, withErrors([]))).toHaveLength(1);
+    expect(inspectionChecks(true, withErrors(['  ']))).toHaveLength(1);
+  });
+
   it('reports the readability checks in at most two rows, and only from reports that ran them (#361)', () => {
     const count = (checked: number, failed = 0, unverified = 0, skipped?: string) => ({ checked, failed, unverified, ...(skipped ? { skipped } : {}) });
     const withChecks = (checks: object, viewport = 'phone') => ({ pageId: 'p', viewport, report: { issues: [], checks } });

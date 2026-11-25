@@ -504,7 +504,7 @@ interface ImageSummary {
 interface InspectionContent {
   pageId?: string;
   viewport?: string;
-  report?: { issues?: Array<{ kind: string; message?: string }>; images?: ImageSummary; documentWidth?: number; viewportWidth?: number; checks?: Partial<InspectionChecks> };
+  report?: { issues?: Array<{ kind: string; message?: string }>; images?: ImageSummary; documentWidth?: number; viewportWidth?: number; checks?: Partial<InspectionChecks>; runtimeErrors?: unknown[] };
 }
 
 /** How each readability check's failures read on the result card, one and many. */
@@ -571,6 +571,12 @@ export function inspectionChecks(ok: boolean, content: unknown, onPage = ''): Ch
   } else if (images.total > 0) {
     out.push({ status: 'pass', text: images.total === 1 ? `The image loads ${at}.` : `All ${images.total} images load ${at}.` });
   }
+  // A script that failed in the page is a problem whatever the layout measured.
+  const errors = Array.isArray(c.report.runtimeErrors) ? c.report.runtimeErrors.map(String).filter((e) => e.trim()) : [];
+  if (errors.length) {
+    const first = errors[0].trim().replace(/\.$/, '');
+    out.push({ status: 'issue', text: `Found ${errors.length === 1 ? 'a script error' : `${errors.length} script errors`} ${at} (${first.length > 120 ? `${first.slice(0, 119)}…` : first}).` });
+  }
   out.push(...readabilityChecks(c.report.checks, at));
   return out;
 }
@@ -623,16 +629,33 @@ export function pagesTouched(ops: EditOperation[], state?: ProjectState): Set<st
  * to its page no longer describes the final page, so it is reported as not confirmed.
  */
 export class InspectionLog {
-  private latest = new Map<string, { pageId: string; ok: boolean; content: unknown; stale: boolean }>();
+  /** `report`: the measurement as the preview gave it, before it was cut to fit a tool result. */
+  /** `good`: the last measurement that ran, kept while a later check of the unchanged page could not run. */
+  private latest = new Map<string, { pageId: string; ok: boolean; content: unknown; report?: unknown; stale: boolean; good?: { report?: unknown } }>();
   /**
    * Component checks (inspect_component), by component and sample, each window of cases kept by its offset;
    * `pageId`: the page of the placement whose content was the sample.
    */
   private components = new Map<string, { windows: Map<number, { ok: boolean; content: unknown; stale: boolean }>; pageId?: string }>();
 
-  record(pageId: string, viewport: string, ok: boolean, content: unknown) {
+  record(pageId: string, viewport: string, ok: boolean, content: unknown, report?: unknown) {
+    const key = `${pageId}\n${viewport}`;
+    // A check that could not run says nothing new about a page that has not changed since it was measured: the card
+    // shows it could not run, and the measurement before it still stands for the application's own check.
+    const known = this.latest.get(key);
+    const good = ok || !known || known.stale ? undefined : known.ok ? { report: known.report } : known.good;
     // Setting an existing key keeps the order of first inspection while the result is the latest one.
-    this.latest.set(`${pageId}\n${viewport}`, { pageId, ok, content, stale: false });
+    this.latest.set(key, { pageId, ok, content, report, stale: false, ...(good ? { good } : {}) });
+  }
+
+  /**
+   * The latest measurement of a page at a width that ran, while no later edit has changed the page; else whether the
+   * latest check could not run.
+   */
+  fresh(pageId: string, viewport: string): { ok: boolean; report?: unknown } | undefined {
+    const e = this.latest.get(`${pageId}\n${viewport}`);
+    if (!e || e.stale) return undefined;
+    return e.ok ? { ok: true, report: e.report } : e.good ? { ok: true, report: e.good.report } : { ok: false };
   }
 
   /** A check of one component on its own; `key` names the component and its sample, `offset` the window of its cases. */
@@ -646,12 +669,15 @@ export class InspectionLog {
     if (total !== undefined) for (const at of [...e.windows.keys()]) if (at > offset && at >= total) e.windows.delete(at);
   }
 
-  /** An edit landed on these pages (or on what every page shares) after their checks ran. */
-  invalidate(pages: Set<string> | 'all') {
+  /**
+   * An edit landed on these pages (or on what every page shares) after their checks ran. `samples`: the pages whose
+   * content component checks sampled that it reached, when that differs from what it changed of how pages look.
+   */
+  invalidate(pages: Set<string> | 'all', samples: Set<string> | 'all' = pages) {
     for (const e of this.latest.values()) if (pages === 'all' || pages.has(e.pageId)) e.stale = true;
     // A component's design, the site's styles and the theme reach every page; an edit of one page's content reaches
     // only a check whose sample was a placement on it.
-    for (const e of this.components.values()) if (pages === 'all' || (e.pageId && pages.has(e.pageId))) for (const w of e.windows.values()) w.stale = true;
+    for (const e of this.components.values()) if (samples === 'all' || (e.pageId && samples.has(e.pageId))) for (const w of e.windows.values()) w.stale = true;
   }
 
   /** Each check names its page, so a check is never read as being about another page the run changed. */
@@ -661,7 +687,8 @@ export class InspectionLog {
       const page = Object.hasOwn(state.pages, e.pageId) ? state.pages[e.pageId] : undefined;
       // A page the run removed after checking it has nothing left to report on; an unknown page has no title.
       if (!page && !e.pageId.startsWith('?')) return [];
-      const rows = inspectionChecks(e.ok, e.content, page ? ` on ${page.title}` : '');
+      // The card reads the measurement whole; the copy cut to fit the model's result may have dropped some of it.
+      const rows = inspectionChecks(e.ok, e.ok && e.report && typeof e.content === 'object' ? { ...(e.content as object), report: e.report } : e.content, page ? ` on ${page.title}` : '');
       return e.stale ? stale(rows) : rows;
     });
     const components = [...this.components.values()].flatMap((e) => {
