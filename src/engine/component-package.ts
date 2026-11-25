@@ -483,6 +483,7 @@ function checkShape(def: ComponentDefinition, inPackage: ReadonlySet<string>) {
   for (const [id, n] of Object.entries(tree.nodes)) {
     if (!SAFE_NODE_ID.test(id) || !isRecord(n) || n.id !== id || !NODE_KINDS.has(n.kind as string)) damaged(`the element "${id.slice(0, 40)}" is not one the design can hold`);
     if ((n.kind === 'element' || n.kind === 'repeat') && !isIdList(n.children)) damaged(`the element "${id}" has no list of children`);
+    if (n.kind === 'slot' && n.children !== undefined && !isIdList(n.children)) damaged(`the slot "${id}" has damaged fallback content`);
     if (n.kind === 'instance') {
       if (!inPackage.has(String(n.definitionId))) fail(`${name} places a component the package doesn't include.`);
       if (n.props !== undefined && !isRecord(n.props)) damaged(`the component placed as "${id}" has no settings`);
@@ -733,6 +734,8 @@ export function importComponentPackage(state: ProjectState, input: ComponentImpo
     mapTokenRefs(def, byVar, (ref) => tokenFor(ref, def.name));
     mapAssetRefs(def, (asset) => own(input.images, asset) ?? fail(`${quoted(def.name)} shows an image the package doesn't include.`));
     for (const n of Object.values(def.tree?.nodes ?? {})) if (n.kind === 'instance') n.definitionId = ids.get(n.definitionId)!;
+    // A slot naming a component the package brings names it by the ID it lands under; contract IDs stay as they are.
+    for (const decl of Object.values(def.slots ?? {})) if (Array.isArray(decl.componentIds)) decl.componentIds = [...new Set(decl.componentIds.map((c) => ids.get(c) ?? c))];
     if (def.kind === 'code') {
       const file = fileOf.get(def.id)!;
       def.source = relinkSource(def.source ?? '', defFile(def), file, moved, keys);

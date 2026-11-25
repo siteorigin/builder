@@ -241,6 +241,18 @@ describe('component packages: export and import (#371)', () => {
     await Promise.all([src.s.close(), dest.close()]);
   });
 
+  it('lands a slot naming a component the package brings under that component’s new ID, and a theme contract as it is (#660)', async () => {
+    const src = await pricingCard();
+    ok(await src.s.apply({ operations: [{ type: 'component.setSlot', definitionId: src.rootId, slot: 'extra', label: 'Extra', componentIds: [src.childId, 'media.gallery'] }] }, { label: 'Slot' }));
+    const { path } = await exportTo(src.s, src.rootId);
+    const dest = await blank('Destination');
+    const r = ok(await importInto(dest, path, { codeAllowed: false }));
+    const root = dest.state.components[r.results!.at(-1)!.definitionId as string];
+    const child = Object.values(dest.state.components).find((d) => d.name === 'Plan title')!;
+    expect(child.id).not.toBe(src.childId);
+    expect(root.slots?.extra).toEqual({ label: 'Extra', componentIds: [child.id, 'media.gallery'] });
+  });
+
   it('reuses a site style the destination already has, renames one that differs, and stands in for a theme style its theme lacks', async () => {
     const src = await pricingCard();
     const { path } = await exportTo(src.s, src.rootId);
@@ -509,7 +521,7 @@ describe('component packages: export and import (#371)', () => {
     expect(twice.error?.message).toMatch(/the element "c" is placed in more than one place/);
     const loop = await importInto(dest, writePackage(JSON.stringify({ ...good, rootId: 'proj.band-abcde', definitions: [managed({ root: { id: 'root', kind: 'element', tag: 'div', children: [] }, x: { id: 'x', kind: 'element', tag: 'div', children: ['x'] } })] })));
     expect(loop.error?.message).toMatch(/the element "x" is placed inside itself/);
-    expect(clash.error?.message).toMatch(/“Band” can't be imported: its design doesn't compile \(Identifier 'slot__hero_title' has already been declared\)/);
+    expect(clash.error?.message).toMatch(/“Band” can't be imported: its design doesn't compile \(Identifier 'so_in__hero_title' has already been declared\)/);
     expect(snapshot(dest)).toBe(untouched);
     await dest.close();
   });
