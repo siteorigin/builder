@@ -317,12 +317,6 @@ export function readField(state: ProjectState, op: EditOperation): FieldRead | n
       // Only an item field depends on the list around the node; a property reads the same whatever repeats it.
       return found({ value: node[op.field], schema, ...('$item' in op.binding ? { list: enclosingRepeatProp(def, node.id) ?? null } : {}) });
     }
-    case 'component.setState': {
-      // A state's declaration is one field (its label, its options' labels, where it starts): a label typed while it
-      // changed elsewhere is held for the author, never written over the newer one.
-      const def = has(state.components, op.definitionId);
-      return def ? found({ state: has(def.state ?? {}, op.state) ?? null }) : gone('component');
-    }
     case 'component.setPropDefault': {
       // The schema is part of the field: it decides how the default is read.
       const schema = has(has(state.components, op.definitionId)?.properties, op.prop);
