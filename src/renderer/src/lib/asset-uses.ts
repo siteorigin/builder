@@ -1,7 +1,9 @@
 // The uses of a library image as the Assets panel lists them: one row for each place that shows it (each row of a
 // gallery or team on its own), named as the inspector names it, with where Show goes and what a replacement in some
 // places sends to name it. Plain functions, tested without a renderer.
-import { imageUses, useKey } from '@engine/image-uses';
+import { imageUses, isBackgroundPath, useKey } from '@engine/image-uses';
+import { parseStyleScopeKey } from '@shared/types';
+import { STATE_WORDS } from '@shared/styles';
 import { placeRoot } from '@engine/alt-review';
 import { allTrees, displayName } from '@engine/tree';
 import type { GraphNode, ImageUseTarget, OwnerRef, ProjectState, ValuePlace } from '@shared/types';
@@ -47,6 +49,32 @@ function rowLabel(state: ProjectState, node: GraphNode, path: ReadonlyArray<stri
 }
 
 /**
+ * A background image's place in words: which part of a placement, for which item and size, or which option of the
+ * design ("Background image, Card, phone", "Background image, Dark tone").
+ */
+function backgroundLabel(state: ProjectState, node: GraphNode, path: ReadonlyArray<string | number>, owner: OwnerRef): string {
+  const def = node.kind === 'instance' && Object.hasOwn(state.components, node.definitionId) ? state.components[node.definitionId] : undefined;
+  const partName = (id: unknown) => (typeof id === 'string' && id !== 'root' ? (def?.parts[id]?.label ?? id) : undefined);
+  const size = (key: unknown) => {
+    const at = typeof key === 'string' ? parseStyleScopeKey(key) : null;
+    if (!at) return undefined;
+    const sizeWord = at.scope === 'base' ? undefined : at.scope;
+    return [sizeWord, at.state ? STATE_WORDS[at.state] : undefined].filter(Boolean).join(' ') || undefined;
+  };
+  let bits: Array<string | undefined>;
+  if (path[0] === 'variant') {
+    // A design's own option: its label, as the design names it.
+    const design = owner.kind === 'component' && Object.hasOwn(state.components, owner.id) ? state.components[owner.id] : undefined;
+    const axis = typeof path[1] === 'string' && design?.variantAxes && Object.hasOwn(design.variantAxes, path[1]) ? design.variantAxes[path[1]] : undefined;
+    const option = typeof path[2] === 'string' && axis && Object.hasOwn(axis.options, path[2]) ? axis.options[path[2]] : undefined;
+    bits = [`${option?.label ?? String(path[2])} ${(axis?.label ?? String(path[1])).toLowerCase()}`, size(path[3])];
+  } else if (path[0] === 'overrides') bits = [partName(path[1]), size(path[2])];
+  else if (path[0] === 'itemOverrides') bits = [partName(path[1]), 'one item', size(path[4])];
+  else bits = [size(path[1])];
+  return ['Background image', ...bits.filter(Boolean)].join(', ');
+}
+
+/**
  * The inspector field an image value is in: a placed component's property (`props.hero`), or one field of a row of
  * its list, by the row's ID (`props.images.g2.image`). Anything else (an image element's own picture, a value
  * deeper in, a row with no ID) has none, and Show selects the element.
@@ -74,7 +102,7 @@ export function describePlace(state: ProjectState, place: ValuePlace, trees = ne
   const node = placeRoot(state, place) as GraphNode | undefined;
   if (!t || !node) return null;
   const row = rowLabel(state, node, place.path);
-  const what = row ? `${displayName(state, node)} · ${row}` : displayName(state, node);
+  const what = isBackgroundPath(place.path) ? `${displayName(state, node)} · ${backgroundLabel(state, node, place.path, place.owner)}` : row ? `${displayName(state, node)} · ${row}` : displayName(state, node);
   const field = fieldOf(node, place.path);
   const at = { owner: t.owner, nodeId: node.id };
   if (t.owner.kind === 'component') {
@@ -99,6 +127,8 @@ export interface ImageUseRow extends Omit<PlaceLabel, 'icon'> {
   /** The alt text it has, and whether it is decorative: an image value's own. */
   alt?: string;
   decorative?: boolean;
+  /** A picture behind an element's content, which has no description. */
+  background?: true;
 }
 
 /** Every use of an image, one row each, in the order a replacement changes them. */
@@ -121,6 +151,8 @@ export function imageUseRows(state: ProjectState, assetId: string): ImageUseRow[
       return { key, target: t, icon: 'site', where: 'Site', what, setting: 'site' };
     }
     const label = describePlace(state, u.place, trees) ?? { icon: 'component' as const, where: 'Site', what: 'Image' };
+    // A background image describes nothing, so it has no description to show or check.
+    if (u.background) return { ...label, key, target: t, background: true };
     return { ...label, key, target: t, alt: typeof u.value.alt === 'string' ? u.value.alt : '', ...(u.value.decorative ? { decorative: true } : {}) };
   });
 }

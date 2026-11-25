@@ -240,7 +240,7 @@ export const previewMedia = (scope: ResponsiveScope): string | null => (scope ==
 
 /** The CSS a preview gives the dragged box: each side that moves, as the stylesheet names it, set to the value. */
 export function previewDecls(plan: HandlePlan, value: StyleValue, rtl: boolean): Array<[string, string]> {
-  const css = typeof value === 'object' && value !== null ? `var(${tokenVar(value.token)})` : String(value);
+  const css = typeof value === 'object' && value !== null ? (typeof value.token === 'string' ? `var(${tokenVar(value.token)})` : '') : String(value);
   const box = plan.handle.box;
   return plan.sides.map((side) => {
     const prop = side === 'top' ? `${box}-block-start` : side === 'bottom' ? `${box}-block-end` : `${box}-inline-${(side === 'left') !== rtl ? 'start' : 'end'}`;

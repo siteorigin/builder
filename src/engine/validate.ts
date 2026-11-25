@@ -3,7 +3,8 @@ import { isArticleDate, pageArticle } from '@shared/articles';
 import { storedCanonical } from '@shared/seo';
 import { findEntry } from '@shared/collections';
 import { collectionDiagnostics } from './collections';
-import type { GraphNode, ImageValue, NodeTree, OwnerRef, ProjectState, PropSchema, ResponsiveStyles, StyleTokenRef, StyleValue } from '@shared/types';
+import { isPictureAsset } from '@shared/background-image';
+import type { BackgroundImageValue, GraphNode, ImageValue, NodeTree, OwnerRef, ProjectState, PropSchema, ResponsiveStyles, StyleTokenRef, StyleValue } from '@shared/types';
 import { STYLE_PROP_MAP, isStateStyleProp, linkShapeError, stateStyleError, validateStyleValue } from '@shared/styles';
 import { effectiveItem, followsPage } from '@shared/page-teasers';
 import { ELEMENT_TAGS, LIST_FEEDS, TEXT_TAGS, conditionRef, isBinding, isBindingRef, isComparison, isEntryBinding, isStateRef, parseStyleScopeKey, type Collection } from '@shared/types';
@@ -365,7 +366,9 @@ export function validateState(state: ProjectState, opts: { sectionLinks?: boolea
     for (const n of Object.values(tree.nodes)) {
       const props = n.kind === 'instance' ? state.components[n.definitionId]?.properties : undefined;
       ignored = new Set(Object.entries(props ?? {}).flatMap(([k, sch]) => (sch.type === 'list' && sch.feed && n.kind === 'instance' && Array.isArray(n.props[k]) ? [n.props[k]] : [])));
-      walk(n, n.id);
+      // Style rules hold no content: a background image in one is checked with the other styles, and describes nothing.
+      const { styles: _styles, overrides: _overrides, itemOverrides: _items, ...content } = n as GraphNode & { overrides?: unknown; itemOverrides?: unknown };
+      walk(content, n.id);
     }
     // A page list's card with no image of its own shows its page's sharing image, which needs a description too.
     if (owner.kind !== 'component')
@@ -834,6 +837,16 @@ function structureDiagnostics(state: ProjectState): Diagnostic[] {
       for (const [prop, v] of Object.entries(scope ?? {})) {
         if (at?.state && !isStateStyleProp(prop))
           out.push({ severity: 'error', code: 'STYLE_STATE_PROPERTY', message: `${label}: ${stateStyleError(prop)}`, owner, nodeId, site: `${nodeId ?? ''}|${layer}|${scopeId}|${prop}` });
+        // A background image names a library image, and is written only while it does.
+        if (Object.hasOwn(STYLE_PROP_MAP, prop) && STYLE_PROP_MAP[prop].kind === 'media') {
+          const site = `${nodeId ?? ''}|${layer}|${scopeId}|${prop}`;
+          const shape = validateStyleValue(prop, v as StyleValue);
+          const asset = shape ? undefined : Object.hasOwn(state.assets.assets, (v as BackgroundImageValue).assetId) ? state.assets.assets[(v as BackgroundImageValue).assetId] : undefined;
+          if (shape) out.push({ severity: 'error', code: 'STYLE_VALUE_INVALID', message: `${label}: ${shape} Nothing is written for it until it is fixed.`, owner, nodeId, site });
+          else if (!asset) out.push({ severity: 'error', code: 'ASSET_MISSING', message: `${label}: a background image references a missing asset. Nothing is written for it until another picture is chosen.`, owner, nodeId, site });
+          else if (!isPictureAsset(asset)) out.push({ severity: 'error', code: 'ASSET_NOT_IMAGE', message: `${label}: a background image shows “${asset.name}”, which is ${asset.kind === 'image' ? 'not a picture file' : `a ${asset.kind}, not a picture`}. Choose an image instead.`, owner, nodeId, site });
+          continue;
+        }
         const token = v && typeof v === 'object' && typeof (v as { token?: unknown }).token === 'string' ? (v as { token: string }).token : undefined;
         // What the stylesheet writes nothing for, from a document edited or imported outside the editor: a link holding
         // more than its token that the property cannot take, or a backdrop blur outside its grammar.

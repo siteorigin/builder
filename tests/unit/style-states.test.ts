@@ -110,7 +110,7 @@ describe('state rules in the style map', () => {
   });
 
   it('change only how an element looks: layout, size, visibility and motion stay on the resting style', () => {
-    expect(STATE_STYLE_PROPS).toEqual(['color', 'background', 'border', 'borderBlockStart', 'borderBlockEnd', 'borderInlineStart', 'borderInlineEnd', 'radius', 'shadow', 'opacity', 'backdropBlur']);
+    expect(STATE_STYLE_PROPS).toEqual(['color', 'background', 'backgroundImage', 'border', 'borderBlockStart', 'borderBlockEnd', 'borderInlineStart', 'borderInlineEnd', 'radius', 'shadow', 'opacity', 'backdropBlur']);
     const s = withBoxes();
     for (const state of ['hover', 'focus', 'active'])
       for (const property of ['paddingBlock', 'hidden', 'layout', 'transition', 'translateY', 'customCss'])

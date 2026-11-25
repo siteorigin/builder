@@ -1,4 +1,5 @@
 import { isFocusValue } from './focus';
+import { backgroundImageError, canonicalBackgroundImage, isBackgroundImageValue } from './background-image';
 import type { ComponentDefinition, ResponsiveScope, ResponsiveStyles, StyleProps, StyleState, StyleTokenRef, StyleValue, TextStyleValue, TokenDef, TokenGroup, TokenValue } from './types';
 import { parseStyleScopeKey, STYLE_STATES, styleScopeKey } from './types';
 
@@ -7,7 +8,7 @@ import { parseStyleScopeKey, STYLE_STATES, styleScopeKey } from './types';
  * Anything outside this list belongs in a code component.
  */
 
-export type StyleValueKind = 'length' | 'color' | 'enum' | 'number' | 'boolean' | 'ratio' | 'focus' | 'textStyle' | 'font' | 'shadow' | 'border' | 'css' | 'tracks';
+export type StyleValueKind = 'length' | 'color' | 'enum' | 'number' | 'boolean' | 'ratio' | 'focus' | 'textStyle' | 'font' | 'shadow' | 'border' | 'css' | 'tracks' | 'media';
 
 export interface StylePropDef {
   id: string;
@@ -139,6 +140,7 @@ export const STYLE_PROPS: StylePropDef[] = [
   ] },
   { id: 'color', label: 'Text color', group: 'appearance', kind: 'color', tokenGroup: 'color' },
   { id: 'background', label: 'Background', description: 'A color, or a linear-, radial- or conic-gradient(). A Site styles color can be made see-through.', group: 'appearance', kind: 'color', tokenGroup: 'color' },
+  { id: 'backgroundImage', label: 'Background image', group: 'appearance', kind: 'media', description: 'A picture from the library behind the content: filling the box, cropped around its focus, or shown whole. A scrim (a color or gradient over the picture) keeps text on top readable. The background color shows wherever the picture does not reach.' },
   { id: 'border', label: 'Border', group: 'appearance', kind: 'border', tokenGroup: 'border' },
   edge('borderBlockStart', 'Border top', 'appearance', 'border', 'border', '1px solid #ddd'),
   edge('borderBlockEnd', 'Border bottom', 'appearance', 'border', 'border', '1px solid #ddd'),
@@ -200,6 +202,8 @@ export function styleSetFor(node: { kind: string }): string[] | undefined {
   const spacing = [...margins, 'paddingBlock', 'paddingInline', 'paddingBlockStart', 'paddingBlockEnd', 'paddingInlineStart', 'paddingInlineEnd'];
   const borders = ['border', 'borderBlockStart', 'borderBlockEnd', 'borderInlineStart', 'borderInlineEnd'];
   const appearance = ['color', 'background', ...borders, 'radius', 'shadow', 'opacity', 'backdropBlur'];
+  // A box that holds content can show a picture behind it.
+  const boxAppearance = ['color', 'background', 'backgroundImage', ...borders, 'radius', 'shadow', 'opacity', 'backdropBlur'];
   // How an item sits inside a grid or stack parent.
   const child = ['columnSpan', 'rowSpan', 'alignSelf', 'flexGrow', 'flexShrink', 'order'];
   const placed = ['position', 'inset', 'zIndex'];
@@ -215,7 +219,7 @@ export function styleSetFor(node: { kind: string }): string[] | undefined {
     case 'icon':
       return ['color', 'fontSize', 'background', 'radius', ...margins, ...child, ...placed, ...end];
     case 'element':
-      return ['layout', 'columns', 'gridTemplate', 'align', 'justify', 'wrap', 'gap', 'rowGap', 'columnGap', ...child, ...spacing, 'width', 'minWidth', 'maxWidth', 'height', 'minHeight', 'maxHeight', 'marginInline', 'overflow', 'textAlign', ...appearance, ...placed, ...end];
+      return ['layout', 'columns', 'gridTemplate', 'align', 'justify', 'wrap', 'gap', 'rowGap', 'columnGap', ...child, ...spacing, 'width', 'minWidth', 'maxWidth', 'height', 'minHeight', 'maxHeight', 'marginInline', 'overflow', 'textAlign', ...boxAppearance, ...placed, ...end];
     default:
       return undefined;
   }
@@ -223,16 +227,21 @@ export function styleSetFor(node: { kind: string }): string[] | undefined {
 
 /**
  * The style controls a component part offers: the part's own list, plus Image focus on an image it lets authors
- * crop to an aspect ratio. Derived rather than stored, so components already in a project offer it too.
+ * crop to an aspect ratio, and Background image on a box whose background it lets authors change. Derived rather
+ * than stored, so components already in a project offer them too.
  */
 export function partStyleControls(def: Pick<ComponentDefinition, 'parts' | 'tree'>, partId: string): string[] | undefined {
   const part = Object.hasOwn(def.parts, partId) ? def.parts[partId] : undefined;
   const list = part?.styleControls;
   if (!part || !list?.length) return list;
   const node = def.tree && Object.hasOwn(def.tree.nodes, part.nodeId) ? def.tree.nodes[part.nodeId] : undefined;
-  const at = list.indexOf('aspectRatio');
-  if (node?.kind !== 'image' || at < 0 || list.includes('objectPosition')) return list;
-  return [...list.slice(0, at + 1), 'objectPosition', ...list.slice(at + 1)];
+  const after = (list: string[], prop: string, add: string) => {
+    const at = list.indexOf(prop);
+    return at < 0 || list.includes(add) ? list : [...list.slice(0, at + 1), add, ...list.slice(at + 1)];
+  };
+  if (node?.kind === 'image') return after(list, 'aspectRatio', 'objectPosition');
+  if (node?.kind === 'element') return after(list, 'background', 'backgroundImage');
+  return list;
 }
 
 /** What a code component's part offers when it names no controls of its own. */
@@ -336,6 +345,7 @@ export function tokenRefCss(ref: StyleTokenRef): string {
  * links compare equal. Anything else is returned as it is.
  */
 export function canonicalStyleValue(v: StyleValue): StyleValue {
+  if (isBackgroundImageValue(v)) return backgroundImageError(v, isScrim) ? v : canonicalBackgroundImage(v);
   if (typeof v !== 'object' || v === null || typeof v.token !== 'string') return v;
   // A malformed link (another key, a strength out of range) is left as it is, so it never compares equal to a good one.
   if (Object.keys(v).some((k) => k !== 'token' && k !== 'alpha') || (v.alpha !== undefined && !(typeof v.alpha === 'number' && v.alpha >= 0 && v.alpha <= 1))) return v;
@@ -862,10 +872,86 @@ export function linkShapeError(propId: string, value: StyleTokenRef): string | n
   return null;
 }
 
+/**
+ * A background image's scrim: a colour, or one gradient (a background colour already shows beneath the picture, and
+ * several layers would paint over each other).
+ */
+export function isScrim(raw: string): boolean {
+  const s = raw.trim();
+  if (s.length > 400 || !isSafeCssValue(s)) return false;
+  const m = /^(linear|radial)-gradient\((.*)\)$/is.exec(s);
+  if (!m) return isScrimColor(s);
+  // An empty argument (two commas together, or one at either end) is no gradient a browser draws.
+  if (/(^|,)\s*(,|$)/.test(m[2])) return false;
+  const parts = splitTop(m[2], (ch) => ch === ',');
+  // A direction or shape first, when there is one; then two colour stops or more, each at up to two places.
+  const words = (p: string) => splitTop(p, (ch) => /\s/.test(ch));
+  const lead = parts.length && !isScrimColor(words(parts[0])[0] ?? '') ? parts.shift()! : null;
+  if (lead !== null && !(m[1].toLowerCase() === 'linear' ? SCRIM_DIRECTION_RE.test(words(lead).join(' ')) : SCRIM_SHAPE_RE.test(words(lead).join(' ')) && scrimPosition(words(lead).join(' ')))) return false;
+  return parts.length >= 2 && parts.every((p) => {
+    const [color, ...at] = words(p);
+    return isScrimColor(color) && at.length <= 2 && at.every((x) => SCRIM_STOP_RE.test(x));
+  });
+}
+
+/**
+ * A scrim's colours, fully spelled out: hex of 3, 4, 6 or 8 digits, rgb() or hsl() of plain numbers, or a few
+ * keywords. No variable, which could name nothing (or the picture itself) and make the browser drop the picture, and
+ * nothing a colour function would only read at run time.
+ */
+/** A plain number, a percentage, or an angle in degrees, as one colour channel. */
+const SCRIM_NUMBER = '-?(?:\\d{1,4}(?:\\.\\d{1,6})?|\\.\\d{1,6})';
+const SCRIM_CHANNEL = { number: new RegExp(`^${SCRIM_NUMBER}%?$`), percent: new RegExp(`^${SCRIM_NUMBER}%$`), hue: new RegExp(`^${SCRIM_NUMBER}(?:deg)?$`) };
+function isScrimColor(raw: string): boolean {
+  const c = raw.trim();
+  if (/^(#(?:[0-9a-f]{3,4}|[0-9a-f]{6}|[0-9a-f]{8})|transparent|black|white)$/i.test(c)) return true;
+  const m = /^(rgba?|hsla?)\(([^()]*)\)$/i.exec(c);
+  if (!m) return false;
+  // Each channel by its place: red, green and blue are numbers or percentages; a hue a number or degrees, then
+  // saturation and lightness percentages; the alpha a number or a percentage.
+  const hsl = m[1].toLowerCase().startsWith('hsl');
+  // Written with spaces, saturation and lightness may also be plain numbers.
+  const kinds = (spaced: boolean) => (hsl ? [SCRIM_CHANNEL.hue, spaced ? SCRIM_CHANNEL.number : SCRIM_CHANNEL.percent, spaced ? SCRIM_CHANNEL.number : SCRIM_CHANNEL.percent] : [SCRIM_CHANNEL.number, SCRIM_CHANNEL.number, SCRIM_CHANNEL.number]);
+  const fits = (channels: string[], alpha: string | undefined, spaced: boolean) => channels.length === 3 && channels.every((x, i) => kinds(spaced)[i].test(x)) && (alpha === undefined || SCRIM_CHANNEL.number.test(alpha));
+  // Commas between every channel, or spaces with the alpha after a slash: never the two mixed.
+  if (m[2].includes(',')) {
+    const parts = m[2].split(',').map((x) => x.trim());
+    return !m[2].includes('/') && (parts.length === 3 || parts.length === 4) && fits(parts.slice(0, 3), parts[3], false);
+  }
+  const [rgb, alpha, ...more] = m[2].split('/');
+  return !more.length && fits(rgb.trim().split(/\s+/), alpha?.trim(), true);
+}
+const SCRIM_DIRECTION_RE = /^(to (top|bottom)( (left|right))?|to (left|right)( (top|bottom))?|-?(\d+(\.\d+)?|\.\d+)(deg|turn|rad|grad))$/i;
+/** A radial gradient's shape and extent, each at most once and in either order, then where it is centred. */
+const SCRIM_SHAPE_RE = /^(((circle|ellipse)( (closest-side|closest-corner|farthest-side|farthest-corner))?|(closest-side|closest-corner|farthest-side|farthest-corner)( (circle|ellipse))?)( at( [^ ]+){1,2})?|at( [^ ]+){1,2})$/i;
+/** Where a radial gradient is centred: one keyword or percentage, across then down, or a down keyword then an across one. */
+function scrimPosition(lead: string): boolean {
+  const at = lead.toLowerCase().split(' at ').length > 1 ? lead.toLowerCase().split(' at ')[1] : lead.toLowerCase().startsWith('at ') ? lead.slice(3).toLowerCase() : null;
+  if (at === null) return true;
+  const pct = (x: string) => /^-?\d+(\.\d+)?%$/.test(x);
+  const [a, b, ...more] = at.trim().split(' ');
+  if (more.length) return false;
+  if (b === undefined) return pct(a) || ['center', 'top', 'bottom', 'left', 'right'].includes(a);
+  return ((pct(a) || ['left', 'center', 'right'].includes(a)) && (pct(b) || ['top', 'center', 'bottom'].includes(b))) || (['top', 'center', 'bottom'].includes(a) && ['left', 'center', 'right'].includes(b));
+}
+const SCRIM_STOP_RE = /^(0|-?(\d+(\.\d+)?|\.\d+)(%|px))$/;
+
+/**
+ * The image layers a `background` value paints (a gradient, or several), without the colour a value may end with:
+ * what the picture's longhands fall back on where there is no picture. 'none' for anything else or anything unsafe.
+ */
+export function backgroundImageLayers(v: StyleValue): string {
+  if (typeof v !== 'string' || !isSafeCssValue(v.trim()) || !isValidGradient(v)) return 'none';
+  const layers = splitTop(v.trim(), (ch) => ch === ',');
+  return (COLOR_RE.test(layers[layers.length - 1]) ? layers.slice(0, -1) : layers).join(', ') || 'none';
+}
+
 /** Validate a literal style value. Returns an error message or null. */
 export function validateStyleValue(propId: string, value: StyleValue): string | null {
-  const def = STYLE_PROP_MAP[propId];
+  const def = Object.hasOwn(STYLE_PROP_MAP, propId) ? STYLE_PROP_MAP[propId] : undefined;
   if (!def) return `Unknown style property "${propId}".`;
+  // A picture is named by its library asset, never by a token or an address.
+  if (def.kind === 'media') return backgroundImageError(value, isScrim);
   if (typeof value === 'object' && value !== null) {
     if (typeof value.token !== 'string') return 'Token reference must have a token ID.';
     if (!def.tokenGroup) return `${def.label} cannot use a token.`;
@@ -935,7 +1021,7 @@ export function validateStyleValue(propId: string, value: StyleValue): string | 
 }
 
 function cssValue(v: StyleValue): string {
-  if (typeof v === 'object' && v !== null) return tokenRefCss(v);
+  if (typeof v === 'object' && v !== null) return typeof v.token === 'string' ? tokenRefCss(v as StyleTokenRef) : '';
   return String(v);
 }
 
@@ -945,7 +1031,10 @@ const CHECKED_AT_OUTPUT = new Set([
   'translateX', 'translateY', 'scale', 'rotate', 'transformOrigin', 'transition', 'transitionDuration', 'transitionEasing', 'backdropBlur'
 ]);
 
-/** Convert one style property into CSS declarations. */
+/**
+ * Convert one style property into CSS declarations. A background image writes nothing here: only the generator
+ * writes one, from the library's record of the picture (generator/background.ts).
+ */
 export function styleToCss(propId: string, raw: StyleValue): string[] {
   if (typeof raw === 'object' && raw !== null && typeof raw.token !== 'string') return [];
   // A link holding more than its token (a strength) is read again: a hand-edited one on a property that cannot
@@ -1365,6 +1454,8 @@ const SHORTHANDS: Record<string, string[]> = {
 
 /** The CSS properties one style property's declarations set (custom properties left out). */
 function cssNames(prop: string, value: StyleValue): string[] {
+  // A background image paints through these, written by the generator alone.
+  if (prop === 'backgroundImage') return isBackgroundImageValue(value) ? ['background-image', 'background-size', 'background-position', 'background-repeat'] : [];
   const decls = prop === 'customCss' ? (typeof value === 'string' ? parseCustomCss(value).decls : []) : prop === 'hidden' ? ['display: none'] : styleToCss(prop, value);
   return decls.map((d) => d.slice(0, d.indexOf(':')).trim().toLowerCase()).filter((p) => p && !p.startsWith('--'));
 }
@@ -1391,6 +1482,12 @@ function covers(short: string, long: string): boolean {
   if (short === 'background' && long === 'background-blend-mode') return false;
   return long.startsWith(`${short}-`);
 }
+
+/**
+ * A background colour and a background image never undo each other: wherever an element can carry a picture, its
+ * background shorthand paints the picture's longhands again from the picture's variables (generator/background.ts).
+ */
+const paintedApart = (a: string, b: string) => (a === 'background' && b === 'backgroundImage') || (a === 'backgroundImage' && b === 'background');
 
 /** Whether two sets of CSS properties set any property in common. */
 const overlap = (a: string[], b: string[]) => a.some((x) => b.some((y) => x === y || covers(x, y) || covers(y, x)));
@@ -1457,6 +1554,8 @@ export function flattenStyles(layers: StyleLayer[], opts: FlattenOptions = {}): 
         if (p === 'display' || stronger.some((n) => names(n).some((q) => q === p || covers(q, p)))) continue;
         // Written again in the order one rule writes them, so a shorthand among them comes before its own longhands.
         const under = stronger.filter((n) => names(n).some((q) => covers(p, q))).sort((a, b) => styleDeclOrder(a.prop) - styleDeclOrder(b.prop) || a.prop.localeCompare(b.prop));
+        // A background image cannot be written in custom CSS: it keeps its picture, and the shorthand over it goes.
+        if (under.some((n) => n.prop === 'backgroundImage')) continue;
         const again = under.flatMap((n) => styleToCss(n.prop, n.value)).filter((d) => !d.startsWith('--') && !d.startsWith('display') && !parseCustomCss(d).error);
         // What the stronger property writes cannot go in custom CSS: it keeps its value, and the shorthand goes.
         if (again.length < under.flatMap((n) => styleToCss(n.prop, n.value)).filter((d) => !d.startsWith('--') && !d.startsWith('display')).length) continue;
@@ -1469,8 +1568,8 @@ export function flattenStyles(layers: StyleLayer[], opts: FlattenOptions = {}): 
     const ownWins = named.filter(own);
     const ownCustom = custom.filter(own);
     for (const q of named.filter((d) => !own(d))) {
-      if (!ownWins.some((p) => p !== q && overlap(names(p), names(q)) && beats(q, p))) continue;
-      if ([...ownWins, ...ownCustom].some((r) => overlap(names(r), names(q)) && beats(r, q))) continue;
+      if (!ownWins.some((p) => p !== q && !paintedApart(p.prop, q.prop) && overlap(names(p), names(q)) && beats(q, p))) continue;
+      if ([...ownWins, ...ownCustom].some((r) => !paintedApart(r.prop, q.prop) && overlap(names(r), names(q)) && beats(r, q))) continue;
       best.set(q.prop, { ...q, index: beneath });
     }
     // Display: every declaration that sets it at this size, ranked as the stylesheets rank them. A show writes its
@@ -1565,7 +1664,7 @@ export function flattenStates(layers: StyleLayer[], opts: Pick<FlattenOptions, '
   // Whether two rules can set something in common. Borders and corners are compared as families, so a side, a
   // colour or a physical edge never slips past its shorthand.
   const family = (n: string) => (n.includes('radius') ? 'radius' : n.startsWith('border') ? 'border' : n);
-  const touch = (a: Decl, b: Decl) => overlap(a.names, b.names) || a.names.some((x) => b.names.some((y) => family(x) === family(y)));
+  const touch = (a: Decl, b: Decl) => !paintedApart(a.prop, b.prop) && (overlap(a.names, b.names) || a.names.some((x) => b.names.some((y) => family(x) === family(y))));
   const order = (d: Decl) => STYLE_STATES.indexOf(d.state!);
   const own = (d: Decl) => d.index >= beneath;
   for (const a of states) {

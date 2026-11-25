@@ -16,7 +16,7 @@ import { variantIdsValid } from '@shared/variants';
 import { propBindingSchema } from '@shared/bindings';
 import { isCarouselTrack } from '@generator/card-links';
 import { boundSchema } from '@engine/schema';
-import { defKey, slotIdent } from '@generator/index';
+import { defKey, designHasMedia, slotIdent } from '@generator/index';
 import { MAX_UI_STATES, dividerProblem, overlayProblem, repeatFilterProblem, stateActionProblem, stateRefProblem, uiStateProblem } from '@engine/schema';
 import { sha } from '../project/fsutil';
 import { readRegularFile, type PackFileSource } from './files';
@@ -266,6 +266,8 @@ async function checkComponents(m: PackManifest, source: PackRoot['source'], revi
     if (files.has(key)) refuse(`${where} would generate the same files as ${files.get(key)}.`);
     files.set(key, def.componentId!);
     if (!variantIdsValid(def)) refuse(`${where} has a variant or option ID that is not allowed (letters and digits, starting with a letter).`);
+    // A pack has no library of its own: a background image would name a picture no project it installs into has.
+    if (def.kind === 'managed' && designHasMedia(def)) refuse(`${where} sets a background image, which can only name a picture in a project's own library.`);
     for (const [name, p] of Object.entries(def.properties)) {
       const prop = p as { type: string; fields?: unknown; default?: unknown; options?: unknown; tokenGroup?: unknown };
       if (prop.type === 'list' && (!prop.fields || typeof prop.fields !== 'object' || !Array.isArray(prop.default))) refuse(`${where}: the list property "${name}" has no fields or no default items.`);

@@ -272,6 +272,11 @@ describe('style registry', () => {
       translateX: '8px', translateY: '-4px', scale: 1.03, rotate: -2, transformOrigin: 'top left', transition: 'shadow', transitionDuration: 300, transitionEasing: 'ease-out'
     };
     for (const p of STYLE_PROPS) {
+      // A background image names a library image, which only the generator writes (background-image.test.ts).
+      if (p.kind === 'media') {
+        expect(validateStyleValue(p.id, { assetId: 'a_photo' }), p.id).toBeNull();
+        continue;
+      }
       const value = (sample[p.id] ?? '12px') as string;
       expect(validateStyleValue(p.id, value), p.id).toBeNull();
       expect(styleToCss(p.id, value).length, p.id).toBeGreaterThan(0);

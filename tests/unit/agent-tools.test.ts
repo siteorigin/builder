@@ -851,7 +851,12 @@ describe('selection tools', () => {
     const base = { state, codeEnabled: true, definitionOps: true };
     const local = { toolCalling: 'constrained-json' as const, contextWindowTokens: 16000 };
     const cloud = { toolCalling: 'native' as const, contextWindowTokens: 400000 };
-    expect(names(toolsForRun({ ...base, selection: target, capabilities: local }).tools)).toEqual(['update_selected_props', 'edit_selected_list', 'style_selected_element', 'request_wider_scope']);
+    // A section whose box can take a background image can look one up by sight (#354).
+    expect(names(toolsForRun({ ...base, selection: target, capabilities: local }).tools)).toEqual(['update_selected_props', 'edit_selected_list', 'style_selected_element', 'request_wider_scope', 'search_assets', 'request_clarification']);
+    // A part that cannot (a card's title) has nothing to look up.
+    const placed = state.components[(pageAt(state, '/')!.nodes[target.nodeId] as InstanceNode).definitionId];
+    const plainPart = Object.entries(placed.parts).find(([id, p]) => id !== 'root' && placed.tree!.nodes[p.nodeId]?.kind === 'text')![0];
+    expect(names(toolsForRun({ ...base, selection: { ...target, partId: plainPart }, capabilities: local }).tools)).not.toContain('search_assets');
     // A request that attached library images can look them up and ask which one, whatever is selected (#12).
     expect(names(toolsForRun({ ...base, selection: target, capabilities: local, attachedImages: true }).tools)).toEqual(['update_selected_props', 'edit_selected_list', 'style_selected_element', 'request_wider_scope', 'search_assets', 'request_clarification']);
     const cloudTools = names(toolsForRun({ ...base, selection: target, capabilities: cloud }).tools);
@@ -986,8 +991,9 @@ describe('selection tools', () => {
     const items = nodeAt(session.state, 2).props.items as Array<ListItem & { title: string; description: string }>;
     expect(items.map((i) => i.id)).toEqual([original[1], added, original[2]]);
     expect(items[1]).toMatchObject({ title: 'Renamed', description: 'Added.' });
-    // Without an image to choose, a focused run is not told how to choose one (#12).
-    expect(adapter.requests[0].system).not.toContain('assetId');
+    // The grid has no picture among its properties, but its box can take a background image, which is chosen by its
+    // library ID (#354): a focused run is told how (#12).
+    expect(adapter.requests[0].system).toContain('An image is set by its assetId');
   });
 
   it('changes one table cell, row or column by ID, never rewriting the rest (issue #179)', async () => {

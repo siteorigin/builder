@@ -699,22 +699,28 @@ describe('what a constrained local run sends first (#364)', () => {
    */
   const SEO_BYTES = 4_250;
   const PAGE_SEO_BYTES = 1_250;
+  /**
+   * Tracked background images (#354) are another: a run that styles its selection takes backgroundImage in its
+   * grammar (the property name and the image value's branch) and its signature, and its brief says to put a scrim
+   * under text, 374 bytes measured on the section and part runs. Their budgets make room for it the same way.
+   */
+  const BACKGROUND_BYTES = 390;
   const BUDGETS = {
     // The site runs offer every catalogue section to insert, so a new section (the Carousel's ~830 bytes) grows them.
     // They also start with the open page's sections (#513): about 1 KB for the starter's eight-section home page.
-    site: { code: false, baseline: 42_641, budget: 32_400 + AUDIT_BYTES + PAGE_COPY_BYTES + SEO_BYTES, audit: AUDIT_BYTES, frosted: 0, copy: PAGE_COPY_BYTES, seo: SEO_BYTES },
-    'site (code)': { code: true, baseline: 44_027, budget: 33_700 + AUDIT_BYTES + PAGE_COPY_BYTES + SEO_BYTES, audit: AUDIT_BYTES, frosted: 0, copy: PAGE_COPY_BYTES, seo: SEO_BYTES },
+    site: { code: false, baseline: 42_641, budget: 32_400 + AUDIT_BYTES + PAGE_COPY_BYTES + SEO_BYTES, audit: AUDIT_BYTES, frosted: 0, copy: PAGE_COPY_BYTES, seo: SEO_BYTES, background: 0 },
+    'site (code)': { code: true, baseline: 44_027, budget: 33_700 + AUDIT_BYTES + PAGE_COPY_BYTES + SEO_BYTES, audit: AUDIT_BYTES, frosted: 0, copy: PAGE_COPY_BYTES, seo: SEO_BYTES, background: 0 },
     // A page run (#513) is measured against the site run it was before it had a scope of its own. It offers the page
     // tool and the few operations that remove, move or set the page's own settings, but nothing site-wide.
-    page: { code: false, baseline: 42_641, budget: 31_700 + PAGE_AUDIT_BYTES + PAGE_COPY_BYTES + PAGE_SEO_BYTES, audit: PAGE_AUDIT_BYTES, frosted: 0, copy: PAGE_COPY_BYTES, seo: PAGE_SEO_BYTES },
-    section: { code: false, baseline: 12_723, budget: 9_700 + FROSTED_BYTES + COPY_BYTES, audit: 0, frosted: FROSTED_BYTES, copy: COPY_BYTES, seo: 0 },
-    part: { code: false, baseline: 10_001, budget: 7_550 + FROSTED_BYTES + COPY_BYTES, audit: 0, frosted: FROSTED_BYTES, copy: COPY_BYTES, seo: 0 },
-    ask: { code: false, baseline: 13_138, budget: 9_600 + AUDIT_BYTES, audit: AUDIT_BYTES, frosted: 0, copy: 0, seo: 0 },
-    'ask (code)': { code: true, baseline: 13_736, budget: 10_100 + AUDIT_BYTES, audit: AUDIT_BYTES, frosted: 0, copy: 0, seo: 0 }
+    page: { code: false, baseline: 42_641, budget: 31_700 + PAGE_AUDIT_BYTES + PAGE_COPY_BYTES + PAGE_SEO_BYTES, audit: PAGE_AUDIT_BYTES, frosted: 0, copy: PAGE_COPY_BYTES, seo: PAGE_SEO_BYTES, background: 0 },
+    section: { code: false, baseline: 12_723, budget: 9_700 + FROSTED_BYTES + COPY_BYTES + BACKGROUND_BYTES, audit: 0, frosted: FROSTED_BYTES, copy: COPY_BYTES, seo: 0, background: BACKGROUND_BYTES },
+    part: { code: false, baseline: 10_001, budget: 7_550 + FROSTED_BYTES + COPY_BYTES + BACKGROUND_BYTES, audit: 0, frosted: FROSTED_BYTES, copy: COPY_BYTES, seo: 0, background: BACKGROUND_BYTES },
+    ask: { code: false, baseline: 13_138, budget: 9_600 + AUDIT_BYTES, audit: AUDIT_BYTES, frosted: 0, copy: 0, seo: 0, background: 0 },
+    'ask (code)': { code: true, baseline: 13_736, budget: 10_100 + AUDIT_BYTES, audit: AUDIT_BYTES, frosted: 0, copy: 0, seo: 0, background: 0 }
   } as const;
   const bytes = (v: unknown) => Buffer.byteLength(JSON.stringify(v), 'utf8');
 
-  it.each(Object.entries(BUDGETS))('keeps the %s run within its budget', async (label, { code, baseline, budget, audit, frosted, copy, seo }) => {
+  it.each(Object.entries(BUDGETS))('keeps the %s run within its budget', async (label, { code, baseline, budget, audit, frosted, copy, seo, background }) => {
     const { session, run } = await setup({ toolMode: 'constrained-json' }, {}, code);
     const home = session.state.pages[session.state.site.homePageId];
     const section = home.nodes[home.rootIds[0]] as { id: string; definitionId: string };
@@ -727,9 +733,10 @@ describe('what a constrained local run sends first (#364)', () => {
     const sent = { messages: bytes(body.messages), response_format: bytes(body.response_format) };
     const total = sent.messages + sent.response_format;
     expect(total, JSON.stringify(sent)).toBeLessThanOrEqual(budget);
-    expect(1 - (total - audit - frosted - copy - seo) / baseline, JSON.stringify(sent)).toBeGreaterThan(0.24);
+    expect(1 - (total - audit - frosted - copy - seo - background) / baseline, JSON.stringify(sent)).toBeGreaterThan(0.24);
     // The room is made only where the tool is offered.
     expect(JSON.stringify(body.response_format).includes('"audit_seo"'), label).toBe(audit > 0);
+    expect(JSON.stringify(body.response_format).includes('"backgroundImage"'), label).toBe(background > 0);
     const actions = (body.response_format.json_schema.schema.properties.action.anyOf as Array<{ properties: { tool: { enum: string[] } } }>).flatMap((b) => b.properties.tool.enum);
     expect(actions.includes('update_page_seo'), label).toBe(seo > 0);
     expect(actions.includes('update_site_seo'), label).toBe(label.startsWith('site'));

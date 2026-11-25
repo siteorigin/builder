@@ -21,7 +21,7 @@ import { PAGE_SEO_ARGS, PAGE_SEO_BRIEF, PAGE_SEO_DESCRIPTION, pageSeoToolSchema,
 import { collectionToolSchemas, LIST_ENTRIES_ARGS, LIST_ENTRIES_BRIEF, LIST_ENTRIES_DESCRIPTION, READ_ENTRY_ARGS, READ_ENTRY_BRIEF, READ_ENTRY_DESCRIPTION, runListEntries, runReadEntry, runUpsertEntry, UPSERT_ENTRY_ARGS, UPSERT_ENTRY_BRIEF, UPSERT_ENTRY_DESCRIPTION } from './collection-tools';
 import { hasCollections } from '@shared/entry-feed';
 import { MANAGED_COMPONENT_ARGS, MANAGED_COMPONENT_BRIEF, MANAGED_COMPONENT_DESCRIPTION, managedComponentSchema, runManagedComponent } from './managed-component';
-import { runSelectionTool, SELECTION_ARGS, SELECTION_BRIEFS, SELECTION_DESCRIPTIONS, selectionTools, type SelectionTarget } from './selection';
+import { runSelectionTool, SELECTION_ARGS, SELECTION_BRIEFS, SELECTION_DESCRIPTIONS, selectionTakesBackground, selectionTools, type SelectionTarget } from './selection';
 import { DEFINITION_ARGS, DEFINITION_BRIEFS, DEFINITION_DESCRIPTIONS, definitionAbridged, definitionTools, runDefinitionTool, type DefinitionTarget, type DefinitionToolName } from './definition';
 import { examplesFor, exampleSection } from './examples';
 import { locateField } from '@engine/locate';
@@ -472,9 +472,9 @@ export function toolsForRun(opts: {
   if (selection) {
     const micro = selectionTools(state, selection);
     if (!micro) return { tools: general, mode: 'general', focused: false };
-    // An image can only be chosen by its asset ID, so a selection with one, or a request that attached images, can
+    // An image can only be chosen by its asset ID, so a selection with one (a background image included), or a request that attached images, can
     // also look them up and ask the user to choose between them by sight.
-    const assets = usesImage(micro) || opts.attachedImages ? general.filter((t) => t.name === 'search_assets' || t.name === 'request_clarification') : [];
+    const assets = usesImage(micro) || selectionTakesBackground(state, selection) || opts.attachedImages ? general.filter((t) => t.name === 'search_assets' || t.name === 'request_clarification') : [];
     // Content too long to show whole in the selection can still be read whole, a part at a time, before it is changed.
     const reads = selectionAbridged(state, selection) ? general.filter((t) => t.name === 'inspect_element') : [];
     return { tools: focused ? [...micro, ...reads, ...assets] : [...micro, ...general], mode: 'selection', focused };
@@ -642,6 +642,7 @@ function valueHint(p: StylePropDef): string {
   if (p.id === 'columnSpan' || p.id === 'rowSpan') return ' (a grid child; above 1 for all sizes it applies from tablet up, set it at scope phone to span there)';
   if (p.id === 'backdropBlur') return ` or one length in px, rem or em up to ${BLUR_LIMITS.px}px or ${BLUR_LIMITS.rem}rem, 0 for none: blurs what shows through a background at less than full strength, for frosted glass`;
   if (p.kind === 'color') return ' (a color token at part strength is {"token": "color.surface", "alpha": 0.7} for 70%, a see-through surface)';
+  if (p.kind === 'media') return ': {"assetId": a library image\'s ID, "size": "cover" (default) or "contain", "position": "X% Y%" focus (default center), "scrim": a color or one gradient over the picture}; give it a scrim whenever text sits on top, so the text stays readable';
   if (p.group !== 'motion') return '';
   if (p.id === 'translateX' || p.id === 'translateY') return ` (0 or one length such as "-4px": at most ${TRANSLATE_LIMITS.px}px, ${TRANSLATE_LIMITS.rem}rem or em, or ${TRANSLATE_LIMITS['%']}% either way)`;
   if (p.kind === 'number') return ` (${p.integer ? 'whole number ' : ''}${p.min} to ${p.max}${p.unit ? ` ${p.unit}` : ''})`;

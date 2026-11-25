@@ -2936,17 +2936,50 @@ function mix(a, b, t) {
 const GRADIENT_SAMPLES = [1, 2, 3, 4, 5, 6, 7].map((n) => n / 8);
 const MAX_STOPS = 12;
 
+/** Whether one background layer is a picture: something only its pixels could tell. */
+const isPictureLayer = (layer) => /url\(|image-set\(|element\(|cross-fade\(|paint\(/i.test(layer);
+
 /**
- * What a computed background-image paints: 'none'; the colours one gradient passes through; 'picture' when an image
- * decides it (url(), image-set()); 'layers' for several images over each other; 'unknown' for a colour that cannot
- * be read. All but 'none' and 'gradient' only pixels could tell.
+ * Whether the top background layer is laid over the whole box as the builder writes a scrim: stretched over it
+ * (100% 100%, or a gradient's own auto size), blended normally, so its colours are what the picture is seen through.
  */
-function backgroundOf(image, read) {
+function scrimCovers(s) {
+  if (!s) return false;
+  const first = (v, d) => topLevel(v || d)[0] || d;
+  // Stretched over the box, so a position in percentages moves it nowhere; one in lengths could move it off the text.
+  const size = first(s.backgroundSize, 'auto');
+  const at = first(s.backgroundPosition, '0% 0%');
+  const clip = first(s.backgroundClip, 'border-box');
+  // Sized to the padding box or the border box: one sized to the content box leaves the padding uncovered.
+  const origin = first(s.backgroundOrigin, 'padding-box');
+  return /^(100% 100%|auto|auto auto)$/.test(size) && /^-?[\d.]+% -?[\d.]+%$/.test(at) && /^(border-box|padding-box)$/.test(clip) && /^(border-box|padding-box)$/.test(origin) && first(s.backgroundBlendMode, 'normal') === 'normal';
+}
+
+/**
+ * What a computed background-image paints: 'none'; the colours one gradient passes through; 'scrim' for a colour or
+ * gradient laid over one picture (a background image with a scrim: its colours over whatever the picture has);
+ * 'picture' when an image decides it (url(), image-set()); 'layers' for several images over each other; 'unknown' for
+ * a colour that cannot be read. All but 'none', 'gradient' and 'scrim' only pixels could tell.
+ */
+function backgroundOf(image, read, s) {
   if (!image || image === 'none') return { kind: 'none' };
-  if (/url\(|image-set\(|element\(|cross-fade\(|paint\(/i.test(image)) return { kind: 'picture' };
   const layers = topLevel(image);
+  // A gradient blended in a colour space of its own (`in hsl longer hue`) passes through colours its stops do not show.
+  if (layers.length === 2 && isPictureLayer(layers[1]) && !isPictureLayer(layers[0]) && !/\bin\s+[a-z]/i.test(layers[0]) && scrimCovers(s)) {
+    const top = gradientOf(layers[0], read);
+    // Sized to, or cut at, the padding box: the border around it is not under the scrim.
+    const first = (v, d) => topLevel(v || d)[0] || d;
+    const inner = first(s.backgroundOrigin, 'padding-box') === 'padding-box' || first(s.backgroundClip, 'border-box') === 'padding-box';
+    return top.kind === 'gradient' ? { kind: 'scrim', stops: top.stops, inner } : { kind: 'picture' };
+  }
+  if (isPictureLayer(image)) return { kind: 'picture' };
   if (layers.length > 1) return { kind: 'layers' };
-  const m = /^(?:repeating-)?(?:linear|radial|conic)-gradient\((.*)\)$/is.exec(layers[0] || '');
+  return gradientOf(layers[0], read);
+}
+
+/** The colours one gradient layer passes through, or what else it is ('picture', 'layers', 'unknown'). */
+function gradientOf(layer, read) {
+  const m = /^(?:repeating-)?(?:linear|radial|conic)-gradient\((.*)\)$/is.exec(layer || '');
   if (!m) return { kind: 'picture' };
   // Each stop's colour and where it starts and ends, fixed up as the browser does (a stop placed before the one
   // ahead of it moves up to it), so a hard edge is told from a blend. Positions in other units are not compared.
@@ -3143,9 +3176,12 @@ function layerCache(read) {
     const s = getComputedStyle(el);
     if (s.display === 'contents') layer = { bg: NONE, image: { kind: 'none' }, opacity: 1, overlays: [] };
     else {
-      layer = { bg: read(s.backgroundColor) || NONE, image: backgroundOf(s.backgroundImage, read), opacity: clamp(Number(s.opacity), 0, 1), overlays: [] };
+      layer = { bg: read(s.backgroundColor) || NONE, image: backgroundOf(s.backgroundImage, read, s), opacity: clamp(Number(s.opacity), 0, 1), overlays: [] };
       // A background painted only inside the content box (or only on the glyphs) does not cover what is under the box.
-      layer.covers = layer.bg.a >= 1 && /^(border-box|padding-box)$/.test(s.backgroundClip || 'border-box');
+      // A picture under a scrim stands for any colour at all (see textContrast), so nothing under it matters either.
+      // The colour is painted with the last layer's clip; a scrim (checked by scrimCovers) with the first's.
+      const clips = topLevel(s.backgroundClip || 'border-box');
+      layer.covers = (layer.bg.a >= 1 && /^(border-box|padding-box)$/.test(clips[clips.length - 1] || 'border-box')) || layer.image.kind === 'scrim';
       const r = boxRect(el);
       for (const which of ['::before', '::after']) {
         const p = getComputedStyle(el, which);
@@ -3233,24 +3269,61 @@ function textContrast(el, read, layerOf, pictures) {
     if (!hidden) return { unknown: 'image' };
   }
   // Every combination of gradient colours: each layer's colour, its gradient's colour over it, then what is inside it.
-  const options = layers.map((l, i) => (l.image.kind === 'gradient' && shows(i) ? l.image.stops : [NONE]));
+  // A scrim's own colours (one colour, or its gradient's) lie over its picture.
+  const distinct = (stops) => [...new Map(stops.map((c) => [`${c.r},${c.g},${c.b},${c.a}`, c])).values()];
+  const options = layers.map((l, i) => (!shows(i) ? [NONE] : l.image.kind === 'gradient' ? l.image.stops : l.image.kind === 'scrim' ? distinct(l.image.stops) : [NONE]));
   // More combinations than are worth working through: a definite answer could miss the one that fails.
   if (options.reduce((n, o) => n * o.length, 1) > MAX_COMBINATIONS) return { unknown: 'gradient' };
   const results = [];
   const picks = [];
-  const paint = (withText) => {
+  // A picture under a scrim could be any colour: each colour channel of what is painted grows with the picture's, and
+  // luminance with each channel, so the darkest and lightest the background can be are the picture taken as black and
+  // as white. See-through text over one is colours of the picture too.
+  const scrimmed = layers.some((l, i) => shows(i) && l.image.kind === 'scrim');
+  if (scrimmed && fill.a < 1) return { unknown: 'image' };
+  // A scrim covers its own box: text moved or overflowing out of it sits on whatever is there instead.
+  for (let i = 0; i < layers.length; i++) {
+    if (!shows(i) || layers[i].image.kind !== 'scrim') continue;
+    const box = boxOf(boxRect(chain[i]));
+    const e = chain[i];
+    const b = layers[i].image.inner ? { x: box.x + e.clientLeft, y: box.y + e.clientTop, width: e.clientWidth, height: e.clientHeight } : box;
+    if (rects.some((r) => r.x < b.x - 0.5 || r.y < b.y - 0.5 || r.x + r.width > b.x + b.width + 0.5 || r.y + r.height > b.y + b.height + 0.5)) return { unknown: 'image' };
+  }
+  const BLACK = { r: 0, g: 0, b: 0, a: 1 };
+  const WHITE = { r: 1, g: 1, b: 1, a: 1 };
+  const paint = (withText, picture = BLACK) => {
     let p = withText ? pm(fill) : NONE;
     for (let i = layers.length - 1; i >= 0; i--) {
-      p = over(p, over(pm(picks[i]), pm(layers[i].bg)));
+      p = over(p, over(pm(picks[i]), layers[i].image.kind === 'scrim' && shows(i) ? picture : pm(layers[i].bg)));
       if (layers[i].opacity < 1) p = fade(p, layers[i].opacity);
     }
     return onCanvas(p);
   };
   const walk = (i) => {
     if (i === layers.length) {
-      const bg = paint(false);
       const fg = paint(true);
-      results.push({ ratio: contrastOf(fg, bg), fg, bg });
+      if (!scrimmed) {
+        const bg = paint(false);
+        results.push({ ratio: contrastOf(fg, bg), fg, bg });
+        return;
+      }
+      // Text in a faded box over the picture shows the picture through it: its colour is the picture's too.
+      const fgLight = paint(true, WHITE);
+      if (Math.abs(luminance(fgLight) - luminance(fg)) > 1e-9) {
+        results.push({ ratio: 1, fg, bg: fg, unknown: true });
+        return;
+      }
+      const dark = paint(false, BLACK);
+      const light = paint(false, WHITE);
+      const l = luminance(fg);
+      // A scrim that hides the picture paints one colour, whatever the picture has.
+      if (luminance(dark) === luminance(light)) results.push({ ratio: contrastOf(fg, dark), fg, bg: dark });
+      // Text as light as some colour the background can take could sit on exactly that colour.
+      else if (l >= luminance(dark) && l <= luminance(light)) results.push({ ratio: 1, fg, bg: l - luminance(dark) < luminance(light) - l ? dark : light, open: true });
+      else {
+        const bg = l > luminance(light) ? light : dark;
+        results.push({ ratio: contrastOf(fg, bg), fg, bg, open: true });
+      }
       return;
     }
     for (const stop of options[i]) {
@@ -3262,6 +3335,11 @@ function textContrast(el, read, layerOf, pictures) {
   const size = parseFloat(s.fontSize) || 16;
   const required = size >= LARGE_TEXT_PX || (size >= LARGE_BOLD_TEXT_PX && (parseInt(s.fontWeight, 10) || 400) >= 700) ? 3 : 4.5;
   const worst = results.reduce((a, b) => (b.ratio < a.ratio ? b : a));
+  // Over a picture, readable however dark or light it is: the scrim keeps it readable. Short of that, only a scrim
+  // opaque enough to hide the picture says the text fails; anything less, only the picture's pixels could tell.
+  if (results.some((r) => r.unknown)) return { unknown: 'image' };
+  if (scrimmed && worst.ratio >= required) return { ratio: worst.ratio, required, fg: hexOf(worst.fg), bg: hexOf(worst.bg), gradient: results.length > 1 };
+  if (scrimmed && results.some((r) => r.open)) return { unknown: 'scrim' };
   if (results.length > 1) {
     const failing = results.filter((r) => r.ratio < required).length;
     // A gradient that is readable at some of its colours and not at others may or may not fail under the text: only
@@ -3273,6 +3351,7 @@ function textContrast(el, read, layerOf, pictures) {
 
 const UNKNOWN_CONTRAST = {
   image: 'it is shown over an image, whose colours only pixels could tell',
+  scrim: 'it is shown over a background image whose scrim is too light to keep it readable over every colour the image could have. A stronger scrim fixes it',
   overlay: 'a decorative layer (a ::before or ::after) lies over its background',
   gradient: 'its gradient background is readable at some points and not at others',
   layers: 'its background is several images or gradients over each other',

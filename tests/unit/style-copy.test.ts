@@ -59,7 +59,8 @@ describe('copy style', () => {
     expect(hero.label).toBe('Split hero');
     expect(hero.where).toBe('on the Home page');
     const root = hero.targets.find((t) => t.part === 'root')!;
-    expect(root.offered).toEqual(['paddingBlock', 'background', 'color', 'minHeight', 'hidden']);
+    // A box that lets its background change also offers a background image.
+    expect(root.offered).toEqual(['paddingBlock', 'background', 'backgroundImage', 'color', 'minHeight', 'hidden']);
     // An image part that can be cropped also offers its focal point.
     expect(hero.targets.find((t) => t.part === 'media')!.offered).toEqual(['aspectRatio', 'objectPosition', 'radius', 'shadow']);
     const heading = styleSelection(s, part(s, 'content.media', 'heading'))!;
@@ -73,7 +74,7 @@ describe('copy style', () => {
   it('matches the inspector: Hidden on a section and on code parts, a part’s own list elsewhere', () => {
     const s = fresh();
     const media = s.components[placed(s, 'content.media').definitionId];
-    expect(placementStyleControls(media, 'root', false)).toEqual(['paddingBlock', 'background', 'hidden']);
+    expect(placementStyleControls(media, 'root', false)).toEqual(['paddingBlock', 'background', 'backgroundImage', 'hidden']);
     expect(placementStyleControls(media, 'heading', false)).toEqual(['textStyle', 'color']);
     expect(placementStyleControls(media, 'nope', false)).toBeNull();
     const header = s.components[(s.site.shell.header.nodes[s.site.shell.header.rootIds[0]] as InstanceNode).definitionId];

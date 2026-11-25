@@ -2065,6 +2065,9 @@ iframe { color-scheme: light dark; }
 /* A linked colour's strength, on its own line under the picker: a short number field with its % after it. */
 .style-strength { display: flex; align-items: center; gap: 6px; flex: 1 0 100%; min-width: 0; font-size: 12px; color: var(--text-2); }
 .style-strength > .style-field { flex: 0 0 64px; }
+.style-media { display: flex; flex-direction: column; gap: 6px; flex: 1 0 100%; min-width: 0; }
+.style-media-options { display: grid; grid-template-columns: auto minmax(0, 1fr); align-items: center; gap: 6px 8px; font-size: 12px; color: var(--text-2); }
+.style-media-options > .input:last-child { grid-column: 2; }
 .style-custom { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; flex: 1 0 100%; min-width: 0; }
 .style-custom > .input { flex: 1; }
 .style-custom .color-pick.md { width: 24px; height: 24px; margin: 1px; }

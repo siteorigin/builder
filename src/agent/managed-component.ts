@@ -19,7 +19,7 @@ import { STYLE_PROP_MAP } from '@shared/styles';
 import { newId } from '@shared/ids';
 import { projectDefinitionId } from '@shared/component-ids';
 import { normalizeRoute } from '@shared/routes';
-import { DIVIDER_SHAPE_TEXT, STYLE_TOKEN_REF, validateOperation } from '@shared/ops';
+import { BACKGROUND_IMAGE, DIVIDER_SHAPE_TEXT, STYLE_TOKEN_REF, validateOperation } from '@shared/ops';
 import { sha256Hex } from '@shared/sha256';
 import { applyOperations } from '@engine/apply';
 import type { EngineError } from '@engine/tree';
@@ -76,7 +76,7 @@ const STATE = z.discriminatedUnion('type', [
 ]);
 const STYLE_FIELDS = {
   property: z.string().describe('A style property such as layout, gap, columns, paddingBlock, background, color, textStyle, radius.'),
-  value: z.union([z.string(), z.number(), z.boolean(), STYLE_TOKEN_REF]),
+  value: z.union([z.string(), z.number(), z.boolean(), STYLE_TOKEN_REF, BACKGROUND_IMAGE]),
   scope: z.enum(SCOPES).optional().describe('Screen size; "base" (the default) is every size.'),
   state: z.enum(STATES).optional()
 };

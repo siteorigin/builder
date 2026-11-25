@@ -327,3 +327,65 @@ describe('layout inspection readability checks', () => {
     expect(of(r, 'low-contrast')).toEqual([expect.objectContaining({ desc: { ctx: 'page:p', node: 'code1', items: '', inside: true } })]);
   }, 30000);
 });
+
+/** A band painted the way the builder writes a background image (#354): its scrim over the picture, over its colour. */
+const photoBand = (node: string, scrim: string | null, text: string, color: string, more = '') =>
+  `<section ${so(`${node}Band`)} style="padding:24px;background-color:#808080;background-image:${scrim ? `${/gradient\(/.test(scrim) ? scrim : `linear-gradient(${scrim}, ${scrim})`}, ` : ''}url(/photo.jpg);background-size:${scrim ? '100% 100%, ' : ''}cover;background-position:${scrim ? 'center, ' : ''}50% 30%;background-repeat:no-repeat${more}"><p ${so(node)} style="color:${color}">${text}</p></section>`;
+
+describe('text over a background image', () => {
+  it.skipIf(!browserInstalled)('is readable when its scrim keeps it readable over any picture, and measured against the scrim', async () => {
+    const r = await inspect(
+      [
+        photoBand('light', 'rgba(0, 0, 0, 0.7)', 'White words on a darkened photo', '#fff'),
+        photoBand('dark', 'rgba(255, 255, 255, 0.8)', 'Dark words on a lightened photo', '#111'),
+        // No colour under the picture: the scrim over the picture is what hides the page beneath.
+        photoBand('bare', 'rgba(0, 0, 0, 0.7)', 'White words on a photo with nothing under it', '#fff', ';background-color:transparent')
+      ].join('')
+    );
+    expect(r.issues.filter((i) => READABILITY.includes(i.kind))).toEqual([]);
+    // The heading and the three lines measured: nothing failed, nothing left unmeasured.
+    expect(r.checks!.contrast).toMatchObject({ checked: 4, failed: 0, unverified: 0 });
+  }, 30000);
+
+  it.skipIf(!browserInstalled)('warns over a picture with no scrim, or one too weak, and fails text a scrim hides the picture under', async () => {
+    const r = await inspect(
+      [
+        photoBand('bare', null, 'White words on a bare photo', '#fff'),
+        photoBand('weak', 'rgba(0, 0, 0, 0.2)', 'White words on a faint scrim', '#fff'),
+        // Between the darkest and lightest the scrimmed picture can be: readable against black, not over every colour.
+        photoBand('inside', 'rgba(0, 0, 0, 0.3)', 'Grey words on a lightly darkened photo', '#777'),
+        // Dark enough at the top, too light at the bottom.
+        photoBand('fading', 'linear-gradient(rgba(0, 0, 0, 0.8), rgba(0, 0, 0, 0.1))', 'White words over a fading scrim', '#fff'),
+        photoBand('opaque', '#777', 'Grey words on a solid scrim', '#888'),
+        // The scrim's own colour: 1:1 whatever the picture has.
+        photoBand('same', '#777', 'Words the colour of their scrim', '#777')
+      ].join('')
+    );
+    const unverified = of(r, 'contrast-unverified');
+    expect(unverified.map((i) => [i.desc?.node, i.reason]).sort()).toEqual([['bare', 'image'], ['fading', 'scrim'], ['inside', 'scrim'], ['weak', 'scrim']]);
+    expect(unverified.find((i) => i.reason === 'scrim')?.message).toMatch(/scrim is too light/);
+    expect(of(r, 'low-contrast').map((i) => [i.desc?.node, i.foreground, i.background, i.ratio]).sort()).toEqual([
+      ['opaque', '#888888', '#777777', expect.any(Number)],
+      ['same', '#777777', '#777777', 1]
+    ]);
+  }, 30000);
+
+  it.skipIf(!browserInstalled)('reads a scrim blended, sized or placed another way, or see-through words, as only pixels could tell', async () => {
+    const r = await inspect(
+      [
+        photoBand('blend', 'rgba(0, 0, 0, 0.7)', 'White words on a blended scrim', '#fff', ';background-blend-mode:multiply'),
+        photoBand('half', 'rgba(0, 0, 0, 0.7)', 'White words on half a scrim', '#fff', ';background-size:50% 100%, cover'),
+        photoBand('moved', 'rgba(0, 0, 0, 0.7)', 'White words beside a moved scrim', '#fff', ';background-position:200px 0, 50% 30%'),
+        photoBand('faint', 'rgba(0, 0, 0, 0.7)', 'See-through words on a scrim', 'rgba(255, 255, 255, 0.6)'),
+        photoBand('inset', 'rgba(0, 0, 0, 0.7)', 'White words in the padding of a content-sized scrim', '#fff', ';background-origin:content-box;padding:40px'),
+        // Words moved up into a band's border, which its padding-box scrim leaves bare over the photo around it.
+        `<section ${so('photoAround')} style="padding:40px;background-image:url(/photo.jpg);background-size:cover"><div ${so('bordered')} style="border:30px solid transparent;background-image:linear-gradient(#000, #000), url(/photo.jpg);background-size:100% 100%, cover;background-clip:padding-box, border-box"><p ${so('inBorder')} style="color:#fff;position:relative;top:-28px;margin:0;line-height:20px">White words in the border</p></div></section>`,
+        // Words moved out of the scrimmed band onto the white page.
+        `<section ${so('shortBand')} style="height:40px;overflow:visible;background-image:linear-gradient(#000, #000), url(/photo.jpg);background-size:100% 100%, cover"><p ${so('below')} style="color:#fff;position:relative;top:60px;margin:0">White words below their band</p></section><div style="height:80px"></div>`,
+        // A faded card over the picture: the picture shows through it, words and all.
+        `<section ${so('cardBand')} style="padding:24px;background-image:linear-gradient(rgba(0,0,0,0.01), rgba(0,0,0,0.01)), url(/photo.jpg);background-size:100% 100%, cover"><div style="background:#fff;opacity:.5;padding:8px"><p ${so('card')} style="color:#000">Black words on a faded white card</p></div></section>`
+      ].join('')
+    );
+    expect(of(r, 'contrast-unverified').map((i) => [i.desc?.node, i.reason]).sort()).toEqual([['below', 'image'], ['blend', 'image'], ['card', 'image'], ['faint', 'image'], ['half', 'image'], ['inBorder', 'image'], ['inset', 'image'], ['moved', 'image']]);
+  }, 30000);
+});
