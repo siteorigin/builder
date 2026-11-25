@@ -36,6 +36,7 @@ describe('writtenDate', () => {
     expect(writtenDate('2027-05-14')).toBe('14 May 2027');
     expect(writtenDate('2027-05-14T19:30')).toBe('14 May 2027 at 19:30');
     expect(writtenDate('2027-05-14T23:30+02:00')).toBe('14 May 2027 at 23:30 (UTC+02:00)');
+    expect(writtenDate('2027-05-14T19:30-03:30')).toBe('14 May 2027 at 19:30 (UTC-03:30)');
     expect(writtenDate('2027-05-14T19:30:15Z')).toBe('14 May 2027 at 19:30:15 UTC');
     expect(writtenDate('2027-02-30')).toBe('2027-02-30');
     expect(writtenDate('next spring')).toBe('next spring');
@@ -48,7 +49,8 @@ describe('the sections of a graph', () => {
     const graph = documentGraph(publishedState(state), PAGE)!;
     const list = summarizeGraph(graph);
     expect(headings(list)).toEqual(['This page', 'Breadcrumb trail', 'Publisher', 'Website']);
-    expect(list.map((s) => s.id).sort()).toEqual(graph['@graph'].map((n) => n['@id']).sort());
+    expect(list.map((s) => s.id)).toEqual([`${SERVICES}#webpage`, `${SERVICES}#breadcrumb`, `${ROOT}#organization`, `${ROOT}#website`]);
+    expect(graph['@graph']).toHaveLength(list.length);
     expect(at(list, 'This page').statement).toBe('This is a web page.');
     expect(rows(at(list, 'This page'))).toMatchObject({ Title: 'Classes and commissions · Riverside Studio', Address: SERVICES, Language: 'en', Description: expect.stringMatching(/^Weekly wheel classes/) });
     expect(at(list, 'Breadcrumb trail').lists[0]).toMatchObject({ ordered: true, items: [{ detail: ROOT }, { text: 'Services', detail: SERVICES }] });
@@ -62,7 +64,7 @@ describe('the sections of a graph', () => {
     const { state } = seoSite();
     const business = run(state, {
       type: 'site.update',
-      identity: { kind: 'LocalBusiness', logo: 'img_icon', address: '1 River Road, Millbrook', telephone: '+1 555 0100', email: 'hello@riverside.example', openingHours: ['Mo-Fr 09:00-17:00', 'Sa 10:00-14:00'], priceRange: '$$', geo: { latitude: 40.5, longitude: -73.25 } }
+      identity: { kind: 'LocalBusiness', logo: 'img_icon', address: '1 River Road, Millbrook', telephone: '+1 555 0100', email: 'hello@riverside.example', openingHours: ['Mo-Fr 09:00-17:00', 'Sa 10:00-14:00'], priceRange: '$$', geo: { latitude: 0, longitude: -73.25 } }
     });
     const publisher = at(sections(business), 'Publisher');
     expect(publisher.statement).toBe('Riverside Studio, a local business, publishes the site.');
@@ -73,7 +75,7 @@ describe('the sections of a graph', () => {
       Email: 'hello@riverside.example',
       'Opening hours': 'Mo-Fr 09:00-17:00, Sa 10:00-14:00',
       'Price range': '$$',
-      'Map position': '40.5, -73.25'
+      'Map position': '0, -73.25'
     });
     const person = at(sections(run(state, { type: 'site.update', identity: { kind: 'Person', name: 'Ana Ruiz', logo: 'img_icon' } })), 'Publisher');
     expect(person.statement).toBe('Ana Ruiz, a person, publishes the site.');
@@ -87,7 +89,7 @@ describe('the sections of a graph', () => {
     expect(headings(list).slice(0, 2)).toEqual(['This page', 'Blog post']);
     const post = at(list, 'Blog post');
     expect(post.statement).toBe('The page is about a blog post, “Spring pottery classes”.');
-    expect(rows(post)).toMatchObject({ Headline: 'Spring pottery classes', Author: 'Ana Ruiz', Published: '2 March 2027', 'Last modified': '1 April 2027', Image: expect.stringContaining(ROOT), Publisher: 'Riverside Studio' });
+    expect(rows(post)).toMatchObject({ Headline: 'Spring pottery classes', Author: 'Ana Ruiz', Published: '2 March 2027', 'Last modified': '1 April 2027', Image: `${ROOT}assets/img_share-1a2b3c4d.png`, Publisher: 'Riverside Studio' });
     expect(rows(at(list, 'This page'))).toMatchObject({ Title: 'Book spring classes', 'Last updated': '1 April 2027' });
     // Never revised: the post says no more of it than the graph does.
     const unrevised = sections(state, POST);
@@ -95,7 +97,7 @@ describe('the sections of a graph', () => {
     expect(rows(at(unrevised, 'Blog post'))).not.toHaveProperty('Author');
   });
 
-  it('calls another collection’s entry an article', () => {
+  it('calls an Article entity, another collection’s, an article', () => {
     const { state } = seoSite();
     const graph = documentGraph(publishedState(state), POST)!;
     const other: SeoGraph = { ...graph, '@graph': graph['@graph'].map((n) => (n['@type'] === 'BlogPosting' ? { ...n, '@type': 'Article' } : n)) };
@@ -114,7 +116,7 @@ describe('the sections of a graph', () => {
     const service = at(list, 'Service');
     expect(headings(list).slice(0, 2)).toEqual(['This page', 'Service']);
     expect(service.statement).toBe('The page is about the service “Services”.');
-    expect(rows(service)).toEqual({ Name: 'Services', Description: expect.any(String), 'Service type': 'Pottery classes', 'Area served': 'Millbrook', 'Provided by': 'Riverside Studio' });
+    expect(rows(service)).toEqual({ Name: 'Services', Description: 'Weekly wheel classes, private lessons and commissioned tableware made to order in the studio.', 'Service type': 'Pottery classes', 'Area served': 'Millbrook', 'Provided by': 'Riverside Studio' });
   });
 
   it('says a product’s price, availability, offer and seller', () => {
@@ -126,12 +128,17 @@ describe('the sections of a graph', () => {
   it('says when and where an event is, and who organizes it', () => {
     const { state } = seoSite();
     const event = at(sections(typed(state, { type: 'Event', startDate: '2027-05-14T19:30+02:00', endDate: '2027-05-15', venue: 'The Boathouse', address: '2 River Road' })), 'Event');
+    expect(event.statement).toBe('The page is about the event “Services”.');
+    const bare = rows(at(sections(typed(state, { type: 'Event', startDate: '2027-05-14', address: '2 River Road' })), 'Event'));
+    expect(bare).toMatchObject({ 'Venue address': '2 River Road' });
+    expect(bare).not.toHaveProperty('Venue');
     expect(rows(event)).toMatchObject({ Starts: '14 May 2027 at 19:30 (UTC+02:00)', Ends: '15 May 2027', Venue: 'The Boathouse', 'Venue address': '2 River Road', 'Organized by': 'Riverside Studio' });
   });
 
   it('lists a guide’s steps in order', () => {
     const { state } = seoSite();
     const guide = at(sections(typed(state, { type: 'HowTo', steps: ['Wedge the clay', 'Centre it', 'Open it'] })), 'How-to guide');
+    expect(guide.statement).toBe('The page is about the how-to guide “Services”.');
     expect(guide.lists).toEqual([{ label: 'Steps', ordered: true, items: [{ text: 'Wedge the clay' }, { text: 'Centre it' }, { text: 'Open it' }] }]);
     expect(rows(guide).Publisher).toBe('Riverside Studio');
   });
@@ -150,7 +157,7 @@ describe('the sections of a graph', () => {
       ...graph,
       '@graph': graph['@graph'].map((n) => (n['@type'] === 'WebSite' ? { ...n, potentialAction: { '@type': 'SearchAction', target: { '@type': 'EntryPoint', urlTemplate: `${ROOT}search/?q={search_term_string}` }, 'query-input': 'required name=search_term_string' } } : n))
     };
-    expect(rows(at(summarizeGraph(searched), 'Website'))['Search address']).toBe(`${ROOT}search/?q={search_term_string}`);
+    expect(rows(at(summarizeGraph(searched), 'Website'))).toMatchObject({ 'Search address': `${ROOT}search/?q={search_term_string}`, 'Search words': expect.stringMatching(/^Required/) });
   });
 
   it('says each contact section’s own details, in the order the page shows them, on a page of two kinds', () => {
@@ -168,6 +175,7 @@ describe('the sections of a graph', () => {
     expect(list.filter((s) => s.heading.startsWith('Contact section')).map((s) => s.id)).toEqual(many.map((n) => n['@id']));
     expect(rows(at(list, 'Contact section 1'))).toEqual({ Email: 'a@example.com, b@example.com', Telephone: '+1 555 0100', 'Address 1': '1 Mill Lane', 'Address 2': '3 Weir Street' });
     expect(rows(at(list, 'Contact section 2'))).toEqual({ Address: '2 River Road' });
+    expect(headings(summarizeGraph({ ...graph, '@graph': [...graph['@graph'], many[0]] }))).toContain('Contact section');
   });
 
   it('leaves nothing out: an entity and a value it has no words for are listed under their own names', () => {
@@ -176,18 +184,22 @@ describe('the sections of a graph', () => {
       ...graph,
       '@graph': [
         ...graph['@graph'].map((n) => (n['@type'] === 'WebPage' ? { ...n, speakableSummary: 'Classes by the river' } : n)),
-        { '@type': 'Course', '@id': `${SERVICES}#course`, name: 'Wheel course', provider: { '@id': `${ROOT}#organization` }, offers: { '@type': 'Offer', price: '10' } }
+        { '@type': 'Course', '@id': `${SERVICES}#course`, name: 'Wheel course', provider: { '@id': `${ROOT}#organization` }, offers: { '@type': 'Offer', price: '10', priceCurrency: 'EUR' } }
       ]
     });
     expect(rows(at(list, 'This page'))['Speakable summary']).toBe('Classes by the river');
     expect(at(list, 'Course').statement).toBe('The graph also describes an entity of the type Course.');
-    expect(rows(at(list, 'Course'))).toEqual({ Name: 'Wheel course', Provider: 'Riverside Studio', Offers: 'Price: 10' });
+    expect(rows(at(list, 'Course'))).toEqual({ Name: 'Wheel course', Provider: 'Riverside Studio', Offers: 'Price: 10; Price currency: EUR' });
   });
 });
 
 describe('structuredPreview in words', () => {
   const audit = (s: ProjectState) => runSeoAudit(s).filter((f) => f.code.startsWith('SEO_PAGE_STRUCTURED_DATA'));
   const preview = (s: ProjectState, subject: SeoSubject = PAGE) => structuredPreview(s, subject)!;
+  const said = (found: ReturnType<typeof preview>) => {
+    if (found.graph.kind !== 'graph') throw new Error(`no graph: ${found.graph.kind}`);
+    return headings(found.graph.sections);
+  };
 
   it('says what the audit says of incomplete typed facts, and links to them, with the entity left unsaid', () => {
     const { state } = seoSite();
@@ -195,8 +207,9 @@ describe('structuredPreview in words', () => {
     const found = preview(s);
     expect(found.problem).toEqual(audit(s)[0]);
     expect(found.problem).toMatchObject({ code: 'SEO_PAGE_STRUCTURED_DATA_INCOMPLETE', message: expect.stringContaining('Add the currency.'), destination: { kind: 'pageSeo', pageId: 'pg_services', field: 'structuredData' } });
-    expect(found.graph.kind === 'graph' && headings(found.graph.sections)).not.toContain('Product');
+    expect(said(found)).not.toContain('Product');
     const done = typed(s, { currency: 'ZAR' });
+    expect(said(preview(done))).toContain('Product');
     expect(preview(done).problem).toBeNull();
     expect(audit(done)).toEqual([]);
   });
@@ -207,8 +220,26 @@ describe('structuredPreview in words', () => {
     (s.pages.pg_services.seo.structuredData as { offerUrl?: string }).offerUrl = 'not an address';
     const found = preview(s);
     expect(found.problem).toEqual(audit(s)[0]);
-    expect(found.problem?.code).toBe('SEO_PAGE_STRUCTURED_DATA_UNUSABLE');
-    expect(found.graph.kind === 'graph' && headings(found.graph.sections)).toContain('Product');
+    expect(found.problem).toMatchObject({ code: 'SEO_PAGE_STRUCTURED_DATA_UNUSABLE', message: expect.stringContaining('The saved offer address can’t be used.') });
+    expect(said(found)).toContain('Product');
+    if (found.graph.kind !== 'graph') throw new Error(found.graph.kind);
+    const product = rows(at(found.graph.sections, 'Product'));
+    expect(product.Price).toBe('12 ZAR');
+    expect(product).not.toHaveProperty('Offer address');
+  });
+
+  it('says a typed page with a blank title names nothing, and links to the title, though the browser title reads well', () => {
+    const { state } = seoSite();
+    const s = copy(typed(state, { type: 'Product', price: '12', currency: 'ZAR' }));
+    s.pages.pg_services.title = '   ';
+    const found = preview(s);
+    expect(said(found)).not.toContain('Product');
+    expect(found.problem).toEqual(audit(s)[0]);
+    expect(found.problem).toMatchObject({ code: 'SEO_PAGE_STRUCTURED_DATA_INCOMPLETE', message: expect.stringContaining('Add the page’s title.'), destination: { kind: 'pageSeo', pageId: 'pg_services', field: 'pageTitle' } });
+    // An About page is the web page itself, which needs no name of its own.
+    const about = copy(typed(state, { type: 'AboutPage' }));
+    about.pages.pg_services.title = '   ';
+    expect(preview(about).problem).toBeNull();
   });
 
   it('judges the same pages the audit does', () => {
@@ -221,7 +252,11 @@ describe('structuredPreview in words', () => {
     ] as const) {
       expect(!!preview(next).problem, what).toBe(judged);
       expect(audit(next).length > 0, what).toBe(judged);
+      expect(preview(next).graph.kind, what).toBe('none');
     }
+    const unknown = copy(s);
+    (unknown.pages.pg_services.seo as { structuredData: unknown }).structuredData = { type: 'Recipe' };
+    expect(preview(unknown).problem).toMatchObject({ message: expect.stringMatching(/has a page type that can’t be used: The “Recipe” page type/), destination: { field: 'structuredData' } });
     expect(preview(state, POST).problem).toBeNull();
   });
 
@@ -232,6 +267,10 @@ describe('structuredPreview in words', () => {
       const graph = preview(s, subject).graph;
       if (graph.kind !== 'graph') throw new Error(graph.kind);
       expect(`<script type="application/ld+json">${graph.json}</script>`).toBe(graphScript(publishedState(s), subject));
+      if (subject === PAGE) {
+        expect(graph.json).toContain('Bowls \\u003c/script> & cups \\u003cby hand>');
+        expect(JSON.parse(graph.json)['@graph'].map((n: { description?: string }) => n.description)).toContain('Bowls </script> & cups <by hand>');
+      }
     }
   });
 });

@@ -29,7 +29,8 @@ const PAGE_SEO_FIELDS: Record<Extract<EditorDestination, { kind: 'pageSeo' }>['f
   description: '#page-seo-description',
   noindex: '#page-seo-noindex',
   socialImage: '[data-seo-field="socialImage"] button',
-  structuredData: '#page-structured-type'
+  structuredData: '#page-structured-type',
+  pageTitle: '[data-seo-field="pageTitle"] input'
 };
 
 /**
@@ -58,7 +59,8 @@ export function openEditorDestination(dest: EditorDestination) {
     // what the page is) opened at the field.
     selectPage(dest.pageId, null);
     setState({ modal: null, rightTab: 'inspect', dockOpen: true });
-    return revealWhenShown(dest.field === 'structuredData' ? 'page-structured-data' : 'page-seo', PAGE_SEO_FIELDS[dest.field]);
+    const section = dest.field === 'structuredData' ? 'page-structured-data' : dest.field === 'pageTitle' ? 'page-basic' : 'page-seo';
+    return revealWhenShown(section, PAGE_SEO_FIELDS[dest.field]);
   }
   if (dest.kind === 'entry') {
     const collection = Object.hasOwn(snap.state.collections ?? {}, dest.collectionId) ? snap.state.collections[dest.collectionId] : undefined;

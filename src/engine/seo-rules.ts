@@ -531,7 +531,7 @@ const entityReadiness: SeoAuditRule = {
 /**
  * What the audit says of one document's typed structured data (shared/page-structured-data.ts), or null: a page the
  * author says is a service, a product, an event or a guide whose structured data can't say so yet (a fact it needs is
- * missing, two contradict each other), or one saved by hand that can't be used. Only the author knows the facts, so the
+ * missing, two contradict each other, or the page has no title to name it by), or one saved by hand that can't be used. Only the author knows the facts, so the
  * AI is not offered to fill them in. Judged on the pages whose structured data the website writes, or will once it has
  * a public URL. The editor's structured data preview says the same.
  */
@@ -540,22 +540,28 @@ export function pageStructuredDataFinding(state: ProjectState, d: EffectiveSeo):
   const page = state.pages[d.subject.pageId];
   const seo = page.seo && typeof page.seo === 'object' ? page.seo : undefined;
   const found = inspectPageStructuredData(seo?.structuredData);
-  if (!found.issues.length) return null;
+  // A service, product, event or guide is named by the page's own title (generator/structured-data.ts): with a blank
+  // one the entity is left out, however complete its facts are.
+  const unnamed = found.ready && found.type !== 'WebPage' && found.type !== 'AboutPage' && found.type !== 'ContactPage' && !seoText(page.title);
+  if (!found.issues.length && !unnamed) return null;
+  const ready = found.ready && !unnamed;
   return finding('entity', {
     severity: 'warning',
-    code: found.ready ? 'SEO_PAGE_STRUCTURED_DATA_UNUSABLE' : 'SEO_PAGE_STRUCTURED_DATA_INCOMPLETE',
-    message: found.ready
+    code: ready ? 'SEO_PAGE_STRUCTURED_DATA_UNUSABLE' : 'SEO_PAGE_STRUCTURED_DATA_INCOMPLETE',
+    message: unnamed
+      ? `${named(state, d)} is marked as ${typePhrase(found.type)}, but its structured data can’t name it until the page has a title: ${['Add the page’s title.', ...found.issues.map((i) => i.message)].join(' ')}`
+      : ready
       ? `${named(state, d)} has structured data that can’t all be used: ${found.issues.map((i) => i.message).join(' ')}`
       : found.type === 'WebPage'
         ? `${named(state, d)} has a page type that can’t be used: ${found.issues.map((i) => i.message).join(' ')}`
         : `${named(state, d)} is marked as ${typePhrase(found.type)}, but its structured data can’t name it until its facts are complete: ${found.issues.map((i) => i.message).join(' ')}`,
     owner: ownerOf(d),
     site: 'structuredData',
-    explanation: found.ready
+    explanation: ready
       ? 'Search engines and AI answer engines compare services, products, events and guides by the facts their pages state. A fact that can’t be used is left out on its own; the rest is written as before.'
       : 'Search engines and AI answer engines compare services, products, events and guides by the facts their pages state. Until the facts it needs (a price, a start date) are there, the page’s structured data leaves the entity out; the rest of it is written as before.',
     aiFixable: false,
-    destination: { kind: 'pageSeo', pageId: d.subject.pageId, field: 'structuredData' }
+    destination: { kind: 'pageSeo', pageId: d.subject.pageId, field: unnamed ? 'pageTitle' : 'structuredData' }
   });
 }
 

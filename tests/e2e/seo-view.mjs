@@ -1110,6 +1110,7 @@ await row('About').click();
 await surface('Structured data').click();
 await eventually(async () => assert.equal(await problem.getAttribute('data-code'), 'SEO_PAGE_STRUCTURED_DATA_INCOMPLETE'), 20000);
 assert.match(await problem.innerText(), /marked as a Product.*Add the currency\./s, 'it says what the product still needs');
+assert.match(await problem.innerText(), /compare services, products, events and guides/, 'and why it matters');
 assert.equal(await entity('Product').count(), 0, 'and the product is not described until then');
 assert.match(await entity('This page').innerText(), /This is a web page\./);
 assert.match(await entity('Publisher').innerText(), /Riverside Studio, an organization, publishes the site\./);
@@ -1123,6 +1124,8 @@ assert.ok((await topOf(problem)) < (await topOf(entity('This page'))), 'then wha
 await problem.getByRole('button', { name: 'Go to Structured data' }).click();
 await eventually(async () => assert.equal(await holder.isVisible(), false, 'the link leaves the view'));
 await eventually(async () => assert.equal(await win.evaluate(() => document.activeElement?.id), 'page-structured-type', 'for the page’s Structured data setting'), 20000);
+assert.equal(await inspected.innerText(), 'About', 'of the page the view was on');
+assert.equal(await win.locator('#page-structured-type').inputValue(), 'Product');
 await rail('seo').click();
 await eventually(async () => assert.equal(await view.locator('.seo-title').innerText(), 'About'));
 await apply([{ type: 'page.update', pageId: about.id, structuredData: { currency: 'ZAR' } }], 'Complete the facts');
@@ -1131,6 +1134,10 @@ await eventually(async () => assert.match(await entity('Product').innerText(), /
 assert.equal(await problem.count(), 0, 'nothing is missing');
 await jsonBlock.locator('summary').click();
 assert.equal(await graphShown.isVisible(), true, 'the JSON-LD is one click away');
+const shownJson = await graphShown.textContent();
+assert.equal(shownJson, JSON.stringify(JSON.parse(shownJson)).replace(/</g, '\\u003c'), 'as the text of the exported page’s script');
+assert.ok(await graphShown.evaluate((el) => el.scrollWidth <= el.clientWidth), 'wrapped, so it never scrolls sideways');
+assert.deepEqual(await entity('Breadcrumb trail').getByRole('listitem').allInnerTexts().then((all) => all.map((t) => t.split('\n')[0])), ['Home', 'About'], 'the trail in order');
 await apply([{ type: 'page.update', pageId: about.id, structuredData: { price: '14' } }], 'Change the price');
 await eventually(async () => assert.match(await entity('Product').innerText(), /14 ZAR/), 20000);
 assert.equal(await jsonOpen(), true, 'an edit leaves the open JSON-LD open');
@@ -1138,7 +1145,16 @@ assert.equal(JSON.parse(await graphShown.textContent())['@graph'].find((n) => n[
 const wide = await view.evaluate((el) => [el.querySelector('.seo-scroll')].map((n) => ({ scroll: n.scrollWidth, client: n.clientWidth }))[0]);
 assert.ok(wide.scroll <= wide.client, `the structured data: nothing scrolls sideways (${JSON.stringify(wide)})`);
 await win.screenshot({ path: join(SHOTS, 'seo-view-structured-data-words.png') });
+// A page title left blank (only an edit made outside its field can) names no product, and the link goes to the title.
+await apply([{ type: 'page.update', pageId: about.id, title: '   ' }], 'Blank the title');
+await eventually(async () => assert.match(await problem.innerText(), /until the page has a title/), 20000);
+assert.equal(await entity('Product').count(), 0);
+await problem.getByRole('button', { name: 'Go to page title' }).click();
+await eventually(async () => assert.equal(await win.evaluate(() => !!document.activeElement?.closest('[data-seo-field="pageTitle"]') && document.activeElement.tagName), 'INPUT', 'the page’s Title has the cursor'), 20000);
+await apply([{ type: 'page.update', pageId: about.id, title: 'About' }], 'Name the page again');
+await rail('seo').click();
 await row('Spring open studio').click();
+await eventually(async () => assert.equal(await view.locator('.seo-title').innerText(), 'Spring open studio'));
 await surface('Structured data').click();
 await eventually(async () => assert.match(await entity('Blog post').innerText(), /“Spring open studio”.*Published\s+2 March 2027/s), 20000);
 assert.match(await entity('Blog post').innerText(), /Publisher\s+Riverside Studio/);

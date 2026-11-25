@@ -313,6 +313,7 @@ await tab('Structured data').click();
 const graph = async () => JSON.parse(await section().getByTestId('seo-graph').textContent());
 const webPage = async () => (await graph())['@graph'].find((n) => n['@type'] === 'WebPage');
 await eventually(async () => assert.deepEqual(await webPage().then((n) => ({ url: n.url, name: n.name })), { url: 'https://studio.example/work/kitchens/', name: 'Kitchens · Harbour Lane Studio' }));
+assert.equal(await section().getByRole('region', { name: 'This page', exact: true }).isVisible(), true, 'the Inspector says it in words');
 const status = (id) => section().locator(`[data-status="${id}"] dd`);
 assert.equal(await status('canonical').innerText(), 'https://studio.example/work/kitchens/');
 assert.equal(await status('search').innerText(), 'May list it');

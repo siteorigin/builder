@@ -139,7 +139,7 @@ function publisherSection(node: GraphNode, text: Text): Section {
   return {
     heading: 'Publisher',
     statement: name ? `${name}, ${PUBLISHERS[type]}, publishes the site.` : `The site is published by ${PUBLISHERS[type]} with no name.`,
-    use: 'Says who stands behind the site, and ties it to the same publisher elsewhere.',
+    use: 'Says who stands behind the site.',
     ...g.rest()
   };
 }
@@ -155,6 +155,7 @@ function websiteSection(node: GraphNode, text: Text): Section {
   const search = g.take('potentialAction');
   if (isObject(search) && isObject(search.target)) {
     g.row('Search address', text(search.target.urlTemplate));
+    if (typeof search['query-input'] === 'string' && search['query-input'].startsWith('required ')) g.row('Search words', 'Required: they go where the address says {search_term_string}');
   } else g.row('Action', text(search));
   return {
     heading: 'Website',
@@ -192,7 +193,7 @@ function pageSection(node: GraphNode, text: Text): Section {
   return {
     heading: 'This page',
     statement: `This is ${kinds.length ? joined(kinds) : 'a web page'}.`,
-    use: 'Search engines and AI answer engines read what this page is, what it is called and where it lives.',
+    use: 'What search engines and AI answer engines read about this page itself.',
     ...g.rest()
   };
 }
@@ -224,7 +225,7 @@ function articleSection(node: GraphNode, text: Text, type: 'BlogPosting' | 'Arti
   return {
     heading: type === 'BlogPosting' ? 'Blog post' : 'Article',
     statement: headline ? `The page is about ${what}, “${headline}”.` : `The page is about ${what} with no headline.`,
-    use: 'The headline, byline, dates and picture identify the piece of writing.',
+    use: 'Identifies the piece of writing and who publishes it.',
     ...g.rest()
   };
 }
