@@ -5,6 +5,7 @@
  * library's own record of the file, so no style text can fetch an address.
  */
 import { describe, expect, it } from 'vitest';
+import { compile } from 'svelte/compiler';
 import type { EditOperation } from '@shared/ops';
 import { validateOperation } from '@shared/ops';
 import type { AssetRecord, ComponentDefinition, ElementNode, ElementRef, InstanceNode, ProjectState, TextNode } from '@shared/types';
@@ -292,6 +293,11 @@ describe('the stylesheet', () => {
     expect(shared).toContain('background-image: var(--so-bg-image, none);');
     const own = files.get(defFile(def))!;
     expect(own).toMatch(/<style>\n[\s\S]*:global\(\.so-[^)]*--tone-dark\.so-[^)]*__root\) \{\n\t\t--so-bg-image: linear-gradient\(rgba\(0, 0, 0, 0\.6\), rgba\(0, 0, 0, 0\.6\)\), url\("\/assets\/harbour-1a2b3c4d\.jpg"\);/);
+    // Svelte takes the block as it is, global selectors and all, and keeps the rule in the component's CSS.
+    const compiled = compile(own, { filename: defFile(def), generate: 'client', runes: true, css: 'external' });
+    expect(compiled.css?.code).toContain('url("/assets/harbour-1a2b3c4d.jpg")');
+    expect(compiled.css?.code).toMatch(/@media \(max-width: 767\.98px\) \{\s*\.so-[^{]*--tone-dark\.so-[^{]*__root \{\s*--so-bg-image: [^;]*image-set\(/);
+    expect(compiled.warnings).toEqual([]);
     // A design with no picture keeps its file as it was.
     const plain = Object.values(s.components).find((d) => d.kind === 'managed' && d.id !== def.id)!;
     expect(files.get(defFile(plain))).not.toContain('<style>');
