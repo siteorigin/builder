@@ -14,7 +14,7 @@ import { RSS_PATH, generateRssFeed, rssDate, xmlText } from '@generator/rss';
 import { buildSearchIndex, generateSearchIndex } from '@generator/search';
 import { documentGraph } from '@generator/structured-data';
 import { validateRoute } from '@shared/routes';
-import { publicUrlWarning } from '../../src/main/export';
+import { leaveOutDrafts, publicUrlWarning } from '../../src/main/export';
 import { heldAsMedia } from '../../src/main/project/versions';
 import { ProjectSession } from '../../src/main/project/session';
 import { POST_BODY, copy, run, seoSite } from './fixtures/seo-site';
@@ -174,6 +174,38 @@ describe('the RSS feed', () => {
     expect(out).toEqual(fresh(publishedState(s)));
     expect(out.has(RSS_PATH)).toBe(false);
     expect(generateLayout(publishedState(s), {})).not.toContain('rss.xml');
+  });
+});
+
+describe('the website export', () => {
+  it('carries the feed, each post’s BlogPosting and the posts search finds, and no trace of a draft post', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'so-rss-export-'));
+    try {
+      const { state, home } = seoSite();
+      const withDraft = run(
+        state,
+        { type: 'node.insert', owner: { kind: 'page', id: home }, componentId: 'site.search' },
+        create('en_secret', 'Secret kiln opening', { publishedAt: '2027-08-01', draft: true, excerpt: 'Not yet announced.' })
+      );
+      const s = await ProjectSession.create(dir, withDraft);
+      s.settleMs = 0;
+      await s.close();
+      await leaveOutDrafts(dir, withDraft);
+      const feed = readFileSync(join(dir, RSS_PATH), 'utf8');
+      expect(assertWellFormed(feed)).toBe('rss');
+      expect(feed).toContain(`<link>${SPRING}</link>`);
+      const index = readFileSync(join(dir, 'src/lib/siteorigin/runtime/search-index.js'), 'utf8');
+      expect(index).toContain('"route":"/blog/spring-pottery-classes/"');
+      const post = readFileSync(join(dir, 'src/routes/blog/spring-pottery-classes/+page.svelte'), 'utf8');
+      expect(post).toContain('\\"@type\\":\\"BlogPosting\\"');
+      for (const [path, content] of [[RSS_PATH, feed], ['search-index.js', index]]) expect(content, path).not.toMatch(/Secret kiln|Not yet announced|en_secret/);
+      expect(readFileSync(join(dir, 'src/routes/+layout.svelte'), 'utf8')).toContain('href={"https://example.com/studio/rss.xml"}');
+      // What the export holds is exactly what the published site generates.
+      const published = generateProject(publishedState(withDraft), { instrument: false });
+      for (const path of [RSS_PATH, 'src/lib/siteorigin/runtime/search-index.js', 'src/routes/+layout.svelte']) expect(readFileSync(join(dir, path), 'utf8'), path).toBe(published.get(path));
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
   });
 });
 
