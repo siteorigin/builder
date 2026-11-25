@@ -6,7 +6,7 @@
  * design stay placements, given the values and styles they were shown with.
  */
 import type { ComponentDefinition, DetachedFrom, GraphNode, InstanceNode, NodeTree, ProjectState, PropSchema, ResponsiveStyles } from '@shared/types';
-import { ELEMENT_ACTIONS, ELEMENT_TAGS, ICON_POSITIONS, TEXT_TAGS, isAppearPreset, isBinding, isBindingRef, slotChildren, stateInitial } from '@shared/types';
+import { ELEMENT_ACTIONS, ELEMENT_TAGS, ICON_POSITIONS, TEXT_TAGS, isAppearPreset, isBinding, isBindingRef, slotChildren, slotFallback, stateInitial } from '@shared/types';
 import { propBindingSchema } from '@shared/bindings';
 import type { Op } from '@shared/ops';
 import { newId } from '@shared/ids';
@@ -389,7 +389,19 @@ export function detachInstance(state: ProjectState, op: Op<'component.detachInst
       if (Object.keys(variants).length) n.variants = variants;
       else delete n.variants;
     }
-    if (src.slots) n.slots = Object.fromEntries(Object.keys(src.slots).map((slot) => [slot, slotChildren(src, slot).flatMap((c) => emit(c, at))]));
+    if (src.slots)
+      n.slots = Object.fromEntries(
+        Object.keys(src.slots).map((slot) => {
+          const given = slotChildren(src, slot);
+          const shown = given.flatMap((c) => emit(c, at));
+          // Content the design gives that slot, hidden here, still keeps what the placed component shows of its own in an
+          // empty slot out of it (only this placement's own slot handed on, as it is, gives it nothing). Left empty on the
+          // page, that would show.
+          if (given.length && !shown.length && !(given.length === 1 && handsOn(given[0])) && showsOwn(inner, slot))
+            fail(`“${label}” would show what “${inner!.name}” shows in its empty “${inner!.slots?.[slot]?.label ?? slot}” slot once detached, where the content its design puts there is hidden now. Change its settings first.`);
+          return [slot, shown];
+        })
+      );
     // What the design and the placement give its root lands on its own placement now, where it beats its design: only
     // what beat that design before goes there, so an option of its own that won still wins.
     const chain = rootChain(n);
@@ -433,6 +445,38 @@ export function detachInstance(state: ProjectState, op: Op<'component.detachInst
     anchors.add(src.anchor);
   };
 
+  /** Whether a design node given to a nested slot is only this placement's own slot handed on, as it is (as the generator hands it on). */
+  const handsOn = (id: string): boolean => {
+    const n = own(design.nodes, id);
+    return n?.kind === 'slot' && !slotFallback(n).length && !n.when && !n.unless && !!own(def.slots, n.slot);
+  };
+
+  /**
+   * Whether a component may show something of its own in a slot left empty: its design's fallback there, code (which
+   * can show anything while a slot is not given), or a component it hands that slot on to as it is, that may.
+   */
+  const ownShown = new Map<string, boolean>();
+  const showsOwn = (c: ComponentDefinition | undefined, slot: string, depth = 0): boolean => {
+    if (!c || depth > 1000) return false;
+    if (c.kind === 'code') return true;
+    // Each design and slot is worked out once, however many paths reach it (and a loop reached again is no answer).
+    const key = `${c.id}|${slot}`;
+    if (ownShown.has(key)) return ownShown.get(key)!;
+    ownShown.set(key, false);
+    const nodes = c.tree?.nodes ?? {};
+    const shown = Object.values(nodes).some((x) => {
+      if (x.kind === 'slot') return x.slot === slot && slotFallback(x).length > 0;
+      if (x.kind !== 'instance') return false;
+      return Object.keys(x.slots ?? {}).some((k) => {
+        const ids = slotChildren(x, k);
+        const only = ids.length === 1 ? own(nodes, ids[0]) : undefined;
+        return only?.kind === 'slot' && only.slot === slot && !slotFallback(only).length && !only.when && !only.unless && showsOwn(own(state.components, x.definitionId), k, depth + 1);
+      });
+    });
+    ownShown.set(key, shown);
+    return shown;
+  };
+
   /** The page nodes one of the design's nodes renders as here: none, one, or one per list item. */
   const emit = (id: string, at: At): string[] => {
     const src = own(design.nodes, id);
@@ -451,6 +495,8 @@ export function detachInstance(state: ProjectState, op: Op<'component.detachInst
       }
       case 'slot': {
         const content = slotChildren(inst, src.slot);
+        // Left empty, the slot shows the design's fallback, made the page's own like the rest of the design.
+        if (!content.length) return slotFallback(src).flatMap((c) => emit(c, at));
         const uses = slotUses.get(src.slot) ?? 0;
         slotUses.set(src.slot, uses + 1);
         // The content moves here; a slot the design shows again (once per list item) gets its own copies.

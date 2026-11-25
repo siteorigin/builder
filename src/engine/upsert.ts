@@ -19,7 +19,7 @@ import { findVariant } from '@shared/variants';
 import { PROJECT_DEFINITION_ID, projectDefinitionId } from '@shared/component-ids';
 import { isCarouselTrack } from '@generator/card-links';
 import { ICONS } from '@catalogue/foundation/icons';
-import { EngineError, RESERVED_ANCHORS, enclosingRepeatProp, fail, instancesOf } from './tree';
+import { EngineError, RESERVED_ANCHORS, enclosingRepeatProp, fail, getTree, instancesOf } from './tree';
 import { clone } from './install';
 import { normalizeImage, normalizeLink, normalizeRichText } from './values';
 import { tagKindProblem } from './semantic-tags';
@@ -99,7 +99,7 @@ export function componentUpsert(state: ProjectState, given: UpsertOp, helpers: U
   const id = was?.id ?? candidate.id;
   const before = was ? clone(was) : undefined;
   // The filled slots each placement shows now, worked out before its values move.
-  const shownBefore = new Map(was ? instancesOf(state, id).map(({ node }) => [node, shownSlots(was, node)] as const) : []);
+  const shownBefore = new Map(was ? instancesOf(state, id).map(({ node, owner }) => [node, shownSlots(was, node, getTree(state, owner))] as const) : []);
   if (was) {
     // Options and slots the new contract leaves out go first, as their own removals would: a placement that chooses an
     // option keeps the default instead, and content in a removed slot, or a component around it that can still choose
@@ -112,7 +112,8 @@ export function componentUpsert(state: ProjectState, given: UpsertOp, helpers: U
         if ('error' in findVariant(was, option, axis)) forgetOption(state, id, axis, option);
         else removeVariant(state, { type: 'component.removeVariant', definitionId: id, variant: option, axis });
       }
-    for (const slot of Object.keys(was.slots ?? {})) if (!own(slots, slot)) removeSlot(state, { type: 'component.removeSlot', definitionId: id, slot });
+    // The new design replaces the tree and its parts whole, so nothing of the old one is cleaned up here.
+    for (const slot of Object.keys(was.slots ?? {})) if (!own(slots, slot)) removeSlot(state, { type: 'component.removeSlot', definitionId: id, slot }, { designReplaced: true });
     keepFieldContent(state, was, properties);
   } else state.components[id] = { ...candidate, properties: {}, slots: undefined };
   const def = state.components[id];
@@ -130,7 +131,7 @@ export function componentUpsert(state: ProjectState, given: UpsertOp, helpers: U
   replaceProperties(state, def, op.properties, [], { bindingsChecked: true });
   // Each slot is declared as setSlot declares it, which refuses one that no longer takes what a placement put there.
   for (const [slot, d] of Object.entries(slots ?? {}))
-    setSlot(state, { type: 'component.setSlot', definitionId: id, slot, label: d.label, description: d.description ?? null, categories: d.categories ?? null, primitives: d.primitives ?? null, max: d.max ?? null });
+    setSlot(state, { type: 'component.setSlot', definitionId: id, slot, label: d.label, description: d.description ?? null, categories: d.categories ?? null, componentIds: d.componentIds ?? null, primitives: d.primitives ?? null, max: d.max ?? null });
   // Styles go through node.setStyle, so each rule is checked and stored as one set by hand would be.
   for (const n of op.nodes) if (n.styles) applyStyles(state, id, n.id, n.styles, helpers);
   for (const [axis, a] of Object.entries(op.variantAxes ?? {}))
@@ -456,7 +457,7 @@ function designNode(state: ProjectState, s: DesignNode): GraphNode {
         ...(s.filter ? { filter: { field: s.filter.field, ...(s.filter.when !== undefined ? { when: { $prop: s.filter.when } } : {}) } } : {})
       } as GraphNode;
     case 'slot':
-      return { ...base, kind: 'slot', slot: s.slot } as GraphNode;
+      return { ...base, kind: 'slot', slot: s.slot, ...(s.children?.length ? { children: [...s.children] } : {}) } as GraphNode;
   }
 }
 
@@ -509,6 +510,7 @@ function designSlots(op: UpsertOp, tree: NodeTree): Record<string, SlotDef> | un
       label: d.label.trim(),
       ...(description ? { description } : {}),
       ...(d.categories ? { categories: [...new Set(d.categories)] as SlotDef['categories'] } : {}),
+      ...(d.componentIds ? { componentIds: [...new Set(d.componentIds.map((c) => c.trim()))] } : {}),
       ...(d.primitives ? { primitives: [...new Set(d.primitives)] as SlotDef['primitives'] } : {}),
       ...(d.max !== undefined ? { max: d.max } : {})
     };
@@ -646,7 +648,7 @@ function settlePlacements(state: ProjectState, was: ComponentDefinition, def: Co
     if (node.itemOverrides && !Object.keys(node.itemOverrides).length) delete node.itemOverrides;
     // Content a placement shows now must still show: a slot the new design puts inside a list it holds no items of
     // would hide it.
-    const shown = shownSlots(def, node);
+    const shown = shownSlots(def, node, getTree(state, owner));
     const hidden = Object.entries(node.slots ?? {}).find(([slot, ids]) => Array.isArray(ids) && ids.length && shownBefore.get(node)?.has(slot) && !shown.has(slot));
     if (hidden) fail(`${label}: ${def.name} would no longer show the content in its "${hidden[0]}" slot. Move that content out first, or show the slot outside the list.`);
     const around = owner.kind === 'component' ? own(state.components, owner.id) : undefined;

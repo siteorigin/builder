@@ -202,7 +202,14 @@ const DESIGN_NODE = z.discriminatedUnion('kind', [
         .describe('Category pills above the items: field, a text or choice item field; when, the yes/no property turning them on.')
     })
     .strict(),
-  z.object({ kind: z.literal('slot'), ...DESIGN_NODE_BASE, slot: z.string().describe('The declared slot whose content shows here.') }).strict()
+  z
+    .object({
+      kind: z.literal('slot'),
+      ...DESIGN_NODE_BASE,
+      slot: z.string().describe('The declared slot whose content shows here.'),
+      children: DESIGN_CHILDREN.describe('IDs of the nodes shown here instead while a placement leaves the slot empty, in order.')
+    })
+    .strict()
 ]);
 
 /** Only files written by the importer, inside static/assets/. */
@@ -692,6 +699,7 @@ export const OPERATION_SCHEMAS = {
               label: z.string().min(1).max(60),
               description: z.string().max(300).optional(),
               categories: z.array(z.enum(COMPONENT_CATEGORIES as unknown as [string, ...string[]])).max(20).optional(),
+              componentIds: z.array(z.string().min(1).max(120)).max(50).optional(),
               primitives: z.array(z.enum(SLOT_PRIMITIVES as unknown as [string, ...string[]])).max(6).optional(),
               max: z.number().int().min(0).max(1000).optional()
             })
@@ -824,7 +832,13 @@ export const OPERATION_SCHEMAS = {
       .max(20)
       .nullable()
       .optional()
-      .describe('Component categories the slot takes. With primitives, the slot takes only what either lists; with neither, anything. Left out keeps it; null removes the restriction.'),
+      .describe('Component categories the slot takes. With componentIds or primitives, the slot takes only what one of them lists; with none, anything. Left out keeps it; null removes the restriction.'),
+    componentIds: z
+      .array(z.string().min(1).max(120))
+      .max(50)
+      .nullable()
+      .optional()
+      .describe('Components the slot takes by ID, whatever their category: a catalogue contract ID (such as "features.grid") or a project component definition ID. Left out keeps it; null removes the restriction.'),
     primitives: z
       .array(z.enum(SLOT_PRIMITIVES as unknown as [string, ...string[]]))
       .max(6)

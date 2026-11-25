@@ -3,7 +3,7 @@ import { createContext, Fragment, useContext, useEffect, useLayoutEffect, useRef
 import { ArrowDown, ArrowUp, ArrowUpDown, BookmarkPlus, Box, Download, ChevronDown, ChevronRight, Columns3, Component, Copy, CornerDownRight, CornerLeftUp, Ellipsis, Eye, EyeOff, FileInput, FileText, Image, LayoutGrid, Link2, Minus, Monitor, PanelBottom, PanelTop, Pencil, Plus, Repeat, Rows3, Shapes, Smartphone, Sparkles, Split, Square, SquareDashed, Tablet, Trash2, Type, Unlink, X, LayoutTemplate } from 'lucide-react';
 import type { EditOperation } from '@shared/ops';
 import type { ElementRef, GraphNode, NodeTree, OwnerRef, ProjectState } from '@shared/types';
-import { refKey, sameRef, slotChildren } from '@shared/types';
+import { refKey, sameRef, slotChildren, slotFallback } from '@shared/types';
 import { showsPart } from '@shared/page-shell';
 import { scopeForWidth } from '@shared/styles';
 import { childLists, codeTakesOverrides, displayName, findParent, subtreeIds } from '@engine/tree';
@@ -90,7 +90,7 @@ function placeOps(tree: NodeTree, owner: OwnerRef, ids: string[], to: Place): Ed
   if (!from) return null;
   const target = to.parentId === null ? tree.rootIds : (() => {
     const n = tree.nodes[to.parentId!];
-    return n?.kind === 'instance' ? slotChildren(n, to.slot!) : n && 'children' in n ? (n.children as string[]) : [];
+    return n?.kind === 'instance' ? slotChildren(n, to.slot!) : n?.kind === 'slot' ? slotFallback(n) : n && 'children' in n ? n.children : [];
   })();
   const same = from.list === target;
   const source = [...from.list];
@@ -965,6 +965,10 @@ function moveDestinations(st: ProjectState, tree: NodeTree, owner: OwnerRef, ids
     if (n.kind === 'element') {
       if (here.parentId === n.id) continue;
       out.push({ path: pathOf(n.id), parentId: n.id, index: n.children.length });
+    } else if (n.kind === 'slot' && owner.kind === 'component') {
+      // A design's slot outlet: into its fallback.
+      if (here.parentId === n.id) continue;
+      out.push({ path: pathOf(n.id), parentId: n.id, index: slotFallback(n).length });
     } else if (n.kind === 'instance') {
       const slots = st.components[n.definitionId]?.slots ?? {};
       for (const [slot, info] of Object.entries(slots)) {
@@ -1060,7 +1064,8 @@ function LayerRow({ state, owner, tree, id, depth, onMenu, path, parentId }: Lis
         : [];
   const childCount = slotLists.reduce((c, l) => c + l.ids.length, 0);
   const expandable = parts.length > 0 || childCount > 0;
-  const canHold = n?.kind === 'element' || (n?.kind === 'instance' && Object.keys(def?.slots ?? {}).length > 0);
+  // A design's slot outlet holds its fallback, shown while a placement leaves the slot empty.
+  const canHold = n?.kind === 'element' || (n?.kind === 'instance' && Object.keys(def?.slots ?? {}).length > 0) || (n?.kind === 'slot' && owner.kind === 'component');
   // In component editing the canvas selects the definition's root through the placement; match it here. A part
   // of a component placed in the design is never that root, whatever its node is called inside that component.
   const isDefRoot = owner.kind === 'component' && state.components[owner.id]?.tree?.rootIds[0] === id;
@@ -1128,7 +1133,7 @@ function LayerRow({ state, owner, tree, id, depth, onMenu, path, parentId }: Lis
     const moving = dragging.ids;
     if (where === 'inside' || where === 'first') {
       const slot = n.kind === 'instance' ? Object.keys(def?.slots ?? {})[0] : undefined;
-      const list = n.kind === 'element' ? n.children : n.kind === 'instance' ? slotChildren(n, slot!) : [];
+      const list = n.kind === 'element' ? n.children : n.kind === 'instance' ? slotChildren(n, slot!) : n.kind === 'slot' ? slotFallback(n) : [];
       const before = where === 'first' ? (list.find((c) => !moving.includes(c)) ?? null) : null;
       return placeOps(tree, owner, moving, { parentId: id, slot, before });
     }

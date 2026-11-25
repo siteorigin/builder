@@ -563,9 +563,15 @@ export interface RepeatFilter {
   /** The yes/no property that turns the pills on; without it they always show. */
   when?: { $prop: string };
 }
+/**
+ * Where a managed component's design shows what each placement puts in one of its slots. `children` is the design's
+ * fallback for it: nodes of the same tree, shown only while the placement gives that slot nothing, and in their place
+ * as soon as it gives it anything.
+ */
 export interface SlotNode extends NodeBase {
   kind: 'slot';
   slot: string;
+  children?: string[];
 }
 export interface InstanceNode extends NodeBase {
   kind: 'instance';
@@ -604,6 +610,11 @@ export interface InstanceNode extends NodeBase {
    * (src/shared/webmcp.ts), as the author typed them. Either left out takes the default.
    */
   webmcp?: { toolName?: string; toolDescription?: string };
+}
+
+/** A slot outlet's fallback: what its design shows while a placement gives the slot nothing (none for a list damaged by hand). */
+export function slotFallback(node: { children?: unknown }): string[] {
+  return Array.isArray(node.children) && node.children.every((c) => typeof c === 'string') ? (node.children as string[]) : [];
 }
 
 /** A placement's content in one slot: the list it holds, or none when a hand edit left something else there. */
@@ -674,15 +685,20 @@ export const SLOT_PRIMITIVES: readonly SlotPrimitive[] = ['element', 'text', 'im
 export const COMPONENT_CATEGORIES: readonly ComponentCategory[] = ['hero', 'content', 'social-proof', 'conversion', 'media', 'layout', 'shell', 'primitive', 'custom'];
 
 /**
- * A place in a component where each placement puts content of its own. With neither `categories` nor `primitives`
- * it takes anything; with either, only components of those categories and elements of those kinds. `max` caps how
- * many children it holds (0 closes it).
+ * A place in a component where each placement puts content of its own. With none of `categories`, `componentIds` and
+ * `primitives` it takes anything; with any of them, only what one of them lists: components of those categories,
+ * the components named, and elements of those kinds. `max` caps how many children it holds (0 closes it).
  */
 export interface SlotDef {
   label: string;
   /** What belongs there, for authors and the AI. */
   description?: string;
   categories?: ComponentCategory[];
+  /**
+   * Components it takes by name, whatever their category: a catalogue contract ID (`ComponentDefinition.componentId`,
+   * the same in every compatible theme) or a project definition ID (`ComponentDefinition.id`).
+   */
+  componentIds?: string[];
   primitives?: SlotPrimitive[];
   max?: number;
 }

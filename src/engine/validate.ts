@@ -966,6 +966,9 @@ function structureDiagnostics(state: ProjectState): Diagnostic[] {
         for (const problem of entryBindingProblems(state, state.collections[owner.id], n)) out.push({ severity: 'error', code: 'BINDING_INVALID', message: `${label}: ${nodeLabel(n)} ${problem}`, owner, nodeId: n.id, site: n.id });
       else if (n.kind === 'slot' && def && !Object.hasOwn(def.slots ?? {}, n.slot))
         out.push({ severity: 'error', code: 'SLOT_INVALID', message: `${label}: the slot "${n.slot}" is not declared by the component.`, owner, nodeId: n.id });
+      // A fallback damaged by hand shows nothing until it is fixed.
+      if (n.kind === 'slot' && n.children !== undefined && (!Array.isArray(n.children) || n.children.some((c) => typeof c !== 'string')))
+        out.push({ severity: 'error', code: 'SLOT_INVALID', message: `${label}: the fallback content of the slot "${n.slot}" is not a list of elements.`, owner, nodeId: n.id, site: `${n.id}|fallback` });
       // Checked on its own, so a read reported on the same button never hides an action added to it.
       if (!def && Object.hasOwn(n, 'stateAction'))
         out.push({ severity: 'error', code: 'BINDING_SCOPE', message: `${label}: ${nodeLabel(n)} changes UI state, which only a button inside a component definition can.`, owner, nodeId: n.id, site: `${n.id}|stateAction` });
@@ -986,7 +989,7 @@ function structureDiagnostics(state: ProjectState): Diagnostic[] {
           if (!decl || slotDeclProblem(decl)) continue;
           const fill = slotFill(state, tree, placed, decl, def);
           const where = `${label}: the “${decl.label}” slot of ${displayName(state, n)}`;
-          for (const r of fill.refusedAll) out.push({ severity: 'error', code: 'SLOT_REFUSED', message: `${where} takes ${slotAccepts(decl)}, but holds ${r.what}.`, owner, nodeId: r.nodeId });
+          for (const r of fill.refusedAll) out.push({ severity: 'error', code: 'SLOT_REFUSED', message: `${where} takes ${slotAccepts(decl, state)}, but holds ${r.what}.`, owner, nodeId: r.nodeId });
           // The message leaves the count out, so taking content out of a slot that is still over its limit is no new problem.
           if (decl.max !== undefined && fill.count > decl.max) out.push({ severity: 'error', code: 'SLOT_FULL', message: `${where} holds at most ${decl.max}, but shows more.`, owner, nodeId: n.id });
         }

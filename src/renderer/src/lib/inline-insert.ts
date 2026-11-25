@@ -4,10 +4,11 @@
  * element in it. Each opens a short searchable list of what fits there, and what is chosen goes exactly there. Worked
  * out on a project's state alone; the canvas draws them on the outline of what they belong to.
  */
-import type { ElementRef, NodeTree, OwnerRef, ProjectState } from '@shared/types';
+import type { ComponentDefinition, ElementRef, NodeTree, OwnerRef, ProjectState } from '@shared/types';
 import type { Diagnostic } from '@engine/validate';
 import { childLists } from '@engine/tree';
-import { catalogueEntries, CATEGORY_LABELS } from '@catalogue/index';
+import { slotDecl } from '@engine/slots';
+import { catalogueEntries, CATEGORY_LABELS, getTheme } from '@catalogue/index';
 import { definitionRole, heldSlots, insertOps, shownOnceSlots, type InsertAt, type InsertRole } from './insert-at';
 import { dropRefusal, savingProblems } from './insert-drop';
 import { BASICS, basicHay, basicSpec, projectInsertDefinitions, type InsertSpec } from './insert-search';
@@ -131,23 +132,52 @@ export interface QuickItem {
  * offered, nor code components outside Developer mode, as in the Insert panel.
  */
 export function quickItems(state: ProjectState, role: InsertRole, dev = false): QuickItem[] {
-  const mine: QuickItem[] = projectInsertDefinitions(state, dev)
+  const mine = projectInsertDefinitions(state, dev)
     .filter((d) => definitionRole(state, d.id) === role)
-    .map((d) => ({ key: `c:${d.id}`, kind: 'component', name: d.name, hay: `${d.name} ${d.description ?? ''} ${d.kind === 'code' ? 'code ' : ''}component`.toLowerCase(), group: 'Your components', spec: { definitionId: d.id } }));
+    .map(componentItem);
   if (role === 'element')
     return [...BASICS.map((b): QuickItem => ({ key: `e:${b.id}`, kind: 'element', name: b.name, hay: basicHay(b), group: 'Basic elements', spec: basicSpec(b), icon: b.icon })), ...mine];
-  const sections = catalogueEntries(state.site.themeId).map(
-    (e): QuickItem => ({
-      key: `s:${e.componentId}`,
-      kind: 'section',
-      name: e.name,
-      hay: `${e.name} ${e.description} ${e.tags.join(' ')} ${CATEGORY_LABELS[e.category] ?? e.category} section`.toLowerCase(),
-      group: 'Sections',
-      spec: { componentId: e.componentId },
-      icon: e.icon
-    })
-  );
-  return [...sections, ...mine];
+  return [...themeItems(state), ...mine];
+}
+
+/** A project component as a + item. */
+function componentItem(d: ComponentDefinition): QuickItem {
+  return { key: `c:${d.id}`, kind: 'component', name: d.name, hay: `${d.name} ${d.description ?? ''} ${d.kind === 'code' ? 'code ' : ''}component`.toLowerCase(), group: 'Your components', spec: { definitionId: d.id } };
+}
+
+/** The theme's sections as + items, or only those `only` names. */
+function themeItems(state: ProjectState, only?: readonly string[]): QuickItem[] {
+  return catalogueEntries(state.site.themeId)
+    .filter((e) => !only || only.includes(e.componentId))
+    .map(
+      (e): QuickItem => ({
+        key: `s:${e.componentId}`,
+        kind: 'section',
+        name: e.name,
+        hay: `${e.name} ${e.description} ${e.tags.join(' ')} ${CATEGORY_LABELS[e.category] ?? e.category} section`.toLowerCase(),
+        group: 'Sections',
+        spec: { componentId: e.componentId },
+        icon: e.icon
+      })
+    );
+}
+
+/**
+ * The components a slot at `at` names (a Bento grid's cards): offered inside it however they are otherwise inserted,
+ * a theme's by its contract (named by contract, or by the ID of the theme's design of it) and the project's own as
+ * they are, so a slot that takes only those never offers nothing.
+ */
+function namedItems(state: ProjectState, at: InsertAt, dev: boolean): QuickItem[] {
+  const parent = at.parentId ? treeFor(state, at.owner)?.nodes[at.parentId] : undefined;
+  const ids = parent?.kind === 'instance' && at.slot !== undefined ? (slotDecl(state, parent, at.slot)?.componentIds ?? []) : [];
+  if (!ids.length) return [];
+  const theme = getTheme(state.site.themeId).components;
+  const contracts = ids.map((id) => {
+    const d = Object.hasOwn(state.components, id) ? state.components[id] : theme.find((c) => c.id === id);
+    return d ? (d.owner === 'theme' ? d.componentId : undefined) : id;
+  });
+  const mine = projectInsertDefinitions(state, dev).filter((d) => ids.includes(d.id) || ids.includes(d.componentId));
+  return [...themeItems(state, contracts.filter((c): c is string => !!c)), ...mine.map(componentItem)];
 }
 
 /**
@@ -157,7 +187,8 @@ export function quickItems(state: ProjectState, role: InsertRole, dev = false): 
  * there (a list item). Whatever is chosen is tried again as it is added.
  */
 export function offeredAt(state: ProjectState, at: InsertAt, role: InsertRole, dev = false): QuickItem[] {
-  const items = quickItems(state, role, dev);
+  const seen = new Set<string>();
+  const items = [...quickItems(state, role, dev), ...(role === 'element' ? namedItems(state, at, dev) : [])].filter((it) => !seen.has(it.key) && !!seen.add(it.key));
   const tried = new Set(fitting(state, at, role, items.filter((it) => role === 'element' || it.kind === 'component')).map((it) => it.key));
   return items.filter((it) => (role === 'section' && it.kind !== 'component') || tried.has(it.key));
 }

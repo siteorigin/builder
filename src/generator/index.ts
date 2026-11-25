@@ -41,7 +41,7 @@ import type {
   TokenValue,
   UiStateSchema
 } from '@shared/types';
-import { CONTAINER_SCOPES, DIVIDER_ICON, ELEMENT_TAGS, GENERATOR_VERSION, LIST_FEEDS, STYLE_SCOPES, STYLE_STATES, TEXT_TAGS, conditionRef, isAppearPreset, isBinding, isBindingRef, isComparison, isContainerScope, isGroupStyleState, isStateRef, parseStyleScopeKey, slotChildren, stateInitial, styleScopeKey, type Condition, type ContainerScope, type GroupStyleState, type StyleScope } from '@shared/types';
+import { CONTAINER_SCOPES, DIVIDER_ICON, ELEMENT_TAGS, GENERATOR_VERSION, LIST_FEEDS, STYLE_SCOPES, STYLE_STATES, TEXT_TAGS, conditionRef, isAppearPreset, isBinding, isBindingRef, isComparison, isContainerScope, isGroupStyleState, isStateRef, parseStyleScopeKey, slotChildren, slotFallback, stateInitial, styleScopeKey, type Condition, type ContainerScope, type GroupStyleState, type StyleScope } from '@shared/types';
 import { INTERACTION_GROUP_CLASS, groupLookup, isInteractionGroup, partInInteractionGroup } from '@shared/interaction-groups';
 import {
   CONTAINER_QUERIES,
@@ -222,7 +222,7 @@ export function propLocals(def: ComponentDefinition): Map<string, string> {
   const taken = new Set<string>();
   for (const name of Object.keys(def.properties).sort()) {
     let local = /^[a-zA-Z_$][\w$]*$/.test(name) ? name : `_${name.replace(/[^\w$]/g, '_')}`;
-    if (RESERVED_WORDS.has(local) || INTERNAL_LOCALS.has(local) || RUNE_NAMES.has(local) || /^(\$|slot_|so_given_|variant_|so_children_|so_state_|so_filter_|so_dialog_|so_opener_|so_overlay_|C_|item\d*$)/.test(local)) local = `prop_${local.replace(/^\$/, '_')}`;
+    if (RESERVED_WORDS.has(local) || INTERNAL_LOCALS.has(local) || RUNE_NAMES.has(local) || /^(\$|slot_|so_given_|variant_|so_slot_|so_children_|so_state_|so_filter_|so_dialog_|so_opener_|so_overlay_|C_|item\d*$)/.test(local)) local = `prop_${local.replace(/^\$/, '_')}`;
     let unique = local;
     for (let i = 2; taken.has(unique); i++) unique = `${local}_${i}`;
     taken.add(unique);
@@ -1498,6 +1498,8 @@ interface EmitCtx {
   usesUid?: boolean;
   /** Editor variants: set when the markup shows something only while editing (`so_editing`, see `editingState`). */
   usesEditing?: boolean;
+  /** The placement whose empty slots show its design's fallback while editing too: Component Studio's preview of it. */
+  fallbackShown?: string;
   /** The isolated preview's editor variant: dialogs and drawers open in their state show in place (GenerateOptions.previewOpen). */
   previewOpen?: boolean;
   /** The list properties of the repeats currently open (outermost first), for the schema of an item field. */
@@ -1801,7 +1803,7 @@ function stateWidgets(ctx: EmitCtx): StateWidgets {
   // Every node's container, slot content included, to tell a button inside a dialog from one outside it.
   const within = new Map<string, string>();
   for (const n of nodes) {
-    const lists = n.kind === 'element' || n.kind === 'repeat' ? [n.children] : n.kind === 'instance' ? Object.values(n.slots ?? {}) : [];
+    const lists = n.kind === 'element' || n.kind === 'repeat' ? [n.children] : n.kind === 'instance' ? Object.values(n.slots ?? {}) : n.kind === 'slot' ? [slotFallback(n)] : [];
     for (const list of lists) if (Array.isArray(list)) for (const c of list) within.set(c, n.id);
   }
   const inside = (id: string, host: string) => {
@@ -2645,7 +2647,7 @@ function headingIdExpr(ctx: EmitCtx, heading: GraphNode): string {
 function parentMap(tree: NodeTree): Map<string, string> {
   const out = new Map<string, string>();
   for (const n of Object.values(tree.nodes)) {
-    const kids = n.kind === 'element' || n.kind === 'repeat' ? n.children : [];
+    const kids = n.kind === 'element' || n.kind === 'repeat' ? n.children : n.kind === 'slot' ? slotFallback(n) : [];
     for (const c of kids) out.set(c, n.id);
   }
   return out;
@@ -2700,6 +2702,7 @@ function slotParentMap(tree: NodeTree): Map<string, { id: string; slot?: string 
   const out = new Map<string, { id: string; slot?: string }>();
   for (const n of Object.values(tree.nodes)) {
     if (n.kind === 'element' || n.kind === 'repeat') for (const c of n.children) out.set(c, { id: n.id });
+    else if (n.kind === 'slot') for (const c of slotFallback(n)) out.set(c, { id: n.id });
     else if (n.kind === 'instance') for (const slot of Object.keys(n.slots ?? {})) for (const c of slotChildren(n, slot)) out.set(c, { id: n.id, slot });
   }
   return out;
@@ -3060,9 +3063,17 @@ function emitNodeInner(ctx: EmitCtx, node: GraphNode): string {
       if (listSchema) ctx.lists = ctx.lists.slice(0, -1);
       return `${p}{#each ${list} ?? [] as ${v} (${v}.id)}\n${children}\n${p}{/each}`;
     }
-    case 'slot':
+    case 'slot': {
+      const local = slotLocal(ctx.state, ctx.def, node.slot);
+      const fallback = slotFallback(node);
+      if (!fallback.length) return `${p}{@render ${local}?.()}`;
       // The slot's local, never its prop's name: a snippet passing it on to a component placed here takes that name.
-      return `${p}{@render ${slotLocal(ctx.state, ctx.def, node.slot)}?.()}`;
+      // The design's own content for the slot, while the placement gives it none.
+      ctx.indent++;
+      const inner = emitNodes(ctx, fallback);
+      ctx.indent--;
+      return `${p}{#if ${local}}\n${p}\t{@render ${local}()}\n${p}{:else}\n${inner}\n${p}{/if}`;
+    }
     case 'instance':
       return emitInstance(ctx, node);
   }
@@ -3388,27 +3399,31 @@ function emitInstance(ctx: EmitCtx, node: InstanceNode): string {
       const placed = node.slots?.[slotName];
       const childIds = Array.isArray(placed) ? placed : [];
       if (!childIds.length) {
-        // The editor's preview marks an empty slot where content can go. Visitors, and every export, see nothing.
-        const marker = ctx.instrument ? emptySlotMarker(def.slots[slotName], slotName) : '';
+        // The editor's preview marks an empty slot where content can go. Visitors, and every export, see what the
+        // component shows there of its own: a code component's `{#if slot_x}…{:else}…`, a design's fallback.
+        // Component Studio's preview of a design shows that fallback while editing too, where it is edited.
+        const studio = ctx.fallbackShown === node.id && designFallback(def, slotName);
+        const marker = ctx.instrument && !studio ? emptySlotMarker(def.slots[slotName], slotName) : '';
         if (!marker) continue;
-        // Only while editing: Preview, as visitors see the page, has nothing in the slot at all.
+        // Given only while editing, so Preview shows what visitors see.
         ctx.usesEditing = true;
-        if (def.kind === 'code') {
-          // A code component may show something of its own while a slot is not given ({#if slot_x}…{:else}…): it
-          // is given the placeholder only while editing, so Preview shows what visitors see.
-          ctx.snippets = (ctx.snippets ?? 0) + 1;
-          const snippet = `so_slot_empty_${ctx.snippets}`;
-          beside.push(`${p}{#snippet ${snippet}()}\n${p}\t${marker}\n${p}{/snippet}`);
-          attrs.push(`slot_${safeIdent(slotName)}={so_editing ? ${snippet} : undefined}`);
-          continue;
-        }
-        snippets.push(`${p}\t{#snippet slot_${safeIdent(slotName)}()}\n${p}\t\t{#if so_editing}\n${p}\t\t\t${marker}\n${p}\t\t{/if}\n${p}\t{/snippet}`);
+        ctx.snippets = (ctx.snippets ?? 0) + 1;
+        const snippet = `so_slot_empty_${ctx.snippets}`;
+        beside.push(`${p}{#snippet ${snippet}()}\n${p}\t${marker}\n${p}{/snippet}`);
+        attrs.push(`${slotIdent(slotName)}={so_editing ? ${snippet} : undefined}`);
+        continue;
+      }
+      // A design handing a slot of its own straight on hands on what its placement gave it, nothing when nothing,
+      // so the component placed here shows its own fallback then.
+      const handed = handedSlot(ctx, childIds);
+      if (handed !== undefined) {
+        attrs.push(`${slotIdent(slotName)}={${slotLocal(ctx.state, ctx.def, handed)}}`);
         continue;
       }
       ctx.indent += 2;
       const inner = emitNodes(ctx, childIds);
       ctx.indent -= 2;
-      snippets.push(`${p}\t{#snippet slot_${safeIdent(slotName)}()}\n${inner}\n${p}\t{/snippet}`);
+      snippets.push(`${p}\t{#snippet ${slotIdent(slotName)}()}\n${inner}\n${p}\t{/snippet}`);
     }
     slotContent = snippets.join('\n');
   }
@@ -3419,6 +3434,21 @@ function emitInstance(ctx: EmitCtx, node: InstanceNode): string {
     markup = `${p}<div style="display: contents" data-so-ctx=${c} data-so-node="${node.id}"${itemsAttr(ctx, node.id)} data-so-code="true">\n${indentBlock(markup)}\n${p}</div>`;
   }
   return markup;
+}
+
+/** Whether a managed design shows content of its own in a slot a placement leaves empty. */
+function designFallback(def: ComponentDefinition, slot: string): boolean {
+  return def.kind === 'managed' && Object.values(def.tree?.nodes ?? {}).some((n) => n.kind === 'slot' && n.slot === slot && slotFallback(n).length > 0);
+}
+
+/**
+ * The design's own slot that a placement's slot content is, when it is only that, shown as it is: no fallback of its
+ * own, and no condition.
+ */
+function handedSlot(ctx: EmitCtx, ids: string[]): string | undefined {
+  const n = ids.length === 1 && ctx.def ? ctx.tree.nodes[ids[0]] : undefined;
+  if (n?.kind !== 'slot' || slotFallback(n).length || n.when || n.unless || !Object.hasOwn(ctx.def!.slots ?? {}, n.slot)) return undefined;
+  return n.slot;
 }
 
 /**
@@ -3916,7 +3946,8 @@ export function generateIsolatedInstance(state: ProjectState, file: string, node
     rctx: { state },
     indent: 1,
     locals: new Map(),
-    firstSection: true
+    firstSection: true,
+    fallbackShown: node.id
   };
   const markup = emitNode(ectx, node.id);
   const imports = renderImports(ectx.imports);

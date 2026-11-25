@@ -180,7 +180,7 @@ describe('the Signal pack', () => {
     expect(renamed.tree!.nodes.inner).toMatchObject({ children: expect.arrayContaining(['tiles']) });
     expect(renamed.parts.grid.nodeId).toBe('tiles');
     expect(renamed.variantAxes!.layout.options['four-columns'].styles).toEqual({ tiles: { desktop: { columns: 4 } } });
-    expect(Object.values(renamed.tree!.nodes).flatMap((n) => [n.id, ...('children' in n ? n.children : [])])).not.toContain('grid');
+    expect(Object.values(renamed.tree!.nodes).flatMap((n) => [n.id, ...('children' in n ? (n.children ?? []) : [])])).not.toContain('grid');
     // A placement inside a design holds its slots' children by ID too.
     const hosting = structuredClone(features);
     hosting.tree!.nodes.host = { id: 'host', kind: 'instance', definitionId: 'x', props: {}, slots: { content: ['grid'] } } as never;

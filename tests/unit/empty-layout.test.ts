@@ -137,7 +137,8 @@ describe('an empty slot’s placeholder in the editor preview', () => {
     const owner = { kind: 'page' as const, id: s.site.homePageId };
     s = applyOperations(s, [{ type: 'node.insert', owner, parentId: null, componentId: 'layout.section' }]).state;
     const home = generateProject(s, { instrument: true }).get(HOME)!;
-    expect(home).toMatch(/\{#snippet slot_content\(\)\}\s*\{#if so_editing\}\s*<span class="so-slot-empty"[^\n]*\s*\{\/if\}\s*\{\/snippet\}/);
+    // Handed to the placement only while editing: in Preview the slot is not given, as on the website.
+    expect(home).toMatch(/\{#snippet (so_slot_empty_\d+)\(\)\}\s*<span class="so-slot-empty"[^\n]*\s*\{\/snippet\}[\s\S]*slot_content=\{so_editing \? \1 : undefined\}/);
     expect(home).toContain('let so_editing = $state(false);');
     expect(home).toContain("attributeFilter: ['data-so-editing']");
     expect(home.match(/let so_editing/g)).toHaveLength(1);
@@ -152,7 +153,7 @@ describe('an empty slot’s placeholder in the editor preview', () => {
     const { s, defId } = holder();
     const dev = generateProject(s, { instrument: true });
     const file = [...dev.values()].find((src) => src.includes(`siteorigin/components/${defId}/component.json`))!;
-    expect(file).toContain('{#if so_editing}');
+    expect(file).toMatch(/slot_\w+=\{so_editing \? so_slot_empty_\d+ : undefined\}/);
     // The properties called "so_editing" and "globalThis" have locals of their own; "document" leaves the page's alone.
     expect(file.match(/let so_editing = \$state\(false\);/g)).toHaveLength(1);
     expect(file).toMatch(/so_editing: prop_so_editing = /);

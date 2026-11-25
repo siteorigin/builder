@@ -77,7 +77,7 @@ import { editTable } from './table';
 import { acceptedTypes, bindingProblem, bindingSlots, boundSchema, checkPropName, enclosingList, isProtoKey, itemStateProblems, normalizeProperties, usesState } from './schema';
 import { declaredTokens, findTokenCycle, findTokenCycleIn, forEachTokenRef, tokenPropUsageCounts, tokenUsageCounts } from './tokens';
 import { deriveDarkPalette, hasDarkPalette } from '@shared/color-scheme';
-import { slotDecl, slotFill, slotLandingProblem } from './slots';
+import { slotAccepts, slotDecl, slotFill, slotLandingProblem, takesComponent } from './slots';
 import { formDefaults, settleFormKeys } from './form-keys';
 import { namesFormFields, type FormField } from '@catalogue/foundation/form';
 import { addPageStarter } from './page-starters';
@@ -1021,6 +1021,7 @@ function copySubtree(from: NodeTree, to: NodeTree, nodeId: string, state: Projec
     // Copies never reuse an anchor: HTML IDs must stay unique.
     if (from === to) delete n.anchor;
     if (n.kind === 'element' || n.kind === 'repeat') n.children = n.children.map((c) => idMap.get(c) ?? c);
+    if (n.kind === 'slot' && Array.isArray(n.children)) n.children = n.children.map((c) => idMap.get(c) ?? c);
     if (n.kind === 'instance') {
       if (n.slots) for (const k of Object.keys(n.slots)) n.slots[k] = slotChildren(n, k).map((c) => idMap.get(c) ?? c);
       const def = state.components[n.definitionId];
@@ -1324,6 +1325,13 @@ function insertionList(tree: NodeTree, parentId: string | null | undefined, slot
   const parent = getNode(tree, parentId);
   if (parent.kind === 'element' || parent.kind === 'repeat') {
     if (slot) fail('Elements do not have slots.');
+    return parent.children;
+  }
+  // Inside a slot outlet of a design: its fallback, shown while a placement leaves that slot empty.
+  if (parent.kind === 'slot') {
+    if (slot) fail('A slot’s fallback content has no slots of its own.');
+    // A list damaged by hand shows nothing (validation reports it): new content starts it again.
+    if (!Array.isArray(parent.children) || parent.children.some((c) => typeof c !== 'string')) parent.children = [];
     return parent.children;
   }
   if (parent.kind === 'instance') {
@@ -3083,8 +3091,14 @@ export function ensureProjectOwned(state: ProjectState, defId: string): string {
 }
 
 function makeUnique(state: ProjectState, op: Op<'component.makeUnique'>): OpResult {
-  const { node, def } = instanceTarget(state, op.owner, op.nodeId);
+  const { node, def, tree } = instanceTarget(state, op.owner, op.nodeId);
   const copy = copyDefinition(state, def, op.name?.trim() || uniqueCopyName(state, def.name));
+  // The slot it sits in must take the copy too: one that names the original by its ID takes only the original.
+  const at = findParent(tree, node.id);
+  const holder = at?.parentId && Object.hasOwn(tree.nodes, at.parentId) ? tree.nodes[at.parentId] : undefined;
+  const decl = holder?.kind === 'instance' && at?.slot !== undefined ? slotDecl(state, holder, at.slot) : undefined;
+  if (decl && !takesComponent(decl, copy))
+    fail(`The “${decl.label}” slot of “${state.components[(holder as InstanceNode).definitionId]?.name ?? 'its component'}” takes ${slotAccepts(decl, state)}, not a copy of “${def.name}”. Move it out of the slot first.`);
   node.definitionId = copy.id;
   return { definitionId: copy.id };
 }

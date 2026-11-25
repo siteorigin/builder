@@ -10,8 +10,8 @@
  * - neither version places another component: nested theme components only make sense as a matched set;
  * - the new version keeps the public contract its placements rely on, and accepts the content they hold.
  */
-import type { ComponentDefinition, InstanceNode, ProjectState } from '@shared/types';
-import { isBinding } from '@shared/types';
+import type { ComponentDefinition, InstanceNode, NodeTree, ProjectState } from '@shared/types';
+import { isBinding, slotChildren, slotFallback } from '@shared/types';
 import type { Op } from '@shared/ops';
 import { getTheme, themeLockEntry } from '@catalogue/index';
 import { definitionHash, matchesLock } from '@shared/migrations';
@@ -141,16 +141,28 @@ function pinnedByProject(state: ProjectState): Map<string, ComponentDefinition> 
 
 /**
  * The slots `next` shows for one placement: those reachable from its roots without passing through a repeat whose list
- * is empty for that placement (its own value, or the new default it would inherit), which renders nothing inside it.
+ * is empty for that placement (its own value, or the new default it would inherit), which renders nothing inside it,
+ * or through the fallback of a slot the placement fills. `tree` is the tree the placement sits in: in a design, a slot
+ * given only that design's own slot, handed on as it is, is empty wherever the design's placement leaves it empty.
  */
-export function shownSlots(next: ComponentDefinition, node: InstanceNode): Set<string> {
+export function shownSlots(next: ComponentDefinition, node: InstanceNode, tree?: NodeTree): Set<string> {
+  const mayBeEmpty = (slot: string) => {
+    const ids = slotChildren(node, slot);
+    if (!ids.length) return true;
+    const only = ids.length === 1 && tree && Object.hasOwn(tree.nodes, ids[0]) ? tree.nodes[ids[0]] : undefined;
+    return only?.kind === 'slot' && !slotFallback(only).length && !only.when && !only.unless;
+  };
   const out = new Set<string>();
   const seen = new Set<string>();
   const walk = (id: string) => {
     const n = own(next.tree!.nodes, id);
     if (!n || seen.has(id)) return;
     seen.add(id);
-    if (n.kind === 'slot') out.add(n.slot);
+    if (n.kind === 'slot') {
+      out.add(n.slot);
+      // Its fallback shows only while the placement leaves the slot empty.
+      if (!mayBeEmpty(n.slot)) return;
+    }
     if (n.kind === 'repeat') {
       const prop = n.list?.$prop;
       const schema = typeof prop === 'string' ? own(next.properties, prop) : undefined;

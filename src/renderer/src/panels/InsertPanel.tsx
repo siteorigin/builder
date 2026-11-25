@@ -10,7 +10,7 @@ import { catalogueComponent, catalogueEntries, CATEGORY_LABELS, getTheme } from 
 import { api, commitOps, getState, setState, toast, undoAction, useStore } from '../store';
 import { acceptMessage, newSessionId, postToFrame } from '../lib/bridge';
 import { insert, insertionPoint, insertPlan, openComponentStudio, openLayout, selectPage, type InsertSpec, type Where } from '../lib/actions';
-import { elementWhere, nodeLabel, sectionWhere, whereFor, type InsertAt, type InsertRole } from '../lib/insert-at';
+import { elementWhere, nodeLabel, sectionWhere, slotRefusal, whereFor, type InsertAt, type InsertRole } from '../lib/insert-at';
 import { BASICS, basicHay, basicSpec, projectInsertDefinitions, searchItems } from '../lib/insert-search';
 import { SLOT_NO_PLACE, unplacedSlots } from '../lib/slot-contract';
 import { exportComponentFile, insertSaved, removeFromLibrary, saveToLibrary } from '../lib/saved-components';
@@ -1270,6 +1270,13 @@ export function InsertPanel() {
     return p;
   };
   const whereOf = (it: Item): Where => planOf(it).where;
+  // Why a click would not put an item where it goes: a slot that does not take it, or has no room (see slotRefusal).
+  // The tile stays, since it can still be dragged somewhere else.
+  const refusals = new Map<string, string | null>();
+  const refusalOf = (it: Item): string | null => {
+    if (!refusals.has(it.key)) refusals.set(it.key, it.saved ? null : slotRefusal(st, planOf(it).at, it.spec));
+    return refusals.get(it.key)!;
+  };
   // Components as a group go to one place only when each of them does.
   const componentTo = mine.length && mine.every((it) => sameWhere(whereOf(it), whereOf(mine[0]))) ? whereOf(mine[0]) : null;
   const savedTo = savedItems.length && savedItems.every((it) => sameWhere(whereOf(it), whereOf(savedItems[0]))) ? whereOf(savedItems[0]) : null;
@@ -1283,6 +1290,9 @@ export function InsertPanel() {
   // and put both in one place.
   const add = async (it: Item) => {
     if (adding.current) return;
+    // Said here rather than tried: the slot it would go into does not take it.
+    const refused = refusalOf(it);
+    if (refused) return void toast(`${fullName(it)} can’t go there. ${refused}`, 'error');
     adding.current = true;
     clearTimeout(peekTimer.current);
     setPeek(null);
@@ -1540,6 +1550,7 @@ export function InsertPanel() {
   const tileProps = (it: Item) => ({
     'data-kind': it.kind,
     'data-key': it.key,
+    ...(refusalOf(it) ? { 'data-refused': '', title: refusalOf(it)! } : {}),
     'aria-describedby': describedBy(it),
     onClick: (e: React.MouseEvent<HTMLElement>) => clickAdds(it, e) && void add(it),
     // A saved component isn't in this project until it is inserted, so it is clicked in rather than dragged.
@@ -2022,10 +2033,11 @@ export function InsertPanel() {
                   role="option"
                   data-kind={it.kind}
                   data-key={it.key}
+                  data-refused={refusalOf(it) ? '' : undefined}
                   aria-selected={it === current}
                   aria-describedby={describedBy(it)}
                   className={`insert-result${it === current ? ' active' : ''}`}
-                  title={it.kind !== 'section' && it.description ? it.description : undefined}
+                  title={refusalOf(it) ?? (it.kind !== 'section' && it.description ? it.description : undefined)}
                   onMouseDown={(e) => e.preventDefault()}
                   onContextMenu={
                     it.kind === 'component' || it.kind === 'saved'

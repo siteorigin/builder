@@ -185,6 +185,8 @@ export function packageClosure(state: ProjectState, rootId: string): ComponentDe
     out.set(id, def);
     if (out.size > MAX_PACKAGE_DEFINITIONS) fail(`It uses more than ${MAX_PACKAGE_DEFINITIONS} components, more than one package carries.`);
     const needs = new Set([...(def.kind === 'managed' ? directDependencies(def) : []), ...(def.dependencies ?? [])]);
+    // A component a slot names by its own ID goes with it, so the slot takes something where it lands.
+    for (const decl of Object.values(def.slots ?? {})) for (const named of Array.isArray(decl?.componentIds) ? decl.componentIds : []) if (Object.hasOwn(state.components, named)) needs.add(named);
     if (def.kind === 'code') {
       const files = new Set(importedFiles(def.source ?? '', defFile(def)));
       for (const other of Object.values(state.components)) if (other.id !== def.id && (codeImports(state, def, other.id) || files.has(defFile(other)))) needs.add(other.id);
@@ -483,6 +485,7 @@ function checkShape(def: ComponentDefinition, inPackage: ReadonlySet<string>) {
   for (const [id, n] of Object.entries(tree.nodes)) {
     if (!SAFE_NODE_ID.test(id) || !isRecord(n) || n.id !== id || !NODE_KINDS.has(n.kind as string)) damaged(`the element "${id.slice(0, 40)}" is not one the design can hold`);
     if ((n.kind === 'element' || n.kind === 'repeat') && !isIdList(n.children)) damaged(`the element "${id}" has no list of children`);
+    if (n.kind === 'slot' && n.children !== undefined && !isIdList(n.children)) damaged(`the slot "${id}" has damaged fallback content`);
     if (n.kind === 'instance') {
       if (!inPackage.has(String(n.definitionId))) fail(`${name} places a component the package doesn't include.`);
       if (n.props !== undefined && !isRecord(n.props)) damaged(`the component placed as "${id}" has no settings`);
@@ -542,8 +545,12 @@ export interface PackagedDefinition {
 /** The identity facts of a package's components (see PackagedDefinition). */
 export function packagedDefinitions(defs: readonly ComponentDefinition[]): PackagedDefinition[] {
   const byFile = new Map(defs.map((d) => [normalizePath(defFile(d)), d.id]));
+  const packaged = new Set(defs.map((d) => d.id));
+  // A component a slot names by its own ID is needed too: kept as the project's while that one lands as a copy, the
+  // slot would name the project's version and refuse the copy.
+  const named = (d: ComponentDefinition) => Object.values(d.slots ?? {}).flatMap((decl) => (Array.isArray(decl?.componentIds) ? decl.componentIds : [])).filter((id) => id !== d.id && packaged.has(id));
   // A component its design places and its declared dependencies name too is one need, listed once.
-  return defs.map((d) => ({ id: d.id, owner: d.owner, kind: d.kind, name: d.name, hash: definitionHash(d), needs: [...new Set(needsOf(d, byFile))] }));
+  return defs.map((d) => ({ id: d.id, owner: d.owner, kind: d.kind, name: d.name, hash: definitionHash(d), needs: [...new Set([...needsOf(d, byFile), ...named(d)])] }));
 }
 
 /**
@@ -733,6 +740,8 @@ export function importComponentPackage(state: ProjectState, input: ComponentImpo
     mapTokenRefs(def, byVar, (ref) => tokenFor(ref, def.name));
     mapAssetRefs(def, (asset) => own(input.images, asset) ?? fail(`${quoted(def.name)} shows an image the package doesn't include.`));
     for (const n of Object.values(def.tree?.nodes ?? {})) if (n.kind === 'instance') n.definitionId = ids.get(n.definitionId)!;
+    // A slot naming a component the package brings names it by the ID it lands under; contract IDs stay as they are.
+    for (const decl of Object.values(def.slots ?? {})) if (Array.isArray(decl.componentIds)) decl.componentIds = [...new Set(decl.componentIds.map((c) => ids.get(c) ?? c))];
     if (def.kind === 'code') {
       const file = fileOf.get(def.id)!;
       def.source = relinkSource(def.source ?? '', defFile(def), file, moved, keys);

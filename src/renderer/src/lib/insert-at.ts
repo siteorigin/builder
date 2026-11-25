@@ -3,12 +3,15 @@
  * saying where it goes, and a drop on the canvas all read it from here, so they agree on the place.
  */
 import type { EditOperation } from '@shared/ops';
-import type { ElementNode, ElementRef, GraphNode, NodeTree, OwnerRef, ProjectState, StyleValue } from '@shared/types';
+import type { ComponentDefinition, ElementNode, ElementRef, GraphNode, NodeTree, OwnerRef, ProjectState, SlotPrimitive, StyleValue } from '@shared/types';
+import { slotChildren } from '@shared/types';
 import { newId } from '@shared/ids';
 import { STICKY_BELOW_HEADER } from '@shared/styles';
 import { childLists, findParent } from '@engine/tree';
+import { restrictsKinds, slotAccepts, slotDecl, slotFill, takesComponent } from '@engine/slots';
+import { getTheme } from '@catalogue/index';
 import { ownerLabel, refLabel, treeFor } from './model';
-import type { InsertSpec, LayoutStarter } from './insert-search';
+import type { InsertSpec, LayoutStarter, Primitive } from './insert-search';
 import { definitionRole, type InsertRole } from '@engine/insert-role';
 import { insertsInline } from '@engine/semantic-tags';
 
@@ -19,6 +22,57 @@ export { definitionRole, type InsertRole };
 export type InsertAt = { owner: OwnerRef; parentId: string | null; slot?: string; index?: number };
 
 const own = <T>(rec: Record<string, T> | undefined, key: string): T | undefined => (rec && Object.hasOwn(rec, key) ? rec[key] : undefined);
+
+/** The kind of element each basic element is, as a slot's contract names the kinds it takes. */
+/** A slot placeholder is left out: what it brings depends on its own contract, which the insert itself checks. */
+const PRIMITIVE_KINDS: Record<Exclude<Primitive, 'slot'>, SlotPrimitive> = {
+  container: 'element',
+  stack: 'element',
+  row: 'element',
+  grid: 'element',
+  badge: 'element',
+  figure: 'element',
+  heading: 'text',
+  paragraph: 'text',
+  richtext: 'text',
+  image: 'image',
+  button: 'link',
+  icon: 'icon',
+  divider: 'divider'
+};
+
+/**
+ * Why the slot `at` puts something into refuses `spec` by its contract alone, or null: a component it neither names nor
+ * takes by category, an element of a kind it does not list, or anything once it holds as many as it can. Cheap enough
+ * for a whole list of tiles; the insert itself checks the rest (what saving needs).
+ */
+export function slotRefusal(state: ProjectState, at: InsertAt | null, spec: InsertSpec): string | null {
+  const tree = at ? treeFor(state, at.owner) : undefined;
+  const parent = at?.parentId ? own(tree?.nodes, at.parentId) : undefined;
+  if (!tree || parent?.kind !== 'instance') return null;
+  const slot = at!.slot ?? slotFor(state, parent.definitionId);
+  const decl = slot === undefined ? undefined : slotDecl(state, parent, slot);
+  if (!decl) return null;
+  const where = `The “${decl.label}” slot of “${own(state.components, parent.definitionId)?.name ?? 'this component'}”`;
+  if (decl.max !== undefined) {
+    const design = at!.owner.kind === 'component' ? own(state.components, at!.owner.id) : undefined;
+    if (slotFill(state, tree, slotChildren(parent, slot!), decl, design).count >= decl.max) return decl.max === 0 ? `${where} takes no content.` : `${where} holds at most ${decl.max === 1 ? 'one item' : `${decl.max} items`}.`;
+  }
+  if (!restrictsKinds(decl)) return null;
+  const takes = `${where} takes ${slotAccepts(decl, state)}.`;
+  if (spec.primitive === 'slot') return null;
+  if (spec.primitive) return (decl.primitives ?? []).includes(PRIMITIVE_KINDS[spec.primitive]) ? null : takes;
+  // A theme component goes in as the site's theme has it (installing it, or using the copy installed from it).
+  const def: ComponentDefinition | undefined = spec.definitionId
+    ? own(state.components, spec.definitionId)
+    : spec.componentId
+      ? getTheme(state.site.themeId).components.find((d) => d.componentId === spec.componentId)
+      : undefined;
+  return def && !takesComponent(decl, def) ? takes : null;
+}
+
+/** Whether the slot `at` puts something into refuses `spec` by its contract alone (see slotRefusal). */
+export const slotRefuses = (state: ProjectState, at: InsertAt | null, spec: InsertSpec): boolean => slotRefusal(state, at, spec) !== null;
 
 /** The slot an element put inside a component goes in: the first one its design shows (a declared slot can be left out
  *  of the design, and what is put in it is then never seen), else the first declared. None when it has no slots. */
@@ -163,6 +217,8 @@ export function placeFor(state: ProjectState, owner: OwnerRef, role: InsertRole,
     const same = node?.kind === 'instance' && !!definitionId && node.definitionId === definitionId;
     if (role === 'element' && node && !same) {
       if (node.kind === 'element') return { owner, parentId: node.id, ...beforeCaption(tree, node) };
+      // A design's slot outlet: into its fallback, shown while a placement leaves the slot empty.
+      if (node.kind === 'slot' && owner.kind === 'component') return { owner, parentId: node.id };
       const slot = node.kind === 'instance' ? (held ?? slotFor(state, node.definitionId)) : undefined;
       if (slot) return { owner, parentId: node.id, slot };
     }
