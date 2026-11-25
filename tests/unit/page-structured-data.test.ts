@@ -118,7 +118,7 @@ describe('the facts page.update saves for a page type', () => {
     expect(checkEventDate('2027-02-29').ok).toBe(false);
     expect(checkEventDate('2027-05-14t09:05:30z')).toEqual({ ok: true, value: '2027-05-14T09:05:30Z' });
     expect(checkEventDate('2027-05-14T19:30+02:00')).toEqual({ ok: true, value: '2027-05-14T19:30+02:00' });
-    for (const bad of ['2027-05-14T24:00', '2027-05-14T19:60', '2027-05-14T19:30:60', '2027-05-14T19:30+15:00', '2027-05-14T19:30+14:59', '2027-05-14T19:30-14:01', '14 May 2027', '2027-5-14']) expect(checkEventDate(bad).ok, bad).toBe(false);
+    for (const bad of ['2027-05-14T24:00', '2027-05-14T19:60', '2027-05-14T19:30:60', '2027-05-14T19:30+15:00', '2027-05-14T19:30+14:59', '2027-05-14T19:30-14:01', '2027-05-14T19:30+02:60', '14 May 2027', '2027-5-14']) expect(checkEventDate(bad).ok, bad).toBe(false);
     expect(checkEventDate('2027-05-14T19:30-14:00')).toEqual({ ok: true, value: '2027-05-14T19:30-14:00' });
     // Only the letters A to Z spell a code: "ß" upper-cased would be "SS".
     expect(checkCurrency('ßP').ok).toBe(false);
@@ -160,6 +160,13 @@ describe('the facts page.update saves for a page type', () => {
       const s = typed(damaged, { type: 'AboutPage' });
       expect((s.pages.pg_services as PageDoc).seo, JSON.stringify(junk)).toEqual({ structuredData: { type: 'AboutPage' } });
     }
+    // A search setting sent beside the structured data keeps too, and a page with no search settings at all gets them.
+    const listed = copy(state);
+    (listed.pages.pg_services as unknown as { seo: unknown }).seo = [];
+    expect((run(listed, { type: 'page.update', pageId: 'pg_services', noindex: true, structuredData: { type: 'AboutPage' } }).pages.pg_services as PageDoc).seo).toEqual({ noindex: true, structuredData: { type: 'AboutPage' } });
+    const bare = copy(state);
+    delete (bare.pages.pg_services as unknown as { seo?: unknown }).seo;
+    expect((run(bare, { type: 'page.update', pageId: 'pg_services', noindex: true, structuredData: { type: 'ContactPage' } }).pages.pg_services as PageDoc).seo).toEqual({ noindex: true, structuredData: { type: 'ContactPage' } });
     // Counted in characters after spaces close up, as the Inspector checks them: never refused by the schema first.
     const parse = (structuredData: Record<string, unknown>) => OPERATION_SCHEMAS['page.update'].safeParse({ type: 'page.update', pageId: 'pg_services', structuredData }).success;
     expect(parse({ serviceType: '🏺'.repeat(160) })).toBe(true);

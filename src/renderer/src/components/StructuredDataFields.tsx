@@ -70,6 +70,16 @@ function FactField({ fact, stored, saved, set }: { fact: Exclude<StructuredFact,
   };
   // What is wrong with the saved value (its check, or how the website reads it) describes the field only while it shows that value.
   const shown = problem ?? (!dirty ? ((value ? check(value) : null) ?? (saved ? { message: saved } : null)) : null);
+  // A saved value the website can't use, shown as text it can (a list holding something else beside its steps, a
+  // number where text belongs): saving it as shown repairs it, which leaving the field unchanged would not.
+  const repair = !problem && !dirty && !!saved && !(value && check(value));
+  const commit = (v: string) => {
+    const c = checkFact(fact, v);
+    if (!c.ok) return false;
+    // Nothing to send when it would store what is stored; anything else (a value saved in another shape) is written.
+    if (JSON.stringify(c.value) === JSON.stringify(Object.hasOwn(stored, fact) ? stored[fact] : fact === 'steps' ? [] : '')) return;
+    return set({ [fact]: c.value } as StructuredDataPatch, `Change ${label.toLowerCase()}`);
+  };
   const error = shown && (
     <span role={problem ? 'alert' : undefined}>
       {shown.message}{' '}
@@ -77,6 +87,11 @@ function FactField({ fact, stored, saved, set }: { fact: Exclude<StructuredFact,
         <span className="field-saved">Not saved. {value ? <>The saved value is still <bdi>{value}</bdi>.</> : 'Nothing is saved here yet.'}</span>
       ) : (
         'The website leaves it out until it is corrected.'
+      )}
+      {repair && (
+        <button type="button" className="link-btn field-fix" onClick={() => void commit(value)}>
+          {value ? 'Save as shown' : 'Clear it'}
+        </button>
       )}
     </span>
   );
@@ -91,13 +106,7 @@ function FactField({ fact, stored, saved, set }: { fact: Exclude<StructuredFact,
         check={check}
         onProblem={setProblem}
         onDirty={setDirty}
-        onCommit={(v) => {
-          const c = checkFact(fact, v);
-          if (!c.ok) return false;
-          // Nothing to send when it would store what is stored; anything else (a value saved in another shape) is written.
-          if (JSON.stringify(c.value) === JSON.stringify(stored[fact] ?? (fact === 'steps' ? [] : ''))) return;
-          return set({ [fact]: c.value } as StructuredDataPatch, `Change ${label.toLowerCase()}`);
-        }}
+        onCommit={commit}
       />
     </Field>
   );
