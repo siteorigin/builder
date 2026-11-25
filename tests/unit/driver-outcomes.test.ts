@@ -663,6 +663,10 @@ describe('replay', () => {
     const s = fake(answers({ name: long }));
     expect((await replay(record(steps), { make: () => s })).ok).toBe(true);
     expect(s.sent.find((f) => f.op === 'ui.locate')!.args).toEqual({ role: 'button', name: long.slice(0, -1), exact: false, region: 'group "Choose an export"', scope: 'editor' });
+    // A full name, longer than the snapshot shows, that itself ends in an ellipsis: the one found shows its start.
+    const literal = `${'A long choice that goes on '.repeat(9)}…`;
+    const literalSteps = [journey[0], step(2, { op: 'ui.click', class: 'input', args: { target: { ref: 'old:1' } }, targets: [{ ...cutShort, name: literal }], outcome: { ok: true, summary: { dispatched: 'complete' } } })];
+    expect((await replay(record(literalSteps), { make: () => fake(answers({ name: `${literal.slice(0, 199)}…` })) })).ok).toBe(true);
     // One that only holds that part somewhere in its name is another element.
     const elsewhere = await replay(record(steps), { make: () => fake(answers({ name: `Also: ${long}` })) });
     expect([elsewhere.ok, elsewhere.divergence?.reason]).toEqual([false, expect.stringMatching(/was not found as one element/)]);
@@ -681,11 +685,16 @@ describe('replay', () => {
     const exported = [journey[0], step(2, { op: 'wait.for', class: 'observation', args: { condition: 'export.finished' }, outcome: { ok: true, summary: { outcome: 'exported', kind: 'site' } } })];
     const source = (f: Frame) => (f.op === 'wait.for' ? reply(f, { outcome: 'exported', export: { kind: 'source', path: 'exports/x' } }) : answers()(f));
     expect((await replay(record(exported), { make: () => fake(source) })).divergence?.reason).toBe('its kind is source where the recording had site');
+    // Read again while the project is still opening: the name arrives, and the replay goes on.
+    let reads = 0;
+    const opening = (f: Frame) => (f.op === 'project.summary' ? reply(f, { project: ++reads < 3 ? null : { site: { name: 'Quayside Rooms' } } }) : answers()(f));
+    expect((await replay(record(named), { make: () => fake(opening) })).ok).toBe(true);
+    expect(reads).toBe(3);
     // Stopped by the record's own mark, and stopped by the app, are told apart.
     const pixels = [journey[0], step(2, { op: 'ui.click', class: 'input', args: {}, targets: [{ at: 'target', replayable: false, reason: 'a screenshot point names pixels of this run' }], outcome: { ok: true } })];
     expect((await replay(record(pixels), { make: () => fake(answers()) })).divergence?.unreplayable).toBe(true);
     expect((await replay(record(journey), { make: () => fake(answers({ found: 2 })) })).divergence?.unreplayable).toBeUndefined();
-  });
+  }, 20_000);
 
   it('aims again at a target that moved as the pointer arrived, a few times, and diverges if it never settles', async () => {
     const moving = (times: number) => {

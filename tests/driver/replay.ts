@@ -138,7 +138,10 @@ export async function replay(record: unknown, opts: ReplayOptions = {}): Promise
     if (!located.ok) return located;
     const node = (located.result as { node: { ref: string; name?: string } }).node;
     // Found by part of a name cut short: the one found must begin with that part, not merely hold it.
-    if (clipped(d.name) && !(node.name ?? '').startsWith(d.name.slice(0, -1))) {
+    // Both may be cut short (the name shown stops at 200 characters), so either may be the start of the other.
+    const kept = clipped(d.name) ? d.name.slice(0, -1) : '';
+    const shown = (node.name ?? '').replace(/…$/, '');
+    if (clipped(d.name) && !(shown.startsWith(kept) || (shown.length >= SNAPSHOT_NAME_CHARS - 1 && kept.startsWith(shown)))) {
       const { v, id, op, sessionId, window: w, elapsedMs, events } = located;
       return { v, id, op, ok: false, sessionId, window: w, elapsedMs, events, error: { code: 'TARGET_NOT_FOUND', message: `The ${d.role} found does not begin with the part of its name the record kept.`, retryable: false } };
     }
@@ -210,6 +213,12 @@ export async function replay(record: unknown, opts: ReplayOptions = {}): Promise
       continue;
     }
     if (!reply.ok) return diverge(e, `it failed: ${reply.error.code} ${reply.error.message}`, reply);
+    // A summary read while the app is still writing what the recording had already seen (a project still opening, a
+    // save still landing) is read again for a little while before it counts as different.
+    for (let again = 0; e.op === 'project.summary' && differs(e, reply) && again < 10; again++) {
+      await new Promise((r) => setTimeout(r, 300));
+      reply = await send();
+    }
     const different = differs(e, reply);
     if (different) return diverge(e, different, reply);
     // An untargeted key reaches what it reached in the recording.

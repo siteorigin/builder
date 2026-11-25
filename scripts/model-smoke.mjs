@@ -51,6 +51,8 @@ const MODEL = process.env.MODEL ?? 'gpt-6.2-sol';
 const EFFORT = process.env.EFFORT ?? 'medium';
 const TIMEOUT_MS = Number(process.env.SMOKE_TIMEOUT_MIN ?? (PROBE ? 5 : 60)) * 60_000;
 const SERVER = 'siteorigin_builder';
+// The replay's own session (started here, not by the MCP server) has Developer mode locked off too.
+process.env.SITEORIGIN_DEVELOPER_MODE = 'locked-off';
 
 /** Codex's own tools that could read or change anything outside the Builder session: all turned off. */
 const DISABLED = ['shell_tool', 'unified_exec', 'view_image', 'image_generation', 'apps', 'plugins', 'browser_use', 'browser_use_external', 'multi_agent', 'multi_agent_v2'];
