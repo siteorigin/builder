@@ -11,7 +11,7 @@ import { dropHeaderLinks, headerOrder, keepHeaderOrder, menuBefore } from '@engi
 import { pagesTouched } from '../../src/agent/report';
 import { ProjectSession } from '../../src/main/project/session';
 import { headerOrderPlan, headerOrderPreview } from '../../src/renderer/src/lib/page-navigation';
-import { planPageRemoval, reviewPageRemoval } from '../../src/renderer/src/lib/page-removal';
+import { NEW_HOME, planPageRemoval, reviewPageRemoval } from '../../src/renderer/src/lib/page-removal';
 
 type Row = { id: string; label: string; sub?: boolean; link: { type: string; target: string; anchor?: string } };
 const HEADER: OwnerRef = { kind: 'shell', id: 'header' };
@@ -257,6 +257,18 @@ describe('the header menu order setting (#749)', () => {
       s = apply(s, planPageRemoval(s, 'pg_services', pageId(s, 'Contact'), new Map()).operations!);
       expect(rows(s)).toEqual(['Home', 'About', 'Shop', 'Contact', 'Lookbook', '  Kitchens', '  Baths']);
       expect(links(s, 'footer')[0].link).toEqual({ type: 'page', target: pageId(s, 'Contact') });
+    });
+
+    it('points Home’s menu link at a new blank Home, which stands in its place in the pages', () => {
+      let s = following();
+      const home = s.site.homePageId;
+      const review = reviewPageRemoval(s, home, NEW_HOME);
+      expect(review.menu).toEqual([]);
+      expect(review.uses.map((u) => u.where)).toContain('Header');
+      s = apply(s, planPageRemoval(s, home, NEW_HOME, new Map()).operations!);
+      expect(rows(s)).toEqual(['Home', 'About', 'Shop', 'Contact', 'Services', 'Lookbook', '  Kitchens', '  Baths']);
+      expect(links(s)[0].link).toEqual({ type: 'page', target: s.site.homePageId });
+      expect(s.site.homePageId).not.toBe(home);
     });
 
     it('keeps a deleted page’s submenu whole, under the first link that was in it', () => {
