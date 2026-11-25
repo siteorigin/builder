@@ -247,6 +247,7 @@ describe('deleting at once', () => {
       expect(sent.at(-1)!.expectedRevision, id).toBe(revision);
       expect(home().nodes, id).not.toHaveProperty(id);
       expect(lastToast()?.text).toBe(text);
+      expect(lastToast()?.action?.label).toBe('Undo');
     }
     expect(appliedSteps()).toBe(steps + cases.length);
   });
@@ -467,7 +468,7 @@ describe('a project that changes while asking or deleting', () => {
       expect(sent.at(-1)!.expectedRevision).toBe(revision);
       expect(JSON.stringify(session.state)).toBe(after);
       expect(appliedSteps()).toBe(steps);
-      expect(lastToast()).toMatchObject({ kind: 'error', text: 'The project changed while you were choosing. Choose again.' });
+      expect(getState().toasts.map((x) => [x.kind, x.text])).toEqual([['error', 'The project changed while you were choosing. Choose again.']]);
     }
   });
 
@@ -524,6 +525,35 @@ describe('a project that changes while asking or deleting', () => {
     expect(sentSince(0)).toEqual(['node.remove n_after', 'node.remove n_after']);
     expect(home().nodes).not.toHaveProperty('n_after');
     expect(getState().toasts.map((t) => t.text)).toEqual(['Deleted Text']);
+  });
+
+  it('deletes nothing unasked that changed before this window heard of it, and says to look again', async () => {
+    // The AI rewrites the paragraph the author is deleting, before this window has heard of it.
+    await session.apply({ operations: [{ type: 'node.setContent', owner: page(), nodeId: 'n_para', field: 'text', value: 'Rewritten' }] }, { label: 'Elsewhere', source: 'user' });
+    const after = JSON.stringify(session.state);
+    const { done } = startDelete('n_para');
+    await done;
+    await pending;
+    expect(sentSince(0)).toEqual(['node.remove n_para']);
+    expect(JSON.stringify(session.state)).toBe(after);
+    expect(getState().toasts.map((x) => [x.kind, x.text])).toEqual([['error', 'Text changed before it could be deleted. Check it, then delete it again.']]);
+  });
+
+  it('deletes another layer picked and deleted while the first deletion is still saving', async () => {
+    let release!: () => void;
+    held = new Promise((r) => (release = r));
+    const first = startDelete('n_para');
+    await vi.waitFor(() => expect(sent).toHaveLength(1));
+    const second = startDelete('n_after');
+    await vi.waitFor(() => expect(sent).toHaveLength(2));
+    release();
+    await Promise.all([first.done, second.done]);
+    await pending;
+    // Both were planned on the same copy: the second, refused as behind, went again once the first had landed.
+    expect(sentSince(0)).toEqual(['node.remove n_para', 'node.remove n_after', 'node.remove n_after']);
+    expect(getState().toasts.map((x) => x.text)).toEqual(['Deleted Text', 'Deleted Text']);
+    expect(home().nodes).not.toHaveProperty('n_para');
+    expect(home().nodes).not.toHaveProperty('n_after');
   });
 
   it('asks nothing and sends nothing while the AI works', async () => {

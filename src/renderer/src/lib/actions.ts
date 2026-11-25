@@ -1,9 +1,9 @@
 import type { EditOperation } from '@shared/ops';
-import type { ElementRef, GraphNode, OwnerRef, ProjectState, RichText } from '@shared/types';
+import type { ElementRef, GraphNode, NodeTree, OwnerRef, ProjectState, RichText } from '@shared/types';
 import { newId } from '@shared/ids';
 import { sameRichText, toRichText } from '@shared/richtext';
 import { isBinding } from '@shared/types';
-import { childLists, findParent } from '@engine/tree';
+import { childLists, findParent, subtreeIds } from '@engine/tree';
 import type { ProjectSnapshot } from '@shared/api';
 import { pageShowing } from '@shared/page-shell';
 import { applyOperations, ungroupRefusal } from '@engine/apply';
@@ -69,7 +69,18 @@ function holds(state: ProjectState, target: ElementRef, ref: ElementRef | null):
 const itemCount = (n: number) => `${n} ${n === 1 ? 'item' : 'items'}`;
 
 /** Why what `t` holds can't be kept when it goes, found on a copy of the project as saving it would, or null when it can. */
-const keepRefusal = (st: ProjectState, t: ElementRef): string | null => dropRefusal(st, [{ type: 'node.removeKeepContent', owner: t.owner, nodeId: t.nodeId }], () => savingProblems(st));
+function keepRefusal(st: ProjectState, t: ElementRef): string | null {
+  const unsaid = 'The project can’t check that here.';
+  try {
+    const why = dropRefusal(st, [{ type: 'node.removeKeepContent', owner: t.owner, nodeId: t.nodeId }], () => savingProblems(st));
+    return why === null ? null : why || unsaid;
+  } catch {
+    return unsaid;
+  }
+}
+
+/** Everything deleting `nodeId` of `tree` takes with it, as it stands: two reads compare equal only if nothing in it changed. */
+const subtreeKey = (tree: NodeTree, nodeId: string) => JSON.stringify(subtreeIds(tree, nodeId).map((id) => tree.nodes[id]));
 
 /**
  * Ask what deleting `t` does with what it holds (#662): 'all' deletes it with everything inside it, 'keep' removes only
@@ -95,7 +106,9 @@ async function askDelete(st: ProjectState, t: ElementRef, label: string, held: H
 }
 
 /** A deletion being asked about or saved: Delete pressed again meanwhile (a held key) asks nothing twice. */
-let deleting = false;
+/** A deletion being asked about or saved, by opening and target: Delete pressed again for it meanwhile (a held key)
+ *  asks nothing twice, while another layer picked meanwhile is deleted as asked. */
+const deleting = new Set<string>();
 
 /**
  * Delete the selection. One holding a component placement or slot content (heldContent) asks first whether to take
@@ -106,9 +119,11 @@ export async function deleteSelection() {
   const s = getState();
   const t = structuralTarget(s.selection);
   let snap = s.snapshot;
-  if (!t || !snap || deleting) return;
+  if (!t || !snap) return;
   if (t.owner.kind === 'shell') return toast('The shared header and footer cannot be deleted. Hide either one on a page in its page settings instead.', 'error');
   const opening = snap.workspaceKey;
+  const key = [opening, t.owner.kind, t.owner.id, t.nodeId].join('\n');
+  if (deleting.has(key)) return;
   const remove: EditOperation = { type: 'node.remove', owner: t.owner, nodeId: t.nodeId };
   const here = (key: string | undefined) => key === opening && getState().snapshot?.workspaceKey === opening;
   // A reply that arrives after its project closed has nothing left here to select or announce.
@@ -121,7 +136,9 @@ export async function deleteSelection() {
   };
   const follow = focusInLayers();
   const watch = followChange(opening);
-  deleting = true;
+  deleting.add(key);
+  /** What the author saw of it: an unasked deletion planned again goes ahead only while that is unchanged. */
+  let seen: string | null = null;
   try {
     for (let tries = 0; ; tries++) {
       const st = snap.state;
@@ -132,12 +149,18 @@ export async function deleteSelection() {
       // A project taking no edits now (open read-only, or the AI at work) says so when the deletion is sent, unasked.
       const held = !snap.readOnly && !snap.aiBusy ? heldContent(tree, t.nodeId) : null;
       if (!held) {
+        const now = subtreeKey(tree, t.nodeId);
+        // Changed since the author chose it (swapped for another component, given new content): theirs to look at again.
+        if (seen !== null && now !== seen) return toast(`${label} changed before it could be deleted. Check it, then delete it again.`, 'error');
+        seen = now;
         // Sent for the project as this window has it: one that has moved on meanwhile (an Undo, a save still on its way)
-        // may now hold something to ask about, so it is planned again on the project's own copy, quietly.
-        const r = await commitOps([remove], editLabel(st, 'Delete', t), undefined, snap.revision, { replanStale: tries < 2 });
+        // is planned again on the project's own copy, quietly, and may now hold something to ask about.
+        const r = await commitOps([remove], editLabel(st, 'Delete', t), undefined, snap.revision, { replanStale: true });
         if (r && !r.ok) {
-          snap = await api.project.snapshot().catch(() => null);
-          if (!snap || !here(snap.workspaceKey)) return;
+          const again = tries < 2 ? await api.project.snapshot().catch(() => null) : null;
+          if (!here(opening)) return;
+          if (!again || !here(again.workspaceKey)) return toast(`${label} was not deleted: the project changed while it was. Delete it again.`, 'error');
+          snap = again;
           continue;
         }
         if (!landed(r)) return;
@@ -169,7 +192,7 @@ export async function deleteSelection() {
       return toast(`Removed ${label} and kept ${itemCount(n)}`, 'info', undoAction(r));
     }
   } finally {
-    deleting = false;
+    deleting.delete(key);
     watch.stop();
   }
 }

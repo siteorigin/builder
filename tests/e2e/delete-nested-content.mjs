@@ -14,6 +14,8 @@ const frame = await createProject(win, { name: 'Nested Studio', parentDir: join(
 const snapshot = () => win.evaluate(async () => (await window.builder.project.snapshot()).state);
 // The project records a change's History step just after its documents, so a read can see the one before the other.
 const history = () => win.evaluate(async () => (await window.builder.project.snapshot()).history.entries.filter((e) => e.applied).map((e) => e.label));
+/** The newest History entry, applied or not. */
+const newest = () => win.evaluate(async () => (({ label, applied }) => ({ label, applied }))((await window.builder.project.snapshot()).history.entries.at(-1)));
 const apply = (operations, label) =>
   win.evaluate(async ([operations, label]) => {
     const r = await window.builder.project.apply({ operations, label });
@@ -81,10 +83,11 @@ const pickSplit = async () => {
   await eventually(async () => assert.deepEqual(await selected(), ['n_split'], 'the Split is selected'));
   await eventually(async () => assert.ok(await row('n_split').evaluate((r) => r === document.activeElement), 'its row has the keyboard'));
 };
-/** After an Undo: the page as it was, and the change it took back no longer applied in History. */
-const restored = async (applied, what) => {
+/** After an Undo: the page as it was, and the change it took back still in History, no longer applied (to redo). */
+const restored = async (applied, label, what) => {
   await eventually(async () => assert.equal(await page(), before, what));
-  await eventually(async () => assert.deepEqual(await history(), applied, 'the change is undone in History'));
+  await eventually(async () => assert.deepEqual(await history(), applied, 'only the change is undone in History'));
+  assert.deepEqual(await newest(), { label, applied: false }, 'it can be redone');
 };
 
 step('the Delete key asks first, with Cancel holding the focus, and Enter on it changes nothing');
@@ -106,6 +109,13 @@ assert.equal(await page(), before, 'nothing changed');
 assert.deepEqual(await history(), applied, 'no change was made');
 assert.equal(await win.locator('.toast', { hasText: 'Split' }).count(), 0, 'nothing to announce');
 assert.deepEqual(await selected(), ['n_split'], 'the Split is still selected');
+// Escape is a dismissal: it stays, as Cancel does.
+await win.keyboard.press('Delete');
+await question.waitFor();
+await win.keyboard.press('Escape');
+await question.waitFor({ state: 'detached' });
+assert.equal(await page(), before, 'Escape changed nothing');
+assert.deepEqual(await history(), applied, 'and made no change');
 
 step('Delete all takes the Split and everything in it as one change; the library keeps its components; one Undo puts it all back');
 await pickSplit();
@@ -120,7 +130,7 @@ assert.equal(await library(), libraryBefore, 'the Split and Card components stay
 await eventually(async () => assert.deepEqual(await history(), [...applied, 'Delete Split on Home'], 'one change'));
 await eventually(async () => assert.deepEqual(await selected(), [], 'nothing that went is still selected'));
 await toastFor('Deleted Split and 3 nested items').getByRole('button', { name: 'Undo' }).click();
-await restored(applied, 'one Undo restores the page exactly');
+await restored(applied, 'Delete Split on Home', 'one Undo restores the page exactly');
 await frame.getByText('Inside the stack', { exact: true }).waitFor();
 
 step('Remove wrapper & keep content, from the Layers menu, puts what the Split held in its place, selected, as one change');
@@ -143,7 +153,7 @@ await eventually(async () => assert.deepEqual(await selected(), ['n_heading'], '
 await frame.getByText('Inside the stack', { exact: true }).waitFor();
 await win.screenshot({ path: join(SHOTS, 'delete-nested-kept.png') });
 await toastFor('Removed Split and kept 3 items').getByRole('button', { name: 'Undo' }).click();
-await restored(applied, 'one Undo puts the Split back with its slots as they were');
+await restored(applied, 'Remove Split on Home, keeping its content', 'one Undo puts the Split back with its slots as they were');
 
 step('an empty Section is deleted at once, with no question');
 await row('n_empty').click();
