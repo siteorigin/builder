@@ -22,6 +22,7 @@ import { codeImports, directDependencies } from './definitions';
 import { childLists, fail } from './tree';
 import { FORM_DESTINATIONS, readsFormServices } from '@catalogue/foundation/form';
 import { clone, installComponent } from './install';
+import { definitionRequiredProblems } from './required';
 
 type OpResult = Record<string, unknown>;
 
@@ -262,6 +263,9 @@ export function planComponentPackage(state: ProjectState, rootId: string, app?: 
   }
   const notes: string[] = [];
   const links = defs.reduce((n, d) => n + siteLinks(d, true), 0);
+  // A required link left with nowhere to go would make a package that no site can take.
+  const emptied = links ? definitionRequiredProblems(state, defs)[0] : undefined;
+  if (emptied) fail(`${emptied.message} It goes to this site's own page or document, which a package can't carry. Give it a web address first, or make it optional.`);
   if (links) notes.push(`${links === 1 ? 'A link' : `${links} links`} to this site's pages or documents ${links === 1 ? 'was' : 'were'} left out, as another site doesn't have them.`);
   // Images: every one shown must be a picture still in the library.
   const images = new Map<string, AssetRecord>();

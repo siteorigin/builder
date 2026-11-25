@@ -4,7 +4,7 @@
  * value as it is made; this reads what is already stored, for load validation and for the edits that carry values
  * over without normalizing each one (a swap, a theme change, a package import).
  */
-import type { ComponentDefinition, GraphNode, OwnerRef, ProjectState, PropSchema } from '@shared/types';
+import type { ComponentDefinition, GraphNode, InstanceNode, OwnerRef, ProjectState, PropSchema } from '@shared/types';
 import { isBinding, isBindingRef, isEntryBinding } from '@shared/types';
 import { entryFieldSchema } from '@shared/entry-fields';
 import { fieldsOf, hasRequired, isEmptyPropValue, requiredGap, requiredMessage } from '@shared/required';
@@ -66,38 +66,62 @@ export function bindingSource(state: ProjectState, owner: OwnerRef, node: GraphN
  */
 export function requiredProblems(state: ProjectState, { bindings = true } = {}): RequiredProblem[] {
   const out: RequiredProblem[] = [];
-  const defs = Object.values(state.components).filter((d): d is ComponentDefinition => !!d && typeof d === 'object' && !!d.properties && typeof d.properties === 'object' && Object.values(d.properties).some((s) => !!s && typeof s === 'object' && hasRequired(s)));
-  for (const def of defs) {
-    for (const [k, s] of Object.entries(def.properties)) {
-      if (!s || typeof s !== 'object' || !hasRequired(s)) continue;
-      const owner: OwnerRef = { kind: 'component', id: def.id };
-      for (const p of requiredValueProblems(s, s.default, `${def.name} → ${s.label} (default)`)) out.push({ key: `default|${def.id}|${k}|${p.key}`, message: p.message, owner });
-      // Each field's own default starts every new item, whatever the property's default holds (an import can empty one).
-      if (!(s.type === 'list' && s.feed))
-        for (const [f, fs] of fieldsOf(s))
-          if (fs.required && isEmptyPropValue(fs, fs.default)) out.push({ key: `default|${def.id}|${k}|field|${f}`, message: requiredMessage(fs, `${def.name} → ${s.label} → ${fs.label} (default)`), owner });
-    }
-  }
+  const defs = Object.values(state.components).filter((d): d is ComponentDefinition => !!d && typeof d === 'object' && hasRequiredProps(d));
+  for (const def of defs) out.push(...defaultProblems(def));
   if (!defs.length) return out;
   const required = new Set(defs.map((d) => d.id));
-  for (const { owner, tree, label } of allTrees(state)) {
-    for (const n of Object.values(tree.nodes ?? {})) {
-      if (n?.kind !== 'instance' || !required.has(n.definitionId) || !n.props || typeof n.props !== 'object') continue;
-      const def = state.components[n.definitionId];
-      for (const [k, s] of Object.entries(def.properties)) {
-        if (!s || typeof s !== 'object' || !hasRequired(s) || !Object.hasOwn(n.props, k)) continue;
-        const v = n.props[k];
-        const key = `${owner.kind}|${owner.id}|${n.id}|${k}`;
-        if (isBinding(v)) {
-          if (!bindings) continue;
-          const from = bindingSource(state, owner, n, v);
-          const gap = from ? requiredGap(from, s) : null;
-          if (gap) out.push({ key, message: `${label}: ${def.name} → ${s.label} takes “${from!.label}”: ${gap}.`, owner, nodeId: n.id, bound: true });
-          continue;
-        }
-        for (const p of requiredValueProblems(s, v, `${label}: ${def.name} → ${s.label}`)) out.push({ key: `${key}|${p.key}`, message: p.message, owner, nodeId: n.id });
-      }
+  for (const { owner, tree, label } of allTrees(state))
+    for (const n of Object.values(tree.nodes ?? {})) if (n?.kind === 'instance' && required.has(n.definitionId)) out.push(...placementProblems(state, owner, n, label, bindings));
+  return out;
+}
+
+const hasRequiredProps = (def: ComponentDefinition) => !!def.properties && typeof def.properties === 'object' && Object.values(def.properties).some((s) => !!s && typeof s === 'object' && hasRequired(s));
+
+/** A definition's defaults that leave a required value empty: each property's, and each required field's own. */
+function defaultProblems(def: ComponentDefinition): RequiredProblem[] {
+  const out: RequiredProblem[] = [];
+  const owner: OwnerRef = { kind: 'component', id: def.id };
+  for (const [k, s] of Object.entries(def.properties ?? {})) {
+    if (!s || typeof s !== 'object' || !hasRequired(s)) continue;
+    for (const p of requiredValueProblems(s, s.default, `${def.name} → ${s.label} (default)`)) out.push({ key: `default|${def.id}|${k}|${p.key}`, message: p.message, owner });
+    // Each field's own default starts every new item, whatever the property's default holds (an import can empty one).
+    if (!(s.type === 'list' && s.feed))
+      for (const [f, fs] of fieldsOf(s))
+        if (fs.required && isEmptyPropValue(fs, fs.default)) out.push({ key: `default|${def.id}|${k}|field|${f}`, message: requiredMessage(fs, `${def.name} → ${s.label} → ${fs.label} (default)`), owner });
+  }
+  return out;
+}
+
+/** What one placement of a component with required properties leaves empty, in its own values or (with `bindings`) through a binding. */
+function placementProblems(state: ProjectState, owner: OwnerRef, n: InstanceNode, label: string, bindings: boolean): RequiredProblem[] {
+  const out: RequiredProblem[] = [];
+  const def = Object.hasOwn(state.components, n.definitionId) ? state.components[n.definitionId] : undefined;
+  if (!def || !n.props || typeof n.props !== 'object') return out;
+  for (const [k, s] of Object.entries(def.properties ?? {})) {
+    if (!s || typeof s !== 'object' || !hasRequired(s) || !Object.hasOwn(n.props, k)) continue;
+    const v = n.props[k];
+    const key = `${owner.kind}|${owner.id}|${n.id}|${k}`;
+    if (isBinding(v)) {
+      if (!bindings) continue;
+      const from = bindingSource(state, owner, n, v);
+      const gap = from ? requiredGap(from, s) : null;
+      if (gap) out.push({ key, message: `${label}: ${def.name} → ${s.label} takes “${from!.label}”: ${gap}.`, owner, nodeId: n.id, bound: true });
+      continue;
     }
+    for (const p of requiredValueProblems(s, v, `${label}: ${def.name} → ${s.label}`)) out.push({ key: `${key}|${p.key}`, message: p.message, owner, nodeId: n.id });
+  }
+  return out;
+}
+
+/**
+ * What a set of definitions leaves empty though required, as they are (a package's copies, say): their defaults, and
+ * the values of the components their designs place. `state` holds the definitions those placements are of.
+ */
+export function definitionRequiredProblems(state: ProjectState, defs: ComponentDefinition[]): RequiredProblem[] {
+  const out: RequiredProblem[] = [];
+  for (const def of defs) {
+    if (hasRequiredProps(def)) out.push(...defaultProblems(def));
+    for (const n of Object.values(def.tree?.nodes ?? {})) if (n?.kind === 'instance') out.push(...placementProblems(state, { kind: 'component', id: def.id }, n, def.name, false));
   }
   return out;
 }

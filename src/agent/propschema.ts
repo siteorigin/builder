@@ -67,7 +67,7 @@ function requiring(s: PropSchema, schema: JsonSchema, compact = false): JsonSche
       break;
   }
   // A required link offers no "" for no link.
-  if (typeof out.description === 'string') out.description = `${s.type === 'link' ? out.description.replace(LINK_HELP, LINK_HELP.replace(', or "" for no link', '')) : out.description}. Required: ${requiredHint(s)}.`;
+  if (typeof out.description === 'string') out.description = `${(s.type === 'link' ? out.description.replace(LINK_HELP, LINK_HELP.replace(', or "" for no link', '')) : out.description).replace(/\.$/, '')}. Required: ${requiredHint(s)}.`;
   return out;
 }
 

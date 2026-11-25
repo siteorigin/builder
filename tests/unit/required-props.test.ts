@@ -11,6 +11,7 @@ import { requiredProblems } from '@engine/required';
 import { blocksSaving, introducedDiagnostics, validateState } from '@engine/validate';
 import { guaranteesValue, isEmptyPropValue, requiredGap } from '@shared/required';
 import { checkProps, type FieldIssue } from '../../src/agent/macros';
+import { planComponentPackage } from '@engine/component-package';
 import { compactPropsSchema, propsJsonSchema } from '../../src/agent/propschema';
 import { catalogueIndex, propSchemaSummary } from '../../src/agent/context';
 import { planComponentInspection } from '../../src/agent/component-inspection';
@@ -277,6 +278,17 @@ describe('required properties: validation of stored values', () => {
   });
 });
 
+describe('required properties in a component package', () => {
+  it('refuses exporting a required link to this site’s own page, which the package would leave going nowhere', () => {
+    const s = project();
+    const page = { type: 'page', target: s.site.homePageId };
+    const { state, definitionId } = placed(s, { links: { type: 'list', label: 'Links', itemLabel: 'Link', fields: { to: { type: 'link', label: 'To', default: page, required: true } }, default: [] } });
+    expect(() => planComponentPackage(state, definitionId)).toThrow(/Card → Links → To \(default\) is required: it needs a destination\. It goes to this site's own page/);
+    const web = placed(project(), { links: { type: 'list', label: 'Links', itemLabel: 'Link', fields: { to: { type: 'link', label: 'To', default: 'https://example.com/', required: true } }, default: [] } });
+    expect(() => planComponentPackage(web.state, web.definitionId)).not.toThrow();
+  });
+});
+
 describe('required properties carried by a swap', () => {
   it('starts a required list from its default items when the placement had none', () => {
     const s = project();
@@ -323,6 +335,7 @@ describe('required properties: what the AI reads', () => {
     expect(full.required).toBeUndefined();
     expect(full.properties.title).toMatchObject({ type: 'string', minLength: 1 });
     expect(full.properties.title.description).toMatch(/Required: it needs some text/);
+    expect(propsJsonSchema({ properties: { go: { type: 'link', label: 'Go', default: { type: 'url', target: 'https://x.test/' }, required: true } } }).properties).toMatchObject({ go: { description: 'Go. An internal route such as /about/, an https:// URL, mailto:, tel:, #anchor. Required: it needs a destination.' } });
     expect(full.properties.note).not.toHaveProperty('minLength');
     expect((full.properties.photo.properties as Record<string, unknown>).assetId).toMatchObject({ type: 'string', minLength: 1 });
     expect(full.properties.cards).toMatchObject({ minItems: 1, items: { properties: { title: { minLength: 1 } } } });
