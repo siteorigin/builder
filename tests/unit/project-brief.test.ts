@@ -20,12 +20,14 @@ const { TEXT_LIMITS } = await import('@shared/text-limits');
 const { createStarterState } = await import('@catalogue/starters');
 const { applyOperations } = await import('@engine/apply');
 const { migrateProject, newestDocumentVersion, MIGRATIONS } = await import('@shared/migrations');
-const { isCanonicalPath, readState, stateToDocs, ProjectFormatError } = await import('../../src/main/project/documents');
+const { isCanonicalPath, newestStoredVersion, readState, stateToDocs, ProjectFormatError } = await import('../../src/main/project/documents');
 const { ProjectSession } = await import('../../src/main/project/session');
 const { docChanges } = await import('../../src/main/project/turn-review');
 const { copyProjectSource, isProjectBrief } = await import('../../src/main/export');
+const { createPreviewStage, removePreviewStage, syncPreviewStage } = await import('../../src/main/runtime/stage');
+const { previewFsPolicy } = await import('../../src/runtime/policy');
 const { matchesFilter, recentGroups } = await import('../../src/renderer/src/lib/recent-places');
-const { checkHeld, placeOf, readFields, shownField, typedText } = await import('../../src/renderer/src/lib/held');
+const { checkHeld, heldPrompt, placeOf, readFields, shownField, typedText } = await import('../../src/renderer/src/lib/held');
 
 const dirs: string[] = [];
 const temp = (name: string) => {
@@ -88,9 +90,12 @@ describe('the brief on disk', () => {
       writeFileSync(join(dir, path), text);
     }
     expect((await readState(dir)).brief).toEqual(noted.brief);
-    // A field left out of the file is empty; one that is not text stops the read, naming the file.
+    // A field left out of the file stays out (it reads as empty); one that is not text stops the read, naming the file.
     writeFileSync(join(dir, BRIEF_FILE), JSON.stringify({ schemaVersion: SCHEMA_VERSION, notes: NOTES }));
-    expect((await readState(dir)).brief).toEqual({ schemaVersion: SCHEMA_VERSION, description: '', notes: NOTES });
+    expect((await readState(dir)).brief).toEqual({ schemaVersion: SCHEMA_VERSION, notes: NOTES });
+    // A brief written by a newer editor is seen even before the project is read, like every other document.
+    writeFileSync(join(dir, BRIEF_FILE), JSON.stringify({ schemaVersion: SCHEMA_VERSION + 1, notes: NOTES }));
+    expect(await newestStoredVersion(dir)).toBe(SCHEMA_VERSION + 1);
     writeFileSync(join(dir, BRIEF_FILE), JSON.stringify({ schemaVersion: SCHEMA_VERSION, notes: ['not', 'text'] }));
     await expect(readState(dir)).rejects.toThrow(ProjectFormatError);
     await expect(readState(dir)).rejects.toThrow(/siteorigin\/brief\.json has a notes that is not text/);
@@ -142,8 +147,20 @@ describe('the brief in a project session', () => {
     expect(onDisk(dir)).toBeNull();
     expect((await again.redo()).ok).toBe(true);
     expect((await again.redo()).ok).toBe(true);
-    expect(again.state.brief?.notes).toBe(NOTES);
-    expect(onDisk(dir)?.notes).toBe(NOTES);
+    expect(again.state.brief).toEqual({ schemaVersion: SCHEMA_VERSION, description: DESCRIPTION, notes: NOTES });
+    expect(onDisk(dir)).toEqual({ schemaVersion: SCHEMA_VERSION, description: DESCRIPTION, notes: NOTES });
+    await again.close();
+  });
+
+  it('edits a brief written by hand with a field left out, without taking it for a change made outside the app', async () => {
+    const { dir, s } = await session();
+    await s.close();
+    writeFileSync(join(dir, BRIEF_FILE), JSON.stringify({ schemaVersion: SCHEMA_VERSION, notes: NOTES }, null, 2));
+    const again = await ProjectSession.open(dir, 'test');
+    expect((await again.saveVersion('With hand-written notes')).ok).toBe(true);
+    const r = await again.apply({ operations: [{ type: 'brief.update', description: DESCRIPTION }] }, { label: 'Edit project description' });
+    expect(r.error).toBeUndefined();
+    expect(onDisk(dir)).toEqual({ schemaVersion: SCHEMA_VERSION, description: DESCRIPTION, notes: NOTES });
     await again.close();
   });
 
@@ -172,6 +189,21 @@ describe('the brief in a project session', () => {
     expect(s.state.site.name).toBe('Harbour Pottery');
     expect(s.state.brief).toEqual({ schemaVersion: SCHEMA_VERSION, description: DESCRIPTION, notes: NOTES });
     expect(onDisk(dir)?.notes).toBe(NOTES);
+    await s.close();
+  });
+
+  it('keeps the brief out of saved versions, and a file its notes name out of what a version holds', async () => {
+    const { dir, s } = await session();
+    mkdirSync(join(dir, 'static', 'downloads'), { recursive: true });
+    writeFileSync(join(dir, 'static', 'downloads', 'proposal.pdf'), '%PDF-1.4 draft');
+    expect((await s.apply({ operations: [{ type: 'brief.update', notes: 'Send the client /downloads/proposal.pdf by Friday.' }] }, { label: 'Edit project notes' })).ok).toBe(true);
+    const saved = await s.saveVersion('With notes');
+    expect(saved.ok).toBe(true);
+    const store = (s as unknown as { versions: { versions: Array<{ id: string; docs: Record<string, string>; media: Record<string, unknown> }> } }).versions;
+    const v = store.versions.find((x) => x.id === saved.id)!;
+    expect(Object.keys(v.docs)).toContain('siteorigin/site.json');
+    expect(Object.keys(v.docs)).not.toContain(BRIEF_FILE);
+    expect(Object.keys(v.media)).not.toContain('static/downloads/proposal.pdf');
     await s.close();
   });
 });
@@ -215,11 +247,43 @@ describe('copies of the project', () => {
     expect(readFileSync(join(duplicate, BRIEF_FILE), 'utf8')).toBe(readFileSync(join(src, BRIEF_FILE), 'utf8'));
   });
 
-  it('know the brief by its path whatever its case, and nothing else by it', () => {
-    expect(isProjectBrief('/p', join('/p', 'siteorigin', 'brief.json'))).toBe(true);
+  it('know the brief, and copies an editor left beside it, by its path whatever its case, and nothing else by it', () => {
+    for (const name of ['brief.json', 'brief.json~', '.brief.json.swp', '#brief.json#', 'brief.json.bak']) expect(isProjectBrief('/p', join('/p', 'siteorigin', name)), name).toBe(true);
     expect(isProjectBrief('/p', join('/p', 'SiteOrigin', 'Brief.JSON'))).toBe(true);
     expect(isProjectBrief('/p', join('/p', 'brief.json'))).toBe(false);
+    expect(isProjectBrief('/p', join('/p', 'siteorigin', 'site.json'))).toBe(false);
+    expect(isProjectBrief('/p', join('/p', 'siteorigin', 'pages', 'brief.json'))).toBe(false);
     expect(isProjectBrief('/p', join('/p', 'static', 'siteorigin', 'brief.json'))).toBe(false);
+  });
+
+  it('leave an editor’s backup of the brief out of an export', async () => {
+    const src = project();
+    writeFileSync(join(src, 'siteorigin', 'brief.json~'), 'Notes since taken out');
+    const exported = join(temp('export'), 'site');
+    await copyProjectSource(src, exported);
+    expect(existsSync(join(exported, 'siteorigin', 'brief.json~'))).toBe(false);
+    expect(existsSync(join(exported, 'siteorigin', 'site.json'))).toBe(true);
+  });
+
+  it('keep the brief out of the preview’s copy and of what the preview server serves', async () => {
+    const src = project();
+    // The preview runs on the project's installed tools, which its copy takes along.
+    mkdirSync(join(src, 'node_modules', 'pkg'), { recursive: true });
+    writeFileSync(join(src, 'node_modules', 'pkg', 'index.js'), '');
+    const stage = await createPreviewStage(src, temp('stages'));
+    try {
+      expect(existsSync(join(stage, 'siteorigin', 'site.json'))).toBe(true);
+      expect(existsSync(join(stage, BRIEF_FILE))).toBe(false);
+      // Brought up to date after the project changed, it still leaves the brief out.
+      writeFileSync(join(src, BRIEF_FILE), JSON.stringify({ schemaVersion: SCHEMA_VERSION, notes: 'Changed' }));
+      writeFileSync(join(src, 'siteorigin', 'site.json'), '{"changed":true}');
+      await syncPreviewStage(src, stage);
+      expect(readFileSync(join(stage, 'siteorigin', 'site.json'), 'utf8')).toBe('{"changed":true}');
+      expect(existsSync(join(stage, BRIEF_FILE))).toBe(false);
+    } finally {
+      await removePreviewStage(stage);
+    }
+    expect(previewFsPolicy('/p').deny).toContain('**/siteorigin/*brief.json*');
   });
 });
 
@@ -288,5 +352,14 @@ describe('typing in the brief while the AI works', () => {
     // A change to the description meanwhile is another field's.
     expect(checkHeld(apply(s, [{ type: 'brief.update', description: 'Changed' }]), [op], base)).toEqual({ kind: 'apply' });
     expect(checkHeld(apply(s, [{ type: 'brief.update', notes: 'Changed elsewhere' }]), [op], base).kind).toBe('changed');
+  });
+
+  it('quotes long notes cut short in the held edit’s status, which is read out', () => {
+    const long = `${'Notes about the client. '.repeat(40)}END`;
+    const { message } = heldPrompt({ phase: 'changed', text: long, currentText: long }, false);
+    expect(message).not.toContain('END');
+    expect(message).toMatch(/…”/);
+    expect(message.length).toBeLessThan(260);
+    expect(heldPrompt({ phase: 'changed', text: 'x', currentText: 'Short notes' }, false).message).toContain('“Short notes”');
   });
 });

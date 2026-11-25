@@ -2697,7 +2697,8 @@ export class ProjectSession extends EventEmitter {
     } catch {
       return [...out].sort();
     }
-    const texts = [...docs.values()];
+    // The brief is the author's own notes: a file it names is not one the site uses.
+    const texts = [...docs].filter(([p]) => p !== BRIEF_FILE).map(([, t]) => t);
     const byAddress = (rel: string) => {
       const address = rel.slice('static'.length);
       const encoded = encodeURI(address);
@@ -2738,7 +2739,8 @@ export class ProjectSession extends EventEmitter {
    */
   private async captureVersion(name: string, opts: { auto?: boolean; also?: string[]; filled?: Record<string, string> } = {}): Promise<SavedVersion> {
     const docs: Record<string, string> = {};
-    for (const [path, content] of this.docs) docs[path] = await this.versions.putText(content);
+    // A version is of the site: the brief says what the project is for, and a restore keeps the one it has.
+    for (const [path, content] of this.docs) if (path !== BRIEF_FILE) docs[path] = await this.versions.putText(content);
     const media: Record<string, string | null> = {};
     for (const rel of new Set([...(await this.versionMediaPaths(this.docs)), ...(opts.also ?? [])])) {
       let abs: string;
@@ -2802,7 +2804,8 @@ export class ProjectSession extends EventEmitter {
     if (v.schemaVersion > SCHEMA_VERSION) return refuse(`“${v.name}” was saved by a newer version of SiteOrigin Builder. Update the app to restore it.`);
     const stored = new Map<string, string>();
     try {
-      for (const [path, h] of Object.entries(v.docs)) stored.set(path, (await this.versions.read(h)).toString('utf8'));
+      // A version never holds the brief; one that does (saved before that was so) is restored without it.
+      for (const [path, h] of Object.entries(v.docs)) if (path !== BRIEF_FILE) stored.set(path, (await this.versions.read(h)).toString('utf8'));
     } catch (e) {
       return refuse((e as Error).message);
     }

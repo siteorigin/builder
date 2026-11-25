@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import { compile, parse } from 'svelte/compiler';
 import type { AssetRecord, ComponentDefinition, GraphNode, InstanceNode, ProjectState, StyleProps } from '@shared/types';
 import { createStarterState } from '@catalogue/starters';
@@ -1468,8 +1468,12 @@ describe('the private project brief (#518)', () => {
     const s = fresh();
     applyAndKeep(s, [
       { type: 'site.update', baseUrl: 'https://harbour.example', description: 'Wheel classes and studio pottery in Leeds.' },
-      { type: 'page.create', title: 'Classes', route: '/classes/' }
+      { type: 'page.create', title: 'Classes', route: '/classes/' },
+      // A draft, so the published run is a run of its own.
+      { type: 'page.create', title: 'Prices', route: '/prices/' }
     ]);
+    const draft = Object.values(s.pages).find((p) => p.title === 'Prices')!.id;
+    applyAndKeep(s, [{ type: 'page.update', pageId: draft, draft: true }]);
     const cache = new GenerationCache();
     const outputs = (state: ProjectState) => [generateProject(state), generateProject(state, { instrument: true }), generateProject(publishedState(state)), generateProject(state, {}, cache)];
     const without = outputs(s);
@@ -1482,10 +1486,25 @@ describe('the private project brief (#518)', () => {
       expect([...files.entries()]).toEqual([...without[i].entries()]);
       for (const [path, text] of files) for (const m of markers) expect(path.includes(m) || text.includes(m), `${path} holds ${m}`).toBe(false);
     });
-    // The visitor-facing description still reaches the meta tags, and the sitemap is made.
+    // The visitor-facing description still reaches the meta tags, and the sitemap is made, without the draft.
     const files = withOut[0];
     expect(files.get('static/sitemap.xml')).toContain('https://harbour.example/classes/');
+    expect(withOut[2].get('static/sitemap.xml')).not.toContain('/prices/');
     expect([...files.values()].some((t) => t.includes('Wheel classes and studio pottery in Leeds.'))).toBe(true);
+    // Nothing that makes the website is handed the brief at all, so no generator can start reading it.
+    const handed: ProjectState[] = [];
+    const original = GenerationCache.prototype.run;
+    const run = vi.spyOn(GenerationCache.prototype, 'run').mockImplementation(function (this: GenerationCache, state: ProjectState, instrument: boolean) {
+      handed.push(state);
+      return original.call(this, state, instrument);
+    });
+    try {
+      generateProject(withBrief, {}, new GenerationCache());
+    } finally {
+      run.mockRestore();
+    }
+    expect(handed.length).toBeGreaterThan(0);
+    for (const state of handed) expect(Object.hasOwn(state, 'brief')).toBe(false);
   });
 });
 

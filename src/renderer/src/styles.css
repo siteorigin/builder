@@ -416,7 +416,8 @@ body:has(.preview-pill:not([inert] *)) .toasts { bottom: 90px; }
 .toast.held { align-items: flex-start; max-width: 460px; }
 .toast.held .held-body { display: flex; flex-direction: column; gap: 4px; min-width: 0; }
 .toast.held .held-where { font-weight: 600; }
-.toast.held .held-text { user-select: text; overflow-wrap: anywhere; opacity: 0.9; }
+/* Long text (working notes) scrolls within a few lines, so the row's actions and the rows above stay in view. */
+.toast.held .held-text { user-select: text; overflow-wrap: anywhere; opacity: 0.9; max-height: 6.5em; overflow-y: auto; white-space: pre-line; }
 .toast.held .held-actions { display: flex; flex-wrap: wrap; gap: 4px; margin-left: -8px; }
 .toast.held button { opacity: 1; }
 .toast.rename-offer { align-items: flex-start; max-width: 460px; }

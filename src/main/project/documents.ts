@@ -304,10 +304,13 @@ async function readStoredState(dir: string, opts: ReadOptions, raw: Map<string, 
   return state;
 }
 
-/** A stored brief, checked: each field is text when given (a field left out is empty), or the project is not read. */
+/**
+ * A stored brief, checked: each field is text when given, or the project is not read. It is kept as stored, a field
+ * left out and all (read as empty), so the session's copy of the file is the file, and an edit finds it unchanged.
+ */
 function briefDoc(doc: unknown): ProjectBriefDoc {
   if (!doc || typeof doc !== 'object' || Array.isArray(doc)) throw new ProjectFormatError(`${BRIEF_FILE} is not a project brief. Restore it from a copy, or remove it to start the brief afresh.`);
   const d = doc as Record<string, unknown>;
   for (const f of BRIEF_FIELDS) if (d[f] !== undefined && typeof d[f] !== 'string') throw new ProjectFormatError(`${BRIEF_FILE} has a ${f} that is not text. Restore it from a copy, or correct it.`);
-  return { ...d, schemaVersion: d.schemaVersion as number, description: (d.description as string | undefined) ?? '', notes: (d.notes as string | undefined) ?? '' };
+  return d as unknown as ProjectBriefDoc;
 }

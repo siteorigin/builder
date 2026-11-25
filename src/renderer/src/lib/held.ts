@@ -531,13 +531,17 @@ export function whereOf(state: ProjectState, op: EditOperation): string {
 
 export type HeldAction = 'stop-apply' | 'apply' | 'replace' | 'copy' | 'retry' | 'discard';
 
+/** The most of a field's text a held edit's status quotes. */
+const QUOTE_MAX = 120;
+
 /** What a held edit's row says, and the actions it offers, in each phase. */
 export function heldPrompt(
   h: { phase: string; text: string | null; currentText?: string | null; note?: string; stopping?: boolean; writing?: boolean; cause?: 'elsewhere' },
   aiBusy: boolean,
   phase: 'working' | 'asking' | 'checking' | 'stopping' | null = null
 ): { message: string; actions: HeldAction[] } {
-  const quote = (t: string | null | undefined) => (t === '' ? 'nothing' : t ? `“${t}”` : null);
+  // Said in the row's status, which is read out: long text (working notes) is cut short there, and shown in full above it.
+  const quote = (t: string | null | undefined) => (t === '' ? 'nothing' : t ? `“${t.length > QUOTE_MAX ? `${t.slice(0, QUOTE_MAX).trimEnd()}…` : t}”` : null);
   // Typed into a field that changed somewhere else meanwhile (a file saved outside the app): both are kept, the
   // newer value in the project and the typed text here, until the author chooses.
   if (h.cause === 'elsewhere' && (h.phase === 'changed' || h.phase === 'failed')) {

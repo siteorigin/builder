@@ -986,10 +986,13 @@ export interface ProjectManifest {
  */
 export interface ProjectBriefDoc {
   schemaVersion: number;
-  /** What the site is and who it is for, in a line or two. Recent projects shows it under the project's name. */
-  description: string;
+  /**
+   * What the site is and who it is for, in a line or two. Recent projects shows it under the project's name. The app
+   * always writes both fields; one left out of a file written by hand reads as empty (see `briefText`).
+   */
+  description?: string;
   /** Free-form working notes: the client, the audience, what the site should achieve. */
-  notes: string;
+  notes?: string;
 }
 
 export interface ThemeLock {

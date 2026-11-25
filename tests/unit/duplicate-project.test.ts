@@ -167,7 +167,7 @@ describe('a duplicated project (#176)', () => {
     expect(c.snapshot()!.state.brief).toMatchObject(brief);
     expect((await c.apply({ operations: [{ type: 'brief.update', description: 'The autumn campaign.' }] }, { label: 'Edit project description', opening: c.openingKey! })).ok).toBe(true);
     await c.close();
-    expect(read(copy, 'siteorigin/brief.json').description).toBe('The autumn campaign.');
+    expect(read(copy, 'siteorigin/brief.json')).toMatchObject({ description: 'The autumn campaign.', notes: brief.notes });
     expect(read(original, 'siteorigin/brief.json')).toMatchObject(brief);
   });
 

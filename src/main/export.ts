@@ -8,7 +8,6 @@ import { existsSync, lstatSync, promises as fs, readdirSync, statSync } from 'no
 import { basename, dirname, join, relative, sep } from 'node:path';
 import type { AssetRecord, NodeTree, PageDoc, ProjectState } from '@shared/types';
 import { documentFormat } from '@shared/document-files';
-import { BRIEF_FILE } from '@shared/brief';
 import { declaredDirection, declaredLanguage, pageDirection, pageLanguage, sameLanguage } from '@shared/languages';
 import { checkPublicUrl } from '@shared/public-url';
 import { STARTER_ASSETS } from '@catalogue/starters';
@@ -56,9 +55,16 @@ export async function copyProjectSource(src: string, dest: string, opts: { keepA
   });
 }
 
-/** Is `p` the project brief of the project in `root`? Compared without case: on a case-insensitive disk, another spelling is the same file. */
+/**
+ * A file in `siteorigin/` named after the brief: the brief itself, or a copy an editor left beside it (`brief.json~`,
+ * `.brief.json.swp`, `#brief.json#`, `brief.json.bak`), which can hold notes the author has since taken out.
+ * Without case: on a case-insensitive disk, another spelling is the same file.
+ */
+const BRIEF_COPY_RE = /^siteorigin\/[^/]*brief\.json[^/]*$/i;
+
+/** Is `p` the project brief of the project in `root`, or a copy of it an editor left beside it? */
 export function isProjectBrief(root: string, p: string): boolean {
-  return relative(root, p).split(sep).join('/').toLowerCase() === BRIEF_FILE;
+  return BRIEF_COPY_RE.test(relative(root, p).split(sep).join('/'));
 }
 
 /** Is `p` part of the project source in `root`: not tools, caches, builds, private files or links? */

@@ -4,16 +4,24 @@
  * never reach visitors: the website and every export leave them out. Site details' description is the visitor-facing
  * one, and stays where it is.
  */
-import { EyeOff } from 'lucide-react';
+import { EyeOff, Lock } from 'lucide-react';
 import { briefText } from '@shared/brief';
 import { TEXT_LIMITS } from '@shared/text-limits';
 import { applyOps, useStore } from '../store';
 import { DraftInput, Field } from '../components/ui';
 
+const HINTS = {
+  description: 'What this site is and who it is for, in a line or two. Recent projects shows it under the project’s name.',
+  notes: 'The client, the audience, what the site should achieve: anything worth keeping while you build it.'
+};
+
 export function ProjectBrief() {
   const brief = useStore((s) => s.snapshot?.state.brief);
   const opening = useStore((s) => s.snapshot?.workspaceKey);
+  const readOnly = useStore((s) => s.snapshot?.readOnly ?? null);
   if (opening === undefined) return null;
+  const description = briefText(brief, 'description');
+  const notes = briefText(brief, 'notes');
   return (
     // Keyed by the project's opening: text typed in one project never shows in the next.
     <div className="panel-body brief" key={opening}>
@@ -23,14 +31,35 @@ export function ProjectBrief() {
           <EyeOff aria-hidden="true" />
           <span>Private to this project. Visitors never see it: the website and every export leave it out.</span>
         </p>
+        {/* Said before anything is typed, so nothing typed here is lost to a save that cannot happen. */}
+        {readOnly && (
+          <p className="brief-private">
+            <Lock aria-hidden="true" />
+            <span>{readOnly.reason}</span>
+          </p>
+        )}
       </div>
       <div className="brief-fields">
-        <Field label="Description" hint="What this site is and who it is for, in a line or two. Recent projects shows it under the project’s name.">
-          <DraftInput multiline rows={3} limit={TEXT_LIMITS.projectDescription} keep="brief:description" value={briefText(brief, 'description')} placeholder="A brochure site for a family-run pottery studio in Leeds." onCommit={(v) => void applyOps([{ type: 'brief.update', description: v }], 'Edit project description')} />
-        </Field>
-        <Field label="Working notes" hint="The client, the audience, what the site should achieve: anything worth keeping while you build it.">
-          <DraftInput multiline className="textarea brief-notes" limit={TEXT_LIMITS.projectNotes} keep="brief:notes" value={briefText(brief, 'notes')} onCommit={(v) => void applyOps([{ type: 'brief.update', notes: v }], 'Edit project notes')} />
-        </Field>
+        {readOnly ? (
+          // Read-only fields stay focusable, so the brief can still be read, selected and copied.
+          <>
+            <Field label="Description" hint={HINTS.description}>
+              <textarea className="textarea" readOnly rows={3} value={description} />
+            </Field>
+            <Field label="Working notes" hint={HINTS.notes}>
+              <textarea className="textarea brief-notes" readOnly value={notes} />
+            </Field>
+          </>
+        ) : (
+          <>
+            <Field label="Description" hint={HINTS.description}>
+              <DraftInput multiline rows={3} limit={TEXT_LIMITS.projectDescription} keep="brief:description" value={description} placeholder="A brochure site for a family-run pottery studio in Leeds." onCommit={(v) => void applyOps([{ type: 'brief.update', description: v }], 'Edit project description')} />
+            </Field>
+            <Field label="Working notes" hint={HINTS.notes}>
+              <DraftInput multiline className="textarea brief-notes" limit={TEXT_LIMITS.projectNotes} keep="brief:notes" value={notes} onCommit={(v) => void applyOps([{ type: 'brief.update', notes: v }], 'Edit project notes')} />
+            </Field>
+          </>
+        )}
       </div>
     </div>
   );

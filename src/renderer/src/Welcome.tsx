@@ -258,17 +258,23 @@ export function Welcome() {
     const twins = (recents ?? []).filter((x) => x !== r && x.name === r.name).map((x) => labels.get(x.dir) ?? x.dir);
     const twin = twins.length > 0;
     const where = labels.get(r.dir) ?? r.dir;
+    // The description is said as the card's description, not as part of its name, which stays short.
+    const descId = r.description ? `recent-desc-${(recents ?? []).indexOf(r)}` : undefined;
     return (
       <li key={r.dir} className={`recent-item${r.missing ? ' missing' : ''}${isLatest ? ' latest' : ''}`}>
         {/* A missing project's card finds it: the picker opens, and the same project found elsewhere takes over this entry (#217). */}
-        <button className="recent-card" disabled={!!opening} aria-busy={busy || undefined} title={r.description ? `${r.name}\n${r.description}\n${r.dir}` : `${r.name}\n${r.dir}`} onClick={() => void (r.missing ? open(undefined, { folder: true, replaces: r.dir }) : open(r.dir))}>
+        <button className="recent-card" disabled={!!opening} aria-busy={busy || undefined} title={r.description ? `${r.name}\n${r.description}\n${r.dir}` : `${r.name}\n${r.dir}`} aria-describedby={descId} onClick={() => void (r.missing ? open(undefined, { folder: true, replaces: r.dir }) : open(r.dir))}>
           <div className="recent-thumb" aria-hidden="true">
             {busy ? <Spinner decorative /> : initials(r.name)}
           </div>
           <div className="recent-meta">
             <strong>{r.name}</strong>
             {/* The project brief's description (#518): the author's own words for what the project is, cut short to fit. */}
-            {r.description && <span className="desc">{r.description}</span>}
+            {r.description && (
+              <span className="desc" id={descId} aria-hidden="true">
+                {r.description}
+              </span>
+            )}
             <span className="where">
               <Folder aria-hidden="true" />
               {r.missing ? (
