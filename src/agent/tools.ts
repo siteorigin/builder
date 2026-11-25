@@ -658,9 +658,28 @@ export interface ToolOutcome {
   mutated?: boolean;
   ops?: EditOperation[];
   results?: unknown[];
+  /** A page measurement as the preview gave it, before it was cut to fit the result (inspect_layout). */
+  report?: unknown;
 }
 
 const WIDTHS = { phone: 390, tablet: 834, desktop: 1280 };
+
+/**
+ * Measure a page in the live preview at a width, for the model's inspect_layout and the application's own check
+ * alike. A preview that is not running, did not load or did not answer is a check that could not run, never a clean
+ * result. `pageId` is an existing page's ID.
+ */
+export async function measurePage(inspect: (pageId: string, width: number) => Promise<unknown>, pageId: string, viewport: keyof typeof WIDTHS, revision: number): Promise<ToolOutcome> {
+  try {
+    const report = (await inspect(pageId, WIDTHS[viewport])) as { error?: unknown } | null;
+    if (!report || typeof report !== 'object' || report.error)
+      return { ok: false, content: { error: 'VALIDATION_FAILED', pageId, viewport, message: `Layout could not be inspected: ${String(report?.error ?? 'no report')}` } };
+    const envelope = { revision, pageId, viewport, width: WIDTHS[viewport] };
+    return { ok: true, content: { ...envelope, report: fitInspection(envelope, report) }, report };
+  } catch (e) {
+    return { ok: false, content: { error: 'VALIDATION_FAILED', pageId, viewport, message: `Layout could not be inspected: ${(e as Error).message}` } };
+  }
+}
 const MAX_RESULT_CHARS = 24000;
 
 /** What a transform, transition or grid property takes, for the read_project list: its range, unit or grammar. */
@@ -954,16 +973,7 @@ export async function executeTool(name: string, rawArgs: string, host: ToolHost,
       const resolved = pageIdFor(state, a.pageId);
       if (!resolved) return { ok: false, content: { error: 'INVALID_ARGUMENT', viewport: a.viewport, message: 'Unknown page.' } };
       a.pageId = resolved;
-      try {
-        const report = (await host.inspectLayout(a.pageId, WIDTHS[a.viewport])) as { error?: unknown } | null;
-        // A preview that is not running or did not load is a failed check, never a clean result.
-        if (!report || typeof report !== 'object' || report.error)
-          return { ok: false, content: { error: 'VALIDATION_FAILED', pageId: resolved, viewport: a.viewport, message: `Layout could not be inspected: ${String(report?.error ?? 'no report')}` } };
-        const envelope = { revision: host.revision(), pageId: resolved, viewport: a.viewport, width: WIDTHS[a.viewport] };
-        return { ok: true, content: { ...envelope, report: fitInspection(envelope, report) } };
-      } catch (e) {
-        return { ok: false, content: { error: 'VALIDATION_FAILED', pageId: resolved, viewport: a.viewport, message: `Layout could not be inspected: ${(e as Error).message}` } };
-      }
+      return measurePage((pageId, width) => host.inspectLayout(pageId, width), resolved, a.viewport, host.revision());
     }
     case 'inspect_component': {
       const a = args as z.infer<(typeof TOOL_ARGS)['inspect_component']>;

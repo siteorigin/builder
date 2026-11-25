@@ -12,8 +12,9 @@ import { canCarryOn, summaryNow, turnState, type TurnHistory } from '@shared/tur
 import { getTheme } from '@catalogue/index';
 import { diagnosticKey, type Diagnostic } from '@engine/validate';
 import type { AgentModelAdapter, CanonicalItem, ContextOverflow, ModelEvent, ToolCall, ToolDefinition } from './types';
-import { describeOps, InspectionLog, pagesTouched } from './report';
-import { asksForComponent, assetSummary, CODE_OPERATIONS, executeTool, imageAnswer, imageLabel, imageRef, libraryImage, MUTATING_TOOLS, REVISION_BOUND_TOOLS, serializeResult, toolsForRun, type RunTools, type ToolHost } from './tools';
+import { describeOps, InspectionLog, pagesTouched, type Viewport } from './report';
+import { asksForComponent, assetSummary, CODE_OPERATIONS, executeTool, imageAnswer, imageLabel, imageRef, libraryImage, measurePage, MUTATING_TOOLS, REVISION_BOUND_TOOLS, serializeResult, toolsForRun, type RunTools, type ToolHost } from './tools';
+import { PreviewCheck } from './preview-check';
 import { compactProjectSummary, describeSelection, diagnosticRank, diagnosticsChars, diagnosticsContext, pageGlance, pageGlanceChars, pageIdFor, projectSummary, withoutSlotInfo, withThemeUpdates } from './context';
 import { outsideOffer, themeUpdateNote } from './theme-update';
 import { canEditContracts, checkAuthority, liveEntry, requestAuthority, widenChoices, type Authority } from './scope';
@@ -1339,14 +1340,20 @@ export class Orchestrator {
     const opResults: unknown[] = [];
     /** The latest layout and image check of each page at each width. */
     const inspections = new InspectionLog();
-    /** The final checks: each page check's latest result, then validation and the build, from `diags`. */
-    const buildChecks = (diags: Diagnostic[]): ChatCheck[] => {
+    /** What the run changed of what pages show, for the preview check it passes before it finishes (#742). */
+    const preview = new PreviewCheck(startState, requestText, ctx?.viewport);
+    /**
+     * The final checks: each page check's latest result, then `unchecked` (changed pages the preview check left out),
+     * then validation and the build, from `diags`.
+     */
+    const buildChecks = (diags: Diagnostic[], unchecked: ChatCheck[] = []): ChatCheck[] => {
       // Errors that were there before the run and still are: one the run fixed is not reported as remaining.
       const remaining = sortErrors(diags).known.length;
       // A component the run left showing the same fixed content everywhere still works, so it is said, not refused.
       const reuse = freshReusability(diags);
       return [
         ...inspections.checks(session.state),
+        ...unchecked,
         { status: 'pass', text: 'Project structure, links and references are valid.' },
         { status: 'pass', text: baseline.size ? 'No new build errors.' : 'All components build without errors.' },
         ...reuse.slice(0, REUSABILITY_CHECKS).map((d): ChatCheck => ({ status: 'issue', text: d.message })),
@@ -1366,6 +1373,33 @@ export class Orchestrator {
     let nudged = false;
     /** Told once about components that are not reusable yet; apart from `nudged`, so neither nudge uses up the other. */
     let reuseNudged = false;
+
+    /**
+     * Measure a page for the application's own preview check, never past Stop or the run's time limit: an answer
+     * that comes later is ignored, and the check could not run.
+     */
+    const measureLive = async (pageId: string, viewport: Viewport) => {
+      const left = limitMs - (activeMs + Date.now() - lastResume);
+      let release = () => {};
+      const cut = new Promise<never>((_, reject) => {
+        if (signal.aborted) return reject(new Error('Stopped.'));
+        if (left <= 0) return reject(new Error('The request reached its time limit.'));
+        const timer = setTimeout(() => reject(new Error('The request reached its time limit.')), left);
+        const stop = () => reject(new Error('Stopped.'));
+        signal.addEventListener('abort', stop, { once: true });
+        release = () => {
+          clearTimeout(timer);
+          signal.removeEventListener('abort', stop);
+        };
+      });
+      // Settled already, or never raced when the preview call throws at once: never an unhandled rejection.
+      cut.catch(() => undefined);
+      try {
+        return await measurePage((id, width) => Promise.race([this.deps.inspectLayout(id, width), cut]), pageId, viewport, session.revision);
+      } finally {
+        release();
+      }
+    };
 
     const host: ToolHost = {
       macros,
@@ -1419,7 +1453,20 @@ export class Orchestrator {
                   : `This request was sent with ${limit} selected, so changes are limited to it.`;
           return { ok: false, revision: session.revision, error: { code: 'SCOPE_MISMATCH', message: `${denied} ${why} Nothing in this batch was applied. Ask the user with ${widen} before changing more.` } };
         }
-        return session.apply({ operations, expectedRevision }, { label, source: 'ai', runId, history: false, idempotencyKey: `${runId}:${key}`, ...(grants?.collectionWrite ? { collectionWrite: grants.collectionWrite } : {}) });
+        // The pages the batch will change are measured as they are, before this run reached them, for the preview check.
+        await preview.beforeApply(operations, session.state, measureLive, (pageId, viewport) => inspections.fresh(pageId, viewport));
+        // Stopped while the preview measured: the batch never lands.
+        if (signal.aborted) return { ok: false, revision: session.revision, error: { code: 'CANCELLED', message: 'Cancelled' } };
+        const before = session.state;
+        const revision = session.revision;
+        const res = await session.apply({ operations, expectedRevision }, { label, source: 'ai', runId, history: false, idempotencyKey: `${runId}:${key}`, ...(grants?.collectionWrite ? { collectionWrite: grants.collectionWrite } : {}) });
+        if (res.ok && session.revision !== revision) {
+          const reach = preview.landed(operations, before, session.state);
+          // A page check made before the change no longer describes a page it changed the look of; a component check
+          // stops vouching for any page whose content it sampled.
+          inspections.invalidate(reach.shared ? 'all' : reach.pages, pagesTouched(operations, session.state));
+        }
+        return res;
       },
       compileAll: () => this.deps.compileAll(),
       inspectLayout: (pageId, width) => this.deps.inspectLayout(pageId, width),
@@ -1523,8 +1570,6 @@ export class Orchestrator {
         mutated = true;
         executedOps.push(...(links.outcome.ops ?? []));
         opResults.push(...(links.outcome.results ?? []));
-        // A connected link can change how its page looks (a button that had nowhere to go).
-        inspections.invalidate(links.outcome.ops?.length ? pagesTouched(links.outcome.ops, session.state) : 'all');
       }
       return links;
     };
@@ -1919,7 +1964,33 @@ export class Orchestrator {
               items.push({ kind: 'user', text: reusabilityNudge(fixable, current.mode === 'definition') });
               continue outer;
             }
-            const checks: ChatCheck[] = [...buildChecks(diags), ...unfinished.map((text): ChatCheck => ({ status: 'issue', text }))];
+            // The application checks the pages the run changed in the preview itself (#742), reusing any check the model
+            // made after its last change. What the run broke goes back to the model on the validation errors' repair budget.
+            const { targets, unchecked } = preview.plan(session.state);
+            const unmeasured = targets.filter((t) => !inspections.fresh(t.pageId, t.viewport));
+            if (unmeasured.length) {
+              const p = addActivity('Checking the changed pages in the preview', 'inspect_layout');
+              for (const t of unmeasured) {
+                const m = await measureLive(t.pageId, t.viewport);
+                if (signal.aborted) throw new Error('Cancelled');
+                inspections.record(t.pageId, t.viewport, m.ok, m.content, m.report);
+              }
+              p.status = 'done';
+            }
+            const broke = preview.introduced(session.state, targets.map((t) => ({ ...t, m: inspections.fresh(t.pageId, t.viewport) })));
+            if (broke.length) {
+              if (repairs >= LIMITS.repairPasses) {
+                await revertAndFinish('failed', 'The changes caused problems in the preview that could not be repaired.', broke.join(' '));
+                return;
+              }
+              repairs++;
+              this.setStatus('repairing');
+              addActivity('Fixing a problem', 'repair');
+              items.push({ kind: 'user', text: `The app checked the changed pages in the preview and found problems this request brought in. Fix them, then finish:\n${broke.map((b) => `- ${b}`).join('\n')}` });
+              msg.text = '';
+              continue outer;
+            }
+            const checks: ChatCheck[] = [...buildChecks(diags, unchecked), ...unfinished.map((text): ChatCheck => ({ status: 'issue', text }))];
             const changes = describeOps(executedOps, startState, session.state, opResults);
             const label = (finalText.split(/(?<=[.!?])\s/)[0] || userMsg.text).slice(0, 80);
             // An unfinished request is never labelled with the model's claim that it is done.
@@ -1993,8 +2064,6 @@ export class Orchestrator {
             mutated = true;
             executedOps.push(...(outcome.ops ?? []));
             opResults.push(...(outcome.results ?? (outcome.ops ?? []).map(() => ({}))));
-            // A change the tool did not itemise could have touched any page.
-            inspections.invalidate(outcome.ops?.length ? pagesTouched(outcome.ops, session.state) : 'all');
           }
           if (signal.aborted) throw new Error('Cancelled');
           activity.status = outcome.ok ? 'done' : 'error';
@@ -2029,7 +2098,7 @@ export class Orchestrator {
             // Keyed by the page the tool resolved (a route and an ID name the same page), so a repeated
             // check replaces the earlier result instead of adding another line.
             const c = outcome.content as { pageId?: string; viewport?: string };
-            inspections.record(c.pageId ?? `?${call.arguments}`, c.viewport ?? '', outcome.ok, outcome.content);
+            inspections.record(c.pageId ?? `?${call.arguments}`, c.viewport ?? '', outcome.ok, outcome.content, outcome.report);
           }
           if (call.name === 'inspect_component') {
             // Keyed by the component the tool resolved and its sample; each window of cases is kept apart, and a

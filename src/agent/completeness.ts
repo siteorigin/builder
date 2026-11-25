@@ -26,7 +26,8 @@ function isStub(state: ProjectState, page: PageDoc): boolean {
   return state.components[node.definitionId]?.category === 'hero';
 }
 
-const named = (request: string, page: PageDoc): boolean => {
+/** Whether the request names the page, by its title or the last part of its address. */
+export const named = (request: string, page: PageDoc): boolean => {
   const words = [page.title, page.route.split('/').filter(Boolean).at(-1) ?? ''].filter((w) => w.length > 2);
   return words.some((w) => new RegExp(`\\b${w.replace(/[.*+?^${}()|[\]\\]/g, '\\$&').replace(/-/g, '[ -]')}\\b`, 'i').test(request));
 };

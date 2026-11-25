@@ -628,16 +628,23 @@ export function pagesTouched(ops: EditOperation[], state?: ProjectState): Set<st
  * to its page no longer describes the final page, so it is reported as not confirmed.
  */
 export class InspectionLog {
-  private latest = new Map<string, { pageId: string; ok: boolean; content: unknown; stale: boolean }>();
+  /** `report`: the measurement as the preview gave it, before it was cut to fit a tool result. */
+  private latest = new Map<string, { pageId: string; ok: boolean; content: unknown; report?: unknown; stale: boolean }>();
   /**
    * Component checks (inspect_component), by component and sample, each window of cases kept by its offset;
    * `pageId`: the page of the placement whose content was the sample.
    */
   private components = new Map<string, { windows: Map<number, { ok: boolean; content: unknown; stale: boolean }>; pageId?: string }>();
 
-  record(pageId: string, viewport: string, ok: boolean, content: unknown) {
+  record(pageId: string, viewport: string, ok: boolean, content: unknown, report?: unknown) {
     // Setting an existing key keeps the order of first inspection while the result is the latest one.
-    this.latest.set(`${pageId}\n${viewport}`, { pageId, ok, content, stale: false });
+    this.latest.set(`${pageId}\n${viewport}`, { pageId, ok, content, report, stale: false });
+  }
+
+  /** The latest check of a page at a width, while no later edit has changed the page. */
+  fresh(pageId: string, viewport: string): { ok: boolean; report?: unknown } | undefined {
+    const e = this.latest.get(`${pageId}\n${viewport}`);
+    return e && !e.stale ? { ok: e.ok, report: e.report } : undefined;
   }
 
   /** A check of one component on its own; `key` names the component and its sample, `offset` the window of its cases. */
@@ -651,12 +658,15 @@ export class InspectionLog {
     if (total !== undefined) for (const at of [...e.windows.keys()]) if (at > offset && at >= total) e.windows.delete(at);
   }
 
-  /** An edit landed on these pages (or on what every page shares) after their checks ran. */
-  invalidate(pages: Set<string> | 'all') {
+  /**
+   * An edit landed on these pages (or on what every page shares) after their checks ran. `samples`: the pages whose
+   * content component checks sampled that it reached, when that differs from what it changed of how pages look.
+   */
+  invalidate(pages: Set<string> | 'all', samples: Set<string> | 'all' = pages) {
     for (const e of this.latest.values()) if (pages === 'all' || pages.has(e.pageId)) e.stale = true;
     // A component's design, the site's styles and the theme reach every page; an edit of one page's content reaches
     // only a check whose sample was a placement on it.
-    for (const e of this.components.values()) if (pages === 'all' || (e.pageId && pages.has(e.pageId))) for (const w of e.windows.values()) w.stale = true;
+    for (const e of this.components.values()) if (samples === 'all' || (e.pageId && samples.has(e.pageId))) for (const w of e.windows.values()) w.stale = true;
   }
 
   /** Each check names its page, so a check is never read as being about another page the run changed. */
