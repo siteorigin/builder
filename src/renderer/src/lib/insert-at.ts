@@ -9,6 +9,7 @@ import { childLists, findParent } from '@engine/tree';
 import { ownerLabel, refLabel, treeFor } from './model';
 import type { InsertSpec } from './insert-search';
 import { definitionRole, type InsertRole } from '@engine/insert-role';
+import { insertsInline } from '@engine/semantic-tags';
 
 /** How a new thing is placed (as one of a page's sections, or as an element inside a layout), and how a component is. */
 export { definitionRole, type InsertRole };
@@ -202,6 +203,25 @@ export function insideComponent(state: ProjectState, at: InsertAt | null): Inser
   const slot = node?.kind === 'instance' ? slotFor(state, node.definitionId) : undefined;
   if (slot) return { owner: at.owner, parentId: node!.id, slot };
   return node?.kind === 'repeat' || node?.kind === 'slot' ? at : null;
+}
+
+/**
+ * Where a slot's placeholder goes in the design of `definitionId`: inside the design's container that `sel` picks,
+ * else inside the design's root element. Never beside a picked text or button, nor inside a component placed in the
+ * design (which would pass the slot on to it): only a container picked on its own is a place for one. Null when the
+ * design has no root element to hold it, or the container holds only inline content (a paragraph), which no slot's
+ * content can go in.
+ */
+export function slotInsertAt(state: ProjectState, definitionId: string, sel: ElementRef | null): InsertAt | null {
+  const def = own(state.components, definitionId);
+  const tree = def?.kind === 'managed' ? def.tree : undefined;
+  if (!def || !tree) return null;
+  const owner: OwnerRef = { kind: 'component', id: def.id };
+  const picked = sel && sel.owner.kind === 'component' && sel.owner.id === def.id && !sel.instancePath.length ? own(tree.nodes, sel.nodeId) : undefined;
+  const root = tree.rootIds.length === 1 ? own(tree.nodes, tree.rootIds[0]) : undefined;
+  const holder = picked?.kind === 'element' ? picked : root?.kind === 'element' ? root : undefined;
+  if (!holder || insertsInline(state, owner, holder.id)) return null;
+  return { owner, parentId: holder.id, ...beforeCaption(tree, holder) };
 }
 
 /**

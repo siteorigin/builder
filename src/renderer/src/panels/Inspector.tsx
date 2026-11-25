@@ -103,7 +103,7 @@ import { defaultReach, designContent, designContentOp, forwardedBinding, propDef
 import { pickImagesField, pickOperations, planChoice } from '../lib/gallery-picks';
 import { footerCopyPlan } from '../lib/page-navigation';
 import { appliesLanded } from '../lib/pending';
-import { BindingControl, PartSection, PropertiesSection, StyleTargetField, TagBindingControl, VariantsSection, styleVariant, useVariantStyle } from './ContractControls';
+import { BindingControl, PartSection, PropertiesSection, SlotsSection, StyleTargetField, TagBindingControl, VariantsSection, styleVariant, useVariantStyle } from './ContractControls';
 import { LivePreview } from './InsertPanel';
 import { EntryBoundNote, EntryFieldsSection } from './EntryFields';
 import { sampleEntries } from '../lib/template-view';
@@ -2123,6 +2123,7 @@ function DefinitionOverview({ state, def, nested }: { state: ProjectState; def: 
       {def.kind === 'managed' && def.tree && (
         <>
           <PropertiesSection def={def} level={LEVEL} />
+          <SlotsSection def={def} level={LEVEL} />
           <VariantsSection def={def} level={LEVEL} onStyle={(target) => styleLook(def, target)} />
           <UiStateSection def={def} level={LEVEL} />
         </>
@@ -2599,6 +2600,8 @@ function DefinitionNodeInspector({ state, def, node, tokens }: { state: ProjectS
       <PartSection def={def} node={node} level={LEVEL} />
       {isRoot && <PlacementRoleSection state={state} def={def} />}
       {isRoot && <PropertiesSection def={def} level={LEVEL} />}
+      {/* On the whole design, a container (where a new slot goes) and a slot's own placeholder. */}
+      {(isRoot || node.kind === 'element' || node.kind === 'slot') && <SlotsSection def={def} node={node} level={LEVEL} />}
       {isRoot && <VariantsSection def={def} level={LEVEL} onStyle={(t) => styleLook(def, t)} />}
       {isRoot && <UiStateSection def={def} level={LEVEL} />}
       <ConditionControls def={def} node={node} level={LEVEL} />
