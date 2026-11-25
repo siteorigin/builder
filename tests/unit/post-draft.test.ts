@@ -5,7 +5,7 @@
  */
 import { afterEach, describe, expect, it } from 'vitest';
 import type { RichText } from '@shared/types';
-import { PostDraft, flushOpenPost, runWriterHistory, saveOpenPost, setOpenWriter, setWriterHistory, type DraftSaveOutcome } from '../../src/renderer/src/lib/post-draft';
+import { PostDraft, flushOpenPost, openWriterPost, runWriterHistory, savePostIfOpen, saveOpenPost, setOpenWriter, setWriterHistory, type DraftSaveOutcome } from '../../src/renderer/src/lib/post-draft';
 import { registerFlush, resetPendingForTests, settle } from '../../src/renderer/src/lib/pending';
 
 const para = (t: string): RichText => [{ type: 'p', spans: [{ text: t }] }];
@@ -295,6 +295,35 @@ describe('saving the open post from elsewhere', () => {
     expect(await flushOpenPost()).toBe(true);
     expect(await saveOpenPost()).toBe(false);
     fields();
+  });
+
+  it('saves the open post for a request about that post only, never another (#701)', async () => {
+    const spring = { collectionId: 'posts', entryId: 'en_spring' };
+    const winter = { collectionId: 'posts', entryId: 'en_winter' };
+    const saved: string[] = [];
+    // No writer open: nothing of the post is unsaved.
+    expect(openWriterPost()).toBeNull();
+    expect(await savePostIfOpen(spring)).toBe(true);
+    const off = setOpenWriter(
+      async () => (saved.push('text'), true),
+      async () => (saved.push('all'), false),
+      winter
+    );
+    expect(openWriterPost()).toEqual(winter);
+    // Another post is held: left alone.
+    expect(await savePostIfOpen(spring)).toBe(true);
+    expect(saved).toEqual([]);
+    // That post: everything it holds, its fields too, and what could not be saved says so.
+    expect(await savePostIfOpen(winter)).toBe(false);
+    expect(saved).toEqual(['all']);
+    // A later writer replaces it; the earlier one's unregister leaves the later one in place.
+    const later = setOpenWriter(async () => (saved.push('later'), true), undefined, spring);
+    off();
+    expect(openWriterPost()).toEqual(spring);
+    expect(await savePostIfOpen(spring)).toBe(true);
+    expect(saved).toEqual(['all', 'later']);
+    later();
+    expect(openWriterPost()).toBeNull();
   });
 
   it('has Save and leaving the project save text the writer holds, focused or not', async () => {

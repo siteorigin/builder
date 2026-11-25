@@ -13,12 +13,16 @@
   .seo-scroll { flex: 1; min-height: 0; overflow-y: auto; scrollbar-gutter: stable; }
   .seo-none { margin: 64px auto; max-width: 36ch; display: flex; flex-direction: column; align-items: center; gap: 10px; color: var(--text-3); text-align: center; padding: 24px; font-size: 13px; }
   .seo-none svg { width: 28px; height: 28px; }
-  .seo-doc { max-width: 72ch; margin: 28px auto 64px; padding: 0 24px; font-size: 13px; color: var(--text-2); }
-  .seo-doc-kind { margin: 0 0 10px; font-size: 12px; color: var(--text-3); }
-  .seo-doc-facts { display: grid; grid-template-columns: max-content 1fr; gap: 6px 16px; margin: 0 0 12px; }
-  .seo-doc-facts dt { color: var(--text-3); }
-  .seo-doc-facts dd { margin: 0; color: var(--text); overflow-wrap: anywhere; }
+  .seo-doc { max-width: 720px; margin: 24px auto 64px; padding: 0 24px; font-size: 13px; color: var(--text-2); display: flex; flex-direction: column; gap: 10px; }
+  .seo-doc-kind { margin: 0; font-size: 12px; color: var(--text-3); }
   .seo-doc .seo-note { margin: 0; }
+  /* The chosen document's previews (#701), at the view's width: a computer's result keeps the width it is measured at
+     while the view has room, and narrows with a narrow view rather than scrolling sideways, its title cut short. */
+  .seo-preview-wide { gap: 12px; }
+  .seo-preview-wide .serp-frame-desktop { overflow-x: visible; }
+  .seo-preview-wide .serp-desktop { max-width: 100%; }
+  .seo-preview-wide .serp-desktop .serp-title-line { overflow: hidden; text-overflow: ellipsis; }
+  .seo-preview-wide .code-view.seo-graph { max-height: 60vh; }
 
   .seo-panel { display: flex; flex-direction: column; flex: 1; min-height: 0; }
   .seo-group { padding: 0 6px 10px; }

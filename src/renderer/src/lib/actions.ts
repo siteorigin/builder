@@ -10,10 +10,12 @@ import { applyOperations, ungroupRefusal } from '@engine/apply';
 import { missingSectionLinks } from '@generator/checks';
 import { api, applyOps, commitOps, getState, inspectorFocusRequest, saveLocal, setState, toast, undoAction, useStore, type State } from '../store';
 import { activeWorkspace, canvasCovered } from './workspace';
-import { seoDocument } from './seo-view';
+import { sameSubject, seoDocument } from './seo-view';
+import { postAt, postWorkspace } from './posts';
+import { withTypedSeo, type TypedSeo } from './seo-preview';
 import type { SeoSubject } from '@shared/seo';
 import { imageDropOps, imageInsertOps, type ImageTarget } from './image-drop';
-import { flushOpenPost } from './post-draft';
+import { flushOpenPost, savePostIfOpen } from './post-draft';
 import { appliesLanded, trackApply, type ApplyOutcome } from './pending';
 import { storedEdit } from './richtext';
 import { showAsset } from './place';
@@ -28,7 +30,7 @@ import { sampleEntries } from './template-view';
 import { duplicateOps, groupOf, layerRef, liveSet, moveIntoOps, moveStepOps, moveToPageOps, removeOps, type Group, type LayerSet } from './layer-set';
 import { editLabel, placeWords } from './edit-label';
 import { draftFor, imagesFor, withDraft } from './chatDrafts';
-import type { SeoHandoff } from './seoHandoff';
+import { previewHandoff, type SeoHandoff } from './seoHandoff';
 import type { SlotTarget } from './slot-target';
 
 export type { InsertSpec, Primitive } from './insert-search';
@@ -978,12 +980,17 @@ export async function openSeoChat(h: SeoHandoff): Promise<boolean> {
   }
   const now = getState();
   const st = now.snapshot!.state;
+  // The SEO view on the page asked about stays in front: the chat is about the page chosen there (#700), and the
+  // previews show what the edit makes of it (#701).
+  const inView = h.mode === 'edit' && h.scope === 'page' && activeWorkspace(now) === 'seo' && sameSubject(now.seoSubject, { kind: 'page', pageId: h.pageId });
   if (h.mode === 'edit' && h.scope === 'page') {
     // Removed while the conversation opened.
     if (pageGone(st)) return (toast('That page is no longer on the site.', 'info'), false);
-    if (now.mode !== 'edit') setMode('edit');
-    // The page itself, so the request is about the whole page; also out of a component edited everywhere or a layout.
-    selectPage(h.pageId, null);
+    if (!inView) {
+      if (now.mode !== 'edit') setMode('edit');
+      // The page itself, so the request is about the whole page; also out of a component edited everywhere or a layout.
+      selectPage(h.pageId, null);
+    }
   } else if (h.mode === 'edit' && (now.definitionMode || now.templateMode || activeWorkspace(now))) {
     // A component edited everywhere or a layout would make the request about that design, and the Posts workspace or the
     // SEO view about the post or document it shows (#700): the page goes back on screen.
@@ -1002,6 +1009,29 @@ export async function openSeoChat(h: SeoHandoff): Promise<boolean> {
   });
   saveLocal({ chatMode: h.mode });
   return true;
+}
+
+/**
+ * Optimize with AI on a post's Search & sharing previews (#599, #701): the question about the post, from `from`, the
+ * previews in the post writer or in the SEO view (on the post chosen there). The writer holding this post saves what it
+ * holds first, so the question quotes it as typed, whether it is in front or out of sight under the SEO view; a writer
+ * holding another post is never saved. `typed` is the text typed into the previews' own fields, laid over the project
+ * as it is once that save lands. Null, so nothing opens, when the author moved on meanwhile (another post or document,
+ * the previews put away, a dialog, another project) or the post has gone.
+ */
+export async function postPreviewHandoff(subject: Extract<SeoSubject, { kind: 'entry' }>, typed: TypedSeo, from: 'writer' | 'view'): Promise<SeoHandoff | null> {
+  const post = { collectionId: subject.collectionId, entryId: subject.entryId };
+  const here = (s: State) =>
+    from === 'view' ? activeWorkspace(s) === 'seo' && sameSubject(s.seoSubject, subject) : postWorkspace(s) === 'write' && s.post?.collectionId === post.collectionId && s.post.entryId === post.entryId;
+  const start = getState();
+  if (!start.snapshot || !postAt(start.snapshot.state, post) || !here(start)) return null;
+  const opening = start.snapshot.workspaceKey;
+  // What could not be saved is said in the writer; the question still quotes what the project holds.
+  await savePostIfOpen(post).catch(() => false);
+  const now = getState();
+  if (!now.snapshot || now.snapshot.workspaceKey !== opening || now.modal || !here(now)) return null;
+  const st = now.snapshot.state;
+  return previewHandoff(st, subject, withTypedSeo(st, subject, typed));
 }
 
 /**

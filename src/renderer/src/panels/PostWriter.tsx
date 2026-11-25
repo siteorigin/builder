@@ -232,7 +232,8 @@ function PostEditor({ post, hidden }: { post: PostRef; hidden: boolean }) {
     const offFlush = registerFlush(() => draft.flush());
     const offOpen = setOpenWriter(
       () => draft.flush(),
-      () => saveAllRef.current()
+      () => saveAllRef.current(),
+      { collectionId: post.collectionId, entryId: post.entryId }
     );
     const offHistory = setWriterHistory((action) => void history(action));
     // Edit → Undo and Redo reach the text as the browser's own history: they are the project's here too.
@@ -971,7 +972,7 @@ function PostSearchSettings({
     <details className="post-details post-seo" onToggle={(e) => setSeoOpen(e.currentTarget.open)}>
       <summary>Search & sharing{seoScope ? ` · ${seoScope}` : ''}</summary>
       <div className="post-fields">
-        <SeoPreview state={state} subject={seoSubject} overlay={seoOverlay} doc={seoDoc} shown={seoOpen && !hidden} />
+        <SeoPreview state={state} subject={seoSubject} overlay={seoOverlay} typed={seoTyped} doc={seoDoc} shown={seoOpen && !hidden} />
         <div data-entry-field="seoTitle" style={{ display: 'contents' }}>
           <Field
             label="Browser title"

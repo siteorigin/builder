@@ -2976,7 +2976,7 @@ function PageSearchSettings({ page, state, draft, upd }: { page: PageDoc; state:
   const ownUrl = base ? base + routeUrl(page.route) : null;
   return (
     <>
-      <SeoPreview state={state} subject={subject} overlay={overlay} doc={seoDoc} shown={shown} />
+      <SeoPreview state={state} subject={subject} overlay={overlay} typed={typed} doc={seoDoc} shown={shown} />
       <Field
         label="Browser title"
         hint={
