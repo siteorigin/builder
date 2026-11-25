@@ -30,6 +30,7 @@ import { LEFT_TABS } from './panels/LeftTabs';
 import { FindReplaceModal } from './panels/FindReplace';
 import { SourceModal, PageSourceModal, NewCodeComponentModal } from './panels/SourceModal';
 import { CreateComponentModal, DeletePageModal, EditDefinitionModal, HistoryModal, MakeUniqueModal, NewComponentModal, RenameComponentModal, SetHomeModal, SwapComponentModal } from './panels/Dialogs';
+import { RemovalReviewModal } from './panels/RemovalReview';
 import { RepeatAsListModal } from './panels/RepeatAsList';
 import { ImportReviewModal } from './panels/ImportReview';
 import { PostImportReviewModal } from './panels/PostImportReview';
@@ -761,6 +762,7 @@ export function Editor() {
       {modal?.kind === 'import-review' && <ImportReviewModal key={modal.id} id={modal.id} rows={modal.rows} />}
       {modal?.kind === 'post-import' && <PostImportReviewModal key={modal.preview.id} preview={modal.preview} opening={modal.opening} />}
       {modal?.kind === 'paste-style' && <PasteStyleModal target={modal.ref} opening={modal.opening} />}
+      {modal?.kind === 'removal-review' && <RemovalReviewModal key={`${modal.opening}:${modal.definitionId}:${modal.slot ?? ''}`} opening={modal.opening} definitionId={modal.definitionId} slot={modal.slot} />}
       {switching?.kind === 'new' && <NewProjectModal onClose={() => setSwitching(null)} />}
       {switching?.kind === 'duplicate' && (
         <DuplicateProjectModal

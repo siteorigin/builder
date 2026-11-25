@@ -31,6 +31,8 @@
   .placement-count { flex: none; margin-top: 1px; font-size: 12px; color: var(--text-2); font-variant-numeric: tabular-nums; }
   .placement-list li .grow { overflow-wrap: anywhere; }
   .placement-reach { color: var(--text-2); }
+  /* A removal review's rows each end in Go to placement, centred on the row. */
+  .removal-list li { align-items: center; }
   /* Errors in these forms carry the danger glyph with their words (the shared .field-error) and mark the field they
      belong to, focused or not (the shared invalid border, inside the focus outline). */
   @media (forced-colors: active) {

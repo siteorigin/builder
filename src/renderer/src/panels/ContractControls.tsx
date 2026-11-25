@@ -533,8 +533,9 @@ const designRef = (def: ComponentDefinition, node: GraphNode | undefined) => (no
 /**
  * The places where each placement puts content of its own: declare one (with its placeholder inside the selected
  * container, or the whole design, in one Undo), change its name, what it takes and how many, and remove one no
- * placement fills. The engine refuses a contract that content placements already hold no longer fits, or removing a
- * slot that holds content, and says where; the form keeps what the author chose until it saves.
+ * placement fills. The engine refuses a contract that content placements already hold no longer fits, and says where;
+ * the form keeps what the author chose until it saves. Removing one that holds content opens a review of where (#663),
+ * which can remove it with that content.
  */
 export function SlotsSection({ def, node, level }: { def: ComponentDefinition; node?: GraphNode; level: number }) {
   const state = useStore((s) => s.snapshot?.state);
@@ -561,8 +562,11 @@ function SlotGroup({ def, name, decl, placedAt, filledIn }: { def: ComponentDefi
   const filled = places.length ? `Holds content on ${places.join(', ')}` : 'Empty on every placement';
   const remove = () => {
     const now = current(def.id);
-    // Sent even while it holds content: the engine then says which placements hold it.
-    if (now && declaredSlot(now.def, name)) void apply([removeSlotOp(now.def, name)], `Remove ${typeof decl.label === 'string' && decl.label.trim() ? decl.label : name} slot`, now.snap);
+    if (!now || !declaredSlot(now.def, name)) return;
+    // Content placements hold in it goes only once the author has seen where (#663): the review lists each placement,
+    // with a way to it, and can remove the slot together with that content.
+    if (slotFilledIn(now.snap.state, now.def, name).length) return void setState({ modal: { kind: 'removal-review', opening: now.snap.workspaceKey, definitionId: def.id, slot: name } });
+    void apply([removeSlotOp(now.def, name)], `Remove ${typeof decl.label === 'string' && decl.label.trim() ? decl.label : name} slot`, now.snap);
   };
   if (damaged)
     return (
@@ -591,7 +595,7 @@ function SlotGroup({ def, name, decl, placedAt, filledIn }: { def: ComponentDefi
         <button className="icon-btn sm" aria-expanded={editing} aria-label={`Edit ${decl.label}`} title="Change what it takes" onClick={() => setEditing((o) => !o)}>
           <Pencil />
         </button>
-        <button className="icon-btn sm" aria-label={`Remove ${decl.label}`} title={places.length ? `${filled}. Move or remove that content first.` : 'Remove, with its place in the design'} onClick={remove}>
+        <button className="icon-btn sm" aria-label={`Remove ${decl.label}`} title={places.length ? `${filled}. Review it before removing.` : 'Remove, with its place in the design'} onClick={remove}>
           <Trash2 />
         </button>
       </div>

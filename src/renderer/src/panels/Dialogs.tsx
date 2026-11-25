@@ -95,7 +95,7 @@ export function Count({ length, max }: { length: number; max: number }) {
 }
 
 /** A list that can be scrolled by keyboard, with a tab stop only when it actually overflows. */
-function ScrollList({ className, labelledBy, label, children }: { className: string; labelledBy?: string; label?: string; children: React.ReactNode }) {
+export function ScrollList({ className, labelledBy, label, children }: { className: string; labelledBy?: string; label?: string; children: React.ReactNode }) {
   const ref = useRef<HTMLUListElement>(null);
   const [scrolls, setScrolls] = useState(false);
   useLayoutEffect(() => {
@@ -164,7 +164,7 @@ function listAll(titles: string[]): string {
 }
 
 /** A dialog's safe button, holding focus past a closing menu like the name fields do. */
-function SafeButton({ onClick, disabled, children }: { onClick: () => void; disabled?: boolean; children: React.ReactNode }) {
+export function SafeButton({ onClick, disabled, children }: { onClick: () => void; disabled?: boolean; children: React.ReactNode }) {
   const ref = useRef<HTMLButtonElement>(null);
   useHeldFocus(ref);
   return (

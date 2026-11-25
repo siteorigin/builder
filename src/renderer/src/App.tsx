@@ -61,7 +61,7 @@ export function App() {
         opened++;
         projectClosed();
         // Held edits and the last AI outcome belong to the project that closed.
-        setState({ screen: 'welcome', snapshot: null, selection: null, pagePlaces: {}, previewReturn: null, seoSubject: null, conversation: null, chatDrafts: {}, chatImages: {}, chatRequest: null, definitionMode: null, templateMode: null, heldEdits: [], aiOutcome: null, inspectorFocus: null, styleCopy: null, renameOffer: null, ...pasteStyleClosed() });
+        setState({ screen: 'welcome', snapshot: null, selection: null, pagePlaces: {}, previewReturn: null, seoSubject: null, conversation: null, chatDrafts: {}, chatImages: {}, chatRequest: null, definitionMode: null, templateMode: null, heldEdits: [], aiOutcome: null, inspectorFocus: null, styleCopy: null, renameOffer: null, ...openingModalsClosed() });
       }),
       // Before the project is closed, switched or the app quits: save what is being typed, or ask the author.
       api.on('lifecycle:request', ({ requestId }) => {
@@ -181,14 +181,18 @@ function openSnapshot(snap: NonNullable<ReturnType<typeof getState>['snapshot']>
     inspectorFocus: null,
     styleCopy: null,
     renameOffer: null,
-    ...pasteStyleClosed()
+    ...openingModalsClosed()
   });
   void restoreConversation(++opened, local.chatConversation);
 }
 
-/** Paste style reviews what was copied in one opening, onto it: another opening never shows it. */
-function pasteStyleClosed(): { modal?: null } {
-  return getState().modal?.kind === 'paste-style' ? { modal: null } : {};
+/**
+ * Paste style reviews what was copied in one opening, onto it, and a removal review the placements of one opening:
+ * another opening never shows either.
+ */
+function openingModalsClosed(): { modal?: null } {
+  const kind = getState().modal?.kind;
+  return kind === 'paste-style' || kind === 'removal-review' ? { modal: null } : {};
 }
 
 /** Counts project openings and closings, so a reply that arrives after the project changed is ignored. */
