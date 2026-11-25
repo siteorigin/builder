@@ -160,6 +160,12 @@ export interface State {
   previewReturn: { pageId: string; ref: ElementRef; revision: number; definitionId: string | null } | null;
   hover: ElementRef | null;
   viewport: number;
+  /**
+   * The palette the canvas previews on a site with a dark one: the one this computer's setting would show a visitor
+   * (`system`), or the light or dark palette. Never the editor's own Appearance, and never saved: each opening starts
+   * from `system`.
+   */
+  previewScheme: PreviewScheme;
   zoom: number | 'fit';
   mode: 'edit' | 'preview';
   leftTab: LeftTab | null;
@@ -292,6 +298,7 @@ export const useStore = create<State>((set) => ({
   previewReturn: null,
   hover: null,
   viewport: 1280,
+  previewScheme: 'system',
   zoom: 'fit',
   mode: 'edit',
   leftTab: 'pages',
@@ -398,6 +405,8 @@ function scopeFollows(p: Partial<State>): Partial<State> {
 export function showLayer(ref: ElementRef) {
   setState({ selection: ref, showSelection: getState().showSelection + 1 });
 }
+
+export type PreviewScheme = 'system' | 'light' | 'dark';
 
 /** Save workspace state (open page, viewport, tabs) to the project that is open now. */
 export function saveLocal(state: LocalWorkspaceState) {

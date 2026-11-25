@@ -10,6 +10,7 @@ import { ICONS } from '@catalogue/foundation/icons';
 import { sourceHash } from '@engine/apply';
 import type { Diagnostic } from '@engine/validate';
 import type { ModelCapabilities, ToolDefinition } from './types';
+import { colorSchemeMode } from '@shared/color-scheme';
 import { agentProps, catalogueIndex, compactNode, componentDetail, componentStructure, pageDetail, pageIdFor, projectSummary, readField, selectionAbridged, tokensSummary } from './context';
 import { AUDIT_SEO_ARGS, seoReport } from './seo-report';
 import { getTree, findParent, displayName } from '@engine/tree';
@@ -670,7 +671,11 @@ export async function executeTool(name: string, rawArgs: string, host: ToolHost,
     case 'read_project': {
       const a = args as z.infer<(typeof TOOL_ARGS)['read_project']>;
       const out: Record<string, unknown> = projectSummary(state, host.revision());
-      if (a.sections?.includes('tokens')) out.tokens = tokensSummary(state);
+      if (a.sections?.includes('tokens')) {
+        out.tokens = tokensSummary(state);
+        // Which palettes visitors get: "single", or a dark palette beside the light one ("system", "toggle").
+        out.colorSchemeMode = colorSchemeMode(state.tokens);
+      }
       if (a.sections?.includes('catalogue')) {
         out.catalogue = catalogueIndex(state.site.themeId);
         out.icons = Object.keys(ICONS);

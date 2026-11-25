@@ -65,7 +65,8 @@ import { clone, definitionHash, freshListIds, installComponent, makeInstance, pl
 import { normalizeImage, normalizeItem, normalizeLink, normalizeProp, normalizeRichText, storedAlt } from './values';
 import { editTable } from './table';
 import { acceptedTypes, bindingProblem, bindingSlots, boundSchema, checkPropName, enclosingList, isProtoKey, normalizeProperties, usesState } from './schema';
-import { declaredTokens, findTokenCycle, forEachTokenRef, tokenPropUsageCounts, tokenUsageCounts } from './tokens';
+import { declaredTokens, findTokenCycle, findTokenCycleIn, forEachTokenRef, tokenPropUsageCounts, tokenUsageCounts } from './tokens';
+import { deriveDarkPalette, hasDarkPalette } from '@shared/color-scheme';
 import { slotDecl, slotFill, slotLandingProblem } from './slots';
 import { formDefaults, settleFormKeys } from './form-keys';
 import { namesFormFields, type FormField } from '@catalogue/foundation/form';
@@ -258,7 +259,9 @@ export function applyOperation(state: ProjectState, op: EditOperation, ctx: Appl
       return {};
     }
     case 'token.set':
-      return tokenSet(state, op);
+      return op.scheme === 'dark' ? tokenSetDark(state, op) : tokenSet(state, op);
+    case 'token.setColorScheme':
+      return tokenSetColorScheme(state, op);
     case 'token.create':
       return tokenCreate(state, op);
     case 'token.rename': {
@@ -2252,7 +2255,9 @@ function listInsert(state: ProjectState, op: Op<'instance.listInsert'>): OpResul
 // ---------------------------------------------------------------------------
 
 function assertNoTokenCycles(state: ProjectState) {
-  if (findTokenCycle(state)) fail('That change would make site styles refer to each other in a loop.');
+  if (findTokenCycleIn(state, 'light')) fail('That change would make site styles refer to each other in a loop.');
+  const dark = findTokenCycleIn(state, 'dark');
+  if (dark) fail(`That change would make the dark palette's colors refer to each other in a loop, through "${declaredTokens(state).find((t) => t.id === dark)?.label ?? dark}". Give one of them a color of its own in the dark palette.`);
 }
 
 /** What each kind of site style is called in messages. */
@@ -2270,28 +2275,74 @@ function tokenSet(state: ProjectState, op: Op<'token.set'>): OpResult {
     return {};
   }
   const v = op.value as Record<string, unknown>;
-  if (v && typeof v === 'object' && !Array.isArray(v) && 'token' in v) {
-    // A reference is exactly { token } naming an existing style of the same kind.
-    if (typeof v.token !== 'string' || Object.keys(v).length !== 1) fail('A site style reference must be { "token": "group.name" }.');
-    // Text styles are written out metric by metric, so one cannot stand in for another as a whole.
-    if (tdef.group === 'text') fail(`"${tdef.label}" is a text style, and a text style cannot follow another text style. Change its font, size or spacing instead.`);
-    const tokens = effectiveTokens(state);
-    const target = tokens.find((t) => t.id === v.token) ?? fail(`Token "${v.token}" does not exist.`);
-    if (target.group !== tdef.group) fail(`"${tdef.label}" can only follow another ${TOKEN_KIND[tdef.group]} style, and "${target.label}" is a ${TOKEN_KIND[target.group]} style.`);
-    // The style followed must lead to a value: every style further along it exists and is the same kind.
-    const seen = new Set([target.id, op.tokenId]);
-    for (let cur = linkOf(target.value, target.group); cur && !seen.has(cur); ) {
-      seen.add(cur);
-      const next = tokens.find((t) => t.id === cur) ?? fail(`"${target.label}" follows "${cur}", which does not exist. Link to another style, or give "${target.label}" its own value first.`);
-      if (next.group !== tdef.group) fail(`"${target.label}" follows "${next.label}", which is a ${TOKEN_KIND[next.group]} style.`);
-      cur = linkOf(next.value, next.group);
-    }
-    state.tokens.overrides[op.tokenId] = { token: target.id };
-  } else tokenSetLiteral(state, tdef, op.value);
+  if (v && typeof v === 'object' && !Array.isArray(v) && 'token' in v) state.tokens.overrides[op.tokenId] = { token: tokenLinkTarget(effectiveTokens(state), tdef, v) };
+  else tokenSetLiteral(state, tdef, op.value);
   // A custom style has no theme default to return to: its value is its own, not an override.
   if (custom && Object.hasOwn(state.tokens.overrides, op.tokenId)) {
     custom.value = state.tokens.overrides[op.tokenId];
     delete state.tokens.overrides[op.tokenId];
+  }
+  assertNoTokenCycles(state);
+  return {};
+}
+
+/** The style a link names, checked: exactly { token }, an existing style of the same kind, leading to a value in `tokens`. */
+function tokenLinkTarget(tokens: TokenDef[], tdef: TokenDef, v: Record<string, unknown>): string {
+  // A reference is exactly { token } naming an existing style of the same kind.
+  if (typeof v.token !== 'string' || Object.keys(v).length !== 1) fail('A site style reference must be { "token": "group.name" }.');
+  // Text styles are written out metric by metric, so one cannot stand in for another as a whole.
+  if (tdef.group === 'text') fail(`"${tdef.label}" is a text style, and a text style cannot follow another text style. Change its font, size or spacing instead.`);
+  const target = tokens.find((t) => t.id === v.token) ?? fail(`Token "${v.token}" does not exist.`);
+  if (target.group !== tdef.group) fail(`"${tdef.label}" can only follow another ${TOKEN_KIND[tdef.group]} style, and "${target.label}" is a ${TOKEN_KIND[target.group]} style.`);
+  // The style followed must lead to a value: every style further along it exists and is the same kind.
+  const seen = new Set([target.id, tdef.id]);
+  for (let cur = linkOf(target.value, target.group); cur && !seen.has(cur); ) {
+    seen.add(cur);
+    const next = tokens.find((t) => t.id === cur) ?? fail(`"${target.label}" follows "${cur}", which does not exist. Link to another style, or give "${target.label}" its own value first.`);
+    if (next.group !== tdef.group) fail(`"${target.label}" follows "${next.label}", which is a ${TOKEN_KIND[next.group]} style.`);
+    cur = linkOf(next.value, next.group);
+  }
+  return target.id;
+}
+
+/**
+ * A colour of the dark palette: a colour, a link to another colour (followed within the dark palette), or null to
+ * show its light colour again. The site must have a dark palette turned on.
+ */
+function tokenSetDark(state: ProjectState, op: Op<'token.set'>): OpResult {
+  const tdef = declaredTokens(state).find((t) => t.id === op.tokenId) ?? fail(`Token "${op.tokenId}" does not exist.`);
+  if (tdef.group !== 'color') fail(`Only colors have a dark palette, and "${tdef.label}" is a ${TOKEN_KIND[tdef.group]} style.`);
+  if (!hasDarkPalette(state.tokens)) fail('This site has one palette. Give it a dark palette first, in Site styles > Colors.');
+  const dark = (state.tokens.darkOverrides ??= {});
+  if (op.value === null) delete dark[op.tokenId];
+  else {
+    const v = op.value as Record<string, unknown>;
+    if (v && typeof v === 'object' && !Array.isArray(v) && 'token' in v) dark[op.tokenId] = { token: tokenLinkTarget(effectiveTokens(state, 'dark'), tdef, v) };
+    else {
+      const err = typeof op.value === 'string' ? validateStyleValue('color', op.value) : `"${String(op.value)}" is not a color.`;
+      if (err) fail(err);
+      dark[op.tokenId] = op.value as string;
+    }
+  }
+  assertNoTokenCycles(state);
+  return {};
+}
+
+/**
+ * Which palettes visitors get. The dark palette is made from the light one the first time it is turned on (or again,
+ * on request), and kept while the site goes back to one palette, so turning it on again restores it as it was.
+ */
+function tokenSetColorScheme(state: ProjectState, op: Op<'token.setColorScheme'>): OpResult {
+  const t = state.tokens;
+  if (op.mode === 'single') {
+    if (op.regenerate) fail('A site with one palette has no dark palette to make. Choose a mode with a dark palette.');
+    delete t.colorSchemeMode;
+    return {};
+  }
+  t.colorSchemeMode = op.mode;
+  if (op.regenerate || !t.darkOverrides || typeof t.darkOverrides !== 'object') {
+    const theme = getTheme(state.site.themeId);
+    t.darkOverrides = deriveDarkPalette(effectiveTokens(state), theme.tokens, theme.contrastPairs ?? []);
   }
   assertNoTokenCycles(state);
   return {};
@@ -2389,7 +2440,8 @@ function tokenCreate(state: ProjectState, op: Op<'token.create'>): OpResult {
 /** A token's value with references followed, for turning its uses into explicit values. */
 /** Places CSS text names a token's variable: code component sources and literal style or token values. */
 function literalTokenUses(state: ProjectState, tokenId: string): string[] {
-  const re = new RegExp(`var\\(\\s*${tokenVar(tokenId).replace(/[-]/g, '\\-')}\\s*[,)]`);
+  // CSS reads the function's name in any case (VAR() too); the variable's own name is case-sensitive.
+  const re = new RegExp(`[vV][aA][rR]\\(\\s*${tokenVar(tokenId).replace(/[-]/g, '\\-')}\\s*[,)]`);
   const out = new Set<string>();
   for (const d of Object.values(state.components)) if (d.owner === 'project' && d.kind === 'code' && d.source && re.test(d.source)) out.add(`the source of "${d.name}"`);
   for (const t of allTrees(state)) {
@@ -2399,11 +2451,13 @@ function literalTokenUses(state: ProjectState, tokenId: string): string[] {
   }
   for (const [id, v] of [...Object.entries(state.tokens.overrides), ...state.tokens.custom.map((c) => [c.id, c.value] as const)])
     if (id !== tokenId && typeof v === 'string' && re.test(v)) out.add(`the site style "${id}"`);
+  // The dark palette's colours too, kept while it is turned off, so turning it back on finds nothing missing.
+  for (const [id, v] of Object.entries(state.tokens.darkOverrides ?? {})) if (id !== tokenId && typeof v === 'string' && re.test(v)) out.add(`the dark palette's "${id}"`);
   return [...out];
 }
 
-function resolvedTokenValue(state: ProjectState, tokenId: string): TokenValue | undefined {
-  const tokens = effectiveTokens(state);
+function resolvedTokenValue(state: ProjectState, tokenId: string, scheme: 'light' | 'dark' = 'light'): TokenValue | undefined {
+  const tokens = effectiveTokens(state, scheme);
   let v = tokens.find((t) => t.id === tokenId)?.value;
   const seen = new Set([tokenId]);
   while (v && typeof v === 'object' && 'token' in v) {
@@ -2431,10 +2485,28 @@ function tokenRemove(state: ProjectState, op: Op<'token.remove'>): OpResult {
     const props = tokenPropUsageCounts(state)[t.id] ?? 0;
     if (props) fail(`"${t.label}" is chosen by ${props} component propert${props === 1 ? 'y' : 'ies'}, which can only hold a site style. Choose a replacement style.`);
     const literal = resolvedTokenValue(state, t.id);
-    forEachTokenRef(state, (id, site) => id === t.id && site.replace(clone(literal)));
+    // A colour can look different in the dark palette. Where it is used directly, one value cannot keep both; a
+    // colour that follows it keeps each palette's value in that palette.
+    const dark = t.group === 'color' && state.tokens.darkOverrides ? resolvedTokenValue(state, t.id, 'dark') : literal;
+    const differs = JSON.stringify(dark) !== JSON.stringify(literal);
+    // Kept while the dark palette is turned off too: turning it back on must find each use as it was.
+    if (differs) {
+      let direct = 0;
+      forEachTokenRef(state, (id, site) => id === t.id && site.kind === 'style' && direct++);
+      if (direct)
+        fail(`"${t.label}" has a different color in the dark palette${hasDarkPalette(state.tokens) ? '' : ' (kept for when it is turned back on)'}, so the places that use it cannot keep one color for both. Choose a replacement color.`);
+    }
+    const darkMap = state.tokens.darkOverrides;
+    forEachTokenRef(state, (id, site) => {
+      if (id !== t.id) return;
+      // A colour whose light value followed it, and has no dark value of its own, followed it in the dark palette too.
+      if (differs && darkMap && typeof dark === 'string' && site.kind === 'token' && site.scheme === 'light' && site.tokenId && !Object.hasOwn(darkMap, site.tokenId)) darkMap[site.tokenId] = dark;
+      site.replace(clone(site.scheme === 'dark' ? dark : literal));
+    });
   }
   state.tokens.custom = state.tokens.custom.filter((x) => x.id !== t.id);
   delete state.tokens.overrides[t.id];
+  if (state.tokens.darkOverrides) delete state.tokens.darkOverrides[t.id];
   return {};
 }
 

@@ -709,10 +709,30 @@ export interface TokenDef {
   description?: string;
 }
 
+/**
+ * Which colour palettes the website gives its visitors: the one palette (`single`, and when absent), a dark one
+ * beside it that follows the visitor's device setting (`system`), or that and a Light/Dark switch in the shared
+ * header whose choice the browser remembers (`toggle`).
+ */
+export type ColorSchemeMode = 'single' | 'system' | 'toggle';
+export const COLOR_SCHEME_MODES: readonly ColorSchemeMode[] = ['single', 'system', 'toggle'];
+
+/** A colour of the dark palette: a colour, or another colour token followed within the dark palette. */
+export type DarkColorValue = string | { token: string };
+
 export interface TokensDoc {
   schemaVersion: number;
   overrides: Record<string, TokenValue>;
   custom: TokenDef[];
+  /** Absent: `single`. */
+  colorSchemeMode?: ColorSchemeMode;
+  /**
+   * The dark palette's own colours, by colour token ID. A colour without one shows its value from the light palette
+   * (`overrides`, else its definition), and a link there is followed within the dark palette. Made from the light
+   * palette the first time a dark palette is turned on, and kept (unused) while the site is back to one palette.
+   * Absent: never made.
+   */
+  darkOverrides?: Record<string, DarkColorValue>;
 }
 
 // ---------------------------------------------------------------------------

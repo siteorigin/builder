@@ -1,0 +1,167 @@
+import type { ProjectState } from '@shared/types';
+import { colorSchemeMode } from '@shared/color-scheme';
+
+/**
+ * The visitor's Light/Dark switch, for a site whose palettes are set to `toggle` (see shared/color-scheme.ts). The
+ * palettes themselves are plain CSS in tokens.css: the dark one applies while the device asks for dark and the
+ * visitor has not chosen light, or whenever they have chosen dark (`data-so-theme` on <html>). This adds the
+ * switch: a button the layout puts in the shared header once the page's script runs, and a line in the head of every
+ * page that applies a remembered choice before the page is first drawn, so it never shows in the other palette
+ * first. Without JavaScript there is no switch and the site follows the device. A site with one palette, or one
+ * that follows the device alone, gets none of it.
+ */
+
+export const THEME_TOGGLE_FILE = 'theme-toggle.js';
+
+/**
+ * Where the browser remembers the visitor's choice: one key per project, so two sites published on the same origin
+ * (under two paths) keep their own.
+ */
+export const themeStorageKey = (state: ProjectState): string => `so-theme:${state.manifest.projectId}`;
+
+/** Whether the site has the switch. */
+export const usesThemeToggle = (state: ProjectState): boolean => colorSchemeMode(state.tokens) === 'toggle';
+
+/**
+ * Applies a remembered choice before anything is drawn: the first thing in the head of every page, as a classic
+ * script so it runs while the page is read. A choice that is not light or dark, or storage the browser refuses,
+ * leaves the device's setting in charge.
+ */
+export const themeBootstrap = (key: string): string =>
+  `<script>try{var c=localStorage.getItem(${scriptString(key)});if(c==="light"||c==="dark")document.documentElement.dataset.soTheme=c}catch(e){}</script>`;
+
+/** A string literal that is safe inside an inline <script>, whatever it holds. */
+const scriptString = (s: string) => JSON.stringify(s).replace(/[<\u2028\u2029]/g, (c) => `\\u${c.charCodeAt(0).toString(16).padStart(4, '0')}`);
+
+/**
+ * The switch's rules, appended to site.css: a 44px target that takes the header's text colour, with the theme's
+ * focus outline. They add no weight (`:where`), so a theme's own rules for the switch win. Print leaves it out
+ * (tokens.css hides it there too, with the dark palette).
+ */
+export const THEME_TOGGLE_CSS = `/* The Light/Dark switch (runtime/${THEME_TOGGLE_FILE}), in the shared header. */
+:where(.so-theme-toggle) { display: inline-flex; flex: none; align-items: center; justify-content: center; width: 44px; height: 44px; margin: 0; margin-inline-start: auto; padding: 0; border: 0; border-radius: var(--so-radius-md, 8px); background: transparent; color: inherit; cursor: pointer; }
+:where(.so-theme-toggle:hover) { background: color-mix(in srgb, currentColor 8%, transparent); }
+:where(.so-theme-toggle svg) { width: 22px; height: 22px; }
+:where(.so-theme-toggle .so-theme-toggle__sun, .so-theme-toggle[aria-pressed="true"] .so-theme-toggle__moon) { display: none; }
+:where(.so-theme-toggle[aria-pressed="true"] .so-theme-toggle__sun) { display: inline; }
+@media print { .so-theme-toggle { display: none !important; } }
+`;
+
+/**
+ * The switch, as plain portable source, remembering the choice under `key`. The editor's variant (`instrument`)
+ * remembers nothing and leaves the page's palette to the editor: a press asks the canvas to preview the other palette
+ * (through its bridge), so the canvas's Light and Dark and the site's switch always agree.
+ */
+export function themeToggleJs(key: string, instrument = false): string {
+  const apply = instrument
+    ? `
+		// In the editor, the canvas decides which palette the page previews: the press asks it for the other one, and
+		// the page follows once the canvas has switched (the device setting the page reads is the canvas's). Before the
+		// editor's bridge is running, a press does nothing, so the page never holds a palette of its own.
+		if (window.__siteoriginBridge) window.dispatchEvent(new CustomEvent('siteorigin:color-scheme', { detail: next }));
+		return;`
+    : `
+		root.dataset.soTheme = next;
+		try {
+			localStorage.setItem(KEY, next);
+		} catch {
+			// Storage the browser refuses: the choice lasts for this page.
+		}`;
+  const sync = instrument
+    ? ''
+    : `
+	// What the browser remembers now: the choice may have changed in another tab while this page showed no header.
+	const remembered = () => {
+		let choice = null;
+		try {
+			choice = localStorage.getItem(KEY);
+		} catch {
+			return;
+		}
+		if (choice === 'light' || choice === 'dark') root.dataset.soTheme = choice;
+		else delete root.dataset.soTheme;
+		show();
+	};
+	// A choice made in another tab of the same site, or cleared there, shows here too.
+	const stored = (event) => {
+		if (event.key === null || event.key === KEY) remembered();
+	};
+	addEventListener('storage', stored);
+	remembered();`;
+  return `// Generated by SiteOrigin Builder. Do not edit: changes are overwritten.
+/**
+ * The visitor's Light/Dark switch, in the site's shared header. The palettes are tokens.css: the dark one applies
+ * while the device asks for dark, unless <html data-so-theme="light">, and whenever <html data-so-theme="dark">. The
+ * switch sets that attribute and remembers it; a line in the head of every page applies the remembered choice before
+ * the page is drawn.
+ */
+const KEY = ${JSON.stringify(key)};
+const ICONS =
+	'<svg viewBox="0 0 24 24" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">' +
+	'<path class="so-theme-toggle__moon" d="M20 14.5A8 8 0 0 1 9.5 4a8 8 0 1 0 10.5 10.5z" />' +
+	'<g class="so-theme-toggle__sun"><circle cx="12" cy="12" r="4" /><path d="M12 2v2M12 20v2M4.9 4.9l1.4 1.4M17.7 17.7l1.4 1.4M2 12h2M20 12h2M4.9 19.1l1.4-1.4M17.7 6.3l1.4-1.4" /></g>' +
+	'</svg>';
+
+/** The shared header: the first header landmark before the page's main content. A page's own header is inside it. */
+function sharedHeader() {
+	const main = document.getElementById('main');
+	for (const el of document.querySelectorAll('header, [role="banner"]')) {
+		if (!main || (!main.contains(el) && el.compareDocumentPosition(main) & Node.DOCUMENT_POSITION_FOLLOWING)) return el;
+	}
+	return null;
+}
+
+/**
+ * Puts the switch in the shared header and keeps it right; \`label()\` gives its name in the language of the page. The
+ * returned function takes it away again. Nothing shows on a page without the header.
+ */
+export function startThemeToggle(label) {
+	const root = document.documentElement;
+	const media = matchMedia('(prefers-color-scheme: dark)');
+	const current = () => {
+		const chosen = root.dataset.soTheme;
+		return chosen === 'light' || chosen === 'dark' ? chosen : media.matches ? 'dark' : 'light';
+	};
+	const button = document.createElement('button');
+	button.type = 'button';
+	button.className = 'so-theme-toggle';
+	button.innerHTML = ICONS;
+	// Pressed while the dark palette shows. The name stays the same either way, as a toggle button's does.
+	const show = () => {
+		button.setAttribute('aria-label', label());
+		button.setAttribute('aria-pressed', String(current() === 'dark'));
+	};
+	const choose = () => {
+		const next = current() === 'dark' ? 'light' : 'dark';${apply}
+		show();
+	};
+	// In a header with a brand row and a phone menu button, it sits just before the menu button; otherwise at the end.
+	const place = () => {
+		const header = sharedHeader();
+		if (!header) return button.remove();
+		const row = header.querySelector('.so-header__inner');
+		const menu = row?.querySelector(':scope > .so-header__menu');
+		if (row && menu) {
+			if (button.nextElementSibling !== menu) row.insertBefore(button, menu);
+		} else if (!header.contains(button)) (row ?? header).append(button);
+	};
+	place();
+	// A header drawn afresh (a part of it shown for another screen size, the editor reloading the header) takes the
+	// switch with it: it goes into the new one.
+	const watch = new MutationObserver(() => {
+		if (!button.isConnected) place();
+	});
+	watch.observe(document.body, { childList: true, subtree: true });
+	button.addEventListener('click', choose);
+	// While the device's setting decides, the switch follows it.
+	media.addEventListener('change', show);${sync}
+	show();
+	return () => {
+		watch.disconnect();
+		button.removeEventListener('click', choose);
+		media.removeEventListener('change', show);${instrument ? '' : `\n\t\tremoveEventListener('storage', stored);`}
+		button.remove();
+	};
+}
+`;
+}

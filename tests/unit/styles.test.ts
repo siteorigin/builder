@@ -990,8 +990,9 @@ describe('see-through site colors (#353)', () => {
 
 describe('the document format for see-through colors and backdrop blur (#353)', () => {
   it('marks them with a version-only step, so an older editor opens such a project read-only', () => {
-    const step = MIGRATIONS.at(-1)!;
-    expect(step.id).toBe('style-strength');
+    const step = MIGRATIONS.find((m) => m.id === 'style-strength')!;
+    expect(step).toBeDefined();
+    expect(MIGRATIONS.indexOf(step) + 2).toBe(15);
     expect(SCHEMA_VERSION).toBe(MIGRATIONS.length + 1);
     const s = fresh();
     const out = structuredClone(s);

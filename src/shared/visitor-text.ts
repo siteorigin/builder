@@ -4,7 +4,7 @@ import { clipText } from './not-found';
 
 /**
  * The words a generated site says on its own, around the author's content: the skip link, the menu and submenu
- * buttons, landmark names, a contact form's progress, search results, the image viewer, a carousel's buttons and
+ * buttons, the Light/Dark switch, landmark names, a contact form's progress, search results, the image viewer, a carousel's buttons and
  * count, and the video player. Each
  * comes in the language of the page it is on, from the author's own wording for that language when there is one,
  * then the built-in wording for the language, then English.
@@ -26,6 +26,7 @@ export const VISITOR_TEXT_KEYS = [
   'mainNav',
   'submenu',
   'home',
+  'themeToggle',
   'formSubmit',
   'formSending',
   'formSendingStatus',
@@ -91,7 +92,8 @@ export const VISITOR_TEXT_GROUPS: Array<{ label: string; fields: VisitorTextFiel
       { key: 'menu', label: 'Menu button', hint: 'The menu button on phones. Screen readers also say whether the menu is open.' },
       { key: 'mainNav', label: 'Main navigation', hint: 'The name screen readers give the header’s links.' },
       { key: 'submenu', label: 'Submenu button', hint: 'The button beside a header link that shows the links under it.', fills: ['link'] },
-      { key: 'home', label: 'Home link', hint: 'The name of the logo’s link on a header without a site name, whose logo has no alternative text.' }
+      { key: 'home', label: 'Home link', hint: 'The name of the logo’s link on a header without a site name, whose logo has no alternative text.' },
+      { key: 'themeToggle', label: 'Light and dark switch', hint: 'The header’s button that switches between the light and dark colors, on a site whose visitors can switch (Site styles > Colors).' }
     ]
   },
   {
@@ -185,6 +187,7 @@ const EN: VisitorText = {
   mainNav: 'Main',
   submenu: '{link} submenu',
   home: 'Home',
+  themeToggle: 'Dark mode',
   formSubmit: 'Send message',
   formSending: 'Sending…',
   formSendingStatus: 'Sending your message…',
@@ -241,6 +244,7 @@ const AR: VisitorText = {
   mainNav: 'القائمة الرئيسية',
   submenu: 'قائمة {link} الفرعية',
   home: 'الصفحة الرئيسية',
+  themeToggle: 'الوضع الداكن',
   formSubmit: 'إرسال الرسالة',
   formSending: 'جارٍ الإرسال…',
   formSendingStatus: 'جارٍ إرسال رسالتك…',
@@ -297,6 +301,7 @@ const HE: VisitorText = {
   mainNav: 'תפריט ראשי',
   submenu: 'תפריט המשנה של {link}',
   home: 'דף הבית',
+  themeToggle: 'מצב כהה',
   formSubmit: 'שליחת ההודעה',
   formSending: 'בשליחה…',
   formSendingStatus: 'ההודעה שלך נשלחת…',

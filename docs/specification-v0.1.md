@@ -371,7 +371,7 @@ Theme defaults and project overrides are stored separately. Changing a theme mus
 
 **Application appearance** changes the Electron interface: System, Light or Dark. It is a user preference and never changes website output.
 
-**Website styling** is controlled by project tokens and components. A dark editor can display and edit a light website. Version 0.1 can create a dark website by changing its tokens; it does not require a visitor-facing color-mode switcher.
+**Website styling** is controlled by project tokens and components. A dark editor can display and edit a light website. A dark website is made by changing its tokens. A website can also give its visitors a dark palette beside the light one (`colorSchemeMode` in `tokens.json`): `single` (the default) emits the one `:root` palette and nothing else; `system` adds the dark palette's colors in `tokens.css` under `@media screen and (prefers-color-scheme: dark)`; `toggle` adds the same under `[data-so-theme]` and a visitor-facing Light/Dark switch in the shared header whose choice the browser remembers, applied in the page head before first paint. The dark palette is made from the light one when first turned on, its colors are edited and contrast-checked in Site styles, and print always uses the light palette. The canvas can preview either palette without reference to the application's appearance.
 
 **Theme pack** means a coherent implementation of the common component catalogue, its tokens, defaults and AI guidance. Theme packs are not the same thing as the application's light/dark preference.
 
@@ -895,7 +895,7 @@ There is exactly one authority for each kind of content. Generated Svelte and it
 | `siteorigin/site.json` | Site settings, page order and shared shell references. | Include. |
 | `siteorigin/pages/<id>.json` | Managed page trees and metadata. | Include. |
 | `siteorigin/components/<id>/component.json` | Managed definition or code-component manifest. | Include. |
-| `siteorigin/tokens.json` | Project token overrides and custom tokens. | Include. |
+| `siteorigin/tokens.json` | Project token overrides, custom tokens, and the optional dark palette and its mode. | Include. |
 | `siteorigin/assets.json` | Asset identities, metadata and usages. | Include. |
 | `siteorigin/theme-lock.json` | Pack, component and contract versions plus hashes. | Include. |
 | `siteorigin/generated-manifest.json` | Generated paths, hashes and identity/source mappings. | Include. |

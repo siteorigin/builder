@@ -307,6 +307,7 @@ export const OP_REACH: Record<OperationType, OpReach> = {
   'instance.editTable': 'node',
   'instance.setVariant': 'node',
   'token.set': 'wider',
+  'token.setColorScheme': 'wider',
   'token.create': 'wider',
   'token.rename': 'wider',
   'token.remove': 'wider',

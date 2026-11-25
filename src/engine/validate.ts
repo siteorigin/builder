@@ -19,6 +19,7 @@ import { nestingChecker } from './semantic-tags';
 import { MAX_UI_STATES, acceptedTypes, bindingProblem, bindingSlots, boundSchema, repeatFilterProblem, stateActionProblem, stateRefProblem, uiStateProblem } from './schema';
 import { cardLinkProblems, isCarouselTrack } from '@generator/card-links';
 import { declaredTokens, findTokenCycle, forEachTokenPropRef } from './tokens';
+import { darkValue } from '@shared/color-scheme';
 import { missingSectionLinks, netlifyFormClashes, pageHeadings, unlinkedButtons, unlinkedMenuLinks, type FormNameClash } from '@generator/checks';
 import { entryInstanceProps } from '@generator/entry-template';
 import { choosesFontAtRunTime, declaresFonts, installedFonts, usedPackFonts } from '@catalogue/fonts';
@@ -976,6 +977,20 @@ function structureDiagnostics(state: ProjectState): Diagnostic[] {
     else if (!tokenIds.has(ref)) out.push({ severity: 'error', code: 'TOKEN_MISSING', message: `The site style "${id}" refers to "${ref}", which does not exist.` });
     else if (want && groupOf.get(ref) !== want) out.push({ severity: 'error', code: 'TOKEN_MISSING', message: `The site style "${id}" refers to "${ref}", which is not a ${want} style.` });
   }
+  // The dark palette's colours: the generated stylesheet leaves out one it cannot use, so each is said here.
+  const dark = state.tokens.darkOverrides;
+  if (dark !== undefined && (!dark || typeof dark !== 'object' || Array.isArray(dark))) out.push({ severity: 'warning', code: 'TOKEN_MISSING', message: 'The dark palette in tokens.json is not a list of colors, so the site shows its light colors in the dark palette too.' });
+  else if (dark)
+    for (const [id, v] of Object.entries(dark)) {
+      const ref = darkValue(v);
+      if (groupOf.get(id) !== 'color') out.push({ severity: 'warning', code: 'TOKEN_MISSING', message: `The dark palette has a color for "${id}", which is not a color of this site, so it is left out.` });
+      else if (ref === null || (typeof ref === 'string' && validateStyleValue('color', ref)))
+        out.push({ severity: 'warning', code: 'TOKEN_MISSING', message: `The dark palette's color for "${id}" is not a color, so it shows its light color.` });
+      // A link that leads nowhere is an error, as one in the light palette is: an edit (a theme without the color it
+      // follows) cannot bring one in.
+      else if (typeof ref === 'object' && !tokenIds.has(ref.token)) out.push({ severity: 'error', code: 'TOKEN_MISSING', message: `The dark palette's "${id}" follows "${ref.token}", which does not exist.` });
+      else if (typeof ref === 'object' && groupOf.get(ref.token) !== 'color') out.push({ severity: 'error', code: 'TOKEN_MISSING', message: `The dark palette's "${id}" follows "${ref.token}", which is not a color style.` });
+    }
   const cycle = findTokenCycle(state);
   if (cycle) out.push({ severity: 'error', code: 'TOKEN_CYCLE', message: `The site style "${cycle}" refers back to itself through other styles.` });
   // Definitions that place themselves, directly or through others, can never render.
