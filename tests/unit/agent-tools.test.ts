@@ -3,7 +3,7 @@ import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import type { AiEvent, ChatContext } from '@shared/api';
-import type { ElementRef, GraphNode, InstanceNode, LinkValue, ListItem, ProjectState, PropSchema, TableValue } from '@shared/types';
+import type { ElementNode, ElementRef, GraphNode, InstanceNode, LinkValue, ListItem, ProjectState, PropSchema, TableValue } from '@shared/types';
 import { createStarterState } from '@catalogue/starters';
 import { catalogueComponent, listThemes } from '@catalogue/index';
 import { Orchestrator } from '@agent/orchestrator';
@@ -1132,8 +1132,10 @@ describe('selection tools', () => {
     );
     await run('Darken it on hover and press', heroRef(session.state));
     const tool = adapter.requests[0].tools.find((t) => t.name === 'style_selected_element');
-    expect((tool?.parameters as { properties: Record<string, { enum?: string[] }> }).properties.state?.enum).toEqual(['groupHover', 'groupFocus', 'hover', 'focus', 'active']);
+    // The starter's hero holds no interaction group, so the group states are not offered.
+    expect((tool?.parameters as { properties: Record<string, { enum?: string[] }> }).properties.state?.enum).toEqual(['hover', 'focus', 'active']);
     expect(tool?.description).toContain('Add state "hover", "focus" (keyboard focus) or "active" (while pressed)');
+    expect(tool?.description).not.toContain('groupHover');
     // Padding on hover would move what is around it: the whole call is refused before anything is applied, naming the field.
     const refused = JSON.stringify(lastResult(adapter.requests[1]));
     expect(refused).toContain('styles[1].property');
@@ -1147,19 +1149,26 @@ describe('selection tools', () => {
   it('nudges a part while its card is hovered, a shift its own hover refuses (#349)', async () => {
     const { session, adapter, run } = await setup(
       [
-        () => [call('g1', 'style_selected_element', { partId: 'root', scope: 'base', state: 'hover', styles: [{ property: 'translateY', value: '-4px' }] })],
-        () => [call('g2', 'style_selected_element', { partId: 'root', scope: 'base', state: 'groupHover', styles: [{ property: 'translateY', value: '-4px' }] })],
+        () => [call('g1', 'style_selected_element', { partId: 'heading', scope: 'base', state: 'hover', styles: [{ property: 'translateY', value: '-4px' }] })],
+        () => [call('g2', 'style_selected_element', { partId: 'heading', scope: 'base', state: 'groupHover', styles: [{ property: 'translateY', value: '-4px' }] })],
         () => finish()
       ],
-      focused
+      focused,
+      'business',
+      // The hero's design made a card: its root is an interaction group around the heading.
+      (s) => {
+        const def = s.components[(pageAt(s, '/')!.nodes[pageAt(s, '/')!.rootIds[0]] as InstanceNode).definitionId];
+        (def.tree!.nodes[def.tree!.rootIds[0]] as ElementNode).interactionGroup = true;
+      }
     );
     await run('Lift it while its card is hovered', heroRef(session.state));
     const tool = adapter.requests[0].tools.find((t) => t.name === 'style_selected_element');
+    expect((tool?.parameters as { properties: Record<string, { enum?: string[] }> }).properties.state?.enum).toEqual(['groupHover', 'groupFocus', 'hover', 'focus', 'active']);
     expect(tool?.description).toContain('state "groupHover" or "groupFocus" styles it while the nearest interaction group around it');
     const refused = JSON.stringify(lastResult(adapter.requests[1]));
     expect(refused).toContain('cannot change on hover, focus or press');
     expect(refused).toContain('A group state (its card hovered or focused) can change it.');
-    expect(nodeAt(session.state, 0).overrides?.root).toEqual({ 'base:groupHover': { translateY: '-4px' } });
+    expect(nodeAt(session.state, 0).overrides?.heading).toEqual({ 'base:groupHover': { translateY: '-4px' } });
   });
 
   it('lifts and animates the selection with the typed motion properties (#351)', async () => {

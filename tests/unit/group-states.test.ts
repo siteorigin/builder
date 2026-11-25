@@ -510,4 +510,47 @@ describe('the assistant', () => {
     expect(nodeFields(el('n_box')).interactionGroup).toMatchObject({ type: 'boolean', default: false });
     expect(nodeFields({ id: 'n_t', kind: 'text', tag: 'p', text: 'x' } as TextNode)).not.toHaveProperty('interactionGroup');
   });
+
+  /** The states, and whether the description names the group ones, that style_selected_element offers a selection. */
+  async function offered(s: ProjectState, nodeId: string, partId?: string) {
+    const { selectionTools } = await import('@agent/selection');
+    const tools = selectionTools(s, { owner: owner(s), instancePath: partId ? [nodeId] : [], nodeId, ...(partId ? { partId } : {}) } as Parameters<typeof selectionTools>[1]);
+    const tool = tools?.find((t) => t.name === 'style_selected_element');
+    const state = (tool?.parameters as { properties: { state: { enum: string[]; description: string } } }).properties.state;
+    return { states: state.enum, named: tool!.description.includes('groupHover') || state.description.includes('groupHover') };
+  }
+  const OWN = ['hover', 'focus', 'active'];
+  const ALL = ['groupHover', 'groupFocus', 'hover', 'focus', 'active'];
+
+  it('offers the group states only to a selection a group can reach', async () => {
+    let s = cards();
+    // No group anywhere: a small model is offered exactly the element's own states, and never reads of groups.
+    expect(await offered(s, 'n_title')).toEqual({ states: OWN, named: false });
+    s = group(s, 'n_card');
+    // Inside a group in its document.
+    expect(await offered(s, 'n_title')).toEqual({ states: ALL, named: true });
+    expect(await offered(s, 'n_inner_arrow')).toEqual({ states: ALL, named: true });
+    // Outside every group.
+    expect(await offered(s, 'n_loose')).toEqual({ states: OWN, named: false });
+  });
+
+  it('offers them to a placement whose design holds a group, or that sits inside one', async () => {
+    const s = fresh();
+    const heroId = home(s).rootIds[0];
+    const hero = home(s).nodes[heroId] as InstanceNode;
+    const def = s.components[hero.definitionId];
+    expect(def.kind).toBe('managed');
+    expect(await offered(s, heroId)).toEqual({ states: OWN, named: false });
+    // A placement of the same design inside a page group: what it shows follows that group.
+    const placed = makeInstance(def, {}) as InstanceNode;
+    home(s).nodes[placed.id] = placed;
+    home(s).nodes.n_box = el('n_box', [placed.id], { interactionGroup: true });
+    home(s).rootIds.push('n_box');
+    expect(await offered(s, placed.id)).toEqual({ states: ALL, named: true });
+    expect(await offered(s, heroId)).toEqual({ states: OWN, named: false });
+    // The design itself holding a group: its parts inside follow it, wherever it is placed.
+    (def.tree!.nodes[def.tree!.rootIds[0]] as ElementNode).interactionGroup = true;
+    expect(await offered(s, heroId)).toEqual({ states: ALL, named: true });
+    expect(await offered(s, heroId, 'heading')).toEqual({ states: ALL, named: true });
+  });
 });
