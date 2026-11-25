@@ -6,6 +6,8 @@
 import type { ComponentDefinition, InstanceNode, NodeTree, OwnerRef, ProjectState } from '@shared/types';
 import type { EditOperation } from '@shared/ops';
 import { childLists, findParent, instancesOf, subtreeIds } from '@engine/tree';
+import { applyOperations } from '@engine/apply';
+import { shownSlots } from '@engine/theme-updates';
 import { codeImports, dependentsOf } from '@engine/definitions';
 import { slotIdent } from '@generator/index';
 import { nodeLabel } from './insert-at';
@@ -92,33 +94,56 @@ export interface SlotRemovalPlan {
   problem?: string;
 }
 
-/**
- * The slot placeholders a design shows: those reached from its root other than through what another placeholder
- * shows while its slot is empty (a placement filling that slot never shows them).
- */
-function shownOutlets(tree: NodeTree): Set<string> {
-  const out = new Set<string>();
-  const seen = new Set<string>();
-  const walk = (id: string) => {
-    const n = own(tree.nodes, id);
-    if (!n || seen.has(id)) return;
-    seen.add(id);
-    if (n.kind === 'slot') return void out.add(id);
-    for (const l of childLists(n)) l.ids.forEach(walk);
-  };
-  tree.rootIds.forEach(walk);
-  return out;
-}
-
 /** A slot's name for the author: its label, or its code name when a hand edit left it without one. */
 const slotName = (label: unknown, slot: string) => (typeof label === 'string' && label.trim() ? label : slot);
+
+/** Code that places a component and fills one of its slots, which it reads by the slot's prop. */
+const codeCaller = (state: ProjectState, defId: string, slot: string) => Object.values(state.components).find((d) => codeImports(state, d, defId) && !!d.source?.includes(slotIdent(slot)));
+
+/**
+ * Content a change to designs would stop showing while it stays in the project (`after` is the project with the change
+ * made): a slot of a changed design, other than `removed`, that a placement which stays fills and the design showed it
+ * before but not after, its last place having gone with the change; or such a slot that code placing the design fills.
+ */
+function hiddenElsewhere(state: ProjectState, after: ProjectState, designs: Iterable<string>, removed: { defId: string; slot: string; label: string }): string | undefined {
+  for (const id of designs) {
+    const was = own(state.components, id);
+    const next = own(after.components, id);
+    if (was?.kind !== 'managed' || !was.tree || next?.kind !== 'managed' || !next.tree) continue;
+    const counted = (x: string) => !(id === removed.defId && x === removed.slot);
+    const say = (x: string, where: string) => {
+      const name = slotName(own(was.slots, x)?.label, x);
+      return id === removed.defId
+        ? `The “${removed.label}” slot shows ${was.name}’s “${name}” slot while it is empty, and “${name}” holds content ${where}. Removed, that content would no longer show. Move the “${name}” slot out of the “${removed.label}” slot in the design first.`
+        : `Inside ${was.name}, the “${removed.label}” slot holds the place where ${was.name} shows its own “${name}” slot, which holds content ${where}. Removed, that content would no longer show. Go to that placement and move the “${name}” slot out first.`;
+    };
+    for (const u of instancesOf(after, id)) {
+      const beforeTree = treeFor(state, u.owner);
+      const before = beforeTree && own(beforeTree.nodes, u.node.id);
+      if (before?.kind !== 'instance' || before.definitionId !== id) continue;
+      // As the site shows it: past repeats empty for this placement, and fallbacks of the slots it fills.
+      const shownBefore = shownSlots(was, before, beforeTree);
+      const shownAfter = shownSlots(next, u.node, treeFor(after, u.owner));
+      const x = Object.keys(u.node.slots ?? {}).find((k) => counted(k) && fillsSlot(u.node, k) && shownBefore.has(k) && !shownAfter.has(k));
+      if (x) return say(x, `on ${u.label}`);
+    }
+    // Code placing the design is read for the slot's prop alone, so it counts any slot the design no longer shows at all.
+    const blank = { kind: 'instance', id: '', definitionId: id, props: {} } as InstanceNode;
+    const shownAfter = shownSlots(next, blank);
+    for (const x of shownSlots(was, blank)) {
+      const caller = counted(x) && !shownAfter.has(x) ? codeCaller(state, id, x) : undefined;
+      if (caller) return say(x, `where the code of ${caller.name} places ${was.name}`);
+    }
+  }
+  return undefined;
+}
 
 /**
  * Remove a slot together with what placements hold in it, as one change (so one Undo puts it all back): each piece of
  * content is removed where it is, then the slot with its placeholder and what that shows while the slot is empty. A
  * placement inside content that goes goes with it, so it is not removed twice. Content a hand edit damaged is left for
- * the author to look at. So is anything that would take away the last place a design shows one of its own slots while
- * a placement that stays fills it: that content would no longer show anywhere. Null when there is no such slot.
+ * the author to look at. So is a removal that would stop a design showing another of its slots that a placement which
+ * stays (or code placing it) fills: that content would no longer show anywhere. Null when there is no such slot.
  */
 export function planSlotRemoval(state: ProjectState, definitionId: string, slot: string): SlotRemovalPlan | null {
   const def = own(state.components, definitionId);
@@ -141,53 +166,29 @@ export function planSlotRemoval(state: ProjectState, definitionId: string, slot:
     byOwner.set(key, entry);
   }
   // Code that places the component and fills the slot reads it by its prop: removed, what it puts there would not show.
-  const caller = Object.values(state.components).find((d) => codeImports(state, d, def.id) && !!d.source?.includes(slotIdent(slot)));
+  const caller = codeCaller(state, def.id, slot);
   if (caller) return { rows, items: 0, problem: `The code of ${caller.name} places ${def.name} and fills its “${label}” slot. Removed, what that code puts there would no longer show. Change that code first.` };
-  // What goes, by place: each piece with everything inside it.
-  const gone = new Map<string, Set<string>>();
   const operations: EditOperation[] = [];
-  for (const [key, { owner, tree, held }] of byOwner) {
+  for (const { owner, tree, held } of byOwner.values()) {
     // A piece inside another that goes (a placement held in the slot, holding more there itself) goes with it.
     const inside = new Set<string>();
     for (const id of held) for (const sub of subtreeIds(tree, id).slice(1)) inside.add(sub);
     const roots = held.filter((id) => !inside.has(id));
     if (!roots.length) return { rows, items: 0, problem: `What the “${label}” slot holds is damaged (it holds itself), so it can’t be removed from here. Undo the change that damaged it.` };
-    gone.set(key, new Set(roots.flatMap((id) => subtreeIds(tree, id))));
     for (const nodeId of roots) operations.push({ type: 'node.remove', owner, nodeId });
   }
-  // The slot's own placeholders go from the design too, with what they show while it is empty.
-  const ownKey = `component:${def.id}`;
-  if (def.tree) {
-    const set = gone.get(ownKey) ?? new Set<string>();
-    for (const n of Object.values(def.tree.nodes)) if (n.kind === 'slot' && n.slot === slot) for (const id of subtreeIds(def.tree, n.id)) set.add(id);
-    gone.set(ownKey, set);
-  }
-  // A design whose last placeholder for one of its own slots goes, while a placement that stays fills that slot.
-  const stays = (owner: OwnerRef, nodeId: string) => !gone.get(`${owner.kind}:${owner.id}`)?.has(nodeId);
-  for (const [key, set] of gone) {
-    const design = key.startsWith('component:') ? own(state.components, key.slice('component:'.length)) : undefined;
-    const tree = design?.tree;
-    if (!design || !tree) continue;
-    const shown = shownOutlets(tree);
-    for (const id of set) {
-      const n = own(tree.nodes, id);
-      if (n?.kind !== 'slot' || (key === ownKey && n.slot === slot)) continue;
-      // Another placeholder the design shows keeps that content showing; one only inside what another shows while empty
-      // does not, for a placement filling that other slot.
-      if (Object.values(tree.nodes).some((m) => m.kind === 'slot' && m.slot === n.slot && !set.has(m.id) && shown.has(m.id))) continue;
-      const filled = instancesOf(state, design.id).find((u) => fillsSlot(u.node, n.slot) && stays(u.owner, u.node.id));
-      if (!filled) continue;
-      const name = slotName(own(design.slots, n.slot)?.label, n.slot);
-      return {
-        rows,
-        items: 0,
-        problem:
-          key === ownKey
-            ? `The “${label}” slot shows ${design.name}’s “${name}” slot while it is empty, and “${name}” holds content on ${filled.label}. Removed, that content would no longer show. Move the “${name}” slot out of the “${label}” slot in the design first.`
-            : `Inside ${design.name}, the “${label}” slot holds the place where ${design.name} shows its own “${name}” slot, which holds content on ${filled.label}. Removed, that content would no longer show. Go to that placement and move the “${name}” slot out first.`
-      };
-    }
-  }
   operations.push({ type: 'component.removeSlot', definitionId, slot });
+  // Tried on a copy of the project, so what the engine would refuse is said before anything is sent, and so is
+  // content of another slot the change would stop showing: in the designs it changes, the component's own and those
+  // holding content that goes.
+  let after: ProjectState;
+  try {
+    after = applyOperations(state, operations).state;
+  } catch (e) {
+    return { rows, items: 0, problem: e instanceof Error ? e.message : `The “${label}” slot can’t be removed with its content.` };
+  }
+  const designs = new Set([def.id, ...[...byOwner.values()].flatMap((o) => (o.owner.kind === 'component' ? [o.owner.id] : []))]);
+  const hidden = hiddenElsewhere(state, after, designs, { defId: def.id, slot, label });
+  if (hidden) return { rows, items: 0, problem: hidden };
   return { rows, items: operations.length - 1, operations };
 }

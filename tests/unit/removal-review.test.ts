@@ -213,6 +213,27 @@ describe('removing a slot with what placements hold in it (#663)', () => {
     hidden = run(inFallback.state, [{ type: 'node.move', owner: w.design, nodeId: inFallback.results[0].nodeId as string, parentId: otherOutlet, index: 0 }]).state;
     hidden = run(hidden, [{ type: 'node.insert', owner: w.home, parentId: wrapOnHome, slot: other.slot, primitive: 'paragraph', text: 'Other words' }]).state;
     expect(planSlotRemoval(hidden, w.id, w.slot)!.problem).toMatch(/shows its own “Extra” slot, which holds content on Home/);
+    // Nor does one inside a list Home leaves empty, which shows nothing.
+    const listed = run(s, [
+      { type: 'component.setPropSchema', definitionId: w.wrapId, prop: 'items', schema: { type: 'list', label: 'Items', itemLabel: 'Item', fields: { text: { type: 'string', label: 'Text', default: '' } }, default: [] } }
+    ]).state;
+    const inList = run(listed, [{ type: 'node.insert', owner: w.design, parentId: 'root', primitive: 'repeat', bind: 'items' }]);
+    const repeatId = inList.results[0].nodeId as string;
+    const listCopy = run(inList.state, [{ type: 'node.duplicate', owner: w.design, nodeId: w.outlet }]);
+    const unlisted = run(listCopy.state, [{ type: 'node.move', owner: w.design, nodeId: listCopy.results[0].nodeId as string, parentId: repeatId, index: 0 }]).state;
+    expect(planSlotRemoval(unlisted, w.id, w.slot)!.problem).toMatch(/shows its own “Extra” slot, which holds content on Home/);
+  });
+
+  it('leaves content that code placing a design fills in a slot the removal would stop it showing', () => {
+    const w = wrapped();
+    const s = structuredClone(w.s);
+    s.components.cd_banner = { id: 'cd_banner', name: 'Banner', kind: 'code', owner: 'project', dependencies: [w.wrapId], source: '<OfferWrap>{#snippet slot_extra()}<p>Hi</p>{/snippet}</OfferWrap>' } as unknown as ComponentDefinition;
+    const plan = planSlotRemoval(s, w.id, w.slot)!;
+    expect(plan.operations).toBeUndefined();
+    expect(plan.problem).toMatch(/^Inside Offer wrap, the “Buttons” slot holds the place where Offer wrap shows its own “Extra” slot, which holds content where the code of Banner places Offer wrap\./);
+    // Code that fills another slot is no reason to keep it.
+    (s.components.cd_banner as { source: string }).source = '<OfferWrap>{#snippet slot_other()}<p>Hi</p>{/snippet}</OfferWrap>';
+    expect(planSlotRemoval(s, w.id, w.slot)!.problem).toBeUndefined();
   });
 
   it('takes a design’s filled slot when the only placement filling it goes too', () => {

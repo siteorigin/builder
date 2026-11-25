@@ -57,7 +57,7 @@ export function RemovalReviewModal({ opening, definitionId, slot }: { opening: s
   // What the button removes now: the slot with its content, the slot alone once nothing fills it, or the component
   // once nothing uses it. Nothing while something is in the way that this review can't remove.
   const operations: EditOperation[] | undefined = slot !== undefined ? plan?.operations : review && !review.rows.length && !dependents.length ? [{ type: 'component.remove', definitionId }] : undefined;
-  const problem = gone || busy ? undefined : readOnly ? 'This project is open read-only, so nothing can be removed.' : plan?.problem;
+  const problem = gone || busy ? undefined : readOnly ? 'This project is open read-only, so nothing can be removed.' : snap?.aiBusy && operations ? 'The AI is changing the project. Removing waits until it has finished.' : plan?.problem;
   // Whether the review can remove anything now, which decides what it says it does.
   const can = !!operations && !problem && !busy;
   // The revision the remove button was pressed on: a press the project changed under (a held Space, a slow click)
