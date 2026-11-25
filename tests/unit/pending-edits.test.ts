@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it } from 'vitest';
-import { CANVAS_DRAFT, CODE_DRAFT, PAGE_ADD_DRAFT, afterSettle, draftCount, isSettling, refusedWithin, reportRefused, resetPendingForTests, retainRefused, savesInFlight, setCanvasCommit, setDraft, settle, trackApply, type ApplyOutcome } from '../../src/renderer/src/lib/pending';
+import { CANVAS_DRAFT, CODE_DRAFT, PAGE_ADD_DRAFT, afterEditsSettle, afterSettle, draftCount, isSettling, refusedWithin, reportRefused, resetPendingForTests, retainRefused, savesInFlight, setCanvasCommit, setDraft, settle, trackApply, type ApplyOutcome } from '../../src/renderer/src/lib/pending';
 import { announcementText, saveStatusAnnouncement } from '../../src/renderer/src/lib/announce';
 
 const wait = (ms: number) => new Promise<void>((r) => setTimeout(r, ms));
@@ -33,6 +33,51 @@ describe('refused text inside a list about to be replaced (#575)', () => {
     retainRefused('gone', 'What you typed in Label can’t be saved.', { ...field(footer), isConnected: false });
     retainRefused('closed', 'What you typed in Label can’t be saved.', field(footer));
     expect(refusedWithin(footer)).toBeNull();
+  });
+});
+
+describe('an export settles pending edits first (#753)', () => {
+  it('includes an inline edit still open on the canvas when the export was started', async () => {
+    // The project as saved, and the canvas holding typed text not committed yet.
+    const project = { heading: 'Welcome' };
+    setDraft(CANVAS_DRAFT, true);
+    setCanvasCommit(() =>
+      setTimeout(() => {
+        setDraft(CANVAS_DRAFT, false);
+        trackApply(
+          new Promise<ApplyOutcome>((r) =>
+            setTimeout(() => {
+              project.heading = 'Welcome aboard';
+              r({ ok: true });
+            }, 20)
+          )
+        );
+      }, 30)
+    );
+    let exported: string | null = null;
+    const started = await afterEditsSettle(
+      () => settle({ blur: () => undefined, wait }),
+      async () => (exported = project.heading)
+    );
+    expect(started).toEqual({ ok: true, value: 'Welcome aboard' });
+    expect(exported).toBe('Welcome aboard');
+    expect(isSettling()).toBe(false);
+  });
+
+  it('does not start when an edit can’t be saved, and says why', async () => {
+    setDraft(CANVAS_DRAFT, true);
+    setCanvasCommit(() => {
+      setDraft(CANVAS_DRAFT, false);
+      trackApply(Promise.resolve({ ok: false, message: 'That change could not be saved: ENOSPC' }));
+    });
+    let starts = 0;
+    const started = await afterEditsSettle(
+      () => settle({ blur: () => undefined, wait }),
+      async () => ++starts
+    );
+    expect(started).toEqual({ ok: false, problems: ['That change could not be saved: ENOSPC'] });
+    expect(starts).toBe(0);
+    expect(isSettling()).toBe(false);
   });
 });
 

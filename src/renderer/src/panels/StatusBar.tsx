@@ -8,6 +8,7 @@ import { diagnosticKey } from '@engine/validate';
 import { api, applyOps, confirmDialog, getState, setState, toast, useStore } from '../store';
 import { refKey, type ElementRef, type ProjectState } from '@shared/types';
 import { breadcrumb, inDefinition, type Crumb } from '../lib/model';
+import { saveFailureNotice } from '../lib/savestate';
 import { activeWorkspace, canvasCovered } from '../lib/workspace';
 import { goToShellPart, groupCount, liveGroup, openAsset, openOutline, pageOutOfSight, selectPage } from '../lib/actions';
 import { destinationForDiagnostic, destinationLabel } from '../lib/destinations';
@@ -50,7 +51,7 @@ function useHealthAnnouncement(quietConflicts: () => boolean): string {
     const d = s.snapshot?.diagnostics ?? [];
     const conflicts = s.snapshot?.conflicts.length ?? 0;
     const { broken, phase } = runtimeInfo(s.runtime, s.previewIssue, s.frameReady);
-    return [d.filter((x) => x.severity === 'error' && x.code !== 'CONFLICT').length + conflicts + (broken ? 1 : 0), d.filter((x) => x.severity === 'warning').length, conflicts, phase].join(',');
+    return [d.filter((x) => x.severity === 'error' && x.code !== 'CONFLICT').length + conflicts + (broken ? 1 : 0) + (s.snapshot?.saveFailure ? 1 : 0), d.filter((x) => x.severity === 'warning').length, conflicts, phase].join(',');
   });
   const opened = health.split(',')[3];
   const recovering = useRef(opened === 'broken');
@@ -116,10 +117,11 @@ export function StatusBar() {
     if (!document.activeElement || document.activeElement === document.body) problemsRef.current?.focus();
   }, [previewActionable]);
   if (!snap) return null;
-  // Problems = document errors plus file conflicts, so this never says "No problems" while the toolbar shows a conflict.
+  // Problems = document errors plus file conflicts and a failed save, so this never says "No problems" while the toolbar
+  // shows either.
   // The project's diagnostics already list each conflict (code CONFLICT); count each one once.
   const { dot, label, broken, phase } = runtimeInfo(runtime, pageIssue, frameReady);
-  const errors = snap.diagnostics.filter((d) => d.severity === 'error' && d.code !== 'CONFLICT').length + snap.conflicts.length + (broken ? 1 : 0);
+  const errors = snap.diagnostics.filter((d) => d.severity === 'error' && d.code !== 'CONFLICT').length + snap.conflicts.length + (broken ? 1 : 0) + (snap.saveFailure ? 1 : 0);
   const warnings = snap.diagnostics.filter((d) => d.severity === 'warning').length;
   // While editing a component everywhere, the path starts at the component (plum), never at a page: its
   // overview, then the design's own layers down to the selection.
@@ -636,7 +638,7 @@ export function HealthModal() {
   // Settling a problem (or removing a saved copy) removes the row holding the focused button, and one that failed may
   // have left focus nowhere: carry on from the summary, which says what is left.
   // The Search & AI readiness count too: the summary's jump to it goes once its last finding is fixed.
-  const listed = [snap?.diagnostics.length ?? 0, snap?.conflicts.length ?? 0, snap?.themeUpdates?.available.length ?? 0, snap?.savedCopies?.length ?? 0, runtime.state, !!pageIssue, seoAudit?.ok ? seoAudit.findings.length : -1].join();
+  const listed = [snap?.diagnostics.length ?? 0, snap?.conflicts.length ?? 0, snap?.themeUpdates?.available.length ?? 0, snap?.savedCopies?.length ?? 0, !!snap?.saveFailure, runtime.state, !!pageIssue, seoAudit?.ok ? seoAudit.findings.length : -1].join();
   useEffect(() => {
     const active = document.activeElement;
     if (!active || active === document.body) summaryRef.current?.focus();
@@ -739,7 +741,8 @@ export function HealthModal() {
   const starting = !toolsFailed && (phase === 'starting' || phase === 'opening');
   // The website tools' own state (the page loading is the summary's to say).
   const toolsBusy = runtime.state === 'preparing' || runtime.state === 'starting';
-  const problems = errors.length + snap.conflicts.length + (toolsFailed || pageFailed ? 1 : 0);
+  const failure = snap.saveFailure ? saveFailureNotice(snap.saveFailure) : null;
+  const problems = errors.length + snap.conflicts.length + (toolsFailed || pageFailed ? 1 : 0) + (failure ? 1 : 0);
   const updates = snap.themeUpdates?.available ?? [];
   const kept = snap.themeUpdates?.kept ?? [];
   const saved = snap.savedCopies ?? [];
@@ -929,6 +932,12 @@ export function HealthModal() {
         )}
         {problems > 0 && (
           <HealthGroup title="Problems" count={problems} tone="danger" anchor="problems">
+            {/* First: until a save succeeds again, the project on disk is behind what the editor shows. */}
+            {failure && (
+              <HealthRow tone="danger" icon={<CircleAlert />} details={snap.saveFailure!.kind === 'failed' ? <ErrorDetails text={snap.saveFailure!.message} /> : undefined}>
+                <strong>{failure.what}</strong> {failure.next}
+              </HealthRow>
+            )}
             {toolsFailed && (
               <HealthRow
                 tone="danger"

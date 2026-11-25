@@ -299,6 +299,21 @@ export interface ProjectSnapshot {
   recentExports: RecentExport[];
   /** Named versions of the site saved in this project. */
   versions?: VersionsInfo;
+  /** A save that failed, until a later one succeeds (or, when unfinished, until the project is reopened). */
+  saveFailure?: SaveFailure | null;
+}
+
+/**
+ * A save that did not reach the disk. `failed`: nothing of it was written, so the project is as it was before it and
+ * the next save that succeeds clears this. `unfinished`: part of it may have been written, so nothing more is saved
+ * until the project is closed and reopened, which finishes it.
+ */
+export interface SaveFailure {
+  kind: 'failed' | 'unfinished';
+  /** The change that was being saved, as history names it, when known. */
+  label?: string;
+  /** What went wrong, in the system's words. */
+  message: string;
 }
 
 export interface LocalWorkspaceState {

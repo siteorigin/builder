@@ -327,7 +327,8 @@ export class Controller {
       themeUpdates: s.readOnly ? undefined : s.themeUpdates(),
       localState: this.localState,
       workspaceKey: this.workspaceKey ?? '',
-      recentExports: this.recentExports
+      recentExports: this.recentExports,
+      saveFailure: s.saveFailure
     };
   }
 
@@ -867,6 +868,10 @@ export class Controller {
       if (ev.changedDocs.includes('siteorigin/assets.json')) void this.checkAssetFiles(session);
     });
     session.on('history', () => this.broadcast());
+    // A save that failed shows in the editor's save indicator at once, though the project's revision did not move.
+    session.on('save-failed', () => {
+      if (this.session === session) this.broadcast();
+    });
     await this.onSessionOpened?.(session);
     // Watching starts before the first look, so a file removed while it runs is seen too.
     this.watchExternalChanges(session);

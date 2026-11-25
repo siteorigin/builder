@@ -253,6 +253,18 @@ export async function settle(deps: SettleDeps): Promise<Settled> {
   }
 }
 
+/**
+ * Start `start` only once everything typed has been committed and every change on its way into the project has landed
+ * (`settled`, as an explicit save does), so what it reads holds what is on screen: an export started while a canvas edit
+ * or a field is still open includes it. When something could not be saved, `start` never runs and the reasons come back.
+ */
+export async function afterEditsSettle<T>(settled: () => Promise<Settled>, start: () => Promise<T>): Promise<{ ok: true; value: T } | { ok: false; problems: string[] }> {
+  const { problems, finish } = await settled();
+  finish();
+  if (problems.length) return { ok: false, problems };
+  return { ok: true, value: await start() };
+}
+
 /** Test helper: forget every draft, change and settle. */
 export function resetPendingForTests(): void {
   drafts.clear();

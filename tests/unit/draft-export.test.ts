@@ -206,7 +206,12 @@ describe('exporting a project with a draft', () => {
   it('issue 588: refuses to export while a save is unfinished, when the generated files may still hold a draft’s words', async () => {
     const { c } = await projectWithDraft();
     const session = (c as unknown as { session: { unsettled: boolean } }).session;
+    const sent: Array<{ channel: string; payload: unknown }> = [];
+    c.send = (channel: string, payload: unknown) => void sent.push({ channel, payload });
     session.unsettled = true;
+    // #753: the editor hears of it at once, and its save indicator says so until the project is reopened.
+    expect(sent.find((m) => m.channel === 'project:changed')?.payload).toMatchObject({ saveFailure: { kind: 'unfinished', message: expect.stringMatching(/reopen/) } });
+    expect(c.snapshot()?.saveFailure?.kind).toBe('unfinished');
     const message = 'A save did not finish, so the project’s files may be out of date. Close and reopen the project, then export again.';
     expect(await c.buildStaticTo(join(temp('out'), 'site'))).toMatchObject({ ok: false, message });
     expect(await c.exportSourceTo(join(temp('out'), 'handoff'))).toMatchObject({ ok: false, message });
