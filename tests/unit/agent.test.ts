@@ -14,7 +14,7 @@ import { authorityFor, canEditContracts, checkAuthority, OP_REACH, partReach, re
 import { OPERATION_SCHEMAS, type EditOperation, type OperationType } from '@shared/ops';
 import type { InstanceNode, ListItem, ProjectState } from '@shared/types';
 import { subtreeIds } from '@engine/tree';
-import { catalogueIndex, pageGlanceChars } from '@agent/context';
+import { catalogueIndex, compactNode, pageGlance, pageGlanceChars } from '@agent/context';
 import { applyOperations } from '@engine/apply';
 import { styleToCss, validateStyleValue } from '@shared/styles';
 import { ICONS } from '@catalogue/foundation/icons';
@@ -870,6 +870,167 @@ describe('page scope (#513)', () => {
       expect(sent.sections.map((x: { id: string }) => x.id), String(window)).toEqual(env.session.state.pages[env.session.state.site.homePageId].rootIds);
       expect(sent.sections.some((x: { text?: string }) => x.text), String(window)).toBe(words);
     }
+  });
+});
+
+describe('slots in the page context (#670)', () => {
+  const editorContext = (req: { items: unknown[] }) => JSON.parse(/<editor_context>\n([\s\S]*)\n<\/editor_context>/.exec((req.items.at(-1) as { text: string }).text)![1]);
+  const LEFT = { label: 'Left column', description: 'Cards and supporting copy', categories: ['layout' as const], componentIds: ['media.gallery'], primitives: ['text' as const], max: 4 };
+  /** The slots of an empty Split, as the model reads them. */
+  const EMPTY_SPLIT = {
+    left: { label: 'Left column', description: 'Cards and supporting copy', count: 0, childIds: [], contract: { categories: ['layout'], componentIds: ['media.gallery'], primitives: ['text'], max: 4 } },
+    right: { label: 'Right column', count: 0, childIds: [] },
+    shut: { label: 'Closed', count: 0, childIds: [], contract: { max: 0 } }
+  };
+  /**
+   * The business starter with a project Split (two columns, a closed third slot and one its design never shows) on Home:
+   * one holding a heading and a nested Split, and one inside a container in a Section. Another on About.
+   */
+  function slotted() {
+    let state = createStarterState('business', 'Test', false);
+    const home = state.site.homePageId;
+    const about = Object.values(state.pages).find((p) => p.route === '/about/')!.id;
+    const page = { kind: 'page' as const, id: home };
+    const run = (...ops: EditOperation[]) => {
+      const r = applyOperations(state, ops);
+      state = r.state;
+      return r.results as Array<{ nodeId: string; definitionId: string }>;
+    };
+    const [{ definitionId: split }] = run({
+      type: 'component.upsert',
+      name: 'Split',
+      category: 'layout',
+      properties: {},
+      nodes: [
+        { kind: 'element', id: 'root', children: ['l', 'r', 's'] },
+        { kind: 'slot', id: 'l', slot: 'left' },
+        { kind: 'slot', id: 'r', slot: 'right' },
+        { kind: 'slot', id: 's', slot: 'shut' }
+      ],
+      slots: { left: LEFT, right: { label: 'Right column' }, shut: { label: 'Closed', max: 0 } }
+    } as EditOperation);
+    // A declared slot the design places nowhere is not one a placement shows.
+    state.components[split].slots!.unused = { label: 'Never shown' };
+    const [{ nodeId: outer }] = run({ type: 'node.insert', owner: page, parentId: null, index: 0, definitionId: split });
+    const [{ nodeId: heading }] = run({ type: 'node.insert', owner: page, parentId: outer, slot: 'left', primitive: 'heading' });
+    const [{ nodeId: inner }] = run({ type: 'node.insert', owner: page, parentId: outer, slot: 'left', definitionId: split });
+    const [{ nodeId: section }] = run({ type: 'node.insert', owner: page, parentId: null, index: 1, componentId: 'layout.section' });
+    const [{ nodeId: stack }] = run({ type: 'node.insert', owner: page, parentId: section, slot: 'content', primitive: 'stack' });
+    const [{ nodeId: boxed }] = run({ type: 'node.insert', owner: page, parentId: stack, definitionId: split });
+    const [{ nodeId: elsewhere }] = run({ type: 'node.insert', owner: { kind: 'page', id: about }, parentId: null, index: 0, definitionId: split });
+    return { state, home, about, split, outer, heading, inner, section, stack, boxed, elsewhere };
+  }
+  type Glanced = { id: string; text?: string; slotInfo?: Record<string, unknown>; instances?: Array<Record<string, unknown>> };
+  async function open(fixture: ReturnType<typeof slotted>, turns: Turn[], opts: SetupOptions = {}) {
+    const env = await setup(turns, opts);
+    env.session.state = fixture.state;
+    return env;
+  }
+
+  it('reports every shown slot of each placement on the active page, empty ones too, with its contract', async () => {
+    const f = slotted();
+    // A stored slot is only what was filled: the empty ones are on no placement.
+    expect(Object.keys((f.state.pages[f.home].nodes[f.outer] as InstanceNode).slots!)).toEqual(['left']);
+    for (const scope of ['page', 'site'] as const) {
+      const env = await open(f, [() => finish('Done.')]);
+      await env.run('Add a card to the right column', { pageId: f.home, pageTitle: 'Home', scope });
+      const context = editorContext(env.adapter.requests[0]);
+      const sections = context.currentPage.sections as Glanced[];
+      expect(sections.map((x) => x.id), scope).toEqual(f.state.pages[f.home].rootIds);
+      expect(sections[0].slotInfo, scope).toStrictEqual({ ...EMPTY_SPLIT, left: { ...EMPTY_SPLIT.left, count: 2, childIds: [f.heading, f.inner] } });
+      // Nested placements, in a slot or in a container, by what holds them.
+      expect(sections[0].instances, scope).toStrictEqual([{ id: f.inner, componentId: f.split, name: 'Split', parentId: f.outer, slot: 'left', slotInfo: EMPTY_SPLIT }]);
+      expect(sections[1].slotInfo, scope).toMatchObject({ content: { count: 1, childIds: [f.stack] } });
+      expect(sections[1].instances, scope).toStrictEqual([{ id: f.boxed, componentId: f.split, name: 'Split', parentId: f.stack, slotInfo: EMPTY_SPLIT }]);
+      expect(context.currentPage.slotDetailsOmitted, scope).toBeUndefined();
+      expect(JSON.stringify(context.currentPage), scope).not.toContain(f.elsewhere);
+      expect(JSON.stringify(context.currentPage), scope).not.toContain('Never shown');
+      expect(env.adapter.requests[0].system, scope).toContain('slotInfo');
+    }
+  });
+
+  it('gives read_page and a selection the same slots, and lists child IDs where the tree stops', () => {
+    const f = slotted();
+    const page = f.state.pages[f.home];
+    const node = compactNode(f.state, page, f.outer) as { slotInfo: Record<string, unknown>; slots: Record<string, unknown[]> };
+    // The children follow in `slots`, so their IDs are not said twice.
+    expect(node.slotInfo).toStrictEqual({
+      left: { label: 'Left column', description: 'Cards and supporting copy', count: 2, contract: EMPTY_SPLIT.left.contract },
+      right: { label: 'Right column', count: 0 },
+      shut: { label: 'Closed', count: 0, contract: { max: 0 } }
+    });
+    expect(node.slots.left).toHaveLength(2);
+    const cut = compactNode(f.state, page, f.outer, 4) as { slotInfo: Record<string, { childIds?: string[] }>; slots?: unknown };
+    expect(cut.slots).toBeUndefined();
+    expect(cut.slotInfo.left.childIds).toEqual([f.heading, f.inner]);
+    expect(cut.slotInfo.right.childIds).toEqual([]);
+  });
+
+  it('lists all of code\'s slots, and leaves out a damaged declaration without losing what its slot holds', () => {
+    const f = slotted();
+    const page = f.state.pages[f.home];
+    const code = structuredClone(f.state);
+    code.components[f.split] = { ...code.components[f.split], kind: 'code', tree: undefined, source: '' };
+    expect(Object.keys(compactNode(code, code.pages[f.home], f.outer).slotInfo as object)).toEqual(['left', 'right', 'shut', 'unused']);
+    const damaged = structuredClone(f.state);
+    damaged.components[f.split].slots!.left = { label: '', max: -1 };
+    const node = compactNode(damaged, page, f.outer) as { slotInfo: object; slots: { left: unknown[] } };
+    expect(Object.keys(node.slotInfo)).toEqual(['right', 'shut']);
+    expect(node.slots.left).toHaveLength(2);
+    // The nested placement it holds is still found.
+    expect((pageGlance(damaged, f.home, 4096)!.sections as Glanced[])[0].instances).toMatchObject([{ id: f.inner, slot: 'left' }]);
+  });
+
+  it('fits the slots into the room there is, never listing fewer sections than without them', () => {
+    const f = slotted();
+    const ids = f.state.pages[f.home].rootIds;
+    const seen = new Set<string>();
+    for (const indent of [undefined, 1])
+      for (let max = 100; max <= 4096; max += 7) {
+        const label = `${max} ${indent ?? 'compact'}`;
+        const plain = pageGlance(f.state, f.home, max, indent, false);
+        const g = pageGlance(f.state, f.home, max, indent);
+        if (!plain) {
+          expect(g, label).toBeNull();
+          continue;
+        }
+        expect(JSON.stringify(g, null, indent).length, label).toBeLessThanOrEqual(max);
+        const sections = g!.sections as Glanced[];
+        expect(sections.map((x) => x.id), label).toEqual((plain.sections as Glanced[]).map((x) => x.id));
+        expect(g!.omittedSections, label).toBe(plain.omittedSections);
+        // A placement lists every slot it shows or none, with each count and contract.
+        const listed = sections.flatMap((x) => [x, ...(x.instances ?? [])]).filter((x) => x.slotInfo) as Array<{ id: string; slotInfo: Record<string, { count: number; childIds?: string[]; description?: string }> }>;
+        for (const x of listed) if (x.id !== f.section) expect(x.slotInfo, label).toMatchObject({ left: { contract: EMPTY_SPLIT.left.contract }, right: { count: 0 }, shut: { contract: { max: 0 } } });
+        const all = listed.flatMap((x) => Object.values(x.slotInfo));
+        // The first two sections hold two placements with slots each.
+        const expected = 2 * Math.min(2, sections.length);
+        const complete = listed.length === expected && all.every((x) => x.childIds) && listed.some((x) => x.slotInfo.left?.description);
+        if (!expected) continue;
+        const flagFits = JSON.stringify({ ...plain, slotDetailsOmitted: true }, null, indent).length <= max;
+        expect(!!g!.slotDetailsOmitted || complete || !flagFits, label).toBe(true);
+        seen.add(complete ? 'complete' : !listed.length ? 'none' : listed.length < expected ? 'some' : 'trimmed');
+      }
+    expect([...seen].sort()).toEqual(['complete', 'none', 'some', 'trimmed']);
+  });
+
+  it('sends the page without its slots, words and all, when that is what fits a known window', async () => {
+    const f = slotted();
+    const caps = { contextWindowKnown: true, maxOutputTokens: 2000 } as const;
+    // Long enough that the window below still gives the glance its full 4096 characters: only the fit decides.
+    const text = `Tidy this page. ${'Keep the tone warm, the copy short and every heading plain. '.repeat(1800)}`;
+    const ctx = { pageId: f.home, pageTitle: 'Home', scope: 'page' as const };
+    const roomy = await open(f, [() => finish('Done.')], { capabilities: { ...caps, contextWindowTokens: 60_000 } });
+    await roomy.run(text, ctx);
+    const req = roomy.adapter.requests[0];
+    expect(editorContext(req).currentPage.sections[0].slotInfo).toBeDefined();
+    const needed = estimateRequestTokens(req.system, req.tools, req.items);
+    expect(pageGlanceChars(needed + 1023)).toBe(4096);
+    const env = await open(f, [() => finish('Done.')], { capabilities: { ...caps, contextWindowTokens: needed + 1023 } });
+    const { result } = await env.run(text, ctx);
+    expect(result?.error).toBeUndefined();
+    const sent = editorContext(env.adapter.requests[0]).currentPage;
+    expect(sent).toStrictEqual(pageGlance(f.state, f.home, 4096, 1, false));
+    expect(sent.sections.some((x: Glanced) => x.text)).toBe(true);
   });
 });
 
