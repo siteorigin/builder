@@ -1048,6 +1048,22 @@ describe('definition editing operations (§2.5)', () => {
       expect(validateOperation({ type: 'component.setSlot', definitionId: id, slot: 'content', label: 'x', primitives: ['video'] }).ok).toBe(false);
     });
 
+    it('refuses a contract that a collection layout’s content no longer fits, and keeps that content (#655)', () => {
+      const { s: base, id, a, b, page } = sections();
+      const posts = { kind: 'template' as const, id: 'posts' };
+      // Only the layout's placement holds content, so only it can refuse.
+      const made = applyOperations(base, [{ type: 'node.remove', owner: page, nodeId: a }, { type: 'node.remove', owner: page, nodeId: b }, { type: 'collection.create', collectionId: 'posts' }]).state;
+      const placed = applyOperations(made, [{ type: 'node.insert', owner: posts, parentId: null, index: 0, definitionId: id }]);
+      const holder = placed.results[0].nodeId as string;
+      const s = applyOperations(placed.state, [{ type: 'node.insert', owner: posts, parentId: holder, slot: 'content', primitive: 'paragraph', text: 'Entry intro' }]).state;
+      const held = (s.collections.posts.settings.template.nodes[holder] as InstanceNode).slots!.content;
+      expect(held).toHaveLength(1);
+      expect(() => applyOperations(s, [{ type: 'component.setSlot', definitionId: id, slot: 'content', label: 'Content', primitives: ['image'] }])).toThrow(/layout: the “Content” slot already holds text, which it would no longer take/);
+      expect(() => applyOperations(s, [{ type: 'component.setSlot', definitionId: id, slot: 'content', label: 'Content', max: 0 }])).toThrow(/layout: the “Content” slot already holds more than 0/);
+      expect(s.components[id].slots!.content.max).toBe(2);
+      expect((s.collections.posts.settings.template.nodes[holder] as InstanceNode).slots!.content).toEqual(held);
+    });
+
     it('reports content a slot does not take, or more than it holds, and damaged slots, when the project is opened', () => {
       const { s: base, id, b, page } = sections();
       const s = applyOperations(base, [{ type: 'node.insert', owner: page, parentId: b, slot: 'content', primitive: 'heading' }]).state;

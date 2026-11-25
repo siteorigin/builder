@@ -13,7 +13,7 @@ import { STYLE_PROP_MAP, styleSetFor } from '@shared/styles';
 import { richTextToPlain, toRichText } from '@shared/richtext';
 import { axesOf, findVariant } from '@shared/variants';
 import { defKey } from '@generator/index';
-import { EngineError, fail, findParent, getNode, instancesOf } from './tree';
+import { EngineError, fail, findParent, getNode, getTree, instancesOf } from './tree';
 import { clone, placedDefaultItems, placedItemId } from './install';
 import { normalizeProp } from './values';
 import { releaseKept } from '@shared/site-name';
@@ -574,7 +574,8 @@ export function setSlot(state: ProjectState, op: Op<'component.setSlot'>): OpRes
   for (const { node, owner, label } of instancesOf(state, def.id)) {
     const placed = node.slots?.[op.slot];
     if (!Array.isArray(placed) || !placed.length) continue;
-    const tree = owner.kind === 'page' ? state.pages[owner.id] : owner.kind === 'shell' ? state.site.shell[owner.id as 'header' | 'footer'] : state.components[owner.id]?.tree;
+    // Every tree a placement can sit in (a collection's layout too), as instancesOf found it.
+    const tree = owner.kind === 'component' ? state.components[owner.id]?.tree : getTree(state, owner);
     if (!tree || slotDeclProblem(next)) continue;
     const design = owner.kind === 'component' ? state.components[owner.id] : undefined;
     const fill = slotFill(state, tree, placed, next, design);
