@@ -132,6 +132,44 @@ describe('exporting a project with a draft', () => {
     expect(source.warnings).toContain('static/winter-stock-preview/index.html is served at /winter-stock-preview/, the address of the draft Winter stock preview, so a build of the exported project publishes it there. Remove or move the file before building.');
   });
 
+  it('issue 588: publishes llms.txt and the Markdown copies without the draft, and refuses a Markdown copy at a draft’s address', async () => {
+    const { c, dir } = await projectWithDraft();
+    expect((await c.apply({ operations: [{ type: 'site.update', llmsFull: true, markdownMirrors: true }] })).ok).toBe(true);
+    // The editor's own files never list the draft either.
+    expect(readFileSync(join(dir, 'static/llms.txt'), 'utf8')).not.toContain('Winter');
+    expect(existsSync(join(dir, 'static/winter-stock-preview/index.html.md'))).toBe(false);
+    const ok = await c.buildStaticTo(join(temp('out'), 'site'));
+    expect(ok.ok).toBe(true);
+    const site = filesIn(ok.path!);
+    expect(site).toEqual(expect.arrayContaining(['llms.txt', 'llms-full.txt', 'index.html.md', 'about/index.html.md', 'contact/index.html.md']));
+    expect(site.filter((f) => /winter/.test(f))).toEqual([]);
+    for (const f of ['llms.txt', 'llms-full.txt']) expect(readFileSync(join(ok.path!, f), 'utf8')).not.toMatch(/winter/i);
+    // Each published page links to its copy.
+    expect(readFileSync(join(ok.path!, 'about/index.html'), 'utf8')).toContain('<link rel="alternate" type="text/markdown" href="./index.html.md" />');
+    // A copy left at the draft's address (from before it was a draft, say) would publish its words.
+    mkdirSync(join(dir, 'static/winter-stock-preview'), { recursive: true });
+    writeFileSync(join(dir, 'static/winter-stock-preview/index.html.md'), '# Winter stock preview');
+    const dest = join(temp('out'), 'site');
+    const r = await c.buildStaticTo(dest);
+    expect(r).toMatchObject({ ok: false, message: 'The website has a Markdown copy of the draft Winter stock preview at /winter-stock-preview/index.html.md. Remove the file that puts it there, then export again.' });
+    expect(existsSync(dest)).toBe(false);
+    const source = await c.exportSourceTo(join(temp('out'), 'handoff'));
+    expect(source.ok).toBe(true);
+    expect(source.warnings).toContain(
+      'static/winter-stock-preview/index.html.md is served at /winter-stock-preview/index.html.md as the Markdown copy of the draft Winter stock preview, so a build of the exported project publishes it there. Remove or move the file before building.'
+    );
+  });
+
+  it('issue 588: refuses to export while a save is unfinished, when the generated files may still hold a draft’s words', async () => {
+    const { c } = await projectWithDraft();
+    const session = (c as unknown as { session: { unsettled: boolean } }).session;
+    session.unsettled = true;
+    const message = 'A save did not finish, so the project’s files may be out of date. Close and reopen the project, then export again.';
+    expect(await c.buildStaticTo(join(temp('out'), 'site'))).toMatchObject({ ok: false, message });
+    expect(await c.exportSourceTo(join(temp('out'), 'handoff'))).toMatchObject({ ok: false, message });
+    session.unsettled = false;
+  });
+
   it('issue 66: publishes the generated not-found page, and refuses a 404.html of the author’s own in static/', async () => {
     const { c, dir } = await projectWithDraft();
     const ok = await c.buildStaticTo(join(temp('out'), 'site'));

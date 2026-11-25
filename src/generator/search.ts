@@ -65,7 +65,7 @@ function hiddenEverywhere(styles: ResponsiveStyles | undefined): boolean {
  * The page's layers that hide themselves at every size, with everything inside them: nothing there is shown to
  * visitors, so nothing there is found. A placement hides by its own root override, which nothing else shows again.
  */
-function hiddenLayers(tree: NodeTree): Set<string> {
+export function hiddenLayers(tree: NodeTree): Set<string> {
   const out = new Set<string>();
   const hide = (id: string) => {
     if (out.has(id)) return;

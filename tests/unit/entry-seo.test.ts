@@ -291,7 +291,7 @@ describe('an entry’s generated page', () => {
     const s = run(state, updatePost({ noindex: true }));
     const meta = post(s);
     expect(meta.noindex).toBe(true);
-    expect(meta.visibility).toEqual({ website: true, indexable: false, sitemap: false, siteSearch: true, jsonLd: false, news: false });
+    expect(meta.visibility).toEqual({ website: true, indexable: false, sitemap: false, siteSearch: true, jsonLd: false, llms: false, news: false });
     expect(headOf(generateEntry(s, 'posts', 'en_spring'))).toContain('<meta name="robots" content="noindex" />');
     expect(headOf(generateEntry(state, 'posts', 'en_spring')).some((l) => l.includes('robots'))).toBe(false);
     expect(sitemapUrls(s)).not.toContain(SPRING);
@@ -316,7 +316,7 @@ describe('an entry’s generated page', () => {
     expect(where(plain, 'SEO_DESCRIPTION_LENGTH')).toEqual({ kind: 'entry', ...POST, field: 'excerpt' });
   });
 
-  it('makes again only the post’s page and the sitemap when its search settings change', () => {
+  it('makes again only the post’s page, the sitemap and llms.txt when its search settings change', () => {
     let s = seoSite().state;
     const cache = new GenerationCache();
     const check = () => {
@@ -332,9 +332,11 @@ describe('an entry’s generated page', () => {
     expect(check()).toEqual(['entry:posts:en_spring#clean', 'entry:posts:en_spring#dev', 'sitemap.xml']);
     expect(check()).toEqual([]);
     s = run(s, updatePost({ noindex: true }));
-    expect(check()).toEqual(['entry:posts:en_spring#clean', 'entry:posts:en_spring#dev', 'sitemap.xml']);
+    // llms.txt lists what search engines may list, so the post leaves it too.
+    expect(check()).toEqual(['entry:posts:en_spring#clean', 'entry:posts:en_spring#dev', 'llms.txt', 'sitemap.xml']);
     expect(check()).toEqual([]);
     expect(generateProject(s).get('static/sitemap.xml')).not.toContain(SPRING);
+    expect(generateProject(s).get('static/llms.txt')).not.toContain(SPRING);
     // A post that shows no picture from the library is not made again when the library changes.
     s = run(s, { type: 'site.update', socialImage: null }, { type: 'entry.create', collectionId: 'posts', entryId: 'en_plain', title: 'Opening hours', publishedAt: '2027-01-05', draft: false, body: ['Open every day but Monday.'] });
     check();

@@ -2480,6 +2480,24 @@ function siteUpdate(state: ProjectState, op: Op<'site.update'>): OpResult {
   if (op.notFoundHeading !== undefined) s.notFoundHeading = op.notFoundHeading.trim() || undefined;
   if (op.notFoundMessage !== undefined) s.notFoundMessage = op.notFoundMessage.trim() || undefined;
   if (op.notFoundLinkLabel !== undefined) s.notFoundLinkLabel = op.notFoundLinkLabel.trim() || undefined;
+  // Agentic discovery (shared/llms.ts): each setting is stored only while it differs from its default.
+  if (op.llmsTxt !== undefined) {
+    if (op.llmsTxt) delete s.llmsTxt;
+    else s.llmsTxt = false;
+  }
+  if (op.llmsFull !== undefined) {
+    if (op.llmsFull) s.llmsFull = true;
+    else delete s.llmsFull;
+  }
+  if (op.markdownMirrors !== undefined) {
+    if (op.markdownMirrors) s.markdownMirrors = true;
+    else delete s.markdownMirrors;
+  }
+  if (op.llmsSummary !== undefined) {
+    const summary = op.llmsSummary.replace(/\s+/g, ' ').trim();
+    if (summary) s.llmsSummary = summary;
+    else delete s.llmsSummary;
+  }
   if (op.visitorText) setVisitorText(s, op.visitorText.language, op.visitorText.text);
   if (op.identity !== undefined) {
     const next = patchIdentity(s.identity, op.identity, (id) => own(state.assets.assets, id)?.kind === 'image');

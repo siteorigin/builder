@@ -14,6 +14,7 @@ import type { Collection, EntryDoc, OwnerRef, ProjectState } from '@shared/types
 import { isImageBlock, isRichBlock } from '@shared/richtext';
 import { archivePages } from '@shared/archives';
 import { checkPublicUrl } from '@shared/public-url';
+import { agentDiscovery } from '@shared/llms';
 import { pagesShowing, SHELL_PARTS } from '@shared/page-shell';
 import { showsEntryText, type SiteLink } from '@generator/checks';
 import { isLibraryImage } from '@generator/seo-graph';
@@ -376,7 +377,39 @@ const entryHeadings: SeoAuditRule = {
   }
 };
 
-/** Every baseline rule, in the order their findings are listed within a pillar. */
+/**
+ * What the website offers AI agents beside its pages (shared/llms.ts): its llms.txt index, which the author may have
+ * turned off, and the pages and posts that index lists, which may be none.
+ */
+const agenticDiscovery: SeoAuditRule = {
+  id: 'agentic-discovery',
+  check({ state, documents }) {
+    if (!agentDiscovery(state.site).llmsTxt)
+      return [
+        finding('agentic', {
+          severity: 'info',
+          code: 'SEO_LLMS_TXT_OFF',
+          message: 'The website has no llms.txt: AI agents get no index of its pages and posts.',
+          site: 'llmsTxt',
+          explanation: 'AI assistants and answer engines read llms.txt to learn what a site covers and which pages to read, without picking through its menus and layout.',
+          aiFixable: true,
+          destination: { kind: 'site', field: 'llmsTxt' }
+        })
+      ];
+    if (documents.some((d) => d.visibility.llms)) return [];
+    return [
+      finding('agentic', {
+        severity: 'warning',
+        code: 'SEO_LLMS_TXT_EMPTY',
+        message: 'llms.txt lists no pages or posts: every one is a draft or hidden from search engines.',
+        site: 'llmsTxt',
+        explanation: 'llms.txt lists only what search engines may list, so AI agents are told of nothing on the site. Let search engines list the pages you want found.',
+        aiFixable: false
+      })
+    ];
+  }
+};
+
 /**
  * Whether the site says who publishes it: its kind (organization, local business or person) and a name, and the
  * addresses of profiles elsewhere that confirm who that is. AI answer engines and search engines match an entity across
@@ -414,4 +447,5 @@ const entityReadiness: SeoAuditRule = {
   }
 };
 
-export const BASELINE_SEO_RULES: readonly SeoAuditRule[] = [baseUrl, homeNoindex, textRule('titles', 'title'), textRule('descriptions', 'description'), unlinkedPages, genericLinkText, socialImage, favicon, entryImages, entryHeadings, entityReadiness];
+/** Every baseline rule, in the order their findings are listed within a pillar. */
+export const BASELINE_SEO_RULES: readonly SeoAuditRule[] = [baseUrl, homeNoindex, textRule('titles', 'title'), textRule('descriptions', 'description'), unlinkedPages, genericLinkText, socialImage, favicon, entryImages, entryHeadings, entityReadiness, agenticDiscovery];

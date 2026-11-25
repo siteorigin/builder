@@ -189,8 +189,10 @@ export function createSeoResolver(state: ProjectState): SeoResolver {
     const indexable = on && !meta.noindex;
     // Listed at its public URL, so only once the site has one.
     const listed = indexable && !!base;
-    // A copy whose canonical URL names another address leaves the sitemap to that one, as search engines ask.
-    return { website: on, indexable, sitemap: listed && sameAddress(meta.canonical, meta.url), siteSearch: on && !meta.searchHidden, jsonLd: listed, news: on && news };
+    // A copy whose canonical URL names another address leaves the sitemap to that one, as search engines ask, and
+    // AI agents are told of that one too.
+    const own = sameAddress(meta.canonical, meta.url);
+    return { website: on, indexable, sitemap: listed && own, siteSearch: on && !meta.searchHidden, jsonLd: listed, llms: indexable && own, news: on && news };
   };
 
   const resolvePage = (pageId: string): EffectiveSeo | null => {

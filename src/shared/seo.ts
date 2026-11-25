@@ -30,6 +30,12 @@ export interface SeoVisibility {
   siteSearch: boolean;
   /** It may carry the connected structured data graph: indexable, with a public URL to name it by. */
   jsonLd: boolean;
+  /**
+   * AI agents are told of it (llms.txt, llms-full.txt and its Markdown copy, see shared/llms.ts): indexable, and not a
+   * copy of another address (its canonical URL is its own), whether or not the site has a public URL. The site's
+   * settings decide which of those files there are.
+   */
+  llms: boolean;
   /** News lists show it: a published page that is a dated article not hidden from them. Entries have feeds of their own. */
   news: boolean;
 }

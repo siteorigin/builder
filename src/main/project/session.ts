@@ -31,6 +31,7 @@ import { packFileInfo, readPackFile } from '../packs/files';
 import { ownServerHook } from './server-hook';
 import { checkSvelteSource, componentSources } from '../codecheck';
 import { asRoute, COMPONENT_DOC, componentCycle, linksInto, ownUrlLinks, placementsOf, siteAddresses, siteBases, stepChanges, type DocVersions } from './turn-review';
+import { isDiscoveryPath } from '@shared/llms';
 import { atomicWrite, ensureDir, readBytesIfExists, readIfExists, readJson, removeDurable, removeEmptyDirs, safeJoin, sha, syncDir, toJson } from './fsutil';
 import { collectionPathOf, collectionsFromDocs, componentDocPath, CUSTOM_SOURCE_RE, DOC_DIR, isCanonicalPath, newestStoredVersion, ProjectFormatError, readProject, readState, stateToAuthoredSources, stateToDocs } from './documents';
 import { heldAsMedia, isVersionMedia, newVersionId, sameContents, VERSION_DAMAGED, VERSION_NAME_MAX, VersionStore, type SavedVersion } from './versions';
@@ -51,6 +52,8 @@ async function inBatches<T, R>(items: T[], fn: (item: T) => Promise<R> | R, size
 
 /** What a generated file that is there but cannot be read hashes to: never ours, never missing. */
 const UNREADABLE = 'unreadable';
+/** Why a file for AI agents the website no longer has, edited outside the app, is in conflict. */
+const OBSOLETE_DISCOVERY_REASON = 'This file for AI agents was edited outside SiteOrigin Builder, and the website no longer has it, so a build would still publish what it says. Restore it to remove it (your version is kept as a copy), or move it out of static/.';
 const UNREADABLE_REASON = 'Generated file could not be read, so SiteOrigin Builder left it as it is. Check that it is a file you can open, then restore it.';
 
 /** Opened for reading without waiting: a pipe at the path must never hold a save up. */
@@ -1016,7 +1019,8 @@ export class ProjectSession extends EventEmitter {
       }
       await this.saveConflicts();
       if (this.migrationDue && !this.pending.size) await this.publishMigration();
-      const changedFiles = await this.publishGenerated(false);
+      // Kept, the external version is a state installed from disk; put back, SiteOrigin Builder's is the one it had.
+      const changedFiles = choice === 'restore' ? await this.publishGenerated(false) : await this.publishInstalled();
       this.revision++;
       if (Object.keys(changed).length) await this.recordHistory(changed, { label: 'Keep external change', source: 'system' });
       await this.saveLocalState();
@@ -1035,7 +1039,7 @@ export class ProjectSession extends EventEmitter {
     if (!conflict) return { ok: false, message: 'That file is no longer in conflict.' };
     let builder: string | Buffer | null | undefined;
     try {
-      builder = conflict.kind === 'canonical' ? (this.pending.get(path) ?? null) : await this.generatedContent(path);
+      builder = conflict.kind === 'canonical' ? (this.pending.get(path) ?? null) : conflict.builderMissing ? null : await this.generatedContent(path);
     } catch {
       builder = undefined;
     }
@@ -1748,6 +1752,12 @@ export class ProjectSession extends EventEmitter {
         await removeDurable(abs);
         await removeEmptyDirs(dirname(abs), join(this.dir, 'src'));
         changedFiles.push(path);
+      } else if (diskHash !== null && isDiscoveryPath(path) && (await fs.lstat(abs).then((st) => st.isFile(), () => false))) {
+        // A file for AI agents edited outside the app that the website no longer has (its page made a draft or hidden
+        // from search engines, its copy turned off) would still publish its words: it stays claimed, so neither export
+        // carries it unnoticed, and named, until it is restored (removed) or moved away.
+        nextFiles[path] = prev[path] ?? inflight[path];
+        this.conflicts.push({ path, reason: OBSOLETE_DISCOVERY_REASON, kind: 'generated', builderMissing: true });
       }
     }
     await this.writeManifest(nextFiles);
@@ -1789,7 +1799,10 @@ export class ProjectSession extends EventEmitter {
 
   private async restoreGeneratedLocked(path: string) {
     const content = await this.generatedContent(path);
-    if (content === undefined) throw new Error('That file is no longer generated.');
+    if (content === undefined) {
+      if (isDiscoveryPath(path) && this.generated.files[path]) return this.retireGeneratedLocked(path);
+      throw new Error('That file is no longer generated.');
+    }
     const abs = safeJoin(this.dir, path);
     // Kept byte for byte before it is replaced; a file that cannot be read is never replaced unkept.
     const disk = await readFileAt(abs);
@@ -1805,6 +1818,48 @@ export class ProjectSession extends EventEmitter {
     await atomicWrite(abs, content, { beforeReplace: unchanged });
     this.generated.files[path] = sha(content);
     this.conflicts = this.conflicts.filter((c) => c.path !== path);
+    await this.publishGenerated(false);
+    this.emit('changed', { revision: this.revision, changedDocs: [], changedFiles: [path], label: 'Restore generated file', source: 'user' } satisfies SessionEvent);
+  }
+
+  /**
+   * Writes the generated files for a state already installed from disk. Should that fail, the files may still say what
+   * the project said before (a page since made a draft, in llms-full.txt): the save is unfinished, so nothing more is
+   * written and no export runs until the project is reopened.
+   */
+  private async publishInstalled(): Promise<string[]> {
+    try {
+      return await this.publishGenerated(false);
+    } catch (e) {
+      if (!this.readOnly) this.unsettled = true;
+      throw e;
+    }
+  }
+
+  /**
+   * Restores a file for AI agents the website no longer has (see publishGenerated): the file itself is moved into the
+   * recovery folder in one step and listed under Saved copies, so what is kept is exactly what was there, and nothing
+   * is left part way under static/ whatever happens meanwhile.
+   */
+  private async retireGeneratedLocked(path: string) {
+    const abs = safeJoin(this.dir, path);
+    const st = await fs.lstat(abs).catch(() => null);
+    if (st && !st.isFile()) throw new Error(`${path} is not a file, so it was not restored. Move it out of static/, then try again.`);
+    if (st) {
+      // Read first, so a list that cannot be added to stops the restore before anything moves.
+      const listed = await this.loadSavedCopies({ forWrite: true });
+      const id = randomBytes(8).toString('hex');
+      const savedAt = Date.now();
+      const file = `${LOCAL_DIR}/recovery/${savedAt}-${id}-${path.replace(/[^A-Za-z0-9._-]+/g, '_').slice(-80)}.external`;
+      const kept = safeJoin(this.dir, file);
+      await ensureDir(dirname(kept));
+      await fs.rename(abs, kept);
+      this.seenOnDisk.delete(abs);
+      const copy: SavedCopy = { id, path, kind: 'generated', side: 'external', savedAt, file };
+      await atomicWrite(safeJoin(this.dir, `${LOCAL_DIR}/recovery/${SAVED_COPIES}`), toJson({ copies: [copy, ...listed] }));
+      this.savedCopies = [copy, ...this.savedCopies];
+    }
+    // The claim stays until the publication below finds the path empty: a file put back there meanwhile is named again.
     await this.publishGenerated(false);
     this.emit('changed', { revision: this.revision, changedDocs: [], changedFiles: [path], label: 'Restore generated file', source: 'user' } satisfies SessionEvent);
   }
@@ -3718,7 +3773,7 @@ export class ProjectSession extends EventEmitter {
       }
       this.state = next;
       this.docs = nextDocs;
-      const changedFiles = await this.publishGenerated(false);
+      const changedFiles = await this.publishInstalled();
       this.revision++;
       if (Object.keys(changed).length) await this.recordHistory(changed, { label: 'External change', source: 'system' });
       await this.saveLocalState();

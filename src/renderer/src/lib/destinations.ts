@@ -105,7 +105,7 @@ export function destinationLabel(dest: EditorDestination): string {
     case 'form':
       return 'Go to form';
     case 'site':
-      return { baseUrl: 'Go to Public URL', favicon: 'Go to site icon', socialImage: 'Go to sharing image', identity: 'Go to Published by', logo: 'Go to logo', sameAs: 'Go to profiles' }[dest.field];
+      return { baseUrl: 'Go to Public URL', favicon: 'Go to site icon', socialImage: 'Go to sharing image', identity: 'Go to Published by', logo: 'Go to logo', sameAs: 'Go to profiles', llmsTxt: 'Go to AI agents' }[dest.field];
     case 'pageSeo':
       return 'Go to Search & sharing';
     case 'entry':

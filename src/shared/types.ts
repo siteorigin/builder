@@ -829,6 +829,15 @@ export interface SiteDoc {
    */
   visitorText?: Record<string, Record<string, string>>;
   /**
+   * What the website offers AI agents beside its pages (src/shared/llms.ts): the llms.txt index of its pages and entries,
+   * on unless this is false; llms-full.txt, every one of them in one file, while true; a Markdown copy beside each one
+   * (`/about/index.html.md`), while true; and the short summary the index opens with, else the site's description.
+   */
+  llmsTxt?: boolean;
+  llmsFull?: boolean;
+  markdownMirrors?: boolean;
+  llmsSummary?: string;
+  /**
    * Who publishes the site, as search engines and AI answer engines are told it in the pages' structured data
    * (src/shared/site-identity.ts). Absent: the site's name, as an organization, with nothing else said of it.
    */

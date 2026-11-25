@@ -1124,7 +1124,7 @@ function ConflictRow({
     onResolve(choice, check);
   };
   const ours = kind === 'generated' ? 'SiteOrigin Builder’s version, made from your pages' : 'SiteOrigin Builder’s version';
-  const restoreDoes = kind === 'generated' ? 'Makes the file again from your pages. To keep a change to it, make the change in the page or in a code component.' : c.builderMissing ? 'Removes the file, which SiteOrigin Builder’s version doesn’t have.' : 'Puts back the version you were editing.';
+  const restoreDoes = kind === 'generated' ? (c.builderMissing ? 'Removes the file, which your pages no longer make. Your version is kept as a copy.' : 'Makes the file again from your pages. To keep a change to it, make the change in the page or in a code component.') : c.builderMissing ? 'Removes the file, which SiteOrigin Builder’s version doesn’t have.' : 'Puts back the version you were editing.';
   return (
     <HealthRow
       tone="danger"

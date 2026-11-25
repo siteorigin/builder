@@ -473,6 +473,10 @@ export const OPERATION_SCHEMAS = {
     notFoundHeading: z.string().max(120).optional().describe('Heading of the page shown at an address the site does not have. "" restores the default.'),
     notFoundMessage: z.string().max(400).optional().describe('Message on that page, shown above its link to the Home page. "" restores the default.'),
     notFoundLinkLabel: z.string().max(60).optional().describe('Text of that page\'s link to the Home page. "" restores the default.'),
+    llmsTxt: z.boolean().optional().describe('llms.txt, the index of listed pages for AI agents. Default true.'),
+    llmsFull: z.boolean().optional().describe('llms-full.txt, every listed page in one file. Default false.'),
+    markdownMirrors: z.boolean().optional().describe('A Markdown copy beside each listed page. Default false.'),
+    llmsSummary: limited(TEXT_LIMITS.siteDescription).optional().describe('llms.txt summary; "" uses the description.'),
     visitorText: z
       .object({
         language: z.string().max(20).describe('Language code, e.g. "ar": pages in it use this wording.'),

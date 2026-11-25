@@ -1,4 +1,5 @@
 import { axesOf, selectedVariants } from '@shared/variants';
+import { agentDiscovery, oneLine } from '@shared/llms';
 import type { ComponentDefinition, ElementRef, GraphNode, NodeTree, OwnerRef, PageDoc, ProjectState, PropSchema } from '@shared/types';
 import { isBinding, slotChildren } from '@shared/types';
 import { partStyleControls } from '@shared/styles';
@@ -160,6 +161,17 @@ export function pageIdFor(state: ProjectState, ref: string): string | null {
   return Object.values(state.pages).find((p) => p?.route === route)?.id ?? null;
 }
 
+/**
+ * The site's agentic discovery settings, only while they differ from the defaults (llms.txt on, the full text and
+ * Markdown copies off, the summary taken from the description), so a site that left them alone stays small.
+ */
+function agentDiscoverySummary(site: ProjectState['site']): { agentDiscovery?: Record<string, unknown> } {
+  const { llmsTxt, llmsFull, markdownMirrors } = agentDiscovery(site);
+  const summary = oneLine(site.llmsSummary);
+  if (llmsTxt && !llmsFull && !markdownMirrors && !summary) return {};
+  return { agentDiscovery: { llmsTxt, llmsFull, markdownMirrors, ...(summary ? { summary } : {}) } };
+}
+
 export function projectSummary(state: ProjectState, revision: number) {
   const theme = getTheme(state.site.themeId);
   // The page each page is inside, by route (see shared/page-tree.ts).
@@ -177,6 +189,8 @@ export function projectSummary(state: ProjectState, revision: number) {
       // Who publishes the site, as its pages tell search engines (site.update identity changes it).
       ...(state.site.identity ? { identity: state.site.identity } : {}),
       notFoundPage: notFoundCopy(state.site),
+      // What the website offers AI agents beside its pages (site.update llmsTxt, llmsFull, markdownMirrors, llmsSummary).
+      ...agentDiscoverySummary(state.site),
       // Which pieces of visitor text have the author's own wording, by language; their words are not repeated here.
       ...visitorTextSummary(state)
     },
