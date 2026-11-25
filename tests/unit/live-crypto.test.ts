@@ -1,4 +1,5 @@
 import { describe, expect, it } from 'vitest';
+import { createPrivateKey, sign as nodeSign } from 'node:crypto';
 import {
   fromBase64Url,
   generateHostKeyPair,
@@ -124,5 +125,25 @@ describe('host challenge-response', () => {
     expect(await importHostPublicKey(keys.publicKey)).not.toBeNull();
     expect(await importHostPublicKey(toBase64Url(new Uint8Array(31)))).toBeNull();
     expect(await importHostPublicKey(toBase64Url(new Uint8Array(33)))).toBeNull();
+  });
+
+  it('signs and verifies the payload as an independent Ed25519 implementation does', async () => {
+    // RFC 8032 test 1's key, and the challenge bytes written out by hand: Node's own Ed25519 signs them.
+    const jwk = { kty: 'OKP', crv: 'Ed25519', d: 'nWGxne_9WmC6hEr0kuwsxERJxWl7MmkZcDusAxyuf2A', x: '11qYAYKxCrfVS_7TyWQHOg7hcvPapiMlrwIaaPcHURo' };
+    const c = { roomId: 'abcdefghijkmnpqrstuvwxyz', nonce: toBase64Url(new Uint8Array(32).map((_, i) => i)) };
+    const payload = Buffer.from(`siteorigin-live/host-challenge/v1\n${c.roomId}\n${c.nonce}`, 'utf8');
+    const expected = toBase64Url(nodeSign(null, payload, createPrivateKey({ key: jwk, format: 'jwk' })));
+    expect(await verifyHostChallenge(jwk.x, c, expected)).toBe(true);
+    // Ed25519 is deterministic: the helper's signature with the same key is the same signature.
+    const privateKey = await globalThis.crypto.subtle.importKey('jwk', jwk, 'Ed25519', false, ['sign']);
+    expect(await signHostChallenge(privateKey, c)).toBe(expected);
+  });
+
+  it('still verifies a replayed proof: only the relay’s single-use nonce stops a replay', async () => {
+    const keys = await generateHostKeyPair();
+    const c = challenge();
+    const signature = await signHostChallenge(keys.privateKey, c);
+    expect(await verifyHostChallenge(keys.publicKey, c, signature)).toBe(true);
+    expect(await verifyHostChallenge(keys.publicKey, c, signature)).toBe(true);
   });
 });

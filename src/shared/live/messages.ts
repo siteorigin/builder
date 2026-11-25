@@ -42,7 +42,7 @@ import { isPreviewHeaderName, isPreviewHeaderValue, isPreviewTarget, PREVIEW_ABO
  * Characters a name may never hold: controls, the marks that reorder text, and invisible spaces, any of which could
  * make one name look like another in the waiting room. Joiners stay: emoji and some scripts need them.
  */
-const UNSAFE_NAME_CHARS = /[\p{Cc}​‎‏‪-‮⁠⁦-⁩﻿]/u;
+const UNSAFE_NAME_CHARS = /[\p{Cc}\u200b\u200e\u200f\u202a-\u202e\u2060\u2066-\u2069\ufeff]/u;
 
 /**
  * A display name as it travels: in Unicode normal form C, every run of spaces or line breaks made one space, trimmed,
