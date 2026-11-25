@@ -1531,7 +1531,7 @@ export class Orchestrator {
         // The pages the batch will change are measured as they are, before this run reached them, for the preview check.
         await preview.beforeApply(operations, session.state, measureLive, (pageId, viewport) => inspections.fresh(pageId, viewport));
         // Stopped while the preview measured: the batch never lands.
-        if (signal.aborted) return { ok: false, revision: session.revision, error: { code: 'CANCELLED', message: 'Cancelled' } };
+        if (signal.aborted) return refused('CANCELLED', 'Cancelled', false);
         const before = session.state;
         const revision = session.revision;
         let res: Awaited<ReturnType<typeof session.apply>>;
