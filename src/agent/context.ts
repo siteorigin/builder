@@ -1042,9 +1042,10 @@ export interface DiagnosticFocus {
  */
 export function diagnosticRank(state: ProjectState, focus: DiagnosticFocus): (d: Diagnostic) => 0 | 1 | 2 {
   const key = (o: { kind: string; id: string }) => `${o.kind}:${o.id}`;
+  /** Owners the request is about as a whole. */
   const target = new Set<string>();
-  /** Nodes of the target's owner that the selection is: the element and the placements around it. */
-  const targetNodes = new Set<string>();
+  /** The selected element, in each tree it is reached through: its placement in the owner, each component's own placement inside the next, and the element itself in the innermost. */
+  const selected = new Map<string, string>();
   const near = new Set<string>();
   const trees: NodeTree[] = [];
   const page = focus.pageId && Object.hasOwn(state.pages, focus.pageId) ? state.pages[focus.pageId] : undefined;
@@ -1058,9 +1059,23 @@ export function diagnosticRank(state: ProjectState, focus: DiagnosticFocus): (d:
       }
   }
   if (focus.selection) {
-    target.add(key(focus.selection.owner));
-    targetNodes.add(focus.selection.nodeId);
-    for (const id of focus.selection.instancePath ?? []) targetNodes.add(id);
+    const path = focus.selection.instancePath ?? [];
+    let owner = key(focus.selection.owner);
+    let tree: NodeTree | undefined;
+    try {
+      tree = getTree(state, focus.selection.owner);
+    } catch {
+      tree = undefined;
+    }
+    for (const id of path) {
+      selected.set(`${owner}|${id}`, id);
+      const n = tree?.nodes[id];
+      const def = n?.kind === 'instance' && Object.hasOwn(state.components, n.definitionId) ? state.components[n.definitionId] : undefined;
+      if (!def) break;
+      owner = key({ kind: 'component', id: def.id });
+      tree = def.tree;
+    }
+    selected.set(`${owner}|${focus.selection.nodeId}`, focus.selection.nodeId);
   }
   const defs: string[] = [];
   if (focus.definitionId) {
@@ -1071,7 +1086,7 @@ export function diagnosticRank(state: ProjectState, focus: DiagnosticFocus): (d:
     target.add(key({ kind: 'entry', id: focus.post.entryId }));
     near.add(key({ kind: 'template', id: focus.post.collectionId }));
     const c = Object.hasOwn(state.collections ?? {}, focus.post.collectionId) ? state.collections[focus.post.collectionId] : undefined;
-    if (c?.template) trees.push(c.template);
+    if (c?.settings.template && typeof c.settings.template === 'object') trees.push(c.settings.template);
   }
   for (const t of trees) for (const n of Object.values(t?.nodes ?? {})) if (n.kind === 'instance') defs.push(n.definitionId);
   // Every component shown there, through the components they place in turn (a cycle is walked once).
@@ -1086,7 +1101,7 @@ export function diagnosticRank(state: ProjectState, focus: DiagnosticFocus): (d:
   }
   return (d) => {
     const owner = d.owner ? key(d.owner) : '';
-    if (target.has(owner) && (!focus.selection || owner !== key(focus.selection.owner) || (d.nodeId !== undefined && targetNodes.has(d.nodeId)))) return 0;
+    if (target.has(owner) || (d.nodeId !== undefined && selected.has(`${owner}|${d.nodeId}`))) return 0;
     return near.has(owner) ? 1 : 2;
   };
 }
@@ -1121,7 +1136,7 @@ export function diagnosticsContext(diags: readonly Diagnostic[], rank: (d: Diagn
   const totals = { errors: listed.filter((d) => d.severity === 'error').length, warnings: listed.filter((d) => d.severity === 'warning').length };
   const entry = (d: Diagnostic): DiagnosticEntry => ({
     code: d.code,
-    message: d.message.length > DIAGNOSTIC_MESSAGE_MAX ? `${d.message.slice(0, DIAGNOSTIC_MESSAGE_MAX - 1)}…` : d.message,
+    message: d.message.length > DIAGNOSTIC_MESSAGE_MAX ? `${d.message.slice(0, DIAGNOSTIC_MESSAGE_MAX - 1).replace(/[\uD800-\uDBFF]$/, '')}…` : d.message,
     owner: d.owner ? `${d.owner.kind}:${d.owner.id}` : null,
     ...(d.nodeId !== undefined ? { nodeId: d.nodeId } : {})
   });
@@ -1137,10 +1152,13 @@ export function diagnosticsContext(diags: readonly Diagnostic[], rank: (d: Diagn
       ...(left.errors || left.warnings ? { notListed: { ...left, note: `${left.errors} error${left.errors === 1 ? '' : 's'} and ${left.warnings} warning${left.warnings === 1 ? '' : 's'} are not listed here: ${more}.` } } : {})
     };
   };
-  const size = (n: number) => JSON.stringify(section(n), null, indent).length;
-  // The most that fit, by halving: the list only grows longer with each entry.
+  // Measured as it sits in the context, one level in.
+  const size = (n: number) => JSON.stringify({ diagnostics: section(n) }, null, indent).length - JSON.stringify({ diagnostics: null }, null, indent).length + 4;
+  // The whole list, when it fits: it says nothing of what is left out, so it can be shorter than a cut one.
+  if (size(listed.length) <= maxChars) return section(listed.length);
+  // Otherwise the most that fit, by halving: a cut list only grows longer with each entry.
   let lo = 0;
-  let hi = listed.length;
+  let hi = listed.length - 1;
   while (lo < hi) {
     const mid = Math.ceil((lo + hi) / 2);
     if (size(mid) <= maxChars) lo = mid;

@@ -4312,6 +4312,22 @@ describe('the project diagnostics in the editor context (#757)', () => {
     expect(listed.errors[0]).toMatchObject({ owner: `page:${home}`, nodeId: 'n_sel' });
   });
 
+  it('lists the build errors an edit already compiles, and compiles nothing for a question', async () => {
+    let compiles = 0;
+    const compileAll = async () => {
+      compiles++;
+      return [{ severity: 'error' as const, code: 'COMPILE', message: 'Pricing card: Unexpected token' }];
+    };
+    const edit = await setup([() => finish('Done.')], { compileAll });
+    await edit.run('Tidy up the footer', pageCtx(edit.session.state.site.homePageId, 'Home', { scope: 'page' }));
+    expect(editorContext(edit.adapter.requests[0]).diagnostics.errors).toContainEqual({ code: 'COMPILE', message: 'Pricing card: Unexpected token', owner: null });
+    compiles = 0;
+    const ask = await setup([() => finish('Done.')], { compileAll });
+    await ask.run('Why is the footer broken?', pageCtx(ask.session.state.site.homePageId, 'Home', { mode: 'ask' }));
+    expect(compiles).toBe(0);
+    expect(editorContext(ask.adapter.requests[0])).not.toHaveProperty('diagnostics');
+  });
+
   it('leaves the section out of a project without problems', async () => {
     const env = await setup([() => finish('Done.')]);
     expect(env.session.diagnostics().filter((d) => d.severity !== 'info')).toEqual([]);
@@ -4331,7 +4347,8 @@ describe('the project diagnostics in the editor context (#757)', () => {
     expect(JSON.stringify(listed, null, 1).length).toBeLessThanOrEqual(diagnosticsChars(40_000));
     expect(listed.notListed).toMatchObject({ errors: totals.errors - listed.errors.length, warnings: totals.warnings - listed.warnings.length });
     expect(listed.notListed.errors + listed.notListed.warnings).toBeGreaterThan(0);
-    expect(listed.notListed.note).toMatch(/validate_project lists them all/);
+    expect(listed.errors.length).toBeGreaterThan(0);
+    expect(listed.notListed.note).toMatch(/validate_project shows them/);
     // Errors go before any warning.
     if (listed.warnings.length) expect(listed.notListed.errors).toBe(0);
   });
@@ -4353,6 +4370,15 @@ describe('the project diagnostics in the editor context (#757)', () => {
     expect(cut.warnings).toEqual([]);
     expect(cut.errors.length).toBeGreaterThan(0);
     expect(cut.notListed).toMatchObject({ errors: 30 - cut.errors.length, warnings: 30 });
+    // A whole list that fits exactly is listed whole, though a cut one with its counts would be longer.
+    const two = diags.filter((d) => d.severity === 'error').slice(0, 2);
+    const whole = diagnosticsContext(two, rank, 100_000, 'more', 1)!;
+    const exact = JSON.stringify({ diagnostics: whole }, null, 1).length - JSON.stringify({ diagnostics: null }, null, 1).length + 4;
+    expect(diagnosticsContext(two, rank, exact, 'more', 1)).toEqual(whole);
+    expect(diagnosticsContext(two, rank, exact - 1, 'more', 1)!.errors.length).toBeLessThan(2);
+    // Room for the counts and no row: the counts alone.
+    const counts = { note: cut.note, errors: [], warnings: [], notListed: { errors: 30, warnings: 30, note: '30 errors and 30 warnings are not listed here: more.' } };
+    expect(diagnosticsContext(diags, rank, JSON.stringify({ diagnostics: counts }).length - JSON.stringify({ diagnostics: null }).length + 4, 'more')).toEqual(counts);
     // No room even for the counts: no section.
     expect(diagnosticsContext(diags, rank, 50, 'more')).toBeUndefined();
     // A long message cannot fill the list alone.
@@ -4372,6 +4398,24 @@ describe('the project diagnostics in the editor context (#757)', () => {
     // A page without its header does not show it.
     state.pages[home].showHeader = false;
     expect(diagnosticRank(state, { pageId: home })({ severity: 'error', code: 'X', message: '', owner: { kind: 'shell', id: 'header' } })).toBe(2);
+    // What the page shows through the components placed there counts too.
+    const elsewhere = Object.keys(state.components).find((id) => rank({ severity: 'error', code: 'X', message: '', owner: { kind: 'component', id } }) === 2)!;
+    expect(elsewhere).toBeDefined();
+    state.components[placed.definitionId] = { ...state.components[placed.definitionId], tree: { rootIds: ['n_x'], nodes: { ...(state.components[placed.definitionId].tree?.nodes ?? {}), n_x: { id: 'n_x', kind: 'instance', definitionId: elsewhere, props: {} } as never } } } as never;
+    state.pages[home].showHeader = true;
+    expect(diagnosticRank(state, { pageId: home })({ severity: 'error', code: 'X', message: '', owner: { kind: 'component', id: elsewhere } })).toBe(1);
+    // An element selected inside a placement is its component's node, and that is the request's target.
+    const nested = diagnosticRank(state, { pageId: home, selection: { owner: { kind: 'page', id: home }, instancePath: [placed.id], nodeId: 'n_x' } });
+    expect(nested({ severity: 'error', code: 'X', message: '', owner: { kind: 'component', id: placed.definitionId }, nodeId: 'n_x' })).toBe(0);
+    expect(nested({ severity: 'error', code: 'X', message: '', owner: { kind: 'page', id: home }, nodeId: placed.id })).toBe(0);
+    expect(nested({ severity: 'error', code: 'X', message: '', owner: { kind: 'page', id: home }, nodeId: 'n_other' })).toBe(1);
+    // A post: the entry first, then its collection's layout and what that places, not the page behind the editor.
+    state.collections = { posts: { settings: { template: { rootIds: ['t1'], nodes: { t1: { id: 't1', kind: 'instance', definitionId: elsewhere, props: {} } } } }, entries: {} } } as never;
+    const post = diagnosticRank(state, { post: { collectionId: 'posts', entryId: 'e1' } });
+    expect(post({ severity: 'error', code: 'X', message: '', owner: { kind: 'entry', id: 'e1' } })).toBe(0);
+    expect(post({ severity: 'error', code: 'X', message: '', owner: { kind: 'template', id: 'posts' } })).toBe(1);
+    expect(post({ severity: 'error', code: 'X', message: '', owner: { kind: 'component', id: elsewhere } })).toBe(1);
+    expect(post({ severity: 'error', code: 'X', message: '', owner: { kind: 'page', id: home } })).toBe(2);
     // A component edited everywhere is the request's target.
     expect(diagnosticRank(state, { pageId: home, definitionId: placed.definitionId })({ severity: 'error', code: 'X', message: '', owner: { kind: 'component', id: placed.definitionId } })).toBe(0);
   });

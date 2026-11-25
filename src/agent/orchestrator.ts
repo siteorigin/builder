@@ -1290,7 +1290,7 @@ export class Orchestrator {
         [...startDiagnostics, ...startBuild],
         diagnosticOrder,
         diagnosticsRoom,
-        current.tools.some((t) => t.name === 'validate_project') ? 'validate_project lists them all' : 'the author sees them all in Project health',
+        current.tools.some((t) => t.name === 'validate_project') ? 'validate_project shows them' : 'the author sees them in Project health',
         indent
       );
     /** This request's own message: what a new conversation would still have to send. */
