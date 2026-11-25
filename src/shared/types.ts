@@ -674,15 +674,20 @@ export const SLOT_PRIMITIVES: readonly SlotPrimitive[] = ['element', 'text', 'im
 export const COMPONENT_CATEGORIES: readonly ComponentCategory[] = ['hero', 'content', 'social-proof', 'conversion', 'media', 'layout', 'shell', 'primitive', 'custom'];
 
 /**
- * A place in a component where each placement puts content of its own. With neither `categories` nor `primitives`
- * it takes anything; with either, only components of those categories and elements of those kinds. `max` caps how
- * many children it holds (0 closes it).
+ * A place in a component where each placement puts content of its own. With none of `categories`, `componentIds` and
+ * `primitives` it takes anything; with any of them, only what one of them lists: components of those categories,
+ * the components named, and elements of those kinds. `max` caps how many children it holds (0 closes it).
  */
 export interface SlotDef {
   label: string;
   /** What belongs there, for authors and the AI. */
   description?: string;
   categories?: ComponentCategory[];
+  /**
+   * Components it takes by name, whatever their category: a catalogue contract ID (`ComponentDefinition.componentId`,
+   * the same in every compatible theme) or a project definition ID (`ComponentDefinition.id`).
+   */
+  componentIds?: string[];
   primitives?: SlotPrimitive[];
   max?: number;
 }

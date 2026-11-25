@@ -986,7 +986,7 @@ function structureDiagnostics(state: ProjectState): Diagnostic[] {
           if (!decl || slotDeclProblem(decl)) continue;
           const fill = slotFill(state, tree, placed, decl, def);
           const where = `${label}: the “${decl.label}” slot of ${displayName(state, n)}`;
-          for (const r of fill.refusedAll) out.push({ severity: 'error', code: 'SLOT_REFUSED', message: `${where} takes ${slotAccepts(decl)}, but holds ${r.what}.`, owner, nodeId: r.nodeId });
+          for (const r of fill.refusedAll) out.push({ severity: 'error', code: 'SLOT_REFUSED', message: `${where} takes ${slotAccepts(decl, state)}, but holds ${r.what}.`, owner, nodeId: r.nodeId });
           // The message leaves the count out, so taking content out of a slot that is still over its limit is no new problem.
           if (decl.max !== undefined && fill.count > decl.max) out.push({ severity: 'error', code: 'SLOT_FULL', message: `${where} holds at most ${decl.max}, but shows more.`, owner, nodeId: n.id });
         }

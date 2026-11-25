@@ -130,7 +130,7 @@ export function componentUpsert(state: ProjectState, given: UpsertOp, helpers: U
   replaceProperties(state, def, op.properties, [], { bindingsChecked: true });
   // Each slot is declared as setSlot declares it, which refuses one that no longer takes what a placement put there.
   for (const [slot, d] of Object.entries(slots ?? {}))
-    setSlot(state, { type: 'component.setSlot', definitionId: id, slot, label: d.label, description: d.description ?? null, categories: d.categories ?? null, primitives: d.primitives ?? null, max: d.max ?? null });
+    setSlot(state, { type: 'component.setSlot', definitionId: id, slot, label: d.label, description: d.description ?? null, categories: d.categories ?? null, componentIds: d.componentIds ?? null, primitives: d.primitives ?? null, max: d.max ?? null });
   // Styles go through node.setStyle, so each rule is checked and stored as one set by hand would be.
   for (const n of op.nodes) if (n.styles) applyStyles(state, id, n.id, n.styles, helpers);
   for (const [axis, a] of Object.entries(op.variantAxes ?? {}))

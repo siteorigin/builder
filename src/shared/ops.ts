@@ -824,7 +824,13 @@ export const OPERATION_SCHEMAS = {
       .max(20)
       .nullable()
       .optional()
-      .describe('Component categories the slot takes. With primitives, the slot takes only what either lists; with neither, anything. Left out keeps it; null removes the restriction.'),
+      .describe('Component categories the slot takes. With componentIds or primitives, the slot takes only what one of them lists; with none, anything. Left out keeps it; null removes the restriction.'),
+    componentIds: z
+      .array(z.string().min(1).max(120))
+      .max(50)
+      .nullable()
+      .optional()
+      .describe('Components the slot takes by ID, whatever their category: a catalogue contract ID (such as "features.grid") or a project component definition ID. Left out keeps it; null removes the restriction.'),
     primitives: z
       .array(z.enum(SLOT_PRIMITIVES as unknown as [string, ...string[]]))
       .max(6)

@@ -542,9 +542,11 @@ export function setSlot(state: ProjectState, op: Op<'component.setSlot'>): OpRes
   // What the operation leaves out stays as it was; null takes it away.
   const next: SlotDef = { ...(own(def.slots, op.slot) ?? {}), label: op.label.trim() };
   const description = op.description?.trim();
+  if (op.componentIds?.some((c) => !c.trim())) fail('Name each component the slot takes by its ID.');
   for (const [key, value] of [
     ['description', op.description === undefined ? undefined : description || null],
     ['categories', op.categories === undefined ? undefined : op.categories === null ? null : [...new Set(op.categories)]],
+    ['componentIds', op.componentIds === undefined ? undefined : op.componentIds === null ? null : [...new Set(op.componentIds.map((c) => c.trim()))]],
     ['primitives', op.primitives === undefined ? undefined : op.primitives === null ? null : [...new Set(op.primitives)]],
     ['max', op.max]
   ] as const) {

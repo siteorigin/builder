@@ -253,6 +253,7 @@ export const MANAGED_COMPONENT_ARGS = z
             label: z.string().min(1).max(60),
             description: z.string().max(300).optional(),
             categories: z.array(z.enum(COMPONENT_CATEGORIES as unknown as [string, ...string[]])).max(20).optional().describe('Component categories it takes.'),
+            componentIds: z.array(z.string().min(1).max(120)).max(50).optional().describe('Components it takes by ID whatever their category: a contract ID such as "features.grid", or a project component\'s definition ID.'),
             primitives: z.array(z.enum(SLOT_PRIMITIVES as unknown as [string, ...string[]])).max(6).optional(),
             max: z.number().int().min(0).max(1000).optional()
           })
@@ -800,7 +801,7 @@ function compile(state: ProjectState, args: ManagedComponentArgs): Compiled {
     if (!slotsShown.has(s.name)) issues.push({ field: at, message: `no slot node shows "${s.name}", so content put there would never appear. Add a node { "kind": "slot", "slot": "${s.name}" }` });
     const { name: _n, ...rest } = s;
     const old = was?.slots && Object.hasOwn(was.slots, s.name) ? was.slots[s.name] : undefined;
-    slots[s.name] = old?.categories && rest.categories === undefined ? { ...rest, categories: old.categories } : rest;
+    slots[s.name] = { ...rest, ...(old?.categories && rest.categories === undefined ? { categories: old.categories } : {}), ...(old?.componentIds && rest.componentIds === undefined ? { componentIds: old.componentIds } : {}) };
   });
   const variantAxes: Record<string, unknown> = {};
   (args.variantAxes ?? []).forEach((a, i) => {

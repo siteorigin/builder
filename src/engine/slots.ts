@@ -6,7 +6,24 @@ import type { ComponentDefinition, GraphNode, InstanceNode, NodeTree, ProjectSta
 import { COMPONENT_CATEGORIES, SLOT_PRIMITIVES } from '@shared/types';
 
 /** Whether a slot limits what kinds of content it takes (beyond how many). */
-export const restrictsKinds = (d: SlotDef): boolean => d.categories !== undefined || d.primitives !== undefined;
+export const restrictsKinds = (d: SlotDef): boolean => d.categories !== undefined || d.primitives !== undefined || d.componentIds !== undefined;
+
+/** The most components a slot can name, and the longest name it can give one. */
+export const SLOT_COMPONENT_IDS_MAX = 50;
+const COMPONENT_ID_MAX = 120;
+
+/** Whether a slot declared as `d` takes a placement of `def`: by its category, or named by its contract or definition ID. */
+export function takesComponent(d: SlotDef, def: Pick<ComponentDefinition, 'id' | 'componentId' | 'category'>): boolean {
+  if (!restrictsKinds(d)) return true;
+  return (d.categories ?? []).includes(def.category) || (d.componentIds ?? []).some((id) => id === def.id || id === def.componentId);
+}
+
+/** The project's definitions a slot's component ID names: the one with that definition ID, else those of that contract. */
+function namedDefinitions(state: Pick<ProjectState, 'components'> | undefined, id: string): ComponentDefinition[] {
+  if (!state?.components) return [];
+  if (Object.hasOwn(state.components, id)) return [state.components[id]];
+  return Object.values(state.components).filter((c) => c?.componentId === id);
+}
 
 const PRIMITIVE_NAMES: Record<SlotPrimitive, [one: string, many: string]> = {
   element: ['a container', 'containers'],
@@ -17,10 +34,14 @@ const PRIMITIVE_NAMES: Record<SlotPrimitive, [one: string, many: string]> = {
   divider: ['a divider', 'dividers']
 };
 
-/** "hero or media components, text and images", or "anything", or "nothing". */
-export function slotAccepts(d: SlotDef): string {
+/**
+ * "hero or media components, “Feature card”, text and images", or "anything", or "nothing". A component named by ID
+ * is called by its name in `state` when the project has it, and by the ID otherwise.
+ */
+export function slotAccepts(d: SlotDef, state?: Pick<ProjectState, 'components'>): string {
   if (!restrictsKinds(d)) return 'anything';
-  const parts = [...(d.categories?.length ? [`${d.categories.join(' or ')} components`] : []), ...(d.primitives ?? []).map((p) => PRIMITIVE_NAMES[p]?.[1] ?? p)];
+  const named = [...new Set((d.componentIds ?? []).map((id) => `“${namedDefinitions(state, id)[0]?.name ?? id}”`))];
+  const parts = [...(d.categories?.length ? [`${d.categories.join(' or ')} components`] : []), ...named, ...(d.primitives ?? []).map((p) => PRIMITIVE_NAMES[p]?.[1] ?? p)];
   if (!parts.length) return 'nothing';
   return parts.length > 1 ? `${parts.slice(0, -1).join(', ')} and ${parts[parts.length - 1]}` : parts[0];
 }
@@ -35,6 +56,18 @@ export interface SlotFill {
 }
 
 const subset = <T>(a: readonly T[] | undefined, b: readonly T[] | undefined) => (a ?? []).every((x) => (b ?? []).includes(x));
+
+/**
+ * Whether every component `outer` names is one `decl` takes too: named there as well, or, when the project has it,
+ * of a category `decl` takes (each of its definitions, when it names a contract several share).
+ */
+function namesTaken(state: Pick<ProjectState, 'components'>, outer: SlotDef, decl: SlotDef): boolean {
+  return (outer.componentIds ?? []).every((id) => {
+    if ((decl.componentIds ?? []).includes(id)) return true;
+    const defs = namedDefinitions(state, id);
+    return defs.length > 0 && defs.every((def) => takesComponent(decl, def));
+  });
+}
 
 /**
  * What a list of children adds up to in a slot declared as `decl`. `design` is the definition the list sits in, when
@@ -53,14 +86,14 @@ export function slotFill(state: ProjectState, tree: NodeTree, ids: readonly stri
     if (n.kind === 'instance') {
       count++;
       const def = Object.hasOwn(state.components, n.definitionId) ? state.components[n.definitionId] : undefined;
-      if (def && kinds && !(decl.categories ?? []).includes(def.category)) refuse(id, `“${def.name}” (a ${def.category} component)`);
+      if (def && kinds && !takesComponent(decl, def)) refuse(id, `“${def.name}” (a ${def.category} component)`);
     } else if (n.kind === 'slot') {
       // Content passed on from the slot of the same name outside: it must be content this slot takes too.
       const outer = design?.slots && Object.hasOwn(design.slots, n.slot) ? design.slots[n.slot] : undefined;
       if (!outer) continue;
       count += outer.max ?? Infinity;
-      if (kinds && (!restrictsKinds(outer) || !subset(outer.categories, decl.categories) || !subset(outer.primitives, decl.primitives)))
-        refuse(id, `the content of “${outer.label}”, which can be ${slotAccepts(outer)}`);
+      if (kinds && (!restrictsKinds(outer) || !subset(outer.categories, decl.categories) || !subset(outer.primitives, decl.primitives) || !namesTaken(state, outer, decl)))
+        refuse(id, `the content of “${outer.label}”, which can be ${slotAccepts(outer, state)}`);
     } else if (n.kind === 'repeat') {
       // A repeat shows its children once per item, and the items come from wherever the list is filled (a placement,
       // or an enclosing component that hands its own list on), so it can show any number.
@@ -94,7 +127,7 @@ export function slotLandingProblem(state: ProjectState, tree: NodeTree, inst: In
   const name = state.components[inst.definitionId]?.name ?? 'This component';
   const where = `The “${decl.label}” slot of “${name}”`;
   const refused = slotFill(state, tree, added, decl, design).refused;
-  if (refused) return `${where} takes ${slotAccepts(decl)}, not ${refused.what}.`;
+  if (refused) return `${where} takes ${slotAccepts(decl, state)}, not ${refused.what}.`;
   if (decl.max === undefined) return null;
   const placed = inst.slots?.[slot];
   const count = slotFill(state, tree, Array.isArray(placed) ? placed : [], decl, design).count;
@@ -111,6 +144,8 @@ export function slotDeclProblem(d: unknown): string | null {
   if (r.description !== undefined && typeof r.description !== 'string') return 'has a description that is not text';
   if (r.categories !== undefined && (!Array.isArray(r.categories) || r.categories.some((c) => !(COMPONENT_CATEGORIES as readonly unknown[]).includes(c))))
     return `lists categories other than ${COMPONENT_CATEGORIES.join(', ')}`;
+  if (r.componentIds !== undefined && (!Array.isArray(r.componentIds) || r.componentIds.length > SLOT_COMPONENT_IDS_MAX || r.componentIds.some((c) => typeof c !== 'string' || !c.trim() || c.length > COMPONENT_ID_MAX)))
+    return `names components by something other than up to ${SLOT_COMPONENT_IDS_MAX} component IDs`;
   if (r.primitives !== undefined && (!Array.isArray(r.primitives) || r.primitives.some((p) => !(SLOT_PRIMITIVES as readonly unknown[]).includes(p))))
     return `lists element kinds other than ${SLOT_PRIMITIVES.join(', ')}`;
   if (r.max !== undefined && !(typeof r.max === 'number' && Number.isInteger(r.max) && r.max >= 0 && r.max <= 1000)) return 'has a limit that is not a whole number from 0 to 1000';
