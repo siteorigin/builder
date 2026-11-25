@@ -14,6 +14,7 @@ import type { InsertSpec } from './insert-search';
 import { dropAt, shownOrder, type Box } from './reorder';
 import { whereFor, type InsertAt, type InsertRole, type Where } from './insert-at';
 import { treeFor } from './model';
+import { shownSlots } from './slot-target';
 
 /** A list a drop can go into, before it is measured: the page's top level (`parentId` null), an element's children,
  *  or one slot of a placed component. `refused` says why nothing goes here (a component that shows several slots,
@@ -51,16 +52,6 @@ export interface DropTarget {
 }
 
 const own = <T>(rec: Record<string, T> | undefined, key: string): T | undefined => (rec && Object.hasOwn(rec, key) ? rec[key] : undefined);
-
-/** The slots a placed component shows: those its design places (a declared slot left out is never seen), every declared
- *  one for code, which renders its own. */
-function shownSlots(state: ProjectState, definitionId: string): string[] {
-  const def = own(state.components, definitionId);
-  const names = Object.keys(def?.slots ?? {});
-  if (def?.kind !== 'managed' || !def.tree) return names;
-  const placed = new Set(Object.values(def.tree.nodes).flatMap((n) => (n.kind === 'slot' ? [n.slot] : [])));
-  return names.filter((n) => placed.has(n));
-}
 
 /** How a refusal says to put something in a place a drop can't reach: for a tile from Insert, by clicking it. */
 const BY_CLICK = 'click the tile';

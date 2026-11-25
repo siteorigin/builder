@@ -70,7 +70,7 @@ export async function removeFromLibrary(entry: Pick<SavedComponent, 'id' | 'dige
 export async function insertSaved(entry: SavedComponent): Promise<string | undefined> {
   const start = getState();
   const snap = start.snapshot;
-  const at = snap ? insertionPoint(entry.role, start.selection, snap) : null;
+  const at = snap ? insertionPoint(entry.role, start.selection, snap, undefined, start.slotTarget) : null;
   if (!snap || !at) return;
   const place = { owner: at.owner, parentId: at.parentId, ...(at.slot !== undefined ? { slot: at.slot } : {}), ...(at.index !== undefined ? { index: at.index } : {}) };
   const r: SavedInsertResult = await api.project.insertSavedComponent(entry.id, entry.digest, place, snap.workspaceKey, snap.revision).catch((e: Error) => ({ ok: false, message: `${entry.name} couldn’t be inserted: ${e.message}` }));
@@ -88,7 +88,7 @@ export async function insertSaved(entry: SavedComponent): Promise<string | undef
   const here = owner.kind === 'page' ? now.pageId === owner.id && !now.templateMode && !now.definitionMode : owner.kind === 'template' ? now.templateMode?.collectionId === owner.id : owner.kind === 'component' ? now.definitionMode?.definitionId === owner.id : true;
   const nodes = now.snapshot && treeFor(now.snapshot.state, owner)?.nodes;
   const there = !!nodes && Object.hasOwn(nodes, r.nodeId);
-  if (!shown || !here || !there || now.selection !== start.selection) {
+  if (!shown || !here || !there || now.selection !== start.selection || now.slotTarget !== start.slotTarget) {
     if (there) toast(`Added ${entry.name}.`, 'info', undoAction({ entryId: r.entryId, revision: r.revision, workspaceKey: snap.workspaceKey }));
     return;
   }

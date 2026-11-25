@@ -155,8 +155,9 @@ async function pasteCopied(latest: Copied, opening: string, follow: boolean) {
   const group = plan?.several ? plan.group : null;
   const last = group ? layerRef(group.owner, group.ids[group.ids.length - 1]) : s.selection;
   const places: { section: InsertAt | null; element: InsertAt | null } = {
-    section: insertionPoint('section', last),
-    element: group && group.parentId !== null ? { owner: group.owner, parentId: group.parentId, slot: group.slot, index: group.indexes[group.indexes.length - 1] + 1 } : insertionPoint('element', last)
+    // Into a slot picked for Insert, if one is (nothing is selected then), as a tile clicked there goes.
+    section: insertionPoint('section', last, undefined, undefined, s.slotTarget),
+    element: group && group.parentId !== null ? { owner: group.owner, parentId: group.parentId, slot: group.slot, index: group.indexes[group.indexes.length - 1] + 1 } : insertionPoint('element', last, undefined, undefined, s.slotTarget)
   };
   let entry: Copied | null = latest;
   let clipboardId: string | null = null;
@@ -175,9 +176,10 @@ async function pasteCopied(latest: Copied, opening: string, follow: boolean) {
   const id = r?.[0]?.nodeId as string | undefined;
   const ids = Array.isArray(r?.[0]?.nodeIds) ? (r[0].nodeIds as string[]) : id ? [id] : [];
   const here = getState();
-  // Selected only while the author is still where they pressed it: the same page, or the same component edited everywhere.
+  // Selected only while the author is still where they pressed it: the same page, or the same component edited everywhere,
+  // with nothing else selected or picked (another slot for Insert, say) meanwhile.
   const now = currentOwner();
-  if (!ids.length || here.snapshot?.workspaceKey !== opening || now?.kind !== at.owner.kind || now.id !== at.owner.id || here.mode !== 'edit' || here.selection !== s.selection || here.layerSet !== s.layerSet) return;
+  if (!ids.length || here.snapshot?.workspaceKey !== opening || now?.kind !== at.owner.kind || now.id !== at.owner.id || here.mode !== 'edit' || here.selection !== s.selection || here.layerSet !== s.layerSet || here.slotTarget !== s.slotTarget) return;
   const pick = (i: number) => ids[Math.min(i, ids.length - 1)];
   // Several pasted together stay selected together, as they were when copied.
   setState({ selection: layerRef(at.owner, pick(entry.primary)), layerSet: ids.length > 1 ? { owner: at.owner, ids, anchor: pick(entry.anchor) } : null, rightTab: 'inspect' });

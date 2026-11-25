@@ -6,7 +6,8 @@
 import type { ElementRef, OwnerRef, ProjectState } from '@shared/types';
 import { catalogueEntries } from '@catalogue/index';
 import { dependsOn } from '@engine/apply';
-import { insertAt, insertRole, whereFor, whereText } from './insert-at';
+import { insertAt, insertRole, slotWhere, whereFor, whereText } from './insert-at';
+import type { SlotTarget } from './slot-target';
 import { BASICS, basicHay, basicSpec, projectInsertDefinitions, type InsertSpec } from './insert-search';
 
 export interface InsertChoice {
@@ -41,10 +42,12 @@ export function insertChoices(state: ProjectState, developerMode: boolean): Inse
  * as insert() places it: in `owner`, the page, component or template being edited, relative to `selection`. Otherwise
  * why it cannot go in, said short enough to sit beside the row.
  */
-export function insertLanding(state: ProjectState, owner: OwnerRef | null, selection: ElementRef | null, spec: InsertSpec): { where: string } | { refused: string } {
+export function insertLanding(state: ProjectState, owner: OwnerRef | null, selection: ElementRef | null, spec: InsertSpec, target: SlotTarget | null = null): { where: string } | { refused: string } {
   // The engine refuses a component inside itself, or inside one it holds; the row says so before it is chosen.
   if (spec.definitionId && owner?.kind === 'component' && (spec.definitionId === owner.id || dependsOn(state, spec.definitionId, owner.id))) return { refused: 'Would contain itself' };
   const role = insertRole(state, spec);
-  const where = owner ? whereFor(state, insertAt(state, owner, role, selection, spec.definitionId), role) : null;
+  const at = owner ? insertAt(state, owner, role, selection, spec.definitionId, target) : null;
+  // Into a picked slot (`target`, see insertAt), named with its component.
+  const where = at ? (target ? slotWhere(state, target) : whereFor(state, at, role)) : null;
   return where ? { where: whereText(where) } : { refused: 'Nowhere to insert' };
 }

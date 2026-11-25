@@ -10,7 +10,7 @@ import { catalogueComponent, catalogueEntries, CATEGORY_LABELS, getTheme } from 
 import { api, commitOps, getState, setState, toast, undoAction, useStore } from '../store';
 import { acceptMessage, newSessionId, postToFrame } from '../lib/bridge';
 import { insert, insertionPoint, insertPlan, openComponentStudio, openLayout, selectPage, type InsertSpec, type Where } from '../lib/actions';
-import { elementWhere, nodeLabel, sectionWhere, slotRefusal, whereFor, type InsertAt, type InsertRole } from '../lib/insert-at';
+import { elementWhere, nodeLabel, sectionWhere, slotRefusal, slotWhere, whereFor, type InsertAt, type InsertRole } from '../lib/insert-at';
 import { BASICS, basicHay, basicSpec, projectInsertDefinitions, searchItems } from '../lib/insert-search';
 import { SLOT_NO_PLACE, unplacedSlots } from '../lib/slot-contract';
 import { exportComponentFile, insertSaved, removeFromLibrary, saveToLibrary } from '../lib/saved-components';
@@ -915,6 +915,8 @@ export function InsertPanel() {
   const snap = useStore((s) => s.snapshot);
   // Read so the destinations below follow the selection, the page and component editing.
   const selection = useStore((s) => s.selection);
+  // A slot picked in Layers, which takes whatever is inserted next.
+  const slotTarget = useStore((s) => s.slotTarget);
   useStore((s) => s.pageId);
   const editing = useStore((s) => s.definitionMode?.definitionId);
   useStore((s) => s.templateMode);
@@ -1250,10 +1252,12 @@ export function InsertPanel() {
   const results = searchItems([...mine, ...savedItems, ...sections, ...slotItems, ...elements], query, shown);
   const current = results[Math.min(active, results.length - 1)];
 
-  const sectionAt = insertionPoint('section');
-  const elementAt = insertionPoint('element');
-  const sectionTo = sectionWhere(st, sectionAt);
-  const elementTo = elementWhere(st, elementAt);
+  const sectionAt = insertionPoint('section', selection, snap, undefined, slotTarget);
+  const elementAt = insertionPoint('element', selection, snap, undefined, slotTarget);
+  // Into a picked slot, whatever goes there: the line names the slot as well as its component.
+  const slotTo = slotTarget && elementAt ? slotWhere(st, slotTarget) : null;
+  const sectionTo = slotTo ?? sectionWhere(st, sectionAt);
+  const elementTo = slotTo ?? elementWhere(st, elementAt);
   // A project component goes where it was made to go: beside the page's sections, or into the selected layout like an
   // element (a second card beside the selected one, in its grid).
   const plans = new Map<string, { role: InsertRole; at: InsertAt | null; where: Where }>();
@@ -1264,7 +1268,8 @@ export function InsertPanel() {
       // A slot's placeholder goes where the Slots section puts one, not where other elements go (see insertPlan).
       const as = it.kind === 'saved' ? it.saved!.role : it.spec.primitive === 'slot' ? 'slot' : it.kind;
       const { role, at } = as === 'section' ? { role: 'section' as const, at: sectionAt } : as === 'element' ? { role: 'element' as const, at: elementAt } : insertPlan(it.spec, snap);
-      p = { role, at, where: as === 'section' ? sectionTo : as === 'element' ? elementTo : whereFor(st, at, role) };
+      // A picked slot takes components too; a slot's placeholder keeps its own place.
+      p = { role, at, where: as === 'section' ? sectionTo : as === 'element' ? elementTo : as === 'slot' ? whereFor(st, at, role) : (slotTo ?? whereFor(st, at, role)) };
       plans.set(it.key, p);
     }
     return p;

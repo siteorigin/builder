@@ -160,6 +160,7 @@ export function CommandMenu() {
   const dev = useStore((s) => !!s.settings?.developerMode);
   // Where an insert lands follows the selection and what is being edited (see currentOwner).
   const selection = useStore((s) => s.selection);
+  const slotTarget = useStore((s) => s.slotTarget);
   const definitionId = useStore((s) => s.definitionMode?.definitionId);
   const templateId = useStore((s) => s.templateMode?.collectionId);
   const [q, setQ] = useState('');
@@ -176,7 +177,7 @@ export function CommandMenu() {
       ...pageChoices(st).map((p) => ({ id: `page:${p.id}`, verb: 'Go to ', label: `Go to ${p.title}`, detail: p.address, group: 'Page', icon: p.home ? <House /> : <FileText />, run: () => selectPage(p.id) })),
       // What the Insert panel offers, each saying where it would go (#174). Enter places it there again, as it is then.
       ...insertChoices(st, dev).map((e): Cmd => {
-        const at = insertLanding(st, owner, selection, e.spec);
+        const at = insertLanding(st, owner, selection, e.spec, slotTarget);
         return {
           id: e.id,
           verb: 'Insert ',
@@ -225,7 +226,7 @@ export function CommandMenu() {
       { id: 'dock', kbd: '⇧⌘\\', label: dockOpen ? 'Hide the right panel' : 'Show the right panel', keywords: 'show hide right panel inspector', group: 'View', icon: <PanelRight />, run: () => setState({ dockOpen: !useStore.getState().dockOpen }) },
       { id: 'close', kbd: '⇧⌘W', label: 'Close project', group: 'Project', icon: <LogOut />, run: () => void closeProject() }
     ];
-  }, [snap, mode, dockOpen, leftTab, dev, selection, pageId, definitionId, templateId]);
+  }, [snap, mode, dockOpen, leftTab, dev, selection, slotTarget, pageId, definitionId, templateId]);
   // What is already on the site comes before what can be added: the sections placed on each page, and a few of the
   // words and destinations the search finds (the full list is in Find and replace).
   const sections = useMemo(() => (snap ? placedSections(snap.state) : []), [snap]);
