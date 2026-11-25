@@ -2233,6 +2233,10 @@ iframe { color-scheme: light dark; }
 .ss-group { display: flex; flex-direction: column; gap: 2px; }
 .ss-group + .ss-group { padding-top: 10px; border-top: 1px solid var(--border); }
 .ss-group-label { min-height: 24px; display: flex; align-items: center; padding: 0 0 4px; font-size: 12px; font-weight: 600; color: var(--text-2); }
+/* Crawlers: one row per listed crawler, its name and who runs it beside what the policy does with it. */
+.crawler-row { display: grid; grid-template-columns: minmax(0, 1fr) 132px; align-items: center; column-gap: 8px; padding: 3px 0; }
+.crawler-row .ss-name { display: block; font-weight: 500; }
+.code-view.crawler-preview { height: auto; max-height: 320px; }
 .ss-name { min-width: 0; min-height: 20px; font-size: 13px; line-height: 1.4; color: var(--text); overflow-wrap: anywhere; }
 /* The reset sits inline right after the name, so it stays beside the last word when a long name wraps. */
 .ss-name .reset-dot { vertical-align: middle; margin: -4px 0 -3px; }

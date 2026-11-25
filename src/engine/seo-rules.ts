@@ -15,6 +15,7 @@ import { isImageBlock, isRichBlock } from '@shared/richtext';
 import { archivePages } from '@shared/archives';
 import { checkPublicUrl } from '@shared/public-url';
 import { agentDiscovery } from '@shared/llms';
+import { crawlerAction, crawlerRules, isWholeSitePattern, KNOWN_CRAWLERS, presetAction, type CrawlerKind, type CrawlerRules } from '@shared/crawler-policy';
 import { pagesShowing, SHELL_PARTS } from '@shared/page-shell';
 import { showsEntryText, type SiteLink } from '@generator/checks';
 import { isLibraryImage } from '@generator/seo-graph';
@@ -411,6 +412,45 @@ const agenticDiscovery: SeoAuditRule = {
 };
 
 /**
+ * Whether robots.txt keeps a crawler out of the whole site when its preset would let it in: Custom keeps it out by
+ * name, or closes every path ("/") to every crawler it lets in. A crawler the preset itself keeps out (Traditional
+ * search engines only keeps out AI search) is the author's choice, and is never reported.
+ */
+function unexpectedlyBlocked(rules: CrawlerRules, token: string): 'named' | 'path' | null {
+  const { action } = crawlerAction(rules, token);
+  if (action === 'disallow') return presetAction(rules.base, token) === 'allow' ? 'named' : null;
+  return rules.paths.some(isWholeSitePattern) ? 'path' : null;
+}
+
+/** Search engines, and AI search engines, robots.txt keeps out of the whole site without its preset saying so. */
+const crawlerPolicy: SeoAuditRule = {
+  id: 'crawler-policy',
+  check({ state }) {
+    const rules = crawlerRules(state.site);
+    const found: SeoFinding[] = [];
+    const report = (kind: CrawlerKind, pillar: SeoPillar, code: string, who: string, explanation: string) => {
+      const blocked = KNOWN_CRAWLERS.filter((c) => c.kind === kind).map((c) => ({ token: c.token, why: unexpectedlyBlocked(rules, c.token) })).filter((c) => c.why);
+      if (!blocked.length) return;
+      const why = blocked.some((c) => c.why === 'path') ? 'a path closes every page to all crawlers' : 'Custom keeps them out by name';
+      found.push(
+        finding(pillar, {
+          severity: 'warning',
+          code,
+          message: `robots.txt keeps ${who} out of the whole website (${blocked.map((c) => c.token).join(', ')}): ${why}.`,
+          site: 'crawlerPolicy',
+          explanation,
+          aiFixable: true,
+          destination: { kind: 'site', field: 'crawlerPolicy' }
+        })
+      );
+    };
+    report('search', 'technical', 'SEO_SEARCH_CRAWLERS_BLOCKED', 'search engines', 'A search engine kept out of every page can’t crawl the website: its results show the pages without their titles and descriptions, if at all. Let it in, or close only the paths you mean to.');
+    report('ai-search', 'agentic', 'SEO_AI_SEARCH_CRAWLERS_BLOCKED', 'AI search engines', 'AI answer engines kept out of every page can’t read or cite the website when people ask about what it covers. Let them in, or choose “Traditional search engines only” if keeping them out is the intent.');
+    return found;
+  }
+};
+
+/**
  * Whether the site says who publishes it: its kind (organization, local business or person) and a name, and the
  * addresses of profiles elsewhere that confirm who that is. AI answer engines and search engines match an entity across
  * the web by those links, so without them the site's own claims stand alone. Neither can be filled in for the author:
@@ -448,4 +488,4 @@ const entityReadiness: SeoAuditRule = {
 };
 
 /** Every baseline rule, in the order their findings are listed within a pillar. */
-export const BASELINE_SEO_RULES: readonly SeoAuditRule[] = [baseUrl, homeNoindex, textRule('titles', 'title'), textRule('descriptions', 'description'), unlinkedPages, genericLinkText, socialImage, favicon, entryImages, entryHeadings, entityReadiness, agenticDiscovery];
+export const BASELINE_SEO_RULES: readonly SeoAuditRule[] = [baseUrl, homeNoindex, textRule('titles', 'title'), textRule('descriptions', 'description'), unlinkedPages, genericLinkText, socialImage, favicon, entryImages, entryHeadings, entityReadiness, agenticDiscovery, crawlerPolicy];

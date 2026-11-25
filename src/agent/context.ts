@@ -1,5 +1,6 @@
 import { axesOf, selectedVariants } from '@shared/variants';
 import { agentDiscovery, oneLine } from '@shared/llms';
+import { crawlerRules, storedCrawlerPolicy } from '@shared/crawler-policy';
 import type { ComponentDefinition, ElementRef, GraphNode, NodeTree, OwnerRef, PageDoc, ProjectState, PropSchema } from '@shared/types';
 import { isBinding, slotChildren } from '@shared/types';
 import { partStyleControls } from '@shared/styles';
@@ -172,6 +173,12 @@ function agentDiscoverySummary(site: ProjectState['site']): { agentDiscovery?: R
   return { agentDiscovery: { llmsTxt, llmsFull, markdownMirrors, ...(summary ? { summary } : {}) } };
 }
 
+/** The site's crawler policy as the website follows it, only while it differs from the default (every crawler let in). */
+function crawlerPolicySummary(site: ProjectState['site']): { crawlerPolicy?: ReturnType<typeof storedCrawlerPolicy> } {
+  const policy = storedCrawlerPolicy(crawlerRules(site));
+  return policy ? { crawlerPolicy: policy } : {};
+}
+
 export function projectSummary(state: ProjectState, revision: number) {
   const theme = getTheme(state.site.themeId);
   // The page each page is inside, by route (see shared/page-tree.ts).
@@ -191,6 +198,8 @@ export function projectSummary(state: ProjectState, revision: number) {
       notFoundPage: notFoundCopy(state.site),
       // What the website offers AI agents beside its pages (site.update llmsTxt, llmsFull, markdownMirrors, llmsSummary).
       ...agentDiscoverySummary(state.site),
+      // Which crawlers robots.txt keeps out, as the website reads the policy, once it differs from the default (site.update crawlerPolicy).
+      ...crawlerPolicySummary(state.site),
       // Which pieces of visitor text have the author's own wording, by language; their words are not repeated here.
       ...visitorTextSummary(state)
     },
