@@ -5,7 +5,7 @@
 import { describe, expect, it } from 'vitest';
 import type { HistoryInfo } from '@shared/api';
 import type { ComponentDefinition } from '@shared/types';
-import { appliedSteps, errorComponent, revertStep, stillNewest } from '../../src/renderer/src/lib/preview-error';
+import { appliedSteps, errorComponent, projectPath, revertStep } from '../../src/renderer/src/lib/preview-error';
 
 const def = (id: string, extra: Partial<ComponentDefinition> = {}) => ({ id, kind: 'managed', name: id, ...extra }) as ComponentDefinition;
 const components = {
@@ -46,6 +46,8 @@ describe('errorComponent', () => {
     expect(errorComponent([`${DIR}/src/lib/siteorigin/generated/theme-hero.svelte`], components, DIR)).toBe('theme.hero');
     expect(errorComponent([undefined, 'C:\\Sites\\harbour\\src\\lib\\components\\PricingCard.svelte'], components, 'C:\\Sites\\harbour')).toBe('project.pricing-card');
     expect(errorComponent(['Unexpected token in src/lib/components/PricingCard.svelte:3:4'], components, DIR)).toBe('project.pricing-card');
+    // A build error's file, taken whole, in a folder with a space.
+    expect(errorComponent(['/Users/me/Harbour Lane/src/lib/components/PricingCard.svelte:3:4'], components, '/Users/me/Harbour Lane')).toBe('project.pricing-card');
   });
 
   it('never takes a file whose path only ends like a component’s', () => {
@@ -70,39 +72,66 @@ const history = (entries: Array<[string, boolean, number?]>): HistoryInfo => ({
 });
 
 describe('revertStep', () => {
-  it('offers the newest change when the page worked before it', () => {
-    const before = history([['a', true]]);
-    const after = history([['a', true], ['b', true]]);
-    expect(revertStep(after, appliedSteps(before))?.id).toBe('b');
+  it('offers the one change made since the page worked, made no later than the error', () => {
+    const before = history([['a', true, 1]]);
+    const after = history([['a', true, 1], ['b', true, 2]]);
+    expect(revertStep(after, appliedSteps(before), 2)).toEqual({ id: 'b', label: 'Edit b' });
+    // The page's update arrived before the editor's word of the change: the editor's revision is the error's.
+    expect(revertStep(after, appliedSteps(before), 1)).toBeNull();
   });
 
   it('offers nothing when the page was never seen working (an error there on open)', () => {
-    expect(revertStep(history([['a', true]]), null)).toBeNull();
+    expect(revertStep(history([['a', true, 1]]), null, 1)).toBeNull();
   });
 
   it('offers nothing when no change came since the page last worked', () => {
-    const h = history([['a', true], ['b', true]]);
-    expect(revertStep(h, appliedSteps(h))).toBeNull();
+    const h = history([['a', true, 1], ['b', true, 2]]);
+    expect(revertStep(h, appliedSteps(h), 2)).toBeNull();
+  });
+
+  it('offers nothing when two changes came since, nor for a change made after the error', () => {
+    const before = history([['a', true, 1]]);
+    expect(revertStep(history([['a', true, 1], ['b', true, 2], ['c', true, 3]]), appliedSteps(before), 3)).toBeNull();
+    // Undone and replaced: the page lost one change and gained another.
+    const both = history([['a', true, 1], ['b', true, 2]]);
+    expect(revertStep(history([['a', true, 1], ['c', true, 4]]), appliedSteps(both), 4)).toBeNull();
   });
 
   it('offers nothing after an Undo, and the redone change after a Redo', () => {
-    const both = history([['a', true], ['b', true]]);
-    const undone = history([['a', true], ['b', false]]);
-    expect(revertStep(undone, appliedSteps(both))).toBeNull();
-    expect(revertStep(both, appliedSteps(undone))?.id).toBe('b');
+    const both = history([['a', true, 1], ['b', true, 2]]);
+    const undone = history([['a', true, 1], ['b', false, 2]]);
+    expect(revertStep(undone, appliedSteps(both), 3)).toBeNull();
+    expect(revertStep(both, appliedSteps(undone), 4)?.id).toBe('b');
   });
 
-  it('offers a step that later edits joined after the page last worked', () => {
+  it('offers a step that later edits joined after the page last worked, until it is joined after the error', () => {
     const typing = history([['a', true, 1], ['b', true, 2]]);
     const more = history([['a', true, 1], ['b', true, 5]]);
-    expect(revertStep(more, appliedSteps(typing))).toMatchObject({ id: 'b', label: 'Edit b' });
-    expect(stillNewest(more, revertStep(more, appliedSteps(typing))!.key)).toBe(true);
-    // Another edit joined it, or a new one came, after the error: the offer no longer holds.
-    expect(stillNewest(history([['a', true, 1], ['b', true, 6]]), 'b@5')).toBe(false);
-    expect(stillNewest(history([['a', true, 1], ['b', false, 5]]), 'b@5')).toBe(false);
+    expect(revertStep(more, appliedSteps(typing), 5)).toMatchObject({ id: 'b', label: 'Edit b' });
+    expect(revertStep(history([['a', true, 1], ['b', true, 6]]), appliedSteps(typing), 5)).toBeNull();
   });
 
   it('offers nothing with an empty history', () => {
-    expect(revertStep(history([]), [])).toBeNull();
+    expect(revertStep(history([]), [], 1)).toBeNull();
+  });
+});
+
+describe('projectPath', () => {
+  it('reads an address, a /@fs address and an absolute path from the project folder', () => {
+    expect(projectPath('http://127.0.0.1:5173/src/lib/x.svelte', DIR)).toBe('src/lib/x.svelte');
+    expect(projectPath(`http://h/@fs${DIR}/src/lib/x.svelte`, DIR)).toBe('src/lib/x.svelte');
+    expect(projectPath(`${DIR}/.siteorigin/cache/dev/src/lib/x.svelte`, DIR)).toBe('src/lib/x.svelte');
+    expect(projectPath('src/lib/x.svelte', DIR)).toBe('src/lib/x.svelte');
+  });
+
+  it('reads an escaped address and a folder with spaces, and a Windows drive in either case', () => {
+    expect(projectPath('http://h/@fs/Users/me/Harbour%20Lane/src/lib/x.svelte', '/Users/me/Harbour Lane')).toBe('src/lib/x.svelte');
+    expect(projectPath('c:/Sites/Harbour/src/lib/x.svelte', 'C:\\Sites\\Harbour')).toBe('src/lib/x.svelte');
+  });
+
+  it('refuses a package’s file and a file outside the project', () => {
+    expect(projectPath('/other/node_modules/pkg/.siteorigin/cache/dev/src/lib/x.svelte', DIR)).toBeNull();
+    expect(projectPath('http://h/node_modules/ui/src/lib/x.svelte', DIR)).toBeNull();
+    expect(projectPath('/Users/me/Sites/other/src/lib/x.svelte', DIR)).toBeNull();
   });
 });

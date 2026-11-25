@@ -12,7 +12,7 @@ import { editLabel } from '../lib/edit-label';
 import type { ElementRef, OwnerRef, ProjectState } from '@shared/types';
 import { refKey, sameRef } from '@shared/types';
 import { aiActivity, api, commitDraft, confirmDialog, errorText, getState, markDraft, saveLocal, setState, setViewport, stepHistory, toast, useStore, type Rect } from '../store';
-import { appliedSteps, errorComponent, revertStep, stillNewest } from '../lib/preview-error';
+import { appliedSteps, errorComponent, revertStep } from '../lib/preview-error';
 import { acceptMessage, newSessionId, postToFrame, staleFor, viewAfter, type FrameView } from '../lib/bridge';
 import { chainOf, descOrNull, measuredRects, pointedAt, rectList, slotBoxes, spaceSizes, spacingOf, type FrameSpacing, type SlotBox } from '../lib/payload';
 import { blocksFromDom, richDom } from '../lib/richtext';
@@ -165,19 +165,28 @@ export function Canvas() {
   const timedOut = useRef(false);
   /**
    * What the page's own error can be put down to (#738), for the message it came with: the component it was thrown in
-   * (Open source) and the change that could have caused it (Revert). Either may be unknown.
+   * (Open source), and for Revert, what History held when the page was last seen working (`seen`) and the revision the
+   * project was at when the error happened (`at`). Revert is worked out from History as it is now (see revertStep).
    */
-  const [issueCause, setIssueCause] = useState<{ message: string; definitionId: string | null; revert: { id: string; label: string; key: string } | null } | null>(null);
-  /** The change the page had been told of when its error happened: showing that same change again does not mend it. */
+  const [issueCause, setIssueCause] = useState<{ message: string; definitionId: string | null; seen: string[] | null; at: number } | null>(null);
+  /** The change the page had been told of, or the editor had made, when its error happened: showing it does not mend it. */
   const errorAt = useRef<number | null>(null);
-  /** History's applied steps when the page was last seen working, in the project it was seen in (see notePageWorking). */
-  const healthy = useRef<{ workspaceKey: string; steps: string[] } | null>(null);
-  const healthyTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   /**
-   * The page loaded, or showed a change, with nothing wrong: once it has gone a moment without an error it counts as
-   * working with the project as it is now, for Revert to name what changed after. The moment matters, because a
-   * change's error can arrive after the page says the change is shown, and a page's own error after it says it loaded.
-   * `revision` is the change the page says it shows: one the editor has already moved past vouches for nothing.
+   * History's applied steps when the page was last seen working: in the project and on the page it was seen on (a
+   * page's own problem is never put down to a change made while another page was shown). See notePageWorking.
+   */
+  const healthy = useRef<{ workspaceKey: string; target: string | null; steps: string[] } | null>(null);
+  const healthyTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  /** Undoing the change Revert names: Try again and Revert wait for it, whatever else the page reports meanwhile. */
+  const [reverting, setReverting] = useState(false);
+  /** What the frame shows, for the page-working baseline: the component in Component Studio, or the page's path. */
+  const previewTarget = () => (showsStudio() ? `studio:${studioAt.current!.definitionId}` : frameAt.current);
+  /**
+   * The page loaded, arrived or showed a change, with nothing wrong: once it has gone a moment without an error it
+   * counts as working with the project as it is now, for Revert to name what changed after. The moment matters,
+   * because a change's error can arrive after the page says the change is shown, and a page's own error after it says
+   * it loaded. `revision` is the change the page says it shows: one the editor has already moved past vouches for
+   * nothing.
    */
   const notePageWorking = (revision?: number) => {
     if (healthyTimer.current) clearTimeout(healthyTimer.current);
@@ -186,12 +195,28 @@ export function Canvas() {
     if (!snap || (revision !== undefined && revision !== snap.revision)) return;
     const { workspaceKey, revision: at } = snap;
     const steps = appliedSteps(snap.history);
+    const target = previewTarget();
     healthyTimer.current = setTimeout(() => {
       healthyTimer.current = null;
       const now = getState();
-      if (now.previewIssue || now.snapshot?.workspaceKey !== workspaceKey || now.snapshot.revision !== at) return;
-      healthy.current = { workspaceKey, steps };
+      if (now.previewIssue || now.snapshot?.workspaceKey !== workspaceKey || now.snapshot.revision !== at || previewTarget() !== target) return;
+      healthy.current = { workspaceKey, target, steps };
     }, 1500);
+  };
+  /**
+   * The page reported a problem: it has not been seen working with the project as it is now, and what the problem can
+   * be put down to is kept with it. `revision` is the change the page had been told of; the editor's own may be newer
+   * (a change's update can reach the page before word of the change does), and either may be the cause.
+   */
+  const noteIssue = (message: string, texts: Array<string | undefined>, revision: number | null, definitionId?: string) => {
+    if (healthyTimer.current) clearTimeout(healthyTimer.current);
+    healthyTimer.current = null;
+    const snap = getState().snapshot;
+    const at = Math.max(revision ?? 0, snap?.revision ?? 0);
+    errorAt.current = at;
+    const base = healthy.current;
+    const seen = base && snap && base.workspaceKey === snap.workspaceKey && base.target === previewTarget() ? base.steps : null;
+    setIssueCause(snap ? { message, definitionId: definitionId ?? errorComponent(texts, snap.state.components, snap.dir), seen, at } : null);
   };
   useEffect(
     () => () => {
@@ -716,7 +741,10 @@ export function Canvas() {
               // Another component's failure is not this one's to report.
               if (elsewhere) break;
               const name = studioDefName() ?? 'The component';
-              setFrameError(`${name} couldn’t be shown${typeof shown?.error === 'string' && shown.error ? `: ${shown.error.slice(0, 300)}` : '.'}`);
+              const failed = `${name} couldn’t be shown${typeof shown?.error === 'string' && shown.error ? `: ${shown.error.slice(0, 300)}` : '.'}`;
+              // The component shown is the one that failed, and the change that failed it can be reverted.
+              noteIssue(failed, [], null, studioAt.current!.definitionId);
+              setFrameError(failed);
               setRetrying(false);
               markTimedOut(false);
               break;
@@ -820,6 +848,8 @@ export function Canvas() {
           // drop a #section the visitor's link went to, and its scroll position).
           frameAt.current = path;
           notePostPreviewAt(path);
+          // The page arrived: it counts as working once it has gone a moment without an error.
+          if (!getState().previewIssue) notePageWorking();
           // In Preview the page the frame is on is a visit, also when the editor opened it (the page picker).
           const at = journeyRef.current.at;
           if (getState().mode === 'preview' && at && samePath(addressPath(at.address), path)) setJourney(observe(journeyRef.current, at, true));
@@ -1062,23 +1092,9 @@ export function Canvas() {
           break;
         }
         case 'runtimeError': {
-          // The page has not been seen working with the project as it is now.
-          if (healthyTimer.current) clearTimeout(healthyTimer.current);
-          healthyTimer.current = null;
           const message = String(p.message).slice(0, 400);
-          const snap = s.snapshot;
           const text = (v: unknown) => (typeof v === 'string' ? v : undefined);
-          const seen = healthy.current && healthy.current.workspaceKey === snap?.workspaceKey ? healthy.current.steps : null;
-          setIssueCause(
-            snap
-              ? {
-                  message,
-                  definitionId: errorComponent([text(p.file), text(p.stack), message], snap.state.components, snap.dir),
-                  revert: revertStep(snap.history, seen)
-                }
-              : null
-          );
-          errorAt.current = typeof p.revision === 'number' && Number.isSafeInteger(p.revision) ? p.revision : null;
+          noteIssue(message, [text(p.file), text(p.stack), message], typeof p.revision === 'number' && Number.isSafeInteger(p.revision) ? p.revision : null);
           markTimedOut(false);
           setFrameError(message);
           setRetrying(false);
@@ -2605,10 +2621,11 @@ export function Canvas() {
   // What the page's error can be put down to, while it still holds: the same error, the change still History's newest
   // and undoable (not while the AI works), the component still in the project.
   const cause = issueCause && issueCause.message === frameError && !slowPage ? issueCause : null;
-  const revertOffered = cause?.revert && snapshot?.history.canUndo && stillNewest(snapshot.history, cause.revert.key) ? cause.revert : null;
+  const revertOffered = cause && snapshot?.history.canUndo && !snapshot.aiBusy && !snapshot.readOnly ? revertStep(snapshot.history, cause.seen, cause.at) : null;
   const sourceOffered = cause?.definitionId && snapshot?.state.components[cause.definitionId] ? cause.definitionId : null;
   /** Load the page again, as Try again does. In Component Studio the preview is prepared again, from the project as it is now. */
   const restartPreview = () => {
+    if (reverting) return;
     setRetrying(true);
     if (getState().definitionMode?.studio) setStudioRetry((n) => n + 1);
     else setSession(newSessionId());
@@ -2616,16 +2633,18 @@ export function Canvas() {
   /** Undo the change the page broke after, then load the page again so it comes back without it. */
   const revertIssue = () => {
     const snap = getState().snapshot;
-    if (retrying || !revertOffered || !snap) return;
-    setRetrying(true);
+    if (retrying || reverting || !revertOffered || !snap) return;
+    setReverting(true);
     void stepHistory(revertOffered.id, 'undo', 1, snap).then(
       (r) => {
-        if (r.ok) return restartPreview();
-        setRetrying(false);
-        toast(r.error?.message ?? 'That change couldn’t be reverted.', 'error');
+        setReverting(false);
+        if (!r.ok) return toast(r.error?.message ?? 'That change couldn’t be reverted.', 'error');
+        setRetrying(true);
+        if (getState().definitionMode?.studio) setStudioRetry((n) => n + 1);
+        else setSession(newSessionId());
       },
       (e: unknown) => {
-        setRetrying(false);
+        setReverting(false);
         toast(errorText(e), 'error');
       }
     );
@@ -2847,13 +2866,13 @@ export function Canvas() {
           </span>
           {/* Not natively disabled, so focus stays here while the page restarts. */}
           {revertOffered && (
-            <button className="btn btn-sm" aria-disabled={retrying || undefined} aria-label={`Revert “${revertOffered.label}”`} title={`Undo “${revertOffered.label}”, the change made before this problem started`} onClick={revertIssue}>
+            <button className="btn btn-sm" aria-disabled={retrying || reverting || undefined} aria-label={`Revert “${revertOffered.label}”`} title={`Undo “${revertOffered.label}”, the change made before this problem started`} onClick={revertIssue}>
               Revert
             </button>
           )}
           <button
             className="btn btn-sm"
-            aria-disabled={retrying || undefined}
+            aria-disabled={retrying || reverting || undefined}
             onClick={() => {
               if (retrying) return;
               restartPreview();
