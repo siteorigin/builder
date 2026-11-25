@@ -3,7 +3,7 @@
 import assert from 'node:assert/strict';
 import { readFileSync, readdirSync } from 'node:fs';
 import { join } from 'node:path';
-import { createProject, eventually, launch, scratch, step, withTimeout } from './harness.mjs';
+import { createProject, eventually, launch, openInspector, scratch, step, withTimeout } from './harness.mjs';
 
 const { WORK, SHOTS: OUT, cleanup } = scratch('focus');
 const { app, win, errors } = await launch(WORK);
@@ -23,6 +23,7 @@ const across = win.getByRole('textbox', { name: 'Image focus across, percent fro
 
 /** Select an Image part straight from the canvas: Alt-click picks the element itself, not its section. */
 async function selectPart(img, section) {
+  await openInspector(win);
   await img.scrollIntoViewIfNeeded();
   await img.click({ modifiers: ['Alt'] });
   await eventually(async () => assert.match(await win.locator('.insp-head').first().innerText(), new RegExp(`Image[\\s\\S]*Part of ${section}`), `the ${section} image is selected`), 15000);

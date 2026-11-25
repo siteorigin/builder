@@ -1,7 +1,7 @@
 // Visual tour: screenshots of key surfaces, mostly in dark mode. Each surface must appear before its shot.
 import assert from 'node:assert/strict';
 import { join } from 'node:path';
-import { MOD, createProject, launch, scratch, step } from './harness.mjs';
+import { MOD, createProject, launch, openInspector, scratch, step } from './harness.mjs';
 
 const { WORK, SHOTS: OUT, cleanup } = scratch('tour');
 const { app, win, errors } = await launch(WORK);
@@ -22,6 +22,7 @@ await shot('31-dark-part.png');
 
 step('edit a component everywhere');
 await gridRow.click();
+await openInspector(win);
 const compSection = win.locator('.section-head', { hasText: 'Component' });
 if ((await compSection.getAttribute('aria-expanded')) === 'false') await compSection.click();
 await win.getByRole('button', { name: 'Edit everywhere…' }).click();

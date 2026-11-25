@@ -5,7 +5,7 @@
 // nothing, and one Undo brings the placement back as it was.
 import assert from 'node:assert/strict';
 import { join } from 'node:path';
-import { createProject, eventually, launch, scratch, step } from './harness.mjs';
+import { createProject, eventually, launch, openInspector, scratch, step } from './harness.mjs';
 
 const { WORK, SHOTS, cleanup } = scratch('detach');
 const { app, win, errors } = await launch(WORK);
@@ -100,6 +100,7 @@ const expand = async (name) => {
 };
 await expand('Section');
 await row('Pricing').click();
+await openInspector(win);
 await win.locator('#dock-panel-inspect .insp-name h3', { hasText: 'Pricing' }).waitFor();
 await win.locator('#dock-panel-inspect').getByRole('button', { name: /^More actions for / }).click();
 await menu.getByRole('menuitem', { name: /Detach component/ }).waitFor();

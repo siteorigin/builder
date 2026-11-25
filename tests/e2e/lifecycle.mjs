@@ -7,7 +7,7 @@
 import assert from 'node:assert/strict';
 import { cpSync, readFileSync, realpathSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
-import { MOD, answerChoosers, chooseMenu, eventually, launch, scratch, step } from './harness.mjs';
+import { MOD, answerChoosers, chooseMenu, eventually, launch, openInspector, scratch, step } from './harness.mjs';
 
 const { WORK, cleanup } = scratch('lifecycle');
 const dirA = join(WORK, 'sites', 'quayside-studio');
@@ -42,6 +42,7 @@ async function heroHeading() {
   const row = win.locator('.list-item', { hasText: 'Split hero' }).first();
   if (!(await row.isVisible().catch(() => false))) await win.locator('.rail [aria-label="Layers"]').click();
   await row.click();
+  await openInspector(win);
   const field = inspector().getByRole('textbox', { name: 'Heading', exact: true });
   await field.waitFor();
   return field;
@@ -58,6 +59,7 @@ step('create a Business site');
 const created = await win.evaluate((o) => window.builder.projects.create(o), { name: 'Quayside Studio', parentDir: join(WORK, 'sites'), starter: 'business', sampleImages: false });
 assert.ok(created.ok, `project created: ${created.message ?? ''}`);
 await win.waitForSelector('.editor');
+await openInspector(win);
 
 step('Cmd+S in a focused Browser title saves it (the explicit save the lifecycle actions now share)');
 const browserTitle = inspector().getByRole('textbox', { name: 'Browser title', exact: true });
@@ -95,6 +97,7 @@ step('an invalid draft asks before leaving, and Keep editing returns to it');
 const titleField = () => inspector().getByRole('textbox', { name: 'Title', exact: true });
 // With nothing selected the Inspector shows the page's settings.
 await win.keyboard.press('Escape');
+await openInspector(win);
 await titleField().waitFor();
 const homeTitle = homeDoc(dirB).title;
 await titleField().fill('');

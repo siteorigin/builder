@@ -3,7 +3,7 @@
 // card it is, the page scrolled to it, and the cards themselves never changed.
 import assert from 'node:assert/strict';
 import { join } from 'node:path';
-import { createProject, eventually, launch, scratch, step } from './harness.mjs';
+import { createProject, eventually, launch, openInspector, scratch, step } from './harness.mjs';
 
 const { WORK, SHOTS, cleanup } = scratch('item-step');
 const { app, win, errors } = await launch(WORK);
@@ -14,7 +14,11 @@ const chip = win.locator('.ov-chip:not(.editing)');
 const prev = chip.getByRole('button', { name: 'Previous item', exact: true });
 const next = chip.getByRole('button', { name: 'Next item', exact: true });
 const position = () => chip.getByTestId('chip-item-pos').innerText();
-const inspectorPos = () => win.locator('#dock-panel-inspect .insp-kind-pos').first().innerText();
+const inspectorPos = async () => {
+  const pos = win.locator('#dock-panel-inspect .insp-kind-pos').first();
+  assert.ok(await pos.isVisible(), 'the Inspector shows the item position');
+  return pos.innerText();
+};
 const title = (i) => frame.getByText(TITLES[i], { exact: true }).first();
 const cards = () =>
   win.evaluate(async () => {
@@ -48,6 +52,8 @@ await title(0).scrollIntoViewIfNeeded();
 await title(0).click({ modifiers: ['Alt'] });
 await chip.waitFor();
 await eventually(async () => assert.match(await chip.locator('.label').innerText(), /title/i, 'the card title is selected'));
+// The Inspector is opened so its item position is read where a person sees it.
+await openInspector(win);
 await selectedIs(0);
 assert.equal(await prev.getAttribute('aria-disabled'), 'true', 'the first card has no Previous');
 assert.equal(await next.getAttribute('aria-disabled'), null, 'but it has a Next');

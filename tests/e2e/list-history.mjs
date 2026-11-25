@@ -5,6 +5,7 @@ import {
   createProject,
   eventually,
   launch,
+  openInspector,
   scratch,
   step,
 } from "./harness.mjs";
@@ -34,6 +35,7 @@ await win
   .locator('[role="tree"] .list-item', { hasText: "Services grid" })
   .first()
   .click();
+await openInspector(win);
 const cards = win.locator('#dock-panel-inspect [data-list="items"]');
 await cards.waitFor();
 const rows = cards.locator(".list-editor-head button.title");

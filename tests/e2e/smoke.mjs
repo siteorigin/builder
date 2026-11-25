@@ -29,6 +29,50 @@ const frame = await createProject(win, { name: 'Harbour Lane Studio', parentDir:
 console.log('created and previewed in', Date.now() - t0, 'ms');
 await win.screenshot({ path: join(OUT, '03-editor.png') });
 
+step('the right panel opens on the AI, the first of its views, at its setup with no provider connected (#696)');
+const dockTabs = win.locator('#editor-dock > .dock-tabs > [role="tab"]');
+assert.deepEqual(await dockTabs.evaluateAll((tabs) => tabs.map((t) => t.id)), ['dock-tab-chat', 'dock-tab-inspect', 'dock-tab-styles', 'dock-tab-project']);
+assert.deepEqual((await dockTabs.allInnerTexts()).map((t) => t.trim()), ['AI', 'Inspector', 'Site styles', 'Project']);
+const selectedTab = () => win.locator('#editor-dock > .dock-tabs > [role="tab"][aria-selected="true"]').getAttribute('id');
+assert.equal(await selectedTab(), 'dock-tab-chat', 'a new window opens on the AI');
+await win.locator('#dock-panel-chat').getByText('Connect an AI provider').first().waitFor();
+
+step('the AI tab’s icon alone keeps the accent colour, in light and dark');
+const iconColours = () =>
+  win.evaluate(() => {
+    const accent = document.createElement('span');
+    accent.style.color = 'var(--accent-text)';
+    document.body.append(accent);
+    const want = getComputedStyle(accent).color;
+    accent.remove();
+    const colour = (id) => {
+      const svg = document.querySelector(`#${id} svg`);
+      return svg && getComputedStyle(svg).display !== 'none' ? getComputedStyle(svg).color : null;
+    };
+    return { want, chat: colour('dock-tab-chat'), inspect: getComputedStyle(document.querySelector('#dock-tab-inspect')).color };
+  });
+const appearance = await win.evaluate(() => document.documentElement.dataset.appearance ?? null);
+for (const theme of ['light', 'dark']) {
+  await win.evaluate((t) => (document.documentElement.dataset.appearance = t), theme);
+  const c = await iconColours();
+  assert.equal(c.chat, c.want, `the AI icon shows in the accent colour (${theme})`);
+  assert.notEqual(c.inspect, c.want, `the other tabs stay plain (${theme})`);
+}
+await win.evaluate((a) => (a === null ? delete document.documentElement.dataset.appearance : (document.documentElement.dataset.appearance = a)), appearance);
+
+step('the arrow keys move through the views in that order');
+await win.locator('#dock-tab-chat').focus();
+await win.keyboard.press('ArrowRight');
+await eventually(async () => assert.equal(await selectedTab(), 'dock-tab-inspect'));
+await win.keyboard.press('End');
+await eventually(async () => assert.equal(await selectedTab(), 'dock-tab-project'));
+await win.keyboard.press('ArrowRight');
+await eventually(async () => assert.equal(await selectedTab(), 'dock-tab-chat', 'Right from the last view wraps to the AI'));
+await win.keyboard.press('ArrowLeft');
+await eventually(async () => assert.equal(await selectedTab(), 'dock-tab-project'));
+await win.keyboard.press('Home');
+await eventually(async () => assert.equal(await selectedTab(), 'dock-tab-chat'));
+
 step('select the hero, then its heading');
 const h1 = frame.locator('h1').first();
 const chipLabel = () => win.locator('.ov-chip .label').first().innerText();
@@ -38,6 +82,18 @@ await win.waitForTimeout(400);
 await h1.click();
 await eventually(async () => assert.match(await chipLabel(), /heading/i, 'the second click selects its heading'));
 await win.screenshot({ path: join(OUT, '04-selected-heading.png') });
+assert.equal(await selectedTab(), 'dock-tab-chat', 'selecting on the canvas keeps the AI open');
+
+step('a view chosen in the project is the one it reopens on');
+const projectDir = (await win.evaluate(() => window.builder.project.snapshot())).dir;
+await win.locator('#dock-tab-inspect').click();
+await eventually(async () => assert.equal(await selectedTab(), 'dock-tab-inspect'));
+await eventually(() => assert.equal(JSON.parse(readFileSync(join(projectDir, '.siteorigin', 'workspace.json'), 'utf8')).rightTab, 'inspect', 'the view is saved with the project'));
+assert.ok((await win.evaluate(() => window.builder.projects.close())).ok, 'the project closes');
+await win.waitForSelector('.welcome');
+assert.ok((await win.evaluate((d) => window.builder.projects.open(d), projectDir)).ok, 'the project reopens');
+await win.waitForSelector('.editor');
+await eventually(async () => assert.equal(await selectedTab(), 'dock-tab-inspect', 'the saved view is kept'));
 assert.deepEqual(errors, [], 'no uncaught errors in the editor');
 await app.close();
 cleanup();

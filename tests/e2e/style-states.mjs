@@ -4,7 +4,7 @@
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
-import { createProject, eventually, launch, scratch, step } from './harness.mjs';
+import { createProject, eventually, launch, openInspector, scratch, step } from './harness.mjs';
 
 const { WORK, SHOTS: OUT, cleanup } = scratch('style-states');
 const { app, win, errors } = await launch(WORK);
@@ -55,6 +55,7 @@ await win.waitForTimeout(800);
 await card.scrollIntoViewIfNeeded();
 // Alt-click picks the element itself, not its section; its padding is the card's own.
 await card.click({ modifiers: ['Alt'], position: { x: 6, y: 6 } });
+await openInspector(win);
 await background.waitFor({ timeout: 15000 });
 await pointerToDock();
 await eventually(async () => assert.equal(await stateRadio('Default').getAttribute('aria-checked'), 'true', 'the card is edited at rest'));

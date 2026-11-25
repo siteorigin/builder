@@ -7,7 +7,7 @@ import assert from 'node:assert/strict';
 import { copyFileSync, existsSync, readdirSync, readFileSync, statSync, writeFileSync } from 'node:fs';
 import { basename, join } from 'node:path';
 import sharp from 'sharp';
-import { createProject, eventually, launch, scratch, step, withTimeout } from './harness.mjs';
+import { createProject, eventually, launch, openInspector, scratch, step, withTimeout } from './harness.mjs';
 
 /**
  * The longest the main process may go without answering the window. With the pictures decoded in the media
@@ -110,6 +110,7 @@ const added = await win.evaluate((h) => window.builder.project.apply({ operation
 assert.equal(added.ok, true, `the hero is added: ${added.error?.message}`);
 await win.locator('.rail [aria-label="Layers"]').click();
 await win.locator('.list-item', { hasText: 'Split hero' }).first().click();
+await openInspector(win);
 await win.getByRole('button', { name: /Choose image|Change/ }).first().click();
 await eventually(async () => checkSmall(await shown('.insp-pick-grid img'), 'the image picker'));
 // Choosing one keeps the original: the placed asset is the record, whatever size the picker showed.

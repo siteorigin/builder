@@ -12,6 +12,7 @@ import { _electron as electron } from 'playwright';
 import { appendFileSync, existsSync, mkdirSync, mkdtempSync, readdirSync, realpathSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { openInspector } from '../harness.mjs';
 
 if (process.env.DESIGN_CAPTURE !== '1') {
   console.log('editor toolbar capture harness: set DESIGN_CAPTURE=1 to run');
@@ -146,6 +147,7 @@ await pause(600);
 
 // An edit through the inspector: mid-typing is "Editing…", then saved with a named undo.
 await frame.locator('h1').first().click();
+await openInspector(win);
 await pause(700);
 const eyebrow = win.locator('.field', { hasText: 'Eyebrow' }).locator('input').first();
 await eyebrow.waitFor({ timeout: 5000 });

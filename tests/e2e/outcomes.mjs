@@ -44,6 +44,8 @@ async function editHeading(text) {
   await click((await find({ role: 'button', name: 'Layers', region: 'Panels' })).ref);
   await until('ui.present', { role: 'treeitem', name: 'Split hero' });
   await click((await find({ role: 'treeitem', name: 'Split hero' })).ref);
+  // The right panel opens on the AI (#696): the Inspector is chosen from its tab.
+  await click((await find({ role: 'tab', name: 'Inspector', scope: 'editor' })).ref);
   await until('ui.present', { role: 'textbox', name: 'Heading', scope: 'editor' });
   const field = await find({ role: 'textbox', name: 'Heading', scope: 'editor' });
   await act('ui.fill', { target: { ref: field.ref }, text });

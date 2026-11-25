@@ -7,7 +7,7 @@
 import assert from 'node:assert/strict';
 import { readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
-import { MOD, answerChoosers, createProject, eventually, launch, scratch, step } from './harness.mjs';
+import { MOD, answerChoosers, createProject, eventually, launch, openInspector, scratch, step } from './harness.mjs';
 
 const { WORK, SHOTS, cleanup } = scratch('posts');
 const { app, win, errors } = await launch(WORK);
@@ -44,6 +44,7 @@ const inspected = inspector.locator('.insp-name h3');
 const placeShown = win.locator('.toolbar .project-title .page');
 await win.locator('.rail [aria-label="Layers"]').click();
 await win.locator(`[role="tree"] [role="treeitem"][data-owner="page:${home.id}"]`).first().click();
+await openInspector(win);
 const sectionName = await eventually(async () => {
   const t = await inspected.innerText();
   assert.ok(t && t !== home.title, `the Inspector shows the section: ${t}`);

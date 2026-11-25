@@ -9,7 +9,7 @@
 // platform's: the test takes them from the menu rather than expecting a particular dictionary's list.
 import assert from 'node:assert/strict';
 import { join } from 'node:path';
-import { MOD, createProject, eventually, launch, scratch, step } from './harness.mjs';
+import { MOD, createProject, eventually, launch, openInspector, scratch, step } from './harness.mjs';
 
 const { WORK, cleanup } = scratch('spelling');
 const { app, win, errors } = await launch(WORK);
@@ -113,6 +113,7 @@ const h1 = frame.locator('h1').first();
 step('an inspector field offers the suggestions for a misspelled word');
 // The canvas is scaled to fit beside the panels, so select the heading with a click on the element itself.
 await h1.dispatchEvent('click');
+await openInspector(win);
 const original = await h1.innerText();
 const headingField = await eventually(async () => {
   for (const f of await win.locator('#dock-panel-inspect').getByRole('textbox').all()) if ((await f.inputValue()) === original) return f;
