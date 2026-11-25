@@ -10,6 +10,7 @@ import { canonicalDir } from '../runtime/policy';
 import { PROVIDER_MODELS } from '@agent/models';
 import type { LocalEndpoint } from '@agent/local';
 import { checkLocalBaseURL, DEFAULT_LOCAL_SETTINGS, localContextWindow, localKeyProblem, localModelFor, localServerKey, type LocalProviderSettings } from '@shared/local';
+import { checkRelayUrl } from '@shared/live/relay-url';
 
 interface SettingsFile {
   settings: AppSettings;
@@ -21,6 +22,7 @@ const DEFAULTS: SettingsFile = {
   settings: {
     appearance: 'system',
     developerMode: false,
+    liveRelayUrl: null,
     ai: {
       provider: 'openai',
       // No local model is preselected: the running server says what it offers.
@@ -97,6 +99,9 @@ export async function loadSettings(): Promise<SettingsFile> {
     };
     // A hand-edited file can hold any value; one that is not a usable size means automatic.
     cache.settings.ai.local.contextWindow = localContextWindow(cache.settings.ai.local.contextWindow);
+    // A relay address that is not text is none. Text that is not a usable address is kept, so starting a live session
+    // reports it rather than quietly using the production relay.
+    if (typeof cache.settings.liveRelayUrl !== 'string' || !cache.settings.liveRelayUrl.trim()) cache.settings.liveRelayUrl = null;
   } catch (e) {
     unread = (e as NodeJS.ErrnoException).code !== 'ENOENT';
     cache = structuredClone(DEFAULTS);
@@ -130,6 +135,14 @@ export async function updateSettings(patch: SettingsPatch): Promise<AppSettings>
   if (asked && 'contextWindow' in asked && asked.contextWindow !== null && localContextWindow(asked.contextWindow) === null) {
     const { contextWindow: _refused, ...rest } = asked;
     patch = { ...patch, ai: { ...patch.ai, local: rest } };
+  }
+  // A relay address is kept in its normal form; null or a blank one goes back to the production relay, and anything
+  // that cannot be used is refused, keeping the address saved before.
+  if ('liveRelayUrl' in patch) {
+    const { liveRelayUrl: asked, ...rest } = patch;
+    const cleared = asked === null || (typeof asked === 'string' && !asked.trim());
+    const relay = cleared ? null : checkRelayUrl(asked);
+    patch = relay === null ? { ...rest, liveRelayUrl: null } : relay.ok ? { ...rest, liveRelayUrl: relay.url } : rest;
   }
   const prev = s.settings.ai;
   const local = { ...prev.local, ...(patch.ai?.local ?? {}), modelsByServer: { ...prev.local.modelsByServer } };

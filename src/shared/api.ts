@@ -43,6 +43,11 @@ export interface AppSettings {
   appearance: Appearance;
   /** Shows code components and source editing. Off by default: most users never need code. */
   developerMode: boolean;
+  /**
+   * Advanced: the live session relay to use instead of the production one, as a normalized http(s) origin, or null
+   * for the default. `SITEORIGIN_LIVE_RELAY_URL` wins over it (see shared/live/relay-url.ts).
+   */
+  liveRelayUrl: string | null;
   ai: {
     provider: ProviderId | null;
     models: Record<ProviderId, string>;
