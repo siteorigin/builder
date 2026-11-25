@@ -141,6 +141,8 @@ export function handleShortcut(key: string, mod: boolean, shift: boolean): boole
     else if (covered) return true;
     // Several layers selected together: the first Escape keeps only the one everything follows.
     else if (planLayers(s)?.several) setState({ layerSet: null });
+    // A slot picked for Insert is let go first, as a selection would be; editing a component everywhere stays.
+    else if (s.slotTarget) setState({ slotTarget: null });
     // While editing a component everywhere, Escape steps to the component overview, then leaves the mode;
     // it never drops back to the placement's page-level editor.
     else if (inDef) setState({ selection: null });

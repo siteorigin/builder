@@ -26,7 +26,6 @@ import { OutlinePanel } from './OutlinePanel';
 import { templateOwner } from '../lib/template-view';
 import { layerSlots, placeOps } from '../lib/layer-drop';
 import { sameSlotTarget, type SlotTarget } from '../lib/slot-target';
-import { slotFor } from '../lib/insert-at';
 
 /*
  * The Layers panel: the current page's outline (shared header, page content, shared footer), or a
@@ -1017,7 +1016,7 @@ function TreeList(props: ListProps & { ids: string[]; labelledBy: string }) {
 
 type Drop = { where: 'before' | 'after' | 'inside' | 'first'; depth: number; label?: string };
 
-function LayerRow({ state, owner, tree, id, depth, onMenu, path, parentId }: ListProps & { id: string; parentId?: string }) {
+function LayerRow({ state, owner, tree, id, depth, onMenu, path, parentId, inSlot }: ListProps & { id: string; parentId?: string; inSlot?: string }) {
   const selection = useStore((s) => s.selection);
   const definitionMode = useStore((s) => s.definitionMode);
   const picked = useContext(Picked);
@@ -1035,10 +1034,12 @@ function LayerRow({ state, owner, tree, id, depth, onMenu, path, parentId }: Lis
   // element has one unnamed list).
   const slotLists: Array<{ slot?: string; label?: string; ids: string[]; shown?: boolean }> = n?.kind === 'instance' ? layerSlots(state, n) : n ? childLists(n) : [];
   const childCount = slotLists.reduce((c, l) => c + l.ids.length, 0);
-  const expandable = parts.length > 0 || childCount > 0 || slotLists.some((l) => l.shown);
-  // The slot a layer dropped onto a placed component's own row goes into: the one Insert fills, the first it shows.
-  const intoSlot = n?.kind === 'instance' ? slotFor(state, n.definitionId) : undefined;
-  const intoLabel = intoSlot ? def?.slots?.[intoSlot]?.label : undefined;
+  // An empty slot is a row of its own, except in a shared header or footer (see SlotRow), where it opens nothing.
+  const expandable = parts.length > 0 || childCount > 0 || (owner.kind !== 'shell' && slotLists.some((l) => l.shown));
+  // The slot a layer dropped onto a placed component's own row goes into: the first it shows, as Insert fills.
+  const into = n?.kind === 'instance' ? slotLists.find((l) => l.shown) : undefined;
+  const intoSlot = into?.slot;
+  const intoLabel = into?.label;
   // A design's slot outlet holds its fallback, shown while a placement leaves the slot empty.
   const canHold = n?.kind === 'element' || !!intoSlot || (n?.kind === 'slot' && owner.kind === 'component');
   // In component editing the canvas selects the definition's root through the placement; match it here. A part
@@ -1153,7 +1154,8 @@ function LayerRow({ state, owner, tree, id, depth, onMenu, path, parentId }: Lis
         data-name={label.kind}
         data-words={label.empty ? undefined : label.excerpt}
         aria-label={`${label.full}${custom ? ', made in this project' : ''}${vis.note ? `, ${vis.note}` : ''}${own && picked && member ? ', shown in the inspector' : ''}`}
-        aria-description={conditions.length ? `${conditions.join('. ')}.` : undefined}
+        // In a component with more than one slot, which one holds it: its row follows that slot's in the same column.
+        aria-description={inSlot || conditions.length ? `${[inSlot ? `In ${inSlot}` : '', ...conditions].filter(Boolean).join('. ')}.` : undefined}
         style={{ ...depthVar(depth), '--drop-depth': drop?.depth ?? depth } as React.CSSProperties}
         draggable={draggable && !renaming}
         onDragStart={(e) => {
@@ -1514,7 +1516,7 @@ function LayerRow({ state, owner, tree, id, depth, onMenu, path, parentId }: Lis
                 return by?.part && by.id === id ? <SubLabel depth={depth + 1} label={`Hidden on ${size} by ${by.name}`} icon={<EyeOff />} /> : null;
               })()}
               {l.ids.map((cid) => (
-                <LayerRow key={cid} state={state} owner={owner} tree={tree} id={cid} depth={depth + 1} onMenu={onMenu} path={[...path, name]} parentId={id} />
+                <LayerRow key={cid} state={state} owner={owner} tree={tree} id={cid} depth={depth + 1} onMenu={onMenu} path={[...path, name]} parentId={id} inSlot={n.kind === 'instance' && slotLists.length > 1 ? l.label : undefined} />
               ))}
             </Fragment>
           ))}

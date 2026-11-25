@@ -1,7 +1,9 @@
 // Empty component slots in Layers (#653), against the real app: a placed Split with two empty slots lists both, Main
-// then Sidebar, each marked empty; picking the second one makes it where Insert puts a tile clicked next; a paragraph
-// dragged in Layers onto that empty Sidebar row moves into it as one change, and a second one is refused by the slot's
-// contract (one item at most), changing nothing. The slot rows are tree items the arrow keys reach, with one tab stop.
+// then Sidebar, each marked empty; picking the second one makes it where Insert puts a tile clicked next, and Escape
+// lets it go; two paragraphs dragged together onto that empty Sidebar row are refused whole by its contract (one item at
+// most), one dragged alone moves in as one change, and a second one is refused; two more dragged together onto a Main
+// that already holds one go after it, in their order, as one change. The slot rows are tree items the arrow keys reach,
+// with one tab stop, and a layer in one of the slots says which.
 import assert from 'node:assert/strict';
 import { join } from 'node:path';
 import { MOD, createProject, eventually, launch, scratch, step } from './harness.mjs';
@@ -32,7 +34,7 @@ const expand = async (id) => {
   await eventually(async () => assert.equal(await row(id).getAttribute('aria-expanded'), 'true', 'the branch is open'));
 };
 
-step('a Section holding an empty Split (Main, then a Sidebar taking one text or button), and two paragraphs beside it');
+step('a Section holding an empty Split (Main, then a Sidebar taking one text or button), and four paragraphs beside it');
 const pageId = (await snapshot()).site.homePageId;
 const owner = { kind: 'page', id: pageId };
 const [{ definitionId: splitDef }] = await apply(
@@ -55,11 +57,10 @@ const [{ definitionId: splitDef }] = await apply(
   'Make Split'
 );
 const [{ nodeId: section }] = await apply([{ type: 'node.insert', owner, parentId: null, componentId: 'layout.section' }], 'Insert section');
-const [{ nodeId: split }, { nodeId: one }, { nodeId: two }] = await apply(
+const [{ nodeId: split }, { nodeId: one }, { nodeId: two }, { nodeId: three }, { nodeId: four }] = await apply(
   [
     { type: 'node.insert', owner, parentId: section, slot: 'content', definitionId: splitDef },
-    { type: 'node.insert', owner, parentId: section, slot: 'content', primitive: 'paragraph', text: 'First note' },
-    { type: 'node.insert', owner, parentId: section, slot: 'content', primitive: 'paragraph', text: 'Second note' }
+    ...['First note', 'Second note', 'Third note', 'Fourth note'].map((text) => ({ type: 'node.insert', owner, parentId: section, slot: 'content', primitive: 'paragraph', text }))
   ],
   'Insert content'
 );
@@ -95,7 +96,7 @@ await eventually(async () => {
   assert.deepEqual(s.main ?? [], [], 'Main is still empty');
   added = s.sidebar[0];
 });
-assert.equal((await snapshot()).pages[pageId].nodes[added].kind, 'text', 'the Paragraph tile');
+assert.deepEqual([(await snapshot()).pages[pageId].nodes[added].kind, (await snapshot()).pages[pageId].nodes[added].tag], ['text', 'p'], 'the Paragraph tile');
 await win.screenshot({ path: join(SHOTS, 'layers-slots-inserted.png') });
 
 step('one Undo empties the Sidebar again');
@@ -106,27 +107,67 @@ await win.keyboard.press(`${MOD}+z`);
 await eventually(async () => assert.deepEqual((await slots()).sidebar ?? [], [], 'the Sidebar is empty'));
 await eventually(async () => assert.equal(await slotRow('sidebar').locator('.layer-slot-empty').count(), 1, 'and its row says so'));
 
-step('a paragraph dragged onto the empty Sidebar row moves into it, as one change');
-const applied = (await history()).length;
+step('Escape lets a picked slot go');
+await slotRow('sidebar').click();
+await eventually(async () => assert.equal(await slotRow('sidebar').getAttribute('aria-selected'), 'true'));
+await win.keyboard.press('Escape');
+await eventually(async () => assert.equal(await slotRow('sidebar').getAttribute('aria-selected'), 'false', 'the Sidebar is no longer picked'));
+
+step('two paragraphs dragged together onto the empty Sidebar, which takes one, are refused whole');
+const start = JSON.stringify((await snapshot()).pages[pageId]);
+let applied = (await history()).length;
+await row(one).click();
+await row(two).click({ modifiers: ['Shift'] });
+await eventually(async () => assert.equal(await tree.locator('[role="treeitem"][aria-selected="true"]').count(), 2, 'both are selected'));
+await row(one).dragTo(slotRow('sidebar'));
+await win.locator('.toast', { hasText: 'holds at most one item' }).waitFor();
+assert.equal(JSON.stringify((await snapshot()).pages[pageId]), start, 'neither moved');
+assert.equal((await history()).length, applied, 'nothing is recorded');
+
+step('a paragraph dragged alone onto the empty Sidebar row moves into it, as one change');
+await row(one).click();
+await eventually(async () => assert.equal(await tree.locator('[role="treeitem"][aria-selected="true"]').count(), 1));
 await row(one).dragTo(slotRow('sidebar'));
 await eventually(async () => assert.deepEqual((await slots()).sidebar, [one], 'the first paragraph is in the Sidebar'));
-assert.deepEqual((await snapshot()).pages[pageId].nodes[section].slots.content, [split, two], 'and gone from beside the Split');
+assert.deepEqual((await snapshot()).pages[pageId].nodes[section].slots.content, [split, two, three, four], 'and gone from beside the Split');
 assert.deepEqual((await history()).slice(applied), ['Move Text · First note on Home'], 'one change');
 assert.equal(await slotRow('sidebar').locator('.layer-slot-empty').count(), 0, 'the Sidebar row is no longer marked empty');
+
+// Screen readers hear which slot of the Split it is in: its row follows that slot's, in the same column.
+assert.equal(await row(one).getAttribute('aria-description'), 'In Sidebar.', 'a layer in a slot says which');
 
 step('a second paragraph dropped onto the full Sidebar is refused by its contract, changing nothing');
 const before = JSON.stringify((await snapshot()).pages[pageId]);
 await row(two).dragTo(slotRow('sidebar'));
-await win.locator('.toast', { hasText: 'holds at most one item' }).waitFor();
+await eventually(async () => assert.ok((await win.locator('.toast', { hasText: 'holds at most one item' }).count()) >= 1));
 assert.equal(JSON.stringify((await snapshot()).pages[pageId]), before, 'the page is as it was');
 
+step('two paragraphs dragged together onto a Main that already holds one go after it, in their order, as one change');
+await row(two).dragTo(slotRow('main'));
+await eventually(async () => assert.deepEqual((await slots()).main, [two], 'Main holds the second paragraph'));
+applied = (await history()).length;
+await row(three).click();
+await row(four).click({ modifiers: ['Shift'] });
+await eventually(async () => assert.equal(await tree.locator('[role="treeitem"][aria-selected="true"]').count(), 2, 'both are selected'));
+await row(three).dragTo(slotRow('main'));
+await eventually(async () => assert.deepEqual((await slots()).main, [two, three, four], 'both go to the end of Main, in their order'));
+assert.deepEqual((await snapshot()).pages[pageId].nodes[section].slots.content, [split], 'and are gone from beside the Split');
+assert.equal((await history()).length, applied + 1, 'one change');
+
 step('the slot rows are tree items the keys reach: Up/Down pick them, Left goes back to the Split');
-await slotRow('main').click();
-await eventually(async () => assert.equal(await slotRow('main').getAttribute('aria-selected'), 'true'));
-await slotRow('main').focus();
+// Main's rows, then the Sidebar's: Down from Main's last layer picks the Sidebar row, Up goes back to that layer.
+await row(four).click();
+await eventually(async () => assert.equal(await row(four).getAttribute('aria-selected'), 'true'));
+await row(four).focus();
 await win.keyboard.press('ArrowDown');
 await eventually(async () => assert.equal(await slotRow('sidebar').getAttribute('aria-selected'), 'true', 'Down picks the Sidebar'));
 assert.ok(await slotRow('sidebar').evaluate((el) => el === document.activeElement), 'and focuses it');
+assert.equal(await row(four).getAttribute('aria-selected'), 'false', 'and lets the layer go');
+await win.keyboard.press('ArrowUp');
+await eventually(async () => assert.equal(await row(four).getAttribute('aria-selected'), 'true', 'Up selects the layer again'));
+assert.equal(await slotRow('sidebar').getAttribute('aria-selected'), 'false', 'and lets the slot go');
+await win.keyboard.press('ArrowDown');
+await eventually(async () => assert.equal(await slotRow('sidebar').getAttribute('aria-selected'), 'true'));
 await win.keyboard.press('ArrowLeft');
 await eventually(async () => assert.equal(await row(split).getAttribute('aria-selected'), 'true', 'Left selects the Split'));
 assert.equal(await slotRow('sidebar').getAttribute('aria-selected'), 'false', 'and lets the slot go');

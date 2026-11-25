@@ -114,8 +114,10 @@ describe('a slot picked as where Insert puts things (#653)', () => {
     const sel: ElementRef = { owner: p.owner, instancePath: [], nodeId: 'n_two' };
     expect(insertAt(p.state, p.owner, 'element', sel, undefined, main)).toEqual({ owner: p.owner, parentId: 'n_split', slot: 'main' });
     expect(insertAt(p.state, p.owner, 'section', sel, undefined, main)).toEqual({ owner: p.owner, parentId: 'n_split', slot: 'main' });
-    // Another Split goes into the picked slot, not beside the one that holds it.
-    expect(insertAt(p.state, p.owner, 'element', null, p.defId, main)).toEqual({ owner: p.owner, parentId: 'n_split', slot: 'main' });
+    // Another Split goes into the picked slot, not beside the selected Split that holds it, as it would unpicked.
+    const split: ElementRef = { owner: p.owner, instancePath: [], nodeId: 'n_split' };
+    expect(insertAt(p.state, p.owner, 'element', split, p.defId)).toEqual({ owner: p.owner, parentId: 'n_section', slot: 'content', index: 1 });
+    expect(insertAt(p.state, p.owner, 'element', split, p.defId, main)).toEqual({ owner: p.owner, parentId: 'n_split', slot: 'main' });
     // Without a pick the placement still fills its first slot.
     expect(insertAt(p.state, p.owner, 'element', { owner: p.owner, instancePath: [], nodeId: 'n_split' })).toEqual({ owner: p.owner, parentId: 'n_split', slot: 'main' });
   });
@@ -125,6 +127,7 @@ describe('a slot picked as where Insert puts things (#653)', () => {
     expect(insertAt(p.state, p.owner, 'element', null, undefined, { ...sidebar(p.owner), parentId: 'n_gone' })).toBeNull();
     expect(insertAt(p.state, p.owner, 'element', null, undefined, { ...sidebar(p.owner), slot: 'nope' })).toBeNull();
     expect(insertAt(p.state, { kind: 'page', id: 'pg_other' }, 'element', null, undefined, sidebar(p.owner))).toBeNull();
+    expect(insertAt(p.state, { kind: 'template', id: p.owner.id }, 'element', null, undefined, sidebar(p.owner))).toBeNull();
     expect(insertAt(p.state, p.owner, 'element', null, undefined, { ...sidebar(p.owner), parentId: 'n_one' })).toBeNull();
   });
 });
@@ -148,6 +151,14 @@ describe('layers dropped onto a slot row (#653)', () => {
     expect(placeOps(out.pages[p.owner.id], p.owner, ['n_one', 'n_two'], { parentId: 'n_split', slot: 'main', before: null })).toBeNull();
   });
 
+  it('adds to the end of a slot that already holds something', () => {
+    const p = page();
+    const one = applyOperations(p.state, placeOps(p.state.pages[p.owner.id], p.owner, ['n_grid'], { parentId: 'n_split', slot: 'main', before: null })!).state;
+    const ops = placeOps(one.pages[p.owner.id], p.owner, ['n_one', 'n_two'], { parentId: 'n_split', slot: 'main', before: null })!;
+    expect(ops.map((o) => (o.type === 'node.move' ? o.index : -1))).toEqual([1, 2]);
+    expect(splitOf(applyOperations(one, ops).state).slots?.main).toEqual(['n_grid', 'n_one', 'n_two']);
+  });
+
   it('is refused whole by the slot’s contract: too many, or a kind it does not take', () => {
     const p = page();
     const two = placeOps(p.state.pages[p.owner.id], p.owner, ['n_one', 'n_two'], { parentId: 'n_split', slot: 'sidebar', before: null })!;
@@ -164,6 +175,8 @@ const opening = 'opening#slots';
 const bridge = {
   project: {
     apply: (batch: Parameters<ProjectSession['apply']>[0], opts: { label?: string } = {}) => session.apply(batch, { label: opts.label ?? 'Edit', source: 'user' }).then(refresh),
+    // Taken only in the opening it was pressed in, as the app does.
+    copy: (pageId: string, nodeId: string | string[], rev: number, key?: string) => (key === opening ? session.copy(pageId, nodeId, rev) : Promise.resolve({ ok: false, message: 'That project is no longer open.' })),
     saveLocalState: async () => {}
   },
   ai: { stop: async () => {} },
@@ -185,6 +198,7 @@ interface EditorState {
 const load = (path: string) => import(/* @vite-ignore */ path);
 const store = (await load('../../src/renderer/src/store')) as { getState: () => EditorState; setState: (p: Partial<EditorState>) => void; selectSlot: (t: SlotTarget) => void };
 const actions = (await load('../../src/renderer/src/lib/actions')) as { insert: (spec: object, label: string) => Promise<string | undefined>; deleteSelection: () => Promise<void> };
+const clipboard = (await load('../../src/renderer/src/lib/clipboard')) as { copySelection: () => boolean; pasteCopy: () => boolean; forgetCopy: () => void };
 
 function refresh<T>(r: T): T {
   store.setState({ snapshot: { state: session.state, revision: session.revision, history: session.historyInfo(), workspaceKey: opening, aiBusy: false, dir: 'project' } as unknown as ProjectSnapshot });
@@ -197,6 +211,7 @@ beforeEach(async () => {
   dirs.push(dir);
   session = await ProjectSession.create(dir, page().state);
   store.setState({ toasts: [], selection: null, layerSet: null, slotTarget: null, pageId: session.state.site.homePageId, definitionMode: null, mode: 'preview' });
+  clipboard.forgetCopy();
   refresh(null);
 });
 afterEach(async () => {
@@ -233,11 +248,27 @@ describe('picking a slot in the editor (#653)', () => {
     store.setState({ pageId: session.state.site.homePageId });
 
     store.selectSlot(sidebar(home()));
+    store.setState({ definitionMode: { definitionId: splitOf(session.state).definitionId, returnPageId: home().id } });
+    expect(store.getState().slotTarget).toBeNull();
+    store.setState({ definitionMode: null });
+
+    store.selectSlot(sidebar(home()));
     // A change elsewhere keeps it; one that removes the Split lets it go.
     await bridge.project.apply({ operations: [{ type: 'node.remove', owner: home(), nodeId: 'n_grid' }] });
     expect(store.getState().slotTarget).toEqual(sidebar(home()));
     await bridge.project.apply({ operations: [{ type: 'node.remove', owner: home(), nodeId: 'n_split' }] });
     expect(store.getState().slotTarget).toBeNull();
+  });
+
+  it('⌘V with a slot picked pastes into it, as a tile clicked in Insert goes', async () => {
+    store.setState({ selection: { owner: home(), instancePath: [], nodeId: 'n_two' } });
+    expect(clipboard.copySelection()).toBe(true);
+    store.selectSlot({ owner: home(), parentId: 'n_split', slot: 'main' });
+    await vi.waitFor(() => expect(clipboard.pasteCopy()).toBe(true));
+    await vi.waitFor(() => expect(splitOf(session.state).slots?.main ?? []).toHaveLength(1));
+    const [copy] = splitOf(session.state).slots!.main;
+    expect(nodes(session.state)[copy]).toMatchObject({ kind: 'text', text: (nodes(session.state).n_two as { text: unknown }).text });
+    expect(splitOf(session.state).slots?.sidebar ?? []).toEqual([]);
   });
 
   it('Delete with a slot picked removes nothing: a slot is not its component', async () => {

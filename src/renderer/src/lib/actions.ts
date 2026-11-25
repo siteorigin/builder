@@ -1028,12 +1028,12 @@ export function setMode(mode: 'edit' | 'preview') {
   if (s.mode === 'edit') return;
   const back = s.previewReturn;
   const st = s.snapshot?.state;
-  // A selection made while previewing is the author's latest choice and stays. Otherwise the one Preview was entered
+  // A selection (or a slot picked for Insert) made while previewing is the author's latest choice and stays. Otherwise the one Preview was entered
   // with, on the same page and in the same component edited everywhere (or none), while it is still there.
   // A layout's element comes back while that layout is still open and has it.
   const layoutBack = !!back && back.ref.owner.kind === 'template' && s.templateMode?.collectionId === back.ref.owner.id;
   const ref =
-    !s.selection && back && st && back.pageId === s.pageId && back.definitionId === editing
+    !s.selection && !s.slotTarget && back && st && back.pageId === s.pageId && back.definitionId === editing
       ? layoutBack
         ? resolveRef(st, back.ref).node
           ? back.ref

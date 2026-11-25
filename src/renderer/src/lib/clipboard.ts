@@ -155,8 +155,9 @@ async function pasteCopied(latest: Copied, opening: string, follow: boolean) {
   const group = plan?.several ? plan.group : null;
   const last = group ? layerRef(group.owner, group.ids[group.ids.length - 1]) : s.selection;
   const places: { section: InsertAt | null; element: InsertAt | null } = {
-    section: insertionPoint('section', last),
-    element: group && group.parentId !== null ? { owner: group.owner, parentId: group.parentId, slot: group.slot, index: group.indexes[group.indexes.length - 1] + 1 } : insertionPoint('element', last)
+    // Into a slot picked for Insert, if one is (nothing is selected then), as a tile clicked there goes.
+    section: insertionPoint('section', last, undefined, undefined, s.slotTarget),
+    element: group && group.parentId !== null ? { owner: group.owner, parentId: group.parentId, slot: group.slot, index: group.indexes[group.indexes.length - 1] + 1 } : insertionPoint('element', last, undefined, undefined, s.slotTarget)
   };
   let entry: Copied | null = latest;
   let clipboardId: string | null = null;
