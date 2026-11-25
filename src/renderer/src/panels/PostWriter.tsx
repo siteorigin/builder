@@ -10,7 +10,7 @@ import { newId } from '@shared/ids';
 import { normalizeRichText } from '@engine/values';
 import { EngineError } from '@engine/tree';
 import { assetLabels, sortAssets } from '@shared/asset-order';
-import { applyOps, commitIfUnchanged, commitOps, getState, markDraft, projectHistory, setState, toast, useStore, type CheckedOutcome, type PostRef } from '../store';
+import { api, applyOps, commitIfUnchanged, commitOps, getState, markDraft, projectHistory, setState, toast, useStore, type CheckedOutcome, type PostRef } from '../store';
 import { DraftInput, Field, Modal, SwitchRow } from '../components/ui';
 import { CanonicalUrlField, RevisionDateField } from '../components/SeoFields';
 import { seoSummary } from '../lib/sharing';
@@ -23,7 +23,7 @@ import { isImeComposing } from '../lib/ime';
 import { appliesLanded, registerFlush, trackApply } from '../lib/pending';
 import { PostDraft, setOpenWriter, setWriterHistory, type DraftProblem, type DraftSaveOutcome } from '../lib/post-draft';
 import { articleProblem, blockAtCaret, caretIn, figureElement, fillFigure, insertFigure, placeCaret, readArticle, renderArticle, setBlock, toggleList, type ArticleBlockTag, type ArticleCaret, type ArticleListKind } from '../lib/post-dom';
-import { MAX_POST_TITLE, postAt } from '../lib/posts';
+import { MAX_POST_TITLE, postAt, postHolds } from '../lib/posts';
 import { setMode } from '../lib/actions';
 import { visitAddress } from './Canvas';
 import { LengthMeter, SeoPreview, subjectKey, useDocumentPreview, useTypedSeo } from './SeoPreview';
@@ -281,12 +281,16 @@ function PostEditor({ post, hidden }: { post: PostRef; hidden: boolean }) {
   }, []);
 
   /**
-   * Change fields of the post, followed so Publish and Save draft know whether it was saved. `held`: the post already
-   * has these values (an image imported again is only checked, never written), so having nothing to write is no refusal.
+   * Change fields of the post, followed so Publish and Save draft know whether it was saved. A change with nothing
+   * written is a refusal unless the project's own copy of the post already has those values (an image imported again
+   * is only checked, never written); one the post no longer matches (edited meanwhile) still is.
    */
-  const update = (fields: Record<string, unknown>, label: string, held = false) => {
-    const p = applyOps([{ type: 'entry.update', collectionId: post.collectionId, entryId: post.entryId, ...fields } as never], label).then((r) => {
-      if (!r && !held) fieldRefusedAt.current = performance.now();
+  const update = (fields: Record<string, unknown>, label: string) => {
+    // The project this change was asked of: only its copy of the post can say the change was already there.
+    const opened = snap.workspaceKey;
+    const p = applyOps([{ type: 'entry.update', collectionId: post.collectionId, entryId: post.entryId, ...fields } as never], label).then(async (r) => {
+      const asAsked = !r && (await api.project.snapshot().then((now) => !!now && now.workspaceKey === opened && postHolds(now.state, post, fields), () => false));
+      if (!r && !asAsked) fieldRefusedAt.current = performance.now();
       return r;
     });
     fieldCommits.current.add(p);
@@ -592,7 +596,7 @@ function PostEditor({ post, hidden }: { post: PostRef; hidden: boolean }) {
                 </Field>
               </div>
               {/* The image editor's picker: a thumbnail of the one chosen, the library to browse, import or drop, and Remove. */}
-              <SiteImageField title="Featured image" plain="featured" state={state} value={entry.featuredImage} onChange={(id) => void update({ featuredImage: id }, 'Change featured image', id === (entry.featuredImage ?? null))} />
+              <SiteImageField title="Featured image" plain="featured" state={state} value={entry.featuredImage} onChange={(id) => void update({ featuredImage: id }, 'Change featured image')} />
             </div>
           </details>
           <PostSearchSettings state={state} post={post} entry={entry} route={route} published={published} hidden={hidden} images={images} labels={labels} update={update} />

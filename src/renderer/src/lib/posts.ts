@@ -51,6 +51,15 @@ export function postAt(state: ProjectState, ref: PostRef | null | undefined): En
 }
 
 /**
+ * Whether the post already has every one of these field values (an empty field and null are the same). A change that
+ * was not written still leaves the post as it was asked to be when this holds: no refusal to report.
+ */
+export function postHolds(state: ProjectState, ref: PostRef, fields: Record<string, unknown>): boolean {
+  const entry = postAt(state, ref) as Record<string, unknown> | undefined;
+  return !!entry && Object.entries(fields).every(([k, v]) => JSON.stringify(entry[k] ?? null) === JSON.stringify(v ?? null));
+}
+
+/**
  * What the Posts workspace puts in front of the editor (#578): its writer, over the canvas (also with no post chosen,
  * and while a Preview waits for what was typed to save), or the post it opened, previewed on the canvas whichever panel
  * the sidebar shows. Null while neither is: the editor shows its page. The toolbar and the Inspector speak of the post

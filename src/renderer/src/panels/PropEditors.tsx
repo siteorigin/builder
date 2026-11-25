@@ -584,8 +584,9 @@ export function ImageEditor({ value, onChange, state, title, plain, picture }: {
       const r = await importAndPlace({
         paths,
         base: snapshot,
-        // On screen: mounted, and not in a dock tab that is hidden (AI, Site styles).
-        shown: () => alive.current && !!chooseBtn.current?.isConnected && chooseBtn.current.offsetParent !== null,
+        // On screen: mounted, and not in a dock tab that is hidden (AI, Site styles) or a closed disclosure (a post's
+        // details), which can still give an offset parent.
+        shown: () => alive.current && !!chooseBtn.current?.isConnected && chooseBtn.current.offsetParent !== null && chooseBtn.current.checkVisibility(),
         holds: (a) => a.id === start.assetId,
         place: (a) => {
           // The same picture again: the field is checked, not written.
