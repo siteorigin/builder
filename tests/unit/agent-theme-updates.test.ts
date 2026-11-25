@@ -102,11 +102,14 @@ describe('what a newer theme version adds', () => {
     // A property whose type changed is offered as new, and so is a new field of a list's items, with its choices.
     const [text] = Object.entries(next.properties).find(([, p]) => p.type === 'string')!;
     next.properties[text] = { type: 'boolean', label: 'Now a switch', default: false } as never;
-    const [list, listSchema] = Object.entries(next.properties).find(([, p]) => p.type === 'list' && !p.feed) ?? [];
-    if (list) (listSchema as { fields: Record<string, unknown> }).fields.tone = { type: 'enum', label: 'Tone', default: 'calm', options: [{ value: 'calm', label: 'Calm' }, { value: 'loud', label: 'Loud' }] };
     const adds = themeUpdateChanges(was, next);
     expect(adds.properties?.[text]).toEqual({ label: 'Now a switch', type: 'boolean' });
-    if (list) expect(adds.fields?.[`${list}.tone`]).toEqual({ type: 'enum', label: 'Tone', options: { calm: 'Calm', loud: 'Loud' } });
+    // A grid's cards gain a field, with its choices.
+    const grid = structuredClone(current('foundation.features.grid'));
+    const newer = structuredClone(grid);
+    const [list, listSchema] = Object.entries(newer.properties).find(([, p]) => p.type === 'list' && !p.feed)!;
+    (listSchema as { fields: Record<string, unknown> }).fields.tone = { type: 'enum', label: 'Tone', default: 'calm', options: [{ value: 'calm', label: 'Calm' }, { value: 'loud', label: 'Loud' }] };
+    expect(themeUpdateChanges(grid, newer).fields).toEqual({ [`${list}.tone`]: { type: 'enum', label: 'Tone', options: { calm: 'Calm', loud: 'Loud' } } });
     expect(adds.options).toEqual({ [prop]: { extra: 'Extra choice' } });
     expect(adds.parts).toEqual({ badge: 'Badge' });
     expect(adds.slots).toEqual({ aside: 'Aside' });
@@ -240,8 +243,9 @@ describe('update_theme_component', () => {
     const s = createStarterState('business', 'Test', false);
     const { h, applied } = host(s);
     expect((await tool(h, 'update_theme_component', { definitionId: HEADER })).content).toMatchObject({ message: expect.stringMatching(/no newer theme version/) });
-    for (const op of [{ type: 'theme.refresh' }, { type: 'theme.refresh', definitionIds: [HEADER] }]) {
-      const raw = await tool(h, 'apply_operations', { expectedRevision: 1, operations: [op] });
+    const edit = { type: 'instance.setProp', owner: { kind: 'shell', id: 'header' }, nodeId: headerNode(s).id, prop: 'ctaLabel', value: 'Call us' };
+    for (const ops of [[{ type: 'theme.refresh' }], [{ type: 'theme.refresh', definitionIds: [HEADER] }], [edit, { type: 'theme.refresh', definitionIds: [HEADER] }]]) {
+      const raw = await tool(h, 'apply_operations', { expectedRevision: 1, operations: ops });
       expect(raw.content).toMatchObject({ error: 'INVALID_ARGUMENT', message: expect.stringMatching(/update_theme_component/) });
     }
     expect(applied).toEqual([]);
@@ -265,11 +269,35 @@ describe('update_theme_component', () => {
     expect(offered(small, { page: { route: '/' } })).toEqual([HERO]);
     const about = s.site.pageOrder.map((id) => s.pages[id]).find((p) => p.id !== s.site.homePageId)!;
     expect(offered(big, { page: { route: about.route } })).toBeNull();
+    // A part of the hero (its heading, say) never updates the hero; the whole hero does.
+    const home = s.site.homePageId;
+    const heroNode = s.pages[home].rootIds.find((id) => (s.pages[home].nodes[id] as InstanceNode).definitionId === HERO)!;
+    const [partId] = Object.entries(s.components[HERO].parts).find(([, p]) => p.nodeId !== s.components[HERO].tree!.rootIds[0])!;
+    expect(offered(big, { selection: { owner: { kind: 'page', id: home }, nodeId: heroNode, partId } })).toBeNull();
+    expect(offered(small, { selection: { owner: { kind: 'page', id: home }, nodeId: heroNode } })).toEqual([HERO]);
     // A component's own design changes no placement, until the user lets the run change more.
     const target = { definitionId: HERO };
     expect(offered(big, { definition: true, definitionTarget: target })).toBeNull();
     expect(offered(big, { definition: true, definitionTarget: null })).toEqual([HEADER, HERO].sort());
     expect(offered(big, { ask: true })).toBeNull();
+  });
+
+  it('offers a small run a nested component only where its tools can change it', () => {
+    const s = beforeActionStyle({ hero: true });
+    const home = s.site.homePageId;
+    const heroNode = s.pages[home].rootIds.find((id) => (s.pages[home].nodes[id] as InstanceNode).definitionId === HERO)!;
+    const ins = applyOperations(s, [{ type: 'node.insert', owner: { kind: 'page', id: home }, parentId: null, index: 0, primitive: 'container' } as EditOperation]);
+    const box = (ins.results[0] as { nodeId: string }).nodeId;
+    const nested = applyOperations(ins.state, [{ type: 'node.move', owner: { kind: 'page', id: home }, nodeId: heroNode, parentId: box, index: 0 }]).state;
+    const offered = (capabilities: { toolCalling: 'native' | 'constrained-json'; contextWindowTokens: number }, page?: { route: string }) =>
+      enumOf(toolsForRun({ state: nested, selection: null, capabilities, codeEnabled: false, definitionOps: false, ...(page ? { page } : {}) }).tools.find((x) => x.name === 'update_theme_component')) ?? null;
+    const big = { toolCalling: 'native' as const, contextWindowTokens: 200000 };
+    const small = { toolCalling: 'constrained-json' as const, contextWindowTokens: 8000 };
+    // The page tool changes top-level sections alone; the operations of a larger run reach the hero inside the container.
+    expect(offered(big, { route: '/' })).toEqual([HERO]);
+    expect(offered(small, { route: '/' })).toBeNull();
+    expect(offered(big)).toContain(HERO);
+    expect(offered(small)).toBeNull();
   });
 
   it('gives a small selection run the new property to set once the header is updated', async () => {
@@ -296,6 +324,7 @@ describe('scope of an update', () => {
     const sel: Authority = { kind: 'selection', owner: { kind: 'shell', id: 'header' }, nodeId: headerNode(s).id, label: 'the header' };
     expect(checkAuthority(s, refresh(HEADER), sel, { themeRefresh: HEADER })).toBeNull();
     expect(checkAuthority(s, refresh(HEADER), sel)).toMatch(/more than the header/);
+    expect(checkAuthority(s, refresh(HEADER), sel, { themeRefresh: HERO })).toMatch(/more than the header/);
     expect(checkAuthority(s, [{ type: 'theme.refresh' }], sel, { themeRefresh: HEADER })).toMatch(/more than the header/);
     // Two at once is never one update the tool asked for, even with one of them granted.
     expect(checkAuthority(s, [{ type: 'theme.refresh', definitionIds: [HEADER, HERO] }], sel, { themeRefresh: HEADER })).toMatch(/more than the header/);
@@ -343,9 +372,12 @@ type Turn = (req: CanonicalModelRequest) => ModelEvent[] | Promise<ModelEvent[]>
 
 class FakeAdapter implements AgentModelAdapter {
   requests: CanonicalModelRequest[] = [];
-  constructor(private turns: Turn[]) {}
+  constructor(
+    private turns: Turn[],
+    private caps: Partial<ReturnType<AgentModelAdapter['capabilities']>> = {}
+  ) {}
   capabilities() {
-    return { toolCalling: 'native' as const, streaming: true, strictSchemas: false, parallelToolCalls: true, contextWindowTokens: 100000, maxOutputTokens: 32000 } as ReturnType<AgentModelAdapter['capabilities']>;
+    return { toolCalling: 'native' as const, streaming: true, strictSchemas: false, parallelToolCalls: true, contextWindowTokens: 100000, maxOutputTokens: 32000, ...this.caps } as ReturnType<AgentModelAdapter['capabilities']>;
   }
   async *streamTurn(req: CanonicalModelRequest): AsyncIterable<ModelEvent> {
     this.requests.push(structuredClone(req));
@@ -368,11 +400,11 @@ const lastResult = (req: CanonicalModelRequest) => {
 const dirs: string[] = [];
 afterEach(() => dirs.splice(0).forEach((d) => rmSync(d, { recursive: true, force: true })));
 
-async function setup(start: ProjectState, turns: Turn[]) {
+async function setup(start: ProjectState, turns: Turn[], caps: Partial<ReturnType<AgentModelAdapter['capabilities']>> = {}) {
   const dir = mkdtempSync(join(tmpdir(), 'so-theme-update-'));
   dirs.push(dir);
   const session = await ProjectSession.create(dir, start);
-  const adapter = new FakeAdapter(turns);
+  const adapter = new FakeAdapter(turns, caps);
   const events: AiEvent[] = [];
   let busy = false;
   const orch = new Orchestrator({
@@ -428,7 +460,7 @@ describe('asking for an outlined header button on a header that predates it', ()
     expect(definitionHash(session.state.components[HEADER])).toBe(definitionHash(current(HEADER)));
     expect(headerNode(session.state).props).toMatchObject({ ctaStyle: 'secondary', ctaLabel: 'Book a call', ctaLink: before.props.ctaLink, links: before.props.links });
     expect(themeUpdates(session.state).available.map((u) => u.id)).toContain(HERO);
-    expect(session.state.themeLock.components[HEADER].hash).toBe(definitionHash(current(HEADER)));
+    expect(session.state.themeLock.components[HEADER]).toEqual({ componentId: 'shell.header', version: getTheme('foundation').version, hash: definitionHash(current(HEADER)) });
     const labels = result!.changes.map((c) => c.label);
     expect(labels).toContain("Updated the “Header” component to the theme's newer version");
     expect(labels.some((l) => /action style/i.test(l)), labels.join(" | ")).toBe(true);
@@ -437,6 +469,32 @@ describe('asking for an outlined header button on a header that predates it', ()
     expect(session.state.components[HEADER]).toEqual(before.header);
     expect(session.state.themeLock.components[HEADER]).toEqual(before.lock);
     expect(headerNode(session.state).props).toEqual(before.props);
+  });
+
+  it('refuses a component the update tool does not offer this run, even when the model sends it', async () => {
+    let session!: ProjectSession;
+    const s = await setup(
+      beforeActionStyle({ hero: true }),
+      [
+        (req) => {
+          // A small whole-site run's page tool cannot set the header's Action style, so it is not offered the header.
+          expect(enumOf(req.tools.find((t) => t.name === 'update_theme_component'))).toEqual([HERO]);
+          return [call('u1', 'update_theme_component', { definitionId: HEADER })];
+        },
+        (req) => {
+          const r = lastResult(req)!;
+          expect(r.isError).toBe(true);
+          expect(r.parsed).toMatchObject({ error: 'SCOPE_MISMATCH', message: expect.stringMatching(/cannot update/) });
+          return finish('Select the header to have its newer version with an outlined button.');
+        }
+      ],
+      { contextWindowTokens: 32000 }
+    );
+    session = s.session;
+    const before = JSON.stringify(session.state.components[HEADER]);
+    const { result } = await s.run("Make the header's Book a call button outlined");
+    expect(JSON.stringify(session.state.components[HEADER])).toBe(before);
+    expect(result?.changes ?? []).toEqual([]);
   });
 
   it('explains a held update instead of saying the header cannot do it', async () => {
@@ -480,6 +538,14 @@ describe('a notice for every page on a header that predates it', () => {
     const system = adapter.requests[0].system;
     expect(system).toContain(`update the header with update_theme_component (definitionId "${HEADER}")`);
     expect(system).not.toContain('status bar');
+  });
+
+  it('asks for a wider change first in a run that may not change the header', async () => {
+    const { adapter, run } = await setup(beforeNotice(false), [() => finish('Done.')]);
+    await run('Tell visitors on every page that the studio is closed on Friday', { scope: 'page' });
+    const system = adapter.requests[0].system;
+    expect(system).toContain('ask them to allow a wider change: updating the header changes every page that shows it');
+    expect(system).not.toContain('update the header with update_theme_component (definitionId');
   });
 
   it('is explained when the header cannot take the update', async () => {

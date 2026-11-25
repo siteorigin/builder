@@ -31,7 +31,7 @@ import { isReusabilityWarning } from '@engine/reusability';
 import { OP_REACH, type AuthorityGrants } from './scope';
 import { digestComponentInspection, inspectionSteps, MAX_CASES, planComponentInspection, resolveInspectTarget } from './component-inspection';
 import type { ComponentPreviewResult, ComponentPreviewStep } from '@shared/component-preview';
-import { runUpdateThemeComponent, themeUpdateNote, UPDATE_THEME_COMPONENT_ARGS, UPDATE_THEME_COMPONENT_BRIEF, UPDATE_THEME_COMPONENT_DESCRIPTION, updateThemeComponentTool, type UpdateReach } from './theme-update';
+import { runUpdateThemeComponent, themeUpdateNote, UPDATE_THEME_COMPONENT_ARGS, UPDATE_THEME_COMPONENT_BRIEF, UPDATE_THEME_COMPONENT_DESCRIPTION, updateThemeComponentTool, wholeSelection, type UpdateReach } from './theme-update';
 
 const owner = z.object({ kind: z.enum(['page', 'shell', 'component', 'template']), id: z.string() });
 
@@ -483,14 +483,15 @@ export function toolsForRun(opts: {
   const update = (reach: UpdateReach) => themeUpdateTools(state, reach);
   if (selection) {
     const micro = selectionTools(state, selection);
-    const mine = update({ kind: 'selection', owner: selection.owner, nodeId: selection.nodeId });
-    if (!micro) return { tools: [...mine, ...general], mode: 'general', focused: false };
+    // A part of a placement never changes its component; a small model's selection tools change the selected placement alone.
+    const mine = (ownOnly: boolean) => (wholeSelection(state, selection) ? update({ kind: 'selection', owner: selection.owner, nodeId: selection.nodeId, ownOnly }) : []);
+    if (!micro) return { tools: [...mine(false), ...general], mode: 'general', focused: false };
     // An image can only be chosen by its asset ID, so a selection with one (a background image included), or a request that attached images, can
     // also look them up and ask the user to choose between them by sight.
     const assets = usesImage(micro) || selectionTakesBackground(state, selection) || opts.attachedImages ? general.filter((t) => t.name === 'search_assets' || t.name === 'request_clarification') : [];
     // Content too long to show whole in the selection can still be read whole, a part at a time, before it is changed.
     const reads = selectionAbridged(state, selection) ? general.filter((t) => t.name === 'inspect_element') : [];
-    return { tools: focused ? [...micro, ...mine, ...reads, ...assets] : [...micro, ...mine, ...general], mode: 'selection', focused };
+    return { tools: focused ? [...micro, ...mine(true), ...reads, ...assets] : [...micro, ...mine(false), ...general], mode: 'selection', focused };
   }
   // A component's own design changes no placement; once the user lets the run change more, it may update one.
   if (opts.definition) return { tools: opts.definitionTarget ? general : [...update({ kind: 'site' }), ...general], mode: 'general', focused: false };

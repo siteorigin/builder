@@ -101,9 +101,9 @@ export function themeUpdateChanges(def: ComponentDefinition, next: ComponentDefi
       out.parts[k] = part.label;
       continue;
     }
-    // A part without a list of its own already offers every control: a list adds none.
+    // A part without a list of its own (or with an empty one) already offers every control: a list adds none.
     const was = partStyleControls(def, k);
-    if (!was) continue;
+    if (!was?.length) continue;
     const had = new Set(was);
     const added = (partStyleControls(next, k) ?? []).filter((c) => !had.has(c));
     if (added.length) out.styleControls[k] = added;
@@ -214,14 +214,15 @@ export const UPDATE_THEME_COMPONENT_BRIEF = 'Update one installed theme componen
  * - site: anything (a whole-site run has the operations to change any placement);
  * - sections: a small whole-site run, whose page tool changes a page's top-level sections and nothing else;
  * - page: a page's run, every placement on that page (only its top-level sections for a small model's page tool);
- * - selection: every placement inside the selected element.
+ * - selection: every placement inside the selected element (for a small model's selection tools, which change the
+ *   selected placement alone, only the selected component's own).
  * An update changes every placement, so each must be one the run may change (scope.ts checks the same).
  */
 export type UpdateReach =
   | { kind: 'site' }
   | { kind: 'sections' }
   | { kind: 'page'; pageId: string; sectionsOnly: boolean }
-  | { kind: 'selection'; owner: OwnerRef; nodeId: string };
+  | { kind: 'selection'; owner: OwnerRef; nodeId: string; ownOnly: boolean };
 
 function withinReach(state: ProjectState, id: string, reach: UpdateReach): boolean {
   if (reach.kind === 'site') return true;
@@ -232,11 +233,50 @@ function withinReach(state: ProjectState, id: string, reach: UpdateReach): boole
   if (reach.kind === 'page') return placed.length > 0 && placed.every((p) => p.owner.kind === 'page' && p.owner.id === reach.pageId && (!reach.sectionsOnly || section(p.owner, p.node.id)));
   let inside: Set<string>;
   try {
-    inside = new Set(subtreeIds(getTree(state, reach.owner), reach.nodeId));
+    const tree = getTree(state, reach.owner);
+    const selected = Object.hasOwn(tree.nodes, reach.nodeId) ? tree.nodes[reach.nodeId] : undefined;
+    if (reach.ownOnly && (selected?.kind !== 'instance' || selected.definitionId !== id)) return false;
+    inside = new Set(subtreeIds(tree, reach.nodeId));
   } catch {
     return false;
   }
   return placed.length > 0 && placed.every((p) => p.owner.kind === reach.owner.kind && p.owner.id === reach.owner.id && inside.has(p.node.id));
+}
+
+/**
+ * Whether a selection is a whole element or placement, which may update a component: a part inside a placement (its
+ * heading, one item, a component nested in it) reaches only what that part shows (see scope.ts).
+ */
+export function wholeSelection(state: ProjectState, sel: { owner: OwnerRef; nodeId: string; partId?: string; itemId?: string; nested?: boolean }): boolean {
+  if (sel.nested || sel.itemId !== undefined) return false;
+  if (!sel.partId) return true;
+  try {
+    const n = getTree(state, sel.owner).nodes[sel.nodeId];
+    const def = n?.kind === 'instance' && Object.hasOwn(state.components, n.definitionId) ? state.components[n.definitionId] : undefined;
+    const part = def && Object.hasOwn(def.parts, sel.partId) ? def.parts[sel.partId] : undefined;
+    if (!def || !part) return false;
+    // The part that is the design's root is the whole placement; a code component's parts are all its root.
+    return def.tree ? def.tree.rootIds[0] === part.nodeId : true;
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Why a call names a component the run's update tool does not offer, or null: a model that ignored the schema's
+ * choices (a local server without grammar support) is held to them all the same.
+ */
+export function outsideOffer(tool: ToolDefinition | undefined, rawArgs: string): string | null {
+  const ids = (tool?.parameters as { properties?: { definitionId?: { enum?: unknown } } } | undefined)?.properties?.definitionId?.enum;
+  if (!Array.isArray(ids)) return null;
+  let id: unknown;
+  try {
+    id = (JSON.parse(rawArgs) as { definitionId?: unknown } | null)?.definitionId;
+  } catch {
+    return null;
+  }
+  if (typeof id !== 'string' || ids.includes(id)) return null;
+  return `This request cannot update "${id}": it is placed where this request cannot change it, or its newer version could not be set with the tools this request has. Tell the user what the newer version adds, and that selecting the component, or allowing a wider change, lets you update it.`;
 }
 
 /** The tool, offered while the project has a theme update this run can take; its definitionId is one of those. */
