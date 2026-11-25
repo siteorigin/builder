@@ -192,9 +192,10 @@ export function createPublicationGate(opts: { root: string; ignored: (path: stri
     const events = buffer;
     buffer = [];
     // A file the watcher has not reported (a change it dropped as a repeat of one just before, say) is reported
-    // here, so Vite reads it again with the rest of the batch; it saying so later only repeats an update.
+    // here, so Vite reads it again with the rest of the batch; it saying so later only repeats an update. One that is
+    // there is reported as added: Vite then also retries what failed to import it, as for a new file.
     for (const abs of expected) {
-      const event = existsSync(abs) ? 'change' : 'unlink';
+      const event = existsSync(abs) ? 'add' : 'unlink';
       events.push([event, abs], ['all', event, abs]);
     }
     expected.clear();
@@ -229,6 +230,12 @@ export function createPublicationGate(opts: { root: string; ignored: (path: stri
     if (!c) return;
     clearTimeout(c.timer);
     collecting = null;
+    // A batch held meanwhile is landing: sent now, the page could fetch its files part way. This one goes with it.
+    if (holds.size) {
+      waiting.push(...c.ready);
+      if (c.reload) partial = true;
+      return;
+    }
     sendReady(c.ready, c.reload);
     delivered = Math.max(delivered, c.covers);
     runAfter();

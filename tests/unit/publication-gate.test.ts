@@ -1,6 +1,8 @@
 import { AsyncResource } from 'node:async_hooks';
 import { EventEmitter } from 'node:events';
-import { join } from 'node:path';
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join, relative, sep } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { createPublicationGate, GATE_LIMITS, mergeHotPayloads } from '@runtime/publication-gate';
 
@@ -200,6 +202,47 @@ describe('publication gate', () => {
     await vi.advanceTimersByTimeAsync(100);
     expect(vite.messages()).toEqual([[abs('src/lib/A.svelte')], [abs('src/lib/B.svelte')]]);
     expect(order).toEqual(['1 after 1', '2 after 2']);
+  });
+
+  it('sends a batch whose updates arrive while the next is landing together with that one', async () => {
+    const gate = createPublicationGate({ root: ROOT, ignored });
+    const vite = fakeVite(gate, { [abs('src/lib/A.svelte')]: 50 });
+    const order: string[] = [];
+    gate.hold('1');
+    vite.watcher.emit('change', abs('src/lib/A.svelte'));
+    gate.release('1', ['src/lib/A.svelte']);
+    gate.afterBatch(() => order.push(`1 after ${vite.sent.client.length}`));
+    await vi.advanceTimersByTimeAsync(10);
+    // The next save is replacing its files when the first one's update is ready: the page must not fetch now.
+    gate.hold('2');
+    await vi.advanceTimersByTimeAsync(100);
+    expect(vite.messages()).toEqual([]);
+    expect(order).toEqual([]);
+    vite.watcher.emit('change', abs('src/lib/B.svelte'));
+    gate.release('2', ['src/lib/B.svelte']);
+    gate.afterBatch(() => order.push(`2 after ${vite.sent.client.length}`));
+    await vi.advanceTimersByTimeAsync(20);
+    expect(vite.messages()).toEqual([[abs('src/lib/A.svelte'), abs('src/lib/B.svelte')]]);
+    expect(order).toEqual(['1 after 1', '2 after 1']);
+  });
+
+  it('reports a missed file that is there as added, so what failed to import it is tried again', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'so-gate-'));
+    try {
+      mkdirSync(join(root, 'src', 'lib'), { recursive: true });
+      writeFileSync(join(root, 'src', 'lib', 'New.svelte'), '<p>new</p>');
+      const gate = createPublicationGate({ root, ignored: () => false });
+      const vite = fakeVite(gate);
+      const reported: string[] = [];
+      vite.watcher.on('all', (event: string, path: string) => reported.push(`${event} ${relative(root, path).split(sep).join('/')}`));
+      gate.hold('1');
+      gate.release('1', ['src/lib/New.svelte', 'src/lib/Gone.svelte']);
+      await vi.advanceTimersByTimeAsync(GATE_LIMITS.settleMs + 20);
+      expect(reported).toEqual(['add src/lib/New.svelte', 'unlink src/lib/Gone.svelte']);
+      expect(vite.messages()).toHaveLength(1);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
   });
 
   it('sends the revision of a batch that changed nothing watched, released while the one before is gathered', async () => {

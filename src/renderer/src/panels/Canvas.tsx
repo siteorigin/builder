@@ -1885,6 +1885,8 @@ export function Canvas() {
     let timer: ReturnType<typeof setTimeout> | undefined;
     // One measure on its way at a time; asked for again meanwhile (a burst of wheel steps), one more follows it.
     let measuring = false;
+    /** The lists were measured while the page still showed an older version of the project. */
+    let listsBehind = false;
     let again = false;
     const listen = (on: boolean) => {
       if (on) {
@@ -1913,7 +1915,7 @@ export function Canvas() {
       if (!commit || !aim.over) return;
       if (aim.refused) return void d.refuse(aim.refused);
       // Aimed on a page a save had not reached yet: where it would go was read from the page before the save.
-      if (aim.at && pageBehind()) return void d.refuse('the page was still updating. Drag it again.');
+      if (aim.at && (listsBehind || pageBehind())) return void d.refuse('the page was still updating. Drag it again.');
       if (aim.at) d.drop(aim.at);
     };
     /** Measure the page's lists, in batches the page answers (it reads at most 200 at a time); a node it can't show
@@ -1933,11 +1935,14 @@ export function Canvas() {
         d.unanswered();
       }, 3000);
       const ids = measureIds(specs);
+      // Measured on a page a save has not reached yet: where a drop would go is read from the page before the save.
+      const behind = pageBehind();
       void measureDescs(listDescs(owner, ids), requests).then((rects) => {
         measuring = false;
         if (done) return;
         if (again) return measure();
         clearTimeout(timer);
+        listsBehind = behind;
         lists = d.lists(new Map(ids.map((id, i) => [id, rects[i]])));
         surfaces = d.surfaces(lists);
         show();
