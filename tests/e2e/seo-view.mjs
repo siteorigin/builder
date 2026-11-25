@@ -13,7 +13,7 @@ import { MOD, createProject, eventually, launch, openInspector, scratch, step } 
 
 const { WORK, SHOTS, cleanup } = scratch('seo-view');
 const { app, win, errors } = await launch(WORK);
-await createProject(win, { name: 'Riverside Studio', parentDir: join(WORK, 'sites'), starter: 'business' });
+await createProject(win, { name: 'Riverside Studio', parentDir: join(WORK, 'sites'), starter: 'business', sampleImages: true });
 
 const snapshot = () => win.evaluate(() => window.builder.project.snapshot());
 const apply = async (operations, label) => {
@@ -304,6 +304,117 @@ assert.equal(await win.locator('#editor-dock').isVisible(), true, 'the right pan
 await eventually(() => noSidewaysScroll('a 1280px window'));
 await win.screenshot({ path: join(SHOTS, 'seo-view-1280.png') });
 await win.setViewportSize({ width: 1440, height: 900 });
+
+step('a post’s search settings edited in the view, with no post open in the writer (#703)');
+const settings = view.locator('.seo-settings');
+const viewField = (name) => settings.getByLabel(name, { exact: true });
+const viewMeter = (kind) => settings.locator(`.seo-meter[data-meter="${kind}"]`);
+const viewSwitch = (name) => settings.getByRole('switch', { name });
+const entryNow = async (id) => (await snapshot()).state.collections.posts.entries[id];
+/**
+ * The newest step is `label`, as History keeps it (once it has recorded it, which can be just after the change itself),
+ * and the editor has heard of it too: its Undo button names it.
+ */
+const lastStep = (label) =>
+  eventually(async () => {
+    assert.equal((await snapshot()).history.undoLabel, label);
+    assert.equal(await win.locator('.toolbar').getByRole('button', { name: `Undo ${label}`, exact: true }).count(), 1, `the editor has heard of “${label}”`);
+  });
+const toasts = async () => (await win.locator('.toast').allInnerTexts()).join('\n');
+assert.equal(await win.locator('.post-writer-holder .post-page').count(), 0, 'no post is open in the writer');
+await row('Spring open studio').click();
+await eventually(async () => assert.equal(await view.locator('.seo-title').innerText(), 'Spring open studio'));
+await eventually(async () => assert.equal(await surfaceShown('Search result'), true));
+assert.equal(await settings.getByRole('heading').innerText(), 'Search & sharing', 'the post’s settings are under its previews');
+const titleBox = viewField('Browser title');
+assert.equal(await titleBox.inputValue(), 'Spring open studio at Riverside', 'the title field shows the saved title');
+// Each keystroke reaches the result and the meter; nothing is saved while it is typed.
+await titleBox.fill('');
+await titleBox.pressSequentially('Glaze');
+await eventually(async () => assert.equal(await result('desktop').locator('.serp-title').innerText(), 'Glaze', 'the result follows the title as it is typed'));
+assert.equal(await viewMeter('title').innerText(), '5 characters · short: 15 to 60 reads best', 'and so does the meter');
+await titleBox.pressSequentially(' weekend');
+await eventually(async () => assert.equal(await result('mobile').locator('.serp-title').innerText(), 'Glaze weekend'));
+assert.equal(await viewMeter('title').innerText(), '13 characters · short: 15 to 60 reads best');
+assert.equal((await entryNow('en_spring')).seo.title, 'Spring open studio at Riverside', 'nothing is saved while it is typed');
+await titleBox.press('Escape');
+await eventually(async () => assert.equal(await titleBox.inputValue(), 'Spring open studio at Riverside', 'Escape puts the saved title back'));
+await eventually(async () => assert.equal(await result('desktop').locator('.serp-title').innerText(), 'Spring open studio at Riverside', 'in the result too'));
+assert.match(await viewMeter('title').innerText(), /^31 characters/);
+// Saved as the writer saves it: trimmed, as a step named as the writer names it.
+await titleBox.fill('  Glaze weekend at Riverside  ');
+await titleBox.press('Enter');
+await eventually(async () => assert.equal((await entryNow('en_spring')).seo.title, 'Glaze weekend at Riverside', 'Enter saves the title, trimmed'));
+await lastStep('Change post browser title');
+await eventually(async () => assert.equal(await titleBox.inputValue(), 'Glaze weekend at Riverside'));
+const descriptionBox = viewField('Description');
+await descriptionBox.fill('Throw, glaze and fire with us this spring.');
+await eventually(async () => assert.ok((await result('desktop').locator('.serp-desc').innerText()).includes('Throw, glaze and fire with us this spring.'), 'the result follows the description as it is typed'));
+assert.match(await viewMeter('description').innerText(), /^42 characters · short/);
+assert.match((await entryNow('en_spring')).seo.description, /^Throw, glaze and fire with us at the spring open studio/, 'nothing is saved while it is typed');
+await descriptionBox.press('Tab');
+await eventually(async () => assert.equal((await entryNow('en_spring')).seo.description, 'Throw, glaze and fire with us this spring.', 'leaving the field saves it'));
+await lastStep('Change post description');
+// The canonical URL, followed by the link preview as it is typed.
+await surface('Link preview').click();
+const canonicalBox = viewField('Canonical URL');
+await canonicalBox.fill('https://journal.example/spring/');
+await eventually(async () => assert.equal(await card.locator('.share-card-host').innerText(), 'journal.example', 'the card follows the canonical URL as it is typed'));
+assert.equal((await entryNow('en_spring')).seo.canonical, undefined, 'nothing is saved while it is typed');
+await canonicalBox.press('Escape');
+await eventually(async () => assert.equal(await card.locator('.share-card-host').innerText(), 'riverside.example', 'Escape puts the post’s own address back'));
+assert.equal(await canonicalBox.inputValue(), '');
+await canonicalBox.fill('https://journal.example/spring/');
+await canonicalBox.press('Enter');
+await eventually(async () => assert.equal((await entryNow('en_spring')).seo.canonical, 'https://journal.example/spring/'));
+await lastStep('Change post canonical URL');
+await canonicalBox.fill('');
+await canonicalBox.press('Enter');
+await eventually(async () => assert.equal((await entryNow('en_spring')).seo.canonical, undefined));
+await lastStep('Clear post canonical URL');
+// The sharing image, chosen and put back to the default.
+const sharing = viewField('Sharing image');
+const picture = await sharing.locator('option').nth(1).getAttribute('value');
+assert.ok(picture, 'the library has a picture to choose');
+await sharing.selectOption(picture);
+await eventually(async () => assert.equal((await entryNow('en_spring')).seo.socialImage, picture));
+await lastStep('Change post sharing image');
+await sharing.selectOption('');
+await eventually(async () => assert.equal((await entryNow('en_spring')).seo.socialImage, undefined));
+await lastStep('Use the default sharing image');
+// Both visibility switches, which the structured data's status follows.
+await surface('Structured data').click();
+await eventually(async () => assert.equal(await view.locator('[data-status="search"] dd').innerText(), 'May list it'));
+for (const [name, field, status, on, label] of [
+  ['Hide from search engines', 'noindex', 'search', 'Asked not to list it', ['Hide post from search engines', 'Show post to search engines']],
+  ['Hide from site search', 'searchHidden', 'siteSearch', 'Hidden from site search', ['Hide post from site search', 'Show post in site search']]
+]) {
+  await viewSwitch(name).click();
+  await eventually(async () => assert.equal((await entryNow('en_spring')).seo[field], true, `${name} is saved`));
+  await lastStep(label[0]);
+  await eventually(async () => assert.equal(await view.locator(`[data-status="${status}"] dd`).innerText(), on, `the status follows ${name}`));
+  await viewSwitch(name).click();
+  await eventually(async () => assert.equal((await entryNow('en_spring')).seo[field] ?? false, false, `${name} is turned off again`));
+  await lastStep(label[1]);
+}
+// Another post never shows the text typed for this one, even text kept for being too long to save.
+await surface('Search result').click();
+await titleBox.fill('A'.repeat(130));
+await titleBox.press('Tab');
+await eventually(async () => assert.equal(await titleBox.getAttribute('aria-invalid'), 'true', 'text too long to save stays, marked'));
+await eventually(async () => assert.equal(await result('desktop').locator('.serp-title').innerText().then((t) => t.startsWith('AAAA')), true, 'and the result shows it'));
+await row('Winter hours').click();
+await eventually(async () => assert.equal(await view.locator('.seo-title').innerText(), 'Winter hours'));
+await eventually(async () => assert.equal(await titleBox.inputValue(), '', 'Winter’s title field shows its own title, none'));
+assert.equal(await titleBox.getAttribute('aria-invalid'), null);
+assert.match(await result('desktop').locator('.serp-title').innerText(), /^Winter hours/, 'its result shows its own default title');
+assert.match(await viewMeter('title').innerText(), /^Default title:/);
+assert.equal(await descriptionBox.inputValue(), '', 'and its own description, none');
+assert.equal((await entryNow('en_spring')).seo.title, 'Glaze weekend at Riverside', 'the text too long to save was never saved');
+await row('Spring open studio').click();
+await eventually(async () => assert.equal(await titleBox.inputValue(), 'Glaze weekend at Riverside', 'back on the post, its saved title shows'));
+assert.equal(await result('desktop').locator('.serp-title').innerText(), 'Glaze weekend at Riverside');
+await win.screenshot({ path: join(SHOTS, 'seo-view-post-settings.png') });
 await row('Winter hours').click();
 await eventually(async () => assert.equal(await view.locator('.seo-title').innerText(), 'Winter hours'));
 
@@ -368,6 +479,92 @@ await rail('posts').click();
 await eventually(async () => assert.equal(await win.locator('.post-writer-holder').isVisible(), true, 'the writer is back'));
 assert.equal(await modeButton('Preview').getAttribute('aria-pressed'), 'false', 'with Preview ready to choose again');
 assert.equal(await modeButton('Preview').isDisabled(), false);
+
+step('a post’s search settings edited in the view with the writer open on it (#703)');
+const writerHolder = win.locator('.post-writer-holder');
+// With the writer holding another post, a title saved in the view is the view's post's alone.
+assert.equal(await writerHolder.locator('.post-title-input').inputValue(), 'Spring open studio', 'the writer holds Spring');
+await rail('seo').click();
+await eventually(async () => assert.equal(await view.locator('.seo-title').innerText(), 'Winter hours'));
+await viewField('Browser title').fill('Winter hours by the river');
+await viewField('Browser title').press('Enter');
+await eventually(async () => assert.equal((await entryNow('en_winter')).seo?.title, 'Winter hours by the river', 'saved to the post chosen in the view'));
+assert.equal((await entryNow('en_spring')).seo.title, 'Glaze weekend at Riverside', 'never to the post the writer holds');
+await lastStep('Change post browser title');
+await rail('posts').click();
+await win.locator('.post-row .post-open', { hasText: 'Winter hours' }).click();
+await eventually(async () => assert.equal(await writerHolder.locator('.post-title-input').inputValue(), 'Winter hours', 'the writer holds Winter'));
+const writerSeo = writerHolder.locator('.post-seo');
+await writerSeo.locator('summary').first().click();
+const writerField = (name) => writerSeo.getByLabel(name, { exact: true });
+assert.equal(await writerField('Browser title').inputValue(), 'Winter hours by the river', 'the writer shows the title saved in the view');
+// Saved in the writer, it shows in the view.
+await writerField('Browser title').fill('Winter hours at the studio');
+await writerField('Browser title').press('Enter');
+await eventually(async () => assert.equal((await entryNow('en_winter')).seo?.title, 'Winter hours at the studio'));
+await rail('seo').click();
+await eventually(async () => assert.equal(await view.locator('.seo-title').innerText(), 'Winter hours'));
+await eventually(async () => assert.equal(await viewField('Browser title').inputValue(), 'Winter hours at the studio', 'a title saved in the writer shows in the view'));
+assert.equal(await result('desktop').locator('.serp-title').innerText(), 'Winter hours at the studio');
+// Saved in the view, it shows in the writer.
+await viewField('Browser title').fill('Short winter days');
+await viewField('Browser title').press('Enter');
+await eventually(async () => assert.equal((await entryNow('en_winter')).seo?.title, 'Short winter days'));
+await lastStep('Change post browser title');
+await eventually(async () => assert.equal(await writerField('Browser title').inputValue(), 'Short winter days', 'a title saved in the view shows in the writer'));
+/** Show the writer and press one of its buttons in one go, while a field of the view still has the text typed in it. */
+const pressInWriterWhileTyping = (button) =>
+  win.evaluate((name) => {
+    const typing = !!document.activeElement?.closest('.seo-view .seo-settings');
+    document.querySelector('.rail [data-rail="posts"]').click();
+    [...document.querySelectorAll('.post-writer-holder .post-bar button')].find((b) => b.textContent.trim() === name).click();
+    return typing;
+  }, button);
+// Save draft, pressed before anything saved the description typed in the view, keeps it.
+await viewField('Description').fill('Long nights at the wheel.');
+assert.equal(await pressInWriterWhileTyping('Save draft'), true, 'the description was still being typed in the view');
+await eventually(async () => assert.equal((await entryNow('en_winter')).seo?.description, 'Long nights at the wheel.', 'Save draft keeps what was typed in the view'));
+await eventually(async () => assert.match(await toasts(), /Saved as a draft\./, 'and says it saved'));
+assert.notEqual((await entryNow('en_winter')).draft, false, 'the post is still a draft');
+await eventually(async () => assert.equal(await writerField('Description').inputValue(), 'Long nights at the wheel.', 'the writer shows the description'));
+// Publish, pressed the same way, publishes the post with the title typed in the view.
+await rail('seo').click();
+await eventually(async () => assert.equal(await holder.isVisible(), true));
+await viewField('Browser title').fill('Winter hours, shorter days');
+assert.equal(await pressInWriterWhileTyping('Publish'), true, 'the title was still being typed in the view');
+await eventually(async () => assert.equal((await entryNow('en_winter')).draft, false, 'Publish publishes the post'));
+assert.equal((await entryNow('en_winter')).seo.title, 'Winter hours, shorter days', 'with the title typed in the view');
+// History names the step once it has recorded it, which can be just after the post itself changed.
+await eventually(async () => {
+  const lastSteps = (await snapshot()).history.entries.filter((e) => e.applied).map((e) => e.label).slice(-2);
+  assert.deepEqual(lastSteps, ['Change post browser title', 'Publish post'], 'the view’s change is saved before the post is published');
+});
+await eventually(async () => assert.equal(await writerField('Browser title').inputValue(), 'Winter hours, shorter days'));
+// An address the view refused is still the post’s: Move to drafts waits, and says where to look.
+await rail('seo').click();
+await eventually(async () => assert.equal(await holder.isVisible(), true));
+const viewCanonical = viewField('Canonical URL');
+await viewCanonical.fill('journal.example/winter');
+await viewCanonical.press('Tab');
+await eventually(async () => assert.equal(await viewCanonical.getAttribute('aria-invalid'), 'true', 'the view keeps the address it refused'));
+await rail('posts').click();
+await eventually(async () => assert.equal(await writerHolder.isVisible(), true));
+await writerHolder.getByRole('button', { name: 'Move to drafts' }).click();
+await eventually(async () => assert.match(await toasts(), /Part of the post is not saved yet, so it stays as it is\. See its search settings in the SEO view\./, 'Move to drafts says where the unsaved text is'));
+assert.equal((await entryNow('en_winter')).draft, false, 'the post stays published');
+await rail('seo').click();
+await eventually(async () => assert.equal(await holder.isVisible(), true));
+await viewCanonical.click();
+await viewCanonical.press('Escape');
+await eventually(async () => assert.equal(await viewCanonical.getAttribute('aria-invalid'), null, 'Escape lets the refused address go'));
+assert.equal(await viewCanonical.inputValue(), '');
+await rail('posts').click();
+await eventually(async () => assert.equal(await writerHolder.isVisible(), true));
+await writerHolder.getByRole('button', { name: 'Move to drafts' }).click();
+await eventually(async () => assert.notEqual((await entryNow('en_winter')).draft, false, 'then it moves to drafts'));
+assert.equal((await entryNow('en_winter')).seo.canonical, undefined, 'and no address was saved');
+// Its notices go before the next step looks at what is painted where the Preview pill sits, which is where they show.
+await eventually(async () => assert.equal(await win.locator('.toast').count(), 0, 'the notices have gone'), 15000);
 
 step('opened from Preview, the view covers the canvas’s own controls, and leaving it returns to the same Preview');
 await rail('pages').click();

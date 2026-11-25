@@ -47,6 +47,9 @@ export function useTypedSeo(key: string) {
   return { typed: typed.key === key ? typed.seo : {}, on };
 }
 
+/** How a document's Search & sharing fields report what they show (useTypedSeo). */
+export type TypedSeoOn = ReturnType<typeof useTypedSeo>['on'];
+
 /**
  * One document's previews with typed text laid over it: the search result, the link card and the length meters,
  * worked out from that document alone, so they follow every keystroke.

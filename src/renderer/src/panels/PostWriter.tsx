@@ -1,7 +1,7 @@
 import './PostsPanel.css';
 import { useEffect, useId, useMemo, useRef, useState, type KeyboardEvent as ReactKeyboardEvent } from 'react';
 import { Bold, Eye, Heading2, Heading3, Heading4, ImagePlus, Italic, Link, List, ListChecks, ListOrdered, Newspaper, Pilcrow, Quote, Send, Unlink, Undo2 } from 'lucide-react';
-import type { AssetRecord, EntryDoc, EntrySeo, ImageValue, LinkRel, LinkValue, ProjectState, RichText } from '@shared/types';
+import type { Collection, EntryDoc, ImageValue, LinkRel, LinkValue, ProjectState, RichText } from '@shared/types';
 import type { ProjectSnapshot } from '@shared/api';
 import type { SeoSubject } from '@shared/seo';
 import { entryRoute, findEntry, orderedEntries } from '@shared/collections';
@@ -11,14 +11,12 @@ import { relsFromAttribute } from '@shared/link-rel';
 import { newId } from '@shared/ids';
 import { normalizeRichText } from '@engine/values';
 import { EngineError } from '@engine/tree';
-import { assetLabels, sortAssets } from '@shared/asset-order';
+import { sortAssets } from '@shared/asset-order';
 import { applyOps, commitIfUnchanged, commitOps, getState, markDraft, projectHistory, setState, toast, useStore, type CheckedOutcome, type PostRef } from '../store';
-import { DraftInput, Field, Modal, SwitchRow } from '../components/ui';
-import { CanonicalUrlField, RevisionDateField } from '../components/SeoFields';
+import { DraftInput, Field, Modal } from '../components/ui';
+import { RevisionDateField } from '../components/SeoFields';
 import { LinkRelControls } from '../components/LinkRelControls';
 import { seoSummary } from '../lib/sharing';
-import { publicUrl } from '@shared/public-url';
-import { routeUrl } from '@shared/routes';
 import { AssetImage } from '../components/AssetImage';
 import { SiteImageField } from './PropEditors';
 import { TEXT_LIMITS } from '@shared/text-limits';
@@ -30,9 +28,10 @@ import { MAX_POST_TITLE, postAt } from '../lib/posts';
 import { PostTermFields } from './PostTerms';
 import { entryTermLabels } from '@shared/entry-fields';
 import type { EditOperation } from '@shared/ops';
-import { setMode } from '../lib/actions';
+import { openSeoView, setMode } from '../lib/actions';
 import { visitAddress } from './Canvas';
-import { LengthMeter, SeoPreview, subjectKey, useDocumentPreview, useTypedSeo } from './SeoPreview';
+import { SeoPreview, subjectKey, useDocumentPreview, useTypedSeo } from './SeoPreview';
+import { PostSearchFields } from './PostSearchFields';
 
 const MAX_EXCERPT = 320;
 /** How long before an action a field's refusal still stops it: the blur its button press caused. */
@@ -124,6 +123,8 @@ function PostEditor({ post, hidden }: { post: PostRef; hidden: boolean }) {
   /** The changes to the post's fields (title, date, address…) on their way, and when one was last refused. */
   const fieldCommits = useRef(new Set<Promise<unknown>>());
   const fieldRefusedAt = useRef(-Infinity);
+  /** This post in the SEO view, where its search settings can be typed in too. */
+  const inView = `.seo-view [data-seo-doc="${CSS.escape(subjectKey({ kind: 'entry', collectionId: post.collectionId, entryId: post.entryId }))}"]`;
   /** The latest saveAll, for the toolbar's Preview (see setOpenWriter). */
   const saveAllRef = useRef<() => Promise<boolean>>(() => Promise.resolve(true));
   /** Why the stored text cannot be edited here, if it cannot. */
@@ -233,7 +234,9 @@ function PostEditor({ post, hidden }: { post: PostRef; hidden: boolean }) {
     const offOpen = setOpenWriter(
       () => draft.flush(),
       () => saveAllRef.current(),
-      { collectionId: post.collectionId, entryId: post.entryId }
+      { collectionId: post.collectionId, entryId: post.entryId },
+      // A change to the post's fields made in the SEO view is followed as one of the writer's own.
+      (change) => void follow(change)
     );
     const offHistory = setWriterHistory((action) => void history(action));
     // Edit → Undo and Redo reach the text as the browser's own history: they are the project's here too.
@@ -298,18 +301,24 @@ function PostEditor({ post, hidden }: { post: PostRef; hidden: boolean }) {
     return p;
   };
   /**
+   * Follow a change to the post's fields on its way (the writer's own, or one made in the SEO view), so Publish and Save
+   * draft know whether it was saved: one the project refuses stops them. `held`: see update.
+   */
+  const follow = <T,>(change: Promise<T>, held = false): Promise<T> =>
+    track(
+      change.then((r) => {
+        if (!r && !held) fieldRefusedAt.current = performance.now();
+        return r;
+      })
+    );
+  /**
    * Change fields of the post, followed so Publish and Save draft know whether it was saved. `held`: the change asks
    * for what the post had when it began (only an image imported again, which is checked and never written), so
    * having nothing to write is no refusal. The check writes nothing either way: when it fails (the field edited
    * meanwhile, the post or project gone, the AI busy) the post keeps what it has, and the import says itself why.
    */
   const update = (fields: Record<string, unknown>, label: string, held = false) =>
-    track(
-      applyOps([{ type: 'entry.update', collectionId: post.collectionId, entryId: post.entryId, ...fields } as never], label).then((r) => {
-        if (!r && !held) fieldRefusedAt.current = performance.now();
-        return r;
-      })
-    );
+    follow(applyOps([{ type: 'entry.update', collectionId: post.collectionId, entryId: post.entryId, ...fields } as never], label), held);
   /**
    * Change what the post is filed under, worked out from the project at `revision`: an answer that the project has
    * moved on since comes back (not ok) to be worked out again, so no other change to the post is written over.
@@ -499,27 +508,39 @@ function PostEditor({ post, hidden }: { post: PostRef; hidden: boolean }) {
     const since = performance.now() - REFUSAL_WINDOW_MS;
     const at = document.activeElement;
     if (at instanceof HTMLElement && at.closest('.post-page') && !at.closest('.post-body')) at.blur();
+    // Or this post's search settings being typed in the SEO view, should anything save it from there.
+    else if (at instanceof HTMLElement && at.closest(inView)) at.blur();
     const saved = await draft.flush();
     await Promise.allSettled([...fieldCommits.current]);
     await appliesLanded();
-    // Or text kept for being too long.
-    return saved && fieldRefusedAt.current < since && !document.querySelector('.post-page [aria-invalid="true"]');
+    // Or text kept for being too long, here or in the SEO view.
+    return saved && fieldRefusedAt.current < since && !document.querySelector('.post-page [aria-invalid="true"]') && !heldInView();
   };
   saveAllRef.current = saveAll;
+  /**
+   * Whether the SEO view holds text typed for this post that it could not save (too long, an address that is not one):
+   * still the post's, so Publish and Save draft wait for it as for the writer's own.
+   */
+  const heldInView = () => !!document.querySelector(`${inView} [aria-invalid="true"]`);
+  /** Say that part of the post is not saved, and where to see why: beside it here, or in the SEO view. */
+  const notSaved = (what: string) => {
+    const inView = heldInView() && !document.querySelector('.post-page [aria-invalid="true"]');
+    toast(`${what} ${inView ? 'See its search settings in the SEO view.' : 'See the note beside it.'}`, 'error', inView ? { label: 'Open SEO view', run: () => void openSeoView({ kind: 'entry', collectionId: post.collectionId, entryId: post.entryId }) } : undefined);
+  };
   const publish = async (draftOn: boolean) => {
-    if (!(await saveAll())) return toast(draftOn ? 'Part of the post is not saved yet, so it stays as it is. See the note beside it.' : 'Part of the post is not saved yet, so it was not published. See the note beside it.', 'error');
+    if (!(await saveAll())) return notSaved(draftOn ? 'Part of the post is not saved yet, so it stays as it is.' : 'Part of the post is not saved yet, so it was not published.');
     const r = await update({ draft: draftOn }, draftOn ? 'Move post to drafts' : 'Publish post');
     if (r) toast(draftOn ? 'Moved to drafts: it is no longer on the website.' : 'Published: it is on the website from the next export.', 'success');
   };
   const saveDraft = async () => {
     if (await saveAll()) toast(entry.draft === false ? 'Saved.' : 'Saved as a draft.', 'success');
-    else toast('Part of the post is not saved yet. See the note beside it.', 'error');
+    else notSaved('Part of the post is not saved yet.');
   };
   const preview = async () => {
     const key = getState().snapshot?.workspaceKey;
     const away = putAway.current;
     // The preview shows what is saved: text that could not be saved stays in view with its note.
-    if (!(await saveAll())) return toast('Part of the post is not saved yet, so the preview would not show it. See the note beside it.', 'error');
+    if (!(await saveAll())) return notSaved('Part of the post is not saved yet, so the preview would not show it.');
     // Another post (or project) opened while this one saved: the preview was this post's, so it does not start (#578).
     // Nor once the writer was put away meanwhile (another panel, the SEO view), even if it is back: the author went
     // elsewhere (#700).
@@ -562,8 +583,6 @@ function PostEditor({ post, hidden }: { post: PostRef; hidden: boolean }) {
   const route = entryRoute(collection, entry);
   const filedUnder = collection ? entryTermLabels(collection, entry, 'categories') : [];
   const published = entry.draft === false;
-  const images = useMemo(() => sortAssets(Object.values(state.assets.assets).filter((a) => a.kind === 'image'), 'name'), [state.assets]);
-  const labels = useMemo(() => assetLabels(images), [images]);
   const blockLabel = { p: 'Paragraph', h2: 'Heading 2', h3: 'Heading 3', h4: 'Heading 4', blockquote: 'Quote' } as Record<string, string>;
   const tools: Array<{ id: string; label: string; icon: React.ReactNode; on?: boolean; run: () => void; gap?: boolean }> = [
     { id: 'p', label: 'Paragraph', icon: <Pilcrow />, on: pressed.block === 'p' || pressed.block === 'div', run: () => block('p') },
@@ -651,7 +670,7 @@ function PostEditor({ post, hidden }: { post: PostRef; hidden: boolean }) {
               <PostTermFields post={post} collection={collection} entry={entry} sendAt={sendAt} track={track} refused={refused} />
             </div>
           </details>
-          <PostSearchSettings state={state} post={post} entry={entry} route={route} published={published} hidden={hidden} images={images} labels={labels} update={update} />
+          <PostSearchSettings state={state} post={post} collection={collection} entry={entry} hidden={hidden} update={update} />
           <div className="post-tools" role="toolbar" aria-label="Formatting">
             {tools.map((t) => (
               <button
@@ -933,36 +952,8 @@ function LinkDialog({ dialog, state, self, onChange, onApply }: { dialog: Extrac
  * its title, description and canonical URL as they are typed. Its own component, so typing re-renders only this, not
  * the writer.
  */
-function PostSearchSettings({
-  state,
-  post,
-  entry,
-  route,
-  published,
-  hidden,
-  images,
-  labels,
-  update
-}: {
-  state: ProjectState;
-  post: PostRef;
-  entry: EntryDoc;
-  route: string;
-  published: boolean;
-  hidden: boolean;
-  images: AssetRecord[];
-  labels: ReturnType<typeof assetLabels>;
-  update: (fields: Record<string, unknown>, label: string) => unknown;
-}) {
-  const uid = useId();
-  // The post's search and sharing settings, and what it falls back to without each.
-  const seo: EntrySeo = entry.seo && typeof entry.seo === 'object' ? entry.seo : {};
-  const defaultTitle = `${entry.title} · ${state.site.name}`;
-  const base = publicUrl(state.site);
-  const ownUrl = base ? base + routeUrl(route) : null;
-  const featured = entry.featuredImage && state.assets.assets[entry.featuredImage]?.kind === 'image';
-  const inheritedImage = featured ? 'The featured image' : state.site.socialImage ? 'The site’s sharing image' : 'None';
-  const seoScope = seoSummary(seo);
+function PostSearchSettings({ state, post, collection, entry, hidden, update }: { state: ProjectState; post: PostRef; collection: Collection; entry: EntryDoc; hidden: boolean; update: (fields: Record<string, unknown>, label: string) => unknown }) {
+  const seoScope = seoSummary(entry.seo && typeof entry.seo === 'object' ? entry.seo : {});
   const seoSubject = useMemo<SeoSubject>(() => ({ kind: 'entry', collectionId: post.collectionId, entryId: post.entryId }), [post.collectionId, post.entryId]);
   const { typed: seoTyped, on: seoOn } = useTypedSeo(subjectKey(seoSubject));
   const { overlay: seoOverlay, doc: seoDoc } = useDocumentPreview(state, seoSubject, seoTyped);
@@ -973,51 +964,7 @@ function PostSearchSettings({
       <summary>Search & sharing{seoScope ? ` · ${seoScope}` : ''}</summary>
       <div className="post-fields">
         <SeoPreview state={state} subject={seoSubject} overlay={seoOverlay} typed={seoTyped} doc={seoDoc} shown={seoOpen && !hidden} />
-        <div data-entry-field="seoTitle" style={{ display: 'contents' }}>
-          <Field
-            label="Browser title"
-            hint={
-              <>
-                Leave empty to use “{defaultTitle}”.
-                <LengthMeter kind="title" doc={seoDoc} />
-              </>
-            }
-          >
-            <DraftInput value={seo.title ?? ''} limit={TEXT_LIMITS.seoTitle} placeholder={defaultTitle} onDirty={seoOn.title} onCommit={(v) => (v.trim() !== (seo.title ?? '') ? update({ seoTitle: v.trim() }, 'Change post browser title') : undefined)} />
-          </Field>
-        </div>
-        <div data-entry-field="seoDescription" style={{ display: 'contents' }}>
-          <Field
-            label="Description"
-            hint={
-              <>
-                Shown by search engines and link previews. Leave empty to use the excerpt.
-                <LengthMeter kind="description" doc={seoDoc} />
-              </>
-            }
-          >
-            <DraftInput multiline rows={3} value={seo.description ?? ''} limit={TEXT_LIMITS.pageDescription} placeholder={entry.excerpt || state.site.description || 'Describe this post'} onDirty={seoOn.description} onCommit={(v) => (v.trim() !== (seo.description ?? '') ? update({ description: v.trim() }, 'Change post description') : undefined)} />
-          </Field>
-        </div>
-        <Field label="Sharing image" controlId={`${uid}-sharing`} hint="The picture link previews show.">
-          <select id={`${uid}-sharing`} className="select" value={seo.socialImage ?? ''} onChange={(e) => void update({ socialImage: e.target.value || null }, e.target.value ? 'Change post sharing image' : 'Use the default sharing image')}>
-            <option value="">{inheritedImage}</option>
-            {seo.socialImage && !images.some((a) => a.id === seo.socialImage) && <option value={seo.socialImage}>Missing image</option>}
-            {images.map((a) => (
-              <option key={a.id} value={a.id}>
-                {labels.get(a.id)?.label ?? a.name}
-              </option>
-            ))}
-          </select>
-        </Field>
-        <CanonicalUrlField value={seo.canonical} ownUrl={ownUrl} what="post" onTyped={seoOn.canonical} onCommit={(url) => update({ canonical: url }, url ? 'Change post canonical URL' : 'Clear post canonical URL')} />
-        <SwitchRow
-          checked={!!seo.noindex}
-          onChange={(v) => void update({ noindex: v }, v ? 'Hide post from search engines' : 'Show post to search engines')}
-          label="Hide from search engines"
-          hint={published ? 'Search engines are asked not to list it, and the sitemap leaves it out. Anyone with the address can still open it.' : 'Once published, search engines are asked not to list it, and the sitemap leaves it out.'}
-        />
-        <SwitchRow checked={!!seo.searchHidden} onChange={(v) => void update({ searchHidden: v }, v ? 'Hide post from site search' : 'Show post in site search')} label="Hide from site search" hint="Keeps this post out of the site’s own search results, whatever search engines are told." />
+        <PostSearchFields state={state} collection={collection} entry={entry} doc={seoDoc} on={seoOn} save={(edit) => update(edit.fields, edit.label)} />
       </div>
     </details>
   );

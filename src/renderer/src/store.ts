@@ -581,6 +581,8 @@ interface DraftOptions {
   check?: boolean;
   shown?: string;
   review?: boolean;
+  /** The control it was typed in, for as long as it is on screen (see writeTyped). */
+  control?: object;
 }
 
 /** The typed edit being committed (see commitDraft). */
@@ -594,7 +596,8 @@ let draft: ({ base: ProjectSnapshot | null; text: string | null } & DraftOptions
  * Otherwise it is written only while each field it writes still holds what it held in `base` (see
  * writeTyped). `review` says the author typed over something other than `base` holds (the page had not
  * caught up), so the edit waits for them to look at the field, unless it holds just `shown`, the text
- * they typed over.
+ * they typed over. `control` names the control it was typed in, when another control can edit the same field (a
+ * post's search title, in the post writer and in the SEO view): only that control's own save is written over unseen.
  */
 export function commitDraft<T>(base: ProjectSnapshot | null, commit: () => T, text: string | null = null, opts: DraftOptions = {}): T {
   const prev = draft;
@@ -644,7 +647,7 @@ export async function commitOps(operations: EditOperation[], label: string, coal
   const s = getState();
   // A rename being committed goes with its typed edit, so whichever way that edit is held (now, when main answers
   // that the AI has just started, or because the title changed elsewhere) it carries the rename's offer.
-  const typed = draft ? { base: draft.base ?? s.snapshot, text: draft.text, seq: ++commitSeq, check: !!draft.check, shown: draft.shown, review: !!draft.review, rename: renaming } : null;
+  const typed = draft ? { base: draft.base ?? s.snapshot, text: draft.text, seq: ++commitSeq, check: !!draft.check, shown: draft.shown, review: !!draft.review, rename: renaming, control: draft.control } : null;
   if (typed) newestCommit.set(fieldOf(typed.base?.workspaceKey, operations), typed.seq);
   if (s.snapshot?.aiBusy) {
     landed({ ok: false, message: refuseWhileAiBusy(typed, operations, label) });
@@ -702,8 +705,8 @@ export async function commitOps(operations: EditOperation[], label: string, coal
 
 const HELD_MESSAGE = 'An edit you made has not been saved yet.';
 
-/** The revision each field's latest typed save made, by opening and field (see writeTyped). */
-const ownSaves = new Map<string, { revision: number; text: string | null }>();
+/** The revision each field's latest typed save made, and the control it was typed in, by opening and field (see writeTyped). */
+const ownSaves = new Map<string, { revision: number; text: string | null; control?: object }>();
 
 /** A typed edit's fields as they were when typing began: what it is checked against before it is written. */
 function typedGuard(base: ProjectSnapshot | null, operations: EditOperation[]): { base: ProjectSnapshot; before: unknown[] } | null {
@@ -724,7 +727,7 @@ function typedGuard(base: ProjectSnapshot | null, operations: EditOperation[]): 
  */
 async function writeTyped(
   guard: { base: ProjectSnapshot; before: unknown[] },
-  typed: { text: string | null; seq: number; shown?: string; review: boolean; rename: PendingRename | null },
+  typed: { text: string | null; seq: number; shown?: string; review: boolean; rename: PendingRename | null; control?: object },
   operations: EditOperation[],
   label: string,
   coalesceKey: string | undefined,
@@ -750,7 +753,10 @@ async function writeTyped(
       // Changed only by the author's own save of this field, which typing began before this window heard of, and
       // nothing since: nothing they did not see is lost.
       // The only change since the base is that save, so nothing else it reads (a route a link names, say) moved.
-      const own = ownSaves.get(field)?.revision;
+      // A save typed in another control of the same field (the SEO view's, while the writer's held text too long to
+      // save) is not one the author saw from here: the edit waits for them to choose.
+      const save = ownSaves.get(field);
+      const own = save && (!save.control || !typed.control || save.control === typed.control) ? save.revision : undefined;
       const ownOnly = own !== undefined && own === base.revision + 1 && own === snap.revision;
       // Tab can start the next cell before this window hears that it saved the row's first cell.
       const rowName = check.kind === 'changed' ? tableRowNameEdit(operations, before, current) : null;
@@ -768,7 +774,7 @@ async function writeTyped(
     if (r.ok) {
       const [op] = operations;
       const text = operations.length === 1 && op.type === 'instance.editTable' && op.action === 'setCell' ? typed.text : null;
-      ownSaves.set(field, { revision: r.revision, text });
+      ownSaves.set(field, { revision: r.revision, text, control: typed.control });
       return { held: false, result: r };
     }
     const code = r.error?.code;
