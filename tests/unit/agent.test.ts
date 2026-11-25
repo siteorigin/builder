@@ -4359,7 +4359,7 @@ describe('the project diagnostics in the editor context (#757)', () => {
       ...Array.from({ length: 30 }, (_, i) => ({ severity: 'error' as const, code: 'E', message: `error ${i}`, owner: { kind: 'page', id: i % 2 ? 'p_a' : 'p_b' } })),
       { severity: 'info' as const, code: 'I', message: 'info' }
     ];
-    const rank = (d: { owner?: { id: string } }) => (d.owner?.id === 'p_a' ? 1 : 2);
+    const rank = (d: { owner?: { id: string } }) => (d.owner?.id === 'p_a' ? 2 : 3);
     expect(diagnosticsContext([], rank, 2048, 'more')).toBeUndefined();
     const full = diagnosticsContext(diags, rank, 100_000, 'more')!;
     expect(full.errors).toHaveLength(30);
@@ -4390,34 +4390,37 @@ describe('the project diagnostics in the editor context (#757)', () => {
     const home = state.site.homePageId;
     const rank = diagnosticRank(state, { pageId: home });
     const placed = Object.values(state.pages[home].nodes).find((n) => n.kind === 'instance') as InstanceNode;
-    expect(rank({ severity: 'error', code: 'X', message: '', owner: { kind: 'page', id: home } })).toBe(1);
-    expect(rank({ severity: 'error', code: 'X', message: '', owner: { kind: 'shell', id: 'header' } })).toBe(1);
-    expect(rank({ severity: 'error', code: 'X', message: '', owner: { kind: 'component', id: placed.definitionId } })).toBe(1);
-    expect(rank({ severity: 'error', code: 'X', message: '', owner: { kind: 'page', id: 'p_elsewhere' } })).toBe(2);
-    expect(rank({ severity: 'error', code: 'X', message: '' })).toBe(2);
+    expect(rank({ severity: 'error', code: 'X', message: '', owner: { kind: 'page', id: home } })).toBe(2);
+    expect(rank({ severity: 'error', code: 'X', message: '', owner: { kind: 'shell', id: 'header' } })).toBe(2);
+    expect(rank({ severity: 'error', code: 'X', message: '', owner: { kind: 'component', id: placed.definitionId } })).toBe(2);
+    expect(rank({ severity: 'error', code: 'X', message: '', owner: { kind: 'page', id: 'p_elsewhere' } })).toBe(3);
+    expect(rank({ severity: 'error', code: 'X', message: '' })).toBe(3);
     // A page without its header does not show it.
     state.pages[home].showHeader = false;
-    expect(diagnosticRank(state, { pageId: home })({ severity: 'error', code: 'X', message: '', owner: { kind: 'shell', id: 'header' } })).toBe(2);
+    expect(diagnosticRank(state, { pageId: home })({ severity: 'error', code: 'X', message: '', owner: { kind: 'shell', id: 'header' } })).toBe(3);
     // What the page shows through the components placed there counts too.
-    const elsewhere = Object.keys(state.components).find((id) => rank({ severity: 'error', code: 'X', message: '', owner: { kind: 'component', id } }) === 2)!;
+    const elsewhere = Object.keys(state.components).find((id) => rank({ severity: 'error', code: 'X', message: '', owner: { kind: 'component', id } }) === 3)!;
     expect(elsewhere).toBeDefined();
     state.components[placed.definitionId] = { ...state.components[placed.definitionId], tree: { rootIds: ['n_x'], nodes: { ...(state.components[placed.definitionId].tree?.nodes ?? {}), n_x: { id: 'n_x', kind: 'instance', definitionId: elsewhere, props: {} } as never } } } as never;
     state.pages[home].showHeader = true;
-    expect(diagnosticRank(state, { pageId: home })({ severity: 'error', code: 'X', message: '', owner: { kind: 'component', id: elsewhere } })).toBe(1);
+    expect(diagnosticRank(state, { pageId: home })({ severity: 'error', code: 'X', message: '', owner: { kind: 'component', id: elsewhere } })).toBe(2);
     // An element selected inside a placement is its component's node, and that is the request's target.
     const nested = diagnosticRank(state, { pageId: home, selection: { owner: { kind: 'page', id: home }, instancePath: [placed.id], nodeId: 'n_x' } });
     expect(nested({ severity: 'error', code: 'X', message: '', owner: { kind: 'component', id: placed.definitionId }, nodeId: 'n_x' })).toBe(0);
     expect(nested({ severity: 'error', code: 'X', message: '', owner: { kind: 'page', id: home }, nodeId: placed.id })).toBe(0);
-    expect(nested({ severity: 'error', code: 'X', message: '', owner: { kind: 'page', id: home }, nodeId: 'n_other' })).toBe(1);
+    expect(nested({ severity: 'error', code: 'X', message: '', owner: { kind: 'page', id: home }, nodeId: 'n_other' })).toBe(2);
     // A post: the entry first, then its collection's layout and what that places, not the page behind the editor.
     state.collections = { posts: { settings: { template: { rootIds: ['t1'], nodes: { t1: { id: 't1', kind: 'instance', definitionId: elsewhere, props: {} } } } }, entries: {} } } as never;
     const post = diagnosticRank(state, { post: { collectionId: 'posts', entryId: 'e1' } });
-    expect(post({ severity: 'error', code: 'X', message: '', owner: { kind: 'entry', id: 'e1' } })).toBe(0);
-    expect(post({ severity: 'error', code: 'X', message: '', owner: { kind: 'template', id: 'posts' } })).toBe(1);
-    expect(post({ severity: 'error', code: 'X', message: '', owner: { kind: 'component', id: elsewhere } })).toBe(1);
-    expect(post({ severity: 'error', code: 'X', message: '', owner: { kind: 'page', id: home } })).toBe(2);
-    // A component edited everywhere is the request's target.
-    expect(diagnosticRank(state, { pageId: home, definitionId: placed.definitionId })({ severity: 'error', code: 'X', message: '', owner: { kind: 'component', id: placed.definitionId } })).toBe(0);
+    expect(post({ severity: 'error', code: 'X', message: '', owner: { kind: 'entry', id: 'e1' } })).toBe(1);
+    expect(post({ severity: 'error', code: 'X', message: '', owner: { kind: 'template', id: 'posts' } })).toBe(2);
+    expect(post({ severity: 'error', code: 'X', message: '', owner: { kind: 'component', id: elsewhere } })).toBe(2);
+    expect(post({ severity: 'error', code: 'X', message: '', owner: { kind: 'page', id: home } })).toBe(3);
+    // A component edited everywhere is the request's target, and an element selected in it comes before the rest of it.
+    const both = diagnosticRank(state, { pageId: home, definitionId: placed.definitionId, selection: { owner: { kind: 'component', id: placed.definitionId }, instancePath: [], nodeId: 'n_x' } });
+    expect(both({ severity: 'error', code: 'X', message: '', owner: { kind: 'component', id: placed.definitionId }, nodeId: 'n_x' })).toBe(0);
+    expect(both({ severity: 'error', code: 'X', message: '', owner: { kind: 'component', id: placed.definitionId }, nodeId: 'n_sibling' })).toBe(1);
+    expect(diagnosticRank(state, { pageId: home, definitionId: placed.definitionId })({ severity: 'error', code: 'X', message: '', owner: { kind: 'component', id: placed.definitionId } })).toBe(1);
   });
 
   it('asks again without the list, keeping the tools, when the provider finds the first request too long', async () => {

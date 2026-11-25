@@ -1036,11 +1036,11 @@ export interface DiagnosticFocus {
 }
 
 /**
- * How near a diagnostic sits to what the request is about: 0 on its target (the selected element, the component edited
- * everywhere, the post), 1 on the page it was sent from or what that page shows (its header and footer while it shows
- * them, and every component placed there, however deep), 2 anywhere else.
+ * How near a diagnostic sits to what the request is about: 0 on the selected element, 1 on the rest of its target (the
+ * component edited everywhere, the post), 2 on the page it was sent from or what that page shows (its header and footer
+ * while it shows them, and every component placed there, however deep), 3 anywhere else.
  */
-export function diagnosticRank(state: ProjectState, focus: DiagnosticFocus): (d: Diagnostic) => 0 | 1 | 2 {
+export function diagnosticRank(state: ProjectState, focus: DiagnosticFocus): (d: Diagnostic) => 0 | 1 | 2 | 3 {
   const key = (o: { kind: string; id: string }) => `${o.kind}:${o.id}`;
   /** Owners the request is about as a whole. */
   const target = new Set<string>();
@@ -1101,8 +1101,9 @@ export function diagnosticRank(state: ProjectState, focus: DiagnosticFocus): (d:
   }
   return (d) => {
     const owner = d.owner ? key(d.owner) : '';
-    if (target.has(owner) || (d.nodeId !== undefined && selected.has(`${owner}|${d.nodeId}`))) return 0;
-    return near.has(owner) ? 1 : 2;
+    if (d.nodeId !== undefined && selected.has(`${owner}|${d.nodeId}`)) return 0;
+    if (target.has(owner)) return 1;
+    return near.has(owner) ? 2 : 3;
   };
 }
 
