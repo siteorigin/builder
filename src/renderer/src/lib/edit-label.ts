@@ -1,5 +1,5 @@
-import type { ElementRef, OwnerRef, ProjectState } from '@shared/types';
-import { STYLE_PROP_MAP } from '@shared/styles';
+import type { ElementRef, OwnerRef, ProjectState, StyleState } from '@shared/types';
+import { STATE_WORDS, STYLE_PROP_MAP } from '@shared/styles';
 import { ownerLabel, refLabel, treeFor } from './model';
 
 /*
@@ -39,10 +39,11 @@ export const styleWords = (property: string) => (STYLE_PROP_MAP[property]?.label
 
 /**
  * A style property set on an element, or on `part` of it: "Set vertical padding for Split hero on Home". `value` is
- * what it was set to: none takes the element's own setting away ("Reset vertical padding for…").
+ * what it was set to: none takes the element's own setting away ("Reset vertical padding for…"). `inState`: the change is
+ * for an interactive state ("Set background on hover for…").
  */
-export function styleLabel(state: ProjectState, property: string, ref: ElementRef, part?: string, value?: unknown): string {
-  return forLabel(state, `${value === null ? 'Reset' : 'Set'} ${styleWords(property)}`, ref, part);
+export function styleLabel(state: ProjectState, property: string, ref: ElementRef, part?: string, value?: unknown, inState?: StyleState): string {
+  return forLabel(state, `${value === null ? 'Reset' : 'Set'} ${styleWords(property)}${inState ? ` ${STATE_WORDS[inState]}` : ''}`, ref, part);
 }
 
 /** The name of part `partId` of the placement `nodeId`, unless it is the placement's own root (which goes by the placement's name). */

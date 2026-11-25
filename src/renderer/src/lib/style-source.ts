@@ -1,5 +1,6 @@
-import type { ResponsiveScope, ResponsiveStyles, StyleValue } from '@shared/types';
-import { cascadeStyles, columnSizesForAllSizes, cssRivals, wideOnlyStyle } from '@shared/styles';
+import type { ResponsiveScope, ResponsiveStyles, StyleState, StyleValue } from '@shared/types';
+import { parseStyleScopeKey, styleScopeKey } from '@shared/types';
+import { cascadeStyles, columnSizesForAllSizes, cssRivals, isStateStyleProp, wideOnlyStyle, type StyleLayer } from '@shared/styles';
 
 export interface StyleSourceInput {
   prop: string;
@@ -59,6 +60,66 @@ export function styleUnder({ prop, scope, styles, inherited, designSizesWin, wid
   // writing the same CSS won, or the design's All sizes value skips that size). Only raw design scopes fall back.
   const fromDesign = scope === 'base' || designSizesWin ? (designHere ?? inherited?.base?.[prop]) : designHere;
   return { value: fromDesign, from: fromDesign !== undefined ? 'design' : undefined };
+}
+
+export interface StateSourceInput extends StyleSourceInput {
+  /** The interactive state being edited. */
+  state: StyleState;
+  /** The size the canvas shows: under All sizes, what shows through is the value at this size. */
+  preview: Exclude<ResponsiveScope, 'base'>;
+  /**
+   * The rules under `styles` as they are stored, weakest first (a design's own node styles, then its selected looks),
+   * so a look's own hover, focus or pressed value is found. Without them, `inherited` stands for the design's resting
+   * values.
+   */
+  layers?: StyleLayer[];
+}
+
+/**
+ * What shows through in an interactive state when this element sets nothing for it at the edited size, and where it
+ * comes from, worked out the way the stylesheet cascades it: a stronger layer wins whatever its state; within one
+ * layer (one stylesheet block) a state rule beats every resting rule, a size's own rule beats the rule for all sizes,
+ * and a later layer beats an earlier one. `all-sizes` is this element's own value for this state at every size,
+ * `default` its own resting value, `design` anything from the design or the look in use (resting or in this state).
+ * Under All sizes, the element's own values for this state at single sizes are listed as exceptions, so they are
+ * left out here too.
+ */
+export function stateUnder({ prop, scope, state, preview, styles, inherited, designSizesWin, layers }: StateSourceInput): { value: StyleValue | undefined; from: 'all-sizes' | 'default' | 'design' | undefined } {
+  const size = scope === 'base' ? preview : scope;
+  type Source = { styles: ResponsiveStyles | undefined; strength: number; own: boolean };
+  // Editing a design everywhere, its changes replace its original values in the same rules: one layer, where a
+  // value taken away brings back the original.
+  const sources: Source[] = designSizesWin
+    ? [
+        { styles: inherited, strength: 1, own: false },
+        { styles, strength: 1, own: true }
+      ]
+    : [...(layers ?? (inherited ? [{ styles: inherited, strength: 1 }] : [])).map((l) => ({ styles: l.styles, strength: l.strength, own: false })), { styles, strength: Infinity, own: true }];
+  const edited = new Set<string>([styleScopeKey(scope, state), ...(scope === 'base' ? [styleScopeKey(size, state)] : [])]);
+  let best: { value: StyleValue; rank: number[]; from: 'all-sizes' | 'default' | 'design' } | undefined;
+  sources.forEach((src, index) => {
+    for (const [key, props] of Object.entries(src.styles ?? {})) {
+      const at = parseStyleScopeKey(key);
+      if (!at || (at.scope !== 'base' && at.scope !== size) || (at.state !== undefined && at.state !== state)) continue;
+      if (at.state && !isStateStyleProp(prop)) continue;
+      const value = props?.[prop];
+      if (value === undefined) continue;
+      // The value being edited (and, under All sizes, this element's own exceptions to it).
+      if (src.own && edited.has(key)) continue;
+      // Editing a design everywhere, a change replaces the original value in the same place; taking the edited one
+      // away brings its original back.
+      if (designSizesWin && !src.own && key !== styleScopeKey(scope, state) && styles?.[key as keyof ResponsiveStyles]?.[prop] !== undefined) continue;
+      const rank = [src.strength, at.state ? 1 : 0, at.scope === 'base' ? 0 : 1, index];
+      if (best && !rankAfter(rank, best.rank)) continue;
+      best = { value, rank, from: !src.own ? 'design' : at.state ? 'all-sizes' : 'default' };
+    }
+  });
+  return best ? { value: best.value, from: best.from } : { value: undefined, from: undefined };
+}
+
+function rankAfter(a: number[], b: number[]): boolean {
+  for (let i = 0; i < a.length; i++) if (a[i] !== b[i]) return a[i] > b[i];
+  return true;
 }
 
 /** The value the element ends up with at the edited size: its own value there, else whatever shows through. */

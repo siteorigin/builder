@@ -1977,6 +1977,10 @@ iframe { color-scheme: light dark; }
 .style-scope-link { border: 0; background: none; padding: 0; color: var(--accent-text); font-weight: 600; text-decoration: underline; text-underline-offset: 2px; text-decoration-color: color-mix(in srgb, currentColor 40%, transparent); }
 .style-scope-link:hover { text-decoration-color: currentColor; }
 .editor.defining .style-scope-link { color: var(--plum); }
+/* The state picker sits under the sizes, in the same sticky band; a chosen state is marked like one size alone. */
+.style-state { display: flex; flex-direction: column; gap: 6px; padding-top: 4px; }
+.style-state-picker.in-state button[aria-checked='true'] { background: color-mix(in srgb, var(--accent) 12%, var(--raised)); color: var(--accent-text); box-shadow: inset 0 0 0 1px var(--accent), var(--shadow-sm); }
+.editor.defining .style-state-picker.in-state button[aria-checked='true'] { background: color-mix(in srgb, var(--plum) 12%, var(--raised)); color: var(--plum); box-shadow: inset 0 0 0 1px var(--plum), var(--shadow-sm); }
 /* Groups are separated by a straight rule; a group with more options than it shows opens from its heading. */
 .style-group { display: flex; flex-direction: column; gap: 6px; padding: 10px 0; }
 .style-group + .style-group { border-top: 1px solid var(--border); }
