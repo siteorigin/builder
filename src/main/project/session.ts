@@ -34,7 +34,7 @@ import { packFileInfo, readPackFile } from '../packs/files';
 import { SITE_ICON_PATHS, SiteIconMaker } from './site-icons';
 import { ownServerHook } from './server-hook';
 import { checkSvelteSource, codeContractNames, componentSources } from '../codecheck';
-import { declaresFormTool } from '@generator/webmcp';
+import { isWebMcpForm } from '@shared/webmcp';
 import { asRoute, COMPONENT_DOC, componentCycle, linksInto, ownUrlLinks, placementsOf, siteAddresses, siteBases, stepChanges, type DocVersions } from './turn-review';
 import { isDiscoveryPath } from '@shared/llms';
 import { RSS_PATH } from '@generator/rss';
@@ -1206,7 +1206,7 @@ export class ProjectSession extends EventEmitter {
     }
     const def = next.components[made.definitionId];
     // A contact form's copy for AI agents is written only while the site declares tools: the code imports the form.
-    const adapters = new Map(Object.values(next.components).flatMap((d) => (declaresFormTool(d) ? [[webMcpFormFile(d), defFile(d)] as const] : [])));
+    const adapters = new Map(Object.values(next.components).flatMap((d) => (isWebMcpForm(d) ? [[webMcpFormFile(d), defFile(d)] as const] : [])));
     def.source = await relocateSource(text, path, made.sourcePath, (target) => adapters.get(target));
     // The parts and slots the edited code shows for itself are declared too, as for any code saved.
     const names = await codeContractNames(def.source);

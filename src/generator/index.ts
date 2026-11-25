@@ -1400,8 +1400,9 @@ function nestedStateMarker(owner: ComponentDefinition, def: ComponentDefinition,
  * directly or as the root of the designs placed there.
  */
 function stylesCode(state: ProjectState, placed: ComponentDefinition, partId: string): boolean {
-  // A design's file converted to code renders its parts as the design did, styled from the shared stylesheet.
-  const def = designCalled(state, placed) ?? placed;
+  // A design's file converted to code renders the design's parts as the design did, styled from the shared stylesheet;
+  // a part its code added is its code's own.
+  const def = calledFor(placed, designCalled(state, placed), partId);
   if (def.kind === 'code') return true;
   let target = def.tree?.nodes[def.parts[partId]?.nodeId ?? def.tree.rootIds[0]];
   for (const seen = new Set<string>(); target?.kind === 'instance' && !seen.has(target.definitionId); ) {

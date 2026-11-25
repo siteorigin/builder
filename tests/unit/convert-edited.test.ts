@@ -77,6 +77,7 @@ describe('a design’s file moved to the custom folder (#737)', () => {
       '\t.e::before { content: url(./badge.svg); --caption: "url(cap.svg)"; }',
       '\t.f { background: url(.well-known/logo.svg); }',
       '\t@import /* note */ "./note.css";',
+      '\t@import /* a */ "./sup.css" supports(/* b */ grid-template-areas: "a a");',
       '</style>',
       ''
     ].join('\n');
@@ -93,6 +94,7 @@ describe('a design’s file moved to the custom folder (#737)', () => {
         .replace('url(./badge.svg)', 'url(../generated/badge.svg)')
         .replace('url(.well-known/logo.svg)', 'url(../generated/.well-known/logo.svg)')
         .replace('"./note.css"', '"../generated/note.css"')
+        .replace('"./sup.css"', '"../generated/sup.css"')
     );
   });
 
@@ -212,12 +214,16 @@ describe('placements of a converted design file (#737)', () => {
     const { state: placed } = applyOperations(next, [{ type: 'node.insert', owner: { kind: 'component', id: design.id }, parentId: design.tree!.rootIds[0], definitionId: ids[hero] }]);
     const [{ node }] = instancesOf(placed, ids[hero]).filter((u) => u.owner.kind === 'component') as Array<{ node: InstanceNode }>;
     node.overrides = { badge: { base: { color: '#123456' } }, heading: { base: { color: '#654321' } } };
+    // On a page too, where the code's own scoped styles for its part are outweighed as any code part's are.
+    const [{ node: onPage }] = instancesOf(placed, ids[hero]).filter((u) => u.owner.kind === 'page') as Array<{ node: InstanceNode }>;
+    onPage.overrides = { ...onPage.overrides, badge: { base: { color: '#abcdef' } } };
     const files = generateProject(placed, { instrument: false });
     const designFile = files.get(defFile(placed.components[design.id]))!;
     expect(designFile).toMatch(/so_o=\{\{[^}]*"badge":/);
     const css = files.get('src/lib/siteorigin/styles/components.css')!;
     expect(css).toContain('#123456');
     expect(css).toContain('#654321');
+    expect(files.get('src/lib/siteorigin/styles/site.css')).toMatch(/color: #abcdef !important/);
   });
 
   it('is called as code once it no longer names the design it was made from', () => {
@@ -254,5 +260,8 @@ describe('imports of a converted file, checked against the project (#737)', () =
     const modules = (p: string) => p === 'src/lib/siteorigin/custom/present.js';
     const problems = await checkSvelteSource("<script>\n\timport x from './missing.svg?raw&p=/../present.js';\n</script>\n<p>{x}</p>\n", { filename: 'src/lib/siteorigin/custom/X.svelte', modules });
     expect(problems.some((p) => p.severity === 'error' && /missing\.svg/.test(p.message))).toBe(true);
+    // A query whose own `..` would make the whole reference another file names none.
+    const other = await checkSvelteSource("<script>\n\timport y from './present.js?p=/../other.js';\n</script>\n<p>{y}</p>\n", { filename: 'src/lib/siteorigin/custom/X.svelte', modules });
+    expect(other.some((p) => p.severity === 'error' && /not a file in this project/.test(p.message))).toBe(true);
   });
 });
