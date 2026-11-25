@@ -7,9 +7,9 @@ import type { ElementRef, ProjectState } from '@shared/types';
 import { refLabel } from '../lib/model';
 import { api, getState, saveLocal, setState, toast, useStore, confirmDialog, selectChatDraft, selectChatImages, setChatDraft, inspectorFocusRequest } from '../store';
 import { afterSendMessage, draftFor, imagesFor, moveDraft, moveImages, unsentDrafts, withDraft, withImages } from '../lib/chatDrafts';
-import { nextRecipient, recipientText, sameRecipient, switchNotice, switchNoticeText, turnRecipient } from '../lib/chatRecipient';
-import { PROVIDER_LABELS, turnModelText } from '@shared/turn-model';
-import { chatContextFor, composerScope, editScope, retryView, targetOf, uneditableDesign } from '../lib/chatTarget';
+import { modelLines, nextRecipient, recipientText, sameRecipient, switchNotice, switchNoticeText, turnRecipient } from '../lib/chatRecipient';
+import { PROVIDER_LABELS, turnModelText, type TurnModel } from '@shared/turn-model';
+import { chatContextFor, composerScope, editScope, requestTarget, retryView, targetOf, uneditableDesign } from '../lib/chatTarget';
 import { CHAT_FOCUS_WAIT_MS, chatFocusStep } from '../lib/page-start';
 import { chatSuggestions } from '../lib/chatSuggestions';
 import { auditOnce } from '../lib/seo-health';
@@ -17,22 +17,56 @@ import { headroomWarning, replayedWords, smallToolsCover } from '../lib/chatHead
 import { openPost, selectPage } from '../lib/actions';
 import { postShown, postWorkspace } from '../lib/posts';
 import { saveOpenPost } from '../lib/post-draft';
-import { canOpen, changeTarget, changeText, checksOf, continueContext, locationTarget, resumableId, retryableId, reviewEntryId, reviewNote, standingNote, undoableId as undoableTurn } from '../lib/result';
+import { answerOnly, canOpen, changeTarget, changeText, checksOf, continueContext, locationTarget, resumableId, retryableId, reviewEntryId, reviewNote, standingNote, undoableId as undoableTurn } from '../lib/result';
 import { summaryNow, turnState } from '@shared/turns';
 import { chatBusy, composerAction, imageLabels, isPaused, offeredImages, questionHint, shownQuestions, waitingQuestion, type WaitingQuestion } from '../lib/chatQuestions';
 import { isImeComposing } from '../lib/ime';
+import { textBlocks } from '../lib/model-text';
 import { Spinner, useMenu } from '../components/ui';
 import { ImageChips, ImageChoices } from '../components/ChatImages';
 import { ConversationsModal } from './Conversations';
 import { activityHint } from '../lib/conversations';
 
 /** Minimal, safe inline formatting for model text: **bold**, `code` and [links](…) shown as text. */
-function Md({ text }: { text: string }) {
+function Inline({ text }: { text: string }) {
   const parts = text.replace(/\[([^\]]+)\]\([^)]*\)/g, '$1').split(/(\*\*[^*]+\*\*|`[^`]+`)/g);
+  return <>{parts.map((p, i) => (p.startsWith('**') && p.length > 4 ? <strong key={i}>{p.slice(2, -2)}</strong> : p.startsWith('`') && p.length > 2 ? <code key={i}>{p.slice(1, -1)}</code> : p))}</>;
+}
+
+/**
+ * Model text as the reader expects it (textBlocks): paragraphs, lists and a bold lead line. One paragraph stays inline,
+ * so a short reply is a plain line of text.
+ */
+function Md({ text }: { text: string }) {
+  const shown = textBlocks(text);
+  if (shown.length <= 1 && (!shown[0] || shown[0].kind === 'p'))
+    return (
+      <span className="md">
+        <Inline text={shown[0]?.lines.join('\n') ?? ''} />
+      </span>
+    );
   return (
-    <span className="md">
-      {parts.map((p, i) => (p.startsWith('**') ? <strong key={i}>{p.slice(2, -2)}</strong> : p.startsWith('`') ? <code key={i}>{p.slice(1, -1)}</code> : p))}
-    </span>
+    <div className="md">
+      {shown.map((b, i) => {
+        if (b.kind === 'ul' || b.kind === 'ol') {
+          const List = b.kind;
+          return (
+            <List key={i}>
+              {b.lines.map((l, j) => (
+                <li key={j}>
+                  <Inline text={l} />
+                </li>
+              ))}
+            </List>
+          );
+        }
+        return (
+          <p key={i} className={b.kind === 'lead' ? 'md-lead' : undefined}>
+            <Inline text={b.lines.join('\n')} />
+          </p>
+        );
+      })}
+    </div>
   );
 }
 
@@ -258,7 +292,8 @@ export function Chat() {
   }, [autoLocal, conversation?.id, running]);
   const next = nextRecipient(provider, settings?.ai.models, autoLocal !== null && serverModel?.baseURL === autoLocal ? serverModel.id : null);
   // A message to a model that has not seen this conversation's recent messages says so before it is sent.
-  const notice = asking ? null : switchNotice(msgs, next);
+  // It is about the next message, so while a run is under way it waits until something is written for that message.
+  const notice = asking || (pending && !draft.trim() && !images.length) ? null : switchNotice(msgs, next);
   const noticeId = useId();
   const headroomId = useId();
   const freshing = useRef(false);
@@ -358,13 +393,31 @@ export function Chat() {
       if (runStatus === 'awaiting-input') {
         // Announced once per question, when it arrives; the composer is already where it is answered.
         if (asking && askingKey) sayOnce(`${askingKey}:asked`, `The AI needs your answer to continue: ${asking.question.text}${asking.question.widen ? ' Allowing it lets this request change the whole site.' : ''}`);
-      } else if ((runStatus === 'preparing' || runStatus === 'running') && workingUser?.context) {
-        // Said once the request has arrived, so it names what the AI may change, in the words the strip uses. A
-        // question reads the site and cannot change it, so it is never said to be working on anything.
-        sayOnce(`${activeRunId}:start`, runMode === 'ask' ? 'AI started reading the site.' : `AI started working on ${scopeOf(workingUser.context, getState().snapshot?.state)}.`);
       } else if (runStatus === 'stopping') sayOnce(`${activeRunId}:stopping`, runMode === 'ask' ? 'Stopping the question.' : 'Stopping the AI. Its changes are being undone.');
-      // Checking and repairing are phases the author may be waiting on, so each is said when it first starts.
-      else if (runStatus === 'validating' || runStatus === 'repairing') sayOnce(`${activeRunId}:${runStatus}`, `${PHASE[runStatus]}.`);
+      else {
+        // The step the strip names, if one is under way: said once each, in the strip's words.
+        const step = [...(working?.activities ?? [])].reverse().find((a) => a.status === 'running');
+        const stepKey = step ? `${activeRunId}:step:${step.id}` : '';
+        if ((runStatus === 'preparing' || runStatus === 'running') && workingUser?.context && !announced.current.has(`${activeRunId}:start`)) {
+          // Said once the request has arrived, so it names what the AI may change, in the words the strip uses, with the
+          // step already under way. A question reads the site and cannot change it, so it is never said to be working on
+          // anything.
+          if (stepKey) announced.current.add(stepKey);
+          sayOnce(`${activeRunId}:start`, `${runMode === 'ask' ? 'AI started reading the site.' : `AI started working on ${scopeOf(workingUser.context, getState().snapshot?.state)}.`}${step ? ` ${step.label}.` : ''}`);
+        } else if (runStatus === 'validating' || runStatus === 'repairing') {
+          // Checking and repairing are phases the author may be waiting on, so each is said when it first starts, with
+          // its step unless the step only repeats the phase's words.
+          const phaseKey = `${activeRunId}:${runStatus}`;
+          const echoes = !!step && step.label.replace(/\.$/, '') === PHASE[runStatus];
+          // A step said before (the one that was under way when the phase began) is not said again.
+          const said = step && !echoes && !announced.current.has(stepKey) ? ` ${step.label}.` : '';
+          if (!announced.current.has(phaseKey)) {
+            if (stepKey) announced.current.add(stepKey);
+            sayOnce(phaseKey, `${PHASE[runStatus]}.${said}`);
+          } else if (stepKey && echoes) announced.current.add(stepKey);
+          else if (stepKey) sayOnce(stepKey, `${step!.label}.`);
+        } else if (stepKey && announced.current.has(`${activeRunId}:start`)) sayOnce(stepKey, `${step!.label}.`);
+      }
       // Each announcement stays until the next one replaces it: clearing it on the next update could cut it off.
     }
     const run = trackedRun.current;
@@ -826,6 +879,18 @@ export function Chat() {
   // What leaves this computer with a message. A server that is not this computer already says where content goes,
   // in its own warning above the box, so the note does not say it twice.
   const attachedImages = 'Attached images go by name and ID only.';
+  // A thread usually stays with one model and one target, so each is said where it starts or changes, not on every
+  // turn: the model under the first turn it handled and any turn that went elsewhere (every turn keeps it in its
+  // details), and a request's target on the first request that names it.
+  const modelShown = modelLines(msgs, next);
+  const previousRequest: (ChatMessage | undefined)[] = [];
+  let lastRequest: ChatMessage | undefined;
+  msgs.forEach((m, i) => {
+    if (m.role !== 'user') return;
+    previousRequest[i] = lastRequest;
+    lastRequest = m;
+  });
+
   const privacy =
     provider?.id === 'local' && configured
       ? provider.warning
@@ -959,17 +1024,19 @@ export function Chat() {
         )}
         {msgs.map((m, i) =>
           m.role === 'user' ? (
-            <UserMessage key={m.id} m={m} />
+            <UserMessage key={m.id} m={m} previous={previousRequest[i]} />
           ) : (
             <AssistantMessage
               key={m.id}
               m={m}
+              modelChanged={modelShown.has(m.id)}
               live={m.runId === activeRunId && running}
               awaiting={waiting}
               undoable={m.id === undoableId}
               reviewEntry={reviewEntryId(m, history, m.id === undoableId)}
               latest={i === msgs.length - 1}
-              canCompose={configured}
+              // Edit and try again puts a request back in the box, which waits until the current run is over.
+              canCompose={configured && !pending && !sending}
               asking={asking}
               onUndo={undoTurn}
               onReview={reviewTurn}
@@ -1055,7 +1122,8 @@ export function Chat() {
       )}
       {configured && notice && (
         <div className={`scope-note switch-note${notice.leavesComputer ? ' danger' : ''}`} role="status">
-          <Info />
+          {/* The danger notes' own glyph when messages leave this computer; otherwise it is information. */}
+          {notice.leavesComputer ? <TriangleAlert /> : <Info />}
           <span>
             <span id={noticeId}>{switchNoticeText(notice)}</span>{' '}
             <button className="link" disabled={pending || sending} title={pending ? 'Available when the current request finishes' : 'Start a new conversation with your unsent message, without the earlier ones'} onClick={startFresh}>
@@ -1110,10 +1178,8 @@ export function Chat() {
           )}
           {/* How to answer sits with the question, ahead of the options, so it is never scrolled out of sight. */}
           <p className="question-hint" id="ai-question-hint">
-            {/* A photo opens larger and a labelled Choose answers, which this run's own wording says. */}
-            {offeredImages(asking.question).length && !asking.question.widen
-              ? `Choose a picture${asking.question.choices.length ? ' or an option' : ''}, or type your own answer below. Select a photo to see it larger first.`
-              : questionHint(asking.question)}
+            {/* A picture opens larger and a labelled Choose answers, which the hint says in the same words everywhere. */}
+            {questionHint(asking.question)}
             {answerElsewhere && inFlight ? ` Your answer goes to ${turnModelText(inFlight)}, which asked.` : ''}
             {draft.trim() || images.length ? ' Your unsent message is kept for afterwards.' : ''}
           </p>
@@ -1363,16 +1429,30 @@ export function Chat() {
   );
 }
 
-function UserMessage({ m }: { m: ChatMessage }) {
-  const state = useStore((s) => s.snapshot?.state);
-  const target = scopeOf(m.context, state);
-  const images = Array.isArray(m.images) ? m.images.filter((i) => typeof i?.assetId === 'string' && typeof i.name === 'string') : [];
+/** What a request was about, as its caption says it: a question, and what the AI was allowed to change. */
+function captionOf(m: ChatMessage | undefined, state: ProjectState | undefined): string {
+  if (!m) return '';
   const ask = m.context?.mode === 'ask';
+  return [ask ? 'Question · read only' : '', scopeOf(m.context, state)].filter(Boolean).join(' · ');
+}
+
+/**
+ * A request, with what it was about under it. Follow-ups about the same thing do not repeat it: the caption shows on
+ * the first request of a run about one target and wherever the target changes, and is always read out.
+ */
+function UserMessage({ m, previous }: { m: ChatMessage; previous?: ChatMessage }) {
+  const state = useStore((s) => s.snapshot?.state);
+  const caption = captionOf(m, state);
+  // The same words can name two different elements ("Home → Heading"), so the target itself must match too.
+  const repeated = !!caption && caption === captionOf(previous, state) && requestTarget(m) === requestTarget(previous);
+  const images = Array.isArray(m.images) ? m.images.filter((i) => typeof i?.assetId === 'string' && typeof i.name === 'string') : [];
   return (
     <div className="msg-user" data-message-id={m.id}>
+      {/* Who said it, for a reader who meets the log without its layout. */}
+      <span className="sr-only">You: </span>
       {typeof m.text === 'string' ? m.text : ''}
       {images.length > 0 && <ImageChips images={images} label="Attached images" />}
-      {(target || ask) && <span className="ctx">{[ask ? 'Question · read only' : '', target].filter(Boolean).join(' · ')}</span>}
+      {caption && <span className={repeated ? 'sr-only' : 'ctx'}>{repeated ? ` (${caption})` : caption}</span>}
     </div>
   );
 }
@@ -1414,8 +1494,107 @@ function Steps({ items, waiting, stopped, recent }: { items: ChatActivity[]; wai
   );
 }
 
+/** The model a finished turn went to, as its details say it. */
+function HandledBy({ recipient }: { recipient: TurnModel }) {
+  return (
+    <p className="turn-handled">
+      <Cpu aria-hidden="true" />
+      <span>
+        {recipient.unanswered ? 'Sent to ' : 'Handled by '}
+        {turnModelText(recipient)}
+      </span>
+    </p>
+  );
+}
+
+/**
+ * A finished turn that changed nothing, left nothing unfinished and found nothing to act on: an answer, read as one.
+ * Its words lead with no card around them; under them, one quiet line says the site is unchanged and opens what the
+ * turn did on the way (its steps, any passed checks, the model).
+ */
+function Reply({ m, recipient, children }: { m: ChatMessage; recipient: TurnModel | null; children?: ReactNode }) {
+  const history = useStore((s) => s.snapshot?.history);
+  const turn = turnState(m, history)!;
+  const r = turn.result;
+  const [open, setOpen] = useState(false);
+  const detailsId = useId();
+  const steps = m.activities ?? [];
+  const { passes } = checksOf(r);
+  const locations = storedLocations(r.locations);
+  const head = outcome(r);
+  const hasDetails = steps.length > 0 || passes.length > 0 || !!recipient;
+  const label = (
+    <>
+      <span className="reply-icon" aria-hidden="true">
+        {head.icon}
+      </span>
+      <span className="reply-label">{head.label}</span>
+    </>
+  );
+  return (
+    <div className="reply" data-status={r.status}>
+      {/* What was asked on the way comes first, so the answer it led to reads after it. */}
+      {children && <div className="result-answers">{children}</div>}
+      <div className="reply-text">
+        <Md text={summaryOf({ ...r, summary: summaryNow(turn) })} />
+      </div>
+      {locations.length > 0 && <Locations list={locations} />}
+      <div className="reply-foot">
+        {hasDetails ? (
+          <button className="reply-toggle" aria-expanded={open} aria-controls={detailsId} onClick={() => setOpen(!open)}>
+            {label}
+            {steps.length > 0 && (
+              <span className="reply-count">
+                <span aria-hidden="true"> · </span>
+                <span className="sr-only">, </span>
+                {steps.length} {steps.length === 1 ? 'step' : 'steps'}
+              </span>
+            )}
+            <ChevronDown className="caret" aria-hidden="true" />
+          </button>
+        ) : (
+          <span className="reply-outcome">{label}</span>
+        )}
+      </div>
+      {open && (
+        <div id={detailsId} className="reply-details">
+          {steps.length > 0 && <Steps items={steps} />}
+          {passes.length > 0 && (
+            <ul className="checks" aria-label="Checks passed">
+              {passes.map((v, i) => (
+                <li key={i}>
+                  <Check aria-hidden="true" />
+                  <span>{v}</span>
+                </li>
+              ))}
+            </ul>
+          )}
+          {recipient && <HandledBy recipient={recipient} />}
+        </div>
+      )}
+    </div>
+  );
+}
+
+/** The fields an answer points to, each with the way to open it. */
+function Locations({ list }: { list: FieldLocation[] }) {
+  return (
+    <ul className="locations" aria-label="Where to change it">
+      {list.map((l, i) => (
+        <li key={i}>
+          <span className="location-path">{l.path.join(' → ')}</span>
+          <button className="btn btn-sm" onClick={() => openLocation(l)} title={`Open ${l.path.at(-1)} in the Inspector`}>
+            <SlidersHorizontal /> Open in inspector
+          </button>
+        </li>
+      ))}
+    </ul>
+  );
+}
+
 function AssistantMessage({
   m,
+  modelChanged,
   live,
   awaiting,
   undoable,
@@ -1430,6 +1609,8 @@ function AssistantMessage({
   continueNote
 }: {
   m: ChatMessage;
+  /** The first turn of the thread to go to its model, or one that went to another model than the turn before. */
+  modelChanged?: boolean;
   live: boolean;
   awaiting: boolean;
   undoable: boolean;
@@ -1476,8 +1657,13 @@ function AssistantMessage({
   });
   // The model this turn went to, as fixed when it started; old transcripts and turns that never reached one show none.
   const recipient = turnRecipient(m);
+  const reply = !!r && answerOnly(r, !!(onContinue || onRetry));
+  // Said under the turn where the thread starts with a model or moves to another, and where the turn has no details to
+  // hold it; otherwise it is in the turn's details. A running turn's model is in the run strip.
+  const modelLine = !!r && !!recipient && (modelChanged || (!reply && !(m.activities ?? []).length));
   return (
     <div className="msg-ai" aria-busy={chatBusy(live, waitingHere)} data-message-id={m.id} data-run-id={m.runId}>
+      <span className="sr-only">AI: </span>
       {!r && taken.length > 0 && <Steps items={taken} waiting={waitingHere} recent={4} />}
       {!r && m.text && (
         <div className="text">
@@ -1486,13 +1672,19 @@ function AssistantMessage({
       )}
       {/* Getting started is said in the run strip, the one place a run's progress is shown. */}
       {!r && answers}
-      {/* A finished turn is one card that leads with its result; what was asked and answered on the way sits inside it. */}
-      {r && (
-        <ResultCard m={m} undoable={undoable} reviewEntry={reviewEntry} latest={latest} canCompose={canCompose} onUndo={onUndo} onReview={onReview} onContinue={onContinue} onRetry={onRetry} continueNote={continueNote}>
+      {/* A finished turn that changed nothing is its answer; any other is one card that leads with its result. What was
+          asked and answered on the way sits inside either. */}
+      {r && reply && (
+        <Reply m={m} recipient={modelLine ? null : recipient}>
+          {answers.length > 0 ? answers : null}
+        </Reply>
+      )}
+      {r && !reply && (
+        <ResultCard m={m} recipient={modelLine ? null : recipient} undoable={undoable} reviewEntry={reviewEntry} latest={latest} canCompose={canCompose} onUndo={onUndo} onReview={onReview} onContinue={onContinue} onRetry={onRetry} continueNote={continueNote}>
           {answers.length > 0 ? answers : null}
         </ResultCard>
       )}
-      {recipient && (
+      {modelLine && recipient && (
         <div className="turn-model">
           <Cpu aria-hidden="true" />
           <span>
@@ -1552,6 +1744,7 @@ function openChange(c: ChatChange) {
 
 function ResultCard({
   m,
+  recipient,
   undoable,
   reviewEntry,
   latest,
@@ -1564,6 +1757,8 @@ function ResultCard({
   children
 }: {
   m: ChatMessage;
+  /** The model the turn went to, said in its steps when it is not said under the turn. */
+  recipient?: TurnModel | null;
   undoable: boolean;
   reviewEntry?: string;
   latest: boolean;
@@ -1597,7 +1792,8 @@ function ResultCard({
   // A turn undone from project history keeps its record, with its changes listed as undone.
   const undone = failedOrStopped || reverted;
   // Results saved before `repair` existed name a rejected key only in their wording.
-  const repair = r.repair ?? (r.error && /API key/i.test(r.summary) ? 'key' : undefined);
+  // Only the latest turn asks for a repair: once a later request has gone through, the setup it named works again.
+  const repair = latest ? (r.repair ?? (r.error && /API key/i.test(r.summary) ? 'key' : undefined)) : undefined;
   const openAiSettings = () => setState({ modal: { kind: 'settings', tab: 'ai' } });
   const { issues, unverified, passes } = checksOf(r);
   const locations = storedLocations(r.locations);
@@ -1620,7 +1816,8 @@ function ResultCard({
   const settled = !latest && !reverted && (r.status === 'completed' || r.status === 'no-changes') && !r.incomplete && !issues.length && !unverified.length && !undoable && !onContinue;
   // An older stopped or undone turn is history too: it keeps its retry, on the same quiet card.
   const quiet = settled || (!latest && ((failedOrStopped && !repair) || reverted));
-  const foldPasses = settled && steps.length > 0;
+  // Only the latest turn keeps its passed checks in view; on an older one they wait in its steps.
+  const foldPasses = (settled || (!latest && !reverted)) && steps.length > 0;
   // A failed, stopped or undone turn can be tried again from its original request, while there is a composer to write in.
   const retryable = (failedOrStopped || reverted) && canCompose;
   const retry = async () => {
@@ -1708,6 +1905,7 @@ function ResultCard({
                 <span key={q.key} className={`result-qualifier ${q.key}`}>
                   {i > 0 && <span aria-hidden="true"> · </span>}
                   <span className="sr-only">, </span>
+                  {q.key === 'issue' && <TriangleAlert aria-hidden="true" />}
                   {q.text}
                 </span>
               ))}
@@ -1735,6 +1933,7 @@ function ResultCard({
               ))}
             </ul>
           )}
+          {recipient && <HandledBy recipient={recipient} />}
         </div>
       )}
       <div className="result-body">
@@ -1768,18 +1967,7 @@ function ResultCard({
           <Md text={summaryOf({ ...r, summary: summaryNow(turn) })} />
         </div>
         {!reverted && note && <p id={reviewId} className="result-standing">{note}</p>}
-        {locations.length > 0 && (
-          <ul className="locations" aria-label="Where to change it">
-            {locations.map((l, i) => (
-              <li key={i}>
-                <span className="location-path">{l.path.join(' → ')}</span>
-                <button className="btn btn-sm" onClick={() => openLocation(l)} title={`Open ${l.path.at(-1)} in the Inspector`}>
-                  <SlidersHorizontal /> Open in inspector
-                </button>
-              </li>
-            ))}
-          </ul>
-        )}
+        {locations.length > 0 && <Locations list={locations} />}
         {issues.length + unverified.length > 0 && (
           <ul className="checks" aria-label="Checks that need attention">
             {/* Anything that needs attention comes before the list of changes. */}
@@ -1910,7 +2098,7 @@ function ResultCard({
           )}
           {retryable && (
             <button className="btn btn-sm" onClick={() => void retry()}>
-              Edit and try again
+              <Pencil /> Edit and try again
             </button>
           )}
         </div>

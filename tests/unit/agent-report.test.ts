@@ -123,6 +123,16 @@ describe('change descriptions', () => {
     for (const l of labels) expect(l).not.toMatch(RAW);
   });
 
+  it('names the shared header once when the edit is to the header itself', () => {
+    const { state } = project();
+    const header = { kind: 'shell' as const, id: 'header' };
+    const nav = state.site.shell.header.rootIds[0];
+    const { changes } = run(state, [() => [{ type: 'instance.setProp', owner: header, nodeId: nav, prop: 'ctaLabel', value: 'Book a call' }]]);
+    // Not "… of Header on the shared header": the element is the header.
+    expect(changes[0].label).toMatch(/^Changed the .+ of the shared header$/);
+    expect(changes[0]).toMatchObject({ owner: header, nodeId: nav });
+  });
+
   it('says which design a section changed to, naming the content it dropped (#374)', () => {
     const { state } = project();
     const home = { kind: 'page' as const, id: state.site.homePageId };
@@ -254,7 +264,7 @@ describe('check results', () => {
     // Above phone width the tap targets are not checked, and the pass does not claim them.
     expect(inspectionChecks(true, withChecks({ ...clean, tapTargets: count(0, 0, 0, 'Phone widths only.') }, 'desktop')).at(-1)).toEqual({ status: 'pass', text: 'No problems with text contrast, overlaps and cut-off text at desktop width.' });
     expect(inspectionChecks(true, withChecks({ contrast: count(30, 3), overlaps: count(12, 1), clippedText: count(2, 2), tapTargets: count(6, 1) })).slice(1)).toEqual([
-      { status: 'issue', text: 'Found 3 text elements with low contrast, overlapping boxes, 2 boxes that cut off text and a tap target under 44px at phone width.' }
+      { status: 'issue', text: 'Found 3 text elements with low contrast, overlapping boxes, 2 boxes that cut off text and a link or button too small to tap easily at phone width.' }
     ]);
     // What only pixels could judge is never a pass, and never a failure.
     expect(inspectionChecks(true, withChecks({ ...clean, contrast: count(30, 0, 2) })).slice(1)).toEqual([{ status: 'unverified', text: "Couldn't confirm the contrast of 2 text elements over images or mixed backgrounds at phone width." }]);

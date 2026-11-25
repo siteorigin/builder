@@ -507,8 +507,8 @@ export interface ShownMessage {
   steps?: string[];
   /** Questions asked during it, with the answers, as the turn shows them. */
   answers?: Array<{ question: string; answer: string | null; images?: string[] }>;
-  /** The finished turn's card. */
-  result?: { status: string; heading: string; qualifiers?: string; summary: string; standing?: string; changes?: string[]; buttons: string[] };
+  /** The finished turn's card, or for a turn that only answered, its reply (`reply`: no card, the outcome on the line under it). */
+  result?: { status: string; heading: string; qualifiers?: string; summary: string; standing?: string; changes?: string[]; buttons: string[]; reply?: true };
   /** The model it went to, as shown under it. */
   model?: string;
 }
@@ -592,6 +592,9 @@ export function readChat(): ShownChat {
         buttons: all(card, '.result-foot button').map(text)
       };
     }
+    // A turn that only answered has no card: its words lead, and its outcome is the line under them.
+    const reply = card ? null : el.querySelector(':scope > .reply');
+    if (reply) m.result = { status: reply.dataset.status ?? '', heading: text(reply.querySelector('.reply-label')), summary: text(reply.querySelector('.reply-text')), buttons: [], reply: true };
     messages.push(m);
   }
   const card = chat.querySelector('.question-card');

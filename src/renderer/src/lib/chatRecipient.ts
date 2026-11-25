@@ -43,6 +43,25 @@ export function sameRecipient(turn: TurnModel, next: NextRecipient): boolean {
   return next.id === null ? turn.auto === true : turn.id === next.id;
 }
 
+/**
+ * The assistant turns whose model is said under them, by message ID. A thread usually stays with one model, which the
+ * composer already names for the next message, so it is said only where the thread moves to another model: on its first
+ * turn when that is not the composer's model, on a turn that went elsewhere than the one before, and on a turn that never
+ * got an answer. Every turn keeps its model in its details.
+ */
+export function modelLines(messages: readonly ChatMessage[], next: NextRecipient | null): Set<string> {
+  const shown = new Set<string>();
+  let last: TurnModel | null = null;
+  for (const m of messages) {
+    const model = turnRecipient(m);
+    if (!model) continue;
+    const moved = last ? model.provider !== last.provider || model.id !== last.id : !next || !sameRecipient(model, next);
+    if (moved || model.unanswered) shown.add(m.id);
+    if (!model.unanswered) last = model;
+  }
+  return shown;
+}
+
 /** What the composer says before a message goes to a model that has not seen this conversation's recent messages. */
 export interface SwitchNotice {
   next: NextRecipient;

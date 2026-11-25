@@ -3,7 +3,7 @@ import { createStarterState } from '@catalogue/starters';
 import { applyOperations } from '@engine/apply';
 import type { ChatMessage } from '@shared/api';
 import type { InstanceNode, ListItem } from '@shared/types';
-import { canOpen, changeTarget, changeText, checksOf, continueContext, locationTarget, resumableId, retryableId, standingNote, undoableId } from '../../src/renderer/src/lib/result';
+import { answerOnly, canOpen, changeTarget, changeText, checksOf, continueContext, locationTarget, resumableId, retryableId, standingNote, undoableId } from '../../src/renderer/src/lib/result';
 import { canCarryOn, resultAsSaid, runStanding, summaryNow, turnState, type TurnHistory } from '@shared/turns';
 
 describe('AI result card', () => {
@@ -317,5 +317,25 @@ describe('where an AI turn stands, read from History (issue 276)', () => {
     expect(at(titled, [])).toBe(titled);
     // A summary read back from disk that is not text is none.
     expect(summaryNow(turnState(turn('a3', 'r3', { summary: undefined as unknown as string, incomplete: true }), steps([]))!)).toBe('');
+  });
+});
+
+describe('a turn that is only an answer', () => {
+  type Result = NonNullable<ChatMessage['result']>;
+  const result = (extra: Partial<Result> = {}): Result => ({ status: 'no-changes', summary: 'Because the header has two styles.', changes: [], validation: [], canUndo: false, ...extra });
+
+  it('is a finished turn that changed nothing and leaves nothing to act on', () => {
+    expect(answerOnly(result(), false)).toBe(true);
+    expect(answerOnly(result({ ask: true, checks: [{ status: 'pass', text: 'Fits the screen at phone width.' }] }), false)).toBe(true);
+  });
+
+  it('is not one that changed the site, is unfinished, found something, or offers a way on', () => {
+    expect(answerOnly(result({ status: 'completed', changes: [{ label: 'Edited Heading content on Home' }] }), false)).toBe(false);
+    expect(answerOnly(result({ incomplete: true }), false)).toBe(false);
+    expect(answerOnly(result({ checks: [{ status: 'issue', text: 'Content is wider than the screen at phone width.' }] }), false)).toBe(false);
+    expect(answerOnly(result({ checks: [{ status: 'unverified', text: 'Could not check the form at tablet width.' }] }), false)).toBe(false);
+    expect(answerOnly(result(), true)).toBe(false);
+    expect(answerOnly(result({ status: 'failed' }), false)).toBe(false);
+    expect(answerOnly(result({ status: 'cancelled' }), false)).toBe(false);
   });
 });
