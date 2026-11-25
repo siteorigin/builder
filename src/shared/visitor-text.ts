@@ -4,7 +4,7 @@ import { clipText } from './not-found';
 
 /**
  * The words a generated site says on its own, around the author's content: the skip link, the menu and submenu
- * buttons, landmark names, a contact form's progress, search results, the image viewer, a carousel's buttons and
+ * buttons, the Light/Dark switch, landmark names, a contact form's progress, search results, the image viewer, a carousel's buttons and
  * count, and the video player. Each
  * comes in the language of the page it is on, from the author's own wording for that language when there is one,
  * then the built-in wording for the language, then English.
