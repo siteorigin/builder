@@ -6,6 +6,7 @@ import { followToken, followedText, textMetrics, tokenVar } from '@shared/styles
 import { effectiveTokens } from '@generator/index';
 import { hasDarkPalette, type PaletteScheme } from '@shared/color-scheme';
 import { ColorSchemeControls } from './ColorSchemeControls';
+import { PaletteHarmony } from './PaletteHarmony';
 import { getTheme, listThemes, type ThemePack } from '@catalogue/index';
 import { usePackPreview } from '../components/PackPreview';
 import { installedFonts } from '@catalogue/fonts';
@@ -22,7 +23,7 @@ import { SiteImageField } from './PropEditors';
 import { FontSelect, familyName } from './FontSelect';
 import { usePreviewStack } from '../lib/editor-fonts';
 import { BrandContrast, ContrastDetail, ContrastFlags, buildContrastModel, useContrastStatus } from './ContrastNotes';
-import type { ForegroundSuggestion } from '@shared/contrast';
+import type { ContrastPair, ForegroundSuggestion } from '@shared/contrast';
 import { NOT_FOUND_LIMITS, clipText, notFoundDefaults } from '@shared/not-found';
 import { VisitorTextFields } from './VisitorText';
 import { AgentDiscoveryFields } from './AgentDiscovery';
@@ -74,6 +75,8 @@ const FOUNDATION_TEXT_USES: Record<string, string> = {
   'text.eyebrow': 'Small labels above headings, footer headings',
   'text.stat': 'Statistics and prices'
 };
+
+const NO_PAIRS: readonly ContrastPair[] = [];
 
 /** Colour roles grouped by purpose, brand first: it is the one most owners change. Unknown ids go last. */
 const COLOR_GROUPS: Array<{ label: string; ids: string[] }> = [
@@ -1433,6 +1436,8 @@ export function SiteStyles() {
 
       <Section title="Colors" id="tok-color" scope={changedNote(colorIds)}>
         <ColorSchemeControls state={st} palette={palette} onPalette={choosePalette} contrast={contrast} otherContrast={otherContrast} say={say} />
+        {/* A palette is made for the light colors; the dark ones have their own "make again" beside them. */}
+        {palette === 'light' && <PaletteHarmony tokens={tokens} pairs={pairs ?? NO_PAIRS} revision={snap.revision} say={say} />}
         {[...COLOR_GROUPS, { label: 'Other colors', ids: colorIds.filter((id) => !COLOR_GROUPS.some((g) => g.ids.includes(id))) }]
           .map((g) => ({ ...g, list: g.ids.map(byId).filter((t): t is TokenDef => !!t && t.group === 'color') }))
           .filter((g) => g.list.length)
