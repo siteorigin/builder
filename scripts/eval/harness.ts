@@ -40,7 +40,7 @@ export interface EvalCase {
   /** Stable forever: reports are compared by this ID. Change `version` when the prompt or grading changes. */
   id: string;
   version: number;
-  category: 'copy' | 'brand' | 'page' | 'site' | 'code' | 'style' | 'scope';
+  category: 'copy' | 'brand' | 'page' | 'site' | 'code' | 'style' | 'scope' | 'posts';
   prompt: string;
   /** Answers to questions the assistant asks, in order. After these it is told to use its judgement. */
   answers?: string[];
@@ -50,6 +50,8 @@ export interface EvalCase {
    * that page. Without it the request comes from Home, limited to its selection when the case has one.
    */
   pageScope?: string;
+  /** The post the request is sent from, open in the Posts workspace, so the run may change only that post. */
+  postScope?: { collectionId: string; entryId: string };
   selection?(state: ProjectState): { ref: ElementRef; label: string };
   grade(ctx: GradeContext): Check[];
   /** The scripted run for the free fake adapter. It proves the harness and the case, not a model. */
@@ -265,7 +267,11 @@ export async function runCase(c: EvalCase, opts: RunOptions): Promise<{ result: 
     const picked = c.selection?.(session.state) ?? null;
     const scoped = c.pageScope === undefined ? undefined : Object.values(session.state.pages).find((p) => p.route === c.pageScope);
     if (c.pageScope !== undefined && !scoped) throw new Error(`No page at ${c.pageScope} to send the request from.`);
-    const ctx: ChatContext = scoped
+    const post = c.postScope ? session.state.collections[c.postScope.collectionId]?.entries[c.postScope.entryId] : undefined;
+    if (c.postScope && !post) throw new Error(`No post ${c.postScope.collectionId}/${c.postScope.entryId} to send the request from.`);
+    const ctx: ChatContext = post
+      ? { pageId: session.state.site.homePageId, pageTitle: 'Home', selection: null, selectionLabel: null, viewport: 1280, post: { ...c.postScope!, title: post.title } }
+      : scoped
       ? { pageId: scoped.id, pageTitle: scoped.title, selection: null, selectionLabel: null, viewport: 1280, scope: 'page' }
       : { pageId: session.state.site.homePageId, pageTitle: 'Home', selection: picked?.ref ?? null, selectionLabel: picked?.label ?? null, viewport: 1280 };
     const started = Date.now();

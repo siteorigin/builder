@@ -248,3 +248,48 @@ describe('the composer on a page: selection, this page or the whole site (#513)'
     expect(continueContext(user('u', { ...base, scope: 'page' }), state, 1280)).toEqual({ ctx: { ...base, scope: 'page' } });
   });
 });
+
+describe('the composer with a post open in the Posts workspace (#400)', () => {
+  /** The starter project with a blog of one post. */
+  function blog() {
+    const { state: start, home, hero } = project();
+    const state = applyOperations(start, [
+      { type: 'collection.create', collectionId: 'posts' },
+      { type: 'entry.create', collectionId: 'posts', entryId: 'en_spring', title: 'Spring open studio', body: ['Twenty makers.'] }
+    ]).state;
+    return { state, home, hero, post: { collectionId: 'posts', entryId: 'en_spring' } };
+  }
+
+  it('is about the post, never the page, selection or design behind the writer, whatever scope was chosen', () => {
+    const { state, home, hero, post } = blog();
+    const picked: ElementRef = { owner: { kind: 'page', id: home }, instancePath: [], nodeId: state.pages[home].rootIds[0] };
+    for (const definitionMode of [null, { definitionId: hero, returnPageId: home }]) {
+      const scope = composerScope(state, { pageId: home, selection: picked, definitionMode, post });
+      expect(scope).toMatchObject({ component: null, selection: null, selectionLabel: null, post: { ...post, title: 'Spring open studio' } });
+      for (const chosen of ['selection', 'page', 'site'] as const) {
+        const ctx = chatContextFor(state, scope, { enabled: { page: true, scope: chosen }, viewport: 1280 });
+        expect(ctx).toEqual({ pageId: home, pageTitle: state.pages[home].title, selection: null, selectionLabel: null, post: { ...post, title: 'Spring open studio' }, viewport: 1280 });
+      }
+      expect(chatContextFor(state, scope, { enabled, viewport: 1280, ask: true })).toMatchObject({ post: { entryId: 'en_spring' }, mode: 'ask' });
+    }
+    // A post that has gone, or none open, leaves the composer on the page as before.
+    expect(composerScope(state, { pageId: home, selection: picked, definitionMode: null, post: { collectionId: 'posts', entryId: 'en_gone' } })).toMatchObject({ selection: picked });
+    expect(composerScope(state, { pageId: home, selection: picked, definitionMode: null, post: null }).post).toBeUndefined();
+    expect(targetOf(chatContextFor(state, composerScope(state, { pageId: home, selection: null, definitionMode: null, post }), { enabled, viewport: 1280 }))).toBe('Post · Spring open studio');
+  });
+
+  it('tries a request about a post again in that post, and continues with it, but never with one that has gone', () => {
+    const { state, home, post } = blog();
+    const ctx: ChatContext = { pageId: home, pageTitle: 'Home', selection: null, selectionLabel: null, post: { ...post, title: 'Spring open studio' }, viewport: 1280 };
+    expect(retryView(state, ctx, { pageId: home, definitionMode: null })).toMatchObject({ post, selection: null, definitionMode: null, missing: null });
+    expect(continueContext(user('u', ctx), state, 1280)).toEqual({ ctx });
+    // The page the writer covered may go; the post goes on.
+    const noHome = { ...ctx, pageId: 'pg_gone' };
+    expect(continueContext(user('u', noHome), state, 1280)).toMatchObject({ ctx: { pageId: home, post: { entryId: 'en_spring' } } });
+    const gone = structuredClone(state);
+    delete gone.collections.posts.entries.en_spring;
+    expect(retryView(gone, ctx, { pageId: home, definitionMode: null })).toMatchObject({ post: null, missing: 'The post “Spring open studio”' });
+    expect(continueContext(user('u', ctx), gone, 1280)).toEqual({ error: 'The post “Spring open studio” is no longer in the site. Open a post, then send "Continue".' });
+    expect(continueContext(user('u', { ...ctx, post: { collectionId: 'posts', entryId: 7 } } as unknown as ChatContext), state, 1280)).toMatchObject({ error: expect.stringMatching(/^That post is no longer in the site/) });
+  });
+});

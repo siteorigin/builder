@@ -406,6 +406,22 @@ describe('posts in an AI turn', () => {
     expect(env.session.state.pages).toEqual(before.pages);
   });
 
+  it('places a feed of posts on a page from a request limited to that page, with no items of its own', async () => {
+    const env = await setup([
+      () => [call('p1', 'upsert_page_with_sections', { slug: 'home', sections: [{ componentId: 'blog.list', props: { heading: 'Latest news', collection: 'posts', category: 'news', count: 2 } }] })],
+      () => [call('p2', 'upsert_page_with_sections', { slug: 'home', sections: [{ componentId: 'blog.grid', props: { heading: 'More', items: [{ title: 'Typed by hand' }] } }] })],
+      () => finish('Added the feed.')
+    ]);
+    const before = structuredClone(env.session.state);
+    await env.send('Add a Latest news list to this page.', { scope: 'page' });
+    expect(env.adapter.requests[0].tools.map((t) => t.name)).not.toContain('upsert_collection_entry');
+    expect(result(env.adapter.requests[2])).toMatch(/fills itself from a collection's published entries/);
+    const home = env.session.state.pages[env.home];
+    const feeds = home.rootIds.map((id) => home.nodes[id] as InstanceNode).filter((n) => env.session.state.components[n.definitionId]?.componentId?.startsWith('blog.'));
+    expect(feeds.map((n) => n.props)).toEqual([expect.objectContaining({ heading: 'Latest news', collection: 'posts', category: 'news', count: 2 })]);
+    expect(env.session.state.collections).toEqual(before.collections);
+  });
+
   it('adds a category once the author allows more', async () => {
     const env = await setup([
       () => [call('w1', 'request_clarification', { question: 'May I add an Events category?', widenScope: true })],

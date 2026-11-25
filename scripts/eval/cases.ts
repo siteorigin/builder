@@ -2,8 +2,9 @@
  * The graded prompts. IDs are stable: reports from different models and dates are compared by them. Grading looks
  * only at the resulting project, so any model may get there its own way; the scripts exist for the free fake run.
  */
-import type { ComponentDefinition, InstanceNode, LinkValue, ListItem, PageDoc, ProjectState } from '@shared/types';
-import type { ModelEvent } from '@agent/types';
+import type { ComponentDefinition, EntryDoc, InstanceNode, LinkValue, ListItem, PageDoc, ProjectState } from '@shared/types';
+import type { EditOperation } from '@shared/ops';
+import type { CanonicalModelRequest, ModelEvent } from '@agent/types';
 import { applyOperations } from '@engine/apply';
 import { richTextToPlain, type RichText } from '@shared/richtext';
 import { renderedContent, type RenderedContent } from '@generator/checks';
@@ -11,7 +12,7 @@ import { childLists } from '@engine/tree';
 import type { Check, EvalCase, ScriptTurn } from './harness';
 
 /** Bump when cases are added, removed or re-graded. */
-export const SUITE_VERSION = 2;
+export const SUITE_VERSION = 3;
 
 let nextCall = 0;
 const call = (name: string, args: unknown): ModelEvent => ({ type: 'done', stopReason: 'tool_use', text: '', toolCalls: [{ id: `call_${++nextCall}`, name, arguments: JSON.stringify(args) }] });
@@ -269,6 +270,49 @@ const cyclesBlocks = (s: ProjectState): Block[] => [
 ];
 
 const page = (slug: string, title: string, sections: unknown[], nav = true) => ({ slug, title, addToHeaderNav: nav, sections });
+
+/**
+ * A blog for the post cases (#400): News and Craft categories, three published posts, and a post with typos that
+ * proofreading should fix and nothing else.
+ */
+const withBlog = (state: ProjectState) =>
+  Object.assign(
+    state,
+    applyOperations(state, [
+      { type: 'collection.create', collectionId: 'posts' },
+      { type: 'collection.createTerm', collectionId: 'posts', taxonomyId: 'categories', label: 'News', termId: 'news' },
+      { type: 'collection.createTerm', collectionId: 'posts', taxonomyId: 'categories', label: 'Craft', termId: 'craft' },
+      { type: 'entry.create', collectionId: 'posts', entryId: 'en_hours', title: 'New winter hours', publishedAt: '2026-11-02', draft: false, excerpt: 'Shorter days, earlier closing.', terms: { categories: ['news'] }, body: ['From November the studio closes at 4pm.'] },
+      { type: 'entry.create', collectionId: 'posts', entryId: 'en_glaze', title: 'Mixing a celadon glaze', publishedAt: '2026-10-12', draft: false, terms: { categories: ['craft'] }, body: ['A pale green glaze, step by step.'] },
+      {
+        type: 'entry.create',
+        collectionId: 'posts',
+        entryId: 'en_open',
+        title: 'Spring open studio',
+        publishedAt: '2026-09-20',
+        draft: false,
+        author: 'Ana Ruiz',
+        excerpt: 'Twenty makers open their doors.',
+        terms: { categories: ['news'] },
+        body: ['## Who is coming', 'Twnety makers will show there work on Saturday.', '- Clay', '- Glass', 'Book a place on the [contact page](/contact/).']
+      }
+    ] as EditOperation[]).state
+  );
+const posts = (s: ProjectState) => s.collections.posts?.entries ?? {};
+const postText = (e: EntryDoc | undefined) => (e ? richTextToPlain(e.body) : '');
+const blocks = (e: EntryDoc | undefined) => (e ? e.body.map((b) => b.type) : []);
+const linksIn = (e: EntryDoc | undefined) => JSON.stringify(e?.body ?? []).includes('"link"');
+const feedOn = (s: ProjectState, p: PageDoc | undefined) => (p ? p.rootIds.map((id) => p.nodes[id] as InstanceNode).find((n) => n?.kind === 'instance' && /^blog\./.test(componentId(s, n) ?? '')) : undefined);
+/** A post long enough to be read in many parts, so the budget collapses reads of it. */
+const LONG_POST = Array.from({ length: 130 }, (_, i) => (i % 13 === 0 ? `## Chapter ${i / 13 + 1}` : `Part ${i + 1} of the history of the riverside studio.${' The kiln, the wheel and the river shaped every season of work here, from the first pots to the newest glazes.'.repeat(4)}`));
+const lastResult = (req: CanonicalModelRequest) => {
+  const it = req.items.at(-1);
+  try {
+    return it?.kind === 'tool_result' ? (JSON.parse(it.content) as Record<string, unknown>) : null;
+  } catch {
+    return null;
+  }
+};
 const intro = (heading: string) => ({ componentId: 'intro.page', props: { heading, lead: `${heading}, explained simply.` } });
 const closing = { componentId: 'cta.banner', props: { heading: 'Ready when you are', primaryLabel: 'Get in touch', primaryLink: '/contact/' } };
 
@@ -573,6 +617,111 @@ export const EVAL_CASES: EvalCase[] = [
         () => [call('upsert_page_with_sections', { slug: 'faq', repair: true, sections: [{ ...faq, index: 1 }] })],
         finish('Added an FAQ page.')
       ];
+    }
+  },
+  {
+    id: 'draft-post-and-add-home-feed',
+    version: 1,
+    category: 'posts',
+    prompt:
+      'Draft a blog post from my notes and file it under News and a new Events category, dated 2027-05-10, with a one-line excerpt. Notes: Kiln opening night. Doors open 6pm. What to expect: studio tours, glaze demos, tea. Book on the contact page. Then add a "Latest news" section with the three newest posts to the home page.',
+    setup: withBlog,
+    grade: ({ before, after }) => {
+      const added = Object.values(posts(after)).filter((e) => !Object.hasOwn(posts(before), e.id));
+      const post = added[0];
+      const events = Object.entries(after.collections.posts?.settings.taxonomies.categories?.terms ?? {}).find(([, t]) => t.label.toLowerCase() === 'events')?.[0];
+      const cats = post?.terms.categories ?? [];
+      const feed = feedOn(after, home(after));
+      return [
+        check('one-new-post', added.length === 1, String(added.length)),
+        check('dated', post?.publishedAt === '2027-05-10', post?.publishedAt),
+        check('categories', cats.includes('news') && !!events && cats.includes(events), JSON.stringify(cats)),
+        check('excerpt', !!post?.excerpt?.trim()),
+        check('heading-list-link', blocks(post).some((b) => b === 'h2' || b === 'h3') && blocks(post).some((b) => b === 'ul' || b === 'ol') && linksIn(post), blocks(post).join(', ')),
+        check('notes-kept', /6\s?pm/i.test(postText(post)) && /tour/i.test(postText(post))),
+        check('home-feed', !!feed && (feed.props.collection === undefined || feed.props.collection === '' || feed.props.collection === 'posts'), feed ? JSON.stringify(feed.props) : 'none'),
+        check('home-sections-kept', home(before).rootIds.every((id) => home(after).rootIds.includes(id))),
+        check('other-posts-untouched', Object.keys(posts(before)).every((id) => same(posts(before)[id], posts(after)[id]))),
+        check('shell-and-tokens-untouched', shellUntouched(before, after))
+      ];
+    },
+    script: () => [
+      () => [
+        call('upsert_collection_entry', {
+          collectionId: 'posts',
+          title: 'Kiln opening night',
+          publishedAt: '2027-05-10',
+          excerpt: 'Come and see the new kiln fired for the first time.',
+          categories: ['News', 'Events'],
+          body: ['Doors open at **6pm**.', '## What to expect', '- Studio tours', '- Glaze demos', '- Tea', 'Book a place on the [contact page](/contact/).']
+        })
+      ],
+      () => [call('upsert_page_with_sections', { slug: 'home', sections: [{ componentId: 'blog.grid', props: { heading: 'Latest news', collection: 'posts', count: 3 } }] })],
+      finish('Drafted “Kiln opening night” under News and Events, and added a Latest news section to the home page.')
+    ]
+  },
+  {
+    id: 'proofread-open-post',
+    version: 1,
+    category: 'posts',
+    prompt: 'Proofread this post and fix the spelling and grammar mistakes. Change nothing else.',
+    setup: withBlog,
+    postScope: { collectionId: 'posts', entryId: 'en_open' },
+    grade: ({ before, after }) => {
+      const was = posts(before).en_open;
+      const now = posts(after).en_open;
+      const text = postText(now);
+      return [
+        check('typos-fixed', /twenty makers/i.test(text) && /their work/i.test(text) && !/twnety|there work/i.test(text), text.slice(0, 200)),
+        check('structure-kept', same(blocks(now), blocks(was)) && linksIn(now), blocks(now).join(', ')),
+        check('details-kept', !!now && same({ ...now, body: null }, { ...was, body: null })),
+        check('other-posts-untouched', Object.keys(posts(before)).every((id) => id === 'en_open' || same(posts(before)[id], posts(after)[id]))),
+        check('pages-untouched', same(before.pages, after.pages) && same(before.collections.posts.settings, after.collections.posts.settings))
+      ];
+    },
+    script: () => [
+      () => [call('read_collection_entry', { collectionId: 'posts', entryId: 'en_open' })],
+      () => [call('upsert_collection_entry', { collectionId: 'posts', entryId: 'en_open', body: ['## Who is coming', 'Twenty makers will show their work on Saturday.', '- Clay', '- Glass', 'Book a place on the [contact page](/contact/).'] })],
+      finish('Fixed “Twnety” and “there work”.')
+    ]
+  },
+  {
+    id: 'excerpt-for-long-post',
+    version: 1,
+    category: 'posts',
+    prompt: 'Read this whole post and write a one-sentence excerpt for it. Leave its text as it is.',
+    setup: (state) => {
+      withBlog(state);
+      Object.assign(state, applyOperations(state, [{ type: 'entry.create', collectionId: 'posts', entryId: 'en_history', title: 'A history of the studio', publishedAt: '2026-08-01', draft: false, body: LONG_POST }]).state);
+    },
+    postScope: { collectionId: 'posts', entryId: 'en_history' },
+    grade: ({ before, after }) => {
+      const was = posts(before).en_history;
+      const now = posts(after).en_history;
+      return [
+        check('excerpt-written', !!now?.excerpt?.trim() && now.excerpt.length <= 320, now?.excerpt),
+        check('text-kept', same(now?.body, was?.body)),
+        check('other-posts-untouched', Object.keys(posts(before)).every((id) => id === 'en_history' || same(posts(before)[id], posts(after)[id])))
+      ];
+    },
+    // Reads every part, then the first again: the budget collapses the first read, which the script checks it was
+    // sent collapsed before it writes, so the free run proves a long post is read without filling the window.
+    script: () => {
+      let reread = false;
+      const step = (req: CanonicalModelRequest): ModelEvent[] => {
+        const last = lastResult(req);
+        if (!reread && typeof last?.next === 'number') return [call('read_collection_entry', { collectionId: 'posts', entryId: 'en_history', offset: last.next })];
+        if (!reread) {
+          reread = true;
+          return [call('read_collection_entry', { collectionId: 'posts', entryId: 'en_history' })];
+        }
+        if (last?.ok === true) return finish('Wrote the excerpt.')(req);
+        // Without the collapsed read the script writes nothing, and the case fails.
+        const collapsed = req.items.some((it) => it.kind === 'tool_result' && it.name === 'read_collection_entry' && it.content.startsWith('[Superseded read_collection_entry posts/en_history'));
+        if (!collapsed) return finish('The first read was never collapsed.')(req);
+        return [call('upsert_collection_entry', { collectionId: 'posts', entryId: 'en_history', excerpt: 'How a riverside studio grew from one wheel to a new kiln.' })];
+      };
+      return [() => [call('read_collection_entry', { collectionId: 'posts', entryId: 'en_history' })], ...Array.from({ length: 40 }, () => step)];
     }
   }
 ];
