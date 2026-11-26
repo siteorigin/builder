@@ -115,6 +115,8 @@ describe('the RSS feed', () => {
     // The start of the text, cut between words.
     expect(summary.endsWith('…')).toBe(true);
     expect(summary.length).toBeLessThanOrEqual(200);
+    // As much of it as fits, not merely some of it.
+    expect(summary.length).toBeGreaterThan(180);
     const kept = summary.slice(0, -1);
     expect(sentence.repeat(6).startsWith(kept)).toBe(true);
     expect(sentence.repeat(6).slice(kept.length)).toMatch(/^[ .]/);
@@ -136,13 +138,23 @@ describe('the RSS feed', () => {
     const described = run(s, update('en_plain', { description: 'Come and see the studio.' }));
     expect(first(described)).toBe('Come and see the studio.');
     expect(generateLlmsTxt(described)).toContain('/blog/open-day/): Come and see the studio.\n');
-    expect(first(run(described, update('en_plain', { excerpt: 'Our open day.' })))).toBe('Our open day.');
+    // The author's own words are never cut, and win over the SEO description in both places.
+    const excerpt = `Our open day. ${'Everyone is welcome. '.repeat(14)}`.trim();
+    const excerpted = run(described, update('en_plain', { excerpt }));
+    expect(excerpt.length).toBeGreaterThan(SUMMARY_LENGTH);
+    expect(first(excerpted)).toBe(excerpt);
+    expect(generateLlmsTxt(excerpted)).toContain(`/blog/open-day/): ${excerpt}\n`);
+    // With no paragraph, quote or list, the words it does have: a heading, then a picture's caption.
+    const headed = [{ type: 'h2', spans: [{ text: 'Doors open at nine' }] }, { type: 'image', assetId: 'img_bowls', alt: 'Bowls', caption: 'The glazing table' }];
+    expect(first(run(s, update('en_plain', { body: headed })))).toBe('Doors open at nine The glazing table');
     // A layout that leaves the entry's text off its page: the text is on the website nowhere, so nothing quotes it.
     const hidden = copy(s);
     const { nodes } = hidden.collections.posts.settings.template!;
     const placed = Object.values(nodes).filter((n) => JSON.stringify(n).includes('"$entry":"body"'));
     expect(placed).not.toHaveLength(0);
     for (const n of placed) n.when = { $entry: 'author' };
+    // Shown for a post with a byline, so quoted for that one; without one, not.
+    expect(first(run(hidden, update('en_plain', { author: 'Ana Ruiz' })))).toBe('Doors open at nine. Bring an apron A lovely morning.');
     expect(first(hidden)).toBeUndefined();
     expect(generateLlmsTxt(hidden)).toMatch(/\/blog\/open-day\/\)\n/);
     // A post with no words at all has none to give.
@@ -151,7 +163,9 @@ describe('the RSS feed', () => {
 
   it('cuts text between words, in text written without spaces too, and never inside a character', () => {
     expect(startOfText('Short and whole.')).toBe('Short and whole.');
-    expect(startOfText('x'.repeat(SUMMARY_LENGTH))).toBe('x'.repeat(SUMMARY_LENGTH));
+    expect(SUMMARY_LENGTH).toBe(200);
+    expect(startOfText('x'.repeat(200))).toBe('x'.repeat(200));
+    expect(startOfText('x'.repeat(201))).toBe(`${'x'.repeat(199)}…`);
     expect(startOfText('one two three four', 12)).toBe('one two…');
     expect(startOfText('one two, three', 12)).toBe('one two…');
     // A hyphenated word is kept or left whole.
@@ -161,7 +175,12 @@ describe('the RSS feed', () => {
     const cut = startOfText(japanese);
     expect(cut.length).toBeGreaterThan(SUMMARY_LENGTH / 2);
     expect(cut.length).toBeLessThanOrEqual(SUMMARY_LENGTH);
-    expect(japanese.startsWith(cut.slice(0, -1))).toBe(true);
+    expect(cut.endsWith('…')).toBe(true);
+    const kept = cut.slice(0, -1);
+    expect(japanese.startsWith(kept)).toBe(true);
+    // Where the cut falls, the language has a boundary between words (or punctuation stripped before the "…").
+    const boundary = new Intl.Segmenter('ja', { granularity: 'word' }).segment(japanese).containing(kept.length)!.index;
+    expect(boundary).toBe(kept.length);
     // One word longer than the room is cut between its characters: no half of an emoji, nor of a joined one.
     expect(startOfText('👩‍🎨'.repeat(10), 14)).toBe(`${'👩‍🎨'.repeat(2)}…`);
   });
@@ -178,6 +197,9 @@ describe('the RSS feed', () => {
       const out = generateProject(s, {}, cache);
       expect(out).toEqual(generateProject(s));
       expect(cache.made.filter((k) => k.startsWith('layout'))).toEqual([]);
+      // Words past the cut change neither file; new opening words change both.
+      const remade = cache.made.filter((k) => k === 'rss.xml' || k === 'llms.txt').sort();
+      expect(remade).toEqual(words.startsWith(long) ? [] : ['llms.txt', 'rss.xml']);
     }
     expect(generateProject(s, {}, cache).get(RSS_PATH)).toContain('The kiln is cold today.');
     expect(generateProject(s, {}, cache).get('static/llms.txt')).toContain('The kiln is cold today.');
@@ -191,6 +213,17 @@ describe('the RSS feed', () => {
     const s = run(state, update('en_spring', { updatedAt: '2027-03-09' }), create('en_draft', 'Later', { publishedAt: '2027-08-01', draft: true }));
     expect(built(s)).toBe('Tue, 09 Mar 2027 00:00:00 GMT');
     expect(generateRssFeed(s)).toBe(generateRssFeed(copy(s)));
+    // The newest day of any post, here an older post's revision; a day that is none counts for nothing.
+    const revised = run(s, create('en_older', 'Winter kiln report', { publishedAt: '2026-12-01' }), update('en_older', { updatedAt: '2027-04-15' }));
+    expect(built(revised)).toBe('Thu, 15 Apr 2027 00:00:00 GMT');
+    const damaged = copy(revised);
+    damaged.collections.posts.entries.en_older.updatedAt = 'soon';
+    expect(built(damaged)).toBe('Tue, 09 Mar 2027 00:00:00 GMT');
+    for (const e of Object.values(damaged.collections.posts.entries)) {
+      e.publishedAt = 'soon';
+      delete e.updatedAt;
+    }
+    expect(built(damaged)).toBeUndefined();
   });
 
   it('escapes what XML and HTML give a meaning to, and replaces characters XML does not allow', () => {

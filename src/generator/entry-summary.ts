@@ -29,10 +29,14 @@ export function startOfText(text: string, max = SUMMARY_LENGTH): string {
   return kept ? `${kept}…` : '';
 }
 
-/** The words of an entry's paragraphs, quotes and lists: headings and pictures' words do not say what it is about. */
-function proseOf(entry: EntryDoc): string {
-  const prose = toRichText(entry.body).filter((b) => !isImageBlock(b) && (isListBlock(b) || b.type === 'p' || b.type === 'blockquote'));
-  return oneLine(richTextToPlain(prose));
+/**
+ * The text an entry's summary starts: its paragraphs, quotes and lists, since headings and pictures' words say less of
+ * what it is about; in an entry with none of those, whatever words it has.
+ */
+function textOf(entry: EntryDoc): string {
+  const body = toRichText(entry.body);
+  const prose = body.filter((b) => !isImageBlock(b) && (isListBlock(b) || b.type === 'p' || b.type === 'blockquote'));
+  return oneLine(richTextToPlain(prose)) || oneLine(richTextToPlain(body));
 }
 
 /**
@@ -42,6 +46,6 @@ function proseOf(entry: EntryDoc): string {
 export function entrySummary(state: ProjectState, collection: Collection, entry: EntryDoc): string {
   const own = oneLine(entry.excerpt) || oneLine(entry.seo?.description);
   if (own) return own;
-  const prose = proseOf(entry);
-  return prose && showsEntryText(state, collection, entry) ? startOfText(prose) : '';
+  const text = textOf(entry);
+  return text && showsEntryText(state, collection, entry) ? startOfText(text) : '';
 }

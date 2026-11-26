@@ -91,6 +91,15 @@ function ownDescription(state: ProjectState, subject: SeoSubject): string {
   return oneLine(state.collections[subject.collectionId]?.entries[subject.entryId]?.excerpt);
 }
 
+/** Each state's published projection, so describing every entry works it out (and each entry's neighbours) once. */
+const published = new WeakMap<ProjectState, ProjectState>();
+
+function publishedOnce(state: ProjectState): ProjectState {
+  let found = published.get(state);
+  if (!found) published.set(state, (found = publishedState(state)));
+  return found;
+}
+
 /**
  * What the index says of a document: a page's own description, an entry's summary. In a cached run the index depends
  * on what an entry's summary says, not on all of the text it may be taken from.
@@ -99,7 +108,7 @@ function listedDescription(state: ProjectState, subject: SeoSubject): string {
   if (subject.kind === 'page') return ownDescription(state, subject);
   const { collectionId, entryId } = subject;
   return derived(state, `llms:summary:${subjectKey(subject)}`, (s) => {
-    const live = publishedState(s);
+    const live = publishedOnce(s);
     const collection = live.collections[collectionId];
     const entry = collection?.entries[entryId];
     return entry ? entrySummary(live, collection, entry) : '';

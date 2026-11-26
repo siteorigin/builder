@@ -88,6 +88,8 @@ export function siteFeed(state: ProjectState): Feed | null {
   return derived(state, 'rss-feed', buildFeed);
 }
 
+const feedTitle = (state: ProjectState, base: string) => oneLine(state.site.name) || new URL(base).host;
+
 function buildFeed(state: ProjectState): Feed | null {
   const base = publicUrl(state.site);
   if (!base) return null;
@@ -111,7 +113,7 @@ function buildFeed(state: ProjectState): Feed | null {
     if (a.published !== b.published) return !a.published ? 1 : !b.published ? -1 : a.published < b.published ? 1 : -1;
     return a.guid < b.guid ? -1 : a.guid > b.guid ? 1 : 0;
   });
-  const title = oneLine(state.site.name) || new URL(base).host;
+  const title = feedTitle(state, base);
   const language = siteLanguage(state.site);
   const built = days.sort().at(-1);
   return {
@@ -131,8 +133,9 @@ function buildFeed(state: ProjectState): Feed | null {
  */
 export function feedLink(state: ProjectState): { url: string; title: string } | null {
   return derived(state, 'rss-link', (s) => {
-    const feed = buildFeed(s);
-    return feed ? { url: feed.url, title: feed.title } : null;
+    const base = publicUrl(s.site);
+    // Without building the feed: no post's summary is worked out for its address and title.
+    return base && hasFeedEntries(s) ? { url: `${base}/${RSS_FILE}`, title: feedTitle(s, base) } : null;
   });
 }
 
