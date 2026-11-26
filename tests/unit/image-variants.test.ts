@@ -590,6 +590,8 @@ describe('media worker client', () => {
     // The project closed: the worker goes now, not half a minute later.
     client.release();
     expect(workers[0].killed).toBe(true);
+    // Some time on, so the released worker's idle timer would have been due had it been left running.
+    await vi.advanceTimersByTimeAsync(10000);
     // Released, not stopped: the next project's picture gets a new worker and its copies.
     const next = client.variants(Buffer.from('b'), 'image/jpeg', 2000);
     await vi.advanceTimersByTimeAsync(0);
@@ -625,6 +627,22 @@ describe('media worker client', () => {
     expect(workers[0].killed).toBe(false);
     workers[0].reply({ id: workers[0].sent[1].id, ok: true, variants: [{ width: 480, mime: 'image/jpeg', data: new Uint8Array([2]) }] });
     expect(await second).toHaveLength(1);
+    expect(workers[0].killed).toBe(true);
+  });
+
+  it('counts a request made just before a release, before it has reached the worker (#822)', async () => {
+    vi.useFakeTimers();
+    const { workers, spawn } = spawner();
+    const client = createVariantClient(spawn, { idleMs: 30000 });
+    // Asked and released in the same turn: nothing is in flight yet, but the request is the worker's to finish.
+    const asked = client.variants(Buffer.from('a'), 'image/jpeg', 2000);
+    client.release();
+    await vi.advanceTimersByTimeAsync(0);
+    expect(workers).toHaveLength(1);
+    expect(workers[0].killed).toBe(false);
+    workers[0].reply({ id: workers[0].sent[0].id, ok: true, variants: [{ width: 480, mime: 'image/jpeg', data: new Uint8Array([1]) }] });
+    expect(await asked).toHaveLength(1);
+    // Then it ends at once, not half a minute later.
     expect(workers[0].killed).toBe(true);
   });
 

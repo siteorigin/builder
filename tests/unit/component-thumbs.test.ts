@@ -379,6 +379,9 @@ describe('the thumbnail queue', () => {
     expect(await thumbs.get(card, 'open#1')).toMatchObject({ state: 'ready' });
     expect(host.captured).toBe(1);
     thumbs.forget();
+    // Nothing is held while the editor is at Welcome.
+    const held = thumbs as unknown as { memory: Map<string, string>; failed: Map<string, unknown>; retried: Map<string, string> };
+    expect([held.memory.size, held.failed.size, held.retried.size]).toEqual([0, 0, 0]);
     // Nothing kept on disk for it either (no cache root): the same opening asks again, so it is photographed afresh.
     expect(await thumbs.get(card, 'open#1')).toMatchObject({ state: 'ready' });
     expect(host.captured).toBe(2);

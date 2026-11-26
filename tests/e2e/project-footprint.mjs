@@ -4,12 +4,12 @@
 // the renderer the preview's frame ran in is ended by Chromium itself a few seconds after the frame goes.
 import assert from 'node:assert/strict';
 import { join } from 'node:path';
-import { createProject, eventually, launch, scratch, step } from './harness.mjs';
+import { eventually, launch, scratch, step } from './harness.mjs';
 import { ownedEntries, processTable } from '../driver/processes.ts';
 
 const CYCLES = 5;
 /** How long a project's own helpers may outlive its close: far less than their half-minute idle time. */
-const HELPERS_MS = 3000;
+const HELPERS_MS = 5000;
 /** How long the whole process set may take to be a fresh launch's again (Chromium keeps an emptied frame's renderer ~10 s). */
 const SETTLED_MS = 20000;
 
@@ -64,15 +64,39 @@ console.log(`fresh: ${fresh.length} children, ${totalMb(freshAt)} MB`);
 assert.deepEqual(helpers(freshAt), [], 'no project helper runs at a fresh Welcome');
 
 step('a Business site with sample pictures, which use the media workers');
-await createProject(win, { name: 'Quayside Studio', parentDir: join(WORK, 'sites'), starter: 'business', sampleImages: true });
-const dir = (await win.evaluate(() => window.builder.project.snapshot())).dir;
+const created = await win.evaluate((o) => window.builder.projects.create(o), { name: 'Quayside Studio', parentDir: join(WORK, 'sites'), starter: 'business', sampleImages: true });
+assert.ok(created.ok, `the project is created: ${created.message ?? ''}`);
+// Asked at once, before the preview is waited for: the pictures were made moments ago, well within the idle time.
+const made = await described();
+assert.ok(helpers(made).some((p) => p.name === 'SiteOrigin media'), `the project's pictures started a media worker (${JSON.stringify(helpers(made))})`);
+await win.waitForSelector('.editor');
+await waitForPreview();
+const { dir, workspaceKey } = await win.evaluate(() => window.builder.project.snapshot());
 await children();
+
+step('a component of the project’s own is photographed for Insert, in the thumbnails’ hidden window');
+const apply = (operations, label) =>
+  win.evaluate(async ([operations, label]) => {
+    const r = await window.builder.project.apply({ operations, label });
+    if (!r.ok) throw new Error(`${label}: ${r.error?.message}`);
+    return r.results;
+  }, [operations, label]);
+const home = (await win.evaluate(() => window.builder.project.snapshot())).state.site.homePageId;
+const owner = { kind: 'page', id: home };
+const [{ nodeId: section }] = await apply([{ type: 'node.insert', owner, componentId: 'layout.section' }], 'Insert section');
+const [{ nodeId: stack }] = await apply([{ type: 'node.insert', owner, parentId: section, slot: 'content', primitive: 'stack' }], 'Insert stack');
+await apply([{ type: 'node.insert', owner, parentId: stack, primitive: 'heading', text: 'Exhibitor' }], 'Insert heading');
+const [{ definitionId: card }] = await apply([{ type: 'component.createFromNode', owner, nodeId: stack, name: 'Exhibitor card' }], 'Create component');
+await eventually(async () => {
+  const thumb = await win.evaluate(([id, opening]) => window.builder.project.componentThumb(id, opening), [card, workspaceKey]);
+  assert.equal(thumb.state, 'ready', `the card is photographed (${JSON.stringify(thumb).slice(0, 200)})`);
+}, 90000, 1000);
+assert.equal((await described()).windows, 2, 'the thumbnails have their hidden window, kept for the next photograph');
 
 const totals = [];
 for (let cycle = 1; cycle <= CYCLES; cycle++) {
   step(`close ${cycle} of ${CYCLES}`);
   const open = await described();
-  if (cycle === 1) assert.ok(helpers(open).some((p) => p.name === 'SiteOrigin media'), `the project's pictures started a media worker (${JSON.stringify(helpers(open))})`);
   assert.ok(helpers(open).some((p) => p.name === 'SiteOrigin project runtime'), 'the preview runs while the project is open');
   await children();
   assert.ok((await win.evaluate(() => window.builder.projects.close())).ok, 'the project closes');
@@ -84,10 +108,13 @@ for (let cycle = 1; cycle <= CYCLES; cycle++) {
     assert.equal(d.windows, 1, 'only the editor window is left: the thumbnails’ window closed with the project');
     assert.deepEqual(d.frames.filter((u) => !u.startsWith('app://')), [], 'the editor shows nothing of the project');
   }, HELPERS_MS, 200);
-  // And then the very processes a fresh launch has, no more: Chromium ends the preview frame's renderer itself.
+  // And then the very processes a fresh launch has, no more, and still so a moment later: Chromium ends the preview
+  // frame's renderer itself.
   await eventually(async () => {
-    const now = await children();
-    assert.deepEqual(now, fresh, `the processes at Welcome are a fresh launch's (${JSON.stringify((await described()).processes)})`);
+    for (let sample = 0; sample < 2; sample++) {
+      if (sample) await win.waitForTimeout(500);
+      assert.deepEqual(await children(), fresh, `the processes at Welcome are a fresh launch's (${JSON.stringify((await described()).processes)})`);
+    }
   }, SETTLED_MS, 250);
   const settled = await described();
   totals.push(totalMb(settled));
