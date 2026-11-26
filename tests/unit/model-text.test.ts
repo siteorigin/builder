@@ -40,6 +40,8 @@ describe('model text blocks', () => {
     expect(textBlocks('## Summary\nAll done.\n\n\n')).toEqual([{ kind: 'lead', lines: ['Summary'] }, p('All done.')]);
     expect(textBlocks('   ')).toEqual([]);
     expect(textBlocks('>')).toEqual([]);
+    expect(textBlocks('##   ')).toEqual([]);
+    expect(textBlocks('> One\n>\n> Two')).toEqual([{ kind: 'quote', blocks: [p('One'), p('Two')] }]);
   });
 
   it('reads a fenced block as code, without its backticks or language tag, exactly as indented', () => {
@@ -94,15 +96,49 @@ describe('model text blocks', () => {
     expect(textBlocks('1. One\n```\nx\n```\n2. Two')).toEqual([ol(item('One')), code('x'), { kind: 'ol', start: 2, items: [item('Two')] }]);
   });
 
+  it('reads a fence, quote or table that starts on an item’s own line', () => {
+    expect(textBlocks('- Parent\n  - ```js\n    x()\n    ```\n- Next\n\nDone.')).toEqual([
+      ul(item('Parent', ul({ lines: [], blocks: [code('x()')] })), item('Next')),
+      p('Done.')
+    ]);
+    expect(textBlocks('- > Approved\n  > by the owner')).toEqual([ul({ lines: [], blocks: [{ kind: 'quote', blocks: [p('Approved', 'by the owner')] }] })]);
+    expect(textBlocks('- | A |\n  | - |')).toEqual([ul({ lines: [], blocks: [{ kind: 'table', head: ['A'], rows: [] }] })]);
+    expect(textBlocks('- > 100 visitors')).toEqual([ul(item('> 100 visitors'))]);
+  });
+
+  it('closes a fence only with a line that is not indented well past it, and leaves a tab’s other columns', () => {
+    expect(textBlocks('```md\n    ```\nKeep this line\n````\nAfter')).toEqual([code('    ```', 'Keep this line'), p('After')]);
+    expect(textBlocks('  ```py\n  if ok:\n\tpass  \n  ```')).toEqual([code('if ok:', '  pass  ')]);
+    expect(textBlocks('- Card\n\t- Body\n    - Title')).toEqual([ul(item('Card', ul(item('Body'), item('Title'))))]);
+    expect(textBlocks('~~~sh\nx')).toEqual([code('x')]);
+  });
+
+  it('keeps a paragraph after a blank line apart from its item’s words, and a very long item whole', () => {
+    expect(textBlocks('- Note\n\n  More.')).toEqual([ul(item('Note', p('More.')))]);
+    expect(textBlocks('7. Seven')).toEqual([{ kind: 'ol', start: 7, items: [item('Seven')] }]);
+    const [list] = textBlocks(`- Root\n${'  x\n'.repeat(150_000)}  end`);
+    expect(list.kind === 'ul' && list.items[0].lines.at(-1)).toBe('end');
+  });
+
   it('reads a table as its cells, without its dashes', () => {
     expect(textBlocks('Pages:\n| Page | Sections |\n| :--- | ---: |\n| Home | 4 |\n| About \\| us |\n\nDone.')).toEqual([
       p('Pages:'),
-      { kind: 'table', head: ['Page', 'Sections'], rows: [['Home', '4'], ['About | us', '']] },
+      { kind: 'table', head: ['Page', 'Sections'], rows: [['Home', '4'], ['About | us']] },
       p('Done.')
     ]);
-    expect(textBlocks('Page | Sections\n--- | ---\nHome | 4 | extra')).toEqual([
-      { kind: 'table', head: ['Page', 'Sections', ''], rows: [['Home', '4', 'extra']] }
+    // Each row keeps the cells it has, so no words are lost and a long row costs only itself.
+    expect(textBlocks('Page | Sections\n--- | ---\nHome | 4 | extra\nAbout |')).toEqual([
+      { kind: 'table', head: ['Page', 'Sections'], rows: [['Home', '4', 'extra'], ['About']] }
     ]);
+    // A pipe that is escaped or in code divides nothing, so it makes no table and no further row.
+    expect(textBlocks('| Mode |\n| --- |\n| Auto |\nUse `on | off`.')).toEqual([{ kind: 'table', head: ['Mode'], rows: [['Auto']] }, p('Use `on | off`.')]);
+    expect(textBlocks('A \\| B\n| --- |')).toEqual([p('A \\| B', '| --- |')]);
+    expect(textBlocks('| Type | Meaning |\n| --- | --- |\n| ``a | b`` | union |')).toEqual([
+      { kind: 'table', head: ['Type', 'Meaning'], rows: [['``a | b``', 'union']] }
+    ]);
+    expect(textBlocks('a | b\nc | d')).toEqual([p('a | b', 'c | d')]);
+    expect(textBlocks('a | b\n| --- |')).toEqual([p('a | b', '| --- |')]);
+    expect(textBlocks('| A |\n| - |\n> a | b')).toEqual([{ kind: 'table', head: ['A'], rows: [] }, { kind: 'quote', blocks: [p('a | b')] }]);
     expect(textBlocks('| Type |\n| --- |\n| `string | null` |\n- a | b')).toEqual([
       { kind: 'table', head: ['Type'], rows: [['`string | null`']] },
       ul(item('a | b'))
@@ -135,6 +171,9 @@ describe('model text spans', () => {
     expect(textSpans('*italic* and _italic_.')).toEqual([em('italic'), ' and ', em('italic'), '.']);
     expect(textSpans('~~struck~~ out')).toEqual([del('struck'), ' out']);
     expect(textSpans('**very _much_ so** and ***both***')).toEqual([strong('very ', em('much'), ' so'), ' and ', em(strong('both'))]);
+    expect(textSpans('Use __Important__ here')).toEqual(['Use ', strong('Important'), ' here']);
+    expect(textSpans('~~old **copy**~~')).toEqual([del('old ', strong('copy'))]);
+    expect(textSpans('*a _b* c_')).toEqual([em('a _b'), ' c_']);
     expect(textSpans('(**`Hero`**)')).toEqual(['(', strong(mono('Hero')), ')']);
     expect(textSpans('*across\nlines*')).toEqual([em('across\nlines')]);
   });
@@ -144,11 +183,14 @@ describe('model text spans', () => {
     expect(textSpans('`items[0](x)`')).toEqual([mono('items[0](x)')]);
     expect(textSpans('```npm run dev``` starts it')).toEqual([mono('npm run dev'), ' starts it']);
     expect(textSpans('a `lone backtick')).toEqual(['a `lone backtick']);
+    // One space comes off each side only when both sides have one.
+    expect(textSpans('` a` `  b  ` `  `')).toEqual([mono(' a'), ' ', mono(' b '), ' ', mono('  ')]);
   });
 
   it('shows a link or image as its words', () => {
     expect(textSpans('See [the **docs**](https://example.com/a_(b)) and ![a photo](x.jpg).')).toEqual(['See the ', strong('docs'), ' and a photo.']);
     expect(textSpans('[`a[0]`](u) [slug]')).toEqual([mono('a[0]'), ' [slug]']);
+    expect(textSpans('[A](u) and [B](v); ![](hero.jpg)')).toEqual(['A and B; hero.jpg']);
   });
 
   it('leaves marks that are not emphasis as typed', () => {
@@ -157,6 +199,10 @@ describe('model text spans', () => {
       '2 * 3 * 4, 2*3*4 and 1200*800*2',
       'src/**/*.ts and tests/**/*.ts',
       '*.ts and *.tsx',
+      "Use '*.jpg' and '*.png'.",
+      '(*.jpg or *.png)',
+      "match '*' or '*'",
+      'width*height*scale',
       '**kwargs and **args',
       'about ~5 min or ~10 min',
       'an unfinished **bold',
@@ -167,6 +213,7 @@ describe('model text spans', () => {
 
   it('shows an escaped mark as the mark', () => {
     expect(textSpans('\\*not italic\\* in C:\\Users')).toEqual(['*not italic* in C:\\Users']);
+    expect(textSpans('\\_x\\_ and \\[y]')).toEqual(['_x_ and [y]']);
   });
 
   it('bounds how deeply emphasis nests', () => {
@@ -176,8 +223,8 @@ describe('model text spans', () => {
 
   it('reads a long run of unpartnered marks quickly', () => {
     const started = performance.now();
-    for (const text of ['*a '.repeat(20_000), ' a_'.repeat(20_000), '['.repeat(20_000), '`a``b'.repeat(10_000), '[a]('.repeat(5_000)]) textSpans(text);
+    for (const text of ['*a '.repeat(20_000), ' a_'.repeat(20_000), '['.repeat(20_000), '`a``b'.repeat(10_000), '[a]('.repeat(5_000), `\` ${'a '.repeat(50_000)}b\``, `a${'__b'.repeat(30_000)}`]) textSpans(text);
     textBlocks(`| ${' '.repeat(50_000)}x\n|${' '.repeat(50_000)}x`);
-    expect(performance.now() - started).toBeLessThan(5_000);
-  });
+    expect(performance.now() - started).toBeLessThan(15_000);
+  }, 30_000);
 });

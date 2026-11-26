@@ -34,24 +34,75 @@ const indentOf = (line: string) => widthOf(leading(line));
 /** The line with up to `by` of its indent taken off. What is left is as it was typed, tabs and all. */
 function dedent(line: string, by: number): string {
   let at = 0;
-  for (let width = 0; width < by && (line[at] === ' ' || line[at] === '\t'); at++) width += widthOf(line[at]);
-  return line.slice(at);
+  let width = 0;
+  for (; width < by && (line[at] === ' ' || line[at] === '\t'); at++) width += widthOf(line[at]);
+  return ' '.repeat(Math.max(0, width - by)) + line.slice(at);
 }
 
-/** Whether this line closes the fence that `open` matched. */
-const closesFence = (line: string, open: string) => {
+/** The indent to take off the lines under a list item: its marker's width, or less where a line has less. */
+const bodyIndent = (lines: string[], marker: number) => lines.reduce((least, line) => (line.trim() ? Math.min(least, indentOf(line)) : least), marker);
+
+type Fence = { mark: string; indent: number };
+
+/** The fence a line opens, also one on the same line as the list markers it sits under. */
+function fenceAt(line: string): Fence | null {
+  let rest = line;
+  for (let depth = 0; depth < MAX_DEPTH && LIST_ITEM.test(rest) && !RULE.test(rest); depth++) rest = rest.slice(LIST_ITEM.exec(rest)![0].length);
+  const mark = FENCE.exec(rest)?.[2];
+  return mark ? { mark, indent: indentOf(line) + line.trimStart().length - rest.trimStart().length } : null;
+}
+
+/** Whether this line closes the fence. One indented well past its opening is part of the code. */
+const closesFence = (line: string, fence: Fence) => {
   const mark = line.trim();
-  return mark.startsWith(open) && mark === open[0].repeat(mark.length);
+  return mark.startsWith(fence.mark) && mark === fence.mark[0].repeat(mark.length) && indentOf(line) <= fence.indent + 3;
 };
 
-/** The cells of a table row. A pipe written as \| is part of its cell. */
-function cells(line: string): string[] {
-  const row = [''];
-  // A pipe inside code is part of the code.
-  for (const [part] of line.trim().matchAll(/`[^`]*`|\\[\s\S]|[^`|\\]+|[\s\S]/g)) {
-    if (part === '|') row.push('');
-    else row[row.length - 1] += part;
+/** Finds the run of as many backticks that closes one. Ask in the order of the text: it never looks back. */
+function tickCloser(text: string) {
+  // Where each length of run starts, so an unpartnered run is not searched for again and again.
+  const ticks = new Map<number, number[]>();
+  for (const run of text.matchAll(/`+/g)) {
+    const starts = ticks.get(run[0].length);
+    if (starts) starts.push(run.index);
+    else ticks.set(run[0].length, [run.index]);
   }
+  const used = new Map<number, number>();
+  return (length: number, after: number): number | undefined => {
+    const starts = ticks.get(length) ?? [];
+    let next = used.get(length) ?? 0;
+    while (next < starts.length && starts[next] < after) next++;
+    used.set(length, next);
+    return starts[next];
+  };
+}
+
+/** A line cut at the pipes that divide it. A pipe written as \| or inside code divides nothing. */
+function divided(line: string): string[] {
+  const row = line.trim();
+  const closer = tickCloser(row);
+  const parts: string[] = [];
+  let from = 0;
+  const marks = /`+|\\[\s\S]|\|/g;
+  for (let match = marks.exec(row); match; match = marks.exec(row)) {
+    const [mark] = match;
+    if (mark === '|') {
+      parts.push(row.slice(from, match.index));
+      from = marks.lastIndex;
+    } else if (mark[0] === '`') {
+      const end = closer(mark.length, marks.lastIndex);
+      if (end !== undefined) marks.lastIndex = end + mark.length;
+    }
+  }
+  parts.push(row.slice(from));
+  return parts;
+}
+
+const isRow = (line: string) => divided(line).length > 1;
+
+/** The cells of a table row. */
+function cells(line: string): string[] {
+  const row = divided(line);
   if (row.length > 1 && !row[0].trim()) row.shift();
   if (row.length > 1 && !row[row.length - 1].trim()) row.pop();
   return row.map((cell) => cell.trim().replace(/\\\|/g, '|'));
@@ -59,7 +110,7 @@ function cells(line: string): string[] {
 
 /** A table starts at a row of cells followed by a line of dashes with as many columns. */
 function startsTable(line: string, next: string | undefined): boolean {
-  if (!next || !line.includes('|') || !next.includes('|')) return false;
+  if (!next || !isRow(line) || !isRow(next)) return false;
   const rule = cells(next);
   return rule.every((cell) => /^:?-+:?$/.test(cell)) && rule.length === cells(line).length;
 }
@@ -68,7 +119,7 @@ function startsTable(line: string, next: string | undefined): boolean {
  * The lines under a list item: those indented past its marker, and the blank lines among them. A fence opened there, or
  * on the marker's own line (`fence`), is kept whole, however its code is indented.
  */
-function itemBody(lines: string[], from: number, indent: number, fence: string): string[] {
+function itemBody(lines: string[], from: number, indent: number, fence: Fence | null): string[] {
   const body: string[] = [];
   let blanks = 0;
   for (let i = from; i < lines.length; i++) {
@@ -83,8 +134,8 @@ function itemBody(lines: string[], from: number, indent: number, fence: string):
     for (; blanks; blanks--) body.push('');
     body.push(line);
     if (fence) {
-      if (closesFence(line, fence)) fence = '';
-    } else fence = FENCE.exec(line)?.[2] ?? '';
+      if (closesFence(line, fence)) fence = null;
+    } else fence = fenceAt(line);
   }
   return body;
 }
@@ -104,7 +155,8 @@ function parse(lines: string[], depth: number): TextBlock[] {
     const fence = FENCE.exec(line);
     if (fence) {
       const code: string[] = [];
-      for (i++; i < lines.length && !closesFence(lines[i], fence[2]); i++) code.push(dedent(lines[i], widthOf(fence[1])));
+      const opened = { mark: fence[2], indent: widthOf(fence[1]) };
+      for (i++; i < lines.length && !closesFence(lines[i], opened); i++) code.push(dedent(lines[i], opened.indent));
       blocks.push({ kind: 'code', lines: code });
       open = false;
       continue;
@@ -125,12 +177,10 @@ function parse(lines: string[], depth: number): TextBlock[] {
     if (startsTable(line, lines[i + 1])) {
       const head = cells(line);
       const rows: string[][] = [];
-      for (i += 2; i < lines.length && lines[i].includes('|') && ![FENCE, LIST_ITEM, QUOTE, HEADING].some((other) => other.test(lines[i])); i++) rows.push(cells(lines[i]));
+      for (i += 2; i < lines.length && isRow(lines[i]) && ![FENCE, LIST_ITEM, QUOTE, HEADING].some((other) => other.test(lines[i])); i++) rows.push(cells(lines[i]));
       i--;
-      // A row with more cells than the heading widens the table rather than losing its words.
-      const width = rows.reduce((most, row) => Math.max(most, row.length), head.length);
-      const pad = (row: string[]) => [...row, ...Array<string>(width - row.length).fill('')];
-      blocks.push({ kind: 'table', head: pad(head), rows: rows.map(pad) });
+      // Rows keep the cells they have: none loses words, and one long row costs only itself.
+      blocks.push({ kind: 'table', head, rows });
       open = false;
       continue;
     }
@@ -139,14 +189,18 @@ function parse(lines: string[], depth: number): TextBlock[] {
       const [marker, spaces, bullet] = item;
       const kind = /\d/.test(bullet) ? 'ol' : 'ul';
       const first = line.slice(marker.length);
-      // An item whose marker's line opens a fence holds that fence from there.
-      const opening = depth < MAX_DEPTH ? FENCE.exec(first)?.[2] : undefined;
-      const under = depth < MAX_DEPTH ? itemBody(lines, i + 1, widthOf(spaces), opening ?? '') : [];
-      const by = Math.min(marker.length, ...under.filter((l) => l.trim()).map(indentOf));
-      const inner = parse([...(opening ? [first] : []), ...under.map((l) => dedent(l, by))], depth + 1);
+      const nests = depth < MAX_DEPTH;
+      // A fence opened on the marker's own line is held from there.
+      const fenced = nests ? FENCE.exec(first)?.[2] : undefined;
+      const under = nests ? itemBody(lines, i + 1, widthOf(spaces), fenced ? { mark: fenced, indent: marker.length } : null) : [];
+      const by = bodyIndent(under, marker.length);
+      const body = under.map((l) => dedent(l, by));
+      // So is a block that starts there. A ">" before a number reads as "more than".
+      const blocky = !!fenced || (nests && (/^>(?!\s*\d)/.test(first) || startsTable(first, body[0])));
+      const inner = parse(blocky ? [first, ...body] : body, depth + 1);
       // Lines that carry straight on from the marker's own line are still the item's text.
-      const carried = !opening && under[0]?.trim() && inner[0]?.kind === 'p' ? (inner.shift() as { lines: string[] }).lines : [];
-      const entry: ListItem = { lines: opening ? [] : [first, ...carried], blocks: inner };
+      const carried = !blocky && under[0]?.trim() && inner[0]?.kind === 'p' ? (inner.shift() as { lines: string[] }).lines : [];
+      const entry: ListItem = { lines: blocky ? [] : [first, ...carried], blocks: inner };
       i += under.length;
       if (last?.kind === kind) last.items.push(entry);
       // A numbered list that code or a paragraph interrupted carries on from its own number.
@@ -155,7 +209,8 @@ function parse(lines: string[], depth: number): TextBlock[] {
       continue;
     }
     if (HEADING.test(line)) {
-      blocks.push({ kind: 'lead', lines: [line.replace(HEADING, '')] });
+      const words = line.replace(HEADING, '').trim();
+      if (words) blocks.push({ kind: 'lead', lines: [words] });
       open = false;
     } else if (open && last?.kind === 'p') last.lines.push(line.trimEnd());
     else {
@@ -170,11 +225,16 @@ export function textBlocks(text: string): TextBlock[] {
   return parse(text.replace(/\r\n?/g, '\n').split('\n'), 0);
 }
 
-/** A link or image, read as its words. Its address may hold one level of parentheses. */
-const LINK = /!?\[((?:[^[\]\n]|\[[^[\]\n]{0,200}\]){0,500})\]\((?:[^()\n]|\([^()\n]{0,500}\)){0,2000}\)/y;
+/** A link or image, read as its words, or its address when it has none. The address may hold one level of parentheses. */
+const LINK = /!?\[((?:[^[\]\n]|\[[^[\]\n]{0,200}\]){0,500})\]\(((?:[^()\n]|\([^()\n]{0,500}\)){0,2000})\)/y;
 const ESCAPABLE = /[\\`*_~[\](){}#+\-.!|>]/;
 const SPACE = /^\s?$/;
 const PUNCTUATION = /^[\p{P}\p{S}]$/u;
+const WORD = /^[\p{L}\p{N}]$/u;
+/** A file pattern's star, as in *.png. */
+const EXTENSION = /^\.[A-Za-z0-9]/;
+/** The names code writes between double underscores. Any other word between them is bold. */
+const DUNDER = /__(?:init|main|name|file|dirname|filename|proto|all|doc|dict|str|repr|call|len|iter|next|enter|exit|new|eq|hash|getitem|setitem|getattr|setattr|slots|class|module|version)__(?![A-Za-z0-9_])/y;
 
 type Opener = { at: number; length: number };
 
@@ -182,9 +242,11 @@ type Opener = { at: number; length: number };
 function flanks(mark: string, length: number, before: string, after: string): { opens: boolean; closes: boolean } {
   const none = { opens: false, closes: false };
   if (mark === '~' ? length !== 2 : length > 3) return none;
-  // A path pattern such as src/**/*.ts, and a sum such as 1200*800, are not emphasis.
+  // A path pattern such as src/**/*.ts, and a product such as 1200*800 or width*height, are not emphasis.
   if (mark === '*' && ((before === '/' && !SPACE.test(after)) || (after === '/' && !SPACE.test(before)))) return none;
-  if (mark === '*' && length === 1 && /\d/.test(before) && /\d/.test(after)) return none;
+  if (mark === '*' && length === 1 && WORD.test(before) && WORD.test(after)) return none;
+  // So is a quoted star, '*'.
+  if (mark === '*' && /["'’”“‘]/.test(before) && /["'’”“‘]/.test(after)) return none;
   const left = !SPACE.test(after) && (!PUNCTUATION.test(after) || SPACE.test(before) || PUNCTUATION.test(before));
   const right = !SPACE.test(before) && (!PUNCTUATION.test(before) || SPACE.test(after) || PUNCTUATION.test(after));
   // An underscore inside a word is part of the word, as in snake_case.
@@ -205,21 +267,7 @@ export function textSpans(text: string): TextSpan[] {
     if (plain) out.push(plain);
     plain = '';
   };
-  // Where each length of backtick run starts, so an unpartnered run is not searched for again and again.
-  const ticks = new Map<number, number[]>();
-  for (const run of text.matchAll(/`+/g)) {
-    const starts = ticks.get(run[0].length);
-    if (starts) starts.push(run.index);
-    else ticks.set(run[0].length, [run.index]);
-  }
-  const used = new Map<number, number>();
-  const closingTicks = (length: number, after: number) => {
-    const starts = ticks.get(length) ?? [];
-    let next = used.get(length) ?? 0;
-    while (next < starts.length && starts[next] < after) next++;
-    used.set(length, next);
-    return starts[next];
-  };
+  const closingTicks = tickCloser(text);
 
   let i = 0;
   while (i < text.length) {
@@ -237,7 +285,8 @@ export function textSpans(text: string): TextSpan[] {
       else {
         flush();
         const code = text.slice(i + length, end);
-        out.push({ kind: 'code', text: /^ .*[^ ].* $/s.test(code) ? code.slice(1, -1) : code });
+        const padded = code.startsWith(' ') && code.endsWith(' ') && /[^ ]/.test(code);
+        out.push({ kind: 'code', text: padded ? code.slice(1, -1) : code });
       }
       i = end === undefined ? i + length : end + length;
       continue;
@@ -247,7 +296,8 @@ export function textSpans(text: string): TextSpan[] {
       const link = LINK.exec(text);
       if (link) {
         flush();
-        out.push(...textSpans(link[1]));
+        if (link[1].trim()) out.push(...textSpans(link[1]));
+        else out.push(link[2]);
         i += link[0].length;
         continue;
       }
@@ -259,15 +309,19 @@ export function textSpans(text: string): TextSpan[] {
     }
     let length = 1;
     while (text[i + length] === c) length++;
-    // A whole name between double underscores, such as __init__, is a name.
-    const name = c === '_' && length === 2 ? /__[A-Za-z0-9_]+?__(?![A-Za-z0-9_])/y : null;
-    if (name) name.lastIndex = i;
-    if (name?.test(text) && !/[A-Za-z0-9_]/.test(text[i - 1] ?? '')) {
-      plain += text.slice(i, name.lastIndex);
-      i = name.lastIndex;
-      continue;
+    // A name such as __init__ is a name.
+    if (c === '_' && length === 2 && !/[A-Za-z0-9_]/.test(text[i - 1] ?? '')) {
+      DUNDER.lastIndex = i;
+      if (DUNDER.test(text)) {
+        plain += text.slice(i, DUNDER.lastIndex);
+        i = DUNDER.lastIndex;
+        continue;
+      }
     }
-    const { opens, closes } = flanks(c, length, text[i - 1] ?? '', text[i + length] ?? '');
+    const flank = flanks(c, length, text[i - 1] ?? '', text[i + length] ?? '');
+    const pattern = c === '*' && length === 1 && !WORD.test(text[i - 1] ?? '') && EXTENSION.test(text.slice(i + 1, i + 3));
+    const opens = flank.opens && !pattern;
+    const closes = flank.closes && !pattern;
     i += length;
     flush();
     let left = length;

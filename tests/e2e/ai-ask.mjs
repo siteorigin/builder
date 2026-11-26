@@ -34,7 +34,7 @@ try {
     '```svelte', CODE, '```', '',
     '| Page | Sections |', '| --- | --- |', '| Contact | *two* |', '',
     '> quoted _words_ and ~~struck~~ ones', '', '---', '',
-    '1. Header', '   - logo', '2. Footer'
+    '7. **`Header`**', '   - logo', '8. Footer'
   ].join('\n');
 
   step('a business site with its own studio hours, viewed on Home');
@@ -93,13 +93,18 @@ try {
   assert.equal(selected.text, CODE, 'and can be selected whole');
   assert.equal(selected.select, 'text');
   assert.match(selected.font, /mono/i);
-  assert.deepEqual(await answer.locator('th, td').allInnerTexts(), ['Page', 'Sections', 'Contact', 'two']);
+  assert.deepEqual(await answer.locator('thead > tr > th').allInnerTexts(), ['Page', 'Sections']);
+  assert.deepEqual(await answer.locator('tbody > tr > td').allInnerTexts(), ['Contact', 'two']);
   assert.equal(await answer.locator('td em').innerText(), 'two');
   assert.equal(await answer.locator('blockquote em').innerText(), 'words');
   assert.equal(await answer.locator('blockquote del').innerText(), 'struck');
+  assert.equal(await answer.locator('blockquote').innerText(), 'quoted words and struck ones');
   assert.equal(await answer.locator('hr').count(), 1);
   assert.equal(await answer.locator('ol > li').count(), 2);
+  assert.equal(await answer.locator('ol').getAttribute('start'), '7');
+  assert.equal(await answer.locator('ol > li:first-child > strong > code').innerText(), 'Header');
   assert.equal(await answer.locator('ol > li:first-child > ul > li').innerText(), 'logo');
+  assert.ok(await answer.locator('pre').evaluate((el) => el.scrollWidth > el.clientWidth), 'the long line runs past its own block');
   assert.doesNotMatch(await answer.innerText(), /```|svelte|\| ---|~~|> quoted|_words_|\*two\*/);
   const fits = await log().evaluate((el) => el.scrollWidth <= el.clientWidth);
   assert.ok(fits, 'long code scrolls in its own block, not the whole panel');

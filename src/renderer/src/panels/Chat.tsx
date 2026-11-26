@@ -188,7 +188,11 @@ function summaryOf(r: NonNullable<ChatMessage['result']>) {
   if (r.ask && r.status === 'cancelled' && /^stopped\.?$/i.test(r.summary.trim())) return 'You stopped this question. It could not change anything.';
   if (r.status === 'cancelled' && /^stopped\.?$/i.test(r.summary.trim())) return r.changes.length ? 'You stopped this request. Its changes were undone.' : 'You stopped this request before it changed anything.';
   // A failed edit that changed nothing says so, unless its own words already do.
-  if (r.status === 'failed' && !r.ask && !r.changes.length && !/restored|unchanged|not changed|no changes|nothing (was|has been) changed/i.test(r.summary)) return `${r.summary.trim()} Nothing on your site was changed.`;
+  if (r.status === 'failed' && !r.ask && !r.changes.length && !/restored|unchanged|not changed|no changes|nothing (was|has been) changed/i.test(r.summary)) {
+    const words = r.summary.trim();
+    // After more than one line it stands apart, so code the words end with does not take it in.
+    return `${words}${words.includes('\n') ? '\n\n' : ' '}Nothing on your site was changed.`;
+  }
   return r.summary;
 }
 
