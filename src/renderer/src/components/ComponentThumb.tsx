@@ -19,6 +19,13 @@ const SETTLE_MS = 500;
 /** When a thumbnail that could not be drawn just now is asked for again, while nothing changes. */
 const RETRY_MS = [3000, 10000];
 
+/** Forget the pictures of the project that closed: none is kept at Welcome. */
+export function forgetComponentThumbs() {
+  shownOpening = null;
+  shown.clear();
+  failed.clear();
+}
+
 function thumbState(opening: string | undefined, definitionId: string) {
   if (opening && opening !== shownOpening) {
     shownOpening = opening;

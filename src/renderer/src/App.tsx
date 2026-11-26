@@ -6,6 +6,7 @@ import { Editor } from './Editor';
 import { UnpackingModal } from './components/ProjectDialogs';
 import { Toasts, openDialogs, openMenus } from './components/ui';
 import { ConfirmHost } from './components/ConfirmDialog';
+import { forgetComponentThumbs } from './components/ComponentThumb';
 import { cancelComponentPreviews, runComponentPreviews, runInspection } from './lib/inspect';
 import { restorePanelWidth, restoreViewport, restoreZoom } from './lib/layout';
 import { handleShortcut } from './Editor';
@@ -59,6 +60,7 @@ export function App() {
       api.on('project:closed', () => {
         superseded = true;
         forgetCopy();
+        forgetComponentThumbs();
         opened++;
         projectClosed();
         // Held edits and the last AI outcome belong to the project that closed.

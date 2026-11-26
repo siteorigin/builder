@@ -23,7 +23,7 @@ import { StaticPreviews } from './static-preview';
 import { isPlainFile, builtPhotosMessage, deliverVercelConfig, pageLanguageWarning, publicUrlNote, rivalHookStop, cleanBuiltSite, cleanWebsitePhotos, copyProjectSource, draftLinksStop, draftSourceNotes, publishedChanged, withheldRoutes, withheldStaticFiles, editedGeneratedFile, explainBuildFailure, exportedAssetFilter, finishExportedSource, leaveOutDrafts, listFiles, locatedPhotos, locationKeptNote, locationRemovedNote, missingAssetsStop, missingSourceWarnings, missingUnusedWarnings, missingWebsiteAssets, notFoundAddressWarning, notFoundHostNote, notFoundPageProblem, omittedAssetsWarning, ownNotFoundFileNote, ownNotFoundFileStop, readNotFoundPage, settleServerHook, stripPartMarkers, carriesPartMarker, projectFingerprint, projectReadme, publishFolder, pruneWebsiteAssets, replaceEmptyFolder, readLibraryImage, sectionLinkWarnings, uncleanablePhotosMessage, uniqueChild, unlinkedButtonWarnings, unlinkedMenuLinkWarnings, formNameWarnings, runtimeFontWarnings, variantCredits } from './export';
 import { LOCAL_DIR, NO_LOCK, ProjectLockedError, ProjectSession, ThemeUnavailableError } from './project/session';
 import { DOC_DIR, MANIFEST_FILE, ProjectFormatError } from './project/documents';
-import { DOCUMENT_EXTENSIONS, FONT_EXTENSIONS, IMAGE_EXTENSIONS, IMPORT_IMAGE_EXTENSIONS, importAsset, importPackageImage, isAssetOfKind, isOpaquePicture, libraryWebCopyPlan, locateAssetFile, originalNameOf, pictureMime, restoreAssetFiles, reviewImportFile, storeLibraryWebCopy } from './project/assets';
+import { DOCUMENT_EXTENSIONS, FONT_EXTENSIONS, IMAGE_EXTENSIONS, IMPORT_IMAGE_EXTENSIONS, importAsset, importPackageImage, isAssetOfKind, isOpaquePicture, libraryWebCopyPlan, locateAssetFile, originalNameOf, pictureMime, releaseMediaWorkers, restoreAssetFiles, reviewImportFile, storeLibraryWebCopy } from './project/assets';
 import { postReader, stopPostReads } from './posts-import/process';
 import { planOperations, planPostImport, type PostImportPlan } from './posts-import/plan';
 import { postImportPreview } from './posts-import/preview';
@@ -288,6 +288,8 @@ export class Controller {
   private closing: Promise<void> | null = null;
   onSessionOpened: ((s: ProjectSession) => Promise<void>) | null = null;
   onSessionClosing: (() => Promise<void>) | null = null;
+  /** The project has gone (a close that can no longer fail): the app ends the helpers it keeps for a project. */
+  onSessionClosed: (() => void) | null = null;
   /** Asks the editor to save what is still being typed before the project is unloaded; false keeps it open. */
   beforeLeave: (() => Promise<boolean>) | null = null;
   /** A project opening began or ended (openingKey changed): a close that was allowed ends it as it starts. */
@@ -1346,6 +1348,12 @@ export class Controller {
       // point leaves the project open, and its previews with it.
       this.endExports();
       this.prepareAbort?.abort();
+      // Nothing the project kept running waits out its idle time at Welcome: the media workers end once the work
+      // already asked of them is done, the thumbnails' hidden window closes (before the preview server it shows
+      // stops), and the thumbnails kept in memory go. Each starts again when the next project needs it.
+      releaseMediaWorkers();
+      this.thumbs.forget();
+      this.onSessionClosed?.();
       // The editor lets go of the preview before its server stops, so a page still loading there never finds it gone.
       this.send('runtime:status', { state: 'idle' });
       await this.stopPreview();

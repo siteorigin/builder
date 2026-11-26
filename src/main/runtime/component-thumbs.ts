@@ -267,6 +267,15 @@ export class ComponentThumbs {
     this.retried.clear();
   }
 
+  /** Forget every thumbnail and failure kept in memory (the project closed): nothing under way may keep one. */
+  forget() {
+    this.opening = null;
+    this.memory.clear();
+    this.failed.clear();
+    this.running.clear();
+    this.retried.clear();
+  }
+
   private remember(key: string, url: string) {
     keep(this.memory, key, url, MEMORY_KEPT);
     this.retried.delete(key);
@@ -348,6 +357,9 @@ export class ComponentThumbs {
     if (!prepared.ok) return same() ? fail(prepared.message, true) : gone;
     let shot: CaptureResult;
     try {
+      // Changed while it was prepared (the project closed, among others): nothing is photographed, and the hidden
+      // window is not opened again for it.
+      if (!same()) return gone;
       this.captures++;
       shot = await this.host.capture(server, prepared.path);
     } finally {
