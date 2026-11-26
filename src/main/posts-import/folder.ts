@@ -63,6 +63,34 @@ function day(v: FrontValue | undefined): string | null {
   return /^\d{4}-\d{2}-\d{2}/.test(t) && isArticleDate(t.slice(0, 10)) ? t.slice(0, 10) : null;
 }
 
+/** The settings a post's date is read from, first to last. */
+const DATE_KEYS = ['date', 'pubdate', 'publishdate', 'published_at', 'published'] as const;
+
+/**
+ * Why a post whose settings give a date has none: the first date setting that is not a day of the calendar, quoted, or
+ * one that could not be read. `published: true` (Jekyll) is a draft setting, not a date.
+ */
+function unreadDate(data: Record<string, FrontValue>, unreadable: string[]): string | undefined {
+  for (const k of DATE_KEYS) {
+    if (unreadable.includes(k)) return `its ${k} setting could not be read`;
+    const v = data[k];
+    if (v === undefined || typeof v === 'boolean') continue;
+    const shown = (Array.isArray(v) ? v.join(', ') : String(v)).trim();
+    if (!shown) continue;
+    return `its ${k} “${shown.length > 40 ? `${shown.slice(0, 40)}…` : shown}” is not a date, such as 2024-03-01`;
+  }
+  return undefined;
+}
+
+/** A file's text, and whether it was not UTF-8: its bytes that are not are read as replacement characters. */
+function decodeText(bytes: Uint8Array): { text: string; notUtf8: boolean } {
+  try {
+    return { text: new TextDecoder('utf-8', { fatal: true }).decode(bytes), notUtf8: false };
+  } catch {
+    return { text: new TextDecoder('utf-8').decode(bytes), notUtf8: true };
+  }
+}
+
 /** Categories or tags: a list, or words in one value (separated by commas, or for Jekyll's categories by spaces). */
 function termList(v: FrontValue | undefined, spaces: boolean): SourceTerm[] {
   const raw = Array.isArray(v) ? v : typeof v === 'string' ? (v.includes(',') ? v.split(',') : spaces ? v.split(/\s+/) : [v]) : [];
@@ -82,7 +110,7 @@ export async function readMarkdownFolder(root: string, pages: RichPages): Promis
   const media = new MediaTable(root, realRoot);
   const skipped: string[] = [];
   let total = 0;
-  const read: Array<{ f: Found; key: string; text: string }> = [];
+  const read: Array<{ f: Found; key: string; text: string; notUtf8: boolean }> = [];
   for (const [n, f] of found.entries()) {
     try {
       const bytes = await readContained(realRoot, join(root, f.rel), MAX_MARKDOWN_FILE_BYTES);
@@ -92,7 +120,8 @@ export async function readMarkdownFolder(root: string, pages: RichPages): Promis
         skipped.push(`${rest} ${rest === 1 ? 'post' : 'posts'} from ${f.rel} on: the folder’s posts are larger than an import reads at once.`);
         break;
       }
-      read.push({ f, key: `md:${f.rel}`, text: bytes.toString('utf8') });
+      const { text, notUtf8 } = decodeText(bytes);
+      read.push({ f, key: `md:${f.rel}`, text, notUtf8 });
     } catch (e) {
       skipped.push(`${f.rel}: ${(e as Error).message}`);
     }
@@ -112,9 +141,10 @@ export async function readMarkdownFolder(root: string, pages: RichPages): Promis
   });
 
   const posts: SourcePost[] = [];
-  for (const { f, key, fm, slug, dated } of fronts) {
+  for (const { f, key, fm, slug, dated, notUtf8 } of fronts) {
     const report = emptyReport();
-    const notes: string[] = fm.problems.length ? [`Some of its settings could not be read (${fm.problems.slice(0, 3).join('; ')}).`] : [];
+    const notes: string[] = notUtf8 ? ['It is not saved as UTF-8 text, so some of its letters may have come out wrong. Check its text, or save the file as UTF-8 and import it again.'] : [];
+    if (fm.problems.length) notes.push(`Some of its settings could not be read (${fm.problems.slice(0, 3).join('; ')}).`);
     const link = (href: string, newTab: boolean, rel: string[] = []): LinkValue | null => {
       const t = href.trim();
       const tab = newTab ? { newTab: true } : {};
@@ -158,7 +188,8 @@ export async function readMarkdownFolder(root: string, pages: RichPages): Promis
       notes.push(`Its text could not be read: ${(e as Error).message}`);
     }
     notes.push(...reportNotes(report));
-    const date = day(fm.data.date) ?? day(fm.data.pubdate) ?? day(fm.data.publishdate) ?? day(fm.data.published_at) ?? day(fm.data.published) ?? dated;
+    const date = DATE_KEYS.map((k) => day(fm.data[k])).find((d) => d !== null) ?? dated;
+    const badDate = date ? undefined : unreadDate(fm.data, fm.unreadable);
     const { draft, reason } = unread ? { draft: true, reason: 'its text could not be read' } : draftOf(fm.data, fm.unreadable);
     const full = (v: FrontValue | undefined) => (typeof v === 'string' && v.trim() ? v.trim().slice(0, 20 * FIELD_CHARS) : undefined);
     const summary = full(fm.data.description) ?? full(fm.data.excerpt) ?? full(fm.data.summary);
@@ -177,7 +208,7 @@ export async function readMarkdownFolder(root: string, pages: RichPages): Promis
       slug,
       date,
       draft: draft || !date,
-      ...(reason ? { draftReason: reason } : !date && !draft ? { draftReason: 'it has no publication date' } : {}),
+      ...(reason ? { draftReason: reason } : !date && !draft ? { draftReason: badDate ?? 'it has no publication date' } : {}),
       ...(author ? { author } : {}),
       ...(excerpt ? { excerpt } : {}),
       categories: termList(fm.data.categories ?? fm.data.category, true),
