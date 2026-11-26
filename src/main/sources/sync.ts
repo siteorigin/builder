@@ -53,10 +53,14 @@ const counts = (p: SyncPlan, revision: number, images: number): SourceSyncResult
 });
 
 /** Every piece of text records hold, one to a line: what a sync writes, never the names of their own details. */
-function textOf(v: unknown, out: string[] = []): string {
-  if (typeof v === 'string') out.push(v);
-  else if (Array.isArray(v)) v.forEach((x) => textOf(x, out));
-  else if (v && typeof v === 'object') Object.values(v).forEach((x) => textOf(x, out));
+function textOf(v: unknown): string {
+  const out: string[] = [];
+  const walk = (x: unknown) => {
+    if (typeof x === 'string' || typeof x === 'number' || typeof x === 'boolean') out.push(String(x));
+    else if (Array.isArray(x)) x.forEach(walk);
+    else if (x && typeof x === 'object') Object.values(x).forEach(walk);
+  };
+  walk(v);
   return out.join('\n');
 }
 
@@ -152,6 +156,8 @@ export async function syncSource(deps: SyncDeps, sourceId: string): Promise<Sour
       if (holdsSecret(name, values) || values.some((v) => v.length >= MIN_SECRET_LENGTH && bytes.includes(v))) return leaked;
       try {
         const { record, existing } = await deps.importImage({ ...img, name }, known, createdAt);
+        // The file name the library made of it ("Arts & Crafts" is arts-and-crafts): never one that holds a secret.
+        if (holdsSecret(record.file, values)) return leaked;
         if (!existing) {
           added.push(record);
           known.push(record);

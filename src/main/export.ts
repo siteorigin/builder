@@ -45,7 +45,7 @@ async function readSettingsFile(path: string): Promise<string | null | typeof UN
   }
   try {
     const st = await fh.stat();
-    return st.isFile() && st.size <= 1024 * 1024 ? await fh.readFile('utf8') : UNREADABLE;
+    return st.isFile() ? await fh.readFile('utf8') : UNREADABLE;
   } catch {
     return UNREADABLE;
   } finally {

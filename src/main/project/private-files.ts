@@ -19,7 +19,8 @@ function isCredentialFile(name: string): boolean {
   let n = name.toLowerCase().replace(/^[.#]+/, '');
   if (n.startsWith('copy of ')) n = n.slice('copy of '.length);
   const at = n.indexOf('.json');
-  if (at < 0) return false;
+  const after = at < 0 ? '' : n.slice(at + 5);
+  if (at < 0 || !(after === '' || after[0] === '~' || after[0] === '#' || after[0] === '.')) return false;
   const stem = n.slice(0, at);
   const base = CREDENTIAL_STEMS.find((s) => stem.startsWith(s));
   return !!base && stem.slice(base.length).split('copy').join('').replace(/[\s_\-()0-9]/g, '') === '';

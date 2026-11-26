@@ -400,6 +400,7 @@ describe('a source’s settings in the project', () => {
     writeFileSync(join(dir, 'static/deep/api-keys-guide-1a2b3c4d.png'), 'png');
     expect(inProjectSource(dir, join(dir, 'static/deep/api-keys-guide-1a2b3c4d.png'))).toBe(true);
     for (const name of ['source-secrets (copy).json', 'Copy of api-keys.json', 'api-keys copy 2.json', '#source-secrets.json#']) expect(isPrivateFileName(name), name).toBe(true);
+    for (const name of ['api-keys.jsonc', 'api-keys.json-diagram.png', 'api-keys-guide.json']) expect(isPrivateFileName(name), name).toBe(false);
     const started = Date.now();
     expect(isPrivateFileName(`api-keys${'1'.repeat(20000)}.png`)).toBe(false);
     expect(Date.now() - started).toBeLessThan(500);
