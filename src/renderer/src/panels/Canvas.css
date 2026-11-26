@@ -65,28 +65,54 @@
   }
   /* What a drag is moving stays marked in place: dashed, on a faint tint of the selection colour. */
   .ov-selected.moving { box-shadow: inset 0 0 0 1px #101828, inset 0 0 0 4px #fff; outline: 2px dashed var(--select); outline-offset: -3px; background: color-mix(in srgb, var(--select) 8%, transparent); }
-  /* Spacing handles: a short bar in each padding band, clear of the content (selection colour) and on the outer edge of
-     the margin above and below (amber), each between white and ink keylines so it holds on any page. The band being
-     dragged or pointed at is tinted; the HUD beside the handle names the value. */
-  .ov-space-handle { --space-c: var(--select); position: absolute; display: grid; place-items: center; width: 24px; height: 12px; transform: translate(-50%, -50%); pointer-events: auto; cursor: ns-resize; z-index: 1; touch-action: none; }
-  .ov-space-handle.x { width: 12px; height: 24px; cursor: ew-resize; }
-  .ov-space-handle.margin { --space-c: #b45309; }
-  .ov-space-handle::before { content: ''; width: 16px; height: 4px; border-radius: 2px; background: var(--space-c); box-shadow: 0 0 0 1px #fff, 0 0 0 2px rgb(16 24 40 / 0.55); opacity: 0.85; transition: width 80ms, height 80ms, opacity 80ms; }
+  /* Spacing handles. One colour, the selection's (green on a shared header or footer), with the kind told by shape:
+     padding a solid bar inside the box, margin a hollow bar outside it, a gap two parallel lines, a column divider an
+     ink grip with two dots, a max width an I-beam on the box's edge. Each sits between white and ink keylines so it
+     holds on any page, in a 24px square target (WCAG 2.5.8). The band being pointed at, focused or dragged is lit,
+     edged the same way; the readout beside the handle names the value. */
+  .ov-space-group { position: absolute; inset: 0; pointer-events: none; }
+  .ov-space-handle { --kl: 0 0 0 1px #fff, 0 0 0 2px #101828; position: absolute; display: grid; place-items: center; width: 24px; height: 24px; transform: translate(-50%, -50%); border-radius: var(--r-sm); pointer-events: auto; cursor: ns-resize; z-index: 1; touch-action: none; outline: none; }
+  .ov-space-handle.x { cursor: ew-resize; }
+  .ov-space-handle::before { content: ''; box-sizing: border-box; width: 16px; height: 4px; border-radius: 2px; background: var(--select); box-shadow: var(--kl); transition: width 80ms, height 80ms; }
   .ov-space-handle.x::before { width: 4px; height: 16px; }
-  .ov-space-handle:hover::before, .ov-space-handle.active::before { opacity: 1; width: 22px; height: 5px; }
-  .ov-space-handle.x:hover::before, .ov-space-handle.x.active::before { width: 5px; height: 22px; }
-  /* Gaps in pink, as a layout's own measure; a column divider is a dark bar on the grid's top edge. */
-  .ov-space-handle.gap { --space-c: #c026d3; }
-  .ov-space-handle.split { --space-c: #101828; }
-  .ov-space-handle.split::before { height: 10px; }
-  .ov-space-handle.split:hover::before, .ov-space-handle.split.active::before { height: 14px; }
-  .ov-space-band { position: absolute; pointer-events: none; background: color-mix(in srgb, var(--select) 16%, transparent); }
-  .ov-space-band.margin { background: rgb(180 83 9 / 0.16); }
-  .ov-space-band.gap { background: rgb(192 38 211 / 0.16); }
-  .ov-space-band.split { background: rgb(16 24 40 / 0.08); outline: 1px dashed rgb(16 24 40 / 0.35); outline-offset: -1px; }
-  .ov-space-hud { position: absolute; display: inline-flex; align-items: center; gap: 6px; height: 22px; padding: 0 8px; border-radius: 11px; background: #101828; color: #fff; font-size: 11px; font-weight: 600; font-variant-numeric: tabular-nums; white-space: nowrap; pointer-events: none; z-index: 2; box-shadow: 0 0 0 1px rgb(255 255 255 / 0.85), 0 4px 12px -4px rgb(16 24 40 / 0.45); transform: translate(18px, -50%); }
-  .ov-space-hud.x { transform: translate(-50%, 18px); }
-  .ov-space-hud .what { font-weight: 400; opacity: 0.75; }
+  .ov-space-handle:hover::before, .ov-space-handle.active::before, .ov-space-handle:focus-visible::before { width: 22px; height: 5px; }
+  .ov-space-handle.x:hover::before, .ov-space-handle.x.active::before, .ov-space-handle.x:focus-visible::before { width: 5px; height: 22px; }
+  .ov-space-handle.margin::before { height: 7px; border-radius: 3.5px; background: #fff; box-shadow: inset 0 0 0 2px var(--select), 0 0 0 1px #101828; }
+  .ov-space-handle.margin:hover::before, .ov-space-handle.margin.active::before, .ov-space-handle.margin:focus-visible::before { height: 8px; }
+  .ov-space-handle.gap::before { height: 6px; border-radius: 1px; background: linear-gradient(var(--select) 0 2px, #fff 2px 4px, var(--select) 4px); }
+  .ov-space-handle.gap.x::before { width: 6px; height: 16px; background: linear-gradient(to right, var(--select) 0 2px, #fff 2px 4px, var(--select) 4px); }
+  .ov-space-handle.gap:hover::before, .ov-space-handle.gap.active::before, .ov-space-handle.gap:focus-visible::before { height: 7px; }
+  .ov-space-handle.gap.x:hover::before, .ov-space-handle.gap.x.active::before, .ov-space-handle.gap.x:focus-visible::before { width: 7px; height: 22px; }
+  .ov-space-handle.split::before { width: 8px; height: 20px; border-radius: 3px; background: radial-gradient(circle at 50% 36%, #fff 1.3px, transparent 1.8px), radial-gradient(circle at 50% 64%, #fff 1.3px, transparent 1.8px), #101828; box-shadow: 0 0 0 1px #fff, 0 0 0 2px #101828; }
+  .ov-space-handle.split:hover::before, .ov-space-handle.split.active::before, .ov-space-handle.split:focus-visible::before { width: 9px; height: 22px; }
+  /* The I-beam's keylines follow its shape: a drop shadow each way, white then ink. */
+  .ov-space-handle.width::before { width: 10px; height: 18px; border-radius: 0; background: linear-gradient(var(--select), var(--select)) center / 4px 100% no-repeat, linear-gradient(var(--select), var(--select)) top / 100% 3px no-repeat, linear-gradient(var(--select), var(--select)) bottom / 100% 3px no-repeat; box-shadow: none; filter: drop-shadow(1px 0 #fff) drop-shadow(-1px 0 #fff) drop-shadow(0 1px #fff) drop-shadow(0 -1px #fff) drop-shadow(1px 0 #101828) drop-shadow(-1px 0 #101828) drop-shadow(0 1px #101828) drop-shadow(0 -1px #101828); }
+  .ov-space-handle.width:hover::before, .ov-space-handle.width.active::before, .ov-space-handle.width:focus-visible::before { width: 12px; height: 22px; }
+  /* Focus: the house 2px --focus ring, 2px out, with white inside it and ink outside so it holds on the page. */
+  .ov-space-handle:focus-visible { outline: 2px solid var(--focus); outline-offset: 2px; box-shadow: 0 0 0 2px #fff, 0 0 0 5px #101828; }
+  @media (prefers-reduced-motion: reduce) { .ov-space-handle::before { transition: none; } }
+  /* Bands: a tint of the selection colour edged with the overlay's keylines, ink outside and white inside, so the
+     edge holds 3:1 on any page; margin hatched and a gap dotted, as their handles differ. A side with no space, or a
+     moving max-width edge, is a 2px selection-colour line between the same keylines. */
+  .ov-space-band { position: absolute; pointer-events: none; background: color-mix(in srgb, var(--select) 18%, transparent); box-shadow: inset 0 0 0 1px #101828; outline: 1px solid #fff; outline-offset: -2px; }
+  .ov-space-band.margin { background: repeating-linear-gradient(45deg, color-mix(in srgb, var(--select) 55%, transparent) 0 1.5px, color-mix(in srgb, var(--select) 12%, transparent) 1.5px 6px); }
+  .ov-space-band.gap { background: radial-gradient(color-mix(in srgb, var(--select) 70%, transparent) 1px, transparent 1.5px) 0 0 / 5px 5px, color-mix(in srgb, var(--select) 14%, transparent); }
+  /* The two columns a divider trades between: edged like the other bands, with no tint over their content. */
+  .ov-space-band.split { background: none; }
+  .ov-space-band.edge { background: var(--select); box-shadow: 0 0 0 1px #fff, 0 0 0 2px #101828; outline: none; }
+  .ov-space-hud { position: absolute; display: inline-flex; flex-wrap: wrap; align-items: center; gap: 0 6px; min-height: 24px; box-sizing: border-box; padding: 2px 8px; border-radius: var(--r-sm); background: #101828; color: #fff; font-size: 12px; font-weight: 600; font-variant-numeric: tabular-nums; white-space: nowrap; pointer-events: none; z-index: 2; box-shadow: 0 0 0 1px #fff, 0 4px 12px -4px rgb(16 24 40 / 0.45); }
+  .ov-space-hud .what, .ov-space-hud .was, .ov-space-hud .hint { font-weight: 400; color: rgb(255 255 255 / 0.72); }
+  .ov-space-hud > span { line-height: 20px; }
+  .ov-space-hud .main { display: inline-flex; flex-wrap: wrap; align-items: center; gap: 0 6px; }
+  /* Stacked: the hint on a line of its own under the value, where only a narrower readout fits. */
+  .ov-space-hud.stacked { flex-direction: column; align-items: flex-start; padding: 3px 8px; }
+  .ov-space-hud.stacked .hint { margin-left: 0; padding-left: 0; border-left: 0; }
+  .ov-space-hud .hint { display: inline-flex; align-items: center; gap: 4px; margin-left: 2px; padding-left: 8px; border-left: 1px solid rgb(255 255 255 / 0.24); }
+  .ov-space-hud .hint.on { color: #fff; font-weight: 600; }
+  .ov-space-hud kbd { font: inherit; font-size: 11px; line-height: 16px; padding: 0 4px; border-radius: var(--r-xs); color: #fff; background: rgb(255 255 255 / 0.14); box-shadow: inset 0 0 0 1px rgb(255 255 255 / 0.32); }
+  /* Pointed at, the name waits a moment, so sweeping the pointer across the page stays quiet; focused, it is at once. */
+  .ov-space-hud.hover { animation: ov-hud-wait 1ms linear 350ms both; pointer-events: auto; }
+  @keyframes ov-hud-wait { from { visibility: hidden; } to { visibility: visible; } }
   /* The list item open in the inspector: a dashed outline on a faint tint, so it reads as "being edited" inside the
      selected section without competing with the selection itself. */
   .ov-revealed { box-shadow: inset 0 0 0 1px #101828, inset 0 0 0 4px #fff; outline: 2px dashed var(--select); outline-offset: -3px; background: color-mix(in srgb, var(--select) 7%, transparent); }

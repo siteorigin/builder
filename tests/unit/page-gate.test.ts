@@ -179,3 +179,28 @@ describe('a failed save and the gate (#755)', () => {
     expect(failedWithRevision({ revision: 5, failure: null }, { revision: 6, failure: null })).toBe(false);
   });
 });
+
+describe('the page gate for a host’s project in a live session (#766)', () => {
+  it('has no fallback: a page behind waits for the page to show the revision, however long, with no timer running', () => {
+    const editor = { revision: 3 };
+    const time = fakeClock();
+    let remote = true;
+    const gate = createPageGate(() => editor.revision, time.clock, () => (remote ? Infinity : PAGE_CATCH_UP_MS));
+    gate.shown(3);
+    gate.took(++editor.revision);
+    const picks: string[] = [];
+    gate.hold(() => picks.push('heading'));
+    time.advance(PAGE_CATCH_UP_MS * 10);
+    expect(gate.behind()).toBe(true);
+    expect(picks).toEqual([]);
+    expect(time.pending()).toBe(0);
+    // The reloaded page shows the revision: the held pick is taken.
+    gate.shown(4);
+    expect(picks).toEqual(['heading']);
+    // Back on this computer's own project, the fallback holds again.
+    remote = false;
+    gate.took(++editor.revision);
+    time.advance(PAGE_CATCH_UP_MS + 1);
+    expect(gate.behind()).toBe(false);
+  });
+});

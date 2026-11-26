@@ -3,10 +3,11 @@
  * a new project that is cancelled or fails, leaves the current project open, locked and previewing as it was.
  */
 import { EventEmitter } from 'node:events';
-import { chmodSync, cpSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
+import { cpSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { denyAccess } from './deny-access';
 
 /** A stand-in for Electron's utility process that starts at once and exits when asked to stop. */
 class FakeWorker extends EventEmitter {
@@ -576,12 +577,12 @@ describe('the recent-projects entry of a renamed site (#31)', () => {
     const saved = () => (JSON.parse(readFileSync(join(env.userData, 'settings.json'), 'utf8')) as { recents: Array<{ dir: string; name: string }> }).recents.find((r) => r.dir === kloof)?.name;
     expect(saved()).toBe('kloof');
     // The settings folder cannot be written while the rename is made: the list has the name, the disk does not.
-    chmodSync(env.userData, 0o500);
+    const restore = denyAccess(env.userData, 'write');
     try {
       expect((await c.apply({ operations: [{ type: 'site.update', name: 'New Kloof Studio' }] }, { label: 'Rename site' })).ok).toBe(true);
       await expect(saveSettings()).rejects.toThrow();
     } finally {
-      chmodSync(env.userData, 0o700);
+      restore();
     }
     expect(saved()).toBe('kloof');
     expect((await c.closeProject()).ok).toBe(true);

@@ -39,8 +39,8 @@ export const SPACING_HANDLES: SpacingHandle[] = [
 
 const OPPOSITE: Record<SpacingSide, SpacingSide> = { top: 'bottom', bottom: 'top', left: 'right', right: 'left' };
 
-/** Half a spacing grip's thickness across its edge, in screen pixels (the 12px side of .ov-space-handle). */
-export const GRIP_HALF = 6;
+/** Half a spacing grip's thickness across its edge, in screen pixels (.ov-space-handle is a 24px square, WCAG 2.5.8). */
+export const GRIP_HALF = 12;
 
 /**
  * Where a padding handle is drawn, in screen pixels: centred in its padding band, so it marks the space it sets
@@ -136,10 +136,26 @@ export function dragValue(px: number, stops: SpaceStop[], exact: boolean, signed
   return best ? { value: { token: best.token }, px: best.px, stop: best } : { value: '0', px: 0 };
 }
 
-/** The HUD's words for where a drag is: the site style's name and its size, or the size alone. */
+/** The HUD's words for where a drag is: the site style's name and its size in whole pixels, or the size alone. */
 export function dragLabel(v: DragValue): string {
-  const px = `${Math.round(v.px * 10) / 10}px`;
+  const px = `${Math.round(v.px)}px`;
   return v.stop ? `${v.stop.label} · ${px}` : px;
+}
+
+/**
+ * The words for a value a box has now, before any drag: the site style it is set to (`stored`, named from `stops` as
+ * the page measured them, or `names` until it has) and its size, or the size alone when it is set in pixels or its
+ * setting is not known. A size is never named after a site style it only happens to match.
+ */
+export function restLabel(stored: StyleValue | undefined, px: number, stops: SpaceStop[], names: Array<{ token: string; label: string }> = []): string {
+  const token = typeof stored === 'object' && stored !== null && typeof stored.token === 'string' ? stored.token : null;
+  const measured = token ? stops.find((s) => s.token === token) : undefined;
+  const named = measured ?? (token ? names.find((n) => n.token === token) : undefined);
+  // The size it is set to, where that is known (a style the page measured, or pixels as written), over the size the
+  // box happens to show (a max width its container holds narrower).
+  const literal = typeof stored === 'string' ? /^(-?\d+(?:\.\d+)?)px$/.exec(stored.trim()) : null;
+  const size = measured ? measured.px : literal ? Number(literal[1]) : px;
+  return dragLabel({ value: '', px: size, ...(named ? { stop: { token: named.token, label: named.label, px: size } } : {}) });
 }
 
 /** The site styles of one group a drag snaps to, with the CSS variable the page holds each one's size in. */
@@ -283,6 +299,7 @@ export function previewDecls(plan: HandlePlan, value: StyleValue, rtl: boolean):
 
 /** The value a target holds for a property at a scope now. */
 export const storedSpacing = (target: SpacingTarget, scope: ResponsiveScope, property: string): StyleValue | undefined => at(target.styles, scope)[property];
+
 
 export const sameStyleValue = (a: StyleValue | undefined, b: StyleValue | undefined) => JSON.stringify(a ?? null) === JSON.stringify(b ?? null);
 

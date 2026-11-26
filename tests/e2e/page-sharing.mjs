@@ -129,16 +129,16 @@ await section().scrollIntoViewIfNeeded();
 await win.screenshot({ path: join(SHOTS, 'page-sharing-own.png') });
 
 step('the preview follows the title and description typed for the page, and falls back when they are cleared');
-await field('Browser title').getByRole('textbox').fill('Our kitchens');
-await field('Browser title').getByRole('textbox').press('Tab');
+await field('Search title').getByRole('textbox').fill('Our kitchens');
+await field('Search title').getByRole('textbox').press('Tab');
 await field('Description').getByRole('textbox').fill('Oak, steel and stone.');
 await field('Description').getByRole('textbox').press('Tab');
 await eventually(async () => assert.deepEqual(await cardText(), { host: 'No usable public URL', title: 'Our kitchens', description: 'Oak, steel and stone.' }));
 // The card follows typed text before it is saved (#597), so the files say what was saved.
 await eventually(() => assert.deepEqual([pageFile(kitchens).seo.title, pageFile(kitchens).seo.description], ['Our kitchens', 'Oak, steel and stone.'], 'the title and description are saved'));
 await allSaved();
-await field('Browser title').getByRole('textbox').fill('');
-await field('Browser title').getByRole('textbox').press('Tab');
+await field('Search title').getByRole('textbox').fill('');
+await field('Search title').getByRole('textbox').press('Tab');
 await field('Description').getByRole('textbox').fill('');
 await field('Description').getByRole('textbox').press('Tab');
 await eventually(async () => assert.deepEqual(await cardText(), { host: 'No usable public URL', title: 'Kitchens · Harbour Lane Studio', description: siteDescription }));

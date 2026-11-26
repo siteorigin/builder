@@ -57,6 +57,18 @@ async function paintedWith(target, selector, name, what) {
     }
   }, 20000);
 }
+/**
+ * A family's file by the PostScript name the platform gives the instance of the variable file that painted: macOS reads
+ * the file's own (PlusJakartaSans-Regular, PlusJakartaSans-Italic, Lora-Regular_wght…), Windows makes one from the
+ * family and the instance's style (Plus-Jakarta-Sans, Plus-Jakarta-Sans-Italic, Lora, Lora-Medium). `upright` is any
+ * instance that is not italic.
+ */
+const face = (family, style) => new RegExp(`^${family}(?:${style === 'italic' ? '-.*Italic' : style === 'upright' ? '-(?!.*Italic)|$' : '-|$'})`);
+const IN_LORA = face('Lora');
+const IN_LORA_ITALIC = face('Lora', 'italic');
+const IN_SANS = face('Plus-?Jakarta-?Sans');
+const IN_SANS_UPRIGHT = face('Plus-?Jakarta-?Sans', 'upright');
+const IN_SANS_ITALIC = face('Plus-?Jakarta-?Sans', 'italic');
 const canvasFrame = () => win.frames().find((f) => f.url().startsWith('http://127.0.0.1'));
 
 step('import Latin upright and italic Lora, Cyrillic upright Lora, and upright and italic Plus Jakarta Sans');
@@ -102,19 +114,19 @@ const latinSel = 'main :is(h1, h2):first-of-type';
 const cyrillicSel = 'main :is(h1, h2):nth-of-type(2)';
 const uprightSel = 'main p:not(:has(em))';
 const italicSel = 'main p em';
-await paintedWith(canvasFrame(), latinSel, /^Lora-/, 'the canvas Latin heading');
-await paintedWith(canvasFrame(), cyrillicSel, /^Lora-/, 'the canvas Cyrillic heading');
-await paintedWith(canvasFrame(), uprightSel, /^PlusJakartaSans-(?!.*Italic)/, 'the canvas body text');
-await paintedWith(canvasFrame(), italicSel, /^PlusJakartaSans-.*Italic/, 'the canvas italic words');
+await paintedWith(canvasFrame(), latinSel, IN_LORA, 'the canvas Latin heading');
+await paintedWith(canvasFrame(), cyrillicSel, IN_LORA, 'the canvas Cyrillic heading');
+await paintedWith(canvasFrame(), uprightSel, IN_SANS_UPRIGHT, 'the canvas body text');
+await paintedWith(canvasFrame(), italicSel, IN_SANS_ITALIC, 'the canvas italic words');
 
 step('Site styles draws its samples in the imported files');
 await win.locator('.dock-tab', { hasText: 'Styles' }).click();
 await win.locator('#dock-panel-styles').waitFor();
 await win.locator('[data-token-id="font.display"] .ss-font-sample').waitFor();
-await paintedWith(win, '[data-token-id="font.display"] .ss-font-sample', /^Lora-/, 'the heading font’s “Aa”');
-await paintedWith(win, '[data-token-id="font.body"] .ss-font-sample', /^PlusJakartaSans-/, 'the body font’s “Aa”');
-await paintedWith(win, '#dock-panel-styles .ss-look-type', /^Lora-/, 'the overview’s “Aa”');
-await paintedWith(win, '#dock-panel-styles [data-token-id^="text."] .ss-specimen', /^(Lora|PlusJakartaSans)-/, 'the first text style’s specimen');
+await paintedWith(win, '[data-token-id="font.display"] .ss-font-sample', IN_LORA, 'the heading font’s “Aa”');
+await paintedWith(win, '[data-token-id="font.body"] .ss-font-sample', IN_SANS, 'the body font’s “Aa”');
+await paintedWith(win, '#dock-panel-styles .ss-look-type', IN_LORA, 'the overview’s “Aa”');
+await paintedWith(win, '#dock-panel-styles [data-token-id^="text."] .ss-specimen', face('(?:Lora|Plus-?Jakarta-?Sans)'), 'the first text style’s specimen');
 // The editor's own text keeps its font: the imported families are loaded under names of the editor's own.
 const chrome = await painted(win, '#dock-panel-styles [data-token-id="font.display"] label');
 assert.ok(chrome.length > 0 && chrome.reduce((n, f) => n + f.glyphCount, 0) > 0, 'the label was painted');
@@ -130,9 +142,9 @@ await eventually(async () => assert.match(await row(ids.loraItalic).locator('.fo
 await eventually(async () => assert.match(await row(ids.sans).locator('.font-face-meta').innerText(), /Variable \(200–800\) · Latin/));
 assert.equal(await row(ids.loraCyrillic).locator('.font-face-file').innerText(), 'lora-cyrillic-wght-normal.woff2', 'the row names the file it was imported from');
 assert.equal(await row(ids.loraCyrillic).locator('.font-face-sample').innerText(), 'Аа Бб Жж', 'the Cyrillic file shows Cyrillic letters');
-await paintedWith(win, `[data-font-sample="${ids.loraCyrillic}"]`, /^Lora-/, 'the Cyrillic file’s sample');
-await paintedWith(win, `[data-font-sample="${ids.loraItalic}"]`, /^Lora-.*Italic/, 'the italic file’s sample');
-await paintedWith(win, `[data-font-sample="${ids.sans}"]`, /^PlusJakartaSans-(?!.*Italic)/, 'the upright body file’s sample');
+await paintedWith(win, `[data-font-sample="${ids.loraCyrillic}"]`, IN_LORA, 'the Cyrillic file’s sample');
+await paintedWith(win, `[data-font-sample="${ids.loraItalic}"]`, IN_LORA_ITALIC, 'the italic file’s sample');
+await paintedWith(win, `[data-font-sample="${ids.sans}"]`, IN_SANS_UPRIGHT, 'the upright body file’s sample');
 const removeButton = (id) => row(id).getByRole('button', { name: /^Remove / });
 const dialog = win.getByTestId('remove-font-dialog');
 
@@ -154,9 +166,9 @@ await dialog.getByRole('radio', { name: /Keep using Plus Jakarta Sans’s other 
 await win.getByRole('button', { name: 'Remove file' }).click();
 await dialog.waitFor({ state: 'detached' });
 await eventually(async () => assert.equal((await snapshot()).state.assets.assets[ids.sans], undefined, 'the upright file is gone'));
-await paintedWith(canvasFrame(), uprightSel, /^PlusJakartaSans-.*Italic/, 'body text, as the dialog said');
+await paintedWith(canvasFrame(), uprightSel, IN_SANS_ITALIC, 'body text, as the dialog said');
 assert.equal((await undo()).ok, true);
-await paintedWith(canvasFrame(), uprightSel, /^PlusJakartaSans-(?!.*Italic)/, 'body text after Undo');
+await paintedWith(canvasFrame(), uprightSel, IN_SANS_UPRIGHT, 'body text after Undo');
 
 step('choosing another font moves body text to it in one step');
 await row(ids.sans).waitFor();
@@ -169,7 +181,7 @@ await eventually(async () => assert.equal((await snapshot()).state.tokens.overri
 const replaced = (await snapshot()).state.assets.assets;
 assert.equal(replaced[ids.sans], undefined, 'the chosen file is gone');
 assert.ok(replaced[ids.sansItalic], 'its sibling stays in Assets');
-await paintedWith(canvasFrame(), uprightSel, /^Lora-/, 'body text in the replacement');
+await paintedWith(canvasFrame(), uprightSel, IN_LORA, 'body text in the replacement');
 assert.equal((await undo()).ok, true);
 await eventually(async () => assert.ok((await snapshot()).state.assets.assets[ids.sans], 'one Undo brings the file back'));
 assert.equal((await snapshot()).state.tokens.overrides['font.body'], "'Plus Jakarta Sans', system-ui, sans-serif", 'and body text’s font');
@@ -185,9 +197,9 @@ await eventually(async () => {
   const fonts = await painted(canvasFrame(), cyrillicSel);
   assert.ok(fonts.length > 0 && fonts.every((f) => !f.isCustomFont), `Cyrillic falls back, as the dialog said: ${JSON.stringify(fonts)}`);
 }, 20000);
-await paintedWith(canvasFrame(), latinSel, /^Lora-/, 'the Latin heading, still in Lora');
+await paintedWith(canvasFrame(), latinSel, IN_LORA, 'the Latin heading, still in Lora');
 assert.equal((await undo()).ok, true);
-await paintedWith(canvasFrame(), cyrillicSel, /^Lora-/, 'the Cyrillic heading after Undo');
+await paintedWith(canvasFrame(), cyrillicSel, IN_LORA, 'the Cyrillic heading after Undo');
 
 step('the last file of a family falls back when the author lets it');
 await row(ids.sansItalic).waitFor();
@@ -217,7 +229,7 @@ await eventually(async () => {
   assert.ok(s.assets.assets[ids.sans] && s.assets.assets[ids.sansItalic], 'two Undos bring both files back');
   assert.equal(s.tokens.overrides['font.body'], "'Plus Jakarta Sans', system-ui, sans-serif");
 });
-await paintedWith(canvasFrame(), uprightSel, /^PlusJakartaSans-(?!.*Italic)/, 'body text after Undo');
+await paintedWith(canvasFrame(), uprightSel, IN_SANS_UPRIGHT, 'body text after Undo');
 
 step('the exported site paints the same files');
 const exportDir = join(WORK, 'export-site');
@@ -246,10 +258,10 @@ const [tab] = await Promise.all([
 ]);
 await tab.waitForLoadState('load');
 await tab.evaluate(() => document.fonts.ready);
-await paintedWith(tab, latinSel, /^Lora-/, 'the exported Latin heading');
-await paintedWith(tab, cyrillicSel, /^Lora-/, 'the exported Cyrillic heading');
-await paintedWith(tab, uprightSel, /^PlusJakartaSans-(?!.*Italic)/, 'the exported body text');
-await paintedWith(tab, italicSel, /^PlusJakartaSans-.*Italic/, 'the exported italic words');
+await paintedWith(tab, latinSel, IN_LORA, 'the exported Latin heading');
+await paintedWith(tab, cyrillicSel, IN_LORA, 'the exported Cyrillic heading');
+await paintedWith(tab, uprightSel, IN_SANS_UPRIGHT, 'the exported body text');
+await paintedWith(tab, italicSel, IN_SANS_ITALIC, 'the exported italic words');
 await tab.close();
 server.close();
 

@@ -303,6 +303,43 @@ describe('admitted guests', () => {
   });
 });
 
+describe('a guest that leaves', () => {
+  it('gives its place up at once, waiting or admitted, rather than through the reconnect grace (#766)', async () => {
+    const room = await openRoom(relay);
+    const cid = await admittedGuest(relay, room, 'Cid');
+    const ann = await admittedGuest(relay, room, 'Ann', 'collaborator');
+    const bea = await joinGuest(relay, room.roomId, 'Bea');
+    expect((await room.host.next('room:roster')).participants.map((p) => p.guestId)).toEqual([cid.guestId, ann.guestId, bea.guestId]);
+
+    bea.guest.send('guest-to-relay', { type: 'guest:leave' });
+    expect((await room.host.next('room:roster')).participants.map((p) => p.guestId)).toEqual([cid.guestId, ann.guestId]);
+    expect((await bea.guest.closed()).code).toBe(LIVE_CLOSE_CODES.REMOVED);
+
+    cid.guest.discard('room:roster');
+    ann.guest.send('guest-to-relay', { type: 'guest:leave' });
+    expect((await room.host.next('room:roster')).participants.map((p) => p.guestId)).toEqual([cid.guestId]);
+    expect((await ann.guest.closed()).code).toBe(LIVE_CLOSE_CODES.REMOVED);
+    // The guests still in the room see the room as it is now too.
+    expect((await cid.guest.next('room:roster')).participants.map((p) => p.guestId)).toEqual([cid.guestId]);
+    // Its cookie no longer opens the preview, and its place cannot be taken back.
+    expect(await previewStatus(relay, room, ann.cookie)).toBe(403);
+    const back = await relay.socket(`/s/${room.roomId}/ws`);
+    back.send('guest-to-relay', { type: 'guest:join', version: 1, displayName: 'Ann', resumeToken: ann.resumeToken });
+    expect((await back.next('protocol:error')).code).toBe('AUTH_FAILED');
+    room.host.close();
+  });
+
+  it('passes on the revision the host’s preview serves with each reload', async () => {
+    const room = await openRoom(relay);
+    const ann = await admittedGuest(relay, room, 'Ann', 'collaborator');
+    room.host.send('host-to-relay', { type: 'preview:reload', revision: 12 });
+    expect(await ann.guest.next('preview:reload')).toEqual({ type: 'preview:reload', revision: 12 });
+    room.host.send('host-to-relay', { type: 'preview:reload' });
+    expect(await ann.guest.next('preview:reload')).toEqual({ type: 'preview:reload' });
+    room.host.close();
+  });
+});
+
 describe('a guest whose socket drops', () => {
   it('takes its own place back with its resume token, even in a locked room, and gets a fresh ticket', async () => {
     const room = await openRoom(relay);

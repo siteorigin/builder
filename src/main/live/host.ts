@@ -42,6 +42,8 @@ export interface LiveHostContext {
   relay(): Promise<ResolvedRelayUrl>;
   /** Whether a save's files are landing in the preview now: a reload then waits, so guests never load a half-landed save. */
   publishing?(): boolean;
+  /** The latest project revision the open project's preview has published, or null before one (#766). */
+  publishedRevision?(): number | null;
   /**
    * The project as guests are given it (shared/live/snapshot.ts) in the opening named, or null when that is not the
    * project open. The same object while nothing a guest sees has changed. Absent: guests' calls are unavailable.
@@ -204,6 +206,10 @@ interface Run {
   reloadTimer: ReturnType<typeof setTimeout> | null;
   /** A reload is owed to guests: sent once the room is held and the preview is ready. */
   reloadDue: boolean;
+  /** The latest project revision the preview was said to serve (projectChanged), sent with each reload; null before one. */
+  publishedRevision: number | null;
+  /** The admitted guests the host's presence was last sent with them listed, so a newcomer is sent it once. */
+  presentedTo: Set<string>;
   /**
    * The latest end asked for that the relay has not confirmed yet (and when, monotonic), so a second extension is
    * never earlier than the first: the relay applies them in order.
@@ -339,6 +345,8 @@ export class LiveHostManager {
       expiryTimer: null,
       reloadTimer: null,
       reloadDue: false,
+      publishedRevision: null,
+      presentedTo: new Set(),
       asked: null,
       announced: new Set(),
       hostPresence: null,
@@ -646,6 +654,7 @@ export class LiveHostManager {
     if (run.phase === 'stopping') return;
     if (!first) {
       this.publish();
+      this.presentToNewcomers(run, conn);
       return this.announce(run);
     }
     if (conn.timer) clearTimeout(conn.timer);
@@ -817,9 +826,33 @@ export class LiveHostManager {
     if (run?.room && run.phase !== 'stopping') this.publish();
   }
 
-  /** A change to the project reached its preview: guests reload what they show. */
-  projectChanged(): void {
-    if (this.run && this.run.phase !== 'stopping') this.scheduleReload(this.run);
+  /**
+   * A change to the project reached its preview, at `revision` when the preview said which: guests reload what they
+   * show, and are told the revision a page loaded now shows.
+   */
+  projectChanged(revision?: number): void {
+    const run = this.run;
+    if (!run || run.phase === 'stopping') return;
+    if (typeof revision === 'number' && Number.isSafeInteger(revision) && revision >= 0) run.publishedRevision = Math.max(run.publishedRevision ?? 0, revision);
+    this.scheduleReload(run);
+  }
+
+  /**
+   * A guest the roster shows newly admitted hears where the host is now, selection and all: the relay keeps only the
+   * host's page for latecomers (#766).
+   */
+  private presentToNewcomers(run: Run, conn: Connection): void {
+    const admitted = run.room!.participants.filter((p) => p.status === 'admitted').map((p) => p.guestId);
+    const fresh = admitted.some((id) => !run.presentedTo.has(id));
+    run.presentedTo = new Set(admitted);
+    if (fresh && run.hostPresence?.selection) this.sendOn(conn, { type: 'presence:update', presence: run.hostPresence });
+  }
+
+  /** The latest revision the preview is known to serve: what it last published, as the editor or this session heard it. */
+  private previewRevision(run: Run): number | null {
+    const published = this.ctx.publishedRevision?.() ?? null;
+    if (published === null) return run.publishedRevision;
+    return run.publishedRevision === null ? published : Math.max(published, run.publishedRevision);
   }
 
   private scheduleReload(run: Run, delay = this.timings.reloadMs): void {
@@ -832,7 +865,8 @@ export class LiveHostManager {
       if (this.run !== run || run.phase !== 'active' || conn?.stage !== 'host' || !this.servingPreview(run)) return;
       // A save landing now: the reload waits for it to have landed.
       if (this.ctx.publishing?.()) return this.scheduleReload(run);
-      if (this.sendOn(conn, { type: 'preview:reload' })) run.reloadDue = false;
+      const revision = this.previewRevision(run);
+      if (this.sendOn(conn, { type: 'preview:reload', ...(revision !== null ? { revision } : {}) })) run.reloadDue = false;
     }, delay);
   }
 
@@ -953,7 +987,9 @@ export class LiveHostManager {
     if (call.value.method === 'project.snapshot') {
       if (!this.spendRead(run, frame.guestId)) return refuse('BUSY', 'Too many requests for the project. Try again shortly.', true);
       const snapshot = this.ctx.guestSnapshot(run.workspaceKey);
-      return snapshot ? answer({ ok: true, result: snapshot }) : refuse('UNAVAILABLE', 'The host’s project is not available right now.', true);
+      // The guest is told which revision the preview serves now, so its canvas knows what the page it loads shows (#766).
+      const previewRevision = this.previewRevision(run);
+      return snapshot ? answer({ ok: true, result: previewRevision === null ? snapshot : { ...snapshot, previewRevision } }) : refuse('UNAVAILABLE', 'The host’s project is not available right now.', true);
     }
     const { guestId } = frame;
     const edits = run.edits.get(guestId) ?? 0;

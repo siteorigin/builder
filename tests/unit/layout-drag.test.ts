@@ -456,15 +456,16 @@ describe('freeSpot: handles never cover each other', () => {
   it('slides a divider down its gutter, clear of the top padding’s handle on the same spot', () => {
     // Two columns with equal side padding: the gutter's middle is the box's, where the top padding handle sits.
     const padding = { x: 500, y: 100, axis: 'y' as const };
-    expect(freeSpot([padding], { x: 500, y: 112, axis: 'x' }, { along: 'y', from: 100, to: 180 })).toEqual({ x: 500, y: 118, axis: 'x' });
+    expect(freeSpot([padding], { x: 500, y: 112, axis: 'x' }, { along: 'y', from: 100, to: 180 })).toEqual({ x: 500, y: 124, axis: 'x' });
   });
 
   it('finds the clear place nearest to it, however narrow, and takes the later of two as near', () => {
-    // Clear only from 18 to 19: between the steps a coarser search would try.
-    expect(freeSpot([{ x: 10, y: 0, axis: 'y' }], { x: 10, y: 12, axis: 'x' }, { along: 'y', from: 0, to: 19 })).toEqual({ x: 10, y: 18, axis: 'x' });
-    // A short row whose top and bottom padding handles fill its height: the gap handle goes just past it, below.
+    // Clear only from 24 to 25 (two 24px targets): between the steps a coarser search would try.
+    expect(freeSpot([{ x: 10, y: 0, axis: 'y' }], { x: 10, y: 12, axis: 'x' }, { along: 'y', from: 0, to: 25 })).toEqual({ x: 10, y: 24, axis: 'x' });
+    // A short row whose top and bottom padding handles fill its height: the gap handle goes just past it, and of
+    // above and below, as near, below.
     const pads = [{ x: 500, y: 100, axis: 'y' as const }, { x: 500, y: 128, axis: 'y' as const }];
-    expect(freeSpot(pads, { x: 500, y: 114, axis: 'x' }, { along: 'y', from: 76, to: 152 })).toEqual({ x: 500, y: 146, axis: 'x' });
+    expect(freeSpot(pads, { x: 500, y: 114, axis: 'x' }, { along: 'y', from: 76, to: 152 })).toEqual({ x: 500, y: 152, axis: 'x' });
     // One beside it, not level with it, is no obstacle.
     expect(freeSpot([{ x: 540, y: 114, axis: 'y' }], { x: 500, y: 114, axis: 'x' }, { along: 'y', from: 76, to: 152 })).toEqual({ x: 500, y: 114, axis: 'x' });
   });

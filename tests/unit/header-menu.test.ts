@@ -230,6 +230,23 @@ function untidy(a: Arrangement): string[] {
   return out;
 }
 
+/**
+ * Whether the header's row holds the brand, the links and the action on one line: as wide as they need, laid out for
+ * a moment within one task as the header's own measure lays them out (nothing is painted).
+ */
+const ROW_FITS = `(() => {
+  const header = document.querySelector('header.so-header');
+  const row = header.querySelector(':scope > .so-header__inner');
+  const available = row.getBoundingClientRect().width;
+  const compact = header.classList.contains('so-header--compact');
+  header.classList.remove('so-header--compact');
+  header.classList.add('so-header--measure');
+  const needed = row.getBoundingClientRect().width;
+  header.classList.remove('so-header--measure');
+  if (compact) header.classList.add('so-header--compact');
+  return needed <= available - 1;
+})()`;
+
 const MENU_LINKS = [...LABELS, 'Book a call'];
 /** Two frames, or a tenth of a second where a headless engine holds frames back. */
 const SETTLED = 'new Promise((done) => { requestAnimationFrame(() => requestAnimationFrame(done)); setTimeout(done, 100); })';
@@ -408,18 +425,23 @@ describe.each(ENGINES)('the phone menu in %s', (engineName, engine) => {
   it('folds a menu that fits only on wide screens into the menu button as the window narrows, and back out as it widens', async () => {
     await withSite('medium', { width: 1280, height: 800 }, 'now', async (page) => {
       const seen: Array<[number, boolean]> = [];
+      const crowded: Array<[number, boolean]> = [];
       for (const width of [1280, 900, 768, 1024, 1440, 820, 1280]) {
         await page.setViewportSize({ width, height: 800 });
         await page.evaluate(SETTLED);
         const arrangement = (await page.evaluate(ARRANGEMENT)) as Arrangement;
         expect(untidy(arrangement), `${width}px`).toEqual([]);
         seen.push([width, arrangement.compact]);
+        crowded.push([width, !(await page.evaluate(ROW_FITS))]);
       }
-      expect(seen).toEqual([
+      // Folded exactly where the row cannot hold the menu on one line.
+      expect(seen).toEqual(crowded);
+      // At 1024px that depends on the system font the site falls back to here: the menu needs about 1050px in San
+      // Francisco (macOS) and 1010px in Segoe UI (Windows). Elsewhere it does not.
+      expect(seen.filter(([width]) => width !== 1024)).toEqual([
         [1280, false],
         [900, true],
         [768, true],
-        [1024, true],
         [1440, false],
         [820, true],
         [1280, false]

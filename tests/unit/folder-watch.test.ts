@@ -6,11 +6,17 @@
  */
 import fs, { mkdirSync, mkdtempSync, realpathSync, renameSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { isAbsolute, join } from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { watchTree, type FolderWatch } from '../../src/main/folder-watch';
 
 const TREE = process.platform === 'linux' ? {} : { tree: true };
+/**
+ * Windows will not rename a folder while anything inside it is held open, as the tree's watch of each folder below it
+ * is (the watch of the folder itself does not stop it, nor does the native watch, which holds only the watched folder).
+ * So there a folder a test moves holds no folder of its own: what is moved is watched, but nothing within it.
+ */
+const DEEP = process.platform === 'win32' ? '' : 'deep';
 const dirs: string[] = [];
 const watches: FolderWatch[] = [];
 
@@ -114,6 +120,43 @@ describe('watching a folder and everything in it', { timeout: 30_000 }, () => {
     expect(errors).toEqual([]);
   });
 
+  it.runIf(process.platform === 'darwin' || process.platform === 'win32')('leaves a folder with folders in it free to be moved under the native watch', async () => {
+    // Windows will not rename a folder while anything inside it is held open: the native watch holds only the folder
+    // watched, so the folders of an open project can still be moved there.
+    const dir = temp();
+    const outside = temp();
+    mkdirSync(join(dir, 'sub', 'deep'), { recursive: true });
+    mkdirSync(join(outside, 'other', 'deep'), { recursive: true });
+    const { events, errors } = start(dir, {});
+    await untilWatching(dir, events);
+    await reported(events, dir, join('sub', 'deep', 'seen.txt'));
+    renameSync(join(dir, 'sub'), join(outside, 'aside'));
+    renameSync(join(outside, 'other'), join(dir, 'sub'));
+    await reported(events, dir, join('sub', 'deep', 'later.txt'));
+    expect(errors).toEqual([]);
+  });
+
+  it.runIf(process.platform === 'darwin' || process.platform === 'win32')('tells of the folder itself removed through the native watch a few times, not without end', async () => {
+    const dir = join(temp(), 'watched');
+    mkdirSync(join(dir, 'a'), { recursive: true });
+    const { w, events, errors } = start(dir, {});
+    const closed = vi.fn();
+    w.on('close', closed);
+    await untilWatching(dir, events);
+    const seen = events.length;
+    rmSync(dir, { recursive: true });
+    await settle(1000);
+    // Windows tells of it by its full path, and again many thousands of times a second until the watch is closed.
+    expect(events.length - seen).toBeLessThan(20);
+    expect(events.filter((e) => e && isAbsolute(e))).toEqual([]);
+    if (process.platform === 'win32') {
+      // As the tree tells of it: once, under an empty name, ending the watch.
+      expect(events.slice(seen).filter((e) => e === '')).toHaveLength(1);
+      expect(closed).toHaveBeenCalledTimes(1);
+    }
+    expect(errors).toEqual([]);
+  });
+
   it('watches a folder made after it started, and reports what the folder already held', async () => {
     const dir = temp();
     const { events, errors } = start(dir);
@@ -145,8 +188,8 @@ describe('watching a folder and everything in it', { timeout: 30_000 }, () => {
     const dir = temp();
     const outside = temp();
     // Both hold a deep/, so a watch of the old one's left behind would pass for the new one's.
-    mkdirSync(join(dir, 'sub', 'deep'), { recursive: true });
-    mkdirSync(join(outside, 'other', 'deep'), { recursive: true });
+    mkdirSync(join(dir, 'sub', DEEP), { recursive: true });
+    mkdirSync(join(outside, 'other', DEEP), { recursive: true });
     writeFileSync(join(outside, 'other', 'held.txt'), '');
     const { events, errors } = start(dir);
     await untilWatching(dir, events);
@@ -155,39 +198,42 @@ describe('watching a folder and everything in it', { timeout: 30_000 }, () => {
     renameSync(join(dir, 'sub'), join(outside, 'aside'));
     renameSync(join(outside, 'other'), join(dir, 'sub'));
     await vi.waitFor(() => expect(events).toContain(join('sub', 'held.txt')), { timeout: 15_000 });
-    await reported(events, dir, join('sub', 'deep', 'later.txt'));
+    await reported(events, dir, join('sub', DEEP, 'later.txt'));
     // The folder moved away is no longer watched as sub/.
     const seen = events.length;
     writeFileSync(join(outside, 'aside', 'gone.txt'), '');
-    writeFileSync(join(outside, 'aside', 'deep', 'gone.txt'), '');
+    writeFileSync(join(outside, 'aside', DEEP, 'gone.txt'), '');
     await settle();
     expect(events.slice(seen)).not.toContain(join('sub', 'gone.txt'));
-    expect(events.slice(seen)).not.toContain(join('sub', 'deep', 'gone.txt'));
+    expect(events.slice(seen)).not.toContain(join('sub', DEEP, 'gone.txt'));
     expect(errors).toEqual([]);
   });
 
   it('still watches a folder moved away and back many times before any of it is told', async () => {
     const dir = temp();
     const outside = temp();
-    mkdirSync(join(dir, 'sub', 'deep'), { recursive: true });
+    mkdirSync(join(dir, 'sub', DEEP), { recursive: true });
     const { events, errors } = start(dir);
     await untilWatching(dir, events);
-    await reported(events, dir, join('sub', 'deep', 'seen.txt'));
+    await reported(events, dir, join('sub', DEEP, 'seen.txt'));
     for (let i = 0; i < 20; i++) {
       renameSync(join(dir, 'sub'), join(outside, 'aside'));
       renameSync(join(outside, 'aside'), join(dir, 'sub'));
     }
     await settle();
-    await reported(events, dir, join('sub', 'deep', 'later.txt'));
+    await reported(events, dir, join('sub', DEEP, 'later.txt'));
     await reported(events, dir, join('sub', 'later.txt'));
     expect(errors).toEqual([]);
   });
 
-  it.each([
+  it.for([
     ['removed', (dir: string) => rmSync(dir, { recursive: true })],
     // The old one is kept, under another name, so the new one cannot be given its number.
     ['replaced by another folder', (dir: string) => (renameSync(dir, `${dir}-old`), mkdirSync(dir))]
-  ])('reports the folder itself %s under an empty name, and ends without an error', async (_name, change) => {
+  ] as const)('reports the folder itself %s under an empty name, and ends without an error', async ([name, change], { skip }) => {
+    // Windows tells a folder's own watch nothing of the folder being renamed (the watch follows it to its new name), so
+    // no tree of watches can see it replaced there; the app watches natively on Windows, not with the tree.
+    if (process.platform === 'win32' && name !== 'removed') skip();
     const dir = join(temp(), 'watched');
     mkdirSync(join(dir, 'a'), { recursive: true });
     const { w, events, errors } = start(dir);

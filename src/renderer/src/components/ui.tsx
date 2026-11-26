@@ -6,7 +6,7 @@ import * as DropdownMenu from '@radix-ui/react-dropdown-menu';
 import { createPortal, flushSync } from 'react-dom';
 import { Check, ChevronDown, CircleAlert, CircleCheck, Info, Pencil, X } from 'lucide-react';
 import { aiActivity, api, applyHeld, commitDraft, discardHeld, dismissToast, editRunStatus, markDraft, toast, undoAvailable, useStore, type HeldEdit, type PendingEdit } from '../store';
-import { afterSettle, isSettling, reportRefused, retainRefused, type Refocusable } from '../lib/pending';
+import { afterLanding, isSettling, reportRefused, retainRefused, type Refocusable } from '../lib/pending';
 import { heldPrompt, type HeldAction } from '../lib/held';
 import { dropKeptDraft, goneReport, keepDraft, keptDraft, keptDraftKey, keptField, keptOnLeave, keptRefusal, limitNote, tooLongReport, unsavedReport } from '../lib/kept-drafts';
 import { runPhase } from '../lib/savestate';
@@ -164,7 +164,10 @@ export function Modal({ title, icon, onClose, children, footer, wide, describedB
             <X />
           </button>
         </div>
-        <div className="modal-body">{children}</div>
+        {/* Scrolled, the dialog is marked so its header draws a rule over the content that has gone under it. */}
+        <div className="modal-body" onScroll={(e) => ref.current?.toggleAttribute('data-scrolled', e.currentTarget.scrollTop > 0)}>
+          {children}
+        </div>
         {footer && <div className="modal-foot">{footer}</div>}
       </div>
     </div>,
@@ -621,10 +624,15 @@ export function Field({ label, children, hint, error, extra, controlId: explicit
   const noteId = `${id}-note`;
   const labelable = (t: unknown) => t === 'input' || t === 'select' || t === 'textarea' || t === DraftInput;
   const only = Children.count(children) === 1 && isValidElement(children) && labelable(children.type) ? (children as ReactElement<Record<string, unknown>>) : null;
-  // A composite child (a field plus its buttons) passes controlId and wires `${controlId}-note` itself.
-  const controlId = explicitId ?? (only ? ((only.props.id as string | undefined) ?? id) : undefined);
+  // A composite child (a field plus its buttons) passes controlId and wires `${controlId}-note` itself. A single control
+  // keeps an ID of its own, and the label names that one.
+  const controlId = (only?.props.id as string | undefined) ?? explicitId ?? (only ? id : undefined);
   const note = error || hint;
-  const control = only && !explicitId ? cloneElement(only, { id: controlId, 'aria-describedby': note ? noteId : undefined, 'aria-invalid': error ? true : undefined }) : children;
+  // A single control is described by the note (beside any description of its own, in the order it gives when it
+  // wires the note itself) and marked by the error, whether its ID was given or generated.
+  const own = ((only?.props['aria-describedby'] as string | undefined) ?? '').split(/\s+/).filter(Boolean);
+  const describedBy = (note && !own.includes(noteId) ? [noteId, ...own] : own).join(' ') || undefined;
+  const control = only ? cloneElement(only, { id: controlId, 'aria-describedby': describedBy, 'aria-invalid': error ? true : only.props['aria-invalid'] }) : children;
   // A composite child (a segmented control, a row of fields) is named as a group by the label instead.
   const grouped = !controlId && !!label;
   return (
@@ -665,8 +673,10 @@ export function Field({ label, children, hint, error, extra, controlId: explicit
  * A row of mutually exclusive options. With `radio` it is exposed as a radio group (WAI-ARIA APG): one tab
  * stop, and the arrow keys move and select. `labelledBy` and `describedBy` name it from visible text.
  */
-export function Segmented<T extends string>({ value, options, onChange, full, label, radio, labelledBy, describedBy }: { value: T; options: Array<{ value: T; label?: ReactNode; icon?: ReactNode; title?: string }>; onChange: (v: T) => void; full?: boolean; label?: string; radio?: boolean; labelledBy?: string; describedBy?: string }) {
-  const current = Math.max(0, options.findIndex((o) => o.value === value));
+export function Segmented<T extends string>({ value, options, onChange, full, label, radio, labelledBy, describedBy }: { value: T; options: Array<{ value: T; label?: ReactNode; icon?: ReactNode; title?: string; /** Unavailable: shown, skipped by the arrow keys. */ disabled?: boolean }>; onChange: (v: T) => void; full?: boolean; label?: string; radio?: boolean; labelledBy?: string; describedBy?: string }) {
+  const chosen = options.findIndex((o) => o.value === value);
+  // The tab stop: the chosen option, or the first available one when the chosen one is unavailable (or none is chosen).
+  const current = chosen >= 0 && !options[chosen].disabled ? chosen : Math.max(0, options.findIndex((o) => !o.disabled));
   const move = (e: React.KeyboardEvent<HTMLDivElement>) => {
     const step = e.key === 'ArrowRight' || e.key === 'ArrowDown' ? 1 : e.key === 'ArrowLeft' || e.key === 'ArrowUp' ? -1 : 0;
     if (!step || !options.length) return;
@@ -674,18 +684,45 @@ export function Segmented<T extends string>({ value, options, onChange, full, la
     // From the focused option, since a saved value can lag behind quick presses.
     const buttons = [...e.currentTarget.querySelectorAll('button')];
     const from = buttons.indexOf(document.activeElement as HTMLButtonElement);
-    const next = ((from < 0 ? current : from) + step + options.length) % options.length;
+    let next = from < 0 ? current : from;
+    for (let n = 0; n < options.length; n++) {
+      next = (next + step + options.length) % options.length;
+      if (!options[next].disabled) break;
+    }
+    if (options[next].disabled) return;
     onChange(options[next].value);
     buttons[next]?.focus();
   };
   return (
     <div className={`segmented${full ? ' full' : ''}`} role={radio ? 'radiogroup' : 'group'} aria-label={labelledBy ? undefined : label} aria-labelledby={labelledBy} aria-describedby={describedBy} onKeyDown={radio ? move : undefined}>
       {options.map((o, i) => (
-        <button key={o.value} type="button" {...(radio ? { role: 'radio', 'aria-checked': value === o.value, tabIndex: i === current ? 0 : -1 } : { 'aria-pressed': value === o.value })} onClick={() => onChange(o.value)} title={o.title} aria-label={o.title}>
+        <button key={o.value} type="button" {...(radio ? { role: 'radio', 'aria-checked': value === o.value, tabIndex: i === current ? 0 : -1 } : { 'aria-pressed': value === o.value })} disabled={o.disabled} onClick={() => onChange(o.value)} title={o.title} aria-label={o.label ? undefined : o.title}>
           {o.icon}
           {o.label}
         </button>
       ))}
+    </div>
+  );
+}
+
+/**
+ * A segmented choice with a visible label above it and, optionally, a hint under it: the label names the group (a
+ * radio group, so one tab stop and the arrow keys) and the hint describes it. Use it wherever a Segmented answers a
+ * question the surrounding form does not already ask.
+ */
+export function ChoiceField<T extends string>({ label, hint, value, options, onChange, full }: { label: ReactNode; hint?: ReactNode; value: T; options: Array<{ value: T; label?: ReactNode; icon?: ReactNode; title?: string }>; onChange: (v: T) => void; full?: boolean }) {
+  const id = useId();
+  return (
+    <div className="field">
+      <div className="field-label" id={`${id}-label`}>
+        {label}
+      </div>
+      <Segmented radio full={full} labelledBy={`${id}-label`} describedBy={hint ? `${id}-hint` : undefined} value={value} options={options} onChange={onChange} />
+      {hint && (
+        <div className="field-hint" id={`${id}-hint`}>
+          {hint}
+        </div>
+      )}
     </div>
   );
 }
@@ -702,7 +739,8 @@ export function RequiredMark() {
 /** What a field a component requires says while its value is empty: its own, or the default it shows. */
 export const missingNote = (schema: PropSchema, value: unknown): string | undefined => (schema.required && isEmptyPropValue(schema, value) ? `Required, but empty: ${requiredHint(schema)}.` : undefined);
 
-export function Switch({ checked, onChange, label, id, labelledBy, describedBy, disabled }: { checked: boolean; onChange: (v: boolean) => void; label?: string; id?: string; labelledBy?: string; describedBy?: string; disabled?: boolean }) {
+export function Switch({ checked, onChange, label, id, labelledBy, describedBy, disabled: own }: { checked: boolean; onChange: (v: boolean) => void; label?: string; id?: string; labelledBy?: string; describedBy?: string; disabled?: boolean }) {
+  const disabled = useContext(LockedFieldsContext) || own;
   return <button id={id} className="switch" role="switch" aria-checked={checked} aria-label={labelledBy ? undefined : label} aria-labelledby={labelledBy} aria-describedby={describedBy} disabled={disabled} onClick={() => onChange(!checked)} />;
 }
 
@@ -754,6 +792,15 @@ interface Home {
   alive?: () => boolean;
 }
 const FieldHomeContext = createContext<Home | null>(null);
+
+/**
+ * Fields that can be read but not changed (a project open read-only, a synced post): inside it every DraftInput is
+ * read-only, so its text can still be focused, selected and copied, and every Switch is disabled. Other controls (an
+ * image picker, a select) are disabled by their place, as a fieldset does.
+ */
+const LockedFieldsContext = createContext(false);
+export const LockedFields = LockedFieldsContext.Provider;
+export const useLockedFields = () => useContext(LockedFieldsContext);
 export function FieldHome({ root, part, alive, children }: { root?: string; part?: string; alive?: () => boolean; children: ReactNode }) {
   const outer = useContext(FieldHomeContext);
   const within = outer?.alive;
@@ -778,6 +825,9 @@ interface DraftInputProps {
   /** The most characters the project keeps for this field. The field counts against it as the author types,
    *  and text over it, typed or pasted, is kept whole and refused, with the reason beside the field. */
   limit?: number;
+  /** With `limit`, for a short name: the count shows only while the field is focused, or once the text nears or
+   *  passes the limit, so a list of names is not a column of counts. Long text keeps its count in view. */
+  quietCount?: boolean;
   /** Where this field's text belongs in the project (a page's description, an image's alt text), so text
    *  refused for being too long, or by `check`, is kept for it while it is off screen. Without it, text too long is
    *  offered to copy when the field goes away. */
@@ -812,6 +862,8 @@ interface DraftInputProps {
   onDirty?: (dirty: boolean, draft: string) => void;
   /** Shows the field (its panel may be closed) before leaving the project's Keep editing returns to it. */
   reveal?: () => void;
+  /** Readable, selectable and focusable, never changed (also inside LockedFields). */
+  readOnly?: boolean;
 }
 
 /** Text input that commits on blur/Enter and keeps a local draft while focused. `onCommit` returns false when
@@ -859,6 +911,7 @@ function DraftField({
   id,
   type,
   limit,
+  quietCount,
   keep,
   keepWhile,
   'aria-describedby': describedBy,
@@ -868,8 +921,10 @@ function DraftField({
   onDirty,
   reveal,
   handle,
-  inputRef
+  inputRef,
+  readOnly: ownReadOnly
 }: DraftInputProps) {
+  const readOnly = useContext(LockedFieldsContext) || !!ownReadOnly;
   // Text this field refused, kept while it was off screen (another page was open, or the same page's settings showed in
   // another place): too long to save, or refused by `check`.
   const [field] = useState(() => (keep ? keptField(useStore.getState().snapshot?.workspaceKey, keep) : null));
@@ -1105,10 +1160,11 @@ function DraftField({
     held.current = isSettling();
     mark(refused && held.current);
     if (refused) reportRefused(named(el), draftKey, el);
-    // The saved value comes back once the change has landed or been refused. While the project is being
-    // left, the typed text stays until the author decides, so Keep editing returns to it intact.
+    // The saved value comes back once the change has landed or been refused: until then the field shows what was
+    // typed, never the value from before it. While the project is being left, the typed text stays until the author
+    // decides, so Keep editing returns to it intact.
     const at = edit.current;
-    afterSettle(() =>
+    afterLanding(() =>
       setTimeout(() => {
         if (!mounted.current || focused.current || edit.current !== at) return;
         held.current = false;
@@ -1150,6 +1206,8 @@ function DraftField({
   const common = {
     ref: setInput,
     value: draft,
+    readOnly: readOnly || undefined,
+    'aria-readonly': readOnly || undefined,
     placeholder,
     'aria-label': ariaLabel,
     'aria-describedby': [describedBy, note ? noteId : null].filter(Boolean).join(' ') || undefined,
@@ -1226,12 +1284,25 @@ function DraftField({
   };
   const control = multiline || wrap ? <textarea className={className === 'input' ? 'textarea' : className} rows={rows ?? (wrap ? 1 : 3)} {...common} /> : <input className={className} type={type} {...common} />;
   if (!note) return control;
+  const count = (
+    <div className={`field-count${note.over ? ' field-error' : quietCount && !tooLong && draft.length < limit! * 0.8 ? ' quiet' : ''}`} id={noteId}>
+      {note.text}
+    </div>
+  );
+  // A quiet count sits inside the field's trailing edge while it is focused, so focusing a name never moves the
+  // rows below it; near or over the limit it takes its line under the field. Always wrapped, so the field is not
+  // remounted (and focus lost) when the count changes place.
+  if (quietCount)
+    return (
+      <span className="field-quiet">
+        {control}
+        {count}
+      </span>
+    );
   return (
     <>
       {control}
-      <div className={`field-count${note.over ? ' field-error' : ''}`} id={noteId}>
-        {note.text}
-      </div>
+      {count}
     </>
   );
 }

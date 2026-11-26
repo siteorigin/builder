@@ -4,11 +4,11 @@
  * Its environment is constructed explicitly by the main process and never contains provider credentials.
  */
 import { createRequire } from 'node:module';
-import { join, sep } from 'node:path';
+import { join } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { maskSecrets, serializeBuildError } from './build-diagnostics';
 import { devPlugin } from './dev-plugin';
-import { canonicalDir, frameAncestorsCsp, framePolicyPlugin, liveGuestPlugin, previewFsPolicy } from './policy';
+import { canonicalDir, frameAncestorsCsp, framePolicyPlugin, liveGuestPlugin, previewFsPolicy, unwatched } from './policy';
 import { createPublicationGate, type GateServer, type PublicationGate } from './publication-gate';
 
 type Msg =
@@ -46,16 +46,6 @@ function useRealProjectDir(dir: string): string {
   const real = canonicalDir(dir);
   process.chdir(real);
   return real;
-}
-
-/**
- * What the dev server does not watch, anchored to the project root (src/lib/siteorigin must stay watched). Build
- * configuration is not watched: a changed config must go through the editor's trust check, not an automatic restart.
- */
-function unwatched(dir: string) {
-  return (p: string) =>
-    ['.siteorigin', 'siteorigin', 'build', 'node_modules', '.svelte-kit/output'].some((d) => p === join(dir, d) || p.startsWith(join(dir, d) + sep)) ||
-    ['vite.config.js', 'vite.config.ts', 'svelte.config.js', 'package.json', 'package-lock.json'].some((f) => p === join(dir, f));
 }
 
 async function start(dir: string, wantedPort = 0, packaged = true) {

@@ -23,8 +23,11 @@ const $ = (/** @type {string} */ id) => /** @type {HTMLElement} */ (document.get
 const ui = {
   bar: $('bar'),
   barMeta: /** @type {HTMLElement} */ (root.querySelector('.bar-meta')),
-  barControls: /** @type {HTMLElement} */ (root.querySelector('.bar-controls')),
+  barControls: $('bar-controls'),
+  barMore: $('bar-more'),
+  panelRole: $('panel-role'),
   title: $('site-title'),
+  siteRole: $('site-role'),
   connection: $('connection'),
   role: $('role'),
   time: $('time'),
@@ -36,19 +39,29 @@ const ui = {
   handoffLink: /** @type {HTMLInputElement} */ ($('handoff-link')),
   handoffCopy: $('handoff-copy'),
   handoffClose: $('handoff-close'),
+  hostNote: $('host-note'),
   stage: $('stage'),
-  veilAction: /** @type {HTMLButtonElement} */ ($('veil-action')),
   frame: $('frame'),
   veil: $('veil'),
+  veilGlyph: $('veil-glyph'),
+  veilTitle: $('veil-title'),
   veilText: $('veil-text'),
+  veilTime: $('veil-time'),
+  handoffTitle: $('handoff-title'),
+  veilAction: /** @type {HTMLButtonElement} */ ($('veil-action')),
   screen: $('screen'),
+  screenGlyph: $('screen-glyph'),
   screenTitle: $('screen-title'),
   screenText: $('screen-text'),
   form: /** @type {HTMLFormElement} */ ($('join')),
   name: /** @type {HTMLInputElement} */ ($('name')),
   nameError: $('name-error'),
-  waiting: $('waiting'),
-  action: /** @type {HTMLButtonElement} */ ($('screen-action'))
+  joinButton: /** @type {HTMLButtonElement} */ ($('join-button')),
+  next: $('screen-next'),
+  actions: $('screen-actions'),
+  action: /** @type {HTMLButtonElement} */ ($('screen-action')),
+  cancel: /** @type {HTMLButtonElement} */ ($('screen-cancel')),
+  announcer: $('announce')
 };
 
 /** How long the viewer keeps trying to take its place back after its socket drops: a little past the relay's grace. */
@@ -97,6 +110,12 @@ let iframe = null;
 /** Whether the preview cookie for the current grant is in place, so the frame may show the site. */
 let previewReady = false;
 let previewFailed = false;
+/** Whether the frame has shown its first page since it was made: until then the guest is told it is opening. */
+let frameShown = false;
+/** Whether that first page is taking longer than it should: the guest is told so, and may try again. */
+let frameSlow = false;
+/** @type {ReturnType<typeof setTimeout> | undefined} */
+let frameShownFallback;
 /** The page the frame is on, as its bridge last said or as the viewer last pointed it. */
 let framePath = '/';
 /** @type {string | null} */
@@ -117,9 +136,27 @@ let siteTitle = '';
 
 /** @type {{ previewPath: string | null; viewportWidth: number } | null} */
 let hostPage = null;
+/** Whether the frame goes where the host goes. Independent of its width: a phone can follow at its own width. */
 let follow = true;
-/** @type {keyof typeof VIEWPORTS} */
-let viewport = 'desktop';
+/**
+ * The frame's width: the host's own (`host`), or a preset. A phone starts at the Mobile preset, where the host's
+ * site is readable, rather than at the host's desktop width scaled down to a third of it.
+ * @type {'host' | keyof typeof VIEWPORTS}
+ */
+const narrow = matchMedia('(max-width: 640px)');
+const midsize = matchMedia('(max-width: 960px)');
+/** The width a guest who has not chosen one gets: their phone's, a tablet's, or the host's on a wide screen. */
+const defaultWidth = () => (narrow.matches ? 'mobile' : midsize.matches ? 'tablet' : 'host');
+let width = defaultWidth();
+/** Whether the guest picked a width themselves: until they do, the default follows the window (a phone turned). */
+let widthChosen = false;
+/** Whether the view has been drawn once: focus moves only on later changes, never when the page first opens. */
+let started = false;
+/** What the veil last said, so focus and announcements follow only a change. */
+let veilShown = '';
+/** The deadline warnings already given (minutes left), so each is announced once, and the deadline they were for. */
+let warned = new Set();
+let warnedFor = 0;
 
 /** @type {ReturnType<typeof setTimeout> | undefined} */
 let reconnectTimer;
@@ -268,9 +305,12 @@ function onStatus(frame) {
       siteTitle = guest.projectName;
       if (typeof frame.previewTicket === 'string') redeem(frame.previewTicket);
       setPhase('admitted');
-      // A guest who becomes a collaborator is told how to edit; an open handoff always says what the role is now.
-      if (guest.role === 'collaborator' && before !== 'collaborator') showHandoff();
-      else if (!ui.handoff.hidden) showHandoff();
+      // A guest who becomes a collaborator is told they can edit; the bar's "How to edit" says how.
+      if (guest.role === 'collaborator' && before !== 'collaborator') {
+        if (before) announce('You can now edit this site with the host. How to edit says how.');
+        // On a phone the way to edit is in the view options: their button carries a dot until it is opened.
+        ui.barMore.dataset.attention = 'true';
+      }
       return;
     }
     case 'declined':
@@ -280,24 +320,38 @@ function onStatus(frame) {
     case 'locked':
       return finish('locked');
     case 'ended':
+      // The close that follows says why (the host ended it, or never came back). Until it does, the ending is shown at
+      // once in words true of both, and the reason fills in on the same screen.
+      endingReason = false;
       return finish('ended');
     case 'expired':
       return finish(frame.scope === 'guest' ? 'expired-guest' : 'expired-session');
   }
 }
 
+/** @type {ReturnType<typeof setTimeout> | undefined} */
+let lostDeadline;
+
 /** The socket is back in the room: any reconnecting is over. */
 function settle() {
+  clearTimeout(lostDeadline);
   reconnecting = false;
   lostSince = 0;
   retries = 0;
 }
 
+/** Whether the ended screen knows why the session ended (the close after the status says). */
+let endingReason = true;
+
 /** @param {number} code */
 function onClose(code) {
   if (isFinal(phase)) {
     // The status came first; the close only says more about why the session ended.
-    if (phase === 'ended' && code === CLOSE_CODES.HOST_GONE) setPhase('host-gone');
+    if (phase === 'ended' && !endingReason) {
+      endingReason = true;
+      if (code === CLOSE_CODES.HOST_GONE) return setPhase('host-gone');
+      render();
+    }
     return;
   }
   if (refusal === 'resume') {
@@ -335,6 +389,13 @@ function markLost() {
   if (reconnecting) return;
   reconnecting = true;
   lostSince = performance.now();
+  // The time to take the place back runs whether or not an attempt ever answers: one that hangs still ends it.
+  clearTimeout(lostDeadline);
+  lostDeadline = setTimeout(() => {
+    if (!reconnecting) return;
+    closeSocket();
+    finish('lost', true);
+  }, RECONNECT_FOR_MS);
   // This tab may now miss a revocation, so nothing is loaded into the frame until the relay has let it back in.
   grant++;
   previewReady = false;
@@ -368,6 +429,7 @@ function endAccess() {
   previewReady = false;
   previewFailed = false;
   reconnecting = false;
+  clearTimeout(lostDeadline);
   guest = null;
   hostPage = null;
   clearTimeout(reconnectTimer);
@@ -375,6 +437,7 @@ function endAccess() {
   clearInterval(ticker);
   ticker = undefined;
   ui.handoff.hidden = true;
+  ui.openInBuilder.setAttribute('aria-expanded', 'false');
   unmountFrame();
 }
 
@@ -463,15 +526,40 @@ function mountFrame() {
   iframe.referrerPolicy = 'no-referrer';
   iframe.setAttribute('sandbox', FRAME_SANDBOX);
   framePath = start;
+  frameShown = false;
+  frameSlow = false;
+  // The site counts as on screen once its first page has loaded, or once the page's bridge says it is ready (a page
+  // still fetching slow images is ready to look at). One that does neither in time is said to be slow, and still
+  // shows by itself the moment it does.
+  iframe.addEventListener('load', frameReady, { once: true });
+  clearTimeout(frameShownFallback);
+  frameShownFallback = setTimeout(() => {
+    if (frameShown || !iframe) return;
+    frameSlow = true;
+    render();
+  }, 6000);
   iframe.src = `${config.previewOrigin}${start}`;
   ui.frame.replaceChildren(iframe);
   layout();
+}
+
+/** The frame's first page is on screen. */
+function frameReady() {
+  if (frameShown || !iframe) return;
+  frameShown = true;
+  frameSlow = false;
+  clearTimeout(frameShownFallback);
+  render();
 }
 
 function unmountFrame() {
   if (!iframe) return;
   iframe.remove();
   iframe = null;
+  clearTimeout(reloadFallback);
+  frameShown = false;
+  frameSlow = false;
+  clearTimeout(frameShownFallback);
   ui.frame.replaceChildren();
 }
 
@@ -515,34 +603,51 @@ window.addEventListener('message', (event) => {
   const data = event.data;
   if (!data || typeof data !== 'object') return;
   if (data.type === BRIDGE_MESSAGES.reloading) clearTimeout(reloadFallback);
-  else if (data.type === BRIDGE_MESSAGES.ready && isFramePath(data.path)) framePath = data.path;
+  else if (data.type === BRIDGE_MESSAGES.refused) {
+    // The relay turned the frame's page away: the preview is not open, whatever the frame loaded. Try again takes the
+    // guest's place back for a fresh ticket. A refusal of a page asked for under an older grant, while a newer one is
+    // on its way, says nothing about the newer one: the frame is caught up once it lands.
+    if (redeeming || queuedTicket) {
+      stale = true;
+      return;
+    }
+    previewFailed = true;
+    previewReady = false;
+    unmountFrame();
+    render();
+  }
+  else if (data.type === BRIDGE_MESSAGES.ready && isFramePath(data.path)) {
+    framePath = data.path;
+    frameReady();
+  }
 });
 
-/** Following the host: show the host's page at the host's width. */
+/** Following the host: show the host's page (at the host's width too, when that is the width chosen). */
 function applyFollow() {
-  if (!follow || !hostPage) return;
   layout();
+  if (!follow || !hostPage) return;
   if (iframe && previewReady && hostConnected && hostPage.previewPath && hostPage.previewPath !== framePath) navigate(hostPage.previewPath);
 }
 
 function frameWidth() {
-  return follow && hostPage ? hostPage.viewportWidth : VIEWPORTS[viewport];
+  if (width === 'host') return hostPage?.viewportWidth ?? VIEWPORTS.desktop;
+  return VIEWPORTS[width];
 }
 
 /** Size the frame to its width, scaled down to fit the stage when the stage is narrower, so its layout is the real one. */
 function layout() {
-  const width = frameWidth();
+  const px = frameWidth();
   const room = ui.stage.clientWidth;
   const height = ui.stage.clientHeight;
-  const scale = room > 0 && width > room ? room / width : 1;
-  ui.frame.style.width = `${Math.round(width * scale)}px`;
+  const scale = room > 0 && px > room ? room / px : 1;
+  ui.frame.style.width = `${Math.round(px * scale)}px`;
   if (iframe) {
-    iframe.style.width = `${width}px`;
+    iframe.style.width = `${px}px`;
     iframe.style.height = `${Math.max(0, Math.round(height / scale))}px`;
     iframe.style.transform = scale === 1 ? '' : `scale(${scale})`;
   }
-  root.dataset.frameWidth = String(width);
-  for (const button of ui.viewports) button.setAttribute('aria-pressed', String(!follow && button.dataset.viewport === viewport));
+  root.dataset.frameWidth = String(px);
+  for (const button of ui.viewports) button.setAttribute('aria-pressed', String(button.dataset.viewport === width));
 }
 
 // ---------------------------------------------------------------------------
@@ -560,7 +665,8 @@ function relayNow() {
 /** @param {number} ms */
 function formatLeft(ms) {
   const seconds = Math.max(0, Math.ceil(ms / 1000));
-  if (seconds < 60) return `${seconds}s`;
+  // The last ten minutes count in minutes and seconds, so a short limit never reads as more time than it is.
+  if (seconds < 600) return `${Math.floor(seconds / 60)}:${String(seconds % 60).padStart(2, '0')}`;
   const minutes = Math.ceil(seconds / 60);
   if (minutes < 60) return `${minutes}m`;
   return `${Math.floor(minutes / 60)}h ${String(minutes % 60).padStart(2, '0')}m`;
@@ -593,61 +699,197 @@ function tick() {
   renderTime();
 }
 
+/** Minutes before the end at which the guest is warned, once each, out loud and by the badge turning amber. */
+const WARN_AT = [5, 1];
+
+/** A time left, in words, for saying out loud: "4 minutes", "about a minute", "40 seconds". */
+function spokenLeft(/** @type {number} */ ms) {
+  const seconds = Math.max(0, Math.ceil(ms / 1000));
+  if (seconds < 60) return `${seconds} seconds`;
+  const minutes = Math.round(seconds / 60);
+  return minutes === 1 ? 'about a minute' : `${minutes} minutes`;
+}
+
 function renderTime() {
   const end = accessEnd();
-  ui.time.hidden = !end;
-  if (end) ui.time.textContent = `${end.own ? 'Your access ends in' : 'Ends in'} ${formatLeft(end.at - relayNow())}`;
+  const state = roomState();
+  ui.time.hidden = !end || state === 'time-up';
+  ui.veilTime.hidden = true;
+  if (!end || state === 'time-up') {
+    renderRole('');
+    return;
+  }
+  const left = end.at - relayNow();
+  // With the preview unavailable the folded bar has no room for the clock, so the card carrying Try again says it.
+  if (state === 'failed') {
+    ui.veilTime.hidden = false;
+    ui.veilTime.textContent = `${end.own ? 'Your access ends' : 'The session ends'} in ${formatLeft(left)}.`;
+  }
+  const label = document.createElement('span');
+  label.className = 'time-label';
+  label.textContent = end.own ? 'Your access ends in' : 'Ends in';
+  const text = document.createElement('span');
+  text.append(label, ` ${formatLeft(left)}`);
+  // Folded, the badge keeps only its digits; a limit of the guest's own still says whose time it is.
+  const short = document.createElement('span');
+  short.className = 'time-short';
+  short.setAttribute('aria-hidden', 'true');
+  short.textContent = end.own ? 'Your time' : '';
+  ui.time.replaceChildren(short, text);
+  ui.time.dataset.own = String(end.own);
+  ui.time.dataset.warn = String(left <= WARN_AT[0] * 60_000);
+  renderRole(`${end.own ? 'Your access ends' : 'The session ends'} in\u00a0${formatLeft(left).replace(' ', '\u00a0')}.`);
+  // A deadline the host moved earns its warnings again.
+  if (end.at !== warnedFor) {
+    warned = new Set();
+    warnedFor = end.at;
+  }
+  // The ticking badge is never itself announced. Coming within a warning says the real time left, once; each later
+  // warning is said once as it is crossed.
+  const due = WARN_AT.filter((m) => left <= m * 60_000 && !warned.has(m));
+  if (due.length) {
+    for (const m of due) warned.add(m);
+    announce(`${end.own ? 'Your access ends' : 'The session ends'} in ${spokenLeft(left)}.`);
+  }
+}
+
+/** The phone panel's line about the guest's role, and the time they have. */
+function renderRole(/** @type {string} */ time) {
+  if (!guest) return;
+  const role = guest.role === 'collaborator' ? 'You’re a collaborator: you can edit this site with the host in SiteOrigin Builder.' : 'You’re watching as a viewer.';
+  ui.panelRole.textContent = time ? `${role} ${time}` : role;
 }
 
 // ---------------------------------------------------------------------------
 // Screens
 
-/** @type {Record<Phase, { title: string; text: string; action?: { label: string; run: () => void } } | null>} */
+/**
+ * What each screen says. `icon` and `tone` draw its status glyph (viewer.css); `next` is what the guest can do from
+ * here when there is no button for it; `action` is the one thing the page can do for them.
+ * @type {Record<Phase, { title: string; text: string; icon?: string; tone?: 'accent' | 'amber' | 'red' | 'green'; next?: string; action?: { label: string; run: () => void } } | null>}
+ */
 const SCREENS = {
-  name: { title: 'Join the live session', text: 'You have been invited to watch a website being designed, live. Enter your name so the host knows who is asking.' },
-  connecting: { title: 'Joining…', text: 'Connecting to the live session.' },
-  pending: { title: 'Waiting for the host', text: '' },
+  name: { title: 'Join the live session', text: 'You’ve been invited to watch a website being designed, live. The host sees your name and decides whether to let you in; you’ll see which site once you’re in.' },
+  connecting: { title: 'Joining…', text: 'Connecting to the live session.', icon: 'spinner' },
+  pending: { title: 'Waiting for the host', text: '', icon: 'spinner' },
   admitted: null,
-  unavailable: { title: 'This session isn’t available', text: 'It may have ended, or the link may be wrong. Check the invite link with the host.', action: { label: 'Try again', run: connect } },
-  lost: { title: 'Connection lost', text: 'This page could not reach the live session for a while.', action: { label: 'Reconnect', run: connect } },
-  replaced: { title: 'Open in another tab', text: 'You joined this session from another tab or window, so this one has stopped.', action: { label: 'Use this tab instead', run: connect } },
-  full: { title: 'This session is full', text: 'It already has as many guests as it can hold. Try again in a little while.', action: { label: 'Try again', run: connect } },
-  locked: { title: 'This session is locked', text: 'The host isn’t letting anyone new in right now. Ask them to unlock it, then try again.', action: { label: 'Try again', run: connect } },
-  declined: { title: 'The host declined your request', text: 'You can ask again if you think that was a mistake.', action: { label: 'Ask again', run: () => setPhase('name') } },
-  kicked: { title: 'You were removed', text: 'The host removed you from the live session.' },
-  'expired-guest': { title: 'Your access has ended', text: 'The time the host gave you in this session is up.' },
-  'expired-session': { title: 'This session has ended', text: 'It reached the end of its time. Thanks for joining.' },
-  ended: { title: 'The host ended the session', text: 'Thanks for joining.' },
-  'host-gone': { title: 'This session has ended', text: 'The host’s connection dropped and they didn’t come back in time.' },
-  error: { title: 'Something went wrong', text: 'The live session could not be joined from this page.', action: { label: 'Try again', run: connect } }
+  unavailable: { title: 'This session isn’t available', text: 'It may have ended, or the link may be wrong. Check the invite link with the host.', icon: 'unlink', tone: 'amber', action: { label: 'Try again', run: connect } },
+  lost: { title: 'Connection lost', text: 'This page could not reach the live session for a while. Your place may still be kept.', icon: 'offline', tone: 'amber', action: { label: 'Reconnect', run: connect } },
+  replaced: { title: 'Opened in another tab', text: 'You joined this session from another tab or window, so this one has stopped.', icon: 'tab', action: { label: 'Use this tab instead', run: connect } },
+  full: { title: 'This session is full', text: 'It already has as many guests as it can hold. Try again in a little while.', icon: 'full', tone: 'amber', action: { label: 'Try again', run: connect } },
+  locked: { title: 'This session is locked', text: 'The host isn’t letting anyone new in right now. Ask them to unlock it, then try again.', icon: 'lock', tone: 'amber', action: { label: 'Try again', run: connect } },
+  declined: { title: 'The host declined your request', text: 'You can ask again if you think that was a mistake.', icon: 'declined', action: { label: 'Ask again', run: () => setPhase('name') } },
+  kicked: { title: 'You were removed', text: 'The host removed you from the live session.', icon: 'removed', next: 'Contact the host if you expected to stay. You can close this tab.' },
+  'expired-guest': { title: 'Your access has ended', text: 'The time the host gave you in this session is up. If they give you more, you can ask to join again.', icon: 'clock', action: { label: 'Ask to join again', run: () => setPhase('name') } },
+  'expired-session': { title: 'This session has ended', text: 'It reached the end of its time. Thanks for joining.', icon: 'done', next: 'You can close this tab. Ask the host for a new invite link to meet again.' },
+  ended: { title: 'The host ended the session', text: 'Thanks for joining.', icon: 'done', next: 'You can close this tab. Ask the host for a new invite link to meet again.' },
+  'host-gone': { title: 'The host left the session', text: 'The host’s connection dropped and they didn’t come back in time, so the session has ended.', icon: 'host', next: 'You can close this tab. Ask the host for a new invite link to meet again.' },
+  error: { title: 'Something went wrong', text: 'The live session could not be joined from this page.', icon: 'alert', tone: 'red', action: { label: 'Try again', run: connect } }
 };
+
+/** What the bar says above a screen the guest reached after watching. */
+const OVER = /** @type {Partial<Record<Phase, [string, string]>>} */ ({
+  replaced: ['disconnected', 'In another tab'],
+  full: ['disconnected', 'Disconnected'],
+  locked: ['disconnected', 'Disconnected'],
+  lost: ['disconnected', 'Disconnected'],
+  unavailable: ['disconnected', 'Disconnected'],
+  error: ['disconnected', 'Disconnected'],
+  kicked: ['removed', 'Removed'],
+  'expired-guest': ['time-up', 'Time’s up']
+});
 
 /** @param {Phase} next */
 function setPhase(next) {
+  const previous = phase;
+  const changed = next !== phase;
   phase = next;
   root.dataset.phase = next;
   if (next === 'admitted' && !ticker) ticker = setInterval(tick, 1000);
+  if (next !== 'admitted') {
+    warned = new Set();
+    veilShown = '';
+  }
+  if (changed) stateSaid = '';
   render();
+  // One ending replacing another (its reason arriving) keeps focus where it is, on the screen's heading.
+  if (changed && started && !(isFinal(previous) && isFinal(next))) focusView();
+}
+
+/** The tab's title says where the guest is, so a guest who switched tabs while waiting sees when they are let in. */
+function renderTitle() {
+  const word =
+    phase === 'admitted' ? `${guest?.projectName || 'Live session'} · ${ROOM[roomState()].word}` : phase === 'name' || phase === 'connecting' ? 'Live session' : ui.screenTitle.textContent || 'Live session';
+  document.title = `${word} · SiteOrigin Builder`;
+}
+
+/**
+ * Take focus to the top of the view that just replaced the last one, so a keyboard or screen reader user is never
+ * left on a control that is gone: the name field, the screen's heading, or in the room the site's name (or the
+ * veil's heading while the site is covered).
+ */
+function focusView() {
+  if (phase === 'name') {
+    ui.name.focus();
+    ui.name.select();
+  } else if (phase === 'admitted') (ui.veil.hidden ? ui.title : ui.veilTitle).focus({ preventScroll: true });
+  else ui.screenTitle.focus({ preventScroll: true });
+}
+
+/** Say a change through the page's one status region, which is always in the page, so it is heard. */
+/** @type {string[]} */
+let toSay = [];
+function announce(/** @type {string} */ text) {
+  if (!text) return;
+  // Everything said in one turn of the page is said together, so a warning and a change of state never overwrite
+  // each other; the region is cleared first, so the same words said twice (a second copy) are heard twice.
+  if (!toSay.length)
+    queueMicrotask(() => {
+      ui.announcer.textContent = '';
+      ui.announcer.textContent = toSay.join(' ');
+      toSay = [];
+    });
+  if (!toSay.includes(text)) toSay.push(text);
+}
+
+/** What the room or the waiting screen last said of itself, so each change of state is said once, and only once. */
+let stateSaid = '';
+function announceState(/** @type {string} */ text) {
+  if (!text || text === stateSaid) return;
+  stateSaid = text;
+  announce(text);
 }
 
 function render() {
   const inRoom = phase === 'admitted';
   // A guest who was watching keeps the bar, saying the session is over, above the screen that says why.
   const over = !inRoom && wasAdmitted && isFinal(phase);
+  root.dataset.over = String(over);
   ui.bar.hidden = !inRoom && !over;
-  ui.barMeta.hidden = over;
-  ui.barControls.hidden = over;
+  ui.barMeta.hidden = over || (inRoom && pastDeadline);
+  ui.barControls.hidden = over || (inRoom && pastDeadline);
+  ui.barMore.hidden = over || (inRoom && pastDeadline);
+  if (ui.barMore.hidden) closeOptions();
   ui.stage.hidden = !inRoom;
   ui.screen.hidden = inRoom;
+  if (!inRoom) ui.hostNote.hidden = true;
   if (inRoom) renderRoom();
   else renderScreen();
+  renderTitle();
   if (over) {
-    // A place the guest can still take back (another tab, a lost connection) is not an ending.
-    const recoverable = phase === 'replaced' || phase === 'lost' || phase === 'unavailable' || phase === 'error';
+    const [state, word] = OVER[phase] ?? ['ended', 'Ended'];
     ui.title.textContent = siteTitle;
-    ui.connection.dataset.state = recoverable ? 'reconnecting' : 'ended';
-    ui.connection.textContent = recoverable ? 'Disconnected' : 'Ended';
+    ui.connection.dataset.state = state;
+    ui.connection.textContent = word;
   }
+}
+
+/** @param {HTMLElement} glyph @param {string | undefined} icon @param {string | undefined} tone */
+function drawGlyph(glyph, icon, tone) {
+  glyph.hidden = !icon;
+  if (icon) glyph.dataset.icon = icon;
+  if (tone) glyph.dataset.tone = tone;
+  else delete glyph.dataset.tone;
 }
 
 function renderScreen() {
@@ -655,59 +897,160 @@ function renderScreen() {
   if (!screen) return;
   let title = screen.title;
   let text = screen.text;
+  const waiting = phase === 'pending' || phase === 'connecting';
+  const who = place?.displayName ?? 'a guest';
   if (phase === 'pending') {
-    title = hostConnected ? 'Waiting for the host' : 'The host is reconnecting';
-    text = hostConnected
-      ? `You asked to join as ${place?.displayName ?? 'a guest'}. This page will update as soon as the host lets you in.`
-      : 'The host’s connection dropped. Your request is kept, and this page will update when they’re back.';
-    if (reconnecting) text = 'Reconnecting to the live session. Your request is kept.';
+    // This page's own connection comes first: while it is down, nothing it says about the host is current.
+    if (reconnecting) {
+      title = 'Reconnecting';
+      text = `Your connection dropped. Your request to join as ${who} is kept while this page reconnects.`;
+    } else if (!hostConnected) {
+      title = 'The host is reconnecting';
+      text = `You asked to join as ${who}. The host’s connection dropped; your request is kept, and this page will update when they’re back.`;
+    } else {
+      title = 'Waiting for the host';
+      text = `You asked to join as ${who}. This page opens the site as soon as the host lets you in.`;
+    }
+    announceState(`${title}. ${text}`);
   }
   if (phase === 'connecting' && reconnecting) text = 'Reconnecting to the live session.';
+  if (phase === 'ended' && !endingReason) {
+    title = 'This session has ended';
+    text = 'Thanks for joining.';
+  }
   ui.screenTitle.textContent = title;
   ui.screenText.textContent = text;
+  drawGlyph(ui.screenGlyph, screen.icon, phase === 'pending' && (!hostConnected || reconnecting) ? 'amber' : screen.tone);
   const asking = phase === 'name';
   ui.form.hidden = !asking;
-  if (asking && !ui.name.value && place) ui.name.value = place.displayName;
-  if (!asking) ui.nameError.hidden = true;
-  ui.waiting.hidden = phase !== 'pending' && phase !== 'connecting';
+  if (asking) {
+    if (!ui.name.value && place) ui.name.value = place.displayName;
+    ui.joinButton.disabled = false;
+    ui.joinButton.textContent = 'Ask to join';
+  } else {
+    ui.nameError.hidden = true;
+    ui.name.removeAttribute('aria-invalid');
+  }
+  ui.next.hidden = !screen.next;
+  ui.next.textContent = screen.next ?? '';
   ui.action.hidden = !screen.action;
+  ui.action.disabled = false;
   if (screen.action) ui.action.textContent = screen.action.label;
+  ui.cancel.hidden = !waiting;
+  // While the page is reconnecting it cannot tell the relay, so the request cannot be withdrawn until it is back.
+  ui.cancel.disabled = waiting && reconnecting;
+  ui.actions.hidden = ui.action.hidden && ui.cancel.hidden;
 }
+
+/**
+ * The room, from one reading of where the guest stands, so the pill, the countdown, the veil and the controls can
+ * never disagree: the time is up, this page is reconnecting, the preview failed or is opening, the host is away, or
+ * the site is live.
+ */
+function roomState() {
+  if (pastDeadline) return 'time-up';
+  if (reconnecting) return 'reconnecting';
+  if (previewFailed) return 'failed';
+  if (previewReady && frameSlow && !frameShown) return 'slow';
+  if (!previewReady || !frameShown) return 'connecting';
+  if (!hostConnected) return 'host-away';
+  return 'live';
+}
+
+const ROOM = {
+  'time-up': { word: 'Time’s up', veil: { icon: 'clock', title: 'Your time is up', text: 'The time the host gave you in this session has run out. If they give you more, the site comes back here.' } },
+  reconnecting: { word: 'Reconnecting', veil: { icon: 'spinner', tone: 'amber', title: 'Reconnecting', text: 'Your connection dropped. Your place is kept while this page reconnects.' } },
+  failed: { word: 'Preview unavailable', veil: { icon: 'alert', tone: 'red', title: 'The preview didn’t open', text: 'You’re still in the session. Try again to open the host’s site.' } },
+  connecting: { word: 'Opening', veil: { icon: 'spinner', title: 'Opening the preview', text: 'The host’s site will appear here in a moment.' } },
+  slow: { word: 'Opening', veil: { icon: 'spinner', tone: 'amber', title: 'The preview is taking a while', text: 'It appears here as soon as the host’s site loads. If it doesn’t, try again.' } },
+  'host-away': { word: 'Host away', veil: null },
+  live: { word: 'Live', veil: null }
+};
 
 function renderRoom() {
   if (!guest) return;
+  const collaborator = guest.role === 'collaborator';
   ui.title.textContent = guest.projectName;
-  ui.role.textContent = guest.role === 'collaborator' ? 'Collaborator' : 'Viewer';
+  ui.role.textContent = collaborator ? 'Collaborator' : 'Viewer';
   ui.role.dataset.role = guest.role;
-  const state = reconnecting || !hostConnected ? 'reconnecting' : previewReady ? 'live' : 'connecting';
+  ui.openInBuilder.hidden = !collaborator;
+  const state = roomState();
+  // Instructions for editing have no place over an ending or for a guest who can no longer edit. Focus that was in
+  // them, or on their button, goes to the nearest thing still there.
+  const held = ui.handoff.contains(document.activeElement) || document.activeElement === ui.openInBuilder;
+  if (!collaborator) delete ui.barMore.dataset.attention;
+  if ((!collaborator || state === 'time-up') && (!ui.handoff.hidden || (held && ui.openInBuilder.hidden))) {
+    closeHandoff(false);
+    if (held && started) (ui.barMore.offsetParent ? ui.barMore : ui.title).focus({ preventScroll: true });
+  }
+  const { word } = ROOM[state];
+  let veil = ROOM[state].veil;
+  // At the session's own deadline, the whole session is over, not only this guest's time.
+  if (state === 'time-up' && !accessEnd()?.own) veil = { icon: 'clock', title: 'The session’s time is up', text: 'The live session reached the end of its time. If the host extends it, the site comes back here.' };
   ui.connection.dataset.state = state;
-  ui.connection.textContent = state === 'live' ? 'Live' : state === 'reconnecting' ? 'Reconnecting' : 'Connecting';
+  ui.connection.textContent = word;
+  ui.bar.dataset.state = state;
   ui.follow.checked = follow;
   renderTime();
-  let veil = '';
-  if (pastDeadline) veil = 'Your time in this session is up.';
-  else if (reconnecting) veil = 'Reconnecting to the live session…';
-  else if (previewFailed) veil = 'The preview could not be opened.';
-  else if (!previewReady) veil = 'Opening the preview…';
-  else if (!hostConnected) veil = 'The host’s connection dropped. The page will update when they’re back.';
+  ui.hostNote.hidden = state !== 'host-away';
+  ui.hostNote.textContent = 'The host’s connection dropped. The site will update when they’re back.';
+  // Focus inside a notice that is going away goes to the site's name, so it is never left on nothing.
+  const focusWasInVeil = !ui.veil.hidden && ui.veil.contains(document.activeElement);
   ui.veil.hidden = !veil;
-  const soft = previewReady && !reconnecting && !pastDeadline && !previewFailed;
-  ui.veil.dataset.soft = String(soft);
   // A covered frame cannot be reached by keyboard or assistive technology either.
-  if (iframe) iframe.inert = Boolean(veil) && !soft;
-  ui.veilText.textContent = veil;
-  ui.veilAction.hidden = !previewFailed || reconnecting;
+  if (iframe) iframe.inert = Boolean(veil);
+  if (veil) {
+    drawGlyph(ui.veilGlyph, veil.icon, veil.tone);
+    ui.veilTitle.textContent = veil.title;
+    ui.veilText.textContent = veil.text;
+  }
+  ui.veilAction.hidden = state !== 'failed' && state !== 'slow';
+  ui.veilAction.disabled = false;
+  const shown = veil ? veil.title : '';
+  if (shown !== veilShown) {
+    // Focus left inside a frame that is now covered, or on nothing, goes to the notice that covers it.
+    const lost = !document.activeElement || document.activeElement === document.body || document.activeElement === iframe;
+    if (veil && started && lost) ui.veilTitle.focus({ preventScroll: true });
+    else if (!veil && focusWasInVeil) ui.title.focus({ preventScroll: true });
+    veilShown = shown;
+  }
+  ui.siteRole.hidden = !collaborator;
+  announceState(state === 'live' ? `Live: you’re watching ${guest.projectName}${collaborator ? ' as a collaborator, and can edit it with the host' : ''}.` : state === 'host-away' ? ui.hostNote.textContent : `${veil?.title}. ${veil?.text}`);
   layout();
 }
 
-function showHandoff() {
-  const collaborator = guest?.role === 'collaborator';
-  ui.handoffText.textContent = collaborator
-    ? 'You can edit this site with the host. Open this invite link in SiteOrigin Builder to start editing; this page only shows the preview.'
-    : 'To edit with the host, ask them to make you a collaborator, then open this invite link in SiteOrigin Builder.';
+// ---------------------------------------------------------------------------
+// The handoff to the desktop app, for collaborators
+
+/** @type {ReturnType<typeof setTimeout> | undefined} */
+let copiedTimer;
+
+/** @param {boolean} [moveFocus] */
+function showHandoff(moveFocus = false) {
+  ui.handoffText.textContent = 'Open this invite link in SiteOrigin Builder on your computer to edit the site with the host. This page only shows the preview.';
   ui.handoffLink.value = config.inviteLink;
   ui.handoffCopy.textContent = 'Copy link';
+  clearTimeout(copiedTimer);
   ui.handoff.hidden = false;
+  ui.openInBuilder.setAttribute('aria-expanded', 'true');
+  closeOptions();
+  if (moveFocus) ui.handoffTitle.focus();
+}
+
+/** @param {boolean} [returnFocus] */
+function closeHandoff(returnFocus = true) {
+  ui.handoff.hidden = true;
+  ui.openInBuilder.setAttribute('aria-expanded', 'false');
+  if (!returnFocus) return;
+  // On a phone the button that opened it is folded away in the view options; their button takes focus instead.
+  if (ui.openInBuilder.offsetParent) ui.openInBuilder.focus();
+  else if (ui.barMore.offsetParent) ui.barMore.focus();
+}
+
+/** The phone's view options, dropped down from the bar. */
+function closeOptions() {
+  ui.bar.dataset.open = 'false';
+  ui.barMore.setAttribute('aria-expanded', 'false');
 }
 
 // ---------------------------------------------------------------------------
@@ -715,31 +1058,65 @@ function showHandoff() {
 
 ui.form.addEventListener('submit', (event) => {
   event.preventDefault();
+  // One request per visit to the name screen.
+  if (phase !== 'name' || ui.joinButton.disabled) return;
   const name = normalizeDisplayName(ui.name.value, config.nameMax);
   if (!name) {
-    ui.nameError.textContent = `Enter a name of 1 to ${config.nameMax} characters.`;
+    const typed = ui.name.value.trim();
+    // Say what is actually wrong: nothing typed, too long, or a character (often invisible, from a paste) a name can't hold.
+    ui.nameError.textContent = !typed ? 'Enter your name.' : [...typed].length > config.nameMax ? `Use a name of ${config.nameMax} characters or fewer.` : 'Type your name again without hidden or special characters.';
     ui.nameError.hidden = false;
+    ui.name.setAttribute('aria-invalid', 'true');
     ui.name.focus();
     return;
   }
   ui.nameError.hidden = true;
+  ui.name.removeAttribute('aria-invalid');
+  ui.joinButton.disabled = true;
+  ui.joinButton.textContent = 'Asking…';
   wasAdmitted = false;
+  endingReason = true;
   place = { displayName: name };
   savePlace();
   connect();
 });
 
+ui.name.addEventListener('input', () => {
+  if (ui.nameError.hidden) return;
+  ui.nameError.hidden = true;
+  ui.name.removeAttribute('aria-invalid');
+});
+
 // Taking the place back on a new socket brings a fresh ticket.
 ui.veilAction.addEventListener('click', () => {
+  if (ui.veilAction.disabled) return;
+  ui.veilAction.disabled = true;
+  // A first page that never arrived is not waited for again: the fresh ticket opens a fresh frame, on the same page.
+  if (!frameShown) unmountFrame();
   previewFailed = false;
   closeSocket();
   markLost();
   connect();
+  // The guest sees the retry start at once: the veil says it is reconnecting until the relay answers.
+  render();
 });
 
 ui.action.addEventListener('click', () => {
-  const screen = SCREENS[phase];
-  screen?.action?.run();
+  if (ui.action.disabled) return;
+  ui.action.disabled = true;
+  SCREENS[phase]?.action?.run();
+  // A run that leaves the guest on this screen (nothing could be done) gives the button back.
+  ui.action.disabled = false;
+});
+
+// Withdraw the request: the relay takes the guest off the host's list at once, and the name can be changed.
+ui.cancel.addEventListener('click', () => {
+  send({ type: 'guest:leave' });
+  closeSocket();
+  settle();
+  endAccess();
+  forgetPlace();
+  setPhase('name');
 });
 
 ui.follow.addEventListener('change', () => {
@@ -750,27 +1127,65 @@ ui.follow.addEventListener('change', () => {
 
 for (const button of ui.viewports) {
   button.addEventListener('click', () => {
-    const chosen = /** @type {keyof typeof VIEWPORTS} */ (button.dataset.viewport);
-    if (!Object.hasOwn(VIEWPORTS, chosen)) return;
-    // Choosing a width is browsing on one's own: the host's width no longer applies.
-    viewport = chosen;
-    follow = false;
+    const chosen = button.dataset.viewport;
+    if (chosen !== 'host' && !Object.hasOwn(VIEWPORTS, /** @type {string} */ (chosen))) return;
+    width = /** @type {typeof width} */ (chosen);
+    widthChosen = true;
     render();
   });
 }
 
-ui.openInBuilder.addEventListener('click', showHandoff);
-ui.handoffClose.addEventListener('click', () => {
-  ui.handoff.hidden = true;
+for (const query of [narrow, midsize])
+  query.addEventListener('change', () => {
+    if (widthChosen) return;
+    width = defaultWidth();
+    if (phase === 'admitted') render();
+  });
+
+ui.barMore.addEventListener('click', () => {
+  const open = ui.bar.dataset.open !== 'true';
+  ui.bar.dataset.open = String(open);
+  delete ui.barMore.dataset.attention;
+  ui.barMore.setAttribute('aria-expanded', String(open));
 });
+
+ui.openInBuilder.addEventListener('click', () => (ui.handoff.hidden ? showHandoff(true) : closeHandoff()));
+ui.handoffClose.addEventListener('click', () => closeHandoff());
 ui.handoffCopy.addEventListener('click', async () => {
   try {
     await navigator.clipboard.writeText(config.inviteLink);
     ui.handoffCopy.textContent = 'Copied';
+    announce('Invite link copied.');
+    clearTimeout(copiedTimer);
+    copiedTimer = setTimeout(() => {
+      ui.handoffCopy.textContent = 'Copy link';
+    }, 2000);
   } catch {
     // No clipboard here: select the link so the guest can copy it themselves.
     ui.handoffLink.focus();
     ui.handoffLink.select();
+  }
+});
+
+// A tap or click anywhere else closes the phone's view options and the handoff. Taps on the site go to its frame, not
+// this page, so the page losing focus to the frame counts as one too.
+document.addEventListener('pointerdown', (event) => {
+  const target = /** @type {Node} */ (event.target);
+  if (ui.bar.dataset.open === 'true' && !ui.barControls.contains(target) && !ui.barMore.contains(target)) closeOptions();
+  if (!ui.handoff.hidden && !ui.handoff.contains(target) && !ui.openInBuilder.contains(target)) closeHandoff(false);
+});
+window.addEventListener('blur', () => {
+  if (!iframe || document.activeElement !== iframe) return;
+  closeOptions();
+  if (!ui.handoff.hidden) closeHandoff(false);
+});
+
+document.addEventListener('keydown', (event) => {
+  if (event.key !== 'Escape') return;
+  if (!ui.handoff.hidden) closeHandoff();
+  else if (ui.bar.dataset.open === 'true') {
+    closeOptions();
+    ui.barMore.focus();
   }
 });
 
@@ -800,3 +1215,4 @@ window.addEventListener('pageshow', (event) => {
 
 if (place?.resumeToken) connect();
 else setPhase('name');
+started = true;

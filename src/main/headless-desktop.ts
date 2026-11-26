@@ -44,6 +44,19 @@ export function launchMode(env: Record<string, string | undefined>, global: obje
   return { automated, headless: automated && env.SITEORIGIN_HEADED !== '1' };
 }
 
+/**
+ * The Chromium switches a headless launch starts with: its hidden window must keep painting, running timers and
+ * animation frames at full speed, as a window on screen does. On Windows a window that is never shown draws about one
+ * frame a second whatever the backgrounding switches say, so the preview frame's scrolls, hit-testing and animation
+ * frames crawl (a click made just after a scroll lands on the old page, or on the editor's <iframe> element); lifting
+ * the frame rate limit gives it frames at the display's rate again.
+ */
+export function headlessSwitches(platform: string): string[] {
+  const switches = ['disable-background-timer-throttling', 'disable-renderer-backgrounding', 'disable-backgrounding-occluded-windows'];
+  if (platform === 'win32') switches.push('disable-frame-rate-limit');
+  return switches;
+}
+
 export type DialogKind = 'open' | 'save' | 'message';
 
 /** What an open chooser takes: one file, several files, one folder, or a file or a folder (macOS's Open Project). */

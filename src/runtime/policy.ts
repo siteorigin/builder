@@ -3,6 +3,34 @@ import { realpathSync } from 'node:fs';
 import { isPreviewTarget } from '@shared/live/preview';
 import { sep } from 'node:path';
 
+/** Folders of the project the dev server does not watch, and the build configuration files it does not either. */
+const UNWATCHED_DIRS = ['.siteorigin', 'siteorigin', 'build', 'node_modules', '.svelte-kit/output'];
+const UNWATCHED_FILES = ['vite.config.js', 'vite.config.ts', 'svelte.config.js', 'package.json', 'package-lock.json'];
+
+/**
+ * What the dev server does not watch, anchored to the project root (src/lib/siteorigin must stay watched). Build
+ * configuration is not watched: a changed config must go through the editor's trust check, not an automatic restart.
+ *
+ * Vite's watcher asks with forward slashes on every platform (`C:/Users/…` on Windows) and the publication gate with
+ * the platform's own separators, so on Windows both spellings, and any case, name the same file. Anything else would
+ * leave all of these watched there: the editor's own data, the build configuration, and the folder a component
+ * preview is prepared in, which a watched folder's open handle keeps from being renamed into place.
+ */
+export function unwatched(dir: string, platform: NodeJS.Platform = process.platform): (path: string) => boolean {
+  const windows = platform === 'win32';
+  const norm = (p: string) => {
+    const s = (windows ? p.replace(/\\/g, '/') : p).replace(/\/+$/, '');
+    return windows ? s.toLowerCase() : s;
+  };
+  const root = norm(dir);
+  const dirs = UNWATCHED_DIRS.map((d) => norm(`${root}/${d}`));
+  const files = new Set(UNWATCHED_FILES.map((f) => norm(`${root}/${f}`)));
+  return (path: string) => {
+    const p = norm(path);
+    return files.has(p) || dirs.some((d) => p === d || p.startsWith(`${d}/`));
+  };
+}
+
 /** A folder's real path, with every link resolved; the path as given when it does not exist yet. */
 export function canonicalDir(dir: string): string {
   try {

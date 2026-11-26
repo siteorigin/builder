@@ -1,5 +1,5 @@
 import { create } from 'zustand';
-import type { AiEvent, AppSettings, ChatContext, ChatEditScope, ChatMessage, ChatMode, Conversation, ImportReviewRow, LiveHostState, LocalWorkspaceState, PostImportPreview, PackRefusal, ProjectSnapshot, ProviderStatus, RunStatus, RuntimeState } from '@shared/api';
+import type { AiEvent, AppSettings, ChatContext, ChatEditScope, ChatMessage, ChatMode, Conversation, ImportReviewRow, LiveHostState, LocalWorkspaceState, PostImportPreview, PackRefusal, ProjectSnapshot, ProviderStatus, RemotePresence, RemoteState, RunStatus, RuntimeState } from '@shared/api';
 import type { ApplyResult, EditOperation } from '@shared/ops';
 import { refKey, type ElementRef, type OwnerRef, type ResponsiveScope, type StyleState } from '@shared/types';
 import type { SampleContactKind } from '@shared/sample-contact';
@@ -24,8 +24,14 @@ import type { TemplateMode } from './lib/template-view';
 import type { DefinitionMode } from './lib/studio';
 import type { ChatFocusRequest } from './lib/page-start';
 import type { RelayClock } from './lib/live-session';
+import { createTransport } from './lib/transport';
 
-export const api = window.builder;
+/**
+ * The editor's API: this computer's own, or, while the editor shows another computer's project as a guest in its
+ * live session, that project's (lib/transport.ts, lib/remote-session.ts).
+ */
+export const transport = createTransport(() => window.builder);
+export const api = transport.api;
 
 export type LeftTab = 'pages' | 'posts' | 'layers' | 'insert' | 'assets' | 'seo';
 export type { PostRef };
@@ -243,6 +249,20 @@ export interface State {
   liveNotice: { id: number; text: string };
   /** The Share popover is open. */
   shareOpen: boolean;
+  /**
+   * This app as a guest in another computer's live session (lib/remote-session.ts), as the main process last said.
+   * While it is admitted the editor shows the host's project, and `snapshot` is that project's.
+   */
+  remote: RemoteState;
+  /** Where the host and the other collaborators are, for the join shown, as each last said. */
+  remotePresence: RemotePresence | null;
+  /**
+   * The host's preview changed and the canvas loads its page again: `seq` counts the reloads asked for, and
+   * `revision` is the project revision a page loaded now shows (null when the host has not said).
+   */
+  remoteReload: { seq: number; revision: number | null };
+  /** The Join live session dialog is open. */
+  joinOpen: boolean;
   /** The newest notice there was when a draft last began: no "saved" notice up to it is kept on screen. */
   savedRetired: number;
   /** Definition editing mode: the project-owned definition being edited, and in Component Studio how it is shown. */
@@ -401,6 +421,10 @@ export const useStore = create<State>((set) => ({
   liveClock: null,
   liveNotice: { id: 0, text: '' },
   shareOpen: false,
+  remote: { phase: 'idle', ended: null },
+  remotePresence: null,
+  remoteReload: { seq: 0, revision: null },
+  joinOpen: false,
   savedRetired: 0,
   definitionMode: null,
   templateMode: null,

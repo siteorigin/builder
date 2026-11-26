@@ -3,7 +3,7 @@
 // explained outcome; links, reveals and opened paths are recorded instead of done; and nothing reaches Electron's own
 // dialog or shell. A normal launch gets none of it.
 import { describe, expect, it } from 'vitest';
-import { DESKTOP_FIXTURES, cancelButton, checkAnswer, createDesktopFixtures, desktopForLaunch, installHeadlessDesktop, launchMode, selectionOf } from '../../src/main/headless-desktop';
+import { DESKTOP_FIXTURES, cancelButton, checkAnswer, createDesktopFixtures, desktopForLaunch, headlessSwitches, installHeadlessDesktop, launchMode, selectionOf } from '../../src/main/headless-desktop';
 import type { ChooserEvent, DesktopEvent, DialogLike, ShellLike } from '../../src/main/headless-desktop';
 
 /** A file system of a few folders and files. */
@@ -78,6 +78,13 @@ describe('launch mode', () => {
     expect(launchMode({}, playwright)).toEqual({ automated: true, headless: true });
     expect(launchMode({ SITEORIGIN_HEADLESS: '1' }, {})).toEqual({ automated: true, headless: true });
     expect(launchMode({ SITEORIGIN_HEADED: '1' }, playwright)).toEqual({ automated: true, headless: false });
+  });
+
+  it('a hidden window keeps drawing at full speed, and on Windows without the frame rate limit that holds it to a frame a second', () => {
+    const backgrounding = ['disable-background-timer-throttling', 'disable-renderer-backgrounding', 'disable-backgrounding-occluded-windows'];
+    expect(headlessSwitches('darwin')).toEqual(backgrounding);
+    expect(headlessSwitches('linux')).toEqual(backgrounding);
+    expect(headlessSwitches('win32')).toEqual([...backgrounding, 'disable-frame-rate-limit']);
   });
 
   it('a normal launch installs nothing: Electron keeps its own dialog and shell, and there is nothing to reach', () =>

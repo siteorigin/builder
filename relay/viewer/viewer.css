@@ -1,34 +1,97 @@
-/* The guest's viewer for a live session (viewer.js). */
+/*
+ * The guest's viewer for a live session (viewer.js).
+ *
+ * It is SiteOrigin Builder's own page, so it wears the app's design system: the tokens below are copies, under the
+ * same names and with the same values, of the ones it uses from src/renderer/src/styles/tokens.css, and its controls
+ * follow primitives.css (.btn, .segmented, .switch, .badge). The page is served as it is, with no build, so it cannot
+ * import them; change a value there and here together. Desktop keeps the app's 30px controls and 13px text; at phone
+ * widths every control is at least 44px tall and text steps up, because this page is also read on phones.
+ */
 
 :root {
-  --bg: #f4f4f1;
-  --surface: #ffffff;
-  --text: #1d1d1b;
-  --muted: #62625d;
-  --line: #deded8;
-  --accent: #2a62d9;
-  --accent-text: #ffffff;
-  --live: #1f8a4c;
-  --warn: #b26b00;
-  --danger: #b3261e;
-  --stage: #e7e7e2;
-  --radius: 10px;
   color-scheme: light dark;
+  --font: -apple-system, BlinkMacSystemFont, 'SF Pro Text', 'Segoe UI Variable', 'Segoe UI', system-ui, sans-serif;
+  --mono: 'SF Mono', ui-monospace, 'Cascadia Code', Menlo, Consolas, monospace;
+
+  --bg: #f2f4f7;
+  --canvas: #e4e8ed;
+  --panel: #f9fafb;
+  --panel-2: #eff2f6;
+  --raised: #ffffff;
+  --hover: rgb(28 39 66 / 0.05);
+  --active: rgb(28 39 66 / 0.08);
+  --border: rgb(28 39 66 / 0.1);
+  --border-strong: rgb(28 39 66 / 0.17);
+  --border-control: #7a859a;
+  --text: #1c2742;
+  --text-2: #4a5670;
+  --text-3: #5c677d;
+  --accent-soft: rgb(23 102 192 / 0.1);
+  --accent-text: #11559f;
+  --on-accent: #ffffff;
+  --accent-fill: #1766c0;
+  --accent-fill-hover: #11559f;
+  --focus: #1766c0;
+  --green: #0b6b45;
+  --green-soft: rgb(11 107 69 / 0.1);
+  --amber: #925600;
+  --amber-soft: rgb(196 122 12 / 0.12);
+  --red: #c2352e;
+  --red-soft: rgb(194 53 46 / 0.09);
+  --red-ink: #b02e28;
+  --disabled-ink: #76819a;
+  --disabled-fill: rgb(28 39 66 / 0.06);
+  --track: rgb(28 39 66 / 0.08);
+  --shadow-sm: 0 1px 2px rgb(28 39 66 / 0.07);
+  --shadow-md: 0 8px 24px -8px rgb(28 39 66 / 0.18), 0 2px 6px rgb(28 39 66 / 0.06);
+  --shadow-lg: 0 24px 56px -16px rgb(28 39 66 / 0.3), 0 6px 16px rgb(28 39 66 / 0.08);
+  --card-ring: 0 0 0 1px var(--border), 0 1px 2px rgb(28 39 66 / 0.06);
+  --surface-ring: 0 0 0 1px var(--border);
+  --r-xs: 4px;
+  --r-sm: 6px;
+  --r-md: 10px;
+  --r-lg: 14px;
+  /* This page's own: the live bar's height, which every state keeps so the page never jumps. */
+  --bar-h: 48px;
+  --control-h: 30px;
 }
 
 @media (prefers-color-scheme: dark) {
   :root {
-    --bg: #161615;
-    --surface: #222220;
-    --text: #ececea;
-    --muted: #a3a39d;
-    --line: #3a3a37;
-    --accent: #7aa2ff;
-    --accent-text: #0e1a33;
-    --live: #4cc77f;
-    --warn: #f0b04a;
-    --danger: #ff8a80;
-    --stage: #0f0f0e;
+    --bg: #11151c;
+    --canvas: #0e1217;
+    --panel: #171c25;
+    --panel-2: #1d232e;
+    --raised: #242b37;
+    --hover: rgb(231 236 244 / 0.06);
+    --active: rgb(231 236 244 / 0.1);
+    --border: rgb(231 236 244 / 0.09);
+    --border-strong: rgb(231 236 244 / 0.16);
+    --border-control: #717d96;
+    --text: #e7ecf4;
+    --text-2: #a8b2c3;
+    --text-3: #8b96a9;
+    --accent-soft: rgb(124 190 255 / 0.15);
+    --accent-text: #9fd0ff;
+    --on-accent: #10203f;
+    --accent-fill: #86c5ff;
+    --accent-fill-hover: #a2d3ff;
+    --focus: #7cbeff;
+    --green: #5ccf9c;
+    --green-soft: rgb(92 207 156 / 0.13);
+    --amber: #f0b45e;
+    --amber-soft: rgb(240 180 94 / 0.13);
+    --red: #ff8a82;
+    --red-soft: rgb(255 138 130 / 0.13);
+    --red-ink: #ff8a82;
+    --disabled-ink: #758096;
+    --disabled-fill: rgb(0 0 0 / 0.22);
+    --track: rgb(0 0 0 / 0.28);
+    --shadow-sm: 0 1px 2px rgb(0 0 0 / 0.3);
+    --shadow-md: 0 10px 30px -8px rgb(0 0 0 / 0.6), 0 2px 6px rgb(0 0 0 / 0.3);
+    --shadow-lg: 0 30px 70px -16px rgb(0 0 0 / 0.7), 0 6px 18px rgb(0 0 0 / 0.4);
+    --card-ring: 0 0 0 1px var(--border-strong);
+    --surface-ring: 0 0 0 1px var(--border-strong);
   }
 }
 
@@ -51,7 +114,8 @@ body {
 body {
   background: var(--bg);
   color: var(--text);
-  font: 15px/1.5 system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif;
+  font: 13px/1.45 var(--font);
+  -webkit-font-smoothing: antialiased;
   -webkit-text-size-adjust: 100%;
 }
 
@@ -65,12 +129,40 @@ button {
   cursor: pointer;
 }
 
+h1,
+h2,
+p {
+  margin: 0;
+}
+
+/* No word left alone on a paragraph's last line. */
+p {
+  text-wrap: pretty;
+}
+
 :focus-visible {
-  outline: 2px solid var(--accent);
+  outline: 2px solid var(--focus);
   outline-offset: 2px;
 }
 
+/* Headings take focus only so a new view is announced from its top; they are not controls. */
+[tabindex='-1']:focus {
+  outline: none;
+}
+
+.sr-only {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  margin: -1px;
+  padding: 0;
+  overflow: hidden;
+  clip-path: inset(50%);
+  white-space: nowrap;
+}
+
 .app {
+  position: relative;
   display: flex;
   flex-direction: column;
   height: 100dvh;
@@ -78,107 +170,439 @@ button {
 }
 
 .mark {
-  display: inline-block;
-  width: 18px;
-  height: 18px;
-  border-radius: 5px;
-  background: linear-gradient(135deg, var(--accent), var(--live));
+  display: block;
   flex: none;
 }
 
-.mark.large {
-  width: 40px;
-  height: 40px;
-  border-radius: 10px;
-  margin-bottom: 8px;
+/* ---------- Controls (primitives.css) ---------- */
+
+.btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  height: var(--control-h);
+  padding: 0 12px;
+  border-radius: var(--r-sm);
+  border: 1px solid var(--border-control);
+  background: var(--raised);
+  color: var(--text);
+  font-weight: 500;
+  white-space: nowrap;
+  box-shadow: var(--shadow-sm);
+  transition: background 120ms, border-color 120ms, box-shadow 120ms;
 }
 
-/* The waiting room and every status screen */
+/* Hover only where there is a pointer to hover with: on a touch screen it would stick after the tap. */
+@media (hover: hover) {
+  .btn:hover:not(:disabled, [aria-disabled='true']) {
+    background: var(--panel-2);
+  }
+}
+
+.btn:active:not(:disabled, [aria-disabled='true']) {
+  background: var(--active);
+  box-shadow: none;
+}
+
+.btn-primary {
+  background: var(--accent-fill);
+  border-color: transparent;
+  color: var(--on-accent);
+  font-weight: 600;
+  box-shadow: 0 1px 2px rgb(17 85 159 / 0.25);
+}
+
+/* Hover only where there is a pointer to hover with: on a touch screen it would stick after the tap. */
+@media (hover: hover) {
+  .btn-primary:hover:not(:disabled, [aria-disabled='true']) {
+    background: var(--accent-fill-hover);
+  }
+}
+
+.btn-primary:active:not(:disabled, [aria-disabled='true']) {
+  background: var(--accent-fill-hover);
+  box-shadow: none;
+}
+
+.btn-ghost {
+  background: transparent;
+  border-color: transparent;
+  box-shadow: none;
+  color: var(--text-2);
+}
+
+/* Hover only where there is a pointer to hover with: on a touch screen it would stick after the tap. */
+@media (hover: hover) {
+  .btn-ghost:hover:not(:disabled, [aria-disabled='true']) {
+    background: var(--hover);
+    color: var(--text);
+  }
+}
+
+.btn:is(:disabled, [aria-disabled='true']) {
+  background: var(--disabled-fill);
+  border-color: var(--border-strong);
+  color: var(--disabled-ink);
+  box-shadow: none;
+  cursor: default;
+}
+
+.btn-block {
+  width: 100%;
+}
+
+.icon-btn {
+  display: inline-grid;
+  place-items: center;
+  width: var(--control-h);
+  height: var(--control-h);
+  flex: none;
+  padding: 0;
+  border: 0;
+  border-radius: var(--r-sm);
+  background: transparent;
+  color: var(--text-2);
+  transition: background 120ms, color 120ms;
+}
+
+/* Hover only where there is a pointer to hover with: on a touch screen it would stick after the tap. */
+@media (hover: hover) {
+  .icon-btn:hover {
+    background: var(--hover);
+    color: var(--text);
+  }
+}
+
+.icon-btn:active {
+  background: var(--active);
+  color: var(--text);
+}
+
+.btn[aria-expanded='true'] {
+  background: var(--accent-soft);
+  border-color: var(--accent-fill);
+  color: var(--accent-text);
+}
+
+.icon-btn[aria-expanded='true'] {
+  background: var(--accent-soft);
+  color: var(--accent-text);
+}
+
+.icon-btn svg {
+  width: 18px;
+  height: 18px;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 2;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+
+.input {
+  width: 100%;
+  height: 36px;
+  padding: 0 10px;
+  border-radius: var(--r-sm);
+  border: 1px solid var(--border-control);
+  background: var(--raised);
+  color: var(--text);
+  font-size: 14px;
+}
+
+.input[aria-invalid='true'] {
+  border-color: var(--red);
+}
+
+.segmented {
+  display: inline-flex;
+  padding: 2px;
+  gap: 2px;
+  border-radius: var(--r-sm);
+  background: var(--track);
+}
+
+.segmented button {
+  height: 24px;
+  padding: 0 9px;
+  border: 0;
+  border-radius: var(--r-xs);
+  background: transparent;
+  color: var(--text-2);
+  font-size: 12px;
+  font-weight: 500;
+}
+
+/* Hover only where there is a pointer to hover with: on a touch screen it would stick after the tap. */
+@media (hover: hover) {
+  .segmented button:hover {
+    color: var(--text);
+  }
+}
+
+.segmented button:active {
+  background: var(--active);
+}
+
+.segmented button[aria-pressed='true'] {
+  background: var(--raised);
+  color: var(--text);
+  font-weight: 600;
+  box-shadow: inset 0 0 0 1px var(--border-control), var(--shadow-sm);
+}
+
+.switch-row {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  font-weight: 500;
+  white-space: nowrap;
+  cursor: pointer;
+}
+
+.switch-row input {
+  appearance: none;
+  position: relative;
+  flex: none;
+  width: 32px;
+  height: 20px;
+  margin: 0;
+  border-radius: 99px;
+  background: var(--border-control);
+  cursor: pointer;
+  transition: background 150ms;
+}
+
+.switch-row input::after {
+  content: '';
+  position: absolute;
+  top: 2px;
+  left: 2px;
+  width: 16px;
+  height: 16px;
+  border-radius: 50%;
+  background: #fff;
+  box-shadow: 0 1px 2px rgb(0 0 0 / 0.25);
+  transition: transform 150ms;
+}
+
+.switch-row input:checked {
+  background: var(--accent-fill);
+}
+
+.switch-row input:checked::after {
+  transform: translateX(12px);
+}
+
+@media (prefers-color-scheme: dark) {
+  .switch-row input::after {
+    background: #f4f7fb;
+  }
+
+  .switch-row input:checked::after {
+    background: #23304f;
+  }
+}
+
+.badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  height: 22px;
+  padding: 0 8px;
+  border-radius: var(--r-sm);
+  background: var(--active);
+  color: var(--text-2);
+  font-size: 12px;
+  font-weight: 600;
+  white-space: nowrap;
+}
+
+/* A role is a fact, not a control or a choice: a ring, so blue stays for what is selected or can be pressed. */
+.badge:is([data-role='viewer'], [data-role='collaborator']) {
+  background: transparent;
+  box-shadow: inset 0 0 0 1px var(--border-strong);
+}
+
+.badge[data-role='collaborator'] {
+  color: var(--text);
+}
+
+.time {
+  background: transparent;
+  font-weight: 500;
+  font-variant-numeric: tabular-nums;
+}
+
+.time::before,
+.error::before,
+.glyph::before {
+  content: '';
+  flex: none;
+  background: currentColor;
+  -webkit-mask: center / contain no-repeat;
+  mask: center / contain no-repeat;
+}
+
+.time::before {
+  width: 12px;
+  height: 12px;
+}
+
+.time-short {
+  display: none;
+}
+
+.time[data-warn='true'] {
+  background: var(--amber-soft);
+  color: var(--amber);
+}
+
+/* ---------- The name, waiting and status screens ---------- */
 
 .screen {
   flex: 1;
   display: grid;
   place-items: center;
   padding: 24px 16px calc(24px + env(safe-area-inset-bottom));
+  overflow-y: auto;
+}
+
+.screen-inner {
+  width: 100%;
+  min-width: 0;
+  max-width: 25rem;
+  /* Optical centre: a little above the middle, so short and tall cards sit at the same height. */
+  margin-bottom: 6vh;
+}
+
+.brand {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin: 0 0 14px 2px;
+  color: var(--text-2);
+  font-size: 13px;
+  font-weight: 600;
+}
+
+/* Over an ending, the bar already names the product. */
+.app[data-over='true'] .brand {
+  display: none;
 }
 
 .card {
-  width: 100%;
-  max-width: 26rem;
-  background: var(--surface);
-  border: 1px solid var(--line);
-  border-radius: 16px;
-  padding: 28px 24px;
-  box-shadow: 0 1px 2px rgb(0 0 0 / 0.04), 0 8px 24px rgb(0 0 0 / 0.06);
+  background: var(--raised);
+  border-radius: var(--r-md);
+  padding: 28px;
+  box-shadow: var(--card-ring), var(--shadow-md);
+}
+
+.glyph {
+  display: grid;
+  place-items: center;
+  width: 40px;
+  height: 40px;
+  margin-bottom: 16px;
+  border-radius: var(--r-md);
+  background: var(--active);
+  color: var(--text-2);
+}
+
+.glyph::before {
+  width: 22px;
+  height: 22px;
+}
+
+.glyph[data-tone='accent'] {
+  background: var(--accent-soft);
+  color: var(--accent-text);
+}
+
+.glyph[data-tone='amber'] {
+  background: var(--amber-soft);
+  color: var(--amber);
+}
+
+.glyph[data-tone='red'] {
+  background: var(--red-soft);
+  color: var(--red-ink);
+}
+
+.glyph[data-tone='green'] {
+  background: var(--green-soft);
+  color: var(--green);
+}
+
+.glyph[data-icon='spinner']::before {
+  display: none;
+}
+
+.glyph[data-icon='spinner']::after {
+  content: '';
+  width: 20px;
+  height: 20px;
+  border-radius: 50%;
+  border: 2.5px solid var(--border-strong);
+  border-top-color: currentColor;
+  animation: spin 0.9s linear infinite;
 }
 
 .card h1 {
-  font-size: 1.35rem;
-  line-height: 1.25;
-  margin: 0 0 8px;
+  font-size: 20px;
+  line-height: 1.3;
+  font-weight: 650;
+  letter-spacing: -0.01em;
 }
 
-.card p {
-  margin: 0 0 16px;
-  color: var(--muted);
+.card :is(h1, p) {
+  /* A name of forty letters with no spaces still stays inside the card, whole. */
+  overflow-wrap: anywhere;
+}
+
+.card h1 + p {
+  margin-top: 6px;
+  color: var(--text-2);
+  font-size: 14px;
+  line-height: 1.5;
 }
 
 form {
   display: grid;
-  gap: 8px;
+  gap: 6px;
+  margin-top: 20px;
 }
 
-label {
+label[for='name'] {
   font-weight: 600;
 }
 
-#name {
-  width: 100%;
-  padding: 10px 12px;
-  border: 1px solid var(--line);
-  border-radius: 8px;
-  background: var(--bg);
-  font-size: 16px;
-}
-
-.card .error {
-  color: var(--danger);
-  margin: 0;
-}
-
-.card .hint {
-  font-size: 0.85rem;
-  margin: 4px 0 0;
-}
-
-#join-button,
-#screen-action,
-#handoff-copy {
-  border: 0;
-  border-radius: 8px;
-  padding: 10px 16px;
-  background: var(--accent);
-  color: var(--accent-text);
-  font-weight: 600;
-}
-
-#screen-action {
-  margin-top: 4px;
-}
-
-.waiting {
+.error {
   display: flex;
-  justify-content: center;
-  padding: 8px 0 4px;
+  align-items: flex-start;
+  gap: 6px;
+  color: var(--red-ink);
+  font-size: 12px;
+  line-height: 1.4;
 }
 
-.spinner {
-  width: 28px;
-  height: 28px;
-  border-radius: 50%;
-  border: 3px solid var(--line);
-  border-top-color: var(--accent);
-  animation: spin 0.9s linear infinite;
+.error::before {
+  width: 13px;
+  height: 13px;
+  margin-top: 1px;
+}
+
+#join-button {
+  height: 38px;
+  margin-top: 8px;
+  font-size: 14px;
+}
+
+.hint {
+  margin-top: 4px;
+  color: var(--text-3);
+  font-size: 12px;
 }
 
 @keyframes spin {
@@ -187,22 +611,52 @@ label {
   }
 }
 
+/* With reduced motion the indicators hold still (a fixed arc still reads as "in progress"), and switches change at once. */
 @media (prefers-reduced-motion: reduce) {
-  .spinner {
-    animation-duration: 3s;
+  .glyph[data-icon='spinner']::after {
+    animation: none;
+    transform: rotate(45deg);
+  }
+
+  .switch-row input,
+  .switch-row input::after {
+    transition: none;
   }
 }
 
-/* The viewer's bar */
+.next {
+  margin-top: 14px;
+  padding-top: 14px;
+  border-top: 1px solid var(--border);
+  color: var(--text-2);
+  font-size: 13px;
+}
 
-.bar {
+.actions {
   display: flex;
   flex-wrap: wrap;
+  gap: 8px;
+  margin-top: 20px;
+}
+
+.actions .btn {
+  height: 34px;
+  padding: 0 14px;
+}
+
+/* ---------- The live bar ---------- */
+
+.bar {
+  position: relative;
+  z-index: 20;
+  display: flex;
   align-items: center;
-  gap: 8px 16px;
-  padding: 8px 16px;
-  background: var(--surface);
-  border-bottom: 1px solid var(--line);
+  gap: 12px;
+  min-height: var(--bar-h);
+  /* On a phone held sideways, clear of its rounded corners and camera cut-out. */
+  padding: 0 max(12px, env(safe-area-inset-right)) 0 max(14px, env(safe-area-inset-left));
+  background: var(--panel);
+  border-bottom: 1px solid var(--border);
 }
 
 .bar-title {
@@ -210,10 +664,27 @@ label {
   align-items: center;
   gap: 8px;
   min-width: 0;
-  flex: 1 1 12rem;
+  flex: 1 1 auto;
+}
+
+.site-stack {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+}
+
+/* Shown only where the role badge is folded away (narrow windows), under the site's name. */
+.site-role {
+  display: none;
+  color: var(--text-2);
+  font-size: 12px;
+  font-weight: 500;
+  line-height: 1.2;
 }
 
 .site {
+  min-width: 0;
+  font-size: 13px;
   font-weight: 600;
   white-space: nowrap;
   overflow: hidden;
@@ -221,147 +692,176 @@ label {
 }
 
 .pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
   flex: none;
-  font-size: 0.8rem;
+  height: 22px;
+  padding: 0 8px;
+  border-radius: var(--r-sm);
+  background: var(--active);
+  color: var(--text-2);
+  font-size: 12px;
   font-weight: 600;
-  padding: 2px 8px;
-  border-radius: 999px;
-  border: 1px solid currentColor;
+  white-space: nowrap;
+}
+
+.pill::before {
+  content: '';
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: currentColor;
 }
 
 .pill[data-state='live'] {
-  color: var(--live);
+  background: var(--green-soft);
+  color: var(--green);
 }
 
-.pill[data-state='live']::before {
-  content: '';
-  display: inline-block;
-  width: 7px;
-  height: 7px;
-  margin-right: 5px;
-  border-radius: 50%;
-  background: currentColor;
-  vertical-align: 1px;
+.pill:is([data-state='slow'], [data-state='reconnecting'], [data-state='host-away'], [data-state='disconnected']) {
+  background: var(--amber-soft);
+  color: var(--amber);
 }
 
-.pill[data-state='ended'] {
-  color: var(--muted);
+.pill[data-state='failed'] {
+  background: var(--red-soft);
+  color: var(--red-ink);
 }
 
-.pill[data-state='reconnecting'],
-.pill[data-state='connecting'] {
-  color: var(--warn);
+/* Ended, removed and out of time: a ring, not a dot, so nothing reads as still going. */
+.pill:is([data-state='ended'], [data-state='time-up'], [data-state='removed'])::before {
+  background: transparent;
+  box-shadow: inset 0 0 0 1.5px currentColor;
 }
 
 .bar-meta {
   display: flex;
-  gap: 8px;
+  gap: 6px;
   align-items: center;
+  flex: none;
 }
 
-.badge {
-  font-size: 0.8rem;
-  padding: 2px 8px;
-  border-radius: 6px;
-  background: var(--bg);
-  border: 1px solid var(--line);
-  white-space: nowrap;
-}
-
-.badge[data-role='collaborator'] {
-  border-color: var(--accent);
-  color: var(--accent);
+.bar-more {
+  display: none;
 }
 
 .bar-controls {
   display: flex;
-  flex-wrap: wrap;
   align-items: center;
-  gap: 8px 12px;
+  gap: 14px;
+  flex: none;
 }
 
-.segmented {
-  display: inline-flex;
-  border: 1px solid var(--line);
-  border-radius: 8px;
-  overflow: hidden;
-}
-
-.segmented button {
-  border: 0;
-  background: transparent;
-  padding: 5px 10px;
-  font-size: 0.85rem;
-}
-
-.segmented button + button {
-  border-left: 1px solid var(--line);
-}
-
-.segmented button[aria-pressed='true'] {
-  background: var(--accent);
-  color: var(--accent-text);
-}
-
-.toggle {
-  display: inline-flex;
+.control {
+  display: flex;
   align-items: center;
-  gap: 6px;
+  gap: 8px;
+}
+
+.control-label {
+  color: var(--text-2);
+  font-size: 12px;
   font-weight: 500;
-  font-size: 0.9rem;
 }
 
-.toggle input {
-  width: 16px;
-  height: 16px;
-  accent-color: var(--accent);
+.panel-role {
+  display: none;
 }
 
-.link-button,
-.quiet {
-  border: 1px solid var(--line);
-  background: transparent;
-  border-radius: 8px;
-  padding: 5px 10px;
-  font-size: 0.85rem;
+/* A dot on the view options button: something new is inside (editing became available). */
+.bar-more[data-attention='true'] {
+  position: relative;
 }
 
-/* The desktop app handoff */
+.bar-more[data-attention='true']::after {
+  content: '';
+  position: absolute;
+  top: 9px;
+  right: 9px;
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--accent-fill);
+  box-shadow: 0 0 0 2px var(--panel);
+}
+
+/* ---------- The handoff to the desktop app ---------- */
 
 .handoff {
-  padding: 12px 16px;
-  background: var(--surface);
-  border-bottom: 1px solid var(--line);
+  position: absolute;
+  z-index: 30;
+  top: calc(var(--bar-h) + 8px);
+  right: 12px;
+  width: 22rem;
+  padding: 16px;
+  border-radius: var(--r-md);
+  background: var(--raised);
+  box-shadow: var(--card-ring), var(--shadow-lg);
+}
+
+.handoff-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  margin: -4px -6px 6px 0;
+}
+
+.handoff h2 {
+  font-size: 14px;
+  font-weight: 600;
 }
 
 .handoff p {
-  margin: 0 0 8px;
+  color: var(--text-2);
 }
 
 .handoff-row {
   display: flex;
-  flex-wrap: wrap;
   gap: 8px;
+  margin-top: 12px;
 }
 
 #handoff-link {
-  flex: 1 1 16rem;
+  flex: 1;
   min-width: 0;
-  padding: 8px 10px;
-  border: 1px solid var(--line);
-  border-radius: 8px;
-  background: var(--bg);
-  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
-  font-size: 0.85rem;
+  height: var(--control-h);
+  font-family: var(--mono);
+  font-size: 12px;
+  text-overflow: ellipsis;
+  background: var(--panel-2);
 }
 
-/* The preview */
+/* ---------- The preview ---------- */
+
+/* The host is away: said in a band of the viewer's own, above the site rather than on top of it. */
+.host-note {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  padding: 7px 16px;
+  background: var(--amber-soft);
+  border-bottom: 1px solid var(--border);
+  color: var(--text);
+  text-align: center;
+}
+
+.host-note::before {
+  content: '';
+  flex: none;
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--amber);
+}
 
 .stage {
   position: relative;
   flex: 1;
   min-height: 0;
-  background: var(--stage);
+  background: var(--canvas);
   overflow: hidden;
   display: flex;
   justify-content: center;
@@ -372,7 +872,7 @@ label {
   max-width: 100%;
   overflow: hidden;
   background: #fff;
-  box-shadow: 0 0 0 1px var(--line);
+  box-shadow: var(--surface-ring);
   transition: width 0.2s ease;
 }
 
@@ -389,43 +889,49 @@ label {
   background: #fff;
 }
 
+/* Opaque: while the guest's access is not settled, nothing of the site shows through. */
 .veil {
   position: absolute;
   inset: 0;
   display: grid;
   place-items: center;
   padding: 16px;
-  /* Opaque: while the guest is not in the room, nothing of the site shows through. */
-  background: var(--bg);
-  text-align: center;
-  align-content: center;
-  gap: 12px;
+  background: var(--canvas);
 }
 
-#veil-action {
-  border: 0;
-  border-radius: 8px;
-  padding: 10px 16px;
-  background: var(--accent);
-  color: var(--accent-text);
+.notice {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  width: 100%;
+  max-width: 22rem;
+  padding: 24px;
+  border-radius: var(--r-md);
+  background: var(--raised);
+  box-shadow: var(--card-ring), var(--shadow-md);
+}
+
+.notice .glyph {
+  margin-bottom: 12px;
+}
+
+.notice h2 {
+  font-size: 15px;
   font-weight: 600;
 }
 
-.veil p {
-  margin: 0;
-  max-width: 28rem;
-  padding: 12px 16px;
-  border-radius: var(--radius);
-  background: var(--surface);
-  border: 1px solid var(--line);
+.notice p {
+  margin-top: 4px;
+  color: var(--text-2);
 }
 
-/* While the page is shown and only the host is away, the notice sits over the top of it instead of hiding it. */
-.veil[data-soft='true'] {
-  inset: 0 0 auto 0;
-  background: transparent;
-  place-items: start center;
-  pointer-events: none;
+.notice .veil-time {
+  display: none;
+  font-variant-numeric: tabular-nums;
+}
+
+.notice .btn {
+  margin-top: 16px;
 }
 
 .noscript {
@@ -433,13 +939,262 @@ label {
   text-align: center;
 }
 
-@media (max-width: 600px) {
+/* ---------- Narrow windows: the bar folds its view options away ---------- */
+
+@media (max-width: 960px) {
+  #role {
+    display: none;
+  }
+
+  /* The countdown shows its clock and digits; its words stay for screen readers and in the options panel. */
+  .time-label {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    overflow: hidden;
+    clip-path: inset(50%);
+    white-space: nowrap;
+  }
+
+  .bar-more {
+    display: inline-grid;
+  }
+
+  .site-role:not([hidden]) {
+    display: block;
+  }
+
+  .time[data-own='true'] .time-short {
+    display: inline;
+  }
+
+  /* With the preview unavailable, the pill needs the room; the card carrying Try again says the time instead. */
+  .bar[data-state='failed'] .time {
+    display: none;
+  }
+
+  .notice .veil-time {
+    display: block;
+  }
+
+  /* The view options drop down over the site instead of stacking rows above it. */
+  .bar-controls {
+    display: none;
+    position: absolute;
+    top: calc(100% + 6px);
+    right: 8px;
+    width: 20rem;
+    flex-direction: column;
+    align-items: stretch;
+    gap: 6px;
+    padding: 12px 16px 16px;
+    border-radius: var(--r-md);
+    background: var(--raised);
+    box-shadow: var(--card-ring), var(--shadow-lg);
+  }
+
+  .bar[data-open='true'] .bar-controls {
+    display: flex;
+  }
+
+  .panel-role {
+    display: block;
+    padding-bottom: 6px;
+    color: var(--text-2);
+  }
+
+  .control {
+    flex-direction: column;
+    align-items: stretch;
+    gap: 6px;
+    padding: 4px 0;
+  }
+
+  .control-label {
+    font-size: 13px;
+    font-weight: 600;
+  }
+
+  .segmented {
+    display: flex;
+  }
+
+  .segmented button {
+    flex: 1;
+    height: 30px;
+  }
+
+  .switch-row {
+    flex-direction: row-reverse;
+    justify-content: space-between;
+    min-height: 36px;
+  }
+}
+
+/* ---------- Phones ---------- */
+
+@media (max-width: 640px) {
+  :root {
+    --bar-h: 56px;
+    --control-h: 44px;
+  }
+
+  body {
+    font-size: 15px;
+  }
+
+  .card {
+    padding: 24px 20px;
+  }
+
+  .card h1 {
+    font-size: 21px;
+  }
+
+  .card h1 + p {
+    font-size: 15px;
+  }
+
+  .input,
+  #handoff-link {
+    height: 44px;
+    font-size: 16px;
+  }
+
+  #join-button,
+  .actions .btn,
+  .notice .btn {
+    height: 44px;
+    font-size: 15px;
+  }
+
+  .actions .btn {
+    flex: 1 1 auto;
+  }
+
+  .notice .btn {
+    align-self: stretch;
+  }
+
+  .hint,
+  .error {
+    font-size: 13px;
+  }
+
+  .next {
+    font-size: 14px;
+  }
+
   .bar {
-    padding: 8px 12px;
+    gap: 8px;
+    padding: 0 max(6px, env(safe-area-inset-right)) 0 max(12px, env(safe-area-inset-left));
+  }
+
+
+  .site {
+    font-size: 15px;
+  }
+
+  .bar-more {
+    width: 44px;
+    height: 44px;
   }
 
   .bar-controls {
-    width: 100%;
-    justify-content: space-between;
+    top: 100%;
+    left: 0;
+    right: 0;
+    width: auto;
+    gap: 4px;
+    padding: 8px max(16px, env(safe-area-inset-right)) 16px max(16px, env(safe-area-inset-left));
+    border-radius: 0;
+    border-bottom: 1px solid var(--border);
+    box-shadow: var(--shadow-lg);
+  }
+
+  .segmented button {
+    height: 44px;
+    font-size: 14px;
+  }
+
+  .switch-row {
+    min-height: 44px;
+  }
+
+  #copy-invite {
+    margin-top: 4px;
+    font-size: 15px;
+  }
+
+  .handoff {
+    left: max(8px, env(safe-area-inset-left));
+    right: max(8px, env(safe-area-inset-right));
+    width: auto;
+  }
+
+  .handoff-row {
+    flex-direction: column;
+    gap: 10px;
+  }
+
+  /* In a column, a growing field would grow in height and give up its own: it keeps its 44px. */
+  #handoff-link {
+    flex: none;
+  }
+
+  .handoff-head .icon-btn {
+    width: 44px;
+    height: 44px;
   }
 }
+
+/* ---------- Touch screens of any width: every target is 44px ---------- */
+
+@media (pointer: coarse) {
+  :root {
+    --bar-h: 56px;
+    --control-h: 44px;
+  }
+
+  .input,
+  #handoff-link {
+    height: 44px;
+    font-size: 16px;
+  }
+
+  #join-button,
+  .actions .btn,
+  .notice .btn,
+  #copy-invite {
+    height: 44px;
+  }
+
+  .segmented button {
+    height: 44px;
+  }
+
+  .switch-row {
+    min-height: 44px;
+  }
+
+  .handoff-head .icon-btn {
+    width: 44px;
+    height: 44px;
+  }
+}
+
+/* ---------- Glyphs (the outline icon set the app uses) ---------- */
+
+.glyph[data-icon='clock']::before { -webkit-mask-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%23000' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Ccircle cx='12' cy='12' r='10'/%3E%3Cpath d='M12 6v6l4 2'/%3E%3C/svg%3E"); mask-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%23000' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Ccircle cx='12' cy='12' r='10'/%3E%3Cpath d='M12 6v6l4 2'/%3E%3C/svg%3E"); }
+.glyph[data-icon='removed']::before { -webkit-mask-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%23000' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2'/%3E%3Ccircle cx='9' cy='7' r='4'/%3E%3Cpath d='M17 8l5 5M22 8l-5 5'/%3E%3C/svg%3E"); mask-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%23000' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2'/%3E%3Ccircle cx='9' cy='7' r='4'/%3E%3Cpath d='M17 8l5 5M22 8l-5 5'/%3E%3C/svg%3E"); }
+.glyph[data-icon='done']::before { -webkit-mask-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%23000' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Ccircle cx='12' cy='12' r='10'/%3E%3Cpath d='m9 12 2 2 4-4'/%3E%3C/svg%3E"); mask-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%23000' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Ccircle cx='12' cy='12' r='10'/%3E%3Cpath d='m9 12 2 2 4-4'/%3E%3C/svg%3E"); }
+.glyph[data-icon='offline']::before { -webkit-mask-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%23000' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M12 20h.01M8.5 16.43a5 5 0 0 1 7 0M2 8.82a15 15 0 0 1 4.18-2.64M19 12.86a10 10 0 0 0-2-1.52M22 8.82a15 15 0 0 0-11.29-3.76M5 12.86a10 10 0 0 1 5.17-2.69M2 2l20 20'/%3E%3C/svg%3E"); mask-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%23000' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M12 20h.01M8.5 16.43a5 5 0 0 1 7 0M2 8.82a15 15 0 0 1 4.18-2.64M19 12.86a10 10 0 0 0-2-1.52M22 8.82a15 15 0 0 0-11.29-3.76M5 12.86a10 10 0 0 1 5.17-2.69M2 2l20 20'/%3E%3C/svg%3E"); }
+.glyph[data-icon='lock']::before { -webkit-mask-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%23000' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Crect x='3' y='11' width='18' height='11' rx='2'/%3E%3Cpath d='M7 11V7a5 5 0 0 1 10 0v4'/%3E%3C/svg%3E"); mask-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%23000' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Crect x='3' y='11' width='18' height='11' rx='2'/%3E%3Cpath d='M7 11V7a5 5 0 0 1 10 0v4'/%3E%3C/svg%3E"); }
+.glyph[data-icon='full']::before { -webkit-mask-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%23000' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2'/%3E%3Ccircle cx='9' cy='7' r='4'/%3E%3Cpath d='M22 21v-2a4 4 0 0 0-3-3.87M16 3.13a4 4 0 0 1 0 7.75'/%3E%3C/svg%3E"); mask-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%23000' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2'/%3E%3Ccircle cx='9' cy='7' r='4'/%3E%3Cpath d='M22 21v-2a4 4 0 0 0-3-3.87M16 3.13a4 4 0 0 1 0 7.75'/%3E%3C/svg%3E"); }
+.glyph[data-icon='tab']::before { -webkit-mask-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%23000' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Crect x='2' y='4' width='20' height='16' rx='2'/%3E%3Cpath d='M2 9h20M7 4v5'/%3E%3C/svg%3E"); mask-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%23000' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Crect x='2' y='4' width='20' height='16' rx='2'/%3E%3Cpath d='M2 9h20M7 4v5'/%3E%3C/svg%3E"); }
+.glyph[data-icon='alert']::before { -webkit-mask-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%23000' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Ccircle cx='12' cy='12' r='10'/%3E%3Cpath d='M12 8v4M12 16h.01'/%3E%3C/svg%3E"); mask-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%23000' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Ccircle cx='12' cy='12' r='10'/%3E%3Cpath d='M12 8v4M12 16h.01'/%3E%3C/svg%3E"); }
+.glyph[data-icon='declined']::before { -webkit-mask-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%23000' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Ccircle cx='12' cy='12' r='10'/%3E%3Cpath d='m15 9-6 6M9 9l6 6'/%3E%3C/svg%3E"); mask-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%23000' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Ccircle cx='12' cy='12' r='10'/%3E%3Cpath d='m15 9-6 6M9 9l6 6'/%3E%3C/svg%3E"); }
+.glyph[data-icon='unlink']::before { -webkit-mask-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%23000' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M9 17H7A5 5 0 0 1 7 7M15 7h2a5 5 0 0 1 4 8M8 12h4M2 2l20 20'/%3E%3C/svg%3E"); mask-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%23000' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M9 17H7A5 5 0 0 1 7 7M15 7h2a5 5 0 0 1 4 8M8 12h4M2 2l20 20'/%3E%3C/svg%3E"); }
+.glyph[data-icon='host']::before { -webkit-mask-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%23000' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Crect x='2' y='3' width='20' height='14' rx='2'/%3E%3Cpath d='M8 21h8M12 17v4M2 2l20 20'/%3E%3C/svg%3E"); mask-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%23000' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Crect x='2' y='3' width='20' height='14' rx='2'/%3E%3Cpath d='M8 21h8M12 17v4M2 2l20 20'/%3E%3C/svg%3E"); }
+.time::before { -webkit-mask-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%23000' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Ccircle cx='12' cy='12' r='10'/%3E%3Cpath d='M12 6v6l4 2'/%3E%3C/svg%3E"); mask-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%23000' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Ccircle cx='12' cy='12' r='10'/%3E%3Cpath d='M12 6v6l4 2'/%3E%3C/svg%3E"); }
+.error::before { -webkit-mask-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%23000' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Ccircle cx='12' cy='12' r='10'/%3E%3Cpath d='M12 8v4M12 16h.01'/%3E%3C/svg%3E"); mask-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%23000' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Ccircle cx='12' cy='12' r='10'/%3E%3Cpath d='M12 8v4M12 16h.01'/%3E%3C/svg%3E"); }

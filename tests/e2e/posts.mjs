@@ -275,7 +275,7 @@ await eventually(async () => assert.equal(await frame.locator('body').evaluate((
 step('back to writing, backdated and published');
 await win.locator('.posts-panel').getByRole('button', { name: 'Back to writing' }).click();
 await eventually(async () => assert.equal(await win.locator('.post-writer-holder').isVisible(), true));
-await win.locator('.post-details:not(.post-seo) > summary').click();
+await win.locator('.post-details:not(.post-seo) .section-head').click();
 const date = win.getByLabel('Publication date');
 await date.fill('2025-06-01');
 await date.press('Enter');
@@ -319,7 +319,9 @@ assert.equal((await snapshot()).state.assets.assets[glazeId].name, 'glaze', 'and
 await eventually(async () => assert.equal(await featured.locator('.insp-pick').count(), 0, 'the picker closed after the import'));
 await featured.getByRole('button', { name: 'Remove featured image' }).click();
 await eventually(() => assert.equal(featuredNow(), null, 'Remove clears the featured image'), 20000);
-assert.equal(await featured.locator('.insp-image-name').innerText(), 'None');
+// The file is written before the change is recorded in History and the editor hears of it: the picker shows it once
+// it has, and only then is History counted.
+await eventually(async () => assert.equal(await featured.locator('.insp-image-name').innerText(), 'None', 'the picker shows none'));
 const featuredSteps = (await snapshot()).history.entries.filter((e) => e.applied && e.label === 'Change featured image').length;
 assert.equal(featuredSteps, 3, 'choosing, importing and removing are each an undo step');
 await win.locator('.post-tools').getByRole('button', { name: 'Undo' }).click();
@@ -335,7 +337,8 @@ assert.equal(featuredNow(), glazeId, 'the same photo stays the featured image');
 assert.equal((await snapshot()).history.entries.filter((e) => e.applied).length, stepsBefore, 'and no undo step is added');
 await win.getByRole('button', { name: 'Publish' }).click();
 await eventually(() => assert.equal(entryFile(entryId).draft, false, 'the post is published'), 20000);
-await eventually(async () => assert.equal(await win.locator('.post-row .post-status').innerText(), 'Published'));
+// Published is the unmarked state: the row's Draft badge goes.
+await eventually(async () => assert.equal(await win.locator('.post-row .post-status').count(), 0, 'a published post carries no status badge'));
 await win.screenshot({ path: join(SHOTS, 'posts-writer.png') });
 
 step('the published post in the site');
@@ -447,9 +450,9 @@ assert.equal(savedTitle(), `${left} ${right}`, 'an empty title is not saved');
 
 step('Search & sharing keeps its fields and meters, and opens the post in the SEO view with what is typed saved first (#708)');
 const seoBox = win.locator('.post-seo');
-await seoBox.locator('summary').first().click();
+await seoBox.locator('.section-head').first().click();
 const postMeter = (kind) => seoBox.locator(`.seo-meter[data-meter="${kind}"]`);
-const postTitleBox = seoBox.getByLabel('Browser title');
+const postTitleBox = seoBox.getByLabel('Search title');
 const postCanonical = seoBox.getByLabel('Canonical URL');
 const openInView = seoBox.getByRole('button', { name: 'Open in SEO view' });
 const seoView = win.getByRole('region', { name: 'SEO view' });
@@ -483,7 +486,7 @@ await openInView.click();
 await eventually(() => assert.equal(savedSeo().title, 'Raku firing notes from the weekend', 'what was typed is saved first'), 20000);
 await eventually(async () => assert.equal(await seoView.locator('.seo-title').innerText(), `${left} ${right}`, 'the SEO view opens on the post'));
 await eventually(async () => assert.equal(await seoView.locator('.serp-desktop .serp-title').innerText(), 'Raku firing notes from the weekend', 'its result shows the saved title'));
-assert.equal(await seoView.getByLabel('Browser title', { exact: true }).inputValue(), 'Raku firing notes from the weekend', 'and so does its field');
+assert.equal(await seoView.getByLabel('Search title', { exact: true }).inputValue(), 'Raku firing notes from the weekend', 'and so does its field');
 await eventually(async () => assert.equal(await seoView.getByRole('button', { name: 'Back to overview' }).evaluate((el) => el === document.activeElement), true, 'focus moves into the view'));
 await win.screenshot({ path: join(SHOTS, 'posts-seo-view.png') });
 

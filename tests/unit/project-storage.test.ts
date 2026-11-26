@@ -6,7 +6,7 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { existsSync, mkdirSync, mkdtempSync, promises as fsp, readdirSync, renameSync, rmSync, statSync, symlinkSync, utimesSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { basename, join } from 'node:path';
 import { createStarterState } from '@catalogue/starters';
 import type { AssetRecord } from '@shared/types';
 import { ProjectSession } from '../../src/main/project/session';
@@ -339,7 +339,7 @@ describe('project storage', () => {
     vi.spyOn(fsp, 'rm').mockImplementation(async (...args: Parameters<typeof fsp.rm>) => {
       const p = String(args[0]);
       if (p.startsWith(join(dir, ASSETS))) {
-        order.push(p.split('/').pop()!);
+        order.push(basename(p));
         if (order.length === 1) {
           reached();
           await held;

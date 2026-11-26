@@ -1,0 +1,23 @@
+@layer components {
+  /* The remote shell's place in the toolbar (#766): how this app is connected to the host's live session, and Leave. */
+  .toolbar .remote-session { display: flex; align-items: center; gap: 6px; }
+  .toolbar .remote-pill {
+    display: inline-flex; align-items: center; gap: 5px; height: 28px; padding: 0 10px 0 8px; border-radius: var(--r-sm);
+    border: 1px solid color-mix(in srgb, var(--green) 55%, transparent); background: var(--green-soft); color: var(--text);
+    font-variant-numeric: tabular-nums; max-width: 240px;
+  }
+  .toolbar .remote-pill svg { width: 15px; height: 15px; flex: none; color: var(--green); }
+  .toolbar .remote-pill.reconnecting,
+  .toolbar .remote-pill.away { background: var(--amber-soft); border-color: color-mix(in srgb, var(--amber) 60%, transparent); }
+  .toolbar .remote-pill.reconnecting svg,
+  .toolbar .remote-pill.away svg { color: var(--amber); }
+  .toolbar .remote-pill[aria-expanded='true'] { box-shadow: inset 0 0 0 1px var(--border-control); }
+  .toolbar .remote-pill .remote-count { min-width: 16px; height: 16px; padding: 0 4px; border-radius: 8px; background: var(--accent-fill); color: var(--on-accent); font-size: 10px; font-weight: 700; line-height: 16px; text-align: center; }
+  .toolbar .remote-leave { gap: 5px; }
+  .toolbar .remote-leave svg { width: 14px; height: 14px; }
+
+  /* Join live session: the invite link and the guest's name. */
+  .join-live { display: flex; flex-direction: column; gap: 12px; }
+  .join-live .muted { margin: 0; color: var(--text-2); line-height: 1.45; }
+  .join-live .error { margin: 0; padding: 6px 8px; border-radius: var(--r-sm); background: var(--red-soft); color: var(--red-ink); overflow-wrap: anywhere; }
+}

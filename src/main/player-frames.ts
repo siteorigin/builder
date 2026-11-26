@@ -46,3 +46,21 @@ export function playerFrameAllowed(url: string, frame: FrameView | null | undefi
     return false;
   }
 }
+
+/**
+ * The preview the editor's canvas shows: the open project's own server once it is ready, or, in another computer's
+ * live session this app is a guest in, the host's preview as this computer's loopback server shows it (#766).
+ * Null while there is neither.
+ */
+export function canvasPreviewUrl(dev: { status: { state: string; url?: string } } | null | undefined, remote: { previewAccess: { url: string } | null }): string | null {
+  if (dev?.status.state === 'ready' && typeof dev.status.url === 'string') return dev.status.url;
+  return remote.previewAccess?.url ?? null;
+}
+
+/**
+ * Whether a frame inside the editor may navigate to `target`: only to the preview the canvas shows (compared by
+ * origin, so http://127.0.0.1:5173 never admits http://127.0.0.1:51730), or to a blank page.
+ */
+export function previewNavigationAllowed(target: string, previewUrl: string | null): boolean {
+  return (!!previewUrl && sameOrigin(target, previewUrl)) || target.startsWith('about:');
+}

@@ -1,7 +1,7 @@
 import { useCallback, useId, useRef, useState } from 'react';
 import { checkCanonicalUrl } from '@shared/seo';
 import { isArticleDate } from '@shared/articles';
-import { DraftInput, Field, type DraftProblem } from './ui';
+import { DraftInput, Field, useLockedFields, type DraftProblem } from './ui';
 
 /** Why typed text can't be a canonical URL, or null when it can (empty text clears it). */
 function canonicalProblem(text: string): DraftProblem | null {
@@ -33,7 +33,8 @@ export function CanonicalUrlField({
   keepWhile?: () => boolean;
   value: unknown;
   ownUrl: string | null;
-  what: 'page' | 'post';
+  /** What the document is called in a sentence: "page", or an entry's own noun ("post", "case study"). */
+  what: string;
   onCommit: (url: string) => unknown;
   onTyped?: (url: string | undefined) => void;
 }) {
@@ -71,11 +72,12 @@ export function CanonicalUrlField({
 export function RevisionDateField({ id: explicitId, label, hint, value, onSet, onClear, refuse = () => false }: { id?: string; label: string; hint: string; value: string | undefined; onSet: (date: string) => unknown; onClear: () => unknown; refuse?: () => unknown }) {
   const generated = useId();
   const id = explicitId ?? generated;
+  const locked = useLockedFields();
   return (
     <Field label={label} hint={hint} controlId={id}>
       <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
         <DraftInput id={id} type="date" aria-describedby={`${id}-note`} value={value ?? ''} onCommit={(v) => (isArticleDate(v) ? (v !== value ? onSet(v) : undefined) : v || value ? refuse() : undefined)} />
-        {value && (
+        {value && !locked && (
           <button type="button" className="link-btn" aria-label={`Clear ${label.toLowerCase()}`} onClick={() => void onClear()}>
             Clear
           </button>

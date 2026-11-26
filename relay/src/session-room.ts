@@ -394,9 +394,11 @@ export class SessionRoom extends DurableObject<Env> {
       case 'preview:response-end':
       case 'preview:abort':
         return this.tunnel.acceptHostFrame(attachment.connectionId, frame);
-      case 'preview:reload':
-        for (const guestWs of this.admittedSockets()) this.send(guestWs, 'relay-to-guest', { type: 'preview:reload' });
+      case 'preview:reload': {
+        const reload = { type: 'preview:reload', ...(frame.revision !== undefined ? { revision: frame.revision } : {}) } as const;
+        for (const guestWs of this.admittedSockets()) this.send(guestWs, 'relay-to-guest', reload);
         return;
+      }
       case 'rpc:response': {
         const { guestId, ...reply } = frame;
         const target = this.admittedSocket(guestId);
@@ -488,6 +490,13 @@ export class SessionRoom extends DurableObject<Env> {
     switch (frame.type) {
       case 'guest:join':
         return this.refuse(ws, 'relay-to-guest', 'WRONG_STATE', 'You have already joined.', false);
+      case 'guest:leave':
+        // Its socket closes with the place: the guest has already let go of the session on its side.
+        this.removeGuest(guest, null, 'You left the session.');
+        this.changed();
+        this.sendRosters();
+        this.scheduleAlarm();
+        return;
       case 'presence:update': {
         if (guest.status !== 'admitted') return this.refuse(ws, 'relay-to-guest', 'FORBIDDEN', 'The host has not let you in yet.', false);
         // Viewers follow the session; collaborators show the others where they are and what they have selected (#765).
@@ -577,12 +586,13 @@ export class SessionRoom extends DurableObject<Env> {
 
     // Checked against the room as it is now, with nothing waiting between the check and the request reaching the host.
     const now = Date.now();
-    if (!grant || isExpired(grant.expiresAt, now)) return textResponse(401, 'Join this live session to see its preview.');
+    const refused = { [INTERNAL_HEADERS.refused]: '1' };
+    if (!grant || isExpired(grant.expiresAt, now)) return textResponse(401, 'Join this live session to see its preview.', refused);
     this.expireDue(now);
     const room = this.room;
     if (!room || room.roomId !== roomId) return textResponse(404, 'There is no live session here. It may have ended.');
     const guest = room.guests.find((g) => g.guestId === grant.guestId);
-    if (!guest || guest.status !== 'admitted' || guest.grantVersion !== grant.grantVersion || guest.role !== grant.role || accessEndsAt(guest, room) !== grant.expiresAt) return textResponse(403, 'You no longer have access to this preview.');
+    if (!guest || guest.status !== 'admitted' || guest.grantVersion !== grant.grantVersion || guest.role !== grant.role || accessEndsAt(guest, room) !== grant.expiresAt) return textResponse(403, 'You no longer have access to this preview.', refused);
     if (!room.hostConnectionId || !this.socket(room.hostConnectionId)) return textResponse(503, 'The host is not connected right now.', { 'retry-after': '5' });
     if (this.tunnel.inFlight(guest.guestId) >= MAX_PREVIEW_REQUESTS_IN_FLIGHT) return textResponse(429, 'Too many preview requests at once.', { 'retry-after': '1' });
     const headers: Array<[string, string]> = [];

@@ -36,6 +36,7 @@ const VALID: { [D in Direction]: FrameOf<D>[] } = {
     { type: 'preview:response-end', requestId, totalBytes: 11 },
     { type: 'preview:abort', requestId, code: 'TOO_LARGE' },
     { type: 'preview:reload' },
+    { type: 'preview:reload', revision: 12 },
     { type: 'rpc:response', guestId, requestId, method: 'project.snapshot', ok: true, result: { revision: 3 } },
     { type: 'rpc:response', guestId, requestId, method: 'project.apply', ok: false, error: { ...rpcError, operationIndex: 2 } },
     { type: 'rpc:event', event: 'project:changed', payload: { revision: 4 } },
@@ -64,6 +65,7 @@ const VALID: { [D in Direction]: FrameOf<D>[] } = {
   'guest-to-relay': [
     { type: 'guest:join', version: 1, displayName: 'Sam Lee' },
     { type: 'guest:join', version: 1, displayName: 'Sam Lee', resumeToken: 'rsm_0123456789abcdefghijk' },
+    { type: 'guest:leave' },
     { type: 'rpc:request', requestId, method: 'project.snapshot', args: [] },
     { type: 'presence:update', presence }
   ],

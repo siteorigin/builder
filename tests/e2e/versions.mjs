@@ -33,14 +33,14 @@ const savedAt = Date.parse((await snapshot()).versions.list[0].time);
 assert.ok(savedAt >= started - 1000 && savedAt <= Date.now(), 'it records when it was saved');
 const row = history.locator('.versions-list li', { hasText: 'Approved by client' });
 await row.waitFor();
-assert.match(await row.innerText(), new RegExp(String(new Date().getFullYear())), 'the row says when it was saved, date included');
+assert.match(await row.innerText(), /Today, \d{1,2}:\d{2}/, 'the row says when it was saved, the day included');
 assert.equal(await name.inputValue(), '', 'the name field is cleared for the next version');
 
 step('change the site, then review what restoring the version changes');
 const approved = (await snapshot()).state.site.name;
 assert.ok((await apply([{ type: 'site.update', name: 'Redesign' }], 'Rename site')).ok);
 assert.ok((await apply([{ type: 'page.create', title: 'Experiments' }], 'Add page')).ok);
-await row.getByRole('button', { name: 'Review…' }).click();
+await row.getByRole('button', { name: 'Restore “Approved by client”…' }).click();
 const review = history.getByTestId('version-review');
 await eventually(async () => {
   const text = await review.innerText();
@@ -82,7 +82,7 @@ await eventually(async () => assert.deepEqual((await snapshot()).versions, befor
 
 step('delete a version once the author confirms');
 await projectMenu('History…');
-await history.getByRole('button', { name: 'Saved versions' }).click();
+await history.getByRole('tab', { name: 'Saved versions' }).click();
 await history.getByRole('button', { name: 'Delete “Approved by client”' }).click();
 const confirm = win.getByRole('dialog', { name: 'Delete saved version?' });
 await confirm.getByRole('button', { name: 'Cancel' }).click();

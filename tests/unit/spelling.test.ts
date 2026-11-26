@@ -2,7 +2,7 @@
 // Read from the source: string literals, template text and JSX text, the strings a stylesheet draws, and the
 // shipped text files. Comments are not read, including those inside code a template writes out.
 import { readFileSync, readdirSync } from 'node:fs';
-import { join, relative } from 'node:path';
+import { join, posix } from 'node:path';
 import ts from 'typescript';
 import { describe, expect, it } from 'vitest';
 
@@ -105,8 +105,9 @@ export function scriptStrings(file: string, source: string): { line: number; tex
   return found;
 }
 
+/** Every file below `dir`, named from the root with forward slashes on every platform, as EXEMPT names them. */
 const files = (dir: string): string[] =>
-  readdirSync(join(ROOT, dir), { withFileTypes: true }).flatMap((e) => (e.isDirectory() ? files(join(dir, e.name)) : [relative(ROOT, join(ROOT, dir, e.name))]));
+  readdirSync(join(ROOT, dir), { withFileTypes: true }).flatMap((e) => (e.isDirectory() ? files(posix.join(dir, e.name)) : [posix.join(dir, e.name)]));
 
 function strings(file: string): { line: number; text: string }[] {
   const source = readFileSync(join(ROOT, file), 'utf8');

@@ -183,11 +183,11 @@ async function preview(request: Request, env: Env, url: URL, host: PreviewHost):
   if (problem) return textResponse(403, problem);
   const secure = isHttps(request, url);
   const values = previewCookieValues(request.headers.get('cookie'), secure);
-  if (values.length === 0) return textResponse(401, 'Join this live session to see its preview.');
-  const name = previewCookieName(secure);
   // A page for the viewer's frame is always asked for whole, so what comes back is a page the bridge can be added to:
   // never a 304 that would bring back a copy the browser kept without it, nor part of one.
   const framed = request.headers.get('sec-fetch-dest') === 'iframe';
+  if (values.length === 0) return framed ? refusedInFrame(url, 401, 'Join this live session to see its preview.') : textResponse(401, 'Join this live session to see its preview.');
+  const name = previewCookieName(secure);
   const headers: Record<string, string> = { cookie: values.map((value) => `${name}=${value}`).join('; '), [INTERNAL_HEADERS.method]: request.method, [INTERNAL_HEADERS.target]: target, [INTERNAL_HEADERS.secure]: secure ? '1' : '0' };
   let passed = 0;
   for (const [headerName, value] of request.headers) {
@@ -198,7 +198,25 @@ async function preview(request: Request, env: Env, url: URL, host: PreviewHost):
     }
   }
   const response = await env.ROOMS.get(env.ROOMS.idFromName(host.label)).fetch(roomRequest('/preview', null, { headers, signal: request.signal }));
+  // The room marks the refusals it makes itself (a cookie it no longer honours, access that ended), so a host's own
+  // 401 or 403 page is never taken for one. The mark is the relay's own and never leaves it.
+  if (response.headers.get(INTERNAL_HEADERS.refused) === '1') {
+    if (framed) return refusedInFrame(url, response.status, (await response.text()).trim());
+    const headers = new Headers(response.headers);
+    headers.delete(INTERNAL_HEADERS.refused);
+    return new Response(response.body, { status: response.status, headers });
+  }
   return framed ? withReloadBridge(request, url, response) : response;
+}
+
+/**
+ * The relay refusing a page the viewer's frame asked for, as a page the viewer can tell apart from any of the host's:
+ * the same status and words, with the reload bridge marked so it tells the viewer the preview was refused rather than
+ * that a page is ready. The viewer then says so, with its way to try again, instead of showing this page as live.
+ */
+function refusedInFrame(url: URL, status: number, message: string): Response {
+  const body = `<!doctype html><html lang="en"><head><meta charset="utf-8"><title>Preview unavailable</title><script src="${url.origin}${PREVIEW_BRIDGE_PATH}" data-refused></script></head><body><p>${escapeHtml(message)}</p></body></html>\n`;
+  return new Response(body, { status, headers: { 'content-type': 'text/html; charset=utf-8', 'cache-control': 'no-store', 'x-content-type-options': 'nosniff' } });
 }
 
 /** The request headers a page for the viewer's frame goes without (see preview()). */
@@ -253,7 +271,8 @@ function withReloadBridge(request: Request, url: URL, response: Response): Respo
 const VIEWER_FILES: Record<string, string> = {
   '/_viewer/viewer.js': 'viewer.js',
   '/_viewer/shared.js': 'shared.js',
-  '/_viewer/viewer.css': 'viewer.css'
+  '/_viewer/viewer.css': 'viewer.css',
+  '/_viewer/mark.svg': 'mark.svg'
 };
 
 /** One of the viewer's files from the Worker's assets, never cached past a deploy and never sniffed as another type. */
@@ -307,48 +326,63 @@ async function guestPage(request: Request, relay: string, roomId: string): Promi
 <meta name="robots" content="noindex">
 <meta name="color-scheme" content="light dark">
 <title>Live session · SiteOrigin Builder</title>
+<link rel="icon" href="/_viewer/mark.svg" type="image/svg+xml">
 <link rel="stylesheet" href="/_viewer/viewer.css">
 <script type="module" src="/_viewer/viewer.js"></script>
 </head>
 <body>
 <div class="app" id="live-session" ${data} data-phase="name">
 <header class="bar" id="bar" hidden>
-  <div class="bar-title"><span class="mark" aria-hidden="true"></span><span class="site" id="site-title"></span><span class="pill" id="connection" role="status"></span></div>
+  <div class="bar-title"><img class="mark" src="/_viewer/mark.svg" alt="" width="24" height="24"><span class="site-stack"><span class="site" id="site-title" tabindex="-1"></span><span class="site-role" id="site-role" hidden>Collaborator</span></span><span class="pill" id="connection"></span></div>
   <div class="bar-meta"><span class="badge" id="role"></span><span class="badge time" id="time" hidden></span></div>
-  <div class="bar-controls">
-    <div class="segmented" role="group" aria-label="Preview width">
-      <button type="button" data-viewport="desktop" aria-pressed="false">Desktop</button>
-      <button type="button" data-viewport="tablet" aria-pressed="false">Tablet</button>
-      <button type="button" data-viewport="mobile" aria-pressed="false">Mobile</button>
+  <button type="button" class="icon-btn bar-more" id="bar-more" aria-expanded="false" aria-controls="bar-controls" aria-label="View options"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 6h10M18 6h2M4 12h4M12 12h8M4 18h12M20 18h0"/><circle cx="16" cy="6" r="2"/><circle cx="10" cy="12" r="2"/><circle cx="18" cy="18" r="2"/></svg></button>
+  <div class="bar-controls" id="bar-controls">
+    <p class="panel-role" id="panel-role"></p>
+    <div class="control">
+      <span class="control-label" id="width-label">Width</span>
+      <div class="segmented" role="group" aria-labelledby="width-label">
+        <button type="button" data-viewport="host" aria-pressed="false">Host’s</button>
+        <button type="button" data-viewport="desktop" aria-pressed="false">Desktop</button>
+        <button type="button" data-viewport="tablet" aria-pressed="false">Tablet</button>
+        <button type="button" data-viewport="mobile" aria-pressed="false">Mobile</button>
+      </div>
     </div>
-    <label class="toggle"><input type="checkbox" id="follow" checked><span>Follow host</span></label>
-    <button type="button" class="link-button" id="copy-invite">Open in Builder</button>
+    <label class="switch-row"><input type="checkbox" role="switch" id="follow" checked><span>Follow host’s page</span></label>
+    <button type="button" class="btn" id="copy-invite" aria-expanded="false" aria-controls="handoff" hidden>How to edit</button>
   </div>
 </header>
-<div class="handoff" id="handoff" hidden>
+<section class="handoff" id="handoff" aria-labelledby="handoff-title" aria-describedby="handoff-text" hidden>
+  <div class="handoff-head"><h2 id="handoff-title" tabindex="-1">Edit with the host</h2><button type="button" class="icon-btn" id="handoff-close" aria-label="Close"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6 6l12 12M18 6L6 18"/></svg></button></div>
   <p id="handoff-text"></p>
-  <div class="handoff-row"><input type="text" id="handoff-link" readonly aria-label="Invite link"><button type="button" id="handoff-copy">Copy link</button><button type="button" class="quiet" id="handoff-close" aria-label="Close">Close</button></div>
-</div>
+  <div class="handoff-row"><input type="text" class="input" id="handoff-link" readonly aria-label="Invite link"><button type="button" class="btn btn-primary" id="handoff-copy">Copy link</button></div>
+</section>
+<p class="host-note" id="host-note" hidden></p>
 <main class="stage" id="stage" hidden>
   <div class="frame" id="frame"></div>
-  <div class="veil" id="veil" hidden><p id="veil-text"></p><button type="button" id="veil-action" hidden>Try again</button></div>
+  <div class="veil" id="veil" hidden>
+    <div class="notice"><span class="glyph" id="veil-glyph" aria-hidden="true"></span><h2 id="veil-title" tabindex="-1"></h2><p id="veil-text"></p><p class="veil-time" id="veil-time" hidden></p><button type="button" class="btn btn-primary" id="veil-action" hidden>Try again</button></div>
+  </div>
 </main>
-<section class="screen" id="screen" aria-live="polite">
-  <div class="card">
-    <span class="mark large" aria-hidden="true"></span>
-    <h1 id="screen-title">Join the live session</h1>
-    <p id="screen-text">You have been invited to watch a website being designed, live. Enter your name so the host knows who is asking.</p>
-    <form id="join" novalidate>
-      <label for="name">Your name</label>
-      <input id="name" name="name" autocomplete="name" autocapitalize="words" spellcheck="false" required>
-      <p class="error" id="name-error" hidden></p>
-      <button type="submit" id="join-button">Ask to join</button>
-      <p class="hint">No account or download needed.</p>
-    </form>
-    <div class="waiting" id="waiting" hidden><span class="spinner" aria-hidden="true"></span></div>
-    <button type="button" id="screen-action" hidden></button>
+<section class="screen" id="screen">
+  <div class="screen-inner">
+    <p class="brand"><img class="mark" src="/_viewer/mark.svg" alt="" width="32" height="32">SiteOrigin Builder</p>
+    <div class="card" id="card">
+      <span class="glyph" id="screen-glyph" aria-hidden="true" hidden></span>
+      <h1 id="screen-title" tabindex="-1">Join the live session</h1>
+      <p id="screen-text">You’ve been invited to watch a website being designed, live. The host sees your name and decides whether to let you in; you’ll see which site once you’re in.</p>
+      <form id="join" novalidate>
+        <label for="name">Your name</label>
+        <input id="name" class="input" name="name" autocomplete="name" autocapitalize="words" spellcheck="false" required aria-describedby="name-error">
+        <p class="error" id="name-error" role="alert" hidden></p>
+        <button type="submit" class="btn btn-primary btn-block" id="join-button">Ask to join</button>
+        <p class="hint">No account or download needed. Not sure about this link? Check with the person who sent it.</p>
+      </form>
+      <p class="next" id="screen-next" hidden></p>
+      <div class="actions" id="screen-actions" hidden><button type="button" class="btn btn-primary" id="screen-action" hidden></button><button type="button" class="btn" id="screen-cancel" hidden>Cancel request</button></div>
+    </div>
   </div>
 </section>
+<p class="sr-only" id="announce" role="status"></p>
 <noscript><p class="noscript">This page needs JavaScript to join a live session.</p></noscript>
 </div>
 </body>
@@ -358,6 +392,7 @@ async function guestPage(request: Request, relay: string, roomId: string): Promi
     "default-src 'none'",
     "script-src 'self'",
     "style-src 'self'",
+    "img-src 'self' data:",
     `connect-src ${socketUrl} ${previewOrigin}`,
     `frame-src ${previewOrigin}`,
     "base-uri 'none'",

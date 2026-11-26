@@ -22,6 +22,7 @@ import { headerOrderPlan, inHeaderMenu } from '../lib/page-navigation';
 import { followsPageOrder } from '@engine/header-order';
 import { setHeaderMenuOrder } from '../lib/header-menu-order';
 import { listPageClicks, pageClicks } from '../lib/page-clicks';
+import { Marked, Runs, fold, found, shortDate } from '../components/ListText';
 
 /** Addresses are at most four levels deep, so a page four levels down cannot have pages inside it. */
 const MAX_DEPTH = 4;
@@ -148,52 +149,6 @@ function sectionFor(st: ProjectState, order: string[], id: string): string | und
 }
 
 /**
- * Text folded for finding (lower-case, accents dropped, however they are typed), with the index in the original
- * text of each folded character, so a match maps back onto what is shown.
- */
-function folded(s: string): { text: string; at: number[] } {
-  let text = '';
-  const at: number[] = [];
-  [...s].forEach((c, i) => {
-    for (const f of c.normalize('NFD').replace(/\p{M}/gu, '').toLowerCase()) (text += f), at.push(i);
-  });
-  return { text, at };
-}
-const fold = (s: string) => folded(s).text;
-
-/** Which characters of `text` the found words cover. */
-function found(text: string, words: string[]): boolean[] {
-  const chars = [...text];
-  const hit = new Array<boolean>(chars.length).fill(false);
-  if (!words.length) return hit;
-  const f = folded(text);
-  for (const w of words)
-    for (let i = f.text.indexOf(w); i >= 0; i = f.text.indexOf(w, i + 1)) for (let k = i; k < i + w.length; k++) hit[f.at[k]] = true;
-  // A combining mark goes with the letter before it.
-  chars.forEach((c, i) => i > 0 && /^\p{M}+$/u.test(c) && (hit[i] = hit[i - 1]));
-  return hit;
-}
-
-/** Characters `from` to `to` of a text, with the found ones marked. */
-function Runs({ chars, hit, from = 0, to = chars.length }: { chars: string[]; hit: boolean[]; from?: number; to?: number }) {
-  const out: React.ReactNode[] = [];
-  let run = '';
-  let on = false;
-  const flush = () => run && out.push(on ? <mark key={out.length}>{run}</mark> : run);
-  for (let i = from; i < to; i++) {
-    if (hit[i] !== on) (flush(), (run = ''), (on = hit[i]));
-    run += chars[i];
-  }
-  flush();
-  return <>{out}</>;
-}
-
-/** The text with each of the found words marked. */
-function Marked({ text, words }: { text: string; words: string[] }) {
-  return words.length ? <Runs chars={[...text]} hit={found(text, words)} /> : <>{text}</>;
-}
-
-/**
  * A page's address. A long one shortens its parent folders from their start and keeps the page's own segment with
  * its slash ("…tfolio/kowhai-street-apartment/"). A page drawn under its section shows the address from there on
  * ("…/kowhai-street-apartment/"): the section's own row, just above, says the rest. While finding, matches are
@@ -229,22 +184,6 @@ function RouteText({ route, words, within }: { route: string; words: string[]; w
   );
 }
 
-const dateFormats = new Map<string, Intl.DateTimeFormat>();
-/** An article's date, short enough for a sidebar row: "2 Oct 2026" (a calendar day, so in UTC). */
-function shortDate(date: string, language: string | undefined): string {
-  const tag = language?.trim() || 'en';
-  let f = dateFormats.get(tag);
-  if (!f) {
-    const opts: Intl.DateTimeFormatOptions = { day: 'numeric', month: 'short', year: 'numeric', timeZone: 'UTC' };
-    try {
-      f = new Intl.DateTimeFormat([tag, 'en'], opts);
-    } catch {
-      f = new Intl.DateTimeFormat('en', opts);
-    }
-    dateFormats.set(tag, f);
-  }
-  return f.format(new Date(`${date}T00:00:00Z`));
-}
 
 /**
  * The site's pages, in page order, drawn as an outline: a page sits under the section page before it whose address

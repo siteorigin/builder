@@ -3,10 +3,11 @@
  * there must never reach the project, and the copy must follow the project as another app edits it.
  */
 import { spawn } from 'node:child_process';
-import { chmodSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, realpathSync, renameSync, rmSync, statSync, symlinkSync, writeFileSync } from 'node:fs';
+import { existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, realpathSync, renameSync, rmSync, statSync, symlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { basename, join } from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
+import { denyAccess } from './deny-access';
 import { createPreviewStage, removePreviewStage, sweepPreviewStages, syncPreviewStage } from '../../src/main/runtime/stage';
 
 const dirs: string[] = [];
@@ -232,11 +233,11 @@ describe('keeping a preview copy up to date', () => {
   it('fails, emptying nothing, when a folder cannot be read', async () => {
     const dir = project();
     const stage = await createPreviewStage(dir, temp('root'));
-    chmodSync(join(dir, 'src/routes'), 0o000);
+    const restore = denyAccess(join(dir, 'src/routes'), 'read');
     try {
       await expect(syncPreviewStage(dir, stage)).rejects.toThrow();
     } finally {
-      chmodSync(join(dir, 'src/routes'), 0o755);
+      restore();
     }
     expect(read(stage, 'src/routes/+page.svelte')).toBe('<h1>Home</h1>');
   });

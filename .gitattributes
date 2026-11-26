@@ -1,0 +1,39 @@
+# Keep every text file LF in the working tree on every platform, whatever
+# core.autocrlf says. Templates, starters, theme packs and fixtures are copied
+# into users' projects or hashed, so a CRLF checkout on Windows would change
+# what the app ships and generates.
+* text=auto eol=lf
+
+# Binary assets: never touch their bytes or diff them as text.
+*.png binary
+*.jpg binary
+*.jpeg binary
+*.gif binary
+*.webp binary
+*.avif binary
+*.heic binary
+*.heif binary
+*.ico binary
+*.icns binary
+*.bmp binary
+*.tif binary
+*.tiff binary
+*.pdf binary
+*.woff binary
+*.woff2 binary
+*.ttf binary
+*.otf binary
+*.eot binary
+*.zip binary
+*.gz binary
+*.tgz binary
+*.dmg binary
+*.exe binary
+*.node binary
+*.wasm binary
+*.mp4 binary
+*.webm binary
+*.mov binary
+*.mp3 binary
+*.wav binary
+*.ogg binary

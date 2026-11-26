@@ -45,7 +45,10 @@ const modal = win.locator('.modal');
 /** Choose Import… → `item` in the Posts panel, with the chooser answered `answer`. */
 async function chooseImport(item, answer) {
   await answerChoosers(app, [answer]);
-  await panel.getByTestId('posts-import').click();
+  // The head's Import… while there is no collection yet; the collection's options menu once there is.
+  const head = panel.getByTestId('posts-import');
+  if (await head.isVisible()) await head.click();
+  else await panel.getByRole('button', { name: / options$/ }).first().click();
   await win.getByRole('menuitem', { name: item }).click();
 }
 
@@ -113,7 +116,7 @@ assert.equal(redo.ok, true);
 await eventually(async () => assert.equal((await posts()).length, 3, 'Redo brings the posts back'));
 
 step('a folder of Markdown posts joins them');
-await chooseImport(/Folder of Markdown posts/, { dialog: 'open', selection: 'folder', paths: [md] });
+await chooseImport(/folder of Markdown posts/i, { dialog: 'open', selection: 'folder', paths: [md] });
 await modal.getByRole('heading', { name: 'Import 4 posts' }).waitFor({ timeout: 30000 });
 assert.match(await modal.getByTestId('post-import-row').first().innerText(), /It links to “Winter hours”, which arrives as a draft: publish that post, or change the link, before the website is exported\./, 'the review says a published post links to a draft');
 await modal.getByTestId('post-import-confirm').click();

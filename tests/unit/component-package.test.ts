@@ -4,7 +4,7 @@
  * pointing at something that project has. A package that is damaged, unsafe or doesn't compile changes nothing.
  */
 import { EventEmitter } from 'node:events';
-import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { constants as fsConstants, existsSync, mkdtempSync, promises as fsp, readFileSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { createHash } from 'node:crypto';
@@ -471,6 +471,18 @@ describe('component packages: export and import (#371)', () => {
       ['a damaged image', JSON.stringify({ ...good, images: [{ id: 'a_x', name: 'X', mime: 'image/png', hash: 'f'.repeat(64), data: '%%%' }] }), /damaged/]
     ];
     for (const [what, text, message] of cases) await expect(readComponentPackage(writePackage(text)), what).rejects.toThrow(message);
+    // A link put in a package's place is refused, even where opening a file follows one (Windows has no O_NOFOLLOW).
+    const target = writePackage(JSON.stringify(good));
+    const link = join(tmp('so-pkg-link-'), 'linked.socomponent.json');
+    symlinkSync(target, link);
+    const open = fsp.open;
+    const spy = vi.spyOn(fsp, 'open').mockImplementation((p, flags, mode) => open(p, typeof flags === 'number' ? flags & ~(fsConstants.O_NOFOLLOW ?? 0) : flags, mode));
+    try {
+      await expect(readComponentPackage(link)).rejects.toThrow('That component package could not be read: it is a link, not a file.');
+      expect((await readComponentPackage(target)).rootId).toBe(good.rootId);
+    } finally {
+      spy.mockRestore();
+    }
     expect(() => decodeComponentPackage(codePackage('<h3>Hi</h3>'))).not.toThrow();
 
     // A design placing a component the package doesn't carry is refused when it would land.

@@ -9,6 +9,11 @@
  * website, one hidden from search engines) is judged on its own words as they would read once listed: missing or the
  * wrong length as they stand, and repeated when a listed document already has the same words, which is what it would
  * compete with. Two such documents never count as repeating each other: neither is in search results.
+ *
+ * A document search engines can't list (a draft, one off the website, one hidden from them) is `excluded`: what its
+ * words would need is still said on its row, but it is not counted among the documents with something to fix, since
+ * nothing about it is wrong in search results today. Home hidden from search engines is the exception: that is the
+ * problem itself.
  */
 import type { EffectiveSeo, SeoSubject } from '@shared/seo';
 import { seoLength, seoText } from '@shared/seo';
@@ -33,8 +38,12 @@ export interface SeoOverviewText {
   status: SeoTextStatus;
   /** Whether the words are a fallback (a page's default title, the site's description, an entry's excerpt). */
   fallback: boolean;
+  /** Where fallback words come from: the document's name, the site's description, or an entry's excerpt. */
+  from?: 'name' | 'site' | 'excerpt';
   /** How many other documents search engines may list have the same words in the same language. */
   duplicates: number;
+  /** Those documents by name, in the view's order, for a document's findings to say which they are. */
+  peers: string[];
 }
 
 /** Something that keeps a document from reading well in search results or when shared. */
@@ -60,12 +69,16 @@ export interface SeoOverviewRow {
   description: SeoOverviewText;
   image: SeoImageStatus;
   problems: SeoOverviewProblem[];
-  /** The most its problems ask: `warning` (missing, repeated, no image, Home hidden), `note` (only a length), else `ok`. */
-  level: 'warning' | 'note' | 'ok';
+  /**
+   * The most its problems ask: `warning` (missing, repeated, no image, Home hidden), `note` (only a length), else
+   * `ok`; `excluded` for a document search engines can't list, whatever its words would need once they can.
+   */
+  level: SeoOverviewLevel;
 }
 
 const WARNINGS: ReadonlySet<SeoOverviewProblem> = new Set(['title-missing', 'title-duplicate', 'description-missing', 'description-duplicate', 'image-missing', 'home-hidden']);
-const LEVEL_RANK = { warning: 0, note: 1, ok: 2 } as const;
+export type SeoOverviewLevel = 'warning' | 'note' | 'ok' | 'excluded';
+const LEVEL_RANK: Record<SeoOverviewLevel, number> = { warning: 0, note: 1, ok: 2, excluded: 3 };
 
 /** A title's or description's words as search results show them, and how their length measures up. */
 export function seoTextStatus(value: string, field: 'title' | 'description'): Pick<SeoOverviewText, 'text' | 'chars' | 'status'> {
@@ -108,6 +121,8 @@ export function seoOverview(project: ProjectState): SeoOverviewRow[] {
       }
 
   const rows: SeoOverviewRow[] = [];
+  // Each row's duplicate keys, to name the listed documents it shares words with once every row is known.
+  const keys = new Map<SeoOverviewRow, { title: string | null; description: string | null }>();
   const seen = new Set<string>();
   for (const group of seoDocuments(state))
     for (const doc of group.documents) {
@@ -122,7 +137,8 @@ export function seoOverview(project: ProjectState): SeoOverviewRow[] {
         const key = seoDuplicateKey(meta, f);
         const same = key ? (counts[f].get(key) ?? 0) : 0;
         // A listed document is counted among its own peers; any other is not one of them.
-        return { ...seoTextStatus(meta[f], f), fallback: !own[f], duplicates: listed ? Math.max(0, same - 1) : same };
+        const from = own[f] ? undefined : f === 'title' ? 'name' : doc.subject.kind === 'entry' && entryExcerpt(state, doc.subject) ? 'excerpt' : 'site';
+        return { ...seoTextStatus(meta[f], f), fallback: !own[f], from, duplicates: listed ? Math.max(0, same - 1) : same, peers: [] };
       };
       const title = field('title');
       const description = field('description');
@@ -141,7 +157,7 @@ export function seoOverview(project: ProjectState): SeoOverviewRow[] {
       }
       if (image === 'none' || image === 'gone') problems.push('image-missing');
       if (doc.home && meta.noindex) problems.push('home-hidden');
-      rows.push({
+      const row: SeoOverviewRow = {
         subject: doc.subject,
         key: doc.key,
         name: doc.title,
@@ -155,15 +171,29 @@ export function seoOverview(project: ProjectState): SeoOverviewRow[] {
         description,
         image,
         problems,
-        level: problems.some((p) => WARNINGS.has(p)) ? 'warning' : problems.length ? 'note' : 'ok'
-      });
+        level: problems.includes('home-hidden') ? 'warning' : !listed ? 'excluded' : problems.some((p) => WARNINGS.has(p)) ? 'warning' : problems.length ? 'note' : 'ok'
+      };
+      rows.push(row);
+      keys.set(row, { title: seoDuplicateKey(meta, 'title') || null, description: seoDuplicateKey(meta, 'description') || null });
+    }
+  for (const row of rows)
+    for (const f of ['title', 'description'] as const) {
+      const key = keys.get(row)![f];
+      if (row[f].duplicates > 0 && key) row[f].peers = rows.filter((o) => o !== row && o.listed && keys.get(o)![f] === key).map((o) => o.name);
     }
   // A stable sort: each level keeps the view's order.
   return rows.map((row, i) => ({ row, i })).sort((a, b) => LEVEL_RANK[a.row.level] - LEVEL_RANK[b.row.level] || a.i - b.i).map(({ row }) => row);
 }
 
-/** The overview's rows with something to fix, in the same order. */
-export const seoOverviewProblems = (rows: readonly SeoOverviewRow[]): SeoOverviewRow[] => rows.filter((r) => r.level !== 'ok');
+/** The overview's rows with something to fix, in the same order: never one search engines can't list. */
+export const seoOverviewProblems = (rows: readonly SeoOverviewRow[]): SeoOverviewRow[] => rows.filter((r) => r.level === 'warning' || r.level === 'note');
+
+/** Whether an entry has an excerpt of its own, which a post's description falls back to before the site's. */
+function entryExcerpt(state: ProjectState, subject: Extract<SeoSubject, { kind: 'entry' }>): boolean {
+  const collection = Object.hasOwn(state.collections, subject.collectionId) ? state.collections[subject.collectionId] : undefined;
+  const entry = collection && Object.hasOwn(collection.entries, subject.entryId) ? collection.entries[subject.entryId] : undefined;
+  return typeof entry?.excerpt === 'string' && entry.excerpt.trim() !== '';
+}
 
 const overviews = new WeakMap<ProjectState, SeoOverviewRow[]>();
 

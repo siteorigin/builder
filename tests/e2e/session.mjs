@@ -6,7 +6,7 @@
 // it started (the preview's dev server, npm) and remove the run's data, keeping only the artifacts asked for and never
 // a folder the caller owns. A replaced editor window is reported, not used silently.
 import assert from 'node:assert/strict';
-import { execFile, spawn } from 'node:child_process';
+import { spawn } from 'node:child_process';
 import { existsSync, mkdirSync, readdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { createInterface } from 'node:readline';
@@ -15,7 +15,7 @@ import { connect } from '../driver/client.ts';
 import { isAlive, ownedProcesses, processTable } from '../driver/processes.ts';
 import { Session, isInside } from '../driver/session.ts';
 import { envelopeReply } from '../unit/mock-openai-server.ts';
-import { eventually, launch, scratch, step } from './harness.mjs';
+import { eventually, launch, processCommands, processesNaming, scratch, step } from './harness.mjs';
 
 const { WORK, cleanup } = scratch('session');
 const sessions = [];
@@ -37,20 +37,9 @@ const session = (opts = {}) => {
 /** Every one of `pids` has ended. */
 const allGone = (pids, what, ms = 30000) => eventually(() => assert.deepEqual(pids.filter(isAlive), [], `${what}: still running`), ms, 200);
 /** Every process's command line, by pid: checks that do not rely on the session's own bookkeeping. */
-const commands = () =>
-  new Promise((resolve, reject) =>
-    execFile('ps', ['-A', '-o', 'pid=,command='], { maxBuffer: 16 * 1024 * 1024 }, (e, out) => {
-      if (e) return reject(e);
-      const map = new Map();
-      for (const line of String(out).split('\n')) {
-        const m = line.match(/^\s*(\d+)\s+(.*)$/);
-        if (m) map.set(Number(m[1]), m[2]);
-      }
-      resolve(map);
-    })
-  );
+const commands = processCommands;
 /** Processes whose command line names `dir`. */
-const naming = async (dir) => [...(await commands())].filter(([, c]) => c.includes(dir)).map(([pid, c]) => `${pid} ${c}`);
+const naming = processesNaming;
 /** Of `pids`, those that are Electron utility processes: the preview's dev server runs as one. */
 const utilities = async (pids) => {
   const all = await commands();
@@ -309,8 +298,9 @@ try {
     }
   });
   let timedOut;
-  // Long enough to reach the preview, as session A's start did, so the deadline passes while the start waits there.
-  await assert.rejects(late.start({ fixture: 'business-v1' }, { timeoutMs: fixtureStartMs + 20000 }), (e) => ((timedOut = e), e.code === 'TIMEOUT'));
+  // Long enough to reach the preview however long session A's start took (a start's time varies, by more on Windows),
+  // so the deadline passes while the start waits there.
+  await assert.rejects(late.start({ fixture: 'business-v1' }, { timeoutMs: fixtureStartMs * 2 + 20000 }), (e) => ((timedOut = e), e.code === 'TIMEOUT'));
   clearInterval(sampler);
   console.log(`timed out at ${timedOut.details.phase}, having seen ${seen.size} processes of the session's, ${previewWorkers.length} of them utility processes`);
   assert.equal(timedOut.details.phase, 'fixture.ready');

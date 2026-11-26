@@ -19,9 +19,10 @@ type Preview = { key: string; mounted: boolean; error?: string; bounds: Box | nu
 
 /**
  * Load `body` (with `preview` as the entry module leaves it) in a 437px frame; what the bridge said on ready and on
- * inspect, asked with `ask` (the AI's component inspection adds readability and gaps).
+ * inspect, asked with `ask` (the AI's component inspection adds readability and gaps). With `resize`, the frame is
+ * given that width that many milliseconds after the inspection is asked for, as a busy machine passes a new width on.
  */
-async function run(body: string, preview: object, ask: Record<string, unknown> = {}) {
+async function run(body: string, preview: object, ask: Record<string, unknown> = {}, resize?: { width: number; after: number }) {
   const browser = await chromium.launch({ headless: true, executablePath: chromium.executablePath() });
   try {
     const page = await browser.newPage();
@@ -47,6 +48,8 @@ async function run(body: string, preview: object, ask: Record<string, unknown> =
         if (e.data?.type === 'ready') {
           ready = e.data.payload;
           frame.contentWindow.postMessage({ protocolVersion: 1, sessionId: 'so-test', type: 'inspect', payload: { requestId: 'r', ...${JSON.stringify(ask)} } }, '*');
+          const resize = ${JSON.stringify(resize ?? null)};
+          if (resize) setTimeout(() => (frame.style.width = resize.width + 'px'), resize.after);
         }
         if (e.data?.type === 'inspectResult') done({ ready, report: e.data.payload.report });
       });
@@ -156,6 +159,19 @@ describe('the bridge in an isolated component preview', () => {
     expect(report.preview?.text).toBe('One Two');
     // A component is not a page: it is never told it lacks the page's one h1.
     expect(report.issues.map((i) => i.kind)).not.toContain('heading-structure');
+  }, 20000);
+
+  it.skipIf(!browserInstalled)('is measured at the width the editor gave its frame, once that width reaches the page', async () => {
+    const body = `<main id="main"><div data-so-ctx="preview:c1" data-so-node="preview" style="height:40px">Card</div></main>`;
+    // The editor made the frame 375px wide just before asking; the page hears of it 400ms later.
+    const { report } = await run(body, { key: 'abcdefabcdefabcdef', mounted: true }, { width: 375 }, { width: 375, after: 400 });
+    expect(report.viewportWidth).toBe(375);
+    expect(report.preview?.bounds?.width).toBe(375);
+    // A width that never arrives is waited for only so long: the page is measured as it is.
+    const started = Date.now();
+    const { report: late } = await run(body, { key: 'abcdefabcdefabcdef', mounted: true }, { width: 375 });
+    expect(late.viewportWidth).toBe(437);
+    expect(Date.now() - started).toBeLessThan(7000);
   }, 20000);
 
   it.skipIf(!browserInstalled)('takes in every root, text with no box of its own, and wrappers inside wrappers', async () => {

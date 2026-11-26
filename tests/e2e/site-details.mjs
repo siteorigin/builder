@@ -89,7 +89,8 @@ const imports = [makePng(join(WORK, 'sunrise.png'), [250, 160, 60]), makePng(joi
 }
 for (const [name, key] of [['Favicon', 'favicon'], ['Social sharing image', 'socialImage']]) {
   const box = picker(name);
-  assert.equal(await box.locator('.insp-image-name').innerText(), 'None', `${name} starts as None`);
+  // The file is written before the editor hears of the change: the Inspector shows it once it has.
+  await eventually(async () => assert.equal(await box.locator('.insp-image-name').innerText(), 'None', `${name} starts as None`));
   await box.getByRole('button', { name: 'Choose image…' }).click();
   const tiles = box.locator('.insp-pick-tile');
   await tiles.first().waitFor();
@@ -108,7 +109,7 @@ for (const [name, key] of [['Favicon', 'favicon'], ['Social sharing image', 'soc
   else assert.ok(Math.abs(shape - 1200 / 630) < 0.05, `the social preview is 1.91:1 (${shape})`);
   await box.getByRole('button', { name: `Remove ${name.toLowerCase()}` }).click();
   await eventually(() => assert.equal(site()[key] ?? null, null, `${name} removed (None)`));
-  assert.equal(await box.locator('.insp-image-name').innerText(), 'None');
+  await eventually(async () => assert.equal(await box.locator('.insp-image-name').innerText(), 'None', `${name} shows None`));
 }
 {
   const social = picker('Social sharing image');
@@ -237,6 +238,9 @@ await input('Language').fill('en-AU');
 await input('Language').press('Tab');
 await eventually(() => assert.equal(site().language, 'en-AU'));
 assert.equal(await error('Language').count(), 0);
+// The file is written before the editor hears the save is done. A form opened before then is planned against the
+// project as it was, and the project refuses its change as made on an older version.
+await eventually(async () => assert.equal(await status().innerText(), 'Saved', 'the editor has the saved code'));
 
 step('Redirects lists, adds, changes and removes old addresses, with the host rules written beside the website (#581)');
 {
@@ -264,6 +268,9 @@ step('Redirects lists, adds, changes and removes old addresses, with the host ru
   await row('/old-services/').getByRole('textbox', { name: 'Address', exact: true }).fill('/about/');
   await row('/old-services/').getByRole('button', { name: 'Save' }).click();
   await eventually(() => assert.deepEqual(site().redirects, [{ from: '/old-services/', custom: true, to: '/about/' }]));
+  // Each change below is planned against the project as the editor has it, which hears of a save after its file is
+  // written: the list shows the last one first, or the next is refused as made on an older version.
+  await eventually(async () => assert.match(await row('/old-services/').innerText(), /\/about\//, 'the list shows where it goes now'));
   await section().getByRole('button', { name: 'Add redirect' }).click();
   await section().getByRole('textbox', { name: 'Old address' }).fill('promo');
   await section().getByRole('radio', { name: 'An address' }).check();
@@ -288,6 +295,7 @@ step('Redirects lists, adds, changes and removes old addresses, with the host ru
   step('the host choice writes Netlify’s forced rules, and removing a redirect undoes and redoes');
   await section().locator('#site-redirect-host').selectOption('netlify');
   await eventually(() => assert.match(rules(), /^\/studio\/old-services\/ \/studio\/about\/ 301!$/m, 'Netlify’s rules are forced past the old address’s page'));
+  await eventually(async () => assert.equal(await section().locator('#site-redirect-host').inputValue(), 'netlify', 'the editor has the host'));
   await row('/promo/').getByRole('button', { name: 'Remove the redirect from /promo/' }).click();
   await eventually(() => assert.equal(site().redirects.length, 1));
   await eventually(async () => assert.equal(await row('/promo/').count(), 0, 'its row goes'));
@@ -296,6 +304,7 @@ step('Redirects lists, adds, changes and removes old addresses, with the host ru
   await eventually(async () => assert.equal(await row('/promo/').count(), 1, 'its row is back'));
   assert.equal((await win.evaluate(() => window.builder.project.redo())).ok, true);
   await eventually(() => assert.equal(site().redirects.length, 1));
+  await eventually(async () => assert.equal(await row('/promo/').count(), 0, 'its row goes again'));
   await row('/old-services/').getByRole('button', { name: 'Remove the redirect from /old-services/' }).click();
   await eventually(() => assert.equal(site().redirects, undefined));
   await eventually(() => assert.equal(hasRules(), false, 'with no redirect left, no rules are written'));

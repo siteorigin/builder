@@ -12,6 +12,8 @@ import type { EarlierSummary } from './earlier-summary';
 import type { SessionDuration } from './live/expiry';
 import type { GuestRole } from './live/limits';
 import type { Participant, Presence } from './live/messages';
+import type { LiveEditBatch } from './live/capabilities';
+import type { LiveApplyResult, LiveProjectSnapshot } from './live/snapshot';
 
 export type Appearance = 'system' | 'light' | 'dark';
 export type ProviderId = 'openai' | 'anthropic' | 'local';
@@ -1005,6 +1007,71 @@ export interface LiveJoinRequest extends LiveRun {
   displayName: string;
 }
 
+/**
+ * Why this app's place in another computer's live session ended (#766): it left, the host turned it away or ended
+ * the session, its access ran out, or the relay could not keep or find its place.
+ */
+export type RemoteEnding = 'left' | 'declined' | 'kicked' | 'expired-guest' | 'expired-session' | 'ended' | 'host-gone' | 'locked' | 'full' | 'replaced' | 'lost' | 'unavailable' | 'refused';
+
+/** Someone admitted to the live session this app is a guest in, as the relay lists them. */
+export interface RemoteParticipant {
+  guestId: string;
+  displayName: string;
+  role: GuestRole;
+}
+
+/** One join of a live session, so a late event from an earlier join never reaches the next. */
+export interface RemoteJoin {
+  joinId: string;
+  /** The relay and room the invite link named. */
+  relayUrl: string;
+  roomId: string;
+  displayName: string;
+  /** Whether the host is connected to the relay now: while it is away, edits wait and the preview shows nothing new. */
+  hostConnected: boolean;
+  /** The connection to the relay dropped and this app is taking its place back. */
+  reconnecting: boolean;
+}
+
+/**
+ * This app as a guest in another computer's live session: the remote shell (#766). `joining`: asking the relay for a
+ * place; `waiting`: in the waiting room until the host lets it in; `admitted`: editing (a collaborator) or watching (a
+ * viewer) the host's project. `previewUrl` is this computer's own loopback address for the host's preview, once the
+ * preview cookie is in place. Times are on the relay's clock: `relayClockOffsetMs` is the relay's less this computer's.
+ * `ended` says why the last join ended, until the next.
+ */
+export type RemoteState =
+  | { phase: 'idle'; ended: { reason: RemoteEnding; message: string } | null }
+  | (RemoteJoin & { phase: 'joining' | 'waiting' })
+  | (RemoteJoin & {
+      phase: 'admitted';
+      guestId: string;
+      role: GuestRole;
+      projectName: string;
+      guestExpiresAt: number | null;
+      sessionExpiresAt: number;
+      relayClockOffsetMs: number;
+      /** The host's preview, as the host says it is doing. */
+      hostRuntime: RuntimeState['state'] | null;
+      /** The project revision the host last said its preview serves: a page loaded now shows it or a later one. Null before it said. */
+      previewRevision: number | null;
+      previewUrl: string | null;
+      /** A preview that could not be let in, until it is. */
+      previewProblem: string | null;
+      /** The host's project is too large to send whole over the relay; the editor shows the last one that fitted. */
+      tooLarge: boolean;
+      participants: RemoteParticipant[];
+    });
+
+/** Where the others in the live session are, as each last said (`remote:presence`): the host, and collaborators by guest ID. */
+export interface RemotePresence {
+  joinId: string;
+  host: Presence | null;
+  guests: Record<string, Presence>;
+}
+
+export type RemoteJoinResult = { ok: true; state: RemoteState } | { ok: false; message: string };
+
 export type LiveStartResult = { ok: true; inviteUrl: string; state: LiveHostState } | { ok: false; message: string };
 /** Whether a host command was sent: the relay's next roster or room state shows it taking effect. */
 export type LiveCommandResult = { ok: true } | { ok: false; message: string };
@@ -1190,6 +1257,8 @@ export interface BuilderApi {
      * the documents, after saving the work it replaces as a version. Anything else changed since is `stale`.
      */
     restoreVersion(id: string, revision: number, reviewed: { files: string[]; replaced: string[] }, workspaceKey: string): Promise<RestoreVersionResult>;
+    /** Give saved version `id` a new name; what it holds and when it was saved stay. */
+    renameVersion(id: string, name: string, workspaceKey: string): Promise<{ ok: boolean; message?: string }>;
     /** Delete saved version `id`, freeing what only it held. */
     deleteVersion(id: string, workspaceKey: string): Promise<{ ok: boolean; message?: string; freed?: number }>;
     exportSource(format?: ExportFormat): Promise<ExportResult>;
@@ -1303,6 +1372,27 @@ export interface BuilderApi {
     presence(run: LiveRun, presence: Presence): Promise<LiveCommandResult>;
     state(): Promise<LiveHostState>;
   };
+  /**
+   * This app as a guest in another computer's live session: the remote shell (#766). Joining needs no project open
+   * here, and opening one leaves the session. Every call after joining names the join (`RemoteJoin.joinId`), so one
+   * meant for a join that has ended reaches no other.
+   */
+  remote: {
+    /** Ask for a place in the session an invite link names; resolves once the relay says where this app stands. */
+    join(opts: { inviteLink: string; displayName: string }): Promise<RemoteJoinResult>;
+    /** Leave the session; the editor goes back to the Welcome screen. */
+    leave(): Promise<void>;
+    state(): Promise<RemoteState>;
+    /**
+     * The host's project as guests are given it: the copy last received, or asked for now (`fresh`: asked again
+     * whatever was received). Null when not admitted.
+     */
+    snapshot(joinId: string, fresh?: boolean): Promise<LiveProjectSnapshot | null>;
+    /** Make a collaborator's edit in the host's project, through the host's own pipeline. */
+    apply(joinId: string, batch: LiveEditBatch): Promise<LiveApplyResult>;
+    /** Where this app is in the editor, for the others: shared while a collaborator. False when it could not be. */
+    presence(joinId: string, presence: Presence): Promise<boolean>;
+  };
   on(channel: 'project:changed', cb: (snap: ProjectSnapshot) => void): () => void;
   on(channel: 'project:closed', cb: () => void): () => void;
   on(channel: 'create:progress', cb: (p: ProgressEvent) => void): () => void;
@@ -1331,6 +1421,17 @@ export interface BuilderApi {
   on(channel: 'live:request', cb: (request: LiveJoinRequest) => void): () => void;
   /** A collaborator in the live session moved to another page or selection, or left. */
   on(channel: 'live:presence', cb: (presence: LivePresence) => void): () => void;
+  /** This app's place in another computer's live session changed: waiting, admitted, a new role, a drop, or an ending. */
+  on(channel: 'remote:state', cb: (state: RemoteState) => void): () => void;
+  /** The host's project changed, as guests are given it. */
+  on(channel: 'remote:changed', cb: (change: { joinId: string; snapshot: LiveProjectSnapshot }) => void): () => void;
+  /**
+   * The host's preview changed: the canvas loads its page again. `revision` is the project revision a page loaded now
+   * shows, as the host last said it (null before it said one).
+   */
+  on(channel: 'remote:reload', cb: (reload: { joinId: string; revision: number | null }) => void): () => void;
+  /** Where the host and the other collaborators are. */
+  on(channel: 'remote:presence', cb: (presence: RemotePresence) => void): () => void;
   inspectResult(requestId: string, report: unknown): void;
   componentPreviewResult(requestId: string, results: ComponentPreviewResult[]): void;
   /** The screen shown now listens for File menu commands (menu:command): one waiting for the editor is sent. */

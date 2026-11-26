@@ -145,8 +145,8 @@ await apply(
 );
 await eventually(async () => assert.equal(await ovRow(`page:${about.id}`).getAttribute('data-level'), 'ok', 'About has nothing left to fix, without reopening the view'));
 const aboutText = await ovRow(`page:${about.id}`).innerText();
-for (const shown of ['Meet the designers behind Riverside Studio', '90 characters', 'The site’s', 'Can be listed']) assert.ok(aboutText.includes(shown), `About’s row shows “${shown}”: ${aboutText}`);
-assert.match(await ovRow('entry:posts:en_winter').innerText(), /Draft: not on the website/, 'the draft says it is not on the website');
+for (const shown of ['Meet the designers behind Riverside Studio', 'Site image', 'Can be listed']) assert.ok(aboutText.includes(shown), `About’s row shows “${shown}”: ${aboutText}`);
+assert.match(await ovRow('entry:posts:en_winter').innerText(), /Kept out of search until published/, 'the draft says it is kept out of search until it is published');
 rows = await ovRows();
 assert.ok(sortedByLevel(rows), 'and the order follows');
 const toFix = rows.filter((r) => r.level !== 'ok').map((r) => r.key);
@@ -244,7 +244,9 @@ await row('Winter hours').focus();
 await win.keyboard.press('ArrowUp');
 await eventually(async () => assert.equal(await row('Spring open studio').evaluate((el) => el === document.activeElement), true, 'Up goes to the row above'));
 await win.keyboard.press('Home');
-await eventually(async () => assert.equal(await panel.locator('.seo-open').first().evaluate((el) => el === document.activeElement), true, 'Home goes to the first page'));
+await eventually(async () => assert.equal(await panel.locator('.seo-open[data-seo="overview"]').evaluate((el) => el === document.activeElement), true, 'Home goes to the overview, the list’s first row'));
+await win.keyboard.press('ArrowDown');
+await eventually(async () => assert.equal(await panel.locator('.seo-group .seo-open').first().evaluate((el) => el === document.activeElement), true, 'and Down to the first page'));
 await win.keyboard.press('Enter');
 await eventually(async () => assert.equal(await view.locator('.seo-title').innerText(), s0.pages[s0.site.pageOrder[0]].title, 'Enter chooses it'));
 await row('Winter hours').click();
@@ -780,7 +782,7 @@ assert.equal(await rail('pages').getAttribute('aria-pressed'), 'true', 'with the
 
 step('Preview chosen while a post is written, then the SEO view opened before it saves: the mode goes back to Edit');
 await rail('posts').click();
-await win.locator('.post-row .post-open', { hasText: 'Spring open studio' }).click();
+await win.locator('.post-row', { hasText: 'Spring open studio' }).click({ position: { x: 48, y: 12 } });
 await eventually(async () => assert.equal(await win.locator('.post-writer-holder').isVisible(), true, 'the writer shows the post'));
 const modeButton = (name) => win.locator('.toolbar [aria-label="Mode"]').getByRole('button', { name, exact: true });
 // Left alone, Preview from the toolbar previews the post once the writer has saved it.
@@ -816,10 +818,10 @@ await eventually(async () => assert.equal((await entryNow('en_winter')).seo?.tit
 assert.equal((await entryNow('en_spring')).seo.title, 'Glaze weekend at Riverside', 'never to the post the writer holds');
 await lastStep('Change post browser title');
 await rail('posts').click();
-await win.locator('.post-row .post-open', { hasText: 'Winter hours' }).click();
+await win.locator('.post-row', { hasText: 'Winter hours' }).click({ position: { x: 48, y: 12 } });
 await eventually(async () => assert.equal(await writerHolder.locator('.post-title-input').inputValue(), 'Winter hours', 'the writer holds Winter'));
 const writerSeo = writerHolder.locator('.post-seo');
-await writerSeo.locator('summary').first().click();
+await writerSeo.locator('.section-head').first().click();
 const writerField = (name) => writerSeo.getByLabel(name, { exact: true });
 assert.equal(await writerField('Browser title').inputValue(), 'Winter hours by the river', 'the writer shows the title saved in the view');
 // Saved in the writer, it shows in the view.

@@ -1,6 +1,7 @@
 import type { LiveHostState, LiveRun } from '@shared/api';
 import { sessionDeadline, type SessionDuration } from '@shared/live/expiry';
-import { MAX_ID_LENGTH, MAX_VIEWPORT_WIDTH, MIN_VIEWPORT_WIDTH, type GuestRole } from '@shared/live/limits';
+import { MAX_ID_LENGTH, MAX_SELECTION_DEPTH, MAX_VIEWPORT_WIDTH, MIN_VIEWPORT_WIDTH, type GuestRole } from '@shared/live/limits';
+import type { ElementRef } from '@shared/types';
 import type { Participant, Presence } from '@shared/live/messages';
 import { isPreviewTarget } from '@shared/live/preview';
 
@@ -38,7 +39,7 @@ export const DURATION_CHOICES: ReadonlyArray<{ id: SessionDuration; label: strin
   { id: '30m', label: '30 minutes' },
   { id: '2h', label: '2 hours' },
   { id: '8h', label: '8 hours' },
-  { id: 'project', label: 'Until project closes' }
+  { id: 'project', label: 'Until closed' }
 ];
 
 export const ROLE_LABELS: Readonly<Record<GuestRole, string>> = { viewer: 'Viewer', collaborator: 'Collaborator' };
@@ -106,14 +107,18 @@ export function livePill(state: LiveHostState, at: number): LivePill {
       return { kind: 'busy', text: 'Starting…', label: 'Share: the live session is starting' };
     case 'stopping':
       return { kind: 'busy', text: 'Ending…', label: 'Share: the live session is ending' };
-    case 'reconnecting':
-      return { kind: 'reconnecting', text: 'Reconnecting', label: 'Share: the live session is reconnecting to the relay' };
+    case 'reconnecting': {
+      const people = admittedGuests(state).length;
+      const waiting = waitingGuests(state).length;
+      const words = [`${people} ${people === 1 ? 'guest' : 'guests'}`, ...(waiting ? [`${waiting} waiting to join`] : []), ...(state.locked ? ['locked'] : [])];
+      return { kind: 'reconnecting', text: 'Reconnecting', label: `Share: the live session is reconnecting, ${words.join(', ')}` };
+    }
     case 'active': {
       const people = admittedGuests(state).length;
       const waiting = waitingGuests(state).length;
       const left = remainingMs(state, at);
       const timed = state.duration !== 'project';
-      const words = [`${people} ${people === 1 ? 'guest' : 'guests'}`, ...(waiting ? [`${waiting} waiting to join`] : []), ...(timed ? [`${spanWords(left)} left`] : [])];
+      const words = [`${people} ${people === 1 ? 'guest' : 'guests'}`, ...(waiting ? [`${waiting} waiting to join`] : []), ...(state.locked ? ['locked'] : []), ...(timed ? [`${spanWords(left)} left`] : [])];
       return { kind: 'live', text: timed ? `Live · ${formatSpan(left)}` : 'Live', label: `Share: live session, ${words.join(', ')}` };
     }
   }
@@ -145,6 +150,17 @@ export function extendChoices(state: LiveRoomState): TimeChoice[] {
 
 /** A time of day on the relay's clock, as this computer shows it. */
 export const clockTime = (state: LiveRoomState, at: number) => new Date(at - state.relayClockOffsetMs).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' });
+
+/** A time on the relay's clock as a time of day, with "tomorrow" when it falls on the next day from `now`. */
+export function clockDay(state: LiveRoomState, at: number, now: number): string {
+  const when = new Date(at - state.relayClockOffsetMs);
+  const today = new Date(now - state.relayClockOffsetMs);
+  const tomorrow = new Date(today.getFullYear(), today.getMonth(), today.getDate() + 1);
+  const time = clockTime(state, at);
+  if (when.toDateString() === today.toDateString()) return time;
+  if (when.toDateString() === tomorrow.toDateString()) return `tomorrow at ${time}`;
+  return `${when.toLocaleDateString([], { weekday: 'long' })} at ${time}`;
+}
 
 /**
  * The ends a guest's own access can be given: until the session ends, or for 15 or 30 minutes, 1 or 2 hours from now,
@@ -183,6 +199,26 @@ export function hostPresence(view: { pageId: string | null; route: string | null
   const width = Math.min(MAX_VIEWPORT_WIDTH, Math.max(MIN_VIEWPORT_WIDTH, Math.round(Number.isFinite(viewport) ? viewport : MIN_VIEWPORT_WIDTH)));
   const pageId = view.pageId && view.pageId.length <= MAX_ID_LENGTH ? view.pageId : null;
   return { pageId, viewportWidth: width, selection: null, previewPath: view.route === null ? null : previewPathOf(view.route) };
+}
+
+/**
+ * A selection the others in a live session can be shown (#766): on the page shown (or its header or footer), within the
+ * protocol's bounds, as a plain copy. Null for anything else: a component edited everywhere, a layout, nothing.
+ */
+export function sharedSelection(selection: ElementRef | null, pageId: string | null): ElementRef | null {
+  if (!selection || !pageId) return null;
+  const { owner } = selection;
+  if (!(owner.kind === 'page' && owner.id === pageId) && owner.kind !== 'shell') return null;
+  const ids = [owner.id, selection.nodeId, ...selection.instancePath, ...(selection.itemPath ?? []), selection.partId ?? '', selection.slot ?? ''];
+  if (ids.some((id) => id.length > MAX_ID_LENGTH) || selection.instancePath.length > MAX_SELECTION_DEPTH || (selection.itemPath?.length ?? 0) > MAX_SELECTION_DEPTH) return null;
+  return {
+    owner: { kind: owner.kind, id: owner.id },
+    instancePath: [...selection.instancePath],
+    nodeId: selection.nodeId,
+    ...(selection.partId ? { partId: selection.partId } : {}),
+    ...(selection.itemPath ? { itemPath: [...selection.itemPath] } : {}),
+    ...(selection.slot ? { slot: selection.slot } : {})
+  };
 }
 
 /** An address as a URL serializes its path and query (so it compares equal to what a guest's browser reports), or null. */

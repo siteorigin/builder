@@ -42,7 +42,7 @@ describe('seoOverview', () => {
     expect(rows.map((r) => r.key)).toEqual([HOME(state), SERVICES, SPRING]);
     expect(rows.every((r) => r.level === 'ok' && r.problems.length === 0 && r.listed)).toBe(true);
     expect(row(rows, HOME(state))).toMatchObject({ name: 'Home', address: '/', home: true, draft: false, noindex: false, collection: '', image: 'site' });
-    expect(row(rows, HOME(state)).title).toEqual({ text: 'Riverside Studio · Pottery classes and handmade work', chars: 52, status: 'good', fallback: false, duplicates: 0 });
+    expect(row(rows, HOME(state)).title).toEqual({ text: 'Riverside Studio · Pottery classes and handmade work', chars: 52, status: 'good', fallback: false, duplicates: 0, peers: [] });
     // An entry's title is branded with the site's name, and its description is its excerpt.
     expect(row(rows, SPRING)).toMatchObject({ name: 'Spring pottery classes', collection: 'Posts', address: '/blog/spring-pottery-classes/' });
     expect(row(rows, SPRING).title).toMatchObject({ text: 'Spring pottery classes · Riverside Studio', fallback: true, status: 'good' });
@@ -165,11 +165,13 @@ describe('seoOverview', () => {
     const { state, home, services } = seoSite();
     const s = run(state, { type: 'page.update', pageId: services, noindex: true }, { type: 'page.update', pageId: home, noindex: true });
     const rows = seoOverview(s);
-    expect(row(rows, SERVICES)).toMatchObject({ noindex: true, listed: false, problems: [], level: 'ok' });
+    // A document search engines can't list is kept out of search: not one of the documents with something to fix.
+    expect(row(rows, SERVICES)).toMatchObject({ noindex: true, listed: false, problems: [], level: 'excluded' });
     expect(row(rows, HOME(s))).toMatchObject({ noindex: true, problems: ['home-hidden'], level: 'warning' });
     expect(runSeoAudit(s).map((f) => f.code)).toContain('SEO_HOME_NOINDEX');
     const post = row(seoOverview(run(state, { type: 'entry.update', collectionId: 'posts', entryId: 'en_spring', noindex: true })), SPRING);
-    expect(post).toMatchObject({ noindex: true, listed: false, level: 'ok' });
+    expect(post).toMatchObject({ noindex: true, listed: false, level: 'excluded' });
+    expect(seoOverviewProblems(rows).map((r) => r.key)).toEqual([HOME(s)]);
   });
 
   it('puts warnings first, then notes, each in the view’s order', () => {

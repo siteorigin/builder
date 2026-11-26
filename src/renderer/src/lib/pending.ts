@@ -143,6 +143,19 @@ export function afterSettle(fn: () => void): void {
   else fn();
 }
 
+/**
+ * Run `fn` once no settle is running and every change on its way into the project now has landed or failed. A field
+ * left with a change still being saved puts the saved value back this way: what was typed stays on screen until the
+ * project holds it (a save can take a while: a slow disk, a preview still taking the save before it), rather than the
+ * value from before the change showing in the meantime.
+ */
+export function afterLanding(fn: () => void): void {
+  afterSettle(() => {
+    if (!inflight.size) return fn();
+    void appliesLanded().then(() => afterSettle(fn));
+  });
+}
+
 /** Editors that hold typed text without a focused field to blur (the Posts writer): settling asks each to save it. */
 const flushers = new Set<() => unknown>();
 

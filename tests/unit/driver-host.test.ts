@@ -317,9 +317,9 @@ describe('the app environment', () => {
       TMPDIR: '/r/tmp',
       TMP: '/r/tmp',
       TEMP: '/r/tmp',
-      XDG_CONFIG_HOME: '/r/home/.config',
-      XDG_CACHE_HOME: '/r/home/.cache',
-      XDG_DATA_HOME: '/r/home/.local/share',
+      XDG_CONFIG_HOME: join('/r/home', '.config'),
+      XDG_CACHE_HOME: join('/r/home', '.cache'),
+      XDG_DATA_HOME: join('/r/home', '.local', 'share'),
       SITEORIGIN_USER_DATA: '/r/profile',
       SITEORIGIN_DOCUMENTS: '/r/workspace',
       OPENAI_API_KEY: '',
@@ -331,6 +331,38 @@ describe('the app environment', () => {
     expect(sessionEnv(paths, { base: { ...base, SITEORIGIN_DEVELOPER_MODE: 'locked-off' } }).SITEORIGIN_DEVELOPER_MODE).toBe('locked-off');
     expect(sessionEnv(paths, { base: { ...base, SITEORIGIN_DEVELOPER_MODE: 'on' } }).SITEORIGIN_DEVELOPER_MODE).toBeUndefined();
     expect(sessionEnv(paths, { base, headed: true }).SITEORIGIN_HEADLESS).toBeUndefined();
+  });
+
+  it('passes on what Windows needs whatever the case it names it in (its PATH is Path), and only there', () => {
+    const paths = { root: 'C:\\r', profile: 'C:\\r\\profile', workspace: 'C:\\r\\workspace', projects: 'C:\\r\\workspace\\SiteOrigin', imports: 'C:\\r\\imports', exports: 'C:\\r\\exports', home: 'C:\\r\\home', tmp: 'C:\\r\\tmp', artifacts: 'C:\\r\\artifacts' };
+    const base = {
+      Path: 'C:\\Windows\\system32;C:\\Windows',
+      SystemRoot: 'C:\\Windows',
+      SYSTEMDRIVE: 'C:',
+      windir: 'C:\\Windows',
+      ComSpec: 'C:\\Windows\\system32\\cmd.exe',
+      PATHEXT: '.COM;.EXE;.BAT;.CMD',
+      'ProgramFiles(x86)': 'C:\\Program Files (x86)',
+      Lc_All: 'C',
+      APPDATA: 'C:\\Users\\me\\AppData\\Roaming',
+      Openai_Api_Key: 'sk-real',
+      HomePath: '\\Users\\me',
+      node_options: '--require evil.js'
+    };
+    const passed = (platform: NodeJS.Platform) =>
+      Object.fromEntries(Object.entries(sessionEnv(paths, { base, platform })).filter(([k]) => k in base));
+    expect(passed('win32')).toEqual({
+      Path: base.Path,
+      SystemRoot: base.SystemRoot,
+      SYSTEMDRIVE: base.SYSTEMDRIVE,
+      windir: base.windir,
+      ComSpec: base.ComSpec,
+      PATHEXT: base.PATHEXT,
+      'ProgramFiles(x86)': base['ProgramFiles(x86)'],
+      Lc_All: 'C'
+    });
+    // Elsewhere names are case-sensitive: only the exact spellings pass.
+    expect(passed('darwin')).toEqual({ SystemRoot: base.SystemRoot, windir: base.windir, ComSpec: base.ComSpec, PATHEXT: base.PATHEXT, 'ProgramFiles(x86)': base['ProgramFiles(x86)'] });
   });
 });
 

@@ -61,6 +61,7 @@ import { normalizeDisplayName, RPC_ERROR_CODES, type RpcError } from '@shared/li
 import { liveSnapshot, scrubHostPaths, type LiveApplyResult, type LiveProjectSnapshot, type LiveSnapshotSource } from '@shared/live/snapshot';
 import { guestEditProblem } from '@engine/guest-edits';
 import { LiveHostManager, type LiveGuestEdit } from './live/host';
+import { LiveGuestManager } from './live/guest';
 import { loopbackPreview } from './live/preview-proxy';
 import { newId } from '@shared/ids';
 import { packageFileName, type ComponentPackage } from '@shared/component-package';
@@ -75,6 +76,9 @@ const PRIVATE_FILES_LEFT_OUT = 'Private files such as .env, keys and credentials
 const INSTANCE_ID = randomUUID();
 
 const READ_ONLY = 'This project is read-only.';
+
+/** Remove an export's staging folder as far as can be done now; what cannot be removed yet is swept later. */
+const removeStaging = (dir: string) => fs.rm(dir, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 }).catch(() => undefined);
 const STALE_INSERT = 'The page changed while the component was being inserted. Insert it again.';
 const TRUST_CHANGED = "This project's build settings changed outside SiteOrigin Builder. Close and reopen the project to review and trust them.";
 const PREVIEW_UNAVAILABLE = 'This project was made with a newer version of SiteOrigin Builder, which is needed to show its preview. Update the app to see and edit the site.';
@@ -345,13 +349,34 @@ export class Controller {
     opening: () => (this.session && this.workspaceKey ? { workspaceKey: this.workspaceKey, projectName: projectDisplayName(this.session.state) } : null),
     preview: () => (this.session && this.workspaceKey ? loopbackPreview(this.dev?.url) : null),
     publishing: () => !!this.dev?.holding,
+    publishedRevision: () => (this.dev ? this.publishedRevision : null),
     relay: async () => resolveRelayUrl({ env: process.env[RELAY_URL_ENV], setting: (await loadSettings()).settings.liveRelayUrl }),
     guestSnapshot: (opening) => this.guestSnapshot(opening),
     applyGuest: (opening, guest, batch) => this.applyGuest(opening, guest, batch),
     emit: (channel, payload) => this.send(channel, payload)
   });
+  /**
+   * This app as a guest in another computer's live session (#766): the remote shell's connection. It holds no project
+   * of this computer's, so it runs only while none is open here: opening one leaves it (attach).
+   */
+  readonly remote = new LiveGuestManager({
+    emit: (channel: string, payload: unknown) => {
+      this.send(channel, payload);
+      if (channel === 'remote:state') this.onRemoteState?.();
+    }
+  });
+  /** This app's place in another computer's live session changed (the menu offers Join only while it has none). */
+  onRemoteState: (() => void) | null = null;
+  /** The latest revision the running preview has published (a page loaded from it now shows it), or null before one. */
+  private publishedRevision: number | null = null;
   /** The snapshot guests were last given, and what it was made from (guestSnapshot). */
   private shared: (LiveSnapshotSource & { snapshot: LiveProjectSnapshot }) | null = null;
+  /**
+   * The open project's documents as of its last change that finished, with that change's revision. A save installs
+   * its documents before its files have all landed and its revision moves on, so guests are given these instead:
+   * never the documents of one revision under the number of the one before (#766).
+   */
+  private settled: { session: ProjectSession; state: ProjectState; revision: number } | null = null;
   /** Cancels a dependency install into the project when another app takes it over. */
   private prepareAbort: AbortController | null = null;
   private closing: Promise<void> | null = null;
@@ -419,7 +444,8 @@ export class Controller {
   guestSnapshot(opening: string): LiveProjectSnapshot | null {
     const s = this.session;
     if (!s || !this.workspaceKey || opening !== this.workspaceKey) return null;
-    const source: LiveSnapshotSource = { state: s.state, revision: s.revision, readOnly: !!s.readOnly, aiBusy: this.aiBusy(), runtime: this.runtimeStatus().state };
+    const settled = this.settled?.session === s ? this.settled : { state: s.state, revision: s.revision };
+    const source: LiveSnapshotSource = { state: settled.state, revision: settled.revision, readOnly: !!s.readOnly, aiBusy: this.aiBusy(), runtime: this.runtimeStatus().state };
     const last = this.shared;
     if (last && last.state === source.state && last.revision === source.revision && last.readOnly === source.readOnly && last.aiBusy === source.aiBusy && last.runtime === source.runtime) return last.snapshot;
     const snapshot = liveSnapshot(source, [s.dir, homedir()]);
@@ -1004,6 +1030,8 @@ export class Controller {
     this.localDirty = false;
     // A live session belongs to the opening it was started in, never the next one (closing has already ended it).
     if (this.live.running) void this.live.end();
+    // A project of this computer's is open now: the editor shows it, not another computer's (#766).
+    this.remote.leave();
     this.workspaceKey = `${session.dir}#${++this.openings}`;
     this.onOpeningChange?.();
     // Another app took the project over and edits its folder now: stop the preview running there at once (and any
@@ -1024,7 +1052,9 @@ export class Controller {
     // The Recent projects entry follows a rename as soon as it is made, and an undo of one, or one made outside. A
     // working copy keeps its own name through them (#176).
     let listedName = projectDisplayName(session.state);
+    this.settled = { session, state: session.state, revision: session.revision };
     session.on('changed', (ev) => {
+      this.settled = { session, state: session.state, revision: session.revision };
       if (!session.readOnly && projectDisplayName(session.state) !== listedName) {
         listedName = projectDisplayName(session.state);
         void renameRecent(session.dir, listedName).catch(() => undefined);
@@ -1120,6 +1150,8 @@ export class Controller {
     // A preview that crashes is started again in the same folder only while that is still this app's to use; a copy is.
     const dev: DevServer = new DevServer(stage ?? session.dir, async (): Promise<boolean> => this.dev === dev && (!!stage || (await session.stillOwner())));
     this.dev = dev;
+    // A new preview server has published nothing yet.
+    this.publishedRevision = null;
     this.stage = stage;
     this.stagedRevision = -1;
     this.pendingStatus = null;
@@ -1127,14 +1159,23 @@ export class Controller {
     dev.onStatus((s) => {
       // A preview that was stopped or replaced no longer speaks for the project.
       if (this.dev !== dev) return;
+      // A server that has just come up serves the files as they are now: the project's own folder at the session's
+      // revision, or the private copy at the revision it was brought to. Changes saved while none ran were published
+      // to nothing, so this is the revision a page loaded from it shows (#766).
+      if (s.state === 'ready' && this.session) {
+        const serves = this.stage ? this.stagedRevision : this.session.revision;
+        if (serves >= 0) this.publishedRevision = Math.max(this.publishedRevision ?? 0, serves);
+      }
       this.send('runtime:status', s);
       this.live.previewChanged();
       this.broadcast();
     });
     // A live session's guests reload once a change has reached the preview: its files are in Vite's hands, so what
     // they load is the new revision (the project's own folder, or the private copy once it has the change).
-    dev.onPublished(() => {
-      if (this.dev === dev) this.live.projectChanged();
+    dev.onPublished((revision) => {
+      if (this.dev !== dev) return;
+      this.publishedRevision = Math.max(this.publishedRevision ?? 0, revision);
+      this.live.projectChanged(revision);
     });
     // Guests' requests to a server stopping or gone are stopped at once, and the relay told why.
     dev.onGone(() => {
@@ -1476,7 +1517,8 @@ export class Controller {
    *  chooses to keep editing a change that cannot be saved. */
   async mayLeave(): Promise<boolean> {
     // Already closing: leaving was settled when that close was allowed.
-    if (!this.session || this.closing || !this.beforeLeave) return true;
+    // Another computer's project shown as a guest (#766) has typing to settle too: it is sent to the host first.
+    if ((!this.session && !this.remote.active) || this.closing || !this.beforeLeave) return true;
     return this.beforeLeave();
   }
 
@@ -1886,6 +1928,13 @@ export class Controller {
     if (!s) return { ok: false, message: 'That project is no longer open.' };
     if (this.aiBusy()) return { ok: false, message: 'Wait for the AI to finish, then try again.' };
     return s.restoreVersion(id, revision, reviewed);
+  }
+
+  /** Rename saved version `id` in the opening `key` only. */
+  async renameVersion(id: string, name: string, key: string): Promise<{ ok: boolean; message?: string }> {
+    const s = this.openedAs(key);
+    if (!s) return { ok: false, message: 'That project is no longer open.' };
+    return s.renameVersion(id, name);
   }
 
   /** Delete saved version `id` in the opening `key` only. */
@@ -2894,15 +2943,29 @@ export class Controller {
     return this.withStaging((staging) => this.buildFromStaging(s, staging, dest, format, published));
   }
 
-  /** A fresh staging folder per export: only the folder created here is ever removed. */
+  /** Staging folders of exports still running: the sweep before another export leaves them alone. */
+  private stagingInUse = new Set<string>();
+
+  /**
+   * A fresh staging folder per export, removed when it ends. Removing it never takes the place of what the export
+   * says: on Windows a file the build had open (a native module it loaded) can refuse removal for a while after the
+   * build has gone. Removal is tried again a few times, and what is still left is swept before the next export.
+   */
   private async withStaging(fn: (staging: string) => Promise<ExportResult>): Promise<ExportResult> {
     const stagingRoot = join(app.getPath('userData'), 'build-staging');
     await fs.mkdir(stagingRoot, { recursive: true });
+    await Promise.all(
+      (await fs.readdir(stagingRoot).catch(() => [] as string[]))
+        .filter((name) => name.startsWith('export-') && !this.stagingInUse.has(join(stagingRoot, name)))
+        .map((name) => removeStaging(join(stagingRoot, name)))
+    );
     const staging = mkdtempSync(join(stagingRoot, 'export-'));
+    this.stagingInUse.add(staging);
     try {
       return await fn(staging);
     } finally {
-      await fs.rm(staging, { recursive: true, force: true });
+      this.stagingInUse.delete(staging);
+      await removeStaging(staging);
     }
   }
 

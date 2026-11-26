@@ -62,19 +62,22 @@ function run(defId: string, plan: (def: ComponentDefinition) => EditOperation | 
   return getState().snapshot?.workspaceKey === now.snap.workspaceKey ? applyOps([op], words, undefined, now.snap.revision) : Promise.resolve(null);
 }
 
-const KIND_WORDS: Record<UiStateSchema['type'], string> = { boolean: 'Yes/no', enum: 'Choice', item: 'Active item' };
+const KIND_WORDS: Record<UiStateSchema['type'], string> = { boolean: 'Yes or no', enum: 'Options', item: 'Active item' };
+
+/** A section's summary: how many it holds, in plain words ("1 state"). */
+const tally = (n: number, one: string, many: string) => `${n} ${n === 1 ? one : many}`;
 
 /**
- * The component's UI state variables: add a yes/no state or a choice, rename it, its options and where every placement
- * starts, and remove what nothing uses any more (the engine names what still does).
+ * The component's UI state variables: add a yes/no state or one with options, rename it, its options and where every
+ * placement starts, and remove what nothing uses any more (the engine names what still does).
  */
 export function UiStateSection({ def, level }: { def: ComponentDefinition; level: number }) {
   const names = Object.keys(def.state ?? {});
   return (
-    <Section title="UI state" id="def-state" level={level} scope={names.length ? (names.length === 1 ? '1 state' : `${names.length} states`) : undefined}>
-      <p className="insp-note muted">
-        What each placement holds and visitors change with its buttons, such as which tab shows or whether a panel is open. Choose what a button does under When clicked, show elements for a value under Conditions, and preview a value in Component Studio.
-      </p>
+    <Section title="UI state" id="def-state" level={level} keepMounted scope={names.length ? tally(names.length, 'state', 'states') : undefined}>
+      {names.length === 0 && (
+        <p className="insp-note muted">Values visitors change with the component’s buttons, such as which tab shows or whether a panel is open. Choose what a button does under When clicked.</p>
+      )}
       {names.map((name) => (
         <StateGroup key={name} def={def} name={name} />
       ))}
@@ -97,42 +100,66 @@ function StateGroup({ def, name }: { def: ComponentDefinition; name: string }) {
       </div>
     );
   }
+  const title = s.label || name;
+  const atMinimum = s.type === 'enum' && s.options.length <= 2;
   return (
-    <div className="contract-group" role="group" aria-label={s.label || name} data-state={name}>
-      <div className="contract-row">
-        <div className="contract-row-main">
-          <Field label="State" controlId={`${id}-label`}>
+    <div className="contract-group" role="group" aria-label={title} data-state={name}>
+      <div className="field">
+        <label htmlFor={`${id}-label`}>State</label>
+        <div className="contract-row">
+          <div className="contract-row-main">
             <DraftInput
               id={`${id}-label`}
+              aria-describedby={`${id}-uses`}
               value={s.label}
               limit={LABEL_MAX}
+              quietCount
               onCommit={(v) => {
                 if (!v.trim()) return false;
-                void run(def.id, (d) => renameStateOp(d, name, v), `Rename ${s.label || name} state`);
+                void run(def.id, (d) => renameStateOp(d, name, v), `Rename ${title} state`);
               }}
             />
-          </Field>
-          <span className="faint contract-meta">
-            {KIND_WORDS[s.type]} · {uses.length ? `used by ${uses.join(', ')}` : 'not used yet'}
-          </span>
+            {uses.length > 2 ? (
+              <details className="contract-uses">
+                {/* Led by what it discloses, so it is not read as opening the options below. */}
+                <summary className="contract-meta" id={`${id}-uses`}>
+                  Used by {uses.length} elements · {KIND_WORDS[s.type]}
+                </summary>
+                <ul className="contract-meta">
+                  {uses.map((u) => (
+                    <li key={u}>{u}</li>
+                  ))}
+                </ul>
+              </details>
+            ) : (
+              <span className="contract-meta" id={`${id}-uses`}>
+                {KIND_WORDS[s.type]} · {uses.length ? `used by ${uses.join(', ')}` : 'not used yet'}
+              </span>
+            )}
+            {uses.length > 0 && (
+              <span className="contract-meta" id={`${id}-stays`}>
+                Clear its uses to remove it.
+              </span>
+            )}
+          </div>
+          <button
+            className="icon-btn sm"
+            aria-label={`Remove ${title}`}
+            aria-disabled={uses.length > 0 || undefined}
+            aria-describedby={uses.length ? `${id}-uses ${id}-stays` : undefined}
+            title={uses.length ? undefined : 'Remove'}
+            onClick={() => !uses.length && void run(def.id, (d) => removeStateOp(d, name), `Remove ${title} state`)}
+          >
+            <Trash2 />
+          </button>
         </div>
-        <button
-          className="icon-btn sm"
-          aria-label={`Remove ${s.label || name}`}
-          title={uses.length ? 'Still used: clear those first' : 'Remove'}
-          onClick={() => void run(def.id, (d) => removeStateOp(d, name), `Remove ${s.label || name} state`)}
-        >
-          <Trash2 />
-        </button>
       </div>
       {s.type === 'item' ? (
-        <Field label="Each placement starts" hint={`At this ${(def.properties[s.list] as { itemLabel?: string } | undefined)?.itemLabel?.toLowerCase() || 'item'} of ${def.properties[s.list]?.label || s.list} (the last one when a placement has fewer). Buttons in a repeat of the list make their item the active one; content there shows for it under Conditions.`}>
-          <select
-            className="select sm"
-            aria-label={`Where ${s.label || name} starts`}
-            value={String(s.initial)}
-            onChange={(e) => void run(def.id, (d) => initialStateOp(d, name, Number(e.target.value)), `Start ${s.label || name} at item ${Number(e.target.value) + 1}`)}
-          >
+        <Field
+          label="Each placement starts on"
+          hint={`This ${(def.properties[s.list] as { itemLabel?: string } | undefined)?.itemLabel?.toLowerCase() || 'item'} of ${def.properties[s.list]?.label || s.list} (the last one when a placement has fewer). Buttons in a repeat of the list make their item the active one; content there shows for it under Conditions.`}
+        >
+          <select className="select sm" value={String(s.initial)} onChange={(e) => void run(def.id, (d) => initialStateOp(d, name, Number(e.target.value)), `Start ${title} at item ${Number(e.target.value) + 1}`)}>
             {itemStatePositions(def, s).map((o) => (
               <option key={o.value} value={o.value}>
                 {o.label}
@@ -142,55 +169,57 @@ function StateGroup({ def, name }: { def: ComponentDefinition; name: string }) {
         </Field>
       ) : s.type === 'boolean' ? (
         <Field label="Each placement starts">
-          <select
-            className="select sm"
-            aria-label={`Where ${s.label || name} starts`}
-            value={s.initial ? 'on' : 'off'}
-            onChange={(e) => void run(def.id, (d) => initialStateOp(d, name, e.target.value === 'on'), `Start ${s.label || name} ${e.target.value}`)}
-          >
+          <select className="select sm" value={s.initial ? 'on' : 'off'} onChange={(e) => void run(def.id, (d) => initialStateOp(d, name, e.target.value === 'on'), `Start ${title} ${e.target.value}`)}>
             <option value="off">Off</option>
             <option value="on">On</option>
           </select>
         </Field>
       ) : (
         <>
-          <ul className="contract-list" aria-label={`${s.label || name} options`}>
+          <ul className="contract-list" aria-label={`${title} options`}>
             {s.options.map((o) => (
               <li key={o.value} className="contract-row" data-option={o.value}>
                 <div className="contract-row-main">
                   <DraftInput
-                    className="sm"
+                    className="input sm"
                     value={o.label}
                     limit={LABEL_MAX}
+                    quietCount
                     ariaLabel={`Name of the ${o.label} option`}
                     onCommit={(v) => {
                       if (!v.trim()) return false;
                       void run(def.id, (d) => renameOptionOp(d, name, o.value, v), `Rename ${o.label} option`);
                     }}
                   />
-                  <span className="faint contract-meta">
-                    {s.initial === o.value ? (
-                      'Each placement starts here'
-                    ) : (
-                      <button className="link-btn" onClick={() => void run(def.id, (d) => initialStateOp(d, name, o.value), `Start ${s.label || name} at ${o.label}`)}>
-                        Start here
-                      </button>
-                    )}
-                  </span>
                 </div>
                 <button
                   className="icon-btn sm"
                   aria-label={`Remove ${o.label}`}
-                  title={s.options.length <= 2 ? 'A choice keeps two options or more' : 'Remove'}
-                  disabled={s.options.length <= 2}
-                  onClick={() => void run(def.id, (d) => removeOptionOp(d, name, o.value), `Remove ${o.label} option`)}
+                  title={atMinimum ? undefined : 'Remove'}
+                  aria-disabled={atMinimum || undefined}
+                  aria-describedby={atMinimum ? `${id}-minimum` : undefined}
+                  onClick={() => !atMinimum && void run(def.id, (d) => removeOptionOp(d, name, o.value), `Remove ${o.label} option`)}
                 >
                   <Trash2 />
                 </button>
               </li>
             ))}
           </ul>
-          <AddOption def={def} name={name} label={s.label || name} />
+          {atMinimum && (
+            <p className="insp-note muted" id={`${id}-minimum`}>
+              A state with options keeps at least two.
+            </p>
+          )}
+          <AddOption def={def} name={name} label={title} />
+          <Field label="Each placement starts on" controlId={`${id}-start`}>
+            <select id={`${id}-start`} className="select sm" value={s.initial} onChange={(e) => void run(def.id, (d) => initialStateOp(d, name, e.target.value), `Start ${title} at ${s.options.find((o) => o.value === e.target.value)?.label ?? e.target.value}`)}>
+              {s.options.map((o) => (
+                <option key={o.value} value={o.value}>
+                  {o.label}
+                </option>
+              ))}
+            </select>
+          </Field>
         </>
       )}
     </div>
@@ -203,6 +232,7 @@ const onEnter = (add: () => void) => (e: KeyboardEvent<HTMLInputElement>) => {
 };
 
 function AddOption({ def, name, label }: { def: ComponentDefinition; name: string; label: string }) {
+  const id = useId();
   const [text, setText] = useState('');
   const s = declaredState(def, name);
   const full = s?.type === 'enum' && s.options.length >= MAX_STATE_OPTIONS;
@@ -213,16 +243,34 @@ function AddOption({ def, name, label }: { def: ComponentDefinition; name: strin
     if ((await run(def.id, (d) => addOptionOp(d, name, sent), `Add ${sent.trim()} option`)) !== null) setText((t) => (t === sent ? '' : t));
   };
   return (
-    <div className="contract-add">
-      <input className="input sm" value={text} placeholder="New option" aria-label={`New ${label.toLowerCase()} option`} maxLength={LABEL_MAX} onChange={(e) => setText(e.target.value)} onKeyDown={onEnter(() => void add())} />
-      <button className="btn btn-sm" disabled={!text.trim() || full} title={full ? `A choice can have at most ${MAX_STATE_OPTIONS} options` : undefined} onClick={() => void add()}>
-        <Plus aria-hidden="true" /> Add
-      </button>
-    </div>
+    <>
+      <div className="contract-add">
+        <input
+          className="input sm"
+          value={text}
+          placeholder="New option"
+          aria-label={`New ${label.toLowerCase()} option`}
+          aria-describedby={full ? `${id}-full` : undefined}
+          maxLength={LABEL_MAX}
+          disabled={full}
+          onChange={(e) => setText(e.target.value)}
+          onKeyDown={onEnter(() => void add())}
+        />
+        <button className="btn btn-sm" disabled={!text.trim() || full} onClick={() => void add()}>
+          <Plus aria-hidden="true" /> Add option
+        </button>
+      </div>
+      {full && (
+        <p className="insp-note muted" id={`${id}-full`}>
+          It has {MAX_STATE_OPTIONS} options, the most a state can have.
+        </p>
+      )}
+    </>
   );
 }
 
 function NewState({ def }: { def: ComponentDefinition }) {
+  const id = useId();
   const [label, setLabel] = useState('');
   const [type, setType] = useState<UiStateSchema['type']>('enum');
   const [options, setOptions] = useState('');
@@ -231,8 +279,16 @@ function NewState({ def }: { def: ComponentDefinition }) {
   const list = lists.some((l) => l.name === chosenList) ? chosenList : lists[0]?.name;
   const listed = optionLabels(options);
   const problem = newStateProblem(def, label, type, listed, list);
+  // A problem is said once there is something to say it about: an untouched form only waits for its name. Once an add
+  // is refused for it, it is an error on the field to fix, until that is fixed.
+  const [tried, setTried] = useState(false);
+  const shown = problem && (tried || label.trim() || options.trim()) ? problem : null;
+  const refused = tried && !!problem;
+  const badName = refused && !label.trim();
+  const badOptions = refused && !badName && type === 'enum';
   const add = async () => {
-    if (problem) return;
+    if (problem) return setTried(true);
+    setTried(false);
     const [sentLabel, sentOptions] = [label, options];
     const done = await run(def.id, (d) => (newStateProblem(d, label, type, listed, list) ? null : addStateOp(d, label, type, listed, list)), `Add ${label.trim()} state`);
     // Only what was sent is cleared: text typed while it was being saved stays.
@@ -242,19 +298,26 @@ function NewState({ def }: { def: ComponentDefinition }) {
     }
   };
   const any = Object.keys(def.state ?? {}).length > 0;
+  const button = (
+    <button className="btn btn-sm contract-add-end" disabled={!!problem} aria-describedby={shown ? `${id}-problem` : `${id}-start`} onClick={() => void add()}>
+      <Plus aria-hidden="true" /> Add state
+    </button>
+  );
   return (
-    <div className="contract-group" role="group" aria-label="New UI state">
-      <div className="field-label">{any ? 'Another state' : 'New state'}</div>
+    <div className="contract-group" role="group" aria-labelledby={`${id}-title`}>
+      <div className="field-label" id={`${id}-title`}>
+        {any ? 'Another state' : 'New state'}
+      </div>
       <div className="contract-add">
-        <input className="input sm" value={label} placeholder={type === 'enum' ? 'Name, e.g. Billing' : 'Name, e.g. Menu open'} aria-label="Name of the state" maxLength={LABEL_MAX} onChange={(e) => setLabel(e.target.value)} onKeyDown={onEnter(() => void add())} />
-        <select className="select sm" aria-label="Kind of state" value={type} onChange={(e) => setType(e.target.value as UiStateSchema['type'])}>
-          <option value="enum">Choice</option>
-          <option value="boolean">Yes/no</option>
+        <input className="input sm" value={label} placeholder={type === 'enum' ? 'Name, e.g. Billing' : 'Name, e.g. Menu open'} aria-label="Name of the state" aria-describedby={shown ? `${id}-problem` : undefined} aria-invalid={badName || undefined} maxLength={LABEL_MAX} onChange={(e) => setLabel(e.target.value)} onKeyDown={onEnter(() => void add())} />
+        <select className="select sm contract-kind" aria-label="Kind of state" value={type} onChange={(e) => setType(e.target.value as UiStateSchema['type'])}>
+          <option value="enum">Options</option>
+          <option value="boolean">Yes or no</option>
           {(lists.length > 0 || type === 'item') && <option value="item">Active item of a list</option>}
         </select>
       </div>
-      {type === 'item' && (
-        <div className="contract-add">
+      <div className="contract-add">
+        {type === 'item' && (
           <select className="select sm" aria-label="The list whose active item it holds" value={list ?? ''} onChange={(e) => setList(e.target.value)}>
             {lists.map((l) => (
               <option key={l.name} value={l.name}>
@@ -262,21 +325,19 @@ function NewState({ def }: { def: ComponentDefinition }) {
               </option>
             ))}
           </select>
-        </div>
-      )}
-      {type === 'enum' && (
-        <div className="contract-add">
-          <input className="input sm" value={options} placeholder="Options, e.g. Monthly, Annual" aria-label="Its options, separated by commas" onChange={(e) => setOptions(e.target.value)} onKeyDown={onEnter(() => void add())} />
-        </div>
-      )}
-      <div className="contract-add">
-        <button className="btn btn-sm" disabled={!!problem} title={problem ?? undefined} onClick={() => void add()}>
-          <Plus aria-hidden="true" /> Add state
-        </button>
+        )}
+        {type === 'enum' && <input className="input sm" value={options} placeholder="Options, e.g. Monthly, Annual" aria-label="Its options, separated by commas" aria-describedby={shown ? `${id}-problem` : undefined} aria-invalid={badOptions || undefined} onChange={(e) => setOptions(e.target.value)} onKeyDown={onEnter(() => void add())} />}
+        {button}
       </div>
-      <p className="insp-note faint">
-        {type === 'enum' ? 'Each placement starts at the first option, such as the first tab.' : type === 'item' ? 'Each placement starts at the first item, such as the first step: its buttons choose another, and what shows for it follows.' : 'Each placement starts off, such as a closed panel.'}
-      </p>
+      {shown ? (
+        <p className={refused ? 'field-error' : 'insp-note muted'} id={`${id}-problem`}>
+          {shown}
+        </p>
+      ) : (
+        <p className="insp-note muted" id={`${id}-start`}>
+          {type === 'enum' ? 'Each placement starts on the first option.' : type === 'item' ? 'Each placement starts on the first item.' : 'Each placement starts off.'}
+        </p>
+      )}
     </div>
   );
 }
@@ -299,7 +360,12 @@ export function ClickActionSection({ def, node, level }: { def: ComponentDefinit
     <Section title="When clicked" id="def-click" level={level} scope={action ? actionWords(def, action) : undefined}>
       {choices.length > 1 || action ? (
         <>
-          <Field label="Also changes" controlId={id} hint="The button keeps its link. With no link it only does this, and every placement shows it.">
+          <Field
+            label="Also changes"
+            controlId={id}
+            hint="The button keeps its link. With no link it only does this, and every placement shows it."
+            error={!known && action ? `This changes “${action.state}” in a way the component’s UI state no longer allows. Choose another, or clear it.` : undefined}
+          >
             <select
               id={id}
               className="select"
@@ -317,8 +383,7 @@ export function ClickActionSection({ def, node, level }: { def: ComponentDefinit
               {!known && action && <option value={`missing:${key}`}>{actionWords(def, action)} (missing)</option>}
             </select>
           </Field>
-          {!known && action && <div className="field-error">This changes “{action.state}” in a way the component’s UI state no longer allows. Choose another, or clear it.</div>}
-          {stepping && (
+          {stepping && known && (
             <SwitchRow
               checked={action.wrap === true}
               label="Go round at the end"
@@ -358,8 +423,11 @@ export function OverlaySection({ def, node, level }: { def: ComponentDefinition;
       <Field
         label="Show it"
         controlId={id}
+        error={mode && refusal ? `It shows in its place for now: this container ${refusal}` : undefined}
         hint={
-          mode && !refusal && opens
+          !mode && refusal
+            ? `This container ${refusal}`
+            : mode && !refusal && opens
             ? `Over the page while ${opens}: its buttons open and close it, and Escape closes it. Preview it open in Component Studio to edit what is inside.`
             : undefined
         }
@@ -382,7 +450,6 @@ export function OverlaySection({ def, node, level }: { def: ComponentDefinition;
           ))}
         </select>
       </Field>
-      {refusal && <p className={mode ? 'field-error' : 'insp-note faint'}>{mode ? `It shows in its place for now: this container ${refusal}` : `This container ${refusal}`}</p>}
     </Section>
   );
 }

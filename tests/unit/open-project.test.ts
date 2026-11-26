@@ -5,7 +5,7 @@
 import { createHash } from 'node:crypto';
 import { mkdirSync, mkdtempSync, promises as fsp, readFileSync, statSync, readdirSync, realpathSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { basename, join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 const state = vi.hoisted(() => ({ userData: '' }));
@@ -134,7 +134,7 @@ describe('readManifestSummary', () => {
     mkdirSync(join(dir, 'x'));
     writeFileSync(join(dir, 'siteorigin.project.json'), '{}');
     const r = await readManifestSummary(dir);
-    expect(r.ok && r.name).toBe(dir.split('/').pop());
+    expect(r.ok && r.name).toBe(basename(dir));
   });
 });
 

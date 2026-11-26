@@ -1,6 +1,6 @@
 import './PostTerms.css';
 import { useEffect, useId, useRef, useState } from 'react';
-import { Check, Pencil, Plus, Trash2, X } from 'lucide-react';
+import { Check, Pencil, Plus, Search, Trash2, X } from 'lucide-react';
 import type { Collection, EntryDoc } from '@shared/types';
 import type { EditOperation } from '@shared/ops';
 import { assignedTermIds, entriesWithTerm, hasArchivePages, termIdFor } from '@shared/collections';
@@ -12,6 +12,7 @@ import { DraftInput, Modal, Tabs } from '../components/ui';
 import { isImeComposing } from '../lib/ime';
 import { trackApply } from '../lib/pending';
 import { postAt, type PostRef } from '../lib/posts';
+import { entryNounLower } from '../lib/content';
 
 /**
  * The groupings a post is filed under: those its collection declares (the blog starts with categories and tags). One
@@ -104,8 +105,8 @@ export function PostTermFields({
         // The project moved on (its copy may still be on its way here): worked out again from it.
         await new Promise((done) => setTimeout(done, 50 * (tries + 1)));
       }
+      // Said beside the picker, with a way to try again (TermChecks), rather than in a toast that goes.
       refused();
-      toast('The post kept changing while its categories were being saved. Try again.', 'error');
       return null;
     };
     const run = async (): Promise<Sent | undefined> => {
@@ -113,7 +114,6 @@ export function PostTermFields({
         return await attempt();
       } catch {
         refused();
-        toast('That category or tag change could not be saved.', 'error');
         return null;
       }
     };
@@ -128,12 +128,12 @@ export function PostTermFields({
     change(taxonomyId, (_c, ids) =>
       ids.includes(termId) === on
         ? null
-        : { ops: [{ type: 'entry.update', collectionId: post.collectionId, entryId: post.entryId, terms: { [taxonomyId]: on ? [...ids, termId] : ids.filter((id) => id !== termId) } }], label: `${on ? 'File post under' : 'Take post out of'} “${label}”` }
+        : { ops: [{ type: 'entry.update', collectionId: post.collectionId, entryId: post.entryId, terms: { [taxonomyId]: on ? [...ids, termId] : ids.filter((id) => id !== termId) } }], label: `${on ? `File ${entryNounLower(collection)} under` : `Take ${entryNounLower(collection)} out of`} “${label}”` }
     );
   const add = (taxonomyId: string, label: string) =>
     change(taxonomyId, (c, ids) => {
       const existing = termCalled(c, taxonomyId, label);
-      if (existing) return ids.includes(existing.id) ? null : { ops: [{ type: 'entry.update', collectionId: post.collectionId, entryId: post.entryId, terms: { [taxonomyId]: [...ids, existing.id] } }], label: `File post under “${existing.label}”` };
+      if (existing) return ids.includes(existing.id) ? null : { ops: [{ type: 'entry.update', collectionId: post.collectionId, entryId: post.entryId, terms: { [taxonomyId]: [...ids, existing.id] } }], label: `File ${entryNounLower(collection)} under “${existing.label}”` };
       // The new term's ID is chosen here, as the engine would choose it, so the post is filed under it in the same step.
       const terms = (c.settings.taxonomies && Object.hasOwn(c.settings.taxonomies, taxonomyId) ? c.settings.taxonomies[taxonomyId].terms : undefined) ?? {};
       const termId = termIdFor(terms, label, undefined, assignedTermIds(c, taxonomyId));
@@ -154,6 +154,7 @@ export function PostTermFields({
           terms={termsOf(collection, t.id)}
           chosen={Array.isArray(entry.terms?.[t.id]) ? entry.terms[t.id] : []}
           revision={revision}
+          entry={entryNounLower(collection)}
           onToggle={(id, on, label) => toggle(t.id, id, on, label)}
           onAdd={(label) => add(t.id, label)}
         />
@@ -162,11 +163,15 @@ export function PostTermFields({
   );
 }
 
+/** Past this many terms a grouping's list is filtered by what is typed and scrolls, its chosen terms shown above it. */
+const MANY_TERMS = 12;
+
 function TermChecks({
   taxonomy,
   terms,
   chosen,
   revision,
+  entry,
   onToggle,
   onAdd
 }: {
@@ -174,6 +179,8 @@ function TermChecks({
   terms: Array<{ id: string; label: string }>;
   chosen: string[];
   revision: number;
+  /** What one entry is called ("post", "case study"). */
+  entry: string;
   onToggle: (termId: string, on: boolean, label: string) => Promise<Sent | undefined>;
   onAdd: (label: string) => Promise<Sent | undefined>;
 }) {
@@ -185,6 +192,8 @@ function TermChecks({
    */
   const [pending, setPending] = useState<Record<string, { on: boolean; seq: number; landedAt?: number }>>({});
   const clicks = useRef(0);
+  /** The last change the project refused, kept beside the list with a way to try it again until it lands. */
+  const [failed, setFailed] = useState<{ kind: 'toggle'; id: string; on: boolean; label: string } | { kind: 'add'; label: string } | null>(null);
   const chosenKey = chosen.join('\n');
   useEffect(() => {
     setPending((p) => {
@@ -200,9 +209,11 @@ function TermChecks({
         if (p[id]?.seq !== seq) return p;
         // Refused: the project's own state shows again. Landed: shown until the project's copy has caught up with it.
         if (r === null || (r && !r.ok)) {
+          setFailed({ kind: 'toggle', id, on, label });
           const { [id]: _gone, ...rest } = p;
           return rest;
         }
+        setFailed((f) => (f?.kind === 'toggle' && f.id === id ? null : f));
         // The project's copy may already be here, with this change or a later one: it decides from now.
         const landedAt = r?.revision ?? 0;
         if ((getState().snapshot?.revision ?? 0) >= landedAt) {
@@ -215,34 +226,43 @@ function TermChecks({
   };
   const ticked = (id: string) => (Object.hasOwn(pending, id) ? pending[id].on : chosen.includes(id));
   const noun = termNoun(taxonomy.id);
-  const submit = async () => {
-    const label = name.trim();
-    if (!label) return;
+  const many = terms.length > MANY_TERMS;
+  const typed = name.trim();
+  const needle = typed.toLowerCase();
+  // With many terms what is typed finds them too; with few, every one is in view anyway.
+  // A term whose change was refused stays in the list whatever is typed, marked, until it lands or is left.
+  const shown = many && needle ? terms.filter((t) => t.label.toLowerCase().includes(needle) || (failed?.kind === 'toggle' && failed.id === t.id)) : terms;
+  const same = typed ? terms.find((t) => t.label.trim().toLowerCase() === needle) : undefined;
+  // Typing a term's exact name and adding it files the entry under that term; one it is already under adds nothing.
+  const canAdd = !!typed && !(same && ticked(same.id));
+  /** Add the term typed, or again the one whose adding was refused (`retry`), whatever is typed now. */
+  const submit = async (retry?: string) => {
+    if (!retry && !canAdd) return;
+    const label = retry ?? typed;
     const r = await onAdd(label);
-    // Kept when refused, to try again; anything typed meanwhile is never cleared.
-    if (r !== null) setName((n) => (n.trim() === label ? '' : n));
+    // Kept when refused, to try again, and said beside the field; anything typed meanwhile is never cleared.
+    if (r === null) return setFailed({ kind: 'add', label });
+    setFailed((f) => (f?.kind === 'add' ? null : f));
+    setName((n) => (n.trim() === label ? '' : n));
   };
-  return (
-    <div className="post-terms" role="group" aria-labelledby={`${uid}-label`} data-taxonomy={taxonomy.id}>
-      <span id={`${uid}-label`} className="post-terms-label">
-        {taxonomy.label}
-      </span>
-      {terms.length > 0 && (
-        <div className="post-terms-list">
-          {terms.map((t) => (
-            <label key={t.id} className="post-term">
-              <input type="checkbox" checked={ticked(t.id)} onChange={(e) => toggle(t.id, e.target.checked, t.label)} />
-              <span>{t.label}</span>
-            </label>
-          ))}
-        </div>
-      )}
+  const picked = terms.filter((t) => ticked(t.id));
+  const box = (t: { id: string; label: string }) => (
+    <label key={t.id} className="post-term">
+      {/* Marked while a change to it was refused: the writer counts it as not saved, and Publish waits for it. */}
+      <input type="checkbox" checked={ticked(t.id)} aria-invalid={(failed?.kind === 'toggle' && failed.id === t.id) || undefined} onChange={(e) => toggle(t.id, e.target.checked, t.label)} />
+      <span>{t.label}</span>
+    </label>
+  );
+  const addRow = (
+    <div className="post-terms-add">
+      {many && <Search className="post-terms-find" aria-hidden="true" />}
       <input
-        className="input sm post-terms-add"
-        placeholder={`Add a ${noun}`}
-        aria-label={`Add a ${noun} to this post`}
+        className={`input sm${many ? ' with-icon' : ''}`}
+        placeholder={many ? `Find or add a ${noun}` : `New ${noun}`}
+        aria-label={many ? `Find or add a ${noun} for this ${entry}` : `Add a ${noun} to this ${entry}`}
         maxLength={80}
         value={name}
+        aria-invalid={failed?.kind === 'add' || undefined}
         onChange={(e) => setName(e.target.value)}
         onKeyDown={(e) => {
           if (e.key !== 'Enter' || isImeComposing(e)) return;
@@ -250,6 +270,49 @@ function TermChecks({
           void submit();
         }}
       />
+      <button type="button" className="btn btn-sm" disabled={!canAdd} onClick={() => void submit()}>
+        <Plus aria-hidden="true" /> {same && !ticked(same.id) ? 'Choose' : 'Add'}
+      </button>
+    </div>
+  );
+  return (
+    <div className="post-terms" role="group" aria-labelledby={`${uid}-label`} data-taxonomy={taxonomy.id}>
+      <span id={`${uid}-label`} className="post-terms-label">
+        {taxonomy.label}
+        {many && <span className="post-terms-count">{picked.length ? `${picked.length} of ${terms.length} chosen` : `${terms.length}, none chosen`}</span>}
+      </span>
+      {/* With many terms, those chosen stay together above the list, each removable. */}
+      {many && picked.length > 0 && (
+        <ul className="post-term-chips" aria-label={`Chosen ${taxonomy.label.toLowerCase()}`}>
+          {picked.map((t) => (
+            <li key={t.id} className="post-term-chip">
+              <span>{t.label}</span>
+              <button type="button" className="icon-btn sm" aria-label={`Remove “${t.label}”`} title="Remove" onClick={() => toggle(t.id, false, t.label)}>
+                <X />
+              </button>
+            </li>
+          ))}
+        </ul>
+      )}
+      {many && addRow}
+      {terms.length > 0 &&
+        (shown.length ? (
+          <div className={`post-terms-list${many ? ' many' : ''}`}>{shown.map(box)}</div>
+        ) : (
+          <p className="post-terms-none">No {taxonomy.label.toLowerCase()} match “{typed}”. Add it as a new {noun}.</p>
+        ))}
+      {!many && addRow}
+      {failed && (
+        <p className="field-error post-terms-failed" role="alert">
+          {failed.kind === 'add' ? `“${failed.label}” could not be added.` : failed.on ? `This ${entry} could not be filed under “${failed.label}”.` : `This ${entry} could not be taken out of “${failed.label}”.`}{' '}
+          <button type="button" className="link-btn" onClick={() => (failed.kind === 'add' ? void submit(failed.label) : (setFailed(null), toggle(failed.id, failed.on, failed.label)))}>
+            Try again
+          </button>{' '}
+          <button type="button" className="link-btn" onClick={() => setFailed(null)}>
+            Leave it
+          </button>
+        </p>
+      )}
     </div>
   );
 }

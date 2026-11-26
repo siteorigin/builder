@@ -207,9 +207,19 @@ try {
       await eventually(async () => assert.ok((await where(c)).scrollLeft > 0, `${label}: a sideways trackpad scroll moves the list`));
       await eventually(async () => assert.match(await status.innerText(), /^Slides [2-3]–[4-5] of 5$/, `${label}: and the count follows (${await status.innerText()})`), 5000);
     } else {
-      // A swipe to the left moves on a slide.
+      // A swipe to the left moves on a slide: a finger put down, moved, rested and lifted. Made of touch events, as
+      // Chromium's synthesized touch scroll gesture never scrolls on Windows (the page gets pointer moves and no touch
+      // moves). The finger rests before it lifts, as headless Chromium on Windows leaves a list a finger flicks where
+      // the finger left it, never snapping it to a slide; one lifted at rest snaps on every platform.
       const cdp = await context.newCDPSession(page);
-      await cdp.send('Input.synthesizeScrollGesture', { x: Math.round(box.x + box.width * 0.7), y: Math.round(box.y + box.height / 2), xDistance: -Math.round(box.width * 0.6), yDistance: 0, gestureSourceType: 'touch', speed: 1200 });
+      const [x, y, dx] = [Math.round(box.x + box.width * 0.7), Math.round(box.y + box.height / 2), -Math.round(box.width * 0.6)];
+      await cdp.send('Input.dispatchTouchEvent', { type: 'touchStart', touchPoints: [{ x, y }] });
+      for (let i = 1; i <= 10; i++) {
+        await cdp.send('Input.dispatchTouchEvent', { type: 'touchMove', touchPoints: [{ x: x + Math.round((dx * i) / 10), y }] });
+        await page.waitForTimeout(16);
+      }
+      await page.waitForTimeout(200);
+      await cdp.send('Input.dispatchTouchEvent', { type: 'touchEnd', touchPoints: [] });
       await eventually(async () => assert.equal(await status.innerText(), 'Slide 2 of 5', `${label}: a swipe shows the second slide`), 5000);
       await eventually(async () => assert.deepEqual((await where(c)).showing, [2], `${label}: and it settles on it`));
     }

@@ -1930,12 +1930,16 @@ export class ProjectSession extends EventEmitter {
           this.landing?.add(d.path);
           installed++;
         }
+        // The documents, their undo position and the revision change together, before the generated files are
+        // written: a snapshot taken while those land (which can take a second on Windows) never shows the new
+        // documents beside the History and revision of the step before, which would show one step too few to undo.
         this.state = next;
         this.docs = nextDocs;
+        if (planned) this.history = planned.history;
+        this.revision++;
         return this.publishGenerated(false, generated);
       });
       if (planned) await this.installHistory(planned.history);
-      this.revision++;
       await this.saveLocalState();
       if (journaled) await removeDurable(this.local('journal.json'));
     } catch (e) {
@@ -3647,6 +3651,28 @@ export class ProjectSession extends EventEmitter {
       }
     }
     return clean;
+  }
+
+  /** Give saved version `id` another name. What it holds, and when it was saved, stay as they are. */
+  renameVersion(id: string, name: string): Promise<{ ok: boolean; message?: string }> {
+    return this.serialize(async () => {
+      const blocked = await this.writeBlocked();
+      if (blocked) return { ok: false, message: blocked.error?.message };
+      if (this.versions.problem) return { ok: false, message: this.versions.problem };
+      const clean = name.replace(/\s+/g, ' ').trim();
+      if (!clean) return { ok: false, message: 'Give the version a name.' };
+      if (clean.length > VERSION_NAME_MAX) return { ok: false, message: `Use a name of at most ${VERSION_NAME_MAX} characters.` };
+      const v = this.versions.versions.find((x) => x.id === id);
+      if (!v) return { ok: false, message: 'That saved version is no longer there.' };
+      if (v.name === clean) return { ok: true };
+      try {
+        await this.versions.publish(this.versions.versions.map((x) => (x.id === id ? { ...x, name: clean } : x)));
+      } catch (e) {
+        return { ok: false, message: (e as Error).message };
+      }
+      this.emit('history');
+      return { ok: true };
+    });
   }
 
   /** Delete saved version `id`, and what no other version holds. */

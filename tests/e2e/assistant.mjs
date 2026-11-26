@@ -310,7 +310,9 @@ try {
   });
   const historyBeforeStop = await applied();
   const held = await send('Make the call to action warmer');
-  await eventually(async () => assert.equal(await gateState('stop-held'), 'reached'));
+  // The finish is asked for once the change has landed, and the run's first change on a page measures that page in the
+  // preview first, at each width it checks (#742): about 9 s on macOS, longer on a slower machine.
+  await eventually(async () => assert.equal(await gateState('stop-held'), 'reached'), 60000);
   await previewHas('heading', 'Talk to the studio');
   for (const name of ['Earlier conversations', 'New conversation']) {
     const e = await refused('ui.click', { target: { ref: (await find('button', name)).ref }, waitMs: 300 }, 'NOT_ACTIONABLE');

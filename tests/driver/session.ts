@@ -16,7 +16,7 @@ import { execFile } from 'node:child_process';
 import type { ChildProcess } from 'node:child_process';
 import { createHash, randomBytes } from 'node:crypto';
 import { constants, existsSync, readdirSync, readFileSync, renameSync, rmSync, writeFileSync } from 'node:fs';
-import { mkdir, mkdtemp, open, readdir, readFile, realpath, rename, rm, stat, writeFile } from 'node:fs/promises';
+import { lstat, mkdir, mkdtemp, open, readdir, readFile, realpath, rename, rm, stat, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { dirname, isAbsolute, join, relative, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -34,6 +34,7 @@ import { SECRET_INPUTS, elementFor, frameSecrets, parseLocateArgs, parseSnapshot
 import type { ObserveEnv, Shots, SnapshotResult } from './observe.ts';
 import { inspectExport, judgeApp, judgeContext, judgeLocate, judgeTerminal, parseCondition, parseInspectArgs, probeApp, readProjectDocs, toSessionPath } from './outcomes.ts';
 import type { AppProbe, Checkpoint, Condition, ExportBrief, LocateSample, Verdict } from './outcomes.ts';
+import { keepAtFullSpeed } from './full-speed.ts';
 import { killTree, killTreeSync, ownedEntries, processTable } from './processes.ts';
 import type { ProcessEntry } from './processes.ts';
 import { DriverError, PROTOCOL_VERSION, errorInfo, failure, frameIdentity, parseRequest, success } from './protocol.ts';
@@ -133,12 +134,16 @@ export async function readSavedImage(
   const artifacts = await realpath(artifactsDir).catch(() => null);
   const folder = await realpath(dirname(path)).catch(() => null);
   if (!artifacts || !folder || !isInside(artifacts, folder)) throw moved();
+  // A link put in its place is refused before it is opened: Windows has no O_NOFOLLOW, so its open follows one.
+  const before = await lstat(path).catch(() => null);
+  if (!before?.isFile()) throw moved();
   // Non-blocking: something put in its place that is not a file (a FIFO) cannot hold the read up; it fails isFile below.
-  const file = await open(path, constants.O_RDONLY | constants.O_NOFOLLOW | (constants.O_NONBLOCK ?? 0)).catch(() => null);
+  const file = await open(path, constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0) | (constants.O_NONBLOCK ?? 0)).catch(() => null);
   if (!file) throw moved();
   try {
     const info = await file.stat();
-    if (!info.isFile()) throw moved();
+    // The file opened is the one checked, not a link swapped in since.
+    if (!info.isFile() || info.ino !== before.ino || info.dev !== before.dev) throw moved();
     if (info.size > limit) throw tooLarge(info.size);
     const png = await file.readFile();
     if (png.length > limit) throw tooLarge(png.length);
@@ -189,7 +194,10 @@ export function isInside(parent: string, child: string): boolean {
   return rel === '' || (!!rel && !rel.startsWith('..') && !isAbsolute(rel));
 }
 
-/** Variables an app may need from the environment to run at all; nothing else of the caller's reaches it. */
+/**
+ * Variables an app may need from the environment to run at all; nothing else of the caller's reaches it. Windows
+ * names them without regard to case (its PATH is `Path`), so there they match whatever their case.
+ */
 const ENV_ALLOW = new Set([
   'PATH',
   'LANG',
@@ -205,12 +213,9 @@ const ENV_ALLOW = new Set([
   'XAUTHORITY',
   'DBUS_SESSION_BUS_ADDRESS',
   'SystemRoot',
-  'SYSTEMROOT',
   'SystemDrive',
   'windir',
-  'WINDIR',
   'ComSpec',
-  'COMSPEC',
   'PATHEXT',
   'ProgramFiles',
   'ProgramFiles(x86)',
@@ -221,6 +226,13 @@ const ENV_ALLOW = new Set([
   'PROCESSOR_ARCHITECTURE',
   'OS'
 ]);
+const ENV_ALLOW_FOLDED = new Set([...ENV_ALLOW].map((k) => k.toUpperCase()));
+
+/** Whether the caller's variable `name` reaches the app, on `platform`. */
+function passesOn(name: string, platform: NodeJS.Platform): boolean {
+  if (platform === 'win32') return ENV_ALLOW_FOLDED.has(name.toUpperCase()) || name.toUpperCase().startsWith('LC_');
+  return ENV_ALLOW.has(name) || name.startsWith('LC_');
+}
 
 export interface SessionPaths {
   root: string;
@@ -238,9 +250,12 @@ export interface SessionPaths {
 }
 
 /** The environment a session's app runs with: an allowlist of the caller's, then the session's own folders. */
-export function sessionEnv(paths: SessionPaths, { headed = false, base = process.env }: { headed?: boolean; base?: NodeJS.ProcessEnv } = {}): Record<string, string> {
+export function sessionEnv(
+  paths: SessionPaths,
+  { headed = false, base = process.env, platform = process.platform }: { headed?: boolean; base?: NodeJS.ProcessEnv; platform?: NodeJS.Platform } = {}
+): Record<string, string> {
   const env: Record<string, string> = {};
-  for (const [k, v] of Object.entries(base)) if (v !== undefined && (ENV_ALLOW.has(k) || k.startsWith('LC_'))) env[k] = v;
+  for (const [k, v] of Object.entries(base)) if (v !== undefined && passesOn(k, platform)) env[k] = v;
   Object.assign(env, {
     HOME: paths.home,
     USERPROFILE: paths.home,
@@ -354,7 +369,11 @@ async function startElectron(opts: ElectronStart): Promise<ElectronApplication> 
   subscribe('child_process', onMessage);
   const release = tolerateStrayLaunchFailures();
   try {
-    return await electron.launch({ args: ['.', ...(opts.args ?? []), token], cwd: opts.cwd, env: definedEnv(opts.env), timeout: opts.timeoutMs, ...(opts.artifactsDir ? { artifactsDir: opts.artifactsDir } : {}) });
+    const app = await electron.launch({ args: ['.', ...(opts.args ?? []), token], cwd: opts.cwd, env: definedEnv(opts.env), timeout: opts.timeoutMs, ...(opts.artifactsDir ? { artifactsDir: opts.artifactsDir } : {}) });
+    // Its window is never shown, so Windows would throttle it (full-speed.ts).
+    const pid = app.process().pid;
+    if (pid) app.once('close', keepAtFullSpeed(pid));
+    return app;
   } finally {
     unsubscribe('child_process', onMessage);
     release();
@@ -2279,6 +2298,9 @@ export class Session {
 
   private async teardown(args: CloseArgs): Promise<CloseResult> {
     const wasStarted = this.state !== 'new';
+    // An app still launching when the close begins is ended, never asked to quit, even if Playwright hands it over
+    // while the close is under way (reading the process table first takes a second on Windows).
+    const midLaunch = wasStarted && !this.app && this.appRunning();
     this.closeRequested = true;
     this.state = 'closing';
     this.keeping = this.keepsArtifacts(args);
@@ -2314,7 +2336,7 @@ export class Session {
     // still running.
     const problems: string[] = [];
     await this.ownedNow().catch(() => undefined);
-    if (this.app && !this.appExited) {
+    if (this.app && !this.appExited && !midLaunch) {
       const quit = await bounded(
         this.app.close().then(
           () => true,
@@ -2324,7 +2346,7 @@ export class Session {
         false
       );
       if (!quit) ended = 'killed';
-    } else if (this.appRunning()) ended = 'killed';
+    } else if (midLaunch || this.appRunning()) ended = 'killed';
     // Even an app that quit can leave a child behind (an npm install whose parent is gone): sweep what it owned.
     const sweep = async (final: boolean) => {
       if (!this.pid) return [];

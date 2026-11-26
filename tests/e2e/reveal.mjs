@@ -66,11 +66,17 @@ await eventually(async () => {
 });
 
 step('picking the revealed answer on the page keeps its question open, and shows its text as it is typed there');
-// Every time the question closes from here on is counted: the hand-overs below must never close it, even briefly.
+// Every time the question closes on the page from here on is counted: the hand-overs below must never close it, even
+// briefly. The save's update can still be on its way (the page showed the typed answer already) and render the FAQ
+// afresh: the question is then a new element, so it is followed by its words wherever it is rendered, and the one the
+// update took off the page, closed once it is gone, is not counted.
 await questions.nth(1).evaluate((d) => {
   window.closes = 0;
+  const question = d.querySelector('summary').textContent.trim();
   // Each record whose old value was set is one close, however soon it opened again.
-  new MutationObserver((records) => (window.closes += records.filter((r) => r.oldValue !== null).length)).observe(d, { attributes: true, attributeFilter: ['open'], attributeOldValue: true });
+  new MutationObserver((records) => {
+    for (const r of records) if (r.oldValue !== null && r.target.isConnected && r.target.querySelector('summary')?.textContent.trim() === question) window.closes++;
+  }).observe(document.body, { subtree: true, attributes: true, attributeFilter: ['open'], attributeOldValue: true });
 });
 // Dispatched on the answer itself: the scaled canvas throws off a pointer's aim at text this far down the page.
 await answerOnPage.dispatchEvent('click', { altKey: true });

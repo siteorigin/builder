@@ -118,6 +118,7 @@ assert.deepEqual(await components(), {}, 'Studio B starts with no components of 
 step('One click imports and places it, and the strip’s Undo takes both back');
 const pageBefore = (await snapshot()).state.pages[(await snapshot()).state.site.homePageId];
 const entries = await applied();
+const revisionBefore = (await snapshot()).revision;
 await savedTile('Feature band').click();
 await eventually(async () => assert.deepEqual(await components(), { 'Feature band': 1 }, 'imported and placed once'));
 await eventually(async () => assert.equal(await applied(), entries + 1, 'as one change'));
@@ -129,6 +130,9 @@ await win.locator('.toast', { hasText: /^Copied Feature band/ }).waitFor();
 await win.getByRole('button', { name: 'Undo adding Feature band' }).click();
 await eventually(async () => assert.deepEqual(await components(), {}, 'one Undo takes the component back'));
 assert.deepEqual((await snapshot()).state.pages[st.site.homePageId], pageBefore, 'and its placement');
+// The project holds the Undo while its files are still being written, and counts it once they are. An import started
+// before then finds the project changed under it, and asks for the import again.
+await eventually(async () => assert.equal((await snapshot()).revision, revisionBefore + 2, 'the Undo is done'), 30000);
 await savedTile('Feature band').waitFor();
 
 step('Import component… brings a file in through the native open chooser, without placing it');

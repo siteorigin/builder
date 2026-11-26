@@ -1,9 +1,11 @@
 import type { VersionReview } from '@shared/api';
 import { plural } from './storage';
+import { dayAndTime } from './when';
 
-/** When a version was saved, as History shows it: the date as well as the time, since versions are kept for long. */
-export function savedAt(iso: string, locale?: string): string {
-  return new Date(iso).toLocaleString(locale, { day: 'numeric', month: 'short', year: 'numeric', hour: '2-digit', minute: '2-digit' });
+/** When a version was saved, as History shows it: the day as well as the time (“Today, 2:34 PM”, “Nov 21, 10:34 AM”, the
+ *  year only when it is another), since versions are kept for long. */
+export function savedAt(iso: string, locale?: string, now: Date = new Date()): string {
+  return dayAndTime(iso, now, locale);
 }
 
 /** At most this many page titles are named on a line; the rest are counted. */

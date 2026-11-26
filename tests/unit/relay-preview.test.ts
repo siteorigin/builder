@@ -202,10 +202,17 @@ describe('stopping responses', () => {
     await reader.read();
     abort.abort();
     await reader.cancel().catch(() => {});
-    // The host is still sending: the next bytes find the guest gone. Well before the 1-second idle deadline.
+    // The host is still sending, as a host streaming a video does: its next bytes find the guest gone, well before the
+    // idle deadline. Where the runtime learns a connection closed only from a write that fails (workerd on Windows), the
+    // socket can still take the first write after the close, so it is the one after that which tells.
     await wait(100);
-    room.host.send('host-to-relay', { type: 'preview:response-chunk', requestId: request.requestId, seq: 1, data: toBase64Url(randomBytes(1000)) });
-    expect(await room.host.next('preview:abort', 900)).toEqual({ type: 'preview:abort', requestId: request.requestId, code: 'CANCELLED' });
+    const until = Date.now() + 900;
+    let stop: unknown;
+    for (let seq = 1; !stop && Date.now() < until; seq++) {
+      room.host.send('host-to-relay', { type: 'preview:response-chunk', requestId: request.requestId, seq, data: toBase64Url(randomBytes(1000)) });
+      stop = await room.host.next('preview:abort', 100).catch(() => undefined);
+    }
+    expect(stop).toEqual({ type: 'preview:abort', requestId: request.requestId, code: 'CANCELLED' });
     room.host.close();
   });
 

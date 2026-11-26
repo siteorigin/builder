@@ -249,6 +249,28 @@ describe('saved versions', () => {
     for (const f of a.files) expect(existsSync(join(dir, f))).toBe(true);
   });
 
+  it('renames a version, keeping what it holds and when it was saved', async () => {
+    const { dir, s } = await make();
+    const saved = await ok(s.saveVersion('First draft'));
+    const [before] = s.versionsInfo().list;
+    const stored = objects(dir).length;
+
+    await ok(s.renameVersion(saved.id!, '  Approved   by client '));
+    const [after] = s.versionsInfo().list;
+    expect(after).toEqual({ ...before, name: 'Approved by client' });
+    expect(objects(dir)).toHaveLength(stored);
+
+    expect(await s.renameVersion(saved.id!, '   ')).toMatchObject({ ok: false, message: 'Give the version a name.' });
+    expect((await s.renameVersion(saved.id!, 'x'.repeat(81))).ok).toBe(false);
+    expect(await s.renameVersion('vgone', 'Anything')).toMatchObject({ ok: false, message: 'That saved version is no longer there.' });
+    expect(s.versionsInfo().list[0].name).toBe('Approved by client');
+
+    // The new name is on disk, not only in this session.
+    await s.close();
+    const again = await reopen(dir);
+    expect(again.versionsInfo().list[0]).toEqual(after);
+  });
+
   it('saves though an image is missing, says which, and restores the rest', async () => {
     const { dir, s } = await make();
     const a = picture(dir, 'photo', 1);
@@ -291,6 +313,7 @@ describe('saved versions', () => {
     expect(await ro.restoreVersion(saved.id!, ro.revision)).toMatchObject({ ok: false, message: 'Open elsewhere.' });
     expect(await ro.saveVersion('Nope')).toMatchObject({ ok: false, message: 'Open elsewhere.' });
     expect(await ro.deleteVersion(saved.id!)).toMatchObject({ ok: false, message: 'Open elsewhere.' });
+    expect(await ro.renameVersion(saved.id!, 'Renamed')).toMatchObject({ ok: false, message: 'Open elsewhere.' });
   });
 
   it('refuses a damaged version without changing anything', async () => {

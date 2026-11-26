@@ -6,12 +6,12 @@
 import { afterAll, describe, expect, it } from 'vitest';
 import { cpSync, mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { basename, join } from 'node:path';
 import type { ProjectState, RichText } from '@shared/types';
 import { createStarterState } from '@catalogue/starters';
 import { applyOperations } from '@engine/apply';
 import { validateOperation } from '@shared/ops';
-import { promises as fsp, realpathSync } from 'node:fs';
+import { constants as fsConstants, promises as fsp, realpathSync } from 'node:fs';
 import { vi } from 'vitest';
 import { validateState } from '@engine/validate';
 import { readWordPress, wordpressDay } from '../../src/main/posts-import/wxr';
@@ -154,9 +154,9 @@ describe('reading a folder of Markdown posts', () => {
     expect(note.body[0]).toMatchObject({ spans: expect.arrayContaining([{ text: 'link to the open day', link: { type: 'entry', target: 'post:md:2019-05-01-open-day.md' } }]) });
     expect(winter.tags.map((t) => t.label)).toEqual(['hours']);
     expect(text(winter.body)).toEqual(['We close at four in winter.', '[m2]']);
-    expect(source.media.map((m) => [m.key, m.ref, m.path?.slice(dir.length)])).toEqual([
-      ['m1', 'images/oven.png', '/images/oven.png'],
-      ['m2', 'snow.jpg', '/winter-hours/snow.jpg']
+    expect(source.media.map((m) => [m.key, m.ref, m.path])).toEqual([
+      ['m1', 'images/oven.png', join(dir, 'images', 'oven.png')],
+      ['m2', 'snow.jpg', join(dir, 'winter-hours', 'snow.jpg')]
     ]);
   });
 
@@ -204,13 +204,13 @@ describe('reading a folder of Markdown posts', () => {
     writeFileSync(join(outside, 'secret.jpg'), 'secret');
     symlinkSync(join(outside, 'secret.jpg'), join(dir, 'images', 'linked.jpg'));
     symlinkSync(outside, join(dir, 'elsewhere'));
-    writeFileSync(join(dir, 'escape.md'), `---\ntitle: Escape\ndate: 2019-01-01\n---\n![a](../${outside.split('/').pop()}/secret.jpg) ![b](images/linked.jpg) ![c](elsewhere/secret.jpg) ![d](%2e%2e/x.jpg) ![e](file:///etc/hosts) ![f](https://example.com/x.jpg)`);
+    writeFileSync(join(dir, 'escape.md'), `---\ntitle: Escape\ndate: 2019-01-01\n---\n![a](../${basename(outside)}/secret.jpg) ![b](images/linked.jpg) ![c](elsewhere/secret.jpg) ![d](%2e%2e/x.jpg) ![e](file:///etc/hosts) ![f](https://example.com/x.jpg)`);
     const source = await readMarkdownFolder(dir, {});
     const escape = source.posts.find((p) => p.title === 'Escape')!;
     const keys = escape.body.flatMap((b) => ('assetId' in b ? [b.assetId] : []));
     const media = source.media.filter((m) => keys.includes(m.key));
     expect(media.map((m) => [m.ref, m.path, m.problem])).toEqual([
-      ['../' + outside.split('/').pop() + '/secret.jpg', undefined, 'its address leads outside the chosen folder'],
+      ['../' + basename(outside) + '/secret.jpg', undefined, 'its address leads outside the chosen folder'],
       ['images/linked.jpg', undefined, 'it is not in the chosen folder'],
       ['elsewhere/secret.jpg', undefined, 'it is not in the chosen folder'],
       ['%2e%2e/x.jpg', undefined, 'its address leads outside the chosen folder'],
@@ -544,6 +544,31 @@ describe('reading only inside the chosen folder', () => {
     ]);
     const real = realpathSync(dir);
     await expect(readContained(real, join(dir, 'images', 'alias.png'), 1000)).rejects.toThrow();
+  });
+
+  it('refuses a link where opening a file follows one, as on Windows (no O_NOFOLLOW), and one swapped in after the check', async () => {
+    const dir = markdownFolder();
+    const real = realpathSync(dir);
+    symlinkSync(join(dir, 'images', 'oven.png'), join(dir, 'images', 'alias.png'));
+    writeFileSync(join(dir, 'images', 'other.png'), 'other');
+    const open = fsp.open;
+    let swap: string | null = null;
+    const spy = vi.spyOn(fsp, 'open').mockImplementation(async (p, flags, mode) => {
+      // The file at `swap` becomes a link to another file of the folder between the check and the open.
+      if (swap && p === swap) {
+        rmSync(swap);
+        symlinkSync(join(dir, 'images', 'other.png'), swap);
+      }
+      return open(p, typeof flags === 'number' ? flags & ~(fsConstants.O_NOFOLLOW ?? 0) : flags, mode);
+    });
+    try {
+      await expect(readContained(real, join(dir, 'images', 'alias.png'), 1000)).rejects.toThrow('it is a link, not a file.');
+      expect((await readContained(real, join(dir, 'images', 'oven.png'), 1000)).toString()).toBe('png');
+      swap = join(dir, 'images', 'oven.png');
+      await expect(readContained(real, swap, 1000)).rejects.toThrow('it changed while it was being read.');
+    } finally {
+      spy.mockRestore();
+    }
   });
 
   it('refuses a file that is not the one the folder holds at its path', async () => {

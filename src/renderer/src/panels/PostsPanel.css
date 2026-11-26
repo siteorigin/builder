@@ -3,28 +3,61 @@
   .canvas-holder { display: contents; }
   .post-writer-holder { position: absolute; top: 0; bottom: 0; z-index: 3; display: flex; min-width: 0; background: var(--bg); }
   .post-writer-holder[hidden] { display: none; }
-  .post-writer { flex: 1; min-width: 0; display: flex; flex-direction: column; }
+  /* The writer's width decides its layout (the sidebar and the dock take what they take), so it is a size container. */
+  .post-writer { flex: 1; min-width: 0; display: flex; flex-direction: column; container: writer / inline-size; }
   .post-writer[hidden] { display: none; }
   .post-none { margin: auto; display: flex; flex-direction: column; align-items: center; gap: 10px; color: var(--text-3); text-align: center; padding: 24px; }
   .post-none svg { width: 28px; height: 28px; }
-  .post-bar { display: flex; align-items: center; gap: 8px; height: 44px; padding: 0 14px; border-bottom: 1px solid var(--border); background: var(--panel); flex: none; }
-  .post-save-state { font-size: 12px; color: var(--text-3); }
-  .post-scroll { flex: 1; min-height: 0; overflow-y: auto; scrollbar-gutter: stable; }
+  /* The bar wraps rather than clipping when the writer is narrow: the state on one row, the actions on the next. */
+  .post-bar { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 8px; min-height: 44px; padding: 7px 16px; border-bottom: 1px solid var(--border); background: var(--panel); flex: none; }
+  .post-bar-actions { display: flex; flex-wrap: wrap; align-items: center; justify-content: flex-end; gap: 6px; margin-left: auto; }
+  .post-save-state { display: inline-flex; align-items: center; gap: 4px; font-size: 12px; color: var(--text-3); }
+  .post-save-state svg { width: 13px; height: 13px; flex: none; }
+  .post-save-state.busy { color: var(--text-2); font-weight: 500; }
+  .post-save-state.problem { color: var(--red-ink); font-weight: 600; }
+  /* Text that is not saved: a band between the bar and the page, so it never scrolls away or hides under the toolbar. */
+  .post-problem.scope-note { flex: none; flex-wrap: wrap; align-items: center; gap: 8px 10px; padding: 10px 16px; border-radius: 0; border-bottom: 1px solid var(--border); }
+  .post-problem > p { flex: 1 1 260px; margin: 0; }
+  .post-problem-actions { display: flex; flex-wrap: wrap; gap: 8px; margin-left: auto; }
+  /* Scrolling to a line or a field leaves room for the sticky toolbar above it (WCAG 2.4.11). */
+  .post-scroll { flex: 1; min-height: 0; overflow-y: auto; scrollbar-gutter: stable; scroll-padding-top: 60px; }
   .post-page { max-width: calc(68ch + 96px); margin: 28px auto 80px; padding: 36px 48px 56px; background: var(--panel); border: 1px solid var(--border); border-radius: var(--r-md); box-shadow: 0 1px 3px rgb(17 24 39 / 0.06); }
-  .post-title-input.input { display: block; height: auto; min-height: 0; max-height: none; padding: 4px 0; border: 0; background: transparent; box-shadow: none; font-size: 32px; line-height: 1.2; font-weight: 700; color: var(--text); field-sizing: content; resize: none; overflow: hidden; overflow-wrap: anywhere; }
-  .post-title-input.input:focus { outline: none; box-shadow: none; }
-  .post-details { margin: 6px 0 18px; font-size: 13px; color: var(--text-2); }
-  .post-details > summary { cursor: pointer; color: var(--text-3); padding: 4px 0; }
-  .post-fields { display: grid; grid-template-columns: repeat(auto-fill, minmax(220px, 1fr)); gap: 4px 16px; padding: 10px 0 4px; }
-  /* The featured image's picker takes the whole row, so its library grid has room. */
-  .post-fields > .insp-image { grid-column: 1 / -1; margin-top: 4px; }
-  .post-tools { position: sticky; top: 0; z-index: 1; display: flex; flex-wrap: wrap; align-items: center; gap: 2px; padding: 6px 4px; margin: 0 -8px 10px; background: var(--panel); border-bottom: 1px solid var(--border); }
-  .post-tools .icon-btn.gap { margin-left: 8px; }
-  .post-block-name { margin-left: auto; font-size: 11px; color: var(--text-3); padding-right: 6px; }
-  .post-problem { margin: 0 0 12px; padding: 10px 12px; border-radius: var(--r-sm); background: var(--amber-soft); color: var(--text); font-size: 13px; }
-  .post-problem p { margin: 0; }
-  .post-problem-actions { display: flex; gap: 8px; margin-top: 8px; }
-  .post-body { min-height: 320px; outline: none; font-size: 18px; line-height: 1.7; color: var(--text); overflow-wrap: break-word; }
+  /* The title is a text field like any other: it shows the house focus outline, with room around its words for it. */
+  .post-title-input.input { display: block; width: calc(100% + 16px); height: auto; min-height: 0; max-height: none; margin: 0 -8px; padding: 4px 8px; border: 0; border-radius: var(--r-sm); background: transparent; box-shadow: none; font-size: 32px; line-height: 1.2; font-weight: 700; color: var(--text); field-sizing: content; resize: none; overflow: hidden; overflow-wrap: anywhere; }
+  /* Its count says something only while it is being typed in, or once it is over. */
+  .post-title-input + .field-count { margin-top: 6px; }
+  /* Off (a synced or deleted entry): quieter, not boxed, still readable and selectable as the entry's name. */
+  .post-title-input.input:disabled { background: transparent; color: var(--text-2); }
+  .post-title-input:not(:focus) + .field-count:not(.field-error) { visibility: hidden; }
+  /* The entry's settings: closed sections between the title and the text, each heading saying what it holds. */
+  .post-sections { margin: 4px 0 22px; border-top: 1px solid var(--border); }
+  .post-sections .section > .row { padding-right: 0; }
+  .post-sections .section-head { height: 40px; padding: 0 2px; gap: 8px; white-space: nowrap; }
+  .post-sections .section-head .scope { flex: 1 1 0; min-width: 0; overflow: hidden; text-overflow: ellipsis; text-align: right; font-weight: 400; }
+  .post-sections .section-body { padding: 2px 2px 20px; gap: 0; }
+  .post-custom { padding-bottom: 16px; margin-bottom: 4px; border-bottom: 1px solid var(--border); }
+  .post-fields { display: grid; grid-template-columns: repeat(auto-fill, minmax(220px, 1fr)); gap: 16px 16px; padding: 8px 0 0; }
+  .post-field-wide { grid-column: 1 / -1; }
+  /* An image's picker (the featured image, an image field) sits flat on the page, not as a card in the paper card;
+     in the details it takes the whole row, so its library grid has room. */
+  .post-page .insp-image { padding: 0; border: 0; background: none; }
+  .post-fields > .insp-image { grid-column: 1 / -1; }
+  /* Its name reads as a field's label, as its neighbours' do, not as a heading. */
+  .post-page .insp-image > .insp-group-title { font-weight: 500; color: var(--text-2); }
+  /* Its background bleeds past the column so text scrolls cleanly under it; its rule stays the column's width, as the
+     sections' rules do. */
+  .post-tools { position: sticky; top: 0; z-index: 1; display: flex; flex-wrap: wrap; align-items: center; gap: 2px; padding: 6px 8px 7px 2px; margin: 0 -8px 12px; background: linear-gradient(var(--border), var(--border)) 8px 100% / calc(100% - 16px) 1px no-repeat, var(--panel); }
+  .post-tools .icon-btn { width: 28px; height: 28px; }
+  /* A group of tools (blocks, inline, lists, links, picture, history) wraps as one when the writer is narrow. */
+  .post-tools-group { display: inline-flex; flex-wrap: nowrap; gap: 2px; }
+  .post-tools-group + .post-tools-group { margin-left: 6px; }
+  /* Pressed takes a full ring as well as the tint, so what is applied at the caret holds 3:1 (WCAG 1.4.11). */
+  .post-tools .icon-btn[aria-pressed='true']:not(:disabled, [aria-disabled='true']) { box-shadow: inset 0 0 0 1px var(--accent); }
+  .post-block-name { margin-left: auto; font-size: 12px; color: var(--text-3); padding-right: 6px; white-space: nowrap; }
+  /* The text is a text field too: the house focus outline, drawn clear of its words. Lines never re-break above the caret. */
+  /* Selectable even while it cannot be changed (a deleted entry's text, kept to copy): the app turns selection off. */
+  .post-body { user-select: text; min-height: 320px; margin: 0 -12px; padding: 4px 12px; border-radius: var(--r-sm); font-size: 18px; line-height: 1.7; color: var(--text); overflow-wrap: break-word; }
+  .post-body :is(p, li, blockquote, h2, h3, h4) { text-wrap: wrap; }
   .post-body > * { margin: 0 0 0.9em; }
   .post-body h2 { font-size: 1.6em; line-height: 1.25; font-weight: 700; margin-top: 1.4em; }
   .post-body h3 { font-size: 1.3em; line-height: 1.3; font-weight: 650; margin-top: 1.2em; }
@@ -41,20 +74,40 @@
   .post-body .post-figure img { display: block; max-width: 100%; height: auto; border-radius: var(--r-sm); }
   .post-body .post-figure figcaption { margin-top: 6px; font-size: 0.82em; color: var(--text-3); text-align: center; }
   .post-figure-missing { padding: 28px 16px; border: 1px dashed var(--border); border-radius: var(--r-sm); color: var(--text-3); font-size: 14px; text-align: center; }
+  .post-review-note { margin: 0 0 10px; font-size: 13px; color: var(--text-2); }
+  .post-body.post-review { min-height: 0; max-height: 50vh; margin: 0; overflow-y: auto; padding: 12px 16px; border: 1px solid var(--border-strong); font-size: 15px; }
   .post-link-kinds { display: flex; gap: 14px; margin: 4px 0 10px; font-size: 13px; }
   .post-link-kind { display: inline-flex; align-items: center; gap: 6px; }
+  /* A narrow writer (a small window, wide side panels): the paper keeps its text, not its margins. */
+  @container writer (max-width: 620px) {
+    .post-page { margin: 12px 8px 48px; padding: 22px 20px 40px; }
+    .post-title-input.input { font-size: 26px; }
+    .post-fields { grid-template-columns: 1fr; }
+    .post-block-name { display: none; }
+    .post-bar { padding: 6px 12px; }
+    /* The toolbar may take two rows here: scrolling to a line leaves room for both. */
+    .post-scroll { scroll-padding-top: 96px; }
+  }
 
-  .posts-panel { display: flex; flex-direction: column; flex: 1; min-height: 0; }
-  /* The Content tab (#675): the project's collections, with the current one's settings and layout beside it. */
-  /* Bounded, so many collections never squeeze the entries out of the sidebar: past it they scroll. */
-  .content-collections { flex: none; max-height: 34%; overflow-y: auto; list-style: none; margin: 0 0 8px; padding: 0 6px 6px; border-bottom: 1px solid var(--border); }
-  .content-collection { display: flex; align-items: center; border-radius: var(--r-sm); }
-  .content-collection:hover, .content-collection:focus-within { background: var(--hover); }
-  .content-collection.current { background: var(--accent-soft); }
-  .content-collection-open { flex: 1; min-width: 0; display: flex; align-items: center; gap: 8px; padding: 6px 8px; border: 0; background: transparent; color: var(--text); text-align: left; border-radius: var(--r-sm); font-weight: 500; }
-  .content-count { margin-left: auto; font-size: 11px; color: var(--text-3); font-variant-numeric: tabular-nums; }
-  .content-collection-actions { display: flex; gap: 2px; padding-right: 4px; }
-  .content-collection-add { margin: 4px 2px 0; }
+  /* The Content tab (#675): the Posts panel (PostsPanel.tsx), the Pages panel's sibling, built the same way. The head
+     is the collection's name (a menu of collections once there is more than one), New <entry> and the collection's …
+     options (sort, groupings, import, settings, layout, source). Under it only the find and the status filter stay
+     put; forms, notes and the list scroll in the body. Each row is the Pages row: a glyph, the title over a quieter
+     line with Draft (published is unmarked) and the date, and a … in a slot every row reserves. */
+  .posts-panel { display: flex; flex-direction: column; flex: 1; min-height: 0; container: posts / inline-size; }
+  .posts-head-title { flex: 1; min-width: 0; display: flex; }
+  .posts-head-title h3 { min-width: 0; }
+  .posts-switch { display: inline-flex; align-items: center; gap: 4px; max-width: 100%; min-width: 0; height: 28px; margin-left: -6px; padding: 0 6px; border: 0; border-radius: var(--r-sm); background: transparent; color: var(--text); font-size: 13px; font-weight: 600; }
+  .posts-switch:hover, .posts-switch[aria-expanded='true'] { background: var(--hover); }
+  .posts-switch svg { flex: none; width: 14px; height: 14px; color: var(--text-3); }
+  .posts-head-add, .posts-head-menu, .posts-head-options { flex: none; color: var(--text-2); }
+  .posts-head-add:hover:not(:disabled), .posts-head-menu:hover:not(:disabled) { color: var(--text); }
+  .posts-head-add[aria-expanded='true'] { color: var(--accent-text); }
+  /* The header's buttons sit against the panel edge, so their focus ring is drawn inside them. */
+  .posts-panel .panel-head :is(.btn, .icon-btn, .posts-switch):focus-visible { outline-offset: -2px; }
+  .posts-source-note { display: flex; align-items: center; gap: 7px; margin: 0 10px 8px; padding: 6px 9px; border-radius: var(--r-md); background: var(--panel-2); border: 1px solid var(--border); font-size: 12px; line-height: 16px; color: var(--text-2); }
+  .posts-source-note > svg { flex: none; width: 14px; height: 14px; color: var(--text-3); }
+  .posts-source-note > span:last-child { min-width: 0; overflow-wrap: anywhere; }
   .content-add { display: flex; flex-direction: column; gap: 8px; margin: 0 10px 10px; }
   .content-starters { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 6px; width: 100%; }
   .content-starter { display: flex; flex-direction: column; align-items: flex-start; gap: 2px; width: 100%; padding: 8px 10px; border: 1px solid var(--border); border-radius: var(--r-sm); background: var(--panel); color: var(--text); text-align: left; font-size: 13px; }
@@ -68,11 +121,11 @@
 
   /* An entry's custom fields, in the writer: a form for records, beside the text for articles. */
   .post-fieldset { margin: 0; padding: 0; border: 0; min-width: 0; }
-  .entry-values { display: flex; flex-direction: column; gap: 4px; margin: 0; padding: 0; border: 0; min-width: 0; }
+  .entry-values { display: flex; flex-direction: column; gap: 16px; margin: 0; padding: 0; border: 0; min-width: 0; }
   .entry-refs { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 4px; font-size: 13px; }
   .entry-refs label { display: flex; align-items: center; gap: 6px; }
-  .post-record { margin: 8px 0 18px; }
-  .post-record-section { margin: 14px 0 6px; font-size: 12px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.04em; color: var(--text-3); }
+  .post-record { display: flex; flex-direction: column; gap: 16px; margin: 12px 0 8px; }
+  .post-record-section.field-label { margin: 0 0 6px; }
   .post-readonly { margin: 0 0 12px; padding: 8px 12px; border-radius: var(--r-sm); background: var(--panel-2); color: var(--text-2); font-size: 13px; }
 
   /* A collection's settings. */
@@ -89,33 +142,80 @@
   .schema-check { display: inline-flex; align-items: center; gap: 4px; font-size: 12px; color: var(--text-2); }
   .schema-add { display: inline-flex; align-items: center; gap: 6px; }
   .schema-error { margin: 0; }
-  .posts-add { display: flex; flex-direction: column; gap: 8px; margin: 0 10px 10px; padding: 10px; border: 1px solid var(--border); border-radius: var(--r-sm); background: var(--panel-2); }
-  .posts-add-actions { display: flex; gap: 6px; }
+  /* The new-entry form opens at the top of the body, under the head's New button, as Pages' Add page form does. */
+  .posts-add-form { display: flex; flex-direction: column; gap: 7px; margin: 2px 6px 8px; padding: 8px; border-radius: var(--r-md); background: var(--panel-2); border: 1px solid var(--border); scroll-margin: 8px; }
+  .posts-add-heading { padding: 0 2px; font-size: 12px; font-weight: 600; color: var(--text-2); }
+  .posts-add-form .input.inline-edit { height: 30px; padding: 0 9px; }
+  .posts-add-collection .content-add { margin: 0; }
+  .posts-add-actions { display: flex; flex-wrap: wrap; gap: 6px; }
   .posts-note { margin: 4px 12px; font-size: 12px; color: var(--text-3); }
-  .posts-tools { display: flex; align-items: center; gap: 6px; padding-right: 10px; }
-  .posts-tools .search { flex: 1; margin-right: 0; margin-bottom: 6px; }
-  .posts-sort { margin-bottom: 6px; max-width: 120px; }
+  /* What stays put above the list: the find, then the status filter, with a rule under them the list scrolls beneath. */
+  .posts-tools { flex: none; padding-bottom: 8px; border-bottom: 1px solid var(--border); }
+  /* A category filter takes its own line when the status filter leaves it too little room. */
+  .posts-filters { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; padding: 0 10px; }
+  .posts-filters .segmented { flex: none; }
+  .posts-filters .segmented button { padding: 0 7px; white-space: nowrap; }
+  .posts-category { flex: 1 1 90px; min-width: 90px; }
   .posts-empty { display: flex; flex-direction: column; align-items: flex-start; gap: 10px; padding: 12px 14px; color: var(--text-2); font-size: 13px; }
   .posts-empty > svg { width: 20px; height: 20px; color: var(--text-3); }
-  .posts-list { list-style: none; margin: 0; padding: 0 6px 12px; }
-  .post-row { position: relative; display: flex; align-items: center; border-radius: var(--r-sm); }
-  .post-row:hover, .post-row:focus-within { background: var(--hover); }
-  .post-row.current { background: var(--accent-soft); }
-  .post-open { flex: 1; min-width: 0; display: flex; flex-direction: column; align-items: flex-start; gap: 3px; padding: 7px 8px; border: 0; background: transparent; text-align: left; color: var(--text); border-radius: var(--r-sm); }
-  .post-title { max-width: 100%; font-weight: 500; }
-  .post-meta { display: flex; align-items: center; gap: 8px; font-size: 11px; color: var(--text-3); }
-  .post-actions { display: flex; gap: 2px; padding-right: 4px; opacity: 0; }
-  .post-row:hover .post-actions, .post-row:focus-within .post-actions { opacity: 1; }
-  .posts-filters { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; padding: 0 10px 8px; }
-  .posts-filters .segmented button { padding: 0 7px; }
-  .posts-category { flex: 1 1 110px; min-width: 0; }
-  .posts-terms { flex: none; }
+  .posts-none { display: flex; flex-direction: column; align-items: flex-start; gap: 8px; padding: 10px 14px 12px; }
+  .posts-none p { margin: 0; color: var(--text-2); overflow-wrap: anywhere; }
+  .posts-count { margin: 8px 14px 0; font-size: 11.5px; line-height: 15px; color: var(--text-3); font-variant-numeric: tabular-nums; }
+  .posts-list.list { gap: 2px; }
+  .posts-list.list[hidden] { display: none; }
+  .posts-list .post-row { align-items: flex-start; gap: 8px; min-height: 41px; padding: 3px 4px 3px 8px; cursor: default; }
+  .posts-list .post-row.selected { font-weight: 400; }
+  .posts-list .post-row .actions { align-self: center; }
+  /* The glyph says what the entry is (a draft, an article, a record); on the open entry it sits in a filled tile. */
+  .post-glyph { flex: none; display: grid; place-items: center; width: 20px; height: 20px; border-radius: var(--r-xs); color: var(--text-3); }
+  .posts-list .post-glyph svg { width: 15px; height: 15px; color: inherit; }
+  .posts-list .post-row.selected .post-glyph { background: var(--accent-fill); color: var(--on-accent); }
+  .posts-list .post-row.selected .post-glyph svg { width: 14px; height: 14px; }
+  /* A one-line row (a record with no date) centres its glyph on the title. */
+  .post-text { flex: 1; min-width: 0; display: flex; flex-direction: column; justify-content: center; min-height: 35px; }
+  .post-title { line-height: 20px; }
+  .posts-list .post-row.selected .post-title { font-weight: 600; }
+  .post-meta { display: flex; align-items: center; gap: 5px; min-width: 0; font-size: 11.5px; line-height: 15px; color: var(--text-3); white-space: nowrap; }
+  .post-meta time { font-variant-numeric: tabular-nums; }
+  .post-status.badge { flex: none; height: 15px; padding: 0 5px; border-radius: var(--r-sm); font-size: 10.5px; }
+  /* On the open entry's tint the badge keeps a solid fill, so its small text stays readable. */
+  .posts-list .post-row.selected .post-status { background: var(--panel); box-shadow: inset 0 0 0 1px currentColor; }
+  .posts-list .post-row.selected :is(.post-meta, .post-found) { color: var(--text-2); }
+  /* While finding, what matched when it is not in the title: the byline, the address or the excerpt around it. */
+  .post-found { font-size: 11.5px; line-height: 15px; color: var(--text-3); overflow-wrap: anywhere; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
+  .posts-list.finding .post-title { white-space: normal; overflow-wrap: anywhere; }
+  .posts-list mark { background: none; color: inherit; font-weight: 600; text-decoration: underline; text-decoration-thickness: 1.5px; text-underline-offset: 2px; }
+  .posts-list .post-row.selected .actions .icon-btn.hover-only,
+  .posts-list .post-row.menu-open .actions .icon-btn.hover-only { opacity: 1; }
+  /* Focus on the open entry's row: the 2px focus outline, a 1px gap of panel, then the fill (as in Pages). */
+  .posts-list .post-row.selected:focus-visible { box-shadow: inset 0 0 0 3px var(--panel); }
+  .posts-list-wrap { position: relative; }
+  /* Keyboard focus on a row cut short shows its whole title and address in a card under it (Escape hides it). */
+  .posts-peek { position: absolute; z-index: 3; display: flex; flex-direction: column; gap: 1px; padding: 6px 9px; border-radius: var(--r-md); background: var(--raised); border: 1px solid var(--border-strong); box-shadow: var(--shadow-md); pointer-events: none; }
+  .posts-peek-title { font-weight: 500; overflow-wrap: anywhere; }
+  .posts-peek-route { font-size: 11.5px; line-height: 15px; color: var(--text-2); overflow-wrap: anywhere; }
+  /* With a collection switcher the head's name comes first: below 280px New <entry> is its icon (as Pages' Edit menu). */
+  @container posts (max-width: 280px) {
+    .panel-head:has(.posts-switch) .posts-head-label { display: none; }
+    .panel-head:has(.posts-switch) .posts-head-add { width: 26px; padding: 0; justify-content: center; gap: 0; }
+  }
+  /* Narrow sidebars (below 232px): the head's buttons are their icons (their names stay in the label and tooltip),
+     the rows and the filter tighten so titles keep their room, and only Drafts keeps its count. */
+  @container posts (max-width: 232px) {
+    .posts-head-label { display: none; }
+    .posts-panel .panel-head .btn { width: 26px; padding: 0; justify-content: center; gap: 0; }
+    .posts-panel .posts-list { padding-inline: 4px; }
+    .posts-list .post-row { padding-left: 6px; gap: 6px; }
+    .posts-filters .segmented button { padding: 0 5px; gap: 4px; }
+    .posts-count-quiet { display: none; }
+  }
 
-  .posts-previewing { display: flex; flex-direction: column; align-items: flex-start; gap: 8px; margin: 0 10px 10px; padding: 10px; border-radius: var(--r-sm); background: var(--accent-soft); font-size: 12px; color: var(--text-2); }
+  .posts-previewing { display: flex; flex-direction: column; align-items: flex-start; gap: 8px; margin: 2px 6px 8px; padding: 8px 10px; border-radius: var(--r-md); background: var(--accent-soft); font-size: 12px; color: var(--text-2); }
   .post-picker { display: flex; flex-direction: column; gap: 10px; margin-bottom: 10px; }
-  .post-picker-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(96px, 1fr)); gap: 8px; max-height: 260px; overflow-y: auto; padding: 2px; }
-  .post-picker-tile { aspect-ratio: 4 / 3; padding: 0; overflow: hidden; border: 1px solid var(--border); border-radius: var(--r-sm); background: var(--panel-2); }
-  .post-picker-tile[aria-selected='true'] { outline: 2px solid var(--accent); outline-offset: 1px; }
+  .post-picker-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(96px, 1fr)); gap: 8px; max-height: 260px; overflow-y: auto; padding: 4px; scroll-padding: 4px; }
+  .post-picker-tile { aspect-ratio: 4 / 3; padding: 0; overflow: hidden; border: 1px solid var(--border-control); border-radius: var(--r-sm); background: var(--panel-2); }
+  /* Chosen is a ring inside the tile, so the focus outline outside it still shows. */
+  .post-picker-tile[aria-selected='true'] { border-color: var(--accent); box-shadow: inset 0 0 0 2px var(--accent); }
   .post-picker-tile img { width: 100%; height: 100%; object-fit: cover; display: block; }
   .post-picker-name { display: block; padding: 6px; font-size: 11px; color: var(--text-2); overflow-wrap: anywhere; }
   .post-picker-decorative { display: flex; align-items: center; gap: 6px; font-size: 13px; color: var(--text-2); }
@@ -170,7 +270,7 @@
     gap: 8px 12px;
   }
   .source-code {
-    font-family: var(--font-mono, ui-monospace, monospace);
+    font-family: var(--mono);
     font-size: 12px;
   }
   .source-sample pre {

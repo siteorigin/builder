@@ -64,8 +64,13 @@ export function failedWithRevision(seen: SeenFailure, now: SeenFailure): boolean
   return now.failure !== null && now.revision !== seen.revision && now.failure !== seen.failure;
 }
 
-/** A gate for the editor's revision, read from `revision()` whenever it is asked about. */
-export function createPageGate(revision: () => number, clock: GateClock = realClock, waitMs = PAGE_CATCH_UP_MS): PageGate {
+/**
+ * A gate for the editor's revision, read from `revision()` whenever it is asked about. `waitMs` is how long a page
+ * behind is waited for before picks go ahead on it, read each time it is asked: Infinity waits until the page says it
+ * shows the revision, or that its update failed.
+ */
+export function createPageGate(revision: () => number, clock: GateClock = realClock, waitMs: number | (() => number) = PAGE_CATCH_UP_MS): PageGate {
+  const wait = typeof waitMs === 'function' ? waitMs : () => waitMs;
   let shownRevision = 0;
   /** The revision a failure was reported for: the gate is open for it, and shut again for the next one. */
   let failedRevision: number | null = null;
@@ -80,7 +85,7 @@ export function createPageGate(revision: () => number, clock: GateClock = realCl
     const r = revision();
     if (shownRevision >= r || failedRevision === r) return false;
     took(r);
-    return clock.now() - since.at < waitMs;
+    return clock.now() - since.at < wait();
   };
   const clearTimer = () => {
     if (timer !== null) clock.clearTimeout(timer);
@@ -91,7 +96,9 @@ export function createPageGate(revision: () => number, clock: GateClock = realCl
     clearTimer();
     if (!held) return;
     if (behind()) {
-      timer = clock.setTimeout(settle, Math.max(0, waitMs - (clock.now() - since.at)) + 1);
+      // With no fallback, only the page's own report opens the gate (shown, failed).
+      const left = wait() - (clock.now() - since.at);
+      if (Number.isFinite(left)) timer = clock.setTimeout(settle, Math.max(0, left) + 1);
       return;
     }
     const pick = held;

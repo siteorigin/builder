@@ -83,11 +83,23 @@ try {
   assert.equal(await band.locator('[data-studio-state]').count(), 0, 'no UI state to preview yet');
   await openRail('Layers');
   const row = (nodeId) => win.locator(`[role="tree"] [data-owner="component:${defId}"][data-node="${nodeId}"]`);
-  /** Select a node of the design: by its Layers row when the tree shows it, else by a click on it in the preview, which reveals its row. */
+  /**
+   * Select a node of the design: by its Layers row when the tree shows it, else by a click on it in the preview, which
+   * reveals its row. A click on a preview still catching up with a change is dropped when the new preview arrives
+   * (#755), which takes longer than a moment on a slower machine (Windows): then it is clicked again, as the author would.
+   */
   const selectRow = async (nodeId) => {
-    if (await row(nodeId).isVisible()) await row(nodeId).click();
-    else await inStudio(` [data-so-node="${nodeId}"]`).first().dispatchEvent('click');
-    await eventually(async () => assert.equal(await row(nodeId).getAttribute('aria-selected'), 'true', `the ${nodeId} row is selected`), 15000);
+    const selected = async () => (await row(nodeId).count()) > 0 && (await row(nodeId).getAttribute('aria-selected')) === 'true';
+    await eventually(
+      async () => {
+        if (await selected()) return;
+        if (await row(nodeId).isVisible()) await row(nodeId).click();
+        else await inStudio(` [data-so-node="${nodeId}"]`).first().dispatchEvent('click');
+        await eventually(async () => assert.ok(await selected(), `the ${nodeId} row is selected`), 3000);
+      },
+      30000,
+      0
+    );
   };
 
   step('the Inspector declares a Billing choice on the whole component');

@@ -95,8 +95,8 @@ export function newStateProblem(def: ComponentDefinition, label: string, type: U
   if (!label.trim()) return 'Name the state.';
   if (Object.keys(def.state ?? {}).length >= MAX_UI_STATES) return `A component can have at most ${MAX_UI_STATES} UI states.`;
   if (type === 'item' && !itemStateLists(def).some((l) => l.name === list)) return 'Choose the list whose active item it holds.';
-  if (type === 'enum' && options.length < 2) return 'A choice needs two options or more, separated by commas.';
-  if (type === 'enum' && options.length > MAX_STATE_OPTIONS) return `A choice can have at most ${MAX_STATE_OPTIONS} options.`;
+  if (type === 'enum' && options.length < 2) return 'Give it two options or more, separated by commas.';
+  if (type === 'enum' && options.length > MAX_STATE_OPTIONS) return `A state can have at most ${MAX_STATE_OPTIONS} options.`;
   return null;
 }
 

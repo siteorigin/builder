@@ -101,15 +101,32 @@
   .contract-box { display: flex; flex-direction: column; gap: 8px; padding: 10px; border-radius: var(--r-sm); background: var(--panel-2); box-shadow: inset 0 0 0 1px var(--border); }
   .contract-actions, .contract-add { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; }
   .contract-add .input { flex: 1 1 96px; min-width: 0; }
-  .contract-list { display: flex; flex-direction: column; gap: 4px; margin: 0; padding: 0; list-style: none; }
+  /* Rows sit 10px apart and a row's own lines 3px apart, so a status line is read with the name above it. */
+  .contract-list { display: flex; flex-direction: column; gap: 10px; margin: 0; padding: 0; list-style: none; }
+  /* A property: its name and actions on one line, then what it is and Required across the whole row. */
+  .contract-item { display: flex; flex-direction: column; gap: 3px; min-width: 0; }
   .contract-row { display: flex; align-items: flex-start; gap: 2px; }
-  .contract-row-main { display: flex; flex: 1 1 auto; flex-direction: column; gap: 2px; min-width: 0; }
+  /* Icon buttons line up with the 26px name field beside them. */
+  .contract-row > .icon-btn.sm { margin-top: 1px; }
+  /* A property's actions: one Tab stop, the arrow keys move between them (RowActions). */
+  .contract-row-actions { display: flex; flex: none; gap: 2px; }
+  .contract-row-actions > .icon-btn.sm { margin-top: 1px; }
+  /* Beside a 30px name (a state's), centred on it. */
+  .field .contract-row > .icon-btn.sm { margin-top: 3px; }
+  .contract-row-main { display: flex; flex: 1 1 auto; flex-direction: column; gap: 3px; min-width: 0; }
+  .contract-row-main > .field-count { margin-top: 0; }
+  .contract-row-line { display: flex; align-items: center; justify-content: space-between; gap: 8px; min-height: 24px; }
+  .contract-row-line > .contract-meta { flex: 1 1 0; min-width: 0; }
   .contract-row-main .input { width: 100%; }
-  .contract-meta { font-size: 11px; line-height: 1.4; overflow-wrap: anywhere; }
-  .contract-required { display: inline-flex; align-items: center; gap: 6px; font-size: 11px; }
+  .contract-meta { font-size: 12px; line-height: 1.4; color: var(--text-3); overflow-wrap: anywhere; }
+  /* An exception among routine status lines (a property the design does not show): stronger ink and weight, no hue. */
+  .contract-flag { font-weight: 500; color: var(--text-2); }
+  /* Required: its word is the switch's label, beside it and clickable, at the size of every other label here. */
+  .contract-required { display: inline-flex; flex: none; align-items: center; gap: 8px; min-height: 24px; margin-left: auto; font-size: 12px; color: var(--text-2); }
+  .contract-required > label { cursor: pointer; }
   .contract-missing { margin: 0; }
   .contract-fields > summary { cursor: pointer; width: fit-content; }
-  .contract-fields > .contract-list { margin: 4px 0 2px 8px; }
+  .contract-fields > .contract-list { gap: 4px; margin: 4px 0 2px 8px; }
   .contract-field { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 2px 8px; font-size: 12px; }
   .contract-field-name { min-width: 0; overflow-wrap: anywhere; }
   .contract-field > .contract-missing { flex-basis: 100%; }
@@ -125,7 +142,12 @@
   .slot-content .insp-mini > span { overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
   .slot-kinds { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 4px 8px; margin: 0; padding: 0; border: 0; min-width: 0; }
   .slot-kinds > legend { grid-column: 1 / -1; padding: 0; margin-bottom: 2px; }
-  .slot-kinds label { display: flex; align-items: center; gap: 6px; font-size: 12px; min-width: 0; }
+  .slot-kinds label { display: flex; align-items: center; gap: 6px; min-height: 24px; font-size: 12px; min-width: 0; }
+  .slot-desc-count { margin-top: -8px; }
+  .contract-kind { flex: 0 0 auto; width: auto; }
+  .contract-add > .contract-add-end { margin-left: auto; }
+  .contract-uses > summary { cursor: pointer; width: fit-content; }
+  .contract-uses > ul { margin: 2px 0 0; padding-left: 16px; }
   .contract-preview .insert-live { max-width: 100%; }
   .insp-note { margin: 0; font-size: 12px; line-height: 1.5; }
   .insp-condition-test { display: flex; gap: 6px; margin-top: 6px; }

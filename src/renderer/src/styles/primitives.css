@@ -64,7 +64,7 @@
   :is(.input, .select, .textarea)[aria-invalid='true'] { border-color: var(--red); }
   :is(.input, .select, .textarea):disabled { background-color: var(--disabled-fill); border-color: var(--border-strong); color: var(--disabled-ink); }
   :is(.input, .textarea):disabled::placeholder { color: var(--disabled-ink); }
-  .select { appearance: none; padding-right: 26px; background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='10' height='6' fill='none' stroke='%234a5670' stroke-width='1.5'%3E%3Cpath d='M1 1l4 4 4-4'/%3E%3C/svg%3E"); background-repeat: no-repeat; background-position: right 9px center; }
+  .select { appearance: none; padding-right: 26px; text-overflow: ellipsis; background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='10' height='6' fill='none' stroke='%234a5670' stroke-width='1.5'%3E%3Cpath d='M1 1l4 4 4-4'/%3E%3C/svg%3E"); background-repeat: no-repeat; background-position: right 9px center; }
   /* A disabled select's chevron dims with its label. */
   .select:disabled { background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='10' height='6' fill='none' stroke='%2376819a' stroke-width='1.5'%3E%3Cpath d='M1 1l4 4 4-4'/%3E%3C/svg%3E"); }
   :where(:root[data-appearance='dark']) {
@@ -75,8 +75,8 @@
   .textarea { height: auto; min-height: 64px; max-height: 260px; padding: 7px 9px; resize: vertical; line-height: 1.5; field-sizing: content; }
   .input.sm, .select.sm { height: 26px; font-size: 12px; }
   /* Read only: selectable but not editable, so it recedes (below the panel in dark, where --panel-2 sits above it). */
-  .input:read-only:not(:disabled) { background: var(--panel-2); color: var(--text-2); }
-  :where(:root[data-appearance='dark']) { .input:read-only:not(:disabled) { background: var(--bg); } }
+  .input:read-only:not(:disabled), .textarea:read-only:not(:disabled) { background: var(--panel-2); color: var(--text-2); }
+  :where(:root[data-appearance='dark']) { :is(.input, .textarea):read-only:not(:disabled) { background: var(--bg); } }
   .select.inherit, .input.inherit::placeholder { color: var(--text-3); }
   .select.inherit { background-color: transparent; }
   input::placeholder, textarea::placeholder { color: var(--text-3); opacity: 1; }
@@ -99,6 +99,12 @@
      glyph) saying why it is not saved. */
   .field-count { margin-top: -2px; font-size: 12px; color: var(--text-3); text-align: right; font-variant-numeric: tabular-nums; }
   .field-count.field-error { text-align: left; color: var(--red); }
+  /* A short name's count (DraftInput quietCount) shows only while its field is being edited, inside the field's
+     trailing edge so nothing around it moves; near or over the limit it is an ordinary count under the field. */
+  .field-quiet { position: relative; display: flex; flex-direction: column; gap: 5px; min-width: 0; }
+  .field-quiet > .field-count.quiet { position: absolute; top: 0; right: 9px; height: 100%; display: flex; align-items: center; margin: 0; pointer-events: none; }
+  .field-quiet > .input:focus:has(+ .field-count.quiet) { padding-right: 60px; }
+  :is(.input, .textarea):not(:focus) + .field-count.quiet { display: none; }
 
   /* ---------- Segmented, Switch, Badge, Kbd, Spinner ---------- */
   /* Segmented: a --r-sm tray with --r-xs options (concentric across its 2px padding). The selected option takes
@@ -118,7 +124,10 @@
   .switch[aria-checked='true'] { background: var(--accent); }
   :where(:root[data-appearance='dark']) { .switch::after { background: #f4f7fb; } .switch[aria-checked='true']::after { background: var(--ink); } }
   .switch[aria-checked='true']::after { transform: translateX(12px); }
-  .switch:disabled { opacity: 0.5; cursor: not-allowed; }
+  /* Unavailable is drawn, not faded (tokens.css): the neutral fill and edge, a quiet thumb, which keeps its side so the
+     setting can still be read. */
+  .switch:disabled { background: var(--disabled-fill); box-shadow: inset 0 0 0 1px var(--border-strong); cursor: not-allowed; }
+  .switch:disabled::after, :where(:root[data-appearance='dark']) .switch[aria-checked='true']:disabled::after { background: var(--disabled-ink); box-shadow: none; }
 
   .badge { display: inline-flex; align-items: center; gap: 4px; height: 20px; padding: 0 7px; border-radius: var(--r-sm); font-size: 11px; font-weight: 600; background: var(--active); color: var(--text-2); white-space: nowrap; }
   .badge.accent { background: var(--accent-soft); color: var(--accent-text); }
@@ -232,6 +241,9 @@
      amber trust, plum component), colours it. Blue stays for the dialog's own controls. */
   .modal-head > svg { width: 18px; height: 18px; flex: none; color: var(--text-2); }
   .modal-body { padding: 4px 18px 18px; overflow: auto; font-size: 13px; color: var(--text); }
+  /* Once the body is scrolled (Modal marks it), a hairline under the header, as the footer has, says the content
+     continues above it. */
+  .modal[data-scrolled] > .modal-head { box-shadow: inset 0 -1px 0 var(--border); }
   .modal-foot { display: flex; align-items: center; justify-content: flex-end; gap: 8px; padding: 12px 18px; border-top: 1px solid var(--border); background: var(--panel-2); }
   /* The safe default in a dialog is visibly focused from the start, even when it was focused by the app. */
   .modal [data-autofocus]:focus { outline: 2px solid var(--focus); outline-offset: 2px; }
@@ -253,6 +265,10 @@
   .toast button { color: inherit; }
   .toast .btn { border: 1px solid color-mix(in srgb, currentColor 65%, transparent); background: transparent; color: inherit; box-shadow: none; }
   .toast .btn:hover:not(:disabled) { background: color-mix(in srgb, currentColor 12%, transparent); }
+  /* A notice's one expected answer (Admit) is filled in the notice's own ink, inverted, so it leads without bringing
+     the app's blue onto a status surface. */
+  .toast .btn-primary { background: var(--toast-action-fill); border-color: transparent; color: var(--toast-action-ink); font-weight: 600; }
+  .toast .btn-primary:hover:not(:disabled) { background: color-mix(in srgb, var(--toast-action-fill) 86%, var(--toast-action-ink)); }
   /* While a dialog is open, toasts still announce but their actions wait (they act on the page behind), taking
      no room, and the notice lets clicks through, all but its dismiss button and its text (which may scroll). ui.tsx offers an Undo again, for a
      full window, once the last dialog closes. */

@@ -1,12 +1,13 @@
 import './SeoView.css';
-import { useEffect, useId, useLayoutEffect, useMemo, useRef, useState, type KeyboardEvent } from 'react';
-import { ArrowLeft, FileText, X, House, Newspaper, Search } from 'lucide-react';
+import { useEffect, useId, useLayoutEffect, useMemo, useRef, useState, type KeyboardEvent, type ReactNode } from 'react';
+import { ArrowLeft, Check, EyeOff, FileText, Info, LayoutList, Lock, X, House, Newspaper, Search, TriangleAlert } from 'lucide-react';
 import type { ProjectState } from '@shared/types';
 import type { SeoSubject } from '@shared/seo';
 import { leaveSeoView, setState, useStore } from '../store';
 import { seoDocument, seoDocuments, seoSubjectKey, type SeoDocument } from '../lib/seo-view';
-import { seoOverviewOnce, seoOverviewProblems, type SeoImageStatus, type SeoOverviewRow, type SeoOverviewText } from '../lib/seo-overview';
+import { seoOverviewOnce, seoOverviewProblems, type SeoImageStatus, type SeoOverviewLevel, type SeoOverviewProblem, type SeoOverviewRow, type SeoOverviewText } from '../lib/seo-overview';
 import { isDraftPage } from '@generator/index';
+import { isReadOnlyCollection } from '../lib/content';
 import { activeWorkspace } from '../lib/workspace';
 import { leaveField } from '../lib/leave-field';
 import { SeoPreview, useDocumentPreview, useTypedSeo, type TypedSeoOn } from './SeoPreview';
@@ -14,6 +15,7 @@ import type { DocumentPreview } from '../lib/seo-preview';
 import { StructuredDataFields } from '../components/StructuredDataFields';
 import { PageSearchFields } from './PageSearchFields';
 import { pageUpdater } from '../lib/page-settings';
+import { LockedFields, useLockedFields } from '../components/ui';
 import { postAt } from '../lib/posts';
 import { savePostSeo } from '../lib/post-seo';
 import { PostSearchFields } from './PostSearchFields';
@@ -29,9 +31,13 @@ export function SeoPanel() {
   const subject = useStore((s) => s.seoSubject);
   const state = snap?.state;
   const groups = useMemo(() => (state ? seoDocuments(state) : []), [state]);
+  // Where each document stands, as the overview says it, so the list shows it beside each row.
+  const rows = state ? seoOverviewOnce(state) : [];
+  const levels = new Map(rows.map((r) => [r.key, r.level]));
+  const toFix = rows.filter((r) => r.level === 'warning').length;
   const listRef = useRef<HTMLDivElement>(null);
-  const chosen = subject ? seoSubjectKey(subject) : null;
-  const keys = groups.flatMap((g) => g.documents.map((d) => d.key));
+  const chosen = subject ? seoSubjectKey(subject) : OVERVIEW_KEY;
+  const keys = [OVERVIEW_KEY, ...groups.flatMap((g) => g.documents.map((d) => d.key))];
   // The row last focused while it is still listed, else the chosen one, else the first.
   const [focused, setFocused] = useState<string | null>(null);
   const stop = focused && keys.includes(focused) ? focused : chosen && keys.includes(chosen) ? chosen : (keys[0] ?? null);
@@ -45,7 +51,7 @@ export function SeoPanel() {
   };
   // The chosen document's row is brought into view when another panel opens the view on it, without taking focus.
   useEffect(() => {
-    if (!chosen || !listRef.current?.offsetParent) return;
+    if (!listRef.current?.offsetParent) return;
     listRef.current.querySelector<HTMLElement>(`[data-seo="${CSS.escape(chosen)}"]`)?.scrollIntoView({ block: 'nearest' });
   }, [chosen]);
   if (!state) return null;
@@ -55,6 +61,22 @@ export function SeoPanel() {
         <h3>SEO</h3>
       </div>
       <div className="panel-body" ref={listRef} onKeyDown={onKey}>
+        <div className={`seo-row seo-row-overview${chosen === OVERVIEW_KEY ? ' current' : ''}`}>
+          <button
+            className="seo-open"
+            data-seo={OVERVIEW_KEY}
+            tabIndex={stop === OVERVIEW_KEY ? 0 : -1}
+            aria-current={chosen === OVERVIEW_KEY || undefined}
+            onFocus={() => setFocused(OVERVIEW_KEY)}
+            onClick={() => setState({ seoSubject: null })}
+          >
+            <span className="seo-row-title">
+              <LayoutList aria-hidden="true" />
+              <span className="ellipsis">Overview</span>
+            </span>
+            <span className="seo-row-meta">{toFix ? `${plural(toFix, 'page or post', 'pages and posts')} to fix` : 'Nothing to fix'}</span>
+          </button>
+        </div>
         {groups.map((g) => (
           <section key={g.id} className="seo-group" aria-labelledby={`seo-group-${g.id}`}>
             <h4 id={`seo-group-${g.id}`} className="seo-group-head">
@@ -76,6 +98,7 @@ export function SeoPanel() {
                       <span className="seo-row-title">
                         {d.home && <House role="img" aria-label="Home page" />}
                         <span className="ellipsis">{d.title}</span>
+                        <LevelMark level={levels.get(d.key)} draft={d.draft} />
                       </span>
                       <span className="seo-row-meta">
                         <span className="seo-row-address ellipsis">{d.address}</span>
@@ -95,6 +118,17 @@ export function SeoPanel() {
   );
 }
 
+/** The sidebar list's first row, the overview, as a key among the documents' keys. */
+const OVERVIEW_KEY = 'overview';
+
+/** A row's standing as a mark after its name in the sidebar: nothing when it is fine, or a draft (its badge says so). */
+function LevelMark({ level, draft }: { level: SeoOverviewLevel | undefined; draft: boolean }) {
+  if (level === 'warning') return <TriangleAlert className="seo-mark warn" role="img" aria-label="Something to fix" />;
+  if (level === 'note') return <Info className="seo-mark note" role="img" aria-label="Worth a look" />;
+  if (level === 'excluded' && !draft) return <EyeOff className="seo-mark quiet" role="img" aria-label="Kept out of search" />;
+  return null;
+}
+
 /** What a document is, in words: the home page, a page, or an entry of its collection. */
 function kindOf(d: SeoDocument, collectionName: string | undefined): string {
   if (d.subject.kind === 'page') return d.home ? 'Home page' : d.draft ? 'Draft page' : 'Page';
@@ -105,31 +139,73 @@ function kindOf(d: SeoDocument, collectionName: string | undefined): string {
 const plural = (n: number, word: string, words = `${word}s`) => `${n} ${n === 1 ? word : words}`;
 
 /** How a title or description measures up, in words, with the tone its status line shows in. */
-function textNote(t: SeoOverviewText, field: 'title' | 'description', listed: boolean): { tone: 'warn' | 'note' | 'ok'; label: string } {
-  if (t.status === 'missing') return { tone: 'warn', label: field === 'title' ? 'No title' : 'No description' };
-  const parts: string[] = [];
+function textNote(t: SeoOverviewText, field: 'title' | 'description', listed: boolean): { tone: 'warn' | 'note' | 'ok'; label: string; detail: string } {
+  // A document search engines can't list has nothing wrong in search results yet: what it would need is a note.
+  const warn = listed ? 'warn' : 'note';
+  if (t.status === 'missing') return { tone: warn, label: field === 'title' ? 'No title' : 'No description', detail: '' };
+  // The finding leads, in its tone; the count and where the words come from follow, quieter.
+  const findings: string[] = [];
   let tone: 'warn' | 'note' | 'ok' = 'ok';
   if (t.duplicates > 0) {
-    tone = 'warn';
+    tone = warn;
     // A document search engines don't list repeats only the published ones they can: it would compete with them once listed.
-    parts.push(`Same as ${plural(t.duplicates, `${listed ? 'other' : 'published'} page or post`, `${listed ? 'other' : 'published'} pages and posts`)}`);
+    findings.push(`Same as ${plural(t.duplicates, listed ? 'other' : 'published one', listed ? 'others' : 'published ones')}`);
   }
-  const count = plural(t.chars, 'character');
-  if (t.status === 'short') parts.push(`Too short · ${count}`);
-  else if (t.status === 'long') parts.push(`Too long · ${count}`);
-  else parts.push(count);
+  // A length is a note: beside a repeat (a warning) it is said in the quieter detail, so it never takes the amber.
+  const length = t.status === 'short' ? 'Too short' : t.status === 'long' ? 'Too long' : '';
+  if (length && !findings.length) findings.push(length);
   if (t.status !== 'good' && tone === 'ok') tone = 'note';
-  if (t.fallback) parts.push(field === 'title' ? 'default' : 'fallback');
-  return { tone, label: parts.join(' · ') };
+  const detail = [findings.length && length && findings[0] !== length ? length.toLowerCase() : '', plural(t.chars, 'character'), t.fallback ? (t.from === 'name' ? 'from its name' : t.from === 'excerpt' ? 'from the excerpt' : 'from the site’s description') : ''].filter(Boolean).join(' · ');
+  return findings.length ? { tone, label: findings.join(' · '), detail } : { tone, label: detail, detail: '' };
 }
 
-const IMAGE_LABELS: Record<SeoImageStatus, string> = { own: 'Its own', featured: 'Featured image', site: 'The site’s', none: 'None', gone: 'Missing from the library' };
+const IMAGE_LABELS: Record<SeoImageStatus, string> = { own: 'Its own', featured: 'Featured image', site: 'Site image', none: 'None', gone: 'Missing from Assets' };
+
+/** A problem in a few words, as the row's name and the document's findings lead with it. */
+const PROBLEM_LABELS: Record<SeoOverviewProblem, string> = {
+  'home-hidden': 'Home is hidden from search engines',
+  'title-missing': 'No search title',
+  'title-duplicate': 'Search title repeated',
+  'description-missing': 'No description',
+  'description-duplicate': 'Description repeated',
+  'image-missing': 'No sharing image',
+  'title-length': 'Search title length',
+  'description-length': 'Description length'
+};
+const PROBLEM_ORDER = Object.keys(PROBLEM_LABELS) as SeoOverviewProblem[];
+const WARNING_PROBLEMS: ReadonlySet<SeoOverviewProblem> = new Set(['home-hidden', 'title-missing', 'title-duplicate', 'description-missing', 'description-duplicate', 'image-missing']);
+
+/** What a row leads with under its name: its first problem, how many more, or why search engines can't list it. */
+function rowSummary(r: SeoOverviewRow): { tone: 'warn' | 'note' | 'quiet'; label: string } | null {
+  if (r.level === 'excluded') return { tone: 'quiet', label: r.draft ? 'Kept out of search until published' : 'Kept out of search' };
+  const problems = PROBLEM_ORDER.filter((p) => r.problems.includes(p));
+  if (!problems.length) return null;
+  // What follows the first: more to fix, or notes, said as such so a note never borrows a warning's weight.
+  const rest = problems.slice(1);
+  // As the document's findings rank them: for a document search engines can't list, only Home hidden is to fix.
+  const notes = rest.filter((p) => !(p === 'home-hidden' || (r.listed && WARNING_PROBLEMS.has(p)))).length;
+  const fixes = rest.length - notes;
+  const more = [fixes ? `${fixes} more to fix` : '', notes ? plural(notes, 'note') : ''].filter(Boolean).join(' and ');
+  return { tone: r.level === 'warning' ? 'warn' : 'note', label: `${PROBLEM_LABELS[problems[0]]}${more ? ` and ${more}` : ''}` };
+}
+
+/** A status line with its glyph: words always, a colour only where something is to fix. */
+function Status({ tone, children, className = '' }: { tone: 'warn' | 'note' | 'ok' | 'quiet'; children: ReactNode; className?: string }) {
+  const Icon = tone === 'warn' ? TriangleAlert : tone === 'note' ? Info : tone === 'ok' ? Check : EyeOff;
+  return (
+    <span className={`seo-ov-status ${tone} ${className}`}>
+      <Icon aria-hidden="true" />
+      <span>{children}</span>
+    </span>
+  );
+}
 
 /** Whether search engines may list a document, in words. */
 function listing(r: SeoOverviewRow): { tone: 'warn' | 'ok' | 'quiet'; label: string } {
-  if (r.noindex) return { tone: r.home ? 'warn' : 'quiet', label: 'Hidden from search engines' };
-  if (r.draft) return { tone: 'quiet', label: 'Draft: not on the website' };
-  if (!r.listed) return { tone: 'quiet', label: 'Not on the website' };
+  // Short, under a column already named "Search engines"; the row's first cell says what it means for search results.
+  if (r.noindex) return { tone: r.home ? 'warn' : 'quiet', label: 'Hidden' };
+  if (r.draft) return { tone: 'quiet', label: 'Draft' };
+  if (!r.listed) return { tone: 'quiet', label: 'Off the website' };
   // Allowed, not known to be: whether a search engine has listed it is beyond the editor.
   return { tone: 'ok', label: 'Can be listed' };
 }
@@ -138,12 +214,18 @@ function TextCell({ t, field, listed }: { t: SeoOverviewText; field: 'title' | '
   const note = textNote(t, field, listed);
   return (
     <td className="seo-ov-text">
-      {t.text ? (
-        <span className="seo-ov-words" title={t.text}>
-          {t.text}
-        </span>
-      ) : null}
-      <span className={`seo-ov-status ${note.tone}`}>{note.label}</span>
+      {/* Clamped to two lines: the whole of it is in the document's previews, a click away. */}
+      {t.text ? <span className="seo-ov-words">{t.text}</span> : null}
+      {/* A cell with nothing to say about its words says nothing, unless they are borrowed from elsewhere (the site's
+          description, an excerpt): the count is in the document's meter. */}
+      {note.tone === 'ok' ? (
+        t.fallback && t.from !== 'name' ? <span className="seo-ov-status ok">{t.from === 'excerpt' ? 'From the excerpt' : 'From the site’s description'}</span> : null
+      ) : (
+        <Status tone={note.tone}>
+          {note.label}
+          {note.detail && <span className="seo-ov-detail"> · {note.detail}</span>}
+        </Status>
+      )}
     </td>
   );
 }
@@ -157,6 +239,9 @@ function SeoOverview({ state, problemsOnly, onProblemsOnly, returnTo, onOpen }: 
   const all = seoOverviewOnce(state);
   const problems = useMemo(() => seoOverviewProblems(all), [all]);
   const rows = problemsOnly ? problems : all;
+  const excluded = all.filter((r) => !r.listed).length;
+  const fixes = all.filter((r) => r.level === 'warning').length;
+  const notes = all.filter((r) => r.level === 'note').length;
   const ref = useRef<HTMLDivElement>(null);
   // Back from a document, focus goes to its row while it is still listed, else to the filter. Once only: the view
   // opened again later leaves focus where it was.
@@ -173,7 +258,10 @@ function SeoOverview({ state, problemsOnly, onProblemsOnly, returnTo, onOpen }: 
       <div className="seo-ov-head">
         <p className="seo-ov-summary">
           {plural(all.length, 'page or post', 'pages and posts')}
-          {problems.length ? ` · ${problems.length} with something to fix` : all.length ? ' · nothing to fix' : ''}
+          {fixes ? ` · ${fixes} to fix` : ''}
+          {notes ? ` · ${notes} worth a look` : ''}
+          {!problems.length && all.length ? ' · nothing to fix' : ''}
+          {excluded ? ` · ${excluded} kept out of search` : ''}
         </p>
         <label className="seo-ov-filter">
           <input type="checkbox" checked={problemsOnly} onChange={(e) => onProblemsOnly(e.target.checked)} /> Problems only
@@ -194,25 +282,31 @@ function SeoOverview({ state, problemsOnly, onProblemsOnly, returnTo, onOpen }: 
             {rows.map((r) => {
               const listed = listing(r);
               const imageMissing = r.image === 'none' || r.image === 'gone';
+              const summary = rowSummary(r);
+              const where = r.collection ? `${r.collection} · ${r.address}` : r.address;
               return (
                 <tr key={r.key} data-seo-row={r.key} data-level={r.level} className="seo-ov-row">
                   <th scope="row">
-                    <button className="seo-ov-open" onClick={() => onOpen(r)}>
+                    {/* The row's one action: its hit area covers the whole row (SeoView.css), so the row's highlight never promises more than it does. */}
+                    <button className="seo-ov-open" title={`${r.name}\n${where}`} onClick={() => onOpen(r)}>
                       <span className="seo-ov-name">
                         {r.home && <House role="img" aria-label="Home page" />}
-                        <span className="ellipsis">{r.name}</span>
+                        <span>{r.name}</span>
+                        {r.draft && <span className="badge amber">Draft</span>}
                       </span>
-                      <span className="seo-ov-where ellipsis">{r.collection ? `${r.collection} · ${r.address}` : r.address}</span>
-                      {r.draft && <span className="badge amber">Draft</span>}
+                      <span className="seo-ov-where ellipsis">{where}</span>
                     </button>
+                    {summary && (
+                      <Status tone={summary.tone} className="seo-ov-lead">
+                        {summary.label}
+                      </Status>
+                    )}
                   </th>
                   <TextCell t={r.title} field="title" listed={r.listed} />
                   <TextCell t={r.description} field="description" listed={r.listed} />
+                  <td className="seo-ov-image">{imageMissing ? <Status tone={r.listed ? 'warn' : 'note'}>{IMAGE_LABELS[r.image]}</Status> : <span className="seo-ov-status ok">{IMAGE_LABELS[r.image]}</span>}</td>
                   <td>
-                    <span className={`seo-ov-status ${imageMissing ? 'warn' : 'ok'}`}>{IMAGE_LABELS[r.image]}</span>
-                  </td>
-                  <td>
-                    <span className={`seo-ov-status ${listed.tone}`}>{listed.label}</span>
+                    <Status tone={listed.tone}>{listed.label}</Status>
                   </td>
                 </tr>
               );
@@ -220,7 +314,7 @@ function SeoOverview({ state, problemsOnly, onProblemsOnly, returnTo, onOpen }: 
           </tbody>
         </table>
       ) : (
-        <p className="seo-ov-empty">{all.length ? 'Nothing to fix: every page and post reads well in search results and when shared.' : 'The site has no pages yet.'}</p>
+        <p className="seo-ov-empty">{!all.length ? 'The site has no pages yet.' : problemsOnly && excluded ? 'No pages or posts need a fix. Those kept out of search are left out of this list.' : 'Nothing to fix: every page and post reads well in search results and when shared.'}</p>
       )}
     </div>
   );
@@ -238,14 +332,12 @@ function SeoViewPostSettings({ state, subject, preview, on }: { state: ProjectSt
   const entry = postAt(state, post);
   if (!collection || !entry) return null;
   return (
-    <section className="seo-settings" aria-labelledby={headId}>
-      <h3 id={headId} className="seo-settings-head">
-        Search & sharing
-      </h3>
-      <div className="seo-fields">
-        <PostSearchFields state={state} collection={collection} entry={entry} doc={preview} on={on} save={(edit) => savePostSeo(post, edit)} />
-      </div>
-    </section>
+    <div className="seo-settings">
+      <section className="seo-settings-group" aria-labelledby={headId}>
+        <h3 id={headId}>Search & sharing</h3>
+        <PostSearchFields state={state} collection={collection} entry={entry} doc={preview} on={on} save={(edit) => savePostSeo(post, edit)} ids="seo-view" />
+      </section>
+    </div>
   );
 }
 
@@ -257,6 +349,7 @@ function SeoViewPostSettings({ state, subject, preview, on }: { state: ProjectSt
  * comes back wherever the field shows next. While they are away, nothing typed is laid over the previews.
  */
 function SeoViewPageSettings({ state, pageId, on, preview }: { state: ProjectState; pageId: string; on: TypedSeoOn; preview: DocumentPreview | null }) {
+  const locked = useLockedFields();
   useEffect(() => () => on.clear(), [on]);
   if (!Object.hasOwn(state.pages, pageId)) return null;
   const page = state.pages[pageId];
@@ -270,7 +363,9 @@ function SeoViewPageSettings({ state, pageId, on, preview }: { state: ProjectSta
       <section className="seo-settings-group" aria-labelledby="seo-view-structured-head">
         <h3 id="seo-view-structured-head">Structured data</h3>
         <p className="field-hint">What the page is for search engines: a service, product, event or guide, with its facts.</p>
-        <StructuredDataFields page={page} upd={upd} />
+        <fieldset className="seo-field-group" disabled={locked}>
+          <StructuredDataFields page={page} upd={upd} />
+        </fieldset>
       </section>
     </div>
   );
@@ -282,23 +377,139 @@ function SeoViewPageSettings({ state, pageId, on, preview }: { state: ProjectSta
  * previews (#701) read the same answers as the previews beside its settings in the Inspector, with that typed text laid
  * over the saved settings; a page's settings sit beside them (#702), and a post's under them (#703).
  */
-function SeoViewDocument({ state, doc, collection, shown }: { state: ProjectState; doc: SeoDocument; collection: string | undefined; shown: boolean }) {
+function SeoViewDocument({ state, doc, collection, shown, locked }: { state: ProjectState; doc: SeoDocument; collection: string | undefined; shown: boolean; locked: boolean }) {
   const { typed, on } = useTypedSeo(doc.key);
   const { overlay, doc: preview } = useDocumentPreview(state, doc.subject, typed);
   const page = doc.subject.kind === 'page' ? doc.subject.pageId : null;
+  // A post synced from an external source is changed there, as the post writer says, whatever the project allows.
+  const synced = doc.subject.kind === 'entry' && isReadOnlyCollection(Object.hasOwn(state.collections, doc.subject.collectionId) ? state.collections[doc.subject.collectionId] : undefined);
+  const settingsLocked = locked || synced;
+  // What the overview says of it, carried here so a finding is in sight, a click from the field that fixes it.
+  const row = seoOverviewOnce(state).find((r) => r.key === doc.key);
+  const findings = row ? docFindings(row) : [];
+  const reason = row && !row.listed && !doc.draft ? (row.noindex ? 'It asks search engines to leave it out of their results, so the search result below is how it would show if they listed it. Shared links still show it: see Link preview.' : 'It is not on the website, so search engines and link previews don’t see it.') : null;
+  const settingsRef = useRef<HTMLDivElement>(null);
+  /** Bring a field into view and put the cursor in it, as a finding's link does. */
+  const goTo = (field: FindingField) => {
+    const box = settingsRef.current;
+    let el = field === 'image' ? box?.querySelector<HTMLElement>('[data-seo-field="socialImage"]') : box?.querySelector<HTMLElement>(`#seo-view-${field}`);
+    if (field === 'image') el = el?.querySelector<HTMLElement>('button:not(:disabled)') ?? el;
+    // A locked control can't take focus: its row or group does, so the jump still lands on what it shows.
+    if (el && (el as HTMLButtonElement).disabled) el = el.closest<HTMLElement>('.switch-row, [data-seo-field]') ?? el;
+    if (el && el.tabIndex < 0 && !el.hasAttribute('tabindex')) el.tabIndex = -1;
+    (el ?? box?.querySelector<HTMLElement>('h3'))?.scrollIntoView({ block: 'center' });
+    el?.focus({ preventScroll: true });
+  };
   return (
-    <div className={`seo-doc${page ? ' seo-doc-page' : ''}`} data-seo-doc={doc.key}>
+    <div className="seo-doc" data-seo-doc={doc.key}>
       <div className="seo-doc-head">
         <p className="seo-doc-kind">{kindOf(doc, collection)}</p>
-        {doc.draft && <p className="seo-note">A draft is left out of the website, so search engines and link previews don’t see it until it’s published.</p>}
+        {doc.draft && <p className="seo-note">A draft is left out of the website, so search engines and link previews don’t see it until it’s published. What follows is how it would show once it is.</p>}
+        {reason && (
+          <p className="seo-note seo-doc-lock">
+            <EyeOff aria-hidden="true" />
+            {reason}
+          </p>
+        )}
+        {synced && (
+          <p className="seo-note seo-doc-lock" role="note">
+            <Lock aria-hidden="true" />
+            Read-only: this post is synced from an external source. Change it there, or detach the collection to edit it here.
+          </p>
+        )}
+        {findings.length > 0 && (
+          <ul className="seo-findings" aria-label="What to fix">
+            {findings.map((f) => (
+              <li key={f.label}>
+                <Status tone={f.tone}>
+                  {f.label}
+                  {f.field && (
+                    <>
+                      {' '}
+                      <button type="button" className="link-btn seo-finding-go" onClick={() => goTo(f.field!)}>
+                        {settingsLocked
+                          ? f.field === 'image'
+                            ? 'Show the sharing image'
+                            : f.field === 'title'
+                              ? 'Show the search title'
+                              : f.field === 'noindex'
+                                ? 'Show the setting'
+                                : 'Show the description'
+                          : f.field === 'image'
+                            ? 'Choose an image'
+                            : f.field === 'title'
+                              ? 'Edit the search title'
+                              : f.field === 'noindex'
+                                ? 'Review search visibility'
+                                : 'Edit the description'}
+                      </button>
+                    </>
+                  )}
+                </Status>
+              </li>
+            ))}
+          </ul>
+        )}
+        {/* Under the previews while the view is narrow: a way straight down to the fields. */}
+        <button type="button" className="link-btn seo-doc-jump" onClick={() => goTo('title')}>
+          Go to Search & sharing settings
+        </button>
       </div>
       <div className="seo-doc-previews">
         <SeoPreview state={state} subject={doc.subject} overlay={overlay} typed={typed} doc={preview} shown={shown} />
       </div>
-      {page && shown && <SeoViewPageSettings state={state} pageId={page} on={on} preview={preview} />}
-      {doc.subject.kind === 'entry' && <SeoViewPostSettings state={state} subject={doc.subject} preview={preview} on={on} />}
+      {/* Locked (a project open read-only, a synced post), the settings stay in sight: their text read-only, still
+          focusable, selectable and copyable, every other control disabled, and nothing dropped on them imported. */}
+      <div
+        ref={settingsRef}
+        className="seo-doc-settings"
+        data-locked={settingsLocked || undefined}
+        onDropCapture={settingsLocked ? (e) => (e.preventDefault(), e.stopPropagation()) : undefined}
+        onDragOverCapture={settingsLocked ? (e) => e.stopPropagation() : undefined}
+      >
+        <LockedFields value={settingsLocked}>
+        {page && shown && <SeoViewPageSettings state={state} pageId={page} on={on} preview={preview} />}
+        {doc.subject.kind === 'entry' && <SeoViewPostSettings state={state} subject={doc.subject} preview={preview} on={on} />}
+        </LockedFields>
+      </div>
     </div>
   );
+}
+
+type FindingField = 'title' | 'description' | 'image' | 'noindex';
+const FINDING_FIELDS: Partial<Record<SeoOverviewProblem, FindingField>> = {
+  'home-hidden': 'noindex',
+  'title-missing': 'title',
+  'title-duplicate': 'title',
+  'title-length': 'title',
+  'description-missing': 'description',
+  'description-duplicate': 'description',
+  'description-length': 'description',
+  'image-missing': 'image'
+};
+
+/** A document's findings in full sentences, the ones that count in search results first, each with the field that fixes it. */
+function docFindings(r: SeoOverviewRow): Array<{ tone: 'warn' | 'note'; label: string; field?: FindingField }> {
+  // Amber only for what counts in search results now: anything a document search engines can't list would need is a
+  // note, Home hidden aside, which is the problem itself.
+  const tone = (p: SeoOverviewProblem) => (p === 'home-hidden' ? 'warn' : !r.listed || !['title-missing', 'title-duplicate', 'description-missing', 'description-duplicate', 'image-missing'].includes(p) ? 'note' : 'warn');
+  // The documents it shares words with, by name while they are few.
+  const others = (t: SeoOverviewText, verb: boolean) => {
+    const names = t.peers.length && t.peers.length <= 3 ? t.peers.map((n) => `“${n}”`) : null;
+    const who = names ? (names.length === 1 ? names[0] : `${names.slice(0, -1).join(', ')} and ${names[names.length - 1]}`) : plural(t.duplicates, `${r.listed ? 'other' : 'published'} page or post`, `${r.listed ? 'other' : 'published'} pages and posts`);
+    return `${who}${verb ? (t.duplicates === 1 ? ' has' : ' have') : ''}`;
+  };
+  const said: Record<SeoOverviewProblem, string> = {
+    'home-hidden': 'Home, the site’s main page, asks search engines to leave it out of their results.',
+    'title-missing': 'It has no search title.',
+    'title-duplicate': `${others(r.title, true)} the same search title, so results can’t tell them apart.`,
+    'title-length': `Its search title is ${r.title.status === 'short' ? 'short' : 'long'} at ${plural(r.title.chars, 'character')}.`,
+    'description-missing': 'It has no description.',
+    'description-duplicate': `${others(r.description, true)} the same description${r.description.fallback ? `: this one uses ${r.description.from === 'excerpt' ? 'its excerpt' : 'the site’s description'}, so write one of its own` : ''}.`,
+    'description-length': `Its description is ${r.description.status === 'short' ? 'short' : 'long'} at ${plural(r.description.chars, 'character')}.`,
+    'image-missing': r.image === 'gone' ? 'Its sharing image is missing from Assets.' : 'It has no sharing image, so shared links show no picture.'
+  };
+  return PROBLEM_ORDER.filter((p) => r.problems.includes(p)).map((p) => ({ tone: tone(p) as 'warn' | 'note', label: said[p], field: FINDING_FIELDS[p] }));
 }
 
 /**
@@ -327,6 +538,7 @@ export function SeoView({ shown }: { shown: boolean }) {
   const snap = useStore((s) => s.snapshot);
   const subject = useStore((s) => s.seoSubject);
   const state = snap?.state;
+  const readOnly = snap?.readOnly ?? null;
   const doc = seoDocument(state, subject);
   const collection = doc?.subject.kind === 'entry' && state ? state.collections[doc.subject.collectionId]?.settings.name : undefined;
   // The overview's filter is kept while a document is open, so Back returns to the list as it was.
@@ -372,9 +584,11 @@ export function SeoView({ shown }: { shown: boolean }) {
       <div className="seo-bar">
         {doc ? (
           <>
-            <button ref={backRef} className="btn btn-ghost seo-back" aria-label="Back to overview" title="Back to overview" onClick={back} onFocus={() => (backFocused.current = true)} onBlur={() => (backFocused.current = false)}>
-              <ArrowLeft />
+            <button ref={backRef} className="btn btn-sm btn-ghost seo-back" aria-label="Back to overview" title="Back to overview (Esc)" onClick={back} onFocus={() => (backFocused.current = true)} onBlur={() => (backFocused.current = false)}>
+              <ArrowLeft aria-hidden="true" />
+              Overview
             </button>
+            <span className="seo-bar-sep" aria-hidden="true" />
             {doc.subject.kind === 'page' ? <FileText aria-hidden="true" /> : <Newspaper aria-hidden="true" />}
             <h2 className="seo-title ellipsis">{doc.title}</h2>
             <span className="seo-address ellipsis" title={doc.address}>
@@ -387,7 +601,8 @@ export function SeoView({ shown }: { shown: boolean }) {
             <h2 className="seo-title">SEO</h2>
           </>
         )}
-        <button className="btn btn-sm seo-leave" title="Leave the SEO view and return to the page (Esc)" onClick={() => {
+        {/* Escape steps back to the overview from a document first, so only the overview's Close says it. */}
+        <button className="btn btn-sm seo-leave" title={doc ? 'Leave the SEO view and return to the page' : 'Leave the SEO view and return to the page (Esc)'} onClick={() => {
             leaveSeoView();
             // Focus lands on the rail's SEO button, where the view opens from, not on the page.
             requestAnimationFrame(() => document.querySelector<HTMLElement>('.rail [data-rail="seo"]')?.focus());
@@ -397,9 +612,15 @@ export function SeoView({ shown }: { shown: boolean }) {
           Close SEO view
         </button>
       </div>
+      {readOnly && (
+        <p className="seo-locked" role="note">
+          <Lock aria-hidden="true" />
+          <span>{readOnly.reason}</span>
+        </p>
+      )}
       <div className="seo-scroll" ref={scrollRef}>
         {doc && state && snap ? (
-          <SeoViewDocument key={`${snap.workspaceKey}\n${doc.key}`} state={state} doc={doc} collection={collection} shown={shown} />
+          <SeoViewDocument key={`${snap.workspaceKey}\n${doc.key}`} state={state} doc={doc} collection={collection} shown={shown} locked={!!readOnly} />
         ) : state && !hidden ? (
           <SeoOverview
             state={state}
