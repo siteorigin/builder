@@ -479,10 +479,11 @@ describe('where a padding handle is drawn (#905)', () => {
   });
 
   it('measures the grip as the canvas draws it', () => {
-    // GRIP_HALF is half the 12px a grip is across its edge in Canvas.css; a mismatch would let the grip onto content.
+    // GRIP_HALF is half the 24px square a grip is in Canvas.css, either way; a mismatch would let the grip onto content.
     const css = readFileSync('src/renderer/src/panels/Canvas.css', 'utf8');
-    expect(css).toMatch(new RegExp(`\\.ov-space-handle \\{[^}]*width: 24px; height: ${GRIP_HALF * 2}px;`));
-    expect(css).toMatch(new RegExp(`\\.ov-space-handle\\.x \\{ width: ${GRIP_HALF * 2}px;`));
+    expect(css).toMatch(new RegExp(`\\.ov-space-handle \\{[^}]*width: ${GRIP_HALF * 2}px; height: ${GRIP_HALF * 2}px;`));
+    // A handle that drags across (.x) is the same square, not resized.
+    expect(css).not.toMatch(/\.ov-space-handle\.x \{[^}]*(width|height):/);
   });
 
   it('keeps a grip that would stand past the page’s edge on the page, so it can still be dragged', () => {
@@ -502,11 +503,12 @@ describe('where a padding handle is drawn (#905)', () => {
   it('keeps a dragged grip by its content edge, never on the content, as the box grows under it', () => {
     // An auto-height section 100px down: 16px of vertical padding around 68px of content, at 100%.
     const at = (pad: number, from?: number) => paddingGripAt({ left: 0, top: 100, width: 400, height: 68 + pad * 2 }, none, sides(pad, 0, pad, 0), 'bottom', 1, from);
+    // The band is thinner than a grip: its inner edge meets the content's, which ends at 184.
     const start = at(16);
-    expect(start.y).toBe(100 + 100 - 8);
+    expect(start.y).toBe(184 + GRIP_HALF);
     // Dragged to 48px of vertical padding: the box is 164px tall and its content ends at 216.
     const held = at(48, 16);
-    expect(held.y).toBe(216 + 8);
+    expect(held.y).toBe(216 + GRIP_HALF);
     // The same distance from the content's edge as when the drag began, so the grip stays off the content.
     expect(216 - (held.y - GRIP_HALF)).toBeLessThanOrEqual(0);
     // Without a drag, the grip goes to the middle of the band.
