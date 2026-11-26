@@ -21,6 +21,12 @@
     overflow: hidden;
     user-select: none;
   }
+  /* The shell fills the window and never scrolls as a whole: anything laid out past its edge (a visually hidden
+     status line positioned against a panel rather than the panel's scroller) is clipped here, so the document is
+     never taller than the window and scrollIntoView or focus cannot shift the editor under its toolbar. Clip, not
+     hidden: #root is no scroll container, so sticky headers inside still stick to their own scrollers, and overlays
+     fixed to the window are not clipped (the window is their containing block). */
+  #root { overflow: clip; }
   input, textarea, select, button { font: inherit; color: inherit; }
   button { cursor: default; background: none; }
   /* A solid 2px outline (3:1 or better in both themes), 2px out, is the one focus indicator; it survives

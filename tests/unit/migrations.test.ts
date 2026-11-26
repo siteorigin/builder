@@ -1,7 +1,7 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { cpSync, existsSync, mkdirSync, mkdtempSync, promises as fsp, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join, relative } from 'node:path';
+import { join, relative, sep } from 'node:path';
 import type { ComponentDefinition, InstanceNode, ProjectState } from '@shared/types';
 import { createStarterState } from '@catalogue/starters';
 import { SCHEMA_VERSION } from '@shared/types';
@@ -54,7 +54,8 @@ function tree(dir: string): Record<string, string> {
     for (const e of readdirSync(d, { withFileTypes: true })) {
       const p = join(d, e.name);
       if (e.isDirectory()) walk(p);
-      else out[relative(dir, p)] = readFileSync(p, 'utf8');
+      // Keyed by the project-relative path with `/` between its parts, as the project's documents are named.
+      else out[relative(dir, p).split(sep).join('/')] = readFileSync(p, 'utf8');
     }
   };
   walk(dir);
@@ -286,7 +287,7 @@ describe('opening an older project', () => {
     const realRename = fsp.rename.bind(fsp);
     let copies = 0;
     vi.spyOn(fsp, 'rename').mockImplementation(async (from, to) => {
-      if (String(to).includes('/recovery/migration-') && ++copies === 3) throw new Error('simulated crash');
+      if (String(to).replaceAll('\\', '/').includes('/recovery/migration-') && ++copies === 3) throw new Error('simulated crash');
       return realRename(from, to);
     });
     await expect(ProjectSession.open(dir, 'crash')).rejects.toThrow('simulated crash');
@@ -390,7 +391,7 @@ describe('opening an older project', () => {
     let edited = false;
     vi.spyOn(fsp, 'rename').mockImplementation(async (from, to) => {
       // The first file of the recovery copy: validation is done and nothing has been published.
-      if (!edited && String(to).includes('/recovery/migration-')) {
+      if (!edited && String(to).replaceAll('\\', '/').includes('/recovery/migration-')) {
         edited = true;
         write(dir, SITE, { ...read(dir, SITE), description: 'Edited at the last moment' });
       }

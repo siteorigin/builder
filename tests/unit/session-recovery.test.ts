@@ -7,6 +7,7 @@ import type { AssetRecord } from '@shared/types';
 import { LOCK_STALE_MS, ProjectLockedError, ProjectSession } from '../../src/main/project/session';
 import { sha, toJson } from '../../src/main/project/fsutil';
 import { instancesOf } from '@engine/tree';
+import { denyAccess } from './deny-access';
 
 const dirs: string[] = [];
 const open: ProjectSession[] = [];
@@ -416,7 +417,7 @@ describe('project lock', () => {
     const atWrite = new Promise<void>((r) => (reached = r));
     const rename = fsp.rename.bind(fsp);
     vi.spyOn(fsp, 'rename').mockImplementation(async (from, to) => {
-      if (String(to).endsWith(SITE)) {
+      if (String(to).endsWith(join(SITE))) {
         reached();
         await gate;
         await rename(from, to);
@@ -780,11 +781,11 @@ describe('comparing conflict versions and saved copies (#82)', () => {
     await s.apply({ operations: [{ type: 'site.update', name: 'Touch' }] }, { label: 'Touch' });
     const list = join(dir, '.siteorigin/recovery/copies.json');
     const listed = readFileSync(list, 'utf8');
-    await fsp.chmod(list, 0o000);
+    const restore = denyAccess(list, 'read');
     try {
       await expect(s.resolveConflict(HOME, 'restore')).rejects.toThrow(/could not be read/);
     } finally {
-      await fsp.chmod(list, 0o644);
+      restore();
     }
     expect(readFileSync(list, 'utf8')).toBe(listed);
     expect(readFileSync(join(dir, HOME), 'utf8')).toBe('<h1>Edited again</h1>\n');
@@ -965,7 +966,7 @@ describe('the version an AI run attempted, when it rolled back around a conflict
     await s.close();
     const blob = join(dir, '.siteorigin/history/blobs', `${marker.paths[SITE].after}.json`);
     const external = readFileSync(join(dir, SITE), 'utf8');
-    await fsp.chmod(blob, 0o000);
+    const restore = denyAccess(blob, 'read');
     let again: ProjectSession;
     try {
       again = await reopen(dir);
@@ -976,7 +977,7 @@ describe('the version an AI run attempted, when it rolled back around a conflict
       expect(again.savedCopies).toEqual([]);
       expect(readFileSync(join(dir, SITE), 'utf8')).toBe(external);
     } finally {
-      await fsp.chmod(blob, 0o644);
+      restore();
     }
     expect(await again.resolveConflict(SITE, 'restore')).toEqual({ ok: true });
     expect(again.savedCopies.map((c) => c.side).sort()).toEqual(['attempted', 'external']);
@@ -1018,14 +1019,14 @@ describe('the version an AI run attempted, when it rolled back around a conflict
     writeFileSync(join(dir, SITE), pre);
     const recovery = join(dir, '.siteorigin/recovery');
     mkdirSync(recovery, { recursive: true });
-    await fsp.chmod(recovery, 0o500);
+    const restore = denyAccess(recovery, 'write');
     let again: ProjectSession;
     try {
       again = await reopen(dir);
       expect(again.conflicts).toEqual([expect.objectContaining({ path: SITE, aiRun: true })]);
       expect(again.savedCopies).toEqual([]);
     } finally {
-      await fsp.chmod(recovery, 0o755);
+      restore();
     }
     expect((await again.reloadFromDisk()).ok).toBe(true);
     expect(again.conflicts).toEqual([]);

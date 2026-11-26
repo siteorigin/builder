@@ -20,8 +20,13 @@ const picker = () => row().locator('input[type="color"]');
 const fill = () => row().locator('.color-pick-fill');
 const saved = () => win.evaluate(async () => (await window.builder.project.snapshot()).state.tokens.overrides['color.brand']);
 const revision = () => win.evaluate(async () => (await window.builder.project.snapshot()).revision);
-/** The revision once it has stopped moving: a snapshot taken mid-apply shows the new state with the old revision. */
+/**
+ * The revision once every save has landed and it has stopped moving. A snapshot taken mid-apply shows the new state
+ * with the old revision, and on a slow disk (Windows) that can last longer than any pause: the toolbar says Saved only
+ * once the save has come back.
+ */
 const settled = async () => {
+  await eventually(async () => assert.equal(await win.locator('.toolbar .save-state').innerText(), 'Saved', 'every save has landed'));
   let last = await revision();
   for (;;) {
     await win.waitForTimeout(250);

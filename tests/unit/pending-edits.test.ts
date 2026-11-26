@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it } from 'vitest';
-import { CANVAS_DRAFT, CODE_DRAFT, PAGE_ADD_DRAFT, afterEditsSettle, afterSettle, draftCount, isSettling, refusedWithin, reportRefused, resetPendingForTests, retainRefused, savesInFlight, setCanvasCommit, setDraft, settle, trackApply, type ApplyOutcome } from '../../src/renderer/src/lib/pending';
+import { CANVAS_DRAFT, CODE_DRAFT, PAGE_ADD_DRAFT, afterEditsSettle, afterLanding, afterSettle, draftCount, isSettling, refusedWithin, reportRefused, resetPendingForTests, retainRefused, savesInFlight, setCanvasCommit, setDraft, settle, trackApply, type ApplyOutcome } from '../../src/renderer/src/lib/pending';
 import { announcementText, saveStatusAnnouncement } from '../../src/renderer/src/lib/announce';
 
 const wait = (ms: number) => new Promise<void>((r) => setTimeout(r, ms));
@@ -299,6 +299,48 @@ describe('settling pending edits', () => {
     // Outside a settle the saved value comes back straight away, as before.
     afterSettle(() => reverted.push('later'));
     expect(reverted).toEqual(['field', 'later']);
+  });
+
+  it('puts a field’s saved value back only once the change it started has landed, however long that takes', async () => {
+    const reverted: string[] = [];
+    // Nothing on its way: at once, as before.
+    afterLanding(() => reverted.push('idle'));
+    expect(reverted).toEqual(['idle']);
+    // Left with its change still being saved (a slow disk, a preview still taking the save before it): the typed text
+    // stays until the project holds it, never the value from before the change.
+    const apply = deferred();
+    trackApply(apply.promise);
+    afterLanding(() => reverted.push('field'));
+    await wait(500);
+    expect(reverted).toEqual(['idle']);
+    apply.resolve({ ok: true });
+    await wait(0);
+    expect(reverted).toEqual(['idle', 'field']);
+    // A change refused puts it back too.
+    const refused = deferred();
+    trackApply(refused.promise);
+    afterLanding(() => reverted.push('refused'));
+    refused.resolve({ ok: false, message: 'That anchor is already used on this page.' });
+    await wait(0);
+    expect(reverted).toEqual(['idle', 'field', 'refused']);
+  });
+
+  it('puts it back after a settle too, once the change has landed', async () => {
+    const reverted: string[] = [];
+    const apply = deferred();
+    const run = settle({
+      blur: () => {
+        trackApply(apply.promise);
+        afterLanding(() => reverted.push('field'));
+      },
+      wait
+    });
+    apply.resolve({ ok: true });
+    const { finish } = await run;
+    expect(reverted).toEqual([]);
+    finish();
+    await wait(0);
+    expect(reverted).toEqual(['field']);
   });
 
   it('runs overlapping settles (Save during a close) to their own answers, reverting after the last', async () => {

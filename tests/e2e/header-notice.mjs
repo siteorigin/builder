@@ -64,6 +64,9 @@ await label.press('Enter');
 await notice.getByRole('combobox', { name: 'Notice link type', exact: true }).selectOption('page');
 await notice.getByRole('combobox', { name: 'Notice page', exact: true }).selectOption(contact);
 await eventually(async () => assert.deepEqual((await headerProps()).noticeLink, { type: 'page', target: contact }, 'the notice links to Contact'));
+// The project has the link before the editor hears of it: the Inspector shows it once it has, and a link type chosen
+// before then would be put back by the news of this one.
+await eventually(async () => assert.equal(await notice.getByRole('combobox', { name: 'Notice page', exact: true }).inputValue(), contact, 'the Inspector shows the link to Contact'));
 
 step('a web address the project cannot store is explained beside the field, which keeps it');
 const linkType = notice.getByRole('combobox', { name: 'Notice link type', exact: true });

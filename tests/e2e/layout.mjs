@@ -129,7 +129,11 @@ const smallest = await app.evaluate(({ BrowserWindow }) => {
   return { minimum: b.getMinimumSize(), size: b.getSize(), content: { width: c.width, height: c.height } };
 });
 assert.deepEqual(smallest.minimum, [1100, 700]);
-assert.deepEqual(smallest.size, smallest.minimum, 'the window will not go smaller than its minimum');
+if (process.platform === 'win32') {
+  // Windows counts its invisible resize borders in the window's size, rounded at fractional display scaling (125%
+  // gives 1102): never smaller than the minimum, and no more than that rounding above it.
+  smallest.size.forEach((v, i) => assert.ok(v >= smallest.minimum[i] && v - smallest.minimum[i] <= 2, `the window will not go smaller than its minimum (${smallest.size})`));
+} else assert.deepEqual(smallest.size, smallest.minimum, 'the window will not go smaller than its minimum');
 // On macOS the content fills the window; a title bar elsewhere takes some of it.
 assertToolbarFits(await settled(smallest.content.width), `the smallest window (${smallest.content.width}px of content)`);
 

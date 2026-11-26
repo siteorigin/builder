@@ -8,6 +8,7 @@ import { existsSync, readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { chromium, type Browser, type Frame, type Page } from 'playwright';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+import { inputReachesFrame } from './frame-input';
 
 const bridge = readFileSync(resolve('src/runtime/bridge.client.js'), 'utf8');
 const browserInstalled = existsSync(chromium.executablePath());
@@ -49,6 +50,7 @@ describe.skipIf(!browserInstalled)('a placement’s empty slots in the preview (
     await page.goto(`${HOST}/`);
     frame = page.frames().find((f) => f.name() === 'so-test')!;
     await frame.waitForSelector('html[data-so-editing]', { state: 'attached' });
+    await inputReachesFrame(page, frame);
   }, 30000);
   afterAll(async () => {
     await browser?.close();

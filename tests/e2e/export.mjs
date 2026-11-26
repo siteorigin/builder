@@ -612,6 +612,9 @@ async function proofTab(url, size = { width: 1280, height: 900 }) {
       void w.loadURL(url);
     }, [url, size])
   ]);
+  // Exactly the size asked for, at the display's own pixel density: Windows makes a hidden window's page a pixel or two
+  // wider than its content size at 125% scaling, and no taller than the screen.
+  await (await tab.context().newCDPSession(tab)).send('Emulation.setDeviceMetricsOverride', { ...size, deviceScaleFactor: 0, mobile: false });
   await tab.waitForLoadState('load');
   return tab;
 }

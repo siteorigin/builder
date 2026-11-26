@@ -256,7 +256,7 @@ export function componentFrame(): ComponentFrame {
     const measured = await next(
       (m) => m.type === 'inspectResult' && (m.payload as { requestId?: unknown }).requestId === requestId,
       PREVIEW_MEASURE_MS,
-      () => postToFrame(target, origin, sessionId, 'inspect', { requestId, ...(measure?.readability ? { readability: true } : {}), ...(measure?.gaps ? { gaps: true } : {}) }, view)
+      () => postToFrame(target, origin, sessionId, 'inspect', { requestId, width, ...(measure?.readability ? { readability: true } : {}), ...(measure?.gaps ? { gaps: true } : {}) }, view)
     );
     if (disposed) return fail('The component preview was closed.');
     if (!measured) return fail('Timed out measuring the component preview.');

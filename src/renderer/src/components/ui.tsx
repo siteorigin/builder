@@ -6,7 +6,7 @@ import * as DropdownMenu from '@radix-ui/react-dropdown-menu';
 import { createPortal, flushSync } from 'react-dom';
 import { Check, ChevronDown, CircleAlert, CircleCheck, Info, Pencil, X } from 'lucide-react';
 import { aiActivity, api, applyHeld, commitDraft, discardHeld, dismissToast, editRunStatus, markDraft, toast, undoAvailable, useStore, type HeldEdit, type PendingEdit } from '../store';
-import { afterSettle, isSettling, reportRefused, retainRefused, type Refocusable } from '../lib/pending';
+import { afterLanding, isSettling, reportRefused, retainRefused, type Refocusable } from '../lib/pending';
 import { heldPrompt, type HeldAction } from '../lib/held';
 import { dropKeptDraft, goneReport, keepDraft, keptDraft, keptDraftKey, keptField, keptOnLeave, keptRefusal, limitNote, tooLongReport, unsavedReport } from '../lib/kept-drafts';
 import { runPhase } from '../lib/savestate';
@@ -1139,10 +1139,11 @@ function DraftField({
     held.current = isSettling();
     mark(refused && held.current);
     if (refused) reportRefused(named(el), draftKey, el);
-    // The saved value comes back once the change has landed or been refused. While the project is being
-    // left, the typed text stays until the author decides, so Keep editing returns to it intact.
+    // The saved value comes back once the change has landed or been refused: until then the field shows what was
+    // typed, never the value from before it. While the project is being left, the typed text stays until the author
+    // decides, so Keep editing returns to it intact.
     const at = edit.current;
-    afterSettle(() =>
+    afterLanding(() =>
       setTimeout(() => {
         if (!mounted.current || focused.current || edit.current !== at) return;
         held.current = false;

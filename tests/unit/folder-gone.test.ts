@@ -121,7 +121,13 @@ describe('an open project whose folder goes away', { timeout: 30_000 }, () => {
   });
 
   it('is reported as gone at the next lock check when it is renamed', async () => {
-    const { dir, c, session } = await openProject();
+    const { dir, c, session, watchers } = await openProject();
+    if (process.platform === 'win32') {
+      // Windows will not rename a folder while anything inside it is held open, as the watches of its folders are: a
+      // project open in the app cannot be renamed there. Once they have stopped it can, and is found gone all the same.
+      expect(() => renameSync(dir, `${dir}-moved`)).toThrow(expect.objectContaining({ code: 'EPERM' }));
+      for (const w of watchers) w.close();
+    }
     renameSync(dir, `${dir}-moved`);
     await expect(session.refreshLock()).resolves.toBe('unknown');
     await expectReportedGone(c);

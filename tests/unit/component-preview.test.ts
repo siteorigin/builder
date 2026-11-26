@@ -1,6 +1,6 @@
 import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, rmSync, statSync, symlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join, posix } from 'node:path';
+import { join, posix, sep } from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
 import type { ProjectState } from '@shared/types';
 import { createStarterState } from '@catalogue/starters';
@@ -254,6 +254,13 @@ describe('serving an isolated preview', () => {
     return { dir, key, path, plugin, request, made };
   }
 
+  /** A file's module id as Vite spells it on every platform: with forward slashes (`C:/Users/…` on Windows). */
+  const viteId = (file: string) => file.split(sep).join('/');
+  /** The address Vite's dev server gives a file it serves by its whole path, as Vite joins it: `/@fs/C:/Users/…` on Windows. */
+  const fsUrl = (id: string) => posix.join('/@fs/', id);
+  /** Vite's resolution of an absolute path: from the file system root, or a drive's. */
+  const absolute = (id: string) => /^(?:\/|[A-Za-z]:\/)/.test(id);
+
   function response(done: () => void) {
     const res = {
       statusCode: 0,
@@ -389,10 +396,10 @@ describe('serving an isolated preview', () => {
   it('answers a released preview’s modules as gone, and drops what the server kept of them', async () => {
     const { dir, key, plugin, made } = await served();
     const other = await writeComponentPreview(dir, made.files);
-    const at = (k: string, rel: string) => `${dir}/.siteorigin/cache/dev/isolated/${k}/${rel}`;
+    const at = (k: string, rel: string) => `${viteId(dir)}/.siteorigin/cache/dev/isolated/${k}/${rel}`;
     const invalidated: string[] = [];
     const graph = {
-      idToModuleMap: new Map<string, { id: string }>([at(key, PREVIEW_MODULE), at(other.key, PREVIEW_MODULE), `\0virtual:siteorigin-component-preview/${key}.js`, `${dir}/src/routes/+page.svelte`].map((id) => [id, { id }])),
+      idToModuleMap: new Map<string, { id: string }>([at(key, PREVIEW_MODULE), at(other.key, PREVIEW_MODULE), `\0virtual:siteorigin-component-preview/${key}.js`, `${viteId(dir)}/src/routes/+page.svelte`].map((id) => [id, { id }])),
       invalidateModule: (mod: unknown) => void invalidated.push((mod as { id: string }).id)
     };
     let middleware: ((req: { url?: string; method?: string }, res: ReturnType<typeof response>, next: () => void) => void) | null = null;
@@ -411,7 +418,7 @@ describe('serving an isolated preview', () => {
     expect(await ask(`/@fs/elsewhere/.siteorigin/cache/dev/isolated/${key}/x.js`)).toBe('next');
     expect(await ask(`/docs/.siteorigin/cache/dev/isolated/${key}/x`)).toBe('next');
     // However the address is spelled.
-    for (const spelling of [`/.siteorigin/cache/dev/isolated/%${key.charCodeAt(0).toString(16)}${key.slice(1)}/x.js`, `//.siteorigin//cache/dev/isolated/${key}/x.js`, `/.siteorigin/cache/dev/./isolated/${key}/x.js`, `/src/../.siteorigin/cache/dev/isolated/${key}/x.js`, `/@id/${at(key, PREVIEW_MODULE)}`, `/@fs${at(key, PREVIEW_MODULE)}?import`])
+    for (const spelling of [`/.siteorigin/cache/dev/isolated/%${key.charCodeAt(0).toString(16)}${key.slice(1)}/x.js`, `//.siteorigin//cache/dev/isolated/${key}/x.js`, `/.siteorigin/cache/dev/./isolated/${key}/x.js`, `/src/../.siteorigin/cache/dev/isolated/${key}/x.js`, `/@id/${at(key, PREVIEW_MODULE)}`, `${fsUrl(at(key, PREVIEW_MODULE))}?import`])
       expect(await ask(spelling), spelling).toBe(404);
     expect(invalidated).toEqual([]);
     // Showing the next preview drops the released one's modules, and only those.
@@ -420,7 +427,9 @@ describe('serving an isolated preview', () => {
   });
 
   it('resolves what a preview’s files import from the preview first, then from the project', async () => {
-    const { dir, key, plugin } = await served();
+    const { dir: folder, key, plugin } = await served();
+    // Vite names every module by its whole path with forward slashes, whatever the platform.
+    const dir = viteId(folder);
     const at = (rel: string) => `${dir}/.siteorigin/cache/dev/isolated/${key}/${rel}`;
     const importer = at(PREVIEW_MODULE);
     const note = at('src/lib/siteorigin/custom/Note.svelte');
@@ -431,7 +440,7 @@ describe('serving an isolated preview', () => {
         asked.push([id, from]);
         const [bare, query = ''] = id.split('?');
         const base = bare.startsWith('.') ? posix.join(posix.dirname(from!), bare) : bare;
-        if (!base.startsWith('/')) return { id: `/node_modules/${id}/index.js` };
+        if (!absolute(base)) return { id: `/node_modules/${id}/index.js` };
         for (const ext of ['', '.js', '.svelte']) if (existsSync(base + ext) && statSync(base + ext).isFile()) return { id: base + ext + (query && `?${query}`) };
         return null;
       }

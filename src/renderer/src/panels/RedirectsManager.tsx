@@ -28,6 +28,8 @@ interface Draft {
   revision?: number;
   /** The redirect as it was when the form opened: one changed or removed since is never written over. */
   was?: string;
+  /** Which opening of the form this is: a save that ends after another form opened leaves that one alone. */
+  opened: number;
 }
 
 /**
@@ -64,6 +66,10 @@ export function RedirectsFields({ state, problems, revision }: { state: ProjectS
   // What the project is now, for a save that comes back refused after it has moved on.
   const now = useRef({ state, revision });
   now.current = { state, revision };
+  // The form open now, and how many times one has been opened.
+  const shown = useRef(draft);
+  shown.current = draft;
+  const openings = useRef(0);
   const pages = state.site.pageOrder.filter((id) => Object.hasOwn(state.pages, id)).map((id) => state.pages[id]);
   const posts = siteEntries(state);
   const host = redirectHost(state.site);
@@ -80,7 +86,7 @@ export function RedirectsFields({ state, problems, revision }: { state: ProjectS
   const open = (r: SiteRedirect | null) => {
     setError(null);
     const kind: Kind = !r ? 'page' : r.pageId !== undefined ? 'page' : r.entryId !== undefined ? 'post' : 'path';
-    setDraft({ from: r?.from ?? null, typed: '', kind, pageId: r?.pageId ?? pages[0]?.id ?? '', entryId: r?.entryId ?? posts[0]?.entry.id ?? '', to: r?.to ?? '', revision, was: r ? JSON.stringify(r) : undefined });
+    setDraft({ from: r?.from ?? null, typed: '', kind, pageId: r?.pageId ?? pages[0]?.id ?? '', entryId: r?.entryId ?? posts[0]?.entry.id ?? '', to: r?.to ?? '', revision, was: r ? JSON.stringify(r) : undefined, opened: ++openings.current });
   };
   const save = async () => {
     if (!draft) return;
@@ -93,6 +99,9 @@ export function RedirectsFields({ state, problems, revision }: { state: ProjectS
     const op: EditOperation = draft.from === null ? { type: 'redirect.add', from: typed.startsWith('/') ? typed : `/${typed}`, ...target } : { type: 'redirect.update', from: draft.from, ...target };
     // Against the project as it was when the form opened: a redirect removed and made again meanwhile is not changed.
     const done = await applyOps([op], draft.from === null ? 'Add redirect' : 'Change redirect', undefined, draft.revision);
+    // The list shows the change before the save is answered (on a slow disk, long before), so the author may already
+    // have opened another redirect's form: that one stays open.
+    if (shown.current?.opened !== draft.opened) return;
     if (done) close();
     // Refused, the form stays as typed, and saving again checks it against the project as it is now, which the list
     // shows; unless the redirect it changes was itself changed or removed meanwhile: then the form closes on it.

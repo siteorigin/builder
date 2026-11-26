@@ -127,7 +127,17 @@ await eventually(async () => assert.equal(await design(), staticDesign, 'the des
 await eventually(async () => assert.equal(await pageDoc(), staticPage, 'and so is Home'));
 
 step('Layers turns it into an empty slot instead, and then offers it no more, saying why');
-await row(column).click({ button: 'right' });
+// The project has the Undo before the editor hears of it, and a menu is worked out as it opens: one opened before
+// then still finds the column holding the slot. It is opened again until it offers the column's content.
+await eventually(async () => {
+  await row(column).click({ button: 'right' });
+  const offered = (await menu.getByRole('menuitem', { name: 'Turn into slot…' }).getAttribute('aria-disabled')) !== 'true';
+  if (!offered) {
+    await win.keyboard.press('Escape');
+    await menu.waitFor({ state: 'detached' });
+  }
+  assert.ok(offered, 'Turn into slot is offered again once the editor has the Undo');
+}, 15000);
 await menu.getByRole('menuitem', { name: 'Turn into slot…' }).click();
 await dialog.waitFor();
 await dialog.getByRole('radio', { name: 'Leave the slot empty' }).check();
@@ -189,7 +199,9 @@ await eventually(async () => {
   assert.equal(held.length, 1, 'the first Split’s slot holds the paragraph');
   assert.equal(st.pages[pageId].nodes[held[0]].kind, 'text', 'a paragraph');
   assert.equal(st.pages[pageId].nodes[second].slots, undefined, 'the second Split’s slot stays empty');
-});
+  // The project holds a change while its files are still being written, and records it in History once they are.
+  assert.notEqual((await history()).length, beforeDrop, 'and the drop is recorded');
+}, 30000);
 assert.equal((await history()).length, beforeDrop + 1, 'in one change');
 await eventually(async () => assert.equal(await placeholder(first).count(), 0, 'the filled slot shows its content, not the placeholder'), 20000);
 assert.equal(await placeholder(second).count(), 1, 'the empty one still shows it');

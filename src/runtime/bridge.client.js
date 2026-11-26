@@ -70,6 +70,41 @@ document.documentElement.setAttribute('data-so-navigation', navigationId);
 /** A command the editor stamped with a navigation this frame has since moved on from. */
 const leftBehind = (m) => !!m.navigationId && m.navigationId !== navigationId;
 
+/**
+ * A page the editor asks for may be one just added: its file is on disk, but the preview server takes a moment to
+ * pick up a new route, and a full load that arrives first is answered Not Found (on a slower machine, Windows, often).
+ * The address asked for is kept for the load it may lead to, and that load, answered 404, loads the page again a few
+ * times before it is shown as missing. Only an address the editor asked for: a visitor's broken link stays missing.
+ */
+const ASKED_KEY = 'siteorigin:asked';
+const MISSING_RELOADS = 6;
+function askedFor(path) {
+  try {
+    sessionStorage.setItem(ASKED_KEY, JSON.stringify({ path: new URL(path, location.href).pathname, tries: 0 }));
+  } catch {
+    // Without storage, a page not there yet stays missing until the editor asks again.
+  }
+}
+/** Load the page again when it is one the editor asked for and the server did not have yet; true when it will. */
+function reloadMissingPage() {
+  let asked = null;
+  try {
+    asked = JSON.parse(sessionStorage.getItem(ASKED_KEY) || 'null');
+    sessionStorage.removeItem(ASKED_KEY);
+  } catch {
+    return false;
+  }
+  const status = performance.getEntriesByType('navigation')[0]?.responseStatus;
+  if (!asked || asked.path !== location.pathname || status !== 404 || !(asked.tries < MISSING_RELOADS)) return false;
+  try {
+    sessionStorage.setItem(ASKED_KEY, JSON.stringify({ path: asked.path, tries: asked.tries + 1 }));
+  } catch {
+    return false;
+  }
+  setTimeout(() => location.reload(), 250 * (asked.tries + 1));
+  return true;
+}
+
 function send(type, payload = {}) {
   if (!sessionId || parentWin === window) return;
   parentWin.postMessage({ protocolVersion: PROTOCOL, sessionId, navigationId, revision, type, payload }, '*');
@@ -2858,6 +2893,29 @@ function imageDone(img) {
 }
 
 /** Resolves when fonts are ready and images have loaded (or failed), or at `deadline` at the latest. */
+/**
+ * Resolves once the page is as wide as the editor made its frame, `width` CSS pixels, or at `deadline`. The frame's new
+ * width reaches the page a moment after it is set (half a second on a busy Windows machine): measured before then, the
+ * page would be measured at the width it had. The frame is drawn in whole device pixels, so at a fractional scale
+ * (125%: 437 CSS pixels are 546.25) the page is the width either side of the one asked for.
+ */
+function atWidth(width, deadline) {
+  if (typeof width !== 'number' || !Number.isFinite(width) || width <= 0) return Promise.resolve();
+  const scale = window.devicePixelRatio || 1;
+  const near = new Set([Math.floor(width * scale), Math.ceil(width * scale)].map((d) => Math.round(d / scale)));
+  return new Promise((resolve) => {
+    const check = () => {
+      if (!near.has(window.innerWidth) && Date.now() < deadline) return;
+      clearInterval(timer);
+      window.removeEventListener('resize', check);
+      resolve();
+    };
+    const timer = setInterval(check, 50);
+    window.addEventListener('resize', check);
+    check();
+  });
+}
+
 async function settled(deadline) {
   // Asked for first: the browser can hold this until the page has loaded, which waits for its images.
   const fonts = document.fonts ? document.fonts.ready : Promise.resolve();
@@ -4861,6 +4919,7 @@ window.addEventListener('message', async (e) => {
       const id = Number.isSafeInteger(m.payload.navId) ? m.payload.navId : null;
       navRequest = id;
       stopShowing();
+      askedFor(path);
       try {
         const nav = await import('$app/navigation');
         await nav.goto(path);
@@ -4868,6 +4927,12 @@ window.addEventListener('message', async (e) => {
         // A request the editor has since replaced loads no page of its own.
         if (navRequest === id) location.assign(path);
         break;
+      }
+      // Shown in place: no load of it is on its way.
+      try {
+        sessionStorage.removeItem(ASKED_KEY);
+      } catch {
+        // Nothing was kept.
       }
       if (navRequest !== id) break;
       navRequest = null;
@@ -5040,6 +5105,8 @@ window.addEventListener('message', async (e) => {
       const started = Date.now();
       let report;
       try {
+        // A frame the editor sized for this measurement (a component shown on its own) is measured at that width.
+        await atWidth(m.payload.width, started + 2500);
         await settled(started + 4000);
         // The page's sections, as the editor lists them, when it asks for the notes on their rhythm.
         const ids = Array.isArray(m.payload.rootIds) ? m.payload.rootIds.filter((id) => typeof id === 'string') : null;
@@ -5330,7 +5397,7 @@ function inkBounds() {
   if (left < 0) return null;
   return box && { x: box.x, y: box.y, width: box.right - box.x, height: box.bottom - box.y };
 }
-send('ready', { path: shownPath(), title: document.title, ...(previewAtStart ? { preview: previewAtStart } : {}) });
+if (!reloadMissingPage()) send('ready', { path: shownPath(), title: document.title, ...(previewAtStart ? { preview: previewAtStart } : {}) });
 reportHistory();
 reportTextFocus();
 reportForms();

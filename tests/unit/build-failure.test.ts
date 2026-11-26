@@ -337,6 +337,34 @@ describe('explaining a failed production build', () => {
     expect(r.details.split('\n').filter((l) => /^\s+at frame\d \(src\/lib\/F\.svelte/.test(l))).toHaveLength(10);
   });
 
+  it('names the component from a stack Windows prints with backslashes, relative to the project', () => {
+    const s = state();
+    s.components.cmp_hours = { schemaVersion: 1, id: 'cmp_hours', componentId: 'custom.hours', contractVersion: 1, kind: 'code', owner: 'project', name: 'Opening hours', description: '', category: 'content', tags: [], properties: {}, parts: {}, sourcePath: 'src/lib/siteorigin/custom/OpeningHours-jvnuj.svelte' } as never;
+    // What a real export on Windows 11 printed (tests/e2e/export-failure.mjs).
+    const logs = [
+      'vite v8.3.8 building ssr environment for production...',
+      '✓ built in 249ms',
+      '500 GET /contact/',
+      'Error: The opening hours widget could not read its hours',
+      '    at src\\lib\\siteorigin\\custom\\OpeningHours-jvnuj.svelte:3:23',
+      '    at node_modules\\svelte\\src\\internal\\server\\renderer.js:416:11',
+      '    at Renderer.child (node_modules\\svelte\\src\\internal\\server\\renderer.js:305:18)',
+      '    at Renderer.component (node_modules\\svelte\\src\\internal\\server\\renderer.js:414:8)',
+      '    at OpeningHours_jvnuj (src\\lib\\siteorigin\\custom\\OpeningHours-jvnuj.svelte:1:1)',
+      '    at _page (src\\routes\\contact\\+page.svelte:43:8)',
+      'prerender_http_error',
+      'Failed to prerender `/contact/`'
+    ];
+    const windows = { ...ctx, platform: 'win32 x64', roots: [{ path: 'C:\\Users\\greg\\AppData\\Local\\Temp\\export-1\\project', label: '<project>' }, { path: 'C:\\Users\\greg', label: '~' }] };
+    const r = explainBuildFailure(s, { error: 'Prerendering failed', failure: { message: 'Prerendering failed' }, logs }, windows);
+    expect(r.message).toBe('The production build failed while building the Contact page (/contact/).');
+    expect(r.warnings).toContain('The build was working in the “Opening hours” component (src/lib/siteorigin/custom/OpeningHours-jvnuj.svelte, line 3).');
+    expect(r.details).toContain('File: src/lib/siteorigin/custom/OpeningHours-jvnuj.svelte, line 3 (the “Opening hours” component)');
+    // A module the error names, relative and with backslashes, is read the same way.
+    const id = explainBuildFailure(s, { error: 'x', failure: { message: 'x', cause: { message: 'boom', id: 'src\\lib\\siteorigin\\custom\\OpeningHours-jvnuj.svelte' } }, logs: [] }, windows);
+    expect(id.message).toBe('The production build failed in the “Opening hours” component (src/lib/siteorigin/custom/OpeningHours-jvnuj.svelte).');
+  });
+
   it('does not list a warning beside a cause that was stated', () => {
     const r = explainBuildFailure(state(), { error: 'Prerendering failed', failure: { message: 'Prerendering failed', cause: { message: 'Unexpected token' } }, logs: ['(!) Some chunks are larger than 500 kB'] }, ctx);
     expect(r.warnings).toEqual(['Unexpected token']);

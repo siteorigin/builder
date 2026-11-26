@@ -1,6 +1,7 @@
 // Shared setup for the end-to-end scripts: scratch folders, launching the built app, the platform
 // shortcut modifier and polling assertions.
 import assert from 'node:assert/strict';
+import { execFile } from 'node:child_process';
 import { mkdirSync, mkdtempSync, realpathSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
@@ -81,6 +82,31 @@ export async function eventually(check, timeout = 10000, interval = 150) {
     }
   }
 }
+
+/**
+ * Every process's command line, by pid, read from the system rather than any session's bookkeeping. Windows has no
+ * `ps`: there the same `pid command` lines come from the process table PowerShell reads.
+ */
+export function processCommands() {
+  const [cmd, args] =
+    process.platform === 'win32'
+      ? ['powershell.exe', ['-NoProfile', '-NonInteractive', '-Command', 'Get-CimInstance Win32_Process | ForEach-Object { "$($_.ProcessId) $($_.CommandLine)" }']]
+      : ['ps', ['-A', '-o', 'pid=,command=']];
+  return new Promise((resolve, reject) =>
+    execFile(cmd, args, { maxBuffer: 16 * 1024 * 1024, windowsHide: true }, (e, out) => {
+      if (e) return reject(e);
+      const map = new Map();
+      for (const line of String(out).split(/\r?\n/)) {
+        const m = line.match(/^\s*(\d+)\s+(.*)$/);
+        if (m) map.set(Number(m[1]), m[2]);
+      }
+      resolve(map);
+    })
+  );
+}
+
+/** Each process whose command line names `dir`, as `pid command`. */
+export const processesNaming = async (dir) => [...(await processCommands())].filter(([, c]) => c.includes(dir)).map(([pid, c]) => `${pid} ${c}`);
 
 export const step = (m) => console.log(`\n== ${m}`);
 

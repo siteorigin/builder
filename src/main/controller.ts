@@ -76,6 +76,9 @@ const PRIVATE_FILES_LEFT_OUT = 'Private files such as .env, keys and credentials
 const INSTANCE_ID = randomUUID();
 
 const READ_ONLY = 'This project is read-only.';
+
+/** Remove an export's staging folder as far as can be done now; what cannot be removed yet is swept later. */
+const removeStaging = (dir: string) => fs.rm(dir, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 }).catch(() => undefined);
 const STALE_INSERT = 'The page changed while the component was being inserted. Insert it again.';
 const TRUST_CHANGED = "This project's build settings changed outside SiteOrigin Builder. Close and reopen the project to review and trust them.";
 const PREVIEW_UNAVAILABLE = 'This project was made with a newer version of SiteOrigin Builder, which is needed to show its preview. Update the app to see and edit the site.';
@@ -2940,15 +2943,29 @@ export class Controller {
     return this.withStaging((staging) => this.buildFromStaging(s, staging, dest, format, published));
   }
 
-  /** A fresh staging folder per export: only the folder created here is ever removed. */
+  /** Staging folders of exports still running: the sweep before another export leaves them alone. */
+  private stagingInUse = new Set<string>();
+
+  /**
+   * A fresh staging folder per export, removed when it ends. Removing it never takes the place of what the export
+   * says: on Windows a file the build had open (a native module it loaded) can refuse removal for a while after the
+   * build has gone. Removal is tried again a few times, and what is still left is swept before the next export.
+   */
   private async withStaging(fn: (staging: string) => Promise<ExportResult>): Promise<ExportResult> {
     const stagingRoot = join(app.getPath('userData'), 'build-staging');
     await fs.mkdir(stagingRoot, { recursive: true });
+    await Promise.all(
+      (await fs.readdir(stagingRoot).catch(() => [] as string[]))
+        .filter((name) => name.startsWith('export-') && !this.stagingInUse.has(join(stagingRoot, name)))
+        .map((name) => removeStaging(join(stagingRoot, name)))
+    );
     const staging = mkdtempSync(join(stagingRoot, 'export-'));
+    this.stagingInUse.add(staging);
     try {
       return await fn(staging);
     } finally {
-      await fs.rm(staging, { recursive: true, force: true });
+      this.stagingInUse.delete(staging);
+      await removeStaging(staging);
     }
   }
 

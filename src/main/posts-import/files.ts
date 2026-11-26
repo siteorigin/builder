@@ -4,8 +4,9 @@
  * checked segment by segment before anything is joined, and the file opened is checked to be the one inside the
  * folder, so a link swapped in after the check is refused too.
  */
-import { constants as fsConstants, promises as fs } from 'node:fs';
+import { promises as fs } from 'node:fs';
 import { isAbsolute, join, relative, sep } from 'node:path';
+import { openRegularFile, readAtMost } from '../regular-file';
 
 /** Whether `path` (a real path) is `root` (a real path) or inside it, compared by whole path components. */
 export function isInsideRoot(root: string, path: string): boolean {
@@ -53,21 +54,17 @@ export async function containedFile(realRoot: string, base: string, segments: st
  * very file the folder holds at that path (so one swapped for a link meanwhile is refused).
  */
 export async function readContained(realRoot: string, path: string, maxBytes: number): Promise<Buffer> {
-  const fh = await fs.open(path, fsConstants.O_RDONLY | (fsConstants.O_NOFOLLOW ?? 0) | (fsConstants.O_NONBLOCK ?? 0));
+  const { handle, stat: st } = await openRegularFile(path);
   try {
-    const st = await fh.stat();
-    if (!st.isFile()) throw new Error('it is not a file.');
     if (st.size > maxBytes) throw new Error(`it is larger than ${Math.round(maxBytes / (1024 * 1024))} MB.`);
     const real = await fs.realpath(path);
     if (!isInsideRoot(realRoot, real)) throw new Error('it is outside the chosen folder.');
     const there = await fs.stat(real);
     if (there.ino !== st.ino || there.dev !== st.dev) throw new Error('it changed while it was being read.');
-    const buf = Buffer.alloc(Math.min(st.size, maxBytes) + 1);
-    let n = 0;
-    for (let r = 1; r > 0 && n < buf.length; n += r) r = (await fh.read(buf, n, buf.length - n, n)).bytesRead;
-    if (n > maxBytes) throw new Error(`it is larger than ${Math.round(maxBytes / (1024 * 1024))} MB.`);
-    return buf.subarray(0, n);
+    const bytes = await readAtMost(handle, st.size, maxBytes);
+    if (!bytes) throw new Error(`it is larger than ${Math.round(maxBytes / (1024 * 1024))} MB.`);
+    return bytes;
   } finally {
-    await fh.close();
+    await handle.close();
   }
 }

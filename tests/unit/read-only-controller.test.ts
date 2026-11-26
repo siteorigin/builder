@@ -9,6 +9,7 @@ import { chmodSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readdirSync, 
 import { hostname, tmpdir } from 'node:os';
 import { isAbsolute, join, relative, sep } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { denyAccess } from './deny-access';
 
 /** A stand-in for Electron's utility process that starts at once and exits when asked to stop. */
 class FakeWorker extends EventEmitter {
@@ -434,11 +435,11 @@ describe('reinstalling the website tools', () => {
     const { c } = controller();
     await c.trustAndOpen(dir);
     await until(() => c.snapshot()?.runtime.state === 'ready', 'the preview');
-    chmodSync(join(dir, 'node_modules/@sveltejs'), 0o500);
+    const restore = denyAccess(join(dir, 'node_modules/@sveltejs'), 'delete');
     try {
       await c.repairDependencies();
     } finally {
-      chmodSync(join(dir, 'node_modules/@sveltejs'), 0o755);
+      restore();
     }
     expect(c.snapshot()?.runtime.state).toBe('error');
   });

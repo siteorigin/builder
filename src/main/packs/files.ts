@@ -2,8 +2,8 @@
  * The files of the loaded packs (fonts and previews), read only through their validated inventory: every read
  * checks the file's size and SHA-256 again, so a file replaced on disk after the pack was loaded is never used.
  */
-import { constants as fsConstants, promises as fs } from 'node:fs';
 import { sha } from '../project/fsutil';
+import { openRegularFile, readAtMost } from '../regular-file';
 
 export interface PackFileSource {
   /** Where the bytes are on this computer. */
@@ -19,18 +19,14 @@ const sources = new Map<string, Map<string, PackFileSource>>();
  * something larger after it was checked is refused before it is read whole.
  */
 export async function readRegularFile(abs: string, maxBytes: number): Promise<Buffer> {
-  const fh = await fs.open(abs, fsConstants.O_RDONLY | (fsConstants.O_NOFOLLOW ?? 0));
+  const { handle, stat } = await openRegularFile(abs);
   try {
-    const st = await fh.stat();
-    if (!st.isFile()) throw new Error(`${abs} is not a file.`);
-    if (st.size > maxBytes) throw new Error(`${abs} is larger than expected.`);
-    const buf = Buffer.alloc(Math.min(st.size, maxBytes) + 1);
-    let n = 0;
-    for (let r = 1; r > 0 && n < buf.length; n += r) r = (await fh.read(buf, n, buf.length - n, n)).bytesRead;
-    if (n > maxBytes) throw new Error(`${abs} is larger than expected.`);
-    return buf.subarray(0, n);
+    if (stat.size > maxBytes) throw new Error(`${abs} is larger than expected.`);
+    const bytes = await readAtMost(handle, stat.size, maxBytes);
+    if (!bytes) throw new Error(`${abs} is larger than expected.`);
+    return bytes;
   } finally {
-    await fh.close();
+    await handle.close();
   }
 }
 

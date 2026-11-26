@@ -29,6 +29,21 @@ const blockTile = (name) => blocksGroup.locator('.insert-tile', { has: win.locat
 const dropLabel = win.locator('[data-testid="insert-drop-label"]');
 const addButton = (side, nodeId) => win.locator(`[data-testid="canvas-add"][data-side="${side}"][data-node="${nodeId}"]`);
 const list = win.locator('[data-testid="quick-insert"]');
+/**
+ * Point at `over` until its + shows, and press it until its list opens. The project holds a change a moment before
+ * its save comes back (a second or more on Windows), and a + pressed meanwhile opens nothing, as one pressed by a
+ * person would not: they press it again.
+ */
+const openPlus = async (button, over) => {
+  for (let tries = 0; ; tries++) {
+    const at = await over();
+    await win.mouse.move(at.x, at.y);
+    await button.waitFor({ timeout: 10000 });
+    await button.click();
+    if (await list.waitFor({ timeout: 3000 }).then(() => true, () => false)) return;
+    if (tries === 4) throw new Error('the + never opened its list');
+  }
+};
 const openInsert = async () => {
   if (!(await panel.locator('.insert-group[data-group="basics"]').isVisible())) await win.getByRole('button', { name: 'Insert', exact: true }).click();
   await panel.locator('.insert-group[data-group="basics"]').waitFor();
@@ -172,12 +187,7 @@ await eventually(async () => assert.equal((await newest())?.id, before?.id, 'and
 
 step('the + inside an empty column offers every block, in its own group');
 await win.keyboard.press('Escape');
-const overCol2 = await pointIn(inPage(col2), 0.5, 0.5);
-await win.mouse.move(overCol2.x, overCol2.y);
-const inCol2 = addButton('inside', col2);
-await inCol2.waitFor({ timeout: 10000 });
-await inCol2.click();
-await list.waitFor();
+await openPlus(addButton('inside', col2), () => pointIn(inPage(col2), 0.5, 0.5));
 const offered = async () => (await list.getByRole('option').allInnerTexts()).map((t) => t.replace(/\s+/g, ' ').trim());
 for (const name of ['Feature card', 'Stat card', 'Testimonial card', 'Callout box', 'Signup form', 'Compact video'])
   assert.ok((await offered()).some((t) => t.startsWith(name) && t.endsWith('Blocks')), `${name} is offered under Blocks`);
@@ -206,12 +216,7 @@ await eventually(async () => assert.equal((await newest())?.id, before?.id, 'and
 
 step('the + inside the Proof section offers only the blocks its slot takes');
 await win.keyboard.press('Escape');
-const overProof = await pointIn(inPage(proof), 0.5, 0.5);
-await win.mouse.move(overProof.x, overProof.y);
-const inProof = addButton('inside', proof);
-await inProof.waitFor({ timeout: 10000 });
-await inProof.click();
-await list.waitFor();
+await openPlus(addButton('inside', proof), () => pointIn(inPage(proof), 0.5, 0.5));
 const proofBlocks = (await offered()).filter((t) => t.endsWith('Blocks')).map((t) => t.replace(/\s*Blocks$/, ''));
 assert.deepEqual(proofBlocks, ['Stat card', 'Testimonial card'], 'social proof only');
 await win.screenshot({ path: join(SHOTS, 'blocks-slot-plus.png') });
