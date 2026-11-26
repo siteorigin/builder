@@ -49,9 +49,10 @@ const copyNodes = (tree: NodeTree, into: Record<string, GraphNode>) => {
 /** The Business starter with its sample pictures, each page given its header and footer as sections of its own. */
 async function starterState(themeId: string): Promise<{ state: ProjectState; pages: Array<{ name: string; pageId: string }> }> {
   const state = createStarterState('business', 'Harbour Lane', true, themeId);
+  const createdAt = new Date().toISOString();
   for (const a of STARTER_ASSETS) {
     const meta = await sharp(join(ASSETS, a.source)).metadata();
-    state.assets.assets[a.id] = { id: a.id, name: a.name, file: `static/samples/${a.source}`, mime: 'image/jpeg', bytes: 1, width: meta.width, height: meta.height, hash: a.id, kind: 'image' };
+    state.assets.assets[a.id] = { id: a.id, name: a.name, file: `static/samples/${a.source}`, mime: 'image/jpeg', bytes: 1, width: meta.width, height: meta.height, hash: a.id, kind: 'image', createdAt };
   }
   const pages: Array<{ name: string; pageId: string }> = [];
   for (const pageId of [...state.site.pageOrder]) {
