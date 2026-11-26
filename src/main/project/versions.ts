@@ -8,7 +8,7 @@
 import { randomBytes } from 'node:crypto';
 import { constants, promises as fs } from 'node:fs';
 import { join } from 'node:path';
-import { atomicWrite, ensureDir, removeDurable, sha, syncDir, toJson } from './fsutil';
+import { atomicWrite, ensureDir, removeDurable, renameReplacing, sha, syncDir, toJson } from './fsutil';
 import { isCanonicalPath } from './documents';
 import { SITE_ICON_FILES } from '@shared/site-icons';
 import { isPrivateFileName } from './private-files';
@@ -216,7 +216,7 @@ export class VersionStore {
       } finally {
         await handle.close();
       }
-      await fs.rename(tmp, this.objectPath(h));
+      await renameReplacing(tmp, this.objectPath(h));
     } catch (e) {
       await fs.rm(tmp, { force: true }).catch(() => undefined);
       throw e;

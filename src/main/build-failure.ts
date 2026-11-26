@@ -111,8 +111,13 @@ const routeIn = (lines: string[], res: RegExp[]) => {
   return undefined;
 };
 
-/** A source file of the project's own a line names, with its line number: `<project>/src/lib/Hero.svelte:12:3`. */
-const SOURCE_FILE = /(?:^|[\s(['"`])(?:<project>\/)?(src\/[^\s:()'"`<>?]+?\.(?:svelte|[cm]?[jt]sx?|css|scss|html))(?![\w.$/-])(?::(\d+))?/;
+/**
+ * A source file of the project's own a line names, with its line number: `<project>/src/lib/Hero.svelte:12:3`. Either
+ * slash: on Windows a stack names it relative to the project, with backslashes (`at src\lib\Hero.svelte:12:3`).
+ */
+const SOURCE_FILE = /(?:^|[\s(['"`])(?:<project>[\\/])?(src[\\/][^\s:()'"`<>?]+?\.(?:svelte|[cm]?[jt]sx?|css|scss|html))(?![\w.$/\\-])(?::(\d+))?/;
+/** The file a SOURCE_FILE match names, in forward slashes, as the project names its files. */
+const fileOf = (hit: RegExpExecArray) => hit[1].replace(/\\/g, '/');
 const sourceFile = (t: string | undefined) => (t ? SOURCE_FILE.exec(` ${t}`) : null);
 
 function pageForRoute(state: ProjectState, route: string): PageDoc | undefined {
@@ -259,7 +264,7 @@ export function readBuildFailure(state: ProjectState, build: BuildReport, ctx: B
   for (const e of [...chain].reverse()) {
     const hit = sourceFile(e.loc?.file) ?? sourceFile(e.id);
     if (hit) {
-      file = hit[1];
+      file = fileOf(hit);
       line = e.loc?.line;
       raised = true;
       break;
@@ -269,7 +274,7 @@ export function readBuildFailure(state: ProjectState, build: BuildReport, ctx: B
     const frames = [...chain].reverse().flatMap((e) => (e.stack ?? '').split('\n')).filter((l) => STACK_FRAME.test(l));
     const hit = [...frames, ...text.filter((l) => STACK_FRAME.test(l))].map((l) => SOURCE_FILE.exec(l)).find(Boolean) ?? text.map((l) => SOURCE_FILE.exec(l)).find(Boolean);
     if (hit) {
-      file = hit[1];
+      file = fileOf(hit);
       line = hit[2] ? Number(hit[2]) : undefined;
     }
   }

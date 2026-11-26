@@ -1930,12 +1930,16 @@ export class ProjectSession extends EventEmitter {
           this.landing?.add(d.path);
           installed++;
         }
+        // The documents, their undo position and the revision change together, before the generated files are
+        // written: a snapshot taken while those land (which can take a second on Windows) never shows the new
+        // documents beside the History and revision of the step before, which would show one step too few to undo.
         this.state = next;
         this.docs = nextDocs;
+        if (planned) this.history = planned.history;
+        this.revision++;
         return this.publishGenerated(false, generated);
       });
       if (planned) await this.installHistory(planned.history);
-      this.revision++;
       await this.saveLocalState();
       if (journaled) await removeDurable(this.local('journal.json'));
     } catch (e) {

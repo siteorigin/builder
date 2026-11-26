@@ -10,6 +10,7 @@ import { randomUUID } from 'node:crypto';
 import { extname, join, sep } from 'node:path';
 import { promisify } from 'node:util';
 import { crc32, deflateRaw } from 'node:zlib';
+import { renameReplacing } from './project/fsutil';
 
 const deflate = promisify(deflateRaw);
 
@@ -123,7 +124,7 @@ export async function zipDirectory(dir: string, zipPath: string, folder = '', be
     closed = true;
     // The last chance to call the export off: an existing ZIP is left as it was.
     await beforeCommit?.();
-    await fs.rename(tmp, zipPath);
+    await renameReplacing(tmp, zipPath);
     return { files: files.length, bytes: offset };
   } catch (e) {
     if (!closed) await out.close().catch(() => undefined);

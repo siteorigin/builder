@@ -9,7 +9,7 @@ import { promises as fs } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { COMPONENT_PREVIEW_ROUTE, ISOLATED_DIR, PREVIEW_KEY, type ComponentPreviewSpec } from '@shared/component-preview';
 import type { FileMap } from '@generator/index';
-import { safeJoin } from '../project/fsutil';
+import { renameReplacing, safeJoin } from '../project/fsutil';
 
 /** Large enough for a list of sample items with rich text, small enough that a preview never weighs on the editor. */
 const MAX_SPEC_CHARS = 200_000;
@@ -70,7 +70,7 @@ export async function writeComponentPreview(root: string, files: FileMap): Promi
       await fs.mkdir(dirname(abs), { recursive: true });
       await fs.writeFile(abs, content);
     }
-    await fs.rename(draft, join(base, key));
+    await renameReplacing(draft, join(base, key));
   } catch (e) {
     await fs.rm(draft, { recursive: true, force: true }).catch(() => undefined);
     throw e;

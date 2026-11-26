@@ -47,6 +47,45 @@ export async function ensureDir(dir: string, opts: { durable?: boolean } = {}): 
   }
 }
 
+export interface RenameReplacingOptions {
+  platform?: NodeJS.Platform;
+  rename?: (from: string, to: string) => Promise<void>;
+  sleep?: (ms: number) => Promise<void>;
+  now?: () => number;
+  /** How long to keep retrying a rename the system refuses for a moment. */
+  budgetMs?: number;
+}
+
+/** The codes Windows gives a rename while something (a sync client, an antivirus scan, the indexer) has a file open. */
+const TRANSIENT_RENAME_CODES = new Set(['EPERM', 'EACCES', 'EBUSY']);
+const RENAME_BUDGET_MS = 3000;
+const RENAME_FIRST_WAIT_MS = 10;
+const RENAME_MAX_WAIT_MS = 250;
+
+/**
+ * Rename `from` onto `to`, replacing it, as `fs.rename` does. On Windows, a rename is refused for a moment while
+ * another program (OneDrive, Defender, the search indexer) holds the target or source open, so a refusal is retried
+ * with a short, growing wait until the budget runs out; anywhere else, and for any other error, it fails at once.
+ */
+export async function renameReplacing(from: string, to: string, opts: RenameReplacingOptions = {}): Promise<void> {
+  // Looked up at each call, so a stand-in for `fs.rename` (a test's injected fault) is still the one used.
+  const rename = opts.rename ?? ((a: string, b: string) => fs.rename(a, b));
+  if ((opts.platform ?? process.platform) !== 'win32') return rename(from, to);
+  const now = opts.now ?? Date.now;
+  const sleep = opts.sleep ?? ((ms: number) => new Promise<void>((r) => setTimeout(r, ms)));
+  const deadline = now() + (opts.budgetMs ?? RENAME_BUDGET_MS);
+  for (let wait = RENAME_FIRST_WAIT_MS; ; wait = Math.min(wait * 2, RENAME_MAX_WAIT_MS)) {
+    try {
+      return await rename(from, to);
+    } catch (e) {
+      if (!TRANSIENT_RENAME_CODES.has((e as NodeJS.ErrnoException).code ?? '')) throw e;
+      const left = deadline - now();
+      if (left <= 0) throw e;
+      await sleep(Math.min(wait, left));
+    }
+  }
+}
+
 /**
  * Write via a temporary file and rename, so readers never see a partial file. A `mode` is applied when the
  * temporary file is created, so a private file is never readable by others, even briefly.
@@ -82,7 +121,7 @@ export async function atomicWrite(path: string, data: string | Buffer, opts: { m
       await fs.rm(tmp, { force: true });
       return false;
     }
-    await fs.rename(tmp, path);
+    await renameReplacing(tmp, path);
   } catch (e) {
     await fs.rm(tmp, { force: true }).catch(() => undefined);
     throw e;

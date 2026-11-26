@@ -32,8 +32,9 @@ import { stopSourceSyncs } from './sources/process';
 import { playerFrameAllowed, sameOrigin } from './player-frames';
 import { stopPhotoDecoders } from './project/photo-convert';
 import { createThumbCapturer } from './thumb-capture';
-import { desktopForLaunch, launchMode } from './headless-desktop';
+import { desktopForLaunch, headlessSwitches, launchMode } from './headless-desktop';
 import { installAiJournal } from './ai-journal';
+import { windowIcon } from './window-icon';
 import { createEditorRecovery, crashQuestion, type EditorRecovery } from './editor-recovery';
 import { createMainErrorReporter } from './main-errors';
 import { fixComponentSource } from '@agent/fixer';
@@ -94,10 +95,8 @@ const AI_TURNS_SPENT = 'This test session allows no more AI requests (its limit 
 /** In a test with a deadline, a provider call that would start after it is refused, wherever in a request it comes. */
 const deadlineFetch: typeof fetch | undefined = aiJournal ? (input, init) => (aiJournal.turns().spent ? Promise.reject(new Error(AI_TURNS_SPENT)) : fetch(input, init)) : undefined;
 if (headless) {
-  // A hidden window must keep painting, running timers and animation frames at full speed.
-  app.commandLine.appendSwitch('disable-background-timer-throttling');
-  app.commandLine.appendSwitch('disable-renderer-backgrounding');
-  app.commandLine.appendSwitch('disable-backgrounding-occluded-windows');
+  // A hidden window must keep painting, running timers and animation frames at full speed (headless-desktop.ts).
+  for (const name of headlessSwitches(process.platform)) app.commandLine.appendSwitch(name);
   // No Dock icon, no menu bar takeover, no focus stealing.
   if (process.platform === 'darwin') app.setActivationPolicy('accessory');
 }
@@ -766,6 +765,7 @@ async function createWindow() {
     minHeight: 700,
     show: false,
     title: 'SiteOrigin Builder',
+    icon: windowIcon({ platform: process.platform, packaged: app.isPackaged, here, resourcesPath: process.resourcesPath }),
     titleBarStyle: process.platform === 'darwin' ? 'hiddenInset' : 'default',
     trafficLightPosition: { x: 16, y: 17 },
     // The app's --bg (styles.css), so the window never flashes a different color before the editor paints.

@@ -1,6 +1,6 @@
 import { EventEmitter } from 'node:events';
 import fs, { type FSWatcher } from 'node:fs';
-import { basename, dirname, join, relative, sep } from 'node:path';
+import { basename, dirname, isAbsolute, join, relative, sep } from 'node:path';
 
 /** A watch of a folder and everything in it. It reports a failure it cannot carry on from as one `error` event. */
 export interface FolderWatch extends EventEmitter {
@@ -19,8 +19,25 @@ export type FolderListener = (event: string, file: string | null) => void;
  */
 export function watchTree(dir: string, listener: FolderListener, options: { tree?: boolean } = {}): FolderWatch {
   const tree = options.tree ?? !(process.platform === 'darwin' || process.platform === 'win32');
-  if (!tree) return fs.watch(dir, { recursive: true }, (event, file) => listener(event, file === null ? null : String(file)));
-  return new TreeWatch(dir, listener);
+  return tree ? new TreeWatch(dir, listener) : nativeWatch(dir, listener);
+}
+
+/**
+ * The platform's own watch of the whole tree. Windows tells of the watched folder itself going by its full path, and
+ * then again and again, many thousands of times a second, until the watch is closed: that is reported once, under an
+ * empty name as the tree reports it, and ends the watch.
+ */
+function nativeWatch(dir: string, listener: FolderListener): FolderWatch {
+  let ended = false;
+  const watcher = fs.watch(dir, { recursive: true }, (event, file) => {
+    if (ended) return;
+    const name = file === null ? null : String(file);
+    if (name === null || !isAbsolute(name)) return listener(event, name);
+    ended = true;
+    watcher.close();
+    listener(event, '');
+  });
+  return watcher;
 }
 
 /** The path, or something on the way to it, is not there (any more): forgotten, not a failure. */
