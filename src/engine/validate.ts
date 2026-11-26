@@ -442,7 +442,9 @@ export function validateState(state: ProjectState, opts: { sectionLinks?: boolea
         out.push({ severity: 'warning', code: 'BUTTON_UNLINKED', message: `${label}: the “${b.label}” button has no link, so visitors won’t see it. Choose where it goes, or hide the button.`, owner, nodeId: b.nodeId });
       for (const m of unlinkedMenuLinks(state, tree))
         out.push({ severity: 'warning', code: 'MENU_LINK_UNLINKED', message: `${label}: the “${m.label}” menu link has no destination, so it goes nowhere. Choose where it goes, or remove it from the menu.`, owner, nodeId: m.nodeId });
-      for (const e of emptySections(state, tree))
+      // Pages and the shared header and footer, as the export notes name them: a collection's layout is read without the
+      // values of the entries it shows.
+      for (const e of owner.kind === 'page' || owner.kind === 'shell' ? emptySections(state, tree) : [])
         out.push({ severity: 'warning', code: 'SECTION_EMPTY', message: `${label}: ${emptySectionMessage(e)}`, owner, nodeId: e.nodeId, ...(e.placementId !== e.nodeId ? { site: `${e.nodeId}|${e.placementId}` } : {}) });
     }
     // Theme definitions are fixed theme data; a project component's own forms are checked like a page's.

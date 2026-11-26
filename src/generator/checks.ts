@@ -1040,11 +1040,16 @@ export function emptySections(state: ProjectState, tree: NodeTree, entry?: { col
   const reported = new Set<string>();
   const lists = new Map<string, ReturnType<typeof contentListOf>>();
   const listOf = (def: ComponentDefinition) => (lists.has(def.id) ? lists.get(def.id)! : lists.set(def.id, contentListOf(def)).get(def.id)!);
-  // The sizes each node on the way down hides what is inside it at (see firstSectionImages).
-  const hiding: Array<[Set<Size>, Set<Size>]> = [];
-  const hidden = () => hiddenEverySize(hiding.map((h) => h[0])) && hiddenEverySize(hiding.map((h) => h[1]));
+  // The nodes on the way down, whose styles decide whether what is inside them shows at any size (see
+  // firstSectionImages): read only where a section may be reported, so a page with none pays nothing for them.
+  const path: Array<{ n: GraphNode; scope: Scope; def: ComponentDefinition | undefined }> = [];
+  const hidden = () => {
+    const sizes = (variants: boolean) =>
+      path.map(({ n, scope, def }) => (def ? (hiddenInDesign(def, n.id, scope, variants)[0] ?? new Set<Size>()) : hiddenSizes([n.styles, n.kind === 'instance' ? n.overrides?.root : undefined])));
+    return hiddenEverySize(sizes(false)) && hiddenEverySize(sizes(true));
+  };
   // The placements being walked that may have nothing to show, innermost last, until something they render says otherwise.
-  const open: Array<{ found: EmptySection; filled: boolean; instance: GraphNode; read: boolean }> = [];
+  const open: Array<{ found: EmptySection; filled: boolean; instance: GraphNode; read: boolean; connected: string | undefined }> = [];
   const filled = () => open.forEach((o) => (o.filled = true));
   const report = (found: EmptySection) => {
     const key = `${found.nodeId}|${found.placementId}`;
@@ -1054,24 +1059,30 @@ export function emptySections(state: ProjectState, tree: NodeTree, entry?: { col
   };
   walkRendered(state, tree, {
     ...(entry ? { entry } : {}),
+    // A panel a visitor can open (a tab not chosen at first) shows its sections too.
+    everyState: true,
     node: (n, scope, reportId, _inDef, def) => {
-      // The placement's heading, from its values as the walk reads them inside its design.
+      path.push({ n, scope, def });
       const last = open[open.length - 1];
       if (last && !last.read && scope.instance === last.instance) {
+        // The placement's heading, from its values as the walk reads them inside its design.
         last.read = true;
         last.found.heading = plainText(scope.props.heading);
+        // A list connected to a collection shows a card per entry: the check reads its rows before the site fills in
+        // what a card takes from the page it links to, so rows are content.
+        const rows = last.connected === undefined ? undefined : scope.props[last.connected];
+        if (Array.isArray(rows) && rows.length) last.filled = true;
       }
-      const page = !def ? hiddenSizes([n.styles, n.kind === 'instance' ? n.overrides?.root : undefined]) : undefined;
-      hiding.push(page ? [page, page] : [hiddenInDesign(def!, n.id, scope, false)[0] ?? new Set(), hiddenInDesign(def!, n.id, scope)[0] ?? new Set()]);
-      // A slot shows whatever the page or the design gives it, a list's row whatever it holds, and pictures and links are
-      // content wherever they are. Text outside a list is the section's heading and introduction.
-      if (n.kind === 'slot' || n.kind === 'image' || n.kind === 'link' || (scope.item && n.kind !== 'element' && n.kind !== 'repeat')) filled();
+      // What the page puts in a slot, a list's row whatever it holds, and pictures and links wherever they are, are
+      // content. Text outside a list is the section's heading and introduction.
+      if ((open.length && !def && n.kind !== 'element') || n.kind === 'image' || n.kind === 'link' || (scope.item && n.kind !== 'element' && n.kind !== 'repeat' && n.kind !== 'slot')) filled();
       if (n.kind !== 'instance') return;
       const placed = state.components[n.definitionId];
       const list = placed ? listOf(placed) : null;
       if (!placed || !list || hidden()) return;
       const { what, fix } = listFix(n, list.prop, list.schema);
-      open.push({ found: { nodeId: reportId, placementId: n.id, name: displayName(state, n), heading: '', what, fix }, filled: false, instance: n, read: false });
+      const connected = n.listSources && Object.hasOwn(n.listSources, list.prop) ? list.prop : undefined;
+      open.push({ found: { nodeId: reportId, placementId: n.id, name: displayName(state, n), heading: '', what, fix }, filled: false, instance: n, read: false, connected });
     },
     code: (def, props, reportId, _placement, n) => {
       // The theme's Video section shows its heading and no player while it has no address its player can play.
@@ -1079,11 +1090,12 @@ export function emptySections(state: ProjectState, tree: NodeTree, entry?: { col
         if (!hidden()) report({ nodeId: reportId, placementId: n.id, name: displayName(state, n), heading: plainText(props.heading), what: 'video', fix: 'Paste the address of a YouTube or Vimeo video' });
         return;
       }
-      // Any other code shows what its own markup says.
+      // A Compact video with no player and no caption shows nothing; any other code shows what its own markup says.
+      if (isComponent(def, 'block.video') && !parseVideoUrl(props.url) && !plainText(props.caption)) return;
       filled();
     },
     done: (n) => {
-      hiding.pop();
+      path.pop();
       const last = open[open.length - 1];
       if (n.kind !== 'instance' || last?.instance !== n) return;
       open.pop();
@@ -1093,10 +1105,9 @@ export function emptySections(state: ProjectState, tree: NodeTree, entry?: { col
   return out;
 }
 
-/** What Project health says of an empty section, after where it is: what it lacks, what visitors see, and what to do. */
+/** What Project health says of an empty section, after where it is: what it lacks, and what to do. */
 export function emptySectionMessage(e: EmptySection): string {
-  const seen = e.heading ? 'its heading with nothing under it' : 'an empty section';
-  return `the ${e.name}${e.heading ? ` “${e.heading}”` : ''} has no ${e.what} to show, so visitors see ${seen}. ${e.fix}, or remove the section.`;
+  return `the ${e.name}${e.heading ? ` “${e.heading}”` : ''} has no ${e.what} to show visitors. ${e.fix}, or remove the section.`;
 }
 
 /** The unlinked buttons one node of a page or shell tree renders: the node itself, or those inside a placement. */

@@ -172,6 +172,28 @@ describe('exporting a project with a draft', () => {
     expect(r.message).toMatch(/^Exported \d+ pages and 2 entries from Posts\.$/);
   });
 
+  it('#881: both exports name a section that has nothing to show, and a draft’s is left out', async () => {
+    const dir = temp('project');
+    let state = createStarterState('blank', 'Bookshop', false);
+    state.site.baseUrl = 'https://books.example';
+    state = applyOperations(state, [{ type: 'page.create', pageId: 'pg_winter01', title: 'Winter stock preview' }, { type: 'page.update', pageId: 'pg_winter01', draft: true }]).state;
+    const { installComponent, makeInstance } = await import('@engine/install');
+    for (const pageId of [state.site.homePageId, 'pg_winter01']) {
+      const gallery = makeInstance(state.components[installComponent(state, 'media.gallery')], {});
+      state.pages[pageId].nodes[gallery.id] = gallery;
+      state.pages[pageId].rootIds.push(gallery.id);
+    }
+    await (await ProjectSession.create(dir, state)).close();
+    const c = await open(dir);
+    const lines = ['A section has nothing to show visitors. Give it content, or remove it (Project health leads to it):', 'Home · Gallery: “Recent projects” has no images'];
+    const site = await c.buildStaticTo(join(temp('out'), 'site'));
+    expect(site.ok).toBe(true);
+    expect(site.warnings.filter((w) => /section|Gallery/.test(w))).toEqual(lines);
+    const source = await c.exportSourceTo(join(temp('out'), 'handoff'));
+    expect(source.ok).toBe(true);
+    expect(source.warnings.filter((w) => /section|Gallery/.test(w))).toEqual(lines);
+  });
+
   it('publishes the hosts’ 301 rules for the published redirects only, with vercel.json at the website’s root (#581)', async () => {
     const dir = temp('project');
     let state = createStarterState('business', 'Bookshop', false);
