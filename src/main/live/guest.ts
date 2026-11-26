@@ -29,7 +29,7 @@ export type RemoteChannel = 'remote:state' | 'remote:changed' | 'remote:reload' 
 export interface LiveGuestContext {
   emit(channel: 'remote:state', payload: RemoteState): void;
   emit(channel: 'remote:changed', payload: { joinId: string; snapshot: LiveProjectSnapshot }): void;
-  emit(channel: 'remote:reload', payload: { joinId: string }): void;
+  emit(channel: 'remote:reload', payload: { joinId: string; revision: number | null }): void;
   emit(channel: 'remote:presence', payload: RemotePresence): void;
 }
 
@@ -148,6 +148,8 @@ interface Join {
   busyTimer: ReturnType<typeof setTimeout> | null;
   tooLarge: boolean;
   hostRuntime: RuntimeState['state'] | null;
+  /** The latest project revision the host said its preview serves (preview:reload), or null before it said one. */
+  previewRevision: number | null;
   preview: {
     server: PreviewServer | null;
     /** The loopback address, once the first cookie is in place; it stays the same for the whole join. */
@@ -287,6 +289,7 @@ export class LiveGuestManager {
       busyTimer: null,
       tooLarge: false,
       hostRuntime: null,
+      previewRevision: null,
       preview: { server: null, url: null, problem: null, lastTicket: null, queued: null, redeeming: false, abort: null, retried: false },
       joined: null,
       ended: false
@@ -412,6 +415,7 @@ export class LiveGuestManager {
         return this.publish();
       }
       case 'preview:reload':
+        if (frame.revision !== undefined) join.previewRevision = Math.max(join.previewRevision ?? 0, frame.revision);
         return this.reload(join);
       case 'rpc:response': {
         const call = join.calls.get(frame.requestId);
@@ -720,7 +724,7 @@ export class LiveGuestManager {
 
   private reload(join: Join): void {
     if (join.ended || this.join !== join || join.phase !== 'admitted' || !join.preview.url) return;
-    this.ctx.emit('remote:reload', { joinId: join.joinId });
+    this.ctx.emit('remote:reload', { joinId: join.joinId, revision: join.previewRevision });
   }
 
   // -------------------------------------------------------------------------

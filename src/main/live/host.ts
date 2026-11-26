@@ -204,6 +204,8 @@ interface Run {
   reloadTimer: ReturnType<typeof setTimeout> | null;
   /** A reload is owed to guests: sent once the room is held and the preview is ready. */
   reloadDue: boolean;
+  /** The latest project revision the preview was said to serve (projectChanged), sent with each reload; null before one. */
+  publishedRevision: number | null;
   /**
    * The latest end asked for that the relay has not confirmed yet (and when, monotonic), so a second extension is
    * never earlier than the first: the relay applies them in order.
@@ -339,6 +341,7 @@ export class LiveHostManager {
       expiryTimer: null,
       reloadTimer: null,
       reloadDue: false,
+      publishedRevision: null,
       asked: null,
       announced: new Set(),
       hostPresence: null,
@@ -817,9 +820,15 @@ export class LiveHostManager {
     if (run?.room && run.phase !== 'stopping') this.publish();
   }
 
-  /** A change to the project reached its preview: guests reload what they show. */
-  projectChanged(): void {
-    if (this.run && this.run.phase !== 'stopping') this.scheduleReload(this.run);
+  /**
+   * A change to the project reached its preview, at `revision` when the preview said which: guests reload what they
+   * show, and are told the revision a page loaded now shows.
+   */
+  projectChanged(revision?: number): void {
+    const run = this.run;
+    if (!run || run.phase === 'stopping') return;
+    if (typeof revision === 'number' && Number.isSafeInteger(revision) && revision >= 0) run.publishedRevision = Math.max(run.publishedRevision ?? 0, revision);
+    this.scheduleReload(run);
   }
 
   private scheduleReload(run: Run, delay = this.timings.reloadMs): void {
@@ -832,7 +841,7 @@ export class LiveHostManager {
       if (this.run !== run || run.phase !== 'active' || conn?.stage !== 'host' || !this.servingPreview(run)) return;
       // A save landing now: the reload waits for it to have landed.
       if (this.ctx.publishing?.()) return this.scheduleReload(run);
-      if (this.sendOn(conn, { type: 'preview:reload' })) run.reloadDue = false;
+      if (this.sendOn(conn, { type: 'preview:reload', ...(run.publishedRevision !== null ? { revision: run.publishedRevision } : {}) })) run.reloadDue = false;
     }, delay);
   }
 

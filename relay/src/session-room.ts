@@ -394,9 +394,11 @@ export class SessionRoom extends DurableObject<Env> {
       case 'preview:response-end':
       case 'preview:abort':
         return this.tunnel.acceptHostFrame(attachment.connectionId, frame);
-      case 'preview:reload':
-        for (const guestWs of this.admittedSockets()) this.send(guestWs, 'relay-to-guest', { type: 'preview:reload' });
+      case 'preview:reload': {
+        const reload = { type: 'preview:reload', ...(frame.revision !== undefined ? { revision: frame.revision } : {}) } as const;
+        for (const guestWs of this.admittedSockets()) this.send(guestWs, 'relay-to-guest', reload);
         return;
+      }
       case 'rpc:response': {
         const { guestId, ...reply } = frame;
         const target = this.admittedSocket(guestId);

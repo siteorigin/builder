@@ -1418,8 +1418,11 @@ export interface BuilderApi {
   on(channel: 'remote:state', cb: (state: RemoteState) => void): () => void;
   /** The host's project changed, as guests are given it. */
   on(channel: 'remote:changed', cb: (change: { joinId: string; snapshot: LiveProjectSnapshot }) => void): () => void;
-  /** The host's preview changed: the canvas loads its page again. */
-  on(channel: 'remote:reload', cb: (reload: { joinId: string }) => void): () => void;
+  /**
+   * The host's preview changed: the canvas loads its page again. `revision` is the project revision a page loaded now
+   * shows, as the host last said it (null before it said one).
+   */
+  on(channel: 'remote:reload', cb: (reload: { joinId: string; revision: number | null }) => void): () => void;
   /** Where the host and the other collaborators are. */
   on(channel: 'remote:presence', cb: (presence: RemotePresence) => void): () => void;
   inspectResult(requestId: string, report: unknown): void;

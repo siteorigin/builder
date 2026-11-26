@@ -202,8 +202,12 @@ const previewResponseChunk = msg('preview:response-chunk', {
 const previewResponseEnd = msg('preview:response-end', { requestId, totalBytes: z.number().int().min(0).max(MAX_PREVIEW_RESPONSE_BYTES) });
 /** Either end stops a response, before its head or midway. */
 const previewAbort = msg('preview:abort', { requestId, code: z.enum(PREVIEW_ABORT_CODES) });
-/** The project changed or the preview restarted: guests reload what they show. */
-const previewReload = msg('preview:reload', {});
+/**
+ * The project changed or the preview restarted: guests reload what they show. `revision` is the project revision a
+ * page loaded from now on shows, when the host knows it, so a guest's editor can tell a page that is behind the
+ * project it holds from one that is not (#766).
+ */
+const previewReload = msg('preview:reload', { revision: time.optional() });
 
 // ---------------------------------------------------------------------------
 // Remote BuilderApi calls

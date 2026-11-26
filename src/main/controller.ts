@@ -1146,8 +1146,8 @@ export class Controller {
     });
     // A live session's guests reload once a change has reached the preview: its files are in Vite's hands, so what
     // they load is the new revision (the project's own folder, or the private copy once it has the change).
-    dev.onPublished(() => {
-      if (this.dev === dev) this.live.projectChanged();
+    dev.onPublished((revision) => {
+      if (this.dev === dev) this.live.projectChanged(revision);
     });
     // Guests' requests to a server stopping or gone are stopped at once, and the relay told why.
     dev.onGone(() => {
