@@ -42,18 +42,26 @@ const admitted = (extra: Partial<Extract<RemoteState, { phase: 'admitted' }>> = 
   ...extra
 });
 
-type Store = typeof import('../../src/renderer/src/store');
-type Session = typeof import('../../src/renderer/src/lib/remote-session');
-type Snapshots = typeof import('../../src/renderer/src/lib/remote-snapshot');
-type View = typeof import('../../src/renderer/src/lib/remote-view');
-type Transport = typeof import('../../src/renderer/src/lib/transport');
-type LiveHost = typeof import('../../src/renderer/src/lib/live-host');
-let store: Store;
-let session: Session;
-let snapshots: Snapshots;
-let view: View;
-let transports: Transport;
-let liveHost: LiveHost;
+/**
+ * The renderer's modules, loaded by path: the Node project's type check (tsconfig.node.json) then never takes in the
+ * renderer, which needs the DOM's types, as the other renderer tests do it.
+ */
+const PATHS = {
+  store: '../../src/renderer/src/store',
+  session: '../../src/renderer/src/lib/remote-session',
+  snapshots: '../../src/renderer/src/lib/remote-snapshot',
+  view: '../../src/renderer/src/lib/remote-view',
+  transports: '../../src/renderer/src/lib/transport',
+  liveHost: '../../src/renderer/src/lib/live-host'
+};
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+type Loaded = any;
+let store: Loaded;
+let session: Loaded;
+let snapshots: Loaded;
+let view: Loaded;
+let transports: Loaded;
+let liveHost: Loaded;
 
 beforeAll(async () => {
   (globalThis as unknown as { window: unknown }).window = {
@@ -108,12 +116,12 @@ beforeAll(async () => {
       }
     }
   };
-  store = await import('../../src/renderer/src/store');
-  session = await import('../../src/renderer/src/lib/remote-session');
-  snapshots = await import('../../src/renderer/src/lib/remote-snapshot');
-  view = await import('../../src/renderer/src/lib/remote-view');
-  transports = await import('../../src/renderer/src/lib/transport');
-  liveHost = await import('../../src/renderer/src/lib/live-host');
+  store = await import(/* @vite-ignore */ PATHS.store);
+  session = await import(/* @vite-ignore */ PATHS.session);
+  snapshots = await import(/* @vite-ignore */ PATHS.snapshots);
+  view = await import(/* @vite-ignore */ PATHS.view);
+  transports = await import(/* @vite-ignore */ PATHS.transports);
+  liveHost = await import(/* @vite-ignore */ PATHS.liveHost);
 });
 
 const offs: Array<() => void> = [];
@@ -135,7 +143,7 @@ const flush = () => new Promise((r) => setTimeout(r, 0));
 function listen() {
   const changed: ProjectSnapshot[] = [];
   let closed = 0;
-  offs.push(store.api.on('project:changed', (s) => void changed.push(s)), store.api.on('project:closed', () => void closed++));
+  offs.push(store.api.on('project:changed', (s: ProjectSnapshot) => void changed.push(s)), store.api.on('project:closed', () => void closed++));
   return { changed, closed: () => closed };
 }
 
@@ -181,8 +189,8 @@ describe('the transport', () => {
     const t = transports.createTransport(() => local);
     const got: unknown[] = [];
     const menus: unknown[] = [];
-    t.api.on('project:changed', (s) => void got.push(s));
-    t.api.on('menu:command', (m) => void menus.push(m));
+    t.api.on('project:changed', (s: unknown) => void got.push(s));
+    t.api.on('menu:command', (m: unknown) => void menus.push(m));
     fire('project:changed', 'local 1');
     const remote = {};
     const other = {};
@@ -295,7 +303,7 @@ describe('following the session', () => {
     session.applyRemoteState({ phase: 'idle', ended: { reason: 'kicked', message: 'The host removed you from the live session.' } });
     expect(events.closed()).toBe(1);
     expect(store.transport.remote).toBe(false);
-    expect(store.getState().toasts.map((t) => t.text)).toEqual(['The host removed you from the live session.']);
+    expect(store.getState().toasts.map((t: { text: string }) => t.text)).toEqual(['The host removed you from the live session.']);
     expect(store.getState().remoteReload).toEqual({ seq: 0, revision: null });
     // This computer's project answers again.
     await store.api.project.apply({ operations: [] });
@@ -357,7 +365,7 @@ describe('presence', () => {
       ]
     });
     const lines = view.presenceLines(state, remote, { joinId: 'join-1', host: { ...at, selection: null }, guests: { 'g-1': at, 'g-2': at, 'g-3': at } });
-    expect(lines.map((l) => [l.who, l.pageId])).toEqual([
+    expect(lines.map((l: { who: string; pageId: string | null }) => [l.who, l.pageId])).toEqual([
       ['Host', home],
       ['Tom', home]
     ]);

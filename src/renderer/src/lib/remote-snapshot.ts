@@ -1,5 +1,5 @@
-import type { ApplyResult, ProjectSnapshot, RemoteState, RuntimeState } from '@shared/api';
-import type { ToolErrorCode } from '@shared/ops';
+import type { ProjectSnapshot, RemoteState, RuntimeState } from '@shared/api';
+import type { ApplyResult, ToolErrorCode } from '@shared/ops';
 import type { RpcError } from '@shared/live/messages';
 import type { LiveApplyResult, LiveProjectSnapshot } from '@shared/live/snapshot';
 
