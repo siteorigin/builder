@@ -575,6 +575,49 @@ describe('source export helpers', () => {
     expect(existsSync(join(dest, 'NOTICE.md'))).toBe(false);
   });
 
+  it('tells whoever receives the project how to serve its not-found page and what its folders hold', () => {
+    const readme = projectReadme('Old');
+    expect(readme).toContain('## Deploying');
+    expect(readme).toContain('`build/404.html`');
+    expect(readme).toContain('Cloudflare Pages, Netlify and GitHub Pages use it automatically');
+    expect(readme).toContain('404 error document to `/404.html`');
+    expect(readme).toContain('`/my-site/404.html`');
+    expect(readme).toContain('`src/lib/siteorigin/paths.json`');
+    for (const entry of ['`src/`', '`static/`', '`siteorigin/`', '`robots.txt`', '`sitemap.xml`', '`rss.xml`', '`llms.txt`']) expect(readme).toContain(entry);
+  });
+
+  it('writes the redirect rules of the host the site names into the README, and still knows it as its own', async () => {
+    const readmes = (['cloudflare', 'netlify', 'vercel'] as const).map((host) => projectReadme('Old', false, undefined, false, host));
+    const [cloudflare, netlify, vercel] = readmes;
+    expect(projectReadme('Old')).toBe(cloudflare);
+    expect(cloudflare).toContain('written for Cloudflare Pages');
+    expect(netlify).toContain('written for Netlify');
+    expect(netlify).toContain('`301!`');
+    expect(netlify).toContain('Netlify uses it automatically');
+    expect(vercel).toContain('copy `vercel.json` into `build/` after each build');
+    expect(vercel).toContain('Vercel uses it automatically');
+    for (const other of [cloudflare, netlify]) expect(other).not.toContain('vercel.json');
+    for (const readme of readmes) {
+      expect(readme).toContain('HTTP 301');
+      expect(isGeneratedReadme(readme)).toBe(true);
+    }
+    // The host chosen since the README was written replaces it on export.
+    for (const host of ['netlify', 'vercel'] as const) {
+      const state = createStarterState('blank', 'Old', false);
+      state.site.redirectHost = host;
+      const dest = temp();
+      write(dest, 'README.md', cloudflare);
+      await finishExportedSource(dest, state, join(dest, 'missing.md'));
+      expect(readFileSync(join(dest, 'README.md'), 'utf8')).toBe(projectReadme('Old', false, undefined, false, host));
+    }
+  });
+
+  it('gives a new project a .gitignore without the library packaging folder it never makes', () => {
+    const ignored = readFileSync(join(__dirname, '../../templates/sveltekit-brochure/files/.gitignore'), 'utf8').split('\n');
+    expect(ignored).toContain('/build');
+    expect(ignored).not.toContain('/package');
+  });
+
   it('picks a new folder name instead of replacing an existing one', () => {
     const parent = temp();
     expect(uniqueChild(parent, 'site')).toBe(join(parent, 'site'));

@@ -158,6 +158,8 @@ describe('exporting a project with a draft', () => {
     expect(source.ok).toBe(true);
     expect(readFileSync(join(source.path!, 'static/_redirects'), 'utf8')).not.toMatch(/winter|teaser/);
     expect(JSON.parse(readFileSync(join(source.path!, 'vercel.json'), 'utf8')).redirects).toHaveLength(2);
+    // Its README says how those rules reach Vercel from a build of its own.
+    expect(readFileSync(join(source.path!, 'README.md'), 'utf8')).toContain('copy `vercel.json` into `build/` after each build');
   });
 
   it('refuses to publish anything at a draft’s address, even a file of the author’s own', async () => {
