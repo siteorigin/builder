@@ -3,7 +3,7 @@ import { createStarterState } from '@catalogue/starters';
 import { applyOperations } from '@engine/apply';
 import type { ChatMessage } from '@shared/api';
 import type { InstanceNode, ListItem } from '@shared/types';
-import { answerOnly, canOpen, changeTarget, changeText, checksOf, continueContext, locationTarget, resumableId, retryableId, standingNote, undoableId } from '../../src/renderer/src/lib/result';
+import { saysUnchanged, answerOnly, canOpen, changeTarget, changeText, checksOf, continueContext, locationTarget, resumableId, retryableId, standingNote, undoableId } from '../../src/renderer/src/lib/result';
 import { canCarryOn, resultAsSaid, runStanding, summaryNow, turnState, type TurnHistory } from '@shared/turns';
 
 describe('AI result card', () => {
@@ -339,5 +339,13 @@ describe('a turn that is only an answer', () => {
     expect(answerOnly(result(), true)).toBe(false);
     expect(answerOnly(result({ status: 'failed' }), false)).toBe(false);
     expect(answerOnly(result({ status: 'cancelled' }), false)).toBe(false);
+  });
+});
+
+describe('saysUnchanged', () => {
+  it('recognises the run\'s own wording so the chat does not repeat it', () => {
+    expect(saysUnchanged('The provider rejected the key. Nothing in the site was changed.')).toBe(true);
+    expect(saysUnchanged('Nothing on your site was changed.')).toBe(true);
+    expect(saysUnchanged('The provider returned an error.')).toBe(false);
   });
 });

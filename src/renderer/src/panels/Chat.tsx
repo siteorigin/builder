@@ -19,7 +19,7 @@ import { postShown, postWorkspace } from '../lib/posts';
 import { activeWorkspace, changeWithoutDocument } from '../lib/workspace';
 import { seoDocument } from '../lib/seo-view';
 import { saveOpenPost } from '../lib/post-draft';
-import { answerOnly, canOpen, changeTarget, changeText, checksOf, continueContext, locationTarget, resumableId, retryableId, reviewEntryId, reviewNote, standingNote, undoableId as undoableTurn } from '../lib/result';
+import { answerOnly, canOpen, changeTarget, changeText, checksOf, continueContext, locationTarget, resumableId, retryableId, reviewEntryId, reviewNote, saysUnchanged, standingNote, undoableId as undoableTurn } from '../lib/result';
 import { summaryNow, turnState } from '@shared/turns';
 import { chatBusy, composerAction, imageLabels, isPaused, offeredImages, questionHint, shownQuestions, waitingQuestion, type WaitingQuestion } from '../lib/chatQuestions';
 import { isImeComposing } from '../lib/ime';
@@ -189,7 +189,7 @@ function summaryOf(r: NonNullable<ChatMessage['result']>) {
   if (r.ask && r.status === 'cancelled' && /^stopped\.?$/i.test(r.summary.trim())) return 'You stopped this question. It could not change anything.';
   if (r.status === 'cancelled' && /^stopped\.?$/i.test(r.summary.trim())) return r.changes.length ? 'You stopped this request. Its changes were undone.' : 'You stopped this request before it changed anything.';
   // A failed edit that changed nothing says so, unless its own words already do.
-  if (r.status === 'failed' && !r.ask && !r.changes.length && !/restored|unchanged|not changed|no changes|nothing (was|has been) changed/i.test(r.summary)) {
+  if (r.status === 'failed' && !r.ask && !r.changes.length && !saysUnchanged(r.summary)) {
     const words = r.summary.trim();
     const unchanged = 'Nothing on your site was changed.';
     // Before words that hold a code fence, closed or not, so the code cannot take it in.

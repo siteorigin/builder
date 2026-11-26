@@ -197,3 +197,8 @@ export function continueContext(user: ChatMessage | undefined, state: ProjectSta
   }
   return { ctx: { ...structuredClone(ctx), ...page } };
 }
+
+/** Whether a summary already says the site was left alone, in any of the wordings the run or the chat uses. */
+export function saysUnchanged(summary: string): boolean {
+  return /restored|unchanged|not changed|no changes|nothing (?:[\w']+ ){0,4}(?:was|has been) changed/i.test(summary);
+}

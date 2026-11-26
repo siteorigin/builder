@@ -474,6 +474,13 @@ describe('failures', () => {
     expect(errorOf(await run(native(), { tools: [] })).message).toMatch(/slot crashed/);
   });
 
+  it('does not print an empty error body', async () => {
+    server.script({ status: 500, body: '{}' });
+    expect(errorOf(await run(native(), { tools: [] })).message).toBe('The local server reported an error.');
+    server.script({ frames: ['error: {}\n\n'] });
+    expect(errorOf(await run(native(), { tools: [] })).message).toBe('The local server reported an error.');
+  });
+
   it('drops stream_options when the server refuses it', async () => {
     server.script({ status: 400, body: JSON.stringify({ error: { message: 'unknown field stream_options' } }) }, textReply('ok'));
     expect(doneOf(await run(native(), { tools: [] })).text).toBe('ok');
