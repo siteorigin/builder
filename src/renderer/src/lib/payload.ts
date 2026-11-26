@@ -144,6 +144,21 @@ export function spacingOf(v: unknown): FrameSpacing | null {
   return { padding, border, margin, rtl: r.rtl === true, desc: { ctx: r.ctx, node: r.node, items: r.items }, layout: layoutOf(r.layout) };
 }
 
+/** The room an empty page keeps for its first step, in frame pixels, with the page it was asked for. */
+export interface FrameEmptyArea {
+  key: string;
+  top: number;
+  height: number;
+  headerBottom: number;
+}
+
+export function emptyAreaOf(v: unknown): FrameEmptyArea | null {
+  if (!v || typeof v !== 'object') return null;
+  const r = v as Record<string, unknown>;
+  if (!str(r.key) || !finite(r.top) || !finite(r.height) || r.height < 0 || !finite(r.headerBottom)) return null;
+  return { key: r.key, top: r.top, height: r.height, headerBottom: r.headerBottom };
+}
+
 /** Spacing site style sizes in request order, null where one has none; null for a malformed list. */
 export function spaceSizes(v: unknown, expected: number): Array<number | null> | null {
   if (!Array.isArray(v) || v.length !== expected) return null;

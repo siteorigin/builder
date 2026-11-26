@@ -10,6 +10,7 @@ import { childLists, codeTakesOverrides, displayName, findParent, subtreeIds } f
 import { aiActivity, api, applyOps, commitDraft, getState, markDraft, selectSlot, setState, showLayer, toast, useStore } from '../store';
 import { rovingKeys, useMenu, useRovingTabStop } from '../components/ui';
 import { isImeComposing } from '../lib/ime';
+import { openInsertSearch } from '../lib/insert-focus';
 import { askAiAbout, asPlanned, deleteLayers, deleteSelection, detachable, detachPlacement, duplicateLayers, duplicateSelection, focusSelectedRow, groupCount, liveGroup, moveLayers, moveLayersInto, moveSelection, moveToPage, otherPages, planLayers, ungroupLayers, wrapLayers, WRAP_NAMES, type LayersPlan } from '../lib/actions';
 import { exportComponentFile, placedDefinition, saveToLibrary } from '../lib/saved-components';
 import { withSeparator, wrapItems } from './WrapItems';
@@ -861,11 +862,7 @@ export function LayersPanel() {
                 <p>No page content yet</p>
                 <button
                   className="btn btn-sm"
-                  onClick={() => {
-                    setState({ leftTab: 'insert' });
-                    // Hand focus to the Insert panel that replaces this one, rather than leaving it on a hidden button.
-                    requestAnimationFrame(() => document.querySelector<HTMLElement>('.side-panel-view:not([hidden]) :is(input, button, [tabindex="0"])')?.focus());
-                  }}
+                  onClick={openInsertSearch}
                 >
                   <Plus /> Add sections
                 </button>

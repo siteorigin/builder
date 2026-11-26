@@ -231,6 +231,34 @@ function rectOf(el) {
   return { x: r.left, y: r.top, width: r.width, height: r.height };
 }
 
+/** A page with no sections, as the editor draws its first step on it: { key, header, height }, or null. `height` is
+ *  the room that step needs in the empty <main>, so it sits between the shared header and footer, where the page's
+ *  sections will go. Held in a stylesheet of the bridge's own that applies only while editing and only while <main>
+ *  holds no element: Preview, and a page with content, are left as visitors get them. */
+let emptySpace = null;
+let emptySpaceSheet = null;
+function setEmptySpace(next) {
+  const height = next && Number.isFinite(next.height) ? Math.min(4000, Math.max(0, Math.ceil(next.height))) : 0;
+  emptySpace = next && typeof next.key === 'string' ? { key: next.key, path: shownPath(), header: Array.isArray(next.header) ? next.header.slice(0, 50) : [] } : null;
+  if (!emptySpaceSheet) {
+    emptySpaceSheet = document.createElement('style');
+    document.head.appendChild(emptySpaceSheet);
+  }
+  const css = emptySpace ? `html[data-so-editing] main#main:not(:has(> *)) { min-height: ${height}px; }` : '';
+  if (emptySpaceSheet.textContent !== css) emptySpaceSheet.textContent = css;
+}
+/** Where that room is now, in the frame: the <main>'s top and height, and how far down the shared header reaches
+ *  (a header that stays at the top while the page scrolls covers the start of it). */
+function emptyArea() {
+  if (!emptySpace || mode !== 'edit') return null;
+  const main = document.getElementById('main');
+  // The first section is on the page before the editor hears that it shows.
+  if (!main || main.querySelector(':scope > *')) return null;
+  const r = Element.prototype.getBoundingClientRect.call(main);
+  const headers = emptySpace.header.flatMap((desc) => findAll(desc).map(rectOf).filter(Boolean).slice(0, 1));
+  return { key: emptySpace.key, top: r.top, height: r.height, headerBottom: Math.max(0, ...headers.map((h) => h.y + h.height)) };
+}
+
 let raf = 0;
 function scheduleRects() {
   if (raf) return;
@@ -270,7 +298,7 @@ function sendRects() {
   const spacing = box && { ...box, layout: layoutReport(selEls[first]), ctx: selected.ctx, node: selected.node, items: selected.items || '' };
   // Each tracked slot's placeholder where it first shows, with what it was measured for.
   const slots = mode === 'edit' ? trackedSlots.flatMap((desc) => { const box = findAll(desc).map(rectOf).find(Boolean); return box ? [{ desc, box }] : []; }) : [];
-  send('rects', { selected: sel, selectedDesc: selected, hovered: hov, hoveredDesc: hovered, revealed: rev, spacing, slots, viewport: { width: innerWidth, height: innerHeight, scrollY } });
+  send('rects', { selected: sel, selectedDesc: selected, hovered: hov, hoveredDesc: hovered, revealed: rev, spacing, slots, empty: emptyArea(), viewport: { width: innerWidth, height: innerHeight, scrollY } });
 }
 
 // ---------------------------------------------------------------------------
@@ -4699,6 +4727,12 @@ window.addEventListener('message', async (e) => {
       trackedSlots = Array.isArray(m.payload.slots) ? m.payload.slots.filter((d) => d && typeof d.slot === 'string').slice(0, 50) : [];
       scheduleRects();
       break;
+    case 'emptySpace':
+      // Said of a page this frame has since left: the editor says it again for the page shown.
+      if (leftBehind(m)) break;
+      setEmptySpace(m.payload.space);
+      scheduleRects();
+      break;
     case 'scrollTo': {
       // Asked about a page this frame has since left: the editor asks again once it knows the page that is here.
       if (leftBehind(m)) break;
@@ -4982,7 +5016,7 @@ new MutationObserver(() => {
   // Outlines are measured again only while there is one to keep in place, or an element a scroll waits for. With
   // nothing selected, hovered while editing or revealed, the editor already has none, so a change to the page is
   // neither measured nor reported.
-  if (revealDirty || selected || pendingScroll || (hovered && mode === 'edit')) scheduleRects();
+  if (revealDirty || selected || pendingScroll || emptySpace || (hovered && mode === 'edit')) scheduleRects();
   // The element held in a state was re-rendered (an update arrived): the new one is marked before it is painted.
   if (forced) markForced();
 }).observe(document.body, { childList: true, subtree: true, characterData: true });
@@ -5010,6 +5044,8 @@ window.addEventListener('unhandledrejection', (e) => {
 
 function reportNav() {
   nextNavigation();
+  // Another page's room is not this one's: the editor asks again for the page it shows. A jump within the page keeps it.
+  if (emptySpace && emptySpace.path !== shownPath()) setEmptySpace(null);
   stopKeeping();
   pendingScroll = null;
   send('navigated', { path: shownPath() });
