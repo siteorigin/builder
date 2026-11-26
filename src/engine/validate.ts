@@ -315,9 +315,10 @@ export function validateState(state: ProjectState, opts: { sectionLinks?: boolea
       ...(schema?.type === 'list' ? Object.entries(schema.fields ?? {}).map(([f, field]) => ({ label: `${schema.label || name} › ${field?.label || f}`, links: linksOf(field, field?.default) })) : [])
     ]);
     for (const { label, links } of defaults) {
-      const broken = new Set<'page' | 'document' | 'entry'>();
+      const broken = new Set<'page' | 'document' | 'entry' | 'collection'>();
       for (const l of links) {
         if (l.type === 'entry') broken.add('entry');
+        if (l.type === 'collection' && !Object.hasOwn(state.collections ?? {}, l.target)) broken.add('collection');
         if (l.type === 'page' && !Object.hasOwn(state.pages, l.target)) broken.add('page');
         if (l.type === 'document' && (Object.hasOwn(state.assets.assets, l.target) ? state.assets.assets[l.target] : undefined)?.kind !== 'document') broken.add('document');
       }
@@ -325,6 +326,7 @@ export function validateState(state: ProjectState, opts: { sectionLinks?: boolea
       if (broken.has('page')) out.push({ severity: 'error', code: 'LINK_BROKEN', message: `${what} a page that no longer exists.`, owner });
       if (broken.has('document')) out.push({ severity: 'error', code: 'LINK_BROKEN', message: `${what} a document that is no longer in Assets. Choose another destination for it.`, owner });
       if (broken.has('entry')) out.push({ severity: 'error', code: 'LINK_BROKEN', message: `${what} a collection entry, which only another entry can link to for now. Choose another destination for it.`, owner });
+      if (broken.has('collection')) out.push({ severity: 'error', code: 'LINK_BROKEN', message: `${what} a collection that no longer exists. Choose another destination for it.`, owner });
     }
   }
 
@@ -393,6 +395,8 @@ export function validateState(state: ProjectState, opts: { sectionLinks?: boolea
       const o = v as Record<string, unknown>;
       if (o.type === 'page' && typeof o.target === 'string' && !state.pages[o.target])
         out.push({ severity: 'error', code: 'LINK_BROKEN', message: `${label}: a link points to a page that no longer exists.`, owner, nodeId });
+      if (o.type === 'collection' && typeof o.target === 'string' && !Object.hasOwn(state.collections ?? {}, o.target))
+        out.push({ severity: 'error', code: 'LINK_BROKEN', message: `${label}: a link goes to the list of a collection that no longer exists. Choose another destination for it.`, owner, nodeId });
       // Only an entry's own text can hold a link to an entry for now: anywhere else the website could not show it, and
       // editing its text on the page would drop it.
       if (o.type === 'entry' && typeof o.target === 'string')

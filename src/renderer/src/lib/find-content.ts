@@ -6,6 +6,7 @@
 import type { ElementRef, GraphNode, InstanceNode, LinkValue, ListItem, NodeTree, OwnerRef, ProjectState, RichListType, RichSpan, RichText } from '@shared/types';
 import type { EditOperation } from '@shared/ops';
 import { cleanBlocks, cleanSpans, isImageBlock, isListBlock, toRichText } from '@shared/richtext';
+import { collectionIndexRoutes } from '@shared/archives';
 import { renderedContent, type ContentSource, type RenderedContent } from '@generator/checks';
 import { applyOperations } from '@engine/apply';
 import { normalizeLink } from '@engine/values';
@@ -88,6 +89,13 @@ export interface FindOptions {
 }
 
 const own = <T>(rec: Record<string, T>, key: string): T | undefined => (Object.hasOwn(rec, key) ? rec[key] : undefined);
+/** The indexes' addresses, worked out once for each snapshot searched (a snapshot never changes). */
+const indexRoutes = new WeakMap<ProjectState, Record<string, string>>();
+const indexRoute = (state: ProjectState, id: string): string | undefined => {
+  let routes = indexRoutes.get(state);
+  if (!routes) indexRoutes.set(state, (routes = collectionIndexRoutes(state)));
+  return own(routes, id);
+};
 const isLink = (v: unknown): v is LinkValue => !!v && typeof v === 'object' && typeof (v as LinkValue).type === 'string' && typeof (v as LinkValue).target === 'string';
 const sameLink = (a: LinkValue | undefined, b: LinkValue | undefined) => JSON.stringify(a ?? null) === JSON.stringify(b ?? null);
 const oneLine = (t: string) => t.replace(/\s+/g, ' ');
@@ -207,6 +215,11 @@ function linkPart(state: ProjectState, link: LinkValue, path: string): Part | nu
       if (!page) return null;
       return { path, kind: 'link', text: page.route + (link.anchor ? `#${link.anchor}` : ''), blocked: 'This goes to a page of the site. Choose another page for it in the inspector.' };
     }
+    case 'collection': {
+      // Found by the index's address, while the website has one; the collection is chosen in the inspector.
+      const route = indexRoute(state, link.target);
+      return route ? { path, kind: 'link', text: route, blocked: 'This goes to a collection’s index. Choose another destination for it in the inspector.' } : null;
+    }
     case 'document': {
       // Found by the file visitors download; the link itself names the document, which is chosen in the inspector.
       const doc = own(state.assets.assets, link.target);
@@ -232,6 +245,11 @@ export function describeLink(state: ProjectState, link: unknown): string {
     case 'page': {
       const page = own(state.pages, link.target);
       return `${page?.title ?? 'Missing page'} (${(page?.route ?? link.target) + (link.anchor ? `#${link.anchor}` : '')})`;
+    }
+    case 'collection': {
+      const c = own(state.collections ?? {}, link.target);
+      const route = indexRoute(state, link.target);
+      return c ? `${c.settings.name} index${route ? ` (${route})` : ''}` : 'Missing collection';
     }
     case 'document': {
       const doc = own(state.assets.assets, link.target);

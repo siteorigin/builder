@@ -1,7 +1,8 @@
 import type { ChoiceOption, ImageValue, LinkRel, LinkValue, ListItem, ProjectState, PropSchema, RichBlock, RichListType, RichSpan, RichText, ScalarPropSchema } from '@shared/types';
 import { canonicalRels } from '@shared/link-rel';
-import { cleanBlocks, ENTRY_LINK_PREFIX, isImageBlock, isListBlock, isRichBlock, isTelephone, linkFromTarget, mergeLists, parseRichText, spanRuns } from '@shared/richtext';
+import { cleanBlocks, COLLECTION_LINK_PREFIX, ENTRY_LINK_PREFIX, isImageBlock, isListBlock, isRichBlock, isTelephone, linkFromTarget, mergeLists, parseRichText, spanRuns } from '@shared/richtext';
 import { collectionRoutes, findEntry } from '@shared/collections';
+import { collectionIndexRoutes } from '@shared/archives';
 import { readablePath } from '@shared/routes';
 import { newId } from '@shared/ids';
 import { fail } from './tree';
@@ -26,6 +27,15 @@ export interface LinkScope {
   article?: boolean;
 }
 
+/** The collection whose index is at `path` (as written, or escaped as a browser copies it), while the website has it. */
+function indexAt(state: ProjectState, path: string): string | undefined {
+  if (!path.startsWith('/') || path.startsWith('//')) return undefined;
+  const readable = readablePath(path);
+  const wanted = `/${readable.replace(/^\/+|\/+$/g, '')}/`.toLowerCase();
+  const routes = collectionIndexRoutes(state);
+  return Object.keys(routes).find((id) => routes[id].toLowerCase() === wanted);
+}
+
 /** A page link's section, written after its route or ID: empty or not an ID, there is no section to go to. */
 function anchorOf(anchor: string, label: string): string {
   if (!/^[A-Za-z][\w-]*$/.test(anchor)) fail(`${label}: "${anchor.slice(0, 40)}" is not a valid anchor.`);
@@ -40,6 +50,7 @@ export function normalizeLink(v: unknown, state: ProjectState, label: string, sc
     if (/^mailto:/i.test(v)) return normalizeLink({ type: 'email', target: v.slice(7) }, state, label);
     if (/^tel:/i.test(v)) return normalizeLink({ type: 'tel', target: v.slice(4) }, state, label);
     if (v.startsWith('#')) return normalizeLink({ type: 'anchor', target: v.slice(1) }, state, label);
+    if (v.startsWith(COLLECTION_LINK_PREFIX)) return normalizeLink({ type: 'collection', target: v.slice(COLLECTION_LINK_PREFIX.length) }, state, label);
     // A page by its ID or route, with an optional #anchor for a section on it, as rich text links take one.
     const hash = v.indexOf('#');
     const path = hash < 0 ? v : v.slice(0, hash);
@@ -47,7 +58,10 @@ export function normalizeLink(v: unknown, state: ProjectState, label: string, sc
     const page = Object.hasOwn(state.pages, path) ? path : Object.values(state.pages).find((p) => p.route === route || p.route === `/${route.replace(/^\/|\/$/g, '')}/`)?.id;
     if (page && hash < 0) return { type: 'page', target: page };
     if (page) return normalizeLink({ type: 'page', target: page, anchor: anchorOf(v.slice(hash + 1), label) }, state, label);
-    fail(`${label}: "${v}" is not a page ID, route (with an optional #anchor), https URL, mailto:, tel: or #anchor.`);
+    // Or a collection's index, by its address: the list of posts at /blog/.
+    const index = hash < 0 ? indexAt(state, path) : undefined;
+    if (index) return { type: 'collection', target: index };
+    fail(`${label}: "${v}" is not a page ID, route (with an optional #anchor), the address of a collection's index, https URL, mailto:, tel: or #anchor.`);
   }
   if (typeof v !== 'object') fail(`${label}: expected a link object.`);
   const l = v as Partial<LinkValue>;
@@ -75,6 +89,12 @@ export function normalizeLink(v: unknown, state: ProjectState, label: string, sc
       if (own(state.assets.assets, target)?.kind !== 'document') fail(`${label}: document "${target.slice(0, 60)}" is not in the library.`);
       // A download goes nowhere else: it has no section and opens no tab of its own.
       return { type, target };
+    case 'collection': {
+      const c = own(state.collections ?? {}, target);
+      if (!c) fail(`${label}: collection "${target.slice(0, 60)}" does not exist.`);
+      // An index is one list from its top: it has no sections to jump to, and opens a tab of its own when asked to.
+      return l.newTab ? { type, target, newTab: true } : { type, target };
+    }
     case 'entry': {
       if (!scope.entries) fail(`${label}: links to collection entries can only be made in an entry's text or fields for now.`);
       if (!findEntry(state, target)) fail(`${label}: entry "${target.slice(0, 60)}" does not exist.`);
@@ -143,6 +163,7 @@ export const MAX_CAPTION = 300;
  * structured blocks. Every link is validated, and a link to a page stores the page's ID.
  */
 export function normalizeRichText(v: unknown, state: ProjectState, label: string, plainAs?: RichListType, scope: LinkScope = {}): RichText {
+  let indexes: Record<string, string> | undefined;
   const link = (target: string, newTab: boolean, rel: LinkRel[] = []): LinkValue | null => {
     const t = target.trim();
     // An entry by its ID, refused where entry links are not kept, so it never stays behind as plain text.
@@ -153,8 +174,11 @@ export function normalizeRichText(v: unknown, state: ProjectState, label: string
       const owner = collectionRoutes(state).find((o) => o.kind === 'entry' && o.route === route);
       if (owner?.kind === 'entry') return normalizeLink({ type: 'entry', target: owner.entryId, newTab }, state, label, scope);
     }
-    const out = linkFromTarget(target, state.pages, newTab, rel);
-    if (!out && target.startsWith('/')) fail(`${label}: no page${scope.entries ? ' or entry' : ''} has the route "${target.slice(0, 60)}".`);
+    // The indexes' addresses are worked out only for a link to an address of this site, once per text.
+    const found = linkFromTarget(target, state.pages, newTab, rel, /^\/(?!\/)/.test(t) ? (indexes ??= collectionIndexRoutes(state)) : {});
+    // A collection named by its ID is checked as any other link to one: it must be in the project.
+    const out = found?.type === 'collection' ? normalizeLink(found, state, label, scope) : found;
+    if (!out && target.startsWith('/')) fail(`${label}: no page${scope.entries ? ', entry' : ''} or collection's index has the route "${target.slice(0, 60)}".`);
     // A number that dials nothing (one saved before numbers needed three digits) is refused, never kept as its markup.
     if (!out && /^tel:/i.test(t)) fail(`${label}: "${t.slice(4, 44)}" is not a valid telephone number.`);
     return out;

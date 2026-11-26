@@ -6,7 +6,8 @@ import type { ProjectSnapshot } from '@shared/api';
 import type { SeoSubject } from '@shared/seo';
 import { collectionHasBody, collectionKind, entryRoute, findEntry, hasDetailPages, orderedEntries } from '@shared/collections';
 import { formatArticleDate, isArticleDate } from '@shared/articles';
-import { linkFromTarget, linkToTarget, sameRichText } from '@shared/richtext';
+import { COLLECTION_LINK_PREFIX, linkFromTarget, linkToTarget, sameRichText } from '@shared/richtext';
+import { linkableIndexes } from '@shared/archives';
 import { relsFromAttribute } from '@shared/link-rel';
 import { newId } from '@shared/ids';
 import { normalizeRichText } from '@engine/values';
@@ -101,7 +102,7 @@ export function PostWriter({ hidden }: { hidden: boolean }) {
   );
 }
 
-type Dialog = null | { kind: 'image'; fig: HTMLElement | null; value: ImageValue; caption: string; at: HTMLElement | null } | { kind: 'link'; range: Range | null; text: string; to: 'page' | 'post' | 'url'; page: string; entry: string; url: string; rel: LinkRel[]; newTab: boolean; error?: string };
+type Dialog = null | { kind: 'image'; fig: HTMLElement | null; value: ImageValue; caption: string; at: HTMLElement | null } | { kind: 'link'; range: Range | null; text: string; to: 'page' | 'post' | 'index' | 'url'; page: string; entry: string; index: string; url: string; rel: LinkRel[]; newTab: boolean; error?: string };
 
 function PostEditor({ post, hidden }: { post: PostRef; hidden: boolean }) {
   const snap = useStore((s) => s.snapshot)!;
@@ -402,16 +403,19 @@ function PostEditor({ post, hidden }: { post: PostRef; hidden: boolean }) {
     }
     const pageLink = kept?.type === 'page' && Object.hasOwn(state.pages, kept.target) ? kept : href && !kept ? linkFromTarget(href, state.pages) : null;
     const entryLink = kept?.type === 'entry' ? kept.target : href.startsWith('entry:') ? href.slice(6) : '';
+    const indexes = linkableIndexes(state);
+    const indexLink = kept?.type === 'collection' ? kept.target : href.startsWith(COLLECTION_LINK_PREFIX) ? href.slice(COLLECTION_LINK_PREFIX.length) : '';
     const firstPage = state.site.pageOrder[0] ?? Object.keys(state.pages)[0] ?? '';
     const posts = allPosts(state).filter((p) => p.id !== post.entryId);
     setDialog({
       kind: 'link',
       range,
       text: range?.toString() ?? '',
-      to: entryLink ? 'post' : pageLink?.type === 'page' ? 'page' : href ? 'url' : 'page',
+      to: entryLink ? 'post' : indexLink ? 'index' : pageLink?.type === 'page' ? 'page' : pageLink?.type === 'collection' ? 'index' : href ? 'url' : 'page',
       page: pageLink?.type === 'page' ? pageLink.target : firstPage,
       entry: entryLink || posts[0]?.id || '',
-      url: pageLink || entryLink ? '' : kept ? linkToTarget(kept, state.pages) : href,
+      index: indexLink || (pageLink?.type === 'collection' ? pageLink.target : '') || indexes[0]?.id || '',
+      url: pageLink || entryLink || indexLink ? '' : kept ? linkToTarget(kept, state.pages) : href,
       // The anchor's own rel, which is what the post keeps (see post-dom), and whether it opens a new tab, which the
       // browser's new link for the words would otherwise lose.
       rel: a && root.current?.contains(a) ? relsFromAttribute(a.getAttribute('rel')) : [],
@@ -423,10 +427,11 @@ function PostEditor({ post, hidden }: { post: PostRef; hidden: boolean }) {
     let rels: LinkRel[] = [];
     if (d.to === 'page') href = Object.hasOwn(state.pages, d.page) ? state.pages[d.page].route : '';
     else if (d.to === 'post') href = findEntry(state, d.entry) ? `entry:${d.entry}` : '';
+    else if (d.to === 'index') href = linkableIndexes(state).some((x) => x.id === d.index) ? `${COLLECTION_LINK_PREFIX}${d.index}` : '';
     else {
       const t = d.url.trim();
       const link: LinkValue | null = linkFromTarget(/^[a-z0-9-]+(\.[a-z0-9-]+)+([/?#]\S*)?$/i.test(t) ? `https://${t}` : t, state.pages);
-      if (!link || link.type === 'page' || link.type === 'anchor') return setDialog({ ...d, error: 'Use a full web address, such as https://example.com, or mailto: or tel:.' });
+      if (!link || link.type === 'page' || link.type === 'collection' || link.type === 'anchor') return setDialog({ ...d, error: 'Use a full web address, such as https://example.com, or mailto: or tel:.' });
       href = /^https?:/i.test(t) || t.startsWith('mailto:') || t.startsWith('tel:') ? t : `https://${t}`;
       if (link.type === 'url') rels = d.rel;
     }
@@ -953,6 +958,7 @@ function opensNewTab(root: HTMLElement, range: Range): boolean {
 function LinkDialog({ dialog, state, self, onChange, onApply }: { dialog: Extract<Dialog, { kind: 'link' }>; state: ProjectState; self: string; onChange: (d: Dialog) => void; onApply: (d: Extract<Dialog, { kind: 'link' }>) => void }) {
   const uid = useId();
   const posts = allPosts(state).filter((p) => p.id !== self);
+  const indexes = linkableIndexes(state);
   const set = (p: Partial<typeof dialog>) => onChange({ ...dialog, ...p, error: undefined });
   const needsWords = !dialog.range || dialog.range.collapsed;
   return (
@@ -983,9 +989,9 @@ function LinkDialog({ dialog, state, self, onChange, onApply }: { dialog: Extrac
           </Field>
         )}
         <div className="post-link-kinds" role="radiogroup" aria-label="Link to">
-          {(['page', 'post', 'url'] as const).map((k) => (
+          {(['page', 'post', ...(indexes.length || dialog.to === 'index' ? (['index'] as const) : []), 'url'] as const).map((k) => (
             <label key={k} className="post-link-kind">
-              <input type="radio" name={`${uid}-to`} checked={dialog.to === k} onChange={() => set({ to: k })} /> {k === 'page' ? 'A page' : k === 'post' ? 'A post' : 'A web address'}
+              <input type="radio" name={`${uid}-to`} checked={dialog.to === k} onChange={() => set({ to: k })} /> {k === 'page' ? 'A page' : k === 'post' ? 'A post' : k === 'index' ? 'A collection index' : 'A web address'}
             </label>
           ))}
         </div>
@@ -1015,6 +1021,25 @@ function LinkDialog({ dialog, state, self, onChange, onApply }: { dialog: Extrac
             </Field>
           ) : (
             <p className="posts-note">There is no other post to link to yet.</p>
+          ))}
+        {dialog.to === 'index' &&
+          (indexes.length ? (
+            <Field label="Collection" controlId={`${uid}-index`}>
+              <select id={`${uid}-index`} className="select" value={indexes.some((x) => x.id === dialog.index) ? dialog.index : ''} onChange={(e) => set({ index: e.target.value })}>
+                {!indexes.some((x) => x.id === dialog.index) && (
+                  <option value="" disabled>
+                    Choose a collection…
+                  </option>
+                )}
+                {indexes.map((x) => (
+                  <option key={x.id} value={x.id}>
+                    {x.name} ({x.route})
+                  </option>
+                ))}
+              </select>
+            </Field>
+          ) : (
+            <p className="posts-note">No collection has an index on the website to link to.</p>
           ))}
         {dialog.to === 'url' && (
           <Field label="Web address" controlId={`${uid}-url`}>

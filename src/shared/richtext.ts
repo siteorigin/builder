@@ -1,6 +1,7 @@
 import type { LinkRel, LinkValue } from './types';
 import { readablePath } from './routes';
 import { canonicalRels, linkRels, linkTitle } from './link-rel';
+import { COLLECTION_ID_RE } from './collections';
 
 /**
  * Structured rich text: the canonical stored form of every rich text value.
@@ -161,6 +162,8 @@ export const sameRichText = (a: RichText, b: RichText) => JSON.stringify(a) === 
 // ---------------------------------------------------------------------------
 
 export type RichPages = Record<string, { id: string; route: string }>;
+/** The address of each collection's index a link can go to, by collection ID (see shared/archives.ts). */
+export type RichIndexes = Record<string, string>;
 
 const URL_RE = /^https?:\/\/[^\s<>"]+$/i;
 const EMAIL_RE = /^[^\s@<>"]+@[^\s@<>"]+\.[^\s@<>"]+$/;
@@ -172,12 +175,18 @@ export const isTelephone = (t: string): boolean => TEL_RE.test(t) && (t.match(/\
 
 /**
  * A link written as text or read from an href: a full http(s) URL, mailto:, tel:, #anchor, a page route (with an
- * optional #anchor) or a page ID. Null for anything else, javascript: and other schemes included. `rel` is kept only
+ * optional #anchor), a page ID, `collection:` and a collection's ID, or the address of a collection's index in
+ * `indexes` (while no page has it). Null for anything else, javascript: and other schemes included. `rel` is kept only
  * on a web address.
  */
-export function linkFromTarget(raw: string, pages: RichPages, newTab = false, rel?: readonly string[]): LinkValue | null {
+export function linkFromTarget(raw: string, pages: RichPages, newTab = false, rel?: readonly string[], indexes: RichIndexes = {}): LinkValue | null {
   const t = raw.trim();
   const tab = newTab ? { newTab: true } : {};
+  // A collection's index by its ID: whether the project has it is for the project to say (see normalizeLink).
+  if (t.startsWith(COLLECTION_LINK_PREFIX)) {
+    const id = t.slice(COLLECTION_LINK_PREFIX.length);
+    return COLLECTION_ID_RE.test(id) ? { type: 'collection', target: id, ...tab } : null;
+  }
   if (/^https?:/i.test(t)) {
     if (!URL_RE.test(t)) return null;
     const rels = canonicalRels(rel);
@@ -197,7 +206,10 @@ export function linkFromTarget(raw: string, pages: RichPages, newTab = false, re
   const readable = readablePath(path);
   const wanted = readable === '/' ? '/' : `/${readable.replace(/^\/+|\/+$/g, '')}/`;
   const page = Object.values(pages).find((p) => p.route === wanted);
-  return page ? { type: 'page', target: page.id, ...anchored, ...tab } : null;
+  if (page) return { type: 'page', target: page.id, ...anchored, ...tab };
+  // An index has no sections to jump to: an address with one is not the index's.
+  const index = anchor ? undefined : Object.keys(indexes).find((id) => indexes[id].toLowerCase() === wanted.toLowerCase());
+  return index ? { type: 'collection', target: index, ...tab } : null;
 }
 
 /** How a link reads as text: pages by their route, which stays readable and maps back to the same page ID. */
@@ -213,6 +225,8 @@ export function linkToTarget(link: LinkValue, pages: RichPages): string {
       return `#${link.target}`;
     case 'entry':
       return `${ENTRY_LINK_PREFIX}${link.target}`;
+    case 'collection':
+      return `${COLLECTION_LINK_PREFIX}${link.target}`;
     default:
       return link.target;
   }
@@ -220,6 +234,8 @@ export function linkToTarget(link: LinkValue, pages: RichPages): string {
 
 /** How a link to a collection entry is written as text: `entry:` and the entry's ID, which never changes. */
 export const ENTRY_LINK_PREFIX = 'entry:';
+/** How a link to a collection's index is written as text: `collection:` and the collection's ID, which never changes. */
+export const COLLECTION_LINK_PREFIX = 'collection:';
 
 // ---------------------------------------------------------------------------
 // Text input

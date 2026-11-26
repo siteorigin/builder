@@ -27,6 +27,7 @@ function keptLink(json: string, state: ProjectState): LinkValue | null {
   if (typeof target !== 'string') return null;
   if (type === 'page') return Object.hasOwn(state.pages, target) ? (l as LinkValue) : null;
   if (type === 'entry') return findEntry(state, target) ? (l as LinkValue) : null;
+  if (type === 'collection') return Object.hasOwn(state.collections ?? {}, target) ? (l as LinkValue) : null;
   return type === 'url' || type === 'email' || type === 'tel' || type === 'anchor' ? (l as LinkValue) : null;
 }
 
@@ -43,7 +44,9 @@ export function articleLinks(state: ProjectState): ArticleRead {
         const id = t.slice(ENTRY_LINK_PREFIX.length);
         return findEntry(state, id) ? { type: 'entry', target: id, ...(newTab ? { newTab: true } : {}) } : null;
       }
-      return linkFromTarget(t, state.pages, newTab, rel);
+      // A collection's index named by its ID is kept only while the project has that collection.
+      const link = linkFromTarget(t, state.pages, newTab, rel);
+      return link?.type === 'collection' && !Object.hasOwn(state.collections ?? {}, link.target) ? null : link;
     }
   };
 }

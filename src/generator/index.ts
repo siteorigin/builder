@@ -104,7 +104,7 @@ import { entryRoute, findEntry, isDraftEntry, isEntryPath, orderedEntries, siteE
 import { entryNeighbours, materializeTemplate } from './entry-template';
 import { connectedListItems, prepareLoops, type LoopRows } from './collection-loops';
 import { archiveFile, generateArchive, hasArchiveLayout, siteArchives } from './archive';
-import { archivePages } from '@shared/archives';
+import { archivePages, collectionIndexRoutes } from '@shared/archives';
 import { actionWraps, brokenCardKeys, cardKey, isCardLink, isCarouselTrack } from './card-links';
 import { booleanStateGuard, declaredState, overlayProblem, repeatFilterProblem, stateActionProblem } from '@engine/schema';
 import { CAROUSEL_JS, CAROUSEL_SVELTE } from './carousel';
@@ -362,6 +362,14 @@ export function resolveLink(link: LinkValue | null | undefined, ctx: ResolveCont
       const found = findEntry(ctx.state, link.target);
       if (!found || !isEntryPath(found.collection, found.entry)) return null;
       href = entryRoute(found.collection, found.entry)!;
+      break;
+    }
+    case 'collection': {
+      // The first page of the collection's list, at its current address: one the website has no index for shows its
+      // words alone, as a link to an entry it does not publish does.
+      const routes = derived(ctx.state, 'collectionIndexRoutes', collectionIndexRoutes);
+      if (!Object.hasOwn(routes, link.target)) return null;
+      href = routes[link.target];
       break;
     }
   }

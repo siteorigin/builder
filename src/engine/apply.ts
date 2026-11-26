@@ -48,7 +48,7 @@ import { isArticleDate, pageArticle, todayArticleDate } from '@shared/articles';
 import { checkCanonicalUrl } from '@shared/seo';
 import { isWebMcpForm, toolOverrides, WEBMCP_DESCRIPTION_MAX, WEBMCP_TYPED_NAME_MAX, webMcpToolName } from '@shared/webmcp';
 import { feedRowFields } from '@shared/entry-feed';
-import { archiveRouteOwner, collectionRouteOwner, findEntry, siteEntries } from '@shared/collections';
+import { POSTS_COLLECTION_ID, archiveRouteOwner, collectionRouteOwner, findEntry, hasArchivePages, siteEntries } from '@shared/collections';
 import { loopText, redirectTargetProblem, resolveRedirects } from '@shared/redirects';
 import { finishSourceSync, sourceRemove, sourceUpsert, type SourceSyncGrant } from './sources';
 import { collectionCreate, collectionRemove, collectionUpdate, entryAddressesInUse, entryCreate, entryRemove, entryReorder, entryUpdate, refuseSyncedHolders, syncedEntryChange, type EntryAddress } from './collections';
@@ -445,8 +445,10 @@ function applyOne(state: ProjectState, op: EditOperation, ctx: ApplyContext): Op
       }
       return {};
     }
-    case 'collection.create':
-      return collectionCreate(state, op);
+    case 'collection.create': {
+      const made = collectionCreate(state, op);
+      return op.addToNavigation ? { ...made, addedToNavigation: addIndexToHeaderNavigation(state, op.collectionId) } : made;
+    }
     case 'collection.update':
       return collectionUpdate(state, op, ctx.entryAddressesAtStart);
     case 'collection.remove':
@@ -986,6 +988,23 @@ function addToHeaderNavigation(state: ProjectState, page: PageDoc): boolean {
   const at = followsPageOrder(state) ? followingSlot(state, list, page.id, slot) : slot.index;
   const item = normalizeItem(schema, { label: page.navLabel || page.title, link: { type: 'page', target: page.id }, ...(slot.sub ? { sub: true } : {}) }, state, schema.label);
   node.props.links = [...list.slice(0, at), item, ...list.slice(at)];
+  return true;
+}
+
+/**
+ * Append a link to a collection's index to the shared header's navigation list, as a top-level link after the others,
+ * named as the blog's is in a menu ("Blog") or else by the collection's name. False (and nothing changed) when there
+ * is no such list, it is full, or the collection has no index for the link to go to.
+ */
+function addIndexToHeaderNavigation(state: ProjectState, collectionId: string): boolean {
+  const menu = headerMenu(state);
+  const c = own(state.collections, collectionId);
+  if (!menu || !c || !hasArchivePages(c.settings)) return false;
+  const { node, schema } = menu;
+  const list = (node.props.links ?? structuredClone(schema.default)) as Array<Record<string, unknown>>;
+  if (schema.max !== undefined && list.length >= schema.max) return false;
+  const label = collectionId === POSTS_COLLECTION_ID ? 'Blog' : c.settings.name;
+  node.props.links = [...list, normalizeItem(schema, { label, link: { type: 'collection', target: collectionId } }, state, schema.label)];
   return true;
 }
 
@@ -3690,10 +3709,13 @@ export function convertEditedDesign(state: ProjectState, definitionId: string, s
   return { definitionId: id, sourcePath: copy.sourcePath! };
 }
 
+/** A link whose address the site works out as it is generated, so it follows a page or collection that moves. */
+const sitesLink = (l: LinkValue | undefined) => l?.type === 'page' || l?.type === 'collection';
+
 const holdsPageLink = (v: unknown): boolean => {
   if (Array.isArray(v)) return v.some(holdsPageLink);
   if (!v || typeof v !== 'object' || isBinding(v)) return false;
-  return (v as LinkValue).type === 'page' || Object.values(v).some(holdsPageLink);
+  return sitesLink(v as LinkValue) || Object.values(v).some(holdsPageLink);
 };
 
 /** A value with each page link in it replaced by no link, read as its schema stores it: words stay, no address. */
@@ -3701,7 +3723,7 @@ function withoutPageLinks(schema: PropSchema, v: unknown): unknown {
   if (!v || typeof v !== 'object' || isBinding(v)) return v;
   switch (schema.type) {
     case 'link':
-      return (v as LinkValue).type === 'page' ? { type: 'none', target: '' } : v;
+      return sitesLink(v as LinkValue) ? { type: 'none', target: '' } : v;
     case 'richtext':
       // Older strings and malformed blocks hold no links and pass through as they are.
       return Array.isArray(v) ? v.map((b) => (!b || typeof b !== 'object' ? b : Array.isArray(b.items) ? { ...b, items: b.items.map((it: unknown) => (Array.isArray(it) ? it.map(unlinked) : it)) } : Array.isArray(b.spans) ? { ...b, spans: b.spans.map(unlinked) } : b)) : v;
@@ -3715,7 +3737,7 @@ function withoutPageLinks(schema: PropSchema, v: unknown): unknown {
       return v;
   }
 }
-const unlinked = (s: RichSpan): RichSpan => (s && typeof s === 'object' && s.link?.type === 'page' ? { ...s, link: { type: 'none', target: '' } } : s);
+const unlinked = (s: RichSpan): RichSpan => (s && typeof s === 'object' && sitesLink(s.link) ? { ...s, link: { type: 'none', target: '' } } : s);
 
 /** A property as the converted source's own fallback holds it: its default, and a list's field defaults, unlinked from pages. */
 function sourceFallback(schema: PropSchema): PropSchema {
@@ -3801,7 +3823,7 @@ function showsPageLink(schema: PropSchema, v: unknown, code: boolean): boolean {
   if (!v || typeof v !== 'object' || isBinding(v)) return false;
   switch (schema.type) {
     case 'link':
-      return (v as LinkValue).type === 'page';
+      return sitesLink(v as LinkValue);
     case 'richtext':
       return (!code || codeTakesBlocks(schema)) && holdsPageLink(v);
     case 'list':
