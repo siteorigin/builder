@@ -12,6 +12,7 @@ vi.hoisted(() => {
     builder: { platform: 'test' }
   };
 });
+// @ts-expect-error TS6142: the Node type-check project sets no --jsx; Vitest compiles the component itself.
 import { RichTextField } from '../../src/renderer/src/components/RichTextField';
 
 describe('RichTextField status line', () => {
