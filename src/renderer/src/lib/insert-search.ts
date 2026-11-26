@@ -12,7 +12,7 @@ export type Primitive = 'container' | 'stack' | 'row' | 'grid' | 'heading' | 'pa
  * the layout starters (`starter`). A divider can start as one of the decorative shapes. A slot's placeholder, in the
  * design of the component being edited, names the declared slot it shows (`bind`).
  */
-export type InsertSpec = { componentId?: string; definitionId?: string; primitive?: Primitive; bind?: string; text?: string; columns?: number; starter?: LayoutStarter; shape?: DividerShape; variants?: Record<string, string> };
+export type InsertSpec = { componentId?: string; definitionId?: string; primitive?: Primitive; bind?: string; text?: string; columns?: number; starter?: LayoutStarter; shape?: DividerShape; variants?: Record<string, string>; /** A collection list: a Stack holding a loop over this collection's entries, each showing its title. */ loop?: string };
 
 /**
  * A Grid that starts with uneven cells: a bento of a wide featured tile and a tall one, a main column beside a sidebar

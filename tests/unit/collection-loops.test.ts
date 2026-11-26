@@ -280,3 +280,36 @@ describe("a collection's archive layout", () => {
     expect(refusal(s, { type: 'node.insert', owner: home(s), parentId: null, primitive: 'repeat', archive: true })).toMatch(/archive layout/);
   });
 });
+
+describe('the editor', () => {
+  it("inserts a collection list on a page as one change: a Stack whose loop shows each entry's title", async () => {
+    const s0 = studio();
+    const { insertOps } = await import('../../src/renderer/src/lib/insert-at');
+    const ops = insertOps({ owner: home(s0), parentId: null, index: 0 }, { primitive: 'stack', loop: 'projects' }, 'element');
+    const s = applyOperations(s0, ops).state;
+    expect(errors(s)).toEqual([]);
+    const loop = Object.values(s.pages[s.site.homePageId].nodes).find((n) => n.kind === 'repeat') as RepeatNode;
+    expect(loop.list).toEqual({ $query: { collectionId: 'projects' } });
+    const html = await serverHtml(generateProject(publishedState(s)), 'loops-insert-');
+    expect(html).toContain('Dockside Offices');
+  });
+
+  it("shows a collection's index layout on its index, and leaves it when the layout goes", async () => {
+    const { keepTemplateValid, shownView, templateOwner } = await import('../../src/renderer/src/lib/template-view');
+    let s = run(studio(), { type: 'collection.update', collectionId: 'projects', archiveTemplate: 'start' });
+    const mode = { collectionId: 'projects', entryId: null, archive: true as const };
+    expect(templateOwner(mode)).toEqual({ kind: 'archive', id: 'projects' });
+    expect(shownView(s, s.site.homePageId, mode)?.route).toBe('/work/');
+    expect(keepTemplateValid(s, mode)).toBe(mode);
+    s = run(s, { type: 'collection.update', collectionId: 'projects', archiveTemplate: null });
+    expect(keepTemplateValid(s, mode)).toBeNull();
+  });
+});
+
+describe('detaching', () => {
+  it('refuses to detach a section that shows a collection, which would freeze it to its own items', () => {
+    let { s, id } = withTeam(studio());
+    s = run(s, { type: 'instance.setListSource', owner: home(s), nodeId: id, prop: 'people', source: { query: ARCHITECTS, fields: PEOPLE } });
+    expect(refusal(s, { type: 'component.detachInstance', owner: home(s), nodeId: id } as EditOperation)).toMatch(/cannot be detached/);
+  });
+});

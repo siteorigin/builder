@@ -42,7 +42,7 @@ import {
   Search
 } from 'lucide-react';
 import type { ComponentDefinition, DividerNode, ElementNode, ElementRef, GraphNode, ImageValue, InstanceNode, LinkValue, ListItem, ListProp, OwnerRef, PageDoc, ProjectState, PropSchema, ResponsiveScope, ResponsiveStyles, ScalarPropSchema, StyleState, StyleValue, TextNode } from '@shared/types';
-import { DIVIDER_ICON, DIVIDER_SHAPES, isBinding, parseStyleScopeKey, styleScopeKey } from '@shared/types';
+import { DIVIDER_ICON, DIVIDER_SHAPES, isBinding, isCollectionLoop, parseStyleScopeKey, styleScopeKey } from '@shared/types';
 import { followNote } from '@shared/site-name';
 import { headerHiddenProps } from '@shared/header-logo';
 import { showsPart } from '@shared/page-shell';
@@ -116,6 +116,8 @@ import { BindingControl, PartSection, PropertiesSection, SlotsSection, StyleTarg
 import { PlacedSlotsSection } from './PlacedSlotsSection';
 import { LivePreview } from './InsertPanel';
 import { EntryBoundNote, EntryFieldsSection } from './EntryFields';
+import { ListSourceSwitch, LoopSourceControls } from './CollectionListControls';
+import { loopMembers } from '@engine/collection-sources';
 import { sampleEntries } from '../lib/template-view';
 import { isHeadingLevel, placementOrder, variantStylable, type StyleTarget } from '../lib/component-contract';
 import { useAskAiKeys } from '../lib/ask-ai-key';
@@ -610,7 +612,7 @@ function InspectorBody() {
   if (!selection && templateMode && st.collections[templateMode.collectionId])
     return (
       <div className="panel-body insp" key={`layout:${templateMode.collectionId}`}>
-        <LayoutOverview state={st} collectionId={templateMode.collectionId} entryId={templateMode.entryId} />
+        <LayoutOverview state={st} collectionId={templateMode.collectionId} entryId={templateMode.entryId} archive={!!templateMode.archive} />
       </div>
     );
   // Keyed by page: fields being typed in belong to their page, never to the one shown after it.
@@ -920,6 +922,12 @@ function OwnerScope({ owner, state, aside }: { owner: OwnerRef; state: ProjectSt
       </Scope>
     );
   }
+  if (owner.kind === 'archive')
+    return (
+      <Scope tone="shared" icon={<Users />} aside={aside}>
+        <strong>{state.collections[owner.id]?.settings.name ?? 'Collection'} index layout.</strong> Changes show on its index and category pages.
+      </Scope>
+    );
   return (
     <Scope tone="local" icon={<FileText />} aside={aside}>
       Only on the {ownerLabel(state, owner)} page
@@ -1056,6 +1064,11 @@ function useFieldRefusals(scope: string) {
 }
 
 function InstanceInspector({ state, owner, node, tokens, selection }: { state: ProjectState; owner: OwnerRef; node: InstanceNode; tokens: Tokens; selection: ElementRef }) {
+  // A section repeated by a collection loop shows each entry's fields where they are bound (see EntryFields).
+  const inCollectionLoop = useMemo(() => {
+    const tree = treeFor(state, owner);
+    return !!tree && loopMembers(tree).has(node.id);
+  }, [state, owner, node.id]);
   // Layers selected together with this one (the menu's Duplicate and Delete act on them all): followed so the menu
   // is rebuilt when they change, and planned with it, so what the menu says is what it does.
   useStore((s) => {
@@ -1276,8 +1289,8 @@ function InstanceInspector({ state, owner, node, tokens, selection }: { state: P
               const found = schema.type === 'object' ? unlinked.find((b) => b.link?.prop === key && b.link.itemId === undefined) : unlinkedField(unlinked, key);
               const own = hideAt(found);
               // A property showing each entry's own value is chosen in Entry content, not typed here.
-              if (owner.kind === 'template' && isBinding(node.props[key])) return <EntryBoundNote key={key} state={state} owner={owner} value={node.props[key]} label={label ?? schema.label} />;
-              return (
+              if ((owner.kind === 'template' || inCollectionLoop) && isBinding(node.props[key])) return <EntryBoundNote key={key} state={state} owner={owner} node={node} value={node.props[key]} label={label ?? schema.label} />;
+              const field = (
                 <PropField
                   key={key}
                   name={key}
@@ -1306,6 +1319,9 @@ function InstanceInspector({ state, owner, node, tokens, selection }: { state: P
                   order={key === 'links' && headerMenuId === node.id ? { control: <HeaderMenuOrderSelect state={state} />, locked: followsPageOrder(state) ? FOLLOWING_MOVE_NOTE : null } : undefined}
                 />
               );
+              // A list of its own items can show a collection's entries instead (see CollectionListControls).
+              if (schema.type === 'list' && !schema.feed && !isBinding(node.props[key])) return <ListSourceSwitch key={key} state={state} owner={owner} node={node} prop={key} schema={schema} manual={field} />;
+              return field;
             }}
           />
         </FieldHome>
@@ -2058,9 +2074,14 @@ function PrimitiveInspector({ state, owner, node, tokens, selection }: { state: 
           </Problem>
         )}
       </Problems>
+      {node.kind === 'repeat' && isCollectionLoop(node) && (
+        <Section title="Entries" id="loop-source" level={LEVEL}>
+          <LoopSourceControls state={state} owner={owner} node={node} />
+        </Section>
+      )}
       <EntryFieldsSection state={state} owner={owner} node={node} />
       <Section title="Content" id="prim-content" level={LEVEL}>
-        <EntryBoundNote state={state} owner={owner} value={node.kind === 'text' ? node.text : node.kind === 'image' ? node.image : undefined} label={node.kind === 'image' ? 'Image' : 'Text'} />
+        <EntryBoundNote state={state} owner={owner} node={node} value={node.kind === 'text' ? node.text : node.kind === 'image' ? node.image : undefined} label={node.kind === 'image' ? 'Image' : 'Text'} />
         {node.kind === 'text' && !node.rich && !isBinding(node.tag) && <TagField state={state} owner={owner} node={node} onChange={(v) => content('tag', v)} />}
         {node.kind === 'text' && !isBinding(node.text) && (
           <>
@@ -2087,7 +2108,7 @@ function PrimitiveInspector({ state, owner, node, tokens, selection }: { state: 
         {node.kind === 'link' && (
           <>
             {isBinding(node.label) ? (
-              <EntryBoundNote state={state} owner={owner} value={node.label} label="Label" />
+              <EntryBoundNote state={state} owner={owner} node={node} value={node.label} label="Label" />
             ) : (
               <div data-field="label">
                 <Field label="Label">
@@ -2095,7 +2116,7 @@ function PrimitiveInspector({ state, owner, node, tokens, selection }: { state: 
                 </Field>
               </div>
             )}
-            <EntryBoundNote state={state} owner={owner} value={node.link} label="Link" />
+            <EntryBoundNote state={state} owner={owner} node={node} value={node.link} label="Link" />
             {!isBinding(node.link) && (
               <div className="field" data-field="link" role="group" aria-labelledby={`${node.id}-dest`}>
                 <div className="field-label" id={`${node.id}-dest`}>
@@ -3291,9 +3312,31 @@ function PostOverview({ state, workspace }: { state: ProjectState; workspace: 'w
 }
 
 /** A collection's layout with nothing selected: whose layout it is, what it changes, the entry it is shown on, and Done. */
-function LayoutOverview({ state, collectionId, entryId }: { state: ProjectState; collectionId: string; entryId: string | null }) {
+function LayoutOverview({ state, collectionId, entryId, archive }: { state: ProjectState; collectionId: string; entryId: string | null; archive?: boolean }) {
   const c = state.collections[collectionId];
-  const samples = sampleEntries(state, collectionId);
+  const samples = archive ? [] : sampleEntries(state, collectionId);
+  if (archive)
+    return (
+      <>
+        <Header
+          title={`${c.settings.name} index layout`}
+          kind="Collection index layout"
+          tone="shared"
+          icon={<FileText />}
+          actions={
+            <button className="btn btn-sm" onClick={() => setState({ templateMode: null, selection: null })}>
+              Done
+            </button>
+          }
+        >
+          <OwnerScope owner={{ kind: 'archive', id: collectionId }} state={state} />
+        </Header>
+        <div className="insp-empty">
+          <MousePointerClick aria-hidden="true" />
+          <p>The {c.settings.name} index and its category pages are shown with this layout, below their heading and above their page links. Its list repeats once for each entry a page lists. Click part of it on the page, or in Layers, to change it.</p>
+        </div>
+      </>
+    );
   return (
     <>
       <Header

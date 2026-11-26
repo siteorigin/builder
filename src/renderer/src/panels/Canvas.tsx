@@ -3612,8 +3612,8 @@ function TemplateStrip({ state, mode, maxWidth, opening }: { state: ProjectState
   return (
     <div className="frame-status template-strip" style={{ maxWidth }} role="group" aria-label={`${collection.settings.name} layout`} aria-busy={opening || undefined} data-testid="template-strip">
       {opening ? <Spinner decorative /> : <LayoutTemplate aria-hidden="true" />}
-      <span className="template-strip-name">{collection.settings.name} layout</span>
-      {samples.length > 0 && (
+      <span className="template-strip-name">{collection.settings.name} {mode.archive ? 'index layout' : 'layout'}</span>
+      {samples.length > 0 && !mode.archive && (
         <label className="template-strip-sample">
           <span>shown on</span>
           <select

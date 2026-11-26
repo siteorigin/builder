@@ -1039,6 +1039,17 @@ export function openLayout(collectionId: string, entryId?: string) {
 }
 
 /**
+ * Edit a collection's index layout (its archive pages') on the canvas, shown on its index, starting one first when the
+ * collection still shows the ready-made cards.
+ */
+export async function openArchiveLayout(collectionId: string) {
+  const st = getState().snapshot?.state;
+  if (!st || !Object.hasOwn(st.collections ?? {}, collectionId)) return;
+  if (!st.collections[collectionId].settings.archiveTemplate && !(await applyOps([{ type: 'collection.update', collectionId, archiveTemplate: 'start' }], `Design the ${st.collections[collectionId].settings.name} index`))) return;
+  setState({ templateMode: { collectionId, entryId: null, archive: true }, definitionMode: null, selection: null, mode: 'edit', previewReturn: null, leftTab: 'layers' });
+}
+
+/**
  * Whether showing `pageId` takes opening it: another page is open, a component is edited everywhere, or the Posts
  * workspace or the SEO view is in front of the page (#578, #700). A jump to something on the page (a match, a broken
  * link) opens it first.

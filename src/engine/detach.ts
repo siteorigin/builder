@@ -6,7 +6,7 @@
  * design stay placements, given the values and styles they were shown with.
  */
 import type { ComponentDefinition, DetachedFrom, GraphNode, InstanceNode, NodeTree, OwnerRef, ProjectState, PropSchema, ResponsiveStyles } from '@shared/types';
-import { repeatProp, ELEMENT_ACTIONS, ELEMENT_TAGS, ICON_POSITIONS, TEXT_TAGS, isAppearPreset, isBinding, isBindingRef, slotChildren, slotFallback, stateInitial } from '@shared/types';
+import { isCollectionLoop, repeatProp, ELEMENT_ACTIONS, ELEMENT_TAGS, ICON_POSITIONS, TEXT_TAGS, isAppearPreset, isBinding, isBindingRef, slotChildren, slotFallback, stateInitial } from '@shared/types';
 import { propBindingSchema } from '@shared/bindings';
 import type { Op } from '@shared/ops';
 import { newId } from '@shared/ids';
@@ -69,6 +69,11 @@ export function detachInstance(state: ProjectState, op: Op<'component.detachInst
   // Its cards would become fixed links to posts, which only a post's own text can hold for now.
   if (Object.values(def.properties).some((p) => p.type === 'list' && p.feed === 'entries'))
     fail(`“${label}” lists posts that come and go with their collection, so it cannot be detached into elements. Use Make unique to change its design on this page alone.`);
+  // Nor a list showing a collection's entries, which come and go with it: detached, it would freeze to its own items.
+  const connected = Object.keys(inst.listSources ?? {}).find((p) => def.properties[p]?.type === 'list');
+  if (connected !== undefined) fail(`“${label}” shows a collection’s entries in its ${def.properties[connected].label.toLowerCase()}, which come and go with the collection, so it cannot be detached into elements. Show its own items first, or use Make unique to change its design on this page alone.`);
+  // A collection loop in its design repeats entries the same way.
+  if (Object.values(def.tree.nodes).some((n) => isCollectionLoop(n))) fail(`“${label}” shows a collection’s entries in its design, which come and go with the collection, so it cannot be detached into elements. Use Make unique to change its design on this page alone.`);
   if (Object.keys(def.state ?? {}).length) fail(`“${label}” has UI state its buttons change, which elements on a page would not keep. Remove its UI state first.`);
   // Nor can they filter themselves: a list whose category buttons show here would lose them.
   const placedScope: Scope = { props: withObjectFields(def, effectiveProps(state, def, inst, { props: {} }, op.owner.id)) };

@@ -4,19 +4,21 @@
  * words, pictures and dates. The page the editor had open stays the page shown when the layout is closed.
  */
 import type { EntryDoc, OwnerRef, ProjectState } from '@shared/types';
-import { entryRoute, orderedEntries } from '@shared/collections';
+import { entryRoute, hasArchivePages, orderedEntries } from '@shared/collections';
 import { siteEntries } from '@generator/index';
 
 export interface TemplateMode {
   collectionId: string;
   /** The entry the layout is shown on, or null for a collection without entries. */
   entryId: string | null;
+  /** The collection's archive layout instead, shown on its index (the first of its archive pages). */
+  archive?: true;
 }
 
 const own = <T>(rec: Record<string, T> | undefined, key: string): T | undefined => (rec && Object.hasOwn(rec, key) ? rec[key] : undefined);
 
 /** The template owner of a layout being edited. */
-export const templateOwner = (mode: TemplateMode): OwnerRef => ({ kind: 'template', id: mode.collectionId });
+export const templateOwner = (mode: TemplateMode): OwnerRef => ({ kind: mode.archive ? 'archive' : 'template', id: mode.collectionId });
 
 /** The entries a layout can be shown on, in the collection's order: those the editor's preview has a page for. */
 export function sampleEntries(state: ProjectState, collectionId: string): EntryDoc[] {
@@ -31,6 +33,8 @@ export function sampleEntries(state: ProjectState, collectionId: string): EntryD
  */
 export function keepTemplateValid(state: ProjectState, mode: TemplateMode | null): TemplateMode | null {
   if (!mode) return null;
+  // An archive layout is shown on the index while the collection has one, and has an index to show it on.
+  if (mode.archive) return own(state.collections, mode.collectionId)?.settings?.archiveTemplate && hasArchivePages(state.collections[mode.collectionId].settings) ? mode : null;
   if (!own(state.collections, mode.collectionId)?.settings?.template) return null;
   const samples = sampleEntries(state, mode.collectionId);
   if (mode.entryId && samples.some((e) => e.id === mode.entryId)) return mode;
@@ -52,6 +56,7 @@ export function shownView(state: ProjectState, pageId: string | null, mode: Temp
   if (mode) {
     const c = own(state.collections, mode.collectionId);
     if (!c) return null;
+    if (mode.archive) return { key: `archive:${mode.collectionId}`, route: hasArchivePages(c.settings) ? (c.settings.route ?? null) : null, title: `${c.settings.name} index layout`, template: mode };
     const entry = mode.entryId ? own(c.entries, mode.entryId) : undefined;
     const routable = !!entry && sampleEntries(state, mode.collectionId).some((e) => e.id === entry.id);
     return { key: `template:${mode.collectionId}:${mode.entryId ?? ''}`, route: routable ? (entryRoute(c, entry) ?? null) : null, title: `${c.settings.name} layout`, template: mode };

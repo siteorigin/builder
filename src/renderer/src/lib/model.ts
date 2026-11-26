@@ -40,12 +40,13 @@ export function treeFor(state: ProjectState, owner: OwnerRef): NodeTree | undefi
   if (owner.kind === 'page') return Object.hasOwn(state.pages, owner.id) ? state.pages[owner.id] : undefined;
   if (owner.kind === 'shell') return owner.id === 'header' || owner.id === 'footer' ? state.site.shell[owner.id] : undefined;
   if (owner.kind === 'template') return Object.hasOwn(state.collections ?? {}, owner.id) ? state.collections[owner.id]?.settings?.template : undefined;
+  if (owner.kind === 'archive') return Object.hasOwn(state.collections ?? {}, owner.id) ? state.collections[owner.id]?.settings?.archiveTemplate : undefined;
   return Object.hasOwn(state.components, owner.id) ? state.components[owner.id]?.tree : undefined;
 }
 
 export function parseCtx(ctx: string): { owner: OwnerRef; path: string[] } | null {
   const [head, ...path] = ctx.split('|');
-  const m = head.match(/^(page|shell|component|template):(.+)$/);
+  const m = head.match(/^(page|shell|component|template|archive):(.+)$/);
   if (!m) return null;
   return { owner: { kind: m[1] as OwnerRef['kind'], id: m[2] }, path };
 }
@@ -709,6 +710,7 @@ export function ownerLabel(state: ProjectState, owner: OwnerRef): string {
   if (owner.kind === 'page') return state.pages[owner.id]?.title ?? 'Page';
   if (owner.kind === 'shell') return owner.id === 'header' ? 'Header' : 'Footer';
   if (owner.kind === 'template') return `${state.collections[owner.id]?.settings.name ?? 'Collection'} layout`;
+  if (owner.kind === 'archive') return `${state.collections[owner.id]?.settings.name ?? 'Collection'} index layout`;
   return state.components[owner.id]?.name ?? 'Component';
 }
 

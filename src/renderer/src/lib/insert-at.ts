@@ -274,7 +274,18 @@ export function slotWhere(st: ProjectState, target: SlotTarget): Where {
  * that fill it.
  */
 export function insertOps(at: InsertAt, spec: InsertSpec, role: InsertRole, nodeId?: string): EditOperation[] {
-  const { columns, starter, ...rest } = spec;
+  const { columns, starter, loop: loopOf, ...rest } = spec;
+  if (loopOf !== undefined) {
+    // A collection list: a Stack whose loop repeats each entry, starting with its title, for the author to design.
+    const stack = nodeId ?? newId('n');
+    const [loop, title] = [newId('n'), newId('n')];
+    return [
+      ...insertOps(at, { ...rest, primitive: 'stack' }, role, stack),
+      { type: 'node.insert', newNodeId: loop, owner: at.owner, parentId: stack, primitive: 'repeat', query: { collectionId: loopOf } },
+      { type: 'node.insert', newNodeId: title, owner: at.owner, parentId: loop, primitive: 'heading', text: 'Title' },
+      { type: 'node.setBinding', owner: at.owner, nodeId: title, field: 'text', binding: { $item: 'title' } }
+    ];
+  }
   const layout = rest.primitive === 'grid' ? starterLayout(columns, starter) : null;
   // A Grid that starts with its cells is named here, so the same change can fill it.
   const id = nodeId ?? (layout ? newId('n') : undefined);

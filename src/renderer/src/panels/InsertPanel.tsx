@@ -1211,6 +1211,9 @@ export function InsertPanel() {
     return [shipped, ...options];
   });
   const elements: Item[] = BASICS.map((b) => ({ key: `e:${b.id}`, kind: 'element', name: b.name, description: '', hay: basicHay(b), group: b.layout ? COLUMN_LAYOUTS : 'Basic elements', spec: basicSpec(b), icon: b.icon }));
+  // A list of each collection's entries, designed like any element: it repeats once for each entry it shows.
+  for (const c of Object.values(st.collections ?? {}).sort((a, b) => a.settings.name.localeCompare(b.settings.name)))
+    elements.push({ key: `loop:${c.settings.id}`, kind: 'element', name: `${c.settings.name} list`, description: '', hay: `${c.settings.name} collection list loop repeat entries ${c.settings.id}`.toLowerCase(), group: 'Basic elements', spec: { primitive: 'stack', loop: c.settings.id }, icon: 'list' });
   // While a component of the project's own is edited everywhere: the slots it declares that its design does not show
   // yet, each placed in the design as an element (see slotInsertAt).
   const editedDef = editing && Object.hasOwn(st.components, editing) ? st.components[editing] : undefined;

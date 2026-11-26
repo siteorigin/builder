@@ -13,7 +13,7 @@ import { ownerLabel, refLabel, treeFor } from './model';
 export function placeWords(state: ProjectState, owner: OwnerRef): string {
   if (owner.kind === 'page') return `on ${ownerLabel(state, owner).trim() || 'a page'}`;
   if (owner.kind === 'component') return `in the ${ownerLabel(state, owner)} design`;
-  return `in ${owner.kind === 'template' ? 'the ' : ''}${ownerLabel(state, owner)}`;
+  return `in ${owner.kind === 'template' || owner.kind === 'archive' ? 'the ' : ''}${ownerLabel(state, owner)}`;
 }
 
 /** An element (or a part of one) and where it is: "Split hero on Home", "Logo in Header". */

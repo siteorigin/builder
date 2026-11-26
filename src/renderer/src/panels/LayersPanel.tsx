@@ -399,7 +399,8 @@ export function LayersPanel() {
   const defOwner: OwnerRef | null = definitionMode ? { kind: 'component', id: definitionMode.definitionId } : null;
   const defTree = defOwner ? st.components[defOwner.id]?.tree : null;
   // A collection's layout being edited: its layers, between the shared header and footer every entry shows.
-  const layout = !defOwner && templateMode && st.collections[templateMode.collectionId]?.settings.template ? { owner: templateOwner(templateMode), tree: st.collections[templateMode.collectionId].settings.template, name: `${st.collections[templateMode.collectionId].settings.name} layout` } : null;
+  const layoutTree = templateMode ? (templateMode.archive ? st.collections[templateMode.collectionId]?.settings.archiveTemplate : st.collections[templateMode.collectionId]?.settings.template) : undefined;
+  const layout = !defOwner && templateMode && layoutTree ? { owner: templateOwner(templateMode), tree: layoutTree, name: `${st.collections[templateMode.collectionId].settings.name} ${templateMode.archive ? 'index layout' : 'layout'}` } : null;
   // The layers selected together, while the selection is one of them and they still sit side by side here.
   const picked = liveGroup({ snapshot: snap, selection, layerSet, pageId, definitionMode, templateMode });
 
