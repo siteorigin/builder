@@ -1,6 +1,7 @@
 import { statSync } from 'node:fs';
 import { join } from 'node:path';
 import { SERVER_HOOK_FILE } from '@generator/index';
+import { perf } from '../perf';
 
 /**
  * Server hooks SvelteKit finds under other names: a file without an extension, a TypeScript file, or a folder with an
@@ -9,6 +10,7 @@ import { SERVER_HOOK_FILE } from '@generator/index';
 const OTHER_HOOKS = ['src/hooks.server', 'src/hooks.server.ts', 'src/hooks.server/index.js', 'src/hooks.server/index.ts'];
 
 const isFile = (path: string) => {
+  perf.count('fs.syncCalls');
   try {
     return statSync(path).isFile();
   } catch {

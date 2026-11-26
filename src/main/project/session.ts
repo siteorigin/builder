@@ -2077,6 +2077,7 @@ export class ProjectSession extends EventEmitter {
   private async seenHash(abs: string): Promise<string | undefined> {
     const seen = this.seenOnDisk.get(abs);
     if (!seen) return undefined;
+    perf.count('files.stats');
     const st = await fs.stat(abs, { bigint: true }).catch(() => null);
     return st && stampOf(st) === seen.stamp ? seen.hash : undefined;
   }
@@ -2106,6 +2107,7 @@ export class ProjectSession extends EventEmitter {
       if (process.platform !== 'win32' && stampOf(before) !== read.stamp) continue;
       const hash = sha(read.bytes);
       perf.count('files.hashed');
+      perf.count('files.hashedBytes', read.bytes.length);
       const stamp = stampOf(before);
       if (statTrusted(before, started, this.settleMs)) this.seenOnDisk.set(abs, { stamp, hash });
       keep?.(read.bytes);
@@ -2162,13 +2164,22 @@ export class ProjectSession extends EventEmitter {
       const was = this.contentHashes.get(abs);
       const cached = !!was && was.content === content;
       const hash = cached ? was!.hash : sha(content);
-      if (!cached) perf.count('files.hashed');
+      if (!cached) {
+        perf.count('files.hashed');
+        if (perf.on) perf.count('files.hashedBytes', typeof content === 'string' ? Buffer.byteLength(content) : content.length);
+      }
       hashes.set(abs, { content, hash });
       return hash;
     };
     this.conflicts = this.conflicts.filter((c) => c.kind !== 'generated');
     /** Files this app wrote that were edited outside it: a design's own may become a code component (see below). */
     const edited = new Set<string>();
+    // The publication's stretches, one after another, for the benchmark's traces.
+    let stretch = perf.span('session.publish.copies');
+    const next = (name: string, attrs?: Parameters<typeof perf.span>[1]) => {
+      stretch();
+      stretch = perf.span(name, attrs);
+    };
     // The theme's font files are copied from its pack beside the generated text, under the same ownership rules.
     const copies = new Map<string, string | Buffer>();
     for (const c of packFileCopies(this.state)) {
@@ -2191,9 +2202,8 @@ export class ProjectSession extends EventEmitter {
     // The website's icons are drawn from the favicon (or the monogram) beside the generated text, under the same rules.
     // A set that cannot be made now costs the icons' update, not the save: icons already claimed stay, still claimed,
     // so they are neither replaced nor removed as obsolete. A file of someone else's at an icon's path is still named.
-    const drawing = perf.span('session.publish.icons');
+    next('session.publish.icons');
     const icons = await this.siteIcons.make(this.dir, this.state);
-    drawing();
     this.iconsAsked = icons.key;
     for (const path of SITE_ICON_PATHS) {
       if (authored.has(path) || clean.has(path)) continue;
@@ -2206,6 +2216,7 @@ export class ProjectSession extends EventEmitter {
       const abs = safeJoin(this.dir, path);
       if (!known(path)) {
         // Anything there but nothing at all, including what cannot be looked at, counts as there.
+        perf.count('files.stats');
         const there = await fs.lstat(abs).then(
           () => true,
           (e: NodeJS.ErrnoException) => e.code !== 'ENOENT'
@@ -2222,6 +2233,7 @@ export class ProjectSession extends EventEmitter {
         if (hash !== null) this.conflicts.push({ path, reason: hash === UNREADABLE ? UNREADABLE_REASON : 'Generated file was edited outside SiteOrigin Builder. Restore it to resume generation.', kind: 'generated' });
       }
     }
+    next('session.publish.check');
     // Looked at together, a stat each: a file unchanged on disk since it was last read is not read again.
     const project = [...copies, ...clean].filter(([path]) => !authored.has(path)).map(([path, content]) => ({ path, content, abs: safeJoin(this.dir, path) }));
     const seen = await inBatches(project, (f) => this.seenHash(f.abs));
@@ -2262,6 +2274,7 @@ export class ProjectSession extends EventEmitter {
       }
       plan.push({ path, content, abs, hash: h, stamp });
     }
+    next('session.publish.variants');
     const keptExternal = new Set(this.conflicts.filter((c) => c.kind === 'generated').map((c) => c.path));
     // Dev variants (with editor identity attributes, never part of the portable source) are written before the
     // project files, so the dev server never loads a stale instrumented file. A file kept as edited outside the
@@ -2273,6 +2286,7 @@ export class ProjectSession extends EventEmitter {
     const variantsChanged = new Set<string>();
     for (const [i, { path, content, abs }] of variants.entries()) {
       if (keptExternal.has(path)) {
+        perf.count('fs.syncCalls');
         if (existsSync(abs)) {
           await fs.rm(abs, { force: true });
           this.seenOnDisk.delete(abs);
@@ -2289,6 +2303,7 @@ export class ProjectSession extends EventEmitter {
         this.seenOnDisk.delete(abs);
         await atomicWrite(abs, content, { durable: false });
         // Only the app writes its preview variants, so the file now on disk is this one.
+        perf.count('files.stats');
         const st = await fs.stat(abs, { bigint: true }).catch(() => null);
         if (st) this.seenOnDisk.set(abs, { stamp: stampOf(st), hash });
       }
@@ -2296,10 +2311,10 @@ export class ProjectSession extends EventEmitter {
     // The preview serves a variant only while the project file is the one generated here; written before the
     // project files, so a file mid-publication is never mistaken for an edit made outside the app.
     await atomicWrite(join(devRoot, CLEAN_HASHES), JSON.stringify(desired), { durable: false });
+    next('session.publish.write', { files: plan.length });
     // Claimed before they are written: a publication that stops part way (a crash, an AI run being rolled back)
     // leaves files the next one recognises as its own, to replace or remove, never as someone else's.
     if (plan.length) await this.writeManifest(prev, { ...inflight, ...Object.fromEntries(plan.map((f) => [f.path, f.hash])) });
-    const writing = perf.span('session.publish.write', { files: plan.length });
     if (initial) {
       // A new project's first publication, into the folder it was made in: nothing of anyone's can be in the way and
       // no preview watches it, so its files are written a few at a time, each as durably, into folders made first.
@@ -2323,7 +2338,10 @@ export class ProjectSession extends EventEmitter {
         const { hash: there } = await this.readHash(abs);
         if (there === h) return false;
         // Nothing readable there may still be something: a link to nowhere is someone else's too.
-        if (there === null && !(await fs.lstat(abs).catch(() => null))) return true;
+        if (there === null) {
+          perf.count('files.stats');
+          if (!(await fs.lstat(abs).catch(() => null))) return true;
+        }
         if (there !== null && ours(path, there)) return true;
         theirs = true;
         return false;
@@ -2350,7 +2368,7 @@ export class ProjectSession extends EventEmitter {
         this.seenOnDisk.delete(variant);
       }
     }
-    writing();
+    next('session.publish.finish');
     // The preview does not watch the editor's cache: a project file whose variant alone changed is touched, so the
     // preview loads the new variant (as a read-only project's private copy does, see syncPreviewStage). Only a file
     // that is this app's own as it stands, and only once the preview may be running.
@@ -2415,6 +2433,7 @@ export class ProjectSession extends EventEmitter {
       const read = await readFileAt(safeJoin(this.dir, c.path));
       if (typeof read === 'object' && textOfBytes(read.bytes) !== null) c.convert = { definitionId: design.id };
     }
+    stretch();
     return changedFiles;
   }
 
@@ -2490,6 +2509,7 @@ export class ProjectSession extends EventEmitter {
     this.manifestRead = null;
     if (!pending && read?.text === text) {
       // The very file read, in place: a link there is replaced by the manifest itself, as any write would.
+      perf.count('files.stats');
       const now = await fs.lstat(path, { bigint: true }).catch(() => null);
       if (now?.isFile() && stampOf(now) === read.stamp) {
         await syncDir(dirname(path));

@@ -69,7 +69,12 @@ export function safeJoin(root: string, rel: string): string {
   if (join(root, r) === abs && noLinkBelow(root, r)) return abs;
   // Walk up to the nearest existing ancestor and make sure its real path is inside the project.
   let probe = abs;
-  while (!existsSync(probe) && probe !== root) probe = dirname(probe);
+  for (;;) {
+    perf.count('fs.syncCalls');
+    if (existsSync(probe) || probe === root) break;
+    probe = dirname(probe);
+  }
+  perf.count('fs.syncCalls', 2);
   const realRoot = realpathSync(root);
   const realProbe = realpathSync(probe);
   if (realProbe !== realRoot && !realProbe.startsWith(realRoot + sep)) throw new Error(`Path escapes the project through a link: ${rel}`);
@@ -87,6 +92,7 @@ function noLinkBelow(root: string, rel: string): boolean {
   const parts = rel.split(sep);
   for (let i = 0; i < parts.length; i++) {
     at = join(at, parts[i]);
+    perf.count('fs.syncCalls');
     try {
       if (lstatSync(at).isSymbolicLink()) return false;
     } catch (e) {

@@ -15,6 +15,7 @@ export const OPEN_READ = fsConstants.O_RDONLY | (fsConstants.O_NONBLOCK ?? 0);
 
 /** The path's stat, or whether nothing is there or it could not be looked at. */
 export async function lookAt(abs: string): Promise<BigIntStats | 'missing' | 'failed'> {
+  perf.count('files.stats');
   try {
     return await fs.stat(abs, { bigint: true });
   } catch (e) {
@@ -50,6 +51,7 @@ export async function readFileAt(abs: string, counted: (bytes: number) => void =
 
 /** Nothing at all is at the path: not a file that merely cannot be looked at now. */
 export async function absent(abs: string): Promise<boolean> {
+  perf.count('files.stats');
   return fs.lstat(abs).then(
     () => false,
     (e) => isMissing(e)
@@ -58,6 +60,7 @@ export async function absent(abs: string): Promise<boolean> {
 
 /** The stat of whatever a new handle on the path reaches, taken as `readFileAt` takes it; null when nothing can be. */
 export async function handleStamp(abs: string): Promise<string | null> {
+  perf.count('files.stats');
   let handle: FileHandle;
   try {
     handle = await fs.open(abs, OPEN_READ);

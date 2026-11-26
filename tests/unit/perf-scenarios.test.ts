@@ -155,7 +155,7 @@ describe('open metrics', () => {
         span('session.open.validate', 1050, 16),
         span('session.generate', 1100, 30, { attrs: { variant: 'clean' } }),
         span('session.generate', 1125, 25, { attrs: { variant: 'dev' } }),
-        span('session.publish', 1600, 540, { dc: { 'files.read': 100, 'files.hashed': 200, 'fs.writes': 2 } }),
+        span('session.publish', 1600, 540, { dc: { 'files.read': 100, 'files.hashed': 200, 'fs.writes': 2, 'fs.syncCalls': 900, 'files.stats': 300, 'files.hashedBytes': 4_000_000 } }),
         span('session.open.sweep', 1602, 1),
         span('session.open', 1603, 600, { dc: { 'files.read': 170, 'docs.read': 12, 'files.hashed': 210, 'fs.durableWrites': 1, 'fs.fsyncs': 4 } }),
         span('controller.open', 1690, 680),
@@ -202,6 +202,8 @@ describe('open metrics', () => {
     expect([v('open.forkToListen'), v('open.listenToFirstResponse'), v('open.firstResponseToCanvasReady'), v('open.editorToCanvasReady')]).toEqual([260, 250, 250, 770]);
     expect([v('open.filesRead'), v('open.filesHashed'), v('open.durableWrites'), v('open.fsyncs')]).toEqual([177, 211, 2, 6]);
     expect([v('open.publishFilesRead'), v('open.publishFilesHashed'), v('open.publishFilesWritten')]).toEqual([100, 200, 2]);
+    expect([v('open.publishSyncCalls'), v('open.publishStats'), v('open.publishBytesHashed')]).toEqual([900, 300, 4_000_000]);
+    expect(got.metrics['open.publishBytesHashed']?.unit).toBe('bytes');
     expect([v('open.snapshotsSent'), v('open.snapshotBytes'), v('open.reloadFromDisk'), v('open.rendererCommits')]).toEqual([2, 500, 1, 14]);
     expect(got.metrics['open.snapshotBytes'].unit).toBe('bytes');
   });
@@ -333,13 +335,13 @@ describe('edit metrics', () => {
         span('session.validateState', 10_020, 5),
         span('session.generate', 10_030, 4, { attrs: { variant: 'clean' } }),
         span('session.generate', 10_034, 3, { attrs: { variant: 'dev' } }),
-        span('session.publish', 10_080, 30, { dc: { 'files.read': 1, 'files.hashed': 13, 'fs.writes': 5 } }),
+        span('session.publish', 10_080, 30, { dc: { 'files.read': 1, 'files.hashed': 13, 'files.hashedBytes': 52_000, 'fs.writes': 5, 'fs.durableWrites': 3, 'fs.fsyncs': 6, 'fs.syncCalls': 410, 'files.stats': 120 } }),
         m('runtime.release', 10_082),
         span('session.persist', 10_100, 70),
         m('session.changed', 10_101, { attrs: { revision: target } }),
         m('controller.snapshotSent', 10_105, { attrs: { revision: target, bytes: 120_000 } }),
         span('session.apply', 10_106, 95, { attrs: { revision: target } }),
-        span('controller.apply', 10_107, 105, { attrs: { revision: target }, dc: { 'fs.durableWrites': 9, 'fs.fsyncs': 19, 'fs.writes': 11 } }),
+        span('controller.apply', 10_107, 105, { attrs: { revision: target }, dc: { 'fs.durableWrites': 9, 'fs.fsyncs': 19, 'fs.writes': 11, 'fs.syncCalls': 450, 'files.stats': 130, 'files.hashedBytes': 60_000 } }),
         r('renderer.snapshotReceived', 10_108, { attrs: { revision: target } }),
         m('runtime.published', 10_110, { attrs: { revision: target } }),
         r('renderer.commit', 10_115, { attrs: { revision: target } }),
@@ -379,9 +381,17 @@ describe('edit metrics', () => {
       'edit.durableWrites': '9 count',
       'edit.fsyncs': '19 count',
       'edit.fileWrites': '11 count',
+      'edit.syncCalls': '450 count',
+      'edit.fileStats': '130 count',
+      'edit.bytesHashed': '60000 bytes',
       'edit.publishFilesRead': '1 count',
       'edit.publishFilesHashed': '13 count',
+      'edit.publishBytesHashed': '52000 bytes',
       'edit.publishFilesWritten': '5 count',
+      'edit.publishDurableWrites': '3 count',
+      'edit.publishFsyncs': '6 count',
+      'edit.publishSyncCalls': '410 count',
+      'edit.publishStats': '120 count',
       'edit.snapshotsSent': '3 count',
       'edit.snapshotBytes': '121005 bytes',
       'edit.reloadFromDisk': '1 count',
