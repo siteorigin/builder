@@ -48,8 +48,7 @@ const reportMainError = createMainErrorReporter({
   log: (...args) => console.error(...args),
   ask: ({ message, detail, buttons, defaultId, cancelId }) => {
     const options = { type: 'error' as const, message, detail, buttons, defaultId, cancelId };
-    // Over the editor when it shows, else on its own: a sheet on a hidden window (one whose page never loaded) is unseen.
-    return (win && !win.isDestroyed() && win.isVisible() ? dialog.showMessageBox(win, options) : dialog.showMessageBox(options)).then((r) => r.response);
+    return (win && !win.isDestroyed() ? dialog.showMessageBox(win, options) : dialog.showMessageBox(options)).then((r) => r.response);
   },
   errorBox: (title, content) => dialog.showErrorBox(title, content),
   quit: () => app.quit(),
@@ -933,7 +932,11 @@ async function createWindow() {
   const first = win;
   await first.loadURL(editorUrl()).catch((e: unknown) => {
     if ((e as { code?: unknown }).code === 'ERR_ABORTED' || first.isDestroyed() || first.webContents.isCrashed()) console.error('The editor did not finish its first load:', e);
-    else reportMainError(e);
+    else {
+      // The report is shown over the window, which never got to show itself: it shows now, so the report is seen.
+      if (!headless) first.show();
+      reportMainError(e);
+    }
   });
 }
 
