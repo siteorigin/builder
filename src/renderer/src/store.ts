@@ -1,4 +1,5 @@
-import { create } from 'zustand';
+import { createContext, useContext } from 'react';
+import { create, useStore as useStoreOf, type StoreApi } from 'zustand';
 import type { AiEvent, AppSettings, BuilderApi, ChatContext, ChatEditScope, ChatMessage, ChatMode, Conversation, ImportReviewRow, LiveHostState, LocalWorkspaceState, PostImportPreview, PackRefusal, ProjectSnapshot, ProviderStatus, RemotePresence, RemoteState, RunStatus, RuntimeState } from '@shared/api';
 import type { ApplyResult, EditOperation } from '@shared/ops';
 import { refKey, type ElementRef, type OwnerRef, type ResponsiveScope, type StyleState } from '@shared/types';
@@ -372,7 +373,7 @@ const oneView = (p: Partial<State>): Partial<State> => {
   return { ...p, templateMode: null, ...(selection?.owner.kind === 'template' || selection?.owner.kind === 'archive' ? { selection: null } : {}) };
 };
 
-export const useStore = create<State>((set) => ({
+const live = create<State>((set) => ({
   screen: 'welcome',
   packs: { refused: [], userDir: '' },
   snapshot: null,
@@ -451,6 +452,26 @@ export const useStore = create<State>((set) => ({
   copyNote: null,
   setState: (p) => set(slotFollows(oneSelection(p)))
 }));
+
+/** What the editor's components read the store through: the store itself, or a hidden panel's view of it. */
+export type StoreView = Pick<StoreApi<State>, 'getState' | 'getInitialState' | 'subscribe'>;
+/**
+ * The view of the store for the components inside it, when that is not the store itself: a panel that can be hidden
+ * gives its contents one that holds still while it is (lib/hideable.tsx).
+ */
+export const StoreViewContext = createContext<StoreView | null>(null);
+
+/** The part of the state `selector` picks, re-rendering when it changes, as the component's view of the store has it. */
+function useStoreView<T>(selector: (s: State) => T): T {
+  return useStoreOf(useContext(StoreViewContext) ?? live, selector);
+}
+
+/**
+ * The editor's store. As a hook, it is read through the view of the panel the component is in (StoreViewContext);
+ * `getState`, `setState` and `subscribe` are always the store's own, so what code does outside rendering sees every
+ * change at once, in a hidden panel too.
+ */
+export const useStore = Object.assign(useStoreView, { getState: live.getState, setState: live.setState, subscribe: live.subscribe, getInitialState: live.getInitialState });
 
 /** Changes how search results are previewed everywhere at once, and remembers it where storage allows. */
 export function setSerpView(change: Partial<SerpView>) {

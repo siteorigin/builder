@@ -51,6 +51,7 @@ import { shortcutLabel } from './lib/shortcut-keys';
 import { isAskAiKey } from './lib/ask-ai-key';
 import { isRemoteShell, leaveLive, LOCAL_PROJECT_COMMANDS, REMOTE_LEFT_TABS, REMOTE_MODALS, REMOTE_RIGHT_TABS, showsRemote } from './lib/remote-session';
 import { timedPanel } from './lib/perf-panels';
+import { Hideable } from './lib/hideable';
 
 /** Leave "editing everywhere" for the page it was entered from. However it is left (Done editing, Esc), focus
  *  lands on the page switcher, where the page now being edited is named. */
@@ -701,8 +702,28 @@ export function Editor() {
   const modeAnnouncement = useTransitionAnnouncement(defName, (prev, next) => (next ? `Editing ${next} everywhere. Layout and style changes apply wherever it is used.` : prev ? `Finished editing ${prev} everywhere` : null));
   const dockViews: Record<RightTab, { label: ReactNode; icon: ReactNode; extra?: ReactNode; panel: () => ReactNode }> = {
     chat: { label: aiBusy ? <span title={`AI: ${aiLabel}`}>AI</span> : 'AI', icon: <Sparkles />, extra: aiBusy ? <span className={`live${aiPhase === 'asking' ? ' asking' : ''}`} role="img" aria-label={aiLabel} title={`AI: ${aiLabel}`} /> : undefined, panel: () => timedPanel('chat', <Chat />) },
-    inspect: { label: 'Inspector', icon: <SlidersHorizontal />, panel: () => timedPanel('inspect', <Inspector />) },
-    styles: { label: 'Site styles', icon: <Palette />, panel: () => timedPanel('styles', <SiteStyles />) },
+    inspect: {
+      label: 'Inspector',
+      icon: <SlidersHorizontal />,
+      panel: () =>
+        timedPanel(
+          'inspect',
+          <Hideable hidden={!dockOpen || rightTab !== 'inspect'}>
+            <Inspector />
+          </Hideable>
+        )
+    },
+    styles: {
+      label: 'Site styles',
+      icon: <Palette />,
+      panel: () =>
+        timedPanel(
+          'styles',
+          <Hideable hidden={!dockOpen || rightTab !== 'styles'}>
+            <SiteStyles />
+          </Hideable>
+        )
+    },
     // The project's private brief (#518), apart from Site details' visitor-facing description.
     project: { label: 'Project', icon: <NotebookPen />, panel: () => timedPanel('project', <ProjectBrief />) }
   };
@@ -780,16 +801,22 @@ export function Editor() {
             <Palette />
           </button>
         </div>
-        {/* Panels stay mounted while hidden, so a search, expanded layers or scroll position survive switching. */}
+        {/* Panels stay mounted while hidden, so a search, expanded layers or scroll position survive switching, and
+            are held while hidden, so they do no work for what they cannot show (lib/hideable). */}
         <aside id="editor-sidebar" className={`side-panel${shown.left < 250 ? ' narrow' : ''}`} style={{ width: shown.left, display: leftTab ? undefined : 'none' }} aria-label="Sidebar">
           {leftTabs.map(({ id: t }) => (
             <div key={t} className="side-panel-view" hidden={leftTab !== t}>
-              {t === 'pages' && timedPanel('pages', <PagesPanel />)}
-              {t === 'posts' && timedPanel('posts', <PostsPanel />)}
-              {t === 'layers' && timedPanel('layers', <LayersPanel />)}
-              {t === 'insert' && timedPanel('insert', <InsertPanel />)}
-              {t === 'assets' && timedPanel('assets', <AssetsPanel narrow={shown.left < 240} />)}
-              {t === 'seo' && timedPanel('seo', <SeoPanel />)}
+              {timedPanel(
+                t,
+                <Hideable hidden={leftTab !== t}>
+                  {t === 'pages' && <PagesPanel />}
+                  {t === 'posts' && <PostsPanel />}
+                  {t === 'layers' && <LayersPanel />}
+                  {t === 'insert' && <InsertPanel />}
+                  {t === 'assets' && <AssetsPanel narrow={shown.left < 240} />}
+                  {t === 'seo' && <SeoPanel />}
+                </Hideable>
+              )}
             </div>
           ))}
         </aside>
