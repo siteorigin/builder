@@ -35,10 +35,10 @@ function blog(baseUrl = 'https://example.com'): ProjectState {
 const files = (s: ProjectState) => generateProject(publishedState(s));
 /** The structured data a generated file carries, parsed. */
 const graph = (source: string) => {
-  const m = /\{@html "(<script type=\\"application\/ld\+json\\">.*?<\/script>)"\}/.exec(source);
-  if (!m) return null;
-  const script = JSON.parse(`"${m[1]}"`) as string;
-  return JSON.parse(script.replace(/^<script[^>]*>/, '').replace(/<\/script>$/, '')) as { '@graph': Array<Record<string, unknown>> };
+  const scripts = [...source.matchAll(/\{@html ("(?:[^"\\]|\\.)*")\}/g)].map((m) => JSON.parse(m[1]) as string).filter((html) => html.startsWith('<script type="application/ld+json">'));
+  if (!scripts.length) return null;
+  expect(scripts).toHaveLength(1);
+  return JSON.parse(scripts[0].replace(/^<script type="application\/ld\+json">|<\/script>$/g, '')) as { '@graph': Array<Record<string, unknown>> };
 };
 
 describe('a collection’s archive pages when found or shared', () => {
@@ -63,8 +63,8 @@ describe('a collection’s archive pages when found or shared', () => {
   it('use the description the author gave the collection and each category', () => {
     const s = run(
       blog(),
-      { type: 'collection.update', collectionId: 'posts', description: 'Notes from the studio floor.' } as EditOperation,
-      { type: 'term.update', collectionId: 'posts', taxonomyId: 'categories', termId: 'news', description: 'What is new at the studio.' } as EditOperation
+      { type: 'collection.update', collectionId: 'posts', description: 'Notes from the studio floor.' },
+      { type: 'collection.update', collectionId: 'posts', categoryDescription: { termId: 'news', description: 'What is new at the studio.' } }
     );
     const out = files(s);
     expect(out.get(route('/blog/'))).toContain('<meta name="description" content={"Notes from the studio floor."} />');

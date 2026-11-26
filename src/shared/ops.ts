@@ -247,9 +247,17 @@ const COLLECTION_SETTINGS = {
     .describe('The pages the website has for it: one per entry (detail) and an index with category archives at its address (archive, which needs detail). Default both. Neither makes it data only: records other pages show, with no address of their own.'),
   route: z.string().max(1100).optional().describe('Address prefix every entry\'s address starts with, such as "/blog/" or "/お知らせ/". At most three levels deep. With an archive, the collection owns this address too. A data-only collection needs none.'),
   taxonomies: z
-    .record(z.string(), z.object({ label: z.string().min(1).max(60), terms: z.record(z.string(), z.object({ label: z.string().min(1).max(80) })).optional() }))
+    .record(
+      z.string(),
+      z.object({
+        label: z.string().min(1).max(60),
+        terms: z.record(z.string(), z.object({ label: z.string().min(1).max(80), description: limited(TEXT_LIMITS.pageDescription).optional() })).optional()
+      })
+    )
     .optional()
-    .describe('Every grouping, by stable ID ("categories", "tags"), each with its terms by stable ID. Replaces the whole set: a grouping or term left out is removed from every entry.'),
+    .describe(
+      'Every grouping, by stable ID ("categories", "tags"), each with its terms by stable ID. Replaces the whole set: a grouping or term left out is removed from every entry. A category\'s description is what its archive page tells search engines and link previews; a term given without one keeps the one it has.'
+    ),
   fields: z
     .record(z.string(), z.record(z.string(), z.unknown()))
     .optional()
@@ -259,7 +267,10 @@ const COLLECTION_SETTINGS = {
   archiveTemplate: z
     .union([z.object({ rootIds: z.array(z.string()), nodes: z.record(z.string(), z.unknown()) }), z.literal('start'), z.null()])
     .optional()
-    .describe('The layout of its archive pages, in place of the ready-made cards: a tree of sections and elements whose collection loop over { "$archive": true } shows the page\'s entries. "start" begins one (a list of linked titles and excerpts); null goes back to the ready-made cards.')
+    .describe('The layout of its archive pages, in place of the ready-made cards: a tree of sections and elements whose collection loop over { "$archive": true } shows the page\'s entries. "start" begins one (a list of linked titles and excerpts); null goes back to the ready-made cards.'),
+  description: limited(TEXT_LIMITS.pageDescription)
+    .optional()
+    .describe('What the collection\'s index tells search engines and link previews. "" removes it: the index then uses the site\'s description, else a sentence naming the collection.')
 };
 
 /**
@@ -959,6 +970,11 @@ export const OPERATION_SCHEMAS = {
     type: z.literal('collection.update'),
     collectionId: z.string(),
     ...COLLECTION_SETTINGS,
+    categoryDescription: z
+      .object({ termId: z.string().max(60), description: limited(TEXT_LIMITS.pageDescription) })
+      .strict()
+      .optional()
+      .describe('What one category\'s archive page tells search engines and link previews, by the category\'s term ID. "" removes it: the archive then uses a sentence naming the category.'),
     sourceId: z.null().optional().describe('null detaches it from the external source its entries are synced from, so they can be edited here. Attaching is done by a sync.')
   }),
   'collection.remove': z.object({ type: z.literal('collection.remove'), collectionId: z.string() }).describe('Delete a collection and every entry in it. Refused while anything outside it links to one of its entries.'),

@@ -10,6 +10,8 @@ import type { Collection, EntryDoc, ProjectState } from './types';
 import { archivePageSize, findEntry, hasArchivePages, hasCategoryArchives, isDraftEntry, isTermId, siteEntries } from './collections';
 import { hasTerm, publishedEntries } from './entry-feed';
 import { validateRoute } from './routes';
+import { siteLanguage } from './languages';
+import { visitorTextFor } from './visitor-text';
 
 /** One page of a collection's index or of one of its category archives. */
 export interface ArchivePage {
@@ -118,4 +120,36 @@ export function archivePages(state: ProjectState): ArchivePage[] {
 /** The address of a category's archive, while it has one. */
 export function categoryArchiveRoute(state: ProjectState, collectionId: string, term: string): string | undefined {
   return archivePages(state).find((p) => p.collectionId === collectionId && p.category === term && p.page === 1)?.route;
+}
+
+/** Wording with each `{name}` it has a value for filled in, in one pass, so a value is written as it is ("{site}", "$&"). */
+export const fillWords = (text: string, values: Record<string, string | number>): string =>
+  text.replace(/\{(\w+)\}/g, (m, k: string) => (Object.hasOwn(values, k) ? String(values[k]) : m));
+
+/** Text the author set, when there is any beyond spaces. */
+const ownText = (v: unknown) => (typeof v === 'string' && v.trim() ? v.trim() : '');
+
+/**
+ * What one archive page is called and says of itself, in the site's language: its heading (the collection's name, or
+ * the category's), its name in a trail (the heading, then its page number after the first), its browser title (that
+ * name and the site's), and its description for search engines and link previews. An index's description is the
+ * collection's own, else the site's, else a sentence naming the collection; a category's is the category's own, else a
+ * sentence naming the category. Every page of a series says the same.
+ */
+export function archiveWords(state: ProjectState, archive: Pick<ArchivePage, 'collectionId' | 'category' | 'page' | 'pages'>): { heading: string; name: string; title: string; description: string } {
+  const site = state.site;
+  const words = visitorTextFor(site, siteLanguage(site));
+  const collection = state.collections[archive.collectionId];
+  const settings = collection?.settings;
+  const collectionName = ownText(settings?.name) || archive.collectionId;
+  const category = archive.category;
+  const term = category && collection ? categoryTerms(collection).find((t) => t.id === category) : undefined;
+  const heading = category ? (term?.label ?? category) : collectionName;
+  const name = `${heading}${archive.page > 1 ? ` – ${fillWords(words.archivePageOf, { page: archive.page, count: archive.pages })}` : ''}`;
+  const siteName = typeof site.name === 'string' ? site.name : '';
+  const fills = { collection: collectionName, site: siteName, ...(category ? { category: heading } : {}) };
+  const description = category
+    ? (term ? ownText(settings!.taxonomies.categories.terms[term.id]?.description) : '') || fillWords(words.archiveCategoryDescription, fills)
+    : ownText(settings?.description) || ownText(site.description) || fillWords(words.archiveDescription, fills);
+  return { heading, name, title: `${name} · ${siteName}`, description };
 }

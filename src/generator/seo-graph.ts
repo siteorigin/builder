@@ -14,12 +14,13 @@
  * The graph is plain JSON with a fixed order: the same project always gives the same bytes.
  */
 import type { EntityKind, ProjectState } from '@shared/types';
-import type { EffectiveSeo, SeoSubject } from '@shared/seo';
+import type { ArchiveSeo, EffectiveSeo, SeoSubject } from '@shared/seo';
 import { seoText } from '@shared/seo';
 import { publicUrl } from '@shared/public-url';
 import { routeUrl } from '@shared/routes';
 import { isLanguageCode, sameLanguage, siteLanguage } from '@shared/languages';
 import { sitePublisher } from '@shared/site-identity';
+import { archiveWords } from '@shared/archives';
 import { siteArchives } from './archive';
 import type { SeoResolver } from './seo-metadata';
 
@@ -62,11 +63,14 @@ export interface GraphContribution {
   extend?: Array<{ id: string; set?: JsonObject; add?: JsonObject }>;
 }
 
+/** What a graph is built for: a page or an entry the resolver knows, or an archive page the generator writes. */
+export type GraphDocument = EffectiveSeo | ArchiveSeo;
+
 export interface GraphContext {
   state: ProjectState;
   resolver: SeoResolver;
-  /** The document the graph is for. */
-  meta: EffectiveSeo;
+  /** The document the graph is for: a page, an entry, or a page of a collection's index or category archive. */
+  meta: GraphDocument;
   ids: GraphIds;
 }
 
@@ -119,7 +123,7 @@ export function graphIds(root: string, url: string, kind: EntityKind = 'Organiza
 const archivesOf = new WeakMap<SeoResolver, ReturnType<typeof siteArchives>>();
 
 /** The trail from the Home page to a document: Home, the published pages its address is inside, its collection's index. */
-function trail(state: ProjectState, resolver: SeoResolver, meta: EffectiveSeo, root: string): Array<{ name: string; url: string }> {
+function trail(state: ProjectState, resolver: SeoResolver, meta: GraphDocument, root: string): Array<{ name: string; url: string }> {
   const site = state.site;
   const pageName = (id: string) => {
     const page = Object.hasOwn(state.pages, id) ? state.pages[id] : undefined;
@@ -136,17 +140,31 @@ function trail(state: ProjectState, resolver: SeoResolver, meta: EffectiveSeo, r
     const r = doc.route.toLowerCase();
     if (route.startsWith(r) && r !== route) steps.push({ route: doc.route, name: pageName(doc.subject.pageId) });
   }
+  const archives = () => {
+    if (!archivesOf.has(resolver)) archivesOf.set(resolver, siteArchives(state));
+    return archivesOf.get(resolver)!;
+  };
   if (meta.subject.kind === 'entry') {
     const { collectionId } = meta.subject;
-    if (!archivesOf.has(resolver)) archivesOf.set(resolver, siteArchives(state));
-    const index = archivesOf.get(resolver)!.find((a) => a.collectionId === collectionId && a.category === undefined && a.page === 1);
+    const index = archives().find((a) => a.collectionId === collectionId && a.category === undefined && a.page === 1);
     const name = seoText(state.collections[collectionId]?.settings?.name);
     if (index && name) steps.push({ route: index.route, name });
+  }
+  // An archive page is inside its collection's index, and a later page of a category's archive inside its first page.
+  if (meta.subject.kind === 'archive') {
+    const { collectionId, category, page } = meta.subject;
+    const above = archives().filter((a) => a.collectionId === collectionId && a.page === 1 && (a.category === undefined || (a.category === category && page > 1)));
+    for (const a of above) if (a.route !== meta.route) steps.push({ route: a.route, name: archiveWords(state, a).name });
   }
   steps.sort((a, b) => a.route.length - b.route.length);
   const base = root.replace(/\/$/, '');
   for (const s of steps) out.push({ name: s.name, url: base + routeUrl(s.route) });
-  const name = meta.subject.kind === 'page' ? pageName(meta.subject.pageId) : seoText(state.collections[meta.subject.collectionId]?.entries[meta.subject.entryId]?.title);
+  const name =
+    meta.subject.kind === 'page'
+      ? pageName(meta.subject.pageId)
+      : meta.subject.kind === 'archive'
+        ? archiveWords(state, meta.subject).name
+        : seoText(state.collections[meta.subject.collectionId]?.entries[meta.subject.entryId]?.title);
   out.push({ name: name || meta.title, url: meta.url! });
   return out;
 }
@@ -192,7 +210,7 @@ function publisherNode(state: ProjectState, root: string, ids: GraphIds): GraphN
 }
 
 /** The graph's own four entities, in their fixed order. */
-function coreNodes(state: ProjectState, resolver: SeoResolver, meta: EffectiveSeo, root: string, ids: GraphIds): GraphNode[] {
+function coreNodes(state: ProjectState, resolver: SeoResolver, meta: GraphDocument, root: string, ids: GraphIds): GraphNode[] {
   const site = state.site;
   const name = seoText(site.name);
   const language = siteLanguage(site);
@@ -273,7 +291,15 @@ const includes = (value: JsonValue): boolean =>
  * that no node has; and a node linked to nothing else in the graph.
  */
 export function buildSeoGraph(state: ProjectState, resolver: SeoResolver, subject: SeoSubject, contributors: readonly GraphContributor[] = []): SeoGraph | null {
-  const meta = resolver.resolve(subject);
+  return graphOf(state, resolver, resolver.resolve(subject), contributors);
+}
+
+/** The connected graph of one page of a collection's index or category archive, as buildSeoGraph builds a page's. */
+export function buildArchiveGraph(state: ProjectState, resolver: SeoResolver, meta: ArchiveSeo, contributors: readonly GraphContributor[] = []): SeoGraph | null {
+  return graphOf(state, resolver, meta, contributors);
+}
+
+function graphOf(state: ProjectState, resolver: SeoResolver, meta: GraphDocument | null, contributors: readonly GraphContributor[]): SeoGraph | null {
   const base = publicUrl(state.site);
   if (!meta?.visibility.jsonLd || !meta.url || !base) return null;
   const root = `${base}/`;

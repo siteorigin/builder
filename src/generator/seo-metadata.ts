@@ -10,7 +10,7 @@
  * draft that holds an address never hides the published entry that gets it.
  */
 import type { AssetRecord, Collection, EntryDoc, EntrySeo, PageDoc, PageSeo, ProjectState } from '@shared/types';
-import { storedCanonical, type EffectiveSeo, type SeoImageSource, type SeoSubject, type SeoVisibility } from '@shared/seo';
+import { storedCanonical, type ArchiveSeo, type EffectiveSeo, type SeoImageSource, type SeoSubject, type SeoVisibility } from '@shared/seo';
 import { pageSharing } from '@shared/sharing';
 import { libraryAlt } from '@shared/asset-alt';
 import { publicUrl } from '@shared/public-url';
@@ -19,6 +19,7 @@ import { pageLanguage, siteLanguage } from '@shared/languages';
 import { isArticleDate, pageArticle } from '@shared/articles';
 import { entryRoute, isDraftEntry, siteEntries } from '@shared/collections';
 import { entryTermLabels } from '@shared/entry-fields';
+import { archiveWords, type ArchivePage } from '@shared/archives';
 import { isDraftPage, publishedState } from './index';
 
 /** One document's metadata, without where it is published: what its own page's `<head>` says. */
@@ -160,6 +161,46 @@ export function entryMetadata(state: ProjectState, collectionId: string, entryId
     draft: isDraftEntry(entry),
     noindex: !!seo.noindex,
     searchHidden: !!seo.searchHidden
+  };
+}
+
+/**
+ * What one page of a collection's index or category archive says of itself (see shared/archives.ts for its words): its
+ * own address as its canonical one, the site's sharing image, and the same place on the website as a page: listed by
+ * search engines, and given structured data once the site has a public URL. Site search and the files for AI agents
+ * list documents with text of their own, and an archive page has none.
+ */
+export function archiveMetadata(state: ProjectState, archive: ArchivePage): ArchiveSeo {
+  const site = state.site;
+  const base = publicUrl(site) ?? null;
+  const { title, description } = archiveWords(state, archive);
+  const siteImage = text(site.socialImage) || null;
+  const found = siteImage ? own(state.assets?.assets, siteImage) : undefined;
+  const image = found?.kind === 'image' ? found : undefined;
+  const url = urlOf(base, archive.route);
+  return {
+    subject: { kind: 'archive', collectionId: archive.collectionId, ...(archive.category ? { category: archive.category } : {}), page: archive.page, pages: archive.pages, route: archive.route },
+    route: archive.route,
+    url,
+    canonical: url,
+    title,
+    socialTitle: title,
+    description,
+    language: siteLanguage(site),
+    imageId: siteImage,
+    image,
+    imageSource: siteImage ? 'site' : 'none',
+    imageUrl: base && image ? fileUrl(base, image) : null,
+    imageAlt: imageAlt(image),
+    published: null,
+    modified: null,
+    author: '',
+    section: '',
+    tags: [],
+    draft: false,
+    noindex: false,
+    searchHidden: false,
+    visibility: { website: true, indexable: true, sitemap: !!base, siteSearch: false, jsonLd: !!base, llms: false, news: false }
   };
 }
 
