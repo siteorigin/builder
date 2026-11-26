@@ -3,6 +3,7 @@ import { markdownMirrorRoute } from '@shared/llms';
 import { constants as fsConstants, existsSync, mkdtempSync, promises as fs, statSync } from 'node:fs';
 import { homedir, tmpdir } from 'node:os';
 import { basename, dirname, extname, isAbsolute, join, relative, sep } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { randomUUID } from 'node:crypto';
 import type { AiTurnReview, ComponentExportResult, ConflictChoice, ComponentImportResult, SavedComponent, SavedInsertPlace, SavedInsertResult, SaveToLibraryResult, PostImportKind, PostImportResult, PostImportReviewResult, CreateProjectOptions, DuplicateProjectOptions, DuplicateProjectResult, ExportFormat, ExportNote, ExportResult, FileText, FontFileData, ImportChoices, ImportReview, ImportReviewRow, LocalWorkspaceState, ProjectSnapshot, ProgressEvent, RecentExport, RestoreVersionResult, RuntimeState, StorageInfo, VersionReview, WebCopyPlan, WebsiteTools } from '@shared/api';
 import { validateOperation, type ApplyResult, type EditBatch, type EditOperation } from '@shared/ops';
@@ -134,6 +135,15 @@ function sampleCache(): SampleCache | null {
 }
 
 /** Licence notice for the Business starter's sample images. */
+/**
+ * The script an exported project with external sources syncs them with (#680), built beside the main process (see
+ * scripts/sync-cli.ts); null when this build has none, and the export then goes without it.
+ */
+async function syncCliText(state: ProjectState): Promise<string | null> {
+  if (!Object.keys(state.sources ?? {}).length) return null;
+  return fs.readFile(join(dirname(fileURLToPath(import.meta.url)), 'sync-sources.mjs'), 'utf8').catch(() => null);
+}
+
 function starterNotice(): string {
   return join(resourcesDir(), 'resources', 'starter-assets', 'NOTICE.md');
 }
@@ -3277,7 +3287,7 @@ export class Controller {
       await timed('export.leaveOutDrafts', () => leaveOutDrafts(dest, s.state))();
       if (opts.forBuild) {
         if (!(await isTrusted(s.dir, await configHash(dest)))) return stop("This project's build settings changed outside SiteOrigin Builder. Reopen the project to review them.");
-      } else await finishExportedSource(dest, s.state, starterNotice());
+      } else await finishExportedSource(dest, s.state, starterNotice(), await syncCliText(s.state));
       if (inventoryChanged(before, await timed('export.fingerprint', () => projectInventory(s.dir, { cache, settleMs: s.settleMs }), () => ({ pass: 'after' }))())) return stop('The project changed on disk while it was being exported. Export again.');
       if (!(await s.stillOwner())) return stop(s.readOnly?.reason ?? READ_ONLY);
       return { ok: true as const, revision: s.revision, state: structuredClone(s.state) };

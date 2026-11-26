@@ -83,13 +83,13 @@ const slugged = (t: string) => folded(t).replace(/[^\p{L}\p{N}]+/gu, '-');
  * Whether `text` holds a secret, as written or as the slug or file name the engine or the library would make of it:
  * a title "Éxample Token" becomes the address example-token.
  */
-function holdsSecret(text: string, values: readonly string[]): boolean {
+export function holdsSecret(text: string, values: readonly string[]): boolean {
   const long = values.filter((v) => v.length >= MIN_SECRET_LENGTH);
   return holdsSecretValue(text, long) || holdsSecretValue(folded(text), long.map(folded)) || holdsSecretValue(slugged(text), long.map(slugged).filter((v) => v.replace(/-/g, '').length >= MIN_SECRET_LENGTH));
 }
 
 /** What to call a picture in the library: the name the source gives it, or its file's name. */
-function pictureName(given: string | undefined, url: string): string {
+export function pictureName(given: string | undefined, url: string): string {
   let file = '';
   try {
     file = decodeURIComponent(new URL(url).pathname.split('/').pop() ?? '');
@@ -162,7 +162,7 @@ export function syncPreflight(state: ProjectState, source: SourceDoc, records: r
 }
 
 /** Why a sync wrote nothing when what a source sent holds one of the user's secrets. */
-const SECRET_IN_RECORDS = 'what it sent holds one of your secrets, which is never written into the project';
+export const SECRET_IN_RECORDS = 'what it sent holds one of your secrets, which is never written into the project';
 
 /** Why a source whose settings name a converter cannot be read without it, or null. */
 function converterMissing(source: SourceDoc): string | null {
