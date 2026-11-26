@@ -13,7 +13,7 @@ import type { LinkNode, ProjectState } from '@shared/types';
 import { createStarterState } from '@catalogue/starters';
 import { applyOperations } from '@engine/apply';
 import { validateOperation } from '@shared/ops';
-import { NOT_FOUND_DIR, NOT_FOUND_PAGE_JS, RUNTIME_DIR, SERVER_HOOK_FILE, generateLayout, generateNotFound, generateProject, generateServerHook } from '@generator/index';
+import { ERROR_PAGE_FILE, NOT_FOUND_COMPONENT, NOT_FOUND_DIR, NOT_FOUND_PAGE_JS, RUNTIME_DIR, SERVER_HOOK_FILE, generateLayout, generateNotFound, generateProject, generateServerHook } from '@generator/index';
 import { notFoundSectionRoutes, pageIds } from '@generator/checks';
 import { GenerationCache } from '@generator/cache';
 import { NOT_FOUND_JS } from '@generator/runtime-files';
@@ -85,6 +85,34 @@ async function renderNotFound(s: ProjectState): Promise<{ head: string; body: st
   const code = compile(generateNotFound(s), { filename: `${NOT_FOUND_DIR}/+page.svelte`, generate: 'server', runes: true }).js.code;
   writeFileSync(out, code.replace(/(["'])\$app\/paths\1/g, JSON.stringify(paths)));
   const Page = (await import(/* @vite-ignore */ out)).default as Component<Record<string, unknown>>;
+  const r = render(Page, { props: {} });
+  return { head: r.head, body: r.body.replace(/<!--[\s\S]*?-->/g, '') };
+}
+
+/**
+ * Server-render one of the generated project's routes that show the not-found page (the 404.html route or the
+ * site's error page), with the component they share, as SvelteKit renders it for an error with `status`.
+ */
+async function renderRoute(s: ProjectState, route: string, status = 404, message = 'Not Found'): Promise<{ head: string; body: string }> {
+  const dir = scratch('not-found-route');
+  const files = generateProject(s);
+  writeFileSync(join(dir, 'app-paths.js'), 'export const resolve = (p) => "." + p; export const asset = (p) => "./" + p;\n');
+  writeFileSync(join(dir, 'app-state.js'), `export const page = ${JSON.stringify({ status, error: { message } })};\n`);
+  const build = (path: string) => {
+    const out = join(dir, path + '.js');
+    mkdirSync(dirname(out), { recursive: true });
+    const code = compile(files.get(path)!, { filename: path, generate: 'server', runes: true }).js.code;
+    writeFileSync(
+      out,
+      code
+        .replace(/(["'])\$app\/paths\1/g, JSON.stringify(join(dir, 'app-paths.js')))
+        .replace(/(["'])\$app\/state\1/g, JSON.stringify(join(dir, 'app-state.js')))
+        .replace(/(["'])(\.[^"']*\.svelte)\1/g, (_, q: string, rel: string) => JSON.stringify(join(dirname(join(dir, path)), rel) + '.js'))
+    );
+    return out;
+  };
+  build(NOT_FOUND_COMPONENT);
+  const Page = (await import(/* @vite-ignore */ build(route))).default as Component<Record<string, unknown>>;
   const r = render(Page, { props: {} });
   return { head: r.head, body: r.body.replace(/<!--[\s\S]*?-->/g, '') };
 }
@@ -163,13 +191,18 @@ describe('generated not-found page', () => {
     for (const instrument of [false, true]) {
       const files = generateProject(fresh(), { instrument });
       expect(NOT_FOUND_DIR).toBe('src/routes/404.html');
-      expect(files.get(`${NOT_FOUND_DIR}/+page.svelte`)).toBe(generateNotFound(fresh()));
+      // One component, shown by the 404.html route and the site's error page alike.
+      expect(NOT_FOUND_COMPONENT).toBe(`${RUNTIME_DIR}/NotFound.svelte`);
+      expect(files.get(NOT_FOUND_COMPONENT)).toBe(generateNotFound(fresh()));
+      expect(files.get(`${NOT_FOUND_DIR}/+page.svelte`)).toContain("import NotFound from '../../lib/siteorigin/runtime/NotFound.svelte';");
+      expect(ERROR_PAGE_FILE).toBe('src/routes/+error.svelte');
+      expect(files.get(ERROR_PAGE_FILE)).toContain("import NotFound from '../lib/siteorigin/runtime/NotFound.svelte';");
       expect(files.get(`${NOT_FOUND_DIR}/+page.js`)).toBe(NOT_FOUND_PAGE_JS);
       expect(NOT_FOUND_PAGE_JS).toMatch(/^export const trailingSlash = 'never';$/m);
       expect(files.get(SERVER_HOOK_FILE)).toBe(generateServerHook(fresh()));
       expect(files.get(`${RUNTIME_DIR}/not-found.js`)).toBe(NOT_FOUND_JS);
       // No editor instrumentation, in the export or in the editor's preview.
-      for (const f of [`${NOT_FOUND_DIR}/+page.svelte`, 'src/hooks.server.js', `${RUNTIME_DIR}/not-found.js`]) expect(files.get(f)).not.toMatch(/data-so-|siteorigin-bridge|builderTest/);
+      for (const f of [NOT_FOUND_COMPONENT, `${NOT_FOUND_DIR}/+page.svelte`, ERROR_PAGE_FILE, 'src/hooks.server.js', `${RUNTIME_DIR}/not-found.js`]) expect(files.get(f)).not.toMatch(/data-so-|siteorigin-bridge|builderTest/);
     }
     const hook = generateServerHook(fresh());
     expect([...hook.matchAll(/^import .* from '([^']+)';$/gm)].map((m) => m[1])).toEqual(['$app/env', './lib/siteorigin/runtime/not-found.js']);
@@ -295,6 +328,39 @@ describe('generated not-found page', () => {
     expect(plain.body).toContain(`>${NOT_FOUND_DEFAULTS.linkLabel}</a>`);
     expect(plain.body.match(/<h1\b/g)).toHaveLength(1);
     expect(plain.body.match(/<a\b/g)).toHaveLength(1);
+  });
+});
+
+describe("the site's error page", () => {
+  it('#882: shows the site\'s own not-found page at a missing address, as the 404.html route does', async () => {
+    const s = fresh();
+    s.site.notFoundHeading = 'Nothing at this address';
+    const own = await renderNotFound(s);
+    for (const route of [ERROR_PAGE_FILE, `${NOT_FOUND_DIR}/+page.svelte`]) {
+      const { head, body } = await renderRoute(s, route);
+      expect(body, route).toContain('>Nothing at this address</h1>');
+      // The same page, whichever shows it (the scoped styles' class follows the file compiled).
+      const scoped = (html: string) => html.replace(/\bsvelte-[a-z0-9]+\b/g, 'svelte-scoped');
+      expect(scoped(body), route).toBe(scoped(own.body));
+      const bare = (html: string) => html.replace(/<!--[\s\S]*?-->/g, '');
+      expect(bare(head), route).toBe(bare(own.head));
+      expect(body, route).not.toContain('Not Found');
+    }
+  });
+
+  it('says what went wrong for any other error, and asks not to be indexed', async () => {
+    const { head, body } = await renderRoute(fresh(), ERROR_PAGE_FILE, 500, 'Internal Error');
+    expect(head).toContain('<title>Error 500</title>');
+    expect(head).toContain('<meta name="robots" content="noindex"/>');
+    expect(body).toMatch(/<h1[^>]*>Error 500<\/h1>/);
+    expect(body).toContain('>Internal Error</p>');
+    expect(body).not.toContain('so-not-found');
+    // Only a missing address is the not-found page: another client error says what it is.
+    const gone = await renderRoute(fresh(), ERROR_PAGE_FILE, 410, 'Gone');
+    expect(gone.body).toMatch(/<h1[^>]*>Error 410<\/h1>/);
+    expect(gone.body).not.toContain('so-not-found');
+    // An error with no message still says something.
+    expect((await renderRoute(fresh(), ERROR_PAGE_FILE, 500, '')).body).toContain('>Something went wrong.</p>');
   });
 });
 
@@ -516,7 +582,7 @@ describe('a project with a server hook of its own', () => {
       expect(existsSync(generated)).toBe(false);
       expect(readFileSync(join(dir, 'src/hooks.server.ts'), 'utf8')).toContain('resolve(event)');
       expect(s.conflicts).toEqual([]);
-      expect(readFileSync(join(dir, `${NOT_FOUND_DIR}/+page.svelte`), 'utf8')).toContain('"Lost?"');
+      expect(readFileSync(join(dir, NOT_FOUND_COMPONENT), 'utf8')).toContain('"Lost?"');
       rmSync(join(dir, 'src/hooks.server.ts'));
       await s.apply({ operations: [{ type: 'site.update', notFoundHeading: 'Lost again?' }] }, { label: 'Not-found heading' });
       expect(readFileSync(generated, 'utf8')).toBe(generateServerHook(s.state));

@@ -38,7 +38,10 @@ vi.mock('../../src/main/runtime/manager', async (original) => ({
     for (const f of filesIn(join(dir, 'src/routes')).filter((f) => f.endsWith('+page.svelte'))) {
       const html = dirname(f).endsWith('.html') ? join(out, dirname(f)) : join(out, dirname(f), 'index.html');
       mkdirSync(dirname(html), { recursive: true });
-      writeFileSync(html, readFileSync(join(dir, 'src/routes', f), 'utf8'));
+      // The not-found page's own source follows the route that shows it.
+      const source = readFileSync(join(dir, 'src/routes', f), 'utf8');
+      const shown = [...source.matchAll(/^\s*import NotFound from '(\.[^']+\/NotFound\.svelte)';$/gm)].map((m) => readFileSync(join(dir, 'src/routes', dirname(f), m[1]), 'utf8'));
+      writeFileSync(html, [source, ...shown].join('\n'));
     }
     return { ok: true, logs: [] };
   }
