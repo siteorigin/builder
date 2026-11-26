@@ -197,7 +197,7 @@ await shot('mixed', { query: 'contact', expects: ['Search all site content'], ac
 
 // Commands with shortcuts.
 await openMenu('project');
-await shot('shortcuts', { query: 'project', expects: ['New project', 'Close project'], active: 'Project health' });
+await shot('shortcuts', { query: 'project', expects: ['New project', 'Close project'], active: 'Project brief' });
 
 // A command that cannot run now: listed with its reason, highlighted without the blue that means Enter runs it.
 await openMenu('redo');

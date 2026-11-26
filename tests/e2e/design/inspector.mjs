@@ -317,7 +317,7 @@ await shot('page-article-end', '.insp-goto', LIGHT);
 
 // The narrowest the dock goes.
 await win.locator('#dock-panel-inspect .panel-body.insp').evaluate((el) => el.scrollTo(0, 0));
-const edge = await win.locator('.dock .resizer').boundingBox();
+const edge = await win.locator('.seam.right .resizer').boundingBox();
 await win.mouse.move(edge.x + edge.width / 2, 600);
 await win.mouse.down();
 await win.mouse.move(edge.x + 120, 600, { steps: 6 });

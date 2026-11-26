@@ -257,7 +257,7 @@ await pause(150);
 await shot('unpacking', '.modal', BOTH, 'Unpacking');
 await win.locator('.modal').getByRole('button', { name: 'Cancel' }).click();
 await pause(150);
-await shot('unpacking-cancelling', '.modal', LIGHT, 'Cancelling');
+await shot('unpacking-cancelling', '.modal', LIGHT, 'Canceling');
 await send('projects:unpacking', null);
 
 await app.close();

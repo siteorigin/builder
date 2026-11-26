@@ -272,7 +272,7 @@ await pause(200);
 await shot('after-insert-next', '.insert-where.added .insert-undo', ['light'], { keepPointer: true });
 
 // ---- The narrowest sidebar the divider allows (last: the width is not put back) ----
-const divider = win.locator('.side-panel .resizer');
+const divider = win.locator('.seam.left .resizer');
 const sideWidth = async () => (await win.locator('.side-panel').boundingBox())?.width ?? 0;
 await divider.focus();
 for (let presses = 0; presses < 24; presses++) {

@@ -172,7 +172,7 @@ await shot('unpacking', '.modal .trust-path');
 // A press on the backdrop must leave the work running.
 await win.mouse.click(8, 8);
 await pause(350);
-behaviour.backdropCancelsUnpacking = (await unpacking.count()) === 0 || (await unpacking.getByRole('button', { name: /Cancelling/ }).count()) > 0;
+behaviour.backdropCancelsUnpacking = (await unpacking.count()) === 0 || (await unpacking.getByRole('button', { name: /Canceling/ }).count()) > 0;
 await sendUnpacking(null);
 await unpacking.waitFor({ state: 'detached' });
 
@@ -194,7 +194,8 @@ await win.locator('.menu').waitFor({ state: 'detached' });
 await pageRow('Contact').click({ button: 'right' });
 await win.getByRole('menuitem', { name: /Delete page/ }).click();
 await win.getByRole('dialog', { name: /Delete/ }).waitFor();
-await shot('confirm-danger', '.modal .btn-danger-fill');
+// A page delete can be undone, so its button is the outlined danger, not the filled one kept for what can't.
+await shot('confirm-danger', '.modal .btn-danger');
 await win.keyboard.press('Escape');
 await win.locator('.modal').waitFor({ state: 'detached' });
 
