@@ -17,9 +17,15 @@ concurrency:
 
 jobs:
   unit:
-    name: Unit tests
+    # The suite takes about 18 minutes on one runner, long enough for its image and browser tests to time out under
+    # the load, so it is split across four runners by file.
+    name: Unit tests (${{ matrix.shard }}/4)
     runs-on: ubuntu-latest
-    timeout-minutes: 45
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [1, 2, 3, 4]
     steps:
       - uses: actions/checkout@v6
         with:
@@ -35,4 +41,4 @@ jobs:
       # stabilize pass runs the WebKit cases.
       - name: Install Chromium for the browser tests
         run: npx playwright install --with-deps chromium
-      - run: npm test
+      - run: npx vitest run --shard=${{ matrix.shard }}/4

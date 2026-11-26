@@ -185,7 +185,7 @@ describe('reviewing an import before anything is written', () => {
     expect(palette[25]).toBe(3);
     expect(palette.includes(Buffer.from('tRNS'))).toBe(true);
     expect((await reviewOf(sourceFile('palette.png', palette))).copy?.format).toBe('PNG');
-  }, 30_000);
+  }, 60_000);
 
   it('works out the size of a copy as the resizer does, never enlarging', async () => {
     expect(WEB_EDGE).toBe(WORKER_WEB_EDGE);
@@ -257,7 +257,7 @@ describe('a web-sized copy of a large photo', () => {
     expect(readFileSync(path).equals(original)).toBe(true);
     // Without the choice the original is stored, as before.
     expect((await importAsset(temp('project'), path, [])).record).toMatchObject({ width: 4000, hash: sha(original) });
-  }, 30_000);
+  }, 60_000);
 
   it('carries a PNG’s author and copyright text onto its JPEG copy', async () => {
     const png = await noisy(3000, 2000, 'png');
@@ -288,7 +288,7 @@ describe('a web-sized copy of a large photo', () => {
     const merged = cleanPhoto(readFileSync(join(mixedProject, mixed.record.file)))?.credits.tiff?.toString('latin1');
     expect(merged).toContain('Bo Lens');
     expect(merged).toContain('Lens & Co');
-  }, 30_000);
+  }, 60_000);
 
   it('keeps the original, saying so, when a copy would be no smaller', async () => {
     const tiny = await sharp(await noisy(1000, 800, 'jpeg')).jpeg({ quality: 20 }).toBuffer();
@@ -359,7 +359,7 @@ describe('importing a reviewed batch', () => {
     // One step adds them all, and one Undo takes them all away.
     await c.session!.undo();
     expect(r.assetIds.some((id) => id in c.session!.state.assets.assets)).toBe(false);
-  }, 30_000);
+  }, 60_000);
 
   it('refuses choices made in another opening of the project, and opens no chooser for an empty list', async () => {
     const { c } = await openProject();
@@ -368,7 +368,7 @@ describe('importing a reviewed batch', () => {
     expect(await c.importAssets([scan], 'image', { opening: 'elsewhere#1', files: [] })).toMatchObject({ ok: false, message: 'The project was closed before the files could be added.' });
     expect(await c.importAssets([], 'image', { opening: c.openingKey!, files: [] })).toEqual({ ok: true, assetIds: [] });
     expect(Object.keys(c.session!.state.assets.assets)).toHaveLength(before);
-  }, 30_000);
+  }, 60_000);
 
   it('gives every image one import adds the same time, keeps the order the files came in, and leaves an image already here as it was', async () => {
     const { c } = await openProject();
@@ -408,7 +408,7 @@ describe('importing a reviewed batch', () => {
     expect(added.some((id) => id in c.session!.state.assets.assets)).toBe(false);
     await c.session!.redo();
     expect(added.map((id) => c.session!.state.assets.assets[id])).toEqual(records);
-  }, 30_000);
+  }, 60_000);
 
   it('adds the same photo dropped twice at once as one asset', async () => {
     const { c } = await openProject();
@@ -416,7 +416,7 @@ describe('importing a reviewed batch', () => {
     const [a, b] = await Promise.all([c.importAssets([sourceFile('one.jpg', photo)]), c.importAssets([sourceFile('two.jpg', photo)])]);
     expect(a.assetIds).toHaveLength(1);
     expect(b.assetIds).toEqual(a.assetIds);
-  }, 30_000);
+  }, 60_000);
 });
 
 describe('making a web-sized copy of a large library image', () => {
@@ -446,7 +446,7 @@ describe('making a web-sized copy of a large library image', () => {
     await c.session!.undo();
     expect(c.session!.state.assets.assets[copy.id]).toBeUndefined();
     expect(assetUsages(c.session!.state)[bigId]).toBe(used);
-  }, 30_000);
+  }, 60_000);
 
   it('puts back the files of a copy already in Assets before using it', async () => {
     const { c, dir } = await openProject();
@@ -459,7 +459,7 @@ describe('making a web-sized copy of a large library image', () => {
     expect(again).toMatchObject({ ok: true, assetId: copy.id });
     expect(sha(readFileSync(join(dir, copy.file)))).toBe(copy.hash);
     expect((await sharp(readFileSync(join(dir, copy.variants![0].file))).metadata()).width).toBe(copy.variants![0].width);
-  }, 30_000);
+  }, 60_000);
 
   it('keeps every use’s alt text when it uses a copy already in Assets, whatever that copy suggests', async () => {
     const { c } = await openProject();
@@ -487,7 +487,7 @@ describe('making a web-sized copy of a large library image', () => {
     const r = await c.makeWebCopy(bigId, { replace: true, opening: c.openingKey! });
     expect(r).toMatchObject({ ok: true, assetId: first.assetId });
     expect(altsOf(first.assetId!)).toEqual(before);
-  }, 30_000);
+  }, 60_000);
 
   it('offers nothing for a picture it cannot copy, and leaves an image alone when a copy would be no smaller', async () => {
     const { c } = await openProject();
@@ -497,5 +497,5 @@ describe('making a web-sized copy of a large library image', () => {
     const before = c.session!.revision;
     expect(await c.makeWebCopy(tight.assetIds[0], { replace: false, opening: c.openingKey! })).toEqual({ ok: false, message: 'A web-sized copy of tight would be no smaller, so it was left as it is.' });
     expect(c.session!.revision).toBe(before);
-  }, 30_000);
+  }, 60_000);
 });

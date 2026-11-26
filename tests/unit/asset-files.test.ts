@@ -240,7 +240,7 @@ describe('importing a picture no browser can show', () => {
     expect(c.session!.state.assets.assets[r.assetIds[0]]).toMatchObject({ name: 'good' });
     expect(r.message).toMatch(/empty\.jpg was not imported because the file is empty\..*cut\.png was not imported because it is incomplete/);
     expect(existsSync(join(dir, c.session!.state.assets.assets[r.assetIds[0]].file))).toBe(true);
-  }, 30_000);
+  }, 60_000);
 });
 
 /** A project folder holding one imported photo big enough for smaller copies. */
@@ -586,7 +586,7 @@ describe('a project whose picture was moved out of its folder', () => {
     expect(r2).toEqual({ ok: true, message: 'Reading nook is back in the project folder.' });
     expect(s.revision).toBe(revision);
     expect(c.snapshot()!.missingAssets).toEqual([]);
-  }, 30_000);
+  }, 60_000);
 
   it('lets only one of two Locates for the same image change it', async () => {
     const { c, dir } = await openProject();
@@ -601,7 +601,7 @@ describe('a project whose picture was moved out of its folder', () => {
     expect(lost.message).toMatch(/changed while|was left as it is/);
     const won = a.ok ? first : second;
     expect(s.state.assets.assets.a_reading.hash).toBe(sha(readFileSync(won)));
-  }, 30_000);
+  }, 60_000);
 
   it('makes missing copies again, and refuses to work on a project open read-only', async () => {
     const { c, dir } = await openProject();
@@ -614,7 +614,7 @@ describe('a project whose picture was moved out of its folder', () => {
     for (const v of hero.variants!) expect(existsSync(join(dir, v.file))).toBe(true);
     expect(c.snapshot()!.missingAssets).toEqual([]);
     expect(await c.locateAsset('a_nope', sourceFile('x.png', await picture('png')))).toEqual({ ok: false, message: 'That image is no longer in the library.' });
-  }, 30_000);
+  }, 60_000);
 });
 
 describe('exporting with missing image files', () => {

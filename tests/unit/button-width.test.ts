@@ -124,7 +124,8 @@ async function renderHome(s: ProjectState): Promise<string> {
   return render(Page, { props: {} }).body.replace(/<!--[\s\S]*?-->/g, '');
 }
 
-type Box = { width: number; left: number };
+/** `fit` is the element's own max-content width: as wide as its label and padding, in whatever font the system has. */
+type Box = { width: number; left: number; fit: number };
 type Measured = { inner: Box; stack: Box; stackDisplay: string; [label: string]: Box | string };
 const box = (m: Measured, key: string) => m[key] as Box;
 
@@ -145,7 +146,11 @@ describe.runIf(BROWSER)('a button in a browser', () => {
       return (await tab.evaluate(`(() => {
         const box = (el, within) => {
           const r = el.getBoundingClientRect();
-          return { width: Math.round(r.width), left: Math.round(r.left - (within ? within.getBoundingClientRect().left : 0)) };
+          const width = el.style.width;
+          el.style.width = 'max-content';
+          const fit = Math.round(el.getBoundingClientRect().width);
+          el.style.width = width;
+          return { width: Math.round(r.width), left: Math.round(r.left - (within ? within.getBoundingClientRect().left : 0)), fit };
         };
         const find = (text) => [...document.querySelectorAll('a.so-btn')].find((a) => a.textContent.trim() === text);
         const inner = document.querySelector('.so-foundation-layout-section__inner');
@@ -166,7 +171,7 @@ describe.runIf(BROWSER)('a button in a browser', () => {
     expect(m.inner.width).toBeGreaterThan(900);
     for (const label of [DIRECT, STACKED]) {
       expect(box(m, label).width, label).toBeGreaterThan(40);
-      expect(box(m, label).width, label).toBeLessThan(160);
+      expect(box(m, label).width, label).toBe(box(m, label).fit);
       expect(box(m, label).left, label).toBe(0);
     }
   });
@@ -174,7 +179,7 @@ describe.runIf(BROWSER)('a button in a browser', () => {
   it('is as wide as its label inside a grid, where it used to fill its cell', async () => {
     const m = await measure(restyle(b, style(b, b.stack, 'layout', 'grid')), 1280);
     expect(m.stackDisplay).toBe('grid');
-    expect(box(m, STACKED).width).toBeLessThan(160);
+    expect(box(m, STACKED).width).toBe(box(m, STACKED).fit);
   });
 
   it('keeps the width a page gives it: Fill, a length, Auto, and a width for one size only', async () => {
@@ -188,14 +193,15 @@ describe.runIf(BROWSER)('a button in a browser', () => {
     const phoneOnly = restyle(b, style(b, b.direct, 'width', 'fill', 'phone'));
     const onPhone = await measure(phoneOnly, 390);
     expect(box(onPhone, DIRECT).width).toBe(onPhone.inner.width);
-    expect(box(await measure(phoneOnly, 1280), DIRECT).width).toBeLessThan(160);
+    const onDesktop = box(await measure(phoneOnly, 1280), DIRECT);
+    expect(onDesktop.width).toBe(onDesktop.fit);
   });
 
   it('still follows its parent’s alignment: centred or at the end', async () => {
     for (const align of ['center', 'end', 'start'] as const) {
       const m = await measure(restyle(b, style(b, b.stack, 'align', align)), 1280);
-      const { width, left } = box(m, STACKED);
-      expect(width, align).toBeLessThan(160);
+      const { width, left, fit } = box(m, STACKED);
+      expect(width, align).toBe(fit);
       const free = m.stack.width - width;
       if (align === 'center') expect(Math.abs(left - free / 2)).toBeLessThanOrEqual(1);
       if (align === 'end') expect(Math.abs(left - free)).toBeLessThanOrEqual(1);
