@@ -45,7 +45,7 @@ export function reviewPageRemoval(state: ProjectState, pageId: string, replaceme
     return { uses: all.filter((u) => !u.card), cards: all.filter((u) => u.card), menu: [], missing: [] };
   }
   // A header menu that follows the pages lets go of its links to the page first, as the engine does: they need no replacement.
-  const { view: base, menu } = withoutMenuLinks(state, pageId);
+  const { view: base, menu } = withoutMenuLinks(state, pageId, replacementId);
   const all = pageLinkUses(base, pageId);
   const uses = all.filter((u) => !u.card);
   const cards = all.filter((u) => u.card);
@@ -57,10 +57,12 @@ export function reviewPageRemoval(state: ProjectState, pageId: string, replaceme
 }
 
 /** The project once a header menu that follows the pages has let go of its links to the page, and their labels. */
-function withoutMenuLinks(state: ProjectState, pageId: string): { view: ProjectState; menu: string[] } {
-  if (!followsPageOrder(state)) return { view: state, menu: [] };
+function withoutMenuLinks(state: ProjectState, pageId: string, replacementId?: PageReplacement): { view: ProjectState; menu: string[] } {
+  // Home's link in a menu with its own order goes too when the page taking Home's place is already in it, as the engine does.
+  const repeat = !followsPageOrder(state) && pageId === state.site.homePageId && typeof replacementId === 'string' && replacementId && Object.hasOwn(state.pages, replacementId) ? replacementId : undefined;
+  if (!followsPageOrder(state) && !repeat) return { view: state, menu: [] };
   const view = structuredClone(state);
-  const menu = dropHeaderLinks(view, pageId);
+  const menu = dropHeaderLinks(view, pageId, repeat);
   return menu.length ? { view, menu } : { view: state, menu: [] };
 }
 
@@ -99,7 +101,7 @@ export function planPageRemoval(state: ProjectState, pageId: string, replacement
   if (!review.uses.length && pageId !== state.site.homePageId) return { operations: [{ type: 'page.remove', pageId }], lost: [] };
   if (!replacementId || !Object.hasOwn(state.pages, replacementId) || replacementId === pageId) return none;
   // Sections are the ones the replacement page still has once the menu's links and the cards are gone, as the engine finds them.
-  const base = withoutMenuLinks(state, pageId).view;
+  const base = withoutMenuLinks(state, pageId, replacementId).view;
   const view = review.cards.length ? withoutCards(base, pageId) : base;
   const ids = pageIds(view, replacementId);
   const operations: EditOperation[] = [];

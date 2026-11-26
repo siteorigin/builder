@@ -3,6 +3,7 @@ import type { InstanceNode, ProjectState } from '@shared/types';
 import type { EditOperation } from '@shared/ops';
 import { createStarterState } from '@catalogue/starters';
 import { getTheme, listThemes } from '@catalogue/index';
+import { reviewPageRemoval } from '../../src/renderer/src/lib/page-removal';
 import { applyOperations, planHomeChange, sourceHash } from '@engine/apply';
 import { propertiesHash } from '@shared/ops';
 import { uniqueCopyName } from '@engine/definitions';
@@ -119,6 +120,8 @@ describe('content operations', () => {
     const r = applyOperations(s, [{ type: 'page.remove', pageId: s.site.homePageId, replacementPageId: about }]).state;
     expect(r.site.homePageId).toBe(about);
     expect(linksTo(r, about)).toHaveLength(1);
+    // The dialog's review names the link the engine removes.
+    expect(reviewPageRemoval(s, s.site.homePageId, about).menu).toHaveLength(1);
     expect(validateState(r).filter((d) => d.severity === 'error')).toEqual([]);
   });
 });
