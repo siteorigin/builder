@@ -74,7 +74,7 @@ function unreadDate(data: Record<string, FrontValue>, unreadable: string[]): str
   for (const k of DATE_KEYS) {
     if (unreadable.includes(k)) return `its ${k} setting could not be read`;
     const v = data[k];
-    if (v === undefined || typeof v === 'boolean') continue;
+    if (v === undefined || (k === 'published' && typeof v === 'boolean')) continue;
     const shown = (Array.isArray(v) ? v.join(', ') : String(v)).trim();
     if (!shown) continue;
     return `its ${k} “${shown.length > 40 ? `${shown.slice(0, 40)}…` : shown}” is not a date, such as 2024-03-01`;

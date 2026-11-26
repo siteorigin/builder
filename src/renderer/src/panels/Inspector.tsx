@@ -20,6 +20,7 @@ import {
   House,
   Image as ImageIcon,
   Layers,
+  Library,
   Link as LinkIcon,
   List,
   MousePointerClick,
@@ -51,7 +52,8 @@ import { validateRoute } from '@shared/routes';
 import { isVideoContract, videoFieldNotes, type VideoFieldNotes } from '@shared/video';
 import { isArticleDate, pageArticle, todayArticleDate } from '@shared/articles';
 import { findEntry } from '@shared/collections';
-import { postAt, postShown } from '../lib/posts';
+import { postAt, postShown, postsCollection } from '../lib/posts';
+import { entryNounLower } from '../lib/content';
 import { activeWorkspace } from '../lib/workspace';
 import { seoDocument } from '../lib/seo-view';
 import { STATE_WORDS, cascadeStyles, columnLayoutPart, partStyleControls, placementStyleControls, styleSetFor } from '@shared/styles';
@@ -3277,16 +3279,20 @@ function PostOverview({ state, workspace }: { state: ProjectState; workspace: 'w
     </button>
   );
   const key = `post:${workspace}:${post?.collectionId ?? ''}:${post?.entryId ?? ''}`;
-  if (shown.kind === 'post' && !shown.ref)
+  if (shown.kind === 'post' && !shown.ref) {
+    // Named as the list beside it is: no collection yet, or the collection with none of its entries open.
+    const collection = postsCollection(state, post?.collectionId);
+    const noun = collection ? entryNounLower(collection) : '';
     return (
       <div className="panel-body insp" key={key}>
-        <Header title="Posts" kind="No post open" icon={<Newspaper />} />
+        <Header title={shown.title} kind={collection ? `No ${noun} open` : 'No collections yet'} icon={collection ? <Newspaper /> : <Library />} />
         <div className="insp-empty">
-          <Newspaper aria-hidden="true" />
-          <p>Choose a post in the list, or start a new one. A post’s text and details are edited in the writer.</p>
+          {collection ? <Newspaper aria-hidden="true" /> : <Library aria-hidden="true" />}
+          <p>{collection ? `Choose ${noun === 'post' ? 'a post' : 'one'} in the list, or start a new one. ${noun === 'post' ? 'A post’s' : 'Its'} text and details are edited in the writer.` : 'Add a collection in the Content list to keep articles, people, projects or what clients say.'}</p>
         </div>
       </div>
     );
+  }
   if (shown.kind === 'post') {
     const other = workspace === 'preview' && !!post && (shown.ref!.entryId !== post.entryId || shown.ref!.collectionId !== post.collectionId);
     return (

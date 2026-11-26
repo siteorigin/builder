@@ -605,7 +605,7 @@ export function Chat() {
   // What the next message is about: the page, or the component edited everywhere, and the element within it.
   // While the Posts workspace is in front, the element or design behind it is never the target: the post it shows, or
   // the page its preview went on to, is. While the SEO view is, the page or post it has chosen is (#700); with none
-  // chosen, the page under it, as the writer with no post open leaves it.
+  // chosen, the page under it. The writer with no post open shows no page: a message from it is about the whole site.
   const workspace = activeWorkspace({ leftTab, postView, mode: editorMode, post: openPostRef });
   const shownPost = workspace === 'write' || workspace === 'preview' ? postShown(st, workspace, openPostRef, postPreviewAt) : null;
   const seoChosen = workspace === 'seo' ? seoDocument(st, seoSubject)?.subject : undefined;
@@ -614,6 +614,7 @@ export function Chat() {
     pageId: seoPage ?? (shownPost?.kind === 'page' ? shownPost.pageId : pageId),
     selection: workspace ? null : selection,
     definitionMode: workspace ? null : definitionMode,
+    writer: workspace === 'write',
     post: seoChosen?.kind === 'entry' ? { collectionId: seoChosen.collectionId, entryId: seoChosen.entryId } : shownPost?.kind === 'post' ? shownPost.ref : null
   });
   const { page, component } = scope;
@@ -633,7 +634,7 @@ export function Chat() {
   // The starters are changes to make, so a question starts from an empty box. They are about pages, so a component
   // edited everywhere offers none.
   // A local server or model that failed its last check is said instead, so no starters are offered.
-  const fresh = !component && !scope.post && msgs.length === 0 && configured && !notReady && !!conversation && !draft.trim();
+  const fresh = !component && !scope.post && !scope.site && msgs.length === 0 && configured && !notReady && !!conversation && !draft.trim();
   const suggestions: Array<{ text: string; kind: string }> = !fresh
     ? []
     : askMode
@@ -702,6 +703,9 @@ export function Chat() {
   const scopeOptions: ScopeChoice[] = scope.post
     ? // A post is the one thing the message is about: shown, not chosen. The AI asks before changing more.
       [{ value: 'page' as const, label: 'This post', description: askMode ? 'The post you have open' : 'Its words and details', icon: <Pencil />, title: askMode ? `The post “${scope.post.title}”` : `Only the post “${scope.post.title}”`, chip: scope.post.title, where: 'this post' }]
+    : scope.site
+    ? // The writer with no post open shows no page: a message from it is about the whole site.
+      [{ value: 'site' as const, label: 'Whole site', description: askMode ? 'Its posts and pages' : 'Posts, pages, the header and footer, and styles', icon: <Globe />, title: askMode ? 'The whole site' : 'Whole site · from Posts', chip: 'Whole site' }]
     : component
     ? [
         ...(selLabel ? [{ value: 'selection' as const, label: selLabel, description: 'Only this element', icon: <MousePointerClick />, title: askMode ? `${selLabel}, in ${component.name}` : `Only ${selLabel}, in ${component.name} everywhere it is used`, chip: selLabel, where: `${component.name} everywhere` }] : []),
@@ -716,7 +720,7 @@ export function Chat() {
           ...(askMode ? [] : [{ value: 'site' as const, label: 'Whole site', description: 'Any page, the header and footer, and styles', icon: <Globe />, title: `Whole site · from ${page.title}`, chip: 'Whole site', where: `from ${page.title}` }])
         ]
       : [];
-  const scopeValue: ChatEditScope = component ? (toSelection ? 'selection' : 'site') : askMode && chosen === 'site' ? 'page' : chosen;
+  const scopeValue: ChatEditScope = scope.site ? 'site' : component ? (toSelection ? 'selection' : 'site') : askMode && chosen === 'site' ? 'page' : chosen;
   const found = scopeOptions.find((o) => o.value === scopeValue) ?? scopeOptions[0] ?? null;
   // A selection in the shared header or footer reaches every page, so the chip says so in words, not only in green.
   const shell = !component && found?.value === 'selection' && scope.selection?.owner.kind === 'shell' ? (scope.selection.owner.id === 'footer' ? 'shared footer' : 'shared header') : null;

@@ -107,7 +107,11 @@ export function postShown(state: ProjectState, workspace: 'write' | 'preview', p
     return page ? { kind: 'page', pageId: page.id } : { kind: 'address', path: at };
   }
   const entry = postAt(state, post);
-  return entry && post ? named(post, entry) : { kind: 'post', ref: null, title: 'Posts', draft: false };
+  if (entry && post) return named(post, entry);
+  // None open: the workspace, named as its list is (the blog's Posts, another collection's own name, or Content while
+  // the project has no collection yet).
+  const collection = postsCollection(state, post?.collectionId);
+  return { kind: 'post', ref: null, title: collection ? (collection.settings.id === POSTS_COLLECTION_ID ? 'Posts' : collection.settings.name) : 'Content', draft: false };
 }
 
 const words = (s: unknown) => (typeof s === 'string' ? s.toLowerCase() : '');

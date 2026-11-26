@@ -272,6 +272,16 @@ describe('the composer with a post open in the Posts workspace (#400)', () => {
       }
       expect(chatContextFor(state, scope, { enabled, viewport: 1280, ask: true })).toEqual({ pageId: home, pageTitle: state.pages[home].title, selection: null, selectionLabel: null, post: { ...post, title: 'Spring open studio' }, viewport: 1280, mode: 'ask' });
     }
+    // The writer with no post open (or the one open gone) shows no page: a message is about the whole site, never the
+    // page or selection out of sight under it, whatever scope was chosen (#895).
+    for (const open of [null, { collectionId: 'posts', entryId: 'en_gone' }]) {
+      const empty = composerScope(state, { pageId: home, selection: picked, definitionMode: null, post: open, writer: true });
+      expect(empty).toEqual({ page: null, component: null, selection: null, selectionLabel: null, site: true });
+      for (const chosen of ['selection', 'page', 'site'] as const)
+        expect(chatContextFor(state, empty, { enabled: { page: true, scope: chosen }, viewport: 1280 })).toEqual({ pageId: state.site.homePageId, pageTitle: state.pages[state.site.homePageId].title, selection: null, selectionLabel: null, scope: 'site', viewport: 1280 });
+    }
+    // The writer with a post open is still about the post.
+    expect(composerScope(state, { pageId: home, selection: picked, definitionMode: null, post, writer: true }).post).toMatchObject(post);
     // A post that has gone, or none open, leaves the composer on the page as before.
     expect(composerScope(state, { pageId: home, selection: picked, definitionMode: null, post: { collectionId: 'posts', entryId: 'en_gone' } })).toMatchObject({ selection: picked });
     expect(composerScope(state, { pageId: home, selection: picked, definitionMode: null, post: null }).post).toBeUndefined();

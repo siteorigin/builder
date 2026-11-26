@@ -166,19 +166,24 @@ describe('reading a folder of Markdown posts', () => {
     writeFileSync(join(dir, 'b-words.md'), '---\ntitle: Words\ndate: last spring\n---\nText.');
     writeFileSync(join(dir, 'c-none.md'), '---\ntitle: None\n---\nText.');
     writeFileSync(join(dir, 'd-jekyll.md'), '---\ntitle: Jekyll\npublished: true\n---\nText.');
+    writeFileSync(join(dir, 'd-true.md'), '---\ntitle: Flagged\ndate: true\n---\nText.');
+    // A date in the file's name still dates a post whose date setting can't be read.
+    writeFileSync(join(dir, '2024-05-06-named.md'), '---\ntitle: Named\ndate: soon\n---\nText.');
     // "Café" in Windows-1252: é is the one byte 0xE9, which UTF-8 never has alone.
     writeFileSync(join(dir, 'e-latin.md'), Buffer.concat([Buffer.from('---\ntitle: Latin\ndate: 2024-01-01\n---\nCaf'), Buffer.from([0xe9]), Buffer.from('.')]));
     writeFileSync(join(dir, 'f-utf8.md'), '\ufeff---\ntitle: Plain\ndate: 2024-01-02\n---\nCafé.');
     const source = await readMarkdownFolder(dir, {});
     expect(source.posts.map((p) => [p.title, p.date, p.draft, p.draftReason])).toEqual([
+      ['Named', '2024-05-06', false, undefined],
       ['Bad day', null, true, 'its date “2024-02-30” is not a date, such as 2024-03-01'],
       ['Words', null, true, 'its date “last spring” is not a date, such as 2024-03-01'],
       ['None', null, true, 'it has no publication date'],
       ['Jekyll', null, true, 'it has no publication date'],
+      ['Flagged', null, true, 'its date “true” is not a date, such as 2024-03-01'],
       ['Latin', '2024-01-01', false, undefined],
       ['Plain', '2024-01-02', false, undefined]
     ]);
-    const [latin, plain] = source.posts.slice(4);
+    const [latin, plain] = source.posts.slice(6);
     expect(latin.notes).toEqual([expect.stringContaining('not saved as UTF-8')]);
     expect(text(latin.body)).toEqual(['Caf\ufffd.']);
     expect(plain.notes).toEqual([]);

@@ -234,7 +234,7 @@ export function CollectionSchemaDialog({ collectionId, onClose }: { collectionId
                 <li key={t.key ?? t.id} className="collection-field">
                   <input
                     className="input"
-                    aria-label={`Grouping name (${t.id})`}
+                    aria-label="Grouping name"
                     maxLength={60}
                     value={t.label}
                     onChange={(e) =>
@@ -243,7 +243,6 @@ export function CollectionSchemaDialog({ collectionId, onClose }: { collectionId
                       })
                     }
                   />
-                  {!t.added && <code className="faint">{t.id}</code>}
                   <button
                     className="icon-btn sm"
                     aria-label={`Remove ${t.label || t.id}`}

@@ -72,6 +72,13 @@ describe('what the editor names while the Posts workspace is in front', () => {
     expect(postShown(s, 'write', null, null)).toEqual({ kind: 'post', ref: null, title: 'Posts', draft: false });
     expect(postShown(s, 'write', { collectionId: 'posts', entryId: 'en_gone' }, null)).toEqual({ kind: 'post', ref: null, title: 'Posts', draft: false });
     expect(postShown(s, 'preview', { collectionId: 'posts', entryId: 'en_gone' }, null)).toEqual({ kind: 'post', ref: null, title: 'Posts', draft: false });
+    // Before the project has a collection, the workspace is Content, as its list is; a collection other than the blog
+    // is named by its own name (#895).
+    const bare = createStarterState('business', 'Riverside Studio', false);
+    expect(postShown(bare, 'write', null, null)).toEqual({ kind: 'post', ref: null, title: 'Content', draft: false });
+    const team = run(bare, { type: 'collection.create', collectionId: 'team', name: 'Team' });
+    expect(postShown(team, 'write', null, null)).toEqual({ kind: 'post', ref: null, title: 'Team', draft: false });
+    expect(postShown(team, 'write', { collectionId: 'team', entryId: 'en_gone' }, null)).toMatchObject({ ref: null, title: 'Team' });
     // A post with no title yet is named as the Posts list names it.
     const blank = structuredClone(s);
     blank.collections.posts.entries.en_spring.title = '';
