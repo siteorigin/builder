@@ -16,13 +16,14 @@ import { websiteFormNotes, type Diagnostic } from '@engine/validate';
 import { exportedCounts } from '../renderer/src/lib/export-summary';
 import { basePath, generateManagedComponent, generatePage, defFile, liveRedirects, publishedState, siteEntries } from '@generator/index';
 import { archivePages } from '@shared/archives';
+import { NOT_FOUND_FILE } from '@shared/not-found';
 import { placeholderImageCount } from '@generator/checks';
 import { redirectHost } from '@generator/host-redirects';
 import type { BuildFailureContext } from './build-failure';
 import { zipDirectory } from './zip';
 import { NOT_A_PROJECT_ZIP, readProjectZip, unpackProject, WEBSITE_ZIP, ZipError } from './unzip';
 import { StaticPreviews } from './static-preview';
-import { isPlainFile, builtPhotosMessage, deliverVercelConfig, pageLanguageWarning, publicUrlNote, rivalHookStop, cleanBuiltSite, cleanWebsitePhotos, copyProjectSource, draftLinksStop, draftSourceNotes, publishedChanged, withheldRoutes, withheldStaticFiles, editedGeneratedFile, explainBuildFailure, exportedAssetFilter, finishExportedSource, leaveOutDrafts, listFiles, locatedPhotos, locationKeptNote, locationRemovedNote, missingAssetsStop, missingSourceWarnings, missingUnusedWarnings, missingWebsiteAssets, notFoundAddressWarning, notFoundHostNote, notFoundPageProblem, omittedAssetsWarning, ownNotFoundFileNote, ownNotFoundFileStop, readNotFoundPage, settleServerHook, stripPartMarkers, carriesPartMarker, projectFingerprint, readExportFile, projectReadme, publishFolder, pruneWebsiteAssets, replaceEmptyFolder, readLibraryImage, sectionLinkWarnings, uncleanablePhotosMessage, uniqueChild, unlinkedButtonWarnings, unlinkedMenuLinkWarnings, emptySectionWarnings, formNameWarnings, runtimeFontWarnings, variantCredits, writeExportedSources, exportedSourcesProblem } from './export';
+import { isPlainFile, builtPhotosMessage, deliverVercelConfig, pageLanguageWarning, publicUrlNote, rivalHookStop, cleanBuiltSite, cleanWebsitePhotos, copyProjectSource, draftLinksStop, draftSourceNotes, publishedChanged, withheldRoutes, withheldStaticFiles, editedGeneratedFile, explainBuildFailure, exportedAssetFilter, finishExportedSource, leaveOutDrafts, listFiles, locatedPhotos, locationKeptNote, locationRemovedNote, missingAssetsStop, missingSourceWarnings, missingUnusedWarnings, missingWebsiteAssets, notFoundAddressWarning, notFoundHostNote, notFoundPageProblem, omittedAssetsWarning, ownNotFoundFileNote, ownNotFoundFileStop, readNotFoundPage, settleServerHook, stripPartMarkers, carriesPartMarker, projectInventory, inventoryChanged, readExportFile, type ExportHashes, projectReadme, publishFolder, pruneWebsiteAssets, replaceEmptyFolder, readLibraryImage, sectionLinkWarnings, uncleanablePhotosMessage, uniqueChild, unlinkedButtonWarnings, unlinkedMenuLinkWarnings, emptySectionWarnings, formNameWarnings, runtimeFontWarnings, variantCredits, writeExportedSources, exportedSourcesProblem } from './export';
 import { LOCAL_DIR, LOCK_HEARTBEAT_MS, NO_LOCK, ProjectLockedError, ProjectSession, ThemeUnavailableError } from './project/session';
 import { DOC_DIR, MANIFEST_FILE, ProjectFormatError } from './project/documents';
 import { DOCUMENT_EXTENSIONS, FONT_EXTENSIONS, IMAGE_EXTENSIONS, IMPORT_IMAGE_EXTENSIONS, importAsset, importPackageImage, isAssetOfKind, isOpaquePicture, libraryWebCopyPlan, locateAssetFile, originalNameOf, pictureMime, releaseMediaWorkers, restoreAssetFiles, reviewImportFile, storeLibraryWebCopy } from './project/assets';
@@ -2911,7 +2912,8 @@ export class Controller {
     };
     try {
       if (format === 'zip') await zipDirectory(from, dest, zipFolder, stillOwned);
-      else await publishFolder(from, dest, stillOwned);
+      // The staged export is thrown away once it is in place: it is moved there rather than copied when it can be.
+      else await publishFolder(from, dest, stillOwned, { move: true });
       return null;
     } catch (e) {
       if (e instanceof ExportStopped) return e.message;
@@ -2981,6 +2983,9 @@ export class Controller {
     return this.withStaging((staging) => this.buildFromStaging(s, staging, dest, format, published));
   }
 
+  /** Each open project's file hashes from its last export's fingerprints, by the stamps they stand for (projectInventory). */
+  private exportHashes = new WeakMap<ProjectSession, ExportHashes>();
+
   /** Staging folders of exports still running: the sweep before another export leaves them alone. */
   private stagingInUse = new Set<string>();
 
@@ -3041,8 +3046,14 @@ export class Controller {
       if (blocked) return stop(blocked.message);
       // Another app may have taken the project over meanwhile: only the lock's owner exports it (spec 20).
       if (!(await s.stillOwner())) return stop(s.readOnly?.reason ?? READ_ONLY);
-      const before = await timed('export.fingerprint', () => projectFingerprint(s.dir), () => ({ pass: 'before' }))();
-      const edited = await timed('export.generatedCheck', () => editedGeneratedFile(s.dir))();
+      // Files left alone since an earlier pass (this export's, or the last one's) are known by their stamps.
+      const cache = this.exportHashes.get(s) ?? new Map();
+      this.exportHashes.set(s, cache);
+      const before = await timed('export.fingerprint', () => projectInventory(s.dir, { cache, settleMs: s.settleMs }), () => ({ pass: 'before' }))();
+      // The generated files were just hashed for the fingerprint: those whose stamps stand for their bytes are checked
+      // against the manifest by those hashes (inventoryChanged below sees any write to them since), the rest are read.
+      const trusted = new Map([...before.hashes].filter(([rel]) => before.stamps.get(rel)?.trusted));
+      const edited = await timed('export.generatedCheck', () => editedGeneratedFile(s.dir, trusted))();
       if (edited) return stop(`${edited} was changed outside SiteOrigin Builder. Open Project health to restore it, then export again.`);
       // Both exports are the published site: its pages decide whether it needs the generated server hook.
       const rival = await rivalHookStop(s.dir, publishedState(s.state));
@@ -3066,7 +3077,7 @@ export class Controller {
       if (opts.forBuild) {
         if (!(await isTrusted(s.dir, await configHash(dest)))) return stop("This project's build settings changed outside SiteOrigin Builder. Reopen the project to review them.");
       } else await finishExportedSource(dest, s.state, starterNotice());
-      if ((await timed('export.fingerprint', () => projectFingerprint(s.dir), () => ({ pass: 'after' }))()) !== before) return stop('The project changed on disk while it was being exported. Export again.');
+      if (inventoryChanged(before, await timed('export.fingerprint', () => projectInventory(s.dir, { cache, settleMs: s.settleMs }), () => ({ pass: 'after' }))())) return stop('The project changed on disk while it was being exported. Export again.');
       if (!(await s.stillOwner())) return stop(s.readOnly?.reason ?? READ_ONLY);
       return { ok: true as const, revision: s.revision, state: structuredClone(s.state) };
     }));
@@ -3146,33 +3157,64 @@ export class Controller {
     const notes: ExportNote[] = [];
     const warn = (...messages: string[]) => void notes.push(...messages.map((message) => ({ message })));
     const warnings = () => notes.map((n) => n.message);
+    // Every built file is read once, as it is cleaned (the images the build brought in from somewhere other than the
+    // cleaned sources: a package, generated code). What the checks below need of each is noted then, from the file as
+    // the build wrote it; they still decide in their own order, and read what the pass did not see.
+    const builtRel = (file: string) => (file.startsWith(out + sep) ? file.slice(out.length + 1).split(sep).join('/') : '');
+    const pageFile = (route: string) => join(out, route === '/' ? 'index.html' : join(route, 'index.html'));
+    const pageAt = new Map(live.site.pageOrder.map((id) => [builtRel(pageFile(live.pages[id].route)), live.pages[id]]));
+    const builtPages = new Map<string, { markup: boolean; language: string | null }>();
+    const scripts = new Map<string, boolean>();
+    let notFoundSeen: string | undefined;
+    // A failure to write a cleaned file is said where the cleaning used to be, after the checks that came before it.
+    let cleaningFailed: { error: unknown } | null = null;
+    const unchecked = await timed('export.verify.cleanBuilt', () =>
+      cleanBuiltSite(out, (rel, bytes) => {
+        if (rel.endsWith('.html')) {
+          const html = bytes.toString('utf8');
+          const page = pageAt.get(rel);
+          builtPages.set(rel, { markup: editorMarkup(html), language: page ? pageLanguageWarning(live, page, html) : null });
+          if (rel === NOT_FOUND_FILE) notFoundSeen = html;
+        } else if (rel.endsWith('.js')) scripts.set(rel, editorScript(bytes.toString('utf8')));
+      }).catch((error: unknown) => {
+        cleaningFailed = { error };
+        return [] as string[];
+      })
+    )();
+    /** What the pass noted of a built page, or what it says when read now. */
+    const pageAtFile = async (file: string) => {
+      const seen = builtPages.get(builtRel(file));
+      if (seen) return seen;
+      const html = await readExportFile(file, 'utf8');
+      const page = pageAt.get(builtRel(file));
+      return { markup: editorMarkup(html), language: page ? pageLanguageWarning(live, page, html) : null };
+    };
     // Verify page inventory.
     for (const id of live.site.pageOrder) {
       const p = live.pages[id];
-      const file = join(out, p.route === '/' ? 'index.html' : join(p.route, 'index.html'));
+      const file = pageFile(p.route);
       if (!existsSync(file)) return { ok: false, message: `The build is missing ${p.route}.`, warnings: warnings() };
-      const html = await readExportFile(file, 'utf8');
-      if (editorMarkup(html)) return { ok: false, message: `Editor-only markup was found in ${p.route}. Export aborted.`, warnings: warnings() };
-      const language = pageLanguageWarning(live, p, html);
-      if (language) warn(language);
+      const built = await pageAtFile(file);
+      if (built.markup) return { ok: false, message: `Editor-only markup was found in ${p.route}. Export aborted.`, warnings: warnings() };
+      if (built.language) warn(built.language);
     }
     // Every published collection entry is a page of its own.
     for (const { route } of siteEntries(live)) {
       const file = join(out, route, 'index.html');
       if (!existsSync(file)) return { ok: false, message: `The build is missing ${route}.`, warnings: warnings() };
-      if (editorMarkup(await readExportFile(file, 'utf8'))) return { ok: false, message: `Editor-only markup was found in ${route}. Export aborted.`, warnings: warnings() };
+      if ((await pageAtFile(file)).markup) return { ok: false, message: `Editor-only markup was found in ${route}. Export aborted.`, warnings: warnings() };
     }
     // So is each page of every collection's index and category archives.
     for (const { route } of archivePages(live)) {
       const file = join(out, route, 'index.html');
       if (!existsSync(file)) return { ok: false, message: `The build is missing ${route}.`, warnings: warnings() };
-      if (editorMarkup(await readExportFile(file, 'utf8'))) return { ok: false, message: `Editor-only markup was found in ${route}. Export aborted.`, warnings: warnings() };
+      if ((await pageAtFile(file)).markup) return { ok: false, message: `Editor-only markup was found in ${route}. Export aborted.`, warnings: warnings() };
     }
     // Old addresses kept working are pages of their own on a static host: each must be there to send visitors on.
     for (const { from } of liveRedirects(live)) {
       const file = join(out, from, 'index.html');
       if (!existsSync(file)) return { ok: false, message: `The build is missing ${from}, an old address that should send visitors on.`, warnings: warnings() };
-      if (editorMarkup(await readExportFile(file, 'utf8'))) return { ok: false, message: `Editor-only markup was found in ${from}. Export aborted.`, warnings: warnings() };
+      if ((await pageAtFile(file)).markup) return { ok: false, message: `Editor-only markup was found in ${from}. Export aborted.`, warnings: warnings() };
     }
     // Nothing may answer at a draft's address, or at an old address that leads to one: a file of the same name in
     // static/, say, would publish the address the author kept back.
@@ -3184,17 +3226,16 @@ export class Controller {
       if (isPlainFile(join(out, markdownMirrorRoute(route))))
         return { ok: false, message: `The website has a Markdown copy of the draft ${draft} at ${markdownMirrorRoute(route)}. Remove the file that puts it there, then export again.`, warnings: warnings() };
     }
-    // The not-found page, which hosts show at any address the site does not have.
-    const notFound = await readNotFoundPage(out);
+    // The not-found page, which hosts show at any address the site does not have (null when it is no plain file).
+    const notFound = notFoundSeen ?? (await readNotFoundPage(out));
     const notFoundStop = notFoundPageProblem(notFound);
     if (notFoundStop || notFound === null) return { ok: false, message: notFoundStop ?? '', warnings: warnings() };
     perf.mark('export.verify.pagesChecked');
     for (const f of await listFiles(out)) {
-      if (/\.js$/.test(f) && editorScript(await readExportFile(join(out, f), 'utf8'))) return { ok: false, message: 'Editor-only code was found in the build. Export aborted.', warnings: warnings() };
+      if (/\.js$/.test(f) && (scripts.get(builtRel(join(out, f))) ?? editorScript(await readExportFile(join(out, f), 'utf8')))) return { ok: false, message: 'Editor-only code was found in the build. Export aborted.', warnings: warnings() };
     }
     perf.mark('export.verify.scriptsChecked');
-    // Images the build brought in from somewhere other than the cleaned sources (a package, generated code).
-    const unchecked = await timed('export.verify.cleanBuilt', () => cleanBuiltSite(out))();
+    if (cleaningFailed) throw (cleaningFailed as { error: unknown }).error;
     if (unchecked.length) return { ok: false, message: builtPhotosMessage(unchecked), warnings: warnings() };
     // A form visitors cannot send leads the notes: enquiries that fail are what the author most needs to know about.
     notes.unshift(...websiteFormNotes(state));

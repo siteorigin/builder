@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { chmodSync, linkSync, mkdtempSync, mkdirSync, readFileSync, readdirSync, rmSync, writeFileSync, existsSync, symlinkSync } from 'node:fs';
+import { chmodSync, linkSync, mkdtempSync, mkdirSync, promises as fsPromises, readFileSync, readdirSync, rmSync, statSync, utimesSync, writeFileSync, existsSync, symlinkSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { spawnSync } from 'node:child_process';
@@ -15,6 +15,7 @@ import {
   cleanBuiltSite,
   cleanWebsitePhotos,
   copyProjectSource,
+  copyTree,
   editedGeneratedFile,
   explainBuildFailure,
   exportedAssetFilter,
@@ -23,10 +24,16 @@ import {
   locatedPhotos,
   locationKeptNote,
   locationRemovedNote,
+  namesFile,
+  namesIn,
+  namesWholeFile,
   omittedAssetsWarning,
   readLibraryImage,
   projectFingerprint,
+  projectInventory,
+  inventoryChanged,
   projectReadme,
+  type ExportHashes,
   pruneWebsiteAssets,
   publishFolder,
   sectionLinkWarnings,
@@ -436,6 +443,37 @@ describe('website photo privacy', () => {
     expect(gunzipSync(readFileSync(join(dir, 'index.html.gz'))).equals(cleaned)).toBe(true);
   });
 
+  it('reads each built file once, showing every page and script as the build wrote it, and cleans a picture named as a page', async () => {
+    const dir = temp();
+    const page = `<html lang="en"><img src="data:image/jpeg;base64,${geotaggedJpeg().toString('base64')}"></html>`;
+    write(dir, 'index.html', page);
+    write(dir, '_app/start.js', 'console.log(1)');
+    write(dir, 'robots.txt', 'User-agent: *');
+    // A photo the build wrote under a page's name: cleaned as a photo, and then as a page.
+    writeBytes(dir, 'disguised.html', geotaggedJpeg());
+    const seen: Array<[string, string]> = [];
+    expect(await cleanBuiltSite(dir, (rel, bytes) => seen.push([rel, bytes.toString('latin1')]))).toEqual([]);
+    expect(seen.map(([rel]) => rel).sort()).toEqual(['_app/start.js', 'disguised.html', 'index.html']);
+    // What the checks see is the build's own, before any picture in it is cleaned.
+    expect(seen.find(([rel]) => rel === 'index.html')![1]).toBe(page);
+    expect(seen.find(([rel]) => rel === 'disguised.html')![1]).toBe(geotaggedJpeg().toString('latin1'));
+    expect(readFileSync(join(dir, 'index.html'), 'latin1')).not.toContain(geotaggedJpeg().toString('base64').slice(0, 200));
+    expect(readFileSync(join(dir, 'disguised.html')).toString('latin1')).not.toContain('SERIAL');
+  });
+
+  it.skipIf(process.platform === 'win32')('names a built file it cannot read as an image first, then as a file that can hold one', async () => {
+    const dir = temp();
+    write(dir, 'a.png', 'not a png');
+    write(dir, 'b.css', `.x{background:url(data:image/png;base64,${Buffer.from('not a png').toString('base64')})}`);
+    write(dir, 'c.html', '<html></html>');
+    chmodSync(join(dir, 'c.html'), 0o000);
+    try {
+      expect(await cleanBuiltSite(dir)).toEqual(process.getuid?.() === 0 ? ['a.png', 'b.css'] : ['a.png', 'c.html', 'b.css', 'c.html']);
+    } finally {
+      chmodSync(join(dir, 'c.html'), 0o644);
+    }
+  });
+
   it('replaces a built file linked from elsewhere instead of writing through the link', async () => {
     const dir = temp();
     const outside = join(temp(), 'original.jpg');
@@ -535,6 +573,45 @@ describe('source export helpers', () => {
     const before = await projectFingerprint(dir);
     write(dir, 'static/robots.txt', 'y');
     expect(await projectFingerprint(dir)).not.toBe(before);
+  });
+
+  it.skipIf(process.platform === 'win32')('copies the source with its files’ and folders’ modes, into a folder already there, as fs.cp does', async () => {
+    const src = temp();
+    write(src, 'static/run.sh', '#!/bin/sh');
+    chmodSync(join(src, 'static/run.sh'), 0o755);
+    write(src, 'src/private/x.js', 'x');
+    chmodSync(join(src, 'src/private'), 0o700);
+    write(src, 'src/routes/+page.svelte', 'page');
+    write(src, '.env', 'SECRET=1');
+    symlinkSync(join(src, 'src/routes/+page.svelte'), join(src, 'src/linked.svelte'));
+    const dest = temp();
+    write(dest, '.siteorigin/preview-copy.json', '{}');
+    await copyProjectSource(src, dest);
+    expect(readFileSync(join(dest, 'src/routes/+page.svelte'), 'utf8')).toBe('page');
+    expect(statSync(join(dest, 'static/run.sh')).mode & 0o777).toBe(0o755);
+    expect(statSync(join(dest, 'src/private')).mode & 0o777).toBe(0o700);
+    expect(readFileSync(join(dest, 'src/private/x.js'), 'utf8')).toBe('x');
+    expect(existsSync(join(dest, '.env'))).toBe(false);
+    expect(existsSync(join(dest, 'src/linked.svelte'))).toBe(false);
+    expect(readFileSync(join(dest, '.siteorigin/preview-copy.json'), 'utf8')).toBe('{}');
+  });
+
+  it('checks generated files against the hashes the fingerprint took, and reads only those it did not take', async () => {
+    const dir = temp();
+    write(dir, 'src/routes/+page.svelte', 'page');
+    write(dir, 'src/lib/x.js', 'x');
+    write(dir, 'vercel.json', '{}');
+    write(dir, 'siteorigin/generated-manifest.json', JSON.stringify({ files: { 'src/routes/+page.svelte': sha('page'), 'src/lib/x.js': sha('x'), 'vercel.json': sha('{}') } }));
+    const { hashes } = await projectInventory(dir);
+    expect([...hashes.keys()].sort()).toEqual(['siteorigin/generated-manifest.json', 'src/lib/x.js', 'src/routes/+page.svelte', 'vercel.json']);
+    expect(await editedGeneratedFile(dir, hashes)).toBeNull();
+    // A hash the fingerprint took is what is compared with the manifest's.
+    expect(await editedGeneratedFile(dir, new Map([...hashes, ['src/routes/+page.svelte', sha('other')]]))).toBe('src/routes/+page.svelte');
+    // A file it did not take is read.
+    write(dir, 'src/lib/x.js', 'edited');
+    const known = new Map(hashes);
+    known.delete('src/lib/x.js');
+    expect(await editedGeneratedFile(dir, known)).toBe('src/lib/x.js');
   });
 
   it('refreshes an untouched README and adds the sample image notice', async () => {
@@ -725,6 +802,49 @@ describe('an export called off just before it is put in place', () => {
     expect(existsSync(join(parent, 'site', 'empty'))).toBe(true);
   });
 
+  it('moves a folder it may give up when the disk allows, and copies it when it cannot move it', async () => {
+    const from = temp();
+    write(from, 'about/index.html', '<h1>About</h1>');
+    const parent = temp();
+    await publishFolder(from, join(parent, 'site'), async () => undefined, { move: true });
+    expect(existsSync(from)).toBe(false);
+    expect(readdirSync(parent)).toEqual(['site']);
+    expect(readFileSync(join(parent, 'site', 'about', 'index.html'), 'utf8')).toBe('<h1>About</h1>');
+    // On another disk it cannot be moved: it is copied, and left where it was.
+    const other = temp();
+    write(other, 'index.html', 'x');
+    const rename = vi.spyOn(fsPromises, 'rename').mockRejectedValueOnce(Object.assign(new Error('cross-device link'), { code: 'EXDEV' }));
+    try {
+      await publishFolder(other, join(parent, 'copied'), async () => undefined, { move: true });
+    } finally {
+      rename.mockRestore();
+    }
+    expect(readFileSync(join(parent, 'copied', 'index.html'), 'utf8')).toBe('x');
+    expect(readFileSync(join(other, 'index.html'), 'utf8')).toBe('x');
+    expect(readdirSync(parent).sort()).toEqual(['copied', 'site']);
+  });
+
+  it('copies rather than moves a folder holding a file another name shares, so a change there never reaches the export', async () => {
+    const from = temp();
+    write(from, 'index.html', '<h1>Site</h1>');
+    const outside = join(temp(), 'shared.css');
+    writeFileSync(outside, 'body{}');
+    linkSync(outside, join(from, 'shared.css'));
+    const parent = temp();
+    await publishFolder(from, join(parent, 'site'), async () => undefined, { move: true });
+    expect(existsSync(join(from, 'index.html'))).toBe(true);
+    writeFileSync(outside, 'body{color:red}');
+    expect(readFileSync(join(parent, 'site', 'shared.css'), 'utf8')).toBe('body{}');
+  });
+
+  it('removes a folder it moved when the export is called off, and the claimed folder with it', async () => {
+    const from = temp();
+    write(from, 'index.html', '<h1>Site</h1>');
+    const parent = temp();
+    await expect(publishFolder(from, join(parent, 'site'), async () => Promise.reject(new Error('taken over')), { move: true })).rejects.toThrow('taken over');
+    expect(readdirSync(parent)).toEqual([]);
+  });
+
   it('keeps anything else that was put in the folder meanwhile', async () => {
     const from = temp();
     write(from, 'index.html', '<h1>Site</h1>');
@@ -767,5 +887,154 @@ describe('an export called off just before it is put in place', () => {
     expect(readdirSync(dest)).toEqual(['index.html']);
     expect(readFileSync(join(dest, 'index.html'), 'utf8')).toBe('my own page');
     expect(readdirSync(parent)).toEqual(['site']);
+  });
+});
+
+describe('the export’s fingerprint, remembered by each file’s stamp', () => {
+  /** Long enough that a file just written was changed before the next pass looked at it (settleMs 0). */
+  const settle = () => new Promise((r) => setTimeout(r, 25));
+
+  it('takes a settled file’s hash from the last pass while its stamp stands, and reads it again once it changes', async () => {
+    const dir = temp();
+    write(dir, 'src/a.js', 'aaaa');
+    write(dir, 'static/robots.txt', 'x');
+    await settle();
+    const cache: ExportHashes = new Map();
+    const first = await projectInventory(dir, { cache, settleMs: 0 });
+    expect(first.fingerprint).toBe(await projectFingerprint(dir));
+    expect([...cache.keys()].sort()).toEqual([join(dir, 'src/a.js'), join(dir, 'static/robots.txt')]);
+    // What the cache holds under the stamp the file still has stands for its bytes: the file is not read again.
+    const abs = join(dir, 'src/a.js');
+    cache.set(abs, { ...cache.get(abs)!, hash: 'remembered' });
+    expect((await projectInventory(dir, { cache, settleMs: 0 })).hashes.get('src/a.js')).toBe('remembered');
+    // An edit outside the app that keeps the size and puts the old modification time back still changes the stamp.
+    const { mtime } = statSync(abs);
+    writeFileSync(abs, 'bbbb');
+    utimesSync(abs, mtime, mtime);
+    const after = await projectInventory(dir, { cache, settleMs: 0 });
+    expect(after.hashes.get('src/a.js')).toBe(sha('bbbb'));
+    expect(after.fingerprint).toBe(await projectFingerprint(dir));
+    expect(after.fingerprint).not.toBe(first.fingerprint);
+    // So does a file put in its place.
+    write(dir, 'src/a.next', 'cccc');
+    rmSync(abs);
+    writeFileSync(abs, readFileSync(join(dir, 'src/a.next')));
+    rmSync(join(dir, 'src/a.next'));
+    expect((await projectInventory(dir, { cache, settleMs: 0 })).hashes.get('src/a.js')).toBe(sha('cccc'));
+  });
+
+  it('sees a file written and put back as it was between two passes, which the fingerprint alone cannot', async () => {
+    const dir = temp();
+    write(dir, 'src/a.js', 'same');
+    write(dir, 'src/b.js', 'other');
+    await settle();
+    const cache: ExportHashes = new Map();
+    const first = await projectInventory(dir, { cache, settleMs: 0 });
+    expect([...first.stamps.values()].every((s) => s.trusted)).toBe(true);
+    expect(inventoryChanged(first, await projectInventory(dir, { cache, settleMs: 0 }))).toBe(false);
+    writeFileSync(join(dir, 'src/a.js'), 'edited');
+    writeFileSync(join(dir, 'src/a.js'), 'same');
+    const second = await projectInventory(dir, { cache, settleMs: 0 });
+    expect(second.fingerprint).toBe(first.fingerprint);
+    expect(inventoryChanged(first, second)).toBe(true);
+    // A file the first pass could not trust (changed too recently) is compared by its bytes alone, as before.
+    const fresh = await projectInventory(dir, { cache: new Map(), settleMs: 60_000 });
+    writeFileSync(join(dir, 'src/b.js'), 'other');
+    expect(inventoryChanged(fresh, await projectInventory(dir, { cache: new Map(), settleMs: 60_000 }))).toBe(false);
+  });
+
+  it('keeps no hash of a file changed too recently for its stamp to stand for it, nor of one no longer there', async () => {
+    const dir = temp();
+    write(dir, 'src/a.js', 'a');
+    write(dir, 'src/b.js', 'b');
+    const cache: ExportHashes = new Map();
+    await projectInventory(dir, { cache, settleMs: 60_000 });
+    expect(cache.size).toBe(0);
+    await settle();
+    await projectInventory(dir, { cache, settleMs: 0 });
+    expect(cache.size).toBe(2);
+    rmSync(join(dir, 'src/b.js'));
+    await projectInventory(dir, { cache, settleMs: 0 });
+    expect([...cache.keys()]).toEqual([join(dir, 'src/a.js')]);
+  });
+
+  it('fingerprints many files the same with or without what it remembers', async () => {
+    const dir = temp();
+    for (let i = 0; i < 60; i++) write(dir, `${['src', 'static', 'siteorigin'][i % 3]}/d${i % 7}/f${i}.txt`, `file ${i}`);
+    write(dir, 'src/skip.tmp', 'never');
+    await settle();
+    const cache: ExportHashes = new Map();
+    const plain = await projectFingerprint(dir);
+    expect((await projectInventory(dir, { cache, settleMs: 0 })).fingerprint).toBe(plain);
+    expect((await projectInventory(dir, { cache, settleMs: 0 })).fingerprint).toBe(plain);
+    expect(cache.size).toBe(60);
+  });
+});
+
+describe('finding the library files a website names', () => {
+  it('reads many names over one text exactly as it searches for each on its own', () => {
+    let x = 0x9e3779b9;
+    const rand = (n: number) => {
+      x ^= x << 13;
+      x ^= x >>> 17;
+      x ^= x << 5;
+      return (x >>> 0) % n;
+    };
+    const pick = (chars: string, length: number) => Array.from({ length }, () => chars[rand(chars.length)]).join('');
+    const NAME = 'ab1-_.';
+    const AROUND = 'ab1-_./ "\'<>=(),é\n';
+    for (let round = 0; round < 3000; round++) {
+      const names = Array.from({ length: 1 + rand(5) }, () => (rand(8) === 0 ? `${pick(NAME, 1 + rand(3))} ${pick(NAME, 1 + rand(3))}` : rand(10) === 0 ? `caf\u00e9-${pick(NAME, 2)}` : pick(NAME, 1 + rand(6))));
+      let text = pick(AROUND, rand(12));
+      for (let k = rand(6); k > 0; k--) text += pick(AROUND, rand(3)) + names[rand(names.length)] + pick(AROUND, rand(3));
+      const found = namesIn(text, names);
+      for (const name of names) {
+        expect(found.file(name), `${JSON.stringify(name)} in ${JSON.stringify(text)}`).toBe(namesFile(text, name));
+        expect(found.whole(name), `${JSON.stringify(name)} whole in ${JSON.stringify(text)}`).toBe(namesWholeFile(text, name));
+      }
+    }
+  });
+});
+
+describe('copying a folder entry by entry', () => {
+  it('judges an entry again when it is no longer what it was listed as, and copies a folder in its place entry by entry', async () => {
+    const src = temp();
+    write(src, 'a.txt', 'a');
+    write(src, 'b.txt', 'b');
+    write(src, 'secret.txt', 'never');
+    const dest = join(temp(), 'out');
+    let swapped = false;
+    const kept = (p: string, e: { isFile(): boolean; isDirectory(): boolean; isSymbolicLink(): boolean }) => {
+      // Once a.txt has been listed as a file, it becomes a link and b.txt a folder, before either is copied.
+      if (!swapped && p.endsWith('b.txt')) {
+        swapped = true;
+        rmSync(join(src, 'a.txt'));
+        symlinkSync(join(src, 'secret.txt'), join(src, 'a.txt'));
+        rmSync(join(src, 'b.txt'));
+        write(src, 'b.txt/inside.txt', 'in');
+        write(src, 'b.txt/secret.txt', 'never');
+      }
+      return !e.isSymbolicLink() && !p.endsWith('secret.txt');
+    };
+    await copyTree(src, dest, kept);
+    expect(existsSync(join(dest, 'a.txt'))).toBe(false);
+    expect(readFileSync(join(dest, 'b.txt', 'inside.txt'), 'utf8')).toBe('in');
+    expect(existsSync(join(dest, 'b.txt', 'secret.txt'))).toBe(false);
+    expect(existsSync(join(dest, 'secret.txt'))).toBe(false);
+  });
+
+  it('replaces a file already in the folder it copies into rather than writing through it, and leaves that folder’s own folders as they are', async () => {
+    const src = temp();
+    write(src, 'sub/page.html', 'new');
+    const dest = temp();
+    const outside = join(temp(), 'theirs.html');
+    writeFileSync(outside, 'theirs');
+    mkdirSync(join(dest, 'sub'));
+    chmodSync(join(dest, 'sub'), 0o750);
+    linkSync(outside, join(dest, 'sub', 'page.html'));
+    await copyTree(src, dest, () => true);
+    expect(readFileSync(join(dest, 'sub', 'page.html'), 'utf8')).toBe('new');
+    expect(readFileSync(outside, 'utf8')).toBe('theirs');
+    if (process.platform !== 'win32') expect(statSync(join(dest, 'sub')).mode & 0o777).toBe(0o750);
   });
 });
