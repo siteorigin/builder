@@ -171,7 +171,8 @@ async function changedTo(guest: JoinedGuest, revision: number): Promise<LiveProj
     const event = await guest.guest.next('rpc:event');
     if (event.event !== 'project:changed') continue;
     const payload = event.payload as LiveProjectChanged;
-    if ((payload.kind === 'snapshot' ? payload.snapshot.revision : payload.revision) >= revision) return payload;
+    const at = payload.kind === 'snapshot' ? payload.snapshot.revision : payload.kind === 'too-large' ? payload.revision : -1;
+    if (at >= revision) return payload;
   }
 }
 

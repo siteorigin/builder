@@ -400,15 +400,20 @@ export class SessionRoom extends DurableObject<Env> {
       case 'rpc:response': {
         const { guestId, ...reply } = frame;
         const target = this.admittedSocket(guestId);
-        if (target) this.send(target, 'relay-to-guest', reply);
+        if (!target) return;
+        // A guest too far behind to take an answer (a whole project, perhaps) is told so instead, in a few bytes.
+        if (backedUp(target) && reply.ok)
+          return void this.send(target, 'relay-to-guest', { type: 'rpc:response', requestId: reply.requestId, method: reply.method, ok: false, error: { code: 'UNAVAILABLE', message: 'Your connection is too far behind. Try again shortly.', recoverable: true } });
+        this.send(target, 'relay-to-guest', reply);
         return;
       }
       case 'rpc:event': {
         const { guestId, ...event } = frame;
         const targets = guestId === undefined ? this.admittedSockets() : [this.admittedSocket(guestId)].filter((t): t is WebSocket => t !== null);
-        // Each event is the host's state as a whole (a project snapshot, the preview's status), so a guest too far
-        // behind to take another misses this one and has the next: its queue never grows by a snapshot per change.
-        for (const target of targets) if (!backedUp(target)) this.send(target, 'relay-to-guest', event);
+        // A guest too far behind to take another whole project is told, in a few bytes, that it missed one, and asks
+        // for the project once it has caught up: its queue never grows by a snapshot per change.
+        const missed = { ...event, payload: { kind: 'missed' } };
+        for (const target of targets) this.send(target, 'relay-to-guest', event.event === 'project:changed' && backedUp(target) ? missed : event);
         return;
       }
       case 'presence:update': {

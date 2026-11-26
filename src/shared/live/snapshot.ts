@@ -39,9 +39,10 @@ export interface LiveRuntimeStatus {
 
 /**
  * The `project:changed` event. A snapshot that does not fit in one frame is announced by its revision alone: asking
- * for it then fails the same way until a later, smaller one.
+ * for it then fails the same way until a later, smaller one. `missed` comes from the relay, in place of a snapshot a
+ * guest's connection was too far behind to take: the guest asks for the project once it has caught up.
  */
-export type LiveProjectChanged = { kind: 'snapshot'; snapshot: LiveProjectSnapshot } | { kind: 'too-large'; revision: number };
+export type LiveProjectChanged = { kind: 'snapshot'; snapshot: LiveProjectSnapshot } | { kind: 'too-large'; revision: number } | { kind: 'missed' };
 
 /**
  * The host's answer to a collaborator's `project.apply`: the revision the edit made and, operation by operation, the

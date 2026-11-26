@@ -7,7 +7,7 @@ import type { EditOperation } from '@shared/ops';
 import type { InstanceNode, OwnerRef, ProjectState } from '@shared/types';
 import { createStarterState } from '@catalogue/starters';
 import { applyOperations } from '@engine/apply';
-import { formDestinationProps, guestDestinationChange, guestEditProblem } from '@engine/guest-edits';
+import { formDestinationProps, GUEST_BATCH_MAX_NEW_ELEMENTS, guestDestinationChange, guestEditProblem } from '@engine/guest-edits';
 
 const FORM = 'foundation.contact.form';
 const SALES = 'https://forms.example.com/sales';
@@ -122,6 +122,26 @@ describe('where a contact form sends its messages', () => {
     // An address the host keeps under a property named like a destination, on a design that sends nothing.
     state.components.cmp_api = { id: 'cmp_api', name: 'API card', kind: 'code', owner: 'project', source: '<p></p>', properties: { endpoint: { type: 'string', label: 'Endpoint', default: 'https://api.example.com/v1' } } } as never;
     expect(guest(state, [{ type: 'node.insert', owner, parentId: null, definitionId: band, props: { recipient: 'https://api.example.com/v1' } }])).not.toBeNull();
+  });
+
+  it('counts a list connected to a collection as the list’s value', () => {
+    const { state, owner, sales } = project();
+    const after = structuredClone(state);
+    (after.pages[owner.id].nodes[sales] as InstanceNode).listSources = { recipient: { query: { collectionId: 'leads' } } } as never;
+    expect(guestDestinationChange(state, after)).toMatch(/Only the host can change where/);
+  });
+
+  it('lets one edit add only so many elements', () => {
+    const { state, owner } = project();
+    const grown = (extra: number) => {
+      const after = structuredClone(state);
+      const nodes = after.pages[owner.id].nodes as Record<string, unknown>;
+      const sample = Object.values(nodes)[0];
+      for (let i = 0; i < extra; i++) nodes[`n_grow${i}`] = { ...(sample as object), id: `n_grow${i}` };
+      return after;
+    };
+    expect(guestEditProblem(state, grown(GUEST_BATCH_MAX_NEW_ELEMENTS))).toBeNull();
+    expect(guestEditProblem(state, grown(GUEST_BATCH_MAX_NEW_ELEMENTS + 1))).toMatch(/at most/);
   });
 
   it('keeps adding dated articles to the host, a copy of one included', () => {

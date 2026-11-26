@@ -65,10 +65,15 @@ type Instance = Extract<GraphNode, { kind: 'instance' }>;
 const text = (value: unknown) => (value === undefined ? 'undefined' : JSON.stringify(value));
 const defaultOf = (def: ComponentDefinition | undefined, prop: string): unknown => (def && Object.hasOwn(def.properties, prop) ? (def.properties[prop] as { default?: unknown }).default : undefined);
 
-/** A placement's value of a property, its own or its design's default, as text to compare. */
+/**
+ * A placement's value of a property, as text to compare: its own or its design's default, and the collection a list
+ * is connected to, whose entries then stand in for the list's items.
+ */
 function valueOf(state: ProjectState, n: Instance, prop: string): string {
   const own = n.props && Object.hasOwn(n.props, prop) ? n.props[prop] : undefined;
-  return text(own ?? defaultOf(Object.hasOwn(state.components, n.definitionId) ? state.components[n.definitionId] : undefined, prop));
+  const value = text(own ?? defaultOf(Object.hasOwn(state.components, n.definitionId) ? state.components[n.definitionId] : undefined, prop));
+  const source = n.listSources && Object.hasOwn(n.listSources, prop) ? n.listSources[prop] : undefined;
+  return source === undefined ? value : `${value}\u0000${JSON.stringify(source)}`;
 }
 
 const EMPTY = new Set(['undefined', 'null', '""']);
@@ -121,10 +126,25 @@ export function guestDestinationChange(before: ProjectState, after: ProjectState
 
 /**
  * Why a guest's batch, leaving the project as `after`, does something only the host may, or null when it does not:
- * adds a dated article (a copy of one included: whether and when the site publishes news is the host's), or changes
- * where a contact form sends its messages (guestDestinationChange).
+ * adds a dated article (a copy of one included: whether and when the site publishes news is the host's), adds more
+ * than GUEST_BATCH_MAX_NEW_ELEMENTS elements, or changes where a contact form sends its messages
+ * (guestDestinationChange).
  */
 export function guestEditProblem(before: ProjectState, after: ProjectState): string | null {
   for (const [id, page] of Object.entries(after.pages)) if (!Object.hasOwn(before.pages, id) && page.article) return 'Only the host can add an article.';
+  if (elements(after) - elements(before) > GUEST_BATCH_MAX_NEW_ELEMENTS) return `One edit may add at most ${GUEST_BATCH_MAX_NEW_ELEMENTS} elements.`;
   return guestDestinationChange(before, after);
+}
+
+/**
+ * How many elements one guest batch may add to the pages and the header and footer. Copies can each double what the
+ * next copies, batch after batch, so the project only ever grows a little at a time from guests' edits.
+ */
+export const GUEST_BATCH_MAX_NEW_ELEMENTS = 2_000;
+
+/** The elements on the site's pages and in its header and footer. */
+function elements(state: ProjectState): number {
+  let n = 0;
+  for (const { owner, tree } of allTrees(state)) if (owner.kind === 'page' || owner.kind === 'shell') n += Object.keys(tree.nodes).length;
+  return n;
 }
