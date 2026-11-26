@@ -35,6 +35,8 @@ vi.mock('../../src/main/runtime/manager', () => ({
   DevServer: class {
     status = { state: 'idle' };
     onStatus() {}
+    onPublished() {}
+    onGone() {}
     notifyRevision() {}
     async start() {}
     async stop() {}
