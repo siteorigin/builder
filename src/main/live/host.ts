@@ -97,9 +97,10 @@ export const GUEST_SNAPSHOT_REFILL_MS = 1_000;
 /** Answers wait while this much is still going out on the host's socket, rather than piling up behind it. */
 const RPC_BACKLOG_BYTES = 8 * 1024 * 1024;
 /**
- * How much sooner than the relay a guest's access ends on the host. The host reads the relay's clock from frames that
- * took a moment to arrive, so it runs a little behind: an edit is never made in the moments after the relay ended
- * the guest's access but before the host could know.
+ * How much sooner than the relay a guest's editor access ends on the host. The host reads the relay's clock from
+ * frames that took a moment to arrive, so it runs a little behind: an edit is never made in the moments after the
+ * relay ended the guest's access but before the host could know. The relay alone decides the rest of a guest's access
+ * (the preview), so a grant shorter than this gives a guest the preview and nothing of the editor.
  */
 export const GRANT_CLOCK_MARGIN_MS = 5_000;
 

@@ -41,7 +41,9 @@ export function formDestinationProps(state: ProjectState): Map<string, Set<strin
     changed = false;
     for (const d of defs) {
       if (d.kind === 'code') {
-        if (!out.has(d.id) && [...out.keys()].some((id) => codeImports(state, d, id))) for (const prop of Object.keys(d.properties)) changed = protect(d, prop) || changed;
+        // A form's own code reads its settings; any other code that places one (even one with a setting's name) may
+        // pass it any of its properties.
+        if (!sendsFormMessages(d) && [...out.keys()].some((id) => id !== d.id && codeImports(state, d, id))) for (const prop of Object.keys(d.properties)) changed = protect(d, prop) || changed;
         continue;
       }
       for (const n of Object.values(d.tree?.nodes ?? {})) {
@@ -75,20 +77,24 @@ const EMPTY = new Set(['undefined', 'null', '""']);
  * Why `after` changes where a contact form on a page or in the header or footer sends its messages, or null when it
  * does not. A placement that was there before keeps every setting that decides it, and is never swapped into or out
  * of a design that has such settings. A new one (inserted, duplicated, detached, or moved from another page) may have
- * none, or only a destination the host already set somewhere: in a placement before, or in a design or its defaults,
- * which guests never write. So a guest never sends a form's messages anywhere the host did not choose.
+ * none, or only what the host already set for that same setting of that same design: in a placement before, or in
+ * a design or its defaults, which guests never write. So a guest never sends a form's messages anywhere the host did
+ * not choose for it.
  */
 export function guestDestinationChange(before: ProjectState, after: ProjectState, owners: readonly OwnerKind[] = ['page', 'shell']): string | null {
   const was = formDestinationProps(before);
   const is = formDestinationProps(after);
   const edited = (kind: OwnerKind) => owners.includes(kind);
-  const allowed = new Set<string>(EMPTY);
+  // What the host set, by design and setting: a value used as one design's recipient is never another's.
+  const allowed = new Set<string>();
+  const at = (definitionId: string, prop: string, value: string) => `${definitionId}\u0000${prop}\u0000${value}`;
+  const allows = (definitionId: string, prop: string, value: string) => EMPTY.has(value) || allowed.has(at(definitionId, prop, value));
   const collect = (state: ProjectState, props: Map<string, Set<string>>, which: (kind: OwnerKind) => boolean) => {
     for (const { owner, tree } of allTrees(state)) {
       if (!which(owner.kind)) continue;
-      for (const n of Object.values(tree.nodes)) if (n.kind === 'instance') for (const p of props.get(n.definitionId) ?? []) allowed.add(valueOf(state, n, p));
+      for (const n of Object.values(tree.nodes)) if (n.kind === 'instance') for (const p of props.get(n.definitionId) ?? []) allowed.add(at(n.definitionId, p, valueOf(state, n, p)));
     }
-    for (const [id, set] of props) for (const p of set) allowed.add(text(defaultOf(state.components[id], p)));
+    for (const [id, set] of props) for (const p of set) allowed.add(at(id, p, text(defaultOf(state.components[id], p))));
   };
   collect(before, was, () => true);
   collect(after, is, (kind) => !edited(kind));
@@ -105,7 +111,7 @@ export function guestDestinationChange(before: ProjectState, after: ProjectState
       if (prior && prior.definitionId !== n.definitionId && (was.has(prior.definitionId) || is.has(n.definitionId))) return `Only the host can change where “${name}” sends its messages.`;
       for (const p of is.get(n.definitionId) ?? []) {
         const now = valueOf(after, n, p);
-        if (prior ? now === valueOf(before, prior, p) : allowed.has(now)) continue;
+        if (prior ? now === valueOf(before, prior, p) : allows(n.definitionId, p, now)) continue;
         return `Only the host can change where “${name}” sends its messages.`;
       }
     }

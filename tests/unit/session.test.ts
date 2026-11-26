@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it } from 'vitest';
-import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import type { InstanceNode, TextNode } from '@shared/types';
@@ -867,6 +867,7 @@ describe('undoing one history entry', () => {
     expect(s.revision).toBe(before.revision);
     expect(JSON.stringify(s.historyInfo())).toBe(before.history);
     expect(existsSync(join(dir, '.siteorigin', 'journal.json'))).toBe(false);
+    expect(readdirSync(join(dir, '.siteorigin')).filter((f) => f.endsWith('.tmp'))).toEqual([]);
     expect(s.saveFailure).toBeNull();
     expect(failed).toEqual([]);
     // The session carries on: the next change saves, as a step that names its guest.

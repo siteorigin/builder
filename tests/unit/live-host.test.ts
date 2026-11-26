@@ -796,12 +796,12 @@ describe('guests’ editor calls', () => {
 
   it('ends a guest’s access as the host shortened it, before the relay confirms, a little before the relay would', async () => {
     const h = editor();
-    const { socket, run, now } = await letIn(h);
+    const { socket, run, state } = await letIn(h);
     call(socket, 'q1', 'project.apply', [EDIT]);
     const edit = await until(() => h.edits[0], 'the edit');
-    expect(h.manager.setGuestExpiry(run, 'g1', now + GRANT_CLOCK_MARGIN_MS + 60)).toEqual({ ok: true });
+    expect(h.manager.setGuestExpiry(run, 'g1', Date.now() + state.relayClockOffsetMs + GRANT_CLOCK_MARGIN_MS + 150)).toEqual({ ok: true });
     expect(edit.guest.check()).toBeNull();
-    await wait(100);
+    await wait(250);
     edit.release();
     expect(await answerTo(socket, 'q1')).toMatchObject({ ok: false, error: { code: 'EXPIRED' } });
   });

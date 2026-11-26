@@ -125,6 +125,12 @@ export function canEditOperation(role: GuestRole, type: string): boolean {
 
 export const LIVE_BATCH_MAX_OPERATIONS = 256;
 export const LIVE_BATCH_LABEL_MAX = 120;
+/**
+ * Copies a guest's batch may make. Each copy can double what the next one copies (a section copied into itself), so
+ * a batch of them could make more than the host's memory holds before anything checks the result.
+ */
+export const LIVE_BATCH_MAX_COPIES = 4;
+const COPYING: readonly string[] = ['node.copy', 'node.duplicate', 'page.duplicate'];
 
 /**
  * A guest's batch of edits, as it travels: operations and the revision they were made against. The host attaches
@@ -183,6 +189,7 @@ export function checkEditBatch(role: GuestRole, input: unknown): CapabilityResul
     if (!checked.ok) return invalid(checked.message, index);
     const beyond = beyondGuestGrant(checked.op);
     if (beyond) return denied(beyond, index);
+    if (COPYING.includes(checked.op.type) && operations.filter((o) => COPYING.includes(o.type)).length >= LIVE_BATCH_MAX_COPIES) return invalid(`A batch may copy at most ${LIVE_BATCH_MAX_COPIES} things.`, index);
     operations.push(checked.op);
   }
   const { expectedRevision, label } = batch.data;

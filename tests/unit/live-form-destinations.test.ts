@@ -111,6 +111,19 @@ describe('where a contact form sends its messages', () => {
     expect([...(formDestinationProps(state).get('cmp_myform') ?? [])].sort()).toEqual(['endpoint', 'provider']);
   });
 
+  it('holds code that places a form to all its properties, whatever their names', () => {
+    const { state } = project();
+    state.components.cmp_codeband = { id: 'cmp_codeband', name: 'Code band', kind: 'code', owner: 'project', source: '<script></script>', dependencies: [FORM], properties: { endpoint: { type: 'string', label: 'Endpoint', default: '' }, recipient: { type: 'string', label: 'Recipient', default: '' }, heading: { type: 'string', label: 'Heading', default: '' } } } as never;
+    expect([...(formDestinationProps(state).get('cmp_codeband') ?? [])].sort()).toEqual(['endpoint', 'heading', 'recipient']);
+  });
+
+  it('lets a new placement use only what the host set for that same design', () => {
+    const { state, owner, band } = project();
+    // An address the host keeps under a property named like a destination, on a design that sends nothing.
+    state.components.cmp_api = { id: 'cmp_api', name: 'API card', kind: 'code', owner: 'project', source: '<p></p>', properties: { endpoint: { type: 'string', label: 'Endpoint', default: 'https://api.example.com/v1' } } } as never;
+    expect(guest(state, [{ type: 'node.insert', owner, parentId: null, definitionId: band, props: { recipient: 'https://api.example.com/v1' } }])).not.toBeNull();
+  });
+
   it('keeps adding dated articles to the host, a copy of one included', () => {
     const { state } = project();
     const article = run(state, [{ type: 'page.create', title: 'Spring news', starter: 'article' }]);
