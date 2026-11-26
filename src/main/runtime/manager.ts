@@ -274,6 +274,15 @@ export class DevServer {
     return () => this.listeners.delete(fn);
   }
 
+  /**
+   * The preview's address while its process is running and has said it is ready; null from the moment that process
+   * is stopped or exits, even while `status` still reads ready (a restart being considered), so nothing is sent to a
+   * port the process no longer holds.
+   */
+  get url(): string | null {
+    return this.proc && this.status.state === 'ready' ? this.status.url : null;
+  }
+
   private set(s: RuntimeStatus) {
     this.status = s;
     for (const l of this.listeners) l(s);

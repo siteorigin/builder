@@ -63,6 +63,15 @@ export class Relay {
     });
   }
 
+  /**
+   * The simulator's own address on this machine, `http://127.0.0.1:<port>`, for a client that connects for real, as
+   * the app's live session host does. Any host serves the relay's own routes here (RELAY_ORIGIN is unset).
+   */
+  async origin(): Promise<string> {
+    const server = await this.miniflare.ready;
+    return `http://${server.hostname}:${server.port}`;
+  }
+
   /** Open a WebSocket to the relay, collecting what arrives from the moment it is accepted. */
   async socket<In extends Incoming = 'relay-to-guest', Out extends Outgoing = 'guest-to-relay'>(path: string, headers: Record<string, string> = {}): Promise<Peer<In, Out>> {
     const response = await this.fetch(path, { headers: { upgrade: 'websocket', ...headers } });

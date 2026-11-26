@@ -25,7 +25,7 @@ if (!markAppearance()) {
 }
 
 const invoke = (channel: string) => (...args: unknown[]) => ipcRenderer.invoke(channel, ...args);
-const ALLOWED_EVENTS = new Set(['project:changed', 'project:closed', 'create:progress', 'runtime:status', 'ai:event', 'appearance', 'inspect:request', 'component-preview:request', 'component-preview:cancel', 'menu:command', 'menu:history', 'input:key', 'lifecycle:request', 'projects:unpacking']);
+const ALLOWED_EVENTS = new Set(['project:changed', 'project:closed', 'create:progress', 'runtime:status', 'ai:event', 'appearance', 'inspect:request', 'component-preview:request', 'component-preview:cancel', 'menu:command', 'menu:history', 'input:key', 'lifecycle:request', 'projects:unpacking', 'live:state', 'live:request']);
 
 const api: BuilderApi = {
   platform: process.platform,
@@ -118,6 +118,18 @@ const api: BuilderApi = {
     fixCode: invoke('ai:fixCode'),
     cancelFix: invoke('ai:cancelFix')
   } as BuilderApi['ai'],
+  live: {
+    start: invoke('live:start'),
+    stop: invoke('live:stop'),
+    admit: invoke('live:admit'),
+    decline: invoke('live:decline'),
+    setRole: invoke('live:setRole'),
+    setGuestExpiry: invoke('live:setGuestExpiry'),
+    kick: invoke('live:kick'),
+    setLocked: invoke('live:setLocked'),
+    extend: invoke('live:extend'),
+    state: invoke('live:state')
+  } as BuilderApi['live'],
   on: ((channel: string, cb: (payload: unknown) => void) => {
     if (!ALLOWED_EVENTS.has(channel)) throw new Error(`Unknown channel ${channel}`);
     const listener = (_e: unknown, payload: unknown) => cb(payload);

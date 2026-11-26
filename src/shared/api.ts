@@ -9,6 +9,9 @@ import type { ThemePack } from '@catalogue/pack';
 import type { FontCoverage } from './font-scripts';
 import type { Recipient, TurnModel } from './turn-model';
 import type { EarlierSummary } from './earlier-summary';
+import type { SessionDuration } from './live/expiry';
+import type { GuestRole } from './live/limits';
+import type { Participant } from './live/messages';
 
 export type Appearance = 'system' | 'light' | 'dark';
 export type ProviderId = 'openai' | 'anthropic' | 'local';
@@ -928,6 +931,60 @@ export interface PackCatalogue {
   userDir: string;
 }
 
+// ---------------------------------------------------------------------------
+// Hosting a live session (src/shared/live/ has the wire protocol; src/main/live/ the host)
+
+/**
+ * One live session, in the project opening it was started in. Every host command names it, so a command meant for a
+ * session that has ended (or for another opening of the project) is refused rather than reaching the next one.
+ */
+export interface LiveRun {
+  /** The snapshot's `workspaceKey` the session was started in. */
+  workspaceKey: string;
+  /** This session, of the ones started in that opening. */
+  runId: string;
+}
+
+/** The room as the relay last confirmed it. Times are on the relay's clock, in milliseconds since the epoch. */
+export interface LiveRoom {
+  roomId: string;
+  /** The link guests open, on the relay the session uses: `<relay>/s/<roomId>`. */
+  inviteUrl: string;
+  /** The project's name as guests are shown it. */
+  projectName: string;
+  duration: SessionDuration;
+  startedAt: number;
+  expiresAt: number;
+  /** The relay's clock less this computer's, as last measured: the relay's time now is `Date.now() + relayClockOffsetMs`. */
+  relayClockOffsetMs: number;
+  /** A locked room turns away new join requests. */
+  locked: boolean;
+  /** Everyone in the room: those waiting to be let in, and those admitted with their role and access. */
+  participants: Participant[];
+}
+
+/**
+ * What the host's live session is doing. `reconnecting`: the relay connection dropped and the host is taking the room
+ * back; guests keep their places, but nothing reaches them until it does, and commands other than stop are refused.
+ * `lastError`: the latest thing the relay refused, or, when idle, why the last session ended on its own (null when
+ * the host ended it).
+ */
+export type LiveHostState =
+  | { phase: 'idle'; lastError: string | null }
+  | (LiveRun & { phase: 'starting' | 'stopping' })
+  | (LiveRun & LiveRoom & { phase: 'active' | 'reconnecting'; previewReady: boolean; lastError: string | null });
+
+/** A guest asking to join, sent once when it starts waiting (`live:request`). */
+export interface LiveJoinRequest extends LiveRun {
+  roomId: string;
+  guestId: string;
+  displayName: string;
+}
+
+export type LiveStartResult = { ok: true; inviteUrl: string; state: LiveHostState } | { ok: false; message: string };
+/** Whether a host command was sent: the relay's next roster or room state shows it taking effect. */
+export type LiveCommandResult = { ok: true } | { ok: false; message: string };
+
 export interface BuilderApi {
   platform: string;
   app: {
@@ -1174,6 +1231,26 @@ export interface BuilderApi {
     /** Cancel an in-flight fixCode request. */
     cancelFix(): Promise<void>;
   };
+  /**
+   * Host a live session of the open project. It belongs to that opening: closing the project, switching to another or
+   * quitting ends it. Times are on the relay's clock (LiveRoom.relayClockOffsetMs).
+   */
+  live: {
+    /** Open a room on the configured relay for the project opening `opening` (its snapshot's workspaceKey). */
+    start(opts: { opening: string; duration: SessionDuration }): Promise<LiveStartResult>;
+    /** End the session for everyone. */
+    stop(run: LiveRun): Promise<LiveCommandResult>;
+    /** Let a waiting guest in, with its own end of access if given (null: until the session ends). */
+    admit(run: LiveRun, guestId: string, role: GuestRole, guestExpiresAt?: number | null): Promise<LiveCommandResult>;
+    decline(run: LiveRun, guestId: string): Promise<LiveCommandResult>;
+    setRole(run: LiveRun, guestId: string, role: GuestRole): Promise<LiveCommandResult>;
+    setGuestExpiry(run: LiveRun, guestId: string, guestExpiresAt: number | null): Promise<LiveCommandResult>;
+    kick(run: LiveRun, guestId: string): Promise<LiveCommandResult>;
+    setLocked(run: LiveRun, locked: boolean): Promise<LiveCommandResult>;
+    /** Move the session's end later, to `expiresAt` on the relay's clock, at most 24 hours after it started. */
+    extend(run: LiveRun, expiresAt: number): Promise<LiveCommandResult>;
+    state(): Promise<LiveHostState>;
+  };
   on(channel: 'project:changed', cb: (snap: ProjectSnapshot) => void): () => void;
   on(channel: 'project:closed', cb: () => void): () => void;
   on(channel: 'create:progress', cb: (p: ProgressEvent) => void): () => void;
@@ -1196,6 +1273,10 @@ export interface BuilderApi {
   /** Edit → Undo or Redo, chosen from the menu or reached by its key (`fromKey`) when nothing on the page took the key. */
   on(channel: 'menu:history', cb: (e: { action: 'undo' | 'redo'; fromKey: boolean }) => void): () => void;
   on(channel: 'input:key', cb: (k: { key: string; code?: string; meta: boolean; ctrl: boolean; shift: boolean; alt: boolean }) => void): () => void;
+  /** The host's live session changed: started, a guest joined or left, it dropped or came back, or it ended. */
+  on(channel: 'live:state', cb: (state: LiveHostState) => void): () => void;
+  /** A guest started waiting to join the live session. */
+  on(channel: 'live:request', cb: (request: LiveJoinRequest) => void): () => void;
   inspectResult(requestId: string, report: unknown): void;
   componentPreviewResult(requestId: string, results: ComponentPreviewResult[]): void;
   /** The screen shown now listens for File menu commands (menu:command): one waiting for the editor is sent. */
