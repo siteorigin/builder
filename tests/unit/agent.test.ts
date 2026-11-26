@@ -5089,9 +5089,9 @@ describe('source patches bound to a revision and a scope (#740)', () => {
     const { result } = await env.run('Tidy the hero code');
     expect(resultOf(env.adapter.requests[2])).toMatchObject({ ok: true, revision: 2 });
     // Checked first, and said as a revision: the project moved on since the read.
-    expect(resultOf(env.adapter.requests[3])).toMatchObject({ error: 'STALE_REVISION', revision: 2, message: expect.stringMatching(/written against revision 1, but the project is at 2\. Call read_source again/) });
+    expect(resultOf(env.adapter.requests[3])).toMatchObject({ ok: false, revision: 2, error: { code: 'STALE_REVISION', recoverable: true, message: expect.stringMatching(/written against revision 1, but the project is at 2\. Call read_source again/) } });
     // The revision matches, but the source is not the one that was read.
-    expect(resultOf(env.adapter.requests[4])).toMatchObject({ error: 'STALE_REVISION', revision: 2, message: 'The source changed. Call read_source again.' });
+    expect(resultOf(env.adapter.requests[4])).toMatchObject({ ok: false, revision: 2, error: { code: 'STALE_REVISION', message: 'The source changed. Call read_source again.' } });
     expect(JSON.stringify(resultOf(env.adapter.requests[5]))).toMatch(/INVALID_ARGUMENT.*expectedRevision/);
     expect(sourceOf(session.state, id)).toBe(tidied(before));
     expect(result?.status).toBe('completed');
@@ -5288,7 +5288,7 @@ describe('source patches bound to a revision and a scope (#740)', () => {
     await env.run('Tidy this code', selected(session.state));
     expect(JSON.stringify(resultOf(env.adapter.requests[2]))).toMatch(/INVALID_ARGUMENT.*scope/);
     expect(resultOf(env.adapter.requests[3]).error).toMatchObject({ code: 'SCOPE_MISMATCH', message: expect.stringMatching(/asks to change the whole site, which is more than Split hero/) });
-    expect(resultOf(env.adapter.requests[4])).toMatchObject({ error: 'INVALID_ARGUMENT', message: expect.stringMatching(/apply_source_patch/) });
+    expect(resultOf(env.adapter.requests[4])).toMatchObject({ ok: false, error: { code: 'INVALID_ARGUMENT', message: expect.stringMatching(/apply_source_patch/) } });
     expect(sourceOf(session.state, id)).toBe(before);
   });
 

@@ -122,8 +122,8 @@ const CASES = {
   read_source: { where: 'site', ok: (_s, _r, ids) => ({ definitionId: ids.note }), fail: () => ({ definitionId: 'def_missing' }), code: 'INVALID_ARGUMENT' },
   apply_source_patch: {
     where: 'site',
-    ok: (s, _r, ids) => ({ definitionId: ids.note, expectedHash: sourceHash(s.components[ids.note].source ?? ''), edits: [{ find: '<p>', replace: '<p class="note">' }] }),
-    fail: (_s, _r, ids) => ({ definitionId: ids.note, expectedHash: 'sha_stale', edits: [{ find: '<p', replace: '<div' }] }),
+    ok: (s, revision, ids) => ({ definitionId: ids.note, scope: { kind: 'site' }, expectedRevision: revision, expectedHash: sourceHash(s.components[ids.note].source ?? ''), edits: [{ find: '<p>', replace: '<p class="note">' }] }),
+    fail: (_s, revision, ids) => ({ definitionId: ids.note, scope: { kind: 'site' }, expectedRevision: revision, expectedHash: 'sha_stale', edits: [{ find: '<p', replace: '<div' }] }),
     code: 'STALE_REVISION'
   },
   inspect_layout: { where: 'site', ok: (s) => ({ pageId: s.site.homePageId, viewport: 'phone' }), fail: () => ({ pageId: 'pg_missing', viewport: 'phone' }), code: 'INVALID_ARGUMENT' },

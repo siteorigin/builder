@@ -128,8 +128,9 @@ export interface LiveEditBatch {
 // A guest's batch is always one the local pipeline accepts as it is.
 const _liveBatchIsEditBatch: Parameters<BuilderApi['project']['apply']>[0] = {} as LiveEditBatch;
 void _liveBatchIsEditBatch;
-// Every refusal the engine gives can be passed on to a guest as it is.
-const _everyEngineCode: Exclude<ToolErrorCode, RpcErrorCode> extends never ? true : never = true;
+// Every refusal the engine gives can be passed on to a guest as it is. ONE_CHANGE_PER_TURN and UPDATE_HELD are an AI
+// run's own refusals of a tool call, never a change's, so no guest edit is refused with them.
+const _everyEngineCode: Exclude<ToolErrorCode, RpcErrorCode | 'ONE_CHANGE_PER_TURN' | 'UPDATE_HELD'> extends never ? true : never = true;
 void _everyEngineCode;
 // Presence selections are the editor's own element references. messages.ts keeps its own copy so the relay never
 // reads the app's types; this keeps the two the same.

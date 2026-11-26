@@ -51,7 +51,7 @@ describe('inspect_layout with refs', () => {
     expect(r.ok).toBe(true);
     // The preview is asked for the elements the refs name, as the canvas finds them.
     expect(asked).toEqual([{ pageId: s.site.homePageId, width: 390, targets: [{ owner: page, instancePath: [], nodeId: grid.id }, { owner: page, instancePath: [grid.id], nodeId: 'card', partId: 'card', itemPath: [item] }] }]);
-    const content = r.content as { scope?: string; pageId: string; report: { targets: Array<{ ref: unknown; visible: boolean }>; issues: unknown[] } };
+    const content = r.content as unknown as { scope?: string; pageId: string; report: { targets: Array<{ ref: unknown; visible: boolean }>; issues: unknown[] } };
     expect(content.scope).toBe('elements');
     expect(content.pageId).toBe(s.site.homePageId);
     // Each element by the ref it was asked by, without what explained the finding.
@@ -83,13 +83,13 @@ describe('inspect_layout with refs', () => {
       const { host, asked } = hostFor(s, () => ({ issues: [] }));
       const r = await executeTool('inspect_layout', JSON.stringify({ pageId: '/', viewport: 'phone', refs: [{ owner: page, nodeId: grid.id }, bad] }), host, 'c1');
       expect(r.ok, JSON.stringify(bad)).toBe(false);
-      expect(r.content).toMatchObject({ error: 'INVALID_ARGUMENT', viewport: 'phone' });
-      expect((r.content as { message: string }).message).toMatch(message);
+      expect(r.content).toMatchObject({ ok: false, error: { code: 'INVALID_ARGUMENT', recoverable: true, details: { viewport: 'phone' } } });
+      expect(r.ok ? '' : r.content.error.message).toMatch(message);
       expect(asked).toEqual([]);
     }
     // An empty list would check nothing: it is refused rather than read as a clean page.
     const empty = hostFor(s, () => ({ issues: [], targets: [] }));
-    expect(await executeTool('inspect_layout', JSON.stringify({ pageId: '/', viewport: 'phone', refs: [] }), empty.host, 'c1')).toMatchObject({ ok: false, content: { error: 'INVALID_ARGUMENT' } });
+    expect(await executeTool('inspect_layout', JSON.stringify({ pageId: '/', viewport: 'phone', refs: [] }), empty.host, 'c1')).toMatchObject({ ok: false, content: { error: { code: 'INVALID_ARGUMENT' } } });
     expect(empty.asked).toEqual([]);
   });
 
@@ -116,11 +116,11 @@ describe('inspect_layout with refs', () => {
     // A preview that answered without the elements (an older frame) is a check that did not run.
     const blind = hostFor(s, () => ({ issues: [] }));
     const one = JSON.stringify({ pageId: '/', viewport: 'desktop', refs: [{ owner: { kind: 'page', id: s.site.homePageId }, nodeId: grid.id }] });
-    expect(await executeTool('inspect_layout', one, blind.host, 'c1')).toMatchObject({ ok: false, content: { error: 'VALIDATION_FAILED' } });
+    expect(await executeTool('inspect_layout', one, blind.host, 'c1')).toMatchObject({ ok: false, content: { error: { code: 'VALIDATION_FAILED' } } });
     // Nor one that answered for each element without measuring it.
     for (const targets of [[null], [{ visible: true }], [{ visible: 'yes', elements: [] }], [{ visible: false, elements: [{ box: null, visible: false, measured: false }] }], [], [{ visible: true, elements: [] }, { visible: true, elements: [] }]]) {
       const odd = hostFor(s, () => ({ issues: [], targets }));
-      expect(await executeTool('inspect_layout', one, odd.host, 'c1'), JSON.stringify(targets)).toMatchObject({ ok: false, content: { error: 'VALIDATION_FAILED' } });
+      expect(await executeTool('inspect_layout', one, odd.host, 'c1'), JSON.stringify(targets)).toMatchObject({ ok: false, content: { error: { code: 'VALIDATION_FAILED' } } });
     }
   });
 
