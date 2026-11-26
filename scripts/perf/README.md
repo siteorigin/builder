@@ -98,6 +98,22 @@ shown in that window (all but Project for the click, all but the Inspector for t
 rendered) and React commits. The panels are the sidebar's six views, the post writer and SEO view over the canvas, and
 the dock's four. Showing the Inspector between the two windows is in neither.
 
+**`chat`**: in the AI panel, in a conversation of 6 messages and then in one of 100, type a 66-character question one
+key at a time and stream a long Markdown answer to it (about 2,200 characters, 4 at a time every 8 ms, from the scripted
+model server in native tool mode: no live provider). The conversations' earlier turns are seeded into the project's
+chat folder before the timed part, which the app does not watch, and opened from Earlier conversations. Checks: the
+composer holds what was typed, the answer's first sentence, one from its middle and one near its end are each on screen
+while the run is still going and before its last sentence, its last is there once it ends, the log shows both new
+messages, the composer is empty, and the conversation saved to disk holds its earlier messages, the request as typed and
+the answer whole, the same two messages the log shows. Every key typed has its span, and the editor handled every event
+main sent, or the iteration fails. Per conversation (`chat.at6.*`, `chat.at100.*`): `keyMs` (median `chat.keystroke` span:
+one keystroke's update with the React render and commit it sets off), `keystrokes`, and the React commits, message
+renders and text parses while typing (`keyCommits`, `keyMessageRenders`, `keyTextParses`); for the reply, the
+`ai:event` sends and their bytes (`events`, `eventBytes`), `eventsHandled`, `eventMs` (median `chat.aiEvent` span, the
+same for one event) and `eventMsTotal`, `replyMs` (until the editor handled the reply's last event), the commits,
+message renders and text parses while it streamed (`streamCommits`, `streamMessageRenders`, `streamTextParses`), and
+the longest main-process stall.
+
 ## Reading and comparing results
 
 Counts and sizes are the portable evidence: they do not depend on the machine, and two runs of the same build give the
@@ -148,10 +164,12 @@ them over IPC). Unset, no file is opened, no IPC channel is registered and every
 
 Counters: `fs.writes`, `fs.durableWrites`, `fs.fsyncs` (`src/main/project/fsutil.ts`), `files.read`, `files.hashed`
 (project, generated and theme pack files), `ipc.projectChanged.sends`, `ipc.projectChanged.bytes` (as IPC serializes
-the snapshot), `session.reloadFromDisk`, `main.stalls` (main), and `react.commits`, `react.renders` (components rendered,
-counted from each commit's fibers) and, per panel marked with `timedPanel` (`src/renderer/src/lib/perf-panels.tsx`),
-`panel.<id>.renders` and `panel.<id>.renderMs` (the time between two probes React renders before and after the panel)
-(renderer). The main process also
+the snapshot), `ipc.aiEvent.sends`, `ipc.aiEvent.bytes` and `ipc.aiEvent.unsized` (the assistant's events, sized the
+same way), `session.reloadFromDisk`, `main.stalls` (main), and `react.commits`, `react.renders` (components rendered,
+counted from each commit's fibers), per panel marked with `timedPanel` (`src/renderer/src/lib/perf-panels.tsx`)
+`panel.<id>.renders` and `panel.<id>.renderMs` (the time between two probes React renders before and after the panel),
+`chat.messageRenders` (a Chat message rendered) and `chat.textParses` (model text read into blocks) (renderer). The main
+process also
 watches its event loop every 20 ms and records each time the watch ran 50 ms or more late as a `main.stall` span of that
 lateness (a block shorter than about 70 ms can go unseen).
 
@@ -164,7 +182,9 @@ the `edit` scenario waits for the workspace save its own panel choice set off be
 - **Main process**: `import { perf, timed } from './perf'` (`src/main/perf.ts`). `perf.mark(name, attrs?)` for a point,
   `const end = perf.span(name, attrs?)` … `end(more?)` for a stretch, `perf.count(name, by?)` for a counter, and
   `timed(name, fn, attrs?)` to wrap an async function, which returns `fn` itself when marks are off.
-- **Editor**: `perfMark(name, attrs?)` or `perfMarkOnce(...)` from `src/renderer/src/lib/perf.ts`.
+- **Editor**: `perfMark(name, attrs?)` or `perfMarkOnce(...)` from `src/renderer/src/lib/perf.ts`; `perfCount(name, by?)`
+  for a counter, which every later mark carries; `perfWork(name, fn, attrs?)` to time an update the editor makes with
+  the React render and commit it sets off (a span ending in a microtask queued after `fn`, with the `commits` it took).
 - **Workers** report to the main process by message, which marks on receipt (as `runtime.ready` and `runtime.published`
   are).
 - **No cost when off.** A hook is an empty function then; anything costly to work out for one (serializing, walking

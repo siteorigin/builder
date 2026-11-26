@@ -25,6 +25,7 @@ import { summaryNow, turnState } from '@shared/turns';
 import { chatBusy, composerAction, imageLabels, isPaused, offeredImages, questionHint, shownQuestions, waitingQuestion, type WaitingQuestion } from '../lib/chatQuestions';
 import { isImeComposing } from '../lib/ime';
 import { textBlocks, textSpans, type TextBlock, type TextSpan } from '../lib/model-text';
+import { perfCount, perfOn, perfWork } from '../lib/perf';
 import { externalLink } from '@shared/links';
 import { confirmOpenExternal } from '../lib/open-external';
 import { Spinner, useMenu } from '../components/ui';
@@ -152,6 +153,7 @@ function Block({ block: b }: { block: TextBlock }) {
 
 /** Model text as the reader expects it (textBlocks). One paragraph stays inline, so a short reply is a plain line of text. */
 function Md({ text }: { text: string }) {
+  perfCount('chat.textParses');
   const shown = textBlocks(text);
   const [first] = shown;
   if (shown.length <= 1 && (!first || first.kind === 'p'))
@@ -883,6 +885,17 @@ export function Chat() {
 
   /** `context` replaces the editor's own (and its images), for a message that continues an earlier request. True once
    *  the request has started. */
+  /** What the composer does with each change to its text: the answer to a waiting question, or the draft. */
+  const typed = (box: HTMLTextAreaElement) => {
+    if (asking && askingKey) setAnswerBox({ key: askingKey, text: box.value });
+    else {
+      // Editing the message that came back makes its next Enter a deliberate send.
+      answeredAt.current = 0;
+      setChatDraft(conversation?.id, box.value);
+    }
+    sizeToFit(box);
+  };
+
   const send = async (text = draft, context?: ChatContext): Promise<boolean> => {
     if (!text.trim() || running || sending || !conversation) return false;
     if (!configured) return (openSettings(), false);
@@ -1476,15 +1489,8 @@ export function Chat() {
             rows={1}
             // Until the project's conversation has loaded, there is no thread to write in.
             readOnly={!conversation}
-            onChange={(e) => {
-              if (asking && askingKey) setAnswerBox({ key: askingKey, text: e.target.value });
-              else {
-                // Editing the message that came back makes its next Enter a deliberate send.
-                answeredAt.current = 0;
-                setChatDraft(conversation?.id, e.target.value);
-              }
-              sizeToFit(e.target);
-            }}
+            // Each keystroke timed with the render it sets off, while marks are on (scripts/perf: the chat scenario).
+            onChange={perfOn ? (e) => perfWork('chat.keystroke', () => typed(e.target)) : (e) => typed(e.target)}
             onKeyDown={(e) => {
               const sendOnEnter = getState().settings?.ai.sendOnEnter ?? true;
               if (e.key === 'Enter' && !isImeComposing(e) && (sendOnEnter ? !e.shiftKey : e.metaKey || e.ctrlKey)) {
@@ -1665,6 +1671,7 @@ function captionOf(m: ChatMessage | undefined, state: ProjectState | undefined):
  * the first request of a run about one target and wherever the target changes, and is always read out.
  */
 function UserMessage({ m, previous }: { m: ChatMessage; previous?: ChatMessage }) {
+  perfCount('chat.messageRenders');
   const state = useStore((s) => s.snapshot?.state);
   const caption = captionOf(m, state);
   // The same words can name two different elements ("Home → Heading"), so the target itself must match too.
@@ -1849,6 +1856,7 @@ function AssistantMessage({
   onRetry?: () => void;
   continueNote?: string;
 }) {
+  perfCount('chat.messageRenders');
   const r = m.result;
   const activities = m.activities ?? [];
   // A live turn of a run that waits for the author is paused: nothing in it spins, whichever message holds the

@@ -26,7 +26,7 @@ import { followRemote, syncRemotePresence } from './lib/remote-session';
 import { JoinLiveDialog } from './components/JoinLive';
 import { isRemoteOpening } from './lib/remote-snapshot';
 import { projectDisplayName, windowTitle } from '@shared/project-name';
-import { perfMark, perfMarkAtCommit, perfOn } from './lib/perf';
+import { perfMark, perfMarkAtCommit, perfOn, perfWork } from './lib/perf';
 
 /** What Undo and Redo, and keys forwarded from the preview frame, act on right now. */
 function historyContext(): HistoryContext {
@@ -97,7 +97,8 @@ export function App() {
         );
       }),
       api.on('runtime:status', (runtime) => setState({ runtime })),
-      api.on('ai:event', applyAiEvent),
+      // Each assistant event timed with the render it sets off, while marks are on (scripts/perf: the chat scenario).
+      api.on('ai:event', perfOn ? (e) => perfWork('chat.aiEvent', () => applyAiEvent(e), { kind: e.kind }) : applyAiEvent),
       api.on('inspect:request', (req) => void runInspection(req)),
       api.on('component-preview:request', (req) => void runComponentPreviews(req)),
       api.on('component-preview:cancel', (req) => cancelComponentPreviews(req.requestId)),

@@ -406,6 +406,12 @@ export class Controller {
       perf.count('ipc.projectChanged.sends');
       if (bytes !== null) perf.count('ipc.projectChanged.bytes', bytes);
       perf.mark('controller.snapshotSent', { revision: (payload as ProjectSnapshot).revision, bytes }, at);
+    } else if (perf.on && channel === 'ai:event') {
+      // The assistant's events, counted and sized the same way (scripts/perf: the chat scenario).
+      const bytes = serializedSize(payload);
+      perf.count('ipc.aiEvent.sends');
+      if (bytes !== null) perf.count('ipc.aiEvent.bytes', bytes);
+      else perf.count('ipc.aiEvent.unsized');
     }
   }
 

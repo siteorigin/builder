@@ -8,14 +8,16 @@
  * it. `run` throws a PredicateError when the feature did not do its job, and the iteration fails: a scenario never
  * gets faster by doing less.
  */
-import { existsSync, readFileSync } from 'node:fs';
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import type { ElectronApplication, FrameLocator, Page } from 'playwright';
 import type { BuilderApi } from '../../src/shared/api';
 import type { PerfAttrs, PerfRecord } from '../../src/shared/perf';
 import type { ProjectState } from '../../src/shared/types';
+import type { ChatMessage, Conversation } from '../../src/shared/api';
+import { MockOpenAIServer, textReply } from '../../tests/unit/mock-openai-server';
 import type { FixtureSpec } from './fixtures';
-import { atRevision, Collector, counter, delta, forScenario, inProc, type Measured, type Trace } from './results';
+import { atRevision, Collector, counter, delta, forScenario, inProc, median, type Measured, type Trace } from './results';
 
 /** The feature did not do its job: the iteration fails, whatever its timings. */
 export class PredicateError extends Error {}
@@ -104,6 +106,9 @@ export interface Scenario {
 /** The editor page's globals, inside `win.evaluate` (the scripts are not compiled with the DOM's types). Cast inline:
  *  Playwright sends only the function's own source to the page. */
 type EditorPage = { builder: BuilderApi };
+/** The little of the DOM the chat scenario reads inside `win.waitForFunction`, typed the same way. */
+type DomElement = { textContent: string | null; querySelector(selector: string): DomElement | null };
+type DomPage = { document: { querySelector(selector: string): DomElement | null; querySelectorAll(selector: string): Iterable<DomElement> } };
 
 /** The preview frame of the canvas. */
 const preview = (win: Page): FrameLocator => win.frameLocator('.frame-box iframe');
@@ -491,7 +496,249 @@ export const panels: Scenario = {
   }
 };
 
-export const SCENARIOS: Scenario[] = [launch, open, edit, panels];
+// ---------------------------------------------------------------------------
+// chat
+// ---------------------------------------------------------------------------
+
+/**
+ * The conversations the chat scenario works in, each seeded with earlier turns, keyed by how many messages its log
+ * holds while the reply streams (the earlier ones, the request and the reply).
+ */
+export const CHAT_CASES = [
+  { key: 'at6', id: 'c_perfshort', title: 'Benchmark: a short conversation', earlier: 4 },
+  { key: 'at100', id: 'c_perflong', title: 'Benchmark: a long conversation', earlier: 98 }
+] as const;
+export type ChatCaseKey = (typeof CHAT_CASES)[number]['key'];
+
+/** What is typed into the composer, one key at a time, before it is sent. */
+export const CHAT_TYPED = 'Which pages still need a hero image, and what would suit each one?';
+/** The streamed reply's first and last sentences, which the check finds on screen while it streams and once it ends. */
+export const chatReplyFirst = (key: string) => `Here is what I found on your site (${key}).`;
+export const chatReplyLast = (key: string) => `That is everything for this question (${key}).`;
+/**
+ * Sentences from the middle and near the end of the reply, each checked on screen while the run is still going: a
+ * reply that showed its start and then stopped taking pieces until its end would pass the first and last checks.
+ */
+export const CHAT_REPLY_CHECKPOINTS = ['Here is how the pages compare today:', 'If you would like, I can add an image block'];
+/** The reply comes in pieces of this many characters, one every CHAT_FRAME_MS, as a model streaming tokens would. */
+const CHAT_PIECE = 4;
+const CHAT_FRAME_MS = 8;
+
+/** A long answer as a model writes one: paragraphs, a list and a table of Markdown, about 2,400 characters. */
+export function chatReply(key: string): string {
+  const pages = ['Home', 'About', 'Services', 'Pricing', 'Team', 'Contact', 'Blog', 'Careers'];
+  return [
+    chatReplyFirst(key),
+    '',
+    'Most of your pages already open with a strong image, but a few start with text alone. A hero image sets the tone before anyone reads a word, so these are worth fixing first:',
+    '',
+    ...pages.slice(0, 5).map((p, i) => `${i + 1}. **${p}**: the opening section has a heading and a short paragraph, but no image. A photo of ${['your team at work', 'the studio itself', 'a finished project', 'a happy client', 'the people behind the work'][i]} would suit it, cropped wide so the heading stays readable.`),
+    '',
+    'Here is how the pages compare today:',
+    '',
+    '| Page | Hero image | Words above the fold |',
+    '| --- | --- | ---: |',
+    ...pages.map((p, i) => `| ${p} | ${i < 5 ? 'none' : '`hero-' + p.toLowerCase() + '.jpg`'} | ${40 + i * 7} |`),
+    '',
+    'A few things to keep in mind as you choose them:',
+    '',
+    '- Use the same aspect ratio on every page, so the layout does not jump as visitors move around.',
+    '- Keep faces and text away from the edges: on a phone the image is cropped to its middle.',
+    '- Write alt text that says what the picture shows, not what it is for. "Two designers sketching at a long table" tells a screen reader user far more than "hero image".',
+    '- Prefer one strong photo to a slideshow. Most visitors never see the second slide.',
+    '',
+    'If you would like, I can add an image block to each of those five sections and leave the picture for you to choose from the library. Ask in Edit mode and I will make the change as one step you can undo.',
+    '',
+    chatReplyLast(key)
+  ].join('\n');
+}
+
+/** Earlier turns of a conversation, alternating questions answered and edits made, as stored ones are. */
+export function chatSeed(c: (typeof CHAT_CASES)[number], fixture: FixtureFacts): Conversation {
+  const messages: ChatMessage[] = [];
+  const at = (i: number) => new Date(Date.UTC(2026, 0, 5, 9, 0, i * 20)).toISOString();
+  const context = { pageId: fixture.homePageId, pageTitle: 'Home', selection: null, selectionLabel: null, viewport: 1280 };
+  for (let turn = 0; messages.length < c.earlier; turn++) {
+    const ask = turn % 2 === 0;
+    const runId = `run_seed${turn}`;
+    messages.push({ id: `m_${c.key}u${turn}`, role: 'user', text: ask ? `Question ${turn + 1}: what does the ${['header', 'footer', 'hero', 'pricing table'][turn % 4]} say on the home page, and is it clear enough for a new visitor?` : `Edit ${turn + 1}: make the ${['header', 'footer', 'hero', 'pricing table'][turn % 4]} heading shorter and friendlier.`, time: at(turn * 2), context: { ...context, ...(ask ? { mode: 'ask' as const } : { scope: 'page' as const }) }, runId });
+    const summary = ask
+      ? `The ${['header', 'footer', 'hero', 'pricing table'][turn % 4]} reads well. It says **what you do** in one line and names the city, which helps local visitors.\n\nTwo small things could help:\n\n- The second sentence repeats the first. Cutting it keeps the focus on the heading.\n- The button says "Learn more". "See our work" tells people where it goes.\n\nNothing on your site was changed.`
+      : `Shortened the heading to "Good design, made simple" and kept its style. The rest of the section is as it was.`;
+    messages.push({
+      id: `m_${c.key}a${turn}`,
+      role: 'assistant',
+      text: ask ? summary : '',
+      time: at(turn * 2 + 1),
+      runId,
+      model: { provider: 'local', id: 'test-model', label: 'test-model' },
+      activities: [
+        { id: `a_${turn}_1`, label: 'Read the Home page', status: 'done', tool: 'read_page' },
+        { id: `a_${turn}_2`, label: ask ? 'Looked at the section' : 'Changed the heading', status: 'done', tool: ask ? 'read_page' : 'update_selected_props' }
+      ],
+      result: { status: ask ? 'no-changes' : 'completed', summary, changes: ask ? [] : [{ label: 'Home → Split hero: Heading', pageId: fixture.homePageId, nodeId: fixture.heroId }], validation: [], checks: [], canUndo: false, ...(ask ? { ask: true } : {}) }
+    } as ChatMessage);
+  }
+  return { id: c.id, title: c.title, named: true, createdAt: at(0), messages: messages.slice(0, c.earlier) };
+}
+
+/** The chat panel's log, its composer and the button that lists earlier conversations. */
+const chatLog = (win: Page) => win.locator('.chat-log');
+const composer = (win: Page) => win.getByRole('textbox', { name: 'Message', exact: true });
+
+export const chat: Scenario = {
+  name: 'chat',
+  after: 'open',
+  description: 'In the AI panel, type a question and stream a long answer to it, in a conversation of 6 messages and in one of 100.',
+  async run(ctx) {
+    const { win, fixture } = ctx;
+    const server = await new MockOpenAIServer().start();
+    try {
+      // The scripted model, in native tool mode so its text streams as it comes; untimed, as are the seeded
+      // conversations (stored where the app keeps them, a folder it does not watch) and the reload that takes the setting.
+      await win.evaluate((url) => (globalThis as unknown as EditorPage).builder.app.setSettings({ ai: { provider: 'local', models: { local: 'test-model' }, local: { baseURL: url, allowRemote: false, toolMode: 'native', contextWindow: 131_072 } } } as never), server.baseURL);
+      const chatDir = join(ctx.projectDir, '.siteorigin', 'sessions', 'chat');
+      mkdirSync(chatDir, { recursive: true });
+      for (const c of CHAT_CASES) writeFileSync(join(chatDir, `${c.id}.json`), JSON.stringify(chatSeed(c, fixture)));
+      await win.reload();
+      await win.locator('.editor').waitFor({ timeout: 60_000 });
+      await preview(win).locator('html[data-so-editing]').waitFor({ state: 'attached', timeout: 60_000 });
+      await win.locator('.dock-tab', { hasText: 'AI' }).first().click();
+      await composer(win).waitFor({ timeout: 15_000 });
+      await ctx.mark('scenario.start', { scenario: 'chat' });
+      for (const c of CHAT_CASES) {
+        // Open the conversation from Earlier conversations, as a person does, and ask rather than edit.
+        await win.getByRole('button', { name: 'Earlier conversations', exact: true }).click();
+        await win.getByRole('menuitemradio', { name: new RegExp(`^${c.title}`) }).or(win.getByRole('menuitem', { name: new RegExp(`^${c.title}`) })).first().click();
+        await win.waitForFunction((n) => [...(globalThis as unknown as DomPage).document.querySelectorAll('.chat-log [data-message-id]')].length === n, c.earlier, { timeout: 30_000 });
+        const mode = win.getByRole('button', { name: /^What your next message does: Edit/ });
+        if (await mode.count()) {
+          await mode.first().click();
+          await win.getByRole('menuitemradio', { name: /^Ask/ }).click();
+        }
+        expect((await composer(win).getAttribute('placeholder')) === 'What would you like to know?', 'the composer is not asking a question');
+        await composer(win).click();
+        // Opening a conversation and choosing the mode save the workspace 300 ms later: that lands before typing starts.
+        await sleep(WORKSPACE_SAVE_WAIT_MS);
+        await ctx.mark('chat.typeStart', { at: c.key });
+        await win.keyboard.type(CHAT_TYPED);
+        expect((await composer(win).inputValue()) === CHAT_TYPED, 'the composer does not hold what was typed');
+        await ctx.mark('chat.typeEnd', { at: c.key });
+        const reply = chatReply(c.key);
+        server.script(textReply(reply, { size: CHAT_PIECE, frameMs: CHAT_FRAME_MS }));
+        await ctx.mark('chat.streamStart', { at: c.key });
+        await win.keyboard.press('Enter');
+        // The reply shows as it streams: its first sentence, then one from the middle and one near the end, each on
+        // screen while the run is still going and before its last sentence has arrived.
+        const last = chatReplyLast(c.key);
+        for (const part of [chatReplyFirst(c.key), ...CHAT_REPLY_CHECKPOINTS]) {
+          const streaming = await win
+            .waitForFunction(
+              ({ part, last }) => {
+                const doc = (globalThis as unknown as DomPage).document;
+                const t = [...doc.querySelectorAll('.chat-log .msg-ai')].at(-1)?.textContent ?? '';
+                return !!doc.querySelector('.run-strip') && t.includes(part) && !t.includes(last);
+              },
+              { part, last },
+              { timeout: 30_000, polling: 'raf' }
+            )
+            .then(
+              () => true,
+              () => false
+            );
+          expect(streaming, `the reply was not shown as it streamed: “${part}” was not on screen before it ended`);
+        }
+        await win.waitForFunction(
+          ({ last }) => {
+            const doc = (globalThis as unknown as DomPage).document;
+            return !doc.querySelector('.run-strip') && ([...doc.querySelectorAll('.chat-log .msg-ai')].at(-1)?.querySelector('.reply-text')?.textContent ?? '').includes(last);
+          },
+          { last },
+          { timeout: 60_000 }
+        );
+        const shown = await chatLog(win).locator('[data-message-id]').count();
+        expect(shown === c.earlier + 2, `the conversation shows ${shown} messages, not ${c.earlier + 2}`);
+        expect((await composer(win).inputValue()) === '', 'the composer still holds the sent message');
+        // The finished turn is saved with the conversation: the request as typed, the answer whole.
+        const file = join(chatDir, `${c.id}.json`);
+        const saved = async () => {
+          const end = Date.now() + 15_000;
+          for (;;) {
+            const conv = existsSync(file) ? (JSON.parse(readFileSync(file, 'utf8')) as Conversation) : null;
+            if ((conv && conv.messages.length === c.earlier + 2) || Date.now() >= end) return conv;
+            await sleep(100);
+          }
+        };
+        const conv = await saved();
+        expect(conv?.messages.length === c.earlier + 2, `the conversation was saved with ${conv?.messages.length} messages, not ${c.earlier + 2}`);
+        expect(conv.id === c.id && conv.messages.slice(0, c.earlier).every((m, i) => m.id === `m_${c.key}${i % 2 ? 'a' : 'u'}${i >> 1}`), 'the conversation was saved without its earlier messages');
+        const [asked, answered] = conv.messages.slice(-2);
+        expect(asked.role === 'user' && asked.text === CHAT_TYPED, 'the saved request is not what was typed');
+        expect(answered.role === 'assistant' && answered.result?.summary.trim() === reply.trim() && answered.text.trim() === reply.trim(), 'the saved answer is not the reply that streamed');
+        const ids = await chatLog(win).locator('[data-message-id]').evaluateAll((els) => els.slice(-2).map((el) => (el as unknown as { dataset: Record<string, string | undefined> }).dataset.messageId));
+        expect(ids[0] === asked.id && ids[1] === answered.id, 'the log does not show the request and answer that were saved');
+        await sleep(ctx.settleMs);
+        await ctx.mark('chat.streamEnd', { at: c.key });
+      }
+      await ctx.mark('scenario.end', { scenario: 'chat' });
+      await ctx.waitTrace((t) => !!t.first('scenario.end', forScenario('chat', 'renderer')) && !!t.first('scenario.end', forScenario('chat', 'main')));
+    } finally {
+      await server.stop();
+    }
+  },
+  measure(trace) {
+    const m = new Collector();
+    for (const c of CHAT_CASES) {
+      const mark = (name: string, proc: 'main' | 'renderer') => m.need(`${name} (${c.key}, ${proc})`, trace.first(name, (r) => r.proc === proc && r.attrs?.at === c.key));
+      const p = `chat.${c.key}`;
+      // Typing: every keystroke's update, React's render and commit included; what rendered while it was typed.
+      const typeStart = mark('chat.typeStart', 'renderer');
+      const typeEnd = mark('chat.typeEnd', 'renderer');
+      if (typeStart && typeEnd) {
+        const keys = trace.all('chat.keystroke', inProc('renderer'), typeStart.t, typeEnd.t);
+        // One span per key typed: fewer is a trace that lost some, never a faster run.
+        if (keys.length !== CHAT_TYPED.length) m.need(`chat.keystroke spans (${c.key}: ${keys.length} of ${CHAT_TYPED.length})`, undefined);
+        else {
+          m.count(`${p}.keystrokes`, keys.length);
+          m.ms(`${p}.keyMs`, median(keys.map((k) => k.ms ?? NaN)));
+        }
+        commits(m, trace, `${p}.keyCommits`, typeStart, typeEnd);
+        m.count(`${p}.keyMessageRenders`, counter(typeEnd, 'chat.messageRenders') - counter(typeStart, 'chat.messageRenders'));
+        m.count(`${p}.keyTextParses`, counter(typeEnd, 'chat.textParses') - counter(typeStart, 'chat.textParses'));
+      }
+      // Streaming: what main sent for the reply, and what the editor did with each event.
+      const mainStart = mark('chat.streamStart', 'main');
+      const mainEnd = mark('chat.streamEnd', 'main');
+      const sent = mainStart && mainEnd ? counter(mainEnd, 'ipc.aiEvent.sends') - counter(mainStart, 'ipc.aiEvent.sends') : NaN;
+      if (mainStart && mainEnd) {
+        m.count(`${p}.events`, sent);
+        if (counter(mainEnd, 'ipc.aiEvent.unsized') !== counter(mainStart, 'ipc.aiEvent.unsized')) m.need(`${p}.eventBytes (an event whose size could not be told)`, undefined);
+        else m.count(`${p}.eventBytes`, counter(mainEnd, 'ipc.aiEvent.bytes') - counter(mainStart, 'ipc.aiEvent.bytes'), 'bytes');
+        m.ms(`${p}.mainStallMax`, stallMax(trace, mainStart, mainEnd));
+      }
+      const streamStart = mark('chat.streamStart', 'renderer');
+      const streamEnd = mark('chat.streamEnd', 'renderer');
+      if (streamStart && streamEnd) {
+        const events = trace.all('chat.aiEvent', inProc('renderer'), streamStart.t, streamEnd.t);
+        // The editor handles every event main sent for the reply: fewer is a trace that lost some.
+        if (!events.length || (Number.isFinite(sent) && events.length !== sent)) m.need(`chat.aiEvent spans (${c.key}: ${events.length} of ${sent} sent)`, undefined);
+        else {
+          m.count(`${p}.eventsHandled`, events.length);
+          m.ms(`${p}.eventMs`, median(events.map((e) => e.ms ?? NaN)));
+          m.ms(`${p}.eventMsTotal`, events.reduce((n, e) => n + (e.ms ?? NaN), 0));
+          // Until the editor had handled the reply's last event.
+          m.ms(`${p}.replyMs`, events.at(-1)!.t - streamStart.t);
+        }
+        commits(m, trace, `${p}.streamCommits`, streamStart, streamEnd);
+        m.count(`${p}.streamMessageRenders`, counter(streamEnd, 'chat.messageRenders') - counter(streamStart, 'chat.messageRenders'));
+        m.count(`${p}.streamTextParses`, counter(streamEnd, 'chat.textParses') - counter(streamStart, 'chat.textParses'));
+      }
+    }
+    return m;
+  }
+};
+
+export const SCENARIOS: Scenario[] = [launch, open, edit, panels, chat];
 
 /**
  * The scenarios to run in one launch for those asked for: each with every one it follows, in the order of SCENARIOS
