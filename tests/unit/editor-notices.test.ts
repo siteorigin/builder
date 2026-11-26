@@ -29,7 +29,7 @@ const ENTRY = [
   "flushSync(() => createRoot(document.getElementById('root')).render(h(App)));",
   'const sync = (fn) => (...args) => { let out; flushSync(() => { out = fn(...args); }); return out; };',
   'window.so = {',
-  '  toast: sync((text, kind, label) => toast(text, kind, label ? { label, run: () => window.ran.push(label) } : undefined)),',
+  '  toast: sync((text, kind, label, more) => toast(text, kind, label ? { label, run: () => window.ran.push(label), ...more } : undefined)),',
   '  setState: sync((patch) => useStore.setState(patch)),',
   '  draft: sync((on) => markDraft("field", on)),',
   '  ask: sync(() => void confirmDialog({ title: "Delete it?", body: "It goes.", confirmLabel: "Delete" })),',
@@ -72,7 +72,7 @@ async function bundle(): Promise<string> {
   return chunk.code;
 }
 
-describe.skipIf(!browserInstalled)('notices (#827)', () => {
+describe.skipIf(!browserInstalled)('notices (#827)', { timeout: 30_000 }, () => {
   let browser: Browser;
   let script: string;
   let context: BrowserContext;
@@ -84,7 +84,7 @@ describe.skipIf(!browserInstalled)('notices (#827)', () => {
   }, 120_000);
   afterAll(async () => {
     await browser?.close();
-  });
+  }, 60_000);
 
   beforeEach(async () => {
     context = await browser.newContext({ viewport: { width: 1000, height: 700 } });
@@ -105,7 +105,7 @@ describe.skipIf(!browserInstalled)('notices (#827)', () => {
     expect(errors).toEqual([]);
   });
 
-  const say = (text: string, kind = 'error', label?: string) => page.evaluate(`so.toast(${JSON.stringify(text)}, ${JSON.stringify(kind)}, ${JSON.stringify(label ?? null)})`);
+  const say = (text: string, kind = 'error', label?: string, more: Record<string, string> = {}) => page.evaluate(`so.toast(${[text, kind, label ?? null, more].map((a) => JSON.stringify(a)).join(', ')})`);
   const shown = () => page.locator('.toast .toast-text').allTextContents();
   const notice = (text: string) => page.locator('.toast', { hasText: text });
   const dismiss = (text: string) => notice(text).getByRole('button', { name: 'Dismiss notice' });
@@ -120,12 +120,15 @@ describe.skipIf(!browserInstalled)('notices (#827)', () => {
     await say(long);
     await say('Copied Gallery', 'info');
     await say('Saved', 'success');
-    await wait(3_900);
+    // The installed clock also moves with real time, so the checks leave most of a second to spare.
+    await wait(3_000);
     expect(await shown()).toEqual([long, 'Copied Gallery', 'Saved']);
-    await wait(200);
-    expect(await shown()).toEqual([long]);
+    await wait(1_100);
+    await expect.poll(shown).toEqual([long]);
+    await say('An error with an action', 'error', 'Copy text');
     await wait(10 * 60_000);
-    expect(await shown()).toEqual([long]);
+    expect(await shown()).toEqual([long, 'An error with an action']);
+    await dismiss('An error with an action').click();
     await dismiss('Could not open').click();
     expect(await shown()).toEqual([]);
   });
@@ -181,10 +184,83 @@ describe.skipIf(!browserInstalled)('notices (#827)', () => {
     expect(await shown()).toEqual(['Copied Gallery']);
     expect(await focus()).toBe('Copied Gallery');
     await page.locator('#behind').focus();
-    await wait(1_900);
+    await wait(1_000);
     expect(await shown()).toEqual(['Copied Gallery']);
-    await wait(200);
+    await wait(1_100);
+    await expect.poll(shown).toEqual([]);
+  });
+
+  it('holds a notice while the pointer is still on it after focus has left', async () => {
+    await say('Copied Gallery', 'info');
+    await notice('Copied Gallery').hover();
+    await dismiss('Copied Gallery').focus();
+    await page.locator('#behind').focus();
+    await wait(60_000);
+    expect(await shown()).toEqual(['Copied Gallery']);
+  });
+
+  it('keeps the focused notice in its place when newer ones arrive', async () => {
+    await say('First');
+    await dismiss('First').focus();
+    for (const n of [2, 3, 4]) await say(`Error ${n}`);
+    expect(await shown()).toEqual(['First', 'Error 3', 'Error 4']);
+  });
+
+  it('moves focus to the earlier notice when the last one is dismissed', async () => {
+    await say('First');
+    await say('Saved', 'success');
+    await dismiss('Saved').focus();
+    await page.keyboard.press('Enter');
+    expect(await shown()).toEqual(['First']);
+    expect(await focus()).toBe('First');
+  });
+
+  it('moves focus on when the dismissed notice had it on its action', async () => {
+    await say('First');
+    await say('Second', 'error', 'Copy text');
+    await page.getByRole('button', { name: 'Copy text' }).focus();
+    await dismiss('Second').click();
+    expect(await focus()).toBe('First');
+  });
+
+  it('shows a focused error once when it is raised again', async () => {
+    await say('The project could not be read');
+    await dismiss('The project could not be read').focus();
+    await say('The project could not be read');
+    await expect.poll(shown).toEqual(['The project could not be read']);
+  });
+
+  it('does not bring expired information back after a dialog', async () => {
+    await say('Copied Gallery', 'info');
+    await notice('Copied Gallery').hover();
+    await page.evaluate(`openModal(true)`);
+    await awayFromNotices();
+    await wait(10_000);
+    await page.evaluate(`openModal(false)`);
+    await wait(500);
     expect(await shown()).toEqual([]);
+  });
+
+  it('offers a held Undo again after a dialog', async () => {
+    await say('Deleted Section', 'info', 'Undo');
+    await page.evaluate(`openModal(true)`);
+    await wait(10_000);
+    expect(await shown()).toEqual([]);
+    await page.evaluate(`openModal(false)`);
+    await expect.poll(shown).toEqual(['Deleted Section']);
+  });
+
+  it('returns focus to what opened a dialog that Escape closed from a notice', async () => {
+    await say('First');
+    await page.locator('#behind').focus();
+    await page.evaluate(`openModal(true)`);
+    await page.locator('#done').focus();
+    await page.keyboard.press('Tab');
+    expect(await focus()).toBe('First');
+    await page.keyboard.press('Escape');
+    await expect.poll(() => page.getByRole('dialog').count()).toBe(0);
+    await wait(100);
+    await expect.poll(focus).toBe('behind');
   });
 
   it('does not keep a held "saved" notice once a new draft begins', async () => {
@@ -256,9 +332,21 @@ describe.skipIf(!browserInstalled)('notices (#827)', () => {
     expect(await shown()).toEqual(['Copied Gallery']);
   });
 
+  const snapshot = (workspaceKey: string, aiRunId: string | null) =>
+    page.evaluate(`so.setState({ snapshot: { dir: 'd', workspaceKey: ${JSON.stringify(workspaceKey)}, revision: 1, aiBusy: ${aiRunId !== null}, aiRunId: ${JSON.stringify(aiRunId)}, conflicts: [], state: { site: { pageOrder: [] }, pages: {}, components: {}, collections: {} } } })`);
+
+  it('withdraws an action into another project once that one opens, keeping its notice', async () => {
+    await snapshot('one', null);
+    await say('Part of the post is not saved', 'error', 'Open SEO view', { opening: 'one' });
+    const open = page.getByRole('button', { name: 'Open SEO view' });
+    expect(await open.count()).toBe(1);
+    await snapshot('two', null);
+    await expect.poll(() => open.count()).toBe(0);
+    expect(await shown()).toEqual(['Part of the post is not saved']);
+  });
+
   it('offers Stop AI only for the request it was raised during', async () => {
-    const running = (aiRunId: string) =>
-      page.evaluate(`so.setState({ snapshot: { dir: 'd', workspaceKey: 'k', revision: 1, aiBusy: true, aiRunId: ${JSON.stringify(aiRunId)}, conflicts: [], state: { site: { pageOrder: [] }, pages: {}, components: {}, collections: {} } } })`);
+    const running = (aiRunId: string) => snapshot('k', aiRunId);
     await running('a');
     await page.evaluate(`so.edit()`);
     await page.evaluate(`so.edit()`);

@@ -540,7 +540,7 @@ function PostEditor({ post, hidden }: { post: PostRef; hidden: boolean }) {
   /** Say that part of the post is not saved, and where to see why: beside it here, or in the SEO view. */
   const notSaved = (what: string) => {
     const inView = heldInView() && !unsavedMark();
-    toast(`${what} ${inView ? 'See its search settings in the SEO view.' : 'See the note beside it.'}`, 'error', inView ? { label: 'Open SEO view', run: () => void openSeoView({ kind: 'entry', collectionId: post.collectionId, entryId: post.entryId }) } : undefined);
+    toast(`${what} ${inView ? 'See its search settings in the SEO view.' : 'See the note beside it.'}`, 'error', inView ? { label: 'Open SEO view', opening: getState().snapshot?.workspaceKey, run: () => void openSeoView({ kind: 'entry', collectionId: post.collectionId, entryId: post.entryId }) } : undefined);
   };
   const publish = async (draftOn: boolean) => {
     const noun = entryNounLower(collection);

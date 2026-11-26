@@ -253,11 +253,11 @@
   .toast .btn { border: 1px solid color-mix(in srgb, currentColor 65%, transparent); background: transparent; color: inherit; box-shadow: none; }
   .toast .btn:hover:not(:disabled) { background: color-mix(in srgb, currentColor 12%, transparent); }
   /* While a dialog is open, toasts still announce but their actions wait (they act on the page behind), taking
-     no room, and the notice lets clicks through, all but its dismiss button. ui.tsx offers an Undo again, for a
+     no room, and the notice lets clicks through, all but its dismiss button and its text (which may scroll). ui.tsx offers an Undo again, for a
      full window, once the last dialog closes. */
   body.dialog-open .toast :is(.btn, .held-actions) { display: none; }
   body.dialog-open .toast { pointer-events: none; }
-  body.dialog-open .toast .toast-dismiss { pointer-events: auto; }
+  body.dialog-open .toast :is(.toast-dismiss, .toast-text) { pointer-events: auto; }
   /* A typed edit kept while the AI works: stays until the author applies or discards it. */
   .toasts .toast-group { display: contents; }
   /* The Previewing bar sits 18px above the canvas floor (about 42px above the window) and is 36px tall: keep the stack above it. */

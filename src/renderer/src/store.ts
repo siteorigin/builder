@@ -125,8 +125,9 @@ export interface Toast {
   id: number;
   text: string;
   kind: 'info' | 'success' | 'error';
-  /** `stops` names the AI request a Stop AI action is for: it is offered only while that request runs. */
-  action?: { label: string; run: () => void; undoes?: UndoTarget; stops?: string };
+  /** A notice can outlive what its action is for, so the action is withdrawn once that has gone: `stops` names the
+   *  AI request a Stop AI is for, and `opening` the opening of the project whose content the action goes to. */
+  action?: { label: string; run: () => void; undoes?: UndoTarget; stops?: string; opening?: string };
 }
 
 /** One committed change, in the opening of the project it was made in (see `undoAction`). */
@@ -874,9 +875,9 @@ async function writeTyped(
 function refuseWhileAiBusy(typed: { base: ProjectSnapshot | null; text: string | null; seq: number; rename: PendingRename | null } | null, operations: EditOperation[], label: string): string {
   if (typed?.base && holdEdit(typed.base, operations, label, { text: typed.text, seq: typed.seq, rename: typed.rename })) return HELD_MESSAGE;
   const message = 'The AI is making changes. Stop it to edit manually.';
-  // The notice outlives the request it is about, so its action stops that request and no later one.
-  const stops = getState().snapshot?.aiRunId ?? undefined;
-  toast(message, 'error', { label: 'Stop AI', stops, run: () => void (stops ? api.ai.stop(stops) : api.ai.stop()) });
+  // The notice outlives the request, so Stop AI is offered only for a request it can name, never a later one.
+  const stops = getState().snapshot?.aiRunId;
+  toast(message, 'error', stops ? { label: 'Stop AI', stops, run: () => void api.ai.stop(stops) } : undefined);
   return message;
 }
 
@@ -1112,6 +1113,7 @@ export function undoAction(r: { entryId?: string; revision: number; workspaceKey
   // History opens at the entry only while its project is still the one open.
   const history = {
     label: 'History',
+    opening: workspaceKey,
     run: () => {
       if (getState().snapshot?.workspaceKey === workspaceKey) setState({ modal: { kind: 'history', entryId } });
     }

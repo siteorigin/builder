@@ -109,8 +109,12 @@ export function useDialogFocus(ref: React.RefObject<HTMLElement | null>, onClose
       const visible = (n: HTMLElement | null) => !!n && document.contains(n) && reachable(n);
       const inRegion = region && document.contains(region) ? [...region.querySelectorAll<HTMLElement>('textarea, input, [tabindex="0"], button:not([disabled])')].find(visible) : undefined;
       const back = visible(opener) && !opener!.closest('[role="menu"]') ? opener : inRegion ?? [...document.querySelectorAll<HTMLElement>('[role="treeitem"][tabindex="0"], [role="option"][aria-selected="true"]')].find(visible) ?? null;
-      // Only restore when focus has nowhere better to be; a dialog action may have focused something new.
-      requestAnimationFrame(() => (!document.activeElement || document.activeElement === document.body) && back?.focus());
+      // Only restore when focus has nowhere better to be (a dialog action may have focused something new), or is
+      // still on a notice it went to from this dialog.
+      requestAnimationFrame(() => {
+        const at = document.activeElement;
+        if (!at || at === document.body || at.closest('.toast-dismiss')) back?.focus();
+      });
     };
   }, [ref]);
   return (e: React.KeyboardEvent) => {
@@ -1326,7 +1330,7 @@ function shownNotices<T extends { id: number }>(ordered: T[], held: (id: number)
  * any notice, or focus is in it, it is held too, and goes LINGER_MS after both have left. The store's timer is
  * left alone: a notice it removes early is kept here, in the same place on the page, until its time is up.
  */
-function useActionTimes(toasts: ToastItem[], dialogOpen: boolean) {
+function useActionTimes(toasts: ToastItem[], dialogOpen: boolean, savedRetired: number) {
   // Every action notice still in play, and any other the author has pointed at or been in, and when each may go
   // (Infinity while held).
   const known = useRef(new Map<number, ToastItem>());
@@ -1355,6 +1359,12 @@ function useActionTimes(toasts: ToastItem[], dialogOpen: boolean) {
   if (wasOpen.current && !dialogOpen) for (const [id, t] of until.current) if (t === Infinity && !engaged(id)) round.current.set(id, (round.current.get(id) ?? 0) + 1);
   wasOpen.current = dialogOpen;
   for (const t of toasts) if (t.action) known.current.set(t.id, t);
+  // The store takes an error away only for good (dismissed, or said again), and so does a new draft a "saved"
+  // notice: however they are held, neither is kept.
+  for (const t of [...known.current.values()]) {
+    const saved = !t.action && t.kind === 'success' && t.id <= savedRetired;
+    if (!live(t.id) && (t.kind === 'error' || saved)) forget(t.id);
+  }
   // Worked out while rendering, so a held notice never leaves the page between the store dropping it and this
   // taking it over: the same element stays, and so does any focus in it.
   const now = Date.now();
@@ -1364,7 +1374,11 @@ function useActionTimes(toasts: ToastItem[], dialogOpen: boolean) {
       // Nothing behind a dialog is pointed at or focused: a notice the dialog hid gets no leave event.
       hovered.current.clear();
       focused.current.clear();
-      for (const [id, t] of known.current) if (t.action && inPlay(id)) until.current.set(id, Infinity);
+      for (const [id, t] of known.current) {
+        // Only an action waits for the dialog: any other notice has no time left once nothing is holding it.
+        if (!t.action) until.current.set(id, 0);
+        else if (inPlay(id)) until.current.set(id, Infinity);
+      }
     } else {
       // The last dialog closed: everything it held back gets a full window from now.
       const end = Date.now() + RETURN_MS;
@@ -1439,15 +1453,13 @@ export function Toasts() {
   const snapshot = useStore((s) => s.snapshot);
   const aiRunId = useStore((s) => (s.snapshot?.aiBusy ? (s.snapshot.aiRunId ?? null) : null));
   const dialogOpen = useDialogOpen();
-  const times = useActionTimes(toasts, dialogOpen);
   const savedRetired = useStore((s) => s.savedRetired);
+  const times = useActionTimes(toasts, dialogOpen, savedRetired);
   // A kept notice is shown only once no dialog holds it back, and only while its action still applies; it then
   // returns as a new status message, so its Undo is announced again.
-  const actionable = (t: ToastItem) => !!t.action && (!t.action.undoes || undoAvailable(t.action.undoes, snapshot)) && (!t.action.stops || aiRunId === t.action.stops);
+  const actionable = ({ action: a }: ToastItem) => !!a && (!a.undoes || undoAvailable(a.undoes, snapshot)) && (!a.stops || aiRunId === a.stops) && (!a.opening || snapshot?.workspaceKey === a.opening);
   // A notice the store has retired stays while a dialog's hold or the author's pointer or focus keeps it.
-  // A "saved" notice a draft retired is not one of them.
-  const retired = (t: ToastItem) => !t.action && t.kind === 'success' && t.id <= savedRetired;
-  const kept = times.kept.filter((t) => !retired(t) && (!dialogOpen || times.held(t.id)) && (!t.action || actionable(t)));
+  const kept = times.kept.filter((t) => (!dialogOpen || times.held(t.id)) && (!t.action || actionable(t)));
   // In the order they arrived (a kept notice stays where it was), and at most a few, so the band at the bottom
   // stays small; any others show as those go.
   const ordered = [...toasts, ...kept].sort((a, b) => a.id - b.id);
@@ -1478,8 +1490,8 @@ export function Toasts() {
   const dismiss = (t: ToastItem, button: HTMLButtonElement) => {
     const buttons = () => [...stack.current!.querySelectorAll<HTMLButtonElement>('.toast-dismiss')];
     const at = buttons().indexOf(button);
-    // A press with the pointer leaves focus where it was, so only a keyboard dismissal has focus to move.
-    const focused = document.activeElement === button;
+    // Focus in the row goes with it. A press with the pointer leaves focus where it was, so elsewhere it stays.
+    const focused = !!button.closest('.toast')?.contains(document.activeElement);
     flushSync(() => {
       times.forget(t);
       dismissToast(t.id);

@@ -141,7 +141,8 @@ const before = JSON.stringify((await snapshot()).pages[pageId]);
 // The refusal said earlier has gone first, so the one awaited below is this drop's own.
 const refusal = win.locator('.toast', { hasText: 'holds at most one item' });
 await eventually(async () => {
-  while (await refusal.count()) await refusal.first().getByRole('button', { name: 'Dismiss notice' }).click({ timeout: 2000 });
+  if (await refusal.count()) await refusal.first().getByRole('button', { name: 'Dismiss notice' }).click({ timeout: 2000 });
+  assert.equal(await refusal.count(), 0, 'the earlier refusal has gone');
 }, 15000);
 await row(two).dragTo(slotRow('sidebar'));
 await refusal.waitFor();

@@ -184,13 +184,13 @@ for (const long of ['<p>' + 'x'.repeat(20001) + '</p>', '<p>' + 'x'.repeat(10001
   assert.equal(await rich.getAttribute('contenteditable'), null, 'the edit has ended');
   assert.equal(await win.evaluate(async () => (await window.builder.project.snapshot()).revision), before, 'nothing was stored');
   await eventually(async () => assert.ok((await win.locator('.toast').allInnerTexts()).some((t) => /could not be saved|too long/i.test(t)), 'the author is told why'));
+  // An error stays until it is dismissed: each is, so the next one seen is new and the later steps start without any.
+  await eventually(async () => {
+    const dismissals = win.locator('.toast.error').getByRole('button', { name: 'Dismiss notice' });
+    if (await dismissals.count()) await dismissals.first().click({ timeout: 2000 });
+    assert.equal(await win.locator('.toast.error').count(), 0, 'the refusal is dismissed');
+  });
 }
-// An error stays until it is dismissed: these are, before the steps that check no error is shown.
-const refusals = win.locator('.toast.error').getByRole('button', { name: 'Dismiss notice' });
-await eventually(async () => {
-  while (await refusals.count()) await refusals.first().click({ timeout: 2000 });
-  assert.equal(await win.locator('.toast.error').count(), 0, 'the refusals are no longer shown');
-}, 20000);
 
 step('insert pricing via Insert panel');
 await win.getByRole('button', { name: 'Insert', exact: true }).click();
