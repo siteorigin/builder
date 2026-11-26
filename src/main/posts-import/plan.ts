@@ -34,6 +34,8 @@ export interface PlannedPost {
   /** The slug the source gave, when the post had to take another. */
   wantedSlug?: string;
   date: string;
+  /** The source gave no date, so `date` is the day of the import. */
+  dateAssigned?: boolean;
   draft: boolean;
   draftReason?: string;
   author?: string;
@@ -46,6 +48,8 @@ export interface PlannedPost {
   featured?: string;
   /** The old address kept working for it. */
   redirectFrom?: string;
+  /** The old address it had, when that one can't keep working (its note says why). */
+  lostAddress?: string;
   oldPath?: string;
   notes: string[];
 }
@@ -222,6 +226,7 @@ export function planPostImport(state: ProjectState, source: ParsedSource, today 
       if (unique.length) terms[tax] = unique.slice(0, MAX_ASSIGNED);
     }
     let redirectFrom: string | undefined;
+    let lostAddress: string | undefined;
     if (p.oldPath && lower(p.oldPath) !== lower(entryRoute)) {
       const from = p.oldPath;
       const why = draft
@@ -242,7 +247,10 @@ export function planPostImport(state: ProjectState, source: ParsedSource, today 
       if (why === '') {
         redirectFrom = from;
         redirects.set(lower(from), p.key);
-      } else if (why) notes.push(`Its old address (${from}) can’t keep working: ${why.replace(/\.$/, '')}.`);
+      } else if (why) {
+        lostAddress = from;
+        notes.push(`Its old address (${from}) can’t keep working, because ${why.charAt(0).toLowerCase()}${why.slice(1).replace(/\.$/, '')}.`);
+      }
     }
     return {
       key: p.key,
@@ -253,6 +261,7 @@ export function planPostImport(state: ProjectState, source: ParsedSource, today 
       route: entryRoute,
       ...(wanted ? { wantedSlug: wanted } : {}),
       date: p.date ?? today,
+      ...(p.date ? {} : { dateAssigned: true }),
       draft,
       ...(draftReason ? { draftReason } : {}),
       ...(author ? { author } : {}),
@@ -262,6 +271,7 @@ export function planPostImport(state: ProjectState, source: ParsedSource, today 
       linksEntries,
       ...(featured ? { featured } : {}),
       ...(redirectFrom ? { redirectFrom } : {}),
+      ...(lostAddress ? { lostAddress } : {}),
       ...(p.oldPath ? { oldPath: p.oldPath } : {}),
       notes
     };

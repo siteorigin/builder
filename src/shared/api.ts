@@ -871,6 +871,8 @@ export interface PostImportPreviewPost {
   /** Where it came from: its file, or its title in the export. */
   from: string;
   date: string;
+  /** The source gave no date: `date` is the day it was reviewed. */
+  dateAssigned?: boolean;
   draft: boolean;
   /** Why a post published at the source arrives as a draft. */
   draftReason?: string;
@@ -904,6 +906,8 @@ export interface PostImportPreview {
   newTerms: { categories: string[]; tags: string[] };
   /** Old addresses kept working. */
   redirects: number;
+  /** Old addresses that can't keep working (each post's note says why). */
+  redirectsLost?: number;
   /** What is not imported at all. */
   skipped: string[];
   /** What stops the import: nothing can be imported while there is one. */
@@ -922,8 +926,8 @@ export interface PostImportResult {
   revision?: number;
   /** The first imported post's entry, to open it. */
   firstEntryId?: string;
-  /** What did not come through (a picture the library refused), in plain words. */
-  notes?: string[];
+  /** The pictures that did not come through (the library refused them): the file, the posts that show it, and why. */
+  notes?: Array<{ file: string; posts: string[]; reason: string }>;
   message?: string;
 }
 

@@ -169,7 +169,7 @@ describe('reviewing an import before anything is written', () => {
 
   it('counts out an ordinary-looking file that cannot be added, so the review never overcounts', async () => {
     expect(await reviewOf(sourceFile('notes.png', Buffer.from('just some text, not a picture')))).toMatchObject({ action: 'refuse', format: 'PNG', reason: expect.any(String) });
-    expect(await reviewOf(sourceFile('empty.jpg', Buffer.alloc(0)))).toMatchObject({ action: 'refuse', format: 'JPG', reason: expect.any(String) });
+    expect(await reviewOf(sourceFile('empty.jpg', Buffer.alloc(0)))).toMatchObject({ action: 'refuse', format: 'JPEG', reason: expect.any(String) });
     expect(await reviewOf(sourceFile('huge.webp', Buffer.alloc(26 * 1024 * 1024)))).toMatchObject({ action: 'refuse', format: 'WEBP', reason: 'it is larger than 25 MB.' });
   });
 
