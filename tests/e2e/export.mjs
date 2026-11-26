@@ -714,7 +714,7 @@ await homeLink.click();
 await eventually(async () => assert.equal(await lost.title(), 'Client proof 1', 'following it reaches the Home page'));
 await lost.close();
 assert.ok(stat.hosting?.includes('set the 404 error document to /404.html'), `the website export says how to point a host at the not-found page: ${stat.hosting}`);
-assert.ok(!stat.warnings.some((w) => /404\.html/.test(w)), `#817: the hosting guidance is not one of the warnings: ${stat.warnings.join(' ')}`);
+assert.ok(![...stat.warnings, ...(stat.notes ?? []).map((n) => n.message)].some((w) => /404\.html/.test(w)), `#817: the hosting guidance is not one of the warnings: ${stat.warnings.join(' ')}`);
 
 step('#75: the exported gallery on a desktop and on a 390px phone');
 /** What the page has fetched so far (the browser's own record, which includes lazy images). */
@@ -875,6 +875,7 @@ assert.equal(statZip.path, staticZip);
 assert.ok(statZip.warnings.some((w) => w.includes(draft.name) && /left out of the website/i.test(w)), `the website ZIP export names the draft it left out: ${statZip.warnings.join(' ')}`);
 assert.ok(statZip.warnings.some((w) => w.includes(photo.name) && /leaves out where/.test(w)), `the website ZIP export says it left out where the photo was taken: ${statZip.warnings.join(' ')}`);
 assert.ok(statZip.hosting?.includes('set the 404 error document to /404.html'), `the website ZIP export says how to point a host at the not-found page: ${statZip.hosting}`);
+assert.ok(![...statZip.warnings, ...(statZip.notes ?? []).map((n) => n.message)].some((w) => /404\.html/.test(w)), `#817: the hosting guidance is not one of the ZIP export's notes: ${statZip.warnings.join(' ')}`);
 
 step('issue 212: a second website proof keeps the first one serving its own files');
 await titleProof('Client proof 2');
@@ -1086,6 +1087,8 @@ step('#393: the sitemap under /studio lists each published post with the day it 
   assert.match(readFileSync(join(studioStat.path, 'blog', 'opening-times', 'index.html'), 'utf8'), /<link rel="canonical" href="https:\/\/example.com\/studio\/blog\/opening-times\/"/, 'the post names its public address');
 }
 assert.ok(studioStat.hosting?.includes('set the 404 error document to /studio/404.html (on Apache: ErrorDocument 404 /studio/404.html)'), `the export names the not-found page under /studio: ${studioStat.hosting}`);
+assert.ok(!/automatically/.test(studioStat.hosting), `under /studio the guidance does not promise the host finds the page on its own: ${studioStat.hosting}`);
+assert.ok(!studioStat.warnings.some((w) => /404\.html/.test(w)), `#817: the hosting guidance is not one of the warnings under /studio: ${studioStat.warnings.join(' ')}`);
 const missingStudio = new URL('customer-storie/deep/', studioStat.previewUrl).href;
 assert.equal((await fetch(missingStudio)).status, 404, 'a missing address under /studio is answered with HTTP 404');
 const lostStudio = await proofTab(missingStudio);
@@ -1116,6 +1119,9 @@ step('#817: a clean site with a public URL exports with nothing to fix, and its 
   assert.doesNotMatch(said, /to review/, `nothing is counted for review: ${said}`);
   const guide = dialog.getByTestId('export-hosting');
   assert.equal(await guide.count(), 1, 'the hosting guidance is shown');
+  assert.equal(await guide.isVisible(), true, 'the hosting guidance can be seen');
+  const describedBy = (await outcome.getAttribute('aria-describedby')) ?? '';
+  assert.ok(describedBy && describedBy === (await guide.getAttribute('id')), 'the result that takes focus is described by the guidance, so a screen reader reads it too');
   assert.match(await guide.innerText(), /Cloudflare Pages, Netlify and Vercel use it automatically.*set the 404 error document to \/404\.html/s, 'the guidance names the hosts the Redirects setting offers');
   const latest = dialog.getByRole('region', { name: 'Recent exports' }).getByRole('listitem').first();
   assert.equal(await latest.locator('.export-row-notes-wrap').count(), 0, 'the export row lists no notes');

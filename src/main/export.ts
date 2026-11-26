@@ -1311,11 +1311,15 @@ export function notFoundAddressWarning(html: string): string | null {
 export function notFoundHostNote(base: string, host: RedirectHost): string {
   const path = notFoundPath(base);
   const page = `Addresses your site does not have show its not-found page, ${NOT_FOUND_FILE}.`;
-  // Those hosts find 404.html at the root they publish: a site built for a sub-path has to be published there.
-  const mounted = base ? ` The website is built to be served under ${base}/, so publish it there.` : '';
-  if (host === 'netlify') return `${page} Netlify uses it automatically when it publishes the exported website as it is.${mounted}`;
-  if (host === 'vercel') return `${page} Vercel uses it automatically when it publishes the exported website as it is.${mounted}`;
-  return `${page} Cloudflare Pages, Netlify and Vercel use it automatically when they publish the exported website as it is. On another host, set the 404 error document to ${path} (on Apache: ErrorDocument 404 ${path}).`;
+  const errorDocument = `set the 404 error document to ${path} (on Apache: ErrorDocument 404 ${path})`;
+  const named = host === 'netlify' ? 'Netlify' : host === 'vercel' ? 'Vercel' : null;
+  // The hosts find 404.html on their own only at the root they publish: under a sub-path, the author has to point them at it.
+  if (base) {
+    const served = `The website is built to be served under ${base}/`;
+    return named ? `${page} ${served}, where ${named} does not find it on its own: have it show ${path} for missing addresses under ${base}/.` : `${page} ${served}, so ${errorDocument}.`;
+  }
+  if (named) return `${page} ${named} uses it automatically when it publishes the exported website as it is.`;
+  return `${page} Cloudflare Pages, Netlify and Vercel use it automatically when they publish the exported website as it is. On another host, ${errorDocument}.`;
 }
 
 /**

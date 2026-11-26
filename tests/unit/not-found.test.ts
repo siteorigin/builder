@@ -409,9 +409,15 @@ describe('exporting the not-found page', () => {
     const netlify = notFoundHostNote('', 'netlify');
     expect(netlify).toBe('Addresses your site does not have show its not-found page, 404.html. Netlify uses it automatically when it publishes the exported website as it is.');
     const vercel = notFoundHostNote('/studio', 'vercel');
-    expect(vercel).toBe('Addresses your site does not have show its not-found page, 404.html. Vercel uses it automatically when it publishes the exported website as it is. The website is built to be served under /studio/, so publish it there.');
-    for (const note of [netlify, vercel]) expect(note).not.toMatch(/Cloudflare|GitHub|error document|Apache/);
+    expect(vercel).toBe('Addresses your site does not have show its not-found page, 404.html. The website is built to be served under /studio/, where Vercel does not find it on its own: have it show /studio/404.html for missing addresses under /studio/.');
+    const netlifyStudio = notFoundHostNote('/studio', 'netlify');
+    expect(netlifyStudio).toContain('where Netlify does not find it on its own: have it show /studio/404.html');
+    for (const note of [netlify, vercel, netlifyStudio]) expect(note).not.toMatch(/Cloudflare|GitHub|error document|Apache/);
+    expect(netlify).not.toMatch(/Vercel/);
+    expect(vercel).not.toMatch(/Netlify/);
     expect(notFoundHostNote('', 'cloudflare')).not.toMatch(/GitHub/);
+    // Under a sub-path no host finds the page on its own: the note never says one does.
+    for (const host of ['cloudflare', 'netlify', 'vercel'] as const) expect(notFoundHostNote('/studio', host)).not.toMatch(/automatically/);
   });
 
   it('reads 404.html only as a plain file, and stops a build that has a 404.html of its own', async () => {

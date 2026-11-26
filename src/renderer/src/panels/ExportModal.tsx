@@ -547,6 +547,7 @@ export function ExportModal() {
   const rowNotes: ExportNote[] = notesInRow ? (shown!.notes ?? shown!.warnings.map((message) => ({ message }))) : succeeded ? [] : (recent[0]?.notes ?? []).filter((n) => n.destination);
   const foldNotes = rowNotes.length > MANY_NOTES;
   const notesId = useId();
+  const hostingId = useId();
   // The page a failed build names by its address, when exactly one page has it: the author's way back to fix it.
   const failedPage = useMemo(() => {
     if (!shown || shown.ok || !state) return null;
@@ -749,7 +750,7 @@ export function ExportModal() {
         {shown && (
           // A failure and its report read as one card; the report stays outside the alert itself.
           <div className={shown.ok ? 'export-outcome' : 'export-outcome export-failure'}>
-            <div ref={resultRef} tabIndex={-1} className={`scope-note export-result ${shown.ok ? 'shared' : 'danger'}`} role={shown.ok ? 'status' : 'alert'} data-report={shown.report}>
+            <div ref={resultRef} tabIndex={-1} className={`scope-note export-result ${shown.ok ? 'shared' : 'danger'}`} role={shown.ok ? 'status' : 'alert'} data-report={shown.report} aria-describedby={shown.ok && shown.hosting ? hostingId : undefined}>
               {shown.ok ? <CircleCheck /> : <CircleAlert />}
               <div className="export-note-body">
                 <strong>{shown.message}</strong>
@@ -771,7 +772,7 @@ export function ExportModal() {
             </div>
             {/* Guidance for the host, not a note about the website: it is never counted among the notes to review. */}
             {shown.ok && shown.hosting && (
-              <div className="scope-note info export-hosting-guide" data-testid="export-hosting">
+              <div className="scope-note info export-hosting-guide" id={hostingId} data-testid="export-hosting">
                 <Info aria-hidden />
                 <span className="export-note-body">
                   <strong>Publishing it</strong>

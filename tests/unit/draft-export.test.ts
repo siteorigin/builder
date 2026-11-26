@@ -136,7 +136,7 @@ describe('exporting a project with a draft', () => {
     const stand = /^“Home” \(\/\) was built without a language/;
     expect(r.warnings.filter((w) => !stand.test(w))).toEqual([]);
     expect((r.notes ?? []).filter((n) => !stand.test(n.message))).toEqual([]);
-    expect(r.hosting).toMatch(/^Addresses your site does not have show its not-found page, 404\.html\. Cloudflare Pages, Netlify and Vercel /);
+    expect(r.hosting).toMatch(/^Addresses your site does not have show its not-found page, 404\.html\. Cloudflare Pages, Netlify and Vercel .* set the 404 error document to \/404\.html /);
     expect((c.snapshot()!.recentExports[0].notes ?? []).filter((n) => /404\.html/.test(n.message))).toEqual([]);
   });
 
@@ -163,7 +163,7 @@ describe('exporting a project with a draft', () => {
     expect(r).toMatchObject({ ok: true });
     // #817: the hosting guidance is for the host the Redirects setting names, and is not a warning.
     expect(r.hosting).toBe('Addresses your site does not have show its not-found page, 404.html. Vercel uses it automatically when it publishes the exported website as it is.');
-    expect(r.warnings.filter((w) => /404\.html/.test(w))).toEqual([]);
+    expect([...r.warnings, ...(r.notes ?? []).map((n) => n.message)].filter((w) => /404\.html/.test(w))).toEqual([]);
     expect(readFileSync(join(r.path!, '_redirects'), 'utf8').split('\n').filter((l) => l && !l.startsWith('#'))).toEqual(['/team/ /about/ 301', '/team /about/ 301']);
     expect(JSON.parse(readFileSync(join(r.path!, 'vercel.json'), 'utf8'))).toEqual({
       redirects: [
