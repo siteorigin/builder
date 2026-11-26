@@ -1,10 +1,11 @@
 /**
  * Signal's components: Foundation's definitions, adopted whole (the same component IDs, properties, parts, slots,
  * variant options, UI state and examples, so a site switches between the two without losing anything), with Signal's
- * own look written over their trees: mono eyebrow labels in soft pills, tinted tiles with generous corners that rise
- * on hover, an asymmetric split hero, and a featured first card in the Services grid (laid out by the stylesheet,
- * see ./base.css). Every change names the node and the variant option it styles, and a change to a node or option
- * the definition no longer has stops the build, so a change to Foundation cannot silently drop Signal's look.
+ * own look written over their trees: mono eyebrow labels in soft pills, tinted tiles with a hairline edge and
+ * generous corners (the blocks too), an asymmetric split hero, and a featured first card in the Services grid (laid
+ * out by the stylesheet, see ./base.css). Every change names the node and the variant option it styles, and a change
+ * to a node or option the definition no longer has stops the build, so a change to Foundation cannot silently drop
+ * Signal's look.
  */
 import type { ComponentDefinition, ResponsiveStyles, StyleScopeKey, StyleValue } from '@shared/types';
 import { parseStyleScopeKey } from '@shared/types';
@@ -95,14 +96,32 @@ export const EYEBROW_PILL: StylePatch = {
   }
 };
 
-/** A tile that rises on hover: its shadow (and, given one, its ground) eases in. Movement is left to the stylesheet. */
-const rises = (hover: Record<string, StyleValue> = {}): StylePatch => ({
-  base: { transition: 'common', transitionDuration: 220, transitionEasing: 'smooth' },
-  'base:hover': { shadow: tok('shadow.md'), ...hover }
-});
+/** A tile's edge: a hairline of brand over the border colour, so a tinted tile reads as one surface on any light ground. */
+export const TILE_EDGE = '1px solid color-mix(in srgb, var(--so-color-brand) 16%, var(--so-color-border))';
 
-/** A soft tinted tile: the alternate background, no outline, large corners. */
-const tile = (radius = 'radius.lg'): StylePatch => ({ base: { background: tok('color.surface-alt'), border: null, shadow: null, radius: tok(radius) } });
+/**
+ * A soft tinted tile: the alternate background, a hairline edge, large corners, no shadow. Tiles hold content; they do
+ * not answer the pointer (a card that is one link does, see ./base.css), so nothing here moves on hover.
+ */
+const tile = (radius = 'radius.lg'): StylePatch => ({ base: { background: tok('color.surface-alt'), border: TILE_EDGE, shadow: null, radius: tok(radius) } });
+
+/** Signal's icon badge: a small rounded square of brand tint with a brand hairline. */
+const ICON_BADGE: StylePatch = {
+  base: {
+    radius: tok('radius.sm'),
+    background: 'color-mix(in srgb, var(--so-color-brand) 12%, var(--so-color-surface))',
+    border: '1px solid color-mix(in srgb, var(--so-color-brand) 20%, transparent)'
+  }
+};
+
+/**
+ * A plan's name and description, given room for two lines of description beside its siblings on desktop, so the
+ * prices of a row of plans start on one line.
+ */
+const PLAN_HEAD: StylePatch = { desktop: { minHeight: '4.75rem' } };
+
+/** A label set as Signal's eyebrow (mono capitals), for a badge that would otherwise be a second kind of label. */
+const MONO_LABEL: StylePatch = { base: { textStyle: tok('text.eyebrow'), fontSize: null, fontWeight: null } };
 
 /** Two patches for one node, the second's rules after the first's. */
 const both = (a: StylePatch, b: StylePatch): StylePatch => {
@@ -126,42 +145,46 @@ export const SIGNAL_RESTYLES: Record<string, Restyle> = {
     // The grid is the bento the stylesheet lays out (see ./base.css), known by this ID in any copy of the section.
     rename: { grid: 'bento' },
     nodes: {
-      card: both(both(tile(), { base: { gap: tok('space.sm') } }), rises({ background: tok('color.surface') })),
-      'card-icon-wrap': {
-        base: {
-          radius: tok('radius.sm'),
-          background: 'color-mix(in srgb, var(--so-color-brand) 12%, var(--so-color-surface))',
-          border: '1px solid color-mix(in srgb, var(--so-color-brand) 20%, transparent)',
-          marginBlockEnd: tok('space.sm')
-        }
-      }
+      card: both(tile(), { base: { gap: tok('space.sm') } }),
+      'card-icon-wrap': both(ICON_BADGE, { base: { marginBlockEnd: tok('space.sm') } })
     },
     variants: onSoft(['card'])
   },
   'testimonials.grid': { nodes: { card: tile() }, variants: onSoft(['card']) },
-  'pricing.plans': {
-    nodes: {
-      plan: rises({ border: '1px solid color-mix(in srgb, var(--so-color-brand) 45%, var(--so-color-border))' }),
-      badge: { base: { textStyle: tok('text.eyebrow'), fontSize: null, fontWeight: null } }
-    }
-  },
+  'pricing.plans': { nodes: { badge: MONO_LABEL, 'plan-head': PLAN_HEAD } },
+  'pricing.toggle': { nodes: { badge: MONO_LABEL, 'plan-head': PLAN_HEAD } },
   'faq.list': {
     // Each question is its own tile instead of a row between hairlines.
     nodes: {
       list: { base: { gap: tok('space.sm') } },
-      item: { base: { paddingInline: tok('space.lg'), background: tok('color.surface-alt'), radius: tok('radius.md') } },
+      item: { base: { paddingInline: tok('space.lg'), background: tok('color.surface-alt'), border: TILE_EDGE, radius: tok('radius.md') } },
       'item-divider': { base: { hidden: true } }
     },
     variants: {
       tone: {
         muted: { item: { base: { background: tok('color.surface') } } },
         // On the dark tone the tile is a lift of the section's own ink, so its text keeps the dark tone's colours.
-        inverse: { item: { base: { background: 'color-mix(in srgb, currentColor 8%, transparent)' } } }
+        inverse: { item: { base: { background: 'color-mix(in srgb, currentColor 8%, transparent)', border: '1px solid color-mix(in srgb, currentColor 14%, transparent)' } } }
       }
     }
   },
-  'contact.details': { nodes: { method: tile('radius.md') }, variants: onSoft(['method']) },
-  'cta.banner': { nodes: { panel: { base: { shadow: tok('shadow.lg') } } } }
+  'contact.details': { nodes: { method: tile('radius.md'), 'method-icon-wrap': ICON_BADGE }, variants: onSoft(['method']) },
+  'content.steps-media': {
+    // Each step is a tile, like a contact method; on a soft or dark section a white one, whose title is drawn in the
+    // page's own text colour (its section's ink starts afresh inside it, see ./base.css).
+    nodes: { step: tile('radius.md') },
+    variants: { tone: { muted: { step: { base: { background: tok('color.surface') } } }, inverse: { step: { base: { background: tok('color.surface') } } } } }
+  },
+  'cta.banner': { nodes: { panel: { base: { shadow: tok('shadow.lg') } } } },
+  // The blocks an owner places by hand look like the sections that hold the same content: tinted tiles with Signal's
+  // icon badge (a block's own tones fill over the tile).
+  'block.feature': {
+    nodes: { root: tile(), 'icon-badge': ICON_BADGE },
+    // On the dark tone the badge is a lift of the block's own ink, so the accent icon in it stays readable.
+    variants: { tone: { inverse: { 'icon-badge': { base: { background: 'color-mix(in srgb, var(--so-color-on-inverse) 10%, transparent)', border: '1px solid color-mix(in srgb, var(--so-color-on-inverse) 22%, transparent)' } } } } }
+  },
+  'block.stat': { nodes: { root: tile() } },
+  'block.testimonial': { nodes: { root: tile() } }
 };
 
 /**

@@ -375,7 +375,7 @@ describe('theme switching (P06, I03)', () => {
     expect(validateState(editorial).filter((d) => d.severity === 'error')).toEqual([]);
     // Editorial's own layout reaches the site: its split hero is asymmetric and its stylesheet is the theme's.
     const files = generateProject(editorial);
-    expect(files.get('src/lib/siteorigin/styles/components.css')).toMatch(/\.so-editorial-hero-split__grid \{[^}]*grid-template-columns: minmax\(0, 2fr\) minmax\(0, 3fr\);/);
+    expect(files.get('src/lib/siteorigin/styles/components.css')).toMatch(/\.so-editorial-hero-split__grid \{[^}]*grid-template-columns: minmax\(0, 5fr\) minmax\(0, 6fr\);/);
     expect(files.get('src/lib/siteorigin/styles/theme.css')).toContain('Editorial theme base styles');
 
     const back = applyOperations(editorial, [{ type: 'theme.apply', themeId: 'foundation' }]).state;

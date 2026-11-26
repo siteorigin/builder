@@ -33,6 +33,9 @@ export const EDITORIAL_BASE_CSS = `${SHARED}
 .so-link { text-underline-offset: 0.2em; }
 .so-link:hover, .so-rich a:hover { text-decoration-thickness: 2px; }
 .so-plain-link:hover { text-decoration-thickness: 1px; text-underline-offset: 0.2em; }
+/* The tab chosen, or the billing period that is on: an outlined button carries a heavy ink rule along its foot, as an
+   index marks the entry you are reading, in place of a faint tint; the rule stays under the pointer. */
+.so-btn--secondary:where([aria-selected='true'], [aria-pressed='true']) { background: transparent; box-shadow: inset 0 -3px 0 currentColor; }
 /* The tab chosen, or a choice that is on, keeps the heavier underline that marks it, at rest and under the pointer
    (Foundation's rule, restated after Editorial's own underlines and their hover states, which would otherwise win). */
 :is(a, button):is(.so-btn--text, .so-link, .so-plain-link):is([aria-selected='true'], [aria-pressed='true']) { text-decoration-thickness: 3px; }
@@ -44,6 +47,41 @@ export const EDITORIAL_BASE_CSS = `${SHARED}
 .so-rich--bullet li::before { width: 5px; height: 5px; border-radius: 0; }
 
 .so-carousel__step, .so-viewer__close, .so-viewer__step, .so-action--image::after { border-radius: var(--so-radius-sm); }
+/* Without a pointer that hovers, or for a visitor who asked for less motion, a text button's arrow (either way it
+   points) and a pressed button stay where they are. */
+@media (hover: none), (prefers-reduced-motion: reduce) {
+  :is(a, button).so-btn--text:hover::after, :is(a, button).so-btn--text:dir(rtl):hover::after { transform: none; }
+  :is(a, button).so-btn:active { transform: none; }
+}
+/* A button that cannot act keeps its colours under the pointer. */
+:is(button:disabled, [aria-disabled='true'], a:not([href])):is(.so-btn--primary, .so-btn--light):hover { background: var(--so-btn-bg); }
+
+/* A step is a white ruled card on any section: inside it the dark section's ink starts afresh, so its title and its
+   keyboard outline are drawn for the white ground. */
+:where(li[class^='so-']:is([class$='__step'], [class*='__step '])) { --so-surface-ink: initial; --so-surface-ink-text: initial; --so-surface-ink-hover: initial; }
+
+/* A step's title is a button that opens it: a plus at its end says so before any hover, and a minus marks the step
+   that is open, as the FAQ's questions do. Drawn in the brand colour on the step's white ground. */
+:where([class*='__step-trigger'][aria-expanded]) { position: relative; padding-inline-end: 2em; }
+:where([class*='__step-trigger'][aria-expanded])::after { content: '+'; content: '+' / ''; position: absolute; inset-inline-end: 0; inset-block-start: 50%; translate: 0 -50%; color: var(--so-color-brand); font-size: 1.25em; line-height: 1; }
+:where([class*='__step-trigger'][aria-expanded='true'])::after { content: '−'; content: '−' / ''; }
+
+/* The index at exactly two or four entries, in its default layout, runs in two columns on desktop, so every rule meets
+   the column's end rather than leaving a short last row beside empty paper. (Two classes heavy, like the grid's own
+   column rule it changes; a site's columns for the grid come later at the same weight and win.) */
+@media screen and (min-width: 1024px) {
+  :where(${featureGrid}:has(> li:nth-child(2):last-child, > li:nth-child(4):last-child))[class*='--layout-default'][class*='--layout-default'] { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+}
+
+/* Prices set in lining figures, so a word ("Custom") and a figure ("$350") stand the same height in a row of plans. */
+:where(${own('pricing-plans', 'price')}, ${own('pricing-toggle', 'monthly-price')}, ${own('pricing-toggle', 'annual-price')}) { font-variant-numeric: lining-nums; }
+
+/* With no shadows, a surface that floats over the page is drawn by a hairline in its own ink: a dialog or drawer, the
+   header's submenu panel, and the compact menu's foot. (The header's panels are its own scoped styles, two classes
+   heavy; three here.) */
+.so-overlay { border: 1px solid currentColor; }
+.so-header .so-header__sub.so-header__sub { border-color: currentColor; }
+.so-header .so-header__nav.so-header__nav { border-bottom-color: currentColor; }
 
 /* The services grid is a numbered index: each entry opens with its number. The entries sit straight on the section
    (no card), so the colours drawn on them are the section's own. */

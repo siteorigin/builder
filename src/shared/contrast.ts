@@ -74,6 +74,8 @@ export interface ContrastPair {
   fixable?: boolean;
   /** Defaults to the text minimum. */
   min?: number;
+  /** The foreground is drawn at this opacity (an element's own, not its colour's), so it is seen as the colour it makes over the ground. */
+  opacity?: number;
 }
 
 /** A pair that could be measured: the ratio, the minimum it needed, and both colours as the site shows them (#rrggbb). */
@@ -139,8 +141,8 @@ export function evaluatePairs(tokens: TokenDef[], pairs: readonly ContrastPair[]
     const fgRead = fg ? read(fg) : null;
     const bg = colorOf(pair.bg);
     if (!fgRead || !bg) return { status: 'unknown', pair };
-    // Text with opacity is seen as the colour it makes over its ground.
-    const shown = compositeOver(fgRead, bg);
+    // Text with opacity, its colour's or its own, is seen as the colour it makes over its ground.
+    const shown = compositeOver(pair.opacity === undefined ? fgRead : { ...fgRead, a: fgRead.a * pair.opacity }, bg);
     const ratio = contrastBetween(shown, bg);
     const min = pair.min ?? TEXT_CONTRAST;
     const measured = { pair, ratio, min, fg: toHex6(shown), bg: toHex6(bg) };
