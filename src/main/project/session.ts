@@ -21,7 +21,7 @@ import { madeRequiredBy } from '@engine/required';
 import { findRemoval, restoreRemoval } from '@engine/restore';
 import { pageLinkUses } from '@engine/page-links';
 import { syncedEntryChange } from '@engine/collections';
-import { sourceSyncRefusal, syncedAssetLoss, type SourceSyncGrant } from '@engine/sources';
+import { sourceIntegrityChange, sourceSyncRefusal, syncedDependencyLoss, type SourceSyncGrant } from '@engine/sources';
 import { codeNeeds, declareCodeNames, filledSlots } from '@engine/definitions';
 import { publicationPlan } from '@generator/checks';
 import { blocksSaving, diagnosticKey, introducedDiagnostics, validateState, type Diagnostic } from '@engine/validate';
@@ -395,6 +395,10 @@ function readsWholeProject(o: EditOperation, state: ProjectState): boolean {
     case 'collection.remove':
     case 'entry.create':
     case 'entry.remove':
+      return true;
+    // A source's settings are checked against every collection and source, which one added outside the app changes.
+    case 'source.upsert':
+    case 'source.remove':
       return true;
     // A redirect's old address must be free of every page's and entry's, and where it goes must be there.
     case 'redirect.add':
@@ -2393,7 +2397,7 @@ export class ProjectSession extends EventEmitter {
    */
   apply(
     batch: EditBatch,
-    opts: CommitOptions & { runId?: string; idempotencyKey?: string; codeAllowed?: boolean; componentImport?: ComponentImport; collectionWrite?: CollectionWriteGrant; sourceSync?: SourceSyncGrant }
+    opts: CommitOptions & { runId?: string; idempotencyKey?: string; codeAllowed?: boolean; componentImport?: ComponentImport; collectionWrite?: CollectionWriteGrant; sourceSync?: SourceSyncGrant; stillWanted?: () => boolean }
   ): Promise<ApplyResult> {
     return this.serialize(async () => {
       const fingerprint = sha(JSON.stringify(batch.operations));
@@ -2413,7 +2417,10 @@ export class ProjectSession extends EventEmitter {
       const ops = [];
       for (const raw of batch.operations) {
         const v = validateOperation(raw);
-        if (!v.ok) return { ok: false, revision: this.revision, error: { code: 'INVALID_ARGUMENT', message: v.message, recoverable: true } };
+        // A source's settings may hold the very credential they should only name: the problem is said in fixed words.
+        const settings = (raw as { type?: unknown })?.type === 'source.upsert';
+        if (!v.ok)
+          return { ok: false, revision: this.revision, error: { code: 'INVALID_ARGUMENT', message: settings ? 'A source’s settings are not valid: name each credential it signs in with as { "$secret": "<name>" }, never its value.' : v.message, recoverable: true } };
         ops.push(v.op);
       }
       // Checked here, in turn with every other edit and with the editor's clipboard, so what it copies is what lands.
@@ -2433,6 +2440,8 @@ export class ProjectSession extends EventEmitter {
       if (opts.sourceSync && (opts.source === 'ai' || opts.runId))
         return { ok: false, revision: this.revision, error: { code: 'SCOPE_MISMATCH', message: 'Only a sync can write a synced collection.', recoverable: false } };
       const syncRefusal = opts.sourceSync ? sourceSyncRefusal(ops, opts.sourceSync) : null;
+      // A sync its project stopped wanting while this waited its turn (it is closing) lands nothing.
+      if (opts.sourceSync && opts.stillWanted && !opts.stillWanted()) return { ok: false, revision: this.revision, error: { code: 'CANCELLED', message: 'The sync was stopped.', recoverable: false } };
       if (syncRefusal) return { ok: false, revision: this.revision, error: { code: 'SCOPE_MISMATCH', message: syncRefusal, recoverable: false } };
       const context = {
         clipboards: this.clipboards,
@@ -2652,7 +2661,10 @@ export class ProjectSession extends EventEmitter {
     h.entries = h.entries.slice(0, h.cursor);
     const last = h.entries[h.entries.length - 1];
     let id: string;
-    if (opts.coalesceKey && last?.coalesceKey === opts.coalesceKey && Date.now() - Date.parse(last.time) < 4000) {
+    // Only a change that carries on from where the last step left its documents: one made in between without a step of
+    // its own (a sync) would otherwise be taken back with them.
+    const joins = !!last && Object.entries(docs).every(([path, d]) => !last.docs[path] || last.docs[path].after === d.before);
+    if (opts.coalesceKey && last?.coalesceKey === opts.coalesceKey && Date.now() - Date.parse(last.time) < 4000 && joins) {
       id = last.id;
       for (const [path, d] of Object.entries(docs)) {
         if (last.docs[path]) last.docs[path].after = d.after;
@@ -3612,7 +3624,8 @@ export class ProjectSession extends EventEmitter {
     const broken = fatal(next).find((d) => !already.has(d.message));
     if (broken) return { ok: false, revision: this.revision, error: { code: 'CONFLICT', message: `Cannot ${direction} ${what}: ${broken.message}`, recoverable: false } };
     // Nor one that rewrites a synced collection's entries (an edit made before it was synced, say), as no change may.
-    const synced = syncedEntryChange(this.state, next) ?? syncedAssetLoss(this.state, next);
+    // Nor one that takes away what such an entry needs, or leaves a collection synced from a source that is gone.
+    const synced = syncedEntryChange(this.state, next) ?? syncedDependencyLoss(this.state, next) ?? sourceIntegrityChange(this.state, next);
     if (synced) return { ok: false, revision: this.revision, error: { code: 'CONFLICT', message: `Cannot ${direction} ${what}: it ${synced}`, recoverable: false } };
     const pin = themePinProblem(next);
     if (pin) return { ok: false, revision: this.revision, error: { code: 'CONFLICT', message: `Cannot ${direction} ${what}: ${pin}`, recoverable: false } };
@@ -3999,7 +4012,7 @@ export class ProjectSession extends EventEmitter {
     const pin = themePinProblem(next);
     if (pin) return refuse(pin);
     const problem = (why: string) => refuse(`Undoing it on its own would leave a problem: ${why}`);
-    const synced = syncedEntryChange(this.state, next) ?? syncedAssetLoss(this.state, next);
+    const synced = syncedEntryChange(this.state, next) ?? syncedDependencyLoss(this.state, next) ?? sourceIntegrityChange(this.state, next);
     if (synced) return refuse(`Undoing it on its own ${synced}`);
     // Anything the project would newly fail, warnings aside: a broken link is as much a reason as a page left out of
     // the page order.

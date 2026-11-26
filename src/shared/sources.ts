@@ -81,7 +81,20 @@ export function sourceDocProblem(doc: unknown, folder?: string): string | null {
  * as written, or escaped as JSON writes it.
  */
 export function holdsSecretValue(text: string, values: readonly string[]): boolean {
-  return values.some((v) => typeof v === 'string' && v.length >= MIN_SECRET_LENGTH && (text.includes(v) || text.includes(JSON.stringify(v).slice(1, -1))));
+  return values.some((v) => typeof v === 'string' && v.length >= MIN_SECRET_LENGTH && secretForms(v).some((f) => text.includes(f)));
+}
+
+/** A secret as text may carry it: as written, escaped as JSON writes it, and encoded as an address or a form does. */
+export function secretForms(v: string): string[] {
+  const forms = new Set([v, JSON.stringify(v).slice(1, -1)]);
+  try {
+    const encoded = encodeURIComponent(v);
+    forms.add(encoded);
+    forms.add(encoded.replace(/%20/g, '+'));
+  } catch {
+    // Text no address can carry (a lone surrogate) is only ever written as it is.
+  }
+  return [...forms];
 }
 
 /** The shortest secret kept. Shorter is no credential, and looking for it in text would find ordinary words. */

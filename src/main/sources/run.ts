@@ -5,9 +5,11 @@
  * is ever drafted for a record that was only not read. Kept apart from the process so it can be tested.
  */
 import { redactSecrets } from './redact';
+import { holdsSecretValue } from '@shared/sources';
 import { recordHash } from './hash';
 import { AdapterError, type SourceAdapter } from './registry';
 import {
+  imageAddressProblem,
   imageKey,
   MAX_DETAIL,
   MAX_IMAGE_BYTES,
@@ -25,7 +27,7 @@ import {
 } from './protocol';
 
 /** A picture's bytes and type, fetched from its address (see worker.ts's fetchImage). */
-export type ImageFetcher = (url: string, maxBytes: number, signal: AbortSignal) => Promise<{ bytes: Uint8Array; mime: string }>;
+export type ImageFetcher = (url: string, maxBytes: number, signal: AbortSignal, check: (url: string) => string | null) => Promise<{ bytes: Uint8Array; mime: string }>;
 
 export interface RunDeps {
   adapters: Readonly<Record<string, SourceAdapter>>;
@@ -66,7 +68,7 @@ export async function runSync(req: SyncRequest, deps: RunDeps): Promise<SyncRepl
   }
   let size: number;
   try {
-    size = JSON.stringify(records).length;
+    size = Buffer.byteLength(JSON.stringify(records));
   } catch {
     return failed('invalid', 'a record cannot be read');
   }
@@ -77,12 +79,17 @@ export async function runSync(req: SyncRequest, deps: RunDeps): Promise<SyncRepl
     if (Object.hasOwn(req.known ?? {}, r.externalId) && req.known[r.externalId] === recordHash(r)) continue;
     for (const img of recordImages(r)) if (!wanted.has(imageKey(img))) wanted.set(imageKey(img), img);
   }
+  // Never an address that carries a secret (an image host is not the source, and need not see it), nor one on this
+  // computer or the local network.
+  const checkAddress = (url: string) => (holdsSecretValue(url, secrets) ? 'a picture’s address holds a secret' : imageAddressProblem(url));
   const images: SyncImage[] = [];
   let total = 0;
   for (const [key, img] of wanted) {
+    const refused = checkAddress(img.url);
+    if (refused) return failed('image', refused);
     let got: { bytes: Uint8Array; mime: string };
     try {
-      got = await deps.fetchImage(img.url, Math.min(MAX_IMAGE_BYTES, MAX_IMAGES_BYTES - total), signal);
+      got = await deps.fetchImage(img.url, Math.min(MAX_IMAGE_BYTES, MAX_IMAGES_BYTES - total), signal, checkAddress);
     } catch (e) {
       return failed(e instanceof AdapterError ? e.code : 'image', e instanceof AdapterError ? e.detail : undefined);
     }

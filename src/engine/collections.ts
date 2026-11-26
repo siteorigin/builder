@@ -866,6 +866,9 @@ export function entryRemove(state: ProjectState, op: Op<'entry.remove'>, atStart
   const c = getCollection(state, op.collectionId);
   const entry = getEntry(c, op.entryId);
   refuseSynced(c, 'removed', sync);
+  // An old address the author keeps for it is theirs: a sync never takes it away with the entry.
+  const custom = sync ? keptAddresses(state).find((r) => r?.entryId === entry.id && r.custom) : undefined;
+  if (custom) fail(`The old address ${custom.from} goes to “${entry.title}”, which its source no longer has. Point that address elsewhere in Site settings, under Redirects, before syncing.`);
   if (op.replacementEntryId !== undefined && op.replacementPageId !== undefined) fail('Choose a replacement entry or a replacement page, not both.');
   if (op.replacementEntryId === entry.id) fail('The replacement must be a different entry.');
   if (op.replacementEntryId !== undefined && !findEntry(state, op.replacementEntryId)) fail(`The replacement entry "${op.replacementEntryId.slice(0, 60)}" does not exist.`);

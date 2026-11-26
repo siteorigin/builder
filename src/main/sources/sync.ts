@@ -7,7 +7,7 @@
  */
 import type { AssetRecord, ProjectState } from '@shared/types';
 import type { ApplyResult, EditOperation } from '@shared/ops';
-import { holdsSecretValue, sourceSecretNames } from '@shared/sources';
+import { holdsSecretValue, MIN_SECRET_LENGTH, sourceSecretNames } from '@shared/sources';
 import type { SourceSyncGrant } from '@engine/sources';
 import { SyncError, syncFailureMessage, type SyncRunner } from './client';
 import type { SecretStore } from './secrets';
@@ -19,7 +19,7 @@ import { redactSecrets } from './redact';
 export interface SyncSession {
   readonly state: ProjectState;
   readonly revision: number;
-  apply(batch: { operations: EditOperation[]; expectedRevision?: number }, opts: { label: string; source: 'system'; history: false; sourceSync: SourceSyncGrant }): Promise<ApplyResult>;
+  apply(batch: { operations: EditOperation[]; expectedRevision?: number }, opts: { label: string; source: 'system'; history: false; sourceSync: SourceSyncGrant; stillWanted: () => boolean }): Promise<ApplyResult>;
   /** Run `fn` while the session holds off sweeping files no record names (pictures written before their records). */
   withImport<T>(fn: () => Promise<T>): Promise<T>;
 }
@@ -52,6 +52,17 @@ const counts = (p: SyncPlan, revision: number, images: number): SourceSyncResult
   images
 });
 
+/** What to call a picture in the library: the name the source gives it, or its file's name. */
+function pictureName(given: string | undefined, url: string): string {
+  let file = '';
+  try {
+    file = decodeURIComponent(new URL(url).pathname.split('/').pop() ?? '');
+  } catch {
+    // An address that cannot be read names nothing.
+  }
+  return (given ?? file.replace(/\.[A-Za-z0-9]+$/, '')).replace(/[-_]+/g, ' ').trim().slice(0, 80) || 'Image';
+}
+
 /** Sync source `sourceId` of the open project. Resolves with what changed, or why nothing did. */
 export async function syncSource(deps: SyncDeps, sourceId: string): Promise<SourceSyncResult> {
   const { session } = deps;
@@ -73,7 +84,8 @@ export async function syncSource(deps: SyncDeps, sourceId: string): Promise<Sour
   let values: string[];
   try {
     secrets = await deps.secrets.resolve(projectId, sourceSecretNames(source));
-    values = await deps.secrets.values(projectId);
+    // Those sent, whatever the store holds by the time it is read again (a secret changed meanwhile), and every other.
+    values = [...new Set([...Object.values(secrets), ...(await deps.secrets.values(projectId))])];
   } catch (e) {
     return { ok: false, code: 'secrets', message: syncFailureMessage(source.name, 'failed', (e as Error).message.replace(/\.$/, '')) };
   }
@@ -81,14 +93,15 @@ export async function syncSource(deps: SyncDeps, sourceId: string): Promise<Sour
   try {
     result = await deps.runner.run(source.name, { adapter: source.adapter, config: source.config, secrets, known: knownHashes(state, source) }, { signal: deps.signal });
   } catch (e) {
-    if (e instanceof SyncError) return { ok: false, code: e.code, message: e.message };
+    if (e instanceof SyncError) return { ok: false, code: e.code, message: redactSecrets(e.message, values) };
     return { ok: false, message: syncFailureMessage(source.name, 'failed') };
   }
   if (!deps.current()) return closed;
   if (session.revision !== revision) return stale;
   // A source that sends back one of the user's secrets (a server echoing its token into a record) never has it written
   // into the project.
-  if (holdsSecretValue(JSON.stringify(result.records), values)) return { ok: false, code: 'secret', message: `“${source.name}” was not synced: what it sent holds one of your secrets, which is never written into the project.` };
+  const leaked: SourceSyncResult = { ok: false, code: 'secret', message: `“${source.name}” was not synced: what it sent holds one of your secrets, which is never written into the project.` };
+  if (holdsSecretValue(JSON.stringify(result.records), values)) return leaked;
   const now = (deps.now ?? (() => new Date()))();
   let plan: SyncPlan;
   try {
@@ -111,8 +124,12 @@ export async function syncSource(deps: SyncDeps, sourceId: string): Promise<Sour
       if (session.revision !== revision) return stale;
       const img = fetched.get(key);
       if (!img) return { ok: false, message: syncFailureMessage(source.name, 'image') };
+      const name = pictureName(wanted.name, wanted.url);
+      // Nor in what a picture brings: its name, as an address may carry it, or its bytes (a text chunk), which the
+      // library keeps as they are.
+      const bytes = Buffer.from(img.bytes);
+      if (holdsSecretValue(name, values) || values.some((v) => v.length >= MIN_SECRET_LENGTH && bytes.includes(v))) return leaked;
       try {
-        const name = (wanted.name ?? decodeURIComponent(new URL(wanted.url).pathname.split('/').pop() ?? '').replace(/\.[A-Za-z0-9]+$/, '')).replace(/[-_]+/g, ' ').trim().slice(0, 80) || 'Image';
         const { record, existing } = await deps.importImage({ ...img, name }, known, createdAt);
         if (!existing) {
           added.push(record);
@@ -131,7 +148,7 @@ export async function syncSource(deps: SyncDeps, sourceId: string): Promise<Sour
       if (e instanceof SyncPlanError) return { ok: false, message: e.message };
       throw e;
     }
-    const r = await session.apply({ operations, expectedRevision: revision }, { label, source: 'system', history: false, sourceSync: grant });
+    const r = await session.apply({ operations, expectedRevision: revision }, { label, source: 'system', history: false, sourceSync: grant, stillWanted: deps.current });
     if (!r.ok) {
       if (r.error?.code === 'STALE_REVISION') return stale;
       return { ok: false, code: r.error?.code, message: `“${source.name}” was not synced: ${redactSecrets((r.error?.message ?? 'its records could not be written.').replace(/^Operation \d+ \([\w.]+\): /, ''), values)}` };

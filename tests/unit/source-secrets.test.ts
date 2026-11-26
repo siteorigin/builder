@@ -24,12 +24,14 @@ describe('the source secret store', () => {
   it('keeps each project’s secrets apart, readable only by the user, and hands out only those asked for', async () => {
     const { file, secrets } = store();
     await secrets.set('proj_a', 'token', '  tok-aaaa-1111  ');
+    await secrets.set('proj_a', 'other', 'tok-not-asked');
     await secrets.set('proj_b', 'token', 'tok-bbbb-2222');
     if (process.platform !== 'win32') expect(statSync(file).mode & 0o777).toBe(0o600);
-    expect(await secrets.names('proj_a')).toEqual(['token']);
+    expect(await secrets.names('proj_a')).toEqual(['other', 'token']);
     expect(await secrets.resolve('proj_a', ['token'])).toEqual({ token: 'tok-aaaa-1111' });
     expect(await secrets.resolve('proj_b', ['token'])).toEqual({ token: 'tok-bbbb-2222' });
-    await expect(secrets.resolve('proj_a', ['token', 'other'])).rejects.toThrow('The secret "other" is not saved for this project.');
+    await expect(secrets.resolve('proj_a', ['token', 'missing'])).rejects.toThrow('The secret "missing" is not saved for this project.');
+    await secrets.set('proj_a', 'other', null);
     // Replaced, the file is still the user's alone.
     await secrets.set('proj_a', 'token', 'tok-aaaa-3333');
     if (process.platform !== 'win32') expect(statSync(file).mode & 0o777).toBe(0o600);
@@ -40,8 +42,8 @@ describe('the source secret store', () => {
 
   it('loses neither of two changes made at once', async () => {
     const { secrets } = store();
-    await Promise.all([secrets.set('p', 'one', 'value-1'), secrets.set('p', 'two', 'value-2'), secrets.set('q', 'one', 'value-3')]);
-    expect(await secrets.names('p')).toEqual(['one', 'two']);
+    await Promise.all([secrets.set('p', 'one', 'value-1'), secrets.set('p', 'two', 'value-2'), secrets.set('q', 'one', 'value-3'), secrets.set('p', 'two', 'value-2b')]);
+    expect(await secrets.resolve('p', ['one', 'two'])).toEqual({ one: 'value-1', two: 'value-2b' });
     expect(await secrets.values('q')).toEqual(['value-3']);
   });
 
@@ -55,11 +57,21 @@ describe('the source secret store', () => {
     await expect(secrets.set('p', 'token', 'value-1')).rejects.toThrow(/damaged/);
     await expect(secrets.names('p')).rejects.toThrow(/damaged/);
     expect(readFileSync(file, 'utf8')).toBe('{"other": {"token": "keep-me"}');
+    // Sound JSON holding what no change could save (a value that is no text, or too short to be taken out of what a
+    // source says) is damaged too.
+    for (const damaged of ['{"other": {"token": 42}}', '{"other": {"token": "abc"}}']) {
+      writeFileSync(file, damaged);
+      await expect(secrets.resolve('other', ['token'])).rejects.toThrow(/damaged/);
+      await expect(secrets.set('p', 'token', 'value-1')).rejects.toThrow(/damaged/);
+      expect(readFileSync(file, 'utf8')).toBe(damaged);
+    }
   });
 });
 
 describe('taking secrets out of what a source says', () => {
   it('replaces each secret as written, as an address or JSON carries it, and the longest first', () => {
+    const quoted = 'q"u\\te tok';
+    expect(redactSecrets(`{"t":${JSON.stringify(quoted)}} form=${encodeURIComponent(quoted).replace(/%20/g, '+')}`, [quoted])).toBe('{"t":"[secret]"} form=[secret]');
     const secrets = ['s3cr3t/t0ken+x', 's3cr3t'];
     const said = `refused s3cr3t/t0ken+x at https://api.example/?key=${encodeURIComponent('s3cr3t/t0ken+x')} body {"t":${JSON.stringify('s3cr3t/t0ken+x')}} and s3cr3t`;
     const out = redactSecrets(said, secrets);
@@ -70,6 +82,8 @@ describe('taking secrets out of what a source says', () => {
 
   it('finds a secret written into a document, escaped or not', () => {
     expect(holdsSecretValue(JSON.stringify({ name: 'Team tok"en-1' }), ['tok"en-1'])).toBe(true);
+    expect(holdsSecretValue('Team tok"en-1', ['tok"en-1'])).toBe(true);
+    expect(holdsSecretValue('https://cdn.example/a%20b%2Fc.png', ['a b/c'])).toBe(true);
     expect(holdsSecretValue('{"name":"Team"}', ['tok"en-1'])).toBe(false);
   });
 });

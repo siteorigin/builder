@@ -53,7 +53,9 @@ export function createSecretStore(file: () => string): SecretStore {
     } catch {
       parsed = null;
     }
-    if (!isRecord(parsed) || !Object.values(parsed).every((p) => isRecord(p) && Object.values(p).every((v) => typeof v === 'string')))
+    // Held to what a change may save, so no value is sent that the redaction would miss.
+    const sound = (v: unknown) => typeof v === 'string' && v.length >= MIN_SECRET_LENGTH && v.length <= MAX_SECRET_LENGTH;
+    if (!isRecord(parsed) || !Object.values(parsed).every((p) => isRecord(p) && Object.entries(p).every(([k, v]) => isSecretName(k) && sound(v))))
       throw new SecretStoreError('Your saved source secrets are damaged, so they were left as they are. Remove source-secrets.json from the app’s data folder to start again.');
     return parsed as SecretFile;
   };

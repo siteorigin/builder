@@ -67,10 +67,17 @@ describe('the sync worker client', () => {
   it('ignores a foreign reply, and stop() or the sync’s own signal ends a sync in progress', async () => {
     const foreign = fakeWorker((m, w) => w.reply({ id: m.id + 1, ok: true, records: [], images: [] }));
     const runner = createSyncRunner(foreign.spawn, { timeoutMs: 5000 });
-    const sync = runner.run('Team', request);
-    setTimeout(() => runner.stop(), 10);
+    let settled = false;
+    const sync = runner.run('Team', request).finally(() => (settled = true));
+    const other = runner.run('Other', request);
+    await new Promise((r) => setTimeout(r, 20));
+    // The foreign reply has come and gone: both are still waiting, their workers alive.
+    expect(settled).toBe(false);
+    expect(foreign.spawned.map((w) => w.killed)).toEqual([false, false]);
+    runner.stop();
     await expect(sync).rejects.toMatchObject({ code: 'stopped' });
-    expect(foreign.spawned[0].killed).toBe(true);
+    await expect(other).rejects.toMatchObject({ code: 'stopped' });
+    expect(foreign.spawned.every((w) => w.killed)).toBe(true);
     const abort = new AbortController();
     const waiting = fakeWorker(() => undefined);
     const aborted = createSyncRunner(waiting.spawn, { timeoutMs: 5000 }).run('Team', request, { signal: abort.signal });
@@ -98,12 +105,46 @@ describe('the sync worker client', () => {
     expect(kills).toBe(2);
   });
 
-  it('says so when the worker cannot be started', async () => {
+  it('says so when the worker cannot be started or sent its request, and ends one that started', async () => {
     await expect(
       createSyncRunner(() => {
         throw new Error('no fork');
       }).run('Team', request)
     ).rejects.toMatchObject({ code: 'not-started' });
+    let kills = 0;
+    const deaf = { postMessage: () => { throw new Error('closed'); }, on: () => undefined, kill: () => (++kills, true) } as unknown as SyncHandle;
+    await expect(createSyncRunner(() => deaf).run('Team', request)).rejects.toMatchObject({ code: 'not-started' });
+    expect(kills).toBe(1);
+  });
+
+  it('settles on an error with no exit, a reply it cannot put in words, and a reply that is no list of records', async () => {
+    const erroring = fakeWorker(() => undefined);
+    const spawnErr = (): SyncHandle => {
+      const h = erroring.spawn();
+      const on = h.on.bind(h) as (e: string, l: () => void) => unknown;
+      on('spawn', () => undefined);
+      setTimeout(() => (h as unknown as { emitError?: () => void }).emitError?.(), 5);
+      return { ...h, on: (e: string, l: () => void) => (e === 'error' ? setTimeout(l, 5) : on(e, l)) } as unknown as SyncHandle;
+    };
+    await expect(createSyncRunner(spawnErr, { timeoutMs: 5000 }).run('Team', request)).rejects.toMatchObject({ code: 'crashed' });
+    // A lone surrogate cannot be written as an address: the detail is left out, and the sync still settles.
+    const garbled = fakeWorker((m, w) => w.reply({ id: m.id, ok: false, code: 'auth', detail: 'bad \ud800 token' }));
+    await expect(createSyncRunner(garbled.spawn, { timeoutMs: 5000 }).run('Team', { ...request, secrets: { team: 'x\ud800yz' } })).rejects.toMatchObject({ code: 'auth' });
+    const empty = fakeWorker((m, w) => w.reply({ id: m.id, ok: true, records: [null as unknown as NormalizedRecord], images: [] }));
+    await expect(createSyncRunner(empty.spawn).run('Team', request)).rejects.toMatchObject({ code: 'invalid' });
+  });
+
+  it('ends a worker whose first kill worked only once', async () => {
+    const listeners: Record<string, Array<() => void>> = {};
+    let kills = 0;
+    const handle = {
+      postMessage: () => undefined,
+      on: (e: string, l: () => void) => ((listeners[e] ??= []).push(l), undefined),
+      kill: () => (++kills, true)
+    } as unknown as SyncHandle;
+    await expect(createSyncRunner(() => handle, { timeoutMs: 10 }).run('Team', request)).rejects.toMatchObject({ code: 'timeout' });
+    listeners.spawn?.forEach((l) => l());
+    expect(kills).toBe(1);
   });
 });
 
@@ -134,6 +175,33 @@ describe('a sync as the worker runs it', () => {
     expect(asked).toEqual(['https://cdn.example/a.png', 'https://cdn.example/x.png?sig=1']);
   });
 
+  it('never asks an address that carries a secret or leads to this computer, redirects included', async () => {
+    const { asked, fetchImage } = fetcher();
+    const one = (url: string) => runSync({ ...request, id: 2 }, { adapters: adapter(async () => [record('1', { values: { photo: { $image: { url } } } })]), fetchImage });
+    expect(await one(`https://cdn.example/a.png?token=${SECRET}`)).toMatchObject({ ok: false, code: 'image', detail: 'a picture’s address holds a secret' });
+    expect(await one('http://192.168.1.1/a.png')).toMatchObject({ ok: false, code: 'image' });
+    expect(await one('http://localhost:8080/a.png')).toMatchObject({ ok: false, code: 'image' });
+    expect(await one('https://user:pw@cdn.example/a.png')).toMatchObject({ ok: false, code: 'image' });
+    expect(asked).toEqual([]);
+    // An image field's own picture is fetched.
+    expect(await one('https://cdn.example/field.png')).toMatchObject({ ok: true, images: [{ key: 'url:https://cdn.example/field.png' }] });
+    // The real fetcher checks where a redirect leads before following it.
+    const { fetchImage: real } = await import('../../src/main/sources/fetch-image');
+    const seen: string[] = [];
+    const fetchStub = async (u: string | URL) => {
+      seen.push(String(u));
+      return new Response(null, { status: 302, headers: { location: 'http://127.0.0.1/admin.png' } });
+    };
+    const original = globalThis.fetch;
+    globalThis.fetch = fetchStub as typeof fetch;
+    try {
+      await expect(real('https://cdn.example/a.png', 1000, new AbortController().signal, (u) => (u.includes('127.0.0.1') ? 'local' : null))).rejects.toMatchObject({ code: 'image', detail: 'local' });
+    } finally {
+      globalThis.fetch = original;
+    }
+    expect(seen).toEqual(['https://cdn.example/a.png']);
+  });
+
   it('fails the whole sync, in fixed words, on a reader that fails part way, a bad record or a picture that will not load', async () => {
     const { fetchImage } = fetcher();
     const run = (read: SourceAdapter['read'], f: ImageFetcher = fetchImage) => runSync({ ...request, id: 1 }, { adapters: adapter(read), fetchImage: f });
@@ -158,6 +226,13 @@ describe('a sync as the worker runs it', () => {
       })
     ).toMatchObject({ ok: false, code: 'image' });
     expect(await run(withPicture, async () => ({ bytes: png, mime: 'image/svg+xml' }))).toMatchObject({ ok: false, code: 'image' });
+    // The second of two pictures failing fails it all: no reply carries some of its pictures.
+    const two = async () => [record('1', { featuredImage: { $image: { url: 'https://cdn.example/a.png' } } }), record('2', { featuredImage: { $image: { url: 'https://cdn.example/b.png' } } })];
+    const second: ImageFetcher = async (url) => {
+      if (url.endsWith('b.png')) throw new Error('gone');
+      return { bytes: png, mime: 'image/png' };
+    };
+    expect(await run(two, second)).toEqual({ id: 1, ok: false, code: 'image' });
     expect(await runSync({ ...request, adapter: 'contentful', id: 1 }, { adapters: adapter(withPicture), fetchImage })).toEqual({ id: 1, ok: false, code: 'adapter-unavailable' });
     expect(await runSync({ ...request, adapter: 'constructor', id: 1 }, { adapters: adapter(withPicture), fetchImage })).toEqual({ id: 1, ok: false, code: 'adapter-unavailable' });
   });

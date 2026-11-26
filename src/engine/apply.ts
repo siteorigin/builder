@@ -4137,7 +4137,7 @@ export function applyOperations(state: ProjectState, ops: EditOperation[], ctx: 
     }
   }
   // A sync attaches its collection and says where each entry it wrote came from.
-  if (ctx.sourceSync) finishSourceSync(draft, ctx.sourceSync);
+  if (ctx.sourceSync) finishSourceSync(draft, ctx.sourceSync, state);
   // Synced collections' entries are what the batch began with, unless it detached them (see syncedEntryChange), or
   // the batch is the sync of the one collection it writes.
   const synced = syncedEntryChange(state, draft, ctx.sourceSync?.collectionId);

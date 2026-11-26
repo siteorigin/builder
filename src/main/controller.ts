@@ -20,13 +20,14 @@ import type { BuildFailureContext } from './build-failure';
 import { zipDirectory } from './zip';
 import { NOT_A_PROJECT_ZIP, readProjectZip, unpackProject, WEBSITE_ZIP, ZipError } from './unzip';
 import { StaticPreviews } from './static-preview';
-import { isPlainFile, builtPhotosMessage, deliverVercelConfig, pageLanguageWarning, publicUrlNote, rivalHookStop, cleanBuiltSite, cleanWebsitePhotos, copyProjectSource, draftLinksStop, draftSourceNotes, publishedChanged, withheldRoutes, withheldStaticFiles, editedGeneratedFile, explainBuildFailure, exportedAssetFilter, finishExportedSource, leaveOutDrafts, listFiles, locatedPhotos, locationKeptNote, locationRemovedNote, missingAssetsStop, missingSourceWarnings, missingUnusedWarnings, missingWebsiteAssets, notFoundAddressWarning, notFoundHostNote, notFoundPageProblem, omittedAssetsWarning, ownNotFoundFileNote, ownNotFoundFileStop, readNotFoundPage, settleServerHook, stripPartMarkers, carriesPartMarker, projectFingerprint, projectReadme, publishFolder, pruneWebsiteAssets, replaceEmptyFolder, readLibraryImage, sectionLinkWarnings, uncleanablePhotosMessage, uniqueChild, unlinkedButtonWarnings, unlinkedMenuLinkWarnings, formNameWarnings, runtimeFontWarnings, variantCredits, writeExportedSources } from './export';
+import { isPlainFile, builtPhotosMessage, deliverVercelConfig, pageLanguageWarning, publicUrlNote, rivalHookStop, cleanBuiltSite, cleanWebsitePhotos, copyProjectSource, draftLinksStop, draftSourceNotes, publishedChanged, withheldRoutes, withheldStaticFiles, editedGeneratedFile, explainBuildFailure, exportedAssetFilter, finishExportedSource, leaveOutDrafts, listFiles, locatedPhotos, locationKeptNote, locationRemovedNote, missingAssetsStop, missingSourceWarnings, missingUnusedWarnings, missingWebsiteAssets, notFoundAddressWarning, notFoundHostNote, notFoundPageProblem, omittedAssetsWarning, ownNotFoundFileNote, ownNotFoundFileStop, readNotFoundPage, settleServerHook, stripPartMarkers, carriesPartMarker, projectFingerprint, projectReadme, publishFolder, pruneWebsiteAssets, replaceEmptyFolder, readLibraryImage, sectionLinkWarnings, uncleanablePhotosMessage, uniqueChild, unlinkedButtonWarnings, unlinkedMenuLinkWarnings, formNameWarnings, runtimeFontWarnings, variantCredits, writeExportedSources, exportedSourcesProblem } from './export';
 import { LOCAL_DIR, NO_LOCK, ProjectLockedError, ProjectSession, ThemeUnavailableError } from './project/session';
 import { DOC_DIR, MANIFEST_FILE, ProjectFormatError } from './project/documents';
 import { DOCUMENT_EXTENSIONS, FONT_EXTENSIONS, IMAGE_EXTENSIONS, IMPORT_IMAGE_EXTENSIONS, importAsset, importPackageImage, isAssetOfKind, isOpaquePicture, libraryWebCopyPlan, locateAssetFile, originalNameOf, pictureMime, restoreAssetFiles, reviewImportFile, storeLibraryWebCopy } from './project/assets';
 import { postReader, stopPostReads } from './posts-import/process';
 import { sourceSecrets, sourceSyncRunner, stopSourceSyncs } from './sources/process';
 import { syncSource, type SourceSyncResult } from './sources/sync';
+import { holdsSecretValue } from '@shared/sources';
 import { planOperations, planPostImport, type PostImportPlan } from './posts-import/plan';
 import { postImportPreview } from './posts-import/preview';
 import { readContained } from './posts-import/files';
@@ -1435,8 +1436,9 @@ export class Controller {
       // opening it was asked in is still the open one.
       await s.exclusive(async () => {
         if (!current()) throw Object.assign(new Error('stale'), { code: 'STALE_OPENING' });
-        // The copy is the project itself, brief and all.
+        // The copy is the project itself, brief and all, with its sources' settings as the project holds them.
         await copyProjectSource(s.dir, tmp, { keepBrief: true });
+        await writeExportedSources(tmp, s.state, { keep: true });
       });
       const manifestPath = join(tmp, MANIFEST_FILE);
       const manifest = JSON.parse(await fs.readFile(manifestPath, 'utf8'));
@@ -1581,6 +1583,10 @@ export class Controller {
     if (this.aiBusy()) return { ok: false, revision: session.revision, error: { code: 'BUSY', message: 'The AI is making changes. Stop it before editing.', recoverable: true } };
     // Code, and copies that would make new code, need Developer mode: the session checks the batch as it applies it.
     const codeAllowed = (await loadSettings()).settings.developerMode;
+    // A source's settings never hold one of the user's saved secrets themselves (a token pasted into its name).
+    const sources = batch.operations.filter((o) => (o as { type?: unknown })?.type === 'source.upsert');
+    if (sources.length && holdsSecretValue(JSON.stringify(sources), await sourceSecrets.values(session.state.manifest.projectId).catch(() => [])))
+      return { ok: false, revision: session.revision, error: { code: 'INVALID_ARGUMENT', message: 'A source’s settings may not hold one of your secrets. Name it with { "$secret": "<name>" } instead.', recoverable: true } };
     // An edit belongs to the project it was made in: one closing, closed or switched meanwhile never receives it.
     if (this.session !== session || this.closing) return { ok: false, revision: session.revision, error: { code: 'CONFLICT', message: 'The project was closed before this change could be saved.', recoverable: false } };
     return session.apply(batch, { label: opts.label ?? batch.label ?? 'Edit', coalesceKey: opts.coalesceKey, source: 'user', codeAllowed });
@@ -2629,8 +2635,10 @@ export class Controller {
       // Both exports are the published site: its pages decide whether it needs the generated server hook.
       const rival = await rivalHookStop(s.dir, publishedState(s.state));
       if (rival) return stop(rival);
+      // A source's settings go out as the project holds them, and only when the folder holds them so too.
+      const sources = opts.forBuild ? null : await exportedSourcesProblem(s.dir, s.state, await sourceSecrets.values(s.state.manifest.projectId).catch(() => []));
+      if (sources) return stop(sources);
       await copyProjectSource(s.dir, dest, { keepAsset: exportedAssetFilter(s.state) });
-      // A source's settings go out as the project holds them, never as a refused edit left them on disk.
       await writeExportedSources(dest, s.state, { keep: !opts.forBuild });
       // The icons go out with the favicon they were made from: one replaced since would go out beside icons of the
       // picture it replaced. Only while icons cannot be made at all do those the project has go out as they are.

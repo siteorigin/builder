@@ -5,7 +5,10 @@
  * What the worker says is put in the app's own words here: a server's reply never reaches the author as it is.
  */
 import { redactSecrets } from './redact';
-import { MAX_DETAIL, type NormalizedRecord, type SyncFailure, type SyncImage, type SyncReply, type SyncRequest } from './protocol';
+import { MAX_DETAIL, MAX_IMAGE_BYTES, MAX_RECORDS, recordProblem, type NormalizedRecord, type SyncFailure, type SyncImage, type SyncReply, type SyncRequest } from './protocol';
+
+const isSyncImage = (i: unknown): i is SyncImage =>
+  !!i && typeof (i as SyncImage).key === 'string' && typeof (i as SyncImage).mime === 'string' && typeof (i as SyncImage).ext === 'string' && (i as SyncImage).bytes instanceof Uint8Array && (i as SyncImage).bytes.byteLength <= MAX_IMAGE_BYTES;
 
 /** Why a sync failed: the worker's reasons, and the client's own. */
 export type SyncErrorCode = SyncFailure | 'timeout' | 'crashed' | 'stopped' | 'not-started';
@@ -79,8 +82,16 @@ export function createSyncRunner(spawn: () => SyncHandle, opts: { timeoutMs?: nu
     run(name, request, { signal } = {}) {
       return new Promise<SyncResult>((resolve, reject) => {
         const secrets = Object.values(request.secrets ?? {});
-        const refuse = (code: SyncErrorCode, detail?: string) =>
-          reject(new SyncError(code, syncFailureMessage(name, code, typeof detail === 'string' && detail ? redactSecrets(detail, secrets).slice(0, MAX_DETAIL) : undefined)));
+        // Always rejects: a detail that cannot be put in words is left out, never left to stop the sync from settling.
+        const refuse = (code: SyncErrorCode, detail?: string) => {
+          let message: string;
+          try {
+            message = syncFailureMessage(name, code, typeof detail === 'string' && detail ? redactSecrets(detail, secrets).slice(0, MAX_DETAIL) : undefined);
+          } catch {
+            message = syncFailureMessage(name, code);
+          }
+          reject(new SyncError(code, message));
+        };
         if (signal?.aborted) return refuse('stopped');
         const id = ++ids;
         let w: SyncHandle;
@@ -106,7 +117,11 @@ export function createSyncRunner(spawn: () => SyncHandle, opts: { timeoutMs?: nu
         signal?.addEventListener('abort', onAbort, { once: true });
         w.on('message', (m) => {
           if (!m || m.id !== id) return;
-          if (m.ok === true && Array.isArray(m.records) && Array.isArray(m.images)) finish(() => resolve({ records: m.records, images: m.images }));
+          if (m.ok === true && Array.isArray(m.records) && Array.isArray(m.images)) {
+            // Checked again here: a reply is the worker's word, and the worker reads someone else's server.
+            if (m.records.length > MAX_RECORDS || !m.records.every((r) => recordProblem(r) === null) || !m.images.every(isSyncImage)) fail('invalid');
+            else finish(() => resolve({ records: m.records, images: m.images }));
+          }
           else if (m.ok === false && typeof m.code === 'string' && Object.hasOwn(REASONS, m.code)) fail(m.code, m.detail);
           else fail('failed');
         });

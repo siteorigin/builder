@@ -2,16 +2,28 @@
 import { AdapterError } from './registry';
 import type { ImageFetcher } from './run';
 
+const MAX_REDIRECTS = 5;
+
 /**
- * A picture from the web, read no further than `maxBytes`. It is fetched without the source's credentials, so they
- * never go to another server, whatever address a record gives or a redirect leads to.
+ * A picture from the web, read no further than `maxBytes`. It is fetched without the source's credentials, so none
+ * goes to another server; each address on the way, redirects included, is checked by `check` before it is asked.
  */
-export const fetchImage: ImageFetcher = async (url, maxBytes, signal) => {
-  const u = new URL(url);
-  if (u.protocol !== 'https:' && u.protocol !== 'http:') throw new AdapterError('image', 'a picture is not at a web address');
-  const res = await fetch(u, { signal, redirect: 'follow', credentials: 'omit' }).catch(() => {
-    throw new AdapterError('network');
-  });
+export const fetchImage: ImageFetcher = async (url, maxBytes, signal, check) => {
+  let address = url;
+  let res: Response | null = null;
+  for (let hops = 0; hops <= MAX_REDIRECTS; hops++) {
+    const problem = check(address);
+    if (problem) throw new AdapterError('image', problem);
+    res = await fetch(address, { signal, redirect: 'manual', credentials: 'omit' }).catch(() => {
+      throw new AdapterError('network');
+    });
+    const next = res.status >= 300 && res.status < 400 ? res.headers.get('location') : null;
+    if (!next) break;
+    await res.body?.cancel().catch(() => undefined);
+    address = new URL(next, address).href;
+    res = null;
+  }
+  if (!res) throw new AdapterError('image', 'a picture’s address redirects too often');
   if (!res.ok || !res.body) throw new AdapterError('image', `a picture could not be loaded (${res.status})`);
   const length = Number(res.headers.get('content-length'));
   if (Number.isFinite(length) && length > maxBytes) throw new AdapterError('too-large', 'its pictures are too large to sync');

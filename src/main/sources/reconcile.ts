@@ -80,6 +80,12 @@ export function planSourceSync(state: ProjectState, source: SourceDoc, records: 
   const attached = c.settings.sourceId === source.id;
   if (c.settings.sourceId !== undefined && !attached) throw new SyncPlanError(`The ${c.settings.name} collection is synced from another source.`);
   if (!attached && Object.keys(c.entries).length) throw new SyncPlanError(`The ${c.settings.name} collection has entries of its own, so “${source.name}” cannot sync into it. Choose an empty collection.`);
+  // A collection is synced from one source, and a source into one collection: an attachment left inconsistent (a hand
+  // edit) would otherwise let this sync claim a second collection, or two sources one.
+  const other = Object.values(state.collections ?? {}).find((x) => x.settings.id !== c.settings.id && x.settings.sourceId === source.id);
+  if (other) throw new SyncPlanError(`The ${other.settings.name} collection is synced from “${source.name}” too. Detach it before syncing.`);
+  const rival = Object.values(state.sources ?? {}).find((s) => s.id !== source.id && s.collectionId === source.collectionId);
+  if (rival) throw new SyncPlanError(`“${rival.name}” syncs into the ${c.settings.name} collection too. Remove one of them before syncing.`);
   const index = syncedIndex(c, source);
   const plan: SyncPlan = { sourceId: source.id, collectionId: c.settings.id, attach: !attached, creates: [], updates: [], republish: [], unpublish: [], remove: [], unchanged: 0, kept: 0, images: new Map(), provenance: {} };
   const planned = new Set<string>();
@@ -139,12 +145,12 @@ export function syncOperations(plan: SyncPlan, state: ProjectState, assetIds: Re
     return id;
   };
   const fields = (r: NormalizedRecord) => {
-    const terms: Record<string, string[]> = {};
-    for (const tax of Object.keys(c.settings.taxonomies ?? {})) terms[tax] = [];
-    for (const [tax, ids] of Object.entries(r.terms ?? {})) terms[tax] = [...ids];
-    const values: Record<string, unknown> = {};
-    for (const name of Object.keys(c.settings.fields ?? {})) values[name] = null;
-    for (const [name, v] of Object.entries(r.values ?? {})) values[name] = isImageRef(v) ? { assetId: asset(v.$image), alt: v.$image.alt ?? '' } : v;
+    // Own keys whatever they are named, so a record's "__proto__" reaches the engine, which refuses it, rather than nothing.
+    const terms = Object.fromEntries([...Object.keys(c.settings.taxonomies ?? {}).map((tax): [string, string[]] => [tax, []]), ...Object.entries(r.terms ?? {}).map(([tax, ids]): [string, string[]] => [tax, [...ids]])]);
+    const values = Object.fromEntries([
+      ...Object.keys(c.settings.fields ?? {}).map((name): [string, unknown] => [name, null]),
+      ...Object.entries(r.values ?? {}).map(([name, v]): [string, unknown] => [name, isImageRef(v) ? { assetId: asset(v.$image), alt: v.$image.alt ?? '' } : v])
+    ]);
     return {
       title: r.title,
       ...(r.slug !== undefined ? { slug: r.slug } : {}),
@@ -161,19 +167,22 @@ export function syncOperations(plan: SyncPlan, state: ProjectState, assetIds: Re
   };
   const ops: EditOperation[] = [];
   const collectionId = plan.collectionId;
-  for (const p of plan.creates) ops.push({ type: 'entry.create', collectionId, entryId: p.entryId, ...fields(p.record) } as EditOperation);
+  // Surviving entries first, so a link one no longer holds never stops a removal; new entries last, so an address a
+  // removed one gave up is free for them.
   for (const p of plan.updates) ops.push({ type: 'entry.update', collectionId, entryId: p.entryId, ...fields(p.record) } as EditOperation);
   for (const p of plan.republish) ops.push({ type: 'entry.update', collectionId, entryId: p.entryId, draft: p.record.draft === true });
   for (const id of plan.unpublish) ops.push({ type: 'entry.update', collectionId, entryId: id, draft: true });
   for (const id of plan.remove) ops.push({ type: 'entry.remove', collectionId, entryId: id });
+  for (const p of plan.creates) ops.push({ type: 'entry.create', collectionId, entryId: p.entryId, ...fields(p.record) } as EditOperation);
   return ops;
 }
 
 /** The content hash each record had when last synced into the collection, by external ID: the worker fetches no picture of one unchanged. */
 export function knownHashes(state: ProjectState, source: SourceDoc): Record<string, string> {
   const c = Object.hasOwn(state.collections ?? {}, source.collectionId) ? state.collections[source.collectionId] : undefined;
-  const out: Record<string, string> = {};
-  if (c?.settings.sourceId !== source.id) return out;
-  for (const e of Object.values(c.entries)) if (e.source?.sourceId === source.id && typeof e.source.externalId === 'string' && !Object.hasOwn(out, e.source.externalId)) out[e.source.externalId] = e.source.contentHash;
-  return out;
+  if (c?.settings.sourceId !== source.id) return {};
+  const known = new Map<string, string>();
+  for (const e of Object.values(c.entries)) if (e.source?.sourceId === source.id && typeof e.source.externalId === 'string' && !known.has(e.source.externalId)) known.set(e.source.externalId, e.source.contentHash);
+  // Own keys whatever they are named ("__proto__" included).
+  return Object.fromEntries(known);
 }

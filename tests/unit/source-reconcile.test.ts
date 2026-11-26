@@ -124,10 +124,49 @@ describe('planning a sync', () => {
     expect(() => planSourceSync(s, s.sources!.people, [rec('1'), rec('1')], AT)).toThrow(/two records with the same ID/);
   });
 
-  it('gives a new record an ID no entry of the project has', () => {
-    const taken = syncedEntryId('people', '1', () => false);
-    expect(syncedEntryId('people', '1', (id) => id === taken)).not.toBe(taken);
-    expect(syncedEntryId('people', '1', () => false)).toMatch(/^en_[a-f0-9]{16}$/);
+  it('gives a new record an ID no entry of the project has, and records of two sources IDs of their own', () => {
+    const first = syncedEntryId('people', '1', () => false);
+    expect(first).toMatch(/^en_[a-f0-9]{16}$/);
+    expect(syncedEntryId('other', '1', () => false)).not.toBe(first);
+    // Taken by an entry of another collection: the plan picks another, and later syncs keep that one.
+    const s = applyOperations(project(), [
+      { type: 'collection.create', collectionId: 'news', name: 'News', route: '/news/' },
+      { type: 'entry.create', collectionId: 'news', entryId: first, title: 'Squatter' }
+    ] as EditOperation[]).state;
+    const { plan, next } = sync(s, [rec('1')]);
+    const id = plan.creates[0].entryId;
+    expect(id).not.toBe(first);
+    const again = sync(next, [rec('1', { title: 'Renamed' })], LATER);
+    expect(again.plan.updates.map((u) => u.entryId)).toEqual([id]);
+    expect(again.next.collections.team.entries[id].title).toBe('Renamed');
+  });
+
+  it('refuses two entries that say they are one record, and an attachment left inconsistent', () => {
+    const synced = sync(project(), [rec('1')]).next;
+    const id = syncedEntryId('people', '1', () => false);
+    const twice = structuredClone(synced);
+    twice.collections.team.entries.en_copy1 = { ...structuredClone(twice.collections.team.entries[id]), id: 'en_copy1', slug: 'copy' };
+    expect(() => planSourceSync(twice, twice.sources!.people, [rec('1')], LATER)).toThrow(/same record/);
+    // The source moved to another collection by hand while the first stays attached: no second collection is claimed.
+    const moved = applyOperations(synced, [{ type: 'collection.create', collectionId: 'directory', name: 'Directory', kind: 'structured', pages: { detail: false, archive: false } }] as EditOperation[]).state;
+    moved.sources!.people = { ...moved.sources!.people, collectionId: 'directory' };
+    expect(() => planSourceSync(moved, moved.sources!.people, [rec('1')], LATER)).toThrow(/Team collection is synced from “People API” too/);
+    const rival = structuredClone(project());
+    rival.sources!.more = { ...rival.sources!.people, id: 'more', name: 'More people' };
+    expect(() => planSourceSync(rival, rival.sources!.people, [rec('1')], AT)).toThrow(/“More people” syncs into the Team collection too/);
+  });
+
+  it('frees a removed entry’s address for a new record in the same sync, and never takes an old address the author keeps', () => {
+    const s = sync(project('remove'), [rec('1'), rec('2', { slug: 'ben' })]).next;
+    const { next } = sync(s, [rec('1'), rec('3', { slug: 'ben' })], LATER);
+    expect(Object.values(next.collections.team.entries).map((e) => [e.source?.externalId, e.slug]).sort()).toEqual([
+      ['1', 'person-1'],
+      ['3', 'ben']
+    ]);
+    // An old address the author pointed at an entry: the sync is refused rather than take it away.
+    const two = syncedEntryId('people', '2', () => false);
+    const kept = applyOperations(s, [{ type: 'redirect.add', from: '/old-ben/', entryId: two }]).state;
+    expect(() => sync(kept, [rec('1')], LATER)).toThrow(/The old address \/old-ben\/ goes to “Person 2”/);
   });
 });
 

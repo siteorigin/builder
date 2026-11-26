@@ -26,6 +26,7 @@ import { redirectHost, VERCEL_CONFIG_FILE } from '@generator/host-redirects';
 import { atomicWrite, readIfExists, removeEmptyDirs, safeJoin, sha, toJson } from './project/fsutil';
 import { isPrivateFileName } from './project/private-files';
 import { sourceDocPath } from './project/documents';
+import { holdsSecretValue } from '@shared/sources';
 import { withoutPartMarkers } from './codecheck';
 import { pageTitle, readBuildFailure, type BuildFailureContext, type BuildReport, type ExplainedBuild } from './build-failure';
 import { addCredits, cleanPhoto, hasCredits, photoMetadata, sniffImageType, type PhotoCredits } from './project/photo-metadata';
@@ -40,7 +41,8 @@ const EXCLUDE_TOP = new Set(['node_modules', '.siteorigin', '.svelte-kit', 'buil
 
 /**
  * Copy the project's source from `src` to `dest`. The project brief (#518) is private to the project and is left out
- * unless `keepBrief` says the copy is the project itself (Duplicate project), so no export ever carries it.
+ * unless `keepBrief` says the copy is the project itself (Duplicate project), so no export ever carries it. External
+ * sources' settings (#676) are never copied: a copy that keeps them writes the project's own (writeExportedSources).
  */
 export async function copyProjectSource(src: string, dest: string, opts: { keepAsset?: (rel: string) => boolean; keepBrief?: boolean } = {}) {
   await fs.cp(src, dest, {
@@ -49,6 +51,8 @@ export async function copyProjectSource(src: string, dest: string, opts: { keepA
     filter: (p) => {
       if (!inProjectSource(src, p)) return false;
       if (!opts.keepBrief && isProjectBrief(src, p)) return false;
+      // Sources' settings are written from the project's own (writeExportedSources), never copied as the folder has them.
+      if (isSourcesFolder(src, p)) return false;
       const rel = relative(src, p);
       if (!rel || !opts.keepAsset) return true;
       try {
@@ -72,11 +76,14 @@ export function isProjectBrief(root: string, p: string): boolean {
   return BRIEF_COPY_RE.test(relative(root, p).split(sep).join('/'));
 }
 
+/** Is `p` the external sources' folder of the project in `root`, or inside it? Without case, as the disk may be. */
+export function isSourcesFolder(root: string, p: string): boolean {
+  return /^siteorigin\/sources(\/|$)/i.test(relative(root, p).split(sep).join('/'));
+}
+
 /**
- * The external sources' settings a copy of the project carries: exactly the ones the project holds, as it holds them,
- * written in place of whatever the folder had there (a hand edit the app refused, a copy an editor left beside one),
- * which may hold the very credential a source only names. A website build carries none: the site shows its entries,
- * and never reads where they came from.
+ * The external sources' settings a copy of the project carries: exactly the ones the project holds, as it holds them.
+ * A website build carries none: the site shows its entries, and never reads where they came from.
  */
 export async function writeExportedSources(dest: string, state: ProjectState, opts: { keep: boolean }) {
   await fs.rm(join(dest, 'siteorigin', 'sources'), { recursive: true, force: true });
@@ -86,6 +93,25 @@ export async function writeExportedSources(dest: string, state: ProjectState, op
     await fs.mkdir(dirname(file), { recursive: true });
     await fs.writeFile(file, toJson(state.sources![id]));
   }
+}
+
+/**
+ * Why the external sources' settings in the project folder `dir` cannot go out as the project holds them, or null: one
+ * on disk that the project does not hold as it is (an edit the app refused, or has not loaded yet), or the project's
+ * own holding one of the user's secret `values` (a token pasted into a source's name). Copies an editor left beside
+ * them never go out, so they are no reason.
+ */
+export async function exportedSourcesProblem(dir: string, state: ProjectState, values: readonly string[]): Promise<string | null> {
+  const held = state.sources ?? {};
+  const folders = await fs.readdir(join(dir, 'siteorigin', 'sources')).catch(() => [] as string[]);
+  for (const d of new Set([...folders, ...Object.keys(held)])) {
+    const rel = sourceDocPath(d);
+    const disk = await readIfExists(safeJoin(dir, rel)).catch(() => null);
+    const mine = Object.hasOwn(held, d) ? toJson(held[d]) : null;
+    if (disk !== mine && !(disk === null && mine === null)) return `${rel} was changed outside SiteOrigin Builder. Open the project again to load it, or put it back, then export again.`;
+  }
+  if (holdsSecretValue(JSON.stringify(held), values)) return 'An external source’s settings hold one of your secrets. Take it out of the source’s settings, then export again.';
+  return null;
 }
 
 /** Is `p` part of the project source in `root`: not tools, caches, builds, private files or links? */

@@ -6,17 +6,17 @@ import { createSyncRunner } from './client';
 import { createSecretStore } from './secrets';
 
 /**
- * Only what a process needs to start, find its temporary folder and reach the network through the system's proxy:
- * none of the app's own settings or keys. The secrets a sync needs are sent in its request, never set here.
+ * Only what a process needs to start and find its temporary folder: none of the app's own settings or keys, nor a
+ * proxy's address, which may sign in. The secrets a sync needs are sent in its request, never set here.
  */
 function workerEnv(): Record<string, string> {
   const env: Record<string, string> = { SITEORIGIN_SOURCE_SYNC: '1' };
-  for (const k of ['PATH', 'SystemRoot', 'TEMP', 'TMP', 'TMPDIR', 'HTTPS_PROXY', 'HTTP_PROXY', 'NO_PROXY', 'https_proxy', 'http_proxy', 'no_proxy']) if (process.env[k]) env[k] = process.env[k]!;
+  for (const k of ['PATH', 'SystemRoot', 'TEMP', 'TMP', 'TMPDIR']) if (process.env[k]) env[k] = process.env[k]!;
   return env;
 }
 
 export const sourceSyncRunner = createSyncRunner(() =>
-  utilityProcess.fork(join(dirname(fileURLToPath(import.meta.url)), 'source-sync-worker.js'), [], { serviceName: 'SiteOrigin source sync', env: workerEnv() })
+  utilityProcess.fork(join(dirname(fileURLToPath(import.meta.url)), 'source-sync-worker.js'), [], { serviceName: 'SiteOrigin source sync', env: workerEnv(), stdio: 'ignore' })
 );
 
 /** End every sync in progress (the project closed, or the app is quitting). */

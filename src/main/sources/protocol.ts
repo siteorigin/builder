@@ -77,9 +77,36 @@ export const MAX_RECORDS = 5000;
 export const MAX_RECORDS_BYTES = 32 * 1024 * 1024;
 export const MAX_IMAGE_BYTES = 25 * 1024 * 1024;
 /** The most picture bytes one sync brings across. */
-export const MAX_IMAGES_BYTES = 256 * 1024 * 1024;
+export const MAX_IMAGES_BYTES = 128 * 1024 * 1024;
 /** The longest a reason's detail may be. */
 export const MAX_DETAIL = 300;
+
+/**
+ * Why a picture's address is not one a sync fetches, or null: only the web, never this computer or the local network
+ * (a source cannot have the app read the author's router or another service on their machine), by the address as
+ * written. A name that only resolves to such an address is not caught here.
+ */
+export function imageAddressProblem(url: string): string | null {
+  let u: URL;
+  try {
+    u = new URL(url);
+  } catch {
+    return 'a picture’s address cannot be read';
+  }
+  if (u.protocol !== 'https:' && u.protocol !== 'http:') return 'a picture is not at a web address';
+  if (u.username || u.password) return 'a picture’s address signs in';
+  const host = u.hostname.toLowerCase().replace(/^\[|\]$/g, '');
+  const v4 = /^(\d+)\.(\d+)\.(\d+)\.(\d+)$/.exec(host)?.slice(1).map(Number);
+  const local =
+    host === 'localhost' ||
+    host.endsWith('.localhost') ||
+    host.endsWith('.local') ||
+    host.endsWith('.internal') ||
+    !host.includes('.') && !host.includes(':') ||
+    (v4 && (v4[0] === 0 || v4[0] === 10 || v4[0] === 127 || (v4[0] === 169 && v4[1] === 254) || (v4[0] === 172 && v4[1] >= 16 && v4[1] <= 31) || (v4[0] === 192 && v4[1] === 168) || (v4[0] === 100 && v4[1] >= 64 && v4[1] <= 127))) ||
+    (host.includes(':') && (host === '::' || host === '::1' || /^f[cd]/.test(host) || /^fe[89ab]/.test(host) || host.startsWith('::ffff:')));
+  return local ? 'a picture is on this computer or the local network, which a sync never reads' : null;
+}
 
 /** A picture's identity: what it is called by whatever address it is read at. */
 export const imageKey = (img: SourceImage): string => `${img.id !== undefined ? 'id' : 'url'}:${img.id ?? img.url}`;

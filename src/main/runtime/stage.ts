@@ -6,7 +6,7 @@
  */
 import { constants, existsSync, lstatSync, mkdtempSync, readlinkSync, realpathSync, promises as fs } from 'node:fs';
 import { dirname, isAbsolute, join, relative, sep } from 'node:path';
-import { copyProjectSource, inProjectSource, isProjectBrief } from '../export';
+import { copyProjectSource, inProjectSource, isProjectBrief, isSourcesFolder } from '../export';
 import { realFileInside } from '../../runtime/policy';
 import { ISOLATED_DIR } from '@shared/component-preview';
 
@@ -103,7 +103,8 @@ export async function syncPreviewStage(project: string, stage: string): Promise<
   const variants = await mirror(devFrom, join(stage, ...DEV_CACHE), (root, p) => notLink(p) && !isolatedIn(root, p));
   // Compared without case: on a case-insensitive disk, another spelling is the same file.
   // The project brief stays out of the copy, as it does from the first one (copyProjectSource).
-  const sources = await mirror(project, stage, (root, p) => inProjectSource(root, p) && !isProjectBrief(root, p) && !(dirname(p) === root && BUILD_CONFIG.has(relative(root, p).toLowerCase())));
+  // So do external sources' settings (#676), which the site never reads (see copyProjectSource).
+  const sources = await mirror(project, stage, (root, p) => inProjectSource(root, p) && !isProjectBrief(root, p) && !isSourcesFolder(root, p) && !(dirname(p) === root && BUILD_CONFIG.has(relative(root, p).toLowerCase())));
   const now = new Date();
   const touched: string[] = [];
   for (const rel of variants) {

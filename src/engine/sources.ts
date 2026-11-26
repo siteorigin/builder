@@ -5,7 +5,7 @@
  * only the main process gives (see `SourceSyncGrant`).
  */
 import type { Diagnostic } from '@shared/api';
-import type { EntrySource, ProjectState, SourceDoc } from '@shared/types';
+import type { EntryDoc, EntrySource, ProjectState, SourceDoc } from '@shared/types';
 import { SCHEMA_VERSION } from '@shared/types';
 import type { EditOperation, Op } from '@shared/ops';
 import { isSourceId, sourceDocProblem } from '@shared/sources';
@@ -95,10 +95,16 @@ export interface SourceSyncGrant {
 /** Why a sync's batch asks for more than its grant allows, or null: library images, and its own collection's entries. */
 export function sourceSyncRefusal(ops: readonly EditOperation[], grant: SourceSyncGrant): string | null {
   for (const op of ops) {
-    if (op.type === 'asset.add') continue;
+    if (op.type === 'asset.add') {
+      if (op.asset.kind !== 'image') return 'A sync adds only pictures to the library.';
+      continue;
+    }
     if (op.type !== 'entry.create' && op.type !== 'entry.update' && op.type !== 'entry.remove') return `A sync cannot ${op.type}.`;
     if (op.collectionId !== grant.collectionId) return 'A sync writes only the collection its source syncs into.';
     if (op.type === 'entry.create' && (op.entryId === undefined || !Object.hasOwn(grant.provenance, op.entryId))) return 'A sync names every entry it adds, and where it came from.';
+    // Nothing outside its collection: no link elsewhere pointed at another entry, no old address claimed.
+    if (op.type === 'entry.create' && op.redirectFrom !== undefined) return 'A sync keeps no old address for an entry.';
+    if (op.type === 'entry.remove' && (op.replacementEntryId !== undefined || op.replacementPageId !== undefined)) return 'A sync points no link elsewhere.';
   }
   return null;
 }
@@ -107,7 +113,12 @@ export function sourceSyncRefusal(ops: readonly EditOperation[], grant: SourceSy
  * The end of a sync's batch: its collection is attached to the source (refused when another source holds it, or local
  * entries it never synced are there), and each entry the sync wrote says where it came from.
  */
-export function finishSourceSync(state: ProjectState, grant: SourceSyncGrant) {
+export function finishSourceSync(state: ProjectState, grant: SourceSyncGrant, before: ProjectState) {
+  // Every entry it had is the source's, as the batch found them: a local one would be edited by nobody once the
+  // collection is read-only, and removing or stamping it within the batch makes it no less the author's.
+  const had = own(before.collections, grant.collectionId);
+  const local = Object.values(had?.entries ?? {}).find((e) => e.source?.sourceId !== grant.sourceId);
+  if (local) fail(`“${local.title}” in ${had!.settings.name} was not synced from this source. Sync into an empty collection, or one already synced from it.`);
   const source = own(state.sources, grant.sourceId);
   if (!source || source.collectionId !== grant.collectionId) throw new EngineError('VALIDATION_FAILED', 'The source changed while it was being synced. Sync it again.');
   const c = own(state.collections, grant.collectionId) ?? fail(`The collection "${grant.collectionId}" does not exist.`);
@@ -117,32 +128,61 @@ export function finishSourceSync(state: ProjectState, grant: SourceSyncGrant) {
     const entry = own(c.entries, id);
     if (entry) entry.source = { ...prov };
   }
-  // Every entry is the source's: one it never wrote would be edited by nobody once the collection is read-only.
   const foreign = Object.values(c.entries).find((e) => e.source?.sourceId !== grant.sourceId);
   if (foreign) fail(`“${foreign.title}” in ${c.settings.name} was not synced from “${source.name}”. Sync into an empty collection, or one already synced from it.`);
 }
 
-/** The library images an entry shows: its featured image, its sharing image and its image fields'. */
-function entryAssets(e: { featuredImage?: unknown; seo?: { socialImage?: unknown }; values?: Record<string, unknown> }): string[] {
-  const out: string[] = [];
-  if (typeof e.featuredImage === 'string') out.push(e.featuredImage);
-  if (typeof e.seo?.socialImage === 'string') out.push(e.seo.socialImage);
-  for (const v of Object.values(e.values ?? {})) if (v && typeof v === 'object' && typeof (v as { assetId?: unknown }).assetId === 'string') out.push((v as { assetId: string }).assetId);
+/** What an entry depends on, anywhere in it: the library images it shows and the entries and pages it links or refers to. */
+function entryNeeds(e: EntryDoc, refs: readonly string[]): { assets: Set<string>; entries: Set<string>; pages: Set<string> } {
+  const out = { assets: new Set<string>(), entries: new Set<string>(), pages: new Set<string>() };
+  const walk = (v: unknown, key?: string) => {
+    if (typeof v === 'string') {
+      if (key === 'assetId' || key === 'featuredImage' || key === 'socialImage') out.assets.add(v);
+      return;
+    }
+    if (Array.isArray(v)) return v.forEach((x) => walk(x));
+    if (!v || typeof v !== 'object') return;
+    const o = v as Record<string, unknown>;
+    // A link: { type, target }.
+    if (typeof o.target === 'string' && (o.type === 'entry' || o.type === 'page')) (o.type === 'entry' ? out.entries : out.pages).add(o.target);
+    for (const [k, x] of Object.entries(o)) walk(x, k);
+  };
+  walk(e);
+  for (const f of refs) for (const id of [e.values?.[f]].flat()) if (typeof id === 'string' && id) out.entries.add(id);
   return out;
 }
 
 /**
- * Why going from `before` to `after` takes a library image away from a synced collection's entry, or null. A sync is
- * no step of History, so an undo of an earlier step (the import of a picture a sync then found in the library) could
- * otherwise take it from an entry no edit may change. Worded to follow "it".
+ * Why going from `before` to `after` takes away something a synced collection's entry depends on, or null: a library
+ * image it shows, an entry or a page it links or refers to. A sync is no step of History, so an undo of an earlier
+ * step (the import of a picture a sync then found in the library, the entry a synced record refers to) could otherwise
+ * take it from an entry no edit may change. Worded to follow "it".
  */
-export function syncedAssetLoss(before: ProjectState, after: ProjectState): string | null {
+export function syncedDependencyLoss(before: ProjectState, after: ProjectState): string | null {
+  const entryIds = (s: ProjectState) => new Set(Object.values(s.collections ?? {}).flatMap((c) => Object.keys(c.entries)));
+  const [had, has] = [entryIds(before), entryIds(after)];
   for (const c of Object.values(after.collections ?? {})) {
     if (typeof c?.settings?.sourceId !== 'string') continue;
+    const refs = Object.entries(c.settings.fields ?? {}).flatMap(([name, f]) => (f?.type === 'reference' ? [name] : []));
     for (const e of Object.values(c.entries)) {
-      const lost = entryAssets(e).find((id) => Object.hasOwn(before.assets.assets, id) && !Object.hasOwn(after.assets.assets, id));
-      if (lost) return `would take “${before.assets.assets[lost].name}” from the library, which “${e.title}” in the ${c.settings.name} collection shows. That collection is synced from an external source, so its entries are read-only here.`;
+      const needs = entryNeeds(e, refs);
+      const where = `“${e.title}” in the ${c.settings.name} collection`;
+      const why = ' That collection is synced from an external source, so its entries are read-only here.';
+      const asset = [...needs.assets].find((id) => Object.hasOwn(before.assets.assets, id) && !Object.hasOwn(after.assets.assets, id));
+      if (asset) return `would take “${before.assets.assets[asset].name}” from the library, which ${where} shows.${why}`;
+      if ([...needs.entries].some((id) => had.has(id) && !has.has(id))) return `would remove an entry ${where} refers to.${why}`;
+      if ([...needs.pages].some((id) => Object.hasOwn(before.pages, id) && !Object.hasOwn(after.pages, id))) return `would remove a page ${where} links to.${why}`;
     }
   }
   return null;
+}
+
+/**
+ * Why going from `before` to `after` leaves the project's sources inconsistent in a way they were not (a collection
+ * synced from a source that is gone, two sources for one collection), or null. Worded to follow "it".
+ */
+export function sourceIntegrityChange(before: ProjectState, after: ProjectState): string | null {
+  const was = new Set(sourceDiagnostics(before).map((d) => `${d.code}|${d.owner?.kind}:${d.owner?.id}`));
+  const now = sourceDiagnostics(after).find((d) => !was.has(`${d.code}|${d.owner?.kind}:${d.owner?.id}`));
+  return now ? `would leave the project's sources inconsistent: ${now.message}` : null;
 }
