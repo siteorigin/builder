@@ -57,7 +57,7 @@ describe('the summary of the earlier conversation', () => {
     expect(summaryText(marked, null)).toContain('Its changes were undone afterwards, and may have been redone since.');
     // An unfinished turn says so, and loses the app's own "kept, continue" sentences.
     const kept = ' The changes so far are checked and kept, and you can undo them in one step. Reply "continue" to carry on.';
-    const unfinished = summarizeEarlier(exchange('Build three pages', { result: result({ status: 'completed', summary: `Built one page.${kept}`, canUndo: true, incomplete: true }) }), 2)!;
+    const unfinished = summarizeEarlier(exchange('Build three pages', { result: result({ status: 'partial', summary: `Built one page.${kept}`, canUndo: true, incomplete: true }) }), 2)!;
     const said = summaryText(unfinished, { entries: [{ runId: unfinished.turns[0].runId!, applied: true }] });
     expect(said).toContain('Reply: Built one page. It stopped before it was finished; its changes are still in the site.');
     expect(said).not.toContain('continue');

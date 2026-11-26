@@ -336,6 +336,7 @@ export async function runCase(c: EvalCase, opts: RunOptions): Promise<{ result: 
     const passed = checks.filter((x) => x.pass).length;
     const validateClean = validationErrors.length === 0;
     const compileClean = compileErrors.length === 0;
+    // A partial run kept what it did but did not finish the request: never a pass, whatever the graders find.
     const finished = status === 'completed' || status === 'no-changes';
     const incomplete = !!last?.result?.incomplete;
     const caps = recorder.capabilities();
@@ -347,7 +348,7 @@ export async function runCase(c: EvalCase, opts: RunOptions): Promise<{ result: 
       contextWindowTokens: caps.contextWindowTokens,
       pass: finished && !incomplete && passed === checks.length && validateClean && compileClean,
       score: checks.length ? passed / checks.length : 0,
-      status: incomplete ? `${status} (incomplete)` : status,
+      status: incomplete && status !== 'partial' ? `${status} (incomplete)` : status,
       checks,
       turns: recorder.turns,
       toolCalls: recorder.toolCalls,

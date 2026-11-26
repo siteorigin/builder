@@ -971,7 +971,7 @@ export async function applyHeld(id: number, opts: { replace?: boolean; stopRunId
     if (!live()) return;
     // Only a request that ended cleanly (rolled back, or finished before the stop reached it) leaves a
     // project the edit can be checked against. One whose rollback failed or kept changes for review does not.
-    if (run !== null && run !== 'cancelled' && run !== 'completed' && run !== 'no-changes')
+    if (run !== null && run !== 'cancelled' && run !== 'completed' && run !== 'partial' && run !== 'no-changes')
       return settle({ phase: 'failed', note: 'The AI request did not end cleanly, so your edit was not applied. Check the page, then try again.' }, { aiOutcome: { run, edit: 'held' } });
     patchHeld(id, { stopping: false });
   }
@@ -1249,7 +1249,7 @@ export function refreshProviders(): Promise<void> {
 export function applyAiEvent(e: AiEvent) {
   const s = getState();
   if (e.kind === 'status') {
-    const terminal = ['completed', 'no-changes', 'cancelled', 'failed', 'conflicted'].includes(e.status!);
+    const terminal = ['completed', 'partial', 'no-changes', 'cancelled', 'failed', 'conflicted'].includes(e.status!);
     // A question never changes the site, so edits typed while it runs are not held or checked against it.
     const ask = e.mode === 'ask';
     if (!ask) aiEpoch++;

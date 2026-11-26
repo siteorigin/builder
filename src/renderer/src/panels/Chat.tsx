@@ -96,11 +96,12 @@ const PHASE: Record<string, string> = {
 function outcome(r: NonNullable<ChatMessage['result']>) {
   // A question read the site and could not change it, which is what its heading says.
   if (r.ask && r.status === 'no-changes') return { icon: <BookOpen />, label: 'Answered · site unchanged' };
-  if (r.status === 'completed' && r.incomplete) return { icon: <CircleDashed />, label: 'Partly done' };
   if (r.status === 'no-changes' && r.incomplete) return { icon: <CircleDashed />, label: 'Not finished' };
   switch (r.status) {
     case 'completed':
       return { icon: <CircleCheck />, label: 'Completed' };
+    case 'partial':
+      return { icon: <CircleDashed />, label: 'Partly done' };
     case 'no-changes':
       return { icon: <Info />, label: 'No changes made' };
     case 'cancelled':

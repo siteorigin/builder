@@ -190,6 +190,14 @@ describe('the tracker', () => {
     run.finish('cancelled', 'Stopped.');
     t.ingest(j.records);
     expect(settledState(t.runView('run_a')!)).toEqual({ reason: 'terminal' });
+    // A run that kept its work but did not finish the request ends the same way (#741).
+    const partial = runOf(j, 'run_b', 'c_b', 'Build the site').start().status('running').status('validating').status('partial');
+    t.ingest(j.records);
+    expect([t.runView('run_b')!.state, settledState(t.runView('run_b')!)]).toEqual(['ending', null]);
+    partial.finish('partial', 'Partly done.', { incomplete: true });
+    t.ingest(j.records);
+    expect(settledState(t.runView('run_b')!)).toEqual({ reason: 'terminal' });
+    expect(t.runView('run_b')!.result).toMatchObject({ status: 'partial', incomplete: true });
   });
 
   it('follows a run whose status arrives before its turn', () => {
@@ -363,7 +371,7 @@ describe('the tracker', () => {
   it('notes a turn’s text cleared, as a run stopped at a limit clears it', () => {
     const j = journal();
     const run = runOf(j, 'run_a', 'c_a', 'One').start().status('running').text('Working on it');
-    run.clearText().finish('completed', 'Partly done.', { incomplete: true });
+    run.clearText().finish('partial', 'Partly done.', { incomplete: true });
     const t = new AssistantTracker();
     t.ingest(j.records);
     expect(t.runView('run_a')!.text).toBe('');

@@ -48,6 +48,7 @@ export interface AiEnding {
 
 const RUN_ENDED: Partial<Record<RunStatus, string>> = {
   completed: 'AI changes saved',
+  partial: 'AI stopped before finishing. Its changes so far were saved',
   'no-changes': 'AI finished without changing anything',
   cancelled: 'AI stopped',
   failed: 'AI request failed',

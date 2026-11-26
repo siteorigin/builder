@@ -70,12 +70,14 @@ describe('continuing an unfinished request (#88)', () => {
   });
 
   it('offers Continue only on the latest result, and only when it is unfinished', () => {
-    expect(resumableId([user('u1'), reply('a1', { incomplete: true })])).toBe('a1');
+    expect(resumableId([user('u1'), reply('a1', { status: 'partial', incomplete: true })])).toBe('a1');
     expect(resumableId([user('u1'), reply('a1', { status: 'no-changes', incomplete: true })])).toBe('a1');
     expect(resumableId([user('u1'), reply('a1')])).toBeUndefined();
+    // A completed run finished what it was asked: it is never carried on from.
+    expect(resumableId([user('u1'), reply('a1', { status: 'completed', incomplete: true })])).toBeUndefined();
     // A newer request has moved on from the unfinished one.
-    expect(resumableId([user('u1'), reply('a1', { incomplete: true }), user('u2'), reply('a2')])).toBeUndefined();
-    expect(resumableId([user('u1'), reply('a1', { incomplete: true }), user('u2')])).toBeUndefined();
+    expect(resumableId([user('u1'), reply('a1', { status: 'partial', incomplete: true }), user('u2'), reply('a2')])).toBeUndefined();
+    expect(resumableId([user('u1'), reply('a1', { status: 'partial', incomplete: true }), user('u2')])).toBeUndefined();
     // A failed run is offered Edit and try again instead; a stopped or conflicted one is the user's to review.
     expect(resumableId([user('u1'), reply('a1', { status: 'failed', incomplete: true })])).toBeUndefined();
     expect(resumableId([user('u1'), reply('a1', { status: 'cancelled', incomplete: true })])).toBeUndefined();
@@ -265,7 +267,7 @@ describe('where an AI turn stands, read from History (issue 276)', () => {
   });
 
   it('offers Continue on an unfinished turn that changed the site only while its changes are known to be in it', () => {
-    const msgs = [ask('u1'), turn('a1', 'r1', { incomplete: true })];
+    const msgs = [ask('u1'), turn('a1', 'r1', { status: 'partial', incomplete: true })];
     expect(resumableId(msgs, steps([{ runId: 'r1', applied: true }]))).toBe('a1');
     expect(resumableId(msgs, steps([], { r1: 'applied' }))).toBe('a1');
     expect(resumableId(msgs, steps([{ runId: 'r1', applied: false }]))).toBeUndefined();
@@ -278,11 +280,11 @@ describe('where an AI turn stands, read from History (issue 276)', () => {
     expect(resumableId([ask('u1'), turn('a1', 'r1', { status: 'no-changes', canUndo: false, changes: [], incomplete: true })], steps([]))).toBe('a1');
     // A finished turn is never carried on from, applied or not.
     expect(canCarryOn(turnState(turn('a1', 'r1'), steps([{ runId: 'r1', applied: true }])))).toBe(false);
-    expect(canCarryOn(turnState(turn('a1', 'r1', { incomplete: true }), steps([{ runId: 'r1', applied: true }])))).toBe(true);
+    expect(canCarryOn(turnState(turn('a1', 'r1', { status: 'partial', incomplete: true }), steps([{ runId: 'r1', applied: true }])))).toBe(true);
   });
 
   it('says why an unfinished turn can no longer be continued, and what can be done instead', () => {
-    const partial = turn('a1', 'r1', { incomplete: true });
+    const partial = turn('a1', 'r1', { status: 'partial', incomplete: true });
     expect(standingNote(partial, steps([{ runId: 'r1', applied: true }]))).toBeUndefined();
     expect(standingNote(partial, steps([{ runId: 'r1', applied: false }]))).toBe('These changes were undone, so this request can only be continued once they are redone.');
     // Its step is gone: no Redo brings it back.
@@ -304,7 +306,7 @@ describe('where an AI turn stands, read from History (issue 276)', () => {
   it('drops the app saying an unfinished turn’s changes are kept once that no longer holds, keeping what the assistant said', () => {
     const stopped = 'I reached the limit of 40 tool calls before finishing, so I stopped here. The changes so far are checked and kept, and you can undo them in one step. Reply "continue" to carry on.';
     const missing = 'This request is not finished yet. The page Reader requests was not built. The changes made so far are checked and kept. Press Continue, or reply "continue", to finish it.';
-    const at = (summary: string, entries: Array<{ runId?: string; applied: boolean }>) => summaryNow(turnState(turn('a1', 'r1', { summary, incomplete: true }), steps(entries))!);
+    const at = (summary: string, entries: Array<{ runId?: string; applied: boolean }>) => summaryNow(turnState(turn('a1', 'r1', { status: 'partial', summary, incomplete: true }), steps(entries))!);
     expect(at(stopped, [{ runId: 'r1', applied: true }])).toBe(stopped);
     expect(at(missing, [{ runId: 'r1', applied: true }])).toBe(missing);
     expect(at(stopped, [{ runId: 'r1', applied: false }])).toBe('I reached the limit of 40 tool calls before finishing, so I stopped here.');

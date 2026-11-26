@@ -219,7 +219,7 @@ const partialConversation = {
   createdAt: t(16),
   messages: turn('Build out a Pricing page with three plans and link it from the header and footer', home, null, {
     activities: [done('p1', 'Reading the project'), done('p2', 'Adding Pricing page'), done('p3', 'Adding sections'), done('p4', 'Updating shared navigation'), { id: 'p5', label: 'Checking Pricing at phone width', status: 'error', detail: 'Content is wider than the screen.' }, done('p6', 'Checking the result')],
-    ...result('completed', 'I added the **Pricing** page with three plans and linked it from the header. I ran out of steps before linking it from the footer.', {
+    ...result('partial', 'I added the **Pricing** page with three plans and linked it from the header. I ran out of steps before linking it from the footer.', {
       changes: [
         { label: 'Added page “Pricing” (/pricing)', pageId: about.id },
         { label: 'Added Plan cards to Pricing', pageId: about.id },

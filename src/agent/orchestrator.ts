@@ -35,7 +35,7 @@ import { planReplay, replayStart, summarizeEarlier, summaryText, type EarlierSum
 
 /**
  * Budgets for one run. They are sized for building a whole multi-page site in one request; a run that
- * reaches one with valid work keeps that work (see stopAtLimit) so the user can say "continue".
+ * reaches one with valid work keeps that work and ends partial (see stopAtLimit) so the user can say "continue".
  */
 export const LIMITS = {
   modelTurns: 50,
@@ -44,6 +44,11 @@ export const LIMITS = {
   activeMs: 10 * 60_000,
   /** A model on the user's own computer can spend minutes reading each long prompt before it answers. */
   localActiveMs: 30 * 60_000,
+  /**
+   * The least time the application's own preview check of a run stopped at a budget gets, whatever is left of the
+   * run's time: the model is done, but what it kept is still checked in the preview before it is kept.
+   */
+  finalCheckMs: 60_000,
   repeatedFailures: 2,
   providerRetries: 3,
   truncationRetries: 2
@@ -1101,7 +1106,7 @@ export class Orchestrator {
         ...(extra.repair ? { repair: extra.repair } : {}),
         ...(sourceDrafts.length ? { sourceDrafts } : {})
       };
-      for (const a of activities) if (a.status === 'running') a.status = status === 'completed' || status === 'no-changes' ? 'done' : 'error';
+      for (const a of activities) if (a.status === 'running') a.status = status === 'completed' || status === 'partial' || status === 'no-changes' ? 'done' : 'error';
       this.setStatus(status);
       this.emitMessage(msg, runId);
     };
@@ -1421,11 +1426,12 @@ export class Orchestrator {
     let reuseNudged = false;
 
     /**
-     * Measure a page for the application's own preview check, never past Stop or the run's time limit: an answer
-     * that comes later is ignored, and the check could not run.
+     * Measure a page for the application's own preview check, never past Stop or the run's time limit (or `until`, the
+     * final check's own deadline, as Date.now() reads it): an answer that comes later is ignored, and the check could
+     * not run.
      */
-    const measureLive = async (pageId: string, viewport: Viewport) => {
-      const left = limitMs - (activeMs + Date.now() - lastResume);
+    const measureLive = async (pageId: string, viewport: Viewport, until?: number) => {
+      const left = until !== undefined ? until - Date.now() : limitMs - (activeMs + Date.now() - lastResume);
       // Stopped, or out of time: the preview is not asked at all.
       if (signal.aborted || left <= 0) return measurePage(() => Promise.reject(new Error(signal.aborted ? 'Stopped.' : 'The request reached its time limit.')), pageId, viewport, session.revision);
       let release = () => {};
@@ -1666,8 +1672,34 @@ export class Orchestrator {
     };
 
     /**
-     * The run reached a budget. Valid work so far is kept as one undoable step and the user can ask to
-     * continue; only work that does not validate or build is rolled back.
+     * The application's own check of the pages the run changed, in the preview (#742), reusing any check the model made
+     * after its last change and trying once more one that could not run. `broke`: what the run brought in; `unresolved`:
+     * the card's rows for what it could not tell. `until` bounds the measurements instead of the run's time limit.
+     */
+    const previewCheck = async (until?: number) => {
+      const { targets, unchecked } = preview.plan(session.state);
+      const unmeasured = targets.filter((t) => !inspections.fresh(t.pageId, t.viewport)?.ok);
+      if (unmeasured.length) {
+        const p = addActivity('Checking the changed pages in the preview', 'inspect_layout');
+        for (const t of unmeasured) {
+          if (signal.aborted) throw new Error('Cancelled');
+          const m = await measureLive(t.pageId, t.viewport, until);
+          if (signal.aborted) throw new Error('Cancelled');
+          // A check that could not run names its page and width in its error's details.
+          inspections.record(t.pageId, t.viewport, m.ok, m.ok ? m.content : (m.content.error.details ?? {}), m.ok ? m.report : undefined);
+        }
+        p.status = 'done';
+      }
+      // Every current check of a page in the set counts, the model's at other widths too.
+      const checkedPages = [...new Set(targets.map((t) => t.pageId))];
+      const latest = checkedPages.flatMap((pageId) => (['phone', 'tablet', 'desktop'] as const).map((viewport) => ({ pageId, viewport, m: inspections.fresh(pageId, viewport) })));
+      return { broke: preview.introduced(session.state, latest), unresolved: [...preview.unresolved(session.state, latest), ...unchecked] };
+    };
+
+    /**
+     * The run reached a budget. Valid work so far is checked like a finished run's, the preview included, then kept as
+     * one undoable step and the run ends partial, so the user can ask to continue. Work that does not validate, build
+     * or show cleanly in the preview is rolled back with no repair pass: the budget is spent.
      */
     const stopAtLimit = async (what: string, error: string) => {
       if (ask) {
@@ -1691,14 +1723,24 @@ export class Orchestrator {
         await revertAndFinish('failed', `Stopped after ${what}, and the changes so far had errors.`, error);
         return;
       }
+      // The model's time is spent, but the preview check still gets its own: a page it could not measure is no proof
+      // the run broke nothing.
+      const remaining = limitMs - (activeMs + Date.now() - lastResume);
+      const { broke, unresolved } = await previewCheck(Date.now() + Math.max(remaining, LIMITS.finalCheckMs));
+      if (broke.length) {
+        v.status = 'error';
+        v.detail = broke.map((b) => b.problems).join(' ');
+        await revertAndFinish('failed', `Stopped after ${what}, and the changes so far caused problems in the preview.`, error, undefined, broke.map((b): ChatCheck => ({ status: 'issue', text: b.card })));
+        return;
+      }
       v.status = 'done';
       const changes = describeOps(executedOps, startState, session.state, opResults);
       const committed = await session.completeRun(`AI (partial): ${requestText.slice(0, 60)}`);
       msg.text = '';
-      await finish('completed', `I reached ${what} before finishing, so I stopped here. The changes so far are checked and kept, and you can undo them in one step. Reply "continue" to carry on.`, {
+      await finish('partial', `I reached ${what} before finishing, so I stopped here. The changes so far are checked and kept, and you can undo them in one step. Reply "continue" to carry on.`, {
         changes,
         checks: [
-          ...buildChecks(diags),
+          ...buildChecks(diags, unresolved),
           ...links.missing.map((r): ChatCheck => ({ status: 'issue', text: `Links to ${r} do not go anywhere yet.` })),
           ...missing().map((w): ChatCheck => ({ status: 'issue', text: notCreated(w) })),
           { status: 'issue', text: `Stopped at ${what} before the request was finished.` }
@@ -2125,26 +2167,9 @@ export class Orchestrator {
               items.push({ kind: 'user', text: reusabilityNudge(fixable, current.mode === 'definition') });
               continue outer;
             }
-            // The application checks the pages the run changed in the preview itself (#742), reusing any check the model
-            // made after its last change. What the run broke goes back to the model on the validation errors' repair budget.
-            const { targets, unchecked } = preview.plan(session.state);
-            // A check the model made that could not run is tried once more by the application.
-            const unmeasured = targets.filter((t) => !inspections.fresh(t.pageId, t.viewport)?.ok);
-            if (unmeasured.length) {
-              const p = addActivity('Checking the changed pages in the preview', 'inspect_layout');
-              for (const t of unmeasured) {
-                if (signal.aborted) throw new Error('Cancelled');
-                const m = await measureLive(t.pageId, t.viewport);
-                if (signal.aborted) throw new Error('Cancelled');
-                // A check that could not run names its page and width in its error's details.
-                inspections.record(t.pageId, t.viewport, m.ok, m.ok ? m.content : (m.content.error.details ?? {}), m.ok ? m.report : undefined);
-              }
-              p.status = 'done';
-            }
-            // Every current check of a page in the set counts, the model's at other widths too.
-            const checkedPages = [...new Set(targets.map((t) => t.pageId))];
-            const latest = checkedPages.flatMap((pageId) => (['phone', 'tablet', 'desktop'] as const).map((viewport) => ({ pageId, viewport, m: inspections.fresh(pageId, viewport) })));
-            const broke = preview.introduced(session.state, latest);
+            // The application checks the pages the run changed in the preview itself (#742). What the run broke goes back
+            // to the model on the validation errors' repair budget.
+            const { broke, unresolved } = await previewCheck();
             if (broke.length) {
               if (repairs >= LIMITS.repairPasses) {
                 // What the run brought in is shown with the rollback: the changes it describes are gone.
@@ -2159,7 +2184,7 @@ export class Orchestrator {
               msg.text = '';
               continue outer;
             }
-            const checks: ChatCheck[] = [...buildChecks(diags, [...preview.unresolved(session.state, latest), ...unchecked]), ...unfinished.map((text): ChatCheck => ({ status: 'issue', text }))];
+            const checks: ChatCheck[] = [...buildChecks(diags, unresolved), ...unfinished.map((text): ChatCheck => ({ status: 'issue', text }))];
             const changes = describeOps(executedOps, startState, session.state, opResults);
             const label = (finalText.split(/(?<=[.!?])\s/)[0] || userMsg.text).slice(0, 80);
             // An unfinished request is never labelled with the model's claim that it is done.
@@ -2169,7 +2194,8 @@ export class Orchestrator {
             // Links left on other pages say how to connect them: Continue would send the same limited request again.
             const again = links.deferred.length ? '' : ' Press Continue, or reply "continue", to finish it.';
             const summary = unfinished.length ? `This request is not finished yet. ${unfinished.join(' ')} The changes made so far are checked and kept.${again}` : finalText || 'Done.';
-            await finish('completed', summary, { changes, checks, canUndo: committed, usage, ...(unfinished.length ? { incomplete: true, unfinished: unfinishedPages(), pendingLinks: macros.pendingLinks } : {}) });
+            // An unfinished request is never reported as a success: it is partial, its valid work kept as one step.
+            await finish(unfinished.length ? 'partial' : 'completed', summary, { changes, checks, canUndo: committed, usage, ...(unfinished.length ? { incomplete: true, unfinished: unfinishedPages(), pendingLinks: macros.pendingLinks } : {}) });
           } else {
             await session.completeRun('AI (no changes)');
             msg.text = finalText;
