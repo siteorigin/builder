@@ -5,7 +5,7 @@
  * What the worker says is put in the app's own words here: a server's reply never reaches the author as it is.
  */
 import { redactSecrets } from './redact';
-import { MAX_DETAIL, MAX_IMAGE_BYTES, MAX_RECORDS, recordProblem, type NormalizedRecord, type SyncFailure, type SyncImage, type SyncReply, type SyncRequest } from './protocol';
+import { MAX_DETAIL, MAX_IMAGE_BYTES, MAX_RECORDS, recordProblem, SAMPLE_SIZE, type NormalizedRecord, type SyncFailure, type SyncImage, type SyncReply, type SyncRequest } from './protocol';
 
 const isSyncImage = (i: unknown): i is SyncImage =>
   !!i && typeof (i as SyncImage).key === 'string' && typeof (i as SyncImage).mime === 'string' && typeof (i as SyncImage).ext === 'string' && (i as SyncImage).bytes instanceof Uint8Array && (i as SyncImage).bytes.byteLength <= MAX_IMAGE_BYTES;
@@ -29,6 +29,7 @@ const REASONS: Record<SyncErrorCode, string> = {
   invalid: 'the source sent records that cannot be entries',
   'too-large': 'the source holds more than one sync can bring',
   image: 'a picture could not be fetched',
+  converter: 'its converter could not put its records in shape',
   failed: 'the source could not be read',
   timeout: 'it took too long, so it was stopped',
   crashed: 'the sync stopped unexpectedly',
@@ -53,6 +54,8 @@ export interface SyncHandle {
 export interface SyncResult {
   records: NormalizedRecord[];
   images: SyncImage[];
+  /** For a sample: the first few records as the source sent them. */
+  raw?: unknown[];
 }
 
 export interface SyncRunner {
@@ -60,7 +63,7 @@ export interface SyncRunner {
    * Every record of a source, and the pictures of those that changed. Rejects with a SyncError whose message names
    * `name`, the source, and holds none of `request.secrets`.
    */
-  run(name: string, request: Omit<SyncRequest, 'id'>, opts?: { signal?: AbortSignal }): Promise<SyncResult>;
+  run(name: string, request: Omit<SyncRequest, 'id'>, opts?: { signal?: AbortSignal; timeoutMs?: number }): Promise<SyncResult>;
   /** End every sync in progress; each rejects. */
   stop(): void;
 }
@@ -79,7 +82,7 @@ export function createSyncRunner(spawn: () => SyncHandle, opts: { timeoutMs?: nu
     }
   };
   return {
-    run(name, request, { signal } = {}) {
+    run(name, request, { signal, timeoutMs: own } = {}) {
       return new Promise<SyncResult>((resolve, reject) => {
         const secrets = Object.values(request.secrets ?? {});
         // Always rejects: a detail that cannot be put in words is left out, never left to stop the sync from settling.
@@ -112,15 +115,15 @@ export function createSyncRunner(spawn: () => SyncHandle, opts: { timeoutMs?: nu
           settle();
         };
         const fail = (code: SyncErrorCode, detail?: string) => finish(() => refuse(code, detail));
-        const timer = setTimeout(() => fail('timeout'), timeoutMs);
+        const timer = setTimeout(() => fail('timeout'), own ?? timeoutMs);
         live.set(w, fail);
         signal?.addEventListener('abort', onAbort, { once: true });
         w.on('message', (m) => {
           if (!m || m.id !== id) return;
           if (m.ok === true && Array.isArray(m.records) && Array.isArray(m.images)) {
             // Checked again here: a reply is the worker's word, and the worker reads someone else's server.
-            if (m.records.length > MAX_RECORDS || !m.records.every((r) => recordProblem(r) === null) || !m.images.every(isSyncImage)) fail('invalid');
-            else finish(() => resolve({ records: m.records, images: m.images }));
+            if (m.records.length > MAX_RECORDS || !m.records.every((r) => recordProblem(r) === null) || !m.images.every(isSyncImage) || (m.raw !== undefined && (!Array.isArray(m.raw) || m.raw.length > SAMPLE_SIZE))) fail('invalid');
+            else finish(() => resolve({ records: m.records, images: m.images, ...(m.raw ? { raw: m.raw } : {}) }));
           }
           else if (m.ok === false && typeof m.code === 'string' && Object.hasOwn(REASONS, m.code)) fail(m.code, m.detail);
           else fail('failed');

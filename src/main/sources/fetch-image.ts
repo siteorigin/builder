@@ -69,4 +69,23 @@ export const createFetchImage = (resolve: Lookup = systemLookup): ImageFetcher =
   return { bytes, mime: res.headers.get('content-type') ?? '' };
 };
 
+/**
+ * Why a picture's host is not one a sync fetches from, or null: a name that resolves to this computer or the local
+ * network, or to nothing. What a sample checks without fetching, as a sync checks it before it asks.
+ */
+export const createHostCheck =
+  (resolve: Lookup = systemLookup) =>
+  async (url: string): Promise<string | null> => {
+    let host: string;
+    try {
+      host = new URL(url).hostname.replace(/^\[|\]$/g, '').replace(/\.+$/, '');
+    } catch {
+      return 'a picture’s address cannot be read';
+    }
+    const found = await resolve(host).catch(() => null);
+    if (!found?.length) return 'a picture’s address could not be found';
+    return found.some((a) => isLocalAddress(a.address)) ? 'a picture is on this computer or the local network, which a sync never reads' : null;
+  };
+
 export const fetchImage = createFetchImage();
+export const checkHost = createHostCheck();

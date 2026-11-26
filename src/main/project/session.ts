@@ -45,7 +45,7 @@ import { RSS_PATH } from '@generator/rss';
 import { HOST_REDIRECTS_FILE, VERCEL_CONFIG_FILE } from '@generator/host-redirects';
 import { atomicWrite, ensureDir, readBytesIfExists, readIfExists, readJson, removeDurable, removeEmptyDirs, safeJoin, sha, syncDir, toJson } from './fsutil';
 import { designAt, relocateSource, textOfBytes } from './edited-design';
-import { collectionDocPath, collectionPathOf, collectionsFromDocs, componentDocPath, CUSTOM_SOURCE_RE, DOC_DIR, isCanonicalPath, MANIFEST_FILE, newestStoredVersion, ProjectFormatError, readProject, readState, sourcePathOf, sourcesFromDocs, stateToAuthoredSources, stateToDocs } from './documents';
+import { collectionDocPath, collectionPathOf, collectionsFromDocs, componentDocPath, converterPathOf, CUSTOM_SOURCE_RE, DOC_DIR, isCanonicalPath, MANIFEST_FILE, newestStoredVersion, ProjectFormatError, readProject, readState, sourcePathOf, sourcesFromDocs, stateToAuthoredSources, stateToDocs } from './documents';
 import { heldAsMedia, isVersionMedia, newVersionId, sameContents, VERSION_DAMAGED, VERSION_NAME_MAX, VersionStore, type SavedVersion } from './versions';
 
 export const LOCAL_DIR = '.siteorigin';
@@ -1846,7 +1846,8 @@ export class ProjectSession extends EventEmitter {
     // beside its source part way through a delete: recovery can then tell that from a definition deleted outside.
     // Entries go before their collection's settings for the same reason: an entry is never left without the collection
     // it belongs to, which reading the project would refuse.
-    const deleteRank = (p: string) => (CUSTOM_SOURCE_RE.test(p) ? 0 : collectionPathOf(p)?.entryId !== undefined ? 1 : 2);
+    // A source's converter goes before its settings, which name it.
+    const deleteRank = (p: string) => (CUSTOM_SOURCE_RE.test(p) || converterPathOf(p) !== null ? 0 : collectionPathOf(p)?.entryId !== undefined ? 1 : 2);
     deletes.sort((a, b) => deleteRank(a.path) - deleteRank(b.path));
     // A change worked out from the whole project (a theme update or switch, a format update) also depends on files it
     // does not write: what builds on a component, what its placements hold. One changed outside the app since it was
@@ -3617,8 +3618,10 @@ export class ProjectSession extends EventEmitter {
     }
     // A source added outside the app.
     for (const d of await fs.readdir(join(this.dir, DOC_DIR, 'sources')).catch(() => [] as string[])) {
-      const path = `${DOC_DIR}/sources/${d}/source.json`;
-      if (isCanonicalPath(path) && !this.docs.has(path) && !skip.has(path) && existsSync(join(this.dir, path))) return path;
+      // Its converter only while its settings name one: a module beside settings that do not is no part of the project.
+      const declared = Object.hasOwn(this.state.sources ?? {}, d) && this.state.sources![d].converter !== undefined;
+      for (const path of [`${DOC_DIR}/sources/${d}/source.json`, ...(declared ? [`${DOC_DIR}/sources/${d}/converter.mjs`] : [])])
+        if (isCanonicalPath(path) && !this.docs.has(path) && !skip.has(path) && existsSync(join(this.dir, path))) return path;
     }
     return null;
   }
@@ -3918,7 +3921,7 @@ export class ProjectSession extends EventEmitter {
     if (path === `${DOC_DIR}/site.json`) return 'the site settings, header or footer';
     if (path === `${DOC_DIR}/tokens.json` || path === `${DOC_DIR}/theme-lock.json`) return 'the site styles';
     if (path === `${DOC_DIR}/assets.json`) return 'the library';
-    const source = sourcePathOf(path);
+    const source = sourcePathOf(path) ?? converterPathOf(path);
     if (source !== null) return this.state.sources?.[source]?.name ?? 'an external source';
     const component = Object.values(this.state.components).find((d) => componentDocPath(d.id) === path || d.sourcePath === path);
     return component ? component.name : path;
@@ -4812,7 +4815,7 @@ function docsToState(docs: Map<string, string>, current: ProjectState): ProjectS
     collections: collectionsFromDocs([...docs].filter(([p]) => collectionPathOf(p)).map(([p, c]) => [p, JSON.parse(c)])).collections
   };
   // Sources the documents lack are none: a deleted one stays deleted across undo and redo.
-  const sources = sourcesFromDocs([...docs].filter(([p]) => sourcePathOf(p) !== null).map(([p, c]) => [p, JSON.parse(c)]));
+  const sources = sourcesFromDocs([...docs].filter(([p]) => sourcePathOf(p) !== null || converterPathOf(p) !== null));
   if (Object.keys(sources).length) next.sources = sources;
   // A brief the documents lack is none: it is only a file while it holds something.
   const brief = parse<ProjectBriefDoc>(BRIEF_FILE);

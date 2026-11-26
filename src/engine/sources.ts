@@ -5,10 +5,10 @@
  * only the main process gives (see `SourceSyncGrant`).
  */
 import type { Diagnostic } from '@shared/api';
-import type { EntryDoc, EntrySource, ProjectState, SourceDoc } from '@shared/types';
+import type { EntryDoc, EntrySource, ProjectState, SourceConfig, SourceDoc, SourceMapping } from '@shared/types';
 import { SCHEMA_VERSION } from '@shared/types';
 import type { EditOperation, Op } from '@shared/ops';
-import { isSourceId, sourceDocProblem } from '@shared/sources';
+import { cleanMapping, CONVERTER_FILE, isSourceId, sourceDocProblem } from '@shared/sources';
 import { EngineError, fail } from './tree';
 
 const own = <T>(rec: Record<string, T> | undefined, key: string): T | undefined => (rec && Object.hasOwn(rec, key) ? rec[key] : undefined);
@@ -16,14 +16,19 @@ const own = <T>(rec: Record<string, T> | undefined, key: string): T | undefined 
 export function sourceUpsert(state: ProjectState, op: Op<'source.upsert'>) {
   if (!isSourceId(op.sourceId)) fail(`"${String(op.sourceId).slice(0, 60)}" cannot be a source's ID: use lowercase letters, numbers and single hyphens.`);
   const was = own(state.sources, op.sourceId);
+  // The whole of its settings, as given: a change of kind, or from a mapping to a converter, leaves nothing behind.
+  const config = structuredClone(op.config ?? {}) as SourceConfig;
+  if (config.credentials && !Object.keys(config.credentials).length) delete config.credentials;
+  const mapping = op.mapping !== undefined ? cleanMapping(op.mapping as SourceMapping) : undefined;
   const doc: SourceDoc = {
     schemaVersion: SCHEMA_VERSION,
     id: op.sourceId,
     name: op.name.trim(),
     adapter: op.adapter,
     collectionId: op.collectionId,
-    config: op.credentials !== undefined ? (Object.keys(op.credentials).length ? { credentials: { ...op.credentials } } : {}) : (was?.config ?? {}),
-    ...(op.removal !== undefined ? { removal: op.removal } : was?.removal !== undefined ? { removal: was.removal } : {})
+    config,
+    ...(op.converter !== undefined ? { converter: { file: CONVERTER_FILE, code: op.converter } } : mapping && Object.keys(mapping).length ? { mapping } : {}),
+    ...(op.removal !== undefined ? { removal: op.removal } : {})
   };
   const problem = sourceDocProblem(doc);
   if (problem) fail(`The source ${doc.name ? `“${doc.name}”` : op.sourceId} cannot be saved: ${problem}`);
@@ -66,6 +71,11 @@ export function sourceDiagnostics(state: ProjectState): Diagnostic[] {
     }
     const target = own(state.collections, s.collectionId);
     // Each told by the relationship that is broken (`site`), so one broken another way is a problem of its own.
+    if (s.converter && typeof s.converter.code !== 'string')
+      out.push({ severity: 'warning', code: 'SOURCE_CONVERTER_MISSING', message: `The source “${s.name}” is read by its ${CONVERTER_FILE}, which is missing. Put it back, or choose where its details are read from instead.`, owner, site: 'converter' });
+    const unknown = target ? Object.keys(s.mapping?.values ?? {}).find((f) => !Object.hasOwn(target.settings.fields ?? {}, f)) : undefined;
+    if (unknown !== undefined)
+      out.push({ severity: 'warning', code: 'SOURCE_MAPPING', message: `The source “${s.name}” reads a field the ${target!.settings.name} collection does not have (${unknown.slice(0, 60)}). Its syncs fail until the field is added or the mapping no longer names it.`, owner, site: `mapping:${unknown}` });
     if (!target) out.push({ severity: 'error', code: 'SOURCE_TARGET_MISSING', message: `The source “${s.name}” syncs into a collection that no longer exists.`, owner, site: `target:${s.collectionId}` });
     else if (claimed.has(s.collectionId))
       out.push({ severity: 'error', code: 'SOURCE_TARGET_SHARED', message: `“${s.name}” and “${claimed.get(s.collectionId)!.name}” both sync into the ${target.settings.name} collection.`, owner, site: `shared:${s.collectionId}:${claimed.get(s.collectionId)!.id}` });
@@ -199,7 +209,8 @@ export function syncedDependencyLoss(before: ProjectState, after: ProjectState):
  */
 export function sourceIntegrityChange(before: ProjectState, after: ProjectState): string | null {
   const key = (d: Diagnostic) => `${d.code}|${d.owner?.kind}:${d.owner?.id}|${d.site ?? ''}`;
-  const was = new Set(sourceDiagnostics(before).map(key));
-  const now = sourceDiagnostics(after).find((d) => !was.has(key(d)));
+  const errors = (s: ProjectState) => sourceDiagnostics(s).filter((d) => d.severity === 'error');
+  const was = new Set(errors(before).map(key));
+  const now = errors(after).find((d) => !was.has(key(d)));
   return now ? `would leave the project's sources inconsistent: ${now.message}` : null;
 }

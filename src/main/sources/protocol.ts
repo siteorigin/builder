@@ -4,7 +4,7 @@
  * fetches. Nothing here is the project's: the worker is given a source's settings and the secrets they name, and
  * nothing else.
  */
-import type { RichText, SourceConfig } from '@shared/types';
+import type { RichText, SourceConfig, SourceMapping } from '@shared/types';
 
 /** A picture a record shows, at an address on the web. */
 export interface SourceImage {
@@ -58,19 +58,35 @@ export interface SyncImage {
  * Why a sync failed, as the worker reports it: fixed reasons, chosen by the main process's words (see client.ts), and
  * never what the source's server said, which may echo the credential it was sent.
  */
-export type SyncFailure = 'adapter-unavailable' | 'auth' | 'network' | 'invalid' | 'too-large' | 'image' | 'failed';
+export type SyncFailure = 'adapter-unavailable' | 'auth' | 'network' | 'invalid' | 'too-large' | 'image' | 'converter' | 'failed';
+
+/** The kind of value each of a collection's custom fields holds, by field name: what a mapped value is read as. */
+export type FieldKinds = Record<string, string>;
 
 export interface SyncRequest {
   id: number;
   adapter: string;
   config: SourceConfig;
+  /** Where its records' details are read from, over its kind's own reading. */
+  mapping?: SourceMapping;
+  /** The text of its converter, which puts the records in shape instead of the mapping. */
+  converter?: string;
+  /** The custom fields of the collection it syncs into. */
+  fields?: FieldKinds;
+  /** `sample`: the records read and put in shape, and the first few as the source sent them, with no picture fetched. */
+  mode?: 'sync' | 'sample';
   /** The secrets the source's settings name, by name: only these. */
   secrets: Record<string, string>;
   /** The content hash each record had when it was last synced, by external ID: their pictures are not fetched again. */
   known: Record<string, string>;
 }
 
-export type SyncReply = { id: number; ok: true; records: NormalizedRecord[]; images: SyncImage[] } | { id: number; ok: false; code: SyncFailure; detail?: string };
+/** How many records a sample shows as the source sent them. */
+export const SAMPLE_SIZE = 3;
+
+export type SyncReply =
+  | { id: number; ok: true; records: NormalizedRecord[]; images: SyncImage[]; raw?: unknown[] }
+  | { id: number; ok: false; code: SyncFailure; detail?: string };
 
 /** The most records a sync reads, and the most a record's or a picture's bytes may be. */
 export const MAX_RECORDS = 5000;
@@ -137,11 +153,33 @@ export function isImageRef(v: unknown): v is SourceImageRef {
   );
 }
 
-/** The pictures a record shows: its featured image, and its image fields'. */
+/**
+ * How a picture in a record's text is written until a sync brings it into the library: an image block whose asset is
+ * `$image:` and the picture's web address.
+ */
+export const TEXT_IMAGE = '$image:';
+
+/** The pictures in text a record holds, by their image blocks. */
+export function textImages(blocks: unknown): SourceImage[] {
+  if (!Array.isArray(blocks)) return [];
+  const out: SourceImage[] = [];
+  for (const b of blocks as Array<{ type?: unknown; assetId?: unknown; alt?: unknown }>) {
+    if (!b || b.type !== 'image' || typeof b.assetId !== 'string' || !b.assetId.startsWith(TEXT_IMAGE)) continue;
+    // Whatever address it gives: one that is no picture on the web is refused where every picture's address is.
+    out.push({ url: b.assetId.slice(TEXT_IMAGE.length), ...(typeof b.alt === 'string' && b.alt ? { alt: b.alt } : {}) });
+  }
+  return out;
+}
+
+/** The pictures a record shows: its featured image, its image fields', and those in its text and rich text fields. */
 export function recordImages(r: NormalizedRecord): SourceImage[] {
   const out: SourceImage[] = [];
   if (isImageRef(r.featuredImage)) out.push(r.featuredImage.$image);
-  for (const v of Object.values(r.values ?? {})) if (isImageRef(v)) out.push(v.$image);
+  for (const v of Object.values(r.values ?? {})) {
+    if (isImageRef(v)) out.push(v.$image);
+    else out.push(...textImages(v));
+  }
+  out.push(...textImages(r.body));
   return out;
 }
 
@@ -162,6 +200,9 @@ export function recordProblem(r: unknown): string | null {
     return 'a record has terms that are not lists of term IDs';
   if (o.values !== undefined && (!o.values || typeof o.values !== 'object' || Array.isArray(o.values))) return 'a record has field values that are damaged';
   if (o.body !== undefined && !Array.isArray(o.body)) return 'a record has text that is damaged';
+  // A picture in a record's text is one the source has, at its address: never the project's own library image.
+  const ownPicture = (blocks: unknown) => Array.isArray(blocks) && blocks.some((b) => !!b && typeof b === 'object' && (b as { type?: unknown }).type === 'image' && !String((b as { assetId?: unknown }).assetId ?? '').startsWith(TEXT_IMAGE));
+  if (ownPicture(o.body) || (o.values && typeof o.values === 'object' && Object.values(o.values).some(ownPicture))) return 'a record’s text shows a picture by a library ID: give its web address with helpers.image or $image:';
   for (const k of Object.keys(o)) if (!RECORD_KEYS.has(k)) return 'a record has a detail no entry has';
   return null;
 }

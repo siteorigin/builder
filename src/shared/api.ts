@@ -1,4 +1,4 @@
-import type { ApplyResult, EditBatch } from './ops';
+import type { ApplyResult, EditBatch, Op } from './ops';
 import type { ElementRef, OwnerRef, ProjectState } from './types';
 import type { ThemeUpdates } from '@engine/theme-updates';
 import type { LocalProviderSettings } from './local';
@@ -986,6 +986,19 @@ export type LiveStartResult = { ok: true; inviteUrl: string; state: LiveHostStat
 /** Whether a host command was sent: the relay's next roster or room state shows it taking effect. */
 export type LiveCommandResult = { ok: true } | { ok: false; message: string };
 
+/** An external source's settings as the Connect dialog saves them: `source.upsert`, whole. */
+export type SourceSettingsDraft = Omit<Op<'source.upsert'>, 'type'>;
+
+/** What a Test of a source's settings found: the first few records as the source sent them and as entries, and what a sync would do. */
+export type SourceSampleResult =
+  | { ok: true; raw: unknown[]; records: unknown[]; total: number; created: number; updated: number; unchanged: number; unpublished: number; removed: number; kept: number }
+  | { ok: false; message: string; code?: string };
+
+/** What a sync of a source changed, or why it changed nothing. */
+export type SourceSyncResult =
+  | { ok: true; revision: number; created: number; updated: number; unchanged: number; unpublished: number; removed: number; kept: number; images: number }
+  | { ok: false; message: string; code?: string };
+
 export interface BuilderApi {
   platform: string;
   app: {
@@ -1114,6 +1127,19 @@ export interface BuilderApi {
      * project (`opening`, its workspace key) has closed, or when the file can't be read.
      */
     fontFile(assetId: string, opening: string): Promise<FontFileData | null>;
+    /** Test an external source's settings against what it has now (#678): nothing is written and no picture fetched. */
+    testSource(draft: SourceSettingsDraft, opening: string): Promise<SourceSampleResult>;
+    /**
+     * Save an external source's settings, once a Test of them passes now, over `base` (sourceFingerprint of the settings
+     * the dialog was opened on; null for a new source) and nothing later.
+     */
+    saveSource(draft: SourceSettingsDraft, opening: string, base: string | null): Promise<{ ok: true; revision: number } | { ok: false; message: string }>;
+    /** Sync external source `sourceId` into its collection now. */
+    syncSource(sourceId: string, opening: string): Promise<SourceSyncResult>;
+    /** The names of the secrets the open project's sources can sign in with, never their values. */
+    sourceSecretNames(opening: string): Promise<string[]>;
+    /** Keep `value` as the open project's source secret `name`, outside the project, or forget it (null). */
+    setSourceSecret(name: string, value: string | null, opening: string): Promise<{ ok: boolean; message?: string }>;
     /** What a web-sized copy of a large library image would be, or null when none can be made from it. */
     webCopyPlan(assetId: string): Promise<{ format: 'JPEG' | 'PNG' | 'JPEG or PNG'; width: number; height: number } | null>;
     /**

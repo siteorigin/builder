@@ -2345,12 +2345,29 @@ export const INTERACTIONS: Interaction[] = [
     id: 'posts.external',
     area: 'posts',
     intent: 'Show content from another CMS or my own API, read-only',
-    start: 'A project and an external content source',
-    routes: ['tab:posts'],
-    outcome: 'Entries from the source are synced into the project’s flat-file collections and exported as plain pages',
-    scenario: 'none',
-    proof: [],
-    gaps: [{ missing: 'Read-only external sources (Contentful, Sanity, WordPress REST, GraphQL, custom APIs) are not built', owner: 'posts', issue: 672 }]
+    start: 'An empty collection and an external content source (Contentful, Sanity, Strapi, WordPress REST, GraphQL or a REST/JSON API)',
+    routes: [
+      'panel:Posts › External source',
+      'item:Posts:Connect external source…',
+      'item:Posts:Source settings…',
+      'item:Posts:Sync now',
+      'item:Posts:Syncing…',
+      'item:Posts:Detach to local collection',
+      'dialog:Connect external source › Test & Fetch Sample'
+    ],
+    outcome: 'Test reads the source and shows its first records as sent and as entries, writing nothing; Save keeps the settings it tested; a sync brings read-only entries with library pictures, shown on their pages, in the archive and in collection queries; settings changed outside the app do not send a secret until saved here again; Detach makes the entries local in one undoable step',
+    scenario: 'unit fixtures · mock Contentful and REST servers',
+    proof: [
+      { test: 'tests/unit/source-connect.test.ts', kind: 'unit', step: 'maps a Contentful space into read-only entries with their pictures, shown on their pages and in the archive' },
+      { test: 'tests/unit/source-connect.test.ts', kind: 'unit', step: 'converts a custom REST API with the project’s converter.mjs, kept beside the source’s settings' },
+      { test: 'tests/unit/source-connect.test.ts', kind: 'unit', step: 'never takes the user’s secret where settings changed outside the app say, until they are saved here again' },
+      { test: 'tests/unit/source-connect.test.ts', kind: 'unit', step: 'detaches into a local collection: no source on the collection or its entries, which are edited as any other' },
+      { test: 'tests/unit/source-controller.test.ts', kind: 'unit', step: 'is only done by Connect external source, which tests them first' },
+      { test: 'tests/unit/source-form.test.ts', kind: 'unit' },
+      { test: 'tests/unit/source-adapters.test.ts', kind: 'unit' },
+      { test: 'tests/unit/source-converter.test.ts', kind: 'unit' }
+    ],
+    gaps: [{ missing: 'No e2e script drives Connect, Test, Save, Sync now and Detach through the built app', owner: 'posts', issue: 672 }]
   },
   {
     id: 'posts.ui-state',

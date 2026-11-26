@@ -2,7 +2,7 @@ import { app, BrowserWindow, dialog, ipcMain, nativeTheme, protocol, net, sessio
 import type { BaseWindow, KeyboardEvent, MenuItem } from 'electron';
 import { join, dirname, normalize, relative, isAbsolute } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
-import type { Appearance, ConflictChoice, ImportChoices, InspectLayoutOptions, LocalWorkspaceState, ProviderId, SettingsPatch } from '@shared/api';
+import type { Appearance, ConflictChoice, ImportChoices, InspectLayoutOptions, LocalWorkspaceState, ProviderId, SettingsPatch, SourceSettingsDraft } from '@shared/api';
 import type { ComponentPreviewMeasure, ComponentPreviewResult, ComponentPreviewStep } from '@shared/component-preview';
 import { editorBackground, editorScheme } from '@shared/appearance';
 import { externalLink } from '@shared/links';
@@ -461,6 +461,21 @@ function registerIpc() {
   handle('project:commitPostImport', (id: unknown, opening: unknown) => controller.commitPostImport(String(id ?? ''), String(opening ?? '')));
   handle('project:cancelPostImport', (id: unknown) => controller.cancelPostImport(String(id ?? '')));
   handle('project:fontFile', (assetId: unknown, opening: unknown) => (typeof assetId === 'string' && typeof opening === 'string' ? controller.fontFile(assetId, opening) : null));
+  // External sources (#678): tested, saved and synced by the main process, with secrets that never reach the editor.
+  const sourceDraft = (d: unknown): SourceSettingsDraft | null => (d && typeof d === 'object' && !Array.isArray(d) && typeof (d as SourceSettingsDraft).sourceId === 'string' && typeof (d as SourceSettingsDraft).name === 'string' ? (d as SourceSettingsDraft) : null);
+  handle('project:testSource', (draft: unknown, opening: unknown) => {
+    const d = sourceDraft(draft);
+    return d && typeof opening === 'string' ? controller.testSource(d, opening) : { ok: false, message: 'Those settings cannot be tested.' };
+  });
+  handle('project:saveSource', (draft: unknown, opening: unknown, base: unknown) => {
+    const d = sourceDraft(draft);
+    return d && typeof opening === 'string' && (typeof base === 'string' || base === null || base === undefined) ? controller.saveSource(d, opening, base ?? null) : { ok: false, message: 'Those settings cannot be saved.' };
+  });
+  handle('project:syncSource', (sourceId: unknown, opening: unknown) => (typeof sourceId === 'string' && typeof opening === 'string' ? controller.syncSource(sourceId, opening) : { ok: false, message: 'There is no such source.' }));
+  handle('project:sourceSecretNames', (opening: unknown) => (typeof opening === 'string' ? controller.sourceSecretNames(opening) : []));
+  handle('project:setSourceSecret', (name: unknown, value: unknown, opening: unknown) =>
+    typeof name === 'string' && (typeof value === 'string' || value === null) && typeof opening === 'string' ? controller.setSourceSecret(name, value, opening) : { ok: false, message: 'That secret cannot be saved.' }
+  );
   handle('project:webCopyPlan', (assetId: unknown) => (typeof assetId === 'string' ? controller.webCopyPlan(assetId) : null));
   handle('project:makeWebCopy', (assetId: unknown, opts: unknown) => {
     const o = (opts ?? {}) as { replace?: unknown; opening?: unknown };

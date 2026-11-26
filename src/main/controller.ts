@@ -5,12 +5,13 @@ import { homedir, tmpdir } from 'node:os';
 import { basename, dirname, extname, isAbsolute, join, relative, sep } from 'node:path';
 import { randomUUID } from 'node:crypto';
 import type { AiTurnReview, ComponentExportResult, ConflictChoice, ComponentImportResult, SavedComponent, SavedInsertPlace, SavedInsertResult, SaveToLibraryResult, PostImportKind, PostImportResult, PostImportReviewResult, CreateProjectOptions, DuplicateProjectOptions, DuplicateProjectResult, ExportFormat, ExportNote, ExportResult, FileText, FontFileData, ImportChoices, ImportReview, ImportReviewRow, LocalWorkspaceState, ProjectSnapshot, ProgressEvent, RecentExport, RestoreVersionResult, RuntimeState, StorageInfo, VersionReview, WebsiteTools } from '@shared/api';
-import type { ApplyResult, EditBatch } from '@shared/ops';
-import type { AssetRecord, ProjectState } from '@shared/types';
+import { validateOperation, type ApplyResult, type EditBatch, type EditOperation } from '@shared/ops';
+import type { AssetRecord, ProjectState, SourceDoc } from '@shared/types';
+import type { SourceSettingsDraft } from '@shared/api';
 import { createStarterState, STARTER_ASSETS, starterProblem } from '@catalogue/starters';
 import { findTheme } from '@catalogue/index';
 import { slugify } from '@shared/routes';
-import { sourceHash } from '@engine/apply';
+import { applyOperations, sourceHash } from '@engine/apply';
 import { websiteFormNotes, type Diagnostic } from '@engine/validate';
 import { basePath, generateManagedComponent, generatePage, defFile, liveRedirects, publishedState, siteEntries } from '@generator/index';
 import { archivePages } from '@shared/archives';
@@ -25,9 +26,10 @@ import { LOCAL_DIR, LOCK_HEARTBEAT_MS, NO_LOCK, ProjectLockedError, ProjectSessi
 import { DOC_DIR, MANIFEST_FILE, ProjectFormatError } from './project/documents';
 import { DOCUMENT_EXTENSIONS, FONT_EXTENSIONS, IMAGE_EXTENSIONS, IMPORT_IMAGE_EXTENSIONS, importAsset, importPackageImage, isAssetOfKind, isOpaquePicture, libraryWebCopyPlan, locateAssetFile, originalNameOf, pictureMime, releaseMediaWorkers, restoreAssetFiles, reviewImportFile, storeLibraryWebCopy } from './project/assets';
 import { postReader, stopPostReads } from './posts-import/process';
-import { sourceSecrets, sourceSyncRunner, stopSourceSyncs } from './sources/process';
-import { syncSource, type SourceSyncResult } from './sources/sync';
-import { holdsSecretValue } from '@shared/sources';
+import { sourceApprovals, sourceSecrets, sourceSyncRunner, stopSourceSyncs } from './sources/process';
+import { sampleSource, syncSource, type SourceSampleResult, type SourceSyncResult } from './sources/sync';
+import { converterProblems, converterProblemText } from './sources/converter';
+import { holdsSecretValue, sourceFingerprint } from '@shared/sources';
 import { planOperations, planPostImport, type PostImportPlan } from './posts-import/plan';
 import { postImportPreview } from './posts-import/preview';
 import { readContained } from './posts-import/files';
@@ -1681,10 +1683,9 @@ export class Controller {
     if (this.aiBusy()) return { ok: false, revision: session.revision, error: { code: 'BUSY', message: 'The AI is making changes. Stop it before editing.', recoverable: true } };
     // Code, and copies that would make new code, need Developer mode: the session checks the batch as it applies it.
     const codeAllowed = (await loadSettings()).settings.developerMode;
-    // A source's settings never hold one of the user's saved secrets themselves (a token pasted into its name).
-    const sources = batch.operations.filter((o) => (o as { type?: unknown })?.type === 'source.upsert');
-    if (sources.length && holdsSecretValue(JSON.stringify(sources), await sourceSecrets.values(session.state.manifest.projectId).catch(() => [])))
-      return { ok: false, revision: session.revision, error: { code: 'INVALID_ARGUMENT', message: 'A source’s settings may not hold one of your secrets. Name it with { "$secret": "<name>" } instead.', recoverable: true } };
+    // A source's settings are saved only once they have been tested against what the source has (saveSource).
+    if (batch.operations.some((o) => (o as { type?: unknown })?.type === 'source.upsert'))
+      return { ok: false, revision: session.revision, error: { code: 'INVALID_ARGUMENT', message: 'A source’s settings are saved from Connect external source, which tests them first.', recoverable: true } };
     // An edit belongs to the project it was made in: one closing, closed or switched meanwhile never receives it.
     if (this.session !== session || this.closing) return { ok: false, revision: session.revision, error: { code: 'CONFLICT', message: 'The project was closed before this change could be saved.', recoverable: false } };
     return session.apply(batch, { label: opts.label ?? batch.label ?? 'Edit', coalesceKey: opts.coalesceKey, source: 'user', codeAllowed });
@@ -2298,6 +2299,7 @@ export class Controller {
             session: s,
             runner: sourceSyncRunner,
             secrets: sourceSecrets,
+            approvals: sourceApprovals,
             current,
             signal: abort.signal,
             importImage: (img, known, createdAt) => importPackageImage(s.dir, { name: img.name, mime: img.mime, ext: img.ext, bytes: Buffer.from(img.bytes) }, known, this.writeFence(s), createdAt)
@@ -2326,16 +2328,95 @@ export class Controller {
     return exportedSourcesProblem(s.dir, s.state, values);
   }
 
-  /** The names of the secrets the open project's sources can sign in with, never their values. */
-  async sourceSecretNames(): Promise<string[]> {
+  /**
+   * The open project with source settings `draft` saved in it, as `source.upsert` saves them, or why they cannot be:
+   * the engine's own reasons, a converter that may not run (each problem by its line), or one of the user's saved
+   * secrets written into them.
+   */
+  private async sourceDraft(s: ProjectSession, draft: SourceSettingsDraft): Promise<{ state: ProjectState; source: SourceDoc } | { message: string }> {
+    const op = { ...draft, type: 'source.upsert' } as EditOperation;
+    const checked = validateOperation(op);
+    if (!checked.ok) return { message: `The source cannot be saved: ${checked.message}` };
+    let values: string[];
+    try {
+      values = await sourceSecrets.values(s.state.manifest.projectId);
+    } catch (e) {
+      return { message: `${(e as Error).message} The source’s settings cannot be checked for them.` };
+    }
+    // A source's settings never hold one of the user's saved secrets themselves (a token pasted into its name).
+    if (holdsSecretValue(JSON.stringify(draft), values)) return { message: 'A source’s settings may not hold one of your secrets. Name it with ${secret:NAME} or a credential instead.' };
+    if (typeof draft.converter === 'string') {
+      const problems = converterProblems(draft.converter);
+      if (problems.length) return { message: `Its converter cannot be run:\n${converterProblemText(problems)}` };
+    }
+    try {
+      const state = applyOperations(s.state, [op]).state;
+      return { state, source: state.sources![draft.sourceId] };
+    } catch (e) {
+      return { message: (e as Error).message };
+    }
+  }
+
+  /**
+   * Test source settings `draft` against what the source has now (#678): every record read and put in shape in the
+   * sync worker, and checked as a sync would write it, with nothing written. The first few come back, as the source
+   * sent them and as entries.
+   */
+  async testSource(draft: SourceSettingsDraft, opening: string): Promise<SourceSampleResult> {
     const s = this.session;
-    return s ? sourceSecrets.names(s.state.manifest.projectId) : [];
+    const closed = { ok: false as const, message: 'The project was closed before the source was tested.' };
+    if (!s || opening !== this.workspaceKey || this.closing) return closed;
+    // Ended with the project from the start, so no source is asked anything once it has closed.
+    const abort = new AbortController();
+    this.sourceSyncs.add(abort);
+    try {
+      const made = await this.sourceDraft(s, draft);
+      if ('message' in made) return { ok: false, message: made.message };
+      if (abort.signal.aborted || this.session !== s || opening !== this.workspaceKey || this.closing) return closed;
+      const r = await sampleSource({ runner: sourceSyncRunner, secrets: sourceSecrets, signal: abort.signal }, made.state, made.source);
+      if (this.session !== s || opening !== this.workspaceKey) return { ok: false, message: 'The project was closed before the source was tested.' };
+      return r;
+    } finally {
+      this.sourceSyncs.delete(abort);
+    }
+  }
+
+  /**
+   * Save source settings `draft`, once a Test of them now passes: a source is never saved that its next sync would
+   * refuse, so a bad converter or mapping never claims its collection. Saved against the project as it was tested.
+   */
+  async saveSource(draft: SourceSettingsDraft, opening: string, base: string | null = null): Promise<{ ok: true; revision: number } | { ok: false; message: string }> {
+    const s = this.session;
+    if (!s || opening !== this.workspaceKey || this.closing) return { ok: false, message: 'The project was closed before the source was saved.' };
+    if (s.readOnly) return { ok: false, message: s.readOnly.reason };
+    if (this.aiBusy()) return { ok: false, message: 'The AI is making changes. Stop it before changing a source.' };
+    // Saved over the source's settings as the dialog was opened on them, never over a later change (its converter.mjs
+    // edited outside the app, say).
+    const now = Object.hasOwn(s.state.sources ?? {}, draft.sourceId) ? s.state.sources![draft.sourceId] : null;
+    if (sourceFingerprint(now) !== (base ?? sourceFingerprint(null))) return { ok: false, message: 'The source’s settings changed since they were opened here. Close this and open them again.' };
+    const revision = s.revision;
+    const tested = await this.testSource(draft, opening);
+    if (!tested.ok) return tested;
+    if (this.session !== s || opening !== this.workspaceKey || this.closing) return { ok: false, message: 'The project was closed before the source was saved.' };
+    if (this.aiBusy()) return { ok: false, message: 'The AI is making changes. Stop it before changing a source.' };
+    const r = await s.apply({ operations: [{ ...draft, type: 'source.upsert' } as EditOperation], expectedRevision: revision }, { label: `Save “${draft.name.trim()}”`, source: 'user' });
+    if (!r.ok) return { ok: false, message: r.error?.code === 'STALE_REVISION' ? 'The project changed while the source was being tested. Save it again.' : (r.error?.message ?? 'The source could not be saved.') };
+    // Tested and saved here: these settings may sign in with the user's secrets.
+    const saved = s.state.sources?.[draft.sourceId];
+    if (saved) await sourceApprovals.approve(s.state.manifest.projectId, saved).catch(() => undefined);
+    return { ok: true, revision: r.revision };
+  }
+
+  /** The names of the secrets the open project's sources can sign in with, never their values. */
+  async sourceSecretNames(opening: string): Promise<string[]> {
+    const s = this.session;
+    return s && opening === this.workspaceKey ? sourceSecrets.names(s.state.manifest.projectId) : [];
   }
 
   /** Keep `value` as the open project's source secret `name`, in the user's own source-secrets.json, or forget it (null). */
-  async setSourceSecret(name: string, value: string | null): Promise<{ ok: boolean; message?: string }> {
+  async setSourceSecret(name: string, value: string | null, opening: string): Promise<{ ok: boolean; message?: string }> {
     const s = this.session;
-    if (!s) return { ok: false, message: 'No project is open.' };
+    if (!s || opening !== this.workspaceKey || this.closing) return { ok: false, message: 'No project is open.' };
     try {
       await sourceSecrets.set(s.state.manifest.projectId, name, value);
       return { ok: true };

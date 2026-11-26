@@ -5,13 +5,19 @@
  * against the very revision of the project the sync began from, or nothing does. A sync is no step of History: the
  * source is where its entries change, and undoing one would only be put back by the next.
  */
-import type { AssetRecord, ProjectState } from '@shared/types';
-import type { ApplyResult, EditOperation } from '@shared/ops';
+import type { AssetRecord, ProjectState, SourceDoc } from '@shared/types';
+import type { SourceSampleResult, SourceSyncResult } from '@shared/api';
+import { applyOperations } from '@engine/apply';
+import { EngineError } from '@engine/tree';
+import { blocksSaving, introducedDiagnostics, validateState } from '@engine/validate';
+import { validateOperation, type ApplyResult, type EditOperation } from '@shared/ops';
+import { randomBytes } from 'node:crypto';
 import { holdsSecretValue, MIN_SECRET_LENGTH, sourceSecretNames } from '@shared/sources';
 import type { SourceSyncGrant } from '@engine/sources';
 import { SyncError, syncFailureMessage, type SyncRunner } from './client';
 import type { SecretStore } from './secrets';
-import type { SyncImage } from './protocol';
+import type { ApprovalStore } from './approvals';
+import { SAMPLE_SIZE, type FieldKinds, type NormalizedRecord, type SyncImage } from './protocol';
 import { knownHashes, planIsEmpty, planSourceSync, SyncPlanError, syncOperations, type SyncPlan } from './reconcile';
 import { redactSecrets } from './redact';
 
@@ -28,6 +34,8 @@ export interface SyncDeps {
   session: SyncSession;
   runner: SyncRunner;
   secrets: SecretStore;
+  /** The settings the user approved (by saving them here) to sign in with their secrets. */
+  approvals: Pick<ApprovalStore, 'approved'>;
   /** Bring a fetched picture into the library: its record, and whether the library had it already (the same bytes). */
   importImage(image: SyncImage & { name: string }, known: AssetRecord[], createdAt: string): Promise<{ record: AssetRecord; existing: boolean }>;
   /** Whether the project the sync began in is still the one open, and wanted. */
@@ -36,9 +44,7 @@ export interface SyncDeps {
   now?: () => Date;
 }
 
-export type SourceSyncResult =
-  | { ok: true; revision: number; created: number; updated: number; unchanged: number; unpublished: number; removed: number; kept: number; images: number }
-  | { ok: false; message: string; code?: string };
+export type { SourceSampleResult, SourceSyncResult } from '@shared/api';
 
 const counts = (p: SyncPlan, revision: number, images: number): SourceSyncResult => ({
   ok: true,
@@ -52,13 +58,17 @@ const counts = (p: SyncPlan, revision: number, images: number): SourceSyncResult
   images
 });
 
-/** Every piece of text records hold, one to a line: what a sync writes, never the names of their own details. */
+/** Every piece of text what a source sent holds, one to a line, the names of its details too (a token echoed as a key). */
 function textOf(v: unknown): string {
   const out: string[] = [];
   const walk = (x: unknown) => {
     if (typeof x === 'string' || typeof x === 'number' || typeof x === 'boolean') out.push(String(x));
     else if (Array.isArray(x)) x.forEach(walk);
-    else if (x && typeof x === 'object') Object.values(x).forEach(walk);
+    else if (x && typeof x === 'object')
+      for (const [k, y] of Object.entries(x)) {
+        out.push(k);
+        walk(y);
+      }
   };
   walk(v);
   return out.join('\n');
@@ -88,6 +98,116 @@ function pictureName(given: string | undefined, url: string): string {
   return (given ?? file.replace(/\.[A-Za-z0-9]+$/, '')).replace(/[-_]+/g, ' ').trim().slice(0, 80) || 'Image';
 }
 
+/** The kinds of value the collection's custom fields hold, by name: how a mapping reads a record's values. */
+export function fieldKinds(state: ProjectState, collectionId: string): FieldKinds {
+  const c = Object.hasOwn(state.collections ?? {}, collectionId) ? state.collections[collectionId] : undefined;
+  return Object.fromEntries(Object.entries(c?.settings.fields ?? {}).map(([k, f]) => [k, f.type]));
+}
+
+/** What the worker is asked for a source: its kind, settings, how its records are put in shape, and its collection's fields. */
+export function sourceRequest(state: ProjectState, source: SourceDoc) {
+  return {
+    adapter: source.adapter,
+    config: source.config,
+    ...(source.mapping ? { mapping: source.mapping } : {}),
+    ...(typeof source.converter?.code === 'string' ? { converter: source.converter.code } : {}),
+    fields: fieldKinds(state, source.collectionId)
+  };
+}
+
+/**
+ * Why `records` cannot be written into the project as a sync of `source` would write them, or null: planned, given a
+ * library image for every picture they show, and applied to a copy of the project with the sync's own grant, then
+ * checked as a saved change is. Nothing is fetched or written: what a picture is never stops a sync here.
+ */
+export function syncPreflight(state: ProjectState, source: SourceDoc, records: readonly NormalizedRecord[], syncedAt: string, values: readonly string[] = []): string | null {
+  let plan: SyncPlan;
+  try {
+    plan = planSourceSync(state, source, records, syncedAt);
+  } catch (e) {
+    if (e instanceof SyncPlanError) return e.message;
+    throw e;
+  }
+  const copy = structuredClone(state);
+  const assetIds = new Map<string, string>();
+  // Named so no record could name one itself: a record's own reference to a library image is checked as it is.
+  const tag = randomBytes(8).toString('hex');
+  let n = 0;
+  for (const key of plan.images.keys()) {
+    const id = `preflight_${tag}_${++n}`;
+    copy.assets.assets[id] = { id, name: 'Picture', file: `static/assets/${id}.png`, mime: 'image/png', bytes: 1, width: 1, height: 1, hash: id, kind: 'image', createdAt: syncedAt };
+    assetIds.set(key, id);
+  }
+  let next: ProjectState;
+  try {
+    const ops = syncOperations(plan, copy, assetIds);
+    // Each checked as the session checks every operation it is given, before the engine.
+    for (const op of ops) {
+      const checked = validateOperation(op);
+      if (!checked.ok) return `a record cannot be written as an entry: ${checked.message}`;
+    }
+    next = applyOperations(copy, ops, { sourceSync: { sourceId: source.id, collectionId: plan.collectionId, provenance: plan.provenance } }).state;
+  } catch (e) {
+    if (e instanceof SyncPlanError || e instanceof EngineError) return (e as Error).message.replace(/^Operation \d+ \([\w.]+\): /, '');
+    throw e;
+  }
+  const saving = (st: ProjectState) => validateState(st, { sectionLinks: false }).filter(blocksSaving);
+  const introduced = introducedDiagnostics(saving(copy), saving(next));
+  if (introduced.length) return introduced.map((d) => d.message).join(' ');
+  // The entries as they would be written, text runs joined and all: no secret is ever put together from its parts.
+  const written = Object.hasOwn(next.collections, plan.collectionId) ? next.collections[plan.collectionId].entries : {};
+  if (holdsSecret(textOf(written), values)) return SECRET_IN_RECORDS;
+  return null;
+}
+
+/** Why a sync wrote nothing when what a source sent holds one of the user's secrets. */
+const SECRET_IN_RECORDS = 'what it sent holds one of your secrets, which is never written into the project';
+
+/** Why a source whose settings name a converter cannot be read without it, or null. */
+function converterMissing(source: SourceDoc): string | null {
+  return source.converter && typeof source.converter.code !== 'string' ? `“${source.name}” is read by its ${source.converter.file}, which is missing. Put it back, or choose where its details are read from instead.` : null;
+}
+
+
+/**
+ * Test source settings `source` (as they would be saved, in the project `state` with them in it) against what the
+ * source has now: every record is read and put in shape, as a sync does, and checked as a sync would write it into
+ * its collection. Nothing is written and no picture fetched. The records are shown only once nothing in them is one of
+ * the user's secrets.
+ */
+export async function sampleSource(deps: Pick<SyncDeps, 'runner' | 'secrets' | 'signal' | 'now'>, state: ProjectState, source: SourceDoc): Promise<SourceSampleResult> {
+  const missing = converterMissing(source);
+  if (missing) return { ok: false, code: 'converter', message: missing };
+  const projectId = state.manifest.projectId;
+  let secrets: Record<string, string>;
+  let values: string[];
+  try {
+    secrets = await deps.secrets.resolve(projectId, sourceSecretNames(source));
+    values = [...new Set([...Object.values(secrets), ...(await deps.secrets.values(projectId))])];
+  } catch (e) {
+    return { ok: false, code: 'secrets', message: syncFailureMessage(source.name, 'failed', (e as Error).message.replace(/\.$/, '')).replace('was not synced', 'could not be tested') };
+  }
+  let result;
+  try {
+    result = await deps.runner.run(source.name, { ...sourceRequest(state, source), mode: 'sample', secrets, known: {} }, { signal: deps.signal, timeoutMs: SAMPLE_TIMEOUT_MS });
+  } catch (e) {
+    const message = e instanceof SyncError ? redactSecrets(e.message, values) : syncFailureMessage(source.name, 'failed');
+    return { ok: false, ...(e instanceof SyncError ? { code: e.code } : {}), message: message.replace('was not synced', 'could not be tested') };
+  }
+  if (holdsSecret(textOf(result.records), values) || holdsSecret(textOf(result.raw ?? []), values))
+    return { ok: false, code: 'secret', message: `“${source.name}” could not be tested: what it sent holds one of your secrets, which is never shown or written into the project.` };
+  const now = (deps.now ?? (() => new Date()))().toISOString();
+  const problem = syncPreflight(state, source, result.records, now, values);
+  if (problem === SECRET_IN_RECORDS) return { ok: false, code: 'secret', message: `“${source.name}” could not be tested: ${SECRET_IN_RECORDS}.` };
+  if (problem) return { ok: false, code: 'invalid', message: `“${source.name}” could not be synced as it is: ${redactSecrets(problem, values)}` };
+  const plan = planSourceSync(state, source, result.records, now);
+  const c = counts(plan, 0, 0) as Extract<SourceSyncResult, { ok: true }>;
+  return { ok: true, raw: result.raw ?? [], records: result.records.slice(0, SAMPLE_SIZE), total: result.records.length, created: c.created, updated: c.updated, unchanged: c.unchanged, unpublished: c.unpublished, removed: c.removed, kept: c.kept };
+}
+
+/** How long a Test may take: less than a sync, as someone is waiting on it. */
+export const SAMPLE_TIMEOUT_MS = 90_000;
+
 /** Sync source `sourceId` of the open project. Resolves with what changed, or why nothing did. */
 export async function syncSource(deps: SyncDeps, sourceId: string): Promise<SourceSyncResult> {
   const { session } = deps;
@@ -104,7 +224,21 @@ export async function syncSource(deps: SyncDeps, sourceId: string): Promise<Sour
     if (e instanceof SyncPlanError) return { ok: false, message: e.message };
     throw e;
   }
+  // Never read another way than its settings say: without its converter, its records would be other entries.
+  const missing = converterMissing(source);
+  if (missing) return { ok: false, code: 'converter', message: missing };
   const projectId = state.manifest.projectId;
+  // Settings changed outside the app (its address, say) never take the user's secrets anywhere until saved here.
+  if (sourceSecretNames(source).length) {
+    let approved: boolean;
+    try {
+      approved = await deps.approvals.approved(projectId, source);
+    } catch {
+      approved = false;
+    }
+    if (!approved)
+      return { ok: false, code: 'unapproved', message: `“${source.name}” was changed outside SiteOrigin Builder since it was last saved here, so it does not sign in with your secrets. Open its settings, test them and save them again.` };
+  }
   let secrets: Record<string, string>;
   let values: string[];
   try {
@@ -116,7 +250,7 @@ export async function syncSource(deps: SyncDeps, sourceId: string): Promise<Sour
   }
   let result;
   try {
-    result = await deps.runner.run(source.name, { adapter: source.adapter, config: source.config, secrets, known: knownHashes(state, source) }, { signal: deps.signal });
+    result = await deps.runner.run(source.name, { ...sourceRequest(state, source), secrets, known: knownHashes(state, source) }, { signal: deps.signal });
   } catch (e) {
     if (e instanceof SyncError) return { ok: false, code: e.code, message: redactSecrets(e.message, values) };
     return { ok: false, message: syncFailureMessage(source.name, 'failed') };
@@ -136,6 +270,11 @@ export async function syncSource(deps: SyncDeps, sourceId: string): Promise<Sour
     throw e;
   }
   if (planIsEmpty(plan)) return counts(plan, revision, 0);
+  // Checked as written before any picture is brought into the library: a record its collection cannot hold stops the
+  // sync with nothing imported.
+  const refused = syncPreflight(state, source, result.records, now.toISOString(), values);
+  if (refused === SECRET_IN_RECORDS) return leaked;
+  if (refused) return { ok: false, code: 'invalid', message: `“${source.name}” was not synced: ${redactSecrets(refused, values)}` };
   const grant: SourceSyncGrant = { sourceId: source.id, collectionId: plan.collectionId, provenance: plan.provenance };
   const label = `Sync “${source.name}”`;
   const fetched = new Map(result.images.map((img) => [img.key, img]));

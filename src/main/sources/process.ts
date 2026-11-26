@@ -4,6 +4,7 @@ import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { createSyncRunner } from './client';
 import { createSecretStore } from './secrets';
+import { createApprovalStore } from './approvals';
 
 /**
  * Only what a process needs to start and find its temporary folder: none of the app's own settings or keys, nor a
@@ -24,3 +25,6 @@ export const stopSourceSyncs = () => sourceSyncRunner.stop();
 
 /** The user's source secrets: `userData/source-secrets.json`, mode 0600. */
 export const sourceSecrets = createSecretStore(() => join(app.getPath('userData'), 'source-secrets.json'));
+
+/** The source settings the user approved to sign in with their secrets: `userData/source-approvals.json`. */
+export const sourceApprovals = createApprovalStore(() => join(app.getPath('userData'), 'source-approvals.json'));

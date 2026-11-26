@@ -11,7 +11,7 @@ import type { EditOperation } from '@shared/ops';
 import { findEntry } from '@shared/collections';
 import { sourceRemoval } from '@shared/sources';
 import { recordHash } from './hash';
-import { imageKey, isImageRef, recordImages, type NormalizedRecord, type SourceImage } from './protocol';
+import { imageKey, isImageRef, recordImages, TEXT_IMAGE, textImages, type NormalizedRecord, type SourceImage } from './protocol';
 
 export class SyncPlanError extends Error {}
 
@@ -144,12 +144,19 @@ export function syncOperations(plan: SyncPlan, state: ProjectState, assetIds: Re
     if (!id) throw new SyncPlanError('A picture of the source was not brought into the library.');
     return id;
   };
+  // A picture in text, given the library image its address brought in.
+  const text = (blocks: unknown) =>
+    Array.isArray(blocks)
+      ? blocks.map((b: { type?: unknown; assetId?: unknown; alt?: unknown }) =>
+          b && b.type === 'image' && typeof b.assetId === 'string' && b.assetId.startsWith(TEXT_IMAGE) ? { ...b, assetId: asset(textImages([b])[0] ?? { url: '' }) } : b
+        )
+      : blocks;
   const fields = (r: NormalizedRecord) => {
     // Own keys whatever they are named, so a record's "__proto__" reaches the engine, which refuses it, rather than nothing.
     const terms = Object.fromEntries([...Object.keys(c.settings.taxonomies ?? {}).map((tax): [string, string[]] => [tax, []]), ...Object.entries(r.terms ?? {}).map(([tax, ids]): [string, string[]] => [tax, [...ids]])]);
     const values = Object.fromEntries([
       ...Object.keys(c.settings.fields ?? {}).map((name): [string, unknown] => [name, null]),
-      ...Object.entries(r.values ?? {}).map(([name, v]): [string, unknown] => [name, isImageRef(v) ? { assetId: asset(v.$image), alt: v.$image.alt ?? '' } : v])
+      ...Object.entries(r.values ?? {}).map(([name, v]): [string, unknown] => [name, isImageRef(v) ? { assetId: asset(v.$image), alt: v.$image.alt ?? '' } : text(v)])
     ]);
     return {
       title: r.title,
@@ -162,7 +169,7 @@ export function syncOperations(plan: SyncPlan, state: ProjectState, assetIds: Re
       featuredImage: r.featuredImage ? asset(r.featuredImage.$image) : null,
       terms,
       values,
-      body: r.body ?? []
+      body: text(r.body ?? [])
     };
   };
   const ops: EditOperation[] = [];
