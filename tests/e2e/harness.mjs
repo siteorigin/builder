@@ -35,17 +35,17 @@ export function withTimeout(promise, ms, what) {
 
 /** The environment `launch` gives the app: its own settings folder and Documents folder inside the run's
  *  scratch folder (so the New project dialog's default location never reaches the developer's Documents),
- *  and no AI provider keys, unless `env` says otherwise. */
+ *  and no AI provider keys, unless `env` says otherwise. The Documents folder is not overridable: no script may write outside its scratch folder. */
 export function launchEnv(WORK, env = {}, base = process.env) {
-  return { ...base, SITEORIGIN_USER_DATA: join(WORK, 'userdata'), SITEORIGIN_DOCUMENTS: join(WORK, 'documents'), OPENAI_API_KEY: '', ANTHROPIC_API_KEY: '', ...env };
+  return { ...base, SITEORIGIN_USER_DATA: join(WORK, 'userdata'), OPENAI_API_KEY: '', ANTHROPIC_API_KEY: '', ...env, SITEORIGIN_DOCUMENTS: join(WORK, 'documents') };
 }
 
 /** Launch the built app (out/) with its own settings folder and Documents folder and no AI provider keys unless given. The page
  *  gets an emulated 1440×900 viewport, unless `viewport` is null: then it follows the (hidden) native window.
  *  An app that never becomes ready is killed with everything it started before the error is thrown. For a run
  *  isolated from everything of the caller's (profile, Documents, environment), use tests/driver/session.ts. */
-export async function launch(WORK, env = {}, { viewport = { width: 1440, height: 900 } } = {}) {
-  const { app, win, errors } = await launchApp({
+export async function launch(WORK, env = {}, { viewport = { width: 1440, height: 900 } } = {}, launcher = launchApp) {
+  const { app, win, errors } = await launcher({
     env: launchEnv(WORK, env),
     viewport: viewport ?? null,
     timeoutMs: 90000

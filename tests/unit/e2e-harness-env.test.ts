@@ -1,7 +1,7 @@
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 // @ts-expect-error the harness is plain JavaScript
-import { launchEnv } from "../e2e/harness.mjs";
+import { launch, launchEnv } from "../e2e/harness.mjs";
 
 describe("the e2e harness launch environment", () => {
   it("keeps the settings and Documents folders inside the run’s scratch folder", () => {
