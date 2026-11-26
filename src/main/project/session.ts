@@ -4581,90 +4581,138 @@ export class ProjectSession extends EventEmitter {
     // Every call counts, refused or not: a reload the app's own save set off is work even when it finds nothing.
     perf.count('session.reloadFromDisk');
     perf.mark('session.reloadFromDisk');
+    return this.serialize(() => this.readBack());
+  }
+
+  /**
+   * The file watch saw `paths` (project-relative) change. When each holds exactly what the app last left there, that
+   * was the app's own save and nothing is read; otherwise the whole project is read again, as reloadFromDisk does.
+   */
+  reloadChanged(paths: Iterable<string>): Promise<{ ok: boolean; message?: string }> {
+    const named = [...paths];
     return this.serialize(async () => {
-      if (this.activeRun) return { ok: false, message: 'Busy' };
-      if (this.readOnly) return this.reloadReadOnly();
-      if (!(await this.stillOwner())) return this.readOnly ? this.reloadReadOnly() : { ok: false, message: LOCK_UNCHECKED };
-      if (this.unsettled) return { ok: false, message: UNSETTLED };
-      // A held conflict is settled outside the app when its file is put back to SiteOrigin Builder's version.
-      let settled = false;
-      for (const [p, builder] of [...this.pending]) {
-        if (!settledOnDisk(p, await this.diskContent(p), builder)) continue;
-        // What an AI request attempted is kept first, as when it is settled in Project health; held until it is.
-        if (!(await this.saveAttempt(p).then(() => true, () => false))) continue;
-        this.releaseConflict(p);
-        settled = true;
-      }
-      if (settled) await this.saveConflicts();
-      let next: ProjectState;
-      let migrated: boolean;
-      let stored: ProjectState;
-      try {
-        // Files still in conflict are read as SiteOrigin Builder's version until the user chooses.
-        const read = await readProject(this.dir, { overlay: this.pending });
-        next = read.state;
-        stored = read.stored;
-        migrated = !!read.migration;
-      } catch (e) {
-        if (settled) this.emit('history');
-        return { ok: false, message: (e as Error).message };
-      }
-      const errors = this.introducedProblems(next);
-      if (errors.length) return { ok: false, message: errors.map((e) => e.message).join(' ') };
-      const pin = themePinProblem(next);
-      if (pin) return { ok: false, message: `The changed files were not loaded: ${pin}` };
-      // A component put back from an older copy (or one from before a theme update) can lack an option placements
-      // chose since: loading it would quietly show them its default instead.
-      // Documents put back from before variant axes come with their own choices, converted (and checked) by that step.
-      const older = (doc: { schemaVersion?: unknown } | undefined) => !!doc && formatOf(doc) < AXES_FORMAT;
-      const lost = choicesLost(this.state, next, (owner) => {
-        const [kind, id] = owner.split(/:(.*)/s);
-        return older(kind === 'shell' ? stored.site : kind === 'page' ? stored.pages[id] : stored.components[id]);
-      });
-      if (lost.length) return { ok: false, message: `The changed files were not loaded: ${lost[0]} Put back the matching page files too, or choose another option first.` };
-      for (const def of Object.values(next.components)) {
-        if (def.kind !== 'code' || def.source === this.state.components[def.id]?.source) continue;
-        const bad = (await checkSvelteSource(def.source ?? '')).filter((p) => p.severity === 'error');
-        if (bad.length) return { ok: false, message: `The edited code for "${def.name}" has problems, so it was not loaded: ${bad[0].message}` };
-      }
-      this.migrationDue = migrated;
-      const nextDocs = stateToDocs(next);
-      let same = nextDocs.size === this.docs.size;
-      if (same) for (const [p, c] of nextDocs) if (this.docs.get(p) !== c) same = false;
-      const srcSame = JSON.stringify([...stateToAuthoredSources(next)]) === JSON.stringify([...stateToAuthoredSources(this.state)]);
-      if (same && srcSame) {
-        // Every document read to find nothing changed: what a reload set off by the app's own save costs.
-        if (!this.migrationDue && !settled) {
-          perf.count('session.reloadUnchanged');
-          perf.mark('session.reloadUnchanged');
-        }
-        // Only the stored format differs (a file put back from an older copy): store it in the current one.
-        if (this.migrationDue && !this.pending.size) await this.publishMigration(3, this.state);
-        if (settled) this.emit('changed', { revision: this.revision, changedDocs: [], changedFiles: [], label: 'Conflict resolved', source: 'system' } satisfies SessionEvent);
-        return { ok: true };
-      }
-      // Treat the external change as a normal committed edit.
-      // Accept the external change as a normal committed edit. The cache is updated to what is on disk
-      // so the history entry records the correct before and after.
-      const prevDocs = this.docs;
-      const changed: HistoryEntry['docs'] = {};
-      for (const p of new Set([...prevDocs.keys(), ...nextDocs.keys()])) {
-        const b = prevDocs.get(p);
-        const a = nextDocs.get(p);
-        // The record of what was exported is loaded, never a step of History: no undo takes back what was published.
-        if (b === a || p === PUBLISHED_FILE) continue;
-        changed[p] = { before: b === undefined ? null : await this.putBlob(b), after: a === undefined ? null : await this.putBlob(a) };
-      }
-      this.state = next;
-      this.docs = nextDocs;
-      const changedFiles = await this.publishInstalled();
-      this.revision++;
-      if (Object.keys(changed).length) await this.recordHistory(changed, { label: 'External change', source: 'system' });
-      await this.saveLocalState();
-      if (this.migrationDue && !this.pending.size) await this.publishMigration(3, this.state);
-      this.emit('changed', { revision: this.revision, changedDocs: Object.keys(changed), changedFiles, label: 'External change', source: 'system' } satisfies SessionEvent);
-      return { ok: true };
+      if (await this.ownSave(named)) return { ok: true };
+      perf.count('session.reloadFromDisk');
+      perf.mark('session.reloadFromDisk');
+      return this.readBack();
     });
+  }
+
+  /**
+   * Whether `paths` hold just what the app left at them, in a project this window holds and nothing waits on: each is a
+   * document whose file reads as exactly its text, or a document's place with nothing there and none in the project. The
+   * project's manifest, which no watch covers, is looked at too, as a full read would. Anything else (a file the app
+   * does not keep, a folder, a held conflict, a format update due, an interrupted save) is for the full read to decide.
+   */
+  private async ownSave(paths: string[]): Promise<boolean> {
+    if (!paths.length || this.activeRun || this.readOnly || this.unsettled || this.migrationDue || this.migrationFailed || this.pending.size) return false;
+    // A lock taken over is noticed now, as any reload notices it.
+    if (!(await this.stillOwner())) return false;
+    try {
+      for (const p of new Set([...paths, MANIFEST_FILE])) {
+        const mine = this.docs.get(p);
+        const abs = safeJoin(this.dir, p);
+        if (mine === undefined) {
+          if (!isCanonicalPath(p) || !(await absent(abs))) return false;
+          continue;
+        }
+        const read = await readFileAt(abs);
+        if (typeof read === 'string') return false;
+        // Read as a full read reads it: text that cannot be stored as it is (a lone surrogate) is not what the file says.
+        const text = read.bytes.toString('utf8');
+        if (text === mine) continue;
+        // The manifest is read whatever the watch named: one stored in another layout says the same when it parses the same.
+        if (p !== MANIFEST_FILE || toJson(JSON.parse(text)) !== mine) return false;
+      }
+      return true;
+    } catch {
+      return false;
+    }
+  }
+
+  private async readBack(): Promise<{ ok: boolean; message?: string }> {
+    if (this.activeRun) return { ok: false, message: 'Busy' };
+    if (this.readOnly) return this.reloadReadOnly();
+    if (!(await this.stillOwner())) return this.readOnly ? this.reloadReadOnly() : { ok: false, message: LOCK_UNCHECKED };
+    if (this.unsettled) return { ok: false, message: UNSETTLED };
+    // A held conflict is settled outside the app when its file is put back to SiteOrigin Builder's version.
+    let settled = false;
+    for (const [p, builder] of [...this.pending]) {
+      if (!settledOnDisk(p, await this.diskContent(p), builder)) continue;
+      // What an AI request attempted is kept first, as when it is settled in Project health; held until it is.
+      if (!(await this.saveAttempt(p).then(() => true, () => false))) continue;
+      this.releaseConflict(p);
+      settled = true;
+    }
+    if (settled) await this.saveConflicts();
+    let next: ProjectState;
+    let migrated: boolean;
+    let stored: ProjectState;
+    try {
+      // Files still in conflict are read as SiteOrigin Builder's version until the user chooses.
+      const read = await readProject(this.dir, { overlay: this.pending });
+      next = read.state;
+      stored = read.stored;
+      migrated = !!read.migration;
+    } catch (e) {
+      if (settled) this.emit('history');
+      return { ok: false, message: (e as Error).message };
+    }
+    const errors = this.introducedProblems(next);
+    if (errors.length) return { ok: false, message: errors.map((e) => e.message).join(' ') };
+    const pin = themePinProblem(next);
+    if (pin) return { ok: false, message: `The changed files were not loaded: ${pin}` };
+    // A component put back from an older copy (or one from before a theme update) can lack an option placements
+    // chose since: loading it would quietly show them its default instead.
+    // Documents put back from before variant axes come with their own choices, converted (and checked) by that step.
+    const older = (doc: { schemaVersion?: unknown } | undefined) => !!doc && formatOf(doc) < AXES_FORMAT;
+    const lost = choicesLost(this.state, next, (owner) => {
+      const [kind, id] = owner.split(/:(.*)/s);
+      return older(kind === 'shell' ? stored.site : kind === 'page' ? stored.pages[id] : stored.components[id]);
+    });
+    if (lost.length) return { ok: false, message: `The changed files were not loaded: ${lost[0]} Put back the matching page files too, or choose another option first.` };
+    for (const def of Object.values(next.components)) {
+      if (def.kind !== 'code' || def.source === this.state.components[def.id]?.source) continue;
+      const bad = (await checkSvelteSource(def.source ?? '')).filter((p) => p.severity === 'error');
+      if (bad.length) return { ok: false, message: `The edited code for "${def.name}" has problems, so it was not loaded: ${bad[0].message}` };
+    }
+    this.migrationDue = migrated;
+    const nextDocs = stateToDocs(next);
+    let same = nextDocs.size === this.docs.size;
+    if (same) for (const [p, c] of nextDocs) if (this.docs.get(p) !== c) same = false;
+    const srcSame = JSON.stringify([...stateToAuthoredSources(next)]) === JSON.stringify([...stateToAuthoredSources(this.state)]);
+    if (same && srcSame) {
+      // Every document read to find nothing changed: what a reload set off by the app's own save costs.
+      if (!this.migrationDue && !settled) {
+        perf.count('session.reloadUnchanged');
+        perf.mark('session.reloadUnchanged');
+      }
+      // Only the stored format differs (a file put back from an older copy): store it in the current one.
+      if (this.migrationDue && !this.pending.size) await this.publishMigration(3, this.state);
+      if (settled) this.emit('changed', { revision: this.revision, changedDocs: [], changedFiles: [], label: 'Conflict resolved', source: 'system' } satisfies SessionEvent);
+      return { ok: true };
+    }
+    // Treat the external change as a normal committed edit.
+    // Accept the external change as a normal committed edit. The cache is updated to what is on disk
+    // so the history entry records the correct before and after.
+    const prevDocs = this.docs;
+    const changed: HistoryEntry['docs'] = {};
+    for (const p of new Set([...prevDocs.keys(), ...nextDocs.keys()])) {
+      const b = prevDocs.get(p);
+      const a = nextDocs.get(p);
+      // The record of what was exported is loaded, never a step of History: no undo takes back what was published.
+      if (b === a || p === PUBLISHED_FILE) continue;
+      changed[p] = { before: b === undefined ? null : await this.putBlob(b), after: a === undefined ? null : await this.putBlob(a) };
+    }
+    this.state = next;
+    this.docs = nextDocs;
+    const changedFiles = await this.publishInstalled();
+    this.revision++;
+    if (Object.keys(changed).length) await this.recordHistory(changed, { label: 'External change', source: 'system' });
+    await this.saveLocalState();
+    if (this.migrationDue && !this.pending.size) await this.publishMigration(3, this.state);
+    this.emit('changed', { revision: this.revision, changedDocs: Object.keys(changed), changedFiles, label: 'External change', source: 'system' } satisfies SessionEvent);
+    return { ok: true };
   }
 
   /** Read-only inspection follows the owner's edits without writing anything. */
