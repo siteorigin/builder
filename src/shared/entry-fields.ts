@@ -13,7 +13,9 @@
  * - `readingTime`: how many minutes the text takes to read, shown as the site words it ("4 min read"); 0, and nothing
  *   shown, for an entry with no text. A condition compares the minutes, whatever the wording.
  * - `prevEntry`, `nextEntry`: links to the published entries listed just before and just after it, in the
- *   collection's order (`prevEntry.title`, `nextEntry.title`: their titles). Empty for the first and the last.
+ *   collection's order (`prevEntry.title`, `nextEntry.title`: their titles; `prevEntry.label`, `nextEntry.label`:
+ *   their titles said to be the previous or next, as the site words it, "Previous: …"). Empty for the first and the
+ *   last. `entryNavLabel` is the site's name for the two links together; empty with neither.
  * - `field.<name>`: the value of one of the collection's custom fields, or its default. A date field is a date as
  *   `publishedAt` is; a reference field shows the titles of the entries it names, separated by commas, and a condition
  *   reads their IDs.
@@ -40,8 +42,11 @@ export const ENTRY_FIELD_NAMES = [
   'readingTime',
   'prevEntry',
   'prevEntry.title',
+  'prevEntry.label',
   'nextEntry',
-  'nextEntry.title'
+  'nextEntry.title',
+  'nextEntry.label',
+  'entryNavLabel'
 ] as const;
 
 /**
@@ -75,8 +80,11 @@ const BUILT_IN: Record<(typeof ENTRY_FIELD_NAMES)[number], PropSchema> = {
   readingTime: { type: 'number', label: 'Reading time', default: 0, min: 0, description: 'Minutes the text takes to read, shown as "4 min read".' },
   prevEntry: { type: 'link', label: 'Previous entry', default: { type: 'none', target: '' } },
   'prevEntry.title': text("Previous entry's title"),
+  'prevEntry.label': text("Previous entry's link text"),
   nextEntry: { type: 'link', label: 'Next entry', default: { type: 'none', target: '' } },
-  'nextEntry.title': text("Next entry's title")
+  'nextEntry.title': text("Next entry's title"),
+  'nextEntry.label': text("Next entry's link text"),
+  entryNavLabel: text('Name of the previous and next links')
 };
 
 const own = <T>(rec: Record<string, T> | undefined, key: string): T | undefined => (rec && Object.hasOwn(rec, key) ? rec[key] : undefined);
@@ -196,6 +204,15 @@ function storedPicture(state: Pick<ProjectState, 'assets'>, value: unknown): Ima
 
 const entryLink = (e: EntryDoc | undefined): LinkValue => (e ? { type: 'entry', target: e.id } : { type: 'none', target: '' });
 const str = (v: unknown) => (typeof v === 'string' ? v.trim() : '');
+const siteWords = (state: Pick<ProjectState, 'site'>) => visitorTextFor(state.site, siteLanguage(state.site));
+
+/** A neighbour's title in the site's wording for its link; wording that leaves the title out has it after. */
+function neighbourLabel(wording: string, neighbour: EntryDoc | undefined): string {
+  const title = str(neighbour?.title);
+  if (!title) return '';
+  // A function, so a title is put in as it is written ("$&" included).
+  return wording.includes('{title}') ? wording.replaceAll('{title}', () => title) : `${wording} ${title}`;
+}
 
 /**
  * What a reference field holds: the IDs it names (`raw`, one or a list as the field takes them), or the titles of the
@@ -244,7 +261,7 @@ export function entryFieldValue(ctx: EntryReadContext, field: string, form: Entr
       const minutes = readingMinutes(entry.body);
       if (form === 'raw') return minutes;
       if (!minutes) return '';
-      const wording = visitorTextFor(state.site, siteLanguage(state.site)).readingTime;
+      const wording = siteWords(state).readingTime;
       return wording.replaceAll('{count}', String(minutes));
     }
     case 'prevEntry':
@@ -255,6 +272,12 @@ export function entryFieldValue(ctx: EntryReadContext, field: string, form: Entr
       return str(neighbours.prev?.title);
     case 'nextEntry.title':
       return str(neighbours.next?.title);
+    case 'prevEntry.label':
+      return neighbourLabel(siteWords(state).entryPrevious, neighbours.prev);
+    case 'nextEntry.label':
+      return neighbourLabel(siteWords(state).entryNext, neighbours.next);
+    case 'entryNavLabel':
+      return neighbours.prev || neighbours.next ? siteWords(state).entryNav : '';
   }
   if (field.startsWith('terms.')) return own(collection.settings.taxonomies, field.slice(6)) ? termLabels(collection, entry, field.slice(6)) : undefined;
   if (field.startsWith('field.')) {

@@ -33,14 +33,15 @@ export function foundationArticleTemplate(): NodeTree {
       b.rich('body', { $entry: 'body' }, { name: 'Text', when: { $entry: 'body' } })
     ])
   ]);
-  const nav = b.el('more', 'div', { name: 'Previous and next', collapseEmpty: true, styles: { base: { paddingBlock: tok('space.xl'), paddingInline: tok('container.gutter') } } }, [
+  const nav = b.el('more', 'nav', { name: 'Previous and next', ariaLabel: { $entry: 'entryNavLabel' }, collapseEmpty: true, styles: { base: { paddingBlock: tok('space.xl'), paddingInline: tok('container.gutter') } } }, [
     b.el(
       'more-row',
       'div',
       { name: 'Links', collapseEmpty: true, styles: { base: column({ layout: 'row', wrap: true, justify: 'space-between', gap: tok('space.lg'), paddingBlock: tok('space.lg'), borderBlockStart: tok('border.default') }) } },
       [
-        b.link('prev', { $entry: 'prevEntry' }, { $entry: 'prevEntry.title' }, 'text', { name: 'Previous entry', when: { $entry: 'prevEntry' } }),
-        b.link('next', { $entry: 'nextEntry' }, { $entry: 'nextEntry.title' }, 'text', { name: 'Next entry', when: { $entry: 'nextEntry' }, icon: 'arrow-right', iconPosition: 'end' })
+        // A text button gets the theme's arrow after it, pointing the way the text runs: only Next is one.
+        b.link('prev', { $entry: 'prevEntry' }, { $entry: 'prevEntry.label' }, 'link', { name: 'Previous entry', when: { $entry: 'prevEntry' } }),
+        b.link('next', { $entry: 'nextEntry' }, { $entry: 'nextEntry.label' }, 'text', { name: 'Next entry', when: { $entry: 'nextEntry' } })
       ]
     )
   ]);
