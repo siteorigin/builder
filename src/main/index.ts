@@ -31,12 +31,30 @@ import { stopPhotoDecoders } from './project/photo-convert';
 import { createThumbCapturer } from './thumb-capture';
 import { desktopForLaunch, launchMode } from './headless-desktop';
 import { installAiJournal } from './ai-journal';
+import { createEditorRecovery, crashQuestion, type EditorRecovery } from './editor-recovery';
+import { createMainErrorReporter } from './main-errors';
 import { fixComponentSource } from '@agent/fixer';
 import type { Diagnostic } from '@engine/validate';
 import { declareCodeNames } from '@engine/definitions';
 import type { ComponentDefinition } from '@shared/types';
 
 const here = dirname(fileURLToPath(import.meta.url));
+// An error nothing in the main process caught is reported in the app's own words, not Electron's raw stack dialog
+// (main-errors.ts), from as early as it can be: before startup is done it says the app could not start, and exits.
+// In an automated run the question is answered by the test, or closed as Keep Working.
+let startedUp = false;
+const reportMainError = createMainErrorReporter({
+  ready: () => startedUp,
+  log: (...args) => console.error(...args),
+  ask: ({ message, detail, buttons, defaultId, cancelId }) => {
+    const options = { type: 'error' as const, message, detail, buttons, defaultId, cancelId };
+    return (win && !win.isDestroyed() ? dialog.showMessageBox(win, options) : dialog.showMessageBox(options)).then((r) => r.response);
+  },
+  errorBox: (title, content) => dialog.showErrorBox(title, content),
+  quit: () => app.quit(),
+  exit: (code) => app.exit(code)
+});
+process.on('uncaughtException', reportMainError);
 // Tests and side-by-side development can isolate settings, credentials and caches.
 if (process.env.SITEORIGIN_USER_DATA) app.setPath('userData', process.env.SITEORIGIN_USER_DATA);
 // A test session's own Documents folder: new projects default to Documents/SiteOrigin and exports start in Documents,
@@ -176,7 +194,13 @@ function previewComponents(steps: ComponentPreviewStep[], measure?: ComponentPre
 const leaveGate = createLeaveGate({
   request: (requestId) => {
     if (!win || win.isDestroyed() || win.webContents.isCrashed()) return false;
-    controller.send('lifecycle:request', { requestId });
+    // A request that could not be sent is treated as an editor that does not answer: it times out to Wait or Leave
+    // Anyway, rather than leave a close or quit waiting for good (or leave without saving what is typed).
+    try {
+      controller.send('lifecycle:request', { requestId });
+    } catch (e) {
+      console.error('The editor could not be asked before leaving:', e);
+    }
     return true;
   },
   // Tests never see a native dialog: a page that stops answering there is left.
@@ -711,6 +735,12 @@ function rendererRoot() {
   return join(here, '../renderer');
 }
 
+/** The editor's address: the dev server in development, otherwise the packaged editor. */
+const editorUrl = () => DEV_URL ?? 'app://editor/index.html';
+
+/** Each editor window's way back from a crash (editor-recovery.ts). */
+const recoveries = new WeakMap<BrowserWindow, EditorRecovery>();
+
 /** Set while a window is being created but does not exist yet, so activation, a second launch or a menu command
  *  arriving meanwhile joins it instead of opening another. */
 let windowComing = false;
@@ -798,18 +828,39 @@ async function createWindow() {
   // a page that has loaded is replaced or crashes. The page a crash brings back is a first load again.
   let committed = false;
   let closeApproved = false;
+  /** From the first close of the window until the editor lets it go or keeps it: a crash meanwhile is not asked about. */
+  let closing = false;
   self.on('close', (e) => {
+    closing = true;
     if (closeApproved || quitState === 'closing' || quitState === 'done' || !controller.session || self.webContents.isCrashed()) return;
     e.preventDefault();
     void controller.mayLeave().then((ok) => {
-      if (!ok || self.isDestroyed()) return;
+      if (!ok || self.isDestroyed()) {
+        closing = false;
+        return;
+      }
       closeApproved = true;
       self.close();
     });
   });
+  // A crashed editor asks, over its window, to be loaded again (or the window closed): the project is still open here,
+  // and the reloaded editor returns to it. Not while the window is closing or the app quitting.
+  const recovery = createEditorRecovery({
+    mayOffer: () => !self.isDestroyed() && !closing && !closeApproved && quitState === 'idle' && !quitAccepted,
+    ask: (signal) => {
+      // A page that crashed before its first paint left the window hidden: the question is shown over it, so it shows.
+      if (!headless && !self.isVisible()) self.show();
+      return dialog.showMessageBox(self, { ...crashQuestion(!!controller.session), signal }).then((r) => (r.response === 1 ? 'close' : 'reload'));
+    },
+    // Loaded at the editor's own address: a page that crashed before its first load finished has nothing to reload.
+    reload: () => void self.webContents.loadURL(editorUrl()).catch((e: unknown) => console.error('The editor could not be loaded again:', e)),
+    close: () => self.close()
+  });
+  recoveries.set(self, recovery);
   // A page that is replaced or crashes mid-recording leaves no one to hand the menus' keys back.
   self.webContents.on('did-navigate', () => self.webContents.setIgnoreMenuShortcuts(false));
-  self.webContents.on('render-process-gone', () => {
+  self.webContents.on('render-process-gone', (_e, details) => {
+    if (details.reason !== 'clean-exit') console.error(`The editor stopped unexpectedly (${details.reason}, exit code ${details.exitCode}).`);
     if (!self.webContents.isDestroyed()) self.webContents.setIgnoreMenuShortcuts(false);
     desktop?.windows.gone(selfId, { closed: false });
     committed = false;
@@ -817,6 +868,8 @@ async function createWindow() {
     leaveGate.editorGone();
     // A project ZIP file being unpacked for this editor is called off: no one is left to answer its trust prompt.
     controller.cancelOpen();
+    // Last, once all of that is settled: a page that ended normally (the window closing) has nothing to come back from.
+    if (details.reason !== 'clean-exit') recovery.gone();
   });
   // A right-click in text that takes typing offers its spelling suggestions and the editing actions, natively:
   // a native menu leaves focus where it is, so a word being edited on the canvas stays in its edit. The canvas
@@ -855,12 +908,15 @@ async function createWindow() {
   // A navigation the editor refuses never commits, so it leaves the editor ready.
   // A project ZIP file being opened for the replaced editor is called off too: its trust prompt has no one to answer it.
   self.webContents.on('did-navigate', () => {
+    // A new page is the editor again, however it was loaded: an answer to an earlier crash's question does nothing.
+    recovery.settle();
     menuCommands.unready(self);
     controller.cancelOpen();
     if (committed) desktop?.windows.gone(selfId, { closed: false });
     committed = true;
   });
   self.on('closed', () => {
+    recovery.settle();
     if (win === self) win = null;
     desktop?.windows.gone(selfId, { closed: true });
     // The thumbnails' hidden window goes with the editor: it must never keep the app running, or stand in for the
@@ -870,15 +926,26 @@ async function createWindow() {
     leaveGate.editorGone();
     controller.cancelOpen();
   });
-  if (DEV_URL) await win.loadURL(DEV_URL);
-  else await win.loadURL('app://editor/index.html');
+  // A first load the page crashed during (or that the crash's reload took over) is taken up by the crash's own question,
+  // not reported as an error here. Any other failure to load the editor is reported in the app's own words: as a
+  // rejection it would only be logged, and leave a blank window.
+  const first = win;
+  await first.loadURL(editorUrl()).catch((e: unknown) => {
+    if ((e as { code?: unknown }).code === 'ERR_ABORTED' || first.isDestroyed() || first.webContents.isCrashed()) console.error('The editor did not finish its first load:', e);
+    else {
+      // The report is shown over the window, which never got to show itself: it shows now, so the report is seen.
+      if (!headless) first.show();
+      reportMainError(e);
+    }
+  });
 }
 
 /** A File menu command (chosen in the menu bar or by its shortcut), for the editor window. */
 function chooseCommand(cmd: MenuCommand) {
   const w = win && !win.isDestroyed() ? win : null;
-  // A crashed editor cannot act on it: it is loaded again, and the command waits until the new page is ready.
-  if (w?.webContents.isCrashed()) w.webContents.reload();
+  // A crashed editor cannot act on it: it is loaded again (its crash question withdrawn), and the command waits until
+  // the new page is ready.
+  if (w?.webContents.isCrashed()) recoveries.get(w)?.recover();
   if (w && !headless) {
     if (w.isMinimized()) w.restore();
     if (w.isVisible()) w.focus();
@@ -983,15 +1050,17 @@ app.whenReady().then(async () => {
   app.setAboutPanelOptions({ applicationName: app.name, applicationVersion: app.getVersion() });
   buildMenu();
   markStarted();
+  startedUp = true;
   // Registered once, not per window: macOS brings up a new window after the last one closes.
   // With Appearance on System, the window's backing color follows this computer's setting (the editor follows it itself).
   nativeTheme.on('updated', () => {
     if (win && !win.isDestroyed()) win.setBackgroundColor(windowBackground());
   });
-  await createWindow();
+  // Registered before the first window loads: a first load that fails must not leave macOS without a way to open one.
   app.on('activate', () => {
     if (!BrowserWindow.getAllWindows().length) void createWindow();
   });
+  await createWindow();
 });
 
 app.on('window-all-closed', () => {
@@ -1010,8 +1079,14 @@ app.on('will-quit', () => {
 // quits. A quit asked again while that is under way waits for it; one the author turns down ("Keep editing")
 // leaves the app running. A close already under way still has a preview to stop and its private copy to remove.
 let quitState: 'idle' | 'asking' | 'closing' | 'done' = 'idle';
+/** Set once a quit goes ahead without asking the editor. */
+let quitAccepted = false;
 app.on('before-quit', (e) => {
-  if (quitState === 'done' || (quitState === 'idle' && !controller.session && !controller.isClosing && !controller.isCreating && !controller.isDuplicating)) return;
+  if (quitState === 'done' || (quitState === 'idle' && !controller.session && !controller.isClosing && !controller.isCreating && !controller.isDuplicating)) {
+    // Nothing to ask: the app quits now, and a crash meanwhile is not asked about.
+    quitAccepted = true;
+    return;
+  }
   e.preventDefault();
   // Quit again while the editor's question is open: re-ask, which brings back Wait or Leave Anyway if it hung.
   if (quitState === 'asking') void controller.mayLeave();

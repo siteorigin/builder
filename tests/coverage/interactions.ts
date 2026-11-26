@@ -355,6 +355,24 @@ export const INTERACTIONS: Interaction[] = [
     gaps: [{ missing: 'No e2e script kills the app during a save and reopens the project to find the work there', owner: 'projects' }]
   },
   {
+    id: 'projects.reload-editor',
+    area: 'projects',
+    intent: 'Get back to the editor after it crashed or failed',
+    start: 'A project open when the editor page crashes, a screen fails while rendering, or the main process meets an error nothing caught',
+    routes: ['dialog:The editor stopped unexpectedly › Reload Editor', 'dialog:The editor stopped working › Reload editor', 'dialog:The editor stopped working › Close project'],
+    outcome:
+      'A crashed editor asks over its window to be loaded again, and Reload Editor brings back the same opening of the project; a screen that fails while rendering says so and reloads, or closes the project; an uncaught main-process error is reported in the app’s own words and the app keeps running',
+    scenario: 'Business starter · none; browser and unit fixtures',
+    proof: [
+      { test: 'tests/e2e/crash-recovery.mjs', kind: 'e2e', step: 'a crashed editor asks to be loaded again, and Reload Editor brings back the same project' },
+      { test: 'tests/e2e/crash-recovery.mjs', kind: 'e2e', step: 'an error the main process did not catch is reported in the app’s own words, and the editor keeps working' },
+      { test: 'tests/unit/editor-recovery.test.ts', kind: 'unit' },
+      { test: 'tests/unit/main-errors.test.ts', kind: 'unit' },
+      { test: 'tests/unit/render-failure-browser.test.ts', kind: 'unit', step: 'shows what happened in place of the screen, and reloads the editor' }
+    ],
+    gaps: [{ missing: 'No e2e script makes a real editor screen throw while rendering', owner: 'projects' }]
+  },
+  {
     id: 'projects.show-folder',
     area: 'projects',
     intent: 'See the project’s files in Finder or Explorer',

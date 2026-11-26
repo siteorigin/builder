@@ -291,9 +291,31 @@ const inPage = (code) =>
     'Reading the page'
   );
 await inPage('window.beforeCrash = true');
-await app.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows()[0].webContents.forcefullyCrashRenderer());
-await eventually(async () => assert.ok(await app.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows()[0].webContents.isCrashed()), 'the renderer crashed'));
-await choose('New Project…');
+// The crash would ask to load the editor again (#886), and an unanswered question does. So New Project is chosen in the
+// crash's own turn, once the app has tidied up after it and before its question is due: the command is what loads the
+// editor again, and the question is withdrawn unasked.
+const crashMark = await desktopCursor(app);
+const crashed = await app.evaluate(({ BrowserWindow, Menu }) => {
+  const editor = BrowserWindow.fromId(globalThis[Symbol.for('siteorigin.desktopFixtures')].editor);
+  const contents = editor.webContents;
+  const gone = new Promise((resolve, reject) => {
+    const late = setTimeout(() => reject(new Error('The renderer did not crash within 30s')), 30000);
+    contents.once('render-process-gone', (_e, details) => {
+      clearTimeout(late);
+      try {
+        const file = Menu.getApplicationMenu().items.find((i) => i.label === 'File');
+        const item = file.submenu.items.find((i) => i.label === 'New Project…');
+        item.click({ triggeredByAccelerator: false, shiftKey: false, ctrlKey: false, altKey: false, metaKey: false }, editor, contents);
+        resolve(details.reason);
+      } catch (e) {
+        reject(e);
+      }
+    });
+  });
+  contents.forcefullyCrashRenderer();
+  return gone;
+});
+assert.notEqual(crashed, 'clean-exit', 'the renderer crashed');
 await eventually(
   async () =>
     assert.equal(
@@ -302,6 +324,11 @@ await eventually(
       'a reloaded Welcome shows the New project dialog'
     ),
   60000
+);
+assert.deepEqual(
+  (await choosersShown(app, crashMark)).filter((c) => c.message === 'The editor stopped unexpectedly'),
+  [],
+  'the File command loaded the editor again, so the crash was not asked about'
 );
 
 assert.deepEqual(errors, [], 'no page errors');
