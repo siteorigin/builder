@@ -295,51 +295,65 @@ describe('an archive page’s styles', () => {
     const files = generateProject(publishedState(s));
     return archivePages(publishedState(s)).map((p) => ({ route: p.route, source: files.get(route(p.route))! }));
   };
-  const unused = (source: string) =>
-    compile(source, { generate: 'server' })
-      .warnings.filter((w) => w.code === 'css_unused_selector')
-      .map((w) => w.message);
+
+  const has = (name: string) => new RegExp(`class="so-archive__${name}[ "]`);
+  const PAGER = /<nav class="so-archive__pages"/;
+  const CARD = /<article class="so-archive__card[ "]/;
+  const TITLE = has('title');
+  /** Every selector an archive page can be styled with, and what its markup holds when the selector is used. */
+  const SELECTORS: Array<[string, RegExp]> = [
+    ['.so-archive', /<section class="so-archive">/],
+    ['.so-archive__inner', /so-archive__inner"/],
+    ['.so-archive__header', has('header')],
+    ['.so-archive__heading', has('heading')],
+    ['.so-archive__eyebrow', has('eyebrow')],
+    ['.so-archive__category', has('category')],
+    ['.so-archive__category a', /<p class="so-archive__category">(?:(?!<\/p>).)*<a /],
+    ['.so-archive__count', has('count')],
+    ['.so-archive__meta', has('meta')],
+    ['.so-archive__excerpt', has('excerpt')],
+    ['.so-archive__empty', has('empty')],
+    ['.so-archive__grid', has('grid')],
+    ['.so-archive__card', CARD],
+    ['.so-archive__text', has('text')],
+    ['.so-archive__card :global(.so-archive__image)', /class="so-archive__image"/],
+    ['.so-archive__title', TITLE],
+    ['.so-archive__title a', TITLE],
+    ['.so-archive__title a:hover', TITLE],
+    ['.so-archive__title a:focus-visible', TITLE],
+    ['.so-archive__card--lead', /so-archive__card--lead">/],
+    ['.so-archive__card--lead .so-archive__title', /so-archive__card--lead">/],
+    ['.so-archive__card--lead :global(.so-archive__image)', /so-archive__card--lead">\s*<SoImage /],
+    ['.so-archive__pages', PAGER],
+    ['.so-archive__pages ol', PAGER],
+    ['.so-archive__pages a', PAGER],
+    [".so-archive__pages a[aria-current='page']", / aria-current="page">/],
+    [".so-archive__pages li[aria-hidden='true']", /<li aria-hidden="true">/]
+  ];
+  const styled = (source: string) =>
+    [...source.slice(source.indexOf('<style>') + 7, source.indexOf('</style>')).replace(/@media[^{]*\{/g, '').matchAll(/([^{}]+)\{/g)].flatMap((m) => m[1].split(',').map((x) => x.trim()));
 
   it.each([
     ['one page', () => sized(blog(), 100)],
     ['several pages', () => sized(blog(), 2)],
     ['enough pages to leave a gap in the page links', () => sized(blog(), 1)],
+    ['no category archives to link to', () => run(blog(), { type: 'collection.update', collectionId: 'posts', categoryArchives: false } as EditOperation)],
+    // The newest post, which leads, has no picture; one in the grid does.
+    ['a lead with no picture above a card with one', () => run(sized(blog(), 100), post('en_text', 'Words only', '2026-04-20'))],
     ['nothing published', bare],
     ['posts with no picture, category, author or excerpt', () => run(bare(), { type: 'entry.create', collectionId: 'posts', entryId: 'en_plain', title: 'Plain', draft: false, body: ['Plain.'] } as EditOperation)]
-  ])('has no selector its markup does not use: %s', (_, state) => {
+  ])('has the selectors its markup uses and no other: %s', (_, state) => {
     const pages = archiveSources(state());
     expect(pages.length).toBeGreaterThan(0);
-    for (const p of pages) expect(unused(p.source), p.route).toEqual([]);
-  });
-
-  // The compiler does not report an unused `:global(…)`, so the picture rules are checked by hand.
-  it('styles a picture only where a card has one, and the lead’s only where the lead has one', () => {
-    for (const p of archiveSources(sized(blog(), 2))) {
-      const card = p.source.includes('class="so-archive__image"');
-      expect(p.source.includes('.so-archive__card :global(.so-archive__image)'), p.route).toBe(card);
-      const lead = /so-archive__card--lead">\s*<SoImage/.test(p.source);
-      expect(p.source.includes('.so-archive__card--lead :global(.so-archive__image)'), p.route).toBe(lead);
+    for (const p of pages) {
+      const markup = p.source.slice(0, p.source.indexOf('<style>'));
+      expect([...new Set(styled(p.source))].sort(), p.route).toEqual(SELECTORS.filter(([, used]) => used.test(markup)).map(([selector]) => selector).sort());
+      // What the build of the exported project says, as the compiler does (it never reports an unused `:global(…)`).
+      expect(
+        compile(p.source, { generate: 'server' }).warnings.filter((w) => w.code === 'css_unused_selector').map((w) => w.message),
+        p.route
+      ).toEqual([]);
     }
-  });
-
-  it('leaves out the lead’s picture rule where only a grid card has a picture', () => {
-    // The newest post, which leads, has none; the one after it does.
-    const s = run(sized(blog(), 100), post('en_text', 'Words only', '2026-04-20'));
-    const first = archiveSources(s).find((p) => p.route === '/blog/')!.source;
-    expect(first).toContain('.so-archive__card :global(.so-archive__image)');
-    expect(first).not.toContain('.so-archive__card--lead :global(.so-archive__image)');
-    expect(first).toContain('.so-archive__card--lead .so-archive__title');
-  });
-
-  it('keeps each rule on the pages that use it', () => {
-    const pages = new Map(archiveSources(sized(blog(), 1)).map((p) => [p.route, p.source]));
-    const first = pages.get('/blog/')!;
-    const second = pages.get('/blog/page/2/')!;
-    for (const selector of ['.so-archive__card--lead .so-archive__title', '.so-archive__category a', '.so-archive__pages ol', ".so-archive__pages a[aria-current='page']", ".so-archive__pages li[aria-hidden='true']"]) expect(first).toContain(selector);
-    expect(second).toContain('.so-archive__count');
-    expect(second).toContain('.so-archive__grid');
-    expect(pages.get('/blog/category/news/')).toContain('.so-archive__eyebrow');
-    expect(archiveSources(bare())[0].source).toContain('.so-archive__empty');
   });
 });
 
