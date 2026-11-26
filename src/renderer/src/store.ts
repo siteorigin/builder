@@ -449,7 +449,8 @@ export const editRunStatus = (s: Pick<State, 'runStatus' | 'runMode'>) => (s.run
 export const getState = () => useStore.getState();
 export const setState = (p: Partial<State>) => {
   // The last panel shown besides the SEO view is where leaving the view goes back to.
-  if ('leftTab' in p) rememberPanelBeforeSeo(p.leftTab === 'seo' ? useStore.getState().leftTab : p.leftTab);
+  // A hidden sidebar, or a project just opened with the view showing, goes back to Pages.
+  if ('leftTab' in p) rememberPanelBeforeSeo(p.leftTab === 'seo' ? ('screen' in p ? 'pages' : (useStore.getState().leftTab ?? 'pages')) : p.leftTab);
   useStore.setState(slotFollows(oneSelection(scopeFollows(oneView(p)))));
 };
 

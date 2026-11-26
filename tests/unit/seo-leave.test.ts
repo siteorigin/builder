@@ -27,4 +27,10 @@ describe('leaveSeoView', () => {
     m.store.leaveSeoView();
     expect(m.store.getState().leftTab).toBe('assets');
   });
+  it('goes back to Pages, never another project’s panel, when a project opens with the view showing', () => {
+    m.store.setState({ leftTab: 'assets' });
+    m.store.setState({ screen: 'editor', leftTab: 'seo' });
+    m.store.leaveSeoView();
+    expect(m.store.getState().leftTab).toBe('pages');
+  });
 });

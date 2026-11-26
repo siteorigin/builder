@@ -392,7 +392,12 @@ export function SeoView({ shown }: { shown: boolean }) {
             <h2 className="seo-title">SEO</h2>
           </>
         )}
-        <button className="btn btn-sm seo-leave" title="Leave the SEO view and return to the page (Esc)" onClick={leaveSeoView}>
+        <button className="btn btn-sm seo-leave" title="Leave the SEO view and return to the page (Esc)" onClick={() => {
+            leaveSeoView();
+            // Focus lands on the rail's SEO button, where the view opens from, not on the page.
+            requestAnimationFrame(() => document.querySelector<HTMLElement>('.rail [data-rail="seo"]')?.focus());
+          }}
+        >
           <X aria-hidden="true" />
           Close SEO view
         </button>

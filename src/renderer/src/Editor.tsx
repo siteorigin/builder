@@ -459,7 +459,11 @@ export function Editor() {
       const history = mod && !e.altKey && ['z', 'y'].includes(e.key.toLowerCase()) && focusedSurface(e.target as HTMLElement) !== 'text';
       const askAi = isAskAiKey({ key: e.key, code: e.code, meta: e.metaKey, ctrl: e.ctrlKey, shift: e.shiftKey, alt: e.altKey });
       // The panel shortcuts (Cmd/Ctrl+\ and Shift+Cmd/Ctrl+\) and Ask AI type nothing, so they work from a field too.
-      if (isTyping(e) && !history && !askAi && !(mod && ['k', 'e', 's', '\\', '|'].includes(e.key.toLowerCase())) && !(mod && e.shiftKey && e.key.toLowerCase() === 'f')) return;
+      // Escape in a checkbox or other button-like input is no typing: it leaves the SEO view all the same. Held down, it
+      // acts once, so the repeats never reach the page the view has just given back.
+      if (e.key === 'Escape' && e.repeat) return;
+      const typing = isTyping(e) && !(e.key === 'Escape' && getState().leftTab === 'seo' && e.target instanceof HTMLInputElement && ['checkbox', 'radio', 'button', 'range'].includes(e.target.type));
+      if (typing && !history && !askAi && !(mod && ['k', 'e', 's', '\\', '|'].includes(e.key.toLowerCase())) && !(mod && e.shiftKey && e.key.toLowerCase() === 'f')) return;
       // Delete removes the canvas selection only when the canvas or Layers has the focus, never from a
       // button or row in another panel (an Assets tile, a page row).
       if (!mod && (e.key === 'Delete' || e.key === 'Backspace')) {
