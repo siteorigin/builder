@@ -67,6 +67,12 @@ export const LIVE_HOST_TIMINGS: LiveHostTimings = {
  */
 export const MAX_SOCKET_BACKLOG_BYTES = 64 * 1024 * 1024;
 
+/**
+ * How long an extension the relay has not confirmed still counts against the next one: the relay answers one it
+ * accepts with room:state at once, so one unconfirmed this long was refused.
+ */
+const ASKED_EXPIRY_MS = 10_000;
+
 const OPEN = 1;
 /** The code the host closes a connection it gives up on with (one of the codes a client may send). */
 const ABANDONED = 4000;
@@ -137,8 +143,11 @@ interface Run {
   reloadTimer: ReturnType<typeof setTimeout> | null;
   /** A reload is owed to guests: sent once the room is held and the preview is ready. */
   reloadDue: boolean;
-  /** The latest end asked for that the relay has not confirmed yet, so a second extension is never earlier than the first. */
-  askedExpiresAt: number | null;
+  /**
+   * The latest end asked for that the relay has not confirmed yet (and when, monotonic), so a second extension is
+   * never earlier than the first: the relay applies them in order.
+   */
+  asked: { expiresAt: number; at: number } | null;
   /** The guests already announced as waiting, so a roster resent after a reconnect announces nobody twice. */
   announced: Set<string>;
   /** Answers start(), until the room is open or the start has failed. */
@@ -253,7 +262,7 @@ export class LiveHostManager {
       expiryTimer: null,
       reloadTimer: null,
       reloadDue: false,
-      askedExpiresAt: null,
+      asked: null,
       announced: new Set(),
       started: null,
       stopping: null,
@@ -326,17 +335,18 @@ export class LiveHostManager {
         resolve();
       };
       const deadline = setTimeout(done, this.timings.stopMs);
+      const stopBy = performance.now() + this.timings.stopMs;
+      const again = () => (retry = setTimeout(attempt, this.timings.backoffBaseMs));
       const attempt = () => {
         retry = null;
         if (settled) return;
+        if (performance.now() >= stopBy) return done();
         let conn = run.conn;
-        // A connection already closing can carry nothing more.
-        if (conn && conn.socket.readyState > OPEN) {
-          run.conn = null;
-          this.close(conn, ABANDONED, null);
-          conn = null;
+        if (!conn && run.room) {
+          conn = this.connect(run, 'reclaim');
+          // No connection could even be opened: tried again while there is time.
+          if (!conn) return void again();
         }
-        if (!conn && run.room) conn = this.connect(run, 'reclaim');
         // A room that was never asked for needs nothing ending.
         if (!conn || (conn.kind === 'create' && conn.stage === 'opening')) return done();
         conn.onClosed.push((code) => {
@@ -344,8 +354,10 @@ export class LiveHostManager {
           // that dropped for any other reason is replaced while there is time.
           if (settled) return;
           if (endedBy(code) !== null || !run.room) return done();
-          retry = setTimeout(attempt, this.timings.backoffBaseMs);
+          again();
         });
+        // A connection already closing carries nothing more: how it closes says whether the room has ended.
+        if (conn.socket.readyState > OPEN) return;
         // The relay reads a connection's frames in order, so room:end may follow room:create before room:ready is back.
         // A connection still proving itself sends it once it has (onReady).
         if (conn.stage === 'creating' || conn.stage === 'roster' || conn.stage === 'host') {
@@ -452,8 +464,7 @@ export class LiveHostManager {
         return this.onRoster(conn, frame.participants);
       case 'room:state': {
         if (!run.room || (conn.stage !== 'roster' && conn.stage !== 'host')) return;
-        this.roomFacts(run.room, frame);
-        run.askedExpiresAt = null;
+        this.roomFacts(run, frame);
         if (run.phase === 'stopping') return;
         this.armExpiry(run);
         return this.publish();
@@ -477,8 +488,6 @@ export class LiveHostManager {
         // Proving itself with a key the room was not made with, or for a room that has changed, never comes right.
         if (frame.code === 'AUTH_FAILED' && conn.stage !== 'host') return this.lost(conn, LIVE_CLOSE_CODES.POLICY, 'The relay did not accept this computer as the live session’s host.');
         run.lastError = frame.message;
-        // A refused command may have been an extension: the next one is checked against the room as confirmed.
-        run.askedExpiresAt = null;
         if (conn.stage === 'host' && run.phase !== 'stopping') this.publish();
         return;
     }
@@ -499,8 +508,10 @@ export class LiveHostManager {
     this.sendOn(conn, { type: 'host:proof', roomId: frame.roomId, nonce: frame.nonce, signature });
   }
 
-  private roomFacts(room: Room, frame: { startedAt: number; expiresAt: number; locked: boolean; now: number }): void {
-    Object.assign(room, { startedAt: frame.startedAt, expiresAt: frame.expiresAt, locked: frame.locked, relayAt: frame.now, monoAt: performance.now() });
+  /** The room as the relay says it is now. An extension it has confirmed no longer counts as asked for. */
+  private roomFacts(run: Run, frame: { startedAt: number; expiresAt: number; locked: boolean; now: number }): void {
+    Object.assign(run.room!, { startedAt: frame.startedAt, expiresAt: frame.expiresAt, locked: frame.locked, relayAt: frame.now, monoAt: performance.now() });
+    if (run.asked && frame.expiresAt >= run.asked.expiresAt) run.asked = null;
   }
 
   private onReady(conn: Connection, frame: Frame<'relay-to-host', 'room:ready'>): void {
@@ -516,8 +527,7 @@ export class LiveHostManager {
       }
       run.room = { roomId: frame.roomId, inviteUrl, participants: [], startedAt: 0, expiresAt: 0, locked: false, relayAt: 0, monoAt: 0 };
     }
-    this.roomFacts(run.room!, frame);
-    run.askedExpiresAt = null;
+    this.roomFacts(run, frame);
     conn.stage = 'roster';
     // Taken back only to be ended (shutdown): the relay closes the connection once it has.
     if (run.phase === 'stopping') {
@@ -807,12 +817,13 @@ export class LiveHostManager {
       run,
       (current, room, now) => {
         if (!isTime(expiresAt)) return 'The end of the session is not a time.';
-        if (expiresAt <= Math.max(room.expiresAt, current.askedExpiresAt ?? 0)) return 'Choose a later end for the live session.';
+        const asked = current.asked && performance.now() - current.asked.at < ASKED_EXPIRY_MS ? current.asked.expiresAt : 0;
+        if (expiresAt <= Math.max(room.expiresAt, asked)) return 'Choose a later end for the live session.';
         const check = checkSessionExpiry(expiresAt, { startedAt: room.startedAt, currentExpiresAt: room.expiresAt }, now);
         if (!check.ok) return check.message;
         return { type: 'room:set-expiry', expiresAt: check.expiresAt };
       },
-      (current, frame) => (current.askedExpiresAt = (frame as { expiresAt: number }).expiresAt)
+      (current, frame) => (current.asked = { expiresAt: (frame as { expiresAt: number }).expiresAt, at: performance.now() })
     );
   }
 }

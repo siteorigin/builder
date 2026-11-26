@@ -82,6 +82,16 @@ function routes(url: string, res: ServerResponse) {
       res.writeHead(200, { 'content-type': 'text/plain' });
       res.write('first');
       return setTimeout(() => res.end('last'), FLUSH_MS * 6);
+    case '/reset-streaming': {
+      // A 205 that carries a body anyway, and never ends.
+      res.writeHead(205, { 'transfer-encoding': 'chunked' });
+      const tick = setInterval(() => res.write('x'), 20);
+      res.on('close', () => {
+        clearInterval(tick);
+        if (!res.writableFinished) closedEarly++;
+      });
+      return;
+    }
     case '/hangup':
       return res.socket?.destroy();
     case '/upgrade':
@@ -221,13 +231,14 @@ describe('tunnelling a preview request', () => {
     expect(proxy.size).toBe(0);
   });
 
-  it('streams a binary larger than one chunk byte for byte, in full chunks', async () => {
+  it('streams a binary larger than one chunk byte for byte, in chunks no larger than the protocol allows', async () => {
     const { proxy, result } = harness();
     const frame = request('/photo.bin');
     proxy.handle(frame);
     const r = await result(frame.requestId);
-    expect(r.chunks.length).toBe(Math.ceil(BINARY.length / PREVIEW_CHUNK_BYTES));
-    expect(r.chunks.slice(0, -1).every((c) => c.length === PREVIEW_CHUNK_BYTES)).toBe(true);
+    // Full chunks as the body arrives; a part of one goes out early only if the body stalls (FLUSH_MS).
+    expect(r.chunks.length).toBeGreaterThanOrEqual(Math.ceil(BINARY.length / PREVIEW_CHUNK_BYTES));
+    expect(r.chunks.every((c) => c.length > 0 && c.length <= PREVIEW_CHUNK_BYTES)).toBe(true);
     expect(Buffer.compare(r.body, Buffer.from(BINARY))).toBe(0);
     expect(r.headers['content-length']).toBe(String(BINARY.length));
   });
@@ -311,6 +322,17 @@ describe('tunnelling a preview request', () => {
     const z = await result(reset.requestId);
     expect(z.head?.status).toBe(205);
     expect(z.chunks).toEqual([]);
+  });
+
+  it('gives up the connection of a bodyless answer that goes on sending, so its slot is freed', async () => {
+    const { proxy, result } = harness();
+    const before = closedEarly;
+    const frame = request('/reset-streaming');
+    proxy.handle(frame);
+    const r = await result(frame.requestId);
+    expect(r.head?.status).toBe(205);
+    expect(r.chunks).toEqual([]);
+    await until(() => proxy.size === 0 && closedEarly === before + 1, 'the connection given up');
   });
 
   it('stops a response larger than the protocol allows before sending it', async () => {

@@ -46,40 +46,38 @@ export function frameAncestorsCsp(packaged: boolean): string {
  */
 export const LIVE_GUEST_HEADER = 'x-siteorigin-live-guest';
 
-/** Whether Vite's `server.proxy` would pass `url` on, by its own rule for each context: a `^` pattern, or a prefix. */
-export function proxiedByVite(contexts: readonly string[], url: string): boolean {
-  return contexts.some((context) => {
-    if (!context.startsWith('^')) return url.startsWith(context);
-    try {
-      return new RegExp(context).test(url);
-    } catch {
-      // A pattern Vite could not use either: refused rather than guessed at.
-      return true;
-    }
-  });
-}
-
+type ProxyRule = { bypass?: (req: GuestReq, res: unknown, options: unknown) => unknown; [option: string]: unknown };
 type GuestReq = { headers: Record<string, string | string[] | undefined>; url?: string };
-type GuestRes = { statusCode: number; setHeader(name: string, value: string): unknown; end(body?: string): unknown };
 
 /**
- * A Vite plugin that answers a live session guest's request as not found when the project's `server.proxy` would pass
- * it on to another server. Its middleware is added in configureServer, so it runs ahead of Vite's proxy.
+ * A Vite plugin that keeps a live session guest's requests off the project's own `server.proxy` rules, at the point
+ * Vite decides to forward: each rule's `bypass` is wrapped, so for a guest's request a local answer the project's own
+ * bypass gives still stands, and anything that would go on to another server is answered as not found. Done in
+ * configureServer, which Vite runs before it reads the rules to install its proxy, so a URL rewritten on the way by
+ * other middleware is judged as Vite forwards it.
  */
 export function liveGuestPlugin() {
   return {
     name: 'siteorigin-live-guest',
-    configureServer(server: { config: { server: { proxy?: Record<string, unknown> } }; middlewares: { use: (fn: (req: GuestReq, res: GuestRes, next: () => void) => void) => unknown } }) {
-      const contexts = Object.entries(server.config.server.proxy ?? {})
-        .filter(([, options]) => options)
-        .map(([context]) => context);
-      if (!contexts.length) return;
-      server.middlewares.use((req, res, next) => {
-        if (req.headers[LIVE_GUEST_HEADER] === undefined || !proxiedByVite(contexts, req.url ?? '/')) return next();
-        res.statusCode = 404;
-        res.setHeader('content-type', 'text/plain; charset=utf-8');
-        res.end('Not found.');
-      });
+    configureServer(server: { config: { server: { proxy?: Record<string, string | ProxyRule | null | undefined> } } }) {
+      const rules = server.config.server.proxy;
+      if (!rules) return;
+      for (const [context, rule] of Object.entries(rules)) {
+        if (!rule) continue;
+        // A rule given as a target is read by Vite as this.
+        const options: ProxyRule = typeof rule === 'string' ? { target: rule, changeOrigin: true } : rule;
+        const own = options.bypass;
+        rules[context] = {
+          ...options,
+          async bypass(req: GuestReq, res: unknown, opts: unknown) {
+            const local = own ? await own(req, res, opts) : undefined;
+            if (req.headers[LIVE_GUEST_HEADER] === undefined) return local;
+            // The project's own code answered it, or names a local address to serve: that is the site.
+            if (typeof local === 'string' || (res as { writableEnded?: boolean } | undefined)?.writableEnded) return local;
+            return false;
+          }
+        };
+      }
     }
   };
 }

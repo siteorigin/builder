@@ -208,6 +208,16 @@ describe('running the room', () => {
     expect(socket.sent.filter((f) => f.type === 'room:set-expiry').map((f) => (f as { expiresAt: number }).expiresAt)).toEqual([state.expiresAt + 2 * 3600_000, state.expiresAt + 3 * 3600_000]);
   });
 
+  it('still counts an extension that is unconfirmed when another change to the room is confirmed', async () => {
+    const h = host();
+    const { socket, run, state } = await opened(h);
+    expect(h.manager.setLocked(run, true)).toEqual({ ok: true });
+    expect(h.manager.extend(run, state.expiresAt + 2 * 3600_000)).toEqual({ ok: true });
+    // The lock's confirmation arrives first, with the old end.
+    socket.receive({ type: 'room:state', startedAt: state.startedAt, expiresAt: state.expiresAt, locked: true, now: Date.now() });
+    expect(h.manager.extend(run, state.expiresAt + 3600_000)).toMatchObject({ ok: false });
+  });
+
   it('gives up a connection whose outgoing backlog has stopped moving, and takes the room back on another', async () => {
     const h = host();
     const { socket, run, roomId, publicKey } = await opened(h);
@@ -414,16 +424,37 @@ describe('ending', () => {
     expect(h.manager.state).toEqual({ phase: 'idle', lastError: null });
   });
 
-  it('ends the room on a new connection when the one it held is already closing', async () => {
+  it('waits for a connection that is already closing to say how, and ends the room on another only if it must', async () => {
+    for (const [code, reclaims] of [[1006, true], [LIVE_CLOSE_CODES.ENDED, false]] as const) {
+      const h = host();
+      const { socket, roomId, run } = await opened(h);
+      // Closing, its close event not yet delivered.
+      socket.readyState = 2;
+      h.timings.stopMs = 300;
+      const stopping = h.manager.stop(run);
+      expect(sentOf(socket, 'room:end')).toBeUndefined();
+      await wait(30);
+      expect(h.sockets.length).toBe(1);
+      socket.drop(code);
+      if (reclaims) expect(new URL((await until(() => h.sockets[1], 'a reconnect to end the room')).url).pathname).toBe(`/s/${roomId}/ws`);
+      expect(await stopping).toEqual({ ok: true });
+      expect(h.sockets.length).toBe(reclaims ? 2 : 1);
+    }
+  });
+
+  it('keeps trying to take the room back to end it when a connection cannot even be made, until the deadline', async () => {
     const h = host();
-    const { socket, roomId, run } = await opened(h);
-    // Closing, its close event not yet delivered.
-    socket.readyState = 2;
-    h.timings.stopMs = 300;
-    const stopping = h.manager.stop(run);
-    expect(sentOf(socket, 'room:end')).toBeUndefined();
-    const again = await until(() => h.sockets[1], 'a reconnect to end the room');
-    expect(new URL(again.url).pathname).toBe(`/s/${roomId}/ws`);
-    expect(await stopping).toEqual({ ok: true });
+    const { socket, run } = await opened(h);
+    socket.drop(1006);
+    let tries = 0;
+    h.manager.createSocket = () => {
+      tries++;
+      throw new Error('offline');
+    };
+    h.timings.stopMs = 200;
+    const at = Date.now();
+    expect(await h.manager.stop(run)).toEqual({ ok: true });
+    expect(tries).toBeGreaterThan(1);
+    expect(Date.now() - at).toBeLessThan(1000);
   });
 });

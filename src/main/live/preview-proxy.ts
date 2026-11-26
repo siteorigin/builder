@@ -60,6 +60,8 @@ export const UPSTREAM_IDLE_MS = 60_000;
  * gives up on a response that sends nothing for a while (its idle deadline).
  */
 export const FLUSH_MS = 50;
+/** How long an answered bodyless response may take to end on its own connection before that connection is closed. */
+export const BODYLESS_END_MS = 5_000;
 const DRAIN_POLL_MS = 20;
 
 /** Statuses that never carry a body. */
@@ -258,6 +260,9 @@ export class PreviewProxy {
       if (!this.send(pending, { type: 'preview:response-end', requestId, totalBytes: 0 })) return;
       pending.answered = true;
       res.on('end', () => this.finish(pending, true));
+      // A body where none belongs (a streamed 205), or a message that never ends, gives its connection up.
+      res.on('data', () => this.finish(pending));
+      pending.flush = setTimeout(() => this.finish(pending), BODYLESS_END_MS);
       res.resume();
       return;
     }

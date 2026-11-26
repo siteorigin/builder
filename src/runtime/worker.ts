@@ -173,7 +173,7 @@ port.on('message', async (ev) => {
       const send = (batch = 0) => {
         server?.ws.send({ type: 'custom', event: 'siteorigin:revision', data: { revision: m.revision, batch } });
         // Vite has the revision's files now: what a page loads from here is that revision (a live session's guests reload).
-        post({ type: 'published', revision: m.revision });
+        if (server) post({ type: 'published', revision: m.revision });
       };
       if (gate) gate.revision(send);
       else send();
