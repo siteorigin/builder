@@ -45,6 +45,12 @@ const MAX_ROOM_SOCKETS = 256;
  * sending faster than the host, or another guest, takes it in.
  */
 const MAX_QUEUED_BYTES = 8 * 1024 * 1024;
+/**
+ * How many presence updates a guest may send in a burst, and how many a second after that. Presence only ever says
+ * where someone is now, so what comes faster is dropped: the next update says it again.
+ */
+const PRESENCE_BURST = 20;
+const PRESENCE_PER_SECOND = 10;
 const OPEN = 1;
 
 /** Why a whole session ends, and what each kind of socket is told. */
@@ -74,6 +80,8 @@ export class SessionRoom extends DurableObject<Env> {
   private room: RoomSnapshot | null;
   private readonly config: RelayConfig;
   private readonly tunnel: PreviewTunnel;
+  /** Each guest's presence budget (PRESENCE_BURST), and when it was last counted, kept while it holds its place. */
+  private readonly presenceBudget = new Map<string, { tokens: number; at: number }>();
   /** The alarm as last set, or undefined when unknown (after waking, once it has fired, or after a failed write). */
   private alarmAt: number | null | undefined = undefined;
   /** The latest write of the alarm, so the alarm handler can wait for it and fail (to be retried) if it failed. */
@@ -392,13 +400,21 @@ export class SessionRoom extends DurableObject<Env> {
       case 'rpc:response': {
         const { guestId, ...reply } = frame;
         const target = this.admittedSocket(guestId);
-        if (target) this.send(target, 'relay-to-guest', reply);
+        if (!target) return;
+        // A guest too far behind to take a whole project is told so instead, in a few bytes. Any other answer is small and
+        // goes as it is: an edit's says it was saved.
+        if (backedUp(target) && reply.ok && reply.method === 'project.snapshot')
+          return void this.send(target, 'relay-to-guest', { type: 'rpc:response', requestId: reply.requestId, method: reply.method, ok: false, error: { code: 'UNAVAILABLE', message: 'Your connection is too far behind. Try again shortly.', recoverable: true } });
+        this.send(target, 'relay-to-guest', reply);
         return;
       }
       case 'rpc:event': {
         const { guestId, ...event } = frame;
         const targets = guestId === undefined ? this.admittedSockets() : [this.admittedSocket(guestId)].filter((t): t is WebSocket => t !== null);
-        for (const target of targets) this.send(target, 'relay-to-guest', event);
+        // A guest too far behind to take another whole project is told, in a few bytes, that it missed one, and asks
+        // for the project once it has caught up: its queue never grows by a snapshot per change.
+        const missed = { ...event, payload: { kind: 'missed' } };
+        for (const target of targets) this.send(target, 'relay-to-guest', event.event === 'project:changed' && backedUp(target) ? missed : event);
         return;
       }
       case 'presence:update': {
@@ -474,6 +490,9 @@ export class SessionRoom extends DurableObject<Env> {
         return this.refuse(ws, 'relay-to-guest', 'WRONG_STATE', 'You have already joined.', false);
       case 'presence:update': {
         if (guest.status !== 'admitted') return this.refuse(ws, 'relay-to-guest', 'FORBIDDEN', 'The host has not let you in yet.', false);
+        // Viewers follow the session; collaborators show the others where they are and what they have selected (#765).
+        if (guest.role !== 'collaborator') return this.refuse(ws, 'relay-to-guest', 'FORBIDDEN', 'Only collaborators share where they are.', false);
+        if (!this.spendPresence(guest.guestId)) return;
         const changed = { type: 'presence:changed', participant: { kind: 'guest', guestId: guest.guestId }, presence: frame.presence } as const;
         const host = this.hostSocket();
         if (host && !backedUp(host)) this.send(host, 'relay-to-host', changed);
@@ -492,6 +511,18 @@ export class SessionRoom extends DurableObject<Env> {
         return;
       }
     }
+  }
+
+  /** Take one of a guest's presence budget, refilled over time; false when none is left. */
+  private spendPresence(guestId: string): boolean {
+    const now = Date.now();
+    const budget = this.presenceBudget.get(guestId) ?? { tokens: PRESENCE_BURST, at: now };
+    budget.tokens = Math.min(PRESENCE_BURST, budget.tokens + ((now - budget.at) * PRESENCE_PER_SECOND) / 1000);
+    budget.at = now;
+    this.presenceBudget.set(guestId, budget);
+    if (budget.tokens < 1) return false;
+    budget.tokens--;
+    return true;
   }
 
   // ---------------------------------------------------------------------------
@@ -684,6 +715,7 @@ export class SessionRoom extends DurableObject<Env> {
   private removeGuest(guest: GuestRecord, status: DistributiveOmit<GuestStatus, 'type'> | null, reason: string): void {
     const room = this.room!;
     room.guests = room.guests.filter((g) => g !== guest);
+    this.presenceBudget.delete(guest.guestId);
     this.tunnel.abortGuest(guest.guestId);
     const ws = guest.connectionId ? this.socket(guest.connectionId) : null;
     if (!ws) return;

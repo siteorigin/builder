@@ -138,6 +138,8 @@ export interface HistoryInfo {
     runId?: string;
     /** The AI run this step took back on its own, keeping the edits made after it (issue 164). */
     revertsRunId?: string;
+    /** The live-session guest who made this step, by the name the host let them in under (#765). */
+    guestName?: string;
   }>;
   /** AI runs whose step History has let go, and whether it was applied or undone when it went (issue 276). */
   droppedRuns?: Record<string, 'applied' | 'undone'>;
@@ -975,6 +977,14 @@ export type LiveHostState =
   | (LiveRun & { phase: 'starting' | 'stopping' })
   | (LiveRun & LiveRoom & { phase: 'active' | 'reconnecting'; previewReady: boolean; lastError: string | null });
 
+/**
+ * Where the live session's collaborators are in the project, as each last said, by guest ID (`live:presence`): sent
+ * whenever one moves, and when one leaves or stops being a collaborator.
+ */
+export interface LivePresence extends LiveRun {
+  guests: Record<string, Presence>;
+}
+
 /** A guest asking to join, sent once when it starts waiting (`live:request`). */
 export interface LiveJoinRequest extends LiveRun {
   roomId: string;
@@ -1306,6 +1316,8 @@ export interface BuilderApi {
   on(channel: 'live:state', cb: (state: LiveHostState) => void): () => void;
   /** A guest started waiting to join the live session. */
   on(channel: 'live:request', cb: (request: LiveJoinRequest) => void): () => void;
+  /** A collaborator in the live session moved to another page or selection, or left. */
+  on(channel: 'live:presence', cb: (presence: LivePresence) => void): () => void;
   inspectResult(requestId: string, report: unknown): void;
   componentPreviewResult(requestId: string, results: ComponentPreviewResult[]): void;
   /** The screen shown now listens for File menu commands (menu:command): one waiting for the editor is sent. */

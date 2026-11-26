@@ -210,7 +210,7 @@ describe('admitted guests', () => {
 
   it('delivers the host’s events, presence and reloads to admitted guests only', async () => {
     const room = await openRoom(relay);
-    const ann = await admittedGuest(relay, room, 'Ann');
+    const ann = await admittedGuest(relay, room, 'Ann', 'collaborator');
     const bea = await admittedGuest(relay, room, 'Bea');
     const waiting = await joinGuest(relay, room.roomId, 'Cy');
 
@@ -235,6 +235,30 @@ describe('admitted guests', () => {
     expect(ann.guest.has('rpc:event')).toBe(false);
     expect(ann.guest.has('presence:changed')).toBe(false);
     for (const type of ['rpc:event', 'presence:changed', 'preview:reload', 'room:roster'] as const) expect(waiting.guest.has(type)).toBe(false);
+    room.host.close();
+  });
+
+  it('passes on presence from collaborators only, and no faster than a few updates a second', async () => {
+    const room = await openRoom(relay);
+    const ann = await admittedGuest(relay, room, 'Ann', 'collaborator');
+    const bea = await admittedGuest(relay, room, 'Bea');
+    room.host.discard('presence:changed');
+    // A viewer follows the session; where it is stays its own.
+    bea.guest.send('guest-to-relay', { type: 'presence:update', presence: { pageId: 'about', viewportWidth: 390, selection: null, previewPath: null } });
+    expect(await bea.guest.next('protocol:error')).toMatchObject({ code: 'FORBIDDEN' });
+    await wait(100);
+    expect(room.host.has('presence:changed')).toBe(false);
+    // A burst past the budget: the excess is dropped, and nothing is refused.
+    for (let i = 0; i < 60; i++) ann.guest.send('guest-to-relay', { type: 'presence:update', presence: { pageId: `p${i}`, viewportWidth: 1280, selection: null, previewPath: null } });
+    await wait(300);
+    let passed = 0;
+    while (room.host.has('presence:changed')) {
+      await room.host.next('presence:changed');
+      passed++;
+    }
+    expect(passed).toBeGreaterThanOrEqual(20);
+    expect(passed).toBeLessThan(40);
+    expect(ann.guest.has('protocol:error')).toBe(false);
     room.host.close();
   });
 

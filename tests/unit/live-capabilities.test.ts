@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { OPERATION_SCHEMAS, validateOperation } from '@shared/ops';
 import { FORM_DESTINATIONS } from '@catalogue/foundation/form';
-import { canCall, canEditOperation, checkEditBatch, checkRpcRequest, COLLABORATOR_METHODS, COLLABORATOR_OPERATIONS, HOST_ONLY_PROPS, LIVE_BATCH_MAX_OPERATIONS, VIEWER_METHODS } from '@shared/live/capabilities';
+import { canCall, canEditOperation, checkEditBatch, checkRpcRequest, COLLABORATOR_METHODS, COLLABORATOR_OPERATIONS, HOST_ONLY_PROPS, LIVE_BATCH_MAX_COPIES, LIVE_BATCH_MAX_OPERATIONS, VIEWER_METHODS } from '@shared/live/capabilities';
 import { GUEST_ROLES } from '@shared/live/limits';
 
 const page = { kind: 'page', id: 'pg_home' } as const;
@@ -210,6 +210,18 @@ describe('checking a batch', () => {
         ok: false,
         error: { code: 'PERMISSION_DENIED', message: expect.stringContaining(Object.keys(field)[0]), operationIndex: 0 }
       });
+  });
+
+  it('holds a batch to a few copies, which could otherwise each double the page', () => {
+    const copy = { type: 'node.duplicate', owner: page, nodeId: 'n_section' };
+    expect(checkEditBatch('collaborator', { operations: Array(LIVE_BATCH_MAX_COPIES).fill(copy) })).toMatchObject({ ok: true });
+    expect(checkEditBatch('collaborator', { operations: [...Array(LIVE_BATCH_MAX_COPIES).fill(copy), { type: 'page.duplicate', pageId: 'pg_home' }] })).toMatchObject({ ok: false, error: { code: 'INVALID_ARGUMENT', operationIndex: LIVE_BATCH_MAX_COPIES } });
+  });
+
+  it('lets a collaborator add a page, but not date it or keep it out of News', () => {
+    expect(checkEditBatch('collaborator', { operations: [{ type: 'page.create', title: 'Workshops', route: '/workshops/', starter: 'services', addToNavigation: true, byline: 'By Ana Ruiz', excerpt: 'Spring dates' }] })).toMatchObject({ ok: true });
+    for (const field of [{ articleDate: '2026-01-01' }, { newsHidden: true }, { newsHidden: false }, { starter: 'article' }])
+      expect(checkEditBatch('collaborator', { operations: [{ type: 'page.create', title: 'News', ...field }] }), Object.keys(field)[0]).toMatchObject({ ok: false, error: { code: 'PERMISSION_DENIED', operationIndex: 0 } });
   });
 
   it('refuses any edit from a viewer', () => {

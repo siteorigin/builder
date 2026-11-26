@@ -6,12 +6,14 @@
 import { EventEmitter } from 'node:events';
 import { createServer, type Server } from 'node:http';
 import type { AddressInfo } from 'node:net';
-import { mkdirSync, mkdtempSync, realpathSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
-import { tmpdir } from 'node:os';
+import { mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
+import { homedir, tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { LiveHostState, LiveJoinRequest, LiveRun } from '../../src/shared/api';
-import { joinGuest, previewOrigin, randomAddress, redeemTicket, startRelay, wait, type Relay } from './relay-harness';
+import type { GuestRole } from '../../src/shared/live/limits';
+import type { LiveProjectChanged, LiveProjectSnapshot } from '../../src/shared/live/snapshot';
+import { joinGuest, previewOrigin, randomAddress, redeemTicket, startRelay, wait, type JoinedGuest, type Relay } from './relay-harness';
 
 /**
  * A stand-in for Electron's utility process that reports the test's preview server as ready, holds a save's updates
@@ -127,7 +129,7 @@ async function until<T>(check: () => T | undefined | null | false, what: string,
 }
 
 /** Open `dir` with its preview running, start a live session in it, and let one guest in with a preview cookie. */
-async function hosting(c: InstanceType<typeof Controller>, sent: Array<[string, unknown]>, dir: string) {
+async function hosting(c: InstanceType<typeof Controller>, sent: Array<[string, unknown]>, dir: string, role: GuestRole = 'viewer') {
   expect((await c.trustAndOpen(dir)).ok).toBe(true);
   await until(() => c.snapshot()?.runtime.state === 'ready', 'the preview');
   const opening = c.snapshot()!.workspaceKey;
@@ -141,11 +143,37 @@ async function hosting(c: InstanceType<typeof Controller>, sent: Array<[string, 
   const guest = await joinGuest(relay, state.roomId, 'Ann');
   // The editor hears the guest ask, then lets it in.
   await until(() => sent.find(([ch, p]) => ch === 'live:request' && (p as LiveJoinRequest).guestId === guest.guestId), 'the join request');
-  expect(c.live.admit(run, guest.guestId, 'viewer')).toEqual({ ok: true });
+  expect(c.live.admit(run, guest.guestId, role)).toEqual({ ok: true });
   const status = await guest.guest.next('guest:status');
   if (status.status !== 'admitted') throw new Error(`Expected to be admitted, got ${status.status}`);
   const cookie = (await redeemTicket(relay, state.roomId, status.previewTicket)).cookie!;
+  // Until the host's roster shows the guest let in, the host answers none of its calls.
+  await until(() => (c.live.state as { participants?: Array<{ guestId: string; status: string }> }).participants?.some((p) => p.guestId === guest.guestId && p.status === 'admitted'), 'the guest admitted');
   return { state, run, guest, cookie };
+}
+
+let calls = 0;
+/** A guest's editor call over the relay, and the host's answer. */
+async function rpc(guest: JoinedGuest, method: string, args: unknown[] = []) {
+  const requestId = `q${++calls}`;
+  guest.guest.send('guest-to-relay', { type: 'rpc:request', requestId, method, args });
+  for (;;) {
+    const answer = await guest.guest.next('rpc:response');
+    if (answer.requestId !== requestId) continue;
+    expect(answer.method).toBe(method);
+    return answer;
+  }
+}
+
+/** The next project:changed a guest is sent at `revision` or later. */
+async function changedTo(guest: JoinedGuest, revision: number): Promise<LiveProjectChanged> {
+  for (;;) {
+    const event = await guest.guest.next('rpc:event');
+    if (event.event !== 'project:changed') continue;
+    const payload = event.payload as LiveProjectChanged;
+    const at = payload.kind === 'snapshot' ? payload.snapshot.revision : payload.kind === 'too-large' ? payload.revision : -1;
+    if (at >= revision) return payload;
+  }
 }
 
 describe('a live session hosted by the open project', () => {
@@ -205,5 +233,123 @@ describe('a live session hosted by the open project', () => {
     expect(guest.guest.has('guest:status')).toBe(false);
     expect(c.live.setLocked(run, true)).toEqual({ ok: true });
     await until(() => (c.live.state as { locked?: boolean }).locked, 'the room locked');
+  });
+
+  it('lets a collaborator read the project and edit it through the host’s own pipeline, as a step of its own', async () => {
+    const dir = await makeProject('acme');
+    const { c, sent } = controller();
+    const { state, run, guest } = await hosting(c, sent, dir, 'collaborator');
+    // A second guest, a viewer, follows along.
+    const bob = await joinGuest(relay, state.roomId, 'Bob');
+    await until(() => sent.find(([ch, p]) => ch === 'live:request' && (p as LiveJoinRequest).guestId === bob.guestId), "Bob's join request");
+    expect(c.live.admit(run, bob.guestId, 'viewer')).toEqual({ ok: true });
+    await bob.guest.next('guest:status');
+
+    // The host's own notes name its folders.
+    const home = c.session!.state.site.homePageId;
+    const noted = await c.apply({ operations: [{ type: 'page.update', pageId: home, description: `Kept in ${dir}` }] });
+    expect(noted.ok, noted.error?.message).toBe(true);
+    const read = await rpc(guest, 'project.snapshot');
+    if (!read.ok) throw new Error(read.error.message);
+    const shared = read.result as LiveProjectSnapshot;
+    expect(shared.state.pages[home].seo.description).toBe('Kept in …');
+    expect(shared).toMatchObject({ revision: c.session!.revision, readOnly: false, aiBusy: false, runtime: { state: 'ready' } });
+    expect(shared.state.pages[home].title).toBe(c.session!.state.pages[home].title);
+    // Nothing of the host's computer or editor goes over the relay.
+    const text = JSON.stringify(shared);
+    for (const leak of [dir, homedir(), 'workspaceKey', 'localState', 'recentExports', '127.0.0.1']) expect(text, leak).not.toContain(leak);
+
+    const before = c.session!.revision;
+    const worker = workers.at(-1)!;
+    // Made against an older revision: refused, and nothing written.
+    expect(await rpc(guest, 'project.apply', [{ operations: [{ type: 'page.update', pageId: home, title: 'Stale' }], expectedRevision: before - 1 }])).toMatchObject({ ok: false, error: { code: 'STALE_REVISION' } });
+    expect(c.session!.revision).toBe(before);
+    const edit = await rpc(guest, 'project.apply', [{ operations: [{ type: 'page.update', pageId: home, title: 'Fresh bread daily' }], expectedRevision: before, label: 'Rename page' }]);
+    expect(edit).toMatchObject({ ok: true, result: { revision: before + 1 } });
+    // Saved on the host, generated for its preview, and in its History as Ann's.
+    expect(c.session!.state.pages[home].title).toBe('Fresh bread daily');
+    expect(readFileSync(join(dir, `siteorigin/pages/${home}.json`), 'utf8')).toContain('Fresh bread daily');
+    await until(() => worker.published.includes(before + 1), 'the preview to have the change');
+    const step = c.snapshot()!.history.entries.at(-1)!;
+    expect(step).toMatchObject({ label: 'Rename page (Ann)', source: 'user', guestName: 'Ann', applied: true });
+    // The host's editor and every guest hear of it.
+    expect(sent.some(([ch, p]) => ch === 'project:changed' && (p as { revision: number }).revision === before + 1)).toBe(true);
+    for (const g of [guest, bob]) expect(await changedTo(g, before + 1)).toMatchObject({ kind: 'snapshot', snapshot: { revision: before + 1 } });
+    // Each edit is a step of its own, which the host can undo.
+    expect((await rpc(guest, 'project.apply', [{ operations: [{ type: 'page.update', pageId: home, title: 'Fresh bread' }] }])).ok).toBe(true);
+    expect(c.snapshot()!.history.entries.slice(-2).map((e) => e.label)).toEqual(['Rename page (Ann)', 'Edit (Ann)']);
+    const last = c.snapshot()!.history.entries.at(-1)!;
+    expect((await c.undoEntry(last.id, c.snapshot()!.workspaceKey)).ok).toBe(true);
+    expect(c.session!.state.pages[home].title).toBe('Fresh bread daily');
+    // What a guest is told of what it made is the IDs it can edit next, and nothing else.
+    const made = await rpc(guest, 'project.apply', [{ operations: [{ type: 'page.create', title: 'Workshops' }] }]);
+    if (!made.ok) throw new Error(made.error.message);
+    const [created] = (made.result as { results: Array<Record<string, unknown>> }).results;
+    expect(Object.keys(created).length).toBeGreaterThan(0);
+    for (const [key, value] of Object.entries(created)) expect(`${key}=${typeof value}`).toMatch(/Ids?=(string|object)$/);
+    expect(c.session!.state.pages[created.pageId as string].title).toBe('Workshops');
+    // A viewer edits nothing.
+    const viewer = await rpc(bob, 'project.apply', [{ operations: [{ type: 'page.update', pageId: home, title: 'Bob was here' }] }]);
+    expect(viewer).toMatchObject({ ok: false, error: { code: 'PERMISSION_DENIED' } });
+    expect(c.session!.state.pages[home].title).toBe('Fresh bread daily');
+  });
+
+  it('refuses code, a viewer’s edits, and edits while the AI works, changing nothing', async () => {
+    const dir = await makeProject('acme');
+    const { c, sent } = controller();
+    const { run, guest } = await hosting(c, sent, dir, 'collaborator');
+    const home = c.session!.state.site.homePageId;
+    const revision = c.session!.revision;
+    const code = await rpc(guest, 'project.apply', [{ operations: [{ type: 'component.createCode', name: 'Widget', source: '<p>hi</p>' }] }]);
+    expect(code).toMatchObject({ ok: false, error: { code: 'PERMISSION_DENIED', operationIndex: 0 } });
+    // The host's AI owns the project while it runs.
+    c.aiBusy = () => true;
+    expect(await rpc(guest, 'project.apply', [{ operations: [{ type: 'page.update', pageId: home, title: 'Busy' }] }])).toMatchObject({ ok: false, error: { code: 'BUSY', recoverable: true } });
+    c.aiBusy = () => false;
+    // Made a viewer: refused at once, and nothing changed.
+    expect(c.live.setRole(run, guest.guestId, 'viewer')).toEqual({ ok: true });
+    expect(await rpc(guest, 'project.apply', [{ operations: [{ type: 'page.update', pageId: home, title: 'Demoted' }] }])).toMatchObject({ ok: false, error: { code: 'PERMISSION_DENIED' } });
+    expect(c.session!.revision).toBe(revision);
+    expect(c.snapshot()!.saveFailure ?? null).toBeNull();
+    // Removed: the guest is told, and nothing of it is answered again.
+    expect(c.live.kick(run, guest.guestId)).toEqual({ ok: true });
+    for (;;) {
+      const status = await guest.guest.next('guest:status');
+      if (status.status === 'kicked') break;
+    }
+  });
+
+  it('never lets a collaborator change where a contact form sends, however a design passes it on', async () => {
+    const dir = await makeProject('acme');
+    const { c, sent } = controller();
+    const { guest } = await hosting(c, sent, dir, 'collaborator');
+    const owner = { kind: 'page' as const, id: c.session!.state.site.homePageId };
+    const host = async (operations: unknown[]) => {
+      const r = await c.apply({ operations } as never);
+      if (!r.ok) throw new Error(r.error?.message);
+      return r.results!;
+    };
+    // The host's own "Contact band", passing its recipient on as the form's endpoint, placed for Sales.
+    const section = (await host([{ type: 'node.insert', owner, parentId: null, componentId: 'layout.section' }]))[0].nodeId as string;
+    await host([{ type: 'node.insert', owner, parentId: section, slot: 'content', componentId: 'contact.form', props: { provider: 'endpoint', endpoint: 'https://forms.example.com/sales' } }]);
+    const band = (await host([{ type: 'component.createFromNode', owner, nodeId: section, name: 'Contact band' }]))[0].definitionId as string;
+    const inner = Object.values(c.session!.state.components[band].tree!.nodes).find((n) => n.kind === 'instance' && n.definitionId === 'foundation.contact.form')!.id;
+    await host([
+      { type: 'component.setPropSchema', definitionId: band, prop: 'recipient', schema: { type: 'string', label: 'Recipient', default: '' } },
+      { type: 'node.setBinding', owner: { kind: 'component', id: band }, nodeId: inner, field: 'prop', prop: 'endpoint', binding: { $prop: 'recipient' } }
+    ]);
+    const sales = (await host([{ type: 'node.insert', owner, parentId: null, definitionId: band, props: { recipient: 'https://forms.example.com/sales' } }]))[0].nodeId as string;
+    const revision = c.session!.revision;
+    const evil = 'https://evil.example/f';
+    for (const operations of [
+      [{ type: 'instance.setProp', owner, nodeId: sales, prop: 'recipient', value: evil }],
+      [{ type: 'node.insert', owner, parentId: null, definitionId: band, newNodeId: 'n_guest01' }, { type: 'instance.setProp', owner, nodeId: 'n_guest01', prop: 'recipient', value: evil }]
+    ])
+      expect(await rpc(guest, 'project.apply', [{ operations }])).toMatchObject({ ok: false, error: { code: 'PERMISSION_DENIED', message: expect.stringContaining('Contact band') } });
+    expect(c.session!.revision).toBe(revision);
+    expect(JSON.stringify(c.session!.state)).not.toContain(evil);
+    expect(c.snapshot()!.saveFailure ?? null).toBeNull();
+    // Its other edits are ordinary.
+    expect((await rpc(guest, 'project.apply', [{ operations: [{ type: 'node.duplicate', owner, nodeId: sales }] }])).ok).toBe(true);
   });
 });

@@ -19,8 +19,9 @@ export const ROOM_ID_LENGTH = 24;
 export const ROOM_ID_RE = /^[23456789abcdefghijkmnpqrstuvwxyz]{24}$/;
 
 /**
- * The two roles a guest can hold. A viewer watches the live preview, follows pages and shows presence; a collaborator
- * can also make visual edits. Nothing the host alone may do is ever granted to either.
+ * The two roles a guest can hold. A viewer watches the live preview, follows pages and sees where the others are; a
+ * collaborator can also make visual edits and shows the others where it is. Nothing the host alone may do is ever
+ * granted to either.
  */
 export const GUEST_ROLES = ['viewer', 'collaborator'] as const;
 export type GuestRole = (typeof GUEST_ROLES)[number];

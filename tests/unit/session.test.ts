@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it } from 'vitest';
-import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import type { InstanceNode, TextNode } from '@shared/types';
@@ -843,5 +843,37 @@ describe('undoing one history entry', () => {
     const r = await s.apply({ operations: [{ type: 'site.update', name: 'Renamed' }] }, { label: 'Rename site' });
     await s.beginRun('run_entry');
     expect(await s.undoEntry(r.entryId!)).toMatchObject({ ok: false, error: { code: 'BUSY' } });
+  });
+
+  it('turns a guarded change away whole as its journal is about to take its place, with no failed save (#765)', async () => {
+    const { dir, s } = await make();
+    const home = s.state.site.homePageId;
+    const page = join(dir, `siteorigin/pages/${home}.json`);
+    const before = { text: readFileSync(page, 'utf8'), revision: s.revision, history: JSON.stringify(s.historyInfo()) };
+    const failed: number[] = [];
+    s.on('save-failed', () => failed.push(s.revision));
+    // Allowed as the change's turn comes and as it is checked; withdrawn only at the journal, after its blobs are written.
+    const asked: Array<'turn' | 'state'> = [];
+    const guard = (next: unknown) => {
+      asked.push(next ? 'state' : 'turn');
+      // The second look at the project as the change leaves it is the one as its journal is about to take its place.
+      return asked.filter((a) => a === 'state').length >= 2 ? { code: 'CANCELLED' as const, message: 'Access changed.', recoverable: false } : null;
+    };
+    const r = await s.apply({ operations: [{ type: 'page.update', pageId: home, title: 'Guarded' }] }, { label: 'Rename (Ann)', guestName: 'Ann', guard });
+    expect(asked).toEqual(['turn', 'state', 'state']);
+    expect(r).toMatchObject({ ok: false, revision: before.revision, error: { code: 'CANCELLED', message: 'Access changed.' } });
+    expect(s.state.pages[home].title).not.toBe('Guarded');
+    expect(readFileSync(page, 'utf8')).toBe(before.text);
+    expect(s.revision).toBe(before.revision);
+    expect(JSON.stringify(s.historyInfo())).toBe(before.history);
+    expect(existsSync(join(dir, '.siteorigin', 'journal.json'))).toBe(false);
+    expect(readdirSync(join(dir, '.siteorigin')).filter((f) => f.endsWith('.tmp'))).toEqual([]);
+    expect(s.saveFailure).toBeNull();
+    expect(failed).toEqual([]);
+    // The session carries on: the next change saves, as a step that names its guest.
+    const ok = await s.apply({ operations: [{ type: 'page.update', pageId: home, title: 'Allowed' }] }, { label: 'Rename (Ann)', guestName: 'Ann', guard: () => null });
+    expect(ok.ok).toBe(true);
+    expect(s.historyInfo().entries.at(-1)).toMatchObject({ label: 'Rename (Ann)', guestName: 'Ann', source: 'user' });
+    await s.close();
   });
 });

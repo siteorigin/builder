@@ -78,8 +78,8 @@ export const GUEST_OWNER_KINDS = ['page', 'shell'] as const;
 /**
  * Component properties only the host sets, wherever they are placed: the contact form settings that send the site's
  * messages to someone's own account (the form's FORM_DESTINATIONS). This goes by the property's name only. A project
- * component that passes one of its own properties into a nested form's settings needs the host's check against that
- * definition (#765), which this contract cannot see.
+ * component that passes one of its own properties into a nested form's settings is caught by the host's check against
+ * the project as the batch would leave it (engine/guest-edits.ts), which this contract cannot see.
  */
 export const HOST_ONLY_PROPS = ['endpoint', 'accessKey'] as const;
 
@@ -109,6 +109,12 @@ function beyondGuestGrant(op: EditOperation): string | null {
     const fields = Object.keys(op).filter((k) => k !== 'type' && k !== 'pageId' && !(COLLABORATOR_PAGE_FIELDS as readonly string[]).includes(k));
     if (fields.length) return `Only the host can change a page’s ${fields.join(', ')}.`;
   }
+  // A new page is held to the same: dating it (an article starter is dated today) or keeping it out of News is the host's.
+  if (op.type === 'page.create') {
+    if (op.starter === 'article') return 'Only the host can start an article.';
+    const fields = (['articleDate', 'newsHidden'] as const).filter((k) => op[k] !== undefined);
+    if (fields.length) return `Only the host can set a new page’s ${fields.join(', ')}.`;
+  }
   return null;
 }
 
@@ -119,6 +125,12 @@ export function canEditOperation(role: GuestRole, type: string): boolean {
 
 export const LIVE_BATCH_MAX_OPERATIONS = 256;
 export const LIVE_BATCH_LABEL_MAX = 120;
+/**
+ * Copies a guest's batch may make. Each copy can double what the next one copies (a section copied into itself), so
+ * a batch of them could make more than the host's memory holds before anything checks the result.
+ */
+export const LIVE_BATCH_MAX_COPIES = 4;
+const COPYING: readonly string[] = ['node.copy', 'node.duplicate', 'page.duplicate'];
 
 /**
  * A guest's batch of edits, as it travels: operations and the revision they were made against. The host attaches
@@ -177,6 +189,7 @@ export function checkEditBatch(role: GuestRole, input: unknown): CapabilityResul
     if (!checked.ok) return invalid(checked.message, index);
     const beyond = beyondGuestGrant(checked.op);
     if (beyond) return denied(beyond, index);
+    if (COPYING.includes(checked.op.type) && operations.filter((o) => COPYING.includes(o.type)).length >= LIVE_BATCH_MAX_COPIES) return invalid(`A batch may copy at most ${LIVE_BATCH_MAX_COPIES} things.`, index);
     operations.push(checked.op);
   }
   const { expectedRevision, label } = batch.data;
