@@ -117,7 +117,7 @@ The Daintree assistant's `/work-batch` skill (`.daintree/assistant/.claude/skill
 - **Generated output is deterministic and portable.** The same documents must generate the same bytes. Editor instrumentation never reaches project source or exports, and an exported project must build with plain `npm ci && npm run build`.
 - **API keys stay in `api-keys.json`.** Keys are kept in the app's data folder, written with mode `0600` (user-only) on macOS and Linux; on Windows the data folder's permissions apply. Don't add OS keychain or `safeStorage` use, and never put a key in a project, a log, a tool result or an export.
 - **The AI gets typed tools only.** No shell, filesystem or network access, and no image bytes are sent to a model.
-- **Plain language in the UI.** The editor is for people who make brochure websites, not developers. Code features stay behind Developer mode.
+- **Plain language in the UI.** The editor is for people who make websites (business sites, portfolios, blogs), not developers. Code features stay behind Developer mode.
 - **Accessibility.** Every control is reachable and operable by keyboard, has an accessible name, and meets WCAG 2.2 AA contrast in light and dark themes.
 - **No AI attribution** in commits, pull requests or docs.
 
