@@ -1141,7 +1141,7 @@ step('#817, #884: a site exports with nothing to fix only once the dialog lists 
       window.builder.project.apply(
         {
           operations: [
-            { type: 'site.update', socialImage: image, identity: { kind: 'Organization', name: 'Quiet Shelf' } },
+            { type: 'site.update', socialImage: image, identity: { kind: 'Organization', name: 'Quiet Shelf', sameAs: ['https://www.wikidata.org/wiki/Q123456'] } },
             { type: 'page.update', pageId: home, description: 'Quiet Shelf keeps a small, carefully chosen stock of second-hand books, open every day but Monday.' }
           ]
         },

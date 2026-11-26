@@ -502,6 +502,15 @@ function BuildDetails({ text, fix }: { text: string; fix?: ReactNode }) {
   );
 }
 
+/**
+ * What the dialog lists to fix besides the export's own notes: the starter's sample contact details not kept on purpose,
+ * and what keeps the website from being found or shared. A result never says "Nothing to fix." over them.
+ */
+function listedFixes(state: ProjectState, kept: readonly string[]): string[] {
+  const audit = auditForHealth(state);
+  return dialogFixes({ samples: sampleContactMatches(state).filter((g) => !kept.includes(g.value)).length, seo: audit.ok ? seoPreflight(audit.findings).total : 0 });
+}
+
 export function ExportModal() {
   // A read-only question changes nothing, so exporting goes on while it runs.
   const aiBusy = useStore((s) => !!editRunStatus(s));
@@ -523,9 +532,6 @@ export function ExportModal() {
   const formNotes = useMemo(() => (state ? websiteFormNotes(state) : []), [state]);
   // What keeps the website from being found or shared, as Project health's Search & AI readiness says it.
   const seoAudit = useMemo(() => (state ? auditForHealth(state) : null), [state]);
-  // What the dialog lists to fix beside the export's own notes: the result never says "Nothing to fix." over them.
-  const seoToFix = useMemo(() => (seoAudit?.ok ? seoPreflight(seoAudit.findings).total : 0), [seoAudit]);
-  const fixesListed = dialogFixes({ samples: samplesToReview.length, seo: seoToFix });
   // What the website shows now, read once for every note about an earlier export.
   const liveTrees = useMemo(() => (state ? websiteTrees(publishedState(state)) : []), [state]);
   const [busy, setBusy] = useState<ExportKind | null>(null);
@@ -597,7 +603,6 @@ export function ExportModal() {
   const run = async (kind: ExportKind) => {
     if (busy || blocked || (kind === 'static' && draftLinks.length)) return;
     setBusy(kind);
-    const listedAtStart = fixesListed;
     const opening = getState().snapshot?.workspaceKey;
     try {
       // What is still being typed (an edit on the canvas, a field) is saved first, so the export holds what is on
@@ -615,8 +620,11 @@ export function ExportModal() {
       const r = started.value;
       // The project closed while its edits were being saved: nothing was exported.
       if (!r) return;
-      // What the dialog listed when the export started, said with its result in the dialog's words.
-      if (r.message) setResult({ ...r, report: newReportId(), fixesListed: r.ok ? listedAtStart : undefined });
+      // What the dialog lists to fix beside the export's own notes, said with its result in the dialog's words. It is
+      // read once the export returns, from the project as it is then, so an edit made while the folder was being chosen
+      // or the edits were saving (which the export carries) is never contradicted.
+      const now = getState();
+      if (r.message) setResult({ ...r, report: newReportId(), fixesListed: r.ok && now.snapshot ? listedFixes(now.snapshot.state, now.keptSamples) : undefined });
       settle.current = r.message ? 'result' : kind;
     } catch (e) {
       settle.current = 'result';

@@ -157,5 +157,7 @@ describe('the export result in the dialog’s words (#884)', () => {
     expect(nothingToFix({ ok: true, warnings: [], fixesListed: dialogFixes({ samples: 3, seo: 2 }) })).toBe(false);
     expect(nothingToFix({ ok: true, warnings: ['One image has not been chosen yet and shows a placeholder.'] })).toBe(false);
     expect(nothingToFix({ ok: false, warnings: [] })).toBe(false);
+    expect(dialogFixes({ samples: 2, seo: 0 })).toEqual(['2 sample contact details from the starter are still on the website.']);
+    expect(nothingToFix({ ok: true, warnings: [], fixesListed: dialogFixes({ samples: 1, seo: 0 }) })).toBe(false);
   });
 });

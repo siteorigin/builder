@@ -152,6 +152,8 @@ describe('exporting a project with a draft', () => {
     expect(r.warnings).toEqual([]);
     expect(r.notes).toEqual([]);
     expect(c.snapshot()!.recentExports[0].notes).toEqual([]);
+    const zip = await c.exportSourceTo(join(temp('out'), 'handoff.zip'), 'zip');
+    expect(zip).toMatchObject({ ok: true, message: 'Source project exported as a ZIP file. Private files such as .env, keys and credentials were left out.', warnings: [], notes: [] });
   });
 
   it('#884: counts the published entries by their collection, as the Export dialog does', async () => {
