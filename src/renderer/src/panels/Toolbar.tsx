@@ -209,8 +209,8 @@ export function Toolbar() {
     ...ZOOM_LEVELS.map((z) => ({ label: `${Math.round(z * 100)}%`, checked: zoom === z, disabled: covered, onSelect: () => setZoom(z) }))
   ];
   const openSettings = () => setState({ modal: { kind: 'settings' } });
-  const widthCovered = seo ? 'The SEO view covers the canvas. Leave it to see the page at another width or zoom.' : 'The post writer covers the canvas. Preview in site shows the post at this width and zoom.';
-  const modeCovered = 'The SEO view covers the canvas. Leave it to edit or preview the page.';
+  const widthCovered = seo ? 'The SEO view covers the canvas. Close the SEO view (Esc) to see the page at another width or zoom.' : 'The post writer covers the canvas. Preview in site shows the post at this width and zoom.';
+  const modeCovered = 'The SEO view covers the canvas. Close the SEO view (Esc) to edit or preview the page.';
   const commitWidth = (fromEnter: boolean, el: HTMLInputElement) => {
     const v = validWidth(widthDraft);
     if (v !== null) {
@@ -404,7 +404,7 @@ export function Toolbar() {
             aria-haspopup="menu"
             aria-expanded={false}
             disabled={seo}
-            title={seo ? 'The SEO view covers the canvas. Leave it to preview the page in other colors.' : `Preview colors: ${schemeLabel.toLowerCase()}`}
+            title={seo ? 'The SEO view covers the canvas. Close the SEO view (Esc) to preview the page in other colors.' : `Preview colors: ${schemeLabel.toLowerCase()}`}
             aria-label={`Preview colors: ${schemeLabel.toLowerCase()}`}
             onClick={(e) => menu.openAt(e.currentTarget, schemeItems, 'Preview colors')}
           >

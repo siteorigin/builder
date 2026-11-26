@@ -3,7 +3,7 @@ import { useEffect, useRef, useState, type KeyboardEvent as ReactKeyboardEvent, 
 import { Check, Component, NotebookPen, Sparkles, SlidersHorizontal, Palette, SquareDashed } from 'lucide-react';
 import { instancesOf } from '@engine/tree';
 import { openDialogs, openMenus, Tabs, useMenu, useWindowWidth, type MenuItem } from './components/ui';
-import { api, applyOps, errorText, getState, projectHistory, RIGHT_TABS, saveLocal, setState, toast, useStore, type LeftTab, type RightTab } from './store';
+import { api, applyOps, errorText, getState, leaveSeoView, projectHistory, RIGHT_TABS, saveLocal, setState, toast, useStore, type LeftTab, type RightTab } from './store';
 import { Toolbar } from './panels/Toolbar';
 import { Canvas, showEditedPage, stepVisitor, visitAddress } from './panels/Canvas';
 import { entryRoute } from '@shared/collections';
@@ -146,7 +146,11 @@ export function handleShortcut(key: string, mod: boolean, shift: boolean, askAi 
     const inDef = !!dm && !!s.selection;
     if (s.modal) setState({ modal: null });
     // The page's selection under the writer or the SEO view is kept for when the page shows again.
-    else if (covered) return true;
+    // The SEO view: Escape steps from a document to the overview, then leaves the view. Not over an open menu.
+    else if (s.leftTab === 'seo' && !openMenus.count && !openDialogs.length) {
+      if (s.seoSubject) setState({ seoSubject: null });
+      else leaveSeoView();
+    } else if (covered) return true;
     // Several layers selected together: the first Escape keeps only the one everything follows.
     else if (planLayers(s)?.several) setState({ layerSet: null });
     // A slot picked for Insert is let go first, as a selection would be; editing a component everywhere stays.
