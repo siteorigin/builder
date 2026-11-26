@@ -82,19 +82,24 @@ export class Relay {
   }
 
   /**
+   * Wait for the simulator itself. wrangler can report its worker ready a moment before its local runtime has made
+   * the simulator, so whatever needs the simulator (its address, hibernation) waits for it here first.
+   */
+  async settled(): Promise<void> {
+    const runtimes = () => (this.worker.raw as unknown as { runtimes: Array<{ mf?: Miniflare }> }).runtimes;
+    for (let i = 0; i < 1000 && !runtimes().some((runtime) => runtime.mf); i++) await wait(10);
+    await this.miniflare.ready;
+  }
+
+  /**
    * The relay as a real browser reaches it: the simulator's own server, under `relay.localhost` so that each room's
    * preview origin (`p-<label>.relay.localhost`) is the same site as the viewer. Chromium resolves `*.localhost` to
    * loopback itself, and the Worker finds previews by the Host header, so no DNS is involved.
    */
   async browserOrigin(): Promise<string> {
-    // Wrangler lists its runtime a moment after the worker says it is ready.
-    for (let i = 0; i < 100 && !this.hasMiniflare(); i++) await wait(50);
+    await this.settled();
     const server = await this.miniflare.ready;
     return `http://relay.localhost:${server.port}`;
-  }
-
-  private hasMiniflare(): boolean {
-    return (this.worker.raw as unknown as { runtimes: Array<{ mf?: Miniflare }> }).runtimes.some((runtime) => runtime.mf);
   }
 
   /** The simulator itself, for what wrangler does not expose: forcing a room's object to hibernate. */
@@ -125,7 +130,9 @@ export async function startRelay(vars: RelayVars = {}): Promise<Relay> {
     dev: { server: { hostname: '127.0.0.1', port: 0 }, inspector: false, watch: false, persist: false, logLevel: 'none' }
   });
   await worker.ready;
-  return new Relay(worker);
+  const relay = new Relay(worker);
+  await relay.settled();
+  return relay;
 }
 
 const wait = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
