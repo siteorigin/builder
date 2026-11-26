@@ -236,8 +236,9 @@ function draftOf(data: Record<string, FrontValue>, unreadable: string[]): { draf
   const p = data.published;
   if (unreadable.includes('draft') || unreadable.includes('published')) return { draft: true, reason: 'its draft setting could not be read' };
   if (d !== undefined && typeof d !== 'boolean') return { draft: true, reason: 'its draft setting is not true or false' };
-  // A published date that is no day of the calendar is said as a date (unreadDate), not as a true-or-false setting.
-  if (p !== undefined && typeof p !== 'boolean' && !day(p) && !(typeof p === 'string' && /^\d{4}-\d{2}-\d{2}/.test(p.trim()))) return { draft: true, reason: 'its published setting is not true or false' };
+  // A published date that is no day of the calendar is said as a date, not as a true-or-false setting.
+  if (typeof p === 'string' && /^\d{4}-\d{2}-\d{2}/.test(p.trim()) && !day(p)) return { draft: true, reason: `its published “${p.trim().slice(0, 40)}” is not a date, such as 2024-03-01` };
+  if (p !== undefined && typeof p !== 'boolean' && !day(p)) return { draft: true, reason: 'its published setting is not true or false' };
   if (d === true) return { draft: true };
   if (p === false) return { draft: true };
   return { draft: false };

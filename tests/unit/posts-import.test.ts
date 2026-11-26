@@ -172,6 +172,8 @@ describe('reading a folder of Markdown posts', () => {
     // "Café" in Windows-1252: é is the one byte 0xE9, which UTF-8 never has alone.
     writeFileSync(join(dir, 'e-latin.md'), Buffer.concat([Buffer.from('---\ntitle: Latin\ndate: 2024-01-01\n---\nCaf'), Buffer.from([0xe9]), Buffer.from('.')]));
     writeFileSync(join(dir, 'g-published.md'), '---\ntitle: Published\npublished: 2024-02-30\n---\nText.');
+    // Beside a date that can be read, a published date that can't still keeps the post a draft.
+    writeFileSync(join(dir, 'g2-both.md'), '---\ntitle: Both\ndate: 2024-03-01\npublished: 2024-02-30\n---\nText.');
     writeFileSync(join(dir, 'h-utf16.md'), Buffer.from('---\ntitle: Wide\ndate: 2024-01-03\n---\nText.', 'utf16le'));
     writeFileSync(join(dir, 'f-utf8.md'), '\ufeff---\ntitle: Plain\ndate: 2024-01-02\n---\nCafé.');
     const source = await readMarkdownFolder(dir, {});
@@ -185,9 +187,10 @@ describe('reading a folder of Markdown posts', () => {
       ['Latin', '2024-01-01', false, undefined],
       ['Plain', '2024-01-02', false, undefined],
       ['Published', null, true, 'its published “2024-02-30” is not a date, such as 2024-03-01'],
+      ['Both', '2024-03-01', true, 'its published “2024-02-30” is not a date, such as 2024-03-01'],
       ['h utf16', null, true, 'it has no publication date']
     ]);
-    expect(source.posts[9].notes).toEqual([expect.stringContaining('not saved as UTF-8')]);
+    expect(source.posts[10].notes).toEqual([expect.stringContaining('not saved as UTF-8')]);
     const [latin, plain] = source.posts.slice(6);
     expect(latin.notes).toEqual([expect.stringContaining('not saved as UTF-8')]);
     expect(text(latin.body)).toEqual(['Caf\ufffd.']);
