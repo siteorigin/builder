@@ -232,10 +232,10 @@ export function stateStyleError(prop: string, state?: StyleState | null): string
 const inWords = (items: readonly string[]): string => (items.length < 2 ? items.join('') : `${items.slice(0, -1).join(', ')} and ${items[items.length - 1]}`);
 /** What an element's own hover, focus or press may style, in words for the agent's instructions, from STATE_STYLE_PROPS. */
 export const STATE_STYLE_WORDS: string = inWords(STATE_STYLE_PROPS.map((p) => STYLE_PROP_MAP[p].label.toLowerCase()));
-/** The values an enum style property takes, in words ("ease, ease-out ... or overshoot"), for the agent's instructions. */
-export function styleOptionWords(id: string): string {
+/** The values an enum style property takes, for the agent's instructions: "ease, ease-out ... or overshoot", or with `last` ", " a plain list. */
+export function styleOptionWords(id: string, last = ' or '): string {
   const values = (STYLE_PROP_MAP[id]?.options ?? []).map((o) => o.value);
-  return values.length < 2 ? values.join('') : `${values.slice(0, -1).join(', ')} or ${values[values.length - 1]}`;
+  return values.length < 2 ? values.join('') : `${values.slice(0, -1).join(', ')}${last}${values[values.length - 1]}`;
 }
 /** Words for an interactive state, after a size ("on hover", "with keyboard focus", "while pressed"). */
 export const STATE_WORDS: Record<StyleState, string> = {

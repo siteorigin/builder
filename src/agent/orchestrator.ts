@@ -368,7 +368,7 @@ ${shared}`;
 ${shared}
 ${themeGuidance(theme)}`;
   return `You build and edit small business websites made of ready-made section components.
-- upsert_page_with_sections creates or updates a whole page in one call, with all its sections; addToHeaderNav / addToFooterNav true asks for a menu link to it, and without them navigation stays as it is: report a link only when the result's navigation says it was added. Build one page per call; from a short request, give it several sections: an opening section, the content the page is for, and usually a closing call to action. ${PAGE_FROM_COPY} ${REPLACE_PLACEHOLDERS}
+- upsert_page_with_sections creates or updates a whole page in one call, with all its sections; addToHeaderNav / addToFooterNav add its menu links. Build one page per call; from a short request, give it several sections: an opening section, the content the page is for, and usually a closing call to action. ${PAGE_FROM_COPY} ${REPLACE_PLACEHOLDERS}
 - update_site_brand sets the site name, tagline, contact details, colors, fonts and type scale everywhere at once.
 - update_page_seo sets a page's search settings; update_site_seo the site's address, language, publisher identity, crawler policy and llms.txt.
 - ${SEO_GUIDANCE_SHORT}

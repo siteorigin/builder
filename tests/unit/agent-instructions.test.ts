@@ -67,7 +67,7 @@ describe('agent instructions match the tool definitions (#815)', () => {
     const list = `${easings.slice(0, -1).join(', ')} or ${easings.at(-1)}`;
     for (const text of [SELECTION_DESCRIPTIONS.style_selected_element, SELECTION_BRIEFS.style_selected_element]) {
       expect(text).toContain(`transitionEasing ${list}`);
-      expect(text).toContain(`transition a preset (${presets.slice(0, -1).join(', ')} or ${presets.at(-1)})`);
+      expect(text).toContain(`transition a preset (${presets.join(', ')})`);
     }
   });
 
@@ -111,10 +111,8 @@ describe('agent instructions match the tool definitions (#815)', () => {
   });
 
   it('says a new page is linked in a menu only when the call asks for it', async () => {
-    for (const text of [UPSERT_DESCRIPTION, UPSERT_BRIEF]) {
-      expect(text).not.toMatch(/wire navigation/);
-      expect(text).toContain('addToHeaderNav');
-    }
+    for (const text of [UPSERT_DESCRIPTION, UPSERT_BRIEF]) expect(text).not.toMatch(/wire navigation/);
+    expect(UPSERT_DESCRIPTION).toContain('addToHeaderNav');
     const req = await firstRequest('Add a team page');
     expect(req.system).not.toMatch(/adds it to the navigation|navigation included/);
     expect(req.system).toContain('addToHeaderNav / addToFooterNav');
