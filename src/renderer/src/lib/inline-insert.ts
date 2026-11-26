@@ -165,7 +165,7 @@ export interface QuickItem {
   name: string;
   /** What search reads: the name, then its description, tags and kind. */
   hay: string;
-  /** Its group, said beside it: "Sections", "Blocks", "Basic elements", "Your components". */
+  /** Its group, the heading it is listed under: "Sections", "Column layouts", "Basic elements", "Blocks", "Your components". */
   group: string;
   spec: InsertSpec;
   /** A Lucide icon name. */
@@ -188,7 +188,7 @@ export function quickItems(state: ProjectState, role: InsertRole, dev = false): 
 
 /** The basic elements as + items. */
 function basicItems(): QuickItem[] {
-  return BASICS.map((b): QuickItem => ({ key: `e:${b.id}`, kind: 'element', name: b.name, hay: basicHay(b), group: 'Basic elements', spec: basicSpec(b), icon: b.icon }));
+  return BASICS.map((b): QuickItem => ({ key: `e:${b.id}`, kind: 'element', name: b.name, hay: basicHay(b), group: b.layout ? 'Column layouts' : 'Basic elements', spec: basicSpec(b), icon: b.icon }));
 }
 
 /** A project component as a + item. */
