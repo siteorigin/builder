@@ -421,7 +421,8 @@ export function settleDraft(collection: Collection, draft: SchemaDraft): SchemaD
     if (schema.type === 'enum') {
       const before = !f.added ? collection.settings.fields?.[f.name] : undefined;
       const kept = new Set(before?.type === 'enum' ? before.options.map((o) => o.value) : []);
-      const values = schema.options.filter((o) => kept.has(o.value)).map((o) => o.value);
+      // Every value the field had, kept or removed, is taken: entries that chose a removed option never move to a new one.
+      const values = [...kept];
       const options = schema.options.map((o) => {
         if (kept.has(o.value)) return { value: o.value, label: o.label.trim() || o.value };
         const value = optionValueFor(o.label, values);

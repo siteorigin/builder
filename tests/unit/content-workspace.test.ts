@@ -363,6 +363,52 @@ describe('the schema dialog', () => {
     expect(saved.years).toMatchObject({ default: 5, max: 5 });
   });
 
+  it('never gives a new option the value of one removed in the same save, so no entry changes its choice', () => {
+    let s = team();
+    s = run(s, [
+      {
+        type: 'collection.update',
+        collectionId: 'team',
+        fields: {
+          ...structuredClone(s.collections.team.settings.fields),
+          terms: {
+            type: 'enum',
+            label: 'Terms',
+            default: 'contract',
+            options: [
+              { value: 'contract', label: 'Fixed term' },
+              { value: 'staff', label: 'Staff' }
+            ]
+          }
+        }
+      } as EditOperation
+    ]);
+    s = run(s, [{ type: 'entry.update', collectionId: 'team', entryId: 'en_ana1', values: { terms: 'contract' } }]);
+    const c = s.collections.team;
+    const draft = schemaDraftOf(c);
+    draft.fields = draft.fields.map((f) =>
+      f.schema.type === 'enum'
+        ? {
+            ...f,
+            schema: {
+              ...f.schema,
+              default: 'staff',
+              options: [
+                { value: 'staff', label: 'Staff' },
+                { value: 'option-3', label: 'Contract' }
+              ]
+            }
+          }
+        : f
+    );
+    const settled = settleDraft(c, draft);
+    if (typeof settled === 'string') throw new Error(settled);
+    const terms = settled.fields.find((f) => f.name === 'terms')!.schema;
+    expect(terms.type === 'enum' && terms.options.map((o) => o.value)).toEqual(['staff', 'contract-2']);
+    // The entry that chose the removed option keeps it, so the engine refuses the removal instead of re-filing it.
+    expect(() => run(s, [schemaUpdateOp(c, settled)!])).toThrow();
+  });
+
   it('names fields in camelCase, free of reserved and taken names', () => {
     expect(fieldNameFor('Job title', [])).toBe('jobTitle');
     expect(fieldNameFor('Job title', ['jobTitle'])).toBe('jobTitle2');

@@ -355,6 +355,8 @@ export function PostsPanel() {
     }
   };
   const createIn = async (to: { collectionId: string; workspaceKey: string | undefined }, t: string) => {
+    // Creating opens the new entry: a choice made while it saves (another collection, another entry) wins over that.
+    const seq = ++navigation.current;
     if (!(await openSaved())) return;
     const s = getState().snapshot;
     if (!s) return;
@@ -370,7 +372,7 @@ export function PostsPanel() {
     setTitle('');
     setQuery('');
     // Typed into the open post while the new one was made: saved first, or the new one waits in the list.
-    if (!(await openSaved())) return;
+    if (!(await openSaved()) || seq !== navigation.current) return;
     setState({ post: ref, postView: 'write', postReveal: null });
     // Straight into the text, or the first field of a record without any: the title is already written.
     requestAnimationFrame(() => document.querySelector<HTMLElement>('.post-body, .entry-values input, .entry-values textarea, .entry-values select')?.focus());
@@ -553,6 +555,7 @@ export function PostsPanel() {
             }
           }}
         >
+          {formTarget && formTarget !== collection && <p className="posts-note">New {entryNounLower(formTarget)} in {formTarget.settings.name}</p>}
           <input ref={addInput} className="input" placeholder={collectionKind(formTarget?.settings) === 'editorial' ? `${entryNoun(formTarget)} title` : 'Name or title'} aria-label={`New ${entryNounLower(formTarget)} title`} maxLength={MAX_POST_TITLE} value={title} readOnly={busy} onChange={(e) => setTitle(e.target.value)} />
           <div className="posts-add-actions">
             <button type="submit" className="btn btn-sm btn-primary" disabled={!title.trim() || busy}>

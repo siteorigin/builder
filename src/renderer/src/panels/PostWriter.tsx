@@ -524,17 +524,22 @@ function PostEditor({ post, hidden }: { post: PostRef; hidden: boolean }) {
     await Promise.allSettled([...fieldCommits.current]);
     await appliesLanded();
     // Or text kept for being too long, here or in the SEO view.
-    return saved && fieldRefusedAt.current < since && !document.querySelector('.post-page [aria-invalid="true"]') && !heldInView();
+    return saved && fieldRefusedAt.current < since && !unsavedMark() && !heldInView();
   };
   saveAllRef.current = saveAll;
   /**
    * Whether the SEO view holds text typed for this post that it could not save (too long, an address that is not one):
    * still the post's, so Publish and Save draft wait for it as for the writer's own.
    */
+  /**
+   * Whether a field of the post marks text it holds and could not save. A link's section picker marks the saved
+   * destination instead (a section gone), which nothing typed here would change, so it is not counted.
+   */
+  const unsavedMark = () => [...document.querySelectorAll('.post-page [aria-invalid="true"]')].some((el) => !el.closest('.insp-link-row'));
   const heldInView = () => !!document.querySelector(`${inView} [aria-invalid="true"]`);
   /** Say that part of the post is not saved, and where to see why: beside it here, or in the SEO view. */
   const notSaved = (what: string) => {
-    const inView = heldInView() && !document.querySelector('.post-page [aria-invalid="true"]');
+    const inView = heldInView() && !unsavedMark();
     toast(`${what} ${inView ? 'See its search settings in the SEO view.' : 'See the note beside it.'}`, 'error', inView ? { label: 'Open SEO view', run: () => void openSeoView({ kind: 'entry', collectionId: post.collectionId, entryId: post.entryId }) } : undefined);
   };
   const publish = async (draftOn: boolean) => {
