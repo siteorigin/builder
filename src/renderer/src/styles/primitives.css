@@ -259,6 +259,10 @@
   .toast button { color: inherit; }
   .toast .btn { border: 1px solid color-mix(in srgb, currentColor 65%, transparent); background: transparent; color: inherit; box-shadow: none; }
   .toast .btn:hover:not(:disabled) { background: color-mix(in srgb, currentColor 12%, transparent); }
+  /* A notice's one expected answer (Admit) is filled in the notice's own ink, inverted, so it leads without bringing
+     the app's blue onto a status surface. */
+  .toast .btn-primary { background: var(--toast-action-fill); border-color: transparent; color: var(--toast-action-ink); font-weight: 600; }
+  .toast .btn-primary:hover:not(:disabled) { background: color-mix(in srgb, var(--toast-action-fill) 86%, var(--toast-action-ink)); }
   /* While a dialog is open, toasts still announce but their actions wait (they act on the page behind), taking
      no room, and the notice lets clicks through, all but its dismiss button and its text (which may scroll). ui.tsx offers an Undo again, for a
      full window, once the last dialog closes. */
