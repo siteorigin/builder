@@ -169,6 +169,34 @@ project closed and Welcome shown. For each reading: `memory.<reading>.total` (th
 difference of two readings in the same launch: `memory.edits.growth.*` (`edit50` − `edit1`: what 49 edits left behind)
 and `memory.close.growth.*` (`closed` − `welcome`: what a project left behind once closed).
 
+**`canvas`** (after `open`): with the home hero selected by a click on it, scroll the home page with the wheel, 30 notches
+of 60 px down and as many back up, each 16 ms after the one before was taken (about 30 a second on an M4 Max, so the
+outlines move every other frame); then sweep the pointer across the page, corner to corner along both diagonals in 60
+moves each, paced the same way. Each window starts from the page's top. The pointer scrolls a third of the way across the page, clear of the
+selection's spacing handles and Add buttons, which take the wheel when they pass under it. Checks: the page scrolled
+as far as the notches went and back to its top, the hero is still selected, at least one hover was outlined in the
+sweep, and, scrolled part of the way down from the top with the pointer on an element of another of the page's sections
+(none pinned to the view), the selection's outline
+sits on the hero (half out of view) and the hover's on an element under the pointer, each within 1.5 px (and the 6 px of
+room a part gets). Per window (`canvas.scroll.*`, `canvas.sweep.*`): `ms` (its length), `canvasRenders` (the canvas
+component rendered), `rectReports` (the page's reports of where its outlines are), `rectReportsSame` (those identical
+to the report before), `hoverReports` (the page saying the pointer reached another element), `rendererCommits`,
+`renders` (every component React rendered), `reportMs` and `reportMsTotal` (median and sum of the `canvas.rects` and
+`canvas.hover` spans: one report handled with the React render and commit it set off), and from a watch the scenario
+runs in the editor's page for the window, `frames` (animation frames), `droppedFrames` (a frame a period or more late
+counts the frames it missed; a watch that saw fewer than half the frames the window should have had fails the
+iteration), `longestFrameMs`, `longTasks` and `longTaskMs` (tasks of 50 ms or more); the frame
+period, `canvas.framePeriodMs`, is the median between frames over a second at rest before the windows. For the sweep,
+`hoversOutlined` and `hoverOutlineMs`: the median time from the pointer moving onto an element in the page (the event's
+time, which the page sends with its report) to the animation frame after the commit that first draws that element's
+outline where the page measured it (`canvas.hoverOutlined`); a hover overtaken before it was outlined is not counted. Each input
+has 5 s to be taken. A machine busy with other work can tell the app late that the project's files changed on disk (they
+are put back before every launch): the app reads the project again or the preview reloads its page, and a window that
+happens in measures a page loading. So the scenario starts once nothing has reloaded for 3 s, and a window, the
+hero's selection or the outlines' check, during which the preview loaded a page or the project was read from disk is done again after another
+3 s of quiet, up to five times; the window measured is its last attempt, and five disturbed attempts fail the
+iteration. Both arms are held to the same rule.
+
 ## Reading and comparing results
 
 Counts and sizes are the portable evidence: they do not depend on the machine, and two runs of the same build give the
@@ -311,7 +339,8 @@ events, sized the same way), `session.reloadFromDisk`, `main.stalls` (main), and
 (components rendered, counted from each commit's fibers), per panel marked with `timedPanel`
 (`src/renderer/src/lib/perf-panels.tsx`) `panel.<id>.renders` and `panel.<id>.renderMs` (the time between two probes
 React renders before and after the panel), `chat.messageRenders` (a Chat message rendered) and `chat.textParses` (model
-text read into blocks) (renderer). The main process also
+text read into blocks), `canvas.renders`, `canvas.rectReports`, `canvas.rectReportsSame` and `canvas.hoverReports` (the
+`canvas` scenario's) (renderer). The main process also
 watches its event loop every 20 ms and records each time the watch ran 50 ms or more late as a `main.stall` span of that
 lateness (a block shorter than about 70 ms can go unseen).
 

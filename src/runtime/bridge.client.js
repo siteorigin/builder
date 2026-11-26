@@ -1309,7 +1309,8 @@ document.addEventListener(
     if (el === pointerEl && sameDesc(next, pointerAt)) return;
     pointerAt = next;
     pointerEl = el;
-    send('hover', { chain: chainFrom(el, true) });
+    // `at`: when the pointer moved, on the clock the editor's timing marks use, so the time to its outline can be told.
+    send('hover', { chain: chainFrom(el, true), at: performance.timeOrigin + e.timeStamp });
   },
   true
 );

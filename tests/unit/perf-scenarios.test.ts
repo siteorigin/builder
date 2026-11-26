@@ -1,9 +1,10 @@
 import { describe, expect, it } from 'vitest';
 import type { PerfRecord } from '../../src/shared/perf';
 import { Collector, Trace } from '../../scripts/perf/results';
-import { CHAT_CASES, CHAT_REPLY_CHECKPOINTS, CHAT_TYPED, chainFor, chat, chatReply, chatReplyFirst, chatReplyLast, chatSeed, edit, exportAgain, exportSite, expect as check, findHeading, launch, memory, MEMORY_EDITS, open, PANELS, panels, runChain, SHOWN_PANELS, type FixtureFacts, type Scenario, type ScenarioContext, switchProject } from '../../scripts/perf/scenarios';
+import { canvas, CHAT_CASES, CHAT_REPLY_CHECKPOINTS, CHAT_TYPED, chainFor, chat, chatReply, chatReplyFirst, chatReplyLast, chatSeed, edit, exportAgain, exportSite, expect as check, findHeading, launch, memory, MEMORY_EDITS, open, PANELS, panels, runChain, SHOWN_PANELS, type FixtureFacts, type Scenario, type ScenarioContext, switchProject } from '../../scripts/perf/scenarios';
 import type { MemoryProbe, MemoryReading } from '../../scripts/perf/memory';
 import { FIXTURES } from '../../scripts/perf/fixtures';
+import { framesOf } from '../../scripts/perf/scenarios';
 
 let seq = 0;
 const m = (name: string, t: number, extra: Partial<PerfRecord> = {}): PerfRecord => ({ kind: 'mark', name, t, proc: 'main', pid: 1, seq: ++seq, ...extra });
@@ -27,6 +28,7 @@ describe('the scenario chain', () => {
     expect(chainFor(['switch']).map((s) => s.name)).toEqual(['launch', 'open', 'switch']);
     // Last of those that follow open: the others measure the fixture's own copy, which switch leaves.
     expect(chainFor(['switch', 'edit']).map((s) => s.name)).toEqual(['launch', 'open', 'edit', 'switch']);
+    expect(chainFor(['canvas']).map((s) => s.name)).toEqual(['launch', 'open', 'canvas']);
     expect(chainFor([])).toEqual([]);
     expect(() => chainFor(['nope'])).toThrow('Unknown scenario');
   });
@@ -656,6 +658,79 @@ describe('export metrics', () => {
     // The output counted on disk after the export, by the scenario's own mark.
     expect(exportSite.measure(trace((x) => x.name === 'export.output' && x.t < 20_000), facts).missing).toEqual(['export.output']);
     expect(exportSite.measure(trace((x) => x.name === 'export.output' && x.t < 20_000), facts).metrics['export.outputFiles']).toBeUndefined();
+  });
+});
+
+describe('canvas metrics', () => {
+  /** One window of `canvas`: its edges with the editor's counters, a report span each (a decoy just outside), and the
+   *  frame watch's findings on its end mark. */
+  function window(name: 'scroll' | 'sweep', at: number, o: { reports?: number[]; hovers?: number[]; counts?: [number, number]; frames?: Record<string, number> } = {}): PerfRecord[] {
+    const [c0, c1] = o.counts ?? [0, 10];
+    const c = (n: number) => ({ c: { 'canvas.renders': n * 2, 'canvas.rectReports': n, 'canvas.rectReportsSame': Math.floor(n / 5), 'canvas.hoverReports': n * 3, 'react.commits': n, 'react.renders': n * 20 } });
+    const frames = o.frames ?? { frames: 120, droppedFrames: 1, longTasks: 0, longTaskMs: 0, longestFrameMs: 33.4 };
+    return [
+      r('canvas.rects', at - 1, { kind: 'span', ms: 50 }),
+      r('canvas.window', at, { attrs: { scenario: 'canvas', window: name, edge: 'start' }, ...c(c0) }),
+      ...(o.reports ?? [1, 2, 3]).map((ms, i) => r('canvas.rects', at + 1 + i, { kind: 'span', ms })),
+      ...(o.hovers ?? []).map((ms, i) => r('canvas.hover', at + 50 + i, { kind: 'span', ms })),
+      r('canvas.window', at + 2000, { attrs: { scenario: 'canvas', window: name, edge: 'end', ...frames }, ...c(c1) }),
+      r('canvas.rects', at + 2001, { kind: 'span', ms: 50 })
+    ];
+  }
+  const start = r('scenario.start', 900, { attrs: { scenario: 'canvas', periodMs: 16.7 } });
+  const outlined = (t: number, movedAt: number) => r('canvas.hoverOutlined', t, { attrs: { movedAt } });
+
+  it('count each window’s renders and reports, time its reports, and time each hover from the move to its outline', () => {
+    const got = canvas.measure(new Trace([start, ...window('scroll', 1000), ...window('sweep', 4000, { reports: [2], hovers: [1, 1, 4], counts: [10, 15] }), outlined(4100, 4080), outlined(4200, 4170), outlined(4300, 4290), outlined(6100, 6000)]), facts);
+    expect(got.missing).toEqual([]);
+    const v = (name: string) => got.metrics[name]?.value;
+    expect([v('canvas.framePeriodMs'), v('canvas.scroll.ms'), v('canvas.scroll.canvasRenders'), v('canvas.scroll.rectReports'), v('canvas.scroll.rectReportsSame'), v('canvas.scroll.hoverReports')]).toEqual([16.7, 2000, 20, 10, 2, 30]);
+    expect([v('canvas.scroll.rendererCommits'), v('canvas.scroll.renders'), v('canvas.scroll.reportMs'), v('canvas.scroll.reportMsTotal')]).toEqual([10, 200, 2, 6]);
+    expect([v('canvas.scroll.frames'), v('canvas.scroll.droppedFrames'), v('canvas.scroll.longTasks'), v('canvas.scroll.longTaskMs'), v('canvas.scroll.longestFrameMs')]).toEqual([120, 1, 0, 0, 33.4]);
+    // The sweep's own counters and spans, the hover reports with the rect reports; the outline after its window is not its.
+    expect([v('canvas.sweep.canvasRenders'), v('canvas.sweep.rectReports'), v('canvas.sweep.reportMs'), v('canvas.sweep.reportMsTotal')]).toEqual([10, 5, 1.5, 8]);
+    expect([v('canvas.sweep.hoversOutlined'), v('canvas.sweep.hoverOutlineMs')]).toEqual([3, 20]);
+  });
+
+  it('name what is missing instead of reporting a window that did less', () => {
+    const got = canvas.measure(new Trace([...window('scroll', 1000, { reports: [], frames: {} }), ...window('sweep', 4000), r('canvas.hoverOutlined', 4100, { attrs: {} })]), facts);
+    expect(got.missing).toEqual([
+      'scenario.start (renderer)',
+      'scenario.start (renderer, with the frame period)',
+      "canvas.scroll: the page's reports (canvas.rects, canvas.hover spans)",
+      'canvas.scroll.frames (the frame watch)',
+      'canvas.scroll.droppedFrames (the frame watch)',
+      'canvas.scroll.longTasks (the frame watch)',
+      'canvas.scroll.longTaskMs (the frame watch)',
+      'canvas.scroll.longestFrameMs (the frame watch)',
+      'canvas.hoverOutlined (a hover without the time the pointer moved)'
+    ]);
+    const none = canvas.measure(new Trace([start, ...window('scroll', 1000), ...window('sweep', 4000)]), facts);
+    expect(none.missing).toEqual(['canvas.hoverOutlined (no hover outlined in the sweep)']);
+    // A frame watch that stalled: 40 frames in a window of 2 s at 16.7 ms is fewer than half.
+    const stalled = canvas.measure(new Trace([start, ...window('scroll', 1000, { frames: { frames: 40, droppedFrames: 0, longTasks: 0, longTaskMs: 0, longestFrameMs: 16.7 } }), ...window('sweep', 4000), outlined(4100, 4080)]), facts);
+    expect(stalled.missing).toEqual(['canvas.scroll.frames (the frame watch saw 40 frames in 2000 ms)']);
+    const half = canvas.measure(new Trace([start, ...window('scroll', 1000)]), facts);
+    expect(half.missing).toEqual(['canvas.window sweep start', 'canvas.window sweep end']);
+  });
+
+  it('measure the last attempt of a window done again after a reload, never the one the reload was in', () => {
+    const again = (records: PerfRecord[], attempt: number) => records.map((x) => (x.name === 'canvas.window' ? { ...x, attrs: { ...x.attrs, attempt } } : x));
+    const first = again(window('scroll', 1000, { reports: [9, 9, 9], counts: [0, 50] }), 1);
+    const second = again(window('scroll', 5000, { reports: [1, 2, 3], counts: [50, 60] }), 2);
+    const sweep = again(window('sweep', 9000), 1);
+    const got = canvas.measure(new Trace([start, ...first, r('canvas.ready', 1500), ...second, ...sweep, outlined(9100, 9080)]), facts);
+    expect(got.missing).toEqual([]);
+    expect([got.metrics['canvas.scroll.rectReports'].value, got.metrics['canvas.scroll.reportMs'].value, got.metrics['canvas.scroll.reportMsTotal'].value]).toEqual([10, 2, 6]);
+    // A last attempt whose end never arrived is missing, not the attempt before it.
+    const cut = canvas.measure(new Trace([start, ...first, ...second.filter((x) => !(x.name === 'canvas.window' && x.attrs?.edge === 'end')), ...sweep, outlined(9100, 9080)]), facts);
+    expect(cut.missing).toEqual(['canvas.window scroll end']);
+  });
+
+  it('count a frame that came a period or more late as the frames it dropped', () => {
+    expect(framesOf([0, 16.7, 33.4, 66.8, 83.5, 150.3], [60, 75], 16.7)).toEqual({ frames: 6, droppedFrames: 4, longestFrameMs: 150.3 - 83.5, longTasks: 2, longTaskMs: 135 });
+    expect(framesOf([0, 16, 34, 50], [], 16.7).droppedFrames).toBe(0);
+    expect(framesOf([], [], 16.7)).toEqual({ frames: 0, droppedFrames: 0, longestFrameMs: 0, longTasks: 0, longTaskMs: 0 });
   });
 });
 
