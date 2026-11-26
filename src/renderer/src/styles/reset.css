@@ -4,8 +4,10 @@
   /* The editor is exactly its window and never scrolls (#897). Whatever a panel holds, however it is positioned,
      stays inside #root: anything reaching past the window's edge would make the document taller than its window,
      and a scrollIntoView (a selection in the preview, a field in the Inspector) would then slide the whole editor
-     up. `clip`, unlike `hidden`, makes #root no scroller of its own for a scrollIntoView to move. */
-  #root { position: relative; overflow: clip; }
+     up. `clip`, unlike `hidden`, makes #root no scroller of its own for a scrollIntoView to move. Its own
+     formatting context keeps a child's top margin (the startup error's) from collapsing through it and pushing it
+     down. A portal mounted on body must stay fixed or top-layer for the same reason. */
+  #root { position: relative; overflow: clip; display: flow-root; }
   body {
     font-family: var(--font);
     font-size: 13px;

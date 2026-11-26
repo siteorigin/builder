@@ -75,6 +75,19 @@ await eventually(
   300
 );
 
+step('selecting the hero and its heading with the Inspector open leaves the editor in its window (#897)');
+await win.locator('.dock-tab', { hasText: 'Inspector' }).click();
+/** The editor document's own scroll position, and how far it reaches past the window. */
+const docScroll = () => win.evaluate(() => ({ x: scrollX, y: scrollY, top: document.scrollingElement.scrollTop, over: document.documentElement.scrollHeight - innerHeight }));
+const still = { x: 0, y: 0, top: 0, over: 0 };
+const heading = frame.locator('h1').first();
+for (const act of ['hero', 'heading', 'Escape', 'Escape']) {
+  if (act === 'Escape') await win.keyboard.press('Escape');
+  else await heading.click();
+  await new Promise((r) => setTimeout(r, 700));
+  assert.deepEqual(await docScroll(), still, `the editor stays put after ${act}`);
+}
+
 step('every Editorial section measures clean at 390px and 1280px');
 const pageId = st.site.homePageId;
 const owner = { kind: 'page', id: pageId };

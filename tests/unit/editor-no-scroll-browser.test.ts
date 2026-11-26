@@ -10,7 +10,7 @@ import { chromium, type Browser, type Page } from 'playwright';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 
 const browserInstalled = existsSync(chromium.executablePath());
-const css = ['reset.css', 'layout.css'].map((f) => readFileSync(resolve('src/renderer/src/styles', f), 'utf8')).join('\n');
+const css = ['tokens.css', 'reset.css', 'layout.css'].map((f) => readFileSync(resolve('src/renderer/src/styles', f), 'utf8')).join('\n');
 
 /**
  * The editor's shell: a toolbar, a canvas with a frame whose page is far taller than it, and a dock whose scrolling
@@ -54,14 +54,26 @@ describe.skipIf(!browserInstalled)('the editor document in a browser', () => {
     await page.setContent(shell);
     const frame = page.frames()[1];
     await frame.waitForSelector('#hero');
+    /** The editor document's and #root's scroll positions, which must never move. */
+    const editor = () => page.evaluate(() => [scrollX, scrollY, document.scrollingElement!.scrollTop, document.getElementById('root')!.scrollTop]);
     // The bridge scrolls the selection into view inside the preview, which also scrolls every scrollable ancestor.
     await frame.evaluate(() => document.getElementById('hero')!.scrollIntoView({ block: 'center' }));
     expect(await frame.evaluate(() => scrollY)).toBeGreaterThan(0);
-    expect(await page.evaluate(() => [scrollX, scrollY, document.scrollingElement!.scrollTop])).toEqual([0, 0, 0]);
-    // Then the field in the Inspector, and back to the page.
+    expect(await editor()).toEqual([0, 0, 0, 0]);
+    // Then a field at the Inspector's end, which its own body scrolls to.
     await page.evaluate(() => document.querySelector('.inspector')!.lastElementChild!.scrollIntoView({ block: 'end' }));
+    expect(await page.locator('.panel-body').evaluate((b) => b.scrollTop)).toBeGreaterThan(0);
+    expect(await editor()).toEqual([0, 0, 0, 0]);
+    // And back to the page.
     await frame.evaluate(() => window.scrollTo(0, 0));
     await frame.evaluate(() => document.getElementById('hero')!.scrollIntoView({ block: 'center' }));
-    expect(await page.evaluate(() => [scrollX, scrollY, document.scrollingElement!.scrollTop])).toEqual([0, 0, 0]);
+    expect(await editor()).toEqual([0, 0, 0, 0]);
+  });
+
+  it('keeps the startup error view inside the window', async () => {
+    await page.setContent(`<!doctype html><html><head><style>${css}</style></head><body><div id="root"><div class="fatal"><p>No theme pack could be loaded.</p></div></div></body></html>`);
+    const { scrollHeight, innerHeight, rootTop } = await page.evaluate(() => ({ scrollHeight: document.documentElement.scrollHeight, innerHeight, rootTop: document.getElementById('root')!.getBoundingClientRect().top }));
+    expect(rootTop).toBe(0);
+    expect(scrollHeight).toBeLessThanOrEqual(innerHeight);
   });
 });
