@@ -89,7 +89,8 @@ window.mountSearch = (props) => {
   return chunk.code;
 }
 
-const PAGE = `<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"></head>
+/** A page of the site, marked as running scripts as its app.html marks it (see generateAppHtml). */
+const PAGE = `<!doctype html><html lang="en" class="so-js"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"></head>
 <body style="margin:0"><main id="app"></main><script src="${BASE}/search.js"></script></body></html>`;
 
 describe.skipIf(!browserInstalled)('site search for a visitor', () => {
@@ -130,6 +131,17 @@ describe.skipIf(!browserInstalled)('site search for a visitor', () => {
   const box = (page: Page) => page.getByRole('searchbox', { name: 'Search for' });
   const status = (page: Page) => page.getByRole('status');
   const results = (page: Page) => page.locator('.so-search__result');
+
+  it('is left out of a page whose scripts never ran, where it could find nothing (#885)', async () => {
+    await withSearch(async (page) => {
+      expect(await page.getByRole('search', { name: 'Find a project' }).count()).toBe(1);
+      expect(await page.evaluate(`getComputedStyle(document.querySelector('.so-search')).display`)).not.toBe('none');
+      // The same page without the mark its head's script sets.
+      await page.evaluate(`document.documentElement.classList.remove('so-js')`);
+      expect(await page.evaluate(`getComputedStyle(document.querySelector('.so-search')).display`)).toBe('none');
+      expect(await page.getByRole('search').count()).toBe(0);
+    });
+  });
 
   it('finds a project by name with the keyboard and goes to it from a nested address', async () => {
     await withSearch(async (page, visited) => {

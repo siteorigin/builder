@@ -169,6 +169,11 @@ const SEARCH_SOURCE = `<script>
 		background: var(--so-color-background);
 		color: var(--so-color-text);
 	}
+	/* Searching needs the page's scripts: where none run (<html> never takes so-js), a form that finds nothing is left
+	   out. The weight of an id no element has outweighs a placement's own (important) styles. */
+	:global(:root:not(.so-js)) .so-search:not(#so-no-js) {
+		display: none !important;
+	}
 	.so-search--muted {
 		background: var(--so-color-surface-alt);
 	}

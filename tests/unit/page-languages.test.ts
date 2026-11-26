@@ -293,7 +293,7 @@ describe('page languages in the website', () => {
     expect(files.get(SERVER_HOOK_FILE)).not.toMatch(/LANGUAGES|lang/);
     expect([...files.keys()].filter((p) => /language/.test(p))).toEqual([]);
     expect(files.get('src/app.html')).toBe(
-      '<!doctype html>\n<html lang="en" dir="ltr">\n\t<head>\n\t\t<meta charset="utf-8" />\n\t\t<meta name="viewport" content="width=device-width, initial-scale=1" />\n\t\t%sveltekit.head%\n\t</head>\n\t<body data-sveltekit-preload-data="hover">\n\t\t<div style="display: contents">%sveltekit.body%</div>\n\t</body>\n</html>\n'
+      '<!doctype html>\n<html lang="en" dir="ltr">\n\t<head>\n\t\t<meta charset="utf-8" />\n\t\t<meta name="viewport" content="width=device-width, initial-scale=1" />\n\t\t<script>document.documentElement.classList.add("so-js");</script>\n\t\t%sveltekit.head%\n\t</head>\n\t<body data-sveltekit-preload-data="hover">\n\t\t<div style="display: contents">%sveltekit.body%</div>\n\t</body>\n</html>\n'
     );
     expect(files.get('src/routes/+layout.svelte')).not.toMatch(/pageLanguages|documentElement/);
     const pageFiles = new Set(Object.values(s.pages).map((p) => pageFile(p)));

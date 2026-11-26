@@ -133,9 +133,11 @@ describe.skipIf(!browserInstalled)('Foundation’s tabbed showcase and billing s
   let script: string;
   let ssr: string;
   let css: string;
+  let appHtml: string;
   beforeAll(async () => {
     const { state, showcase } = project();
     const files = generateProject(state);
+    appHtml = files.get('src/app.html')!;
     ssr = await serverHtml(files);
     css = ['tokens', 'theme', 'components', 'site'].map((f) => files.get(`src/lib/siteorigin/styles/${f}.css`) ?? '').join('\n');
     script = await bundle(files, showcase);
@@ -153,7 +155,7 @@ describe.skipIf(!browserInstalled)('Foundation’s tabbed showcase and billing s
       if ((m.type() === 'warning' || m.type() === 'error') && !m.text().startsWith('Failed to load resource')) problems.push(m.text());
     });
     page.on('pageerror', (e) => problems.push(e.message));
-    const html = `<!doctype html><html lang="en"><head><meta name="viewport" content="width=device-width, initial-scale=1"><style>${css}</style></head><body><div id="app">${ssr}</div><div id="harness"></div></body></html>`;
+    const html = `<!doctype html><html lang="en" class="so-js"><head><meta name="viewport" content="width=device-width, initial-scale=1"><style>${css}</style></head><body><div id="app">${ssr}</div><div id="harness"></div></body></html>`;
     await page.route('**/*', (route) => {
       const url = new URL(route.request().url());
       if (url.origin !== ORIGIN) return route.abort();
@@ -307,6 +309,38 @@ describe.skipIf(!browserInstalled)('Foundation’s tabbed showcase and billing s
       expect(problems).toEqual([]);
     } finally {
       await page.close();
+    }
+  });
+
+  it('shows every tab’s panel under its label and both billing periods where scripts never run, without the controls (#885)', async () => {
+    const context = await browser.newContext({ javaScriptEnabled: false, viewport: { width: 1280, height: 900 } });
+    try {
+      const page = await context.newPage();
+      // As the site ships it: the head's script that marks the page as running scripts never runs.
+      const head = /<script>document\.documentElement[^<]*<\/script>/.exec(appHtml)![0];
+      await page.setContent(`<!doctype html><html lang="en"><head>${head}<style>${css}</style></head><body><div id="app">${ssr}</div></body></html>`);
+      const seen = (await page.evaluate(`({
+        marked: document.documentElement.classList.contains('so-js'),
+        list: getComputedStyle(document.querySelector('#app [role="tablist"]')).display,
+        panels: [...document.querySelectorAll('#app [role="tabpanel"]')].map((p) => [p.checkVisibility(), getComputedStyle(p, '::before').content, p.querySelector('h3')?.textContent.trim()]),
+        group: getComputedStyle(document.querySelector('#app [role="group"]')).display,
+        prices: [...document.querySelectorAll('#app li p')].filter((p) => p.checkVisibility()).map((p) => p.textContent.replace(/\\s+/g, ' ').trim()).filter((p) => p.startsWith('$'))
+      })`)) as { marked: boolean; list: string; panels: Array<[boolean, string, string]>; group: string; prices: string[] };
+      expect(seen.marked).toBe(false);
+      expect(seen.list).toBe('none');
+      expect(seen.panels).toEqual([
+        [true, '"Design"', 'Plans drawn around how you live'],
+        [true, '"Build"', 'One team from demolition to handover'],
+        [true, '"Care"', 'Looked after long after we leave'],
+        [true, '"Support"', 'Help when you need it']
+      ]);
+      expect(seen.group).toBe('none');
+      // Each plan shows both periods, each price saying which it is for.
+      expect(seen.prices).toEqual(['$29 per month', '$290 per year, billed once', '$49 per month', '$490 per year, billed once', '$119 per month', '$1,190 per year, billed once']);
+      // The page as the browser lays it out keeps the showcase's own grid in every panel.
+      expect(await page.evaluate(`[...document.querySelectorAll('#app [role="tabpanel"]')].map((p) => getComputedStyle(p).display)`)).toEqual(['grid', 'grid', 'grid', 'grid']);
+    } finally {
+      await context.close();
     }
   });
 

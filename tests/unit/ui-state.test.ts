@@ -16,7 +16,7 @@ import { installComponent, makeInstance } from '@engine/install';
 import { applyOperations } from '@engine/apply';
 import { blocksSaving, introducedDiagnostics, validateState, type Diagnostic } from '@engine/validate';
 import { REUSABILITY_CODES } from '@engine/reusability';
-import { CHOICE_GROUP_CLASS, STATE_OFF_CLASS, defFile, generateProject, nodeClass } from '@generator/index';
+import { CHOICE_GROUP_CLASS, CHOICE_OFF_CLASS, SCRIPTS_CLASS, STATE_OFF_CLASS, defFile, generateProject, nodeClass } from '@generator/index';
 import { notFoundSectionRoutes, publicationPlan, renderedContent } from '@generator/checks';
 import { UTIL_JS } from '@generator/runtime-files';
 import { FOUNDATION_BASE_CSS } from '@catalogue/foundation/base.css';
@@ -962,8 +962,13 @@ describe('generated buttons, tabs and disclosures', () => {
       expect(tagsWith(out, 'role', 'tablist')).toEqual([]);
       expect(tagsWith(out, 'role', 'tabpanel')).toEqual([]);
       expect(tagsWith(out, 'aria-pressed')).toHaveLength(variant.tabs?.length ?? 3);
+      // The buttons make a group: the option not chosen stays in the page, hidden while scripts run, so a page
+      // whose scripts never run shows both.
+      expect(openTag(out, nodeClass(tabsOnly, 'panel-b'))).not.toBe('');
+      expect(openTag(out, nodeClass(tabsOnly, 'panel-b'))).not.toContain(CHOICE_OFF_CLASS);
+      expect(openTag(out, nodeClass(tabsOnly, 'panel-a'))).toContain(CHOICE_OFF_CLASS);
       expect(out).toContain('Team plan details');
-      expect(out).not.toContain('Starter plan details');
+      expect(out).toContain('Starter plan details');
       expect(compileWarnings(t, [tabsOnly])).toEqual([]);
     }
   });
@@ -1008,13 +1013,27 @@ describe('generated buttons, tabs and disclosures', () => {
     expect([stepState(o, 'gone', 1, true), stepState(o, 'gone', -1, true), stepState(o, 'gone', -1, false)]).toEqual(['a', 'a', 'a']);
   });
 
-  it('hides content a state hides on screen only, and prints every panel under its tab’s label', () => {
+  it('hides content a state hides on screen only while scripts run, and prints every panel under its tab’s label', () => {
     const s = fresh();
     const plain = generateProject(s).get('src/lib/siteorigin/styles/components.css')!;
     expect(plain).not.toContain(STATE_OFF_CLASS);
     tabsDef(s);
-    const css = generateProject(s).get('src/lib/siteorigin/styles/components.css')!;
-    expect(css).toMatch(new RegExp(`@media not print \\{\\s*\\.${STATE_OFF_CLASS}:not\\(#so-print\\) \\{ display: none !important; \\}`));
+    const files = generateProject(s);
+    const css = files.get('src/lib/siteorigin/styles/components.css')!;
+    // Where no script runs, the buttons do nothing, so nothing a state hides stays hidden (issue #885).
+    expect(css).toMatch(new RegExp(`@media not print \\{\\s*\\.${SCRIPTS_CLASS} \\.${STATE_OFF_CLASS}:not\\(#so-print\\) \\{ display: none !important; \\}`));
+    // No rule hides it whether or not scripts run.
+    expect(css).not.toMatch(new RegExp(`^\\s*\\.${STATE_OFF_CLASS}`, 'm'));
+    // An option a group's buttons choose hides while scripts run, printed too: a page prints the option chosen.
+    expect(css).toMatch(new RegExp(`\\}\\n\\.${SCRIPTS_CLASS} \\.${CHOICE_OFF_CLASS}:not\\(#so-print\\) \\{ display: none !important; \\}`));
+    // The page marks itself as running scripts before anything shows, from a script of its own in <head>.
+    const app = files.get('src/app.html')!;
+    expect(app).toContain(`<script>document.documentElement.classList.add("${SCRIPTS_CLASS}");</script>`);
+    expect(app.indexOf(SCRIPTS_CLASS)).toBeLessThan(app.indexOf('%sveltekit.head%'));
+    // Without scripts the tab row is left out and every panel shows under its tab's label, as printed.
+    const screen = FOUNDATION_BASE_CSS.slice(FOUNDATION_BASE_CSS.indexOf('@media not print'), FOUNDATION_BASE_CSS.indexOf('@media print'));
+    expect(screen).toContain(`:root:not(.${SCRIPTS_CLASS}) .so-tablist:not(#so-print) { display: none !important; }`);
+    expect(screen).toContain(`:root:not(.${SCRIPTS_CLASS}) [role='tabpanel'][data-tab-label]:not([data-tab-label=''])::before`);
     const print = FOUNDATION_BASE_CSS.slice(FOUNDATION_BASE_CSS.indexOf('@media print'));
     expect(print).toContain('.so-tablist:not(#so-print) { display: none !important; }');
     expect(print).toContain("[role='tabpanel'][data-tab-label]:not([data-tab-label=''])::before");
@@ -1219,6 +1238,113 @@ describe('optional tabs, unnamed tabs and groups of a choice’s buttons', () =>
     expect(publicationPlan(plan).draftLinks.map((l) => l.label)).toEqual(['Coming soon']);
   });
 
+  it('keeps in the page, for a page whose scripts never run, only the options a group’s buttons choose, in every item of a list', async () => {
+    const s = fresh();
+    const PERIOD: UiStateSchema = { type: 'enum', label: 'Billing', options: [{ value: 'monthly', label: 'Monthly' }, { value: 'annual', label: 'Annual' }, { value: 'legacy', label: 'Legacy' }], initial: 'monthly' };
+    const def = addDef(s, {
+      componentId: 'test.plans',
+      name: 'Plans switch',
+      properties: { plans: P.list('Plans', 'Plan', { name: P.str('Name', 'Plan') }, [{ name: 'Basic' }, { name: 'Pro' }]) },
+      parts: {},
+      state: structuredClone({ billing: PERIOD }),
+      build: (b) =>
+        b.el('root', 'section', {}, [
+          b.el('switch', 'div', {}, [
+            b.link('monthly-btn', NONE, 'Monthly', 'secondary', { stateAction: { state: 'billing', op: 'set', value: 'monthly' } }),
+            b.link('annual-btn', NONE, 'Annual', 'secondary', { stateAction: { state: 'billing', op: 'set', value: 'annual' } })
+          ]),
+          b.el('list', 'ul', {}, [
+            b.repeat('items', 'plans', [
+              b.el('plan', 'li', {}, [
+                b.text('name', 'h3', { $item: 'name' }),
+                b.el('monthly', 'p', { when: eq(uiState('billing'), 'monthly'), collapseEmpty: true }, [b.text('monthly-text', 'span', 'Paid monthly')]),
+                b.el('annual', 'p', { when: eq(uiState('billing'), 'annual'), collapseEmpty: true }, [b.text('annual-text', 'span', 'Paid yearly')])
+              ])
+            ])
+          ]),
+          // No button offers this option, so a page shows it only as its state does.
+          b.text('legacy', 'p', 'Grandfathered rate', { when: eq(uiState('billing'), 'legacy') })
+        ])
+    });
+    place(s, def);
+    const html = await renderHome(s);
+    expect(html.split('Paid monthly')).toHaveLength(3);
+    expect(html.split('Paid yearly')).toHaveLength(3);
+    // Each item's content for the option not chosen hides while scripts run, and none of it is named by an ID.
+    const annual = tagsWith(html, 'class', `${nodeClass(def, 'annual')} ${CHOICE_OFF_CLASS}`);
+    expect(annual).toHaveLength(2);
+    for (const t of annual) expect(t).not.toMatch(/\sid=/);
+    expect(tagsWith(html, 'class', nodeClass(def, 'monthly'))).toHaveLength(2);
+    expect(html).not.toContain('Grandfathered rate');
+    expect(compileWarnings(s, [def])).toEqual([]);
+  });
+
+  it('keeps a choice’s content only where hiding it is all it takes: never a summary, nor beside a tab list, and empties its wrapper with it', async () => {
+    const s = fresh();
+    const def = addDef(s, {
+      componentId: 'test.choice-shapes',
+      name: 'Choice shapes',
+      properties: { items: P.list('Items', 'Item', { tag: P.choice('Tag', 'summary', [['summary', 'Summary'], ['p', 'Paragraph']]) }, [{ tag: 'summary' }]) },
+      parts: {},
+      state: structuredClone({ billing: BILLING }),
+      build: (b) =>
+        b.el('root', 'section', {}, [
+          b.el('switch', 'div', {}, [
+            b.link('monthly-btn', NONE, 'Monthly', 'secondary', { stateAction: { state: 'billing', op: 'set', value: 'monthly' } }),
+            b.link('annual-btn', NONE, 'Annual', 'secondary', { stateAction: { state: 'billing', op: 'set', value: 'annual' } })
+          ]),
+          // A disclosure's first summary is its control, hidden or not: only the chosen one is in the page.
+          b.el('terms', 'details', {}, [
+            b.el('summary-monthly', 'summary', { when: eq(uiState('billing'), 'monthly') }, [b.text('summary-monthly-text', 'span', 'Monthly terms')]),
+            b.el('summary-annual', 'summary', { when: eq(uiState('billing'), 'annual') }, [b.text('summary-annual-text', 'span', 'Annual terms')]),
+            b.text('terms-text', 'p', 'Cancel any time.')
+          ]),
+          // A padded wrapper that collapses with what it holds hides with the option it holds, printed too.
+          b.el('wrap', 'div', { collapseEmpty: true, styles: { paddingBlock: '24px' } }, [b.text('monthly-note', 'p', 'Billed monthly', { when: eq(uiState('billing'), 'monthly') })]),
+          // A summary whose tag each item of a list chooses could be any item's disclosure control: kept out too.
+          b.el('list', 'ul', {}, [
+            b.repeat('items', 'items', [
+              b.el('item', 'li', {}, [
+                b.el('item-terms', 'details', {}, [
+                  b.el('item-monthly', { $item: 'tag' }, { when: eq(uiState('billing'), 'monthly') }, [b.text('item-monthly-text', 'span', 'Item monthly')]),
+                  b.el('item-annual', 'summary', { when: eq(uiState('billing'), 'annual') }, [b.text('item-annual-text', 'span', 'Item annual')])
+                ])
+              ])
+            ])
+          ])
+        ])
+    });
+    place(s, def);
+    const html = await renderHome(s);
+    expect(html).toContain('Annual terms');
+    expect(html).not.toContain('Monthly terms');
+    expect(html).toContain('Item annual');
+    expect(html).not.toContain('Item monthly');
+    expect(tagsWith(html, 'class', `${nodeClass(def, 'monthly-note')} ${CHOICE_OFF_CLASS}`)).toHaveLength(1);
+    const wrap = openTag(html, nodeClass(def, 'wrap'));
+    expect(wrap).not.toBe('');
+    expect(attrOf(wrap, 'class')!.split(' ')).toContain(CHOICE_OFF_CLASS);
+    expect(attrOf(wrap, 'class')!.split(' ')).not.toContain(STATE_OFF_CLASS);
+    expect(compileWarnings(s, [def])).toEqual([]);
+    // A choice whose buttons are also a tab list's keeps the tab list's rules: a row of shortcuts besides offers
+    // nothing more to show without scripts.
+    const t = fresh();
+    const tabs = tabsDef(t, {
+      extra: (b) => [
+        b.el('shortcuts', 'div', {}, [
+          b.link('short-a', NONE, 'Starter', 'text', { stateAction: { state: 'plan', op: 'set', value: 'a' } }),
+          b.link('short-c', NONE, 'Studio', 'text', { stateAction: { state: 'plan', op: 'set', value: 'c' } })
+        ]),
+        b.text('teaser', 'p', 'Studio teaser', { when: eq(uiState('plan'), 'c') })
+      ]
+    });
+    place(t, tabs);
+    const out = await renderHome(t);
+    expect(tagsWith(out, 'role', 'tablist')).toHaveLength(1);
+    expect(out).not.toContain('Studio teaser');
+    expect(out).not.toContain(CHOICE_OFF_CLASS);
+  });
+
   it('groups a choice’s buttons gathered in a plain container, named as a tab list is, each named by its option while blank', async () => {
     const s = fresh();
     const def = addDef(s, {
@@ -1247,7 +1373,10 @@ describe('optional tabs, unnamed tabs and groups of a choice’s buttons', () =>
     expect(pressed.map((t) => attrOf(t, 'aria-pressed'))).toEqual(['false', 'true', 'false', 'true']);
     expect(pressed.map((t) => html.slice(html.indexOf(t) + t.length).split('<')[0])).toEqual(['Monthly', 'Annual', 'Monthly', 'Annual']);
     expect(html.split('$100 a year')).toHaveLength(3);
-    expect(html).not.toContain('$10 a month');
+    expect(tagsWith(html, 'class', `${nodeClass(def, 'annual-note')}`)).toHaveLength(2);
+    // The other period's note stays in the page, hidden while scripts run, so a page without them shows both.
+    expect(html.split('$10 a month')).toHaveLength(3);
+    expect(tagsWith(html, 'class', `${nodeClass(def, 'monthly-note')} ${CHOICE_OFF_CLASS}`)).toHaveLength(2);
     expect(compileWarnings(s, [def])).toEqual([]);
     // A group's labels may say what the page does not say again, so print keeps it.
     expect(generateProject(s).get('src/lib/siteorigin/styles/components.css')).not.toContain(CHOICE_GROUP_CLASS);

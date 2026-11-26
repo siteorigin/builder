@@ -159,7 +159,8 @@ export async function renderPreviews(pack: ThemePack, files: Map<string, string>
 
   const docs = cases.map((c, i) => {
     const { body, head } = module.render(module.pages[i], { props: {} });
-    const html = `<!doctype html><html lang="en"><head><meta charset="utf-8"><style>${css}</style>${head.replace(/<title>[^<]*<\/title>/, '')}<style>html{scroll-behavior:auto}*{animation:none!important;transition:none!important}</style></head><body><main id="main">${body}</main></body></html>`;
+    // Drawn as a visitor whose browser runs the page's scripts sees it (see SCRIPTS_CLASS): one tab's panel, one period.
+    const html = `<!doctype html><html lang="en" class="so-js"><head><meta charset="utf-8"><style>${css}</style>${head.replace(/<title>[^<]*<\/title>/, '')}<style>html{scroll-behavior:auto}*{animation:none!important;transition:none!important}</style></head><body><main id="main">${body}</main></body></html>`;
     const key = createHash('sha256').update(`${RENDERER}\n${VIEW.width}x${VIEW.height}\n${fontKey}\n${html}`).digest('hex');
     return { c, html, cached: join(cacheDir, `${key}.webp`) };
   });

@@ -1261,8 +1261,21 @@ function definitionRules(state: ProjectState, def: ComponentDefinition, standalo
   return rules;
 }
 
-/** The class a panel kept in the page takes while its component's state hides it (see stateWidgets). */
+/**
+ * The class a panel kept in the page takes while its component's state hides it (see stateWidgets). It hides on screen
+ * while scripts run (SCRIPTS_CLASS): printed, or where nothing would ever show it, every panel shows.
+ */
 export const STATE_OFF_CLASS = 'so-state-off';
+/**
+ * The class an option's content kept in the page takes while another option of its choice is chosen (a billing
+ * period's price, StatePanel.choice). It hides while scripts run, printed too: a page prints the option chosen.
+ */
+export const CHOICE_OFF_CLASS = 'so-choice-off';
+/**
+ * The class <html> takes as the page starts, from a script of its own (see generateAppHtml): while it is missing, the
+ * buttons that change a component's state would do nothing, so all the content they choose between shows.
+ */
+export const SCRIPTS_CLASS = 'so-js';
 /**
  * The class of a group of a choice's buttons (see stateWidgets). Its labels may say something the page does not say
  * again, so print keeps it; a theme leaves out of print the groups of its own designs that repeat nothing.
@@ -1347,7 +1360,9 @@ export function generateComponentsCss(state: ProjectState): string {
   // A tab's panel while another tab is chosen, or a closed disclosure's content, stays in the page hidden on screen
   // only, so printing shows it with its own layout. An id no element has (#so-print) outweighs a placement's styles.
   if (sortedDefs(state).some((def) => def.kind === 'managed' && stateLocals(def).size))
-    parts.push(`/* Content a component's state hides on screen. */\n@media not print {\n\t.${STATE_OFF_CLASS}:not(#so-print) { display: none !important; }\n}`);
+    parts.push(
+      `/* Content a component's state hides on screen, while scripts run (without them, its buttons do nothing). */\n@media not print {\n\t.${SCRIPTS_CLASS} .${STATE_OFF_CLASS}:not(#so-print) { display: none !important; }\n}\n.${SCRIPTS_CLASS} .${CHOICE_OFF_CLASS}:not(#so-print) { display: none !important; }`
+    );
   if (sortedDefs(state).some(hasOverlays)) parts.push(OVERLAY_CSS);
   // Items a list's category filter hides stay in the page, hidden on screen only, so printing shows them all; the
   // row of category buttons is left out of print.
@@ -1751,6 +1766,11 @@ interface StatePanel {
   tab?: string;
   /** Shown once per item of a list, while its item is an item state's active one: named by its item too. */
   perItem?: boolean;
+  /**
+   * Content of one option of a choice whose buttons make a group (a billing period's price): kept in the page, perhaps
+   * once per item of a list, with no ID, as no button names it. It hides whenever scripts run, in print too.
+   */
+  choice?: true;
 }
 /** What a button that changes state, and goes nowhere, tells assistive technology about what it does. */
 type StateButton =
@@ -1895,6 +1915,29 @@ function stateWidgets(ctx: EmitCtx): StateWidgets {
     if (n.kind === 'text') return !tag && !n.rich;
     return n.kind === 'element' && !n.collapseEmpty && !rendersAsCard(ctx, n) && !isCarouselTrack(n) && (tag ? isBareTag(ctx, n, tag) : true);
   };
+  // Reached from a root through elements and lists alone, whatever their conditions: content this file's own markup
+  // renders, as many times as its lists do (never a card's or a carousel's runtime helper, or a collection loop).
+  const plain = new Set<string>();
+  const walk = (id: string) => {
+    const n = tree.nodes[id];
+    if (!n || plain.has(id)) return;
+    plain.add(id);
+    if ((n.kind === 'element' && !rendersAsCard(ctx, n) && !isCarouselTrack(n)) || (n.kind === 'repeat' && !isCollectionLoop(n))) n.children.forEach(walk);
+  };
+  tree.rootIds.forEach(walk);
+  /**
+   * Content a choice keeps in the page while another option is chosen: an element or plain text, wherever it renders,
+   * but never one whose mere presence matters to the browser however it is styled (the first summary of a disclosure
+   * is its control, hidden or not).
+   */
+  const choiceHost = (n: GraphNode): boolean => {
+    if (!plain.has(n.id) || roots.has(n.id) || (n as { overlay?: unknown }).overlay !== undefined) return false;
+    if (n.kind !== 'text' && n.kind !== 'element') return false;
+    if (n.kind === 'text' ? n.rich : rendersAsCard(ctx, n) || isCarouselTrack(n)) return false;
+    // A tag a list item chooses is only known item by item, so it could be any of them.
+    if (isBinding(n.tag) && !('$prop' in n.tag)) return false;
+    return !tagChoices(ctx, n).tags.some((t) => PRESENCE_TAGS.has(t));
+  };
   /** A button that changes state and goes nowhere: always a real button. */
   const stateButton = (n: GraphNode): n is GraphNode & { kind: 'link'; stateAction: StateAction } =>
     n.kind === 'link' && !!actionState(def, ctx.states, n.stateAction, n.id) && !isBinding(n.link) && !resolveLink(n.link as LinkValue, ctx.rctx);
@@ -2012,6 +2055,13 @@ function stateWidgets(ctx: EmitCtx): StateWidgets {
         if (out.lists.has(id) || !panelHost(group, 'div') || group.kind !== 'element' || group.when || group.unless || group.children.length < 2) continue;
         if (group.children.every((c) => setters.some((b) => b.id === c && !b.when))) out.groups.set(id, name);
       }
+      // With a group, what each option its buttons choose shows stays in the page, so a visitor whose browser runs no
+      // scripts (whose buttons do nothing) reads every one of those options' (see CHOICE_OFF_CLASS). An option no
+      // button of a group chooses is never offered there, so its content keeps its condition.
+      // A choice that is also a tab list's (tabs, perhaps optional, with a row of shortcuts besides) keeps its panels'
+      // rules alone.
+      const offered = [...out.lists.values()].includes(name) ? new Set<string | undefined>() : new Set([...out.groups].filter(([, st]) => st === name).flatMap(([id]) => (tree.nodes[id] as GraphNode & { kind: 'element' }).children.map(setValue)));
+      for (const { n, g } of guarded) if (g.state === name && typeof g.shows === 'string' && offered.has(g.shows) && !out.panels.has(n.id) && choiceHost(n)) out.panels.set(n.id, { state: name, shows: g.shows, choice: true });
       continue;
     }
     const toggles = buttons.filter((b) => b.stateAction.op === 'toggle');
@@ -2053,6 +2103,9 @@ export function optionalTabGates(state: ProjectState, def: ComponentDefinition, 
   memo.brokenCards = ctx.brokenCards;
   return gates;
 }
+
+/** Tags the browser acts on by their place in the page, whatever their styles: never kept in it hidden. */
+const PRESENCE_TAGS = new Set(['summary', 'legend', 'caption', 'figcaption', 'option', 'optgroup', 'source', 'track', 'title', 'base', 'meta', 'link', 'style', 'script']);
 
 /** Whether an element always renders as \`tag\` (no property chooses its tag). */
 function isBareTag(ctx: EmitCtx, node: GraphNode & { kind: 'element' }, tag: string): boolean {
@@ -2141,7 +2194,7 @@ function stateElementAttrs(ctx: EmitCtx, node: GraphNode & { kind: 'element' | '
     return ` role="${role}" aria-label={has(${value}) ? ${value} : ${fallback}}`;
   }
   const panel = ctx.widgets?.panels.get(node.id);
-  if (!panel) return '';
+  if (!panel || panel.choice) return '';
   // Content with an anchor keeps it as its id (anchorAttr), and no button names it.
   const id = node.anchor ? '' : ` id={${widgetId(ctx, node.id, 'panel', panel.perItem)}}`;
   if (!panel.tab) return id;
@@ -2291,15 +2344,22 @@ function filterItemClass(ctx: EmitCtx, node: GraphNode): string | null {
 }
 
 /**
- * The condition under which an element shows on screen while it stays in the page: a panel's own condition, or for a
- * collapsing element, its children showing when only kept panels would keep it there. Null when nothing hides it.
+ * The classes that hide an element while it stays in the page, as class-list expressions: a panel's while its own
+ * condition fails, and a collapsing element's while only kept content would keep it there (none of its children shows),
+ * hiding where that content hides: an option's content (CHOICE_OFF_CLASS) in print too, the rest on screen only.
  */
-function screenShown(ctx: EmitCtx, node: GraphNode): string | null {
-  if (!ctx.widgets?.panels.size) return null;
-  if (ctx.widgets.panels.has(node.id)) return conditionExpr(ctx, (node.when ?? node.unless) as Condition, !node.when);
-  if (node.kind !== 'element' || !node.collapseEmpty) return null;
+function offClasses(ctx: EmitCtx, node: GraphNode): string[] {
+  if (!ctx.widgets?.panels.size) return [];
+  const out: string[] = [];
+  const panel = ctx.widgets.panels.get(node.id);
+  if (panel) out.push(`!(${conditionExpr(ctx, (node.when ?? node.unless) as Condition, !node.when)}) && ${js(panel.choice ? CHOICE_OFF_CLASS : STATE_OFF_CLASS)}`);
+  if (node.kind !== 'element' || !node.collapseEmpty) return out;
+  const present = childrenCondition(ctx, node, new Set(), true);
+  const printed = childrenCondition(ctx, node, new Set(), 'print');
   const shown = childrenCondition(ctx, node, new Set());
-  return shown !== childrenCondition(ctx, node, new Set(), true) ? shown : null;
+  if (printed !== present && printed) out.push(`!(${printed}) && ${js(CHOICE_OFF_CLASS)}`);
+  if (shown !== printed && shown) out.push(`!(${shown}) && ${js(STATE_OFF_CLASS)}`);
+  return out;
 }
 
 function useImport(ctx: EmitCtx, name: string, path: string) {
@@ -2410,8 +2470,7 @@ function classExpr(ctx: EmitCtx, node: GraphNode, extra: string[] = []): string 
     for (const [axis] of root ? axesOf(ctx.def) : nodeAxes(ctx.def, node.id).map((a) => [a])) parts.push(`\`so-${defKey(ctx.def.id)}--${axis}-\${${variantProp(axis)}}\``);
     if (root) parts.push('className');
     // Kept in the page while its state hides it: hidden on screen, shown in print (see stateWidgets).
-    const shown = screenShown(ctx, node);
-    if (shown) parts.push(`!(${shown}) && ${js(STATE_OFF_CLASS)}`);
+    parts.push(...offClasses(ctx, node));
     // An item whose category is not the one chosen, likewise (see FilterGen).
     const filtered = filterItemClass(ctx, node);
     if (filtered) parts.push(filtered);
@@ -2482,10 +2541,10 @@ function emitNode(ctx: EmitCtx, id: string): string {
   // A list's category pills go just above the element holding it, shown and hidden with it.
   const filter = ctx.filters?.find((f) => f.host === node.id);
   if (filter) {
-    const shown = screenShown(ctx, node);
-    out = `${filterBar(ctx, filter, shown ? `!(${shown}) && ${js(STATE_OFF_CLASS)}` : null)}\n${out}`;
+    const off = offClasses(ctx, node);
+    out = `${filterBar(ctx, filter, off.length ? off.join(', ') : null)}\n${out}`;
   }
-  // A collapsing element stays while any child is in the page: a hidden panel inside keeps it, hidden too (screenShown).
+  // A collapsing element stays while any child is in the page: a hidden panel inside keeps it, hidden too (offClasses).
   const children = node.kind === 'element' && node.collapseEmpty && ctx.def ? childrenCondition(ctx, node, new Set(), true) : null;
   if (children) {
     useImport(ctx, '{ has }', `${RUNTIME_DIR}/util.js`);
@@ -2525,13 +2584,21 @@ function indentBlock(s: string): string {
 }
 
 /**
+ * What a render condition asks (see renderCondition): whether a node shows on screen (false), whether it is in the
+ * page at all (true), or whether it shows when printed while scripts run ('print': a kept panel does, an option's
+ * content not chosen does not).
+ */
+type Presence = boolean | 'print';
+
+/**
  * The condition under which a node renders, from its own `when`/`unless`, a repeat's list and a collapsing
  * element's children; null when it always renders. Definitions only, in the scope the node is emitted in. With
  * `present`, whether it is in the page at all: a panel kept there while its state hides it always is.
  */
-function renderCondition(ctx: EmitCtx, node: GraphNode, seen: Set<string>, present = false): string | null {
+function renderCondition(ctx: EmitCtx, node: GraphNode, seen: Set<string>, present: Presence = false): string | null {
   const parts: string[] = [];
-  const kept = present && (!!ctx.widgets?.panels.has(node.id) || !!ctx.widgets?.overlays.has(node.id));
+  const panel = ctx.widgets?.panels.get(node.id);
+  const kept = present === 'print' ? !!panel && !panel.choice : present && (!!panel || !!ctx.widgets?.overlays.has(node.id));
   if (node.when && !kept) parts.push(conditionExpr(ctx, node.when, false));
   if (node.unless && !kept) parts.push(conditionExpr(ctx, node.unless, true));
   if (node.kind === 'repeat' && isCollectionLoop(node)) parts.push(js(!!ctx.loops?.get(node.id)?.rows.length));
@@ -2545,7 +2612,7 @@ function renderCondition(ctx: EmitCtx, node: GraphNode, seen: Set<string>, prese
 }
 
 /** A collapsing element renders while any child does; a child that always renders (or no children) keeps it. */
-function childrenCondition(ctx: EmitCtx, node: GraphNode & { kind: 'element' }, seen: Set<string>, present = false): string | null {
+function childrenCondition(ctx: EmitCtx, node: GraphNode & { kind: 'element' }, seen: Set<string>, present: Presence = false): string | null {
   if (seen.has(node.id)) return null;
   seen.add(node.id);
   const conds: string[] = [];
@@ -4344,6 +4411,7 @@ export function generateAppHtml(state: ProjectState): string {
 	<head>
 		<meta charset="utf-8" />
 		<meta name="viewport" content="width=device-width, initial-scale=1" />
+		<script>document.documentElement.classList.add(${js(SCRIPTS_CLASS)});</script>
 		%sveltekit.head%
 	</head>
 	<body data-sveltekit-preload-data="hover">

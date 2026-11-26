@@ -152,7 +152,7 @@ describe.skipIf(!browserInstalled)('generated dialogs and drawers in a browser',
       const show = HTMLDialogElement.prototype.showModal;
       HTMLDialogElement.prototype.showModal = function () { window.modals++; return show.call(this); };
     }`);
-    const html = `<!doctype html><html lang="en"><head><style>${from.css}</style></head><body><div id="app">${variant === 'clean' ? from.ssr : ''}</div></body></html>`;
+    const html = `<!doctype html><html lang="en" class="so-js"><head><style>${from.css}</style></head><body><div id="app">${variant === 'clean' ? from.ssr : ''}</div></body></html>`;
     await page.route('**/*', (route) => {
       const url = new URL(route.request().url());
       if (url.origin !== ORIGIN) return route.abort();

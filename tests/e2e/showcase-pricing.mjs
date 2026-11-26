@@ -3,7 +3,8 @@
 // first tab chosen and only its panel showing. The exported site is then used at a 1280px desktop and a 390px phone: the
 // showcase switched by pointer and keyboard, its tab row scrolling sideways on the phone; the billing switch changing
 // every plan's price by pointer and keyboard; printed with every tab's panel and without the controls; read without
-// JavaScript, which shows the first tab and the monthly prices. The website is opened in a headless browser.
+// JavaScript, which shows every tab's panel under its label and both periods' prices, without the tab row or the
+// switch (#885). The website is opened in a headless browser.
 import assert from 'node:assert/strict';
 import { mkdirSync } from 'node:fs';
 import { join } from 'node:path';
@@ -132,15 +133,24 @@ try {
     await context.close();
   }
 
-  step('without JavaScript the first tab and the monthly prices show');
+  step('without JavaScript every tab’s panel shows under its label, and both periods’ prices, with no tab row or switch');
   {
     const context = await browser.newContext({ javaScriptEnabled: false, viewport: { width: 1280, height: 900 } });
     const page = await context.newPage();
     await page.goto(url);
     const panels = page.locator('[role="tabpanel"]').filter({ visible: true });
-    assert.equal(await panels.count(), 1, 'one panel shows');
-    assert.equal(await panels.locator('h3').innerText(), 'Plans drawn around how you live');
-    assert.deepEqual(await page.locator('li p').filter({ visible: true }).locator('span').filter({ hasText: /^\$/ }).allInnerTexts(), monthly);
+    assert.equal(await panels.count(), 4, 'every panel shows');
+    assert.deepEqual(await panels.locator('h3').allInnerTexts(), ['Plans drawn around how you live', 'One team from demolition to handover', 'Looked after long after we leave', 'Help when you need it']);
+    const seen = await page.evaluate(() => ({
+      list: getComputedStyle(document.querySelector('[role="tablist"]')).display,
+      labels: [...document.querySelectorAll('[role="tabpanel"]')].map((p) => getComputedStyle(p, '::before').content),
+      group: getComputedStyle(document.querySelector('[role="group"]')).display
+    }));
+    assert.equal(seen.list, 'none', 'the tab row, which would do nothing, is left out');
+    assert.deepEqual(seen.labels, ['"Design"', '"Build"', '"Care"', '"Support"'], 'each panel shows under its tab’s label');
+    assert.equal(seen.group, 'none', 'the billing switch, which would do nothing, is left out');
+    const shown = await page.locator('li p').filter({ visible: true }).locator('span').filter({ hasText: /^\$/ }).allInnerTexts();
+    assert.deepEqual(shown, monthly.flatMap((m, i) => [m, annual[i]]), 'every plan shows both periods’ prices');
     await context.close();
   }
 

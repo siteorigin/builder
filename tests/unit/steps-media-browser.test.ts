@@ -84,7 +84,7 @@ describe.skipIf(!browserInstalled)('Steps with pictures and the pinned heading i
     });
     page.on('pageerror', (e) => problems.push(e.message));
     const header = `<div id="stand-in-header" style="position:fixed;inset:0 0 auto 0;height:var(--so-header-offset);background:#111;z-index:50"></div>`;
-    const site = `<!doctype html><html lang="en" style="--so-header-offset:${HEADER}px"><head><meta name="viewport" content="width=device-width, initial-scale=1"><style>${css}</style></head><body>${variant === 'clean' ? header : ''}<div id="app">${variant === 'clean' ? ssr : ''}</div></body></html>`;
+    const site = `<!doctype html><html lang="en" class="so-js" style="--so-header-offset:${HEADER}px"><head><meta name="viewport" content="width=device-width, initial-scale=1"><style>${css}</style></head><body>${variant === 'clean' ? header : ''}<div id="app">${variant === 'clean' ? ssr : ''}</div></body></html>`;
     await page.route('**/*', (route) => {
       const url = new URL(route.request().url());
       if (url.origin !== ORIGIN) return route.abort();

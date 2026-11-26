@@ -277,7 +277,8 @@ describe('serving an isolated preview', () => {
     expect(res.headers['content-type']).toMatch(/text\/html/);
     expect(res.headers['cache-control']).toBe('no-store');
     expect(res.body).toContain('<!--transformed-->');
-    expect(res.body).toContain('<html lang="de-AT" dir="ltr">');
+    // Marked as running scripts, as a page marks itself, so content a state hides stays hidden.
+    expect(res.body).toContain('<html lang="de-AT" dir="ltr" class="so-js">');
     expect(res.body).toContain('<meta name="viewport" content="width=device-width, initial-scale=1" />');
     expect(res.body).toContain('<meta name="robots" content="noindex" />');
     const head = await request(path, 'HEAD');

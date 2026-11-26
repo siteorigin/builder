@@ -18,7 +18,7 @@ import { catalogueComponent, catalogueEntries, getTheme, searchCatalogue } from 
 import { FOUNDATION_BASE_CSS } from '@catalogue/foundation/base.css';
 import { applyOperations } from '@engine/apply';
 import { blocksSaving, validateState } from '@engine/validate';
-import { CHOICE_GROUP_CLASS, STATE_OFF_CLASS, defFile, generateProject, nodeClass } from '@generator/index';
+import { CHOICE_GROUP_CLASS, CHOICE_OFF_CLASS, SCRIPTS_CLASS, STATE_OFF_CLASS, defFile, generateProject, nodeClass } from '@generator/index';
 import { newMacroMemory, runUpsert, upsertToolSchema } from '@agent/macros';
 import { executeTool, type ToolHost } from '@agent/tools';
 
@@ -246,9 +246,15 @@ describe('Pricing with billing switch', () => {
       ['<button', 'Annual', 'false']
     ]);
     for (const price of ['$29', '$49', '$119']) expect(html).toContain(`>${price}<`);
-    for (const price of ['$290', '$490', '$1,190']) expect(html).not.toContain(`>${price}<`);
     expect(html.match(/per month/g)).toHaveLength(3);
-    expect(html).not.toContain('billed once');
+    // Every plan's annual price is in the page too, its row hidden while scripts run: a page whose scripts never run
+    // (whose switch does nothing) shows both periods (#885).
+    const monthly = tagsWith(html, 'class').filter((t) => attrOf(t, 'class')!.split(' ').includes(nodeClass(def, 'monthly-price-row')));
+    const annual = tagsWith(html, 'class').filter((t) => attrOf(t, 'class')!.split(' ').includes(nodeClass(def, 'annual-price-row')));
+    expect(monthly.map((t) => attrOf(t, 'class')!.split(' ').includes(CHOICE_OFF_CLASS))).toEqual([false, false, false]);
+    expect(annual.map((t) => attrOf(t, 'class')!.split(' ').includes(CHOICE_OFF_CLASS))).toEqual([true, true, true]);
+    for (const price of ['$290', '$490', '$1,190']) expect(html).toContain(`>${price}<`);
+    expect(html.match(/per year, billed once/g)).toHaveLength(3);
     // Its own name for the switch, in the site's language.
     const named = await renderHome(inserted(BILLING, { switchLabel: 'Période de facturation' }).state);
     expect(attrOf(tagsWith(named, 'role', 'group')[0], 'aria-label')).toBe('Période de facturation');
@@ -274,8 +280,10 @@ describe('Pricing with billing switch', () => {
     const source = generateProject(state).get(defFile(def))!;
     expect(source).toContain('let so_state_billing = $state("monthly");');
     expect(source).toContain('onclick={() => (so_state_billing = "annual")}');
-    // Each period's price and note show together, inside every plan.
-    expect(source).toMatch(/\{#each[\s\S]*\{#if so_state_billing === "monthly"\}[\s\S]*monthlyPrice[\s\S]*monthlyNote[\s\S]*\{#if so_state_billing === "annual"\}[\s\S]*annualPrice[\s\S]*annualNote[\s\S]*\{\/each\}/);
+    // Each period's price and note show together, inside every plan: both stay in the page, the one not chosen
+    // hidden by a class while scripts run.
+    expect(source).toMatch(/\{#each[\s\S]*!\(so_state_billing === "monthly"\) && "so-choice-off"[\s\S]*monthlyPrice[\s\S]*monthlyNote[\s\S]*!\(so_state_billing === "annual"\) && "so-choice-off"[\s\S]*annualPrice[\s\S]*annualNote[\s\S]*\{\/each\}/);
+    expect(source).not.toContain('{#if so_state_billing');
     expect(source).not.toMatch(/\$effect|addEventListener|document\./);
   });
 
@@ -307,7 +315,9 @@ describe('print', () => {
   it('prints every present tab’s panel under its label without the tab row, and the plans without the switch', () => {
     const { state } = inserted(BILLING, undefined, inserted(SHOWCASE).state);
     const css = generateProject(state).get('src/lib/siteorigin/styles/components.css')!;
-    expect(css).toMatch(new RegExp(`@media not print \\{\\s*\\.${STATE_OFF_CLASS}:not\\(#so-print\\) \\{ display: none !important; \\}`));
+    expect(css).toMatch(new RegExp(`@media not print \\{\\s*\\.${SCRIPTS_CLASS} \\.${STATE_OFF_CLASS}:not\\(#so-print\\) \\{ display: none !important; \\}`));
+    // The billing period not chosen is left out of print as well, while scripts run.
+    expect(css).toContain(`\n.${SCRIPTS_CLASS} .${CHOICE_OFF_CLASS}:not(#so-print) { display: none !important; }`);
     const print = FOUNDATION_BASE_CSS.slice(FOUNDATION_BASE_CSS.indexOf('@media print'));
     expect(print).toContain('.so-tablist:not(#so-print) { display: none !important; }');
     // Only the billing switch of Foundation's pricing, in any copy of it: other groups of buttons print.
@@ -315,5 +325,41 @@ describe('print', () => {
     expect(print).toContain(`section:has(:is([class*='__monthly-price-row'], [class*='__annual-price-row'])) .${CHOICE_GROUP_CLASS}:is([class$='__switch'], [class*='__switch ']):not(#so-print) { display: none !important; }`);
     expect(print.match(new RegExp(`\\.${CHOICE_GROUP_CLASS}\\b`, 'g'))).toHaveLength(1);
     expect(print).toContain("[role='tabpanel'][data-tab-label]:not([data-tab-label=''])::before");
+  });
+});
+
+describe('without scripts (#885)', () => {
+  it('shows every tab’s panel under its label and both billing periods, without the controls that would do nothing', async () => {
+    const { state, def } = inserted(SHOWCASE);
+    const files = generateProject(state);
+    // The page marks itself as running scripts in <head>, before the body shows; without that mark nothing a state
+    // hides is hidden.
+    expect(files.get('src/app.html')).toMatch(new RegExp(`<script>document\\.documentElement\\.classList\\.add\\("${SCRIPTS_CLASS}"\\);</script>\\n\\t\\t%sveltekit\\.head%`));
+    const css = files.get('src/lib/siteorigin/styles/components.css')!;
+    // No rule hides it whether or not scripts run.
+    expect(css).not.toMatch(new RegExp(`^\\s*\\.${STATE_OFF_CLASS}`, 'm'));
+    // Every panel is in the page, with its content, and the ones not chosen carry only the class that hides them.
+    const html = await renderHome(state);
+    const panels = tagsWith(html, 'role', 'tabpanel');
+    expect(panels).toHaveLength(3);
+    expect(panels.map((p) => attrOf(p, 'class')!.split(' ').includes(STATE_OFF_CLASS))).toEqual([false, true, true]);
+    for (const words of ['Plans drawn around how you live', 'One team from demolition to handover', 'Looked after long after we leave']) expect(html).toContain(words);
+    expect(attrOf(tagsWith(html, 'role', 'tablist')[0], 'class')!.split(' ')).toEqual(expect.arrayContaining(['so-tablist', nodeClass(def, 'tab-list')]));
+    // On screen without scripts, the theme lays them out as printed: each under its tab's label, the tab row and
+    // Pricing's switch left out.
+    const screen = FOUNDATION_BASE_CSS.slice(FOUNDATION_BASE_CSS.indexOf('@media not print {'), FOUNDATION_BASE_CSS.indexOf('@media print'));
+    const off = `:root:not(.${SCRIPTS_CLASS})`;
+    expect(screen).toContain(`${off} .so-tablist:not(#so-print) { display: none !important; }`);
+    expect(screen).toContain(`${off} section:has(:is([class*='__monthly-price-row'], [class*='__annual-price-row'])) .${CHOICE_GROUP_CLASS}:is([class$='__switch'], [class*='__switch ']):not(#so-print) { display: none !important; }`);
+    expect(screen).toContain(`${off} [role='tabpanel'][data-tab-label]:not([data-tab-label=''])::before {\n    content: attr(data-tab-label);`);
+    expect(screen).toContain(`${off} [role='tabpanel'] + [role='tabpanel'] { margin-block-start: 1.5em; }`);
+  });
+
+  it('leaves the site search out, as nothing could search', () => {
+    const search = catalogueComponent('foundation', 'site.search')!;
+    const source = (search.kind === 'code' ? search.source : undefined) ?? '';
+    expect(source).toContain('<form class="so-search__form"');
+    const { css } = compile(source, { filename: 'SiteSearch.svelte', generate: 'server', runes: true });
+    expect(css?.code).toMatch(new RegExp(`:root:not\\(\\.${SCRIPTS_CLASS}\\) \\.so-search\\.svelte-[a-z0-9]+:not\\(#so-no-js\\) \\{\\s*display: none !important;`));
   });
 });
