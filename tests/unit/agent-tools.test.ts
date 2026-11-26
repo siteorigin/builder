@@ -1632,7 +1632,7 @@ describe('context budget', () => {
         ...read('l3', { pageId: 'pg_a', viewport: 'phone' }, layout('pg_a', 'phone'), 'inspect_layout'),
         // A project read that includes everything an earlier one did replaces it, whatever order the sections came in.
         ...read('p1', { sections: ['tokens'] }, project(), 'read_project'),
-        ...read('p2', { sections: ['catalogue', 'pages'] }, project(), 'read_project'),
+        ...read('p2', { sections: ['catalogue'] }, project(), 'read_project'),
         ...read('p3', { sections: ['catalogue', 'tokens'] }, project(), 'read_project'),
         ...read('p4', {}, project(), 'read_project'),
         ...filler('f1'),
@@ -1646,7 +1646,7 @@ describe('context budget', () => {
       expect(at(items, 'e1')).toBe('[Superseded inspect_element n_1 on page pg_a at rev 3. Inspect it again before relying on it.]');
       expect(at(items, 'l1')).toBe('[Superseded inspect_layout pg_a phone. Measure it again if you need it.]');
       expect(at(items, 'p1')).toBe('[Superseded read_project at rev 3 (tokens). Pages: pg_a /, pg_b /about/. Read it again if you need it.]');
-      expect(at(items, 'p2')).toContain('[Superseded read_project at rev 3 (catalogue, pages).');
+      expect(at(items, 'p2')).toContain('[Superseded read_project at rev 3 (catalogue).');
       for (const id of ['s2', 's3', 's4', 'e2', 'e3', 'l2', 'l3', 'p3', 'p4']) expect(at(items, id), id).toBe(at(kept, id));
     });
 

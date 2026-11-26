@@ -18,7 +18,8 @@ import { getTree, findParent, displayName } from '@engine/tree';
 import { newMacroMemory, runUpsert, UPSERT_ARGS, UPSERT_BRIEF, UPSERT_DESCRIPTION, upsertToolSchema, type MacroMemory } from './macros';
 import { BRAND_ARGS, BRAND_BRIEF, BRAND_DESCRIPTION, brandToolSchema, runBrand } from './brand';
 import { PAGE_SEO_ARGS, PAGE_SEO_BRIEF, PAGE_SEO_DESCRIPTION, pageSeoToolSchema, runPageSeo, runSiteSeo, SITE_SEO_ARGS, SITE_SEO_BRIEF, SITE_SEO_DESCRIPTION, siteSeoToolSchema } from './seo-tools';
-import { collectionToolSchemas, LIST_ENTRIES_ARGS, LIST_ENTRIES_BRIEF, LIST_ENTRIES_DESCRIPTION, READ_ENTRY_ARGS, READ_ENTRY_BRIEF, READ_ENTRY_DESCRIPTION, runListEntries, runReadEntry, runUpsertEntry, UPSERT_ENTRY_ARGS, UPSERT_ENTRY_BRIEF, UPSERT_ENTRY_DESCRIPTION } from './collection-tools';
+import { collectionToolSchemas, UPSERT_PINNED_ENTRY_BRIEF, UPSERT_PINNED_ENTRY_DESCRIPTION, LIST_ENTRIES_ARGS, LIST_ENTRIES_BRIEF, LIST_ENTRIES_DESCRIPTION, READ_ENTRY_ARGS, READ_ENTRY_BRIEF, READ_ENTRY_DESCRIPTION, runListEntries, runReadEntry, runUpsertEntry, UPSERT_ENTRY_ARGS, UPSERT_ENTRY_BRIEF, UPSERT_ENTRY_DESCRIPTION } from './collection-tools';
+import { PROJECT_SECTIONS } from './budget';
 import { hasCollections } from '@shared/entry-feed';
 import { MANAGED_COMPONENT_ARGS, MANAGED_COMPONENT_BRIEF, MANAGED_COMPONENT_DESCRIPTION, managedComponentSchema, runManagedComponent } from './managed-component';
 import { runSelectionTool, SELECTION_ARGS, SELECTION_BRIEFS, SELECTION_DESCRIPTIONS, selectionTakesBackground, selectionTools, type SelectionTarget } from './selection';
@@ -44,8 +45,11 @@ const REQUESTED_SCOPE = z.object({
 });
 const SCOPE_NOTE = 'What this call changes. Wider than the request may change is refused; narrower limits the call.';
 
+/** The most operations one apply_operations call takes. */
+export const MAX_BATCH_OPERATIONS = 30;
+
 export const TOOL_ARGS = {
-  read_project: z.object({ sections: z.array(z.enum(['pages', 'tokens', 'catalogue', 'components', 'shell'])).optional() }),
+  read_project: z.object({ sections: z.array(z.enum(PROJECT_SECTIONS)).optional() }),
   read_page: z.object({ pageId: z.string(), nodeId: z.string().optional().describe('Optional subtree to read.') }),
   inspect_element: z.object({
     owner,
@@ -66,7 +70,7 @@ export const TOOL_ARGS = {
   apply_operations: z.object({
     expectedRevision: z.number().int().describe('The revision you last read. Mismatches are rejected; read again and retry.'),
     scope: REQUESTED_SCOPE.optional().describe(SCOPE_NOTE),
-    operations: z.array(EditOperationSchema).min(1).max(30)
+    operations: z.array(EditOperationSchema).min(1).max(MAX_BATCH_OPERATIONS)
   }),
   read_source: z.object({ definitionId: z.string(), startLine: z.number().int().min(1).optional(), endLine: z.number().int().optional() }),
   apply_source_patch: z.object({
@@ -131,7 +135,7 @@ export type ToolName = keyof typeof TOOL_ARGS;
 const CONTRACT_READ = 'Read a component contract: property schema, parts, variants, slots and examples. Use before inserting or editing an unfamiliar component.';
 
 const DESCRIPTIONS: Record<ToolName, string> = {
-  read_project: 'Project summary: revision, pages (IDs and routes), shared header/footer, project components. Optional sections add site tokens, or the theme catalogue: every component with its compact property signature, style parts and variants, plus the valid icon names.',
+  read_project: 'Project summary: revision, pages (IDs and routes), shared header/footer, project components. Optional sections add site tokens, the theme catalogue (every component with its compact property signature, style parts and variants, plus the valid icon names) or the installed components.',
   read_page: 'Read a page: its sections and their component instances, props (with list item IDs), variants, style overrides and nested content.',
   inspect_element:
     'Inspect one node: full props, the component property schema, public parts with allowed style controls, variants, slots and its position in the tree. With prop, read one content field whole instead (long rich text as Markdown), a part at a time: call again with the offset each part returns until next is null.',
@@ -139,7 +143,7 @@ const DESCRIPTIONS: Record<ToolName, string> = {
   read_component: `${CONTRACT_READ} structure adds how its design is built.`,
   search_assets: 'List imported images by name and description, with the assetId that identifies each one (two images can share a name). You cannot see image contents.',
   apply_operations:
-    'Apply a batch of typed edit operations atomically. This is the only way to change the website. Every operation is validated; on error nothing in the batch is applied and you get the exact problem. Operations refer to pages by ID: to fill a page you create, use the pageId this call returns in your next step. Call it at most once per step (one response of yours); the request carries on in your next step without the user replying.',
+    'Apply a batch of typed edit operations atomically. Every operation is validated; on error nothing in the batch is applied and you get the exact problem. Operations refer to pages by ID: to fill a page you create, use the pageId this call returns in your next step. Call it at most once per step (one response of yours); the request carries on in your next step without the user replying.',
   read_source: 'Read the Svelte source of a component. Generated managed sources are read-only; project code components can be patched.',
   apply_source_patch: 'Change the source of a project code component (never generated files, config or dependencies). Requires the revision and hash read_source returned with it.',
   inspect_layout:
@@ -171,7 +175,7 @@ const DESCRIPTIONS: Record<ToolName, string> = {
  * the name and signature say it all. A tool missing here keeps its description.
  */
 const BRIEFS: Partial<Record<ToolName, string>> = {
-  read_project: 'Revision, pages (IDs and routes), header/footer and project components. sections adds site tokens, or the catalogue: every component with its properties, parts and variants, and the icon names.',
+  read_project: 'Revision, pages (IDs and routes), header/footer and project components. sections adds tokens, the catalogue (components with properties, parts, variants; icon names) or installed components.',
   read_page: 'Its sections with props (and list item IDs), variants, styles and nested content.',
   inspect_element: 'One node: props, property schema, parts with their style controls, variants, slots and place in the tree. With prop, one content field whole (rich text as Markdown), a part at a time: call again with each offset returned until next is null.',
   search_components: 'Theme and project components by keywords, with their IDs.',
@@ -356,7 +360,7 @@ export function toolDefinitions(opts: { codeEnabled?: boolean; definitionOps?: b
   return (Object.keys(TOOL_ARGS) as ToolName[])
     .filter((name) => !TASK_TOOLS.has(name) && (codeEnabled || !CODE_TOOLS.has(name)))
     .map((name) => {
-      const args = name === 'apply_operations' ? TOOL_ARGS.apply_operations.extend({ operations: z.array(offeredOperations(codeEnabled, definitionOps, opts.operations)).min(1).max(30) }) : TOOL_ARGS[name];
+      const args = name === 'apply_operations' ? TOOL_ARGS.apply_operations.extend({ operations: z.array(offeredOperations(codeEnabled, definitionOps, opts.operations)).min(1).max(MAX_BATCH_OPERATIONS) }) : TOOL_ARGS[name];
       const schema = z.toJSONSchema(args, { unrepresentable: 'any', io: 'input' }) as Record<string, unknown>;
       delete schema.$schema;
       return { name, ...describe(name), parameters: schema };
@@ -490,7 +494,7 @@ function runTools(opts: {
     return {
       tools: [
         { name: 'read_collection_entry', ...describe('read_collection_entry'), parameters: pinned.read },
-        { name: 'upsert_collection_entry', ...describe('upsert_collection_entry'), parameters: pinned.upsert },
+        { name: 'upsert_collection_entry', description: UPSERT_PINNED_ENTRY_DESCRIPTION, brief: UPSERT_PINNED_ENTRY_BRIEF, parameters: pinned.upsert },
         plainTool('request_clarification')
       ],
       mode: 'entry',

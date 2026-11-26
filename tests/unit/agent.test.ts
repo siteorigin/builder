@@ -1610,7 +1610,7 @@ describe('library images in the chat (#12)', () => {
 
 describe('run budget, parallel calls and validation', () => {
   const create = (title: string, rev: number) => ({ expectedRevision: rev, operations: [{ type: 'page.create', title }] });
-  const readTurns = (n: number): Turn[] => Array.from({ length: n }, (_, i) => () => [call(`r${i}`, 'read_project', { sections: i % 2 ? ['tokens'] : ['pages'] })]);
+  const readTurns = (n: number): Turn[] => Array.from({ length: n }, (_, i) => () => [call(`r${i}`, 'read_project', i % 2 ? { sections: ['tokens'] } : {})]);
 
   it('runs parallel read calls but only one mutation per model turn', async () => {
     let homeId = '';
