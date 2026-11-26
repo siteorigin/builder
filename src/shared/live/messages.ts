@@ -280,7 +280,7 @@ const presence = z
     selection: elementRef.nullable(),
     previewPath: z
       .string()
-      .refine((path) => /^[\x21-\x7e]+$/.test(path) && isPreviewTarget(path), { message: 'Not a path within the preview, in its URL-encoded form.' })
+      .refine((path) => /^[A-Za-z0-9\-._~!$&'()*+,;=:@/?%]+$/.test(path) && isPreviewTarget(path), { message: 'Not a path within the preview, in its URL-encoded form.' })
       .nullable()
   })
   .strict();

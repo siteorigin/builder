@@ -37,8 +37,16 @@
     location.reload();
   });
 
-  const ready = () => window.parent.postMessage({ type: 'siteorigin-live:ready', path: path() }, viewer);
+  // The site's own router moves with history.pushState, which raises no event; a cheap look each half second catches it
+  // without touching the site's code.
+  let last = path();
+  const ready = () => {
+    last = path();
+    window.parent.postMessage({ type: 'siteorigin-live:ready', path: last }, viewer);
+  };
   ready();
   window.addEventListener('popstate', ready);
-  window.addEventListener('hashchange', ready);
+  setInterval(() => {
+    if (path() !== last) ready();
+  }, 500);
 })();

@@ -100,7 +100,7 @@ describe('the viewer’s files', () => {
       '😀'.repeat(40),
       '😀'.repeat(41),
       '---',
-      ...[...'\u115f\u1160\u200b\u2060\u2800\u3164\ufeff\uffa0\u061c\u200e\u200f\u202a\u202b\u202c\u202d\u2066\u2067\u2068\u2069\u0000\u001f\u007f\u0085'].map((c) => `Ann${c}Lee`),
+      ...[...'\u115f\u1160\u200b\u2060\u2800\u3164\ufeff\uffa0\u061c\u200e\u200f\u202a\u202b\u202c\u202d\u2066\u2067\u2068\u2069\u0000\u0001\u001f\u007f\u0085'].map((c) => `Ann${c}Lee`),
       'Zoë',
       'محمد',
       42,
@@ -128,7 +128,7 @@ describe('the reload bridge in the preview', () => {
     };
     const tag = `<script src="${room.previewOrigin}/__siteorigin/live.js"></script>`;
     const page = new TextEncoder().encode('<!doctype html><html><head><title>Home</title></head><body><h1>Hello</h1></body></html>');
-    const framed = await ask('/', 'iframe', { headers: [['content-type', 'text/html; charset=utf-8'], ['content-length', String(page.length)], ['etag', '"v1"'], ['last-modified', 'Wed, 25 Nov 2026 09:00:00 GMT'], ['accept-ranges', 'bytes']], body: page }, { 'if-none-match': '"v0"', 'if-modified-since': 'Wed, 25 Nov 2026 08:00:00 GMT', range: 'bytes=0-10', accept: 'text/html' });
+    const framed = await ask('/', 'iframe', { headers: [['content-type', 'text/html; charset=utf-8'], ['content-length', String(page.length)], ['etag', '"v1"'], ['last-modified', 'Wed, 25 Nov 2026 09:00:00 GMT'], ['accept-ranges', 'bytes']], body: page }, { 'if-none-match': '"v0"', 'if-modified-since': 'Wed, 25 Nov 2026 08:00:00 GMT', range: 'bytes=0-10', 'if-range': '"v0"', accept: 'text/html' });
     expect(framed.answer.status).toBe(200);
     expect(framed.body).toBe(`<!doctype html><html><head>${tag}<title>Home</title></head><body><h1>Hello</h1></body></html>`);
     // A framed page is always asked for whole, so it always comes back with the bridge in it.

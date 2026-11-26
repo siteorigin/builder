@@ -153,7 +153,7 @@ describe('refused frames', () => {
   });
 
   it('give a presence path only as a path within the preview, in its URL-encoded form', () => {
-    for (const previewPath of ['', 'about/', '//other.test/', '/caf\u00e9/', '/a b/', '/a#b', '/__open-in-editor', 42])
+    for (const previewPath of ['', 'about/', '//other.test/', '/caf\u00e9/', '/a b/', '/a#b', '/a{b', '/a"b', '/a<b>', '/__open-in-editor', 42])
       expect(refused('host-to-relay', { type: 'presence:update', presence: { pageId: null, viewportWidth: 390, selection: null, previewPath } }), String(previewPath)).toMatchObject({ code: 'INVALID', path: 'presence.previewPath' });
     expect(parseFrame('host-to-relay', json({ type: 'presence:update', presence: { pageId: null, viewportWidth: 390, selection: null, previewPath: '/caf%C3%A9/?tab=1' } })).ok).toBe(true);
   });

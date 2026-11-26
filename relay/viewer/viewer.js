@@ -103,6 +103,13 @@ let queuedTicket = null;
 let redeeming = false;
 /** @type {AbortController | null} */
 let redemption = null;
+/** The last ticket taken up: the relay sends an unused ticket again with any grant update, and each is good once. */
+/** @type {string | null} */
+let lastTicket = null;
+/** Redemptions that failed in a row on a working socket; each is retried by taking the place back for a fresh ticket. */
+let previewRetries = 0;
+/** Whether the guest's access ran out on the relay's clock and the relay has not yet said otherwise. */
+let pastDeadline = false;
 /** Whether the frame may be behind the host: it was kept while the socket was down, when reloads could be missed. */
 let stale = false;
 /** Whether the guest was let in on this page, and the site's name then, so a final screen keeps the bar saying Ended. */
@@ -253,6 +260,7 @@ function onStatus(frame) {
       return setPhase('pending');
     case 'admitted': {
       settle();
+      pastDeadline = false;
       const before = guest?.role;
       guest = { role: frame.role === 'collaborator' ? 'collaborator' : 'viewer', projectName: String(frame.projectName ?? ''), guestExpiresAt: typeof frame.guestExpiresAt === 'number' ? frame.guestExpiresAt : null };
       sessionExpiresAt = Number(frame.sessionExpiresAt) || 0;
@@ -354,6 +362,9 @@ function scheduleReconnect() {
 function endAccess() {
   grant++;
   queuedTicket = null;
+  pastDeadline = false;
+  previewRetries = 0;
+  framePath = '/';
   redemption?.abort();
   stale = false;
   previewReady = false;
@@ -391,6 +402,8 @@ function isFinal(p) {
 
 /** Redeem tickets one at a time, newest last, so the cookie the browser keeps is always the newest grant's. */
 function redeem(/** @type {string} */ ticket) {
+  if (ticket === lastTicket) return;
+  lastTicket = ticket;
   queuedTicket = ticket;
   if (!redeeming) void drainTickets();
 }
@@ -429,10 +442,17 @@ async function drainTickets() {
     if (ok) {
       previewReady = true;
       previewFailed = false;
+      previewRetries = 0;
       if (!iframe) mountFrame();
       else if (stale) refreshFrame();
       else applyFollow();
       stale = false;
+    } else if (previewRetries < 2) {
+      // The ticket is spent or lost either way: taking the place back on a new socket brings a fresh one.
+      previewRetries++;
+      closeSocket();
+      scheduleReconnect();
+      continue;
     } else {
       previewFailed = true;
     }
@@ -443,7 +463,7 @@ async function drainTickets() {
 
 function mountFrame() {
   if (iframe) return layout();
-  const start = follow && hostPage?.previewPath ? hostPage.previewPath : '/';
+  const start = follow && hostPage?.previewPath ? hostPage.previewPath : framePath;
   iframe = document.createElement('iframe');
   iframe.id = 'preview';
   iframe.title = guest?.projectName ? `Live preview of ${guest.projectName}` : 'Live preview';
@@ -469,11 +489,15 @@ function navigate(path) {
   iframe.src = `${config.previewOrigin}${path}`;
 }
 
-/** Load the frame's page again, or the host's when following it: after anything that may have left it behind. */
+/**
+ * Catch the frame up after anything that may have left it behind (the host away, the socket down): to the host's page
+ * when following a host that is elsewhere, otherwise the page the guest is on, reloaded where it is scrolled to.
+ */
 function refreshFrame() {
   if (!iframe || !previewReady) return;
   layout();
-  navigate(follow && hostPage?.previewPath ? hostPage.previewPath : framePath);
+  if (follow && hostPage?.previewPath && hostPage.previewPath !== framePath) navigate(hostPage.previewPath);
+  else reloadPreview();
 }
 
 /** Show the host's latest work: the bridge reloads the page the guest is on, where it is scrolled to. */
@@ -554,7 +578,17 @@ function accessEnd() {
  */
 function tick() {
   const end = accessEnd();
-  if (end && clock.at > 0 && relayNow() >= end.at) return finish(end.own ? 'expired-guest' : 'expired-session');
+  if (end && clock.at > 0 && relayNow() >= end.at && !pastDeadline) {
+    // The relay has the last word (the host may have extended the guest's access while this socket was down), so the
+    // place is kept; only the site goes, until the relay lets the guest in again or says why not.
+    pastDeadline = true;
+    grant++;
+    previewReady = false;
+    queuedTicket = null;
+    redemption?.abort();
+    unmountFrame();
+    render();
+  }
   renderTime();
 }
 
@@ -607,9 +641,11 @@ function render() {
   if (inRoom) renderRoom();
   else renderScreen();
   if (over) {
+    // A place the guest can still take back (another tab, a lost connection) is not an ending.
+    const recoverable = phase === 'replaced' || phase === 'lost' || phase === 'unavailable' || phase === 'error';
     ui.title.textContent = siteTitle;
-    ui.connection.dataset.state = 'ended';
-    ui.connection.textContent = 'Ended';
+    ui.connection.dataset.state = recoverable ? 'reconnecting' : 'ended';
+    ui.connection.textContent = recoverable ? 'Disconnected' : 'Ended';
   }
 }
 
@@ -648,7 +684,8 @@ function renderRoom() {
   ui.follow.checked = follow;
   renderTime();
   let veil = '';
-  if (reconnecting) veil = 'Reconnecting to the live session…';
+  if (pastDeadline) veil = 'Your time in this session is up.';
+  else if (reconnecting) veil = 'Reconnecting to the live session…';
   else if (previewFailed) veil = 'The preview could not be opened. Reload this page to try again.';
   else if (!previewReady) veil = 'Opening the preview…';
   else if (!hostConnected) veil = 'The host’s connection dropped. The page will update when they’re back.';

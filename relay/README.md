@@ -46,11 +46,11 @@ name and resume token) is in the tab's `sessionStorage`, so a reload or a droppe
 
 The viewer follows the host's page and width from the host's presence (`previewPath`, `viewportWidth`), or lets the
 guest browse on their own at Desktop, Tablet or Mobile width. The relay keeps the host's latest page, without its
-selection, on the host's socket and sends it to each guest it lets in or back. On `preview:reload` the viewer asks the
+selection, in its copy of the room and sends it to each guest it lets in or back. On `preview:reload` the viewer asks the
 reload bridge in its frame to reload the page the guest is on and put its scroll back: the viewer cannot read or
-reload a frame on another origin itself. The relay adds the bridge (a same-origin `<script src>`) only to whole,
-successful HTML pages requested as the viewer's frame (`Sec-Fetch-Dest: iframe`), and drops their validators and
-length, which describe the host's bytes. A collaborator is shown the invite link to open in SiteOrigin Builder.
+reload a frame on another origin itself. The relay adds the bridge (a same-origin `<script src>`) only to UTF-8 HTML
+pages, error pages included, requested as the viewer's frame (`Sec-Fetch-Dest: iframe`); it asks the host for those
+pages whole and drops their validators and length, which describe the host's bytes. A collaborator is shown the invite link to open in SiteOrigin Builder.
 
 ### Why every room has its own preview origin
 

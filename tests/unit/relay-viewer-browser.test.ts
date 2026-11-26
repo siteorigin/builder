@@ -1,4 +1,7 @@
 /**
+ * Waits on the viewer's own page go through selectors or polls from here: its policy refuses `eval`, which Playwright
+ * needs to poll a predicate written as a string. The preview's pages have no such policy.
+ *
  * The guest's viewer in a real headless browser, against the relay in Cloudflare's local simulator: a guest opens the
  * invite link, asks to join, waits, is let in, and watches the host's site in the frame, while the test plays the host
  * over the relay's own protocol and answers the preview requests that frame makes. The viewer is on
@@ -174,13 +177,12 @@ describe.skipIf(!browserInstalled)('the guest’s viewer', { timeout: 30_000 }, 
 
       // The guest browses on their own, scrolls, and the host changes the page.
       await frame.click('a[href="/about/"]');
-      await s.tab.waitForFunction(`document.querySelector('iframe')?.contentWindow !== null`);
+      await s.tab.waitForSelector('iframe');
       frame = await preview(s);
       await frame.waitForFunction(`document.querySelector('h1')?.textContent === 'About'`);
       await frame.evaluate(`window.scrollTo(0, 1500)`);
       s.site.set('/about/', page('About, updated', '<div style="height:4000px"></div>'));
       s.host.send('host-to-relay', { type: 'preview:reload' });
-      await s.tab.waitForFunction(() => true);
       for (let i = 0; i < 100 && (await heading(s).catch(() => null)) !== 'About, updated'; i++) await wait(50);
       frame = await preview(s);
       expect(await frame.textContent('h1')).toBe('About, updated');
@@ -202,7 +204,7 @@ describe.skipIf(!browserInstalled)('the guest’s viewer', { timeout: 30_000 }, 
       expect(await frame.evaluate<number>(`window.innerWidth`)).toBe(834);
 
       s.host.send('host-to-relay', { type: 'presence:update', presence: { pageId: 'pg_home', viewportWidth: 1280, selection: null, previewPath: '/' } });
-      await s.tab.waitForFunction(`document.querySelector('#live-session')?.getAttribute('data-frame-width') === '1280'`);
+      await s.tab.waitForSelector('#live-session[data-frame-width="1280"]', { state: 'attached' });
       for (let i = 0; i < 100 && (await heading(s).catch(() => null)) !== 'Home'; i++) await wait(50);
       frame = await preview(s);
       expect(await frame.textContent('h1')).toBe('Home');
@@ -337,7 +339,7 @@ describe.skipIf(!browserInstalled)('the guest’s viewer', { timeout: 30_000 }, 
       await s.tab.waitForSelector('#connection[data-state="reconnecting"]');
       expect(await s.tab.isVisible('#veil')).toBe(true);
       expect(await frameCount(s)).toBe(1);
-      await bobTab.waitForFunction(`document.querySelector('#screen-title')?.textContent === 'The host is reconnecting'`);
+      await expect.poll(() => bobTab.textContent('#screen-title')).toBe('The host is reconnecting');
 
       const asked = s.server.asked.length;
       s.host = (await reconnectHost(relay, s.room.roomId, s.room.keys)).host;
@@ -346,7 +348,7 @@ describe.skipIf(!browserInstalled)('the guest’s viewer', { timeout: 30_000 }, 
       for (let i = 0; i < 100 && s.server.asked.length === asked; i++) await wait(25);
       expect(s.server.asked.slice(asked)).toContain('/');
       expect(await heading(s)).toBe('Home');
-      await bobTab.waitForFunction(`document.querySelector('#screen-title')?.textContent === 'Waiting for the host'`);
+      await expect.poll(() => bobTab.textContent('#screen-title')).toBe('Waiting for the host');
       await bob.close();
     } finally {
       await s.done();
