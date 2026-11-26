@@ -62,6 +62,12 @@ const LATIN_TITLES = ['OʼNeil & Sons', 'Rock ʼn Roll', 'AˇB', 'AˊB', 'Hawai�
 describe('addresses in any script (#36)', () => {
   it('gives a page titled in Japanese, or other scripts, its natural address', () => {
     expect(addressSlug('お問い合わせ')).toBe('お問い合わせ');
+    // A page address still fills its 60 characters; only a project folder backs off to the end of a word (#808).
+    const long = 'Kowhai Garden Supplies and Landscaping Co-operative of Greater Wellington';
+    expect(addressSlug(long)).toBe('kowhai-garden-supplies-and-landscaping-co-operative-of-great');
+    expect(addressSlug(long, { wholeWords: true })).toBe('kowhai-garden-supplies-and-landscaping-co-operative-of');
+    // A cut that lands just before a hyphen keeps the whole last word.
+    expect(addressSlug(`${'a'.repeat(30)} ${'b'.repeat(29)} c`, { wholeWords: true })).toBe(`${'a'.repeat(30)}-${'b'.repeat(29)}`);
     expect(addressSlug('FAQ よくある質問')).toBe('faq-よくある質問');
     expect(addressSlug('会社概要・沿革')).toBe('会社概要-沿革');
     expect(addressSlug('コーヒー')).toBe('コーヒー');

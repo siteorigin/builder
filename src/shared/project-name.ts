@@ -4,7 +4,7 @@
  * rename (#31).
  */
 import type { ProjectManifest, SiteDoc } from './types';
-import { slugify } from './routes';
+import { addressSlug } from './routes';
 
 export function projectDisplayName(state: { manifest: Pick<ProjectManifest, 'workingCopyName'>; site: Pick<SiteDoc, 'name'> }): string {
   const own = state.manifest.workingCopyName;
@@ -29,8 +29,21 @@ export const MAX_COPY_NAME = 80;
 /** Folder names Windows keeps for devices. */
 const WINDOWS_RESERVED = /^(con|prn|aux|nul|com[0-9]|lpt[0-9])$/;
 
-/** The folder a project named `name` is made in, inside the folder chosen for it ("Con" gets a suffix). */
+/** The folder a project gets when its name has nothing a folder name can keep ("🌸🌸", "..."). */
+export const FALLBACK_FOLDER = 'website';
+
+/**
+ * The folder a project named `name` is made in, inside the folder chosen for it, as New project and Duplicate both show
+ * and make it: the name as a page address spells it, so "日本語サイト" keeps its own words, cut to 60 characters at the
+ * end of a word, and "Con" gets a suffix.
+ */
 export function projectFolderName(name: string): string {
-  const slug = slugify(name) || 'website';
-  return WINDOWS_RESERVED.test(slug) ? `${slug}-site` : slug;
+  return projectFolder(name).folder;
+}
+
+/** The folder for `name` (see projectFolderName), and whether it is FALLBACK_FOLDER because nothing in the name could be kept. */
+export function projectFolder(name: string): { folder: string; fallback: boolean } {
+  const slug = addressSlug(name, { wholeWords: true });
+  if (!slug) return { folder: FALLBACK_FOLDER, fallback: true };
+  return { folder: WINDOWS_RESERVED.test(slug) ? `${slug}-site` : slug, fallback: false };
 }

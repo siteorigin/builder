@@ -253,6 +253,38 @@ await mark.click();
 await win.waitForSelector('.welcome');
 assert.equal(savedHeading(dirA), 'Kept through clicking All projects', 'a click saves the focused field too');
 
+step('New project creates the folder it shows, for a name too long to keep whole (#808)');
+const longName = 'Kowhai Garden Supplies and Landscaping Co-operative of Greater Wellington and the Hutt Valley';
+const longDir = join(realpathSync(join(WORK, 'sites')), 'kowhai-garden-supplies-and-landscaping-co-operative-of');
+await answerChoosers(app, [{ dialog: 'open', title: 'Choose where to create the project', paths: [join(WORK, 'sites')] }]);
+await win.locator('.welcome-action', { hasText: 'New project' }).click();
+const longForm = win.getByRole('dialog', { name: 'New project' });
+await longForm.waitFor();
+// The default folder arrives on its own: chosen only after it, the chosen one is not overwritten.
+await eventually(async () => assert.match((await longForm.locator('#new-project-path .path-text').textContent()) ?? '', /[/\\]/, 'the form shows its default folder'));
+await longForm.getByLabel('Project name').fill(longName);
+await longForm.getByRole('radio', { name: 'Blank site' }).click();
+await longForm.getByRole('button', { name: 'Choose…' }).click();
+const shownPath = (scope) => scope.locator('.path-text').first().textContent();
+await eventually(async () => assert.equal(await shownPath(longForm.locator('#new-project-path')), longDir, 'the form shows the folder cut at the end of a word'));
+// Every folder the progress screen shows is recorded from before Create is pressed, however quickly setup ends.
+await win.evaluate(() => {
+  const seen = (window.__progressPaths = []);
+  const look = () => {
+    const el = document.querySelector('.path-group .path-text');
+    if (el && seen[seen.length - 1] !== el.textContent) seen.push(el.textContent);
+  };
+  window.__progressWatch = new MutationObserver(look);
+  window.__progressWatch.observe(document.body, { subtree: true, childList: true, characterData: true });
+});
+await longForm.getByRole('button', { name: 'Create project' }).click();
+await win.waitForSelector('.editor', { timeout: 180000 });
+const progressPaths = await win.evaluate(() => (window.__progressWatch.disconnect(), window.__progressPaths));
+assert.deepEqual(progressPaths, [longDir], 'the progress screen shows the same folder, and only it');
+await eventually(async () => assert.equal(await openDir(), longDir, 'the project is made, and opened, in the folder shown'), 30000);
+await menu('Close Project');
+await win.waitForSelector('.welcome');
+
 step('closing the window saves the focused field');
 await openProject(dirA);
 heading = await heroHeading();
