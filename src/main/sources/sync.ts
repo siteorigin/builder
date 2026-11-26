@@ -6,7 +6,8 @@
  * source is where its entries change, and undoing one would only be put back by the next.
  */
 import type { AssetRecord, ProjectState, SourceDoc } from '@shared/types';
-import type { SourceSampleResult, SourceSyncResult } from '@shared/api';
+import type { SourceSampleResult, SourceSettingsDraft, SourceSyncResult } from '@shared/api';
+import { converterProblems, converterProblemText } from './converter';
 import { applyOperations } from '@engine/apply';
 import { EngineError } from '@engine/tree';
 import { blocksSaving, introducedDiagnostics, validateState } from '@engine/validate';
@@ -252,6 +253,35 @@ export async function inspectSource(deps: Pick<SyncDeps, 'runner' | 'secrets' | 
   // Only what is shown goes anywhere, and none of it may hold a secret (a server echoing its token).
   if (holdsSecret(textOf(result.raw ?? []), values)) return { ok: false, code: 'secret', message: `“${source.name}” could not be read: what it sent holds one of your secrets, which is never shown.` };
   return { ok: true, raw: result.raw ?? [], total: result.total ?? 0 };
+}
+
+/**
+ * The project `state` with source settings `draft` saved in it, as `source.upsert` saves them, or why they cannot be:
+ * the engine's own reasons, a converter that may not run (each problem by its line), or one of the user's saved
+ * secrets written into them.
+ */
+export async function sourceDraftState(state: ProjectState, draft: SourceSettingsDraft, secrets: Pick<SecretStore, 'values'>): Promise<{ state: ProjectState; source: SourceDoc } | { message: string }> {
+  const op = { ...draft, type: 'source.upsert' } as EditOperation;
+  const checked = validateOperation(op);
+  if (!checked.ok) return { message: `The source cannot be saved: ${checked.message}` };
+  let values: string[];
+  try {
+    values = await secrets.values(state.manifest.projectId);
+  } catch (e) {
+    return { message: `${(e as Error).message} The source’s settings cannot be checked for them.` };
+  }
+  // A source's settings never hold one of the user's saved secrets themselves (a token pasted into its name).
+  if (holdsSecretValue(JSON.stringify(draft), values)) return { message: 'A source’s settings may not hold one of your secrets. Name it with ${secret:NAME} or a credential instead.' };
+  if (typeof draft.converter === 'string') {
+    const problems = converterProblems(draft.converter);
+    if (problems.length) return { message: `Its converter cannot be run:\n${converterProblemText(problems)}` };
+  }
+  try {
+    const next = applyOperations(state, [op]).state;
+    return { state: next, source: next.sources![draft.sourceId] };
+  } catch (e) {
+    return { message: (e as Error).message };
+  }
 }
 
 /** How long a Test may take: less than a sync, as someone is waiting on it. */
