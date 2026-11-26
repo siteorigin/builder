@@ -4276,7 +4276,8 @@ function rhythm(vw, page, deadline) {
  * Measure the page. Images get until `deadline` to be requested again; the readability checks stop at
  * `readableBy`, so the report always reaches the editor before it stops waiting. `opts.readability` measures a
  * component shown on its own as a page is measured; `opts.gaps` adds the space between stacked elements.
- * `opts.page` ({ pageId, rootIds }) names the page's sections, for the notes on its rhythm.
+ * `opts.page` ({ pageId, rootIds }) names the page's sections, for the notes on its rhythm. `opts.focus` (element IDs)
+ * keeps only the findings on those elements, before the list is capped, so a finding asked about is never cut.
  */
 async function inspect(deadline, readableBy = deadline + 1500, opts = {}) {
   // Narrowed to elements the editor names (`opts.targets`, descriptors in the order asked): every element each one
@@ -4336,7 +4337,12 @@ async function inspect(deadline, readableBy = deadline + 1500, opts = {}) {
     if (!byKind.has(i.kind)) byKind.set(i.kind, []);
     byKind.get(i.kind).push(i);
   }
-  const listed = pickIssues([...byKind.values(), ...(readable ? readable.findings : [])], MAX_ISSUES);
+  const focus = Array.isArray(opts.focus) ? new Set(opts.focus) : null;
+  // An element is on a focused one when it is that element, or inside a focused placement, which its context names.
+  const focused = (d) => !!d && (focus.has(d.node) || String(d.ctx || '').split('|').some((id) => focus.has(id)));
+  const onFocus = (i) => !!focus && (focused(i?.desc) || focused(i?.with?.desc));
+  const lists = [...byKind.values(), ...(readable ? readable.findings : [])].map((l) => (focus ? l.filter(onFocus) : l)).filter((l) => l.length);
+  const listed = pickIssues(lists, MAX_ISSUES);
   // Advice on how the sections follow one another, for a page of the site with more than one; a component shown on
   // its own has no page around it.
   // Advice about the whole page, so never for chosen elements.
@@ -4356,8 +4362,11 @@ async function inspect(deadline, readableBy = deadline + 1500, opts = {}) {
     images: images.summary,
     ...(readable ? { checks: readable.checks } : {}),
     issues: listed,
+    // How many findings there were in all, listed or not, so a reader knows what the cap left out.
+    issueCount: lists.reduce((n, l) => n + l.length, 0),
     ...(notes ? { rhythm: notes } : {}),
     runtimeErrors: errors.slice(-10),
+    runtimeErrorCount: errors.length,
     ...(found ? { targets: found.map(targetReport) } : {}),
     ...(preview ? { preview } : {}),
     ...(opts.gaps ? stackReport(readableBy + 500) : {})
@@ -4895,7 +4904,9 @@ window.addEventListener('message', async (e) => {
         const page = typeof m.payload.pageId === 'string' && ids ? { pageId: m.payload.pageId, rootIds: ids } : null;
         // Elements asked for by the editor (inspect_layout with refs), as descriptors in the order asked.
         const targets = Array.isArray(m.payload.targets) ? m.payload.targets.slice(0, 20) : undefined;
-        report = await inspect(Math.min(Date.now() + 2500, started + 6000), started + 7000, { readability: m.payload.readability === true, gaps: m.payload.gaps === true, page, ...(targets ? { targets } : {}) });
+        // Element IDs whose findings alone are listed (validate_project narrowed to them).
+        const focus = Array.isArray(m.payload.focus) ? m.payload.focus.filter((id) => typeof id === 'string') : undefined;
+        report = await inspect(Math.min(Date.now() + 2500, started + 6000), started + 7000, { readability: m.payload.readability === true, gaps: m.payload.gaps === true, page, ...(targets ? { targets } : {}), ...(focus ? { focus } : {}) });
       } catch (err) {
         // A failed measurement is answered as one, never left for the editor to time out on.
         report = { error: `The page could not be measured: ${String((err && err.message) || err).slice(0, 200)}` };

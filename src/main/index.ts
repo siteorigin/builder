@@ -3,7 +3,7 @@ import type { BaseWindow, KeyboardEvent, MenuItem } from 'electron';
 import { join, dirname, normalize, relative, isAbsolute } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { readFileSync } from 'node:fs';
-import type { Appearance, ConflictChoice, ImportChoices, LocalWorkspaceState, ProviderId, SettingsPatch } from '@shared/api';
+import type { Appearance, ConflictChoice, ImportChoices, InspectLayoutOptions, LocalWorkspaceState, ProviderId, SettingsPatch } from '@shared/api';
 import type { ComponentPreviewMeasure, ComponentPreviewResult, ComponentPreviewStep } from '@shared/component-preview';
 import { editorBackground, editorScheme } from '@shared/appearance';
 import { externalLink } from '@shared/links';
@@ -34,7 +34,7 @@ import { installAiJournal } from './ai-journal';
 import { fixComponentSource } from '@agent/fixer';
 import type { Diagnostic } from '@engine/validate';
 import { declareCodeNames } from '@engine/definitions';
-import type { ComponentDefinition, ElementRef } from '@shared/types';
+import type { ComponentDefinition } from '@shared/types';
 
 const here = dirname(fileURLToPath(import.meta.url));
 // Tests and side-by-side development can isolate settings, credentials and caches.
@@ -85,19 +85,38 @@ protocol.registerSchemesAsPrivileged([{ scheme: 'app', privileges: { standard: t
 const pendingInspections = new Map<string, (report: unknown) => void>();
 const pendingComponentPreviews = new Map<string, (results: unknown) => void>();
 
-/** Measure a page in the editor's hidden preview frame at `width` CSS px (see the renderer's runInspection). */
-function inspectLayout(pageId: string, width: number, targets?: ElementRef[]): Promise<unknown> {
+/**
+ * Measure a page in the editor's hidden preview frame at `width` CSS px (see the renderer's runInspection). A report
+ * says which project revision the preview served when the page was loaded for it (`previewRevision`). `targets`: measure
+ * only these elements; `focus`: only findings on these elements are listed.
+ */
+function inspectLayout(pageId: string, width: number, opts: InspectLayoutOptions = {}): Promise<unknown> {
   return new Promise((resolve, reject) => {
     const requestId = Math.random().toString(36).slice(2);
+    let done = false;
     const timer = setTimeout(() => {
+      done = true;
       pendingInspections.delete(requestId);
       reject(new Error('The preview did not respond in time.'));
     }, 50000); // The renderer may load the page twice (two 20s attempts plus a pause) before answering.
-    pendingInspections.set(requestId, (r) => {
-      clearTimeout(timer);
-      resolve(r);
-    });
-    controller.send('inspect:request', { requestId, pageId, width, ...(targets ? { targets } : {}) });
+    // The deadline covers waiting for a private copy of the project to catch up too.
+    controller
+      .previewRevision()
+      .then((previewRevision) => {
+        if (done) return;
+        pendingInspections.set(requestId, (r) => {
+          clearTimeout(timer);
+          resolve(r && typeof r === 'object' && !(r as { error?: unknown }).error && previewRevision !== null ? { ...r, previewRevision } : r);
+        });
+        controller.send('inspect:request', { requestId, pageId, width, ...(opts.targets ? { targets: opts.targets } : {}), ...(opts.focus ? { focus: opts.focus } : {}) });
+      })
+      .catch((e: unknown) => {
+        // A request that could not be made is answered now, not at the deadline.
+        clearTimeout(timer);
+        pendingInspections.delete(requestId);
+        if (!done) reject(e instanceof Error ? e : new Error(String(e)));
+        done = true;
+      });
   });
 }
 
@@ -226,6 +245,7 @@ const orchestrator = new Orchestrator({
   },
   compileAll: async (): Promise<Diagnostic[]> => (controller.session ? compileProject(controller.session.state) : []),
   inspectLayout,
+  fileDiagnostics: () => controller.fileDiagnostics(),
   inspectComponent: (steps, signal) => previewComponents(steps, { readability: true, gaps: true, budgetMs: INSPECT_COMPONENT_BUDGET_MS }, signal),
   onBusyChange: () => controller.broadcast(),
   codeEnabled: async () => (await loadSettings()).settings.developerMode

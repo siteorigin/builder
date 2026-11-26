@@ -1,12 +1,19 @@
 import type { ProjectState } from '@shared/types';
 import type { Diagnostic } from '@engine/validate';
-import { generateProject } from '@generator/index';
+import { defFile, generateProject, pageFile, webMcpFormFile } from '@generator/index';
 
 /** Component validation profile: every Svelte file must parse and compile with the pinned compiler. */
 export async function compileProject(state: ProjectState): Promise<Diagnostic[]> {
   const { compile } = await import('svelte/compiler');
   const out: Diagnostic[] = [];
   const files = generateProject(state, { instrument: false });
+  // Which page or component each file is, so a result can be narrowed to them (validate_project).
+  const owners = new Map<string, { kind: string; id: string }>();
+  for (const page of Object.values(state.pages)) owners.set(pageFile(page), { kind: 'page', id: page.id });
+  for (const def of Object.values(state.components)) {
+    owners.set(webMcpFormFile(def), { kind: 'component', id: def.id });
+    owners.set(defFile(def), { kind: 'component', id: def.id });
+  }
   for (const [path, source] of files) {
     if (!path.endsWith('.svelte')) continue;
     // Pages are prerendered (server) and hydrated (client); a file must compile both ways.
@@ -17,7 +24,8 @@ export async function compileProject(state: ProjectState): Promise<Diagnostic[]>
         const err = e as { message: string; code?: string; start?: { line: number }; end?: { line?: number } };
         const def = Object.values(state.components).find((d) => d.sourcePath === path || path.includes(d.id.replace(/[^a-zA-Z0-9]+/g, '-').toLowerCase()));
         const reason = err.message.split('\n')[0];
-        out.push({ severity: 'error', code: 'COMPILE', message: `${def ? def.name : path}${err.start ? ` (line ${err.start.line})` : ''}: ${reason}`, site: compileSite(path, source, err, reason) });
+        const owner = owners.get(path);
+        out.push({ severity: 'error', code: 'COMPILE', message: `${def ? def.name : path}${err.start ? ` (line ${err.start.line})` : ''}: ${reason}`, ...(owner ? { owner } : {}), site: compileSite(path, source, err, reason) });
         break;
       }
     }

@@ -12,7 +12,7 @@ import { createStarterState, STARTER_ASSETS, starterProblem } from '@catalogue/s
 import { findTheme } from '@catalogue/index';
 import { slugify } from '@shared/routes';
 import { sourceHash } from '@engine/apply';
-import { websiteFormNotes } from '@engine/validate';
+import { websiteFormNotes, type Diagnostic } from '@engine/validate';
 import { basePath, generateManagedComponent, generatePage, defFile, liveRedirects, publishedState, siteEntries } from '@generator/index';
 import { archivePages } from '@shared/archives';
 import { placeholderImageCount } from '@generator/checks';
@@ -242,6 +242,8 @@ export class Controller {
   private stage: string | null = null;
   private stageSync: Promise<unknown> = Promise.resolve();
   private stageTicket = 0;
+  /** The project revision the private copy was last brought up to, and the preview told of (-1 before the first). */
+  private stagedRevision = -1;
   /** Watches over the files the copy is made from, as the project's own dev server would watch them. */
   private stageWatchers: FSWatcher[] = [];
   private stageTimer: NodeJS.Timeout | null = null;
@@ -971,6 +973,7 @@ export class Controller {
     const dev: DevServer = new DevServer(stage ?? session.dir, async (): Promise<boolean> => this.dev === dev && (!!stage || (await session.stillOwner())));
     this.dev = dev;
     this.stage = stage;
+    this.stagedRevision = -1;
     this.pendingStatus = null;
     if (stage) this.watchStageSources(session);
     dev.onStatus((s) => {
@@ -1014,6 +1017,34 @@ export class Controller {
   }
 
   /**
+   * The project revision the running preview serves, once any copy under way has finished, or null without a preview.
+   * The preview runs from the project's own folder, whose generated files are written before a change is announced,
+   * or from a private copy brought up to a revision at a time.
+   */
+  async previewRevision(): Promise<number | null> {
+    const session = this.session;
+    if (!this.dev || !session) return null;
+    if (!this.stage) return session.revision;
+    await this.stageSync.catch(() => undefined);
+    return this.stage && this.session === session ? this.stagedRevision : null;
+  }
+
+  /**
+   * Project health's entries for library files missing from the project folder, from a look at the folder now. Nothing
+   * is kept or published: Project health keeps its own look, which the folder watch refreshes.
+   */
+  async fileDiagnostics(): Promise<Diagnostic[]> {
+    const session = this.session;
+    if (!session) return [];
+    const state = session.state;
+    try {
+      return missingFileDiagnostics(state, await findMissingAssetFiles(session.dir, state.assets.assets));
+    } catch {
+      return [];
+    }
+  }
+
+  /**
    * Mirror the project into the private copy, then tell the preview which revision it shows. Requests made while one
    * runs collapse into the latest. A copy that cannot be brought up to date is replaced by a fresh one, which reports
    * any problem.
@@ -1035,7 +1066,10 @@ export class Controller {
           release?.(copied);
         }
         this.filesChangedAt = Date.now();
-        if (this.stage === stage) this.dev?.notifyRevision(revision);
+        if (this.stage === stage) {
+          this.stagedRevision = revision;
+          this.dev?.notifyRevision(revision);
+        }
       })
       .catch(() => {
         if (this.stage !== stage || this.session !== session || this.restaged === session) return;

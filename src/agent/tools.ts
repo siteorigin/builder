@@ -1,6 +1,6 @@
 import { z } from 'zod';
 import type { AssetRecord, ElementRef, ProjectState } from '@shared/types';
-import type { ChatImageRef, FieldLocation } from '@shared/api';
+import type { ChatImageRef, FieldLocation, InspectLayoutOptions } from '@shared/api';
 import type { EditOperation, ToolError } from '@shared/ops';
 import { EditOperationSchema, legacyShellError, MODEL_BINDING, OPERATION_SCHEMAS, type OperationType } from '@shared/ops';
 import { BLUR_LIMITS, MAX_GRID_TRACKS, STYLE_PROPS, TRANSLATE_LIMITS, type StylePropDef } from '@shared/styles';
@@ -27,7 +27,7 @@ import { examplesFor, exampleSection } from './examples';
 import { locateField } from '@engine/locate';
 import { CODE_OPERATIONS, developerModeReason } from '@engine/developer-mode';
 import { changedComponents, componentWarnings, introducedReusability } from './reusability';
-import { isReusabilityWarning } from '@engine/reusability';
+import { runValidateProject, VALIDATE_ARGS, VALIDATE_BRIEF, VALIDATE_DESCRIPTION, VALIDATE_FOCUSED_BRIEF } from './validation';
 import { OP_REACH, type AuthorityGrants, type RequestedScope } from './scope';
 import { digestComponentInspection, inspectionSteps, MAX_CASES, planComponentInspection, resolveInspectTarget } from './component-inspection';
 import type { ComponentPreviewResult, ComponentPreviewStep } from '@shared/component-preview';
@@ -94,7 +94,7 @@ export const TOOL_ARGS = {
     nodeId: z.string().optional(),
     offset: z.number().int().min(0).optional().describe('Continue a sweep: the offset a previous call returned in next.')
   }),
-  validate_project: z.object({ profile: z.enum(['schema', 'component']).optional() }),
+  validate_project: VALIDATE_ARGS,
   audit_seo: AUDIT_SEO_ARGS,
   request_clarification: z.object({
     question: z.string().min(1).max(300),
@@ -146,7 +146,7 @@ const DESCRIPTIONS: Record<ToolName, string> = {
     'Measure a page in the live preview at a viewport width: overflow, images (report.images; unverified ones were still loading, not a site problem), alt text, headings, runtime errors, and readability (counts in report.checks): text contrast against its painted background, overlapping boxes, cut-off text, tap targets under 44px below 768px. Each finding\'s ref is the owner, nodeId, partId and itemId node.setStyle takes; Pass refs to re-measure just those elements: report.targets has each one\'s box, scroll size and visibility, beside the findings inside them (targets: which, by index). contrast-unverified is text only pixels could judge (over an image). On a page of two or more sections, report.rhythm is advice on composition (never an error): three or more sections in a row with one layout on one background (at phone width, only sections that keep columns side by side) or each with a filled button, and an inner heading as large as the h1, each with the refs of the sections or headings to vary. No screenshots.',
   inspect_component:
     'Check one component on its own, off-screen, without changing anything: it is measured at phone (390px) and desktop (1280px) width with every link set and empty text filled, in each option of every variant axis, and with stress content: long text with an unbroken long word, links and optional text left empty, one and five list items. Returns each overflow, cut-off text, low contrast, overlap, small tap target, runtime error and spacing collapse once, with the cases and widths it showed in and where it is in the design: at.nodeId is the node of its design (node.setStyle { owner: { kind: "component", id: definitionId }, nodeId } changes it on every placement) and at.partId the part it belongs to. The design of a theme component changes on a project copy: component.fork it first (one the project does not have yet is added by placing it) and use the definitionId that returns. A clean component gets a one-line summary. Use after building or changing a reusable component, then fix what it finds and check again.',
-  validate_project: 'Run validation: "schema" checks references, routes and structure; "component" also compiles every Svelte component.',
+  validate_project: VALIDATE_DESCRIPTION,
   audit_seo:
     'Audit how well the website can be found, shared and understood by search engines, link previews and AI agents, from the saved project (it changes and measures nothing): its public URL, search settings, browser titles and descriptions (missing, repeated, too short or long), sharing image and icon, link wording, pages no other page links to, and the pictures and headings in collection entries. Returns findings most serious first, each with its code, pillar, whether an edit of yours can fix it (aiFixable) and where it is fixed (fix), why it matters (reason, an index into reasons), counts by severity and pillar, and the internal links: how many links lead into and out of each published page, with orphans that nothing else links to. pageId (an ID or route) narrows it to one page: its own findings, and which pages, shared header or footer, or entries link to it. pillar keeps one kind of finding. A long report comes in parts: call again with offset set to nextOffset, or linkOffset set to links.nextLinkOffset, and after a change to the site start again from the first part.',
   request_clarification:
@@ -181,7 +181,7 @@ const BRIEFS: Partial<Record<ToolName, string>> = {
   apply_source_patch: 'Change a project code component (never generated files, config or dependencies), with the revision and hash from read_source.',
   inspect_layout: 'Measure a page in the live preview at a width: overflow, off-screen elements, whether each image loaded (unverified ones were still loading, which is fine), missing alt text, headings and runtime errors. Structure only, no screenshots. refs (findings\' refs): just those elements, each\'s box in report.targets.',
   inspect_component: 'Measure a component on its own at phone and desktop width, in every variant option and with long, empty and repeated content: overflow, cut-off text, contrast, overlaps and collapsed spacing, each with where it is in the design. Changes nothing.',
-  validate_project: '"schema" checks references, routes and structure; "component" also compiles every component.',
+  validate_project: VALIDATE_BRIEF,
   audit_seo: 'SEO and AI-readiness findings, worst first, and each page’s links in and out. pageId (ID or route) or pillar narrows it. More: offset=nextOffset, linkOffset=nextLinkOffset.',
   request_clarification:
     'Ask the user one question and wait for the answer: when they ask you to interview them, ask them something or let them choose, when you would offer options (never list them in your reply instead), or when a wrong guess would change shared content. Up to four short, concrete choices; they can also type an answer. To choose between images, pass assetIds: they see the pictures. One question per call; then act on the answer.',
@@ -433,7 +433,20 @@ function entryWrite(state: ProjectState): ToolDefinition[] {
  * selection they cannot cover (a layout element, say) always uses the general tools. A component's own design gets
  * its definition tools on a small model, and the general tools on a larger one.
  */
-export function toolsForRun(opts: {
+/**
+ * The tools a run is offered. A small model keeps validation's two document profiles: the preview and project profiles,
+ * narrowing and paging through long lists would cost a window that small more than they give it (a 12,288-token one
+ * has no room left for them).
+ */
+export function toolsForRun(opts: Parameters<typeof runTools>[0]): RunTools {
+  const run = runTools(opts);
+  if (!run.focused || !run.tools.some((t) => t.name === 'validate_project')) return run;
+  const schema = z.toJSONSchema(z.object({ profile: VALIDATE_ARGS.shape.profile.unwrap().extract(['schema', 'component']).optional() }), { unrepresentable: 'any', io: 'input' }) as Record<string, unknown>;
+  delete schema.$schema;
+  return { ...run, tools: run.tools.map((t) => (t.name === 'validate_project' ? { ...t, description: VALIDATE_FOCUSED_BRIEF, brief: VALIDATE_FOCUSED_BRIEF, parameters: schema } : t)) };
+}
+
+function runTools(opts: {
   state: ProjectState;
   selection: SelectionTarget | null;
   capabilities: Pick<ModelCapabilities, 'toolCalling' | 'contextWindowTokens'>;
@@ -651,8 +664,11 @@ export interface ToolHost {
    */
   apply(operations: EditOperation[], expectedRevision: number, label: string, idempotencyKey: string, grants?: AuthorityGrants, requested?: RequestedScope): Promise<{ ok: boolean; revision: number; results?: unknown[]; error?: ToolError }>;
   compileAll(): Promise<Diagnostic[]>;
-  /** `targets`: measure only these elements and what is inside them (see layout-targets.ts); omitted, the whole page. */
-  inspectLayout(pageId: string, width: number, targets?: ElementRef[]): Promise<unknown>;
+  /**
+   * `targets`: measure only these elements and what is inside them (see layout-targets.ts); omitted, the whole page.
+   * `focus`: list only the findings on these elements (validate_project narrowed to them).
+   */
+  inspectLayout(pageId: string, width: number, opts?: InspectLayoutOptions): Promise<unknown>;
   /** Show and measure a component in isolated previews, step by step (see inspect_component). */
   inspectComponent?(steps: ComponentPreviewStep[]): Promise<ComponentPreviewResult[]>;
   /** `images`: library images offered as choices, already checked to be in the project. */
@@ -670,6 +686,12 @@ export interface ToolHost {
   /** The post the run is limited to (sent from the Posts workspace), and how it is named, or null once it may change
    *  more: it then reads and writes that post alone. */
   entryLimit?(): { collectionId: string; entryId: string; label: string } | null;
+  /** The pages that show this run's changes, as the preview check before it finishes would measure them (validate_project's preview). */
+  changedPageIds?(): string[];
+  /** Problems with the project's files on disk, such as image files missing from the project folder, looked for again. */
+  fileDiagnostics?(): Promise<Diagnostic[]>;
+  /** Aborted when the run is stopped. */
+  signal?: AbortSignal;
 }
 
 const WIDTHS = { phone: 390, tablet: 834, desktop: 1280 };
@@ -1026,7 +1048,7 @@ async function runTool(name: string, rawArgs: string, host: ToolHost, callId: st
       // Measured from the project as the call read it.
       if (!targets) return measurePage((pageId, width) => host.inspectLayout(pageId, width), resolved, a.viewport, revision);
       try {
-        const report = (await host.inspectLayout(a.pageId, WIDTHS[a.viewport], targets)) as { error?: unknown; targets?: unknown } | null;
+        const report = (await host.inspectLayout(a.pageId, WIDTHS[a.viewport], { targets })) as { error?: unknown; targets?: unknown } | null;
         // One measurement per element asked for, each saying whether it shows and where it rendered.
         // An element the preview could not measure is no answer, never one that does not show.
         const answered = (t: unknown) => {
@@ -1073,12 +1095,8 @@ async function runTool(name: string, rawArgs: string, host: ToolHost, callId: st
       if (!digest.measured) return failed(String((digest.content.failed as Array<{ error: string }> | undefined)?.[0]?.error ?? 'the preview gave no measurements.'));
       return { ok: true, content: fitComponentCheck({ revision, ...digest.content }) };
     }
-    case 'validate_project': {
-      const a = args as z.infer<(typeof TOOL_ARGS)['validate_project']>;
-      const diags = [...host.diagnostics(), ...(a.profile === 'component' ? await host.compileAll() : [])];
-      // Component reusability findings are listed apart, with their nodes, so other warnings cannot crowd them out.
-      return { ok: true, content: { revision, errors: diags.filter((d) => d.severity === 'error').map((d) => d.message), warnings: diags.filter((d) => d.severity === 'warning' && !isReusabilityWarning(d)).slice(0, 20).map((d) => d.message), ...componentWarnings(diags) } };
-    }
+    case 'validate_project':
+      return runValidateProject(args as z.infer<typeof VALIDATE_ARGS>, host);
     case 'audit_seo': {
       const report = seoReport(state, host.revision(), args as z.infer<typeof AUDIT_SEO_ARGS>, MAX_RESULT_CHARS - 200);
       return report.ok ? { ok: true, content: report.content } : toolError('INVALID_ARGUMENT', report.message);

@@ -2863,12 +2863,50 @@ describe('validate_project and components that are not reusable yet (#363)', () 
     const diags = validateState(s);
     expect(diags.findIndex((d) => d.code === 'COMPONENT_UNBOUND_CONTENT')).toBeGreaterThan(20);
     const host = { state: () => s, revision: () => 1, diagnostics: () => diags, compileAll: async () => [] } as unknown as Parameters<typeof executeTool>[2];
-    const content = (await executeTool('validate_project', '{}', host, 'v1')).content as unknown as { warnings: string[]; componentWarnings?: Array<{ code: string; definitionId: string; nodeId?: string }>; omittedComponentWarnings?: number };
+    const content = (await executeTool('validate_project', '{}', host, 'v1')).content as unknown as { warnings: Array<{ message: string }>; componentWarnings?: Array<{ code: string; definitionId: string; nodeId?: string }>; omittedComponentWarnings?: number };
     expect(content.warnings).toHaveLength(20);
-    expect(content.warnings.some((w) => w.includes('Spring offers'))).toBe(false);
+    expect((content as { omittedWarnings?: number }).omittedWarnings).toBeGreaterThan(0);
+    expect(content.warnings.some((w) => w.message.includes('Spring offers'))).toBe(false);
     expect(content.componentWarnings).toHaveLength(8);
     expect(content.componentWarnings![0]).toEqual(expect.objectContaining({ code: 'COMPONENT_UNBOUND_CONTENT', definitionId: 'proj.hero', nodeId: 'fixed0' }));
     expect(content.omittedComponentWarnings).toBe(2);
+  });
+});
+
+describe('validate_project preview of the pages a run changed (#756)', () => {
+  it('measures the pages the run created, at phone width', async () => {
+    const measured: Array<[string, number]> = [];
+    let session: ProjectSession | undefined;
+    const harness = await setup(
+      [
+        () => [call('c', 'apply_operations', { expectedRevision: session!.revision, operations: [{ type: 'page.create', title: 'Offers' }] })],
+        () => [call('e', 'apply_operations', { expectedRevision: session!.revision, operations: [{ type: 'page.create', title: 'Deals' }] })],
+        () => [call('v', 'validate_project', { profile: 'preview' })],
+        () => finish()
+      ],
+      {},
+      'business',
+      undefined,
+      {
+        inspectLayout: async (pageId: string, width: number) => {
+          measured.push([pageId, width]);
+          return { previewRevision: session!.revision, issues: [], runtimeErrors: [] };
+        }
+      }
+    );
+    session = harness.session;
+    await harness.run('Add an Offers page and a Deals page');
+    const offers = pageAt(session.state, '/offers/')!;
+    const deals = pageAt(session.state, '/deals/')!;
+    expect(offers).toBeDefined();
+    expect(deals).toBeDefined();
+    const result = lastResult(harness.adapter.requests[3]);
+    expect(result.preview).toMatchObject({ viewport: 'phone', width: 390 });
+    // The pages the run made, and no other.
+    expect(result.preview.pages.map((p: { pageId: string }) => p.pageId).sort()).toEqual([offers.id, deals.id].sort());
+    expect(result.preview.pages.every((p: { ok: boolean }) => p.ok)).toBe(true);
+    expect(measured.filter(([, w]) => w === 390).map(([p]) => p)).toEqual(expect.arrayContaining([offers.id, deals.id]));
+    expect(result.narrowedTo.pageIds.sort()).toEqual([offers.id, deals.id].sort());
   });
 });
 
