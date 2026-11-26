@@ -225,6 +225,11 @@ export interface State {
   revealedItem: RevealedItem | null;
   /** Bumped when a Layers row asks for its layer to be shown on the page, even one already selected (see showLayer). */
   showSelection: number;
+  /**
+   * The selection a move just put somewhere else on the page, to be shown there once the page has the move's
+   * `revision` (issue #902): the selection itself is the same, so nothing else asks the page to scroll to it.
+   */
+  showMoved: { ref: ElementRef; revision: number } | null;
   /** Bumped when the personal component library changes (#372), so Insert lists it again. */
   libraryVersion: number;
   pendingSave: number;
@@ -387,6 +392,7 @@ export const useStore = create<State>((set) => ({
   rects: { selected: [], hovered: [], revealed: [] },
   revealedItem: null,
   showSelection: 0,
+  showMoved: null,
   libraryVersion: 0,
   pendingSave: 0,
   modal: null,

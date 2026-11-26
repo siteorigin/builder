@@ -1,4 +1,4 @@
-import type { EditOperation } from '@shared/ops';
+import type { ApplyResult, EditOperation } from '@shared/ops';
 import type { ElementRef, GraphNode, OwnerRef, ProjectState, RichText } from '@shared/types';
 import { newId } from '@shared/ids';
 import { sameRichText, toRichText } from '@shared/richtext';
@@ -260,7 +260,18 @@ export async function moveSelection(dir: -1 | 1) {
   if (!info) return;
   const index = info.index + dir;
   if (index < 0 || index >= info.list.length) return;
-  await applyOps([{ type: 'node.move', owner: t.owner, nodeId: t.nodeId, parentId: info.parentId, slot: info.slot, index }], editLabel(s.snapshot.state, 'Move', t, dir < 0 ? 'up' : 'down'));
+  const r = await commitOps([{ type: 'node.move', owner: t.owner, nodeId: t.nodeId, parentId: info.parentId, slot: info.slot, index }], editLabel(s.snapshot.state, 'Move', t, dir < 0 ? 'up' : 'down'));
+  showMovedSelection(s.selection, r);
+}
+
+/**
+ * After a move from the keyboard or a menu, the selection is shown where it went (issue #902), once the page has the
+ * move: unless the author has picked something else, or left the project, meanwhile.
+ */
+function showMovedSelection(ref: ElementRef | null, r: (ApplyResult & { workspaceKey: string }) | null) {
+  const now = getState();
+  if (!ref || !r?.ok || now.selection !== ref || now.snapshot?.workspaceKey !== r.workspaceKey) return;
+  setState({ showMoved: { ref, revision: r.revision } });
 }
 
 // ---------------------------------------------------------------------------
@@ -382,7 +393,9 @@ export async function moveLayers(dir: -1 | 1, plan = planLayers()) {
   const why = lockedGroup(plan.snap.state, plan.group);
   if (why) return toast(why, 'error');
   const ops = moveStepOps(plan.group, dir);
-  if (ops) await applyOps(ops, groupLabel(plan.snap.state, 'Move', plan.group, dir < 0 ? 'up' : 'down'), undefined, plan.snap.revision);
+  if (!ops) return;
+  const r = await commitOps(ops, groupLabel(plan.snap.state, 'Move', plan.group, dir < 0 ? 'up' : 'down'), undefined, plan.snap.revision);
+  showMovedSelection(plan.selection, r);
 }
 
 /** Duplicate the layers selected together: the copies go together after the last of them, and are selected (with

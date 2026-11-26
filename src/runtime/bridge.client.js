@@ -267,10 +267,12 @@ function scheduleRects() {
     if (revealDirty) reconcileReveal();
     else if (revealPlace) placeReveal();
     retryScroll();
+    settleShown();
     keepInView();
     sendRects();
-    // Checked again every frame while a change of width settles, whatever moves the page meanwhile.
-    if (keepHold) scheduleRects();
+    // Checked again every frame while a change of width settles, or a scroll the editor asked for settles, whatever
+    // moves the page meanwhile.
+    if (keepHold || shownHold) scheduleRects();
   });
 }
 /** A divider the page renders: a plain rule, or one of the decorative bands drawn in its place. */
@@ -685,8 +687,9 @@ function heldPoint(k, el) {
 function keepInView() {
   const k = keepHold;
   if (!k) return;
-  // The list item open in the inspector is brought into view by its own reveal.
-  if (performance.now() > k.until || mode !== 'edit' || editing || reveal || !sameDesc(k.desc, selected)) {
+  // The list item open in the inspector is brought into view by its own reveal, and an element the editor just asked
+  // to show by that scroll's own hold (what showed before it was asked for is not the point to keep).
+  if (performance.now() > k.until || mode !== 'edit' || editing || reveal || shownHold || !sameDesc(k.desc, selected)) {
     keepHold = null;
     return;
   }
@@ -747,12 +750,95 @@ for (const type of ['pointerdown', 'keydown']) window.addEventListener(type, () 
 
 /**
  * A scroll the editor asked for (`scrollTo`) to an element the page does not show yet: one just inserted, which the
- * site's hot update mounts a moment after the editor has selected it (issue #509). { desc, show, until } until it shows,
+ * site's hot update mounts a moment after the editor has selected it (issue #509), or one just moved, whose new place
+ * shows once the page has the change's revision (`after`, issue #902). { desc, show, until, after } until it shows,
  * `until` (performance.now()) passes, or the author, a newer request, another page or Preview takes over.
  */
 let pendingScroll = null;
 /** How long a scroll waits for its element: long enough for the site to build and mount a new section. */
 const SCROLL_WAIT_MS = 3000;
+/** How long a scroll waits for the revision it is about, before it gives up. */
+const REVISION_WAIT_MS = 10000;
+/**
+ * An element the editor asked to show, kept in view while the page settles (issue #902): { desc, show, until, still,
+ * lastY, at: where on the page it last showed, or null }. A page that has just opened is still laying out (an image, a font, the site's own code moving the page), and
+ * a smooth scroll aimed at where the element was can end with only a sliver of it in view, or be cut short. Until
+ * `until`, once the page has stopped scrolling (`still` frames without a move), an element that is not in view is put
+ * there. The author scrolling, clicking or typing, a newer request, another selection, another page, Preview or an edit
+ * in the page ends it.
+ */
+let shownHold = null;
+/** How long a shown element is kept in view while the page settles. */
+const SHOWN_SETTLE_MS = 2500;
+/** Frames the page must go without scrolling before the element is put back: a smooth scroll moves it every frame. */
+const STILL_FRAMES = 6;
+/** Whether a box shows comfortably in the frame, clear of its edges. */
+function comfortable(r) {
+  return r.top >= 60 && r.bottom <= innerHeight - 20;
+}
+/** The element `desc` names that shows on the page, through any wrapper laid out as its content, or null. */
+function shownTarget(desc) {
+  let target = findAll(desc).find((e) => rectOf(e));
+  if (!target) return null;
+  while (getComputedStyle(target).display === 'contents') {
+    const next = [...target.children].find((c) => rectOf(c));
+    if (!next) break;
+    target = next;
+  }
+  return target;
+}
+/** The scroll position that shows box `r` as scrollToDesc does (its middle, or the top of a tall one shown from Layers), as far as the page can scroll. */
+function shownTop(r, show) {
+  const root = document.scrollingElement || document.documentElement;
+  const end = Math.max(0, root.scrollHeight - root.clientHeight);
+  const top = show && r.height > innerHeight - 80 ? scrollY + r.top : scrollY + r.top + r.height / 2 - innerHeight / 2;
+  return Math.max(0, Math.min(end, Math.round(top)));
+}
+/** Keeps the shown element in view while the page settles: run with each measurement, every frame while it holds. */
+function settleShown() {
+  const h = shownHold;
+  if (!h) return;
+  if (performance.now() > h.until || mode !== 'edit' || editing || reveal || pendingScroll) {
+    shownHold = null;
+    return;
+  }
+  const moved = Math.abs(scrollY - h.lastY) > 0.5;
+  h.lastY = scrollY;
+  h.still = moved ? 0 : h.still + 1;
+  const target = shownTarget(h.desc);
+  const r = target && target.getBoundingClientRect();
+  // Once it showed, the page scrolled with nothing on it moving (a scrollbar dragged, a search in the page, the site's
+  // own code): that has the last word. A change of layout that moves it away is put right.
+  if (moved && r && h.at !== null && Math.abs(r.top + scrollY - h.at) <= 1) {
+    shownHold = null;
+    return;
+  }
+  if (h.still < STILL_FRAMES || !r) return;
+  const top = shownTop(r, h.show);
+  // In view, or already where the page can show it best (the end of the page, or one taller than the frame).
+  if (comfortable(r) || Math.abs(top - scrollY) <= 2) {
+    h.at = r.top + scrollY;
+    return;
+  }
+  h.at = null;
+  const from = scrollY;
+  // 'instant', not 'auto': a site's own smooth scrolling would otherwise animate it.
+  window.scrollTo({ top, behavior: 'instant' });
+  const by = scrollY - from;
+  const after = target.getBoundingClientRect();
+  // One that does not move with the page (something fixed or sticky) cannot be brought into view by scrolling it.
+  if (Math.abs(by) > 1 && Math.abs(after.top - (r.top - by)) > Math.abs(by) / 2) {
+    shownHold = null;
+    return;
+  }
+  h.lastY = scrollY;
+  h.still = 0;
+}
+/** The author or the editor has taken over the page: nothing scrolls it back to an element asked for earlier. */
+function stopShowing() {
+  pendingScroll = null;
+  shownHold = null;
+}
 /**
  * Scrolls the element `desc` names into view, unless it already shows comfortably. False while there is nothing to
  * scroll to yet: it is not on the page, or it is a component's wrapper whose content has not arrived. One already on
@@ -761,9 +847,12 @@ const SCROLL_WAIT_MS = 3000;
  * Once `waiting` for one that was not there, a hidden copy mounting first (one a component shows at another width)
  * is not it: the wait goes on for one that shows.
  */
-function scrollToDesc(desc, show, waiting = false) {
+function scrollToDesc(desc, show, waiting = false, moved = false) {
   const all = findAll(desc);
   let el = all.find((e) => rectOf(e));
+  // Kept in view while the page settles only when it shows now and is scrolled to here: one hidden when asked is not
+  // moved to later, and one already in view (a pick on the page) leaves the page to the author.
+  const shows = !!el;
   if (!el) {
     if (waiting || !all.length || all.some((e) => getComputedStyle(e).display === 'contents')) return false;
     el = all[0];
@@ -780,7 +869,15 @@ function scrollToDesc(desc, show, waiting = false) {
   // Shown from Layers (`show`), one taller than the frame shows from its top. A pick on the page itself keeps its
   // place on the page.
   const block = show && r.height > innerHeight - 80 ? 'start' : 'center';
-  if (r.top < 60 || r.bottom > innerHeight - 20) target.scrollIntoView({ block, behavior: matchMedia('(prefers-reduced-motion: reduce)').matches ? 'auto' : 'smooth' });
+  const fits = comfortable(r);
+  // Asked for in so many words (`show`: the command menu, Layers) or just moved, one in view already is still kept
+  // there while the page settles: from where it shows now, so the author's own scrolling ends that at once.
+  if (shows && (!fits || show || moved)) {
+    shownHold = { desc, show, until: performance.now() + SHOWN_SETTLE_MS, still: 0, lastY: scrollY, at: fits ? r.top + scrollY : null };
+    scheduleRects();
+  }
+  if (fits) return true;
+  target.scrollIntoView({ block, behavior: matchMedia('(prefers-reduced-motion: reduce)').matches ? 'auto' : 'smooth' });
   return true;
 }
 /** Tried again each time the page changes or is measured, until the element shows or the wait is over. */
@@ -788,7 +885,14 @@ function retryScroll() {
   const p = pendingScroll;
   if (!p) return;
   if (performance.now() > p.until || mode !== 'edit') pendingScroll = null;
-  else if (scrollToDesc(p.desc, p.show, true)) pendingScroll = null;
+  else if (p.after > revision) return;
+  // An item opened in the inspector, or text being edited, meanwhile: the page shows that instead.
+  else if (p.after && (reveal || editing)) pendingScroll = null;
+  else if (p.after) {
+    // The page has the change: its element is where the change put it (already on the page, for a move).
+    pendingScroll = null;
+    if (!scrollToDesc(p.desc, p.show, false, true)) pendingScroll = { desc: p.desc, show: p.show, until: performance.now() + SCROLL_WAIT_MS, after: 0 };
+  } else if (scrollToDesc(p.desc, p.show, true)) pendingScroll = null;
 }
 /**
  * The keys that scroll the page, or move focus to what the page then scrolls to (Tab). A modifier alone (Shift as a
@@ -796,9 +900,9 @@ function retryScroll() {
  */
 const SCROLL_KEYS = new Set(['ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight', 'PageUp', 'PageDown', 'Home', 'End', ' ', 'Tab']);
 // The author's own scrolling, or a click in the page: the page stays where the author has it.
-for (const type of ['wheel', 'touchstart', 'pointerdown']) window.addEventListener(type, () => (pendingScroll = null), { capture: true, passive: true });
+for (const type of ['wheel', 'touchstart', 'pointerdown']) window.addEventListener(type, stopShowing, { capture: true, passive: true });
 window.addEventListener('keydown', (e) => {
-  if (SCROLL_KEYS.has(e.key) && !e.ctrlKey && !e.altKey && !e.metaKey) pendingScroll = null;
+  if (SCROLL_KEYS.has(e.key) && !e.ctrlKey && !e.altKey && !e.metaKey) stopShowing();
 }, { capture: true, passive: true });
 
 // ---------------------------------------------------------------------------
@@ -4697,7 +4801,7 @@ window.addEventListener('message', async (e) => {
       // Preview shows the page as it is saved, where the visitor scrolls it.
       if (mode === 'preview') {
         clearSpacing();
-        pendingScroll = null;
+        stopShowing();
       }
       // A double-click from before the change starts nothing after it.
       pendingHit = null;
@@ -4723,6 +4827,7 @@ window.addEventListener('message', async (e) => {
       selected = m.payload.selected || null;
       // The author selected something else meanwhile: the element asked for is no longer the one to show.
       if (pendingScroll && !sameDesc(pendingScroll.desc, selected)) pendingScroll = null;
+      if (shownHold && !sameDesc(shownHold.desc, selected)) shownHold = null;
       if (m.payload.hovered !== undefined) hovered = m.payload.hovered;
       trackedSlots = Array.isArray(m.payload.slots) ? m.payload.slots.filter((d) => d && typeof d.slot === 'string').slice(0, 50) : [];
       scheduleRects();
@@ -4737,12 +4842,15 @@ window.addEventListener('message', async (e) => {
       // Asked about a page this frame has since left: the editor asks again once it knows the page that is here.
       if (leftBehind(m)) break;
       // A newer request replaces one still waiting. One for an element the page does not show yet (just inserted, its
-      // hot update still on the way) waits for it while editing.
+      // hot update still on the way) waits for it while editing, and one about a change the page does not have yet (a
+      // section moved, still in its old place here) waits for that change's revision.
       const desc = m.payload.desc;
       const show = !!m.payload.show;
-      pendingScroll = null;
-      if (!scrollToDesc(desc, show) && mode === 'edit' && desc && typeof desc.ctx === 'string' && typeof desc.node === 'string')
-        pendingScroll = { desc, show, until: performance.now() + SCROLL_WAIT_MS };
+      const after = Number.isSafeInteger(m.payload.revision) ? m.payload.revision : 0;
+      stopShowing();
+      const wanted = mode === 'edit' && desc && typeof desc.ctx === 'string' && typeof desc.node === 'string';
+      if (wanted && after > revision) pendingScroll = { desc, show, until: performance.now() + REVISION_WAIT_MS, after };
+      else if (!scrollToDesc(desc, show) && wanted) pendingScroll = { desc, show, until: performance.now() + SCROLL_WAIT_MS, after: 0 };
       break;
     }
     case 'navigate': {
@@ -4752,7 +4860,7 @@ window.addEventListener('message', async (e) => {
       // a page reported on the way (or a visitor's link the request overtook) never switches it back.
       const id = Number.isSafeInteger(m.payload.navId) ? m.payload.navId : null;
       navRequest = id;
-      pendingScroll = null;
+      stopShowing();
       try {
         const nav = await import('$app/navigation');
         await nav.goto(path);
@@ -4839,7 +4947,7 @@ window.addEventListener('message', async (e) => {
       // A wheel turned over a page this frame has since left scrolls nothing here.
       if (!Number.isFinite(y) || !y || leftBehind(m)) break;
       stopKeeping();
-      pendingScroll = null;
+      stopShowing();
       if (revealScroll) revealScroll = false;
       window.scrollBy({ top: Math.max(-4000, Math.min(4000, y)), behavior: 'instant' });
       if (selected) scheduleRects();
@@ -5047,7 +5155,7 @@ function reportNav() {
   // Another page's room is not this one's: the editor asks again for the page it shows. A jump within the page keeps it.
   if (emptySpace && emptySpace.path !== shownPath()) setEmptySpace(null);
   stopKeeping();
-  pendingScroll = null;
+  stopShowing();
   send('navigated', { path: shownPath() });
   scheduleRects();
   // What a practice send says belongs to the page it started on.
