@@ -137,7 +137,7 @@ describe.skipIf(!browserInstalled)('Inspector text and a pick on the canvas (#89
     ['Supporting text', 'TEXTAREA']
   ]) {
     it(`saves what was typed in ${name} for the element it was typed for when the canvas selects another`, async () => {
-      expect(await page.getByRole('textbox', { name, exact: true }).evaluate((el) => el.tagName)).toBe(tag);
+      expect(await page.evaluate<string>(`document.querySelector('[aria-label="${name}"]').tagName`)).toBe(tag);
       await type(name, 'Typed for the hero');
       await page.evaluate('so.pick("services")');
       await expect.poll(() => shown(name)).toBe(name === 'Heading' ? 'Saved services' : 'Saved text services');
@@ -193,12 +193,12 @@ describe.skipIf(!browserInstalled)('Inspector text and a pick on the canvas (#89
 
   it('keeps the author typing when a pick selects what is already selected, on this page or another', async () => {
     await type('Heading', 'Still typing');
-    const field = await page.getByRole('textbox', { name: 'Heading', exact: true }).elementHandle();
+    await page.evaluate('window.typedIn = document.activeElement');
     // The field is left, if at all, as the store changes: checked at once, and again once React has drawn the change.
     expect(await page.evaluate(`(so.pick("hero"), [useStore().selection.nodeId, document.activeElement.getAttribute('aria-label')])`)).toEqual(['hero', 'Heading']);
     expect(await page.evaluate(`(so.page("about"), [useStore().pageId, document.activeElement.getAttribute('aria-label')])`)).toEqual(['about', 'Heading']);
     await page.evaluate('new Promise((r) => requestAnimationFrame(() => setTimeout(r)))');
-    expect(await field!.evaluate((el) => el === document.activeElement && el.isConnected)).toBe(true);
+    expect(await page.evaluate('window.typedIn === document.activeElement && window.typedIn.isConnected')).toBe(true);
     expect(await shown('Heading')).toBe('Still typing');
     expect(await commits()).toEqual([]);
   });
