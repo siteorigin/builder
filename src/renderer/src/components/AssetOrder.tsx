@@ -5,30 +5,35 @@ import type { AssetRecord } from '@shared/types';
 import { setAssetSort, useStore } from '../store';
 
 /**
- * A name shortened to about `room` characters for a thumbnail caption. It keeps its first and last words, since
- * versions, sizes and numbers live at the end ("team offsite … 1100"), cut at word boundaries where there are any.
+ * A name shortened to at most `room` characters for a thumbnail caption. Versions, sizes and numbers live at the end
+ * ("team offsite … 1100", "brand … selects 03"), so the last word is kept whole first and the first word gets what is
+ * left; then whole words are added to the ending, then to the start, while they fit. A word is cut only when it can't
+ * fit whole: the first word to make room for the last, or a last word too long to keep beside anything.
  * Assets and the gallery picker caption their tiles the same way.
  */
 export function shortName(name: string, room = 30): string {
   if (name.length <= room) return name;
-  const headRoom = Math.round(room * 0.47);
-  let head = name.slice(0, headRoom);
-  if (head.lastIndexOf(' ') > headRoom / 2) head = head.slice(0, head.lastIndexOf(' '));
-  // Room the head gave back by stopping at a word goes to the ending.
-  const tailRoom = room - head.trimEnd().length - 3;
-  const space = name.lastIndexOf(' ', name.length - 6);
-  const tail = space > head.length && name.length - space - 1 <= tailRoom ? name.slice(space + 1) : name.slice(-Math.max(4, tailRoom - 2));
-  return `${head.trimEnd()} … ${tail.trimStart()}`;
-}
-
-/**
- * A name split so its last word can be kept whole while the rest is cut to fit a single line:
- * ["team offsite 2026", "1100"]. A name with no short last word comes back whole.
- */
-export function splitEnding(name: string): [string, string] {
-  const space = name.lastIndexOf(' ');
-  if (space <= 0 || name.length - space - 1 > 12) return [name, ''];
-  return [name.slice(0, space), name.slice(space + 1)];
+  const fit = room - 3; // what the head and the tail share, around " … "
+  const words = name.split(' ').filter(Boolean);
+  if (words.length < 2) {
+    const headRoom = Math.ceil(fit / 2);
+    return `${name.slice(0, headRoom)} … ${name.slice(-(fit - headRoom))}`;
+  }
+  const lastWord = words[words.length - 1];
+  if (lastWord.length > fit - 4) {
+    // The last word alone nearly fills the room: a short start, then as much of its ending as fits.
+    const head = words[0].slice(0, Math.min(words[0].length, Math.ceil(fit / 2)));
+    return `${head} … ${lastWord.slice(-(fit - head.length))}`;
+  }
+  let tail = lastWord;
+  let head = words[0].slice(0, fit - tail.length);
+  const headWhole = head === words[0];
+  let first = 1;
+  let last = words.length - 1;
+  // Whole words onto the ending, then onto the start (only after a whole first word).
+  while (last > first && head.length + words[last - 1].length + 1 + tail.length <= fit) tail = `${words[--last]} ${tail}`;
+  while (headWhole && first < last && head.length + 1 + words[first].length + tail.length <= fit) head += ` ${words[first++]}`;
+  return `${head} … ${tail}`;
 }
 
 /**
