@@ -1,34 +1,101 @@
 @layer components {
   /* ---------- Paste style review (StylePaste.tsx) ----------
-     Each style the paste writes, gathered under the part it lands on: the size, what it is now and what it becomes.
-     What can't be pasted sits apart and quieter, each with its reason on its own line. */
-  .paste-body { display: flex; flex-direction: column; gap: 12px; }
-  .paste-summary, .paste-error, .paste-note, .paste-empty { margin: 0; }
-  .paste-note { font-size: 12px; }
-  .paste-empty { color: var(--text-2); }
+     Where the style comes from and goes, and the sizes it goes at, stay pinned at the top while the review scrolls.
+     Each style the paste writes sits under the part it lands on: the size, what it is now and what it becomes, in
+     columns shared down the list. A cleared value is a ringed token, never a bold value. What can't be pasted folds
+     away under its count, unframed and quieter. Why Paste style is unavailable is said once, beside it. */
+  .paste-body { display: flex; flex-direction: column; gap: 12px; container: paste-body / inline-size; }
+  .paste-note, .paste-route, .paste-same { margin: 0; }
+  /* It overlaps the scroller's top edge by 2px, so no scrolled text shows through a rounding seam under the title. */
+  .paste-context { position: sticky; top: -6px; z-index: 1; display: flex; flex-direction: column; gap: 12px; margin: -6px -18px 0; padding: 6px 18px 12px; background: var(--panel); }
+  /* Whatever is scrolled to or focused lands below the pinned strip (--paste-pin, measured in StylePaste.tsx). */
+  .modal-body:has(> .paste-body) { scroll-padding-top: calc(var(--paste-pin, 0px) + 8px); }
+  /* Scrolled, the rule moves from under the title to under the pinned context, so the list slides under one edge. */
+  .modal[data-scrolled]:has(.paste-context) > .modal-head { box-shadow: none; }
+  .modal[data-scrolled] .paste-context { box-shadow: 0 1px 0 var(--border); }
+  /* Each size choice keeps its name on one line; the longer "Match the copy" takes the room it needs. */
+  .paste-context .segmented button { flex: 1 1 auto; padding: 0 10px; white-space: nowrap; }
+  .paste-route { display: flex; flex-wrap: wrap; align-items: center; gap: 2px 6px; font-size: 13px; line-height: 1.4; }
+  .paste-route strong { font-weight: 600; overflow-wrap: anywhere; }
+  .paste-route-arrow { width: 14px; height: 14px; flex: none; color: var(--text-2); }
+  .paste-note { font-size: 12px; line-height: 1.4; }
+  .paste-body > .paste-note:last-child { padding-top: 4px; }
   .paste-section { display: flex; flex-direction: column; gap: 8px; padding-top: 12px; border-top: 1px solid var(--border); }
-  .paste-heading { margin: 0; font-size: 13px; font-weight: 600; color: var(--text); }
-  .paste-group { display: flex; flex-direction: column; gap: 4px; }
-  .paste-target { margin: 0; font-size: 12px; font-weight: 600; color: var(--text-2); }
-  .paste-list { margin: 0; padding: 0; list-style: none; border: 1px solid var(--border-strong); border-radius: var(--r-md); background: var(--raised); }
-  .paste-row { display: grid; grid-template-columns: minmax(0, 140px) minmax(0, 1fr); align-items: baseline; gap: 4px 12px; padding: 7px 12px; }
+  .paste-heading { display: flex; align-items: baseline; gap: 8px; margin: 0; font-size: 14px; font-weight: 600; color: var(--text); }
+  .paste-heading-note { font-size: 12px; font-weight: 500; color: var(--text-2); }
+  /* "5 not pasted" opens the list it counts. */
+  .paste-heading-link { padding: 0; border: 0; background: none; font: inherit; color: var(--text-2); text-decoration: underline; text-underline-offset: 2px; text-decoration-color: color-mix(in srgb, currentColor 40%, transparent); }
+  .paste-heading-link:hover { color: var(--text); text-decoration-color: currentColor; }
+  .paste-group { display: flex; flex-direction: column; gap: 6px; }
+  .paste-group + .paste-group { margin-top: 4px; }
+  .paste-target { margin: 0; font-size: 12px; font-weight: 500; color: var(--text-2); }
+  .paste-reach { color: var(--text-3); }
+
+  /* The property, the size and the before → after are three columns every row in a card shares. The size column has a
+     floor that holds "Medium container" and never wraps, so values start at the same place card after card. */
+  .paste-list { display: grid; grid-template-columns: minmax(88px, 116px) minmax(104px, max-content) minmax(0, 1fr); column-gap: 12px; margin: 0; padding: 0; list-style: none; border: 1px solid var(--border-strong); border-radius: var(--r-md); background: var(--raised); }
+  .paste-row { grid-column: 1 / -1; display: grid; grid-template-columns: subgrid; align-items: baseline; row-gap: 4px; padding: 7px 12px; }
   .paste-row + .paste-row { border-top: 1px solid var(--border); }
   .paste-prop { display: flex; flex-direction: column; font-weight: 500; overflow-wrap: anywhere; }
-  .paste-part { font-size: 12px; font-weight: 400; color: var(--text-3); }
-  .paste-changes { display: flex; flex-direction: column; gap: 3px; min-width: 0; }
-  .paste-change { display: grid; grid-template-columns: 64px minmax(0, 1fr); gap: 8px; align-items: baseline; }
-  .paste-size { font-size: 12px; color: var(--text-2); }
+  /* Scrolled part-way through a property's sizes, its name stays beside them under the pinned strip, and leaves with
+     its last size. */
+  .paste-list .paste-prop { position: sticky; top: calc(var(--paste-pin, 0px) + 2px); }
+  .paste-changes { grid-column: 2 / -1; display: grid; grid-template-columns: subgrid; row-gap: 5px; min-width: 0; }
+  .paste-change { grid-column: 1 / -1; display: grid; grid-template-columns: subgrid; align-items: baseline; }
+  .paste-size { font-size: 12px; color: var(--text-2); white-space: nowrap; }
+  .paste-state { color: var(--text-3); }
   .paste-values { display: flex; flex-wrap: wrap; align-items: center; gap: 2px 6px; min-width: 0; overflow-wrap: anywhere; }
+  .paste-after { display: inline-flex; flex-wrap: wrap; align-items: center; gap: 2px 6px; min-width: 0; }
   .paste-from, .paste-to { display: inline-flex; align-items: center; gap: 5px; }
   .paste-from { color: var(--text-3); text-decoration: line-through; text-decoration-thickness: 1px; }
   .paste-to { color: var(--text); font-weight: 600; text-decoration: none; }
-  .paste-arrow { width: 12px; height: 12px; flex: none; color: var(--text-3); }
-  .paste-cleared { color: var(--text); font-weight: 600; }
-  .paste-reach { font-weight: 400; color: var(--text-3); }
   .paste-unset { color: var(--text-3); }
+  .paste-arrow { width: 12px; height: 12px; flex: none; color: var(--text-2); }
+  /* A removal: a ringed token in the quiet ink, then what the size uses instead. Neutral, not red: it is the
+     consequence of the Sizes choice, not a danger. */
+  .paste-cleared { display: inline-flex; align-items: center; gap: 4px; height: 20px; padding: 0 7px; border-radius: var(--r-sm); box-shadow: inset 0 0 0 1px var(--border-control); font-size: 12px; font-weight: 500; color: var(--text-2); }
+  .paste-cleared svg { width: 12px; height: 12px; flex: none; }
+  .paste-fallback { font-size: 12px; color: var(--text-3); }
   .paste-lead { width: 13px; height: 13px; flex: none; color: var(--text-2); }
-  .paste-swatch { width: 12px; height: 12px; flex: none; border-radius: 50%; box-shadow: inset 0 0 0 1px rgb(0 0 0 / 0.18), 0 0 0 1px var(--border-control); }
-  .paste-skipped .paste-list { background: transparent; }
-  .paste-skipped .paste-prop { font-weight: 400; color: var(--text-2); }
-  .paste-reason { font-size: 12px; color: var(--text-2); }
+  /* The Site styles colour sample (.ss-chip): one --border-control ring holds 3:1 around any colour. */
+  .paste-swatch { width: 12px; height: 12px; flex: none; border-radius: 50%; box-shadow: 0 0 0 1px var(--border-control); }
+  .paste-same { display: flex; align-items: flex-start; gap: 6px; font-size: 12px; line-height: 1.4; color: var(--text-2); }
+  .paste-same svg { width: 13px; height: 13px; flex: none; margin-top: 2px; color: var(--text-3); }
+
+  /* Not pasted: a disclosure under its count, then plain rows with a hairline between them, no card. */
+  .paste-disclosure { display: inline-flex; align-items: center; gap: 4px; margin-left: -2px; padding: 0 4px 0 2px; border: 0; border-radius: var(--r-xs); background: none; font: inherit; color: inherit; }
+  .paste-disclosure:hover { background: var(--hover); }
+  .paste-disclosure .chev { width: 13px; height: 13px; flex: none; color: var(--text-2); transition: transform 120ms; }
+  .paste-disclosure[aria-expanded='true'] .chev { transform: rotate(90deg); }
+  .paste-skipped [hidden] { display: none; }
+  .paste-skipped > div:not([hidden]) { display: flex; flex-direction: column; gap: 10px; }
+  .paste-skip-list { margin: 0; padding: 0; list-style: none; }
+  .paste-skip { display: grid; grid-template-columns: minmax(88px, 116px) minmax(0, 1fr); align-items: baseline; gap: 2px 12px; padding: 5px 0; font-size: 12px; line-height: 1.4; }
+  .paste-skip + .paste-skip { border-top: 1px solid var(--border); }
+  .paste-skip .paste-prop { font-weight: 500; color: var(--text-2); }
+  .paste-part { font-weight: 400; color: var(--text-3); }
+  .paste-reason { color: var(--text-2); }
+
+  /* Narrow: the property takes its own line and each size keeps its values beside it. */
+  @container paste-body (max-width: 420px) {
+    .paste-list { grid-template-columns: max-content minmax(0, 1fr); }
+    .paste-list .paste-prop, .paste-changes { grid-column: 1 / -1; }
+    .paste-list .paste-prop { position: static; }
+    .paste-skip { grid-template-columns: minmax(0, 1fr); }
+  }
+
+  /* The footer's reason Paste style can't be pressed, icon first, in the place the eye goes when it can't. */
+  .paste-foot-note { display: inline-flex; align-items: center; gap: 6px; min-width: 0; font-size: 12px; line-height: 1.35; color: var(--text-2); }
+  .paste-foot-note svg { width: 14px; height: 14px; flex: none; color: var(--text-2); }
+  .paste-foot-note .spinner { width: 12px; height: 12px; }
+  /* Room for "Paste 12 styles", so the button doesn't jump as the Sizes choice changes the count. */
+  .paste-go { min-width: 118px; justify-content: center; }
+
+  /* The held copy in the status bar: what Paste style will paste, and a way to let it go. */
+  .status-bar .held-style { display: inline-flex; flex: 0 1 auto; align-items: center; gap: 5px; min-width: 0; max-width: 240px; height: 24px; padding: 0 0 0 6px; color: var(--text-2); white-space: nowrap; }
+  .status-bar .held-style > svg { width: 13px; height: 13px; flex: none; }
+  .held-style-label { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+  .held-style-clear { display: grid; flex: none; place-items: center; width: 24px; height: 24px; padding: 0; border: 0; border-radius: var(--r-xs); background: transparent; color: var(--text-3); }
+  .held-style-clear:hover { background: var(--hover); color: var(--text); }
+  .held-style-clear svg { width: 12px; height: 12px; }
 }
