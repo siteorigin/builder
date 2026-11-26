@@ -70,7 +70,7 @@ describe('the process table with memory', () => {
       [108, NaN],
       [109, 0]
     ]);
-    expect([complete(read), complete(read.slice(0, 2))]).toEqual([false, true]);
+    expect([complete(read), complete(read.slice(0, 2)), complete([])]).toEqual([false, true, false]);
     expect(['darwin', 'linux', 'win32'].map((p) => memorySource(p as NodeJS.Platform))).toEqual(['top footprint', 'ps rss', 'CIM WorkingSetSize']);
   });
 

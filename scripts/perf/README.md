@@ -249,8 +249,8 @@ change in MiB and Improvement, then all processes and the two heaps. Growth can 
 MiB, never as a percentage of it, in both formats.
 
 How the band was arrived at: on an M4 Max (36 GB, macOS, shared with other work), two runs of one build, 5 iterations
-each on both fixtures, were compared, and a third with 40 MiB held in the main process (a filled `Buffer`, made at
-startup on a throwaway build). Between the two runs every process count was identical; on the small fixture every
+each on both fixtures, were compared (the second run's large case failed one launch, below, and was run again), and a
+third with 40 MiB held in the main process (a filled `Buffer`, made at startup on a throwaway build). Between the two runs every process count was identical; on the small fixture every
 memory figure stayed inside the band (the largest move 9 MiB on a 548 MiB total, 6 MiB on the main process); on the
 large one all but four did: at `canvas` the GPU process still held its open-time memory (about 430 MiB) in 4 of one
 run's 5 launches and in none of the other's, which moved its figure and the total, and the preview's renderer moved by

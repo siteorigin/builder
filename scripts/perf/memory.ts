@@ -95,8 +95,8 @@ export function withFootprints(rows: MemoryRow[], footprints: Map<number, number
   return rows.map((r) => ({ ...r, bytes: footprints.get(r.pid) ?? (r.bytes === 0 ? 0 : NaN) }));
 }
 
-/** Whether every process of a sample has its figure. */
-export const complete = (rows: MemoryRow[]) => rows.every((r) => Number.isFinite(r.bytes));
+/** Whether a sample has processes, and every one of them its figure. */
+export const complete = (rows: MemoryRow[]) => rows.length > 0 && rows.every((r) => Number.isFinite(r.bytes));
 
 const run = (file: string, args: string[], timeoutMs: number) =>
   new Promise<string>((resolve, reject) => execFile(file, args, { timeout: timeoutMs, maxBuffer: 16 * 1024 * 1024, windowsHide: true }, (err, stdout) => (err ? reject(err) : resolve(stdout))));
