@@ -141,7 +141,7 @@ describe('moving a page', () => {
     };
     expect(refused('/lookbook/kitchens/lookbook/')).toMatch(/“Lookbook” cannot move inside itself/);
     // Spring would end up five levels deep.
-    expect(refused('/a/b/lookbook/')).toMatch(/would move “Spring” to \/a\/b\/lookbook\/kitchens\/spring\/, which is not possible: Routes can be at most four levels deep/);
+    expect(refused('/a/b/lookbook/')).toMatch(/would move “Spring” to \/a\/b\/lookbook\/kitchens\/spring\/, which is not possible: An address can be at most four levels deep/);
     const blocked = applyOperations(s, [{ type: 'page.create', pageId: 'pg_workkit', title: 'Work kitchens', route: '/work/kitchens/' }]).state;
     // A page written with capitals by hand is in the way all the same.
     const capitals = structuredClone(blocked);

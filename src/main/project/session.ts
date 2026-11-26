@@ -4,16 +4,17 @@ import { promises as fs, constants as fsConstants, existsSync, statSync, type Bi
 import type { FileHandle } from 'node:fs/promises';
 import { hostname } from 'node:os';
 import { basename, dirname, join } from 'node:path';
-import type { ComponentDefinition, PageDoc, ProjectBriefDoc, ProjectState, SiteDoc } from '@shared/types';
+import type { ComponentDefinition, PageDoc, ProjectBriefDoc, ProjectState, PublishedDoc, SiteDoc } from '@shared/types';
 import { SCHEMA_VERSION } from '@shared/types';
 import { BRIEF_FILE } from '@shared/brief';
+import { PUBLISHED_FILE, withPublished } from '@shared/published';
 import { collectionGrantRefusal, type CollectionWriteGrant } from '@shared/collection-grant';
 import type { ApplyResult, EditBatch, EditOperation, ToolError } from '@shared/ops';
 import type { AiTurnReview, ConflictChoice, FileText, RestoreVersionResult, SavedCopy, SaveFailure, StorageInfo, TurnLaterChange, VersionReview, VersionsInfo } from '@shared/api';
 import { validateOperation } from '@shared/ops';
 import { choicesLost } from '@shared/variants';
 import { AXES_FORMAT, formatOf } from '@shared/migrations';
-import { applyOperations, assetUsages, captureClipboard, convertEditedDesign, type Clipboard } from '@engine/apply';
+import { applyOperations, assetUsages, captureClipboard, convertEditedDesign, keepDeliveredAddresses, type Clipboard } from '@engine/apply';
 import { clone } from '@engine/install';
 import { listThemes, themePinProblem } from '@catalogue/index';
 import { anchorsInUse, displayName, EngineError } from '@engine/tree';
@@ -2429,6 +2430,29 @@ export class ProjectSession extends EventEmitter {
     });
   }
 
+  /**
+   * Record the page addresses an export delivered (`live`, the published project it was built from), so a page that
+   * moves from one keeps it working (see shared/published). Written outside History: no undo takes back an export. A
+   * page that moved while the export ran keeps the address it was delivered at too. Null once it is recorded, or the
+   * reason it could not be.
+   */
+  recordPublished(live: Pick<ProjectState, 'pages'>): Promise<string | null> {
+    return this.serialize(async () => {
+      const published = withPublished(this.state.published, live);
+      if (!published) return null;
+      const blocked = await this.writeBlocked();
+      if (blocked) return blocked.error?.message ?? 'The project can’t be saved right now.';
+      const moved = Object.values(live.pages).flatMap((p) => (Object.hasOwn(this.state.pages, p.id) && this.state.pages[p.id].route !== p.route ? [{ from: p.route, pageId: p.id }] : []));
+      const next = keepDeliveredAddresses(withRecord(this.state, published), moved);
+      try {
+        await this.persist(next, { label: 'Record exported addresses', history: false, source: 'system' });
+      } catch (e) {
+        return e instanceof Error && e.message ? e.message : String(e);
+      }
+      return null;
+    });
+  }
+
   /** Commands run one at a time, each (unless it only reads) holding the lock generation's claim throughout. */
   private serialize<T>(fn: () => Promise<T>, writes = true): Promise<T> {
     const run = writes ? () => this.fenced(fn) : fn;
@@ -3313,7 +3337,8 @@ export class ProjectSession extends EventEmitter {
   private async captureVersion(name: string, opts: { auto?: boolean; also?: string[]; filled?: Record<string, string> } = {}): Promise<SavedVersion> {
     const docs: Record<string, string> = {};
     // A version is of the site: the brief says what the project is for, and a restore keeps the one it has.
-    for (const [path, content] of this.docs) if (path !== BRIEF_FILE) docs[path] = await this.versions.putText(content);
+    // Nor what has been published: a restore never takes back what the website was exported with.
+    for (const [path, content] of this.docs) if (path !== BRIEF_FILE && path !== PUBLISHED_FILE) docs[path] = await this.versions.putText(content);
     const media: Record<string, string | null> = {};
     for (const rel of new Set([...(await this.versionMediaPaths(this.docs)), ...(opts.also ?? [])])) {
       let abs: string;
@@ -3378,7 +3403,7 @@ export class ProjectSession extends EventEmitter {
     const stored = new Map<string, string>();
     try {
       // A version never holds the brief; one that does (saved before that was so) is restored without it.
-      for (const [path, h] of Object.entries(v.docs)) if (path !== BRIEF_FILE) stored.set(path, (await this.versions.read(h)).toString('utf8'));
+      for (const [path, h] of Object.entries(v.docs)) if (path !== BRIEF_FILE && path !== PUBLISHED_FILE) stored.set(path, (await this.versions.read(h)).toString('utf8'));
     } catch (e) {
       return refuse((e as Error).message);
     }
@@ -3389,6 +3414,9 @@ export class ProjectSession extends EventEmitter {
       state = { ...read.state, manifest: this.state.manifest };
       if (this.state.brief) state.brief = this.state.brief;
       else delete state.brief;
+      // So does the record of what was exported, which no version of the site takes back.
+      if (this.state.published) state.published = this.state.published;
+      else delete state.published;
     } catch (e) {
       return refuse(`“${v.name}” can’t be restored: ${(e as Error).message}`);
     }
@@ -3634,6 +3662,7 @@ export class ProjectSession extends EventEmitter {
     for (const [path, cur] of this.docs) if (!skip.has(path) && !sameContent(path, await this.diskContent(path), cur)) return path;
     // A brief written outside the app while the project had none.
     if (!this.docs.has(BRIEF_FILE) && !skip.has(BRIEF_FILE) && existsSync(join(this.dir, BRIEF_FILE))) return BRIEF_FILE;
+    if (!this.docs.has(PUBLISHED_FILE) && !skip.has(PUBLISHED_FILE) && existsSync(join(this.dir, PUBLISHED_FILE))) return PUBLISHED_FILE;
     for (const f of await fs.readdir(join(this.dir, DOC_DIR, 'pages')).catch(() => [] as string[])) {
       const path = `${DOC_DIR}/pages/${f}`;
       if (isCanonicalPath(path) && !this.docs.has(path) && !skip.has(path)) return path;
@@ -4272,7 +4301,8 @@ export class ProjectSession extends EventEmitter {
         for (const p of touched) if ((await this.diskContent(p)) !== (this.docs.get(p) ?? null)) changedOutside.push(p);
         if (touched.length && !changedOutside.length) {
           try {
-            await this.persist(run.beforeState, { label: 'Revert AI changes', history: false, source: 'system' });
+            // What was exported while the run worked stays recorded: reverting the run takes back its edits, not the export.
+            await this.persist(withRecord(run.beforeState, this.state.published), { label: 'Revert AI changes', history: false, source: 'system' });
           } catch (e) {
             if (!(e instanceof DiskConflictError)) throw e;
             changedOutside.push(e.path);
@@ -4836,6 +4866,14 @@ function sameDocs(a: Map<string, string>, b: Map<string, string>, except?: strin
   return true;
 }
 
+/** `state` with `published` as its record of exported addresses (none when it is undefined). */
+function withRecord(state: ProjectState, published: PublishedDoc | undefined): ProjectState {
+  const next = { ...state };
+  if (published) next.published = published;
+  else delete next.published;
+  return next;
+}
+
 /** Rebuild state from a document map (used by undo/redo). */
 function docsToState(docs: Map<string, string>, current: ProjectState): ProjectState {
   const parse = <T>(p: string): T | undefined => (docs.has(p) ? (JSON.parse(docs.get(p)!) as T) : undefined);
@@ -4855,6 +4893,8 @@ function docsToState(docs: Map<string, string>, current: ProjectState): ProjectS
   // A brief the documents lack is none: it is only a file while it holds something.
   const brief = parse<ProjectBriefDoc>(BRIEF_FILE);
   if (brief) next.brief = brief;
+  const published = parse<PublishedDoc>(PUBLISHED_FILE);
+  if (published) next.published = published;
   for (const [p, c] of docs) {
     const pm = p.match(/^siteorigin\/pages\/(.+)\.json$/);
     if (pm) next.pages[pm[1]] = JSON.parse(c);

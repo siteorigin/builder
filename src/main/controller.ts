@@ -2868,6 +2868,7 @@ export class Controller {
       const problem = await this.publish(s, folder, dest, format, `${slugify(snap.state.site.name) || 'website'}-source`);
       if (problem) return { ok: false, message: problem, warnings: [] };
       this.exportPaths.add(dest);
+      await this.notePublished(s, live, warn);
       this.recordExport(s, { kind: 'source', format, path: dest, revision: snap.revision, exportedAt: new Date().toISOString(), notes });
       return { ok: true, path: dest, message: `${format === 'zip' ? 'Source project exported as a ZIP file.' : 'Source project exported.'} ${PRIVATE_FILES_LEFT_OUT}`, warnings: notes.map((n) => n.message), notes, revision: snap.revision };
     });
@@ -3100,6 +3101,7 @@ export class Controller {
     const hosting = notFoundHostNote(basePath(state), redirectHost(live.site));
     const exportedAt = new Date().toISOString();
     this.exportPaths.add(dest);
+    await this.notePublished(s, live, warn);
     if (format === 'zip') {
       this.recordExport(s, { kind: 'site', format, path: dest, revision, exportedAt, notes });
       return { ok: true, path: dest, message: `Exported ${exported} as a ZIP file.`, warnings: warnings(), notes, revision, hosting };
@@ -3124,6 +3126,16 @@ export class Controller {
    * earlier one was (its folder deleted since, or a ZIP file replaced) supersedes it, and stops its preview, which
    * would otherwise serve the new files under the old proof's address.
    */
+  /**
+   * Record the page addresses an export delivered, so pages that move from them keep them working. The export is done
+   * either way: a record that cannot be written is a note, since a page moved later then leaves no old address.
+   */
+  private async notePublished(s: ProjectSession, live: ProjectState, warn: (...messages: string[]) => void) {
+    if (this.session !== s) return;
+    const problem = await s.recordPublished(live).catch((e: unknown) => (e instanceof Error ? e.message : String(e)));
+    if (problem) warn(`The exported page addresses couldn’t be recorded in the project (${problem.replace(/\.$/, '')}), so a page moved before the next export won’t keep its old address working. Export again once the project can be saved.`);
+  }
+
   private recordExport(s: ProjectSession, record: RecentExport): boolean {
     if (this.session !== s) {
       if (record.previewUrl) this.previews.stop(record.previewUrl);

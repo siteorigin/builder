@@ -1,7 +1,8 @@
 import { promises as fs, existsSync } from 'node:fs';
 import { join } from 'node:path';
-import type { AssetsDoc, Collection, CollectionDoc, ComponentDefinition, EntryDoc, PageDoc, ProjectBriefDoc, ProjectManifest, ProjectState, SiteDoc, SourceDoc, ThemeLock, TokensDoc } from '@shared/types';
+import type { AssetsDoc, Collection, CollectionDoc, ComponentDefinition, EntryDoc, PageDoc, ProjectBriefDoc, ProjectManifest, ProjectState, PublishedDoc, SiteDoc, SourceDoc, ThemeLock, TokensDoc } from '@shared/types';
 import { BRIEF_FILE, BRIEF_FIELDS } from '@shared/brief';
+import { PUBLISHED_FILE, publishedDocProblem } from '@shared/published';
 import { isCollectionId, isEntryId } from '@shared/collections';
 import { CONVERTER_FILE, isSourceId, MAX_CONVERTER, sourceDocProblem } from '@shared/sources';
 import { SCHEMA_VERSION } from '@shared/types';
@@ -17,7 +18,7 @@ const SAFE_ID_RE = /^[A-Za-z0-9][A-Za-z0-9._-]{0,120}$/;
 export function isCanonicalPath(p: string): boolean {
   return (
     p === MANIFEST_FILE ||
-    /^siteorigin\/(site|tokens|assets|theme-lock|brief)\.json$/.test(p) ||
+    /^siteorigin\/(site|tokens|assets|theme-lock|brief|published)\.json$/.test(p) ||
     /^siteorigin\/pages\/[A-Za-z0-9_-]+\.json$/.test(p) ||
     /^siteorigin\/components\/[A-Za-z0-9][A-Za-z0-9._-]*\/component\.json$/.test(p) ||
     collectionPathOf(p) !== null ||
@@ -136,6 +137,8 @@ export function stateToDocs(state: ProjectState): Map<string, string> {
   docs.set(`${DOC_DIR}/theme-lock.json`, toJson(state.themeLock));
   // Only while it holds something: an empty brief is no file.
   if (state.brief) docs.set(BRIEF_FILE, toJson(state.brief));
+  // Only once an export has delivered the website.
+  if (state.published) docs.set(PUBLISHED_FILE, toJson(state.published));
   for (const id of Object.keys(state.pages).sort()) docs.set(`${DOC_DIR}/pages/${id}.json`, toJson(state.pages[id]));
   for (const id of Object.keys(state.components).sort()) {
     const def = state.components[id];
@@ -354,6 +357,7 @@ async function readStoredState(dir: string, opts: ReadOptions, raw: Map<string, 
   if (duplicates.length) throw new ProjectFormatError(`${duplicates[0]} has the same entry ID as an entry of another collection. Entry IDs must be unique across the project.`);
   const state: ProjectState = { manifest, site, tokens, assets, themeLock, pages, components, collections };
   if (exists(BRIEF_FILE)) state.brief = briefDoc(await load<unknown>(BRIEF_FILE));
+  if (exists(PUBLISHED_FILE)) state.published = publishedDoc(await load<unknown>(PUBLISHED_FILE));
   // External sources: each folder's settings, checked to hold no credential before anything else reads them.
   const sources: Record<string, SourceDoc> = {};
   for (const d of await list(`${DOC_DIR}/sources`, (p) => sourcePathOf(p))) {
@@ -394,6 +398,13 @@ async function loadQuiet(text: (rel: string) => Promise<string | null>, rel: str
   } catch {
     throw new ProjectFormatError(`Could not read ${rel}: it is not valid JSON.`);
   }
+}
+
+/** A stored record of exported addresses, checked: anything else stops the read. */
+function publishedDoc(doc: unknown): PublishedDoc {
+  const problem = publishedDocProblem(doc);
+  if (problem) throw new ProjectFormatError(`${PUBLISHED_FILE} ${problem}. Restore it from a copy, or remove it: the pages’ old addresses are then kept working only from the next export.`);
+  return doc as PublishedDoc;
 }
 
 /** A stored source's settings, checked: a credential written into them, or anything else they cannot hold, stops the read. */

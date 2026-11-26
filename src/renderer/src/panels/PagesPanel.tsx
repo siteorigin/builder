@@ -587,6 +587,9 @@ export function PagesPanel() {
   const menuItems = (menuOf?.node.props.links ?? menuOf?.schema.default ?? []) as Array<Record<string, unknown>>;
   const slotUnder = parent && menuOf ? headerMenuSlotUnder(st, menuItems, parent.id) : null;
   const navNote = parent && slotUnder?.sub ? (slotUnder.under ? `under ${slotUnder.under}` : `in the submenu of ${parent.title}’s link`) : null;
+  // A menu holding as many links as it takes has no room for the new page: shown before it is added, not after.
+  const menuMax = menuOf?.schema.max;
+  const menuFull = menuMax !== undefined && menuItems.length >= menuMax;
   /** Select the shared header and land on its navigation list, ready to edit. */
   const editMenu = () => {
     if (!headerMenu) return;
@@ -606,7 +609,7 @@ export function PagesPanel() {
     const t = title.trim();
     if (!t || creating || dateMissing || titleOver) return;
     setCreating(true);
-    const nav = addToNav && !!headerMenu;
+    const nav = addToNav && !!headerMenu && !menuFull;
     // Sent against the snapshot the address was previewed on: a project that changed meanwhile previews again
     // rather than taking an address it no longer has free.
     const kind = asArticle ? { starter, articleDate } : { starter };
@@ -925,7 +928,7 @@ export function PagesPanel() {
                   Inside
                 </label>
                 <select id="pages-add-inside" className="select" value={parent?.id ?? ''} disabled={creating} onChange={(e) => chooseParent(e.target.value || null)} aria-describedby="pages-add-where">
-                  <option value="">No section (top level)</option>
+                  <option value="">Top level</option>
                   {sections.map((id) => (
                     <option key={id} value={id}>
                       {' '.repeat(depthOf(id))}
@@ -978,18 +981,30 @@ export function PagesPanel() {
               </div>
             )}
             {headerMenu && (
-              <label className="pages-add-check">
-                <input
-                  type="checkbox"
-                  checked={addToNav}
-                  disabled={creating}
-                  onChange={(e) => {
-                    navChosen.current = true;
-                    setAddToNav(e.target.checked);
-                  }}
-                />
-                {navNote ? `Add to header menu, ${navNote}` : 'Add to header menu'}
-              </label>
+              <div className="pages-add-field stack">
+                <label className="pages-add-check">
+                  <input
+                    type="checkbox"
+                    checked={addToNav && !menuFull}
+                    disabled={creating || menuFull}
+                    aria-describedby={menuFull ? 'pages-add-menu-full' : undefined}
+                    onChange={(e) => {
+                      navChosen.current = true;
+                      setAddToNav(e.target.checked);
+                    }}
+                  />
+                  {navNote ? `Add to header menu, ${navNote}` : 'Add to header menu'}
+                </label>
+                {menuFull && (
+                  <span className="note" id="pages-add-menu-full">
+                    The header menu is full: it holds {menuMax} links.{' '}
+                    <button type="button" className="link-btn" disabled={creating} onMouseDown={(e) => e.preventDefault()} onClick={editMenu}>
+                      Edit menu
+                    </button>{' '}
+                    to make room.
+                  </span>
+                )}
+              </div>
             )}
             <div className="pages-add-actions">
               <button className="btn btn-sm btn-primary" disabled={!title.trim() || creating || dateMissing || titleOver > 0} onMouseDown={(e) => e.preventDefault()} onClick={() => void add()}>

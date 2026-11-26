@@ -7,6 +7,7 @@ import type { ApplyResult } from '@shared/ops';
 import { newId } from '@shared/ids';
 import { displayName, placesOf } from '@engine/tree';
 import { planHomeChange } from '@engine/apply';
+import { wasPublishedFor } from '@shared/published';
 import { uniqueCopyName } from '@engine/definitions';
 import { placementRole } from '@engine/insert-role';
 import { planSwap, type SwapCarry, type SwapPlan } from '@engine/swap';
@@ -1395,6 +1396,8 @@ export function SetHomeModal({ pageId }: { pageId: string }) {
   if (!snap || !st || !page || !review) return null;
   const { moves, to, first, rows, total } = review;
   const vacated = page.route;
+  // Only an address the website was exported with can be in anyone's bookmarks: one never exported is not kept.
+  const published = wasPublishedFor(st, vacated, pageId);
   const taker = keep ? undefined : moves.find((m) => m.to === vacated);
   const confirm = async () => {
     setBusy(true);
@@ -1461,32 +1464,40 @@ export function SetHomeModal({ pageId }: { pageId: string }) {
             </li>
           ))}
         </ul>
-        <div className="page-dialog-option" data-off={!keep || undefined}>
-          <label>
-            <input type="checkbox" checked={keep} disabled={busy} aria-describedby="set-home-keep-note" onChange={(e) => setKeep(e.target.checked)} />
+        {published ? (
+          <div className="page-dialog-option" data-off={!keep || undefined}>
+            <label>
+              <input type="checkbox" checked={keep} disabled={busy} aria-describedby="set-home-keep-note" onChange={(e) => setKeep(e.target.checked)} />
+              <span>
+                Keep <span className="page-dialog-address">{vacated}</span> working
+              </span>
+            </label>
+            <p id="set-home-keep-note" className="page-dialog-option-note" aria-live="polite">
+              {keep ? <ShieldCheck /> : <TriangleAlert />}
+              <span>
+                {keep ? (
+                  <>
+                    Bookmarks and links from other sites to <span className="page-dialog-address">{vacated}</span> are sent to “{page.title}” at <span className="page-dialog-address">/</span> instead of breaking.
+                  </>
+                ) : taker ? (
+                  <>
+                    Once your site is published again, <span className="page-dialog-address">{vacated}</span> shows “{st.pages[taker.pageId].title}”, so bookmarks and links from other sites to it reach the wrong page.
+                  </>
+                ) : (
+                  <>
+                    Once your site is published again, <span className="page-dialog-address">{vacated}</span> stops working, so bookmarks and links from other sites to it will break.
+                  </>
+                )}
+              </span>
+            </p>
+          </div>
+        ) : (
+          <p className="page-dialog-option-note">
             <span>
-              Keep <span className="page-dialog-address">{vacated}</span> working
-            </span>
-          </label>
-          <p id="set-home-keep-note" className="page-dialog-option-note" aria-live="polite">
-            {keep ? <ShieldCheck /> : <TriangleAlert />}
-            <span>
-              {keep ? (
-                <>
-                  Bookmarks and links from other sites to <span className="page-dialog-address">{vacated}</span> are sent to “{page.title}” at <span className="page-dialog-address">/</span> instead of breaking.
-                </>
-              ) : taker ? (
-                <>
-                  Once your site is published again, <span className="page-dialog-address">{vacated}</span> shows “{st.pages[taker.pageId].title}”, so bookmarks and links from other sites to it reach the wrong page.
-                </>
-              ) : (
-                <>
-                  Once your site is published again, <span className="page-dialog-address">{vacated}</span> stops working, so bookmarks and links from other sites to it will break.
-                </>
-              )}
+              The website hasn’t been exported with <span className="page-dialog-address">{vacated}</span> yet, so no bookmark or link from another site leads there, and nothing is kept.
             </span>
           </p>
-        </div>
+        )}
         {rows.length > 0 && (
           <div className="page-dialog-block">
             <div className="page-dialog-heading" id="set-home-links">

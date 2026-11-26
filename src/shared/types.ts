@@ -1514,6 +1514,14 @@ export interface ProjectState {
   brief?: ProjectBriefDoc;
   /** External sources by ID. Absent or empty for a project without any. */
   sources?: Record<string, SourceDoc>;
+  /** The page addresses the website has been exported with (see shared/published). Absent until the first export. */
+  published?: PublishedDoc;
+}
+
+/** The page addresses exports delivered (see shared/published), as stored in siteorigin/published.json. */
+export interface PublishedDoc {
+  /** Each exported page address, lowercased, and the ID of the page it led to when it was last exported. */
+  pages: Record<string, string>;
 }
 
 // ---------------------------------------------------------------------------
