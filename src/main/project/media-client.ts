@@ -101,6 +101,12 @@ export interface VariantClient {
   opaque(buf: Buffer, mime: string): Promise<boolean | null>;
   /** Square PNG icons of a picture, one for each of `icons`, or why there are none. Never rejects. */
   icons(buf: Buffer, mime: string, icons: IconSpec[], opts?: { untrusted?: boolean }): Promise<IconsResult>;
+  /**
+   * End the worker as soon as it has nothing to do (the project that wanted it closed), instead of after the idle time:
+   * at once when it is idle, or when the requests already made have finished. A request made after this keeps the
+   * worker on its usual idle time, and a worker that has ended starts again for the next request.
+   */
+  release(): void;
   /** Stop the worker for good (the app is quitting): requests in flight or still to come get no copies. */
   stop(): void;
 }
@@ -120,6 +126,10 @@ export function createVariantClient(spawn: () => WorkerHandle, opts: { timeoutMs
   let queue: Promise<unknown> = Promise.resolve();
   let nextId = 0;
   let stopped = false;
+  /** Requests made and not yet settled, in flight or waiting their turn. */
+  let pending = 0;
+  /** Set by release(): end the worker once the requests made before it have settled. */
+  let releasing = false;
 
   const settle = (id: number, result: VariantReply | null) => {
     if (current?.id !== id) return;
@@ -176,12 +186,17 @@ export function createVariantClient(spawn: () => WorkerHandle, opts: { timeoutMs
         settle(id, null);
       }
     }).finally(() => {
-      if (current || idle || stopped) return;
+      pending--;
+      if (current || idle || stopped || pending) return;
+      if (releasing) return void ((releasing = false), kill());
       idle = setTimeout(() => ((idle = null), kill()), idleMs);
       idle.unref?.();
     });
 
   const request = (ask: Ask) => {
+    pending++;
+    // Someone wants the worker again: it keeps its usual idle time.
+    releasing = false;
     const p = queue.then(() => run(ask));
     queue = p;
     return p;
@@ -203,6 +218,13 @@ export function createVariantClient(spawn: () => WorkerHandle, opts: { timeoutMs
         // A reply without exactly one icon for each asked for is the worker failing, not the picture.
         r?.ok && r.icons?.length === icons.length ? { ok: true, icons: r.icons.map(toBuffer) } : { ok: false, unreadable: !!(r && !r.ok && r.unreadable) }
       ),
+    release() {
+      if (stopped) return;
+      if (idle) clearTimeout(idle);
+      idle = null;
+      if (pending) releasing = true;
+      else kill();
+    },
     stop() {
       stopped = true;
       if (idle) clearTimeout(idle);

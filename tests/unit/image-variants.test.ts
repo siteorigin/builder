@@ -577,6 +577,76 @@ describe('media worker client', () => {
     expect(await queued).toEqual([]);
     expect(workers).toHaveLength(2);
   });
+
+  it('ends an idle worker as soon as it is released, and starts a fresh one for the next request (#822)', async () => {
+    vi.useFakeTimers();
+    const { workers, spawn } = spawner();
+    const client = createVariantClient(spawn, { idleMs: 30000 });
+    const p = client.variants(Buffer.from('a'), 'image/jpeg', 2000);
+    await vi.advanceTimersByTimeAsync(0);
+    workers[0].reply({ id: workers[0].sent[0].id, ok: true, variants: [] });
+    await p;
+    expect(workers[0].killed).toBe(false);
+    // The project closed: the worker goes now, not half a minute later.
+    client.release();
+    expect(workers[0].killed).toBe(true);
+    // Released, not stopped: the next project's picture gets a new worker and its copies.
+    const next = client.variants(Buffer.from('b'), 'image/jpeg', 2000);
+    await vi.advanceTimersByTimeAsync(0);
+    expect(workers).toHaveLength(2);
+    workers[1].reply({ id: workers[1].sent[0].id, ok: true, variants: [{ width: 480, mime: 'image/jpeg', data: new Uint8Array([1]) }] });
+    expect(await next).toHaveLength(1);
+    // The old idle timer never ends the new worker early.
+    await vi.advanceTimersByTimeAsync(29999);
+    expect(workers[1].killed).toBe(false);
+    await vi.advanceTimersByTimeAsync(1);
+    expect(workers[1].killed).toBe(true);
+    // Releasing a client with no worker starts nothing.
+    client.release();
+    expect(workers).toHaveLength(2);
+    client.stop();
+  });
+
+  it('lets the requests made before a release finish, then ends the worker without waiting out the idle time (#822)', async () => {
+    vi.useFakeTimers();
+    const { workers, spawn } = spawner();
+    const client = createVariantClient(spawn, { idleMs: 30000 });
+    const first = client.variants(Buffer.from('a'), 'image/jpeg', 2000);
+    const second = client.variants(Buffer.from('b'), 'image/jpeg', 2000);
+    await vi.advanceTimersByTimeAsync(0);
+    client.release();
+    // Work under way is never cut short by a release.
+    expect(workers[0].killed).toBe(false);
+    workers[0].reply({ id: workers[0].sent[0].id, ok: true, variants: [{ width: 480, mime: 'image/jpeg', data: new Uint8Array([1]) }] });
+    expect(await first).toHaveLength(1);
+    await vi.advanceTimersByTimeAsync(0);
+    // The queued request runs on the same worker, which is not ended between the two.
+    expect(workers).toHaveLength(1);
+    expect(workers[0].killed).toBe(false);
+    workers[0].reply({ id: workers[0].sent[1].id, ok: true, variants: [{ width: 480, mime: 'image/jpeg', data: new Uint8Array([2]) }] });
+    expect(await second).toHaveLength(1);
+    expect(workers[0].killed).toBe(true);
+  });
+
+  it('keeps its usual idle time when asked for again after a release (#822)', async () => {
+    vi.useFakeTimers();
+    const { workers, spawn } = spawner();
+    const client = createVariantClient(spawn, { idleMs: 5000 });
+    const before = client.variants(Buffer.from('a'), 'image/jpeg', 2000);
+    await vi.advanceTimersByTimeAsync(0);
+    client.release();
+    // A project created beside the one that closed asks for its pictures meanwhile.
+    const after = client.variants(Buffer.from('b'), 'image/jpeg', 2000);
+    workers[0].reply({ id: workers[0].sent[0].id, ok: true, variants: [] });
+    await before;
+    await vi.advanceTimersByTimeAsync(0);
+    workers[0].reply({ id: workers[0].sent[1].id, ok: true, variants: [] });
+    await after;
+    expect(workers[0].killed).toBe(false);
+    await vi.advanceTimersByTimeAsync(5000);
+    expect(workers[0].killed).toBe(true);
+    client.stop();
+  });
 });
 
 describe('web-sized copies', () => {
