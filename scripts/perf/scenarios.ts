@@ -1177,7 +1177,372 @@ export const memory: Scenario = {
   }
 };
 
-export const SCENARIOS: Scenario[] = [launch, open, edit, panels, chat, exportSite, exportAgain, switchProject, memory];
+// ---------------------------------------------------------------------------
+// canvas
+// ---------------------------------------------------------------------------
+
+/** `canvas`' two timed windows: the wheel scrolling the page down and back with the hero selected, and the pointer
+ *  sweeping across it. */
+export const CANVAS_WINDOWS = ['scroll', 'sweep'] as const;
+/** The scroll: this many wheel notches of this many pixels down, then as many back up, one every STEP_MS. */
+export const SCROLL_STEPS = 30;
+export const SCROLL_STEP = 60;
+/** The sweep: two diagonals across the page, each this many pointer moves, one every STEP_MS. */
+export const SWEEP_STEPS = 60;
+/** About a frame between two inputs, as a wheel or a mouse at 60 Hz sends them. */
+const STEP_MS = 16;
+/** How far an outline may sit from the element it outlines (device-pixel snapping), in the editor's pixels. */
+const OUTLINE_SLACK = 1.5;
+
+/** What the editor's frames did in one window, as the injected watch below saw them. */
+interface FramesSeen {
+  frames: number;
+  droppedFrames: number;
+  longestFrameMs: number;
+  longTasks: number;
+  longTaskMs: number;
+}
+/**
+ * The frame watch, run in the editor's page: every animation frame's time, and every long task (50 ms or more) of its
+ * main thread, until it is stopped. Source text, not a function: the scripts' compiler wraps a named function in a
+ * helper the page does not have.
+ */
+const WATCH_FRAMES = `(() => {
+  const w = { times: [], long: [], on: true };
+  const po = new PerformanceObserver((list) => { for (const e of list.getEntries()) w.long.push(e.duration); });
+  po.observe({ type: 'longtask' });
+  w.tick = (t) => { if (!w.on) return; w.times.push(t); requestAnimationFrame(w.tick); };
+  w.stop = () => { w.on = false; for (const e of po.takeRecords()) w.long.push(e.duration); po.disconnect(); return { times: w.times, long: w.long }; };
+  requestAnimationFrame(w.tick);
+  globalThis.__perfFrames = w;
+})()`;
+const STOP_FRAMES = 'globalThis.__perfFrames.stop()';
+
+/** Start watching the editor's frames. The scenario's own, injected for the window and stopped after it: nothing of
+ *  the app's. */
+async function watchFrames(win: Page) {
+  await win.evaluate(WATCH_FRAMES);
+}
+
+/** Stop the watch and say what it saw: a frame later than `periodMs` after the one before stands for the frames it
+ *  dropped (one interval of two periods is one dropped frame). */
+export function framesOf(times: number[], long: number[], periodMs: number): FramesSeen {
+  let dropped = 0;
+  let longest = 0;
+  for (let i = 1; i < times.length; i++) {
+    const dt = times[i] - times[i - 1];
+    longest = Math.max(longest, dt);
+    dropped += Math.max(0, Math.round(dt / periodMs) - 1);
+  }
+  return { frames: times.length, droppedFrames: dropped, longestFrameMs: longest, longTasks: long.length, longTaskMs: long.reduce((n, d) => n + d, 0) };
+}
+async function framesSeen(win: Page, periodMs: number): Promise<FramesSeen> {
+  const { times, long } = (await win.evaluate(STOP_FRAMES)) as { times: number[]; long: number[] };
+  return framesOf(times, long, periodMs);
+}
+
+/** The editor's frame period at rest: the median time between its animation frames over a second of doing nothing. */
+async function framePeriod(win: Page): Promise<number> {
+  await watchFrames(win);
+  await sleep(1000);
+  const { times } = (await win.evaluate(STOP_FRAMES)) as { times: number[] };
+  return median(times.slice(1).map((t, i) => t - times[i]));
+}
+
+type Box = { x: number; y: number; width: number; height: number };
+/** The page's scroll position once it has stopped moving (two readings 100 ms apart agree). */
+async function settledScroll(frame: FrameLocator): Promise<number> {
+  const read = () => frame.locator('html').evaluate(() => (globalThis as unknown as { scrollY: number }).scrollY);
+  let was = await read();
+  for (let i = 0; i < 50; i++) {
+    await sleep(100);
+    const now = await read();
+    if (now === was) return now;
+    was = now;
+  }
+  return was;
+}
+
+/** The boxes of an element of the page and each of the editor's elements around it (`data-so-node`), in the page's
+ *  pixels; the element is the one at a point of the page, or the first heading of the page with this text. */
+type ChainAt = { point: { x: number; y: number } } | { heading: string };
+async function chainBoxes(frame: FrameLocator, at: ChainAt): Promise<Box[]> {
+  return frame.locator('html').evaluate((_html, at) => {
+    type El = { getAttribute(n: string): string | null; hasAttribute(n: string): boolean; parentElement: El | null; textContent: string | null; getBoundingClientRect(): Box };
+    const doc = (globalThis as unknown as { document: { elementFromPoint(x: number, y: number): El | null; querySelectorAll(s: string): Iterable<El> } }).document;
+    let el: El | null = 'point' in at ? doc.elementFromPoint(at.point.x, at.point.y) : ([...doc.querySelectorAll('h1')].find((h) => h.textContent?.trim() === at.heading) ?? null);
+    const out: Box[] = [];
+    for (; el; el = el.parentElement) {
+      if (!el.hasAttribute('data-so-node')) continue;
+      const r = el.getBoundingClientRect();
+      out.push({ x: r.x, y: r.y, width: r.width, height: r.height });
+    }
+    return out;
+  }, at);
+}
+
+/** Whether `drawn` (an outline, in the editor) outlines one of `boxes` (the page's, shown at `frame` scaled by `z`), with
+ *  the breathing room an outline may have (0 or 6 px). */
+function outlines(drawn: Box, boxes: Box[], frame: Box, z: number): boolean {
+  return boxes.some((b) =>
+    [0, 6].some((pad) => {
+      const x = frame.x + b.x * z - pad;
+      const y = frame.y + b.y * z - pad;
+      return Math.abs(drawn.x - x) <= OUTLINE_SLACK && Math.abs(drawn.y - y) <= OUTLINE_SLACK && Math.abs(drawn.width - (b.width * z + pad * 2)) <= OUTLINE_SLACK * 2 && Math.abs(drawn.height - (b.height * z + pad * 2)) <= OUTLINE_SLACK * 2;
+    })
+  );
+}
+
+/**
+ * How many times a window (or the outlines' check) is tried. A machine busy with other work can tell the app of the
+ * project's files changing on disk (they were put back before the launch) seconds late: the app reads the project
+ * again, or the preview reloads its page, and a window that happens in measures a page loading instead. Such a window
+ * is done again; the one measured is the last, which nothing reloaded. Each arm is held to the same rule.
+ */
+const WINDOW_TRIES = 5;
+/** Longer than any one input takes: one still not taken went to a page that was reloading under it. */
+const INPUT_MS = 5_000;
+const input = (p: Promise<void>, what: string) => withDeadline(p, INPUT_MS, what);
+
+/** The preview loaded a page, or the project was read again from disk, between two times. */
+const reloadedIn = (t: Trace, from: number, to: number) => !!t.first('canvas.ready', inProc('renderer'), from, to) || !!t.first('session.reloadFromDisk', inProc('main'), from, to);
+
+/** The editor's mark for one edge of one of `canvas`' windows, in one attempt (any attempt without one). */
+const atWindow =
+  (window: string, edge: 'start' | 'end', attempt?: number) =>
+  (r: PerfRecord): boolean =>
+    r.proc === 'renderer' && r.attrs?.scenario === 'canvas' && r.attrs?.window === window && r.attrs?.edge === edge && (attempt === undefined || r.attrs?.attempt === attempt);
+/** The window's mark in its last attempt: the one measured. */
+function lastWindow(t: Trace, window: string, edge: 'start' | 'end'): PerfRecord | undefined {
+  const all = t.all('canvas.window', atWindow(window, edge));
+  const last = Math.max(...all.map((r) => (typeof r.attrs?.attempt === 'number' ? r.attrs.attempt : 0)));
+  return all.find((r) => (typeof r.attrs?.attempt === 'number' ? r.attrs.attempt : 0) === last);
+}
+
+/** How long nothing must have reloaded before a window starts. The reloads come in bursts up to about 4 s apart. */
+const QUIET_MS = 3000;
+/** Until the page is there, editing, and nothing has reloaded for QUIET_MS (30 s at most), then the settle time. */
+async function settledAgain(ctx: ScenarioContext) {
+  await preview(ctx.win).locator('html[data-so-editing]').waitFor({ state: 'attached', timeout: 60_000 });
+  for (let i = 0; i < 60 && reloadedIn(await ctx.waitTrace(() => true, 0), Date.now() - QUIET_MS, Infinity); i++) await sleep(500);
+  await sleep(ctx.settleMs);
+}
+
+/** `body` done again, up to WINDOW_TRIES times, while a reload happens during it; what it threw stands otherwise. */
+async function undisturbed(ctx: ScenarioContext, what: string, body: (attempt: number) => Promise<void>) {
+  for (let attempt = 1; ; attempt++) {
+    const t0 = Date.now() - 100;
+    let failed: unknown = null;
+    try {
+      await body(attempt);
+    } catch (e) {
+      failed = e;
+    }
+    await sleep(500);
+    if (!reloadedIn(await ctx.waitTrace(() => true, 0), t0, Infinity)) {
+      if (failed) throw failed;
+      return;
+    }
+    if (attempt >= WINDOW_TRIES) throw new Error(`the preview reloaded during ${what} ${WINDOW_TRIES} times (the project’s files kept changing on disk)`);
+    await settledAgain(ctx);
+  }
+}
+
+/** One of `canvas`' windows: its edges marked, with what the frame watch saw on the end, done again if a reload
+ *  happened during it. */
+async function inWindow(ctx: ScenarioContext, window: (typeof CANVAS_WINDOWS)[number], periodMs: number, body: () => Promise<void>) {
+  await undisturbed(ctx, `the ${window}`, async (attempt) => {
+    // From the page's top every time: a page loaded again can come back where it was scrolled to.
+    const frame = preview(ctx.win);
+    await frame.locator('html').evaluate(() => (globalThis as unknown as { scrollTo(o: object): void }).scrollTo({ top: 0, behavior: 'instant' }));
+    expect((await settledScroll(frame)) === 0, `the page would not go back to its top before the ${window}`);
+    await sleep(500);
+    await watchFrames(ctx.win);
+    await ctx.mark('canvas.window', { scenario: 'canvas', window, edge: 'start', attempt });
+    try {
+      await body();
+    } finally {
+      await ctx.mark('canvas.window', { scenario: 'canvas', window, edge: 'end', attempt, ...(await framesSeen(ctx.win, periodMs)) });
+    }
+  });
+}
+
+export const canvas: Scenario = {
+  name: 'canvas',
+  after: 'open',
+  description: 'With the home hero selected, scroll the home page down and back with the wheel, then sweep the pointer across it, and check the outlines sit on what they outline.',
+  async run(ctx) {
+    const { win, fixture } = ctx;
+    const before = await win.evaluate(() => (globalThis as unknown as EditorPage).builder.project.snapshot());
+    expect(before, 'no project is open');
+    const shownHeading = findHeading(before.state.pages[fixture.homePageId], fixture.heroId)?.heading ?? fixture.heading;
+    const frame = preview(win);
+    // Not timed: the hero selected by a click on it, from nothing selected, as the selection toolbar shows. Done again
+    // if the page reloads under the click (see WINDOW_TRIES).
+    await settledAgain(ctx);
+    await undisturbed(ctx, 'selecting the hero', async () => {
+      for (let i = 0; i < 4 && (await heroChip(win).count()); i++) await win.keyboard.press('Escape');
+      await frame.getByRole('heading', { name: shownHeading, exact: true, level: 1 }).first().click({ timeout: 15_000 });
+      await heroChip(win).waitFor({ timeout: 15_000 });
+    });
+    const box = await win.locator('.frame-box iframe').boundingBox();
+    expect(box, 'the preview frame has no box');
+    const view = await frame.locator('html').evaluate(() => {
+      const g = globalThis as unknown as { innerWidth: number; innerHeight: number; document: { documentElement: { scrollHeight: number } } };
+      return { width: g.innerWidth, height: g.innerHeight, scrollable: g.document.documentElement.scrollHeight - g.innerHeight };
+    });
+    const z = box.width / view.width;
+    const editorHeight = await win.evaluate(() => (globalThis as unknown as { innerHeight: number }).innerHeight);
+    const shown = { x: box.x, y: box.y, width: box.width, height: Math.min(box.height, editorHeight - box.y) };
+    // A notch moves the page by its pixels on screen: the page's own are larger while the canvas shows it zoomed out.
+    const travel = Math.round((SCROLL_STEPS * SCROLL_STEP) / z);
+    expect(view.scrollable >= travel, `the home page scrolls ${view.scrollable}px, short of the ${travel}px the scroll needs`);
+    // The pointer rests over the page, a third of the way across: clear of the selection's spacing handles in the middle
+    // of its edges and its Add buttons three quarters across, which take the wheel when they pass under it.
+    await win.mouse.move(shown.x + shown.width * 0.3, shown.y + shown.height / 2);
+    const periodMs = await framePeriod(win);
+    expect(Number.isFinite(periodMs) && periodMs > 0, 'the editor drew no frames at rest');
+    await sleep(Math.max(ctx.settleMs, WORKSPACE_SAVE_WAIT_MS));
+    // A launch's late reports of the project's files being put back are let pass first (see WINDOW_TRIES).
+    await settledAgain(ctx);
+    await ctx.mark('scenario.start', { scenario: 'canvas', periodMs });
+
+    // The wheel scrolls the page down and back up with the hero selected.
+    await inWindow(ctx, 'scroll', periodMs, async () => {
+      for (let i = 0; i < SCROLL_STEPS; i++) {
+        await input(win.mouse.wheel(0, SCROLL_STEP), 'a wheel notch');
+        await sleep(STEP_MS);
+      }
+      const down = await settledScroll(frame);
+      for (let i = 0; i < SCROLL_STEPS; i++) {
+        await input(win.mouse.wheel(0, -SCROLL_STEP), 'a wheel notch');
+        await sleep(STEP_MS);
+      }
+      const up = await settledScroll(frame);
+      // Images that load above the view as it scrolls make the page longer, and the browser keeps what shows in place, so
+      // a scroll can end a little past where the notches alone would take it: it went most of the way each way.
+      expect(down >= travel * 0.75, `the wheel scrolled the page from its top to ${down}px, short of the ${travel}px its notches go`);
+      expect(down - up >= travel * 0.75, `the wheel brought the page back from ${down}px only to ${up}px`);
+    });
+    expect(await heroChip(win).count(), `the ${HERO_NAME} is no longer selected after the scroll`);
+
+    // The pointer sweeps across the page, corner to corner and back across the other diagonal.
+    await inWindow(ctx, 'sweep', periodMs, async () => {
+      const legs = [
+        [0.1, 0.05, 0.9, 0.95],
+        [0.9, 0.05, 0.1, 0.95]
+      ];
+      for (const [x0, y0, x1, y1] of legs)
+        for (let i = 0; i <= SWEEP_STEPS; i++) {
+          const f = i / SWEEP_STEPS;
+          await input(win.mouse.move(shown.x + shown.width * (x0 + (x1 - x0) * f), shown.y + shown.height * (y0 + (y1 - y0) * f)), 'a pointer move');
+          await sleep(STEP_MS);
+        }
+      await sleep(300);
+    });
+    await ctx.waitTrace((t) => !!t.first('canvas.hoverOutlined', inProc('renderer'), lastWindow(t, 'sweep', 'start')?.t ?? Infinity), 5_000);
+
+    // Not timed: scrolled part of the way down from the page's top, the selection's outline sits on the hero, half out of
+    // view, and the hover's on an element of another of the page's sections under the pointer. From the top each time: a
+    // page loaded again can come back where it was scrolled to.
+    await undisturbed(ctx, 'the outlines’ check', async () => {
+      await frame.locator('html').evaluate(() => (globalThis as unknown as { scrollTo(o: object): void }).scrollTo({ top: 0, behavior: 'instant' }));
+      await input(win.mouse.move(shown.x + shown.width * 0.3, shown.y + shown.height / 2), 'a pointer move');
+      const top = await settledScroll(frame);
+      for (let i = 0; i < 5; i++) {
+        await input(win.mouse.wheel(0, SCROLL_STEP), 'a wheel notch');
+        await sleep(STEP_MS);
+      }
+      const at = await settledScroll(frame);
+      expect(at > top, 'the page did not scroll before the outlines were checked');
+      const spot = await frame.locator('html').evaluate((_html, heading) => {
+        type El = { contains(o: El): boolean; textContent: string | null; closest(s: string): El | null; parentElement: El | null; getBoundingClientRect(): Box };
+        const g = globalThis as unknown as { innerWidth: number; innerHeight: number; document: { querySelectorAll(s: string): Iterable<El> }; getComputedStyle(el: El): { position: string } };
+        const h1 = [...g.document.querySelectorAll('h1')].find((h) => h.textContent?.trim() === heading);
+        const section = h1?.closest('section') ?? null;
+        // In the page's own content (not the shared header or footer), and in nothing pinned to the view while it scrolls.
+        for (const el of g.document.querySelectorAll('main [data-so-node]')) {
+          if (section && (section.contains(el) || el.contains(section))) continue;
+          let pinned = false;
+          for (let up: El | null = el; up && !pinned; up = up.parentElement) pinned = ['fixed', 'sticky'].includes(g.getComputedStyle(up).position);
+          if (pinned) continue;
+          const r = el.getBoundingClientRect();
+          if (r.width >= 40 && r.height >= 20 && r.y >= 10 && r.y + r.height <= g.innerHeight - 10 && r.x >= 0 && r.x + r.width <= g.innerWidth) return { x: r.x + r.width / 2, y: r.y + r.height / 2 };
+        }
+        return null;
+      }, shownHeading);
+      expect(spot, 'no element of another section is in view to hover');
+      await input(win.mouse.move(box.x + spot.x * z, box.y + spot.y * z), 'a pointer move');
+      await win.locator('.ov-hover').first().waitFor({ timeout: 10_000 });
+      await sleep(500);
+      const selected = await win.locator('.ov-selected').first().boundingBox();
+      expect(selected && outlines(selected, await chainBoxes(frame, { heading: shownHeading }), box, z), `the selection’s outline (${JSON.stringify(selected)}) is not on the ${HERO_NAME} after the scroll`);
+      const hovered = await win.locator('.ov-hover').first().boundingBox();
+      expect(hovered && outlines(hovered, await chainBoxes(frame, { point: spot }), box, z), `the hover’s outline (${JSON.stringify(hovered)}) is not on what the pointer is over`);
+    });
+    await ctx.mark('scenario.end', { scenario: 'canvas' });
+    await ctx.waitTrace((t) => !!t.first('scenario.end', forScenario('canvas', 'renderer')) && !!t.first('scenario.end', forScenario('canvas', 'main')));
+  },
+  measure(trace) {
+    const m = new Collector();
+    const begin = m.need('scenario.start (renderer)', trace.first('scenario.start', forScenario('canvas', 'renderer')));
+    const period = begin?.attrs?.periodMs;
+    if (typeof period === 'number') m.ms('canvas.framePeriodMs', period);
+    else m.need('scenario.start (renderer, with the frame period)', undefined);
+    for (const w of CANVAS_WINDOWS) {
+      // The last attempt: any before it had a reload during it, and was done again.
+      const start = m.need(`canvas.window ${w} start`, lastWindow(trace, w, 'start'));
+      const end = m.need(`canvas.window ${w} end`, start && trace.first('canvas.window', atWindow(w, 'end', start.attrs?.attempt as number)));
+      if (!start || !end) continue;
+      const p = `canvas.${w}`;
+      const gained = (name: string) => counter(end, name) - counter(start, name);
+      m.since(`${p}.ms`, start, end);
+      m.count(`${p}.canvasRenders`, gained('canvas.renders'));
+      m.count(`${p}.rectReports`, gained('canvas.rectReports'));
+      m.count(`${p}.rectReportsSame`, gained('canvas.rectReportsSame'));
+      m.count(`${p}.hoverReports`, gained('canvas.hoverReports'));
+      commits(m, trace, `${p}.rendererCommits`, start, end);
+      if (trackless(start) || trackless(end)) m.need(`${p}.renders (the editor did not count component renders)`, undefined);
+      else m.count(`${p}.renders`, gained('react.renders'));
+      // Each report from the page, handled with the render and commit it set off.
+      const reports = [...trace.all('canvas.rects', inProc('renderer'), start.t, end.t), ...trace.all('canvas.hover', inProc('renderer'), start.t, end.t)];
+      if (!reports.length) m.need(`${p}: the page's reports (canvas.rects, canvas.hover spans)`, undefined);
+      else {
+        m.ms(`${p}.reportMs`, median(reports.map((r) => r.ms ?? NaN)));
+        m.ms(`${p}.reportMsTotal`, reports.reduce((n, r) => n + (r.ms ?? NaN), 0));
+      }
+      for (const k of ['frames', 'droppedFrames', 'longTasks'] as const) {
+        const v = end.attrs?.[k];
+        if (typeof v === 'number') m.count(`${p}.${k}`, v);
+        else m.need(`${p}.${k} (the frame watch)`, undefined);
+      }
+      // A watch that saw fewer than half the frames the window should have had stalled: its dropped frames say nothing.
+      const frames = end.attrs?.frames;
+      if (typeof frames === 'number' && typeof period === 'number' && frames < (end.t - start.t) / period / 2) m.need(`${p}.frames (the frame watch saw ${frames} frames in ${Math.round(end.t - start.t)} ms)`, undefined);
+      for (const k of ['longTaskMs', 'longestFrameMs'] as const) {
+        const v = end.attrs?.[k];
+        if (typeof v === 'number') m.ms(`${p}.${k}`, v);
+        else m.need(`${p}.${k} (the frame watch)`, undefined);
+      }
+    }
+    // From the pointer moving onto an element in the page to the frame that paints its outline.
+    const sweepStart = lastWindow(trace, 'sweep', 'start');
+    const sweepEnd = sweepStart && trace.first('canvas.window', atWindow('sweep', 'end', sweepStart.attrs?.attempt as number));
+    if (sweepStart && sweepEnd) {
+      const outlined = trace.all('canvas.hoverOutlined', inProc('renderer'), sweepStart.t, sweepEnd.t);
+      const waits = outlined.map((r) => r.t - (typeof r.attrs?.movedAt === 'number' ? r.attrs.movedAt : NaN));
+      if (!outlined.length) m.need('canvas.hoverOutlined (no hover outlined in the sweep)', undefined);
+      else if (waits.some((w) => !Number.isFinite(w))) m.need('canvas.hoverOutlined (a hover without the time the pointer moved)', undefined);
+      else {
+        m.count('canvas.sweep.hoversOutlined', outlined.length);
+        m.ms('canvas.sweep.hoverOutlineMs', median(waits));
+      }
+    }
+    return m;
+  }
+};
+
+export const SCENARIOS: Scenario[] = [launch, open, edit, panels, chat, canvas, exportSite, exportAgain, switchProject, memory];
 
 /**
  * The scenarios to run in one launch for those asked for: each with every one it follows, in the order of SCENARIOS

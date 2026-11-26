@@ -311,6 +311,11 @@ function scheduleRects() {
   });
 }
 /** A divider the page renders: a plain rule, or one of the decorative bands drawn in its place. */
+/**
+ * The last report posted, with the page and revision it was measured on. One the same again is not posted: the editor
+ * already draws it. A request from the editor (`track`) clears it, so what the editor asks for is always answered.
+ */
+let rectsPosted = '';
 function isSeparator(el) {
   return el.tagName === 'HR' || el.classList.contains('so-band') || el.classList.contains('so-band-icon');
 }
@@ -335,7 +340,11 @@ function sendRects() {
   const spacing = box && { ...box, layout: layoutReport(selEls[first]), ctx: selected.ctx, node: selected.node, items: selected.items || '' };
   // Each tracked slot's placeholder where it first shows, with what it was measured for.
   const slots = mode === 'edit' ? trackedSlots.flatMap((desc) => { const box = findAll(desc).map(rectOf).find(Boolean); return box ? [{ desc, box }] : []; }) : [];
-  send('rects', { selected: sel, selectedDesc: selected, hovered: hov, hoveredDesc: hovered, revealed: rev, spacing, slots, empty: emptyArea(), viewport: { width: innerWidth, height: innerHeight, scrollY } });
+  const report = { selected: sel, selectedDesc: selected, hovered: hov, hoveredDesc: hovered, revealed: rev, spacing, slots, empty: emptyArea(), viewport: { width: innerWidth, height: innerHeight, scrollY } };
+  const seen = JSON.stringify([navigationId, revision, report]);
+  if (seen === rectsPosted) return;
+  rectsPosted = seen;
+  send('rects', report);
 }
 
 // ---------------------------------------------------------------------------
@@ -1309,7 +1318,8 @@ document.addEventListener(
     if (el === pointerEl && sameDesc(next, pointerAt)) return;
     pointerAt = next;
     pointerEl = el;
-    send('hover', { chain: chainFrom(el, true) });
+    // `at`: when the pointer moved, on the clock the editor's timing marks use, so the time to its outline can be told.
+    send('hover', { chain: chainFrom(el, true), at: performance.timeOrigin + e.timeStamp });
   },
   true
 );
@@ -4881,15 +4891,25 @@ window.addEventListener('message', async (e) => {
       applyOverlaysShown();
       scheduleRects();
       break;
-    case 'track':
+    case 'track': {
+      const was = { selected, hovered, slots: trackedSlots };
       selected = m.payload.selected || null;
       // The author selected something else meanwhile: the element asked for is no longer the one to show.
       if (pendingScroll && !sameDesc(pendingScroll.desc, selected)) pendingScroll = null;
       if (shownHold && !sameDesc(shownHold.desc, selected)) shownHold = null;
       if (m.payload.hovered !== undefined) hovered = m.payload.hovered;
       trackedSlots = Array.isArray(m.payload.slots) ? m.payload.slots.filter((d) => d && typeof d.slot === 'string').slice(0, 50) : [];
+      rectsPosted = '';
+      // Only what is hovered changed, and the next frame has nothing to do before it measures (a reveal to put in place, a
+      // scroll the editor asked for, the selection held in view): measured at once too, so the editor draws the hover's
+      // outline in its next frame, not the one after, and it keeps up with the pointer. The next frame measures again
+      // either way, after what the page itself does in it (a component moving what the pointer reached), and reports
+      // only what that changed.
+      const hoverOnly = !sameDesc(was.hovered, hovered) && sameDesc(was.selected, selected) && was.slots.length === trackedSlots.length && was.slots.every((d, i) => sameDesc(d, trackedSlots[i]));
+      if (hoverOnly && !revealDirty && !revealPlace && !pendingScroll && !shownHold && !keepHold) sendRects();
       scheduleRects();
       break;
+    }
     case 'emptySpace':
       // Said of a page this frame has since left: the editor says it again for the page shown.
       if (leftBehind(m)) break;

@@ -16,7 +16,7 @@ import { refKey, sameRef } from '@shared/types';
 import { aiActivity, api, commitDraft, errorText, getState, markDraft, saveLocal, setState, setViewport, stepHistory, toast, useStore, type Rect } from '../store';
 import { appliedSteps, errorComponent, revertStep, stillNewest } from '../lib/preview-error';
 import { acceptMessage, newSessionId, postToFrame, staleFor, viewAfter, type BridgeMessage, type FrameView } from '../lib/bridge';
-import { chainOf, descOrNull, emptyAreaOf, measuredRects, pointedAt, rectList, slotBoxes, spaceSizes, spacingOf, type FrameEmptyArea, type FrameSpacing, type SlotBox } from '../lib/payload';
+import { chainOf, descOrNull, emptyAreaOf, measuredRects, pointedAt, rectList, sameRects, slotBoxes, spaceSizes, spacingOf, type FrameEmptyArea, type FrameSpacing, type SlotBox } from '../lib/payload';
 import { blocksFromDom, richDom } from '../lib/richtext';
 import { collectionIndexRoutes } from '@shared/archives';
 import { dropAt, dropReaches, moveIndex, shownOrder } from '../lib/reorder';
@@ -63,7 +63,10 @@ import { addressPath, frameEntry, NO_HISTORY, observe, siteAddresses, startJourn
 import { shortcutLabel } from '../lib/shortcut-keys';
 import { settlePageClick } from '../lib/page-clicks';
 import { askAiHint, useAskAiKeys } from '../lib/ask-ai-key';
-import { perfMark } from '../lib/perf';
+import { perfCount, perfMark, perfOn, perfWork } from '../lib/perf';
+
+/** Whether two reports measured the same element (or both nothing). */
+const sameMeasured = (a: BridgeDesc | null, b: BridgeDesc | null) => a === b || (!!a && !!b && a.ctx === b.ctx && a.node === b.node && (a.items || '') === (b.items || '') && (a.part || '') === (b.part || '') && a.slot === b.slot);
 
 /** True while an inline text edit is open in the preview; shortcuts must not act on the selection then. */
 export const inlineEdit = { active: false };
@@ -119,6 +122,8 @@ export function showEditedPage(): void {
 }
 
 export function Canvas() {
+  // Each render of the canvas, for the performance harness (scripts/perf/README.md, the `canvas` scenario).
+  perfCount('canvas.renders');
   const runtime = useStore((s) => s.runtime);
   const snapshot = useStore((s) => s.snapshot);
   const pageId = useStore((s) => s.pageId);
@@ -356,6 +361,10 @@ export function Canvas() {
   /** What the page measured the selected and hovered boxes for, so an Add button is drawn only on the box of what it
    *  belongs to, never on one measured for the selection before. */
   const rectsFor = useRef<{ selected: BridgeDesc | null; hovered: BridgeDesc | null }>({ selected: null, hovered: null });
+  /** With timing marks on: the last report from the page as it came, and the hover whose outline is still to be painted,
+   *  with when the pointer moved onto it in the page (the `canvas` scenario). */
+  const lastReport = useRef('');
+  const hoverTimed = useRef<{ key: string; at: number } | null>(null);
   /** The boxes of the empty slots a selected placement shows several of, each with what it was measured for, for their
    *  Add buttons (#657); kept only when they change, since the page reports every frame while it scrolls. */
   const [slotRects, setSlotRects] = useState<SlotBox[]>([]);
@@ -986,18 +995,40 @@ export function Canvas() {
           const held = heldHover.current;
           heldHover.current = false;
           hoverChain.current = chain;
+          const was = perfOn ? getState().hover : null;
           resolveHover();
           if (held) syncTrack();
+          // The pointer reached another element: its outline is timed from the move in the page to the frame that
+          // paints it (the `canvas` scenario).
+          if (perfOn) {
+            perfCount('canvas.hoverReports');
+            const now = getState().hover;
+            if (now && !sameRef(now, was)) hoverTimed.current = { key: refKey(now), at: typeof p.at === 'number' ? p.at : NaN };
+          }
           break;
         }
         case 'rects': {
+          if (perfOn) {
+            perfCount('canvas.rectReports');
+            const seen = JSON.stringify(p);
+            if (seen === lastReport.current) perfCount('canvas.rectReportsSame');
+            lastReport.current = seen;
+          }
           const hovered = rectList(p.hovered);
           const selected = rectList(p.selected);
           // The pointer is on the name of what it was over (or its Add button): that element keeps its outline while it
           // rests there.
           const kept = !hovered.length && overTag.current;
+          const measuredBefore = rectsFor.current;
           rectsFor.current = { selected: descOrNull(p.selectedDesc), hovered: kept ? rectsFor.current.hovered : descOrNull(p.hoveredDesc) };
-          setState({ rects: { selected, hovered: kept ? getState().rects.hovered : hovered, revealed: rectList(p.revealed) } });
+          // A list that did not move keeps the one drawn, and a report where nothing moved changes nothing: the canvas is
+          // not drawn again for it (the page reports every frame while anything moves). One measured for something else
+          // is drawn, even with the same boxes: two elements can share a box, and what is drawn on it (an Add button)
+          // belongs to the one it was measured for.
+          const was = getState().rects;
+          const next = { selected: sameRects(selected, was.selected), hovered: kept ? was.hovered : sameRects(hovered, was.hovered), revealed: sameRects(rectList(p.revealed), was.revealed) };
+          const remeasured = !sameMeasured(measuredBefore.selected, rectsFor.current.selected) || !sameMeasured(measuredBefore.hovered, rectsFor.current.hovered);
+          if (remeasured || next.selected !== was.selected || next.hovered !== was.hovered || next.revealed !== was.revealed) setState({ rects: next });
           const slots = slotBoxes(p.slots);
           const slotsSeen = JSON.stringify(slots);
           if (slotsSeen !== slotRectsSeen.current) {
@@ -1257,7 +1288,11 @@ export function Canvas() {
       frameView.current = { session, view: viewAfter(m, known) };
       // A measurement the editor waits on, taken from a page or revision since left (or asked of one the frame had
       // left when it got the request), answers as nothing measured.
-      handle(m, staleFor(m, frameView.current.view) || m.payload.unmeasured === true);
+      const unmeasured = staleFor(m, frameView.current.view) || m.payload.unmeasured === true;
+      // The page's reports of what moved under the pointer and where its outlines are, timed with the render and
+      // commit each sets off (the `canvas` scenario).
+      if (perfOn && (m.type === 'rects' || m.type === 'hover')) perfWork(`canvas.${m.type}`, () => handle(m, unmeasured));
+      else handle(m, unmeasured);
     };
     window.addEventListener('message', onMsg);
     return () => window.removeEventListener('message', onMsg);
@@ -1389,10 +1424,27 @@ export function Canvas() {
     seenFailure.current = now;
   }, [snapshot?.revision, saveFailed]);
 
-  // Keep the bridge in sync with selection, hover and document revisions.
+  // With timing marks on: the first commit that draws the hovered element's outline where the page measured it for that
+  // element, marked once the frame it is in is painted (the `canvas` scenario).
+  useLayoutEffect(() => {
+    const timed = hoverTimed.current;
+    if (!perfOn || !timed) return;
+    const s = getState();
+    if (!s.hover || refKey(s.hover) !== timed.key) return void (hoverTimed.current = null);
+    const want = descFor(s.hover, hoverPlacement.current);
+    const got = rectsFor.current.hovered;
+    if (!want || !got || got.ctx !== want.ctx || got.node !== want.node || (got.items || '') !== (want.items || '') || (got.part || '') !== (want.part || '') || got.slot !== want.slot) return;
+    if (!wrapRef.current?.querySelector('.ov-hover')) return;
+    hoverTimed.current = null;
+    requestAnimationFrame(() => perfMark('canvas.hoverOutlined', { movedAt: timed.at }));
+  });
+
+  // Keep the bridge in sync with selection, hover and document revisions. Asked again when Site styles opens or closes,
+  // or Edit and Preview change places, so the page reports afresh what the canvas can draw again (an insertion's
+  // arrival cue waits for that, and the page sends no report that would only repeat the last).
   useEffect(() => {
     if (ready) syncTrack();
-  }, [ready, selection, hover, snapshot?.revision]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [ready, selection, hover, snapshot?.revision, stylesOpen, mode]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // A new selection is scrolled to once the frame shows its page, and so is one a Layers row asks to show again
   // (showLayer). Asked from Layers, one taller than the page shows from its top. One made with a page change (a page
