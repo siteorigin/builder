@@ -32,7 +32,8 @@ function options() {
       iterations: { type: 'string', default: '5' },
       out: { type: 'string' },
       app: { type: 'string', default: ROOT },
-      settle: { type: 'string', default: '1500' }
+      settle: { type: 'string', default: '1500' },
+      cold: { type: 'boolean', default: false }
     }
   });
   const fixtures = values.fixture.split(',').map((f) => f.trim()) as FixtureName[];
@@ -40,8 +41,11 @@ function options() {
   const iterations = Number(values.iterations);
   if (!Number.isInteger(iterations) || iterations < 1) throw new Error('--iterations takes a whole number of at least 1.');
   const scenarios = values.scenario.split(',').map((s) => s.trim());
-  return { scenarios, chain: chainFor(scenarios), fixtures, iterations, out: values.out ? resolve(values.out) : null, app: resolve(values.app), settleMs: Number(values.settle) };
+  return { scenarios, chain: chainFor(scenarios), fixtures, iterations, out: values.out ? resolve(values.out) : null, app: resolve(values.app), settleMs: Number(values.settle), cold: values.cold };
 }
+
+/** Chromium's caches in a profile: left out of each iteration's profile with --cold, so its code is compiled afresh. */
+const BROWSER_CACHES = ['Cache', 'Code Cache', 'GPUCache', 'DawnGraphiteCache', 'DawnWebGPUCache', 'Shared Dictionary', 'blob_storage'];
 
 /** Put `from` in place of `to`'s contents, leaving the entries named in `keep` as they are; copies share blocks where the disk can. */
 function restore(from: string, to: string, keep: string[] = []) {
@@ -176,7 +180,7 @@ async function main() {
   const runDir = join(PERF_DIR, 'runs', stamp);
   mkdirSync(runDir, { recursive: true });
   const out = opts.out ?? join(PERF_DIR, 'results', `${stamp}.json`);
-  console.log(`perf: ${opts.chain.map((s) => s.name).join(' → ')} on ${opts.fixtures.join(', ')}, ${opts.iterations} iterations, app ${relative(ROOT, opts.app) || '.'} (${build.git?.head.slice(0, 10) ?? 'no git'}${build.git?.dirty ? ', dirty' : ''})`);
+  console.log(`perf: ${opts.chain.map((s) => s.name).join(' → ')} on ${opts.fixtures.join(', ')}, ${opts.iterations} iterations, ${opts.cold ? 'cold' : 'warm'} profile, app ${relative(ROOT, opts.app) || '.'} (${build.git?.head.slice(0, 10) ?? 'no git'}${build.git?.dirty ? ', dirty' : ''})`);
   const cases: CaseResult[] = [];
   let stamped: { commit: string | null; builtAt: string | null } = { commit: null, builtAt: null };
   let electron: string | null = null;
@@ -196,6 +200,7 @@ async function main() {
     for (let i = 1; i <= opts.iterations; i++) {
       restore(join(dir, 'project-start'), project, ['node_modules']);
       restore(join(dir, 'profile-start'), profile);
+      if (opts.cold) for (const name of BROWSER_CACHES) rmSync(join(profile, name), { recursive: true, force: true });
       const results = await iterate(opts, opts.chain, { dir, profile, project, facts: fx.facts, restoredAt: Date.now() }, i, runDir);
       const t = Trace.parse(existsSync(join(dir, `trace-${i}.ndjson`)) ? readFileSync(join(dir, `trace-${i}.ndjson`), 'utf8') : '');
       if (t.build().commit) stamped = t.build();
@@ -215,7 +220,7 @@ async function main() {
     createdAt: new Date().toISOString(),
     build: { commit: stamped.commit, builtAt: stamped.builtAt, fingerprint: build.fingerprint, head: build.git?.head ?? null, dirty: build.git?.dirty ?? null, appDir: opts.app },
     machine: { platform: platform(), arch: arch(), osRelease: release(), cpu: cpus()[0]?.model ?? null, cores: cpus().length, memoryGiB: Math.round(totalmem() / 2 ** 30), node: process.versions.node, electron },
-    config: { iterations: opts.iterations, scenarios: opts.chain.map((s) => s.name).filter((n) => opts.scenarios.includes(n)), fixtures: opts.fixtures, settleMs: opts.settleMs },
+    config: { iterations: opts.iterations, scenarios: opts.chain.map((s) => s.name).filter((n) => opts.scenarios.includes(n)), fixtures: opts.fixtures, settleMs: opts.settleMs, cold: opts.cold },
     cases
   };
   mkdirSync(join(out, '..'), { recursive: true });

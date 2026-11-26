@@ -47,7 +47,7 @@ export interface RunResult {
   createdAt: string;
   build: { commit: string | null; builtAt: string | null; fingerprint: string; head: string | null; dirty: boolean | null; appDir: string };
   machine: Record<string, string | number | null>;
-  config: { iterations: number; scenarios: string[]; fixtures: string[]; settleMs: number };
+  config: { iterations: number; scenarios: string[]; fixtures: string[]; settleMs: number; cold?: boolean };
   cases: CaseResult[];
 }
 
@@ -184,11 +184,14 @@ export function summarizeCase(iterations: Iteration[]): Record<string, Summary> 
 // ---------------------------------------------------------------------------
 
 /**
- * The band inside which a duration's change is not shown to be real: three times the larger spread of the two runs,
- * and never under 1 ms. Counts and sizes have none: any change in them is a change.
+ * The band inside which a duration's change is not shown to be real: three times the larger spread (MAD) of the two
+ * runs, and never under 10% of the before median or 1 ms. Two runs of the same build on a quiet machine stay inside it
+ * (scripts/perf/README.md); five iterations alone understate the spread between runs. Counts and sizes have none: any
+ * change in them is a change.
  */
+export const NOISE_RULE = 'max(3 × MAD, 10%, 1 ms)';
 export function noiseBand(a: Summary, b: Summary): number {
-  return a.unit === 'ms' ? Math.max(1, 3 * Math.max(a.mad, b.mad)) : 0;
+  return a.unit === 'ms' ? Math.max(1, 3 * Math.max(a.mad, b.mad), 0.1 * Math.abs(a.median)) : 0;
 }
 
 export interface MetricChange {
@@ -291,9 +294,15 @@ export function changeMarkdown(changes: CaseChange[], before: RunResult, after: 
     if (m.before === null || m.after === null) return m.verdict;
     if (m.before === 0) return m.after === 0 ? '0.0%' : 'new';
     const v = ((m.before - m.after) / m.before) * 100;
-    return m.verdict === 'noise' ? `${signed(v)} (noise)` : signed(v);
+    // A duration inside the noise band has not been shown to move: no percentage is claimed for it.
+    return m.verdict === 'noise' ? '(noise)' : signed(v);
   };
-  const footer = `Trees: ${before.build.commit ?? before.build.head ?? '?'} → ${after.build.commit ?? after.build.head ?? '?'} · ${after.config.iterations} iterations each · median · noise band 3 × MAD (min 1 ms) for durations`;
+  const m = after.machine;
+  const profile = (r: RunResult) => (r.config.cold ? 'cold profile' : 'warm profile');
+  const footer = [
+    `Machine: ${m.cpu ?? '?'}, ${m.platform ?? '?'} ${m.osRelease ?? ''}`.trim() + ` · ${before.config.iterations} → ${after.config.iterations} iterations, 1 warm-up · ${profile(after)} · median · noise band ${NOISE_RULE}`,
+    `Trees: ${before.build.commit ?? before.build.head ?? '?'} → ${after.build.commit ?? after.build.head ?? '?'}, both built with \`npm run build\``
+  ].join('  \n');
   return changes
     .map((c) => {
       const head = `### ${c.scenario} · ${c.fixture}`;

@@ -54,7 +54,7 @@ describe('benchmark results', () => {
     for (const m of c.metrics) expect([m.delta, m.changePct, m.verdict]).toEqual([0, 0, 'same']);
   });
 
-  it('call a duration inside three times the spread noise, and any change in a count a change', () => {
+  it('call a duration inside three times the spread (and at least 10%) noise, and any change in a count a change', () => {
     const a = result([passed({ d: { unit: 'ms', values: [100, 104, 96] }, n: { unit: 'count', values: [9, 9, 9] } })]);
     const b = result([passed({ d: { unit: 'ms', values: [108, 112, 104] }, n: { unit: 'count', values: [10, 10, 10] } })]);
     const [c] = compareResults(a, b);
@@ -63,6 +63,8 @@ describe('benchmark results', () => {
     expect(d).toMatchObject({ before: 100, after: 108, delta: 8, verdict: 'noise', noise: 12 });
     expect(n).toMatchObject({ delta: 1, verdict: 'changed', noise: 0 });
     expect(noiseBand(summarize('ms', [5, 5, 5]), summarize('ms', [5, 5, 5]))).toBe(1);
+    // A steady metric still gets the 10% floor: five iterations understate the spread between two runs.
+    expect(noiseBand(summarize('ms', [500, 500, 501]), summarize('ms', [540, 540, 540]))).toBe(50);
     const far = compareResults(a, result([passed({ d: { unit: 'ms', values: [60, 61, 59] }, n: { unit: 'count', values: [2, 2, 2] } })]))[0].metrics;
     expect(far.find((m) => m.metric === 'd')).toMatchObject({ verdict: 'changed', changePct: -40 });
   });
@@ -90,7 +92,8 @@ describe('benchmark results', () => {
     expect(md).toContain('### edit · small');
     expect(md).toContain('| Metric | Before | After | Improvement |');
     expect(md).toContain('| edit.durableWrites | 16 | 2 | 87.5% |');
-    expect(md).toContain('| edit.previewApplied | 200 ms | 201 ms | −0.3% (noise) |');
+    expect(md).toContain('| edit.previewApplied | 200 ms | 201 ms | (noise) |');
+    expect(md).toContain('Trees: abc1234 → abc1234, both built with `npm run build`');
     expect(md).toContain('| Predicate | pass | pass | ok |');
   });
 });
