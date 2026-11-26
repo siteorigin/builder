@@ -62,7 +62,8 @@ function boundTo(n: GraphNode, def: ComponentDefinition | undefined): string | n
 /**
  * The name Layers and the breadcrumb give a layer. A name the author gave always wins, whatever the content
  * says later. Otherwise text and buttons are told apart by their words ("Text · Meet the makers…"), an empty
- * one says so, and one in a component's design names the setting it shows. `def` is the component whose
+ * one says so, words that only repeat the kind are not said twice, and one in a component's design names the
+ * setting it shows. `def` is the component whose
  * design holds the node, if any.
  */
 export function layerLabel(state: ProjectState, n: GraphNode, def?: ComponentDefinition): LayerLabel {
@@ -74,6 +75,8 @@ export function layerLabel(state: ProjectState, n: GraphNode, def?: ComponentDef
     return prop ? { label: `${kind} · ${prop}`, kind, excerpt: prop, full: `${kind} · ${prop}` } : { label: kind, kind, full: kind };
   }
   if (!words) return { label: `${kind} · empty`, kind, excerpt: 'empty', empty: true, full: `${kind}, empty` };
+  // Words that only repeat the kind (a button still reading "Button") add nothing: "Button", not "Button · Button".
+  if (words.trim().toLocaleLowerCase() === kind.toLocaleLowerCase()) return { label: kind, kind, full: kind };
   const excerpt = clip(words, EXCERPT_MAX);
   return { label: `${kind} · ${excerpt}`, kind, excerpt, full: `${kind}: ${clip(words, FULL_MAX)}` };
 }

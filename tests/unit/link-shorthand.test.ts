@@ -87,6 +87,11 @@ describe('telephone links', () => {
       ['+1 (555) 010', 'tel:+1555010'],
       ['555-0100', 'tel:5550100'],
       ['+44 20 7946 0958', 'tel:+442079460958'],
+      // A bracketed trunk zero is left out of an international number, except where numbers keep it (#905).
+      ['+27 (0)21 555-0100', 'tel:+27215550100'],
+      ['+44 (0) 20 7946 0958', 'tel:+442079460958'],
+      ['+39 (0)6 3691 2666', 'tel:+390636912666'],
+      ['(0)21 555-0100', 'tel:0215550100'],
       ['1'.repeat(30), `tel:${'1'.repeat(30)}`]
     ];
     for (const [target, href] of dials) {

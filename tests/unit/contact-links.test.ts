@@ -140,8 +140,10 @@ describe('contact text and links', () => {
     expect(contactMismatch('+1 202 555 0142', tel('+15550134'))).toEqual({ kind: 'tel', shown: '+1 202 555 0142', opens: 'tel:+15550134', repair: tel('+12025550142') });
     expect(contactMismatch('+1 202 555 0142', email('design@kloof.example'))).toMatchObject({ kind: 'tel', opens: 'mailto:design@kloof.example', repair: tel('+12025550142') });
     expect(contactMismatch('bookings@kloof.example', email('design@kloof.example'))?.opens).toBe('mailto:design@kloof.example');
-    // A link target is read exactly as the export dials it, so a stored trunk zero is a mismatch.
-    expect(contactMismatch('+44 20 7946 0018', tel('+44 (0)20 7946 0018'))).toMatchObject({ opens: 'tel:+4402079460018', repair: tel('+442079460018') });
+    // A link target is read exactly as the export dials it: a stored trunk zero is left out from abroad, and kept
+    // where numbers keep it, so only the second is a different number.
+    expect(contactMismatch('+44 20 7946 0018', tel('+44 (0)20 7946 0018'))).toBeNull();
+    expect(contactMismatch('+39 6 3691 2666', tel('+39 (0)6 3691 2666'))).toMatchObject({ opens: 'tel:+390636912666', repair: tel('+39636912666') });
     expect(contactMismatch('+39 (0)6 3691 2666', tel('+390699990000'))?.repair).toEqual(tel('+390636912666'));
     expect(contactMismatch('+44 (0)20 7946 0018', tel('+442079460999'))?.repair).toEqual(tel('+442079460018'));
     // A repair keeps an email link's subject.
