@@ -704,7 +704,7 @@ const answer = async () => {
 const formStatus = () => frame.locator('.so-form__status[role="status"]').innerText();
 const formAlert = () => frame.locator('.so-form__status[role="alert"]').innerText();
 const practicePanel = win.locator('.form-practice');
-const practiceNote = () => practicePanel.locator('[role="status"]').innerText();
+const practiceNote = () => practicePanel.locator('.form-practice-result').innerText();
 
 await answer();
 await contact.getByRole('button', { name: 'Send message' }).press('Enter');
@@ -716,24 +716,24 @@ assert.equal(await formStatus(), '', 'Edit shows no sent message');
 await win.locator('button[title^="Preview:"]').click();
 await eventually(async () => {
   const text = await practicePanel.innerText();
-  assert.ok(text.includes('Form sends are simulated in Preview. Nothing is sent unless you test live delivery.'), `Preview says before any send that sends are simulated: ${text}`);
-  assert.ok(text.includes('sends to forms.e2e.test/f/rehearsal'), `and where the form sends once published: ${text}`);
+  assert.ok(text.includes('Form sends are practice in Preview. Only a real test is sent.'), `Preview says before any send that sends are practice: ${text}`);
+  assert.ok(text.includes('this form sends to forms.e2e.test/f/rehearsal'), `and where the form sends once published: ${text}`);
 });
 await answer();
 await contact.getByLabel('Email').press('Enter');
-await eventually(async () => assert.equal(await practiceNote(), 'Practice send: the form showed its sent message. Nothing was sent.', 'Preview explains the practice send'));
+await eventually(async () => assert.equal(await practiceNote(), 'The form showed its success message. Nothing was sent.', 'Preview explains the practice send'));
 assert.equal(await formStatus(), 'Thank you. Your message has been sent.', 'the form shows its own sent message');
 assert.equal(delivered.length, 0, 'a practice send in Preview sends nothing');
 
-await practicePanel.getByRole('button', { name: 'Error', exact: true }).click();
+await practicePanel.getByRole('radio', { name: 'Error', exact: true }).click();
 await answer();
 await contact.getByLabel('Email').press('Enter');
-await eventually(async () => assert.equal(await practiceNote(), 'Practice send: the form showed its error message. Nothing was sent.', 'Preview explains the failed practice send'));
+await eventually(async () => assert.equal(await practiceNote(), 'The form showed its error message. Nothing was sent.', 'Preview explains the failed practice send'));
 assert.equal(await formAlert(), 'Sorry, your message could not be sent. Please try again or contact us directly.', 'the form shows its own error message');
 assert.equal(await contact.getByLabel('Message').inputValue(), 'A rehearsal enquiry', 'a failed send keeps the answers');
 assert.equal(delivered.length, 0, 'a failed practice send sends nothing');
 
-await practicePanel.getByRole('button', { name: /Test live delivery/ }).click();
+await practicePanel.getByRole('button', { name: /Send a real test/ }).click();
 await eventually(async () => {
   const text = await practicePanel.innerText();
   assert.ok(text.includes('Send one real test message?') && text.includes('go to forms.e2e.test/f/rehearsal'), `the live test names where it sends before it sends: ${text}`);
@@ -744,12 +744,12 @@ await eventually(() => assert.equal(delivered.length, 1, 'the confirmed live tes
 assert.equal(delivered[0].method, 'POST');
 assert.equal(delivered[0].url, ENDPOINT, 'the live test goes to the address the author confirmed');
 assert.ok(delivered[0].body.includes('A rehearsal enquiry'), 'the live test sends the answers in the form');
-await eventually(async () => assert.equal(await practiceNote(), 'Live test sent to forms.e2e.test/f/rehearsal. The service answered with status 200. Check the service to see the message arrived.', 'Preview reports what the service answered'));
+await eventually(async () => assert.equal(await practiceNote(), 'Real test sent to forms.e2e.test/f/rehearsal. Check the service to see the message arrived.', 'Preview reports what the service answered'));
 
-await practicePanel.getByRole('button', { name: 'Success', exact: true }).click();
+await practicePanel.getByRole('radio', { name: 'Success', exact: true }).click();
 await answer();
 await contact.getByLabel('Email').press('Enter');
-await eventually(async () => assert.equal(await practiceNote(), 'Practice send: the form showed its sent message. Nothing was sent.', 'the next send is a practice again'));
+await eventually(async () => assert.equal(await practiceNote(), 'The form showed its success message. Nothing was sent.', 'the next send is a practice again'));
 assert.equal(delivered.length, 1, 'only the confirmed live test was sent');
 await win.locator('button[title^="Edit:"]').click();
 await app.context().unroute('https://forms.e2e.test/**', deliver);

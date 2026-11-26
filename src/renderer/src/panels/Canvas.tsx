@@ -155,6 +155,8 @@ export function Canvas() {
   /** Forms in Preview (issue #193): the page's forms, the reply practice sends get, the last send, the live test on its way. */
   const [forms, setForms] = useState<PreviewForm[]>([]);
   const [practice, setPractice] = useState<PracticeResult>('success');
+  // The forms panel folded to its title line, kept from page to page while Preview is open.
+  const [practiceFolded, setPracticeFolded] = useState(false);
   const [lastSend, setLastSend] = useState<FormSend | null>(null);
   const [liveRequest, setLiveRequestState] = useState<string | null>(null);
   /** The live test the editor is waiting on, read by message handlers that may run before React re-renders. */
@@ -3153,7 +3155,7 @@ export function Canvas() {
       )}
       {/* Said once when a page with forms opens, for an author whose focus stays in the page and never meets the panel. */}
       <p className="sr-only" role="status">
-        {formsShown ? `Form sends are simulated in Preview. ${forms.some((f) => f.live) ? 'Nothing is sent unless you test live delivery.' : 'Nothing is sent.'}` : ''}
+        {formsShown ? `Form sends are practice in Preview. ${forms.some((f) => f.live) ? 'Only a real test is sent.' : 'Nothing is sent.'}` : ''}
       </p>
       {formsShown && (
         <FormPractice
@@ -3164,6 +3166,8 @@ export function Canvas() {
           last={lastSend}
           liveBusy={!!liveRequest}
           onLiveTest={liveTest}
+          folded={practiceFolded}
+          onFold={setPracticeFolded}
           bottom={practiceBottom}
           maxHeight={practiceMax}
           onHeight={setPracticeH}

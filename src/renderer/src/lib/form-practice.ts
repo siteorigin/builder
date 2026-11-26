@@ -96,38 +96,43 @@ export function formDestinationNote(form: PreviewForm): string {
   const name = formName(form);
   if (form.service === 'netlify') return `${name} sends to Netlify Forms once the site is deployed on Netlify. Test delivery there.`;
   if (form.service === 'endpoint') return `On the published site, ${lower(name)} sends to ${shortDestination(form.destination)}.`;
-  return `${name} is not connected to a form service yet.`;
+  return `${name} is not connected to a form service yet. Choose one in its settings.`;
 }
 
 const lower = (name: string) => (name.startsWith('The form') ? 'the form' + name.slice('The form'.length) : name);
 
-/** What happened to a send, in the editor's words. */
-export function formSendNote(send: FormSend, form?: PreviewForm): string {
+/**
+ * What happened to a send, in the editor's words. `named` says which form it was, for a page with several, where
+ * nothing else in a report would.
+ */
+export function formSendNote(send: FormSend, form?: PreviewForm, named?: string): string {
   const to = send.destination || form?.destination;
   const where = to ? shortDestination(to) : 'the form service';
+  const it = named ? lower(named) : 'the form';
+  const from = named ? ` from ${lower(named)}` : '';
   if (send.kind === 'practice') {
-    if (send.result === 'sending') return 'Practicing a send. Nothing is being sent.';
-    return `Practice send: the form showed its ${send.result === 'error' ? 'error' : 'sent'} message. Nothing was sent.`;
+    if (send.result === 'sending') return 'The form is answering in the page. Nothing is being sent.';
+    return `${named ?? 'The form'} showed its ${send.result === 'error' ? 'error' : 'success'} message. Nothing was sent.`;
   }
   switch (send.result) {
     case 'sending':
-      return `Sending one real test message to ${where}…`;
+      return `Sending one real test message${from} to ${where}…`;
     case 'sent':
-      return `Live test sent to ${where}${passedOn(send)}. The service answered with status ${send.status}. Check the service to see the message arrived.`;
+      return `Real test${from} sent to ${where}${passedOn(send)}. Check the service to see the message arrived.`;
     case 'refused':
-      return `Live test sent to ${where}${passedOn(send)}, but the service answered with status ${send.status}. Check the form’s settings with the service.`;
+      return `Real test${from} sent to ${where}${passedOn(send)}, but the service refused it (status ${send.status}). Check the form’s settings with the service.`;
     case 'unreadable':
-      return `The live test to ${where} got no reply the editor could read. The message may still have arrived: check the service before you test again.`;
+      return `The real test${from} to ${where} got no reply the editor could read. The message may still have arrived: check the service before you test again.`;
     case 'invalid':
-      return 'Nothing was sent: the form has answers missing or not valid. Correct them and test again.';
+      return `Nothing was sent: ${it} has answers missing or not valid. Correct them and test again.`;
     case 'unavailable':
-      return 'Nothing was sent: the form or its settings changed. Check them and test again.';
+      return `Nothing was sent: ${it} or its settings changed. Check them and test again.`;
     default:
-      return 'Nothing was sent: the form did not send its message.';
+      return `Nothing was sent: ${it} did not send its message.`;
   }
 }
 
-/** Where the service passed a live test on to, when it did. */
+/** Where the service passed a real test on to, when it did. */
 const passedOn = (send: FormSend) => (send.redirected ? `, which passed it on to ${shortDestination(send.redirected)}` : '');
 
 /** Whether a send's report is the last word on it, rather than one saying it has started. */

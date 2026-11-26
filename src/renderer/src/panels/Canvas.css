@@ -271,44 +271,79 @@
   .preview-pill svg { width: 15px; height: 15px; }
   .preview-pill button { flex: none; white-space: nowrap; display: inline-flex; align-items: center; gap: 5px; height: 26px; padding: 0 12px; border: 0; border-radius: 99px; background: var(--sky-2); color: var(--ink); font-size: 12px; font-weight: 600; }
   .preview-pill button:hover { background: var(--sky-1); }
-  /* Forms in Preview: what a send does, the practice reply, and a confirmed live test. Above the other bottom bars. */
-  .form-practice { position: absolute; left: 50%; transform: translateX(-50%); z-index: 5; width: min(560px, calc(100% - 24px)); display: flex; flex-direction: column; gap: 6px; padding: 10px 12px 10px 14px; border-radius: 12px; background: var(--raised); border: 1px solid var(--border); box-shadow: var(--shadow-md); font-size: 12px; color: var(--text-2); }
-  .form-practice p { margin: 0; }
-  .form-practice-title { color: var(--text); font-size: 13px; }
-  .form-practice-title svg { display: inline; width: 14px; height: 14px; margin-right: 2px; vertical-align: -2px; color: var(--accent-text); }
-  .form-practice-title strong { font-weight: 600; }
-  .form-practice-where { overflow-wrap: anywhere; }
-  .form-practice-row { display: flex; align-items: center; flex-wrap: wrap; gap: 8px; }
-  .form-practice-label { color: var(--text); font-weight: 500; }
-  .form-practice-live { margin-left: auto; }
-  /* A real send is the one consequential act here, so its confirmation is amber rather than the calm accent. */
-  .form-practice-confirm { display: flex; flex-direction: column; gap: 7px; padding: 9px 10px; border-radius: 8px; background: color-mix(in srgb, var(--amber) 8%, var(--raised)); border: 1px solid color-mix(in srgb, var(--amber) 50%, var(--border)); color: var(--text); overflow-wrap: anywhere; }
-  .form-practice-confirm .form-practice-row > .select { flex: 1 1 0; width: auto; min-width: 0; }
-  .form-practice-confirm .btn[aria-disabled='true'] { cursor: not-allowed; }
-  .form-practice-dest { font-weight: 600; }
-  .form-practice .segmented button[aria-pressed='true'] { box-shadow: inset 0 0 0 1.5px var(--text-2), var(--shadow-sm); }
-  .form-practice .segmented button svg { width: 12px; height: 12px; }
+  /* Forms in Preview: what a send does, the practice reply, and a confirmed real test. Above the other bottom bars,
+     which the canvas stacks by the panel's measured height. Folds to its title line so the page gets its foot back. */
+  .form-practice { position: absolute; left: 50%; transform: translateX(-50%); z-index: 5; width: min(560px, calc(100% - 24px)); display: flex; flex-direction: column; gap: 8px; padding: 8px 6px 12px 14px; border-radius: var(--r-md); background: var(--raised); border: 1px solid var(--border); box-shadow: var(--shadow-md); font-size: 12px; color: var(--text-2); container-type: inline-size; }
   /* On a short canvas the panel scrolls inside itself rather than running off the top. */
   .form-practice { overflow-y: auto; }
-  .form-practice-forms summary { width: fit-content; min-height: 24px; padding: 4px 6px 4px 0; border-radius: 4px; cursor: pointer; color: var(--accent-text); font-weight: 500; }
-  .form-practice-forms summary:hover { color: var(--text); }
-  .form-practice-forms ul { display: flex; flex-direction: column; gap: 3px; max-height: 120px; margin: 4px 0 0; padding: 0 0 0 16px; overflow-y: auto; overflow-wrap: anywhere; }
-  .form-practice-live[aria-disabled='true'] { opacity: 0.55; cursor: not-allowed; }
-  .form-practice-outcome { display: flex; flex-direction: column; gap: 2px; padding-top: 7px; border-top: 1px solid var(--border); }
-  .form-practice-outcome:has(.form-practice-result:empty) { margin-top: -6px; padding-top: 0; border-top: 0; }
-  .form-practice-lead { display: inline-flex; align-items: center; gap: 5px; font-weight: 600; color: var(--text-2); }
-  .form-practice-lead svg { width: 13px; height: 13px; flex: none; }
+  .form-practice[data-folded] { padding-bottom: 8px; }
+  .form-practice p { margin: 0; }
+  .form-practice-head { display: flex; align-items: center; gap: 8px; min-height: 30px; }
+  .form-practice-head > svg { flex: none; width: 15px; height: 15px; color: var(--text-2); }
+  .form-practice-title { flex: 1; min-width: 0; color: var(--text); font-size: 13px; text-wrap: balance; }
+  .form-practice-title strong { font-weight: 600; }
+  .form-practice-head .form-practice-lead { flex: none; max-width: 45%; margin-right: 2px; padding: 2px 6px; border-radius: var(--r-xs); overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
+  .form-practice-fold { flex: none; width: 28px; height: 28px; }
+  .form-practice-fold svg { width: 16px; height: 16px; transition: transform 120ms; }
+  .form-practice-fold[aria-expanded='false'] svg { transform: rotate(180deg); }
+  .form-practice-body { display: flex; flex-direction: column; gap: 8px; padding-right: 8px; }
+  .form-practice-body[hidden] { display: none; }
+  .form-practice-where { overflow-wrap: anywhere; }
+  .form-practice-dest { display: inline; font-weight: 600; color: var(--text); overflow-wrap: anywhere; }
+  .form-practice-row { display: flex; align-items: center; flex-wrap: wrap; gap: 8px 12px; }
+  .form-practice-choice { display: flex; align-items: center; gap: 8px; }
+  .form-practice-label { color: var(--text); font-weight: 500; }
+  .form-practice-live { margin-left: auto; }
+  .form-practice-live[aria-disabled='true'] { cursor: not-allowed; }
+  /* The forms list: the app's disclosure, a quiet row with a chevron that turns when open. */
+  .form-practice-forms summary { display: flex; align-items: center; gap: 4px; width: fit-content; min-height: 24px; padding: 2px 6px 2px 2px; margin-left: -2px; border-radius: var(--r-xs); list-style: none; cursor: default; color: var(--text-2); font-weight: 500; }
+  .form-practice-forms summary::-webkit-details-marker { display: none; }
+  .form-practice-forms summary:hover { color: var(--text); background: var(--hover); }
+  .form-practice-forms summary:focus-visible { outline: 2px solid var(--focus); outline-offset: 2px; }
+  .form-practice-forms summary svg { width: 14px; height: 14px; flex: none; transition: transform 120ms; }
+  .form-practice-forms[open] summary svg { transform: rotate(90deg); }
+  .form-practice-forms ul { display: flex; flex-direction: column; gap: 3px; margin: 4px 0 0; padding: 0 0 0 22px; overflow-wrap: anywhere; }
+  /* A real send is the one consequential act here, so its confirmation is amber rather than the calm accent. */
+  .form-practice-confirm { display: flex; flex-direction: column; gap: 8px; padding: 10px; border-radius: var(--r-sm); background: color-mix(in srgb, var(--amber) 8%, var(--raised)); border: 1px solid color-mix(in srgb, var(--amber) 50%, var(--border)); color: var(--text); overflow-wrap: anywhere; }
+  .form-practice-ask { display: flex; align-items: flex-start; gap: 7px; }
+  .form-practice-ask > svg { flex: none; width: 14px; height: 14px; margin-top: 1px; color: var(--amber); }
+  .form-practice-pick { display: flex; align-items: center; gap: 8px; }
+  .form-practice-pick > .select { flex: 1 1 0; width: auto; min-width: 0; }
+  .form-practice-actions { display: flex; flex-wrap: wrap; gap: 8px; }
+  .form-practice-confirm .btn[aria-disabled='true'] { cursor: not-allowed; }
+  /* The last send. A practice send is neutral and marked with the reply glyph; a real test sits in a box toned by its
+     outcome, so the two never read alike. */
+  .form-practice-outcome { display: flex; flex-direction: column; gap: 2px; margin: 0 8px 0 -9px; padding: 5px 9px; border-radius: var(--r-sm); }
+  /* Mounted from the start so the first send is announced; with nothing to say it takes no room. */
+  .form-practice-outcome:empty { margin-top: -8px; padding: 0; }
+  .form-practice-lead { display: inline-flex; align-items: center; gap: 5px; font-weight: 600; color: var(--text); }
+  .form-practice-lead svg { width: 13px; height: 13px; flex: none; color: var(--text-2); }
   .form-practice-lead .spinner { width: 12px; height: 12px; }
-  .form-practice-outcome[data-tone='ok'] .form-practice-lead { color: var(--green); }
-  .form-practice-outcome[data-tone='warn'] .form-practice-lead { color: var(--amber); }
-  .form-practice-outcome[data-tone='bad'] .form-practice-lead { color: var(--red); }
-  /* A real send's outcome sits in a tinted box, so it never reads as a practice run. */
-  .form-practice-outcome[data-kind='live'] { --tone: var(--accent); padding: 6px 9px; border: 1px solid color-mix(in srgb, var(--tone) 40%, var(--border)); border-radius: 8px; background: color-mix(in srgb, var(--tone) 7%, var(--raised)); }
-  .form-practice-outcome[data-kind='live'][data-tone='busy'] .form-practice-lead { color: var(--accent-text); }
+  .form-practice-result { color: var(--text-2); overflow-wrap: anywhere; }
+  /* A practice result is one line where it fits, so a practice send moves the page as little as it can. */
+  .form-practice-outcome[data-kind='practice'] { display: block; padding-block: 0; }
+  .form-practice-outcome[data-kind='practice'] .form-practice-lead { margin-right: 6px; vertical-align: top; }
+  .form-practice-outcome[data-kind='practice'] .form-practice-result { display: inline; }
+  .form-practice-outcome[data-kind='live'] { --tone: var(--accent); margin-left: 0; border: 1px solid color-mix(in srgb, var(--tone) 40%, var(--border)); background: color-mix(in srgb, var(--tone) 7%, var(--raised)); }
+  .form-practice-outcome[data-kind='live'] .form-practice-result { color: var(--text); }
   .form-practice-outcome[data-kind='live'][data-tone='ok'] { --tone: var(--green); }
   .form-practice-outcome[data-kind='live'][data-tone='warn'] { --tone: var(--amber); }
   .form-practice-outcome[data-kind='live'][data-tone='bad'] { --tone: var(--red); }
-  .form-practice-result { color: var(--text); overflow-wrap: anywhere; }
+  :is(.form-practice-outcome[data-kind='live'] .form-practice-lead, .form-practice-lead[data-kind='live']) svg { color: inherit; }
+  .form-practice-outcome[data-kind='live'][data-tone='busy'] .form-practice-lead, .form-practice-lead[data-kind='live'][data-tone='busy'] { color: var(--accent-text); }
+  :is(.form-practice-outcome[data-tone='ok'] .form-practice-lead, .form-practice-lead[data-tone='ok']) { color: var(--green); }
+  :is(.form-practice-outcome[data-tone='warn'] .form-practice-lead, .form-practice-lead[data-tone='warn']) { color: var(--amber); }
+  :is(.form-practice-outcome[data-tone='bad'] .form-practice-lead, .form-practice-lead[data-tone='bad']) { color: var(--red); }
+  /* Narrow: the reply choice keeps its row, and the real test takes the next one whole rather than trailing alone. */
+  @container (max-width: 440px) {
+    .form-practice-row { flex-direction: column; align-items: stretch; }
+    .form-practice-choice { justify-content: space-between; }
+    .form-practice-live { margin-left: 0; }
+    /* Folded, the last result takes a line of its own under the title rather than being cut short. */
+    .form-practice-head { flex-wrap: wrap; row-gap: 2px; }
+    .form-practice-head .form-practice-lead { order: 3; flex-basis: 100%; max-width: none; margin-left: 17px; padding-left: 6px; white-space: normal; }
+  }
+  @media (prefers-reduced-motion: reduce) { .form-practice-fold svg, .form-practice-forms summary svg { transition: none; } }
   /* Back, Forward and the address of the visitor's journey: quiet controls on the pill itself. */
   .preview-pill .pill-note { flex: none; display: inline-flex; align-items: center; gap: 6px; }
   .preview-pill .pill-step { width: 26px; padding: 0; justify-content: center; background: transparent; color: #fff; }
