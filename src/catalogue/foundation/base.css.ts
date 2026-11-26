@@ -134,7 +134,7 @@ ${SURFACES}
 /* A blog card or row (Featured post, Post grid, Post list) is one link: its title underlines while the pointer is on it. */
 .so-card-link:hover :is(${ends('__card-title')}, ${ends('__row-title')}) { text-decoration: underline; text-decoration-thickness: 1px; text-underline-offset: 0.15em; }
 /* A feed that matches no published entry leaves nothing for visitors: not its heading over an empty space. The editor
-   shows it again while editing (src/runtime/bridge.client.js), so the author can still find and change it. */
+   shows it again while editing, so the author can still find and change it. */
 :is(${ends('-blog-grid__root')}, ${ends('-blog-list__root')}):not(:has(li)),
 ${ends('-blog-featured__root')}:not(:has(${ends('__card')})) { display: none; }
 /* A post's line of date, author and reading time (a component's "Date and byline" row, any copy of it, or the line in
