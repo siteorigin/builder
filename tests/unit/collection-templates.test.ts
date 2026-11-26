@@ -15,6 +15,7 @@ import { generateProject, generateSiteCss, pageNodeClass, publishedState } from 
 import { GenerationCache } from '@generator/cache';
 import { missingSectionLinks, publicationPlan } from '@generator/checks';
 import { entryNeighbours, materializeTemplate } from '@generator/entry-template';
+import { entryMetadata } from '@generator/seo-metadata';
 import { entryFieldSchemas, entryFieldValue, readingMinutes } from '@shared/entry-fields';
 import { migrateProject } from '@shared/migrations';
 import { keepTemplateValid, sampleEntries, shownView, viewAt } from '../../src/renderer/src/lib/template-view';
@@ -211,7 +212,7 @@ describe('entry fields', () => {
 
   it('shows an element only for the entries its condition holds for, and a collapsing one only with something in it', () => {
     let s = blog();
-    s.assets.assets.img_hall = { id: 'img_hall', name: 'Hall', file: 'static/assets/hall-1a2b3c4d.jpg', mime: 'image/jpeg', bytes: 10, width: 1600, height: 900, hash: 'h', kind: 'image', description: 'The great hall', createdAt: '2026-01-01T00:00:00.000Z' };
+    s.assets.assets.img_hall = { id: 'img_hall', name: 'Hall', file: 'static/assets/hall-1a2b3c4d.jpg', mime: 'image/jpeg', bytes: 10, width: 1600, height: 900, hash: 'h', kind: 'image', altSuggestion: 'The great hall', createdAt: '2026-01-01T00:00:00.000Z' };
     s = run(s, { type: 'entry.update', collectionId: 'posts', entryId: 'en_winter', featuredImage: 'img_hall' });
     const c = s.collections.posts;
     const image = Object.values(template(s).nodes).find((n) => n.kind === 'image')!;
@@ -240,6 +241,36 @@ describe('entry fields', () => {
     s = run(s, { type: 'node.setBinding', owner: POSTS, nodeId: bound(s, 'excerpt').id, field: 'unless', binding: { $entry: 'field.price' }, eq: 'Free' });
     const after = s.collections.posts;
     expect(shown(materializeTemplate(s, after, after.entries.en_winter, {}), bound(s, 'excerpt').id)).toBe(false);
+  });
+});
+
+describe('the alt text of an entry’s picture', () => {
+  it('is its suggested alt text wherever it is published, and never the library’s note about the file', () => {
+    let s = blog();
+    s = run(s, { type: 'collection.update', collectionId: 'posts', fields: { photo: { type: 'image', label: 'Photo' } } });
+    const picture = { file: 'static/assets/hall-1a2b3c4d.jpg', mime: 'image/jpeg', bytes: 10, width: 1600, height: 900, kind: 'image' as const, description: 'Sample image. Replace it with your own.', createdAt: '2026-01-01T00:00:00.000Z' };
+    s.assets.assets.img_hall = { ...picture, id: 'img_hall', name: 'Hall', hash: 'h', altSuggestion: '  The great hall  ' };
+    s.assets.assets.img_bare = { ...picture, id: 'img_bare', name: 'Bare', hash: 'b' };
+    s = run(
+      s,
+      { type: 'entry.update', collectionId: 'posts', entryId: 'en_winter', featuredImage: 'img_hall', values: { photo: { assetId: 'img_hall', alt: '' } } },
+      { type: 'entry.update', collectionId: 'posts', entryId: 'en_spring', featuredImage: 'img_bare', values: { photo: { assetId: 'img_bare', alt: '' } } }
+    );
+    const c = s.collections.posts;
+    const read = (id: string) => ({ state: s, collection: c, entry: c.entries[id], neighbours: {} });
+    for (const field of ['featuredImage', 'field.photo']) {
+      expect(entryFieldValue(read('en_winter'), field)).toEqual({ assetId: 'img_hall', alt: 'The great hall' });
+      expect(entryFieldValue(read('en_spring'), field)).toEqual({ assetId: 'img_bare', alt: '' });
+    }
+    expect(entryMetadata(s, 'posts', 'en_winter')!.imageAlt).toBe('The great hall');
+    expect(entryMetadata(s, 'posts', 'en_spring')!.imageAlt).toBe('');
+    const files = generateProject(publishedState(s));
+    const winter = pageOf(files, 'winter-workshop');
+    expect(winter).toContain('"alt":"The great hall"');
+    expect(winter).toContain('<meta property="og:image:alt" content={"The great hall"} />');
+    expect(pageOf(files, 'spring-open-studio')).toContain('<meta property="og:image" content=');
+    expect(pageOf(files, 'spring-open-studio')).not.toContain('image:alt');
+    expect([...files.values()].join('\n')).not.toContain('Replace it with your own');
   });
 });
 

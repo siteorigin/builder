@@ -6,6 +6,7 @@
  * the checks on what a page renders, the inspector, the canvas) goes through `effectiveItem`, so they agree.
  */
 import type { ImageValue, LinkValue, ListProp, PageDoc, PageTeaser, ProjectState, ScalarPropSchema } from './types';
+import { libraryAlt } from './asset-alt';
 
 export type PageTeaserValue = 'title' | 'description' | 'image';
 export const PAGE_TEASER_VALUES: readonly PageTeaserValue[] = ['title', 'description', 'image'];
@@ -36,8 +37,8 @@ export function pageValue(state: ProjectState, page: PageDoc, what: PageTeaserVa
   const id = page.seo?.socialImage;
   const asset = id && Object.hasOwn(state.assets.assets, id) ? state.assets.assets[id] : undefined;
   if (!asset || asset.kind !== 'image') return undefined;
-  // The card's linked title already names the page, so an image with no suggested description adds nothing to read.
-  return { assetId: asset.id, alt: asset.altSuggestion?.trim() ?? '' };
+  // The card's linked title already names the page, so an image with no suggested alt text adds nothing to read.
+  return { assetId: asset.id, alt: libraryAlt(asset) };
 }
 
 /** The item field mapped to each page value, for a list that has a mapping. */

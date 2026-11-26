@@ -964,7 +964,7 @@ async function runTool(name: string, rawArgs: string, host: ToolHost, callId: st
         .slice(0, a.limit ?? 20)
         .map(assetSummary);
       const assets = fitAssets(list);
-      return { ok: true, content: { assets, note: `Image contents are not available; rely on names and descriptions.${assets !== list ? SHORTENED_ASSETS : ''}` } };
+      return { ok: true, content: { assets, note: `Image contents are not available; rely on names and descriptions. A description is a private note: never use it as alt text.${assets !== list ? SHORTENED_ASSETS : ''}` } };
     }
     case 'apply_operations': {
       const a = args as z.infer<(typeof TOOL_ARGS)['apply_operations']>;

@@ -12,6 +12,7 @@
 import type { AssetRecord, Collection, EntryDoc, EntrySeo, PageDoc, PageSeo, ProjectState } from '@shared/types';
 import { storedCanonical, type EffectiveSeo, type SeoImageSource, type SeoSubject, type SeoVisibility } from '@shared/seo';
 import { pageSharing } from '@shared/sharing';
+import { libraryAlt } from '@shared/asset-alt';
 import { publicUrl } from '@shared/public-url';
 import { routeUrl } from '@shared/routes';
 import { pageLanguage, siteLanguage } from '@shared/languages';
@@ -39,9 +40,6 @@ const day = (v: unknown) => (isArticleDate(v) ? (v as string) : null);
 
 /** The public URL of a library file, as the generated pages write it; none for a record without a file (hand-edited). */
 const fileUrl = (base: string, asset: AssetRecord) => (typeof asset.file === 'string' && asset.file ? `${base}/${asset.file.replace(/^static\//, '')}` : null);
-
-/** What an image shows, as its sharing tags describe it: the library's suggested description, else its own. */
-const imageAlt = (image: AssetRecord | undefined) => (image ? text(image.altSuggestion) || text(image.description) : '');
 
 /** A document's public URL, written as its generated page writes it (its canonical link and og:url). */
 const urlOf = (base: string | null, route: string) => (base ? base + routeUrl(route) : null);
@@ -91,7 +89,7 @@ export function pageMetadata(state: ProjectState, pageOrId: PageDoc | string): S
     image: sharing.image,
     imageSource: sharing.source === 'page' ? 'own' : sharing.source,
     imageUrl: base && sharing.image ? fileUrl(base, sharing.image) : null,
-    imageAlt: imageAlt(sharing.image),
+    imageAlt: libraryAlt(sharing.image),
     published: article ? article.date : null,
     modified: day(page.updatedAt),
     author: article ? text(article.byline).trim() : '',
@@ -153,7 +151,7 @@ export function entryMetadata(state: ProjectState, collectionId: string, entryId
     image,
     imageSource,
     imageUrl: base && image ? fileUrl(base, image) : null,
-    imageAlt: imageAlt(image),
+    imageAlt: libraryAlt(image),
     published: day(entry.publishedAt),
     modified: day(entry.updatedAt),
     author: text(entry.author).trim(),

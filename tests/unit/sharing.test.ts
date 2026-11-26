@@ -263,14 +263,16 @@ describe('the generated sharing tags', () => {
     expect(bare).toContain('<meta name="twitter:card" content="summary" />');
   });
 
-  it('describes the picture from the library when it has no suggested description, and keeps its own size', () => {
+  it('leaves the picture without alt text when none is suggested, never the library’s note, and keeps its own size', () => {
     const { state, byTitle } = site();
     state.assets.assets['a_wide'] = image('a_wide', 'Wide', { width: 2000, height: 900, description: 'A wide kitchen' });
     const s = apply(state, { type: 'page.update', pageId: byTitle('Kitchens').id, socialImage: 'a_wide' });
     const src = head(s, s.pages[byTitle('Kitchens').id]);
     expect(src).toContain('<meta property="og:image:width" content="2000" />');
     expect(src).toContain('<meta property="og:image:height" content="900" />');
-    expect(src).toContain('<meta property="og:image:alt" content={"A wide kitchen"} />');
+    expect(src).toContain('<meta property="og:image" content=');
+    expect(src).not.toContain('image:alt');
+    expect(src).not.toContain('A wide kitchen');
   });
 
   it('writes no image for a page whose own image has gone, even when the site has one', () => {
