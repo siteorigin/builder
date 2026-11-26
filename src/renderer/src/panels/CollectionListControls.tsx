@@ -7,6 +7,7 @@ import { useId, type ReactNode } from 'react';
 import type { InstanceNode, ListConnection, ListProp, OwnerRef, ProjectState, RepeatNode } from '@shared/types';
 import { CURRENT_COLLECTION, ENTRY_ORDER_FIELD, QUERY_OPERATORS, normalizeCollectionQuery, queryEntries, type CollectionQuery, type QueryClause, type QueryOperator } from '@shared/collection-query';
 import { fieldFitProblem, rowFieldSchemas } from '@shared/collection-rows';
+import { requiredGap } from '@shared/required';
 import { connectionProblem, loopProblem } from '@engine/collection-sources';
 import { getTree } from '@engine/tree';
 import { applyOps, toast, useStore } from '../store';
@@ -39,6 +40,12 @@ export function QueryControls({ state, owner, query, onChange, note }: { state: 
   const fields = collection ? rowFieldSchemas(collection) : {};
   const readable = Object.entries(fields).filter(([f]) => f !== 'entryLink');
   const set = (patch: Partial<CollectionQuery>) => onChange(normalizeCollectionQuery({ ...query, ...patch }) ?? query);
+  /** The first term of the grouping a field reads, for a filter by it to start with. */
+  const firstTerm = (field: string): string | undefined => {
+    const taxonomy = field === 'categories' ? 'categories' : field.startsWith('terms.') ? field.slice(6) : undefined;
+    const terms = taxonomy && collection ? collection.settings.taxonomies?.[taxonomy]?.terms : undefined;
+    return terms ? Object.keys(terms)[0] : undefined;
+  };
   const where = query.where ?? [];
   const sort = query.sort?.[0];
   return (
@@ -67,7 +74,9 @@ export function QueryControls({ state, owner, query, onChange, note }: { state: 
             </select>
             <select aria-label="Test" value={c.op} onChange={(e) => {
               const op = e.target.value as QueryOperator;
-              replace({ field: c.field, op, ...(op === 'exists' ? {} : { value: typedValue(Array.isArray(c.value) ? c.value.join(', ') : String(c.value ?? ''), type, op) }) });
+              // A grouping's filter starts with one of its terms, never a blank one it does not have.
+              const typed = Array.isArray(c.value) ? c.value.join(', ') : String(c.value ?? '');
+              replace({ field: c.field, op, ...(op === 'exists' ? {} : { value: typedValue(typed.trim() ? typed : (firstTerm(c.field) ?? ''), type, op) }) });
             }}>
               {QUERY_OPERATORS.map((op) => (
                 <option key={op} value={op}>
@@ -148,7 +157,8 @@ function startConnection(state: ProjectState, owner: OwnerRef, node: InstanceNod
 function connectionFor(first: ProjectState['collections'][string], schema: ListProp): ListConnection | null {
   const fields = rowFieldSchemas(first);
   const pick = (target: ListProp['fields'][string], name: string): string | undefined => {
-    const fits = Object.entries(fields).filter(([, s]) => !fieldFitProblem(s, target));
+    // A field an item needs comes from one every entry has.
+    const fits = Object.entries(fields).filter(([, s]) => !fieldFitProblem(s, target) && !(target.required && requiredGap(s, target)));
     // A field named like the item field first ("role" from field.role), then a title or picture for a name or a portrait.
     return (
       fits.find(([f]) => f === `field.${name}` || f === name)?.[0] ??

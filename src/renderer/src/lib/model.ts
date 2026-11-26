@@ -37,7 +37,7 @@ export interface BridgeDesc {
 }
 
 /** Where a placement in `owner`'s tree runs its collection queries: a layout's own collection is the current one. */
-const layoutPlace = (owner: OwnerRef) => (owner.kind === 'template' || owner.kind === 'archive' ? { entry: { collectionId: owner.id, entryId: '' } } : {});
+const layoutPlace = (owner: OwnerRef, entryId: string | null = null) => (owner.kind === 'template' || owner.kind === 'archive' ? { entry: { collectionId: owner.id, entryId: owner.kind === 'template' ? (entryId ?? '') : '' } } : {});
 
 export function treeFor(state: ProjectState, owner: OwnerRef): NodeTree | undefined {
   // Own keys only: ids can come from the preview, and "toString" must not find Object.prototype's.
@@ -621,7 +621,7 @@ export function itemStep(state: ProjectState, ref: ElementRef, sample?: { entryI
   const schema = own(placed[k].def.properties ?? {}, key) as ListProp;
   let list: unknown;
   // A list connected to a collection steps through the entries it shows (on the page itself, where it is placed).
-  const connected = k === 0 ? connectedListItems(state, placed[0].def, placed[0].node, key, layoutPlace(ref.owner)) : undefined;
+  const connected = k === 0 ? connectedListItems(state, placed[0].def, placed[0].node, key, layoutPlace(ref.owner, sample?.entryId)) : undefined;
   if (connected) list = connected;
   else if (schema.feed) {
     // A computed list's rows are the pages it shows where it is placed: known only for a placement on the page itself.

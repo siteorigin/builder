@@ -30,7 +30,7 @@ import { checkCanonicalUrl, storedCanonical } from '@shared/seo';
 import { addressSlug, normalizeRoute, numberedSlug, validateRoute, validateSegment } from '@shared/routes';
 import { isImageBlock, isRichBlock } from '@shared/richtext';
 import { newId } from '@shared/ids';
-import { EngineError, fail } from './tree';
+import { EngineError, allTrees, fail } from './tree';
 import { starterArchiveLayout } from './collection-sources';
 import { normalizeLink, normalizeRichText, normalizeScalar } from './values';
 import { bindingSlots, checkPropName, normalizePropSchema } from './schema';
@@ -427,7 +427,7 @@ export function collectionCreate(state: ProjectState, op: Op<'collection.create'
   if (op.pageSize !== undefined) settings.pageSize = pageSizeOf(op.pageSize);
   if (op.categoryArchives !== undefined) settings.categoryArchives = op.categoryArchives;
   state.collections[op.collectionId] = { settings, entries: {} };
-  if (op.archiveTemplate) setArchiveLayout(state.collections[op.collectionId], op.archiveTemplate);
+  if (op.archiveTemplate) setArchiveLayout(state, state.collections[op.collectionId], op.archiveTemplate);
   return { collectionId: op.collectionId, ...(route !== undefined ? { route } : {}) };
 }
 
@@ -527,7 +527,7 @@ export function collectionUpdate(state: ProjectState, op: Op<'collection.update'
   if (op.archiveTemplate !== undefined) {
     // The archive pages' own layout, a fresh one to design, or back to the ready-made cards.
     if (op.archiveTemplate === null) delete c.settings.archiveTemplate;
-    else setArchiveLayout(c, op.archiveTemplate);
+    else setArchiveLayout(state, c, op.archiveTemplate);
   }
   if (op.pageSize !== undefined) c.settings.pageSize = pageSizeOf(op.pageSize);
   if (op.categoryArchives !== undefined) c.settings.categoryArchives = op.categoryArchives;
@@ -1227,19 +1227,24 @@ function entrySourceProblem(source: unknown): string | null {
 const LAYOUT_NODE_KINDS = new Set(['element', 'text', 'image', 'link', 'icon', 'divider', 'repeat', 'instance']);
 
 /**
- * An archive layout given whole: a tree of the nodes it holds, reached from its roots, each under a fresh ID of its
- * own, so no node (or style rule) is shared with the page or layout it was copied from. A node of another kind, or
- * one listed twice, is refused.
+ * An archive layout given whole: a tree of the nodes it holds, reached from its roots, each under an ID no other tree
+ * has, so no node (or style rule) is shared with the page or layout it was copied from. A node of another kind, or one
+ * listed twice, is refused.
  */
-function archiveLayoutOf(raw: { rootIds: string[]; nodes: Record<string, unknown> }): NodeTree {
+function archiveLayoutOf(state: ProjectState, collectionId: string, raw: { rootIds: string[]; nodes: Record<string, unknown> }): NodeTree {
   const src = structuredClone(raw) as NodeTree;
   const ids = new Map<string, string>();
   const nodes: Record<string, GraphNode> = {};
+  // An ID of its own is kept, so a batch can go on to edit the node it names; one another tree has (it was copied from
+  // a page), or one a class name could not carry, is given a fresh one.
+  const taken = new Set(allTrees(state).filter((t) => !(t.owner.kind === 'archive' && t.owner.id === collectionId)).flatMap((t) => Object.keys(t.tree.nodes ?? {})));
+  const idFor = (id: string) => (/^[A-Za-z0-9_-]{1,64}$/.test(id) && !taken.has(id) ? id : newId('n'));
   const take = (id: string, depth: number): string => {
     const n = Object.hasOwn(src.nodes, id) ? (src.nodes[id] as GraphNode | null) : undefined;
     if (!n || typeof n !== 'object' || n.id !== id || !LAYOUT_NODE_KINDS.has(n.kind)) fail(`The archive layout's node "${id.slice(0, 60)}" is not one it can hold: give each node its own ID and a kind a page can show.`);
     if (ids.has(id) || depth > 100) fail(`The archive layout shows the node "${id.slice(0, 60)}" twice.`);
-    const fresh = newId('n');
+    const fresh = idFor(id);
+    taken.add(fresh);
     ids.set(id, fresh);
     const copy = { ...n, id: fresh } as GraphNode;
     if ((copy.kind === 'element' || copy.kind === 'repeat') && Array.isArray(copy.children)) copy.children = copy.children.map((c) => take(c, depth + 1));
@@ -1253,6 +1258,6 @@ function archiveLayoutOf(raw: { rootIds: string[]; nodes: Record<string, unknown
 }
 
 /** A collection's archive layout as `collection.create` or `collection.update` sets it. */
-export function setArchiveLayout(c: Collection, value: NonNullable<Op<'collection.update'>['archiveTemplate']>): void {
-  c.settings.archiveTemplate = value === 'start' ? starterArchiveLayout(c) : archiveLayoutOf(value);
+export function setArchiveLayout(state: ProjectState, c: Collection, value: NonNullable<Op<'collection.update'>['archiveTemplate']>): void {
+  c.settings.archiveTemplate = value === 'start' ? starterArchiveLayout(c) : archiveLayoutOf(state, c.settings.id, value);
 }

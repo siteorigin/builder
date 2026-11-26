@@ -523,6 +523,9 @@ export function resolveValue(schema: PropSchema | undefined, value: unknown, ctx
   }
 }
 
+/** A list as one holding the items it is given: a connected list that would fill itself shows the collection's entries. */
+const ownItems = (schema: PropSchema): PropSchema => (schema.type === 'list' && schema.feed ? { ...schema, feed: undefined } : schema);
+
 export function resolveInstanceProps(def: ComponentDefinition, node: InstanceNode, ctx: ResolveContext): Record<string, unknown> {
   const out: Record<string, unknown> = {};
   const rctx = def.kind === 'code' ? { ...ctx, forCode: true } : ctx;
@@ -531,7 +534,7 @@ export function resolveInstanceProps(def: ComponentDefinition, node: InstanceNod
     // A list connected to a collection shows the entries it finds (see ./collection-loops), not its own items.
     const connected = connectedListItems(ctx.state, def, node, name, ctx);
     const raw = connected ?? (Object.hasOwn(node.props, name) ? node.props[name] : schema.default);
-    out[name] = resolveValue(schema, raw, rctx, query);
+    out[name] = resolveValue(connected ? ownItems(schema) : schema, raw, rctx, query);
   }
   return out;
 }
@@ -3388,7 +3391,7 @@ function emitInstance(ctx: EmitCtx, node: InstanceNode): string {
     // A list connected to a collection holds the entries its query finds where it is written (see ./collection-loops).
     const connected = connectedListItems(ctx.state, def, node, propName, ctx.rctx);
     let expr = connected
-      ? js(resolveValue(schema, connected, rctx))
+      ? js(resolveValue(ownItems(schema), connected, rctx))
       : feed
       ? ctx.def
         ? designRowsExpr(schema, rctx, entryQuery(def.properties, node.props))

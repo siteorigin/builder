@@ -395,6 +395,14 @@ describe('review regressions', () => {
     expect(clean).toMatch(/"f0":/);
   });
 
+  it('refuses to detach a section a loop repeats while it shows each entry', () => {
+    const { s, loop } = withLoop(studio(), { collectionId: 'projects' });
+    const r = applyOperations(s, [{ type: 'node.insert', owner: home(s), parentId: loop, componentId: 'team.grid' }]);
+    const grid = r.results[0].nodeId as string;
+    const bound = run(r.state, { type: 'node.setBinding', owner: home(s), nodeId: grid, field: 'prop', prop: 'heading', binding: { $item: 'title' } });
+    expect(refusal(bound, { type: 'component.detachInstance', owner: home(s), nodeId: grid } as EditOperation)).toMatch(/each entry’s fields/);
+  });
+
   it('refuses to detach a placement repeated by a loop that shows each entry, and detaches once disconnected', () => {
     let { s, id } = withTeam(studio());
     s = run(s, { type: 'instance.setListSource', owner: home(s), nodeId: id, prop: 'people', source: { query: ARCHITECTS, fields: PEOPLE } });
@@ -421,11 +429,13 @@ describe('review regressions', () => {
     const r = applyOperations(s, [{ type: 'node.insert', owner: home(s), parentId: null, index: 0, componentId: 'blog.grid' }]);
     s = r.state;
     const id = r.results[0].nodeId as string;
-    s = run(s, { type: 'instance.setListSource', owner: home(s), nodeId: id, prop: 'items', source: { query: { collectionId: 'projects', sort: [{ field: 'field.client' }] }, fields: { title: 'title', pageLink: 'entryLink' } } });
+    // Only the projects for one client: the feed it fills itself with would list them all.
+    s = run(s, { type: 'instance.setListSource', owner: home(s), nodeId: id, prop: 'items', source: { query: { collectionId: 'projects', where: [{ field: 'field.client', op: 'eq', value: 'Hart Family' }] }, fields: { title: 'title', pageLink: 'entryLink' } } });
     expect(errors(s)).toEqual([]);
     const html = await serverHtml(generateProject(publishedState(s)), 'loops-feed-');
-    expect(html).toContain('Dockside Offices');
+    expect(html).toContain('The Old Mill');
     expect(html).toContain('href="/work/old-mill/"');
+    expect(html).not.toContain('Dockside Offices');
   });
 
   it('refuses a guest binding a form destination to each entry of a loop', async () => {
@@ -442,5 +452,9 @@ describe('review regressions', () => {
     expect(Object.keys(layout.nodes).length).toBe(Object.keys(page.nodes).length);
     expect(Object.keys(layout.nodes).some((id) => Object.hasOwn(page.nodes, id))).toBe(false);
     expect(refusal(s0, { type: 'collection.update', collectionId: 'projects', archiveTemplate: { rootIds: ['x'], nodes: { x: { id: 'x', kind: 'slot', slot: 'a' } } } })).toMatch(/not one it can hold/);
+    expect(refusal(s0, { type: 'collection.update', collectionId: 'projects', archiveTemplate: { rootIds: ['x'], nodes: { x: { id: 'x', kind: 'element', tag: 'div', children: ['y', 'y'] }, y: { id: 'y', kind: 'text', tag: 'p', text: 'Hi' } } } })).toMatch(/twice/);
+    // A layout whose IDs are its own keeps them, so the same batch can go on to edit its nodes.
+    const own = run(s0, { type: 'collection.update', collectionId: 'projects', archiveTemplate: { rootIds: ['n_arch1'], nodes: { n_arch1: { id: 'n_arch1', kind: 'element', tag: 'section', children: [] } } } }, { type: 'node.rename', owner: { kind: 'archive', id: 'projects' }, nodeId: 'n_arch1', name: 'Entries' });
+    expect(own.collections.projects.settings.archiveTemplate!.nodes.n_arch1.name).toBe('Entries');
   });
 });
