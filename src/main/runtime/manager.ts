@@ -256,6 +256,9 @@ export class DevServer {
   private restarts = 0;
   private listeners = new Set<(s: RuntimeStatus) => void>();
   private publishedListeners = new Set<(revision: number) => void>();
+  private goneListeners = new Set<() => void>();
+  /** Holds asked for and not yet released: a save's files are landing. */
+  private activeHolds = 0;
   logs: Array<{ level: string; message: string; time: number }> = [];
   private stopped = false;
   /** Ends a start still waiting for its process: a stopped server has nothing left to wait for. */
@@ -282,6 +285,21 @@ export class DevServer {
   onPublished(fn: (revision: number) => void) {
     this.publishedListeners.add(fn);
     return () => this.publishedListeners.delete(fn);
+  }
+
+  /** Called the moment the server's process is stopped or exits, before anything is waited for (see `url`). */
+  onGone(fn: () => void) {
+    this.goneListeners.add(fn);
+    return () => this.goneListeners.delete(fn);
+  }
+
+  private gone() {
+    for (const fn of this.goneListeners) fn();
+  }
+
+  /** Whether a save's files are landing now (a hold asked for and not yet released): pages loaded meanwhile may mix the two. */
+  get holding(): boolean {
+    return this.activeHolds > 0;
   }
 
   /**
@@ -348,6 +366,7 @@ export class DevServer {
         clearTimeout(timer);
         if (this.proc !== proc) return resolve();
         this.proc = null;
+        this.gone();
         if (this.stopped) return;
         if (this.restarts < 1) {
           this.restarts++;
@@ -381,6 +400,7 @@ export class DevServer {
   async hold(): Promise<(files: string[]) => void> {
     const proc = this.proc;
     if (!proc || this.status.state !== 'ready') return () => {};
+    this.activeHolds++;
     const id = String(++this.holdCount);
     await new Promise<void>((resolve) => {
       const timer = setTimeout(done, HOLD_ACK_MS);
@@ -401,6 +421,7 @@ export class DevServer {
     return (files) => {
       if (released) return;
       released = true;
+      this.activeHolds--;
       // A worker stopped or replaced meanwhile held nothing of this server's; one that ends its holds on its own.
       if (this.proc !== proc) return;
       try {
@@ -423,6 +444,7 @@ export class DevServer {
     this.stopped = true;
     const p = this.proc;
     this.proc = null;
+    if (p) this.gone();
     this.settleStart?.();
     this.settleStart = null;
     if (p) {

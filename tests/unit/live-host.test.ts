@@ -60,7 +60,7 @@ afterEach(async () => {
   }
 });
 
-function host(opts: { timings?: Partial<LiveHostTimings>; relay?: () => Promise<ResolvedRelayUrl>; preview?: { port: number } | null } = {}) {
+function host(opts: { timings?: Partial<LiveHostTimings>; relay?: () => Promise<ResolvedRelayUrl>; preview?: { port: number } | null; publishing?: () => boolean } = {}) {
   const sockets: FakeSocket[] = [];
   const states: LiveHostState[] = [];
   const requests: LiveJoinRequest[] = [];
@@ -69,6 +69,7 @@ function host(opts: { timings?: Partial<LiveHostTimings>; relay?: () => Promise<
       opening: () => ({ workspaceKey: '/sites/acme#1', projectName: 'Acme' }),
       preview: () => opts.preview ?? null,
       relay: opts.relay ?? (async () => resolveRelayUrl({ env: RELAY })),
+      publishing: opts.publishing,
       emit: (channel, payload) => void (channel === 'live:state' ? states.push(payload as LiveHostState) : requests.push(payload as LiveJoinRequest))
     },
     {
@@ -216,6 +217,18 @@ describe('running the room', () => {
     // The lock's confirmation arrives first, with the old end.
     socket.receive({ type: 'room:state', startedAt: state.startedAt, expiresAt: state.expiresAt, locked: true, now: Date.now() });
     expect(h.manager.extend(run, state.expiresAt + 3600_000)).toMatchObject({ ok: false });
+  });
+
+  it('holds a guest reload while a save is landing, and sends it once it has', async () => {
+    let landing = true;
+    const h = host({ preview: { port: 5173 }, publishing: () => landing });
+    const { socket } = await opened(h);
+    h.manager.projectChanged();
+    await wait(40);
+    expect(sentOf(socket, 'preview:reload')).toBeUndefined();
+    landing = false;
+    await until(() => sentOf(socket, 'preview:reload'), 'the reload');
+    expect(socket.sent.filter((f) => f.type === 'preview:reload').length).toBe(1);
   });
 
   it('gives up a connection whose outgoing backlog has stopped moving, and takes the room back on another', async () => {

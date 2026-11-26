@@ -310,6 +310,7 @@ export class Controller {
   readonly live = new LiveHostManager({
     opening: () => (this.session && this.workspaceKey ? { workspaceKey: this.workspaceKey, projectName: projectDisplayName(this.session.state) } : null),
     preview: () => (this.session && this.workspaceKey ? loopbackPreview(this.dev?.url) : null),
+    publishing: () => !!this.dev?.holding,
     relay: async () => resolveRelayUrl({ env: process.env[RELAY_URL_ENV], setting: (await loadSettings()).settings.liveRelayUrl }),
     emit: (channel, payload) => this.send(channel, payload)
   });
@@ -1028,6 +1029,10 @@ export class Controller {
     // they load is the new revision (the project's own folder, or the private copy once it has the change).
     dev.onPublished(() => {
       if (this.dev === dev) this.live.projectChanged();
+    });
+    // Guests' requests to a server stopping or gone are stopped at once, and the relay told why.
+    dev.onGone(() => {
+      if (this.dev === dev) this.live.previewChanged();
     });
     await dev.start();
     // Anything the other app wrote between the copy and the watches.

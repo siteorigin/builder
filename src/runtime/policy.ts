@@ -1,5 +1,6 @@
 /** What the project's preview server may do. Kept apart from the worker so it can be tested. */
 import { realpathSync } from 'node:fs';
+import { isPreviewTarget } from '@shared/live/preview';
 import { sep } from 'node:path';
 
 /** A folder's real path, with every link resolved; the path as given when it does not exist yet. */
@@ -46,35 +47,67 @@ export function frameAncestorsCsp(packaged: boolean): string {
  */
 export const LIVE_GUEST_HEADER = 'x-siteorigin-live-guest';
 
-type ProxyRule = { bypass?: (req: GuestReq, res: unknown, options: unknown) => unknown; [option: string]: unknown };
 type GuestReq = { headers: Record<string, string | string[] | undefined>; url?: string };
+type GuestRes = { statusCode: number; writableEnded?: boolean; setHeader(name: string, value: string): unknown; end(body?: string): unknown };
+type Bypass = (this: unknown, req: GuestReq, res: GuestRes | undefined, options: unknown) => unknown;
+type ProxyServer = { on(event: 'proxyReq', fn: (proxyReq: { destroy(error?: Error): void }, req: GuestReq) => void): unknown };
+type ProxyRule = { bypass?: Bypass; configure?: (this: unknown, proxy: ProxyServer, options: ProxyRule) => void; [option: string]: unknown };
+
+const isGuest = (req: GuestReq) => req.headers[LIVE_GUEST_HEADER] !== undefined;
 
 /**
- * A Vite plugin that keeps a live session guest's requests off the project's own `server.proxy` rules, at the point
- * Vite decides to forward: each rule's `bypass` is wrapped, so for a guest's request a local answer the project's own
- * bypass gives still stands, and anything that would go on to another server is answered as not found. Done in
- * configureServer, which Vite runs before it reads the rules to install its proxy, so a URL rewritten on the way by
- * other middleware is judged as Vite forwards it.
+ * A Vite plugin that shows a live session guest the project's site and nothing more, wherever another plugin or the
+ * project's own configuration would take its request:
+ * - A guest's request whose address, as the other plugins' middleware leaves it, is no longer a place in the preview
+ *   (one of the dev server's own routes, such as `__open-in-editor`, that something rewrote it to) is not found. The
+ *   plugin runs last, so it sees the address as Vite's own middleware will.
+ * - The project's `server.proxy` rules never send a guest's request on to another server. Each rule's `bypass` is
+ *   wrapped where Vite decides to forward: a local answer the project's own bypass gives stands (one it sent itself,
+ *   or a local address that is a place in the preview), and anything else is not found. A rule's own `configure` that
+ *   sets another bypass has it wrapped too, and whatever the options end up saying, a guest's request about to be
+ *   sent on is stopped before anything of it leaves. Vite reads the rules to install its proxy only after every
+ *   plugin's configureServer has run.
  */
 export function liveGuestPlugin() {
+  const guarded = new WeakSet<Bypass>();
+  const guard = (own: Bypass | undefined): Bypass => {
+    const bypass: Bypass = async function (this: unknown, req, res, options) {
+      const local = own ? await own.call(this, req, res, options) : undefined;
+      if (!isGuest(req)) return local;
+      // Answered by the project's own code: a local address tells Vite it has been served, so it forwards nothing.
+      if (res?.writableEnded) return typeof local === 'string' ? local : (req.url ?? '/');
+      if (typeof local === 'string' && isPreviewTarget(local)) return local;
+      return false;
+    };
+    guarded.add(bypass);
+    return bypass;
+  };
   return {
     name: 'siteorigin-live-guest',
-    configureServer(server: { config: { server: { proxy?: Record<string, string | ProxyRule | null | undefined> } } }) {
+    enforce: 'post' as const,
+    configureServer(server: { config: { server: { proxy?: Record<string, string | ProxyRule | null | undefined> } }; middlewares: { use: (fn: (req: GuestReq, res: GuestRes, next: () => void) => void) => unknown } }) {
+      server.middlewares.use((req, res, next) => {
+        if (!isGuest(req) || isPreviewTarget(req.url ?? '')) return next();
+        res.statusCode = 404;
+        res.setHeader('content-type', 'text/plain; charset=utf-8');
+        res.end('Not found.');
+      });
       const rules = server.config.server.proxy;
       if (!rules) return;
       for (const [context, rule] of Object.entries(rules)) {
         if (!rule) continue;
         // A rule given as a target is read by Vite as this.
         const options: ProxyRule = typeof rule === 'string' ? { target: rule, changeOrigin: true } : rule;
-        const own = options.bypass;
+        const configure = options.configure;
         rules[context] = {
           ...options,
-          async bypass(req: GuestReq, res: unknown, opts: unknown) {
-            const local = own ? await own(req, res, opts) : undefined;
-            if (req.headers[LIVE_GUEST_HEADER] === undefined) return local;
-            // The project's own code answered it, or names a local address to serve: that is the site.
-            if (typeof local === 'string' || (res as { writableEnded?: boolean } | undefined)?.writableEnded) return local;
-            return false;
+          bypass: guard(options.bypass),
+          configure(this: unknown, proxy: ProxyServer, opts: ProxyRule) {
+            configure?.call(this, proxy, opts);
+            if (!opts.bypass || !guarded.has(opts.bypass)) opts.bypass = guard(opts.bypass);
+            proxy.on('proxyReq', (proxyReq, req) => {
+              if (isGuest(req)) proxyReq.destroy(new Error('A live session guest’s request is never sent on.'));
+            });
           }
         };
       }

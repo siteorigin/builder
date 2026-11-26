@@ -26,6 +26,8 @@ export interface LiveHostContext {
   preview(): LoopbackPreview | null;
   /** The relay to use: the environment variable, the advanced setting, or the production relay. */
   relay(): Promise<ResolvedRelayUrl>;
+  /** Whether a save's files are landing in the preview now: a reload then waits, so guests never load a half-landed save. */
+  publishing?(): boolean;
   emit(channel: 'live:state' | 'live:request', payload: LiveHostState | LiveJoinRequest): void;
 }
 
@@ -336,7 +338,8 @@ export class LiveHostManager {
       };
       const deadline = setTimeout(done, this.timings.stopMs);
       const stopBy = performance.now() + this.timings.stopMs;
-      const again = () => (retry = setTimeout(attempt, this.timings.backoffBaseMs));
+      // The next try comes after a moment, never after the time left to end the room.
+      const again = () => (retry = setTimeout(attempt, Math.min(this.timings.backoffBaseMs, Math.max(0, (stopBy - performance.now()) / 2))));
       const attempt = () => {
         retry = null;
         if (settled) return;
@@ -529,6 +532,12 @@ export class LiveHostManager {
     }
     this.roomFacts(run, frame);
     conn.stage = 'roster';
+    if (conn.kind === 'reclaim') {
+      // Proven: the room is this host's again, so only its own handshake deadline is left, not the outage's.
+      run.giveUpAt = null;
+      if (conn.timer) clearTimeout(conn.timer);
+      conn.timer = setTimeout(() => this.lost(conn, null), this.timings.handshakeMs);
+    }
     // Taken back only to be ended (shutdown): the relay closes the connection once it has.
     if (run.phase === 'stopping') {
       this.endRoom(conn);
@@ -726,6 +735,8 @@ export class LiveHostManager {
       const conn = run.conn;
       // Still owed while the room is being taken back or the preview is not ready: sent once both are.
       if (this.run !== run || run.phase !== 'active' || conn?.stage !== 'host' || !this.servingPreview(run)) return;
+      // A save landing now: the reload waits for it to have landed.
+      if (this.ctx.publishing?.()) return this.scheduleReload(run);
       if (this.sendOn(conn, { type: 'preview:reload' })) run.reloadDue = false;
     }, delay);
   }
