@@ -287,7 +287,7 @@ describe('orchestrator with constrained JSON', () => {
       const before = headerName(session, header);
       server.script(envelopeReply('update_site_brand', rename('Harbor Coffee'), 'Renaming the site'), { frames: [sseChunk({ role: 'assistant' })], endless: { frame: sseChunk({ content: ' and more' }), everyMs: 20 } });
       const { runId, result } = await run('Rename the site, then keep going');
-      expect(result).toMatchObject({ status: 'completed', canUndo: true, incomplete: true, error: 'time limit' });
+      expect(result).toMatchObject({ status: 'partial', canUndo: true, incomplete: true, error: 'time limit' });
       expect(result?.summary).toMatch(/time limit/);
       expect(headerName(session, header)).toBe('Harbor Coffee');
       await expect.poll(() => server.disconnects).toBe(1);
@@ -563,7 +563,7 @@ describe('the loaded context window', () => {
     const { session, run, header } = await setup();
     server.script(envelopeReply('update_site_brand', rename('Kept')), llamaOverflow(9000, 8192));
     const { result } = await run('Rename the site');
-    expect(result).toMatchObject({ status: 'completed', incomplete: true, canUndo: true });
+    expect(result).toMatchObject({ status: 'partial', incomplete: true, canUndo: true });
     expect(headerName(session, header)).toBe('Kept');
   });
 

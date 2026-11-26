@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -138,7 +138,7 @@ describe('agent orchestrator', () => {
       () => finish('Added a Services page and linked it from the header.')
     ]);
     const before = session.historyInfo().entries.length;
-    const { runId, result } = await run('Add a services page');
+    const { runId, result } = await run('Add a blank services page');
     expect(result?.status).toBe('completed');
     expect(result?.changes.map((c) => c.label).join(' ')).toContain('Services');
     expect(session.state.site.pageOrder).toHaveLength(4);
@@ -156,7 +156,7 @@ describe('agent orchestrator', () => {
       () => [call('dup', 'apply_operations', op)],
       () => finish('Created the page.')
     ]);
-    const { result } = await run('Create a page called Once');
+    const { result } = await run('Create a blank page called Once');
     expect(result?.status).toBe('completed');
     expect(Object.values(session.state.pages).filter((p) => p.title === 'Once')).toHaveLength(1);
     const firstResult = adapter.requests[1].items.at(-1);
@@ -848,6 +848,40 @@ describe('page scope (#513)', () => {
     expect(third.result?.status).toBe('completed');
     expect(third.result?.incomplete).toBeUndefined();
     expect(banner().props.primaryLink).toEqual({ type: 'page', target: contact });
+  });
+
+  it('is not partial when connecting the links puts the project back as it was at a limit: nothing was kept (#741)', async () => {
+    let about = '';
+    let contact = '';
+    const banner = () => Object.values(env.session.state.pages[about].nodes).find((n) => n.kind === 'instance' && env.session.state.components[n.definitionId]?.componentId === 'cta.banner') as InstanceNode;
+    const env = await setup([
+      () => [call('l1', 'upsert_page_with_sections', { slug: '/about/', sections: [{ componentId: 'cta.banner', props: { heading: 'Talk to us', primaryLink: '/contact-us/' } }] })],
+      () => finish('Done.'),
+      () => finish('Done.'),
+      // Continued: the only change clears the link the author connected, which the run then connects again.
+      () => [call('c1', 'apply_operations', { expectedRevision: env.session.revision, operations: [{ type: 'instance.setProp', owner: { kind: 'page', id: about }, nodeId: banner().id, prop: 'primaryLink', value: { type: 'none', target: '' } }] })],
+      () => [call('r1', 'read_project', {})],
+      () => [call('r2', 'read_project', {})]
+    ]);
+    about = Object.values(env.session.state.pages).find((p) => p.route === '/about/')!.id;
+    const first = await env.run('Point the About banner at a Contact us page');
+    expect(first.result).toMatchObject({ status: 'partial', pendingLinks: [expect.objectContaining({ route: '/contact-us/' })] });
+    expect((await env.session.apply({ operations: [{ type: 'page.create', title: 'Contact us', route: '/contact-us/' }], expectedRevision: env.session.revision }, { label: 'Add page', source: 'user' })).ok).toBe(true);
+    contact = Object.values(env.session.state.pages).find((p) => p.route === '/contact-us/')!.id;
+    expect((await env.session.apply({ operations: [{ type: 'instance.setProp', owner: { kind: 'page', id: about }, nodeId: banner().id, prop: 'primaryLink', value: { type: 'page', target: contact } }], expectedRevision: env.session.revision }, { label: 'Link', source: 'user' })).ok).toBe(true);
+    const entries = env.session.historyInfo().entries.length;
+    const turns = LIMITS.modelTurns;
+    LIMITS.modelTurns = 2;
+    try {
+      const { result } = await env.run('continue', { scope: 'site' });
+      expect(result).toMatchObject({ status: 'failed', error: 'turn limit', canUndo: false });
+      expect(result?.incomplete).toBeUndefined();
+      expect(result?.summary).toBe('Stopped after the limit of 2 steps without making any changes.');
+    } finally {
+      LIMITS.modelTurns = turns;
+    }
+    expect(banner().props.primaryLink).toEqual({ type: 'page', target: contact });
+    expect(env.session.historyInfo().entries).toHaveLength(entries);
   });
 
   it('sends the request without the page glance when only that keeps it inside a known window', async () => {
@@ -1576,7 +1610,7 @@ describe('library images in the chat (#12)', () => {
       createdAt: '2026-01-01T00:00:00.000Z',
       messages: [
         { id: 'm_u', role: 'user', text: ['Add pages'], time: '2026-01-01T00:00:00.000Z' },
-        { id: 'm_a', role: 'assistant', text: '', time: '2026-01-01T00:00:01.000Z', result: { status: 'completed', summary: 'Partly done.', changes: [], validation: [], canUndo: false, incomplete: true } }
+        { id: 'm_a', role: 'assistant', text: '', time: '2026-01-01T00:00:01.000Z', result: { status: 'partial', summary: 'Partly done.', changes: [], validation: [], canUndo: false, incomplete: true } }
       ]
     };
     writeFileSync(join(dir, 'c_unread1.json'), JSON.stringify(saved));
@@ -1647,13 +1681,14 @@ describe('run budget, parallel calls and validation', () => {
     const { session, run } = await setup([() => [call('p1', 'apply_operations', create('Pricing', 0))], ...readTurns(LIMITS.modelTurns)]);
     const before = session.historyInfo().entries.length;
     const { runId, result } = await run('Build a big site');
-    expect(result?.status).toBe('completed');
+    expect(result?.status).toBe('partial');
     expect(result?.incomplete).toBe(true);
     expect(result?.error).toBe('turn limit');
     expect(result?.summary).toMatch(/continue/i);
     expect(result?.canUndo).toBe(true);
     expect(Object.values(session.state.pages).some((p) => p.title === 'Pricing')).toBe(true);
     expect(session.historyInfo().entries.length).toBe(before + 1);
+    expect(session.historyInfo().entries.at(-1)?.label).toBe('AI (partial): Build a big site');
     expect((await session.undoGroup(runId)).ok).toBe(true);
     expect(Object.values(session.state.pages).some((p) => p.title === 'Pricing')).toBe(false);
   });
@@ -1676,7 +1711,7 @@ describe('run budget, parallel calls and validation', () => {
       () => [call('p1', 'apply_operations', create('Gallery', 0))],
       () => finish('Added a gallery page.')
     ]);
-    const { result } = await run('Add a gallery page');
+    const { result } = await run('Add a blank gallery page');
     expect(result?.status).toBe('completed');
     expect(Object.values(session.state.pages).some((p) => p.title === 'Gallery')).toBe(true);
     expect(JSON.stringify(adapter.requests[1].items.at(-1))).toMatch(/smaller/);
@@ -1699,9 +1734,15 @@ describe('run budget, parallel calls and validation', () => {
   it('keeps valid work when the tool-call budget runs out mid-turn', async () => {
     const reads = Array.from({ length: LIMITS.toolCalls + 5 }, (_, i): [string, string, unknown] => [`r${i}`, 'read_project', {}]);
     const { session, run } = await setup([() => [call('p1', 'apply_operations', create('Pricing', 0))], () => [calls(...reads)]]);
-    const { result } = await run('Build a big site');
-    expect(result).toMatchObject({ status: 'completed', incomplete: true, error: 'tool limit', canUndo: true });
+    const before = session.historyInfo().entries.length;
+    const { runId, result } = await run('Build a big site');
+    expect(result).toMatchObject({ status: 'partial', incomplete: true, error: 'tool limit', canUndo: true });
+    expect(result?.checks).toContainEqual({ status: 'issue', text: `Stopped at the limit of ${LIMITS.toolCalls} tool calls before the request was finished.` });
     expect(Object.values(session.state.pages).some((p) => p.title === 'Pricing')).toBe(true);
+    expect(session.historyInfo().entries.length).toBe(before + 1);
+    expect(session.historyInfo().entries.at(-1)?.label).toBe('AI (partial): Build a big site');
+    expect((await session.undoGroup(runId)).ok).toBe(true);
+    expect(Object.values(session.state.pages).some((p) => p.title === 'Pricing')).toBe(false);
   });
 
   it('stops promptly when stopped during a rate-limit backoff', async () => {
@@ -1842,7 +1883,7 @@ describe('run budget, parallel calls and validation', () => {
       { inspectLayout: async () => (++n === 1 ? { viewportWidth: 390, issues: [{ kind: 'text-overflow', message: 'Text is wider than its box.' }] } : { error: 'The preview is not running.' }) }
     );
     homeId = env.session.state.site.homePageId;
-    const { result } = await env.run('Add a wide page');
+    const { result } = await env.run('Add a blank wide page');
     expect(result?.status).toBe('completed');
     const v = result!.validation.join(' | ');
     expect(v).toMatch(/overflow.*phone/i);
@@ -1882,7 +1923,7 @@ describe('run budget, parallel calls and validation', () => {
       { inspectLayout: async () => (++n === 1 ? failing() : { viewportWidth: 390, documentWidth: 390, checks: checks(0), issues: [] }) }
     );
     homeId = env.session.state.site.homePageId;
-    const { result } = await env.run('Check the home page on a phone');
+    const { result } = await env.run('Add a blank page, then check the home page on a phone');
     expect(result?.status).toBe('completed');
     const first = env.adapter.requests[2].items.find((i) => i.kind === 'tool_result' && i.callId === 'i1') as { content: string };
     expect(first.content.length).toBeLessThanOrEqual(24000);
@@ -1921,7 +1962,7 @@ describe('run budget, parallel calls and validation', () => {
       { inspectLayout: () => reports.shift()!() }
     );
     homeId = env.session.state.site.homePageId;
-    const { result } = await env.run('Add a wide page');
+    const { result } = await env.run('Add a blank wide page');
     expect(result?.status).toBe('completed');
     const v = result!.validation;
     expect(v).toContain('Content is wider than the screen at phone width on Home.');
@@ -2923,12 +2964,15 @@ describe('requests that create pages over several steps (#88)', () => {
     expect(skipped.error.message).toContain('needs no reply from the user');
     expect(nudge).toContain('Reader requests (/reader-requests/) has not been created');
     expect(nudge).toContain('skipped');
-    expect(first.result).toMatchObject({ status: 'completed', incomplete: true, canUndo: true, unfinished: [{ title: 'Reader requests', route: '/reader-requests/' }] });
+    expect(first.result).toMatchObject({ status: 'partial', incomplete: true, canUndo: true, unfinished: [{ title: 'Reader requests', route: '/reader-requests/' }] });
     expect(first.result?.summary).toContain('not finished');
     expect(first.result?.summary).toContain('Reader requests (/reader-requests/) was not created');
     expect(first.result?.summary).not.toContain('Both pages are ready');
     expect(first.result?.checks).toContainEqual({ status: 'issue', text: 'The page Reader requests (/reader-requests/) was not created.' });
     expect(pageAt(session.state, '/reader-requests/')).toBeUndefined();
+    // What it did build is kept, as one step that says it is partial.
+    expect(pageAt(session.state, '/staff-picks/')).toBeDefined();
+    expect(session.historyInfo().entries.at(-1)?.label).toMatch(/^AI \(partial\): Add a Staff picks page/);
 
     const second = await run('Continue');
     expect(carried).toContain('Reader requests (/reader-requests/) from the earlier request has not been created');
@@ -3108,7 +3152,7 @@ describe('requests that create pages over several steps (#88)', () => {
       () => finish('Added Reader requests.')
     ]);
     const first = await run('Add Staff picks with a link to a new Reader requests page');
-    expect(first.result).toMatchObject({ status: 'completed', incomplete: true, error: 'turn limit' });
+    expect(first.result).toMatchObject({ status: 'partial', incomplete: true, error: 'turn limit' });
     const staff = pageAt(session.state, '/staff-picks/')!;
     const cta = () => pageAt(session.state, '/staff-picks/')!.nodes[staff.rootIds[0]] as unknown as { props: Record<string, unknown> };
     expect(first.result?.pendingLinks).toEqual([expect.objectContaining({ route: '/reader-requests/', pageId: staff.id, nodeId: staff.rootIds[0], prop: 'primaryLink' })]);
@@ -4733,7 +4777,7 @@ describe('the preview check before a changed run finishes (#742)', () => {
     const env = await setup([() => [call('p1', 'apply_operations', { expectedRevision: 0, operations: titles.map((title) => ({ type: 'page.create', title, starter: 'intro' })) })], () => finish('Added six pages.')], {
       inspectLayout: async (pageId, width) => (inspected.push([pageId, width]), clean(width))
     });
-    const { result } = await env.run('Add six pages');
+    const { result } = await env.run('Add six blank pages');
     expect(result?.status).toBe('completed');
     const made = titles.map((t) => Object.values(env.session.state.pages).find((p) => p.title === t)!.id);
     // New pages have nothing to compare with, so each is measured once, as it finished.
@@ -4904,6 +4948,124 @@ describe('the preview check before a changed run finishes (#742)', () => {
     expect(result?.status).toBe('cancelled');
     expect(env.session.revision).toBe(0);
     expect(JSON.stringify(env.session.state.pages[homeId])).toBe(before);
+  });
+});
+
+describe('a run stopped at its time limit (#741)', () => {
+  const restyle = (session: ProjectSession) => {
+    const pageId = session.state.site.homePageId;
+    return call('s1', 'apply_operations', {
+      expectedRevision: session.revision,
+      operations: [{ type: 'node.setStyle', owner: { kind: 'page', id: pageId }, nodeId: session.state.pages[pageId].rootIds[0], scope: 'base', property: 'paddingBlock', value: { token: 'space.lg' } }]
+    });
+  };
+  const clean = (width: number) => ({ viewportWidth: width, documentWidth: width, issues: [] });
+  const wide = (width: number) => ({ viewportWidth: width, documentWidth: width + 130, issues: [{ kind: 'horizontal-overflow', message: `The page is ${width + 130}px wide.` }] });
+  /** The clock moves on by `skip` ms whenever a turn asks it to, so the run's time runs out without waiting for it. */
+  const clock = () => {
+    const real = Date.now.bind(Date);
+    let skip = 0;
+    let expiredAt = Infinity;
+    const spy = vi.spyOn(Date, 'now').mockImplementation(() => real() + skip);
+    return {
+      expire: () => {
+        skip += LIMITS.activeMs + 1000;
+        expiredAt = Date.now();
+      },
+      expiredAt: () => expiredAt,
+      restore: () => spy.mockRestore()
+    };
+  };
+  /** A change, then a turn that outlives the time limit and asks for one more read. */
+  const turns = (session: () => ProjectSession, expire: () => void): Turn[] => [
+    () => [restyle(session())],
+    () => {
+      expire();
+      return [call('r1', 'read_project', {})];
+    }
+  ];
+
+  it('checks the changes in the preview after the limit, keeps them as one undoable step and ends partial', async () => {
+    const time = clock();
+    try {
+      const inspected: Array<[string, number, number]> = [];
+      let afterLimit = 0;
+      const env = await setup(turns(() => env.session, time.expire), {
+        inspectLayout: async (pageId, width) => {
+          inspected.push([pageId, width, env.session.revision]);
+          if (env.session.revision >= 1 && Date.now() >= time.expiredAt()) afterLimit++;
+          return clean(width);
+        }
+      });
+      const homeId = env.session.state.site.homePageId;
+      const before = JSON.stringify(env.session.state.pages[homeId]);
+      const entries = env.session.historyInfo().entries.length;
+      const { runId, result } = await env.run('Give the hero more room');
+      expect(result).toMatchObject({ status: 'partial', incomplete: true, error: 'time limit', canUndo: true });
+      expect(result?.summary).toMatch(/10-minute time limit/);
+      expect(result?.checks).toContainEqual({ status: 'issue', text: 'Stopped at the 10-minute time limit before the request was finished.' });
+      // The changed page was measured as the run left it, after its time had run out.
+      expect(inspected).toContainEqual([homeId, 1280, 1]);
+      expect(afterLimit).toBe(1);
+      expect(result?.checks).toContainEqual({ status: 'pass', text: 'Fits the screen at desktop width on Home.' });
+      expect(env.events.filter((e) => e.kind === 'status' && e.runId === runId).at(-1)?.status).toBe('partial');
+      // Kept as one step under the partial label, and the project as it was before the request is one undo away.
+      expect(JSON.stringify(env.session.state.pages[homeId])).not.toBe(before);
+      expect(env.session.historyInfo().entries).toHaveLength(entries + 1);
+      expect(env.session.historyInfo().entries.at(-1)?.label).toBe('AI (partial): Give the hero more room');
+      expect((await env.session.undoGroup(runId)).ok).toBe(true);
+      expect(JSON.stringify(env.session.state.pages[homeId])).toBe(before);
+    } finally {
+      time.restore();
+    }
+  });
+
+  it('reverts and fails, with no repair, when the preview shows the changes broke a page', async () => {
+    const time = clock();
+    try {
+      const inspected: Array<[string, number, number]> = [];
+      const env = await setup(turns(() => env.session, time.expire), { inspectLayout: async (pageId, width) => (inspected.push([pageId, width, env.session.revision]), env.session.revision >= 1 ? wide(width) : clean(width)) });
+      const homeId = env.session.state.site.homePageId;
+      const before = JSON.stringify(env.session.state.pages[homeId]);
+      const entries = env.session.historyInfo().entries.length;
+      const { result } = await env.run('Give the hero more room');
+      expect(result).toMatchObject({ status: 'failed', error: 'time limit', canUndo: false });
+      expect(result?.incomplete).toBeUndefined();
+      expect(result?.summary).toMatch(/^Stopped after the 10-minute time limit, and the changes so far caused problems in the preview\./);
+      expect(result?.summary).toMatch(/restored to how it was before this request/);
+      expect(result?.checks?.some((c) => c.status === 'issue' && /desktop width on Home/.test(c.text))).toBe(true);
+      expect(inspected).toContainEqual([homeId, 1280, 1]);
+      // The budget is spent: nothing goes back to the model.
+      expect(env.adapter.requests).toHaveLength(2);
+      expect(JSON.stringify(env.session.state.pages[homeId])).toBe(before);
+      expect(env.session.historyInfo().entries).toHaveLength(entries);
+    } finally {
+      time.restore();
+    }
+  });
+
+  it('is stopped, not kept, when the user stops it while the preview check after the limit is still running', async () => {
+    const time = clock();
+    try {
+      let started = false;
+      const env = await setup(turns(() => env.session, time.expire), {
+        inspectLayout: (_pageId, width) => {
+          if (env.session.revision < 1) return Promise.resolve(clean(width));
+          started = true;
+          return new Promise(() => undefined);
+        }
+      });
+      const homeId = env.session.state.site.homePageId;
+      const before = JSON.stringify(env.session.state.pages[homeId]);
+      const pending = env.run('Give the hero more room');
+      while (!started) await new Promise((r) => setTimeout(r, 5));
+      env.orch.stop();
+      const { result } = await pending;
+      expect(result?.status).toBe('cancelled');
+      expect(JSON.stringify(env.session.state.pages[homeId])).toBe(before);
+    } finally {
+      time.restore();
+    }
   });
 });
 

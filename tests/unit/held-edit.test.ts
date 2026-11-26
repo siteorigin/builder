@@ -389,6 +389,9 @@ describe('toolbar save state', () => {
     expect(saveAnnouncement('checking', 'saved', { run: 'no-changes' })).toBe('AI finished without changing anything');
     expect(saveAnnouncement('checking', 'saved', { run: 'failed' })).toBe('AI request failed');
     expect(saveAnnouncement('checking', 'saved', { run: 'completed' })).toBe('AI changes saved');
+    expect(saveAnnouncement('checking', 'saved', { run: 'partial' })).toBe('AI stopped before finishing. Its changes so far were saved');
+    expect(saveAnnouncement('checking', 'saved', { run: 'partial', edit: 'saved' })).toBe('AI stopped before finishing. Its changes so far were saved. Your edit was saved');
+    expect(saveAnnouncement('checking', 'held', { run: 'partial' })).toBe('AI stopped before finishing. Its changes so far were saved. Your edit is not saved yet');
     expect(saveAnnouncement('checking', 'saved', { run: 'cancelled', edit: 'saved' })).toBe('AI stopped. Your edit was saved');
     expect(saveAnnouncement('checking', 'held', { run: 'completed' })).toBe('AI changes saved. Your edit is not saved yet');
     expect(saveAnnouncement('checking', 'held', { run: 'cancelled', edit: 'saved' })).toBe('AI stopped. Your edit was saved. Another edit is not saved yet');

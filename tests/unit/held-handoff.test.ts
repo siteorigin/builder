@@ -482,6 +482,21 @@ describe('Stop AI and apply my edit', () => {
     expect(store.getState().aiOutcome).toMatchObject({ run: 'no-changes', edit: 'saved' });
   });
 
+  it('applies an edit held while a request ran that ended partial, its changes kept, when the stop arrived too late (#741)', async () => {
+    const g = gate();
+    // A blank page the request asked to build: kept, but the request is not finished.
+    const { session, about, send, orch } = await setup([g.turn, () => aiEdit('p', [{ type: 'page.create', title: 'Pricing' }])]);
+    const runId = await send('Build a Pricing page');
+    store.setState({ snapshot: snapshot() });
+    const held = await commitWhileBusy(browserTitle(about, 'Meet our design team'));
+    g.release();
+    await until(() => !orch.busy, 'the request to finish');
+    await store.applyHeld(held.id, { stopRunId: runId });
+    expect(store.getState().aiOutcome).toMatchObject({ run: 'partial', edit: 'saved' });
+    expect(session.state.pages[about].seo.title).toBe('Meet our design team');
+    expect(Object.values(session.state.pages).some((p) => p.title === 'Pricing')).toBe(true);
+  });
+
   it('keeps the newest of two commits of a field when the older one comes back refused late', async () => {
     const g = gate();
     const { about, send } = await setup([g.turn]);

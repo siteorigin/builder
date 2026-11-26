@@ -26,7 +26,7 @@ import { envelopeReply } from '../unit/mock-openai-server.ts';
 import { DriverError } from './protocol.ts';
 
 /** The statuses a run ends with. */
-export const TERMINAL_STATUSES = ['completed', 'no-changes', 'cancelled', 'failed', 'conflicted'] as const;
+export const TERMINAL_STATUSES = ['completed', 'partial', 'no-changes', 'cancelled', 'failed', 'conflicted'] as const;
 const TERMINAL = new Set<string>(TERMINAL_STATUSES);
 
 // ---------------------------------------------------------------------------

@@ -86,7 +86,7 @@ export function locationTarget(state: ProjectState, currentPageId: string | null
  */
 export function resumableId(messages: ChatMessage[], history?: TurnHistory | null): string | undefined {
   const last = messages.at(-1);
-  if (last?.role !== 'assistant' || !last.result?.incomplete || (last.result.status !== 'completed' && last.result.status !== 'no-changes')) return undefined;
+  if (last?.role !== 'assistant' || !last.result?.incomplete || (last.result.status !== 'partial' && last.result.status !== 'no-changes')) return undefined;
   return canCarryOn(turnState(last, history)) ? last.id : undefined;
 }
 

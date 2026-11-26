@@ -205,7 +205,7 @@ const homeId = (await win.evaluate(() => window.builder.project.snapshot())).sta
 const missing = 'The page Reader requests (/reader-requests/) was not created.';
 const ask = 'Add Staff picks and Reader requests pages';
 const originalCtx = { pageId: homeId, pageTitle: 'Home', selection: null, selectionLabel: null, viewport: 390 };
-const unfinished = (id, title, min, context, status = 'completed') => ({
+const unfinished = (id, title, min, context, status = 'partial') => ({
   id,
   title,
   createdAt: t(min),

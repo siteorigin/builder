@@ -97,7 +97,7 @@
   .result-card.settled .result-head:has(.result-qualifiers) .result-icon { margin-top: 4px; }
   .result-head:has(.result-qualifiers) .steps-toggle { margin-top: 1px; }
   /* Hue marks only what needs attention; success, no-change and stop are told apart by icon and word. */
-  .result-card:is(.completed, .no-changes, .cancelled) .result-icon { color: var(--text-2); }
+  .result-card:is(.completed, .partial, .no-changes, .cancelled) .result-icon { color: var(--text-2); }
   .result-card.failed .result-icon { color: var(--red); }
   .result-card.conflicted .result-icon { color: var(--text); }
   .result-card.failed .result-head { background: var(--red-soft); }

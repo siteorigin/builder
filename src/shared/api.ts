@@ -520,7 +520,7 @@ export interface RecentExport {
 // AI
 // ---------------------------------------------------------------------------
 
-export type RunStatus = 'preparing' | 'running' | 'awaiting-input' | 'validating' | 'repairing' | 'stopping' | 'completed' | 'no-changes' | 'cancelled' | 'failed' | 'conflicted';
+export type RunStatus = 'preparing' | 'running' | 'awaiting-input' | 'validating' | 'repairing' | 'stopping' | 'completed' | 'partial' | 'no-changes' | 'cancelled' | 'failed' | 'conflicted';
 
 /** edit: the AI may change the site. ask: a read-only question; the AI reads the site and changes nothing. */
 export type ChatMode = 'edit' | 'ask';
@@ -634,8 +634,9 @@ export interface ChatMessage {
     error?: string;
     usage?: { inputTokens: number; outputTokens: number };
     /**
-     * The request is not finished: the run stopped at a budget, or ended with requested work still missing. Any
-     * valid work is kept, and the user can ask it to continue.
+     * The request is not finished: the run stopped at a budget, or ended with requested work still missing. Set on
+     * every `partial` result, whose valid work is kept as one undoable step, and on a `no-changes` one that made
+     * nothing of what was asked. The user can ask either to continue.
      */
     incomplete?: boolean;
     /**
