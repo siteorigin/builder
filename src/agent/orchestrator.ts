@@ -126,7 +126,17 @@ export interface OrchestratorDeps {
   onBusyChange(busy: boolean): void;
   /** Whether code components may be created or edited (Developer mode). */
   codeEnabled?(): Promise<boolean>;
+  /** Timing spans for the benchmark (scripts/perf, the main process's `perf`); absent or off, they cost nothing. */
+  perf?: AgentPerf;
 }
+
+/** The little of the main process's timing marks a run uses: a span, ended once with what was learned meanwhile. */
+export interface AgentPerf {
+  readonly on: boolean;
+  span(name: string, attrs?: Record<string, string | number | boolean | null>): (more?: Record<string, string | number | boolean | null>) => void;
+}
+
+const NO_SPAN = () => {};
 
 interface ActiveRun {
   id: string;
@@ -1145,7 +1155,11 @@ export class Orchestrator {
      * `lost`: a source that could not be kept, said on the result.
      */
     const drafts = { rejected: [] as SourceDraft[], applied: [] as SourceDraft[], reverted: false, lost: [] as string[] };
+    /** The run's span, from here to its result (scripts/perf: the ai scenario). */
+    const perf = this.deps.perf?.on ? this.deps.perf : null;
+    const endRun = perf ? perf.span('ai.run', { mode: run.mode }) : NO_SPAN;
     const finish = async (status: RunStatus, summary: string, extra: Partial<NonNullable<ChatMessage['result']>> = {}) => {
+      endRun({ status });
       if (!drafts.reverted && drafts.applied.length) {
         // The run's changes are kept: the project holds what those copies hold. A copy that cannot be removed is
         // left in the recovery folder, which costs nothing but space.
@@ -1628,7 +1642,9 @@ export class Orchestrator {
         const own = asked && asked.authority !== authority ? checkAuthority(session.state, operations, asked.authority, grants) : null;
         if (own) return refused('SCOPE_MISMATCH', `${own} This call asked to change only ${authorityLabel(asked!.authority)}. Nothing in this batch was applied: send it with a scope that covers what it changes.`, true);
         // The pages the batch will change are measured as they are, before this run reached them, for the preview check.
+        const endBaselines = perf ? perf.span('ai.baselines') : NO_SPAN;
         await preview.beforeApply(operations, session.state, measureLive, (pageId, viewport) => inspections.fresh(pageId, viewport));
+        endBaselines();
         // Stopped while the preview measured: the batch never lands.
         if (signal.aborted) return refused('CANCELLED', 'Canceled', false);
         const before = session.state;
@@ -1775,6 +1791,7 @@ export class Orchestrator {
       const { targets, unchecked } = preview.plan(session.state);
       const unmeasured = targets.filter((t) => !inspections.fresh(t.pageId, t.viewport)?.ok);
       if (unmeasured.length) {
+        const endCheck = perf ? perf.span('ai.finalCheck', { targets: unmeasured.length }) : NO_SPAN;
         const p = addActivity('Checking the changed pages in the preview', 'inspect_layout');
         for (const t of unmeasured) {
           if (signal.aborted) throw new Error('Canceled');
@@ -1784,6 +1801,7 @@ export class Orchestrator {
           inspections.record(t.pageId, t.viewport, m.ok, m.ok ? m.content : (m.content.error.details ?? {}), m.ok ? m.report : undefined);
         }
         p.status = 'done';
+        endCheck();
       }
       // Every current check of a page in the set counts, the model's at other widths too.
       const checkedPages = [...new Set(targets.map((t) => t.pageId))];
@@ -2330,6 +2348,7 @@ export class Orchestrator {
         // Calls run in order. Reads may come in parallel, but only the first change of a turn is applied:
         // each change moves the revision, so later ones in the same turn were planned against stale state.
         let mutationTried = false;
+        const endTurn = perf ? perf.span('ai.turnTools', { turn: turns, calls: done.toolCalls.length, reads: done.toolCalls.filter((c) => !MUTATING_TOOLS.has(c.name as never)).length }) : NO_SPAN;
         for (const call of done.toolCalls) {
           if (signal.aborted) throw new Error('Canceled');
           const mutating = MUTATING_TOOLS.has(call.name as never);
@@ -2369,7 +2388,14 @@ export class Orchestrator {
               stamp(toolError('INVALID_ARGUMENT', `Unknown tool "${call.name}".`, { recoverable: !(ask && mutating) }), readRevision())
             : outside
               ? stamp(toolError('SCOPE_MISMATCH', outside), readRevision())
-              : await executeTool(call.name, call.arguments, host, call.id);
+              : await (async () => {
+                  const endTool = perf ? perf.span('ai.tool', { tool: call.name, turn: turns }) : NO_SPAN;
+                  try {
+                    return await executeTool(call.name, call.arguments, host, call.id);
+                  } finally {
+                    endTool();
+                  }
+                })();
           // Record a landed edit before honouring Stop, so the stopped result reports the rollback truthfully.
           if (outcome.ok && outcome.mutated) {
             // Whatever comes later in this turn was planned against the revision this just moved.
@@ -2425,6 +2451,7 @@ export class Orchestrator {
           items.push(resultItem(call, outcome));
           if (MUTATING_TOOLS.has(call.name as never)) msg.text = '';
         }
+        endTurn();
       }
     } catch (e) {
       const cancelled = signal.aborted || (e as Error).message === 'Canceled';

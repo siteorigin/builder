@@ -2926,7 +2926,9 @@ function atWidth(width, deadline) {
   });
 }
 
+/** Waits for the page's images, then its web fonts, then a frame; says how long each took (ms), for the editor's timing marks. */
 async function settled(deadline) {
+  const t0 = performance.now();
   // Asked for first: the browser can hold this until the page has loaded, which waits for its images.
   const fonts = document.fonts ? document.fonts.ready : Promise.resolve();
   // Hydration or an update can replace images while earlier ones load, so look again until none is pending.
@@ -2939,9 +2941,13 @@ async function settled(deadline) {
     if (!pending.length) break;
     await until(deadline, Promise.all(pending.map(imageDone)));
   }
+  const t1 = performance.now();
   await until(deadline, fonts);
+  const t2 = performance.now();
   // The final layout, once what changes it has arrived.
   await until(deadline, new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(r))));
+  const t3 = performance.now();
+  return { images: Math.round(t1 - t0), fonts: Math.round(t2 - t1), frame: Math.round(t3 - t2) };
 }
 
 /**
@@ -5127,7 +5133,7 @@ window.addEventListener('message', async (e) => {
       try {
         // A frame the editor sized for this measurement (a component shown on its own) is measured at that width.
         await atWidth(m.payload.width, started + 2500);
-        await settled(started + 4000);
+        const waited = await settled(started + 4000);
         // The page's sections, as the editor lists them, when it asks for the notes on their rhythm.
         const ids = Array.isArray(m.payload.rootIds) ? m.payload.rootIds.filter((id) => typeof id === 'string') : null;
         const page = typeof m.payload.pageId === 'string' && ids ? { pageId: m.payload.pageId, rootIds: ids } : null;
@@ -5136,6 +5142,8 @@ window.addEventListener('message', async (e) => {
         // Element IDs whose findings alone are listed (validate_project narrowed to them).
         const focus = Array.isArray(m.payload.focus) ? m.payload.focus.filter((id) => typeof id === 'string') : undefined;
         report = await inspect(Math.min(Date.now() + 2500, started + 6000), started + 7000, { readability: m.payload.readability === true, gaps: m.payload.gaps === true, page, ...(targets ? { targets } : {}), ...(focus ? { focus } : {}) });
+        // How long the page took to settle, when the editor asks (a page check, for its timing marks).
+        if (m.payload.timing === true && report && typeof report === 'object') report.settled = waited;
       } catch (err) {
         // A failed measurement is answered as one, never left for the editor to time out on.
         report = { error: `The page could not be measured: ${String((err && err.message) || err).slice(0, 200)}` };

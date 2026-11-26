@@ -68,6 +68,16 @@ describe('benchmark results', () => {
     expect(far.find((m) => m.metric === 'd')).toMatchObject({ verdict: 'changed', changePct: -40 });
   });
 
+  it('judge a share of a run against a band, at least one percentage point, and show it as a percentage', () => {
+    const a = result([passed({ s: { unit: 'share', values: [0.5, 0.52, 0.48] } })]);
+    const near = compareResults(a, result([passed({ s: { unit: 'share', values: [0.54, 0.55, 0.53] } })]))[0].metrics[0];
+    expect(near).toMatchObject({ verdict: 'noise' });
+    expect(noiseBand(summarize('share', [0.05, 0.05]), summarize('share', [0.05]))).toBe(0.01);
+    const far = compareResults(a, result([passed({ s: { unit: 'share', values: [0.2, 0.21, 0.19] } })]))[0].metrics[0];
+    expect(far).toMatchObject({ verdict: 'changed', changePct: -60 });
+    expect(changeTables(compareResults(a, a))).toContain('50.0%');
+  });
+
   it('say zero to zero is no change, and a count from zero is new', () => {
     const [c] = compareResults(result([passed({ z: { unit: 'count', values: [0, 0, 0] }, y: { unit: 'count', values: [0, 0, 0] } })]), result([passed({ z: { unit: 'count', values: [0, 0, 0] }, y: { unit: 'count', values: [3, 3, 3] } })]));
     expect(c.metrics.find((m) => m.metric === 'z')).toMatchObject({ changePct: 0, verdict: 'same' });

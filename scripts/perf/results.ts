@@ -5,8 +5,11 @@
 import type { PerfRecord } from '../../src/shared/perf';
 import { MEMORY_PROTOCOL, readingPrefix, type MemoryReading } from './memory';
 
-/** `bytes` are sizes (IPC payloads, files), exact; `memory` is resident or heap memory, in bytes, with a noise band. */
-export type Unit = 'ms' | 'count' | 'bytes' | 'memory';
+/**
+ * `bytes` are sizes (IPC payloads, files), exact; `memory` is resident or heap memory, in bytes, with a noise band;
+ * `share` is one duration as a fraction of another (0 to 1, shown as a percentage), with a noise band as durations have.
+ */
+export type Unit = 'ms' | 'count' | 'bytes' | 'memory' | 'share';
 
 /** One iteration's value of a metric. */
 export interface Measured {
@@ -160,6 +163,12 @@ export class Collector {
   count(name: string, value: number, unit: 'count' | 'bytes' | 'memory' = 'count') {
     this.metrics[name] = { unit, value };
   }
+
+  /** A fraction of one duration that another took (0 to 1). */
+  share(name: string, value: number) {
+    if (Number.isFinite(value)) this.metrics[name] = { unit: 'share', value };
+    else this.need(`${name} (a finite share)`, undefined);
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -260,10 +269,12 @@ const MEMORY_FLOOR = 8 * 2 ** 20;
 export function noiseBand(a: Summary, b: Summary): number {
   if (a.unit === 'ms') return Math.max(1, 3 * Math.max(a.mad, b.mad), 0.1 * Math.abs(a.median));
   if (a.unit === 'memory') return Math.max(MEMORY_FLOOR, 3 * Math.max(a.mad, b.mad), 0.1 * Math.abs(a.median));
+  // A share moves with the durations it is made of: the same band, its floor one percentage point.
+  if (a.unit === 'share') return Math.max(0.01, 3 * Math.max(a.mad, b.mad), 0.1 * Math.abs(a.median));
   return 0;
 }
 /** Units whose changes are judged against a noise band. */
-const banded = (unit: Unit) => unit === 'ms' || unit === 'memory';
+const banded = (unit: Unit) => unit === 'ms' || unit === 'memory' || unit === 'share';
 
 export interface MetricChange {
   metric: string;
@@ -350,6 +361,7 @@ export function compareResults(before: RunResult, after: RunResult): CaseChange[
 export function formatValue(value: number | null, unit: Unit): string {
   if (value === null || !Number.isFinite(value)) return '–';
   if (unit === 'ms') return `${value >= 100 ? Math.round(value).toLocaleString('en-US') : value.toFixed(1)} ms`;
+  if (unit === 'share') return `${(value * 100).toFixed(1)}%`;
   if (unit === 'memory') return `${(value / 2 ** 20).toLocaleString('en-US', { minimumFractionDigits: 1, maximumFractionDigits: 1 })} MiB`;
   if (unit === 'bytes') return value >= 10_240 ? `${(value / 1024).toLocaleString('en-US', { maximumFractionDigits: 1 })} KiB` : `${value} B`;
   return value.toLocaleString('en-US', { maximumFractionDigits: 1 });

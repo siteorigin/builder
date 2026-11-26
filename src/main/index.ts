@@ -147,8 +147,10 @@ const pendingComponentPreviews = new Map<string, (results: unknown) => void>();
  * only these elements; `focus`: only findings on these elements are listed.
  */
 function inspectLayout(pageId: string, width: number, opts: InspectLayoutOptions = {}): Promise<unknown> {
-  return new Promise((resolve, reject) => {
-    const requestId = Math.random().toString(36).slice(2);
+  const requestId = Math.random().toString(36).slice(2);
+  // One measurement, from the request to its answer (scripts/perf: the ai scenario); the editor marks its load by `req`.
+  const end = perf.on ? perf.span('ai.inspect', { req: requestId, width, revision: controller.session?.revision ?? null }) : null;
+  const answer = new Promise<unknown>((resolve, reject) => {
     let done = false;
     const timer = setTimeout(() => {
       done = true;
@@ -174,6 +176,12 @@ function inspectLayout(pageId: string, width: number, opts: InspectLayoutOptions
         done = true;
       });
   });
+  if (end)
+    answer.then(
+      (r) => end({ ok: !!r && typeof r === 'object' && !(r as { error?: unknown }).error }),
+      () => end({ ok: false })
+    );
+  return answer;
 }
 
 /**
@@ -390,7 +398,8 @@ const orchestrator = new Orchestrator({
     perf.mark(busy ? 'ai.runStart' : 'ai.runEnd');
     controller.broadcast();
   },
-  codeEnabled: async () => (await loadSettings()).settings.developerMode
+  codeEnabled: async () => (await loadSettings()).settings.developerMode,
+  perf
 });
 // Only a request that may change the site holds it: a read-only question leaves the author editing, exporting
 // and resolving conflicts as usual.

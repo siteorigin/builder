@@ -4,6 +4,7 @@ import { acceptMessage, newSessionId, postToFrame, viewAfter, type BridgeMessage
 import type { InspectLayoutOptions } from '@shared/api';
 import { attributeFindings, failedImages, missingImages, missingSections, staleImages } from './inspect-check';
 import { descOf } from './model';
+import { perfMark, perfOn } from './perf';
 
 /** How long the preview server gets to pick up files the AI just wrote before a fresh page load. */
 const SETTLE_MS = 400;
@@ -18,7 +19,7 @@ type InspectRequest = { requestId: string; pageId: string; width: number } & Ins
  */
 export async function runInspection(req: InspectRequest) {
   const state = () => getState().snapshot?.state;
-  let report = await measure(req);
+  let report = await measure(req, 1);
   // A page the dev server has not caught up with (a route created moments ago, sections just added, an image
   // just changed) is missing some of its sections or images, or shows an image it no longer uses, and a file the
   // server has not picked up yet fails to load; give it one more chance before reporting.
@@ -29,7 +30,7 @@ export async function runInspection(req: InspectRequest) {
     const first = report;
     const absentOnly = !failedImages(report) && missingSections(state(), req.pageId, report).length === 0 && missingImages(state(), req.pageId, report).length === 0 && staleImages(state(), req.pageId, report).length === 0;
     await new Promise((r) => setTimeout(r, 1500));
-    report = await measure(req);
+    report = await measure(req, 2);
     // Asked again only because an element rendered nowhere: a second load that fails leaves the first one's answer.
     if (absentOnly && (!report || typeof report !== 'object' || (report as { error?: unknown }).error)) report = first;
   }
@@ -42,6 +43,7 @@ export async function runInspection(req: InspectRequest) {
   if (report && typeof report === 'object') {
     // The section and image address lists are only for these checks; they are not evidence for the AI.
     delete (report as { sections?: unknown }).sections;
+    delete (report as { settled?: unknown }).settled;
     delete (report as { images?: { sources?: unknown } }).images?.sources;
     // Each finding names the element to change as operations address it, against the project measured.
     attributeFindings(state(), report);
@@ -49,7 +51,8 @@ export async function runInspection(req: InspectRequest) {
   api.inspectResult(req.requestId, report);
 }
 
-async function measure(req: InspectRequest): Promise<unknown> {
+/** `attempt`: the first load of the page for this request, or the second when the first looked behind (scripts/perf marks). */
+async function measure(req: InspectRequest, attempt: number): Promise<unknown> {
   await new Promise((r) => setTimeout(r, SETTLE_MS));
   const s = getState();
   const runtime = s.runtime;
@@ -63,6 +66,12 @@ async function measure(req: InspectRequest): Promise<unknown> {
       window.removeEventListener('message', onMsg);
       clearTimeout(timer);
       frame.remove();
+      // How long the page waited for its images, fonts and a frame before it was measured (scripts/perf).
+      if (perfOn) {
+        const waited = (report as { settled?: Record<string, unknown> } | null)?.settled;
+        const ms = (k: string) => (typeof waited?.[k] === 'number' ? (waited[k] as number) : null);
+        perfMark('inspect.done', { req: req.requestId, attempt, images: ms('images'), fonts: ms('fonts'), frame: ms('frame') });
+      }
       resolve(report);
     };
     /** The load the frame last reported: a result measured on another one says nothing of this page. */
@@ -72,6 +81,7 @@ async function measure(req: InspectRequest): Promise<unknown> {
       if (!m) return;
       view = viewAfter(m, view);
       if (m.type === 'ready') {
+        if (perfOn) perfMark('inspect.ready', { req: req.requestId, attempt });
         postToFrame(frame, origin, sessionId, 'mode', { mode: 'preview' }, view);
         // The frame waits (up to 4s) for fonts and images itself, and up to 2.5s more to request again
         // images that showed nothing, before measuring; loading and measuring get separate deadlines.
@@ -83,11 +93,12 @@ async function measure(req: InspectRequest): Promise<unknown> {
         const targets = Array.isArray(req.targets) && state ? req.targets.map((t) => descOf(state, t)) : undefined;
         // `focus`: only findings on these elements are listed (validate_project narrowed to them).
         const focus = Array.isArray(req.focus) ? req.focus : undefined;
-        postToFrame(frame, origin, sessionId, 'inspect', { requestId: req.requestId, pageId: req.pageId, rootIds: [...page.rootIds], ...(targets ? { targets } : {}), ...(focus ? { focus } : {}) }, view);
+        postToFrame(frame, origin, sessionId, 'inspect', { requestId: req.requestId, pageId: req.pageId, rootIds: [...page.rootIds], ...(perfOn ? { timing: true } : {}), ...(targets ? { targets } : {}), ...(focus ? { focus } : {}) }, view);
       } else if (m.type === 'inspectResult' && (m.payload as { requestId?: unknown }).requestId === req.requestId) done((m.payload as { report: unknown }).report);
     };
     let timer = setTimeout(() => done({ error: 'Timed out loading the page.' }), 12000);
     window.addEventListener('message', onMsg);
+    if (perfOn) perfMark('inspect.load', { req: req.requestId, attempt });
     frame.src = runtime.url + page.route;
     document.body.appendChild(frame);
   });
