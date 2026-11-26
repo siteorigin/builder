@@ -94,3 +94,14 @@ describe('dropLineBox when none of the line shows (#904)', () => {
     expect(above.top).toBe(57);
   });
 });
+
+describe('dropLineBox at the very edge of what shows (#904)', () => {
+  it('keeps a line that only just reaches into view at the edge it is at', () => {
+    const shown = { left: 0, top: 0, right: 500, bottom: 278 };
+    // A row whose first pixels show at the bottom: its gap starts just inside the clip.
+    const v = dropLineBox({ left: 200, top: 267, width: 0, height: 120 }, shown);
+    expect(v.top + v.height).toBe(276);
+    const h = dropLineBox({ left: 494, top: 100, width: 200, height: 0 }, shown);
+    expect(h.left + h.width).toBe(498);
+  });
+});

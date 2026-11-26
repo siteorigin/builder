@@ -2108,8 +2108,9 @@ export function Canvas() {
     /** The lists were measured while the page still showed an older version of the project. */
     let listsBehind = false;
     let again = false;
-    /** The lists were measured after the page's last scroll. Until they are, the ones measured before it still show the
-     *  line, so a scroll never takes it away, and a release drops where that line shows: what the author saw. */
+    /** The lists were measured after the page's last scroll: only then does a release drop by them, at the place on the
+     *  page now under the pointer. Until then the ones measured before it still show the line (a measure behind), so a
+     *  scroll never takes it away. */
     let fresh = false;
     /** A measure asked for since the one on its way was asked for, of a page that has changed (not only scrolled): what
      *  that one finds is of the page before the change, and shows nothing. */
@@ -2255,8 +2256,9 @@ export function Canvas() {
       point = { x: ev.clientX, y: ev.clientY };
       if (d.still?.(point)) return end(false);
       show();
-      if (lists || !aim.over) return end(true);
-      // Released on the page before it was measured: dropped where it was let go, once it is.
+      if ((lists && fresh) || !aim.over) return end(true);
+      // Released on the page before it was measured where it now shows (scrolled since, say): dropped where it was let
+      // go, once it is.
       released = true;
       cancelAnimationFrame(scrollFrame);
       scrollFrame = 0;
