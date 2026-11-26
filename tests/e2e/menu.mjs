@@ -124,6 +124,15 @@ const linkMark = await desktopCursor(app);
 await chooseMenu(app, ['Help', 'SiteOrigin Website']);
 await eventually(async () => assert.deepEqual((await desktopIntents(app, linkMark)).filter((x) => x.kind === 'open-external').map((x) => x.target), ['https://siteorigin.com/'], 'the website opens in the browser'));
 
+if (process.platform !== 'darwin') {
+  step('Help: About shows the version (Windows and Linux)');
+  const aboutMark = await desktopCursor(app);
+  const version = await app.evaluate(({ app: a }) => a.getVersion());
+  await answerChoosers(app, [{ dialog: 'message', button: 0 }]);
+  await chooseMenu(app, ['Help', 'About SiteOrigin Builder']);
+  await eventually(async () => assert.ok((await choosersShown(app, aboutMark)).some((c) => JSON.stringify(c).includes(`Version ${version}`)), 'About names the version'));
+}
+
 step('Welcome: Settings… opens the Settings dialog');
 await chooseMenu(app, SETTINGS);
 await settingsDialog().waitFor();
