@@ -411,3 +411,42 @@ export function toggleList(root: HTMLElement, kind: ArticleListKind): boolean {
   });
   return true;
 }
+
+/** What a Markdown marker typed at the start of a paragraph, then a space, makes of it. `#` is not one: the title is the post's only first-level heading. */
+const SHORTCUTS: Record<string, { block: ArticleBlockTag } | { list: ArticleListKind }> = {
+  '##': { block: 'h2' },
+  '###': { block: 'h3' },
+  '####': { block: 'h4' },
+  '>': { block: 'blockquote' },
+  '-': { list: 'ul' },
+  '*': { list: 'ul' },
+  '+': { list: 'ul' },
+  '1.': { list: 'ol' },
+  '[ ]': { list: 'check' }
+};
+
+/**
+ * The change a space typed now makes when it ends a Markdown marker that starts a paragraph (`## ` a heading, `- ` a
+ * list), as a function that removes the marker and changes the block; null when the space is only a space. Only a
+ * paragraph of the text's own, with the caret collapsed just after the marker on its first line, changes: a heading, a
+ * list item, a quote, or a marker after other words stays as typed.
+ */
+export function markdownShortcut(root: HTMLElement): (() => boolean) | null {
+  const doc = root.ownerDocument;
+  const sel = doc.getSelection();
+  if (!sel?.rangeCount || !sel.isCollapsed) return null;
+  const block = blockAtCaret(root);
+  if (!block || block.tagName !== 'P') return null;
+  const before = doc.createRange();
+  before.selectNodeContents(block);
+  before.setEnd(sel.anchorNode!, sel.anchorOffset);
+  const to = SHORTCUTS[before.toString()];
+  if (!to || before.cloneContents().querySelector('br, img')) return null;
+  return () => {
+    before.deleteContents();
+    // A block left with no words keeps a line to type on.
+    if (!block.textContent && !block.querySelector('br, img')) block.replaceChildren(doc.createElement('br'));
+    sel.collapse(block, 0);
+    return 'block' in to ? setBlock(root, to.block) : toggleList(root, to.list);
+  };
+}
