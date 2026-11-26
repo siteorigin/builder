@@ -1,5 +1,6 @@
-import { useCallback, useMemo, useState } from 'react';
-import type { ProjectState } from '@shared/types';
+import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
+import { Check, ChevronRight, Copy } from 'lucide-react';
+import type { ProjectState, SiteDoc } from '@shared/types';
 import { agentDiscovery, LLMS_FULL_FILE, LLMS_TXT_FILE, MARKDOWN_MIRROR_FILE } from '@shared/llms';
 import { publicUrl } from '@shared/public-url';
 import { webMcpOn } from '@shared/webmcp';
@@ -7,9 +8,60 @@ import { TEXT_LIMITS } from '@shared/text-limits';
 import { generateLlmsTxt } from '@generator/llms';
 import { DraftInput, Field, SwitchRow } from '../components/ui';
 
+/** How many of the section's four features are on, for its closed heading ("2 on", "All off"). */
+export function agentsScope(site: SiteDoc): string {
+  const s = agentDiscovery(site);
+  const on = [s.llmsTxt, s.llmsFull, s.markdownMirrors, webMcpOn(site)].filter(Boolean).length;
+  return on ? `${on} on` : 'All off';
+}
+
+/** A switch's label: what it does in plain words, then the file or standard it writes, as secondary text. */
+function Named({ name, tech }: { name: string; tech: string }) {
+  return (
+    <>
+      {name} <span className="agents-tech">{tech}</span>
+    </>
+  );
+}
+
+/** Copies the preview's text, says so in place and to screen readers, and goes back to "Copy" after a moment. */
+function CopyText({ text, what }: { text: string; what: string }) {
+  const [copied, setCopied] = useState<boolean | 'failed'>(false);
+  const timer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  useEffect(() => () => void (timer.current && clearTimeout(timer.current)), []);
+  // A new text is not the copied one.
+  useEffect(() => setCopied(false), [text]);
+  const copy = () => {
+    void navigator.clipboard?.writeText(text).then(
+      () => {
+        setCopied(true);
+        if (timer.current) clearTimeout(timer.current);
+        timer.current = setTimeout(() => setCopied(false), 2400);
+      },
+      () => {
+        setCopied('failed');
+        if (timer.current) clearTimeout(timer.current);
+        timer.current = setTimeout(() => setCopied(false), 4000);
+      }
+    );
+  };
+  return (
+    <>
+      <button type="button" className="btn btn-sm btn-ghost agents-copy" onClick={copy} aria-label={`Copy ${what}`}>
+        {copied === true ? <Check aria-hidden="true" /> : <Copy aria-hidden="true" />}
+        {copied === true ? 'Copied' : copied ? 'Couldn’t copy' : 'Copy'}
+      </button>
+      <span className="sr-only" role="status">
+        {copied === true ? `${what} copied.` : copied ? `${what} couldn’t be copied.` : ''}
+      </span>
+    </>
+  );
+}
+
 /**
- * Site styles' AI agents section: what the website offers AI agents beside its pages (see shared/llms.ts), and the
- * llms.txt it writes, shown as it will be while the summary is typed.
+ * Site styles' AI agents section: what the website offers AI agents beside its pages (see shared/llms.ts). The page
+ * index's summary and its preview sit under the index's switch, the only setting they belong to; the other three
+ * are written whether or not the index is.
  */
 export function AgentDiscoveryFields({ state, onChange }: { state: ProjectState; onChange: (patch: Record<string, unknown>) => unknown }) {
   const site = state.site;
@@ -17,51 +69,79 @@ export function AgentDiscoveryFields({ state, onChange }: { state: ProjectState;
   // The summary as the field shows it while it holds unsaved text (typed, or refused and shown again), until it is
   // saved or put back.
   const [typed, setTyped] = useState<string | null>(null);
+  // The file itself is looked at now and then, not each visit: shown on request, so the four switches stay together.
+  const [showFile, setShowFile] = useState(false);
   const shown = useCallback((dirty: boolean, draft: string) => setTyped(dirty ? draft : null), []);
   // The documents it lists are worked out once per project state; typing changes only its opening.
   const preview = useMemo(() => (settings.llmsTxt ? generateLlmsTxt(state, typed === null ? undefined : { summary: typed }) : null), [state, typed, settings.llmsTxt]);
+  const own = typeof site.llmsSummary === 'string' ? site.llmsSummary : '';
+  const described = typeof site.description === 'string' && site.description.trim() !== '';
+  const summaryHint: ReactNode = (typed ?? own).trim()
+    ? described
+      ? 'The index opens with it. Clear it to use the site’s description.'
+      : 'The index opens with it. Clear it to leave the summary out.'
+    : described
+      ? 'Using the site’s description, shown in the field. Write your own to say something else.'
+      : 'Optional: one or two sentences the index opens with.';
   return (
     <>
-      <SwitchRow
-        id="site-llms-txt"
-        checked={settings.llmsTxt}
-        onChange={(v) => onChange({ llmsTxt: v })}
-        label={`Write ${LLMS_TXT_FILE}`}
-        hint="An index AI assistants read to learn what the site covers: its pages and posts that search engines may list, with their descriptions. Drafts and pages hidden from search engines are never in it."
-      />
+      <p className="agents-intro">Files and features the website offers AI tools. They cover only the pages and posts search engines may list.</p>
+      <div className={`agents-feature${settings.llmsTxt ? ' on' : ''}`}>
+        <SwitchRow
+          id="site-llms-txt"
+          checked={settings.llmsTxt}
+          onChange={(v) => onChange({ llmsTxt: v })}
+          label={<Named name="Page index for AI tools" tech={LLMS_TXT_FILE} />}
+          hint={settings.llmsTxt ? 'Lists the pages and posts, each with its description.' : 'Lists the pages and posts. Turn it on to write its summary and see the file.'}
+        />
+        {preview !== null && (
+          <div className="agents-sub">
+            <Field label="Index summary" hint={summaryHint}>
+              <DraftInput multiline rows={2} limit={TEXT_LIMITS.siteDescription} quietCount keep="site:llmsSummary" value={own} placeholder={typeof site.description === 'string' ? site.description : ''} onDirty={shown} onCommit={(v) => onChange({ llmsSummary: v })} />
+            </Field>
+            <div className="agents-file">
+              <div className="agents-file-head">
+                <button type="button" className="link-btn agents-file-toggle" aria-expanded={showFile} aria-controls="site-llms-preview" onClick={() => setShowFile(!showFile)}>
+                  <ChevronRight aria-hidden="true" />
+                  {showFile ? 'Hide the file' : 'Show the file'}
+                </button>
+                <CopyText text={preview} what={LLMS_TXT_FILE} />
+              </div>
+              <div id="site-llms-preview" className="agents-file-body" hidden={!showFile}>
+                {showFile && (
+                  <>
+                    <pre className="code-view agents-preview" tabIndex={0} aria-label={`${LLMS_TXT_FILE} as the website writes it`} data-testid="llms-txt-preview">
+                      {preview}
+                    </pre>
+                    {!publicUrl(site) && <div className="field-hint">Its links are relative to the website’s folder until the site has a public URL (Site details).</div>}
+                  </>
+                )}
+              </div>
+            </div>
+          </div>
+        )}
+      </div>
       <SwitchRow
         id="site-llms-full"
         checked={settings.llmsFull}
         onChange={(v) => onChange({ llmsFull: v })}
-        label={`Write ${LLMS_FULL_FILE}`}
-        hint="The words of every page and post in that index, as Markdown in one file."
+        label={<Named name="All page text in one file" tech={LLMS_FULL_FILE} />}
+        hint="Every page and post as Markdown, for tools that read the whole site."
       />
       <SwitchRow
         id="site-markdown-mirrors"
         checked={settings.markdownMirrors}
         onChange={(v) => onChange({ markdownMirrors: v })}
-        label="Write a Markdown copy of each page"
-        hint={`Beside each page and post in the index, at its address with ${MARKDOWN_MIRROR_FILE} added, without the header, footer or layout. Each page links to its copy.`}
+        label={<Named name="Text copy of each page" tech={MARKDOWN_MIRROR_FILE} />}
+        hint="Markdown beside each page, without the header and footer, linked from it."
       />
       <SwitchRow
         id="site-webmcp"
         checked={webMcpOn(site)}
         onChange={(v) => onChange({ webmcp: v })}
-        label="Declare WebMCP tools"
-        hint="AI assistants in a visitor’s browser learn what each contact form is for and what its fields ask, and can search the site. The assistant only fills a form in: the visitor checks it and sends it. Browsers without WebMCP ignore it."
+        label={<Named name="Forms and search for browser assistants" tech="WebMCP" />}
+        hint="An assistant in the visitor’s browser can search the site and fill in a contact form for the visitor to check and send."
       />
-      <Field label="Summary" hint="One or two sentences llms.txt opens with. Leave it empty to use the site’s default description.">
-        <DraftInput multiline limit={TEXT_LIMITS.siteDescription} keep="site:llmsSummary" value={typeof site.llmsSummary === 'string' ? site.llmsSummary : ''} placeholder={typeof site.description === 'string' ? site.description : ''} onDirty={shown} onCommit={(v) => onChange({ llmsSummary: v })} />
-      </Field>
-      {preview !== null ? (
-        <Field label={`${LLMS_TXT_FILE} preview`} hint={publicUrl(site) ? undefined : 'Without a public URL its links are relative to the website’s folder. Add one in Site details for full addresses.'}>
-          <pre className="code-view" tabIndex={0} aria-label={`${LLMS_TXT_FILE} as the website writes it`} data-testid="llms-txt-preview">
-            {preview}
-          </pre>
-        </Field>
-      ) : (
-        <p className="field-hint">The website has no {LLMS_TXT_FILE}, so AI agents get no index of its pages.</p>
-      )}
     </>
   );
 }

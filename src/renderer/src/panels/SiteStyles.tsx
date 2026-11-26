@@ -26,8 +26,8 @@ import { usePreviewStack } from '../lib/editor-fonts';
 import { BrandContrast, ContrastDetail, ContrastFlags, buildContrastModel, useContrastStatus } from './ContrastNotes';
 import type { ContrastPair, ForegroundSuggestion } from '@shared/contrast';
 import { NOT_FOUND_LIMITS, clipText, notFoundDefaults } from '@shared/not-found';
-import { VisitorTextFields } from './VisitorText';
-import { AgentDiscoveryFields } from './AgentDiscovery';
+import { VisitorTextFields, visitorTextScope } from './VisitorText';
+import { AgentDiscoveryFields, agentsScope } from './AgentDiscovery';
 import { CrawlerPolicyFields } from './CrawlerPolicy';
 import { RedirectsFields } from './RedirectsManager';
 import { redirectRecords } from '@shared/redirects';
@@ -1582,7 +1582,7 @@ export function SiteStyles() {
         <IdentityFields state={st} workspaceKey={snap?.workspaceKey} onPatch={(identity) => updSite({ identity })} />
       </Section>
 
-      <Section title="AI agents" id="site-agents" defaultOpen={false}>
+      <Section title="AI agents" id="site-agents" defaultOpen={false} scope={agentsScope(site)}>
         {/* Keyed by the project's opening: a summary typed in one project is never previewed in the next. */}
         <AgentDiscoveryFields key={`agents-${snap?.workspaceKey}`} state={st} onChange={updSite} />
       </Section>
@@ -1597,8 +1597,9 @@ export function SiteStyles() {
         <RedirectsFields key={`redirects-${snap?.workspaceKey}`} state={st} problems={snap?.diagnostics ?? []} revision={snap?.revision} />
       </Section>
 
-      <Section title="Visitor text" id="site-visitor-text" defaultOpen={false}>
-        <VisitorTextFields state={st} onCommit={(language, key, value) => updSite({ visitorText: { language, text: { [key]: value } } })} />
+      <Section title="Visitor text" id="site-visitor-text" defaultOpen={false} scope={visitorTextScope(site)}>
+        {/* Its saves report back, so a wording put back is said only once it has saved. */}
+        <VisitorTextFields state={st} onCommit={(language, key, value) => applyOps([{ type: 'site.update', visitorText: { language, text: { [key]: value } } }], 'Update site settings')} />
       </Section>
 
       <Section title="Not-found page" id="site-not-found" defaultOpen={false}>
