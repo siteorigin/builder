@@ -62,6 +62,10 @@ export const READ_ENTRY_DESCRIPTION =
 export const READ_ENTRY_BRIEF = 'Its details, and its text as Markdown a part at a time: offset=next until next is null, before rewriting it whole.';
 export const UPSERT_ENTRY_DESCRIPTION = `Create a draft entry of a collection (a blog post, say), or change one by its entryId: only the fields given change, the rest stays as it is. categories files it under categories by name, adding any the collection lacks. ${BODY_FORMAT} Send body only to change the text, after reading all of it.`;
 export const UPSERT_ENTRY_BRIEF = `Only the fields given change. ${BODY_FORMAT} Send body only after reading all the text.`;
+/** The same tool in a run limited to one post, which may not create an entry or add a category (scope.ts). */
+const PINNED_CATEGORIES = 'Category names the collection already has; replaces its categories, [] removes them. A new category is more than this request may change: ask to widen the scope first.';
+export const UPSERT_PINNED_ENTRY_DESCRIPTION = `Change this post: only the fields given change, the rest stays as it is. categories files it under categories its collection already has, by name. ${BODY_FORMAT} Send body only to change the text, after reading all of it.`;
+export const UPSERT_PINNED_ENTRY_BRIEF = `Only the fields given change; categories only by names the collection has. ${BODY_FORMAT} Send body only after reading all the text.`;
 
 /** The collection a call names, with its IDs listed when there is none. */
 function collectionFor(state: ProjectState, id: string): { collection: Collection } | { error: FieldIssue } {
@@ -285,6 +289,7 @@ export function collectionToolSchemas(state: ProjectState, pin?: { collectionId:
     read.properties.entryId = only;
     upsert.properties.entryId = only;
     upsert.required = [...new Set([...(upsert.required ?? []), 'entryId'])];
+    upsert.properties.categories = { ...(upsert.properties.categories as object), description: PINNED_CATEGORIES };
   }
   return { list, read, upsert };
 }
