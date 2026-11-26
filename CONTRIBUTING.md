@@ -27,7 +27,7 @@ npm run build             # the end-to-end scripts drive the built app in out/
 node tests/e2e/<script>.mjs   # the end-to-end script that covers your change, when there is one
 ```
 
-Add unit tests that cover the change, and give every bug fix a regression test that fails without the fix. Never weaken an assertion to make a change pass. `npm run test:e2e` runs the chain of end-to-end scripts listed in `package.json` (not every script in `tests/e2e/` is in it); pull-request CI runs only the unit tests, on Linux, and the full suites are driven to green by a separate local stabilization pass rather than by every change.
+Add unit tests that cover the change, and give every bug fix a regression test that fails without the fix. Never weaken an assertion to make a change pass. `npm run test:e2e` runs the chain of end-to-end scripts listed in `package.json` (not every script in `tests/e2e/` is in it); pull-request CI runs only the unit tests the change can affect, on Linux, and the full suites are driven to green by a separate local stabilization pass rather than by every change.
 
 The end-to-end scripts in `tests/e2e/` drive the real Electron app with Playwright and fail on the first broken step. A check for a tracked app bug can be wrapped in `knownFailure()`: it prints `!! KNOWN FAILURE` without failing the run, and prints a reminder to remove the wrapper once it passes. Each run of a script that uses the harness's `scratch()` creates a fresh scratch folder inside `WORK` (default: the OS temp folder) and deletes it when the script passes; a failed run keeps it and prints its path. Screenshots go to `SHOTS` (default: `so-e2e-shots` in the OS temp folder). Run one Electron script at a time.
 
@@ -128,7 +128,7 @@ The Daintree assistant's `/work-batch` skill (`.daintree/assistant/.claude/skill
 
 Keep each commit to one coherent change, with the checks above passing. Commit messages follow the existing style: a type, an optional scope and a plain summary, such as `feat(renderer): make the media gallery findable` or `fix(agent): retry a rate-limited stream once`, with a few bullets on what changed and why.
 
-Branch from `develop` and open pull requests against it, describing what changed for users and how you tested it, with screenshots for visible changes. CI runs the unit tests on Linux for every pull request (`.github/workflows/ci.yml`); it runs no type check or e2e, so run `npm run typecheck` and the e2e script that covers your change yourself.
+Branch from `develop` and open pull requests against it, describing what changed for users and how you tested it, with screenshots for visible changes. For every pull request, CI runs the unit tests the change can affect, on Linux (`.github/workflows/ci.yml` says when that is the whole suite); it runs no type check or e2e, so run `npm run typecheck` and the e2e script that covers your change yourself.
 
 ## Licence
 
