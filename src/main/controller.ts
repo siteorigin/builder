@@ -6,7 +6,7 @@ import { basename, dirname, extname, isAbsolute, join, relative, sep } from 'nod
 import { randomUUID } from 'node:crypto';
 import type { AiTurnReview, ComponentExportResult, ConflictChoice, ComponentImportResult, SavedComponent, SavedInsertPlace, SavedInsertResult, SaveToLibraryResult, PostImportKind, PostImportResult, PostImportReviewResult, CreateProjectOptions, DuplicateProjectOptions, DuplicateProjectResult, ExportFormat, ExportNote, ExportResult, FileText, FontFileData, ImportChoices, ImportReview, ImportReviewRow, LocalWorkspaceState, ProjectSnapshot, ProgressEvent, RecentExport, RestoreVersionResult, RuntimeState, StorageInfo, VersionReview, WebCopyPlan, WebsiteTools } from '@shared/api';
 import { validateOperation, type ApplyResult, type EditBatch, type EditOperation } from '@shared/ops';
-import type { AssetRecord, ProjectState, SourceDoc } from '@shared/types';
+import type { AssetRecord, ProjectState, PublishedDoc, SourceDoc } from '@shared/types';
 import type { SourceSettingsDraft } from '@shared/api';
 import { createStarterState, STARTER_ASSETS, starterProblem } from '@catalogue/starters';
 import { findTheme } from '@catalogue/index';
@@ -38,7 +38,8 @@ import { MAX_PICTURE_BYTES, type ParsedSource } from './posts-import/source';
 import { heicDecoder, type PhotoDecoder } from './project/photo-convert';
 import { findMissingAssetFiles, missingFileDiagnostics, missingParts } from './project/asset-files';
 import { atomicWrite, readIfExists, sha, toJson } from './project/fsutil';
-import { PUBLISHED_FILE, withPublished } from '@shared/published';
+import { PUBLISHED_FILE, publishedDocProblem, withPublished } from '@shared/published';
+import { collectionRouteOwner } from '@shared/collections';
 import { fontCoverage } from './project/media';
 import { isValidFontAsset } from '@shared/fonts';
 import { photoMetadata } from './project/photo-metadata';
@@ -2852,8 +2853,9 @@ export class Controller {
       await settleServerHook(folder, publishedState(snap.state));
       // The exported source is the published site; its drafts are kept to edit but not built.
       const live = publishedState(snap.state);
-      // The project handed over knows the addresses this export publishes, as this one does once it records them.
-      const record = withPublished(snap.state.published, live);
+      // The project handed over knows the addresses this export publishes, as this one does once it records them: added
+      // to the record the copied folder holds, which is the project's as it is on disk.
+      const record = withPublished(await copiedRecord(folder, snap.state.published), live);
       if (record) await fs.writeFile(join(folder, PUBLISHED_FILE), toJson(record));
       // The forms the published site shows that visitors cannot send, each leading to its settings.
       notes.push(...websiteFormNotes(snap.state));
@@ -3141,7 +3143,7 @@ export class Controller {
     for (const p of Object.values(live.pages)) {
       const now = Object.hasOwn(s.state.pages, p.id) ? s.state.pages[p.id] : undefined;
       const at = (route: string) => route.toLowerCase() === p.route.toLowerCase();
-      if (now && now.route !== p.route && !Object.values(s.state.pages).some((q) => at(q.route)) && !liveRedirects(s.state).some((r) => at(r.from)))
+      if (now && now.route !== p.route && !Object.values(s.state.pages).some((q) => at(q.route)) && !liveRedirects(s.state).some((r) => at(r.from)) && !collectionRouteOwner(s.state, p.route))
         warn(`“${now.title}” moved from ${p.route} to ${now.route} while the website was being exported, so ${p.route} isn’t kept working. Add it in Site settings, under Redirects, to send visitors on.`);
     }
   }
@@ -3225,3 +3227,14 @@ export function friendlyError(msg: string): string {
   return msg.length > 200 ? 'Setting up the website tools failed. Open Diagnostics for details, then choose Reinstall website tools.' : msg;
 }
 
+/** The record of exported addresses a copied project folder holds, or `fallback` when it holds none it can read. */
+async function copiedRecord(folder: string, fallback: PublishedDoc | undefined): Promise<PublishedDoc | undefined> {
+  const text = await readIfExists(join(folder, PUBLISHED_FILE)).catch(() => null);
+  if (text === null) return fallback;
+  try {
+    const doc: unknown = JSON.parse(text);
+    return publishedDocProblem(doc) ? fallback : (doc as PublishedDoc);
+  } catch {
+    return fallback;
+  }
+}

@@ -3135,6 +3135,9 @@ function PageSettings({ page, state }: { page: PageDoc; state: ProjectState }) {
   const [titleError, setTitleError] = useState<string | null>(null);
   // Why the address typed in the field can't be saved, shown beside it while the typed text stays.
   const [addressError, setAddressError] = useState<string | null>(null);
+  // Made Home (or back), the field is another one: a reason given for the last one's text goes with it.
+  const homeNow = !!page && page.id === state.site.homePageId;
+  useEffect(() => setAddressError(null), [homeNow]);
   if (!page) return null;
   // History says which page each setting was changed on: "Change browser title (About)".
   const upd = pageUpdater(page);

@@ -4467,7 +4467,8 @@ export class ProjectSession extends EventEmitter {
       for (const p of new Set([...prevDocs.keys(), ...nextDocs.keys()])) {
         const b = prevDocs.get(p);
         const a = nextDocs.get(p);
-        if (b === a) continue;
+        // The record of what was exported is loaded, never a step of History: no undo takes back what was published.
+        if (b === a || p === PUBLISHED_FILE) continue;
         changed[p] = { before: b === undefined ? null : await this.putBlob(b), after: a === undefined ? null : await this.putBlob(a) };
       }
       this.state = next;

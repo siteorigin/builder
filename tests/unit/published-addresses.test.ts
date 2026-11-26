@@ -4,7 +4,7 @@
  * address leaves nothing behind.
  */
 import { afterEach, describe, expect, it } from 'vitest';
-import { existsSync, mkdtempSync, readFileSync, rmSync } from 'node:fs';
+import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import type { EditOperation } from '@shared/ops';
@@ -198,6 +198,22 @@ describe('recording an export in the project', () => {
       expect(wasPublishedFor(s.state, '/services/', 'pg_services')).toBe(true);
       await s.close();
     }
+  });
+
+  it('loads a record changed outside the app without a step of History, so a later export never blocks Undo', async () => {
+    const { dir, s } = await session();
+    expect((await s.apply({ operations: [{ type: 'site.update', name: 'Renamed' }] }, { label: 'Rename site' })).ok).toBe(true);
+    // Pulled from another copy of the project: an older export had About at /about-us/.
+    writeFileSync(join(dir, PUBLISHED_FILE), JSON.stringify({ pages: { '/about-us/': byTitle(s.state, 'About').id } }, null, 2) + '\n');
+    expect((await s.reloadFromDisk()).ok).toBe(true);
+    expect(wasPublishedFor(s.state, '/about-us/', byTitle(s.state, 'About').id)).toBe(true);
+    expect(s.historyInfo().entries.map((e) => e.label)).not.toContain('External change');
+    expect(await s.recordPublished(s.state)).toBeNull();
+    expect((await s.undo()).ok).toBe(true);
+    expect(s.state.site.name).toBe('Test Studio');
+    expect(wasPublishedFor(s.state, '/about-us/', byTitle(s.state, 'About').id)).toBe(true);
+    expect(wasPublishedFor(s.state, '/services/', 'pg_services')).toBe(true);
+    await s.close();
   });
 
   it('keeps the record out of a version saved after an export, so restoring it takes back no later export', async () => {
