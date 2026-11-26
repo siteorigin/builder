@@ -442,9 +442,9 @@ describe('held custom field values (#675)', () => {
     const op = set({ department: 'Studio' });
     const read = readFields(base, [op])![0];
     expect(read.found && shownField(op, read.value)).toBe('');
-    const roleOp = set({ role: 'Glazer' });
+    const roleOp: EditOperation = { type: 'entry.update', collectionId: 'team', entryId: 'en_cy1', values: { role: 'Glazer' } };
     const fresh = apply(base, [{ type: 'entry.create', collectionId: 'team', entryId: 'en_cy1', title: 'Cy' }]);
-    const r2 = readFields(fresh, [{ ...roleOp, entryId: 'en_cy1' }])![0];
+    const r2 = readFields(fresh, [roleOp])![0];
     expect(r2.found && shownField(roleOp, r2.value)).toBe('Maker');
   });
 
