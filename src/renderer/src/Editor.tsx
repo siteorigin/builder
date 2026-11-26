@@ -415,6 +415,8 @@ export function Editor() {
   const leftWidth = useStore((s) => s.leftWidth);
   const rightWidth = useStore((s) => s.rightWidth);
   const storedModal = useStore((s) => s.modal);
+  const definitionModeOn = useStore((s) => !!s.definitionMode);
+  const templateModeOn = useStore((s) => !!s.templateMode);
   const modal = remoteShell && storedModal && !REMOTE_MODALS.has(storedModal.kind) ? null : storedModal;
   const leftTabs = remoteShell ? LEFT_TABS.filter((t) => REMOTE_LEFT_TABS.has(t.id)) : LEFT_TABS;
   const rightTabs = remoteShell ? RIGHT_TABS.filter((t) => REMOTE_RIGHT_TABS.has(t)) : RIGHT_TABS;
@@ -425,7 +427,10 @@ export function Editor() {
     if (s.leftTab && !REMOTE_LEFT_TABS.has(s.leftTab)) setState({ leftTab: 'pages' });
     if (!REMOTE_RIGHT_TABS.has(s.rightTab)) setState({ rightTab: 'inspect' });
     if (s.modal && !REMOTE_MODALS.has(s.modal.kind)) setState({ modal: null });
-  }, [remoteShell, leftTab, rightTab, storedModal]);
+    // Component definitions and collection layouts are the host's: editing one everywhere, or Component Studio, is not
+    // a guest's to open, however it was asked for.
+    if (s.definitionMode || s.templateMode) setState({ definitionMode: null, templateMode: null });
+  }, [remoteShell, leftTab, rightTab, storedModal, definitionModeOn, templateModeOn]);
   const dockOpen = useStore((s) => s.dockOpen);
   const windowWidth = useWindowWidth();
   // The panels are drawn at their preferred widths while the canvas keeps its minimum; in a smaller window

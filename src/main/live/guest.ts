@@ -80,6 +80,8 @@ export interface RemotePreviewAccess {
 }
 
 const OPEN = 1;
+/** How long an `ended` status waits for the close after it, which may say the host stayed away too long. */
+const ENDING_CLOSE_WAIT_MS = 1_000;
 /** The code the guest closes a connection it gives up on with (one of the codes a client may send). */
 const ABANDONED = 4000;
 
@@ -162,6 +164,12 @@ interface Join {
     /** One automatic retry, by taking the place back for a fresh ticket, per ticket that failed. */
     retried: boolean;
   };
+  /**
+   * The session ended with a status (`ended`) whose close, arriving next, may say more (the host stayed away too
+   * long): the ending waits a moment for it.
+   */
+  endingAs: RemoteEnding | null;
+  endingTimer: ReturnType<typeof setTimeout> | null;
   /** Answers join(), until the relay has said where the guest stands. */
   joined: ((result: RemoteJoinResult) => void) | null;
   ended: boolean;
@@ -169,11 +177,26 @@ interface Join {
 
 const unavailable = (message: string): RpcError => ({ code: 'UNAVAILABLE', message, recoverable: true });
 
-/** Whether a value is a snapshot as guests are sent them: enough of one to show, which the editor reads again itself. */
+const isRecord = (value: unknown): value is Record<string, unknown> => !!value && typeof value === 'object' && !Array.isArray(value);
+
+/**
+ * Whether a value is a snapshot as guests are sent them, with the documents the editor opens it by: the site and its
+ * home page, the pages, components, tokens, assets and collections. Anything less is never shown.
+ */
 function isSnapshot(value: unknown): value is LiveProjectSnapshot {
-  const v = value as Partial<LiveProjectSnapshot> | null;
-  return !!v && typeof v === 'object' && Number.isSafeInteger(v.revision) && !!v.state && typeof v.state === 'object' && typeof v.readOnly === 'boolean' && typeof v.aiBusy === 'boolean' && !!v.runtime && typeof v.runtime.state === 'string';
+  if (!isRecord(value) || !Number.isSafeInteger(value.revision) || (value.revision as number) < 0) return false;
+  if (typeof value.readOnly !== 'boolean' || typeof value.aiBusy !== 'boolean' || !isRecord(value.runtime) || typeof value.runtime.state !== 'string') return false;
+  const state = value.state;
+  if (!isRecord(state) || !isRecord(state.site) || typeof state.site.homePageId !== 'string' || !Array.isArray(state.site.pageOrder)) return false;
+  if (!isRecord(state.pages) || !Object.hasOwn(state.pages, state.site.homePageId)) return false;
+  return ['components', 'tokens', 'assets', 'collections', 'manifest'].every((key) => isRecord(state[key]));
 }
+
+/** The revision a snapshot the host was asked for says its preview serves, when it says (host.ts adds it to the answer). */
+const previewRevisionOf = (value: unknown): number | null => {
+  const at = isRecord(value) ? value.previewRevision : undefined;
+  return typeof at === 'number' && Number.isSafeInteger(at) && at >= 0 ? at : null;
+};
 
 export class LiveGuestManager {
   /** The join under way, from asking to join until it ends. */
@@ -222,6 +245,7 @@ export class LiveGuestManager {
       sessionExpiresAt: join.sessionExpiresAt,
       relayClockOffsetMs: this.relayNow(join) - Date.now(),
       hostRuntime: join.hostRuntime,
+      previewRevision: join.previewRevision,
       previewUrl: join.preview.url,
       previewProblem: join.preview.problem,
       tooLarge: join.tooLarge,
@@ -243,20 +267,14 @@ export class LiveGuestManager {
     const displayName = normalizeDisplayName(rawName);
     if (!displayName) return { ok: false, message: 'Enter the name the host will see, up to 40 characters.' };
     if (this.current) return { ok: false, message: 'Leave the live session you are in before joining another.' };
-    let previewOrigin: string;
-    try {
-      previewOrigin = await roomPreviewOrigin(invite.relayUrl, invite.roomId);
-    } catch (error) {
-      return { ok: false, message: error instanceof Error ? error.message : String(error) };
-    }
-    if (this.current) return { ok: false, message: 'Leave the live session you are in before joining another.' };
+    // Held from the first moment, before anything is awaited: a project opened here, or Leave, meanwhile ends it.
     const join: Join = {
       joinId: randomUUID(),
       relayUrl: invite.relayUrl,
       roomId: invite.roomId,
       displayName,
       socketUrl: relaySocketUrl(invite.relayUrl, roomSocketPath(invite.roomId)),
-      previewOrigin,
+      previewOrigin: '',
       phase: 'joining',
       socket: null,
       socketSeq: 0,
@@ -292,14 +310,28 @@ export class LiveGuestManager {
       hostRuntime: null,
       previewRevision: null,
       preview: { server: null, url: null, problem: null, lastTicket: null, queued: null, redeeming: false, abort: null, retried: false },
+      endingAs: null,
+      endingTimer: null,
       joined: null,
       ended: false
     };
     this.current = join;
     this.lastEnded = null;
     const result = new Promise<RemoteJoinResult>((resolve) => (join.joined = resolve));
-    this.connect(join);
     this.publish();
+    try {
+      join.previewOrigin = await roomPreviewOrigin(invite.relayUrl, invite.roomId);
+    } catch (error) {
+      if (this.current === join) this.current = null;
+      join.ended = true;
+      join.joined = null;
+      this.lastEnded = null;
+      this.publish();
+      return { ok: false, message: error instanceof Error ? error.message : String(error) };
+    }
+    // Left, or ended by a project opened here, while the preview's address was worked out.
+    if (join.ended) return result;
+    this.connect(join);
     return result;
   }
 
@@ -311,10 +343,12 @@ export class LiveGuestManager {
     this.end(join, 'left');
   }
 
-  /** Let go of everything, as the app quits. */
+  /** Let go of everything, as the app quits: the place is given up, as Leave gives it up. */
   dispose(): void {
     const join = this.current;
-    if (join) this.end(join, 'left', false);
+    if (!join) return;
+    this.sendFrame(join, { type: 'guest:leave' });
+    this.end(join, 'left', false);
   }
 
   private connect(join: Join): void {
@@ -397,7 +431,10 @@ export class LiveGuestManager {
         return this.publish();
       case 'host:availability': {
         const back = !join.hostConnected && frame.connected;
+        const gone = join.hostConnected && !frame.connected;
         join.hostConnected = frame.connected;
+        // The host answers nothing asked of the connection it lost: what was waiting is answered now, not at its deadline.
+        if (gone) this.failCalls(join, 'The host’s connection to the live session dropped.');
         // Whatever the host changed while it was away reaches the editor now.
         if (back && join.phase === 'admitted') {
           void this.fetchSnapshot(join);
@@ -416,13 +453,15 @@ export class LiveGuestManager {
         return this.publish();
       }
       case 'preview:reload':
-        if (frame.revision !== undefined) join.previewRevision = Math.max(join.previewRevision ?? 0, frame.revision);
+        if (frame.revision !== undefined) this.notePreviewRevision(join, frame.revision);
         return this.reload(join);
       case 'rpc:response': {
         const call = join.calls.get(frame.requestId);
         if (!call) return;
         join.calls.delete(frame.requestId);
         clearTimeout(call.timer);
+        // An answer for another method than was asked is no answer to this call.
+        if (frame.method !== call.method) return call.resolve({ ok: false, error: { code: 'INTERNAL', message: 'The host’s answer could not be read. Check the page before trying again.', recoverable: false } });
         return call.resolve(frame.ok ? { ok: true, result: frame.result } : { ok: false, error: frame.error });
       }
       case 'rpc:event':
@@ -484,7 +523,11 @@ export class LiveGuestManager {
       case 'locked':
         return this.end(join, 'locked');
       case 'ended':
-        return this.end(join, 'ended');
+        // The close that follows says whether the host ended it or stayed away too long.
+        if (join.endingAs) return;
+        join.endingAs = 'ended';
+        join.endingTimer = setTimeout(() => this.end(join, 'ended'), ENDING_CLOSE_WAIT_MS);
+        return;
       case 'expired':
         return this.end(join, frame.scope === 'guest' ? 'expired-guest' : 'expired-session');
     }
@@ -556,12 +599,17 @@ export class LiveGuestManager {
         join.refetch = false;
         const answer = await this.call(join, 'project.snapshot', []);
         if (join.ended || this.current !== join) return null;
-        if (answer.ok && isSnapshot(answer.result)) this.accept(join, answer.result);
-        else if (!answer.ok && answer.error.code === 'TOO_LARGE') {
+        if (answer.ok && isSnapshot(answer.result)) {
+          const at = previewRevisionOf(answer.result);
+          if (at !== null) this.notePreviewRevision(join, at);
+          const { previewRevision: _at, ...snapshot } = answer.result as LiveProjectSnapshot & { previewRevision?: unknown };
+          this.accept(join, snapshot);
+        } else if (!answer.ok && answer.error.code === 'TOO_LARGE') {
           join.tooLarge = true;
           this.publish();
-        } else if (!answer.ok && answer.error.code === 'BUSY' && !join.busyTimer) {
-          // The host lets a guest ask only so often: asked again shortly.
+        } else if (!answer.ok && (answer.error.code === 'BUSY' || (!join.latest && answer.error.recoverable)) && !join.busyTimer) {
+          // The host lets a guest ask only so often, and may be briefly unable to answer: asked again shortly, so a guest
+          // let in never waits for a project that is not coming.
           join.busyTimer = setTimeout(() => {
             join.busyTimer = null;
             if (!join.ended) void this.fetchSnapshot(join);
@@ -611,10 +659,12 @@ export class LiveGuestManager {
   }
 
   /** The host's project as guests are given it: the copy last received, else asked for now. Null when not in a session. */
-  async snapshot(joinId: unknown): Promise<LiveProjectSnapshot | null> {
+  async snapshot(joinId: unknown, fresh: unknown = false): Promise<LiveProjectSnapshot | null> {
     const join = this.current;
     if (!join || join.joinId !== joinId || join.phase !== 'admitted') return null;
-    return join.latest ?? (await this.fetchSnapshot(join));
+    // Asked fresh (an edit refused as out of date checks what the host has now), the host is asked again.
+    if (fresh === true || !join.latest) await this.fetchSnapshot(join);
+    return join.latest;
   }
 
   /** Make a collaborator's edit in the host's project. The host checks it again, and it lands through the host's own pipeline. */
@@ -623,6 +673,8 @@ export class LiveGuestManager {
     if (!join || join.joinId !== joinId || join.phase !== 'admitted') return { ok: false, error: unavailable('You are no longer in that live session.') };
     if (join.role !== 'collaborator') return { ok: false, error: { code: 'PERMISSION_DENIED', message: 'The host has made you a viewer: you can watch, but not edit.', recoverable: false } };
     if (!join.hostConnected) return { ok: false, error: unavailable('The host is reconnecting. Try again in a moment.') };
+    // An edit to a project this guest cannot see as it is now would land blind.
+    if (join.tooLarge) return { ok: false, error: { code: 'TOO_LARGE', message: 'The host’s project is too large to share in a live session right now, so editing is paused.', recoverable: true } };
     const answer = await this.call(join, 'project.apply', [batch]);
     if (!answer.ok) return { ok: false, error: answer.error };
     const result = answer.result as { revision?: unknown; results?: unknown } | null;
@@ -709,6 +761,8 @@ export class LiveGuestManager {
           this.closeSocket(join, ABANDONED);
           this.onClose(join, null);
         } else {
+          // The grant before it is revoked: nothing is served with it, and the editor says why.
+          preview.server.setTarget(null);
           preview.problem = 'The host’s preview could not be opened. Leave the session and join again to try once more.';
         }
         this.publish();
@@ -736,6 +790,7 @@ export class LiveGuestManager {
     if (join.ended) return;
     if (join.handshakeTimer) clearTimeout(join.handshakeTimer);
     join.handshakeTimer = null;
+    if (join.endingAs) return this.end(join, code === LIVE_CLOSE_CODES.HOST_GONE ? 'host-gone' : join.endingAs);
     if (join.refusal === 'resume') return this.end(join, 'lost');
     switch (code) {
       case LIVE_CLOSE_CODES.REPLACED:
@@ -767,6 +822,12 @@ export class LiveGuestManager {
       this.failCalls(join, 'The connection to the live session dropped.');
     }
     if (now - (join.lostSince ?? now) > this.timings.reconnectForMs) return this.end(join, 'lost');
+    // Access that ended while the connection was down has ended here too: the relay would say so on return.
+    if (join.phase === 'admitted') {
+      const at = this.relayNow(join);
+      if (join.guestExpiresAt !== null && at >= join.guestExpiresAt) return this.end(join, 'expired-guest');
+      if (join.sessionExpiresAt > 0 && at >= join.sessionExpiresAt) return this.end(join, 'expired-session');
+    }
     const delay = Math.min(this.timings.backoffMaxMs, this.timings.backoffBaseMs * 2 ** join.retries) * (0.75 + Math.random() * 0.5);
     join.retries++;
     if (join.retryTimer) clearTimeout(join.retryTimer);
@@ -785,8 +846,8 @@ export class LiveGuestManager {
     if (join.ended) return;
     join.ended = true;
     this.closeSocket(join);
-    for (const timer of [join.retryTimer, join.presenceTimer, join.busyTimer]) if (timer) clearTimeout(timer);
-    join.retryTimer = join.presenceTimer = join.busyTimer = null;
+    for (const timer of [join.retryTimer, join.presenceTimer, join.busyTimer, join.endingTimer]) if (timer) clearTimeout(timer);
+    join.retryTimer = join.presenceTimer = join.busyTimer = join.endingTimer = null;
     this.failCalls(join, reason === 'left' ? 'You left the live session.' : ENDING_MESSAGES[reason]);
     join.preview.abort?.abort();
     join.preview.queued = null;
@@ -803,6 +864,13 @@ export class LiveGuestManager {
   }
 
   // -------------------------------------------------------------------------
+
+  /** The host said its preview serves `revision` (a reload, or a snapshot asked for): the latest is kept and shown. */
+  private notePreviewRevision(join: Join, revision: number): void {
+    if (join.previewRevision !== null && revision <= join.previewRevision) return;
+    join.previewRevision = revision;
+    this.publish();
+  }
 
   private readClock(join: Join, now: number): void {
     join.relayAt = now;

@@ -306,17 +306,21 @@ describe('admitted guests', () => {
 describe('a guest that leaves', () => {
   it('gives its place up at once, waiting or admitted, rather than through the reconnect grace (#766)', async () => {
     const room = await openRoom(relay);
+    const cid = await admittedGuest(relay, room, 'Cid');
     const ann = await admittedGuest(relay, room, 'Ann', 'collaborator');
     const bea = await joinGuest(relay, room.roomId, 'Bea');
-    expect((await room.host.next('room:roster')).participants.map((p) => p.guestId)).toEqual([ann.guestId, bea.guestId]);
+    expect((await room.host.next('room:roster')).participants.map((p) => p.guestId)).toEqual([cid.guestId, ann.guestId, bea.guestId]);
 
     bea.guest.send('guest-to-relay', { type: 'guest:leave' });
-    expect((await room.host.next('room:roster')).participants.map((p) => p.guestId)).toEqual([ann.guestId]);
+    expect((await room.host.next('room:roster')).participants.map((p) => p.guestId)).toEqual([cid.guestId, ann.guestId]);
     expect((await bea.guest.closed()).code).toBe(LIVE_CLOSE_CODES.REMOVED);
 
+    cid.guest.discard('room:roster');
     ann.guest.send('guest-to-relay', { type: 'guest:leave' });
-    expect((await room.host.next('room:roster')).participants).toEqual([]);
+    expect((await room.host.next('room:roster')).participants.map((p) => p.guestId)).toEqual([cid.guestId]);
     expect((await ann.guest.closed()).code).toBe(LIVE_CLOSE_CODES.REMOVED);
+    // The guests still in the room see the room as it is now too.
+    expect((await cid.guest.next('room:roster')).participants.map((p) => p.guestId)).toEqual([cid.guestId]);
     // Its cookie no longer opens the preview, and its place cannot be taken back.
     expect(await previewStatus(relay, room, ann.cookie)).toBe(403);
     const back = await relay.socket(`/s/${room.roomId}/ws`);

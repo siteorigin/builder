@@ -314,7 +314,22 @@ describe('ending', () => {
     ['the host removes the guest', (s) => s.receive({ type: 'guest:status', status: 'kicked' }), 'kicked'],
     ['the guest’s own access ends', (s) => s.receive({ type: 'guest:status', status: 'expired', scope: 'guest' }), 'expired-guest'],
     ['the session reaches its end', (s) => s.receive({ type: 'guest:status', status: 'expired', scope: 'session' }), 'expired-session'],
-    ['the host ends the session', (s) => s.receive({ type: 'guest:status', status: 'ended' }), 'ended'],
+    [
+      'the host ends the session',
+      (s) => {
+        s.receive({ type: 'guest:status', status: 'ended' });
+        s.drop(LIVE_CLOSE_CODES.ENDED);
+      },
+      'ended'
+    ],
+    [
+      'the host stays away past its grace (ended, then the close that says so)',
+      (s) => {
+        s.receive({ type: 'guest:status', status: 'ended' });
+        s.drop(LIVE_CLOSE_CODES.HOST_GONE);
+      },
+      'host-gone'
+    ],
     ['the relay removes the guest with no status', (s) => s.drop(LIVE_CLOSE_CODES.REMOVED), 'kicked'],
     ['the host stayed away too long', (s) => s.drop(LIVE_CLOSE_CODES.HOST_GONE), 'host-gone']
   ];
@@ -361,6 +376,115 @@ describe('ending', () => {
     // A late frame from the socket that was left changes nothing.
     socket.receive({ type: 'guest:status', status: 'kicked' });
     expect(g.manager.state).toMatchObject({ ended: { reason: 'left' } });
+  });
+});
+
+describe('what the review found (#766)', () => {
+  it('ends an `ended` status on its own when no close follows, as the host ending it', async () => {
+    const g = guest();
+    await inRoom(g);
+    g.socket().receive({ type: 'guest:status', status: 'ended' });
+    expect(g.manager.state.phase).toBe('admitted');
+    await until(() => g.manager.state.phase === 'idle', 'the end');
+    expect(g.manager.state).toMatchObject({ ended: { reason: 'ended' } });
+  });
+
+  it('holds the join from the first moment: leaving before it connects ends it, and nothing connects after', async () => {
+    const g = guest();
+    const joined = g.manager.join({ inviteLink: INVITE, displayName: 'Sarah' });
+    expect(g.manager.active).toBe(true);
+    g.manager.leave();
+    expect(await joined).toMatchObject({ ok: false });
+    await flush();
+    expect(g.sockets).toHaveLength(0);
+    expect(g.manager.state).toMatchObject({ phase: 'idle', ended: { reason: 'left' } });
+  });
+
+  it('answers a call at once when the host drops, rather than at its deadline', async () => {
+    const g = guest();
+    const joinId = await inRoom(g);
+    const edit = g.manager.apply(joinId, { operations: [{ type: 'page.update', pageId: state.site.homePageId, title: 'Hi' }] });
+    g.socket().receive({ type: 'host:availability', connected: false });
+    const answer = await edit;
+    expect(answer).toMatchObject({ ok: false, error: { code: 'UNAVAILABLE' } });
+    expect(!answer.ok && answer.error.message).toMatch(/may still have been made/);
+  });
+
+  it('pauses edits while the host’s project is too large to see', async () => {
+    const g = guest();
+    const joinId = await inRoom(g);
+    g.socket().receive({ type: 'rpc:event', event: 'project:changed', payload: { kind: 'too-large', revision: 9 } });
+    const sent = g.socket().sent.length;
+    expect(await g.manager.apply(joinId, { operations: [] })).toMatchObject({ ok: false, error: { code: 'TOO_LARGE' } });
+    expect(g.socket().sent).toHaveLength(sent);
+  });
+
+  it('takes no answer for another method as the call’s, and no snapshot the editor could not open', async () => {
+    const g = guest();
+    const joinId = await inRoom(g);
+    const edit = g.manager.apply(joinId, { operations: [{ type: 'page.update', pageId: state.site.homePageId, title: 'Hi' }] });
+    const ask = g.socket().last('rpc:request')!;
+    g.socket().receive({ type: 'rpc:response', requestId: ask.requestId, method: 'project.snapshot', ok: true, result: { revision: 4 } });
+    expect(await edit).toMatchObject({ ok: false, error: { code: 'INTERNAL' } });
+    g.socket().receive({ type: 'rpc:event', event: 'project:changed', payload: { kind: 'snapshot', snapshot: { ...snapshotAt(8), state: {} } } });
+    expect(g.changed.map((c) => c.snapshot.revision)).toEqual([3]);
+  });
+
+  it('ends a join whose access ran out while its connection was down', async () => {
+    const g = guest();
+    await inRoom(g);
+    g.socket().receive(admitted({ guestExpiresAt: Date.now() + 20, now: Date.now() }));
+    await new Promise((r) => setTimeout(r, 30));
+    g.socket().drop(1006);
+    await until(() => g.manager.state.phase === 'idle', 'the end');
+    expect(g.manager.state).toMatchObject({ ended: { reason: 'expired-guest' } });
+  });
+
+  it('keeps the revision the host’s preview serves from the snapshot it was asked for, and asks afresh when told to', async () => {
+    const g = guest();
+    const joined = g.manager.join({ inviteLink: INVITE, displayName: 'Sarah' });
+    await until(() => g.sockets.length, 'the socket');
+    g.socket().open();
+    g.socket().receive(pending);
+    await joined;
+    g.socket().receive(admitted({ previewTicket: 'ticket-0123456789abcdef' }));
+    const ask = g.socket().last('rpc:request')!;
+    g.socket().receive({ type: 'rpc:response', requestId: ask.requestId, method: 'project.snapshot', ok: true, result: { ...snapshotAt(3), previewRevision: 2 } });
+    await flush();
+    expect(g.manager.state).toMatchObject({ previewRevision: 2 });
+    // What the editor is given is the snapshot itself.
+    expect(g.changed.at(-1)!.snapshot).not.toHaveProperty('previewRevision');
+    const joinId = (g.manager.state as { joinId: string }).joinId;
+    const fresh = g.manager.snapshot(joinId, true);
+    const again = g.socket().last('rpc:request')!;
+    expect(again.requestId).not.toBe(ask.requestId);
+    g.socket().receive({ type: 'rpc:response', requestId: again.requestId, method: 'project.snapshot', ok: true, result: snapshotAt(5) });
+    expect(await fresh).toMatchObject({ revision: 5 });
+  });
+
+  it('asks again for the first snapshot when the host could not answer it', async () => {
+    const g = guest();
+    const joined = g.manager.join({ inviteLink: INVITE, displayName: 'Sarah' });
+    await until(() => g.sockets.length, 'the socket');
+    g.socket().open();
+    g.socket().receive(pending);
+    await joined;
+    g.socket().receive(admitted());
+    const ask = g.socket().last('rpc:request')!;
+    g.socket().receive({ type: 'rpc:response', requestId: ask.requestId, method: 'project.snapshot', ok: false, error: { code: 'UNAVAILABLE', message: 'Not now', recoverable: true } });
+    await until(() => g.socket().last('rpc:request')!.requestId !== ask.requestId, 'the second ask');
+    const again = g.socket().last('rpc:request')!;
+    g.socket().receive({ type: 'rpc:response', requestId: again.requestId, method: 'project.snapshot', ok: true, result: snapshotAt(3) });
+    await until(() => g.changed.length, 'the project');
+  });
+
+  it('gives its place up when the app quits', async () => {
+    const g = guest();
+    await inRoom(g);
+    const socket = g.socket();
+    g.manager.dispose();
+    expect(socket.last('guest:leave')).toEqual({ type: 'guest:leave' });
+    expect(g.preview.closed).toBe(1);
   });
 });
 

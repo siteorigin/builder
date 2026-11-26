@@ -36,8 +36,9 @@ export function remoteRuntime(remote: AdmittedRemote): RuntimeState {
     case 'unavailable':
       return { state: 'unavailable', message: 'The host’s project has no preview that can be shared.' };
     case 'ready':
-      if (remote.previewUrl) return { state: 'ready', url: remote.previewUrl };
-      return remote.previewProblem ? { state: 'error', message: remote.previewProblem } : { state: 'starting' };
+      // A preview that could not be let in again shows why, never the page of a grant that has ended.
+      if (remote.previewProblem) return { state: 'error', message: remote.previewProblem };
+      return remote.previewUrl ? { state: 'ready', url: remote.previewUrl } : { state: 'starting' };
     default:
       return { state: 'starting' };
   }
@@ -73,10 +74,13 @@ export function remoteSnapshot(remote: AdmittedRemote, live: LiveProjectSnapshot
 /** Engine refusals the editor knows by their own code; a live session's own are said in words. */
 const EDITOR_CODES: ReadonlySet<string> = new Set<ToolErrorCode>(['INVALID_ARGUMENT', 'STALE_REVISION', 'SCOPE_MISMATCH', 'PATH_DENIED', 'VALIDATION_FAILED', 'CONFLICT', 'CANCELLED', 'BUSY']);
 
-/** A refusal from the host or the relay as the editor's own: the engine's codes as they are, the rest as a conflict, with what they said. */
+/**
+ * A refusal from the host or the relay as the editor's own: the engine's codes as they are, and the rest (a live
+ * session's own, and a host busy with its AI, which is no reason to offer this guest a Stop) as a change not made,
+ * with what they said. Never a conflict, which would have the editor read this computer's files again.
+ */
 export function remoteToolError(error: RpcError): NonNullable<ApplyResult['error']> {
-  // A host busy with its AI is no reason to offer this guest a Stop: it is said as a refusal like the rest.
-  const code = (EDITOR_CODES.has(error.code) && error.code !== 'BUSY' ? error.code : 'CONFLICT') as ToolErrorCode;
+  const code = (EDITOR_CODES.has(error.code) && error.code !== 'BUSY' ? error.code : 'CANCELLED') as ToolErrorCode;
   return { code, message: error.message, recoverable: error.recoverable, ...(error.operationIndex !== undefined ? { operationIndex: error.operationIndex } : {}) };
 }
 

@@ -42,12 +42,16 @@ export function joinProblems(inviteLink: string, displayName: string): { link?: 
 }
 
 export function JoinLiveDialog() {
-  const open = useStore((s) => s.joinOpen);
+  const asked = useStore((s) => s.joinOpen);
   const shell = useStore(isRemoteShell);
+  // A join under way always shows its dialog, also over an editor that was loaded again meanwhile, so the waiting
+  // room is never left without a way to stop asking.
+  const joining = useStore((s) => s.remote.phase !== 'idle' && !isRemoteShell(s));
+  const open = asked || joining;
   // Once the host's project is shown, the dialog has done its work.
   useEffect(() => {
-    if (open && shell) setState({ joinOpen: false });
-  }, [open, shell]);
+    if (asked && shell) setState({ joinOpen: false });
+  }, [asked, shell]);
   if (!open || shell) return null;
   return <JoinLiveForm />;
 }
@@ -88,15 +92,19 @@ function JoinLiveForm() {
     asked.current = true;
     const name = normalizeDisplayName(displayName)!;
     rememberName(name);
-    const result = await joinLive(inviteLink.trim(), name);
+    // Cancel while a project of this computer's closes calls the join off.
+    const result = await joinLive(inviteLink.trim(), name, () => getState().joinOpen);
     setSubmitting(false);
     // The dialog was closed meanwhile: whatever came of it is the session's to show.
     if (!getState().joinOpen) return;
     if (!result.ok) setFailure(result.message);
   };
 
-  const status =
-    remote.phase === 'joining'
+  // A project too large to send over the relay cannot be opened here, however long the guest waits.
+  const tooLarge = remote.phase === 'admitted' && remote.tooLarge;
+  const status = tooLarge
+    ? ''
+    : remote.phase === 'joining'
       ? 'Connecting to the live session…'
       : remote.phase === 'waiting'
         ? remote.hostConnected
@@ -168,7 +176,12 @@ function JoinLiveForm() {
           />
         </Field>
         {localProject && !inRoom && <p className="muted">Joining closes {localProject} first. What you are typing in it is saved.</p>}
-        {failure && (
+        {tooLarge && (
+          <p className="error" role="alert">
+            The host’s project is too large to share in a live session, so it cannot be opened here. Ask the host to share it again once it is smaller, or to send you its preview link to watch it.
+          </p>
+        )}
+        {failure && !inRoom && (
           <p className="error" role="alert">
             {failure}
           </p>

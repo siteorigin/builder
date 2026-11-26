@@ -15,6 +15,8 @@ const handlers = new Map<string, Set<Handler>>();
 const emit = (channel: string, payload: unknown) => handlers.get(channel)?.forEach((h) => h(payload));
 const calls = { localApply: 0, remoteApply: [] as unknown[], closes: 0, joins: [] as unknown[], leaves: 0, snapshots: [] as string[], presence: [] as unknown[] };
 let closeAnswer = { ok: true };
+/** What the main process says the join is, when the editor asks. */
+let remoteStateAnswer: RemoteState = { phase: 'idle', ended: null };
 let remoteSnapshot: LiveProjectSnapshot | null = null;
 
 const state = createStarterState('business', 'Acme', false);
@@ -35,6 +37,7 @@ const admitted = (extra: Partial<Extract<RemoteState, { phase: 'admitted' }>> = 
   sessionExpiresAt: Date.now() + 3_600_000,
   relayClockOffsetMs: 0,
   hostRuntime: 'ready',
+  previewRevision: null,
   previewUrl: 'http://127.0.0.1:4555',
   previewProblem: null,
   tooLarge: false,
@@ -64,6 +67,9 @@ let transports: Loaded;
 let liveHost: Loaded;
 
 beforeAll(async () => {
+  // Leaving settles what is being typed (lib/leave.ts), which looks for the focused field.
+  (globalThis as unknown as { HTMLElement: unknown }).HTMLElement ??= class {};
+  (globalThis as unknown as { document: unknown }).document = { activeElement: null, body: null, getElementById: () => null, querySelector: () => null, querySelectorAll: () => [] };
   (globalThis as unknown as { window: unknown }).window = {
     addEventListener: () => undefined,
     removeEventListener: () => undefined,
@@ -100,7 +106,7 @@ beforeAll(async () => {
           return { ok: true, state: { phase: 'waiting' } };
         },
         leave: async () => void calls.leaves++,
-        state: async () => ({ phase: 'idle', ended: null }),
+        state: async () => remoteStateAnswer,
         snapshot: async (joinId: string) => {
           calls.snapshots.push(joinId);
           return remoteSnapshot;
@@ -134,6 +140,7 @@ afterEach(() => {
   calls.remoteApply.length = calls.joins.length = calls.snapshots.length = calls.presence.length = 0;
   closeAnswer = { ok: true };
   remoteSnapshot = null;
+  remoteStateAnswer = { phase: 'idle', ended: null };
   store.setState({ toasts: [], snapshot: null, remote: { phase: 'idle', ended: null }, remotePresence: null, selection: null, pageId: null });
 });
 
@@ -151,6 +158,7 @@ function listen() {
 async function shown(extra: Partial<Extract<RemoteState, { phase: 'admitted' }>> = {}) {
   const events = listen();
   remoteSnapshot = live(7);
+  remoteStateAnswer = admitted(extra);
   session.applyRemoteState(admitted(extra));
   await flush();
   const snap = events.changed.at(-1)!;
@@ -230,6 +238,8 @@ describe('the host’s project as the editor shows it', () => {
   it('shows the preview only once the host’s is running and the cookie is in place', () => {
     expect(snapshots.remoteRuntime(admitted({ previewUrl: null }))).toEqual({ state: 'starting' });
     expect(snapshots.remoteRuntime(admitted({ previewUrl: null, previewProblem: 'Could not open' }))).toEqual({ state: 'error', message: 'Could not open' });
+    // A grant that could not be renewed is never shown as the page of the one before it.
+    expect(snapshots.remoteRuntime(admitted({ previewProblem: 'Could not open' }))).toEqual({ state: 'error', message: 'Could not open' });
     expect(snapshots.remoteRuntime(admitted({ hostRuntime: 'starting' }))).toEqual({ state: 'starting' });
     expect(snapshots.remoteRuntime(admitted({ hostRuntime: 'error' }))).toMatchObject({ state: 'error' });
     expect(snapshots.remoteRuntime(admitted({ hostRuntime: 'unavailable' }))).toMatchObject({ state: 'unavailable' });
@@ -238,8 +248,9 @@ describe('the host’s project as the editor shows it', () => {
   it('reads the host’s answers as the editor reads an edit’s result', () => {
     expect(snapshots.remoteApplyResult({ ok: true, revision: 8, results: [{ pageId: 'p' }] }, 7)).toEqual({ ok: true, revision: 8, results: [{ pageId: 'p' }] });
     expect(snapshots.remoteApplyResult({ ok: false, error: { code: 'STALE_REVISION', message: 'Moved on', recoverable: true } }, 7)).toEqual({ ok: false, revision: 7, error: { code: 'STALE_REVISION', message: 'Moved on', recoverable: true } });
-    // A refusal of a live session's own, or the host busy with its AI, is said in its words: never an AI the guest could stop.
-    for (const code of ['PERMISSION_DENIED', 'BUSY', 'EXPIRED'] as const) expect(snapshots.remoteToolError({ code, message: 'No', recoverable: false })).toEqual({ code: 'CONFLICT', message: 'No', recoverable: false });
+    // A refusal of a live session's own, or the host busy with its AI, is a change not made, in its words: never an AI
+    // the guest could stop, nor a conflict that would read this computer's files again.
+    for (const code of ['PERMISSION_DENIED', 'BUSY', 'EXPIRED', 'UNAVAILABLE'] as const) expect(snapshots.remoteToolError({ code, message: 'No', recoverable: true })).toEqual({ code: 'CANCELLED', message: 'No', recoverable: true });
     expect(snapshots.remoteToolError({ code: 'VALIDATION_FAILED', message: 'Bad', recoverable: false, operationIndex: 2 })).toEqual({ code: 'VALIDATION_FAILED', message: 'Bad', recoverable: false, operationIndex: 2 });
   });
 });
@@ -247,12 +258,20 @@ describe('the host’s project as the editor shows it', () => {
 describe('following the session', () => {
   it('opens the host’s project once admitted and sends the editor’s edits to the host, never to this computer', async () => {
     const events = await shown();
+    offs.push(...session.followRemote());
     expect(calls.snapshots).toEqual(['join-1']);
     expect(events.changed.at(-1)).toMatchObject({ workspaceKey: 'remote:join-1', revision: 7 });
     expect(store.transport.remote).toBe(true);
     expect(session.isRemoteShell(store.getState())).toBe(true);
-    const result = await store.api.project.apply({ operations: [{ type: 'page.update', pageId: home, title: 'Hi' }], expectedRevision: 7 }, { label: 'Rename page', opening: 'remote:join-1' });
+    // An edit is answered once the editor holds the project that has it, as a local one is, so what it made can be selected.
+    let answered = false;
+    const applying = store.api.project.apply({ operations: [{ type: 'page.update', pageId: home, title: 'Hi' }], expectedRevision: 7 }, { label: 'Rename page', opening: 'remote:join-1' }).then((r: unknown) => ((answered = true), r));
+    await flush();
+    expect(answered).toBe(false);
+    emit('remote:changed', { joinId: 'join-1', snapshot: live(8) });
+    const result = await applying;
     expect(result).toEqual({ ok: true, revision: 8, results: [{ nodeId: 'n-new' }] });
+    expect(events.changed.at(-1)?.revision).toBe(8);
     expect(calls.remoteApply).toEqual([{ joinId: 'join-1', batch: { operations: [{ type: 'page.update', pageId: home, title: 'Hi' }], expectedRevision: 7, label: 'Rename page' } }]);
     expect(calls.localApply).toBe(0);
     // An edit made in another opening (this computer's project, a join that ended) is refused here.
@@ -284,18 +303,32 @@ describe('following the session', () => {
     expect(events.changed.at(-1)?.readOnly).toBeNull();
   });
 
-  it('asks the canvas to reload with the revision the host’s preview serves', async () => {
+  it('asks the canvas to reload, and counts a page loaded now as the revision the host’s preview serves', async () => {
     await shown();
     offs.push(...session.followRemote());
     emit('remote:reload', { joinId: 'join-1', revision: 9 });
     expect(store.getState().remoteReload).toEqual({ seq: 1, revision: 9 });
-    emit('remote:reload', { joinId: 'join-1', revision: null });
-    expect(store.getState().remoteReload).toEqual({ seq: 2, revision: 9 });
     emit('remote:reload', { joinId: 'join-0', revision: 20 });
-    expect(store.getState().remoteReload.seq).toBe(2);
-    // A page loaded now shows what the host said; locally, the editor's own revision.
-    expect(session.loadedRevision(store.getState())).toBe(9);
-    expect(session.loadedRevision({ snapshot: { revision: 4, workspaceKey: '/sites/acme#1' } as ProjectSnapshot, remote: { phase: 'idle', ended: null }, remoteReload: { seq: 2, revision: 9 } })).toBe(4);
+    expect(store.getState().remoteReload.seq).toBe(1);
+    // Before the host has said, a page loaded shows the snapshot's revision; once it has, the one it said.
+    expect(session.loadedRevision(store.getState())).toBe(7);
+    emit('remote:state', admitted({ previewRevision: 6 }));
+    expect(session.loadedRevision(store.getState())).toBe(6);
+    // Locally, the editor's own revision.
+    expect(session.loadedRevision({ snapshot: { revision: 4, workspaceKey: '/sites/acme#1' } as ProjectSnapshot, remote: admitted({ previewRevision: 9 }) })).toBe(4);
+  });
+
+  it('refuses an edit while editing is paused, whatever asked for it, without asking the host', async () => {
+    await shown({ role: 'viewer' });
+    const result = await store.api.project.apply({ operations: [{ type: 'page.update', pageId: home, title: 'Hi' }] }, { opening: 'remote:join-1' });
+    expect(result).toMatchObject({ ok: false, error: { code: 'CANCELLED', message: expect.stringMatching(/as a viewer/) } });
+    expect(calls.remoteApply).toEqual([]);
+  });
+
+  it('settles what is being typed before leaving the host’s project, and only then leaves', async () => {
+    await shown();
+    expect(await session.leaveLive()).toBe(true);
+    expect(calls.leaves).toBe(1);
   });
 
   it('closes the host’s project and puts the editor back on this computer’s own when the session ends, saying why', async () => {
@@ -326,6 +359,16 @@ describe('following the session', () => {
     expect(await session.joinLive('http://relay.localhost:8787/s/abcdefghijkmnpqrstuvwxyz', 'Sarah')).toEqual({ ok: true });
     expect(calls.closes).toBe(2);
     expect(calls.joins).toEqual([{ inviteLink: 'http://relay.localhost:8787/s/abcdefghijkmnpqrstuvwxyz', displayName: 'Sarah' }]);
+    // Called off while the project closed: no request reaches the host.
+    expect(await session.joinLive('http://relay.localhost:8787/s/abcdefghijkmnpqrstuvwxyz', 'Sarah', () => false)).toMatchObject({ ok: false });
+    expect(calls.joins).toHaveLength(1);
+  });
+
+  it('leaves no dialog of the host’s project open for whatever opens next', async () => {
+    await shown();
+    store.setState({ modal: { kind: 'delete-page', pageId: home } });
+    session.applyRemoteState({ phase: 'idle', ended: { reason: 'ended', message: 'The host ended the live session.' } });
+    expect(store.getState().modal).toBeNull();
   });
 });
 

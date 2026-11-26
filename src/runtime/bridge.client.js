@@ -5059,11 +5059,6 @@ window.addEventListener('message', async (e) => {
     case 'revision':
       revision = m.payload.revision;
       break;
-    // The page is loaded again where it is, keeping this frame and its session: the editor of a live session's guest
-    // asks for it when the host's preview has changed, since no hot update reaches it through the relay (#766).
-    case 'reload':
-      location.reload();
-      break;
     // The state the Inspector edits, shown on the selected element; a state of null clears it.
     case 'forceState': {
       const p = m.payload || {};

@@ -344,6 +344,7 @@ export class Controller {
     opening: () => (this.session && this.workspaceKey ? { workspaceKey: this.workspaceKey, projectName: projectDisplayName(this.session.state) } : null),
     preview: () => (this.session && this.workspaceKey ? loopbackPreview(this.dev?.url) : null),
     publishing: () => !!this.dev?.holding,
+    publishedRevision: () => (this.dev ? this.publishedRevision : null),
     relay: async () => resolveRelayUrl({ env: process.env[RELAY_URL_ENV], setting: (await loadSettings()).settings.liveRelayUrl }),
     guestSnapshot: (opening) => this.guestSnapshot(opening),
     applyGuest: (opening, guest, batch) => this.applyGuest(opening, guest, batch),
@@ -361,6 +362,8 @@ export class Controller {
   });
   /** This app's place in another computer's live session changed (the menu offers Join only while it has none). */
   onRemoteState: (() => void) | null = null;
+  /** The latest revision the running preview has published (a page loaded from it now shows it), or null before one. */
+  private publishedRevision: number | null = null;
   /** The snapshot guests were last given, and what it was made from (guestSnapshot). */
   private shared: (LiveSnapshotSource & { snapshot: LiveProjectSnapshot }) | null = null;
   /** Cancels a dependency install into the project when another app takes it over. */
@@ -1133,6 +1136,8 @@ export class Controller {
     // A preview that crashes is started again in the same folder only while that is still this app's to use; a copy is.
     const dev: DevServer = new DevServer(stage ?? session.dir, async (): Promise<boolean> => this.dev === dev && (!!stage || (await session.stillOwner())));
     this.dev = dev;
+    // A new preview server has published nothing yet.
+    this.publishedRevision = null;
     this.stage = stage;
     this.stagedRevision = -1;
     this.pendingStatus = null;
@@ -1147,7 +1152,9 @@ export class Controller {
     // A live session's guests reload once a change has reached the preview: its files are in Vite's hands, so what
     // they load is the new revision (the project's own folder, or the private copy once it has the change).
     dev.onPublished((revision) => {
-      if (this.dev === dev) this.live.projectChanged(revision);
+      if (this.dev !== dev) return;
+      this.publishedRevision = Math.max(this.publishedRevision ?? 0, revision);
+      this.live.projectChanged(revision);
     });
     // Guests' requests to a server stopping or gone are stopped at once, and the relay told why.
     dev.onGone(() => {
@@ -1489,7 +1496,8 @@ export class Controller {
    *  chooses to keep editing a change that cannot be saved. */
   async mayLeave(): Promise<boolean> {
     // Already closing: leaving was settled when that close was allowed.
-    if (!this.session || this.closing || !this.beforeLeave) return true;
+    // Another computer's project shown as a guest (#766) has typing to settle too: it is sent to the host first.
+    if ((!this.session && !this.remote.active) || this.closing || !this.beforeLeave) return true;
     return this.beforeLeave();
   }
 

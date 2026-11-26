@@ -20,7 +20,7 @@ import { blocksFromDom, richDom } from '../lib/richtext';
 import { collectionIndexRoutes } from '@shared/archives';
 import { dropAt, dropReaches, moveIndex, shownOrder } from '../lib/reorder';
 import { dropLineBox, edgeSpeed, type EdgeView } from '../lib/edge-scroll';
-import { createPageGate, failedWithRevision, gatedPick, type PageGate, type SeenFailure } from '../lib/page-gate';
+import { createPageGate, failedWithRevision, gatedPick, PAGE_CATCH_UP_MS, type PageGate, type SeenFailure } from '../lib/page-gate';
 import { insertOps, insertRole, whereText, type InsertAt, type Where } from '../lib/insert-at';
 import { dropRefusal, incomingOrder, insertDestination, measureIds, moveDestination, savingProblems, slotOfKey, type DropList, type ListSpec, type Measured, type MoveAim, type SlotSurface } from '../lib/insert-drop';
 import { setInsertDropTarget, type InsertDrag } from '../lib/insert-drag';
@@ -50,7 +50,7 @@ import { focusInspector } from '../lib/inspector-focus';
 import { clampViewport, frameKeyResize, VIEWPORT_LIMITS, type PanelSide } from '../lib/layout';
 import { formSendOf, formsOf, sendSettled, type FormSend, type PracticeResult, type PreviewForm } from '../lib/form-practice';
 import { FormPractice } from './FormPractice';
-import { isRemoteShell, loadedRevision, REMOTE_RELOAD_FALLBACK_MS } from '../lib/remote-session';
+import { isRemoteShell, loadedRevision } from '../lib/remote-session';
 import { SpacingHandles } from './SpacingHandles';
 import { QuickInsert } from './QuickInsert';
 import { addPoints, offeredAt, pointLabel, resolvePoint, type AddPoint, type QuickItem } from '../lib/inline-insert';
@@ -397,7 +397,13 @@ export function Canvas() {
    * been waited for long enough. A click made meanwhile is taken again then.
    */
   const gate = useRef<PageGate | null>(null);
-  gate.current ??= createPageGate(() => getState().snapshot?.revision ?? 0);
+  // The host's project in a live session has no fallback (#766): every change it sends is published to its preview and
+  // followed by a reload, so a page behind it is shown again soon, and one that waited too long could be edited blind.
+  gate.current ??= createPageGate(
+    () => getState().snapshot?.revision ?? 0,
+    undefined,
+    () => (isRemoteShell(getState()) ? Infinity : PAGE_CATCH_UP_MS)
+  );
   const pageBehind = () => gate.current!.behind();
   /** The latest render's handling of a message from the page, for a click the gate held to be taken with. */
   const pageMessage = useRef<((m: BridgeMessage, unmeasured: boolean, held?: HeldPick) => void) | null>(null);
@@ -606,34 +612,34 @@ export function Canvas() {
 
   /**
    * The host's preview changed, in a live session this app is a guest in (#766): no hot update reaches the page
-   * through the relay, so it is loaded again where it is, keeping the frame and its scroll. A page that cannot be asked
-   * (still loading, or one the bridge does not run on) is given a fresh frame instead, and so is one that has not
-   * answered in a while. An inline edit open on the page is left to finish first: the reload follows it.
+   * through the relay, so the page is loaded again in a frame of its own (a new session), and the revision that frame
+   * shows is the one the host had said its preview serves as it started loading. A report from an earlier frame is
+   * another session's, so no page loaded before a change can pass for one after it. An inline edit open on the page is
+   * left to finish first: the reload follows it.
    */
   const remoteReloadSeq = useStore((s) => (isRemoteShell(s) ? s.remoteReload.seq : 0));
-  const remoteReloadFallback = useRef<ReturnType<typeof setTimeout> | null>(null);
   const remoteReloadOwed = useRef(false);
+  const mounted = useRef(true);
+  /** The revision each frame's page shows, as it was when the frame started loading. */
+  const frameRevision = useRef<{ session: string; revision: number } | null>(null);
+  useEffect(() => {
+    frameRevision.current = { session, revision: loadedRevision(getState()) };
+  }, [session]);
   const reloadRemoteFrame = () => {
+    if (!mounted.current) return;
     if (inlineEdit.active) return void (remoteReloadOwed.current = true);
     remoteReloadOwed.current = false;
-    if (remoteReloadFallback.current) clearTimeout(remoteReloadFallback.current);
-    remoteReloadFallback.current = null;
-    if (!getState().frameReady) return setSession(newSessionId());
-    post('reload');
-    remoteReloadFallback.current = setTimeout(() => {
-      remoteReloadFallback.current = null;
-      setSession(newSessionId());
-    }, REMOTE_RELOAD_FALLBACK_MS);
+    setSession(newSessionId());
   };
   useEffect(() => {
     if (remoteReloadSeq) reloadRemoteFrame();
   }, [remoteReloadSeq]); // eslint-disable-line react-hooks/exhaustive-deps
-  useEffect(
-    () => () => {
-      if (remoteReloadFallback.current) clearTimeout(remoteReloadFallback.current);
-    },
-    []
-  );
+  useEffect(() => {
+    mounted.current = true;
+    return () => {
+      mounted.current = false;
+    };
+  }, []);
 
   /** The inline edit is over (committed, cancelled, or its page went away): shortcuts work again. */
   function endInlineEdit(editId?: string) {
@@ -828,10 +834,8 @@ export function Canvas() {
           assetDrag.current?.end(false);
           // The page shows the project as the preview served it: the editor's revision locally, and for the host's
           // project in a live session, the revision its host last said its preview serves (#766).
-          shownRevision.current = loadedRevision(s);
+          shownRevision.current = isRemoteShell(s) && frameRevision.current?.session === session ? frameRevision.current.revision : loadedRevision(s);
           gate.current!.shown(shownRevision.current);
-          if (remoteReloadFallback.current) clearTimeout(remoteReloadFallback.current);
-          remoteReloadFallback.current = null;
           const sameFrame = readySession.current === session;
           const reloaded = sameFrame && s.mode === 'preview';
           readySession.current = session;

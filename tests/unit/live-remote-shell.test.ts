@@ -211,6 +211,8 @@ describe('the remote shell', () => {
     await until(() => g.snapshots.some((s) => s.revision === before + 1 && s.state.pages[home].title === 'Fresh bread daily'), 'the change back at the guest');
     // The guest is told to reload once the host's preview has it, and which revision a page loaded now shows.
     await until(() => g.reloads.some((r) => r !== null && r >= before + 1), 'the reload');
+    // And the editor knows a page it loads from now on shows that revision.
+    await until(() => (g.admitted().previewRevision ?? 0) >= before + 1, 'the published revision');
 
     // The host's own edit reaches the guest too.
     expect((await h.c.apply({ operations: [{ type: 'page.update', pageId: home, seoTitle: 'Bread, baked daily' }] })).ok).toBe(true);

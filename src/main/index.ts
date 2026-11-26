@@ -239,7 +239,12 @@ controller.onRemoteState = () => updateProjectMenu();
 // requests carrying its secret: the editor's own window is given it, and nothing else on this computer is.
 controller.remote.onPreviewAccess = (access) => {
   const requests = electronSession.defaultSession.webRequest;
-  if (!access) return requests.onBeforeSendHeaders(null);
+  if (!access) {
+    requests.onBeforeSendHeaders(null);
+    // What the canvas loaded of the host's preview is kept nowhere once access has ended: not in this computer's cache.
+    void electronSession.defaultSession.clearCache().catch(() => undefined);
+    return;
+  }
   requests.onBeforeSendHeaders({ urls: [`${access.url}/*`] }, (details, done) => {
     const fromEditor = !!win && !win.isDestroyed() && details.webContentsId === win.webContents.id;
     const requestHeaders = { ...details.requestHeaders };
@@ -446,7 +451,7 @@ function registerIpc() {
   handle('remote:join', (opts: unknown) => (controller.session ? { ok: false, message: 'Close the open project before joining a live session.' } : controller.remote.join(opts)));
   handle('remote:leave', () => controller.remote.leave());
   handle('remote:state', () => controller.remote.state);
-  handle('remote:snapshot', (joinId: unknown) => controller.remote.snapshot(joinId));
+  handle('remote:snapshot', (joinId: unknown, fresh?: unknown) => controller.remote.snapshot(joinId, fresh === true));
   handle('remote:apply', (joinId: unknown, batch: unknown) => controller.remote.apply(joinId, batch));
   handle('remote:presence', (joinId: unknown, presence: unknown) => controller.remote.presence(joinId, presence));
   handle('project:snapshot', () => controller.snapshot());
@@ -856,7 +861,7 @@ async function createWindow() {
   let closing = false;
   self.on('close', (e) => {
     closing = true;
-    if (closeApproved || quitState === 'closing' || quitState === 'done' || !controller.session || self.webContents.isCrashed()) return;
+    if (closeApproved || quitState === 'closing' || quitState === 'done' || (!controller.session && !controller.remote.active) || self.webContents.isCrashed()) return;
     e.preventDefault();
     void controller.mayLeave().then((ok) => {
       if (!ok || self.isDestroyed()) {
@@ -949,6 +954,8 @@ async function createWindow() {
     menuCommands.closed(self);
     leaveGate.editorGone();
     controller.cancelOpen();
+    // Nobody is left to see the host's project: this app's place in another computer's live session is given up (#766).
+    if (win === null) controller.remote.leave();
   });
   // A first load the page crashed during (or that the crash's reload took over) is taken up by the crash's own question,
   // not reported as an error here. Any other failure to load the editor is reported in the app's own words: as a
@@ -987,8 +994,11 @@ function updateProjectMenu() {
     const item = Menu.getApplicationMenu()?.getMenuItemById(id);
     if (item) item.enabled = open;
   }
-  const join = Menu.getApplicationMenu()?.getMenuItemById('join-live');
-  if (join) join.enabled = !controller.remote.active;
+  // While this app is in another computer's live session, or asking to join one, no project of its own opens.
+  for (const id of ['join-live', 'new-project', 'open-project', 'open-project-folder']) {
+    const item = Menu.getApplicationMenu()?.getMenuItemById(id);
+    if (item) item.enabled = !controller.remote.active;
+  }
 }
 
 /** Developer mode as last read, for the menu, which is built synchronously. */
@@ -1148,7 +1158,7 @@ let quitState: 'idle' | 'asking' | 'closing' | 'done' = 'idle';
 /** Set once a quit goes ahead without asking the editor. */
 let quitAccepted = false;
 app.on('before-quit', (e) => {
-  if (quitState === 'done' || (quitState === 'idle' && !controller.session && !controller.isClosing && !controller.isCreating && !controller.isDuplicating)) {
+  if (quitState === 'done' || (quitState === 'idle' && !controller.session && !controller.remote.active && !controller.isClosing && !controller.isCreating && !controller.isDuplicating)) {
     // Nothing to ask: the app quits now, and a crash meanwhile is not asked about.
     quitAccepted = true;
     return;
@@ -1171,6 +1181,8 @@ app.on('before-quit', (e) => {
       await controller.stopCreating();
       // A copy of the project under way finishes, or removes what it made, before the project closes.
       await controller.settleDuplicates();
+      // A place in another computer's live session is given up first, so the host sees it go at once.
+      controller.remote.dispose();
       await controller.close();
     } finally {
       quitState = 'done';

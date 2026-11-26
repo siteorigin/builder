@@ -29,7 +29,7 @@ export function noticesFile(packaged: boolean, resourcesPath: string, appPath: s
 export interface AppMenuOptions {
   /** A project is open: Export and Close Project are offered. */
   projectOpen: boolean;
-  /** This app is in another computer's live session, or asking to join one: Join Live Session is not offered again. */
+  /** This app is in another computer's live session, or asking to join one: no project of its own is offered, nor Join again. */
   remoteActive?: boolean;
   /** Reload and the developer tools are offered: a development build, or Developer mode on. */
   developer: boolean;
@@ -118,10 +118,10 @@ export function appMenuTemplate(platform: NodeJS.Platform, { projectOpen, remote
     {
       label: 'File',
       submenu: [
-        { label: 'New Project…', accelerator: 'CmdOrCtrl+Shift+N', click: send('new-project') },
-        { label: 'Open Project…', accelerator: 'CmdOrCtrl+O', click: send('open-project') },
+        { id: 'new-project', label: 'New Project…', accelerator: 'CmdOrCtrl+Shift+N', enabled: !remoteActive, click: send('new-project') },
+        { id: 'open-project', label: 'Open Project…', accelerator: 'CmdOrCtrl+O', enabled: !remoteActive, click: send('open-project') },
         // Open Project's picker takes a file or ZIP file here; a project folder has its own.
-        ...(isMac ? [] : [{ label: 'Open Project Folder…', click: send('open-project-folder') }]),
+        ...(isMac ? [] : [{ id: 'open-project-folder', label: 'Open Project Folder…', enabled: !remoteActive, click: send('open-project-folder') }]),
         { type: 'separator' },
         { id: 'join-live', label: 'Join Live Session…', enabled: !remoteActive, click: send('join-live') },
         { type: 'separator' },

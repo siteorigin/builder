@@ -1053,6 +1053,8 @@ export type RemoteState =
       relayClockOffsetMs: number;
       /** The host's preview, as the host says it is doing. */
       hostRuntime: RuntimeState['state'] | null;
+      /** The project revision the host last said its preview serves: a page loaded now shows it or a later one. Null before it said. */
+      previewRevision: number | null;
       previewUrl: string | null;
       /** A preview that could not be let in, until it is. */
       previewProblem: string | null;
@@ -1379,8 +1381,11 @@ export interface BuilderApi {
     /** Leave the session; the editor goes back to the Welcome screen. */
     leave(): Promise<void>;
     state(): Promise<RemoteState>;
-    /** The host's project as guests are given it: the copy last received, or asked for now. Null when not admitted. */
-    snapshot(joinId: string): Promise<LiveProjectSnapshot | null>;
+    /**
+     * The host's project as guests are given it: the copy last received, or asked for now (`fresh`: asked again
+     * whatever was received). Null when not admitted.
+     */
+    snapshot(joinId: string, fresh?: boolean): Promise<LiveProjectSnapshot | null>;
     /** Make a collaborator's edit in the host's project, through the host's own pipeline. */
     apply(joinId: string, batch: LiveEditBatch): Promise<LiveApplyResult>;
     /** Where this app is in the editor, for the others: shared while a collaborator. False when it could not be. */

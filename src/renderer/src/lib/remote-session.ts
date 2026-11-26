@@ -8,6 +8,7 @@ import { api, getState, setState, toast, transport, useStore, type State } from 
 import { IDLE_LIVE, sharedSelection } from './live-session';
 import { presenceOf } from './live-host';
 import { remoteApplyResult, remoteOpening, remoteSnapshot, type AdmittedRemote } from './remote-snapshot';
+import { prepareToLeave } from './leave';
 import type { RemoteApi } from './transport';
 
 /**
@@ -25,6 +26,8 @@ interface Shown {
   remote: RemoteApi;
   live: LiveProjectSnapshot | null;
   snapshot: ProjectSnapshot | null;
+  /** Edits the host has made, waiting for the editor to hold the project at their revision (remoteApi's apply). */
+  waiters: Array<{ revision: number; resolve: () => void }>;
 }
 let shown: Shown | null = null;
 
@@ -48,17 +51,14 @@ export const REMOTE_MODALS: ReadonlySet<string> = new Set(['settings', 'find', '
 /** The File menu's commands that open or act on a project of this computer's: a guest leaves the session first. */
 export const LOCAL_PROJECT_COMMANDS: ReadonlySet<string> = new Set(['new-project', 'open-project', 'open-project-folder', 'duplicate-project', 'export', 'join-live']);
 
-/** How long a page asked to load again may take to say it has before the canvas gives it a fresh frame. */
-export const REMOTE_RELOAD_FALLBACK_MS = 4000;
-
 /**
- * The project revision a page the canvas has just loaded shows. Locally the editor's own: its preview serves the
- * project as it is. For the host's project, the revision the host last said its preview serves (a page loaded after
- * that is at least that one), or, before it said one, the snapshot's.
+ * The project revision a page the canvas starts loading now will show. Locally the editor's own: its preview serves
+ * the project as it is. For the host's project, the revision the host last said its preview serves (a page loaded
+ * after that is at least that one), or, before it said one, the snapshot's.
  */
-export function loadedRevision(s: Pick<State, 'snapshot' | 'remote' | 'remoteReload'>): number {
+export function loadedRevision(s: Pick<State, 'snapshot' | 'remote'>): number {
   const revision = s.snapshot?.revision ?? 0;
-  return isRemoteShell(s) && s.remoteReload.revision !== null ? s.remoteReload.revision : revision;
+  return isRemoteShell(s) && s.remote.phase === 'admitted' && s.remote.previewRevision !== null ? s.remote.previewRevision : revision;
 }
 
 /**
@@ -112,11 +112,12 @@ export function applyRemoteState(next: RemoteState): void {
 async function show(admitted: AdmittedRemote): Promise<void> {
   const joinId = admitted.joinId;
   if (shown) end(null);
-  const entry: Shown = { joinId, remote: remoteApi(joinId), live: null, snapshot: null };
+  const entry: Shown = { joinId, remote: remoteApi(joinId), live: null, snapshot: null, waiters: [] };
   shown = entry;
   transport.use(entry.remote);
-  // Nothing of this computer's own live session is shown over the host's project (none runs: no project is open).
-  setState({ live: IDLE_LIVE, liveClock: null, remoteReload: { seq: 0, revision: null } });
+  // Nothing of this computer's own live session is shown over the host's project (none runs: no project is open),
+  // and no dialog or mode of another opening is left open over it.
+  setState({ live: IDLE_LIVE, liveClock: null, remoteReload: { seq: 0, revision: null }, modal: null, definitionMode: null, templateMode: null });
   const live = await api.remote.snapshot(joinId).catch(() => null);
   if (shown === entry && live) takeLive(entry, live);
 }
@@ -127,6 +128,26 @@ function takeLive(entry: Shown, live: LiveProjectSnapshot): void {
   if (entry.live && live.revision < entry.live.revision) return;
   entry.live = live;
   publish(entry, true);
+  // Edits whose revision the editor now holds are done.
+  const done = entry.waiters.filter((w) => w.revision <= live.revision);
+  entry.waiters = entry.waiters.filter((w) => w.revision > live.revision);
+  for (const w of done) w.resolve();
+}
+
+/** How long an edit the host made waits for its revision to reach the editor before it is answered anyway. */
+export const REMOTE_EDIT_ARRIVAL_MS = 5000;
+
+/** Resolves once the editor holds the host's project at `revision` or later, the join ends, or after a while. */
+function arrival(entry: Shown, revision: number): Promise<void> {
+  if (shown !== entry || (entry.live && entry.live.revision >= revision)) return Promise.resolve();
+  return new Promise((resolve) => {
+    const waiter = { revision, resolve: () => (clearTimeout(timer), resolve()) };
+    const timer = setTimeout(() => {
+      entry.waiters = entry.waiters.filter((w) => w !== waiter);
+      resolve();
+    }, REMOTE_EDIT_ARRIVAL_MS);
+    entry.waiters.push(waiter);
+  });
 }
 
 /** Something that decides what the editor may do changed (a role, the host's connection): the snapshot says so again. */
@@ -156,9 +177,11 @@ function end(ended: { reason: string; message: string } | null): void {
   const entry = shown;
   if (!entry) return;
   shown = null;
+  for (const w of entry.waiters.splice(0)) w.resolve();
   if (entry.snapshot) transport.emit(entry.remote, 'project:closed', undefined);
   transport.use(null);
-  setState({ remotePresence: null, remoteReload: { seq: 0, revision: null } });
+  // A dialog about the host's project (Delete page, say) never stays open for whatever opens next.
+  setState({ remotePresence: null, remoteReload: { seq: 0, revision: null }, modal: null });
   if (ended && ended.reason !== 'left') toast(ended.message, 'info');
 }
 
@@ -167,13 +190,15 @@ function end(ended: { reason: string; message: string } | null): void {
 
 /**
  * Join the live session an invite link names. A project of this computer's that is open is closed first, through the
- * usual close (it saves what is being typed, or asks); one the author keeps open keeps the join from starting.
+ * usual close (it saves what is being typed, or asks); one the author keeps open keeps the join from starting, and so
+ * does the author calling the join off meanwhile (`wanted` false once it is).
  */
-export async function joinLive(inviteLink: string, displayName: string): Promise<{ ok: true } | { ok: false; message: string }> {
+export async function joinLive(inviteLink: string, displayName: string, wanted: () => boolean = () => true): Promise<{ ok: true } | { ok: false; message: string }> {
   if (getState().snapshot && !showsRemote()) {
     const closed = await api.projects.close().catch(() => ({ ok: false }));
     if (!closed.ok) return { ok: false, message: 'The open project was kept open, so the live session was not joined.' };
   }
+  if (!wanted()) return { ok: false, message: 'Joining was called off.' };
   try {
     const result = await api.remote.join({ inviteLink, displayName });
     return result.ok ? { ok: true } : { ok: false, message: result.message };
@@ -182,9 +207,14 @@ export async function joinLive(inviteLink: string, displayName: string): Promise
   }
 }
 
-/** Leave the live session, or stop asking to join one. */
-export async function leaveLive(): Promise<void> {
+/**
+ * Leave the live session, or stop asking to join one. Leaving the host's project settles what is being typed first,
+ * as closing a project does: it is sent to the host, or the author is asked; Keep editing stays in the session.
+ */
+export async function leaveLive(): Promise<boolean> {
+  if (showsRemote() && !(await prepareToLeave(() => undefined).catch(() => false))) return false;
   await api.remote.leave().catch(() => undefined);
+  return true;
 }
 
 // ---------------------------------------------------------------------------
@@ -210,9 +240,17 @@ export function remoteApi(joinId: string): RemoteApi {
     project: {
       snapshot: async () => mine()?.snapshot ?? null,
       apply: async (batch: EditBatch, opts?: { label?: string; opening?: string }): Promise<ApplyResult> => {
-        if (!mine() || (opts?.opening !== undefined && opts.opening !== opening)) return { ok: false, revision: revision(), error: { code: 'SCOPE_MISMATCH', message: 'That change was made in a live session that has ended.', recoverable: false } };
+        const entry = mine();
+        if (!entry || (opts?.opening !== undefined && opts.opening !== opening)) return { ok: false, revision: revision(), error: { code: 'SCOPE_MISMATCH', message: 'That change was made in a live session that has ended.', recoverable: false } };
+        // Whatever reaches here (a shortcut, a drag) is held to what the editor shows: no edit while editing is paused.
+        const paused = entry.snapshot?.readOnly?.reason;
+        if (paused) return { ok: false, revision: revision(), error: { code: 'CANCELLED', message: paused, recoverable: false } };
         const label = opts?.label?.slice(0, LIVE_BATCH_LABEL_MAX);
         const result = await api.remote.apply(joinId, { operations: batch.operations, ...(batch.expectedRevision !== undefined ? { expectedRevision: batch.expectedRevision } : {}), ...(label ? { label } : {}) });
+        // An answer for a join that has ended meanwhile is never acted on as this computer's project's.
+        if (mine() !== entry) return { ok: false, revision: 0, error: { code: 'CANCELLED', message: 'The live session ended before the host answered. Your change may have been made there.', recoverable: false } };
+        // As a local edit's answer comes with the project that has it, so the caller can select what it made.
+        if (result.ok) await arrival(entry, result.revision);
         return remoteApplyResult(result, revision());
       },
       undo: historyRefused,
@@ -222,9 +260,9 @@ export function remoteApi(joinId: string): RemoteApi {
       // Nothing of the host's project is saved on this computer: there is nothing to wait for.
       flush: async () => true,
       saveLocalState: async () => undefined,
-      // An edit refused as out of date reads the host's project again.
+      // An edit refused as out of date reads the host's project again, as the host has it now.
       reloadFromDisk: async () => {
-        const live = await api.remote.snapshot(joinId).catch(() => null);
+        const live = await api.remote.snapshot(joinId, true).catch(() => null);
         const entry = mine();
         if (entry && live) takeLive(entry, live);
         return live ? { ok: true } : { ok: false, message: 'The host’s project could not be read.' };
