@@ -22,8 +22,8 @@ export const COPYRIGHT_PROP = 'copyright';
  */
 export const COPYRIGHT_YEAR = '{year}';
 const YEAR_LINE = /^(©\s*(?:\d{4}\s*[-–—]\s*)?)\{year\}(?!\d)/;
-/** The year position of a line as the site shows it: the ©, a first year and dash when it gives a range, then the year. */
-const SHOWN_YEAR = /^(©\s*(?:\d{4}\s*[-–—]\s*)?)(\d{4})(?!\d)/;
+/** The year position of a line as the site shows it: the year right after the ©, or a range's last year. */
+const SHOWN_YEARS = [/^(©\s*)(\d{4})(?!\d)/, /^(©\s*\d{4}\s*[-–—]\s*)(\d{4})(?!\d)/];
 
 /** A copyright line's words before and after its `{year}`, or null when it names no year that way. */
 export function copyrightYearParts(line: string): [string, string] | null {
@@ -45,8 +45,9 @@ export function shownCopyright(line: string, year: number = new Date().getFullYe
 export function keptCopyrightYear<T>(current: unknown, next: T, year: number = new Date().getFullYear()): T {
   if (typeof current !== 'string' || typeof next !== 'string') return next;
   if (!copyrightYearParts(current)) return next;
-  const shown = SHOWN_YEAR.exec(next);
-  return (shown && shown[2] === String(year) ? `${shown[1]}${COPYRIGHT_YEAR}${next.slice(shown[0].length)}` : next) as T;
+  // The first year shown is the one the line says first: a range's last year only when that first one is not this year.
+  const shown = SHOWN_YEARS.map((shape) => shape.exec(next)).find((m) => m?.[2] === String(year));
+  return (shown ? `${shown[1]}${COPYRIGHT_YEAR}${next.slice(shown[0].length)}` : next) as T;
 }
 
 /** The properties that follow the site's name. */

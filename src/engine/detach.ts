@@ -335,7 +335,7 @@ export function placementRenderer(state: ProjectState, place: RenderedPlacement,
         n.tag = tagOf(n, at) as typeof n.tag;
         const v = value(n.text, at);
         // A copyright line's `{year}` is read only from the property: as ordinary text it says the year it is now.
-        const copyright = isBinding(n.text) && '$prop' in n.text && n.text.$prop === COPYRIGHT_PROP && n.text.field === undefined;
+        const copyright = isBinding(n.text) && '$prop' in n.text && n.text.$prop === COPYRIGHT_PROP && n.text.field === undefined && def.properties[COPYRIGHT_PROP]?.type === 'string';
         n.text = n.rich ? toRichText(v) : copyright ? shownCopyright(text(v)) : text(v);
         if (n.datetime !== undefined) {
           const date = text(value(n.datetime, at)).trim();

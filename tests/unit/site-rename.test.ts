@@ -178,6 +178,8 @@ describe('a copyright line that shows the year it is built in (#828)', () => {
     expect(keptCopyrightYear('© 2019–{year} Acme.', '© 2020-2031 Acme.', 2031)).toBe('© 2020-{year} Acme.');
     expect(keptCopyrightYear(current, '© 2019–2031 Acme.', 2031)).toBe('© 2019–{year} Acme.');
     expect(keptCopyrightYear('©{year} Acme.', '© 2031 Acme.', 2031)).toBe('© {year} Acme.');
+    // A year after the shown one is the author's words, not the end of a range.
+    expect(keptCopyrightYear('© {year} — 1984 Studio.', '© 2031 — 1984 Studio Co.', 2031)).toBe('© {year} — 1984 Studio Co.');
     // Another year typed in its place is the author's fixed year, and a line that never said {year} is stored as typed.
     expect(keptCopyrightYear(current, '© 2030 Acme.', 2031)).toBe('© 2030 Acme.');
     expect(keptCopyrightYear(current, '© 20310 Acme.', 2031)).toBe('© 20310 Acme.');
