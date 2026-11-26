@@ -375,6 +375,15 @@ export function Canvas() {
   const assetDrag = useRef<{ end: (commit: boolean) => void; remeasure: () => void } | null>(null);
   /** The project revision the page shows: as it loads, the one the editor has; then each one it says it has applied. */
   const shownRevision = useRef(0);
+  /** The selection asked to be shown (showSelection) before the page it is on arrived, by its refKey. */
+  const showOnArrival = useRef<string | null>(null);
+  /** The scroll to the selection as its page arrives: shown as asked, when it was asked to be shown on its way. */
+  const arrivalScroll = (desc: BridgeDesc) => {
+    const sel = getState().selection;
+    const show = !!sel && showOnArrival.current === refKey(sel);
+    showOnArrival.current = null;
+    return show ? { desc, show } : { desc };
+  };
   /**
    * Whether the page still shows an older version of the project than the editor has: a save's update has not reached
    * it yet (spec §18.2, lib/page-gate). What is picked or measured on it would be the old page, so picks and canvas
@@ -796,7 +805,7 @@ export function Canvas() {
           // selection, as an arrival in place does (`navigated`); the first load scrolls to it once the frame is ready.
           if ((studio || ready) && getState().mode !== 'preview' && (studio || (view?.route && samePath(view.route, path)))) {
             const desc = descFor(getState().selection);
-            if (desc) post('scrollTo', { desc });
+            if (desc) post('scrollTo', arrivalScroll(desc));
           }
           frameTextFocus.active = false;
           endInlineEdit();
@@ -893,7 +902,7 @@ export function Canvas() {
           // scrolled to before this page was there: now it is.
           if (getState().mode !== 'preview') {
             const desc = descFor(getState().selection);
-            if (desc) post('scrollTo', { desc });
+            if (desc) post('scrollTo', arrivalScroll(desc));
           }
           break;
         }
@@ -1330,11 +1339,13 @@ export function Canvas() {
   // (`navigated`). The selection Edit makes again after Preview stays where the visitor left the page.
   const shownFor = useRef(showSelection);
   useEffect(() => {
-    // A request is for the moment it is made: one the page could not take then never carries over to a later pick.
+    // A request is for the moment it is made: one the page could not take then never carries over to a later pick,
+    // except to the page it is on its way to (a section picked from the command menu on another page, issue #902).
     const show = shownFor.current !== showSelection;
     shownFor.current = showSelection;
     const quiet = takeUnscrolled(selection);
     const desc = ready && (showsStudio() || (view?.route && samePath(view.route, frameAt.current))) ? descFor(selection) : null;
+    showOnArrival.current = show && !desc && selection ? refKey(selection) : null;
     if (desc && (show || !quiet)) post('scrollTo', show ? { desc, show } : { desc });
   }, [ready, selection && refKey(selection), showSelection]); // eslint-disable-line react-hooks/exhaustive-deps
 

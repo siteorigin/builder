@@ -135,6 +135,41 @@ describe.skipIf(!browserInstalled)('showing the section the editor asks for once
     expect(await scrollY()).toBe(at);
   });
 
+  it('leaves the page to the author after a pick of a section already in view', async () => {
+    // A click on the page: the editor asks for the section, which shows already, so nothing scrolls or holds.
+    await send('track', { selected: sel('about'), hovered: null });
+    await inFrame(`win.scrollTo({ top: 360, behavior: 'instant' });`);
+    await settle();
+    await send('scrollTo', { desc: sel('about') });
+    expect(await scrollY()).toBe(360);
+    // A search in the page, or the site's own code, then scrolls it away, with no input the bridge sees.
+    await inFrame(`win.scrollTo({ top: 1800, behavior: 'instant' });`);
+    await scrolled();
+    expect(await scrollY()).toBe(1800);
+  });
+
+  it('lets a scrollbar drag after the section has shown have the last word', async () => {
+    await send('track', { selected: sel('faq'), hovered: null });
+    await send('scrollTo', { desc: sel('faq') });
+    await scrolled();
+    expect(await inView('faq')).toBe(true);
+    // Dragging the scrollbar sends the page no wheel, pointer or key; nothing on the page moved.
+    await inFrame(`win.scrollTo({ top: 0, behavior: 'instant' });`);
+    await scrolled();
+    expect(await scrollY()).toBe(0);
+  });
+
+  it('gives up on a selection fixed in the frame, without scrolling the page to its top', async () => {
+    await inFrame(`const el = doc.getElementById('team'); el.style.position = 'fixed'; el.style.top = '0'; el.style.left = '0'; el.style.right = '0'; el.style.height = '80px';`);
+    await inFrame(`win.scrollTo({ top: 1200, behavior: 'instant' });`);
+    await settle();
+    await send('track', { selected: sel('team'), hovered: null });
+    await send('scrollTo', { desc: sel('team') });
+    await scrolled();
+    expect(await scrollY()).toBeGreaterThan(600);
+    await inFrame(`doc.getElementById('team').removeAttribute('style');`);
+  });
+
   it('leaves a section at the end of the page where the page can show it, without scrolling on and on', async () => {
     await send('track', { selected: sel('footer'), hovered: null });
     await send('scrollTo', { desc: sel('footer') });
