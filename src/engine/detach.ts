@@ -12,6 +12,7 @@ import type { Op } from '@shared/ops';
 import { newId } from '@shared/ids';
 import { richTextToPlain, toRichText } from '@shared/richtext';
 import { isArticleDate } from '@shared/articles';
+import { COPYRIGHT_PROP, shownCopyright } from '@shared/site-name';
 import { containerVisibilityKept, flattenContainers, flattenStates, flattenStyles, type StyleLayer } from '@shared/styles';
 import { groupLookup, partInInteractionGroup, withoutGroupStates } from '@shared/interaction-groups';
 import { designLayers, selectedVariants } from '@shared/variants';
@@ -333,7 +334,9 @@ export function placementRenderer(state: ProjectState, place: RenderedPlacement,
       case 'text': {
         n.tag = tagOf(n, at) as typeof n.tag;
         const v = value(n.text, at);
-        n.text = n.rich ? toRichText(v) : text(v);
+        // A copyright line's `{year}` is read only from the property: as ordinary text it says the year it is now.
+        const copyright = isBinding(n.text) && '$prop' in n.text && n.text.$prop === COPYRIGHT_PROP && n.text.field === undefined && def.properties[COPYRIGHT_PROP]?.type === 'string';
+        n.text = n.rich ? toRichText(v) : copyright ? shownCopyright(text(v)) : text(v);
         if (n.datetime !== undefined) {
           const date = text(value(n.datetime, at)).trim();
           // A value that is not a date renders as ordinary text.

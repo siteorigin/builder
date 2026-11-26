@@ -100,9 +100,57 @@ describe('the blank starter (#15)', () => {
     // The footer still renders, with what is true of any site: the copyright and the Home link.
     const layout = files.get('src/routes/+layout.svelte')!;
     const footerTag = /<C_foundation_shell_footer_\w+[^]*?\/>/.exec(layout)?.[0] ?? '';
-    expect(footerTag).toContain(`copyright={${JSON.stringify(`© ${new Date().getFullYear()} Kloof.`)}}`);
+    expect(footerTag).toContain('copyright={"© " + new globalThis.Date().getFullYear() + " Kloof."}');
     expect(footerTag).toMatch(/links=\{\[\{[^}]*"label":"Home","link":\{"href":"\/"\}\}\]\}/);
     expect(footerTag).toContain('contact={[]}');
+  });
+});
+
+describe('the starters’ copyright year (#828)', () => {
+  /** The footer's copyright as the generated layout passes it, worked out as a visitor's browser would in `year`. */
+  const shownIn = (s: ProjectState, year: number, instrument = false) => {
+    const layout = generateProject(s, instrument ? { instrument: true } : {}).get('src/routes/+layout.svelte')!;
+    const expr = /<C_foundation_shell_footer_\w+[^]*?\scopyright=\{([^\n]*?)\}\s/.exec(layout)?.[1];
+    expect(expr).toBeDefined();
+    vi.useFakeTimers({ toFake: ['Date'] });
+    try {
+      vi.setSystemTime(new Date(year, 6, 1));
+      return new Function(`return (${expr});`)() as string;
+    } finally {
+      vi.useRealTimers();
+    }
+  };
+
+  for (const [starter, line] of [['business', '© {year} Kloof. All rights reserved.'], ['blank', '© {year} Kloof.']] as const)
+    it(`keeps the ${starter} starter's footer on the year the site is built in, not the year it was made`, () => {
+      const s = createStarterState(starter, 'Kloof', false);
+      const footer = s.site.shell.footer.nodes[s.site.shell.footer.rootIds[0]] as InstanceNode;
+      expect(footer.props.copyright).toBe(line);
+      // The same project, built in later years, says each of them, in the export and in the editor's preview.
+      for (const year of [2031, 2032]) for (const instrument of [false, true]) expect(shownIn(s, year, instrument)).toBe(line.replace('{year}', String(year)));
+    });
+
+  it('reads only a {year} in the year position, and leaves a fixed year and every other brace as written', () => {
+    const s = createStarterState('blank', 'Studio {year}', false);
+    const footer = s.site.shell.footer.nodes[s.site.shell.footer.rootIds[0]] as InstanceNode;
+    expect(shownIn(s, 2031)).toBe('© 2031 Studio {year}.');
+    footer.props.copyright = '© 2019–{year} Studio.';
+    expect(shownIn(s, 2031)).toBe('© 2019–2031 Studio.');
+    footer.props.copyright = '© 2026 Studio.';
+    expect(shownIn(s, 2031)).toBe('© 2026 Studio.');
+    footer.props.copyright = 'Made in {year}. </script>';
+    expect(shownIn(s, 2031)).toBe('Made in {year}. </script>');
+  });
+
+  it('says the About page’s team is as many people as its Team section shows', () => {
+    const s = createStarterState('business', 'Kloof', false);
+    const about = Object.values(s.pages).find((p) => p.route === '/about/')!;
+    const sections = about.rootIds.map((id) => about.nodes[id] as InstanceNode);
+    const def = (n: InstanceNode) => s.components[n.definitionId].componentId;
+    const story = JSON.stringify(sections.find((n) => def(n) === 'content.media')!.props.body);
+    const people = sections.find((n) => def(n) === 'team.grid')!.props.people as unknown[];
+    expect(people).toHaveLength(3);
+    expect(story).toContain('a team of three');
   });
 });
 

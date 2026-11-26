@@ -8,7 +8,7 @@ import { join, posix } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { compile } from 'svelte/compiler';
 import { build, type Rolldown } from 'vite';
-import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 import type { ComponentDefinition, InstanceNode, ProjectState } from '@shared/types';
 import { createStarterState } from '@catalogue/starters';
 import { installComponent, makeInstance } from '@engine/install';
@@ -318,7 +318,18 @@ describe('shell.footer', () => {
     const neither = html('shell.footer', { links: [], contact: [] });
     expect(neither).not.toContain('<nav');
     expect(neither).not.toContain('<h2');
-    expect(neither).toContain('© 2026 Studio');
+  });
+
+  it('shows the year it is built in, from its own default copyright line (#828)', () => {
+    vi.useFakeTimers({ toFake: ['Date'] });
+    try {
+      vi.setSystemTime(new Date(2031, 5, 1));
+      expect(html('shell.footer', { links: [], contact: [] })).toContain('© 2031 Studio. All rights reserved.');
+      vi.setSystemTime(new Date(2032, 0, 1));
+      expect(html('shell.footer', { links: [], contact: [] })).toContain('© 2032 Studio. All rights reserved.');
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it('labels each group by its own heading when both have links', () => {

@@ -82,7 +82,7 @@ export function brandToolSchema(state: ProjectState): JsonSchema {
       },
       contactEmail: { type: 'string', maxLength: 120 },
       contactPhone: { type: 'string', maxLength: 30 },
-      copyright: { type: 'string', maxLength: 200, description: 'Footer copyright line. Follows the site name if omitted.' },
+      copyright: { type: 'string', maxLength: 200, description: 'Footer copyright line; {year} is this year. Follows the site name if omitted.' },
       baseUrl: { type: 'string', maxLength: 200, description: 'Public https:// address. "" clears it.' },
       language: { type: 'string', maxLength: 20, description: 'Language code, such as "en".' },
       socialImage: { type: 'string', maxLength: 200, description: 'Link preview image assetId. "" removes it.' }

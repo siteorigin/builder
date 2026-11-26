@@ -15,6 +15,41 @@ import type { ShellPart } from './page-shell';
 export const BRAND_PROP = 'siteName';
 /** The footer property that holds its copyright line. */
 export const COPYRIGHT_PROP = 'copyright';
+/**
+ * A copyright line that says `{year}` in its year position (right after the ©, or ending a range there, as in
+ * "© 2019–{year} Acme") shows the year the site is built in, so it never goes out of date (#828). The site build reads
+ * the year when it runs; the project keeps the token.
+ */
+export const COPYRIGHT_YEAR = '{year}';
+const YEAR_LINE = /^(©\s*(?:\d{4}\s*[-–—]\s*)?)\{year\}(?!\d)/;
+/** The year position of a line as the site shows it: the year right after the ©, or a range's last year. */
+const SHOWN_YEARS = [/^(©\s*)(\d{4})(?!\d)/, /^(©\s*\d{4}\s*[-–—]\s*)(\d{4})(?!\d)/];
+
+/** A copyright line's words before and after its `{year}`, or null when it names no year that way. */
+export function copyrightYearParts(line: string): [string, string] | null {
+  const m = YEAR_LINE.exec(line);
+  return m ? [m[1], line.slice(m[0].length)] : null;
+}
+
+/** A copyright line as the site shows it in `year`. Text without a `{year}` in its year position is shown as it is. */
+export function shownCopyright(line: string, year: number = new Date().getFullYear()): string {
+  const parts = copyrightYearParts(line);
+  return parts ? `${parts[0]}${year}${parts[1]}` : line;
+}
+
+/**
+ * What an edit of a copyright line typed over the words the site showed (`next`) stores, when the line says
+ * `{year}`: the year the edit left where it was shown stays the token, so editing the rest (the words, the © and a
+ * first year before it) keeps the year current. Typing another year in its place makes it that fixed year.
+ */
+export function keptCopyrightYear<T>(current: unknown, next: T, year: number = new Date().getFullYear()): T {
+  if (typeof current !== 'string' || typeof next !== 'string') return next;
+  if (!copyrightYearParts(current)) return next;
+  // The first year shown is the one the line says first: a range's last year only when that first one is not this year.
+  const shown = SHOWN_YEARS.map((shape) => shape.exec(next)).find((m) => m?.[2] === String(year));
+  return (shown ? `${shown[1]}${COPYRIGHT_YEAR}${next.slice(shown[0].length)}` : next) as T;
+}
+
 /** The properties that follow the site's name. */
 const BRAND_TEXT = [BRAND_PROP, COPYRIGHT_PROP] as const;
 
@@ -65,12 +100,13 @@ const escape = (s: string) => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 
 /**
  * The copyright line with `next` in place of `previous`, when the line gives `previous` as its holder: right after
- * the © and the year (or years), and ending there or at a full stop. Null for any other line, such as one naming
- * "Acme, Inc." or "Acme Photography" for a site called Acme.
+ * the © and the year (or years, the last of which may be `{year}`), and ending there or at a full stop. Null for any
+ * other line, such as one naming "Acme, Inc." or "Acme Photography" for a site called Acme.
  */
 export function renamedCopyright(line: string, previous: string, next: string): string | null {
   if (!previous) return null;
-  const m = line.match(new RegExp(`^(©\\s*\\d{4}(?:\\s*[-–—]\\s*\\d{4})?\\s+)${escape(previous)}(?=$|\\.(?:\\s|$))`));
+  const years = '(?:\\d{4}(?:\\s*[-–—]\\s*(?:\\d{4}|\\{year\\}))?|\\{year\\})';
+  const m = line.match(new RegExp(`^(©\\s*${years}\\s+)${escape(previous)}(?=$|\\.(?:\\s|$))`));
   return m ? `${m[1]}${next}${line.slice(m[0].length)}` : null;
 }
 
@@ -141,7 +177,9 @@ export function followNote(state: ProjectState, node: InstanceNode, prop: string
   const follows = followsSiteName(state, node, prop);
   if (follows === undefined) return undefined;
   if (prop === BRAND_PROP) return { follows, text: follows ? 'Follows the site name: renaming the site changes it too.' : 'Its own name: renaming the site leaves it as it is.' };
-  return { follows, text: follows ? 'Names the site, so renaming the site changes it too.' : 'Its own wording: renaming the site leaves it as it is.' };
+  const said = follows ? 'Names the site, so renaming the site changes it too.' : 'Its own wording: renaming the site leaves it as it is.';
+  const line = node.props[prop] ?? state.components[node.definitionId]?.properties[prop]?.default;
+  return { follows, text: typeof line === 'string' && copyrightYearParts(line) ? `${said} {year} shows the year the site is built in.` : said };
 }
 
 /**

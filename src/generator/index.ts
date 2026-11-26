@@ -41,6 +41,7 @@ import type {
   TokenValue,
   UiStateSchema
 } from '@shared/types';
+import { COPYRIGHT_PROP, copyrightYearParts } from '@shared/site-name';
 import { CONTAINER_SCOPES, DIVIDER_ICON, ELEMENT_TAGS, GENERATOR_VERSION, LIST_FEEDS, STYLE_SCOPES, STYLE_STATES, TEXT_TAGS, conditionRef, isAppearPreset, isBinding, isBindingRef, isComparison, isContainerScope, isGroupStyleState, isStateRef, parseStyleScopeKey, slotChildren, slotFallback, stateInitial, styleScopeKey, type Condition, type ContainerScope, type GroupStyleState, type StyleScope } from '@shared/types';
 import { INTERACTION_GROUP_CLASS, groupLookup, isInteractionGroup, partInInteractionGroup } from '@shared/interaction-groups';
 import {
@@ -204,6 +205,16 @@ export function relImport(fromFile: string, toFile: string): string {
  */
 export const js = (v: unknown) => JSON.stringify(v ?? null).replace(/</g, '\\u003c');
 const attrJs = (v: unknown) => `{${js(v)}}`;
+
+/**
+ * A property's stored value as generated code. A copyright line that says `{year}` reads the year when the site is
+ * built or shown (#828): plain JavaScript in the property's value, so the site needs nothing of the Builder for it.
+ */
+function valueExpr(propName: string, schema: PropSchema, value: unknown, ctx: ResolveContext): string {
+  const parts = propName === COPYRIGHT_PROP && schema.type === 'string' && typeof value === 'string' ? copyrightYearParts(value) : null;
+  // `globalThis` so that a property the design names `Date` cannot stand in for the clock.
+  return parts ? `${js(parts[0])} + new globalThis.Date().getFullYear() + ${js(parts[1])}` : js(resolveValue(schema, value, ctx));
+}
 
 const RESERVED_WORDS = new Set(
   (
@@ -3361,7 +3372,7 @@ function emitInstance(ctx: EmitCtx, node: InstanceNode): string {
         : js(resolveValue(schema, [], rctx, entryQuery(def.properties, node.props)))
       : isBinding(raw)
         ? bindExpr(ctx, raw)
-        : js(resolveValue(schema, raw, rctx));
+        : valueExpr(propName, schema, raw, rctx);
     // A value bound from the design arrives as blocks; each field the code takes as paragraph strings is converted.
     const fields = code && isBinding(raw) ? paragraphFields(schema) : [];
     if (code && isBinding(raw) && ((schema.type === 'richtext' && !codeTakesBlocks(schema)) || fields.length)) {
@@ -3645,10 +3656,10 @@ function renderImports(imports: Map<string, string>): string {
 // Component files
 // ---------------------------------------------------------------------------
 
-function propDefaultExpr(schema: PropSchema, ctx: ResolveContext): string {
+function propDefaultExpr(name: string, schema: PropSchema, ctx: ResolveContext): string {
   // A computed list is filled by each placement, for its page; the component's own file never holds articles.
   if (schema.type === 'list' && schema.feed) return '[]';
-  return js(resolveValue(schema, schema.default, ctx));
+  return valueExpr(name, schema, schema.default, ctx);
 }
 
 /** Whether a node sits inside a list, where items are repeated and never take the page's `so_eager` flag. */
@@ -3870,7 +3881,7 @@ export function generateManagedComponent(state: ProjectState, def: ComponentDefi
       const key = propKey(def, name);
       const local = locals.get(name)!;
       const head = key === local ? local : `${/^[a-zA-Z_$][\w$]*$/.test(key) ? key : js(key)}: ${local}`;
-      return `\t\t${head} = ${propDefaultExpr(schema, ctx.rctx)},`;
+      return `\t\t${head} = ${propDefaultExpr(name, schema, ctx.rctx)},`;
     });
   const legacyCaller = hasLegacyVariantCaller(state, def);
   if (legacyCaller) propDecls.push(`\t\tvariant = undefined,`);
