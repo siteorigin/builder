@@ -147,6 +147,22 @@ export function converterProblems(code: string): ConverterProblem[] {
   return out;
 }
 
+/**
+ * Whether a converter reads its source its own way: it names `fetchAll` anywhere, which is what the worker runs in
+ * place of the source's own reader (the name is looked up in the module, exported or not). A converter that cannot be
+ * read counts as one that does.
+ */
+export function readsItsOwnWay(code: string): boolean {
+  const p = parsed(code);
+  if ('problem' in p) return true;
+  let named = false;
+  walk(p.ast, (n) => {
+    if ((n.type === 'Identifier' && n.name === 'fetchAll') || (n.type === 'Literal' && n.value === 'fetchAll')) named = true;
+    else if (n.type === 'TemplateElement' && /fetchAll/.test(String((n.value as { cooked?: unknown })?.cooked ?? ''))) named = true;
+  });
+  return named;
+}
+
 /** The problems, one per line, as an author reads them. */
 export const converterProblemText = (problems: readonly ConverterProblem[]): string => problems.map((p) => (p.line ? `Line ${p.line}: ${p.message}` : p.message)).join('\n');
 

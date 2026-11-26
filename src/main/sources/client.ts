@@ -56,6 +56,8 @@ export interface SyncResult {
   images: SyncImage[];
   /** For a sample: the first few records as the source sent them. */
   raw?: unknown[];
+  /** For an inspection: how many records the source has. */
+  total?: number;
 }
 
 export interface SyncRunner {
@@ -122,8 +124,18 @@ export function createSyncRunner(spawn: () => SyncHandle, opts: { timeoutMs?: nu
           if (!m || m.id !== id) return;
           if (m.ok === true && Array.isArray(m.records) && Array.isArray(m.images)) {
             // Checked again here: a reply is the worker's word, and the worker reads someone else's server.
-            if (m.records.length > MAX_RECORDS || !m.records.every((r) => recordProblem(r) === null) || !m.images.every(isSyncImage) || (m.raw !== undefined && (!Array.isArray(m.raw) || m.raw.length > SAMPLE_SIZE))) fail('invalid');
-            else finish(() => resolve({ records: m.records, images: m.images, ...(m.raw ? { raw: m.raw } : {}) }));
+            const inspected = request.mode === 'inspect';
+            if (
+              m.records.length > MAX_RECORDS ||
+              !m.records.every((r) => recordProblem(r) === null) ||
+              !m.images.every(isSyncImage) ||
+              (m.raw !== undefined && (!Array.isArray(m.raw) || m.raw.length > SAMPLE_SIZE)) ||
+              // An inspection is only ever the records as sent and how many there are: never one that reads as a sync of none.
+              (inspected && (m.records.length || m.images.length || !Array.isArray(m.raw) || !Number.isSafeInteger(m.total) || (m.total as number) < m.raw.length)) ||
+              (!inspected && m.total !== undefined)
+            )
+              fail('invalid');
+            else finish(() => resolve({ records: m.records, images: m.images, ...(m.raw ? { raw: m.raw } : {}), ...(inspected ? { total: m.total } : {}) }));
           }
           else if (m.ok === false && typeof m.code === 'string' && Object.hasOwn(REASONS, m.code)) fail(m.code, m.detail);
           else fail('failed');

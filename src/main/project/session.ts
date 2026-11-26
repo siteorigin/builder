@@ -9,6 +9,8 @@ import { SCHEMA_VERSION } from '@shared/types';
 import { BRIEF_FILE } from '@shared/brief';
 import { PUBLISHED_FILE, withPublished } from '@shared/published';
 import { collectionGrantRefusal, type CollectionWriteGrant } from '@shared/collection-grant';
+import type { SourceWriteGrant } from '@shared/sources';
+import { sourceWriteRefusal } from '../sources/grant';
 import type { ApplyResult, EditBatch, EditOperation, ToolError } from '@shared/ops';
 import type { AiTurnReview, ConflictChoice, FileText, RestoreVersionResult, SavedCopy, SaveFailure, StorageInfo, TurnLaterChange, VersionReview, VersionsInfo } from '@shared/api';
 import { validateOperation } from '@shared/ops';
@@ -2887,12 +2889,13 @@ export class ProjectSession extends EventEmitter {
   /**
    * `codeAllowed: false` refuses code, and copies that would make new code, as the project is when the batch applies.
    * `componentImport` is the checked package a `component.import` in the batch lands; only the editor's import has one.
-   * `collectionWrite` is what the assistant's post tool may write in this one batch (see shared/collection-grant).
+   * `collectionWrite` is what the assistant's post tool may write in this one batch (see shared/collection-grant), and
+   * `sourceWrite` the one source mapping or converter its source tool tested (see sources/grant.ts).
    * `guard` (CommitOptions) is also asked as the batch's turn comes, with no state, so a grant already gone costs nothing.
    */
   apply(
     batch: EditBatch,
-    opts: CommitOptions & { runId?: string; idempotencyKey?: string; codeAllowed?: boolean; componentImport?: ComponentImport; collectionWrite?: CollectionWriteGrant; sourceSync?: SourceSyncGrant; stillWanted?: () => boolean }
+    opts: CommitOptions & { runId?: string; idempotencyKey?: string; codeAllowed?: boolean; componentImport?: ComponentImport; collectionWrite?: CollectionWriteGrant; sourceWrite?: SourceWriteGrant; sourceSync?: SourceSyncGrant; stillWanted?: () => boolean }
   ): Promise<ApplyResult> {
     // An edit's own work, once it is its turn (src/shared/perf.ts): the wait for that is the rest of controller.apply.
     return this.serialize(timed('session.apply', async (): Promise<ApplyResult> => {
@@ -2963,9 +2966,12 @@ export class ProjectSession extends EventEmitter {
       // The project brief is the author's own (#518): the assistant reads it as background (#519) but never changes it.
       if ((opts.source === 'ai' || opts.runId) && ops.some((o) => o.type === 'brief.update'))
         return { ok: false, revision: this.revision, error: { code: 'SCOPE_MISMATCH', message: 'The project brief can only be changed in the editor.', recoverable: true } };
-      // So are external sources' settings (#676), which name the secrets the user signs in with.
-      if ((opts.source === 'ai' || opts.runId) && ops.some((o) => o.type === 'source.upsert' || o.type === 'source.remove'))
-        return { ok: false, revision: this.revision, error: { code: 'SCOPE_MISMATCH', message: 'External sources can only be changed in the editor.', recoverable: true } };
+      // So are external sources' settings (#676), which name the secrets the user signs in with, apart from the one
+      // mapping or converter the assistant's source tool tested (#680), as it tested it.
+      if ((opts.source === 'ai' || opts.runId) && ops.some((o) => o.type === 'source.upsert' || o.type === 'source.remove')) {
+        const refused = opts.sourceWrite ? sourceWriteRefusal(ops, opts.sourceWrite, this.state.sources) : 'External sources can only be changed in the editor.';
+        if (refused) return { ok: false, revision: this.revision, error: { code: 'SCOPE_MISMATCH', message: refused, recoverable: true } };
+      }
       // The assistant reaches a collection only through its collection and entry tools, and a layout only from a request
       // sent while it is open: each grants exactly that batch (see shared/collection-grant). Any other collection change
       // is the editor's.

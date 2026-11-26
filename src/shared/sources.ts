@@ -430,3 +430,13 @@ export function sourceFingerprint(doc: SourceDoc | null | undefined): string {
     Array.isArray(v) ? `[${v.map(canonical).join(',')}]` : v && typeof v === 'object' ? `{${Object.keys(v).sort().map((k) => `${JSON.stringify(k)}:${canonical((v as Record<string, unknown>)[k])}`).join(',')}}` : JSON.stringify(v ?? null);
   return canonical(doc ?? null);
 }
+
+/**
+ * What one batch of an AI run may change of a source (#680): its mapping or converter alone, as the assistant's
+ * write_source_converter tested it, given by that tool's own call and never by the model. `base` is the source's saved
+ * settings as they were tested (sourceFingerprint): settings changed since are no longer what was tested.
+ */
+export interface SourceWriteGrant {
+  sourceId: string;
+  base: string;
+}

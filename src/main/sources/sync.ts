@@ -205,6 +205,55 @@ export async function sampleSource(deps: Pick<SyncDeps, 'runner' | 'secrets' | '
   return { ok: true, raw: result.raw ?? [], records: result.records.slice(0, SAMPLE_SIZE), total: result.records.length, created: c.created, updated: c.updated, unchanged: c.unchanged, unpublished: c.unpublished, removed: c.removed, kept: c.kept };
 }
 
+/**
+ * Whether `source`'s settings may sign in with the user's secrets: they name none, or the user approved them as they
+ * are, by saving them here. Settings changed outside the app (a collaborator's commit pointing them elsewhere) are not.
+ */
+export async function signInApproved(approvals: Pick<ApprovalStore, 'approved'>, projectId: string, source: SourceDoc): Promise<boolean> {
+  if (!sourceSecretNames(source).length) return true;
+  try {
+    return await approvals.approved(projectId, source);
+  } catch {
+    return false;
+  }
+}
+
+/** Why a source whose settings were changed outside the app does not sign in with the user's secrets. */
+export const unapprovedMessage = (source: SourceDoc) =>
+  `“${source.name}” was changed outside SiteOrigin Builder since it was last saved here, so it does not sign in with your secrets. Open its settings, test them and save them again.`;
+
+/** What a source has, as its kind of source reads it, before any mapping or converter puts it in shape. */
+export type SourceInspection = { ok: true; raw: unknown[]; total: number } | { ok: false; code?: string; message: string };
+
+/**
+ * The first few records source `sourceId` of the project `state` has, exactly as its kind of source reads them (links
+ * resolved, the list found in the reply), and how many it has (#680): what the assistant reads to write its mapping or
+ * converter, which are not run. Its saved settings are read as they are, signed in only when the user approved them.
+ * Nothing is written and no picture fetched, and nothing comes back that holds one of the user's secrets.
+ */
+export async function inspectSource(deps: Pick<SyncDeps, 'runner' | 'secrets' | 'approvals' | 'signal'>, state: ProjectState, source: SourceDoc): Promise<SourceInspection> {
+  const projectId = state.manifest.projectId;
+  const refused = (message: string) => message.replace('was not synced', 'could not be read');
+  if (!(await signInApproved(deps.approvals, projectId, source))) return { ok: false, code: 'unapproved', message: unapprovedMessage(source) };
+  let secrets: Record<string, string>;
+  let values: string[];
+  try {
+    secrets = await deps.secrets.resolve(projectId, sourceSecretNames(source));
+    values = [...new Set([...Object.values(secrets), ...(await deps.secrets.values(projectId))])];
+  } catch (e) {
+    return { ok: false, code: 'secrets', message: refused(syncFailureMessage(source.name, 'failed', (e as Error).message.replace(/\.$/, ''))) };
+  }
+  let result;
+  try {
+    result = await deps.runner.run(source.name, { adapter: source.adapter, config: source.config, fields: fieldKinds(state, source.collectionId), mode: 'inspect', secrets, known: {} }, { signal: deps.signal, timeoutMs: SAMPLE_TIMEOUT_MS });
+  } catch (e) {
+    return { ok: false, ...(e instanceof SyncError ? { code: e.code } : {}), message: refused(e instanceof SyncError ? redactSecrets(e.message, values) : syncFailureMessage(source.name, 'failed')) };
+  }
+  // Only what is shown goes anywhere, and none of it may hold a secret (a server echoing its token).
+  if (holdsSecret(textOf(result.raw ?? []), values)) return { ok: false, code: 'secret', message: `“${source.name}” could not be read: what it sent holds one of your secrets, which is never shown.` };
+  return { ok: true, raw: result.raw ?? [], total: result.total ?? 0 };
+}
+
 /** How long a Test may take: less than a sync, as someone is waiting on it. */
 export const SAMPLE_TIMEOUT_MS = 90_000;
 
@@ -229,16 +278,8 @@ export async function syncSource(deps: SyncDeps, sourceId: string): Promise<Sour
   if (missing) return { ok: false, code: 'converter', message: missing };
   const projectId = state.manifest.projectId;
   // Settings changed outside the app (its address, say) never take the user's secrets anywhere until saved here.
-  if (sourceSecretNames(source).length) {
-    let approved: boolean;
-    try {
-      approved = await deps.approvals.approved(projectId, source);
-    } catch {
-      approved = false;
-    }
-    if (!approved)
-      return { ok: false, code: 'unapproved', message: `“${source.name}” was changed outside SiteOrigin Builder since it was last saved here, so it does not sign in with your secrets. Open its settings, test them and save them again.` };
-  }
+  if (!(await signInApproved(deps.approvals, projectId, source)))
+    return { ok: false, code: 'unapproved', message: unapprovedMessage(source) };
   let secrets: Record<string, string>;
   let values: string[];
   try {

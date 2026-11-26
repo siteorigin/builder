@@ -127,6 +127,8 @@ export async function runSync(req: SyncRequest, deps: RunDeps): Promise<SyncRepl
   let records: NormalizedRecord[];
   let raw: unknown[] | undefined;
   try {
+    // A reader that puts its records in shape itself has no records as sent to show.
+    if (adapter.read && req.mode === 'inspect') return failed('adapter-unavailable');
     if (adapter.read) records = await adapter.read(req.config, given, signal);
     else {
       if (!adapter.items || !adapter.origin) return failed('adapter-unavailable');
@@ -141,6 +143,18 @@ export async function runSync(req: SyncRequest, deps: RunDeps): Promise<SyncRepl
         if (typeof req.converter === 'string' && echoed(read)) throw new AdapterError('invalid', ECHO);
         return read;
       };
+      // The records as the kind of source reads them, put in no shape: its mapping and converter are what is being
+      // written, so neither may stand between the source and what the assistant reads.
+      if (req.mode === 'inspect') {
+        const read = await adapter.items({ config: req.config, secrets: given, signal, transport, env: deps.env ?? {} });
+        if (!Array.isArray(read)) return failed('invalid', 'the reader gave no list of records');
+        if (read.length > MAX_RECORDS) return failed('too-large', `it has more than ${MAX_RECORDS} records`);
+        try {
+          return { id: req.id, ok: true, records: [], images: [], raw: read.slice(0, SAMPLE_SIZE).map(sampleView), total: read.length };
+        } catch {
+          return failed('invalid', 'a record cannot be read');
+        }
+      }
       let read: unknown[];
       let shaped: unknown;
       if (typeof req.converter === 'string') {
