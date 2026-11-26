@@ -944,7 +944,10 @@ describe('contact form', () => {
     expect(src).toContain("disabled={!ready || status === 'sending'}");
     expect(src).toContain('HTMLFormElement.prototype.reset.call(form)');
     // The live regions sit outside the form, which is aria-busy while sending.
-    expect(src.indexOf('role="status"')).toBeGreaterThan(src.indexOf('</form>'));
+    // The confirmation heads the form and the failure follows it: both outside it.
+    const [formStart, formEnd] = [src.indexOf('<form'), src.indexOf('</form>')];
+    expect(src.indexOf('role="status"')).toBeLessThan(formStart);
+    expect(src.indexOf('role="alert"')).toBeGreaterThan(formEnd);
     expect(src).toContain('role="status"');
     expect(src).toContain('role="alert"');
     expect(src).toContain('aria-busy');

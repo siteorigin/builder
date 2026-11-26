@@ -46,11 +46,27 @@ const SEARCH_SOURCE = `<script>
 		run++;
 		status = 'idle';
 		found = null;
+		remember('');
+	}
+
+	// The search sent stays in the address as ?q=, so reloading the page (or sharing it) runs it again.
+	function remember(words) {
+		// Built from document.URL: this only writes the address; reading it is onMount's, below.
+		const url = new URL(document.URL);
+		if ((url.searchParams.get('q') ?? '') === words) return;
+		if (words) url.searchParams.set('q', words);
+		else url.searchParams.delete('q');
+		history.replaceState(history.state, '', url);
 	}
 
 	function submit(event) {
 		event.preventDefault();
 		search();
+	}
+
+	// Emptying the box, with its clear button or by deleting the words, clears what it found.
+	function input() {
+		if (!query && status !== 'idle') reset();
 	}
 
 	async function search() {
@@ -60,8 +76,10 @@ const SEARCH_SOURCE = `<script>
 		if (!searchWords(words).length) {
 			found = null;
 			status = 'empty';
+			remember('');
 			return;
 		}
+		remember(words);
 		status = 'searching';
 		try {
 			const pages = await loadPages();
@@ -133,12 +151,14 @@ const SEARCH_SOURCE = `<script>
 						placeholder={placeholder || undefined}
 						aria-describedby={uid + '-status'}
 						bind:value={query}
+						oninput={input}
 						onkeydown={keydown}
 					/>
 					<button class="so-btn so-btn--primary so-search__button" type="submit">{buttonLabel || text().searchButton}</button>
 				</div>
 			</form>
-			<p class="so-search__status" id={uid + '-status'} role="status">
+			<p class={['so-search__status', status === 'failed' && 'so-search__status--failed', status === 'done' && 'so-search__status--count']} id={uid + '-status'} role="status">
+				{#if status === 'failed'}<svg class="so-search__icon" viewBox="0 0 20 20" width="20" height="20" aria-hidden="true" focusable="false"><circle cx="10" cy="10" r="8.25" fill="none" stroke="currentColor" stroke-width="1.5" /><path d="M10 5.75v5" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" /><circle cx="10" cy="13.9" r="1.1" fill="currentColor" /></svg>{/if}
 				{#if status === 'empty'}{emptyMessage || text().searchEmpty}{:else if status === 'searching'}{text().searchSearching}{:else if status === 'failed'}{text().searchFailed}{:else if status === 'done' && found}{#each outcome as part}{#if part.name === 'query'}<bdi>{part.text}</bdi>{:else}{part.text}{/if}{/each}{#if found.total === 0}{' '}{noResultsMessage || text().searchAdvice}{/if}{/if}
 			</p>
 			{#if status === 'done' && found && shown}
@@ -213,7 +233,10 @@ const SEARCH_SOURCE = `<script>
 		line-height: var(--so-text-h2-line-height);
 	}
 	.so-search__lead {
+		font-family: var(--so-text-lead-family);
 		font-size: var(--so-text-lead-size);
+		font-weight: var(--so-text-lead-weight);
+		letter-spacing: var(--so-text-lead-tracking);
 		line-height: var(--so-text-lead-line-height);
 		color: var(--so-color-muted);
 	}
@@ -226,9 +249,13 @@ const SEARCH_SOURCE = `<script>
 		flex-direction: column;
 		gap: var(--so-space-xs);
 	}
+	/* The box's label in the theme's small text, a step bolder, as the contact form's questions are. */
 	.so-search__label {
-		font-size: 0.95rem;
-		font-weight: 550;
+		font-family: var(--so-text-small-family);
+		font-size: var(--so-text-small-size);
+		line-height: var(--so-text-small-line-height);
+		letter-spacing: var(--so-text-small-tracking);
+		font-weight: 600;
 	}
 	.so-search__row {
 		display: flex;
@@ -238,23 +265,39 @@ const SEARCH_SOURCE = `<script>
 	.so-search__input {
 		flex: 1 1 14rem;
 		min-width: 0;
-		min-height: 48px;
+		/* The height of the theme's buttons, so the box and its button line up. */
+		min-height: 46px;
 		padding: 0.65em 0.85em;
-		/* Field outlines reach 3:1 against the section background (WCAG 1.4.11). */
-		border: 1px solid color-mix(in srgb, var(--so-color-text) 55%, transparent);
+		/* Opaque, from the box's own ink, as the contact form's fields are: mixed 80% into the fill it keeps 3:1 there
+		   (WCAG 1.4.11) for a grey or darker text on a light fill, down to the lightest readable grey. */
+		border: 1px solid color-mix(in srgb, var(--so-color-text) 80%, var(--so-color-surface));
 		border-radius: var(--so-radius-sm);
 		background: var(--so-color-surface);
 		color: var(--so-color-text);
 		/* At least 16px, so phones do not zoom in when the box is tapped. */
 		font: inherit;
 		font-size: max(1rem, 16px);
+		transition: border-color 160ms ease;
+	}
+	.so-search__input:hover:not(:focus) {
+		border-color: var(--so-color-text);
 	}
 	.so-search__input:focus-visible {
 		outline: 2px solid var(--so-surface-ink, var(--so-color-focus));
 		outline-offset: 1px;
 	}
-	.so-search__button {
-		min-height: 48px;
+	/* The browser's clear button, drawn in the box's own ink rather than the browser's blue, as a 24px target. */
+	.so-search__input::-webkit-search-cancel-button {
+		appearance: none;
+		width: 24px;
+		height: 24px;
+		margin-inline-start: 0.5em;
+		background: var(--so-color-muted);
+		mask: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24'%3E%3Cpath d='M7 7l10 10M17 7 7 17' stroke='black' stroke-width='2' stroke-linecap='round'/%3E%3C/svg%3E") center / 20px no-repeat;
+		cursor: pointer;
+	}
+	.so-search__input::-webkit-search-cancel-button:hover {
+		background: var(--so-color-text);
 	}
 	/* The status stays in the page while it is empty, so screen readers announce what it says next. */
 	.so-search__body {
@@ -264,6 +307,29 @@ const SEARCH_SOURCE = `<script>
 	}
 	.so-search__status {
 		margin: 0;
+	}
+	/* How many pages matched heads the list. */
+	.so-search__status--count {
+		font-weight: 600;
+	}
+	/* The search could not run: marked with a symbol and a rule, in the section's own text colour, as the contact
+	   form marks a message that could not be sent. */
+	.so-search__status--failed {
+		display: flex;
+		align-items: flex-start;
+		gap: 0.6em;
+		padding: var(--so-space-sm) var(--so-space-md);
+		/* An outline rather than a tint, so the words keep the full contrast of the section's own ground. */
+		border: 1px solid color-mix(in srgb, currentColor 22%, transparent);
+		border-inline-start: 3px solid currentColor;
+		border-radius: var(--so-radius-sm);
+		font-weight: 600;
+	}
+	.so-search__icon {
+		flex: none;
+		width: 1.25em;
+		height: 1.25em;
+		margin-top: calc((1lh - 1.25em) / 2);
 	}
 	.so-search__results {
 		list-style: none;
@@ -279,6 +345,10 @@ const SEARCH_SOURCE = `<script>
 		gap: var(--so-space-2xs, 0.25rem);
 		padding-block-end: var(--so-space-md);
 		border-bottom: 1px solid color-mix(in srgb, currentColor 18%, transparent);
+	}
+	.so-search__result:last-child {
+		padding-block-end: 0;
+		border-bottom: 0;
 	}
 	.so-search__link {
 		align-self: flex-start;
@@ -303,14 +373,29 @@ const SEARCH_SOURCE = `<script>
 		color: var(--so-color-muted);
 		overflow-wrap: anywhere;
 	}
+	/* Dimmed by colour rather than opacity, so a match inside keeps its full strength. */
 	.so-search--inverse .so-search__excerpt {
-		color: var(--so-color-on-inverse);
-		opacity: 0.85;
+		color: color-mix(in srgb, var(--so-color-on-inverse) 85%, var(--so-color-inverse));
 	}
+	/* A match is told by its weight and an underline in the section's own text colour, on the section's own ground:
+	   nothing is laid under the letters, so they keep the contrast of the text around them on any palette. */
 	.so-search mark {
-		background: color-mix(in srgb, var(--so-color-accent) 30%, transparent);
-		color: inherit;
-		border-radius: 2px;
+		background: none;
+		color: var(--so-color-text);
+		font-weight: 650;
+		text-decoration: underline;
+		text-decoration-thickness: 2px;
+		text-underline-offset: 0.2em;
+	}
+	.so-search--inverse mark {
+		color: var(--so-color-on-inverse);
+	}
+	/* A title is bold and underlined already: there the match's underline is three times as heavy. */
+	.so-search__link mark {
+		font-weight: inherit;
+		text-decoration-thickness: 3px;
+		/* On the link's own underline, so the two read as one line, heavier under the match. */
+		text-underline-offset: 0.18em;
 	}
 </style>
 `;
