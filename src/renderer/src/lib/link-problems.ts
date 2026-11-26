@@ -28,7 +28,7 @@ export function inlineLinkProblem(href: string, pages: RichPages, indexes: RichI
   const hash = t.indexOf('#');
   if (hash >= 0 && !SECTION.test(t.slice(hash + 1))) return 'A section name starts with a letter and uses only letters, numbers, - and _.';
   const path = hash < 0 ? t : t.slice(0, hash);
-  if (path.startsWith('/') && !path.startsWith('//')) return `No page or collection index has the address ${path.length > 60 ? `${path.slice(0, 59)}…` : path}. Check the spelling, or link to one of the site’s pages.`;
+  if (path.startsWith('/') && !path.startsWith('//')) return `No page has the address ${path.length > 60 ? `${path.slice(0, 59)}…` : path}. Check the spelling, or link to one of the site’s pages.`;
   return 'Use a page address such as /about/, a web address, an email address or a phone number.';
 }
 

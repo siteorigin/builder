@@ -178,7 +178,7 @@ export function normalizeRichText(v: unknown, state: ProjectState, label: string
     const found = linkFromTarget(target, state.pages, newTab, rel, /^\/(?!\/)/.test(t) ? (indexes ??= collectionIndexRoutes(state)) : {});
     // A collection named by its ID is checked as any other link to one: it must be in the project.
     const out = found?.type === 'collection' ? normalizeLink(found, state, label, scope) : found;
-    if (!out && target.startsWith('/')) fail(`${label}: no page${scope.entries ? ', entry' : ''} or collection's index has the route "${target.slice(0, 60)}".`);
+    if (!out && target.startsWith('/')) fail(`${label}: no page${scope.entries ? ' or entry' : ''} has the route "${target.slice(0, 60)}".`);
     // A number that dials nothing (one saved before numbers needed three digits) is refused, never kept as its markup.
     if (!out && /^tel:/i.test(t)) fail(`${label}: "${t.slice(4, 44)}" is not a valid telephone number.`);
     return out;

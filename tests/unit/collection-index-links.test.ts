@@ -88,7 +88,7 @@ describe('links to a collection index', () => {
     // Without the indexes the address is no page, and the link would be dropped: the canvas passes them.
     expect(blocksFromDom(dom, s.pages).droppedLinks).toBe(1);
     expect(inlineLinkProblem('/blog/', s.pages, indexes)).toBeNull();
-    expect(inlineLinkProblem('/blog/', s.pages)).toMatch(/No page or collection index has the address \/blog\//);
+    expect(inlineLinkProblem('/blog/', s.pages)).toMatch(/No page has the address \/blog\//);
     expect(inlineLinkProblem('collection:events', s.pages, indexes)).toMatch(/no index on the website/);
   });
 
