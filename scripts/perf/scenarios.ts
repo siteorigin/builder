@@ -9,7 +9,7 @@
  * gets faster by doing less. `memory` (after `launch`) reads the memory of every process of the app at named points
  * (memory.ts), and is never reported beside a timing scenario.
  */
-import { existsSync, mkdirSync, readdirSync, readFileSync, renameSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, readdirSync, readFileSync, realpathSync, renameSync, rmSync, writeFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import type { ElectronApplication, FrameLocator, Page } from 'playwright';
 import { desktopInMain, type DesktopCall } from '../../tests/driver/desktop';
@@ -18,6 +18,8 @@ import type { PerfAttrs, PerfRecord } from '../../src/shared/perf';
 import type { ProjectState } from '../../src/shared/types';
 import type { ChatMessage, Conversation } from '../../src/shared/api';
 import { MockOpenAIServer, textReply } from '../../tests/unit/mock-openai-server';
+import { createStarterState, STARTER_ASSETS } from '../../src/catalogue/starters';
+import { projectFolderName } from '../../src/shared/project-name';
 import type { FixtureSpec } from './fixtures';
 import { growthMetrics, readingMetrics, type MemoryProbe, type MemoryReading } from './memory';
 import { PHOTO_COUNT, photoSpec, scenarioPhotos } from './photos';
@@ -1885,7 +1887,267 @@ export const importPhotos: Scenario = {
   }
 };
 
-export const SCENARIOS: Scenario[] = [launch, open, edit, edits, panels, chat, canvas, exportSite, exportAgain, importPhotos, switchProject, memory];
+// ---------------------------------------------------------------------------
+// create, createAgain
+// ---------------------------------------------------------------------------
+
+/** How long a creation may take, from Create to its home page ready to edit in the canvas. */
+const CREATE_MS = 240_000;
+
+/** The projects `create` and `createAgain` make, each in its own folder in the app's default projects folder. */
+export const CREATED_NAMES = { create: 'Perf created', createAgain: 'Perf created again' } as const;
+
+/** A lock entry npm installs on this computer: optional packages bound to another OS or CPU are skipped (npm ci). */
+export function installsHere(entry: { os?: string[]; cpu?: string[]; libc?: string[]; link?: boolean }, platform: string = process.platform, arch: string = process.arch): boolean {
+  if (entry.link) return false;
+  const fits = (list: string[] | undefined, value: string) => {
+    if (!list?.length) return true;
+    if (list.includes(`!${value}`)) return false;
+    const allowed = list.filter((v) => !v.startsWith('!'));
+    return !allowed.length || allowed.includes(value);
+  };
+  // libc is told only on Linux, and only by npm itself: an entry bound to one is not checked here.
+  return fits(entry.os, platform) && fits(entry.cpu, arch) && !(platform === 'linux' && entry.libc?.length);
+}
+
+/** A package as the lock records it: what it needs, and the computers it is made for. */
+interface LockEntry {
+  os?: string[];
+  cpu?: string[];
+  libc?: string[];
+  link?: boolean;
+  dependencies?: Record<string, string>;
+  optionalDependencies?: Record<string, string>;
+  devDependencies?: Record<string, string>;
+  peerDependencies?: Record<string, string>;
+  peerDependenciesMeta?: Record<string, { optional?: boolean }>;
+}
+
+/**
+ * The lock's packages `npm ci` installs on this computer: those the project needs, followed through what each needs
+ * (optional and required peers too), each found as Node finds it from where it is needed, leaving out the optional
+ * ones made for another OS or CPU and anything only they need.
+ */
+export function installedPackages(packages: Record<string, LockEntry>, platform: string = process.platform, arch: string = process.arch): string[] {
+  const found = new Set<string>();
+  const needs = (e: LockEntry, root: boolean) => [
+    ...Object.keys(e.dependencies ?? {}),
+    ...Object.keys(e.optionalDependencies ?? {}),
+    ...(root ? Object.keys(e.devDependencies ?? {}) : []),
+    ...Object.keys(e.peerDependencies ?? {}).filter((n) => !e.peerDependenciesMeta?.[n]?.optional)
+  ];
+  const resolve = (from: string, name: string): string | null => {
+    for (let at = from; ; at = at.includes('/node_modules/') ? at.slice(0, at.lastIndexOf('/node_modules/')) : '') {
+      const key = at ? `${at}/node_modules/${name}` : `node_modules/${name}`;
+      if (packages[key]) return key;
+      if (!at) return null;
+    }
+  };
+  const visit = (key: string) => {
+    for (const name of needs(packages[key], key === '')) {
+      const dep = resolve(key, name);
+      if (!dep || found.has(dep) || !installsHere(packages[dep], platform, arch)) continue;
+      found.add(dep);
+      visit(dep);
+    }
+  };
+  visit('');
+  return [...found].sort();
+}
+
+/**
+ * The packages of `dir`'s lock that `npm ci` installs here and that are not in its node_modules: a created project's
+ * website tools must be whole and its own, so they install, build and run without the app.
+ */
+export function missingPackages(dir: string): string[] {
+  const lock = JSON.parse(readFileSync(join(dir, 'package-lock.json'), 'utf8')) as { packages?: Record<string, LockEntry> };
+  return installedPackages(lock.packages ?? {}).filter((key) => !existsSync(join(dir, key, 'package.json')));
+}
+
+/**
+ * Make a project from the New project dialog, as a person does: on Welcome, New project, a name, the Business starter
+ * with its sample images in the default folder, Create; until the canvas reports its home page ready to edit.
+ * `createAgain` closes that project and makes a second one the same way, in the same launch: what the second project
+ * made with this app costs. The profile's npm cache holds every package the starter installs (the runner copies the
+ * fixtures' in), so setup installs offline, as from the cache a packaged app ships.
+ */
+function createScenario(name: 'create' | 'createAgain', after: 'launch' | 'create'): Scenario {
+  const projectName = CREATED_NAMES[name];
+  const expected = () => {
+    const state = createStarterState('business', projectName, true);
+    const home = state.pages[state.site.homePageId];
+    // The library gets one record per sample image the app ships, made as each is imported (controller.ts).
+    return { pages: Object.keys(state.pages).length, assets: STARTER_ASSETS.length, homeRoute: home.route, heading: findHeading(home)?.heading ?? '' };
+  };
+  const createdHomeReady = (route: string) => (r: PerfRecord) => r.proc === 'renderer' && r.attrs?.mode === 'edit' && r.attrs?.studio === false && r.attrs?.path === route;
+  return {
+    name,
+    after,
+    description:
+      name === 'create'
+        ? 'Create a project from the Business starter with sample images in the New project dialog, from opening the dialog to the canvas reporting its home page ready to edit.'
+        : 'Close the project made by create and make a second one the same way, in the same launch.',
+    async run(ctx) {
+      const { win } = ctx;
+      const want = expected();
+      expect(want.heading && want.assets > 0, 'the Business starter has no sample images or no hero heading to check');
+      if (name === 'createAgain') {
+        // Back on Welcome, as the first creation started: closing the first project is not timed.
+        const closed = await win.evaluate(() => (globalThis as unknown as EditorPage).builder.projects.close());
+        expect(closed.ok, 'the project create made could not be closed');
+        await win.locator('.welcome').waitFor({ timeout: 60_000 });
+      }
+      expect(await win.locator('.welcome').isVisible(), 'creating starts from Welcome, and Welcome is not showing');
+      const parent = await win.evaluate(() => (globalThis as unknown as EditorPage).builder.dialogs.defaultProjectsFolder());
+      const dir = join(parent, projectFolderName(projectName));
+      // Each iteration makes the project afresh in a folder that is not there yet.
+      rmSync(dir, { recursive: true, force: true });
+      // A screen change saves the workspace 300 ms later: that lands before the creation starts, not in it.
+      await sleep(Math.max(ctx.settleMs, WORKSPACE_SAVE_WAIT_MS));
+      await ctx.mark('scenario.start', { scenario: name });
+      await win.locator('.welcome-action').first().click();
+      const dialog = win.getByRole('dialog', { name: 'New project' });
+      await dialog.waitFor({ timeout: 30_000 });
+      // Create waits for the check of the website tools; it must find every one of them on this computer.
+      const tools = dialog.locator('#new-project-tools');
+      for (let end = Date.now() + 60_000; (await tools.getAttribute('data-tools')) === 'checking'; ) {
+        expect(Date.now() < end, 'the New project dialog never finished checking the website tools');
+        await sleep(25);
+      }
+      const said = await tools.getAttribute('data-tools');
+      expect(said === 'local', `the New project dialog says the website tools are ${said}, not on this computer: the profile's npm cache does not hold the starter's packages`);
+      expect((await dialog.getByRole('radio', { name: /Business/ }).getAttribute('aria-checked')) === 'true', 'the Business starter is not the one chosen');
+      expect(await dialog.getByRole('switch', { name: 'Include sample images' }).isChecked(), 'sample images are not included');
+      await dialog.getByLabel('Project name').fill(projectName);
+      const create = dialog.getByRole('button', { name: 'Create project' });
+      for (let end = Date.now() + 30_000; !(await create.isEnabled()); ) {
+        expect(Date.now() < end, 'Create project never became available');
+        await sleep(25);
+      }
+      await create.click();
+      // The new project in the editor, then its home page ready to edit in the canvas.
+      const real = () => (existsSync(dir) ? realpathSync(dir) : dir);
+      const deadline = Date.now() + CREATE_MS;
+      let snap: Awaited<ReturnType<BuilderApi['project']['snapshot']>> = null;
+      while (Date.now() < deadline) {
+        snap = await win.evaluate(() => (globalThis as unknown as EditorPage).builder.project.snapshot());
+        if (snap && snap.dir === real()) break;
+        const problem = await dialog.locator('#new-project-error').textContent({ timeout: 50 }).catch(() => null);
+        expect(!problem, `the project was not created: ${problem}`);
+        await sleep(50);
+      }
+      expect(snap && snap.dir === real(), `the new project did not open: ${snap?.dir ?? 'no project is open'}`);
+      expect(!snap.readOnly, `the new project opened read-only: ${snap.readOnly?.reason ?? ''}`);
+      const pages = Object.keys(snap.state.pages).length;
+      const assets = Object.keys(snap.state.assets.assets).length;
+      expect(pages === want.pages, `the new project has ${pages} pages, not the starter's ${want.pages}`);
+      expect(assets === want.assets, `the new project has ${assets} images, not the starter's ${want.assets} samples`);
+      expect(findHeading(snap.state.pages[snap.state.site.homePageId])?.heading === want.heading, 'the new project’s home hero has another heading');
+      const t = await ctx.waitTrace((t) => !!t.first('canvas.ready', createdHomeReady(want.homeRoute), forScenarioStart(t, name)), CREATE_MS);
+      expect(t.first('canvas.ready', createdHomeReady(want.homeRoute), forScenarioStart(t, name)), 'the canvas never reported the new project’s home page ready to edit');
+      await preview(win).getByRole('heading', { name: want.heading, exact: true, level: 1 }).first().waitFor({ timeout: 30_000 });
+      // Its sample images are files of its own, and its website tools a whole node_modules npm made, there for good.
+      for (const a of Object.values(snap.state.assets.assets)) expect(existsSync(join(dir, a.file)), `the sample image ${a.file} is not in the new project`);
+      const missing = missingPackages(dir);
+      expect(!missing.length, `the new project's node_modules lacks ${missing.length} locked packages (${missing.slice(0, 3).join(', ')})`);
+      const hidden = join(dir, 'node_modules', '.package-lock.json');
+      expect(existsSync(hidden), 'the new project’s node_modules has no lock of its own (npm’s hidden lockfile)');
+      const pkg = JSON.parse(readFileSync(join(dir, 'package.json'), 'utf8')) as { name: string };
+      expect((JSON.parse(readFileSync(hidden, 'utf8')) as { name?: string }).name === pkg.name, 'the new project’s node_modules was installed for another package');
+      expect(existsSync(join(dir, '.siteorigin', 'cache', 'deps.json')), 'the new project does not record its website tools as set up');
+      await sleep(ctx.settleMs);
+      await ctx.mark('scenario.end', { scenario: name });
+      await ctx.waitTrace((t) => !!t.first('scenario.end', forScenario(name, 'renderer')) && !!t.first('scenario.end', forScenario(name, 'main')));
+    },
+    measure(trace) {
+      const m = new Collector();
+      const want = expected();
+      const begin = trace.first('scenario.start', forScenario(name, 'renderer'));
+      const end = m.need('scenario.end (main)', trace.first('scenario.end', forScenario(name, 'main'), begin?.t));
+      const from = begin?.t ?? Infinity;
+      const to = end?.t ?? -Infinity;
+      // The dialog: New project pressed, the form on screen, and the check of the website tools that Create waits for.
+      const asked = m.need('newProject.requested', trace.first('newProject.requested', inProc('renderer'), from, to));
+      const shown = m.need('newProject.formShown', trace.first('newProject.formShown', inProc('renderer'), asked?.t ?? Infinity, to));
+      const known = m.need('newProject.toolsKnown', trace.first('newProject.toolsKnown', inProc('renderer'), asked?.t ?? Infinity, to));
+      m.since(`${name}.dialogShown`, asked, shown);
+      m.since(`${name}.dialogReady`, asked, known);
+      const check = m.need('controller.websiteTools', trace.first('controller.websiteTools', inProc('main'), asked?.t ?? Infinity, to));
+      m.span(`${name}.websiteTools`, check);
+      m.count(`${name}.dialogIdealTrees`, delta(check, 'tools.idealTrees'));
+      m.ms(`${name}.dialogStallMax`, asked && known ? stallMax(trace, asked, known) : undefined);
+      // The creation: Create pressed, to the new project's home page ready to edit.
+      const req = m.need('create.requested', trace.first('create.requested', inProc('renderer'), known?.t ?? Infinity, to));
+      const at = req?.t ?? Infinity;
+      const total = m.need('controller.create', trace.first('controller.create', inProc('main'), at, to));
+      const inside = (n: string) => m.need(n, trace.first(n, inProc('main'), startOf(total) ?? Infinity, total?.t ?? -Infinity));
+      const allInside = (n: string) => trace.all(n, inProc('main'), startOf(total) ?? Infinity, total?.t ?? -Infinity);
+      m.span(`${name}.controller`, total);
+      m.span(`${name}.files`, inside('create.files'));
+      const images = inside('create.images');
+      m.span(`${name}.images`, images);
+      const session = inside('session.create');
+      m.span(`${name}.session`, session);
+      m.span(`${name}.session.writeDocs`, inside('session.create.writeDocs'));
+      const publish = inside('session.publish');
+      m.span(`${name}.publish`, publish);
+      // The publication's site icons, drawn in the media worker, and its generated files written.
+      const inPublish = (n: string) => m.need(n, trace.first(n, inProc('main'), startOf(publish) ?? Infinity, publish?.t ?? -Infinity));
+      m.span(`${name}.publish.icons`, inPublish('session.publish.icons'));
+      m.span(`${name}.publish.write`, inPublish('session.publish.write'));
+      // Both of the first publication's generations, the website's and the preview's.
+      const variant = (v: string) => trace.all('session.generate', (r) => r.proc === 'main' && r.attrs?.variant === v, startOf(session) ?? Infinity, session?.t ?? -Infinity);
+      const clean = variant('clean');
+      const dev = variant('dev');
+      if (!clean.length) m.need('session.generate (clean)', undefined);
+      if (!dev.length) m.need('session.generate (dev)', undefined);
+      if (clean.length && dev.length) m.ms(`${name}.generate`, [...clean, ...dev].reduce((n, r) => n + (r.ms ?? NaN), 0));
+      m.span(`${name}.session.localState`, inside('session.create.localState'));
+      m.span(`${name}.lock`, inside('create.lock'));
+      m.span(`${name}.trust`, inside('create.trust'));
+      // Setting up the website tools: the cache, the checks of what they need, npm, and the marker that they are set up.
+      const deps = inside('create.dependencies');
+      m.span(`${name}.dependencies`, deps);
+      const within = (n: string) => trace.all(n, inProc('main'), startOf(deps) ?? Infinity, deps?.t ?? -Infinity);
+      m.span(`${name}.tools.seedCache`, m.need('tools.seedCache', within('tools.seedCache')[0]));
+      const checks = within('tools.check');
+      if (!checks.length) m.need('tools.check', undefined);
+      else m.ms(`${name}.tools.check`, checks.reduce((n, r) => n + (r.ms ?? NaN), 0));
+      const npm = within('tools.npm');
+      if (!npm.length) m.need('tools.npm', undefined);
+      else m.ms(`${name}.tools.npm`, npm.reduce((n, r) => n + (r.ms ?? NaN), 0));
+      m.span(`${name}.tools.marker`, m.need('tools.marker', within('tools.marker')[0]));
+      m.span(`${name}.makeWay`, inside('create.makeWay'));
+      m.span(`${name}.attach`, inside('controller.attach'));
+      m.span(`${name}.startRuntime`, inside('controller.startRuntime'));
+      const ready = m.need('canvas.ready', trace.first('canvas.ready', createdHomeReady(want.homeRoute), at, to));
+      m.since(`${name}.editorShown`, req, m.need('renderer.commit (editor)', trace.first('renderer.commit', (r) => r.attrs?.screen === 'editor', at, to)));
+      previewStart(m, trace, name, req, at, ready);
+      // The headline: Create pressed, to the new project's home page ready to edit.
+      m.since(`${name}.canvasReady`, req, ready);
+      m.since(`${name}.fromDialog`, asked, ready);
+      if (typeof images?.attrs?.images === 'number') m.count(`${name}.imagesImported`, images.attrs.images);
+      else if (images) m.need('create.images (the images it imported)', undefined);
+      m.count(`${name}.fileWrites`, delta(total, 'fs.writes'));
+      m.count(`${name}.imageFileWrites`, delta(images, 'fs.writes'));
+      m.count(`${name}.publishFileWrites`, delta(publish, 'fs.writes'));
+      m.count(`${name}.durableWrites`, delta(total, 'fs.durableWrites'));
+      m.count(`${name}.fsyncs`, delta(total, 'fs.fsyncs'));
+      m.count(`${name}.filesRead`, delta(total, 'files.read'));
+      m.count(`${name}.filesHashed`, delta(total, 'files.hashed'));
+      m.count(`${name}.npmRuns`, delta(total, 'tools.npmRuns'));
+      m.count(`${name}.idealTrees`, delta(total, 'tools.idealTrees'));
+      m.count(`${name}.toolChecks`, allInside('tools.check').length);
+      m.ms(`${name}.mainStallMax`, req && ready ? stallMax(trace, req, ready) : undefined);
+      return m;
+    }
+  };
+}
+
+export const create = createScenario('create', 'launch');
+export const createAgain = createScenario('createAgain', 'create');
+
+export const SCENARIOS: Scenario[] = [launch, open, edit, edits, panels, chat, canvas, exportSite, exportAgain, importPhotos, switchProject, create, createAgain, memory];
 
 /**
  * The scenarios to run in one launch for those asked for: each with every one it follows, in the order of SCENARIOS

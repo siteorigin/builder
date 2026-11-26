@@ -269,6 +269,9 @@ async function main() {
     // A second copy of the fixture, for the scenarios that open another project over the first (switch).
     const other = opts.chain.some((s) => s.name === 'switch') ? join(dir, 'other') : null;
     const profile = join(dir, 'profile');
+    // The scenarios that make a project install its website tools from the profile's npm cache, as a packaged app does
+    // from the cache it ships: the fixtures' own, which every package the starter installs went through.
+    const creates = opts.chain.some((s) => s.name === 'create');
     const perScenario = new Map<string, Iteration[]>(opts.chain.map((s) => [s.name, []]));
     let fx: Awaited<ReturnType<typeof preparedFixture>> | null = null;
     try {
@@ -279,6 +282,12 @@ async function main() {
       // launches after their second do. (The preview's is not: its server takes a new port each launch, and the cache
       // is keyed by address.) What it leaves is what every iteration starts from.
       console.log(`perf: ${name}: warm-up`);
+      if (creates) {
+        const cache = join(PERF_DIR, 'fixtures', 'profile', 'npm-cache');
+        if (!existsSync(cache)) throw new Error(`There is no npm cache in ${relative(ROOT, dirname(cache))} to make projects from: remove .tmp/perf/fixtures and run again.`);
+        mkdirSync(profile, { recursive: true });
+        copy(cache, join(profile, 'npm-cache'));
+      }
       // The second copy is opened first, so the fixture's own copy is the first of Recent projects.
       if (other) {
         restore(fx.dir, other);

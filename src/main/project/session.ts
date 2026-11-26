@@ -622,13 +622,21 @@ export class ProjectSession extends EventEmitter {
   // Open / create
   // -------------------------------------------------------------------------
 
-  static async create(dir: string, state: ProjectState): Promise<ProjectSession> {
+  static create(dir: string, state: ProjectState): Promise<ProjectSession> {
+    return timed('session.create', () => ProjectSession.createTimed(dir, state))();
+  }
+
+  private static async createTimed(dir: string, state: ProjectState): Promise<ProjectSession> {
     const s = new ProjectSession(dir);
     s.state = state;
     await s.ensureLocalDirs();
+    const writing = perf.span('session.create.writeDocs');
     await s.writeAllDocs();
+    writing();
     await s.publishGenerated(true);
+    const saving = perf.span('session.create.localState');
     await s.saveLocalState();
+    saving();
     return s;
   }
 
@@ -2143,7 +2151,9 @@ export class ProjectSession extends EventEmitter {
     // The website's icons are drawn from the favicon (or the monogram) beside the generated text, under the same rules.
     // A set that cannot be made now costs the icons' update, not the save: icons already claimed stay, still claimed,
     // so they are neither replaced nor removed as obsolete. A file of someone else's at an icon's path is still named.
+    const drawing = perf.span('session.publish.icons');
     const icons = await this.siteIcons.make(this.dir, this.state);
+    drawing();
     this.iconsAsked = icons.key;
     for (const path of SITE_ICON_PATHS) {
       if (authored.has(path) || clean.has(path)) continue;
@@ -2249,6 +2259,7 @@ export class ProjectSession extends EventEmitter {
     // Claimed before they are written: a publication that stops part way (a crash, an AI run being rolled back)
     // leaves files the next one recognises as its own, to replace or remove, never as someone else's.
     if (plan.length) await this.writeManifest(prev, { ...inflight, ...Object.fromEntries(plan.map((f) => [f.path, f.hash])) });
+    const writing = perf.span('session.publish.write', { files: plan.length });
     for (const { path, content, abs, hash: h, stamp } of plan) {
       this.seenOnDisk.delete(abs);
       let theirs = false;
@@ -2288,6 +2299,7 @@ export class ProjectSession extends EventEmitter {
         this.seenOnDisk.delete(variant);
       }
     }
+    writing();
     // The preview does not watch the editor's cache: a project file whose variant alone changed is touched, so the
     // preview loads the new variant (as a read-only project's private copy does, see syncPreviewStage). Only a file
     // that is this app's own as it stands, and only once the preview may be running.

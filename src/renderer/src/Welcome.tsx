@@ -184,7 +184,10 @@ export function Welcome() {
       if (openDialogs.length) return;
       const cmd = (e as CustomEvent).detail;
       // A project on its way may still ask for trust: a New project form or Settings must not be underneath that.
-      if (cmd === 'new-project' && !openingRef.current) setCreating(true);
+      if (cmd === 'new-project' && !openingRef.current) {
+        perfMark('newProject.requested', { from: 'menu' });
+        setCreating(true);
+      }
       if (cmd === 'open-project') void open();
       if (cmd === 'open-project-folder') void open(undefined, { folder: true });
       if (cmd === 'join-live' && !openingRef.current) setState({ joinOpen: true });
@@ -456,7 +459,15 @@ export function Welcome() {
         </div>
         <div className="welcome-actions no-drag">
           {/* With recent projects this is the screen's one primary action; on first run the main pane's button is. */}
-          <button className={`action-card welcome-action${recents?.length ? ' primary' : ' secondary'}`} disabled={!!opening} aria-keyshortcuts={keys.newProject.aria} onClick={() => setCreating(true)}>
+          <button
+            className={`action-card welcome-action${recents?.length ? ' primary' : ' secondary'}`}
+            disabled={!!opening}
+            aria-keyshortcuts={keys.newProject.aria}
+            onClick={() => {
+              perfMark('newProject.requested', { from: 'welcome' });
+              setCreating(true);
+            }}
+          >
             <span className="ico">
               <Plus size={18} />
             </span>

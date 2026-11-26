@@ -561,7 +561,7 @@ export class Controller {
     // (the window was closed and opened again meanwhile) has its own, which this one never clears.
     const abort = new AbortController();
     this.createAbort = abort;
-    const run = this.createProject(opts, abort);
+    const run = timed('controller.create', () => this.createProject(opts, abort), (r) => ({ ok: r?.ok ?? false }))();
     this.creations.set(run, abort);
     try {
       return await run;
@@ -633,6 +633,7 @@ export class Controller {
     try {
       if (signal.aborted) throw new Error('Canceled');
       progress({ step: 'files', message: 'Preparing project files…' });
+      const filing = perf.span('create.files');
       await fs.mkdir(dirname(dir), { recursive: true });
       try {
         await fs.mkdir(dir);
@@ -669,11 +670,13 @@ export class Controller {
       await fs.writeFile(lockPath, JSON.stringify(lock, null, '\t') + '\n');
       own('README.md');
       await fs.writeFile(join(dir, 'README.md'), projectReadme(name));
+      filing();
       const notice = starterNotice();
       const assetsDir = join(resourcesDir(), 'resources', 'starter-assets');
       const withImages = opts.starter === 'business' && opts.sampleImages && existsSync(assetsDir);
       const state = createStarterState(opts.starter, name, withImages, opts.themeId);
       if (withImages) {
+        const importing = perf.span('create.images');
         own('static');
         for (const a of STARTER_ASSETS) {
           const src = join(assetsDir, a.source);
@@ -691,12 +694,15 @@ export class Controller {
           own('NOTICE.md');
           await fs.copyFile(notice, join(dir, 'NOTICE.md'));
         }
+        importing({ images: Object.keys(state.assets.assets).length });
       }
       if (signal.aborted) throw new Error('Canceled');
       own(...SESSION_ENTRIES);
       sessionStarted = true;
       session = await ProjectSession.create(dir, state);
+      const locking = perf.span('create.lock');
       const lockErr = await session.acquireLock(INSTANCE_ID);
+      locking();
       if (lockErr) {
         // Another app opened the new project first: it is that app's now, so nothing here may remove it.
         wrote.clear();
@@ -711,12 +717,12 @@ export class Controller {
         abort.abort();
       };
       staged.on('lock-lost', stop);
-      await trust(dir, await configHash(dir));
+      await timed('create.trust', async () => trust(dir, await configHash(dir)))();
       progress({ step: 'dependencies', message: 'Setting up website tools…', detail: 'Installing the tools that build and preview your site.' });
       own('node_modules');
       let toolsMissing: RuntimeState | null = null;
       try {
-        await prepareDependencies(dir, (line) => progress({ step: 'dependencies', message: 'Setting up website tools…', detail: line.slice(0, 160) }), signal, () => staged.stillOwner());
+        await timed('create.dependencies', () => prepareDependencies(dir, (line) => progress({ step: 'dependencies', message: 'Setting up website tools…', detail: line.slice(0, 160) }), signal, () => staged.stillOwner()))();
       } catch (e) {
         // The tools needed a download and the registry could not be reached (offline, say). The project itself is
         // complete and this app's, so it opens for editing, its preview saying what is missing, with Try again. A
@@ -726,9 +732,11 @@ export class Controller {
       }
       if (signal.aborted) throw new Error('Canceled');
       // From the moment the open project starts closing, the new one is replacing it: there is nothing left to cancel.
-      const way = await this.makeWay(since, signal, () =>
-        progress(toolsMissing ? { step: 'preview', message: 'Opening the project…', detail: 'The website tools could not be downloaded, so the preview waits until you are back online.' } : { step: 'preview', message: 'Starting preview…' })
-      );
+      const way = await timed('create.makeWay', () =>
+        this.makeWay(since, signal, () =>
+          progress(toolsMissing ? { step: 'preview', message: 'Opening the project…', detail: 'The website tools could not be downloaded, so the preview waits until you are back online.' } : { step: 'preview', message: 'Starting preview…' })
+        )
+      )();
       if (!way.ok) {
         refused = way;
         throw new Error(way.message ?? 'The open project was kept.');
@@ -802,7 +810,7 @@ export class Controller {
 
   /** Whether creating a project downloads website tools, decided by the same check setup makes. */
   websiteTools(): Promise<WebsiteTools> {
-    return starterTools(templateFiles());
+    return timed('controller.websiteTools', () => starterTools(templateFiles()), (t) => ({ tools: t ?? null }))();
   }
 
   /**

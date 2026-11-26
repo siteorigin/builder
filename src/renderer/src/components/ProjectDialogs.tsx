@@ -1,4 +1,4 @@
-import { Fragment, useEffect, useMemo, useRef, useState, type CSSProperties } from 'react';
+import { Fragment, useEffect, useLayoutEffect, useMemo, useRef, useState, type CSSProperties } from 'react';
 import { Check, CircleAlert, CloudAlert, CloudDownload, Copy, FileArchive, FolderOpen, Info, LayoutTemplate, ShieldAlert, TriangleAlert } from 'lucide-react';
 import type { DuplicateProjectResult, ProgressEvent, WebsiteTools } from '@shared/api';
 import { MAX_COPY_NAME, projectDisplayName, projectFolderName } from '@shared/project-name';
@@ -10,6 +10,7 @@ import { api, errorText, toast, useStore } from '../store';
 import { loadEditor } from '../lib/editor-module';
 import { usePackPreview, usePreviewExtent } from './PackPreview';
 import { Field, Modal, Spinner, SwitchRow } from './ui';
+import { perfMark, perfMarkAtCommit } from '../lib/perf';
 import './ProjectDialogs.css';
 
 /*
@@ -602,6 +603,11 @@ function NewProjectForm({ onClose }: { onClose: () => void }) {
   const chosenParent = useRef(false);
   const live = useRef(true);
   const stepRef = useRef<ProgressEvent['step'] | null>(null);
+  // The form on screen, and the check of the website tools settled, which Create waits for (src/shared/perf.ts).
+  useLayoutEffect(() => perfMarkAtCommit('newProject.formShown'), []);
+  useLayoutEffect(() => {
+    if (tools !== null) perfMarkAtCommit('newProject.toolsKnown', { tools });
+  }, [tools]);
   useEffect(() => {
     live.current = true;
     void api.dialogs.defaultProjectsFolder().then((d) => !chosenParent.current && setParent(d), () => undefined);
@@ -685,6 +691,7 @@ function NewProjectForm({ onClose }: { onClose: () => void }) {
     stepRef.current = 'files';
     setStepSince(Date.now());
     setProgress({ step: 'files', message: 'Preparing project files…' });
+    perfMark('create.requested', { starter, sampleImages: images });
     let r: { ok: boolean; message?: string };
     try {
       r = await api.projects.create({ name: name.trim(), parentDir: parent, starter, sampleImages: images, themeId: theme.id, attempt: id });

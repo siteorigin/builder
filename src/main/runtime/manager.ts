@@ -102,11 +102,16 @@ const bundledCache = () => (app.isPackaged ? join(process.resourcesPath, 'npm-ca
  */
 async function checkTools(dir: string, caches: string[]): Promise<(ToolsAvailability & { packages: LockedPackage[] }) | null> {
   if (!existsSync(join(dir, 'package-lock.json'))) return null;
+  const checking = perf.span('tools.check');
+  let tools: (ToolsAvailability & { packages: LockedPackage[] }) | null = null;
   try {
     const packages = await lockedPackages(npmDir(), dir, {}, userCache());
-    return { ...cacheCoverage(packages, caches), packages };
+    perf.count('tools.idealTrees');
+    return (tools = { ...cacheCoverage(packages, caches), packages });
   } catch {
     return null;
+  } finally {
+    checking(tools ? { needed: tools.needed, missing: tools.missing } : { needed: null });
   }
 }
 
@@ -139,7 +144,9 @@ export async function prepareDependencies(dir: string, onLine: (line: string) =>
     if (signal?.aborted || !(await mayWrite()) || signal?.aborted) throw new Error('Canceled');
   };
   const npmCli = join(npmDir(), 'bin', 'npm-cli.js');
+  const seeding = perf.span('tools.seedCache');
   let cache = await seedCache();
+  seeding();
   let tools = await checkTools(dir, [cache]);
   // The shipped cache may have what the user cache lost since it was seeded (a cleared or damaged file): seed it again.
   const bundled = bundledCache();
@@ -202,11 +209,13 @@ export async function prepareDependencies(dir: string, onLine: (line: string) =>
     onLine(tools ? 'Downloading the website tools that are not included for this computer…' : 'Setting up the website tools. Some may need to be downloaded…');
     await download();
   }
+  const marking = perf.span('tools.marker');
   const marker = JSON.stringify({ lockHash: await lockHash(dir), preparedAt: new Date().toISOString() });
   // Cancelled or taken over as the install finished: the project may belong to someone else now.
   await stillMine();
   await fs.mkdir(join(dir, '.siteorigin', 'cache'), { recursive: true });
   await fs.writeFile(join(dir, '.siteorigin', 'cache', 'deps.json'), marker);
+  marking();
 }
 
 /**
@@ -228,9 +237,15 @@ async function seedCache(refill = false): Promise<string> {
 type NpmError = Error & { code?: string };
 
 function runNpm(args: string[], dir: string, onLine: (line: string) => void, signal?: AbortSignal): Promise<void> {
+  const running = perf.span('tools.npm', { command: args[1] ?? null, offline: args.includes('--offline') });
+  return runNpmNow(args, dir, onLine, signal).finally(() => running());
+}
+
+function runNpmNow(args: string[], dir: string, onLine: (line: string) => void, signal?: AbortSignal): Promise<void> {
   return new Promise<void>((resolve, reject) => {
     // Cancelled before it started (while the cache was being prepared): an abort event will not come again.
     if (signal?.aborted) return reject(new Error('Canceled'));
+    perf.count('tools.npmRuns');
     const child = spawn(process.execPath, args, {
       cwd: dir,
       env: projectEnv({ ELECTRON_RUN_AS_NODE: '1', npm_config_update_notifier: 'false' }),

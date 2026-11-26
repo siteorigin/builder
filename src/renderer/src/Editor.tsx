@@ -548,7 +548,10 @@ export function Editor() {
       // Switching projects from the editor uses the same New project and Trust dialogs as Welcome, shown over
       // this project: cancelling them, or a project that cannot be made or opened, leaves it as it is.
       if (cmd === 'open-project' || cmd === 'open-project-folder') openProject(undefined, cmd === 'open-project-folder' ? { folder: true } : undefined);
-      if (cmd === 'new-project') setSwitching({ kind: 'new' });
+      if (cmd === 'new-project') {
+        perfMark('newProject.requested', { from: 'menu' });
+        setSwitching({ kind: 'new' });
+      }
       if (cmd === 'duplicate-project') setSwitching({ kind: 'duplicate' });
     };
     // The project behind a switch dialog has closed (the switch happened): the dialog was about it, so it goes too.
