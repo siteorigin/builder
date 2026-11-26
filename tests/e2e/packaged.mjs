@@ -1,12 +1,14 @@
 // P01: the packaged app creates a project and previews it with no system Node on PATH, makes the starter
 // images' responsive copies in its media worker, and serves the preview with the packaged-only frame policy. It carries
-// its own licence and the generated third-party notices, which Help > Third-Party Notices opens (#823).
+// its own licence and the generated third-party notices, which Help > Third-Party Notices opens (#823). On macOS its
+// bundle also declares no camera, microphone, audio capture or Bluetooth use.
 // Written for macOS, Windows and Linux; for now only the local stabilization run takes it, on macOS. APP_BIN overrides
 // the executable.
 import assert from 'node:assert/strict';
 import { _electron as electron } from 'playwright';
-import { readFileSync, rmSync } from 'node:fs';
-import { join } from 'node:path';
+import { execFileSync } from 'node:child_process';
+import { readFileSync, realpathSync, rmSync } from 'node:fs';
+import { dirname, join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { chooseMenu, desktopCursor, desktopIntents } from './harness.mjs';
 
@@ -20,13 +22,22 @@ const defaults = {
   win32: 'dist/win-unpacked/SiteOrigin Builder.exe',
   linux: 'dist/linux-unpacked/siteorigin-builder'
 };
+const executablePath = process.env.APP_BIN ?? defaults[process.platform];
+if (process.platform === 'darwin') {
+  // The bundle that holds this executable: Contents/MacOS/<executable> beside Contents/Info.plist.
+  const plistPath = join(dirname(realpathSync(executablePath)), '..', 'Info.plist');
+  const plist = JSON.parse(execFileSync('/usr/bin/plutil', ['-convert', 'json', '-o', '-', '--', plistPath], { encoding: 'utf8' }));
+  const declared = Object.keys(plist).filter((key) => /^NS(Camera|Microphone|AudioCapture|Bluetooth\w*)UsageDescription$/.test(key));
+  assert.deepEqual(declared, [], 'the bundle declares no camera, microphone, audio capture or Bluetooth use');
+  assert.equal(plist.LSApplicationCategoryType, 'public.app-category.graphics-design', 'the bundle is in Graphics & Design');
+}
 const minimalPath = process.platform === 'win32' ? 'C:\\Windows\\System32;C:\\Windows' : '/usr/bin:/bin';
 // Launched by path, the app does not see Playwright's loader: SITEORIGIN_HEADLESS says a test drives it, so it stays
 // off screen and answers its own native choosers (#494).
 const env = { PATH: minimalPath, SITEORIGIN_USER_DATA: join(WORK, 'u'), SITEORIGIN_HEADLESS: '1' };
 for (const k of ['HOME', 'USERPROFILE', 'APPDATA', 'LOCALAPPDATA', 'TEMP', 'TMP', 'SystemRoot', 'DISPLAY', 'XAUTHORITY', 'XDG_RUNTIME_DIR']) if (process.env[k]) env[k] = process.env[k];
 const app = await electron.launch({
-  executablePath: process.env.APP_BIN ?? defaults[process.platform],
+  executablePath,
   args: process.platform === 'linux' ? ['--no-sandbox'] : [],
   env
 });
@@ -38,6 +49,9 @@ try {
   assert.equal(editor.origin, 'app://editor', 'the packaged editor is served from app://editor');
   assert.match(editor.csp, /default-src 'self'/, 'the editor page carries its content security policy');
   assert.match(editor.csp, /script-src 'self'(;|$)/, 'the editor runs only its own scripts');
+
+  // With no Bluetooth use declared, macOS would end the app if a page reached for it.
+  if (process.platform === 'darwin') assert.equal(await win.evaluate(() => 'bluetooth' in navigator), false, 'Web Bluetooth is off');
 
   // A packaged build registers none of the development-only builderTest handlers (#494). Driven by a test it still
   // answers its own native choosers, so a chooser nobody answered is closed and recorded, never shown on screen.

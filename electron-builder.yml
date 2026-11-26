@@ -29,20 +29,30 @@ extraResources:
     to: resources/packs-dev
 
 mac:
-  category: public.app-category.developer-tools
+  category: public.app-category.graphics-design
+  # Electron's stock Info.plist declares uses the app doesn't have: it denies every permission request except
+  # clipboard writes, and src/main/index.ts turns Web Bluetooth off. A null here removes the key from the bundle.
+  extendInfo:
+    NSAudioCaptureUsageDescription: null
+    NSBluetoothAlwaysUsageDescription: null
+    NSBluetoothPeripheralUsageDescription: null
+    NSCameraUsageDescription: null
+    NSMicrophoneUsageDescription: null
   target: [dmg]
   icon: build/icon.png
-  # Signing uses a "Developer ID Application" identity from the keychain when one is available
-  # (or CSC_LINK / CSC_KEY_PASSWORD in CI). Notarization runs when APPLE_ID credentials are set.
+  # Releases are built by hand (README.md, Releasing). build/after-pack.cjs signs every macOS build ad-hoc.
+  # electron-builder then signs it again when it finds a "Developer ID Application" identity (in the keychain,
+  # or from CSC_LINK / CSC_KEY_PASSWORD), and notarizes it when APPLE_ID, APPLE_APP_SPECIFIC_PASSWORD and
+  # APPLE_TEAM_ID are set.
   hardenedRuntime: true
   gatekeeperAssess: false
   entitlements: build/entitlements.mac.plist
   entitlementsInherit: build/entitlements.mac.plist
-  # Notarizes when APPLE_ID, APPLE_APP_SPECIFIC_PASSWORD and APPLE_TEAM_ID are set (see release workflow).
 win:
   target: [nsis]
   icon: build/icon.png
 linux:
   target: [AppImage]
   icon: build/icon.png
-  category: Development
+  # A main category and an additional one that goes with it, from the freedesktop.org menu specification.
+  category: Graphics;Publishing

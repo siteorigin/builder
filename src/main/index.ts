@@ -55,6 +55,9 @@ controller.thumbCapture = (server, path) =>
 
 // Never touch the macOS keychain (Chromium would otherwise use it for its own encrypted storage).
 app.commandLine.appendSwitch('use-mock-keychain');
+// The packaged macOS app declares no Bluetooth use (electron-builder.yml), and macOS ends a process that reaches for
+// Bluetooth without declaring it. Web Bluetooth gets to the hardware without a permission request, so it is off.
+if (process.platform === 'darwin') app.commandLine.appendSwitch('disable-blink-features', 'WebBluetooth');
 
 // Automated runs never put a window on screen or take focus. Playwright's Electron loader defines
 // __playwright_run before this module loads; SITEORIGIN_HEADLESS=1 forces it for other drivers, and
