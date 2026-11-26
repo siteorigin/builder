@@ -11,6 +11,7 @@ const { tmpdir } = require('node:os');
 const { listPackage, extractFile } = require('@electron/asar');
 const notices = require('./notices.cjs');
 const { copyNpm } = require('./copy-npm.cjs');
+const { stripMacOnly } = require('./strip-mac-cache.cjs');
 
 const ARCH = { 0: 'ia32', 1: 'x64', 2: 'armv7l', 3: 'arm64', 4: 'universal' };
 
@@ -42,6 +43,11 @@ exports.default = async function afterPack(context) {
   }
   rmSync(work, { recursive: true, force: true });
   if (!existsSync(cache)) throw new Error('Bundled dependency cache was not created.');
+  // The Mac app ships without the starter's macOS-only native packages, which Apple's notary rejects (strip-mac-cache.cjs).
+  if (context.electronPlatformName === 'darwin') {
+    const removed = stripMacOnly(cache, join(root, 'templates/sveltekit-brochure/files/package-lock.json'));
+    console.log(`Left out of the Mac npm cache, downloaded with the first project: ${removed.join(', ')}`);
+  }
 
   writeNotices(root, resources, starter);
 
