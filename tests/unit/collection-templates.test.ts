@@ -163,7 +163,7 @@ describe('entry fields', () => {
     expect(pageOf(files, 'winter-workshop')).toContain('{"Next: Spring open studio"}');
   });
 
-  it.each(['foundation', 'editorial', 'signal'])('names the links to the posts beside one, with one arrow, in a named nav (%s)', (theme) => {
+  it.each(['foundation', 'editorial', 'signal'])('names the links to the posts beside one, as two links of one kind, in a named nav (%s)', (theme) => {
     const s = run(blog(theme), { type: 'entry.update', collectionId: 'posts', entryId: 'en_secret', draft: false });
     expect(s.site.themeId).toBe(theme);
     const c = s.collections.posts;
@@ -175,9 +175,9 @@ describe('entry fields', () => {
     expect((article.nodes[nav.children[0]] as ElementNode).children.map((id) => article.nodes[id].name)).toEqual(['Previous entry', 'Next entry']);
     const prev = Object.values(article.nodes).find((n) => n.name === 'Previous entry') as LinkNode;
     const next = Object.values(article.nodes).find((n) => n.name === 'Next entry') as LinkNode;
-    // A plain link has no arrow; a text button has the theme's one, after it. Neither adds an icon of its own.
+    // Two links of one kind (no theme arrow on one side only), and neither adds an icon of its own.
     expect(prev).toMatchObject({ appearance: 'link', label: 'Previous: Spring open studio', link: { type: 'entry', target: 'en_spring' } });
-    expect(next).toMatchObject({ appearance: 'text', label: 'Next: Winter workshop', link: { type: 'entry', target: 'en_winter' } });
+    expect(next).toMatchObject({ appearance: 'link', label: 'Next: Winter workshop', link: { type: 'entry', target: 'en_winter' } });
     expect([prev.icon, next.icon]).toEqual([undefined, undefined]);
     const page = generateProject(publishedState(s)).get('src/routes/blog/secret-plans/+page.svelte')!;
     expect(page).toMatch(/<nav [^>]*aria-label=\{"Previous and next"\}>/);

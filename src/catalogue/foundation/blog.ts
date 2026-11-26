@@ -2,7 +2,9 @@
  * Blog feeds: sections that show a collection's published entries (posts, case studies) anywhere on the site, newest
  * first, worked out each time the site is generated (see shared/entry-feed.ts). A placement chooses the collection,
  * a category or tag and how many to show; a post published, backdated, retitled or turned back into a draft changes
- * every feed with nothing to edit here. Each card links to its entry by ID and states its date in a `<time>` element.
+ * every feed with nothing to edit here. Each card is one link to its entry by ID, named by the entry's title, with
+ * the title a heading inside it, and states its date in a `<time>` element. A feed that matches no published entry
+ * leaves nothing on the page for visitors (see base.css.ts), while the editor still shows its heading.
  */
 import type { ScalarPropSchema } from '@shared/types';
 import { P, tok } from '../dsl';
@@ -33,7 +35,22 @@ function query(count?: { def: number; max: number }): Record<string, ScalarPropS
   });
 }
 
-const metaStyles = { layout: 'row', wrap: true, columnGap: tok('space.md'), textStyle: tok('text.small'), ...mutedStyles } as const;
+/**
+ * The level of each entry's title, one below the section's heading: Heading 3 under the default Heading 2, or Heading 2
+ * for a section that has no heading of its own (Featured post's default).
+ */
+const titleLevel = (level: 'h2' | 'h3') =>
+  ({
+    ...P.choice('Entry title level', level, [
+      ['h2', 'Heading 2'],
+      ['h3', 'Heading 3'],
+      ['h4', 'Heading 4']
+    ]),
+    description: 'One level below the section’s heading: Heading 3 under a Heading 2, Heading 2 when the section has no heading of its own under the page title.'
+  }) as ScalarPropSchema;
+
+// The theme puts a dot between the date and the author (base.css.ts, a post's date-and-byline row), spaced as the gap.
+const metaStyles = { layout: 'row', wrap: true, columnGap: tok('space.sm'), textStyle: tok('text.small'), ...mutedStyles } as const;
 const DESCRIPTION_TAIL = 'Drafts are left out; on a post’s own page that post is left out, so it works as “Related posts”.';
 const TAGS = ['blog', 'posts', 'articles', 'latest', 'recent', 'news', 'journal', 'feed', 'collection', 'entries', 'case studies', 'related posts'];
 
@@ -56,6 +73,7 @@ export const blogFeatured = managed({
     eyebrow: P.str('Eyebrow', ''),
     heading: P.str('Heading', ''),
     headingLevel: headingLevel('h2'),
+    titleLevel: titleLevel('h2'),
     lead: P.text('Supporting text', ''),
     ...query(),
     items: P.list('Featured entry', 'Entry', entryFields(), [], { titleField: 'title', min: 0, max: 1, feed: 'entries' })
@@ -81,14 +99,16 @@ export const blogFeatured = managed({
     sectionShell(b, [
       headingBlock(b),
       b.repeat('featured', 'items', [
-        // Side by side from tablets, each half the card; a post without a picture has its text across the whole card.
-        b.el('card', 'article', { name: 'Card', when: { $item: 'pageLink' }, styles: { base: { layout: 'stack', gap: tok('space.xl') }, tablet: { layout: 'row', align: 'center' } } }, [
-          b.image('card-image', { $item: 'image' }, { name: 'Featured image', when: { $item: 'image' }, styles: { width: 'fill', aspectRatio: '3/2', radius: tok('radius.lg'), objectFit: 'cover' } }),
+        // Side by side from tablets up, each half the card; a post without a picture has its text across the whole card.
+        // The whole card is the entry's link, named by its title.
+        b.el('card', 'article', { name: 'Card', when: { $item: 'pageLink' }, link: { $item: 'pageLink' }, ariaLabel: { $item: 'title' }, styles: { base: { layout: 'stack', gap: tok('space.lg') }, tablet: { layout: 'row', align: 'center', gap: tok('space.xl') }, desktop: { layout: 'row', align: 'center', gap: tok('space.xl') } } }, [
+          // Free to shrink below the picture's own width, so the row splits evenly.
+          b.image('card-image', { $item: 'image' }, { name: 'Featured image', when: { $item: 'image' }, styles: { width: 'fill', minWidth: '0', aspectRatio: '3/2', radius: tok('radius.lg'), objectFit: 'cover' } }),
           b.el('card-body', 'div', { name: 'Text', styles: { layout: 'stack', width: 'fill', gap: tok('space.md') } }, [
             b.text('card-category', 'p', { $item: 'category' }, { name: 'Category', when: { $item: 'category' }, styles: eyebrowStyles }),
-            b.link('card-title', { $item: 'pageLink' }, { $item: 'title' }, 'plain', { name: 'Title', styles: { textStyle: tok('text.h2') } }),
+            b.text('card-title', { $prop: 'titleLevel' }, { $item: 'title' }, { name: 'Title', styles: { textStyle: tok('text.h2') } }),
             meta(b, 'card-meta'),
-            b.text('card-text', 'p', { $item: 'excerpt' }, { name: 'Excerpt', when: { $item: 'excerpt' }, styles: { textStyle: tok('text.lead'), ...mutedStyles } })
+            b.text('card-text', 'p', { $item: 'excerpt' }, { name: 'Excerpt', when: { $item: 'excerpt' }, styles: mutedStyles })
           ])
         ])
       ])
@@ -107,6 +127,7 @@ export const blogGrid = managed({
     eyebrow: P.str('Eyebrow', ''),
     heading: P.str('Heading', 'Latest articles'),
     headingLevel: headingLevel('h2'),
+    titleLevel: titleLevel('h3'),
     lead: P.text('Supporting text', ''),
     ...query({ def: 3, max: 24 }),
     items: P.list('Entries', 'Entry', entryFields(), [], { titleField: 'title', min: 0, max: 24, feed: 'entries' })
@@ -137,11 +158,13 @@ export const blogGrid = managed({
       b.el('grid', 'ul', { name: 'Card grid', collapseEmpty: true, styles: { base: { layout: 'grid', columns: 1, gap: tok('space.xl') }, tablet: { columns: 2 }, desktop: { columns: 3 } } }, [
         b.repeat('cards', 'items', [
           b.el('card-item', 'li', { name: 'Card item', when: { $item: 'pageLink' } }, [
-            // Each card is a bordered box (no fill, so the section's tone still decides the text colours), so a post without a picture is plainly its own and does not read as the caption of the picture beside it.
-            b.el('card', 'article', { name: 'Card', styles: { layout: 'stack', gap: tok('space.sm'), paddingBlock: tok('space.md'), paddingInline: tok('space.md'), border: tok('border.default'), radius: tok('radius.lg') } }, [
+            // Each card is a bordered box (no fill, so the section's tone still decides the text colours), so a post without
+            // a picture is plainly its own and does not read as the caption of the picture beside it. The blog's own index
+            // pages show the same card (generator/archive.ts). The whole card is the entry's link, named by its title.
+            b.el('card', 'article', { name: 'Card', link: { $item: 'pageLink' }, ariaLabel: { $item: 'title' }, styles: { layout: 'stack', gap: tok('space.sm'), height: '100%', paddingBlock: tok('space.md'), paddingInline: tok('space.md'), border: tok('border.default'), radius: tok('radius.lg') } }, [
               b.image('card-image', { $item: 'image' }, { name: 'Card image', when: { $item: 'image' }, styles: { width: 'fill', aspectRatio: '3/2', radius: tok('radius.md'), objectFit: 'cover', marginBlockEnd: tok('space.xs') } }),
               b.text('card-category', 'p', { $item: 'category' }, { name: 'Category', when: { $item: 'category' }, styles: eyebrowStyles }),
-              b.link('card-title', { $item: 'pageLink' }, { $item: 'title' }, 'plain', { name: 'Title', styles: { textStyle: tok('text.h3') } }),
+              b.text('card-title', { $prop: 'titleLevel' }, { $item: 'title' }, { name: 'Title', styles: { textStyle: tok('text.h3') } }),
               meta(b, 'card-meta'),
               b.text('card-text', 'p', { $item: 'excerpt' }, { name: 'Excerpt', when: { $item: 'excerpt' }, styles: mutedStyles })
             ])
@@ -163,6 +186,7 @@ export const blogList = managed({
     eyebrow: P.str('Eyebrow', ''),
     heading: P.str('Heading', 'Recent posts'),
     headingLevel: headingLevel('h2'),
+    titleLevel: titleLevel('h3'),
     lead: P.text('Supporting text', ''),
     ...query({ def: 5, max: 24 }),
     items: P.list('Entries', 'Entry', entryFields(), [], { titleField: 'title', min: 0, max: 24, feed: 'entries' })
@@ -184,9 +208,9 @@ export const blogList = managed({
       b.el('list', 'ul', { name: 'List', collapseEmpty: true, styles: { base: { layout: 'stack', gap: '0', maxWidth: tok('container.reading') } } }, [
         b.repeat('rows', 'items', [
           b.el('row-item', 'li', { name: 'Row item', when: { $item: 'pageLink' } }, [
-            b.el('row', 'article', { name: 'Row', styles: { layout: 'stack', gap: tok('space.xs'), paddingBlock: tok('space.lg'), borderBlockEnd: tok('border.default') } }, [
+            b.el('row', 'article', { name: 'Row', link: { $item: 'pageLink' }, ariaLabel: { $item: 'title' }, styles: { layout: 'stack', gap: tok('space.xs'), paddingBlock: tok('space.lg'), borderBlockEnd: tok('border.default') } }, [
               b.text('row-category', 'p', { $item: 'category' }, { name: 'Category', when: { $item: 'category' }, styles: eyebrowStyles }),
-              b.link('row-title', { $item: 'pageLink' }, { $item: 'title' }, 'plain', { name: 'Title', styles: { textStyle: tok('text.h3') } }),
+              b.text('row-title', { $prop: 'titleLevel' }, { $item: 'title' }, { name: 'Title', styles: { textStyle: tok('text.h3') } }),
               meta(b, 'row-meta'),
               b.text('row-text', 'p', { $item: 'excerpt' }, { name: 'Excerpt', when: { $item: 'excerpt' }, styles: mutedStyles })
             ])

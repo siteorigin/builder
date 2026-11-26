@@ -131,6 +131,16 @@ ${SURFACES}
 :not(.so-btn) > .so-link__icon--end { margin-inline-start: 0.35em; }
 /* A whole card as one link: it keeps the card's own layout and colours (any rule on the card wins). */
 :where(.so-card-link) { display: block; color: inherit; text-decoration: none; }
+/* A blog card or row (Featured post, Post grid, Post list) is one link: its title underlines while the pointer is on it. */
+.so-card-link:hover :is(${ends('__card-title')}, ${ends('__row-title')}) { text-decoration: underline; text-decoration-thickness: 1px; text-underline-offset: 0.15em; }
+/* A feed that matches no published entry leaves nothing for visitors: not its heading over an empty space. The editor
+   shows it again while editing (src/runtime/bridge.client.js), so the author can still find and change it. */
+:is(${ends('-blog-grid__root')}, ${ends('-blog-list__root')}):not(:has(li)),
+${ends('-blog-featured__root')}:not(:has(${ends('__card')})) { display: none; }
+/* A post's line of date, author and reading time (a component's "Date and byline" row, any copy of it, or the line in
+   an article layout's header) divides its items with a dot, ending the item before it so a wrapped line never starts
+   with one; screen readers skip it. Only these lines: a paragraph an author writes with a date in it keeps its words. */
+:where(${ends('__meta')}, ${ends('__card-meta')}, ${ends('__row-meta')}, article > header p):where(:has(> time, > * > time)) > :where(:not(:last-child))::after { content: '\\00B7'; content: '\\00B7' / ''; margin-inline-start: var(--so-space-sm); }
 /* A thumbnail that opens full size (a gallery photo): a badge in its corner says so, on touch screens too. */
 .so-action--image { position: relative; cursor: zoom-in; }
 .so-action--image::after {

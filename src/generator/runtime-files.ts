@@ -155,6 +155,11 @@ export const IMAGE_SVELTE = `<script>
 	picture {
 		display: contents;
 	}
+	/* With the <picture> laid out as its contents, its <source> elements would each be an item of a flex or grid
+	   parent, taking a gap of their own above the picture. They are never drawn, so they take no place either. */
+	source {
+		display: none;
+	}
 </style>
 `;
 
