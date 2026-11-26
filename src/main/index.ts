@@ -12,7 +12,7 @@ import { installedCatalogue, loadInstalledPacks, packPreview, packRoots } from '
 import { createLeaveGate, type LeaveAnswer } from './leave-gate';
 import { forwardsKey, menuKeyCopy } from './history-keys';
 import { createMenuCommands, type MenuCommand } from './menu-commands';
-import { appMenuTemplate } from './app-menu';
+import { appMenuTemplate, noticesFile } from './app-menu';
 import { writingMenuTemplate } from './writing-menu';
 import { currentShortcuts, loadSettings, localCheckEpoch, localCheckRecorder, localEndpoint, pinRecent, providerStatuses, recents, removeRecent, setKey, updateSettings, getKey } from './settings';
 import { Orchestrator } from '@agent/orchestrator';
@@ -853,7 +853,17 @@ function buildMenu() {
     if (!headless && (!win || focused !== win)) return;
     controller.send('menu:history', { action, fromKey: menuKeyCopy(event, process.platform === 'darwin') });
   };
-  Menu.setApplicationMenu(Menu.buildFromTemplate(appMenuTemplate(process.platform, controller.openingKey !== null, { command: chooseCommand, history })));
+  Menu.setApplicationMenu(Menu.buildFromTemplate(appMenuTemplate(process.platform, controller.openingKey !== null, { command: chooseCommand, history, openNotices })));
+}
+
+/** Help > Third-Party Notices: the notices file, in the desktop's own viewer (recorded instead in an automated run). */
+function openNotices() {
+  const file = noticesFile(app.isPackaged, process.resourcesPath, app.getAppPath());
+  void shell.openPath(file).then((problem) => {
+    if (!problem) return;
+    const detail = app.isPackaged ? `${file}\n\n${problem}` : `${file}\n\n${problem}\n\nnpm run build writes the notices for a development build.`;
+    void dialog.showMessageBox({ type: 'warning', message: 'The third-party notices could not be opened.', detail });
+  });
 }
 
 // One app instance at a time: a second one would race this one's settings, recents and project locks.

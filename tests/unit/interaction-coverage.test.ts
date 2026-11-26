@@ -43,10 +43,10 @@ describe('what the readers find in the app', () => {
   });
 
   it('keeps each platform’s accelerators: Redo on Ctrl+Y on Windows, Shift+Cmd/Ctrl+Z elsewhere', () => {
-    const redo = (p: NodeJS.Platform) => (appMenuTemplate(p, true, { command: () => undefined, history: () => () => undefined }).find((m) => m.label === 'Edit')!.submenu as MenuItemConstructorOptions[]).find((i) => i.id === 'edit-redo')!.accelerator;
+    const redo = (p: NodeJS.Platform) => (appMenuTemplate(p, true, { command: () => undefined, history: () => () => undefined, openNotices: () => undefined }).find((m) => m.label === 'Edit')!.submenu as MenuItemConstructorOptions[]).find((i) => i.id === 'edit-redo')!.accelerator;
     expect([redo('win32'), redo('darwin'), redo('linux')]).toEqual(['Control+Y', 'Shift+CommandOrControl+Z', 'Shift+CommandOrControl+Z']);
     // Export and Close Project are offered only with a project open.
-    const file = (p: NodeJS.Platform, open: boolean) => (appMenuTemplate(p, open, { command: () => undefined, history: () => () => undefined }).find((m) => m.label === 'File')!.submenu as MenuItemConstructorOptions[]).filter((i) => i.id).map((i) => [i.id, i.enabled]);
+    const file = (p: NodeJS.Platform, open: boolean) => (appMenuTemplate(p, open, { command: () => undefined, history: () => () => undefined, openNotices: () => undefined }).find((m) => m.label === 'File')!.submenu as MenuItemConstructorOptions[]).filter((i) => i.id).map((i) => [i.id, i.enabled]);
     for (const p of ['darwin', 'win32', 'linux'] as const)
       expect([file(p, true), file(p, false)], p).toEqual([
         [['export', true], ['close-project', true]],

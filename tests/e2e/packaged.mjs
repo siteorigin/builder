@@ -1,12 +1,14 @@
 // P01: the packaged app creates a project and previews it with no system Node on PATH, makes the starter
-// images' responsive copies in its media worker, and serves the preview with the packaged-only frame policy.
+// images' responsive copies in its media worker, and serves the preview with the packaged-only frame policy. It carries
+// its own licence and the generated third-party notices, which Help > Third-Party Notices opens (#823).
 // Written for macOS, Windows and Linux; for now only the local stabilization run takes it, on macOS. APP_BIN overrides
 // the executable.
 import assert from 'node:assert/strict';
 import { _electron as electron } from 'playwright';
-import { rmSync } from 'node:fs';
+import { readFileSync, rmSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
+import { chooseMenu, desktopCursor, desktopIntents } from './harness.mjs';
 
 /** The preview may be framed by the packaged editor's origin only, never by a loopback dev server. */
 const PACKAGED_FRAME_POLICY = 'frame-ancestors app://editor';
@@ -50,6 +52,29 @@ try {
   assert.equal(picked, null, 'an unanswered folder chooser chooses nothing');
   const choosers = await app.evaluate(() => globalThis[Symbol.for('siteorigin.desktopFixtures')].events(0).entries.filter((e) => e.type === 'chooser').map((e) => [e.title, e.outcome]));
   assert.deepEqual(choosers, [['Choose a folder', 'unanswered']], 'it was closed and recorded, not shown');
+
+  // The app's own licence and the notices the build generated sit in its resources, on every platform (#823).
+  const resources = await app.evaluate(() => process.resourcesPath);
+  assert.equal(readFileSync(join(resources, 'LICENSE.txt'), 'utf8'), readFileSync('LICENSE', 'utf8'), 'the app ships its own licence');
+  const notices = readFileSync(join(resources, 'THIRD_PARTY_NOTICES.txt'), 'utf8');
+  console.log('notices', `${(notices.length / 1024).toFixed(0)} KB`, notices.match(/^Packages: .*$/m)?.[0]);
+  const listed = [
+    ['React, compiled into the editor', /^react \d[^\n]*\nLicence: MIT\n(Source: [^\n]*\n)?Included in: [^\n]*compiled into the editor/m],
+    ['CodeMirror', /^@codemirror\/view \d/m],
+    ['Radix', /^@radix-ui\/react-dropdown-menu \d/m],
+    ['Lucide with its Feather attribution', /^lucide-react \d[\s\S]*?Cole Bemis/m],
+    ['the shipped Svelte compiler', /^svelte \d[^\n]*\n[\s\S]*?Included in: [^\n]*shipped with the app/m],
+    ['sharp, unpacked from the archive', /^sharp \d/m],
+    ['npm', /^npm \d[^\n]*\n[\s\S]*?Included in: npm, which sets projects up/m],
+    ['the starter’s cached SvelteKit', /^@sveltejs\/kit \d[^\n]*\n[\s\S]*?Included in: the website starter/m],
+    ['the Inter font with the OFL', /^Font: Inter \(Inter Variable\)\nLicence: OFL-1\.1\n[\s\S]*?SIL OPEN FONT LICENSE/m]
+  ];
+  for (const [what, re] of listed) assert.match(notices, re, `the notices list ${what}`);
+  // Help > Third-Party Notices hands that file to the desktop (recorded, as a test drives the app).
+  const before = await desktopCursor(app);
+  await chooseMenu(app, ['Help', 'Third-Party Notices']);
+  const opened = (await desktopIntents(app, before)).map((e) => [e.kind, e.target]);
+  assert.deepEqual(opened, [['open-path', join(resources, 'THIRD_PARTY_NOTICES.txt')]], 'Help > Third-Party Notices opens the notices');
 
   const progress = [];
   await win.exposeFunction('__progress', (p) => progress.push(p));

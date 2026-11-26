@@ -2533,6 +2533,20 @@ export const INTERACTIONS: Interaction[] = [
     gaps: [{ missing: 'Tests quit through the app, not through Quit in the macOS app menu or the File menu on Windows and Linux; the rest of the macOS app menu (About, Hide, Services) is Electron’s own', owner: 'desktop' }]
   },
   {
+    id: 'desktop.notices',
+    area: 'desktop',
+    intent: 'Read the licences of what the app is made of',
+    start: 'The app at Welcome or with a project open',
+    routes: ['menu:Help > Third-Party Notices'],
+    outcome: 'The installed app carries its own licence and a generated notices file with the full licence text of every bundled package and font; Help > Third-Party Notices opens that file',
+    scenario: 'welcome · none',
+    builds: ['dev', 'packaged'],
+    proof: [
+      { test: 'tests/e2e/packaged.mjs', kind: 'packaged' },
+      { test: 'tests/unit/notices.test.ts', kind: 'unit' }
+    ]
+  },
+  {
     id: 'desktop.system-menus',
     area: 'desktop',
     intent: 'Use the Edit, View and Window menu items the system supplies',
