@@ -448,7 +448,7 @@ describe('issue 584: the web app manifest and home-screen icons through the expo
     const dest = join(temp('out'), 'site');
     expect((await c.buildStaticTo(dest)).ok).toBe(true);
     for (const f of ['apple-touch-icon.png', 'icon-192.png', 'icon-512.png']) expect(await centre(readFileSync(join(dest, f)))).toEqual([255, 0, 0]);
-    for (const image of icoImages(readFileSync(join(dest, 'favicon.ico')))) expect(await centre(image.png)).toEqual([255, 0, 0]);
+    expect(await Promise.all(icoImages(readFileSync(join(dest, 'favicon.ico'))).map((i) => centre(i.png)))).toEqual(Array(3).fill([255, 0, 0]));
     // The tab's own favicon is the picture itself, which the website keeps.
     expect(readFileSync(join(dest, 'assets/logo-1a2b3c4d.png')).equals(readFileSync(join(dir, 'static/assets/logo-1a2b3c4d.png')))).toBe(true);
   }, 30_000);

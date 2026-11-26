@@ -237,6 +237,7 @@ describe('what the icons are made from', () => {
     ]);
     const chosen = withFavicon(tmp(), Buffer.from('png'));
     expect(siteIconSet(chosen).source).toEqual({ kind: 'file', file: 'static/assets/logo-1a2b3c4d.png', mime: 'image/png' });
+    expect(siteIconSet(chosen).icons).toContainEqual({ path: 'static/favicon.ico', size: 48, ico: [16, 32, 48] });
     // A hand edit pointing the favicon at a document, or naming the site with something other than text.
     chosen.assets.assets.as_logo.kind = 'document';
     expect(siteIconSet(chosen).source.kind).toBe('svg');
@@ -251,6 +252,7 @@ describe('what the icons are made from', () => {
       expect(validateRoute(`/${f}/`)).not.toBeNull();
       expect(heldAsMedia(`static/${f}`)).toBe(f === 'favicon.svg');
     }
+    expect(heldAsMedia('static/favicon.ico')).toBe(false);
     expect(heldAsMedia('static/assets/logo-1a2b3c4d.png')).toBe(true);
     expect(heldAsMedia('static/icons/apple-touch-icon.png')).toBe(true);
   });
@@ -298,13 +300,32 @@ describe('drawing the icons', () => {
     }
     const jpeg = await sharp({ create: { width: 64, height: 64, channels: 3, background: '#0000ff' } }).jpeg().toBuffer();
     const grey = await sharp({ create: { width: 64, height: 64, channels: 3, background: '#777777' } }).toColourspace('b-w').png().toBuffer();
-    for (const [data, mime] of [[jpeg, 'image/jpeg'], [grey, 'image/png']] as const) for (const image of await draw(data, mime)) expect((await sharp(image.png).metadata()).channels).toBe(4);
+    expect((await sharp(grey).metadata()).channels).toBe(1);
+    for (const [data, mime] of [[jpeg, 'image/jpeg'], [grey, 'image/png']] as const) {
+      const images = await draw(data, mime);
+      expect(images).toHaveLength(3);
+      for (const image of images) {
+        expect(await sharp(image.png).metadata()).toMatchObject({ width: image.width, height: image.height, depth: 'uchar', channels: 4 });
+        expect((await pixel(image.png, image.width / 2, image.width / 2)).a).toBe(255);
+      }
+    }
+    // A wide picture is fitted whole, as in the PNG icons: both its ends are kept, with padding above.
+    for (const image of await draw(await wideBanner(), 'image/png')) {
+      const middle = image.width / 2;
+      for (const x of [0, image.width - 1]) {
+        const end = await pixel(image.png, x, middle);
+        expect(end.b).toBeGreaterThan(end.r);
+      }
+      expect((await pixel(image.png, middle, 1)).a).toBe(0);
+    }
   });
 
   it('hands favicon.ico back from the worker among the other icons', async () => {
     const set = siteIconSet(fresh());
     const reply = await handleVariantRequest({ id: 1, kind: 'icons', data: new Uint8Array(Buffer.from(set.monogram)), mime: 'image/svg+xml', width: 0, icons: set.icons });
-    expect(reply.ok && reply.icons).toHaveLength(set.icons.length);
+    const replied = reply.ok ? (reply.icons ?? []) : [];
+    expect(replied).toHaveLength(set.icons.length);
+    expect(icoImages(Buffer.from(replied[set.icons.findIndex((i) => i.path === `static/${FAVICON_ICO}`)])).map((i) => i.width)).toEqual([16, 32, 48]);
     // And through the maker, whose requests carry the sizes it is made at.
     setSiteIconRenderer(inProcess);
     const drawn = await new SiteIconMaker().make(tmp(), fresh());

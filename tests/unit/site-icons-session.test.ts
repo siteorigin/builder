@@ -218,7 +218,9 @@ describe('the website’s icons in a project', () => {
     expect(await centre(readFileSync(join(d, 'static/apple-touch-icon.png')))).toEqual({ r: 0, g: 0, b: 255 });
     // Choosing no favicon, and undoing that, takes favicon.ico to the monogram and back with the other icons.
     expect((await s.apply({ operations: [{ type: 'site.update', favicon: null }] }, { label: 'No favicon' })).ok).toBe(true);
-    expect(await at(icoImages(readFileSync(join(d, 'static', FAVICON_ICO)))[2].png, 1, 1)).toEqual({ r: 0x1f, g: 0x5a, b: 0x4c });
+    const corners = await Promise.all(icoImages(readFileSync(join(d, 'static', FAVICON_ICO))).map((i) => at(i.png, 1, 1)));
+    expect(corners).toEqual(Array(3).fill({ r: 0x1f, g: 0x5a, b: 0x4c }));
+    expect(manifest(d)[`static/${FAVICON_ICO}`]).toBe(sha(readFileSync(join(d, 'static', FAVICON_ICO))));
     expect((await s.undo()).ok).toBe(true);
     expect(await ico()).toEqual(Array(3).fill({ r: 0, g: 0, b: 255 }));
   });
@@ -283,21 +285,21 @@ describe('the website’s icons in a project', () => {
     expect(s.conflicts).toEqual([]);
   });
 
-  it('never replace a file of someone else’s at an icon’s address, whether or not they can be made', async () => {
+  it.each(['static/apple-touch-icon.png', 'static/favicon.ico'])('never replace a file of someone else’s at %s, whether or not the icons can be made', async (theirs) => {
     const r = renderer();
     r.fail = true;
     const d = tmp();
     await (await create(d)).close();
-    // An older project with its own home-screen icon, opened by this version.
-    writeFileSync(join(d, 'static/apple-touch-icon.png'), 'my own icon');
+    // An older project with its own icon there, opened by this version.
+    writeFileSync(join(d, theirs), 'my own icon');
     let s = await open(d);
-    expect(s.conflicts.map((c) => c.path)).toEqual(['static/apple-touch-icon.png']);
+    expect(s.conflicts.map((c) => c.path)).toEqual([theirs]);
     await s.close();
     r.fail = false;
     s = await open(d);
-    expect(readFileSync(join(d, 'static/apple-touch-icon.png'), 'utf8')).toBe('my own icon');
-    expect(s.conflicts.map((c) => c.path)).toEqual(['static/apple-touch-icon.png']);
-    expect(manifest(d)['static/apple-touch-icon.png']).toBeUndefined();
+    expect(readFileSync(join(d, theirs), 'utf8')).toBe('my own icon');
+    expect(s.conflicts.map((c) => c.path)).toEqual([theirs]);
+    expect(manifest(d)[theirs]).toBeUndefined();
     // The others are written and claimed as usual.
     expect(manifest(d)['static/icon-192.png']).toBe(sha(readFileSync(join(d, 'static/icon-192.png'))));
   });
