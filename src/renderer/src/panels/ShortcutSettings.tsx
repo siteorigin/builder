@@ -1,9 +1,8 @@
 import { useEffect, useState, type KeyboardEvent } from 'react';
 import { DEFAULT_SHORTCUTS, MAC_SYSTEM_HINT, shortcutHint } from '@shared/shortcuts';
-import { recordedPress } from '../lib/shortcut-keys';
+import { recordedPress, shortcutLabel } from '../lib/shortcut-keys';
 import { api, setState } from '../store';
 import { InlineRow } from './LocalModelSettings';
-import { platformKeys } from './CopyPaste';
 
 const errorText = (e: unknown) => (e instanceof Error && e.message ? e.message.replace(/^Error invoking remote method '[^']+': (?:Error: )?/, '') : 'Something went wrong.');
 
@@ -52,7 +51,7 @@ export function AskAiShortcut({ binding, save }: { binding: string; save: (askAi
     if (press.binding === binding) return setProblem(null);
     void commit(press.binding);
   };
-  const current = platformKeys(shortcutHint(binding));
+  const current = shortcutLabel(shortcutHint(binding), api.platform);
   const isDefault = binding === DEFAULT_SHORTCUTS.askAi;
   return (
     <InlineRow id="settings-ask-ai-key" label="Ask AI" hint={recording ? `Press the new shortcut, or Esc to cancel.${api.platform === 'darwin' ? ` ${MAC_SYSTEM_HINT}` : ''}` : 'Opens the AI chat about what’s selected, from anywhere in the editor.'} error={problem}>
@@ -78,7 +77,7 @@ export function AskAiShortcut({ binding, save }: { binding: string; save: (askAi
         </button>
         {!isDefault && (
           <button type="button" className="btn btn-sm" disabled={busy || recording} onClick={() => void commit(DEFAULT_SHORTCUTS.askAi)}>
-            Reset to {platformKeys(shortcutHint(DEFAULT_SHORTCUTS.askAi))}
+            Reset to {shortcutLabel(shortcutHint(DEFAULT_SHORTCUTS.askAi), api.platform)}
           </button>
         )}
       </div>

@@ -7,6 +7,7 @@ import { starterProblem } from '@catalogue/starters';
 import { isImeComposing } from '../lib/ime';
 import { endEditingHold } from '../lib/leave';
 import { api, errorText, toast, useStore } from '../store';
+import { loadEditor } from '../lib/editor-module';
 import { usePackPreview, usePreviewExtent } from './PackPreview';
 import { Field, Modal, Spinner, SwitchRow } from './ui';
 import './ProjectDialogs.css';
@@ -556,7 +557,22 @@ function problemOf(message: string): Problem {
   return { about: 'other', text: message };
 }
 
+/** New project, once the themes it offers have arrived: Welcome shows, and takes New project, before they have. */
 export function NewProjectModal({ onClose }: { onClose: () => void }) {
+  const ready = useStore((s) => s.packs.ready);
+  // The editor's code loads while the form is filled in, so the new project shows as soon as it is made.
+  useEffect(() => void loadEditor().catch(() => undefined), []);
+  if (ready) return <NewProjectForm onClose={onClose} />;
+  return (
+    <Modal title="New project" icon={<LayoutTemplate />} onClose={onClose}>
+      <p className="muted" role="status">
+        <Spinner decorative /> Loading themes…
+      </p>
+    </Modal>
+  );
+}
+
+function NewProjectForm({ onClose }: { onClose: () => void }) {
   const [name, setName] = useState('');
   const [parent, setParent] = useState('');
   const [starter, setStarter] = useState<StarterId>('business');

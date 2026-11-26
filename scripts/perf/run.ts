@@ -26,6 +26,8 @@ type EditorPage = { builder: BuilderApi; __siteoriginPerf?: { mark(name: string,
 /** The longest a warm-up open (an install included the first time) and one scenario of an iteration may take. */
 const WARMUP_MS = 15 * 60_000;
 const SCENARIO_MS = 5 * 60_000;
+/** How long the warm-up's last open waits before quitting, for Chromium to cache the code it ran. */
+const CODE_CACHE_WAIT_MS = 2000;
 
 function options() {
   const { values } = parseArgs({
@@ -133,8 +135,11 @@ async function stop(app: ElectronApplication, pid: number, root: ProcessEntry[])
   if (survivors.length) throw new StopRun(`Processes the app started would not end (${survivors.map((s) => s.pid).join(', ')}): stopping before the next iteration shares the machine with them.`);
 }
 
-/** Open `dir` in a launch with no marks, trusting it as the trust prompt would, and wait for its canvas. */
-async function openUntimed(appDir: string, scratch: string, profile: string, dir: string) {
+/**
+ * Open `dir` in a launch with no marks, trusting it as the trust prompt would, and wait for its canvas. With `cache`,
+ * stay a moment before quitting: Chromium keeps a script's compiled code once it has run, not as it starts.
+ */
+async function openUntimed(appDir: string, scratch: string, profile: string, dir: string, { cache = false }: { cache?: boolean } = {}) {
   const { app, win, pid, root } = await start(appDir, scratch, profile, null);
   try {
     await withDeadline(
@@ -146,6 +151,7 @@ async function openUntimed(appDir: string, scratch: string, profile: string, dir
       WARMUP_MS,
       'the warm-up open'
     );
+    if (cache) await new Promise((r) => setTimeout(r, CODE_CACHE_WAIT_MS));
   } finally {
     await stop(app, pid, root);
   }
@@ -256,11 +262,15 @@ async function main() {
     let fx: Awaited<ReturnType<typeof preparedFixture>> | null = null;
     try {
       fx = await preparedFixture(opts.app, name);
-      // The warm-up: the fixture copied into place and opened once in a fresh profile, which trusts it and lists it in
-      // Recent projects. What it leaves is what every iteration starts from.
+      // The warm-up: the fixture copied into place and opened in a fresh profile, which trusts it and lists it in Recent
+      // projects, then opened again. Chromium keeps a script's compiled code only once the script has run twice (the
+      // first run notes it), so every iteration launches and opens with the editor's code cached, as a person's
+      // launches after their second do. (The preview's is not: its server takes a new port each launch, and the cache
+      // is keyed by address.) What it leaves is what every iteration starts from.
       console.log(`perf: ${name}: warm-up`);
       restore(fx.dir, project);
       await openUntimed(opts.app, join(dir, 'launch'), profile, project);
+      await openUntimed(opts.app, join(dir, 'launch'), profile, project, { cache: true });
       restore(project, join(dir, 'project-start'), ['node_modules']);
       toolCaches(project, join(dir, 'tools-start'), false);
       restore(profile, join(dir, 'profile-start'));

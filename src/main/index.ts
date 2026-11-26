@@ -127,7 +127,9 @@ if (headless) {
   if (process.platform === 'darwin') app.setActivationPolicy('accessory');
 }
 
-protocol.registerSchemesAsPrivileged([{ scheme: 'app', privileges: { standard: true, secure: true, supportFetchAPI: true } }]);
+// Chromium keeps the editor's compiled script in the profile (codeCache), so a launch after the first two reuses it
+// instead of compiling the whole script again.
+protocol.registerSchemesAsPrivileged([{ scheme: 'app', privileges: { standard: true, secure: true, supportFetchAPI: true, codeCache: true } }]);
 
 // ---------------------------------------------------------------------------
 // AI
@@ -384,7 +386,8 @@ function isEditorUrl(url: string): boolean {
 /**
  * Answer the editor's requests on `channel`. A request made while the theme packs are still being verified waits for
  * them and is authorized again; `anytime` is for the few that never reach a pack (the failure screens' Quit, build
- * details and links), which answer at once, and also when verification failed.
+ * details and links, and what Welcome shows: the recent projects, and the open project, of which there is none until a
+ * request that waited has opened one), which answer at once, and also when verification failed.
  */
 function handle(channel: string, fn: (...args: never[]) => unknown, { anytime = false }: { anytime?: boolean } = {}) {
   ipcMain.handle(channel, (event, ...args) => {
@@ -461,7 +464,7 @@ function registerIpc() {
     return r.canceled ? null : r.filePaths[0];
   });
   handle('dialogs:defaultProjectsFolder', () => suggestedProjectsFolder());
-  handle('projects:recents', () => recents());
+  handle('projects:recents', () => recents(), { anytime: true });
   handle('projects:removeRecent', (dir: string) => removeRecent(dir));
   handle('projects:pinRecent', (dir: unknown, pinned: unknown) => {
     if (typeof dir !== 'string' || typeof pinned !== 'boolean') throw new Error('A pin needs a project folder and whether to pin it.');
@@ -510,7 +513,7 @@ function registerIpc() {
   handle('remote:snapshot', (joinId: unknown, fresh?: unknown) => controller.remote.snapshot(joinId, fresh === true));
   handle('remote:apply', (joinId: unknown, batch: unknown) => controller.remote.apply(joinId, batch));
   handle('remote:presence', (joinId: unknown, presence: unknown) => controller.remote.presence(joinId, presence));
-  handle('project:snapshot', () => controller.snapshot());
+  handle('project:snapshot', () => controller.snapshot(), { anytime: true });
   handle('project:reloadFromDisk', () => controller.reloadFromDisk());
   handle('project:apply', (batch, opts) => controller.apply(batch, opts));
   // One node, or several siblings copied together (the session checks they are siblings on that page).

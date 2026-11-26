@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState, type KeyboardEvent } from 'react';
 import { ArrowRight, CircleAlert, Folder, FolderOpen, Moon, Pin, Plus, Search, Settings, Sun, Users, X } from 'lucide-react';
 import type { RecentProject } from '@shared/api';
-import { api, errorText, setState, toast, useStore } from './store';
+import { api, errorText, setState, toast, useStore, whenThemesReady } from './store';
 import { openDialogs, Spinner } from './components/ui';
 import { NewProjectModal, TrustProjectModal } from './components/ProjectDialogs';
 import { recentGroups, whereLabels } from './lib/recent-places';
@@ -9,6 +9,7 @@ import { SettingsModal } from './panels/SettingsModal';
 import { AppMark, MARK_COLORS } from './components/AppMark';
 import { switchScheme, useEditorScheme } from './lib/appearance';
 import { perfMark, perfMarkOnce } from './lib/perf';
+import { loadEditor } from './lib/editor-module';
 import './Welcome.css';
 
 export function BrandMark() {
@@ -225,11 +226,15 @@ export function Welcome() {
     if (openingRef.current) return;
     openingRef.current = true;
     perfMark('open.requested', { chosen: dir === undefined ? 'dialog' : 'path' });
+    // The editor's code loads while the main process opens the project, so it is here when the project is.
+    void loadEditor().catch(() => undefined);
     returnFocus.current = document.activeElement instanceof HTMLElement && document.activeElement !== document.body ? document.activeElement : null;
     setOpening(dir ?? opts?.replaces ?? (opts?.folder ? 'folder-dialog' : 'dialog'));
     try {
       // A missing entry's Find folder…: the main process drops the entry once the same project has opened (#217),
       // after the trust prompt when there is one, so a cancel or another project keeps it.
+      // Nothing is opened before the themes are in, or at all when there are none (the page then says so).
+      await whenThemesReady();
       const r = await api.projects.open(dir, opts);
       if (r.needsTrust) setTrust({ ...r.needsTrust, replaces: opts?.replaces });
       else if (!r.ok && r.message) toast(r.message, 'error');

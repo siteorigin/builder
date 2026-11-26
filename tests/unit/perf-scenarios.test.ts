@@ -74,7 +74,12 @@ describe('launch metrics', () => {
       span('main.stall', 1180, 60),
       span('launch.loadPacks', 1350, 140),
       m('launch.windowCreated', 1400, { c: { 'files.read': 40, 'files.hashed': 38 } }),
+      r('launch.pageStart', 1405),
+      r('launch.pageParsed', 1430),
+      r('launch.scriptStart', 1510),
+      r('launch.scriptEvaluated', 1570),
       m('launch.readyToShow', 1600),
+      r('launch.catalogueReceived', 1610),
       r('launch.firstRender', 1620),
       r('launch.firstInteractive', 1640),
       r('launch.recentsShown', 1660, { c: { 'react.commits': 5 } }),
@@ -91,13 +96,28 @@ describe('launch metrics', () => {
       'launch.firstRender': '620 ms',
       'launch.firstInteractive': '640 ms',
       'launch.recentsShown': '660 ms',
+      'launch.pageStart': '405 ms',
+      'launch.pageParsed': '430 ms',
+      'launch.scriptStart': '510 ms',
+      'launch.scriptEvaluated': '570 ms',
+      'launch.catalogueReceived': '610 ms',
+      'launch.scriptCompile': '80 ms',
+      'launch.scriptEvaluate': '60 ms',
+      'launch.windowToFirstRender': '220 ms',
+      'launch.windowToWelcome': '260 ms',
       'launch.loadPacks': '140 ms',
       'launch.rendererCommits': '5 count',
       'launch.filesReadBeforeWindow': '40 count',
       'launch.filesHashedBeforeWindow': '38 count',
       'launch.mainStallMax': '60 ms'
     });
-    for (const drop of ['launch.windowCreated', 'launch.readyToShow']) expect(launch.measure(new Trace(t.records.filter((x) => x.name !== drop)), facts).missing).toEqual([drop]);
+    for (const drop of ['launch.windowCreated', 'launch.readyToShow', 'launch.scriptStart', 'launch.pageParsed', 'launch.catalogueReceived']) expect(launch.measure(new Trace(t.records.filter((x) => x.name !== drop)), facts).missing).toEqual([drop]);
+    // Interactive after its recents were listed: the later of the two is the Welcome screen.
+    const late = new Trace(t.records.map((x) => (x.name === 'launch.firstInteractive' ? { ...x, t: 1700 } : x)));
+    expect(launch.measure(late, facts).metrics['launch.windowToWelcome']).toEqual({ unit: 'ms', value: 300 });
+    // The script's marks are the editor's own: the same names from the main process are not them.
+    const fromMain = new Trace(t.records.map((x) => (x.name === 'launch.scriptStart' ? { ...x, proc: 'main' as const } : x)));
+    expect(launch.measure(fromMain, facts).missing).toEqual(['launch.scriptStart']);
   });
 });
 

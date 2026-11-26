@@ -205,3 +205,13 @@ if (bridge) {
   // A driver marks the edges of what it measures with the editor's counters (scripts/perf/README.md).
   host.__siteoriginPerf = { mark: perfMark };
 }
+
+// The editor's script has started to run: main.tsx imports this module first, so nothing of the script was evaluated
+// before this line. Beside it, the page's own start and the end of its parsing (the script is a module, so it runs
+// after that): from the page parsed to here is the script's load and compile, the rest of the launch its evaluation.
+if (bridge) {
+  const page = performance.getEntriesByType('navigation')[0] as PerformanceNavigationTiming | undefined;
+  perfMark('launch.pageStart', undefined, performance.timeOrigin);
+  if (page && page.domInteractive > 0) perfMark('launch.pageParsed', undefined, performance.timeOrigin + page.domInteractive);
+  perfMark('launch.scriptStart');
+}
