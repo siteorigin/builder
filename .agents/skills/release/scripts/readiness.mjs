@@ -45,21 +45,28 @@ const tryGit = (...a) => {
   }
 };
 // A workflow's runs, or none when GitHub doesn't know the workflow (it isn't on
-// the default branch yet): that is "never ran", not a failure of this script.
+// the default branch yet): that is "never ran". Any other failure (network,
+// auth) stops the script rather than reading as "never ran".
 const missingWorkflows = new Set();
 const workflowRuns = (os, ...filters) => {
   try {
-    return gh("run", "list", `--workflow=release-${os}.yml`, ...filters);
-  } catch {
-    missingWorkflows.add(os);
-    return [];
+    return JSON.parse(execFileSync("gh", ["run", "list", `--workflow=release-${os}.yml`, ...filters], { encoding: "utf8", maxBuffer: 64 << 20, stdio: ["ignore", "pipe", "pipe"] }));
+  } catch (err) {
+    if (/could not find any workflows/i.test(String(err.stderr ?? ""))) {
+      missingWorkflows.add(os);
+      return [];
+    }
+    console.error(`gh run list for release-${os}.yml failed: ${String(err.stderr ?? err.message).trim()}`);
+    process.exit(2);
   }
 };
 const haveCommit = (sha) => tryGit("cat-file", "-e", `${sha}^{commit}`) !== null || tryGit("fetch", "-q", "origin", sha) !== null;
 const blob = (ref, file) => tryGit("rev-parse", `${ref}:${file}`);
 
 const head = git("rev-parse", args.head ?? "origin/develop");
-const lastTag = git("tag", "-l", "v*", "--sort=-version:refname").split("\n")[0] || null;
+// versionsort.suffix=- ranks v0.2.0 above v0.2.0-rc.1, as SemVer does; git's
+// default puts the rc first.
+const lastTag = git("-c", "versionsort.suffix=-", "tag", "-l", "v*", "--sort=-version:refname").split("\n")[0] || null;
 if (lastTag && tryGit("merge-base", lastTag, head) === null) {
   console.error(`${lastTag} shares no history with ${head}; run git fetch origin --tags`);
   process.exit(2);
@@ -78,7 +85,8 @@ const OSES = ["macos", "linux", "windows"];
 // in a tag run: a dry run can't prove it, so it is reported, not dry-run.
 const RELEASE_ONLY = [
   { re: /^build\/entitlements|^build\/strip-mac-cache\.cjs$|^scripts\/release\/verify-macos\.sh$/, oses: ["macos"] },
-  { re: /^build\/|^electron-builder\.yml$|^scripts\/build-packs\.ts$|^scripts\/packs\//, oses: OSES },
+  // The starter's manifest and lockfile: packaging installs them into the npm cache it ships.
+  { re: /^build\/|^electron-builder\.yml$|^scripts\/build-packs\.ts$|^scripts\/packs\/|^templates\/sveltekit-brochure\/files\/package(-lock)?\.json$/, oses: OSES },
   { re: /^scripts\/release\/(feed|generate-update-metadata|validate-update-metadata)\.ts$/, oses: OSES },
   { re: /^\.github\/workflows\/release-macos\.yml$/, oses: ["macos"] },
   { re: /^\.github\/workflows\/release-linux\.yml$/, oses: ["linux"] },
@@ -96,27 +104,28 @@ const need = (why, which = OSES) => {
   which.forEach((os) => oses.add(os));
 };
 
-// A dry run counts only when it ran the whole pipeline: the build succeeded
-// and, on macOS, the signature and notarization were verified.
+// A dry run counts only when it ran the whole pipeline: on macOS both
+// architectures built and verified and the assemble job wrote the feed; on
+// Linux and Windows the build (which writes the feed) succeeded. Every
+// qualifying run is kept: a file is proven by any of them that built it.
 const dryRuns = {};
 for (const os of OSES) {
   const candidates = workflowRuns(os, "--event", "workflow_dispatch", "--limit", "10", "--json", "databaseId,headSha,conclusion,updatedAt,url").filter(
     (r) => r.conclusion === "success"
   );
-  dryRuns[os] =
-    candidates.find((r) => {
-      if (!haveCommit(r.headSha)) return false;
-      const jobs = gh("run", "view", String(r.databaseId), "--json", "jobs").jobs;
-      const builds = jobs.filter((j) => /^Build/.test(j.name) && j.conclusion === "success");
-      if (!builds.length) return false;
-      return os !== "macos" || builds.some((j) => j.steps?.some((st) => /Verify the signature and notarization/.test(st.name) && st.conclusion === "success"));
-    }) ?? null;
+  dryRuns[os] = candidates.filter((r) => {
+    if (!haveCommit(r.headSha)) return false;
+    const jobs = gh("run", "view", String(r.databaseId), "--json", "jobs").jobs;
+    const ok = (name) => jobs.find((j) => j.name === name)?.conclusion === "success";
+    if (os !== "macos") return ok("Build (x64)");
+    const verified = (name) =>
+      jobs.find((j) => j.name === name)?.steps?.some((st) => /Verify the signature and notarization/.test(st.name) && st.conclusion === "success");
+    return verified("Build (arm64)") && verified("Build (x64)") && ok("Assemble the macOS release");
+  });
 }
 const provenBy = (sha, file) => sha && blob(sha, file) === blob(head, file);
-const dryRunProves = (os, file) => {
-  const r = dryRuns[os];
-  return Boolean(r && provenBy(r.headSha, file) && DEPENDENCY_FILES.every((f) => provenBy(r.headSha, f)));
-};
+const dryRunProves = (os, file) =>
+  dryRuns[os].some((r) => provenBy(r.headSha, file) && DEPENDENCY_FILES.every((f) => provenBy(r.headSha, f)));
 
 const publishOnly = [];
 const unproven = [];
@@ -124,8 +133,12 @@ let changedFiles = [];
 if (!lastTag) {
   // The first release: prove every OS unless a dry run already built this tree's pipeline and dependencies.
   for (const os of OSES) {
-    const r = dryRuns[os];
-    const sameTree = r && git("diff", "--name-only", r.headSha, head).split("\n").filter(Boolean).every((f) => !ruleFor(f) && !DEPENDENCY_FILES.includes(f));
+    const sameTree = dryRuns[os].some((r) =>
+      git("diff", "--name-only", r.headSha, head)
+        .split("\n")
+        .filter(Boolean)
+        .every((f) => !(ruleFor(f) && !ruleFor(f).publishOnly && ruleFor(f).oses.includes(os)) && !DEPENDENCY_FILES.includes(f))
+    );
     if (!sameTree) need(`${os}: no release yet, and no green dry run has built this tree's release pipeline and dependencies`, [os]);
   }
 } else {
@@ -159,12 +172,18 @@ for (const os of OSES) {
   const workflow = tryGit("show", `${head}:.github/workflows/release-${os}.yml`) ?? "";
   const unitBlock = workflow.match(/\n  unit-tests:\n([\s\S]*?)\n  [\w-]+:\n/)?.[1] ?? "";
   const timeout = Number(unitBlock.match(/timeout-minutes:\s*(\d+)/)?.[1]);
-  const runs = workflowRuns(os, "--limit", "20", "--json", "databaseId,conclusion,url").filter((r) => r.conclusion === "success");
+  // Any completed run: the unit job ran even when the build after it failed.
+  const runs = workflowRuns(os, "--limit", "20", "--json", "databaseId,status,url").filter((r) => r.status === "completed");
   let found = null;
   for (const r of runs.slice(0, 5)) {
-    const durations = gh("run", "view", String(r.databaseId), "--json", "jobs")
-      .jobs.filter((j) => /^Unit tests/i.test(j.name) && j.conclusion === "success" && j.startedAt && j.completedAt)
-      .map((j) => (Date.parse(j.completedAt) - Date.parse(j.startedAt)) / 60_000);
+    const unit = gh("run", "view", String(r.databaseId), "--json", "jobs").jobs.filter((j) => /^Unit tests/i.test(j.name) && j.startedAt && j.completedAt);
+    // A unit job that hit its timeout ends "cancelled" after running the whole time: the clearest sign of all.
+    const timedOut = unit.find((j) => j.conclusion === "cancelled" && timeout && (Date.parse(j.completedAt) - Date.parse(j.startedAt)) / 60_000 >= timeout - 1);
+    if (timedOut) {
+      found = { minutes: timeout, run: r.url };
+      break;
+    }
+    const durations = unit.filter((j) => j.conclusion === "success").map((j) => (Date.parse(j.completedAt) - Date.parse(j.startedAt)) / 60_000);
     if (durations.length) {
       found = { minutes: Math.max(...durations), run: r.url };
       break;
@@ -197,7 +216,7 @@ console.log(
         releaseOnlyChanged: changedFiles.filter((f) => ruleFor(f)).slice(0, 30),
         unproven,
         publishOnly,
-        dryRuns: Object.fromEntries(OSES.map((os) => [os, short(dryRuns[os])])),
+        dryRuns: Object.fromEntries(OSES.map((os) => [os, dryRuns[os].map(short)])),
       },
     },
     null,

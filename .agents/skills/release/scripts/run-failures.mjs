@@ -61,11 +61,19 @@ const text = (line) => strip(line).replace(/^﻿?\d{4}-\d\d-\d\dT[\d:.]+Z ?/, ""
 function jobLog(job) {
   const file = path.join(dir, `job-${job.id}.log`);
   if (!existsSync(file)) {
-    try {
-      writeFileSync(file, sh("gh", ["api", `repos/${repo}/actions/jobs/${job.id}/logs`]));
-    } catch {
-      return null;
+    // Recent gh refuses to print a log holding terminal escape codes (every
+    // vitest log does) unless told it may; an older gh doesn't know the flag.
+    let saved = false;
+    for (const flags of [["--allow-escape-sequences"], []]) {
+      try {
+        writeFileSync(file, sh("gh", ["api", ...flags, `repos/${repo}/actions/jobs/${job.id}/logs`]));
+        saved = true;
+        break;
+      } catch {
+        // try the next form
+      }
     }
+    if (!saved) return null;
   }
   return readFileSync(file, "utf8").split("\n").map(text);
 }
@@ -82,9 +90,15 @@ const run = ghJson("run", "view", args.run, "--repo", repo, "--json", "status,co
 const allJobs = paged(`repos/${repo}/actions/runs/${args.run}/jobs?filter=latest`, "jobs");
 const picked = args.job
   ? allJobs.filter((j) => String(j.id) === args.job)
-  : allJobs.filter((j) => j.conclusion === "failure" || j.conclusion === "cancelled" || j.conclusion === "timed_out");
+  : allJobs.filter((j) => ["failure", "cancelled", "timed_out", "startup_failure"].includes(j.conclusion));
 const out = [`# ${run.workflowName} ${args.run} (attempt ${run.attempt}, ${run.status}${run.conclusion ? ` ${run.conclusion}` : ""}) at ${run.headSha.slice(0, 10)}`, run.url, ""];
-if (!picked.length) out.push(args.job ? `No job ${args.job} in this run.` : "No failed, timed-out or cancelled jobs.");
+if (!picked.length) {
+  out.push(args.job ? `No job ${args.job} in this run.` : "No failed, timed-out or cancelled jobs.");
+  // A workflow that can't start (a YAML or permissions error) fails with no jobs at all.
+  if (!args.job && run.conclusion && run.conclusion !== "success" && !allJobs.length) {
+    out.push(`The run ended ${run.conclusion} with no jobs: the workflow itself is broken (check it with actionlint, and its permissions).`);
+  }
+}
 
 function unitReport(log) {
   const lines = [];
@@ -132,7 +146,9 @@ for (const job of picked) {
   }
   const log = jobLog(job);
   let explained = false;
-  if (/unit/i.test(job.name) && log) {
+  // A unit job that failed before vitest ran (npm ci, say) has no vitest
+  // output: the log before the error says what happened instead.
+  if (/unit/i.test(job.name) && log && log.some((l) => /^\s*(Test Files|FAIL) /.test(l))) {
     out.push(...unitReport(log));
     explained = true;
   }

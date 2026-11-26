@@ -49,7 +49,8 @@ const tryGit = (...a) => {
 const out = args.out ?? usage("--out <dir> is required");
 const chunkSize = Number(args.chunk ?? 40);
 if (!Number.isInteger(chunkSize) || chunkSize < 1) usage("--chunk must be a positive integer");
-const base = args.base ?? git("tag", "-l", "v*", "--sort=-version:refname").split("\n")[0];
+// versionsort.suffix=- ranks v0.2.0 above v0.2.0-rc.1, as SemVer does.
+const base = args.base ?? git("-c", "versionsort.suffix=-", "tag", "-l", "v*", "--sort=-version:refname").split("\n")[0];
 const head = tryGit("rev-parse", args.head ?? "origin/develop") ?? usage(`unknown --head ${args.head}`);
 // The tag needn't be an ancestor of develop (past re-tags left the tag's merge
 // commit on main only); sharing history is enough for base..head.
@@ -134,9 +135,10 @@ const records = prs.map((p) => {
 
 // A docs/chore PR that touches shipped code is not internal; only drop it when
 // every file it touches (all of them: a truncated list keeps the PR) is
-// outside what the app is built from: its source, the packaging inputs, the
-// website starter and the resources and theme packs it ships.
-const SHIPPED = /^(src|build|templates|resources|scripts\/packs)\/|^scripts\/build-packs\.ts$|^electron-builder\.yml$/;
+// outside what the app is built from: its source, the bundler and packaging
+// inputs, its dependencies, the website starter and the resources and theme
+// packs it ships.
+const SHIPPED = /^(src|build|templates|resources|scripts\/packs)\/|^scripts\/build-packs\.ts$|^(electron-builder\.yml|electron\.vite\.config\.ts|package\.json|package-lock\.json)$/;
 const isInternal = (r) =>
   !r.breaking &&
   !r.filesTruncated &&

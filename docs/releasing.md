@@ -3,9 +3,9 @@
 A release is shipped by the `release` skill (`.agents/skills/release/`): run `/release` in Claude Code, optionally with the version (`/release 0.2.0`). After one question about the version it runs unattended:
 
 1. **Pin and cut.** It pins `origin/develop` and cuts `release/vX.Y.Z` in its own worktree.
-2. **Prove before tagging.** It dry-runs every OS whose packaging, signing, release scripts or dependencies changed since the last tag without a green dry run (every OS for the first release), while analyst agents write the changelog from the PRs since the last tag.
+2. **Prove before tagging.** It dry-runs every OS whose packaging, signing, release scripts or dependencies changed since the last tag without a green dry run that built them (every OS for the first release, unless one already has), while analyst agents write the changelog from the PRs since the last tag (the first release's notes come from the README instead).
 3. **Merge, tag, push.** It writes the `CHANGELOG.md` section, merges into `main` and back into `develop`, tags `vX.Y.Z`, and pushes all three together.
-4. **Watch and recover.** It watches the three release workflows until every update feed carries the new version, recovering from failures with at most one restart.
+4. **Watch and recover.** It watches the three release workflows until every update feed carries the new version, recovering from failures with one restart as the plan (a second only for a failure the first couldn't have carried).
 5. **Publish the notes.** It creates the GitHub Release with the changelog section.
 
 The skill's `SKILL.md` and `references/ci-and-recovery.md` are the detailed runbook.
@@ -29,7 +29,7 @@ A `vX.Y.Z` tag starts three independent workflows. Each runs the whole unit suit
 
 | Workflow | Builds | Feed |
 | --- | --- | --- |
-| `release-macos.yml` | A Developer ID signed, notarized and stapled DMG and update zip for arm64 (`macos-15`) and x64 (`macos-15-intel`), each verified | `latest-mac.yml`, listing both zips |
+| `release-macos.yml` | For arm64 (`macos-15`) and x64 (`macos-15-intel`): a Developer ID signed, notarized and stapled DMG, and an update zip holding the same signed, notarized and stapled app, each verified | `latest-mac.yml`, listing both zips |
 | `release-linux.yml` | An x64 AppImage | `latest-linux.yml` |
 | `release-windows.yml` | An x64 NSIS installer, not Authenticode-signed yet | `latest.yml` |
 

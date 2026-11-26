@@ -44,7 +44,8 @@ node .agents/skills/release/scripts/run-failures.mjs --run <id> --out "${W}/fail
 It works while the run is still going. For each job of the latest attempt that failed, hit its timeout or never got a runner, it says why it ended (a job that hits `timeout-minutes` reports `cancelled`, as does one GitHub never assigned a runner; the script tells them apart from the annotations) and then:
 
 - **Unit jobs:** the vitest failure blocks and summary, and the slowest test files. A summary showing every test passed in a job that hit its timeout means the job ran out of time, not that a test failed.
-- **Anything else** (a build, signing, notarization, verification or publish step): the 40 log lines before the error. For a notarization rejection, the log holds Apple's JSON report with every rejected file's path and reason.
+- **Anything else** (a build, signing, notarization, verification or publish step), and a unit job that failed before vitest ran: the 40 log lines before the error. For a notarization rejection, the log holds Apple's JSON report with every rejected file's path and reason, for the app (electron-builder prints it) and for the DMG (the workflow fetches it with `notarytool log`).
+- **A run that failed to start** (`startup_failure`, no jobs): the workflow file itself is broken; lint it.
 
 `--job <id>` analyses one job whatever its outcome, for the slowest files of a green unit job.
 
@@ -61,7 +62,7 @@ The failure isn't about the code. Wait for the run to finish (a job can't be rer
 | `stapler staple` or `stapler validate` fails with -1005 / "network connection lost" / exit 68, or `notarytool` network errors after the submission was Accepted | macOS `build` (the DMG staple already retries three times; a failure that survives that is still Apple's side) |
 | Runner lost communication, provisioning failed, "The job was not acquired by Runner of type hosted even after multiple attempts" (macOS capacity), "The operation was canceled" with no failing step, `npm ci`, Playwright or artifact download network errors, GitHub API 5xx | any |
 | A unit test that failed all four of its tries on one OS's run with a timing error, and passed in the other OSes' runs on the same commit | `unit-tests` |
-| The R2 upload or a download-domain check failing with a 5xx or a timeout, with the R2 secrets set | `publish` (the checks retry; rerunning `publish` alone is safe, since the version gate skips what already went up only when the metadata is live) |
+| The R2 upload or a download-domain check failing with a 5xx or a timeout, with the R2 secrets set | `publish` (the checks retry). Rerun only the failed job, `gh run rerun <id> --failed`: it downloads the same artifact and uploads the same bytes. Never "Re-run all jobs" once a publish has started uploading: a rebuild makes new bytes under the same file names, and the download domain caches each file for good |
 
 Rerun the same job at most twice. A third failure with the same signature is real. A unit job that hit its timeout is not a flake when its summary shows the suite simply ran long: the suite has outgrown the job (see Known traps).
 
@@ -96,7 +97,8 @@ A fix pushed blind costs an hour per guess. Before pushing one, make the failure
 | Situation | Do |
 | --- | --- |
 | Dry run failed | Re-dispatch on the release branch's new head every OS the fix can reach: just the failing OS for a fix only it builds; every OS for a change to shared tests, workflows, dependencies or packaging. |
-| Tag run failed, **no feed has published** `vX.Y.Z` | Re-tag. |
+| A `publish` job failed **after its "Upload the installers to R2" step ran** | Rerun that job alone (`gh run rerun <id> --failed`), whatever else failed. Its OS's files are on the download domain, cached for good, so a re-tag or rebuild of that OS would serve mismatched bytes under the same names. A fix that changes that OS's build needs a patch release |
+| Tag run failed, **no feed has published** `vX.Y.Z` and no `publish` job reached its upload | Re-tag. |
 | Tag run failed, some feeds published, and the fix touches only tests, CI, or code that runs only on the unpublished feeds' platforms | Re-tag. Each OS whose feed is published gets its new run cancelled: it would rebuild and then skip the upload. |
 | Tag run failed, some feeds published, and the fix changes code the published feeds' users run | Patch release. Their `vX.Y.Z` is final. |
 
@@ -122,11 +124,11 @@ git push origin --delete release-fix/vX.Y.Z
 
 The `+` forces only the named tag; `main` and `develop` stay fast-forward-only, and `--atomic` moves all three or none. Never `--tags --force`. A rejected push means `main` or `develop` moved: run the block again from the top.
 
-The tag push starts three fresh runs on the new commit. Resolve their IDs (`gh run list --workflow=<wf> --event push --limit 3`, matching `headBranch == vX.Y.Z` and `headSha == ${MAIN}`), cancel the run of any OS whose feed is published, and watch the rest. Never rerun an old run after a re-tag: a rerun keeps its original commit, which the tag no longer points at. Post what failed, the fix commits, and what restarted.
+The tag push starts three fresh runs on the new commit. Resolve their IDs (`gh run list --workflow=<wf> --event push --commit "${MAIN}" --json databaseId,headBranch`), cancel the run of any OS whose feed is published, and watch the rest. Never rerun an old run after a re-tag: a rerun keeps its original commit, which the tag no longer points at. Post what failed, the fix commits, and what restarted.
 
 ### Patch release
 
-A gitflow hotfix: `X.Y.(Z+1)` is `X.Y.Z` plus the fix and nothing else from `develop`. No question to the user; the version is determined.
+A gitflow hotfix: `X.Y.(Z+1)` is `X.Y.Z` plus the fix and nothing else from `develop`. No question to the user; the version is determined. For a prerelease, the patch stays on its channel: `X.Y.Z-rc.N` is followed by `X.Y.Z-rc.(N+1)`, never `X.Y.(Z+1)`.
 
 1. With every `vX.Y.Z` run terminal and `vX.Y.Z` left where it is, on `release-fix/vX.Y.Z` in `WT`: `npm version X.Y.(Z+1) --no-git-tag-version`, and add a short `CHANGELOG.md` section above `## [X.Y.Z]`: an intro saying what was wrong with `X.Y.Z` and on which platforms, and the fix under Bug Fixes. Commit `chore(release): release vX.Y.(Z+1)`.
 2. Run the Phase 4 step 4 block from SKILL.md with `release-fix/vX.Y.Z` in place of `release/vX.Y.Z` and `X.Y.(Z+1)` as the version. The develop merge resolves `CHANGELOG.md` the same way: `develop`'s Unreleased entries first, then `X.Y.(Z+1)`, then `X.Y.Z` and the rest in order. Then delete the fix branch on origin.

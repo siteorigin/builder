@@ -49,6 +49,7 @@ Check everything that could stop the release before asking anything, so nothing 
 
 - `gh auth status` works. `git fetch origin --tags --prune` succeeds.
 - `main` carries no content `develop` lacks: `git diff --quiet origin/develop...origin/main`. Merge commits from past re-tags can sit on `main` alone with no content; that's fine. A content difference is a hotfix on `main`; note it, since the release merge will carry it.
+- The three release workflows are on `develop`: `gh workflow list` lists `Release (macOS)`, `Release (Linux)` and `Release (Windows)`. GitHub dispatches a dry run only of a workflow on the default branch.
 - No release workflow run is queued or in progress: for each of `release-macos.yml`, `release-linux.yml`, `release-windows.yml`, `gh run list --workflow=<wf> --limit 20 --json status --jq '[.[] | select(.status != "completed")] | length'` is 0. One in flight means another release or dry run is underway; stop.
 - Every secret the release needs is set: `gh secret list` lists `MAC_CERTS`, `MAC_CERTS_PASSWORD`, `APPLE_API_KEY`, `APPLE_API_KEY_ID`, `APPLE_API_ISSUER`, `APPLE_TEAM_ID`, `R2_ACCESS_KEY_ID`, `R2_SECRET_ACCESS_KEY`, `R2_ENDPOINT` and `R2_BUCKET`. A missing one would fail the macOS build or every publish job after the tag. `WEBSITE_WEBHOOK_SECRET` and the `WEBSITE_REFRESH_URL` variable are optional: without them the website isn't told, and the summary says so.
 
@@ -56,7 +57,7 @@ If any of these fails, stop and say why. It's one of the few times you hand back
 
 Then work out the version:
 
-1. Current version from `package.json` on `origin/develop`; baseline from `git tag -l "v*" --sort=-version:refname | head -1`. The tag needn't be an ancestor of `develop` (past re-tags left the tag's merge commit on `main` only); `git merge-base <tag> origin/develop` must succeed.
+1. Current version from `package.json` on `origin/develop`; baseline from `git -c versionsort.suffix=- tag -l "v*" --sort=-version:refname | head -1` (the setting ranks `v0.2.0` above `v0.2.0-rc.1`, as SemVer does). The tag needn't be an ancestor of `develop` (past re-tags left the tag's merge commit on `main` only); `git merge-base <tag> origin/develop` must succeed.
 2. **No tag yet: the first release.** It ships the current `package.json` version as it stands (no bump); recommend it, and offer the next minor as the alternative. There are no PRs to compare against, so Phase 3 writes the first release's notes from the README (see `references/changelog-pipeline.md`, "The first release").
 3. Otherwise, one quick call gives the PR titles: `gh pr list --state merged --base develop --search "merged:>=<tag date>" --limit 1000 --json title --jq '.[].title'`. Read the `## [Unreleased]` section of `CHANGELOG.md` too. A breaking change (`!:`, `BREAKING CHANGE`, an Unreleased `### Breaking Changes`) or any `feat` means minor; only fixes mean patch. Pre-1.0, breaking changes ride a minor bump; 1.0.0 is never recommended, only offered.
 4. A valid version in `$ARGUMENTS` that's greater than the current one (or equal to it, for the first release): use it and skip the question. One that isn't: stop and say why. Either way, `release/vX.Y.Z` must not exist locally or on origin, and `vX.Y.Z` must not exist as a tag.
@@ -101,9 +102,9 @@ It answers two questions, each with the evidence behind it. Act on both, then po
 gh workflow run release-<os>.yml --ref release/vX.Y.Z -f dry_run=true
 ```
 
-Resolve each run's ID from `gh run list --workflow=release-<os>.yml --branch release/vX.Y.Z --event workflow_dispatch --limit 5 --json databaseId,headSha`, matching `headSha` to the branch head, then wait on them with `watch-runs.mjs`. A dry run signs and notarizes on macOS, on purpose: Apple's notary is one of the likeliest late failures, and its verdict depends on everything the app bundles.
+Resolve each run's ID from `gh run list --workflow=release-<os>.yml --event workflow_dispatch --commit "$(git rev-parse HEAD)" --json databaseId,createdAt`, taking the run created after the dispatch (poll for a few seconds until it appears), then wait on them with `watch-runs.mjs`. A dry run signs and notarizes on macOS, on purpose: Apple's notary is one of the likeliest late failures, and its verdict depends on everything the app bundles.
 
-**Unit-job headroom (`unitHeadroom`).** A release workflow's unit job that used more than three quarters of its timeout last time will blow it as the suite grows, and only a tag run would show it. Fix that before tagging: split the job or speed up the file that got slow (`run-failures.mjs --run <id> --job <job id>` on that run's unit job lists the slowest files). Don't raise the timeout. "Unknown" before any release run has a unit job is expected; say so and move on.
+**Unit-job headroom (`unitHeadroom`).** A release workflow's unit job that used more than three quarters of its timeout last time will blow it as the suite grows, and only a tag run would show it. Fix that before tagging: split the job or speed up the file that got slow (`run-failures.mjs --run <id> --job <job id> --out "${W}/failures"` on that run's unit job lists the slowest files). Don't raise the timeout. "Unknown" before any release run has a unit job is expected; say so and move on.
 
 **A failed dry run** is fixed on the release branch, which costs minutes now instead of an hour later: triage it with `run-failures.mjs`, reproduce it (`references/ci-and-recovery.md`, "Reproduce locally"), fix it, and commit through the `commit` skill. Then run `readiness.mjs` again on the new head and re-dispatch every OS the fix can reach.
 
@@ -150,11 +151,13 @@ In `WT`, on `release/vX.Y.Z`:
    The last line must show `main` and the tag both at `${MAIN}`. `--atomic` means `main`, `develop` and the tag land together or not at all, so the tag can never trigger a release whose `main` was rejected.
 
    - **The develop merge conflicts in `CHANGELOG.md`** when PRs added `## [Unreleased]` entries after the pin. Keep `develop`'s `## [Unreleased]` heading with only the entries that aren't in the new release section, then the new `## [X.Y.Z]` section, then every older section in order. Other conflicts mean `develop` and the release branch both changed a file since the pin; keep `develop`'s side unless the release branch's change was a release fix, in which case keep both.
+   - **A merge stops on a conflict:** resolve it as above, `git add` the files, `git merge --continue`, then carry on from the line after that merge (`MAIN=…` after the `main` merge, `DEV=…` after the `develop` one).
    - **The push is rejected** because `main` or `develop` moved on origin: `git tag -d vX.Y.Z`, then run the block again from the top. Never force it.
+   - **The push's result is unclear** (the connection dropped, the log is empty): read what landed before doing anything else, with `git ls-remote origin refs/heads/main refs/heads/develop "refs/tags/vX.Y.Z^{}"`. All three at `${MAIN}`, `${DEV}` and `${MAIN}`: it landed, carry on. None of them moved: run the block again. Anything else: stop and report; `--atomic` makes a partial push unexpected.
 
 5. Only after `ls-remote` confirms the push: `git push origin --delete release/vX.Y.Z`. Then post: "Tagged vX.Y.Z; main, develop and the tag pushed together."
 
-Resolve the three tag-triggered run IDs (`gh run list --workflow=<wf> --event push --limit 3`, matching `headBranch == vX.Y.Z` and `headSha == ${MAIN}`) and post their URLs. A clean tag run takes about an hour: Linux and Windows about 40 minutes, macOS about an hour.
+Resolve the three tag-triggered run IDs (`gh run list --workflow=<wf> --event push --commit "${MAIN}" --json databaseId,headBranch,url`, the run whose `headBranch` is `vX.Y.Z`; poll for a minute if one hasn't appeared yet) and post their URLs. A clean tag run takes about an hour: Linux and Windows about 40 minutes, macOS about an hour.
 
 ## Phase 5: Watch to green, restart once at most
 
@@ -169,6 +172,8 @@ When a job fails, follow `references/ci-and-recovery.md`. In short:
 5. **Then restart once,** per the decision table: re-tag or patch. Reruns of infrastructure failures don't count as restarts. A second restart is allowed only for a failure the first restart could not have carried, and the budget in `references/ci-and-recovery.md` caps the total.
 
 Stop only for the few things only a person can fix (an expired Apple agreement, an expired certificate, a missing or rejected R2 key). Keep going until all three feeds carry `vX.Y.Z` (or its patch) or the retry budget is spent.
+
+A `publish` job that failed after its "Upload the installers to R2" step ran has put that version's files on the download domain, cached for good, even though the feed doesn't list them yet. Never rebuild that OS: rerun the failed job (`gh run rerun <id> --failed`), which publishes the same files from the run's artifact. `references/ci-and-recovery.md` has the rule.
 
 ## Phase 6: Wrap up
 

@@ -6,7 +6,9 @@
 // like a red run).
 //
 // Usage: node watch-runs.mjs --runs <id,id,...> [--minutes 9] [--version X.Y.Z]
-// Exits 0 when every run is terminal, 4 when a job failed or was cancelled
+// --version also picks the feeds: rc-*.yml for an rc, beta-*.yml for a beta.
+// Exits 0 when every run is terminal (read each run's conclusion in the
+// output: a run that failed in its last job ends terminal too), 4 when a job failed or was cancelled
 // since the call started (triage it now; the runs keep going), 3 when the
 // window ended first. Call it again to keep watching; each call fits inside
 // one Bash timeout. Job timeouts report "cancelled": run-failures.mjs tells
@@ -39,7 +41,14 @@ if (!ids.length || !Number.isFinite(minutes) || minutes <= 0) {
 }
 const repo = args.repo ?? "siteorigin/builder";
 const deadline = Date.now() + minutes * 60_000;
-const FEEDS = ["latest-mac.yml", "latest-linux.yml", "latest.yml"];
+// The feeds a version publishes to: a stable version's are latest-*, an rc's
+// rc-* and a beta's beta-* (the release workflows' channel rule).
+const channel = (() => {
+  const v = (args.version ?? "").replace(/^v/, "").replace(/\+.*$/, "");
+  const pre = v.includes("-") ? v.slice(v.indexOf("-") + 1).split(".")[0] : "";
+  return pre === "rc" || pre === "beta" ? pre : "latest";
+})();
+const FEEDS = [`${channel}-mac.yml`, `${channel}-linux.yml`, `${channel}.yml`];
 const BAD = new Set(["failure", "timed_out", "cancelled", "startup_failure"]);
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
@@ -72,6 +81,7 @@ async function feeds() {
         try {
           const res = await fetch(`https://downloads.siteorigin.com/releases/${feed}?t=${Date.now()}`, { signal: AbortSignal.timeout(10_000) });
           if (res.status === 404) return `${feed} (not published)`;
+          if (!res.ok) return `${feed} (HTTP ${res.status})`;
           const version = (await res.text()).match(/^version:\s*(\S+)/m)?.[1] ?? "?";
           return `${feed} ${version}${args.version && version === args.version ? " ✓" : ""}`;
         } catch {
