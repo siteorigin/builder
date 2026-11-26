@@ -2,11 +2,13 @@
  * Definition-level editing of project components: removal, property schema, parts, variants, slots and
  * property bindings. Every operation keeps instances consistent with the definition it changes.
  */
-import type { ComponentDefinition, Comparison, GraphNode, InstanceNode, ListItem, OwnerRef, ProjectState, PropSchema, ScalarPropSchema, SlotDef, StateAction } from '@shared/types';
+import type { Collection, ComponentDefinition, Comparison, GraphNode, InstanceNode, ListItem, NodeTree, OwnerRef, ProjectState, PropSchema, ScalarPropSchema, SlotDef, StateAction } from '@shared/types';
 import { slotDecl, slotDeclProblem, slotFill } from './slots';
 import { propBindingName, propBindingSchema } from '@shared/bindings';
 import { isArticleDate } from '@shared/articles';
-import { ELEMENT_ACTIONS, ELEMENT_TAGS, ICON_POSITIONS, TEXT_TAGS, isBinding, isBindingRef, isEntryBinding, isStateRef, slotChildren } from '@shared/types';
+import { repeatProp, ELEMENT_ACTIONS, ELEMENT_TAGS, ICON_POSITIONS, TEXT_TAGS, conditionRef, isBinding, isBindingRef, isEntryBinding, isStateRef, slotChildren } from '@shared/types';
+import { rowFieldSchema } from '@shared/collection-rows';
+import { loopCollection, loopMembers } from './collection-sources';
 import { ENTRY_CONTENT_FIELDS, entryChoiceProblem, entryComparisonProblem, entryFieldSchema, isEntryDateField } from '@shared/entry-fields';
 import type { Op } from '@shared/ops';
 import { STYLE_PROP_MAP, styleSetFor } from '@shared/styles';
@@ -293,7 +295,7 @@ function enclosingRepeatProp(def: ComponentDefinition, nodeId: string): string |
   while (cur?.parentId && !seen.has(cur.parentId)) {
     seen.add(cur.parentId);
     const p = tree.nodes[cur.parentId];
-    if (p?.kind === 'repeat') return p.list.$prop;
+    if (p?.kind === 'repeat') return repeatProp(p) ?? null;
     cur = findParent(tree, cur.parentId);
   }
   return null;
@@ -816,7 +818,39 @@ function literalFor(field: BindField, node: GraphNode, schema: PropSchema | unde
  */
 function templateSetBinding(state: ProjectState, op: Op<'node.setBinding'>): OpResult {
   const collection = Object.hasOwn(state.collections ?? {}, op.owner.id) ? state.collections[op.owner.id] : fail(`Collection "${op.owner.id}" does not exist.`);
-  const node = getNode(collection.settings.template, op.nodeId);
+  return entrySetBinding(state, op, { tree: collection.settings.template, collection, read: '$entry' });
+}
+
+/**
+ * node.setBinding on an element inside a collection loop (see ./collection-sources), in any tree: it shows a field of
+ * each row's entry (`{ $item: field }`), or stops showing it. Undefined when the edit is not one of those.
+ */
+function loopSetBinding(state: ProjectState, op: Op<'node.setBinding'>): OpResult | undefined {
+  const b = op.binding;
+  if (b !== null && !('$item' in b)) return undefined;
+  // A theme's design is edited only once forked (refused below, as any edit of it is).
+  if (op.owner.kind === 'component' && state.components[op.owner.id]?.owner !== 'project') return undefined;
+  const tree = getTree(state, op.owner);
+  const loop = loopMembers(tree).get(op.nodeId);
+  if (!loop) return undefined;
+  if (b === null) {
+    // Unbinding what a row reads; anything else on the element is the tree's own to unbind.
+    const node = getNode(tree, op.nodeId);
+    const holder = (op.field === 'prop' ? (node as InstanceNode).props : node) as Record<string, unknown> | undefined;
+    const current = holder?.[op.field === 'prop' ? op.prop ?? '' : op.field];
+    const ref = op.field === 'when' || op.field === 'unless' ? conditionRef(current) : current;
+    if (!(isBinding(ref) && '$item' in ref)) return undefined;
+  }
+  const collection = loopCollection(state, op.owner, loop) ?? fail(`${describeNode(getNode(tree, loop.id))} shows a collection the project does not have. Choose its collection first.`);
+  return entrySetBinding(state, op, { tree, collection, read: '$item' });
+}
+
+/** node.setBinding reading an entry: the entry a layout is shown for (`$entry`), or a collection loop row's (`$item`). */
+function entrySetBinding(state: ProjectState, op: Op<'node.setBinding'>, at: { tree: NodeTree; collection: Collection; read: '$entry' | '$item' }): OpResult {
+  const { collection } = at;
+  const readField = (b: object): string => String((b as Record<string, unknown>)[at.read]);
+  const schemaOf = (f: string) => (at.read === '$item' ? rowFieldSchema(collection, f) : entryFieldSchema(collection, f));
+  const node = getNode(at.tree, op.nodeId);
   const field = op.field as BindField;
   const kinds = FIELD_KINDS[field];
   if (kinds && !kinds.includes(node.kind)) fail(`${describeNode(node)} has no "${field}" to bind.`);
@@ -844,16 +878,18 @@ function templateSetBinding(state: ProjectState, op: Op<'node.setBinding'>): OpR
     return {};
   }
   const b = op.binding;
-  if (!isEntryBinding(b)) fail(`A collection's layout shows the entry's fields: bind to { "$entry": field }. Properties, list items and UI state belong to components.`);
-  const schema = entryFieldSchema(collection, b.$entry) ?? fail(`Entries of ${collection.settings.name} have no field "${String(b.$entry).slice(0, 60)}".`);
+  if (at.read === '$entry' && !isEntryBinding(b)) fail(`A collection's layout shows the entry's fields: bind to { "$entry": field }. Properties, list items and UI state belong to components.`);
+  if (at.read === '$item' && !('$item' in b && Object.keys(b).length === 1)) fail('An element of a collection loop shows a field of each entry: bind to { "$item": field }.');
+  const read = readField(b);
+  const schema = schemaOf(read) ?? fail(`Entries of ${collection.settings.name} have no field "${read.slice(0, 60)}".`);
   if (schema.type === 'enum' && !Array.isArray((schema as { options?: unknown }).options)) fail(`"${schema.label}" is damaged: it has no choices. Set its choices in the collection's settings first.`);
-  if (field === 'datetime' && !isEntryDateField(collection, b.$entry)) fail(`"${schema.label}" is not a date: a text can state the publication date (publishedAt), the last update (updatedAt) or a date field.`);
+  if (field === 'datetime' && !isEntryDateField(collection, read)) fail(`"${schema.label}" is not a date: a text can state the publication date (publishedAt), the last update (updatedAt) or a date field.`);
   const ok = acceptedTypes(node, field, nested);
   if (ok && !ok.includes(schema.type)) fail(`"${schema.label}" cannot be shown as ${field === 'prop' ? `"${op.prop}"` : `the ${field}`}: it needs a ${ok.join(' or ')} field.`);
   const choice = entryChoiceProblem(schema, nested);
   if (choice) fail(`"${schema.label}" ${choice}`);
   const comparison = op.eq !== undefined ? ({ ref: clone(b), eq: op.eq } as Comparison) : op.ne !== undefined ? ({ ref: clone(b), ne: op.ne } as Comparison) : undefined;
-  const compared = comparison ? entryComparisonProblem(collection, b.$entry) : null;
+  const compared = comparison ? entryComparisonProblem(collection, read) : null;
   if (compared) fail(compared);
   const problem = bindingProblem(state, { node, field, prop: op.prop, comparison }, schema);
   if (problem) fail(`${describeNode(node)} ${problem}`);
@@ -862,6 +898,9 @@ function templateSetBinding(state: ProjectState, op: Op<'node.setBinding'>): OpR
 }
 
 export function nodeSetBinding(state: ProjectState, op: Op<'node.setBinding'>): OpResult {
+  // Inside a collection loop an element reads each row's entry, in any tree.
+  const looped = loopSetBinding(state, op);
+  if (looped) return looped;
   if (op.owner.kind === 'template') return templateSetBinding(state, op);
   if (op.owner.kind !== 'component') fail('Bindings only exist inside component definitions. Edit the component first.');
   const def = projectDef(state, op.owner.id);

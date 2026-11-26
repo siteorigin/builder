@@ -11,7 +11,7 @@
  * - the new version keeps the public contract its placements rely on, and accepts the content they hold.
  */
 import type { ComponentDefinition, InstanceNode, NodeTree, ProjectState } from '@shared/types';
-import { isBinding, slotChildren, slotFallback } from '@shared/types';
+import { repeatProp, isBinding, slotChildren, slotFallback } from '@shared/types';
 import type { Op } from '@shared/ops';
 import { getTheme, themeLockEntry } from '@catalogue/index';
 import { definitionHash, matchesLock } from '@shared/migrations';
@@ -165,7 +165,7 @@ export function shownSlots(next: ComponentDefinition, node: InstanceNode, tree?:
       if (!mayBeEmpty(n.slot)) return;
     }
     if (n.kind === 'repeat') {
-      const prop = n.list?.$prop;
+      const prop = repeatProp(n);
       const schema = typeof prop === 'string' ? own(next.properties, prop) : undefined;
       // A list that fills itself (articles, the current page) has rows only the site can tell, so it may show them,
       // unless it may hold none at all.

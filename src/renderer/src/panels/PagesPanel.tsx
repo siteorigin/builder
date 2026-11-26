@@ -10,7 +10,7 @@ import { limitNote } from '../lib/kept-drafts';
 import { TEXT_LIMITS } from '@shared/text-limits';
 import { keepRefusedText, openSection, rovingKeys, useMenu } from '../components/ui';
 import { isImeComposing } from '../lib/ime';
-import { goToShellPart, openLayout, selectPage, setMode } from '../lib/actions';
+import { goToShellPart, openArchiveLayout, openLayout, selectPage, setMode } from '../lib/actions';
 import { visitAddress } from './Canvas';
 import { headerMenu as findHeaderMenu, headerMenuSlotUnder } from '@engine/tree';
 import { isDraftPage } from '@generator/index';
@@ -1242,8 +1242,8 @@ export function PagesPanel() {
 /** The page sizes offered for a collection's index, besides its own (a size set in its settings file is kept). */
 const PAGE_SIZES = [1, 2, 3, 4, 5, 6, 8, 9, 10, 12, 15, 18, 20, 24, 30, 50, MAX_PAGE_SIZE];
 
-function CollectionArchive({ collectionId, name, route, pageSize, categories }: { collectionId: string; name: string; route: string; pageSize: number; categories: boolean }) {
-  const update = (patch: { pageSize?: number; categoryArchives?: boolean }, label: string) => commitOps([{ type: 'collection.update', collectionId, ...patch }], label);
+function CollectionArchive({ collectionId, name, route, pageSize, categories, designed }: { collectionId: string; name: string; route: string; pageSize: number; categories: boolean; designed: boolean }) {
+  const update = (patch: { pageSize?: number; categoryArchives?: boolean; archiveTemplate?: null }, label: string) => commitOps([{ type: 'collection.update', collectionId, ...patch }], label);
   const viewIndex = () => {
     // The index is a page of the website: a layout being edited closes first, as opening a page closes it.
     if (getState().templateMode) setState({ templateMode: null, ...(getState().selection?.owner.kind === 'template' ? { selection: null } : {}) });
@@ -1283,6 +1283,15 @@ function CollectionArchive({ collectionId, name, route, pageSize, categories }: 
       <button className="btn btn-sm btn-ghost" onClick={viewIndex} aria-label={`View the ${name} index`} data-testid={`view-index-${collectionId}`}>
         View index
       </button>
+      {/* The index's own layout, designed on the canvas, in place of the ready-made cards. */}
+      <button className="btn btn-sm btn-ghost" onClick={() => void openArchiveLayout(collectionId)} aria-label={`Design the ${name} index`} data-testid={`design-index-${collectionId}`}>
+        Design index
+      </button>
+      {designed && (
+        <button className="btn btn-sm btn-ghost" onClick={() => void update({ archiveTemplate: null }, `Show the ready-made cards on the ${name} index`)} aria-label={`Use the ready-made ${name} index`}>
+          Use ready-made cards
+        </button>
+      )}
     </div>
   );
 }
@@ -1314,7 +1323,7 @@ function CollectionLayouts({ state }: { state: ProjectState }) {
               <button className="btn btn-sm" aria-pressed={open === id} aria-label={`Edit the ${c.settings.name} layout`} data-testid={`edit-layout-${id}`} onClick={() => openLayout(id)}>
                 Edit layout
               </button>
-              <CollectionArchive collectionId={id} name={c.settings.name} route={c.settings.route ?? ''} pageSize={archivePageSize(c.settings)} categories={hasCategoryArchives(c.settings)} />
+              <CollectionArchive collectionId={id} name={c.settings.name} route={c.settings.route ?? ''} pageSize={archivePageSize(c.settings)} categories={hasCategoryArchives(c.settings)} designed={!!c.settings.archiveTemplate} />
             </li>
           );
         })}

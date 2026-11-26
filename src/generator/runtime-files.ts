@@ -474,6 +474,7 @@ export function usedIcons(state: ProjectState): string[] {
   visit(state.site.shell);
   // Each collection's layout shows on every entry's page.
   for (const c of Object.values(state.collections ?? {})) visit(c?.settings?.template);
+  for (const c of Object.values(state.collections ?? {})) visit(c?.settings?.archiveTemplate);
   for (const def of Object.values(state.components)) {
     if (def.kind === 'code') {
       for (const m of (def.source ?? '').matchAll(/['"`]([a-z0-9-]+)['"`]/g)) if (Object.hasOwn(ICONS, m[1])) found.add(m[1]);

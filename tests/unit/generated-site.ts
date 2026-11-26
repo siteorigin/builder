@@ -17,8 +17,8 @@ export function removeRendered() {
   roots.splice(0).forEach((d) => rmSync(d, { recursive: true, force: true }));
 }
 
-/** The exported Home page rendered on the server, hydration markers and all, as the static site ships it. */
-export async function serverHtml(files: Map<string, string>, prefix = 'generated-site-'): Promise<string> {
+/** The exported Home page (or another route's page) rendered on the server, hydration markers and all, as the static site ships it. */
+export async function serverHtml(files: Map<string, string>, prefix = 'generated-site-', route = 'src/routes/+page.svelte'): Promise<string> {
   mkdirSync(resolve('.tmp'), { recursive: true });
   const dir = mkdtempSync(join(resolve('.tmp'), prefix));
   roots.push(dir);
@@ -39,7 +39,7 @@ export async function serverHtml(files: Map<string, string>, prefix = 'generated
         .replace(/(["'])\$app\/navigation\1/g, JSON.stringify(navigation))
     );
   }
-  const Page = (await import(/* @vite-ignore */ join(dir, 'src/routes/+page.svelte.js'))).default as Component<Record<string, unknown>>;
+  const Page = (await import(/* @vite-ignore */ join(dir, `${route}.js`))).default as Component<Record<string, unknown>>;
   return render(Page, { props: {} }).body;
 }
 

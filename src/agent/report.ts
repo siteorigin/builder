@@ -272,6 +272,13 @@ export function describeOps(ops: EditOperation[], before: ProjectState, after: P
         const nowValue = shownImage(after, op.owner, now?.kind === 'instance' ? now.props[op.prop] : op.value);
         return imageParts(wasValue, nowValue, label).forEach((p) => contentEdit(op, p));
       }
+      case 'instance.setListSource': {
+        const label = inSentence(propSchema(op.owner, op.nodeId, op.prop)?.label ?? op.prop);
+        const collection = op.source ? String((op.source.query as { collectionId?: unknown }).collectionId ?? '') : '';
+        return plain(op, op.source ? `Showed ${quoted(collection)} in the ${label} of ${name(op.owner, op.nodeId)} on ${where(op.owner)}` : `Showed the ${label} of ${name(op.owner, op.nodeId)} on ${where(op.owner)} from its own items again`, linkTo(op.owner, op.nodeId));
+      }
+      case 'node.setRepeatSource':
+        return plain(op, `Changed which entries ${name(op.owner, op.nodeId)} shows on ${where(op.owner)}`, linkTo(op.owner, op.nodeId));
       case 'instance.listInsert':
       case 'instance.listRemove':
       case 'instance.listMove': {

@@ -1,5 +1,5 @@
 import type { AppearPreset, ComponentDefinition, ElementNode, GraphNode, InstanceNode, NodeTree, OwnerRef, ProjectState } from '@shared/types';
-import { STYLE_SCOPES, isAppearPreset, isBinding, slotFallback } from '@shared/types';
+import { repeatProp, STYLE_SCOPES, isAppearPreset, isBinding, slotFallback } from '@shared/types';
 import { pageParents } from '@shared/page-tree';
 
 export class EngineError extends Error {
@@ -31,6 +31,12 @@ export function getTree(state: ProjectState, owner: OwnerRef): NodeTree {
     if (!c) fail(`Collection "${owner.id}" does not exist.`);
     if (!c.settings.template || typeof c.settings.template !== 'object') fail(`The ${c.settings.name} collection has no layout to edit.`);
     return c.settings.template;
+  }
+  if (owner.kind === 'archive') {
+    const c = Object.hasOwn(state.collections ?? {}, owner.id) ? state.collections[owner.id] : undefined;
+    if (!c) fail(`Collection "${owner.id}" does not exist.`);
+    if (!c.settings.archiveTemplate || typeof c.settings.archiveTemplate !== 'object') fail(`The ${c.settings.name} collection has no archive layout to edit. Start one with "collection.update" and "archiveTemplate".`);
+    return c.settings.archiveTemplate;
   }
   const def = Object.hasOwn(state.components, owner.id) ? state.components[owner.id] : undefined;
   if (!def) fail(`Component definition "${owner.id}" does not exist.`);
@@ -108,7 +114,7 @@ export function enclosingRepeatProp(def: ComponentDefinition, nodeId: string): s
   let id: string | null | undefined = nodeId;
   for (let guard = 0; id && guard < 50; guard++) {
     const n: GraphNode | undefined = def.tree.nodes[id];
-    if (n && n.kind === 'repeat' && n.id !== nodeId) return n.list.$prop;
+    if (n && n.kind === 'repeat' && n.id !== nodeId) return repeatProp(n);
     id = findParent(def.tree, id)?.parentId;
   }
   return undefined;
@@ -247,6 +253,9 @@ export function templateTrees(state: ProjectState): Array<{ owner: OwnerRef; tre
   for (const id of Object.keys(state.collections ?? {}).sort()) {
     const t = state.collections[id]?.settings?.template;
     if (t && typeof t === 'object' && t.nodes && typeof t.nodes === 'object' && Array.isArray(t.rootIds)) out.push({ owner: { kind: 'template', id }, tree: t, label: `${state.collections[id].settings.name} layout` });
+    // Its archive pages' layout, when it has one of its own.
+    const a = state.collections[id]?.settings?.archiveTemplate;
+    if (a && typeof a === 'object' && a.nodes && typeof a.nodes === 'object' && Array.isArray(a.rootIds)) out.push({ owner: { kind: 'archive', id }, tree: a, label: `${state.collections[id].settings.name} archive layout` });
   }
   return out;
 }

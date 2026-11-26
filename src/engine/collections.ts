@@ -30,7 +30,8 @@ import { checkCanonicalUrl, storedCanonical } from '@shared/seo';
 import { addressSlug, normalizeRoute, numberedSlug, validateRoute, validateSegment } from '@shared/routes';
 import { isImageBlock, isRichBlock } from '@shared/richtext';
 import { newId } from '@shared/ids';
-import { EngineError, fail } from './tree';
+import { EngineError, allTrees, fail } from './tree';
+import { starterArchiveLayout } from './collection-sources';
 import { normalizeLink, normalizeRichText, normalizeScalar } from './values';
 import { bindingSlots, checkPropName, normalizePropSchema } from './schema';
 import { entryLinkUses, type LinkHolder } from './page-links';
@@ -426,6 +427,7 @@ export function collectionCreate(state: ProjectState, op: Op<'collection.create'
   if (op.pageSize !== undefined) settings.pageSize = pageSizeOf(op.pageSize);
   if (op.categoryArchives !== undefined) settings.categoryArchives = op.categoryArchives;
   state.collections[op.collectionId] = { settings, entries: {} };
+  if (op.archiveTemplate) setArchiveLayout(state, state.collections[op.collectionId], op.archiveTemplate);
   return { collectionId: op.collectionId, ...(route !== undefined ? { route } : {}) };
 }
 
@@ -521,6 +523,11 @@ export function collectionUpdate(state: ProjectState, op: Op<'collection.update'
     // show their words alone meanwhile, as links to drafts do.
     if (route !== undefined) c.settings.route = route;
     if (op.pages !== undefined) c.settings.pages = pages;
+  }
+  if (op.archiveTemplate !== undefined) {
+    // The archive pages' own layout, a fresh one to design, or back to the ready-made cards.
+    if (op.archiveTemplate === null) delete c.settings.archiveTemplate;
+    else setArchiveLayout(state, c, op.archiveTemplate);
   }
   if (op.pageSize !== undefined) c.settings.pageSize = pageSizeOf(op.pageSize);
   if (op.categoryArchives !== undefined) c.settings.categoryArchives = op.categoryArchives;
@@ -1215,4 +1222,44 @@ function entrySourceProblem(source: unknown): string | null {
   const text = (k: string) => typeof src[k] === 'string' && (src[k] as string).trim() !== '';
   if (!text('sourceId') || !text('externalId') || !text('contentHash') || !text('syncedAt') || Number.isNaN(Date.parse(src.syncedAt as string))) return 'where it was synced from is damaged.';
   return null;
+}
+
+const LAYOUT_NODE_KINDS = new Set(['element', 'text', 'image', 'link', 'icon', 'divider', 'repeat', 'instance']);
+
+/**
+ * An archive layout given whole: a tree of the nodes it holds, reached from its roots, each under an ID no other tree
+ * has, so no node (or style rule) is shared with the page or layout it was copied from. A node of another kind, or one
+ * listed twice, is refused.
+ */
+function archiveLayoutOf(state: ProjectState, collectionId: string, raw: { rootIds: string[]; nodes: Record<string, unknown> }): NodeTree {
+  const src = structuredClone(raw) as NodeTree;
+  const ids = new Map<string, string>();
+  const nodes: Record<string, GraphNode> = {};
+  // An ID of its own is kept, so a batch can go on to edit the node it names; one another tree has (it was copied from
+  // a page), or one a class name could not carry, is given a fresh one.
+  const taken = new Set(allTrees(state).filter((t) => !(t.owner.kind === 'archive' && t.owner.id === collectionId)).flatMap((t) => Object.keys(t.tree.nodes ?? {})));
+  const idFor = (id: string) => (/^[A-Za-z0-9_-]{1,64}$/.test(id) && !taken.has(id) ? id : newId('n'));
+  const take = (id: string, depth: number): string => {
+    const n = Object.hasOwn(src.nodes, id) ? (src.nodes[id] as GraphNode | null) : undefined;
+    if (!n || typeof n !== 'object' || n.id !== id || !LAYOUT_NODE_KINDS.has(n.kind)) fail(`The archive layout's node "${id.slice(0, 60)}" is not one it can hold: give each node its own ID and a kind a page can show.`);
+    if (ids.has(id)) fail(`The archive layout shows the node "${id.slice(0, 60)}" twice.`);
+    if (depth > 100) fail('The archive layout nests its elements more than 100 deep.');
+    if (n.kind === 'repeat' && (!n.list || typeof n.list !== 'object' || Array.isArray(n.list))) fail(`The archive layout's list "${id.slice(0, 60)}" repeats nothing: give it a query, or the archive page's entries.`);
+    const fresh = idFor(id);
+    taken.add(fresh);
+    ids.set(id, fresh);
+    const copy = { ...n, id: fresh } as GraphNode;
+    if ((copy.kind === 'element' || copy.kind === 'repeat') && Array.isArray(copy.children)) copy.children = copy.children.map((c) => take(c, depth + 1));
+    else if (copy.kind === 'element' || copy.kind === 'repeat') fail(`The archive layout's node "${id.slice(0, 60)}" has no list of children.`);
+    if (copy.kind === 'instance' && copy.slots) copy.slots = Object.fromEntries(Object.entries(copy.slots).map(([slot, kids]) => [slot, (Array.isArray(kids) ? kids : []).map((c) => take(c, depth + 1))]));
+    nodes[fresh] = copy;
+    return fresh;
+  };
+  const rootIds = src.rootIds.map((id) => take(id, 0));
+  return { rootIds, nodes };
+}
+
+/** A collection's archive layout as `collection.create` or `collection.update` sets it. */
+export function setArchiveLayout(state: ProjectState, c: Collection, value: NonNullable<Op<'collection.update'>['archiveTemplate']>): void {
+  c.settings.archiveTemplate = value === 'start' ? starterArchiveLayout(c) : archiveLayoutOf(state, c.settings.id, value);
 }

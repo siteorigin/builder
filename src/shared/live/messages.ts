@@ -255,7 +255,7 @@ const rpcEvent = <E extends z.ZodRawShape>(extra: E) => msg('rpc:event', { ...ex
 
 const shortId = z.string().min(1).max(MAX_ID_LENGTH);
 /** The editor's ElementRef, as presence carries it (capabilities.ts checks the two stay the same). */
-const OWNER_KINDS = ['page', 'shell', 'component', 'template'] as const;
+const OWNER_KINDS = ['page', 'shell', 'component', 'template', 'archive'] as const;
 const elementRef = z
   .object({
     owner: z.object({ kind: z.enum(OWNER_KINDS), id: shortId }).strict(),

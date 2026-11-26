@@ -332,7 +332,7 @@ const oneView = (p: Partial<State>): Partial<State> => {
   if (!(('pageId' in p && p.pageId !== s.pageId) || p.definitionMode)) return p;
   // What was selected in the layout goes with it: nothing is ever acted on that the canvas no longer shows.
   const selection = 'selection' in p ? p.selection : s.selection;
-  return { ...p, templateMode: null, ...(selection?.owner.kind === 'template' ? { selection: null } : {}) };
+  return { ...p, templateMode: null, ...(selection?.owner.kind === 'template' || selection?.owner.kind === 'archive' ? { selection: null } : {}) };
 };
 
 export const useStore = create<State>((set) => ({

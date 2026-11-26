@@ -2,7 +2,7 @@
  * Property schema validation for component definitions, and where a managed definition binds its properties.
  */
 import type { BindingRef, ComponentDefinition, Comparison, GraphNode, ListFeed, ListProp, NodeTree, PageTeaser, ProjectState, PropSchema, RepeatFilter, ScalarPropSchema, StateRef, TokenGroup, UiStateSchema } from '@shared/types';
-import { DIVIDER_SHAPES, ELEMENT_ACTIONS, ELEMENT_TAGS, ICON_POSITIONS, LIST_FEEDS, OVERLAY_MODES, RICH_CODE_FORMS, STATE_ACTION_OPS, TEXT_TAGS, UI_STATE_TYPES, conditionRef, isBinding, isBindingRef, isComparison, isStateRef } from '@shared/types';
+import { repeatProp, DIVIDER_SHAPES, ELEMENT_ACTIONS, ELEMENT_TAGS, ICON_POSITIONS, LIST_FEEDS, OVERLAY_MODES, RICH_CODE_FORMS, STATE_ACTION_OPS, TEXT_TAGS, UI_STATE_TYPES, conditionRef, isBinding, isBindingRef, isComparison, isStateRef } from '@shared/types';
 import { feedRowFields } from '@shared/entry-feed';
 import { PAGE_TEASER_TYPES, PAGE_TEASER_VALUES, type PageTeaserValue } from '@shared/page-teasers';
 import { axesOf } from '@shared/variants';
@@ -513,7 +513,7 @@ export function enclosingList(def: ComponentDefinition, nodeId: string): ListPro
     seen.add(cur.parentId);
     const p = tree.nodes[cur.parentId];
     if (p?.kind === 'repeat') {
-      const schema = def.properties[p.list.$prop];
+      const schema = def.properties[repeatProp(p) ?? ''];
       return schema?.type === 'list' ? schema : null;
     }
     cur = findParent(tree, cur.parentId);
@@ -686,7 +686,7 @@ export function itemScopeProblem(def: ComponentDefinition, nodeId: string, name:
   if (!repeats.length) return `${what}, but is not inside a repeat of "${listLabel}".`;
   if (repeats.length > 1) return `${what} from inside a repeat within another repeat; it needs to be in a repeat of "${listLabel}" alone.`;
   const r = repeats[0] as GraphNode & { kind: 'repeat' };
-  if (r.list?.$prop !== declared.list) return `${what}, but is inside a repeat of "${def.properties?.[r.list?.$prop]?.label ?? r.list?.$prop}", not of "${listLabel}".`;
+  if (repeatProp(r) !== declared.list) return `${what}, but is inside a repeat of "${def.properties?.[repeatProp(r) ?? '']?.label ?? repeatProp(r) ?? 'a collection'}", not of "${listLabel}".`;
   if (r.filter !== undefined) return `${what} inside a repeat with a category filter, which could hide the active item.`;
   return null;
 }
@@ -749,7 +749,7 @@ export function repeatFilterProblem(def: ComponentDefinition, node: GraphNode): 
   const extra = Object.keys(f).filter((k) => k !== 'field' && k !== 'when');
   if (extra.length) return `has a category filter that also says ${extra.map((k) => `"${k}"`).join(', ')}; a filter names only its field and the property that turns it on.`;
   const { field, when } = f as RepeatFilter;
-  const listName = node.list && typeof node.list === 'object' ? node.list.$prop : undefined;
+  const listName = repeatProp(node);
   const list = typeof listName === 'string' && Object.hasOwn(def.properties, listName) ? def.properties[listName] : undefined;
   if (list?.type !== 'list') return 'filters a list the component does not have.';
   if (typeof field !== 'string' || !field) return 'has a category filter that names no item field.';

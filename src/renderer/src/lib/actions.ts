@@ -28,7 +28,7 @@ import { clearSlotOps, moveOutOps, slotTitle } from './slot-overview';
 import { boundaryOf, computedAt, followsPageAt, inDefinition, keepPagesValid, listPropFor, refExists, refLabel, resolveRef, shownOrDefault, treeFor } from './model';
 import { NEW_STUDIO, type StudioView } from './studio';
 import { forgetPlace, placeOn, selectionBack } from './page-place';
-import { sampleEntries } from './template-view';
+import { sampleEntries, templateOwner } from './template-view';
 import { duplicateOps, groupOf, layerRef, liveSet, moveIntoOps, moveStepOps, moveToPageOps, removeOps, type Group, type LayerSet } from './layer-set';
 import { editLabel, placeWords, subjectWords } from './edit-label';
 import { heldContent, removalKey, type HeldContent } from './delete-content';
@@ -42,7 +42,7 @@ export type { InsertSpec, Primitive } from './insert-search';
 export function currentOwner(): OwnerRef | null {
   const s = getState();
   if (s.definitionMode) return { kind: 'component', id: s.definitionMode.definitionId };
-  if (s.templateMode) return { kind: 'template', id: s.templateMode.collectionId };
+  if (s.templateMode) return templateOwner(s.templateMode);
   return s.pageId ? { kind: 'page', id: s.pageId } : null;
 }
 
@@ -295,7 +295,7 @@ export function liveGroup(s: EditorPlace = getState()): Group | null {
   const shown = s.definitionMode
     ? set.owner.kind === 'component' && set.owner.id === s.definitionMode.definitionId
     : s.templateMode
-      ? set.owner.kind === 'template' && set.owner.id === s.templateMode.collectionId
+      ? set.owner.kind === templateOwner(s.templateMode).kind && set.owner.id === s.templateMode.collectionId
       : set.owner.kind === 'page' && set.owner.id === s.pageId;
   return shown ? liveSet(treeFor(s.snapshot.state, set.owner), s.selection, set) : null;
 }
@@ -684,8 +684,8 @@ export async function insertHere(spec: InsertSpec, name: string, role: InsertRol
   const owner = at.owner;
   // The shared header and footer show on whatever page or layout the author is on: still on the one they added from.
   const here =
-    owner.kind === 'template'
-      ? now.templateMode?.collectionId === owner.id
+    owner.kind === 'template' || owner.kind === 'archive'
+      ? !!now.templateMode && templateOwner(now.templateMode).kind === owner.kind && now.templateMode.collectionId === owner.id
       : owner.kind === 'shell'
         ? now.pageId === from.pageId && now.templateMode?.collectionId === from.templateMode?.collectionId
         : now.pageId === owner.id && !now.templateMode;
@@ -1039,6 +1039,17 @@ export function openLayout(collectionId: string, entryId?: string) {
 }
 
 /**
+ * Edit a collection's index layout (its archive pages') on the canvas, shown on its index, starting one first when the
+ * collection still shows the ready-made cards.
+ */
+export async function openArchiveLayout(collectionId: string) {
+  const st = getState().snapshot?.state;
+  if (!st || !Object.hasOwn(st.collections ?? {}, collectionId)) return;
+  if (!st.collections[collectionId].settings.archiveTemplate && !(await applyOps([{ type: 'collection.update', collectionId, archiveTemplate: 'start' }], `Design the ${st.collections[collectionId].settings.name} index`))) return;
+  setState({ templateMode: { collectionId, entryId: null, archive: true }, definitionMode: null, selection: null, mode: 'edit', previewReturn: null, leftTab: 'layers' });
+}
+
+/**
  * Whether showing `pageId` takes opening it: another page is open, a component is edited everywhere, or the Posts
  * workspace or the SEO view is in front of the page (#578, #700). A jump to something on the page (a match, a broken
  * link) opens it first.
@@ -1234,7 +1245,7 @@ export function setMode(mode: 'edit' | 'preview') {
   // A selection (or a slot picked for Insert) made while previewing is the author's latest choice and stays. Otherwise the one Preview was entered
   // with, on the same page and in the same component edited everywhere (or none), while it is still there.
   // A layout's element comes back while that layout is still open and has it.
-  const layoutBack = !!back && back.ref.owner.kind === 'template' && s.templateMode?.collectionId === back.ref.owner.id;
+  const layoutBack = !!back && !!s.templateMode && back.ref.owner.kind === templateOwner(s.templateMode).kind && s.templateMode.collectionId === back.ref.owner.id;
   const ref =
     !s.selection && !s.slotTarget && back && st && back.pageId === s.pageId && back.definitionId === editing
       ? layoutBack

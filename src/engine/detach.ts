@@ -6,7 +6,7 @@
  * design stay placements, given the values and styles they were shown with.
  */
 import type { ComponentDefinition, DetachedFrom, GraphNode, InstanceNode, NodeTree, OwnerRef, ProjectState, PropSchema, ResponsiveStyles } from '@shared/types';
-import { ELEMENT_ACTIONS, ELEMENT_TAGS, ICON_POSITIONS, TEXT_TAGS, isAppearPreset, isBinding, isBindingRef, slotChildren, slotFallback, stateInitial } from '@shared/types';
+import { repeatProp, ELEMENT_ACTIONS, ELEMENT_TAGS, ICON_POSITIONS, TEXT_TAGS, isAppearPreset, isBinding, isBindingRef, slotChildren, slotFallback, stateInitial } from '@shared/types';
 import { propBindingSchema } from '@shared/bindings';
 import type { Op } from '@shared/ops';
 import { newId } from '@shared/ids';
@@ -21,6 +21,7 @@ import { defKey, keepWeakerHides, naturalDisplay, nodeAxes } from '@generator/in
 import { effectiveProps, evaluate, filterShowsAt, rendersIn, type Scope } from '@generator/checks';
 import { anchorCapable, anchorsInUse, fail, findParent, getNode, getTree, settledRoot, subtreeIds } from './tree';
 import { slotLandingProblem } from './slots';
+import { loopMembers, readsItem, showsCollection } from './collection-sources';
 import { repeatFilterProblem } from './schema';
 import { clone } from './install';
 
@@ -69,6 +70,13 @@ export function detachInstance(state: ProjectState, op: Op<'component.detachInst
   // Its cards would become fixed links to posts, which only a post's own text can hold for now.
   if (Object.values(def.properties).some((p) => p.type === 'list' && p.feed === 'entries'))
     fail(`“${label}” lists posts that come and go with their collection, so it cannot be detached into elements. Use Make unique to change its design on this page alone.`);
+  // Nor a list showing a collection's entries, which come and go with it: detached, it would freeze to its own items.
+  const connected = Object.keys(inst.listSources ?? {}).find((p) => def.properties[p]?.type === 'list');
+  if (connected !== undefined) fail(`“${label}” shows a collection’s entries in its ${def.properties[connected].label.toLowerCase()}, which come and go with the collection, so it cannot be detached into elements. Show its own items first, or use Make unique to change its design on this page alone.`);
+  // A collection loop in its design (or in a design placed inside it) repeats entries the same way.
+  if (showsCollection(state, def)) fail(`“${label}” shows a collection’s entries in its design, which come and go with the collection, so it cannot be detached into elements. Use Make unique to change its design on this page alone.`);
+  // A placement repeated by a page's collection loop shows each entry's fields: detached, every row would show one.
+  if (loopMembers(tree).has(inst.id) && readsItem(inst)) fail(`“${label}” shows each entry’s fields in the list it is repeated in, which elements detached from it would not keep. Unbind them first, or use Make unique to change its design on this page alone.`);
   if (Object.keys(def.state ?? {}).length) fail(`“${label}” has UI state its buttons change, which elements on a page would not keep. Remove its UI state first.`);
   // Nor can they filter themselves: a list whose category buttons show here would lose them.
   const placedScope: Scope = { props: withObjectFields(def, effectiveProps(state, def, inst, { props: {} }, op.owner.id)) };
@@ -561,7 +569,7 @@ export function placementRenderer(state: ProjectState, place: RenderedPlacement,
     if (!src || !rendersIn(state, design, at.scope, src)) return [];
     switch (src.kind) {
       case 'repeat': {
-        const list = src.list.$prop;
+        const list = repeatProp(src) ?? '';
         const schema = own(def.properties, list);
         const rows = evaluate(src.list, at.scope);
         const fields = schema?.type === 'list' ? schema.fields : undefined;

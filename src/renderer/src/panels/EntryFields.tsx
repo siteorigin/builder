@@ -4,11 +4,14 @@
  * fit it, or its own value, which is then the same on every entry's page; and the element can be shown only on the
  * entries that have a value for a field (a featured image, an author).
  */
-import type { GraphNode, OwnerRef, ProjectState, PropSchema } from '@shared/types';
-import { conditionRef, isEntryBinding } from '@shared/types';
+import type { Collection, GraphNode, OwnerRef, ProjectState, PropSchema } from '@shared/types';
+import { conditionRef, isBinding, isEntryBinding } from '@shared/types';
 import type { EditOperation } from '@shared/ops';
 import { entryChoiceProblem, entryFieldLabel, entryFieldSchemas, isEntryDateField } from '@shared/entry-fields';
+import { rowFieldSchemas } from '@shared/collection-rows';
 import { acceptedTypes, type BindField } from '@engine/schema';
+import { loopCollection, loopMembers } from '@engine/collection-sources';
+import { getTree } from '@engine/tree';
 import { applyOps } from '../store';
 import { Field, Section } from '../components/ui';
 
@@ -54,38 +57,63 @@ function fitting(fields: Record<string, PropSchema>, node: GraphNode, place: Pla
   return Object.keys(fields).filter((f) => (!ok || ok.includes(fields[f].type)) && !entryChoiceProblem(fields[f], place.nested));
 }
 
-/** The entry field a value shows, or '' for a value of its own. */
-const shown = (v: unknown) => (isEntryBinding(v) ? v.$entry : '');
+/** What an element reads entries through: a collection's layout (`$entry`), or the collection loop it is in (`$item`). */
+interface Reader {
+  key: '$entry' | '$item';
+  collection: Collection;
+  fields: Record<string, PropSchema>;
+}
 
-export function EntryFieldsSection({ state, owner, node }: { state: ProjectState; owner: OwnerRef; node: GraphNode }) {
+/** How a node reads entries: inside a collection loop, each row's; in a collection's layout, the page's. */
+function readerFor(state: ProjectState, owner: OwnerRef, node: GraphNode): Reader | null {
+  let tree;
+  try {
+    tree = getTree(state, owner);
+  } catch {
+    return null;
+  }
+  const loop = loopMembers(tree).get(node.id);
+  const looped = loop ? loopCollection(state, owner, loop) : undefined;
+  if (looped) return { key: '$item', collection: looped, fields: rowFieldSchemas(looped) };
   if (owner.kind !== 'template' || !Object.hasOwn(state.collections, owner.id)) return null;
   const collection = state.collections[owner.id];
-  const fields = entryFieldSchemas(collection);
+  return { key: '$entry', collection, fields: entryFieldSchemas(collection) };
+}
+
+/** The entry field a value reads through `key`, or '' for a value of its own. */
+const readOf = (v: unknown, key: Reader['key']): string => (key === '$entry' ? (isEntryBinding(v) ? v.$entry : '') : isBinding(v) && '$item' in v && typeof v.$item === 'string' ? v.$item : '');
+
+export function EntryFieldsSection({ state, owner, node }: { state: ProjectState; owner: OwnerRef; node: GraphNode }) {
+  const reader = readerFor(state, owner, node);
+  if (!reader) return null;
+  const { collection, fields, key } = reader;
+  const shown = (v: unknown) => readOf(v, key);
+  const ref = (field: string) => (key === '$entry' ? { $entry: field } : { $item: field });
   const places = placesOf(state, node);
   // What decides whether it shows: one entry field being there (`with:`) or not (`without:`). A condition read from
   // anything else (a hand edit) shows as it is, and choosing On every entry clears both.
   const when = conditionRef(node.when);
   const unless = conditionRef(node.unless);
-  const condition = isEntryBinding(when) ? `with:${when.$entry}` : isEntryBinding(unless) ? `without:${unless.$entry}` : node.when !== undefined || node.unless !== undefined ? 'other' : '';
+  const condition = shown(when) ? `with:${shown(when)}` : shown(unless) ? `without:${shown(unless)}` : node.when !== undefined || node.unless !== undefined ? 'other' : '';
   const bind = (place: Place, field: string) => {
-    const ops: EditOperation[] = [{ type: 'node.setBinding', owner, nodeId: node.id, field: place.field, ...(place.prop ? { prop: place.prop } : {}), binding: field ? { $entry: field } : null }];
+    const ops: EditOperation[] = [{ type: 'node.setBinding', owner, nodeId: node.id, field: place.field, ...(place.prop ? { prop: place.prop } : {}), binding: field ? ref(field) : null }];
     // A text showing a date states it for machines too (a <time>); showing anything else, it states none.
     if (node.kind === 'text' && !node.rich && place.field === 'text') {
-      if (isEntryDateField(collection, field)) ops.push({ type: 'node.setBinding', owner, nodeId: node.id, field: 'datetime', binding: { $entry: field } });
-      else if (isEntryBinding(node.datetime)) ops.push({ type: 'node.setBinding', owner, nodeId: node.id, field: 'datetime', binding: null });
+      if (isEntryDateField(collection, field)) ops.push({ type: 'node.setBinding', owner, nodeId: node.id, field: 'datetime', binding: ref(field) });
+      else if (shown(node.datetime)) ops.push({ type: 'node.setBinding', owner, nodeId: node.id, field: 'datetime', binding: null });
     }
     void applyOps(ops, field ? `Show ${entryFieldLabel(collection, field)}` : `Unbind ${place.label}`);
   };
   const showWhen = (choice: string) => {
     const [how, field] = choice.split(/:(.*)/s);
     const ops: EditOperation[] = [];
-    if (node.when !== undefined || how === 'with') ops.push({ type: 'node.setBinding', owner, nodeId: node.id, field: 'when', binding: how === 'with' ? { $entry: field } : null });
-    if (node.unless !== undefined || how === 'without') ops.push({ type: 'node.setBinding', owner, nodeId: node.id, field: 'unless', binding: how === 'without' ? { $entry: field } : null });
+    if (node.when !== undefined || how === 'with') ops.push({ type: 'node.setBinding', owner, nodeId: node.id, field: 'when', binding: how === 'with' ? ref(field) : null });
+    if (node.unless !== undefined || how === 'without') ops.push({ type: 'node.setBinding', owner, nodeId: node.id, field: 'unless', binding: how === 'without' ? ref(field) : null });
     if (ops.length) void applyOps(ops, how === 'with' ? `Show only with ${entryFieldLabel(collection, field)}` : how === 'without' ? `Show only without ${entryFieldLabel(collection, field)}` : 'Show on every entry');
   };
   return (
     <Section title="Entry content" id="entry-fields" level={4}>
-      <p className="faint insp-note">Every entry of {collection.settings.name} is shown with this layout. Choose what this shows of each entry.</p>
+      <p className="faint insp-note">{key === '$item' ? `This repeats once for each entry of ${collection.settings.name} its list shows. Choose what it shows of each entry.` : `Every entry of ${collection.settings.name} is shown with this layout. Choose what this shows of each entry.`}</p>
       {places.map((place) => {
         const options = fitting(fields, node, place);
         const current = shown(place.value);
@@ -130,12 +158,13 @@ export function EntryFieldsSection({ state, owner, node }: { state: ProjectState
 }
 
 /** A note in place of a field that shows each entry's own value: it is changed in the entry, not here. */
-export function EntryBoundNote({ state, owner, value, label }: { state: ProjectState; owner: OwnerRef; value: unknown; label: string }) {
-  if (owner.kind !== 'template' || !isEntryBinding(value)) return null;
-  const collection = state.collections[owner.id];
+export function EntryBoundNote({ state, owner, value, label, node }: { state: ProjectState; owner: OwnerRef; value: unknown; label: string; node?: GraphNode }) {
+  const reader = node ? readerFor(state, owner, node) : owner.kind === 'template' && Object.hasOwn(state.collections, owner.id) ? { key: '$entry' as const, collection: state.collections[owner.id], fields: {} } : null;
+  const field = reader ? readOf(value, reader.key) : '';
+  if (!reader || !field) return null;
   return (
     <p className="faint insp-note" data-testid="entry-bound-note">
-      {label}: each entry’s {collection ? entryFieldLabel(collection, value.$entry).toLowerCase() : value.$entry}.
+      {label}: each entry’s {(reader.fields[field]?.label ?? entryFieldLabel(reader.collection, field)).toLowerCase()}.
     </p>
   );
 }

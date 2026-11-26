@@ -14,7 +14,7 @@ import { routeDir, routeUrl } from '@shared/routes';
 import { visitorTextFor } from '@shared/visitor-text';
 import type { ProjectState } from '@shared/types';
 import { derived } from './cache';
-import { HEADER_NOTE, RUNTIME_DIR, js, relImport, resolveImage } from './index';
+import { HEADER_NOTE, RUNTIME_DIR, emitArchiveLayout, js, relImport, resolveImage, type GenerateOptions } from './index';
 
 /** The route file of an archive page. */
 export function archiveFile(route: string): string {
@@ -47,8 +47,18 @@ export function pageLinks(page: number, pages: number): Array<number | null> {
 const fill = (text: string, values: Record<string, string | number>) => Object.entries(values).reduce((t, [k, v]) => t.replaceAll(`{${k}}`, String(v)), text);
 const href = (route: string) => `{resolve(${js(route)})}`;
 
-/** One archive page: `route` must be one of the collection's archive pages in `state`. */
-export function generateArchive(state: ProjectState, collectionId: string, route: string): string {
+/** Whether a collection's archive pages show its own layout (`archiveTemplate`) in place of the ready-made cards. */
+export function hasArchiveLayout(settings: { archiveTemplate?: unknown }): boolean {
+  const t = settings.archiveTemplate as { rootIds?: unknown; nodes?: unknown } | undefined;
+  return !!t && typeof t === 'object' && Array.isArray(t.rootIds) && !!t.nodes && typeof t.nodes === 'object';
+}
+
+/**
+ * One archive page: `route` must be one of the collection's archive pages in `state`. With an archive layout of the
+ * collection's own, the layout shows the page's entries between its heading and its page links (see
+ * emitArchiveLayout); otherwise they are the ready-made cards.
+ */
+export function generateArchive(state: ProjectState, collectionId: string, route: string, opts: GenerateOptions = {}): string {
   const series = collectionArchives(state, collectionId);
   const here = series.find((p) => p.route === route)!;
   const collection = state.collections[collectionId];
@@ -110,15 +120,16 @@ export function generateArchive(state: ProjectState, collectionId: string, route
 
   // The first page of the index leads with its newest entry, shown large; every other page is a grid of cards.
   const ids = here.entryIds.filter((id) => Object.hasOwn(collection.entries, id));
-  const lead = !here.category && here.page === 1 && ids.length ? ids[0] : undefined;
-  const rest = lead ? ids.slice(1) : ids;
+  const layout = hasArchiveLayout(collection.settings) ? emitArchiveLayout(state, collectionId, ids, file, opts) : null;
+  const lead = !layout && !here.category && here.page === 1 && ids.length ? ids[0] : undefined;
+  const rest = layout ? [] : lead ? ids.slice(1) : ids;
   const body: string[] = [];
   if (lead) body.push(`\t\t${card(lead, true, 'h2')}`);
   if (rest.length) {
     uses.add('grid');
     body.push(`\t\t<ul class="so-archive__grid">\n${rest.map((id) => `\t\t\t<li>${card(id, false, 'h2').replace(/\n/g, '\n\t')}</li>`).join('\n')}\n\t\t</ul>`);
   }
-  if (!ids.length) {
+  if (!ids.length && !layout) {
     uses.add('empty');
     body.push(`\t\t<p class="so-archive__empty">{${js(words.archiveEmpty)}}</p>`);
   }
@@ -150,6 +161,9 @@ export function generateArchive(state: ProjectState, collectionId: string, route
   if (here.next) head.push(`\t<link rel="next" href=${href(here.next)} />`);
 
   const imports = [`\timport { resolve } from '$app/paths';`, ...(uses.has('image') ? [`\timport SoImage from ${js(relImport(file, `${RUNTIME_DIR}/Image.svelte`))};`] : [])];
+  // The layout's own imports, each once (the layout may show pictures too).
+  for (const line of layout?.imports ?? []) if (!imports.includes(line)) imports.push(line);
+  const script = [imports.join('\n'), layout?.script ?? ''].filter(Boolean).join('\n\n');
   if (here.category) uses.add('eyebrow');
   if (here.page > 1) uses.add('count');
   const intro = [
@@ -157,11 +171,12 @@ export function generateArchive(state: ProjectState, collectionId: string, route
     `\t\t\t<h1 class="so-archive__heading">{${js(heading)}}</h1>`,
     here.page > 1 ? `\t\t\t<p class="so-archive__count">{${js(fill(words.archivePageOf, { page: here.page, count: here.pages }))}}</p>` : ''
   ].filter(Boolean);
-  return (
-    HEADER_NOTE(`siteorigin/collections/${collectionId}/collection.json`) +
-    `<script>\n${imports.join('\n')}\n</script>\n\n<svelte:head>\n${head.join('\n')}\n</svelte:head>\n\n` +
-    `<section class="so-archive">\n\t<div class="so-container so-archive__inner">\n\t\t<header class="so-archive__header">\n${intro.join('\n')}\n\t\t</header>\n${body.join('\n')}\n\t</div>\n</section>\n\n${archiveStyle(uses)}`
-  );
+  const header = `\t\t<header class="so-archive__header">\n${intro.join('\n')}\n\t\t</header>`;
+  // With a layout of its own: the heading, the layout's sections at the page's full width, then the page links.
+  const sections = layout
+    ? [`<section class="so-archive">\n\t<div class="so-container so-archive__inner">\n${header}\n\t</div>\n</section>`, layout.markup, body.length ? `<section class="so-archive">\n\t<div class="so-container so-archive__inner">\n${body.join('\n')}\n\t</div>\n</section>` : ''].filter(Boolean).join('\n')
+    : `<section class="so-archive">\n\t<div class="so-container so-archive__inner">\n${header}\n${body.join('\n')}\n\t</div>\n</section>`;
+  return HEADER_NOTE(`siteorigin/collections/${collectionId}/collection.json`) + `<script>\n${script}\n</script>\n\n<svelte:head>\n${head.join('\n')}\n</svelte:head>\n\n` + `${sections}\n\n${archiveStyle(uses)}`;
 }
 
 /** The parts of an archive page that not every one has, each with rules of its own. */

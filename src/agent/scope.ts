@@ -328,6 +328,9 @@ export const OP_REACH: Record<OperationType, OpReach> = {
   'node.setBinding': 'node',
   'node.setStateAction': 'node',
   'instance.setProp': 'node',
+  // One placement's list, or one loop: the node's own, reading the collection without changing it.
+  'instance.setListSource': 'node',
+  'node.setRepeatSource': 'node',
   'instance.listInsert': 'node',
   'instance.listRemove': 'node',
   'instance.listMove': 'node',

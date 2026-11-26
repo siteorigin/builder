@@ -8,7 +8,7 @@
  */
 import { isBackgroundImageValue } from '@shared/background-image';
 import type { Binding, ComponentDefinition, DividerNode, ElementNode, GraphNode, InstanceNode, LinkNode, LinkValue, ListProp, NodeTree, ObjectProp, OverlayMode, PartDef, ProjectState, PropSchema, SlotDef, StateAction, StyleValue, TextNode, UiStateSchema, VariantAxis } from '@shared/types';
-import { ELEMENT_ACTIONS, ICON_POSITIONS, SCHEMA_VERSION, isAppearPreset, isBinding, isStateRef, parseStyleScopeKey } from '@shared/types';
+import { ELEMENT_ACTIONS, ICON_POSITIONS, SCHEMA_VERSION, isCollectionLoop, isAppearPreset, isBinding, isStateRef, parseStyleScopeKey } from '@shared/types';
 import type { Op } from '@shared/ops';
 import { STYLE_PROP_MAP, styleSetFor } from '@shared/styles';
 import { slugify } from '@shared/routes';
@@ -193,6 +193,7 @@ function rebuildTarget(state: ProjectState, id: string): ComponentDefinition {
   if (def.category === 'shell') fail(`"${def.name}" is the site's shared header or footer, which is changed one element at a time.`);
   // What the description cannot say yet would be lost without a word: refused until it can.
   if (Object.values(def.tree.nodes).some((n) => n.kind === 'instance')) fail(`"${def.name}" places other components in its design, which component.upsert cannot describe yet. Change it with the node operations instead.`);
+  if (Object.values(def.tree.nodes).some((n) => isCollectionLoop(n))) fail(`"${def.name}" shows a collection's entries in its design, which component.upsert cannot describe yet. Change it with the node operations instead.`);
   return def;
 }
 

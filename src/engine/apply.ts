@@ -30,7 +30,7 @@ import type {
 import type { BackgroundImageValue, Binding, EntryDoc, SiteRedirect } from '@shared/types';
 import { withAuthoredRel } from '@shared/link-rel';
 import { groupLookup, hasGroupStyles, partInInteractionGroup } from '@shared/interaction-groups';
-import { APPEAR_PRESETS, DIVIDER_SHAPES, ELEMENT_ACTIONS, ICON_POSITIONS, OVERLAY_MODES, SCHEMA_VERSION, conditionRef, isContainerScope, isGroupStyleState, parseStyleScopeKey, styleScopeKey, isAppearPreset, isBinding, isBindingRef, isComparison, isEntryBinding, slotChildren, type AppearPreset, type ElementAction, type ElementTag, type IconPosition, type OverlayMode, type TextTag } from '@shared/types';
+import { repeatProp, APPEAR_PRESETS, DIVIDER_SHAPES, ELEMENT_ACTIONS, ICON_POSITIONS, OVERLAY_MODES, SCHEMA_VERSION, conditionRef, isContainerScope, isGroupStyleState, parseStyleScopeKey, styleScopeKey, isAppearPreset, isBinding, isBindingRef, isComparison, isEntryBinding, slotChildren, type AppearPreset, type ElementAction, type ElementTag, type IconPosition, type OverlayMode, type TextTag } from '@shared/types';
 import { propertiesHash, type EditOperation, type Op } from '@shared/ops';
 import { STYLE_PROP_MAP, canonicalStyleValue, containerStyleError, isSafeCssValue, stateStyleError, isTokenLength, linkOf, partStyleControls, styleSetFor, textStyleValue, textWeight, tokenVar, validateStyleValue } from '@shared/styles';
 import { normalizeRoute, slugify, suggestRoute, validateRoute } from '@shared/routes';
@@ -68,6 +68,7 @@ import { NO_SHELL_IDS, labelKeyFor, pageIds } from '@generator/checks';
 import { pageLinkUses, type PageLinkUse } from './page-links';
 import { batchTagProblem, insertsInline, tagKindProblem } from './semantic-tags';
 import { dropHeaderLinks, followingSlot, followsPageOrder, keepHeaderOrder, menuBefore } from './header-order';
+import { collectionSourceProblems, instanceSetListSource, loopNode, nodeSetRepeatSource, showsCollection } from './collection-sources';
 import { EngineError, RESERVED_ANCHORS, anchorCapable, anchorsInUse, childLists, codePlacesClass, displayName, enclosingRepeatProp, fail, findParent, getNode, getTree, headerMenu, headerMenuSlot, instancesOf, itemLinkPairs, settledRoot, subtreeIds, allTrees, type ParentInfo } from './tree';
 import { definitionRole } from './insert-role';
 import { itemStyleRecords, liveItemStyles, placementItems, repeatedPartList } from '@shared/item-styles';
@@ -254,6 +255,10 @@ function applyOne(state: ProjectState, op: EditOperation, ctx: ApplyContext): Op
       return nodeSetStateAction(state, op);
     case 'instance.setProp':
       return keepingFormKeys(state, op, () => instanceSetProp(state, op, ctx));
+    case 'instance.setListSource':
+      return instanceSetListSource(state, editableTree(state, op.owner), op);
+    case 'node.setRepeatSource':
+      return nodeSetRepeatSource(state, editableTree(state, op.owner), op);
     case 'instance.listInsert':
       return keepingFormKeys(state, op, () => listInsert(state, op));
     case 'instance.listRemove':
@@ -1548,7 +1553,11 @@ function nodeInsert(state: ProjectState, op: Op<'node.insert'>): OpResult {
   const landed = slotLanding(state, op.owner, tree, op.parentId, list);
   let nodes: GraphNode[];
   if ((op.shape !== undefined || op.icon !== undefined) && (!op.primitive || op.primitive === 'slot' || op.primitive === 'repeat')) fail('Only a divider has a shape, and only a badge or a divider of shape "icon" starts with an icon.');
-  if (op.primitive === 'slot' || op.primitive === 'repeat') {
+  if ((op.query !== undefined || op.archive) && (op.primitive !== 'repeat' || op.bind !== undefined)) fail('A query (or the archive page\'s entries) is what a collection loop repeats: insert a "repeat" with it, and no "bind".');
+  if (op.primitive === 'repeat' && (op.query !== undefined || op.archive)) {
+    // A collection loop shows entries anywhere: a page, the header or footer, a layout or a component's design.
+    nodes = [loopNode(state, op.owner, { query: op.query, archive: op.archive })];
+  } else if (op.primitive === 'slot' || op.primitive === 'repeat') {
     nodes = [structuralNode(state, op.owner, op.primitive, op.bind)];
   } else if (op.primitive) {
     nodes = primitiveNode(state, op.primitive, { text: op.text, shape: op.shape, icon: op.icon });
@@ -2017,7 +2026,7 @@ function checkMovedItemFields(state: ProjectState, def: ComponentDefinition, lis
     const n = def.tree!.nodes[id];
     const list = enclosingRepeatProp(def, id);
     if (list === before) continue;
-    if (n.kind === 'repeat' && list !== undefined && n.list.$prop === list) fail('A repeat cannot repeat the list it is already inside.');
+    if (n.kind === 'repeat' && list !== undefined && repeatProp(n) === list) fail('A repeat cannot repeat the list it is already inside.');
     for (const { slot, b, comparison } of nodeBindings(n)) {
       if (!('$item' in b)) continue;
       const what = `${displayName(state, n, def)} shows the list item field "${b.$item}"`;
@@ -3546,6 +3555,8 @@ function convertToCode(state: ProjectState, op: Op<'component.convertToCode'>): 
   refuseItemStylesInto(state, getTree(state, op.owner), [op.nodeId], 'a code component styles its items together.');
   // The code would show only the state's starting values, and its buttons would no longer change them.
   if (Object.keys(def.state ?? {}).length) fail(`"${def.name}" has UI state its buttons change, which a code copy would not keep. Remove its UI state first.`);
+  // Code holds what it shows for good: a collection's entries would stay as they are now, however they change.
+  if (showsCollection(state, def, node)) fail(`"${def.name}" shows a collection's entries, which a code copy would hold as they are now, never changing with the collection. Show its own items instead first.`);
   // Content placed in such a slot could no longer be checked for links inside the card's own link.
   const carded = slotsInsideCards(state, def);
   if (carded.length) fail(`"${def.name}" places its ${carded.map((s) => `“${def.slots?.[s]?.label ?? s}”`).join(', ')} content inside a card that links somewhere, which a code component cannot keep free of other links. Remove the card's link first.`);
@@ -4181,6 +4192,16 @@ export function applyOperations(state: ProjectState, ops: EditOperation[], ctx: 
     const was = Object.hasOwn(state.components, d.id) ? itemStateProblems(state.components[d.id]) : new Map<string, unknown>();
     const added = [...after].find(([key]) => !was.has(key))?.[1];
     if (added) throw new EngineError('INVALID_ARGUMENT', `${d.name}: ${added.message}`, { owner: { kind: 'component', id: d.id }, ...(added.nodeId ? { nodeId: added.nodeId } : {}) });
+  }
+  // A list connected to a collection, a collection loop or what its elements read that the batch leaves broken (its
+  // collection removed, a field it reads retyped, the list property renamed) is refused, whichever operation did it.
+  // Problems the project already had (a hand edit) are left for validation to report. Adding, describing or removing
+  // assets changes no tree, list or collection, so a batch of only those skips the walk.
+  const sourcesAfter = ops.every((op) => op.type === 'asset.add' || op.type === 'asset.update' || op.type === 'asset.remove') ? [] : collectionSourceProblems(draft);
+  if (sourcesAfter.length) {
+    const before = new Set(collectionSourceProblems(state).map((p) => p.key));
+    const added = sourcesAfter.find((p) => !before.has(p.key));
+    if (added) throw new EngineError('INVALID_ARGUMENT', `${added.label}: ${displayName(draft, added.node)} ${added.message}`, { owner: added.owner, nodeId: added.nodeId });
   }
   // A theme update changes no project component, not even this derived field.
   if (ops.every((op) => op.type === 'theme.refresh')) return { state: draft, results };

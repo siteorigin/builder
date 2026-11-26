@@ -3,7 +3,7 @@
  */
 import type { Binding, Collection, ComponentDefinition, EntryDoc, GraphNode, ImageValue, InstanceNode, LinkValue, NodeTree, OwnerRef, PageDoc, ProjectState, PropSchema, ResponsiveStyles } from '@shared/types';
 import { propBindingSchema, propBindingValue } from '@shared/bindings';
-import { CONTAINER_SCOPES, TEXT_TAGS, conditionHolds, conditionRef, isBinding, isComparison, isStateRef, slotChildren, slotFallback, stateInitial, type Condition } from '@shared/types';
+import { repeatProp, CONTAINER_SCOPES, TEXT_TAGS, conditionHolds, conditionRef, isBinding, isComparison, isStateRef, slotChildren, slotFallback, stateInitial, type Condition } from '@shared/types';
 import { isImageBlock, isListBlock, isRichBlock, richTextToPlain, spanRuns, toRichText, type RichSpan } from '@shared/richtext';
 import type { EditOperation } from '@shared/ops';
 import { slugify } from '@shared/routes';
@@ -22,6 +22,7 @@ import { actionWraps } from './card-links';
 import { isVideoContract, parseVideoUrl } from '@shared/video';
 import { derived } from './cache';
 import { entryNeighbours, materializeTemplate, showsBody } from './entry-template';
+import { connectedListItems } from './collection-loops';
 import { selectedVariantStyles, startingVariants } from '@shared/variants';
 import { itemStylesOf } from '@shared/item-styles';
 
@@ -234,6 +235,12 @@ export function effectiveProps(
 ): Record<string, unknown> {
   const props: Record<string, unknown> = {};
   for (const [name, schema] of Object.entries(def.properties)) {
+    // A list connected to a collection shows its entries, as the generator writes them, never its own items.
+    const connected = connectedListItems(state, def, n, name, entry ? { entry } : {});
+    if (connected) {
+      props[name] = connected;
+      continue;
+    }
     const own = Object.hasOwn(n.props, name);
     // A computed list holds what the site's pages (or a collection's entries) give it where it is placed, as the
     // generator writes it: it is never bound or stored. An entry feed shows what the placement's own values chose.
@@ -329,7 +336,8 @@ export function filterShowsAt(state: ProjectState, def: ComponentDefinition, rep
     if ((typeof on === 'boolean' ? on : prop?.type === 'boolean' ? prop.default : on) !== true) return false;
   }
   if (!rendersIn(state, tree, scope, repeat)) return false;
-  const list = repeat.list && typeof repeat.list === 'object' && Object.hasOwn(def.properties, repeat.list.$prop) ? def.properties[repeat.list.$prop] : undefined;
+  const listProp = repeatProp(repeat);
+  const list = listProp !== undefined && Object.hasOwn(def.properties, listProp) ? def.properties[listProp] : undefined;
   if (list?.type !== 'list') return false;
   const schema = Object.hasOwn(list.fields, field) ? list.fields[field] : undefined;
   const options = schema?.type === 'enum' && Array.isArray(schema.options) ? schema.options.map((o) => o?.value) : undefined;
@@ -466,6 +474,8 @@ export function walkRendered(state: ProjectState, tree: NodeTree, visit: Visit) 
           // A component inside a design reads the placement's own fields only through the bindings it is given.
           const forwarded: Record<string, PlacementField> = {};
           const fedLists = new Set<string>();
+          // A list connected to a collection holds its entries' rows: nothing in it is a field of the placement.
+          for (const k of Object.keys(n.listSources ?? {})) fedLists.add(k);
           if (frame.def) for (const [k, v] of Object.entries(n.props)) {
             // A computed list handed on is still the pages' rows: nothing in it is a field of the placement.
             if (isBinding(v) && '$prop' in v && isFeed(frame.def.properties[v.$prop])) {

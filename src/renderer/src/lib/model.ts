@@ -11,6 +11,7 @@ import { placementItems, repeatedPartList } from '@shared/item-styles';
 import { isShellPart, pagesShowing, partsShown, showsPart } from '@shared/page-shell';
 import { isDraftPage } from '@generator/index';
 import { entryNeighbours, materializeTemplate } from '@generator/entry-template';
+import { connectedListItems } from '@generator/collection-loops';
 import { PREVIEW_NODE_ID, previewCtx } from '@shared/component-preview';
 import { layerLabel } from './layers';
 import { keepTemplateValid, type TemplateMode } from './template-view';
@@ -35,17 +36,21 @@ export interface BridgeDesc {
   slot?: string;
 }
 
+/** Where a placement in `owner`'s tree runs its collection queries: a layout's own collection is the current one. */
+const layoutPlace = (owner: OwnerRef, entryId: string | null = null) => (owner.kind === 'template' || owner.kind === 'archive' ? { entry: { collectionId: owner.id, entryId: owner.kind === 'template' ? (entryId ?? '') : '' } } : {});
+
 export function treeFor(state: ProjectState, owner: OwnerRef): NodeTree | undefined {
   // Own keys only: ids can come from the preview, and "toString" must not find Object.prototype's.
   if (owner.kind === 'page') return Object.hasOwn(state.pages, owner.id) ? state.pages[owner.id] : undefined;
   if (owner.kind === 'shell') return owner.id === 'header' || owner.id === 'footer' ? state.site.shell[owner.id] : undefined;
   if (owner.kind === 'template') return Object.hasOwn(state.collections ?? {}, owner.id) ? state.collections[owner.id]?.settings?.template : undefined;
+  if (owner.kind === 'archive') return Object.hasOwn(state.collections ?? {}, owner.id) ? state.collections[owner.id]?.settings?.archiveTemplate : undefined;
   return Object.hasOwn(state.components, owner.id) ? state.components[owner.id]?.tree : undefined;
 }
 
 export function parseCtx(ctx: string): { owner: OwnerRef; path: string[] } | null {
   const [head, ...path] = ctx.split('|');
-  const m = head.match(/^(page|shell|component|template):(.+)$/);
+  const m = head.match(/^(page|shell|component|template|archive):(.+)$/);
   if (!m) return null;
   return { owner: { kind: m[1] as OwnerRef['kind'], id: m[2] }, path };
 }
@@ -544,6 +549,9 @@ function selectableItemIds(state: ProjectState, ref: ElementRef, r: ReturnType<t
   const list = listPropFor(def, ref.nodeId);
   const schema = list ? own(def.properties, list) : undefined;
   if (!list || schema?.type !== 'list') return undefined;
+  // A list connected to a collection shows its entries, by their IDs.
+  const connected = !design && r.instance ? connectedListItems(state, def, r.instance, list, layoutPlace(ref.owner)) : undefined;
+  if (connected) return connected.map((row) => row.id as string);
   if (schema.feed) {
     if (design) return undefined;
     return placedFeedRows(state, schema, ref.owner, def.properties, r.instance!.props as Record<string, unknown>).map((row) => row.id as string);
@@ -597,12 +605,12 @@ export function itemStep(state: ProjectState, ref: ElementRef, sample?: { entryI
   const itemId = path[path.length - 1];
   if (!itemId || !ref.instancePath.length) return null;
   // The placements on the way to the part, outermost first, with the designs they place.
-  const placed: Array<{ props: Record<string, unknown>; def: ComponentDefinition }> = [];
+  const placed: Array<{ props: Record<string, unknown>; def: ComponentDefinition; node: InstanceNode }> = [];
   for (let k = 0; k < ref.instancePath.length; k++) {
     const node = resolveRef(state, { owner: ref.owner, instancePath: ref.instancePath.slice(0, k), nodeId: ref.instancePath[k] }).node;
     const def = node?.kind === 'instance' ? own(state.components, node.definitionId) : undefined;
     if (!def || node?.kind !== 'instance') return null;
-    placed.push({ props: (node.props ?? {}) as Record<string, unknown>, def });
+    placed.push({ props: (node.props ?? {}) as Record<string, unknown>, def, node });
   }
   // The innermost repeat around the part is in the deepest design on the way that repeats it (or the component holding it).
   let k = placed.length - 1;
@@ -612,7 +620,10 @@ export function itemStep(state: ProjectState, ref: ElementRef, sample?: { entryI
   k++;
   const schema = own(placed[k].def.properties ?? {}, key) as ListProp;
   let list: unknown;
-  if (schema.feed) {
+  // A list connected to a collection steps through the entries it shows (on the page itself, where it is placed).
+  const connected = k === 0 ? connectedListItems(state, placed[0].def, placed[0].node, key, layoutPlace(ref.owner, sample?.entryId)) : undefined;
+  if (connected) list = connected;
+  else if (schema.feed) {
     // A computed list's rows are the pages it shows where it is placed: known only for a placement on the page itself.
     if (k > 0) return null;
     list = placedFeedRows(state, schema, ref.owner, placed[0].def.properties, placed[0].props, ref.owner.kind === 'template' && sample ? { entryId: sample.entryId, nodeId: ref.instancePath[0] } : undefined);
@@ -709,6 +720,7 @@ export function ownerLabel(state: ProjectState, owner: OwnerRef): string {
   if (owner.kind === 'page') return state.pages[owner.id]?.title ?? 'Page';
   if (owner.kind === 'shell') return owner.id === 'header' ? 'Header' : 'Footer';
   if (owner.kind === 'template') return `${state.collections[owner.id]?.settings.name ?? 'Collection'} layout`;
+  if (owner.kind === 'archive') return `${state.collections[owner.id]?.settings.name ?? 'Collection'} index layout`;
   return state.components[owner.id]?.name ?? 'Component';
 }
 

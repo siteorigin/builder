@@ -60,6 +60,8 @@ const LOOK: Record<OperationType, Look> = {
   'node.setBinding': 'owner',
   'node.setStateAction': 'owner',
   'instance.setProp': 'owner',
+  'instance.setListSource': 'owner',
+  'node.setRepeatSource': 'owner',
   'instance.listInsert': 'owner',
   'instance.listRemove': 'owner',
   'instance.listMove': 'owner',
