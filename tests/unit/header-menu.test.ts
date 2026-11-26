@@ -23,10 +23,18 @@ const ENGINES = ([['chromium', chromium], ['webkit', webkit]] as Array<[string, 
 /** A wide wordmark: 136px at the header's 34px logo height. */
 const LOGO_SVG = '<svg xmlns="http://www.w3.org/2000/svg" width="400" height="100" viewBox="0 0 400 100"><rect width="400" height="100" fill="#2a6"/></svg>';
 const PHONES = [320, 360, 390];
+/** The issue's case: a 33-character name beside the ten links the menu allows and the Book a call action. */
+const WIDE_BRAND = 'Harbourside Interior Design Group';
+const THEMES = ['foundation', 'editorial', 'signal'] as const;
+const WIDTHS = [768, 820, 900, 1024, 1100, 1180, 1280, 1366, 1440, 1600, 1920];
+/** A menu that fits beside the name on every screen wider than a phone. */
+const SHORT_LABELS = ['Home', 'About', 'Contact'];
+/** A menu that fits beside a short name on a wide screen and not on a narrow one. */
+const MEDIUM_LABELS = ['Home', 'About us', 'Services', 'Our work', 'Residential', 'Commercial', 'Journal', 'Contact'];
 
 /** The exported site's files and stylesheets: a long name (and, for `logo`, a wide logo beside it) and ten links. */
-function exportedSite(logo: boolean) {
-  const s = createStarterState('business', BRAND, false);
+function exportedSite(logo: boolean, brand = BRAND, themeId?: string, labels = LABELS) {
+  const s = createStarterState('business', brand, false, themeId);
   const targets = s.site.pageOrder;
   const page = (target: string): LinkValue => ({ type: 'page', target });
   const header = s.site.shell.header.nodes[s.site.shell.header.rootIds[0]] as InstanceNode;
@@ -35,7 +43,7 @@ function exportedSite(logo: boolean) {
     s.assets.assets.wordmark = { id: 'wordmark', name: 'wordmark', file: 'static/assets/wordmark.svg', mime: 'image/svg+xml', bytes: LOGO_SVG.length, width: 400, height: 100, hash: 'wordmark', kind: 'image', createdAt: '' };
     image = { assetId: 'wordmark', alt: 'North Harbor wordmark' };
   }
-  header.props = { ...header.props, siteName: BRAND, logo: image, showSiteName: true, sticky: true, links: LABELS.map((label, i) => ({ id: `i${i + 1}`, label, link: page(targets[i % targets.length]) })) };
+  header.props = { ...header.props, siteName: brand, logo: image, showSiteName: true, sticky: true, links: labels.map((label, i) => ({ id: `i${i + 1}`, label, link: page(targets[i % targets.length]) })) };
   const files = generateProject(s);
   const css = ['tokens', 'theme', 'components', 'site'].map((n) => files.get(`${STYLES_DIR}/${n}.css`) ?? '').join('\n');
   return { files, css };
@@ -157,6 +165,71 @@ interface Focus {
   href: string | null;
 }
 
+/**
+ * How the header is laid out: whether the menu button shows, how many lines the name takes, and the boxes of the
+ * brand, the links and the action, with the row they sit in.
+ */
+const ARRANGEMENT = `(() => {
+  const box = (el) => {
+    const b = el.getBoundingClientRect();
+    return { left: b.left, right: b.right, top: b.top, bottom: b.bottom, width: b.width, height: b.height };
+  };
+  const name = document.querySelector('.so-header__brand > span');
+  const range = document.createRange();
+  range.selectNodeContents(name);
+  const lines = new Set([...range.getClientRects()].filter((r) => r.width > 0).map((r) => Math.round(r.top))).size;
+  const toggle = document.querySelector('.so-header__toggle');
+  const nav = document.getElementById('so-site-nav');
+  const shown = (el) => el.getClientRects().length > 0 && getComputedStyle(el).visibility !== 'hidden';
+  return {
+    compact: shown(toggle),
+    navShown: shown(nav),
+    lines,
+    inner: box(document.querySelector('.so-header__inner')),
+    brand: box(document.querySelector('.so-header__brand')),
+    toggle: shown(toggle) ? box(toggle) : null,
+    links: [...nav.querySelectorAll('.so-header__list > li > a')].map(box),
+    cta: nav.querySelector('.so-header__cta') ? box(nav.querySelector('.so-header__cta')) : null,
+    viewport: document.documentElement.clientWidth,
+    scrollWidth: document.documentElement.scrollWidth
+  };
+})()`;
+
+interface Arrangement {
+  compact: boolean;
+  navShown: boolean;
+  lines: number;
+  inner: Box;
+  brand: Box;
+  toggle: Box | null;
+  links: Box[];
+  cta: Box | null;
+  viewport: number;
+  scrollWidth: number;
+}
+
+/** What is untidy about an arrangement: one row of brand, links and action, or the brand beside the menu button. */
+function untidy(a: Arrangement): string[] {
+  const out: string[] = [];
+  if (a.lines !== 1) out.push(`the name takes ${a.lines} lines`);
+  if (a.scrollWidth > a.viewport + 0.5) out.push(`the page scrolls sideways to ${a.scrollWidth}px`);
+  if (a.compact) {
+    if (a.navShown) out.push('the menu button shows beside an open row of links');
+    if (a.toggle && a.brand.right > a.toggle.left + 0.5) out.push('the brand runs under the menu button');
+    return out;
+  }
+  if (!a.navShown) out.push('neither the links nor the menu button show');
+  if (!a.links.length || !a.cta) out.push(`the row shows ${a.links.length} links${a.cta ? '' : ' and no action'}`);
+  const row = [...a.links, ...(a.cta ? [a.cta] : [])];
+  const mid = (b: Box) => (b.top + b.bottom) / 2;
+  const centre = mid(a.brand);
+  // Every link and the action on one row, level with the brand and beside it.
+  if (row.some((b) => Math.abs(mid(b) - centre) > 2)) out.push(`the links sit on rows at ${[...new Set(row.map((b) => Math.round(mid(b))))].join(', ')}px, the brand at ${Math.round(centre)}px`);
+  if (row.some((b) => b.left < a.brand.right)) out.push('a link starts before the brand ends');
+  if (row.some((b) => b.right > a.inner.right + 0.5)) out.push('a link runs past the header');
+  return out;
+}
+
 const MENU_LINKS = [...LABELS, 'Book a call'];
 /** Two frames, or a tenth of a second where a headless engine holds frames back. */
 const SETTLED = 'new Promise((done) => { requestAnimationFrame(() => requestAnimationFrame(done)); setTimeout(done, 100); })';
@@ -168,7 +241,13 @@ describe.each(ENGINES)('the phone menu in %s', (engineName, engine) => {
   let script: string;
   let dir: string;
   const markup: Record<string, { head: string; body: string }> = {};
-  const sites = { name: exportedSite(false), logo: exportedSite(true) };
+  const sites = {
+    name: exportedSite(false),
+    logo: exportedSite(true),
+    ...(Object.fromEntries(THEMES.map((theme) => [theme, exportedSite(false, WIDE_BRAND, theme)])) as Record<(typeof THEMES)[number], ReturnType<typeof exportedSite>>),
+    short: exportedSite(false, 'Studio North', 'foundation', SHORT_LABELS),
+    medium: exportedSite(false, 'Studio North', 'foundation', MEDIUM_LABELS)
+  };
 
   beforeAll(async () => {
     const files = Object.fromEntries(Object.entries(sites).map(([name, site]) => [name, site.files]));
@@ -284,6 +363,110 @@ describe.each(ENGINES)('the phone menu in %s', (engineName, engine) => {
           if (brand.right > toggle.left + 0.5) problems.push(`${at}: the brand (to ${brand.right}px) runs under the button (from ${toggle.left}px)`);
         });
     expect(problems).toEqual([]);
+  }, 60_000);
+
+  it('keeps a long name, ten links and the action in one tidy arrangement at every width in every theme, with or without scripts', async () => {
+    const problems: string[] = [];
+    const compactAt: Record<string, number[]> = {};
+    for (const theme of THEMES)
+      for (const scripts of ['now', 'off'] as const) {
+        const at = `${theme}${scripts === 'off' ? ' without scripts' : ''}`;
+        // Wider and then narrower again, on the same page, as a visitor resizes the window.
+        await withSite(theme, { width: WIDTHS[0], height: 800 }, scripts, async (page) => {
+          for (const width of [...WIDTHS, ...WIDTHS.slice(0, -1).reverse()]) {
+            await page.setViewportSize({ width, height: 800 });
+            // A page without scripts runs no frames or timers to wait for.
+            if (scripts === 'now') await page.evaluate(SETTLED);
+            const arrangement = (await page.evaluate(ARRANGEMENT)) as Arrangement;
+            if (arrangement.compact) (compactAt[at] ??= []).push(width);
+            const found = untidy(arrangement);
+            if (found.length) problems.push(`${at} at ${width}px: ${found.join('; ')}`);
+          }
+        });
+      }
+    expect(problems).toEqual([]);
+    // The content width caps the row, so a full menu beside a long name folds into the menu button at every width.
+    expect(Object.keys(compactAt)).toHaveLength(THEMES.length * 2);
+    for (const [at, widths] of Object.entries(compactAt)) expect(widths.length, at).toBe(WIDTHS.length * 2 - 1);
+
+    // There the menu holds every link and the action, one under another.
+    for (const theme of THEMES)
+      await withSite(theme, { width: 1280, height: 900 }, 'now', async (page) => {
+        await page.locator('.so-header__toggle').click();
+        await expect.poll(() => menuOpen(page)).toBe(true);
+        const shown = (await page.evaluate(`[...document.querySelectorAll('#so-site-nav ul a, #so-site-nav .so-header__cta')].map((a) => {
+          const b = a.getBoundingClientRect();
+          return { text: a.textContent.trim(), top: b.top, left: b.left, visible: b.width > 0 && b.height > 0 };
+        })`)) as Array<{ text: string; top: number; left: number; visible: boolean }>;
+        expect(shown.map((l) => l.text), theme).toEqual(MENU_LINKS);
+        expect(shown.every((l) => l.visible), theme).toBe(true);
+        for (let i = 1; i < shown.length; i++) expect(shown[i].top, `${theme}: ${shown[i].text} below ${shown[i - 1].text}`).toBeGreaterThan(shown[i - 1].top);
+        expect(new Set(shown.slice(0, LABELS.length).map((l) => Math.round(l.left))).size, `${theme}: links in one column`).toBe(1);
+      });
+  }, 150_000);
+
+  it('folds a menu that fits only on wide screens into the menu button as the window narrows, and back out as it widens', async () => {
+    await withSite('medium', { width: 1280, height: 800 }, 'now', async (page) => {
+      const seen: Array<[number, boolean]> = [];
+      for (const width of [1280, 900, 768, 1024, 1440, 820, 1280]) {
+        await page.setViewportSize({ width, height: 800 });
+        await page.evaluate(SETTLED);
+        const arrangement = (await page.evaluate(ARRANGEMENT)) as Arrangement;
+        expect(untidy(arrangement), `${width}px`).toEqual([]);
+        seen.push([width, arrangement.compact]);
+      }
+      expect(seen).toEqual([
+        [1280, false],
+        [900, true],
+        [768, true],
+        [1024, true],
+        [1440, false],
+        [820, true],
+        [1280, false]
+      ]);
+      // Opened while folded, the menu stays open as the window widens, with focus on one of its links. Escape
+      // closes it and returns focus to the menu button, which stays while it has focus (the row would hide it); once
+      // focus moves on, the row takes over.
+      await page.setViewportSize({ width: 900, height: 800 });
+      await page.evaluate(SETTLED);
+      await page.locator('.so-header__toggle').click();
+      await expect.poll(() => menuOpen(page)).toBe(true);
+      await page.locator('#so-site-nav ul a').first().focus();
+      await page.setViewportSize({ width: 1280, height: 800 });
+      await page.evaluate(SETTLED);
+      expect(((await page.evaluate(ARRANGEMENT)) as Arrangement).compact, 'open menu kept').toBe(true);
+      expect(await menuOpen(page)).toBe(true);
+      await page.keyboard.press('Escape');
+      await expect.poll(() => menuOpen(page)).toBe(false);
+      expect((await focus(page))?.toggle).toBe(true);
+      await page.evaluate(SETTLED);
+      expect(((await page.evaluate(ARRANGEMENT)) as Arrangement).compact, 'the focused menu button kept').toBe(true);
+      await tab(page);
+      await expect.poll(async () => ((await page.evaluate(ARRANGEMENT)) as Arrangement).compact).toBe(false);
+      expect(untidy((await page.evaluate(ARRANGEMENT)) as Arrangement)).toEqual([]);
+
+      // A link in the row with focus keeps the row as the window narrows, until focus moves on.
+      await page.locator('#so-site-nav ul a').nth(3).focus();
+      await page.setViewportSize({ width: 900, height: 800 });
+      await page.evaluate(SETTLED);
+      expect(((await page.evaluate(ARRANGEMENT)) as Arrangement).compact, 'focused link kept').toBe(false);
+      expect((await focus(page))?.text).toBe(MEDIUM_LABELS[3]);
+      await page.evaluate("document.querySelector('main a[href]').focus()");
+      await expect.poll(async () => ((await page.evaluate(ARRANGEMENT)) as Arrangement).compact).toBe(true);
+    });
+  }, 60_000);
+
+  it('shows a short menu in the row beside the name at every width above a phone, from the first paint', async () => {
+    for (const scripts of ['now', 'off'] as const)
+      await withSite('short', { width: WIDTHS[0], height: 800 }, scripts, async (page) => {
+        for (const width of WIDTHS) {
+          await page.setViewportSize({ width, height: 800 });
+          if (scripts === 'now') await page.evaluate(SETTLED);
+          const arrangement = (await page.evaluate(ARRANGEMENT)) as Arrangement;
+          expect(arrangement.compact, `${width}px${scripts === 'off' ? ' without scripts' : ''}`).toBe(false);
+          expect(untidy(arrangement)).toEqual([]);
+        }
+      });
   }, 60_000);
 
   it('opens the menu by touch and by keyboard when the browser runs no scripts', async () => {

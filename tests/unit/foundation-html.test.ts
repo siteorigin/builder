@@ -754,7 +754,9 @@ describe('shell.header', () => {
       // Only a link that goes somewhere closes the menu when chosen, and only one brightens under the pointer.
       expect(source).toMatch(/onclick=\{href\(item\.link\) \? chose : undefined\}/);
       const hovers = source.match(/\.so-header__nav[^{,\n]*:hover/g)!;
-      expect(hovers).toHaveLength(3);
+      // The row's links, a submenu's links, and a submenu's links in the compact header (by the phone query or the
+      // header's own class).
+      expect(hovers).toHaveLength(4);
       for (const h of hovers) expect(h).toMatch(/ a\[href\]:hover$/);
     });
 

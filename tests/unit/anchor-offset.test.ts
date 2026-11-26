@@ -1,6 +1,6 @@
 /**
- * Following a link to an anchor on a Foundation site whose sticky header is tall (a long brand and seven
- * navigation labels that wrap), in real headless browsers: the generated layout, home page and theme CSS exactly
+ * Following a link to an anchor on a Foundation site whose sticky header is tall (a long brand, seven navigation
+ * labels and a brand row padded to a different height at each width), in real headless browsers: the generated layout, home page and theme CSS exactly
  * as an exported site ships them, compiled for the client. A direct visit loads the rendered markup first, so the
  * browser jumps to the fragment before the site's script runs, as it does on a prerendered export.
  */
@@ -33,6 +33,15 @@ const FONTS = `<script>${['inter', 'fraunces']
     return `document.fonts.add(new FontFace(${JSON.stringify(family)}, Uint8Array.from(atob("${file}"), (c) => c.charCodeAt(0)), { weight: '100 900' }));`;
   })
   .join('')}</script>`;
+/**
+ * The header is taller than the theme's 5.5rem fallback margin wider than a phone, and its height changes at each
+ * width the tests step through, as a header whose labels wrap once was: with the full menu beside the long name, the
+ * links fold into the menu button, which leaves a 72px row on its own.
+ */
+const TALL_HEADER = `
+@media (min-width: 768px) { .so-header__inner { padding-block: 30px; } }
+@media (min-width: 1024px) { .so-header__inner { padding-block: 24px; } }
+@media (min-width: 1280px) { .so-header__inner { padding-block: 36px; } }`;
 /** Where a revealed target lands below the header: the theme's 1rem, give or take rounding. */
 const GAP = { min: 15, max: 18 };
 
@@ -65,7 +74,7 @@ function exportedSite(sticky: boolean) {
   });
   home.rootIds = [hero, jumps, bookmarked, padded, ...rest];
   const files = generateProject(s);
-  const css = ['tokens', 'theme', 'components', 'site'].map((n) => files.get(`${STYLES_DIR}/${n}.css`) ?? '').join('\n');
+  const css = ['tokens', 'theme', 'components', 'site'].map((n) => files.get(`${STYLES_DIR}/${n}.css`) ?? '').join('\n') + TALL_HEADER;
   return { files, css };
 }
 
@@ -284,9 +293,9 @@ describe.each(ENGINES)('anchors below the sticky header in %s', (_name, engine) 
     expect(gap, describeLanding(where, l)).toBeLessThanOrEqual(GAP.max);
   }
 
-  // Wrapped labels make the header taller than the fallback margin on wider screens. On a phone the menu is
-  // collapsed and the name wraps beside the full-size menu button: onto three lines at 360px (taller than the
-  // margin), two from 375px up (shorter).
+  // The padded brand row makes the header taller than the fallback margin on wider screens. On a phone the name
+  // wraps beside the full-size menu button: onto three lines at 360px (taller than the margin), two from 375px up
+  // (shorter).
   it.each([
     [1024, 'covered'],
     [768, 'covered'],
@@ -333,7 +342,7 @@ describe.each(ENGINES)('anchors below the sticky header in %s', (_name, engine) 
 
   it('a web font that makes the header taller after the visit lands is revealed again, unless the visitor has scrolled', async () => {
     await withSite('sticky', 1024, async ({ page, releaseFont }) => {
-      const grow = () => page.addStyleTag({ content: '.so-header__inner { padding-block: 40px; }' });
+      const grow = () => page.addStyleTag({ content: '.so-header__inner { padding-block: 60px; }' });
       const { after } = await visit(page, HEADING, '?font');
       expectLanded('before the font loads', after);
       expect(await page.evaluate('document.fonts.status'), 'the font is still loading').toBe('loading');
@@ -412,7 +421,7 @@ describe.each(ENGINES)('anchors below the sticky header in %s', (_name, engine) 
 
   it.each([
     ['a sticky header set lower with an inset', 'sticky', '.so-header { top: 10vh !important; }', 'below', [800, 600]],
-    ['a sticky header mostly above the window', 'static', '.so-header { position: sticky !important; top: -140px !important; }', 'below', [800, 600]],
+    ['a sticky header mostly above the window', 'static', '.so-header { position: sticky !important; top: -60px !important; }', 'below', [800, 600]],
     ['a header made sticky without a top inset, which scrolls away', 'static', '.so-header { position: sticky !important; }', 'top', [800, 600]],
     // In the short window the header fills most of the lower half.
     ['a header fixed to the bottom of the window', 'sticky', '.so-header { position: fixed !important; top: auto !important; bottom: 0; left: 0; right: 0; }', 'top', [800, 240]]
@@ -429,7 +438,11 @@ describe.each(ENGINES)('anchors below the sticky header in %s', (_name, engine) 
           for (const id of [HEADING, SECTION]) {
             const l = await follow(page, id);
             const label = `link to ${id} in a ${height}px window`;
-            if (where === 'below') expectLanded(label, l);
+            if (where === 'below') {
+              // Some of the header shows at the top of the window, so its offset is what the link clears.
+              expect(l.headerBottom, describeLanding(label, l)).toBeGreaterThan(0);
+              expectLanded(label, l);
+            }
             else {
               // A header at the bottom can cover the middle of a tall section; its start is what the link shows.
               expect(l.hits[0], describeLanding(label, l)).toBe('target');
