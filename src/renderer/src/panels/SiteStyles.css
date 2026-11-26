@@ -81,6 +81,7 @@
   .ss-color.compact { grid-template-columns: 44px minmax(0, 1fr) 78px; column-gap: 10px; margin-left: 0; }
   .ss-color.compact .color-pick { width: 44px; height: 44px; }
   .ss-color > .ss-color-extra { grid-column: 3 / -1; min-width: 0; }
+  .ss-color > .ss-color-error { overflow-wrap: anywhere; }
   .ss-color.compact > .ss-color-extra { grid-column: 2 / -1; }
   .ss-flags-slot:empty { display: none; }
   .ss-hex-linked { display: block; height: 26px; line-height: 24px; padding: 0 8px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; border-radius: var(--r-sm); border: 1px dashed var(--border-control); font-size: 12px; color: var(--text-2); outline-offset: 1px; }

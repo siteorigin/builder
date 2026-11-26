@@ -979,7 +979,7 @@ const SCRIM_NUMBER = '-?(?:\\d{1,4}(?:\\.\\d{1,6})?|\\.\\d{1,6})';
 const SCRIM_CHANNEL = { number: new RegExp(`^${SCRIM_NUMBER}%?$`), percent: new RegExp(`^${SCRIM_NUMBER}%$`), hue: new RegExp(`^${SCRIM_NUMBER}(?:deg)?$`) };
 function isScrimColor(raw: string): boolean {
   const c = raw.trim();
-  if (/^(#(?:[0-9a-f]{3,4}|[0-9a-f]{6}|[0-9a-f]{8})|transparent|black|white)$/i.test(c)) return true;
+  if (/^(#(?:[0-9a-f]{3,4}|[0-9a-f]{6}|[0-9a-f]{8})|transparent)$/i.test(c) || isNamedColor(c)) return true;
   const m = /^(rgba?|hsla?)\(([^()]*)\)$/i.exec(c);
   if (!m) return false;
   // Each channel by its place: red, green and blue are numbers or percentages; a hue a number or degrees, then

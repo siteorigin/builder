@@ -7,7 +7,7 @@ import { followedText, linkOf, textMetrics } from '@shared/styles';
 import { applyOps } from '../store';
 import { ColorPick } from '../components/ColorPick';
 import { ColorTextInput } from '../components/ColorTextInput';
-import { colorFieldProblem } from '../lib/color';
+import { colorFieldProblem } from '@shared/color';
 import { normalizeColorText } from '@shared/color-names';
 import { DraftInput, Field } from '../components/ui';
 import { FontSelect, familyName } from './FontSelect';
@@ -68,6 +68,7 @@ function NewStyle({ tokens, say }: { tokens: TokenDef[]; say: (text: string) => 
       say(`${label.trim()} added to your styles.`);
       setLabel('');
       setValue('');
+      setRefused(null);
     }
   };
   return (

@@ -26,7 +26,10 @@ const NAMED: Record<string, string> = {
 
 /** The #rrggbb a CSS colour name stands for, in any case; undefined for anything else. */
 export function namedColorHex(value: string): string | undefined {
-  const k = value.trim().toLowerCase();
+  const s = value.trim();
+  // CSS folds case in ASCII only: a lookalike letter that lowercases to one (the Kelvin sign to k) names no colour.
+  if (!/^[a-z]+$/i.test(s)) return undefined;
+  const k = s.toLowerCase();
   return Object.hasOwn(NAMED, k) ? NAMED[k] : undefined;
 }
 

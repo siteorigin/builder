@@ -951,6 +951,8 @@ function Control({
         >
           {def.kind === 'color' && <ColorPick key={`${scope}:${styleState ?? ''}`} className="md" value={literal ? String(value) : colorText} onPick={onSet} label={`${label}: pick a color`} />}
           <CustomValueInput
+            // Each size and state has its own field: text refused in one never shows, or saves, in another.
+            key={`${scope}:${styleState ?? ''}`}
             def={def}
             className={`input sm grow style-input${def.kind === 'color' ? ' mono' : ''}${literal ? ' is-set' : ''}`}
             value={literal ? String(value) : ''}

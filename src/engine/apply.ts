@@ -2292,12 +2292,12 @@ function nodeSetStyle(state: ProjectState, op: Op<'node.setStyle'>): OpResult {
     // A list or a slot renders what it holds, and no element of its own a group state could restyle.
     if (isGroupStyleState(op.state) && (node.kind === 'repeat' || node.kind === 'slot')) fail('A list or a slot shows no element of its own for its group to restyle. Style an element inside it instead.');
   }
+  // A hex colour typed without its # is saved with one.
+  if (STYLE_PROP_MAP[op.property].kind === 'color' && typeof op.value === 'string') op = { ...op, value: normalizeColorText(op.value) };
   if (op.value !== null) {
     // Clearing one is always allowed, as for a state, so a hand-edited document can be cleaned up.
     const inContainer = isContainerScope(op.scope) ? containerStyleError(op.property) : null;
     if (inContainer) fail(inContainer);
-    // A hex colour typed without its # is saved with one.
-    if (STYLE_PROP_MAP[op.property].kind === 'color' && typeof op.value === 'string') op = { ...op, value: normalizeColorText(op.value) };
     const err = validateStyleValue(op.property, op.value);
     if (err) fail(err);
     checkTokenRef(state, op.value);
@@ -2894,10 +2894,11 @@ const TEXT_KEYS = ['family', 'size', 'lineHeight', 'weight', 'tracking', 'transf
 function tokenSetLiteral(state: ProjectState, tdef: TokenDef, v: unknown) {
   const id = tdef.id;
   if (tdef.group === 'color') {
-    const color = typeof v === 'string' ? normalizeColorText(v) : v;
-    const err = validateStyleValue('color', String(color));
+    if (typeof v !== 'string') fail(`"${String(v)}" is not a color.`);
+    const color = normalizeColorText(v);
+    const err = validateStyleValue('color', color);
     if (err) fail(err);
-    state.tokens.overrides[id] = color as TokenValue;
+    state.tokens.overrides[id] = color;
   } else if (tdef.group === 'text') {
     if (!v || typeof v !== 'object' || Array.isArray(v)) fail('Text styles need { family, size, lineHeight, weight, tracking }.');
     // A text style saved as a link to another (hand-edited, or from an older version) starts from what it is

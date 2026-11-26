@@ -3,13 +3,12 @@
 import { describe, expect, it } from 'vitest';
 import type { ProjectState } from '@shared/types';
 import { isNamedColor, namedColorHex, normalizeColorText } from '@shared/color-names';
-import { parseColor, pickerHex } from '@shared/color';
-import { isValidGradient, validateStyleValue } from '@shared/styles';
+import { colorFieldProblem, parseColor, pickerHex } from '@shared/color';
+import { backgroundImageLayers, isScrim, isValidGradient, validateStyleValue } from '@shared/styles';
 import { paletteChanges } from '@shared/palette';
 import { createStarterState } from '@catalogue/starters';
 import { applyOperations } from '@engine/apply';
 import { effectiveTokens, generateProject } from '@generator/index';
-import { colorFieldProblem } from '../../src/renderer/src/lib/color';
 
 const fresh = () => createStarterState('blank', 'Blank', false);
 const home = (s: ProjectState) => s.pages[s.site.homePageId];
@@ -111,5 +110,28 @@ describe('a typed colour through the project', () => {
     s = applyOperations(s, [{ type: 'token.set', tokenId: 'color.brand', value: { token: 'color.accent' } }]).state;
     const changes = paletteChanges(effectiveTokens(s), { 'color.brand': '#ff0000' } as Parameters<typeof paletteChanges>[1]);
     expect(changes).toEqual([]);
+  });
+});
+
+describe('review follow-ups', () => {
+  it('names no colour with a lookalike letter CSS does not fold', () => {
+    // U+212A KELVIN SIGN lowercases to "k" in JavaScript, but a browser reads no colour from it.
+    expect(isNamedColor('blacK')).toBe(false);
+    expect(parseColor('blacK')).toBeNull();
+    expect(validateStyleValue('color', 'blacK')).toMatch(/not a color/);
+  });
+
+  it('takes colour names in a scrim, alone or in a gradient', () => {
+    expect(isScrim('RebeccaPurple')).toBe(true);
+    expect(isScrim('linear-gradient(to bottom, transparent, navy)')).toBe(true);
+    expect(isScrim('reddish')).toBe(false);
+  });
+
+  it('refuses a site colour that is not text', () => {
+    expect(() => applyOperations(fresh(), [{ type: 'token.set', tokenId: 'color.brand', value: ['RebeccaPurple'] as unknown as string }])).toThrow(/is not a color/);
+  });
+
+  it('strips a named colour that ends a gradient from the picture layers', () => {
+    expect(backgroundImageLayers('linear-gradient(red, blue), white')).toBe('linear-gradient(red, blue)');
   });
 });
