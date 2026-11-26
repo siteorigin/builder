@@ -1352,7 +1352,7 @@ export class Controller {
   close(): Promise<void> {
     const [key, session] = [this.workspaceKey, this.session];
     // A close that fails leaves the project open and editable under the same opening, and tells the editor.
-    this.closing ??= this.closeNow().catch((e) => { if (session && this.session === session && !this.workspaceKey) (this.workspaceKey = key), this.onOpeningChange?.(), this.broadcast(); throw e; }).finally(() => (this.closing = null));
+    this.closing ??= this.closeNow().catch((e) => { if (session && this.session === session && !this.workspaceKey) (this.workspaceKey = key), this.watchExternalChanges(session), this.onOpeningChange?.(), this.broadcast(); throw e; }).finally(() => (this.closing = null));
     return this.closing;
   }
 
