@@ -100,3 +100,32 @@ export function pagesSummaryText(plan: { published: PageDoc[]; drafts: PageDoc[]
   // Only entries are left out: there is no page for the search-engine note to be about.
   return { long, published: line, drafts: draftEntries.length > 0 ? { lead: draftEntriesSentence(draftEntries, false), rest: ' Drafts stay in the editable project.' } : null };
 }
+
+/** The heading of the Export dialog's review of the starter's sample contact details still on the website. */
+export function sampleContactsHeading(count: number): string {
+  return count === 1 ? 'A sample contact detail from the starter is still on the website.' : `${count} sample contact details from the starter are still on the website.`;
+}
+
+/** The heading of the Export dialog's search and AI preflight, for what keeps the website from being found or shared. */
+export function seoPreflightHeading(count: number): string {
+  return count === 1 ? 'One thing keeps the website from being found or shared well.' : `${count} things keep the website from being found or shared well.`;
+}
+
+/**
+ * What the Export dialog still listed to fix when an export started, beside the export's own notes, in the dialog's
+ * words: the sample contact details left to review and what keeps the website from being found. An export's result
+ * says "Nothing to fix." only when this is empty too.
+ */
+export function dialogFixes({ samples, seo }: { samples: number; seo: number }): string[] {
+  return [...(samples ? [sampleContactsHeading(samples)] : []), ...(seo ? [seoPreflightHeading(seo)] : [])];
+}
+
+/** What a website export says it published: "3 pages", "3 pages and 3 entries from Posts", as the dialog counts them. */
+export function exportedCounts(pages: number, entries: SiteEntry[]): string {
+  return `${pages} page${pages === 1 ? '' : 's'}${entries.length ? ` and ${entryCounts(entries, 'entry')}` : ''}`;
+}
+
+/** Whether an export's result may say "Nothing to fix.": it finished with no notes, and the dialog listed nothing to fix. */
+export function nothingToFix(result: { ok: boolean; warnings: string[]; fixesListed?: string[] }): boolean {
+  return result.ok && !result.warnings.length && !result.fixesListed?.length;
+}

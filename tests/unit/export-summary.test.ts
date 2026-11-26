@@ -9,7 +9,7 @@ import { siteEntries, type SiteEntry } from '@shared/collections';
 import { createStarterState } from '@catalogue/starters';
 import { applyOperations } from '@engine/apply';
 import { publicationPlan } from '@generator/checks';
-import { draftEntriesSentence, entryCounts, pagesSummaryText, publishedEntriesSentence } from '../../src/renderer/src/lib/export-summary';
+import { dialogFixes, draftEntriesSentence, entryCounts, exportedCounts, nothingToFix, pagesSummaryText, publishedEntriesSentence } from '../../src/renderer/src/lib/export-summary';
 
 const run = (s: ProjectState, ...ops: EditOperation[]) => applyOperations(s, ops).state;
 const entry = (collectionId: string, id: string, draft: boolean): EditOperation => ({ type: 'entry.create', collectionId, entryId: id, title: `Entry ${id}`, publishedAt: '2026-01-12', draft });
@@ -134,5 +134,28 @@ describe('the words of the summary', () => {
     });
     // Only entries are left out: the note about hiding a page from search engines has nothing to say.
     expect(pagesSummaryText({ published: pages('Home'), drafts: [], publishedEntries: [], draftEntries: entriesOf(s, true) }).drafts).toEqual({ lead: '1 draft entry from Posts is left out.', rest: ' Drafts stay in the editable project.' });
+  });
+});
+
+describe('the export result in the dialog’s words (#884)', () => {
+  it('counts what the website published as the dialog does', () => {
+    const plan = publicationPlan(blog());
+    expect(exportedCounts(3, plan.publishedEntries)).toBe('3 pages and 2 entries from Posts');
+    expect(exportedCounts(1, [])).toBe('1 page');
+    expect(exportedCounts(2, plan.publishedEntries.slice(0, 1))).toBe('2 pages and 1 entry from Posts');
+  });
+
+  it('lists what the dialog still had to fix, in its headings’ words', () => {
+    expect(dialogFixes({ samples: 0, seo: 0 })).toEqual([]);
+    expect(dialogFixes({ samples: 3, seo: 2 })).toEqual(['3 sample contact details from the starter are still on the website.', '2 things keep the website from being found or shared well.']);
+    expect(dialogFixes({ samples: 1, seo: 1 })).toEqual(['A sample contact detail from the starter is still on the website.', 'One thing keeps the website from being found or shared well.']);
+  });
+
+  it('says nothing is left to fix only when neither the export nor the dialog found anything', () => {
+    expect(nothingToFix({ ok: true, warnings: [], fixesListed: [] })).toBe(true);
+    expect(nothingToFix({ ok: true, warnings: [] })).toBe(true);
+    expect(nothingToFix({ ok: true, warnings: [], fixesListed: dialogFixes({ samples: 3, seo: 2 }) })).toBe(false);
+    expect(nothingToFix({ ok: true, warnings: ['One image has not been chosen yet and shows a placeholder.'] })).toBe(false);
+    expect(nothingToFix({ ok: false, warnings: [] })).toBe(false);
   });
 });

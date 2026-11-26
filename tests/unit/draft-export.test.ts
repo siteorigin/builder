@@ -141,6 +141,35 @@ describe('exporting a project with a draft', () => {
     expect((c.snapshot()!.recentExports[0].notes ?? []).filter((n) => /404\.html/.test(n.message))).toEqual([]);
   });
 
+  it('#884: the editable project’s export says private files were left out without counting it as a note', async () => {
+    const dir = temp('project');
+    const state = createStarterState('blank', 'Bookshop', false);
+    state.site.baseUrl = 'https://books.example';
+    await (await ProjectSession.create(dir, state)).close();
+    const c = await open(dir);
+    const r = await c.exportSourceTo(join(temp('out'), 'handoff'));
+    expect(r).toMatchObject({ ok: true, message: 'Source project exported. Private files such as .env, keys and credentials were left out.' });
+    expect(r.warnings).toEqual([]);
+    expect(r.notes).toEqual([]);
+    expect(c.snapshot()!.recentExports[0].notes).toEqual([]);
+  });
+
+  it('#884: counts the published entries by their collection, as the Export dialog does', async () => {
+    const dir = temp('project');
+    let state = createStarterState('business', 'Bookshop', false);
+    state = applyOperations(state, [
+      { type: 'collection.create', collectionId: 'posts' },
+      { type: 'entry.create', collectionId: 'posts', entryId: 'en_aaaa1', title: 'Opening day', publishedAt: '2026-01-12', draft: false },
+      { type: 'entry.create', collectionId: 'posts', entryId: 'en_aaaa2', title: 'Winter hours', publishedAt: '2026-01-13', draft: false },
+      { type: 'entry.create', collectionId: 'posts', entryId: 'en_aaaa3', title: 'Coming soon', publishedAt: '2026-01-14', draft: true }
+    ]).state;
+    await (await ProjectSession.create(dir, state)).close();
+    const c = await open(dir);
+    const r = await c.buildStaticTo(join(temp('out'), 'site'));
+    expect(r.ok).toBe(true);
+    expect(r.message).toMatch(/^Exported \d+ pages and 2 entries from Posts\.$/);
+  });
+
   it('publishes the hosts’ 301 rules for the published redirects only, with vercel.json at the website’s root (#581)', async () => {
     const dir = temp('project');
     let state = createStarterState('business', 'Bookshop', false);

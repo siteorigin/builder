@@ -13,6 +13,7 @@ import { findTheme } from '@catalogue/index';
 import { slugify } from '@shared/routes';
 import { sourceHash } from '@engine/apply';
 import { websiteFormNotes, type Diagnostic } from '@engine/validate';
+import { exportedCounts } from '../renderer/src/lib/export-summary';
 import { basePath, generateManagedComponent, generatePage, defFile, liveRedirects, publishedState, siteEntries } from '@generator/index';
 import { archivePages } from '@shared/archives';
 import { placeholderImageCount } from '@generator/checks';
@@ -58,6 +59,9 @@ import { codeBrought, importedCode, migratePackage, packagedDefinitions, planCom
 import { definitionRole } from '@engine/insert-role';
 import { findSaved, listSaved, removeSaved, saveToLibrary, savedPackagePath } from './saved-components';
 import { buildComponentPackage, preparePackageImport, readComponentPackage, type PreparedImport } from './project/component-package';
+
+/** Said with every editable project export: a statement, never a note to review, since nothing needs doing about it. */
+const PRIVATE_FILES_LEFT_OUT = 'Private files such as .env, keys and credentials were left out.';
 
 const INSTANCE_ID = randomUUID();
 
@@ -2661,7 +2665,7 @@ export class Controller {
     const bad = this.badExportTarget(s, dest, format);
     if (bad) return { ok: false, message: bad, warnings: [] };
     // What the export says about what it delivered, in order, with where to fix what the editor can fix.
-    const notes: ExportNote[] = [{ message: 'Private files such as .env, keys and credentials were left out.' }];
+    const notes: ExportNote[] = [];
     const warn = (...messages: string[]) => void notes.push(...messages.map((message) => ({ message })));
     return this.withStaging(async (staging) => {
       const folder = join(staging, 'project');
@@ -2688,7 +2692,7 @@ export class Controller {
       if (problem) return { ok: false, message: problem, warnings: [] };
       this.exportPaths.add(dest);
       this.recordExport(s, { kind: 'source', format, path: dest, revision: snap.revision, exportedAt: new Date().toISOString(), notes });
-      return { ok: true, path: dest, message: format === 'zip' ? 'Source project exported as a ZIP file.' : 'Source project exported.', warnings: notes.map((n) => n.message), notes, revision: snap.revision };
+      return { ok: true, path: dest, message: `${format === 'zip' ? 'Source project exported as a ZIP file.' : 'Source project exported.'} ${PRIVATE_FILES_LEFT_OUT}`, warnings: notes.map((n) => n.message), notes, revision: snap.revision };
     });
   }
 
@@ -2911,8 +2915,8 @@ export class Controller {
     const relative = notFoundAddressWarning(notFound);
     if (relative) warn(relative);
     const pages = live.site.pageOrder.length;
-    const entries = siteEntries(live).length;
-    const exported = `${pages} page${pages === 1 ? '' : 's'}${entries ? ` and ${entries} collection entr${entries === 1 ? 'y' : 'ies'}` : ''}`;
+    // In the Export dialog's words: "3 pages and 3 entries from Posts".
+    const exported = exportedCounts(pages, siteEntries(live));
     const problem = await this.publish(s, out, dest, format);
     if (problem) return { ok: false, message: problem, warnings: warnings() };
     // How the host shows the not-found page is guidance, not a warning: it goes beside the notes, never among them.
