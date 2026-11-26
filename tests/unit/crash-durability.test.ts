@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it } from 'vitest';
-import { cpSync, mkdirSync, mkdtempSync, promises as fsp, readdirSync, rmSync } from 'node:fs';
+import { constants, cpSync, mkdirSync, mkdtempSync, promises as fsp, readdirSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { existsSync, readFileSync, statSync, writeFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
@@ -32,8 +32,12 @@ async function reopen(dir: string) {
   return s;
 }
 
+/** A path with `/` between its parts on every platform, to match it against a project-relative suffix. */
+const slash = (p: unknown) => String(p).replaceAll('\\', '/');
+
 /** Every file system call that changes something on disk. */
 const MUTATING = ['writeFile', 'appendFile', 'rename', 'rm', 'unlink', 'link', 'rmdir', 'mkdir', 'utimes', 'chmod', 'copyFile', 'open', 'truncate'] as const;
+const WRITE_FLAGS = constants.O_WRONLY | constants.O_RDWR | constants.O_CREAT | constants.O_TRUNC | constants.O_APPEND;
 let disarm: (() => void) | null = null;
 
 /**
@@ -48,8 +52,9 @@ function crashBefore(step: number | ((method: string, args: unknown[]) => boolea
   for (const m of MUTATING) {
     const real = originals.get(m)!;
     fs[m] = function (this: unknown, ...args: unknown[]) {
-      // Opening for reading changes nothing.
-      if (m === 'open' && (args[1] === undefined || args[1] === 'r')) return real.apply(this, args);
+      // Opening for reading changes nothing, whether the flags are spelled as a string or as numbers (a theme's font
+      // file is opened read-only and without following links).
+      if (m === 'open' && (args[1] === undefined || args[1] === 'r' || (typeof args[1] === 'number' && (args[1] & WRITE_FLAGS) === 0))) return real.apply(this, args);
       if (dead || (typeof step === 'number' ? ++count >= step : step(m, args))) {
         dead = true;
         return Promise.reject(Object.assign(new Error('injected crash'), { code: 'EIO' }));
@@ -349,7 +354,7 @@ describe('crash durability', { timeout: 300_000 }, () => {
       const real = fsp.rename.bind(fsp);
       const fs = fsp as unknown as Record<string, unknown>;
       fs.rename = async (from: string, to: string) => {
-        if (String(to).endsWith(suffix)) throw Object.assign(new Error('injected failure'), { code: 'EIO' });
+        if (slash(to).endsWith(suffix)) throw Object.assign(new Error('injected failure'), { code: 'EIO' });
         return real(from, to);
       };
       disarm = () => {
@@ -403,7 +408,7 @@ describe('crash durability', { timeout: 300_000 }, () => {
       const { dir, s } = await make();
       expect(await s.beginRun('run_x')).toBeNull();
       expect((await s.apply({ operations: [{ type: 'site.update', name: 'AI name' }] }, { label: 'AI', source: 'ai', runId: 'run_x', history: false })).ok).toBe(true);
-      const c = crashBefore((m, args) => m === 'rename' && String(args[1]).endsWith('history/history.json'));
+      const c = crashBefore((m, args) => m === 'rename' && slash(args[1]).endsWith('history/history.json'));
       await s.completeRun('AI: test').catch(() => undefined);
       expect(c.crashed()).toBe(true);
       disarm?.();
@@ -422,7 +427,7 @@ describe('crash durability', { timeout: 300_000 }, () => {
       const { dir, s } = await make();
       expect(await s.beginRun('run_v')).toBeNull();
       expect((await s.apply({ operations: [{ type: 'site.update', name: 'AI name' }] }, { label: 'AI', source: 'ai', runId: 'run_v', history: false })).ok).toBe(true);
-      crashBefore((m, args) => m === 'rename' && String(args[1]).endsWith('history/history.json'));
+      crashBefore((m, args) => m === 'rename' && slash(args[1]).endsWith('history/history.json'));
       await s.completeRun('AI: test').catch(() => undefined);
       disarm?.();
       // The app was updated to a new document format before the project was opened again.
@@ -449,7 +454,7 @@ describe('crash durability', { timeout: 300_000 }, () => {
       expect((await s.apply({ operations: [{ type: 'site.update', name: 'By hand' }] }, { label: 'By hand' })).ok).toBe(true);
       expect(await s.beginRun('run_v')).toBeNull();
       expect((await s.apply({ operations: [{ type: 'site.update', name: 'AI name' }] }, { label: 'AI', source: 'ai', runId: 'run_v', history: false })).ok).toBe(true);
-      crashBefore((m, args) => m === 'rename' && String(args[1]).endsWith('history/history.json'));
+      crashBefore((m, args) => m === 'rename' && slash(args[1]).endsWith('history/history.json'));
       await s.completeRun('AI: test').catch(() => undefined);
       disarm?.();
       const journalPath = join(dir, '.siteorigin/journal.json');
@@ -468,7 +473,7 @@ describe('crash durability', { timeout: 300_000 }, () => {
         const { dir, s } = await make();
         expect(await s.beginRun('run_v')).toBeNull();
         expect((await s.apply({ operations: [{ type: 'site.update', name: 'AI name' }] }, { label: 'AI', source: 'ai', runId: 'run_v', history: false })).ok).toBe(true);
-        crashBefore((m, args) => m === 'rename' && String(args[1]).endsWith('history/history.json'));
+        crashBefore((m, args) => m === 'rename' && slash(args[1]).endsWith('history/history.json'));
         await s.completeRun('AI: test').catch(() => undefined);
         disarm?.();
         const journalPath = join(dir, '.siteorigin/journal.json');
@@ -503,7 +508,7 @@ describe('crash durability', { timeout: 300_000 }, () => {
       const { dir, s } = await make();
       expect(await s.beginRun('run_w')).toBeNull();
       expect((await s.apply({ operations: [{ type: 'site.update', name: 'AI name' }] }, { label: 'AI', source: 'ai', runId: 'run_w', history: false })).ok).toBe(true);
-      crashBefore((m, args) => m === 'rename' && String(args[1]).endsWith('history/history.json'));
+      crashBefore((m, args) => m === 'rename' && slash(args[1]).endsWith('history/history.json'));
       await s.completeRun('AI: test').catch(() => undefined);
       disarm?.();
       const journalPath = join(dir, '.siteorigin/journal.json');
@@ -523,7 +528,7 @@ describe('crash durability', { timeout: 300_000 }, () => {
       const { dir, s } = await make();
       expect(await s.beginRun('run_p')).toBeNull();
       expect((await s.apply({ operations: [{ type: 'site.update', name: 'AI name' }, { type: 'page.create', title: 'AI page' }] }, { label: 'AI', source: 'ai', runId: 'run_p', history: false })).ok).toBe(true);
-      crashBefore((m, args) => m === 'rename' && String(args[1]).endsWith('history/history.json'));
+      crashBefore((m, args) => m === 'rename' && slash(args[1]).endsWith('history/history.json'));
       await s.completeRun('AI: test').catch(() => undefined);
       disarm?.();
       const journalPath = join(dir, '.siteorigin/journal.json');
@@ -549,7 +554,7 @@ describe('crash durability', { timeout: 300_000 }, () => {
         const { dir, s } = await make();
         expect(await s.beginRun('run_x')).toBeNull();
         expect((await s.apply({ operations: [{ type: 'site.update', name: 'AI name' }] }, { label: 'AI', source: 'ai', runId: 'run_x', history: false })).ok).toBe(true);
-        crashBefore((m, args) => m === 'rename' && String(args[1]).endsWith('history/history.json'));
+        crashBefore((m, args) => m === 'rename' && slash(args[1]).endsWith('history/history.json'));
         await s.completeRun('AI: test').catch(() => undefined);
         disarm?.();
         const journalPath = join(dir, '.siteorigin/journal.json');
@@ -597,16 +602,16 @@ describe('crash durability', { timeout: 300_000 }, () => {
     }
 
     it('is reported when the run stopped before its save was journaled', async () => {
-      await expectReported(await interruptedRemoval((m, args) => m === 'rename' && String(args[1]).endsWith('journal.json')));
+      await expectReported(await interruptedRemoval((m, args) => m === 'rename' && slash(args[1]).endsWith('journal.json')));
     });
 
     it('is reported when the run stopped after its delete was journaled', async () => {
-      await expectReported(await interruptedRemoval((m, args) => m === 'rm' && String(args[0]).endsWith('.svelte')));
+      await expectReported(await interruptedRemoval((m, args) => m === 'rm' && slash(args[0]).endsWith('.svelte')));
     });
 
     it('is still reported after a second crash part way through recovery', async () => {
-      const r = await interruptedRemoval((m, args) => m === 'rm' && String(args[0]).endsWith('.svelte'));
-      const c = crashBefore((m, args) => m === 'rename' && String(args[1]).endsWith('conflicts.json'));
+      const r = await interruptedRemoval((m, args) => m === 'rm' && slash(args[0]).endsWith('.svelte'));
+      const c = crashBefore((m, args) => m === 'rename' && slash(args[1]).endsWith('conflicts.json'));
       await ProjectSession.open(r.dir, 'interrupted-recovery', { force: true }).catch(() => undefined);
       expect(c.crashed()).toBe(true);
       disarm?.();
@@ -614,7 +619,7 @@ describe('crash durability', { timeout: 300_000 }, () => {
     });
 
     it('can be undone after the deletion is kept', async () => {
-      const r = await interruptedRemoval((m, args) => m === 'rename' && String(args[1]).endsWith('journal.json'));
+      const r = await interruptedRemoval((m, args) => m === 'rename' && slash(args[1]).endsWith('journal.json'));
       const again = await reopen(r.dir);
       expect((await again.resolveConflict(r.meta, 'keep')).ok).toBe(true);
       expect((await again.undo()).ok).toBe(true);
@@ -623,7 +628,7 @@ describe('crash durability', { timeout: 300_000 }, () => {
     });
 
     it('can still be restored', async () => {
-      const r = await interruptedRemoval((m, args) => m === 'rename' && String(args[1]).endsWith('journal.json'));
+      const r = await interruptedRemoval((m, args) => m === 'rename' && slash(args[1]).endsWith('journal.json'));
       const again = await reopen(r.dir);
       expect((await again.resolveConflict(r.meta, 'restore')).ok).toBe(true);
       expect(again.conflicts).toEqual([]);
@@ -755,7 +760,7 @@ describe('flush order', () => {
 
   it('flushes the folders a stopped save created before recovery retires its journal', async () => {
     const { dir, s } = await make();
-    const c = crashBefore((m, args) => m === 'rename' && String(args[1]).endsWith('component.json'));
+    const c = crashBefore((m, args) => m === 'rename' && slash(args[1]).endsWith('component.json'));
     await s.apply({ operations: [{ type: 'component.createCode', name: 'Widget', source: '<p>Widget</p>' }] }, { label: 'Add widget' }).catch(() => undefined);
     expect(c.crashed()).toBe(true);
     disarm?.();

@@ -1,5 +1,6 @@
 import type { Miniflare, WebSocket as SimulatedWebSocket } from 'miniflare';
 import { unstable_startWorker } from 'wrangler';
+import dns from 'node:dns';
 import { request as httpRequest } from 'node:http';
 import { Readable } from 'node:stream';
 import { generateHostKeyPair, previewHostLabel, signHostChallenge, toBase64Url, type HostKeyPair } from '../../src/shared/live/crypto';
@@ -13,6 +14,52 @@ import { PREVIEW_ADMISSION_PATH, roomPreviewOrigin } from '../../src/shared/live
  * Worker and starts it in workerd with its Durable Object, rate limiter and alarms, all offline and in memory. Tests
  * play the host and the guests over real WebSockets with the shared protocol's own encoders.
  */
+
+type Lookup = typeof dns.lookup;
+type PromiseLookup = typeof dns.promises.lookup;
+type LookupCallback = (err: NodeJS.ErrnoException | null, address: string | dns.LookupAddress[], family?: number) => void;
+/** Where a lookup is asked: the callback form and the promise form (which Playwright uses). */
+export type Resolver = { lookup: Lookup; promises: { lookup: PromiseLookup } };
+
+/** The loopback addresses a lookup asking for `options` gets, IPv4 first. */
+function loopback(options: unknown): { all: boolean; addresses: dns.LookupAddress[] } {
+  const opts: dns.LookupOptions = typeof options === 'number' ? { family: options } : typeof options === 'object' && options ? (options as dns.LookupOptions) : {};
+  const family = opts.family === 'IPv4' ? 4 : opts.family === 'IPv6' ? 6 : (opts.family ?? 0);
+  const addresses = [
+    { address: '127.0.0.1', family: 4 },
+    { address: '::1', family: 6 }
+  ].filter((a) => !family || family === a.family);
+  return { all: !!opts.all, addresses };
+}
+
+/** A name under `localhost` (RFC 6761): `localhost` itself and every name ending in `.localhost`. */
+export const isLocalhostName = (hostname: string) => /(^|\.)localhost\.?$/i.test(hostname);
+
+let localhostNamesResolved = false;
+
+/**
+ * Give names under `localhost` the loopback addresses in this process, as macOS and Linux already do (RFC 6761) and
+ * Chromium does on every platform. Windows' resolver answers only `localhost` itself, so a request a test makes from Node
+ * to a room's preview origin (`p-<label>.relay.localhost`, through Playwright's `route.fetch`) found no address there and
+ * never completed. Every other name is looked up as before. Only Windows needs it, unless `platform` says otherwise.
+ */
+export function resolveLocalhostNames(platform: NodeJS.Platform = process.platform, target: Resolver = dns): void {
+  if (platform !== 'win32' || (target === dns && localhostNamesResolved)) return;
+  if (target === dns) localhostNamesResolved = true;
+  const original = target.lookup;
+  target.lookup = ((hostname: string, options: unknown, callback?: unknown) => {
+    if (!isLocalhostName(hostname)) return (original as (...args: unknown[]) => void).call(target, hostname, options, callback);
+    const done = (typeof options === 'function' ? options : callback) as LookupCallback;
+    const { all, addresses } = loopback(typeof options === 'function' ? undefined : options);
+    process.nextTick(() => (all ? done(null, addresses) : done(null, addresses[0].address, addresses[0].family)));
+  }) as Lookup;
+  const originalPromise = target.promises.lookup;
+  target.promises.lookup = (async (hostname: string, options?: unknown) => {
+    if (!isLocalhostName(hostname)) return (originalPromise as (...args: unknown[]) => Promise<unknown>).call(target.promises, hostname, options);
+    const { all, addresses } = loopback(options);
+    return all ? addresses : addresses[0];
+  }) as PromiseLookup;
+}
 
 export const WORKER_NAME = 'siteorigin-live-relay';
 export const SIGNING_KEY = 'relay-test-signing-key-0123456789abcdefghijkl';
@@ -94,9 +141,12 @@ export class Relay {
   /**
    * The relay as a real browser reaches it: the simulator's own server, under `relay.localhost` so that each room's
    * preview origin (`p-<label>.relay.localhost`) is the same site as the viewer. Chromium resolves `*.localhost` to
-   * loopback itself, and the Worker finds previews by the Host header, so no DNS is involved.
+   * loopback itself, and the Worker finds previews by the Host header, so no DNS is involved. A request a test makes
+   * from Node to one of these origins (Playwright's `route.fetch`) asks the system's resolver instead; see
+   * `resolveLocalhostNames`.
    */
   async browserOrigin(): Promise<string> {
+    resolveLocalhostNames();
     await this.settled();
     const server = await this.miniflare.ready;
     return `http://relay.localhost:${server.port}`;

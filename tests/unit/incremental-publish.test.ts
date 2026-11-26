@@ -2,7 +2,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import { chmodSync, existsSync, lstatSync, mkdtempSync, promises as fsp, readFileSync, rmSync, symlinkSync, utimesSync, writeFileSync } from 'node:fs';
 import { execFileSync } from 'node:child_process';
 import { tmpdir } from 'node:os';
-import { dirname, join, relative } from 'node:path';
+import { dirname, join, relative as nativeRelative, sep } from 'node:path';
 import type { InstanceNode, ProjectState } from '@shared/types';
 import type { EditOperation } from '@shared/ops';
 import { createStarterState } from '@catalogue/starters';
@@ -12,6 +12,8 @@ import { ProjectSession, statTrusted, type SessionEvent } from '../../src/main/p
 import { stateToAuthoredSources } from '../../src/main/project/documents';
 
 const dirs: string[] = [];
+/** A path relative to a folder as the project names its files, with forward slashes on every platform. */
+const relative = (from: string, to: string) => nativeRelative(from, to).split(sep).join('/');
 afterEach(() => {
   vi.restoreAllMocks();
   dirs.splice(0).forEach((d) => rmSync(d, { recursive: true, force: true }));

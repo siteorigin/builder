@@ -6,9 +6,12 @@
 // evidence.read's file check.
 import { spawn, spawnSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
-import { mkdirSync, mkdtempSync, readFileSync, readdirSync, realpathSync, renameSync, rmSync, statSync, symlinkSync, writeFileSync } from 'node:fs';
+import { constants as fsConstants, mkdirSync, mkdtempSync, readFileSync, readdirSync, realpathSync, renameSync, rmSync, statSync, symlinkSync, writeFileSync } from 'node:fs';
+import type { Mode, PathLike } from 'node:fs';
+import fsPromises from 'node:fs/promises';
+import { syncBuiltinESMExports } from 'node:module';
 import { tmpdir } from 'node:os';
-import { join, relative } from 'node:path';
+import { delimiter, join, relative } from 'node:path';
 import { createInterface } from 'node:readline';
 import { PassThrough } from 'node:stream';
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
@@ -287,14 +290,15 @@ describe('tool discovery', () => {
   it('names this Node by the link on PATH that leads to it, which outlives an upgrade, else by its own path', () => {
     const bin = join(scratch, 'bin');
     const other = join(scratch, 'other');
+    const exe = process.platform === 'win32' ? 'node.exe' : 'node';
     mkdirSync(bin);
     mkdirSync(other);
-    symlinkSync(process.execPath, join(bin, 'node'));
-    writeFileSync(join(other, 'node'), '#!/bin/sh\n');
-    expect(thisNode([join(scratch, 'missing'), other, bin].join(':'), process.execPath)).toBe(join(bin, 'node'));
+    symlinkSync(process.execPath, join(bin, exe));
+    writeFileSync(join(other, exe), '#!/bin/sh\n');
+    expect(thisNode([join(scratch, 'missing'), other, bin].join(delimiter), process.execPath)).toBe(join(bin, exe));
     expect(thisNode(other, process.execPath)).toBe(process.execPath);
     // A relative PATH entry still gives a full path, which means the same from the checkout Codex starts it in.
-    expect(thisNode(relative(process.cwd(), bin), process.execPath)).toBe(join(bin, 'node'));
+    expect(thisNode(relative(process.cwd(), bin), process.execPath)).toBe(join(bin, exe));
     expect(thisNode('', process.execPath)).toBe(process.execPath);
   });
 });
@@ -1076,6 +1080,23 @@ describe('evidence.read\'s file check', () => {
     await expect(readSavedImage(artifacts, join(artifacts, 'snapshots'), '0006-editor', captured), 'a folder').rejects.toMatchObject({ details: { reason: 'moved' } });
     // Its base64 and the reply around it stay inside the official SDK's 10 MiB line.
     expect(Math.ceil(MAX_EVIDENCE_BYTES / 3) * 4).toBeLessThan(10 * 1024 * 1024 - 64 * 1024);
+  });
+
+  it('refuses a link put in its place where opening a file follows one, as on Windows (no O_NOFOLLOW)', async () => {
+    const dir = join(scratch, 'follow-artifacts');
+    mkdirSync(join(dir, 'snapshots'), { recursive: true });
+    // A link to a file with the very bytes it captured: only the link itself can refuse it.
+    writeFileSync(join(scratch, 'follow-copy.png'), png);
+    symlinkSync(join(scratch, 'follow-copy.png'), join(dir, 'snapshots', '0009-editor.png'));
+    const open = fsPromises.open;
+    fsPromises.open = ((p: PathLike, flags?: string | number, mode?: Mode) => open(p, typeof flags === 'number' ? flags & ~(fsConstants.O_NOFOLLOW ?? 0) : flags, mode)) as typeof open;
+    syncBuiltinESMExports();
+    try {
+      await expect(readSavedImage(dir, join(dir, 'snapshots', '0009-editor.png'), '0009-editor', captured)).rejects.toMatchObject({ code: 'OP_FAILED', details: { reason: 'moved' } });
+    } finally {
+      fsPromises.open = open;
+      syncBuiltinESMExports();
+    }
   });
 
   it.skipIf(process.platform === 'win32')('is not held up by something put in a screenshot\'s place that is not a file', async () => {
