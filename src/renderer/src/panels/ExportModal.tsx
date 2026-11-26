@@ -16,7 +16,7 @@ import { diagnosticKey, websiteFormNotes, websiteTrees } from '@engine/validate'
 import { publishedState } from '@generator/index';
 import { destinationLabel, noteState } from '../lib/destinations';
 import { openEditorDestination } from '../lib/open-destination';
-import { pagesSummaryText } from '../lib/export-summary';
+import { dialogFixes, nothingToFix, pagesSummaryText, sampleContactsHeading, seoPreflightHeading } from '../lib/export-summary';
 import { auditForHealth, seoCountsText, seoPreflight, type SeoAuditResult } from '../lib/seo-health';
 import { findingHandoff } from '../lib/seoHandoff';
 import { AiHandoffButton } from '../components/AiHandoff';
@@ -232,7 +232,7 @@ function SampleContactReview({ groups, kept, disabled, readOnly, folded, onSettl
           <div className="export-review-head">
             <TriangleAlert aria-hidden />
             <div className="grow">
-              <strong id={headId}>{groups.length === 1 ? 'A sample contact detail from the starter is still on the website.' : `${groups.length} sample contact details from the starter are still on the website.`}</strong>
+              <strong id={headId}>{sampleContactsHeading(groups.length)}</strong>
               <span>Visitors who use {groups.length === 1 ? 'it' : 'them'} won’t reach you. This won’t stop the export.</span>
             </div>
             {/* While a job runs the rows' actions wait, so there is nothing to open. */}
@@ -390,7 +390,7 @@ function SeoPreflight({ audit, state, disabled, folded }: { audit: SeoAuditResul
       <div className="export-review-head">
         <TriangleAlert aria-hidden />
         <div className="grow">
-          <strong id={headId}>{pre.total === 1 ? 'One thing keeps the website from being found or shared well.' : `${pre.total} things keep the website from being found or shared well.`}</strong>
+          <strong id={headId}>{seoPreflightHeading(pre.total)}</strong>
           <span>Search engines, link previews and AI agents read the website as it is exported. This won’t stop the export.</span>
         </div>
         {folded && !disabled && (
@@ -502,6 +502,15 @@ function BuildDetails({ text, fix }: { text: string; fix?: ReactNode }) {
   );
 }
 
+/**
+ * What the dialog lists to fix besides the export's own notes: the starter's sample contact details not kept on purpose,
+ * and what keeps the website from being found or shared. A result never says "Nothing to fix." over them.
+ */
+function listedFixes(state: ProjectState, kept: readonly string[]): string[] {
+  const audit = auditForHealth(state);
+  return dialogFixes({ samples: sampleContactMatches(state).filter((g) => !kept.includes(g.value)).length, seo: audit.ok ? seoPreflight(audit.findings).total : 0 });
+}
+
 export function ExportModal() {
   // A read-only question changes nothing, so exporting goes on while it runs.
   const aiBusy = useStore((s) => !!editRunStatus(s));
@@ -528,7 +537,7 @@ export function ExportModal() {
   const [busy, setBusy] = useState<ExportKind | null>(null);
   // Each report carries its own id, shown on the result (data-report): the same report drawn again after a cancelled
   // retry keeps its id, a new one (even with the same words) gets another, so a test can tell them apart.
-  const [result, setResult] = useState<(ExportResult & { report: string }) | null>(null);
+  const [result, setResult] = useState<(ExportResult & { report: string; fixesListed?: string[] }) | null>(null);
   const [format, setFormat] = useState<ExportFormat>('folder');
   const linksId = useId();
   const [linksOpen, setLinksOpen] = useState(false);
@@ -611,7 +620,11 @@ export function ExportModal() {
       const r = started.value;
       // The project closed while its edits were being saved: nothing was exported.
       if (!r) return;
-      if (r.message) setResult({ ...r, report: newReportId() });
+      // What the dialog lists to fix beside the export's own notes, said with its result in the dialog's words. It is
+      // read once the export returns, from the project as it is then, so an edit made while the folder was being chosen
+      // or the edits were saving (which the export carries) is never contradicted.
+      const now = getState();
+      if (r.message) setResult({ ...r, report: newReportId(), fixesListed: r.ok && now.snapshot ? listedFixes(now.snapshot.state, now.keptSamples) : undefined });
       settle.current = r.message ? 'result' : kind;
     } catch (e) {
       settle.current = 'result';
@@ -756,9 +769,15 @@ export function ExportModal() {
                 <strong>{shown.message}</strong>
                 {/* On success the newest recent export, directly below, already shows this path. */}
                 {shown.path && recent[0]?.path !== shown.path && <ExportPath path={shown.path} />}
+                {shown.ok &&
+                  shown.fixesListed?.map((line, i) => (
+                    <span className="export-note-line" key={`listed-${i}`}>
+                      • {line}
+                    </span>
+                  ))}
                 {notesInRow ? (
                   <span>{shown.warnings.length === 1 ? '1 note to review below.' : `${shown.warnings.length} notes to review below.`}</span>
-                ) : shown.ok && !shown.warnings.length ? (
+                ) : nothingToFix(shown) ? (
                   <span className="export-clean">Nothing to fix.</span>
                 ) : (
                   shown.warnings.map((w, i) => (
