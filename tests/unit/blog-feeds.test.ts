@@ -4,6 +4,7 @@
  * size at a time, with Previous and Next links between them.
  */
 import { describe, expect, it } from 'vitest';
+import { compile } from 'svelte/compiler';
 import type { AssetRecord, ComponentDefinition, InstanceNode, ListProp, OwnerRef, ProjectState } from '@shared/types';
 import type { EditOperation } from '@shared/ops';
 import { validateOperation } from '@shared/ops';
@@ -284,6 +285,75 @@ describe('a collection’s index and category archives', () => {
     expect(fresh.has(route('/blog/page/6/'))).toBe(true);
     expect(fresh.has(route('/blog/page/7/'))).toBe(false);
     expect(fresh.has(route('/blog/category/events/'))).toBe(true);
+  });
+});
+
+describe('an archive page’s styles', () => {
+  const sized = (s: ProjectState, n: number) => run(s, { type: 'collection.update', collectionId: 'posts', pageSize: n } as EditOperation);
+  const bare = () => run(createStarterState('business', 'Riverside Studio', false), { type: 'collection.create', collectionId: 'posts' } as EditOperation);
+  const archiveSources = (s: ProjectState) => {
+    const files = generateProject(publishedState(s));
+    return archivePages(publishedState(s)).map((p) => ({ route: p.route, source: files.get(route(p.route))! }));
+  };
+
+  const has = (name: string) => new RegExp(`class="so-archive__${name}[ "]`);
+  const PAGER = /<nav class="so-archive__pages"/;
+  const CARD = /<article class="so-archive__card[ "]/;
+  const TITLE = has('title');
+  /** Every selector an archive page can be styled with, and what its markup holds when the selector is used. */
+  const SELECTORS: Array<[string, RegExp]> = [
+    ['.so-archive', /<section class="so-archive">/],
+    ['.so-archive__inner', /so-archive__inner"/],
+    ['.so-archive__header', has('header')],
+    ['.so-archive__heading', has('heading')],
+    ['.so-archive__eyebrow', has('eyebrow')],
+    ['.so-archive__category', has('category')],
+    ['.so-archive__category a', /<p class="so-archive__category">(?:(?!<\/p>).)*<a /],
+    ['.so-archive__count', has('count')],
+    ['.so-archive__meta', has('meta')],
+    ['.so-archive__excerpt', has('excerpt')],
+    ['.so-archive__empty', has('empty')],
+    ['.so-archive__grid', has('grid')],
+    ['.so-archive__card', CARD],
+    ['.so-archive__text', has('text')],
+    ['.so-archive__card :global(.so-archive__image)', /class="so-archive__image"/],
+    ['.so-archive__title', TITLE],
+    ['.so-archive__title a', TITLE],
+    ['.so-archive__title a:hover', TITLE],
+    ['.so-archive__title a:focus-visible', TITLE],
+    ['.so-archive__card--lead', /so-archive__card--lead">/],
+    ['.so-archive__card--lead .so-archive__title', /so-archive__card--lead">/],
+    ['.so-archive__card--lead :global(.so-archive__image)', /so-archive__card--lead">\s*<SoImage /],
+    ['.so-archive__pages', PAGER],
+    ['.so-archive__pages ol', PAGER],
+    ['.so-archive__pages a', PAGER],
+    [".so-archive__pages a[aria-current='page']", / aria-current="page">/],
+    [".so-archive__pages li[aria-hidden='true']", /<li aria-hidden="true">/]
+  ];
+  const styled = (source: string) =>
+    [...source.slice(source.indexOf('<style>') + 7, source.indexOf('</style>')).replace(/@media[^{]*\{/g, '').matchAll(/([^{}]+)\{/g)].flatMap((m) => m[1].split(',').map((x) => x.trim()));
+
+  it.each([
+    ['one page', () => sized(blog(), 100)],
+    ['several pages', () => sized(blog(), 2)],
+    ['enough pages to leave a gap in the page links', () => sized(blog(), 1)],
+    ['no category archives to link to', () => run(blog(), { type: 'collection.update', collectionId: 'posts', categoryArchives: false } as EditOperation)],
+    // The newest post, which leads, has no picture; one in the grid does.
+    ['a lead with no picture above a card with one', () => run(sized(blog(), 100), post('en_text', 'Words only', '2026-04-20'))],
+    ['nothing published', bare],
+    ['posts with no picture, category, author or excerpt', () => run(bare(), { type: 'entry.create', collectionId: 'posts', entryId: 'en_plain', title: 'Plain', draft: false, body: ['Plain.'] } as EditOperation)]
+  ])('has the selectors its markup uses and no other: %s', (_, state) => {
+    const pages = archiveSources(state());
+    expect(pages.length).toBeGreaterThan(0);
+    for (const p of pages) {
+      const markup = p.source.slice(0, p.source.indexOf('<style>'));
+      expect([...new Set(styled(p.source))].sort(), p.route).toEqual(SELECTORS.filter(([, used]) => used.test(markup)).map(([selector]) => selector).sort());
+      // What the build of the exported project says, as the compiler does (it never reports an unused `:global(…)`).
+      expect(
+        compile(p.source, { generate: 'server' }).warnings.filter((w) => w.code === 'css_unused_selector').map((w) => w.message),
+        p.route
+      ).toEqual([]);
+    }
   });
 });
 

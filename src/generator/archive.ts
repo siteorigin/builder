@@ -62,31 +62,47 @@ export function generateArchive(state: ProjectState, collectionId: string, route
   const heading = here.category ? (terms.get(here.category) ?? here.category) : name;
   const title = `${heading}${here.page > 1 ? ` – ${fill(words.archivePageOf, { page: here.page, count: here.pages })}` : ''} · ${site.name}`;
   const rctx = { state };
-  let usesImage = false;
+  // What the markup below turns out to hold, so that the page is styled for that and nothing more: Svelte warns of
+  // every selector that matches nothing, in the build of the exported project.
+  const uses = new Set<ArchivePart>();
 
   const card = (entryId: string, lead: boolean, level: 'h2' | 'h3') => {
     const entry = collection.entries[entryId];
     const row = entryRow(state, collection, entry);
     const image = row.image?.assetId ? resolveImage(row.image, rctx) : null;
-    if (image) usesImage = true;
+    uses.add('card');
+    if (lead) uses.add('lead');
+    // The lead's picture takes every card picture's rule, and one of its own.
+    if (image) uses.add('image');
+    if (image && lead) uses.add('leadImage');
     const ids = Array.isArray(entry.terms?.categories) ? entry.terms.categories.filter((t) => terms.has(t)) : [];
     const lines: string[] = [];
     if (image) lines.push(`\t\t\t<SoImage image={${js(image)}} sizes=${js(lead ? '(min-width: 768px) 50vw, 100vw' : '(min-width: 1024px) 33vw, (min-width: 768px) 50vw, 100vw')}${lead && here.page === 1 ? ' eager' : ''} class="so-archive__image" />`);
     lines.push(`\t\t\t<div class="so-archive__text">`);
-    if (ids.length)
+    if (ids.length) {
+      uses.add('category');
       lines.push(
         `\t\t\t\t<p class="so-archive__category">${ids
           .map((t) => {
             const label = `{${js(terms.get(t))}}`;
             const to = archives.get(t);
-            return to && to !== route ? `<a href=${href(to)}>${label}</a>` : `<span>${label}</span>`;
+            if (!to || to === route) return `<span>${label}</span>`;
+            uses.add('categoryLink');
+            return `<a href=${href(to)}>${label}</a>`;
           })
           .join(', ')}</p>`
       );
+    }
     lines.push(`\t\t\t\t<${level} class="so-archive__title"><a href=${href(entryRouteOf(entryId))}>{${js(row.title)}}</a></${level}>`);
     const meta = [row.date ? `<time datetime=${js(row.date)}>{${js(row.dateLabel)}}</time>` : '', row.byline ? `<span>{${js(row.byline)}}</span>` : ''].filter(Boolean);
-    if (meta.length) lines.push(`\t\t\t\t<p class="so-archive__meta">${meta.join(' ')}</p>`);
-    if (row.excerpt) lines.push(`\t\t\t\t<p class="so-archive__excerpt">{${js(row.excerpt)}}</p>`);
+    if (meta.length) {
+      uses.add('meta');
+      lines.push(`\t\t\t\t<p class="so-archive__meta">${meta.join(' ')}</p>`);
+    }
+    if (row.excerpt) {
+      uses.add('excerpt');
+      lines.push(`\t\t\t\t<p class="so-archive__excerpt">{${js(row.excerpt)}}</p>`);
+    }
     lines.push(`\t\t\t</div>`);
     return `<article class="so-archive__card${lead ? ' so-archive__card--lead' : ''}">\n${lines.join('\n')}\n\t\t</article>`;
   };
@@ -98,11 +114,20 @@ export function generateArchive(state: ProjectState, collectionId: string, route
   const rest = lead ? ids.slice(1) : ids;
   const body: string[] = [];
   if (lead) body.push(`\t\t${card(lead, true, 'h2')}`);
-  if (rest.length) body.push(`\t\t<ul class="so-archive__grid">\n${rest.map((id) => `\t\t\t<li>${card(id, false, 'h2').replace(/\n/g, '\n\t')}</li>`).join('\n')}\n\t\t</ul>`);
-  if (!ids.length) body.push(`\t\t<p class="so-archive__empty">{${js(words.archiveEmpty)}}</p>`);
+  if (rest.length) {
+    uses.add('grid');
+    body.push(`\t\t<ul class="so-archive__grid">\n${rest.map((id) => `\t\t\t<li>${card(id, false, 'h2').replace(/\n/g, '\n\t')}</li>`).join('\n')}\n\t\t</ul>`);
+  }
+  if (!ids.length) {
+    uses.add('empty');
+    body.push(`\t\t<p class="so-archive__empty">{${js(words.archiveEmpty)}}</p>`);
+  }
   if (here.pages > 1) {
+    uses.add('pages');
     const step = (to: string | undefined, rel: 'prev' | 'next', label: string) => (to ? `\t\t\t<a class="so-archive__step" rel=${js(rel)} href=${href(to)}>{${js(label)}}</a>` : '');
-    const numbers = pageLinks(here.page, here.pages)
+    const links = pageLinks(here.page, here.pages);
+    if (links.includes(null)) uses.add('gap');
+    const numbers = links
       .map((n) => {
         if (n === null) return `\t\t\t\t<li aria-hidden="true">…</li>`;
         const to = series.find((p) => p.category === here.category && p.page === n)!.route;
@@ -124,7 +149,9 @@ export function generateArchive(state: ProjectState, collectionId: string, route
   if (here.prev) head.push(`\t<link rel="prev" href=${href(here.prev)} />`);
   if (here.next) head.push(`\t<link rel="next" href=${href(here.next)} />`);
 
-  const imports = [`\timport { resolve } from '$app/paths';`, ...(usesImage ? [`\timport SoImage from ${js(relImport(file, `${RUNTIME_DIR}/Image.svelte`))};`] : [])];
+  const imports = [`\timport { resolve } from '$app/paths';`, ...(uses.has('image') ? [`\timport SoImage from ${js(relImport(file, `${RUNTIME_DIR}/Image.svelte`))};`] : [])];
+  if (here.category) uses.add('eyebrow');
+  if (here.page > 1) uses.add('count');
   const intro = [
     here.category ? `\t\t\t<p class="so-archive__eyebrow">{${js(words.archiveCategory)}}</p>` : '',
     `\t\t\t<h1 class="so-archive__heading">{${js(heading)}}</h1>`,
@@ -133,150 +160,184 @@ export function generateArchive(state: ProjectState, collectionId: string, route
   return (
     HEADER_NOTE(`siteorigin/collections/${collectionId}/collection.json`) +
     `<script>\n${imports.join('\n')}\n</script>\n\n<svelte:head>\n${head.join('\n')}\n</svelte:head>\n\n` +
-    `<section class="so-archive">\n\t<div class="so-container so-archive__inner">\n\t\t<header class="so-archive__header">\n${intro.join('\n')}\n\t\t</header>\n${body.join('\n')}\n\t</div>\n</section>\n\n${ARCHIVE_STYLE}`
+    `<section class="so-archive">\n\t<div class="so-container so-archive__inner">\n\t\t<header class="so-archive__header">\n${intro.join('\n')}\n\t\t</header>\n${body.join('\n')}\n\t</div>\n</section>\n\n${archiveStyle(uses)}`
   );
 }
 
+/** The parts of an archive page that not every one has, each with rules of its own. */
+type ArchivePart = 'eyebrow' | 'count' | 'empty' | 'grid' | 'card' | 'lead' | 'image' | 'leadImage' | 'category' | 'categoryLink' | 'meta' | 'excerpt' | 'pages' | 'gap';
+
+/** A style rule: its selectors, each with the part it matches (none: every page has it), its declarations, and its media query if it has one. */
+type ArchiveRule = [selectors: Array<[selector: string, part?: ArchivePart]>, declarations: string, media?: string];
+
 /** How an archive page looks: the site's own type, colours and spacing, through its design tokens. */
-const ARCHIVE_STYLE = `<style>
-	.so-archive {
-		padding-block: var(--so-space-3xl, 5rem);
-	}
-	.so-archive__inner {
-		display: flex;
-		flex-direction: column;
-		gap: var(--so-space-2xl, 3rem);
-	}
-	.so-archive__header {
-		display: flex;
-		flex-direction: column;
-		gap: var(--so-space-sm, 0.75rem);
-	}
-	.so-archive__eyebrow,
-	.so-archive__category {
-		font-family: var(--so-text-eyebrow-family, inherit);
-		font-size: var(--so-text-eyebrow-size, 0.78rem);
-		line-height: var(--so-text-eyebrow-line-height, 1.4);
-		font-weight: var(--so-text-eyebrow-weight, 600);
-		letter-spacing: var(--so-text-eyebrow-tracking, 0.12em);
-		text-transform: var(--so-text-eyebrow-transform, uppercase);
-		color: var(--so-color-brand, inherit);
-	}
-	.so-archive__category a {
-		color: inherit;
-	}
-	.so-archive__heading {
-		font-family: var(--so-text-h1-family, inherit);
-		font-size: var(--so-text-h1-size, 2.5rem);
-		line-height: var(--so-text-h1-line-height, 1.1);
-		font-weight: var(--so-text-h1-weight, 600);
-		letter-spacing: var(--so-text-h1-tracking, normal);
-		text-transform: var(--so-text-h1-transform, none);
-	}
-	.so-archive__count,
-	.so-archive__meta,
-	.so-archive__excerpt,
-	.so-archive__empty {
-		color: var(--so-color-muted, inherit);
-	}
-	.so-archive__meta {
-		display: flex;
-		flex-wrap: wrap;
-		column-gap: var(--so-space-md, 1rem);
-		font-family: var(--so-text-small-family, inherit);
-		font-size: var(--so-text-small-size, 0.875rem);
-		line-height: var(--so-text-small-line-height, 1.5);
-	}
-	.so-archive__grid {
-		display: grid;
-		grid-template-columns: repeat(auto-fill, minmax(min(100%, 18rem), 1fr));
-		gap: var(--so-space-xl, 2rem);
-		margin: 0;
-		padding: 0;
-		list-style: none;
-	}
-	.so-archive__card {
-		display: flex;
-		flex-direction: column;
-		gap: var(--so-space-sm, 0.75rem);
-	}
-	.so-archive__text {
-		display: flex;
-		flex-direction: column;
-		gap: var(--so-space-sm, 0.75rem);
-	}
-	.so-archive__card :global(.so-archive__image) {
-		width: 100%;
-		height: auto;
-		aspect-ratio: 3 / 2;
-		object-fit: cover;
-		border-radius: var(--so-radius-md, 6px);
-	}
-	.so-archive__title {
-		font-family: var(--so-text-h3-family, inherit);
-		font-size: var(--so-text-h3-size, 1.2rem);
-		line-height: var(--so-text-h3-line-height, 1.35);
-		font-weight: var(--so-text-h3-weight, 600);
-		letter-spacing: var(--so-text-h3-tracking, normal);
-	}
-	.so-archive__title a {
-		color: inherit;
-		text-decoration: none;
-	}
-	.so-archive__title a:hover,
-	.so-archive__title a:focus-visible {
-		text-decoration: underline;
-	}
-	@media (min-width: 768px) {
-		.so-archive__card--lead {
-			display: grid;
-			grid-template-columns: 1fr 1fr;
-			align-items: center;
-			gap: var(--so-space-xl, 2rem);
-		}
-	}
-	.so-archive__card--lead .so-archive__title {
-		font-family: var(--so-text-h2-family, inherit);
-		font-size: var(--so-text-h2-size, 2rem);
-		line-height: var(--so-text-h2-line-height, 1.2);
-		font-weight: var(--so-text-h2-weight, 600);
-		letter-spacing: var(--so-text-h2-tracking, normal);
-	}
-	.so-archive__card--lead :global(.so-archive__image) {
-		border-radius: var(--so-radius-lg, 10px);
-	}
-	.so-archive__pages {
-		display: flex;
-		flex-wrap: wrap;
-		align-items: center;
-		gap: var(--so-space-md, 1rem);
-	}
-	.so-archive__pages ol {
-		display: flex;
-		flex-wrap: wrap;
-		gap: var(--so-space-xs, 0.5rem);
-		margin: 0;
-		padding: 0;
-		list-style: none;
-	}
-	.so-archive__pages a {
-		display: inline-flex;
-		align-items: center;
-		justify-content: center;
-		min-width: 2.75rem;
-		min-height: 2.75rem;
-		padding-inline: var(--so-space-sm, 0.75rem);
-		border: var(--so-border-default, 1px solid currentColor);
-		border-radius: var(--so-radius-md, 6px);
-		color: inherit;
-		text-decoration: none;
-	}
-	.so-archive__pages a[aria-current='page'] {
-		background: var(--so-color-text, #111);
-		color: var(--so-color-background, #fff);
-	}
-	.so-archive__pages li[aria-hidden='true'] {
-		align-self: center;
-	}
-</style>
-`;
+const ARCHIVE_RULES: ArchiveRule[] = [
+  [
+    [['.so-archive']],
+    `padding-block: var(--so-space-3xl, 5rem);`
+  ],
+  [
+    [['.so-archive__inner']],
+    `display: flex;
+flex-direction: column;
+gap: var(--so-space-2xl, 3rem);`
+  ],
+  [
+    [['.so-archive__header']],
+    `display: flex;
+flex-direction: column;
+gap: var(--so-space-sm, 0.75rem);`
+  ],
+  [
+    [['.so-archive__eyebrow', 'eyebrow'], ['.so-archive__category', 'category']],
+    `font-family: var(--so-text-eyebrow-family, inherit);
+font-size: var(--so-text-eyebrow-size, 0.78rem);
+line-height: var(--so-text-eyebrow-line-height, 1.4);
+font-weight: var(--so-text-eyebrow-weight, 600);
+letter-spacing: var(--so-text-eyebrow-tracking, 0.12em);
+text-transform: var(--so-text-eyebrow-transform, uppercase);
+color: var(--so-color-brand, inherit);`
+  ],
+  [
+    [['.so-archive__category a', 'categoryLink']],
+    `color: inherit;`
+  ],
+  [
+    [['.so-archive__heading']],
+    `font-family: var(--so-text-h1-family, inherit);
+font-size: var(--so-text-h1-size, 2.5rem);
+line-height: var(--so-text-h1-line-height, 1.1);
+font-weight: var(--so-text-h1-weight, 600);
+letter-spacing: var(--so-text-h1-tracking, normal);
+text-transform: var(--so-text-h1-transform, none);`
+  ],
+  [
+    [['.so-archive__count', 'count'], ['.so-archive__meta', 'meta'], ['.so-archive__excerpt', 'excerpt'], ['.so-archive__empty', 'empty']],
+    `color: var(--so-color-muted, inherit);`
+  ],
+  [
+    [['.so-archive__meta', 'meta']],
+    `display: flex;
+flex-wrap: wrap;
+column-gap: var(--so-space-md, 1rem);
+font-family: var(--so-text-small-family, inherit);
+font-size: var(--so-text-small-size, 0.875rem);
+line-height: var(--so-text-small-line-height, 1.5);`
+  ],
+  [
+    [['.so-archive__grid', 'grid']],
+    `display: grid;
+grid-template-columns: repeat(auto-fill, minmax(min(100%, 18rem), 1fr));
+gap: var(--so-space-xl, 2rem);
+margin: 0;
+padding: 0;
+list-style: none;`
+  ],
+  [
+    [['.so-archive__card', 'card']],
+    `display: flex;
+flex-direction: column;
+gap: var(--so-space-sm, 0.75rem);`
+  ],
+  [
+    [['.so-archive__text', 'card']],
+    `display: flex;
+flex-direction: column;
+gap: var(--so-space-sm, 0.75rem);`
+  ],
+  [
+    [['.so-archive__card :global(.so-archive__image)', 'image']],
+    `width: 100%;
+height: auto;
+aspect-ratio: 3 / 2;
+object-fit: cover;
+border-radius: var(--so-radius-md, 6px);`
+  ],
+  [
+    [['.so-archive__title', 'card']],
+    `font-family: var(--so-text-h3-family, inherit);
+font-size: var(--so-text-h3-size, 1.2rem);
+line-height: var(--so-text-h3-line-height, 1.35);
+font-weight: var(--so-text-h3-weight, 600);
+letter-spacing: var(--so-text-h3-tracking, normal);`
+  ],
+  [
+    [['.so-archive__title a', 'card']],
+    `color: inherit;
+text-decoration: none;`
+  ],
+  [
+    [['.so-archive__title a:hover', 'card'], ['.so-archive__title a:focus-visible', 'card']],
+    `text-decoration: underline;`
+  ],
+  [
+    [['.so-archive__card--lead', 'lead']],
+    `display: grid;
+grid-template-columns: 1fr 1fr;
+align-items: center;
+gap: var(--so-space-xl, 2rem);`,
+    '(min-width: 768px)'
+  ],
+  [
+    [['.so-archive__card--lead .so-archive__title', 'lead']],
+    `font-family: var(--so-text-h2-family, inherit);
+font-size: var(--so-text-h2-size, 2rem);
+line-height: var(--so-text-h2-line-height, 1.2);
+font-weight: var(--so-text-h2-weight, 600);
+letter-spacing: var(--so-text-h2-tracking, normal);`
+  ],
+  [
+    [['.so-archive__card--lead :global(.so-archive__image)', 'leadImage']],
+    `border-radius: var(--so-radius-lg, 10px);`
+  ],
+  [
+    [['.so-archive__pages', 'pages']],
+    `display: flex;
+flex-wrap: wrap;
+align-items: center;
+gap: var(--so-space-md, 1rem);`
+  ],
+  [
+    [['.so-archive__pages ol', 'pages']],
+    `display: flex;
+flex-wrap: wrap;
+gap: var(--so-space-xs, 0.5rem);
+margin: 0;
+padding: 0;
+list-style: none;`
+  ],
+  [
+    [['.so-archive__pages a', 'pages']],
+    `display: inline-flex;
+align-items: center;
+justify-content: center;
+min-width: 2.75rem;
+min-height: 2.75rem;
+padding-inline: var(--so-space-sm, 0.75rem);
+border: var(--so-border-default, 1px solid currentColor);
+border-radius: var(--so-radius-md, 6px);
+color: inherit;
+text-decoration: none;`
+  ],
+  [
+    [[".so-archive__pages a[aria-current='page']", 'pages']],
+    `background: var(--so-color-text, #111);
+color: var(--so-color-background, #fff);`
+  ],
+  [
+    [[".so-archive__pages li[aria-hidden='true']", 'gap']],
+    `align-self: center;`
+  ]
+];
+
+/** The style block of a page holding `uses`: each selector that matches something on it, and no other. */
+function archiveStyle(uses: ReadonlySet<ArchivePart>): string {
+  const indent = (text: string) => text.replace(/^/gm, '\t');
+  const rules = ARCHIVE_RULES.flatMap(([selectors, declarations, media]) => {
+    const matched = selectors.filter(([, part]) => !part || uses.has(part)).map(([selector]) => selector);
+    if (!matched.length) return [];
+    const rule = `${matched.join(',\n')} {\n${indent(declarations)}\n}`;
+    return [indent(media ? `@media ${media} {\n${indent(rule)}\n}` : rule)];
+  });
+  return `<style>\n${rules.join('\n')}\n</style>\n`;
+}
