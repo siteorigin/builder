@@ -1,6 +1,6 @@
 import './PostsPanel.css';
 import { useEffect, useId, useMemo, useRef, useState } from 'react';
-import { ArrowLeft, Copy, FileDown, LayoutTemplate, Library, Newspaper, Plus, Search, Settings2, Tags, Trash2, X } from 'lucide-react';
+import { ArrowLeft, Copy, FileDown, LayoutTemplate, Library, Newspaper, Plug, Plus, Search, Settings2, Tags, Trash2, X } from 'lucide-react';
 import { formatArticleDate } from '@shared/articles';
 import { entryLinkUses } from '@engine/page-links';
 import { api, commitOps, confirmDialog, getState, markDraft, setState, toast, undoAction, useStore } from '../store';
@@ -11,6 +11,9 @@ import { isImeComposing } from '../lib/ime';
 import { POST_SORTS, POST_STATUSES, duplicatePostOps, newPostOps, postAt, postCounts, postRows, postsCollection, MAX_POST_TITLE, type PostRef, type PostSort, type PostStatus } from '../lib/posts';
 import { TermsManager, postTaxonomies, termsManagerTitle, termsOf } from './PostTerms';
 import { CollectionSchemaDialog } from './CollectionSchemaDialog';
+import { SourceDialog } from './SourceDialog';
+import { detachOps, sourceOfCollection, syncSummary } from '../lib/sources';
+import { sourceFingerprint } from '@shared/sources';
 import { STARTER_COLLECTIONS, contentRows, customCollectionOps, entryNoun, entryNounLower, isReadOnlyCollection, starterCollectionOps } from '../lib/content';
 import { openLayout } from '../lib/actions';
 import type { EditOperation } from '@shared/ops';
@@ -255,6 +258,10 @@ export function PostsPanel() {
   const [managing, setManaging] = useState(false);
   const [schema, setSchema] = useState<string | null>(null);
   const [addingCollection, setAddingCollection] = useState(false);
+  /** The collection whose external source is being connected or changed. */
+  const [connecting, setConnecting] = useState<string | null>(null);
+  const [syncing, setSyncing] = useState(false);
+  const sourceMenu = useMenu();
   /** The collection the new-entry form was opened for: what it creates in, whatever the list shows by then. */
   const addTarget = useRef<{ collectionId: string; workspaceKey: string | undefined } | null>(null);
   /** Counts each choice of what the panel shows, so one still saving the open entry never undoes a later one. */
@@ -409,6 +416,70 @@ export function PostsPanel() {
   ];
   const openImport = (el: HTMLElement) => importMenu.openAt(el, importItems, 'Import posts');
 
+  /** Sync a collection's source now, and say what changed. */
+  const syncNow = async (sourceId: string, name: string) => {
+    if (syncing) return;
+    setSyncing(true);
+    const r = await api.project.syncSource(sourceId, snap.workspaceKey).catch((e: Error) => ({ ok: false as const, message: e.message }));
+    setSyncing(false);
+    toast(r.ok ? syncSummary(name, r) : r.message, r.ok ? 'info' : 'error');
+  };
+
+  /** Detach a collection from its source: its entries become local ones, and the source's settings go. */
+  const detach = async (collectionId: string) => {
+    const was = getState().snapshot;
+    const now = was?.state;
+    const c = now && Object.hasOwn(now.collections, collectionId) ? now.collections[collectionId] : undefined;
+    const source = now && sourceOfCollection(now, collectionId);
+    if (!was || !now || !c || (!source && c.settings.sourceId === undefined)) return;
+    const ok = await confirmDialog({
+      title: 'Detach to local collection?',
+      body: source
+        ? `Its entries stay as they are and become ones you edit here. “${source.name}” and its settings are removed, so changes made in the source no longer reach them.`
+        : 'Its entries stay as they are and become ones you edit here. The source its settings named is no longer in the project.',
+      confirmLabel: 'Detach',
+      tone: 'caution',
+      icon: 'unlock',
+      subject: c.settings.name,
+      details: [{ kind: 'undo', text: 'You can undo it.' }]
+    });
+    if (!ok) return;
+    // Only what was asked about: the same project, and the same source.
+    const fresh = getState().snapshot;
+    if (!fresh || fresh.workspaceKey !== was.workspaceKey) return;
+    const cNow = Object.hasOwn(fresh.state.collections, collectionId) ? fresh.state.collections[collectionId] : undefined;
+    if (sourceFingerprint(sourceOfCollection(fresh.state, collectionId)) !== sourceFingerprint(source) || cNow?.settings.sourceId !== c.settings.sourceId)
+      return toast('The collection’s source changed meanwhile. Look at it again before detaching it.', 'error');
+    const r = await commitOps(detachOps(fresh.state, collectionId), source ? `Detach ${c.settings.name} from “${source.name}”` : `Detach ${c.settings.name}`, undefined, fresh.revision);
+    if (r?.ok) toast(`${c.settings.name} is a local collection now: its entries are edited here.`, 'info', r.entryId ? undoAction({ entryId: r.entryId, revision: r.revision, workspaceKey: r.workspaceKey }) : undefined);
+  };
+
+  /** What can be done with a collection's external source. */
+  const openSourceMenu = (el: HTMLElement, collectionId: string) => {
+    const c = state.collections[collectionId];
+    const source = sourceOfCollection(state, collectionId);
+    // Synced from a source the project has no settings for: it can only be detached.
+    const orphan = !source && c.settings.sourceId !== undefined;
+    const items: MenuItem[] = orphan
+      ? [{ label: 'Detach to local collection', description: 'Its source is no longer in the project. Keep its entries here, to edit them in the app.', onSelect: () => void detach(collectionId) }]
+      : source
+      ? [
+          { heading: source.name },
+          { label: syncing ? 'Syncing…' : 'Sync now', description: 'Bring in what changed in the source.', disabled: syncing, onSelect: () => void syncNow(source.id, source.name) },
+          { label: 'Source settings…', onSelect: () => setConnecting(collectionId) },
+          { label: 'Detach to local collection', description: 'Keep its entries here, to edit them in the app.', onSelect: () => void detach(collectionId) }
+        ]
+      : [
+          {
+            label: 'Connect external source…',
+            description: Object.keys(c.entries).length ? 'Only an empty collection can be connected: its first sync brings in every entry.' : 'Sync its entries from a CMS or an API.',
+            disabled: Object.keys(c.entries).length > 0,
+            onSelect: () => setConnecting(collectionId)
+          }
+        ];
+    sourceMenu.openAt(el, items, 'External source');
+  };
+
   /** The layout every entry's page is shown with, on the canvas, once the entry being written is saved. */
   const editLayout = async (id: string) => {
     if (!(await saveOpenPost())) return;
@@ -507,6 +578,9 @@ export function PostsPanel() {
                   <button className="icon-btn sm" aria-label={`${c.name} settings`} title="Fields, groupings and pages" data-testid={`collection-settings-${c.id}`} onClick={() => void openSaved().then((ok) => ok && setSchema(c.id))}>
                     <Settings2 />
                   </button>
+                  <button className="icon-btn sm" aria-label={`${c.name} external source`} aria-haspopup="menu" aria-expanded="false" title="Sync from a CMS or an API" data-testid={`collection-source-${c.id}`} onClick={(e) => openSourceMenu(e.currentTarget, c.id)}>
+                    <Plug />
+                  </button>
                   <button
                     className="icon-btn sm"
                     aria-label={`Edit the ${c.name} layout`}
@@ -529,6 +603,8 @@ export function PostsPanel() {
       </ul>
       {addingCollection && <AddCollection state={state} onMade={made} onCancel={() => setAddingCollection(false)} />}
       {schema && <CollectionSchemaDialog collectionId={schema} onClose={() => setSchema(null)} />}
+      {connecting && <SourceDialog collectionId={connecting} onClose={() => setConnecting(null)} />}
+      {sourceMenu.node}
       {managing && <TermsManager collectionId={collection.settings.id} onClose={() => setManaging(false)} onRenamed={(tax, from, to) => tax === 'categories' && category === from && setCategory(to)} />}
       {previewing && post && (
         <div className="posts-previewing" role="status">

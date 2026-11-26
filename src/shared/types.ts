@@ -1273,12 +1273,91 @@ export interface SecretRef {
   $secret: string;
 }
 
+/** The kinds of source the app reads, each with no package to install. */
+export type SourceAdapterId = 'rest' | 'graphql' | 'contentful' | 'sanity' | 'strapi' | 'wordpress';
+
 /**
- * A source's settings for its kind of source. Credentials are only ever named, slot by slot (`{ "token": { "$secret":
- * "team-read" } }`), so the document can be shared with the project.
+ * How a REST source's records come in pages: all at once (`none`); by page number or by offset, until a page brings
+ * fewer than it asked for; by a cursor each reply gives for the next; or by the address of the next page, which each
+ * reply gives at `path` (or in its `Link: <…>; rel="next"` header).
+ */
+export type SourcePagination =
+  | { type: 'none' }
+  | { type: 'page'; param: string; sizeParam?: string; size: number; start?: number }
+  | { type: 'offset'; param: string; limitParam?: string; limit: number }
+  | { type: 'cursor'; param: string; cursorPath: string }
+  | { type: 'nextLink'; path?: string };
+
+/**
+ * A source's settings for its kind of source. Credentials are only ever named: slot by slot for a CMS's own token
+ * (`{ "token": { "$secret": "team-read" } }`), or as `${secret:NAME}` inside a REST or GraphQL header or query value,
+ * so the document can be shared with the project. Each kind takes only its own settings.
  */
 export interface SourceConfig {
   credentials?: Record<string, SecretRef>;
+  /** REST, GraphQL, Strapi and WordPress: the address read (a site's own address for Strapi and WordPress). */
+  url?: string;
+  /** REST: how it is asked. Absent: GET. */
+  method?: 'GET' | 'POST';
+  /** REST and GraphQL: headers sent with every request. */
+  headers?: Record<string, string>;
+  /** REST: query parameters added to the address. */
+  query?: Record<string, string>;
+  /** REST with POST: the JSON sent, as text. */
+  body?: string;
+  /** REST and GraphQL: where the list of records is in a reply ("data.items"). Absent: the reply is the list. */
+  itemsPath?: string;
+  pagination?: SourcePagination;
+  /** GraphQL: the query sent, a read only. */
+  graphql?: string;
+  /** GraphQL: its variables. */
+  variables?: Record<string, unknown>;
+  /** Contentful. */
+  spaceId?: string;
+  /** Contentful. Absent: master. */
+  environment?: string;
+  /** Contentful: the content type's ID. */
+  contentType?: string;
+  /** Sanity. */
+  projectId?: string;
+  dataset?: string;
+  /** Sanity: the GROQ query whose result is the list of records. */
+  groq?: string;
+  /** Strapi: the collection's API ID, plural ("articles"). WordPress: the type of post ("posts", "pages"). */
+  resource?: string;
+}
+
+/**
+ * Where each detail of an entry is read from in a record a source sends, as a path ("fields.fullName",
+ * "fields.avatar.url", "tags[0]"). Left out, a detail keeps the kind of source's own reading of it.
+ */
+export interface SourceMapping {
+  externalId?: string;
+  title?: string;
+  slug?: string;
+  publishedAt?: string;
+  updatedAt?: string;
+  draft?: string;
+  author?: string;
+  excerpt?: string;
+  /** The featured image's address. */
+  featuredImageUrl?: string;
+  featuredImageAlt?: string;
+  body?: string;
+  /** What the text at `body` is written in. Absent: plain text. */
+  bodyFormat?: 'text' | 'html' | 'markdown' | 'contentful';
+  /** Custom fields, by field name. */
+  values?: Record<string, string>;
+}
+
+/**
+ * A source whose records are put in shape by the author's own code: `siteorigin/sources/<id>/converter.mjs`, beside its
+ * settings. Its settings name the file; the project in memory holds its text too.
+ */
+export interface SourceConverter {
+  file: 'converter.mjs';
+  /** The module's text. Never in source.json: written to, and read from, the file it names. */
+  code?: string;
 }
 
 /**
@@ -1295,6 +1374,10 @@ export interface SourceDoc {
   /** The collection its records are synced into. */
   collectionId: string;
   config: SourceConfig;
+  /** Where its records' details are read from, for a source read without a converter. */
+  mapping?: SourceMapping;
+  /** The author's converter, which puts its records in shape instead of `mapping`. */
+  converter?: SourceConverter;
   /** Absent: `unpublish`. */
   removal?: SourceRemoval;
 }
@@ -1390,7 +1473,7 @@ export interface EntryDoc {
   /** Custom field values by field name. A field left out shows its default. */
   values: Record<string, CollectionFieldValue>;
   body: RichText;
-  /** Where it was synced from, for an entry written by a sync. Kept as its history once its collection is detached. */
+  /** Where it was synced from, for an entry written by a sync. Detaching its collection clears it: the entry is local. */
   source?: EntrySource;
 }
 

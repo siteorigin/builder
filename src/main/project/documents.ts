@@ -3,7 +3,7 @@ import { join } from 'node:path';
 import type { AssetsDoc, Collection, CollectionDoc, ComponentDefinition, EntryDoc, PageDoc, ProjectBriefDoc, ProjectManifest, ProjectState, SiteDoc, SourceDoc, ThemeLock, TokensDoc } from '@shared/types';
 import { BRIEF_FILE, BRIEF_FIELDS } from '@shared/brief';
 import { isCollectionId, isEntryId } from '@shared/collections';
-import { isSourceId, sourceDocProblem } from '@shared/sources';
+import { CONVERTER_FILE, isSourceId, MAX_CONVERTER, sourceDocProblem } from '@shared/sources';
 import { SCHEMA_VERSION } from '@shared/types';
 import { migrateProject, newestDocumentVersion, type MigrationResult } from '@shared/migrations';
 import { readIfExists, safeJoin, toJson } from './fsutil';
@@ -22,6 +22,7 @@ export function isCanonicalPath(p: string): boolean {
     /^siteorigin\/components\/[A-Za-z0-9][A-Za-z0-9._-]*\/component\.json$/.test(p) ||
     collectionPathOf(p) !== null ||
     sourcePathOf(p) !== null ||
+    converterPathOf(p) !== null ||
     CUSTOM_SOURCE_RE.test(p)
   );
 }
@@ -36,12 +37,35 @@ export function sourcePathOf(p: string): string | null {
   return m && isSourceId(m[1]) ? m[1] : null;
 }
 
-/** Sources from their documents, by path; any other path is skipped. */
-export function sourcesFromDocs(docs: Iterable<[string, unknown]>): Record<string, SourceDoc> {
+/** A source's converter module, beside its settings. */
+export function converterDocPath(sourceId: string): string {
+  return `${DOC_DIR}/sources/${sourceId}/${CONVERTER_FILE}`;
+}
+
+/** The source whose converter module `p` is, or null for any other path. */
+export function converterPathOf(p: string): string | null {
+  const m = /^siteorigin\/sources\/([^/]+)\/converter\.mjs$/.exec(p);
+  return m && isSourceId(m[1]) ? m[1] : null;
+}
+
+/** A source's settings as source.json keeps them: its converter only named, its text in its own file. */
+export function storedSourceDoc(doc: SourceDoc): SourceDoc {
+  return doc.converter ? { ...doc, converter: { file: doc.converter.file } } : doc;
+}
+
+/**
+ * Sources from their documents, by path, settings parsed: each converter's text joined from its own file (a converter
+ * whose file is not there has no text, which its source's diagnostics report). Any other path is skipped.
+ */
+export function sourcesFromDocs(docs: Iterable<[string, string]>): Record<string, SourceDoc> {
+  const all = new Map(docs);
   const out: Record<string, SourceDoc> = {};
-  for (const [path, doc] of [...docs].sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0))) {
+  for (const [path, text] of [...all].sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0))) {
     const id = sourcePathOf(path);
-    if (id !== null) out[id] = doc as SourceDoc;
+    if (id === null) continue;
+    const doc = JSON.parse(text) as SourceDoc;
+    const code = all.get(converterDocPath(id));
+    out[id] = doc.converter ? { ...doc, converter: { file: doc.converter.file, ...(code !== undefined ? { code } : {}) } } : doc;
   }
   return out;
 }
@@ -126,7 +150,12 @@ export function stateToDocs(state: ProjectState): Map<string, string> {
     docs.set(collectionDocPath(id), toJson(c.settings));
     for (const eid of Object.keys(c.entries).sort()) docs.set(entryDocPath(id, eid), toJson(c.entries[eid]));
   }
-  for (const id of Object.keys(state.sources ?? {}).sort()) docs.set(sourceDocPath(id), toJson(state.sources![id]));
+  for (const id of Object.keys(state.sources ?? {}).sort()) {
+    const doc = state.sources![id];
+    docs.set(sourceDocPath(id), toJson(storedSourceDoc(doc)));
+    // A converter is the author's code, canonical as a component's is: journaled, and part of undo history.
+    if (typeof doc.converter?.code === 'string') docs.set(converterDocPath(id), doc.converter.code);
+  }
   return docs;
 }
 
@@ -333,7 +362,16 @@ async function readStoredState(dir: string, opts: ReadOptions, raw: Map<string, 
     // A folder left behind by an interrupted delete holds no settings.
     if (!exists(path)) continue;
     if (!isSourceId(d)) throw new ProjectFormatError(`${DOC_DIR}/sources/${d} is not a valid source folder name (use lowercase letters, numbers and single hyphens).`);
-    sources[d] = sourceDoc(await loadQuiet(text, path), path, d);
+    const doc = sourceDoc(await loadQuiet(text, path), path, d);
+    if (doc.converter?.code !== undefined) throw new ProjectFormatError(`${path} cannot be used: its converter's code is kept in ${converterDocPath(d)}, not in its settings.`);
+    if (doc.converter) {
+      const code = await text(converterDocPath(d)).catch(() => {
+        throw new ProjectFormatError(`Could not read ${converterDocPath(d)}.`);
+      });
+      if (code !== null && code.length > MAX_CONVERTER) throw new ProjectFormatError(`${converterDocPath(d)} is longer than ${MAX_CONVERTER} characters.`);
+      // One that is missing is said by the source's diagnostics, and its syncs fail until it is back.
+      sources[d] = code !== null ? { ...doc, converter: { file: doc.converter.file, code } } : doc;
+    } else sources[d] = doc;
   }
   if (Object.keys(sources).length) state.sources = sources;
   return state;

@@ -400,7 +400,7 @@ describe('a synced collection', () => {
   function synced(collectionId = 'team') {
     const s = studio();
     // Synced from a source the project declares (#676), as a sync leaves it.
-    s.sources = { 'people-api': { schemaVersion: SCHEMA_VERSION, id: 'people-api', name: 'People API', adapter: 'rest', collectionId, config: {} } };
+    s.sources = { 'people-api': { schemaVersion: SCHEMA_VERSION, id: 'people-api', name: 'People API', adapter: 'rest', collectionId, config: { url: 'https://people.example/api' } } };
     s.collections[collectionId].settings.sourceId = 'people-api';
     for (const e of Object.values(s.collections[collectionId].entries)) e.source = { ...SOURCE, externalId: e.id };
     return s;
@@ -421,10 +421,11 @@ describe('a synced collection', () => {
     // Everything else stays editable, its settings included.
     expect(run(s, { type: 'entry.update', collectionId: 'projects', entryId: 'en_hall', title: 'Old town hall' }).collections.projects.entries.en_hall.title).toBe('Old town hall');
     expect(run(s, { type: 'entry.reorder', collectionId: 'team', entryIds: ['en_okafor', 'en_ruiz'] }).collections.team.settings.entryOrder).toEqual(['en_okafor', 'en_ruiz']);
-    // Detached, in the same change: its entries are local again, each keeping where it came from.
+    // Detached, in the same change: its entries are local again, and say nothing of the source any more (#678).
     const local = run(s, { type: 'collection.update', collectionId: 'team', sourceId: null }, { type: 'entry.update', collectionId: 'team', entryId: 'en_okafor', title: 'Ben O.' });
     expect(local.collections.team.settings).not.toHaveProperty('sourceId');
-    expect(local.collections.team.entries.en_okafor).toMatchObject({ title: 'Ben O.', source: { ...SOURCE, externalId: 'en_okafor' } });
+    expect(local.collections.team.entries.en_okafor).toMatchObject({ title: 'Ben O.' });
+    for (const e of Object.values(local.collections.team.entries)) expect(e).not.toHaveProperty('source');
     expect(run(local, { type: 'entry.create', collectionId: 'team', entryId: 'en_cara', title: 'Cara' }).collections.team.entries).toHaveProperty('en_cara');
     // Removing one of them too, its provenance notwithstanding.
     const removed = run(local, { type: 'entry.remove', collectionId: 'team', entryId: 'en_okafor', replacementEntryId: 'en_ruiz' });

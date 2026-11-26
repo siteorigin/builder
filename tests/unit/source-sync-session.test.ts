@@ -76,7 +76,7 @@ async function setup() {
     {
       operations: [
         { type: 'collection.create', collectionId: 'team', name: 'Team', kind: 'structured', pages: { detail: true, archive: false }, route: '/team/', fields: { role: { type: 'string', label: 'Role', default: '' } } },
-        { type: 'source.upsert', sourceId: 'people', name: 'People API', adapter: 'fixture', collectionId: 'team', credentials: { token: { $secret: 'people-token' } } }
+        { type: 'source.upsert', sourceId: 'people', name: 'People API', adapter: 'fixture', collectionId: 'team', config: { credentials: { token: { $secret: 'people-token' } } } }
       ] as EditOperation[]
     },
     { label: 'Add the team source' }
@@ -251,6 +251,9 @@ describe('syncing a source into a project', () => {
     const r = await syncSource(deps, 'people');
     expect(r).toMatchObject({ ok: false });
     expect(r.ok === false && r.message).toMatch(/no field "nope"/);
+    // Found before any picture is brought into the library (#678): its file is never written.
+    expect(r).toMatchObject({ code: 'invalid' });
+    expect(world.imports).toBe(0);
     expect(Object.keys(s.state.assets.assets)).toHaveLength(assets);
     expect(Object.keys(s.state.collections.team.entries)).toEqual([]);
     expect(s.state.collections.team.settings.sourceId).toBeUndefined();
@@ -285,7 +288,7 @@ describe('a source’s settings in the project', () => {
     const { dir, s, world, deps } = await setup();
     for (const op of [
       { type: 'source.remove', sourceId: 'people' },
-      { type: 'source.upsert', sourceId: 'people', name: 'Renamed by the AI', adapter: 'fixture', collectionId: 'team' }
+      { type: 'source.upsert', sourceId: 'people', name: 'Renamed by the AI', adapter: 'fixture', collectionId: 'team', config: {} }
     ] as EditOperation[]) {
       const ai = await s.apply({ operations: [op] }, { label: 'Change', source: 'ai' });
       expect(ai.error?.code, op.type).toBe('SCOPE_MISMATCH');
@@ -313,7 +316,7 @@ describe('a source’s settings in the project', () => {
     expect(JSON.parse(readFileSync(join(dir, 'siteorigin/sources/people/source.json'), 'utf8')).name).toBe('People API');
     // A credential given as a value, under any name, is never saved, and never repeated.
     for (const credentials of [{ token: SECRET }, { [SECRET.replace(/-/g, '_')]: { $secret: 'people-token', extra: SECRET } }]) {
-      const leaked = await s.apply({ operations: [{ type: 'source.upsert', sourceId: 'people', name: 'People API', adapter: 'fixture', collectionId: 'team', credentials: credentials as never }] }, { label: 'Change' });
+      const leaked = await s.apply({ operations: [{ type: 'source.upsert', sourceId: 'people', name: 'People API', adapter: 'fixture', collectionId: 'team', config: { credentials: credentials as never } }] }, { label: 'Change' });
       expect(leaked.error?.code).toBe('INVALID_ARGUMENT');
       expect(JSON.stringify(leaked.error)).not.toContain(SECRET);
       expect(JSON.stringify(leaked.error)).not.toContain(SECRET.replace(/-/g, '_'));
@@ -326,7 +329,7 @@ describe('a source’s settings in the project', () => {
     // A second source, added on its own, synced into a collection of its own.
     const made = await s.apply({ operations: [{ type: 'collection.create', collectionId: 'crew', name: 'Crew', kind: 'structured', pages: { detail: false, archive: false } }] as EditOperation[] }, { label: 'Crew' });
     expect(made.ok).toBe(true);
-    const added = await s.apply({ operations: [{ type: 'source.upsert', sourceId: 'crew-api', name: 'Crew API', adapter: 'fixture', collectionId: 'crew', credentials: { token: { $secret: 'people-token' } } }] }, { label: 'Add Crew API' });
+    const added = await s.apply({ operations: [{ type: 'source.upsert', sourceId: 'crew-api', name: 'Crew API', adapter: 'fixture', collectionId: 'crew', config: { credentials: { token: { $secret: 'people-token' } } } }] }, { label: 'Add Crew API' });
     expect(added.ok).toBe(true);
     world.records = [person('1', 'Ana', { values: {} })];
     await expect(syncSource(deps, 'crew-api')).resolves.toMatchObject({ ok: true, created: 1 });

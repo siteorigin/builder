@@ -25,8 +25,8 @@ import { hasFeedEntries } from '@generator/rss';
 import { redirectHost, VERCEL_CONFIG_FILE } from '@generator/host-redirects';
 import { atomicWrite, readIfExists, removeEmptyDirs, safeJoin, sha, toJson } from './project/fsutil';
 import { isPrivateFileName } from './project/private-files';
-import { sourceDocPath } from './project/documents';
-import { holdsSecretValue, isSourceId } from '@shared/sources';
+import { converterDocPath, sourceDocPath, storedSourceDoc } from './project/documents';
+import { CONVERTER_FILE, holdsSecretValue, isSourceId } from '@shared/sources';
 
 const UNREADABLE = Symbol('unreadable');
 
@@ -121,9 +121,11 @@ export async function writeExportedSources(dest: string, state: ProjectState, op
   await fs.rm(join(dest, 'siteorigin', 'sources'), { recursive: true, force: true });
   if (!opts.keep) return;
   for (const id of Object.keys(state.sources ?? {}).sort()) {
+    const doc = state.sources![id];
     const file = join(dest, sourceDocPath(id));
     await fs.mkdir(dirname(file), { recursive: true });
-    await fs.writeFile(file, toJson(state.sources![id]));
+    await fs.writeFile(file, toJson(storedSourceDoc(doc)));
+    if (typeof doc.converter?.code === 'string') await fs.writeFile(join(dest, converterDocPath(id)), doc.converter.code);
   }
 }
 
@@ -146,8 +148,14 @@ export async function exportedSourcesProblem(dir: string, state: ProjectState, v
     }
   };
   for (const d of new Set([...folders, ...Object.keys(held)])) {
+    const mine = Object.hasOwn(held, d) ? held[d] : undefined;
     const disk = await readSettingsFile(join(dir, 'siteorigin', 'sources', d, 'source.json'));
-    if (disk !== UNREADABLE && same(disk, Object.hasOwn(held, d) ? held[d] : undefined)) continue;
+    // Its converter too, exactly as the project holds it. A module beside settings that name none is no part of it,
+    // and never goes out (the copy is written from the project's own).
+    const code = mine?.converter ? await readSettingsFile(join(dir, 'siteorigin', 'sources', d, CONVERTER_FILE)) : null;
+    const sameCode = code !== UNREADABLE && code === (mine?.converter?.code ?? null);
+    if (disk !== UNREADABLE && same(disk, mine && storedSourceDoc(mine)) && !sameCode && isSourceId(d)) return `${converterDocPath(d)} was changed outside SiteOrigin Builder. Open the project again to load it, or put it back, then export again.`;
+    if (disk !== UNREADABLE && same(disk, mine && storedSourceDoc(mine)) && sameCode) continue;
     // Named only when it is a source's own name: a folder may be called anything, a credential included.
     return `${isSourceId(d) ? sourceDocPath(d) : 'An external source’s settings'} ${isSourceId(d) ? 'was' : 'were'} changed outside SiteOrigin Builder. Open the project again to load ${isSourceId(d) ? 'it' : 'them'}, or put ${isSourceId(d) ? 'it' : 'them'} back, then export again.`;
   }

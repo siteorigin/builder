@@ -466,8 +466,12 @@ export function collectionUpdate(state: ProjectState, op: Op<'collection.update'
   const c = getCollection(state, op.collectionId);
   if (op.name !== undefined) c.settings.name = op.name.trim() || c.settings.name;
   applyIdentity(c.settings, op);
-  // Detached, its entries are local: edited here, and left alone by syncs.
-  if (op.sourceId === null) delete c.settings.sourceId;
+  // Detached, its entries are local: edited here, and left alone by syncs. Nothing says they came from the source any
+  // more, so no later sync of it can claim them.
+  if (op.sourceId === null) {
+    delete c.settings.sourceId;
+    for (const e of Object.values(c.entries)) delete e.source;
+  }
   const name = c.settings.name;
   const was = { route: c.settings.route, detail: hasDetailPages(c.settings), archive: hasArchivePages(c.settings) };
   const pages = op.pages !== undefined ? pagesOf(op.pages) : { detail: was.detail, archive: was.archive };
@@ -645,11 +649,26 @@ function sameValue(a: unknown, b: unknown): boolean {
  * its order) stay the author's; a collection detached by the change, or made by it, is local. Removing a synced
  * collection is refused on its own (see collectionRemove). Worded to follow "This" or "it".
  */
+/** Whether `after` is `before` with each entry given where it came from (`source`, from `sourceId`) and nothing else. */
+function sameEntriesBut(before: Record<string, EntryDoc>, after: Record<string, EntryDoc>, sourceId: string): boolean {
+  const ids = Object.keys(after);
+  if (ids.length !== Object.keys(before).length) return false;
+  return ids.every((id) => {
+    const [b, a] = [own(before, id), after[id]];
+    if (!b || b.source !== undefined || a.source?.sourceId !== sourceId) return false;
+    const { source: _given, ...rest } = a;
+    return sameValue(b, rest);
+  });
+}
+
 export function syncedEntryChange(before: ProjectState, after: ProjectState, except?: string): string | null {
   for (const c of Object.values(after.collections ?? {})) {
     if (!isSyncedCollection(c?.settings) || c.settings.id === except) continue;
     const was = own(before.collections ?? {}, c.settings.id);
     if (!was || sameValue(was.entries, c.entries)) continue;
+    // Attached again as it was detached (an undo of Detach): the very same entries, each given back only where it came
+    // from, by the source it is attached to.
+    if (!isSyncedCollection(was.settings) && sameEntriesBut(was.entries, c.entries, c.settings.sourceId!)) continue;
     return `would change the entries of the ${c.settings.name} collection, which is synced from an external source, so they are read-only here. Change them in the source, or detach the collection from it first.`;
   }
   return null;

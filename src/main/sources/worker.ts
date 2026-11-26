@@ -4,8 +4,8 @@
  * by client.ts, and ended as soon as it answers.
  */
 import type { SyncReply, SyncRequest } from './protocol';
-import { ADAPTERS } from './registry';
-import { fetchImage } from './fetch-image';
+import { ADAPTERS } from './adapters';
+import { checkHost, fetchImage } from './fetch-image';
 import { runSync } from './run';
 
 const port = (process as unknown as { parentPort: { on: (e: 'message', cb: (ev: { data: SyncRequest }) => void) => void; postMessage: (m: SyncReply) => void } }).parentPort;
@@ -13,7 +13,7 @@ const port = (process as unknown as { parentPort: { on: (e: 'message', cb: (ev: 
 port.on('message', async ({ data: m }) => {
   let reply: SyncReply;
   try {
-    reply = await runSync(m, { adapters: ADAPTERS, fetchImage });
+    reply = await runSync(m, { adapters: ADAPTERS, fetchImage, checkHost });
   } catch {
     reply = { id: m?.id ?? 0, ok: false, code: 'failed' };
   }

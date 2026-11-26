@@ -23,7 +23,7 @@ function project(removal?: SourceDoc['removal']): ProjectState {
   let s = createStarterState('business', 'Sources', false);
   s = applyOperations(s, [
     { type: 'collection.create', collectionId: 'team', name: 'Team', kind: 'structured', pages: { detail: true, archive: false }, route: '/team/', fields: { role: { type: 'string', label: 'Role', default: '' }, photo: { type: 'image', label: 'Photo', default: { assetId: null, alt: '' } } } },
-    { type: 'source.upsert', sourceId: 'people', name: 'People API', adapter: 'fixture', collectionId: 'team', credentials: { token: { $secret: 'people-token' } }, ...(removal ? { removal } : {}) }
+    { type: 'source.upsert', sourceId: 'people', name: 'People API', adapter: 'fixture', collectionId: 'team', config: { credentials: { token: { $secret: 'people-token' } } }, ...(removal ? { removal } : {}) }
   ] as EditOperation[]).state;
   return s;
 }

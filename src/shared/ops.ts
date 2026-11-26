@@ -1015,13 +1015,14 @@ export const OPERATION_SCHEMAS = {
       name: z.string().min(1).max(120),
       adapter: z.string().max(40).describe('The kind of source it is, which says how its records are read.'),
       collectionId: z.string().max(60).describe('The collection its records are synced into.'),
-      credentials: z
-        .record(z.string().max(64), z.object({ $secret: z.string().max(64) }).strict())
-        .optional()
-        .describe('The secrets it signs in with, by slot: each { "$secret": "<name>" }, never the value. Given, replaces them all; left out keeps them.'),
+      config: z
+        .record(z.string().max(40), z.unknown())
+        .describe('Its kind of source’s settings (an address, headers, a query…). Credentials only as { "credentials": { "<slot>": { "$secret": "<name>" } } } or ${secret:NAME} in a header or query value, never the value.'),
+      mapping: z.record(z.string().max(40), z.unknown()).optional().describe('Where each detail of an entry is read from in a record, by path ("fields.title"). Left out: the kind of source’s own reading.'),
+      converter: z.string().max(60_000).optional().describe('The text of its converter.mjs, which puts its records in shape instead of a mapping. Left out: none.'),
       removal: z.enum(['unpublish', 'remove', 'keep']).optional().describe('What a sync does with an entry the source no longer has. Defaults to unpublish, which drafts it so links keep working.')
     })
-    .describe('Add an external source, or change one.'),
+    .describe('Add an external source, or replace its settings whole.'),
   'source.remove': z.object({ type: z.literal('source.remove'), sourceId: z.string() }).describe('Delete an external source. Refused while a collection is synced from it.'),
 
   'asset.add': z.object({
