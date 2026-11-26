@@ -45,7 +45,7 @@ import { fontCoverage } from './project/media';
 import { isValidFontAsset } from '@shared/fonts';
 import { photoMetadata } from './project/photo-metadata';
 import { watchTree, type FolderWatch } from './folder-watch';
-import { DevServer, buildProject, dependenciesReady, prepareDependencies, starterTools } from './runtime/manager';
+import { DevServer, buildProject, dependenciesReady, prepareDependencies, starterTools, type RuntimeStatus } from './runtime/manager';
 import { NETWORK_CODES, ToolsDownloadError } from './runtime/availability';
 import { copyProjectTools, createPreviewStage, removePreviewStage, sweepPreviewStages, syncPreviewStage } from './runtime/stage';
 import { clearComponentPreviews, previewSpec, removeComponentPreview, writeComponentPreview } from './runtime/component-preview';
@@ -159,6 +159,19 @@ async function configHash(dir: string): Promise<string> {
 type OpenResult = { ok: boolean; message?: string; needsTrust?: { dir: string; name: string } };
 
 /**
+ * A preview server started while its project was still opening (prepareRuntime), until its start takes it over:
+ * `dev` once its checks passed and it was forked, `started` settling as its start did, and whether the opening's
+ * publication was seen (`held`) and how many project files it changed (`landed`).
+ */
+interface EarlyRuntime {
+  session: ProjectSession;
+  dev: DevServer | null;
+  started: Promise<void>;
+  held: boolean;
+  landed: number;
+}
+
+/**
  * Open project's picker. On macOS one picker takes a project folder, its siteorigin.project.json or a project ZIP file.
  * Windows and Linux cannot mix files and folders in one picker, so theirs takes the file or a ZIP file, and a folder
  * when one is asked for (Welcome's Open project folder).
@@ -264,6 +277,10 @@ const editorScript = (js: string) => /siteorigin-bridge|data-so-ctx/.test(js) ||
 export class Controller {
   session: ProjectSession | null = null;
   dev: DevServer | null = null;
+  /** The preview server started early for a project still opening, for its start to take over (see prepareRuntime). */
+  private early: EarlyRuntime | null = null;
+  /** Early preview servers stopped and not yet exited, by folder: no other server starts there, and no lock goes, first. */
+  private earlyExits = new Map<string, Promise<void>>();
   private createAbort: AbortController | null = null;
   /** Set from a switch's close until its replacement is attached. */
   private handingOver = false;
@@ -930,7 +947,7 @@ export class Controller {
     const since = this.closings;
     let session: ProjectSession;
     try {
-      session = await ProjectSession.open(dir, INSTANCE_ID, { force: opts.force });
+      session = await ProjectSession.open(dir, INSTANCE_ID, { force: opts.force, preview: { start: (s) => this.prepareRuntime(s), stop: (s) => this.dropEarly(s) } });
     } catch (e) {
       // A newer format, or a project another app is editing, opens for inspection instead (spec 16.6, 18.1).
       const locked = e instanceof ProjectLockedError;
@@ -959,12 +976,14 @@ export class Controller {
     }
     const way = await this.makeWay(since);
     if (!way.ok) {
+      await this.dropEarly(session);
       await session.close().catch(() => undefined);
       return way;
     }
     // Attached in the same turn as the switch (attach makes it the open project before it waits on anything), so no
     // other switch can come between the two.
     void this.attach(session, workspace).catch(async (e) => {
+      await this.dropEarly(session);
       if (this.session === session) await this.close();
       else await session.close();
       this.send('runtime:status', { state: 'error', message: `The project could not be opened: ${(e as Error).message}` });
@@ -1124,13 +1143,95 @@ export class Controller {
   }
 
   private startRuntimeNow(): Promise<void> {
-    return timed('controller.startRuntime', () => this.startRuntimeWork(), () => ({ state: this.dev?.status.state ?? 'none' }))();
+    const session = this.session;
+    // A server started early for this opening that the start did not take over (a check failed, it was closed) goes.
+    return timed('controller.startRuntime', () => this.startRuntimeWork(), () => ({ state: this.dev?.status.state ?? 'none' }))().finally(() => (session ? this.dropEarly(session) : undefined));
+  }
+
+  /**
+   * Start the preview of a project that is still opening, once its lock is held and its documents are read and sound,
+   * so its server comes up while the generated files are published (#960). It starts only after the checks a start
+   * makes (the configuration is the one trusted, the website tools are set up, the lock is still this app's, old
+   * component previews are gone), and startRuntime makes them all again before taking it over (takeEarly).
+   */
+  private prepareRuntime(session: ProjectSession) {
+    void this.dropEarly();
+    const dir = session.dir;
+    const early: EarlyRuntime = { session, dev: null, started: Promise.resolve(), held: false, landed: 0 };
+    this.early = early;
+    // What the opening's publication changes in the project: a server that read the files before then is not taken.
+    session.previewHold = async () => {
+      early.held = true;
+      return (files) => void (early.landed += files.length);
+    };
+    // Taken over by another app before it is attached (a switch waiting on Keep editing, say): its preview goes at once.
+    session.once('lock-lost', () => void this.dropEarly(session));
+    const mine = async () => this.early === early && (await session.stillOwner()) && this.early === early;
+    early.started = (async () => {
+      if (!(await isTrusted(dir, await configHash(dir)))) return;
+      if (this.early !== early || !(await dependenciesReady(dir)) || !(await mine())) return;
+      // One started for this folder by an earlier opening and stopped since has exited first.
+      await this.earlyExits.get(dir);
+      await clearComponentPreviews(dir).catch(() => undefined);
+      if (!(await mine())) return;
+      const dev: DevServer = new DevServer(dir, async (): Promise<boolean> => this.dev === dev && (await session.stillOwner()));
+      early.dev = dev;
+      await dev.start();
+    })().catch(() => undefined);
+  }
+
+  /**
+   * Stop the server started early for an opening (`session`'s, or any) that is not taking it. Settles once its process
+   * has exited, so the lock it ran under, or a fresh server in its folder, comes only after it.
+   */
+  private async dropEarly(session?: ProjectSession): Promise<void> {
+    const early = this.early;
+    // Another opening's now, or none: one of this session's stopped earlier (by another opening) may still be exiting.
+    if (!early || (session && early.session !== session)) return session ? this.earlyExits.get(session.dir) : undefined;
+    this.early = null;
+    const dir = early.session.dir;
+    // Never forked (its checks were still running): an earlier one stopped in that folder may still be exiting.
+    if (!early.dev) return this.earlyExits.get(dir);
+    const exited = early.dev.stop();
+    // Whoever starts a server in that folder next, or lets its lock go, waits for this one to have exited.
+    this.earlyExits.set(dir, exited);
+    void exited.then(() => {
+      if (this.earlyExits.get(dir) === exited) this.earlyExits.delete(dir);
+    });
+    await exited;
+  }
+
+  /**
+   * The server started early for `session`'s opening, when its start may take it over: it has not failed or stopped,
+   * and the opening's publication landed no file in the project. What a starting server reads at once (its
+   * configuration, the routes there are) is then what was published; every other file it serves is read when a page
+   * is first asked for, which is after this. It stays where a lost lock, a close or quitting stops it until the start
+   * takes it. Any other is stopped, and its process has exited, before this returns.
+   */
+  private async usableEarly(session: ProjectSession): Promise<EarlyRuntime | null> {
+    const early = this.early;
+    if (!early || early.session !== session) return null;
+    const state = early.dev?.status.state;
+    if (early.dev && early.held && early.landed === 0 && !session.readOnly && (state === 'starting' || state === 'ready')) return early;
+    await this.dropEarly(session);
+    return null;
   }
 
   private async startRuntimeWork() {
     const session = this.session;
     if (!session) return;
     await this.stopPreview();
+    if (this.session !== session) return;
+    // A server started while the project opened is looked at now, and stopped and waited for when it cannot be taken,
+    // before the checks below: so they run, as always, with no wait between them and anything running in the folder.
+    // One that can be is taken only after them (startRuntimeNow stops it if the start ends without it).
+    const early = await this.usableEarly(session);
+    if (!early) await this.earlyExits.get(session.dir);
+    await this.startRuntimeChecked(session, early);
+  }
+
+  /** startRuntimeWork's checks and start, with the server started early for this opening to take over, if any. */
+  private async startRuntimeChecked(session: ProjectSession, usable: EarlyRuntime | null) {
     if (this.session !== session) return;
     // Nothing to start and nothing to retry: no worker is ever forked for it.
     if (previewUnavailable(session)) {
@@ -1177,8 +1278,17 @@ export class Controller {
     // Decided with no wait before the fork: a takeover after this point stops the worker and queues a staged restart.
     const stage = session.readOnly ? await this.stagePreview(session) : null;
     if (session.readOnly && !stage) return;
-    // A preview that crashes is started again in the same folder only while that is still this app's to use; a copy is.
-    const dev: DevServer = new DevServer(stage ?? session.dir, async (): Promise<boolean> => this.dev === dev && (!!stage || (await session.stillOwner())));
+    // The server started while the project opened, when it could be taken over; otherwise a new one. A preview that
+    // crashes is started again in the same folder only while that is still this app's to use; a copy is.
+    // Stopped during the checks (a lost lock, another opening): a start of its own replaces it, making every check
+    // again; one the lock went with is already queued (lock-lost).
+    if (usable && !stage && this.early !== usable) {
+      if (!session.readOnly) void this.startRuntime().catch(() => undefined);
+      return;
+    }
+    const early = stage ? null : usable;
+    if (early) this.early = null;
+    const dev: DevServer = early?.dev ?? new DevServer(stage ?? session.dir, async (): Promise<boolean> => this.dev === dev && (!!stage || (await session.stillOwner())));
     this.dev = dev;
     // A new preview server has published nothing yet.
     this.publishedRevision = null;
@@ -1186,7 +1296,7 @@ export class Controller {
     this.stagedRevision = -1;
     this.pendingStatus = null;
     if (stage) this.watchStageSources(session);
-    dev.onStatus((s) => {
+    const onStatus = (s: RuntimeStatus) => {
       // A preview that was stopped or replaced no longer speaks for the project.
       if (this.dev !== dev) return;
       // A server that has just come up serves the files as they are now: the project's own folder at the session's
@@ -1199,7 +1309,8 @@ export class Controller {
       this.send('runtime:status', s);
       this.live.previewChanged();
       this.broadcast();
-    });
+    };
+    dev.onStatus(onStatus);
     // A live session's guests reload once a change has reached the preview: its files are in Vite's hands, so what
     // they load is the new revision (the project's own folder, or the private copy once it has the change).
     dev.onPublished((revision) => {
@@ -1211,7 +1322,11 @@ export class Controller {
     dev.onGone(() => {
       if (this.dev === dev) this.live.previewChanged();
     });
-    await dev.start();
+    if (early) {
+      // Taken over where it is now (starting, or already listening); what it does next is reported as it happens.
+      onStatus(dev.status);
+      await early.started;
+    } else await dev.start();
     // Anything the other app wrote between the copy and the watches.
     if (stage) this.syncStage(session);
   }
@@ -1563,7 +1678,7 @@ export class Controller {
   close(): Promise<void> {
     const [key, session] = [this.workspaceKey, this.session];
     // A close that fails leaves the project open and editable under the same opening, and tells the editor.
-    this.closing ??= this.closeNow().catch((e) => { if (session && this.session === session && !this.workspaceKey) (this.workspaceKey = key), this.watchExternalChanges(session), this.onOpeningChange?.(), this.broadcast(); throw e; }).finally(() => (this.closing = null));
+    this.closing ??= timed('controller.close', () => this.closeNow())().catch((e) => { if (session && this.session === session && !this.workspaceKey) (this.workspaceKey = key), this.watchExternalChanges(session), this.onOpeningChange?.(), this.broadcast(); throw e; }).finally(() => (this.closing = null));
     return this.closing;
   }
 
@@ -1582,6 +1697,8 @@ export class Controller {
     this.folderTimer = null;
     if (this.folderPoll) clearInterval(this.folderPoll);
     this.folderPoll = null;
+    // Quitting: a project still opening never gets to take over the preview started for it.
+    if (this.quitting) await this.dropEarly();
     const s = this.session;
     if (!s) return this.endExports();
     this.closings++;
@@ -1625,6 +1742,8 @@ export class Controller {
       await this.stopPreview();
       await this.runtimeQueue;
       await this.stopPreview();
+      // Closed before its start took over the server started while it opened (Close Project during attach).
+      await this.dropEarly(s);
       await liveEnded;
       await s.close();
       // Its entry in Recent projects leaves with the name it has now, whichever way it was left: back to Welcome or

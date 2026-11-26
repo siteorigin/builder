@@ -197,7 +197,7 @@ async function mark(app: ElectronApplication, win: Page, name: string, attrs?: P
 }
 
 /** One iteration: a launch with marks on and the chain run in it. */
-async function iterate(opts: Options, c: { dir: string; profile: string; project: string; facts: FixtureFacts; restoredAt: number }, index: number, trace: string): Promise<ChainOutcome[]> {
+async function iterate(opts: Options, c: { dir: string; profile: string; project: string; other: string | null; facts: FixtureFacts; restoredAt: number }, index: number, trace: string): Promise<ChainOutcome[]> {
   rmSync(trace, { force: true });
   const { app, win, pid, root } = await start(opts.app, join(c.dir, 'launch'), c.profile, trace);
   try {
@@ -206,6 +206,7 @@ async function iterate(opts: Options, c: { dir: string; profile: string; project
       win,
       fixture: c.facts,
       projectDir: c.project,
+      otherProjectDir: c.other,
       iteration: index,
       settleMs: opts.settleMs,
       restoredAt: c.restoredAt,
@@ -257,6 +258,8 @@ async function main() {
     }
     const dir = join(runDir, name);
     const project = join(dir, 'project');
+    // A second copy of the fixture, for the scenarios that open another project over the first (switch).
+    const other = opts.chain.some((s) => s.name === 'switch') ? join(dir, 'other') : null;
     const profile = join(dir, 'profile');
     const perScenario = new Map<string, Iteration[]>(opts.chain.map((s) => [s.name, []]));
     let fx: Awaited<ReturnType<typeof preparedFixture>> | null = null;
@@ -268,6 +271,13 @@ async function main() {
       // launches after their second do. (The preview's is not: its server takes a new port each launch, and the cache
       // is keyed by address.) What it leaves is what every iteration starts from.
       console.log(`perf: ${name}: warm-up`);
+      // The second copy is opened first, so the fixture's own copy is the first of Recent projects.
+      if (other) {
+        restore(fx.dir, other);
+        await openUntimed(opts.app, join(dir, 'launch'), profile, other);
+        restore(other, join(dir, 'other-start'), ['node_modules']);
+        toolCaches(other, join(dir, 'other-tools-start'), false);
+      }
       restore(fx.dir, project);
       await openUntimed(opts.app, join(dir, 'launch'), profile, project);
       await openUntimed(opts.app, join(dir, 'launch'), profile, project, { cache: true });
@@ -291,13 +301,17 @@ async function main() {
     for (let i = 1; i <= opts.iterations && !stopped; i++) {
       restore(join(dir, 'project-start'), project, ['node_modules']);
       toolCaches(project, join(dir, 'tools-start'), true);
+      if (other) {
+        restore(join(dir, 'other-start'), other, ['node_modules']);
+        toolCaches(other, join(dir, 'other-tools-start'), true);
+      }
       restore(join(dir, 'profile-start'), profile);
       if (opts.cold) for (const cache of BROWSER_CACHES) rmSync(join(profile, cache), { recursive: true, force: true });
       const trace = join(dir, `trace-${i}.ndjson`);
       const rel = relative(dirname(out), trace);
       let outcomes: ChainOutcome[];
       try {
-        outcomes = await iterate(opts, { dir, profile, project, facts: fx.facts, restoredAt: Date.now() }, i, trace);
+        outcomes = await iterate(opts, { dir, profile, project, other, facts: fx.facts, restoredAt: Date.now() }, i, trace);
       } catch (e) {
         if (!(e instanceof StopRun)) throw e;
         stopped = e.message;

@@ -393,7 +393,8 @@ describe('a takeover at the last moment', () => {
     env.silent = true;
     const { c } = controller();
     await c.trustAndOpen(dir);
-    await until(() => workers.length === 1, 'the live worker');
+    // Forked while the project opened, and taken over by its start: the open project's own preview, still starting.
+    await until(() => workers.length === 1 && c.dev !== null, 'the live worker');
     const [live] = workers;
     expect(live.cwd).toBe(dir);
     env.silent = false;

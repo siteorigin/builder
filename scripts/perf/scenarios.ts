@@ -80,6 +80,11 @@ export interface ScenarioContext {
   fixture: FixtureFacts;
   /** The project folder this iteration opens. */
   projectDir: string;
+  /**
+   * A second copy of the fixture, trusted and in Recent projects behind the first, put back with it for every
+   * iteration: what `switch` opens over the first. Null when no scenario asked for one.
+   */
+  otherProjectDir: string | null;
   iteration: number;
   /** How long to wait once a scenario's job is done before ending it, so work it set off afterwards is counted. */
   settleMs: number;
@@ -254,9 +259,10 @@ export const open: Scenario = {
     m.span('open.startRuntime', runtime);
     m.since('open.firstSnapshotSent', req, m.need('controller.snapshotSent', trace.first('controller.snapshotSent', inProc('main'), at)));
     m.since('open.editorShown', req, m.need('renderer.commit (editor)', trace.first('renderer.commit', (r) => r.attrs?.screen === 'editor', at)));
-    m.since('open.runtimeForked', req, m.need('runtime.forked', trace.first('runtime.forked', inProc('main'), at)));
-    m.since('open.runtimeReady', req, m.need('runtime.ready', trace.first('runtime.ready', inProc('main'), at)));
+    previewStart(m, trace, 'open', req, at, ready);
     m.since('open.canvasReady', req, ready);
+    // What the author watches as "Starting preview": the editor shown to the page ready to edit in its canvas.
+    m.since('open.editorToCanvasReady', trace.first('renderer.commit', (r) => r.attrs?.screen === 'editor', at), ready);
     const sum = (name: string) => [session, attach, runtime].reduce((n, r) => n + delta(r, name), 0);
     m.count('open.filesRead', sum('files.read'));
     m.count('open.docsRead', sum('docs.read'));
@@ -276,6 +282,33 @@ export const open: Scenario = {
   }
 };
 
+/**
+ * The preview's start after `req` (#960), phase by phase, all marked by the preview process that served the page the
+ * canvas reported ready (`ready`): the last to start listening after `from` and before it, never one stopped unused.
+ * Forked, the worker given its start, the project's Vite loaded, its server made, listening (`runtime.ready`), the
+ * canvas's first page asked for and its answer gone; with the three stretches between the fork, the server listening,
+ * that answer and `ready`.
+ */
+function previewStart(m: Collector, trace: Trace, prefix: string, req: PerfRecord | undefined, from: number, ready: PerfRecord | undefined) {
+  if (!ready) return;
+  const listening = m.need('runtime.ready', trace.all('runtime.ready', inProc('main'), from, ready.t).at(-1));
+  if (!listening) return;
+  const worker = listening.attrs?.worker;
+  const ofWorker = (r: PerfRecord) => r.proc === 'main' && worker !== undefined && r.attrs?.worker === worker;
+  const at = (name: string) => m.need(name, trace.first(name, ofWorker, from));
+  const [forked, started, loaded, created, asked, answered] = ['runtime.forked', 'runtime.started', 'runtime.viteLoaded', 'runtime.serverCreated', 'runtime.firstRequest', 'runtime.firstResponse'].map(at);
+  m.since(`${prefix}.runtimeForked`, req, forked);
+  m.since(`${prefix}.runtimeStarted`, req, started);
+  m.since(`${prefix}.runtimeViteLoaded`, req, loaded);
+  m.since(`${prefix}.runtimeServerCreated`, req, created);
+  m.since(`${prefix}.runtimeReady`, req, listening);
+  m.since(`${prefix}.runtimeFirstRequest`, req, asked);
+  m.since(`${prefix}.runtimeFirstResponse`, req, answered);
+  m.since(`${prefix}.forkToListen`, forked, listening);
+  m.since(`${prefix}.listenToFirstResponse`, listening, answered);
+  m.since(`${prefix}.firstResponseToCanvasReady`, answered, ready);
+}
+
 /** When a scenario's start mark reached the trace from the editor; Infinity before it has. */
 function forScenarioStart(t: Trace, scenario: string): number {
   return t.first('scenario.start', forScenario(scenario, 'renderer'))?.t ?? Infinity;
@@ -286,6 +319,120 @@ const homeReady =
   (fixture: FixtureFacts) =>
   (r: PerfRecord): boolean =>
     r.proc === 'renderer' && r.attrs?.mode === 'edit' && r.attrs?.studio === false && r.attrs?.path === fixture.homeRoute;
+
+// ---------------------------------------------------------------------------
+// switch
+// ---------------------------------------------------------------------------
+
+/** How long the first project's preview server and lock may take to go once the second project is ready to edit. */
+const SWITCH_LEFT_MS = 15_000;
+
+/** The project's lock file (src/main/project/session.ts), there while this app holds the project. */
+const lockFile = (dir: string) => join(dir, '.siteorigin', 'lock.json');
+
+export const switchProject: Scenario = {
+  name: 'switch',
+  after: 'open',
+  description:
+    'With the fixture open, open a second copy of it with File > Open Project…, to the canvas bridge reporting its home page ready to edit; the first project’s preview server must stop and its lock go.',
+  async run(ctx) {
+    const { app, win, fixture } = ctx;
+    const other = ctx.otherProjectDir;
+    expect(other, 'no second project was prepared to switch to');
+    expect(existsSync(lockFile(ctx.projectDir)), 'the first project is not locked before the switch');
+    const wait = ctx.restoredAt + FILES_SETTLE_MS - Date.now();
+    if (wait > 0) await sleep(wait);
+    // The folder chooser File > Open Project… shows is answered through the app's chooser fixtures
+    // (src/main/headless-desktop.ts), never by patching the dialog. Inline: the runner's compiler wraps named inner
+    // functions in a helper the main process does not have, so the driver's own *InMain functions cannot be sent.
+    const answered = await app.evaluate((_electron, paths) => {
+      const fixtures = (globalThis as Record<symbol, { editor: number | null; setAnswers(a: unknown[], o: { request: null }): string[] } | undefined>)[Symbol.for('siteorigin.desktopFixtures')];
+      return fixtures && fixtures.editor !== null ? fixtures.setAnswers([{ dialog: 'open', paths }], { request: null }).length : 0;
+    }, [other]);
+    expect(answered === 1, 'the app answers no choosers, or has no editor window: it was not launched by a test');
+    await ctx.mark('scenario.start', { scenario: 'switch' });
+    // Chosen as the menu bar chooses it: the item's own click, for the editor window (never focused: it is headless).
+    const chosen = await app.evaluate(({ Menu, BrowserWindow }) => {
+      const id = (globalThis as Record<symbol, { editor: number | null } | undefined>)[Symbol.for('siteorigin.desktopFixtures')]?.editor;
+      const win = typeof id === 'number' ? BrowserWindow.fromId(id) : null;
+      const item = Menu.getApplicationMenu()?.getMenuItemById('open-project');
+      if (!win || !item || !item.enabled || item.label !== 'Open Project…') return false;
+      item.click({ triggeredByAccelerator: false, shiftKey: false, ctrlKey: false, altKey: false, metaKey: false } as unknown as KeyboardEvent, win, win.webContents);
+      return true;
+    });
+    expect(chosen, 'File > Open Project… is not there to choose, or is disabled');
+    // The second project in the editor, then its page ready to edit in the canvas: never the first project's.
+    const deadline = Date.now() + 120_000;
+    let snap: Awaited<ReturnType<BuilderApi['project']['snapshot']>> = null;
+    while (Date.now() < deadline) {
+      snap = await win.evaluate(() => (globalThis as unknown as EditorPage).builder.project.snapshot());
+      if (snap?.dir === other) break;
+      await sleep(25);
+    }
+    expect(snap?.dir === other, `the second project did not open: ${snap?.dir ?? 'no project is open'}`);
+    const t = await ctx.waitTrace((t) => !!switchReady(t, fixture), 120_000);
+    expect(switchReady(t, fixture), 'the canvas never reported the second project’s home page ready to edit');
+    await preview(win).getByRole('heading', { name: fixture.heading, exact: true, level: 1 }).first().waitFor({ timeout: 30_000 });
+    snap = await win.evaluate(() => (globalThis as unknown as EditorPage).builder.project.snapshot());
+    expect(snap?.dir === other, `another project is open after the switch: ${snap?.dir ?? 'none'}`);
+    expect(!snap.readOnly, `the second project opened read-only: ${snap.readOnly?.reason ?? ''}`);
+    const facts = { pages: Object.keys(snap.state.pages).length, entries: Object.values(snap.state.collections ?? {}).reduce((n, c) => n + Object.keys((c as { entries?: object }).entries ?? {}).length, 0), assets: Object.keys(snap.state.assets.assets).length, projectComponents: Object.values(snap.state.components).filter((c) => c.owner === 'project').length };
+    for (const k of ['pages', 'entries', 'assets', 'projectComponents'] as const) expect(facts[k] === fixture[k], `the second project opened with ${facts[k]} ${k}, not ${fixture[k]}`);
+    expect(findHeading(snap.state.pages[fixture.homePageId], fixture.heroId)?.heading === fixture.heading, 'the second project’s home hero opened with another heading');
+    // The first project's preview server always stops, and its lock goes with it.
+    const left = await ctx.waitTrace((t) => !!oldWorkerExited(t, fixture), SWITCH_LEFT_MS);
+    expect(oldWorkerExited(left, fixture), 'the first project’s preview server was never stopped');
+    const lockDeadline = Date.now() + SWITCH_LEFT_MS;
+    while (existsSync(lockFile(ctx.projectDir)) && Date.now() < lockDeadline) await sleep(50);
+    expect(!existsSync(lockFile(ctx.projectDir)), 'the first project is still locked after the switch');
+    expect(existsSync(lockFile(other)), 'the second project is not locked');
+    await sleep(ctx.settleMs);
+    await ctx.mark('scenario.end', { scenario: 'switch' });
+    await ctx.waitTrace((t) => !!t.first('scenario.end', forScenario('switch', 'renderer')) && !!t.first('scenario.end', forScenario('switch', 'main')));
+  },
+  measure(trace, fixture) {
+    const m = new Collector();
+    const begin = trace.first('scenario.start', forScenario('switch', 'renderer'));
+    const from = begin?.t ?? Infinity;
+    const req = m.need('open.requested', trace.first('open.requested', inProc('renderer'), from));
+    const at = req?.t ?? Infinity;
+    const ready = m.need('canvas.ready', switchReady(trace, fixture));
+    const span = (name: string) => m.need(name, trace.first(name, inProc('main'), at));
+    m.span('switch.controller', span('controller.open'));
+    m.span('switch.session', span('session.open'));
+    m.span('switch.close', span('controller.close'));
+    m.span('switch.attach', span('controller.attach'));
+    m.span('switch.startRuntime', span('controller.startRuntime'));
+    previewStart(m, trace, 'switch', req, at, ready);
+    m.since('switch.canvasReady', req, ready);
+    // The first project's server stopping, which the second's start need not wait for, but which must always happen.
+    m.since('switch.oldServerExited', req, m.need('runtime.exited (the first project’s)', oldWorkerExited(trace, fixture)));
+    m.ms('switch.mainStallMax', stallMax(trace, req, ready));
+    return m;
+  }
+};
+
+/** The preview process that served the first project's canvas in `open` (the last listening before it), reported gone. */
+function oldWorkerExited(t: Trace, fixture: FixtureFacts): PerfRecord | undefined {
+  const shown = t.first('canvas.ready', homeReady(fixture), forScenarioStart(t, 'open'));
+  const listening = shown && t.all('runtime.ready', inProc('main'), -Infinity, shown.t).at(-1);
+  return listening ? t.first('runtime.exited', (r) => r.proc === 'main' && r.attrs?.worker === listening.attrs?.worker, shown.t) : undefined;
+}
+
+/**
+ * The canvas reporting the second project's home page ready to edit: after the switch was asked for, after a preview
+ * process forked since then was listening, and after the second project was attached (the first project's canvas let
+ * go of by then), so the first project's canvas is never taken for it.
+ */
+function switchReady(t: Trace, fixture: FixtureFacts): PerfRecord | undefined {
+  const req = t.first('open.requested', inProc('renderer'), forScenarioStart(t, 'switch'));
+  if (!req) return undefined;
+  const forked = t.first('runtime.forked', inProc('main'), req.t);
+  const listening = forked && t.first('runtime.ready', (r) => r.proc === 'main' && r.attrs?.worker === forked.attrs?.worker, forked.t);
+  const attach = t.first('controller.attach', inProc('main'), req.t);
+  if (!listening || !attach) return undefined;
+  return t.first('canvas.ready', homeReady(fixture), Math.max(listening.t, attach.t - (attach.ms ?? 0)));
+}
 
 // ---------------------------------------------------------------------------
 // edit
@@ -913,7 +1060,7 @@ const SCENARIO_EXPORT_MS = 280_000;
 export const exportSite = exportScenario('export', 'open');
 export const exportAgain = exportScenario('exportAgain', 'export');
 
-export const SCENARIOS: Scenario[] = [launch, open, edit, panels, chat, exportSite, exportAgain];
+export const SCENARIOS: Scenario[] = [launch, open, edit, panels, chat, exportSite, exportAgain, switchProject];
 
 /**
  * The scenarios to run in one launch for those asked for: each with every one it follows, in the order of SCENARIOS

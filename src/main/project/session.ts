@@ -54,6 +54,14 @@ export { statTrusted };
 import { heldAsMedia, isVersionMedia, newVersionId, sameContents, VERSION_DAMAGED, VERSION_NAME_MAX, VersionStore, type SavedVersion } from './versions';
 
 export const LOCAL_DIR = '.siteorigin';
+
+/** How a project is opened for editing (ProjectSession.open). */
+export interface OpenOptions {
+  /** Take the lock from the owner with this token (an unlock), or from any owner. */
+  force?: boolean | string;
+  /** Start the project's preview just before its generated files are published; stopped, and waited for, if it then fails. */
+  preview?: { start(s: ProjectSession): void; stop(s: ProjectSession): Promise<void> };
+}
 /** Sources AI runs wrote or tried to write, a folder per run, in the recovery folder (see keepSourceDraft). */
 export const SOURCE_DRAFTS = 'ai-runs';
 /** A run's ID as the orchestrator makes it (newId): safe to name a folder with. */
@@ -624,11 +632,17 @@ export class ProjectSession extends EventEmitter {
     return s;
   }
 
-  static open(dir: string, instanceId: string, opts: { force?: boolean | string } = {}): Promise<ProjectSession> {
+  /**
+   * Open a project for editing. `preview.start` is called once its lock is held, anything a crash interrupted is
+   * recovered and its documents are read and found sound, just before its generated files are published: what runs the
+   * preview may start it then, while the publication goes on (src/main/controller.ts, prepareRuntime). An opening that
+   * fails after that waits for `preview.stop` before it lets the lock go.
+   */
+  static open(dir: string, instanceId: string, opts: OpenOptions = {}): Promise<ProjectSession> {
     return timed('session.open', () => ProjectSession.openTimed(dir, instanceId, opts), (s) => ({ ok: !!s }))();
   }
 
-  private static async openTimed(dir: string, instanceId: string, opts: { force?: boolean | string }): Promise<ProjectSession> {
+  private static async openTimed(dir: string, instanceId: string, opts: OpenOptions): Promise<ProjectSession> {
     const s = new ProjectSession(dir);
     const checking = perf.span('session.open.formatCheck');
     // A project from a newer version is never written to, not even its local folders.
@@ -649,9 +663,11 @@ export class ProjectSession extends EventEmitter {
           throw new ProjectLockedError('The project was taken over while it was opening. Try again.', now ? judgeLock(s.local('lock.json'), now, instanceId, false).owner : { host: 'another computer', token: NO_LOCK });
         }
         await s.ensureLocalDirs();
-        await s.openLocked();
+        await s.openLocked(opts.preview?.start);
       });
     } catch (e) {
+      // A preview started for this opening has gone before the lock does.
+      await opts.preview?.stop(s).catch(() => undefined);
       await s.releaseLock();
       throw e;
     }
@@ -722,7 +738,7 @@ export class ProjectSession extends EventEmitter {
     return out;
   }
 
-  private async openLocked() {
+  private async openLocked(startPreview?: (s: ProjectSession) => void) {
     const s = this;
     const dir = this.dir;
     const recovering = perf.span('session.open.recover');
@@ -761,6 +777,7 @@ export class ProjectSession extends EventEmitter {
     // Generating from another copy of the site's theme would restyle it before anyone edited anything.
     const pin = themePinProblem(s.state);
     if (pin) throw new ThemeUnavailableError(pin);
+    startPreview?.(s);
     // With a file in conflict the update waits: its stored version is the user's to choose first.
     if (s.migrationDue && !s.pending.size) await s.publishMigration();
     else await s.publishGenerated(false);
