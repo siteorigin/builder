@@ -44,7 +44,7 @@ import type { ComponentThumb } from '@shared/component-thumbs';
 import { generateComponentPreview } from '@generator/preview';
 import { canonicalDir } from '../runtime/policy';
 import { addRecent, isTrusted, loadSettings, renameRecent, trust, untrust } from './settings';
-import { MAX_COPY_NAME, projectDisplayName, projectFolderName } from '@shared/project-name';
+import { MAX_COPY_NAME, projectDisplayName, projectFolder, projectFolderName } from '@shared/project-name';
 import { newId } from '@shared/ids';
 import { packageFileName, type ComponentPackage } from '@shared/component-package';
 import { codeBrought, importedCode, migratePackage, packagedDefinitions, planComponentPackage, type ImportPlacement } from '@engine/component-package';
@@ -395,8 +395,17 @@ export class Controller {
     if (opts.themeId !== undefined && findTheme(opts.themeId)?.devOnly) return { ok: false, message: `The theme "${opts.themeId}" is a development fixture, which cannot start a project. Choose another theme.` };
     const themeProblem = starterProblem(opts.starter, opts.themeId);
     if (themeProblem) return { ok: false, message: themeProblem };
-    let dir = join(opts.parentDir, slugify(name) || 'website');
-    if (existsSync(dir) && (await fs.readdir(dir)).length) return { ok: false, message: `${dir} already exists and is not empty. Choose another name or folder.` };
+    const { folder, fallback } = projectFolder(name);
+    let dir = join(opts.parentDir, folder);
+    // Told the same way whenever the folder turns out to be taken. A name with nothing a folder can keep ("🌸🌸") always
+    // leads to the same folder, so then the name is what to change, and the message says how.
+    const taken = () =>
+      new FolderTakenError(
+        fallback
+          ? `“${name}” has no letters or numbers to name its folder, so it would go in ${dir}, which already exists and is not empty. Add a letter or number to the name, or choose another folder.`
+          : `${dir} already exists and is not empty. Choose another name or folder.`
+      );
+    if (existsSync(dir) && (await fs.readdir(dir)).length) return { ok: false, message: taken().message };
     // Asked before the new project is made, so keeping editing costs no setup, and again at the switch, for anything
     // typed meanwhile (on macOS a window reopened during setup shows the open project without this dialog).
     if (!(await this.mayLeave())) return { ok: false };
@@ -435,20 +444,20 @@ export class Controller {
       } catch (e) {
         if ((e as NodeJS.ErrnoException).code !== 'EEXIST') throw e;
         // Another app may have made it meanwhile: never write into a folder that is no longer empty.
-        if ((await fs.readdir(dir)).length) throw new Error(`${dir} already exists and is not empty. Choose another name or folder.`);
+        if ((await fs.readdir(dir)).length) throw taken();
       }
       // Claim the folder before writing to it. Only one creation, in this app or another, can make its local folder,
       // so two creating into the same empty folder never write over, or clean up, each other's files.
       try {
         await fs.mkdir(join(dir, LOCAL_DIR));
       } catch (e) {
-        if ((e as NodeJS.ErrnoException).code === 'EEXIST') throw new Error(`${dir} already exists and is not empty. Choose another name or folder.`);
+        if ((e as NodeJS.ErrnoException).code === 'EEXIST') throw taken();
         throw e;
       }
       wrote.add(LOCAL_DIR);
       // Anything that arrived before the claim makes the folder no longer empty after all: give the claim up and leave
       // the rest untouched.
-      if ((await fs.readdir(dir)).some((n) => n !== LOCAL_DIR)) throw new Error(`${dir} already exists and is not empty. Choose another name or folder.`);
+      if ((await fs.readdir(dir)).some((n) => n !== LOCAL_DIR)) throw taken();
       // One name for the folder from here on: the build tools resolve links and must agree with the session.
       dir = canonicalDir(dir);
       own(...(await fs.readdir(templateFiles())));
@@ -549,7 +558,7 @@ export class Controller {
       // Keeping editing (or quitting) at the switch is no failure to explain: the dialog just makes way.
       // A handover that never reached the editor ends here, so later switches are not held up by it.
       if (committed && !attached) this.handingOver = false;
-      let msg = refused ? (refused.message ?? '') : takenOver ? 'The new project’s lock was taken or removed while it was being set up, so it was not opened.' : friendlyError((e as Error).message);
+      let msg = refused ? (refused.message ?? '') : takenOver ? 'The new project’s lock was taken or removed while it was being set up, so it was not opened.' : e instanceof FolderTakenError ? e.message : friendlyError((e as Error).message);
       const note = (more: string) => (msg = msg ? `${msg} ${more}` : more);
       // Once the project's own documents are being written it may be another app's: it opened the project before this
       // attempt had the lock (a lock file this attempt never made), or took it over since (Unlock in another window).
@@ -2818,6 +2827,9 @@ function safeUsages(s: ProjectSession): Record<string, number> {
 }
 
 /** Plain-language explanations for setup failures; the technical detail stays available in diagnostics. */
+/** The new project's folder was found taken: told as written, never mistaken for another failure by its wording. */
+class FolderTakenError extends Error {}
+
 export function friendlyError(msg: string): string {
   if (/Downloading the website tools failed|network|offline|ENOTCACHED/i.test(msg) || NETWORK_CODES.some((code) => msg.includes(code)))
     return 'The website tools could not be downloaded. Check your internet connection and try again. A connection is only needed once.';

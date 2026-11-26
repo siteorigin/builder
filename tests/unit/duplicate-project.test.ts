@@ -96,6 +96,12 @@ describe('the name a project is shown by', () => {
     expect(projectFolderName('Con')).toBe('con-site');
     expect(projectFolderName('LPT1')).toBe('lpt1-site');
     expect(projectFolderName('Console')).toBe('console');
+    // The folder New project shows and makes (#808): a long name ends at a word, other scripts keep their words.
+    expect(projectFolderName('Kowhai Garden Supplies and Landscaping Co-operative of Greater Wellington')).toBe('kowhai-garden-supplies-and-landscaping-co-operative-of');
+    expect(projectFolderName('a'.repeat(70))).toBe('a'.repeat(60));
+    expect(projectFolderName('日本語サイト')).toBe('日本語サイト');
+    expect(projectFolderName('🌸🌸')).toBe('website');
+    expect(projectFolderName('...')).toBe('website');
   });
 });
 

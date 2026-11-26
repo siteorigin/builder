@@ -107,9 +107,10 @@ function foldAddress(text: string): string {
 /**
  * A segment cut to at most `chars` code points and `bytes` UTF-8 bytes (never splitting a character outside the Basic
  * Multilingual Plane), without the hyphen the cut may leave at its end, and with a sigma that now ends the word
- * spelled so.
+ * spelled so. With `wholeWords`, a cut that would land inside a word ends at the hyphen before it instead, unless the
+ * first word alone is too long.
  */
-function cutSegment(text: string, chars: number, bytes: number): string {
+function cutSegment(text: string, chars: number, bytes: number, wholeWords = false): string {
   let kept = 0;
   let size = 0;
   let end = 0;
@@ -117,6 +118,10 @@ function cutSegment(text: string, chars: number, bytes: number): string {
     size += utf8Length(ch.codePointAt(0)!);
     if (++kept > chars || size > bytes) break;
     end += ch.length;
+  }
+  if (wholeWords && end < text.length && text[end] !== '-') {
+    const lastBreak = text.lastIndexOf('-', end - 1);
+    if (lastBreak > 0) end = lastBreak;
   }
   const cut = end < text.length ? text.slice(0, end).normalize('NFC') : text;
   return spellSigma(cut.replace(/-+$/, ''));
@@ -131,13 +136,13 @@ const pointCount = (text: string) => Array.from(text).length;
  * between words a single hyphen, cut to fit a segment (60 characters, 40 in Japanese). "" when nothing in the title
  * can be kept.
  */
-export function addressSlug(text: string): string {
+export function addressSlug(text: string, opts: { wholeWords?: boolean } = {}): string {
   // What is kept depends on what is kept before it ("ʼ" stays only after a letter that stays), so the text is
   // filtered until nothing more changes; each pass can only turn characters into hyphens.
   let kept = keepAddressChars(foldAddress(text).replace(/&/g, ' and '));
   for (let next = keepAddressChars(kept); next !== kept; next = keepAddressChars(kept)) kept = next;
   // Trimmed after the cut, which may land on the hyphen between two words.
-  return cutSegment(kept, SEGMENT_CHARS, SEGMENT_BYTES);
+  return cutSegment(kept, SEGMENT_CHARS, SEGMENT_BYTES, opts.wholeWords);
 }
 
 /** `text` with each character an address cannot hold where it stands as a hyphen, and no hyphen leading or doubled. */

@@ -627,7 +627,8 @@ export function NewProjectModal({ onClose }: { onClose: () => void }) {
     nameRef.current?.closest('.modal-body')?.scrollTo({ top: 0 });
     nameRef.current?.focus();
   }, [problem]);
-  const slug = name.trim().normalize('NFD').replace(/[\u0300-\u036f]/g, '').replace(/&/g, ' and ').toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '') || 'website';
+  // The folder main makes, worked out the same way, so the one shown is the one created.
+  const slug = projectFolderName(name.trim());
 
   const separator = isWindowsPath(parent) ? '\\' : '/';
   const target = parent && name.trim() ? `${parent.endsWith(separator) ? parent : parent + separator}${slug}` : parent;

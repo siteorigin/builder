@@ -60,6 +60,7 @@ vi.mock('../../src/main/runtime/manager', () => ({
 const { Controller } = await import('../../src/main/controller');
 const { ToolsDownloadError } = await import('../../src/main/runtime/availability');
 const { ProjectLockedError, ProjectSession } = await import('../../src/main/project/session');
+const { projectFolderName } = await import('@shared/project-name');
 
 type Step = 'files' | 'dependencies' | 'preview';
 
@@ -651,5 +652,60 @@ describe('the theme a new project starts with (#390)', () => {
     expect(await c.create({ ...opts(other), themeId: 'nope' })).toEqual({ ok: false, message: 'The theme "nope" is not installed. Choose another theme.' });
     expect(await c.create({ ...opts(other), themeId: 'foundation-alt' })).toEqual({ ok: false, message: expect.stringMatching(/development fixture/) });
     expect(readdirSync(other)).toEqual([]);
+  });
+});
+
+describe('the folder a new project is made in (#808)', () => {
+  const named = (parent: string, name: string) => ({ ...opts(parent), name });
+  const long = 'Kowhai Garden Supplies and Landscaping Co-operative of Greater Wellington and the Hutt Valley';
+
+  it('is the folder the dialog shows for a long name, cut at the end of a word', async () => {
+    const { c, parent } = setup();
+    const folder = projectFolderName(long);
+    expect(folder).toBe('kowhai-garden-supplies-and-landscaping-co-operative-of');
+    expect(await c.create(named(parent, long))).toEqual({ ok: true });
+    expect(readdirSync(parent)).toEqual([folder]);
+    expect(c.session!.dir).toBe(join(parent, folder));
+    // The package keeps an npm-safe name.
+    expect(JSON.parse(readFileSync(join(parent, folder, 'package.json'), 'utf8')).name).toMatch(/^[a-z0-9-]+$/);
+  });
+
+  it('keeps a name in another script as written, so two such projects can share a parent folder beside “website”', async () => {
+    const { c, parent } = setup();
+    mkdirSync(join(parent, 'website'));
+    writeFileSync(join(parent, 'website', 'notes.txt'), 'mine');
+    expect(await c.create(named(parent, '日本語サイト'))).toEqual({ ok: true });
+    expect(await c.create(named(parent, 'Ресторан'))).toEqual({ ok: true });
+    expect(readdirSync(parent).sort()).toEqual(['website', 'ресторан', '日本語サイト'].sort());
+    expect(c.session!.dir).toBe(join(parent, projectFolderName('Ресторан')));
+    expect(JSON.parse(readFileSync(join(parent, '日本語サイト', 'package.json'), 'utf8')).name).toBe('website');
+    expect(readdirSync(join(parent, 'website'))).toEqual(['notes.txt']);
+  });
+
+  it('says the name is the problem when a name with nothing a folder can keep meets a taken “website”', async () => {
+    const { c, parent } = setup();
+    mkdirSync(join(parent, 'website'));
+    writeFileSync(join(parent, 'website', 'notes.txt'), 'mine');
+    for (const name of ['🌸🌸', '...']) {
+      const r = await c.create(named(parent, name));
+      expect(r.ok).toBe(false);
+      expect(r.message).toBe(`“${name}” has no letters or numbers to name its folder, so it would go in ${join(parent, 'website')}, which already exists and is not empty. Add a letter or number to the name, or choose another folder.`);
+    }
+    // A project really named Website is told the folder is taken, as for any other name.
+    expect((await c.create(named(parent, 'Website'))).message).toBe(`${join(parent, 'website')} already exists and is not empty. Choose another name or folder.`);
+    expect(readdirSync(join(parent, 'website'))).toEqual(['notes.txt']);
+  });
+
+  it('tells a folder taken while it waited the same way, however long the message', async () => {
+    const { c, parent } = setup();
+    const dir = join(parent, 'website');
+    vi.spyOn(c as unknown as { mayLeave: () => Promise<boolean> }, 'mayLeave').mockImplementation(async () => {
+      mkdirSync(dir);
+      writeFileSync(join(dir, 'notes.txt'), 'theirs');
+      return true;
+    });
+    const r = await c.create(named(parent, '🌸🌸'));
+    expect(r).toEqual({ ok: false, message: expect.stringMatching(/^“🌸🌸” has no letters or numbers to name its folder.*already exists and is not empty/) });
+    expect(readdirSync(dir)).toEqual(['notes.txt']);
   });
 });
