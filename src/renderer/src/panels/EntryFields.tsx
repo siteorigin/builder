@@ -32,6 +32,9 @@ function placesOf(state: ProjectState, node: GraphNode): Place[] {
       return [{ field: 'text', label: node.rich ? 'Rich text' : 'Text', value: r.text }];
     case 'image':
       return [{ field: 'image', label: 'Image', value: r.image }];
+    case 'element':
+      // A container's name is offered only where it has one to change or clear, and on a `nav`, which wants one.
+      return node.tag === 'nav' || isBinding(node.ariaLabel) ? [{ field: 'ariaLabel', label: 'Accessible name', value: r.ariaLabel }] : [];
     case 'link':
       return [
         { field: 'label', label: 'Label', value: r.label },

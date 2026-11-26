@@ -164,11 +164,14 @@ describe('entry fields', () => {
 
   it.each(['foundation', 'editorial', 'signal'])('names the links to the posts beside one, with one arrow, in a named nav (%s)', (theme) => {
     const s = run(blog(theme), { type: 'entry.update', collectionId: 'posts', entryId: 'en_secret', draft: false });
+    expect(s.site.themeId).toBe(theme);
     const c = s.collections.posts;
     const shownOn = (state: ProjectState, id: string) => materializeTemplate(state, state.collections.posts, state.collections.posts.entries[id], entryNeighbours(state, 'posts', id));
     const article = shownOn(s, 'en_secret');
     const nav = Object.values(article.nodes).find((n) => n.name === 'Previous and next') as ElementNode;
     expect(nav).toMatchObject({ tag: 'nav', ariaLabel: 'Previous and next' });
+    // Both links are inside it, in its one row.
+    expect((article.nodes[nav.children[0]] as ElementNode).children.map((id) => article.nodes[id].name)).toEqual(['Previous entry', 'Next entry']);
     const prev = Object.values(article.nodes).find((n) => n.name === 'Previous entry') as LinkNode;
     const next = Object.values(article.nodes).find((n) => n.name === 'Next entry') as LinkNode;
     // A plain link has no arrow; a text button has the theme's one, after it. Neither adds an icon of its own.
@@ -184,24 +187,26 @@ describe('entry fields', () => {
     const lone = run(s, { type: 'entry.update', collectionId: 'posts', entryId: 'en_spring', draft: true }, { type: 'entry.update', collectionId: 'posts', entryId: 'en_winter', draft: true });
     expect(generateProject(publishedState(lone)).get('src/routes/blog/secret-plans/+page.svelte')).not.toContain('<nav ');
     expect(entryFieldValue({ state: s, collection: c, entry: c.entries.en_spring, neighbours: entryNeighbours(s, 'posts', 'en_spring') }, 'prevEntry.label')).toBe('');
+    expect(entryFieldValue({ state: s, collection: c, entry: c.entries.en_spring, neighbours: {} }, 'entryNavLabel')).toBe('');
   });
 
   it('words the links beside a post as the site does, and keeps the title when the wording leaves it out', () => {
     // Set after the layout is made: the layout reads the wording rather than holding a copy of it.
     const s = run(
       blog(),
-      { type: 'entry.update', collectionId: 'posts', entryId: 'en_secret', draft: false, title: 'Costs $& more' },
+      { type: 'entry.update', collectionId: 'posts', entryId: 'en_secret', draft: false },
+      { type: 'entry.update', collectionId: 'posts', entryId: 'en_spring', title: 'Costs $& more' },
       { type: 'site.update', language: 'he' }
     );
     const words = (state: ProjectState) => {
-      const article = materializeTemplate(state, state.collections.posts, state.collections.posts.entries.en_winter, entryNeighbours(state, 'posts', 'en_winter'));
-      return Object.values(article.nodes).flatMap((n) => (n.name === 'Previous and next' ? [(n as ElementNode).ariaLabel] : n.name === 'Previous entry' ? [(n as LinkNode).label] : []));
+      const article = materializeTemplate(state, state.collections.posts, state.collections.posts.entries.en_secret, entryNeighbours(state, 'posts', 'en_secret'));
+      return Object.values(article.nodes).flatMap((n) => (n.name === 'Previous and next' ? [(n as ElementNode).ariaLabel] : n.name === 'Previous entry' || n.name === 'Next entry' ? [(n as LinkNode).label] : []));
     };
-    expect(words(s).sort()).toEqual(['הקודם והבא', 'הקודם: Costs $& more'].sort());
-    const own = run(s, { type: 'site.update', visitorText: { language: 'he', text: { entryNav: 'More', entryPrevious: 'Before: {title}.' } } });
-    expect(words(own).sort()).toEqual(['Before: Costs $& more.', 'More']);
-    const bare = run(s, { type: 'site.update', visitorText: { language: 'he', text: { entryNav: 'More', entryPrevious: 'Go back' } } });
-    expect(words(bare).sort()).toEqual(['Go back Costs $& more', 'More']);
+    expect(words(s).sort()).toEqual(['הקודם והבא', 'הקודם: Costs $& more', 'הבא: Winter workshop'].sort());
+    const own = run(s, { type: 'site.update', visitorText: { language: 'he', text: { entryNav: 'More', entryPrevious: 'Before: {title}.', entryNext: 'After: {title}.' } } });
+    expect(words(own).sort()).toEqual(['After: Winter workshop.', 'Before: Costs $& more.', 'More']);
+    const bare = run(s, { type: 'site.update', visitorText: { language: 'he', text: { entryNav: 'More', entryPrevious: 'Go back', entryNext: 'Go on' } } });
+    expect(words(bare).sort()).toEqual(['Go back Costs $& more', 'Go on Winter workshop', 'More']);
   });
 
   it('shows an element only for the entries its condition holds for, and a collapsing one only with something in it', () => {
