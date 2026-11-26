@@ -3,8 +3,13 @@ import { createStarterState } from "@catalogue/starters";
 import type { ProjectSnapshot } from "@shared/api";
 
 /** Notices belong to the project they were raised in (#875): opening another one clears them. */
-type AppModule = typeof import("../../src/renderer/src/App");
-type StoreModule = typeof import("../../src/renderer/src/store");
+interface AppModule {
+  openSnapshot(snap: ProjectSnapshot): void;
+}
+interface StoreModule {
+  toast(text: string, kind?: "info" | "success" | "error"): void;
+  getState(): { toasts: unknown[] };
+}
 const APP_PATH = "../../src/renderer/src/App";
 const STORE_PATH = "../../src/renderer/src/store";
 let app: AppModule;
@@ -29,7 +34,7 @@ beforeAll(async () => {
 
 const snap = (key: string) =>
   ({
-    state: createStarterState("blank"),
+    state: createStarterState("business", "Test", false),
     workspaceKey: key,
     revision: 1,
     localState: {},
