@@ -3677,15 +3677,17 @@ export class ProjectSession extends EventEmitter {
     const writes = new Set([...this.docs.keys(), ...docs.keys()].filter((p) => this.docs.get(p) !== docs.get(p)));
     const unloaded = await this.unloadedEdit(writes);
     if (unloaded) return { ok: false, revision: this.revision, error: { code: 'CONFLICT', message: `Cannot ${direction} ${what} yet: ${unloaded} changed outside the app. Try again in a moment.`, recoverable: true } };
+    let changed: string[];
     try {
       // The cursor moves in the same journaled change as the documents, so a crash never separates them.
-      await this.persist(next, { label: `${direction === 'undo' ? 'Undo' : 'Redo'} ${steps.length === 1 ? steps[0].label : what}`, history: false, cursor: to, source: 'user' });
+      changed = (await this.persist(next, { label: `${direction === 'undo' ? 'Undo' : 'Redo'} ${steps.length === 1 ? steps[0].label : what}`, history: false, cursor: to, source: 'user' })).changedDocs;
     } catch (e) {
       if (e instanceof DiskConflictError) return { ok: false, revision: this.revision, error: this.diskConflict(e) };
       throw e;
     }
     this.emit('history');
-    return { ok: true, revision: this.revision };
+    // What it changed and the step it took, so the editor can say so when that is not on the page it shows (#903).
+    return { ok: true, revision: this.revision, changed, ...(steps.length === 1 ? { label: steps[0].label } : {}) };
   }
 
   undo(): Promise<ApplyResult> {

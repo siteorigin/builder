@@ -553,6 +553,11 @@ describe('copy and paste (#62)', () => {
     expect(copy.definitionId).toBe(original.definitionId);
     expect(copy.props.heading).toBe(original.props.heading);
     expect(s.state.pages[home.id].nodes[original.id]).toBeUndefined();
+    // Undo and Redo say which documents they wrote and which step they took, so the editor can say so when that is
+    // not the page it shows (#903).
+    const contactDoc = `siteorigin/pages/${contact(s).id}.json`;
+    expect(await s.undo()).toMatchObject({ ok: true, changed: [contactDoc], label: 'Paste Services grid' });
+    expect(await s.redo()).toMatchObject({ ok: true, changed: [contactDoc], label: 'Paste Services grid' });
     await s.undo();
     expect(contact(s).rootIds).toHaveLength(before);
     expect(s.state.pages[home.id].nodes[original.id]).toBeUndefined();

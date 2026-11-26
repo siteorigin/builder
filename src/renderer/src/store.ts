@@ -18,6 +18,7 @@ import type { LayerSet } from './lib/layer-set';
 import { slotTargetHolds, type SlotTarget } from './lib/slot-target';
 import type { PostRef } from './lib/posts';
 import { notePlace, type PagePlaces } from './lib/page-place';
+import { changedPages, historyNotice } from './lib/history-notice';
 import type { TemplateMode } from './lib/template-view';
 import type { DefinitionMode } from './lib/studio';
 import type { ChatFocusRequest } from './lib/page-start';
@@ -521,11 +522,50 @@ export function trackHistory<T extends ApplyResult | null | undefined>(run: Prom
   return run;
 }
 
-/** Undo or redo the project, from any button, shortcut or menu. A failure is said at once. */
+/** How a notice opens a page (lib/actions selectPage, which needs this store first, so it is handed over from there). */
+let pageOpener: ((pageId: string) => void) | null = null;
+export function setPageOpener(open: (pageId: string) => void) {
+  pageOpener = open;
+}
+
+/**
+ * Undo or redo the project, from any button, shortcut or menu. A failure is said at once. One whose change is not on
+ * the page shown says what it changed and where, and offers that page (#903): the author sees nothing happen otherwise.
+ */
 export function projectHistory(action: 'undo' | 'redo') {
+  const before = getState().snapshot;
   void trackHistory(action === 'redo' ? api.project.redo() : api.project.undo()).then(
-    (r) => r && !r.ok && r.error && toast(r.error.message, 'error'),
+    (r) => {
+      if (r && !r.ok && r.error) toast(r.error.message, 'error');
+      else if (r?.ok && before) void noticeElsewhere(action, r, before);
+    },
     (e: unknown) => toast(errorText(e), 'error')
+  );
+}
+
+async function noticeElsewhere(action: 'undo' | 'redo', r: ApplyResult, before: ProjectSnapshot) {
+  if (!changedPages(r.changed).length) return;
+  const opening = before.workspaceKey;
+  // Judged once the step is shown: the page as it now stands, and whatever the editor shows by then.
+  await shownAt(r.revision, opening);
+  const s = getState();
+  if (s.snapshot?.workspaceKey !== opening) return;
+  const notice = historyNotice(action, r.label, r.changed, s, before.state, s.snapshot.state);
+  if (!notice) return;
+  const show = notice.show;
+  toast(
+    notice.text,
+    'info',
+    show && {
+      label: `Show ${show.title}`,
+      opening,
+      run: () => {
+        const now = getState();
+        if (now.snapshot?.workspaceKey !== opening || !now.snapshot.state.pages[show.pageId]) return;
+        if (now.modal?.kind === 'history') setState({ modal: null });
+        pageOpener?.(show.pageId);
+      }
+    }
   );
 }
 
