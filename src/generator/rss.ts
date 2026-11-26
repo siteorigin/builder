@@ -1,6 +1,6 @@
 /**
  * The website's RSS 2.0 feed (`/rss.xml`): every published collection entry, newest first, each with its title, its
- * address, when it was published, who wrote it and its summary. Feed readers need full addresses, so the site has a
+ * address, when it was published, who wrote it and its summary (see ./entry-summary). Feed readers need full addresses, so the site has a
  * feed only once it has a public URL; without one the export says the feed was left out. Every page of the website
  * names the feed in its `<head>` (the shared layout), so a reader finds it from any address on the site.
  *
@@ -9,7 +9,8 @@
  * subscribers read. An item's link is the entry's own address on this site, and its ID names the project and the
  * entry, so renaming a post, moving the site to another domain or reordering the feed never delivers it twice.
  *
- * The feed is plain XML with a fixed order and no build date: the same project always gives the same bytes.
+ * The feed is plain XML with a fixed order, and its build date is its posts' newest day rather than the clock's: the
+ * same project always gives the same bytes.
  */
 import type { ProjectState } from '@shared/types';
 import { isArticleDate } from '@shared/articles';
@@ -18,6 +19,7 @@ import { isLanguageCode, siteLanguage } from '@shared/languages';
 import { publicUrl } from '@shared/public-url';
 import { routeUrl } from '@shared/routes';
 import { derived } from './cache';
+import { entrySummary } from './entry-summary';
 import { publishedState } from './index';
 
 /** The feed's file name, at the root of the website. */
@@ -47,6 +49,8 @@ export interface Feed {
   link: string;
   description: string;
   language?: string;
+  /** The newest day (YYYY-MM-DD) a listed post was published or updated; absent when none has a valid one. */
+  built?: string;
   items: FeedItem[];
 }
 
@@ -84,17 +88,22 @@ export function siteFeed(state: ProjectState): Feed | null {
   return derived(state, 'rss-feed', buildFeed);
 }
 
+const feedTitle = (state: ProjectState, base: string) => oneLine(state.site.name) || new URL(base).host;
+
 function buildFeed(state: ProjectState): Feed | null {
   const base = publicUrl(state.site);
   if (!base) return null;
   const project = oneLine(state.manifest?.projectId);
   // Drafts leave before addresses are shared out, so a post whose address a draft held first is the one listed.
-  const items = siteEntries(publishedState(state)).map(({ entry, route }) => {
+  const live = publishedState(state);
+  const days: string[] = [];
+  const items = siteEntries(live).map(({ collection, entry, route }) => {
     const item: FeedItem = { title: oneLine(entry.title) || entry.slug, link: base + routeUrl(route), guid: project ? `${project}:${entry.id}` : entry.id };
     if (isArticleDate(entry.publishedAt)) item.published = entry.publishedAt;
+    for (const day of [entry.publishedAt, entry.updatedAt]) if (isArticleDate(day)) days.push(day);
     const author = oneLine(entry.author);
     if (author) item.author = author;
-    const description = oneLine(entry.excerpt) || oneLine(entry.seo?.description);
+    const description = entrySummary(live, collection, entry);
     if (description) item.description = description;
     return item;
   });
@@ -104,14 +113,16 @@ function buildFeed(state: ProjectState): Feed | null {
     if (a.published !== b.published) return !a.published ? 1 : !b.published ? -1 : a.published < b.published ? 1 : -1;
     return a.guid < b.guid ? -1 : a.guid > b.guid ? 1 : 0;
   });
-  const title = oneLine(state.site.name) || new URL(base).host;
+  const title = feedTitle(state, base);
   const language = siteLanguage(state.site);
+  const built = days.sort().at(-1);
   return {
     url: `${base}/${RSS_FILE}`,
     title,
     link: `${base}/`,
     description: oneLine(state.site.description) || title,
     ...(isLanguageCode(language) ? { language } : {}),
+    ...(built ? { built } : {}),
     items
   };
 }
@@ -122,8 +133,9 @@ function buildFeed(state: ProjectState): Feed | null {
  */
 export function feedLink(state: ProjectState): { url: string; title: string } | null {
   return derived(state, 'rss-link', (s) => {
-    const feed = buildFeed(s);
-    return feed ? { url: feed.url, title: feed.title } : null;
+    const base = publicUrl(s.site);
+    // Without building the feed: no post's summary is worked out for its address and title.
+    return base && hasFeedEntries(s) ? { url: `${base}/${RSS_FILE}`, title: feedTitle(s, base) } : null;
   });
 }
 
@@ -137,6 +149,7 @@ export function generateRssFeed(state: ProjectState): string | null {
     el('link', feed.link),
     el('description', feed.description),
     ...(feed.language ? [el('language', feed.language)] : []),
+    ...(feed.built ? [el('lastBuildDate', rssDate(feed.built))] : []),
     `\t\t<atom:link href="${xmlText(feed.url)}" rel="self" type="application/rss+xml"/>`
   ];
   const items = feed.items.map((item) => {

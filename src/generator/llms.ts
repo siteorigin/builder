@@ -5,7 +5,8 @@
  * They list exactly the documents whose visibility says `llms` (generator/seo-metadata.ts): on the published website
  * and not hidden from search engines. Drafts and `noindex` pages never appear, nor anything of them in the Markdown of
  * another (generator/markdown.ts). Only the documents' public fields are read (titles, descriptions, excerpts, dates,
- * what their pages show); nothing private to the project is.
+ * what their pages show); nothing private to the project is. The index describes an entry as the RSS feed does
+ * (./entry-summary).
  *
  * Links are the site's public URLs once it has one. Without one they are written relative to the file holding them,
  * as the site's own pages resolve theirs, so the files still lead to each other wherever the website is put (in a
@@ -21,6 +22,8 @@ import { derived } from './cache';
 import { createSeoResolver } from './seo-metadata';
 import { entryMarkdown, escapeLineStart, inlineMarkdown, pageMarkdown, type MarkdownContext } from './markdown';
 import { showsEntryText } from './checks';
+import { entrySummary } from './entry-summary';
+import { publishedState } from './index';
 
 /** A document as the listing names it: "page\n{id}" or "entry\n{collection}\n{entry}". */
 export const subjectKey = (s: SeoSubject) => (s.kind === 'page' ? `page\n${s.pageId}` : `entry\n${s.collectionId}\n${s.entryId}`);
@@ -88,6 +91,30 @@ function ownDescription(state: ProjectState, subject: SeoSubject): string {
   return oneLine(state.collections[subject.collectionId]?.entries[subject.entryId]?.excerpt);
 }
 
+/** Each state's published projection, so describing every entry works it out (and each entry's neighbours) once. */
+const published = new WeakMap<ProjectState, ProjectState>();
+
+function publishedOnce(state: ProjectState): ProjectState {
+  let found = published.get(state);
+  if (!found) published.set(state, (found = publishedState(state)));
+  return found;
+}
+
+/**
+ * What the index says of a document: a page's own description, an entry's summary. In a cached run the index depends
+ * on what an entry's summary says, not on all of the text it may be taken from.
+ */
+function listedDescription(state: ProjectState, subject: SeoSubject): string {
+  if (subject.kind === 'page') return ownDescription(state, subject);
+  const { collectionId, entryId } = subject;
+  return derived(state, `llms:summary:${subjectKey(subject)}`, (s) => {
+    const live = publishedOnce(s);
+    const collection = live.collections[collectionId];
+    const entry = collection?.entries[entryId];
+    return entry ? entrySummary(live, collection, entry) : '';
+  });
+}
+
 /** The name a document is listed by: a page's title, an entry's own title; its address when it has none. */
 function titleOf(state: ProjectState, subject: SeoSubject, route: string): string {
   const title = subject.kind === 'page' ? state.pages[subject.pageId]?.title : state.collections[subject.collectionId]?.entries[subject.entryId]?.title;
@@ -107,7 +134,7 @@ function heading(state: ProjectState, typed?: string): string[] {
 
 /**
  * The llms.txt index: the site's name and summary, then its pages and each collection's entries, each a link (to its
- * Markdown copy when the site writes them, else its page) with its own description. `summary` is the summary as the
+ * Markdown copy when the site writes them, else its page) with its description (an entry's summary). `summary` is the summary as the
  * author is typing it, for the editor's preview.
  */
 export function generateLlmsTxt(state: ProjectState, opts: { summary?: string } = {}): string {
@@ -125,7 +152,7 @@ export function generateLlmsTxt(state: ProjectState, opts: { summary?: string } 
       groups.set(key, group);
     }
     const href = siteHref(state, '/', markdownMirrors ? markdownMirrorRoute(d.route) : d.route);
-    const description = ownDescription(state, d.subject);
+    const description = listedDescription(state, d.subject);
     group.items.push(`- [${inlineMarkdown(titleOf(state, d.subject, d.route))}](${href})${description ? `: ${inlineMarkdown(description)}` : ''}`);
   }
   for (const { name, items } of groups.values()) lines.push('', `## ${inlineMarkdown(name)}`, '', ...items);

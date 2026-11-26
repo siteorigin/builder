@@ -10,7 +10,9 @@ import type { ProjectState } from '@shared/types';
 import type { EditOperation } from '@shared/ops';
 import { generateLayout, generateProject, publishedState } from '@generator/index';
 import { GenerationCache } from '@generator/cache';
+import { SUMMARY_LENGTH, startOfText } from '@generator/entry-summary';
 import { RSS_PATH, generateRssFeed, rssDate, xmlText } from '@generator/rss';
+import { generateLlmsTxt } from '@generator/llms';
 import { buildSearchIndex, generateSearchIndex } from '@generator/search';
 import { documentGraph } from '@generator/structured-data';
 import { validateRoute } from '@shared/routes';
@@ -90,6 +92,138 @@ describe('the RSS feed', () => {
     // RSS's <author> must be an email address: a byline is the creator. The ID names no address.
     expect(xml).not.toContain('<author>');
     expect(xml.match(/<guid isPermaLink="false">/g)).toHaveLength(3);
+  });
+
+  it('summarizes a post without an excerpt from the start of its text, in the feed and in llms.txt alike', () => {
+    const { state } = seoSite();
+    const sentence = 'The kiln was loaded on Friday and opened again on Monday morning. ';
+    const s = run(
+      state,
+      create('en_plain', 'Kiln notes', {
+        publishedAt: '2027-02-01',
+        body: [
+          { type: 'h2', spans: [{ text: 'A heading' }] },
+          { type: 'image', assetId: 'img_bowls', alt: 'Three glazed bowls on a shelf', caption: 'A caption' },
+          { type: 'p', spans: [{ text: sentence.repeat(6) }] }
+        ]
+      })
+    );
+    const [withExcerpt, without] = feedOf(s).items;
+    expect(withExcerpt.description).toBe('Spring wheel classes open for bookings: six weeks of throwing, trimming and glazing.');
+    expect(without.title).toBe('Kiln notes');
+    const summary = without.description!;
+    // The start of the text, cut between words.
+    expect(summary.endsWith('…')).toBe(true);
+    expect(summary.length).toBeLessThanOrEqual(200);
+    // As much of it as fits, not merely some of it.
+    expect(summary.length).toBeGreaterThan(180);
+    const kept = summary.slice(0, -1);
+    expect(sentence.repeat(6).startsWith(kept)).toBe(true);
+    expect(sentence.repeat(6).slice(kept.length)).toMatch(/^[ .]/);
+    const llms = generateLlmsTxt(s);
+    expect(llms).toContain(`/blog/kiln-notes/): ${summary}\n`);
+    expect(llms).toContain(`/blog/spring-pottery-classes/): ${withExcerpt.description}\n`);
+  });
+
+  it('takes the excerpt, then the SEO description, then the text, and quotes no text a post’s page does not show', () => {
+    const { state } = seoSite();
+    const body = [
+      { type: 'p', spans: [{ text: 'Doors open ' }, { text: 'at nine', strong: true }, { text: '.' }] },
+      { type: 'ul', items: [[{ text: 'Bring an apron' }]] },
+      { type: 'blockquote', spans: [{ text: 'A lovely morning.' }] }
+    ];
+    const s = run(state, create('en_plain', 'Open day', { publishedAt: '2027-05-01', body }));
+    const first = (p: ProjectState) => feedOf(p).items[0].description;
+    expect(first(s)).toBe('Doors open at nine. Bring an apron A lovely morning.');
+    const described = run(s, update('en_plain', { description: 'Come and see the studio.' }));
+    expect(first(described)).toBe('Come and see the studio.');
+    expect(generateLlmsTxt(described)).toContain('/blog/open-day/): Come and see the studio.\n');
+    // The author's own words are never cut, and win over the SEO description in both places.
+    const excerpt = `Our open day. ${'Everyone is welcome. '.repeat(14)}`.trim();
+    const excerpted = run(described, update('en_plain', { excerpt }));
+    expect(excerpt.length).toBeGreaterThan(SUMMARY_LENGTH);
+    expect(first(excerpted)).toBe(excerpt);
+    expect(generateLlmsTxt(excerpted)).toContain(`/blog/open-day/): ${excerpt}\n`);
+    // With no paragraph, quote or list, the words it does have: a heading, then a picture's caption.
+    const headed = [{ type: 'h2', spans: [{ text: 'Doors open at nine' }] }, { type: 'image', assetId: 'img_bowls', alt: 'Bowls', caption: 'The glazing table' }];
+    expect(first(run(s, update('en_plain', { body: headed })))).toBe('Doors open at nine The glazing table');
+    // A layout that leaves the entry's text off its page: the text is on the website nowhere, so nothing quotes it.
+    const hidden = copy(s);
+    const { nodes } = hidden.collections.posts.settings.template!;
+    const placed = Object.values(nodes).filter((n) => JSON.stringify(n).includes('"$entry":"body"'));
+    expect(placed).not.toHaveLength(0);
+    for (const n of placed) n.when = { $entry: 'author' };
+    // Shown for a post with a byline, so quoted for that one; without one, not.
+    expect(first(run(hidden, update('en_plain', { author: 'Ana Ruiz' })))).toBe('Doors open at nine. Bring an apron A lovely morning.');
+    expect(first(hidden)).toBeUndefined();
+    expect(generateLlmsTxt(hidden)).toMatch(/\/blog\/open-day\/\)\n/);
+    // A post with no words at all has none to give.
+    expect(first(run(s, update('en_plain', { body: [] })))).toBeUndefined();
+  });
+
+  it('cuts text between words, in text written without spaces too, and never inside a character', () => {
+    expect(startOfText('Short and whole.')).toBe('Short and whole.');
+    expect(SUMMARY_LENGTH).toBe(200);
+    expect(startOfText('x'.repeat(200))).toBe('x'.repeat(200));
+    expect(startOfText('x'.repeat(201))).toBe(`${'x'.repeat(199)}…`);
+    expect(startOfText('one two three four', 12)).toBe('one two…');
+    expect(startOfText('one two, three', 12)).toBe('one two…');
+    // A hyphenated word is kept or left whole.
+    expect(startOfText('we use a well-known kiln', 16)).toBe('we use a…');
+    // Japanese, with one early space: cut between its words rather than back at that space.
+    const japanese = `お知らせ ${'陶芸教室の予約を受け付けています。'.repeat(20)}`;
+    const cut = startOfText(japanese);
+    expect(cut.length).toBeGreaterThan(SUMMARY_LENGTH / 2);
+    expect(cut.length).toBeLessThanOrEqual(SUMMARY_LENGTH);
+    expect(cut.endsWith('…')).toBe(true);
+    const kept = cut.slice(0, -1);
+    expect(japanese.startsWith(kept)).toBe(true);
+    // Where the cut falls, the language has a boundary between words (or punctuation stripped before the "…").
+    const boundary = new Intl.Segmenter('ja', { granularity: 'word' }).segment(japanese).containing(kept.length)!.index;
+    expect(boundary).toBe(kept.length);
+    // One word longer than the room is cut between its characters: no half of an emoji, nor of a joined one.
+    expect(startOfText('👩‍🎨'.repeat(10), 14)).toBe(`${'👩‍🎨'.repeat(2)}…`);
+  });
+
+  it('keeps a summary taken from a post’s text right in a cached run', () => {
+    const { state } = seoSite();
+    const cache = new GenerationCache();
+    const text = (words: string) => update('en_spring', { body: [{ type: 'p', spans: [{ text: words }] }] });
+    const long = 'Wheels are booked by the week. '.repeat(10);
+    let s = run(state, update('en_spring', { excerpt: '' }), text(long));
+    generateProject(s, {}, cache);
+    for (const words of [`${long}Aprons provided.`, 'The kiln is cold today.']) {
+      s = run(s, text(words));
+      const out = generateProject(s, {}, cache);
+      expect(out).toEqual(generateProject(s));
+      expect(cache.made.filter((k) => k.startsWith('layout'))).toEqual([]);
+      // Words past the cut change neither file; new opening words change both.
+      const remade = cache.made.filter((k) => k === 'rss.xml' || k === 'llms.txt').sort();
+      expect(remade).toEqual(words.startsWith(long) ? [] : ['llms.txt', 'rss.xml']);
+    }
+    expect(generateProject(s, {}, cache).get(RSS_PATH)).toContain('The kiln is cold today.');
+    expect(generateProject(s, {}, cache).get('static/llms.txt')).toContain('The kiln is cold today.');
+  });
+
+  it('says when it was built by its newest post’s date, so the same project gives the same bytes', () => {
+    const { state } = seoSite();
+    const built = (s: ProjectState) => /<lastBuildDate>([^<]*)<\/lastBuildDate>/.exec(feedOf(s).xml.split('<item>')[0])?.[1];
+    expect(built(state)).toBe('Tue, 02 Mar 2027 00:00:00 GMT');
+    // A later update to a post changes the feed; a draft, which the feed does not list, does not.
+    const s = run(state, update('en_spring', { updatedAt: '2027-03-09' }), create('en_draft', 'Later', { publishedAt: '2027-08-01', draft: true }));
+    expect(built(s)).toBe('Tue, 09 Mar 2027 00:00:00 GMT');
+    expect(generateRssFeed(s)).toBe(generateRssFeed(copy(s)));
+    // The newest day of any post, here an older post's revision; a day that is none counts for nothing.
+    const revised = run(s, create('en_older', 'Winter kiln report', { publishedAt: '2026-12-01' }), update('en_older', { updatedAt: '2027-04-15' }));
+    expect(built(revised)).toBe('Thu, 15 Apr 2027 00:00:00 GMT');
+    const damaged = copy(revised);
+    damaged.collections.posts.entries.en_older.updatedAt = 'soon';
+    expect(built(damaged)).toBe('Tue, 09 Mar 2027 00:00:00 GMT');
+    for (const e of Object.values(damaged.collections.posts.entries)) {
+      e.publishedAt = 'soon';
+      delete e.updatedAt;
+    }
+    expect(built(damaged)).toBeUndefined();
   });
 
   it('escapes what XML and HTML give a meaning to, and replaces characters XML does not allow', () => {

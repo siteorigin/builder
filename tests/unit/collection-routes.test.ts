@@ -93,9 +93,9 @@ describe('collection entries on the website', () => {
     expect(check()).toEqual([]);
     s = run(s, { type: 'entry.update', collectionId: 'posts', entryId: 'en_winter', body: ['Bring an apron and a towel.'] });
     expect(check()).toEqual(['entry:posts:en_winter#clean', 'entry:posts:en_winter#dev']);
-    // A new date changes the post's page and the sitemap that dates it, nothing else.
+    // A new date changes the post's page, the sitemap that dates it and the feed built that day, nothing else.
     s = run(s, { type: 'entry.update', collectionId: 'posts', entryId: 'en_spring', updatedAt: '2026-03-20' });
-    expect(check().sort()).toEqual(['entry:posts:en_spring#clean', 'entry:posts:en_spring#dev', 'sitemap.xml']);
+    expect(check().sort()).toEqual(['entry:posts:en_spring#clean', 'entry:posts:en_spring#dev', 'rss.xml', 'sitemap.xml']);
   });
 });
 
