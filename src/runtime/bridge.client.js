@@ -239,7 +239,7 @@ let emptySpace = null;
 let emptySpaceSheet = null;
 function setEmptySpace(next) {
   const height = next && Number.isFinite(next.height) ? Math.min(4000, Math.max(0, Math.ceil(next.height))) : 0;
-  emptySpace = next && typeof next.key === 'string' ? { key: next.key, header: Array.isArray(next.header) ? next.header.slice(0, 50) : [] } : null;
+  emptySpace = next && typeof next.key === 'string' ? { key: next.key, path: shownPath(), header: Array.isArray(next.header) ? next.header.slice(0, 50) : [] } : null;
   if (!emptySpaceSheet) {
     emptySpaceSheet = document.createElement('style');
     document.head.appendChild(emptySpaceSheet);
@@ -252,7 +252,8 @@ function setEmptySpace(next) {
 function emptyArea() {
   if (!emptySpace || mode !== 'edit') return null;
   const main = document.getElementById('main');
-  if (!main) return null;
+  // The first section is on the page before the editor hears that it shows.
+  if (!main || main.querySelector(':scope > *')) return null;
   const r = Element.prototype.getBoundingClientRect.call(main);
   const headers = emptySpace.header.flatMap((desc) => findAll(desc).map(rectOf).filter(Boolean).slice(0, 1));
   return { key: emptySpace.key, top: r.top, height: r.height, headerBottom: Math.max(0, ...headers.map((h) => h.y + h.height)) };
@@ -5043,6 +5044,8 @@ window.addEventListener('unhandledrejection', (e) => {
 
 function reportNav() {
   nextNavigation();
+  // Another page's room is not this one's: the editor asks again for the page it shows. A jump within the page keeps it.
+  if (emptySpace && emptySpace.path !== shownPath()) setEmptySpace(null);
   stopKeeping();
   pendingScroll = null;
   send('navigated', { path: shownPath() });

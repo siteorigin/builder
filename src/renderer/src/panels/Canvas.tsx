@@ -555,6 +555,10 @@ export function Canvas() {
     const h = emptyCardRef.current?.offsetHeight;
     if (h && h !== emptyCardH) setEmptyCardH(h);
   });
+  // While the strip stands in for the card it can't be measured, so a frame of another width is tried afresh.
+  useEffect(() => {
+    if (!emptyCardRef.current) setEmptyCardH(186);
+  }, [viewport * zoom]); // eslint-disable-line react-hooks/exhaustive-deps
   // The card and the same space above and below it, in page pixels.
   const emptyRoom = Math.ceil((emptyCardH + 48) / zoom);
   useEffect(() => {
@@ -2817,7 +2821,10 @@ export function Canvas() {
   // Where the card goes, in page pixels: at the top of the empty page's room, below a header that covers its start.
   // Where the room or the frame is too short for it (scrolled away, a low window), the strip says it instead.
   const emptyAt = emptyArea && emptyArea.key === pageId ? Math.max(emptyArea.top, emptyArea.headerBottom) : null;
-  const emptyFits = emptyAt !== null && (emptyAt * z + 24 + emptyCardH <= frameH * z) && 24 + emptyCardH <= (emptyArea!.top + emptyArea!.height - emptyAt) * z + 1;
+  // The room counts as the size asked for until the page reports it, so a change of zoom never swaps the card (and
+  // the focus on its buttons) for the strip while the page catches up.
+  const emptyEnd = emptyArea ? emptyArea.top + Math.max(emptyArea.height, emptyRoom) : 0;
+  const emptyFits = emptyAt !== null && emptyAt * z + 24 + emptyCardH <= frameH * z && 24 + emptyCardH <= (emptyEnd - emptyAt) * z + 1;
   // While the AI works, the page's copy waits: a question it asks would take over the message box, and the copy would
   // become the answer. A project open read-only takes no AI edits.
   const aiWorking = !!runStatus || turnOpen;
