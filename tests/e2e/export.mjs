@@ -1188,6 +1188,8 @@ if (BUILD) {
     const r = spawnSync(npm, args, { cwd: sourceOut, env, encoding: 'utf8', shell: process.platform === 'win32', timeout: 600000 });
     console.log(`npm ${args.join(' ')}: exit ${r.status} in ${Math.round((Date.now() - t0) / 1000)}s`);
     assert.equal(r.status, 0, `npm ${args.join(' ')} succeeds in the exported source:\n${(r.stdout ?? '').slice(-3000)}\n${(r.stderr ?? '').slice(-3000)}`);
+    const warned = `${r.stdout ?? ''}\n${r.stderr ?? ''}`.split('\n').filter((line) => line.includes('[vite-plugin-svelte]'));
+    assert.deepEqual(warned, [], `npm ${args.join(' ')} prints no Svelte warnings (#816)`);
   }
   assert.ok(existsSync(join(sourceOut, 'build', 'index.html')), 'the standalone build writes build/index.html');
   assert.ok(existsSync(join(sourceOut, 'build', 'about', 'index.html')), 'the standalone build prerenders nested routes');
