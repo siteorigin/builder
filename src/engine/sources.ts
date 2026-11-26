@@ -121,3 +121,28 @@ export function finishSourceSync(state: ProjectState, grant: SourceSyncGrant) {
   const foreign = Object.values(c.entries).find((e) => e.source?.sourceId !== grant.sourceId);
   if (foreign) fail(`“${foreign.title}” in ${c.settings.name} was not synced from “${source.name}”. Sync into an empty collection, or one already synced from it.`);
 }
+
+/** The library images an entry shows: its featured image, its sharing image and its image fields'. */
+function entryAssets(e: { featuredImage?: unknown; seo?: { socialImage?: unknown }; values?: Record<string, unknown> }): string[] {
+  const out: string[] = [];
+  if (typeof e.featuredImage === 'string') out.push(e.featuredImage);
+  if (typeof e.seo?.socialImage === 'string') out.push(e.seo.socialImage);
+  for (const v of Object.values(e.values ?? {})) if (v && typeof v === 'object' && typeof (v as { assetId?: unknown }).assetId === 'string') out.push((v as { assetId: string }).assetId);
+  return out;
+}
+
+/**
+ * Why going from `before` to `after` takes a library image away from a synced collection's entry, or null. A sync is
+ * no step of History, so an undo of an earlier step (the import of a picture a sync then found in the library) could
+ * otherwise take it from an entry no edit may change. Worded to follow "it".
+ */
+export function syncedAssetLoss(before: ProjectState, after: ProjectState): string | null {
+  for (const c of Object.values(after.collections ?? {})) {
+    if (typeof c?.settings?.sourceId !== 'string') continue;
+    for (const e of Object.values(c.entries)) {
+      const lost = entryAssets(e).find((id) => Object.hasOwn(before.assets.assets, id) && !Object.hasOwn(after.assets.assets, id));
+      if (lost) return `would take “${before.assets.assets[lost].name}” from the library, which “${e.title}” in the ${c.settings.name} collection shows. That collection is synced from an external source, so its entries are read-only here.`;
+    }
+  }
+  return null;
+}

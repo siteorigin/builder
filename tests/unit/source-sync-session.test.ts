@@ -44,6 +44,8 @@ import type { NormalizedRecord, SyncReply, SyncRequest } from '../../src/main/so
 import type { EditOperation } from '@shared/ops';
 
 const SECRET = 'tok-0a1b2c3d4e5f6a7b';
+// Each test makes a project and brings pictures through the real media pipeline, as photo-import.test.ts does.
+vi.setConfig({ testTimeout: 30_000 });
 const dirs: string[] = [];
 const open: Array<{ close: () => Promise<unknown> }> = [];
 afterEach(async () => {
@@ -193,6 +195,21 @@ describe('syncing a source into a project', () => {
     world.records = [person('1', 'Ana')];
     await expect(syncSource({ ...deps, current: () => false }, 'people')).resolves.toMatchObject({ ok: false, code: 'closed' });
     expect(Object.keys(s.state.collections.team.entries)).toEqual([]);
+  });
+
+  it('never lets an undo take away a picture a synced entry found in the library', async () => {
+    const { dir, s, world, deps } = await setup();
+    // The author adds Ana's picture by hand first; the sync then finds the same bytes in the library.
+    const { record } = await importPackageImage(dir, { name: 'Ana', mime: 'image/png', ext: '.png', bytes: await png(10) }, Object.values(s.state.assets.assets));
+    const added = await s.apply({ operations: [{ type: 'asset.add', asset: record }] }, { label: 'Add Ana' });
+    expect(added.ok).toBe(true);
+    world.records = [person('1', 'Ana')];
+    await expect(syncSource(deps, 'people')).resolves.toMatchObject({ ok: true, created: 1, images: 0 });
+    expect(s.state.collections.team.entries[syncedEntryId('people', '1', () => false)].featuredImage).toBe(record.id);
+    const undo = await s.undo();
+    expect(undo.ok).toBe(false);
+    expect(undo.error?.message).toMatch(/“Ana” in the Team collection shows/);
+    expect(s.state.assets.assets[record.id]).toBeDefined();
   });
 
   it('refuses a sync whose secret is not saved, before anything is read', async () => {

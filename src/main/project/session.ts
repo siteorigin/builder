@@ -21,7 +21,7 @@ import { madeRequiredBy } from '@engine/required';
 import { findRemoval, restoreRemoval } from '@engine/restore';
 import { pageLinkUses } from '@engine/page-links';
 import { syncedEntryChange } from '@engine/collections';
-import { sourceSyncRefusal, type SourceSyncGrant } from '@engine/sources';
+import { sourceSyncRefusal, syncedAssetLoss, type SourceSyncGrant } from '@engine/sources';
 import { codeNeeds, declareCodeNames, filledSlots } from '@engine/definitions';
 import { publicationPlan } from '@generator/checks';
 import { blocksSaving, diagnosticKey, introducedDiagnostics, validateState, type Diagnostic } from '@engine/validate';
@@ -3612,7 +3612,7 @@ export class ProjectSession extends EventEmitter {
     const broken = fatal(next).find((d) => !already.has(d.message));
     if (broken) return { ok: false, revision: this.revision, error: { code: 'CONFLICT', message: `Cannot ${direction} ${what}: ${broken.message}`, recoverable: false } };
     // Nor one that rewrites a synced collection's entries (an edit made before it was synced, say), as no change may.
-    const synced = syncedEntryChange(this.state, next);
+    const synced = syncedEntryChange(this.state, next) ?? syncedAssetLoss(this.state, next);
     if (synced) return { ok: false, revision: this.revision, error: { code: 'CONFLICT', message: `Cannot ${direction} ${what}: it ${synced}`, recoverable: false } };
     const pin = themePinProblem(next);
     if (pin) return { ok: false, revision: this.revision, error: { code: 'CONFLICT', message: `Cannot ${direction} ${what}: ${pin}`, recoverable: false } };
@@ -3999,7 +3999,7 @@ export class ProjectSession extends EventEmitter {
     const pin = themePinProblem(next);
     if (pin) return refuse(pin);
     const problem = (why: string) => refuse(`Undoing it on its own would leave a problem: ${why}`);
-    const synced = syncedEntryChange(this.state, next);
+    const synced = syncedEntryChange(this.state, next) ?? syncedAssetLoss(this.state, next);
     if (synced) return refuse(`Undoing it on its own ${synced}`);
     // Anything the project would newly fail, warnings aside: a broken link is as much a reason as a page left out of
     // the page order.
