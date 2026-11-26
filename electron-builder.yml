@@ -2,6 +2,12 @@ appId: com.siteorigin.builder
 productName: SiteOrigin Builder
 # One naming scheme for every installer: siteorigin-builder-0.1.0-mac-arm64.dmg, -win-x64.exe, -linux-x86_64.AppImage.
 artifactName: ${name}-${version}-${os}-${arch}.${ext}
+# The download domain the release workflows publish to (docs/releasing.md). Builds bundle it as the update feed in
+# resources/app-update.yml, and electron-builder writes each platform's blockmaps for differential updates; the
+# workflows write the feed's metadata files themselves (scripts/release/generate-update-metadata.ts).
+publish:
+  provider: generic
+  url: https://downloads.siteorigin.com/releases/
 directories:
   output: dist
   buildResources: build
@@ -40,7 +46,8 @@ mac:
     NSBluetoothPeripheralUsageDescription: null
     NSCameraUsageDescription: null
     NSMicrophoneUsageDescription: null
-  target: [dmg]
+  # The DMG for people to download; the zip for updates, which Squirrel.Mac installs only from a zip.
+  target: [dmg, zip]
   icon: build/icon.png
   # Releases are built by .github/workflows/release.yml (docs/releasing.md). build/after-pack.cjs signs every
   # macOS build ad-hoc. electron-builder then signs it again when it finds a "Developer ID Application" identity
@@ -53,6 +60,9 @@ mac:
 # The DMG is signed with the same identity when there is one, so it can carry its own notarization ticket.
 dmg:
   sign: true
+  # No blockmap for the DMG: the release workflow staples a notarization ticket into it after electron-builder
+  # writes one, which would leave the map describing other bytes. Updates come from the zip's blockmap.
+  writeUpdateInfo: false
 win:
   target: [nsis]
   icon: build/icon.png
