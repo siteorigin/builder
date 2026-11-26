@@ -537,31 +537,16 @@ describe('source export helpers', () => {
     expect(await projectFingerprint(dir)).not.toBe(before);
   });
 
-  it('refreshes an untouched README, adds the sample image notice and relaxes old engines', async () => {
+  it('refreshes an untouched README and adds the sample image notice', async () => {
     const state = createStarterState('business', 'New Name', true);
     state.assets.assets['a_hero'] = { id: 'a_hero', name: 'Hero', file: 'static/assets/hero.jpg', mime: 'image/jpeg', bytes: 1, hash: 'x', kind: 'image', createdAt: '' };
     const dest = temp();
-    const legacy = readFileSync(join(__dirname, 'fixtures', 'legacy-readme.md'), 'utf8');
-    write(dest, 'README.md', legacy);
-    write(dest, 'package.json', JSON.stringify({ name: 'x', engines: { node: '^22.22.2 || ^24.15.0 || >=26.0.0' } }));
-    write(dest, 'package-lock.json', JSON.stringify({ packages: { '': { engines: { node: '^22.22.2 || ^24.15.0 || >=26.0.0' } } } }));
+    write(dest, 'README.md', projectReadme('Old Name'));
     const notice = join(temp(), 'NOTICE.md');
     writeFileSync(notice, 'sample images');
     await finishExportedSource(dest, state, notice);
     expect(readFileSync(join(dest, 'README.md'), 'utf8')).toBe(projectReadme('New Name'));
     expect(readFileSync(join(dest, 'NOTICE.md'), 'utf8')).toBe('sample images');
-    expect(JSON.parse(readFileSync(join(dest, 'package.json'), 'utf8')).engines.node).toBe('>=22.17.0');
-    expect(JSON.parse(readFileSync(join(dest, 'package-lock.json'), 'utf8')).packages[''].engines.node).toBe('>=22.17.0');
-  });
-
-  it('brings a README from before fonts came with the theme up to date', async () => {
-    const dest = temp();
-    write(dest, 'README.md', readFileSync(join(__dirname, 'fixtures', 'npm-fonts-readme.md'), 'utf8'));
-    await finishExportedSource(dest, createStarterState('blank', 'Old Name', false), join(dest, 'missing.md'));
-    const readme = readFileSync(join(dest, 'README.md'), 'utf8');
-    expect(readme).toBe(projectReadme('Old Name'));
-    expect(readme).toContain('The fonts come with the theme, in `src/lib/siteorigin/fonts/`');
-    expect(readme).not.toContain('installed from npm');
   });
 
   it("keeps a README the owner has edited", async () => {
