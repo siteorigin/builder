@@ -8,10 +8,11 @@ import { createHash } from 'node:crypto';
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, posix } from 'node:path';
-import { pathToFileURL } from 'node:url';
+import { fileURLToPath, pathToFileURL } from 'node:url';
 import { compile } from 'svelte/compiler';
 import { build, type Rolldown } from 'vite';
 import sharp from 'sharp';
+import type { Page } from 'playwright';
 import type { ProjectState } from '@shared/types';
 import { catalogueEntries, registerPacks } from '@catalogue/index';
 import { createStarterState } from '@catalogue/starters';
@@ -20,17 +21,31 @@ import { installComponent, makeInstance } from '@engine/install';
 import { collectionCreate, entryCreate } from '@engine/collections';
 import { POSTS_COLLECTION_ID } from '@shared/collections';
 import { STYLES_DIR, generateProject, pageFile } from '@generator/index';
+import { thumbCrop, type Box } from '../../src/main/runtime/component-thumbs';
 
-/** What the photograph shows: the top of the section at desktop width, in the 16:10 shape of an Insert tile. */
+/**
+ * The page a thumbnail is photographed on: a section at desktop width. The photograph is a 16:10 frame around what
+ * the component paints (thumbCrop, as a project component's thumbnail is framed), so a short section or a small
+ * block fills its Insert tile rather than sitting in a corner of the whole desktop window (#905).
+ */
 const VIEW = { width: 1280, height: 800 };
-const THUMB_WIDTH = 320;
+const THUMB_SIZE = { width: 320, height: 200 };
+/**
+ * How wide a block (a feature card, a stat card, a signup form) is shown: about the column of a three- or four-up
+ * grid it is placed in, since a block fills whatever holds it.
+ */
+const BLOCK_WIDTH = 440;
+/** How far down the page a block starts. */
+const BLOCK_ROOM = 240;
 /** Part of every cache key, so a change to how thumbnails are drawn draws them all again. */
-const RENDERER = 'preview-v1';
+const RENDERER = 'preview-v2';
 const ORIGIN = 'http://pack.preview';
 const GEN = '\0gen:';
 
 interface Case {
   componentId: string;
+  /** A block, placed where an element goes, rather than a section of its own (insertAs: 'element'). */
+  block: boolean;
   axis?: string;
   option?: string;
   pageId: string;
@@ -62,25 +77,41 @@ function withFixedIds<T>(fn: () => T): T {
   }
 }
 
+/** The published posts a post section's thumbnail lists, newest first. */
+const SAMPLE_POSTS = [
+  { title: 'Notes from the studio', excerpt: 'A closer look at the materials and small details that shape our work.', publishedAt: '2025-06-12' },
+  { title: 'A season of new projects', excerpt: 'What we are building this year, and the people we are building it with.', publishedAt: '2025-05-28' },
+  { title: 'How we plan a first visit', excerpt: 'The questions we ask before anything is drawn, and why they matter.', publishedAt: '2025-05-09' }
+];
+
+/**
+ * What an article's page says about itself, for a section that reads its own page (the Article header): kept out of
+ * news lists, so the post sections beside it list the sample posts alone.
+ */
+const SAMPLE_ARTICLE = { title: 'Notes from the studio', article: { date: '2025-06-12', byline: 'By the studio team', excerpt: 'A closer look at the materials and small details that shape our work.', hidden: true } };
+
+/** Whether a component reads the page it is placed on (an article's title, date and byline). */
+const readsOwnPage = (def: { properties: Record<string, { type?: string; feed?: string }> }) => Object.values(def.properties).some((prop) => prop.type === 'list' && prop.feed === 'currentPage');
+
 /** A project holding one page per thumbnail, each with a single section. */
-function previewProject(pack: ThemePack): { state: ProjectState; cases: Case[] } {
+export function previewProject(pack: ThemePack): { state: ProjectState; cases: Case[] } {
   const state = createStarterState('blank', 'Studio', false);
   state.site.themeId = pack.id;
   // Entry feeds draw their cards from published entries instead of a property's defaults.
   if (pack.components.some((def) => Object.values(def.properties).some((prop) => prop.type === 'list' && prop.feed === 'entries'))) {
     collectionCreate(state, { type: 'collection.create', collectionId: POSTS_COLLECTION_ID });
-    entryCreate(state, {
-      type: 'entry.create',
-      collectionId: POSTS_COLLECTION_ID,
-      entryId: 'en_preview',
-      title: 'Notes from the studio',
-      excerpt: 'A closer look at the materials and small details that shape our work.',
-      author: 'Studio team',
-      publishedAt: '2025-06-12',
-      draft: false
-    });
+    // Enough posts to fill a grid's row and a list, so a post section shows as visitors with a few posts see it.
+    for (const [i, post] of SAMPLE_POSTS.entries()) entryCreate(state, { type: 'entry.create', collectionId: POSTS_COLLECTION_ID, entryId: `en_preview${i}`, ...post, author: 'Studio team', draft: false });
   }
   const template = state.pages[state.site.homePageId];
+  // News lists draw their rows from the site's dated article pages: a few, published and listed, that no case shows.
+  if (pack.components.some((def) => Object.values(def.properties).some((prop) => prop.type === 'list' && prop.feed === 'articles'))) {
+    for (const [i, post] of SAMPLE_POSTS.entries()) {
+      const pageId = `pg_article${i}`;
+      state.pages[pageId] = { ...structuredClone(template), id: pageId, title: post.title, route: `/article-${i}/`, rootIds: [], nodes: {}, article: { date: post.publishedAt, byline: 'Studio team', excerpt: post.excerpt } };
+      state.site.pageOrder.push(pageId);
+    }
+  }
   const cases: Case[] = [];
   for (const entry of catalogueEntries(pack.id)) {
     const def = state.components[installComponent(state, entry.componentId)];
@@ -88,12 +119,33 @@ function previewProject(pack: ThemePack): { state: ProjectState; cases: Case[] }
     for (const o of options) {
       const pageId = `pg_preview${cases.length}`;
       const node = makeInstance(def, {}, o ? { [o.axis]: o.option } : undefined);
-      state.pages[pageId] = { ...structuredClone(template), id: pageId, title: entry.name, route: `/preview-${cases.length}/`, rootIds: [node.id], nodes: { [node.id]: node } };
+      const own = readsOwnPage(def) ? structuredClone(SAMPLE_ARTICLE) : { title: entry.name };
+      state.pages[pageId] = { ...structuredClone(template), id: pageId, ...own, route: `/preview-${cases.length}/`, rootIds: [node.id], nodes: { [node.id]: node } };
       state.site.pageOrder.push(pageId);
-      cases.push({ componentId: entry.componentId, ...o, pageId });
+      cases.push({ componentId: entry.componentId, block: def.insertAs === 'element', ...o, pageId });
     }
   }
   return { state, cases };
+}
+
+/**
+ * The preview bridge's own measure of where a page paints (inkBounds in bridge.client.js), run in the photographed
+ * page, so a theme's thumbnails are framed exactly as a project component's are.
+ */
+export function inkBoundsSource(): string {
+  const bridge = readFileSync(fileURLToPath(new URL('../../src/runtime/bridge.client.js', import.meta.url)), 'utf8');
+  const start = bridge.indexOf('\nfunction inkBounds() {');
+  const end = start < 0 ? -1 : bridge.indexOf('\n}\n', start);
+  if (end < 0) throw new Error('The preview bridge has no inkBounds() to frame thumbnails with.');
+  return `(${bridge.slice(start + 1, end + 2)})()`;
+}
+
+/** The html of a thumbnail's page: a block in a column of its own width, centred, and a section as wide as the window. */
+export function previewHtml(css: string, head: string, body: string, block: boolean): string {
+  // Room above a block, so a short one can be centred in its frame.
+  const main = block ? `<main id="main" style="box-sizing:content-box;max-width:${BLOCK_WIDTH}px;margin:0 auto;padding:${BLOCK_ROOM}px 16px 24px">` : '<main id="main">';
+  // Drawn as a visitor whose browser runs the page's scripts sees it (see SCRIPTS_CLASS): one tab's panel, one period.
+  return `<!doctype html><html lang="en" class="so-js"><head><meta charset="utf-8"><style>${css}</style>${head.replace(/<title>[^<]*<\/title>/, '')}<style>html{scroll-behavior:auto}*{animation:none!important;transition:none!important}</style></head><body>${main}${body}</main></body></html>`;
 }
 
 interface Rendered {
@@ -144,6 +196,42 @@ async function bundlePages(files: Map<string, string>, pages: string[]): Promise
 }
 
 /**
+ * Leaves the background, border and shadow of every box about as wide as the window out of what is measured, and
+ * returns what puts them back: a section's own band of colour is in the photograph, but what is framed is what it
+ * holds, so a short section is not shown as a sliver at the top of the whole window.
+ */
+const UNPAINT_BANDS = `(() => {
+  const kept = [];
+  for (const el of document.querySelectorAll('#main, #main *')) {
+    if (el.getBoundingClientRect().width < innerWidth * 0.9) continue;
+    kept.push([el, el.getAttribute('style')]);
+    for (const p of ['background', 'border-color', 'box-shadow']) el.style.setProperty(p, p === 'border-color' ? 'transparent' : 'none', 'important');
+  }
+  window.__soBands = kept;
+})()`;
+const REPAINT_BANDS = `(() => {
+  for (const [el, style] of window.__soBands ?? []) style === null ? el.removeAttribute('style') : el.setAttribute('style', style);
+  delete window.__soBands;
+})()`;
+
+/**
+ * What to photograph of the page shown in `page`: a 16:10 frame around what it paints (for a section, what its full
+ * width bands hold), or the top of the window when it paints nothing that can be measured.
+ */
+export async function frameOf(page: Page, ink: string, block: boolean): Promise<Box> {
+  if (!block) await page.evaluate(UNPAINT_BANDS);
+  const painted: Box | null = await page.evaluate(ink);
+  if (!block) await page.evaluate(REPAINT_BANDS);
+  // A block is shown whole (a form with its button): one taller than its frame is framed wider, centred across.
+  if (block && painted && painted.height * 1.6 > painted.width) {
+    const width = Math.min(VIEW.width, painted.height * 1.6);
+    return thumbCrop(null, { ...painted, x: painted.x + painted.width / 2 - width / 2, width }, VIEW) ?? { x: 0, y: 0, ...VIEW };
+  }
+  const bounds: Box | null = await page.evaluate(`(() => { const r = document.getElementById('main')?.getBoundingClientRect(); return r && { x: r.x, y: r.y, width: r.width, height: r.height }; })()`);
+  return thumbCrop(bounds, painted, VIEW) ?? { x: 0, y: 0, ...VIEW };
+}
+
+/**
  * Draw the thumbnails of every component and variant option of a pack. `files` maps each pack file (its fonts)
  * to its source on disk. Returns the previews map for the manifest and the image bytes by release path.
  */
@@ -159,9 +247,8 @@ export async function renderPreviews(pack: ThemePack, files: Map<string, string>
 
   const docs = cases.map((c, i) => {
     const { body, head } = module.render(module.pages[i], { props: {} });
-    // Drawn as a visitor whose browser runs the page's scripts sees it (see SCRIPTS_CLASS): one tab's panel, one period.
-    const html = `<!doctype html><html lang="en" class="so-js"><head><meta charset="utf-8"><style>${css}</style>${head.replace(/<title>[^<]*<\/title>/, '')}<style>html{scroll-behavior:auto}*{animation:none!important;transition:none!important}</style></head><body><main id="main">${body}</main></body></html>`;
-    const key = createHash('sha256').update(`${RENDERER}\n${VIEW.width}x${VIEW.height}\n${fontKey}\n${html}`).digest('hex');
+    const html = previewHtml(css, head, body, c.block);
+    const key = createHash('sha256').update(`${RENDERER}\n${VIEW.width}x${VIEW.height} ${THUMB_SIZE.width}x${THUMB_SIZE.height}\n${fontKey}\n${html}`).digest('hex');
     return { c, html, cached: join(cacheDir, `${key}.webp`) };
   });
   rmSync(dir, { recursive: true, force: true });
@@ -181,6 +268,7 @@ export async function renderPreviews(pack: ThemePack, files: Map<string, string>
   if (browser) {
     try {
       const page = await browser.newPage({ viewport: VIEW, deviceScaleFactor: 1, locale: 'en-US', colorScheme: 'light', reducedMotion: 'reduce' });
+      const ink = inkBoundsSource();
       let current = '';
       // The page and its fonts come from memory; nothing else may load.
       await page.route('**/*', async (route) => {
@@ -194,8 +282,8 @@ export async function renderPreviews(pack: ThemePack, files: Map<string, string>
         current = d.html;
         await page.goto(`${ORIGIN}/styles/preview.html`, { waitUntil: 'load' });
         await page.evaluate('document.fonts.ready.then(() => undefined)');
-        const png = await page.screenshot({ clip: { x: 0, y: 0, ...VIEW }, type: 'png' });
-        writeFileSync(d.cached, await sharp(png).resize({ width: THUMB_WIDTH }).webp({ quality: 80, effort: 6 }).toBuffer());
+        const png = await page.screenshot({ clip: await frameOf(page, ink, d.c.block), type: 'png' });
+        writeFileSync(d.cached, await sharp(png).resize(THUMB_SIZE).webp({ quality: 80, effort: 6 }).toBuffer());
       }
     } finally {
       await browser.close();
