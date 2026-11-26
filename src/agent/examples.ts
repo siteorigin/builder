@@ -182,7 +182,7 @@ export const COMPONENT_BLUEPRINTS: ComponentBlueprint[] = [
   {
     id: 'callout',
     keywords: ['callout', 'banner', 'cta', 'call', 'action', 'notice', 'announcement', 'promo', 'promotion', 'offer', 'signup', 'newsletter', 'booking', 'contact'],
-    description: 'A call to action: a heading, rich text and a button shown only when it has a label, side by side from tablet up, with a dark tone',
+    description: 'A call to action: a heading, rich text and a button shown only when it has both a label and a link, side by side from tablet up, with a dark tone',
     args: {
       name: 'Call to action',
       description: 'A short message with one button.',
@@ -191,7 +191,7 @@ export const COMPONENT_BLUEPRINTS: ComponentBlueprint[] = [
         { type: 'string', name: 'heading', label: 'Heading', default: 'Ready when you are' },
         { type: 'richtext', name: 'text', label: 'Text', default: 'Tell us what you need and we will reply within a day.' },
         { type: 'string', name: 'buttonLabel', label: 'Button text', default: 'Get in touch' },
-        { type: 'link', name: 'buttonLink', label: 'Button link', description: 'The button shows once it has a link.', default: '' }
+        { type: 'link', name: 'buttonLink', label: 'Button link', description: 'The button shows once it has both a link and a label.', default: '' }
       ],
       nodes: [
         { kind: 'element', id: 'root', tag: 'section', children: ['inner'], styles: shellRoot },

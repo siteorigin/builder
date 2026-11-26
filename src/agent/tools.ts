@@ -44,6 +44,9 @@ const REQUESTED_SCOPE = z.object({
 });
 const SCOPE_NOTE = 'What this call changes. Wider than the request may change is refused; narrower limits the call.';
 
+/** The most operations one apply_operations call takes. */
+export const MAX_BATCH_OPERATIONS = 30;
+
 export const TOOL_ARGS = {
   read_project: z.object({ sections: z.array(z.enum(['pages', 'tokens', 'catalogue', 'components', 'shell'])).optional() }),
   read_page: z.object({ pageId: z.string(), nodeId: z.string().optional().describe('Optional subtree to read.') }),
@@ -66,7 +69,7 @@ export const TOOL_ARGS = {
   apply_operations: z.object({
     expectedRevision: z.number().int().describe('The revision you last read. Mismatches are rejected; read again and retry.'),
     scope: REQUESTED_SCOPE.optional().describe(SCOPE_NOTE),
-    operations: z.array(EditOperationSchema).min(1).max(30)
+    operations: z.array(EditOperationSchema).min(1).max(MAX_BATCH_OPERATIONS)
   }),
   read_source: z.object({ definitionId: z.string(), startLine: z.number().int().min(1).optional(), endLine: z.number().int().optional() }),
   apply_source_patch: z.object({
@@ -139,7 +142,7 @@ const DESCRIPTIONS: Record<ToolName, string> = {
   read_component: `${CONTRACT_READ} structure adds how its design is built.`,
   search_assets: 'List imported images by name and description, with the assetId that identifies each one (two images can share a name). You cannot see image contents.',
   apply_operations:
-    'Apply a batch of typed edit operations atomically. This is the only way to change the website. Every operation is validated; on error nothing in the batch is applied and you get the exact problem. Operations refer to pages by ID: to fill a page you create, use the pageId this call returns in your next step. Call it at most once per step (one response of yours); the request carries on in your next step without the user replying.',
+    'Apply a batch of typed edit operations atomically. It can make any edit the visual editor can. Every operation is validated; on error nothing in the batch is applied and you get the exact problem. Operations refer to pages by ID: to fill a page you create, use the pageId this call returns in your next step. Call it at most once per step (one response of yours); the request carries on in your next step without the user replying.',
   read_source: 'Read the Svelte source of a component. Generated managed sources are read-only; project code components can be patched.',
   apply_source_patch: 'Change the source of a project code component (never generated files, config or dependencies). Requires the revision and hash read_source returned with it.',
   inspect_layout:
