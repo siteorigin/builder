@@ -2578,7 +2578,7 @@ export class Controller {
         try {
           const at = { revision: -1 };
           const made = await storeLibraryWebCopy(s.dir, record, buf, Object.values(s.state.assets.assets), this.assetFence(s, record, at));
-          if ('lighter' in made) return { ok: false, message: `A web-sized copy of ${name} would hardly be lighter, so it was left as it is.` };
+          if ('lighter' in made) return { ok: false, message: `A web-sized copy of ${name} would be less than a third lighter, so it was left as it is.` };
           const ops = [
             ...(made.existing ? [] : [{ type: 'asset.add' as const, asset: made.record }]),
             // The copy is the same picture: every use keeps its alt text, whatever the copy's own suggestion says.

@@ -672,9 +672,10 @@ const worthwhile = (copy: Buffer, original: Buffer) => copy.length <= original.l
 
 /**
  * Plans measured or being measured, by the original's content: opening the same picture again, or going back to it
- * before its answer came, never encodes it again.
+ * before its answer came, never encodes it again. Only answers already in are let go to keep the map small: one
+ * still queued is never asked for a second time.
  */
-const measured = new Map<string, Promise<WebCopyPlan>>();
+const measured = new Map<string, { plan: Promise<WebCopyPlan>; done: boolean }>();
 const MEASURED_MAX = 32;
 
 /**
@@ -688,20 +689,27 @@ export async function libraryWebCopyPlan(record: AssetRecord, buf: Buffer): Prom
   if (!info || imageProblem(buf, record.mime) || info.width * info.height > MAX_VARIANT_PIXELS) return null;
   const key = `${sha(buf)}:${record.mime}`;
   const known = measured.get(key);
-  if (known) return known;
-  const plan = measureWebCopy(record, buf).catch(() => null);
-  measured.set(key, plan);
-  if (measured.size > MEASURED_MAX) measured.delete(measured.keys().next().value!);
-  void plan.then((p) => p === null && measured.get(key) === plan && measured.delete(key));
-  return plan;
+  if (known) return known.plan;
+  const entry = { plan: measureWebCopy(record, buf).catch(() => null), done: false };
+  measured.set(key, entry);
+  for (const [k, e] of measured) {
+    if (measured.size <= MEASURED_MAX) break;
+    if (e.done) measured.delete(k);
+  }
+  void entry.plan.then((p) => {
+    entry.done = true;
+    if (p === null && measured.get(key) === entry) measured.delete(key);
+  });
+  return entry.plan;
 }
 
 async function measureWebCopy(record: AssetRecord, buf: Buffer): Promise<WebCopyPlan> {
   const result = await mediaWorker.webCopy({ data: buf, mime: record.mime }, WEB_EDGE);
   if (!result.ok) return null;
   const p = preparedCopy(record.file, buf, result.copy);
-  if (p.buf.length > MAX_BYTES) return null;
-  return worthwhile(p.buf, buf) ? { format: p.mime === 'image/png' ? 'PNG' : 'JPEG', width: result.copy.width, height: result.copy.height } : { lighter: false };
+  // Checked in the order making the copy checks them, so the two always agree.
+  if (!worthwhile(p.buf, buf)) return { lighter: false };
+  return p.buf.length > MAX_BYTES ? null : { format: p.mime === 'image/png' ? 'PNG' : 'JPEG', width: result.copy.width, height: result.copy.height };
 }
 
 /**

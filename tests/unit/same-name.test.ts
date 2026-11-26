@@ -31,4 +31,15 @@ describe('telling apart images with the same name', () => {
     expect(labels.get('a_z')).toBe('6 KB · image 3 of 3');
     expect(labels.get('a_x')).toBe('88 KB');
   });
+
+  it('numbers an image whose only difference is a time that cannot be read', () => {
+    const labels = sameNameLabels([image('a_1', 'Hero', 6000, '2026-11-03T10:00:00.000Z'), image('a_2', 'Hero', 6000, 'not a time')], { a_1: 1, a_2: 1 }, key);
+    expect(labels.get('a_1')).toBe('added 3 Nov 2026');
+    expect(labels.get('a_2')).toBe('image 1 of 2');
+  });
+
+  it('orders by the time itself, whatever offset it was written with', () => {
+    const labels = sameNameLabels([image('a_1', 'Hero', 6000, '2026-11-03T10:00:00.000+02:00'), image('a_2', 'Hero', 6000, '2026-11-03T09:00:00.000Z')], { a_1: 1, a_2: 1 }, key);
+    expect([labels.get('a_1'), labels.get('a_2')]).toEqual(['image 1 of 2', 'image 2 of 2']);
+  });
 });

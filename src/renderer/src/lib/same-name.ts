@@ -32,9 +32,11 @@ export function sameNameLabels(images: AssetRecord[], usage: Record<string, numb
     });
     const telling = facts[0].map((_, i) => i).filter((i) => new Set(facts.map((f) => f[i])).size > 1);
     const labels = facts.map((f) => telling.map((i) => f[i]).filter(Boolean).join(' · '));
-    const order = [...group].sort((a, b) => String(a.createdAt).localeCompare(String(b.createdAt)) || a.id.localeCompare(b.id));
+    const at = (a: AssetRecord) => (typeof a.createdAt === 'string' ? Date.parse(a.createdAt) : NaN);
+    const order = [...group].sort((a, b) => (at(a) || 0) - (at(b) || 0) || a.id.localeCompare(b.id));
     group.forEach((a, i) => {
-      const alike = labels.filter((l) => l === labels[i]).length > 1;
+      // An image with nothing of its own to name (alike in all but a time no one can read) is numbered too.
+      const alike = !labels[i] || labels.filter((l) => l === labels[i]).length > 1;
       const numbered = `image ${order.indexOf(a) + 1} of ${group.length}`;
       out.set(a.id, alike ? [labels[i], numbered].filter(Boolean).join(' · ') : labels[i]);
     });

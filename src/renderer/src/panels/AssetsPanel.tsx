@@ -963,7 +963,7 @@ export function AssetsPanel({ narrow }: { narrow: boolean }) {
             )}
             {/* Smaller thumbnails are for scanning by eye: the name is in the tile's tooltip and its spoken name. */}
             {!compact && <span className="asset-name">{shortName(nameOf(a))}</span>}
-            {shared && !compact && <span className="asset-tile-id">{a.id}</span>}
+            {apart && !compact && <span className="asset-tile-id">{apart}</span>}
           </button>
         );
       })}
@@ -1390,7 +1390,7 @@ export function AssetsPanel({ narrow }: { narrow: boolean }) {
                   : offer
                     ? `${sameSize ? `A ${offer.format} copy at the same ${offer.width} × ${offer.height} is far lighter.` : `A web-sized copy (${offer.format} · ${offer.width} × ${offer.height}) keeps it light.`} ${used ? `It shows in ${onePlace ? 'its place' : 'its places'} instead, and the original stays in Assets.` : 'It’s added to Assets beside the original, which you can then remove.'}`
                     : webPlan
-                      ? 'A web-sized copy would hardly be lighter: it is already about as light as a picture this size gets.'
+                      ? 'A web-sized copy would be less than a third lighter, so none is offered.'
                       : used
                       ? 'A copy under 1.5 MB keeps it light: save one, add it, and use it with Replace everywhere.'
                       : 'A copy under 1.5 MB keeps it light: save one, add it, then remove this one.'}
