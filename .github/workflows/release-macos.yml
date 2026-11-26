@@ -17,10 +17,6 @@ on:
   push:
     tags:
       - "v*"
-    # TEMPORARY: runs the workflow from this branch before it can be dispatched
-    # from develop. Remove before merging.
-    branches:
-      - feature/release-pipeline
   workflow_dispatch:
     inputs:
       dry_run:
