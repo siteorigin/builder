@@ -123,7 +123,8 @@ export function headroomWarning(input: HeadroomInput): HeadroomWarning | null {
   const context = `the local model's ${assumed ? 'assumed ' : ''}${n(windowTokens)}-token context`;
   // A size read from the server needs nothing in Settings; one set there, or an assumed one, does.
   const inSettings = set !== null ? ' and match that size in AI settings' : assumed ? ' and set that size in AI settings' : '';
-  const larger = `load the model with a larger context${inSettings}`;
+  const held = set !== null && input.reportedWindow !== null && set < input.reportedWindow;
+  const larger = held ? 'raise the context size in AI settings' : `load the model with a larger context${inSettings}`;
   // Less room than a short paragraph: no message fits, however it is split.
   const kind = roomTokens < 256 ? 'setup' : draftTokens > roomTokens ? 'draft' : 'history';
   const text =

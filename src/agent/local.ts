@@ -991,21 +991,6 @@ export async function openLocalAdapter(
   return { adapter: new LocalAdapter(chosen, { fetch: opts.fetch, lookup: opts.lookup, context, onCheck: opts.onCheck }), model: chosen.model };
 }
 
-/**
- * What the composer needs to know before a message is sent: the model the next request would go to (the one chosen,
- * or the server's first) and the context size the server reports for it, as `openLocalAdapter` will read them. With
- * no model chosen, `listing` is what the server's model list showed.
- */
-export async function probeLocalTarget(
-  endpoint: LocalEndpoint,
-  opts: Pick<LocalAdapterOptions, 'fetch' | 'lookup'> & { signal?: AbortSignal; timeoutMs?: number } = {}
-): Promise<{ model: string | null; reportedWindow: number | null; listing?: { ok: boolean; models: string[]; message?: string } }> {
-  const listing = endpoint.model ? undefined : await listLocalModels(endpoint, opts);
-  const model = endpoint.model || listing?.models[0] || null;
-  const context = model ? await discoverLocalContext({ ...endpoint, model }, opts) : {};
-  return { model, reportedWindow: count(context.windowTokens) ?? null, ...(listing ? { listing } : {}) };
-}
-
 /** Why a server's model list rules out using `model` ('' for its first model), or null when it does not. */
 export function listedProblem(r: { ok: boolean; models: string[]; message?: string }, model: string): string | null {
   if (!r.ok) return r.message ?? 'Could not reach the local server.';

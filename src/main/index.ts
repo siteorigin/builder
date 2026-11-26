@@ -19,7 +19,7 @@ import { Orchestrator } from '@agent/orchestrator';
 import { INSPECT_COMPONENT_BUDGET_MS } from '@agent/component-inspection';
 import { OpenAIAdapter, testOpenAI } from '@agent/openai';
 import { AnthropicAdapter, testAnthropic } from '@agent/anthropic';
-import { listedProblem, listLocalModels, openLocalAdapter, probeLocalTarget, testLocal } from '@agent/local';
+import { discoverLocalContext, listedProblem, listLocalModels, openLocalAdapter, testLocal } from '@agent/local';
 import { compileProject } from './compile';
 import { checkSvelteSource, codeContractNames, componentSources } from './codecheck';
 import { renderSiteIconsInWorker, stopMediaWorker } from './project/assets';
@@ -318,9 +318,12 @@ function registerIpc() {
     const before = (await loadSettings()).settings.ai;
     // Withdrawing permission ends work in progress at once, which would otherwise keep sending to that server. The
     // work may have started on a remote server before the address in use changed, so the address is not checked.
-    if (before.provider === 'local' && before.local.allowRemote === true && patch.ai?.local && 'allowRemote' in patch.ai.local && patch.ai.local.allowRemote !== true) {
-      orchestrator.stop();
-      fixAbort?.abort();
+    if (before.local.allowRemote === true && patch.ai?.local && 'allowRemote' in patch.ai.local && patch.ai.local.allowRemote !== true) {
+      if (before.provider === 'local') {
+        orchestrator.stop();
+        fixAbort?.abort();
+      }
+      // Tests and the composer's context reads only ever reach the local server, whichever provider is chosen now.
       for (const test of testAborts) test.abort();
     }
     const s = await updateSettings(patch);
@@ -554,21 +557,15 @@ function registerIpc() {
     // Which server answered, so Settings shows the list for that server only.
     return { ...found, server: endpoint.baseURL };
   });
-  // The saved server only, as above. With no model chosen, what its model list shows is recorded as a list is.
-  handle('ai:localTarget', async () => {
+  // The saved server only, as above. A read for the composer: it records nothing about the server.
+  handle('ai:localContext', async (model: unknown) => {
     // Registered before the saved setup is read, as a test is, so remote access withdrawn meanwhile stops it too.
     const abort = new AbortController();
     testAborts.add(abort);
     try {
-      const epoch = localCheckEpoch();
       const endpoint = await localEndpoint();
-      const record = localCheckRecorder(endpoint, epoch);
-      const { listing, ...target } = await probeLocalTarget(endpoint, { signal: abort.signal });
-      if (listing && !abort.signal.aborted) {
-        const problem = listedProblem(listing, '');
-        record(problem ? { ok: false, stage: 'server', message: problem } : { listed: listing.models });
-      }
-      return target;
+      const found = typeof model === 'string' ? await discoverLocalContext({ ...endpoint, model }, { signal: abort.signal }) : {};
+      return { server: endpoint.baseURL, reportedWindow: found.windowTokens ?? null };
     } finally {
       testAborts.delete(abort);
     }

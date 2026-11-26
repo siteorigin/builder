@@ -1136,11 +1136,8 @@ export interface BuilderApi {
     /** Models the saved local server reports. */
     /** `server`: the saved address that was asked, which the list belongs to. */
     localModels(): Promise<{ ok: boolean; models: string[]; message?: string; server?: string }>;
-    /**
-     * The model the next request to the saved local server would go to, and the context size the server reports for
-     * it; either is null when unknown.
-     */
-    localTarget(): Promise<{ model: string | null; reportedWindow: number | null }>;
+    /** The context size the saved local server reports for a model, or null. `server`: the saved address asked. */
+    localContext(model: string): Promise<{ server: string; reportedWindow: number | null }>;
     conversations(): Promise<{ active: Conversation; list: ConversationSummary[] }>;
     newConversation(): Promise<Conversation>;
     openConversation(id: string): Promise<Conversation>;

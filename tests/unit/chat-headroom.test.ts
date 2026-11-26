@@ -8,6 +8,7 @@ import type { ProjectState } from '@shared/types';
 import { createStarterState } from '@catalogue/starters';
 import { selectionTarget, selectionTools } from '@agent/selection';
 import type { ElementRef, InstanceNode } from '@shared/types';
+import { LOCAL_MODEL_PROFILES } from '@shared/local-models';
 import { headroomWarning, LOCAL_OVERHEAD_TOKENS, messageRoom, replayedWords, SMALL_OVERHEAD_TOKENS, smallToolsCover } from '../../src/renderer/src/lib/chatHeadroom';
 
 /**
@@ -181,10 +182,26 @@ describe('composer headroom for a local model', () => {
     // Nothing to change in AI settings when the size came from the server.
     expect(small.text).toBe("This message is longer than the local model's 8,192-token context leaves room for (about 3,584 tokens). Send the copy a few sections at a time, or load the model with a larger context.");
     // With both, the smaller one.
-    expect(warn(draft, { model, contextWindow: 8192, reportedWindow: 65_536 })).toMatchObject({ windowTokens: 8192, assumed: false });
+    const held = warn(draft, { model, contextWindow: 8192, reportedWindow: 65_536 })!;
+    expect(held).toMatchObject({ windowTokens: 8192, assumed: false });
+    // The server already has more than Settings allows, so Settings is what to change.
+    expect(held.text).toContain('or raise the context size in AI settings.');
     expect(warn(draft, { model, contextWindow: 65_536, reportedWindow: 8192 })).toMatchObject({ windowTokens: 8192, assumed: false });
     expect(warn(draft, { model, contextWindow: 65_536, reportedWindow: 8192 })!.text).toContain('match that size in AI settings');
-    expect(warn(draft, { model, contextWindow: 65_536 })).toBeNull();
+    // A size set in Settings replaces the profile's too.
+    expect(warn(draft, { model, contextWindow: 8192 })).toMatchObject({ windowTokens: 8192, assumed: false });
+  });
+
+  it("counts the tools of the model's profile when the tool mode is automatic", () => {
+    const entry = { match: /^native-by-profile$/, profile: { toolCalling: 'native' as const } };
+    LOCAL_MODEL_PROFILES.push(entry);
+    try {
+      // The small native tools take far more of a small window than constrained JSON does.
+      expect(warn(a(600), { model: 'native-by-profile', contextWindow: 12_288 })).toMatchObject({ roomTokens: messageRoom(12_288, 'native') });
+      expect(warn(a(600), { model: 'native-by-profile', contextWindow: 12_288, toolMode: 'constrained-json' })).toBeNull();
+    } finally {
+      LOCAL_MODEL_PROFILES.splice(LOCAL_MODEL_PROFILES.indexOf(entry), 1);
+    }
   });
 
   it('counts the earlier messages a request replays, and says to start a new conversation when they tip it over', () => {

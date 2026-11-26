@@ -104,7 +104,7 @@ const api: BuilderApi = {
     setKey: invoke('ai:setKey'),
     testProvider: invoke('ai:test'),
     localModels: invoke('ai:localModels'),
-    localTarget: invoke('ai:localTarget'),
+    localContext: invoke('ai:localContext'),
     conversations: invoke('ai:conversations'),
     newConversation: invoke('ai:newConversation'),
     openConversation: invoke('ai:openConversation'),
