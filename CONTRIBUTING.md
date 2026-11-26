@@ -24,7 +24,7 @@ npm run build             # the end-to-end scripts drive the built app in out/
 node tests/e2e/<script>.mjs   # the end-to-end script that covers your change, when there is one
 ```
 
-Add unit tests that cover the change, and give every bug fix a regression test that fails without the fix. Never weaken an assertion to make a change pass. `npm run test:e2e` runs the whole end-to-end chain (smoke, editing flows, code components, visual tour, export integrity); while the repository is private, the full suites are driven to green by a separate local stabilization pass rather than by every change.
+Add unit tests that cover the change, and give every bug fix a regression test that fails without the fix. Never weaken an assertion to make a change pass. `npm run test:e2e` runs the whole end-to-end chain (smoke, editing flows, code components, visual tour, export integrity); pull-request CI runs only the unit tests, on Linux, and the full suites are driven to green by a separate local stabilization pass rather than by every change.
 
 The end-to-end scripts in `tests/e2e/` drive the real Electron app with Playwright and fail on the first broken step. A few checks for tracked app bugs are wrapped in `knownFailure()`: they print `!! KNOWN FAILURE` without failing the run, and print a reminder to remove the wrapper once they pass. Each run creates a fresh scratch folder inside `WORK` (default: the OS temp folder) and deletes it when the script passes; a failed run keeps it and prints its path. Screenshots go to `SHOTS` (default: `so-e2e-shots` in the OS temp folder). Run one Electron script at a time.
 
@@ -109,7 +109,7 @@ Each session runs headless in its own profile and workspace, with a scripted AI 
 
 Parallel work uses git worktrees, each with its own install. A new worktree starts without `node_modules`: run `npm ci` in it before building or testing. The repository has no Daintree setup command, so new worktrees are ready as soon as they are created.
 
-The Daintree assistant's `/work-batch` skill (`.daintree/assistant/.claude/skills/work-batch/`) works the issue backlog this way: `/next-batch` picks, one `/work` agent per issue opens a PR, and `/merge-prs` lands them on local checks, since the repository has no CI yet.
+The Daintree assistant's `/work-batch` skill (`.daintree/assistant/.claude/skills/work-batch/`) works the issue backlog this way: `/next-batch` picks, one `/work` agent per issue opens a PR and sees its CI through, and `/merge-prs` lands them.
 
 ## Rules that matter
 
@@ -125,7 +125,7 @@ The Daintree assistant's `/work-batch` skill (`.daintree/assistant/.claude/skill
 
 Keep each commit to one coherent change, with the checks above passing. Commit messages follow the existing style: a type, an optional scope and a plain summary, such as `feat(renderer): make the media gallery findable` or `fix(agent): retry a rate-limited stream once`, with a few bullets on what changed and why.
 
-While the repository is private, work lands directly on `develop`. Once it is open-sourced, branch from `develop` and open pull requests against it, describing what changed for users and how you tested it, with screenshots for visible changes.
+Branch from `develop` and open pull requests against it, describing what changed for users and how you tested it, with screenshots for visible changes. CI runs the unit tests on Linux for every pull request (`.github/workflows/ci.yml`); it runs no type check or e2e, so run `npm run typecheck` and the e2e script that covers your change yourself.
 
 ## Licence
 

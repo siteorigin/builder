@@ -9,12 +9,12 @@ Work from this run's measured throughput, not issue counts alone: issues landed 
 | Pick (`/next-batch`) | about 12 minutes | Daintree, 2026-10-22; this repository's backlog is much smaller, so expect less |
 | Sync, create worktrees, launch | about 12 minutes for 16 issues | Daintree, 2026-10-22 |
 | One agent's scoped work, reviewed and landed | 27 to 65 minutes | Seven parallel agents on this repository, 2026-11-23, not run through `/work` |
-| PR CI after `/work` ends | none | This repository has no GitHub CI |
-| `/merge-prs` | about 45 minutes for 16 PRs in trains | Daintree, 2026-10-22; no CI wait here, but hot-file rebases are likely |
+| The agent seeing its PR's CI through | a few minutes when the first run is green; each fix adds a run | `Unit tests` on `ubuntu-latest`, not yet timed on GitHub |
+| `/merge-prs` | about 45 minutes for 16 PRs in trains | Daintree, 2026-10-22; PRs arrive with their CI finished, but hot-file rebases are likely |
 
 Replace these with this repository's own numbers once a run has finished.
 
-The flow hides the pick and the merge, so while there are enough ready issues to keep every slot busy, throughput is about the slot count over the average `/work` time: 8 slots at 45 minutes is about 11 issues an hour.
+The flow hides the pick and the merge, so while there are enough ready issues to keep every slot busy, throughput is about the slot count over the average unit time, `/work` and its CI watch together: 8 slots at 50 minutes is about 10 issues an hour.
 
 Then say what bounds it:
 

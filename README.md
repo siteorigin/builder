@@ -76,7 +76,7 @@ Before a public release (spec §24 and §25.2):
 - [ ] **TODO: signing and notarization.** macOS: a Developer ID Application certificate (`CSC_LINK` / `CSC_KEY_PASSWORD`) and notarization credentials (`APPLE_ID`, `APPLE_APP_SPECIFIC_PASSWORD`, `APPLE_TEAM_ID`), then mount the DMG on a second Mac and check the bundled `.app` with `spctl -a -vv` and `xcrun stapler validate`. Windows: an Authenticode certificate for the NSIS installer. Until then builds are ad-hoc signed or unsigned, and Gatekeeper and SmartScreen warn.
 - [ ] `npm run dist` on each platform; install the DMG and NSIS installer (and launch the AppImage) on a clean machine, create a project offline, export it and build the export.
 - [ ] Tag the release (`vX.Y.Z`) on `main`.
-- [ ] **Deferred until the project is open-sourced:** restore CI. `2aa4206` removed the GitHub Actions CI (typecheck, unit tests, packaged smoke on macOS, Windows and Linux) and the tag-triggered release workflow while the repository is private. When it opens, restore both and add full `test:e2e` jobs for macOS and for Linux under `xvfb-run`. Until then, the full suites run in the local macOS stabilization pass, and the checks above run by hand.
+- [ ] **The rest of CI.** Pull requests run the unit tests on Linux (`.github/workflows/ci.yml`), and nothing runs on a push to `develop`. `2aa4206` removed the earlier CI (typecheck, unit tests, packaged smoke on macOS, Windows and Linux) and the tag-triggered release workflow while the repository was private; the release workflow, the other platforms and full `test:e2e` jobs for macOS and for Linux under `xvfb-run` are still to come. Until then, the full suites run in the local macOS stabilization pass, and the checks above run by hand.
 
 ## Architecture
 

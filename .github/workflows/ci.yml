@@ -1,0 +1,38 @@
+name: CI
+
+# Pull requests only, and only the unit tests, on Linux. Nothing runs on a push
+# to `develop`, and nothing here builds the app, runs e2e or covers another OS:
+# the local stabilize skill (.agents/skills/stabilize) owns the full suite on
+# the merged tree (CLAUDE.md, Testing).
+on:
+  pull_request:
+
+permissions:
+  contents: read
+
+# A new push to a pull request cancels the run on its previous head.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+jobs:
+  unit:
+    name: Unit tests
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 24
+          cache: npm
+      - run: npm ci
+      # The browser tests in tests/unit skip themselves when their browser is
+      # missing, so install Chromium or a third of the suite never runs. WebKit
+      # stays out: Playwright's Linux WebKit is not Safari, and the macOS
+      # stabilize pass runs the WebKit cases.
+      - name: Install Chromium for the browser tests
+        run: npx playwright install --with-deps chromium
+      - run: npm test

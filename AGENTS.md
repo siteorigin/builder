@@ -4,11 +4,11 @@ Electron + React desktop editor that builds portable SvelteKit 3 / Svelte 5 broc
 
 ## Where the project is
 
-This is a prototype. The goal right now is a good, usable builder that can make a real multi-page site, not release polish. Work lands straight on `develop`; there is no PR gate yet. The exception is a `/work-batch` run in Daintree (`.daintree/`), where each issue gets a `/work` PR and `/merge-prs` lands them on local checks.
+This is a prototype. The goal right now is a good, usable builder that can make a real multi-page site, not release polish. Work lands straight on `develop`; there is no PR gate yet. The exception is a `/work-batch` run in Daintree (`.daintree/`), where each issue gets a `/work` PR, its agent sees the PR's CI through, and `/merge-prs` lands them.
 
 **Pre-release: no backwards compatibility.** Nothing has shipped, and every existing project is throwaway development data. Never spend effort keeping old projects, old document formats or old component definitions working: no migrations, schema-version bumps, compatibility shims, fallbacks for old shapes, or deprecation paths. Change the format or the contract directly and update the starters, fixtures and tests to match. An old project that breaks gets deleted and recreated. Compatibility work starts at the first public release.
 
-**CI is deliberately deferred.** There is no GitHub Actions CI and none should be added: no `.github/workflows`, no pushes that trigger runs. CI comes back when the project is open-sourced. Until then, the full test surface is owned by the local stabilize workflow (below).
+**CI runs on pull requests only: the unit tests, on Linux.** The repository is public, and `.github/workflows/ci.yml` runs `npm ci` and `npm test` on `ubuntu-latest`, with Chromium installed for the browser tests, for every push to a pull request, as one check, `Unit tests`. Nothing runs on a push to `develop`, and CI has no typecheck, e2e, build, packaged smoke, WebKit or other OS: keep it to that, and add no other workflow, unless asked. An agent that opens a PR can watch its CI to a verdict (`gh pr checks <n> --watch`) and fix what its change broke: fetch before pushing, never force-push, and rerun only a clear flake. The rest of the test surface is owned by the local stabilize workflow (below).
 
 ## Testing
 
@@ -20,7 +20,7 @@ This is a prototype. The goal right now is a good, usable builder that can make 
 
 Definition of done for a change: typecheck green, unit tests covering the change added and green, and the one e2e script that covers the change run when there is one. Don't chase e2e failures outside your change. Bug fixes get a regression test that fails without the fix. Never weaken an assertion to make a change pass.
 
-**Stabilization.** The whole tree — unit, e2e, build, packaged smoke — is driven to green by the `stabilize` skill (`.agents/skills/stabilize/`), run with Codex (`$stabilize`) or Claude Code (`/stabilize`), and only when a human invokes it. For now it is **local only, on macOS**; Linux and Windows stages are added later, together with CI. Failures in the full suites are fixed there, not by every change.
+**Stabilization.** The whole tree — unit, e2e, build, packaged smoke — is driven to green by the `stabilize` skill (`.agents/skills/stabilize/`), run with Codex (`$stabilize`) or Claude Code (`/stabilize`), and only when a human invokes it. For now it is **local only, on macOS**; PR CI's unit tests are the only Linux run, and Windows has none yet. Failures in the full suites are fixed there, not by every change.
 
 ## Rules
 
