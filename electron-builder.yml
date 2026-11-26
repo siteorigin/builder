@@ -42,8 +42,8 @@ mac:
   icon: build/icon.png
   # Releases are built by hand (README.md, Releasing). build/after-pack.cjs signs every macOS build ad-hoc.
   # electron-builder then signs it again when it finds a "Developer ID Application" identity (in the keychain,
-  # or from CSC_LINK / CSC_KEY_PASSWORD), and notarizes it when APPLE_ID, APPLE_APP_SPECIFIC_PASSWORD and
-  # APPLE_TEAM_ID are set.
+  # or from CSC_LINK / CSC_KEY_PASSWORD), and then notarizes it when it has notarization credentials, such as
+  # APPLE_ID, APPLE_APP_SPECIFIC_PASSWORD and APPLE_TEAM_ID.
   hardenedRuntime: true
   gatekeeperAssess: false
   entitlements: build/entitlements.mac.plist
