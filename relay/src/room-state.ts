@@ -80,8 +80,21 @@ export interface SocketAttachment {
   nonce?: string;
   /** Whose socket a `guest` socket is. */
   guestId?: string;
+  /**
+   * On the host's socket: the page its latest presence was on, without the selection, so a guest let in or back
+   * later can follow the host before it moves. Kept on this socket alone, and bounded (an ID, a width and one preview
+   * path), so the attachment stays inside its limit; a new host connection starts without one.
+   */
+  hostPage?: HostPage;
   /** The room's latest copy (see RoomSnapshot); null once retired or before the room exists. */
   room: RoomSnapshot | null;
+}
+
+/** Where the host is: what of its presence a guest needs to follow it. */
+export interface HostPage {
+  pageId: string | null;
+  viewportWidth: number;
+  previewPath: string | null;
 }
 
 /** What the attachment helpers need of a socket, so they run (and are tested) outside the Workers runtime too. */

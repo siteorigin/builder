@@ -22,7 +22,7 @@ describe('the waiting room', () => {
     guest.send('guest-to-relay', { type: 'rpc:request', requestId: 'r1', method: 'project.snapshot', args: [] });
     const denied = await guest.next('rpc:response');
     expect(denied).toEqual({ type: 'rpc:response', requestId: 'r1', method: 'project.snapshot', ok: false, error: { code: 'PERMISSION_DENIED', message: 'The host has not let you in yet.', recoverable: true } });
-    guest.send('guest-to-relay', { type: 'presence:update', presence: { pageId: null, viewportWidth: 1280, selection: null } });
+    guest.send('guest-to-relay', { type: 'presence:update', presence: { pageId: null, viewportWidth: 1280, selection: null, previewPath: null } });
     expect((await guest.next('protocol:error')).code).toBe('FORBIDDEN');
 
     expect((await relay.fetch(`${room.previewOrigin}/`)).status).toBe(401);
@@ -219,8 +219,8 @@ describe('admitted guests', () => {
     room.host.send('host-to-relay', { type: 'rpc:event', guestId: bea.guestId, event: 'runtime:status', payload: 'ready' });
     expect((await bea.guest.next('rpc:event')).event).toBe('runtime:status');
 
-    const hostPresence = { pageId: 'home', viewportWidth: 1024, selection: null };
-    const annPresence = { pageId: 'about', viewportWidth: 390, selection: null };
+    const hostPresence = { pageId: 'home', viewportWidth: 1024, selection: null, previewPath: '/' };
+    const annPresence = { pageId: 'about', viewportWidth: 390, selection: null, previewPath: null };
     room.host.send('host-to-relay', { type: 'presence:update', presence: hostPresence });
     expect(await ann.guest.next('presence:changed')).toEqual({ type: 'presence:changed', participant: { kind: 'host' }, presence: hostPresence });
     ann.guest.send('guest-to-relay', { type: 'presence:update', presence: annPresence });

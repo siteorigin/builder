@@ -3,6 +3,8 @@ import type { SessionRoom } from './session-room';
 /** What the Worker and its SessionRoom objects are given: wrangler.toml's bindings and vars, and the signing secret. */
 export interface Env {
   ROOMS: DurableObjectNamespace<SessionRoom>;
+  /** The viewer's static files (relay/viewer/), which the Worker serves at the paths it names. */
+  ASSETS: Fetcher;
   ROOM_CREATION_LIMITER: RateLimit;
   ROOM_CONNECT_LIMITER: RateLimit;
   /** Signs guests' preview cookies. A secret: never in wrangler.toml. */

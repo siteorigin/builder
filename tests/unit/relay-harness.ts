@@ -72,6 +72,16 @@ export class Relay {
     return peer;
   }
 
+  /**
+   * The relay as a real browser reaches it: the simulator's own server, under `relay.localhost` so that each room's
+   * preview origin (`p-<label>.relay.localhost`) is the same site as the viewer. Chromium resolves `*.localhost` to
+   * loopback itself, and the Worker finds previews by the Host header, so no DNS is involved.
+   */
+  async browserOrigin(): Promise<string> {
+    const server = await this.miniflare.ready;
+    return `http://relay.localhost:${server.port}`;
+  }
+
   /** The simulator itself, for what wrangler does not expose: forcing a room's object to hibernate. */
   private get miniflare(): Miniflare {
     const mf = (this.worker.raw as unknown as { runtimes: Array<{ mf?: Miniflare }> }).runtimes.find((runtime) => runtime.mf)?.mf;

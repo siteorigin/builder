@@ -4,6 +4,14 @@ name = "siteorigin-live-relay"
 main = "src/index.ts"
 compatibility_date = "2026-11-23"
 
+# The guest's viewer: the page's script, styles and the preview's reload bridge (viewer/). The Worker runs first for
+# every request and serves these files only at the paths it names (src/index.ts), so nothing here is reachable by its
+# own path, and no preview origin serves the viewer's files.
+[assets]
+directory = "viewer"
+binding = "ASSETS"
+run_worker_first = true
+
 [[durable_objects.bindings]]
 name = "ROOMS"
 class_name = "SessionRoom"

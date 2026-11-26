@@ -1,7 +1,7 @@
 import { newRoomId, PREVIEW_HOST_LABEL_RE, previewHostLabel } from '../../src/shared/live/crypto';
-import { MAX_PREVIEW_HEADERS, ROOM_ID_RE } from '../../src/shared/live/limits';
+import { DISPLAY_NAME_MAX, LIVE_PROTOCOL_VERSION, MAX_PREVIEW_HEADERS, ROOM_ID_RE } from '../../src/shared/live/limits';
 import { isPreviewHeaderName, isPreviewHeaderValue, isPreviewTarget } from '../../src/shared/live/preview';
-import { HOST_SOCKET_PATH, PREVIEW_ADMISSION_PATH } from '../../src/shared/live/relay-url';
+import { formatInviteLink, HOST_SOCKET_PATH, PREVIEW_ADMISSION_PATH, relaySocketUrl, roomPreviewOrigin, roomSocketPath } from '../../src/shared/live/relay-url';
 import { MAX_ADMISSION_BODY_BYTES, previewCookieName, previewCookieValues } from './admission';
 import { hasSigningKey, relayOrigin, type Env } from './config';
 import { INTERNAL_HEADERS, readBoundedText, roomRequest, textResponse } from './http';
@@ -17,9 +17,11 @@ export { SessionRoom } from './session-room';
  * - The relay's own host, where the viewer lives:
  *   - `GET /ws/host` (WebSocket): open a new room; the host's first frame is room:create.
  *   - `GET /s/:roomId/ws` (WebSocket): a host reconnecting, or a guest joining.
- *   - `GET /s/:roomId`: the invite link, where the guest's page will live.
+ *   - `GET /s/:roomId`: the invite link: the guest's viewer, a waiting room and then the live preview.
+ *   - `GET /_viewer/*`: the viewer's script and styles (VIEWER_FILES).
  * - Each room's preview origin, `p-<label>.<relay host>` (previewHostLabel), where the host's site sits at the root:
  *   - `POST /__siteorigin/admission`: an admitted guest's page redeems its preview ticket for the preview cookie.
+ *   - `GET /__siteorigin/live.js`: the reload bridge the relay adds to the preview's pages in the viewer's frame.
  *   - `GET|HEAD /*`: the host's preview, tunnelled over the host's socket, for admitted guests.
  *
  * Every room's preview is its own origin so that the site code running in it, which its host controls, can reach
@@ -35,11 +37,12 @@ export default {
     if (preview) return previewRoute(request, env, url, preview);
     if (origin && url.origin !== origin) return textResponse(404, 'Not found.');
     if (url.pathname === HOST_SOCKET_PATH) return openRoom(request, env);
+    if (Object.hasOwn(VIEWER_FILES, url.pathname)) return viewerFile(request, env, VIEWER_FILES[url.pathname]);
     const match = /^\/s\/([^/]+)(\/.*)?$/.exec(url.pathname);
     if (!match || !ROOM_ID_RE.test(match[1])) return textResponse(404, 'Not found.');
     const roomId = match[1];
     const rest = match[2] ?? '';
-    if (rest === '' || rest === '/') return guestPage(request, roomId);
+    if (rest === '' || rest === '/') return guestPage(request, origin ?? (isHttps(request, url) ? url.origin.replace(/^http:/, 'https:') : url.origin), roomId);
     if (rest === '/ws') return connect(request, env, roomId);
     return textResponse(404, 'Not found.');
   }
@@ -71,6 +74,7 @@ function previewHost(url: URL, origin: string | null): PreviewHost | null {
 
 async function previewRoute(request: Request, env: Env, url: URL, host: PreviewHost): Promise<Response> {
   if (request.headers.get('upgrade')) return textResponse(404, 'Not found.');
+  if (url.pathname === PREVIEW_BRIDGE_PATH) return viewerFile(request, env, 'preview-bridge.js');
   if (url.pathname === PREVIEW_ADMISSION_PATH) {
     if (request.method === 'OPTIONS') return admissionPreflight(request, host);
     if (request.method === 'POST') return admission(request, env, url, host);
@@ -189,34 +193,171 @@ async function preview(request: Request, env: Env, url: URL, host: PreviewHost):
       passed++;
     }
   }
-  return env.ROOMS.get(env.ROOMS.idFromName(host.label)).fetch(roomRequest('/preview', null, { headers, signal: request.signal }));
+  const response = await env.ROOMS.get(env.ROOMS.idFromName(host.label)).fetch(roomRequest('/preview', null, { headers, signal: request.signal }));
+  return request.headers.get('sec-fetch-dest') === 'iframe' ? withReloadBridge(request, response) : response;
 }
 
-/** The invite link's page. The guest's viewer replaces this placeholder; the route and its headers stay. */
-function guestPage(request: Request, roomId: string): Response {
+/**
+ * Where, on a room's preview origin, the relay serves the reload bridge. A first segment starting with `__` is never
+ * one a guest may ask the preview for (preview.ts), so it cannot hide a file of the site.
+ */
+const PREVIEW_BRIDGE_PATH = '/__siteorigin/live.js';
+
+/**
+ * A page of the preview loaded in the viewer's frame, with the relay's reload bridge (viewer/preview-bridge.js) added
+ * to it: when the host's project changes, the viewer asks the bridge to reload the page the guest is on, where it is
+ * scrolled to, which the viewer cannot do itself across origins. Only whole, successful HTML pages are changed;
+ * anything else passes as it is. The page's own validators and length describe the host's bytes, not these, so they
+ * go: the browser then fetches the page whole each time, which a page in a live session wants anyway.
+ */
+function withReloadBridge(request: Request, response: Response): Response {
+  if (request.method !== 'GET' || response.status !== 200 || !/^text\/html\s*(;|$)/i.test(response.headers.get('content-type') ?? '')) return response;
+  const headers = new Headers(response.headers);
+  for (const name of ['content-length', 'etag', 'last-modified', 'accept-ranges']) headers.delete(name);
+  const tag = `<script src="${PREVIEW_BRIDGE_PATH}"></script>`;
+  // In the head when the page has one, else at the start of its body, else at its end.
+  let added = false;
+  const add = {
+    element(element: Element) {
+      if (added) return;
+      added = true;
+      element.prepend(tag, { html: true });
+    }
+  };
+  return new HTMLRewriter()
+    .on('head', add)
+    .on('body', add)
+    .onDocument({
+      end(end) {
+        if (!added) end.append(tag, { html: true });
+      }
+    })
+    .transform(new Response(response.body, { status: response.status, headers }));
+}
+
+/**
+ * The viewer's own files, by the path the guest's page loads them from on the relay's host. Each is served only at
+ * its path here, from the Worker's assets (relay/viewer/), so the asset directory's layout is never itself a route.
+ */
+const VIEWER_FILES: Record<string, string> = {
+  '/_viewer/viewer.js': 'viewer.js',
+  '/_viewer/shared.js': 'shared.js',
+  '/_viewer/viewer.css': 'viewer.css'
+};
+
+/** One of the viewer's files from the Worker's assets, never cached past a deploy and never sniffed as another type. */
+async function viewerFile(request: Request, env: Env, file: string): Promise<Response> {
   if (request.method !== 'GET' && request.method !== 'HEAD') return textResponse(405, 'Not allowed.', { allow: 'GET, HEAD' });
+  const asset = await env.ASSETS.fetch(new Request(new URL(`/${file}`, request.url), { method: request.method }));
+  if (!asset.ok) return textResponse(404, 'Not found.');
+  const headers = new Headers(asset.headers);
+  headers.set('cache-control', 'no-cache');
+  headers.set('x-content-type-options', 'nosniff');
+  return new Response(request.method === 'HEAD' ? null : asset.body, { status: 200, headers });
+}
+
+/** HTML text with its markup characters escaped, for an attribute value or an element's content. */
+function escapeHtml(text: string): string {
+  return text.replace(/[&<>"']/g, (c) => `&#${c.charCodeAt(0)};`);
+}
+
+/**
+ * The invite link's page: the guest's viewer. It is the same for every well-formed room ID, whether or not the room is
+ * open, so the page never says which rooms exist; the viewer finds out on the room's socket. Everything the page needs
+ * to reach its room (the socket, the room's preview origin, the invite link) is worked out here and written into it,
+ * and its Content Security Policy names exactly those: it may connect to its room's socket and preview origin, frame
+ * that preview, and load nothing but the viewer's own files.
+ */
+async function guestPage(request: Request, relay: string, roomId: string): Promise<Response> {
+  if (request.method !== 'GET' && request.method !== 'HEAD') return textResponse(405, 'Not allowed.', { allow: 'GET, HEAD' });
+  let previewOrigin: string;
+  try {
+    previewOrigin = await roomPreviewOrigin(relay, roomId);
+  } catch (error) {
+    return textResponse(503, `This relay cannot serve live sessions at this address: ${error instanceof Error ? error.message : String(error)}`);
+  }
+  const socketUrl = relaySocketUrl(relay, roomSocketPath(roomId));
+  const attrs = {
+    'data-room-id': roomId,
+    'data-socket-url': socketUrl,
+    'data-preview-origin': previewOrigin,
+    'data-invite-link': formatInviteLink(relay, roomId),
+    'data-protocol-version': String(LIVE_PROTOCOL_VERSION),
+    'data-name-max': String(DISPLAY_NAME_MAX)
+  };
+  const data = Object.entries(attrs)
+    .map(([name, value]) => `${name}="${escapeHtml(value)}"`)
+    .join(' ');
   const html = `<!doctype html>
 <html lang="en">
 <head>
 <meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <meta name="robots" content="noindex">
-<title>SiteOrigin Builder live session</title>
-<style>body{font:16px/1.5 system-ui,sans-serif;margin:0;display:grid;place-items:center;min-height:100vh;background:#f6f6f4;color:#222}main{max-width:32rem;padding:2rem}</style>
+<meta name="color-scheme" content="light dark">
+<title>Live session · SiteOrigin Builder</title>
+<link rel="stylesheet" href="/_viewer/viewer.css">
+<script type="module" src="/_viewer/viewer.js"></script>
 </head>
 <body>
-<main id="live-session" data-room-id="${roomId}">
-<h1>SiteOrigin Builder live session</h1>
-<p>You have been invited to a live session. The viewer for live sessions is not available yet.</p>
+<div class="app" id="live-session" ${data} data-phase="name">
+<header class="bar" id="bar" hidden>
+  <div class="bar-title"><span class="mark" aria-hidden="true"></span><span class="site" id="site-title"></span><span class="pill" id="connection" role="status"></span></div>
+  <div class="bar-meta"><span class="badge" id="role"></span><span class="badge time" id="time" hidden></span></div>
+  <div class="bar-controls">
+    <div class="segmented" role="group" aria-label="Preview width">
+      <button type="button" data-viewport="desktop" aria-pressed="false">Desktop</button>
+      <button type="button" data-viewport="tablet" aria-pressed="false">Tablet</button>
+      <button type="button" data-viewport="mobile" aria-pressed="false">Mobile</button>
+    </div>
+    <label class="toggle"><input type="checkbox" id="follow" checked><span>Follow host</span></label>
+    <button type="button" class="link-button" id="copy-invite">Open in Builder</button>
+  </div>
+</header>
+<div class="handoff" id="handoff" hidden>
+  <p id="handoff-text"></p>
+  <div class="handoff-row"><input type="text" id="handoff-link" readonly aria-label="Invite link"><button type="button" id="handoff-copy">Copy link</button><button type="button" class="quiet" id="handoff-close" aria-label="Close">Close</button></div>
+</div>
+<main class="stage" id="stage" hidden>
+  <div class="frame" id="frame"></div>
+  <div class="veil" id="veil" hidden><p id="veil-text"></p></div>
 </main>
+<section class="screen" id="screen" aria-live="polite">
+  <div class="card">
+    <span class="mark large" aria-hidden="true"></span>
+    <h1 id="screen-title">Join the live session</h1>
+    <p id="screen-text">You have been invited to watch a website being designed, live. Enter your name so the host knows who is asking.</p>
+    <form id="join" novalidate>
+      <label for="name">Your name</label>
+      <input id="name" name="name" autocomplete="name" autocapitalize="words" spellcheck="false" required>
+      <p class="error" id="name-error" hidden></p>
+      <button type="submit" id="join-button">Ask to join</button>
+      <p class="hint">No account or download needed.</p>
+    </form>
+    <div class="waiting" id="waiting" hidden><span class="spinner" aria-hidden="true"></span></div>
+    <button type="button" id="screen-action" hidden></button>
+  </div>
+</section>
+<noscript><p class="noscript">This page needs JavaScript to join a live session.</p></noscript>
+</div>
 </body>
 </html>
 `;
+  const csp = [
+    "default-src 'none'",
+    "script-src 'self'",
+    "style-src 'self'",
+    `connect-src ${socketUrl} ${previewOrigin}`,
+    `frame-src ${previewOrigin}`,
+    "base-uri 'none'",
+    "form-action 'none'",
+    "frame-ancestors 'none'"
+  ].join('; ');
   return new Response(request.method === 'HEAD' ? null : html, {
     headers: {
       'content-type': 'text/html; charset=utf-8',
       'cache-control': 'no-store',
-      'content-security-policy': "default-src 'none'; style-src 'unsafe-inline'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'",
+      'content-security-policy': csp,
       'referrer-policy': 'no-referrer',
       'x-content-type-options': 'nosniff'
     }
