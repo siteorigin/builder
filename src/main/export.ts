@@ -24,6 +24,8 @@ import { SEARCH_INDEX_FILE } from '@generator/search';
 import { hasFeedEntries } from '@generator/rss';
 import { redirectHost, VERCEL_CONFIG_FILE } from '@generator/host-redirects';
 import { atomicWrite, readIfExists, removeEmptyDirs, safeJoin, sha, toJson } from './project/fsutil';
+import { isPrivateFileName } from './project/private-files';
+import { sourceDocPath } from './project/documents';
 import { withoutPartMarkers } from './codecheck';
 import { pageTitle, readBuildFailure, type BuildFailureContext, type BuildReport, type ExplainedBuild } from './build-failure';
 import { addCredits, cleanPhoto, hasCredits, photoMetadata, sniffImageType, type PhotoCredits } from './project/photo-metadata';
@@ -35,8 +37,6 @@ import { NOT_FOUND_FILE, notFoundPath } from '@shared/not-found';
 
 const EXCLUDE_TOP = new Set(['node_modules', '.siteorigin', '.svelte-kit', 'build', '.git', '.DS_Store']);
 
-/** Private files that never leave the project folder. */
-const PRIVATE_FILE = /^(\.env(\..*)?|\.npmrc|\.netrc|\.git-credentials|id_rsa.*|id_ed25519.*|id_ecdsa.*|id_dsa.*|.*\.(pem|key|p12|pfx|ppk|keystore|jks|asc|gpg))$/i;
 
 /**
  * Copy the project's source from `src` to `dest`. The project brief (#518) is private to the project and is left out
@@ -72,6 +72,22 @@ export function isProjectBrief(root: string, p: string): boolean {
   return BRIEF_COPY_RE.test(relative(root, p).split(sep).join('/'));
 }
 
+/**
+ * The external sources' settings a copy of the project carries: exactly the ones the project holds, as it holds them,
+ * written in place of whatever the folder had there (a hand edit the app refused, a copy an editor left beside one),
+ * which may hold the very credential a source only names. A website build carries none: the site shows its entries,
+ * and never reads where they came from.
+ */
+export async function writeExportedSources(dest: string, state: ProjectState, opts: { keep: boolean }) {
+  await fs.rm(join(dest, 'siteorigin', 'sources'), { recursive: true, force: true });
+  if (!opts.keep) return;
+  for (const id of Object.keys(state.sources ?? {}).sort()) {
+    const file = join(dest, sourceDocPath(id));
+    await fs.mkdir(dirname(file), { recursive: true });
+    await fs.writeFile(file, toJson(state.sources![id]));
+  }
+}
+
 /** Is `p` part of the project source in `root`: not tools, caches, builds, private files or links? */
 export function inProjectSource(root: string, p: string): boolean {
   const rel = relative(root, p);
@@ -80,7 +96,7 @@ export function inProjectSource(root: string, p: string): boolean {
   // The editor's own data (history, which holds every version of the brief) by any spelling: on a case-insensitive
   // disk, `.SiteOrigin` is the same folder.
   if (EXCLUDE_TOP.has(top) || top.toLowerCase() === '.siteorigin' || /\.tmp$/.test(p)) return false;
-  if (PRIVATE_FILE.test(basename(p))) return false;
+  if (isPrivateFileName(basename(p))) return false;
   try {
     return !lstatSync(p).isSymbolicLink();
   } catch {
