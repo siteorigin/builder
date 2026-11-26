@@ -20,11 +20,14 @@ import type { BuildFailureContext } from './build-failure';
 import { zipDirectory } from './zip';
 import { NOT_A_PROJECT_ZIP, readProjectZip, unpackProject, WEBSITE_ZIP, ZipError } from './unzip';
 import { StaticPreviews } from './static-preview';
-import { isPlainFile, builtPhotosMessage, deliverVercelConfig, pageLanguageWarning, publicUrlNote, rivalHookStop, cleanBuiltSite, cleanWebsitePhotos, copyProjectSource, draftLinksStop, draftSourceNotes, publishedChanged, withheldRoutes, withheldStaticFiles, editedGeneratedFile, explainBuildFailure, exportedAssetFilter, finishExportedSource, leaveOutDrafts, listFiles, locatedPhotos, locationKeptNote, locationRemovedNote, missingAssetsStop, missingSourceWarnings, missingUnusedWarnings, missingWebsiteAssets, notFoundAddressWarning, notFoundHostNote, notFoundPageProblem, omittedAssetsWarning, ownNotFoundFileNote, ownNotFoundFileStop, readNotFoundPage, settleServerHook, stripPartMarkers, carriesPartMarker, projectFingerprint, projectReadme, publishFolder, pruneWebsiteAssets, replaceEmptyFolder, readLibraryImage, sectionLinkWarnings, uncleanablePhotosMessage, uniqueChild, unlinkedButtonWarnings, unlinkedMenuLinkWarnings, formNameWarnings, runtimeFontWarnings, variantCredits } from './export';
+import { isPlainFile, builtPhotosMessage, deliverVercelConfig, pageLanguageWarning, publicUrlNote, rivalHookStop, cleanBuiltSite, cleanWebsitePhotos, copyProjectSource, draftLinksStop, draftSourceNotes, publishedChanged, withheldRoutes, withheldStaticFiles, editedGeneratedFile, explainBuildFailure, exportedAssetFilter, finishExportedSource, leaveOutDrafts, listFiles, locatedPhotos, locationKeptNote, locationRemovedNote, missingAssetsStop, missingSourceWarnings, missingUnusedWarnings, missingWebsiteAssets, notFoundAddressWarning, notFoundHostNote, notFoundPageProblem, omittedAssetsWarning, ownNotFoundFileNote, ownNotFoundFileStop, readNotFoundPage, settleServerHook, stripPartMarkers, carriesPartMarker, projectFingerprint, projectReadme, publishFolder, pruneWebsiteAssets, replaceEmptyFolder, readLibraryImage, sectionLinkWarnings, uncleanablePhotosMessage, uniqueChild, unlinkedButtonWarnings, unlinkedMenuLinkWarnings, formNameWarnings, runtimeFontWarnings, variantCredits, writeExportedSources, exportedSourcesProblem } from './export';
 import { LOCAL_DIR, NO_LOCK, ProjectLockedError, ProjectSession, ThemeUnavailableError } from './project/session';
 import { DOC_DIR, MANIFEST_FILE, ProjectFormatError } from './project/documents';
 import { DOCUMENT_EXTENSIONS, FONT_EXTENSIONS, IMAGE_EXTENSIONS, IMPORT_IMAGE_EXTENSIONS, importAsset, importPackageImage, isAssetOfKind, isOpaquePicture, libraryWebCopyPlan, locateAssetFile, originalNameOf, pictureMime, restoreAssetFiles, reviewImportFile, storeLibraryWebCopy } from './project/assets';
 import { postReader, stopPostReads } from './posts-import/process';
+import { sourceSecrets, sourceSyncRunner, stopSourceSyncs } from './sources/process';
+import { syncSource, type SourceSyncResult } from './sources/sync';
+import { holdsSecretValue } from '@shared/sources';
 import { planOperations, planPostImport, type PostImportPlan } from './posts-import/plan';
 import { postImportPreview } from './posts-import/preview';
 import { readContained } from './posts-import/files';
@@ -1326,6 +1329,10 @@ export class Controller {
     // A posts import being read or reviewed belongs to this project.
     this.postImport = null;
     stopPostReads();
+    // So does a source being synced: its worker is ended, and a reply already in nothing lands.
+    for (const sync of this.sourceSyncs) sync.abort();
+    this.sourceSyncs.clear();
+    stopSourceSyncs();
     // Workspace state belongs to the project it was saved in: accept no more of it, and write it before the lock goes.
     this.workspaceKey = null;
     this.onOpeningChange?.();
@@ -1429,8 +1436,12 @@ export class Controller {
       // opening it was asked in is still the open one.
       await s.exclusive(async () => {
         if (!current()) throw Object.assign(new Error('stale'), { code: 'STALE_OPENING' });
-        // The copy is the project itself, brief and all.
+        // The copy is the project itself, brief and all, with its sources' settings as the project holds them, and as
+        // the folder holds them too, so they match the collections copied beside them.
+        const sources = await this.sourcesCopyProblem(s);
+        if (sources) throw Object.assign(new Error(sources), { code: 'SOURCES' });
         await copyProjectSource(s.dir, tmp, { keepBrief: true });
+        await writeExportedSources(tmp, s.state, { keep: true });
       });
       const manifestPath = join(tmp, MANIFEST_FILE);
       const manifest = JSON.parse(await fs.readFile(manifestPath, 'utf8'));
@@ -1575,6 +1586,10 @@ export class Controller {
     if (this.aiBusy()) return { ok: false, revision: session.revision, error: { code: 'BUSY', message: 'The AI is making changes. Stop it before editing.', recoverable: true } };
     // Code, and copies that would make new code, need Developer mode: the session checks the batch as it applies it.
     const codeAllowed = (await loadSettings()).settings.developerMode;
+    // A source's settings never hold one of the user's saved secrets themselves (a token pasted into its name).
+    const sources = batch.operations.filter((o) => (o as { type?: unknown })?.type === 'source.upsert');
+    if (sources.length && holdsSecretValue(JSON.stringify(sources), await sourceSecrets.values(session.state.manifest.projectId).catch(() => [])))
+      return { ok: false, revision: session.revision, error: { code: 'INVALID_ARGUMENT', message: 'A source’s settings may not hold one of your secrets. Name it with { "$secret": "<name>" } instead.', recoverable: true } };
     // An edit belongs to the project it was made in: one closing, closed or switched meanwhile never receives it.
     if (this.session !== session || this.closing) return { ok: false, revision: session.revision, error: { code: 'CONFLICT', message: 'The project was closed before this change could be saved.', recoverable: false } };
     return session.apply(batch, { label: opts.label ?? batch.label ?? 'Edit', coalesceKey: opts.coalesceKey, source: 'user', codeAllowed });
@@ -2163,6 +2178,77 @@ export class Controller {
     );
   }
 
+  /** The source syncs in progress: each is ended when its project closes. */
+  private sourceSyncs = new Set<AbortController>();
+
+  /**
+   * Sync external source `sourceId` of the open project into its collection (#676): its records are read in the sync
+   * worker, signed in with the secrets the source names, and land as one change against the revision the sync began
+   * from, or nothing does.
+   */
+  async syncSource(sourceId: string, opening: string): Promise<SourceSyncResult> {
+    const s = this.session;
+    const closed = { ok: false as const, message: 'The project was closed before the source was synced.' };
+    if (!s || opening !== this.workspaceKey || this.closing) return closed;
+    if (s.readOnly) return { ok: false, message: s.readOnly.reason };
+    if (this.aiBusy()) return { ok: false, message: 'The AI is making changes. Stop it before syncing a source.' };
+    const abort = new AbortController();
+    this.sourceSyncs.add(abort);
+    const current = () => !abort.signal.aborted && this.session === s && opening === this.workspaceKey && !this.closing;
+    try {
+      return await this.serialImport(async () => {
+        if (!current()) return closed;
+        return syncSource(
+          {
+            session: s,
+            runner: sourceSyncRunner,
+            secrets: sourceSecrets,
+            current,
+            signal: abort.signal,
+            importImage: (img, known, createdAt) => importPackageImage(s.dir, { name: img.name, mime: img.mime, ext: img.ext, bytes: Buffer.from(img.bytes) }, known, this.writeFence(s), createdAt)
+          },
+          sourceId
+        );
+      });
+    } finally {
+      this.sourceSyncs.delete(abort);
+    }
+  }
+
+  /**
+   * Why the project's external sources' settings cannot go into a copy of it, or null: the folder holds them otherwise
+   * than the project does, or they hold one of the user's saved secrets. Secrets that cannot be read stop a copy of a
+   * project that has sources, since nothing then says they are not there.
+   */
+  private async sourcesCopyProblem(s: ProjectSession): Promise<string | null> {
+    const has = Object.keys(s.state.sources ?? {}).length > 0;
+    let values: string[] = [];
+    try {
+      values = await sourceSecrets.values(s.state.manifest.projectId);
+    } catch (e) {
+      if (has) return `${(e as Error).message} The project's external sources cannot be checked for them.`;
+    }
+    return exportedSourcesProblem(s.dir, s.state, values);
+  }
+
+  /** The names of the secrets the open project's sources can sign in with, never their values. */
+  async sourceSecretNames(): Promise<string[]> {
+    const s = this.session;
+    return s ? sourceSecrets.names(s.state.manifest.projectId) : [];
+  }
+
+  /** Keep `value` as the open project's source secret `name`, in the user's own source-secrets.json, or forget it (null). */
+  async setSourceSecret(name: string, value: string | null): Promise<{ ok: boolean; message?: string }> {
+    const s = this.session;
+    if (!s) return { ok: false, message: 'No project is open.' };
+    try {
+      await sourceSecrets.set(s.state.manifest.projectId, name, value);
+      return { ok: true };
+    } catch (e) {
+      return { ok: false, message: (e as Error).message };
+    }
+  }
+
   /**
    * An imported font file's bytes, for the editor to draw its samples in the file itself, and the alphabets it covers.
    * Null when the project has moved on (`opening`), the record is not a sound font, or the file can't be read.
@@ -2568,7 +2654,11 @@ export class Controller {
       // Both exports are the published site: its pages decide whether it needs the generated server hook.
       const rival = await rivalHookStop(s.dir, publishedState(s.state));
       if (rival) return stop(rival);
+      // A source's settings go out as the project holds them, and only when the folder holds them so too.
+      const sources = opts.forBuild ? null : await this.sourcesCopyProblem(s);
+      if (sources) return stop(sources);
       await copyProjectSource(s.dir, dest, { keepAsset: exportedAssetFilter(s.state) });
+      await writeExportedSources(dest, s.state, { keep: !opts.forBuild });
       // The icons go out with the favicon they were made from: one replaced since would go out beside icons of the
       // picture it replaced. Only while icons cannot be made at all do those the project has go out as they are.
       const iconSource = await s.siteIconSource(dest);

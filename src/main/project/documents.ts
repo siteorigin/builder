@@ -1,8 +1,9 @@
 import { promises as fs, existsSync } from 'node:fs';
 import { join } from 'node:path';
-import type { AssetsDoc, Collection, CollectionDoc, ComponentDefinition, EntryDoc, PageDoc, ProjectBriefDoc, ProjectManifest, ProjectState, SiteDoc, ThemeLock, TokensDoc } from '@shared/types';
+import type { AssetsDoc, Collection, CollectionDoc, ComponentDefinition, EntryDoc, PageDoc, ProjectBriefDoc, ProjectManifest, ProjectState, SiteDoc, SourceDoc, ThemeLock, TokensDoc } from '@shared/types';
 import { BRIEF_FILE, BRIEF_FIELDS } from '@shared/brief';
 import { isCollectionId, isEntryId } from '@shared/collections';
+import { isSourceId, sourceDocProblem } from '@shared/sources';
 import { SCHEMA_VERSION } from '@shared/types';
 import { migrateProject, newestDocumentVersion, type MigrationResult } from '@shared/migrations';
 import { readIfExists, safeJoin, toJson } from './fsutil';
@@ -20,8 +21,29 @@ export function isCanonicalPath(p: string): boolean {
     /^siteorigin\/pages\/[A-Za-z0-9_-]+\.json$/.test(p) ||
     /^siteorigin\/components\/[A-Za-z0-9][A-Za-z0-9._-]*\/component\.json$/.test(p) ||
     collectionPathOf(p) !== null ||
+    sourcePathOf(p) !== null ||
     CUSTOM_SOURCE_RE.test(p)
   );
+}
+
+export function sourceDocPath(sourceId: string): string {
+  return `${DOC_DIR}/sources/${sourceId}/source.json`;
+}
+
+/** The source whose settings document `p` is, or null for any other path. Only well-formed IDs match. */
+export function sourcePathOf(p: string): string | null {
+  const m = /^siteorigin\/sources\/([^/]+)\/source\.json$/.exec(p);
+  return m && isSourceId(m[1]) ? m[1] : null;
+}
+
+/** Sources from their documents, by path; any other path is skipped. */
+export function sourcesFromDocs(docs: Iterable<[string, unknown]>): Record<string, SourceDoc> {
+  const out: Record<string, SourceDoc> = {};
+  for (const [path, doc] of [...docs].sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0))) {
+    const id = sourcePathOf(path);
+    if (id !== null) out[id] = doc as SourceDoc;
+  }
+  return out;
 }
 
 export function collectionDocPath(collectionId: string): string {
@@ -104,6 +126,7 @@ export function stateToDocs(state: ProjectState): Map<string, string> {
     docs.set(collectionDocPath(id), toJson(c.settings));
     for (const eid of Object.keys(c.entries).sort()) docs.set(entryDocPath(id, eid), toJson(c.entries[eid]));
   }
+  for (const id of Object.keys(state.sources ?? {}).sort()) docs.set(sourceDocPath(id), toJson(state.sources![id]));
   return docs;
 }
 
@@ -134,6 +157,7 @@ export async function newestStoredVersion(dir: string): Promise<number> {
     paths.push(collectionDocPath(c));
     for (const f of await names(`${DOC_DIR}/collections/${c}/entries`)) if (f.endsWith('.json') && isEntryId(f.slice(0, -5))) paths.push(entryDocPath(c, f.slice(0, -5)));
   }
+  for (const d of await names(`${DOC_DIR}/sources`)) if (isSourceId(d)) paths.push(sourceDocPath(d));
   let newest = 0;
   for (const rel of paths) {
     try {
@@ -301,7 +325,44 @@ async function readStoredState(dir: string, opts: ReadOptions, raw: Map<string, 
   if (duplicates.length) throw new ProjectFormatError(`${duplicates[0]} has the same entry ID as an entry of another collection. Entry IDs must be unique across the project.`);
   const state: ProjectState = { manifest, site, tokens, assets, themeLock, pages, components, collections };
   if (exists(BRIEF_FILE)) state.brief = briefDoc(await load<unknown>(BRIEF_FILE));
+  // External sources: each folder's settings, checked to hold no credential before anything else reads them.
+  const sources: Record<string, SourceDoc> = {};
+  for (const d of await list(`${DOC_DIR}/sources`, (p) => sourcePathOf(p))) {
+    if (d.startsWith('.')) continue;
+    const path = `${DOC_DIR}/sources/${d}/source.json`;
+    // A folder left behind by an interrupted delete holds no settings.
+    if (!exists(path)) continue;
+    if (!isSourceId(d)) throw new ProjectFormatError(`${DOC_DIR}/sources/${d} is not a valid source folder name (use lowercase letters, numbers and single hyphens).`);
+    sources[d] = sourceDoc(await loadQuiet(text, path), path, d);
+  }
+  if (Object.keys(sources).length) state.sources = sources;
   return state;
+}
+
+/**
+ * A stored source's settings, read without quoting a word of the file when it is damaged: the file may hold the very
+ * credential it should only name.
+ */
+async function loadQuiet(text: (rel: string) => Promise<string | null>, rel: string): Promise<unknown> {
+  let t: string | null;
+  try {
+    t = await text(rel);
+  } catch {
+    throw new ProjectFormatError(`Could not read ${rel}.`);
+  }
+  if (t === null) throw new ProjectFormatError(`Could not read ${rel}: the file is missing`);
+  try {
+    return JSON.parse(t);
+  } catch {
+    throw new ProjectFormatError(`Could not read ${rel}: it is not valid JSON.`);
+  }
+}
+
+/** A stored source's settings, checked: a credential written into them, or anything else they cannot hold, stops the read. */
+function sourceDoc(doc: unknown, path: string, folder: string): SourceDoc {
+  const problem = sourceDocProblem(doc, folder);
+  if (problem) throw new ProjectFormatError(`${path} cannot be used: ${problem}`);
+  return doc as SourceDoc;
 }
 
 /**

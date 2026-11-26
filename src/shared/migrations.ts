@@ -567,7 +567,7 @@ export function matchesLock(hash: string | undefined, def: ComponentDefinition):
 /** Every document of a project, which each carry their own `schemaVersion`. */
 function documents(project: ProjectState): Array<{ schemaVersion: number }> {
   const collections = Object.values(project.collections ?? {}).flatMap((c) => [c.settings, ...Object.values(c.entries)]);
-  return [project.manifest, project.site, project.tokens, project.assets, project.themeLock, ...Object.values(project.pages), ...Object.values(project.components), ...collections, ...(project.brief ? [project.brief] : [])];
+  return [project.manifest, project.site, project.tokens, project.assets, project.themeLock, ...Object.values(project.pages), ...Object.values(project.components), ...collections, ...(project.brief ? [project.brief] : []), ...Object.values(project.sources ?? {})];
 }
 
 /** A missing or malformed version counts as the first format: migrations leave current documents unchanged. */

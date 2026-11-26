@@ -35,11 +35,12 @@ export function frameAncestorsCsp(packaged: boolean): string {
 
 /**
  * What the preview server may serve from disk: the project folder only, never the editor's private data or
- * secrets, nor the project's private brief (#518) and any copy of it an editor left beside it. Vite's own defaults
+ * secrets, nor the project's private brief (#518) and any copy of it an editor left beside it, nor its external
+ * sources' settings and any copy of a credential file (#676). Vite's own defaults
  * are repeated because setting `deny` replaces them.
  */
 export function previewFsPolicy(dir: string) {
-  return { strict: true, allow: [dir], deny: ['.env', '.env.*', '*.{crt,pem,key,p12,pfx,cer,der}', '.npmrc', '.yarnrc.yml', '**/.git/**', '**/.siteorigin/**', '**/siteorigin/brief.json*', '**/siteorigin/.brief.json*', '**/siteorigin/#brief.json#'] };
+  return { strict: true, allow: [dir], deny: ['.env', '.env.*', '*.{crt,pem,key,p12,pfx,cer,der}', '.npmrc', '.yarnrc.yml', '**/.git/**', '**/.siteorigin/**', '**/siteorigin/brief.json*', '**/siteorigin/.brief.json*', '**/siteorigin/#brief.json#', '**/siteorigin/sources/**', '**/*source-secrets.json*', '**/*api-keys.json*'] };
 }
 
 type HeaderValue = string | number | readonly string[];

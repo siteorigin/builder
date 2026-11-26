@@ -21,7 +21,8 @@ export default defineConfig({
           index: resolve('src/main/index.ts'),
           'runtime-worker': resolve('src/runtime/worker.ts'),
           'media-worker': resolve('src/main/project/media-worker.ts'),
-          'posts-import-worker': resolve('src/main/posts-import/worker.ts')
+          'posts-import-worker': resolve('src/main/posts-import/worker.ts'),
+          'source-sync-worker': resolve('src/main/sources/worker.ts')
         }
       }
     }

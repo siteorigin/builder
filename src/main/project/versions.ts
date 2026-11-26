@@ -11,6 +11,7 @@ import { join } from 'node:path';
 import { atomicWrite, ensureDir, removeDurable, sha, syncDir, toJson } from './fsutil';
 import { isCanonicalPath } from './documents';
 import { SITE_ICON_FILES } from '@shared/site-icons';
+import { isPrivateFileName } from './private-files';
 
 /** The format of versions.json. A newer one is left alone: nothing is saved, deleted or collected. */
 export const VERSIONS_FORMAT = 1;
@@ -29,9 +30,8 @@ export function isVersionMedia(path: string): boolean {
  * manifest claims.
  */
 const GENERATED_STATIC = new Set(['static/robots.txt', 'static/sitemap.xml', 'static/llms.txt', 'static/llms-full.txt', 'static/rss.xml', 'static/_redirects', ...SITE_ICON_FILES.map((f) => `static/${f}`)]);
-const PRIVATE_NAME = /^(\.env(\..*)?|\.npmrc|\.netrc|\.git-credentials|id_rsa.*|id_ed25519.*|id_ecdsa.*|id_dsa.*|.*\.(pem|key|p12|pfx|ppk|keystore|jks|asc|gpg))$/i;
 export function heldAsMedia(path: string): boolean {
-  return isVersionMedia(path) && !GENERATED_STATIC.has(path) && !PRIVATE_NAME.test(path.slice(path.lastIndexOf('/') + 1));
+  return isVersionMedia(path) && !GENERATED_STATIC.has(path) && !isPrivateFileName(path.slice(path.lastIndexOf('/') + 1));
 }
 const OBJECT_RE = /^[a-f0-9]{64}$/;
 const ID_RE = /^v[a-z0-9]{6,40}$/;

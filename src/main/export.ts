@@ -4,9 +4,9 @@
  */
 import { markdownMirrorRoute } from '@shared/llms';
 import { randomUUID } from 'node:crypto';
-import { existsSync, lstatSync, promises as fs, readdirSync, statSync } from 'node:fs';
+import { constants as fsConstants, existsSync, lstatSync, promises as fs, readdirSync, statSync } from 'node:fs';
 import { basename, dirname, join, relative, sep } from 'node:path';
-import type { AssetRecord, NodeTree, PageDoc, ProjectState } from '@shared/types';
+import type { AssetRecord, NodeTree, PageDoc, ProjectState, SourceDoc } from '@shared/types';
 import { documentFormat } from '@shared/document-files';
 import { declaredDirection, declaredLanguage, pageDirection, pageLanguage, sameLanguage } from '@shared/languages';
 import { checkPublicUrl } from '@shared/public-url';
@@ -24,6 +24,41 @@ import { SEARCH_INDEX_FILE } from '@generator/search';
 import { hasFeedEntries } from '@generator/rss';
 import { redirectHost, VERCEL_CONFIG_FILE } from '@generator/host-redirects';
 import { atomicWrite, readIfExists, removeEmptyDirs, safeJoin, sha, toJson } from './project/fsutil';
+import { isPrivateFileName } from './project/private-files';
+import { sourceDocPath } from './project/documents';
+import { holdsSecretValue, isSourceId } from '@shared/sources';
+
+const UNREADABLE = Symbol('unreadable');
+
+/**
+ * A settings file's text, null when there is none, or UNREADABLE for anything but a plain file (a pipe, which would
+ * hold the read up forever, a folder, a device) or one that cannot be read. Opened without waiting, so nothing at the
+ * path can hold it up.
+ */
+async function readSettingsFile(path: string): Promise<string | null | typeof UNREADABLE> {
+  let fh: Awaited<ReturnType<typeof fs.open>>;
+  try {
+    fh = await fs.open(path, fsConstants.O_RDONLY | (fsConstants.O_NONBLOCK ?? 0));
+  } catch (e) {
+    const code = (e as NodeJS.ErrnoException).code;
+    return code === 'ENOENT' || code === 'ENOTDIR' ? null : UNREADABLE;
+  }
+  try {
+    const st = await fh.stat();
+    return st.isFile() ? await fh.readFile('utf8') : UNREADABLE;
+  } catch {
+    return UNREADABLE;
+  } finally {
+    await fh.close().catch(() => undefined);
+  }
+}
+
+/** JSON with every object's keys sorted, so two documents that say the same compare equal. */
+function canonicalJson(v: unknown): string {
+  if (Array.isArray(v)) return `[${v.map(canonicalJson).join(',')}]`;
+  if (v && typeof v === 'object') return `{${Object.keys(v).sort().map((k) => `${JSON.stringify(k)}:${canonicalJson((v as Record<string, unknown>)[k])}`).join(',')}}`;
+  return JSON.stringify(v);
+}
 import { withoutPartMarkers } from './codecheck';
 import { pageTitle, readBuildFailure, type BuildFailureContext, type BuildReport, type ExplainedBuild } from './build-failure';
 import { addCredits, cleanPhoto, hasCredits, photoMetadata, sniffImageType, type PhotoCredits } from './project/photo-metadata';
@@ -35,12 +70,11 @@ import { NOT_FOUND_FILE, notFoundPath } from '@shared/not-found';
 
 const EXCLUDE_TOP = new Set(['node_modules', '.siteorigin', '.svelte-kit', 'build', '.git', '.DS_Store']);
 
-/** Private files that never leave the project folder. */
-const PRIVATE_FILE = /^(\.env(\..*)?|\.npmrc|\.netrc|\.git-credentials|id_rsa.*|id_ed25519.*|id_ecdsa.*|id_dsa.*|.*\.(pem|key|p12|pfx|ppk|keystore|jks|asc|gpg))$/i;
 
 /**
  * Copy the project's source from `src` to `dest`. The project brief (#518) is private to the project and is left out
- * unless `keepBrief` says the copy is the project itself (Duplicate project), so no export ever carries it.
+ * unless `keepBrief` says the copy is the project itself (Duplicate project), so no export ever carries it. External
+ * sources' settings (#676) are never copied: a copy that keeps them writes the project's own (writeExportedSources).
  */
 export async function copyProjectSource(src: string, dest: string, opts: { keepAsset?: (rel: string) => boolean; keepBrief?: boolean } = {}) {
   await fs.cp(src, dest, {
@@ -49,6 +83,8 @@ export async function copyProjectSource(src: string, dest: string, opts: { keepA
     filter: (p) => {
       if (!inProjectSource(src, p)) return false;
       if (!opts.keepBrief && isProjectBrief(src, p)) return false;
+      // Sources' settings are written from the project's own (writeExportedSources), never copied as the folder has them.
+      if (isSourcesFolder(src, p)) return false;
       const rel = relative(src, p);
       if (!rel || !opts.keepAsset) return true;
       try {
@@ -72,6 +108,53 @@ export function isProjectBrief(root: string, p: string): boolean {
   return BRIEF_COPY_RE.test(relative(root, p).split(sep).join('/'));
 }
 
+/** Is `p` the external sources' folder of the project in `root`, or inside it? Without case, as the disk may be. */
+export function isSourcesFolder(root: string, p: string): boolean {
+  return /^siteorigin\/sources(\/|$)/i.test(relative(root, p).split(sep).join('/'));
+}
+
+/**
+ * The external sources' settings a copy of the project carries: exactly the ones the project holds, as it holds them.
+ * A website build carries none: the site shows its entries, and never reads where they came from.
+ */
+export async function writeExportedSources(dest: string, state: ProjectState, opts: { keep: boolean }) {
+  await fs.rm(join(dest, 'siteorigin', 'sources'), { recursive: true, force: true });
+  if (!opts.keep) return;
+  for (const id of Object.keys(state.sources ?? {}).sort()) {
+    const file = join(dest, sourceDocPath(id));
+    await fs.mkdir(dirname(file), { recursive: true });
+    await fs.writeFile(file, toJson(state.sources![id]));
+  }
+}
+
+/**
+ * Why the external sources' settings in the project folder `dir` cannot go out as the project holds them, or null: one
+ * on disk that the project does not hold as it is (an edit the app refused, or has not loaded yet), or the project's
+ * own holding one of the user's secret `values` (a token pasted into a source's name). Copies an editor left beside
+ * them never go out, so they are no reason.
+ */
+export async function exportedSourcesProblem(dir: string, state: ProjectState, values: readonly string[]): Promise<string | null> {
+  const held = state.sources ?? {};
+  const folders = await fs.readdir(join(dir, 'siteorigin', 'sources')).catch(() => [] as string[]);
+  // The same document however it is laid out: an edit that only spaces it differently is the same settings.
+  const same = (disk: string | null, mine: SourceDoc | undefined): boolean => {
+    if (disk === null || mine === undefined) return disk === null && mine === undefined;
+    try {
+      return canonicalJson(JSON.parse(disk)) === canonicalJson(mine);
+    } catch {
+      return false;
+    }
+  };
+  for (const d of new Set([...folders, ...Object.keys(held)])) {
+    const disk = await readSettingsFile(join(dir, 'siteorigin', 'sources', d, 'source.json'));
+    if (disk !== UNREADABLE && same(disk, Object.hasOwn(held, d) ? held[d] : undefined)) continue;
+    // Named only when it is a source's own name: a folder may be called anything, a credential included.
+    return `${isSourceId(d) ? sourceDocPath(d) : 'An external source’s settings'} ${isSourceId(d) ? 'was' : 'were'} changed outside SiteOrigin Builder. Open the project again to load ${isSourceId(d) ? 'it' : 'them'}, or put ${isSourceId(d) ? 'it' : 'them'} back, then export again.`;
+  }
+  if (holdsSecretValue(JSON.stringify(held), values)) return 'An external source’s settings hold one of your secrets. Take it out of the source’s settings, then export again.';
+  return null;
+}
+
 /** Is `p` part of the project source in `root`: not tools, caches, builds, private files or links? */
 export function inProjectSource(root: string, p: string): boolean {
   const rel = relative(root, p);
@@ -80,7 +163,7 @@ export function inProjectSource(root: string, p: string): boolean {
   // The editor's own data (history, which holds every version of the brief) by any spelling: on a case-insensitive
   // disk, `.SiteOrigin` is the same folder.
   if (EXCLUDE_TOP.has(top) || top.toLowerCase() === '.siteorigin' || /\.tmp$/.test(p)) return false;
-  if (PRIVATE_FILE.test(basename(p))) return false;
+  if (isPrivateFileName(basename(p))) return false;
   try {
     return !lstatSync(p).isSymbolicLink();
   } catch {

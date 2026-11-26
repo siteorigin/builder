@@ -118,7 +118,10 @@ const LOOK: Record<OperationType, Look> = {
   'entry.create': 'lists',
   'entry.update': 'lists',
   'entry.reorder': 'lists',
-  'entry.remove': 'lists'
+  'entry.remove': 'lists',
+  // A source's settings change nothing a page shows until a sync writes its entries.
+  'source.upsert': 'none',
+  'source.remove': 'none'
 };
 
 /** page.update fields only search engines, sharing previews and the editor read; a language counts once it turns the text. */

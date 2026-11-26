@@ -970,6 +970,24 @@ export const OPERATION_SCHEMAS = {
     replacementPageId: z.string().optional().describe('Links to the removed entry are pointed to this page instead.')
   }),
 
+  // Editor only: an external source's settings (#676). A credential is only ever named, by the secret the user keeps
+  // outside the project.
+  'source.upsert': z
+    .object({
+      type: z.literal('source.upsert'),
+      sourceId: z.string().max(60).describe('Stable lowercase ID and folder name, such as "team-cms".'),
+      name: z.string().min(1).max(120),
+      adapter: z.string().max(40).describe('The kind of source it is, which says how its records are read.'),
+      collectionId: z.string().max(60).describe('The collection its records are synced into.'),
+      credentials: z
+        .record(z.string().max(64), z.object({ $secret: z.string().max(64) }).strict())
+        .optional()
+        .describe('The secrets it signs in with, by slot: each { "$secret": "<name>" }, never the value. Given, replaces them all; left out keeps them.'),
+      removal: z.enum(['unpublish', 'remove', 'keep']).optional().describe('What a sync does with an entry the source no longer has. Defaults to unpublish, which drafts it so links keep working.')
+    })
+    .describe('Add an external source, or change one.'),
+  'source.remove': z.object({ type: z.literal('source.remove'), sourceId: z.string() }).describe('Delete an external source. Refused while a collection is synced from it.'),
+
   'asset.add': z.object({
     type: z.literal('asset.add'),
     asset: z.object({

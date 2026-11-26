@@ -6,6 +6,7 @@
  */
 import { describe, expect, it } from 'vitest';
 import type { EntrySource, InstanceNode, ProjectState, TextNode } from '@shared/types';
+import { SCHEMA_VERSION } from '@shared/types';
 import type { EditOperation } from '@shared/ops';
 import { validateOperation } from '@shared/ops';
 import { createStarterState } from '@catalogue/starters';
@@ -398,6 +399,8 @@ describe('a synced collection', () => {
   /** The studio with its team synced from an external source (attached by a sync, as #676 will). */
   function synced(collectionId = 'team') {
     const s = studio();
+    // Synced from a source the project declares (#676), as a sync leaves it.
+    s.sources = { 'people-api': { schemaVersion: SCHEMA_VERSION, id: 'people-api', name: 'People API', adapter: 'rest', collectionId, config: {} } };
     s.collections[collectionId].settings.sourceId = 'people-api';
     for (const e of Object.values(s.collections[collectionId].entries)) e.source = { ...SOURCE, externalId: e.id };
     return s;
