@@ -2289,7 +2289,8 @@ export const INTERACTIONS: Interaction[] = [
       { test: 'tests/unit/post-workspace.test.ts', kind: 'unit' },
       { test: 'tests/unit/post-draft.test.ts', kind: 'unit' },
       { test: 'tests/e2e/posts.mjs', kind: 'e2e', step: 'the featured image is chosen, imported and removed in the visual picker, each an undo step (#563)' }
-    ]
+    ],
+    gaps: [{ missing: 'Duplicate as draft and Delete in a post’s menu are never chosen by a test', owner: 'posts' }]
   },
   {
     id: 'posts.publish',
@@ -2318,7 +2319,7 @@ export const INTERACTIONS: Interaction[] = [
     area: 'posts',
     intent: 'File posts under categories and tags, and manage them',
     start: 'Business site with three posts, two published',
-    routes: ['panel:Posts › Categories and tags', 'item:Posts:*…', 'panel:Posts › writer › Category', 'panel:Posts › Filter'],
+    routes: ['panel:Posts › Categories and tags', 'item:Posts:*…', 'panel:Posts › writer › Category', 'panel:Posts › Filter', 'panel:Posts › options › Sort', 'item:Posts:<data>'],
     outcome: 'Categories and tags are added in the manager and as they are typed; the list narrows by category, status and words; a rename moves the address, its posts and a list of posts choosing it in one undo step; a delete says how many posts it is on and is refused while a list chooses it',
     scenario: 'Business starter · none',
     proof: [
@@ -2327,7 +2328,8 @@ export const INTERACTIONS: Interaction[] = [
       { test: 'tests/e2e/post-taxonomy.mjs', kind: 'e2e', step: 'the category renamed: its address, its posts and the list on Home follow it in one step' },
       { test: 'tests/e2e/post-taxonomy.mjs', kind: 'e2e', step: 'deleting a category says how many posts it is on; one a list of posts chooses is refused' },
       { test: 'tests/unit/post-taxonomy.test.ts', kind: 'unit' }
-    ]
+    ],
+    gaps: [{ missing: 'Sorting the list from its options menu is never chosen by a test', owner: 'posts' }]
   },
   {
     id: 'posts.import',
@@ -2368,13 +2370,14 @@ export const INTERACTIONS: Interaction[] = [
     area: 'posts',
     intent: 'Change the layout every post uses, once',
     start: 'Business site with published posts',
-    routes: ['panel:Posts › Posts layout', 'item:Posts:Edit layout'],
+    routes: ['panel:Pages › Collections › Posts › Edit layout', 'item:Posts:Edit layout'],
     outcome: 'The posts layout opens on the canvas, shows any post, and an edit to it reaches every post',
     scenario: 'Business starter · none',
     proof: [
       { test: 'tests/e2e/export.mjs', kind: 'e2e', step: '#394: the posts layout, opened on the canvas, shown on any post, and edited once for every post' },
       { test: 'tests/unit/collection-templates.test.ts', kind: 'unit' }
-    ]
+    ],
+    gaps: [{ missing: 'Edit layout in the Content panel’s options menu is never chosen by a test; the proof opens it from Pages', owner: 'posts' }]
   },
   {
     id: 'posts.collections',
@@ -2389,7 +2392,7 @@ export const INTERACTIONS: Interaction[] = [
       { test: 'tests/unit/collection-session.test.ts', kind: 'unit' }
     ],
     gaps: [
-      { missing: 'No panel makes or edits a collection other than the blog; custom fields and taxonomies are not shown in the entry editor', owner: 'posts', issue: 672 },
+      { missing: 'The Content panel adds, switches to and edits collections (Add a collection…, Collection settings…, Add a field), but no test drives them through the app', owner: 'posts', issue: 672 },
       { missing: 'Collections every site can use as visual components (team, testimonials, products) are still to come', owner: 'posts', issue: 346 }
     ]
   },
