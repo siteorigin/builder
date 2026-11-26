@@ -177,35 +177,69 @@
   .asset-cleanup p { margin: 0; font-size: 12px; line-height: 1.4; color: var(--text-2); }
   .asset-nomatch { display: flex; flex-direction: column; align-items: flex-start; gap: 8px; padding: 6px 14px; }
   .asset-nomatch p { margin: 0; font-size: 12px; color: var(--text-2); }
-  /* What the project's media take, and what removed files kept for Undo take (issue #253). */
-  /* Pinned under every tab, so what the project takes is always one glance away. */
+  /* What the project's media take, and what removed files kept for Undo take (issue #253). Pinned under every tab,
+     so what the project takes is always one glance away. Every figure is named in words on screen, never in a
+     tooltip. The heading is the total and a disclosure for the breakdown, folded at first in a short window. */
   .asset-storage { flex: none; display: flex; flex-direction: column; gap: 4px; padding: 8px 14px 10px; border-top: 1px solid var(--border); background: var(--panel); }
   .asset-storage-head { display: flex; align-items: center; justify-content: space-between; gap: 8px; min-height: 24px; }
-  .asset-storage h4 { display: flex; align-items: center; gap: 6px; margin: 0; font-size: 12px; font-weight: 600; color: var(--text); }
-  .asset-storage h4 svg { width: 13px; height: 13px; color: var(--text-3); }
+  .asset-storage h4 { min-width: 0; margin: 0; font-size: 12px; font-weight: 600; color: var(--text); }
+  /* The heading is the disclosure: its chevron hangs in the footer's left padding so "Storage" lines up with the rows. */
+  .asset-storage-toggle { display: inline-flex; align-items: center; gap: 1px; min-height: 24px; margin-left: -14px; padding: 0 4px 0 1px; border: 0; border-radius: var(--r-sm); background: none; font: inherit; color: inherit; white-space: nowrap; }
+  .asset-storage-toggle:hover { background: var(--hover); }
+  /* At the panel's edge, so its ring is drawn inside. */
+  .asset-storage-toggle:focus-visible { outline-offset: -2px; }
+  .asset-storage-toggle svg { width: 12px; height: 12px; flex: none; color: var(--text-3); transition: transform 120ms; }
+  .asset-storage-toggle[aria-expanded='true'] svg { transform: rotate(90deg); }
+  .asset-storage-total { margin-left: 4px; font-weight: 400; color: var(--text-2); font-variant-numeric: tabular-nums; }
+  .asset-storage-details { display: flex; flex-direction: column; gap: 4px; }
+  .asset-storage-details[hidden] { display: none; }
   .asset-storage dl { display: flex; flex-direction: column; gap: 1px; width: 100%; margin: 0; }
-  .asset-storage dl > div { display: flex; justify-content: space-between; gap: 8px; font-size: 12px; }
-  .asset-storage dt { color: var(--text-2); }
-  .asset-storage dd { margin: 0; color: var(--text); font-variant-numeric: tabular-nums; text-align: right; }
-  .storage-dialog { display: flex; flex-direction: column; gap: 10px; max-width: 460px; }
-  .storage-dialog p { margin: 0; line-height: 1.5; }
-  .storage-table { width: 100%; border-collapse: collapse; font-size: 12px; font-variant-numeric: tabular-nums; }
-  .storage-table th { padding: 5px 8px 5px 0; font-weight: 500; text-align: left; color: var(--text-2); }
-  .storage-table td { padding: 5px 0 5px 12px; text-align: right; white-space: nowrap; }
-  .storage-table tr + tr > * { border-top: 1px solid var(--border); }
-  .storage-steps { margin: -4px 0 0; padding-left: 18px; }
+  .asset-storage dl > div { display: flex; justify-content: space-between; align-items: baseline; gap: 8px; font-size: 12px; line-height: 1.45; }
+  .asset-storage dt { min-width: 0; color: var(--text-2); }
+  .asset-storage dd { flex: none; white-space: nowrap; margin: 0; color: var(--text); font-variant-numeric: tabular-nums; text-align: right; }
+  .asset-storage-note { margin: 2px 0 0; font-size: 12px; line-height: 1.4; color: var(--text-3); }
+  @media (max-height: 640px) { .asset-storage { padding-block: 6px; } }
+  @media (prefers-reduced-motion: reduce) { .asset-storage-toggle svg { transition: none; } }
+
+  /* Free up space reads like the app's other confirmations (ConfirmDialog.css): one sentence of what it does, then
+     what goes and what stays as two labelled groups with the total the button frees, then the detail lines.
+     "This can't be undone." is the footer's first item, beside the buttons, so it never scrolls away from them. */
+  .storage-dialog { display: flex; flex-direction: column; gap: 14px; }
+  .storage-dialog p { margin: 0; line-height: 1.5; text-wrap: pretty; }
+  .storage-dialog .scope-note { align-items: center; }
+  .storage-notes { display: flex; flex-direction: column; gap: 8px; scroll-margin-top: 4px; }
+  .storage-notes[hidden] { display: none; }
+  .storage-table { width: 100%; border-collapse: collapse; font-size: 13px; font-variant-numeric: tabular-nums; }
+  .storage-table th { padding: 5px 8px 5px 0; font-weight: 400; text-align: left; }
+  .storage-table td { width: 1%; padding: 5px 0 5px 16px; text-align: right; white-space: nowrap; }
+  .storage-table tbody + tbody .storage-group th { padding-top: 16px; }
+  .storage-table .storage-group th { padding: 0 0 6px; font-size: 12px; font-weight: 600; color: var(--text-2); border-bottom: 1px solid var(--border); }
+  .storage-group-label { display: inline-flex; align-items: center; gap: 7px; }
+  .storage-table .storage-group svg { width: 14px; height: 14px; flex: none; }
+  .storage-table tr:not(.storage-group) + tr > * { border-top: 1px solid var(--border); }
+  .storage-goes .storage-group th { color: var(--text); }
+  .storage-goes .storage-group svg { color: var(--red); }
+  .storage-goes tr:not(.storage-group) > * { color: var(--text); }
+  .storage-goes .storage-total > * { font-weight: 600; }
+  .storage-stays .storage-group svg { color: var(--text-3); }
+  .storage-stays tr:not(.storage-group) > * { color: var(--text-2); }
+  .storage-details > li > div { display: flex; flex-direction: column; gap: 4px; min-width: 0; }
+  .storage-steps { margin: 0; padding-left: 18px; }
+  .storage-dialog .storage-steps { list-style: disc; }
+  /* The steps sit inside a ConfirmDialog detail line, whose rules are for the lines themselves, not lists in them. */
+  .storage-details .storage-steps li { display: list-item; color: var(--text); }
+  .storage-details li[data-kind] .storage-more svg { width: 14px; height: 14px; margin: 0; color: inherit; }
   .storage-steps li { margin: 2px 0; overflow-wrap: anywhere; }
   .storage-steps li.more { list-style: none; margin-left: -18px; color: var(--text-2); }
-  .storage-steps li.more summary { cursor: pointer; color: var(--accent-text); }
-  .storage-steps li.more ul { margin: 2px 0 0; padding-left: 18px; color: var(--text); }
-  /* What stays and what goes: the rows that will be deleted read in full text, the kept row says so. */
-  .storage-stays, .storage-goes-tag { display: inline-flex; align-items: center; gap: 3px; vertical-align: 1px; margin-left: 6px; padding: 1px 6px; border-radius: var(--r-sm); background: var(--panel-2); color: var(--text-2); font-size: 11px; font-weight: 500; }
-  .storage-goes-tag { background: var(--red-soft); color: var(--red); }
-  .storage-goes-tag svg { width: 10px; height: 10px; }
-  .asset-storage-note { margin: 0; font-size: 11px; color: var(--text-2); }
-  .storage-table tr:not(.storage-goes) td { color: var(--text-2); }
-  .storage-table tr.storage-goes th, .storage-table tr.storage-goes td { color: var(--text); font-weight: 600; }
-  .storage-dialog .scope-note:not(.danger) { align-items: center; background: var(--panel-2); }
+  /* The rest of the steps join the same list: the house disclosure (SettingsModal.css), a chevron that turns. */
+  .storage-more { display: inline-flex; align-items: center; gap: 4px; width: fit-content; min-height: 24px; margin-left: -4px; padding: 0 6px 0 2px; border: 0; border-radius: var(--r-sm); background: none; font-size: 13px; font-weight: 500; color: var(--text-2); }
+  .storage-more:hover { color: var(--text); background: var(--hover); }
+  .storage-more svg { width: 14px; height: 14px; transition: transform 120ms; }
+  .storage-more[aria-expanded='true'] svg { transform: rotate(90deg); }
+  @media (prefers-reduced-motion: reduce) { .storage-more svg { transition: none; } }
+  .storage-nothing { display: flex; flex-direction: column; gap: 8px; }
+  .storage-final { display: flex; align-items: center; gap: 8px; margin: 0 auto 0 0; font-size: 13px; font-weight: 600; color: var(--text); }
+  .storage-final svg { width: 15px; height: 15px; flex: none; color: var(--red); }
 
 
   .uses-toggle { align-self: flex-start; display: inline-flex; align-items: center; gap: 3px; min-height: 22px; border: 0; border-radius: var(--r-xs); background: none; padding: 0 4px 0 0; font-size: 11px; color: var(--text-2); text-align: left; }

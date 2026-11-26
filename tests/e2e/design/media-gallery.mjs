@@ -343,7 +343,7 @@ await storage.getByText('Kept for Undo').waitFor({ timeout: 30000 });
 await scrollBody('end');
 await pause(300);
 await shot('storage-kept', '.asset-storage', { themes: ['light'] });
-await storage.getByRole('button', { name: /Free up space/ }).click();
+await storage.getByRole('button', { name: /^Free .+…$/ }).click();
 await win.getByTestId('free-space-dialog').waitFor({ timeout: 10000 });
 await pause(300);
 await shot('free-space', '[data-testid="free-space-dialog"]', { window: true });
