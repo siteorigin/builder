@@ -345,6 +345,8 @@ export function Chat() {
   // (another conversation, a finished run, coming back to the app), so a server that now runs another model is a switch.
   const autoLocal = configured && provider?.id === 'local' && !settings?.ai.models.local?.trim() ? (settings?.ai.local.baseURL ?? '') : null;
   const [serverModel, setServerModel] = useState<{ baseURL: string; id: string | null } | null>(null);
+  /** Both questions about the server are asked again when Settings closes: a saved key can change what it answers. */
+  const settingsOpen = useStore((s) => s.modal?.kind === 'settings');
   const probeSeq = useRef(0);
   /** The model the local server offers first now; only the newest answer is kept, whatever order they arrive in. */
   const probeServer = (baseURL: string): Promise<string | null> => {
@@ -371,8 +373,38 @@ export function Chat() {
       window.removeEventListener('focus', ask);
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [autoLocal, conversation?.id, running]);
+  }, [autoLocal, conversation?.id, running, settingsOpen]);
   const next = nextRecipient(provider, settings?.ai.models, autoLocal !== null && serverModel?.baseURL === autoLocal ? serverModel.id : null);
+  // The context that model's server reports, for the length warning. Asked apart from the model, so a server slow to
+  // say never holds up the recipient.
+  const contextModel = (configured && provider?.id === 'local' && next?.id) || '';
+  const contextKey = contextModel && settings ? JSON.stringify([settings.ai.local.baseURL, contextModel, settings.ai.local.allowRemote]) : null;
+  const [serverContext, setServerContext] = useState<{ key: string; window: number | null } | null>(null);
+  const localBaseURL = settings?.ai.local.baseURL;
+  useEffect(() => {
+    if (contextKey === null) return;
+    /** Only the newest answer is kept, and none that arrives after what it was asked about changed. */
+    let latest = 0;
+    const ask = () => {
+      const seq = ++latest;
+      void api.ai.localContext(contextModel).then(
+        (r) => {
+          // The server named is the one main asked, which may have been changed while the question was on its way.
+          if (seq === latest && r.server === localBaseURL) setServerContext({ key: contextKey, window: r.reportedWindow });
+        },
+        () => undefined
+      );
+    };
+    ask();
+    window.addEventListener('focus', ask);
+    return () => {
+      latest = -1;
+      window.removeEventListener('focus', ask);
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [contextKey, conversation?.id, running, settingsOpen]);
+  // An answer about another server or model says nothing about this one.
+  const reportedWindow = serverContext && serverContext.key === contextKey ? serverContext.window : null;
   // A message to a model that has not seen this conversation's recent messages says so before it is sent.
   // It is about the next message, so while a run is under way it waits until something is written for that message.
   const notice = asking || (pending && !draft.trim() && !images.length) ? null : switchNotice(msgs, next);
@@ -594,7 +626,7 @@ export function Chat() {
   const localModel = configured && provider?.id === 'local';
   const headroom =
     localModel && !asking && settings
-      ? headroomWarning({ draft, history: replayed, contextWindow: settings.ai.local.contextWindow, toolMode: settings.ai.local.toolMode, pageTools: !askMode && !component && !scope.post && !(toSelection && !!scope.selection && smallToolsCover(st, scope.selection)) })
+      ? headroomWarning({ draft, history: replayed, contextWindow: settings.ai.local.contextWindow, model: contextModel, reportedWindow, toolMode: settings.ai.local.toolMode, pageTools: !askMode && !component && !scope.post && !(toSelection && !!scope.selection && smallToolsCover(st, scope.selection)) })
       : null;
   // Starters come from what this project holds: the page, the selection, the pages and the images that exist.
   // The starters are changes to make, so a question starts from an empty box. They are about pages, so a component

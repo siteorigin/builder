@@ -834,6 +834,67 @@ describe('capability profiles', () => {
     expect(modelInfo('local', 'anything')).toMatchObject({ contextWindow: DEFAULT_LOCAL_PROFILE.contextWindow, maxOutput: DEFAULT_LOCAL_PROFILE.maxOutput });
   });
 
+  it.each([
+    'qwen3.5-2b',
+    'qwen-3.5-2b',
+    'qwen_3.5_2b',
+    'Qwen3.5-2B-Instruct',
+    'Qwen/Qwen3.5-2B',
+    'Qwen3.5-2B-Q4_K_M.gguf',
+    'Qwen_Qwen3.5-2B-Instruct-IQ4_XS.gguf',
+    'qwen3.5-2b.Q8_0.gguf',
+    '/Users/me/models/Qwen3.5-2B-Instruct-f16.gguf',
+    'C:\\models\\Qwen3.5-2B-Q5_K_S.gguf',
+    'qwen3.5:2b',
+    'qwen3.5:2b-q4_K_M',
+    'hf.co/unsloth/Qwen3.5-2B-GGUF:Q4_K_M'
+  ])('gives Qwen3.5-2B its own context and reply budget, as %s', (id) => {
+    expect(localModelProfile(id)).toMatchObject({ toolCalling: 'constrained-json', contextWindow: 131_072, maxOutput: 16_384, temperature: DEFAULT_LOCAL_PROFILE.temperature });
+    expect(adapter({ model: id }).capabilities()).toMatchObject({ contextWindowTokens: 131_072, maxOutputTokens: 16_384, contextWindowKnown: false });
+    expect(modelInfo('local', id)).toMatchObject({ contextWindow: 131_072, maxOutput: 16_384 });
+  });
+
+  it.each([
+    'qwen3.5-27b',
+    'qwen3.5:27b',
+    'qwen3.5-0.2b',
+    'qwen3.5-2.5b',
+    'qwen3-2b',
+    'qwen2.5-2b',
+    'qwen3.5-122b',
+    'qwen3.5-2billion',
+    'qwen3.5-2b2',
+    'notqwen3.5-2b',
+    '/models/Qwen3.5-2B-GGUF/Qwen3.5-27B-Q4_K_M.gguf',
+    'C:\\qwen3.5-2b\\other-model.gguf'
+  ])('does not take %s for Qwen3.5-2B', (id) => {
+    expect(localModelProfile(id)).toEqual(DEFAULT_LOCAL_PROFILE);
+    expect(adapter({ model: id }).capabilities()).toMatchObject({ contextWindowTokens: 32_768, maxOutputTokens: 8192 });
+  });
+
+  it('holds Qwen3.5-2B to the smaller of Settings and the server, and to its profile only with neither', () => {
+    const window = (endpoint: Partial<LocalEndpoint>, windowTokens?: number) => adapter({ model: 'qwen3.5:2b', ...endpoint }, { context: windowTokens ? { windowTokens } : {} }).capabilities();
+    expect(window({}, 8192)).toMatchObject({ contextWindowTokens: 8192, contextWindowKnown: true, maxOutputTokens: 16_384 });
+    // A server that loaded more than the profile assumes is believed.
+    expect(window({}, 262_144).contextWindowTokens).toBe(262_144);
+    expect(window({ contextWindow: 200_000 })).toMatchObject({ contextWindowTokens: 200_000, contextWindowKnown: true });
+    expect(window({ contextWindow: 16_384 }, 65_536).contextWindowTokens).toBe(16_384);
+    expect(window({ contextWindow: 65_536 }, 4096).contextWindowTokens).toBe(4096);
+  });
+
+  it("names Qwen3.5-2B's own capacity in the steps for a server that loaded it with less than its profile", () => {
+    const help = (model: string, windowTokens?: number) => adapter({ model }, { context: { server: 'ollama', ...(windowTokens ? { windowTokens } : {}) } }).contextHelp(32_768);
+    const small = help('qwen3.5:2b', 8192);
+    expect(small).toMatch(/^Qwen3\.5-2B itself takes up to 262,144 tokens\. /);
+    expect(small).toContain('OLLAMA_CONTEXT_LENGTH=32768');
+    // Nothing reported, or enough loaded already: no claim about what was loaded.
+    expect(help('qwen3.5:2b')).not.toContain('262,144');
+    expect(help('qwen3.5:2b', 131_072)).not.toContain('262,144');
+    expect(adapter({ model: 'qwen3.5:2b' }, { context: { windowTokens: 131_072 } }).contextHelp(262_144)).not.toContain('itself takes');
+    // A model with no profile of its own has no known capacity to name.
+    expect(help('other:7b', 8192)).not.toContain('itself takes');
+  });
+
   it('a model is added as one entry, and the first match wins', () => {
     const profiles = [{ match: /^our-model/, profile: { contextWindow: 16384 } }, { match: /our/, profile: { contextWindow: 1 } }];
     expect(localModelProfile('our-model-4b', profiles)).toEqual({ ...DEFAULT_LOCAL_PROFILE, contextWindow: 16384 });

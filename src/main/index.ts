@@ -19,7 +19,7 @@ import { Orchestrator } from '@agent/orchestrator';
 import { INSPECT_COMPONENT_BUDGET_MS } from '@agent/component-inspection';
 import { OpenAIAdapter, testOpenAI } from '@agent/openai';
 import { AnthropicAdapter, testAnthropic } from '@agent/anthropic';
-import { listedProblem, listLocalModels, openLocalAdapter, testLocal } from '@agent/local';
+import { discoverLocalContext, listedProblem, listLocalModels, openLocalAdapter, testLocal } from '@agent/local';
 import { compileProject } from './compile';
 import { checkSvelteSource, codeContractNames, componentSources } from './codecheck';
 import { renderSiteIconsInWorker, stopMediaWorker } from './project/assets';
@@ -322,7 +322,8 @@ function registerIpc() {
     const before = (await loadSettings()).settings.ai;
     // Withdrawing permission ends work in progress at once, which would otherwise keep sending to that server. The
     // work may have started on a remote server before the address in use changed, so the address is not checked.
-    if (before.provider === 'local' && before.local.allowRemote === true && patch.ai?.local && 'allowRemote' in patch.ai.local && patch.ai.local.allowRemote !== true) {
+    // Nor is the provider: another may have been chosen while that work runs.
+    if (before.local.allowRemote === true && patch.ai?.local && 'allowRemote' in patch.ai.local && patch.ai.local.allowRemote !== true) {
       orchestrator.stop();
       fixAbort?.abort();
       for (const test of testAborts) test.abort();
@@ -562,6 +563,19 @@ function registerIpc() {
     record(problem ? { ok: false, stage: 'server', message: problem } : { listed: found.models });
     // Which server answered, so Settings shows the list for that server only.
     return { ...found, server: endpoint.baseURL };
+  });
+  // The saved server only, as above. A read for the composer: it records nothing about the server.
+  handle('ai:localContext', async (model: unknown) => {
+    // Registered before the saved setup is read, as a test is, so remote access withdrawn meanwhile stops it too.
+    const abort = new AbortController();
+    testAborts.add(abort);
+    try {
+      const endpoint = await localEndpoint();
+      const found = typeof model === 'string' ? await discoverLocalContext({ ...endpoint, model }, { signal: abort.signal }) : {};
+      return { server: endpoint.baseURL, reportedWindow: found.windowTokens ?? null };
+    } finally {
+      testAborts.delete(abort);
+    }
   });
   handle('ai:conversations', () => orchestrator.loadConversations());
   handle('ai:newConversation', () => orchestrator.newConversation());
