@@ -198,6 +198,75 @@ await eventually(async () => assert.equal((await design()).galleries, 1, 'the me
 await win.locator('.mode-band-done').click();
 await win.locator('.mode-band').waitFor({ state: 'detached' });
 
+step('an element just inserted from the Insert panel answers ⌘C and Backspace, with focus still on its tile (#898)');
+await win.locator('.rail [aria-label="Pages"]').click();
+await pageRow('Blank').click();
+await eventually(async () => assert.deepEqual(await sectionsOn('Blank'), []));
+const panel = win.locator('.side-panel-view:not([hidden])');
+await win.locator('.rail [aria-label="Insert"]').click();
+const basicTile = (name) => panel.locator('.insert-tile.basic', { has: win.locator('strong', { hasText: new RegExp(`^${name}$`) }) });
+const blankIds = () =>
+  win.evaluate(async () => {
+    const s = await window.builder.project.snapshot();
+    return Object.keys(Object.values(s.state.pages).find((x) => x.title === 'Blank').nodes).sort();
+  });
+/** Run `act`, wait for it to add to the page, and return the IDs of what it added. */
+const inserting = async (what, act) => {
+  const before = await blankIds();
+  await act();
+  const added = await eventually(async () => {
+    const now = (await blankIds()).filter((id) => !before.includes(id));
+    assert.ok(now.length, `${what} is inserted`);
+    return now;
+  });
+  await panel.locator('.insert-where-done', { hasText: what }).waitFor();
+  return added;
+};
+const present = async (ids) => {
+  const now = await blankIds();
+  return ids.filter((id) => now.includes(id)).length;
+};
+let button;
+for (const tile of ['2 columns', 'Heading', 'Paragraph', 'Button']) button = await inserting(tile, () => basicTile(tile).click());
+const focusedTile = () => win.evaluate(() => document.activeElement?.closest('.insert-tile')?.querySelector('strong')?.textContent ?? null);
+assert.equal(await focusedTile(), 'Button', 'focus stays on the tile');
+await win.keyboard.press(`${MOD}+c`);
+await win.locator('.toast', { hasText: /^Copied Button/ }).waitFor();
+await win.keyboard.press('Backspace');
+await eventually(async () => assert.equal(await present(button), 0, 'Backspace deletes the Button just inserted'));
+// What is selected now was not inserted from this tile: a second Backspace leaves it alone.
+const afterDelete = await blankIds();
+await win.keyboard.press('Backspace');
+await win.waitForTimeout(500);
+assert.deepEqual(await blankIds(), afterDelete, 'one Backspace, one delete');
+// The keyboard's own insert, and Delete: the same.
+await basicTile('Button').focus();
+button = await inserting('Button', () => win.keyboard.press('Enter'));
+// Another tile never takes what this one inserted: the editor leaves both keys alone there.
+await win.evaluate(() => {
+  window.keysTaken = [];
+  window.addEventListener('keydown', (e) => ['Delete', 'Backspace'].includes(e.key) && window.keysTaken.push(e.defaultPrevented));
+});
+await basicTile('Paragraph').focus();
+await win.keyboard.press('Delete');
+await win.keyboard.press('Backspace');
+assert.deepEqual(await win.evaluate(() => window.keysTaken), [false, false], 'neither key is the editor’s on another tile');
+assert.equal(await present(button), button.length, 'and the Button stays');
+await basicTile('Button').focus();
+await win.keyboard.press('Delete');
+await eventually(async () => assert.equal(await present(button), 0, 'Delete on the tile that inserted it deletes it'));
+// Hiding the panel ends it, though the Button is still selected when the panel comes back.
+await basicTile('Button').focus();
+button = await inserting('Button', () => win.keyboard.press('Enter'));
+await win.locator('.rail [aria-label="Insert"]').click();
+await panel.locator('.insert-tile').first().waitFor({ state: 'hidden' }).catch(() => {});
+await win.locator('.rail [aria-label="Insert"]').click();
+await basicTile('Button').focus();
+await win.evaluate(() => (window.keysTaken = []));
+await win.keyboard.press('Delete');
+assert.deepEqual(await win.evaluate(() => window.keysTaken), [false], 'the tile’s claim ended with the panel hidden');
+assert.equal(await present(button), button.length);
+
 assert.deepEqual(errors, [], 'no uncaught errors in the editor');
 await app.close();
 cleanup();

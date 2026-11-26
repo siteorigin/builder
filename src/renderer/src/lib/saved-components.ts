@@ -7,6 +7,7 @@ import type { ComponentDefinition, ElementRef, ProjectState } from '@shared/type
 import { api, getState, setState, shownAt, toast, undoAction } from '../store';
 import { insertionPoint } from './actions';
 import { markArrival } from './arrival';
+import { claimForInsert } from './clip-keys';
 import { treeFor } from './model';
 
 /** The personal library changed: Insert lists it again. */
@@ -67,7 +68,7 @@ export async function removeFromLibrary(entry: Pick<SavedComponent, 'id' | 'dige
  * inserted into somewhere else. Selected, with the arrival cue, once the page shows it, unless the author has moved on
  * meanwhile. Resolves to the history entry it made, for an Undo beside it.
  */
-export async function insertSaved(entry: SavedComponent): Promise<string | undefined> {
+export async function insertSaved(entry: SavedComponent, tile?: unknown): Promise<string | undefined> {
   const start = getState();
   const snap = start.snapshot;
   const at = snap ? insertionPoint(entry.role, start.selection, snap, undefined, start.slotTarget) : null;
@@ -95,5 +96,6 @@ export async function insertSaved(entry: SavedComponent): Promise<string | undef
   const ref: ElementRef = { owner, instancePath: [], nodeId: r.nodeId };
   if (now.mode === 'edit') markArrival(ref);
   setState({ selection: ref, rightTab: 'inspect' });
+  claimForInsert(tile, ref);
   return r.entryId;
 }

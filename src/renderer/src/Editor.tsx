@@ -40,7 +40,7 @@ import { DuplicateProjectModal, NewProjectModal, TrustProjectModal } from './com
 import { askAiAbout, deleteLayers, duplicateLayers, moveLayers, openComponentStudio, openSiteStyles, planLayers, setMode, ungroupLayers, wrapLayers } from './lib/actions';
 import { StudioControls } from './panels/StudioControls';
 import { copySelection, pasteCopy } from './lib/clipboard';
-import { clipKeyIsEditors } from './lib/clip-keys';
+import { clipKeyIsEditors, deleteKeyIsEditors } from './lib/clip-keys';
 import { focusedSurface } from './lib/history';
 import { visitorStepKey } from '@shared/preview-keys';
 import { useTransitionAnnouncement } from './lib/announce';
@@ -492,15 +492,12 @@ export function Editor() {
       if (e.key === 'Escape' && e.repeat) return;
       const typing = isTyping(e) && !(e.key === 'Escape' && getState().leftTab === 'seo' && e.target instanceof HTMLInputElement && ['checkbox', 'radio', 'button', 'range'].includes(e.target.type));
       if (typing && !history && !askAi && !(mod && ['k', 'e', 's', '\\', '|'].includes(e.key.toLowerCase())) && !(mod && e.shiftKey && e.key.toLowerCase() === 'f')) return;
-      // Delete removes the canvas selection only when the canvas or Layers has the focus, never from a
-      // button or row in another panel (an Assets tile, a page row).
-      if (!mod && (e.key === 'Delete' || e.key === 'Backspace')) {
-        const t = e.target as HTMLElement;
-        if (t !== document.body && !t.closest('[role="tree"], .canvas, .ov-chip')) return;
-      }
-      // Copy and paste of sections and elements: Copy only from the page, Layers and the selection's own controls, Paste
-      // from any control that takes no typing (lib/clip-keys).
-      if (mod && !askAi && ['c', 'v'].includes(e.key.toLowerCase()) && !clipKeyIsEditors(e.key.toLowerCase() === 'c' ? 'copy' : 'paste', e.target as HTMLElement, document.body)) return;
+      // Delete removes the canvas selection only from the canvas, Layers or the Insert tile that just made it, never
+      // from a button or row in another panel (an Assets tile, a page row) (lib/clip-keys).
+      if (!mod && (e.key === 'Delete' || e.key === 'Backspace') && !deleteKeyIsEditors(e.target as HTMLElement, document.body, getState().selection, e.repeat)) return;
+      // Copy and paste of sections and elements: Copy only from the page, Layers, the selection's own controls and that
+      // Insert tile, Paste from any control that takes no typing.
+      if (mod && !askAi && ['c', 'v'].includes(e.key.toLowerCase()) && !clipKeyIsEditors(e.key.toLowerCase() === 'c' ? 'copy' : 'paste', e.target as HTMLElement, document.body, getState().selection)) return;
       if (handleShortcut(e.key, mod, e.shiftKey, askAi)) e.preventDefault();
     };
     const onCmd = (e: Event) => {

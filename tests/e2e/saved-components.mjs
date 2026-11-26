@@ -5,7 +5,7 @@
 import assert from 'node:assert/strict';
 import { existsSync, readdirSync } from 'node:fs';
 import { join } from 'node:path';
-import { answerChoosers, choosersShown, createProject, desktopCursor, eventually, launch, openInspector, scratch, step } from './harness.mjs';
+import { MOD, answerChoosers, choosersShown, createProject, desktopCursor, eventually, launch, openInspector, scratch, step } from './harness.mjs';
 
 const { WORK, cleanup } = scratch('saved-components');
 const { app, win, errors } = await launch(WORK);
@@ -123,6 +123,9 @@ await eventually(async () => assert.deepEqual(await components(), { 'Feature ban
 await eventually(async () => assert.equal(await applied(), entries + 1, 'as one change'));
 const st = (await snapshot()).state;
 await win.locator('.insert-where-done', { hasText: 'Added Feature band' }).waitFor();
+// Focus is still on the saved tile, which takes Copy for what it inserted (#898).
+await win.keyboard.press(`${MOD}+c`);
+await win.locator('.toast', { hasText: /^Copied Feature band/ }).waitFor();
 await win.getByRole('button', { name: 'Undo adding Feature band' }).click();
 await eventually(async () => assert.deepEqual(await components(), {}, 'one Undo takes the component back'));
 assert.deepEqual((await snapshot()).state.pages[st.site.homePageId], pageBefore, 'and its placement');
