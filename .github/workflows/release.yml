@@ -1,10 +1,11 @@
 name: Release
 
-# Builds the installers for a version tag (`vX.Y.Z`): a signed and notarized DMG
-# for each Mac architecture, an NSIS installer for Windows and an AppImage for
-# Linux, and attaches them to a draft GitHub release for that tag. Publishing the
-# release stays a manual step (docs/releasing.md). A manual run builds the same
-# installers from any branch and keeps them as workflow artifacts only.
+# Runs the whole unit test suite, then builds the installers for a version tag
+# (`vX.Y.Z`): a signed and notarized DMG for each Mac architecture, an NSIS
+# installer for Windows and an AppImage for Linux, and attaches them to a draft
+# GitHub release for that tag. Publishing the release stays a manual step
+# (docs/releasing.md). A manual run does the same from any branch and keeps the
+# installers as workflow artifacts only.
 #
 # Only macOS is signed. Windows has no Authenticode certificate yet, so
 # SmartScreen warns; Linux AppImages are not signed.
@@ -30,8 +31,30 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
+  # The whole unit suite, the same way PR CI runs it (ci.yml) but never narrowed
+  # to a diff: no installer is built from a tree whose unit tests fail. E2E stays
+  # in the local stabilize pass and the release checklist (docs/releasing.md).
+  unit:
+    name: Unit tests
+    runs-on: ubuntu-latest
+    # The whole suite on one runner takes about 20 minutes.
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 24
+          cache: npm
+      - run: npm ci
+      # The browser tests skip themselves when Chromium is missing.
+      - run: npx playwright install --with-deps chromium
+      - run: npx vitest run
+
   mac:
     name: macOS (${{ matrix.arch }})
+    needs: unit
     runs-on: ${{ matrix.runner }}
     timeout-minutes: 90
     strategy:
@@ -150,6 +173,7 @@ jobs:
 
   windows:
     name: Windows (x64)
+    needs: unit
     runs-on: windows-latest
     timeout-minutes: 60
     steps:
@@ -182,6 +206,7 @@ jobs:
 
   linux:
     name: Linux (x64)
+    needs: unit
     runs-on: ubuntu-latest
     timeout-minutes: 60
     steps:
