@@ -1,7 +1,7 @@
 import { Agent, request as httpRequest, type ClientRequest, type IncomingMessage } from 'node:http';
-import { MAX_PREVIEW_HEADERS, MAX_PREVIEW_REQUESTS_IN_FLIGHT, MAX_PREVIEW_RESPONSE_BYTES, PREVIEW_CHUNK_BYTES } from '@shared/live/limits';
+import { MAX_GUESTS, MAX_PREVIEW_HEADERS, MAX_PREVIEW_REQUESTS_IN_FLIGHT, MAX_PREVIEW_RESPONSE_BYTES, PREVIEW_CHUNK_BYTES } from '@shared/live/limits';
 import type { Frame } from '@shared/live/messages';
-import { isPreviewHeaderName, isPreviewHeaderValue, isPreviewLocation, isPreviewTarget, PREVIEW_METHODS, type PreviewAbortCode } from '@shared/live/preview';
+import { isPreviewHeaderName, isPreviewHeaderValue, isPreviewLocation, isPreviewTarget, PREVIEW_METHODS, PreviewStream, type PreviewAbortCode, type PreviewMethod } from '@shared/live/preview';
 
 /**
  * The host's end of the preview tunnel: a guest's preview request, passed on by the relay, is asked of the open
@@ -47,8 +47,8 @@ export interface PreviewProxyOptions {
   buffered(): number;
 }
 
-/** The most preview requests the host serves at once, for all guests: each guest may have its own share in flight. */
-export const MAX_PROXY_REQUESTS = 64;
+/** The most preview requests the host serves at once: every guest a room holds, each with its own share in flight. */
+export const MAX_PROXY_REQUESTS = MAX_GUESTS * MAX_PREVIEW_REQUESTS_IN_FLIGHT;
 /** A response pauses reading from the preview server while this much is waiting on the socket, until it drains below LOW. */
 export const SOCKET_HIGH_WATER_BYTES = 4 * PREVIEW_CHUNK_BYTES;
 export const SOCKET_LOW_WATER_BYTES = PREVIEW_CHUNK_BYTES;
@@ -62,6 +62,8 @@ const BODYLESS = new Set([204, 205, 304]);
 interface Pending {
   requestId: string;
   guestId: string;
+  /** What has been sent of the response, held to the rules the relay reads it by, so nothing is sent it would refuse. */
+  stream: PreviewStream;
   req: ClientRequest | null;
   res: IncomingMessage | null;
   drain: ReturnType<typeof setTimeout> | null;
@@ -96,10 +98,13 @@ export function previewResponseHeaders(raw: readonly string[], target: string, p
   const out: Array<[string, string]> = [];
   let length: string | null = null;
   let location = false;
+  // Headers the response names in its Connection header are for the connection to the preview server alone.
+  const hopByHop = new Set<string>();
+  for (let i = 0; i + 1 < raw.length; i += 2) if (raw[i].toLowerCase() === 'connection') for (const token of raw[i + 1].split(',')) hopByHop.add(token.trim().toLowerCase());
   for (let i = 0; i + 1 < raw.length && out.length < MAX_PREVIEW_HEADERS; i += 2) {
     const name = raw[i].toLowerCase();
     let value = raw[i + 1];
-    if (!isPreviewHeaderName(name, 'response')) continue;
+    if (!isPreviewHeaderName(name, 'response') || hopByHop.has(name)) continue;
     if (name === 'content-length') {
       // One length only, and only one that is a length: Node's parser already refused a response that disagrees with itself.
       if (length !== null || !/^\d{1,15}$/.test(value)) continue;
@@ -154,7 +159,7 @@ export class PreviewProxy {
     // The preview server is asked as the editor asks it: the guest's host name never reaches it.
     headers.host = `127.0.0.1:${preview.port}`;
 
-    const pending: Pending = { requestId, guestId, req: null, res: null, drain: null, done: false };
+    const pending: Pending = { requestId, guestId, stream: new PreviewStream(frame.method as PreviewMethod), req: null, res: null, drain: null, done: false };
     this.pending.set(requestId, pending);
     const req = httpRequest({ host: '127.0.0.1', port: preview.port, method: frame.method, path: frame.target, headers, agent: this.agent, setHost: false });
     pending.req = req;
@@ -196,6 +201,10 @@ export class PreviewProxy {
     const { requestId } = pending;
     const status = res.statusCode ?? 0;
     if (status < 200 || status > 599) return this.fail(pending, 'INVALID_RESPONSE');
+    // The body goes to the guest as it is, and the protocol has no way to say it is compressed: asked for none, any
+    // other encoding is a body the guest could not read.
+    const encoding = res.headers['content-encoding'];
+    if (encoding !== undefined && encoding.trim().toLowerCase() !== 'identity') return this.fail(pending, 'INVALID_RESPONSE');
     const headers = previewResponseHeaders(res.rawHeaders, frame.target, port);
     const bodyless = frame.method === 'HEAD' || BODYLESS.has(status);
     const declared = headers.find(([name]) => name === 'content-length')?.[1];
@@ -237,9 +246,9 @@ export class PreviewProxy {
       if (this.send(pending, { type: 'preview:response-end', requestId, totalBytes: total })) this.finish(pending, true);
     });
     // A response that stops before its end (the preview server failed or restarted) is stopped for the guest too.
-    res.on('error', () => this.fail(pending, 'UNAVAILABLE'));
+    res.on('error', () => this.fail(pending, 'INVALID_RESPONSE'));
     res.on('close', () => {
-      if (!res.complete) this.fail(pending, 'UNAVAILABLE');
+      if (!res.complete) this.fail(pending, 'INVALID_RESPONSE');
     });
   }
 
@@ -259,9 +268,19 @@ export class PreviewProxy {
     pending.drain = setTimeout(check, DRAIN_POLL_MS);
   }
 
-  /** Send a frame for a request still open; a socket that has gone ends the request. */
+  /**
+   * Send a frame for a request still open. A frame the relay would refuse (a body longer than its head said, or past
+   * the most a response may carry) stops the response instead; a socket that has gone ends it.
+   */
   private send(pending: Pending, frame: PreviewReplyFrame): boolean {
     if (pending.done) return false;
+    const { requestId: _id, ...step } = frame;
+    const accepted = pending.stream.accept(step as Parameters<PreviewStream['accept']>[0]);
+    if (!accepted.ok) {
+      this.finish(pending);
+      this.options.send({ type: 'preview:abort', requestId: pending.requestId, code: accepted.code });
+      return false;
+    }
     if (this.options.send(frame)) return true;
     this.finish(pending);
     return false;

@@ -50,6 +50,20 @@ function routes(url: string, res: ServerResponse) {
     case '/cached':
       res.writeHead(304, { etag: '"v1"' });
       return res.end();
+    case '/reset':
+      res.writeHead(205);
+      return res.end();
+    case '/range': {
+      const part = Buffer.from(BINARY.subarray(100, 200));
+      res.writeHead(206, { 'content-type': 'application/octet-stream', 'content-range': `bytes 100-199/${BINARY.length}`, 'accept-ranges': 'bytes', 'content-length': String(part.length) });
+      return res.end(part);
+    }
+    case '/nominated':
+      res.writeHead(200, { 'content-type': 'text/plain', connection: 'etag', etag: '"secret"' });
+      return res.end('ok');
+    case '/gzip':
+      res.writeHead(200, { 'content-type': 'text/plain', 'content-encoding': 'gzip' });
+      return res.end('not really gzip');
     case '/huge':
       res.writeHead(200, { 'content-type': 'application/octet-stream', 'content-length': String(40 * 1024 * 1024) });
       return res.write('a');
@@ -218,8 +232,10 @@ describe('tunnelling a preview request', () => {
     const { proxy, result } = harness();
     const head = request('/photo.bin', { method: 'HEAD' });
     const cached = request('/cached', { headers: [['if-none-match', '"v1"']] });
+    const reset = request('/reset');
     proxy.handle(head);
     proxy.handle(cached);
+    proxy.handle(reset);
     const h = await result(head.requestId, 'HEAD');
     expect(h.head?.status).toBe(200);
     expect(h.chunks).toEqual([]);
@@ -227,6 +243,9 @@ describe('tunnelling a preview request', () => {
     const c = await result(cached.requestId);
     expect(c.head?.status).toBe(304);
     expect(c.chunks).toEqual([]);
+    const z = await result(reset.requestId);
+    expect(z.head?.status).toBe(205);
+    expect(z.chunks).toEqual([]);
   });
 
   it('stops a response larger than the protocol allows before sending it', async () => {
@@ -244,8 +263,34 @@ describe('tunnelling a preview request', () => {
     proxy.handle(frame);
     const r = await result(frame.requestId);
     expect(r.head?.status).toBe(200);
-    expect(r.abort?.code).toBe('UNAVAILABLE');
+    expect(r.abort?.code).toBe('INVALID_RESPONSE');
     expect(proxy.size).toBe(0);
+  });
+
+  it('refuses a compressed body, which the guest could not read without its encoding', async () => {
+    const { proxy, result } = harness();
+    const frame = request('/gzip');
+    proxy.handle(frame);
+    const r = await result(frame.requestId);
+    expect(r.head).toBeUndefined();
+    expect(r.abort?.code).toBe('INVALID_RESPONSE');
+  });
+
+  it('passes ranges and their headers on, and drops headers the response names as its connection’s own', async () => {
+    const { proxy, result } = harness();
+    const range = request('/range', { headers: [['range', 'bytes=100-199'], ['if-range', '"v1"']] });
+    const nominated = request('/nominated');
+    proxy.handle(range);
+    proxy.handle(nominated);
+    const r = await result(range.requestId);
+    expect(r.head?.status).toBe(206);
+    expect(r.headers['content-range']).toBe(`bytes 100-199/${BINARY.length}`);
+    expect(r.headers['accept-ranges']).toBe('bytes');
+    expect(Buffer.compare(r.body, Buffer.from(BINARY.subarray(100, 200)))).toBe(0);
+    expect(seen.find((s) => s.url === '/range')?.headers).toMatchObject({ range: 'bytes=100-199', 'if-range': '"v1"' });
+    const n = await result(nominated.requestId);
+    expect(n.body.toString()).toBe('ok');
+    expect(n.headers.etag).toBeUndefined();
   });
 
   it('answers that the preview is unavailable while no preview server is ready', async () => {
