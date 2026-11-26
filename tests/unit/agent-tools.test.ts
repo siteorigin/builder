@@ -932,6 +932,14 @@ describe('update_site_brand', () => {
     expect(session.state.tokens).toEqual(tokens);
   });
 
+  it('warns of a brand color that reads poorly on a page background saved by name', async () => {
+    const { adapter, run } = await setup([() => [call('b1', 'update_site_brand', { brandColor: '#ffee55' })], () => finish()], {}, 'business', (s) => {
+      s.tokens.overrides['color.background'] = 'White';
+    });
+    await run('Make it yellow');
+    expect(lastResult(adapter.requests[1]).warnings).toEqual([expect.stringContaining('#ffee55 has low contrast on the page background')]);
+  });
+
   it('derives readable colors for both dark and light brand colors', () => {
     const hex = (h: string): [number, number, number] => [parseInt(h.slice(1, 3), 16), parseInt(h.slice(3, 5), 16), parseInt(h.slice(5, 7), 16)];
     for (const brand of ['#0b5cad', '#f5c518', '#1f5a4c', '#ffffff', '#000000', '#e11d48']) {
