@@ -19,7 +19,9 @@ describe('right panel views', () => {
 
   it('build the dock tabs in that order, so the arrow keys follow it', () => {
     const editor = readFileSync('src/renderer/src/Editor.tsx', 'utf8');
-    expect(editor).toContain('options={RIGHT_TABS.map((value) => ({ value, ...dockViews[value] }))}');
+    // A remote shell shows fewer views (#766), filtered out of RIGHT_TABS so the order is kept.
+    expect(editor).toContain('const rightTabs = remoteShell ? RIGHT_TABS.filter((t) => REMOTE_RIGHT_TABS.has(t)) : RIGHT_TABS;');
+    expect(editor).toContain('options={rightTabs.map((value) => ({ value, ...dockViews[value] }))}');
   });
 
   it('open on the AI before a project says otherwise', () => {
