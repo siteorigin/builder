@@ -12,8 +12,9 @@ This is a prototype. The goal right now is a good, usable builder that can make 
 
 ## Testing
 
-- `npm run typecheck` — both tsconfigs.
-- `npm test` — Vitest unit tests in `tests/unit/` (engine, generator, agent harness, sessions, codecheck, SVG).
+- `npm run typecheck` — the app's two tsconfigs and the relay's (`relay/tsconfig.json`).
+- `npm test` — Vitest unit tests in `tests/unit/` (engine, generator, agent harness, sessions, codecheck, SVG, and the live session relay in Cloudflare's local simulator, offline).
+- `npm run relay:dev` — the live session relay (`relay/`) on port 8787; copy `relay/.dev.vars.example` to `relay/.dev.vars` first. Point the app at `http://relay.localhost:8787` (not `127.0.0.1` or bare `localhost`): each room's preview is its own origin, `http://p-<label>.relay.localhost:8787`, and must be the same site as the viewer.
 - `npm run test:e2e` — Playwright scripts in `tests/e2e/` that drive the built Electron app (`npm run build` first). `tests/e2e/ai.mjs` calls a live provider and costs money: run it only when asked.
 
 **E2E runs headless, always.** The main process detects a Playwright launch (or `SITEORIGIN_HEADLESS=1`) and never shows the window, never takes focus, and keeps the app out of the Dock (`src/main/index.ts`). Nothing may pop up on the user's screen during tests: don't call `show()`/`focus()` on test paths. An automated launch answers every native chooser from the test and records the links and reveals it hands to the desktop instead of acting on them (`src/main/headless-desktop.ts`): set answers with the harness's `answerChoosers` or the driver's `desktop.setAnswers` rather than patching Electron's `dialog` or `shell`. `SITEORIGIN_HEADED=1` shows the window only when a human is debugging a script.

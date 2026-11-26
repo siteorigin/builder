@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { base64UrlByteLength, isPreviewHeaderName, isPreviewHeaderValue, isPreviewLocation, isPreviewTarget, previewBrowserLocation, PreviewStream, PREVIEW_CACHE_CONTROL, type PreviewStreamFrame } from '@shared/live/preview';
+import { base64UrlByteLength, isPreviewHeaderName, isPreviewHeaderValue, isPreviewLocation, isPreviewTarget, PreviewStream, PREVIEW_CACHE_CONTROL, type PreviewStreamFrame } from '@shared/live/preview';
 import { toBase64Url } from '@shared/live/crypto';
 import { MAX_PREVIEW_RESPONSE_BYTES, PREVIEW_CHUNK_BYTES } from '@shared/live/limits';
 
@@ -107,15 +107,9 @@ describe('preview targets and headers', () => {
       expect(isPreviewTarget(ok), ok).toBe(true);
   });
 
-  it('sends a redirect to the same place under the room’s preview, fragment and all', () => {
-    expect(isPreviewLocation('/about/#team')).toBe(true);
-    expect(previewBrowserLocation('/s/abcdefghijkmnpqrstuvwxyz/preview', '/about/#team')).toBe('/s/abcdefghijkmnpqrstuvwxyz/preview/about/#team');
-    expect(previewBrowserLocation('/s/abcdefghijkmnpqrstuvwxyz/preview/', '/')).toBe('/s/abcdefghijkmnpqrstuvwxyz/preview/');
-    expect(previewBrowserLocation('/s/abcdefghijkmnpqrstuvwxyz/preview', '/search/?q=bread&page=2#results')).toBe('/s/abcdefghijkmnpqrstuvwxyz/preview/search/?q=bread&page=2#results');
-    for (const bad of ['//evil.example/', 'https://evil.example/', '/a#b#c', '/a#b c', '/__open-in-editor#x']) {
-      expect(isPreviewLocation(bad), bad).toBe(false);
-      expect(previewBrowserLocation('/s/abcdefghijkmnpqrstuvwxyz/preview', bad)).toBeNull();
-    }
+  it('lets a redirect name any place within the preview, fragment and all, and nowhere else', () => {
+    for (const ok of ['/about/#team', '/', '/search/?q=bread&page=2#results']) expect(isPreviewLocation(ok), ok).toBe(true);
+    for (const bad of ['//evil.example/', 'https://evil.example/', '/a#b#c', '/a#b c', '/__open-in-editor#x', '/__siteorigin/admission']) expect(isPreviewLocation(bad), bad).toBe(false);
   });
 
   it('keeps preview responses out of shared caches', () => {

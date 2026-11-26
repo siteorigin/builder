@@ -1,3 +1,4 @@
+import { previewHostLabel } from './crypto';
 import { ROOM_ID_RE } from './limits';
 
 /**
@@ -7,6 +8,10 @@ import { ROOM_ID_RE } from './limits';
  * route below sits at its root.
  */
 
+/**
+ * The production relay. It must move to a registrable domain used for nothing else before it is deployed (#767): each
+ * room's preview runs its host's site code under this host, and that code may set cookies for the parent domain.
+ */
 export const DEFAULT_RELAY_URL = 'https://live.siteorigin.com';
 export const RELAY_URL_ENV = 'SITEORIGIN_LIVE_RELAY_URL';
 
@@ -16,10 +21,12 @@ export const HOST_SOCKET_PATH = '/ws/host';
 export const roomPath = (roomId: string) => `/s/${roomId}`;
 /** The socket a host reconnects on and guests join on. */
 export const roomSocketPath = (roomId: string) => `${roomPath(roomId)}/ws`;
-/** Where an admitted guest redeems its preview ticket for the room's preview cookie (POST, `{ ticket }`). */
-export const roomAdmissionPath = (roomId: string) => `${roomPath(roomId)}/admission`;
-/** The root of the room's tunnelled preview; a preview request's target is the path below it. */
-export const roomPreviewPath = (roomId: string) => `${roomPath(roomId)}/preview`;
+/**
+ * Where, on the room's preview origin, an admitted guest redeems its preview ticket for the preview cookie (POST,
+ * `{ ticket }`). Every other path on that origin is the host's site; a first segment starting with `__` is never one a
+ * guest may ask the preview for (preview.ts), so this one cannot hide a page of the site.
+ */
+export const PREVIEW_ADMISSION_PATH = '/__siteorigin/admission';
 
 /** Characters no relay address or invite link may hold: spaces and controls (which the URL parser drops or mends) and backslashes (which it reads as slashes). */
 const UNSAFE = /[\s\u0000-\u001f\u007f\\]/;
@@ -106,4 +113,21 @@ export function parseInviteLink(text: unknown): InviteLink | null {
   if (!match || !ROOM_ID_RE.test(match[2])) return null;
   const relay = checkRelayUrl(match[1]);
   return relay.ok ? { relayUrl: relay.url, roomId: match[2] } : null;
+}
+
+/**
+ * A room's preview origin: the host's site at its own root, on `p-<label>.<relay host>` with the relay's scheme and
+ * port (see previewHostLabel). The relay's host is the viewer's, so the two are the same site and the preview cookie
+ * (SameSite=Lax, host-only) goes with the viewer's iframe in every browser, Safari included. That needs a relay host
+ * of at least two labels: an IP address has no subdomains, and `p-….localhost` is a different site from `localhost`.
+ * Point local development at `http://relay.localhost:8787`.
+ */
+export async function roomPreviewOrigin(relayUrl: string, roomId: string): Promise<string> {
+  const relay = checkRelayUrl(relayUrl);
+  if (!relay.ok) throw new Error(relay.message);
+  const url = new URL(relay.url);
+  if (/^\[|^\d+\.\d+\.\d+\.\d+$/.test(url.hostname)) throw new Error('A relay on an IP address cannot give rooms their own preview origins. Use a host name, such as relay.localhost.');
+  if (!url.hostname.includes('.')) throw new Error('A relay needs a host name with a dot, such as relay.localhost, for its previews to share its site.');
+  url.hostname = `${await previewHostLabel(roomId)}.${url.hostname}`;
+  return url.origin;
 }

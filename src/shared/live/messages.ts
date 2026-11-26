@@ -168,13 +168,12 @@ const headers = (direction: 'request' | 'response') =>
     .array(z.tuple([z.string().refine((n) => isPreviewHeaderName(n, direction), { message: `Not a ${direction} header the preview passes on.` }), z.string().refine(isPreviewHeaderValue, { message: 'Not a valid header value.' })]))
     .max(MAX_PREVIEW_HEADERS);
 
-/** A guest's browser asking for a preview address; `target` is the path (and query) under the room's preview. */
+/** A guest's browser asking for a preview address; `target` is the path (and query) on the room's preview origin. */
 const previewRequest = msg('preview:request', { requestId, guestId, method: z.enum(PREVIEW_METHODS), target: z.string().refine(isPreviewTarget, { message: 'Not a path within the preview.' }), headers: headers('request') });
 const previewResponseHead = msg('preview:response-head', {
   requestId,
   status: z.number().int().min(200).max(599),
-  // A redirect names a place in the preview as the host's preview sees it; the relay sends the browser to it under
-  // the room's preview path (previewBrowserLocation).
+  // A redirect names a place in the preview, which is the site at the root of the room's own preview origin.
   headers: headers('response').refine((list) => list.every(([name, value]) => name !== 'location' || isPreviewLocation(value)), { message: 'A redirect must stay within the preview.' })
 });
 /** Chunks are numbered from zero with no gaps; each holds 1 to 256 KiB of the body. */

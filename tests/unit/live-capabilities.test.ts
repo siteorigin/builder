@@ -40,6 +40,8 @@ const REFUSED_OPERATIONS = [
   'component.setPropDefault',
   'component.setState',
   'component.removeState',
+  // Turns a container in a component's design into a slot: a change to the definition every placement shows.
+  'component.containerToSlot',
   'component.setPart',
   'component.removePart',
   'component.setVariant',
