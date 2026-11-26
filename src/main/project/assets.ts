@@ -692,15 +692,21 @@ export async function libraryWebCopyPlan(record: AssetRecord, buf: Buffer): Prom
   if (known) return known.plan;
   const entry = { plan: measureWebCopy(record, buf).catch(() => null), done: false };
   measured.set(key, entry);
-  for (const [k, e] of measured) {
-    if (measured.size <= MEASURED_MAX) break;
-    if (e.done) measured.delete(k);
-  }
+  trimMeasured();
   void entry.plan.then((p) => {
     entry.done = true;
     if (p === null && measured.get(key) === entry) measured.delete(key);
+    trimMeasured();
   });
   return entry.plan;
+}
+
+/** Lets go of the oldest answers already in until the map is back to its size. */
+function trimMeasured() {
+  for (const [k, e] of measured) {
+    if (measured.size <= MEASURED_MAX) return;
+    if (e.done) measured.delete(k);
+  }
 }
 
 async function measureWebCopy(record: AssetRecord, buf: Buffer): Promise<WebCopyPlan> {
