@@ -100,8 +100,8 @@ const uiStateDecl = z.object({
 export const DIVIDER_SHAPE_TEXT =
   'How the divider is drawn: "line" (default) is a plain rule; "angle" and "wave" are decorative section-edge bands and "icon" a hairline either side of an icon, drawn in the divider\'s text color (its "color" style) and hidden from screen readers.';
 const link = z.object({
-  type: z.enum(['none', 'page', 'url', 'email', 'tel', 'anchor', 'document']),
-  target: z.string().describe('Page ID for page links, https URL, email address, phone number, anchor ID or a document asset ID.'),
+  type: z.enum(['none', 'page', 'url', 'email', 'tel', 'anchor', 'document', 'collection']),
+  target: z.string().describe('Page ID for page links, https URL, email address, phone number, anchor ID, a document asset ID, or a collection ID for a link to that collection\'s index (such as the blog\'s list of posts).'),
   anchor: z.string().optional(),
   newTab: z.boolean().optional(),
   rel: z.array(z.enum(LINK_RELS)).optional().describe('url only: what the link says about the site it goes to (a paid link is sponsored).')
@@ -963,7 +963,8 @@ export const OPERATION_SCHEMAS = {
     .object({
       type: z.literal('collection.create'),
       collectionId: z.string().max(60).describe('Stable lowercase ID and folder name, such as "posts" or "case-studies". "posts" is the ready-made blog: Posts at /blog/, with categories and tags.'),
-      ...COLLECTION_SETTINGS
+      ...COLLECTION_SETTINGS,
+      addToNavigation: z.boolean().optional().describe('Also add a link to the collection\'s index (its list of entries) to the shared header navigation, while the menu has room.')
     })
     .describe('Add a collection of entries kept apart from the pages, such as blog posts or projects.'),
   'collection.update': z.object({

@@ -152,7 +152,11 @@ export async function readMarkdownFolder(root: string, pages: RichPages): Promis
     const link = (href: string, newTab: boolean, rel: string[] = []): LinkValue | null => {
       const t = href.trim();
       const tab = newTab ? { newTab: true } : {};
-      if (!t || /^[a-z][a-z0-9+.-]*:/i.test(t) || t.startsWith('#') || t.startsWith('//')) return linkFromTarget(t.startsWith('//') ? `https:${t}` : t, pages, newTab, rel);
+      // A link to a collection's index by its ID names a collection of the project it was written for, not this one.
+      if (!t || /^[a-z][a-z0-9+.-]*:/i.test(t) || t.startsWith('#') || t.startsWith('//')) {
+        const link = linkFromTarget(t.startsWith('//') ? `https:${t}` : t, pages, newTab, rel);
+        return link?.type === 'collection' ? null : link;
+      }
       const path = t.split(/[?#]/)[0];
       // Another post of the folder, by its file.
       if (MARKDOWN.test(path)) {

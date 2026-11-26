@@ -3,7 +3,7 @@
  * can say so and keep the text rather than the project refusing it afterwards.
  */
 import type { LinkValue, ProjectState } from '@shared/types';
-import { linkFromTarget, type RichPages } from '@shared/richtext';
+import { linkFromTarget, type RichIndexes, type RichPages } from '@shared/richtext';
 import { normalizeLink } from '@engine/values';
 
 const SECTION = /^[A-Za-z][\w-]*$/;
@@ -15,10 +15,13 @@ const BARE_DOMAIN = /^[a-z0-9-]+(\.[a-z0-9-]+)+([/?#]\S*)?$/i;
  * read when the edit is saved: a page address, a web address, mailto:, tel: or #section. Null when it goes
  * somewhere the site can link to.
  */
-export function inlineLinkProblem(href: string, pages: RichPages): string | null {
+export function inlineLinkProblem(href: string, pages: RichPages, indexes: RichIndexes = {}): string | null {
   const t = href.trim();
   if (!t) return 'Type where the link goes.';
-  if (linkFromTarget(t, pages)) return null;
+  const link = linkFromTarget(t, pages, false, undefined, indexes);
+  // A collection by its ID is one the site has an index for.
+  if (link && (link.type !== 'collection' || Object.hasOwn(indexes, link.target))) return null;
+  if (link) return 'That collection has no index on the website to link to. Link to one of the site’s pages instead.';
   if (/^https?:/i.test(t)) return 'That web address is not complete. Use a full address, such as https://example.com.';
   if (/^mailto:/i.test(t)) return 'That is not a complete email address, such as hello@example.com.';
   if (/^tel:/i.test(t)) return 'A phone number has at least 3 digits and uses only digits, spaces and + ( ) . -';

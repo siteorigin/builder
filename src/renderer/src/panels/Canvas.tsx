@@ -17,6 +17,7 @@ import { appliedSteps, errorComponent, revertStep, stillNewest } from '../lib/pr
 import { acceptMessage, newSessionId, postToFrame, staleFor, viewAfter, type BridgeMessage, type FrameView } from '../lib/bridge';
 import { chainOf, descOrNull, emptyAreaOf, measuredRects, pointedAt, rectList, slotBoxes, spaceSizes, spacingOf, type FrameEmptyArea, type FrameSpacing, type SlotBox } from '../lib/payload';
 import { blocksFromDom, richDom } from '../lib/richtext';
+import { collectionIndexRoutes } from '@shared/archives';
 import { dropAt, dropReaches, moveIndex, shownOrder } from '../lib/reorder';
 import { createPageGate, failedWithRevision, gatedPick, type PageGate, type SeenFailure } from '../lib/page-gate';
 import { insertOps, insertRole, whereText, type InsertAt, type Where } from '../lib/insert-at';
@@ -1028,7 +1029,8 @@ export function Canvas() {
           }
           // Rich text arrives as a copy of its structure (marks, lists and links included), plain text as a string.
           const dom = p.rich !== undefined ? richDom(p.rich) : null;
-          const rich = dom ? blocksFromDom(dom, getState().snapshot?.state.pages ?? {}) : null;
+          const live = getState().snapshot?.state;
+          const rich = dom ? blocksFromDom(dom, live?.pages ?? {}, undefined, live ? collectionIndexRoutes(live) : {}) : null;
           const value = rich ? rich.blocks : p.rich === undefined && typeof p.text === 'string' && p.text.length <= 20000 ? p.text : null;
           if (rich?.droppedLinks) {
             toast('A link pointed to something that is not a page, web address, email or phone number, so it was removed.', 'error');
@@ -1062,7 +1064,8 @@ export function Canvas() {
           // A destination typed in the page's link field, checked against the site's pages before the words are
           // linked: the field keeps it, and says what is wrong, until it names somewhere the site can link to.
           if (!pendingEdits.current.has(String(p.editId)) || typeof p.href !== 'string') break;
-          const problem = inlineLinkProblem(p.href.slice(0, 2000), getState().snapshot?.state.pages ?? {});
+          const live = getState().snapshot?.state;
+          const problem = inlineLinkProblem(p.href.slice(0, 2000), live?.pages ?? {}, live ? collectionIndexRoutes(live) : {});
           post('linkChecked', { check: p.check, ...(problem ? { problem } : {}) });
           break;
         }

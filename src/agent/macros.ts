@@ -11,6 +11,7 @@ import { conditionHolds, conditionRef, stateInitial } from '@shared/types';
 import { effectiveItem, followsPage, teaserFields } from '@shared/page-teasers';
 import type { EditOperation } from '@shared/ops';
 import { normalizeRoute, validateRoute } from '@shared/routes';
+import { collectionIndexRoutes } from '@shared/archives';
 import { newId } from '@shared/ids';
 import { isLanguageCode } from '@shared/languages';
 import { TEXT_LIMITS } from '@shared/text-limits';
@@ -237,6 +238,13 @@ function resolveRouteLink(v: unknown, state: ProjectState): { value: unknown; pe
   if (page) {
     const { anchor, newTab } = (v && typeof v === 'object' ? v : {}) as Partial<LinkValue>;
     return { value: { type: 'page', target: page.id, ...(anchor ? { anchor } : {}), ...(newTab ? { newTab } : {}) } };
+  }
+  // A collection's index (the blog at /blog/) is no page still to come: the link goes to it.
+  const indexes = collectionIndexRoutes(state);
+  const index = Object.keys(indexes).find((id) => indexes[id].toLowerCase() === route.toLowerCase());
+  if (index) {
+    const { newTab } = (v && typeof v === 'object' ? v : {}) as Partial<LinkValue>;
+    return { value: { type: 'collection', target: index, ...(newTab ? { newTab } : {}) } };
   }
   return { value: { type: 'none', target: '' }, pendingRoute: route };
 }

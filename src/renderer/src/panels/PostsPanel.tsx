@@ -4,6 +4,7 @@ import { ArrowLeft, Copy, FileDown, LayoutTemplate, Library, Newspaper, Plug, Pl
 import { formatArticleDate } from '@shared/articles';
 import { entryLinkUses } from '@engine/page-links';
 import { api, commitOps, confirmDialog, getState, markDraft, setState, toast, undoAction, useStore } from '../store';
+import { headerMenu as findHeaderMenu } from '@engine/tree';
 import { Field, Modal, Segmented, useMenu, type MenuItem } from '../components/ui';
 import { reviewPostImport } from './PostImportReview';
 import type { PostImportKind } from '@shared/api';
@@ -157,14 +158,27 @@ function AddCollection({ state, onMade, onCancel }: { state: ProjectState; onMad
   const [kind, setKind] = useState<CollectionKind>('structured');
   const [pages, setPages] = useState(false);
   const [busy, setBusy] = useState(false);
+  // A blog is offered a link in the header menu, as a new page is: ticked, while the header has a menu to take it.
+  const [toMenu, setToMenu] = useState(true);
   const make = async (plan: { ops: EditOperation[]; collectionId: string } | null, label: string) => {
     if (!plan || busy) return;
     setBusy(true);
     const r = await commitOps(plan.ops, label);
     setBusy(false);
-    if (r?.ok) onMade(plan.collectionId);
+    if (!r?.ok) return;
+    const asked = plan.ops.some((o) => o.type === 'collection.create' && o.addToNavigation);
+    const made = r.results?.find((x, i) => plan.ops[i]?.type === 'collection.create');
+    if (asked && made?.addedToNavigation === false) toast('Added the blog. Its link could not join the header menu, which is full or shows links from somewhere else: link one to the Posts index in the header’s menu.', 'info');
+    onMade(plan.collectionId);
   };
   const starters = STARTER_COLLECTIONS.filter((c) => c.id !== POSTS_COLLECTION_ID || !Object.hasOwn(state.collections, POSTS_COLLECTION_ID));
+  const offersBlog = starters.some((c) => c.id === POSTS_COLLECTION_ID) && !!findHeaderMenu(state);
+  /** The starter's operations, the blog's with the header link when it is asked for. */
+  const starterPlan = (id: string) => {
+    const plan = starterCollectionOps(getState().snapshot!.state, id);
+    if (!plan || id !== POSTS_COLLECTION_ID || !offersBlog || !toMenu) return plan;
+    return { ...plan, ops: plan.ops.map((o) => (o.type === 'collection.create' ? { ...o, addToNavigation: true } : o)) };
+  };
   if (custom)
     return (
       <form
@@ -214,7 +228,7 @@ function AddCollection({ state, onMade, onCancel }: { state: ProjectState; onMad
       <ul className="content-starters">
         {starters.map((c) => (
           <li key={c.id}>
-            <button className="content-starter" disabled={busy} data-starter={c.id} onClick={() => void make(starterCollectionOps(getState().snapshot!.state, c.id), `Add the ${c.name} collection`)}>
+            <button className="content-starter" disabled={busy} data-starter={c.id} onClick={() => void make(starterPlan(c.id), `Add the ${c.name} collection`)}>
               <strong>{c.label}</strong>
               <span>{c.description}</span>
             </button>
@@ -227,6 +241,11 @@ function AddCollection({ state, onMade, onCancel }: { state: ProjectState; onMad
           </button>
         </li>
       </ul>
+      {offersBlog && (
+        <label className="content-check">
+          <input type="checkbox" checked={toMenu} disabled={busy} onChange={(e) => setToMenu(e.target.checked)} /> Add a Blog link to the header menu
+        </label>
+      )}
       {onCancel && (
         <button className="btn btn-sm btn-ghost" onClick={onCancel}>
           Cancel

@@ -162,3 +162,22 @@ export function archiveWords(state: Pick<ProjectState, 'site' | 'collections'>, 
   const own = category ? (term ? ownText(settings!.taxonomies.categories.terms[term.id]?.description) : '') : ownText(settings?.description);
   return { heading, name, title: `${name} · ${typeof site.name === 'string' ? site.name : ''}`, description: own || defaultArchiveDescription(state, archive.collectionId, category) };
 }
+
+/**
+ * The address of each collection's index (the first page of its list of entries), by collection ID, for the
+ * collections whose index the website has: a link to a collection (`{ type: 'collection' }`) goes there, and a link
+ * to one without an index (data only, entry pages alone, or its address held by something else) shows its words alone.
+ */
+export function collectionIndexRoutes(state: ProjectState): Record<string, string> {
+  const out: Record<string, string> = {};
+  for (const p of archivePages(state)) if (p.category === undefined && p.page === 1) out[p.collectionId] = p.route;
+  return out;
+}
+
+/** The collections a link can go to the index of, by ID, each with its name and its index's address. */
+export function linkableIndexes(state: ProjectState): Array<{ id: string; name: string; route: string }> {
+  const routes = collectionIndexRoutes(state);
+  return Object.keys(routes)
+    .sort()
+    .map((id) => ({ id, name: typeof state.collections[id]?.settings?.name === 'string' && state.collections[id].settings.name.trim() ? state.collections[id].settings.name.trim() : id, route: routes[id] }));
+}

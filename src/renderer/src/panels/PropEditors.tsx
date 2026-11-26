@@ -38,6 +38,7 @@ import { effectiveItem } from '@shared/page-teasers';
 import { feedLimit } from '@shared/articles';
 import { entryQuery, feedCollection } from '@shared/entry-feed';
 import { findEntry } from '@shared/collections';
+import { linkableIndexes } from '@shared/archives';
 import { openPost, selectPage } from '../lib/actions';
 import { placedFeedRows, resolveRef } from '../lib/model';
 import { groupFields, listItemImage, listRowTitle, type PropGroup } from '@shared/fields';
@@ -305,6 +306,10 @@ export function LinkEditor({ value, onChange, state, label, everywhere, invalid,
   // The page a link last pointed at, so a trip through another link type comes back to it.
   const lastPage = useRef<string | null>(null);
   if (v.type === 'page' && state.pages[v.target]) lastPage.current = v.target;
+  // The collections whose index a link can go to, and the one it last went to.
+  const indexes = useMemo(() => linkableIndexes(state), [state]);
+  const lastIndex = useRef<string | null>(null);
+  if (v.type === 'collection' && indexes.some((x) => x.id === v.target)) lastIndex.current = v.target;
   // Likewise the document it last went to.
   const lastDocument = useRef<string | null>(null);
   const linkedDocument = v.type === 'document' && Object.hasOwn(state.assets.assets, v.target) && isLibraryDocument(state.assets.assets[v.target]) ? state.assets.assets[v.target] : undefined;
@@ -312,6 +317,7 @@ export function LinkEditor({ value, onChange, state, label, everywhere, invalid,
   const pickType = (t: LinkValue['type']) => {
     if (t === v.type) return setPending(null);
     if (t === 'none') onChange({ type: 'none', target: '' });
+    else if (t === 'collection' && indexes.length) onChange({ type: t, target: indexes.find((x) => x.id === lastIndex.current)?.id ?? indexes[0].id, ...(v.newTab ? { newTab: true } : {}) });
     else if (t === 'document' && lastDocument.current && Object.hasOwn(state.assets.assets, lastDocument.current) && isLibraryDocument(state.assets.assets[lastDocument.current])) onChange({ type: t, target: lastDocument.current });
     else if (t === 'page') {
       // Back to the page it pointed at before; else the page being edited, where a carried section lives; else Home.
@@ -342,6 +348,7 @@ export function LinkEditor({ value, onChange, state, label, everywhere, invalid,
       <select className="select sm" value={type} aria-label={named('Link type')} aria-invalid={invalid || undefined} aria-describedby={describedBy} onChange={(e) => pickType(e.target.value as LinkValue['type'])}>
         <option value="none">No link</option>
         <option value="page">Page</option>
+        {(indexes.length > 0 || type === 'collection' || v.type === 'collection') && <option value="collection">Collection index</option>}
         <option value="url">Web address</option>
         <option value="document">Document</option>
         <option value="email">Email</option>
@@ -354,6 +361,26 @@ export function LinkEditor({ value, onChange, state, label, everywhere, invalid,
           {state.site.pageOrder.map((id) => (
             <option key={id} value={id}>
               {state.pages[id].title} ({state.pages[id].route})
+            </option>
+          ))}
+        </select>
+      ) : type === 'collection' ? (
+        <select
+          className="select sm"
+          value={indexes.some((x) => x.id === v.target) ? v.target : ''}
+          aria-label={named('Collection')}
+          aria-invalid={!indexes.some((x) => x.id === v.target) || undefined}
+          aria-describedby={indexes.some((x) => x.id === v.target) ? undefined : missingId}
+          onChange={(e) => e.target.value && onChange({ type: 'collection', target: e.target.value, ...(v.newTab ? { newTab: true } : {}) })}
+        >
+          {!indexes.some((x) => x.id === v.target) && (
+            <option value="" disabled>
+              {indexName(state, v.target) ?? 'Missing collection'}
+            </option>
+          )}
+          {indexes.map((x) => (
+            <option key={x.id} value={x.id}>
+              {x.name} ({x.route})
             </option>
           ))}
         </select>
@@ -427,12 +454,20 @@ export function LinkEditor({ value, onChange, state, label, everywhere, invalid,
           {missingText}
         </div>
       )}
+      {!pending && v.type === 'collection' && !indexes.some((x) => x.id === v.target) && (
+        <div className="field-error" id={missingId}>
+          {indexName(state, v.target) ? `${indexName(state, v.target)} has no index on the website, so the link shows its words alone. Turn on its index, or choose another destination.` : 'This collection is no longer in the project, so the link goes nowhere. Choose another destination.'}
+        </div>
+      )}
       {/* A new tab only means something for pages and web addresses; mail and phone links open their own apps. */}
-      {!pending && (v.type === 'page' || v.type === 'url') && <SwitchRow checked={!!v.newTab} onChange={(n) => onChange({ ...v, newTab: n })} label="Open in a new tab" />}
+      {!pending && (v.type === 'page' || v.type === 'url' || v.type === 'collection') && <SwitchRow checked={!!v.newTab} onChange={(n) => onChange({ ...v, newTab: n })} label="Open in a new tab" />}
       {!pending && v.type === 'url' && <LinkRelControls value={v.rel} onChange={(rel) => onChange(withRels(v, rel))} />}
     </div>
   );
 }
+
+/** A collection's name, while the project has it. */
+const indexName = (state: ProjectState, id: string): string | null => (Object.hasOwn(state.collections ?? {}, id) ? state.collections[id].settings.name : null);
 
 /** Where a saved link takes visitors, as the end of "the link still …", for while another kind of link is being set up. */
 function savedDestination(v: LinkValue, state: ProjectState, sectionGone: boolean): string {
@@ -440,6 +475,10 @@ function savedDestination(v: LinkValue, state: ProjectState, sectionGone: boolea
   // A section by the name the picker gives it, when it has one.
   const section = (pageId: string | null | undefined, id: string) => sectionOptions(state, pageId, undefined).options.find((o) => o.value === `#${id}`)?.text ?? `#${id}`;
   if (page) return `goes to ${sectionGone || !v.anchor ? 'the top of ' : ''}${page.title}${v.anchor && !sectionGone ? `, ${section(page.id, v.anchor)}` : ''}`;
+  if (v.type === 'collection') {
+    const index = linkableIndexes(state).find((x) => x.id === v.target);
+    return index ? `goes to the ${index.name} index` : 'goes nowhere';
+  }
   if (v.type === 'document') return Object.hasOwn(state.assets.assets, v.target) && isLibraryDocument(state.assets.assets[v.target]) ? `downloads ${state.assets.assets[v.target].name}` : 'goes nowhere';
   if (v.type === 'email') return `emails ${v.target}`;
   if (v.type === 'tel') return `calls ${v.target}`;

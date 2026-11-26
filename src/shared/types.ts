@@ -84,15 +84,16 @@ export type StyleProps = Record<string, StyleValue>;
  */
 export type ResponsiveStyles = Partial<Record<StyleScopeKey, StyleProps>>;
 
-export type LinkType = 'none' | 'page' | 'url' | 'email' | 'tel' | 'anchor' | 'document' | 'entry';
+export type LinkType = 'none' | 'page' | 'url' | 'email' | 'tel' | 'anchor' | 'document' | 'entry' | 'collection';
 /** The relationships an author can declare on a link to another site, in the order they are stored and written. */
 export const LINK_RELS = ['nofollow', 'sponsored', 'ugc'] as const;
 export type LinkRel = (typeof LINK_RELS)[number];
 export interface LinkValue {
   type: LinkType;
   /**
-   * Page ID, URL, email address, telephone number, anchor ID, a document's asset ID or a collection entry's ID,
-   * depending on `type`. Entry IDs are unique across the project, so an entry link names no collection.
+   * Page ID, URL, email address, telephone number, anchor ID, a document's asset ID, a collection entry's ID or (for
+   * a link to a collection's index, the first page of its list) the collection's ID, depending on `type`. Entry IDs are
+   * unique across the project, so an entry link names no collection.
    */
   target: string;
   /** Optional in-page anchor for page links. */

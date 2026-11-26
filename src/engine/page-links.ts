@@ -42,7 +42,12 @@ export function entryLinkUses(state: ProjectState, entryIds: string | ReadonlySe
   return linkUses(state, 'entry', typeof entryIds === 'string' ? new Set([entryIds]) : entryIds);
 }
 
-function linkUses(state: ProjectState, kind: 'page' | 'entry', target: string | ReadonlySet<string>): PageLinkUse[] {
+/** Every stored link to the index of the collection `collectionId`, from anywhere in the project, its own entries included. */
+export function collectionLinkUses(state: ProjectState, collectionId: string): PageLinkUse[] {
+  return linkUses(state, 'collection', collectionId);
+}
+
+function linkUses(state: ProjectState, kind: 'page' | 'entry' | 'collection', target: string | ReadonlySet<string>): PageLinkUse[] {
   const out: PageLinkUse[] = [];
   const seen = new Set<object>();
   const ids = typeof target === 'string' ? new Set([target]) : target;

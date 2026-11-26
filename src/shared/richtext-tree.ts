@@ -4,7 +4,7 @@
  * main process reads imports with the same rules the editor applies to what is typed.
  */
 import type { LinkValue, RichBlock, RichListBlock, RichSpan, RichText, RichTextBlock } from './types';
-import { cleanBlocks, linkFromTarget, mergeLists, type RichPages } from './richtext';
+import { cleanBlocks, linkFromTarget, mergeLists, type RichIndexes, type RichPages } from './richtext';
 
 /** A text node, or an element by tag name with its children. `b` and `i` carry an inline style's bold or
  *  italic (true) or its explicit removal (false), as the browser's own commands can leave them. `check` marks a
@@ -32,7 +32,7 @@ const ARTICLE_BLOCK: Record<string, RichTextBlock['type']> = { ...TEXT_BLOCKS_ON
  * The blocks the edited element now holds. `droppedLinks` counts links whose destination cannot be stored; their
  * words stay as plain text.
  */
-export function blocksFromDom(nodes: RichDomNode[], pages: RichPages, article?: ArticleRead): { blocks: RichText; droppedLinks: number } {
+export function blocksFromDom(nodes: RichDomNode[], pages: RichPages, article?: ArticleRead, indexes?: RichIndexes): { blocks: RichText; droppedLinks: number } {
   const TEXT_BLOCK = article ? ARTICLE_BLOCK : TEXT_BLOCKS_ON_PAGE;
   const blocks: RichBlock[] = [];
   let run: RichSpan[] = [];
@@ -90,7 +90,7 @@ export function blocksFromDom(nodes: RichDomNode[], pages: RichPages, article?: 
     }
     if (tag === 'a' && n.href !== undefined) {
       const rel = Array.isArray(n.rel) ? n.rel : [];
-      const link = article ? article.link(n.href, !!n.newTab, rel) : linkFromTarget(n.href, pages, !!n.newTab, rel);
+      const link = article ? article.link(n.href, !!n.newTab, rel) : linkFromTarget(n.href, pages, !!n.newTab, rel, indexes);
       if (link) inner.link = link;
       else droppedLinks++;
     }

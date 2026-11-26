@@ -35,7 +35,7 @@ import { EngineError, allTrees, fail } from './tree';
 import { starterArchiveLayout } from './collection-sources';
 import { normalizeLink, normalizeRichText, normalizeScalar } from './values';
 import { bindingSlots, checkPropName, normalizePropSchema } from './schema';
-import { entryLinkUses, type LinkHolder } from './page-links';
+import { collectionLinkUses, entryLinkUses, type LinkHolder, type PageLinkUse } from './page-links';
 import { declaredTokens } from './tokens';
 import { articleTemplateFor } from '@catalogue/index';
 
@@ -494,6 +494,13 @@ export function collectionUpdate(state: ProjectState, op: Op<'collection.update'
   const was = { route: c.settings.route, detail: hasDetailPages(c.settings), archive: hasArchivePages(c.settings) };
   const pages = op.pages !== undefined ? pagesOf(op.pages) : { detail: was.detail, archive: was.archive };
   const route = op.route !== undefined && op.route !== c.settings.route ? prefixRoute(op.route) : was.route;
+  // Its index can't go while anything links to it: text edited on the page keeps a link only by its address, so one
+  // shown as words alone meanwhile would be lost, and a post's text holding one could no longer be saved.
+  if (was.archive && !pages.archive) {
+    const held = collectionLinkUses(state, c.settings.id);
+    if (held.length)
+      fail(`${held.length} link${held.length === 1 ? '' : 's'} go${held.length === 1 ? 'es' : ''} to the ${name} index (in ${[...new Set(held.map((u) => u.where))].slice(0, 3).join(', ')}). Point ${held.length === 1 ? 'it' : 'them'} elsewhere before turning the index off.`);
+  }
   if (pages.detail && route === undefined) fail(`The ${name} collection needs an address for its pages, such as "/${c.settings.id}/".`);
   // The collection's pages take every address they did not have: moved, or turned on.
   const moved = route !== was.route;
@@ -615,12 +622,14 @@ export function collectionRemove(state: ProjectState, op: Op<'collection.remove'
     if (field) throw new EngineError('VALIDATION_FAILED', `${field.label} of the ${other.settings.name} collection refers to entries of ${c.settings.name}. Remove that field first.`);
   }
   const members = new Set(Object.keys(c.entries));
-  // Links between its own entries go with them, as do its layout's and its fields' defaults; any other link to one of
-  // them would be left going nowhere.
-  const outside = entryLinkUses(state, members).filter((u) => !(u.owner.kind === 'template' && u.owner.id === c.settings.id));
+  // Links its own entries, layouts and fields' defaults hold go with them; any other link to one of its entries, or to
+  // its list, would be left going nowhere.
+  const mine = (u: PageLinkUse) => ((u.owner.kind === 'template' || u.owner.kind === 'archive') && u.owner.id === c.settings.id) || (u.owner.kind === 'entry' && 'collectionId' in u.owner && u.owner.collectionId === c.settings.id);
+  const toIndex = collectionLinkUses(state, c.settings.id).filter((u) => !mine(u));
+  const outside = [...entryLinkUses(state, members).filter((u) => !mine(u)), ...toIndex];
   if (outside.length) {
     const n = outside.length;
-    throw new EngineError('VALIDATION_FAILED', `${n} link${n === 1 ? '' : 's'} outside the ${c.settings.name} collection point to its entries (in ${[...new Set(outside.map((u) => u.where))].slice(0, 3).join(', ')}). Point them elsewhere first.`, { references: n });
+    throw new EngineError('VALIDATION_FAILED', `${n} link${n === 1 ? '' : 's'} outside the ${c.settings.name} collection point to ${toIndex.length ? 'its list or its entries' : 'its entries'} (in ${[...new Set(outside.map((u) => u.where))].slice(0, 3).join(', ')}). Point them elsewhere first.`, { references: n });
   }
   delete state.collections[c.settings.id];
   // Their old addresses go with them: nothing is left there to send visitors on to.
@@ -1210,6 +1219,7 @@ function linkProblems(state: ProjectState, value: unknown, what: string, owner: 
   for (const l of linksIn(value)) {
     if (l.type === 'page' && !Object.hasOwn(state.pages, l.target)) gone.add('a page that no longer exists');
     if (l.type === 'entry' && !findEntry(state, l.target)) gone.add('an entry that no longer exists');
+    if (l.type === 'collection' && !own(state.collections, l.target)) gone.add('a collection that no longer exists');
     if (l.type === 'document' && own(state.assets.assets, l.target)?.kind !== 'document') gone.add('a document that is no longer in Assets');
   }
   return [...gone].map((g) => ({ severity: 'error' as const, code: 'LINK_BROKEN', message: `${what} goes to ${g}.`, owner, site: `${site}|${g}` }));
