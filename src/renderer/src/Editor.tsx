@@ -49,7 +49,7 @@ import { PANEL_DEFAULTS, PANEL_LIMITS, RAIL_WIDTH, fitPanels, panelMax, resizePa
 import { closeProject, endEditingHold, saveNow } from './lib/leave';
 import { shortcutLabel } from './lib/shortcut-keys';
 import { isAskAiKey } from './lib/ask-ai-key';
-import { isRemoteShell, leaveLive, LOCAL_PROJECT_COMMANDS, REMOTE_LEFT_TABS, REMOTE_MODALS, REMOTE_RIGHT_TABS, showsRemote } from './lib/remote-session';
+import { confirmLeaveLive, isRemoteShell, LOCAL_PROJECT_COMMANDS, REMOTE_LEFT_TABS, REMOTE_MODALS, REMOTE_RIGHT_TABS, showsRemote } from './lib/remote-session';
 import { timedPanel } from './lib/perf-panels';
 import { Hideable } from './lib/hideable';
 
@@ -532,7 +532,7 @@ export function Editor() {
       // The host's project, as a guest in its live session (#766): nothing of this computer's opens over it, and
       // closing it is leaving the session.
       if (showsRemote()) {
-        if (cmd === 'close-project') void leaveLive();
+        if (cmd === 'close-project') void confirmLeaveLive();
         else if (LOCAL_PROJECT_COMMANDS.has(cmd)) toast('Leave the live session first: a project of your own opens once you have left.', 'info');
         else if (cmd === 'settings') setState({ modal: { kind: 'settings' } });
         return;

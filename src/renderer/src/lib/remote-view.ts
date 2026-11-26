@@ -25,15 +25,19 @@ export interface RemotePill {
   text: string;
   /** Its fuller words, for its name and title. */
   label: string;
+  /** The line under the project's name in the pill's menu: the role and the time left in words, or what is wrong. */
+  detail: string;
+  /** What changed about the connection, for a screen reader: the role or the trouble, never the minutes left. */
+  announce: string;
 }
 
 /** The pill: how this guest is connected, and how long it has left. */
 export function remotePill(remote: AdmittedRemote, now = Date.now()): RemotePill {
   const role = ROLE_LABELS[remote.role];
   const left = remoteLeftMs(remote, now);
-  if (remote.reconnecting) return { kind: 'reconnecting', text: 'Reconnecting…', label: `Live session: reconnecting to ${remote.projectName}` };
-  if (!remote.hostConnected) return { kind: 'away', text: 'Host away', label: `Live session: the host of ${remote.projectName} is reconnecting` };
-  return { kind: 'live', text: `${role} · ${formatSpan(left)}`, label: `Connected to ${remote.projectName} as ${role}, ${spanWords(left)} left` };
+  if (remote.reconnecting) return { kind: 'reconnecting', text: 'Reconnecting…', label: `Live session: reconnecting to ${remote.projectName}`, detail: 'Your connection dropped. Reconnecting…', announce: `Reconnecting to the live session of ${remote.projectName}.` };
+  if (!remote.hostConnected) return { kind: 'away', text: 'Host away', label: `Live session: the host of ${remote.projectName} is reconnecting`, detail: remote.role === 'collaborator' ? 'The host is reconnecting. Your editing waits for them.' : 'The host is reconnecting.', announce: `The host of ${remote.projectName} is reconnecting.` };
+  return { kind: 'live', text: `${role} · ${formatSpan(left)} left`, label: `Connected to ${remote.projectName} as ${role}, ${spanWords(left)} left`, detail: `${role} · ${spanWords(left)} left`, announce: `Connected to ${remote.projectName} as ${role}.` };
 }
 
 /** What a participant is on, in the host's project as this guest holds it: the page, and what is selected there. */
@@ -78,4 +82,26 @@ export function presenceLines(state: ProjectState, remote: AdmittedRemote, prese
     if (at) lines.push({ key: participant.guestId, who: participant.displayName, where: presenceWhere(state, at), pageId: page(at) });
   }
   return lines;
+}
+
+export interface RosterLine extends PresenceLine {
+  /** A viewer: in the session, following the host's work, with no place of their own in it. */
+  watching: boolean;
+}
+
+/**
+ * Everyone else in the live session, as the pill's menu lists them and its count counts them: the host while it is
+ * connected, each other collaborator the relay lists, then the viewers. Where each collaborator is comes from their
+ * presence when it has arrived, so someone who has yet to say where they are is listed all the same.
+ */
+export function remoteRoster(state: ProjectState, remote: AdmittedRemote, presence: RemotePresence | null): RosterLine[] {
+  const at = presence && presence.joinId === remote.joinId ? presence : null;
+  const page = (p: Presence) => (p.pageId && Object.hasOwn(state.pages, p.pageId) ? p.pageId : null);
+  const line = (key: string, who: string, p: Presence | null | undefined): RosterLine => ({ key, who, where: p ? presenceWhere(state, p) : 'Location not known yet', pageId: p ? page(p) : null, watching: false });
+  const others = remote.participants.filter((p) => p.guestId !== remote.guestId);
+  return [
+    ...(remote.hostConnected ? [line('host', 'Host', at?.host)] : []),
+    ...others.filter((p) => p.role === 'collaborator').map((p) => line(p.guestId, p.displayName, at?.guests[p.guestId])),
+    ...others.filter((p) => p.role !== 'collaborator').map((p): RosterLine => ({ key: p.guestId, who: p.displayName, where: 'Watching', pageId: null, watching: true }))
+  ];
 }

@@ -18,7 +18,7 @@ import { activeWorkspace, canvasCovered } from '../lib/workspace';
 import { shortcutLabel } from '../lib/shortcut-keys';
 import { ShareControl } from './SharePopover';
 import { RemoteSessionControl } from './RemoteSession';
-import { isRemoteShell, leaveLive } from '../lib/remote-session';
+import { confirmLeaveLive, isRemoteShell } from '../lib/remote-session';
 
 export function Toolbar() {
   const snap = useStore((s) => s.snapshot);
@@ -251,7 +251,7 @@ export function Toolbar() {
           aria-label={remoteShell ? 'Leave the live session' : 'All projects'}
           title={remoteShell ? 'Leave the live session' : `All projects (${keys('⇧⌘W')})`}
           onMouseDown={(e) => e.button === 0 && e.preventDefault()}
-          onClick={() => void (remoteShell ? leaveLive() : closeProject())}
+          onClick={() => void (remoteShell ? confirmLeaveLive() : closeProject())}
         >
           <AppMark size={22} />
         </button>
@@ -278,7 +278,7 @@ export function Toolbar() {
                   { separator: true },
                   // The host's project is the host's: it alone opens, reveals, copies, versions and closes it.
                   ...(remoteShell
-                    ? [{ label: 'Leave live session', icon: <LogOut />, onSelect: () => void leaveLive() }]
+                    ? [{ label: 'Leave live session…', icon: <LogOut />, onSelect: () => void confirmLeaveLive() }]
                     : [
                         { label: 'New project…', icon: <Plus />, onSelect: () => sendCommand('new-project') },
                         { label: 'Open project…', icon: <FolderOpen />, onSelect: () => sendCommand('open-project') },
