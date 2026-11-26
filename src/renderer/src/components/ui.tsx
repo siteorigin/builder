@@ -1047,10 +1047,13 @@ function DraftField({
       // Kept text this field held is settled; text kept by another control of the same place is left to it.
       if (fate === 'drop') dropKeptDraft(field!);
       if (!field || !keptDraft(field)) markDraft(draftKey, false);
-      if (!open || offered || !(focused.current || over || (gone && refused))) return;
+      // Refused by its check with no place to keep it, and left before it went (the selection changed): offered to copy.
+      const dropped = refused && !field && !focused.current;
+      if (!open || offered || !(focused.current || over || (gone && refused) || dropped)) return;
       const copy = { label: 'Copy text', run: () => void navigator.clipboard?.writeText(text).catch(() => undefined) };
       if (over) toast(`${tooLongReport(nameRef.current, text.length, limit!)} The field went away, so copy it to keep it.`, 'error', copy);
       else if (gone && refused) toast(goneReport(nameRef.current), 'error', copy);
+      else if (dropped) toast(`${refusedReport(nameRef.current)} The field went away, so copy it to keep it.`, 'error', copy);
       else if (aiRan(from!)) commitDraft(from!.base, () => from!.commit(text), text, { check: true, control: owner.current });
       else if (text.trim()) toast('What you were typing was not saved, because the field went away.', 'error', copy);
     };
@@ -1153,6 +1156,8 @@ function DraftField({
     'aria-invalid': invalid || note?.over || undefined,
     id,
     autoFocus,
+    // Left by the store before the Inspector shows something else (see leaveInspectorField).
+    'data-draft-field': '',
     onFocus: (e: React.FocusEvent<HTMLInputElement | HTMLTextAreaElement>) => {
       focused.current = true;
       nameRef.current = fieldName(e.currentTarget, ariaLabel);

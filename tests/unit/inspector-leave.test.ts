@@ -22,6 +22,7 @@ const ENTRY = [
   `import { DraftInput } from ${renderer('components/ui')};`,
   `import { setState, useStore } from ${renderer('store')};`,
   'window.commits = [];',
+  'window.plainBlurs = 0;',
   "const ref = (nodeId) => ({ owner: { kind: 'page', id: 'home' }, instancePath: [], nodeId });",
   "flushSync(() => useStore.setState({ snapshot: { workspaceKey: 'w', state: {} }, pageId: 'home', selection: ref('hero') }));",
   // Keyed as the Inspector keys what it shows: another selection, or with none another page, is another set of fields.
@@ -29,10 +30,16 @@ const ENTRY = [
   '  const selection = useStore((s) => s.selection);',
   '  const pageId = useStore((s) => s.pageId);',
   "  const shows = selection ? selection.nodeId : 'page:' + pageId;",
-  "  const commit = (v) => void window.commits.push([shows, v, useStore.getState().selection?.nodeId ?? null]);",
+  // What was saved, by which field, and what the editor had selected and open as it was saved.
+  "  const commit = (v) => void window.commits.push([shows, v, useStore.getState().selection?.nodeId ?? null, useStore.getState().pageId]);",
+  // A web address refused unless it starts https://: kept in the field, never sent.
+  "  const check = (v) => (v.startsWith('https://') ? null : { message: 'Start it with https://' });",
   "  return h('div', { id: 'dock-panel-inspect' }, h('div', { key: JSON.stringify([selection, selection ? null : pageId]) },",
   "    h(DraftInput, { ariaLabel: 'Heading', value: 'Saved ' + shows, onCommit: commit }),",
-  "    h(DraftInput, { ariaLabel: 'Supporting text', multiline: true, value: 'Saved text ' + shows, onCommit: commit })));",
+  "    h(DraftInput, { ariaLabel: 'Supporting text', multiline: true, value: 'Saved text ' + shows, onCommit: commit }),",
+  "    h(DraftInput, { ariaLabel: 'Web address', value: 'https://' + shows + '.test', onCommit: commit, check }),",
+  // A control of its own (a choice's label): what it does as it goes is its own, and the store leaves it alone.
+  "    h('input', { 'aria-label': 'Choice 1', defaultValue: 'Yes', onBlur: () => void window.plainBlurs++ })));",
   '}',
   "flushSync(() => createRoot(document.getElementById('root')).render(h(Panel)));",
   'window.so = {',
@@ -42,7 +49,8 @@ const ENTRY = [
   // The project changed on disk and took the selected element with it.
   "  removed: () => setState({ snapshot: { workspaceKey: 'w', state: {} }, selection: null }),",
   "  notices: () => useStore.getState().toasts.map((t) => t.text),",
-  '};'
+  '};',
+  'window.useStore = () => useStore.getState();'
 ].join('\n');
 
 /** The preload bridge: every call answers nothing. */
@@ -107,44 +115,70 @@ describe.skipIf(!browserInstalled)('Inspector text and a pick on the canvas (#89
     expect(errors).toEqual([]);
   });
 
-  const commits = () => page.evaluate<Array<[string, string, string | null]>>('window.commits');
+  const commits = () => page.evaluate<Array<[string, string, string | null, string]>>('window.commits');
   const notices = () => page.evaluate<string[]>('so.notices()');
   const focused = () => page.evaluate<string | null>('document.activeElement?.getAttribute("aria-label") ?? null');
 
-  /** Types `text` in the field named `name`, leaving focus in it, as an author who has not pressed Enter. */
+  /** Types `text` in the field named `name`, leaving focus in it, as an author who has not pressed Enter: nothing is saved yet. */
   const type = async (name: string, text: string) => {
     const field = page.getByRole('textbox', { name, exact: true });
+    const before = (await commits()).length;
     await field.click();
     await field.press('ControlOrMeta+a');
     await page.keyboard.insertText(text);
     expect(await focused()).toBe(name);
+    expect(await field.inputValue()).toBe(text);
+    expect(await commits()).toHaveLength(before);
   };
+  const shown = (name: string) => page.getByRole('textbox', { name, exact: true }).inputValue();
 
-  for (const name of ['Heading', 'Supporting text']) {
+  for (const [name, tag] of [
+    ['Heading', 'INPUT'],
+    ['Supporting text', 'TEXTAREA']
+  ]) {
     it(`saves what was typed in ${name} for the element it was typed for when the canvas selects another`, async () => {
+      expect(await page.getByRole('textbox', { name, exact: true }).evaluate((el) => el.tagName)).toBe(tag);
       await type(name, 'Typed for the hero');
       await page.evaluate('so.pick("services")');
-      await expect.poll(() => page.getByRole('textbox', { name, exact: true }).inputValue()).toBe(name === 'Heading' ? 'Saved services' : 'Saved text services');
+      await expect.poll(() => shown(name)).toBe(name === 'Heading' ? 'Saved services' : 'Saved text services');
       // Saved once, by the hero's own field, while the hero was still selected: never for the element picked next.
-      expect(await commits()).toEqual([['hero', 'Typed for the hero', 'hero']]);
+      expect(await commits()).toEqual([['hero', 'Typed for the hero', 'hero', 'home']]);
       expect(await notices()).toEqual([]);
     });
   }
 
+  it('offers text its field refused to copy when the canvas selects another, and saves nothing', async () => {
+    await type('Web address', 'harbour lane');
+    await page.evaluate('so.pick("services")');
+    await expect.poll(() => shown('Web address')).toBe('https://services.test');
+    expect(await commits()).toEqual([]);
+    expect(await notices()).toEqual(['What you typed in Web address can’t be saved. The field went away, so copy it to keep it.']);
+  });
+
+  it('leaves a control of its own to itself', async () => {
+    await page.getByRole('textbox', { name: 'Choice 1', exact: true }).click();
+    await page.keyboard.insertText(' please');
+    await page.evaluate('so.pick("services")');
+    await expect.poll(() => shown('Heading')).toBe('Saved services');
+    expect(await page.evaluate('window.plainBlurs')).toBe(0);
+  });
+
   it('saves page settings being typed when the canvas selects an element, and when another page opens', async () => {
     await page.evaluate('so.pick(null)');
-    await expect.poll(() => page.getByRole('textbox', { name: 'Heading', exact: true }).inputValue()).toBe('Saved page:home');
+    await expect.poll(() => shown('Heading')).toBe('Saved page:home');
     await type('Heading', 'Home’s own');
     await page.evaluate('so.pick("hero")');
-    await expect.poll(() => page.getByRole('textbox', { name: 'Heading', exact: true }).inputValue()).toBe('Saved hero');
+    await expect.poll(() => shown('Heading')).toBe('Saved hero');
+    expect(await commits()).toEqual([['page:home', 'Home’s own', null, 'home']]);
     await page.evaluate('so.pick(null)');
-    await expect.poll(() => page.getByRole('textbox', { name: 'Heading', exact: true }).inputValue()).toBe('Saved page:home');
+    await expect.poll(() => shown('Heading')).toBe('Saved page:home');
     await type('Heading', 'Still Home’s');
     await page.evaluate('so.page("about")');
-    await expect.poll(() => page.getByRole('textbox', { name: 'Heading', exact: true }).inputValue()).toBe('Saved page:about');
+    await expect.poll(() => shown('Heading')).toBe('Saved page:about');
+    // Saved while Home was still open, by Home's own settings.
     expect(await commits()).toEqual([
-      ['page:home', 'Home’s own', null],
-      ['page:home', 'Still Home’s', null]
+      ['page:home', 'Home’s own', null, 'home'],
+      ['page:home', 'Still Home’s', null, 'home']
     ]);
     expect(await notices()).toEqual([]);
   });
@@ -152,17 +186,20 @@ describe.skipIf(!browserInstalled)('Inspector text and a pick on the canvas (#89
   it('writes nothing for an element a change to the project took away, and offers what was typed to copy', async () => {
     await type('Heading', 'Typed for the hero');
     await page.evaluate('so.removed()');
-    await expect.poll(() => page.getByRole('textbox', { name: 'Heading', exact: true }).inputValue()).toBe('Saved page:home');
+    await expect.poll(() => shown('Heading')).toBe('Saved page:home');
     expect(await commits()).toEqual([]);
-    expect(await notices()).toEqual(['What you were typing was not saved, because the field went away.']);
+    await expect.poll(notices).toEqual(['What you were typing was not saved, because the field went away.']);
   });
 
-  it('keeps the author typing when a pick selects what is already selected', async () => {
+  it('keeps the author typing when a pick selects what is already selected, on this page or another', async () => {
     await type('Heading', 'Still typing');
-    await page.evaluate('so.pick("hero")');
+    const field = await page.getByRole('textbox', { name: 'Heading', exact: true }).elementHandle();
+    // The field is left, if at all, as the store changes: checked at once, and again once React has drawn the change.
+    expect(await page.evaluate(`(so.pick("hero"), [useStore().selection.nodeId, document.activeElement.getAttribute('aria-label')])`)).toEqual(['hero', 'Heading']);
+    expect(await page.evaluate(`(so.page("about"), [useStore().pageId, document.activeElement.getAttribute('aria-label')])`)).toEqual(['about', 'Heading']);
     await page.evaluate('new Promise((r) => requestAnimationFrame(() => setTimeout(r)))');
-    expect(await focused()).toBe('Heading');
-    expect(await page.getByRole('textbox', { name: 'Heading', exact: true }).inputValue()).toBe('Still typing');
+    expect(await field!.evaluate((el) => el === document.activeElement && el.isConnected)).toBe(true);
+    expect(await shown('Heading')).toBe('Still typing');
     expect(await commits()).toEqual([]);
   });
 });

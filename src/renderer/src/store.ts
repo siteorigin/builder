@@ -465,13 +465,17 @@ export const inspectorFocusRequest = (f: Omit<InspectorFocus, 'seq' | 'at'>): In
 /** The status of a request that may change the site; a read-only question is not one. */
 export const editRunStatus = (s: Pick<State, 'runStatus' | 'runMode'>) => (s.runMode === 'ask' ? null : s.runStatus);
 
-/** What the Inspector shows its fields for, as it keys them: the selection, the page, and the component or layout edited. */
-const inspectorShows = (v: Pick<State, 'selection' | 'pageId' | 'definitionMode' | 'templateMode'>) =>
-  JSON.stringify([v.selection, v.pageId, v.definitionMode?.definitionId ?? null, v.templateMode?.collectionId ?? null]);
+/** What the Inspector shows its fields for, as it keys them: the selection in the component edited, or with nothing
+ *  selected the page, the component or the layout. */
+const inspectorShows = (v: Pick<State, 'selection' | 'pageId' | 'definitionMode' | 'templateMode'>) => {
+  const def = v.definitionMode?.definitionId ?? null;
+  return JSON.stringify(v.selection ? [v.selection, def] : [null, v.pageId, def, v.templateMode?.collectionId ?? null]);
+};
 
 /**
- * Before the Inspector shows its fields for something else, the field being typed in there is left, so what it holds
- * is saved (or kept as refused) for the element it was typed for, with the editor still as it was typed in (#896).
+ * Before the Inspector shows its fields for something else, the draft field being typed in there is left, so what it
+ * holds is saved (or refused, and offered to copy) for the element it was typed for, with the editor still as it was
+ * typed in (#896). Other controls keep their own way of going (a choice's label is offered to copy).
  * Most ways of selecting move focus first (a Layers row, a button), but a pick on the canvas takes none, and a field
  * removed while it has focus never hears its blur. A change to the project that takes the field's element away (an
  * Undo, the AI, the files changing on disk) is left to the field itself as it goes.
@@ -480,7 +484,7 @@ function leaveInspectorField(p: Partial<State>) {
   if ('snapshot' in p || !('selection' in p || 'pageId' in p || 'definitionMode' in p || 'templateMode' in p)) return;
   const s = useStore.getState();
   if (inspectorShows({ ...s, ...p }) === inspectorShows(s) || typeof document === 'undefined') return;
-  leaveField(document.getElementById('dock-panel-inspect'));
+  leaveField(document.getElementById('dock-panel-inspect'), '[data-draft-field]');
 }
 
 export const getState = () => useStore.getState();
