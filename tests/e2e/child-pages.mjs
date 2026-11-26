@@ -6,7 +6,9 @@
 // new one, and its submenu works by keyboard (Enter, Space, Tab, Escape), by pointer and by touch at phone width.
 // A page titled お問い合わせ (#36) previews and gets that address, takes another typed in Japanese in Page address,
 // and the editor follows a visitor's link to it in Preview; the export has it at /studio/お問い合わせ/, escaped in
-// the sitemap, and its old address sends visitors on.
+// the sitemap, and its old address sends visitors on. An address is kept working only once an export published it
+// (#890), so the site is exported before each move whose old address is followed, and an address that can't be one
+// is refused beside the field.
 import assert from 'node:assert/strict';
 import { createServer } from 'node:http';
 import { existsSync, readFileSync, statSync } from 'node:fs';
@@ -105,6 +107,10 @@ try {
   await list.locator('.list-editor-item', { hasText: 'Kitchens' }).getByRole('switch', { name: 'Show under the link above' }).click();
   await eventually(async () => assert.deepEqual((await menuRows()).map((r) => r.row), ['Home', 'About', 'Contact', 'Lookbook', '  Kitchens']));
 
+  step('a first export publishes Kitchens at /lookbook/kitchens/, so the address is kept working when it moves');
+  const firstExport = await withTimeout(win.evaluate((dest) => window.builderTest.exportStatic(dest), join(WORK, 'export-first')), 300000, 'First export');
+  assert.equal(firstExport.ok, true, `the first export succeeds: ${firstExport.message}`);
+
   step('move Kitchens into Work from its page settings: Move under lists it in Work, the menu stays as it was');
   const work = await apply([{ type: 'page.create', title: 'Work', route: '/work/', starter: 'intro' }], 'Add page Work');
   assert.equal(work.ok, true);
@@ -145,12 +151,24 @@ try {
   await win.getByRole('menuitem', { name: 'Page settings' }).click();
   const addressField = inspector().getByLabel('Page address');
   await eventually(async () => assert.equal(await addressField.inputValue(), '/お問い合わせ/'));
+  // An address that can't be one is refused beside the field, in the field's own words, and what was typed stays.
+  await addressField.fill('/bad!/');
+  await addressField.press('Enter');
+  await eventually(async () => assert.match(await inspector().locator('.field-error').innerText(), /"bad!" can’t be part of an address/, 'the reason is given beside the field'));
+  assert.equal(await addressField.inputValue(), '/bad!/', 'the typed address stays in the field');
+  assert.equal((await pageBy('お問い合わせ')).route, '/お問い合わせ/', 'nothing is saved');
+  await addressField.press('Escape');
+  await eventually(async () => assert.equal(await addressField.inputValue(), '/お問い合わせ/', 'Escape puts the saved address back'));
   // One typed, one copied from a browser's address bar with its escapes.
   for (const [typed, route] of [['/連絡先/', '/連絡先/'], [encodeURI('/お問い合わせ/'), '/お問い合わせ/']]) {
     await addressField.fill(typed);
     await addressField.press('Enter');
     await eventually(async () => assert.equal((await pageBy('お問い合わせ')).route, route, `the address ${typed} is kept as ${route}`));
     await eventually(async () => assert.equal(await addressField.inputValue(), route, 'the field shows the address the page has'));
+    if (route !== '/連絡先/') continue;
+    // Published at /連絡先/ before it moves back, so that address is kept working.
+    const published = await withTimeout(win.evaluate((dest) => window.builderTest.exportStatic(dest), join(WORK, 'export-second')), 300000, 'Second export');
+    assert.equal(published.ok, true, `the second export succeeds: ${published.message}`);
   }
   assert.deepEqual((await snapshot()).state.site.redirects.find((r) => r.pageId === contactJa.id), { from: '/連絡先/', pageId: contactJa.id }, 'the address it left keeps leading to it');
 
