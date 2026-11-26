@@ -1,6 +1,7 @@
 import { join } from 'node:path';
 import type { MenuItemConstructorOptions } from 'electron';
 import type { MenuCommand } from './menu-commands';
+import { REPORT_URL } from '@shared/links';
 
 /** What the application menu's own items do: hand a command to the editor, route Undo and Redo through it, open a
  *  link outside the app, show the app's name and build (Windows and Linux, which have no About panel), copy the build
@@ -43,9 +44,6 @@ export function offersDeveloperItems({ packaged, automated, developerMode }: { p
 
 /** The Help menu's link. */
 export const WEBSITE_URL = 'https://siteorigin.com';
-
-/** Where a problem is reported: a new issue on the public repository, which the person fills in and submits themselves. */
-export const REPORT_URL = 'https://github.com/siteorigin/builder/issues/new';
 
 /**
  * The application menu bar for a platform, as data: the app menu (macOS, with Settings…), File (with Open Project

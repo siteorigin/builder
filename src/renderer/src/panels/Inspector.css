@@ -136,6 +136,9 @@
   .slot-name { font-size: 12px; font-weight: 600; overflow-wrap: anywhere; }
   /* A placement's slots: what each holds, one way to each item, its name cut short rather than pushing the row wide. */
   .placed-slot .contract-row { gap: 8px; }
+  /* Add… while its list is open: the house open state for a button that owns a popover, as in the toolbar. */
+  .placed-slot .btn[aria-expanded='true'] { background: var(--active); color: var(--text); box-shadow: inset 0 0 0 1px var(--border-control); }
+  :where(:root[data-appearance='dark']) { .placed-slot .btn[aria-expanded='true'] { background: var(--bg); } }
   .slot-content { display: flex; flex-direction: column; align-items: flex-start; gap: 1px; margin: 0 0 0 -6px; padding: 0; list-style: none; }
   .slot-content > li { max-width: 100%; min-width: 0; }
   .slot-content .insp-mini { max-width: 100%; min-width: 0; }

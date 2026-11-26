@@ -13,7 +13,7 @@ import { findTheme, listThemes, registerPacks, themePinProblem } from '@catalogu
 import { BUNDLED_PACK_IDS } from '@catalogue/pack';
 import { evaluatePairs } from '@shared/contrast';
 import { createStarterState } from '@catalogue/starters';
-import { mergeStyles, restyle } from '@catalogue/signal/components';
+import { TILE_EDGE, mergeStyles, restyle } from '@catalogue/signal/components';
 import { applyOperations } from '@engine/apply';
 import { FONTS_DIR, STYLES_DIR, effectiveTokens, generateProject, packFileCopies } from '@generator/index';
 import { buildPack, registerBuiltinPacks } from '../../src/main/packs/build';
@@ -104,7 +104,7 @@ describe('the Signal pack', () => {
     expect(def(FOUNDATION_PACK, 'hero.split').tree!.nodes.eyebrow.styles?.base).not.toHaveProperty('radius');
   });
 
-  it('has a look of its own: geometric and mono type, pill eyebrows, tiles that lift, a bento grid', () => {
+  it('has a look of its own: geometric and mono type, pill eyebrows, edged tiles, a bento grid', () => {
     const signal = findTheme('signal')!;
     const token = (id: string) => signal.tokens.find((t) => t.id === id)!.value;
     expect(signal.tokens.map((t) => [t.id, t.group])).toEqual(findTheme('foundation')!.tokens.map((t) => [t.id, t.group]));
@@ -123,30 +123,31 @@ describe('the Signal pack', () => {
     for (const c of branded) expect(c.variantAxes!.tone.options.brand.styles!.eyebrow.base, c.componentId).toMatchObject({ background: 'transparent', opacity: 0.8 });
 
     const features = def(signal, 'features.grid');
-    expect(features.tree!.nodes.card.styles).toMatchObject({
-      base: { background: { token: 'color.surface-alt' }, transition: 'common', transitionDuration: 220 },
-      'base:hover': { shadow: { token: 'shadow.md' }, background: { token: 'color.surface' } }
-    });
-    expect(features.tree!.nodes.card.styles!.base).not.toHaveProperty('border');
+    expect(features.tree!.nodes.card.styles).toEqual({ base: expect.objectContaining({ background: { token: 'color.surface-alt' }, border: TILE_EDGE }) });
+    // A card that is not a link does not answer the pointer.
+    for (const [id, node] of [['features.grid', 'card'], ['pricing.plans', 'plan']]) expect(def(signal, id).tree!.nodes[node].styles, id).not.toHaveProperty('base:hover');
     expect(features.variantAxes!.tone.options.muted.styles!.card).toEqual({ base: { background: { token: 'color.surface' } } });
     expect(def(signal, 'hero.split').tree!.nodes.grid.styles?.desktop).toMatchObject({ gridTemplate: '1.15fr 1fr' });
     expect(def(signal, 'faq.list').tree!.nodes['item-divider'].styles?.base).toEqual({ hidden: true });
 
     // The bento: the first of three or more cards in the default layout spans two columns and two rows on desktop.
     expect(signal.baseCss).toMatch(/^\/\* Signal theme base styles \*\//);
-    const featured = ":is([class$='__bento'], [class*='__bento ']):is([class$='--layout-default'], [class*='--layout-default ']) > li:first-child:nth-last-child(n + 3)";
-    expect(signal.baseCss).toContain(`@media screen and (min-width: 1024px) {\n  :where(${featured}) { grid-column: 1 / -2; grid-row: span 2; }`);
+    const bento = ":is([class$='__bento'], [class*='__bento ']):is([class$='--layout-default'], [class*='--layout-default '])";
+    expect(signal.baseCss).toContain(`  :where(${bento} > li:first-child:nth-last-child(n + 3)) { grid-column: 1 / -2; grid-row: span 2; }`);
+    // Any count fills its rows: one card takes the row, two share it, and a last row of one or two widens.
+    for (const rule of [`:where(${bento} > li:only-child) { grid-column: 1 / -1; }`, `:where(${bento} > li:first-child:nth-last-child(2)) { grid-column: 1 / -2; }`, `:where(${bento} > li:nth-child(3n + 4):last-child) { grid-column: 1 / -1; }`, `:where(${bento} > li:nth-child(3n + 4):nth-last-child(2)) { grid-column: 1 / -2; }`])
+      expect(signal.baseCss).toContain(rule);
     expect(def(signal, 'features.grid').parts.grid.nodeId).toBe('bento');
     expect(def(signal, 'features.grid').variantAxes!.layout.options['two-columns'].styles).toEqual({ bento: { desktop: { columns: 2 } } });
     // A chosen tab keeps its ring on hover, and a shadow the site sets wins: the lift weighs one class.
-    expect(signal.baseCss).toContain(".so-btn--primary:where(:is(a, button):hover:not([aria-selected='true'], [aria-pressed='true'])) { box-shadow: var(--so-shadow-md); }");
+    expect(signal.baseCss).toContain(".so-btn--primary:where(:is(a[href], button:not(:disabled)):not([aria-disabled='true']):hover:not([aria-selected='true'], [aria-pressed='true'])) { box-shadow: var(--so-shadow-md); }");
     // The arrow travels further only for visitors who have not asked for less motion.
-    expect(signal.baseCss).toMatch(/@media \(prefers-reduced-motion: no-preference\) \{\n {2}:is\(a, button\)\.so-btn--text:hover::after \{ transform: translateX\(5px\); \}/);
+    expect(signal.baseCss).toMatch(/@media \(hover: hover\) and \(prefers-reduced-motion: no-preference\) \{\n {2}:is\(a, button\)\.so-btn--text:hover::after \{ transform: translateX\(5px\); \}/);
     // Light tiles (cards, plans and contact methods) start afresh after the tone rules, so a dark section's ink never lands on them.
-    expect(signal.baseCss).toContain(":where(li[class^='so-']:is(:is([class$='__card'], [class*='__card ']), :is([class$='__plan'], [class*='__plan ']), :is([class$='__method'], [class*='__method ']))) { --so-surface-ink: initial;");
+    expect(signal.baseCss).toContain(":where(li[class^='so-']:is(:is([class$='__card'], [class*='__card ']), :is([class$='__plan'], [class*='__plan ']), :is([class$='__method'], [class*='__method ']), :is([class$='__step'], [class*='__step ']))) { --so-surface-ink: initial;");
     expect(signal.baseCss.indexOf("--so-surface-ink: initial; --so-surface-ink-text: initial; --so-surface-ink-hover: initial; }\n.so-btn {")).toBeGreaterThan(signal.baseCss.indexOf('--so-surface-ink: var(--so-color-on-inverse);'));
     // Lifts only play where a pointer hovers, for visitors who have not asked for less motion.
-    expect(signal.baseCss).toContain('@media (hover: hover) and (prefers-reduced-motion: no-preference) {\n  :where(:is(a, button):is(.so-btn--primary, .so-btn--light):hover) { translate: 0 -2px; }');
+    expect(signal.baseCss).toContain("@media (hover: hover) and (prefers-reduced-motion: no-preference) {\n  :where(:is(a[href], button:not(:disabled)):not([aria-disabled='true']):is(.so-btn--primary, .so-btn--light):hover) { translate: 0 -2px; }");
     // Everything Foundation's stylesheet does for every section, Signal's does too, unchanged.
     expect(signal.baseCss).toContain(findTheme('foundation')!.baseCss.replace('/* Foundation theme base styles */\n', ''));
     expect(signal.aiProfile.guidance.join(' ')).toMatch(/featured tile/);
@@ -195,9 +196,10 @@ describe("Signal's contrast pairs", () => {
   it("declare Foundation's pairs and the eyebrow pill's own ground, on every tone, all readable as delivered", () => {
     const signal = findTheme('signal')!;
     const ids = signal.contrastPairs!.map((p) => p.id);
-    expect(ids).toEqual([...findTheme('foundation')!.contrastPairs!.map((p) => p.id), 'eyebrow-background', 'eyebrow-surface-alt', 'eyebrow-dark']);
+    expect(ids).toEqual([...findTheme('foundation')!.contrastPairs!.map((p) => p.id), 'eyebrow-background', 'eyebrow-surface-alt', 'eyebrow-dark', 'icon-badge', 'dark-faq', 'outline-edge', 'dark-icon-badge', 'outline-edge-surface-alt', 'footer-labels', 'field-edge', 'field-edge-surface-alt', 'footer-labels-light']);
     // Each pill's ground is its own ink at 8% over the section it sits on.
-    expect(signal.contrastPairs!.slice(-3).map((p) => [p.fg, p.bg, p.group])).toEqual([
+    const pill = (id: string) => signal.contrastPairs!.find((p) => p.id === id)!;
+    expect(['eyebrow-background', 'eyebrow-surface-alt', 'eyebrow-dark'].map(pill).map((p) => [p.fg, p.bg, p.group])).toEqual([
       ['color.brand', { mix: ['color.brand', 8, 'color.background'] }, 'brand-text'],
       ['color.brand', { mix: ['color.brand', 8, 'color.surface-alt'] }, 'brand-text'],
       ['color.accent', { mix: ['color.accent', 8, 'color.inverse'] }, 'dark-accent']

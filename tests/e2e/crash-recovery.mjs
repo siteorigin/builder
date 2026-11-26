@@ -46,7 +46,7 @@ const reason = await app.evaluate(({ BrowserWindow }) => {
     contents.once('render-process-gone', (_e, details) => {
       clearTimeout(late);
       try {
-        fixtures.setAnswers([{ dialog: 'message', message: 'The editor stopped unexpectedly', button: 'Reload Editor' }]);
+        fixtures.setAnswers([{ dialog: 'message', message: 'The editor stopped working', button: 'Reload Editor' }]);
         resolve(details.reason);
       } catch (e) {
         reject(e);
@@ -66,10 +66,10 @@ assert.deepEqual(await opening(), before, 'the same opening of the project is st
 const asked = (await choosersShown(app, mark)).filter((c) => c.dialog === 'message');
 assert.deepEqual(
   asked.map((c) => [c.window, c.message, c.outcome, c.result?.label]),
-  [[editor, 'The editor stopped unexpectedly', 'chosen', 'Reload Editor']],
+  [[editor, 'The editor stopped working', 'chosen', 'Reload Editor']],
   'one question, over the editor window, answered with Reload Editor'
 );
-assert.match(asked[0].detail, /return to your project/);
+assert.match(asked[0].detail, /^Your work is safe\..*go back to your project/s);
 
 step('an error the main process did not catch is reported in the app’s own words, and the editor keeps working');
 const errorMark = await desktopCursor(app);
@@ -85,7 +85,7 @@ await eventually(async () => {
     [['SiteOrigin Builder ran into a problem', 'Keep Working']],
     'the error was reported, and closing the report kept the app running'
   );
-  assert.match(shown[0].detail, /^A test error in the main process\n\n/);
+  assert.match(shown[0].detail, /\n\nDetails: A test error in the main process$/);
 });
 assert.deepEqual(await opening(), before, 'the project is still open');
 assert.equal(await inPage(`!!document.querySelector('.editor')`), true, 'the editor is still there');

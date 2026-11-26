@@ -90,7 +90,8 @@ const contrastPair = z.strictObject({
   varyingGround: z.boolean().optional(),
   group: z.string().max(80),
   fixable: z.boolean().optional(),
-  min: z.number().positive().max(21).optional()
+  min: z.number().positive().max(21).optional(),
+  opacity: z.number().gt(0).max(1).optional()
 });
 
 /** The parts of a definition the loader relies on; the rest is checked by what reads it (the engine and generator). */

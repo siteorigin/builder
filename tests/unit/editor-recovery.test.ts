@@ -143,11 +143,12 @@ describe('editor recovery (#886)', () => {
 
   it('words the question for an open project or for Welcome, with Reload Editor as default and Esc', () => {
     const open = crashQuestion(true);
-    expect(open.message).toBe('The editor stopped unexpectedly');
-    expect(open.detail).toBe('Reload the editor to return to your project. Text you were still typing may need to be entered again.');
+    // The same name and the same words for what is safe as the in-window failure screen (RenderFailure.tsx).
+    expect(open.message).toBe('The editor stopped working');
+    expect(open.detail).toBe('Your work is safe. Only text you were still typing may need to be entered again.\n\nReload the editor to go back to your project. If this keeps happening, choose Help > Report a Problem.');
     expect(open.buttons).toEqual(['Reload Editor', 'Close Window']);
     expect(open.buttons[open.defaultId]).toBe('Reload Editor');
     expect(open.buttons[open.cancelId]).toBe('Reload Editor');
-    expect(crashQuestion(false).detail).toBe('Reload the editor to return to SiteOrigin Builder.');
+    expect(crashQuestion(false).detail).toBe('Your projects are safe. Reload the editor to carry on. If this keeps happening, choose Help > Report a Problem.');
   });
 });

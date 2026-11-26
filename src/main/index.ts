@@ -3,6 +3,7 @@ import type { BaseWindow, KeyboardEvent, MenuItem } from 'electron';
 import { join, dirname, normalize, relative, isAbsolute } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { release } from 'node:os';
+import { mkdir } from 'node:fs/promises';
 // First, so the trace (src/main/perf.ts) starts before anything else this module imports is evaluated.
 import { perf } from './perf';
 import { PERF_ARG, PERF_GLOBAL } from '@shared/perf';
@@ -12,6 +13,8 @@ import { editorBackground, editorScheme } from '@shared/appearance';
 import { externalLink } from '@shared/links';
 import { Controller, resourcesDir, suggestedProjectsFolder } from './controller';
 import { installedCatalogue, loadInstalledPacks, packPreview, packRoots } from './packs/installed';
+import { createPacksGate } from './packs/gate';
+import { createCloudProviders } from './cloud-providers';
 import { createLeaveGate, type LeaveAnswer } from './leave-gate';
 import { forwardsKey, menuKeyCopy } from './history-keys';
 import { createMenuCommands, type MenuCommand } from './menu-commands';
@@ -22,8 +25,6 @@ import { writingMenuTemplate } from './writing-menu';
 import { currentShortcuts, loadSettings, localCheckEpoch, localCheckRecorder, localEndpoint, pinRecent, providerStatuses, recents, removeRecent, setKey, updateSettings, getKey } from './settings';
 import { Orchestrator } from '@agent/orchestrator';
 import { INSPECT_COMPONENT_BUDGET_MS } from '@agent/component-inspection';
-import { OpenAIAdapter, testOpenAI } from '@agent/openai';
-import { AnthropicAdapter, testAnthropic } from '@agent/anthropic';
 import { discoverLocalContext, listedProblem, listLocalModels, openLocalAdapter, testLocal } from '@agent/local';
 import { compileProject } from './compile';
 import { checkSvelteSource, codeContractNames, componentSources } from './codecheck';
@@ -39,7 +40,7 @@ import { desktopForLaunch, headlessSwitches, launchMode } from './headless-deskt
 import { installAiJournal } from './ai-journal';
 import { windowIcon } from './window-icon';
 import { createEditorRecovery, crashQuestion, type EditorRecovery } from './editor-recovery';
-import { createMainErrorReporter } from './main-errors';
+import { createMainErrorReporter, errorText } from './main-errors';
 import { fixComponentSource } from '@agent/fixer';
 import type { Diagnostic } from '@engine/validate';
 import { declareCodeNames } from '@engine/definitions';
@@ -79,6 +80,21 @@ let win: BrowserWindow | null = null;
 let appearance: Appearance = 'system';
 const windowBackground = () => editorBackground(editorScheme(appearance, nativeTheme.shouldUseDarkColors));
 const controller = new Controller(() => win);
+/**
+ * The theme packs, verified once per run while the first editor window loads (packs/gate.ts): every request the
+ * editor makes waits for them (handle()), so nothing reaches a pack before it is verified.
+ */
+const packs = createPacksGate(async () => {
+  const end = perf.span('launch.loadPacks');
+  try {
+    await loadInstalledPacks(packRoots(resourcesDir(), app.getPath('userData')));
+  } catch (e) {
+    console.error('The theme packs could not be loaded:', e);
+    throw e;
+  } finally {
+    end();
+  }
+});
 /** Photographs component previews for Insert's thumbnails, in a hidden window of its own, while the editor is open. */
 const thumbCapturer = createThumbCapturer();
 controller.thumbCapture = (server, path) =>
@@ -267,6 +283,9 @@ let fixAbort: AbortController | null = null;
 /** Connection tests in flight, stopped with everything else when a remote server is no longer allowed. */
 const testAborts = new Set<AbortController>();
 
+/** OpenAI and Anthropic, each loaded with its SDK the first time it is used (cloud-providers.ts). */
+const cloudProviders = createCloudProviders();
+
 async function orchestratorAdapter(signal?: AbortSignal) {
   return orchestratorDeps.adapter(signal);
 }
@@ -293,7 +312,8 @@ const orchestratorDeps = {
     const key = await getKey(provider);
     if (!key) return { error: `Add your ${provider === 'openai' ? 'OpenAI' : 'Anthropic'} API key in Settings to use the assistant.`, repair: 'key' };
     const model = s.models[provider];
-    return { adapter: provider === 'openai' ? new OpenAIAdapter(key.key, model) : new AnthropicAdapter(key.key, model), model, provider };
+    const made = await cloudProviders.adapter(provider, key.key, model);
+    return 'error' in made ? made : { adapter: made.adapter, model, provider };
   }
 } as { adapter: (signal?: AbortSignal) => Promise<{ adapter: import('@agent/types').AgentModelAdapter; model: string; provider: ProviderId; auto?: boolean } | { error: string; repair?: 'settings' | 'key' }> };
 
@@ -361,18 +381,41 @@ function isEditorUrl(url: string): boolean {
   }
 }
 
-function handle(channel: string, fn: (...args: never[]) => unknown) {
+/**
+ * Answer the editor's requests on `channel`. A request made while the theme packs are still being verified waits for
+ * them and is authorized again; `anytime` is for the few that never reach a pack (the failure screens' Quit, build
+ * details and links), which answer at once, and also when verification failed.
+ */
+function handle(channel: string, fn: (...args: never[]) => unknown, { anytime = false }: { anytime?: boolean } = {}) {
   ipcMain.handle(channel, (event, ...args) => {
-    if (!win || event.sender !== win.webContents) throw new Error('Unauthorized sender');
-    // Only the editor's main frame may use privileged IPC (never the preview iframe).
-    if (event.senderFrame !== win.webContents.mainFrame || !isEditorUrl(event.senderFrame.url)) throw new Error('Unauthorized frame');
-    return (fn as (...a: unknown[]) => unknown)(...args);
+    const authorize = () => {
+      if (!win || event.sender !== win.webContents) throw new Error('Unauthorized sender');
+      // Only the editor's main frame may use privileged IPC (never the preview iframe).
+      if (event.senderFrame !== win.webContents.mainFrame || !isEditorUrl(event.senderFrame.url)) throw new Error('Unauthorized frame');
+    };
+    authorize();
+    const run = () => (fn as (...a: unknown[]) => unknown)(...args);
+    return anytime ? run() : packs.after(authorize, run);
   });
 }
 
 function registerIpc() {
-  handle('app:info', () => ({ version: app.getVersion(), platform: process.platform, dev: !app.isPackaged }));
+  handle('app:info', () => ({ version: app.getVersion(), platform: process.platform, dev: !app.isPackaged }), { anytime: true });
   handle('app:catalogue', () => installedCatalogue());
+  // For the failure screens (FailureScreen.tsx): the build to quote in a report, the themes folder, and Quit.
+  handle('app:buildDetails', () => buildDetails(), { anytime: true });
+  handle('app:showThemesFolder', async () => {
+    // Electron's own words when the folder could not be opened, or '' when it was.
+    const dir = installedCatalogue().userDir;
+    if (!dir) return 'No themes folder';
+    try {
+      await mkdir(dir, { recursive: true });
+    } catch (e) {
+      return errorText(e);
+    }
+    return shell.openPath(dir);
+  });
+  handle('app:quit', () => app.quit(), { anytime: true });
   handle('packs:preview', (packId: unknown, file: unknown) => packPreview(packId, file));
   handle('app:getSettings', async () => (await loadSettings()).settings);
   handle('app:setSettings', async (patch: SettingsPatch) => {
@@ -404,11 +447,15 @@ function registerIpc() {
   handle('app:recordShortcut', (on: unknown) => {
     if (win && !win.isDestroyed()) win.webContents.setIgnoreMenuShortcuts(on === true);
   });
-  handle('app:openExternal', async (url: string) => {
-    // Web pages, email addresses and phone numbers only, each checked: the link may come from the previewed site.
-    const link = externalLink(url);
-    if (link) await shell.openExternal(link.href);
-  });
+  handle(
+    'app:openExternal',
+    async (url: string) => {
+      // Web pages, email addresses and phone numbers only, each checked: the link may come from the previewed site.
+      const link = externalLink(url);
+      if (link) await shell.openExternal(link.href);
+    },
+    { anytime: true }
+  );
   handle('dialogs:chooseFolder', async (title: string, defaultPath?: string) => {
     const r = await dialog.showOpenDialog(win!, { title, defaultPath, properties: ['openDirectory', 'createDirectory'] });
     return r.canceled ? null : r.filePaths[0];
@@ -647,7 +694,7 @@ function registerIpc() {
     if (!key) return { ok: false, message: 'No API key is set.' };
     const model = custom || (await loadSettings()).settings.ai.models[p];
     const opts = deadlineFetch ? { fetch: deadlineFetch } : {};
-    return p === 'openai' ? testOpenAI(key, model, opts) : testAnthropic(key, model, opts);
+    return cloudProviders.test(p, key, model, opts);
   });
   // Always the saved server, so a key is only ever sent to the address the user saved.
   handle('ai:localModels', async () => {
@@ -913,7 +960,7 @@ async function createWindow() {
   // A page that is replaced or crashes mid-recording leaves no one to hand the menus' keys back.
   self.webContents.on('did-navigate', () => self.webContents.setIgnoreMenuShortcuts(false));
   self.webContents.on('render-process-gone', (_e, details) => {
-    if (details.reason !== 'clean-exit') console.error(`The editor stopped unexpectedly (${details.reason}, exit code ${details.exitCode}).`);
+    if (details.reason !== 'clean-exit') console.error(`The editor stopped working (${details.reason}, exit code ${details.exitCode}).`);
     if (!self.webContents.isDestroyed()) self.webContents.setIgnoreMenuShortcuts(false);
     desktop?.windows.gone(selfId, { closed: false });
     committed = false;
@@ -985,7 +1032,11 @@ async function createWindow() {
   // not reported as an error here. Any other failure to load the editor is reported in the app's own words: as a
   // rejection it would only be logged, and leave a blank window.
   const first = win;
-  await first.loadURL(editorUrl()).catch((e: unknown) => {
+  const loading = first.loadURL(editorUrl());
+  // The theme packs are verified while the editor loads, once per run: it renders nothing until it has their
+  // catalogue. A failure is logged by the verification and given to every request that waits for it.
+  void packs.verify().catch(() => undefined);
+  await loading.catch((e: unknown) => {
     if ((e as { code?: unknown }).code === 'ERR_ABORTED' || first.isDestroyed() || first.webContents.isCrashed()) console.error('The editor did not finish its first load:', e);
     else {
       // The report is shown over the window, which never got to show itself: it shows now, so the report is seen.
@@ -1105,7 +1156,7 @@ if (logging) {
   captureMainErrors(mainLog, { console, process });
   mainLog.write('start', launchLine());
 }
-/** Settles once startup (theme packs, IPC, the menu) is done: no window may open before then. */
+/** Settles once startup (IPC, the menu) is done: no window may open before then. */
 let markStarted!: () => void;
 const started = new Promise<void>((resolve) => (markStarted = resolve));
 
@@ -1143,10 +1194,7 @@ app.whenReady().then(async () => {
   electronSession.defaultSession.on('will-download', (e) => e.preventDefault());
   // The website's icons are drawn in the media worker, from before any project opens.
   setSiteIconRenderer(renderSiteIconsInWorker);
-  // Theme packs are loaded before anything can open a project or ask for the catalogue.
-  const packsLoaded = perf.span('launch.loadPacks');
-  await loadInstalledPacks(packRoots(resourcesDir(), app.getPath('userData')));
-  packsLoaded();
+  // Theme packs are verified once the first window is loading (createWindow): every request waits for them (handle()).
   registerIpc();
   developerModeOn = (await loadSettings()).settings.developerMode;
   // The About panel names this app and its version, not the Electron bundle a development build runs in, with the

@@ -2,13 +2,13 @@
   "schemaVersion": 1,
   "rows": {
     "renderer.script": {
-      "raw": 9268705,
-      "gzip": 2220285,
+      "raw": 9316832,
+      "gzip": 2231287,
       "files": []
     },
     "renderer.style": {
-      "raw": 577276,
-      "gzip": 117964,
+      "raw": 595405,
+      "gzip": 122335,
       "files": []
     },
     "renderer.later": {
@@ -17,13 +17,13 @@
       "files": []
     },
     "main": {
-      "raw": 4547126,
-      "gzip": 1304943,
+      "raw": 4537360,
+      "gzip": 1303194,
       "files": []
     },
     "preload": {
-      "raw": 8621,
-      "gzip": 2518,
+      "raw": 8745,
+      "gzip": 2550,
       "files": []
     },
     "worker.media-worker": {
@@ -48,40 +48,10 @@
     }
   },
   "packages": {
-    "@anthropic-ai/sdk": {
-      "version": "1.12.0",
-      "files": 248,
-      "bytes": 1441500
-    },
-    "@opentelemetry/api": {
-      "version": "1.10.0",
-      "files": 51,
-      "bytes": 60725
-    },
-    "@stablelib/base64": {
-      "version": "1.0.1",
-      "files": 1,
-      "bytes": 10907
-    },
     "acorn": {
       "version": "8.19.0",
       "files": 1,
       "bytes": 234658
-    },
-    "fast-sha256": {
-      "version": "1.3.0",
-      "files": 1,
-      "bytes": 14722
-    },
-    "openai": {
-      "version": "7.62.0",
-      "files": 236,
-      "bytes": 1415043
-    },
-    "standardwebhooks": {
-      "version": "1.3.0",
-      "files": 2,
-      "bytes": 6422
     }
   },
   "unresolved": []

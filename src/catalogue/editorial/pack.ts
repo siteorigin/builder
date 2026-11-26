@@ -24,7 +24,7 @@ export const EDITORIAL = createPack({
     examples: FOUNDATION_EXAMPLES,
     guidance: [
       'Editorial reads like a printed magazine: a high-contrast display serif for headings, a grotesk for text, square corners, hairline rules and no shadows. Let type and whitespace carry the design instead of boxes and color.',
-      'Compose in asymmetric columns. Split hero and Content with image already set copy and picture at about 2:3; Text section and FAQ set their heading in a narrow column beside a wide one, like an index. Prefer these to centered layouts on inner pages.',
+      'Compose in asymmetric columns. Split hero sets its copy beside a wider square picture (about 5:6), and Content with image sets copy and picture at about 2:3; Text section and FAQ set their heading in a narrow column beside a wide one, like an index. Prefer these to centered layouts on inner pages.',
       'Services grid is a numbered index (01, 02, 03): write three to six entries with short, parallel titles, in the order a reader should take them.',
       'Keep most sections on the default paper tone; use one Dark section (inverse) per page at most, for statistics or a closing call to action, and the Soft background tone (muted) to separate long runs of text.',
       'Write headlines like a magazine: short, declarative and specific (under eight words), with one or two sentences of supporting text. Use eyebrows as section labels ("Practice", "Selected work", "Index").',

@@ -60,7 +60,7 @@ const manager = () => page().getByRole('dialog', { name: 'AI conversations' });
 const row = (id) => manager().locator(`li[data-conversation-id="${id}"]`);
 const openManager = async () => {
   await page().getByRole('button', { name: 'Earlier conversations' }).click();
-  await page().getByRole('menuitem', { name: 'Find, rename or remove…' }).click();
+  await page().getByRole('menuitem', { name: 'Find, rename or delete…' }).click();
   await manager().waitFor();
 };
 
@@ -122,9 +122,24 @@ try {
   assert.match(titles[keeperId], /^Write a homepage design brief for Kiln and Clay, a calm\S*…$/, `cut at a word: ${titles[keeperId]}`);
   await openManager();
   await eventually(async () => assert.equal(await manager().locator('li').count(), 3));
-  assert.equal(await row(keeperId).locator('.conversation-prompt').innerText(), KEEPER);
-  assert.equal(await row(secondId).locator('.conversation-prompt').innerText(), SECOND);
-  assert.match(await row(experimentId).innerText(), /1 request · Last active today/);
+  // A title cut from the first request gives way to the whole request, on the title's line.
+  assert.equal(await row(keeperId).locator('.conversation-title').innerText(), KEEPER);
+  assert.equal(await row(secondId).locator('.conversation-title').innerText(), SECOND);
+  assert.match(await row(experimentId).innerText(), /1 request · Last active \d{1,2}[:.]\d{2}/);
+  assert.equal(await manager().locator('.history-day-head').first().innerText(), 'Today');
+
+  step('the list is one Tab stop: arrow keys move between conversations and along their actions');
+  const focusedName = () => page().evaluate(() => document.activeElement?.getAttribute('aria-label') ?? '');
+  await manager().getByRole('searchbox', { name: 'Find a conversation' }).focus();
+  await press('ArrowDown');
+  assert.match(await focusedName(), /^Open “Interview me/, 'down from Find: the first conversation’s Open');
+  await press('ArrowRight');
+  assert.match(await focusedName(), /^Rename “Interview me/);
+  await press('ArrowDown');
+  assert.match(await focusedName(), /^Rename “Write a homepage design brief/, 'down keeps the action');
+  await press('Tab');
+  assert.equal(await page().evaluate(() => document.activeElement?.textContent?.trim()), 'Close', 'Tab leaves the list for the footer');
+  await manager().getByRole('searchbox', { name: 'Find a conversation' }).focus();
 
   step('the keeper reopened from the manager and continued: it moves to the top');
   await row(keeperId).getByRole('button', { name: /^Open/ }).click();

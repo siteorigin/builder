@@ -131,27 +131,66 @@
   .ov-add::after { content: ''; position: absolute; inset: -5px; border-radius: 50%; }
   .ov-add svg { width: 14px; height: 14px; stroke-width: 2.6; }
   .ov-add:is(:hover, :focus-visible, [aria-expanded='true']) { opacity: 1; transform: scale(1.14); }
+  /* Open, the + owns the list beside it: a second ring of its colour round the white rim, and its glyph turned to a
+     close mark, since a second press puts the list away. */
+  .ov-add[aria-expanded='true'] { box-shadow: 0 0 0 1.5px #fff, 0 0 0 3.5px var(--select), 0 2px 6px rgb(16 24 40 / 0.32); }
+  .ov-add svg { transition: rotate 120ms ease-out; }
+  .ov-add[aria-expanded='true'] svg { rotate: 45deg; }
+  @media (prefers-reduced-motion: reduce) { .ov-add, .ov-add svg { transition: none; } }
   .ov-add:focus-visible { outline: 2px solid var(--focus); outline-offset: 2px; }
   .ov-add-line { position: absolute; height: 2px; margin-top: -1px; background: var(--select); box-shadow: 0 0 0 1px rgb(255 255 255 / 0.85); pointer-events: none; opacity: 0; transition: opacity 90ms ease-out; }
   .ov-add:is(:hover, :focus-visible, [aria-expanded='true']) + .ov-add-line { opacity: 1; }
+  /* The quick insert list an Add button opens (the canvas's, or a slot's in the Inspector). A popover at the menus'
+     level (z-index as .menu), built from the house pieces: the .input field, .menu-item rows with the command menu's
+     highlight (the accent tint and the 2px inset focus outline on the row Enter adds), .menu-label headings that stay
+     at the top as their group scrolls under them, and Insert's own section sketches. The 8px gutter keeps the field's
+     focus ring inside the popover. */
   .quick-insert-veil { position: fixed; inset: 0; z-index: 999; }
-  .quick-insert { position: fixed; z-index: 1000; display: flex; flex-direction: column; width: 288px; max-width: calc(100vw - 16px); padding: 6px; border-radius: var(--r-md); background: var(--raised); border: 1px solid var(--border-strong); box-shadow: var(--shadow-md); animation: pop-in 120ms ease-out; }
-  .quick-insert .qi-title { padding: 3px 6px 7px; overflow: hidden; font-size: 12px; font-weight: 600; color: var(--text-2); white-space: nowrap; text-overflow: ellipsis; }
+  .quick-insert { position: fixed; z-index: 1000; display: flex; flex-direction: column; width: 304px; max-width: calc(100vw - 16px); padding: 8px; border-radius: var(--r-md); background: var(--raised); border: 1px solid var(--border-strong); box-shadow: var(--shadow-md); animation: pop-in 120ms ease-out; }
+  .quick-insert .qi-title { padding: 0 2px 8px; overflow: hidden; font-size: 12px; font-weight: 600; color: var(--text); white-space: nowrap; text-overflow: ellipsis; }
   .quick-insert .qi-search { position: relative; }
-  .quick-insert .qi-search > svg { position: absolute; left: 9px; top: 50%; translate: 0 -50%; width: 14px; height: 14px; color: var(--text-3); pointer-events: none; }
-  .quick-insert input { width: 100%; height: 30px; padding: 0 8px 0 29px; border: 1px solid var(--border-control); border-radius: var(--r-sm); background: var(--panel); color: var(--text); font-size: 13px; user-select: text; }
-  .quick-insert input:focus-visible { outline: 2px solid var(--focus); outline-offset: -1px; }
-  .quick-insert .qi-list { margin: 6px 0 0; padding: 0; max-height: 264px; overflow-y: auto; list-style: none; }
+  .quick-insert .qi-search > svg { position: absolute; left: 9px; top: 50%; translate: 0 -50%; width: 15px; height: 15px; color: var(--text-3); pointer-events: none; }
+  .quick-insert .qi-search .input { padding-left: 31px; }
+  .quick-insert .qi-search:has(.qi-clear) .input { padding-right: 32px; }
+  .quick-insert .qi-clear { position: absolute; right: 4px; top: 50%; translate: 0 -50%; width: 24px; height: 24px; color: var(--text-3); }
+  .quick-insert .qi-clear svg { width: 14px; height: 14px; }
+  .quick-insert .qi-clear:hover { color: var(--text); }
+  .quick-insert .qi-list { max-height: var(--qi-list-max, 345px); margin: 8px -4px 0 0; padding: 0 3px 0 0; overflow: hidden auto; scrollbar-gutter: stable; scroll-padding: 0 0 2px; }
+  /* Keyboard scrolling keeps the row Enter adds clear of a stuck heading and its fade. */
+  .quick-insert.headed .qi-list { scroll-padding-top: 38px; }
   .quick-insert .qi-list:empty { display: none; }
-  .quick-insert .qi-item { display: flex; align-items: center; gap: 8px; height: 30px; padding: 0 8px; border-radius: var(--r-sm); color: var(--text); font-size: 13px; cursor: default; user-select: none; }
-  .quick-insert .qi-item.active { background: var(--hover); }
-  .quick-insert .qi-icon { display: inline-flex; flex: none; color: var(--text-3); }
-  .quick-insert .qi-item.active .qi-icon { color: var(--accent-text); }
+  .quick-insert .qi-list::-webkit-scrollbar { width: 7px; }
+  .quick-insert .qi-list::-webkit-scrollbar-thumb { border: 1px solid transparent; border-radius: 99px; background: var(--border-control) content-box; }
+  /* A heading stuck over its group's scrolled rows (marked by the list as it scrolls) draws a hairline and lets the row
+     passing under it fade out, as in the command menu, so no sliver of a half-hidden row reads as broken text. */
+  .quick-insert .qi-head { position: sticky; top: 0; z-index: 1; height: 28px; padding: 0; overflow: visible; }
+  .quick-insert .qi-head > span { position: relative; display: block; height: 100%; padding: 8px 8px 4px; overflow: hidden; line-height: 16px; text-overflow: ellipsis; white-space: nowrap; background: var(--raised); }
+  .quick-insert .qi-head::after { content: ''; position: absolute; inset: 100% 0 auto; height: 10px; border-top: 1px solid var(--border); background: linear-gradient(var(--raised), transparent); opacity: 0; pointer-events: none; }
+  .quick-insert .qi-head[data-stuck]::after { opacity: 1; }
+  .quick-insert .qi-group:first-child > .qi-head { height: 22px; }
+  .quick-insert .qi-group:first-child > .qi-head > span { padding-top: 2px; }
+  .quick-insert .qi-group + .qi-group { margin-top: 4px; }
+  /* One highlight only: the row Enter adds. A pointer resting on another row does not paint a second one. */
+  .quick-insert .qi-item.focused { outline: 2px solid var(--focus); outline-offset: -2px; }
+  .quick-insert .qi-item:hover:not(.focused) { background: transparent; }
+  .quick-insert .qi-item:hover:not(.focused) svg { color: var(--text-2); }
   .quick-insert .qi-name { flex: 1 1 auto; min-width: 0; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
-  .quick-insert .qi-group { flex: none; color: var(--text-3); font-size: 11px; }
-  .quick-insert .qi-note { margin: 6px 6px 2px; color: var(--text-2); font-size: 12px; }
-  .quick-insert .qi-note:empty { display: none; }
-  .quick-insert .qi-note.refused { color: var(--red-ink); }
+  /* A section's row carries a sketch of its layout, Insert's own, at a size that keeps every bar a whole pixel. */
+  .quick-insert .qi-item.pictured { height: 40px; padding-left: 5px; gap: 10px; }
+  .quick-insert .qi-thumb { width: 44px; height: 30px; background: var(--panel-2); }
+  .quick-insert .qi-thumb .sketch { padding: 4px; gap: 2px; }
+  .quick-insert .qi-thumb .sketch i:not(.hi, .cta, .img, .nest, .slot, .quote) { background: var(--text-3); }
+  /* A choice its place refused: drawn unavailable, with the reason on its own row, where the choice was made. */
+  .quick-insert .qi-item[aria-disabled='true'], .quick-insert .qi-item[aria-disabled='true'] svg { color: var(--disabled-ink); }
+  .quick-insert .qi-item[aria-disabled='true'] .menu-desc { color: var(--red-ink); }
+  .quick-insert .qi-item.focused[aria-disabled='true'] { background: var(--disabled-fill); outline: 1px solid var(--border-control); outline-offset: -1px; }
+  .quick-insert .qi-item.pictured.described { height: auto; min-height: 40px; padding-block: 5px; align-items: center; }
+  /* Nothing to list: why, and the way on. */
+  .quick-insert .qi-empty { display: flex; flex-direction: column; align-items: flex-start; gap: 2px; padding: 10px 2px 2px; font-size: 12px; line-height: 17px; color: var(--text-2); }
+  .quick-insert .qi-title + .qi-empty { padding-top: 2px; }
+  .quick-insert .qi-empty strong { max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 13px; line-height: 20px; font-weight: 600; color: var(--text); }
+  .quick-insert .qi-empty .qi-actions { display: flex; gap: 16px; margin-top: 6px; }
+  .quick-insert .qi-empty .btn { margin-top: 8px; }
   /* The selection chip: name, then grouped actions, as one toolbar. It is app chrome on the user's page, so
      it carries a complete white rim that separates it from any page colour, and its own shadow. Inner
      buttons are 24px targets with --r-xs corners, concentric with the chip's --r-sm. */

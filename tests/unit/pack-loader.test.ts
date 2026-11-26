@@ -447,7 +447,7 @@ describe('loading every installed pack', () => {
     await release(mine);
     const catalogue = await loadInstalledPacks([{ dir: tmp(), source: 'bundled' }, user(mine)]);
     expect(catalogue.packs.map((p) => p.id)).toEqual(['studio']);
-    expect(catalogue.refused[0].reason).toMatch(/built-in theme is missing/);
+    expect(catalogue.refused[0].reason).toBe('Missing from this installation of SiteOrigin Builder.');
     expect(catalogue.userDir).toBe(mine);
     expect(findTheme('studio')?.source).toBe('user');
     const shown = (url: string | null) => {

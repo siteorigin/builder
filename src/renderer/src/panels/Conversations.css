@@ -1,21 +1,50 @@
 @layer components {
-  /* Earlier conversations, managed (issue 235): found by name or request, renamed in place, deleted one at a time. */
+  /* Earlier conversations, managed (issue 235): found by name or request, renamed in place, deleted one at a time.
+     Newest first under the day each was last added to, with History's sticky day headings (Dialogs.css), in one
+     bordered list that scrolls on its own. Everything here is scoped, so History and Saved versions keep their look. */
+  .conversation-body { display: contents; }
   .conversation-search { position: relative; display: flex; align-items: center; margin: 0 0 12px; }
   .conversation-search > svg { position: absolute; left: 10px; width: 14px; height: 14px; color: var(--text-3); pointer-events: none; }
   .conversation-search .input { flex: 1; min-width: 0; padding-left: 30px; }
-  .conversation-search + .scope-note { margin-bottom: 12px; }
-  .conversation-list { max-height: min(56vh, 520px); overflow-y: auto; }
+  .conversation-search ~ .scope-note { margin-bottom: 12px; text-wrap: pretty; }
+  .conversation-days { max-height: min(56vh, 520px); overflow-y: auto; border: 1px solid var(--border); border-radius: var(--r-md); scroll-padding-block: 34px 8px; }
+  .conversation-days .history-list { border: 0; border-radius: 0; overflow: visible; }
   .conversation-list li { flex-shrink: 0; align-items: flex-start; min-height: 56px; padding: 8px 8px 8px 12px; }
-  .conversation-list li > :is(.btn, .icon-btn) { margin-top: 2px; }
+  /* The open conversation: a fill and a Current badge, as History marks where it stands. */
   .conversation-list li[aria-current='true'] { background: var(--accent-soft); }
+  .conversation-list li[aria-current='true'] .conversation-meta { color: var(--text-2); }
   .conversation-text { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
   .conversation-title { font-weight: 500; }
-  .conversation-prompt { display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; font-size: 12.5px; color: var(--text-2); overflow-wrap: anywhere; }
+  .conversation-prompt { display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; color: var(--text-2); overflow-wrap: anywhere; }
   .conversation-about { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
-  .conversation-text small { font-size: 12px; color: var(--text-3); font-variant-numeric: tabular-nums; }
-  .conversation-text small.conversation-error { color: var(--red-ink); }
-  .conversation-text mark { background: var(--accent-soft); color: var(--text); border-radius: 2px; box-shadow: 0 0 0 1px var(--accent-soft); }
-  .conversation-rename { display: flex; gap: 6px; }
-  .conversation-rename .input { flex: 1; min-width: 0; }
-  .conversation-count { font-size: 12px; }
+  .conversation-meta { display: flex; align-items: center; gap: 6px; min-width: 0; font-size: 12px; color: var(--text-3); font-variant-numeric: tabular-nums; }
+  .conversation-meta .badge { height: 18px; padding: 0 6px; }
+  /* The time takes its line's colour (the shared list rule makes it quieter, under 4.5:1 on the open row in dark). */
+  .conversation-meta time { font-size: inherit; color: inherit; }
+  /* A match reads on any row, the tinted open one included: a stronger wash with a full ring, and weight. */
+  .conversation-text mark { background: color-mix(in srgb, var(--accent) 22%, transparent); color: var(--text); font-weight: 600; border-radius: 2px; box-shadow: 0 0 0 1px color-mix(in srgb, var(--accent-text) 80%, transparent); }
+  /* Open, then Rename and Delete together. Delete warns in red when pointed at or focused, and only then. */
+  .conversation-actions { display: flex; flex: none; align-items: center; gap: 8px; margin-top: 2px; }
+  .conversation-tools { display: flex; gap: 2px; }
+  .conversation-tools .icon-btn { color: var(--text-2); }
+  .conversation-tools .conversation-delete:is(:hover, :focus-visible):not(:disabled, [aria-disabled='true']) { background: var(--red-soft); color: var(--red); }
+  .conversation-actions :is(.btn, .icon-btn)[aria-disabled='true'] { cursor: not-allowed; }
+  .conversation-actions .icon-btn[aria-disabled='true'] { color: var(--disabled-ink); }
+  /* Renaming swaps the name for a field in the same line box, so the row keeps its height; its problem sits under it. */
+  .conversation-rename { display: flex; margin: 0; }
+  .conversation-rename .input { flex: 1; min-width: 0; height: 22px; margin: -2px 0 -2px -5px; padding: 0 4px; font-weight: 500; }
+  .conversation-rename .input:focus { outline-offset: -1px; }
+  /* An invalid name keeps its red edge while focused: the focus ring sits outside it. */
+  .conversation-rename .input[aria-invalid='true']:focus { outline-offset: 1px; }
+  /* While a row is renamed, its whole first request is in sight to name it by. */
+  .conversation-list li.renaming .conversation-prompt { display: block; overflow: visible; }
+  .conversation-title:not(.ellipsis) { overflow-wrap: anywhere; }
+  .conversation-error { display: flex; align-items: center; gap: 4px; font-size: 12px; color: var(--red-ink); }
+  .conversation-error svg { width: 12px; height: 12px; flex: none; }
+  .conversation-empty { padding: 24px 12px; }
+  .conversation-count { font-size: 12px; font-variant-numeric: tabular-nums; }
+  @media (forced-colors: active) {
+    .conversation-text mark { background: Mark; color: MarkText; forced-color-adjust: none; }
+    .conversation-list li[aria-current='true'] { outline: 1px solid CanvasText; outline-offset: -2px; }
+  }
 }

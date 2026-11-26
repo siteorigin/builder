@@ -5,11 +5,11 @@
      stays inside #root: anything reaching past the window's edge would make the document taller than its window,
      and a scrollIntoView (a selection in the preview, a field in the Inspector) would then slide the whole editor
      up. `clip`, unlike `hidden`, makes #root no scroller of its own for a scrollIntoView to move. Its own
-     formatting context keeps a child's top margin (the startup error's) from collapsing through it and pushing it
+     formatting context keeps a child's top margin from collapsing through it and pushing it
      down. A portal mounted on body must stay fixed or top-layer for the same reason. */
   #root { position: relative; overflow: clip; display: flow-root; }
-  /* The startup error is the one view taller than its window can be (a long list of themes that failed): it scrolls
-     inside #root, so every reason stays reachable and the document still never grows. */
+  /* A failure screen (FailureScreen.tsx) is the one view taller than its window can be (a long list of themes that
+     failed, a short window): it scrolls inside #root, so every reason stays reachable and the document never grows. */
   #root:has(> .fatal) { overflow: auto; }
   body {
     font-family: var(--font);
@@ -64,10 +64,4 @@
   .sr-only { position: absolute; top: 0; left: 0; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); }
   .grid-2 { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
   /* Shown instead of the editor when no theme pack could be loaded. */
-  .fatal { max-width: 560px; margin: 15vh auto; padding: 0 16px; font-size: 14px; line-height: 1.5; color: var(--text); }
-  .fatal ul { margin: 12px 0 0; padding-left: 18px; color: var(--text-2); font-size: 13px; overflow-wrap: anywhere; }
-  /* Shown instead of a screen that failed while rendering (#886). */
-  .render-failure h1 { margin: 0 0 8px; font-size: 18px; font-weight: 600; }
-  .render-failure-detail { margin: 12px 0 0; max-height: 30vh; overflow: auto; white-space: pre-wrap; overflow-wrap: anywhere; color: var(--text-2); font: 12px/1.5 var(--mono); }
-  .render-failure-actions { display: flex; gap: 8px; margin-top: 20px; }
 }

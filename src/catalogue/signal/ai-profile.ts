@@ -9,9 +9,9 @@ import { FOUNDATION_EXAMPLES } from '../foundation/ai-examples';
 const NO_IMAGE = { assetId: null, alt: '' };
 
 export const SIGNAL_GUIDANCE: string[] = [
-  'Signal is crisp and contemporary: geometric Sora headings, DM Sans text, small mono eyebrow labels in soft pills, and tinted cards with generous corners that lift on hover.',
+  'Signal is crisp and contemporary: geometric Sora headings, DM Sans text, small mono eyebrow labels in soft pills, and tinted tiles with a hairline edge and generous corners. Only a card that is a link lifts under the pointer.',
   'Give every section a short eyebrow (one to three words): Signal sets it in capitals in a pill, so it reads as a label, not a sentence.',
-  'Put the most important offer first in a Services grid: with three or more cards Signal shows the first as a large featured tile, so three or five cards fill the grid best.',
+  'Put the most important offer first in a Services grid: with three or more cards Signal shows the first as a large featured tile with its title and description set large, so give that card the strongest title and a one-sentence description. Any number of cards fills the grid; three to six reads best.',
   'Alternate the tone axis (default, muted, inverse) for rhythm; on a muted section cards turn white, which suits pricing, FAQs and contact details. Avoid two Dark sections in a row.',
   'Begin the home page with a hero (the split hero suits a product screenshot), inner pages with a Page introduction, and end most pages with a Call to action.',
   'Write in a direct, specific voice: concrete outcomes and numbers over adjectives. Keep headings under ten words and supporting text to one or two sentences.',
