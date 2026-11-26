@@ -247,11 +247,13 @@ await rows.first().waitFor({ timeout: 30000 });
 const offered = await app.evaluate(() => globalThis.offered.at(-1));
 assert.ok(offered.filters.some((f) => f.extensions.includes('heic') && f.extensions.includes('heif')), 'the chooser offers HEIC photos');
 assert.equal(await rows.count(), 3, 'the review lists the photo to convert, the large PNG and the file that can’t be added');
-const [heicRow, scanRow] = [await rows.nth(0).innerText(), await rows.nth(1).innerText()];
+// By name: a photo to convert is listed first, but one that can't be added (no converter) after what will be added.
+const heicRow = await rows.filter({ hasText: 'IMG_0042.heic' }).innerText();
+const scanRow = await rows.filter({ hasText: 'field-scan.png' }).innerText();
 if (CONVERTS) assert.match(heicRow, /IMG_0042\.heic[^]*HEIC · 1,200 × 1,600[^]*JPEG · 1,200 × 1,600/, 'the HEIC photo becomes an upright JPEG of its displayed size');
 else assert.match(heicRow, /Can’t be added: it is a HEIC photo[^]*JPEG/, 'without a converter the review says what to do instead');
 assert.match(scanRow, /field-scan\.png[^]*PNG · 3,000 × 2,000[^]*web-sized copy instead: JPEG · 2,560 × 1,707/, 'the large PNG is offered a web-sized JPEG');
-assert.ok(await rows.nth(1).locator('input[type="checkbox"]').isChecked(), 'the web-sized copy is chosen by default');
+assert.ok(await rows.filter({ hasText: 'field-scan.png' }).locator('input[type="checkbox"]').isChecked(), 'the web-sized copy is chosen by default');
 assert.match(await win.locator('.import-review-rest').innerText(), /One other file is added as it is/);
 assert.match(await rows.filter({ hasText: 'notes.unsupported' }).innerText(), /Can’t be added: only JPEG, PNG/, 'the unsupported file is named as one that can’t be added');
 // Nothing is written while the author decides.

@@ -131,7 +131,9 @@ await row(one).dragTo(slotRow('sidebar'));
 await eventually(async () => assert.deepEqual((await slots()).sidebar, [one], 'the first paragraph is in the Sidebar'));
 assert.deepEqual((await snapshot()).pages[pageId].nodes[section].slots.content, [split, two, three, four], 'and gone from beside the Split');
 assert.deepEqual((await history()).slice(applied), ['Move Text · First note on Home'], 'one change');
-assert.equal(await slotRow('sidebar').locator('.layer-slot-empty').count(), 0, 'the Sidebar row is no longer marked empty');
+// Layers shows the move once the save has landed and the editor has heard of it, which on a slow disk is after the
+// project's own snapshot has it.
+await eventually(async () => assert.equal(await slotRow('sidebar').locator('.layer-slot-empty').count(), 0, 'the Sidebar row is no longer marked empty'));
 
 // Screen readers hear which slot of the Split it is in: its row follows that slot's, in the same column.
 assert.equal(await row(one).getAttribute('aria-description'), 'In Sidebar.', 'a layer in a slot says which');

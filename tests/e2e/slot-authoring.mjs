@@ -121,9 +121,13 @@ await form.getByRole('checkbox', { name: 'Text', exact: true }).check();
 await form.getByLabel('Holds at most').fill('1');
 const configuring = (await snapshot()).revision;
 await form.getByRole('button', { name: 'Save' }).click();
-await eventually(async () =>
-  assert.deepEqual((await design()).slots, { buttons: { label: 'Actions', description: 'A short call to action', categories: ['media'], primitives: ['text'], max: 1 } }, 'saved')
-);
+// The project holds a change while its files are still being written, and counts it once they are: it is counted
+// only when the save is done.
+await eventually(async () => {
+  const now = await snapshot();
+  assert.deepEqual(now.state.components[defId].slots, { buttons: { label: 'Actions', description: 'A short call to action', categories: ['media'], primitives: ['text'], max: 1 } }, 'saved');
+  assert.notEqual(now.revision, configuring, 'and the save is done');
+}, 30000);
 assert.equal((await snapshot()).revision, configuring + 1, 'in one change');
 await form.waitFor({ state: 'detached' });
 await eventually(async () => assert.match(await inspector.locator('[data-slot="buttons"]').innerText(), /Takes media components and text · At most 1/));

@@ -5,7 +5,7 @@
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
-import { createProject, eventually, launch, scratch, step } from './harness.mjs';
+import { createProject, eventually, launch, openInspector, scratch, step } from './harness.mjs';
 
 const { WORK, cleanup } = scratch('hot-update');
 const { app, win, errors } = await launch(WORK);
@@ -280,6 +280,49 @@ try {
 await eventually(async () => assert.equal((await selected())?.nodeId, ids.heroId, 'the click selects the hero once the page shows the save, with no second click'), 15000);
 assert.ok(Date.now() - released < 2000, `the page’s acknowledgement released the click (selected ${Date.now() - released} ms after the update was let go)`);
 assert.ok((await shown()).leads.includes(lead3), 'the page shows the save');
+
+step('a field left while its save waits for the page to take the one before shows what was typed until the save lands, never the value before it');
+{
+  const eyebrowBefore = 'Before the slow save';
+  const typed = 'Typed while the page catches up';
+  await apply([{ type: 'instance.setProp', owner, nodeId: ids.heroId, prop: 'eyebrow', value: eyebrowBefore }], 'Hero eyebrow');
+  await eventually(async () => assert.ok((await frame.getByText(eyebrowBefore, { exact: true }).count()) > 0, 'the page shows the eyebrow'), 30000);
+  await openInspector(win);
+  const field = win.locator('#dock-panel-inspect').getByRole('textbox', { name: 'Eyebrow', exact: true });
+  await eventually(async () => assert.equal(await field.inputValue(), eyebrowBefore, 'the Inspector shows the saved eyebrow'));
+  // The page holds the next save's update, so the save after it waits for the page (the preview takes saves one at a
+  // time) and lands only some time after the field is left.
+  await canvas.evaluate(() => {
+    window.__soHeld = false;
+    window.__soHold = new Promise((resolve) => (window.__soRelease = resolve));
+  });
+  await apply([{ type: 'instance.setProp', owner, nodeId: ids.heroId, prop: 'lead', value: 'Held at the page' }], 'Hero lead held');
+  await eventually(async () => assert.equal(await canvas.evaluate(() => window.__soHeld), true, 'the page has the update, held'), 30000);
+  try {
+    await field.fill(typed);
+    // Every value the field shows from the moment it is left until its save has landed (or 3 s).
+    const shownAfterLeaving = await field.evaluate(async (el, until) => {
+      const seen = [el.value];
+      const started = await window.builder.project.snapshot().then((s) => s.revision);
+      el.blur();
+      const t0 = performance.now();
+      while (performance.now() - t0 < 3000) {
+        await new Promise((r) => setTimeout(r, 10));
+        if (seen.at(-1) !== el.value) seen.push(el.value);
+        if (el.value === until && (await window.builder.project.snapshot()).revision > started && performance.now() - t0 > 1000) break;
+      }
+      return seen;
+    }, typed);
+    assert.deepEqual(shownAfterLeaving, [typed], 'the field shows what was typed throughout, and never the saved value from before');
+  } finally {
+    await canvas.evaluate(() => {
+      window.__soHold = null;
+      window.__soRelease();
+    });
+  }
+  await eventually(async () => assert.equal(await field.inputValue(), typed, 'the field shows the saved text'));
+  await eventually(async () => assert.ok((await frame.getByText(typed, { exact: true }).count()) > 0, 'the page shows it'), 30000);
+}
 
 assert.deepEqual(errors, [], 'no uncaught errors in the editor');
 await app.close();

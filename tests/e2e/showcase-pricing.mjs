@@ -35,6 +35,9 @@ try {
       .locator('.insert-tile.section', { has: win.locator('strong', { hasText: new RegExp(`^${name}$`) }) });
   await tile('Content', 'Tabbed showcase').click();
   await eventually(async () => assert.equal(placed(await snapshot(), 'tabs.showcase').length, 1, 'one Tabbed showcase is on Home'));
+  // The panel takes one insert at a time, and the project holds the first a moment before its save comes back (a
+  // second or more on Windows): the next tile is clicked once the panel says the first one was added.
+  await win.getByRole('button', { name: 'Undo adding Tabbed showcase' }).waitFor();
   await tile('Conversion', 'Pricing with billing switch').click();
   await eventually(async () => assert.equal(placed(await snapshot(), 'pricing.toggle').length, 1, 'one Pricing with billing switch is on Home'));
   const showcase = placed(await snapshot(), 'tabs.showcase')[0];

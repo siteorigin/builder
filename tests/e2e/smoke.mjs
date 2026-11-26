@@ -28,6 +28,23 @@ const t0 = Date.now();
 const frame = await createProject(win, { name: 'Harbour Lane Studio', parentDir: join(WORK, 'sites'), starter: 'business', sampleImages: true });
 console.log('created and previewed in', Date.now() - t0, 'ms');
 await win.screenshot({ path: join(OUT, '03-editor.png') });
+
+step('the hidden window keeps drawing: the editor and its preview each get animation frames as a window on screen does');
+{
+  // Counted over one second. A window on screen draws at the display's rate; a hidden one held to a frame a second (Windows,
+  // without its frame rate limit lifted) leaves the preview's scrolls, hit-testing and acknowledgements that far behind.
+  const framesInASecond = () =>
+    new Promise((resolve) => {
+      let n = 0;
+      const t0 = performance.now();
+      const tick = () => (performance.now() - t0 < 1000 ? (n++, requestAnimationFrame(tick)) : resolve(n));
+      requestAnimationFrame(tick);
+    });
+  const preview = await (await win.locator('.frame-box iframe').elementHandle()).contentFrame();
+  const [editorFrames, previewFrames] = await Promise.all([win.evaluate(framesInASecond), preview.evaluate(framesInASecond)]);
+  assert.ok(editorFrames >= 20, `the editor drew ${editorFrames} animation frames in a second`);
+  assert.ok(previewFrames >= 20, `the preview drew ${previewFrames} animation frames in a second`);
+}
 const samples = Object.values((await win.evaluate(() => window.builder.project.snapshot())).state.assets.assets);
 assert.ok(samples.length, 'the sample images are in the library');
 assert.deepEqual(samples.filter((a) => 'originalName' in a).map((a) => a.id), [], 'a bundled sample is no file of the author’s, so none has an original name');

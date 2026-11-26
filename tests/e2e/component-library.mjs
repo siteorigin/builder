@@ -357,13 +357,20 @@ const ready = (r, what) => {
   assert.ok(r.bounds && r.bounds.width > 0 && r.bounds.height > 0, `${what}: the component takes up room (${JSON.stringify(r.bounds)})`);
   return r;
 };
+// A frame is drawn in whole device pixels: at 125% (Windows) 437 CSS pixels are 546.25 device pixels, so the page
+// inside is the width either side of the one asked for. At 100% and 200% it is exactly that width.
+const scale = await app.evaluate(({ screen }) => screen.getPrimaryDisplay().scaleFactor);
+const shownAt = (r, width, what) => {
+  const near = new Set([Math.floor(width * scale), Math.ceil(width * scale)].map((d) => Math.round(d / scale)));
+  assert.ok(near.has(r.report.viewportWidth), `${what}: shown ${r.report.viewportWidth}px wide at ${scale}×, for ${width}px asked`);
+  assert.ok(r.bounds.width <= r.report.viewportWidth, `${what}: and fits it`);
+};
 const blueDef = Object.values((await snapshot()).components).find((d) => d.name === 'Exhibitor card blue');
 assert.equal((await library())['Exhibitor card blue'], 0, 'the card is placed nowhere');
 const [alone] = await preview([{ spec: { definitionId: blueDef.id }, width: 437 }]);
 ready(alone, 'an unplaced project component');
 assert.equal(alone.definitionId, blueDef.id);
-assert.equal(alone.report.viewportWidth, 437, 'it is shown at exactly the width asked for');
-assert.ok(alone.bounds.width <= 437, 'and fits it');
+shownAt(alone, 437, 'it is shown at the width asked for');
 assert.equal(alone.text, 'Exhibitor', 'it shows the component alone: no header, footer or page around it');
 
 step('sample values and each variant of a catalogue component, in two frames at once');
@@ -384,8 +391,8 @@ assert.doesNotMatch(other.text, /Two up|Four up/, 'each frame shows its own prev
 assert.match(twoAgain.text, /Two up/);
 assert.ok(two.bounds.height > four.bounds.height + 40, `two columns put the three cards on two rows, four on one (${two.bounds.height} vs ${four.bounds.height})`);
 assert.equal(twoAgain.bounds.height, two.bounds.height, 'the same choices show the same layout');
-assert.equal(narrow.report.viewportWidth, 437);
-assert.ok(narrow.bounds.width <= 437 && narrow.bounds.height > four.bounds.height, 'at a phone width the cards stack, whatever the layout chosen');
+shownAt(narrow, 437, 'a narrow width');
+assert.ok(narrow.bounds.height > four.bounds.height, 'at a phone width the cards stack, whatever the layout chosen');
 assert.deepEqual(Object.keys((await snapshot()).components).sort(), componentsBefore, 'previewing a catalogue component never adds it to the project');
 
 step('a code component with its variant and sample values, and a component that does not exist');

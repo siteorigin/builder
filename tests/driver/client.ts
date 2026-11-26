@@ -178,7 +178,16 @@ export class DriverClient {
 export async function connect(opts: ConnectOptions = {}): Promise<DriverClient> {
   let fd: number | null = null;
   const stderr = opts.stderr === 'ignore' ? 'ignore' : typeof opts.stderr === 'object' ? (fd = openSync(opts.stderr.file, 'a')) : 'inherit';
-  const host = spawn(process.execPath, ['--no-warnings', HOST_PATH, ...(opts.contained ? ['--contained'] : [])], { stdio: ['pipe', 'pipe', stderr], env: { ...process.env, ...opts.env }, windowsHide: true });
+  // Detached on Windows: Node puts every other child there in a job that is killed the moment this process ends, and a
+  // client killed outright (as the MCP SDK does to a server that has not exited 2 s after its input closed) would take
+  // the host with it in the middle of closing, leaving the app running and the run folder behind. Elsewhere the host
+  // outlives this process anyway, and stays in its process group.
+  const host = spawn(process.execPath, ['--no-warnings', HOST_PATH, ...(opts.contained ? ['--contained'] : [])], {
+    stdio: ['pipe', 'pipe', stderr],
+    env: { ...process.env, ...opts.env },
+    windowsHide: true,
+    detached: process.platform === 'win32'
+  });
   if (fd !== null) closeSync(fd);
   await new Promise<void>((resolve, reject) => {
     host.once('spawn', () => resolve());

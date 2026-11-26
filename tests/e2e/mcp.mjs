@@ -7,14 +7,13 @@
 // the client (whether a process is alive, whether a folder exists) only read.
 import assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';
-import { execFile } from 'node:child_process';
 import { existsSync, readFileSync } from 'node:fs';
 import { relative, isAbsolute } from 'node:path';
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { StdioClientTransport } from '@modelcontextprotocol/sdk/client/stdio.js';
 import { MCP_PATH } from '../driver/mcp.ts';
 import { isAlive, processTable } from '../driver/processes.ts';
-import { eventually, scratch, step } from './harness.mjs';
+import { eventually, processesNaming, scratch, step } from './harness.mjs';
 
 const { WORK, cleanup } = scratch('mcp');
 let passed = false;
@@ -57,10 +56,7 @@ const inside = (parent, child) => {
 /** The session hosts the server has started and that still run. */
 const hosts = async () => (await processTable()).filter((e) => e.ppid === transport.pid).map((e) => e.pid);
 /** Processes whose command line names `dir`: a check that does not rely on the session's own bookkeeping. */
-const naming = (dir) =>
-  new Promise((resolve, reject) =>
-    execFile('ps', ['-A', '-o', 'pid=,command='], { maxBuffer: 16 * 1024 * 1024 }, (e, out) => (e ? reject(e) : resolve(String(out).split('\n').filter((l) => l.includes(dir)))))
-  );
+const naming = processesNaming;
 /** The workspace two levels deep: a project is made in a folder inside it. */
 const workspaceTree = async () => {
   const top = (await ok('files_list', { path: 'workspace' })).entries;

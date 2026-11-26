@@ -102,7 +102,8 @@ try {
   assert.equal(await sub.getAttribute('aria-checked'), 'true');
   await sub.click();
   await eventually(async () => assert.deepEqual((await menuRows()).map((r) => r.row), ['Home', 'About', 'Contact', 'Lookbook', 'Kitchens']));
-  assert.equal(await list.locator('.list-editor-item.nested').count(), 0, 'the row is no longer shown under Lookbook');
+  // The project holds the change before this window hears of it: the list follows once it does.
+  await eventually(async () => assert.equal(await list.locator('.list-editor-item.nested').count(), 0, 'the row is no longer shown under Lookbook'));
   assert.equal((await pageBy('Kitchens')).route, '/lookbook/kitchens/', 'the page stays inside Lookbook');
   await list.locator('.list-editor-item', { hasText: 'Kitchens' }).getByRole('switch', { name: 'Show under the link above' }).click();
   await eventually(async () => assert.deepEqual((await menuRows()).map((r) => r.row), ['Home', 'About', 'Contact', 'Lookbook', '  Kitchens']));

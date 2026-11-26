@@ -319,7 +319,9 @@ assert.equal((await snapshot()).state.assets.assets[glazeId].name, 'glaze', 'and
 await eventually(async () => assert.equal(await featured.locator('.insp-pick').count(), 0, 'the picker closed after the import'));
 await featured.getByRole('button', { name: 'Remove featured image' }).click();
 await eventually(() => assert.equal(featuredNow(), null, 'Remove clears the featured image'), 20000);
-assert.equal(await featured.locator('.insp-image-name').innerText(), 'None');
+// The file is written before the change is recorded in History and the editor hears of it: the picker shows it once
+// it has, and only then is History counted.
+await eventually(async () => assert.equal(await featured.locator('.insp-image-name').innerText(), 'None', 'the picker shows none'));
 const featuredSteps = (await snapshot()).history.entries.filter((e) => e.applied && e.label === 'Change featured image').length;
 assert.equal(featuredSteps, 3, 'choosing, importing and removing are each an undo step');
 await win.locator('.post-tools').getByRole('button', { name: 'Undo' }).click();

@@ -63,10 +63,22 @@ const editMenu = (id) =>
     item.click({ triggeredByAccelerator: false }, undefined, undefined);
   }, id);
 
-/** The spellchecker's suggestions for `word`, then the ordinary editing actions. */
-function assertWritingMenu(m, where, word = 'recieve') {
+/**
+ * Whether a misspelling marked through DevTools gets suggestions in the menu. macOS asks the spellchecker for them as
+ * the menu opens; Windows offers only the suggestions its spellchecker stored on a marker it set itself, so a marker
+ * set through DevTools names the word and offers none there.
+ */
+const MARKED_SUGGESTS = process.platform !== 'win32';
+
+/** The spellchecker's suggestions for `word`, then the ordinary editing actions. `marked`: the word was marked through DevTools. */
+function assertWritingMenu(m, where, word = 'recieve', { marked = false } = {}) {
   assert.equal(m.editable, true, `${where}: the right-click is in text that takes typing`);
   assert.equal(m.word, word, `${where}: the misspelled word under the pointer is reported`);
+  if (marked && !MARKED_SUGGESTS) {
+    assert.deepEqual(m.suggestions, [], `${where}: nothing to suggest for a marker the spellchecker did not set`);
+    assert.deepEqual(m.labels, ['No spelling suggestions', '—', 'Cut', 'Copy', 'Paste', '—', 'Select All'], `${where}: the word is named as misspelled, then the editing actions`);
+    return;
+  }
   assert.ok(m.suggestions.length > 0, `${where}: the spellchecker has suggestions`);
   assert.deepEqual(m.labels, [...m.suggestions, '—', 'Cut', 'Copy', 'Paste', '—', 'Select All'], `${where}: the suggestions come first, then the editing actions`);
 }
@@ -107,6 +119,11 @@ const dblclickCanvas = async (el, word) => {
   await win.mouse.dblclick(p.x, p.y);
 };
 const rightClickWord = (el, word) => clickCanvas(el, { word, button: 'right' });
+/**
+ * Scroll `el` into view. The page takes a saved correction in its own time (later on a slower machine) and replaces
+ * what it shows meanwhile, which can take the element away mid-scroll: the scroll is then made again on what it shows.
+ */
+const scrollTo = (el) => eventually(() => el.scrollIntoViewIfNeeded({ timeout: 2000 }));
 
 const h1 = frame.locator('h1').first();
 
@@ -216,15 +233,17 @@ for (let attempt = 1; attempt <= 3; attempt++) {
   await win.keyboard.press('Escape');
   await eventually(async () => assert.equal(await h1.getAttribute('contenteditable'), null, 'the edit ends'));
 }
-assertWritingMenu(freshMenu, 'heading as its edit begins');
+assertWritingMenu(freshMenu, 'heading as its edit begins', 'recieve', { marked: true });
 await settle();
 assert.equal(await openMenus(), 0, 'the element actions stay closed');
 assert.equal(await chip(), freshChip, 'the selection stays on the heading');
 // The right-click put the selection on the word, where the replacement goes: marked again, as it still would be.
 assert.equal(await h1.evaluate(() => getSelection().toString()), 'recieve', 'the right-click selects the misspelled word');
 await mark();
-await choose(freshMenu.suggestions[0]);
-await eventually(async () => assert.equal(await h1.innerText(), `${freshMenu.suggestions[0]} confirmation`, 'the suggestion replaces the word'));
+if (MARKED_SUGGESTS) {
+  await choose(freshMenu.suggestions[0]);
+  await eventually(async () => assert.equal(await h1.innerText(), `${freshMenu.suggestions[0]} confirmation`, 'the suggestion replaces the word'));
+}
 await cdp.detach();
 assert.ok(await h1.getAttribute('contenteditable'), 'the heading is still being edited');
 await win.keyboard.press('Escape');
@@ -268,7 +287,7 @@ step('a correction inside bold rich text keeps its formatting');
 const found = frame.locator('.so-rich', { hasText: 'That conversation shapes' }).first();
 // Found by its words, then held by its place on the page: the words are about to change.
 const rich = frame.locator(`.so-rich[data-so-node="${await found.getAttribute('data-so-node')}"][data-so-ctx="${await found.getAttribute('data-so-ctx')}"]`);
-await rich.scrollIntoViewIfNeeded();
+await scrollTo(rich);
 await settle();
 await clickCanvas(rich);
 await settle();
@@ -301,7 +320,7 @@ const stored = () =>
 await eventually(async () => assert.deepEqual(await stored(), [{ text: 'We ' }, { text: richFix, strong: true }, { text: ' every enquiry' }], 'the bold correction is saved as written'));
 
 step('a right-click on a section still opens its element actions');
-await h1.scrollIntoViewIfNeeded();
+await scrollTo(h1);
 await settle();
 await clickCanvas(h1);
 await settle();
