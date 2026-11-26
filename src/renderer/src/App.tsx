@@ -22,6 +22,9 @@ import { placeOn, readPlaces } from './lib/page-place';
 import { startEditorFonts } from './lib/editor-fonts';
 import { isAskAiKey } from './lib/ask-ai-key';
 import { followLive, syncPresence } from './lib/live-host';
+import { followRemote, syncRemotePresence } from './lib/remote-session';
+import { JoinLiveDialog } from './components/JoinLive';
+import { isRemoteOpening } from './lib/remote-snapshot';
 import { projectDisplayName, windowTitle } from '@shared/project-name';
 
 /** What Undo and Redo, and keys forwarded from the preview frame, act on right now. */
@@ -133,7 +136,10 @@ export function App() {
       useStore.subscribe(persistPlaces),
       // The live session this opening hosts, and where the host is for guests following it (#764).
       ...followLive(),
-      syncPresence()
+      syncPresence(),
+      // Another computer's live session this app is a guest in, and where it is for the others (#766).
+      ...followRemote(),
+      syncRemotePresence()
     ];
     void api.project
       .snapshot()
@@ -156,6 +162,7 @@ export function App() {
           {screen === 'welcome' ? <Welcome /> : <Editor />}
         </RenderFailure>
       )}
+      {booted && <JoinLiveDialog />}
       <UnpackingModal />
       <Toasts />
       <ConfirmHost />
@@ -180,8 +187,9 @@ export function openSnapshot(snap: NonNullable<ReturnType<typeof getState>['snap
     previewScheme: 'system',
     zoom: restoreZoom(local.zoom),
     leftTab: (local.leftTab as never) ?? 'pages',
-    // No saved view, or one this version does not have (a newer one's, a hand-edited file), opens the AI.
-    rightTab: restoreRightTab(local.rightTab),
+    // No saved view, or one this version does not have (a newer one's, a hand-edited file), opens the AI. The host's
+    // project in a live session opens on the Inspector: its AI is the host's (#766).
+    rightTab: isRemoteOpening(snap.workspaceKey) ? 'inspect' : restoreRightTab(local.rightTab),
     // Every project opens with its own panel widths (or the defaults), never the last project's.
     leftWidth: restorePanelWidth('left', local.leftWidth),
     rightWidth: restorePanelWidth('right', local.rightWidth),
@@ -216,7 +224,9 @@ export function openSnapshot(snap: NonNullable<ReturnType<typeof getState>['snap
     renameOffer: null,
     ...openingModalsClosed()
   });
-  void restoreConversation(++opened, local.chatConversation);
+  // The host's AI conversations are its own: a guest has none to restore (#766).
+  if (isRemoteOpening(snap.workspaceKey)) opened++;
+  else void restoreConversation(++opened, local.chatConversation);
 }
 
 /**

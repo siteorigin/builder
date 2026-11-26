@@ -29,6 +29,8 @@ export function noticesFile(packaged: boolean, resourcesPath: string, appPath: s
 export interface AppMenuOptions {
   /** A project is open: Export and Close Project are offered. */
   projectOpen: boolean;
+  /** This app is in another computer's live session, or asking to join one: no project of its own is offered, nor Join again. */
+  remoteActive?: boolean;
   /** Reload and the developer tools are offered: a development build, or Developer mode on. */
   developer: boolean;
 }
@@ -53,7 +55,7 @@ export const REPORT_URL = 'https://github.com/siteorigin/builder/issues/new';
  * tools only to developers. No Electron import, so the menu can be listed for every platform in a test
  * (tests/coverage/surfaces.ts).
  */
-export function appMenuTemplate(platform: NodeJS.Platform, { projectOpen, developer }: AppMenuOptions, actions: AppMenuActions): MenuItemConstructorOptions[] {
+export function appMenuTemplate(platform: NodeJS.Platform, { projectOpen, remoteActive = false, developer }: AppMenuOptions, actions: AppMenuActions): MenuItemConstructorOptions[] {
   const isMac = platform === 'darwin';
   const settings: MenuItemConstructorOptions = { id: 'settings', label: 'Settings…', accelerator: 'CmdOrCtrl+,', click: () => actions.command('settings') };
   const send = (cmd: MenuCommand) => () => actions.command(cmd);
@@ -116,10 +118,12 @@ export function appMenuTemplate(platform: NodeJS.Platform, { projectOpen, develo
     {
       label: 'File',
       submenu: [
-        { label: 'New Project…', accelerator: 'CmdOrCtrl+Shift+N', click: send('new-project') },
-        { label: 'Open Project…', accelerator: 'CmdOrCtrl+O', click: send('open-project') },
+        { id: 'new-project', label: 'New Project…', accelerator: 'CmdOrCtrl+Shift+N', enabled: !remoteActive, click: send('new-project') },
+        { id: 'open-project', label: 'Open Project…', accelerator: 'CmdOrCtrl+O', enabled: !remoteActive, click: send('open-project') },
         // Open Project's picker takes a file or ZIP file here; a project folder has its own.
-        ...(isMac ? [] : [{ label: 'Open Project Folder…', click: send('open-project-folder') }]),
+        ...(isMac ? [] : [{ id: 'open-project-folder', label: 'Open Project Folder…', enabled: !remoteActive, click: send('open-project-folder') }]),
+        { type: 'separator' },
+        { id: 'join-live', label: 'Join Live Session…', enabled: !remoteActive, click: send('join-live') },
         { type: 'separator' },
         { id: 'export', label: 'Export…', accelerator: 'CmdOrCtrl+E', enabled: projectOpen, click: send('export') },
         { type: 'separator' },

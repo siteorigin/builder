@@ -1,7 +1,7 @@
 import type { LiveCommandResult, LiveHostState, LiveJoinRequest, LiveRun } from '@shared/api';
 import type { SessionDuration } from '@shared/live/expiry';
 import { api, getState, setState, toast, useStore, type State } from '../store';
-import { hasRoom, hostPresence, joinNotice, liveFor, liveRun, presenceKey, readRelayClock, sameRun, waitingGuests } from './live-session';
+import { hasRoom, hostPresence, joinNotice, liveFor, liveRun, presenceKey, readRelayClock, sameRun, sharedSelection, waitingGuests } from './live-session';
 import { shownView } from './template-view';
 import { postAt, postShown, postWorkspace } from './posts';
 import { entryRoute } from '@shared/collections';
@@ -177,8 +177,17 @@ export function presenceOf(s: Pick<State, 'snapshot' | 'pageId' | 'templateMode'
 }
 
 /**
+ * Where the host is for its guests: where presenceOf says, and what it has selected on that page, so collaborators
+ * see what the host is working on (#766).
+ */
+export function hostPresenceOf(s: Parameters<typeof presenceOf>[0] & Pick<State, 'selection'>) {
+  const at = presenceOf(s);
+  return { ...at, selection: sharedSelection(s.selection, at.pageId) };
+}
+
+/**
  * Keep guests following the host told where it is, while this opening hosts a session: once when it starts, and after
- * every change of page, address or width, a moment after the changes stop. The main process keeps the latest and sends
+ * every change of page, address, width or selection, a moment after the changes stop. The main process keeps the latest and sends
  * it again whenever the room is taken back. Returns the unsubscriber.
  */
 export function syncPresence(): () => void {
@@ -190,7 +199,7 @@ export function syncPresence(): () => void {
     const live = shownLive(s);
     const run = liveRun(live);
     if (!run || live.phase === 'stopping') return;
-    const presence = presenceOf(s);
+    const presence = hostPresenceOf(s);
     const key = presenceKey(run, presence);
     if (key === sent) return;
     sent = key;
@@ -212,6 +221,7 @@ export function syncPresence(): () => void {
       s.templateMode !== prev.templateMode ||
       s.definitionMode !== prev.definitionMode ||
       s.viewport !== prev.viewport ||
+      s.selection !== prev.selection ||
       s.leftTab !== prev.leftTab ||
       s.postView !== prev.postView ||
       s.mode !== prev.mode ||

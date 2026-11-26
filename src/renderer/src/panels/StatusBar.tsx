@@ -9,6 +9,7 @@ import { api, applyOps, confirmDialog, getState, setState, toast, useStore } fro
 import { refKey, type ElementRef, type ProjectState } from '@shared/types';
 import { breadcrumb, inDefinition, type Crumb } from '../lib/model';
 import { saveFailureNotice } from '../lib/savestate';
+import { isRemoteOpening } from '../lib/remote-snapshot';
 import { activeWorkspace, canvasCovered } from '../lib/workspace';
 import { goToShellPart, groupCount, liveGroup, openAsset, openOutline, pageOutOfSight, selectPage } from '../lib/actions';
 import { destinationForDiagnostic, destinationLabel } from '../lib/destinations';
@@ -177,11 +178,19 @@ export function StatusBar() {
       {snap.readOnly && (
         <>
           <span className="status-sep" aria-hidden="true" />
-          <button className="read-only" title={`${snap.readOnly.reason} Open Project health for what you can do.`} onClick={openHealth}>
-            <Lock aria-hidden="true" />
-            Read-only
-            <ChevronRight className="go" aria-hidden="true" />
-          </button>
+          {isRemoteOpening(snap.workspaceKey) ? (
+            // The host's project in a live session (#766): its health is the host's; the reason is all there is to say.
+            <span className="read-only" title={snap.readOnly.reason}>
+              <Lock aria-hidden="true" />
+              Read-only
+            </span>
+          ) : (
+            <button className="read-only" title={`${snap.readOnly.reason} Open Project health for what you can do.`} onClick={openHealth}>
+              <Lock aria-hidden="true" />
+              Read-only
+              <ChevronRight className="go" aria-hidden="true" />
+            </button>
+          )}
         </>
       )}
       {crumbs.length > 0 && <span className="status-sep" aria-hidden="true" />}

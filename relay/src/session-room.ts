@@ -394,9 +394,11 @@ export class SessionRoom extends DurableObject<Env> {
       case 'preview:response-end':
       case 'preview:abort':
         return this.tunnel.acceptHostFrame(attachment.connectionId, frame);
-      case 'preview:reload':
-        for (const guestWs of this.admittedSockets()) this.send(guestWs, 'relay-to-guest', { type: 'preview:reload' });
+      case 'preview:reload': {
+        const reload = { type: 'preview:reload', ...(frame.revision !== undefined ? { revision: frame.revision } : {}) } as const;
+        for (const guestWs of this.admittedSockets()) this.send(guestWs, 'relay-to-guest', reload);
         return;
+      }
       case 'rpc:response': {
         const { guestId, ...reply } = frame;
         const target = this.admittedSocket(guestId);
@@ -488,6 +490,13 @@ export class SessionRoom extends DurableObject<Env> {
     switch (frame.type) {
       case 'guest:join':
         return this.refuse(ws, 'relay-to-guest', 'WRONG_STATE', 'You have already joined.', false);
+      case 'guest:leave':
+        // Its socket closes with the place: the guest has already let go of the session on its side.
+        this.removeGuest(guest, null, 'You left the session.');
+        this.changed();
+        this.sendRosters();
+        this.scheduleAlarm();
+        return;
       case 'presence:update': {
         if (guest.status !== 'admitted') return this.refuse(ws, 'relay-to-guest', 'FORBIDDEN', 'The host has not let you in yet.', false);
         // Viewers follow the session; collaborators show the others where they are and what they have selected (#765).

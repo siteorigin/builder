@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState, type KeyboardEvent } from 'react';
-import { ArrowRight, CircleAlert, Folder, FolderOpen, Moon, Pin, Plus, Search, Settings, Sun, X } from 'lucide-react';
+import { ArrowRight, CircleAlert, Folder, FolderOpen, Moon, Pin, Plus, Search, Settings, Sun, Users, X } from 'lucide-react';
 import type { RecentProject } from '@shared/api';
 import { api, errorText, setState, toast, useStore } from './store';
 import { openDialogs, Spinner } from './components/ui';
@@ -181,6 +181,7 @@ export function Welcome() {
       if (cmd === 'new-project' && !openingRef.current) setCreating(true);
       if (cmd === 'open-project') void open();
       if (cmd === 'open-project-folder') void open(undefined, { folder: true });
+      if (cmd === 'join-live' && !openingRef.current) setState({ joinOpen: true });
       if (cmd === 'settings' && !openingRef.current) setState({ modal: { kind: 'settings' } });
     };
     window.addEventListener('builder-command', onCmd);
@@ -480,6 +481,16 @@ export function Welcome() {
               </span>
             </button>
           )}
+          {/* Another computer's project, edited with its host over a live session (#766): nothing is opened here. */}
+          <button className="action-card welcome-action secondary join-live-action" disabled={!!opening} onClick={() => setState({ joinOpen: true })}>
+            <span className="ico">
+              <Users size={18} />
+            </span>
+            <span className="grow">
+              <strong>Join live session…</strong>
+              <span>Edit with someone who shared an invite link</span>
+            </span>
+          </button>
         </div>
         <div className="spacer" />
         {refusedPacks.length > 0 && (

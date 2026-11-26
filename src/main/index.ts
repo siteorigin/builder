@@ -29,7 +29,7 @@ import { setSiteIconRenderer } from './project/site-icons';
 import { readInsertPlace } from './saved-components';
 import { stopPostReads } from './posts-import/process';
 import { stopSourceSyncs } from './sources/process';
-import { playerFrameAllowed, sameOrigin } from './player-frames';
+import { canvasPreviewUrl, playerFrameAllowed, previewNavigationAllowed as navigationAllowed, sameOrigin } from './player-frames';
 import { stopPhotoDecoders } from './project/photo-convert';
 import { createThumbCapturer } from './thumb-capture';
 import { desktopForLaunch, launchMode } from './headless-desktop';
@@ -234,6 +234,26 @@ const menuCommands = createMenuCommands<BrowserWindow>({
   send: (w, command) => w.webContents.send('menu:command', command)
 });
 controller.onOpeningChange = () => updateProjectMenu();
+controller.onRemoteState = () => updateProjectMenu();
+// The remote shell's canvas loads the host's preview from this computer's loopback server (#766), which serves only
+// requests carrying its secret: the editor's own window is given it, and nothing else on this computer is.
+controller.remote.onPreviewAccess = (access) => {
+  const requests = electronSession.defaultSession.webRequest;
+  if (!access) {
+    requests.onBeforeSendHeaders(null);
+    // What the canvas loaded of the host's preview is kept nowhere once access has ended: not in this computer's cache.
+    void electronSession.defaultSession.clearCache().catch(() => undefined);
+    return;
+  }
+  requests.onBeforeSendHeaders({ urls: [`${access.url}/*`] }, (details, done) => {
+    const fromEditor = !!win && !win.isDestroyed() && details.webContentsId === win.webContents.id;
+    const requestHeaders = { ...details.requestHeaders };
+    // Never one of the page's own: a page in the preview cannot set the secret, only fail to have it.
+    for (const name of Object.keys(requestHeaders)) if (name.toLowerCase() === access.header) delete requestHeaders[name];
+    if (fromEditor && sameOrigin(details.url, access.url)) requestHeaders[access.header] = access.secret;
+    done({ requestHeaders });
+  });
+};
 let fixAbort: AbortController | null = null;
 /** Connection tests in flight, stopped with everything else when a remote server is no longer allowed. */
 const testAborts = new Set<AbortController>();
@@ -426,6 +446,14 @@ function registerIpc() {
   handle('live:extend', (run: unknown, expiresAt: unknown) => controller.live.extend(run, expiresAt));
   handle('live:presence', (run: unknown, presence: unknown) => controller.live.setPresence(run, presence));
   handle('live:state', () => controller.live.state);
+  // This app as a guest in another computer's live session (#766). Joining needs no project open here; each call
+  // names the join it is for, so one meant for a join that has ended reaches no other.
+  handle('remote:join', (opts: unknown) => (controller.session ? { ok: false, message: 'Close the open project before joining a live session.' } : controller.remote.join(opts)));
+  handle('remote:leave', () => controller.remote.leave());
+  handle('remote:state', () => controller.remote.state);
+  handle('remote:snapshot', (joinId: unknown, fresh?: unknown) => controller.remote.snapshot(joinId, fresh === true));
+  handle('remote:apply', (joinId: unknown, batch: unknown) => controller.remote.apply(joinId, batch));
+  handle('remote:presence', (joinId: unknown, presence: unknown) => controller.remote.presence(joinId, presence));
   handle('project:snapshot', () => controller.snapshot());
   handle('project:reloadFromDisk', () => controller.reloadFromDisk());
   handle('project:apply', (batch, opts) => controller.apply(batch, opts));
@@ -799,12 +827,10 @@ async function createWindow() {
   // The preview iframe must not navigate away from the project origin or open popups.
   win.webContents.on('did-attach-webview', (e) => e.preventDefault());
   const editorContents = win.webContents;
-  const previewUrl = () => (controller.dev?.status.state === 'ready' ? (controller.dev.status as { url: string }).url : null);
-  const previewNavigationAllowed = (target: string) => {
-    const devUrl = previewUrl();
-    // Compare origins, not string prefixes: http://127.0.0.1:5173 must not admit http://127.0.0.1:51730.
-    return (!!devUrl && sameOrigin(target, devUrl)) || target.startsWith('about:');
-  };
+  // The open project's preview server, or, in a live session this app is a guest in, the host's preview as this
+  // computer's loopback server shows it (#766).
+  const previewUrl = () => canvasPreviewUrl(controller.dev as { status: { state: string; url?: string } } | null, controller.remote);
+  const previewNavigationAllowed = (target: string) => navigationAllowed(target, previewUrl());
   win.webContents.on('will-frame-navigate', (e) => {
     if (e.isMainFrame) return;
     // A video section's player, which a press of Play in Preview adds to the previewed page. Its redirects are not.
@@ -835,7 +861,7 @@ async function createWindow() {
   let closing = false;
   self.on('close', (e) => {
     closing = true;
-    if (closeApproved || quitState === 'closing' || quitState === 'done' || !controller.session || self.webContents.isCrashed()) return;
+    if (closeApproved || quitState === 'closing' || quitState === 'done' || (!controller.session && !controller.remote.active) || self.webContents.isCrashed()) return;
     e.preventDefault();
     void controller.mayLeave().then((ok) => {
       if (!ok || self.isDestroyed()) {
@@ -928,6 +954,8 @@ async function createWindow() {
     menuCommands.closed(self);
     leaveGate.editorGone();
     controller.cancelOpen();
+    // Nobody is left to see the host's project: this app's place in another computer's live session is given up (#766).
+    if (win === null) controller.remote.leave();
   });
   // A first load the page crashed during (or that the crash's reload took over) is taken up by the crash's own question,
   // not reported as an error here. Any other failure to load the editor is reported in the app's own words: as a
@@ -956,12 +984,20 @@ function chooseCommand(cmd: MenuCommand) {
   menuCommands.run(cmd);
 }
 
-/** Export and Close Project act on the open project, so the menu offers them only while one is open. */
+/**
+ * Export and Close Project act on the open project, so the menu offers them only while one is open; Join Live Session
+ * only while this app is not already in one.
+ */
 function updateProjectMenu() {
   const open = controller.openingKey !== null;
   for (const id of ['export', 'close-project']) {
     const item = Menu.getApplicationMenu()?.getMenuItemById(id);
     if (item) item.enabled = open;
+  }
+  // While this app is in another computer's live session, or asking to join one, no project of its own opens.
+  for (const id of ['join-live', 'new-project', 'open-project', 'open-project-folder']) {
+    const item = Menu.getApplicationMenu()?.getMenuItemById(id);
+    if (item) item.enabled = !controller.remote.active;
   }
 }
 
@@ -1017,7 +1053,7 @@ function buildMenu() {
     if (!headless && (!win || focused !== win)) return;
     controller.send('menu:history', { action, fromKey: menuKeyCopy(event, process.platform === 'darwin') });
   };
-  const options = { projectOpen: controller.openingKey !== null, developer: offersDeveloperItems({ packaged: app.isPackaged, automated, developerMode: developerModeOn }) };
+  const options = { projectOpen: controller.openingKey !== null, remoteActive: controller.remote.active, developer: offersDeveloperItems({ packaged: app.isPackaged, automated, developerMode: developerModeOn }) };
   Menu.setApplicationMenu(Menu.buildFromTemplate(appMenuTemplate(process.platform, options, { command: chooseCommand, history, openLink: openMenuLink, about: showAbout, copyBuildDetails, showLog, openNotices })));
 }
 
@@ -1108,6 +1144,7 @@ app.on('window-all-closed', () => {
 
 // The media worker would be ended with the app anyway; stopping it first settles any import still waiting on it.
 app.on('will-quit', () => {
+  controller.remote.dispose();
   stopMediaWorker();
   stopPhotoDecoders();
   stopPostReads();
@@ -1121,7 +1158,7 @@ let quitState: 'idle' | 'asking' | 'closing' | 'done' = 'idle';
 /** Set once a quit goes ahead without asking the editor. */
 let quitAccepted = false;
 app.on('before-quit', (e) => {
-  if (quitState === 'done' || (quitState === 'idle' && !controller.session && !controller.isClosing && !controller.isCreating && !controller.isDuplicating)) {
+  if (quitState === 'done' || (quitState === 'idle' && !controller.session && !controller.remote.active && !controller.isClosing && !controller.isCreating && !controller.isDuplicating)) {
     // Nothing to ask: the app quits now, and a crash meanwhile is not asked about.
     quitAccepted = true;
     return;
@@ -1144,6 +1181,8 @@ app.on('before-quit', (e) => {
       await controller.stopCreating();
       // A copy of the project under way finishes, or removes what it made, before the project closes.
       await controller.settleDuplicates();
+      // A place in another computer's live session is given up first, so the host sees it go at once.
+      controller.remote.dispose();
       await controller.close();
     } finally {
       quitState = 'done';

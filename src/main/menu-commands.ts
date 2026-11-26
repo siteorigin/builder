@@ -13,9 +13,10 @@
  * No electron import: the caller passes how to reach the window, so the router is tested on its own.
  */
 
-/** `open-project-folder` is Windows and Linux only, whose pickers take files or folders but not both. `settings` opens
- *  the Settings dialog over Welcome or the editor. */
-export type MenuCommand = 'new-project' | 'open-project' | 'open-project-folder' | 'export' | 'close-project' | 'settings';
+/** `open-project-folder` is Windows and Linux only, whose pickers take files or folders but not both. `join-live` asks
+ *  for an invite link to join another computer's live session as a remote shell (#766). `settings` opens the Settings
+ *  dialog over Welcome or the editor. */
+export type MenuCommand = 'new-project' | 'open-project' | 'open-project-folder' | 'join-live' | 'export' | 'close-project' | 'settings';
 
 export interface MenuCommandOptions<W> {
   /** The editor window, or null when there is none. */
