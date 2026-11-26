@@ -55,6 +55,8 @@ export interface VariantRequest {
 export interface IconSpec {
   size: number;
   background?: string;
+  /** Instead of one PNG, an ICO file holding a PNG at each of these sizes, none over 256; `size` is the largest. */
+  ico?: readonly number[];
 }
 
 /** The website's icons the worker made, in the order asked for, or why there are none: `unreadable` only when the decoder refused the picture. */

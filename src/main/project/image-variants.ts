@@ -191,7 +191,8 @@ export async function isOpaque(buf: Buffer): Promise<boolean> {
 }
 
 /**
- * The website's square PNG icons from a picture (the favicon, or the monogram's SVG), one for each of `icons`: turned
+ * The website's square icons from a picture (the favicon, or the monogram's SVG), one for each of `icons`, a PNG or
+ * an ICO of PNGs: turned
  * the way its orientation says, its first frame if it moves, fitted whole inside the square (enlarged when it is
  * smaller) and centred. An icon with a background has every see-through pixel filled with it, as the one iOS shows
  * must be; the others keep their transparency. An SVG is drawn at the size of the largest icon, never enlarged from a
@@ -209,16 +210,45 @@ export async function renderSiteIcons(buf: Buffer, mime: string, icons: IconSpec
     // 72 dpi draws the SVG at its own size; librsvg takes no more than this.
     if (edge > 0) density = Math.min(2400, Math.max(72, Math.ceil((72 * largest) / edge)));
   }
+  const clear = { r: 0, g: 0, b: 0, alpha: 0 };
+  const square = (size: number, background?: string) => {
+    const img = sharp(buf, { limitInputPixels: MAX_VARIANT_PIXELS, failOn: 'error', pages: 1, page: 0, ...(density ? { density } : {}) })
+      .autoOrient()
+      .resize(size, size, { fit: 'contain', position: 'centre', background: background ?? clear });
+    return (background ? img.flatten({ background }) : img).toColourspace('srgb');
+  };
   const out: Buffer[] = [];
   for (const icon of icons) {
-    const clear = { r: 0, g: 0, b: 0, alpha: 0 };
-    let img = sharp(buf, { limitInputPixels: MAX_VARIANT_PIXELS, failOn: 'error', pages: 1, page: 0, ...(density ? { density } : {}) })
-      .autoOrient()
-      .resize(icon.size, icon.size, { fit: 'contain', position: 'centre', background: icon.background ?? clear });
-    if (icon.background) img = img.flatten({ background: icon.background });
-    out.push(await img.toColourspace('srgb').png().toBuffer());
+    if (!icon.ico) {
+      out.push(await square(icon.size, icon.background).png().toBuffer());
+      continue;
+    }
+    const images: Array<{ size: number; png: Buffer }> = [];
+    // The PNGs in an ICO are 32-bit RGBA (Windows reads no others), whatever channels the picture has.
+    for (const size of icon.ico) images.push({ size, png: await square(size, icon.background).ensureAlpha().png().toBuffer() });
+    out.push(packIco(images));
   }
   return out;
+}
+
+/** An ICO file of square PNG images of at most 256 pixels: a header, one directory entry for each, then the images. */
+function packIco(images: ReadonlyArray<{ size: number; png: Buffer }>): Buffer {
+  const directory = Buffer.alloc(6 + 16 * images.length);
+  directory.writeUInt16LE(1, 2); // an icon, not a cursor
+  directory.writeUInt16LE(images.length, 4);
+  let offset = directory.length;
+  images.forEach(({ size, png }, n) => {
+    const at = 6 + 16 * n;
+    // A side of 256 is written as 0.
+    directory.writeUInt8(size % 256, at);
+    directory.writeUInt8(size % 256, at + 1);
+    directory.writeUInt16LE(1, at + 4); // colour planes
+    directory.writeUInt16LE(32, at + 6); // bits per pixel
+    directory.writeUInt32LE(png.length, at + 8);
+    directory.writeUInt32LE(offset, at + 12);
+    offset += png.length;
+  });
+  return Buffer.concat([directory, ...images.map((i) => i.png)]);
 }
 
 /** What the media worker does with one request; the worker process only carries messages to and from it. */

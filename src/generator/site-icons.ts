@@ -1,7 +1,7 @@
 /**
  * What the website gives home screens, bookmarks and installed shortcuts beside its favicon (issue 584): the web app
- * manifest, the browser's theme colour, and a description of the PNG icons made from the favicon (or the monogram
- * while none is chosen). The icons are pictures, which this pure generator cannot draw: it says what they are made
+ * manifest, the browser's theme colour, and a description of the PNG icons and favicon.ico made from the favicon (or
+ * the monogram while none is chosen). The icons are pictures, which this pure generator cannot draw: it says what they are made
  * from, and the editor renders them (src/main/project/site-icons.ts) and writes them beside the generated text.
  */
 import type { ProjectState, TokenDef } from '@shared/types';
@@ -9,7 +9,7 @@ import { parseColor, toHex6, type Rgba } from '@shared/color';
 import { colorSchemeMode, resolvedCss } from '@shared/color-scheme';
 import { compositeOver } from '@shared/contrast';
 import { siteDirection, siteLanguage } from '@shared/languages';
-import { APP_ICONS, APPLE_TOUCH_ICON, WEB_MANIFEST } from '@shared/site-icons';
+import { APP_ICONS, APPLE_TOUCH_ICON, FAVICON_ICO, FAVICON_ICO_SIZES, WEB_MANIFEST } from '@shared/site-icons';
 import { effectiveTokens, generateFaviconSvg, js } from './index';
 
 const WHITE: Rgba = { r: 255, g: 255, b: 255, a: 1 };
@@ -87,7 +87,7 @@ export function generateWebManifest(state: ProjectState): string {
 /** What the PNG icons are made from: the favicon picture chosen, by its file in the project, or the monogram's SVG. */
 export type SiteIconSource = { kind: 'file'; file: string; mime: string } | { kind: 'svg'; svg: string };
 
-/** One PNG icon: its project path, its square size and, for the one iOS shows, the opaque colour behind it. */
+/** One drawn icon: its project path, its square size and, for the one iOS shows, the opaque colour behind it. */
 export interface SiteIcon {
   path: string;
   size: number;
@@ -96,9 +96,11 @@ export interface SiteIcon {
    * which keep their transparency.
    */
   background?: string;
+  /** For favicon.ico: the file is an ICO holding a square PNG at each of these sizes, of which `size` is the largest. */
+  ico?: readonly number[];
 }
 
-/** The PNG icons the website serves, and what all of them are made from. */
+/** The drawn icons the website serves, and what all of them are made from. */
 export interface SiteIconSet {
   source: SiteIconSource;
   /** The monogram the icons fall back to when the favicon picture cannot be read. */
@@ -107,7 +109,7 @@ export interface SiteIconSet {
 }
 
 /**
- * The PNG icons, made from the favicon picture while one is chosen and its record is there, and from the monogram
+ * The PNG icons and favicon.ico, made from the favicon picture while one is chosen and its record is there, and from the monogram
  * otherwise. The monogram is drawn edge to edge here, since home screens round an icon's corners themselves.
  */
 export function siteIconSet(state: ProjectState): SiteIconSet {
@@ -115,5 +117,6 @@ export function siteIconSet(state: ProjectState): SiteIconSet {
   const monogram = generateFaviconSvg(state, { square: true });
   const source: SiteIconSource = favicon?.kind === 'image' ? { kind: 'file', file: favicon.file, mime: favicon.mime } : { kind: 'svg', svg: monogram };
   const { background } = siteColors(effectiveTokens(state));
-  return { source, monogram, icons: APP_ICONS.map((i) => ({ path: `static/${i.file}`, size: i.size, ...(i.file === APPLE_TOUCH_ICON ? { background } : {}) })) };
+  const pngs: SiteIcon[] = APP_ICONS.map((i) => ({ path: `static/${i.file}`, size: i.size, ...(i.file === APPLE_TOUCH_ICON ? { background } : {}) }));
+  return { source, monogram, icons: [...pngs, { path: `static/${FAVICON_ICO}`, size: Math.max(...FAVICON_ICO_SIZES), ico: FAVICON_ICO_SIZES }] };
 }

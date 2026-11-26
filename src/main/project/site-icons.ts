@@ -1,5 +1,5 @@
 /**
- * The website's PNG icons (issue 584), made from what the generator says they are made from (generator/site-icons.ts):
+ * The website's drawn icons, the PNG ones (issue 584) and favicon.ico (issue 819), made from what the generator says they are made from (generator/site-icons.ts):
  * the favicon picture, or the monogram while none is chosen or its file cannot be used. The session publishes them
  * beside the generated text, under the same ownership rules as a theme's font files.
  *
@@ -13,7 +13,7 @@ import { createHash } from 'node:crypto';
 import { constants, promises as fs } from 'node:fs';
 import { basename, join } from 'node:path';
 import type { AssetRecord, ProjectState } from '@shared/types';
-import { APP_ICONS } from '@shared/site-icons';
+import { DRAWN_ICON_FILES } from '@shared/site-icons';
 import { siteIconSet } from '@generator/site-icons';
 import type { IconSpec, IconsResult } from './media-client';
 
@@ -31,7 +31,7 @@ export function setSiteIconRenderer(next: SiteIconRenderer | null): void {
 }
 
 /** Project paths of the icons, as the session claims them. */
-export const SITE_ICON_PATHS: readonly string[] = APP_ICONS.map((i) => `static/${i.file}`);
+export const SITE_ICON_PATHS: readonly string[] = DRAWN_ICON_FILES.map((f) => `static/${f}`);
 
 /** How long a set that could not be made waits before it is tried again, so a stuck worker does not slow every save. */
 const RETRY_MS = 60_000;
@@ -235,7 +235,7 @@ export class SiteIconMaker {
 
   /** Draws one set, keeping it, or noting that it could not be made. Says whether it was made. */
   private async draw(input: IconInput, draw: SiteIconRenderer): Promise<boolean> {
-    const specs = input.icons.map(({ size, background }) => (background ? { size, background } : { size }));
+    const specs = input.icons.map(({ path: _, ...spec }) => spec);
     let r = await draw(input.data, input.mime, specs, { untrusted: input.untrusted }).catch((): IconsResult => ({ ok: false, unreadable: false }));
     const standIn = !r.ok && r.unreadable && !!input.monogram;
     if (standIn) r = await draw(input.monogram!, 'image/svg+xml', specs).catch((): IconsResult => ({ ok: false, unreadable: false }));

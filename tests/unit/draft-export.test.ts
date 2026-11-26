@@ -6,6 +6,7 @@ import { cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, 
 import { tmpdir } from 'node:os';
 import { dirname, join, relative } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { icoImages } from './ico';
 
 const env = vi.hoisted(() => ({ userData: '', dialogs: 0, pick: null as null | (() => Promise<string>), builds: 0 }));
 vi.mock('electron', () => ({
@@ -415,6 +416,8 @@ describe('issue 584: the web app manifest and home-screen icons through the expo
       expect(await sharp(readFileSync(join(dest, icon.src))).metadata()).toMatchObject({ format: 'png', width: size, height: size });
     }
     expect(await sharp(readFileSync(join(dest, 'apple-touch-icon.png'))).metadata()).toMatchObject({ format: 'png', width: 180, height: 180, hasAlpha: false });
+    // What a client asks for unprompted is there too, though no page links it.
+    expect(icoImages(readFileSync(join(dest, 'favicon.ico'))).map((i) => i.width)).toEqual([16, 32, 48]);
     // The editable project carries the same files, still claimed as generated, so it reopens without conflicts.
     const out = join(temp('out'), 'handoff');
     expect((await c.exportSourceTo(out)).ok).toBe(true);
@@ -445,6 +448,7 @@ describe('issue 584: the web app manifest and home-screen icons through the expo
     const dest = join(temp('out'), 'site');
     expect((await c.buildStaticTo(dest)).ok).toBe(true);
     for (const f of ['apple-touch-icon.png', 'icon-192.png', 'icon-512.png']) expect(await centre(readFileSync(join(dest, f)))).toEqual([255, 0, 0]);
+    for (const image of icoImages(readFileSync(join(dest, 'favicon.ico')))) expect(await centre(image.png)).toEqual([255, 0, 0]);
     // The tab's own favicon is the picture itself, which the website keeps.
     expect(readFileSync(join(dest, 'assets/logo-1a2b3c4d.png')).equals(readFileSync(join(dir, 'static/assets/logo-1a2b3c4d.png')))).toBe(true);
   }, 30_000);
