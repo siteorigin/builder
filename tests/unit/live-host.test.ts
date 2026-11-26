@@ -243,6 +243,61 @@ describe('running the room', () => {
   });
 });
 
+describe('the host’s presence', () => {
+  const at = (pageId: string | null, viewportWidth = 1280, previewPath: string | null = '/') => ({ pageId, viewportWidth, selection: null, previewPath });
+  const presences = (socket: FakeSocket) => socket.sent.filter((f) => f.type === 'presence:update').map((f) => (f as { presence: unknown }).presence);
+
+  it('sends where the host is while the room is held, and only when it changes', async () => {
+    const h = host();
+    const { socket, run } = await opened(h);
+    expect(h.manager.setPresence(run, at('home'))).toEqual({ ok: true });
+    expect(h.manager.setPresence(run, at('home'))).toEqual({ ok: true });
+    expect(h.manager.setPresence(run, at('about', 390, '/about/'))).toEqual({ ok: true });
+    // The width alone, or the address alone, is a change too.
+    expect(h.manager.setPresence(run, at('about', 834, '/about/'))).toEqual({ ok: true });
+    expect(h.manager.setPresence(run, at('about', 834, '/about/?tab=2'))).toEqual({ ok: true });
+    expect(presences(socket)).toEqual([at('home'), at('about', 390, '/about/'), at('about', 834, '/about/'), at('about', 834, '/about/?tab=2')]);
+  });
+
+  it('sends a presence given before the room was open once it is, and again on the room taken back', async () => {
+    const h = host();
+    const starting = h.manager.start({ opening: '/sites/acme#1', duration: '2h' });
+    const socket = await until(() => h.sockets[0], 'the host socket');
+    const run = { workspaceKey: '/sites/acme#1', runId: (h.manager.state as LiveRun).runId };
+    expect(h.manager.setPresence(run, at('home'))).toEqual({ ok: true });
+    socket.open();
+    const create = sentOf(socket, 'room:create')!;
+    const roomId = newRoomId();
+    socket.receive(ready(roomId));
+    expect(presences(socket)).toEqual([]);
+    socket.receive({ type: 'room:roster', participants: [ANN] });
+    await starting;
+    expect(presences(socket)).toEqual([at('home')]);
+    socket.drop(1006);
+    // Kept while the room is being taken back, and sent once it has been: the latest only.
+    expect(h.manager.setPresence(run, at('about', 834, '/about/'))).toEqual({ ok: true });
+    const again = await until(() => h.sockets[1], 'a reconnect');
+    await reclaimed(again, roomId, create.publicKey);
+    expect(presences(again)).toEqual([at('about', 834, '/about/')]);
+  });
+
+  it('refuses a presence the relay would not read, and one for a session that has ended', async () => {
+    const h = host();
+    const { socket, run } = await opened(h);
+    expect(h.manager.setPresence(run, at('home', 10))).toMatchObject({ ok: false });
+    expect(h.manager.setPresence(run, at('home', 1280, '../etc'))).toMatchObject({ ok: false });
+    expect(h.manager.setPresence(run, { ...at('home'), extra: true })).toMatchObject({ ok: false });
+    expect(h.manager.setPresence({ ...run, runId: 'other' }, at('home'))).toMatchObject({ ok: false });
+    // Ending, and ended: nothing more goes out.
+    const stopping = h.manager.stop(run);
+    expect(h.manager.setPresence(run, at('home'))).toMatchObject({ ok: false });
+    socket.drop(LIVE_CLOSE_CODES.ENDED);
+    await stopping;
+    expect(h.manager.setPresence(run, at('home'))).toMatchObject({ ok: false });
+    expect(presences(socket)).toEqual([]);
+  });
+});
+
 describe('taking the room back', () => {
   it('reconnects on the room’s socket, proves itself with the session key, and takes the room as the relay has it', async () => {
     const h = host({ preview: { port: 5173 } });

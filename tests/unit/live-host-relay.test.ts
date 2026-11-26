@@ -234,6 +234,19 @@ describe('the waiting room and guests', () => {
   });
 });
 
+describe('the host’s presence', () => {
+  it('reaches a guest let in later, and every admitted guest as the host moves', async () => {
+    const h = host();
+    const { state, run } = await started(h);
+    expect(h.manager.setPresence(run, { pageId: 'about', viewportWidth: 834, selection: null, previewPath: '/about/' })).toEqual({ ok: true });
+    // Ann joins after the host has settled on a page: she is shown it as she is let in.
+    const ann = await admitted(h, run, state.roomId);
+    expect(await ann.guest.next('presence:changed')).toEqual({ type: 'presence:changed', participant: { kind: 'host' }, presence: { pageId: 'about', viewportWidth: 834, selection: null, previewPath: '/about/' } });
+    expect(h.manager.setPresence(run, { pageId: 'home', viewportWidth: 390, selection: null, previewPath: '/' })).toEqual({ ok: true });
+    expect(await ann.guest.next('presence:changed')).toMatchObject({ participant: { kind: 'host' }, presence: { pageId: 'home', viewportWidth: 390, previewPath: '/' } });
+  });
+});
+
 describe('the preview tunnel', () => {
   it('serves admitted guests the project’s preview byte for byte: HTML, CSS, JS and a binary larger than a chunk', async () => {
     const h = host();

@@ -14,6 +14,7 @@ import type { ProjectSnapshot } from '@shared/api';
 import type { PropSchema } from '@shared/types';
 import { isEmptyPropValue, requiredHint } from '@shared/required';
 import { RenameOffer } from './RenameOffer';
+import { JoinRequests } from './JoinRequests';
 
 // Editable content counts (the code editor's text area is one), so Tab order and wrapping inside a dialog see it.
 const FOCUSABLE = 'button:not(:disabled), [href], input:not(:disabled), select:not(:disabled), textarea:not(:disabled), [contenteditable="true"], [tabindex]:not([tabindex="-1"])';
@@ -701,12 +702,12 @@ export function RequiredMark() {
 /** What a field a component requires says while its value is empty: its own, or the default it shows. */
 export const missingNote = (schema: PropSchema, value: unknown): string | undefined => (schema.required && isEmptyPropValue(schema, value) ? `Required, but empty: ${requiredHint(schema)}.` : undefined);
 
-export function Switch({ checked, onChange, label, id, labelledBy, describedBy }: { checked: boolean; onChange: (v: boolean) => void; label?: string; id?: string; labelledBy?: string; describedBy?: string }) {
-  return <button id={id} className="switch" role="switch" aria-checked={checked} aria-label={labelledBy ? undefined : label} aria-labelledby={labelledBy} aria-describedby={describedBy} onClick={() => onChange(!checked)} />;
+export function Switch({ checked, onChange, label, id, labelledBy, describedBy, disabled }: { checked: boolean; onChange: (v: boolean) => void; label?: string; id?: string; labelledBy?: string; describedBy?: string; disabled?: boolean }) {
+  return <button id={id} className="switch" role="switch" aria-checked={checked} aria-label={labelledBy ? undefined : label} aria-labelledby={labelledBy} aria-describedby={describedBy} disabled={disabled} onClick={() => onChange(!checked)} />;
 }
 
 /** A switch with its visible label and optional hint, all clickable and wired together. */
-export function SwitchRow({ checked, onChange, label, hint, id: explicitId }: { checked: boolean; onChange: (v: boolean) => void; label: ReactNode; hint?: ReactNode; id?: string }) {
+export function SwitchRow({ checked, onChange, label, hint, id: explicitId, disabled }: { checked: boolean; onChange: (v: boolean) => void; label: ReactNode; hint?: ReactNode; id?: string; disabled?: boolean }) {
   const generated = useId();
   // A switch a destination focuses has an ID of its own (see open-destination).
   const id = explicitId ?? generated;
@@ -722,7 +723,7 @@ export function SwitchRow({ checked, onChange, label, hint, id: explicitId }: { 
           </div>
         )}
       </div>
-      <Switch id={id} checked={checked} onChange={onChange} labelledBy={`${id}-l`} describedBy={hint ? `${id}-h` : undefined} />
+      <Switch id={id} checked={checked} onChange={onChange} labelledBy={`${id}-l`} describedBy={hint ? `${id}-h` : undefined} disabled={disabled} />
     </div>
   );
 }
@@ -1530,6 +1531,7 @@ export function Toasts() {
       }}
     >
       <RenameOffer />
+      <JoinRequests />
       {held.length > 0 && (
         <div className="toast-group" role="region" aria-label="Edits not saved yet">
           {held.map((h) => (
