@@ -1,0 +1,445 @@
+/* The guest's viewer for a live session (viewer.js). */
+
+:root {
+  --bg: #f4f4f1;
+  --surface: #ffffff;
+  --text: #1d1d1b;
+  --muted: #62625d;
+  --line: #deded8;
+  --accent: #2a62d9;
+  --accent-text: #ffffff;
+  --live: #1f8a4c;
+  --warn: #b26b00;
+  --danger: #b3261e;
+  --stage: #e7e7e2;
+  --radius: 10px;
+  color-scheme: light dark;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    --bg: #161615;
+    --surface: #222220;
+    --text: #ececea;
+    --muted: #a3a39d;
+    --line: #3a3a37;
+    --accent: #7aa2ff;
+    --accent-text: #0e1a33;
+    --live: #4cc77f;
+    --warn: #f0b04a;
+    --danger: #ff8a80;
+    --stage: #0f0f0e;
+  }
+}
+
+*,
+*::before,
+*::after {
+  box-sizing: border-box;
+}
+
+[hidden] {
+  display: none !important;
+}
+
+html,
+body {
+  height: 100%;
+  margin: 0;
+}
+
+body {
+  background: var(--bg);
+  color: var(--text);
+  font: 15px/1.5 system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif;
+  -webkit-text-size-adjust: 100%;
+}
+
+button,
+input {
+  font: inherit;
+  color: inherit;
+}
+
+button {
+  cursor: pointer;
+}
+
+:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
+.app {
+  display: flex;
+  flex-direction: column;
+  height: 100dvh;
+  min-height: 100%;
+}
+
+.mark {
+  display: inline-block;
+  width: 18px;
+  height: 18px;
+  border-radius: 5px;
+  background: linear-gradient(135deg, var(--accent), var(--live));
+  flex: none;
+}
+
+.mark.large {
+  width: 40px;
+  height: 40px;
+  border-radius: 10px;
+  margin-bottom: 8px;
+}
+
+/* The waiting room and every status screen */
+
+.screen {
+  flex: 1;
+  display: grid;
+  place-items: center;
+  padding: 24px 16px calc(24px + env(safe-area-inset-bottom));
+}
+
+.card {
+  width: 100%;
+  max-width: 26rem;
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: 16px;
+  padding: 28px 24px;
+  box-shadow: 0 1px 2px rgb(0 0 0 / 0.04), 0 8px 24px rgb(0 0 0 / 0.06);
+}
+
+.card h1 {
+  font-size: 1.35rem;
+  line-height: 1.25;
+  margin: 0 0 8px;
+}
+
+.card p {
+  margin: 0 0 16px;
+  color: var(--muted);
+}
+
+form {
+  display: grid;
+  gap: 8px;
+}
+
+label {
+  font-weight: 600;
+}
+
+#name {
+  width: 100%;
+  padding: 10px 12px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--bg);
+  font-size: 16px;
+}
+
+.card .error {
+  color: var(--danger);
+  margin: 0;
+}
+
+.card .hint {
+  font-size: 0.85rem;
+  margin: 4px 0 0;
+}
+
+#join-button,
+#screen-action,
+#handoff-copy {
+  border: 0;
+  border-radius: 8px;
+  padding: 10px 16px;
+  background: var(--accent);
+  color: var(--accent-text);
+  font-weight: 600;
+}
+
+#screen-action {
+  margin-top: 4px;
+}
+
+.waiting {
+  display: flex;
+  justify-content: center;
+  padding: 8px 0 4px;
+}
+
+.spinner {
+  width: 28px;
+  height: 28px;
+  border-radius: 50%;
+  border: 3px solid var(--line);
+  border-top-color: var(--accent);
+  animation: spin 0.9s linear infinite;
+}
+
+@keyframes spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .spinner {
+    animation-duration: 3s;
+  }
+}
+
+/* The viewer's bar */
+
+.bar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px 16px;
+  padding: 8px 16px;
+  background: var(--surface);
+  border-bottom: 1px solid var(--line);
+}
+
+.bar-title {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+  flex: 1 1 12rem;
+}
+
+.site {
+  font-weight: 600;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.pill {
+  flex: none;
+  font-size: 0.8rem;
+  font-weight: 600;
+  padding: 2px 8px;
+  border-radius: 999px;
+  border: 1px solid currentColor;
+}
+
+.pill[data-state='live'] {
+  color: var(--live);
+}
+
+.pill[data-state='live']::before {
+  content: '';
+  display: inline-block;
+  width: 7px;
+  height: 7px;
+  margin-right: 5px;
+  border-radius: 50%;
+  background: currentColor;
+  vertical-align: 1px;
+}
+
+.pill[data-state='ended'] {
+  color: var(--muted);
+}
+
+.pill[data-state='reconnecting'],
+.pill[data-state='connecting'] {
+  color: var(--warn);
+}
+
+.bar-meta {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+}
+
+.badge {
+  font-size: 0.8rem;
+  padding: 2px 8px;
+  border-radius: 6px;
+  background: var(--bg);
+  border: 1px solid var(--line);
+  white-space: nowrap;
+}
+
+.badge[data-role='collaborator'] {
+  border-color: var(--accent);
+  color: var(--accent);
+}
+
+.bar-controls {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px 12px;
+}
+
+.segmented {
+  display: inline-flex;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  overflow: hidden;
+}
+
+.segmented button {
+  border: 0;
+  background: transparent;
+  padding: 5px 10px;
+  font-size: 0.85rem;
+}
+
+.segmented button + button {
+  border-left: 1px solid var(--line);
+}
+
+.segmented button[aria-pressed='true'] {
+  background: var(--accent);
+  color: var(--accent-text);
+}
+
+.toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-weight: 500;
+  font-size: 0.9rem;
+}
+
+.toggle input {
+  width: 16px;
+  height: 16px;
+  accent-color: var(--accent);
+}
+
+.link-button,
+.quiet {
+  border: 1px solid var(--line);
+  background: transparent;
+  border-radius: 8px;
+  padding: 5px 10px;
+  font-size: 0.85rem;
+}
+
+/* The desktop app handoff */
+
+.handoff {
+  padding: 12px 16px;
+  background: var(--surface);
+  border-bottom: 1px solid var(--line);
+}
+
+.handoff p {
+  margin: 0 0 8px;
+}
+
+.handoff-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+#handoff-link {
+  flex: 1 1 16rem;
+  min-width: 0;
+  padding: 8px 10px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--bg);
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 0.85rem;
+}
+
+/* The preview */
+
+.stage {
+  position: relative;
+  flex: 1;
+  min-height: 0;
+  background: var(--stage);
+  overflow: hidden;
+  display: flex;
+  justify-content: center;
+}
+
+.frame {
+  height: 100%;
+  max-width: 100%;
+  overflow: hidden;
+  background: #fff;
+  box-shadow: 0 0 0 1px var(--line);
+  transition: width 0.2s ease;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .frame {
+    transition: none;
+  }
+}
+
+.frame iframe {
+  display: block;
+  border: 0;
+  transform-origin: 0 0;
+  background: #fff;
+}
+
+.veil {
+  position: absolute;
+  inset: 0;
+  display: grid;
+  place-items: center;
+  padding: 16px;
+  /* Opaque: while the guest is not in the room, nothing of the site shows through. */
+  background: var(--bg);
+  text-align: center;
+  align-content: center;
+  gap: 12px;
+}
+
+#veil-action {
+  border: 0;
+  border-radius: 8px;
+  padding: 10px 16px;
+  background: var(--accent);
+  color: var(--accent-text);
+  font-weight: 600;
+}
+
+.veil p {
+  margin: 0;
+  max-width: 28rem;
+  padding: 12px 16px;
+  border-radius: var(--radius);
+  background: var(--surface);
+  border: 1px solid var(--line);
+}
+
+/* While the page is shown and only the host is away, the notice sits over the top of it instead of hiding it. */
+.veil[data-soft='true'] {
+  inset: 0 0 auto 0;
+  background: transparent;
+  place-items: start center;
+  pointer-events: none;
+}
+
+.noscript {
+  padding: 16px;
+  text-align: center;
+}
+
+@media (max-width: 600px) {
+  .bar {
+    padding: 8px 12px;
+  }
+
+  .bar-controls {
+    width: 100%;
+    justify-content: space-between;
+  }
+}

@@ -1,0 +1,2 @@
+# Types for the tests, not files the viewer serves.
+*.d.ts

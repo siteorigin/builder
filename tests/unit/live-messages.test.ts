@@ -12,7 +12,7 @@ const requestId = 'req_1';
 const publicKey = toBase64Url(new Uint8Array(32).fill(7));
 const nonce = toBase64Url(new Uint8Array(32).fill(9));
 const signature = toBase64Url(new Uint8Array(64).fill(3));
-const presence: Presence = { pageId: 'pg_home', viewportWidth: 1280, selection: { owner: { kind: 'page', id: 'pg_home' }, instancePath: ['n_card'], nodeId: 'n_title', itemPath: ['it_1'], slot: 'body' } };
+const presence: Presence = { pageId: 'pg_home', viewportWidth: 1280, selection: { owner: { kind: 'page', id: 'pg_home' }, instancePath: ['n_card'], nodeId: 'n_title', itemPath: ['it_1'], slot: 'body' }, previewPath: '/' };
 const rpcError = { code: 'PERMISSION_DENIED', message: 'A viewer cannot edit.', recoverable: false } as const;
 
 /** One valid frame of every type, in every direction it travels. */
@@ -41,7 +41,7 @@ const VALID: { [D in Direction]: FrameOf<D>[] } = {
     { type: 'rpc:event', event: 'project:changed', payload: { revision: 4 } },
     { type: 'rpc:event', guestId, event: 'runtime:status', payload: { state: 'ready' } },
     { type: 'presence:update', presence },
-    { type: 'presence:update', presence: { pageId: null, viewportWidth: 390, selection: null } }
+    { type: 'presence:update', presence: { pageId: null, viewportWidth: 390, selection: null, previewPath: null } }
   ],
   'relay-to-host': [
     { type: 'room:ready', version: 1, roomId, startedAt: T, expiresAt: T + 2 * HOUR, locked: false, now: T },
@@ -78,6 +78,8 @@ const VALID: { [D in Direction]: FrameOf<D>[] } = {
     { type: 'guest:status', status: 'locked' },
     { type: 'guest:status', status: 'ended' },
     { type: 'room:state', startedAt: T, expiresAt: T + 2 * HOUR, locked: false, now: T },
+    { type: 'host:availability', connected: false },
+    { type: 'host:availability', connected: true },
     { type: 'room:roster', participants: [{ guestId, displayName: 'Sam Lee', status: 'admitted', role: 'viewer', guestExpiresAt: null }] },
     { type: 'preview:reload' },
     { type: 'rpc:response', requestId, method: 'project.snapshot', ok: true, result: null },
@@ -148,6 +150,13 @@ describe('refused frames', () => {
     expect(parseFrame('guest-to-relay', undefined)).toMatchObject({ ok: false, error: { code: 'NOT_TEXT' } });
     expect(refused('guest-to-relay', '{"type":')).toMatchObject({ code: 'INVALID_JSON' });
     for (const v of ['[]', 'null', '42', '"guest:join"']) expect(refused('guest-to-relay', v)).toMatchObject({ code: 'INVALID' });
+  });
+
+  it('give a presence path only as a path within the preview, in its URL-encoded form', () => {
+    for (const previewPath of ['', 'about/', '//other.test/', '/caf\u00e9/', '/a b/', '/a#b', '/a{b', '/a}b', '/a"b', '/a<b>', '/a`b', '/__open-in-editor', 42])
+      expect(refused('host-to-relay', { type: 'presence:update', presence: { pageId: null, viewportWidth: 390, selection: null, previewPath } }), String(previewPath)).toMatchObject({ code: 'INVALID', path: 'presence.previewPath' });
+    expect(parseFrame('host-to-relay', json({ type: 'presence:update', presence: { pageId: null, viewportWidth: 390, selection: null, previewPath: '/caf%C3%A9/?tab=1' } })).ok).toBe(true);
+    expect(parseFrame('host-to-relay', json({ type: 'presence:update', presence: { pageId: null, viewportWidth: 390, selection: null, previewPath: "/search/o'neil/?filters[tag]=news|all" } })).ok).toBe(true);
   });
 
   it('name a type this direction carries', () => {

@@ -6,7 +6,7 @@ import { holdUntil, nextDeadline, restoreRoom, writeAttachment, type GuestRecord
 const T = 1_000_000;
 
 function room(patch: Partial<RoomSnapshot> = {}, guests: GuestRecord[] = []): RoomSnapshot {
-  return { revision: 1, roomId: 'abcdefghijkmnpqrstuvwxyz', publicKey: 'k', projectName: 'Site', startedAt: T, expiresAt: T + 60_000, locked: false, hostConnectionId: 'host', hostGraceUntil: null, guests, ...patch };
+  return { revision: 1, roomId: 'abcdefghijkmnpqrstuvwxyz', publicKey: 'k', projectName: 'Site', startedAt: T, expiresAt: T + 60_000, locked: false, hostConnectionId: 'host', hostGraceUntil: null, hostPage: null, guests, ...patch };
 }
 const away = { hostConnectionId: null, hostGraceUntil: T + 30_000 };
 const droppedGuest: GuestRecord = { guestId: 'g1', displayName: 'Ann', status: 'pending', connectionId: null, reconnectUntil: T + 5_000, resumeToken: 'r'.repeat(43) };

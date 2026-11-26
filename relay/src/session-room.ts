@@ -213,6 +213,7 @@ export class SessionRoom extends DurableObject<Env> {
       locked: false,
       hostConnectionId: attachment.connectionId,
       hostGraceUntil: null,
+      hostPage: null,
       guests: []
     };
     this.setPhase(ws, attachment, { phase: 'host', deadline: null });
@@ -287,6 +288,8 @@ export class SessionRoom extends DurableObject<Env> {
     }
     this.changed();
     this.sendRoomReady(ws, now);
+    // A host taking over from a live connection was never away; one coming back from its grace was.
+    if (previous === null) this.sendHostAvailability();
     this.scheduleAlarm();
   }
 
@@ -312,7 +315,9 @@ export class SessionRoom extends DurableObject<Env> {
       else {
         this.sendAdmitted(guest, now);
         this.send(ws, 'relay-to-guest', { type: 'room:roster', participants: guestRoster(room) });
+        this.sendHostPage(guest);
       }
+      this.sendHostAvailability(ws);
       this.scheduleAlarm();
       return;
     }
@@ -329,6 +334,7 @@ export class SessionRoom extends DurableObject<Env> {
     this.setPhase(ws, attachment, { phase: 'guest', guestId: guest.guestId, deadline: null });
     this.changed();
     this.send(ws, 'relay-to-guest', { type: 'guest:status', status: 'pending', guestId: guest.guestId, resumeToken: guest.resumeToken });
+    this.sendHostAvailability(ws);
     this.sendRosters();
     this.scheduleAlarm();
   }
@@ -395,9 +401,16 @@ export class SessionRoom extends DurableObject<Env> {
         for (const target of targets) this.send(target, 'relay-to-guest', event);
         return;
       }
-      case 'presence:update':
+      case 'presence:update': {
+        const { pageId, viewportWidth, previewPath } = frame.presence;
+        const page = room.hostPage;
+        if (!page || page.pageId !== pageId || page.viewportWidth !== viewportWidth || page.previewPath !== previewPath) {
+          room.hostPage = { pageId, viewportWidth, previewPath };
+          this.changed();
+        }
         for (const guestWs of this.admittedSockets()) this.send(guestWs, 'relay-to-guest', { type: 'presence:changed', participant: { kind: 'host' }, presence: frame.presence });
         return;
+      }
     }
   }
 
@@ -415,6 +428,7 @@ export class SessionRoom extends DurableObject<Env> {
         this.changed();
         this.sendAdmitted(admitted, now);
         this.sendRosters();
+        this.sendHostPage(admitted);
         this.scheduleAlarm();
         return;
       }
@@ -656,6 +670,7 @@ export class SessionRoom extends DurableObject<Env> {
       room.hostGraceUntil = now + this.config.hostGraceMs;
       this.tunnel.abortHost(attachment.connectionId);
       this.changed();
+      this.sendHostAvailability();
     } else if (attachment.phase === 'guest') {
       const guest = room.guests.find((g) => g.guestId === attachment.guestId);
       if (!guest || guest.connectionId !== attachment.connectionId) return;
@@ -832,6 +847,32 @@ export class SessionRoom extends DurableObject<Env> {
     if (host) this.send(host, 'relay-to-host', { type: 'room:roster', participants: hostRoster(room) });
     const participants = guestRoster(room);
     for (const ws of this.admittedSockets()) this.send(ws, 'relay-to-guest', { type: 'room:roster', participants });
+  }
+
+  /**
+   * Tell guests whether the host is connected: one guest's socket when it has just joined or resumed, or every
+   * guest's, waiting or admitted, when the host's socket has just dropped or a proven host has come back.
+   */
+  private sendHostAvailability(to?: WebSocket): void {
+    const room = this.room;
+    if (!room) return;
+    const frame = { type: 'host:availability', connected: room.hostConnectionId !== null } as const;
+    const targets = to ? [to] : room.guests.flatMap((guest) => {
+      const ws = guest.connectionId ? this.socket(guest.connectionId) : null;
+      return ws ? [ws] : [];
+    });
+    for (const ws of targets) this.send(ws, 'relay-to-guest', frame);
+  }
+
+  /**
+   * Tell a guest just let in, or back, where the host is, so it can follow the host before the host next moves. The
+   * selection is not kept, so it is sent as none; the host's next presence brings it.
+   */
+  private sendHostPage(guest: AdmittedGuest): void {
+    const page = this.room?.hostPage;
+    const ws = guest.connectionId ? this.socket(guest.connectionId) : null;
+    if (!page || !ws) return;
+    this.send(ws, 'relay-to-guest', { type: 'presence:changed', participant: { kind: 'host' }, presence: { ...page, selection: null } });
   }
 
   /** Tell an admitted guest its grant as it stands, with its ticket for the preview while one is unused. */

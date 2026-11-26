@@ -121,6 +121,12 @@ const roomSetLocked = msg('room:set-locked', { locked: z.boolean() });
 /** The host ends the session, also when it closes or switches the project. */
 const roomEnd = msg('room:end', {});
 const roomState = msg('room:state', { startedAt: time, expiresAt: time, locked: z.boolean(), now: time });
+/**
+ * Whether the room's host is connected, as guests are told it: on joining or resuming, and whenever the host's socket
+ * drops (the room then waits out the host's reconnect grace) or a proven host takes the room back. Guests waiting to
+ * be let in are told too, so a waiting room can say the host is reconnecting; it says nothing else about the room.
+ */
+const hostAvailability = msg('host:availability', { connected: z.boolean() });
 
 /**
  * A short-lived, single-use ticket an admitted guest redeems at the room's admission path for its preview cookie, so
@@ -260,8 +266,26 @@ const elementRef = z
     slot: shortId.optional()
   })
   .strict();
-/** What a participant is looking at, replacing whatever it showed before. Null clears a page or a selection. */
-const presence = z.object({ pageId: shortId.nullable(), viewportWidth: z.number().int().min(MIN_VIEWPORT_WIDTH).max(MAX_VIEWPORT_WIDTH), selection: elementRef.nullable() }).strict();
+/**
+ * What a participant is looking at, replacing whatever it showed before. Null clears a page or a selection.
+ * `previewPath` is where that page is in the preview (the path and query on the room's preview origin, as a URL
+ * serializes them: ASCII, with anything else percent-encoded), so a guest following the host can show the same page
+ * and tell when it already is; null when the participant is on nothing the preview serves. A guest in the browser
+ * cannot read its own preview's address, and sends null.
+ */
+const presence = z
+  .object({
+    pageId: shortId.nullable(),
+    viewportWidth: z.number().int().min(MIN_VIEWPORT_WIDTH).max(MAX_VIEWPORT_WIDTH),
+    selection: elementRef.nullable(),
+    previewPath: z
+      .string()
+      // Printable ASCII, less what a URL serializer would percent-encode in a path or query, so it compares equal to
+      // the address the guest's browser reports for the same page.
+      .refine((path) => /^[\x21-\x7e]+$/.test(path) && !/["<>`{}]/.test(path) && isPreviewTarget(path), { message: 'Not a path within the preview, in its URL-encoded form.' })
+      .nullable()
+  })
+  .strict();
 const presenceUpdate = msg('presence:update', { presence });
 const presenceChanged = msg('presence:changed', { participant: z.discriminatedUnion('kind', [z.object({ kind: z.literal('host') }).strict(), z.object({ kind: z.literal('guest'), guestId }).strict()]), presence });
 
@@ -307,7 +331,7 @@ const RELAY_TO_HOST = z.discriminatedUnion('type', [
 
 const GUEST_TO_RELAY = z.discriminatedUnion('type', [guestJoin, msg('rpc:request', { requestId, method, args }), presenceUpdate]);
 
-const RELAY_TO_GUEST = z.discriminatedUnion('type', [guestStatus, roomState, guestRoster, previewReload, rpcResponse({}, method), rpcEvent({}), presenceChanged, protocolError]);
+const RELAY_TO_GUEST = z.discriminatedUnion('type', [guestStatus, roomState, hostAvailability, guestRoster, previewReload, rpcResponse({}, method), rpcEvent({}), presenceChanged, protocolError]);
 
 export const FRAME_SCHEMAS = { 'host-to-relay': HOST_TO_RELAY, 'relay-to-host': RELAY_TO_HOST, 'guest-to-relay': GUEST_TO_RELAY, 'relay-to-guest': RELAY_TO_GUEST } as const;
 export type Direction = keyof typeof FRAME_SCHEMAS;
