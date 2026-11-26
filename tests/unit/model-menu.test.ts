@@ -5,12 +5,9 @@ import { PROVIDER_MODELS } from '@agent/models';
 const offered = [...PROVIDER_MODELS.openai, ...PROVIDER_MODELS.anthropic];
 
 describe('the model menu', () => {
-  it('does not offer the model kept for internal testing', () => {
-    expect(offered.map((m) => m.id)).not.toContain('gpt-6.1-terra');
-  });
-
-  it('still offers the small model authors can choose', () => {
-    expect(offered.map((m) => m.id)).toContain('gpt-6-luna');
+  it('offers the models an author can choose, and not the one kept for internal testing', () => {
+    expect(PROVIDER_MODELS.openai.map((m) => m.id)).toEqual(['gpt-6.2-sol', 'gpt-6.2-astra', 'gpt-6-luna']);
+    expect(PROVIDER_MODELS.anthropic.map((m) => m.id)).toEqual(['claude-sonnet-5-5', 'claude-haiku-5-5', 'claude-opus-5-5']);
   });
 
   it('tells an author when to pick each model, in their own terms', () => {
@@ -20,9 +17,7 @@ describe('the model menu', () => {
     }
   });
 
-  it('keeps the recommended model first, where the default comes from', () => {
-    expect(PROVIDER_MODELS.openai[0].id).toBe('gpt-6.2-sol');
-    expect(PROVIDER_MODELS.anthropic[0].id).toBe('claude-sonnet-5-5');
+  it('marks the first model of each provider, the default, as recommended', () => {
     for (const provider of ['openai', 'anthropic'] as const) expect(PROVIDER_MODELS[provider][0].note).toMatch(/^Recommended/);
   });
 });
