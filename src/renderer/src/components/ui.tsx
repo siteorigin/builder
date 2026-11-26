@@ -624,7 +624,13 @@ export function Field({ label, children, hint, error, extra, controlId: explicit
   // A composite child (a field plus its buttons) passes controlId and wires `${controlId}-note` itself.
   const controlId = explicitId ?? (only ? ((only.props.id as string | undefined) ?? id) : undefined);
   const note = error || hint;
-  const control = only && !explicitId ? cloneElement(only, { id: controlId, 'aria-describedby': note ? noteId : undefined, 'aria-invalid': error ? true : undefined }) : children;
+  // A lone control given its ID by the caller still takes the hint and the invalid state, unless it wires its own.
+  const control =
+    only && !explicitId
+      ? cloneElement(only, { id: controlId, 'aria-describedby': note ? noteId : undefined, 'aria-invalid': error ? true : undefined })
+      : only && note && only.props['aria-describedby'] === undefined
+        ? cloneElement(only, { 'aria-describedby': noteId, 'aria-invalid': error ? true : undefined })
+        : children;
   // A composite child (a segmented control, a row of fields) is named as a group by the label instead.
   const grouped = !controlId && !!label;
   return (
@@ -778,6 +784,9 @@ interface DraftInputProps {
   /** The most characters the project keeps for this field. The field counts against it as the author types,
    *  and text over it, typed or pasted, is kept whole and refused, with the reason beside the field. */
   limit?: number;
+  /** With `limit`, for a short name: the count shows only while the field is focused, or once the text nears or
+   *  passes the limit, so a list of names is not a column of counts. Long text keeps its count in view. */
+  quietCount?: boolean;
   /** Where this field's text belongs in the project (a page's description, an image's alt text), so text
    *  refused for being too long, or by `check`, is kept for it while it is off screen. Without it, text too long is
    *  offered to copy when the field goes away. */
@@ -859,6 +868,7 @@ function DraftField({
   id,
   type,
   limit,
+  quietCount,
   keep,
   keepWhile,
   'aria-describedby': describedBy,
@@ -1226,12 +1236,25 @@ function DraftField({
   };
   const control = multiline || wrap ? <textarea className={className === 'input' ? 'textarea' : className} rows={rows ?? (wrap ? 1 : 3)} {...common} /> : <input className={className} type={type} {...common} />;
   if (!note) return control;
+  const count = (
+    <div className={`field-count${note.over ? ' field-error' : quietCount && !tooLong && draft.length < limit! * 0.8 ? ' quiet' : ''}`} id={noteId}>
+      {note.text}
+    </div>
+  );
+  // A quiet count sits inside the field's trailing edge while it is focused, so focusing a name never moves the
+  // rows below it; near or over the limit it takes its line under the field. Always wrapped, so the field is not
+  // remounted (and focus lost) when the count changes place.
+  if (quietCount)
+    return (
+      <span className="field-quiet">
+        {control}
+        {count}
+      </span>
+    );
   return (
     <>
       {control}
-      <div className={`field-count${note.over ? ' field-error' : ''}`} id={noteId}>
-        {note.text}
-      </div>
+      {count}
     </>
   );
 }

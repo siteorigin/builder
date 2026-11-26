@@ -4,7 +4,7 @@
  * as it is when the author acts (lib/component-contract) and sends it against that revision, so a change planned on a
  * project that has moved on since is refused rather than misapplied. Every change is one Undo.
  */
-import { useId, useState, type KeyboardEvent } from 'react';
+import { useId, useLayoutEffect, useRef, useState, type KeyboardEvent, type ReactNode } from 'react';
 import { ArrowDown, ArrowUp, Paintbrush, Pencil, Plus, Trash2 } from 'lucide-react';
 import type { ProjectSnapshot } from '@shared/api';
 import type { ComponentCategory, ComponentDefinition, GraphNode, ProjectState, PropSchema, SlotDef, SlotPrimitive } from '@shared/types';
@@ -257,7 +257,8 @@ const TYPE_WORDS: Record<string, string> = {
   token: 'Site style'
 };
 
-const LEVEL_NOTE = 'Heading levels come after the content on every placement';
+/** A section's summary: how many it holds, in plain words ("1 slot", "5 properties"). */
+const tally = (n: number, one: string, many: string) => `${n} ${n === 1 ? one : many}`;
 
 /** Where a Required switch is: a property, or one field of a list or an object. */
 type RequiredAt = { prop: string; field?: string };
@@ -268,22 +269,23 @@ const requiredKey = (at: RequiredAt) => `${at.prop}:${at.field ?? ''}`;
  * value and for a computed list's fields, unless already on (a hand edit), so it can be turned off. Read-only, it only
  * says so.
  */
-function RequiredSwitch({ schema, at, name, readOnly, onChange }: { schema: PropSchema; at: RequiredAt; name: string; readOnly: boolean; onChange: (on: boolean) => void }) {
+function RequiredSwitch({ schema, at, name, readOnly, describedBy, onChange }: { schema: PropSchema; at: RequiredAt; name: string; readOnly: boolean; describedBy?: string; onChange: (on: boolean) => void }) {
+  const id = useId();
   const on = isRequired(schema, at.field);
   if (!on && !canRequire(schema, at.field)) return null;
-  if (readOnly) return on ? <span className="faint contract-required">Required</span> : null;
+  if (readOnly) return on ? <span className="contract-required">Required</span> : null;
+  // The visible word is the switch's label, and clicking it toggles the switch; the switch's own name says whose it is.
   return (
     <span className="contract-required">
-      <span className="faint" aria-hidden="true">
-        Required
-      </span>
-      <Switch checked={on} onChange={onChange} label={`${name} required`} />
+      <label htmlFor={id}>Required</label>
+      <Switch id={id} checked={on} onChange={onChange} label={`${name} required`} describedBy={describedBy} />
     </span>
   );
 }
 
 /** The component's properties, in the order each placement's Content lists them: rename, reorder, require or remove them. */
 export function PropertiesSection({ def, level }: { def: ComponentDefinition; level: number }) {
+  const id = useId();
   const entries = placementOrder(def).map((k) => [k, def.properties[k]] as [string, PropSchema]);
   const readOnly = useStore((s) => !!s.snapshot?.readOnly);
   // What the last Required switch did, said beside it until another is used: the placements it left missing a value
@@ -308,19 +310,22 @@ export function PropertiesSection({ def, level }: { def: ComponentDefinition; le
       },
       () => apply([op], `${on ? 'Require' : 'Stop requiring'} ${label}`, now.snap)
     );
-    if (done && count) setSaid({ key, text: `${count === 1 ? 'One placement is' : `${count} placements are`} missing ${label} now. Project health lists ${count === 1 ? 'it' : 'them'}.` });
+    if (done && count) setSaid({ key, text: `${count === 1 ? 'One placement is' : `${count} placements are`} missing ${label} now.` });
   };
+  // The note a Required switch's last use left, while it shows: the switch is described by it.
+  const saidId = (at: RequiredAt) => `${id}-said-${requiredKey(at)}`;
+  const saidFor = (at: RequiredAt, schema: PropSchema) => (said?.key === requiredKey(at) && (said.refused || isRequired(schema, at.field)) ? saidId(at) : undefined);
   const missingNote = (at: RequiredAt, schema: PropSchema) => {
     if (said?.key !== requiredKey(at)) return null;
     if (said.refused)
       return (
-        <p className="contract-meta field-error contract-missing" role="alert">
+        <p className="contract-meta field-error contract-missing" role="alert" id={saidId(at)}>
           {said.text}
         </p>
       );
     if (!isRequired(schema, at.field)) return null;
     return (
-      <p className="faint contract-meta contract-missing" role="status">
+      <p className="contract-meta contract-missing" role="status" id={saidId(at)}>
         {said.text}{' '}
         <button className="link-btn" onClick={() => setState({ modal: { kind: 'health' } })}>
           Open Project health
@@ -350,8 +355,13 @@ export function PropertiesSection({ def, level }: { def: ComponentDefinition; le
     }
     void apply([{ type: 'component.removePropSchema', definitionId: def.id, prop }], `Remove ${schema.label} property`, now.snap);
   };
+  const anyShown = entries.some(([prop]) => propertyUses(def, prop).length > 0);
+  const shownNote = `${id}-shown`;
+  const levelNote = `${id}-levels`;
+  // A move the heading-level rule blocks (not the first row's up or the last row's down) says why, under the list.
+  const levelBlocked = entries.some(([prop], i) => (i > 0 && !movePropOp(def, prop, -1)) || (i < entries.length - 1 && !movePropOp(def, prop, 1)));
   return (
-    <Section title="Properties" id="def-properties" level={level} scope={entries.length ? `${entries.length} filled in on each placement` : undefined}>
+    <Section title="Properties" id="def-properties" level={level} scope={entries.length ? tally(entries.length, 'property', 'properties') : undefined}>
       {entries.length === 0 ? (
         <p className="insp-note muted">Every placement shows the same content. To let each placement fill something in, select a heading, text, image, button or icon and choose Fill in on each placement.</p>
       ) : (
@@ -361,64 +371,97 @@ export function PropertiesSection({ def, level }: { def: ComponentDefinition; le
             const up = movePropOp(def, prop, -1);
             const down = movePropOp(def, prop, 1);
             return (
-              <li key={prop} className="contract-row" data-prop={prop}>
-                <div className="contract-row-main">
-                  <DraftInput
-                    className="sm"
-                    value={schema.label}
-                    limit={PROPERTY_MAX}
-                    ariaLabel={`Name of the ${schema.label} property`}
-                    onCommit={(v) => {
-                      if (!v.trim()) return false;
-                      const now = current(def.id);
-                      const op = now && renamePropOp(now.def, prop, v);
-                      if (op) void apply([op], `Rename ${schema.label} property`, now.snap);
-                    }}
-                  />
-                  <span className="faint contract-meta">
-                    {TYPE_WORDS[schema.type] ?? schema.type} · {uses.length ? `shown by ${uses.join(', ')}` : 'not shown in the design'}
+              <li key={prop} className="contract-item" data-prop={prop}>
+                <div className="contract-row">
+                  <div className="contract-row-main">
+                    <DraftInput
+                      className="input sm"
+                      value={schema.label}
+                      limit={PROPERTY_MAX}
+                      quietCount
+                      ariaLabel={`Name of the ${schema.label} property`}
+                      onCommit={(v) => {
+                        if (!v.trim()) return false;
+                        const now = current(def.id);
+                        const op = now && renamePropOp(now.def, prop, v);
+                        if (op) void apply([op], `Rename ${schema.label} property`, now.snap);
+                      }}
+                    />
+                  </div>
+                  <RowActions label={`Actions for ${schema.label}`}>
+                  <button
+                    className="icon-btn sm"
+                    aria-disabled={!up || undefined}
+                    aria-describedby={i > 0 && !up ? levelNote : undefined}
+                    aria-label={`Move ${schema.label} up`}
+                    title="Move up"
+                    onClick={() => up && move(prop, -1)}
+                  >
+                    <ArrowUp />
+                  </button>
+                  <button
+                    className="icon-btn sm"
+                    aria-disabled={!down || undefined}
+                    aria-describedby={i < entries.length - 1 && !down ? levelNote : undefined}
+                    aria-label={`Move ${schema.label} down`}
+                    title="Move down"
+                    onClick={() => down && move(prop, 1)}
+                  >
+                    <ArrowDown />
+                  </button>
+                  <button
+                    className="icon-btn sm"
+                    aria-disabled={uses.length > 0}
+                    aria-describedby={uses.length ? shownNote : undefined}
+                    aria-label={`Remove ${schema.label}`}
+                    title={uses.length ? `Shown by ${uses.join(', ')}. Change ${uses.length === 1 ? 'that' : 'those'} first, so the design no longer shows it.` : 'Remove'}
+                    onClick={() => uses.length === 0 && void remove(prop)}
+                  >
+                    <Trash2 />
+                  </button>
+                  </RowActions>
+                </div>
+                <div className="contract-row-line">
+                  <span className="contract-meta">
+                    {TYPE_WORDS[schema.type] ?? schema.type} · {uses.length ? `shown by ${uses.join(', ')}` : <span className="contract-flag">not shown in the design</span>}
                   </span>
-                  <RequiredSwitch schema={schema} at={{ prop }} name={schema.label} readOnly={readOnly} onChange={(on) => void require({ prop }, on)} />
-                  {missingNote({ prop }, schema)}
-                  {requirableFields(schema).length > 0 && (
-                    <details className="contract-fields">
-                      <summary className="faint contract-meta">
-                        {schema.type === 'list' ? `${schema.itemLabel} fields` : 'Fields'} ({requirableFields(schema).length})
-                      </summary>
-                      <ul className="contract-list" aria-label={`Fields of ${schema.label}`}>
-                        {requirableFields(schema).map(([field, fs]) => (
-                          <li key={field} className="contract-field" data-field={field}>
-                            <span className="contract-field-name">
-                              {fs.label} <span className="faint">· {TYPE_WORDS[fs.type] ?? fs.type}</span>
-                            </span>
-                            <RequiredSwitch schema={schema} at={{ prop, field }} name={`${schema.label} → ${fs.label}`} readOnly={readOnly} onChange={(on) => void require({ prop, field }, on)} />
-                            {missingNote({ prop, field }, schema)}
-                          </li>
+                  <RequiredSwitch schema={schema} at={{ prop }} name={schema.label} readOnly={readOnly} describedBy={saidFor({ prop }, schema)} onChange={(on) => void require({ prop }, on)} />
+                </div>
+                {missingNote({ prop }, schema)}
+                {requirableFields(schema).length > 0 && (
+                  <details className="contract-fields">
+                    <summary className="contract-meta">
+                      {schema.type === 'list' ? `${schema.itemLabel} fields` : 'Fields'} ({requirableFields(schema).length})
+                    </summary>
+                    <ul className="contract-list" aria-label={`Fields of ${schema.label}`}>
+                      {requirableFields(schema).map(([field, fs]) => (
+                        <li key={field} className="contract-field" data-field={field}>
+                          <span className="contract-field-name">
+                            {fs.label} <span className="faint">· {TYPE_WORDS[fs.type] ?? fs.type}</span>
+                          </span>
+                          <RequiredSwitch schema={schema} at={{ prop, field }} name={`${schema.label} → ${fs.label}`} readOnly={readOnly} describedBy={saidFor({ prop, field }, schema)} onChange={(on) => void require({ prop, field }, on)} />
+                          {missingNote({ prop, field }, schema)}
+                        </li>
                         ))}
                       </ul>
                     </details>
                   )}
-                </div>
-                <button className="icon-btn sm" disabled={!up} aria-label={`Move ${schema.label} up`} title={i > 0 && !up ? LEVEL_NOTE : 'Move up'} onClick={() => move(prop, -1)}>
-                  <ArrowUp />
-                </button>
-                <button className="icon-btn sm" disabled={!down} aria-label={`Move ${schema.label} down`} title={i < entries.length - 1 && !down ? LEVEL_NOTE : 'Move down'} onClick={() => move(prop, 1)}>
-                  <ArrowDown />
-                </button>
-                <button
-                  className="icon-btn sm"
-                  aria-disabled={uses.length > 0}
-                  aria-label={`Remove ${schema.label}`}
-                  title={uses.length ? `Shown by ${uses.join(', ')}. Change ${uses.length === 1 ? 'that' : 'those'} first, so the design no longer shows it.` : 'Remove'}
-                  onClick={() => uses.length === 0 && void remove(prop)}
-                >
-                  <Trash2 />
-                </button>
               </li>
             );
           })}
         </ul>
       )}
+      {anyShown && (
+        <p className="insp-note muted" id={shownNote}>
+          To remove a property the design shows, first change what shows it.
+        </p>
+      )}
+      {levelBlocked && (
+        <p className="insp-note muted" id={levelNote}>
+          Heading levels stay after the content they set on every placement, so some properties can’t move past them.
+        </p>
+      )}
+      {entries.length > 0 && <p className="insp-note muted">To add one, select a heading, text, image, button or icon and choose Fill in on each placement.</p>}
     </Section>
   );
 }
@@ -459,6 +502,7 @@ export function PartSection({ def, node, level }: { def: ComponentDefinition; no
               aria-describedby={`${id}-part-note`}
               value={found.part.label}
               limit={NAME_MAX}
+              quietCount
               onCommit={(v) => {
                 if (!v.trim()) return false;
                 const now = current(def.id);
@@ -494,24 +538,57 @@ export function useVariantStyle(def: ComponentDefinition): StyleTarget {
 
 export const styleVariant = (def: ComponentDefinition, target: StyleTarget) => setState({ variantStyle: target ? { definitionId: def.id, ...target } : null });
 
-/** A one-line add: text and a button. */
-function AddRow({ label, placeholder, onAdd }: { label: string; placeholder: string; onAdd: (text: string) => Promise<unknown> | null }) {
+/**
+ * A row's action buttons as one Tab stop: the arrow keys (and Home, End) move between them, unavailable ones included
+ * so their reasons can be heard, and Tab goes on to the next row's name. The buttons keep their own names.
+ */
+function RowActions({ label, children }: { label: string; children: ReactNode }) {
+  const [at, setAt] = useState(0);
+  const ref = useRef<HTMLDivElement>(null);
+  useLayoutEffect(() => {
+    ref.current?.querySelectorAll('button').forEach((b, i) => (b.tabIndex = i === at ? 0 : -1));
+  });
+  const onKeyDown = (e: KeyboardEvent<HTMLDivElement>) => {
+    const buttons = [...(ref.current?.querySelectorAll('button') ?? [])];
+    const from = buttons.indexOf(document.activeElement as HTMLButtonElement);
+    if (from < 0) return;
+    const to = e.key === 'ArrowRight' || e.key === 'ArrowDown' ? from + 1 : e.key === 'ArrowLeft' || e.key === 'ArrowUp' ? from - 1 : e.key === 'Home' ? 0 : e.key === 'End' ? buttons.length - 1 : null;
+    if (to === null) return;
+    e.preventDefault();
+    const next = (to + buttons.length) % buttons.length;
+    setAt(next);
+    buttons[next]?.focus();
+  };
+  return (
+    <div ref={ref} className="contract-row-actions" role="toolbar" aria-label={label} onKeyDown={onKeyDown} onFocus={(e) => setAt(Math.max(0, [...(ref.current?.querySelectorAll('button') ?? [])].indexOf(e.target as Element as HTMLButtonElement)))}>
+      {children}
+    </div>
+  );
+}
+
+/** A one-line add: a name and an "Add …" button that names what it adds; Enter adds too. */
+function AddRow({ label, placeholder, button, onAdd }: { label: string; placeholder: string; button: string; onAdd: (text: string) => Promise<unknown> | null }) {
   const [text, setText] = useState('');
   const add = async () => {
-    if (!text.trim()) return;
-    if ((await onAdd(text)) !== null) setText('');
+    const sent = text;
+    if (!sent.trim()) return;
+    // Only the text sent is cleared: a name typed while it was being saved stays.
+    if ((await onAdd(sent)) !== null) setText((t) => (t === sent ? '' : t));
   };
   return (
     <div className="contract-add">
       <input className="input sm" value={text} placeholder={placeholder} aria-label={label} maxLength={NAME_MAX} onChange={(e) => setText(e.target.value)} onKeyDown={keys({ enter: () => void add() })} />
       <button className="btn btn-sm" disabled={!text.trim()} onClick={() => void add()}>
-        <Plus aria-hidden="true" /> Add
+        <Plus aria-hidden="true" /> {button}
       </button>
     </div>
   );
 }
 
-/** The looks placements choose between, by group: add, rename, make default, remove, and pick one to style. */
+/**
+ * The component's choices (Tone, Width) and the options of each (Light, Dark) that placements pick between: add,
+ * rename, choose where placements start, remove, and pick an option to style.
+ */
 export function VariantsSection({ def, level, onStyle }: { def: ComponentDefinition; level: number; onStyle: (target: StyleTarget) => void }) {
   const id = useId();
   const [group, setGroup] = useState('');
@@ -524,11 +601,34 @@ export function VariantsSection({ def, level, onStyle }: { def: ComponentDefinit
     return op ? apply([op], label, now.snap) : null;
   };
   const addGroup = async () => {
-    if (!group.trim() || !first.trim()) return;
-    if (await run((d, snap) => addVariantGroupOp(snap.state, d, group, first), `Add ${group.trim()} variants`)) {
-      setGroup('');
-      setFirst('');
+    const [sentGroup, sentFirst] = [group, first];
+    if (!sentGroup.trim() || !sentFirst.trim()) return;
+    if (await run((d, snap) => addVariantGroupOp(snap.state, d, sentGroup, sentFirst), `Add ${sentGroup.trim()} choice`)) {
+      setGroup((t) => (t === sentGroup ? '' : t));
+      setFirst((t) => (t === sentFirst ? '' : t));
     }
+  };
+  const removeChoice = async (axis: string, label: string) => {
+    // Every option goes in one change, planned and counted from one reading of the project.
+    const now = current(def.id);
+    const a = now && axesOf(now.def).find(([x]) => x === axis)?.[1];
+    if (!now || !a) return;
+    // Every placement shows one of its options, chosen or the default: each loses it, styles and all.
+    const showing = instancesOf(now.snap.state, def.id).filter((p) => selectedVariants(now.def, p.node.variants)[axis] !== undefined).length;
+    if (showing) {
+      const ok = await confirmDialog({
+        title: `Remove “${label}”?`,
+        body: `${showing === 1 ? 'One placement shows' : `${showing} placements show`} one of its options, and will lose it and its styles. Undo brings them back.`,
+        confirmLabel: 'Remove',
+        tone: 'caution'
+      });
+      if (!ok) return;
+    }
+    void apply(
+      Object.keys(a.options).map((option) => removeVariantOp(now.def, axis, option)),
+      `Remove ${label} choice`,
+      now.snap
+    );
   };
   const remove = async (axis: string, option: string, label: string) => {
     // Counted and sent from one reading of the project: a placement that changes while the dialog is open refuses it.
@@ -547,52 +647,54 @@ export function VariantsSection({ def, level, onStyle }: { def: ComponentDefinit
       });
       if (!ok) return;
     }
-    void apply([removeVariantOp(now.def, axis, option)], `Remove ${label} variant`, now.snap);
+    void apply([removeVariantOp(now.def, axis, option)], `Remove ${label} option`, now.snap);
   };
   return (
-    <Section title="Variants" id="def-variants" level={level} scope={axes.length ? `${axes.length === 1 ? '1 choice' : `${axes.length} choices`} on each placement` : undefined}>
-      <p className="insp-note muted">Looks each placement chooses between, such as a dark tone or a wide layout. Style one with the paintbrush, or under Style.</p>
+    <Section title="Variants" id="def-variants" level={level} keepMounted scope={axes.length ? tally(axes.length, 'choice', 'choices') : undefined}>
+      {axes.length === 0 && <p className="insp-note muted">Choices each placement makes about how it looks, such as a Tone of Light or Dark. Style an option with its paintbrush, or under Style.</p>}
       {axes.map(([axis, a]) => (
-        <div key={axis} className="contract-group" role="group" aria-label={a.label} data-axis={axis}>
-          <Field label="Choice" controlId={`${id}-${axis}`}>
-            <DraftInput
-              id={`${id}-${axis}`}
-              value={a.label}
-              limit={CHOICE_MAX}
-              onCommit={(v) => {
-                if (!v.trim()) return false;
-                void run((d) => renameVariantGroupOp(d, axis, v), `Rename ${a.label} variants`);
-              }}
-            />
-          </Field>
+        <div key={axis} className="contract-group" role="group" aria-label={`${a.label} choice`} data-axis={axis}>
+          <div className="field">
+            <label htmlFor={`${id}-${axis}`}>Choice</label>
+            <div className="contract-row">
+              <div className="contract-row-main">
+                <DraftInput
+                  id={`${id}-${axis}`}
+                  value={a.label}
+                  limit={CHOICE_MAX}
+                  quietCount
+                  onCommit={(v) => {
+                    if (!v.trim()) return false;
+                    void run((d) => renameVariantGroupOp(d, axis, v), `Rename ${a.label} choice`);
+                  }}
+                />
+              </div>
+              <button className="icon-btn sm" aria-label={`Remove ${a.label}`} title="Remove, with its options" onClick={() => void removeChoice(axis, a.label)}>
+                <Trash2 />
+              </button>
+            </div>
+          </div>
           <ul className="contract-list" aria-label={`${a.label} options`}>
             {Object.entries(a.options).map(([option, o]) => {
               const styling = target?.axis === axis && target.variant === option;
+              const styled = !!o.styles && Object.keys(o.styles).length > 0;
               return (
                 <li key={option} className="contract-row" data-variant={option}>
                   <div className="contract-row-main">
                     <DraftInput
-                      className="sm"
+                      className="input sm"
                       value={o.label}
                       limit={NAME_MAX}
+                      quietCount
                       ariaLabel={`Name of the ${o.label} option`}
                       onCommit={(v) => {
                         if (!v.trim()) return false;
-                        void run((d) => renameVariantOp(d, axis, option, v), `Rename ${o.label} variant`);
+                        void run((d) => renameVariantOp(d, axis, option, v), `Rename ${o.label} option`);
                       }}
                     />
-                    <span className="faint contract-meta">
-                      {a.default === option ? (
-                        'Default'
-                      ) : (
-                        <button className="link-btn" onClick={() => void run((d) => defaultVariantOp(d, axis, option), `Make ${o.label} the default`)}>
-                          Make default
-                        </button>
-                      )}
-                      {o.styles && Object.keys(o.styles).length ? ' · styled' : ''}
-                    </span>
+                    {styled && <span className="contract-meta">Has its own styles</span>}
                   </div>
-                  <button className="icon-btn sm" aria-pressed={styling} aria-label={`Style ${o.label}`} title={styling ? 'Styling this look' : 'Style this look'} onClick={() => onStyle(styling ? null : { axis, variant: option })}>
+                  <button className="icon-btn sm" aria-pressed={styling} aria-label={`Style ${o.label}`} title={styling ? 'Styling this option' : 'Style this option'} onClick={() => onStyle(styling ? null : { axis, variant: option })}>
                     <Paintbrush />
                   </button>
                   <button className="icon-btn sm" aria-label={`Remove ${o.label}`} title="Remove" onClick={() => void remove(axis, option, o.label)}>
@@ -602,19 +704,40 @@ export function VariantsSection({ def, level, onStyle }: { def: ComponentDefinit
               );
             })}
           </ul>
-          <AddRow label={`New ${a.label.toLowerCase()} option`} placeholder="New option" onAdd={(text) => run((d, snap) => addVariantOp(snap.state, d, axis, text), `Add ${text.trim()} variant`)} />
+          <AddRow label={`New ${a.label.toLowerCase()} option`} placeholder="New option" button="Add option" onAdd={(text) => run((d, snap) => addVariantOp(snap.state, d, axis, text), `Add ${text.trim()} option`)} />
+          {Object.keys(a.options).length > 1 && (
+            <Field label="Each placement starts on" controlId={`${id}-${axis}-default`}>
+              <select
+                id={`${id}-${axis}-default`}
+                className="select sm"
+                value={a.default}
+                onChange={(e) => {
+                  const option = e.target.value;
+                  const label = a.options[option]?.label ?? option;
+                  void run((d) => defaultVariantOp(d, axis, option), `Make ${label} the default`);
+                }}
+              >
+                {Object.entries(a.options).map(([option, o]) => (
+                  <option key={option} value={option}>
+                    {o.label}
+                  </option>
+                ))}
+              </select>
+            </Field>
+          )}
         </div>
       ))}
-      <div className="contract-group" role="group" aria-label="New choice">
-        <div className="field-label">{axes.length ? 'Another choice' : 'New choice'}</div>
+      <div className="contract-group" role="group" aria-labelledby={`${id}-new`}>
+        <div className="field-label" id={`${id}-new`}>
+          {axes.length ? 'Another choice' : 'New choice'}
+        </div>
+        <input className="input sm" value={group} placeholder="Choice, e.g. Tone" aria-label="Name of the choice" maxLength={CHOICE_MAX} onChange={(e) => setGroup(e.target.value)} onKeyDown={keys({ enter: () => void addGroup() })} />
         <div className="contract-add">
-          <input className="input sm" value={group} placeholder="Choice, e.g. Tone" aria-label="Name of the choice" maxLength={CHOICE_MAX} onChange={(e) => setGroup(e.target.value)} />
-          <input className="input sm" value={first} placeholder="Option, e.g. Dark" aria-label="Its first option" maxLength={NAME_MAX} onChange={(e) => setFirst(e.target.value)} onKeyDown={keys({ enter: () => void addGroup() })} />
+          <input className="input sm" value={first} placeholder="First option, e.g. Light" aria-label="Its first option" maxLength={NAME_MAX} onChange={(e) => setFirst(e.target.value)} onKeyDown={keys({ enter: () => void addGroup() })} />
           <button className="btn btn-sm" disabled={!group.trim() || !first.trim()} onClick={() => void addGroup()}>
-            <Plus aria-hidden="true" /> Add
+            <Plus aria-hidden="true" /> Add choice
           </button>
         </div>
-        <p className="insp-note faint">Placements keep their look: each starts on Default until it picks another.</p>
       </div>
     </Section>
   );
@@ -635,23 +758,45 @@ export function SlotsSection({ def, node, level }: { def: ComponentDefinition; n
   if (def.kind !== 'managed' || !def.tree || !state) return null;
   const names = Object.keys(def.slots ?? {});
   const placed = placedSlots(def);
+  // Where each slot's content shows, named as the new slot's place is: by the element holding its placeholder.
+  const placedIn = (name: string) => {
+    const at = placed.get(name);
+    if (!at) return undefined;
+    const owner = { kind: 'component' as const, id: def.id };
+    for (const n of Object.values(def.tree!.nodes)) {
+      if ('children' in n && Array.isArray(n.children) && n.children.includes(at)) return slotPlaceWords(state, { owner, parentId: n.id } as InsertAt);
+      // Passed on into a slot of a component placed in the design: "Section’s Content", as the add hint says it.
+      const inner = n.kind === 'instance' ? Object.entries(n.slots ?? {}).find(([, ids]) => ids.includes(at))?.[0] : undefined;
+      if (inner) return slotPlaceWords(state, { owner, parentId: n.id, slot: inner } as InsertAt);
+    }
+    return def.name;
+  };
+  // Shown on every element of the design, the slots are still the whole component's, not the selected element's.
+  const inner = !!node && def.tree.rootIds[0] !== node.id;
   return (
-    <Section title="Slots" id="def-slots" level={level} keepMounted scope={names.length ? (names.length === 1 ? '1 slot' : `${names.length} slots`) : undefined}>
-      <p className="insp-note muted">Places where each placement puts content of its own, such as a card’s body or a hero’s buttons. Choose what each takes and how many.</p>
+    <Section title="Slots" id="def-slots" level={level} keepMounted scope={names.length ? `${tally(names.length, 'slot', 'slots')}${inner ? ' in the component' : ''}` : undefined}>
+      {names.length === 0 && <p className="insp-note muted">Places where each placement puts content of its own, such as a card’s body or a hero’s buttons. Choose what each takes and how many.</p>}
       {names.map((name) => (
-        <SlotGroup key={name} def={def} name={name} decl={def.slots![name]} placedAt={placed.get(name)} filledIn={slotFilledIn(state, def, name)} />
+        <SlotGroup key={name} def={def} name={name} decl={def.slots![name]} placedIn={placedIn(name)} filledIn={slotFilledIn(state, def, name)} />
       ))}
       <NewSlot def={def} node={node} />
     </Section>
   );
 }
 
-function SlotGroup({ def, name, decl, placedAt, filledIn }: { def: ComponentDefinition; name: string; decl: SlotDef; placedAt?: string; filledIn: string[] }) {
+function SlotGroup({ def, name, decl, placedIn, filledIn }: { def: ComponentDefinition; name: string; decl: SlotDef; placedIn?: string; filledIn: string[] }) {
   const [editing, setEditing] = useState(false);
+  const pencil = useRef<HTMLButtonElement>(null);
+  // Closing the form (Save, Cancel or Escape) puts focus back on the button that opened it.
+  const close = () => {
+    setEditing(false);
+    requestAnimationFrame(() => pencil.current?.focus());
+  };
   // A declaration damaged by a hand edit says so, and can still be removed; validation reports it too.
   const damaged = slotDeclProblem(decl);
   const places = [...new Set(filledIn)];
-  const shown = placedAt ? 'In the design' : 'Not in the design yet: add it from Insert';
+  // Named by the element holding it, so a slot listed under another selected element is not read as that element's.
+  const shown = placedIn ? `In ${placedIn}` : 'Not in the design yet: add it from Insert';
   const filled = places.length ? `Holds content on ${places.join(', ')}` : 'Empty on every placement';
   const remove = () => {
     const now = current(def.id);
@@ -679,22 +824,22 @@ function SlotGroup({ def, name, decl, placedAt, filledIn }: { def: ComponentDefi
       <div className="contract-row">
         <div className="contract-row-main">
           <strong className="slot-name">{decl.label}</strong>
-          {decl.description && <span className="faint contract-meta">{decl.description}</span>}
-          <span className="faint contract-meta" data-slot-accepts>
+          {decl.description && <span className="contract-meta">{decl.description}</span>}
+          <span className="contract-meta" data-slot-accepts>
             Takes {slotAccepts(decl)} · {slotLimitWords(decl)}
           </span>
-          <span className="faint contract-meta">
+          <span className="contract-meta">
             {shown} · {filled}
           </span>
         </div>
-        <button className="icon-btn sm" aria-expanded={editing} aria-label={`Edit ${decl.label}`} title="Change what it takes" onClick={() => setEditing((o) => !o)}>
+        <button ref={pencil} className="icon-btn sm" aria-expanded={editing} aria-label={`Edit ${decl.label}`} title="Rename it, or change what it takes" onClick={() => setEditing((o) => !o)}>
           <Pencil />
         </button>
         <button className="icon-btn sm" aria-label={`Remove ${decl.label}`} title={places.length ? `${filled}. Review it before removing.` : 'Remove, with its place in the design'} onClick={remove}>
           <Trash2 />
         </button>
       </div>
-      {editing && <SlotForm def={def} name={name} decl={decl} onDone={() => setEditing(false)} />}
+      {editing && <SlotForm def={def} name={name} decl={decl} onDone={close} />}
     </div>
   );
 }
@@ -715,9 +860,17 @@ function SlotForm({ def, name, decl, onDone }: { def: ComponentDefinition; name:
   const problem = slotDraftProblem(draft);
   const set = (patch: Partial<SlotDraft>) => setDraft((d) => ({ ...d, ...patch }));
   const toggle = <T extends string>(list: T[], value: T, on: boolean) => (on ? [...list.filter((x) => x !== value), value] : list.filter((x) => x !== value));
+  const form = useRef<HTMLDivElement>(null);
   const save = async () => {
     setTried(true);
-    if (problem || saving) return;
+    // Refused here: the author is taken to the field that says why, which may be far above Save.
+    if (problem) {
+      const field = form.current?.querySelector<HTMLInputElement>(draft.label.trim() ? `#${CSS.escape(`${id}-max`)}` : `#${CSS.escape(`${id}-name`)}`);
+      field?.focus();
+      field?.scrollIntoView({ block: 'center', behavior: window.matchMedia('(prefers-reduced-motion: reduce)').matches ? 'auto' : 'smooth' });
+      return;
+    }
+    if (saving) return;
     const now = current(def.id);
     const d = now && declaredSlot(now.def, name);
     if (!now || !d) return void toast(`The “${base.label}” slot has been removed, so there is nothing to save. Undo brings it back.`, 'error');
@@ -746,16 +899,19 @@ function SlotForm({ def, name, decl, onDone }: { def: ComponentDefinition; name:
     </fieldset>
   );
   return (
-    <div className="contract-box" role="group" aria-labelledby={`${id}-title`} data-slot-form={name}>
+    <div ref={form} className="contract-box" role="group" aria-labelledby={`${id}-title`} data-slot-form={name}>
       <p className="insp-note" id={`${id}-title`}>
-        <strong>What “{base.label}” takes</strong>
+        <strong>Edit “{base.label}”</strong>
       </p>
-      <Field label="Name">
-        <input className="input" value={draft.label} maxLength={SLOT_LABEL_MAX} onChange={(e) => set({ label: e.target.value })} onKeyDown={keys({ enter: () => void save(), escape: onDone })} autoFocus />
+      <Field label="Name" error={tried && problem && !draft.label.trim() ? problem : undefined}>
+        <input id={`${id}-name`} className="input" value={draft.label} maxLength={SLOT_LABEL_MAX} onChange={(e) => set({ label: e.target.value })} onKeyDown={keys({ enter: () => void save(), escape: onDone })} autoFocus />
       </Field>
-      <Field label="What belongs there" hint="For you and the AI, when filling it in.">
-        <textarea className="textarea" rows={2} value={draft.description} maxLength={SLOT_DESCRIPTION_MAX} onChange={(e) => set({ description: e.target.value })} />
+      <Field label="What belongs there" controlId={`${id}-desc`} hint="For you and the AI, when filling it in.">
+        <textarea id={`${id}-desc`} className="textarea" rows={2} value={draft.description} maxLength={SLOT_DESCRIPTION_MAX} aria-describedby={`${id}-desc-count ${id}-desc-note`} onChange={(e) => set({ description: e.target.value })} />
       </Field>
+      <div className="field-count slot-desc-count" id={`${id}-desc-count`}>
+        {draft.description.length} / {SLOT_DESCRIPTION_MAX}
+      </div>
       <Field label="Takes">
         <Segmented
           radio
@@ -775,11 +931,11 @@ function SlotForm({ def, name, decl, onDone }: { def: ComponentDefinition; name:
           {!draft.categories.length && !draft.primitives.length && <p className="insp-note muted">Nothing checked: the slot takes nothing.</p>}
         </>
       )}
-      <Field label="Holds at most" hint="Blank for no limit. 0 keeps it empty.">
-        <input className="input" inputMode="numeric" placeholder="No limit" value={draft.max} maxLength={4} onChange={(e) => set({ max: e.target.value })} onKeyDown={keys({ enter: () => void save(), escape: onDone })} />
+      <Field label="Holds at most" hint="Blank for no limit. 0 keeps it empty." error={tried && problem && draft.label.trim() ? problem : undefined}>
+        <input id={`${id}-max`} className="input" inputMode="numeric" placeholder="No limit" value={draft.max} maxLength={4} onChange={(e) => set({ max: e.target.value })} onKeyDown={keys({ enter: () => void save(), escape: onDone })} />
       </Field>
       {tried && problem && (
-        <p className="field-error" role="alert">
+        <p className="sr-only" role="alert">
           {problem}
         </p>
       )}
@@ -806,6 +962,7 @@ function slotPlaceWords(state: ProjectState, at: InsertAt): string {
 
 /** Declare a new slot, with its placeholder where slotInsertAt puts it for the node the Inspector shows. */
 function NewSlot({ def, node }: { def: ComponentDefinition; node?: GraphNode }) {
+  const id = useId();
   const [label, setLabel] = useState('');
   const state = useStore((s) => s.snapshot?.state);
   const at = state ? slotInsertAt(state, def.id, designRef(def, node)) : null;
@@ -816,18 +973,21 @@ function NewSlot({ def, node }: { def: ComponentDefinition; node?: GraphNode }) 
     const place = now && slotInsertAt(now.snap.state, def.id, designRef(now.def, now.node));
     const plan = place && createSlotOps(now.snap.state, now.def, label, place);
     if (!now || !plan) return;
-    if (await apply(plan.operations, `Add ${label.trim()} slot`, now.snap)) setLabel('');
+    const sent = label;
+    if (await apply(plan.operations, `Add ${sent.trim()} slot`, now.snap)) setLabel((t) => (t === sent ? '' : t));
   };
   return (
-    <div className="contract-group" role="group" aria-label="New slot">
-      <div className="field-label">{Object.keys(def.slots ?? {}).length ? 'Another slot' : 'New slot'}</div>
+    <div className="contract-group" role="group" aria-labelledby={`${id}-label`}>
+      <div className="field-label" id={`${id}-label`}>
+        {Object.keys(def.slots ?? {}).length ? 'Another slot' : 'New slot'}
+      </div>
       <div className="contract-add">
-        <input className="input sm" value={label} placeholder="Slot, e.g. Buttons" aria-label="Name of the new slot" maxLength={SLOT_LABEL_MAX} disabled={!at} onChange={(e) => setLabel(e.target.value)} onKeyDown={keys({ enter: () => void add() })} />
-        <button className="btn btn-sm" disabled={!at || !label.trim()} onClick={() => void add()}>
+        <input className="input sm" value={label} placeholder="Slot, e.g. Buttons" aria-label="Name of the new slot" aria-describedby={`${id}-where`} maxLength={SLOT_LABEL_MAX} disabled={!at} onChange={(e) => setLabel(e.target.value)} onKeyDown={keys({ enter: () => void add() })} />
+        <button className="btn btn-sm" disabled={!at || !label.trim()} aria-describedby={at ? undefined : `${id}-where`} onClick={() => void add()}>
           <Plus aria-hidden="true" /> Add slot
         </button>
       </div>
-      <p className="insp-note faint" data-slot-where>
+      <p className="insp-note muted" id={`${id}-where`} data-slot-where>
         {where ? `It goes inside ${where}, and takes anything until you choose.` : SLOT_NO_PLACE}
       </p>
     </div>
@@ -843,7 +1003,7 @@ export function StyleTargetField({ def, target, disabledReason }: { def: Compone
   const axes = axesOf(def);
   if (!axes.length) return null;
   const value = target && !disabledReason ? `${target.axis}:${target.variant}` : '';
-  const hint = disabledReason ?? (target ? 'Only placements showing this look get these styles.' : undefined);
+  const hint = disabledReason ?? (target ? 'Only placements showing this option get these styles.' : undefined);
   return (
     <Field label="Styling" controlId={id} hint={hint}>
       <select
