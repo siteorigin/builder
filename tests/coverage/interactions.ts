@@ -112,6 +112,7 @@ export const GAP_ISSUES: Record<number, string> = {
 };
 
 const J = 'tests/e2e/journeys.mjs';
+const L_SHARE = 'tests/e2e/live-share.mjs';
 
 export const INTERACTIONS: Interaction[] = [
   {
@@ -1860,6 +1861,29 @@ export const INTERACTIONS: Interaction[] = [
       { test: 'tests/e2e/packaged.mjs', kind: 'packaged' },
       { test: 'tests/e2e/import.mjs', kind: 'e2e', step: 'served by the preview under the development frame policy' }
     ]
+  },
+  {
+    id: 'preview.live-session',
+    area: 'preview',
+    intent: 'Share the project live: start a session, send the link, let people in as viewers or collaborators, and manage who is in it until it ends',
+    start: 'A project open, no live session, the relay in its local simulator',
+    routes: ['toolbar:Share', 'dialog:Share a live session › Session length', 'dialog:Share a live session › Start live session', 'dialog:Live session › Copy', 'status:Join requests › Admit as Viewer', 'status:Join requests › Admit as Collaborator', 'dialog:Live session › Decline', 'dialog:Live session › Role', 'dialog:Live session › Access', 'dialog:Live session › Remove', 'dialog:Live session › Lock room', 'dialog:Live session › Extend', 'item:SharePopover:<data>', 'dialog:Live session › End session', 'dialog:Live session › Escape'],
+    outcome: 'The invite link points at the configured relay and is copied on start and on Copy; a waiting guest is announced and is let in with the chosen role, or declined; role, a guest’s own end of access, the lock, an extension and a removal reach the guests; guests follow the host’s page and width; ending the session, or closing the project, ends it for every guest and leaves Share as it was',
+    scenario: 'business · none · relay simulator',
+    proof: [
+      { test: L_SHARE, kind: 'e2e', step: 'Share starts a live session and copies its invite link' },
+      { test: L_SHARE, kind: 'e2e', step: 'a guest waiting is announced, and admitted from the notice' },
+      { test: L_SHARE, kind: 'e2e', step: 'guests follow the host’s page and width' },
+      { test: L_SHARE, kind: 'e2e', step: 'the popover admits and declines, and manages the roster' },
+      { test: L_SHARE, kind: 'e2e', step: 'locking turns new guests away and keeps those in' },
+      { test: L_SHARE, kind: 'e2e', step: 'extending moves the end later' },
+      { test: L_SHARE, kind: 'e2e', step: 'removing a guest' },
+      { test: L_SHARE, kind: 'e2e', step: 'ending the session' },
+      { test: L_SHARE, kind: 'e2e', step: 'closing the project ends a running session for everyone' },
+      { test: 'tests/unit/live-share.test.ts', kind: 'unit' },
+      { test: 'tests/unit/live-host-relay.test.ts', kind: 'unit', step: 'reaches a guest let in later, and every admitted guest as the host moves' }
+    ],
+    gaps: [{ missing: 'A dropped relay connection (Reconnecting, then Live again or ended) is proven only below the editor, in tests/unit/live-host-relay.test.ts', owner: 'preview' }]
   },
   // ---- export ----
   {

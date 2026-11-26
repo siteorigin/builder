@@ -61,6 +61,7 @@ describe('the time left', () => {
     expect(spanWords(HOUR + MIN)).toBe('1 hour 1 minute');
     expect(spanWords(2 * HOUR)).toBe('2 hours');
     expect(spanWords(30_000)).toBe('30 seconds');
+    expect(spanWords(1000)).toBe('1 second');
   });
 
   it('reads the relay’s clock, carried forward on the monotonic clock rather than this computer’s', () => {
@@ -89,6 +90,7 @@ describe('the pill', () => {
     expect(livePill(room({ phase: 'reconnecting' } as Partial<LiveRoomState>), T0)).toMatchObject({ kind: 'reconnecting', text: 'Reconnecting' });
     expect(livePill({ phase: 'idle', lastError: null }, T0)).toMatchObject({ kind: 'idle', text: 'Share' });
     expect(livePill({ phase: 'starting', workspaceKey: 'k', runId: 'r' }, T0)).toMatchObject({ kind: 'busy', text: 'Starting…' });
+    expect(livePill({ phase: 'stopping', workspaceKey: 'k', runId: 'r' }, T0)).toEqual({ kind: 'busy', text: 'Ending…', label: 'Share: the live session is ending' });
   });
 
   it('shows a session of another project opening as none', () => {
@@ -104,6 +106,7 @@ describe('the pill', () => {
     expect(joinNotice([])).toBe('');
     expect(joinNotice(['Ann'])).toBe('Ann wants to join the live session');
     expect(joinNotice(['Ann', 'Bo', 'Cy'])).toBe('Ann, Bo and Cy want to join the live session');
+    expect(joinNotice(['Ann', 'Bo', 'Cy', 'Di'])).toBe('Ann, Bo, Cy and Di want to join the live session');
   });
 });
 
@@ -158,6 +161,8 @@ describe('the host’s presence', () => {
     // Any width the editor allows is one the relay reads.
     expect(valid(hostPresence({ pageId: 'home', route: '/' }, 240))).toBe(true);
     expect(valid(hostPresence({ pageId: 'home', route: '/' }, Number.NaN))).toBe(true);
+    expect(hostPresence({ pageId: 'home', route: '/café/' }, 833.6)).toMatchObject({ viewportWidth: 834, previewPath: '/caf%C3%A9/' });
+    expect(hostPresence({ pageId: 'home', route: '//evil.example/' }, 834).previewPath).toBeNull();
     expect(valid(hostPresence({ pageId: 'x'.repeat(200), route: '/' }, 1280))).toBe(true);
   });
 });

@@ -12,10 +12,10 @@ import { joinGuest, redeemTicket, startRelay } from '../unit/relay-harness.ts';
 import { parseInviteLink } from '../../src/shared/live/relay-url.ts';
 
 const { WORK, SHOTS, cleanup } = scratch('live-share');
-const relay = await withTimeout(startRelay(), 120000, 'The relay simulator');
-const origin = await relay.origin();
-const { app, win, errors } = await launch(WORK, { SITEORIGIN_LIVE_RELAY_URL: origin });
 const guests = [];
+let relay = null;
+let app = null;
+let win = null;
 
 const share = () => win.locator('.toolbar .share-btn');
 const popover = () => win.locator('.share-popover');
@@ -48,6 +48,16 @@ const asks = async (roomId, name) => {
 };
 
 try {
+  // Started here, so the relay and the app are let go whatever fails, even while they start.
+  const starting = startRelay();
+  relay = await withTimeout(starting, 120000, 'The relay simulator').catch(async (e) => {
+    void starting.then((late) => late.dispose()).catch(() => undefined);
+    throw e;
+  });
+  const origin = await relay.origin();
+  const launched = await launch(WORK, { SITEORIGIN_LIVE_RELAY_URL: origin });
+  ({ app, win } = launched);
+  const { errors } = launched;
   await createProject(win, { name: 'Harbour Lane Studio', parentDir: join(WORK, 'sites'), starter: 'business', sampleImages: false });
   // The headless window is not focused, so the page's clipboard would refuse; record what is copied instead.
   await win.evaluate(() => {
@@ -73,7 +83,8 @@ try {
   const parsed = parseInviteLink(invite);
   assert.ok(parsed, `the invite link is a room link: ${invite}`);
   assert.equal(parsed.relayUrl, origin, 'the invite link points at the configured relay');
-  assert.deepEqual(await win.evaluate(() => window.__copied), [invite], 'starting copied the invite link');
+  // The link is copied once the start has answered, which may be a moment after the pill shows the session.
+  await eventually(async () => assert.deepEqual(await win.evaluate(() => window.__copied), [invite], 'starting copied the invite link'), 3000);
   await dialog.getByRole('button', { name: 'Copy' }).click();
   await eventually(async () => assert.deepEqual(await win.evaluate(() => window.__copied), [invite, invite]), 3000);
   await win.getByText('Invite link copied', { exact: true }).waitFor();
@@ -82,13 +93,13 @@ try {
 
   step('a guest waiting is announced, and admitted from the notice');
   await closeShare();
-  assert.ok(await share().evaluate((el) => el === document.activeElement), 'Escape hands focus back to Share');
+  await eventually(async () => assert.ok(await share().evaluate((el) => el === document.activeElement), 'Escape hands focus back to Share'), 3000);
   const ann = await asks(roomId, 'Ann');
   const notice = win.getByRole('region', { name: 'Join requests' });
   await notice.getByText('Ann wants to join').waitFor();
   await eventually(async () => assert.equal(await win.locator('.toolbar [role="status"][aria-live="polite"]').last().innerText(), 'Ann wants to join the live session'));
   assert.equal(await share().locator('.share-badge').innerText(), '1');
-  assert.match(await share().getAttribute('aria-label'), /1 waiting to join/);
+  assert.match(await share().getAttribute('aria-label'), /^Share: live session, 0 guests, 1 waiting to join, \d+ minutes left$/);
   await win.screenshot({ path: join(SHOTS, 'live-share-waiting.png') });
   await notice.getByRole('group', { name: 'Answer Ann' }).getByRole('button', { name: 'Admit as Collaborator' }).click();
   const annIn = await ann.guest.next('guest:status');
@@ -96,18 +107,19 @@ try {
   assert.equal(annIn.role, 'collaborator');
   assert.equal((await redeemTicket(relay, roomId, annIn.previewTicket)).status, 204, 'the admitted guest can open the preview');
   await notice.waitFor({ state: 'detached' });
-  await eventually(async () => assert.match(await share().getAttribute('aria-label'), /1 guest, /));
+  await eventually(async () => assert.match(await share().getAttribute('aria-label'), /^Share: live session, 1 guest, \d+ minutes left$/));
 
   step('guests follow the host’s page and width');
   const follows = await ann.guest.next('presence:changed');
   assert.deepEqual(follows.participant, { kind: 'host' });
   assert.equal(follows.presence.previewPath, '/');
   assert.equal(follows.presence.viewportWidth, 1280);
+  ann.guest.discard('presence:changed');
   await win.getByRole('button', { name: 'Phone' }).click();
-  await eventually(async () => {
-    const moved = ann.guest.take('presence:changed', (f) => f.presence.viewportWidth === 390);
-    assert.ok(moved, 'the new width reaches the guest');
-  });
+  await eventually(async () => assert.ok(ann.guest.take('presence:changed', (f) => f.participant.kind === 'host' && f.presence.viewportWidth === 390 && f.presence.previewPath === '/'), 'the new width reaches the guest'));
+  const about = Object.values((await win.evaluate(() => window.builder.project.snapshot())).state.pages).find((p) => p.route === '/about/');
+  await win.locator('.pages-panel').getByText('About', { exact: true }).first().click();
+  await eventually(async () => assert.ok(ann.guest.take('presence:changed', (f) => f.participant.kind === 'host' && f.presence.pageId === about.id && f.presence.previewPath === '/about/' && f.presence.viewportWidth === 390), 'the new page reaches the guest'));
 
   step('the popover admits and declines, and manages the roster');
   const bo = await asks(roomId, 'Bo');
@@ -193,8 +205,8 @@ try {
   assert.deepEqual(errors, [], 'no uncaught errors in the editor');
 } finally {
   for (const g of guests) g.close();
-  await app.close().catch(() => undefined);
-  await relay.dispose().catch(() => undefined);
+  await app?.close().catch(() => undefined);
+  await relay?.dispose().catch(() => undefined);
 }
 // Once the app has let go of its files.
 cleanup();

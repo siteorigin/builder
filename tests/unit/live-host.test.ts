@@ -253,7 +253,10 @@ describe('the host’s presence', () => {
     expect(h.manager.setPresence(run, at('home'))).toEqual({ ok: true });
     expect(h.manager.setPresence(run, at('home'))).toEqual({ ok: true });
     expect(h.manager.setPresence(run, at('about', 390, '/about/'))).toEqual({ ok: true });
-    expect(presences(socket)).toEqual([at('home'), at('about', 390, '/about/')]);
+    // The width alone, or the address alone, is a change too.
+    expect(h.manager.setPresence(run, at('about', 834, '/about/'))).toEqual({ ok: true });
+    expect(h.manager.setPresence(run, at('about', 834, '/about/?tab=2'))).toEqual({ ok: true });
+    expect(presences(socket)).toEqual([at('home'), at('about', 390, '/about/'), at('about', 834, '/about/'), at('about', 834, '/about/?tab=2')]);
   });
 
   it('sends a presence given before the room was open once it is, and again on the room taken back', async () => {
@@ -285,6 +288,12 @@ describe('the host’s presence', () => {
     expect(h.manager.setPresence(run, at('home', 1280, '../etc'))).toMatchObject({ ok: false });
     expect(h.manager.setPresence(run, { ...at('home'), extra: true })).toMatchObject({ ok: false });
     expect(h.manager.setPresence({ ...run, runId: 'other' }, at('home'))).toMatchObject({ ok: false });
+    // Ending, and ended: nothing more goes out.
+    const stopping = h.manager.stop(run);
+    expect(h.manager.setPresence(run, at('home'))).toMatchObject({ ok: false });
+    socket.drop(LIVE_CLOSE_CODES.ENDED);
+    await stopping;
+    expect(h.manager.setPresence(run, at('home'))).toMatchObject({ ok: false });
     expect(presences(socket)).toEqual([]);
   });
 });

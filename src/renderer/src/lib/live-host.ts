@@ -3,6 +3,8 @@ import type { SessionDuration } from '@shared/live/expiry';
 import { api, getState, setState, toast, useStore, type State } from '../store';
 import { hasRoom, hostPresence, joinNotice, liveFor, liveRun, presenceKey, readRelayClock, sameRun, waitingGuests } from './live-session';
 import { shownView } from './template-view';
+import { postAt, postShown, postWorkspace } from './posts';
+import { entryRoute } from '@shared/collections';
 
 /**
  * The editor's side of hosting a live session: it follows the session the main process runs (src/main/live/host.ts),
@@ -14,15 +16,19 @@ import { shownView } from './template-view';
 /** The session the editor shows: the main process's, while it is this opening's. */
 export const shownLive = (s: Pick<State, 'live' | 'snapshot'>): LiveHostState => liveFor(s.live, s.snapshot?.workspaceKey);
 
-/** Take a state the main process sent. A room's end that the host did not ask for is said once. */
+/**
+ * Take a state the main process sent. A running session's end that the host did not ask for is said once, in the
+ * opening it belonged to; one that never started is said by its start (startLive).
+ */
 export function applyLiveState(next: LiveHostState): void {
-  const prev = getState().live;
+  const s = getState();
+  const prev = s.live;
   setState({ live: next, liveClock: hasRoom(next) ? readRelayClock(next) : null });
-  if (next.phase === 'idle' && prev.phase !== 'idle' && next.lastError) toast(next.lastError, 'info');
+  if (next.phase === 'idle' && next.lastError && hasRoom(prev) && prev.workspaceKey === s.snapshot?.workspaceKey) toast(next.lastError, 'info');
 }
 
 let noticeId = 0;
-let waitingNames: string[] = [];
+let waiting: LiveJoinRequest[] = [];
 let noticeTimer: ReturnType<typeof setTimeout> | null = null;
 
 /**
@@ -32,15 +38,16 @@ let noticeTimer: ReturnType<typeof setTimeout> | null = null;
 export function applyLiveRequest(request: LiveJoinRequest): void {
   const s = getState();
   if (!sameRun(liveRun(s.live), request) || request.workspaceKey !== s.snapshot?.workspaceKey) return;
-  waitingNames.push(request.displayName);
+  waiting.push(request);
   if (noticeTimer) return;
   noticeTimer = setTimeout(() => {
     noticeTimer = null;
-    const names = waitingNames;
-    waitingNames = [];
-    // Only those still waiting by now: one let in or gone meanwhile is not news.
-    const still = new Set(waitingGuests(getState().live).map((g) => g.displayName));
-    const text = joinNotice(names.filter((n) => still.has(n)));
+    const asked = waiting;
+    waiting = [];
+    // Only those still waiting by now, in the session they asked to join: one let in or gone meanwhile is not news.
+    const now = shownLive(getState());
+    const still = new Set(waitingGuests(now).map((g) => g.guestId));
+    const text = joinNotice(asked.filter((r) => sameRun(liveRun(now), r) && still.has(r.guestId)).map((r) => r.displayName));
     if (text) setState({ liveNotice: { id: ++noticeId, text } });
   }, 150);
 }
@@ -67,7 +74,7 @@ export function followLive(): Array<() => void> {
     gone = true;
     if (noticeTimer) clearTimeout(noticeTimer);
     noticeTimer = null;
-    waitingNames = [];
+    waiting = [];
   });
   return offs;
 }
@@ -95,6 +102,7 @@ export async function copyInvite(inviteUrl: string): Promise<void> {
 export async function startLive(duration: SessionDuration): Promise<boolean> {
   const opening = getState().snapshot?.workspaceKey;
   if (!opening) return false;
+  const attempt = ++starts;
   let result;
   try {
     result = await api.live.start({ opening, duration });
@@ -103,7 +111,8 @@ export async function startLive(duration: SessionDuration): Promise<boolean> {
     return false;
   }
   if (!result.ok) {
-    toast(result.message, 'error');
+    // A start the host called off (Cancel) is not a failure.
+    if (cancelled !== attempt) toast(result.message, 'error');
     return false;
   }
   const started = liveRun(result.state);
@@ -112,6 +121,15 @@ export async function startLive(duration: SessionDuration): Promise<boolean> {
   if (await copyText(result.inviteUrl)) toast('Live session started. Invite link copied.', 'success');
   else toast('Live session started. The invite link could not be copied: copy it from Share.', 'info');
   return true;
+}
+
+let starts = 0;
+let cancelled = 0;
+
+/** Call off a session still starting: its start then ends quietly. */
+export function cancelStart(run: LiveRun): Promise<boolean> {
+  cancelled = starts;
+  return liveCommand(run, (r) => api.live.stop(r));
 }
 
 /**
@@ -133,10 +151,27 @@ export async function liveCommand(run: LiveRun, send: (run: LiveRun) => Promise<
 /** How long a burst of changes (a width being dragged) waits before guests are told where the host ended up. */
 export const PRESENCE_DELAY_MS = 150;
 
-/** Where the host is, from the editor's state: the view the canvas shows, at its width. */
-export function presenceOf(s: Pick<State, 'snapshot' | 'pageId' | 'templateMode' | 'definitionMode' | 'viewport'>) {
+/**
+ * Where the host is, from the editor's state: what the canvas shows, at its width. A post previewed is its address (or
+ * wherever its visitor went on to); under the post writer, or with a component edited everywhere, the canvas shows no
+ * place of the site, so none is sent.
+ */
+export function presenceOf(s: Pick<State, 'snapshot' | 'pageId' | 'templateMode' | 'definitionMode' | 'viewport' | 'leftTab' | 'postView' | 'mode' | 'post' | 'postPreviewAt'>) {
   const state = s.snapshot?.state;
-  if (!state || s.definitionMode) return hostPresence({ pageId: null, route: null }, s.viewport);
+  const none = hostPresence({ pageId: null, route: null }, s.viewport);
+  if (!state || s.definitionMode) return none;
+  const posts = postWorkspace(s);
+  if (posts === 'write') return none;
+  if (posts === 'preview') {
+    if (s.postPreviewAt !== null) {
+      const shown = postShown(state, 'preview', s.post, s.postPreviewAt);
+      if (shown.kind === 'page') return hostPresence({ pageId: shown.pageId, route: state.pages[shown.pageId].route }, s.viewport);
+      return hostPresence({ pageId: null, route: s.postPreviewAt }, s.viewport);
+    }
+    const entry = postAt(state, s.post);
+    const collection = s.post && Object.hasOwn(state.collections ?? {}, s.post.collectionId) ? state.collections[s.post.collectionId] : undefined;
+    return hostPresence({ pageId: null, route: entry && collection ? (entryRoute(collection, entry) ?? null) : null }, s.viewport);
+  }
   const view = shownView(state, s.pageId, s.templateMode);
   return hostPresence({ pageId: view && !view.template ? view.key : null, route: view?.route ?? null }, s.viewport);
 }
@@ -170,7 +205,18 @@ export function syncPresence(): () => void {
       return;
     }
     const was = shownLive(prev);
-    const changed = !sameRun(liveRun(was), liveRun(live)) || s.snapshot?.state !== prev.snapshot?.state || s.pageId !== prev.pageId || s.templateMode !== prev.templateMode || s.definitionMode !== prev.definitionMode || s.viewport !== prev.viewport;
+    const changed =
+      !sameRun(liveRun(was), liveRun(live)) ||
+      s.snapshot?.state !== prev.snapshot?.state ||
+      s.pageId !== prev.pageId ||
+      s.templateMode !== prev.templateMode ||
+      s.definitionMode !== prev.definitionMode ||
+      s.viewport !== prev.viewport ||
+      s.leftTab !== prev.leftTab ||
+      s.postView !== prev.postView ||
+      s.mode !== prev.mode ||
+      s.post !== prev.post ||
+      s.postPreviewAt !== prev.postPreviewAt;
     if (!changed || timer) return;
     timer = setTimeout(flush, PRESENCE_DELAY_MS);
   });

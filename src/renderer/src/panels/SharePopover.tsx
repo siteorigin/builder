@@ -7,7 +7,7 @@ import { GUEST_ROLES, type GuestRole } from '@shared/live/limits';
 import type { SessionDuration } from '@shared/live/expiry';
 import { api, getState, setState, useStore } from '../store';
 import { openMenus, Segmented, Spinner, SwitchRow, useMenu } from '../components/ui';
-import { copyInvite, liveCommand, shownLive, startLive } from '../lib/live-host';
+import { cancelStart, copyInvite, liveCommand, shownLive, startLive } from '../lib/live-host';
 import { JoinAnswers, useBusy } from '../components/JoinRequests';
 import {
   admittedGuests,
@@ -121,8 +121,14 @@ function SharePopover({ id, live, at, trigger }: { id: string; live: LiveHostSta
       if (t instanceof Element && t.closest('[role="menu"]')) return;
       setState({ shareOpen: false });
     };
+    // A press in the preview frame never reaches this document: focus going into it puts the popover away too.
+    const intoFrame = () => setTimeout(() => document.activeElement instanceof HTMLIFrameElement && setState({ shareOpen: false }));
     document.addEventListener('pointerdown', away, true);
-    return () => document.removeEventListener('pointerdown', away, true);
+    window.addEventListener('blur', intoFrame);
+    return () => {
+      document.removeEventListener('pointerdown', away, true);
+      window.removeEventListener('blur', intoFrame);
+    };
   }, [trigger]);
   // Below the Share button, its right edge with the button's, kept 8px inside the window.
   useLayoutEffect(() => {
@@ -145,7 +151,11 @@ function SharePopover({ id, live, at, trigger }: { id: string; live: LiveHostSta
     const active = document.activeElement;
     if (!hadFocus.current || (active && active !== document.body)) return;
     const el = box.current;
-    (el?.querySelector<HTMLElement>('.live-waiting button:not(:disabled), .live-roster select:not(:disabled), [data-autofocus]') ?? el)?.focus({ preventScroll: true });
+    if (!el) return;
+    // The next guest waiting, else the roster, else the popover's first control: in that order, brought into view.
+    const next = ['.live-waiting button:not(:disabled)', '.live-roster select:not(:disabled)', '[data-autofocus]'].map((q) => el.querySelector<HTMLElement>(q)).find(Boolean) ?? el;
+    next.focus({ preventScroll: true });
+    next.scrollIntoView?.({ block: 'nearest' });
   });
   return createPortal(
     <div
@@ -158,7 +168,13 @@ function SharePopover({ id, live, at, trigger }: { id: string; live: LiveHostSta
       style={pos ?? { right: 8, top: 52, opacity: 0 }}
       onFocus={() => (hadFocus.current = true)}
       onBlur={(e) => {
-        if (!e.currentTarget.contains(e.relatedTarget as Node | null) && e.relatedTarget) hadFocus.current = false;
+        const to = e.relatedTarget as Node | null;
+        // Focus that went nowhere (a row removed under it) stays the popover's to place.
+        if (!to || e.currentTarget.contains(to)) return;
+        hadFocus.current = false;
+        // Tabbing or clicking away into the editor puts it away, so the editor's shortcuts work again; the Share button
+        // and the Extend menu it opened are part of it.
+        if (!trigger.current?.contains(to) && !(to instanceof Element && to.closest('[role="menu"]'))) setState({ shareOpen: false });
       }}
       onKeyDown={(e) => {
         if (e.key !== 'Escape' || e.defaultPrevented) return;
@@ -173,13 +189,13 @@ function SharePopover({ id, live, at, trigger }: { id: string; live: LiveHostSta
           <X />
         </button>
       </div>
-      {live.phase === 'idle' ? <StartView lastError={live.lastError} /> : live.phase === 'starting' || live.phase === 'stopping' ? <BusyView live={live} /> : <RoomView live={live} at={at} />}
+      {live.phase === 'idle' ? <StartView /> : hasRoom(live) ? <RoomView live={live} at={at} /> : <BusyView live={live} />}
     </div>,
     document.body
   );
 }
 
-function StartView({ lastError }: { lastError: string | null }) {
+function StartView() {
   const [duration, setDuration] = useState<SessionDuration>('2h');
   const [starting, setStarting] = useState(false);
   const labelId = useId();
@@ -192,7 +208,6 @@ function StartView({ lastError }: { lastError: string | null }) {
         </span>
         <Segmented radio full labelledBy={labelId} value={duration} options={DURATION_CHOICES.map((d) => ({ value: d.id, label: d.label }))} onChange={setDuration} />
       </div>
-      {lastError && <p className="share-note">The last session ended: {lastError}</p>}
       <button
         type="button"
         className="btn btn-primary share-start"
@@ -217,7 +232,7 @@ function BusyView({ live }: { live: Extract<LiveHostState, { phase: 'starting' |
         <Spinner decorative /> {live.phase === 'starting' ? 'Starting the live session…' : 'Ending the live session…'}
       </p>
       {live.phase === 'starting' && (
-        <button type="button" className="btn btn-sm" data-autofocus onClick={() => void liveCommand(run, (r) => api.live.stop(r))}>
+        <button type="button" className="btn btn-sm" data-autofocus onClick={() => void cancelStart(run)}>
           Cancel
         </button>
       )}
@@ -313,9 +328,8 @@ function RoomView({ live, at }: { live: LiveRoomState; at: number }) {
         label="Lock room"
         hint="Turns away new join requests. Everyone already here stays."
         checked={live.locked}
-        onChange={(locked) => {
-          if (!reconnecting) void go('lock', () => liveCommand(run, (r) => api.live.setLocked(r, locked)));
-        }}
+        disabled={reconnecting || busy.has('lock')}
+        onChange={(locked) => void go('lock', () => liveCommand(run, (r) => api.live.setLocked(r, locked)))}
       />
       <div className="share-foot">
         <button type="button" className="btn btn-sm btn-danger" disabled={busy.has('end')} onClick={() => void go('end', () => liveCommand(run, (r) => api.live.stop(r)))}>
@@ -341,7 +355,17 @@ function GuestRow({ run, live, guest, at, disabled }: { run: LiveRun; live: Live
   const { busy, run: go } = useBusy();
   const off = disabled || busy.size > 0;
   const choices = guestExpiryChoices(live, at);
-  const own = guest.guestExpiresAt !== null && guest.guestExpiresAt < live.expiresAt;
+  // Any end of its own shows as one, so Whole session can always be chosen to clear it.
+  const own = guest.guestExpiresAt !== null;
+  // A role asked for shows until the roster confirms it (or the command fails), so it is never offered back as a no-op.
+  const [asked, setAsked] = useState<GuestRole | null>(null);
+  useEffect(() => {
+    if (!asked) return;
+    if (guest.role === asked) return setAsked(null);
+    // One the relay refused never arrives: the roster's role shows again after a while.
+    const timer = setTimeout(() => setAsked(null), 10_000);
+    return () => clearTimeout(timer);
+  }, [asked, guest.role]);
   const timeLeft = guestTimeLeft(live, guest, at);
   return (
     <li className="live-row">
@@ -350,7 +374,19 @@ function GuestRow({ run, live, guest, at, disabled }: { run: LiveRun; live: Live
         {timeLeft && <span className="share-quiet"> · {timeLeft}</span>}
       </span>
       <span className="live-controls">
-        <select className="select select-sm" aria-label={`Role for ${guest.displayName}`} value={guest.role} disabled={off} onChange={(e) => void go('role', () => liveCommand(run, (r) => api.live.setRole(r, guest.guestId, e.target.value as GuestRole)))}>
+        <select
+          className="select select-sm"
+          aria-label={`Role for ${guest.displayName}`}
+          value={asked ?? guest.role}
+          disabled={off}
+          onChange={(e) => {
+            const role = e.target.value as GuestRole;
+            setAsked(role);
+            void go('role', async () => {
+              if (!(await liveCommand(run, (r) => api.live.setRole(r, guest.guestId, role)))) setAsked(null);
+            });
+          }}
+        >
           {GUEST_ROLES.map((role) => (
             <option key={role} value={role}>
               {ROLE_LABELS[role]}
