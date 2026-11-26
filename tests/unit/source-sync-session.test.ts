@@ -347,7 +347,10 @@ describe('a source’s settings in the project', () => {
     writeFileSync(file, JSON.stringify({ ...doc, config: { credentials: { token: SECRET } } }));
     const read = await readState(dir).catch((e: Error) => e);
     expect(read).toBeInstanceOf(ProjectFormatError);
-    expect((read as Error).message).toMatch(/siteorigin\/sources\/people\/source\.json cannot be used: its credential "token" holds a value/);
+    expect((read as Error).message).toMatch(/siteorigin\/sources\/people\/source\.json cannot be used: one of its credentials holds a value/);
+    // Nor is the name of the slot it was written under repeated, which may itself be the credential.
+    writeFileSync(file, JSON.stringify({ ...doc, config: { credentials: { [SECRET.replace(/-/g, '_')]: SECRET } } }));
+    expect(((await readState(dir).catch((e: Error) => e)) as Error).message).not.toContain(SECRET.replace(/-/g, '_'));
     expect((read as Error).message).not.toContain(SECRET);
     // A credential under a setting no source takes yet is refused too.
     writeFileSync(file, JSON.stringify({ ...doc, config: { apiKey: SECRET } }));

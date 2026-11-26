@@ -70,7 +70,8 @@ export function sourceDocProblem(doc: unknown, folder?: string): string | null {
     for (const [slot, ref] of slots) {
       if (!isSecretName(slot)) return 'one of its credentials has a name a credential cannot have.';
       // The value itself, whatever its shape, is never kept here.
-      if (!isSecretRef(ref)) return `its credential "${slot}" holds a value instead of naming a secret. Keep the value as a secret, and name it here with { "$secret": "<name>" }.`;
+      // Nor is the slot's name quoted: a credential pasted in the wrong place may be the name.
+      if (!isSecretRef(ref)) return 'one of its credentials holds a value instead of naming a secret. Keep the value as a secret, and name it here with { "$secret": "<name>" }.';
     }
   }
   return null;
