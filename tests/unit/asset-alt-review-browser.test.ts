@@ -29,6 +29,7 @@ const ROWS: Row[] = [
   { where: 'Home', what: 'Content with image', alt: 'No alt text', go: true },
   { where: 'Header and footer on every page', what: 'Gallery with captions · Photo 12 of the renovated kitchen', alt: 'Kept its own: “A bright kitchen with oak cupboards and a long stone worktop”', go: true },
   { where: 'Testimonial with portrait and quotation', what: 'Starting value of Photograph', alt: 'No alt text', go: false },
+  { where: 'NorthumberlandRiversideRenovationGallery', what: 'Image', alt: 'No alt text', go: true },
   { where: 'About', what: 'IMG_20260314_kitchen_renovation_final_export_v2', alt: 'Kept its own: “IMG_20260314_kitchen_renovation_final_export_v2”', go: true }
 ];
 
