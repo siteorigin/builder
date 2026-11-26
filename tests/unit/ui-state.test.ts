@@ -964,6 +964,7 @@ describe('generated buttons, tabs and disclosures', () => {
       expect(tagsWith(out, 'aria-pressed')).toHaveLength(variant.tabs?.length ?? 3);
       // The buttons make a group: the option not chosen stays in the page, hidden while scripts run, so a page
       // whose scripts never run shows both.
+      expect(openTag(out, nodeClass(tabsOnly, 'panel-b'))).not.toBe('');
       expect(openTag(out, nodeClass(tabsOnly, 'panel-b'))).not.toContain(CHOICE_OFF_CLASS);
       expect(openTag(out, nodeClass(tabsOnly, 'panel-a'))).toContain(CHOICE_OFF_CLASS);
       expect(out).toContain('Team plan details');
@@ -1276,6 +1277,59 @@ describe('optional tabs, unnamed tabs and groups of a choice’s buttons', () =>
     expect(tagsWith(html, 'class', nodeClass(def, 'monthly'))).toHaveLength(2);
     expect(html).not.toContain('Grandfathered rate');
     expect(compileWarnings(s, [def])).toEqual([]);
+  });
+
+  it('keeps a choice’s content only where hiding it is all it takes: never a summary, nor beside a tab list, and empties its wrapper with it', async () => {
+    const s = fresh();
+    const def = addDef(s, {
+      componentId: 'test.choice-shapes',
+      name: 'Choice shapes',
+      properties: {},
+      parts: {},
+      state: structuredClone({ billing: BILLING }),
+      build: (b) =>
+        b.el('root', 'section', {}, [
+          b.el('switch', 'div', {}, [
+            b.link('monthly-btn', NONE, 'Monthly', 'secondary', { stateAction: { state: 'billing', op: 'set', value: 'monthly' } }),
+            b.link('annual-btn', NONE, 'Annual', 'secondary', { stateAction: { state: 'billing', op: 'set', value: 'annual' } })
+          ]),
+          // A disclosure's first summary is its control, hidden or not: only the chosen one is in the page.
+          b.el('terms', 'details', {}, [
+            b.el('summary-monthly', 'summary', { when: eq(uiState('billing'), 'monthly') }, [b.text('summary-monthly-text', 'span', 'Monthly terms')]),
+            b.el('summary-annual', 'summary', { when: eq(uiState('billing'), 'annual') }, [b.text('summary-annual-text', 'span', 'Annual terms')]),
+            b.text('terms-text', 'p', 'Cancel any time.')
+          ]),
+          // A padded wrapper that collapses with what it holds hides with the option it holds, printed too.
+          b.el('wrap', 'div', { collapseEmpty: true, styles: { paddingBlock: '24px' } }, [b.text('monthly-note', 'p', 'Billed monthly', { when: eq(uiState('billing'), 'monthly') })])
+        ])
+    });
+    place(s, def);
+    const html = await renderHome(s);
+    expect(html).toContain('Annual terms');
+    expect(html).not.toContain('Monthly terms');
+    expect(tagsWith(html, 'class', `${nodeClass(def, 'monthly-note')} ${CHOICE_OFF_CLASS}`)).toHaveLength(1);
+    const wrap = openTag(html, nodeClass(def, 'wrap'));
+    expect(wrap).not.toBe('');
+    expect(attrOf(wrap, 'class')!.split(' ')).toContain(CHOICE_OFF_CLASS);
+    expect(attrOf(wrap, 'class')!.split(' ')).not.toContain(STATE_OFF_CLASS);
+    expect(compileWarnings(s, [def])).toEqual([]);
+    // A choice whose buttons are also a tab list's keeps the tab list's rules: a row of shortcuts besides offers
+    // nothing more to show without scripts.
+    const t = fresh();
+    const tabs = tabsDef(t, {
+      extra: (b) => [
+        b.el('shortcuts', 'div', {}, [
+          b.link('short-a', NONE, 'Starter', 'text', { stateAction: { state: 'plan', op: 'set', value: 'a' } }),
+          b.link('short-c', NONE, 'Studio', 'text', { stateAction: { state: 'plan', op: 'set', value: 'c' } })
+        ]),
+        b.text('teaser', 'p', 'Studio teaser', { when: eq(uiState('plan'), 'c') })
+      ]
+    });
+    place(t, tabs);
+    const out = await renderHome(t);
+    expect(tagsWith(out, 'role', 'tablist')).toHaveLength(1);
+    expect(out).not.toContain('Studio teaser');
+    expect(out).not.toContain(CHOICE_OFF_CLASS);
   });
 
   it('groups a choice’s buttons gathered in a plain container, named as a tab list is, each named by its option while blank', async () => {

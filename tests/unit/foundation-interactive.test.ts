@@ -357,7 +357,7 @@ describe('without scripts (#885)', () => {
 
   it('leaves the site search out, as nothing could search', () => {
     const search = catalogueComponent('foundation', 'site.search')!;
-    const source = search.kind === 'code' ? search.source : '';
+    const source = (search.kind === 'code' ? search.source : undefined) ?? '';
     expect(source).toContain('<form class="so-search__form"');
     const { css } = compile(source, { filename: 'SiteSearch.svelte', generate: 'server', runes: true });
     expect(css?.code).toMatch(new RegExp(`:root:not\\(\\.${SCRIPTS_CLASS}\\) \\.so-search\\.svelte-[a-z0-9]+:not\\(#so-no-js\\) \\{\\s*display: none !important;`));
