@@ -127,14 +127,20 @@ export function Welcome() {
   // While the filter has focus, the result Enter would open is marked.
   const [filterFocused, setFilterFocused] = useState(false);
   // Times such as "just now" are drawn again each minute, and when the window comes back, so they never go stale.
+  // Coming back also reads the list again (#809): a folder moved or renamed meanwhile shows as not found, with Find folder…
   const [, setClock] = useState(0);
   useEffect(() => {
     const tick = () => setClock(Date.now());
+    const back = () => {
+      tick();
+      // An open on its way reads the list once it is done.
+      if (!openingRef.current) refresh();
+    };
     const timer = window.setInterval(tick, 60000);
-    window.addEventListener('focus', tick);
+    window.addEventListener('focus', back);
     return () => {
       window.clearInterval(timer);
-      window.removeEventListener('focus', tick);
+      window.removeEventListener('focus', back);
     };
   }, []);
   const results = useRef<HTMLDivElement>(null);

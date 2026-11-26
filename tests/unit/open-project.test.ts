@@ -17,7 +17,7 @@ vi.mock('electron', () => ({
 }));
 
 import { dialog } from 'electron';
-import { Controller, readManifestSummary } from '../../src/main/controller';
+import { Controller, projectNotFound, readManifestSummary } from '../../src/main/controller';
 import { loadSettings, trust, untrust } from '../../src/main/settings';
 import { NOT_A_PROJECT_ZIP, WEBSITE_ZIP } from '../../src/main/unzip';
 import { zipDirectory } from '../../src/main/zip';
@@ -65,9 +65,28 @@ describe('opening a received project', () => {
   it('answers a missing project folder with a normal message, not a rejection', async () => {
     const dir = tmp('so-empty-');
     const r = await new Controller(() => null).open(dir);
-    expect(r).toEqual({ ok: false, message: expect.stringContaining('not a SiteOrigin Builder project') });
+    expect(r).toEqual({ ok: false, message: projectNotFound(dir) });
     const gone = join(dir, 'deleted');
-    expect((await new Controller(() => null).open(gone)).ok).toBe(false);
+    expect(await new Controller(() => null).open(gone)).toEqual({ ok: false, message: projectNotFound(gone) });
+  });
+
+  // #809: a Recent projects card whose folder was moved. The author chose no folder, so nothing may say they chose wrong.
+  it('says a project asked for by its folder was not found, never that a chosen folder is the wrong kind', async () => {
+    const gone = join(tmp('so-moved-'), 'mill-road');
+    const r = await new Controller(() => null).open(gone);
+    expect(r).toEqual({ ok: false, message: `The project folder ${gone} was not found. It may have been moved, renamed or deleted.` });
+    // The folder is still there, but the project has gone from it.
+    const emptied = tmp('so-emptied-');
+    const e = await new Controller(() => null).open(emptied);
+    expect(e).toEqual({ ok: false, message: `The project in ${emptied} was not found: its siteorigin.project.json is no longer there. It may have been moved, renamed or deleted.` });
+    for (const m of [r.message, e.message]) expect(m).not.toMatch(/not a SiteOrigin Builder project|Choose a folder/);
+  });
+
+  it('still says a folder the author chose is not a project', async () => {
+    const dir = tmp('so-chosen-');
+    vi.mocked(dialog.showOpenDialog).mockResolvedValueOnce({ canceled: false, filePaths: [dir] });
+    const r = await new Controller(() => ({}) as never).open(undefined, { folder: true });
+    expect(r).toEqual({ ok: false, message: 'That folder is not a SiteOrigin Builder project. Choose a folder that contains siteorigin.project.json.' });
   });
 
   it('still asks for trust on a healthy manifest, naming the project', async () => {
