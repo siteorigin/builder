@@ -25,6 +25,7 @@ import { blocksSaving, diagnosticKey, introducedDiagnostics, validateState, type
 import { developerModeRefusal } from '@engine/developer-mode';
 import { findMissingAssetFiles } from './asset-files';
 import type { MissingAssetFiles } from '@shared/api';
+import { HISTORY_LIMIT } from '@shared/api';
 import { DOCUMENT_EXTENSIONS } from '@shared/document-files';
 import { defFile, GENERATED_DIR, generateManagedComponent, generateProject, GENERATOR_VERSION, packFileCopies, SERVER_HOOK_FILE, webMcpFormFile } from '@generator/index';
 import { sendsFormMessages, type ComponentImport } from '@engine/component-package';
@@ -157,7 +158,6 @@ export function statTrusted(st: Pick<BigIntStats, 'mtimeNs' | 'ctimeNs'>, now: n
   const settled = (ns: bigint) => now - Number(ns / 1_000_000n) > settleMs;
   return settled(st.mtimeNs) && settled(st.ctimeNs);
 }
-const HISTORY_LIMIT = 100;
 /** How many let-go AI runs History remembers the standing of (see HistoryFile.droppedRuns). */
 const DROPPED_RUN_LIMIT = 200;
 /** How often an open project refreshes its lock, and how long an unrefreshed lock is still trusted. */
@@ -3099,7 +3099,7 @@ export class ProjectSession extends EventEmitter {
       canRedo: h.cursor < h.entries.length && !this.activeRun,
       undoLabel: h.entries[h.cursor - 1]?.label,
       redoLabel: h.entries[h.cursor]?.label,
-      entries: h.entries.map((e, i) => ({ id: e.id, label: e.label, source: e.source, time: e.time, applied: i < h.cursor, runId: e.runId, ...(e.revertsRunId ? { revertsRunId: e.revertsRunId } : {}) })),
+      entries: h.entries.map((e, i) => ({ id: e.id, label: e.label, source: e.source, time: e.time, revision: e.revision, applied: i < h.cursor, runId: e.runId, ...(e.revertsRunId ? { revertsRunId: e.revertsRunId } : {}) })),
       ...(h.droppedRuns ? { droppedRuns: { ...h.droppedRuns } } : {})
     };
   }

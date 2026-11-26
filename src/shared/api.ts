@@ -108,6 +108,9 @@ export interface MissingAssetFiles {
   variants: string[];
 }
 
+/** How many steps History keeps: past this, each new step lets the oldest go. */
+export const HISTORY_LIMIT = 100;
+
 export interface HistoryInfo {
   canUndo: boolean;
   canRedo: boolean;
@@ -118,6 +121,8 @@ export interface HistoryInfo {
     label: string;
     source: string;
     time: string;
+    /** The revision the step last changed the project at: a step that later edits joined has a newer one. */
+    revision: number;
     applied: boolean;
     runId?: string;
     /** The AI run this step took back on its own, keeping the edits made after it (issue 164). */

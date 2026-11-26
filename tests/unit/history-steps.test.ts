@@ -226,7 +226,7 @@ describe('stepping History to a chosen entry', () => {
 });
 
 describe('what choosing a row in History does', () => {
-  const entry = (label: string, applied: boolean) => ({ id: label, label, source: 'user', time: '2026-11-24T10:00:00.000Z', applied });
+  const entry = (label: string, applied: boolean) => ({ id: label, label, source: 'user', time: '2026-11-24T10:00:00.000Z', revision: 1, applied });
   // Oldest first: three applied, two undone.
   const entries = [entry('Rename site', true), entry('Duplicate Split hero on Home', true), entry('Edit Heading on About', true), entry('Delete Logo strip on Home', false), entry('Insert Gallery on Home', false)];
 

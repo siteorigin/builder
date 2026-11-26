@@ -1814,6 +1814,21 @@ export const INTERACTIONS: Interaction[] = [
     ]
   },
   {
+    id: 'preview.error-recovery',
+    area: 'preview',
+    intent: 'When the page breaks after a change, undo that change or open the component that threw',
+    start: 'Business site Home, the page reporting an error on the canvas',
+    routes: ['canvas:Page problem › Revert', 'canvas:Page problem › Open source', 'canvas:Page problem › Try again'],
+    outcome: 'Revert is offered only for the one change made since the page last worked and, used, undoes it and brings the page back while keeping earlier edits; Open source opens the component the error names; neither is offered when the cause is unknown',
+    scenario: 'Business starter · none',
+    proof: [
+      { test: 'tests/e2e/preview-error.mjs', kind: 'e2e', step: 'the first edit after the page opens, followed by an error, offers to revert it' },
+      { test: 'tests/e2e/preview-error.mjs', kind: 'e2e', step: 'an error with no edit before it offers no Revert, and Open source opens the generated component read only' },
+      { test: 'tests/e2e/preview-error.mjs', kind: 'e2e', step: 'an error after an edit offers to revert it, and Revert brings the page back without it, keeping the edit before' },
+      { test: 'tests/unit/preview-error.test.ts', kind: 'unit' }
+    ]
+  },
+  {
     id: 'preview.packaged',
     area: 'preview',
     intent: 'Preview the site in the installed app',

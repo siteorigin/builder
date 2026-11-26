@@ -6,10 +6,11 @@
 import { existsSync, readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { chromium, type Browser, type Page } from 'playwright';
-import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 
 const bridge = readFileSync(resolve('src/runtime/bridge.client.js'), 'utf8');
 const browserInstalled = existsSync(chromium.executablePath());
+const THROWER = '/src/lib/siteorigin/generated/hero.svelte';
 
 const HOST = 'http://host.test';
 const SITE = 'http://bridge.test';
@@ -75,6 +76,8 @@ describe.skipIf(!browserInstalled)('a visitor’s journey through the preview fr
     await page.route('**/*', (route) => {
       const url = new URL(route.request().url());
       if (url.origin === SITE && url.pathname === '/bridge.js') return route.fulfill({ contentType: 'text/javascript', body: bridge });
+      // A component that throws as it runs, served where the generator writes one.
+      if (url.origin === SITE && url.pathname === THROWER) return route.fulfill({ contentType: 'text/javascript', body: `throw new Error('boom in the hero');` });
       if (url.origin === SITE && PAGES[url.pathname]) return route.fulfill({ contentType: 'text/html', body: PAGES[url.pathname] });
       if (url.origin === HOST) return route.fulfill({ contentType: 'text/html', body: `<!doctype html><title>host</title><body style="margin:0"><iframe name="so-test" src="${SITE}/" style="border:0;width:700px;height:400px"></iframe></body>` });
       return route.abort();
@@ -85,10 +88,11 @@ describe.skipIf(!browserInstalled)('a visitor’s journey through the preview fr
       window.mode = 'preview';
       window.latest = null;
       window.errors = [];
+      window.errorReports = [];
       window.addEventListener('message', (e) => {
         if (!e.data || e.data.sessionId !== 'so-test') return;
         if (e.data.type === 'history') window.latest = e.data.payload;
-        if (e.data.type === 'runtimeError') window.errors.push(e.data.payload.message);
+        if (e.data.type === 'runtimeError') window.errors.push(e.data.payload.message), window.errorReports.push(e.data.payload);
         if (e.data.type === 'ready') e.source.postMessage({ protocolVersion: 1, sessionId: 'so-test', type: 'mode', payload: { mode: window.mode } }, '*');
       });
     }`);
@@ -190,5 +194,26 @@ describe.skipIf(!browserInstalled)('a visitor’s journey through the preview fr
     // Give an unhandled rejection time to be reported, as it would be.
     await frame().evaluate(`new Promise((r) => setTimeout(r, 200))`);
     expect(await page.evaluate<string[]>(`window.errors`)).toEqual([]);
+  }, 30000);
+
+  it('reports a page error with where it was thrown and the change the page was showing (#738)', async () => {
+    await fresh();
+    await reported('/');
+    await page.evaluate(`window.errorReports = []`);
+    // The change the editor last told the page of.
+    await command('revision', { revision: 7 });
+    await frame().evaluate(`(() => { const s = document.createElement('script'); s.src = '${THROWER}?t=1'; document.body.append(s); })()`);
+    const report = await vi.waitFor(async () => {
+      const [r] = await page.evaluate<Array<{ message: string; stack?: string; file?: string; revision: unknown }>>(`window.errorReports`);
+      if (!r) throw new Error('no error reported yet');
+      return r;
+    });
+    expect(report.message).toContain('boom in the hero');
+    expect(report.file).toContain(THROWER);
+    expect(report.stack).toContain(THROWER);
+    expect(report.revision).toBe(7);
+    // Leave on a page that works.
+    await fresh();
+    await reported('/');
   }, 30000);
 });
