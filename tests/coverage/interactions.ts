@@ -2365,6 +2365,21 @@ export const INTERACTIONS: Interaction[] = [
     gaps: [{ missing: 'Settings… from the command menu is never chosen by a test', owner: 'settings' }]
   },
   {
+    id: 'settings.menu',
+    area: 'settings',
+    intent: 'Open Settings from the application menu or its shortcut',
+    start: 'Welcome, or a project open',
+    routes: ['menu:SiteOrigin Builder > Settings…', 'menu:File > Settings…'],
+    outcome: 'Settings opens over Welcome or the editor; the item is in the app menu on macOS and the File menu elsewhere, on Cmd/Ctrl+,',
+    scenario: 'welcome · none; Business starter · none',
+    proof: [
+      { test: 'tests/e2e/menu.mjs', kind: 'e2e', step: 'Welcome: Settings… opens the Settings dialog' },
+      { test: 'tests/e2e/menu.mjs', kind: 'e2e', step: 'a project: Settings… opens the Settings dialog over the editor' },
+      { test: 'tests/unit/app-menu.test.ts', kind: 'unit' }
+    ],
+    gaps: [{ missing: 'File > Settings… on Windows and Linux is never chosen by a local run, which is macOS only', owner: 'settings' }]
+  },
+  {
     id: 'settings.developer',
     area: 'settings',
     intent: 'Turn on Developer mode to work with code',
@@ -2522,7 +2537,7 @@ export const INTERACTIONS: Interaction[] = [
     area: 'desktop',
     intent: 'Quit Builder without losing what I was typing',
     start: 'A project open with an Inspector field focused',
-    routes: ['role:appMenu', 'role:quit'],
+    routes: ['role:quit'],
     outcome: 'Quitting saves the focused field; a refused draft asks first and Keep editing keeps the app open; quitting during a read-only preview removes the private copy',
     scenario: 'Business starter · none',
     proof: [
@@ -2551,7 +2566,7 @@ export const INTERACTIONS: Interaction[] = [
     area: 'desktop',
     intent: 'Use the Edit, View and Window menu items the system supplies',
     start: 'A project open, typing in a field',
-    routes: ['role:cut', 'role:copy', 'role:paste', 'role:delete', 'role:selectAll', 'role:viewMenu', 'role:windowMenu'],
+    routes: ['role:cut', 'role:copy', 'role:paste', 'role:delete', 'role:selectAll', 'role:resetZoom', 'role:zoomIn', 'role:zoomOut', 'role:togglefullscreen', 'role:windowMenu', 'role:about', 'role:services', 'role:hide', 'role:hideOthers', 'role:unhide'],
     outcome: 'A text field keeps its own paste rather than the editor’s section paste',
     scenario: 'Business starter · none',
     proof: [{ test: 'tests/e2e/copy-paste.mjs', kind: 'e2e', step: 'stays out of a text field: the toolbar’s width field keeps its own paste' }],
@@ -2559,6 +2574,34 @@ export const INTERACTIONS: Interaction[] = [
       { missing: 'Cut, Copy, Paste, Delete and Select All in the Edit menu are Electron roles no test chooses', owner: 'desktop' },
       { missing: 'The View and Window menus are Electron roles; no test chooses their items', owner: 'desktop' }
     ]
+  },
+  {
+    id: 'desktop.developer-menu',
+    area: 'desktop',
+    intent: 'Reload the editor or open the developer tools while working on Builder',
+    start: 'Welcome or a project open, Developer mode on (or a development build)',
+    routes: ['role:reload', 'role:forceReload', 'role:toggleDevTools'],
+    outcome: 'View offers Reload, Force Reload and Toggle Developer Tools only in Developer mode or a development build, and an author gets none of them',
+    scenario: 'welcome · none; Business starter · none',
+    proof: [
+      { test: 'tests/e2e/menu.mjs', kind: 'e2e', step: 'Settings… and Help are offered, and Reload and the developer tools only in Developer mode' },
+      { test: 'tests/unit/app-menu.test.ts', kind: 'unit' }
+    ],
+    gaps: [{ missing: 'The items are Electron roles; no test chooses them', owner: 'desktop' }]
+  },
+  {
+    id: 'desktop.help',
+    area: 'desktop',
+    intent: 'Find the SiteOrigin website, or the version to quote in a bug report',
+    start: 'Welcome or a project open',
+    routes: ['menu:Help > SiteOrigin Website', 'menu:Help > About SiteOrigin Builder'],
+    outcome: 'The website opens in the browser through the checked external-link path; About shows the app’s name and version (in the app menu on macOS, in Help elsewhere)',
+    scenario: 'welcome · none',
+    proof: [
+      { test: 'tests/e2e/menu.mjs', kind: 'e2e', step: 'Help: the website link is handed to the desktop' },
+      { test: 'tests/unit/app-menu.test.ts', kind: 'unit' }
+    ],
+    gaps: [{ missing: 'Help > About SiteOrigin Builder exists only on Windows and Linux, which local runs do not cover', owner: 'desktop' }]
   },
   {
     id: 'desktop.mac-text',

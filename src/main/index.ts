@@ -59,12 +59,12 @@ app.commandLine.appendSwitch('use-mock-keychain');
 // Automated runs never put a window on screen or take focus. Playwright's Electron loader defines
 // __playwright_run before this module loads; SITEORIGIN_HEADLESS=1 forces it for other drivers, and
 // SITEORIGIN_HEADED=1 shows the window when debugging a test.
-const { headless } = launchMode(process.env, globalThis);
+const { headless, automated } = launchMode(process.env, globalThis);
 // Nor do they show a native dialog, open a link or open Finder: the test answers every chooser and sees every hand-off
 // to the desktop (headless-desktop.ts), headed or not. A normal launch keeps Electron's own.
 const desktop = desktopForLaunch(process.env, globalThis, { dialog, shell });
 // And they keep every assistant event in order, for a test to follow each run by its own IDs (ai-journal.ts).
-const aiJournal = launchMode(process.env, globalThis).automated ? installAiJournal(globalThis) : null;
+const aiJournal = automated ? installAiJournal(globalThis) : null;
 const AI_TURNS_SPENT = 'This test session allows no more AI requests (its limit or its time is used up), so nothing was sent.';
 /** In a test with a deadline, a provider call that would start after it is refused, wherever in a request it comes. */
 const deadlineFetch: typeof fetch | undefined = aiJournal ? (input, init) => (aiJournal.turns().spent ? Promise.reject(new Error(AI_TURNS_SPENT)) : fetch(input, init)) : undefined;
@@ -325,6 +325,11 @@ function registerIpc() {
       for (const test of testAborts) test.abort();
     }
     const s = await updateSettings(patch);
+    // Reload and the developer tools come and go with Developer mode.
+    if (s.developerMode !== developerModeOn) {
+      developerModeOn = s.developerMode;
+      buildMenu();
+    }
     // The editor redraws itself; Electron keeps following this computer, so the website preview never changes with it.
     if (s.appearance !== appearance) {
       appearance = s.appearance;
@@ -844,6 +849,25 @@ function updateProjectMenu() {
   }
 }
 
+/** Developer mode as last read, for the menu, which is built synchronously. */
+let developerModeOn = false;
+/** An unpackaged build run by a person is a development build. An automated run counts as packaged, so a test sees
+ *  the menu an author gets. */
+const developmentBuild = !app.isPackaged && !automated;
+
+/** Help > About on Windows and Linux, which have no About panel: the app's name and version, to quote in a report. */
+function showAbout() {
+  const options = { type: 'info' as const, title: `About ${app.name}`, message: app.name, detail: `Version ${app.getVersion()}`, buttons: ['OK'] };
+  void (win && !win.isDestroyed() ? dialog.showMessageBox(win, options) : dialog.showMessageBox(options));
+}
+
+/** Help menu links open in the browser, checked like every other link the app hands to the desktop. */
+function openMenuLink(url: string) {
+  const link = externalLink(url);
+  // An automated run records the link instead of opening it (headless-desktop.ts).
+  if (link) void shell.openExternal(link.href);
+}
+
 function buildMenu() {
   // Undo and Redo belong to whatever has focus, which only the editor knows: a text field (a visitor's in
   // Preview, too) keeps its own history and authoring surfaces undo the project. So these are not the
@@ -854,7 +878,8 @@ function buildMenu() {
     if (!headless && (!win || focused !== win)) return;
     controller.send('menu:history', { action, fromKey: menuKeyCopy(event, process.platform === 'darwin') });
   };
-  Menu.setApplicationMenu(Menu.buildFromTemplate(appMenuTemplate(process.platform, controller.openingKey !== null, { command: chooseCommand, history, openNotices })));
+  const options = { projectOpen: controller.openingKey !== null, developer: developmentBuild || developerModeOn };
+  Menu.setApplicationMenu(Menu.buildFromTemplate(appMenuTemplate(process.platform, options, { command: chooseCommand, history, openLink: openMenuLink, about: showAbout, openNotices })));
 }
 
 /** Help > Third-Party Notices: the notices file, in the desktop's own viewer (recorded instead in an automated run). */
@@ -910,6 +935,7 @@ app.whenReady().then(async () => {
   // Theme packs are loaded before anything can open a project or ask for the catalogue.
   await loadInstalledPacks(packRoots(resourcesDir(), app.getPath('userData')));
   registerIpc();
+  developerModeOn = (await loadSettings()).settings.developerMode;
   buildMenu();
   markStarted();
   // Registered once, not per window: macOS brings up a new window after the last one closes.

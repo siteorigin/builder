@@ -89,7 +89,8 @@ const OTHER_KEYS: Record<string, string> = {
   '⇧Enter': 'It’s already the shortcut for Done.',
   '-': 'The app menu uses it for Zoom Out.',
   '=': 'The app menu uses it for Zoom In.',
-  '⇧+': 'The app menu uses it for Zoom In.'
+  '⇧+': 'The app menu uses it for Zoom In.',
+  ',': 'The app menu uses it for Settings.'
 };
 
 /**

@@ -58,14 +58,17 @@ export function nativeMenu(): Surface[] {
   const walk = (items: MenuItemConstructorOptions[], path: string[], p: Platform) => {
     for (const item of items) {
       if (item.type === 'separator') continue;
-      if (item.role) add(`role:${item.role}`, p);
-      else if (Array.isArray(item.submenu)) walk(item.submenu, [...path, item.label ?? '?'], p);
+      // A menu with a role of its own (Help) is read through its items.
+      if (Array.isArray(item.submenu)) walk(item.submenu, [...path, item.label ?? '?'], p);
+      else if (item.role) add(`role:${item.role}`, p);
       else if (item.label) add(`menu:${[...path, item.label].join(' > ')}`, p);
       else throw new Error(`An application menu item with no label or role under ${path.join(' > ') || 'the menu bar'}: read it in tests/coverage/surfaces.ts.`);
     }
   };
-  // With a project open and without: an item offered only at Welcome is found too.
-  for (const p of PLATFORMS) for (const open of [true, false]) walk(appMenuTemplate(p, open, { command: () => undefined, history: () => () => undefined, openNotices: () => undefined }), [], p);
+  // With a project open and without, for an author and a developer: an item offered only at Welcome, or only to
+  // developers, is found too.
+  const actions = { command: () => undefined, history: () => () => undefined, openLink: () => undefined, about: () => undefined, openNotices: () => undefined };
+  for (const p of PLATFORMS) for (const projectOpen of [true, false]) for (const developer of [true, false]) walk(appMenuTemplate(p, { projectOpen, developer }, actions), [], p);
   return [...found].map(([key, ps]) => ({ key, file: 'src/main/app-menu.ts', platforms: PLATFORMS.filter((p) => ps.has(p)) }));
 }
 

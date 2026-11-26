@@ -1,13 +1,15 @@
 // The native File menu works from Welcome, from a project and, on macOS, from the running app with no window
 // left: New Project and Open Project bring a window back and do what was asked once it is ready, and Export
-// and Close Project are offered only while a project is open (#255). Needs no preview.
+// and Close Project are offered only while a project is open (#255). Settings… opens Settings from Welcome and the
+// editor, Help links to the website, and Reload and the developer tools are offered only in Developer mode, since an
+// automated run gets the menu a packaged build has (#810). Needs no preview.
 //
 // Menu items are chosen through their own click handlers (harness chooseMenu), as the menu bar and the item's shortcut
 // do. Headless runs cannot press native key equivalents, so the shortcuts are checked as the accelerators the items
 // carry. The folder picker is answered by the app's chooser fixtures, which record the window it was shown over.
 import assert from 'node:assert/strict';
 import { join } from 'node:path';
-import { answerChoosers, chooseMenu, choosersShown, desktopCursor, desktopEvents, eventually, launch, menuItem, scratch, step, withTimeout } from './harness.mjs';
+import { answerChoosers, chooseMenu, choosersShown, desktopCursor, desktopEvents, desktopIntents, eventually, launch, menuItem, scratch, step, withTimeout } from './harness.mjs';
 
 const { WORK, cleanup } = scratch('menu');
 const dirA = join(WORK, 'sites', 'harbour-bakery');
@@ -96,6 +98,37 @@ assert.equal(items['Open Project…'].accelerator, 'CmdOrCtrl+O');
 assert.equal(items['Export…'].accelerator, 'CmdOrCtrl+E');
 assert.equal(items['Close Project'].accelerator, 'CmdOrCtrl+Shift+W');
 
+/** Settings… is in the app menu on macOS and in the File menu elsewhere. */
+const SETTINGS = process.platform === 'darwin' ? ['SiteOrigin Builder', 'Settings…'] : ['File', 'Settings…'];
+const settingsDialog = () => win.getByRole('dialog', { name: 'Settings' });
+/** The View menu's items that only developers get, by role. */
+const DEVELOPER_ROLES = ['reload', 'forcereload', 'toggledevtools'];
+const developerItems = async () => (await menuItem(app, 'View')).items.map((i) => String(i.role ?? '').toLowerCase()).filter((r) => DEVELOPER_ROLES.includes(r));
+
+step('Settings… and Help are offered, and Reload and the developer tools only in Developer mode');
+assert.equal((await menuItem(app, ...SETTINGS))?.accelerator, 'CmdOrCtrl+,', 'Settings… has the platform’s shortcut');
+const help = (await menuItem(app, 'Help')).items.map((i) => i.label);
+assert.ok(help.includes('SiteOrigin Website'), `Help links to the website: ${help.join(', ')}`);
+// macOS shows the version in the app menu's About panel; elsewhere Help has an About item.
+if (process.platform === 'darwin') assert.ok((await menuItem(app, 'SiteOrigin Builder')).items.some((i) => String(i.role).toLowerCase() === 'about'), 'the app menu has About');
+else assert.ok(help.includes('About SiteOrigin Builder'), 'Help has About');
+assert.deepEqual(await developerItems(), [], 'an author is not offered Reload or the developer tools');
+await win.evaluate(() => window.builder.app.setSettings({ developerMode: true }));
+await eventually(async () => assert.deepEqual(await developerItems(), DEVELOPER_ROLES, 'Developer mode offers Reload and the developer tools'));
+assert.equal((await menuItem(app, 'File', 'Export…')).enabled, false, 'rebuilding the menu keeps Export unavailable on Welcome');
+await win.evaluate(() => window.builder.app.setSettings({ developerMode: false }));
+await eventually(async () => assert.deepEqual(await developerItems(), [], 'turning Developer mode off takes them away again'));
+
+step('Help: the website link is handed to the desktop');
+const linkMark = await desktopCursor(app);
+await chooseMenu(app, ['Help', 'SiteOrigin Website']);
+await eventually(async () => assert.deepEqual((await desktopIntents(app, linkMark)).filter((x) => x.kind === 'open-external').map((x) => x.target), ['https://siteorigin.com/'], 'the website opens in the browser'));
+
+step('Welcome: Settings… opens the Settings dialog');
+await chooseMenu(app, SETTINGS);
+await settingsDialog().waitFor();
+await dismiss(settingsDialog());
+
 step('Welcome: Export and Close Project are unavailable, New Project opens its dialog');
 await expectProjectItems(false, 'on Welcome');
 await choose('New Project…');
@@ -112,6 +145,15 @@ for (const [name, dir] of [
   await expectEditorFor(name, dir);
 }
 await expectProjectItems(true, 'with a project open');
+step('a project: Settings… opens the Settings dialog over the editor, and the menu still offers Export');
+await chooseMenu(app, SETTINGS);
+await settingsDialog().waitFor();
+await dismiss(settingsDialog());
+await win.evaluate(() => window.builder.app.setSettings({ developerMode: true }));
+await eventually(async () => assert.deepEqual(await developerItems(), DEVELOPER_ROLES, 'Developer mode offers Reload and the developer tools'));
+await expectProjectItems(true, 'after the menu was rebuilt with a project open');
+await win.evaluate(() => window.builder.app.setSettings({ developerMode: false }));
+await eventually(async () => assert.deepEqual(await developerItems(), [], 'turning Developer mode off takes them away again'));
 await choose('Export…');
 await exportDialog().waitFor();
 await dismiss(exportDialog());

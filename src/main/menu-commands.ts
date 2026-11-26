@@ -1,5 +1,5 @@
 /**
- * Delivers the File menu's commands (New Project, Open Project, Export, Close Project) to the editor. The editor
+ * Delivers the menu's commands (New Project, Open Project, Export, Close Project, Settings) to the editor. The editor
  * acts on a command only once it has loaded and shows the right screen, so a command chosen while there is no
  * window (macOS keeps the app running after the last one closes), or while the window's editor is still
  * starting or reloading, waits: a window is brought up and the command is sent when its editor says it is
@@ -13,8 +13,9 @@
  * No electron import: the caller passes how to reach the window, so the router is tested on its own.
  */
 
-/** `open-project-folder` is Windows and Linux only, whose pickers take files or folders but not both. */
-export type MenuCommand = 'new-project' | 'open-project' | 'open-project-folder' | 'export' | 'close-project';
+/** `open-project-folder` is Windows and Linux only, whose pickers take files or folders but not both. `settings` opens
+ *  the Settings dialog over Welcome or the editor. */
+export type MenuCommand = 'new-project' | 'open-project' | 'open-project-folder' | 'export' | 'close-project' | 'settings';
 
 export interface MenuCommandOptions<W> {
   /** The editor window, or null when there is none. */
