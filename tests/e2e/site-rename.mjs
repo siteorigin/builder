@@ -2,7 +2,8 @@
 // footer's brand and its copyright line, in the live website and in the exported one. A footer name the author wrote
 // is kept and said so, beside the site's name and beside the footer's own field, which can go back to following it.
 // Recent projects lists the project under its new name, after switching straight into another project and after
-// closing back to Welcome, and each card names the project's own folder.
+// closing back to Welcome, and each card names the project's own folder. The window's title names the open project
+// through creation, renames and the switch, and is the app's own name on Welcome (#811).
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
@@ -10,6 +11,16 @@ import { createProject, eventually, launch, scratch, step } from './harness.mjs'
 
 const { WORK, SHOTS, cleanup } = scratch('site-rename');
 const { app, win, errors } = await launch(WORK);
+
+/** The editor window's own title, which the Window menu and the taskbar show (not the hidden thumbnail window's). */
+const editorWindow = await app.browserWindow(win);
+const windowTitle = () => editorWindow.evaluate((w) => w.getTitle());
+const titleIs = (name) => eventually(async () => assert.equal(await windowTitle(), name ? `${name} — SiteOrigin Builder` : 'SiteOrigin Builder', 'the window title'));
+
+step('on Welcome the window has the app’s name');
+await win.waitForSelector('.welcome');
+await titleIs(null);
+
 const frame = await createProject(win, { name: 'Morning Press', parentDir: join(WORK, 'sites'), starter: 'business', sampleImages: false });
 const dir = join(WORK, 'sites', 'morning-press');
 const year = new Date().getFullYear();
@@ -56,10 +67,14 @@ const live = async () => ({
 });
 const liveIs = (want, what) => eventually(async () => assert.deepEqual(await live(), want, what), 30000);
 
+step('the window’s title names the open project');
+await titleIs('Morning Press');
+
 step('renaming the site in Site details renames the header, the footer and its copyright line');
 await openDetails();
 assert.match(await nameField().innerText(), /The header and footer show it too\./, 'the field says where else the name shows');
 await rename('Morning Paper');
+await titleIs('Morning Paper');
 await eventually(() => assert.deepEqual([shellProps('header').siteName, shellProps('footer').siteName, shellProps('footer').copyright], ['Morning Paper', 'Morning Paper', `© ${year} Morning Paper. All rights reserved.`]));
 await liveIs({ header: 'Morning Paper', footer: 'Morning Paper', copyright: `© ${year} Morning Paper. All rights reserved.` }, 'the live website shows the new name');
 await eventually(async () => assert.match(await win.locator('.toolbar').innerText(), /Morning Paper/, 'the toolbar shows it too'));
@@ -104,9 +119,11 @@ const recents = () => win.evaluate(() => window.builder.projects.recents());
 await eventually(async () => assert.equal((await recents()).find((r) => r.dir === dir)?.name, 'New Morning Courier', 'the list follows the rename as it is made'));
 await win.evaluate((o) => window.builder.projects.create(o), { name: 'Orchid Garden', parentDir: join(WORK, 'sites'), starter: 'blank', sampleImages: false });
 await eventually(async () => assert.match(await win.locator('.toolbar').innerText(), /Orchid Garden/, 'the new project is open'), 90000);
+await titleIs('Orchid Garden');
 await eventually(async () => assert.equal((await recents()).find((r) => r.dir === dir)?.name, 'New Morning Courier', 'the list has the name it was left with'));
 await menu('Close Project');
 await win.waitForSelector('.welcome');
+await titleIs(null);
 const card = (name) => win.locator('.recent-card', { hasText: name });
 await card('New Morning Courier').waitFor();
 assert.equal(await win.locator('.recent-card', { hasText: 'Morning Press' }).count(), 0, 'no card has an old name');

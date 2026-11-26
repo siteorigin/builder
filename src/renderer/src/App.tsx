@@ -19,6 +19,7 @@ import { keepSeoSubject } from './lib/seo-view';
 import { placeOn, readPlaces } from './lib/page-place';
 import { startEditorFonts } from './lib/editor-fonts';
 import { isAskAiKey } from './lib/ask-ai-key';
+import { projectDisplayName, windowTitle } from '@shared/project-name';
 
 /** What Undo and Redo, and keys forwarded from the preview frame, act on right now. */
 function historyContext(): HistoryContext {
@@ -31,6 +32,13 @@ export function App() {
   // No screen is shown until the project that is open (if any) is known, so a File menu command waiting for this
   // window reaches the screen that will stay: Welcome, or the editor of a project left open with no window (macOS).
   const [booted, setBooted] = useState(false);
+
+  // The window's title follows the page's (Electron carries it over), so a window opened again over an open project,
+  // or a reloaded page, names it too.
+  const title = useStore((s) => windowTitle(s.screen === 'editor' && s.snapshot ? projectDisplayName(s.snapshot.state) : null));
+  useEffect(() => {
+    document.title = title;
+  }, [title]);
 
   // The project's imported fonts, loaded into the editor for its samples.
   useEffect(() => startEditorFonts(), []);
