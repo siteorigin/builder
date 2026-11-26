@@ -485,6 +485,20 @@ describe('where a padding handle is drawn (#905)', () => {
     expect(css).toMatch(new RegExp(`\\.ov-space-handle\\.x \\{ width: ${GRIP_HALF * 2}px;`));
   });
 
+  it('keeps a grip that would stand past the page’s edge on the page, so it can still be dragged', () => {
+    // A full-width section with no side padding: its side grips would sit wholly outside the page, out of reach.
+    const box = { left: 0, top: 40, width: 1000, height: 300 };
+    const frame = { width: 1000, height: 600 };
+    expect(paddingGripAt(box, none, none, 'left', 1, undefined, frame)).toEqual({ x: GRIP_HALF, y: 190 });
+    expect(paddingGripAt(box, none, none, 'right', 1, undefined, frame)).toEqual({ x: 1000 - GRIP_HALF, y: 190 });
+    // One at the very top of the page, likewise.
+    expect(paddingGripAt({ ...box, top: 0 }, none, none, 'top', 1, undefined, frame).y).toBe(GRIP_HALF);
+    // A grip inside its band is where it was.
+    expect(paddingGripAt(box, none, sides(32, 32, 32, 32), 'left', 1, undefined, frame)).toEqual({ x: 16, y: 190 });
+    // An edge scrolled out of view keeps its grip with it, rather than one drawn over what is shown.
+    expect(paddingGripAt({ ...box, top: -200 }, none, sides(32, 0, 32, 0), 'top', 1, undefined, frame).y).toBe(-200 + 16);
+  });
+
   it('keeps a dragged grip by its content edge, never on the content, as the box grows under it', () => {
     // An auto-height section 100px down: 16px of vertical padding around 68px of content, at 100%.
     const at = (pad: number, from?: number) => paddingGripAt({ left: 0, top: 100, width: 400, height: 68 + pad * 2 }, none, sides(pad, 0, pad, 0), 'bottom', 1, from);

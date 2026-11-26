@@ -46,9 +46,11 @@ export const GRIP_HALF = 6;
  * Where a padding handle is drawn, in screen pixels: centred in its padding band, so it marks the space it sets
  * without covering what the box holds. In a band thinner than the grip, the grip's inner edge meets the content's
  * edge and the rest stands out over the box's own edge, never over its text or a small button's label (#905).
- * `box` is the selected box on screen; `border` and `padding` are in page pixels, at zoom `z`.
+ * `box` is the selected box on screen; `border` and `padding` are in page pixels, at zoom `z`. With `frame` (the
+ * visible page's size on screen), a grip that would stand out past the page's edge (a full-width section with no
+ * side padding) is kept inside it, so it can still be reached.
  */
-export function paddingGripAt(box: { left: number; top: number; width: number; height: number }, border: Record<SpacingSide, number>, padding: Record<SpacingSide, number>, side: SpacingSide, z: number, from?: number): { x: number; y: number } {
+export function paddingGripAt(box: { left: number; top: number; width: number; height: number }, border: Record<SpacingSide, number>, padding: Record<SpacingSide, number>, side: SpacingSide, z: number, from?: number, frame?: { width: number; height: number }): { x: number; y: number } {
   const midX = box.left + box.width / 2;
   const midY = box.top + box.height / 2;
   // From the box's outer edge inwards, for a padding of `pad`: the middle of its band, kept clear of the content.
@@ -57,10 +59,14 @@ export function paddingGripAt(box: { left: number; top: number; width: number; h
   // While a drag that started at a padding of `from` runs, the grip keeps the distance from the content's edge it had
   // then: it moves with that edge, as the pointer does, and never onto the content.
   const depth = from === undefined ? depthAt(padding[side]) : inner - ((border[side] + from) * z - depthAt(from));
-  if (side === 'top') return { x: midX, y: box.top + depth };
-  if (side === 'bottom') return { x: midX, y: box.top + box.height - depth };
-  if (side === 'left') return { x: box.left + depth, y: midY };
-  return { x: box.left + box.width - depth, y: midY };
+  // Kept inside the page only where the box's own edge is on it: an edge scrolled out of view keeps its grip with it.
+  const inside = (v: number, edge: number, size: number | undefined) => (size === undefined || edge < 0 || edge > size ? v : Math.max(GRIP_HALF, Math.min(v, size - GRIP_HALF)));
+  const right = box.left + box.width;
+  const bottom = box.top + box.height;
+  if (side === 'top') return { x: midX, y: inside(box.top + depth, box.top, frame?.height) };
+  if (side === 'bottom') return { x: midX, y: inside(bottom - depth, bottom, frame?.height) };
+  if (side === 'left') return { x: inside(box.left + depth, box.left, frame?.width), y: midY };
+  return { x: inside(right - depth, right, frame?.width), y: midY };
 }
 const INLINE_FLIP: Record<string, string> = { paddingInlineStart: 'paddingInlineEnd', paddingInlineEnd: 'paddingInlineStart' };
 

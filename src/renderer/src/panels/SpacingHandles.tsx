@@ -121,12 +121,14 @@ interface Drag {
  * edited when it is released: one Undo takes it back. Escape puts the page back and saves nothing. Handles show only
  * for what the inspector offers here, and only at the size the canvas is showing, so a drag always shows what it saves.
  */
-export function SpacingHandles({ state, selection, desc, box, spacing, zoom, post, measureSpace, onDragging, focusCanvas, pageBehind }: {
+export function SpacingHandles({ state, selection, desc, box, frame, spacing, zoom, post, measureSpace, onDragging, focusCanvas, pageBehind }: {
   state: ProjectState;
   selection: ElementRef;
   desc: BridgeDesc;
   /** The selected element's border box on screen, inside the overlay. */
   box: { left: number; top: number; width: number; height: number };
+  /** The visible page's size on screen, which a grip stays inside. */
+  frame?: { width: number; height: number };
   spacing: FrameSpacing;
   zoom: number;
   post: (type: string, payload?: unknown) => void;
@@ -196,7 +198,7 @@ export function SpacingHandles({ state, selection, desc, box, spacing, zoom, pos
       if (h.box === 'margin') return h.side === 'top' ? { x: midX + aside, y: box.top - mg.top * z } : { x: midX + aside, y: box.top + box.height + mg.bottom * z };
       // The padding being dragged keeps its grip by its content's edge, as the pointer moves it, rather than in the
       // middle of the new band, which would leave the pointer behind.
-      return paddingGripAt(box, bd, pd, h.side, z, dragged?.id === `spacing-padding-${h.side}` ? dragged.start : undefined);
+      return paddingGripAt(box, bd, pd, h.side, z, dragged?.id === `spacing-padding-${h.side}` ? dragged.start : undefined, frame);
     };
     const band = (b: SpacingHandle['box'], side: SpacingHandle['side']): Rect => {
       const innerW = box.width - (bd.left + bd.right) * z;

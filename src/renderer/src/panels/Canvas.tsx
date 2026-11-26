@@ -3338,6 +3338,7 @@ export function Canvas() {
                     selection={selection!}
                     desc={spaceDesc!}
                     box={toBox(rects.selected[0])}
+                    frame={{ width: viewport * z, height: frameH * z }}
                     spacing={spacing!}
                     zoom={z}
                     post={post}
@@ -3614,7 +3615,7 @@ function SelectionChip({ box, frameWidth, taken, name, icon, parent, repeats, re
   if (editing) {
     const what = /^[A-Z][a-z]/.test(name) ? name[0].toLowerCase() + name.slice(1) : name;
     return (
-      <div ref={ref} className="ov-chip strip editing" style={{ left, top, maxWidth: chipRoom(left, frameWidth) }} role="toolbar" aria-label={`Editing ${what}`} onKeyDown={onKeyDown} onFocus={trackFocus} onBlur={trackBlur}>
+      <div ref={ref} className="ov-chip strip editing" style={{ left, top, maxWidth: chipRoom(taken, frameWidth) }} role="toolbar" aria-label={`Editing ${what}`} onKeyDown={onKeyDown} onFocus={trackFocus} onBlur={trackBlur}>
         <span className="name">
           <Pencil />
           <span className="label">Editing {what}</span>
@@ -3633,7 +3634,7 @@ function SelectionChip({ box, frameWidth, taken, name, icon, parent, repeats, re
     <div
       ref={ref}
       className="ov-chip strip"
-      style={{ left, top, maxWidth: chipRoom(left, frameWidth) }}
+      style={{ left, top, maxWidth: chipRoom(taken, frameWidth) }}
       role="toolbar"
       // Which of a repeated part it acts on (one card, or every card) is part of what the toolbar is for.
       aria-label={`${name}${item ? `, ${item.n} of ${item.count}` : repeats > 1 ? `, all ${repeats} ${repeatsLabel}` : ''} actions`}

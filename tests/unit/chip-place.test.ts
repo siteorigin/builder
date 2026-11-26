@@ -23,9 +23,16 @@ describe('the selection chip', () => {
     // Too little room for the whole chip: it still starts after them, and narrows to what is left.
     expect(chipLeft(20, 200, 500, 360)).toBe(360);
     expect(chipRoom(360, 500)).toBe(140);
-    // No room at all: it lines up with the selection, at its narrowest.
-    expect(chipLeft(20, 200, 400, 360)).toBe(20);
-    expect(chipRoom(390, 400)).toBe(CHIP_MIN);
+    // No room at all: still after them (at its narrowest, past the frame's edge), never over the picker or Done.
+    expect(chipLeft(20, 200, 400, 360)).toBe(360);
+    expect(chipRoom(360, 400)).toBe(CHIP_MIN);
+  });
+
+  it('may be as wide as the frame, whatever width it had for the last selection', () => {
+    // A short chip near the right edge, then a longer one: its room is not cut to where the short one sat.
+    expect(chipRoom(0, 1000)).toBe(1000);
+    expect(chipLeft(900, 80, 1000)).toBe(900);
+    expect(chipLeft(900, 300, 1000)).toBe(700);
   });
 
   it('is drawn above the page frame, never on it', () => {
@@ -35,7 +42,7 @@ describe('the selection chip', () => {
     expect(canvas).not.toMatch(/chipPlacement|placement === 'inside'/);
     // Both chips (selected, and text being typed) start after the collection layout's strip and fit the room left.
     expect(canvas.match(/chipLeft\(box\.left, w, frameWidth, taken\)/g)).toHaveLength(1);
-    expect(canvas.match(/maxWidth: chipRoom\(left, frameWidth\)/g)).toHaveLength(2);
+    expect(canvas.match(/maxWidth: chipRoom\(taken, frameWidth\)/g)).toHaveLength(2);
     expect(canvas).toMatch(/taken=\{chipTaken\}/);
     // The height the canvas parks it by is the height the stylesheet draws it at.
     expect(readFileSync('src/renderer/src/panels/Canvas.css', 'utf8')).toMatch(new RegExp(`\\.ov-chip \\{[^}]*height: ${CHIP_H}px;`));
