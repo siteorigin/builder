@@ -1395,6 +1395,24 @@ export const INTERACTIONS: Interaction[] = [
       { test: 'tests/unit/conditions.test.ts', kind: 'unit' }
     ]
   },
+  {
+    id: 'components.required',
+    area: 'components',
+    intent: 'Require a value on every placement of a component, and fill in what one is missing',
+    start: 'Blank site, a project component placed twice, one placement’s label cleared, edited everywhere',
+    routes: ['inspector:Properties › Required', 'inspector:Content', 'dialog:Project health › Go to field'],
+    outcome: 'The switch makes the property required in one Undo and says how many placements are missing it, never refusing them; a field the component requires says so, and clearing a filled one is refused at the field with the engine’s message, keeping its value and showing no toast; Project health goes to the field of a placement still missing it',
+    scenario: 'Blank starter · none',
+    proof: [
+      { test: 'tests/e2e/required-properties.mjs', kind: 'e2e', step: 'Edit everywhere: turn Required on for Monthly label' },
+      { test: 'tests/e2e/required-properties.mjs', kind: 'e2e', step: 'clearing a filled label is refused at the field, which keeps it' },
+      { test: 'tests/e2e/required-properties.mjs', kind: 'e2e', step: 'Project health lists the placement missing it and goes to its field' },
+      { test: 'tests/e2e/required-properties.mjs', kind: 'e2e', step: 'one Undo takes the rule and the finding away' },
+      { test: 'tests/unit/required-fields.test.ts', kind: 'unit' },
+      { test: 'tests/unit/required-props.test.ts', kind: 'unit' },
+      { test: 'tests/unit/component-contract.test.ts', kind: 'unit' }
+    ]
+  },
   // ---- code ----
   {
     id: 'code.create',
