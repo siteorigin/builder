@@ -53,8 +53,8 @@ import { RELAY_URL_ENV, resolveRelayUrl } from '@shared/live/relay-url';
 import { LIVE_BATCH_LABEL_MAX, type LiveEditBatch } from '@shared/live/capabilities';
 import { MAX_MESSAGE_LENGTH } from '@shared/live/limits';
 import { normalizeDisplayName, RPC_ERROR_CODES, type RpcError } from '@shared/live/messages';
-import { HOST_PATH_PLACEHOLDER, liveSnapshot, type LiveApplyResult, type LiveProjectSnapshot, type LiveSnapshotSource } from '@shared/live/snapshot';
-import { guestDestinationChange } from '@engine/form-destinations';
+import { liveSnapshot, scrubHostPaths, type LiveApplyResult, type LiveProjectSnapshot, type LiveSnapshotSource } from '@shared/live/snapshot';
+import { guestEditProblem } from '@engine/guest-edits';
 import { LiveHostManager, type LiveGuestEdit } from './live/host';
 import { loopbackPreview } from './live/preview-proxy';
 import { newId } from '@shared/ids';
@@ -428,14 +428,20 @@ export class Controller {
     if (!session || gone()) return refuse('UNAVAILABLE', 'The host’s project is not open.', true);
     if (session.readOnly) return refuse('READ_ONLY', 'The host’s project is open read-only, so it can’t be changed now.', false);
     if (this.aiBusy()) return refuse('BUSY', 'The host’s AI is making changes. Try again once it has finished.', true);
+    // Whatever a guest is told, in the engine's words or the host's, names nothing of this computer.
+    const shared = (error: RpcError): LiveApplyResult => ({ ok: false, error: { ...error, message: scrubHostPaths(error.message, [session.dir, homedir()]).slice(0, MAX_MESSAGE_LENGTH) } });
     let refusal: RpcError | null = null;
+    // The project as the batch would leave it is the same however often the guard asks: checked once.
+    let checked: { next: ProjectState; problem: string | null } | null = null;
     const guard = (next: ProjectState | null) => {
       refusal =
         guest.check() ??
         (gone() ? { code: 'UNAVAILABLE', message: 'The host’s project is not open.', recoverable: true } : null) ??
         (this.aiBusy() ? { code: 'BUSY', message: 'The host’s AI is making changes. Try again once it has finished.', recoverable: true } : null);
-      const moved = !refusal && next ? guestDestinationChange(session.state, next) : null;
-      if (moved) refusal = { code: 'PERMISSION_DENIED', message: moved, recoverable: false };
+      if (!refusal && next) {
+        if (checked?.next !== next) checked = { next, problem: guestEditProblem(session.state, next) };
+        if (checked.problem) refusal = { code: 'PERMISSION_DENIED', message: checked.problem, recoverable: false };
+      }
       return refusal ? { code: 'CANCELLED' as const, message: refusal.message, recoverable: refusal.recoverable } : null;
     };
     const label = `${normalizeDisplayName(batch.label, LIVE_BATCH_LABEL_MAX) ?? 'Edit'} (${guest.displayName})`;
@@ -443,14 +449,13 @@ export class Controller {
       { operations: batch.operations, ...(batch.expectedRevision !== undefined ? { expectedRevision: batch.expectedRevision } : {}) },
       { label, source: 'user', guestName: guest.displayName, codeAllowed: false, guard }
     );
-    if (refusal) return { ok: false, error: refusal };
+    if (refusal) return shared(refusal);
     if (r.ok) return { ok: true, revision: r.revision, results: (r.results ?? []).map(sharedIds) };
     if (session.readOnly) return refuse('READ_ONLY', 'The host’s project is open read-only, so it can’t be changed now.', false);
     const error = r.error ?? { code: 'INTERNAL', message: 'The host could not make that edit.', recoverable: false };
     const code = (RPC_ERROR_CODES as readonly string[]).includes(error.code) ? (error.code as RpcError['code']) : 'INTERNAL';
-    // The engine's words, less anything of this computer they name; never its details.
-    const message = [session.dir, homedir()].reduce((m, path) => (path.length > 3 ? m.split(path).join(HOST_PATH_PLACEHOLDER) : m), error.message).slice(0, MAX_MESSAGE_LENGTH);
-    return { ok: false, error: { code, message, recoverable: error.recoverable } };
+    // The engine's words, never its details.
+    return shared({ code, message: error.message, recoverable: error.recoverable });
   }
 
   /** What the preview is doing; a project only a newer version can generate never has one. */

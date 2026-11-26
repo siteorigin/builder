@@ -1,5 +1,5 @@
 import type { RuntimeState } from '../api';
-import type { Collection, ComponentDefinition, EntryDoc, ProjectManifest, ProjectState } from '../types';
+import type { AssetRecord, AssetsDoc, Collection, ComponentDefinition, EntryDoc, ProjectManifest, ProjectState } from '../types';
 import type { RpcError } from './messages';
 
 /**
@@ -21,13 +21,15 @@ export interface LiveProjectSnapshot {
 /**
  * The project's documents, less what stays the author's: the private brief and external sources' settings (which
  * name the secrets they sign in with). The manifest leaves out the author's own name for this working copy,
- * components the path of their code and the code the author wrote (a theme's own code ships with the app and stays),
- * and a synced entry where it was synced from, which can name a file anywhere on the host's computer.
+ * components their code and where it is (guests never edit code, and a project's copy of a theme's code may hold
+ * the author's own changes), library files the name they had on the author's computer, and a synced entry where it
+ * was synced from, which can name a file anywhere on the host's computer.
  */
-export type LiveProjectState = Omit<ProjectState, 'brief' | 'sources' | 'manifest' | 'components' | 'collections'> & {
+export type LiveProjectState = Omit<ProjectState, 'brief' | 'sources' | 'manifest' | 'components' | 'collections' | 'assets'> & {
   manifest: Omit<ProjectManifest, 'workingCopyName'>;
-  components: Record<string, Omit<ComponentDefinition, 'sourcePath'>>;
+  components: Record<string, Omit<ComponentDefinition, 'sourcePath' | 'source'>>;
   collections: Record<string, Omit<Collection, 'entries'> & { entries: Record<string, Omit<EntryDoc, 'source'>> }>;
+  assets: Omit<AssetsDoc, 'assets'> & { assets: Record<string, Omit<AssetRecord, 'originalName'>> };
 };
 
 /** What the preview is doing, without its address (a port on the host's computer) or its messages. */
@@ -62,9 +64,12 @@ export const HOST_PATH_PLACEHOLDER = '…';
 const escape = (text: string) => text.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 
 /**
- * A pattern for the host's own paths (the project folder, the home folder) as text may hold them: either slash, and a
- * path is only a path up to a separator or the end, so `/home/ann` never matches inside `/home/anna`. Paths too short
- * to tell apart from ordinary text (the root) are left out. Null when nothing is left to look for.
+ * A pattern for the host's own paths (the project folder, the home folder) as text may hold them: either slash, any
+ * case (the host's disk may not tell them apart), and only as a path of its own. It ends at a separator, a sentence's
+ * end or the end of the text, so `/home/ann` never matches inside `/home/anna`; and it starts a path rather than
+ * continuing a word or an address, so a web address that happens to contain it (`https://example.org/home/ann/`) is
+ * left as it is, where a `file://` address is not. Paths too short to tell apart from ordinary text (the root) are
+ * left out. Null when nothing is left to look for.
  */
 function hostPathPattern(paths: readonly string[]): RegExp | null {
   const forms = new Set<string>();
@@ -78,7 +83,13 @@ function hostPathPattern(paths: readonly string[]): RegExp | null {
   if (!forms.size) return null;
   // The longest first, so the project folder inside the home folder is matched whole.
   const alternatives = [...forms].sort((a, b) => b.length - a.length).map(escape);
-  return new RegExp(`(?:${alternatives.join('|')})(?=$|[\\\\/\\s"'<>()\`,;:?#])`, 'g');
+  return new RegExp(`(?<![\\w.~%-])(?:${alternatives.join('|')})(?=$|[\\\\/\\s"'<>()\`,;:?#!]|\\.(?:$|\\s|[\\\\/"'<>)]))`, 'gi');
+}
+
+/** `text` with every host path in it (see liveSnapshot) replaced: for anything else a guest is sent, such as an error. */
+export function scrubHostPaths(text: string, hostPaths: readonly string[]): string {
+  const pattern = hostPathPattern(hostPaths);
+  return pattern ? text.replace(pattern, HOST_PATH_PLACEHOLDER) : text;
 }
 
 /** A deep copy of a JSON value with every host path in its text (keys too) replaced. */
@@ -95,10 +106,15 @@ function scrub(value: unknown, pattern: RegExp): unknown {
   return out;
 }
 
-function shareComponent(def: ComponentDefinition): Omit<ComponentDefinition, 'sourcePath'> {
-  const { sourcePath: _path, source, ...rest } = def;
-  return def.owner === 'theme' && source !== undefined ? { ...rest, source } : rest;
+function shareComponent(def: ComponentDefinition): LiveProjectState['components'][string] {
+  const { sourcePath: _path, source: _source, ...rest } = def;
+  return rest;
 }
+
+const shareAssets = (doc: AssetsDoc): LiveProjectState['assets'] => ({
+  ...doc,
+  assets: Object.fromEntries(Object.entries(doc.assets).map(([id, { originalName: _name, ...asset }]) => [id, asset]))
+});
 
 const shareCollection = (c: Collection): LiveProjectState['collections'][string] => ({
   ...c,
@@ -111,13 +127,14 @@ const shareCollection = (c: Collection): LiveProjectState['collections'][string]
  * one where it should not, never sends it over the relay.
  */
 export function liveSnapshot(source: LiveSnapshotSource, hostPaths: readonly string[]): LiveProjectSnapshot {
-  const { brief: _brief, sources: _sources, manifest, components, collections, ...documents } = source.state;
+  const { brief: _brief, sources: _sources, manifest, components, collections, assets, ...documents } = source.state;
   const { workingCopyName: _name, ...sharedManifest } = manifest;
   const state: LiveProjectState = {
     ...documents,
     manifest: sharedManifest,
     components: Object.fromEntries(Object.entries(components).map(([id, def]) => [id, shareComponent(def)])),
-    collections: Object.fromEntries(Object.entries(collections).map(([id, c]) => [id, shareCollection(c)]))
+    collections: Object.fromEntries(Object.entries(collections).map(([id, c]) => [id, shareCollection(c)])),
+    assets: shareAssets(assets)
   };
   const pattern = hostPathPattern(hostPaths);
   return {

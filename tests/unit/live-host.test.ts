@@ -6,7 +6,7 @@ import type { GuestRole } from '../../src/shared/live/limits';
 import type { FrameOf, Participant, Presence } from '../../src/shared/live/messages';
 import type { LiveApplyResult, LiveProjectSnapshot } from '../../src/shared/live/snapshot';
 import { resolveRelayUrl, type ResolvedRelayUrl } from '../../src/shared/live/relay-url';
-import { GUEST_SNAPSHOT_BURST, LiveHostManager, MAX_GUEST_EDITS_IN_FLIGHT, MAX_SOCKET_BACKLOG_BYTES, type LiveGuestEdit, type LiveHostContext, type LiveHostTimings } from '../../src/main/live/host';
+import { GRANT_CLOCK_MARGIN_MS, GUEST_SNAPSHOT_BURST, LiveHostManager, MAX_GUEST_EDITS_IN_FLIGHT, MAX_SOCKET_BACKLOG_BYTES, type LiveGuestEdit, type LiveHostContext, type LiveHostTimings } from '../../src/main/live/host';
 
 /**
  * The host's live session manager against sockets the test drives frame by frame, for the orderings a real relay
@@ -568,11 +568,12 @@ function editor(opts: { timings?: Partial<LiveHostTimings> } = {}) {
 async function letIn(h: ReturnType<typeof editor>, role: GuestRole = 'collaborator', guestExpiresAt: number | null = null) {
   const o = await opened(h, [{ guestId: 'g1', displayName: 'Ann', status: 'pending' }]);
   expect(h.manager.admit(o.run, 'g1', role, guestExpiresAt)).toEqual({ ok: true });
-  o.socket.receive({ type: 'room:roster', participants: [{ ...ANN, role, guestExpiresAt }] });
+  o.socket.receive(roster(role, guestExpiresAt));
   return o;
 }
 
-const roster = (role: GuestRole, guestExpiresAt: number | null = null): FrameOf<'relay-to-host'> => ({ type: 'room:roster', participants: [{ ...ANN, role, guestExpiresAt }] });
+const admittedAs = (guestId: string, displayName: string, role: GuestRole, guestExpiresAt: number | null = null): Participant => ({ guestId, displayName, status: 'admitted', role, guestExpiresAt });
+const roster = (role: GuestRole, guestExpiresAt: number | null = null): FrameOf<'relay-to-host'> => ({ type: 'room:roster', participants: [admittedAs('g1', 'Ann', role, guestExpiresAt)] });
 const call = (socket: FakeSocket, requestId: string, method: 'project.snapshot' | 'project.apply', args: unknown[] = []) => socket.receive({ type: 'rpc:request', guestId: 'g1', requestId, method, args });
 const answerTo = (socket: FakeSocket, requestId: string) => until(() => socket.sent.find((f) => f.type === 'rpc:response' && f.requestId === requestId) as Extract<FrameOf<'host-to-relay'>, { type: 'rpc:response' }> | undefined, `the answer to ${requestId}`);
 
@@ -677,7 +678,7 @@ describe('guests’ editor calls', () => {
     for (const change of ['demote', 'demote and restore', 'kick', 'expire'] as const) {
       const h = editor();
       const now = Date.now();
-      const { socket, run } = await letIn(h, 'collaborator', change === 'expire' ? now + 150 : null);
+      const { socket, run } = await letIn(h, 'collaborator', change === 'expire' ? now + GRANT_CLOCK_MARGIN_MS + 150 : null);
       call(socket, 'q1', 'project.apply', [EDIT]);
       const edit = await until(() => h.edits[0], 'the edit');
       expect(edit.guest.check()).toBeNull();
@@ -773,12 +774,122 @@ describe('guests’ editor calls', () => {
     expect(h.presence.at(-1)).toEqual({ workspaceKey: run.workspaceKey, runId: run.runId, guests: { g1: HERE } });
     // Made a viewer: gone from the editor at once, and what a viewer sends is not shown.
     h.manager.setRole(run, 'g1', 'viewer');
-    expect(h.presence.at(-1)).toMatchObject({ guests: {} });
+    expect(h.presence.at(-1)).toEqual({ workspaceKey: run.workspaceKey, runId: run.runId, guests: {} });
+    const shown = h.presence.length;
     socket.receive(roster('viewer'));
     socket.receive({ type: 'presence:changed', participant: { kind: 'guest', guestId: 'g1' }, presence: HERE });
-    expect(h.presence.at(-1)).toMatchObject({ guests: {} });
     // Nor the presence of someone who was never let in.
     socket.receive({ type: 'presence:changed', participant: { kind: 'guest', guestId: 'g9' }, presence: HERE });
-    expect(h.presence.at(-1)).toMatchObject({ guests: {} });
+    expect(h.presence.length).toBe(shown);
+  });
+
+  it('answers nothing for a guest let in before the relay has confirmed it', async () => {
+    const h = editor();
+    const { socket, run } = await opened(h, [{ guestId: 'g1', displayName: 'Ann', status: 'pending' }]);
+    expect(h.manager.admit(run, 'g1', 'collaborator')).toEqual({ ok: true });
+    call(socket, 'q1', 'project.snapshot');
+    call(socket, 'q2', 'project.apply', [EDIT]);
+    expect(await answerTo(socket, 'q1')).toMatchObject({ ok: false, error: { code: 'PERMISSION_DENIED' } });
+    expect(await answerTo(socket, 'q2')).toMatchObject({ ok: false, error: { code: 'PERMISSION_DENIED' } });
+    expect(h.edits).toEqual([]);
+  });
+
+  it('ends a guest’s access as the host shortened it, before the relay confirms, a little before the relay would', async () => {
+    const h = editor();
+    const { socket, run, now } = await letIn(h);
+    call(socket, 'q1', 'project.apply', [EDIT]);
+    const edit = await until(() => h.edits[0], 'the edit');
+    expect(h.manager.setGuestExpiry(run, 'g1', now + GRANT_CLOCK_MARGIN_MS + 60)).toEqual({ ok: true });
+    expect(edit.guest.check()).toBeNull();
+    await wait(100);
+    edit.release();
+    expect(await answerTo(socket, 'q1')).toMatchObject({ ok: false, error: { code: 'EXPIRED' } });
+  });
+
+  it('holds a guest to every demotion still unconfirmed, however many changes follow', async () => {
+    const h = editor();
+    const { socket, run } = await letIn(h);
+    for (const role of ['viewer', 'collaborator', 'viewer', 'collaborator'] as const) h.manager.setRole(run, 'g1', role);
+    // The relay confirms the first pair only.
+    socket.receive(roster('viewer'));
+    socket.receive(roster('collaborator'));
+    call(socket, 'q1', 'project.apply', [EDIT]);
+    expect(await answerTo(socket, 'q1')).toMatchObject({ ok: false, error: { code: 'PERMISSION_DENIED' } });
+    socket.receive(roster('viewer'));
+    socket.receive(roster('collaborator'));
+    call(socket, 'q2', 'project.apply', [EDIT]);
+    (await until(() => h.edits[0], 'the edit')).release();
+    expect(await answerTo(socket, 'q2')).toMatchObject({ ok: true });
+  });
+
+  it('sends the project only to guests it still lets in, when the relay lists one it has removed', async () => {
+    const h = editor({ timings: { eventsMs: 5 } });
+    const { socket, run } = await opened(h, [
+      { guestId: 'g1', displayName: 'Ann', status: 'pending' },
+      { guestId: 'g2', displayName: 'Bea', status: 'pending' }
+    ]);
+    h.manager.admit(run, 'g1', 'viewer');
+    h.manager.admit(run, 'g2', 'viewer');
+    socket.receive({ type: 'room:roster', participants: [admittedAs('g1', 'Ann', 'viewer'), admittedAs('g2', 'Bea', 'viewer')] });
+    expect(h.manager.kick(run, 'g2')).toEqual({ ok: true });
+    h.manager.editorChanged();
+    await until(() => socket.sent.some((f) => f.type === 'rpc:event' && f.event === 'project:changed'), 'the event');
+    const events = socket.sent.filter((f) => f.type === 'rpc:event');
+    expect(events.length).toBeGreaterThan(0);
+    for (const e of events) expect(e).toMatchObject({ guestId: 'g1' });
+  });
+
+  it('tells guests each time the preview’s state changes', async () => {
+    const h = editor({ timings: { eventsMs: 5 } });
+    const { socket } = await letIn(h, 'viewer');
+    const runtime = () => socket.sent.filter((f) => f.type === 'rpc:event' && f.event === 'runtime:status');
+    h.manager.editorChanged();
+    await until(() => runtime().length === 1, 'the first status');
+    h.env.snapshot = { ...SNAPSHOT, runtime: { state: 'starting' } };
+    h.manager.editorChanged();
+    await until(() => runtime().length === 2, 'the next status');
+    expect(runtime()[1]).toEqual({ type: 'rpc:event', event: 'runtime:status', payload: { state: 'starting' } });
+  });
+
+  it('sends again a role and an end of access the relay may never have had', async () => {
+    const h = editor();
+    const { socket, roomId, publicKey, run, now } = await letIn(h);
+    const until2 = now + 60 * 60_000;
+    h.manager.setRole(run, 'g1', 'viewer');
+    h.manager.setGuestExpiry(run, 'g1', until2);
+    socket.drop(1006);
+    const next = await until(() => h.sockets[1], 'the reconnect');
+    // The relay still has Ann as a collaborator with no end of her own.
+    next.open();
+    const nonce = newNonce();
+    next.receive({ type: 'host:challenge', roomId, nonce });
+    await until(() => sentOf(next, 'host:proof'), 'the proof');
+    next.receive(ready(roomId));
+    next.receive(roster('collaborator'));
+    expect(next.sent.filter((f) => f.type === 'guest:set-role' || f.type === 'guest:set-expiry')).toEqual([
+      { type: 'guest:set-role', guestId: 'g1', role: 'viewer' },
+      { type: 'guest:set-expiry', guestId: 'g1', guestExpiresAt: until2 }
+    ]);
+    void publicKey;
+    // Until it confirms, she is a viewer.
+    call(next, 'q1', 'project.apply', [EDIT]);
+    expect(await answerTo(next, 'q1')).toMatchObject({ ok: false, error: { code: 'PERMISSION_DENIED' } });
+  });
+
+  it('never lets in again a guest it removed, waiting or not', async () => {
+    const h = editor();
+    const { socket, roomId, publicKey, run } = await opened(h, [{ guestId: 'g1', displayName: 'Ann', status: 'pending' }]);
+    expect(h.manager.kick(run, 'g1')).toEqual({ ok: true });
+    expect(h.manager.admit(run, 'g1', 'viewer')).toMatchObject({ ok: false });
+    socket.drop(1006);
+    const next = await until(() => h.sockets[1], 'the reconnect');
+    next.open();
+    const nonce = newNonce();
+    next.receive({ type: 'host:challenge', roomId, nonce });
+    await until(() => sentOf(next, 'host:proof'), 'the proof');
+    next.receive(ready(roomId));
+    next.receive({ type: 'room:roster', participants: [{ guestId: 'g1', displayName: 'Ann', status: 'pending' }] });
+    expect(next.sent.filter((f) => f.type === 'guest:kick')).toEqual([{ type: 'guest:kick', guestId: 'g1' }]);
+    void publicKey;
   });
 });

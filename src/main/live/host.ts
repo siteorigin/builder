@@ -96,6 +96,12 @@ export const GUEST_SNAPSHOT_BURST = 5;
 export const GUEST_SNAPSHOT_REFILL_MS = 1_000;
 /** Answers wait while this much is still going out on the host's socket, rather than piling up behind it. */
 const RPC_BACKLOG_BYTES = 8 * 1024 * 1024;
+/**
+ * How much sooner than the relay a guest's access ends on the host. The host reads the relay's clock from frames that
+ * took a moment to arrive, so it runs a little behind: an edit is never made in the moments after the relay ended
+ * the guest's access but before the host could know.
+ */
+export const GRANT_CLOCK_MARGIN_MS = 5_000;
 
 /**
  * The most that may wait to go out on the host's socket. Each preview response pauses well below this
@@ -880,18 +886,25 @@ export class LiveHostManager {
     }
     if (reclaimed && run.phase !== 'stopping') {
       const now = relayNow(room);
+      const resend = (frame: HostToRelay) => {
+        if (this.sendOn(reclaimed, frame)) this.decided(run, frame);
+      };
       for (const p of room.participants) {
+        // Removed, waiting or not: the relay never had it.
+        if (run.kicked.has(p.guestId)) {
+          resend({ type: 'guest:kick', guestId: p.guestId });
+          continue;
+        }
         if (p.status !== 'admitted') continue;
         const grant = run.grants.get(p.guestId);
-        const resend = (frame: HostToRelay) => {
-          if (this.sendOn(reclaimed, frame)) this.decided(run, frame);
-        };
-        if (run.kicked.has(p.guestId) || !grant) {
+        // In the room with nothing the host let it in with: let go.
+        if (!grant) {
           resend({ type: 'guest:kick', guestId: p.guestId });
           continue;
         }
         if (grant.role !== p.role) resend({ type: 'guest:set-role', guestId: p.guestId, role: grant.role });
-        if (guestAccessEndsAt(grant.guestExpiresAt, room.expiresAt) < guestAccessEndsAt(p.guestExpiresAt, room.expiresAt)) {
+        if (grant.guestExpiresAt !== p.guestExpiresAt) {
+          // Until the relay confirms it, the guest is held to the earlier of the two (grantOf); one already past ends it.
           const until = checkGuestExpiry(grant.guestExpiresAt, room.expiresAt, now);
           resend(until.ok ? { type: 'guest:set-expiry', guestId: p.guestId, guestExpiresAt: until.expiresAt } : { type: 'guest:kick', guestId: p.guestId });
         }
@@ -910,7 +923,7 @@ export class LiveHostManager {
     const grant = run.grants.get(guestId);
     if (!room || p?.status !== 'admitted' || !grant || run.kicked.has(guestId)) return { code: 'PERMISSION_DENIED', message: 'You are not in this live session.', recoverable: false };
     const ends = Math.min(guestAccessEndsAt(p.guestExpiresAt, room.expiresAt), guestAccessEndsAt(grant.guestExpiresAt, room.expiresAt));
-    if (isExpired(ends, relayNow(room))) return { code: 'EXPIRED', message: 'Your access to this live session has ended.', recoverable: false };
+    if (isExpired(ends - GRANT_CLOCK_MARGIN_MS, relayNow(room))) return { code: 'EXPIRED', message: 'Your access to this live session has ended.', recoverable: false };
     const role: GuestRole = p.role === 'viewer' || grant.role === 'viewer' || grant.unconfirmed.includes('viewer') ? 'viewer' : 'collaborator';
     return { role, displayName: p.displayName, generation: grant.generation };
   }
@@ -957,7 +970,9 @@ export class LiveHostManager {
     };
     void this.ctx
       .applyGuest(run.workspaceKey, { guestId, displayName: grant.displayName, check }, call.value.args[0])
-      .catch((): LiveApplyResult => ({ ok: false, error: { code: 'INTERNAL', message: 'The host could not make that edit.', recoverable: false } }))
+      // A failure the editor did not turn into a refusal may have come after the edit was saved: the guest is told it
+      // cannot know, rather than that nothing changed, so it reads the project before trying again.
+      .catch((): LiveApplyResult => ({ ok: false, error: { code: 'INTERNAL', message: 'The host could not confirm whether your edit was saved. Fetch the project before trying again.', recoverable: false } }))
       .then((result) => {
         const left = (run.edits.get(guestId) ?? 1) - 1;
         if (left > 0) run.edits.set(guestId, left);
@@ -987,6 +1002,9 @@ export class LiveHostManager {
     const head = { type: 'rpc:response', guestId: frame.guestId, requestId: frame.requestId, method: frame.method } as const;
     const encoded = encodeFrame('host-to-relay', result.ok ? { ...head, ok: true, result: result.result } : { ...head, ok: false, error: result.error });
     if (encoded.ok) return void this.write(conn, encoded.frame);
+    // An edit that was made says so even when the IDs of everything it made are too many to send.
+    const made = result.ok && frame.method === 'project.apply' ? (result.result as { revision?: unknown }).revision : undefined;
+    if (typeof made === 'number' && this.sendOn(conn, { ...head, ok: true, result: { revision: made, results: [] } })) return;
     const error: RpcError =
       encoded.error.code === 'TOO_LARGE' ? { code: 'TOO_LARGE', message: 'The host’s project is too large to share in a live session.', recoverable: false } : { code: 'INTERNAL', message: 'The host could not send its answer.', recoverable: false };
     this.sendOn(conn, { ...head, ok: false, error });
@@ -1028,15 +1046,28 @@ export class LiveHostManager {
     const conn = run.conn;
     // Owed while the room is being taken back: sent once it is (onRoster).
     if (this.run !== run || run.phase !== 'active' || conn?.stage !== 'host' || !this.current(run)) return;
+    // Only to guests the host still lets in. When the relay lists one the host has removed, or whose access has ended
+    // on the host's reckoning (a command the relay has not had yet, or refused), each of the others is sent its own.
+    const listed = run.room!.participants.filter((p) => p.status === 'admitted');
+    const granted = listed.filter((p) => !('code' in this.grantOf(run, p.guestId)));
     // Nobody to tell: a guest let in later asks for the project itself.
-    if (!run.room!.participants.some((p) => p.status === 'admitted' && !run.kicked.has(p.guestId))) return;
+    if (!granted.length) return;
     const snapshot = this.ctx.guestSnapshot?.(run.workspaceKey);
     if (!snapshot || snapshot === run.sentSnapshot) return;
-    if (snapshot.runtime.state !== run.sentRuntime && this.sendOn(conn, { type: 'rpc:event', event: 'runtime:status', payload: snapshot.runtime })) run.sentRuntime = snapshot.runtime.state;
-    const event = (payload: LiveProjectChanged) => encodeFrame('host-to-relay', { type: 'rpc:event', event: 'project:changed', payload });
-    let encoded = event({ kind: 'snapshot', snapshot });
-    if (!encoded.ok && encoded.error.code === 'TOO_LARGE') encoded = event({ kind: 'too-large', revision: snapshot.revision });
-    if (encoded.ok && this.write(conn, encoded.frame)) run.sentSnapshot = snapshot;
+    const to: Array<string | undefined> = granted.length === listed.length ? [undefined] : granted.map((p) => p.guestId);
+    const send = (event: 'runtime:status' | 'project:changed', payload: unknown) => {
+      let sent = true;
+      for (const guestId of to) {
+        const encoded = encodeFrame('host-to-relay', { type: 'rpc:event', event, payload, ...(guestId ? { guestId } : {}) });
+        if (!encoded.ok) return encoded.error;
+        sent = this.write(conn, encoded.frame) && sent;
+      }
+      return sent;
+    };
+    if (snapshot.runtime.state !== run.sentRuntime && send('runtime:status', snapshot.runtime) === true) run.sentRuntime = snapshot.runtime.state;
+    let sent = send('project:changed', { kind: 'snapshot', snapshot } satisfies LiveProjectChanged);
+    if (typeof sent === 'object' && sent.code === 'TOO_LARGE') sent = send('project:changed', { kind: 'too-large', revision: snapshot.revision } satisfies LiveProjectChanged);
+    if (sent === true) run.sentSnapshot = snapshot;
   }
 
   // -------------------------------------------------------------------------
@@ -1065,9 +1096,10 @@ export class LiveHostManager {
   }
 
   admit(run: unknown, guestId: unknown, role: unknown, guestExpiresAt: unknown = null): LiveCommandResult {
-    return this.command(run, (_run, room, now) => {
+    return this.command(run, (current, room, now) => {
       const guest = this.guest(room, guestId);
       if (typeof guest === 'string') return guest;
+      if (current.kicked.has(guest.guestId)) return 'That guest has been removed from the live session.';
       if (guest.status !== 'pending') return 'That guest has already been let in.';
       if (!isRole(role)) return 'Choose whether the guest views or collaborates.';
       const until = checkGuestExpiry(guestExpiresAt ?? null, room.expiresAt, now);

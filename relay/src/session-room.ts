@@ -80,7 +80,7 @@ export class SessionRoom extends DurableObject<Env> {
   private room: RoomSnapshot | null;
   private readonly config: RelayConfig;
   private readonly tunnel: PreviewTunnel;
-  /** Each guest connection's presence budget (PRESENCE_BURST), and when it was last counted. Kept in memory only. */
+  /** Each guest's presence budget (PRESENCE_BURST), and when it was last counted, kept while it holds its place. */
   private readonly presenceBudget = new Map<string, { tokens: number; at: number }>();
   /** The alarm as last set, or undefined when unknown (after waking, once it has fired, or after a failed write). */
   private alarmAt: number | null | undefined = undefined;
@@ -406,7 +406,9 @@ export class SessionRoom extends DurableObject<Env> {
       case 'rpc:event': {
         const { guestId, ...event } = frame;
         const targets = guestId === undefined ? this.admittedSockets() : [this.admittedSocket(guestId)].filter((t): t is WebSocket => t !== null);
-        for (const target of targets) this.send(target, 'relay-to-guest', event);
+        // Each event is the host's state as a whole (a project snapshot, the preview's status), so a guest too far
+        // behind to take another misses this one and has the next: its queue never grows by a snapshot per change.
+        for (const target of targets) if (!backedUp(target)) this.send(target, 'relay-to-guest', event);
         return;
       }
       case 'presence:update': {
@@ -484,7 +486,7 @@ export class SessionRoom extends DurableObject<Env> {
         if (guest.status !== 'admitted') return this.refuse(ws, 'relay-to-guest', 'FORBIDDEN', 'The host has not let you in yet.', false);
         // Viewers follow the session; collaborators show the others where they are and what they have selected (#765).
         if (guest.role !== 'collaborator') return this.refuse(ws, 'relay-to-guest', 'FORBIDDEN', 'Only collaborators share where they are.', false);
-        if (!this.spendPresence(attachment.connectionId)) return;
+        if (!this.spendPresence(guest.guestId)) return;
         const changed = { type: 'presence:changed', participant: { kind: 'guest', guestId: guest.guestId }, presence: frame.presence } as const;
         const host = this.hostSocket();
         if (host && !backedUp(host)) this.send(host, 'relay-to-host', changed);
@@ -505,13 +507,13 @@ export class SessionRoom extends DurableObject<Env> {
     }
   }
 
-  /** Take one of a guest connection's presence budget, refilled over time; false when none is left. */
-  private spendPresence(connectionId: string): boolean {
+  /** Take one of a guest's presence budget, refilled over time; false when none is left. */
+  private spendPresence(guestId: string): boolean {
     const now = Date.now();
-    const budget = this.presenceBudget.get(connectionId) ?? { tokens: PRESENCE_BURST, at: now };
+    const budget = this.presenceBudget.get(guestId) ?? { tokens: PRESENCE_BURST, at: now };
     budget.tokens = Math.min(PRESENCE_BURST, budget.tokens + ((now - budget.at) * PRESENCE_PER_SECOND) / 1000);
     budget.at = now;
-    this.presenceBudget.set(connectionId, budget);
+    this.presenceBudget.set(guestId, budget);
     if (budget.tokens < 1) return false;
     budget.tokens--;
     return true;
@@ -673,7 +675,6 @@ export class SessionRoom extends DurableObject<Env> {
 
   private socketGone(ws: WebSocket): void {
     const attachment = readAttachment(ws);
-    if (attachment) this.presenceBudget.delete(attachment.connectionId);
     if (attachment && attachment.phase !== 'retired') {
       writeAttachment(ws, { ...attachment, phase: 'retired' }, null);
       this.release(attachment);
@@ -708,6 +709,7 @@ export class SessionRoom extends DurableObject<Env> {
   private removeGuest(guest: GuestRecord, status: DistributiveOmit<GuestStatus, 'type'> | null, reason: string): void {
     const room = this.room!;
     room.guests = room.guests.filter((g) => g !== guest);
+    this.presenceBudget.delete(guest.guestId);
     this.tunnel.abortGuest(guest.guestId);
     const ws = guest.connectionId ? this.socket(guest.connectionId) : null;
     if (!ws) return;

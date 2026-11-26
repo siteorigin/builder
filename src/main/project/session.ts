@@ -1898,15 +1898,21 @@ export class ProjectSession extends EventEmitter {
           ? { history: { ...this.history, cursor: opts.cursor }, pruned: false, entryId: undefined }
           : null;
     const journaled = !!(writes.length || deletes.length || planned);
-    // The last moment the change can be turned away whole: nothing of it is on disk yet but its blobs.
-    const refused = opts.guard?.(next);
-    if (refused) throw new GuardRefusal(refused);
+    // A guard (CommitOptions.guard) is asked now, and again as the journal is about to take its place: the last moment
+    // the change can be turned away whole, with nothing of it on disk but its blobs.
+    const guard = opts.guard;
+    const stillAllowed = () => {
+      const refused = guard?.(next);
+      if (refused) throw new GuardRefusal(refused);
+      return true;
+    };
+    stillAllowed();
     let changedFiles: string[];
     // Files replaced or removed so far: a change stopped before the first one has changed nothing on disk.
     let installed = 0;
     try {
       // Journal first, then replace files.
-      if (journaled) await this.writeJournal({ writes: writes.map(({ path, blob, before }) => ({ path, blob, before })), deletes, history: planned?.history, revision: this.revision + 1 });
+      if (journaled) await this.writeJournal({ writes: writes.map(({ path, blob, before }) => ({ path, blob, before })), deletes, history: planned?.history, revision: this.revision + 1 }, guard ? async () => stillAllowed() : undefined);
       // A code component's source the preview watches is replaced with the files generated from it, in one update.
       changedFiles = await this.publishing(async () => {
         // Each file is checked again just before it is replaced or removed: one saved outside the app since the check
@@ -1931,6 +1937,8 @@ export class ProjectSession extends EventEmitter {
       await this.saveLocalState();
       if (journaled) await removeDurable(this.local('journal.json'));
     } catch (e) {
+      // Turned away by its guard before its journal took its place: nothing of it reached the project.
+      if (e instanceof GuardRefusal) throw e;
       // Stopped by a file saved outside the app before anything was replaced: nothing of this change is on disk, so
       // its journal goes and the project carries on (an AI request's own recovery marker is left to its rollback).
       if (journaled && installed === 0 && !this.activeRun && e instanceof DiskConflictError) {
@@ -1952,8 +1960,8 @@ export class ProjectSession extends EventEmitter {
     return event;
   }
 
-  private async writeJournal(j: Omit<Journal, 'schemaVersion'>) {
-    await atomicWrite(this.local('journal.json'), toJson({ schemaVersion: SCHEMA_VERSION, ...j } satisfies Journal));
+  private async writeJournal(j: Omit<Journal, 'schemaVersion'>, beforeReplace?: () => Promise<boolean>) {
+    await atomicWrite(this.local('journal.json'), toJson({ schemaVersion: SCHEMA_VERSION, ...j } satisfies Journal), beforeReplace ? { beforeReplace } : {});
   }
 
   /** Every generated file for `state`, reusing what earlier generations made from inputs that are unchanged. */

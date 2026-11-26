@@ -1,27 +1,35 @@
 /**
- * Where a contact form sends visitors' messages, as a live session's guests may not change it (#765). The form's own
- * destinations (FORM_DESTINATIONS) are refused by name before a guest's batch runs (shared/live/capabilities.ts); this
- * follows them through the designs that pass a value on to a form, which only the project can show.
+ * What a live session's guests may not do to the project, checked against the project as a guest's batch would leave
+ * it (#765), where the operations alone cannot show it: change where a contact form sends visitors' messages, through
+ * whatever design passes its settings on, or add a dated article (copying one included). The form's own destinations
+ * (FORM_DESTINATIONS) are also refused by name before a guest's batch runs (shared/live/capabilities.ts).
  */
 import type { ComponentDefinition, GraphNode, OwnerKind, ProjectState } from '@shared/types';
-import { FORM_DESTINATIONS } from '@catalogue/foundation/form';
+import { FORM_DESTINATIONS, FORM_SERVICES } from '@catalogue/foundation/form';
 import { sendsFormMessages } from './component-package';
 import { codeImports } from './definitions';
 import { allTrees, enclosingRepeatProp } from './tree';
 
 const isRecord = (v: unknown): v is Record<string, unknown> => !!v && typeof v === 'object' && !Array.isArray(v);
 
+/** A form's settings that decide where its messages go: the service it uses, and that service's own setting. */
+const ROUTING = ['provider', ...new Set(Object.values(FORM_SERVICES).map((s) => s.prop))];
+
 /**
- * The properties of each component that decide where a contact form sends its messages: a form's own destinations,
- * and every property of a design that passes a value on to one of those, however deep. A whole property or one field
- * of it passed on protects that property; an item's field passed on inside a repeat protects the list it repeats.
- * Code decides in its source what it passes on, so code that places a form (and is not one) has all its properties
- * protected.
+ * The properties of each component that decide where a contact form sends its messages: a form's service and its
+ * settings, and every property of a design that passes a value on to one of those, however deep. A form is the theme's
+ * (or a copy whose code still reads its settings), or anything with a form destination's name, as the name check
+ * refuses it. A whole property or one field of it passed on protects that property; an item's field passed on inside
+ * a repeat protects the list it repeats. Code decides in its source what it passes on, so code that places a form
+ * (and is not one) has all its properties protected.
  */
 export function formDestinationProps(state: ProjectState): Map<string, Set<string>> {
   const out = new Map<string, Set<string>>();
   const defs = Object.values(state.components);
-  for (const d of defs) if (sendsFormMessages(d)) out.set(d.id, new Set(FORM_DESTINATIONS));
+  for (const d of defs) {
+    if (!sendsFormMessages(d) && !FORM_DESTINATIONS.some((k) => Object.hasOwn(d.properties, k))) continue;
+    out.set(d.id, new Set(ROUTING.filter((k) => Object.hasOwn(d.properties, k))));
+  }
   const protect = (d: ComponentDefinition, prop: string | undefined): boolean => {
     if (!prop || !Object.hasOwn(d.properties, prop)) return false;
     const set = out.get(d.id) ?? new Set<string>();
@@ -33,7 +41,7 @@ export function formDestinationProps(state: ProjectState): Map<string, Set<strin
     changed = false;
     for (const d of defs) {
       if (d.kind === 'code') {
-        if (!sendsFormMessages(d) && [...out.keys()].some((id) => codeImports(state, d, id))) for (const prop of Object.keys(d.properties)) changed = protect(d, prop) || changed;
+        if (!out.has(d.id) && [...out.keys()].some((id) => codeImports(state, d, id))) for (const prop of Object.keys(d.properties)) changed = protect(d, prop) || changed;
         continue;
       }
       for (const n of Object.values(d.tree?.nodes ?? {})) {
@@ -65,10 +73,10 @@ const EMPTY = new Set(['undefined', 'null', '""']);
 
 /**
  * Why `after` changes where a contact form on a page or in the header or footer sends its messages, or null when it
- * does not. A placement that was there before keeps every destination it had, whatever the batch did to it (a swap to
- * another design included). A new one (inserted, duplicated, detached, or moved from another page) may have none, or
- * only a destination the host already set somewhere: in a placement before, or in a design or its defaults, which
- * guests never write.
+ * does not. A placement that was there before keeps every setting that decides it, and is never swapped into or out
+ * of a design that has such settings. A new one (inserted, duplicated, detached, or moved from another page) may have
+ * none, or only a destination the host already set somewhere: in a placement before, or in a design or its defaults,
+ * which guests never write. So a guest never sends a form's messages anywhere the host did not choose.
  */
 export function guestDestinationChange(before: ProjectState, after: ProjectState, owners: readonly OwnerKind[] = ['page', 'shell']): string | null {
   const was = formDestinationProps(before);
@@ -91,13 +99,26 @@ export function guestDestinationChange(before: ProjectState, after: ProjectState
     for (const n of Object.values(tree.nodes)) {
       if (n.kind !== 'instance') continue;
       const prior = placed.get(`${owner.kind}:${owner.id}:${n.id}`);
+      const name = after.components[n.definitionId]?.name ?? 'a contact form';
+      // Swapped for another design, into or out of one that decides where a form sends: what carries over cannot be
+      // matched setting for setting, so only the host makes that swap.
+      if (prior && prior.definitionId !== n.definitionId && (was.has(prior.definitionId) || is.has(n.definitionId))) return `Only the host can change where “${name}” sends its messages.`;
       for (const p of is.get(n.definitionId) ?? []) {
         const now = valueOf(after, n, p);
         if (prior ? now === valueOf(before, prior, p) : allowed.has(now)) continue;
-        const name = after.components[n.definitionId]?.name ?? 'a contact form';
         return `Only the host can change where “${name}” sends its messages.`;
       }
     }
   }
   return null;
+}
+
+/**
+ * Why a guest's batch, leaving the project as `after`, does something only the host may, or null when it does not:
+ * adds a dated article (a copy of one included: whether and when the site publishes news is the host's), or changes
+ * where a contact form sends its messages (guestDestinationChange).
+ */
+export function guestEditProblem(before: ProjectState, after: ProjectState): string | null {
+  for (const [id, page] of Object.entries(after.pages)) if (!Object.hasOwn(before.pages, id) && page.article) return 'Only the host can add an article.';
+  return guestDestinationChange(before, after);
 }

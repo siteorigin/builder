@@ -79,7 +79,7 @@ export const GUEST_OWNER_KINDS = ['page', 'shell'] as const;
  * Component properties only the host sets, wherever they are placed: the contact form settings that send the site's
  * messages to someone's own account (the form's FORM_DESTINATIONS). This goes by the property's name only. A project
  * component that passes one of its own properties into a nested form's settings is caught by the host's check against
- * the project as the batch would leave it (engine/form-destinations.ts), which this contract cannot see.
+ * the project as the batch would leave it (engine/guest-edits.ts), which this contract cannot see.
  */
 export const HOST_ONLY_PROPS = ['endpoint', 'accessKey'] as const;
 

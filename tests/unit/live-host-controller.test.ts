@@ -159,7 +159,9 @@ async function rpc(guest: JoinedGuest, method: string, args: unknown[] = []) {
   guest.guest.send('guest-to-relay', { type: 'rpc:request', requestId, method, args });
   for (;;) {
     const answer = await guest.guest.next('rpc:response');
-    if (answer.requestId === requestId) return answer;
+    if (answer.requestId !== requestId) continue;
+    expect(answer.method).toBe(method);
+    return answer;
   }
 }
 
@@ -242,10 +244,14 @@ describe('a live session hosted by the open project', () => {
     expect(c.live.admit(run, bob.guestId, 'viewer')).toEqual({ ok: true });
     await bob.guest.next('guest:status');
 
+    // The host's own notes name its folders.
+    const home = c.session!.state.site.homePageId;
+    const noted = await c.apply({ operations: [{ type: 'page.update', pageId: home, description: `Kept in ${dir}` }] });
+    expect(noted.ok, noted.error?.message).toBe(true);
     const read = await rpc(guest, 'project.snapshot');
     if (!read.ok) throw new Error(read.error.message);
     const shared = read.result as LiveProjectSnapshot;
-    const home = c.session!.state.site.homePageId;
+    expect(shared.state.pages[home].seo.description).toBe('Kept in …');
     expect(shared).toMatchObject({ revision: c.session!.revision, readOnly: false, aiBusy: false, runtime: { state: 'ready' } });
     expect(shared.state.pages[home].title).toBe(c.session!.state.pages[home].title);
     // Nothing of the host's computer or editor goes over the relay.
@@ -254,6 +260,9 @@ describe('a live session hosted by the open project', () => {
 
     const before = c.session!.revision;
     const worker = workers.at(-1)!;
+    // Made against an older revision: refused, and nothing written.
+    expect(await rpc(guest, 'project.apply', [{ operations: [{ type: 'page.update', pageId: home, title: 'Stale' }], expectedRevision: before - 1 }])).toMatchObject({ ok: false, error: { code: 'STALE_REVISION' } });
+    expect(c.session!.revision).toBe(before);
     const edit = await rpc(guest, 'project.apply', [{ operations: [{ type: 'page.update', pageId: home, title: 'Fresh bread daily' }], expectedRevision: before, label: 'Rename page' }]);
     expect(edit).toMatchObject({ ok: true, result: { revision: before + 1 } });
     // Saved on the host, generated for its preview, and in its History as Ann's.
@@ -271,6 +280,13 @@ describe('a live session hosted by the open project', () => {
     const last = c.snapshot()!.history.entries.at(-1)!;
     expect((await c.undoEntry(last.id, c.snapshot()!.workspaceKey)).ok).toBe(true);
     expect(c.session!.state.pages[home].title).toBe('Fresh bread daily');
+    // What a guest is told of what it made is the IDs it can edit next, and nothing else.
+    const made = await rpc(guest, 'project.apply', [{ operations: [{ type: 'page.create', title: 'Workshops' }] }]);
+    if (!made.ok) throw new Error(made.error.message);
+    const [created] = (made.result as { results: Array<Record<string, unknown>> }).results;
+    expect(Object.keys(created).length).toBeGreaterThan(0);
+    for (const [key, value] of Object.entries(created)) expect(`${key}=${typeof value}`).toMatch(/Ids?=(string|object)$/);
+    expect(c.session!.state.pages[created.pageId as string].title).toBe('Workshops');
     // A viewer edits nothing.
     const viewer = await rpc(bob, 'project.apply', [{ operations: [{ type: 'page.update', pageId: home, title: 'Bob was here' }] }]);
     expect(viewer).toMatchObject({ ok: false, error: { code: 'PERMISSION_DENIED' } });
@@ -300,5 +316,39 @@ describe('a live session hosted by the open project', () => {
       const status = await guest.guest.next('guest:status');
       if (status.status === 'kicked') break;
     }
+  });
+
+  it('never lets a collaborator change where a contact form sends, however a design passes it on', async () => {
+    const dir = await makeProject('acme');
+    const { c, sent } = controller();
+    const { guest } = await hosting(c, sent, dir, 'collaborator');
+    const owner = { kind: 'page' as const, id: c.session!.state.site.homePageId };
+    const host = async (operations: unknown[]) => {
+      const r = await c.apply({ operations } as never);
+      if (!r.ok) throw new Error(r.error?.message);
+      return r.results!;
+    };
+    // The host's own "Contact band", passing its recipient on as the form's endpoint, placed for Sales.
+    const section = (await host([{ type: 'node.insert', owner, parentId: null, componentId: 'layout.section' }]))[0].nodeId as string;
+    await host([{ type: 'node.insert', owner, parentId: section, slot: 'content', componentId: 'contact.form', props: { provider: 'endpoint', endpoint: 'https://forms.example.com/sales' } }]);
+    const band = (await host([{ type: 'component.createFromNode', owner, nodeId: section, name: 'Contact band' }]))[0].definitionId as string;
+    const inner = Object.values(c.session!.state.components[band].tree!.nodes).find((n) => n.kind === 'instance' && n.definitionId === 'foundation.contact.form')!.id;
+    await host([
+      { type: 'component.setPropSchema', definitionId: band, prop: 'recipient', schema: { type: 'string', label: 'Recipient', default: '' } },
+      { type: 'node.setBinding', owner: { kind: 'component', id: band }, nodeId: inner, field: 'prop', prop: 'endpoint', binding: { $prop: 'recipient' } }
+    ]);
+    const sales = (await host([{ type: 'node.insert', owner, parentId: null, definitionId: band, props: { recipient: 'https://forms.example.com/sales' } }]))[0].nodeId as string;
+    const revision = c.session!.revision;
+    const evil = 'https://evil.example/f';
+    for (const operations of [
+      [{ type: 'instance.setProp', owner, nodeId: sales, prop: 'recipient', value: evil }],
+      [{ type: 'node.insert', owner, parentId: null, definitionId: band, newNodeId: 'n_guest01' }, { type: 'instance.setProp', owner, nodeId: 'n_guest01', prop: 'recipient', value: evil }]
+    ])
+      expect(await rpc(guest, 'project.apply', [{ operations }])).toMatchObject({ ok: false, error: { code: 'PERMISSION_DENIED', message: expect.stringContaining('Contact band') } });
+    expect(c.session!.revision).toBe(revision);
+    expect(JSON.stringify(c.session!.state)).not.toContain(evil);
+    expect(c.snapshot()!.saveFailure ?? null).toBeNull();
+    // Its other edits are ordinary.
+    expect((await rpc(guest, 'project.apply', [{ operations: [{ type: 'node.duplicate', owner, nodeId: sales }] }])).ok).toBe(true);
   });
 });

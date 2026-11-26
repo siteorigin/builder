@@ -209,7 +209,7 @@ describe('checking a batch', () => {
 
   it('lets a collaborator add a page, but not date it or keep it out of News', () => {
     expect(checkEditBatch('collaborator', { operations: [{ type: 'page.create', title: 'Workshops', route: '/workshops/', starter: 'services', addToNavigation: true, byline: 'By Ana Ruiz', excerpt: 'Spring dates' }] })).toMatchObject({ ok: true });
-    for (const field of [{ articleDate: '2026-01-01' }, { newsHidden: true }, { starter: 'article' }])
+    for (const field of [{ articleDate: '2026-01-01' }, { newsHidden: true }, { newsHidden: false }, { starter: 'article' }])
       expect(checkEditBatch('collaborator', { operations: [{ type: 'page.create', title: 'News', ...field }] }), Object.keys(field)[0]).toMatchObject({ ok: false, error: { code: 'PERMISSION_DENIED', operationIndex: 0 } });
   });
 

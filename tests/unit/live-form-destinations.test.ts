@@ -7,7 +7,7 @@ import type { EditOperation } from '@shared/ops';
 import type { InstanceNode, OwnerRef, ProjectState } from '@shared/types';
 import { createStarterState } from '@catalogue/starters';
 import { applyOperations } from '@engine/apply';
-import { formDestinationProps, guestDestinationChange } from '@engine/form-destinations';
+import { formDestinationProps, guestDestinationChange, guestEditProblem } from '@engine/guest-edits';
 
 const FORM = 'foundation.contact.form';
 const SALES = 'https://forms.example.com/sales';
@@ -52,7 +52,7 @@ describe('where a contact form sends its messages', () => {
   it('follows a destination through the design that passes it on', () => {
     const { state, band } = project();
     const props = formDestinationProps(state);
-    expect([...(props.get(FORM) ?? [])].sort()).toEqual(['accessKey', 'endpoint']);
+    expect([...(props.get(FORM) ?? [])].sort()).toEqual(['accessKey', 'endpoint', 'formName', 'provider']);
     expect([...(props.get(band) ?? [])]).toEqual(['recipient']);
   });
 
@@ -66,7 +66,9 @@ describe('where a contact form sends its messages', () => {
     expect(guest(state, [{ type: 'instance.setProp', owner, nodeId: form, prop: 'endpoint', value: SALES }])).not.toBeNull();
     // Everything else about them is an ordinary edit.
     expect(guest(state, [{ type: 'instance.setProp', owner, nodeId: form, prop: 'heading', value: 'Write to us' }])).toBeNull();
-    expect(guest(state, [{ type: 'node.setStyle', owner, nodeId: sales, property: 'paddingBlock', value: '2rem' } as EditOperation])).toBeNull();
+    expect(guest(state, [{ type: 'node.setStyle', owner, nodeId: sales, scope: 'base', property: 'paddingBlock', value: '2rem' } as EditOperation])).toBeNull();
+    // Which service a form uses decides where its messages go as much as the service's own setting.
+    expect(guest(state, [{ type: 'instance.setProp', owner, nodeId: form, prop: 'provider', value: 'web3forms' }])).not.toBeNull();
   });
 
   it('lets a new placement send only where the host already sends', () => {
@@ -85,13 +87,44 @@ describe('where a contact form sends its messages', () => {
     expect(guest(state, [{ type: 'node.insert', owner, parentId: null, definitionId: band, newNodeId: 'n_guest1' }, { type: 'instance.setProp', owner, nodeId: 'n_guest1', prop: 'recipient', value: 'https://evil.example/f' }])).not.toBeNull();
   });
 
-  it('keeps a destination when a design is swapped for another in its place', () => {
+  it('never makes a design’s ordinary text a destination by swapping it for one that passes it on', () => {
+    const { state, owner, band } = project();
+    let next = state;
+    const step = (ops: EditOperation[]) => {
+      const r = run(next, ops);
+      next = r.state;
+      return r.results;
+    };
+    const section = step([{ type: 'node.insert', owner, parentId: null, componentId: 'layout.section' }])[0].nodeId as string;
+    const note = step([{ type: 'component.createFromNode', owner, nodeId: section, name: 'Note band' }])[0].definitionId as string;
+    step([{ type: 'component.setPropSchema', definitionId: note, prop: 'recipient', schema: { type: 'string', label: 'Recipient', default: '' } }]);
+    const placed = step([{ type: 'node.insert', owner, parentId: null, definitionId: note, props: { recipient: 'https://evil.example/f' } }])[0].nodeId as string;
+    const swapped = run(next, [{ type: 'instance.swapComponent', owner, nodeId: placed, definitionId: band, allowDrops: true }]).state;
+    expect((swapped.pages[owner.id].nodes[placed] as InstanceNode).props.recipient).toBe('https://evil.example/f');
+    expect(guestDestinationChange(next, swapped)).toMatch(/Only the host can change where/);
+  });
+
+  it('treats anything with a form destination’s name as a form, whatever its code', () => {
+    const { state } = project();
+    const copy = { id: 'cmp_myform', name: 'My form', kind: 'code', owner: 'project', source: '<form></form>', properties: { endpoint: { type: 'string', label: 'Endpoint', default: '' }, provider: { type: 'string', label: 'Service', default: '' }, heading: { type: 'string', label: 'Heading', default: '' } } } as never;
+    state.components.cmp_myform = copy;
+    expect([...(formDestinationProps(state).get('cmp_myform') ?? [])].sort()).toEqual(['endpoint', 'provider']);
+  });
+
+  it('keeps adding dated articles to the host, a copy of one included', () => {
+    const { state } = project();
+    const article = run(state, [{ type: 'page.create', title: 'Spring news', starter: 'article' }]);
+    const withArticle = article.state;
+    const articleId = article.results[0].pageId as string;
+    expect(guestEditProblem(withArticle, run(withArticle, [{ type: 'page.duplicate', pageId: articleId }]).state)).toMatch(/Only the host can add an article/);
+    expect(guestEditProblem(withArticle, run(withArticle, [{ type: 'page.duplicate', pageId: withArticle.site.homePageId }]).state)).toBeNull();
+    expect(guestEditProblem(withArticle, run(withArticle, [{ type: 'page.create', title: 'Workshops' }]).state)).toBeNull();
+  });
+
+  it('leaves swapping a placement into or out of a design that routes a form to the host', () => {
     const { state, owner, sales } = project();
-    // Into a design without a destination, the placement sends nowhere any more: no destination was changed.
     const swapped = run(state, [{ type: 'instance.swapComponent', owner, nodeId: sales, componentId: 'contact.form', allowDrops: true }]);
-    const node = swapped.state.pages[owner.id].nodes[sales] as InstanceNode;
-    expect(node.definitionId).toBe(FORM);
-    // The form it became keeps Sales's destination only if the swap carried it over; anything else is refused.
-    expect(guestDestinationChange(state, swapped.state) === null).toBe((node.props.endpoint ?? '') === SALES);
+    expect((swapped.state.pages[owner.id].nodes[sales] as InstanceNode).definitionId).toBe(FORM);
+    expect(guestDestinationChange(state, swapped.state)).toMatch(/Only the host can change where/);
   });
 });
