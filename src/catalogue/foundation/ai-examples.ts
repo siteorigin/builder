@@ -10,7 +10,7 @@ export const FOUNDATION_EXAMPLES: AiExample[] = [
     componentId: 'hero.centered',
     keywords: ['home', 'homepage', 'hero', 'landing', 'banner', 'headline', 'site', 'website'],
     description: 'Home page opening for a local trade business',
-    props: { eyebrow: 'Family-run since 1998', heading: 'Plumbing you can set your watch by', lead: 'Same-day repairs and honest quotes across the Harbour district.', primaryLabel: 'Book a visit', primaryLink: '/contact/', secondaryLabel: 'See services', secondaryLink: '/services/' }
+    props: { eyebrow: 'Family-run since 1998', heading: 'Plumbing you can set your watch by', lead: 'Same-day repairs and honest quotes across the Harbor district.', primaryLabel: 'Book a visit', primaryLink: '/contact/', secondaryLabel: 'See services', secondaryLink: '/services/' }
   },
   {
     id: 'hero-split-studio',
@@ -56,7 +56,7 @@ export const FOUNDATION_EXAMPLES: AiExample[] = [
     keywords: ['about', 'story', 'history', 'mission', 'image', 'photo', 'approach'],
     description: 'A short story beside an image',
     variant: 'media-end',
-    props: { eyebrow: 'Our story', heading: 'Started with one van and a good reputation', body: 'We began in 2009 fixing boilers for neighbours.\n\nToday a team of **twelve** looks after homes across the county.', image: NO_IMAGE, actionLabel: 'Meet the team', actionLink: '/about/' }
+    props: { eyebrow: 'Our story', heading: 'Started with one van and a good reputation', body: 'We began in 2009 fixing boilers for neighbors.\n\nToday a team of **twelve** looks after homes across the county.', image: NO_IMAGE, actionLabel: 'Meet the team', actionLink: '/about/' }
   },
   {
     id: 'steps-media-process',
@@ -93,7 +93,7 @@ export const FOUNDATION_EXAMPLES: AiExample[] = [
     componentId: 'content.text',
     keywords: ['text', 'article', 'policy', 'privacy', 'terms', 'legal', 'paragraphs'],
     description: 'A heading with plain paragraphs',
-    props: { heading: 'How we handle your details', body: 'We only keep the details needed to answer your enquiry.\n\nAsk us at any time and we will delete them.' }
+    props: { heading: 'How we handle your details', body: 'We only keep the details needed to answer your inquiry.\n\nAsk us at any time and we will delete them.' }
   },
   {
     id: 'stats-results',
@@ -162,7 +162,7 @@ export const FOUNDATION_EXAMPLES: AiExample[] = [
       monthlyLabel: 'Monthly',
       annualLabel: 'Yearly, 2 months free',
       plans: [
-        { name: 'Starter', description: 'For one person getting organised.', monthlyPrice: '$12', monthlyNote: 'per month', annualPrice: '$120', annualNote: 'per year, billed once', features: 'Unlimited projects\nEmail support', actionLabel: 'Start free trial', actionLink: '/contact/' },
+        { name: 'Starter', description: 'For one person getting organized.', monthlyPrice: '$12', monthlyNote: 'per month', annualPrice: '$120', annualNote: 'per year, billed once', features: 'Unlimited projects\nEmail support', actionLabel: 'Start free trial', actionLink: '/contact/' },
         { name: 'Team', description: 'For teams of up to twenty.', badge: 'Most popular', monthlyPrice: '$39', monthlyNote: 'per month', annualPrice: '$390', annualNote: 'per year, billed once', features: 'Everything in Starter\nShared workspaces\nPriority support', actionLabel: 'Start free trial', actionLink: '/contact/' }
       ]
     }
@@ -231,7 +231,7 @@ export const FOUNDATION_EXAMPLES: AiExample[] = [
     description: 'A gallery of recent work: an image can open full size (action "image") or lead to its project page (action "link")',
     props: {
       eyebrow: 'Recent work',
-      heading: 'A few favourite projects',
+      heading: 'A few favorite projects',
       lead: 'Each one shaped around how the client lives.',
       images: [
         { image: NO_IMAGE, caption: 'Kitchen, Millbrook', action: 'link', link: '/about/' },
@@ -281,17 +281,17 @@ export const FOUNDATION_EXAMPLES: AiExample[] = [
       items: [
         { icon: 'mail', label: 'Email', value: 'hello@example.com', link: { type: 'email', target: 'hello@example.com' } },
         { icon: 'phone', label: 'Phone', value: '+1 555 0134', link: { type: 'tel', target: '+15550134' } },
-        { icon: 'map-pin', label: 'Workshop', value: '12 Harbour Lane' }
+        { icon: 'map-pin', label: 'Workshop', value: '12 Harbor Lane' }
       ]
     }
   },
   {
-    id: 'contact-form-enquiry',
+    id: 'contact-form-inquiry',
     componentId: 'contact.form',
     keywords: ['form', 'enquiry', 'inquiry', 'message', 'contact', 'booking', 'quote'],
-    description: 'An enquiry form',
+    description: 'An inquiry form',
     props: {
-      eyebrow: 'Enquiries',
+      eyebrow: 'Inquiries',
       heading: 'Tell us about your project',
       lead: 'A few details help us give you a useful first answer.',
       fields: [
@@ -299,7 +299,7 @@ export const FOUNDATION_EXAMPLES: AiExample[] = [
         { label: 'Email', name: 'email', type: 'email', required: true },
         { label: 'Message', name: 'message', type: 'textarea', required: true }
       ],
-      submitLabel: 'Send enquiry'
+      submitLabel: 'Send inquiry'
     }
   },
   {

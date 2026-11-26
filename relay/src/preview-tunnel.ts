@@ -130,7 +130,7 @@ export class PreviewTunnel {
 
     const signal = request.signal;
     if (signal) {
-      const onAbort = () => this.fail(pending, { status: 499, message: 'The request was cancelled.', abort: 'CANCELLED' });
+      const onAbort = () => this.fail(pending, { status: 499, message: 'The request was canceled.', abort: 'CANCELLED' });
       if (signal.aborted) {
         onAbort();
         return answered;

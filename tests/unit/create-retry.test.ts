@@ -117,8 +117,8 @@ const untilCancelled = (dir: string, signal?: AbortSignal) => {
   mkdirSync(join(dir, 'node_modules', 'vite'), { recursive: true });
   writeFileSync(join(dir, 'node_modules', 'vite', 'package.json'), '{}');
   return new Promise<void>((_resolve, reject) => {
-    if (signal?.aborted) return reject(new Error('Cancelled'));
-    signal?.addEventListener('abort', () => reject(new Error('Cancelled')));
+    if (signal?.aborted) return reject(new Error('Canceled'));
+    signal?.addEventListener('abort', () => reject(new Error('Canceled')));
   });
 };
 
@@ -131,7 +131,7 @@ describe('New project after Cancel', () => {
       hooks.cancelAt = step;
       if (step === 'dependencies') deps.run = untilCancelled;
       const r = await c.create(opts(parent));
-      expect(r).toEqual({ ok: false, message: 'Cancelled.' });
+      expect(r).toEqual({ ok: false, message: 'Canceled.' });
       expect(existsSync(dir)).toBe(true);
       expect(readdirSync(dir)).toEqual([]);
       expect(c.session).toBeNull();
@@ -146,7 +146,7 @@ describe('New project after Cancel', () => {
       const dir = join(parent, 'meadow-studio');
       hooks.cancelAt = step;
       if (step === 'dependencies') deps.run = untilCancelled;
-      expect(await c.create(opts(parent))).toEqual({ ok: false, message: 'Cancelled.' });
+      expect(await c.create(opts(parent))).toEqual({ ok: false, message: 'Canceled.' });
       expect(existsSync(dir)).toBe(false);
       expect(readdirSync(parent)).toEqual([]);
 
@@ -192,7 +192,7 @@ describe('New project after Cancel', () => {
     mkdirSync(dir);
     const pending = c.create(opts(parent));
     c.cancelCreate();
-    expect(await pending).toEqual({ ok: false, message: 'Cancelled.' });
+    expect(await pending).toEqual({ ok: false, message: 'Canceled.' });
     expect(readdirSync(dir)).toEqual([]);
     expect(c.session).toBeNull();
     expect(await c.create(opts(parent))).toEqual({ ok: true });
@@ -210,7 +210,7 @@ describe('New project after Cancel', () => {
     failFirst();
     expect((await first).ok).toBe(false);
     c.cancelCreate();
-    expect(await second).toEqual({ ok: false, message: 'Cancelled.' });
+    expect(await second).toEqual({ ok: false, message: 'Canceled.' });
     expect(readdirSync(parent)).toEqual([]);
   });
 
@@ -228,7 +228,7 @@ describe('New project after Cancel', () => {
         writeFileSync(join(d, '.siteorigin', 'cache', 'deps.json'), '{}');
         c.cancelCreate();
       };
-      expect(await c.create(settings)).toEqual({ ok: false, message: 'Cancelled.' });
+      expect(await c.create(settings)).toEqual({ ok: false, message: 'Canceled.' });
       expect(readdirSync(dir)).toEqual([]);
       expect(await c.create(settings)).toEqual({ ok: true });
     });
@@ -393,7 +393,7 @@ describe('New project when cleaning up goes wrong', () => {
     hooks.cancelAt = 'files';
     const r = await c.create(opts(parent));
     expect(r.ok).toBe(false);
-    expect(r.message).toBe(`Cancelled. Some of the new project’s files could not be removed from ${dir}.`);
+    expect(r.message).toBe(`Canceled. Some of the new project’s files could not be removed from ${dir}.`);
     expect(readdirSync(dir)).toEqual(['README.md']);
   });
 
@@ -439,7 +439,7 @@ describe('protecting what was already there', () => {
       return installing;
     };
     hooks.cancelAt = 'dependencies';
-    expect(await c.create(opts(parent))).toEqual({ ok: false, message: `Cancelled. The new project’s files were left in ${dir}.` });
+    expect(await c.create(opts(parent))).toEqual({ ok: false, message: `Canceled. The new project’s files were left in ${dir}.` });
     expect(tree(dir)).toEqual(before);
     expect(before).toContain('siteorigin.project.json');
     expect(before).toContain(join('.siteorigin', 'lock.json'));

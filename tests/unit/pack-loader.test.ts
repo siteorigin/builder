@@ -123,7 +123,7 @@ describe('loading a theme pack release', () => {
     ['a component under another pack ID', (d) => edit(d, (m) => (m.components[2].id = 'foundation.hero.centered')), /must be "studio\.hero\.centered"/],
     ['a component that claims another pack', (d) => edit(d, (m) => (m.components[2].provenance = { ...m.components[2].provenance, pack: 'foundation' })), /comes from another pack/],
     ['a licence that forbids publishing', (d) => edit(d, (m) => (m.components[3].license = 'LicenseRef-Proprietary')), /does not allow it to be published/],
-    ['a font licence that forbids publishing', (d) => edit(d, (m) => (m.fonts[0].license = 'LicenseRef-Desktop-Only')), /font Lora has the licence/],
+    ['a font licence that forbids publishing', (d) => edit(d, (m) => (m.fonts[0].license = 'LicenseRef-Desktop-Only')), /font Lora has the license/],
     ['an element whose child is missing', (d) => edit(d, (m) => (m.components[2].tree!.nodes[m.components[2].tree!.rootIds[0]] as { children: string[] }).children.push('ghost')), /lists a child "ghost" that does not exist/],
     ['a component part with no element', (d) => edit(d, (m) => (Object.values(m.components[2].parts)[0].nodeId = 'ghost')), /refers to an element that does not exist/],
     ['base CSS that imports a stylesheet', (d) => edit(d, (m) => (m.baseCss += '\n@import "https://example.com/x.css";')), /@import/],
@@ -204,7 +204,7 @@ describe('loading a theme pack release', () => {
       symlinkSync(elsewhere, join(d, 'fonts'));
     }, /fonts is a link/],
     ['a font larger than the limit', (d) => edit(d, (m) => (m.files[m.fonts[0].faces[0].file].size = 5 * 1024 * 1024)), /is larger than 4096 KB/],
-    ['a pack licence that forbids publishing', (d) => edit(d, (m) => (m.license = 'LicenseRef-Proprietary')), /The pack's licence "LicenseRef-Proprietary" does not allow/],
+    ['a pack licence that forbids publishing', (d) => edit(d, (m) => (m.license = 'LicenseRef-Proprietary')), /The pack's license "LicenseRef-Proprietary" does not allow/],
     ['an element ID that could break out of generated markup', (d) => edit(d, (m) => {
       const def = m.components[2];
       const root = def.tree!.rootIds[0];

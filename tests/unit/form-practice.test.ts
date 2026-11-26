@@ -54,7 +54,7 @@ describe('forms in Preview, as the editor reads the preview bridge (issue #193)'
   });
 
   it('says what a practice send did, and that nothing was sent', () => {
-    expect(formSendNote({ id: FORM.id, kind: 'practice', result: 'sending' }, FORM)).toBe('Practising a send. Nothing is being sent.');
+    expect(formSendNote({ id: FORM.id, kind: 'practice', result: 'sending' }, FORM)).toBe('Practicing a send. Nothing is being sent.');
     expect(formSendNote({ id: FORM.id, kind: 'practice', result: 'success' }, FORM)).toBe('Practice send: the form showed its sent message. Nothing was sent.');
     expect(formSendNote({ id: FORM.id, kind: 'practice', result: 'error' }, FORM)).toBe('Practice send: the form showed its error message. Nothing was sent.');
   });

@@ -311,7 +311,7 @@ async function checkComponents(m: PackManifest, source: PackRoot['source'], revi
       if (problem) refuse(`${where}: the slot "${slot}" ${problem}.`);
     }
     if (def.provenance?.pack !== m.id || def.provenance?.packVersion !== m.version || def.provenance?.componentId !== def.componentId) refuse(`${where} says it comes from another pack or version.`);
-    if (!COMPONENT_LICENSES.has(def.license ?? '')) refuse(`${where} has the licence "${def.license}", which does not allow it to be published in websites.`);
+    if (!COMPONENT_LICENSES.has(def.license ?? '')) refuse(`${where} has the license "${def.license}", which does not allow it to be published in websites.`);
     if ('sourcePath' in def) refuse(`${where} names a source file; a pack's code is stored in the pack itself.`);
     if (def.kind === 'managed') {
       if (!def.tree) refuse(`${where} has no elements.`);
@@ -387,7 +387,7 @@ export async function loadPackDir(dir: string, root: PackRoot, reviewed: Readonl
   if (m.schemaVersion !== SCHEMA_VERSION) refuse(`The pack is written for document schema ${m.schemaVersion}; this app reads ${SCHEMA_VERSION}.`);
   const folder = dir.split(sep).pop();
   if (folder !== m.id) refuse(`The folder is named "${folder}" but holds the pack "${m.id}". Name the folder after the pack.`);
-  if (!COMPONENT_LICENSES.has(m.license)) refuse(`The pack's licence "${m.license}" does not allow its components to be published in websites.`);
+  if (!COMPONENT_LICENSES.has(m.license)) refuse(`The pack's license "${m.license}" does not allow its components to be published in websites.`);
   checkCss(m.baseCss, 'Its base CSS');
   await checkComponents(m, root.source, reviewed);
   if (m.devOnly && root.source === 'user') refuse('Development fixtures cannot be installed.');
@@ -395,7 +395,7 @@ export async function loadPackDir(dir: string, root: PackRoot, reviewed: Readonl
   // Every file the pack uses is listed, and every listed file is used.
   const used = new Set<string>();
   for (const f of m.fonts) {
-    if (!FONT_LICENSES.has(f.license)) refuse(`The font ${f.name} has the licence "${f.license}", which does not allow it to be published in websites.`);
+    if (!FONT_LICENSES.has(f.license)) refuse(`The font ${f.name} has the license "${f.license}", which does not allow it to be published in websites.`);
     for (const face of f.faces) {
       if (!face.file.startsWith('fonts/') || !face.file.endsWith('.woff2')) refuse(`The font ${f.name} names ${face.file}, which is not a .woff2 file in the fonts folder.`);
       used.add(face.file);

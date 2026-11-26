@@ -53,7 +53,7 @@ class FakeAdapter implements AgentModelAdapter {
     }
     for (const ev of await turn(req)) {
       if (signal.aborted) {
-        yield { type: 'error', code: 'cancelled', message: 'Cancelled' };
+        yield { type: 'error', code: 'cancelled', message: 'Canceled' };
         return;
       }
       yield ev;

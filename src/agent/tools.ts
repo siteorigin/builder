@@ -93,7 +93,7 @@ export const TOOL_ARGS = {
   }),
   inspect_component: z.object({
     definitionId: z.string().optional().describe('A component of the project.'),
-    componentId: z.string().optional().describe('Or a theme catalogue component, whether or not the project has it yet.'),
+    componentId: z.string().optional().describe('Or a theme catalog component, whether or not the project has it yet.'),
     owner: owner.optional().describe('Or, with nodeId, a placement: its own content and variant choices are the starting point.'),
     nodeId: z.string().optional(),
     offset: z.number().int().min(0).optional().describe('Continue a sweep: the offset a previous call returned in next.')
@@ -135,11 +135,11 @@ export type ToolName = keyof typeof TOOL_ARGS;
 const CONTRACT_READ = 'Read a component contract: property schema, parts, variants, slots and examples. Use before inserting or editing an unfamiliar component.';
 
 const DESCRIPTIONS: Record<ToolName, string> = {
-  read_project: 'Project summary: revision, pages (IDs and routes), shared header/footer, project components. Optional sections add site tokens, the theme catalogue (every component with its compact property signature, style parts and variants, plus the valid icon names) or the installed components.',
+  read_project: 'Project summary: revision, pages (IDs and routes), shared header/footer, project components. Optional sections add site tokens, the theme catalog (every component with its compact property signature, style parts and variants, plus the valid icon names) or the installed components.',
   read_page: 'Read a page: its sections and their component instances, props (with list item IDs), variants, style overrides and nested content.',
   inspect_element:
     'Inspect one node: full props, the component property schema, public parts with allowed style controls, variants, slots and its position in the tree. With prop, read one content field whole instead (long rich text as Markdown), a part at a time: call again with the offset each part returns until next is null.',
-  search_components: 'Search the theme catalogue and project components by keywords. Returns componentIds or definitionIds you can insert with node.insert.',
+  search_components: 'Search the theme catalog and project components by keywords. Returns componentIds or definitionIds you can insert with node.insert.',
   read_component: `${CONTRACT_READ} structure adds how its design is built.`,
   search_assets: 'List imported images by name and description, with the assetId that identifies each one (two images can share a name). You cannot see image contents.',
   apply_operations:
@@ -175,7 +175,7 @@ const DESCRIPTIONS: Record<ToolName, string> = {
  * the name and signature say it all. A tool missing here keeps its description.
  */
 const BRIEFS: Partial<Record<ToolName, string>> = {
-  read_project: 'Revision, pages (IDs and routes), header/footer and project components. sections adds tokens, the catalogue (components with properties, parts, variants; icon names) or installed components.',
+  read_project: 'Revision, pages (IDs and routes), header/footer and project components. sections adds tokens, the catalog (components with properties, parts, variants; icon names) or installed components.',
   read_page: 'Its sections with props (and list item IDs), variants, styles and nested content.',
   inspect_element: 'One node: props, property schema, parts with their style controls, variants, slots and place in the tree. With prop, one content field whole (rich text as Markdown), a part at a time: call again with each offset returned until next is null.',
   search_components: 'Theme and project components by keywords, with their IDs.',

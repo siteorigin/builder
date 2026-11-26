@@ -51,9 +51,9 @@ vi.mock('../../src/main/runtime/manager', async (importOriginal) => {
   return {
     ...real,
     prepareDependencies: async (dir: string, _onLine: unknown, signal?: AbortSignal, mayWrite?: () => Promise<boolean>) => {
-      if (mayWrite && !(await mayWrite())) throw new Error('Cancelled');
+      if (mayWrite && !(await mayWrite())) throw new Error('Canceled');
       await env.prepare?.(dir, signal);
-      if (signal?.aborted) throw new Error('Cancelled');
+      if (signal?.aborted) throw new Error('Canceled');
     }
   };
 });
@@ -386,7 +386,7 @@ describe('a new project made while another is open', () => {
       return true;
     };
     const r = await c.create(orchid(parent));
-    expect(r).toEqual({ ok: false, message: expect.stringMatching(/^Cancelled/) });
+    expect(r).toEqual({ ok: false, message: expect.stringMatching(/^Canceled/) });
     expect(asked).toBe(2);
     expect(c.session).toBe(open.session);
     expect(closedCount(sent)).toBe(0);
@@ -487,7 +487,7 @@ describe('a new project that is cancelled while another is open', () => {
       if (channel === 'create:progress' && (payload as { step: string }).step === 'files') c.cancelCreate();
     };
     const r = await c.create({ name: 'Orchid Garden', parentDir: parent, starter: 'blank', sampleImages: false });
-    expect(r).toEqual({ ok: false, message: expect.stringMatching(/^Cancelled/) });
+    expect(r).toEqual({ ok: false, message: expect.stringMatching(/^Canceled/) });
     // Nothing is left behind, not even the folder moved aside to be removed.
     expect(readdirSync(parent)).toEqual([]);
     // A folder that was already there (empty) is the author's: cancelling leaves it.

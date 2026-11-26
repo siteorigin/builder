@@ -445,7 +445,7 @@ export class Controller {
     // typed meanwhile (on macOS a window reopened during setup shows the open project without this dialog).
     if (!(await this.mayLeave())) return { ok: false };
     // Cancelled before anything happened: the open project stays open.
-    if (signal.aborted) return { ok: false, message: 'Cancelled.' };
+    if (signal.aborted) return { ok: false, message: 'Canceled.' };
     // Set only once this attempt has created the folder itself: only then may it remove the folder on failure.
     let createdDir = false;
     // The top-level entries this attempt created, each named just before it is written and only if nothing else had put
@@ -470,7 +470,7 @@ export class Controller {
     let committed = false;
     let attached = false;
     try {
-      if (signal.aborted) throw new Error('Cancelled');
+      if (signal.aborted) throw new Error('Canceled');
       progress({ step: 'files', message: 'Preparing project files…' });
       await fs.mkdir(dirname(dir), { recursive: true });
       try {
@@ -531,7 +531,7 @@ export class Controller {
           await fs.copyFile(notice, join(dir, 'NOTICE.md'));
         }
       }
-      if (signal.aborted) throw new Error('Cancelled');
+      if (signal.aborted) throw new Error('Canceled');
       own(...SESSION_ENTRIES);
       sessionStarted = true;
       session = await ProjectSession.create(dir, state);
@@ -563,7 +563,7 @@ export class Controller {
         if (!(e instanceof ToolsDownloadError) || signal.aborted || takenOver || !(await staged.stillOwner()) || signal.aborted) throw e;
         toolsMissing = { state: 'error', message: friendlyError(e.message), detail: e.message };
       }
-      if (signal.aborted) throw new Error('Cancelled');
+      if (signal.aborted) throw new Error('Canceled');
       // From the moment the open project starts closing, the new one is replacing it: there is nothing left to cancel.
       const way = await this.makeWay(since, signal, () =>
         progress(toolsMissing ? { step: 'preview', message: 'Opening the project…', detail: 'The website tools could not be downloaded, so the preview waits until you are back online.' } : { step: 'preview', message: 'Starting preview…' })
@@ -579,7 +579,7 @@ export class Controller {
       if (toolsMissing && !takenOver && !(await staged.stillOwner())) takenOver = true;
       // Its lock lost while the open project was closing for it: it is not shown, but rolled back. A Cancel or a quit
       // arriving now is too late to undo the switch, which finishes.
-      if (takenOver) throw new Error('Cancelled');
+      if (takenOver) throw new Error('Canceled');
       // The preview writes its own output into the folder.
       if (!toolsMissing) own('.svelte-kit');
       attached = true;
@@ -627,7 +627,7 @@ export class Controller {
         createdDir = false;
       }
       if (!(await removeCreatedProject(dir, closed ? session : null, wrote, createdDir))) note(`Some of the new project’s files could not be removed from ${dir}.`);
-      progress({ step: 'error', message: msg === 'Cancelled' ? 'Project creation was cancelled.' : 'The project could not be created.', detail: msg });
+      progress({ step: 'error', message: msg === 'Canceled' ? 'Project creation was canceled.' : 'The project could not be created.', detail: msg });
       return msg ? { ok: false, message: msg } : { ok: false };
     }
   }
@@ -1352,7 +1352,7 @@ export class Controller {
    */
   private async makeWay(since: number, signal?: AbortSignal, committing?: () => void): Promise<{ ok: boolean; message?: string }> {
     if (!(await this.mayLeave())) return { ok: false };
-    if (signal?.aborted) return { ok: false, message: friendlyError('Cancelled') };
+    if (signal?.aborted) return { ok: false, message: friendlyError('Canceled') };
     // An ordinary close already under way when this switch began is joined below; one since then, or quitting, wins.
     if (this.quitting || this.closings !== since) return { ok: false };
     // One handover at a time: from the close until the replacement is attached, no other switch may close anything.
@@ -2205,7 +2205,7 @@ export class Controller {
    */
   async commitPostImport(id: string, opening: string): Promise<PostImportResult> {
     const pending = this.postImport;
-    if (!pending || pending.id !== id) return { ok: false, message: 'This import was already finished or cancelled. Choose Import posts again.' };
+    if (!pending || pending.id !== id) return { ok: false, message: 'This import was already finished or canceled. Choose Import posts again.' };
     this.postImport = null;
     const s = this.session;
     const closed = { ok: false, message: 'The project was closed before the posts could be imported.' };
@@ -3018,7 +3018,7 @@ export function friendlyError(msg: string): string {
     return 'The website tools could not be downloaded. Check your internet connection and try again. A connection is only needed once.';
   if (/ENOSPC/i.test(msg)) return 'Your disk is full. Free up some space and try again.';
   if (/EACCES|EPERM/i.test(msg)) return 'SiteOrigin Builder does not have permission to write to that folder. Choose a folder in your Documents and try again.';
-  if (/Cancelled/i.test(msg)) return 'Cancelled.';
+  if (/Canceled/i.test(msg)) return 'Canceled.';
   return msg.length > 200 ? 'Setting up the website tools failed. Open Diagnostics for details, then choose Reinstall website tools.' : msg;
 }
 

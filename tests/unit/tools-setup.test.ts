@@ -225,7 +225,7 @@ describe('a development build, with no tools shipped', () => {
     const abort = new AbortController();
     const done = install(abort.signal);
     abort.abort();
-    await expect(done).rejects.toThrow('Cancelled');
+    await expect(done).rejects.toThrow('Canceled');
     expect(npm.runs).toEqual([]);
   });
 });

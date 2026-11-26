@@ -106,7 +106,7 @@ describe('the summary of the earlier conversation', () => {
     // It stays short: the oldest exchanges are counted, not kept.
     expect(built!.turns).toHaveLength(SUMMARY_TURNS);
     expect(built!.omitted).toBe(5);
-    expect(summaryText(built!)).toContain('(5 earlier exchanges are no longer summarised.)');
+    expect(summaryText(built!)).toContain('(5 earlier exchanges are no longer summarized.)');
   });
 
   it('reuses a stored summary that still matches, and builds a new one when it does not', () => {

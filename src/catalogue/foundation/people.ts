@@ -23,7 +23,7 @@ export const logoStrip = managed({
         { name: 'Fernhill', logo: img },
         { name: 'Copperline', logo: img },
         { name: 'Marlow & Co', logo: img },
-        { name: 'Bright Harbour', logo: img },
+        { name: 'Bright Harbor', logo: img },
         { name: 'Oakhurst', logo: img }
       ],
       { titleField: 'name', max: 12 }
@@ -73,7 +73,7 @@ export const testimonials = managed({
       { quote: P.required(P.text('Quote', 'A short quote from a happy client.')), name: P.str('Name', 'Client name'), role: P.str('Role', ''), portrait: P.image('Portrait') },
       [
         { quote: 'They listened properly, explained every option and delivered exactly what was promised. The house finally works for us.', name: 'Amelia Hart', role: 'Homeowner, Ashford', portrait: img },
-        { quote: 'Calm, organised and genuinely good company. We would not hesitate to work with the team again.', name: 'Daniel Okafor', role: 'Owner, Copperline Café', portrait: img },
+        { quote: 'Calm, organized and genuinely good company. We would not hesitate to work with the team again.', name: 'Daniel Okafor', role: 'Owner, Copperline Café', portrait: img },
         { quote: 'The attention to detail is remarkable. Every visitor asks who designed our new studio.', name: 'Priya Raman', role: 'Founder, Fernhill Yoga', portrait: img }
       ],
       { titleField: 'name', max: 12 }
@@ -129,7 +129,7 @@ export const team = managed({
       [
         { portrait: img, name: 'Hannah Wells', role: 'Founder & lead designer', bio: 'Fifteen years designing homes and small workplaces.' },
         { portrait: img, name: 'Marcus Lee', role: 'Project manager', bio: 'Keeps every schedule, budget and contractor on track.' },
-        { portrait: img, name: 'Sofia Alvarez', role: 'Interior designer', bio: 'Specialises in materials, colour and lighting.' }
+        { portrait: img, name: 'Sofia Alvarez', role: 'Interior designer', bio: 'Specializes in materials, color and lighting.' }
       ],
       { titleField: 'name', max: 16 }
     )

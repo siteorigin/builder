@@ -127,7 +127,7 @@ await esc();
 // 6. One card's title picked on the page: "2 of 3". Alt-click picks the title itself, not the card or the
 // section around it.
 // Dispatched, because the scaled frame's images sit over the cards for Playwright's hit test.
-await frame.getByText('Materials & colour', { exact: true }).first().dispatchEvent('click', { altKey: true });
+await frame.getByText('Materials & color', { exact: true }).first().dispatchEvent('click', { altKey: true });
 await pause(800);
 await shot('card-picked', '.ov-chip:has(.label:text-matches("title", "i")):has([data-testid="chip-item-pos"]:text("2 of 3"))', { themes: LIGHT });
 

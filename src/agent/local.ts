@@ -113,7 +113,7 @@ type TurnResult =
   | { kind: 'unusable'; problem: string; raw: string };
 type ChatMessage = { role: 'system' | 'user' | 'assistant' | 'tool'; content: string; tool_calls?: unknown[]; tool_call_id?: string; name?: string };
 
-const CANCELLED: LocalError = { code: 'cancelled', message: 'Cancelled' };
+const CANCELLED: LocalError = { code: 'cancelled', message: 'Canceled' };
 
 function headers(apiKey: string | null | undefined, accept: string): Record<string, string> {
   return { 'content-type': 'application/json', accept, ...(apiKey ? { authorization: `Bearer ${apiKey}` } : {}) };
@@ -888,7 +888,7 @@ export async function listLocalModels(endpoint: Pick<LocalEndpoint, 'baseURL' | 
   if (!url.ok) return { ok: false, models: [], message: url.message };
   const keyProblem = localKeyProblem(endpoint.apiKey) ?? (await localhostProblem(url.url, opts.lookup, opts.signal));
   if (keyProblem) return { ok: false, models: [], message: keyProblem };
-  if (opts.signal?.aborted) return { ok: false, models: [], message: 'Cancelled' };
+  if (opts.signal?.aborted) return { ok: false, models: [], message: 'Canceled' };
   try {
     const timeout = AbortSignal.timeout(opts.timeoutMs ?? DISCOVERY_TIMEOUT_MS);
     const res = await (opts.fetch ?? globalThis.fetch)(`${url.url}/models`, { headers: headers(endpoint.apiKey, 'application/json'), redirect: 'error', signal: opts.signal ? AbortSignal.any([timeout, opts.signal]) : timeout });
@@ -973,11 +973,11 @@ export async function openLocalAdapter(
   opts: Pick<LocalAdapterOptions, 'fetch' | 'lookup' | 'onCheck'> & { signal?: AbortSignal; timeoutMs?: number } = {}
 ): Promise<{ adapter: LocalAdapter; model: string } | { error: string; setup?: true }> {
   const chosen = { ...endpoint };
-  if (opts.signal?.aborted) return { error: 'Cancelled' };
+  if (opts.signal?.aborted) return { error: 'Canceled' };
   // A server that runs a single model needs no choice in Settings.
   if (!chosen.model) {
     const found = await listLocalModels(chosen, opts);
-    if (opts.signal?.aborted) return { error: 'Cancelled' };
+    if (opts.signal?.aborted) return { error: 'Canceled' };
     // Nothing answered, or nothing is loaded: the setup's to fix, and what the request showed about it.
     const problem = listedProblem(found, '');
     if (problem) {

@@ -643,7 +643,7 @@ function registerIpc() {
     const abort = (fixAbort = new AbortController());
     try {
       const ad = await orchestratorAdapter(abort.signal);
-      if (abort.signal.aborted) return { ok: false, cancelled: true, message: 'Cancelled' };
+      if (abort.signal.aborted) return { ok: false, cancelled: true, message: 'Canceled' };
       if ('error' in ad) return { ok: false, message: ad.error };
       // The repaired code is written by the assistant, so it must pass the assistant's stricter policy, and so
       // must the project components it imports.

@@ -215,7 +215,7 @@ export function CrawlerPolicyFields({ state, onChange }: { state: ProjectState; 
         checked={rules.noAiMeta}
         onChange={(v) => save({ noAiMeta: v })}
         label="Ask AI services not to train on pages"
-        hint={`Adds ${NOAI_META} to every page. Some AI services honour it; it keeps no crawler out.`}
+        hint={`Adds ${NOAI_META} to every page. Some AI services honor it; it keeps no crawler out.`}
       />
       <Field
         label="robots.txt preview"

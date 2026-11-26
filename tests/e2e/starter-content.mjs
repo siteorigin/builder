@@ -55,7 +55,7 @@ try {
   const address = review.getByTestId('export-sample-address');
   assert.match(await email.innerText(), /hello@example\.com · 5 places on Contact and the shared footer/);
   assert.match(await phone.innerText(), /\+1 555 0134 · 4 places on Contact and the shared footer/);
-  assert.match(await address.innerText(), /12 Harbour Lane, Millbrook · 1 place on Contact/);
+  assert.match(await address.innerText(), /12 Harbor Lane, Millbrook · 1 place on Contact/);
   assert.equal(await review.evaluate((el) => !!el.closest('[role="alert"]')), false, 'a review, not an error');
   assert.equal(await websiteButton.getAttribute('aria-disabled'), null, 'the review never stops the website export');
   assert.equal(await websiteButton.isDisabled(), false, 'the website export can be started while details are under review');
@@ -69,7 +69,7 @@ try {
   await address.getByRole('button', { name: 'Keep it' }).click();
   await address.waitFor({ state: 'detached' });
   const kept = exportDialog.getByTestId('export-samples-kept');
-  assert.match(await kept.innerText(), /12 Harbour Lane, Millbrook is kept as you chose\./);
+  assert.match(await kept.innerText(), /12 Harbor Lane, Millbrook is kept as you chose\./);
   assert.equal(await email.count() + (await phone.count()), 2, 'the email and number are still under review');
 
   step('Show where lists each place, and Open goes to that field in the inspector');

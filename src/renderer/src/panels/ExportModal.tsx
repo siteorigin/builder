@@ -887,7 +887,7 @@ export function ExportModal() {
                   </span>
                   <span className="export-card-line">{format === 'zip' ? 'Every published page as a finished website, in one ZIP file.' : 'Every published page as a finished website folder, for any web host.'}</span>
                   <span className="export-card-line export-card-photos" data-testid="export-photo-privacy">
-                    <MapPinOff aria-hidden /> <span>Removes where each photo was taken and the camera details. Credits, copyright, orientation and colour stay.</span>
+                    <MapPinOff aria-hidden /> <span>Removes where each photo was taken and the camera details. Credits, copyright, orientation and color stay.</span>
                   </span>
                 </span>
               </button>

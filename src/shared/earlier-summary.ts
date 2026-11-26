@@ -246,7 +246,7 @@ export const SUMMARY_LABEL = 'Summary of the earlier conversation';
  */
 export function summaryText(summary: EarlierSummary, history?: TurnHistory | null): string {
   const lines = [`[${SUMMARY_LABEL}: its older messages, shortened. The recent messages follow in full.]`];
-  if (summary.omitted) lines.push(`(${summary.omitted} earlier ${summary.omitted === 1 ? 'exchange is' : 'exchanges are'} no longer summarised.)`);
+  if (summary.omitted) lines.push(`(${summary.omitted} earlier ${summary.omitted === 1 ? 'exchange is' : 'exchanges are'} no longer summarized.)`);
   summary.turns.forEach((t, i) => {
     const parts: string[] = [];
     if (t.asked) parts.push(`The author asked: "${t.asked}"`);

@@ -1303,7 +1303,7 @@ describe('the loaded context window', () => {
   it('lists nothing once the run is stopped', async () => {
     const stopped = new AbortController();
     stopped.abort();
-    expect(await openLocalAdapter({ baseURL: server.baseURL, model: '' }, { signal: stopped.signal })).toEqual({ error: 'Cancelled' });
+    expect(await openLocalAdapter({ baseURL: server.baseURL, model: '' }, { signal: stopped.signal })).toEqual({ error: 'Canceled' });
     expect(await listLocalModels({ baseURL: server.baseURL }, { signal: stopped.signal })).toMatchObject({ ok: false });
     expect(server.requests).toEqual([]);
   });

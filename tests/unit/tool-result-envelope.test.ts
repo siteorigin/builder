@@ -313,7 +313,7 @@ class FakeAdapter implements AgentModelAdapter {
     const turn = this.turns.shift();
     for (const ev of turn ? await turn(req) : finish('Done.')) {
       if (signal.aborted) {
-        yield { type: 'error', code: 'cancelled', message: 'Cancelled' };
+        yield { type: 'error', code: 'cancelled', message: 'Canceled' };
         return;
       }
       yield ev;
@@ -467,7 +467,7 @@ describe("the orchestrator's own refusals in the envelope (#744)", () => {
     };
     const { result } = await run('Rename Home');
     expect(result?.status).toBe('cancelled');
-    expect(hooks.outcomes.find((o) => o.name === 'apply_operations')?.content).toEqual({ ok: false, revision: 1, error: { code: 'CANCELLED', message: 'Cancelled', recoverable: false } });
+    expect(hooks.outcomes.find((o) => o.name === 'apply_operations')?.content).toEqual({ ok: false, revision: 1, error: { code: 'CANCELLED', message: 'Canceled', recoverable: false } });
     expect(adapter.requests).toHaveLength(1);
     expect(home(session.state).title).toBe('Before the run');
     expect(session.revision).toBe(1);

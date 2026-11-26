@@ -240,7 +240,7 @@ const favicon: SeoAuditRule = {
         code: 'SEO_FAVICON_MISSING',
         message: 'The site has no icon of its own: browser tabs and search results show a letter in its place.',
         site: 'favicon',
-        explanation: 'Search results and browser tabs show the site’s icon beside its name; one of its own makes the site recognisable at a glance.',
+        explanation: 'Search results and browser tabs show the site’s icon beside its name; one of its own makes the site recognizable at a glance.',
         aiFixable: false,
         destination: { kind: 'site', field: 'favicon' }
       })

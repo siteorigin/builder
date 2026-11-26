@@ -668,7 +668,7 @@ function SiteSketch() {
         </div>
         <div className="sketch-page">
           <div className="sketch-nav">
-            <span className="logo">Harbour Lane</span>
+            <span className="logo">Harbor Lane</span>
             <span>Shop</span>
             <span>Weddings</span>
             <span>Visit</span>

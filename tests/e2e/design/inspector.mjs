@@ -87,7 +87,7 @@ const openRail = async (name) => {
 /** Pick one card's title on the page. Each click goes a level deeper, so keep going until the header names it. */
 async function pickCardTitle() {
   for (let i = 0; i < 4; i++) {
-    await frame.getByText('Materials & colour', { exact: true }).first().dispatchEvent('click');
+    await frame.getByText('Materials & color', { exact: true }).first().dispatchEvent('click');
     await pause(800);
     if ((await win.locator('.dock .insp-name h3').first().innerText()) === 'Card title') return;
   }
@@ -188,7 +188,7 @@ await pause(1800);
 await win.keyboard.press('Escape');
 await pause(500);
 await shot('definition-overview', '.insp-empty, .empty-insp', LIGHT);
-await frame.getByText('Materials & colour', { exact: true }).first().dispatchEvent('click');
+await frame.getByText('Materials & color', { exact: true }).first().dispatchEvent('click');
 await pause(900);
 await shot('definition-node', '.insp-head', LIGHT);
 await win.getByRole('button', { name: 'Done editing' }).first().click();

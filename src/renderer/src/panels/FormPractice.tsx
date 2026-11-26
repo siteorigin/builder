@@ -5,7 +5,7 @@ import { formDestinationNote, formName, formSendNote, shortDestination, type For
 
 /** The last send at a glance: practice and real sends never look alike, and neither do their outcomes. */
 function outcomeOf(send: FormSend): { lead: string; tone: 'practice' | 'busy' | 'ok' | 'warn' | 'bad' } {
-  if (send.kind === 'practice') return send.result === 'sending' ? { lead: 'Practising', tone: 'busy' } : { lead: 'Practice only', tone: 'practice' };
+  if (send.kind === 'practice') return send.result === 'sending' ? { lead: 'Practicing', tone: 'busy' } : { lead: 'Practice only', tone: 'practice' };
   switch (send.result) {
     case 'sending':
       return { lead: 'Sending a real message', tone: 'busy' };

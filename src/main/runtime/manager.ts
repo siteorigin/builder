@@ -127,7 +127,7 @@ const CACHE_PROBLEMS = new Set(['ENOTCACHED', 'EINTEGRITY']);
  */
 export async function prepareDependencies(dir: string, onLine: (line: string) => void, signal?: AbortSignal, mayWrite: () => Promise<boolean> = async () => true): Promise<void> {
   const stillMine = async () => {
-    if (signal?.aborted || !(await mayWrite()) || signal?.aborted) throw new Error('Cancelled');
+    if (signal?.aborted || !(await mayWrite()) || signal?.aborted) throw new Error('Canceled');
   };
   const npmCli = join(npmDir(), 'bin', 'npm-cli.js');
   let cache = await seedCache();
@@ -181,7 +181,7 @@ export async function prepareDependencies(dir: string, onLine: (line: string) =>
       await runNpm([...base, '--offline'], dir, onLine, signal);
       unusable = left().length > 0;
     } catch (e) {
-      if (signal?.aborted || (e as Error).message === 'Cancelled' || !CACHE_PROBLEMS.has((e as NpmError).code ?? '')) throw e;
+      if (signal?.aborted || (e as Error).message === 'Canceled' || !CACHE_PROBLEMS.has((e as NpmError).code ?? '')) throw e;
       unusable = true;
     }
     if (unusable) {
@@ -221,7 +221,7 @@ type NpmError = Error & { code?: string };
 function runNpm(args: string[], dir: string, onLine: (line: string) => void, signal?: AbortSignal): Promise<void> {
   return new Promise<void>((resolve, reject) => {
     // Cancelled before it started (while the cache was being prepared): an abort event will not come again.
-    if (signal?.aborted) return reject(new Error('Cancelled'));
+    if (signal?.aborted) return reject(new Error('Canceled'));
     const child = spawn(process.execPath, args, {
       cwd: dir,
       env: projectEnv({ ELECTRON_RUN_AS_NODE: '1', npm_config_update_notifier: 'false' }),
@@ -239,7 +239,7 @@ function runNpm(args: string[], dir: string, onLine: (line: string) => void, sig
     // Once its output has all arrived, so the code npm reported is read in full.
     child.on('close', (code) => {
       signal?.removeEventListener('abort', onAbort);
-      if (signal?.aborted) reject(new Error('Cancelled'));
+      if (signal?.aborted) reject(new Error('Canceled'));
       else if (code === 0) resolve();
       else reject(Object.assign(new Error(`Installing dependencies failed (exit ${code}). ${err.trim().split('\n').slice(-6).join(' ')}`), { code: npmErrorCode(err) }));
     });

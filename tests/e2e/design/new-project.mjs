@@ -184,7 +184,7 @@ await pause(250);
 await shot('new-setup-failed', '.modal [role="alert"]', { themes: LIGHT, text: 'permission' });
 
 // Setup canceled: main answers with its own "Cancelled." and the form comes back, which is no failure.
-await fresh({ recents: RECENTS, create: { ok: false, message: 'Cancelled.' } });
+await fresh({ recents: RECENTS, create: { ok: false, message: 'Canceled.' } });
 await openNew();
 await nameIt();
 await create();

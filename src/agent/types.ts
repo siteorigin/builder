@@ -124,7 +124,7 @@ export function isAbort(e: unknown): boolean {
 
 export function classifyHttpError(e: unknown): { code: ModelErrorCode; message: string; retryAfterMs?: number } {
   const err = e as { status?: number; message?: string; name?: string; headers?: Record<string, string> | Headers };
-  if (isAbort(e)) return { code: 'cancelled', message: 'Cancelled' };
+  if (isAbort(e)) return { code: 'cancelled', message: 'Canceled' };
   const status = err?.status;
   const header = (k: string): string | undefined => {
     const h = err?.headers;

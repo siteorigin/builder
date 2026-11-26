@@ -3003,7 +3003,7 @@ describe('a run limited to one page (#513)', () => {
     for (const req of [general, focused]) {
       expect(req.system).toContain('When you write copy yourself, from a short request');
       expect(req.system).toContain('Copy the user supplies (pasted text, notes or a draft) is the source: keep its wording, headings, figures, lists, quotes and links as written, add no filler');
-      expect(req.system).toContain('put every distinct block of it, in reading order, in the theme catalogue section that fits it');
+      expect(req.system).toContain('put every distinct block of it, in reading order, in the theme catalog section that fits it');
       expect(req.system).toContain('add no section or text the copy does not call for');
       // The theme's advice on heading length and calls to action is for what the model writes, not the user's copy.
       expect(req.system).toMatch(/Theme guidance for [^\n]+, for copy and sections you write \(reference data\):/);
@@ -3034,7 +3034,7 @@ describe('a run limited to one page (#513)', () => {
     expect(site.system).toContain('Build one page per call; from a short request, give it several sections: an opening section, the content the page is for, and usually a closing call to action.');
     expect(site.system).not.toContain('each with several sections');
     // A site run populates the page the author is on from pasted copy by the same rules.
-    expect(site.system).toContain('put every distinct block of it, in reading order, in the theme catalogue section that fits it');
+    expect(site.system).toContain('put every distinct block of it, in reading order, in the theme catalog section that fits it');
     expect(site.system).toContain('pass it when supplied copy is the whole page');
     const constrainedSite = await firstRequest({ toolCalling: 'constrained-json', contextWindowTokens: 32_000 }, 'site');
     expect(constrainedSite.system).toContain('Build one page per upsert_page_with_sections call; from a short request, give it several sections');

@@ -3422,13 +3422,13 @@ function textContrast(el, read, layerOf, pictures) {
 }
 
 const UNKNOWN_CONTRAST = {
-  image: 'it is shown over an image, whose colours only pixels could tell',
-  scrim: 'it is shown over a background image whose scrim is too light to keep it readable over every colour the image could have. A stronger scrim fixes it',
+  image: 'it is shown over an image, whose colors only pixels could tell',
+  scrim: 'it is shown over a background image whose scrim is too light to keep it readable over every color the image could have. A stronger scrim fixes it',
   overlay: 'a decorative layer (a ::before or ::after) lies over its background',
   gradient: 'its gradient background is readable at some points and not at others',
   layers: 'its background is several images or gradients over each other',
   fill: 'its text is painted with a background or an image',
-  color: 'its colour could not be read'
+  color: 'its color could not be read'
 };
 
 /** Elements that take a press or a tap. */
@@ -3669,7 +3669,7 @@ function readability(vw, deadline, within = null) {
           if (c.w <= 2 || c.h <= 2) continue;
           const going = each(checks.overlaps, () => {
             const other = findingDesc(b.el);
-            overlaps.add(one.el, { overlap: { width: Math.round(c.w), height: Math.round(c.h) } }, `Overlaps a neighbouring box by ${Math.round(c.w)}×${Math.round(c.h)}px.`, { with: { ...(other ? { desc: other } : {}), text: textPreview(b.el) } }, [one.el, b.el]);
+            overlaps.add(one.el, { overlap: { width: Math.round(c.w), height: Math.round(c.h) } }, `Overlaps a neighboring box by ${Math.round(c.w)}×${Math.round(c.h)}px.`, { with: { ...(other ? { desc: other } : {}), text: textPreview(b.el) } }, [one.el, b.el]);
             checks.overlaps.failed++;
           });
           if (!going) {
@@ -4072,7 +4072,7 @@ function layoutOf(section, layerOf, deadline) {
   if (got) return { ...got, panels };
   const heading = section.boxes.map((b) => (b.matches(TEXT_BLOCKS) ? b : b.querySelector(TEXT_BLOCKS))).find(Boolean);
   const centered = !!heading && getComputedStyle(heading).textAlign === 'center';
-  return { key: `column:${centered ? 'center' : 'start'}`, words: centered ? 'one centred column' : 'one column', panels };
+  return { key: `column:${centered ? 'center' : 'start'}`, words: centered ? 'one centered column' : 'one column', panels };
 }
 
 /** What a level of boxes side by side is: its key (equal keys are the same layout) and the words for it. */
