@@ -13,6 +13,14 @@ import type { EarlierSummary } from './earlier-summary';
 export type Appearance = 'system' | 'light' | 'dark';
 export type ProviderId = 'openai' | 'anthropic' | 'local';
 
+/** What a page measurement in the preview is limited to. */
+export interface InspectLayoutOptions {
+  /** Measure only these elements of the page and what is inside them (inspect_layout with refs). */
+  targets?: ElementRef[];
+  /** List only the findings on these elements (validate_project narrowed to them). */
+  focus?: string[];
+}
+
 export interface RecentProject {
   dir: string;
   name: string;
@@ -1166,8 +1174,8 @@ export interface BuilderApi {
   on(channel: 'ai:event', cb: (e: AiEvent) => void): () => void;
   /** The editor's Appearance, when Settings saves a new one. */
   on(channel: 'appearance', cb: (appearance: Appearance) => void): () => void;
-  /** `targets`: measure only these elements of the page and what is inside them (inspect_layout with refs). */
-  on(channel: 'inspect:request', cb: (req: { requestId: string; pageId: string; width: number; targets?: ElementRef[] }) => void): () => void;
+  /** `targets`: measure only these elements of the page and what is inside them (inspect_layout with refs); `focus`: list only the findings on these elements (validate_project narrowed to them). */
+  on(channel: 'inspect:request', cb: (req: { requestId: string; pageId: string; width: number } & InspectLayoutOptions) => void): () => void;
   /** Show components in isolated preview frames, step by step, and answer with componentPreviewResult. */
   on(channel: 'component-preview:request', cb: (req: { requestId: string; steps: ComponentPreviewStep[]; measure?: ComponentPreviewMeasure }) => void): () => void;
   /** The main process no longer waits for this batch: start no more of its steps. */

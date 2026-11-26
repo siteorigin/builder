@@ -1,10 +1,10 @@
 import { installedFonts } from '@catalogue/fonts';
 import { promises as fs } from 'node:fs';
 import { join } from 'node:path';
-import { CHAT_EDIT_SCOPES, turnQuestions, type AiEvent, type ChatActivity, type ChatCheck, type ChatContext, type ChatImageRef, type ChatMessage, type ChatMode, type Conversation, type ConversationSummary, type FieldLocation, type ProviderId, type RunStatus, type SourceDraft } from '@shared/api';
+import { CHAT_EDIT_SCOPES, turnQuestions, type AiEvent, type ChatActivity, type ChatCheck, type ChatContext, type ChatImageRef, type ChatMessage, type ChatMode, type Conversation, type ConversationSummary, type FieldLocation, type InspectLayoutOptions, type ProviderId, type RunStatus, type SourceDraft } from '@shared/api';
 import type { EditOperation, ToolError, ToolErrorCode } from '@shared/ops';
 import type { CollectionWriteGrant } from '@shared/collection-grant';
-import type { ElementRef, ProjectState } from '@shared/types';
+import type { ProjectState } from '@shared/types';
 import { autoTitle, byRecentActivity, cleanTitle, NEW_CONVERSATION, storedTitle, summarize, TITLE_MAX } from '@shared/conversations';
 import type { ComponentPreviewResult, ComponentPreviewStep } from '@shared/component-preview';
 import { newId } from '@shared/ids';
@@ -106,8 +106,10 @@ export interface OrchestratorDeps {
   adapter(signal?: AbortSignal): Promise<{ adapter: AgentModelAdapter; model: string; provider: ProviderId; auto?: boolean } | { error: string; repair?: 'settings' | 'key' }>;
   emit(e: AiEvent): void;
   compileAll(): Promise<Diagnostic[]>;
-  /** `targets`: measure only these elements of the page and what is inside them. */
-  inspectLayout(pageId: string, width: number, targets?: ElementRef[]): Promise<unknown>;
+  /** `targets`: measure only these elements of the page and what is inside them; `focus`: list only the findings on these elements (validate_project narrowed to them). */
+  inspectLayout(pageId: string, width: number, opts?: InspectLayoutOptions): Promise<unknown>;
+  /** Problems with the project's files on disk (image files missing from the project folder), looked for again, for validate_project. */
+  fileDiagnostics?(): Promise<Diagnostic[]>;
   /** Show and measure a component in isolated previews (see inspect_component); without it the tool says it cannot run. */
   inspectComponent?(steps: ComponentPreviewStep[], signal?: AbortSignal): Promise<ComponentPreviewResult[]>;
   onBusyChange(busy: boolean): void;
@@ -1552,7 +1554,11 @@ export class Orchestrator {
         return res;
       },
       compileAll: () => this.deps.compileAll(),
-      inspectLayout: (pageId, width, targets) => (targets ? this.deps.inspectLayout(pageId, width, targets) : this.deps.inspectLayout(pageId, width)),
+      inspectLayout: (pageId, width, opts) => (opts ? this.deps.inspectLayout(pageId, width, opts) : this.deps.inspectLayout(pageId, width)),
+      // The pages the preview check would measure before the run finishes: those it changed, and a few that show a shared change.
+      changedPageIds: () => [...new Set(preview.plan(session.state).targets.map((t) => t.pageId))],
+      ...(this.deps.fileDiagnostics ? { fileDiagnostics: () => this.deps.fileDiagnostics!() } : {}),
+      signal,
       ...(this.deps.inspectComponent ? { inspectComponent: (steps: ComponentPreviewStep[]) => this.deps.inspectComponent!(steps, signal) } : {}),
       ask: (question, choices, widenScope, images) =>
         new Promise<string>((resolve) => {

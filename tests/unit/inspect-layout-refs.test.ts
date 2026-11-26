@@ -22,7 +22,8 @@ function hostFor(s: ProjectState, answer: (targets: ElementRef[] | undefined) =>
   const host = {
     state: () => s,
     revision: () => 7,
-    inspectLayout: async (pageId: string, width: number, targets?: ElementRef[]) => {
+    inspectLayout: async (pageId: string, width: number, opts?: { targets?: ElementRef[] }) => {
+      const targets = opts?.targets;
       asked.push({ pageId, width, ...(targets ? { targets } : {}) });
       return answer(targets);
     }

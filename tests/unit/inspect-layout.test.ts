@@ -49,7 +49,7 @@ body{margin:0;font:16px/1.5 sans-serif;color:#111;background:#fff}
 </style></head><body><main ${so('main')}><h1 ${so('title')}>Readable page</h1>${body}</main><script type="module" src="/bridge.js"></script></body></html>`;
 
 /** Inspect `body` (inside a page with one h1) at `width`, twice when asked, and count what the inspection left behind. */
-async function inspect(body: string, width = 390, targets?: Array<{ ctx: string; node: string; items: string; part?: string }>): Promise<Report> {
+async function inspect(body: string, width = 390, payload: Record<string, unknown> = {}): Promise<Report> {
   const page = await browser.newPage();
   try {
     await page.route(`${ORIGIN}/**`, (route) => {
@@ -70,7 +70,7 @@ async function inspect(body: string, width = 390, targets?: Array<{ ctx: string;
         if (e.data?.sessionId !== 'so-test') return;
         if (e.data.type === 'ready') {
           before = frame.contentDocument.querySelectorAll('*').length;
-          frame.contentWindow.postMessage({ protocolVersion: 1, sessionId: 'so-test', type: 'inspect', payload: { requestId: 'r'${targets ? `, targets: ${JSON.stringify(targets)}` : ''} } }, '*');
+          frame.contentWindow.postMessage({ protocolVersion: 1, sessionId: 'so-test', type: 'inspect', payload: { requestId: 'r', ...${JSON.stringify(payload)} } }, '*');
         }
         if (e.data.type === 'inspectResult') done({ ...e.data.payload.report, leftovers: frame.contentDocument.querySelectorAll('*').length - before });
       });
@@ -413,7 +413,7 @@ describe('layout inspection of chosen elements (#743)', () => {
     <script>addEventListener('load', () => setTimeout(() => { throw new Error('boom') }, 0))</script>`;
 
   it.skipIf(!browserInstalled)('measures each element asked for, with only the findings inside it beside what belongs to the page', async () => {
-    const r = await inspect(PAGE_BODY, 390, [at('hero'), at('card', 'b'), at('band'), at('nowhere')]);
+    const r = await inspect(PAGE_BODY, 390, { targets: [at('hero'), at('card', 'b'), at('band'), at('nowhere')] });
     const [hero, card, band, nowhere] = r.targets!;
     // The hero: its box, its content's size, and that it shows.
     expect(hero.visible).toBe(true);
@@ -448,7 +448,7 @@ describe('layout inspection of chosen elements (#743)', () => {
   }, 30000);
 
   it.skipIf(!browserInstalled)('shows the element hidden on phones at desktop width, and measures the whole page when nothing is asked for', async () => {
-    const wide = await inspect(PAGE_BODY, 1280, [at('band'), at('card')]);
+    const wide = await inspect(PAGE_BODY, 1280, { targets: [at('band'), at('card')] });
     expect(wide.targets![0].visible).toBe(true);
     expect(wide.targets![0].elements[0].box!.height).toBeGreaterThan(0);
     // Without an item, every card of the list.
@@ -468,7 +468,7 @@ describe('layout inspection of chosen elements (#743)', () => {
         <div data-so-ctx="page:p" data-so-node="code" data-so-code style="display:contents"><div data-so-part="wide" style="width:300px;background:#eee">Wide part</div></div>
         <div ${so('next')} style="background:#eee">Next card</div>
       </div>`;
-    const r = await inspect(body, 390, [at('ghost'), at('story'), { ...at('code'), part: 'wide' }]);
+    const r = await inspect(body, 390, { targets: [at('ghost'), at('story'), { ...at('code'), part: 'wide' }] });
     const [ghost, story, wide] = r.targets!;
     expect(ghost.visible).toBe(false);
     expect(ghost.elements[0].box).toMatchObject({ height: 40 });
@@ -484,7 +484,7 @@ describe('layout inspection of chosen elements (#743)', () => {
       <form ${so('form')} style="display:contents"><input name="parentNode"><input name="parentElement"><input name="children"><input name="scrollWidth"><p ${so('formText')}>A form</p></form>
       <ul ${so('cards')}>${['a', 'b'].map((i) => `<li ${so('card', i)} style="width:600px">Card ${i}</li>`).join('')}</ul>
       <div ${so('grid')} style="display:grid;grid-template-columns:repeat(2, minmax(0, 1fr));gap:10px"><div ${so('wide')} style="width:300px;background:#eee">Wide card</div><div ${so('next')} style="background:#eee">Next card</div></div>`;
-    const r = await inspect(body, 390, [at('card', 'a'), at('card', 'b'), at('wide'), at('next'), at('formText'), at('form')]);
+    const r = await inspect(body, 390, { targets: [at('card', 'a'), at('card', 'b'), at('wide'), at('next'), at('formText'), at('form')] });
     expect(r.targets).toHaveLength(6);
     // A form whose controls are named like the properties measuring reads is still measured, and shows.
     expect(r.targets![5]).toMatchObject({ visible: true, elements: [expect.objectContaining({ visible: true })] });
@@ -497,4 +497,24 @@ describe('layout inspection of chosen elements (#743)', () => {
     // An overlap between two elements asked for is about both.
     expect(of(r, 'overlap')).toEqual([expect.objectContaining({ targets: [2, 3] })]);
   }, 30000);
+});
+
+describe.skipIf(!browserInstalled)('a measurement focused on some elements (#756)', () => {
+  // Many elements too wide for a phone, then the one asked about: a placement whose own root overflows too, named in
+  // the page by the design's node ID and placed by its context.
+  const wide = (attrs: string) => `<div ${attrs} style="width:600px;height:4px"></div>`;
+  const BODY = Array.from({ length: 45 }, (_, i) => wide(so(`o${i}`))).join('') + wide('data-so-ctx="page:p|place1" data-so-node="root"');
+
+  it('lists the focused elements’ findings before the list is capped, and counts only theirs', async () => {
+    const all = (await inspect(BODY)) as Report & { issueCount?: number };
+    expect(all.issues.length).toBeLessThan(all.issueCount!);
+    const focused = (await inspect(BODY, 390, { focus: ['place1'] })) as Report & { issueCount?: number };
+    const overflow = of(focused, 'element-overflow');
+    expect(overflow).toHaveLength(1);
+    expect(overflow[0].desc).toMatchObject({ ctx: 'page:p|place1', node: 'root' });
+    expect(focused.issueCount).toBe(focused.issues.length);
+    // A design node ID alone ("root") is not the placement asked about.
+    const byDesign = (await inspect(BODY, 390, { focus: ['o3'] })) as Report & { issueCount?: number };
+    expect(of(byDesign, 'element-overflow').map((i) => i.desc?.node)).toEqual(['o3']);
+  });
 });

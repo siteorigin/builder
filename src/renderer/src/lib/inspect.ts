@@ -1,14 +1,14 @@
 import type { ComponentPreviewMeasure, ComponentPreviewResult, ComponentPreviewSpec, ComponentPreviewStep, PreparedComponentPreview } from '@shared/component-preview';
 import { api, getState } from '../store';
 import { acceptMessage, newSessionId, postToFrame, viewAfter, type BridgeMessage, type FrameView } from './bridge';
-import type { ElementRef } from '@shared/types';
+import type { InspectLayoutOptions } from '@shared/api';
 import { attributeFindings, failedImages, missingImages, missingSections, staleImages } from './inspect-check';
 import { descOf } from './model';
 
 /** How long the preview server gets to pick up files the AI just wrote before a fresh page load. */
 const SETTLE_MS = 400;
 
-type InspectRequest = { requestId: string; pageId: string; width: number; targets?: ElementRef[] };
+type InspectRequest = { requestId: string; pageId: string; width: number } & InspectLayoutOptions;
 
 /**
  * Measure a page for the AI at a given viewport width using an off-screen preview frame.
@@ -81,7 +81,9 @@ async function measure(req: InspectRequest): Promise<unknown> {
         // Elements asked for are found as the canvas finds a selection, against the project as it is now.
         const state = getState().snapshot?.state;
         const targets = Array.isArray(req.targets) && state ? req.targets.map((t) => descOf(state, t)) : undefined;
-        postToFrame(frame, origin, sessionId, 'inspect', { requestId: req.requestId, pageId: req.pageId, rootIds: [...page.rootIds], ...(targets ? { targets } : {}) }, view);
+        // `focus`: only findings on these elements are listed (validate_project narrowed to them).
+        const focus = Array.isArray(req.focus) ? req.focus : undefined;
+        postToFrame(frame, origin, sessionId, 'inspect', { requestId: req.requestId, pageId: req.pageId, rootIds: [...page.rootIds], ...(targets ? { targets } : {}), ...(focus ? { focus } : {}) }, view);
       } else if (m.type === 'inspectResult' && (m.payload as { requestId?: unknown }).requestId === req.requestId) done((m.payload as { report: unknown }).report);
     };
     let timer = setTimeout(() => done({ error: 'Timed out loading the page.' }), 12000);
