@@ -421,7 +421,7 @@ describe.each(ENGINES)('anchors below the sticky header in %s', (_name, engine) 
 
   it.each([
     ['a sticky header set lower with an inset', 'sticky', '.so-header { top: 10vh !important; }', 'below', [800, 600]],
-    ['a sticky header mostly above the window', 'static', '.so-header { position: sticky !important; top: -140px !important; }', 'below', [800, 600]],
+    ['a sticky header mostly above the window', 'static', '.so-header { position: sticky !important; top: -60px !important; }', 'below', [800, 600]],
     ['a header made sticky without a top inset, which scrolls away', 'static', '.so-header { position: sticky !important; }', 'top', [800, 600]],
     // In the short window the header fills most of the lower half.
     ['a header fixed to the bottom of the window', 'sticky', '.so-header { position: fixed !important; top: auto !important; bottom: 0; left: 0; right: 0; }', 'top', [800, 240]]
@@ -438,7 +438,11 @@ describe.each(ENGINES)('anchors below the sticky header in %s', (_name, engine) 
           for (const id of [HEADING, SECTION]) {
             const l = await follow(page, id);
             const label = `link to ${id} in a ${height}px window`;
-            if (where === 'below') expectLanded(label, l);
+            if (where === 'below') {
+              // Some of the header shows at the top of the window, so its offset is what the link clears.
+              expect(l.headerBottom, describeLanding(label, l)).toBeGreaterThan(0);
+              expectLanded(label, l);
+            }
             else {
               // A header at the bottom can cover the middle of a tall section; its start is what the link shows.
               expect(l.hits[0], describeLanding(label, l)).toBe('target');

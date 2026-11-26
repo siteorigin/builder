@@ -121,7 +121,7 @@ const HEADER_SOURCE = `<script>
 	 * Site header with a working, accessible mobile menu.
 	 * Foundation theme code component. Props are edited in SiteOrigin Builder.
 	 */
-	import { onMount } from 'svelte';
+	import { onMount, untrack } from 'svelte';
 	import { afterNavigate, beforeNavigate } from '$app/navigation';
 	import { page } from '$app/state';
 	import { resolve } from '$app/paths';
@@ -154,6 +154,7 @@ const HEADER_SOURCE = `<script>
 	// before the site's script runs (or when it never does), and the script keeps whatever the visitor chose.
 	let menu = $state();
 	let toggle = $state();
+	let nav = $state();
 	// A link marked to show under the link above joins the submenu of the nearest top-level link before it; one
 	// with none before it stays at the top level.
 	const groups = $derived.by(() => {
@@ -293,7 +294,7 @@ const HEADER_SOURCE = `<script>
 
 	/**
 	 * Measures whether the row holds the brand, the links and the action on one line at the width it has. For a
-	 * moment within one task (nothing is painted, and nothing that has focus is hidden) the header lays the row out
+	 * moment within one task (nothing is painted, and focus stays where it is) the header lays the row out
 	 * as wide as its contents on one line, outside the compact header; the row's own width does not depend on its
 	 * contents, so the answer does not depend on which arrangement shows, and the two never take turns. A phone
 	 * always has the compact header, by the phone query.
@@ -302,8 +303,6 @@ const HEADER_SOURCE = `<script>
 		const row = el.querySelector(':scope > .so-header__inner');
 		const win = el.ownerDocument.defaultView;
 		if (!row || win.matchMedia('(max-width: 767.98px)').matches) return;
-		// The open menu, or its button with focus, stays as it is: checked again once it closes or focus moves on.
-		if (compact && (menu?.open || el.ownerDocument.activeElement === toggle)) return;
 		const available = row.getBoundingClientRect().width;
 		const wasCompact = el.classList.contains('so-header--compact');
 		el.classList.remove('so-header--compact');
@@ -312,12 +311,16 @@ const HEADER_SOURCE = `<script>
 		el.classList.remove('so-header--measure');
 		if (wasCompact) el.classList.add('so-header--compact');
 		const next = needed <= available - 1;
-		if (next !== fits) fits = next;
+		// A change that would hide the control with focus waits, and so does one that would fold away the open menu:
+		// checked again once the menu closes or focus moves on.
+		const active = el.ownerDocument.activeElement;
+		if (next !== !compact && (compact ? menu?.open || active === toggle : !!active && !!nav?.contains(active))) return;
+		if (fits !== next) fits = next;
 	}
 
 	// Measured as the script starts, then (a frame later, once) whenever the row changes width, the brand changes
-	// size (a logo loading), the row's contents change (an edited label, the colour scheme switch joining it) or the
-	// fonts load.
+	// size (a logo loading), the row's contents change (an edited label, the colour scheme switch joining it), the
+	// fonts load, the window crosses a width where the row's gaps change, or the menu or focus moves on.
 	$effect(() => {
 		const el = header;
 		if (!el) return;
@@ -330,7 +333,8 @@ const HEADER_SOURCE = `<script>
 			win.cancelAnimationFrame(frame);
 			frame = win.requestAnimationFrame(() => measureFit(el));
 		};
-		measureFit(el);
+		// Not a dependency of the effect: the arrangement it settles on is what it reads.
+		untrack(() => measureFit(el));
 		const resized = new ResizeObserver(later);
 		resized.observe(row);
 		const brand = row.querySelector('.so-header__brand');
@@ -339,10 +343,13 @@ const HEADER_SOURCE = `<script>
 		changed.observe(row, { childList: true, subtree: true, characterData: true, attributes: true, attributeFilter: ['src', 'hidden'] });
 		doc.fonts?.addEventListener?.('loadingdone', later);
 		menu?.addEventListener('toggle', later);
-		toggle?.addEventListener('focusout', later);
+		el.addEventListener('focusout', later);
+		const widths = ['(max-width: 767.98px)', '(max-width: 1023.98px)'].map((query) => win.matchMedia(query));
+		for (const query of widths) query.addEventListener('change', later);
 		return () => {
 			menu?.removeEventListener('toggle', later);
-			toggle?.removeEventListener('focusout', later);
+			el.removeEventListener('focusout', later);
+			for (const query of widths) query.removeEventListener('change', later);
 			resized.disconnect();
 			changed.disconnect();
 			doc.fonts?.removeEventListener?.('loadingdone', later);
@@ -508,7 +515,7 @@ const HEADER_SOURCE = `<script>
 		</details>
 
 		<!-- A link with others under it keeps going to its own page; the button beside it shows and hides them. -->
-		<nav id="so-site-nav" class="so-header__nav" aria-label={text().mainNav}>
+		<nav id="so-site-nav" class="so-header__nav" aria-label={text().mainNav} bind:this={nav}>
 			<ul class="so-header__list">
 				{#each groups as { item, children } (item.id)}
 					{#if children.length}

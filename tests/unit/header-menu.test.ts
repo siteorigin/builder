@@ -219,6 +219,7 @@ function untidy(a: Arrangement): string[] {
     return out;
   }
   if (!a.navShown) out.push('neither the links nor the menu button show');
+  if (!a.links.length || !a.cta) out.push(`the row shows ${a.links.length} links${a.cta ? '' : ' and no action'}`);
   const row = [...a.links, ...(a.cta ? [a.cta] : [])];
   const mid = (b: Box) => (b.top + b.bottom) / 2;
   const centre = mid(a.brand);
@@ -385,8 +386,24 @@ describe.each(ENGINES)('the phone menu in %s', (engineName, engine) => {
       }
     expect(problems).toEqual([]);
     // The content width caps the row, so a full menu beside a long name folds into the menu button at every width.
+    expect(Object.keys(compactAt)).toHaveLength(THEMES.length * 2);
     for (const [at, widths] of Object.entries(compactAt)) expect(widths.length, at).toBe(WIDTHS.length * 2 - 1);
-  }, 120_000);
+
+    // There the menu holds every link and the action, one under another.
+    for (const theme of THEMES)
+      await withSite(theme, { width: 1280, height: 900 }, 'now', async (page) => {
+        await page.locator('.so-header__toggle').click();
+        await expect.poll(() => menuOpen(page)).toBe(true);
+        const shown = (await page.evaluate(`[...document.querySelectorAll('#so-site-nav ul a, #so-site-nav .so-header__cta')].map((a) => {
+          const b = a.getBoundingClientRect();
+          return { text: a.textContent.trim(), top: b.top, left: b.left, visible: b.width > 0 && b.height > 0 };
+        })`)) as Array<{ text: string; top: number; left: number; visible: boolean }>;
+        expect(shown.map((l) => l.text), theme).toEqual(MENU_LINKS);
+        expect(shown.every((l) => l.visible), theme).toBe(true);
+        for (let i = 1; i < shown.length; i++) expect(shown[i].top, `${theme}: ${shown[i].text} below ${shown[i - 1].text}`).toBeGreaterThan(shown[i - 1].top);
+        expect(new Set(shown.slice(0, LABELS.length).map((l) => Math.round(l.left))).size, `${theme}: links in one column`).toBe(1);
+      });
+  }, 150_000);
 
   it('folds a menu that fits only on wide screens into the menu button as the window narrows, and back out as it widens', async () => {
     await withSite('medium', { width: 1280, height: 800 }, 'now', async (page) => {
@@ -407,15 +424,18 @@ describe.each(ENGINES)('the phone menu in %s', (engineName, engine) => {
         [820, true],
         [1280, false]
       ]);
-      // Opened while folded, the menu stays open as the window widens. Escape closes it and returns focus to the
-      // menu button, which stays while it has focus (the row would hide it); once focus moves on, the row takes over.
+      // Opened while folded, the menu stays open as the window widens, with focus on one of its links. Escape
+      // closes it and returns focus to the menu button, which stays while it has focus (the row would hide it); once
+      // focus moves on, the row takes over.
       await page.setViewportSize({ width: 900, height: 800 });
       await page.evaluate(SETTLED);
       await page.locator('.so-header__toggle').click();
       await expect.poll(() => menuOpen(page)).toBe(true);
+      await page.locator('#so-site-nav ul a').first().focus();
       await page.setViewportSize({ width: 1280, height: 800 });
       await page.evaluate(SETTLED);
       expect(((await page.evaluate(ARRANGEMENT)) as Arrangement).compact, 'open menu kept').toBe(true);
+      expect(await menuOpen(page)).toBe(true);
       await page.keyboard.press('Escape');
       await expect.poll(() => menuOpen(page)).toBe(false);
       expect((await focus(page))?.toggle).toBe(true);
@@ -424,6 +444,15 @@ describe.each(ENGINES)('the phone menu in %s', (engineName, engine) => {
       await tab(page);
       await expect.poll(async () => ((await page.evaluate(ARRANGEMENT)) as Arrangement).compact).toBe(false);
       expect(untidy((await page.evaluate(ARRANGEMENT)) as Arrangement)).toEqual([]);
+
+      // A link in the row with focus keeps the row as the window narrows, until focus moves on.
+      await page.locator('#so-site-nav ul a').nth(3).focus();
+      await page.setViewportSize({ width: 900, height: 800 });
+      await page.evaluate(SETTLED);
+      expect(((await page.evaluate(ARRANGEMENT)) as Arrangement).compact, 'focused link kept').toBe(false);
+      expect((await focus(page))?.text).toBe(MEDIUM_LABELS[3]);
+      await page.evaluate("document.querySelector('main a[href]').focus()");
+      await expect.poll(async () => ((await page.evaluate(ARRANGEMENT)) as Arrangement).compact).toBe(true);
     });
   }, 60_000);
 
