@@ -1,11 +1,13 @@
 import { randomUUID } from 'node:crypto';
 import { performance } from 'node:perf_hooks';
-import type { LiveCommandResult, LiveHostState, LiveJoinRequest, LiveRun, LiveStartResult } from '@shared/api';
+import type { LiveCommandResult, LiveHostState, LiveJoinRequest, LivePresence, LiveRun, LiveStartResult } from '@shared/api';
+import { checkRpcRequest, type LiveEditBatch } from '@shared/live/capabilities';
 import { LIVE_CLOSE_CODES } from '@shared/live/close-codes';
 import { generateHostKeyPair, signHostChallenge, type HostKeyPair } from '@shared/live/crypto';
-import { checkGuestExpiry, checkSessionExpiry, isSessionDuration, type SessionDuration } from '@shared/live/expiry';
+import { checkGuestExpiry, checkSessionExpiry, guestAccessEndsAt, isExpired, isSessionDuration, type SessionDuration } from '@shared/live/expiry';
 import { GUEST_ID_RE, GUEST_ROLES, LIVE_PROTOCOL_VERSION, PROJECT_NAME_MAX, type GuestRole } from '@shared/live/limits';
-import { encodeFrame, normalizeDisplayName, parseFrame, type Frame, type HostToRelay, type Participant, type Presence } from '@shared/live/messages';
+import { encodeFrame, normalizeDisplayName, parseFrame, type Frame, type HostToRelay, type Participant, type Presence, type RpcError } from '@shared/live/messages';
+import type { LiveApplyResult, LiveProjectChanged, LiveProjectSnapshot } from '@shared/live/snapshot';
 import { formatInviteLink, HOST_SOCKET_PATH, RELAY_URL_ENV, relaySocketUrl, roomSocketPath, type ResolvedRelayUrl } from '@shared/live/relay-url';
 import { PreviewProxy, type LoopbackPreview } from './preview-proxy';
 
@@ -15,8 +17,20 @@ import { PreviewProxy, type LoopbackPreview } from './preview-proxy';
  * only in memory, manages who is let in, and answers admitted guests' preview requests from the project's own loopback
  * preview server (preview-proxy.ts). When the connection drops it takes the room back by signing the relay's
  * challenge with that key, so guests keep their places. Closing or switching the project, or quitting, ends the
- * session for everyone. Nothing here writes to the project: the host stays its only writer.
+ * session for everyone. Admitted guests' editor calls (#765) are checked here against what each guest may do now, as
+ * the host last decided it as well as the relay last said, and only then handed to the editor, which makes a
+ * collaborator's edits through its own pipeline as the host's writer.
  */
+
+/**
+ * A guest's edit, as the editor is given it: who it is from, and a check the editor asks again as the edit's turn comes
+ * and just before it is saved, null while the guest may still make it.
+ */
+export interface LiveGuestEdit {
+  guestId: string;
+  displayName: string;
+  check(): RpcError | null;
+}
 
 /** What the manager needs of the app: the open project, its preview, the relay to use, and the editor to tell. */
 export interface LiveHostContext {
@@ -28,7 +42,14 @@ export interface LiveHostContext {
   relay(): Promise<ResolvedRelayUrl>;
   /** Whether a save's files are landing in the preview now: a reload then waits, so guests never load a half-landed save. */
   publishing?(): boolean;
-  emit(channel: 'live:state' | 'live:request', payload: LiveHostState | LiveJoinRequest): void;
+  /**
+   * The project as guests are given it (shared/live/snapshot.ts) in the opening named, or null when that is not the
+   * project open. The same object while nothing a guest sees has changed. Absent: guests' calls are unavailable.
+   */
+  guestSnapshot?(opening: string): LiveProjectSnapshot | null;
+  /** Make a collaborator's checked edit in the opening named, through the editor's own pipeline. */
+  applyGuest?(opening: string, guest: LiveGuestEdit, batch: LiveEditBatch): Promise<LiveApplyResult>;
+  emit(channel: 'live:state' | 'live:request' | 'live:presence', payload: LiveHostState | LiveJoinRequest | LivePresence): void;
 }
 
 /** Opens a WebSocket to the relay. Tests give their own; the app uses the platform's. */
@@ -48,6 +69,8 @@ export interface LiveHostTimings {
   reloadMs: number;
   /** After the session's end, how long the host waits for the relay to say so before ending it itself. */
   expiryGraceMs: number;
+  /** Changes to the project this close together reach guests as one project:changed. */
+  eventsMs: number;
 }
 
 export const LIVE_HOST_TIMINGS: LiveHostTimings = {
@@ -59,8 +82,20 @@ export const LIVE_HOST_TIMINGS: LiveHostTimings = {
   // tell a room that is gone from a network that is down.
   outageMs: 15 * 60_000,
   reloadMs: 250,
-  expiryGraceMs: 5_000
+  expiryGraceMs: 5_000,
+  eventsMs: 250
 };
+
+/** A guest's edits waiting their turn at once: one guest cannot fill the project's write queue. */
+export const MAX_GUEST_EDITS_IN_FLIGHT = 2;
+/**
+ * Snapshots a guest may ask for in a burst, and how often one more is allowed after: a guest asks on joining and when
+ * it has missed a change, and project:changed brings the rest. Each answer is up to a frame of the host's upload.
+ */
+export const GUEST_SNAPSHOT_BURST = 5;
+export const GUEST_SNAPSHOT_REFILL_MS = 1_000;
+/** Answers wait while this much is still going out on the host's socket, rather than piling up behind it. */
+const RPC_BACKLOG_BYTES = 8 * 1024 * 1024;
 
 /**
  * The most that may wait to go out on the host's socket. Each preview response pauses well below this
@@ -125,6 +160,23 @@ interface Room {
   participants: Participant[];
 }
 
+/**
+ * The host's own decision about a guest it let in, kept as it sends each command, so the host never waits for the
+ * relay to confirm a grant it has taken away. What a guest may do is the least of this and what the relay last said.
+ */
+interface Grant {
+  role: GuestRole;
+  guestExpiresAt: number | null;
+  /**
+   * Role changes sent and not yet seen in a roster, oldest first. A roster in flight when one was sent still shows the
+   * role before it, and the relay forwards calls in order with its rosters: until a roster shows each change, a call
+   * may have been forwarded before it, so the guest holds the least role among them.
+   */
+  unconfirmed: GuestRole[];
+  /** Bumped whenever the host takes a role away, so an edit asked for before then never lands, whatever came after. */
+  generation: number;
+}
+
 interface Run {
   runId: string;
   workspaceKey: string;
@@ -153,7 +205,21 @@ interface Run {
   /** The guests already announced as waiting, so a roster resent after a reconnect announces nobody twice. */
   announced: Set<string>;
   /** Where the host is in the editor, as last told: sent once the room is held, and again on every room taken back. */
-  presence: Presence | null;
+  hostPresence: Presence | null;
+  /** What the host has decided about each guest it let in (Grant). */
+  grants: Map<string, Grant>;
+  /** Guests the host removed: nothing of theirs is answered again, whatever a roster still says. */
+  kicked: Set<string>;
+  /** Each guest's edits being made now (MAX_GUEST_EDITS_IN_FLIGHT). */
+  edits: Map<string, number>;
+  /** Each guest's snapshot budget (GUEST_SNAPSHOT_BURST), and when it was last counted (monotonic). */
+  reads: Map<string, { tokens: number; at: number }>;
+  /** Where each collaborator is, as each last said. */
+  presence: Map<string, Presence>;
+  /** The editor's state guests were last sent, so a change reaches them once. */
+  sentSnapshot: LiveProjectSnapshot | null;
+  sentRuntime: string | null;
+  eventsTimer: ReturnType<typeof setTimeout> | null;
   /** Answers start(), until the room is open or the start has failed. */
   started: ((result: LiveStartResult) => void) | null;
   stopping: Promise<void> | null;
@@ -268,7 +334,15 @@ export class LiveHostManager {
       reloadDue: false,
       asked: null,
       announced: new Set(),
-      presence: null,
+      hostPresence: null,
+      grants: new Map(),
+      kicked: new Set(),
+      edits: new Map(),
+      reads: new Map(),
+      presence: new Map(),
+      sentSnapshot: null,
+      sentRuntime: null,
+      eventsTimer: null,
       started: null,
       stopping: null,
       ended: false
@@ -394,8 +468,8 @@ export class LiveHostManager {
   }
 
   private clearTimers(run: Run): void {
-    for (const timer of [run.retryTimer, run.expiryTimer, run.reloadTimer]) if (timer) clearTimeout(timer);
-    run.retryTimer = run.expiryTimer = run.reloadTimer = null;
+    for (const timer of [run.retryTimer, run.expiryTimer, run.reloadTimer, run.eventsTimer]) if (timer) clearTimeout(timer);
+    run.retryTimer = run.expiryTimer = run.reloadTimer = run.eventsTimer = null;
   }
 
   /** Whether `run` is still the session starting or running in the open project. */
@@ -484,12 +558,9 @@ export class LiveHostManager {
         conn.proxy?.abort(frame.requestId);
         return;
       case 'rpc:request':
-        // Guests' editor calls arrive with the RPC bridge (#765); until then each is answered, and nothing runs.
-        if (conn.stage === 'host')
-          this.sendOn(conn, { type: 'rpc:response', guestId: frame.guestId, requestId: frame.requestId, method: frame.method, ok: false, error: { code: 'UNAVAILABLE', message: 'Editing from a live session is not available yet.', recoverable: false } });
-        return;
+        return this.onCall(conn, frame);
       case 'presence:changed':
-        return;
+        return this.onPresence(conn, frame);
       case 'protocol:error':
         // Proving itself with a key the room was not made with, or for a room that has changed, never comes right.
         if (frame.code === 'AUTH_FAILED' && conn.stage !== 'host') return this.lost(conn, LIVE_CLOSE_CODES.POLICY, 'The relay did not accept this computer as the live session’s host.');
@@ -563,6 +634,7 @@ export class LiveHostManager {
     run.room.participants = participants;
     const first = conn.stage === 'roster';
     conn.stage = 'host';
+    this.confirmGrants(run, first && conn.kind === 'reclaim' ? conn : null);
     // Ending: nobody is let in or told about any more.
     if (run.phase === 'stopping') return;
     if (!first) {
@@ -579,12 +651,17 @@ export class LiveHostManager {
     run.phase = 'active';
     run.attempt = 0;
     run.giveUpAt = null;
-    // Whatever was sent before a drop may not have arrived: guests coming back to a room taken back reload once.
-    if (conn.kind === 'reclaim') run.reloadDue = true;
+    // Whatever was sent before a drop may not have arrived: guests coming back to a room taken back reload once, and
+    // are sent the project as it is now.
+    if (conn.kind === 'reclaim') {
+      run.reloadDue = true;
+      run.sentSnapshot = run.sentRuntime = null;
+      this.editorChanged();
+    }
     this.publish();
     this.announce(run);
     // Guests following the host see where it is now, whatever was sent before a drop.
-    if (run.presence) this.sendOn(conn, { type: 'presence:update', presence: run.presence });
+    if (run.hostPresence) this.sendOn(conn, { type: 'presence:update', presence: run.hostPresence });
     if (run.reloadDue) this.scheduleReload(run, 0);
     const started = run.started;
     run.started = null;
@@ -674,11 +751,6 @@ export class LiveHostManager {
   /** Send a frame on a connection that is open; false when it is not, or the frame cannot be sent. */
   private sendOn(conn: Connection, frame: HostToRelay): boolean {
     if (conn.closed || conn.socket.readyState !== OPEN) return false;
-    // A connection that has stopped moving is given up, and the room taken back on another.
-    if (conn.socket.bufferedAmount > MAX_SOCKET_BACKLOG_BYTES) {
-      this.lost(conn, null);
-      return false;
-    }
     let text: string;
     if (frame.type === 'preview:response-chunk') {
       // Made here from at most a chunk of bytes, so always well formed: checking each 256 KiB chunk would only cost time.
@@ -691,6 +763,17 @@ export class LiveHostManager {
         return false;
       }
       text = encoded.frame;
+    }
+    return this.write(conn, text);
+  }
+
+  /** Send text already made a frame on a connection that is open. */
+  private write(conn: Connection, text: string): boolean {
+    if (conn.closed || conn.socket.readyState !== OPEN) return false;
+    // A connection that has stopped moving is given up, and the room taken back on another.
+    if (conn.socket.bufferedAmount > MAX_SOCKET_BACKLOG_BYTES) {
+      this.lost(conn, null);
+      return false;
     }
     try {
       conn.socket.send(text);
@@ -747,6 +830,216 @@ export class LiveHostManager {
   }
 
   // -------------------------------------------------------------------------
+  // What guests may do
+
+  /** Record what a command the relay was just sent decides about a guest: it holds for the host from now. */
+  private decided(run: Run, frame: HostToRelay): void {
+    switch (frame.type) {
+      case 'guest:admit':
+        run.grants.set(frame.guestId, { role: frame.role, guestExpiresAt: frame.guestExpiresAt, unconfirmed: [], generation: 0 });
+        return;
+      case 'guest:set-role': {
+        const grant = run.grants.get(frame.guestId);
+        if (!grant) return;
+        if (frame.role === 'viewer') grant.generation++;
+        grant.role = frame.role;
+        grant.unconfirmed.push(frame.role);
+        if (frame.role === 'viewer') this.dropPresence(run, frame.guestId);
+        return;
+      }
+      case 'guest:set-expiry': {
+        const grant = run.grants.get(frame.guestId);
+        if (grant) grant.guestExpiresAt = frame.guestExpiresAt;
+        return;
+      }
+      case 'guest:kick':
+        run.grants.delete(frame.guestId);
+        run.kicked.add(frame.guestId);
+        this.dropPresence(run, frame.guestId);
+        return;
+    }
+  }
+
+  /**
+   * A roster arrived: the role changes it shows are confirmed, oldest first, and a guest it no longer lists has gone.
+   * On a connection that has just taken the room back (`reclaimed`), commands sent on the one that dropped may never
+   * have reached the relay: wherever the room differs from what the host decided, it is sent again.
+   */
+  private confirmGrants(run: Run, reclaimed: Connection | null): void {
+    const room = run.room!;
+    const listed = new Map(room.participants.map((p) => [p.guestId, p]));
+    for (const [guestId, grant] of run.grants) {
+      const p = listed.get(guestId);
+      if (!p) {
+        run.grants.delete(guestId);
+        continue;
+      }
+      if (p.status !== 'admitted') continue;
+      if (reclaimed) grant.unconfirmed = [];
+      else if (grant.unconfirmed[0] === p.role) grant.unconfirmed.shift();
+    }
+    if (reclaimed && run.phase !== 'stopping') {
+      const now = relayNow(room);
+      for (const p of room.participants) {
+        if (p.status !== 'admitted') continue;
+        const grant = run.grants.get(p.guestId);
+        const resend = (frame: HostToRelay) => {
+          if (this.sendOn(reclaimed, frame)) this.decided(run, frame);
+        };
+        if (run.kicked.has(p.guestId) || !grant) {
+          resend({ type: 'guest:kick', guestId: p.guestId });
+          continue;
+        }
+        if (grant.role !== p.role) resend({ type: 'guest:set-role', guestId: p.guestId, role: grant.role });
+        if (guestAccessEndsAt(grant.guestExpiresAt, room.expiresAt) < guestAccessEndsAt(p.guestExpiresAt, room.expiresAt)) {
+          const until = checkGuestExpiry(grant.guestExpiresAt, room.expiresAt, now);
+          resend(until.ok ? { type: 'guest:set-expiry', guestId: p.guestId, guestExpiresAt: until.expiresAt } : { type: 'guest:kick', guestId: p.guestId });
+        }
+      }
+    }
+    for (const guestId of run.presence.keys()) if (this.collaborator(run, guestId) === null) this.dropPresence(run, guestId);
+  }
+
+  /**
+   * What a guest may do now: admitted, as the relay last said and as the host last decided, with access that has not
+   * ended on the relay's clock. The least of the two in every respect; anything else is refused.
+   */
+  private grantOf(run: Run, guestId: string): { role: GuestRole; displayName: string; generation: number } | RpcError {
+    const room = run.room;
+    const p = room?.participants.find((x) => x.guestId === guestId);
+    const grant = run.grants.get(guestId);
+    if (!room || p?.status !== 'admitted' || !grant || run.kicked.has(guestId)) return { code: 'PERMISSION_DENIED', message: 'You are not in this live session.', recoverable: false };
+    const ends = Math.min(guestAccessEndsAt(p.guestExpiresAt, room.expiresAt), guestAccessEndsAt(grant.guestExpiresAt, room.expiresAt));
+    if (isExpired(ends, relayNow(room))) return { code: 'EXPIRED', message: 'Your access to this live session has ended.', recoverable: false };
+    const role: GuestRole = p.role === 'viewer' || grant.role === 'viewer' || grant.unconfirmed.includes('viewer') ? 'viewer' : 'collaborator';
+    return { role, displayName: p.displayName, generation: grant.generation };
+  }
+
+  /** A guest's grant when it is a collaborator now, or null. */
+  private collaborator(run: Run, guestId: string): { displayName: string; generation: number } | null {
+    const grant = this.grantOf(run, guestId);
+    return 'code' in grant || grant.role !== 'collaborator' ? null : grant;
+  }
+
+  /**
+   * A guest's editor call, forwarded by the relay. It runs only on the connection that holds the room for the open
+   * project, for a guest whose grant allows it now, with its arguments as capabilities.ts checked them; every call is
+   * answered, and nothing a guest sends reaches the editor otherwise.
+   */
+  private onCall(conn: Connection, frame: Frame<'relay-to-host', 'rpc:request'>): void {
+    const run = conn.run;
+    const answer = (result: { ok: true; result: unknown } | { ok: false; error: RpcError }) => this.answer(conn, frame, result);
+    const refuse = (code: RpcError['code'], message: string, recoverable: boolean) => answer({ ok: false, error: { code, message, recoverable } });
+    if (conn.stage !== 'host' || run.phase !== 'active' || !this.current(run) || !this.ctx.guestSnapshot || !this.ctx.applyGuest) return refuse('UNAVAILABLE', 'The host’s project is not available right now.', true);
+    const grant = this.grantOf(run, frame.guestId);
+    if ('code' in grant) return answer({ ok: false, error: grant });
+    const call = checkRpcRequest(grant.role, frame.method, frame.args);
+    if (!call.ok) return answer(call);
+    if (conn.socket.bufferedAmount > RPC_BACKLOG_BYTES) return refuse('BUSY', 'The host is busy sending. Try again shortly.', true);
+    if (call.value.method === 'project.snapshot') {
+      if (!this.spendRead(run, frame.guestId)) return refuse('BUSY', 'Too many requests for the project. Try again shortly.', true);
+      const snapshot = this.ctx.guestSnapshot(run.workspaceKey);
+      return snapshot ? answer({ ok: true, result: snapshot }) : refuse('UNAVAILABLE', 'The host’s project is not available right now.', true);
+    }
+    const { guestId } = frame;
+    const edits = run.edits.get(guestId) ?? 0;
+    if (edits >= MAX_GUEST_EDITS_IN_FLIGHT) return refuse('BUSY', 'Your earlier edits are still being made. Try again shortly.', true);
+    run.edits.set(guestId, edits + 1);
+    const { generation } = grant;
+    // Asked again as the edit's turn comes and just before it is saved: a guest removed, made a viewer, or out of time
+    // since it asked (even one given its role back since) lands nothing, and so does an edit whose connection dropped.
+    const check = (): RpcError | null => {
+      if (this.run !== run || run.phase !== 'active' || run.conn !== conn || conn.closed) return { code: 'UNAVAILABLE', message: 'The live session’s connection dropped before your edit was made.', recoverable: true };
+      const now = this.grantOf(run, guestId);
+      if ('code' in now) return now;
+      if (now.role !== 'collaborator' || now.generation !== generation) return { code: 'PERMISSION_DENIED', message: 'The host changed your access before your edit was made.', recoverable: false };
+      return null;
+    };
+    void this.ctx
+      .applyGuest(run.workspaceKey, { guestId, displayName: grant.displayName, check }, call.value.args[0])
+      .catch((): LiveApplyResult => ({ ok: false, error: { code: 'INTERNAL', message: 'The host could not make that edit.', recoverable: false } }))
+      .then((result) => {
+        const left = (run.edits.get(guestId) ?? 1) - 1;
+        if (left > 0) run.edits.set(guestId, left);
+        else run.edits.delete(guestId);
+        answer(result.ok ? { ok: true, result: { revision: result.revision, results: result.results } } : { ok: false, error: result.error });
+      });
+  }
+
+  /** Take one of a guest's snapshot budget, refilled over time; false when it has none left. */
+  private spendRead(run: Run, guestId: string): boolean {
+    const now = performance.now();
+    const budget = run.reads.get(guestId) ?? { tokens: GUEST_SNAPSHOT_BURST, at: now };
+    budget.tokens = Math.min(GUEST_SNAPSHOT_BURST, budget.tokens + (now - budget.at) / GUEST_SNAPSHOT_REFILL_MS);
+    budget.at = now;
+    run.reads.set(guestId, budget);
+    if (budget.tokens < 1) return false;
+    budget.tokens--;
+    return true;
+  }
+
+  /**
+   * Answer a call on the connection it came on, while that still holds the room: the relay answers nobody's calls for
+   * a connection it has let go. A result too large for one frame is refused as that, so the guest is never left waiting.
+   */
+  private answer(conn: Connection, frame: Frame<'relay-to-host', 'rpc:request'>, result: { ok: true; result: unknown } | { ok: false; error: RpcError }): void {
+    if (conn.closed || conn.run.conn !== conn) return;
+    const head = { type: 'rpc:response', guestId: frame.guestId, requestId: frame.requestId, method: frame.method } as const;
+    const encoded = encodeFrame('host-to-relay', result.ok ? { ...head, ok: true, result: result.result } : { ...head, ok: false, error: result.error });
+    if (encoded.ok) return void this.write(conn, encoded.frame);
+    const error: RpcError =
+      encoded.error.code === 'TOO_LARGE' ? { code: 'TOO_LARGE', message: 'The host’s project is too large to share in a live session.', recoverable: false } : { code: 'INTERNAL', message: 'The host could not send its answer.', recoverable: false };
+    this.sendOn(conn, { ...head, ok: false, error });
+  }
+
+  /** A participant's presence: kept, and shown in the editor, for a collaborator only. */
+  private onPresence(conn: Connection, frame: Frame<'relay-to-host', 'presence:changed'>): void {
+    const run = conn.run;
+    if (conn.stage !== 'host' || run.phase !== 'active' || frame.participant.kind !== 'guest') return;
+    const { guestId } = frame.participant;
+    if (!this.collaborator(run, guestId)) return;
+    run.presence.set(guestId, frame.presence);
+    this.publishPresence(run);
+  }
+
+  private dropPresence(run: Run, guestId: string): void {
+    if (run.presence.delete(guestId)) this.publishPresence(run);
+  }
+
+  private publishPresence(run: Run): void {
+    this.ctx.emit('live:presence', { workspaceKey: run.workspaceKey, runId: run.runId, guests: Object.fromEntries(run.presence) });
+  }
+
+  /**
+   * Something guests see of the project may have changed (its documents, whether it can be edited, the preview's
+   * state): they are sent it shortly, once, however many changes come together.
+   */
+  editorChanged(): void {
+    const run = this.run;
+    if (!run || run.phase === 'stopping' || run.eventsTimer) return;
+    run.eventsTimer = setTimeout(() => {
+      run.eventsTimer = null;
+      this.sendEditor(run);
+    }, this.timings.eventsMs);
+  }
+
+  /** Send guests what changed since they were last sent it: the preview's state, and the project. */
+  private sendEditor(run: Run): void {
+    const conn = run.conn;
+    // Owed while the room is being taken back: sent once it is (onRoster).
+    if (this.run !== run || run.phase !== 'active' || conn?.stage !== 'host' || !this.current(run)) return;
+    // Nobody to tell: a guest let in later asks for the project itself.
+    if (!run.room!.participants.some((p) => p.status === 'admitted' && !run.kicked.has(p.guestId))) return;
+    const snapshot = this.ctx.guestSnapshot?.(run.workspaceKey);
+    if (!snapshot || snapshot === run.sentSnapshot) return;
+    if (snapshot.runtime.state !== run.sentRuntime && this.sendOn(conn, { type: 'rpc:event', event: 'runtime:status', payload: snapshot.runtime })) run.sentRuntime = snapshot.runtime.state;
+    const event = (payload: LiveProjectChanged) => encodeFrame('host-to-relay', { type: 'rpc:event', event: 'project:changed', payload });
+    let encoded = event({ kind: 'snapshot', snapshot });
+    if (!encoded.ok && encoded.error.code === 'TOO_LARGE') encoded = event({ kind: 'too-large', revision: snapshot.revision });
+    if (encoded.ok && this.write(conn, encoded.frame)) run.sentSnapshot = snapshot;
+  }
+
+  // -------------------------------------------------------------------------
   // The host's commands
 
   /**
@@ -761,6 +1054,7 @@ export class LiveHostManager {
     const frame = build(run, run.room, relayNow(run.room));
     if (typeof frame === 'string') return { ok: false, message: frame };
     if (!this.sendOn(conn, frame)) return { ok: false, message: 'The live session’s connection to the relay is down.' };
+    this.decided(run, frame);
     sent?.(run, frame);
     return { ok: true };
   }
@@ -856,8 +1150,8 @@ export class LiveHostManager {
     if (!encoded.ok) return { ok: false, message: 'That is not a place in the editor guests can follow.' };
     // What was checked, as it was checked: never the caller's own object.
     const next = (JSON.parse(encoded.frame) as { presence: Presence }).presence;
-    if (run.presence && encoded.frame === JSON.stringify({ type: 'presence:update', presence: run.presence })) return { ok: true };
-    run.presence = next;
+    if (run.hostPresence && encoded.frame === JSON.stringify({ type: 'presence:update', presence: run.hostPresence })) return { ok: true };
+    run.hostPresence = next;
     const conn = run.conn;
     if (run.phase === 'active' && conn?.stage === 'host') this.sendOn(conn, { type: 'presence:update', presence: next });
     return { ok: true };

@@ -50,7 +50,12 @@ import { canonicalDir } from '../runtime/policy';
 import { addRecent, isTrusted, loadSettings, renameRecent, trust, untrust } from './settings';
 import { MAX_COPY_NAME, projectDisplayName, projectFolder, projectFolderName } from '@shared/project-name';
 import { RELAY_URL_ENV, resolveRelayUrl } from '@shared/live/relay-url';
-import { LiveHostManager } from './live/host';
+import { LIVE_BATCH_LABEL_MAX, type LiveEditBatch } from '@shared/live/capabilities';
+import { MAX_MESSAGE_LENGTH } from '@shared/live/limits';
+import { normalizeDisplayName, RPC_ERROR_CODES, type RpcError } from '@shared/live/messages';
+import { HOST_PATH_PLACEHOLDER, liveSnapshot, type LiveApplyResult, type LiveProjectSnapshot, type LiveSnapshotSource } from '@shared/live/snapshot';
+import { guestDestinationChange } from '@engine/form-destinations';
+import { LiveHostManager, type LiveGuestEdit } from './live/host';
 import { loopbackPreview } from './live/preview-proxy';
 import { newId } from '@shared/ids';
 import { packageFileName, type ComponentPackage } from '@shared/component-package';
@@ -168,6 +173,20 @@ async function isZipFile(path: string): Promise<boolean> {
 
 /** A failure message that says which project folder it is about. */
 const inFolder = (message: string, dir: string) => `${message} Project folder: "${dir}".`;
+
+/**
+ * One operation's result as a live-session guest is given it: the IDs of what it made (`nodeId`, `pageId`,
+ * `definitionIds`…), which the guest's next edit can name, and nothing else the engine reports.
+ */
+function sharedIds(result: Record<string, unknown>): Record<string, string | string[]> {
+  const out: Record<string, string | string[]> = {};
+  for (const [key, value] of Object.entries(result ?? {})) {
+    if (!/^[a-z][A-Za-z]*Ids?$/.test(key)) continue;
+    if (typeof value === 'string') out[key] = value;
+    else if (Array.isArray(value) && value.every((v) => typeof v === 'string')) out[key] = value as string[];
+  }
+  return out;
+}
 
 /**
  * A project asked for by its folder (a Recent projects card, Duplicate's Open copy) that is no longer there (#809). The
@@ -314,8 +333,12 @@ export class Controller {
     preview: () => (this.session && this.workspaceKey ? loopbackPreview(this.dev?.url) : null),
     publishing: () => !!this.dev?.holding,
     relay: async () => resolveRelayUrl({ env: process.env[RELAY_URL_ENV], setting: (await loadSettings()).settings.liveRelayUrl }),
+    guestSnapshot: (opening) => this.guestSnapshot(opening),
+    applyGuest: (opening, guest, batch) => this.applyGuest(opening, guest, batch),
     emit: (channel, payload) => this.send(channel, payload)
   });
+  /** The snapshot guests were last given, and what it was made from (guestSnapshot). */
+  private shared: (LiveSnapshotSource & { snapshot: LiveProjectSnapshot }) | null = null;
   /** Cancels a dependency install into the project when another app takes it over. */
   private prepareAbort: AbortController | null = null;
   private closing: Promise<void> | null = null;
@@ -372,6 +395,62 @@ export class Controller {
   broadcast() {
     const snap = this.snapshot();
     if (snap) this.send('project:changed', snap);
+    this.live.editorChanged();
+  }
+
+  /**
+   * The project as a live session's guests are given it, in the opening `opening` (shared/live/snapshot.ts): its
+   * documents, with nothing of this computer in them, and whether it can be edited now. The same object while none of
+   * that has changed, so guests are sent each change once.
+   */
+  guestSnapshot(opening: string): LiveProjectSnapshot | null {
+    const s = this.session;
+    if (!s || !this.workspaceKey || opening !== this.workspaceKey) return null;
+    const source: LiveSnapshotSource = { state: s.state, revision: s.revision, readOnly: !!s.readOnly, aiBusy: this.aiBusy(), runtime: this.runtimeStatus().state };
+    const last = this.shared;
+    if (last && last.state === source.state && last.revision === source.revision && last.readOnly === source.readOnly && last.aiBusy === source.aiBusy && last.runtime === source.runtime) return last.snapshot;
+    const snapshot = liveSnapshot(source, [s.dir, homedir()]);
+    this.shared = { ...source, snapshot };
+    return snapshot;
+  }
+
+  /**
+   * Make a live-session collaborator's edit (#765), already checked against what collaborators may do
+   * (shared/live/capabilities.ts), in the opening `opening`: through the same pipeline as the editor's own edits, in
+   * turn with them, as a History step of its own that names the guest. Never code, whatever Settings allow. Refused, as
+   * local edits are, while the AI is making changes or the project is read-only; and refused whole if, by the time it
+   * would be saved, the guest's access has changed or it would change where a contact form sends its messages.
+   */
+  async applyGuest(opening: string, guest: LiveGuestEdit, batch: LiveEditBatch): Promise<LiveApplyResult> {
+    const session = this.session;
+    const refuse = (code: RpcError['code'], message: string, recoverable: boolean): LiveApplyResult => ({ ok: false, error: { code, message, recoverable } });
+    const gone = () => this.session !== session || this.workspaceKey !== opening || !!this.closing;
+    if (!session || gone()) return refuse('UNAVAILABLE', 'The host’s project is not open.', true);
+    if (session.readOnly) return refuse('READ_ONLY', 'The host’s project is open read-only, so it can’t be changed now.', false);
+    if (this.aiBusy()) return refuse('BUSY', 'The host’s AI is making changes. Try again once it has finished.', true);
+    let refusal: RpcError | null = null;
+    const guard = (next: ProjectState | null) => {
+      refusal =
+        guest.check() ??
+        (gone() ? { code: 'UNAVAILABLE', message: 'The host’s project is not open.', recoverable: true } : null) ??
+        (this.aiBusy() ? { code: 'BUSY', message: 'The host’s AI is making changes. Try again once it has finished.', recoverable: true } : null);
+      const moved = !refusal && next ? guestDestinationChange(session.state, next) : null;
+      if (moved) refusal = { code: 'PERMISSION_DENIED', message: moved, recoverable: false };
+      return refusal ? { code: 'CANCELLED' as const, message: refusal.message, recoverable: refusal.recoverable } : null;
+    };
+    const label = `${normalizeDisplayName(batch.label, LIVE_BATCH_LABEL_MAX) ?? 'Edit'} (${guest.displayName})`;
+    const r = await session.apply(
+      { operations: batch.operations, ...(batch.expectedRevision !== undefined ? { expectedRevision: batch.expectedRevision } : {}) },
+      { label, source: 'user', guestName: guest.displayName, codeAllowed: false, guard }
+    );
+    if (refusal) return { ok: false, error: refusal };
+    if (r.ok) return { ok: true, revision: r.revision, results: (r.results ?? []).map(sharedIds) };
+    if (session.readOnly) return refuse('READ_ONLY', 'The host’s project is open read-only, so it can’t be changed now.', false);
+    const error = r.error ?? { code: 'INTERNAL', message: 'The host could not make that edit.', recoverable: false };
+    const code = (RPC_ERROR_CODES as readonly string[]).includes(error.code) ? (error.code as RpcError['code']) : 'INTERNAL';
+    // The engine's words, less anything of this computer they name; never its details.
+    const message = [session.dir, homedir()].reduce((m, path) => (path.length > 3 ? m.split(path).join(HOST_PATH_PLACEHOLDER) : m), error.message).slice(0, MAX_MESSAGE_LENGTH);
+    return { ok: false, error: { code, message, recoverable: error.recoverable } };
   }
 
   /** What the preview is doing; a project only a newer version can generate never has one. */
@@ -385,6 +464,7 @@ export class Controller {
   private status(s: RuntimeState) {
     this.pendingStatus = s;
     this.send('runtime:status', s);
+    this.live.editorChanged();
   }
 
   // -------------------------------------------------------------------------

@@ -25,7 +25,7 @@ if (!markAppearance()) {
 }
 
 const invoke = (channel: string) => (...args: unknown[]) => ipcRenderer.invoke(channel, ...args);
-const ALLOWED_EVENTS = new Set(['project:changed', 'project:closed', 'create:progress', 'runtime:status', 'ai:event', 'appearance', 'inspect:request', 'component-preview:request', 'component-preview:cancel', 'menu:command', 'menu:history', 'input:key', 'lifecycle:request', 'projects:unpacking', 'live:state', 'live:request']);
+const ALLOWED_EVENTS = new Set(['project:changed', 'project:closed', 'create:progress', 'runtime:status', 'ai:event', 'appearance', 'inspect:request', 'component-preview:request', 'component-preview:cancel', 'menu:command', 'menu:history', 'input:key', 'lifecycle:request', 'projects:unpacking', 'live:state', 'live:request', 'live:presence']);
 
 const api: BuilderApi = {
   platform: process.platform,

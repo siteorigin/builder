@@ -1,5 +1,6 @@
 import type { RuntimeState } from '../api';
-import type { ComponentDefinition, ProjectManifest, ProjectState } from '../types';
+import type { Collection, ComponentDefinition, EntryDoc, ProjectManifest, ProjectState } from '../types';
+import type { RpcError } from './messages';
 
 /**
  * The project as a live session's guests are given it (#765): `project.snapshot` answers with it and `project:changed`
@@ -19,12 +20,14 @@ export interface LiveProjectSnapshot {
 
 /**
  * The project's documents, less what stays the author's: the private brief and external sources' settings (which
- * name the secrets they sign in with). The manifest leaves out the author's own name for this working copy, and
- * components the path of their code and the code the author wrote; a theme's own code ships with the app and stays.
+ * name the secrets they sign in with). The manifest leaves out the author's own name for this working copy,
+ * components the path of their code and the code the author wrote (a theme's own code ships with the app and stays),
+ * and a synced entry where it was synced from, which can name a file anywhere on the host's computer.
  */
-export type LiveProjectState = Omit<ProjectState, 'brief' | 'sources' | 'manifest' | 'components'> & {
+export type LiveProjectState = Omit<ProjectState, 'brief' | 'sources' | 'manifest' | 'components' | 'collections'> & {
   manifest: Omit<ProjectManifest, 'workingCopyName'>;
   components: Record<string, Omit<ComponentDefinition, 'sourcePath'>>;
+  collections: Record<string, Omit<Collection, 'entries'> & { entries: Record<string, Omit<EntryDoc, 'source'>> }>;
 };
 
 /** What the preview is doing, without its address (a port on the host's computer) or its messages. */
@@ -37,6 +40,12 @@ export interface LiveRuntimeStatus {
  * for it then fails the same way until a later, smaller one.
  */
 export type LiveProjectChanged = { kind: 'snapshot'; snapshot: LiveProjectSnapshot } | { kind: 'too-large'; revision: number };
+
+/**
+ * The host's answer to a collaborator's `project.apply`: the revision the edit made and, operation by operation, the
+ * IDs of what it made (a new node or page), so the guest can go on editing it; or why nothing was changed.
+ */
+export type LiveApplyResult = { ok: true; revision: number; results: Array<Record<string, string | string[]>> } | { ok: false; error: RpcError };
 
 /** What the host's snapshot is built from. */
 export interface LiveSnapshotSource {
@@ -91,18 +100,24 @@ function shareComponent(def: ComponentDefinition): Omit<ComponentDefinition, 'so
   return def.owner === 'theme' && source !== undefined ? { ...rest, source } : rest;
 }
 
+const shareCollection = (c: Collection): LiveProjectState['collections'][string] => ({
+  ...c,
+  entries: Object.fromEntries(Object.entries(c.entries).map(([id, { source: _from, ...entry }]) => [id, entry]))
+});
+
 /**
  * The snapshot guests are given, made from the host's: only the fields named here, and every host path in their text
  * (`hostPaths`: the project folder and the home folder) replaced, so a page that quotes one, or a document that holds
  * one where it should not, never sends it over the relay.
  */
 export function liveSnapshot(source: LiveSnapshotSource, hostPaths: readonly string[]): LiveProjectSnapshot {
-  const { brief: _brief, sources: _sources, manifest, components, ...documents } = source.state;
+  const { brief: _brief, sources: _sources, manifest, components, collections, ...documents } = source.state;
   const { workingCopyName: _name, ...sharedManifest } = manifest;
   const state: LiveProjectState = {
     ...documents,
     manifest: sharedManifest,
-    components: Object.fromEntries(Object.entries(components).map(([id, def]) => [id, shareComponent(def)]))
+    components: Object.fromEntries(Object.entries(components).map(([id, def]) => [id, shareComponent(def)])),
+    collections: Object.fromEntries(Object.entries(collections).map(([id, c]) => [id, shareCollection(c)]))
   };
   const pattern = hostPathPattern(hostPaths);
   return {
