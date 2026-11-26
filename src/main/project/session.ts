@@ -3649,6 +3649,28 @@ export class ProjectSession extends EventEmitter {
     return clean;
   }
 
+  /** Give saved version `id` another name. What it holds, and when it was saved, stay as they are. */
+  renameVersion(id: string, name: string): Promise<{ ok: boolean; message?: string }> {
+    return this.serialize(async () => {
+      const blocked = await this.writeBlocked();
+      if (blocked) return { ok: false, message: blocked.error?.message };
+      if (this.versions.problem) return { ok: false, message: this.versions.problem };
+      const clean = name.replace(/\s+/g, ' ').trim();
+      if (!clean) return { ok: false, message: 'Give the version a name.' };
+      if (clean.length > VERSION_NAME_MAX) return { ok: false, message: `Use a name of at most ${VERSION_NAME_MAX} characters.` };
+      const v = this.versions.versions.find((x) => x.id === id);
+      if (!v) return { ok: false, message: 'That saved version is no longer there.' };
+      if (v.name === clean) return { ok: true };
+      try {
+        await this.versions.publish(this.versions.versions.map((x) => (x.id === id ? { ...x, name: clean } : x)));
+      } catch (e) {
+        return { ok: false, message: (e as Error).message };
+      }
+      this.emit('history');
+      return { ok: true };
+    });
+  }
+
   /** Delete saved version `id`, and what no other version holds. */
   deleteVersion(id: string): Promise<{ ok: boolean; message?: string; freed?: number }> {
     return this.serialize(async () => {

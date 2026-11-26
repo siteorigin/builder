@@ -1190,6 +1190,8 @@ export interface BuilderApi {
      * the documents, after saving the work it replaces as a version. Anything else changed since is `stale`.
      */
     restoreVersion(id: string, revision: number, reviewed: { files: string[]; replaced: string[] }, workspaceKey: string): Promise<RestoreVersionResult>;
+    /** Give saved version `id` a new name; what it holds and when it was saved stay. */
+    renameVersion(id: string, name: string, workspaceKey: string): Promise<{ ok: boolean; message?: string }>;
     /** Delete saved version `id`, freeing what only it held. */
     deleteVersion(id: string, workspaceKey: string): Promise<{ ok: boolean; message?: string; freed?: number }>;
     exportSource(format?: ExportFormat): Promise<ExportResult>;

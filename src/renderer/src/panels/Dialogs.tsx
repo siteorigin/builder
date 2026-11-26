@@ -1,6 +1,7 @@
 import './Dialogs.css';
 import { useCallback, useEffect, useId, useLayoutEffect, useMemo, useRef, useState } from 'react';
-import { ArrowRightLeft, Box, CircleAlert, CircleMinus, Component, Copy, CornerDownRight, FileText, History, House, Info, Newspaper, Package, PanelBottom, PanelTop, Pencil, Redo2, ShieldCheck, Sparkles, Split, Trash2, TriangleAlert, Undo2, User } from 'lucide-react';
+import { createPortal } from 'react-dom';
+import { ArrowRightLeft, Bookmark, Box, CircleAlert, CircleMinus, Component, Copy, CornerDownRight, FileText, FolderSync, History, House, Info, Newspaper, Package, PanelBottom, PanelTop, Pencil, Redo2, ShieldCheck, Sparkles, Split, Trash2, TriangleAlert, Undo2, User, Users } from 'lucide-react';
 import type { ElementRef, OwnerRef, ProjectState } from '@shared/types';
 import type { AiTurnReview, ProjectSnapshot } from '@shared/api';
 import type { ApplyResult } from '@shared/ops';
@@ -15,7 +16,7 @@ import type { LinkHolder, PageLinkUse } from '@engine/page-links';
 import { shellPageLinks, type ShellPageLink } from '@generator/checks';
 import { isDraftPage } from '@generator/index';
 import { applyOps, api, commitOps, errorText, getState, projectHistory, revertAiTurn, saveLocal, setState, shownAt, stepHistory, toast, useStore } from '../store';
-import { Field, Modal, openMenus, openSection } from '../components/ui';
+import { Field, Modal, openMenus, openSection, Tabs } from '../components/ui';
 import { isImeComposing } from '../lib/ime';
 import { createComponentTarget, resolveRef, treeFor } from '../lib/model';
 import { goToShellPart, insertionPoint, openComponentStudio, selectPage, setMode } from '../lib/actions';
@@ -23,7 +24,8 @@ import { duplicateName, duplicateOperation } from '../lib/duplicate-component';
 import { componentRequest, componentRequestContext, newComponentPlace, startBlankOps } from '../lib/new-component';
 import { NEW_HOME, planPageRemoval, reviewPageRemoval, withoutCards, type PageReplacement } from '../lib/page-removal';
 import { SECTION_NODE, sectionOptions } from '../lib/sections';
-import { HistoryTabs, SavedVersionsModal } from './SavedVersions';
+import { HistoryNote, historyLock, SavedVersionsPanel } from './SavedVersions';
+import { clock, dayAndTime, dayKey, dayName, fullWhen, lowerDay } from '../lib/when';
 import { appliedCount, historyStep } from '../lib/history-steps';
 import { reviewPlan, stepChangeText, turnName } from '../lib/turn-review';
 import { swapChoices, type SwapChoice } from '../lib/swap-choices';
@@ -1831,12 +1833,57 @@ function TurnReview({
   );
 }
 
+type HistoryTab = 'changes' | 'versions';
+/** No element: a panel opened on the other tab holds on to no focus. */
+const NO_FOCUS: React.RefObject<HTMLElement | null> = { current: null };
+
+/**
+ * History: one dialog with two tabs (the shared APG Tabs), Changes and Saved versions. Both panels stay mounted, so a
+ * name being typed, a list's scroll and a review survive switching, and the dialog keeps its place and its height.
+ * Each panel pins what it needs above its list (a note on why History is held, the intro, the save form) and scrolls
+ * only the list; each puts its own actions in the dialog's footer while it is shown.
+ */
 export function HistoryModal() {
-  const versions = useStore((s) => s.modal?.kind === 'history' && s.modal.tab === 'versions');
-  return versions ? <SavedVersionsModal /> : <ChangesModal />;
+  const tab = useStore((s): HistoryTab => (s.modal?.kind === 'history' && s.modal.tab === 'versions' ? 'versions' : 'changes'));
+  const [foot, setFoot] = useState<HTMLElement | null>(null);
+  // A version being saved, renamed, restored or deleted: the dialog waits for it before it can close.
+  const [busy, setBusy] = useState(false);
+  const show = (next: HistoryTab) => {
+    const m = getState().modal;
+    if (m?.kind === 'history') setState({ modal: { ...m, tab: next === 'versions' ? 'versions' : undefined } });
+  };
+  return (
+    <Modal title="History" icon={<History />} onClose={() => setState({ modal: null })} busy={busy} footer={<span ref={setFoot} className="history-foot" />}>
+      <div className="history-body">
+        <Tabs<HistoryTab>
+          value={tab}
+          onChange={show}
+          label="History"
+          idBase="history"
+          keepMounted
+          panelClassName="history-panel"
+          options={[
+            { value: 'changes', label: 'Changes', icon: <Undo2 aria-hidden="true" />, panel: () => <ChangesPanel active={tab === 'changes'} foot={foot} holding={busy} /> },
+            { value: 'versions', label: 'Saved versions', icon: <Bookmark aria-hidden="true" />, panel: () => <SavedVersionsPanel active={tab === 'versions'} foot={foot} onBusy={setBusy} /> }
+          ]}
+        />
+      </div>
+    </Modal>
+  );
 }
 
-function ChangesModal() {
+type Entry = ProjectSnapshot['history']['entries'][number];
+/** Who made a change, as its row says it. */
+const changeBy = (e: Entry) => (e.source === 'ai' ? 'AI' : e.source === 'system' ? 'Outside the app' : e.guestName ? `${e.guestName} (guest)` : 'You');
+/** Its glyph: a person for you, two for a live-session guest, the AI's sparkles, a synced folder for a change made outside. */
+function ChangeGlyph({ e }: { e: Entry }) {
+  if (e.source === 'ai') return <Sparkles aria-hidden="true" />;
+  if (e.source === 'system') return <FolderSync aria-hidden="true" />;
+  return e.guestName ? <Users aria-hidden="true" /> : <User aria-hidden="true" />;
+}
+
+/** `holding`: a saved version is being saved, renamed, restored or deleted, and the dialog waits for it to close. */
+function ChangesPanel({ active, foot, holding }: { active: boolean; foot: HTMLElement | null; holding: boolean }) {
   const snap = useStore((s) => s.snapshot);
   // Opened from a notification whose change could not be undone on its own: show that change, with focus on it.
   // Otherwise focus starts where History stands now.
@@ -1852,18 +1899,59 @@ function ChangesModal() {
   // The list is one Tab stop: the row last focused, else the change asked for, else where History stands now.
   const [stop, setStop] = useState<string | null>(null);
   const tabId = has(stop) ? stop : has(focusId) ? focusId : (all[cursor - 1] ?? all[cursor] ?? all.at(-1))?.id;
-  const [said, setSaid] = useState<{ text: string; failed: boolean } | null>(null);
+  // Until the pointer is used in the list, the row focus started on keeps its ring: the dialog's safe default is seen.
+  const [fresh, setFresh] = useState(true);
+  // The row pointed at or focused: the rows its step would take with it are marked, so its reach is seen.
+  const [aim, setAim] = useState<number | null>(null);
+  // What the last step chosen here did, for History as it stood then (`at`): once History moves on (another step, the
+  // AI, a guest, the footer's Undo) or is held, it no longer describes what is on screen and is not shown.
+  const [saidAt, setSaid] = useState<{ text: string; failed: boolean; at: string; want?: number } | null>(null);
   // One step at a time, until the project shows where it went: a second chosen before then would be planned on
   // History as it was.
   const stepping = useRef(false);
   const [waitFor, setWaitFor] = useState<number | null>(null);
   const busy = waitFor !== null && (snap?.revision ?? 0) < waitFor;
-  // While the AI works History is its to change: a step chosen now could take back more than its row says.
-  const locked = busy || !!snap?.aiBusy;
-  const listRef = useRef<HTMLOListElement>(null);
+  // While the AI works History is its to change, and a read-only project can't be changed at all: a step chosen now
+  // could take back more than its row says, or nothing. The rows stay readable, and the reason is pinned above them.
+  const lock = historyLock(snap, 'changes');
+  const locked = busy || !!lock;
+  const historyAt = `${snap?.revision ?? 0}|${all.length}|${cursor}|${all.at(-1)?.id ?? ''}`;
+  // A step's success is pinned to History once the project shows where the step went.
+  useEffect(() => {
+    if (!saidAt || saidAt.at || saidAt.want === undefined || snap?.revision === undefined) return;
+    // Bound to History at exactly the revision the step produced; one that went past it (a guest's edit landed first)
+    // is no longer what the message describes, so it is dropped.
+    if (snap.revision === saidAt.want) setSaid({ ...saidAt, at: historyAt });
+    else if (snap.revision > saidAt.want) setSaid(null);
+  }, [saidAt, snap?.revision, historyAt]);
+  const said = saidAt && !lock && saidAt.at === historyAt ? saidAt : null;
+  const noteId = useId();
+  const listRef = useRef<HTMLDivElement>(null);
+  // Where History stands stays in sight: when its row is scrolled away, the line above the list offers to show it.
+  const [nowSeen, setNowSeen] = useState(true);
+  const [scrolled, setScrolled] = useState(false);
+  const nowRow = useRef<HTMLLIElement | null>(null);
+  const nowRef = useCallback((el: HTMLLIElement | null) => {
+    nowRow.current = el;
+  }, []);
+  useEffect(() => {
+    const el = nowRow.current;
+    const root = el?.closest<HTMLElement>('.history-scroll');
+    if (!el || !root || typeof IntersectionObserver === 'undefined') return setNowSeen(true);
+    // Under the sticky day heading counts as out of sight.
+    const seen = new IntersectionObserver(([e]) => setNowSeen(e.isIntersecting), { root, rootMargin: '-30px 0px 0px 0px', threshold: 0.6 });
+    seen.observe(el);
+    return () => seen.disconnect();
+  }, [cursor, all.length, active]);
+  const showNow = () => {
+    const el = nowRow.current;
+    el?.scrollIntoView({ block: 'center' });
+    el?.querySelector<HTMLElement>('.history-step')?.focus({ preventScroll: true });
+  };
   // Focus starts on the list's Tab stop, and stays there while the menu that opened History finishes closing.
   const startRef = useRef<HTMLElement | null>(null);
-  useHeldFocus(startRef);
+  const openedHere = useRef(active).current;
+  useHeldFocus(openedHere ? startRef : NO_FOCUS);
   const start = useCallback((el: HTMLElement | null) => {
     startRef.current = el;
     el?.scrollIntoView({ block: 'nearest' });
@@ -1871,7 +1959,7 @@ function ChangesModal() {
   // The row that had focus went with its change (dropped by a newer one): focus goes on to the list's Tab stop, so
   // the keys still move through the list rather than out of the dialog.
   useEffect(() => {
-    if (stop && !all.some((e) => e.id === stop) && (!document.activeElement || document.activeElement === document.body))
+    if (active && stop && !all.some((e) => e.id === stop) && (!document.activeElement || document.activeElement === document.body))
       listRef.current?.querySelector<HTMLElement>('.history-step[tabindex="0"]')?.focus();
   });
   /** Make one change to History (`run`), saying `done` once it is made or why it could not be. */
@@ -1883,11 +1971,17 @@ function ChangesModal() {
     run(snap).then(
       (r) => {
         if (getState().snapshot?.workspaceKey !== key) return;
-        setSaid(r.ok ? { text: done, failed: false } : { text: r.error?.message ?? 'That step could not be made.', failed: true });
+        // A step that was made is said for History as the step left it; one that failed, for History as it is.
+        const now = getState().snapshot;
+        const nowAll = now?.history.entries ?? [];
+        const here = (revision: number, entries: typeof nowAll) => `${revision}|${entries.length}|${appliedCount(entries)}|${entries.at(-1)?.id ?? ''}`;
+        setSaid(r.ok ? { text: done, failed: false, at: '', want: r.revision } : { text: r.error?.message ?? 'That step could not be made.', failed: true, at: here(now?.revision ?? 0, nowAll) });
         setWaitFor(r.ok ? r.revision : null);
       },
       (e: unknown) => {
-        setSaid({ text: errorText(e), failed: true });
+        const now = getState().snapshot;
+        const nowAll = now?.history.entries ?? [];
+        setSaid({ text: errorText(e), failed: true, at: `${now?.revision ?? 0}|${nowAll.length}|${appliedCount(nowAll)}|${nowAll.at(-1)?.id ?? ''}` });
         setWaitFor(null);
       }
     ).finally(() => (stepping.current = false));
@@ -1896,8 +1990,9 @@ function ChangesModal() {
     const step = historyStep(all, i);
     act((at) => stepHistory(all[i].id, step.direction, step.count, at), step.done);
   };
-  // Up and Down move between the rows (Home and End to the newest and oldest); Enter or Space steps to one.
-  const onKeyDown = (e: React.KeyboardEvent<HTMLOListElement>) => {
+  // Up and Down move between the rows (Home and End to the newest and oldest), across the day headings; Enter or
+  // Space steps to one.
+  const onKeyDown = (e: React.KeyboardEvent<HTMLDivElement>) => {
     // A key held down from whatever opened History (Enter on its menu item) repeats onto the row focus starts on:
     // only a fresh press steps.
     if (e.repeat && (e.key === 'Enter' || e.key === ' ')) return e.preventDefault();
@@ -1909,93 +2004,160 @@ function ChangesModal() {
     e.preventDefault();
     rows[n].focus();
   };
-  return (
-    <Modal
-      title="History"
-      icon={<History />}
-      onClose={() => setState({ modal: null })}
-      footer={
-        <>
-          <button className="btn" disabled={!snap?.history.canUndo || busy} onClick={() => projectHistory('undo')}>
-            <Undo2 /> Undo
-          </button>
-          <button className="btn" disabled={!snap?.history.canRedo || busy} onClick={() => projectHistory('redo')}>
-            <Redo2 /> Redo
-          </button>
-          {/* What a step chosen in the list did, or why it could not: in sight however far the list is scrolled. */}
-          <span className={`history-said ellipsis${said?.failed ? ' failed' : ''}`} role="status" title={said?.text}>
-            {said?.text ?? ''}
+  // The rows a step to the aimed row takes, the aimed row among them: down to it from where History stands (it goes
+  // too), or up to it through what is undone (it comes back too).
+  const aimed = aim !== null && aim < all.length && !locked ? historyStep(all, aim) : null;
+  const inStep = (i: number) => !!aimed && (aimed.direction === 'undo' ? i >= aim! && i < cursor : i >= cursor && i <= aim!);
+  // Where History stands, and what tells it apart from a change of the same name: when, and what is undone after it.
+  // Non-breaking: a space leading a flex item would collapse against the name.
+  const nowWhere = `${cursor > 0 ? `\u00a0· ${lowerDay(dayAndTime(all[cursor - 1].time))}` : ''}\u00a0· ${cursor === all.length ? 'the latest change' : `${all.length - cursor} newer ${all.length - cursor === 1 ? 'change' : 'changes'} undone`}`;
+  const nowText = `Now at ${cursor === 0 ? 'before these changes' : all[cursor - 1]?.label}${nowWhere}`;
+  // Newest first, under the day they were made.
+  const days: Array<{ key: string; name: string; rows: typeof entries }> = [];
+  for (const row of entries) {
+    const key = dayKey(row.e.time);
+    const last = days.at(-1);
+    if (last?.key === key) last.rows.push(row);
+    else days.push({ key, name: dayName(row.e.time), rows: [row] });
+  }
+  const footer = (
+    <>
+      <button className="btn" disabled={!snap?.history.canUndo || locked} title={snap?.history.undoLabel ? `Undo “${snap.history.undoLabel}”` : undefined} onClick={() => (setSaid(null), projectHistory('undo'))}>
+        <Undo2 /> Undo
+      </button>
+      <button className="btn" disabled={!snap?.history.canRedo || locked} title={snap?.history.redoLabel ? `Redo “${snap.history.redoLabel}”` : undefined} onClick={() => (setSaid(null), projectHistory('redo'))}>
+        <Redo2 /> Redo
+      </button>
+      {/* What a step chosen in the list did, said politely, or why it could not, said as an error: in sight however far
+          the list is scrolled. */}
+      <span className="history-said" title={said?.text}>
+        <span className="ellipsis" role="status">
+          {said && !said.failed ? said.text : ''}
+        </span>
+        {said?.failed && (
+          <span className="history-said-failed" role="alert">
+            <CircleAlert aria-hidden="true" />
+            <span className="ellipsis">{said.text}</span>
           </span>
-          <button className="btn" onClick={() => setState({ modal: null })}>
-            Close
-          </button>
-        </>
-      }
-    >
-      <HistoryTabs tab="changes" busy={busy} />
-      {reviewing && snap && (
-        <TurnReview
-          entryId={reviewing}
-          snap={snap}
-          locked={locked}
-          focusRef={start}
-          onStep={go}
-          onRevert={(reviewed, done) => act((at) => revertAiTurn(reviewing, reviewed, at), done)}
-        />
-      )}
-      <p className="muted" style={{ marginTop: 0 }}>
-        Your last 100 changes, newest first. Choose one to undo it and every change after it, or to redo every change up to it. Anything undone can be redone until you make a new change. To keep a version of the site for longer, save it in Saved versions.
-      </p>
-      {entries.length === 0 ? (
-        <div className="empty-insp" style={{ padding: '28px 12px' }}>
-          <History />
-          <span>No changes yet. Your edits will appear here as you work.</span>
-        </div>
-      ) : (
-        <ol ref={listRef} className="history-list history-steps" aria-label="Changes" onKeyDown={onKeyDown}>
-          {entries.map(({ e, i }) => {
-            const step = historyStep(all, i);
-            const current = i === cursor - 1;
-            const meta = `history-meta-${e.id}`;
-            return (
-              <li key={e.id} className={`${e.applied ? '' : 'undone'}${e.id === focusId ? ' focus' : ''}`}>
-                <button
-                  ref={e.id === tabId && !reviewing ? start : undefined}
-                  className="history-step"
-                  tabIndex={e.id === tabId ? 0 : -1}
-                  data-autofocus={e.id === tabId && !stop && !reviewing ? true : undefined}
-                  aria-label={step.name}
-                  aria-describedby={meta}
-                  aria-current={current ? 'step' : undefined}
-                  aria-disabled={locked || undefined}
-                  onFocus={() => setStop(e.id)}
-                  onClick={() => go(i)}
-                >
-                  {e.source === 'ai' ? <Sparkles aria-hidden="true" /> : <User aria-hidden="true" />}
-                  <span className="grow ellipsis" title={e.label}>
-                    {e.label}
-                  </span>
-                  {current && <span className="badge accent">Current</span>}
-                  {!e.applied && <span className="badge">Undone</span>}
-                  <span className="step-action" aria-hidden="true">
-                    {step.text}
-                  </span>
-                  <time>{new Date(e.time).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}</time>
-                  <span id={meta} className="sr-only">
-                    {`${e.source === 'ai' ? 'By AI' : e.source === 'system' ? 'From outside the app' : e.guestName ? `By ${e.guestName}` : 'By you'} at ${new Date(e.time).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}${e.applied ? '' : ', undone'}`}
-                  </span>
-                </button>
-              </li>
-            );
-          })}
-          {cursor === 0 && (
-            <li className="history-start" aria-current="step">
-              <span className="grow">Before these changes</span>
-              <span className="badge accent">Current</span>
-            </li>
-          )}
-        </ol>
-      )}
-    </Modal>
+        )}
+      </span>
+      <button className="btn" disabled={holding} onClick={() => setState({ modal: null })}>
+        Close
+      </button>
+    </>
+  );
+  return (
+    <>
+      {active && foot && createPortal(footer, foot)}
+      <div className={`history-pinned${scrolled ? ' scrolled' : ''}`}>
+        {lock && (
+          <HistoryNote id={noteId} tone="info" icon={lock.icon}>
+            {lock.text}
+          </HistoryNote>
+        )}
+        {entries.length > 0 && (
+          <>
+            <p className="history-intro">
+              {all.length === 1 ? 'Your one change so far.' : `Your last ${all.length} changes, newest first.`}
+              {!lock && ' Choosing one undoes or redoes every change up to it.'}
+            </p>
+            {/* Where History stands, told apart from a change with the same name by when it was made and what is after it. */}
+            <p className="history-now" title={nowText}>
+              <span className="history-now-what">
+                Now at <strong>{cursor === 0 ? 'before these changes' : all[cursor - 1].label}</strong>
+              </span>
+              <span className="history-now-where">{nowWhere}</span>
+              <button type="button" className="link" hidden={nowSeen} onClick={showNow}>
+                Show it
+              </button>
+            </p>
+          </>
+        )}
+      </div>
+      <div className="history-scroll" onScroll={(e) => setScrolled(e.currentTarget.scrollTop > 0)}>
+        {reviewing && snap && (
+          <TurnReview
+            entryId={reviewing}
+            snap={snap}
+            locked={locked}
+            focusRef={start}
+            onStep={go}
+            onRevert={(reviewed, done) => act((at) => revertAiTurn(reviewing, reviewed, at), done)}
+          />
+        )}
+        {entries.length === 0 ? (
+          <div className="empty-insp history-empty">
+            <History />
+            <span>No changes yet. Your edits will appear here as you work.</span>
+          </div>
+        ) : (
+          <div ref={listRef} className={`history-steps${locked ? ' locked' : ''}`} role="group" aria-label="Changes" onKeyDown={onKeyDown} onPointerDown={() => setFresh(false)}>
+            {days.map((day, d) => (
+              <section key={day.key} className="history-day" aria-labelledby={`history-day-${day.key}`}>
+                <h3 className="history-day-head" id={`history-day-${day.key}`}>
+                  {day.name}
+                </h3>
+                <ol className="history-list">
+                  {day.rows.map(({ e, i }) => {
+                    const step = historyStep(all, i);
+                    const current = i === cursor - 1;
+                    const meta = `history-meta-${e.id}`;
+                    const by = changeBy(e);
+                    return (
+                      <li key={e.id} ref={current ? nowRef : undefined} className={`${e.applied ? '' : 'undone'}${e.id === focusId ? ' focus' : ''}${inStep(i) ? ' in-step' : ''}${aimed && i === aim ? ' aim' : ''}`}>
+                        <button
+                          ref={e.id === tabId && !reviewing ? start : undefined}
+                          className="history-step"
+                          tabIndex={e.id === tabId ? 0 : -1}
+                          data-autofocus={e.id === tabId && fresh && !reviewing ? true : undefined}
+                          aria-label={step.name}
+                          aria-describedby={lock ? `${meta} ${noteId}` : meta}
+                          aria-current={current ? 'step' : undefined}
+                          aria-disabled={locked || undefined}
+                          onFocus={() => (setStop(e.id), setAim(i))}
+                          onBlur={() => setAim((a) => (a === i ? null : a))}
+                          onMouseEnter={() => setAim(i)}
+                          onMouseLeave={() => setAim((a) => (a === i ? null : a))}
+                          onClick={() => go(i)}
+                        >
+                          <ChangeGlyph e={e} />
+                          <span className="history-step-text">
+                            <span className="grow ellipsis" title={e.label}>
+                              {e.label}
+                            </span>
+                            <span className="history-step-meta" aria-hidden="true">
+                              {current && <span className="badge accent">Current</span>}
+                              {!e.applied && <span className="badge">Undone</span>}
+                              <span className="ellipsis">
+                                {by} ·{' '}
+                                <time dateTime={e.time} title={fullWhen(e.time)}>
+                                  {clock(e.time)}
+                                </time>
+                              </span>
+                            </span>
+                          </span>
+                          <span className="step-action" aria-hidden="true">
+                            {step.text}
+                          </span>
+                          <span id={meta} className="sr-only">
+                            {`${e.source === 'ai' ? 'By AI' : e.source === 'system' ? 'From outside the app' : e.guestName ? `By ${e.guestName}, a guest` : 'By you'}, ${fullWhen(e.time)}${e.applied ? '' : ', undone'}`}
+                          </span>
+                        </button>
+                      </li>
+                    );
+                  })}
+                  {cursor === 0 && d === days.length - 1 && (
+                    <li ref={nowRef} className="history-start" aria-current="step">
+                      <span className="grow">Before these changes</span>
+                      <span className="badge accent">Current</span>
+                    </li>
+                  )}
+                </ol>
+              </section>
+            ))}
+          </div>
+        )}
+      </div>
+    </>
   );
 }
