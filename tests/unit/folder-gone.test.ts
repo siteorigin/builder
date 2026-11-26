@@ -2,7 +2,7 @@
  * An open project whose folder is removed or renamed (issue 830): no watch on it throws, and the project is reported
  * as gone rather than left to fail at the next write.
  */
-import type { FSWatcher } from 'node:fs';
+import type { FolderWatch } from '../../src/main/folder-watch';
 import { existsSync, mkdtempSync, promises as fs, realpathSync, renameSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -40,7 +40,7 @@ afterEach(async () => {
   dirs.splice(0).forEach((d) => rmSync(d, { recursive: true, force: true }));
 });
 
-type Watching = { watchers: FSWatcher[]; stageWatchers: FSWatcher[]; watchStageSources(s: unknown): void; attach(s: unknown, workspace: object, runtime: object): Promise<void> };
+type Watching = { watchers: FolderWatch[]; stageWatchers: FolderWatch[]; watchStageSources(s: unknown): void; attach(s: unknown, workspace: object, runtime: object): Promise<void> };
 
 /**
  * A watch just started may not report yet (macOS starts its events a moment later, much later on a busy machine), and

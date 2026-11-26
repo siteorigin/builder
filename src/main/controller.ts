@@ -1,6 +1,5 @@
 import { app, BrowserWindow, dialog, shell, type OpenDialogOptions } from 'electron';
 import { markdownMirrorRoute } from '@shared/llms';
-import { watch, type FSWatcher } from 'node:fs';
 import { constants as fsConstants, existsSync, mkdtempSync, promises as fs, statSync } from 'node:fs';
 import { homedir, tmpdir } from 'node:os';
 import { basename, dirname, extname, isAbsolute, join, relative, sep } from 'node:path';
@@ -39,6 +38,7 @@ import { atomicWrite, readIfExists, sha } from './project/fsutil';
 import { fontCoverage } from './project/media';
 import { isValidFontAsset } from '@shared/fonts';
 import { photoMetadata } from './project/photo-metadata';
+import { watchTree, type FolderWatch } from './folder-watch';
 import { DevServer, buildProject, dependenciesReady, prepareDependencies, starterTools } from './runtime/manager';
 import { NETWORK_CODES, ToolsDownloadError } from './runtime/availability';
 import { copyProjectTools, createPreviewStage, removePreviewStage, sweepPreviewStages, syncPreviewStage } from './runtime/stage';
@@ -255,7 +255,7 @@ export class Controller {
   private localTimer: NodeJS.Timeout | null = null;
   private localWrites: Promise<void> = Promise.resolve();
   private exportPaths = new Set<string>();
-  private watchers: FSWatcher[] = [];
+  private watchers: FolderWatch[] = [];
   private watchTimer: NodeJS.Timeout | null = null;
   private assetTimer: NodeJS.Timeout | null = null;
   private folderTimer: NodeJS.Timeout | null = null;
@@ -267,7 +267,7 @@ export class Controller {
   /** The project revision the private copy was last brought up to, and the preview told of (-1 before the first). */
   private stagedRevision = -1;
   /** Watches over the files the copy is made from, as the project's own dev server would watch them. */
-  private stageWatchers: FSWatcher[] = [];
+  private stageWatchers: FolderWatch[] = [];
   private stageTimer: NodeJS.Timeout | null = null;
   /** The project whose copy was already replaced once after a mirror failed, so a lasting failure cannot loop. */
   private restaged: ProjectSession | null = null;
@@ -1139,10 +1139,10 @@ export class Controller {
    * Watch a folder of the open project. A watch that fails (its folder went, too many files) just stops: unhandled, its
    * error would be thrown. Whatever a watch reports may be the project folder going, so that is looked at too.
    */
-  private watchFolder(session: ProjectSession, dir: string, listener: (event: string, file: string | null) => void): FSWatcher {
-    const w = watch(dir, { recursive: true }, (event, file) => {
+  private watchFolder(session: ProjectSession, dir: string, listener: (event: string, file: string | null) => void): FolderWatch {
+    const w = watchTree(dir, (event, file) => {
       this.checkFolderSoon(session);
-      listener(event, file === null ? null : String(file));
+      listener(event, file);
     });
     w.on('error', () => {
       w.close();
