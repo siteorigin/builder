@@ -1438,16 +1438,25 @@ export function SiteStyles() {
         </div>
       </Section>
 
-      <Section title="Colors" id="tok-color" scope={changedNote(colorIds)}>
-        <ColorSchemeControls state={st} palette={palette} onPalette={choosePalette} contrast={contrast} otherContrast={otherContrast} say={say} />
-        {/* A palette is made for the light colors; the dark ones have their own "make again" beside them. */}
-        {palette === 'light' && <PaletteHarmony tokens={tokens} pairs={pairs ?? NO_PAIRS} dark={dual ? (st.tokens.darkOverrides ?? {}) : null} revision={snap.revision} say={say} />}
+      {/* The count follows the palette shown, as the rows' own reset marks do. */}
+      <Section title="Colors" id="tok-color" scope={palette === 'dark' ? (colorIds.some(shownChanged) ? `${colorIds.filter(shownChanged).length} changed` : undefined) : changedNote(colorIds)}>
+        <ColorSchemeControls state={st} palette={palette} onPalette={choosePalette} contrast={contrast} otherContrast={otherContrast} onJump={(id) => (setOpenDetail(id), openSection('tok-color', { focus: `[data-token-id="${CSS.escape(id)}"] .ss-contrast-block` }))} />
+        {/* A palette is made for the light colors; under Dark it says so, and the dark ones have their own remake. */}
+        <PaletteHarmony tokens={tokens} pairs={pairs ?? NO_PAIRS} dark={dual ? (st.tokens.darkOverrides ?? {}) : null} revision={snap.revision} shown={palette} onShowLight={() => choosePalette('light')} />
         {[...COLOR_GROUPS, { label: 'Other colors', ids: colorIds.filter((id) => !COLOR_GROUPS.some((g) => g.ids.includes(id))) }]
           .map((g) => ({ ...g, list: g.ids.map(byId).filter((t): t is TokenDef => !!t && t.group === 'color') }))
           .filter((g) => g.list.length)
           .map((g) => (
-            <div className="ss-group" key={g.label} role="group" aria-label={g.label}>
-              <div className="ss-group-label">{g.label}</div>
+            <div className="ss-group" key={g.label} role="group" aria-label={dual ? `${g.label}, ${palette} colors` : g.label}>
+              <div className="ss-group-label">
+                {g.label}
+                {/* Which palette these rows edit, on every group, so it stays in view once the switch scrolls away. */}
+                {dual && (
+                  <span className="ss-group-scheme" aria-hidden="true">
+                    {palette === 'dark' ? 'Dark colors' : 'Light colors'}
+                  </span>
+                )}
+              </div>
               {g.list.map((t) => colorRow(t))}
             </div>
           ))}

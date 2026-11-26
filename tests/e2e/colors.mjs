@@ -284,22 +284,23 @@ const beforeBackground = await pageBackground();
 const atRest = await settled();
 const chips = async () => Object.fromEntries(await harmony.locator('.ss-harmony-chips li').evaluateAll((els) => els.map((el) => [el.dataset.role, el.dataset.value])));
 const drawnPage = () => harmony.locator('.ss-harmony-preview').evaluate((el) => getComputedStyle(el).backgroundColor);
-assert.equal(await harmony.getByRole('button', { name: 'Neutral', exact: true }).getAttribute('aria-pressed'), 'true', 'Neutral is offered first');
+assert.equal(await harmony.getByRole('radio', { name: 'Neutral', exact: true }).getAttribute('aria-checked'), 'true', 'Neutral is offered first');
 const neutral = await chips();
 const neutralPage = await drawnPage();
-const tinted = harmony.getByRole('button', { name: 'Tinted', exact: true });
+const tinted = harmony.getByRole('radio', { name: 'Tinted', exact: true });
 await tinted.click();
-await eventually(async () => assert.equal(await tinted.getAttribute('aria-pressed'), 'true', 'the mood is chosen'));
+await eventually(async () => assert.equal(await tinted.getAttribute('aria-checked'), 'true', 'the mood is chosen'));
 const proposed = await chips();
 assert.notEqual(proposed['color.background'], neutral['color.background'], 'each mood proposes its own colors');
 assert.notEqual(await drawnPage(), neutralPage, 'and the preview is drawn in them');
 assert.equal(await drawnPage(), rgbOf(proposed['color.background']), 'its page in the proposed background');
 for (const id of ['color.background', 'color.surface', 'color.surface-alt', 'color.border', 'color.muted', 'color.brand-strong', 'color.inverse', 'color.accent']) assert.match(proposed[id] ?? '', /^#[0-9a-f]{6}$/, `the preview names ${id}`);
-assert.match(await harmony.locator('.ss-harmony-verdict').textContent(), /Every color pair is readable/, 'and says the proposal is readable');
+assert.match(await harmony.locator('.ss-harmony-facts').textContent(), /Every color pair in this preview is readable/, 'and says the proposal is readable');
 assert.equal(await settled(), atRest, 'choosing a mood only previews it');
 assert.deepEqual(await overrides(), beforePalette, 'and saves nothing');
 assert.equal(await pageBackground(), beforeBackground, 'nor changes the page');
-await harmony.getByRole('button', { name: 'Generate harmonious palette from brand' }).click();
+const useTinted = harmony.getByRole('button', { name: 'Use the tinted palette' });
+await useTinted.click();
 // What the site shows: a color the palette shares with the theme needs no saved value of its own.
 const siteColor = (id) => frame.locator('html').evaluate((el, name) => getComputedStyle(el).getPropertyValue(name).trim().toLowerCase(), `--so-${id.replace(/[^a-zA-Z0-9]+/g, '-')}`);
 await eventually(async () => {
@@ -308,12 +309,12 @@ await eventually(async () => {
 assert.equal((await overrides())['color.background'], proposed['color.background'], 'saved as the site background');
 assert.equal(await settled(), atRest + 1, 'in one step');
 await eventually(async () => assert.equal(await pageBackground(), rgbOf(proposed['color.background']), 'the page shows the new background'));
-await eventually(async () => assert.match(await win.locator('#dock-panel-styles [aria-live="polite"][aria-atomic="true"]').textContent(), /Tinted palette made from your brand color\. You can undo this\./, 'and says it can be undone'));
-await eventually(async () => assert.equal(await harmony.getByRole('button', { name: 'Generate harmonious palette from brand' }).isDisabled(), true, 'the palette in use is not offered again'));
+await eventually(async () => assert.equal(await win.locator('.toast', { hasText: 'Your site now uses the tinted palette.' }).getByRole('button', { name: 'Undo' }).count(), 1, 'and says so, with an Undo'));
+await eventually(async () => assert.equal(await useTinted.getAttribute('aria-disabled'), 'true', 'the palette in use is not offered again'));
 await undo();
 await eventually(async () => assert.deepEqual(await overrides(), beforePalette, 'one undo puts every color back, links included'));
 await eventually(async () => assert.equal(await pageBackground(), beforeBackground, 'and the page with them'));
-await eventually(async () => assert.equal(await harmony.getByRole('button', { name: 'Generate harmonious palette from brand' }).isDisabled(), false, 'and offers the palette again'));
+await eventually(async () => assert.equal(await useTinted.getAttribute('aria-disabled'), null, 'and offers the palette again'));
 
 assert.deepEqual(errors, [], 'no uncaught errors in the editor');
 await app.close();
