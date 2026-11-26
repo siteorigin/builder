@@ -74,27 +74,69 @@
   .asset-grid.compact .asset-size svg { width: 10px; height: 10px; }
   .asset-size svg { flex: none; width: 11px; height: 11px; }
   .asset-drop-hint { margin: -4px 14px 18px; font-size: 12px; color: var(--text-3); }
-  .font-list { margin: 10px 10px 16px; }
-  .font-list-note { margin: 0 0 8px; font-size: 12px; line-height: 1.45; color: var(--text-2); }
-  .font-face-label { grid-column: 1 / -1; font-size: 11px; color: var(--text-2); }
-  .font-list ul { display: flex; flex-direction: column; gap: 8px; margin: 0; padding: 0; list-style: none; }
-  .font-face { display: flex; flex-direction: column; gap: 6px; padding: 8px; border-radius: var(--r-sm); background: var(--panel-2); }
-  .font-face-head { display: flex; flex-direction: column; gap: 1px; min-width: 0; }
-  .font-face-head b { font-size: 13px; font-weight: 600; overflow-wrap: anywhere; }
-  .font-face-meta { font-size: 11px; color: var(--text-2); }
-  .font-face-file { font-family: var(--mono); font-size: 10.5px; color: var(--text-3); overflow-wrap: anywhere; }
+  /* ---------- Fonts: a card a family, its files (one face each) as rows inside it ----------
+   * The family carries what is shared (its name, whether the site uses it and where); each file carries what
+   * tells it apart (style and alphabet, drawn in itself) and the corrections that apply to it alone. */
+  .font-list { margin: 10px 10px 16px; container-type: inline-size; }
+  .font-list-note { margin: 0 0 10px; font-size: 12px; line-height: 1.45; color: var(--text-2); }
+  .font-families, .font-faces { display: flex; flex-direction: column; margin: 0; padding: 0; list-style: none; }
+  .font-families { gap: 10px; }
+  .font-family { border-radius: var(--r-sm); background: var(--panel-2); }
+  .font-family-head { position: relative; display: flex; flex-direction: column; gap: 2px; padding: 8px 10px 10px 6px; border-radius: var(--r-sm); }
+  .font-family-head:hover { background: var(--hover); }
+  .font-family-title { display: flex; align-items: center; justify-content: space-between; gap: 8px; min-width: 0; }
+  .font-family-title h4 { margin: 0; min-width: 0; font-size: 16px; font-weight: 600; line-height: 1.3; }
+  /* The family's name, drawn in the family itself, is the button that opens it: a closed card is one line of the inventory. */
+  .font-family-toggle { display: flex; align-items: flex-start; gap: 4px; min-width: 0; min-height: 24px; padding: 1px 4px 1px 0; border: 0; border-radius: var(--r-xs); background: none; color: var(--text); font: inherit; text-align: left; overflow-wrap: anywhere; }
+  /* The whole header (name, badge and uses) is the button's target; only the name carries its focus ring. */
+  .font-family-toggle::after { content: ''; position: absolute; inset: 0; border-radius: var(--r-sm); }
+  .font-family-head:hover .font-family-toggle svg { color: var(--text); }
+  .font-family-toggle svg { flex: none; width: 14px; height: 14px; margin-top: 4px; color: var(--text-2); transition: transform 120ms; }
+  .font-family-toggle[aria-expanded='true'] svg { transform: rotate(90deg); }
+  @media (prefers-reduced-motion: reduce) { .font-family-toggle svg { transition: none; } }
+  .font-family-title .badge { flex: none; position: relative; pointer-events: none; }
+  .font-family-meta { margin: 0 0 0 18px; font-size: 12px; line-height: 1.45; color: var(--text-2); }
+  .font-family-body[hidden] { display: none; }
+  .font-family-name { padding: 0 10px 12px; }
+  .font-family-name .field-hint { line-height: 1.4; }
+  /* Faces are rows of the family, split by hairlines, never cards inside the card. */
+  .font-face { display: flex; flex-direction: column; gap: 6px; padding: 10px; border-top: 1px solid var(--border); }
+  .font-face-head { display: flex; align-items: center; justify-content: space-between; gap: 6px; min-width: 0; min-height: 24px; }
+  .font-face-title { min-width: 0; font-size: 12px; font-weight: 600; color: var(--text); }
+  /* Each part keeps its separator, so a narrow row breaks between parts, never after a dangling dot. */
+  .font-face-title > span { white-space: nowrap; }
+  .font-face-size { font-weight: 400; color: var(--text-2); font-variant-numeric: tabular-nums; }
+  .font-face-head .font-remove { flex: none; margin-right: -4px; }
+  .font-face-file { font-family: var(--mono); font-size: 12px; line-height: 1.4; color: var(--text-2); overflow-wrap: anywhere; }
   .font-face-sample { font-size: 22px; line-height: 1.3; color: var(--text); overflow-wrap: anywhere; }
-  .font-face-sample.muted { font-size: 11px; line-height: 1.6; color: var(--text-3); }
+  .font-face-sample.muted { font-size: 12px; line-height: 1.6; color: var(--text-3); }
+  /* Weight takes the wider share: "400 Regular" is longer than "Upright". */
+  .font-face-edit { display: grid; grid-template-columns: minmax(0, 4fr) minmax(0, 3fr); gap: 8px; margin-top: 2px; }
+  .font-face-edit .field { gap: 3px; min-width: 0; }
+  .font-face-weight { display: flex; align-items: center; height: 26px; font-size: 12px; color: var(--text); font-variant-numeric: tabular-nums; }
+  /* A narrow sidebar stacks Weight over Style, so neither value is cut to "It…". */
+  @container (max-width: 230px) { .font-face-edit { grid-template-columns: minmax(0, 1fr); } }
+  /* A wide one keeps the two controls at a readable width rather than stretching one word across the panel. */
+  @container (min-width: 340px) { .font-face-edit { grid-template-columns: minmax(0, 160px) minmax(0, 130px); } }
+  /* A font select with its own Import button beside it (Site styles). */
+  .font-select { display: flex; align-items: center; gap: 4px; min-width: 0; }
+  .font-select .select { flex: 1; min-width: 0; }
+  /* Removing a used file: the choices are the app's option cards in a fieldset whose legend asks the question. */
   .font-remove-uses { margin: -4px 0 0; padding-left: 18px; display: flex; flex-direction: column; gap: 2px; line-height: 1.45; }
-  .font-remove-choices { display: flex; flex-direction: column; gap: 8px; }
-  .font-remove-choice { display: flex; align-items: flex-start; gap: 8px; cursor: pointer; }
-  .font-remove-choice input { margin: 3px 0 0; flex: none; accent-color: var(--accent); }
-  .font-remove-choice > span { display: flex; flex-direction: column; gap: 1px; }
-  .font-remove-choice-label { font-weight: 600; }
-  .font-remove-replacement { margin-left: 24px; }
-  .font-remove-replacement .select { width: 100%; }
-  .font-face-edit { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr) auto; gap: 4px; align-items: center; }
-  .font-face-edit > :nth-child(2) { grid-column: 1 / -1; margin-bottom: 2px; }
+  .font-remove-choices { display: flex; flex-direction: column; gap: 8px; min-width: 0; margin: 0; padding: 0; border: 0; }
+  .font-remove-choices legend { padding: 0; margin-bottom: 8px; font-weight: 600; color: var(--text); }
+  .font-remove-option label { cursor: pointer; }
+  .font-remove-option-text { display: flex; flex-direction: column; gap: 4px; min-width: 0; }
+  .font-remove-option[data-chosen] { border-color: var(--accent); box-shadow: inset 0 0 0 1px var(--accent); }
+  .font-remove-option-notes { display: flex; flex-direction: column; gap: 4px; font-weight: 400; }
+  .font-remove-option-notes .page-dialog-option-note { margin-left: 0; }
+  /* What keeping the family changes for its text: a site-wide change in how it looks, so amber, not the danger red. */
+  .font-remove-option .page-dialog-option-note[data-warn] svg { color: var(--amber); }
+  .font-remove-replacement { display: flex; align-items: flex-end; gap: 10px; margin: 6px 0 0 21px; }
+  .font-remove-replacement .field { flex: 1; min-width: 0; }
+  /* The specimen's slot is kept from the start, so choosing a font never narrows the select under the pointer. */
+  .font-remove-replacement:not(:has(.font-remove-sample)) { padding-right: 54px; }
+  .font-remove-sample { display: grid; place-items: center; flex: none; width: 44px; height: 44px; border-radius: var(--r-sm); background: var(--raised); box-shadow: 0 0 0 1px var(--border-strong); font-size: 22px; line-height: 1; color: var(--text); }
   .doc-list { margin: 10px 10px 16px; }
   .doc-list-note { margin: 0; font-size: 12px; line-height: 1.45; color: var(--text-2); }
   .doc-list > .doc-list-note { margin: 2px 4px; }

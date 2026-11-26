@@ -256,7 +256,7 @@ function StyleRow({ t, uses, propUses, where, tokens, state, say, onEditText }: 
   } else {
     const own =
       t.group === 'font' ? (
-        <FontSelect id={`${uid}-value`} state={state} stack={literal} onChoose={(next) => set(next)} />
+        <FontSelect id={`${uid}-value`} state={state} stack={literal} importable={t.label} onChoose={(next) => set(next)} />
       ) : (
         t.group === 'color' ? (
           <ColorTextInput id={`${uid}-value`} className="input sm mono" value={literal} placeholder={spec?.placeholder} onSave={(v) => set(v)} />
