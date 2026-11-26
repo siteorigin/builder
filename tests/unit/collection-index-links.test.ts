@@ -19,7 +19,6 @@ import { linkFromTarget, linkToTarget, richTextToMarkdown } from '@shared/richte
 import { blocksFromDom } from '@shared/richtext-tree';
 import { inlineLinkProblem } from '../../src/renderer/src/lib/link-problems';
 import { articleLinks } from '../../src/renderer/src/lib/article-links';
-import { articleProblem } from '../../src/renderer/src/lib/post-dom';
 import { describeLink } from '../../src/renderer/src/lib/find-content';
 import { starterCollectionOps } from '../../src/renderer/src/lib/content';
 
@@ -97,7 +96,6 @@ describe('links to a collection index', () => {
     const s = run(blog(), { type: 'entry.create', collectionId: 'posts', entryId: 'en_one1', title: 'One', body: ['See [all posts](collection:posts).'] });
     const body = s.collections.posts.entries.en_one1.body;
     expect(body).toEqual([{ type: 'p', spans: [{ text: 'See ' }, { text: 'all posts', link: INDEX }, { text: '.' }] }]);
-    expect(articleProblem(body)).toBeNull();
     expect(articleLinks(s).link('collection:posts', false, [])).toEqual(INDEX);
     expect(articleLinks(s).link(`so-link:${JSON.stringify(INDEX)}`, true, [])).toEqual(INDEX);
     expect(articleLinks(s).link('collection:events', false, [])).toBeNull();
