@@ -42,11 +42,23 @@ export function parseProcessTable(text: string): ProcessEntry[] {
   return out;
 }
 
-/** Every process below `root` in the table (not `root` itself), parents before their children. */
-export function descendants(table: ProcessEntry[], root: number): number[] {
+/** A Windows start time (ticks), or null for a POSIX one (words), which are never compared. */
+const ticks = (p: ProcessEntry | undefined) => (p?.started && /^\d+$/.test(p.started) ? BigInt(p.started) : null);
+
+/**
+ * Every process below `root` in the table (not `root` itself), parents before their children. On Windows a process
+ * keeps the pid of the parent that made it after that parent ends, and the pid can go to a later process, which is no
+ * parent of it: an edge to a parent that started after its child is not followed. A root that has exited is checked
+ * by `rootStarted`, when it was read while it ran.
+ */
+export function descendants(table: ProcessEntry[], root: number, rootStarted?: string): number[] {
+  const byPid = new Map(table.map((p) => [p.pid, p]));
+  const startOf = (pid: number) => byPid.get(pid) ?? (pid === root && rootStarted ? { pid, ppid: 0, started: rootStarted } : undefined);
   const children = new Map<number, number[]>();
   for (const p of table) {
     if (p.pid === p.ppid) continue;
+    const [parent, child] = [ticks(startOf(p.ppid)), ticks(p)];
+    if (parent !== null && child !== null && parent > child) continue;
     const list = children.get(p.ppid) ?? [];
     list.push(p.pid);
     children.set(p.ppid, list);
@@ -69,8 +81,8 @@ export function descendants(table: ProcessEntry[], root: number): number[] {
  * The pids a session owns by position in the table: the app's main process, everything below it, and (POSIX) every
  * member of the group it leads, including orphans the walk no longer reaches. The root comes first.
  */
-export function ownedProcesses(table: ProcessEntry[], root: number): number[] {
-  const owned = new Set([root, ...descendants(table, root)]);
+export function ownedProcesses(table: ProcessEntry[], root: number, rootStarted?: string): number[] {
+  const owned = new Set([root, ...descendants(table, root, rootStarted)]);
   // A group keeps its leader's pid as its id after the leader exits, and that pid is not reused while the group lives.
   for (const p of table) {
     if (p.pgid !== root) continue;
@@ -93,8 +105,8 @@ function rootIsOurs(table: ProcessEntry[], root: number, known: ProcessEntry[]):
  * The live entries a session owns: those found from the root (unless its pid now belongs to another process), and any
  * process recorded in `known` that is still the same process.
  */
-export function ownedEntries(table: ProcessEntry[], root: number, known: ProcessEntry[] = []): ProcessEntry[] {
-  const pids = new Set(rootIsOurs(table, root, known) ? ownedProcesses(table, root) : []);
+export function ownedEntries<T extends ProcessEntry>(table: T[], root: number, known: ProcessEntry[] = []): T[] {
+  const pids = new Set(rootIsOurs(table, root, known) ? ownedProcesses(table, root, known.find((k) => k.pid === root)?.started) : []);
   // A remembered process that is still the same one is owned, and so is whatever it has started since.
   for (const k of known) {
     const now = table.find((p) => p.pid === k.pid);
@@ -111,7 +123,8 @@ function run(file: string, args: string[], timeoutMs: number): Promise<string> {
   });
 }
 
-const WIN_LIST = 'Get-CimInstance Win32_Process | ForEach-Object { "$($_.ProcessId) $($_.ParentProcessId) - $($_.CreationDate.Ticks)" }';
+// Creation times in UTC ticks: local ones go back an hour when the clocks do, and would put a child before its parent.
+const WIN_LIST = 'Get-CimInstance Win32_Process | ForEach-Object { "$($_.ProcessId) $($_.ParentProcessId) - $($_.CreationDate.ToUniversalTime().Ticks)" }';
 const tableCommand = (): [string, string[]] =>
   process.platform === 'win32' ? ['powershell.exe', ['-NoProfile', '-NonInteractive', '-Command', WIN_LIST]] : ['ps', ['-A', '-o', 'pid=,ppid=,pgid=,lstart=']];
 

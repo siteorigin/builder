@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import type { PerfRecord } from '../../src/shared/perf';
-import { changeMarkdown, changeTables, compareMetric, compareResults, median, noiseBand, summarize, summarizeCase, Trace, type CaseResult, type Iteration, type RunResult } from '../../scripts/perf/results';
+import { changeMarkdown, changeTables, compareMetric, compareResults, median, memoryMetric, noiseBand, protocolDifference, summarize, summarizeCase, Trace, withAbsentRoles, type CaseResult, type Iteration, type RunResult, type Unit } from '../../scripts/perf/results';
+import { MEMORY_PROTOCOL, type MemoryReading } from '../../scripts/perf/memory';
 
 let seq = 0;
 const rec = (name: string, t: number, extra: Partial<PerfRecord> = {}): PerfRecord => ({ kind: 'mark', name, t, proc: 'main', pid: 1, seq: ++seq, ...extra });
@@ -16,7 +17,7 @@ function result(cases: CaseResult[], iterations = 3): RunResult {
   };
 }
 
-const passed = (metrics: Record<string, { unit: 'ms' | 'count' | 'bytes'; values: number[] }>, fixtureHash = 'f1', scenario = 'edit', fixture = 'small'): CaseResult => {
+const passed = (metrics: Record<string, { unit: Unit; values: number[] }>, fixtureHash = 'f1', scenario = 'edit', fixture = 'small'): CaseResult => {
   const n = Object.values(metrics)[0].values.length;
   const iterations: Iteration[] = Array.from({ length: n }, (_, i) => ({ index: i + 1, ok: true, trace: `t${i}`, metrics: Object.fromEntries(Object.entries(metrics).map(([k, m]) => [k, { unit: m.unit, value: m.values[i] }])) }));
   return { scenario, fixture, fixtureHash, status: 'passed', iterations, metrics: summarizeCase(iterations)! };
@@ -174,5 +175,162 @@ describe('benchmark results, at their edges', () => {
     const a = result([passed({ x: { unit: 'ms', values: [100] } })]);
     const b = result([passed({ x: { unit: 'count', values: [2] } })]);
     expect(changeMarkdown(compareResults(a, b), a, b)).toContain('| x | 100 ms | 2 | incompatible (units differ) |');
+  });
+});
+
+describe('memory in results', () => {
+  const MiB = 2 ** 20;
+  const unitOf = (name: string): Unit => (/\.processes(\.|$)/.test(name) ? 'count' : 'memory');
+  const iteration = (metrics: Record<string, number>, index = 1): Iteration => ({ index, ok: true, trace: '', metrics: Object.fromEntries(Object.entries(metrics).map(([k, v]) => [k, { unit: unitOf(k), value: v }])) });
+  /** A memory case of `values` per metric (MiB for memory, plain numbers for counts), and the readings its iterations took. */
+  const memoryCase = (metrics: Record<string, number[]>, labels: Array<[string, 'rest' | 'peak']> = []): CaseResult => {
+    const n = Object.values(metrics)[0].length;
+    const iterations = Array.from({ length: n }, (_, i) => ({
+      ...iteration(Object.fromEntries(Object.entries(metrics).map(([k, v]) => [k, unitOf(k) === 'memory' ? v[i] * MiB : v[i]])), i + 1),
+      memory: labels.map(([label, kind]) => ({ label, kind }) as MemoryReading)
+    }));
+    return { scenario: 'memory', fixture: 'small', fixtureHash: 'f1', status: 'passed', iterations, metrics: summarizeCase(withAbsentRoles(iterations))! };
+  };
+
+  it('know a memory metric’s reading and what it is of it', () => {
+    expect(memoryMetric('memory.canvas.total')).toEqual({ reading: 'memory.canvas', field: 'total' });
+    expect(memoryMetric('memory.canvas.processes')).toEqual({ reading: 'memory.canvas', field: 'processes' });
+    expect(memoryMetric('memory.canvas.processes.media')).toEqual({ reading: 'memory.canvas', field: 'roleProcesses', role: 'media' });
+    expect(memoryMetric('memory.open.peak.mem.devServer.esbuild')).toEqual({ reading: 'memory.open.peak', field: 'mem', role: 'devServer.esbuild' });
+    // A role whose name holds a field's word keeps all of it.
+    expect(memoryMetric('memory.canvas.mem.devServer.bytes.agent')).toEqual({ reading: 'memory.canvas', field: 'mem', role: 'devServer.bytes.agent' });
+    expect(memoryMetric('memory.edits.growth.heap.main')).toEqual({ reading: 'memory.edits.growth', field: 'heap', role: 'main' });
+    expect(memoryMetric('edit.previewApplied')).toBeNull();
+    expect(memoryMetric('memory.canvas')).toBeNull();
+  });
+
+  it('count a role some launches lacked as none in those, and never fill a reading that was not taken', () => {
+    const iterations = [
+      iteration({ 'memory.canvas.total': 300, 'memory.canvas.processes': 2, 'memory.canvas.mem.main': 200, 'memory.canvas.processes.main': 1, 'memory.canvas.mem.media': 100, 'memory.canvas.processes.media': 1 }),
+      iteration({ 'memory.canvas.total': 200, 'memory.canvas.processes': 1, 'memory.canvas.mem.main': 200, 'memory.canvas.processes.main': 1 })
+    ];
+    expect(summarizeCase(iterations)).toBeNull();
+    const s = summarizeCase(withAbsentRoles(iterations))!;
+    expect(s['memory.canvas.mem.media']).toMatchObject({ unit: 'memory', values: [100, 0], median: 50 });
+    expect(s['memory.canvas.processes.media']).toMatchObject({ unit: 'count', values: [1, 0] });
+    // The stored iterations are left as they were taken.
+    expect(iterations[1].metrics!['memory.canvas.mem.media']).toBeUndefined();
+    // A launch that did not take the reading at all fails the case: its total is missing, and nothing of it is filled in.
+    const lacking = withAbsentRoles([iterations[0], iteration({ 'memory.welcome.total': 1 })]);
+    expect(Object.keys(lacking[1].metrics!)).toEqual(['memory.welcome.total']);
+    expect(summarizeCase(lacking)).toBeNull();
+    // Nothing else is filled in.
+    const timing: Iteration[] = [
+      { index: 1, ok: true, trace: '', metrics: { 'edit.x': { unit: 'count', value: 1 }, 'memory.canvas.total': { unit: 'memory', value: 1 } } },
+      { index: 2, ok: true, trace: '', metrics: { 'memory.canvas.total': { unit: 'memory', value: 1 } } }
+    ];
+    expect(withAbsentRoles(timing)[1].metrics!['edit.x']).toBeUndefined();
+    expect(summarizeCase(withAbsentRoles(timing))).toBeNull();
+  });
+
+  it('judge memory against max(3 × MAD, 10%, 8 MiB), and process counts exactly', () => {
+    const at = (mib: number[]) => summarize('memory', mib.map((v) => v * MiB));
+    expect(noiseBand(at([200, 200, 200]), at([200]))).toBe(20 * MiB);
+    expect(compareMetric('m', at([200, 200, 200]), at([220, 220, 220])).verdict).toBe('noise');
+    expect(compareMetric('m', at([200, 200, 200]), [220 * MiB + 1].map((v) => summarize('memory', [v]))[0]).verdict).toBe('changed');
+    expect(compareMetric('m', at([200, 200, 200]), [180 * MiB - 1].map((v) => summarize('memory', [v]))[0]).verdict).toBe('changed');
+    // Small figures (a heap, a growth near zero) have the 8 MiB floor; a wide spread widens the band.
+    expect(noiseBand(at([20]), at([20]))).toBe(8 * MiB);
+    expect(compareMetric('m', at([0]), at([8])).verdict).toBe('noise');
+    expect(compareMetric('m', at([-4]), at([5])).verdict).toBe('changed');
+    expect(noiseBand(at([100, 115, 85]), at([100]))).toBe(45 * MiB);
+    // The larger spread of the two, whichever side it is on, and 10% of a growth below zero.
+    expect(noiseBand(at([100]), at([100, 115, 85]))).toBe(45 * MiB);
+    expect(noiseBand(at([-200]), at([-200]))).toBe(20 * MiB);
+    expect(compareMetric('n', summarize('count', [7, 7, 7]), summarize('count', [8, 8, 8]))).toMatchObject({ verdict: 'changed', noise: 0 });
+  });
+
+  it('compare a memory result with itself as no change, and a role on one side only as none on the other', () => {
+    const a = result([memoryCase({ 'memory.canvas.total': [400, 402, 398], 'memory.canvas.processes': [2, 2, 2], 'memory.canvas.mem.main': [200, 201, 199], 'memory.canvas.processes.main': [1, 1, 1], 'memory.canvas.mem.editor': [200, 201, 199], 'memory.canvas.processes.editor': [1, 1, 1] })]);
+    const self = compareResults(a, a)[0];
+    expect([self.status, self.metrics.length]).toEqual(['compared', 6]);
+    for (const m of self.metrics) expect([m.metric, m.delta, m.verdict]).toEqual([m.metric, 0, 'same']);
+    const b = result([memoryCase({ 'memory.canvas.total': [430, 432, 428], 'memory.canvas.processes': [3, 3, 3], 'memory.canvas.mem.main': [200, 201, 199], 'memory.canvas.processes.main': [1, 1, 1], 'memory.canvas.mem.editor': [200, 201, 199], 'memory.canvas.processes.editor': [1, 1, 1], 'memory.canvas.mem.devServer.esbuild': [30, 30, 30], 'memory.canvas.processes.devServer.esbuild': [1, 1, 1] })]);
+    const got = Object.fromEntries(compareResults(a, b)[0].metrics.map((m) => [m.metric, m]));
+    expect(got['memory.canvas.mem.devServer.esbuild']).toMatchObject({ before: 0, after: 30 * MiB, verdict: 'changed' });
+    expect(got['memory.canvas.processes.devServer.esbuild']).toMatchObject({ before: 0, after: 1, verdict: 'changed' });
+    expect(got['memory.canvas.processes']).toMatchObject({ before: 2, after: 3, verdict: 'changed' });
+    expect(got['memory.canvas.mem.main'].verdict).toBe('same');
+    // The other way round, the role is gone to none.
+    expect(Object.fromEntries(compareResults(b, a)[0].metrics.map((m) => [m.metric, m]))['memory.canvas.mem.devServer.esbuild']).toMatchObject({ before: 30 * MiB, after: 0, verdict: 'changed' });
+  });
+
+  it('refuse memory read differently, or from another source', () => {
+    const with_ = (config: Partial<RunResult['config']>) => ({ ...result([memoryCase({ 'memory.canvas.total': [400] })]), config: { ...result([]).config, ...config } });
+    const P = MEMORY_PROTOCOL;
+    const b = with_({ memoryProtocol: P, memorySource: 'ps rss' });
+    expect(protocolDifference(b, b)).toBeNull();
+    expect(protocolDifference(b, with_({ memoryProtocol: P + 1, memorySource: 'ps rss' }))).toBe(`their memory was read differently (memory protocols ${P} and ${P + 1})`);
+    expect(protocolDifference(result([]), b)).toBe(`their memory was read differently (memory protocols none and ${P})`);
+    // Two results of a protocol this harness no longer reads are not compared with each other either.
+    const old = with_({ memoryProtocol: P - 1, memorySource: 'ps rss' });
+    expect(protocolDifference(old, old)).toBe(`their memory was read by memory protocol ${P - 1}, which this harness does not read (it reads ${P})`);
+    const windows = with_({ memoryProtocol: P, memorySource: 'CIM WorkingSetSize' });
+    expect(protocolDifference(b, windows)).toBe('their memory was read from different sources (ps rss and CIM WorkingSetSize)');
+    expect(compareResults(b, windows)).toEqual([{ scenario: 'memory', fixture: 'small', status: 'protocol-differs', metrics: [] }]);
+  });
+
+  it('never read growth as a percentage of itself, and keep a timing table’s percentages as they were', () => {
+    const grew = (v: number[]) => result([memoryCase({ 'memory.edits.growth.total': v, 'memory.edits.growth.processes': [0, 0, 0] })]);
+    const [a, b] = [grew([-20, -20, -20]), grew([-5, -5, -5])];
+    const change = compareResults(a, b)[0].metrics.find((m) => m.metric === 'memory.edits.growth.total')!;
+    expect([change.delta, change.changePct, change.verdict]).toEqual([15 * MiB, null, 'changed']);
+    expect(changeTables(compareResults(a, b))).toMatch(/memory\.edits\.growth\.total\s+-20\.0 MiB\s+-5\.0 MiB\s+15\.0 MiB\s+–\s+±8\.0 MiB\s+changed/);
+    const md = changeMarkdown(compareResults(grew([10, 10, 10]), grew([-20, -20, -20])), grew([10, 10, 10]), grew([-20, -20, -20]));
+    expect(md).toContain('| **All processes** | 0 | 10.0 MiB | -20.0 MiB | -30.0 MiB | changed |');
+    // A count that is below zero in a timing case keeps its percentage.
+    const x = result([passed({ 'edit.delta': { unit: 'count', values: [-5, -5, -5] } })]);
+    const y = result([passed({ 'edit.delta': { unit: 'count', values: [-3, -3, -3] } })]);
+    expect(changeMarkdown(compareResults(x, y), x, y)).toContain('| edit.delta | -5 | -3 | 40.0% |');
+  });
+
+  it('print a table per reading, a row per process, in the order the readings were taken, then each growth', () => {
+    const labels: Array<[string, 'rest' | 'peak']> = [['welcome', 'rest'], ['open', 'peak'], ['canvas', 'rest']];
+    const metrics = (main: number, preview: number[]) => ({
+      'memory.welcome.total': [300, 300, 300],
+      'memory.welcome.processes': [2, 2, 2],
+      'memory.welcome.mem.main': [190, 190, 190],
+      'memory.welcome.processes.main': [1, 1, 1],
+      'memory.welcome.mem.editor': [110, 110, 110],
+      'memory.welcome.processes.editor': [1, 1, 1],
+      'memory.welcome.heap.main': [15, 15, 15],
+      'memory.welcome.heap.editor': [14, 14, 14],
+      'memory.open.peak.total': [700, 700, 700],
+      'memory.open.peak.processes': [3, 3, 3],
+      'memory.open.peak.mem.main': [main + 60, main + 60, main + 60],
+      'memory.open.peak.processes.main': [1, 1, 1],
+      'memory.canvas.total': [600, 600, 600],
+      'memory.canvas.processes': [3, 3, 3],
+      'memory.canvas.mem.main': [main, main, main],
+      'memory.canvas.processes.main': [1, 1, 1],
+      'memory.canvas.mem.preview': preview,
+      'memory.canvas.processes.preview': preview.map((v) => (v ? 1 : 0)),
+      'memory.close.growth.total': [-2, -2, -2],
+      'memory.close.growth.processes': [0, 0, 0],
+      'memory.close.growth.mem.main': [-2, -2, -2],
+      'memory.close.growth.processes.main': [0, 0, 0]
+    });
+    const a = result([memoryCase(metrics(200, [170, 170, 170]), labels)]);
+    // The after run took its readings in another order: the tables follow the before run's.
+    const b = result([memoryCase({ ...metrics(240, [170, 172, 168]), 'memory.canvas.processes.main': [2, 2, 2] }, [...labels].reverse())]);
+    const md = changeMarkdown(compareResults(a, b), a, b);
+    expect(md).toContain('### memory · small');
+    const order = ['#### welcome', '#### open.peak', '#### canvas', '#### close.growth'].map((h) => md.indexOf(h));
+    expect(order.every((i, k) => i >= 0 && (k === 0 || i > order[k - 1]))).toBe(true);
+    expect(md).toContain('| Process | Processes | Before | After | Change | Improvement |');
+    expect(md).toContain('| main | 1 → 2 | 200.0 MiB | 240.0 MiB | +40.0 MiB | −20.0% |');
+    expect(md).toContain('| preview | 1 | 170.0 MiB | 170.0 MiB | 0.0 MiB | (noise) |');
+    expect(md).toContain('| **All processes** | 2 | 300.0 MiB | 300.0 MiB | 0.0 MiB | (noise) |');
+    expect(md).toContain('| JS heap, main |  | 15.0 MiB | 15.0 MiB | 0.0 MiB | (noise) |');
+    // Growth is read in MiB, not as a share of it.
+    expect(md).toContain('| main | 0 | -2.0 MiB | -2.0 MiB | 0.0 MiB | (noise) |');
+    expect(md).toContain('noise band max(3 × MAD, 10%, 8 MiB) for memory, process counts exact');
+    expect(md).toContain('Predicate: pass → pass.');
+    expect(md).not.toContain('| Metric | Before | After | Improvement |');
   });
 });
