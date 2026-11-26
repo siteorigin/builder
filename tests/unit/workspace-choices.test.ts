@@ -22,7 +22,7 @@ const bridge = {
   platform: 'darwin'
 };
 vi.stubGlobal('window', { builder: bridge });
-vi.stubGlobal('document', { activeElement: null });
+vi.stubGlobal('document', { activeElement: null, getElementById: () => null });
 vi.stubGlobal('HTMLElement', class {});
 
 // The store and the save are DOM code, outside this test project's types: loaded by a path the type checker does
