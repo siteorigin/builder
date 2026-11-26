@@ -249,6 +249,29 @@ assert.equal(l.canvas.width, CANVAS_MIN, 'the canvas keeps its minimum after bot
 assert.equal(l.frame.width, CANVAS_MIN - 56, 'the desktop preview at Fit is 384px wide');
 assert.ok(l.doc <= l.inner, 'the editor is still no wider than the window');
 
+step('a press on a seam never starts dragging a row the resize brings under it');
+// Chromium picks what an HTML drag carries from what is under the press point once the pointer has moved far
+// enough, by which time widening the sidebar has put a draggable page row there (issue #829). A stand-in row, so
+// no real row's own drag handling runs.
+const startRowDrag = () =>
+  win.evaluate(() => {
+    const row = document.createElement('div');
+    row.draggable = true;
+    document.querySelector('.side-panel')?.append(row);
+    const started = row.dispatchEvent(new DragEvent('dragstart', { bubbles: true, cancelable: true }));
+    row.remove();
+    return started;
+  });
+{
+  const b = await LEFT.boundingBox();
+  await win.mouse.move(b.x + b.width / 2, b.y + b.height / 2);
+  await win.mouse.down();
+  assert.equal(await startRowDrag(), false, 'a drag of whatever is under the seam is refused while the seam is pressed');
+  await win.mouse.up();
+  assert.equal(await startRowDrag(), true, 'and rows drag again once it is released');
+  assert.deepEqual(await panels(), { side: 200, dock: 412 }, 'a press without a move changes no width');
+}
+
 step('arrow keys stop at the same limits, and a step one way can be taken back');
 await press(LEFT, 'ArrowRight', 5);
 await press(RIGHT, 'ArrowLeft', 5);
