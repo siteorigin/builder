@@ -109,6 +109,12 @@ function beyondGuestGrant(op: EditOperation): string | null {
     const fields = Object.keys(op).filter((k) => k !== 'type' && k !== 'pageId' && !(COLLABORATOR_PAGE_FIELDS as readonly string[]).includes(k));
     if (fields.length) return `Only the host can change a page’s ${fields.join(', ')}.`;
   }
+  // A new page is held to the same: dating it (an article starter is dated today) or keeping it out of News is the host's.
+  if (op.type === 'page.create') {
+    if (op.starter === 'article') return 'Only the host can start an article.';
+    const fields = (['articleDate', 'newsHidden'] as const).filter((k) => op[k] !== undefined);
+    if (fields.length) return `Only the host can set a new page’s ${fields.join(', ')}.`;
+  }
   return null;
 }
 

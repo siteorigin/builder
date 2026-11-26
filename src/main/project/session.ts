@@ -8,7 +8,7 @@ import type { ComponentDefinition, PageDoc, ProjectBriefDoc, ProjectState, SiteD
 import { SCHEMA_VERSION } from '@shared/types';
 import { BRIEF_FILE } from '@shared/brief';
 import { collectionGrantRefusal, type CollectionWriteGrant } from '@shared/collection-grant';
-import type { ApplyResult, EditBatch, EditOperation } from '@shared/ops';
+import type { ApplyResult, EditBatch, EditOperation, ToolError } from '@shared/ops';
 import type { AiTurnReview, ConflictChoice, FileText, RestoreVersionResult, SavedCopy, SaveFailure, StorageInfo, TurnLaterChange, VersionReview, VersionsInfo } from '@shared/api';
 import { validateOperation } from '@shared/ops';
 import { choicesLost } from '@shared/variants';
@@ -334,6 +334,8 @@ export interface HistoryEntry {
    * entry is applied, that run's turn reads as undone. Never on the AI run's own entry, which `runId` names.
    */
   revertsRunId?: string;
+  /** The live-session guest who made this change, by the name the host let them in under (#765). */
+  guestName?: string;
 }
 
 interface HistoryFile {
@@ -463,6 +465,20 @@ export interface CommitOptions {
   history?: boolean;
   /** The AI run this change takes back on its own (see HistoryEntry.revertsRunId). */
   revertsRunId?: string;
+  /** The live-session guest the change is from (see HistoryEntry.guestName). */
+  guestName?: string;
+  /**
+   * A live-session guest's grant (#765), asked with the project as the change would leave it, as the last thing before
+   * anything is written: a refusal then leaves the project, its files and History as they were, with no failed save.
+   */
+  guard?: (next: ProjectState | null) => ToolError | null;
+}
+
+/** A change its guard refused at the last moment (CommitOptions.guard): nothing of it was written. */
+class GuardRefusal extends Error {
+  constructor(readonly refusal: ToolError) {
+    super(refusal.message);
+  }
 }
 
 export interface SessionEvent {
@@ -1813,6 +1829,7 @@ export class ProjectSession extends EventEmitter {
     try {
       return await this.writeState(next, opts);
     } catch (e) {
+      if (e instanceof GuardRefusal) throw e;
       if (!(e instanceof DiskConflictError) || this.unsettled) {
         this.failedSave = { label: opts.label, message: e instanceof Error && e.message ? e.message : String(e) };
         this.emit('save-failed');
@@ -1881,6 +1898,9 @@ export class ProjectSession extends EventEmitter {
           ? { history: { ...this.history, cursor: opts.cursor }, pruned: false, entryId: undefined }
           : null;
     const journaled = !!(writes.length || deletes.length || planned);
+    // The last moment the change can be turned away whole: nothing of it is on disk yet but its blobs.
+    const refused = opts.guard?.(next);
+    if (refused) throw new GuardRefusal(refused);
     let changedFiles: string[];
     // Files replaced or removed so far: a change stopped before the first one has changed nothing on disk.
     let installed = 0;
@@ -2436,12 +2456,15 @@ export class ProjectSession extends EventEmitter {
    * `codeAllowed: false` refuses code, and copies that would make new code, as the project is when the batch applies.
    * `componentImport` is the checked package a `component.import` in the batch lands; only the editor's import has one.
    * `collectionWrite` is what the assistant's post tool may write in this one batch (see shared/collection-grant).
+   * `guard` (CommitOptions) is also asked as the batch's turn comes, with no state, so a grant already gone costs nothing.
    */
   apply(
     batch: EditBatch,
     opts: CommitOptions & { runId?: string; idempotencyKey?: string; codeAllowed?: boolean; componentImport?: ComponentImport; collectionWrite?: CollectionWriteGrant; sourceSync?: SourceSyncGrant; stillWanted?: () => boolean }
   ): Promise<ApplyResult> {
     return this.serialize(async () => {
+      const refused = opts.guard?.(null);
+      if (refused) return { ok: false, revision: this.revision, error: refused };
       const fingerprint = sha(JSON.stringify(batch.operations));
       if (opts.idempotencyKey && this.idempotency.has(opts.idempotencyKey)) {
         const prior = this.idempotency.get(opts.idempotencyKey)!;
@@ -2609,6 +2632,7 @@ export class ProjectSession extends EventEmitter {
         ev = await this.persist(next, { ...opts, wholeProject: !!opts.sourceSync || ops.some((o) => o.type === 'theme.refresh' || o.type === 'theme.apply' || readsWholeProject(o, this.state)) });
       } catch (e) {
         if (e instanceof DiskConflictError) return { ok: false, revision: this.revision, error: this.diskConflict(e) };
+        if (e instanceof GuardRefusal) return { ok: false, revision: this.revision, error: e.refusal };
         throw e;
       }
       const result: ApplyResult = { ok: true, revision: this.revision, results, changed: ev.changedDocs, entryId: ev.entryId };
@@ -2725,7 +2749,8 @@ export class ProjectSession extends EventEmitter {
         docs,
         coalesceKey: opts.coalesceKey,
         runId: opts.runId,
-        ...(opts.revertsRunId ? { revertsRunId: opts.revertsRunId } : {})
+        ...(opts.revertsRunId ? { revertsRunId: opts.revertsRunId } : {}),
+        ...(opts.guestName ? { guestName: opts.guestName } : {})
       });
     }
     const pruned = h.entries.length > HISTORY_LIMIT;
@@ -3185,7 +3210,7 @@ export class ProjectSession extends EventEmitter {
       canRedo: h.cursor < h.entries.length && !this.activeRun,
       undoLabel: h.entries[h.cursor - 1]?.label,
       redoLabel: h.entries[h.cursor]?.label,
-      entries: h.entries.map((e, i) => ({ id: e.id, label: e.label, source: e.source, time: e.time, revision: e.revision, applied: i < h.cursor, runId: e.runId, ...(e.revertsRunId ? { revertsRunId: e.revertsRunId } : {}) })),
+      entries: h.entries.map((e, i) => ({ id: e.id, label: e.label, source: e.source, time: e.time, revision: e.revision, applied: i < h.cursor, runId: e.runId, ...(e.revertsRunId ? { revertsRunId: e.revertsRunId } : {}), ...(e.guestName ? { guestName: e.guestName } : {}) })),
       ...(h.droppedRuns ? { droppedRuns: { ...h.droppedRuns } } : {})
     };
   }

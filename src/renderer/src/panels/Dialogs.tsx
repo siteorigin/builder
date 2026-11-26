@@ -1970,7 +1970,7 @@ function ChangesModal() {
                   </span>
                   <time>{new Date(e.time).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}</time>
                   <span id={meta} className="sr-only">
-                    {`${e.source === 'ai' ? 'By AI' : e.source === 'system' ? 'From outside the app' : 'By you'} at ${new Date(e.time).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}${e.applied ? '' : ', undone'}`}
+                    {`${e.source === 'ai' ? 'By AI' : e.source === 'system' ? 'From outside the app' : e.guestName ? `By ${e.guestName}` : 'By you'} at ${new Date(e.time).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}${e.applied ? '' : ', undone'}`}
                   </span>
                 </button>
               </li>

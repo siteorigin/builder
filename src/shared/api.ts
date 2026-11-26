@@ -138,6 +138,8 @@ export interface HistoryInfo {
     runId?: string;
     /** The AI run this step took back on its own, keeping the edits made after it (issue 164). */
     revertsRunId?: string;
+    /** The live-session guest who made this step, by the name the host let them in under (#765). */
+    guestName?: string;
   }>;
   /** AI runs whose step History has let go, and whether it was applied or undone when it went (issue 276). */
   droppedRuns?: Record<string, 'applied' | 'undone'>;
