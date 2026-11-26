@@ -384,7 +384,7 @@ describe('the AI and replacing in some places', () => {
     let applied = false;
     const host = { state: () => state, revision: () => 0, apply: async () => ((applied = true), { ok: true, revision: 1 }) } as unknown as ToolHost;
     const r = await executeTool('apply_operations', JSON.stringify({ expectedRevision: 0, operations: [replaceIn([uses.hero])] }), host, 'c1');
-    expect(r).toMatchObject({ ok: false, content: { error: 'INVALID_ARGUMENT', message: expect.stringContaining('does not take uses') } });
+    expect(r).toMatchObject({ ok: false, content: { error: { code: 'INVALID_ARGUMENT', message: expect.stringContaining('does not take uses') } } });
     expect(applied).toBe(false);
   });
 });

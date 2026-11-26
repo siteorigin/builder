@@ -135,7 +135,7 @@ function pricing(extra: Record<string, unknown> = {}) {
   };
 }
 
-const fields = (content: Record<string, any>) => (content.fields as Array<{ field: string; message: string }>).map((f) => f.field);
+const fields = (content: Record<string, any>) => (content.error.details.fields as Array<{ field: string; message: string }>).map((f) => f.field);
 
 /**
  * Whether a value is one the strict subset accepts, as a grammar compiled from it would: types, enums, closed
@@ -351,7 +351,7 @@ describe('upsert_managed_component: building in one call (#359)', () => {
     const before = structuredClone(s.state);
     const out = await call(bad);
     expect(out.ok).toBe(false);
-    expect(out.content.error).toBe('VALIDATION_FAILED');
+    expect(out.content.error.code).toBe('VALIDATION_FAILED');
     expect(fields(out.content).sort()).toEqual(
       [
         'nodes[0].children[2]',
@@ -367,7 +367,7 @@ describe('upsert_managed_component: building in one call (#359)', () => {
       ].sort()
     );
     // The messages name what is wrong in the model's own terms.
-    const msg = (f: string) => (out.content.fields as Array<{ field: string; message: string }>).find((x) => x.field === f)!.message;
+    const msg = (f: string) => (out.content.error.details.fields as Array<{ field: string; message: string }>).find((x) => x.field === f)!.message;
     expect(msg('nodes[2].text')).toMatch(/"headline", which is not one of the properties \(heading, intro, level, plans, note\)/);
     expect(msg('nodes[9].text')).toMatch(/"plans" items have no field "cost"/);
     // A node no children list names, because its parent named another ID, is a second root.
@@ -392,7 +392,7 @@ describe('upsert_managed_component: building in one call (#359)', () => {
     const out = await call(args);
     expect(out.ok).toBe(false);
     expect(fields(out.content)).toEqual(expect.arrayContaining(['nodes[14].id', 'parts[2].id', 'slots[0].name', 'properties[3].fields[0].name', 'variantAxes[1].name', 'variantAxes[0].options[0].id']));
-    const msg = (f: string) => (out.content.fields as Array<{ field: string; message: string }>).find((x) => x.field === f)!.message;
+    const msg = (f: string) => (out.content.error.details.fields as Array<{ field: string; message: string }>).find((x) => x.field === f)!.message;
     for (const f of ['nodes[14].id', 'parts[2].id', 'variantAxes[1].name', 'variantAxes[0].options[0].id']) expect(msg(f)).toMatch(/is a reserved name/);
     expect(applies()).toBe(0);
   });
@@ -454,7 +454,7 @@ describe('upsert_managed_component: building in one call (#359)', () => {
     const first = await call(bad);
     expect(first.ok).toBe(false);
     expect(fields(first.content).sort()).toEqual(['nodes[8].text', 'properties[2].default']);
-    expect(first.content.message).toMatch(/repair: true/);
+    expect(first.content.error.message).toMatch(/repair: true/);
 
     const level = { type: 'enum', name: 'level', label: 'Heading level', options: [{ value: 'h2', label: 'H2' }, { value: 'h3', label: 'H3' }], default: 'h3' };
     const fixed = await call({ name: 'Pricing table', repair: true, nodes: [{ kind: 'text', id: 'name', tag: 'h3', text: { $item: 'name' } }], properties: [level] });
@@ -497,7 +497,7 @@ describe('upsert_managed_component: building in one call (#359)', () => {
     const before = structuredClone(s.state.components[beta]);
     const stale = await call({ definitionId: beta, name: 'Beta', repair: true, nodes: [name] });
     expect(fields(stale.content)).toEqual(['repair']);
-    expect(stale.content.message).toMatch(/changed since that call was rejected/);
+    expect(stale.content.error.message).toMatch(/changed since that call was rejected/);
     expect(s.state.components[beta]).toEqual(before);
   });
 
@@ -577,7 +577,7 @@ describe('upsert_managed_component: building in one call (#359)', () => {
     bad.nodes[8] = { kind: 'text', id: 'name', tag: 'h3', text: { $item: 'title' } } as never;
     const first = await call(bad);
     expect(fields(first.content)).toEqual(expect.arrayContaining(['properties[5].name']));
-    const msg = (out: { content: Record<string, any> }, f: string) => (out.content.fields as Array<{ field: string; message: string }>).find((x) => x.field === f)?.message;
+    const msg = (out: { content: Record<string, any> }, f: string) => (out.content.error.details.fields as Array<{ field: string; message: string }>).find((x) => x.field === f)?.message;
     expect(msg(first, 'properties[5].name')).toMatch(/cannot be repaired by it: send the whole component again/);
     // Mending the node leaves the nameless property where it was, still refused, rather than dropping it unseen.
     const again = await call({ name: 'Pricing table', repair: true, nodes: [{ kind: 'text', id: 'name', tag: 'h3', text: { $item: 'name' } }] });
@@ -585,7 +585,7 @@ describe('upsert_managed_component: building in one call (#359)', () => {
     const count = Object.keys(s.state.components).length;
     const odd = await executeTool('upsert_managed_component', JSON.stringify({ name: 'Cards', repair: true, definitionId: { toString: null } }), { ...{ state: () => s.state, revision: () => s.revision }, macros: newMacroMemory() } as unknown as ToolHost, 'odd');
     expect(odd.ok).toBe(false);
-    expect((odd.content as { fields: Array<{ field: string }> }).fields.map((f) => f.field)).toEqual(['definitionId']);
+    expect((odd.content as unknown as { error: { details: { fields: Array<{ field: string }> } } }).error.details.fields.map((f) => f.field)).toEqual(['definitionId']);
     expect(Object.keys(s.state.components)).toHaveLength(count);
   });
 
@@ -803,7 +803,7 @@ describe('UI state in one call (#377)', () => {
     const fields = async (args: unknown) => {
       const out = await call(args);
       expect(out.ok).toBe(false);
-      return out.content.fields as Array<{ field: string; message: string }>;
+      return out.content.error.details.fields as Array<{ field: string; message: string }>;
     };
     expect(await fields(withNode('annual', { when: { ref: { $state: 'period' }, eq: 'annual' } }))).toEqual([{ field: `nodes[${nodeAt('annual')}].when`, message: expect.stringMatching(/reads the UI state "period", which is not one of the state \(plan, open\)/) }]);
     expect(await fields(withNode('annual', { when: { ref: { $state: 'plan' }, eq: 'yearly' } }))).toEqual([{ field: `nodes[${nodeAt('annual')}].when.eq`, message: expect.stringMatching(/"yearly" is not one of the options of "plan" \(monthly, annual\)/) }]);
@@ -829,7 +829,7 @@ describe('UI state in one call (#377)', () => {
     // Rebuilt with no word about its state, its tabs would vanish unseen: refused, naming the field to send.
     const silent = await call({ name: 'Plan switch', definitionId, properties: planSwitch().properties, nodes: plain });
     expect(silent.ok).toBe(false);
-    expect(silent.content.fields).toEqual([{ field: 'state', message: expect.stringMatching(/\(plan, open\)\. Send state again with the rebuild; an empty list removes it/) }]);
+    expect(silent.content.error.details.fields).toEqual([{ field: 'state', message: expect.stringMatching(/\(plan, open\)\. Send state again with the rebuild; an empty list removes it/) }]);
     // A rebuild that keeps the tabs and drops the drawer describes the state it keeps.
     const kept = await call(
       planSwitch({ definitionId, state: [planSwitch().state[0]], nodes: planSwitch().nodes.filter((n) => !['more', 'drawer', 'terms'].includes(n.id)).map((n) => (n.id === 'root' ? { ...n, children: ['heading', 'tabs', 'monthly', 'annual'] } : n)) })

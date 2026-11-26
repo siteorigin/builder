@@ -59,14 +59,14 @@ function hostFor(session: ProjectSession, authority: Authority): ToolHost {
     definitionTarget: () => target,
     apply: async (operations: EditOperation[], expectedRevision: number, label: string) => {
       const denied = checkAuthority(session.state, operations, authority);
-      if (denied) return { ok: false, revision: session.revision, error: { code: 'SCOPE_MISMATCH', message: denied } };
+      if (denied) return { ok: false, revision: session.revision, error: { code: 'SCOPE_MISMATCH', message: denied, recoverable: true } };
       return session.apply({ operations, expectedRevision }, { label, source: 'ai' });
     }
   };
 }
 
 const run = (host: ToolHost, name: string, args: unknown) => executeTool(name, JSON.stringify(args), host, `c_${Math.random()}`);
-const errorOf = (o: { content: unknown }) => o.content as { error?: string | { code?: string; message?: string }; message?: string };
+const errorOf = (o: { content: unknown }) => (o.content as { error: { code: string; message: string; recoverable: boolean; details?: unknown } }).error;
 
 describe('choosing the definition tools', () => {
   it('keeps a small model focused on a component edited everywhere, or a node selected in it', async () => {
@@ -227,7 +227,7 @@ describe('running the definition tools', () => {
     expect((await run(host, 'manage_component_prop', { change: { action: 'add', prop: 'tagline', label: 'Tagline', type: 'string', default: 'Made by hand' } })).ok).toBe(true);
     const added = await run(host, 'insert_definition_node', { parentId: 'content', primitive: 'paragraph', text: 'Made by hand', index: 2 });
     expect(added.ok).toBe(true);
-    const nodeId = (added.content as { nodeId: string }).nodeId;
+    const nodeId = (added.content as unknown as { nodeId: string }).nodeId;
     expect(session.state.components[id].tree!.nodes[nodeId]).toMatchObject({ kind: 'text', text: 'Made by hand' });
     expect(session.state.components[id].tree!.nodes.content).toMatchObject({ children: expect.arrayContaining([nodeId]) });
     expect((session.state.components[id].tree!.nodes.content as { children: string[] }).children.indexOf(nodeId)).toBe(2);
@@ -235,7 +235,7 @@ describe('running the definition tools', () => {
     expect((await run(host, 'bind_definition_field', { nodeId, field: 'text', binding: { $prop: 'tagline' } })).ok).toBe(true);
     expect((session.state.components[id].tree!.nodes[nodeId] as { text?: unknown }).text).toEqual({ $prop: 'tagline' });
     // Without an index, at the end.
-    const last = (await run(host, 'insert_definition_node', { parentId: 'content', primitive: 'divider' })).content as { nodeId: string };
+    const last = (await run(host, 'insert_definition_node', { parentId: 'content', primitive: 'divider' })).content as unknown as { nodeId: string };
     expect((session.state.components[id].tree!.nodes.content as { children: string[] }).children.at(-1)).toBe(last.nodeId);
     expect((await run(host, 'remove_definition_node', { nodeId: 'secondary' })).ok).toBe(true);
     expect(session.state.components[id].tree!.nodes.secondary).toBeUndefined();
@@ -259,7 +259,7 @@ describe('running the definition tools', () => {
     expect(insert.properties!.primitive.enum).toEqual(expect.arrayContaining(['badge', 'figure', 'divider']));
     expect(insert.properties!.shape.enum).toEqual(['line', 'angle', 'wave', 'icon']);
     const nodes = () => session.state.components[id].tree!.nodes;
-    const added = async (args: Record<string, unknown>) => ((await run(host, 'insert_definition_node', { parentId: 'content', ...args })).content as { nodeId: string }).nodeId;
+    const added = async (args: Record<string, unknown>) => ((await run(host, 'insert_definition_node', { parentId: 'content', ...args })).content as unknown as { nodeId: string }).nodeId;
     const badge = await added({ primitive: 'badge', text: 'New season', icon: 'leaf' });
     expect(nodes()[badge]).toMatchObject({ kind: 'element', tag: 'span', name: 'Badge' });
     expect((nodes()[badge] as { children: string[] }).children.map((c) => nodes()[c])).toMatchObject([
@@ -276,7 +276,7 @@ describe('running the definition tools', () => {
     expect((await run(host, 'edit_definition_node', { nodeId: divider, content: { icon: 'star' } })).ok).toBe(true);
     expect(nodes()[divider]).toMatchObject({ shape: 'icon', icon: 'star' });
     const refused = errorOf(await run(host, 'insert_definition_node', { parentId: 'content', primitive: 'heading', shape: 'wave' }));
-    expect(typeof refused.error === 'object' ? refused.error.message : refused.message).toMatch(/Only a divider has a shape/);
+    expect(refused.message).toMatch(/Only a divider has a shape/);
   });
 
   it("keeps an image's picture when only its alt text is sent", async () => {
@@ -284,7 +284,7 @@ describe('running the definition tools', () => {
     const { session, id } = await hero((s) => void (s.assets.assets[assetId] = { id: assetId, name: 'Room', file: 'static/assets/room.jpg', mime: 'image/jpeg', bytes: 1, width: 10, height: 10, hash: 'x', kind: 'image', createdAt: '' }));
     const host = hostFor(session, authorityOf(session.state, id, null));
     const added = await run(host, 'insert_definition_node', { parentId: 'content', primitive: 'image' });
-    const nodeId = (added.content as { nodeId: string }).nodeId;
+    const nodeId = (added.content as unknown as { nodeId: string }).nodeId;
     expect((await run(host, 'edit_definition_node', { nodeId, content: { image: { assetId, alt: 'A room' } } })).ok).toBe(true);
     expect((await run(host, 'edit_definition_node', { nodeId, content: { image: { alt: 'A calm room' } } })).ok).toBe(true);
     expect((session.state.components[id].tree!.nodes[nodeId] as { image?: unknown }).image).toMatchObject({ assetId, alt: 'A calm room' });
@@ -334,7 +334,7 @@ describe('running the definition tools', () => {
       expect(errorOf(r).message, name).toMatch(message);
     }
     // Each problem is named by the field it is in.
-    const fields = (r: { content: unknown }) => (r.content as { fields: Array<{ field: string }> }).fields.map((f) => f.field);
+    const fields = (r: { content: unknown }) => (r.content as { error: { details: { fields: Array<{ field: string }> } } }).error.details.fields.map((f) => f.field);
     expect(fields(await run(host, 'edit_definition_node', { nodeId: 'content', content: { text: 'Hi' } }))).toEqual(['content.text']);
     expect(fields(await run(host, 'style_definition_element', { scope: 'base', state: 'hover', styles: [{ property: 'gap', value: '1rem' }] }))).toEqual(['styles[0].property']);
     expect(session.revision).toBe(revision);
@@ -365,7 +365,7 @@ describe('running the definition tools', () => {
     for (const [name, args] of scoped) {
       const r = await run(host, name, args);
       expect(r.ok, name).toBe(false);
-      expect((errorOf(r).error as { code?: string }).code, name).toBe('SCOPE_MISMATCH');
+      expect(errorOf(r).code, name).toBe('SCOPE_MISMATCH');
     }
     expect(session.revision).toBe(revision);
   });
@@ -429,8 +429,7 @@ describe('UI state with the definition tools (#377)', () => {
     const fieldOf = async (name: string, args: unknown) => {
       const out = await run(host, name, args);
       expect(out.ok).toBe(false);
-      const c = out.content as { message?: unknown };
-      return typeof c.message === "string" ? c.message : JSON.stringify(c);
+      return (out.content as { error: { message: string } }).error.message;
     };
     expect(await fieldOf('manage_component_state', { change: { action: 'add', state: 'plan', label: 'Again', type: 'boolean' } })).toMatch(/change\.state.*already has the UI state "plan"/);
     expect(await fieldOf('manage_component_state', { change: { action: 'add', state: 'tab', label: 'Tab', type: 'enum' } })).toMatch(/change\.options.*needs its option values/);

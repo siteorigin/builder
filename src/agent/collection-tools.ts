@@ -15,6 +15,7 @@ import { MAX_ENTRY_BLOCKS, MAX_ENTRY_CHARS } from '@engine/values';
 import { fieldError, type FieldIssue } from './macros';
 import type { JsonSchema } from './propschema';
 import type { ToolHost, ToolOutcome } from './tools';
+import { applyFailure } from './result';
 
 /** Entries listed per call: enough to find a post by its title, few enough for a small window. */
 export const ENTRY_LIST_PAGE = 10;
@@ -236,7 +237,7 @@ export async function runUpsertEntry(args: UpsertEntryArgs, host: ToolHost, call
   ];
   const label = entry ? `Edit post “${String(fields.title ?? entry.title).slice(0, 60)}”` : `Draft post “${String(fields.title).slice(0, 60)}”`;
   const res = await host.apply(ops, revision, label, callId, { collectionWrite: { collectionId: collection.settings.id, ...(entry ? { entryId: entry.id } : {}) } });
-  if (!res.ok) return { ok: false, content: { ok: false, revision: res.revision, error: res.error } };
+  if (!res.ok) return applyFailure(res);
   const written = (res.results?.at(-1) ?? {}) as { entryId?: string; slug?: string; route?: string };
   return {
     ok: true,

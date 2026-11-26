@@ -215,7 +215,7 @@ describe('the AI replacing an image', () => {
     let applied = false;
     const host = { state: () => state, revision: () => 0, apply: async () => ((applied = true), { ok: true, revision: 1 }) } as unknown as ToolHost;
     const r = await executeTool('apply_operations', JSON.stringify({ expectedRevision: 0, operations: [{ type: 'asset.replace', assetId: 'a_kitchen', withAssetId: 'a_person1', keepAlt: true }] }), host, 'c1');
-    expect(r).toMatchObject({ ok: false, content: { error: 'INVALID_ARGUMENT', message: expect.stringContaining('does not take keepAlt') } });
+    expect(r).toMatchObject({ ok: false, content: { error: { code: 'INVALID_ARGUMENT', message: expect.stringContaining('does not take keepAlt') } } });
     expect(applied).toBe(false);
   });
 });

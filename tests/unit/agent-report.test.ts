@@ -319,8 +319,8 @@ describe('check results', () => {
     const report = { checks: { contrast: { checked: 200, failed: 70, unverified: 0 } }, images: { total: 1, loaded: 1, failed: 0, unverified: 0 }, issues: [...Array.from({ length: 70 }, (_, i) => issue('low-contrast', i)), issue('overlap', 99), issue('small-tap-target', 98)], runtimeErrors: ['e'.repeat(5000)] };
     const envelope = { revision: 3, pageId: 'p', viewport: 'phone', width: 390 };
     const fitted = fitInspection(envelope, report) as typeof report & { omittedIssues: number };
-    expect(serializeResult({ ...envelope, report: fitted }).length).toBeLessThanOrEqual(24000);
-    expect(JSON.parse(serializeResult({ ...envelope, report: fitted })).truncated).toBeUndefined();
+    expect(serializeResult({ ok: true, ...envelope, report: fitted }).length).toBeLessThanOrEqual(24000);
+    expect(JSON.parse(serializeResult({ ok: true, ...envelope, report: fitted })).truncated).toBeUndefined();
     expect(fitted.checks).toEqual(report.checks);
     expect(fitted.images).toEqual(report.images);
     expect(new Set(fitted.issues.map((i) => i.kind))).toEqual(new Set(['low-contrast', 'overlap', 'small-tap-target']));
@@ -349,7 +349,7 @@ describe('check results', () => {
     const issue = (i: number) => ({ kind: 'low-contrast', ref: ref(`n${i}`), text: 't'.repeat(80), message: 'm'.repeat(400) });
     const report = { issues: Array.from({ length: 70 }, (_, i) => issue(i)), rhythm };
     const fitted = fitInspection(envelope, report) as typeof report & { omittedIssues: number };
-    expect(JSON.parse(serializeResult({ ...envelope, report: fitted })).truncated).toBeUndefined();
+    expect(JSON.parse(serializeResult({ ok: true, ...envelope, report: fitted })).truncated).toBeUndefined();
     expect(fitted.omittedIssues).toBeGreaterThan(0);
     expect(fitted.rhythm).toEqual(rhythm.map((n) => ({ kind: n.kind, message: n.message })));
     // The notes the bridge sent are left as they were.
@@ -372,11 +372,11 @@ describe('check results', () => {
     const dropped = fitInspection(envelope, fill(Math.floor((room - bare - 20) / 3))) as Record<string, unknown>;
     expect(dropped.rhythm).toBeUndefined();
     expect(dropped.omittedRhythm).toBe(3);
-    for (const r of [short, dropped]) expect(JSON.parse(serializeResult({ ...envelope, report: r })).truncated).toBeUndefined();
+    for (const r of [short, dropped]) expect(JSON.parse(serializeResult({ ok: true, ...envelope, report: r })).truncated).toBeUndefined();
     // So close to the limit that even saying the notes went would not fit: they go without a word.
     const tight = fitInspection(envelope, fill(Math.floor((room - bare - 4) / 3))) as Record<string, unknown>;
     expect(tight.rhythm).toBeUndefined();
-    expect(JSON.parse(serializeResult({ ...envelope, report: tight })).truncated).toBeUndefined();
+    expect(JSON.parse(serializeResult({ ok: true, ...envelope, report: tight })).truncated).toBeUndefined();
     // Advice gives way before findings: shortening the notes is enough to keep every finding of a repeated kind.
     const compact = rhythm.map((n) => ({ kind: n.kind, message: n.message }));
     const overlaps = (n: number) => Array.from({ length: 6 }, (_, i) => ({ kind: 'overlap', ref, message: `${i}`.repeat(n) }));

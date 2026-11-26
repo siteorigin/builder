@@ -19,13 +19,14 @@ The immediate objective is a usable editor with a coherent foundation. The initi
 
 ### Decisions changed during implementation
 
-The v0.1 implementation deliberately departs from this draft in four places. The sections concerned have been updated to match, and each is marked *(changed in implementation)*.
+The v0.1 implementation deliberately departs from this draft in five places. The sections concerned have been updated to match, and each is marked *(changed in implementation)*.
 
 | Area | Draft | Implementation | Sections |
 | --- | --- | --- | --- |
 | First AI provider | Anthropic first, OpenAI next. | OpenAI is the default provider, through the Responses API with GPT-6.2 Sol (`gpt-6.2-sol`) as the default model; the Anthropic adapter ships beside it behind the same contract. | §2.1, §25.2 |
 | Stored API keys | OS-backed protection (`safeStorage`), session-only on Linux without a secret backend. | A plain `api-keys.json` in the app's data folder, written with mode `0600` (user-only) on macOS and Linux; on Windows the data folder's permissions apply. The OS keychain is never used, so users never see keychain access prompts. | §21.4, I10 |
 | Source editor | Monaco. | CodeMirror 6 with Svelte language support and live compiler diagnostics: much smaller, and enough for project code components. | §15.1 |
+| Tool result payload | A tool's payload under `data` in `ToolResult`. | A tool's own fields sit beside `ok` and `revision`, which every result has, success or failure: write results always carried them there, and every reader of a result keeps one place to look. | §13.3 |
 | Catalogue location | A separate `siteorigin-builder-components` repository. | v0.1 bundles the Foundation theme from this repository (`src/catalogue/`, written in a small TypeScript DSL). A separate component repository and its build are future targets. | §9.1, §23 |
 
 ## Contents
@@ -714,19 +715,23 @@ interface EditBatch {
   operations: EditOperation[];
 }
 
-interface ToolResult<T> {
-  ok: boolean;
-  revision: number;
-  data?: T;
-  error?: {
-    code: 'INVALID_ARGUMENT' | 'STALE_REVISION' | 'SCOPE_MISMATCH'
-      | 'PATH_DENIED' | 'VALIDATION_FAILED' | 'CONFLICT' | 'CANCELLED';
-    message: string;
-    recoverable: boolean;
-    details?: unknown;
-  };
-}
+type ToolErrorCode =
+  | 'INVALID_ARGUMENT' | 'STALE_REVISION' | 'SCOPE_MISMATCH' | 'PATH_DENIED'
+  | 'VALIDATION_FAILED' | 'CONFLICT' | 'CANCELLED'
+  | 'BUSY' | 'ONE_CHANGE_PER_TURN' | 'UPDATE_HELD';
+
+type ToolResult<T extends object> =
+  | ({ ok: true; revision: number } & T)
+  | {
+      ok: false;
+      revision: number;
+      error: { code: ToolErrorCode; message: string; recoverable: boolean; details?: unknown };
+    };
 ```
+
+Every tool result the model receives has this shape: reads and checks as well as changes, and the orchestrator's own refusals (a tool not offered, a second change in one step, a write in a read-only run). *(Changed in implementation: a tool's own fields sit beside `ok` and `revision` instead of under `data`, and never reuse those names or `error`.)* `revision` is the project revision the result reflects: the one a read or check read (an Ask run's frozen revision), the one a change made, or the one at which a call was refused. `recoverable` says whether a corrected or later call can succeed in the same run; a model tries again only then. `details` carries what correcting the call needs, such as each field's problem or which page and viewport a check could not measure. `BUSY`: the project is held by another writer for now. `ONE_CHANGE_PER_TURN`: a second change in one model step, skipped and not applied; it is sent again in the next step. `UPDATE_HELD`: a theme component update this project cannot take.
+
+A result over the size limit is cut so that `ok`, `revision`, any `error` (its code, message and recoverable flag) and every field small enough to keep whole (IDs, hashes, ranges and counts) stay fields of their own: `truncated` is true, `leftOut` names the fields cut short or left out, `note` says how to see them (a narrower read; for a change that landed, a read of what it changed, never the change again), and `partial` holds the start of the rest as JSON text. A read the context budget collapses (§14.1) stays a result: `{ ok: true, revision, superseded }`, where `superseded` is the one line that stands in for it.
 
 The orchestrator attaches trusted run ID, tool-call ID, idempotency key and authorized scope. The model's requested scope is validated against that authority; it cannot grant itself wider permissions by changing the envelope.
 

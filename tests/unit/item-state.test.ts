@@ -533,7 +533,7 @@ describe('the assistant', () => {
     expect(refused.ok).toBe(false);
     expect(JSON.stringify(refused.content)).toMatch(/not inside a repeat of \\"Steps\\"/);
     // The refusal points at the button to move or change, not at the state.
-    expect((refused.content as { fields?: Array<{ field: string }> }).fields?.map((f) => f.field)).toEqual(['nodes[7]']);
+    expect((refused.content as { error: { details?: { fields?: Array<{ field: string }> } } }).error.details?.fields?.map((f) => f.field)).toEqual(['nodes[7]']);
     const made = await executeTool('upsert_managed_component', JSON.stringify(design('pick')), host, 'c2');
     expect(made.ok).toBe(true);
     const def = Object.values(session.state.components).find((d) => d.name === 'Process')!;

@@ -1406,7 +1406,7 @@ describe('library images in the chat (#12)', () => {
     const { result } = await pending;
     expect(result?.status).toBe('completed');
     expect(heroImage(env.session.state)?.assetId).toBe(second.id);
-    expect(toolResult(env.adapter.requests[1], 'q1')).toEqual({ answer: `I chose the image "hero" (assetId: ${second.id}).` });
+    expect(toolResult(env.adapter.requests[1], 'q1')).toEqual({ ok: true, revision: 1, answer: `I chose the image "hero" (assetId: ${second.id}).` });
     const turn = env.orch.conversation!.messages.find((m) => m.role === 'assistant')!;
     expect(turn.questions?.[0]).toMatchObject({ answered: 'hero', answeredAssetId: second.id });
 
@@ -1445,7 +1445,7 @@ describe('library images in the chat (#12)', () => {
     expect(answer(runIdOf(env), q.id!, first.id)).toBe(true);
     expect(answer(runIdOf(env), q.id!, { assetId: second.id })).toBe(false);
     await pending;
-    expect(toolResult(env.adapter.requests[1], 'q1')).toEqual({ answer: first.id });
+    expect(toolResult(env.adapter.requests[1], 'q1')).toEqual({ ok: true, revision: 1, answer: first.id });
     const asked = env.orch.conversation!.messages.find((m) => m.role === 'assistant')!.questions![0];
     expect(asked).toMatchObject({ answered: first.id });
     expect(asked.answeredAssetId).toBeUndefined();
@@ -1463,9 +1463,9 @@ describe('library images in the chat (#12)', () => {
     const { result } = await env.run('Ask me which photo');
     expect(result?.status).toBe('no-changes');
     expect(env.events.some((e) => e.status === 'awaiting-input')).toBe(false);
-    expect(toolResult(env.adapter.requests[1], 'q1')).toMatchObject({ error: 'INVALID_ARGUMENT', message: expect.stringContaining('"a_missing"') });
-    expect(toolResult(env.adapter.requests[2], 'q2')).toMatchObject({ error: 'INVALID_ARGUMENT', message: expect.stringContaining(`"${font.id}"`) });
-    expect(toolResult(env.adapter.requests[3], 'q3')).toMatchObject({ error: 'INVALID_ARGUMENT', message: expect.stringContaining('widenScope') });
+    expect(toolResult(env.adapter.requests[1], 'q1')).toMatchObject({ error: { code: 'INVALID_ARGUMENT', message: expect.stringContaining('"a_missing"') } });
+    expect(toolResult(env.adapter.requests[2], 'q2')).toMatchObject({ error: { code: 'INVALID_ARGUMENT', message: expect.stringContaining(`"${font.id}"`) } });
+    expect(toolResult(env.adapter.requests[3], 'q3')).toMatchObject({ error: { code: 'INVALID_ARGUMENT', message: expect.stringContaining('widenScope') } });
     expect(JSON.stringify(toolResult(env.adapter.requests[4], 'q4'))).toMatch(/assetIds/);
     expect(env.adapter.requests[4].items.at(-1)).toMatchObject({ kind: 'tool_result', isError: true });
   });
@@ -1639,7 +1639,7 @@ describe('run budget, parallel calls and validation', () => {
     expect(results[3].isError).toBe(true);
     expect(results[3].content).toContain('ONE_CHANGE_PER_TURN');
     // A step is not a turn of the conversation: the model is told to carry on, not to wait for the user.
-    expect(JSON.parse(results[3].content).message).toMatch(/next step.*needs no reply|needs no reply.*next step/);
+    expect(JSON.parse(results[3].content).error.message).toMatch(/next step.*needs no reply|needs no reply.*next step/);
     expect(result?.summary).toBe('Added two pages.');
   });
 
@@ -2660,7 +2660,7 @@ describe('building a new component from Create component (#172)', () => {
   });
 
   it('refuses an ID the model names for a new component', async () => {
-    let refused: { error?: string; message?: string } = {};
+    let refused: { error?: { code: string; message: string } } = {};
     const env = await setup([
       () => [call('a1', 'apply_operations', { expectedRevision: 0, operations: [{ type: 'component.create', definitionId: 'proj.taken-abcde', name: 'Card' }] })],
       (req) => {
@@ -2669,7 +2669,7 @@ describe('building a new component from Create component (#172)', () => {
       }
     ]);
     await env.run('Create a component called "Card".', task);
-    expect(refused.message).toMatch(/does not take a definitionId/);
+    expect(refused.error?.message).toMatch(/does not take a definitionId/);
     expect(env.session.state.components['proj.taken-abcde']).toBeUndefined();
   });
 
@@ -2761,7 +2761,7 @@ describe('building a new component from Create component (#172)', () => {
     expect(context).toContain('Feature cards');
     // The first call was refused with the path of the one bad binding; the repair sent only that node.
     const refused = lastTool(requests[1]);
-    expect(refused.fields).toEqual([{ field: 'nodes[6].text', message: expect.stringMatching(/"people" items have no field "title"/) }]);
+    expect(refused.error.details.fields).toEqual([{ field: 'nodes[6].text', message: expect.stringMatching(/"people" items have no field "title"/) }]);
     const made = lastTool(requests[2]);
     expect(made.ok).toBe(true);
     const def = env.session.state.components[made.definitionId];
@@ -2854,7 +2854,7 @@ describe('requests that create pages over several steps (#88)', () => {
   const lastText = (req: CanonicalModelRequest) => (req.items.at(-1) as { text: string }).text;
 
   it('carries on after a batch that creates and fills a page is rejected, using the ID the create returns', async () => {
-    let rejected: { error?: { message: string }; hint?: string } = {};
+    let rejected: { error?: { message: string } } = {};
     let nudge = '';
     const { session, run, adapter } = await setup([
       () => [call('a', 'apply_operations', { expectedRevision: 0, operations: [{ type: 'page.create', title: 'Staff picks', route: '/staff-picks/' }, { type: 'node.insert', owner: { kind: 'page', id: '/staff-picks/' }, componentId: 'cta.banner' }] })],
@@ -2875,7 +2875,7 @@ describe('requests that create pages over several steps (#88)', () => {
     const { result } = await run('Add a Staff picks page');
     // The engine's own message is kept, and the model is told how to do it in two steps.
     expect(rejected.error?.message).toContain('Page "/staff-picks/" does not exist');
-    expect(rejected.hint).toMatch(/create the page alone, then fill it in your next step/);
+    expect(rejected.error?.message).toMatch(/create the page alone, then fill it in your next step/);
     expect(nudge).toContain('Staff picks (/staff-picks/) has not been created');
     expect(adapter.requests).toHaveLength(5);
     expect(result).toMatchObject({ status: 'completed', summary: 'Added a Staff picks page.', canUndo: true });
@@ -2885,7 +2885,7 @@ describe('requests that create pages over several steps (#88)', () => {
 
   it('never calls a request Completed while a page it skipped is missing, and finishes it, link and checks included, on Continue', async () => {
     const inspected: Array<[string, number]> = [];
-    let skipped: { error?: string; message?: string } = {};
+    let skipped = {} as { error: { code: string; message: string } };
     let nudge = '';
     let carried = '';
     const { session, run, adapter } = await setup(
@@ -2919,8 +2919,8 @@ describe('requests that create pages over several steps (#88)', () => {
       { inspectLayout: async (pageId, width) => (inspected.push([pageId, width]), { issues: [] }) }
     );
     const first = await run('Add a Staff picks page and a Reader requests page, link the first to the second, and check both at phone and desktop widths.');
-    expect(skipped.error).toBe('ONE_CHANGE_PER_TURN');
-    expect(skipped.message).toContain('needs no reply from the user');
+    expect(skipped.error.code).toBe('ONE_CHANGE_PER_TURN');
+    expect(skipped.error.message).toContain('needs no reply from the user');
     expect(nudge).toContain('Reader requests (/reader-requests/) has not been created');
     expect(nudge).toContain('skipped');
     expect(first.result).toMatchObject({ status: 'completed', incomplete: true, canUndo: true, unfinished: [{ title: 'Reader requests', route: '/reader-requests/' }] });
@@ -3058,11 +3058,11 @@ describe('requests that create pages over several steps (#88)', () => {
     const { run } = await setup([
       () => [call('a', 'apply_operations', { expectedRevision: 0, operations: [{ type: 'page.create', title: 'Staff picks' }, { type: 'node.insert', owner: { kind: 'page', id: 'pg_gone1' }, componentId: 'cta.banner' }] })],
       (req) => {
-        hints.push(lastTool(req).hint);
+        hints.push(/create the page alone.*/.exec(lastTool(req).error?.message ?? '')?.[0]);
         return [call('b', 'apply_operations', { expectedRevision: 0, operations: [{ type: 'page.create', title: 'Staff picks' }, { type: 'node.insert', owner: { kind: 'page', id: 'Staff picks' }, componentId: 'cta.banner' }] })];
       },
       (req) => {
-        hints.push(lastTool(req).hint);
+        hints.push(/create the page alone.*/.exec(lastTool(req).error?.message ?? '')?.[0]);
         return finish('Gave up.');
       }
     ]);
@@ -3963,7 +3963,7 @@ describe('search and AI-agent settings (#598)', () => {
     ]);
     const before = structuredClone(env.session.state);
     const { result } = await env.run('Update search settings');
-    expect(results.map((r) => (r as { error?: string }).error)).toEqual(['VALIDATION_FAILED', 'VALIDATION_FAILED', 'VALIDATION_FAILED', 'VALIDATION_FAILED', 'VALIDATION_FAILED', 'VALIDATION_FAILED', 'VALIDATION_FAILED', 'INVALID_ARGUMENT']);
+    expect(results.map((r) => (r as { error?: { code: string } }).error?.code)).toEqual(['VALIDATION_FAILED', 'VALIDATION_FAILED', 'VALIDATION_FAILED', 'VALIDATION_FAILED', 'VALIDATION_FAILED', 'VALIDATION_FAILED', 'VALIDATION_FAILED', 'INVALID_ARGUMENT']);
     expect(JSON.stringify(results[0])).toMatch(/crawlerPolicy\.overrides\[1\]\.token.*already in overrides\[0\]/);
     expect(JSON.stringify(results[1])).toMatch(/identity\.logo: no library image has the assetId \\"a_missing0\\"/);
     expect(JSON.stringify(results[1])).toMatch(/socialImage: no library image has the assetId \\"a_missing1\\"/);
@@ -4009,7 +4009,7 @@ describe('search and AI-agent settings (#598)', () => {
           return [call('p3', 'update_site_seo', { baseUrl: 'https://riverside.example' })];
         },
         (req) => {
-          expect(lastResult(req)).toMatchObject({ error: 'INVALID_ARGUMENT', message: 'Unknown tool "update_site_seo".' });
+          expect(lastResult(req)).toMatchObject({ error: { code: 'INVALID_ARGUMENT', message: 'Unknown tool "update_site_seo".' } });
           // Only the About page's own change landed.
           expect(env.session.revision).toBe(1);
           return [call('p4', 'request_clarification', { question: 'Set the public address for the whole site?', widenScope: true })];
@@ -4041,11 +4041,11 @@ describe('search and AI-agent settings (#598)', () => {
     const env = await setup([
       () => [call('x1', 'update_page_seo', { pageId: '/', noindex: true })],
       (req) => {
-        expect(lastResult(req)).toMatchObject({ error: 'INVALID_ARGUMENT', message: 'Unknown tool "update_page_seo".' });
+        expect(lastResult(req)).toMatchObject({ error: { code: 'INVALID_ARGUMENT', message: 'Unknown tool "update_page_seo".' } });
         return [call('x2', 'update_site_seo', { description: 'Changed from a selection.' })];
       },
       (req) => {
-        expect(lastResult(req)).toMatchObject({ error: 'INVALID_ARGUMENT', message: 'Unknown tool "update_site_seo".' });
+        expect(lastResult(req)).toMatchObject({ error: { code: 'INVALID_ARGUMENT', message: 'Unknown tool "update_site_seo".' } });
         return finish('Nothing changed.');
       }
     ]);
@@ -5089,9 +5089,9 @@ describe('source patches bound to a revision and a scope (#740)', () => {
     const { result } = await env.run('Tidy the hero code');
     expect(resultOf(env.adapter.requests[2])).toMatchObject({ ok: true, revision: 2 });
     // Checked first, and said as a revision: the project moved on since the read.
-    expect(resultOf(env.adapter.requests[3])).toMatchObject({ error: 'STALE_REVISION', revision: 2, message: expect.stringMatching(/written against revision 1, but the project is at 2\. Call read_source again/) });
+    expect(resultOf(env.adapter.requests[3])).toMatchObject({ ok: false, revision: 2, error: { code: 'STALE_REVISION', recoverable: true, message: expect.stringMatching(/written against revision 1, but the project is at 2\. Call read_source again/) } });
     // The revision matches, but the source is not the one that was read.
-    expect(resultOf(env.adapter.requests[4])).toMatchObject({ error: 'STALE_REVISION', revision: 2, message: 'The source changed. Call read_source again.' });
+    expect(resultOf(env.adapter.requests[4])).toMatchObject({ ok: false, revision: 2, error: { code: 'STALE_REVISION', message: 'The source changed. Call read_source again.' } });
     expect(JSON.stringify(resultOf(env.adapter.requests[5]))).toMatch(/INVALID_ARGUMENT.*expectedRevision/);
     expect(sourceOf(session.state, id)).toBe(tidied(before));
     expect(result?.status).toBe('completed');
@@ -5288,7 +5288,7 @@ describe('source patches bound to a revision and a scope (#740)', () => {
     await env.run('Tidy this code', selected(session.state));
     expect(JSON.stringify(resultOf(env.adapter.requests[2]))).toMatch(/INVALID_ARGUMENT.*scope/);
     expect(resultOf(env.adapter.requests[3]).error).toMatchObject({ code: 'SCOPE_MISMATCH', message: expect.stringMatching(/asks to change the whole site, which is more than Split hero/) });
-    expect(resultOf(env.adapter.requests[4])).toMatchObject({ error: 'INVALID_ARGUMENT', message: expect.stringMatching(/apply_source_patch/) });
+    expect(resultOf(env.adapter.requests[4])).toMatchObject({ ok: false, error: { code: 'INVALID_ARGUMENT', message: expect.stringMatching(/apply_source_patch/) } });
     expect(sourceOf(session.state, id)).toBe(before);
   });
 

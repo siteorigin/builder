@@ -1,7 +1,7 @@
 import { z } from 'zod';
 import type { AssetRecord, ElementRef, ProjectState } from '@shared/types';
 import type { ChatImageRef, FieldLocation } from '@shared/api';
-import type { EditOperation } from '@shared/ops';
+import type { EditOperation, ToolError } from '@shared/ops';
 import { EditOperationSchema, legacyShellError, MODEL_BINDING, OPERATION_SCHEMAS, type OperationType } from '@shared/ops';
 import { BLUR_LIMITS, MAX_GRID_TRACKS, STYLE_PROPS, TRANSLATE_LIMITS, type StylePropDef } from '@shared/styles';
 import { addressSlug, normalizeRoute } from '@shared/routes';
@@ -32,6 +32,7 @@ import { OP_REACH, type AuthorityGrants, type RequestedScope } from './scope';
 import { digestComponentInspection, inspectionSteps, MAX_CASES, planComponentInspection, resolveInspectTarget } from './component-inspection';
 import type { ComponentPreviewResult, ComponentPreviewStep } from '@shared/component-preview';
 import { LAYOUT_TARGET, MAX_LAYOUT_TARGETS, resolveLayoutTargets, targetRef } from './layout-targets';
+import { applyFailure, MAX_RESULT_CHARS, stamp, toolError, type ResultOutcome, type ToolOutcome } from './result';
 import { runUpdateThemeComponent, themeUpdateNote, UPDATE_THEME_COMPONENT_ARGS, UPDATE_THEME_COMPONENT_BRIEF, UPDATE_THEME_COMPONENT_DESCRIPTION, updateThemeComponentTool, wholeSelection, type UpdateReach } from './theme-update';
 
 const owner = z.object({ kind: z.enum(['page', 'shell', 'component', 'template']), id: z.string() });
@@ -648,7 +649,7 @@ export interface ToolHost {
    * `grants`: what the calling tool may also change for a run limited to one page (see scope.ts), never set by the model.
    * `requested`: the scope the model asked for; one wider than the run's is refused, and a narrower one limits the call.
    */
-  apply(operations: EditOperation[], expectedRevision: number, label: string, idempotencyKey: string, grants?: AuthorityGrants, requested?: RequestedScope): Promise<{ ok: boolean; revision: number; results?: unknown[]; error?: { code: string; message: string } }>;
+  apply(operations: EditOperation[], expectedRevision: number, label: string, idempotencyKey: string, grants?: AuthorityGrants, requested?: RequestedScope): Promise<{ ok: boolean; revision: number; results?: unknown[]; error?: ToolError }>;
   compileAll(): Promise<Diagnostic[]>;
   /** `targets`: measure only these elements and what is inside them (see layout-targets.ts); omitted, the whole page. */
   inspectLayout(pageId: string, width: number, targets?: ElementRef[]): Promise<unknown>;
@@ -671,37 +672,23 @@ export interface ToolHost {
   entryLimit?(): { collectionId: string; entryId: string; label: string } | null;
 }
 
-export interface ToolOutcome {
-  ok: boolean;
-  content: unknown;
-  /** A field locate_field found, for the answer's "Open in inspector". */
-  location?: FieldLocation;
-  mutated?: boolean;
-  ops?: EditOperation[];
-  results?: unknown[];
-  /** A page measurement as the preview gave it, before it was cut to fit the result (inspect_layout). */
-  report?: unknown;
-}
-
 const WIDTHS = { phone: 390, tablet: 834, desktop: 1280 };
 
 /**
  * Measure a page in the live preview at a width, for the model's inspect_layout and the application's own check
  * alike. A preview that is not running, did not load or did not answer is a check that could not run, never a clean
- * result. `pageId` is an existing page's ID.
+ * result; it names the page and width it was for in its details. `pageId` is an existing page's ID.
  */
 export async function measurePage(inspect: (pageId: string, width: number) => Promise<unknown>, pageId: string, viewport: keyof typeof WIDTHS, revision: number): Promise<ToolOutcome> {
   try {
     const report = (await inspect(pageId, WIDTHS[viewport])) as { error?: unknown } | null;
-    if (!report || typeof report !== 'object' || report.error)
-      return { ok: false, content: { error: 'VALIDATION_FAILED', pageId, viewport, message: `Layout could not be inspected: ${String(report?.error ?? 'no report')}` } };
+    if (!report || typeof report !== 'object' || report.error) return toolError('VALIDATION_FAILED', `Layout could not be inspected: ${String(report?.error ?? 'no report')}`, { details: { pageId, viewport } });
     const envelope = { revision, pageId, viewport, width: WIDTHS[viewport] };
     return { ok: true, content: { ...envelope, report: fitInspection(envelope, report) }, report };
   } catch (e) {
-    return { ok: false, content: { error: 'VALIDATION_FAILED', pageId, viewport, message: `Layout could not be inspected: ${(e as Error).message}` } };
+    return toolError('VALIDATION_FAILED', `Layout could not be inspected: ${(e as Error).message}`, { details: { pageId, viewport } });
   }
 }
-const MAX_RESULT_CHARS = 24000;
 
 /** What a transform, transition or grid property takes, for the read_project list: its range, unit or grammar. */
 function valueHint(p: StylePropDef): string {
@@ -771,6 +758,23 @@ export function fitInspection<R>(envelope: Record<string, unknown>, report: R): 
 }
 
 /**
+ * Images found by search_assets, cut when they must be to fit one result, so every one keeps what tells it apart (its
+ * ID, name and size): descriptions and alt suggestions are shortened first, then left out.
+ */
+function fitAssets(list: Array<ReturnType<typeof assetSummary>>): Array<Partial<ReturnType<typeof assetSummary>>> {
+  const room = MAX_RESULT_CHARS - 400;
+  const fits = (l: unknown[]) => JSON.stringify(l).length <= room;
+  if (fits(list)) return list;
+  const cut = (t: string | undefined) => (t && t.length > 80 ? `${t.slice(0, 80)}…` : t);
+  const short = list.map((x) => ({ ...x, description: cut(x.description), altSuggestion: cut(x.altSuggestion) }));
+  if (fits(short)) return short;
+  return list.map(({ assetId, name, width, height }) => ({ assetId, name, width, height }));
+}
+
+/** What search_assets says beside images whose descriptions it had to shorten or leave out. */
+const SHORTENED_ASSETS = ' Descriptions and alt suggestions were shortened or left out to fit every image: search with narrower words, or a lower limit, to see them whole.';
+
+/**
  * A component check cut, when it must be, to fit a tool result whole, so it keeps the fields that say what it is
  * (and the budget reads): first the texts of its findings, then findings from the end, keeping one of every kind.
  */
@@ -789,19 +793,26 @@ function fitComponentCheck(content: Record<string, unknown>): Record<string, unk
   return omitted ? { ...out, omittedFindings: omitted } : out;
 }
 
-export function serializeResult(content: unknown): string {
-  const s = JSON.stringify(content);
-  if (s.length <= MAX_RESULT_CHARS) return s;
-  return JSON.stringify({ truncated: true, note: `Result was ${s.length} characters; showing the first ${MAX_RESULT_CHARS}. Request a narrower range (for example read_page with nodeId).`, partial: s.slice(0, MAX_RESULT_CHARS) });
+export { MAX_RESULT_CHARS, serializeResult } from './result';
+export type { ToolOutcome } from './result';
+
+/**
+ * Run one tool call. Its result always has the one shape every tool's has (see result.ts), with the revision the call
+ * read wherever the tool does not name the one it reflects (a change names the revision it made).
+ */
+export async function executeTool(name: string, rawArgs: string, host: ToolHost, callId: string): Promise<ResultOutcome> {
+  const revision = host.revision();
+  return stamp(await runTool(name, rawArgs, host, callId, revision), revision);
 }
 
-export async function executeTool(name: string, rawArgs: string, host: ToolHost, callId: string): Promise<ToolOutcome> {
-  if (!(name in TOOL_ARGS)) return { ok: false, content: { error: 'INVALID_ARGUMENT', message: `Unknown tool "${name}".` } };
+async function runTool(name: string, rawArgs: string, host: ToolHost, callId: string, revision: number): Promise<ToolOutcome | ResultOutcome> {
+  // An own key only: "constructor" is no tool either.
+  if (!Object.hasOwn(TOOL_ARGS, name)) return toolError('INVALID_ARGUMENT', `Unknown tool "${name}".`);
   let parsed: unknown;
   try {
     parsed = rawArgs.trim() ? JSON.parse(rawArgs) : {};
   } catch {
-    return { ok: false, content: { error: 'INVALID_ARGUMENT', message: 'Arguments were not valid JSON.' } };
+    return toolError('INVALID_ARGUMENT', 'Arguments were not valid JSON.');
   }
   // Its own checks name each problem by its path, and keep the call for a repair that sends only what was wrong.
   if (name === 'upsert_managed_component') return runManagedComponent(parsed, host, callId, (host.macros ??= newMacroMemory()));
@@ -809,9 +820,9 @@ export async function executeTool(name: string, rawArgs: string, host: ToolHost,
   // Checked before parsing, which drops fields the schema does not name.
   const raw = name === 'apply_operations' && parsed && typeof parsed === 'object' ? (parsed as { operations?: unknown }).operations : undefined;
   const legacy = Array.isArray(raw) ? raw.map(legacyShellError).find(Boolean) : null;
-  if (legacy) return { ok: false, content: { error: 'INVALID_ARGUMENT', message: legacy } };
+  if (legacy) return toolError('INVALID_ARGUMENT', legacy);
   const r = schema.safeParse(parsed);
-  if (!r.success) return { ok: false, content: { error: 'INVALID_ARGUMENT', message: r.error.issues.slice(0, 8).map((i) => `${i.path.join('.') || 'arguments'}: ${i.message}`).join('; ') } };
+  if (!r.success) return toolError('INVALID_ARGUMENT', r.error.issues.slice(0, 8).map((i) => `${i.path.join('.') || 'arguments'}: ${i.message}`).join('; '));
   const args = r.data as never;
   const state = host.state();
   switch (name as ToolName) {
@@ -837,10 +848,10 @@ export async function executeTool(name: string, rawArgs: string, host: ToolHost,
       const resolved = pageIdFor(state, a.pageId);
       if (resolved) a.pageId = resolved;
       const detail = resolved ? pageDetail(state, resolved) : null;
-      if (!detail) return { ok: false, content: { error: 'INVALID_ARGUMENT', message: `No page "${a.pageId}". Pages: ${state.site.pageOrder.join(', ')}` } };
+      if (!detail) return toolError('INVALID_ARGUMENT', `No page "${a.pageId}". Pages: ${state.site.pageOrder.join(', ')}`);
       if (a.nodeId) {
         const page = state.pages[a.pageId];
-        if (!page.nodes[a.nodeId]) return { ok: false, content: { error: 'INVALID_ARGUMENT', message: `No node "${a.nodeId}" on this page.` } };
+        if (!page.nodes[a.nodeId]) return toolError('INVALID_ARGUMENT', `No node "${a.nodeId}" on this page.`);
         return { ok: true, content: { revision: host.revision(), owner: detail.owner, node: compactNode(state, page, a.nodeId) } };
       }
       return { ok: true, content: { revision: host.revision(), ...detail } };
@@ -849,14 +860,14 @@ export async function executeTool(name: string, rawArgs: string, host: ToolHost,
       const a = args as z.infer<(typeof TOOL_ARGS)['inspect_element']>;
       if (a.prop !== undefined) {
         const read = readField(state, { owner: a.owner, nodeId: a.nodeId, prop: a.prop, itemId: a.itemId, field: a.field, offset: a.offset });
-        if (!read.ok) return { ok: false, content: { error: 'INVALID_ARGUMENT', message: read.message } };
+        if (!read.ok) return toolError('INVALID_ARGUMENT', read.message);
         return { ok: true, content: { revision: host.revision(), ...read.content } };
       }
-      if (a.itemId !== undefined || a.field !== undefined || a.offset !== undefined) return { ok: false, content: { error: 'INVALID_ARGUMENT', message: 'itemId, field and offset read one field: name its prop too.' } };
+      if (a.itemId !== undefined || a.field !== undefined || a.offset !== undefined) return toolError('INVALID_ARGUMENT', 'itemId, field and offset read one field: name its prop too.');
       try {
         const tree = getTree(state, a.owner);
         const n = tree.nodes[a.nodeId];
-        if (!n) return { ok: false, content: { error: 'INVALID_ARGUMENT', message: `No node "${a.nodeId}".` } };
+        if (!n) return toolError('INVALID_ARGUMENT', `No node "${a.nodeId}".`);
         const parent = findParent(tree, a.nodeId);
         const out: Record<string, unknown> = {
           revision: host.revision(),
@@ -874,7 +885,7 @@ export async function executeTool(name: string, rawArgs: string, host: ToolHost,
         }
         return { ok: true, content: out };
       } catch (e) {
-        return { ok: false, content: { error: 'INVALID_ARGUMENT', message: (e as Error).message } };
+        return toolError('INVALID_ARGUMENT', (e as Error).message);
       }
     }
     case 'search_components': {
@@ -897,8 +908,9 @@ export async function executeTool(name: string, rawArgs: string, host: ToolHost,
       // adds is said beside it (themeUpdate), with whether this project can take it.
       const themed = a.componentId ? catalogueComponent(state.site.themeId, a.componentId) : undefined;
       const installed = themed && Object.hasOwn(state.components, themed.id) ? state.components[themed.id] : undefined;
-      const def = a.definitionId ? state.components[a.definitionId] : (installed ?? themed);
-      if (!def) return { ok: false, content: { error: 'INVALID_ARGUMENT', message: 'Component not found. Use search_components.' } };
+      // An own key only: "constructor" is no component either.
+      const def = a.definitionId ? (Object.hasOwn(state.components, a.definitionId) ? state.components[a.definitionId] : undefined) : (installed ?? themed);
+      if (!def) return toolError('INVALID_ARGUMENT', 'Component not found. Use search_components.');
       // A design read part by part: the contract came with the first part.
       if (a.structure && a.offset) return { ok: true, content: { definitionId: def.id, structure: componentStructure(state, def, a.offset) } };
       const update = themeUpdateNote(state, Object.hasOwn(state.components, def.id) && state.components[def.id] === def ? def : undefined);
@@ -922,35 +934,36 @@ export async function executeTool(name: string, rawArgs: string, host: ToolHost,
         .filter((x) => !!x && libraryImage(state, x.id) === x && (!q || `${x.name} ${x.description ?? ''} ${x.altSuggestion ?? ''}`.toLowerCase().includes(q)))
         .slice(0, a.limit ?? 20)
         .map(assetSummary);
-      return { ok: true, content: { assets: list, note: 'Image contents are not available; rely on names and descriptions.' } };
+      const assets = fitAssets(list);
+      return { ok: true, content: { assets, note: `Image contents are not available; rely on names and descriptions.${assets !== list ? SHORTENED_ASSETS : ''}` } };
     }
     case 'apply_operations': {
       const a = args as z.infer<(typeof TOOL_ARGS)['apply_operations']>;
       const ops = a.operations as unknown as EditOperation[];
       // Page IDs are allocated by the app; only its own page tool may pass one through.
-      if (ops.some((o) => o.type === 'page.create' && o.pageId !== undefined)) return { ok: false, content: { error: 'INVALID_ARGUMENT', message: 'page.create does not take a pageId.' } };
+      if (ops.some((o) => o.type === 'page.create' && o.pageId !== undefined)) return toolError('INVALID_ARGUMENT', 'page.create does not take a pageId.');
       // Node IDs too: the result of each node.insert names the node it made.
-      if (ops.some((o) => o.type === 'node.insert' && o.newNodeId !== undefined)) return { ok: false, content: { error: 'INVALID_ARGUMENT', message: 'node.insert does not take a newNodeId.' } };
+      if (ops.some((o) => o.type === 'node.insert' && o.newNodeId !== undefined)) return toolError('INVALID_ARGUMENT', 'node.insert does not take a newNodeId.');
       // So are new components' IDs: the result of each component.create names the component it made.
-      if (ops.some((o) => o.type === 'component.create' && o.definitionId !== undefined)) return { ok: false, content: { error: 'INVALID_ARGUMENT', message: 'component.create does not take a definitionId.' } };
+      if (ops.some((o) => o.type === 'component.create' && o.definitionId !== undefined)) return toolError('INVALID_ARGUMENT', 'component.create does not take a definitionId.');
       // A whole design is built through a tool of its own; the raw operation is never offered.
       if (ops.some((o) => o.type === 'component.upsert'))
-        return { ok: false, content: { error: 'INVALID_ARGUMENT', message: 'component.upsert is not available here. Build or rebuild a whole component with upsert_managed_component where it is offered, or with component.create and the node and component operations.' } };
+        return toolError('INVALID_ARGUMENT', 'component.upsert is not available here. Build or rebuild a whole component with upsert_managed_component where it is offered, or with component.create and the node and component operations.');
       // Source is patched through its own tool, against the revision and hash it was read at.
       if (ops.some((o) => o.type === 'component.updateSource'))
-        return { ok: false, content: { error: 'INVALID_ARGUMENT', message: "component.updateSource is not available here. Change a code component's source with apply_source_patch, with the revision and hash read_source returns." } };
+        return toolError('INVALID_ARGUMENT', "component.updateSource is not available here. Change a code component's source with apply_source_patch, with the revision and hash read_source returns.");
       // A theme update is one component the request needs, through its own tool: never every outdated one at once.
       if (ops.some((o) => o.type === 'theme.refresh'))
-        return { ok: false, content: { error: 'INVALID_ARGUMENT', message: 'theme.refresh is not available here. Update one installed theme component the request needs with update_theme_component, then make the change.' } };
+        return toolError('INVALID_ARGUMENT', 'theme.refresh is not available here. Update one installed theme component the request needs with update_theme_component, then make the change.');
       // The copy goes right after the original; placing it elsewhere is a node.move of the copy it returns.
-      if (ops.some((o) => o.type === 'node.duplicate' && o.index !== undefined)) return { ok: false, content: { error: 'INVALID_ARGUMENT', message: 'node.duplicate does not take an index.' } };
+      if (ops.some((o) => o.type === 'node.duplicate' && o.index !== undefined)) return toolError('INVALID_ARGUMENT', 'node.duplicate does not take an index.');
       // Keeping every use's alt text is for the app's own web-sized copies, which are the same picture.
-      if (ops.some((o) => o.type === 'asset.replace' && o.keepAlt !== undefined)) return { ok: false, content: { error: 'INVALID_ARGUMENT', message: 'asset.replace does not take keepAlt: uses with the old image’s suggested alt text take the new one’s, and its result lists the uses whose alt text to check.' } };
+      if (ops.some((o) => o.type === 'asset.replace' && o.keepAlt !== undefined)) return toolError('INVALID_ARGUMENT', 'asset.replace does not take keepAlt: uses with the old image’s suggested alt text take the new one’s, and its result lists the uses whose alt text to check.');
       // Choosing some uses is the author's, from the places Assets lists; the AI replaces an image everywhere.
-      if (ops.some((o) => o.type === 'asset.replace' && o.uses !== undefined)) return { ok: false, content: { error: 'INVALID_ARGUMENT', message: 'asset.replace does not take uses: it replaces the image wherever it is used. To change one place, set that image value instead.' } };
+      if (ops.some((o) => o.type === 'asset.replace' && o.uses !== undefined)) return toolError('INVALID_ARGUMENT', 'asset.replace does not take uses: it replaces the image wherever it is used. To change one place, set that image value instead.');
       // A swap keeps every piece of content or is refused, naming what has no place: content goes only by an edit that says so.
       if (ops.some((o) => o.type === 'instance.swapComponent' && o.allowDrops !== undefined))
-        return { ok: false, content: { error: 'INVALID_ARGUMENT', message: 'instance.swapComponent does not take allowDrops. Pick a design with a place for the content, or, if the user asked for that content to go, clear it with instance.setProp first and then swap.' } };
+        return toolError('INVALID_ARGUMENT', 'instance.swapComponent does not take allowDrops. Pick a design with a place for the content, or, if the user asked for that content to go, clear it with instance.setProp first and then swap.');
       const before = host.diagnostics();
       const res = await host.apply(ops, a.expectedRevision, labelForOps(ops, state), callId, undefined, a.scope);
       if (!res.ok) {
@@ -959,7 +972,7 @@ export async function executeTool(name: string, rawArgs: string, host: ToolHost,
         const hint = dependent
           ? 'Nothing in this batch was applied, including its page.create. A new page cannot be referred to in the batch that creates it: create the page alone, then fill it in your next step with the pageId and revision that call returns.'
           : undefined;
-        return { ok: false, content: { ok: false, revision: res.revision, error: res.error, ...(hint ? { hint } : {}) } };
+        return applyFailure(res, hint);
       }
       // A component this batch made or changed that every placement would show the same way is said now, while the
       // model still has its node IDs to hand.
@@ -968,8 +981,8 @@ export async function executeTool(name: string, rawArgs: string, host: ToolHost,
     }
     case 'read_source': {
       const a = args as z.infer<(typeof TOOL_ARGS)['read_source']>;
-      const def = state.components[a.definitionId];
-      if (!def) return { ok: false, content: { error: 'INVALID_ARGUMENT', message: 'Unknown component.' } };
+      const def = Object.hasOwn(state.components, a.definitionId) ? state.components[a.definitionId] : undefined;
+      if (!def) return toolError('INVALID_ARGUMENT', 'Unknown component.');
       if (def.kind !== 'code') return { ok: true, content: { definitionId: def.id, revision: host.revision(), editable: false, note: 'This is a managed component. Its source is generated: read_component with structure shows its design, and operations edit it. A copy can be converted to code with component.convertToCode.' } };
       const lines = (def.source ?? '').split('\n');
       const start = (a.startLine ?? 1) - 1;
@@ -978,39 +991,40 @@ export async function executeTool(name: string, rawArgs: string, host: ToolHost,
     }
     case 'apply_source_patch': {
       const a = args as z.infer<(typeof TOOL_ARGS)['apply_source_patch']>;
-      const def = state.components[a.definitionId];
-      if (!def || def.kind !== 'code' || def.owner !== 'project') return { ok: false, content: { error: 'PATH_DENIED', message: 'Only project code components can be patched.' } };
+      const def = Object.hasOwn(state.components, a.definitionId) ? state.components[a.definitionId] : undefined;
+      if (!def || def.kind !== 'code' || def.owner !== 'project') return toolError('PATH_DENIED', 'Only project code components can be patched.');
       let src = def.source ?? '';
       // Bound to the project as it was read, like any other change: an edit in between (to this component's contract,
       // say) can make a patch written against the old one wrong even when the source itself did not change.
       if (a.expectedRevision !== host.revision())
-        return { ok: false, content: { error: 'STALE_REVISION', revision: host.revision(), message: `This patch was written against revision ${a.expectedRevision}, but the project is at ${host.revision()}. Call read_source again and write the patch against what it returns.` } };
-      if (sourceHash(src) !== a.expectedHash) return { ok: false, content: { error: 'STALE_REVISION', revision: host.revision(), message: 'The source changed. Call read_source again.' } };
+        return toolError('STALE_REVISION', `This patch was written against revision ${a.expectedRevision}, but the project is at ${host.revision()}. Call read_source again and write the patch against what it returns.`, { revision: host.revision() });
+      if (sourceHash(src) !== a.expectedHash) return toolError('STALE_REVISION', 'The source changed. Call read_source again.', { revision: host.revision() });
       if (a.source !== undefined) src = a.source;
       else for (const e of a.edits ?? []) {
         const count = src.split(e.find).length - 1;
-        if (count !== 1) return { ok: false, content: { error: 'INVALID_ARGUMENT', message: `"${e.find.slice(0, 60)}" matched ${count} times; it must match exactly once.` } };
+        if (count !== 1) return toolError('INVALID_ARGUMENT', `"${e.find.slice(0, 60)}" matched ${count} times; it must match exactly once.`);
         src = src.replace(e.find, e.replace);
       }
       const ops: EditOperation[] = [{ type: 'component.updateSource', definitionId: def.id, source: src, expectedHash: a.expectedHash }];
       const res = await host.apply(ops, a.expectedRevision, `Edit ${def.name} source`, callId, undefined, a.scope);
-      if (!res.ok) return { ok: false, content: { ok: false, error: res.error } };
+      if (!res.ok) return applyFailure(res);
       const compile = (await host.compileAll()).filter((d) => d.severity === 'error');
       return { ok: true, mutated: true, ops, content: { ok: true, revision: res.revision, hash: sourceHash(src), compileErrors: compile.map((d) => d.message) } };
     }
     case 'inspect_layout': {
       const a = args as z.infer<(typeof TOOL_ARGS)['inspect_layout']>;
       const resolved = pageIdFor(state, a.pageId);
-      if (!resolved) return { ok: false, content: { error: 'INVALID_ARGUMENT', viewport: a.viewport, message: 'Unknown page.' } };
+      if (!resolved) return toolError('INVALID_ARGUMENT', 'Unknown page.', { details: { viewport: a.viewport } });
       a.pageId = resolved;
       // A narrowed check names the elements it measured, so it is never read as a check of the whole page.
       let targets: ElementRef[] | undefined;
       if (a.refs) {
         const found = resolveLayoutTargets(state, resolved, a.refs);
-        if (!found.ok) return { ok: false, content: { error: 'INVALID_ARGUMENT', pageId: resolved, viewport: a.viewport, message: found.message } };
+        if (!found.ok) return toolError('INVALID_ARGUMENT', found.message, { details: { pageId: resolved, viewport: a.viewport } });
         targets = found.targets;
       }
-      if (!targets) return measurePage((pageId, width) => host.inspectLayout(pageId, width), resolved, a.viewport, host.revision());
+      // Measured from the project as the call read it.
+      if (!targets) return measurePage((pageId, width) => host.inspectLayout(pageId, width), resolved, a.viewport, revision);
       try {
         const report = (await host.inspectLayout(a.pageId, WIDTHS[a.viewport], targets)) as { error?: unknown; targets?: unknown } | null;
         // One measurement per element asked for, each saying whether it shows and where it rendered.
@@ -1023,25 +1037,27 @@ export async function executeTool(name: string, rawArgs: string, host: ToolHost,
         // A preview that is not running or did not load is a failed check, never a clean result; nor is a narrowed
         // check that did not say what it found for each element.
         if (!report || typeof report !== 'object' || report.error || !measured)
-          return { ok: false, content: { error: 'VALIDATION_FAILED', pageId: resolved, viewport: a.viewport, message: `Layout could not be inspected: ${String(report?.error ?? (report ? 'the elements were not measured' : 'no report'))}` } };
-        const envelope = { revision: host.revision(), pageId: resolved, viewport: a.viewport, width: WIDTHS[a.viewport], scope: 'elements' as const };
+          return toolError('VALIDATION_FAILED', `Layout could not be inspected: ${String(report?.error ?? (report ? 'the elements were not measured' : 'no report'))}`, { details: { pageId: resolved, viewport: a.viewport } });
+        const envelope = { revision, pageId: resolved, viewport: a.viewport, width: WIDTHS[a.viewport], scope: 'elements' as const };
         const shaped = { ...report, targets: measured.map((t, i) => ({ ref: targetRef(a.refs![i]), ...t })) };
         return { ok: true, content: { ...envelope, report: fitInspection(envelope, shaped) } };
       } catch (e) {
-        return { ok: false, content: { error: 'VALIDATION_FAILED', pageId: resolved, viewport: a.viewport, message: `Layout could not be inspected: ${(e as Error).message}` } };
+        return toolError('VALIDATION_FAILED', `Layout could not be inspected: ${(e as Error).message}`, { details: { pageId: resolved, viewport: a.viewport } });
       }
     }
     case 'inspect_component': {
       const a = args as z.infer<(typeof TOOL_ARGS)['inspect_component']>;
       const target = resolveInspectTarget(state, a);
-      if ('error' in target) return { ok: false, content: { error: 'INVALID_ARGUMENT', message: target.error } };
+      if ('error' in target) return toolError('INVALID_ARGUMENT', target.error);
       const cases = planComponentInspection(target);
       const offset = a.offset ?? 0;
-      if (offset >= cases.length) return { ok: false, content: { error: 'INVALID_ARGUMENT', message: `There are ${cases.length} cases to measure; offset ${offset} is past the last.` } };
       // Which check could not run, as a result that did would name it.
       const which = { definitionId: target.def.id, ...(target.placement ? { placement: target.placement } : {}), ...(offset ? { offset } : {}) };
-      const failed = (message: string) => ({ ok: false, content: { error: 'VALIDATION_FAILED', ...which, message: `The component could not be inspected: ${message}` } });
-      if (!host.inspectComponent) return failed('measuring a component is not available here.');
+      // Never one of the sweep's windows: a call past its end leaves a check that measured every case a clean one.
+      if (offset >= cases.length) return toolError('INVALID_ARGUMENT', `There are ${cases.length} cases to measure; offset ${offset} is past the last.`);
+      const failed = (message: string, recoverable?: boolean) => toolError('VALIDATION_FAILED', `The component could not be inspected: ${message}`, { details: which, recoverable });
+      // No call in this run can measure it.
+      if (!host.inspectComponent) return failed('measuring a component is not available here.', false);
       const window = cases.slice(offset, offset + MAX_CASES);
       const revision = host.revision();
       let results: ComponentPreviewResult[];
@@ -1051,7 +1067,7 @@ export async function executeTool(name: string, rawArgs: string, host: ToolHost,
         return failed((e as Error).message);
       }
       // Measured against a project that changed meanwhile: it says nothing certain about either.
-      if (host.revision() !== revision) return { ok: false, content: { error: 'STALE_REVISION', ...which, message: 'The project changed while the component was measured. Inspect it again.' } };
+      if (host.revision() !== revision) return toolError('STALE_REVISION', 'The project changed while the component was measured. Inspect it again.', { details: which, revision: host.revision() });
       const digest = digestComponentInspection(target, window, Array.isArray(results) ? results : [], { offset, total: cases.length, all: cases });
       // Nothing measured is a check that could not run, never a clean component.
       if (!digest.measured) return failed(String((digest.content.failed as Array<{ error: string }> | undefined)?.[0]?.error ?? 'the preview gave no measurements.'));
@@ -1061,17 +1077,17 @@ export async function executeTool(name: string, rawArgs: string, host: ToolHost,
       const a = args as z.infer<(typeof TOOL_ARGS)['validate_project']>;
       const diags = [...host.diagnostics(), ...(a.profile === 'component' ? await host.compileAll() : [])];
       // Component reusability findings are listed apart, with their nodes, so other warnings cannot crowd them out.
-      return { ok: true, content: { revision: host.revision(), errors: diags.filter((d) => d.severity === 'error').map((d) => d.message), warnings: diags.filter((d) => d.severity === 'warning' && !isReusabilityWarning(d)).slice(0, 20).map((d) => d.message), ...componentWarnings(diags) } };
+      return { ok: true, content: { revision, errors: diags.filter((d) => d.severity === 'error').map((d) => d.message), warnings: diags.filter((d) => d.severity === 'warning' && !isReusabilityWarning(d)).slice(0, 20).map((d) => d.message), ...componentWarnings(diags) } };
     }
     case 'audit_seo': {
       const report = seoReport(state, host.revision(), args as z.infer<typeof AUDIT_SEO_ARGS>, MAX_RESULT_CHARS - 200);
-      return report.ok ? { ok: true, content: report.content } : { ok: false, content: { error: 'INVALID_ARGUMENT', message: report.message } };
+      return report.ok ? { ok: true, content: report.content } : toolError('INVALID_ARGUMENT', report.message);
     }
     case 'locate_field': {
       const a = args as z.infer<(typeof TOOL_ARGS)['locate_field']>;
       const target = { owner: a.owner, nodeId: a.nodeId, prop: a.prop, ...(a.itemId !== undefined ? { itemId: a.itemId } : {}), ...(a.field !== undefined ? { field: a.field } : {}) };
       const found = locateField(state, target);
-      if (!found.ok) return { ok: false, content: { error: 'INVALID_ARGUMENT', message: [found.message, found.hint].filter(Boolean).join(' ') } };
+      if (!found.ok) return toolError('INVALID_ARGUMENT', [found.message, found.hint].filter(Boolean).join(' '));
       const path = found.path.join(' → ');
       return {
         ok: true,
@@ -1090,9 +1106,9 @@ export async function executeTool(name: string, rawArgs: string, host: ToolHost,
       const a = args as z.infer<(typeof TOOL_ARGS)['request_clarification']>;
       // The whole offer is checked before the user is asked: a question never shows a picture that is not there.
       const ids = [...new Set(a.assetIds ?? [])];
-      if (ids.length && a.widenScope) return { ok: false, content: { error: 'INVALID_ARGUMENT', message: 'A widenScope question takes no assetIds: ask about the images in a separate question.' } };
+      if (ids.length && a.widenScope) return toolError('INVALID_ARGUMENT', 'A widenScope question takes no assetIds: ask about the images in a separate question.');
       const missing = ids.filter((id) => libraryImage(state, id) === null);
-      if (missing.length) return { ok: false, content: { error: 'INVALID_ARGUMENT', message: `No library image has the assetId ${missing.map((id) => `"${id}"`).join(', ')}. Use the assetIds search_assets returns.` } };
+      if (missing.length) return toolError('INVALID_ARGUMENT', `No library image has the assetId ${missing.map((id) => `"${id}"`).join(', ')}. Use the assetIds search_assets returns.`);
       const images = ids.map((id) => imageRef(libraryImage(state, id)!));
       const answer = await host.ask(a.question, a.choices ?? [], a.widenScope, images.length ? images : undefined);
       return { ok: true, content: { answer } };

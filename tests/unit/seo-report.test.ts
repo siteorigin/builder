@@ -157,9 +157,9 @@ describe('audit_seo', () => {
     expect(draft).toMatchObject({ ok: true, content: { scope: { pageId: 'pg_draft' }, published: false, total: 0 } });
     expect((await audit(s, { pageId: '/soon/' })).content).toEqual(draft.content);
     const missing = await audit(s, { pageId: '/nowhere/' });
-    expect(missing).toMatchObject({ ok: false, content: { error: 'INVALID_ARGUMENT', message: expect.stringContaining('No page "/nowhere/"') } });
+    expect(missing).toMatchObject({ ok: false, content: { error: { code: 'INVALID_ARGUMENT', message: expect.stringContaining('No page "/nowhere/"') } } });
     expect((await audit(s, { pageId: '   ' })).ok).toBe(false);
-    expect((await audit(s, { pillar: 'speed' })).content).toMatchObject({ error: 'INVALID_ARGUMENT', message: expect.stringContaining('pillar') });
+    expect((await audit(s, { pillar: 'speed' })).content).toMatchObject({ error: { code: 'INVALID_ARGUMENT', message: expect.stringContaining('pillar') } });
   });
 
   it('reads a project with a page too damaged to read, and never reports on that page', async () => {
@@ -220,8 +220,8 @@ describe('audit_seo', () => {
     expect(rows.map((r: { pageId: string }) => r.pageId)).toEqual(s.site.pageOrder);
     expect(rows.filter((r: { orphan?: boolean }) => r.orphan).length).toBe(first.content.links.orphans);
     // Past the end is an error, never an empty report that reads as a clean one.
-    expect(await audit(s, { offset: all.length })).toMatchObject({ ok: false, content: { message: expect.stringContaining('past the last') } });
-    expect(await audit(s, { linkOffset: 152 })).toMatchObject({ ok: false, content: { message: expect.stringContaining('past the last') } });
+    expect(await audit(s, { offset: all.length })).toMatchObject({ ok: false, content: { ok: false, error: { code: 'INVALID_ARGUMENT', message: expect.stringContaining('past the last') } } });
+    expect(await audit(s, { linkOffset: 152 })).toMatchObject({ ok: false, content: { ok: false, error: { code: 'INVALID_ARGUMENT', message: expect.stringContaining('past the last') } } });
   });
 
   it('leaves out an ID too long to show rather than the rest of the report', async () => {

@@ -316,7 +316,7 @@ describe('choosing the shared header and footer per page', () => {
     const applied: EditOperation[][] = [];
     const host = { state: () => s, revision: () => 1, diagnostics: () => [], apply: async (ops: EditOperation[]) => (applied.push(ops), { ok: true, revision: 2 }) } as unknown as ToolHost;
     const old = await executeTool('apply_operations', JSON.stringify({ expectedRevision: 1, operations: [{ type: 'page.update', pageId: about, title: 'About us' }, { type: 'page.update', pageId: about, shell: 'none' }] }), host, 'c1');
-    expect(old).toMatchObject({ ok: false, content: { error: 'INVALID_ARGUMENT', message: expect.stringContaining('showHeader and showFooter') } });
+    expect(old).toMatchObject({ ok: false, content: { error: { code: 'INVALID_ARGUMENT', message: expect.stringContaining('showHeader and showFooter') } } });
     expect(applied).toEqual([]);
     const now = await executeTool('apply_operations', JSON.stringify({ expectedRevision: 1, operations: [{ type: 'page.update', pageId: about, showHeader: false }] }), host, 'c2');
     expect(now.ok).toBe(true);
