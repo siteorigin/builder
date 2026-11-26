@@ -3,13 +3,17 @@ import type { MenuItemConstructorOptions } from 'electron';
 import type { MenuCommand } from './menu-commands';
 
 /** What the application menu's own items do: hand a command to the editor, route Undo and Redo through it, open a
- *  link outside the app, show the app's name and version (Windows and Linux, which have no About panel), or open the
- *  third-party notices. */
+ *  link outside the app, show the app's name and build (Windows and Linux, which have no About panel), copy the build
+ *  details, reveal the main process's log file, or open the third-party notices. */
 export interface AppMenuActions {
   command: (cmd: MenuCommand) => void;
   history: (action: 'undo' | 'redo') => NonNullable<MenuItemConstructorOptions['click']>;
   openLink: (url: string) => void;
   about: () => void;
+  /** Put the build details (buildDetailsText) on the clipboard, to paste into a report. */
+  copyBuildDetails: () => void;
+  /** Reveal the main process's log file (main-log.ts) in the file manager. */
+  showLog: () => void;
   /** Open the third-party notices file (noticesFile) with the desktop's text viewer. */
   openNotices: () => void;
 }
@@ -38,11 +42,14 @@ export function offersDeveloperItems({ packaged, automated, developerMode }: { p
 /** The Help menu's link. */
 export const WEBSITE_URL = 'https://siteorigin.com';
 
+/** Where a problem is reported: a new issue on the public repository, which the person fills in and submits themselves. */
+export const REPORT_URL = 'https://github.com/siteorigin/builder/issues/new';
+
 /**
  * The application menu bar for a platform, as data: the app menu (macOS, with Settings…), File (with Open Project
  * Folder… where the pickers cannot take a file or a folder at once, and Settings… off macOS), Edit (Undo and Redo
- * routed through the editor, then Electron's text roles), View, Window and Help (the website, the third-party notices,
- * and About off macOS). Export and Close Project are offered only while a project is open; Reload and the developer
+ * routed through the editor, then Electron's text roles), View, Window and Help (the website, reporting a problem,
+ * copying the build details, the log file, the third-party notices, and About off macOS). Export and Close Project are offered only while a project is open; Reload and the developer
  * tools only to developers. No Electron import, so the menu can be listed for every platform in a test
  * (tests/coverage/surfaces.ts).
  */
@@ -130,6 +137,11 @@ export function appMenuTemplate(platform: NodeJS.Platform, { projectOpen, develo
       role: 'help',
       submenu: [
         { label: 'SiteOrigin Website', click: () => actions.openLink(WEBSITE_URL) },
+        { type: 'separator' },
+        { id: 'report-problem', label: 'Report a Problem…', click: () => actions.openLink(REPORT_URL) },
+        { id: 'copy-build-details', label: 'Copy Build Details', click: () => actions.copyBuildDetails() },
+        { id: 'show-log', label: 'Show Log File', click: () => actions.showLog() },
+        { type: 'separator' },
         { id: 'third-party-notices', label: 'Third-Party Notices', click: () => actions.openNotices() },
         // macOS shows the version in the app menu's About panel.
         ...(isMac ? [] : [{ type: 'separator' as const }, { label: 'About SiteOrigin Builder', click: actions.about }])
