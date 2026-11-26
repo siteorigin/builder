@@ -668,6 +668,23 @@ describe('collection query edges', () => {
       }
     }) as QueryPlace;
     expect(queryEntries(s, { collectionId: 'posts', limit: 1 }, place).length).toBe(1);
+    let reads = 0;
+    const watched = Object.defineProperty({}, 'entry', {
+      get() {
+        reads++;
+        return { collectionId: 'posts', entryId: 'en_first' };
+      }
+    }) as QueryPlace;
+    expect(ids(s, { collectionId: 'posts', sort: byId }, watched)).toContain('en_first');
+    expect(reads).toBe(0);
+    let n = 0;
+    const shifting = Object.defineProperty({}, 'collectionId', {
+      get() {
+        return n++ < 1 ? 'posts' : 1n;
+      }
+    });
+    expect(normalizeCollectionQuery(shifting)).toEqual({ collectionId: 'posts' });
+    expect(() => collectionQueryKey(shifting)).not.toThrow();
     // Rich text damaged past reading finds nothing rather than stopping whatever asked.
     s.collections.posts.entries.en_first.body = [{ type: 'p', spans: [null] }] as unknown as EntryDoc['body'];
     expect(queryEntries(s, { collectionId: 'posts', where: [{ field: 'body', op: 'contains', value: 'x' }] })).toEqual([]);

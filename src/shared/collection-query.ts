@@ -113,53 +113,52 @@ export function normalizePlace(raw: unknown): QueryPlace {
 }
 
 function normalize(raw: unknown): CollectionQuery | null {
-  if (!isObj(raw) || typeof raw.collectionId !== 'string' || !raw.collectionId) return null;
+  if (!isObj(raw)) return null;
+  // Each property is read once, so a value that answers differently each time is checked as it is kept.
+  const { collectionId, where: rawWhere, sort: rawSort, limit: rawLimit, offset: rawOffset, excludeCurrent } = raw;
+  if (typeof collectionId !== 'string' || !collectionId) return null;
   const where: QueryClause[] = [];
-  if (raw.where !== undefined) {
-    if (!Array.isArray(raw.where)) return null;
-    for (const c of raw.where) {
-      if (!isObj(c) || typeof c.field !== 'string' || !(QUERY_OPERATORS as readonly unknown[]).includes(c.op)) return null;
-      const op = c.op as QueryOperator;
+  if (rawWhere !== undefined) {
+    if (!Array.isArray(rawWhere)) return null;
+    for (const c of Array.from(rawWhere as unknown[])) {
+      if (!isObj(c)) return null;
+      const { field, op, value } = c;
+      if (typeof field !== 'string' || !(QUERY_OPERATORS as readonly unknown[]).includes(op)) return null;
       if (op === 'exists') {
-        if (c.value !== undefined && typeof c.value !== 'boolean') return null;
-        where.push({
-          field: c.field,
-          op,
-          ...(c.value === false ? { value: false } : {})
-        });
+        if (value !== undefined && typeof value !== 'boolean') return null;
+        where.push({ field, op, ...(value === false ? { value: false } : {}) });
       } else if (op === 'in') {
         // Read item by item, so a hole in the list is a value of the wrong kind rather than skipped.
-        const values = Array.isArray(c.value) ? Array.from(c.value as unknown[]) : null;
+        const values = Array.isArray(value) ? Array.from(value as unknown[]) : null;
         if (!values || !values.every(isScalar)) return null;
-        where.push({ field: c.field, op, value: values });
+        where.push({ field, op, value: values });
       } else {
-        if (!isScalar(c.value)) return null;
-        where.push({ field: c.field, op, value: c.value });
+        if (!isScalar(value)) return null;
+        where.push({ field, op: op as QueryOperator, value });
       }
     }
   }
   const sort: QuerySort[] = [];
-  if (raw.sort !== undefined) {
-    if (!Array.isArray(raw.sort)) return null;
-    for (const s of raw.sort) {
-      if (!isObj(s) || typeof s.field !== 'string' || (s.direction !== undefined && s.direction !== 'asc' && s.direction !== 'desc')) return null;
-      sort.push({
-        field: s.field,
-        ...(s.direction === 'desc' ? { direction: 'desc' as const } : {})
-      });
+  if (rawSort !== undefined) {
+    if (!Array.isArray(rawSort)) return null;
+    for (const s of Array.from(rawSort as unknown[])) {
+      if (!isObj(s)) return null;
+      const { field, direction } = s;
+      if (typeof field !== 'string' || (direction !== undefined && direction !== 'asc' && direction !== 'desc')) return null;
+      sort.push({ field, ...(direction === 'desc' ? { direction: 'desc' as const } : {}) });
     }
   }
-  const limit = count(raw.limit);
-  const offset = count(raw.offset);
-  if ((raw.limit !== undefined && limit === undefined) || (raw.offset !== undefined && offset === undefined)) return null;
-  if (raw.excludeCurrent !== undefined && typeof raw.excludeCurrent !== 'boolean') return null;
+  const limit = count(rawLimit);
+  const offset = count(rawOffset);
+  if ((rawLimit !== undefined && limit === undefined) || (rawOffset !== undefined && offset === undefined)) return null;
+  if (excludeCurrent !== undefined && typeof excludeCurrent !== 'boolean') return null;
   return {
-    collectionId: raw.collectionId,
+    collectionId,
     ...(where.length ? { where } : {}),
     ...(sort.length ? { sort } : {}),
     ...(limit !== undefined ? { limit } : {}),
     ...(offset ? { offset } : {}),
-    ...(raw.excludeCurrent === true ? { excludeCurrent: true } : {})
+    ...(excludeCurrent === true ? { excludeCurrent: true } : {})
   };
 }
 
@@ -370,7 +369,8 @@ const ABSENT_LAST = (a: QueryScalar | undefined, b: QueryScalar | undefined): nu
 export function queryEntries(state: ProjectState, raw: unknown, rawPlace: QueryPlace = {}): EntryDoc[] {
   const query = normalizeCollectionQuery(raw);
   if (!query) return [];
-  const place = normalizePlace(rawPlace);
+  // The place is read only when the query reads it.
+  const place = query.collectionId === CURRENT_COLLECTION || query.excludeCurrent ? normalizePlace(rawPlace) : {};
   try {
     return evaluate(state, query, place);
   } catch {
