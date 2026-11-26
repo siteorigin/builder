@@ -1737,6 +1737,11 @@ export class Orchestrator {
       const changes = describeOps(executedOps, startState, session.state, opResults);
       const committed = await session.completeRun(`AI (partial): ${requestText.slice(0, 60)}`);
       msg.text = '';
+      // Connecting links can take the project back to how it was: then nothing is kept, and nothing is partial.
+      if (!committed) {
+        await finish('failed', `Stopped after ${what} without making any changes.`, { error, usage, checks: [{ status: 'issue', text: `Stopped at ${what} before the request was finished.` }] });
+        return;
+      }
       await finish('partial', `I reached ${what} before finishing, so I stopped here. The changes so far are checked and kept, and you can undo them in one step. Reply "continue" to carry on.`, {
         changes,
         checks: [
@@ -2193,9 +2198,12 @@ export class Orchestrator {
             // The model's own summary may call the request done; what is missing is the project's to say.
             // Links left on other pages say how to connect them: Continue would send the same limited request again.
             const again = links.deferred.length ? '' : ' Press Continue, or reply "continue", to finish it.';
-            const summary = unfinished.length ? `This request is not finished yet. ${unfinished.join(' ')} The changes made so far are checked and kept.${again}` : finalText || 'Done.';
-            // An unfinished request is never reported as a success: it is partial, its valid work kept as one step.
-            await finish(unfinished.length ? 'partial' : 'completed', summary, { changes, checks, canUndo: committed, usage, ...(unfinished.length ? { incomplete: true, unfinished: unfinishedPages(), pendingLinks: macros.pendingLinks } : {}) });
+            // An unfinished request is never reported as a success: it is partial, its valid work kept as one step. One whose
+            // changes came to nothing (a link put back as it was) kept nothing, so it is unfinished with no changes.
+            const kept = unfinished.length ? (committed ? `The changes made so far are checked and kept.${again}` : `Nothing was changed.${again ? ' Press Continue, or reply "continue", to try again.' : ''}`) : '';
+            const summary = unfinished.length ? `This request is not finished yet. ${unfinished.join(' ')} ${kept}` : finalText || 'Done.';
+            const status = !unfinished.length ? 'completed' : committed ? 'partial' : 'no-changes';
+            await finish(status, summary, { changes: unfinished.length && !committed ? [] : changes, checks, canUndo: committed, usage, ...(unfinished.length ? { incomplete: true, unfinished: unfinishedPages(), pendingLinks: macros.pendingLinks } : {}) });
           } else {
             await session.completeRun('AI (no changes)');
             msg.text = finalText;

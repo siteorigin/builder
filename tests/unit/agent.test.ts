@@ -850,6 +850,40 @@ describe('page scope (#513)', () => {
     expect(banner().props.primaryLink).toEqual({ type: 'page', target: contact });
   });
 
+  it('is not partial when connecting the links puts the project back as it was at a limit: nothing was kept (#741)', async () => {
+    let about = '';
+    let contact = '';
+    const banner = () => Object.values(env.session.state.pages[about].nodes).find((n) => n.kind === 'instance' && env.session.state.components[n.definitionId]?.componentId === 'cta.banner') as InstanceNode;
+    const env = await setup([
+      () => [call('l1', 'upsert_page_with_sections', { slug: '/about/', sections: [{ componentId: 'cta.banner', props: { heading: 'Talk to us', primaryLink: '/contact-us/' } }] })],
+      () => finish('Done.'),
+      () => finish('Done.'),
+      // Continued: the only change clears the link the author connected, which the run then connects again.
+      () => [call('c1', 'apply_operations', { expectedRevision: env.session.revision, operations: [{ type: 'instance.setProp', owner: { kind: 'page', id: about }, nodeId: banner().id, prop: 'primaryLink', value: { type: 'none', target: '' } }] })],
+      () => [call('r1', 'read_project', {})],
+      () => [call('r2', 'read_project', {})]
+    ]);
+    about = Object.values(env.session.state.pages).find((p) => p.route === '/about/')!.id;
+    const first = await env.run('Point the About banner at a Contact us page');
+    expect(first.result).toMatchObject({ status: 'partial', pendingLinks: [expect.objectContaining({ route: '/contact-us/' })] });
+    expect((await env.session.apply({ operations: [{ type: 'page.create', title: 'Contact us', route: '/contact-us/' }], expectedRevision: env.session.revision }, { label: 'Add page', source: 'user' })).ok).toBe(true);
+    contact = Object.values(env.session.state.pages).find((p) => p.route === '/contact-us/')!.id;
+    expect((await env.session.apply({ operations: [{ type: 'instance.setProp', owner: { kind: 'page', id: about }, nodeId: banner().id, prop: 'primaryLink', value: { type: 'page', target: contact } }], expectedRevision: env.session.revision }, { label: 'Link', source: 'user' })).ok).toBe(true);
+    const entries = env.session.historyInfo().entries.length;
+    const turns = LIMITS.modelTurns;
+    LIMITS.modelTurns = 2;
+    try {
+      const { result } = await env.run('continue', { scope: 'site' });
+      expect(result).toMatchObject({ status: 'failed', error: 'turn limit', canUndo: false });
+      expect(result?.incomplete).toBeUndefined();
+      expect(result?.summary).toBe('Stopped after the limit of 2 steps without making any changes.');
+    } finally {
+      LIMITS.modelTurns = turns;
+    }
+    expect(banner().props.primaryLink).toEqual({ type: 'page', target: contact });
+    expect(env.session.historyInfo().entries).toHaveLength(entries);
+  });
+
   it('sends the request without the page glance when only that keeps it inside a known window', async () => {
     const caps = { contextWindowKnown: true, maxOutputTokens: 2000 } as const;
     // Long enough that both windows below give the glance room for every section's text: only the fit decides.
@@ -4931,8 +4965,16 @@ describe('a run stopped at its time limit (#741)', () => {
   const clock = () => {
     const real = Date.now.bind(Date);
     let skip = 0;
+    let expiredAt = Infinity;
     const spy = vi.spyOn(Date, 'now').mockImplementation(() => real() + skip);
-    return { expire: () => (skip += LIMITS.activeMs + 1000), restore: () => spy.mockRestore() };
+    return {
+      expire: () => {
+        skip += LIMITS.activeMs + 1000;
+        expiredAt = Date.now();
+      },
+      expiredAt: () => expiredAt,
+      restore: () => spy.mockRestore()
+    };
   };
   /** A change, then a turn that outlives the time limit and asks for one more read. */
   const turns = (session: () => ProjectSession, expire: () => void): Turn[] => [
@@ -4947,7 +4989,14 @@ describe('a run stopped at its time limit (#741)', () => {
     const time = clock();
     try {
       const inspected: Array<[string, number, number]> = [];
-      const env = await setup(turns(() => env.session, time.expire), { inspectLayout: async (pageId, width) => (inspected.push([pageId, width, env.session.revision]), clean(width)) });
+      let afterLimit = 0;
+      const env = await setup(turns(() => env.session, time.expire), {
+        inspectLayout: async (pageId, width) => {
+          inspected.push([pageId, width, env.session.revision]);
+          if (env.session.revision >= 1 && Date.now() >= time.expiredAt()) afterLimit++;
+          return clean(width);
+        }
+      });
       const homeId = env.session.state.site.homePageId;
       const before = JSON.stringify(env.session.state.pages[homeId]);
       const entries = env.session.historyInfo().entries.length;
@@ -4957,6 +5006,7 @@ describe('a run stopped at its time limit (#741)', () => {
       expect(result?.checks).toContainEqual({ status: 'issue', text: 'Stopped at the 10-minute time limit before the request was finished.' });
       // The changed page was measured as the run left it, after its time had run out.
       expect(inspected).toContainEqual([homeId, 1280, 1]);
+      expect(afterLimit).toBe(1);
       expect(result?.checks).toContainEqual({ status: 'pass', text: 'Fits the screen at desktop width on Home.' });
       expect(env.events.filter((e) => e.kind === 'status' && e.runId === runId).at(-1)?.status).toBe('partial');
       // Kept as one step under the partial label, and the project as it was before the request is one undo away.
@@ -4997,16 +5047,20 @@ describe('a run stopped at its time limit (#741)', () => {
   it('is stopped, not kept, when the user stops it while the preview check after the limit is still running', async () => {
     const time = clock();
     try {
+      let started = false;
       const env = await setup(turns(() => env.session, time.expire), {
         inspectLayout: (_pageId, width) => {
           if (env.session.revision < 1) return Promise.resolve(clean(width));
-          env.orch.stop();
+          started = true;
           return new Promise(() => undefined);
         }
       });
       const homeId = env.session.state.site.homePageId;
       const before = JSON.stringify(env.session.state.pages[homeId]);
-      const { result } = await env.run('Give the hero more room');
+      const pending = env.run('Give the hero more room');
+      while (!started) await new Promise((r) => setTimeout(r, 5));
+      env.orch.stop();
+      const { result } = await pending;
       expect(result?.status).toBe('cancelled');
       expect(JSON.stringify(env.session.state.pages[homeId])).toBe(before);
     } finally {

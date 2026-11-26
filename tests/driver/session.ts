@@ -1190,7 +1190,7 @@ export class Session {
         else if (card) {
           // The journal lost its end; the panel shows it. The run is reported as over, with what its card says.
           settled = { reason: 'terminal' };
-          run = { ...run, state: 'terminal', status: card.status || run.status, question: null, result: run.result ?? { status: card.status, summary: card.summary, changes: card.changes ?? [], canUndo: card.buttons.includes('Undo turn') } };
+          run = { ...run, state: 'terminal', status: card.status || run.status, question: null, result: run.result ?? { status: card.status, summary: card.summary, changes: card.changes ?? [], canUndo: card.buttons.includes('Undo turn'), ...(card.status === 'partial' ? { incomplete: true } : {}) } };
         }
       }
       if (settled) break;

@@ -28,7 +28,7 @@ The v0.1 implementation deliberately departs from this draft in six places. The 
 | Source editor | Monaco. | CodeMirror 6 with Svelte language support and live compiler diagnostics: much smaller, and enough for project code components. | §15.1 |
 | Tool result payload | A tool's payload under `data` in `ToolResult`. | A tool's own fields sit beside `ok` and `revision`, which every result has, success or failure: write results always carried them there, and every reader of a result keeps one place to look. | §13.3 |
 | Catalogue location | A separate `siteorigin-builder-components` repository. | v0.1 bundles the Foundation theme from this repository (`src/catalogue/`, written in a small TypeScript DSL). A separate component repository and its build are future targets. | §9.1, §23 |
-| Unfinished runs | A run that reaches a budget limit is unsuccessful and is reverted, optionally keeping the attempted diff for inspection. | A run that reaches its turn, tool-call, time or context limit, or finishes with requested work still missing, ends **Partly done** (`partial`), never Completed. Its validated work is kept as one undoable history group so the user can continue it. Work with new errors, or that breaks a changed page in the application's preview check, is still reverted and the run fails. Reverting valid work would throw away model time the user already paid for, and Continue needs that work in place. | §11.3, §12.3, §12.5 |
+| Unfinished runs | A run that reaches a budget limit is unsuccessful and is reverted, optionally keeping the attempted diff for inspection. | A run that reaches its turn, tool-call, time or context limit, or finishes with requested work still missing, after making valid changes, ends **Partly done** (`partial`), never Completed. Its validated work is kept as one undoable history group so the user can continue it. Work with new errors, or that breaks a changed page in the application's preview check, is still reverted and the run fails. A run that changed nothing is not partial: stopped at a limit it fails, and finished with work missing it reads as not finished with no changes. Reverting valid work would throw away model time the user already paid for, and Continue needs that work in place. | §11.3, §12.3, §12.5 |
 
 ## Contents
 
@@ -609,6 +609,7 @@ stateDiagram-v2
     Running --> Validating
     Validating --> Repairing
     Repairing --> Running
+    Repairing --> Validating
     Validating --> Completed
     Validating --> Partial
     Running --> Stopping
@@ -620,6 +621,7 @@ stateDiagram-v2
     Running --> Failed
     Validating --> Failed
     Running --> Conflicted
+    Validating --> Conflicted
     Stopping --> Conflicted
     Completed --> [*]
     Partial --> [*]
@@ -658,7 +660,7 @@ If the model gives a final answer while required validation is incomplete, the o
 
 These are configurable engineering defaults to tune during evaluation. Report the limiting condition and preserve a recoverable checkpoint. Do not silently continue indefinitely or treat a budget limit as success.
 
-*(Changed in implementation.)* A run that reaches a budget limit (model turns, tool calls, active time or the model's context window) validates what it has changed so far, with the same checks as a normal finish, including the application's preview check of the changed pages. Valid work is kept as one undoable history group and the run ends **Partly done** (`partial`), naming the limit it reached and what is still missing, so the user can continue it. A run that changed nothing, whose work has new errors, or whose work breaks a changed page in the preview, is reverted to the pre-run checkpoint and ends Failed. A run that finishes with requested work still missing ends Partly done in the same way. A failed mutating run is still reverted unless a conflict prevents safe restoration.
+*(Changed in implementation.)* A run that reaches a budget limit (model turns, tool calls, active time or the model's context window) validates what it has changed so far, with the same checks as a normal finish, including the application's preview check of the changed pages. Valid work is kept as one undoable history group and the run ends **Partly done** (`partial`), naming the limit it reached and what is still missing, so the user can continue it. A run that changed nothing, whose work has new errors, or whose work breaks a changed page in the preview, is reverted to the pre-run checkpoint and ends Failed. A run that finishes with requested work still missing ends Partly done in the same way when it kept changes; one that changed nothing ends with no changes, marked not finished, and can be continued. A failed mutating run is still reverted unless a conflict prevents safe restoration.
 
 ### 12.6 Cancellation and provider retry
 
