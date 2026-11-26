@@ -245,7 +245,11 @@ describe('the source tools’ host', () => {
     expect(await approvals.approved(s.state.manifest.projectId, s.state.sources!.crew)).toBe(false);
     expect(await host.approve(again.ticket)).toBe(true);
     expect(await approvals.approved(s.state.manifest.projectId, s.state.sources!.crew)).toBe(true);
-    // A fetchAll the module does not export is never run as its reader.
+    // A converter that gives no entries for the records the source has would take every entry away at its next sync.
+    expect(await host.verify('crew', { converter: 'export function convert() {\n  return [];\n}\n' })).toMatchObject({ ok: false, message: expect.stringMatching(/gives no entries/) });
+    // A fetchAll the module does not export is never run as its reader, nor a function it names undefined.
+    const shadow = await runConverter('function undefined() { return [{ uuid: "nope" }]; }\nexport function convert(items) { return items; }\n', { richText: () => [] }, async () => [{ uuid: 'read' }]);
+    expect(shadow.items).toEqual([{ uuid: 'read' }]);
     let asked = 0;
     const r = await runConverter('function fetchAll() { return [{ uuid: "nope" }]; }\nexport function convert(items) { return items; }\n', { richText: () => [] }, async () => (asked++, [{ uuid: 'read' }]));
     expect(r.items).toEqual([{ uuid: 'read' }]);
@@ -299,7 +303,12 @@ describe('the source tools’ host', () => {
     expect((await leaky.s.apply({ operations: [{ type: 'source.upsert', sourceId: 'crew', name: saved.name, adapter: 'rest', collectionId: 'team', config: saved.config, converter: GOOD }] as EditOperation[] }, { label: 'Converter' })).ok).toBe(true);
     const disk = leaky.s.state.sources!.crew;
     disk.converter!.code = `// ${SECRET}\n${GOOD}`;
-    expect(await leaky.host.inspect('crew', fp(leaky.s))).toMatchObject({ ok: false, code: 'secret' });
+    expect(await leaky.host.inspect('crew', fp(leaky.s))).toMatchObject({ ok: false, code: 'secret', message: expect.not.stringContaining(SECRET) });
+    expect(await leaky.host.verify('crew', { converter: GOOD })).toMatchObject({ ok: false, code: 'secret' });
+    // Its name, too.
+    disk.converter!.code = GOOD;
+    disk.name = `Crew ${SECRET}`;
+    expect(await leaky.host.inspect('crew', fp(leaky.s))).toMatchObject({ ok: false, code: 'secret', message: expect.not.stringContaining(SECRET) });
     // The settings the run read, or none: settings saved since are not read in their place.
     expect(await leaky.host.inspect('crew', 'an earlier fingerprint')).toMatchObject({ ok: false, code: 'stale' });
   });
@@ -323,6 +332,7 @@ describe('the project', () => {
     expect((await ai([op({ converter: GOOD })], { ...tested(GOOD), base: 'stale' })).error?.message).toMatch(/changed since/);
     // Only what was tested: another converter under the same grant is refused.
     expect((await ai([op({ converter: `${GOOD}\n// another` })], tested(GOOD))).error?.message).toMatch(/only the mapping or converter it tested/);
+    expect((await ai([op({ converter: GOOD })], { ...tested(GOOD), sourceId: 'other' })).error?.message).toMatch(/only the source it tested/);
     expect(s.state.sources!.crew.converter).toBeUndefined();
     expect((await ai([op({ converter: GOOD })], tested(GOOD))).ok).toBe(true);
     expect(s.state.sources!.crew.converter?.code).toBe(GOOD);

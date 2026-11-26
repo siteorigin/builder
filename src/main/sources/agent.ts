@@ -72,18 +72,26 @@ export function createAgentSources(deps: AgentSourceDeps): (signal: AbortSignal)
     // Read for the settings the run read: records of other settings would be shown beside these.
     const stale = { ok: false as const, code: 'stale', message: `“${found.source.name}” changed while it was being read. Read the project again.` };
     if (sourceFingerprint(found.source) !== fingerprint) return stale;
-    // What the tool shows of how the source reads them now is checked too: a converter edited outside the app can hold anything.
-    let values: string[];
-    try {
-      values = await deps.secrets.values(found.project.state.manifest.projectId);
-    } catch (e) {
-      return { ok: false, code: 'secrets', message: `${(e as Error).message} The source cannot be checked for them.` };
-    }
-    if (holdsSecret(sourceConversionKey(found.source), values)) return { ok: false, code: 'secret', message: `“${found.source.name}”’s mapping or converter holds one of your secrets, which is never shown.` };
+    const leaked = await holdsUserSecret(found.project, found.source);
+    if (leaked) return leaked;
     const r = await inspectSource({ runner: deps.runner, secrets: deps.secrets, approvals: deps.approvals, signal }, found.project.state, found.source);
     if (deps.project() !== found.project) return { ok: false, message: 'The project was closed before the source was read.' };
     const now = Object.hasOwn(found.project.state.sources ?? {}, sourceId) ? found.project.state.sources![sourceId] : undefined;
     return now && sourceFingerprint(now) === fingerprint ? r : stale;
+  };
+
+  /**
+   * Why a source's saved settings cannot be shown or tested by the assistant when they hold one of the user's secrets
+   * (settings edited outside the app can hold anything, its name and its converter included), or null. Said by its ID.
+   */
+  const holdsUserSecret = async (project: AgentSourceProject, source: SourceDoc): Promise<{ ok: false; code: string; message: string } | null> => {
+    let values: string[];
+    try {
+      values = await deps.secrets.values(project.state.manifest.projectId);
+    } catch (e) {
+      return { ok: false, code: 'secrets', message: `${(e as Error).message} The source cannot be checked for them.` };
+    }
+    return holdsSecret(sourceFingerprint(source), values) ? { ok: false, code: 'secret', message: `The settings of the source ${source.id} hold one of your secrets, which is never shown. The author takes it out in Connect external source.` } : null;
   };
 
   const verify: (sourceId: string, change: Parameters<SourceToolHost['verify']>[1], signal: AbortSignal) => Promise<SourceVerifyResult> = async (sourceId, change, signal) => {
@@ -106,6 +114,8 @@ export function createAgentSources(deps: AgentSourceDeps): (signal: AbortSignal)
       ...('converter' in change ? { converter: change.converter } : { mapping: change.mapping }),
       ...(source.removal !== undefined ? { removal: source.removal } : {})
     } as SourceSettingsDraft;
+    const leaked = await holdsUserSecret(project, source);
+    if (leaked) return { ...fail(leaked.message, [], false), code: leaked.code };
     if (!(await signInApproved(deps.approvals, project.state.manifest.projectId, source))) return fail(unapprovedMessage(source), [], false);
     const made = await sourceDraftState(project.state, draft, deps.secrets);
     if ('message' in made) return fail(made.message, [{ stage: 'settings', message: made.message }]);
@@ -120,7 +130,9 @@ export function createAgentSources(deps: AgentSourceDeps): (signal: AbortSignal)
       const line = /\(line (\d+)\)/.exec(r.message)?.[1];
       return fail(r.message, recoverable ? [{ stage, message: r.message, ...(line ? { line: Number(line) } : {}) }] : [], recoverable);
     }
-    // The records it read, not those it gave: a converter that makes up an entry shows nothing about the source.
+    // Records read and records given: one that makes up an entry shows nothing of the source, and one that gives none
+    // would have its next sync draft or remove every entry the source has.
+    if (r.raw.length && !r.total) return fail(`The ${'converter' in change ? 'converter' : 'mapping'} gives no entries for the ${r.raw.length === 1 ? 'record' : 'records'} “${source.name}” has, so its next sync would take away every entry it synced.`, [{ stage: 'records', message: 'It gives no entries.' }]);
     if (!r.raw.length) return fail(`“${source.name}” has no records now, so nothing shows the ${'converter' in change ? 'converter' : 'mapping'} is right. Ask the author to add one at the source first.`, [], false);
     const ticket = randomUUID();
     tickets.set(ticket, { project, sourceId, candidate: sourceFingerprint(made.source) });

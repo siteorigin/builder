@@ -237,6 +237,14 @@ describe('syncing a project without the app', () => {
     // Neither staged nor in place: the sync is not called finished.
     writeFileSync(join(pending, 'plan.json'), JSON.stringify([{ rel: 'siteorigin/assets.json', staged: '0', sha: 'b'.repeat(64) }]));
     await expect(finishPending(dir)).rejects.toThrow(/missing/);
+    // In place, but not the file the plan names: not finished either, and nothing before it moved.
+    writeFileSync(join(dir, 'siteorigin/assets.json'), '{"other":true}');
+    writeFileSync(join(pending, '0'), '{"staged":true}');
+    writeFileSync(join(pending, 'plan.json'), JSON.stringify([
+      { rel: 'siteorigin/site.json', staged: '0', sha: createHash('sha256').update('{"staged":true}').digest('hex') },
+      { rel: 'siteorigin/assets.json', staged: '1', sha: 'c'.repeat(64) }
+    ]));
+    await expect(finishPending(dir)).rejects.toThrow(/damaged/);
     expect(readFileSync(join(dir, 'siteorigin/site.json'), 'utf8')).toBe('{"keep":true}');
     expect(existsSync(join(pending, 'plan.json'))).toBe(true);
   });

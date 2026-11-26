@@ -9,7 +9,8 @@
  * shows the refreshed entries once the project has been opened in it again.
  */
 import { fork } from 'node:child_process';
-import { promises as fs, realpathSync } from 'node:fs';
+import { constants as fsConstants, promises as fs, realpathSync } from 'node:fs';
+import { randomBytes } from 'node:crypto';
 import { dirname, join, relative, resolve, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import type { AssetRecord, ProjectState, SourceDoc } from '@shared/types';
@@ -116,8 +117,9 @@ async function moveInto(from: string, target: string) {
     await fs.rename(from, target);
   } catch (e) {
     if ((e as NodeJS.ErrnoException).code !== 'EXDEV') throw e;
-    const beside = `${target}.${process.pid}.sync`;
-    await fs.copyFile(from, beside);
+    const beside = `${target}.${randomBytes(6).toString('hex')}.sync`;
+    // Never through a file already there (a link left at that name).
+    await fs.copyFile(from, beside, fsConstants.COPYFILE_EXCL);
     await fs.rename(beside, target);
     await fs.rm(from, { force: true });
   }
@@ -130,13 +132,18 @@ async function moveInto(from: string, target: string) {
  */
 export async function finishPending(dir: string): Promise<boolean> {
   const pending = await pendingDir(dir);
+  const unreadable = () => new SyncCliError(`The files of a sync that was cut short (${PENDING_DIR}) cannot be read, so nothing was changed.`);
+  const planned = await fs.lstat(join(pending, 'plan.json')).catch((e: NodeJS.ErrnoException) => (e.code === 'ENOENT' ? null : Promise.reject(unreadable())));
+  if (!planned) {
+    await fs.rm(pending, { recursive: true, force: true });
+    return false;
+  }
+  if (!planned.isFile()) throw unreadable();
   let text: string;
   try {
     text = await fs.readFile(join(pending, 'plan.json'), 'utf8');
-  } catch (e) {
-    if ((e as NodeJS.ErrnoException).code !== 'ENOENT') throw new SyncCliError(`The files of a sync that was cut short (${PENDING_DIR}) cannot be read, so nothing was changed.`);
-    await fs.rm(pending, { recursive: true, force: true });
-    return false;
+  } catch {
+    throw unreadable();
   }
   let raw: unknown;
   try {
@@ -146,20 +153,25 @@ export async function finishPending(dir: string): Promise<boolean> {
   }
   const plan = checkedPlan(raw);
   const targets = await Promise.all(plan.map((step) => inside(dir, step.rel)));
+  // Every file checked before any is moved: each staged copy as the plan says it, or (moved already by the sync that
+  // was cut short) in place as the plan says it.
+  const moves: boolean[] = [];
   for (const [i, step] of plan.entries()) {
-    const target = targets[i];
     if (step.staged === null) {
-      await fs.rm(target, { force: true });
+      moves.push(false);
       continue;
     }
     const from = join(pending, step.staged);
     const staged = await fs.lstat(from).catch(() => null);
-    if (staged?.isFile()) await moveInto(from, target);
-    else {
-      // Moved already by the sync that was cut short, or lost: only the very file the plan names will do.
-      const there = await fs.readFile(target).catch(() => null);
-      if (!there || sha(there) !== step.sha) throw new SyncCliError(`${step.rel} of a sync that was cut short is missing, so the sync was not finished. Delete ${PENDING_DIR} and sync again.`);
-    }
+    const copy = staged?.isFile() ? await fs.readFile(from) : null;
+    const there = copy ? null : await fs.readFile(targets[i]).catch(() => null);
+    const bytes = copy ?? there;
+    if (!bytes || sha(bytes) !== step.sha) throw new SyncCliError(`${step.rel} of a sync that was cut short is ${bytes ? 'damaged' : 'missing'}, so the sync was not finished. Delete ${PENDING_DIR} and sync again.`);
+    moves.push(!!copy);
+  }
+  for (const [i, step] of plan.entries()) {
+    if (step.staged === null) await fs.rm(targets[i], { force: true });
+    else if (moves[i]) await moveInto(join(pending, step.staged), targets[i]);
   }
   await fs.rm(pending, { recursive: true, force: true });
   return true;
@@ -264,7 +276,7 @@ export async function syncProject(dir: string, opts: SyncCliOptions): Promise<Ar
   const staged = new Map<string, { record: AssetRecord; hash: string }>();
   const out = [];
   for (const source of sources) {
-    const say = (why: string) => new SyncCliError(`“${source.name}” was not synced: ${redactSecrets(why, values)}`);
+    const say = (why: string) => new SyncCliError(redactSecrets(`“${source.name}” was not synced: ${why}`, values));
     if (source.converter && typeof source.converter.code !== 'string') throw say(`its ${source.converter.file} is missing.`);
     try {
       planSourceSync(state, source, [], new Date(0).toISOString());
@@ -277,7 +289,7 @@ export async function syncProject(dir: string, opts: SyncCliOptions): Promise<Ar
     try {
       result = await opts.runner.run(source.name, { ...sourceRequest(state, source), secrets: own, known: knownHashes(state, source) });
     } catch (e) {
-      throw new SyncCliError(e instanceof SyncError ? redactSecrets(e.message, values) : `“${source.name}” was not synced: it could not be read.`);
+      throw new SyncCliError(redactSecrets(e instanceof SyncError ? e.message : `“${source.name}” was not synced: it could not be read.`, values));
     }
     const refused = syncPreflight(state, source, result.records, now, values);
     if (refused) throw say(refused === SECRET_IN_RECORDS ? `${SECRET_IN_RECORDS}.` : refused);
@@ -296,7 +308,8 @@ export async function syncProject(dir: string, opts: SyncCliOptions): Promise<Ar
       if (!img) throw say('a picture could not be fetched.');
       const name = pictureName(wanted.name, wanted.url);
       // Nor in its bytes, a text chunk's included, in any form a secret can be written.
-      if (holdsSecret(name, values) || holdsSecret(Buffer.from(img.bytes).toString('latin1'), values)) throw say(`${SECRET_IN_RECORDS}.`);
+      const bytes = Buffer.from(img.bytes);
+      if (holdsSecret(name, values) || values.some((v) => v.length >= MIN_SECRET_LENGTH && bytes.includes(v)) || holdsSecret(bytes.toString('latin1'), values)) throw say(`${SECRET_IN_RECORDS}.`);
       const got = await libraryImage(dir, img, name, [...known, ...added], staged, now);
       if (holdsSecret(got.record.file, values)) throw say(`${SECRET_IN_RECORDS}.`);
       if (!known.includes(got.record) && !added.includes(got.record)) added.push(got.record);

@@ -193,7 +193,8 @@ function asScript(code: string, ast: AnyNode): string {
   }
   out += code.slice(from);
   const names = exportedNames(ast);
-  const read = (n: string) => (names.has(n) ? `typeof ${n} === 'function' ? ${n} : undefined` : 'undefined');
+  // `void 0`, never the name `undefined`, which a module may declare as a function of its own.
+  const read = (n: string) => (names.has(n) ? `typeof ${n} === 'function' ? ${n} : void 0` : 'void 0');
   // On the module's first line, so a problem's line is the author's.
   return `(function () { 'use strict'; ${out}\n;return { convert: ${read('convert')}, fetchAll: ${read('fetchAll')} }; })()`;
 }
