@@ -297,7 +297,8 @@ export function RichTextField({ value, onCommit, pages, plainAs, id, describedBy
           )}
         </div>
       )}
-      <div className="field-error" role="status">
+      {/* The live region stays mounted so a note is announced; it only looks like an error while it has one. */}
+      <div className={note ? 'field-error' : undefined} role="status">
         {note}
       </div>
     </div>
