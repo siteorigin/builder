@@ -1,7 +1,8 @@
 import { turnQuestions, type ChatMessage } from '@shared/api';
 import type { ElementRef, ProjectState } from '@shared/types';
 import { getTree } from '@engine/tree';
-import { DEFAULT_LOCAL_CONTEXT_WINDOW, localContextWindow, type LocalToolMode } from '@shared/local';
+import { localContextWindow, type LocalToolMode } from '@shared/local';
+import { localModelProfile, localWindow } from '@shared/local-models';
 import { estimateTokens, FOCUSED_WINDOW_TOKENS } from '@shared/tokens';
 import { MAX_REPLAYED_ANSWER } from '@shared/turn-model';
 import { planReplay, summaryText } from '@shared/earlier-summary';
@@ -37,6 +38,10 @@ export interface HeadroomInput {
   pageTools: boolean;
   /** The context size set in Settings, or null to read it from the server. */
   contextWindow: number | null;
+  /** The model the message would go to, or '' while that is not known. */
+  model: string;
+  /** The context size the server reports for that model, or null when it reports none or has not answered. */
+  reportedWindow: number | null;
   toolMode: LocalToolMode;
 }
 
@@ -48,7 +53,7 @@ export interface HeadroomWarning {
   /** The tokens the messages may take in all. */
   roomTokens: number;
   windowTokens: number;
-  /** No size is set, so the default is assumed; the server may report another. */
+  /** Neither Settings nor the server gives a size, so the model's profile is assumed. */
   assumed: boolean;
   text: string;
 }
@@ -107,14 +112,18 @@ const n = (t: number) => t.toLocaleString('en-US');
 export function headroomWarning(input: HeadroomInput): HeadroomWarning | null {
   if (!input.draft.trim()) return null;
   const set = localContextWindow(input.contextWindow);
-  const windowTokens = set ?? DEFAULT_LOCAL_CONTEXT_WINDOW;
-  const assumed = set === null;
-  const roomTokens = messageRoom(windowTokens, input.toolMode, input.pageTools);
+  const profile = localModelProfile(input.model);
+  // The window the run will plan against, and the tools it will get.
+  const { tokens: windowTokens, known } = localWindow(set, input.reportedWindow, profile);
+  const assumed = !known;
+  const roomTokens = messageRoom(windowTokens, input.toolMode === 'auto' ? profile.toolCalling : input.toolMode, input.pageTools);
   const draftTokens = estimateTokens(input.draft);
   const historyTokens = input.history.reduce((sum, m) => sum + estimateTokens(m), 0);
   if (draftTokens + historyTokens <= roomTokens) return null;
   const context = `the local model's ${assumed ? 'assumed ' : ''}${n(windowTokens)}-token context`;
-  const larger = `load the model with a larger context and ${assumed ? 'set' : 'match'} that size in AI settings`;
+  // A size read from the server needs nothing in Settings; one set there, or an assumed one, does.
+  const inSettings = set !== null ? ' and match that size in AI settings' : assumed ? ' and set that size in AI settings' : '';
+  const larger = `load the model with a larger context${inSettings}`;
   // Less room than a short paragraph: no message fits, however it is split.
   const kind = roomTokens < 256 ? 'setup' : draftTokens > roomTokens ? 'draft' : 'history';
   const text =

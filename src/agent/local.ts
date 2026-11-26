@@ -6,7 +6,7 @@ import type { AgentModelAdapter, CanonicalItem, CanonicalModelRequest, ContextOv
 import type { JsonSchema } from './strict-schema';
 import { redact } from './types';
 import { envelopeInstructions, envelopeSchema, FINISH_ACTION, parseEnvelope, partialStatus, stripThinking } from './constrained';
-import { localModelProfile, type LocalModelProfile } from './models';
+import { localModelProfile, localWindow, type LocalModelProfile } from '@shared/local-models';
 import { MIN_OUTPUT_TOKENS, WORKING_WINDOW_TOKENS } from './budget';
 
 /** A loaded model can take minutes to read a long prompt before its first token. */
@@ -475,10 +475,8 @@ export class LocalAdapter implements AgentModelAdapter {
     this.server = opts.context?.server;
   }
 
-  /** The smaller of what the author set and what the server reported; the profile's guess when neither is known. */
   private window(): number {
-    const known = [this.configured, this.reported].filter((n): n is number => n !== undefined);
-    return known.length ? Math.min(...known) : this.profile.contextWindow;
+    return localWindow(this.configured, this.reported, this.profile).tokens;
   }
 
   capabilities(): ModelCapabilities {
@@ -489,7 +487,7 @@ export class LocalAdapter implements AgentModelAdapter {
       parallelToolCalls: this.mode === 'native',
       contextWindowTokens: this.window(),
       maxOutputTokens: this.profile.maxOutput,
-      contextWindowKnown: this.configured !== undefined || this.reported !== undefined
+      contextWindowKnown: localWindow(this.configured, this.reported, this.profile).known
     };
   }
 
@@ -502,6 +500,8 @@ export class LocalAdapter implements AgentModelAdapter {
     const n = (t: number) => t.toLocaleString('en-US');
     const steps: string[] = [];
     if (this.reported === undefined || this.reported < tokens) {
+      const { capacity, contextWindow } = this.profile;
+      if (capacity && this.reported !== undefined && this.reported < contextWindow) steps.push(`${capacity.name} itself takes up to ${n(capacity.tokens)} tokens.`);
       switch (this.server) {
         case 'llama.cpp':
           steps.push(`Restart llama-server with --ctx-size ${tokens} or more. With --parallel, each parallel request gets an equal share of that size.`);
@@ -989,6 +989,21 @@ export async function openLocalAdapter(
   // The loaded context size decides the tools and the reply budget, so it is read before the first request.
   const context = await discoverLocalContext(chosen, opts);
   return { adapter: new LocalAdapter(chosen, { fetch: opts.fetch, lookup: opts.lookup, context, onCheck: opts.onCheck }), model: chosen.model };
+}
+
+/**
+ * What the composer needs to know before a message is sent: the model the next request would go to (the one chosen,
+ * or the server's first) and the context size the server reports for it, as `openLocalAdapter` will read them. With
+ * no model chosen, `listing` is what the server's model list showed.
+ */
+export async function probeLocalTarget(
+  endpoint: LocalEndpoint,
+  opts: Pick<LocalAdapterOptions, 'fetch' | 'lookup'> & { signal?: AbortSignal; timeoutMs?: number } = {}
+): Promise<{ model: string | null; reportedWindow: number | null; listing?: { ok: boolean; models: string[]; message?: string } }> {
+  const listing = endpoint.model ? undefined : await listLocalModels(endpoint, opts);
+  const model = endpoint.model || listing?.models[0] || null;
+  const context = model ? await discoverLocalContext({ ...endpoint, model }, opts) : {};
+  return { model, reportedWindow: count(context.windowTokens) ?? null, ...(listing ? { listing } : {}) };
 }
 
 /** Why a server's model list rules out using `model` ('' for its first model), or null when it does not. */

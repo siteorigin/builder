@@ -2,7 +2,7 @@
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { createServer } from 'node:http';
 import type { AddressInfo } from 'node:net';
-import { contextOverflow, discoverLocalContext, LocalAdapter, listLocalModels, openLocalAdapter, testLocal, type LocalAdapterOptions, type LocalEndpoint } from '@agent/local';
+import { contextOverflow, discoverLocalContext, LocalAdapter, listLocalModels, openLocalAdapter, probeLocalTarget, testLocal, type LocalAdapterOptions, type LocalEndpoint } from '@agent/local';
 import { envelopeSchema, parseEnvelope, partialStatus, signature } from '@agent/constrained';
 import { dropEnumTypes, findForbiddenShapes, inlineDefinitions, OPEN_VALUE_KEY, toStrictSchema } from '@agent/strict-schema';
 import { constrainedToolSets } from './fixtures/constrained-tools';
@@ -824,6 +824,26 @@ describe('what a chat request shows about the setup', () => {
   });
 });
 
+describe('what the composer asks before a message is sent', () => {
+  it("gives the chosen model and the context the server loaded it with, without choosing from the server's list", async () => {
+    server.models = { data: [{ id: 'first', meta: { n_ctx: 4096 } }, { id: 'qwen3.5:2b', meta: { n_ctx: 8192 } }] };
+    expect(await probeLocalTarget({ baseURL: server.baseURL, model: 'qwen3.5:2b' })).toEqual({ model: 'qwen3.5:2b', reportedWindow: 8192 });
+    expect(posts()).toEqual([]);
+  });
+
+  it("takes the server's first model when none is chosen, with its list, as a run would", async () => {
+    server.models = { data: [{ id: 'first', meta: { n_ctx: 4096 } }, { id: 'second', meta: { n_ctx: 8192 } }] };
+    expect(await probeLocalTarget({ baseURL: server.baseURL, model: '' })).toEqual({ model: 'first', reportedWindow: 4096, listing: { ok: true, models: ['first', 'second'] } });
+  });
+
+  it('reports nothing it does not know', async () => {
+    server.models = { data: [{ id: 'quiet' }] };
+    expect(await probeLocalTarget({ baseURL: server.baseURL, model: 'quiet' })).toEqual({ model: 'quiet', reportedWindow: null });
+    const gone = await probeLocalTarget({ baseURL: `http://127.0.0.1:${await closedPort()}/v1`, model: '' });
+    expect(gone).toMatchObject({ model: null, reportedWindow: null, listing: { ok: false } });
+  });
+});
+
 describe('capability profiles', () => {
   const custom = { toolCalling: 'native' as const, contextWindow: 8192, maxOutput: 1024, temperature: 0 };
 
@@ -832,6 +852,63 @@ describe('capability profiles', () => {
     expect(DEFAULT_LOCAL_PROFILE.toolCalling).toBe('constrained-json');
     expect(adapter().capabilities()).toMatchObject({ toolCalling: 'constrained-json', strictSchemas: true, contextWindowTokens: DEFAULT_LOCAL_PROFILE.contextWindow });
     expect(modelInfo('local', 'anything')).toMatchObject({ contextWindow: DEFAULT_LOCAL_PROFILE.contextWindow, maxOutput: DEFAULT_LOCAL_PROFILE.maxOutput });
+  });
+
+  it.each([
+    'qwen3.5-2b',
+    'Qwen3.5-2B-Instruct',
+    'Qwen/Qwen3.5-2B',
+    'Qwen3.5-2B-Q4_K_M.gguf',
+    'Qwen_Qwen3.5-2B-Instruct-IQ4_XS.gguf',
+    'qwen3.5-2b.Q8_0.gguf',
+    '/Users/me/models/Qwen3.5-2B-Instruct-f16.gguf',
+    'C:\\models\\Qwen3.5-2B-Q5_K_S.gguf',
+    'qwen3.5:2b',
+    'qwen3.5:2b-q4_K_M',
+    'hf.co/unsloth/Qwen3.5-2B-GGUF:Q4_K_M'
+  ])('gives Qwen3.5-2B its own context and reply budget, as %s', (id) => {
+    expect(localModelProfile(id)).toMatchObject({ toolCalling: 'constrained-json', contextWindow: 131_072, maxOutput: 16_384, temperature: DEFAULT_LOCAL_PROFILE.temperature });
+    expect(adapter({ model: id }).capabilities()).toMatchObject({ contextWindowTokens: 131_072, maxOutputTokens: 16_384, contextWindowKnown: false });
+    expect(modelInfo('local', id)).toMatchObject({ contextWindow: 131_072, maxOutput: 16_384 });
+  });
+
+  it.each([
+    'qwen3.5-27b',
+    'qwen3.5:27b',
+    'qwen3.5-0.2b',
+    'qwen3.5-2.5b',
+    'qwen3-2b',
+    'qwen2.5-2b',
+    'qwen3.5-122b',
+    'qwen3.5-2billion',
+    'notqwen3.5-2b',
+    '/models/Qwen3.5-2B-GGUF/Qwen3.5-27B-Q4_K_M.gguf',
+    'C:\\qwen3.5-2b\\other-model.gguf'
+  ])('does not take %s for Qwen3.5-2B', (id) => {
+    expect(localModelProfile(id)).toEqual(DEFAULT_LOCAL_PROFILE);
+    expect(adapter({ model: id }).capabilities()).toMatchObject({ contextWindowTokens: 32_768, maxOutputTokens: 8192 });
+  });
+
+  it('holds Qwen3.5-2B to the smaller of Settings and the server, and to its profile only with neither', () => {
+    const window = (endpoint: Partial<LocalEndpoint>, windowTokens?: number) => adapter({ model: 'qwen3.5:2b', ...endpoint }, { context: windowTokens ? { windowTokens } : {} }).capabilities();
+    expect(window({}, 8192)).toMatchObject({ contextWindowTokens: 8192, contextWindowKnown: true, maxOutputTokens: 16_384 });
+    // A server that loaded more than the profile assumes is believed.
+    expect(window({}, 262_144).contextWindowTokens).toBe(262_144);
+    expect(window({ contextWindow: 200_000 }).contextWindowTokens).toBe(200_000);
+    expect(window({ contextWindow: 16_384 }, 65_536).contextWindowTokens).toBe(16_384);
+    expect(window({ contextWindow: 65_536 }, 4096).contextWindowTokens).toBe(4096);
+  });
+
+  it("names Qwen3.5-2B's own capacity in the steps for a server that loaded it with less than its profile", () => {
+    const help = (model: string, windowTokens?: number) => adapter({ model }, { context: { server: 'ollama', ...(windowTokens ? { windowTokens } : {}) } }).contextHelp(32_768);
+    const small = help('qwen3.5:2b', 8192);
+    expect(small).toMatch(/^Qwen3\.5-2B itself takes up to 262,144 tokens\. /);
+    expect(small).toContain('OLLAMA_CONTEXT_LENGTH=32768');
+    // Nothing reported, or enough loaded already: no claim about what was loaded.
+    expect(help('qwen3.5:2b')).not.toContain('262,144');
+    expect(help('qwen3.5:2b', 131_072)).not.toContain('262,144');
+    // A model with no profile of its own has no known capacity to name.
+    expect(help('other:7b', 8192)).not.toContain('itself takes');
   });
 
   it('a model is added as one entry, and the first match wins', () => {

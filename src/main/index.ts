@@ -19,7 +19,7 @@ import { Orchestrator } from '@agent/orchestrator';
 import { INSPECT_COMPONENT_BUDGET_MS } from '@agent/component-inspection';
 import { OpenAIAdapter, testOpenAI } from '@agent/openai';
 import { AnthropicAdapter, testAnthropic } from '@agent/anthropic';
-import { listedProblem, listLocalModels, openLocalAdapter, testLocal } from '@agent/local';
+import { listedProblem, listLocalModels, openLocalAdapter, probeLocalTarget, testLocal } from '@agent/local';
 import { compileProject } from './compile';
 import { checkSvelteSource, codeContractNames, componentSources } from './codecheck';
 import { renderSiteIconsInWorker, stopMediaWorker } from './project/assets';
@@ -553,6 +553,25 @@ function registerIpc() {
     record(problem ? { ok: false, stage: 'server', message: problem } : { listed: found.models });
     // Which server answered, so Settings shows the list for that server only.
     return { ...found, server: endpoint.baseURL };
+  });
+  // The saved server only, as above. With no model chosen, what its model list shows is recorded as a list is.
+  handle('ai:localTarget', async () => {
+    // Registered before the saved setup is read, as a test is, so remote access withdrawn meanwhile stops it too.
+    const abort = new AbortController();
+    testAborts.add(abort);
+    try {
+      const epoch = localCheckEpoch();
+      const endpoint = await localEndpoint();
+      const record = localCheckRecorder(endpoint, epoch);
+      const { listing, ...target } = await probeLocalTarget(endpoint, { signal: abort.signal });
+      if (listing && !abort.signal.aborted) {
+        const problem = listedProblem(listing, '');
+        record(problem ? { ok: false, stage: 'server', message: problem } : { listed: listing.models });
+      }
+      return target;
+    } finally {
+      testAborts.delete(abort);
+    }
   });
   handle('ai:conversations', () => orchestrator.loadConversations());
   handle('ai:newConversation', () => orchestrator.newConversation());

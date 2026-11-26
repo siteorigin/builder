@@ -32,7 +32,7 @@ async function overhead(caps: Partial<ModelCapabilities>, route: string, selecte
 }
 
 const a = (tokens: number) => 'a'.repeat(tokens * 4);
-const warn = (draft: string, o: Partial<Parameters<typeof headroomWarning>[0]> = {}) => headroomWarning({ draft, history: [], contextWindow: null, toolMode: 'auto', pageTools: true, ...o });
+const warn = (draft: string, o: Partial<Parameters<typeof headroomWarning>[0]> = {}) => headroomWarning({ draft, history: [], contextWindow: null, model: '', reportedWindow: null, toolMode: 'auto', pageTools: true, ...o });
 
 describe('composer headroom for a local model', () => {
   it('reserves at least what the instructions, tools and editor context take, and not much more', async () => {
@@ -163,6 +163,28 @@ describe('composer headroom for a local model', () => {
     // Chinese, Japanese and Korean characters count a token each, as the assistant counts them.
     expect(warn('お'.repeat(16_384))).toBeNull();
     expect(warn('お'.repeat(16_385))?.kind).toBe('draft');
+  });
+
+  it("uses the window the run would: Settings and the server's size, then the model's profile", () => {
+    const model = 'Qwen3.5-2B-Instruct-Q4_K_M.gguf';
+    const draft = a(20_000);
+    // Too long for the window assumed for an unknown model, not for Qwen3.5-2B's.
+    expect(warn(draft)).toMatchObject({ windowTokens: 32_768, assumed: true });
+    expect(warn(draft, { model })).toBeNull();
+    const long = warn(a(65_537), { model })!;
+    expect(long).toMatchObject({ kind: 'draft', windowTokens: 131_072, roomTokens: 65_536, assumed: true });
+    expect(long.text).toContain("assumed 131,072-token context");
+    // The server's size replaces the profile's, in either direction, and is not an assumption.
+    expect(warn(draft, { reportedWindow: 65_536 })).toBeNull();
+    const small = warn(a(3585), { model, reportedWindow: 8192 })!;
+    expect(small).toMatchObject({ kind: 'draft', windowTokens: 8192, assumed: false });
+    // Nothing to change in AI settings when the size came from the server.
+    expect(small.text).toBe("This message is longer than the local model's 8,192-token context leaves room for (about 3,584 tokens). Send the copy a few sections at a time, or load the model with a larger context.");
+    // With both, the smaller one.
+    expect(warn(draft, { model, contextWindow: 8192, reportedWindow: 65_536 })).toMatchObject({ windowTokens: 8192, assumed: false });
+    expect(warn(draft, { model, contextWindow: 65_536, reportedWindow: 8192 })).toMatchObject({ windowTokens: 8192, assumed: false });
+    expect(warn(draft, { model, contextWindow: 65_536, reportedWindow: 8192 })!.text).toContain('match that size in AI settings');
+    expect(warn(draft, { model, contextWindow: 65_536 })).toBeNull();
   });
 
   it('counts the earlier messages a request replays, and says to start a new conversation when they tip it over', () => {

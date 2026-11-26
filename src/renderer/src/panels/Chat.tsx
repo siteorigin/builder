@@ -266,28 +266,26 @@ export function Chat() {
   const inFlight = running ? turnRecipient(working) : null;
   /** A turn has started and not ended, even before its status arrives (a local server can take a while to answer). */
   const pending = running || !!(working && !working.result);
-  // With no local model chosen, the server's first model takes the next message: asked whenever it may have changed
-  // (another conversation, a finished run, coming back to the app), so a server that now runs another model is a switch.
-  const autoLocal = configured && provider?.id === 'local' && !settings?.ai.models.local?.trim() ? (settings?.ai.local.baseURL ?? '') : null;
-  const [serverModel, setServerModel] = useState<{ baseURL: string; id: string | null } | null>(null);
+  // The local model the next message goes to and the context its server reports: the model for the recipient (with
+  // none chosen, the server's first takes it), both for the length warning. Asked whenever either may have changed
+  // (another server or model, another conversation, a finished run, coming back to the app, where a server that now
+  // runs another model is a switch).
+  const chosenLocal = settings?.ai.models.local?.trim() ?? '';
+  const localKey = configured && provider?.id === 'local' && settings ? JSON.stringify([settings.ai.local.baseURL, chosenLocal, settings.ai.local.allowRemote]) : null;
+  const [probed, setProbed] = useState<{ key: string; model: string | null; reportedWindow: number | null } | null>(null);
   const probeSeq = useRef(0);
-  /** The model the local server offers first now; only the newest answer is kept, whatever order they arrive in. */
-  const probeServer = (baseURL: string): Promise<string | null> => {
-    const seq = ++probeSeq.current;
-    return api.ai
-      .localModels()
-      .then(
-        (r) => (r.ok && r.models[0]) || null,
-        () => null
-      )
-      .then((id) => {
-        if (seq === probeSeq.current) setServerModel({ baseURL, id });
-        return id;
-      });
-  };
   useEffect(() => {
-    if (autoLocal === null) return;
-    const ask = () => void probeServer(autoLocal);
+    if (localKey === null) return;
+    /** Only the newest answer is kept, whatever order they arrive in. */
+    const ask = () => {
+      const seq = ++probeSeq.current;
+      void api.ai
+        .localTarget()
+        .catch(() => ({ model: null, reportedWindow: null }))
+        .then((found) => {
+          if (seq === probeSeq.current) setProbed({ key: localKey, ...found });
+        });
+    };
     ask();
     window.addEventListener('focus', ask);
     return () => {
@@ -295,9 +293,10 @@ export function Chat() {
       probeSeq.current++;
       window.removeEventListener('focus', ask);
     };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [autoLocal, conversation?.id, running]);
-  const next = nextRecipient(provider, settings?.ai.models, autoLocal !== null && serverModel?.baseURL === autoLocal ? serverModel.id : null);
+  }, [localKey, conversation?.id, running]);
+  // An answer about another server or model says nothing about this one.
+  const localTarget = probed && probed.key === localKey ? probed : null;
+  const next = nextRecipient(provider, settings?.ai.models, chosenLocal ? null : (localTarget?.model ?? null));
   // A message to a model that has not seen this conversation's recent messages says so before it is sent.
   // It is about the next message, so while a run is under way it waits until something is written for that message.
   const notice = asking || (pending && !draft.trim() && !images.length) ? null : switchNotice(msgs, next);
@@ -519,7 +518,7 @@ export function Chat() {
   const localModel = configured && provider?.id === 'local';
   const headroom =
     localModel && !asking && settings
-      ? headroomWarning({ draft, history: replayed, contextWindow: settings.ai.local.contextWindow, toolMode: settings.ai.local.toolMode, pageTools: !askMode && !component && !scope.post && !(toSelection && !!scope.selection && smallToolsCover(st, scope.selection)) })
+      ? headroomWarning({ draft, history: replayed, contextWindow: settings.ai.local.contextWindow, model: chosenLocal || (localTarget?.model ?? ''), reportedWindow: localTarget?.reportedWindow ?? null, toolMode: settings.ai.local.toolMode, pageTools: !askMode && !component && !scope.post && !(toSelection && !!scope.selection && smallToolsCover(st, scope.selection)) })
       : null;
   // Starters come from what this project holds: the page, the selection, the pages and the images that exist.
   // The starters are changes to make, so a question starts from an empty box. They are about pages, so a component
