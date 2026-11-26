@@ -4,7 +4,7 @@ import { Bold, Eye, Heading2, Heading3, Heading4, ImagePlus, Italic, Link, List,
 import type { Collection, EntryDoc, ImageValue, LinkRel, LinkValue, ProjectState, RichText } from '@shared/types';
 import type { ProjectSnapshot } from '@shared/api';
 import type { SeoSubject } from '@shared/seo';
-import { entryRoute, findEntry, orderedEntries } from '@shared/collections';
+import { collectionHasBody, collectionKind, entryRoute, findEntry, hasDetailPages, orderedEntries } from '@shared/collections';
 import { formatArticleDate, isArticleDate } from '@shared/articles';
 import { linkFromTarget, linkToTarget, sameRichText } from '@shared/richtext';
 import { relsFromAttribute } from '@shared/link-rel';
@@ -32,6 +32,8 @@ import { openSeoView, setMode } from '../lib/actions';
 import { visitAddress } from './Canvas';
 import { SeoInlineActions, subjectKey, useDocumentPreview, useTypedSeo } from './SeoPreview';
 import { PostSearchFields } from './PostSearchFields';
+import { EntryValueFields } from './EntryValueFields';
+import { entryNoun, entryNounLower, isReadOnlyCollection } from '../lib/content';
 
 const MAX_EXCERPT = 320;
 /** How long before an action a field's refusal still stops it: the blur its button press caused. */
@@ -79,6 +81,8 @@ function problemText(p: DraftProblem): string {
 export function PostWriter({ hidden }: { hidden: boolean }) {
   const post = useStore((s) => s.post);
   const exists = useStore((s) => !!(s.snapshot && postAt(s.snapshot.state, s.post)));
+  // Entry text turned on or off in the collection's settings: the writer starts again with the text editor or without it.
+  const hasBody = useStore((s) => (s.snapshot && s.post && Object.hasOwn(s.snapshot.state.collections, s.post.collectionId) ? collectionHasBody(s.snapshot.state.collections[s.post.collectionId].settings) : true));
   // A writer already open stays while the post is gone from the project (the AI, an Undo): it may hold unsaved text,
   // which it offers to keep. It lets go of the post itself once nothing is left unsaved.
   const shown = useRef<string | null>(null);
@@ -88,11 +92,11 @@ export function PostWriter({ hidden }: { hidden: boolean }) {
   return (
     <div className="post-writer" hidden={hidden}>
       {post && keep ? (
-        <PostEditor key={`${post.collectionId}/${post.entryId}`} post={post} hidden={hidden} />
+        <PostEditor key={`${post.collectionId}/${post.entryId}/${hasBody ? 'text' : 'record'}`} post={post} hidden={hidden} />
       ) : (
         <div className="post-none">
           <Newspaper aria-hidden="true" />
-          <p>Choose a post in the list, or start a new one.</p>
+          <p>Choose an entry in the list, or start a new one.</p>
         </div>
       )}
     </div>
@@ -528,13 +532,16 @@ function PostEditor({ post, hidden }: { post: PostRef; hidden: boolean }) {
     toast(`${what} ${inView ? 'See its search settings in the SEO view.' : 'See the note beside it.'}`, 'error', inView ? { label: 'Open SEO view', run: () => void openSeoView({ kind: 'entry', collectionId: post.collectionId, entryId: post.entryId }) } : undefined);
   };
   const publish = async (draftOn: boolean) => {
-    if (!(await saveAll())) return notSaved(draftOn ? 'Part of the post is not saved yet, so it stays as it is.' : 'Part of the post is not saved yet, so it was not published.');
-    const r = await update({ draft: draftOn }, draftOn ? 'Move post to drafts' : 'Publish post');
-    if (r) toast(draftOn ? 'Moved to drafts: it is no longer on the website.' : 'Published: it is on the website from the next export.', 'success');
+    const noun = entryNounLower(collection);
+    if (!(await saveAll())) return notSaved(draftOn ? `Part of the ${noun} is not saved yet, so it stays as it is.` : `Part of the ${noun} is not saved yet, so it was not published.`);
+    const r = await update({ draft: draftOn }, draftOn ? `Move ${noun} to drafts` : `Publish ${noun}`);
+    // A record without a page of its own is on the website wherever a list of its collection shows it.
+    const where = hasDetailPages(collection.settings) ? 'it is on the website from the next export.' : `lists of ${collection.settings.name} show it from the next export.`;
+    if (r) toast(draftOn ? 'Moved to drafts: it is no longer on the website.' : `Published: ${where}`, 'success');
   };
   const saveDraft = async () => {
     if (await saveAll()) toast(entry.draft === false ? 'Saved.' : 'Saved as a draft.', 'success');
-    else notSaved('Part of the post is not saved yet.');
+    else notSaved(`Part of the ${entryNounLower(collection)} is not saved yet.`);
   };
   const preview = async () => {
     const key = getState().snapshot?.workspaceKey;
@@ -584,6 +591,52 @@ function PostEditor({ post, hidden }: { post: PostRef; hidden: boolean }) {
   const route = entryRoute(collection, entry) ?? '';
   const filedUnder = collection ? entryTermLabels(collection, entry, 'categories') : [];
   const published = entry.draft === false;
+  // What the collection is (#675): records get a form of their fields, articles the writer with their fields beside it;
+  // a collection without entry pages has no address, preview or search settings; a synced one is only read here.
+  const structured = collectionKind(collection.settings) === 'structured';
+  const hasBody = collectionHasBody(collection.settings);
+  const paged = hasDetailPages(collection.settings);
+  const readOnly = isReadOnlyCollection(collection);
+  const noun = entryNoun(collection);
+  const nounLower = entryNounLower(collection);
+  const setValue = (name: string, value: unknown, label: string) => update({ values: { [name]: value } }, label);
+  const details = (
+    <div className="post-fields">
+      <Field label="Publication date" hint={`A date in the past backdates the ${nounLower}.`}>
+        <DraftInput type="date" value={entry.publishedAt} onCommit={(v) => (isArticleDate(v) ? (v !== entry.publishedAt ? update({ publishedAt: v }, `Change ${nounLower} date`) : undefined) : refuse())} />
+      </Field>
+      <div data-entry-field="updatedAt" style={{ display: 'contents' }}>
+        <RevisionDateField
+          label="Last updated"
+          hint={`When the ${nounLower} was last revised, for search engines. Leave empty when it hasn’t been.`}
+          value={entry.updatedAt}
+          onSet={(v) => update({ updatedAt: v }, `Change ${nounLower} revision date`)}
+          onClear={() => update({ updatedAt: null }, `Clear ${nounLower} revision date`)}
+          refuse={refuse}
+        />
+      </div>
+      {paged && (
+        <Field label="Address" hint={`The last part of ${route}`}>
+          <DraftInput value={entry.slug} onCommit={(v) => (v.trim() ? (v.trim() !== entry.slug ? update({ slug: v.trim() }, `Change ${nounLower} address`) : undefined) : refuse())} />
+        </Field>
+      )}
+      {/* data-entry-field: where Go to form lands, for a layout's form that reads this field (see open-destination). */}
+      <div data-entry-field="author" style={{ display: 'contents' }}>
+        <Field label="Author">
+          <DraftInput value={entry.author ?? ''} limit={MAX_AUTHOR} placeholder="Who wrote it" onCommit={(v) => (v.trim() !== (entry.author ?? '') ? update({ author: v.trim() || null }, `Change ${nounLower} author`) : undefined)} />
+        </Field>
+      </div>
+      <div data-entry-field="excerpt" style={{ display: 'contents' }}>
+        <Field label="Excerpt" hint={`A sentence or two for lists of ${structured ? 'entries' : 'posts'} and for search engines.`}>
+          <DraftInput multiline rows={3} value={entry.excerpt ?? ''} limit={MAX_EXCERPT} onCommit={(v) => (v.trim() !== (entry.excerpt ?? '') ? update({ excerpt: v.trim() || null }, `Change ${nounLower} excerpt`) : undefined)} />
+        </Field>
+      </div>
+      {/* The image editor's picker: a thumbnail of the one chosen, the library to browse, import or drop, and Remove. */}
+      <SiteImageField title="Featured image" plain="featured" state={state} value={entry.featuredImage} onChange={(id) => void update({ featuredImage: id }, 'Change featured image', id === (entry.featuredImage ?? null))} />
+      {!structured && <PostTermFields post={post} collection={collection} entry={entry} sendAt={sendAt} track={track} refused={refused} />}
+    </div>
+  );
+  const values = <EntryValueFields state={state} collection={collection} entry={entry} readOnly={readOnly} set={setValue} refuse={refuse} />;
   const blockLabel = { p: 'Paragraph', h2: 'Heading 2', h3: 'Heading 3', h4: 'Heading 4', blockquote: 'Quote' } as Record<string, string>;
   const tools: Array<{ id: string; label: string; icon: React.ReactNode; on?: boolean; run: () => void; gap?: boolean }> = [
     { id: 'p', label: 'Paragraph', icon: <Pilcrow />, on: pressed.block === 'p' || pressed.block === 'div', run: () => block('p') },
@@ -606,15 +659,22 @@ function PostEditor({ post, hidden }: { post: PostRef; hidden: boolean }) {
     <>
       <div className="post-bar" role="toolbar" aria-label="Post">
         <span className={`badge ${published ? 'green' : 'amber'}`}>{published ? 'Published' : 'Draft'}</span>
+        {readOnly && (
+          <span className="badge" data-testid="entry-read-only" title="Synced from an external source: change it there, or detach the collection to edit it here.">
+            Read-only
+          </span>
+        )}
         <span className="post-save-state" role="status">
-          {status.problem ? 'Not saved' : status.saving ? 'Saving…' : status.dirty ? 'Editing…' : 'Saved'}
+          {readOnly ? 'Synced' : status.problem ? 'Not saved' : status.saving ? 'Saving…' : status.dirty ? 'Editing…' : 'Saved'}
         </span>
         <span className="grow" />
-        <button className="btn btn-sm" onClick={() => void preview()} title="See the post on the canvas as visitors will, in the site’s header and footer">
-          <Eye aria-hidden="true" /> Preview in site
-        </button>
-        {published ? (
-          <button className="btn btn-sm" onClick={() => void publish(true)} title="Take the post off the website and keep it as a draft">
+        {paged && (
+          <button className="btn btn-sm" onClick={() => void preview()} title={`See the ${nounLower} on the canvas as visitors will, in the site’s header and footer`}>
+            <Eye aria-hidden="true" /> Preview in site
+          </button>
+        )}
+        {readOnly ? null : published ? (
+          <button className="btn btn-sm" onClick={() => void publish(true)} title={`Take the ${nounLower} off the website and keep it as a draft`}>
             Move to drafts
           </button>
         ) : (
@@ -630,48 +690,50 @@ function PostEditor({ post, hidden }: { post: PostRef; hidden: boolean }) {
       </div>
       <div className="post-scroll">
         <article className="post-page">
+          {/* A synced entry is read here and changed in its source: every control below is off, its text included. */}
+          <fieldset className="post-fieldset" disabled={readOnly}>
+          {readOnly && (
+            <p className="post-readonly" role="note">
+              Read-only: this {nounLower} is synced from an external source. Change it there, or detach the collection to edit it here.
+            </p>
+          )}
           {/* A title is one line that wraps: all of it stays readable, and Enter saves it instead of adding a line. */}
-          <DraftInput wrap className="input post-title-input" ariaLabel="Post title" value={entry.title} limit={MAX_POST_TITLE} placeholder="Title" onCommit={(v) => (v.trim() ? (v.trim() !== entry.title ? update({ title: v.trim() }, 'Rename post') : undefined) : refuse())} />
-          <details className="post-details">
-            <summary>
-              {formatArticleDate(entry.publishedAt, state.site.language)}
-              {entry.author ? ` · ${entry.author}` : ''} · {route}
-              {filedUnder.length ? ` · ${filedUnder.join(', ')}` : ''}
-            </summary>
-            <div className="post-fields">
-              <Field label="Publication date" hint="A date in the past backdates the post.">
-                <DraftInput type="date" value={entry.publishedAt} onCommit={(v) => (isArticleDate(v) ? (v !== entry.publishedAt ? update({ publishedAt: v }, 'Change post date') : undefined) : refuse())} />
-              </Field>
-              <div data-entry-field="updatedAt" style={{ display: 'contents' }}>
-                <RevisionDateField
-                  label="Last updated"
-                  hint="When the post was last revised, for search engines. Leave empty when it hasn’t been."
-                  value={entry.updatedAt}
-                  onSet={(v) => update({ updatedAt: v }, 'Change post revision date')}
-                  onClear={() => update({ updatedAt: null }, 'Clear post revision date')}
-                  refuse={refuse}
-                />
-              </div>
-              <Field label="Address" hint={`The last part of ${route}`}>
-                <DraftInput value={entry.slug} onCommit={(v) => (v.trim() ? (v.trim() !== entry.slug ? update({ slug: v.trim() }, 'Change post address') : undefined) : refuse())} />
-              </Field>
-              {/* data-entry-field: where Go to form lands, for a layout's form that reads this field (see open-destination). */}
-              <div data-entry-field="author" style={{ display: 'contents' }}>
-                <Field label="Author">
-                  <DraftInput value={entry.author ?? ''} limit={MAX_AUTHOR} placeholder="Who wrote it" onCommit={(v) => (v.trim() !== (entry.author ?? '') ? update({ author: v.trim() || null }, 'Change post author') : undefined)} />
-                </Field>
-              </div>
-              <div data-entry-field="excerpt" style={{ display: 'contents' }}>
-                <Field label="Excerpt" hint="A sentence or two for lists of posts and for search engines.">
-                  <DraftInput multiline rows={3} value={entry.excerpt ?? ''} limit={MAX_EXCERPT} onCommit={(v) => (v.trim() !== (entry.excerpt ?? '') ? update({ excerpt: v.trim() || null }, 'Change post excerpt') : undefined)} />
-                </Field>
-              </div>
-              {/* The image editor's picker: a thumbnail of the one chosen, the library to browse, import or drop, and Remove. */}
-              <SiteImageField title="Featured image" plain="featured" state={state} value={entry.featuredImage} onChange={(id) => void update({ featuredImage: id }, 'Change featured image', id === (entry.featuredImage ?? null))} />
+          <DraftInput wrap className="input post-title-input" ariaLabel={`${noun} title`} value={entry.title} limit={MAX_POST_TITLE} placeholder={structured ? 'Name or title' : 'Title'} onCommit={(v) => (v.trim() ? (v.trim() !== entry.title ? update({ title: v.trim() }, `Rename ${nounLower}`) : undefined) : refuse())} />
+          {structured ? (
+            <div className="post-record">
+              {values}
               <PostTermFields post={post} collection={collection} entry={entry} sendAt={sendAt} track={track} refused={refused} />
+              <details className="post-details">
+                <summary>
+                  {formatArticleDate(entry.publishedAt, state.site.language)}
+                  {paged ? ` · ${route}` : ''} · Publication date and more
+                </summary>
+                {details}
+              </details>
             </div>
-          </details>
-          <PostSearchSettings state={state} post={post} collection={collection} entry={entry} update={update} />
+          ) : (
+            <>
+              <details className="post-details">
+                <summary>
+                  {formatArticleDate(entry.publishedAt, state.site.language)}
+                  {entry.author ? ` · ${entry.author}` : ''}
+                  {route ? ` · ${route}` : ''}
+                  {filedUnder.length ? ` · ${filedUnder.join(', ')}` : ''}
+                </summary>
+                {details}
+              </details>
+              {Object.keys(collection.settings.fields ?? {}).length > 0 && (
+                <details className="post-details post-custom" open>
+                  <summary>Fields</summary>
+                  {values}
+                </details>
+              )}
+            </>
+          )}
+          {paged && <PostSearchSettings state={state} post={post} collection={collection} entry={entry} update={update} />}
+          {hasBody && structured && <h3 className="post-record-section">Text</h3>}
+          {hasBody && (
+          <>
           <div className="post-tools" role="toolbar" aria-label="Formatting">
             {tools.map((t) => (
               <button
@@ -725,11 +787,11 @@ function PostEditor({ post, hidden }: { post: PostRef; hidden: boolean }) {
           <div
             ref={root}
             className="post-body"
-            contentEditable={!unreadable}
+            contentEditable={!unreadable && !readOnly}
             suppressContentEditableWarning
             role="textbox"
             aria-multiline="true"
-            aria-label="Post text"
+            aria-label={`${noun} text`}
             spellCheck
             onInput={() => draft.input()}
             onCompositionStart={() => draft.compositionStart()}
@@ -752,6 +814,9 @@ function PostEditor({ post, hidden }: { post: PostRef; hidden: boolean }) {
               if (fig && root.current?.contains(fig)) openImage(fig);
             }}
           />
+          </>
+          )}
+          </fieldset>
         </article>
       </div>
       {dialog?.kind === 'image' && (

@@ -34,7 +34,7 @@ await apply(
   ],
   'Start the blog'
 );
-await win.locator('.rail [aria-label="Posts"]').click();
+await win.locator('.rail [aria-label="Content"]').click();
 await eventually(async () => assert.deepEqual(await titles(), ['Studio plans', 'New kiln', 'Glaze night'], 'the list shows every post, newest first'));
 
 step('categories and tags added in the manager');
