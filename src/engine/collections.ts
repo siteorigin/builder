@@ -427,6 +427,7 @@ export function collectionCreate(state: ProjectState, op: Op<'collection.create'
   if (op.pageSize !== undefined) settings.pageSize = pageSizeOf(op.pageSize);
   if (op.categoryArchives !== undefined) settings.categoryArchives = op.categoryArchives;
   state.collections[op.collectionId] = { settings, entries: {} };
+  if (op.archiveTemplate) setArchiveLayout(state.collections[op.collectionId], op.archiveTemplate);
   return { collectionId: op.collectionId, ...(route !== undefined ? { route } : {}) };
 }
 
@@ -526,7 +527,7 @@ export function collectionUpdate(state: ProjectState, op: Op<'collection.update'
   if (op.archiveTemplate !== undefined) {
     // The archive pages' own layout, a fresh one to design, or back to the ready-made cards.
     if (op.archiveTemplate === null) delete c.settings.archiveTemplate;
-    else c.settings.archiveTemplate = op.archiveTemplate === 'start' ? starterArchiveLayout(c) : archiveLayoutOf(op.archiveTemplate);
+    else setArchiveLayout(c, op.archiveTemplate);
   }
   if (op.pageSize !== undefined) c.settings.pageSize = pageSizeOf(op.pageSize);
   if (op.categoryArchives !== undefined) c.settings.categoryArchives = op.categoryArchives;
@@ -1223,14 +1224,35 @@ function entrySourceProblem(source: unknown): string | null {
   return null;
 }
 
-/** An archive layout given whole: a tree whose roots and nodes are its own, each node named by its ID. */
+const LAYOUT_NODE_KINDS = new Set(['element', 'text', 'image', 'link', 'icon', 'divider', 'repeat', 'instance']);
+
+/**
+ * An archive layout given whole: a tree of the nodes it holds, reached from its roots, each under a fresh ID of its
+ * own, so no node (or style rule) is shared with the page or layout it was copied from. A node of another kind, or
+ * one listed twice, is refused.
+ */
 function archiveLayoutOf(raw: { rootIds: string[]; nodes: Record<string, unknown> }): NodeTree {
-  const tree = structuredClone(raw) as NodeTree;
-  for (const [id, n] of Object.entries(tree.nodes)) {
-    const node = n as { id?: unknown; kind?: unknown } | null;
-    if (!node || typeof node !== 'object' || node.id !== id || typeof node.kind !== 'string') fail(`The archive layout's node "${id.slice(0, 60)}" is not a node of its own ID.`);
-  }
-  const missing = tree.rootIds.find((id) => !Object.hasOwn(tree.nodes, id));
-  if (missing !== undefined) fail(`The archive layout starts with "${missing.slice(0, 60)}", which it does not hold.`);
-  return tree;
+  const src = structuredClone(raw) as NodeTree;
+  const ids = new Map<string, string>();
+  const nodes: Record<string, GraphNode> = {};
+  const take = (id: string, depth: number): string => {
+    const n = Object.hasOwn(src.nodes, id) ? (src.nodes[id] as GraphNode | null) : undefined;
+    if (!n || typeof n !== 'object' || n.id !== id || !LAYOUT_NODE_KINDS.has(n.kind)) fail(`The archive layout's node "${id.slice(0, 60)}" is not one it can hold: give each node its own ID and a kind a page can show.`);
+    if (ids.has(id) || depth > 100) fail(`The archive layout shows the node "${id.slice(0, 60)}" twice.`);
+    const fresh = newId('n');
+    ids.set(id, fresh);
+    const copy = { ...n, id: fresh } as GraphNode;
+    if ((copy.kind === 'element' || copy.kind === 'repeat') && Array.isArray(copy.children)) copy.children = copy.children.map((c) => take(c, depth + 1));
+    else if (copy.kind === 'element' || copy.kind === 'repeat') fail(`The archive layout's node "${id.slice(0, 60)}" has no list of children.`);
+    if (copy.kind === 'instance' && copy.slots) copy.slots = Object.fromEntries(Object.entries(copy.slots).map(([slot, kids]) => [slot, (Array.isArray(kids) ? kids : []).map((c) => take(c, depth + 1))]));
+    nodes[fresh] = copy;
+    return fresh;
+  };
+  const rootIds = src.rootIds.map((id) => take(id, 0));
+  return { rootIds, nodes };
+}
+
+/** A collection's archive layout as `collection.create` or `collection.update` sets it. */
+export function setArchiveLayout(c: Collection, value: NonNullable<Op<'collection.update'>['archiveTemplate']>): void {
+  c.settings.archiveTemplate = value === 'start' ? starterArchiveLayout(c) : archiveLayoutOf(value);
 }

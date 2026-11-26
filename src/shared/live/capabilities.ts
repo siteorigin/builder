@@ -99,6 +99,8 @@ function beyondGuestGrant(op: EditOperation): string | null {
     if (owner && !(GUEST_OWNER_KINDS as readonly string[]).includes(owner.kind)) return `Guests edit pages and the shared header and footer, not a ${owner.kind}.`;
   }
   if (op.type === 'instance.setProp' && isHostOnlyProp(op.prop)) return `Only the host can change "${op.prop}".`;
+  // Nor bind one to each entry of a collection loop it is repeated in, which sets it as surely.
+  if (op.type === 'node.setBinding' && op.field === 'prop' && op.prop !== undefined && isHostOnlyProp(op.prop)) return `Only the host can change "${op.prop}".`;
   if (op.type === 'node.insert' && op.props) {
     const prop = Object.keys(op.props).find(isHostOnlyProp);
     if (prop) return `Only the host can set "${prop}".`;

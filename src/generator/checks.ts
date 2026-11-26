@@ -22,6 +22,7 @@ import { actionWraps } from './card-links';
 import { isVideoContract, parseVideoUrl } from '@shared/video';
 import { derived } from './cache';
 import { entryNeighbours, materializeTemplate, showsBody } from './entry-template';
+import { connectedListItems } from './collection-loops';
 import { selectedVariantStyles, startingVariants } from '@shared/variants';
 import { itemStylesOf } from '@shared/item-styles';
 
@@ -234,6 +235,12 @@ export function effectiveProps(
 ): Record<string, unknown> {
   const props: Record<string, unknown> = {};
   for (const [name, schema] of Object.entries(def.properties)) {
+    // A list connected to a collection shows its entries, as the generator writes them, never its own items.
+    const connected = connectedListItems(state, def, n, name, entry ? { entry } : {});
+    if (connected) {
+      props[name] = connected;
+      continue;
+    }
     const own = Object.hasOwn(n.props, name);
     // A computed list holds what the site's pages (or a collection's entries) give it where it is placed, as the
     // generator writes it: it is never bound or stored. An entry feed shows what the placement's own values chose.

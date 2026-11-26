@@ -9,8 +9,8 @@ import { CURRENT_COLLECTION, ENTRY_ORDER_FIELD, QUERY_OPERATORS, normalizeCollec
 import { fieldFitProblem, rowFieldSchemas } from '@shared/collection-rows';
 import { connectionProblem, loopProblem } from '@engine/collection-sources';
 import { getTree } from '@engine/tree';
-import { applyOps } from '../store';
-import { Field, Segmented } from '../components/ui';
+import { applyOps, toast, useStore } from '../store';
+import { DraftInput, Field, Segmented } from '../components/ui';
 
 const OP_WORDS: Record<QueryOperator, string> = { eq: 'is', ne: 'is not', in: 'is one of', contains: 'contains', gt: 'is after / more than', gte: 'is at least', lt: 'is before / less than', lte: 'is at most', exists: 'is set' };
 
@@ -26,10 +26,9 @@ function collectionChoices(state: ProjectState, owner: OwnerRef): Array<{ value:
 /** A clause's value as typed: a number when it reads as one and the field holds numbers, a yes/no for one, else text. */
 function typedValue(raw: string, type: string | undefined, op: QueryOperator): QueryClause['value'] {
   if (op === 'exists') return undefined;
-  if (op === 'in') return raw.split(',').map((v) => v.trim()).filter(Boolean);
-  if (type === 'number' && raw.trim() !== '' && Number.isFinite(Number(raw))) return Number(raw);
-  if (type === 'boolean') return raw === 'true';
-  return raw;
+  const one = (v: string): string | number | boolean => (type === 'number' && v.trim() !== '' && Number.isFinite(Number(v)) ? Number(v) : type === 'boolean' ? v.trim() === 'true' : v);
+  if (op === 'in') return raw.split(',').map((v) => v.trim()).filter(Boolean).map(one);
+  return one(raw);
 }
 
 /** Which entries, in what order and how many: the controls of one collection query. */
@@ -76,8 +75,11 @@ export function QueryControls({ state, owner, query, onChange, note }: { state: 
                 </option>
               ))}
             </select>
+            {/* Kept as typed until it is committed: a list's trailing comma, or a number half typed, is never read back over it. */}
             {c.op !== 'exists' && (
-              <input aria-label="Value" value={Array.isArray(c.value) ? c.value.join(', ') : String(c.value ?? '')} onChange={(e) => replace({ field: c.field, op: c.op, value: typedValue(e.target.value, type, c.op) })} />
+              <Field label="Value">
+                <DraftInput value={Array.isArray(c.value) ? c.value.join(', ') : String(c.value ?? '')} onCommit={(v) => replace({ field: c.field, op: c.op, value: typedValue(v, type, c.op) })} />
+              </Field>
             )}
             <button className="btn btn-sm" aria-label={`Remove filter ${i + 1}`} onClick={() => set({ where: where.filter((_, j) => j !== i) })}>
               Remove
@@ -115,10 +117,13 @@ export function QueryControls({ state, owner, query, onChange, note }: { state: 
   );
 }
 
-/** A preview of what a query finds here: the titles of its first few entries. */
-function FoundEntries({ state, owner, query }: { state: ProjectState; owner: OwnerRef; query: CollectionQuery }) {
-  const place = owner.kind === 'template' || owner.kind === 'archive' ? { entry: { collectionId: owner.id, entryId: '' } } : {};
-  const found = queryEntries(state, query, place);
+/** A preview of what a query finds here, at most `max`: the titles of its first few entries. */
+function FoundEntries({ state, owner, query, max }: { state: ProjectState; owner: OwnerRef; query: CollectionQuery; max?: number }) {
+  // In a collection's layout, the entry the canvas shows it on is the current one.
+  const sample = useStore((s) => (s.templateMode && !s.templateMode.archive && owner.kind === 'template' && s.templateMode.collectionId === owner.id ? s.templateMode.entryId : null));
+  const place = owner.kind === 'template' || owner.kind === 'archive' ? { entry: { collectionId: owner.id, entryId: sample ?? '' } } : {};
+  const all = queryEntries(state, query, place);
+  const found = max === undefined ? all : all.slice(0, max);
   if (!found.length) return <p className="insp-note muted">No published entries match yet. Drafts are left out.</p>;
   return (
     <p className="insp-note field-hint">
@@ -128,10 +133,19 @@ function FoundEntries({ state, owner, query }: { state: ProjectState; owner: Own
   );
 }
 
-/** A first connection for a list: the first collection, each item field filled by the entry field of the same kind it best fits. */
-function startConnection(state: ProjectState, schema: ListProp): ListConnection | null {
-  const first = Object.values(state.collections ?? {}).sort((a, b) => a.settings.name.localeCompare(b.settings.name))[0];
-  if (!first) return null;
+/**
+ * A first connection for a list: the first collection (by name) whose entry fields can fill every field an item needs,
+ * each item field filled by the entry field of the same kind it best fits. Null when no collection can.
+ */
+function startConnection(state: ProjectState, owner: OwnerRef, node: InstanceNode, prop: string, schema: ListProp): ListConnection | null {
+  for (const c of Object.values(state.collections ?? {}).sort((a, b) => a.settings.name.localeCompare(b.settings.name))) {
+    const start = connectionFor(c, schema);
+    if (start && !connectionProblem(state, owner, node, prop, start)) return start;
+  }
+  return null;
+}
+
+function connectionFor(first: ProjectState['collections'][string], schema: ListProp): ListConnection | null {
   const fields = rowFieldSchemas(first);
   const pick = (target: ListProp['fields'][string], name: string): string | undefined => {
     const fits = Object.entries(fields).filter(([, s]) => !fieldFitProblem(s, target));
@@ -172,8 +186,9 @@ export function ListSourceSwitch({ state, owner, node, prop, schema, manual }: {
       onChange={(v) => {
         if (v === mode) return;
         if (v === 'own') return send(null, `Show the ${label} from its own items`);
-        const start = startConnection(state, schema);
+        const start = startConnection(state, owner, node, prop, schema);
         if (start) send(start, `Show a collection in the ${label}`);
+        else toast(`No collection has fields that can fill every ${schema.itemLabel.toLowerCase()}'s ${Object.values(schema.fields).filter((f) => f.required).map((f) => f.label.toLowerCase()).join(' and ') || 'fields'}. Give one a field of that kind first.`, 'info');
       }}
     />
   );
@@ -192,7 +207,7 @@ export function ListSourceSwitch({ state, owner, node, prop, schema, manual }: {
     <div className="list-source field" data-list-source={prop}>
       <div className="field-label">{schema.label}</div>
       {toggle}
-      <QueryControls state={state} owner={owner} query={query} onChange={(q) => send({ ...connection, query: q }, `Choose which entries the ${label} show`)} note={<FoundEntries state={state} owner={owner} query={query} />} />
+      <QueryControls state={state} owner={owner} query={query} onChange={(q) => send({ ...connection, query: q }, `Choose which entries the ${label} show`)} note={<FoundEntries state={state} owner={owner} query={query} max={typeof schema.max === 'number' ? schema.max : undefined} />} />
       <div className="field-label" id={`${id}-map`}>
         Each {schema.itemLabel.toLowerCase()} shows
       </div>

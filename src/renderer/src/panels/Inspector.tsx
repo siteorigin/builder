@@ -1320,7 +1320,7 @@ function InstanceInspector({ state, owner, node, tokens, selection }: { state: P
                 />
               );
               // A list of its own items can show a collection's entries instead (see CollectionListControls).
-              if (schema.type === 'list' && !schema.feed && !isBinding(node.props[key])) return <ListSourceSwitch key={key} state={state} owner={owner} node={node} prop={key} schema={schema} manual={field} />;
+              if (schema.type === 'list' && !isBinding(node.props[key])) return <ListSourceSwitch key={key} state={state} owner={owner} node={node} prop={key} schema={schema} manual={field} />;
               return field;
             }}
           />
@@ -2738,6 +2738,13 @@ function DefinitionNodeInspector({ state, def, node, tokens }: { state: ProjectS
           </Problem>
         )}
       </Problems>
+      {/* A collection loop in the design, and what its elements show of each entry. */}
+      {node.kind === 'repeat' && isCollectionLoop(node) && (
+        <Section title="Entries" id="def-loop-source" level={LEVEL}>
+          <LoopSourceControls state={state} owner={owner} node={node} />
+        </Section>
+      )}
+      <EntryFieldsSection state={state} owner={owner} node={node} />
       <DesignContentSection state={state} def={def} node={node} />
       {/* A component placed in the design: what it is given here, the same in every placement. */}
       {node.kind === 'instance' && placedDef && <NestedInputs state={state} def={def} node={node} placedDef={placedDef} />}

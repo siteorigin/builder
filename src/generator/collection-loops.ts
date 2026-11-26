@@ -54,7 +54,7 @@ export function connectedListItems(state: ProjectState, def: ComponentDefinition
   if (raw === undefined) return undefined;
   const schema = own(def.properties, prop);
   const connection = normalizeConnection(raw);
-  if (schema?.type !== 'list' || schema.feed || !connection) return undefined;
+  if (schema?.type !== 'list' || !connection) return undefined;
   const here = queryPlace(place);
   const collection = queryCollection(state, connection.query, here);
   const entries = collection ? queriedEntries(state, connection.query, here) : [];
@@ -91,19 +91,23 @@ function placeSchema(node: GraphNode, field: (typeof CONTENT)[number]): PropSche
  * A tree ready to write: each collection loop's places keyed and its rows worked out, with the tree they key. The
  * tree is the one given when it has no loop; otherwise a copy, which keeps every node ID.
  */
-export function prepareLoops(state: ProjectState, tree: NodeTree, rctx: ResolveContext): { tree: NodeTree; loops: Map<string, LoopRows> } {
+export function prepareLoops(state: ProjectState, tree: NodeTree, rctx: ResolveContext, inDesign = false): { tree: NodeTree; loops: Map<string, LoopRows> } {
   const place: LoopPlace = { ...(rctx.entry ? { entry: rctx.entry } : {}), ...(rctx.archive ? { archive: rctx.archive } : {}) };
   const loops = new Map<string, LoopRows>();
   const nodes = tree.nodes && typeof tree.nodes === 'object' ? tree.nodes : {};
   if (!Object.values(nodes).some((n) => isCollectionLoop(n as GraphNode))) return { tree, loops };
-  const copy: Record<string, GraphNode> = structuredClone(nodes);
+  // Copied through plain reads: in a cached run the documents are views that record what is read (see ./cache), which
+  // structuredClone cannot copy. Documents are JSON, so nothing is lost.
+  const copy: Record<string, GraphNode> = JSON.parse(JSON.stringify(nodes));
   for (const loop of Object.values(copy)) {
     if (!isCollectionLoop(loop) || loop.kind !== 'repeat') continue;
     const { collection, entries } = loopEntries(state, loop, place);
     const fields: Record<string, PropSchema> = {};
     /** How each key's value is read for one entry. */
     const readers: Array<[string, (entry: EntryDoc) => unknown]> = [];
-    const keyed = (key: string, schema: PropSchema, read: (entry: EntryDoc) => unknown) => {
+    // Each place's key is its place in the loop (`f0`, `f1`...): the site's rows name no editor node.
+    const keyed = (_place: string, schema: PropSchema, read: (entry: EntryDoc) => unknown) => {
+      const key = `f${readers.length}`;
       fields[key] = schema;
       readers.push([key, read]);
       return { $item: key };
@@ -120,6 +124,8 @@ export function prepareLoops(state: ProjectState, tree: NodeTree, rctx: ResolveC
         if (c === undefined) continue;
         const ref = conditionRef(c);
         const field = itemField(ref);
+        // A design's own property or UI state decides it as anywhere in the design.
+        if (field === undefined && inDesign) continue;
         // Inside a loop a condition reads an entry field; anything else (a page has no properties) always holds.
         if (field === undefined || !collection || !rowFieldSchema(collection, field)) {
           delete r[key];
@@ -133,6 +139,7 @@ export function prepareLoops(state: ProjectState, tree: NodeTree, rctx: ResolveC
           if (!isBindingRef(v)) continue;
           const field = itemField(v);
           const nested = own(def?.properties, prop);
+          if (field === undefined && inDesign) continue;
           if (field === undefined || !nested || !collection || !rowFieldSchema(collection, field)) {
             // What a loop's section cannot read shows the section's own default.
             delete (n.props as Record<string, unknown>)[prop];
@@ -141,13 +148,13 @@ export function prepareLoops(state: ProjectState, tree: NodeTree, rctx: ResolveC
           const pctx = def?.kind === 'code' ? { ...rctx, forCode: true } : rctx;
           (n.props as Record<string, unknown>)[prop] = keyed(`${n.id}|prop|${prop}`, nested, (e) => resolveValue(nested, projectField(state, collection, e, field, nested), pctx));
         }
-        // A placement's variant is its own, the same in every row.
-        for (const [axis, v] of Object.entries((n as InstanceNode).variants ?? {})) if (isBindingRef(v)) delete (n as InstanceNode).variants![axis];
+        // A placement's variant is its own, the same in every row (or, in a design, the design's to choose).
+        if (!inDesign) for (const [axis, v] of Object.entries((n as InstanceNode).variants ?? {})) if (isBindingRef(v)) delete (n as InstanceNode).variants![axis];
         for (const ids of Object.values(n.slots ?? {})) if (Array.isArray(ids)) ids.forEach(visit);
         return;
       }
       for (const key of STRUCTURE) {
-        if (!isBindingRef(r[key])) continue;
+        if (!isBindingRef(r[key]) || (inDesign && itemField(r[key]) === undefined)) continue;
         const empty = emptyFor(n, key);
         if (empty === undefined) delete r[key];
         else r[key] = empty;
@@ -156,6 +163,7 @@ export function prepareLoops(state: ProjectState, tree: NodeTree, rctx: ResolveC
         const v = r[key];
         if (!isBindingRef(v)) continue;
         const field = itemField(v);
+        if (field === undefined && inDesign) continue;
         if (field === undefined || !collection || !rowFieldSchema(collection, field) || !ENTRY_CONTENT_FIELDS.has(key)) {
           const empty = emptyFor(n, key);
           if (empty === undefined) delete r[key];

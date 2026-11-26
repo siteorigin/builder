@@ -68,7 +68,7 @@ import { NO_SHELL_IDS, labelKeyFor, pageIds } from '@generator/checks';
 import { pageLinkUses, type PageLinkUse } from './page-links';
 import { batchTagProblem, insertsInline, tagKindProblem } from './semantic-tags';
 import { dropHeaderLinks, followingSlot, followsPageOrder, keepHeaderOrder, menuBefore } from './header-order';
-import { collectionSourceProblems, instanceSetListSource, loopNode, nodeSetRepeatSource } from './collection-sources';
+import { collectionSourceProblems, instanceSetListSource, loopNode, nodeSetRepeatSource, showsCollection } from './collection-sources';
 import { EngineError, RESERVED_ANCHORS, anchorCapable, anchorsInUse, childLists, codePlacesClass, displayName, enclosingRepeatProp, fail, findParent, getNode, getTree, headerMenu, headerMenuSlot, instancesOf, itemLinkPairs, settledRoot, subtreeIds, allTrees, type ParentInfo } from './tree';
 import { definitionRole } from './insert-role';
 import { itemStyleRecords, liveItemStyles, placementItems, repeatedPartList } from '@shared/item-styles';
@@ -3555,6 +3555,8 @@ function convertToCode(state: ProjectState, op: Op<'component.convertToCode'>): 
   refuseItemStylesInto(state, getTree(state, op.owner), [op.nodeId], 'a code component styles its items together.');
   // The code would show only the state's starting values, and its buttons would no longer change them.
   if (Object.keys(def.state ?? {}).length) fail(`"${def.name}" has UI state its buttons change, which a code copy would not keep. Remove its UI state first.`);
+  // Code holds what it shows for good: a collection's entries would stay as they are now, however they change.
+  if (showsCollection(state, def, node)) fail(`"${def.name}" shows a collection's entries, which a code copy would hold as they are now, never changing with the collection. Show its own items instead first.`);
   // Content placed in such a slot could no longer be checked for links inside the card's own link.
   const carded = slotsInsideCards(state, def);
   if (carded.length) fail(`"${def.name}" places its ${carded.map((s) => `“${def.slots?.[s]?.label ?? s}”`).join(', ')} content inside a card that links somewhere, which a code component cannot keep free of other links. Remove the card's link first.`);

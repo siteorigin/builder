@@ -56,6 +56,8 @@ function withTeam(s: ProjectState): { s: ProjectState; id: string } {
 }
 
 const ARCHITECTS = { collectionId: 'team', where: [{ field: 'field.role', op: 'eq', value: 'Architect' }], sort: [{ field: 'title', direction: 'desc' }], limit: 5 };
+/** Architects by name, A to Z, at most two: the collection's own order (newest first) would put Dev Patel first. */
+const FIRST_TWO = { collectionId: 'team', where: [{ field: 'field.role', op: 'eq', value: 'Architect' }], sort: [{ field: 'title' }], limit: 2 };
 const PEOPLE = { name: 'title', role: 'field.role', bio: 'field.location' };
 
 describe('a list property connected to a collection', () => {
@@ -74,7 +76,26 @@ describe('a list property connected to a collection', () => {
     // The sample people the section came with are not shown, and nothing of the editor is in the page.
     expect(html).not.toContain('Hannah Wells');
     expect(html).not.toMatch(/data-so-/);
-    expect(files.get(pageFile(s.pages[s.site.homePageId]))).not.toMatch(/collectionId|\$query/);
+    expect(files.get(pageFile(s.pages[s.site.homePageId]))).not.toContain('collectionId');
+    expect(files.get(pageFile(s.pages[s.site.homePageId]))).not.toContain('$query');
+  });
+
+  it('sorts and limits as its query says, against the collection\'s own order, and leaves drafts out of the unpublished state too', async () => {
+    let { s, id } = withTeam(studio());
+    // A third architect, so the limit of two leaves one out; the draft architect would sort first by name.
+    s = run(
+      s,
+      { type: 'entry.create', collectionId: 'team', entryId: 'en_zola', title: 'Zoe Zola', draft: false, values: { role: 'Architect' } },
+      { type: 'entry.update', collectionId: 'team', entryId: 'en_patel', publishedAt: '2026-09-01' },
+      { type: 'instance.setListSource', owner: home(s), nodeId: id, prop: 'people', source: { query: FIRST_TWO, fields: PEOPLE } }
+    );
+    const html = await serverHtml(generateProject(s), 'loops-sort-');
+    expect(html).toContain('Ana Ruiz');
+    expect(html).toContain('Dev Patel');
+    expect(html.indexOf('Ana Ruiz')).toBeLessThan(html.indexOf('Dev Patel'));
+    expect(html).not.toContain('Zoe Zola');
+    expect(html).not.toContain('Cara Diaz');
+    expect(html).not.toContain('Ben Okafor');
   });
 
   it('keeps its own items while connected, and shows them again once disconnected', () => {
@@ -99,6 +120,11 @@ describe('a list property connected to a collection', () => {
     expect(cache.made).toContain(`page:${s.site.homePageId}#clean`);
     expect(again.get(file)).toContain('Lisbon');
     expect([...again]).toEqual([...generateProject(s)]);
+    // An entry the list does not show changes nothing it shows: Home is not made again.
+    s = run(s, { type: 'entry.update', collectionId: 'team', entryId: 'en_okafor', values: { location: 'York' } });
+    generateProject(s, {}, cache);
+    expect(cache.made).not.toContain(`page:${s.site.homePageId}#clean`);
+    expect(again.get(file)).not.toContain('Ben Okafor');
     // An entry that starts matching joins the list.
     s = run(s, { type: 'entry.update', collectionId: 'team', entryId: 'en_okafor', values: { role: 'Architect' } });
     expect(generateProject(s, {}, cache).get(file)).toContain('Ben Okafor');
@@ -108,19 +134,26 @@ describe('a list property connected to a collection', () => {
     const { s, id } = withTeam(studio());
     const connect = (fields: Record<string, string>, query: Record<string, unknown> = ARCHITECTS) => refusal(s, { type: 'instance.setListSource', owner: home(s), nodeId: id, prop: 'people', source: { query, fields } });
     expect(connect({ ...PEOPLE, shoe: 'title' })).toMatch(/fills "shoe"/);
-    expect(connect({ ...PEOPLE, role: 'field.salary' })).toMatch(/do not have/);
+    expect(connect({ ...PEOPLE, role: 'field.salary' })).toMatch(/from "field.salary", which entries of Team do not have/);
+    // A field an item needs is filled from one every entry has: an excerpt can be empty.
+    expect(connect({ ...PEOPLE, name: 'excerpt' })).toMatch(/can be empty/);
     expect(connect({ ...PEOPLE, portrait: 'title' })).toMatch(/cannot fill/);
     expect(connect({ role: 'field.role' })).toMatch(/unfilled/);
     expect(connect(PEOPLE, { collectionId: 'staff' })).toMatch(/does not have/);
     expect(connect(PEOPLE, { collectionId: '$current' })).toMatch(/collection of the page it is on/);
     expect(connect(PEOPLE, { collectionId: 'team', where: [{ field: 'field.salary', op: 'eq', value: 1 }] })).toMatch(/filters by "field.salary"/);
+    expect(connect(PEOPLE, { collectionId: 'team', sort: [{ field: 'field.salary' }] })).toMatch(/sorts by "field.salary"/);
+    // A link to an entry's page is the row's, not a value a query sorts by.
+    expect(connect(PEOPLE, { collectionId: 'team', sort: [{ field: 'entryLink' }] })).toMatch(/sorts by "entryLink"/);
   });
 
   it('refuses a change elsewhere that would break it: the collection removed, a field it shows retyped', () => {
     let { s, id } = withTeam(studio());
     s = run(s, { type: 'instance.setListSource', owner: home(s), nodeId: id, prop: 'people', source: { query: ARCHITECTS, fields: PEOPLE } });
     expect(refusal(s, { type: 'collection.remove', collectionId: 'team' })).toMatch(/does not have/);
-    expect(refusal(s, { type: 'collection.update', collectionId: 'team', fields: { role: { type: 'number', label: 'Role' }, location: { type: 'string', label: 'Location' }, senior: { type: 'boolean', label: 'Senior' } } })).toMatch(/Role/);
+    // Location (shown as each bio) turned into a yes/no, its values cleared first so the entries allow it.
+    s = run(s, ...['en_ruiz', 'en_okafor', 'en_patel', 'en_diaz'].map((entryId): EditOperation => ({ type: 'entry.update', collectionId: 'team', entryId, values: { location: null } })));
+    expect(refusal(s, { type: 'collection.update', collectionId: 'team', fields: { role: { type: 'string', label: 'Role' }, location: { type: 'boolean', label: 'Location' }, senior: { type: 'boolean', label: 'Senior' } } })).toMatch(/fills “Bio” of “People”, but "Location" \(yes\/no\) cannot fill "Bio"/);
     // Disconnected first, the collection can go.
     s = run(s, { type: 'instance.setListSource', owner: home(s), nodeId: id, prop: 'people', source: null }, { type: 'collection.remove', collectionId: 'team' });
     expect(s.collections.team).toBeUndefined();
@@ -205,7 +238,7 @@ describe('collection loops', () => {
     expect(refusal(s, { type: 'node.insert', owner: home(s), parentId: loop, primitive: 'repeat', query: { collectionId: 'team' } })).toMatch(/another list/);
     expect(refusal(s, { type: 'node.setRepeatSource', owner: home(s), nodeId: loop, source: { $query: { collectionId: '$current' } } })).toMatch(/collection of the page it is on/);
     expect(refusal(s, { type: 'node.setRepeatSource', owner: home(s), nodeId: loop, source: { $archive: true } })).toMatch(/archive layout/);
-    expect(refusal(s, { type: 'collection.remove', collectionId: 'projects' })).toBeTruthy();
+    expect(refusal(s, { type: 'collection.remove', collectionId: 'projects' })).toMatch(/collection “projects”, which the project does not have/);
   });
 
   it("in a collection's layout, lists the collection's other entries", async () => {
@@ -215,9 +248,11 @@ describe('collection loops', () => {
     expect(errors(s)).toEqual([]);
     const files = generateProject(publishedState(s));
     const mill = files.get('src/routes/work/old-mill/+page.svelte')!;
-    expect(mill).toContain('Dockside Offices');
-    expect(mill).not.toMatch(/"The Old Mill"[^\n]*"id":"en_mill"/);
+    const dock = files.get('src/routes/work/dockside/+page.svelte')!;
+    expect(mill).toContain('"id":"en_dock"');
     expect(mill).not.toContain('"id":"en_mill"');
+    expect(dock).toContain('"id":"en_mill"');
+    expect(dock).not.toContain('"id":"en_dock"');
   });
 
   it("in a component's design, writes the rows into the component's own file", () => {
@@ -311,5 +346,101 @@ describe('detaching', () => {
     let { s, id } = withTeam(studio());
     s = run(s, { type: 'instance.setListSource', owner: home(s), nodeId: id, prop: 'people', source: { query: ARCHITECTS, fields: PEOPLE } });
     expect(refusal(s, { type: 'component.detachInstance', owner: home(s), nodeId: id } as EditOperation)).toMatch(/cannot be detached/);
+  });
+});
+
+describe('review regressions', () => {
+  it('generates a page with a collection loop through the generation cache, in both modes, as a full run does', () => {
+    let { s } = withLoop(studio(), { collectionId: 'projects' });
+    const cache = new GenerationCache();
+    for (const opts of [{}, { instrument: true }]) expect([...generateProject(s, opts, cache)]).toEqual([...generateProject(s, opts)]);
+    s = run(s, { type: 'entry.update', collectionId: 'projects', entryId: 'en_mill', values: { client: 'Fernhill Yoga' } });
+    for (const opts of [{}, { instrument: true }]) {
+      const files = generateProject(s, opts, cache);
+      expect([...files]).toEqual([...generateProject(s, opts)]);
+      expect(files.get(pageFile(s.pages[s.site.homePageId]))).toContain('Fernhill Yoga');
+    }
+  });
+
+  it("keeps a design's own conditions inside its collection loop: a property still decides what each row shows", async () => {
+    let s = studio();
+    const made = applyOperations(s, [{ type: 'component.create', name: 'Project list' } as EditOperation]);
+    s = made.state;
+    const defId = made.results[0].definitionId as string;
+    const owner: OwnerRef = { kind: 'component', id: defId };
+    const root = s.components[defId].tree!.rootIds[0];
+    s = run(s, { type: 'component.setPropSchema', definitionId: defId, prop: 'showClient', schema: { type: 'boolean', label: 'Show client', default: true } } as EditOperation);
+    const loop = applyOperations(s, [{ type: 'node.insert', owner, parentId: root, primitive: 'repeat', query: { collectionId: 'projects' } }]);
+    s = loop.state;
+    const p = applyOperations(s, [{ type: 'node.insert', owner, parentId: loop.results[0].nodeId as string, primitive: 'paragraph', text: 'x' }]);
+    const para = p.results[0].nodeId as string;
+    s = run(p.state, { type: 'node.setBinding', owner, nodeId: para, field: 'text', binding: { $item: 'field.client' } }, { type: 'node.setBinding', owner, nodeId: para, field: 'when', binding: { $prop: 'showClient' } });
+    expect(errors(s)).toEqual([]);
+    const placed = applyOperations(s, [{ type: 'node.insert', owner: home(s), parentId: null, index: 0, definitionId: defId, props: { showClient: false } }]);
+    s = placed.state;
+    const off = await serverHtml(generateProject(publishedState(s)), 'loops-design-off-');
+    expect(off).not.toContain('Hart Family');
+    s = run(s, { type: 'instance.setProp', owner: home(s), nodeId: placed.results[0].nodeId as string, prop: 'showClient', value: true });
+    const on = await serverHtml(generateProject(publishedState(s)), 'loops-design-on-');
+    expect(on).toContain('Hart Family');
+    expect(on).not.toMatch(/data-so-/);
+    // A design showing a collection is never frozen into code.
+    expect(refusal(s, { type: 'component.convertToCode', owner: home(s), nodeId: placed.results[0].nodeId as string } as EditOperation)).toMatch(/collection's entries/);
+  });
+
+  it("keys the site's rows by place in the loop, not by editor node", () => {
+    const { s, title } = withLoop(studio(), { collectionId: 'projects' });
+    const clean = generateProject(publishedState(s)).get(pageFile(s.pages[s.site.homePageId]))!;
+    expect(clean).not.toContain(`${title}|`);
+    expect(clean).toMatch(/"f0":/);
+  });
+
+  it('refuses to detach a placement repeated by a loop that shows each entry, and detaches once disconnected', () => {
+    let { s, id } = withTeam(studio());
+    s = run(s, { type: 'instance.setListSource', owner: home(s), nodeId: id, prop: 'people', source: { query: ARCHITECTS, fields: PEOPLE } });
+    s = run(s, { type: 'instance.setListSource', owner: home(s), nodeId: id, prop: 'people', source: null });
+    const after = run(s, { type: 'component.detachInstance', owner: home(s), nodeId: id } as EditOperation);
+    expect(after.pages[after.site.homePageId].nodes[id]).toBeUndefined();
+  });
+
+  it("refuses removing a grouping's term a loop filters by, and leaves a project's existing problem alone when the collection is renamed", () => {
+    let s = run(studio(), { type: 'collection.update', collectionId: 'projects', taxonomies: { sectors: { label: 'Sectors', terms: { homes: { label: 'Homes' }, offices: { label: 'Offices' } } } } });
+    ({ s } = withLoop(s, { collectionId: 'projects', where: [{ field: 'terms.sectors', op: 'eq', value: 'homes' }] }));
+    expect(refusal(s, { type: 'collection.removeTerm', collectionId: 'projects', taxonomyId: 'sectors', termId: 'homes' } as EditOperation)).toMatch(/term of “Sectors”/);
+    // A loop element reading a field the collection lacks (a hand edit) is reported, and renaming the collection,
+    // which changes how the problem is worded, is not refused for it.
+    const broken = structuredClone(s);
+    const text = Object.values(broken.pages[broken.site.homePageId].nodes).find((n) => n.kind === 'text' && (n as { text?: unknown }).text && typeof (n as { text?: unknown }).text === 'object')!;
+    (text as unknown as { text: unknown }).text = { $item: 'field.gone' };
+    expect(errors(broken).map((d) => d.code)).toContain('COLLECTION_SOURCE');
+    expect(run(broken, { type: 'collection.update', collectionId: 'projects', name: 'Work' }).collections.projects.settings.name).toBe('Work');
+  });
+
+  it('connects a list that fills itself from posts, which then shows the collection instead', async () => {
+    let s = studio();
+    const r = applyOperations(s, [{ type: 'node.insert', owner: home(s), parentId: null, index: 0, componentId: 'blog.grid' }]);
+    s = r.state;
+    const id = r.results[0].nodeId as string;
+    s = run(s, { type: 'instance.setListSource', owner: home(s), nodeId: id, prop: 'items', source: { query: { collectionId: 'projects', sort: [{ field: 'field.client' }] }, fields: { title: 'title', pageLink: 'entryLink' } } });
+    expect(errors(s)).toEqual([]);
+    const html = await serverHtml(generateProject(publishedState(s)), 'loops-feed-');
+    expect(html).toContain('Dockside Offices');
+    expect(html).toContain('href="/work/old-mill/"');
+  });
+
+  it('refuses a guest binding a form destination to each entry of a loop', async () => {
+    const { checkEditBatch } = await import('@shared/live/capabilities');
+    const op = { type: 'node.setBinding', owner: { kind: 'page', id: 'p' }, nodeId: 'n_abcd', field: 'prop', prop: 'endpoint', binding: { $item: 'title' } };
+    expect(checkEditBatch('collaborator', { operations: [op] })).toMatchObject({ ok: false });
+  });
+
+  it('gives an archive layout given whole fresh node IDs, so it shares no node with the page it was copied from', () => {
+    const s0 = studio();
+    const page = s0.pages[s0.site.homePageId];
+    const s = run(s0, { type: 'collection.update', collectionId: 'projects', archiveTemplate: { rootIds: page.rootIds, nodes: page.nodes as Record<string, unknown> } });
+    const layout = s.collections.projects.settings.archiveTemplate!;
+    expect(Object.keys(layout.nodes).length).toBe(Object.keys(page.nodes).length);
+    expect(Object.keys(layout.nodes).some((id) => Object.hasOwn(page.nodes, id))).toBe(false);
+    expect(refusal(s0, { type: 'collection.update', collectionId: 'projects', archiveTemplate: { rootIds: ['x'], nodes: { x: { id: 'x', kind: 'slot', slot: 'a' } } } })).toMatch(/not one it can hold/);
   });
 });

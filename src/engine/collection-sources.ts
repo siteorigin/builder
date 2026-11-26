@@ -11,6 +11,8 @@ import { CURRENT_COLLECTION, ENTRY_ORDER_FIELD, normalizeCollectionQuery, type C
 import { fieldFitProblem, normalizeConnection, rowFieldSchema } from '@shared/collection-rows';
 import { ENTRY_CONTENT_FIELDS, entryChoiceProblem, entryComparisonProblem, isEntryDateField } from '@shared/entry-fields';
 import { acceptedTypes, bindingProblem, bindingSlots } from './schema';
+import { requiredGap } from '@shared/required';
+import { termNamed } from '@shared/entry-feed';
 import { allTrees, childLists, displayName, fail, getNode } from './tree';
 import { newId } from '@shared/ids';
 
@@ -27,8 +29,12 @@ export interface SourceProblem {
   message: string;
 }
 
-/** The fields a query filters and sorts by that are not a row's or an entry's (see shared/collection-query.ts). */
+/** The fields a query filters and sorts by that are not an entry's (see shared/collection-query.ts). */
 const QUERY_ONLY = new Set(['id', 'slug']);
+/** A row's fields no query reads: a link to the entry's page is the row's, not a value to filter or sort by. */
+const UNQUERIED = new Set(['entryLink']);
+/** Whether a query can read `field` of `collection`'s entries. */
+const queryable = (collection: Collection, field: string) => QUERY_ONLY.has(field) || (!UNQUERIED.has(field) && !!rowFieldSchema(collection, field));
 
 /** Which collection a query reads where it is placed: the one it names, or for `$current` the one whose layout it is in. */
 function queryCollectionOf(state: ProjectState, owner: OwnerRef, query: Pick<CollectionQuery, 'collectionId'>): Collection | undefined {
@@ -48,8 +54,16 @@ export function queryProblem(state: ProjectState, owner: OwnerRef, raw: unknown)
   const collection = queryCollectionOf(state, owner, query);
   if (!collection) return `reads the collection “${query.collectionId}”, which the project does not have.`;
   const name = collection.settings.name;
-  for (const c of query.where ?? []) if (!QUERY_ONLY.has(c.field) && !rowFieldSchema(collection, c.field)) return `filters by "${c.field.slice(0, 60)}", which entries of ${name} do not have.`;
-  for (const s of query.sort ?? []) if (s.field !== ENTRY_ORDER_FIELD && !QUERY_ONLY.has(s.field) && !rowFieldSchema(collection, s.field)) return `sorts by "${s.field.slice(0, 60)}", which entries of ${name} do not have.`;
+  for (const c of query.where ?? []) {
+    if (!queryable(collection, c.field)) return `filters by "${c.field.slice(0, 60)}", which entries of ${name} do not have.`;
+    // A grouping's terms are named by ID or label: one it no longer has would leave the list empty.
+    const taxonomy = c.field === 'categories' ? 'categories' : c.field.startsWith('terms.') ? c.field.slice(6) : undefined;
+    if (taxonomy === undefined || c.op === 'exists') continue;
+    const values = Array.isArray(c.value) ? c.value : [c.value];
+    const named = values.filter((v) => typeof v === 'string' && termNamed(collection, taxonomy, v.trim()) !== undefined);
+    if (c.op === 'in' ? !named.length : named.length !== values.length) return `filters by a term of “${rowFieldSchema(collection, c.field)?.label ?? taxonomy}” that it does not have (${values.map((v) => JSON.stringify(v)).join(', ').slice(0, 80)}).`;
+  }
+  for (const s of query.sort ?? []) if (s.field !== ENTRY_ORDER_FIELD && !queryable(collection, s.field)) return `sorts by "${s.field.slice(0, 60)}", which entries of ${name} do not have.`;
   return null;
 }
 
@@ -58,8 +72,8 @@ export function connectionProblem(state: ProjectState, owner: OwnerRef, node: In
   const def = own(state.components, node.definitionId);
   if (!def) return null;
   const schema = own(def.properties, prop);
+  // A list that fills itself (posts, pages) shows the collection instead while connected.
   if (schema?.type !== 'list') return `connects "${prop.slice(0, 60)}" to a collection, but ${def.name} has no list of that name.`;
-  if (schema.feed) return `connects “${schema.label}” to a collection, but it fills itself from the site's ${schema.feed === 'entries' ? 'posts' : 'pages'}.`;
   if (isBinding(own(node.props, prop))) return `connects “${schema.label}” to a collection while it is passed down from the design around it. Unbind it first.`;
   const connection = normalizeConnection(raw);
   if (!connection) return `connects “${schema.label}” to a collection in a form that cannot be read: a query, and which entry field fills each item field.`;
@@ -74,9 +88,15 @@ export function connectionProblem(state: ProjectState, owner: OwnerRef, node: In
     const fit = fieldFitProblem(from, target);
     if (fit) return `fills “${target.label}” of “${schema.label}”, but ${fit}`;
   }
-  // Every item shows an entry: one an item must have is filled from it, never left at its sample value.
+  // Every item shows an entry: one an item must have is filled from it, never left at its sample value, and from a
+  // field every entry has (an entry's title), never one that can be empty.
   const unfilled = Object.entries(schema.fields).find(([field, f]) => f.required && !Object.hasOwn(connection.fields, field));
   if (unfilled) return `leaves “${unfilled[1].label}” of “${schema.label}” unfilled, which every item needs: choose the entry field that fills it.`;
+  for (const [field, source] of Object.entries(connection.fields)) {
+    const target = schema.fields[field];
+    const gap = target.required ? requiredGap(rowFieldSchema(collection, source)!, target) : null;
+    if (gap) return `fills “${target.label}” of “${schema.label}”, but ${gap}: fill it from a field every entry has, such as the title.`;
+  }
   return null;
 }
 
@@ -103,7 +123,7 @@ export function loopCollection(state: ProjectState, owner: OwnerRef, loop: Pick<
 }
 
 /** What is wrong with a collection loop placed in `owner`'s tree, or null. */
-export function loopProblem(state: ProjectState, owner: OwnerRef, tree: NodeTree, node: RepeatNode): string | null {
+export function loopProblem(state: ProjectState, owner: OwnerRef, tree: NodeTree, node: RepeatNode, parentsOf?: Map<string, GraphNode>): string | null {
   const list = node.list as Record<string, unknown>;
   if (Object.hasOwn(list, '$archive')) {
     if (owner.kind !== 'archive' || list.$archive !== true || Object.keys(list).length !== 1) return "repeats the entries of the archive page it is on, which only a collection's archive layout has.";
@@ -113,8 +133,7 @@ export function loopProblem(state: ProjectState, owner: OwnerRef, tree: NodeTree
     if (problem) return problem;
   }
   // One list at a time: each row's elements read its entry, never a row of another list around or inside it.
-  const parents = new Map<string, GraphNode>();
-  for (const p of Object.values(tree.nodes)) for (const cl of childLists(p)) for (const c of cl.ids) parents.set(c, p);
+  const parents = parentsOf ?? parentNodes(tree);
   for (let at = parents.get(node.id), hops = 0; at && hops < 200; at = parents.get(at.id), hops++) if (at.kind === 'repeat') return 'is inside another list. Show a collection in a list of its own.';
   const inside = new Set<string>();
   const visit = (id: string) => {
@@ -128,10 +147,21 @@ export function loopProblem(state: ProjectState, owner: OwnerRef, tree: NodeTree
   return null;
 }
 
-/** What is wrong with what one element inside a loop reads of its entries: each a message that follows its name. */
-export function loopBindingProblems(state: ProjectState, collection: Collection, n: GraphNode): string[] {
-  const out: string[] = [];
+/** Each node's parent in a tree. */
+function parentNodes(tree: NodeTree): Map<string, GraphNode> {
+  const parents = new Map<string, GraphNode>();
+  for (const p of Object.values(tree.nodes)) if (p && typeof p === 'object') for (const cl of childLists(p)) for (const c of cl.ids) parents.set(c, p);
+  return parents;
+}
+
+/**
+ * What is wrong with what one element inside a loop reads of its entries: each a message that follows its name, with
+ * the place it is about (a field, or a section's property), which names it apart from its wording.
+ */
+export function loopBindingProblems(state: ProjectState, collection: Collection, n: GraphNode): Array<{ place: string; message: string }> {
+  const found: Array<{ place: string; message: string }> = [];
   for (const slot of bindingSlots(n)) {
+    const out = { push: (message: string) => found.push({ place: `${slot.field}:${slot.prop ?? ''}`, message }) };
     const condition = slot.field === 'when' || slot.field === 'unless';
     const b = condition ? conditionRef(slot.value) : isBindingRef(slot.value) ? slot.value : undefined;
     if (!b || !isBinding(b) || !('$item' in b)) continue;
@@ -174,7 +204,7 @@ export function loopBindingProblems(state: ProjectState, collection: Collection,
     const problem = bindingProblem(state, { node: n, field: slot.field, prop: slot.prop, comparison }, schema);
     if (problem) out.push(problem);
   }
-  return out;
+  return found;
 }
 
 /** Whether a node reads an item field (`{ $item }`) in any of its binding places. */
@@ -198,6 +228,7 @@ export function collectionSourceProblems(state: ProjectState): SourceProblem[] {
     const def: ComponentDefinition | undefined = owner.kind === 'component' ? state.components[owner.id] : undefined;
     if (def?.owner === 'theme' || !tree?.nodes || typeof tree.nodes !== 'object') continue;
     const loops = enclosingLoops(tree);
+    let parents: Map<string, GraphNode> | undefined;
     for (const n of Object.values(tree.nodes)) {
       if (!n || typeof n !== 'object') continue;
       if (n.kind === 'instance' && n.listSources && typeof n.listSources === 'object')
@@ -206,12 +237,12 @@ export function collectionSourceProblems(state: ProjectState): SourceProblem[] {
           if (problem) out.push({ owner, label, node: n, nodeId: n.id, key: `${owner.kind}:${owner.id}:${n.id}:list:${prop}`, message: problem });
         }
       if (isCollectionLoop(n) && n.kind === 'repeat') {
-        const problem = loopProblem(state, owner, tree, n);
+        const problem = loopProblem(state, owner, tree, n, (parents ??= parentNodes(tree)));
         if (problem) out.push({ owner, label, node: n, nodeId: n.id, key: `${owner.kind}:${owner.id}:${n.id}:loop`, message: problem });
       }
       const loop = loops.get(n.id);
       const collection = loop ? loopCollection(state, owner, loop) : undefined;
-      if (collection) for (const problem of loopBindingProblems(state, collection, n)) out.push({ owner, label, node: n, nodeId: n.id, key: `${owner.kind}:${owner.id}:${n.id}:item:${problem}`, message: problem });
+      if (collection) for (const problem of loopBindingProblems(state, collection, n)) out.push({ owner, label, node: n, nodeId: n.id, key: `${owner.kind}:${owner.id}:${n.id}:item:${problem.place}`, message: problem.message });
     }
   }
   return out;
@@ -280,4 +311,15 @@ export function starterArchiveLayout(collection: Collection): NodeTree {
   if (has('publishedAt')) nodes[date] = { id: date, kind: 'text', tag: 'p', name: 'Date', text: { $item: 'publishedAt' }, datetime: { $item: 'publishedAt' }, when: { $item: 'publishedAt' }, styles: { base: { color: { token: 'color.muted' } } } } as unknown as GraphNode;
   if (has('excerpt')) nodes[excerpt] = { id: excerpt, kind: 'text', tag: 'p', name: 'Excerpt', text: { $item: 'excerpt' }, when: { $item: 'excerpt' } } as unknown as GraphNode;
   return { rootIds: [section], nodes };
+}
+
+/**
+ * Whether a placement shows a collection's entries anywhere it renders: a list connected to one, or a collection loop
+ * in its design or in the designs placed inside it.
+ */
+export function showsCollection(state: ProjectState, def: ComponentDefinition, node?: InstanceNode, seen = new Set<string>()): boolean {
+  if (node?.listSources && Object.keys(node.listSources).length) return true;
+  if (seen.has(def.id) || !def.tree) return false;
+  seen.add(def.id);
+  return Object.values(def.tree.nodes).some((n) => isCollectionLoop(n) || (n.kind === 'instance' && (!!(n.listSources && Object.keys(n.listSources).length) || (!!own(state.components, n.definitionId) && showsCollection(state, state.components[n.definitionId], undefined, seen)))));
 }

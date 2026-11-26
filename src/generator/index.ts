@@ -3878,7 +3878,7 @@ function designRowsExpr(schema: ListProp, rctx: ResolveContext, query: EntryQuer
 export function generateManagedComponent(state: ProjectState, def: ComponentDefinition, opts: GenerateOptions, standalone?: EmitCtx['standalone']): string {
   const file = defFile(def);
   // A collection loop in a design shows the same entries wherever the design is placed: its rows are written in.
-  const { tree, loops } = prepareLoops(state, def.tree!, { state });
+  const { tree, loops } = prepareLoops(state, def.tree!, { state }, true);
   const locals = propLocals(def);
   const ctx: EmitCtx = {
     state,
