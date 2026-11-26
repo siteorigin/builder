@@ -47,7 +47,7 @@ const titleOf = (state: ProjectState | undefined, id: string) => state?.pages[id
 
 /**
  * The notice for an Undo or Redo of `label` that wrote `changed`, or null when there is nothing to say: it changed no
- * page, or it changed the page on screen, where the author sees it happen. `before` is the project as it stood when
+ * page but the one on screen, where the author sees it happen. `before` is the project as it stood when
  * the step was asked for and `after` as it stands once the step is shown, so a page the step removed is still named
  * (an undone page addition) but never offered, and one it brought back is offered.
  */
@@ -59,8 +59,9 @@ export function historyNotice(
   before: ProjectState | undefined,
   after: ProjectState | undefined
 ): HistoryNotice | null {
-  const pages = changedPages(changed);
-  if (!pages.length || pages.some((id) => pageInSight(place, id))) return null;
+  // Only the pages out of sight: one changed on the page shown too may look no different there (a link's destination).
+  const pages = changedPages(changed).filter((id) => !pageInSight(place, id));
+  if (!pages.length) return null;
   const titles = pages.map((id) => titleOf(after, id) ?? titleOf(before, id)).filter((t): t is string => !!t);
   const verb = direction === 'undo' ? 'Undid' : 'Redid';
   const said = label?.trim() ?? '';

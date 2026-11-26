@@ -543,14 +543,17 @@ export function projectHistory(action: 'undo' | 'redo') {
   );
 }
 
-async function noticeElsewhere(action: 'undo' | 'redo', r: ApplyResult, before: ProjectSnapshot) {
+/** The notice for an Undo or Redo that changed a page out of sight (see projectHistory). `label` stands in for a step
+ *  the result does not name. */
+async function noticeElsewhere(action: 'undo' | 'redo', r: ApplyResult, before: ProjectSnapshot, label?: string) {
   if (!changedPages(r.changed).length) return;
   const opening = before.workspaceKey;
-  // Judged once the step is shown: the page as it now stands, and whatever the editor shows by then.
-  await shownAt(r.revision, opening);
+  // Judged once the step is shown: the page as it now stands, and whatever the editor shows by then. A step not shown
+  // in time is not judged on a project that has not heard of it.
+  if (!(await shownAt(r.revision, opening))) return;
   const s = getState();
   if (s.snapshot?.workspaceKey !== opening) return;
-  const notice = historyNotice(action, r.label, r.changed, s, before.state, s.snapshot.state);
+  const notice = historyNotice(action, r.label ?? label, r.changed, s, before.state, s.snapshot.state);
   if (!notice) return;
   const show = notice.show;
   toast(
@@ -1161,13 +1164,17 @@ export function undoAction(r: { entryId?: string; revision: number; workspaceKey
   return {
     label: 'Undo',
     undoes: { entryId, workspaceKey, revision: r.revision },
-    run: () =>
+    run: () => {
+      const before = getState().snapshot;
       void trackHistory(api.project.undoEntry(entryId, workspaceKey)).then(
         (res) => {
           if (!res.ok) toast(res.error?.message ?? 'That change could not be undone.', 'error', res.error?.code === 'CONFLICT' ? history : undefined);
+          // Its notice has gone with the click: one on another page by now says where it was undone (#903).
+          else if (before?.workspaceKey === workspaceKey) void noticeElsewhere('undo', res, before, before.history?.entries.find((e) => e.id === entryId)?.label);
         },
         () => toast('That change could not be undone.', 'error', history)
-      )
+      );
+    }
   };
 }
 

@@ -247,6 +247,14 @@ describe('an Undo or Redo of a change on another page (#903)', () => {
     await landed({ ok: true, revision: 5, changed: [CONTACT_DOC, 'siteorigin/site.json'], label: 'Change link to Contact' }, () => show('opening#a', 5));
     expect(notices()).toEqual(['Redid “Change link to Contact” on Contact.']);
 
+    // A step that changed Home as well as Contact may look no different on Home: Contact is still named.
+    open('opening#a');
+    show('opening#a', 4);
+    at({});
+    store.projectHistory('undo');
+    await landed({ ok: true, revision: 5, changed: ['siteorigin/pages/home.json', CONTACT_DOC], label: 'Delete page Contact' }, () => show('opening#a', 5));
+    expect(notices()).toEqual(['Undid “Delete page Contact” on Contact.']);
+
     open('opening#a');
     show('opening#a', 5);
     at({ pageId: 'contact' });
@@ -256,7 +264,7 @@ describe('an Undo or Redo of a change on another page (#903)', () => {
   });
 
   it('speaks up when Contact is open but a component, a layout or a post is in front of it', async () => {
-    for (const place of [{ definitionMode: { definitionId: 'card' } }, { templateMode: { collectionId: 'posts' } }, { leftTab: 'posts', post: { collectionId: 'posts', entryId: 'p1' } }]) {
+    for (const place of [{ definitionMode: { definitionId: 'card' } }, { templateMode: { collectionId: 'posts' } }, { leftTab: 'posts', post: { collectionId: 'posts', entryId: 'p1' } }, { leftTab: 'seo' }]) {
       open('opening#a');
       show('opening#a', 4);
       at({ pageId: 'contact', ...place });
@@ -281,6 +289,30 @@ describe('an Undo or Redo of a change on another page (#903)', () => {
     store.projectHistory('undo');
     await landed({ ok: true, revision: 6, changed: ['siteorigin/site.json'], label: 'Change site name' }, () => show('opening#a', 6));
     expect(notices()).toEqual([]);
+  });
+
+  it('says where a notification’s Undo undid its change, by History’s name for it, once another page is shown', async () => {
+    open('opening#a');
+    store.setState({ snapshot: { workspaceKey: 'opening#a', revision: 4, state: { pages: pages('Contact') }, history: { entries: [{ id: 'h_delete', label: 'Delete Gallery on Contact' }] } } as unknown as ProjectSnapshot });
+    at({});
+    store.undoAction({ entryId: 'h_delete', revision: 4, workspaceKey: 'opening#a' })!.run();
+    await landed({ ok: true, revision: 5, changed: [CONTACT_DOC] }, () => show('opening#a', 5));
+    expect(notices()).toEqual(['Undid “Delete Gallery on Contact”.']);
+  });
+
+  it('says nothing about a step the editor has not shown in time, judged on a project that has not heard of it', async () => {
+    vi.useFakeTimers();
+    try {
+      open('opening#a');
+      show('opening#a', 4);
+      at({});
+      store.projectHistory('undo');
+      undos.at(-1)!({ ok: true, revision: 5, changed: [CONTACT_DOC], label: 'Duplicate Split hero on Contact' });
+      await vi.advanceTimersByTimeAsync(3100);
+      expect(notices()).toEqual([]);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it('says nothing once another project is open, and withdraws Show for a page gone since', async () => {
