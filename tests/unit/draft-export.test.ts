@@ -123,6 +123,23 @@ describe('exporting a project with a draft', () => {
     expect(c.snapshot()!.state.pages.pg_winter01.draft).toBe(true);
   });
 
+  it('#817: a clean site with a public URL exports with nothing to fix, and its hosting guidance beside the warnings', async () => {
+    const dir = temp('project');
+    const state = createStarterState('blank', 'Bookshop', false);
+    state.site.baseUrl = 'https://books.example';
+    await (await ProjectSession.create(dir, state)).close();
+    const c = await open(dir);
+    const r = await c.buildStaticTo(join(temp('out'), 'site'));
+    expect(r.ok).toBe(true);
+    // This file's stand-in build writes each page's Svelte source, which has no <html lang>: the one note that gives
+    // rise to is the stand-in's. tests/e2e/export.mjs runs the real build and expects no notes at all.
+    const stand = /^“Home” \(\/\) was built without a language/;
+    expect(r.warnings.filter((w) => !stand.test(w))).toEqual([]);
+    expect((r.notes ?? []).filter((n) => !stand.test(n.message))).toEqual([]);
+    expect(r.hosting).toMatch(/^Addresses your site does not have show its not-found page, 404\.html\. Cloudflare Pages, Netlify and Vercel .* set the 404 error document to \/404\.html /);
+    expect((c.snapshot()!.recentExports[0].notes ?? []).filter((n) => /404\.html/.test(n.message))).toEqual([]);
+  });
+
   it('publishes the hosts’ 301 rules for the published redirects only, with vercel.json at the website’s root (#581)', async () => {
     const dir = temp('project');
     let state = createStarterState('business', 'Bookshop', false);
@@ -144,6 +161,9 @@ describe('exporting a project with a draft', () => {
     env.pick = async () => out;
     const r = await c.exportStatic('folder', shown);
     expect(r).toMatchObject({ ok: true });
+    // #817: the hosting guidance is for the host the Redirects setting names, and is not a warning.
+    expect(r.hosting).toBe('Addresses your site does not have show its not-found page, 404.html. Vercel uses it automatically when it publishes the exported website as it is.');
+    expect([...r.warnings, ...(r.notes ?? []).map((n) => n.message)].filter((w) => /404\.html/.test(w))).toEqual([]);
     expect(readFileSync(join(r.path!, '_redirects'), 'utf8').split('\n').filter((l) => l && !l.startsWith('#'))).toEqual(['/team/ /about/ 301', '/team /about/ 301']);
     expect(JSON.parse(readFileSync(join(r.path!, 'vercel.json'), 'utf8'))).toEqual({
       redirects: [
@@ -240,7 +260,9 @@ describe('exporting a project with a draft', () => {
     const ok = await c.buildStaticTo(join(temp('out'), 'site'));
     expect(ok.ok).toBe(true);
     expect(readFileSync(join(ok.path!, '404.html'), 'utf8')).toContain('so-not-found__heading');
-    expect(ok.warnings.at(-1)).toMatch(/^Addresses your site does not have show its not-found page, 404\.html\..* set the 404 error document to \/404\.html /);
+    // #817: how the host shows the page is guidance beside the notes, never one of them.
+    expect(ok.hosting).toMatch(/^Addresses your site does not have show its not-found page, 404\.html\. Cloudflare Pages, Netlify and Vercel .* set the 404 error document to \/404\.html /);
+    expect([...ok.warnings, ...(ok.notes ?? []).map((n) => n.message)].filter((w) => /not-found page, 404\.html\.|error document/.test(w))).toEqual([]);
     mkdirSync(join(dir, 'static'), { recursive: true });
     writeFileSync(join(dir, 'static/404.html'), '<p>Our old page</p>');
     const dest = join(temp('out'), 'site');

@@ -1,5 +1,5 @@
 import { Fragment, useEffect, useId, useMemo, useRef, useState, useSyncExternalStore, type CSSProperties, type ReactNode } from 'react';
-import { ChevronRight, CircleAlert, CircleCheck, Cloud, Copy, FilePen, FolderCode, Globe, MapPin, MapPinOff, TriangleAlert, Upload } from 'lucide-react';
+import { ChevronRight, CircleAlert, CircleCheck, Cloud, Copy, FilePen, FolderCode, Globe, Info, MapPin, MapPinOff, TriangleAlert, Upload } from 'lucide-react';
 import { describeDraftLink, publicationIds, publicationPlan, type DraftLink } from '@generator/checks';
 import type { PageDoc, ProjectState } from '@shared/types';
 import type { SiteEntry } from '@shared/collections';
@@ -547,6 +547,7 @@ export function ExportModal() {
   const rowNotes: ExportNote[] = notesInRow ? (shown!.notes ?? shown!.warnings.map((message) => ({ message }))) : succeeded ? [] : (recent[0]?.notes ?? []).filter((n) => n.destination);
   const foldNotes = rowNotes.length > MANY_NOTES;
   const notesId = useId();
+  const hostingId = useId();
   // The page a failed build names by its address, when exactly one page has it: the author's way back to fix it.
   const failedPage = useMemo(() => {
     if (!shown || shown.ok || !state) return null;
@@ -749,7 +750,7 @@ export function ExportModal() {
         {shown && (
           // A failure and its report read as one card; the report stays outside the alert itself.
           <div className={shown.ok ? 'export-outcome' : 'export-outcome export-failure'}>
-            <div ref={resultRef} tabIndex={-1} className={`scope-note export-result ${shown.ok ? 'shared' : 'danger'}`} role={shown.ok ? 'status' : 'alert'} data-report={shown.report}>
+            <div ref={resultRef} tabIndex={-1} className={`scope-note export-result ${shown.ok ? 'shared' : 'danger'}`} role={shown.ok ? 'status' : 'alert'} data-report={shown.report} aria-describedby={shown.ok && shown.hosting ? hostingId : undefined}>
               {shown.ok ? <CircleCheck /> : <CircleAlert />}
               <div className="export-note-body">
                 <strong>{shown.message}</strong>
@@ -757,6 +758,8 @@ export function ExportModal() {
                 {shown.path && recent[0]?.path !== shown.path && <ExportPath path={shown.path} />}
                 {notesInRow ? (
                   <span>{shown.warnings.length === 1 ? '1 note to review below.' : `${shown.warnings.length} notes to review below.`}</span>
+                ) : shown.ok && !shown.warnings.length ? (
+                  <span className="export-clean">Nothing to fix.</span>
                 ) : (
                   shown.warnings.map((w, i) => (
                     <span className="export-note-line" key={i}>
@@ -767,6 +770,16 @@ export function ExportModal() {
                 {!shown.ok && shown.details && <span className="export-note-next">{shown.message === UNEXPECTED_FAILURE ? 'Try exporting again. If it keeps failing, use Copy details and send the report to your developer or support.' : 'Check the page or component named above in the editor, then export again. If you can’t fix it, use Copy details and send the report to your developer or support.'}</span>}
               </div>
             </div>
+            {/* Guidance for the host, not a note about the website: it is never counted among the notes to review. */}
+            {shown.ok && shown.hosting && (
+              <div className="scope-note info export-hosting-guide" id={hostingId} data-testid="export-hosting">
+                <Info aria-hidden />
+                <span className="export-note-body">
+                  <strong>Publishing it</strong>
+                  <span>{shown.hosting}</span>
+                </span>
+              </div>
+            )}
             {/* Outside the alert: opening the report or copying it must not make the result announce itself again. The fix,
                 when there is one, leads the row as the dialog's primary action, and is the next stop after the result. */}
             {!shown.ok && (shown.details ? <BuildDetails text={shown.details} fix={fix} /> : fix && (

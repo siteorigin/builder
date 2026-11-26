@@ -490,6 +490,11 @@ export interface ExportResult {
   details?: string;
   revision?: number;
   previewUrl?: string;
+  /**
+   * A finished website's hosting guidance (how its host shows the not-found page): information for the success screen,
+   * never one of the warnings, which are what the author may need to fix.
+   */
+  hosting?: string;
   /** The library image the export stopped for, so the author can open it in Assets. */
   assetId?: string;
 }
