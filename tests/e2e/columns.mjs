@@ -80,7 +80,7 @@ try {
   const [left, right] = columns;
   await eventually(async () => {
     const [l, r] = [await boxOf(left), await boxOf(right)];
-    assert.deepEqual([l.framed, r.framed], ['Stack', 'Stack'], 'each empty column is framed');
+    assert.deepEqual([l.framed, r.framed], ['Column 1', 'Column 2'], 'each empty column is framed with the name its chip shows');
     assert.ok(l.height >= 72 && r.height >= 72, `each is tall enough to pick: ${JSON.stringify([l, r])}`);
     assert.ok(Math.abs(l.y - r.y) < 2 && l.x + l.width <= r.x, `side by side: ${JSON.stringify([l, r])}`);
     // Two tracks on desktop, not the three a plain Grid starts with.
@@ -118,7 +118,7 @@ try {
     const p = await page();
     assert.deepEqual([p.nodes[left].children.length, p.nodes[right].children.length], [1, 0], 'the first Undo empties the right column alone');
   }, 15000);
-  await eventually(async () => assert.equal((await boxOf(right)).framed, 'Stack', 'and it is framed again'), 30000);
+  await eventually(async () => assert.equal((await boxOf(right)).framed, 'Column 2', 'and it is framed again'), 30000);
   await undo();
   await eventually(async () => assert.equal((await page()).nodes[left].children.length, 0, 'the second empties the left'), 15000);
   await undo();
@@ -202,7 +202,7 @@ try {
     await eventually(async () => {
       const b = await boxes(cells);
       for (const [name, box] of Object.entries(b)) {
-        assert.equal(box.framed, 'Stack', `${name} is framed`);
+        assert.equal(box.framed, name, `${name} is framed with its own name`);
         assert.ok(box.height >= 72, `${name} is tall enough to pick: ${JSON.stringify(box)}`);
       }
       starter.desktop(b, await at(grid).evaluate((el) => getComputedStyle(el).gridTemplateColumns.split(' ').map(parseFloat)));
@@ -215,7 +215,7 @@ try {
     await fill(cells[1], 'Paragraph', 'p', true);
     await eventually(async () => {
       const b = await boxes(cells);
-      assert.deepEqual(Object.values(b).map((x) => x.framed), starter.cells.map((_, i) => (i < 2 ? null : 'Stack')), 'filled cells lose their frames, the empty ones keep theirs');
+      assert.deepEqual(Object.values(b).map((x) => x.framed), starter.cells.map((cell, i) => (i < 2 ? null : cell)), 'filled cells lose their frames, the empty ones keep theirs');
     }, 30000);
 
     step(`${starter.tile}: one column on phones, the cells one above the other in order`);

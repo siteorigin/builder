@@ -38,6 +38,7 @@ import { repeatAsListTarget } from '../lib/repeat-as-list';
 import { boundaryOf, computedAt, createComponentTarget, definitionPick, descOf, designCtx, inDefinition, itemStep, needsStudio, placementsOn, refExists, refLabel, resolveRef, selectionFromChain, stepItem, studioDescOf, studioDesignCtx, studioPick, throughPlacement, toDefinitionRef, withoutSlot, type BridgeDesc } from '../lib/model';
 import { NEW_STUDIO, StudioLoads, studioSpec } from '../lib/studio';
 import { titleOnlyPage } from '../lib/page-start';
+import { CHIP_H, chipLeft, chipRoom } from '../lib/chip-place';
 import { askAiAbout, writePageWithAi, canInlineEdit, commitText, dropAsset, dropAssetAt, deleteSelection, detachable, detachPlacement, duplicateLayers, duplicateSelection, insertHere, liveGroup, moveLayers, moveSelection, planOne, setMode, showsInlineText, structuralTarget, takeUnscrolled, ungroupLayers, wrapLayers } from '../lib/actions';
 import { exportComponentFile, placedDefinition, saveToLibrary } from '../lib/saved-components';
 import { wrapItems } from './WrapItems';
@@ -544,11 +545,15 @@ export function Canvas() {
   /** What the strip shows on its left (a page opening, a section moving), and how wide it is. */
   const stripLeft = useRef<HTMLDivElement>(null);
   const [stripLeftW, setStripLeftW] = useState(0);
+  /** How wide a collection layout's strip (its entry picker and Done) is, so a parked chip starts after it. */
+  const [templateStripW, setTemplateStripW] = useState(0);
   useLayoutEffect(() => {
     const [short, mid, full] = [...(labelMeasure.current?.children ?? [])].map((el) => (el as HTMLElement).offsetWidth);
     if (short && mid && full && (short !== labelW.short || mid !== labelW.mid || full !== labelW.full)) setLabelW({ short, mid, full });
     const left = stripLeft.current?.offsetWidth ?? 0;
     if (left !== stripLeftW) setStripLeftW(left);
+    const template = canvasRef.current?.querySelector<HTMLElement>('[data-testid="template-strip"]')?.offsetWidth ?? 0;
+    if (template !== templateStripW) setTemplateStripW(template);
   });
 
   /** A page with nothing on it (only the shared header and footer, if it shows them): the canvas offers the first
@@ -2896,14 +2901,15 @@ export function Canvas() {
   const firstSel = selBoxes[0];
   // Only on the inserted element's own outline, and not once it is being moved or its text typed.
   const arriving = !!arrival && !!selection && arrival.key === refKey(selection) && !reorder && !editing;
-  // Text being edited always has its chip parked above the page, never over the words.
-  const placement = firstSel && selection ? chipPlacement(firstSel, !isPart && !editing, frameH * z) : null;
   // Spacing handles sit on the selected box itself (not its outline's breathing room), while editing and not while
   // text is being typed, a block moved, the page resized or a component's design edited everywhere.
   const spaceDesc = selection ? descFor(selection) : null;
   // The page's report must be for this selection: one from before it changed measured something else.
   // A code component's marked part has no spacing handles: a report for its placement is never one for the part.
   const spaceFor = !!spacing && !!spaceDesc && !spaceDesc.part && spaceDesc.slot === undefined && spacing.desc.ctx === spaceDesc.ctx && spacing.desc.node === spaceDesc.node && spacing.desc.items === spaceDesc.items;
+  // The selection's chip is parked in the strip above the page (see chipLeft), after a collection layout's own strip.
+  const chipShown = !!firstSel && !!selection;
+  const chipTaken = templateStripW ? templateStripW + 12 : 0;
   const spaceShown = selBoxes.length > 0 && spaceFor && !!state && !editing && !reorder && !resizing && !definitionMode && !snapshot?.aiBusy && !snapshot?.readOnly;
   // The canvas's Add buttons (#387), on the box of the selection and of what is hovered, each only on a box the page
   // measured for it (one copy: a repeated item's place would be every item's). Below one section and above the next
@@ -2962,7 +2968,7 @@ export function Canvas() {
   // then not at all, whichever fits beside the chip. While the frame is being resized it always shows in full.
   // The same goes for what the strip says on its left (a page opening, a section moving), which never takes more
   // room than leaves the width itself.
-  const chipEnd = placement === 'strip' && !reorder && !resizing && !imageDrop && firstSel ? Math.max(0, Math.min(firstSel.left, frameW - chipW)) + chipW + 12 : 0;
+  const chipEnd = chipShown && !reorder && !resizing && !imageDrop && firstSel ? chipLeft(firstSel.left, chipW, frameW, chipTaken) + chipW + 12 : 0;
   const leftEnd = chipEnd || (stripLeftW ? stripLeftW + 12 : 0);
   const labelMode = resizing || leftEnd + labelW.full <= frameW ? 'full' : scalePct !== 100 && leftEnd + labelW.mid <= frameW ? 'mid' : leftEnd + labelW.short <= frameW ? 'short' : 'gone';
   const stripRoom = Math.max(80, frameW - labelW.short - 12);
@@ -2990,7 +2996,7 @@ export function Canvas() {
   // The strip offers the first steps when there is no room for the card, or on a page that has only its title.
   // Where a drag of something new would go between content, the same for a tile from Insert and an image from Assets.
   const between = insertDrop ?? (imageDrop && { outline: imageDrop.list, line: imageDrop.line, refused: imageDrop.refused });
-  const stripStart = !staleFrame && !resizing && !reorder && !insertDrop && !imageDrop && !(placement === 'strip' && firstSel) && ((emptyPage && emptyAt !== null && !emptyFits) || titleOnly);
+  const stripStart = !staleFrame && !resizing && !reorder && !insertDrop && !imageDrop && !chipShown && ((emptyPage && emptyAt !== null && !emptyFits) || titleOnly);
 
   return (
     <main
@@ -3242,13 +3248,15 @@ export function Canvas() {
               <div className="overlay-clip">
                 {hovering &&
                   hovBoxes.map((b, i) => {
-                    const tall = b.height >= 40;
-                    // A tall element carries its name inside its top-left corner (kept in view when its top has scrolled
-                    // out of the page); a short one, above it, or below when it sits at the top of the page.
+                    // A tall container carries its name inside its top-left corner (kept in view when its top has
+                    // scrolled out of the page); a short element, and text or a button of any height, whose first line
+                    // the name would cover, above it, or below when it sits at the top of the page (#905). Text with no
+                    // room either side (as tall as the visible page) keeps it inside, so it is still shown.
+                    const tall = b.height >= 40 && (!textKind(hover) || (b.top < 24 && b.top + b.height + 20 > frameH * z));
                     // Near the page's right edge the name is anchored to the element's right, so the page edge never cuts it.
                     const side = b.left > frameW - 160 ? (tall ? { left: 'auto', right: 4 } : { left: 'auto', right: 0 }) : tall ? {} : { left: 0 };
                     const tagAt = { ...side, ...(tall ? (b.top < 0 ? { top: 4 - b.top } : {}) : b.top >= 24 ? { top: -19 } : { top: b.height - 1 }) };
-                    const show = i === 0 && !tagHidden && b.top + b.height > (tall ? 30 : 0) && !(placement === 'inside' && firstSel && Math.abs(firstSel.top - b.top) < 34 && Math.abs(firstSel.left - b.left) < chipW + 8);
+                    const show = i === 0 && !tagHidden && b.top + b.height > (tall ? 30 : 0);
                     return (
                       <div key={`h${i}`} className="ov-box ov-hover" style={b}>
                         {show && (
@@ -3330,6 +3338,7 @@ export function Canvas() {
                     selection={selection!}
                     desc={spaceDesc!}
                     box={toBox(rects.selected[0])}
+                    frame={{ width: viewport * z, height: frameH * z }}
                     spacing={spacing!}
                     zoom={z}
                     post={post}
@@ -3377,11 +3386,11 @@ export function Canvas() {
                   </div>
                 </div>
               )}
-              {firstSel && selection && state && placement && !reorder && !insertDrop?.moving && !resizing && !imageDrop && (
+              {firstSel && selection && state && chipShown && !reorder && !insertDrop?.moving && !resizing && !imageDrop && (
                 <SelectionChip
                   box={firstSel}
                   frameWidth={viewport * z}
-                  placement={placement}
+                  taken={chipTaken}
                   name={defRoot ? state.components[definitionMode!.definitionId].name : selLabel}
                   icon={kindIcon(state, selection)}
                   parent={isPart && !definitionMode ? chromeLabel(state, { owner: selection.owner, instancePath: selection.instancePath.slice(0, -1), nodeId: selection.instancePath[selection.instancePath.length - 1] }) : null}
@@ -3502,31 +3511,13 @@ function stepKey(s: ReturnType<typeof getState>): string {
   return JSON.stringify([s.selection ? refKey(s.selection) : null, s.snapshot?.revision ?? null, s.pageId, s.templateMode ?? null, s.definitionMode?.definitionId ?? null, s.viewport]);
 }
 
-const CHIP_H = 28;
-/** Near a container's top or bottom edge, in screen pixels, a dragged element goes beside it rather than into it. */
-const CHIP_GAP = 4;
-
 /**
- * Where the chip goes. A tall section (with its top on screen) carries it inside its top edge, where its own
- * padding is. A smaller element gets it above, when there is room inside the page. Everything else (parts,
- * which sit among other content, and anything scrolled past the top or bottom of the visible page) parks it
- * in the strip above the page frame, lined up with the selection, so it never covers the page or floats off
- * it. `frameHeight` is the visible page's height, in the same (zoomed) pixels as the box.
- */
-function chipPlacement(box: { top: number; height: number }, topLevel: boolean, frameHeight: number): 'inside' | 'above' | 'strip' {
-  if (!topLevel) return 'strip';
-  if (box.top >= 0 && box.height > 120 && box.top + CHIP_H + CHIP_GAP + 2 <= frameHeight) return 'inside';
-  if (box.top >= CHIP_H + CHIP_GAP + 2 && box.top < frameHeight) return 'above';
-  return 'strip';
-}
-
-/**
- * The selection chip: a toolbar of the selection's name and actions. Its place comes from chipPlacement and
- * it stays inside the page frame horizontally. One Tab stop: Left/Right/Home/End move between its buttons
+ * The selection chip: a toolbar of the selection's name and actions. It is parked in the strip above the page frame,
+ * lined up with the selection (see chipLeft), so it never covers the page. One Tab stop: Left/Right/Home/End move between its buttons
  * (WAI-ARIA APG toolbar); the drag handle is pointer-only, with Move up and Move down as its keyboard
  * equivalent. Delete is not here: it lives at the end of More actions, in red, and on the Delete key.
  */
-function SelectionChip({ box, frameWidth, placement, name, icon, parent, repeats, repeatsLabel, item, sib, canMove, editing, onMore, onGrip, onWidth, onLostFocus, onDone, onMove, onStep, stepBlocked, onEditText, onReveal }: { box: { left: number; top: number; width: number; height: number }; frameWidth: number; placement: 'inside' | 'above' | 'strip'; name: string; icon: React.ReactNode; parent: string | null; repeats: number; repeatsLabel: string; item: ReturnType<typeof itemStep>; sib: { index: number; count: number } | null; canMove: boolean; editing: boolean; onMore: (el: HTMLElement, focusLast?: boolean) => void; onGrip: (e: React.PointerEvent) => void; onWidth: (w: number) => void; onLostFocus: () => void; onDone: () => void; onMove: (dir: -1 | 1) => void; onStep: (dir: -1 | 1) => void; stepBlocked: { prev: boolean; next: boolean } | null; onEditText: (() => void) | null; onReveal: (() => void) | null }) {
+function SelectionChip({ box, frameWidth, taken, name, icon, parent, repeats, repeatsLabel, item, sib, canMove, editing, onMore, onGrip, onWidth, onLostFocus, onDone, onMove, onStep, stepBlocked, onEditText, onReveal }: { box: { left: number; top: number; width: number; height: number }; frameWidth: number; taken: number; name: string; icon: React.ReactNode; parent: string | null; repeats: number; repeatsLabel: string; item: ReturnType<typeof itemStep>; sib: { index: number; count: number } | null; canMove: boolean; editing: boolean; onMore: (el: HTMLElement, focusLast?: boolean) => void; onGrip: (e: React.PointerEvent) => void; onWidth: (w: number) => void; onLostFocus: () => void; onDone: () => void; onMove: (dir: -1 | 1) => void; onStep: (dir: -1 | 1) => void; stepBlocked: { prev: boolean; next: boolean } | null; onEditText: (() => void) | null; onReveal: (() => void) | null }) {
   const askKeys = useAskAiKeys();
   const selection = useStore((s) => s.selection);
   const layerSet = useStore((s) => s.layerSet);
@@ -3576,8 +3567,8 @@ function SelectionChip({ box, frameWidth, placement, name, icon, parent, repeats
     [] // eslint-disable-line react-hooks/exhaustive-deps
   );
   const t = structuralTarget(selection);
-  const top = placement === 'strip' ? -CHIP_H - 6 : placement === 'inside' ? box.top + CHIP_GAP + 2 : box.top - CHIP_H - CHIP_GAP;
-  const left = Math.max(0, Math.min(placement === 'inside' ? box.left + CHIP_GAP + 2 : box.left, frameWidth - w));
+  const top = -CHIP_H - 6;
+  const left = chipLeft(box.left, w, frameWidth, taken);
   const parentRef = selection?.instancePath.length ? { owner: selection.owner, instancePath: selection.instancePath.slice(0, -1), nodeId: selection.instancePath[selection.instancePath.length - 1] } : null;
   const structural = !!t && !selection?.instancePath.length;
   const canEdit = structural && t!.owner.kind !== 'shell';
@@ -3624,7 +3615,7 @@ function SelectionChip({ box, frameWidth, placement, name, icon, parent, repeats
   if (editing) {
     const what = /^[A-Z][a-z]/.test(name) ? name[0].toLowerCase() + name.slice(1) : name;
     return (
-      <div ref={ref} className={`ov-chip ${placement} editing`} style={{ left, top, maxWidth: frameWidth }} role="toolbar" aria-label={`Editing ${what}`} onKeyDown={onKeyDown} onFocus={trackFocus} onBlur={trackBlur}>
+      <div ref={ref} className="ov-chip strip editing" style={{ left, top, maxWidth: chipRoom(taken, frameWidth) }} role="toolbar" aria-label={`Editing ${what}`} onKeyDown={onKeyDown} onFocus={trackFocus} onBlur={trackBlur}>
         <span className="name">
           <Pencil />
           <span className="label">Editing {what}</span>
@@ -3642,8 +3633,8 @@ function SelectionChip({ box, frameWidth, placement, name, icon, parent, repeats
   return (
     <div
       ref={ref}
-      className={`ov-chip ${placement}`}
-      style={{ left, top, maxWidth: frameWidth }}
+      className="ov-chip strip"
+      style={{ left, top, maxWidth: chipRoom(taken, frameWidth) }}
       role="toolbar"
       // Which of a repeated part it acts on (one card, or every card) is part of what the toolbar is for.
       aria-label={`${name}${item ? `, ${item.n} of ${item.count}` : repeats > 1 ? `, all ${repeats} ${repeatsLabel}` : ''} actions`}

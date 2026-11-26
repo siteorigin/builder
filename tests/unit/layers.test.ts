@@ -126,6 +126,15 @@ describe('layer names', () => {
     expect(full.length).toBeLessThanOrEqual('Text: '.length + 201);
   });
 
+  it('say a button that reads its own kind once, not "Button · Button" (#905)', () => {
+    const t = nested();
+    t.run([{ type: 'node.insert', owner: t.owner, parentId: t.grid, primitive: 'button', text: 'Button' }]);
+    const button = (t.node(t.grid) as { children: string[] }).children.at(-1)!;
+    expect(layerLabel(t.s, t.node(button))).toEqual({ label: 'Button', kind: 'Button', full: 'Button' });
+    t.run([{ type: 'node.setContent', owner: t.owner, nodeId: t.para, field: 'text', value: 'text' }]);
+    expect(layerLabel(t.s, t.node(t.para)).label).toBe('Text');
+  });
+
   it('say when a paragraph is empty', () => {
     const t = nested();
     t.run([{ type: 'node.setContent', owner: t.owner, nodeId: t.para, field: 'text', value: '   ' }]);

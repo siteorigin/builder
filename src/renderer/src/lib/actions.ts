@@ -102,9 +102,9 @@ async function askDelete(st: ProjectState, t: ElementRef, label: string, held: H
     { kind: 'undo', text: why ? 'One Undo puts it all back.' : 'Either way, one Undo puts it all back.' }
   ];
   const ask = { title: `Delete “${label}”?`, icon: 'delete' as const, details };
-  if (why) return (await confirmDialog({ ...ask, body: `It holds ${itemCount(n)}, which go with it.`, confirmLabel: 'Delete all', tone: 'caution' })) ? 'all' : null;
+  if (why) return (await confirmDialog({ ...ask, body: `It holds ${itemCount(n)}, which ${n === 1 ? 'goes' : 'go'} with it.`, confirmLabel: 'Delete all', tone: 'caution' })) ? 'all' : null;
   // Keeping is the main choice and Delete all the one that loses work; Cancel, the safe one, takes the first focus.
-  const ok = await confirmDialog({ ...ask, body: `It holds ${itemCount(n)}. Delete them with it, or keep them where they are?`, confirmLabel: 'Remove wrapper & keep content', cancelLabel: 'Delete all', stayLabel: 'Cancel' });
+  const ok = await confirmDialog({ ...ask, body: n === 1 ? 'It holds 1 item. Delete that with it, or keep it where it is?' : `It holds ${n} items. Delete them with it, or keep them where they are?`, confirmLabel: 'Remove wrapper & keep content', cancelLabel: 'Delete all', stayLabel: 'Cancel' });
   return ok === null ? null : ok ? 'keep' : 'all';
 }
 

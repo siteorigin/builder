@@ -773,8 +773,9 @@ export function NewProjectModal({ onClose }: { onClose: () => void }) {
 
   const onName = shown?.about === 'name';
   const onLocation = shown?.about === 'name' || shown?.about === 'location';
-  // What happens offline stays in view whenever Create is on offer, a failure that can be retried included.
-  const showToolsNote = (tools === 'download' || tools === 'unknown') && canCreate;
+  // What happens offline is in view from the moment the check says setup downloads, before anything is typed, so
+  // the dialog never grows under the pointer while a name is entered (#905).
+  const showToolsNote = tools === 'download' || tools === 'unknown';
   return (
     <Modal
       title="New project"
@@ -939,7 +940,7 @@ export function NewProjectModal({ onClose }: { onClose: () => void }) {
         {showToolsNote && (
           <div id="new-project-tools-note" className="scope-note info">
             <Info aria-hidden="true" />
-            <span>If the website tools can’t download, your project still opens. Choose Try again in its preview later.</span>
+            <span>Offline? Your project still opens. Choose Try again in its preview later.</span>
           </div>
         )}
       </div>

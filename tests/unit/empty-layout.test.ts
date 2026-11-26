@@ -88,17 +88,28 @@ describe('the frame of an empty container in the editor preview', () => {
     const cache = new GenerationCache();
     const dev = generateProject(s, { instrument: true }, cache);
     const home = dev.get(HOME)!;
-    expect(tagOf(home, ids.grid)).toContain('data-so-empty-layout="Grid"');
-    expect(tagOf(home, ids.row)).toContain('data-so-empty-layout="Row"');
+    expect(tagOf(home, ids.grid)).toContain('data-so-empty-layout={"Grid"}');
+    expect(tagOf(home, ids.row)).toContain('data-so-empty-layout={"Row"}');
     // A Container is a Stack with room around it, and Layers calls it a Stack too.
-    expect(tagOf(home, ids.stack)).toContain('data-so-empty-layout="Stack"');
-    expect(tagOf(home, ids.container)).toContain('data-so-empty-layout="Stack"');
+    expect(tagOf(home, ids.stack)).toContain('data-so-empty-layout={"Stack"}');
+    expect(tagOf(home, ids.container)).toContain('data-so-empty-layout={"Stack"}');
     expect(home.match(/data-so-empty-layout=/g)).toHaveLength(4);
     // An attribute on the container itself: it gains no element inside.
     expect(home).toMatch(new RegExp(`data-so-node="${ids.grid}"[^>]*></div>`));
     for (const [path, src] of dev) if (path.endsWith('.svelte')) expect(() => compile(src, { filename: path, generate: 'client', runes: true }), path).not.toThrow();
     // No exported file has any of it, from a fresh run or from the cache the editor's run filled.
     for (const files of [generateProject(s, {}, cache), generateProject(s)]) for (const [path, src] of files) expect(src, path).not.toMatch(EDITOR_ONLY);
+  });
+
+  it('names an empty container that has a name of its own by that name, as Layers does (#905)', () => {
+    const { s, owner, ids } = site();
+    const named = applyOperations(s, [{ type: 'node.rename', owner, nodeId: ids.stack, name: 'Column 1' }]).state;
+    const home = generateProject(named, { instrument: true }).get(HOME)!;
+    expect(tagOf(home, ids.stack)).toContain('data-so-empty-layout={"Column 1"}');
+    expect(tagOf(home, ids.row)).toContain('data-so-empty-layout={"Row"}');
+    // A name is the author's text: it reaches the page as a value, never as markup.
+    const odd = applyOperations(s, [{ type: 'node.rename', owner, nodeId: ids.stack, name: 'A "quoted" {name} <b>' }]).state;
+    for (const [path, src] of generateProject(odd, { instrument: true })) if (path.endsWith('.svelte')) expect(() => compile(src, { filename: path, generate: 'client', runes: true }), path).not.toThrow();
   });
 
   it('leaves a container with something in it, and an empty element with no layout, unframed', () => {
@@ -112,7 +123,7 @@ describe('the frame of an empty container in the editor preview', () => {
     // Emptied again (Undo), the frame comes back.
     const para = (filled.pages[owner.id].nodes[ids.grid] as ElementNode).children[0];
     const emptied = applyOperations(filled, [{ type: 'node.remove', owner, nodeId: para }]).state;
-    expect(tagOf(generateProject(emptied, { instrument: true }, cache).get(HOME)!, ids.grid)).toContain('data-so-empty-layout="Grid"');
+    expect(tagOf(generateProject(emptied, { instrument: true }, cache).get(HOME)!, ids.grid)).toContain('data-so-empty-layout={"Grid"}');
     // The footer's spacer is empty by design and has no layout: it is drawn as designed, on every page.
     const business = generateProject(createStarterState('business', 'Studio', false), { instrument: true });
     for (const [path, src] of business) expect(src, path).not.toContain('data-so-empty-layout');
@@ -124,9 +135,9 @@ describe('the frame of an empty container in the editor preview', () => {
     const defId = made.results[0].definitionId as string;
     const dev = generateProject(made.state, { instrument: true });
     const file = [...dev.entries()].find(([, src]) => src.includes('siteorigin/components/' + defId + '/component.json'));
-    expect(file?.[1]).toContain('data-so-empty-layout="Row"');
+    expect(file?.[1]).toContain('data-so-empty-layout={"Row"}');
     const preview = generateComponentPreview(made.state, { definitionId: defId });
-    expect('files' in preview && [...preview.files.values()].some((src) => src.includes('data-so-empty-layout="Row"'))).toBe(true);
+    expect('files' in preview && [...preview.files.values()].some((src) => src.includes('data-so-empty-layout={"Row"}'))).toBe(true);
     for (const [path, src] of generateProject(made.state)) expect(src, path).not.toMatch(EDITOR_ONLY);
   });
 });
@@ -213,14 +224,14 @@ describe('a change only the editor’s variant shows, in a project the preview r
     const session = await ProjectSession.create(dir, start);
     const file = join(dir, HOME);
     const variant = join(dir, '.siteorigin/cache/dev', HOME);
-    expect(readFileSync(variant, 'utf8')).toContain('data-so-empty-layout="Grid"');
+    expect(readFileSync(variant, 'utf8')).toContain('data-so-empty-layout={"Grid"}');
     const before = readFileSync(file, 'utf8');
     const long = new Date('2001-01-01T00:00:00Z');
     utimesSync(file, long, long);
     // Arranged as a Row: the visitor's file is the same (its styles are in the stylesheet), the editor's names a Row.
     const r = await session.apply({ operations: [{ type: 'node.setStyle', owner, nodeId: ids.grid, scope: 'base', property: 'layout', value: 'row' }] }, { label: 'Arrange' });
     expect(r.ok).toBe(true);
-    expect(readFileSync(variant, 'utf8')).toContain('data-so-empty-layout="Row"');
+    expect(readFileSync(variant, 'utf8')).toContain('data-so-empty-layout={"Row"}');
     expect(readFileSync(file, 'utf8')).toBe(before);
     expect(statSync(file).mtimeMs).toBeGreaterThan(long.getTime());
     // A change the variant does not show either leaves the file alone.

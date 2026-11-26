@@ -65,7 +65,7 @@
   }
   /* What a drag is moving stays marked in place: dashed, on a faint tint of the selection colour. */
   .ov-selected.moving { box-shadow: inset 0 0 0 1px #101828, inset 0 0 0 4px #fff; outline: 2px dashed var(--select); outline-offset: -3px; background: color-mix(in srgb, var(--select) 8%, transparent); }
-  /* Spacing handles: a short bar on the inner edge of each padding band (selection colour) and on the outer edge of
+  /* Spacing handles: a short bar in each padding band, clear of the content (selection colour) and on the outer edge of
      the margin above and below (amber), each between white and ink keylines so it holds on any page. The band being
      dragged or pointed at is tinted; the HUD beside the handle names the value. */
   .ov-space-handle { --space-c: var(--select); position: absolute; display: grid; place-items: center; width: 24px; height: 12px; transform: translate(-50%, -50%); pointer-events: auto; cursor: ns-resize; z-index: 1; touch-action: none; }

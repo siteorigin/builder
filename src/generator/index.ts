@@ -85,6 +85,7 @@ import { generateHostRedirects, generateVercelConfig, HOST_REDIRECTS_FILE, VERCE
 import { sha256Hex } from '@shared/sha256';
 import { NOT_FOUND_ROUTE, notFoundCopy } from '@shared/not-found';
 import { pickImagesField } from '@shared/image-lists';
+import { dialString } from '@shared/contact-links';
 import { HTML_ATTR, HTML_START, pageDirection, pageLanguage, sameLanguage, siteDirection, siteLanguage, translationGroup, translationMembers } from '@shared/languages';
 import { publicUrl } from '@shared/public-url';
 import { siteVisitorText, visitorTextFor, visitorTextLanguage } from '@shared/visitor-text';
@@ -351,8 +352,9 @@ export function resolveLink(link: LinkValue | null | undefined, ctx: ResolveCont
       break;
     case 'tel':
       // A number saved before numbers needed three digits dials nothing: it shows its words alone.
-      if (!isTelephone(link.target)) return null;
-      href = `tel:${link.target.replace(/[^+0-9]/g, '')}`;
+      // Nor does one that is only a country code and its trunk zero ("+358 (0)").
+      if (!isTelephone(link.target) || !isTelephone(dialString(link.target))) return null;
+      href = `tel:${dialString(link.target)}`;
       break;
     case 'anchor':
       href = `#${link.target.replace(/^#/, '')}`;
@@ -3702,14 +3704,15 @@ function emptyImageListMarker(ctx: EmitCtx, node: GraphNode & { kind: 'element' 
 }
 
 /**
- * Editor variants: an empty container (see isEmptyLayout) names its kind for the frame the bridge draws while
- * editing, with a grid's columns ruled in its gaps. Only an attribute: the page has no element more, and Preview,
+ * Editor variants: an empty container (see isEmptyLayout) is named for the frame the bridge draws while editing, as
+ * Layers names it (its own name, such as a Columns cell's "Column 1", or else its kind), with a grid's columns ruled
+ * in its gaps. Only an attribute: the page has no element more, and Preview,
  * which the bridge leaves unstyled, shows the container exactly as visitors get it. A carousel's track is left to
  * its own helper.
  */
 function emptyFrameAttr(ctx: EmitCtx, node: GraphNode & { kind: 'element' }): string {
   if (!ctx.instrument || !isEmptyLayout(node) || isCarouselTrack(node)) return '';
-  return ` data-so-empty-layout="${elementKind(node)}"`;
+  return ` data-so-empty-layout={${js(node.name?.trim() || elementKind(node))}}`;
 }
 
 /**

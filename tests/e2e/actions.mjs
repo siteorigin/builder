@@ -312,8 +312,9 @@ try {
   step('what a person could not do fails with a reason, and changes nothing');
   const unchanged = await applied();
   const order = await pageOrder();
-  // Covered by the canvas's chip: a section's chip drawn over the page. A point inside both one of its buttons and the
-  // visible page is aimed at through the smallest element of the page there.
+  // Covered by the canvas's chrome: the + that adds a section below the selected one, drawn on its edge over the page
+  // (the selection's chip is parked above the page, #905). A point inside both that button and the visible page is
+  // aimed at through the smallest element of the page there.
   await click((await find({ role: 'button', name: 'Layers', region: 'Panels' })).ref);
   let sel = null;
   let aimAt = null;
@@ -326,10 +327,9 @@ try {
     });
     // Selecting a row scrolls its section into view: the point is worked out once the page has stopped moving.
     const pointUnder = async () => {
-      // One of the chip's own buttons (the chip's frame lets the page take clicks around them).
-      const bar = await find({ role: 'toolbar', name: `${name} actions`, scope: 'editor' });
-      const button = flatten((await snapshot({ within: bar.ref, maxNodes: 100 })).editor.nodes).find((x) => x.role === 'button' && x.box && !x.offscreen);
-      assert.ok(button, 'the chip has a button');
+      // The selected section's own + below it.
+      const button = await find({ role: 'button', name: `Add a section below ${name}`, scope: 'editor' });
+      assert.ok(button?.box && !button.offscreen, 'the section has its + on screen');
       const pv = (await snapshot({ maxNodes: 1, screenshot: true })).screenshots.preview;
       const b = button.box;
       const left = Math.max(b.x, pv.clip.x);
@@ -352,11 +352,11 @@ try {
     });
     if (aimAt) break;
   }
-  assert.ok(aimAt, 'a section’s chip is drawn over the page');
+  assert.ok(aimAt, 'a section’s + is drawn over the page');
   const covered = failed(await call('ui.click', { target: aimAt, waitMs: 300 }), 'NOT_ACTIONABLE', 'the page under the chip');
   assert.equal(covered.details.reason, 'obscured');
   assert.equal(covered.details.dispatched, 'none');
-  assert.equal(covered.details.blocker.surface, 'editor', 'the chip, in the editor, is what covers it');
+  assert.equal(covered.details.blocker.surface, 'editor', 'the +, in the editor, is what covers it');
   assert.equal(covered.retryable, true);
   assert.deepEqual((await snapshot({ maxNodes: 20 })).context.selection?.semantic, sel.semantic, 'the selection is as it was');
   // Under a dialog: the page and the editor's own controls.

@@ -254,9 +254,7 @@ step('the Button dragged over Sidebar, which takes only text, is refused there a
 step('a move dragged to Sidebar and cancelled with Escape, or let go back on its grip, changes nothing (#658)');
 {
   const changes = await newest();
-  // The Button's chip sits over the Paragraph above it: Escape steps out to Main first, so a click finds the Paragraph.
-  await win.keyboard.press('Escape');
-  await eventually(async () => assert.doesNotMatch(await chip(), /^(Button|Link)/));
+  // The Button's chip is parked above the page, so the Paragraph above it is a click away (#905).
   await selectIn(paraEl, /^Text/);
   await pickUpSelection();
   const at = await pointAt(marker('sidebar'), 0.5, 30);

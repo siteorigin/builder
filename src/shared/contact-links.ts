@@ -23,9 +23,26 @@ const MAX_DIGITS = 15;
 /** Countries whose numbers keep their leading 0 when dialled from abroad: "+39 (0)6 …" dials the zero. */
 const KEEPS_ZERO = /^\+(39|378|225)/;
 
-/** The dial string the generator writes into a tel: link. */
+/** A number's digits and its leading +, as written. */
 const dial = (t: string) => t.replace(/[^+0-9]/g, '');
 const digitCount = (t: string) => (t.match(/[0-9]/g) ?? []).length;
+/** A bracketed trunk zero, written straight after an international number's country code ("+44 (0)20 …"). */
+const TRUNK_ZERO = /^(\s*\+\s*\d{1,3})[\s\u00a0\u2007\u2009\u202f.\-/\u2010\u2011]*\(\s*0\s*\)/;
+/** A number as written, without the bracketed trunk zero after its country code. */
+const withoutTrunk = (t: string) => t.replace(TRUNK_ZERO, '$1 ');
+
+/**
+ * The dial string the generator writes into a tel: link: the digits and a leading +, without the bracketed trunk
+ * zero an international number leaves out from abroad ("+27 (0)21 555-0100" dials +27215550100), except where
+ * numbers keep it ("+39 (0)6 …").
+ */
+export function dialString(target: string): string {
+  const kept = dial(target);
+  if (KEEPS_ZERO.test(kept)) return kept;
+  const m = TRUNK_ZERO.exec(target);
+  // A country code and its trunk zero with no number after them ("+358 (0)") dial nothing.
+  return m && !/\d/.test(target.slice(m[0].length)) ? '' : dial(withoutTrunk(target));
+}
 
 /** A number in visible text, or as a link's target dials it (`asDialled`: exactly as the generator writes it). */
 function phone(text: string, asDialled = false): Contact | null {
@@ -37,8 +54,9 @@ function phone(text: string, asDialled = false): Contact | null {
   const kept = dial(t);
   const count = kept.length - (kept.startsWith('+') ? 1 : 0);
   if (count < MIN_DIGITS || count > MAX_DIGITS) return null;
-  const dropped = dial(t.replace(/\(\s*0\s*\)/g, ''));
-  if (asDialled || !t.startsWith('+') || dropped === kept) return { kind: 'tel', digits: kept };
+  if (asDialled) return { kind: 'tel', digits: dialString(t) };
+  const dropped = dial(withoutTrunk(t));
+  if (!t.startsWith('+') || dropped === kept) return { kind: 'tel', digits: kept };
   // The bracketed trunk zero in "+44 (0)20 …" is left out from abroad, except where numbers keep it.
   return KEEPS_ZERO.test(kept) ? { kind: 'tel', digits: kept, alt: dropped } : { kind: 'tel', digits: dropped, alt: kept };
 }

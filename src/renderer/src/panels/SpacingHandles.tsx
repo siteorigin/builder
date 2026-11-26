@@ -14,6 +14,7 @@ import {
   draggedSize,
   groupSignature,
   groupTokens,
+  paddingGripAt,
   planHandle,
   previewDecls,
   previewMedia,
@@ -120,12 +121,14 @@ interface Drag {
  * edited when it is released: one Undo takes it back. Escape puts the page back and saves nothing. Handles show only
  * for what the inspector offers here, and only at the size the canvas is showing, so a drag always shows what it saves.
  */
-export function SpacingHandles({ state, selection, desc, box, spacing, zoom, post, measureSpace, onDragging, focusCanvas, pageBehind }: {
+export function SpacingHandles({ state, selection, desc, box, frame, spacing, zoom, post, measureSpace, onDragging, focusCanvas, pageBehind }: {
   state: ProjectState;
   selection: ElementRef;
   desc: BridgeDesc;
   /** The selected element's border box on screen, inside the overlay. */
   box: { left: number; top: number; width: number; height: number };
+  /** The visible page's size on screen, which a grip stays inside. */
+  frame?: { width: number; height: number };
   spacing: FrameSpacing;
   zoom: number;
   post: (type: string, payload?: unknown) => void;
@@ -188,15 +191,14 @@ export function SpacingHandles({ state, selection, desc, box, spacing, zoom, pos
     const stored = (property: string) => (v: StyleValue) => sameStyleValue(storedSpacing(t, scope, property), v);
     const { padding: pd, border: bd, margin: mg } = spacing;
     const midX = box.left + box.width / 2;
-    const midY = box.top + box.height / 2;
     // Margin handles sit beside the padding ones, so both can be reached when there is no space between them.
     const aside = Math.min(28, box.width / 4);
+    const dragged = drag.current?.grip;
     const spaceAt = (h: SpacingHandle) => {
       if (h.box === 'margin') return h.side === 'top' ? { x: midX + aside, y: box.top - mg.top * z } : { x: midX + aside, y: box.top + box.height + mg.bottom * z };
-      if (h.side === 'top') return { x: midX, y: box.top + (bd.top + pd.top) * z };
-      if (h.side === 'bottom') return { x: midX, y: box.top + box.height - (bd.bottom + pd.bottom) * z };
-      if (h.side === 'left') return { x: box.left + (bd.left + pd.left) * z, y: midY };
-      return { x: box.left + box.width - (bd.right + pd.right) * z, y: midY };
+      // The padding being dragged keeps its grip by its content's edge, as the pointer moves it, rather than in the
+      // middle of the new band, which would leave the pointer behind.
+      return paddingGripAt(box, bd, pd, h.side, z, dragged?.id === `spacing-padding-${h.side}` ? dragged.start : undefined, frame);
     };
     const band = (b: SpacingHandle['box'], side: SpacingHandle['side']): Rect => {
       const innerW = box.width - (bd.left + bd.right) * z;

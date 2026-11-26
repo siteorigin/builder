@@ -401,7 +401,7 @@ describe('deleting a parent that holds a placement', () => {
     const before = structuredClone(session.state);
     const note = structuredClone(home().nodes.n_note);
     const started = startDelete('n_empty');
-    expect(getConfirm()?.body).toBe('It holds 1 item. Delete them with it, or keep them where they are?');
+    expect(getConfirm()?.body).toBe('It holds 1 item. Delete that with it, or keep it where it is?');
     expect(getConfirm()?.details?.slice(0, 2).map((d) => d.text)).toEqual(['Delete all removes it and everything inside it.', 'Remove wrapper & keep content puts that item in its place.']);
     await answer(started, true);
     const [first, second] = home().rootIds;
@@ -534,7 +534,7 @@ describe('a project that changes while asking or deleting', () => {
     const started = startDelete('n_empty');
     expect(getConfirm()).toBeNull();
     await vi.waitFor(() => expect(getConfirm()?.title).toBe('Delete “Section”?'));
-    expect(getConfirm()?.body).toBe('It holds 1 item. Delete them with it, or keep them where they are?');
+    expect(getConfirm()?.body).toBe('It holds 1 item. Delete that with it, or keep it where it is?');
     // The first try was refused as planned on an older copy, and nothing was deleted.
     expect(sentSince(0)).toEqual(['node.remove n_empty']);
     await answer(started, null);
