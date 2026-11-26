@@ -442,7 +442,7 @@ const usesImage = (tools: ToolDefinition[]) => JSON.stringify(tools[0].parameter
 
 /** The tools of a read-only question: the same small set for every model, with or without a selection. A project with
  *  collections can also have its posts read. */
-function askTools(state: ProjectState, codeEnabled: boolean, entry?: { collectionId: string; entryId: string } | null, layout?: { owner: LayoutOwner } | null): ToolDefinition[] {
+function askTools(state: ProjectState, codeEnabled: boolean, entry?: { collectionId: string; entryId: string } | null, layout?: { owner: LayoutOwner } | null, sources = true): ToolDefinition[] {
   const names: ToolName[] = [...ASK_TOOLS, ...(codeEnabled ? (['read_source'] as const) : [])];
   const tools = names.map((name): ToolDefinition => {
     // A question can never widen what may change: nothing may.
@@ -457,7 +457,7 @@ function askTools(state: ProjectState, codeEnabled: boolean, entry?: { collectio
   const posts = entry ? [{ name: 'read_collection_entry', ...describe('read_collection_entry'), parameters: collectionToolSchemas(state, entry).read }] : entryReads(state);
   // A question asked with a collection's layout open reads that layout as it is. One about the site may read what an
   // external source the author connected has, and change nothing.
-  return [...tools.map(contractRead), ...posts, ...(layout ? [plainTool('read_layout')] : []), ...(!entry && !layout && hasSources(state) ? [plainTool('inspect_source_sample')] : [])];
+  return [...tools.map(contractRead), ...posts, ...(layout ? [plainTool('read_layout')] : []), ...(sources && !entry && !layout && hasSources(state) ? [plainTool('inspect_source_sample')] : [])];
 }
 
 /** The reads of a collection's entries, while the project has a collection to read. */
@@ -583,7 +583,8 @@ function runTools(opts: {
 }): RunTools {
   const { state, selection, capabilities, codeEnabled, definitionOps } = opts;
   const focused = !!opts.focused || capabilities.toolCalling === 'constrained-json' || capabilities.contextWindowTokens < FOCUSED_WINDOW_TOKENS;
-  if (opts.ask) return { tools: askTools(state, codeEnabled, opts.entry, opts.layout), mode: 'ask', focused };
+  // A small model's question reads a source only when it asks about one.
+  if (opts.ask) return { tools: askTools(state, codeEnabled, opts.entry, opts.layout, !focused || !!opts.sourceRequest), mode: 'ask', focused };
   // One collection layout, for every model: nothing else is in reach, and nothing widens it.
   if (opts.layout) return { tools: layoutTools(state, opts.layout.owner, focused), mode: 'layout', focused };
   // One post, for every model: its text read a part at a time and written back, and the author to ask for more. Nothing

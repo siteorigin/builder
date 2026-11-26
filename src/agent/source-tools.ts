@@ -9,7 +9,7 @@
 import { z } from 'zod';
 import type { ProjectState, SourceDoc, SourceMapping } from '@shared/types';
 import type { EditOperation } from '@shared/ops';
-import { isSourceId, MAX_CONVERTER } from '@shared/sources';
+import { isSourceId, MAX_CONVERTER, sourceFingerprint, type SourceWriteGrant } from '@shared/sources';
 import { collectionsSummary } from './context';
 import type { ToolHost, ToolOutcome } from './tools';
 import { applyFailure, toolError } from './result';
@@ -36,7 +36,7 @@ export interface SourceTestCounts {
 }
 
 export type SourceVerifyResult =
-  | ({ ok: true; operation: EditOperation; base: string; ticket: string; records: unknown[] } & SourceTestCounts)
+  | ({ ok: true; operation: EditOperation; grant: SourceWriteGrant; ticket: string; records: unknown[] } & SourceTestCounts)
   | { ok: false; code?: string; message: string; issues?: SourceToolIssue[]; recoverable: boolean };
 
 /** How the records of a source become entries, as the assistant writes it. */
@@ -44,8 +44,11 @@ export type SourceConversion = { converter: string } | { mapping: SourceMapping 
 
 /** The main process's side of the source tools, for the open project, ended with the run. */
 export interface SourceToolHost {
-  /** The first few records source `sourceId` has, as its kind of source reads them. */
-  inspect(sourceId: string): Promise<SourceInspectResult>;
+  /**
+   * The first few records source `sourceId` has, as its kind of source reads them, while its saved settings are still
+   * `fingerprint` (sourceFingerprint: the ones the run read).
+   */
+  inspect(sourceId: string, fingerprint: string): Promise<SourceInspectResult>;
   /** Test `change` against everything source `sourceId` has now, writing nothing: the one operation that saves it, if it passes. */
   verify(sourceId: string, change: SourceConversion): Promise<SourceVerifyResult>;
   /** Once the tested change has landed: let the source go on signing in with the user's secrets, as before it. */
@@ -142,7 +145,9 @@ export function fitSample(raw: readonly unknown[], max = SAMPLE_CHARS): { record
       const records = raw.slice(0, n).map((r) => clip(r, l));
       if (JSON.stringify(records).length <= max) return { records, clipped: true };
     }
-  return { records: [clip(raw[0], { text: 20, items: 1, keys: 10, depth: 3 })], clipped: true };
+  const last = [clip(raw[0], { text: 20, items: 1, keys: 10, depth: 3 })];
+  // Its detail names themselves too long to show: said, never shown cut past the room for it.
+  return { records: JSON.stringify(last).length <= max ? last : ['(The first record is too large to show here.)'], clipped: true };
 }
 
 /** Whether the project has a source the tools can read. */
@@ -171,7 +176,7 @@ export async function runInspectSource(args: InspectSourceArgs, host: ToolHost):
   if ('error' in found) return found.error;
   const { source } = found;
   if (!host.sources) return toolError('VALIDATION_FAILED', 'Reading an external source is not available here.', { recoverable: false });
-  const read = await host.sources.inspect(source.id);
+  const read = await host.sources.inspect(source.id, sourceFingerprint(source));
   if (!read.ok) return toolError('VALIDATION_FAILED', read.message, { details: { sourceId: source.id, ...(read.code ? { code: read.code } : {}) }, recoverable: read.code === 'network' || read.code === 'timeout' });
   const collection = collectionsSummary(host.state()).find((c) => c.id === source.collectionId) ?? null;
   const sample = fitSample(read.raw);
@@ -224,7 +229,7 @@ export async function runWriteSource(args: WriteSourceArgs, host: ToolHost, call
   }
   const what = 'converter' in change ? 'converter' : 'mapping';
   const label = `Write the ${what} of “${source.name.slice(0, 60)}”`;
-  const res = await host.apply([tested.operation], revision, label, callId, { sourceWrite: { sourceId: source.id, base: tested.base } });
+  const res = await host.apply([tested.operation], revision, label, callId, { sourceWrite: tested.grant });
   if (!res.ok) return applyFailure(res);
   // Signing in with the user's secrets goes on as it did: what was saved reads nothing its own way.
   const approved = await host.sources.approve(tested.ticket);

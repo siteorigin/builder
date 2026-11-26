@@ -25,7 +25,7 @@ import { applyFailure, MAX_RESULT_CHARS, stamp, toolError, type ToolResult } fro
 import { applyContextBudget } from '@agent/budget';
 import { ProjectSession } from '../../src/main/project/session';
 import type { SourceToolHost } from '@agent/source-tools';
-import { sourceFingerprint } from '@shared/sources';
+import { sourceConversionKey, sourceFingerprint } from '@shared/sources';
 
 /**
  * Tools a test adds to those a run is offered, so a guard behind them (a write in a question) can be reached, and every
@@ -212,7 +212,7 @@ const sourcesOf = (session: ProjectSession): SourceToolHost => ({
   verify: async (sourceId, change) => {
     const saved = session.state.sources![sourceId];
     const operation = { type: 'source.upsert', sourceId, name: saved.name, adapter: saved.adapter, collectionId: saved.collectionId, config: saved.config, ...change } as EditOperation;
-    return { ok: true, operation, base: sourceFingerprint(saved), ticket: 't1', records: [], total: 1, created: 1, updated: 0, unchanged: 0, unpublished: 0, removed: 0, kept: 0 };
+    return { ok: true, operation, grant: { sourceId, base: sourceFingerprint(saved), change: sourceConversionKey(change) }, ticket: 't1', records: [], total: 1, created: 1, updated: 0, unchanged: 0, unpublished: 0, removed: 0, kept: 0 };
   },
   approve: async () => true
 });

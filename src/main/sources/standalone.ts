@@ -51,49 +51,114 @@ export interface PlannedWrite {
 /** Only the canonical documents and the library's own files are ever written. */
 const WRITABLE = /^(?:siteorigin\/(?:assets|site)\.json|siteorigin\/collections\/[a-z0-9][a-z0-9-]*\/(?:collection\.json|entries\/en_[A-Za-z0-9_-]+\.json)|static\/assets\/[a-z0-9][a-z0-9-]*\.(?:jpg|png|webp|gif|avif))$/;
 
-/** `rel` inside `dir`, through no link that leads elsewhere. */
-function inside(dir: string, rel: string): string {
+/** Only an entry's document is ever taken away. */
+const REMOVABLE = /^siteorigin\/collections\/[a-z0-9][a-z0-9-]*\/entries\/en_[A-Za-z0-9_-]+\.json$/;
+
+/** `real` is `root` or inside it. */
+const within = (root: string, real: string) => real === root || real.startsWith(root + sep);
+
+/** `rel` inside `dir`, through no link that leads elsewhere, and never a link itself. */
+async function inside(dir: string, rel: string): Promise<string> {
   if (!WRITABLE.test(rel)) throw new SyncCliError(`A sync never writes ${rel}.`);
   const root = realpathSync(dir);
   const abs = resolve(root, rel);
   let probe = dirname(abs);
   for (;;) {
     try {
-      const real = realpathSync(probe);
-      if (real !== root && !real.startsWith(root + sep)) throw new SyncCliError(`${rel} is reached through a link that leads out of the project.`);
+      if (!within(root, realpathSync(probe))) throw new SyncCliError(`${rel} is reached through a link that leads out of the project.`);
       break;
     } catch (e) {
       if (e instanceof SyncCliError) throw e;
       probe = dirname(probe);
     }
   }
+  if ((await fs.lstat(abs).catch(() => null))?.isSymbolicLink()) throw new SyncCliError(`${rel} is a link, which a sync never writes through.`);
   return abs;
 }
 
+/** The folder a sync stages its files in, inside the project and no link elsewhere. */
+async function pendingDir(dir: string): Promise<string> {
+  const root = realpathSync(dir);
+  for (const part of ['.siteorigin', PENDING_DIR]) {
+    const st = await fs.lstat(join(root, part)).catch(() => null);
+    if (st && !st.isDirectory()) throw new SyncCliError(`${part} is not a folder of the project's own, so a sync cannot use it.`);
+  }
+  return join(root, PENDING_DIR);
+}
+
+/** One step of a sync's plan: the file put in place from its staged copy (with its content's hash), or taken away. */
+interface PlanStep {
+  rel: string;
+  staged: string | null;
+  sha?: string;
+}
+
+/** A plan as written by commitWrites, or why it is not one; nothing is done until all of it reads as one. */
+function checkedPlan(raw: unknown): PlanStep[] {
+  const bad = () => new SyncCliError(`The files of a sync that was cut short (${PENDING_DIR}) are damaged, so nothing was changed. Check them, then delete that folder and sync again.`);
+  if (!Array.isArray(raw)) throw bad();
+  const seen = new Set<string>();
+  for (const [i, step] of raw.entries()) {
+    const st = step as Partial<PlanStep> | null;
+    if (!st || typeof st.rel !== 'string' || seen.has(st.rel) || !WRITABLE.test(st.rel)) throw bad();
+    seen.add(st.rel);
+    if (st.staged === null) {
+      if (!REMOVABLE.test(st.rel)) throw bad();
+    } else if (st.staged !== String(i) || typeof st.sha !== 'string' || !/^[0-9a-f]{64}$/.test(st.sha)) throw bad();
+  }
+  return raw as PlanStep[];
+}
+
+/** Move a staged file into place, by a copy beside it when the two are on different disks. */
+async function moveInto(from: string, target: string) {
+  await fs.mkdir(dirname(target), { recursive: true });
+  try {
+    await fs.rename(from, target);
+  } catch (e) {
+    if ((e as NodeJS.ErrnoException).code !== 'EXDEV') throw e;
+    const beside = `${target}.${process.pid}.sync`;
+    await fs.copyFile(from, beside);
+    await fs.rename(beside, target);
+    await fs.rm(from, { force: true });
+  }
+}
+
 /**
- * Finish a sync that was cut short: every file its plan names is put in place, in order, and the plan let go. A plan
- * not yet written in full is a sync that wrote nothing, and is let go.
+ * Finish a sync that was cut short: every file its plan names is put in place, in order, and the plan let go. A sync
+ * whose plan was never written wrote nothing, and its staged files are let go. A plan that cannot be read, or a file it
+ * names that is neither staged nor already in place, stops the sync with nothing changed.
  */
 export async function finishPending(dir: string): Promise<boolean> {
-  const pending = join(dir, PENDING_DIR);
-  let plan: Array<{ rel: string; staged: string | null }>;
+  const pending = await pendingDir(dir);
+  let text: string;
   try {
-    plan = JSON.parse(await fs.readFile(join(pending, 'plan.json'), 'utf8'));
-  } catch {
+    text = await fs.readFile(join(pending, 'plan.json'), 'utf8');
+  } catch (e) {
+    if ((e as NodeJS.ErrnoException).code !== 'ENOENT') throw new SyncCliError(`The files of a sync that was cut short (${PENDING_DIR}) cannot be read, so nothing was changed.`);
     await fs.rm(pending, { recursive: true, force: true });
     return false;
   }
-  for (const { rel, staged } of plan) {
-    const target = inside(dir, rel);
-    const st = await fs.lstat(target).catch(() => null);
-    if (st?.isSymbolicLink()) throw new SyncCliError(`${rel} is a link, which a sync never writes through.`);
-    if (staged === null) await fs.rm(target, { force: true });
+  let raw: unknown;
+  try {
+    raw = JSON.parse(text);
+  } catch {
+    raw = null;
+  }
+  const plan = checkedPlan(raw);
+  const targets = await Promise.all(plan.map((step) => inside(dir, step.rel)));
+  for (const [i, step] of plan.entries()) {
+    const target = targets[i];
+    if (step.staged === null) {
+      await fs.rm(target, { force: true });
+      continue;
+    }
+    const from = join(pending, step.staged);
+    const staged = await fs.lstat(from).catch(() => null);
+    if (staged?.isFile()) await moveInto(from, target);
     else {
-      const from = join(pending, staged);
-      // Already moved by the sync that was cut short.
-      if (!(await fs.stat(from).catch(() => null))) continue;
-      await fs.mkdir(dirname(target), { recursive: true });
-      await fs.rename(from, target);
+      // Moved already by the sync that was cut short, or lost: only the very file the plan names will do.
+      const there = await fs.readFile(target).catch(() => null);
+      if (!there || sha(there) !== step.sha) throw new SyncCliError(`${step.rel} of a sync that was cut short is missing, so the sync was not finished. Delete ${PENDING_DIR} and sync again.`);
     }
   }
   await fs.rm(pending, { recursive: true, force: true });
@@ -102,14 +167,22 @@ export async function finishPending(dir: string): Promise<boolean> {
 
 /** Write every file of `writes`, or (cut short) leave a plan the next sync finishes. */
 export async function commitWrites(dir: string, writes: readonly PlannedWrite[]): Promise<void> {
-  const pending = join(dir, PENDING_DIR);
+  for (const w of writes) {
+    await inside(dir, w.rel);
+    if (w.data === null && !REMOVABLE.test(w.rel)) throw new SyncCliError(`A sync never takes away ${w.rel}.`);
+  }
+  const pending = await pendingDir(dir);
   await fs.rm(pending, { recursive: true, force: true });
   await fs.mkdir(pending, { recursive: true });
-  const plan = writes.map((w, i) => {
-    inside(dir, w.rel);
-    return { rel: w.rel, staged: w.data === null ? null : String(i) };
-  });
-  for (const [i, w] of writes.entries()) if (w.data !== null) await fs.writeFile(join(pending, String(i)), w.data);
+  const plan: PlanStep[] = [];
+  for (const [i, w] of writes.entries()) {
+    if (w.data === null) {
+      plan.push({ rel: w.rel, staged: null });
+      continue;
+    }
+    await fs.writeFile(join(pending, String(i)), w.data);
+    plan.push({ rel: w.rel, staged: String(i), sha: sha(Buffer.from(w.data)) });
+  }
   // The plan last, by rename: until it is there, nothing has been written.
   await fs.writeFile(join(pending, 'plan.tmp'), JSON.stringify(plan));
   await fs.rename(join(pending, 'plan.tmp'), join(pending, 'plan.json'));
@@ -135,21 +208,27 @@ export function secretsFromEnv(sources: readonly SourceDoc[], env: Readonly<Reco
   return out;
 }
 
-/** A fetched picture as a library image: the one the library has with the same bytes, or a new record and its file. */
-async function libraryImage(dir: string, img: SyncImage, name: string, known: readonly AssetRecord[], createdAt: string): Promise<{ record: AssetRecord; file?: PlannedWrite }> {
+/**
+ * A fetched picture as a library image: the one the library has with the same bytes (on disk, or brought in by this
+ * sync), or a new record and its file.
+ */
+async function libraryImage(dir: string, img: SyncImage, name: string, known: readonly AssetRecord[], staged: Map<string, { record: AssetRecord; hash: string }>, createdAt: string): Promise<{ record: AssetRecord; file?: PlannedWrite }> {
   const buf = Buffer.from(img.bytes);
   const problem = imageProblem(buf, img.mime);
   if (problem) throw new SyncCliError(`${name}${img.ext} cannot be a library image (${problem}).`);
   const hash = sha(buf);
+  const same = [...staged.values()].find((x) => x.hash === hash && x.record.mime === img.mime);
+  if (same) return { record: same.record };
   for (const dup of known.filter((a) => a.hash === hash && a.mime === img.mime)) {
-    const there = await fs.readFile(inside(dir, dup.file)).catch(() => null);
+    const there = await fs.readFile(await inside(dir, dup.file)).catch(() => null);
     if (there && sha(there) === hash) return { record: dup };
   }
   const file = `static/assets/${slugify(name) || 'image'}-${hash.slice(0, 8)}${img.ext}`;
-  const there = await fs.readFile(inside(dir, file)).catch(() => null);
-  if (there && !there.equals(buf)) throw new SyncCliError(`A different file already has the name ${file.split('/').pop()} in static/assets/.`);
+  const there = await fs.readFile(await inside(dir, file)).catch(() => null);
+  if ((there && !there.equals(buf)) || (staged.has(file) && staged.get(file)!.hash !== hash)) throw new SyncCliError(`A different file already has the name ${file.split('/').pop()} in static/assets/.`);
   const info = imageInfo(buf, img.mime);
   const record: AssetRecord = { id: newId('a'), name: name.trim().slice(0, 200) || 'Image', file, mime: img.mime, bytes: buf.length, hash, kind: 'image', createdAt, ...(info ? { width: info.width, height: info.height } : {}) };
+  staged.set(file, { record, hash });
   return { record, ...(there ? {} : { file: { rel: file, data: buf } }) };
 }
 
@@ -165,21 +244,24 @@ export interface SyncCliOptions {
  * Resolves with what changed, by source; rejects with a SyncCliError (nothing written) when any source cannot be synced.
  */
 export async function syncProject(dir: string, opts: SyncCliOptions): Promise<Array<{ sourceId: string; created: number; updated: number; removed: number; unpublished: number; images: number }>> {
-  const log = opts.log ?? (() => undefined);
-  if (await finishPending(dir)) log('Finished the files of a sync that was cut short.');
+  // Said once every file is in place: a later source that fails leaves nothing written, and nothing said of it.
+  const lines: string[] = [];
+  if (await finishPending(dir)) opts.log?.('Finished the files of a sync that was cut short.');
   const start = await readState(dir);
   let state: ProjectState = start;
   const sources = Object.keys(start.sources ?? {})
     .sort()
     .map((id) => start.sources![id]);
   if (!sources.length) {
-    log('This project has no external sources.');
+    opts.log?.('This project has no external sources.');
     return [];
   }
   const secrets = secretsFromEnv(sources, opts.env);
   const values = [...new Set(Object.values(secrets))];
   const now = (opts.now ?? (() => new Date()))().toISOString();
+  const log = (line: string) => lines.push(redactSecrets(line, values));
   const images: PlannedWrite[] = [];
+  const staged = new Map<string, { record: AssetRecord; hash: string }>();
   const out = [];
   for (const source of sources) {
     const say = (why: string) => new SyncCliError(`“${source.name}” was not synced: ${redactSecrets(why, values)}`);
@@ -213,8 +295,9 @@ export async function syncProject(dir: string, opts: SyncCliOptions): Promise<Ar
       const img = fetched.get(key);
       if (!img) throw say('a picture could not be fetched.');
       const name = pictureName(wanted.name, wanted.url);
-      if (holdsSecret(name, values) || values.some((v) => v.length >= MIN_SECRET_LENGTH && Buffer.from(img.bytes).includes(v))) throw say(`${SECRET_IN_RECORDS}.`);
-      const got = await libraryImage(dir, img, name, [...known, ...added], now);
+      // Nor in its bytes, a text chunk's included, in any form a secret can be written.
+      if (holdsSecret(name, values) || holdsSecret(Buffer.from(img.bytes).toString('latin1'), values)) throw say(`${SECRET_IN_RECORDS}.`);
+      const got = await libraryImage(dir, img, name, [...known, ...added], staged, now);
       if (holdsSecret(got.record.file, values)) throw say(`${SECRET_IN_RECORDS}.`);
       if (!known.includes(got.record) && !added.includes(got.record)) added.push(got.record);
       if (got.file && !images.some((f) => f.rel === got.file!.rel)) images.push(got.file);
@@ -242,6 +325,7 @@ export async function syncProject(dir: string, opts: SyncCliOptions): Promise<Ar
   const writes = [...images, ...assets, ...docs.filter((d) => d.rel !== 'siteorigin/assets.json'), ...removed];
   if (holdsSecret(writes.map((w) => (typeof w.data === 'string' ? w.data : '')).join('\n'), values)) throw new SyncCliError(`Nothing was synced: ${SECRET_IN_RECORDS}.`);
   if (writes.length) await commitWrites(dir, writes);
+  for (const line of lines) opts.log?.(line);
   return out;
 }
 
@@ -266,6 +350,8 @@ export function childRunner(script: string): SyncRunner {
 
 /** The child's side: read the one source it is asked for, answer, and end. */
 function serveWorker() {
+  // The script that started it has gone (a CI job ended it): nothing is waiting for an answer.
+  process.once('disconnect', () => process.exit(1));
   process.once('message', async (m: SyncRequest) => {
     let reply: SyncReply;
     try {

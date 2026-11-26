@@ -439,4 +439,10 @@ export function sourceFingerprint(doc: SourceDoc | null | undefined): string {
 export interface SourceWriteGrant {
   sourceId: string;
   base: string;
+  /** The change itself, as tested (sourceConversionKey): only it may be written. */
+  change: string;
 }
+
+/** How a source's records are put in shape, as one piece of text: its converter's code, or its mapping. */
+export const sourceConversionKey = (d: { converter?: unknown; mapping?: unknown }): string =>
+  sourceFingerprint({ converter: typeof d.converter === 'string' ? d.converter : (d.converter as { code?: unknown } | undefined)?.code ?? null, mapping: d.mapping ?? null } as unknown as SourceDoc);

@@ -7,7 +7,8 @@
 import { createServer, type Server } from 'node:http';
 import { EventEmitter } from 'node:events';
 import { execFile } from 'node:child_process';
-import { copyFileSync, cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync } from 'node:fs';
+import { createHash } from 'node:crypto';
+import { copyFileSync, cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, statSync, symlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import sharp from 'sharp';
@@ -24,7 +25,7 @@ const { createStarterState } = await import('@catalogue/starters');
 const { createSyncRunner } = await import('../../src/main/sources/client');
 const { runSync } = await import('../../src/main/sources/run');
 const { ADAPTERS } = await import('../../src/main/sources/adapters');
-const { commitWrites, finishPending, PENDING_DIR, secretEnvName, syncProject, SyncCliError } = await import('../../src/main/sources/standalone');
+const { commitWrites, finishPending, PENDING_DIR, secretEnvName, secretsFromEnv, syncProject, SyncCliError } = await import('../../src/main/sources/standalone');
 const { copyProjectSource, finishExportedSource, isGeneratedReadme, projectReadme, SYNC_COMMAND, SYNC_SCRIPT, writeExportedSources, writeSyncScript } = await import('../../src/main/export');
 const { buildSyncCli } = await import('../../scripts/sync-cli');
 import type { SyncHandle } from '../../src/main/sources/client';
@@ -66,7 +67,7 @@ async function api(people: () => unknown[]) {
 const person = (id: string, name: string, role: string, photo?: string) => ({ id, name, role, joined: '2026-03-04', ...(photo ? { photo } : {}) });
 
 /** A project with a Team collection synced from the API by a mapping that names its token, written and closed. */
-async function project(origin: string): Promise<string> {
+async function project(origin: string, removal?: 'remove'): Promise<string> {
   const dir = temp('so-sync-cli-');
   const s = await ProjectSession.create(dir, createStarterState('business', 'Crew', false));
   const r = await s.apply(
@@ -80,7 +81,8 @@ async function project(origin: string): Promise<string> {
           adapter: 'rest',
           collectionId: 'team',
           config: { url: `${origin}/v1/people`, itemsPath: 'data', headers: { Authorization: 'Bearer ${secret:crew-token}' } },
-          mapping: { externalId: 'id', title: 'name', publishedAt: 'joined', featuredImageUrl: 'photo', values: { role: 'role' } }
+          mapping: { externalId: 'id', title: 'name', publishedAt: 'joined', featuredImageUrl: 'photo', values: { role: 'role' } },
+          ...(removal ? { removal } : {})
         }
       ] as EditOperation[]
     },
@@ -117,7 +119,8 @@ const now = () => new Date('2026-11-26T09:00:00Z');
 
 describe('syncing a project without the app', () => {
   it('writes the entries, their collection and their pictures, then nothing more while the source is unchanged', async () => {
-    let people = [person('1', 'Ana Ruiz', 'Architect', 'https://images.example.test/ana.png'), person('2', 'Ben Okafor', 'Engineer')];
+    // Two addresses, the same picture: the library takes it once.
+    let people = [person('1', 'Ana Ruiz', 'Architect', 'https://images.example.test/ana.png'), person('2', 'Ben Okafor', 'Engineer', 'https://cdn.example.test/ben.png')];
     const server = await api(() => people);
     const dir = await project(server.origin);
     const generated = fileTimes(dir, 'src');
@@ -125,7 +128,7 @@ describe('syncing a project without the app', () => {
     const lines: string[] = [];
     expect(await syncProject(dir, { env, runner, now, log: (l) => lines.push(l) })).toEqual([{ sourceId: 'crew', created: 2, updated: 0, removed: 0, unpublished: 0, images: 1 }]);
     expect(lines).toEqual(['Crew API: 2 added, 0 updated, 0 made drafts, 0 removed, 0 unchanged, 1 new pictures.']);
-    expect(fetched).toEqual(['https://images.example.test/ana.png']);
+    expect(fetched.sort()).toEqual(['https://cdn.example.test/ben.png', 'https://images.example.test/ana.png']);
     // Read back as the app reads the project: attached, each entry saying where it came from, the picture in the library.
     const state = await readState(dir);
     expect(state.collections.team.settings.sourceId).toBe('crew');
@@ -135,6 +138,9 @@ describe('syncing a project without the app', () => {
     expect(picture).toMatchObject({ kind: 'image', mime: 'image/png', width: 6, height: 4 });
     expect(picture.file).toMatch(/^static\/assets\/ana-[0-9a-f]{8}\.png$/);
     expect(existsSync(join(dir, picture.file))).toBe(true);
+    const ben = Object.values(state.collections.team.entries).find((e) => e.title === 'Ben Okafor')!;
+    expect(ben.featuredImage).toBe(ana.featuredImage);
+    expect(Object.values(state.assets.assets).filter((a) => a.mime === 'image/png' && a.hash === picture.hash)).toHaveLength(1);
     // No secret anywhere in the project, and the generated site and its build settings untouched.
     for (const f of readdirSync(dir, { recursive: true, withFileTypes: true }).filter((d) => d.isFile())) expect(readFileSync(join(f.parentPath, f.name)).includes(SECRET), f.name).toBe(false);
     expect(fileTimes(dir, 'src')).toEqual(generated);
@@ -144,7 +150,7 @@ describe('syncing a project without the app', () => {
     expect(await syncProject(dir, { env, runner, now: () => new Date('2026-11-27T09:00:00Z') })).toEqual([{ sourceId: 'crew', created: 0, updated: 0, removed: 0, unpublished: 0, images: 0 }]);
     expect(fileTimes(dir)).toEqual(synced);
     // A record gone and one renamed: the gone one is made a draft (the source's removal setting), the renamed one keeps its file name and ID.
-    people = [person('2', 'Ben O.', 'Engineer')];
+    people = [person('2', 'Ben O.', 'Engineer', 'https://cdn.example.test/ben.png')];
     expect(await syncProject(dir, { env, runner, now })).toEqual([{ sourceId: 'crew', created: 0, updated: 1, removed: 0, unpublished: 1, images: 0 }]);
     const after = await readState(dir);
     expect(Object.values(after.collections.team.entries).map((e) => [e.title, e.draft]).sort()).toEqual([
@@ -163,6 +169,9 @@ describe('syncing a project without the app', () => {
     await expect(syncProject(dir, { env: { CREW_TOKEN: 'tok-wrong-0000' }, runner, now })).rejects.toThrow(/“Crew API” was not synced: the source refused its credentials/);
     expect(fileTimes(dir)).toEqual(before);
     expect(secretEnvName('contentful-token')).toBe('CONTENTFUL_TOKEN');
+    const named = (n: string) => ({ config: { headers: { Authorization: `Bearer \${secret:${n}}` } } }) as never;
+    expect(() => secretsFromEnv([named('crew-token')], { CREW_TOKEN: 'ab' })).toThrow('CREW_TOKEN is shorter than any secret can be.');
+    expect(() => secretsFromEnv([named('crew-token'), named('CREW_TOKEN')], { CREW_TOKEN: SECRET })).toThrow(/are both read from CREW_TOKEN/);
   });
 
   it('never writes a record that holds the secret it was sent', async () => {
@@ -188,7 +197,7 @@ describe('syncing a project without the app', () => {
     const pending = join(dir, PENDING_DIR);
     mkdirSync(pending, { recursive: true });
     writes.forEach((w, i) => i > 0 && writeFileSync(join(pending, String(i)), w.data));
-    writeFileSync(join(pending, 'plan.json'), JSON.stringify(writes.map((w, i) => ({ rel: w.rel, staged: String(i) }))));
+    writeFileSync(join(pending, 'plan.json'), JSON.stringify(writes.map((w, i) => ({ rel: w.rel, staged: String(i), sha: createHash('sha256').update(w.data).digest('hex') }))));
     mkdirSync(join(dir, 'siteorigin/collections/team/entries'), { recursive: true });
     writeFileSync(join(dir, writes[0].rel), writes[0].data);
     expect(JSON.parse(readFileSync(join(dir, 'siteorigin/collections/team/collection.json'), 'utf8')).sourceId).toBeUndefined();
@@ -200,10 +209,49 @@ describe('syncing a project without the app', () => {
     expect(await finishPending(dir)).toBe(false);
   });
 
+  it('takes away the entry of a record the source no longer has, when its settings say so', async () => {
+    let people = [person('1', 'Ana Ruiz', 'Architect'), person('2', 'Ben Okafor', 'Engineer')];
+    const server = await api(() => people);
+    const dir = await project(server.origin, 'remove');
+    const { runner } = await inline();
+    await syncProject(dir, { env, runner, now });
+    const files = () => readdirSync(join(dir, 'siteorigin/collections/team/entries')).sort();
+    expect(files()).toHaveLength(2);
+    people = [person('2', 'Ben Okafor', 'Engineer')];
+    expect(await syncProject(dir, { env, runner, now })).toEqual([{ sourceId: 'crew', created: 0, updated: 0, removed: 1, unpublished: 0, images: 0 }]);
+    expect(files()).toHaveLength(1);
+    expect(Object.values((await readState(dir)).collections.team.entries).map((e) => e.title)).toEqual(['Ben Okafor']);
+  });
+
+  it('changes nothing when the plan of a sync cut short is damaged, or a file it names was lost', async () => {
+    const dir = temp('so-sync-damaged-');
+    mkdirSync(join(dir, 'siteorigin'), { recursive: true });
+    writeFileSync(join(dir, 'siteorigin/site.json'), '{"keep":true}');
+    const pending = join(dir, PENDING_DIR);
+    mkdirSync(pending, { recursive: true });
+    // A step that would take a required document away, or move a file from outside the staging folder.
+    writeFileSync(join(pending, 'plan.json'), JSON.stringify([{ rel: 'siteorigin/site.json', staged: null }]));
+    await expect(finishPending(dir)).rejects.toThrow(/are damaged/);
+    writeFileSync(join(pending, 'plan.json'), JSON.stringify([{ rel: 'siteorigin/site.json', staged: '../../../elsewhere', sha: 'a'.repeat(64) }]));
+    await expect(finishPending(dir)).rejects.toThrow(/are damaged/);
+    // Neither staged nor in place: the sync is not called finished.
+    writeFileSync(join(pending, 'plan.json'), JSON.stringify([{ rel: 'siteorigin/assets.json', staged: '0', sha: 'b'.repeat(64) }]));
+    await expect(finishPending(dir)).rejects.toThrow(/missing/);
+    expect(readFileSync(join(dir, 'siteorigin/site.json'), 'utf8')).toBe('{"keep":true}');
+    expect(existsSync(join(pending, 'plan.json'))).toBe(true);
+  });
+
   it('refuses to write outside the documents and the library', async () => {
     const dir = temp('so-sync-paths-');
     await expect(commitWrites(dir, [{ rel: 'package.json', data: '{}' }])).rejects.toThrow('A sync never writes package.json.');
     await expect(commitWrites(dir, [{ rel: 'siteorigin/collections/team/entries/../../../../x.json', data: '{}' }])).rejects.toThrow(/never writes/);
+    await expect(commitWrites(dir, [{ rel: 'siteorigin/site.json', data: null }])).rejects.toThrow('A sync never takes away siteorigin/site.json.');
+    // A folder on the way that is a link out of the project.
+    const outside = temp('so-sync-outside-');
+    mkdirSync(join(dir, 'siteorigin/collections/team'), { recursive: true });
+    symlinkSync(outside, join(dir, 'siteorigin/collections/team/entries'));
+    await expect(commitWrites(dir, [{ rel: 'siteorigin/collections/team/entries/en_x.json', data: '{}' }])).rejects.toThrow(/link that leads out of the project/);
+    expect(readdirSync(outside)).toEqual([]);
   });
 });
 
@@ -225,6 +273,9 @@ describe('an exported project with sources', () => {
     const cli = await buildSyncCli();
     const { dest } = await exported(dir, cli);
     expect(readFileSync(join(dest, SYNC_SCRIPT), 'utf8')).toBe(cli);
+    // With the notices of what it bundles.
+    expect(cli).toMatch(/\nacorn \d+\.\d+\.\d+\n\nMIT License/);
+    expect(cli).toMatch(/\nzod \d+\.\d+\.\d+\n/);
     const pkg = JSON.parse(readFileSync(join(dest, 'package.json'), 'utf8'));
     expect(pkg.scripts).toMatchObject({ build: 'vite build', sync: SYNC_COMMAND });
     const readme = readFileSync(join(dest, 'README.md'), 'utf8');
@@ -270,6 +321,16 @@ describe('an exported project with sources', () => {
     expect(await writeSyncScript(dest, withSources, '// Generated by SiteOrigin Builder. x\n')).toBe(false);
     expect(await writeSyncScript(dest, none, null)).toBe(false);
     expect(readFileSync(join(dest, SYNC_SCRIPT), 'utf8')).toBe('console.log("mine")\n');
+    // The author's own script, run by the same command: both stay when the sources go.
+    const pkg = JSON.parse(readFileSync(join(dest, 'package.json'), 'utf8'));
+    writeFileSync(join(dest, 'package.json'), JSON.stringify({ ...pkg, scripts: { ...pkg.scripts, sync: SYNC_COMMAND } }, null, '\t'));
+    expect(await writeSyncScript(dest, none, null)).toBe(false);
+    expect(JSON.parse(readFileSync(join(dest, 'package.json'), 'utf8')).scripts.sync).toBe(SYNC_COMMAND);
+    // A build without the script never takes away the one a copy has.
+    rmSync(join(dest, SYNC_SCRIPT));
+    expect(await writeSyncScript(dest, withSources, '// Generated by SiteOrigin Builder. x\n')).toBe(true);
+    expect(await writeSyncScript(dest, withSources, null)).toBe(true);
+    expect(readFileSync(join(dest, SYNC_SCRIPT), 'utf8')).toBe('// Generated by SiteOrigin Builder. x\n');
     expect(projectReadme('Crew', false, undefined, false, 'cloudflare', false)).not.toContain('External sources');
   });
 });

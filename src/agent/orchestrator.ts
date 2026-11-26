@@ -1246,7 +1246,7 @@ export class Orchestrator {
     const componentAsked = !ask && (asksForComponent(userMsg.text) || (CONTINUE.test(userMsg.text) && !!request && asksForComponent(request)));
     // So does a request for a collection: a small site run is then offered the tools that make and show one.
     const collectionAsked = !ask && (asksForCollection(userMsg.text, session.state) || (CONTINUE.test(userMsg.text) && !!request && asksForCollection(request, session.state)));
-    const sourceAsked = !ask && (asksForSource(userMsg.text, session.state) || (CONTINUE.test(userMsg.text) && !!request && asksForSource(request, session.state)));
+    const sourceAsked = asksForSource(userMsg.text, session.state) || (CONTINUE.test(userMsg.text) && !!request && asksForSource(request, session.state));
     // Stopped while preparing: the run is ending, not running.
     if (!signal.aborted) this.setStatus('running');
     // Problems the project already had (including components that already fail to build) are not the run's. Each is
@@ -1442,7 +1442,7 @@ export class Orchestrator {
           // search_assets reads what the library says about them.
           ...(userMsg.images?.length ? { attachedImages: userMsg.images.map((i) => { const live = libraryImage(session.state, i.assetId); return live ? imageRef(live) : { ...i, removed: true }; }) } : {}),
           // A constrained edit run without code has no code tool to steer away from; a question may still be about code.
-          ...(constrainedJson && !ask && !codeEnabled ? {} : { customCode: codeEnabled ? 'allowed (code is checked before saving)' : 'not available: use theme components, primitives and styles only' }),
+          ...(constrainedJson && !ask && !codeEnabled ? {} : { customCode: codeEnabled ? 'allowed (code is checked before saving)' : 'not available for components: use theme components, primitives and styles only (a source\'s converter is not component code)' }),
           allowedScope: ask
             ? 'nothing: this is a read-only question'
             : authority.kind === 'site'

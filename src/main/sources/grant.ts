@@ -6,7 +6,7 @@
  */
 import type { EditOperation } from '@shared/ops';
 import type { SourceDoc } from '@shared/types';
-import { sourceFingerprint, type SourceWriteGrant } from '@shared/sources';
+import { sourceConversionKey, sourceFingerprint, type SourceWriteGrant } from '@shared/sources';
 import { readsItsOwnWay } from './converter';
 
 /** Why a batch asks for more than its source grant allows, or null. */
@@ -21,6 +21,7 @@ export function sourceWriteRefusal(ops: readonly EditOperation[], grant: SourceW
     sourceFingerprint({ name: d.name, adapter: d.adapter, collectionId: d.collectionId, config: d.config ?? {}, removal: d.removal ?? null } as unknown as SourceDoc);
   if (kept(op) !== kept(saved)) return `The source tool changes only how “${saved.name}”’s records are put in shape: its settings stay as the author saved them.`;
   if (op.converter === undefined ? op.mapping === undefined : op.mapping !== undefined) return 'The source tool writes a mapping or a converter.';
+  if (sourceConversionKey(op) !== grant.change) return 'The source tool writes only the mapping or converter it tested.';
   if (typeof op.converter === 'string' && readsItsOwnWay(op.converter)) return 'A converter the assistant writes reads its records as the source’s settings do: it has no fetchAll.';
   if (saved.converter && (typeof saved.converter.code !== 'string' || readsItsOwnWay(saved.converter.code)))
     return `“${saved.name}” reads its source its own way, with its converter’s fetchAll: only the author changes how it is read, in Connect external source.`;

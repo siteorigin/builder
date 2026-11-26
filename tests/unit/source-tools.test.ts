@@ -32,7 +32,8 @@ const { asksForSource, toolsForRun } = await import('@agent/tools');
 const { fitSample, SAMPLE_CHARS } = await import('@agent/source-tools');
 const { findForbiddenShapes, toStrictSchema } = await import('@agent/strict-schema');
 const { envelopeSchema } = await import('@agent/constrained');
-const { sourceFingerprint } = await import('@shared/sources');
+const { sourceConversionKey, sourceFingerprint } = await import('@shared/sources');
+const { runConverter } = await import('../../src/main/sources/converter');
 import type { SyncHandle } from '../../src/main/sources/client';
 import type { SyncReply, SyncRequest } from '../../src/main/sources/protocol';
 import type { EditOperation } from '@shared/ops';
@@ -138,6 +139,8 @@ const call = (id: string, name: string, args: unknown): ModelEvent => ({ type: '
 const finish = (text: string): ModelEvent[] => [{ type: 'done', stopReason: 'end', text, toolCalls: [] }];
 const lastResult = (req: CanonicalModelRequest) => JSON.parse((req.items.at(-1) as { content?: string }).content ?? '{}') as Record<string, any>;
 const converterFile = (dir: string) => join(dir, 'siteorigin/sources/crew/converter.mjs');
+/** The crew source's saved settings, as a run that read them names them. */
+const fp = (s: { state: { sources?: Record<string, unknown> } }) => sourceFingerprint(s.state.sources!.crew as never);
 
 describe('in an AI turn', () => {
   it('reads the API’s records, has an unsafe and a broken converter refused, and saves a verified one, undone in one step', async () => {
@@ -217,8 +220,8 @@ describe('in an AI turn', () => {
 
 describe('the source tools’ host', () => {
   it('reads records as the API sends them even when its mapping cannot read them, and tests a mapping against them', async () => {
-    const { host, api } = await setup(undefined, { mapping: { externalId: 'id', title: 'title' } });
-    const read = await host.inspect('crew');
+    const { s, host, api } = await setup(undefined, { mapping: { externalId: 'id', title: 'title' } });
+    const read = await host.inspect('crew', fp(s));
     expect(read).toEqual({ ok: true, raw: PEOPLE, total: 2 });
     const wrong = await host.verify('crew', { mapping: { externalId: 'uuid', title: 'name' } });
     expect(wrong).toMatchObject({ ok: false, recoverable: true, issues: [expect.objectContaining({ stage: 'records' })] });
@@ -227,22 +230,49 @@ describe('the source tools’ host', () => {
     expect(api.seen.every((p) => p === '/v1/people')).toBe(true);
   });
 
+  it('approves only the very change it tested, once it has landed, and runs only a converter’s exported reader', async () => {
+    const { s, host, approvals } = await setup();
+    const first = await host.verify('crew', { converter: GOOD });
+    const second = await host.verify('crew', { converter: `${GOOD}// two\n` });
+    if (!first.ok || !second.ok) throw new Error('not tested');
+    // Not landed yet: nothing to approve.
+    expect(await host.approve(second.ticket)).toBe(false);
+    const again = await host.verify('crew', { converter: `${GOOD}// two\n` });
+    if (!again.ok) throw new Error('not tested');
+    expect((await s.apply({ operations: [again.operation] }, { label: 'AI', source: 'ai', sourceWrite: again.grant })).ok).toBe(true);
+    // The first ticket is for another change than the one that landed.
+    expect(await host.approve(first.ticket)).toBe(false);
+    expect(await approvals.approved(s.state.manifest.projectId, s.state.sources!.crew)).toBe(false);
+    expect(await host.approve(again.ticket)).toBe(true);
+    expect(await approvals.approved(s.state.manifest.projectId, s.state.sources!.crew)).toBe(true);
+    // A fetchAll the module does not export is never run as its reader.
+    let asked = 0;
+    const r = await runConverter('function fetchAll() { return [{ uuid: "nope" }]; }\nexport function convert(items) { return items; }\n', { richText: () => [] }, async () => (asked++, [{ uuid: 'read' }]));
+    expect(r.items).toEqual([{ uuid: 'read' }]);
+    expect(asked).toBe(1);
+  });
+
   it('never reads or rewrites a source changed outside the app, or one read by its own fetchAll, and never shows an echoed secret', async () => {
     const { s, host, api, approvals } = await setup();
     // Settings changed since they were approved (a collaborator's commit) do not sign in.
     const elsewhere = { ...s.state.sources!.crew, config: { ...s.state.sources!.crew.config, query: { all: 'yes' } } };
     expect((await s.apply({ operations: [{ type: 'source.upsert', sourceId: 'crew', name: elsewhere.name, adapter: 'rest', collectionId: 'team', config: elsewhere.config }] as EditOperation[] }, { label: 'Elsewhere' })).ok).toBe(true);
     api.seen.length = 0;
-    expect(await host.inspect('crew')).toMatchObject({ ok: false, code: 'unapproved' });
+    expect(await host.inspect('crew', fp(s))).toMatchObject({ ok: false, code: 'unapproved' });
     expect(await host.verify('crew', { converter: GOOD })).toMatchObject({ ok: false, recoverable: false });
     expect(api.seen).toEqual([]);
     // Read by the author's own fetchAll: the assistant neither reads around it nor replaces it.
     const own = 'export async function fetchAll(helpers) { return helpers.fetchJson("/v1/published"); }\nexport function convert(items) { return items.map((p) => ({ externalId: p.uuid, title: p.headline })); }\n';
     expect((await s.apply({ operations: [{ type: 'source.upsert', sourceId: 'crew', name: 'Crew API', adapter: 'rest', collectionId: 'team', config: elsewhere.config, converter: own }] as EditOperation[] }, { label: 'Own reader' })).ok).toBe(true);
     await approvals.approve(s.state.manifest.projectId, s.state.sources!.crew);
-    expect(await host.inspect('crew')).toMatchObject({ ok: false, code: 'converter', message: expect.stringMatching(/own fetchAll/) });
+    expect(await host.inspect('crew', fp(s))).toMatchObject({ ok: false, code: 'converter', message: expect.stringMatching(/own fetchAll/) });
     expect(await host.verify('crew', { converter: GOOD })).toMatchObject({ ok: false, code: 'converter' });
     expect(api.seen).toEqual([]);
+    // A converter that is missing is not read around either.
+    const missing = structuredClone(s.state.sources!.crew);
+    s.state.sources!.crew.converter = { file: 'converter.mjs' };
+    expect(await host.inspect('crew', fp(s))).toMatchObject({ ok: false, code: 'converter', message: expect.stringMatching(/missing/) });
+    s.state.sources!.crew = missing;
     // Nor does a converter the assistant writes read its own way.
     const back = await s.apply({ operations: [{ type: 'source.upsert', sourceId: 'crew', name: 'Crew API', adapter: 'rest', collectionId: 'team', config: elsewhere.config, mapping: { title: 'headline' } }] as EditOperation[] }, { label: 'Mapped' });
     expect(back.ok).toBe(true);
@@ -253,10 +283,25 @@ describe('the source tools’ host', () => {
 
   it('refuses records that hold one of the user’s secrets, and a source with no records to test against', async () => {
     const echoed = await setup(() => ({ data: [{ ...PEOPLE[0], note: `token ${SECRET}` }] }));
-    expect(await echoed.host.inspect('crew')).toMatchObject({ ok: false, code: 'secret' });
+    expect(await echoed.host.inspect('crew', fp(echoed.s))).toMatchObject({ ok: false, code: 'secret' });
+    // Only the third record holds it: every record shown is checked.
+    const third = await setup(() => ({ data: [PEOPLE[0], PEOPLE[1], { ...PEOPLE[0], uuid: 'u-cy', bio: SECRET }] }));
+    expect(await third.host.inspect('crew', fp(third.s))).toMatchObject({ ok: false, code: 'secret' });
     const empty = await setup(() => ({ data: [] }));
-    expect(await empty.host.inspect('crew')).toEqual({ ok: true, raw: [], total: 0 });
+    expect(await empty.host.inspect('crew', fp(empty.s))).toEqual({ ok: true, raw: [], total: 0 });
     expect(await empty.host.verify('crew', { converter: GOOD })).toMatchObject({ ok: false, recoverable: false, message: expect.stringMatching(/no records/) });
+    // A converter that makes up its own entry shows nothing about a source that has none.
+    const invented = 'export function convert() {\n  return [{ externalId: "x", title: "Made up" }];\n}\n';
+    expect(await empty.host.verify('crew', { converter: invented })).toMatchObject({ ok: false, message: expect.stringMatching(/no records/) });
+    // Nor is a converter that holds one of the user's secrets ever shown, edited outside the app or not.
+    const leaky = await setup();
+    const saved = leaky.s.state.sources!.crew;
+    expect((await leaky.s.apply({ operations: [{ type: 'source.upsert', sourceId: 'crew', name: saved.name, adapter: 'rest', collectionId: 'team', config: saved.config, converter: GOOD }] as EditOperation[] }, { label: 'Converter' })).ok).toBe(true);
+    const disk = leaky.s.state.sources!.crew;
+    disk.converter!.code = `// ${SECRET}\n${GOOD}`;
+    expect(await leaky.host.inspect('crew', fp(leaky.s))).toMatchObject({ ok: false, code: 'secret' });
+    // The settings the run read, or none: settings saved since are not read in their place.
+    expect(await leaky.host.inspect('crew', 'an earlier fingerprint')).toMatchObject({ ok: false, code: 'stale' });
   });
 });
 
@@ -265,15 +310,21 @@ describe('the project', () => {
     const { s, source } = await setup();
     const base = sourceFingerprint(s.state.sources!.crew);
     const op = (extra: Partial<SourceSettingsDraft>) => ({ ...source, ...extra, type: 'source.upsert' }) as EditOperation;
-    const ai = (ops: EditOperation[], grant?: { sourceId: string; base: string }) => s.apply({ operations: ops }, { label: 'AI', source: 'ai', ...(grant ? { sourceWrite: grant } : {}) });
+    const ai = (ops: EditOperation[], grant?: { sourceId: string; base: string; change: string }) => s.apply({ operations: ops }, { label: 'AI', source: 'ai', ...(grant ? { sourceWrite: grant } : {}) });
+    const tested = (code: string) => ({ sourceId: 'crew', base, change: sourceConversionKey({ converter: code }) });
     expect((await ai([op({ converter: GOOD })])).error).toMatchObject({ code: 'SCOPE_MISMATCH', message: expect.stringMatching(/only be changed in the editor/) });
-    // Anywhere else, or with other secrets: refused, whatever the grant.
-    expect((await ai([op({ converter: GOOD, config: { ...source.config, url: 'https://elsewhere.example/collect' } })], { sourceId: 'crew', base })).error?.message).toMatch(/settings stay as the author saved them/);
-    expect((await ai([op({ converter: 'async function fetchAll() { return []; }\nexport function convert(i) { return i; }\n' })], { sourceId: 'crew', base })).error?.message).toMatch(/no fetchAll/);
-    expect((await ai([op({ converter: GOOD }), { type: 'source.remove', sourceId: 'crew' } as EditOperation], { sourceId: 'crew', base })).error?.message).toMatch(/nothing else/);
-    expect((await ai([op({ converter: GOOD })], { sourceId: 'crew', base: 'stale' })).error?.message).toMatch(/changed since/);
+    // Anywhere else, with other secrets, named or kept otherwise: refused, whatever the grant.
+    expect((await ai([op({ converter: GOOD, config: { ...source.config, url: 'https://elsewhere.example/collect' } })], tested(GOOD))).error?.message).toMatch(/settings stay as the author saved them/);
+    expect((await ai([op({ converter: GOOD, name: 'Renamed' })], tested(GOOD))).error?.message).toMatch(/settings stay as the author saved them/);
+    expect((await ai([op({ converter: GOOD, removal: 'remove' })], tested(GOOD))).error?.message).toMatch(/settings stay as the author saved them/);
+    const reader = 'export async function fetchAll() { return []; }\nexport function convert(i) { return i; }\n';
+    expect((await ai([op({ converter: reader })], tested(reader))).error?.message).toMatch(/no fetchAll/);
+    expect((await ai([op({ converter: GOOD }), { type: 'source.remove', sourceId: 'crew' } as EditOperation], tested(GOOD))).error?.message).toMatch(/nothing else/);
+    expect((await ai([op({ converter: GOOD })], { ...tested(GOOD), base: 'stale' })).error?.message).toMatch(/changed since/);
+    // Only what was tested: another converter under the same grant is refused.
+    expect((await ai([op({ converter: `${GOOD}\n// another` })], tested(GOOD))).error?.message).toMatch(/only the mapping or converter it tested/);
     expect(s.state.sources!.crew.converter).toBeUndefined();
-    expect((await ai([op({ converter: GOOD })], { sourceId: 'crew', base })).ok).toBe(true);
+    expect((await ai([op({ converter: GOOD })], tested(GOOD))).ok).toBe(true);
     expect(s.state.sources!.crew.converter?.code).toBe(GOOD);
   });
 });
@@ -291,6 +342,10 @@ describe('what a model is offered', () => {
     expect(names(ask)).not.toContain('write_source_converter');
     const page = toolsForRun({ state: s.state, selection: null, capabilities: caps, codeEnabled: false, definitionOps: false, page: { route: '/' } });
     expect(names(page)).not.toContain('write_source_converter');
+    expect(names(page)).not.toContain('inspect_source_sample');
+    // A small model's question reads a source only when it asks about one.
+    expect(names(toolsForRun({ state: s.state, selection: null, capabilities: constrained, codeEnabled: false, definitionOps: false, ask: true }))).not.toContain('inspect_source_sample');
+    expect(names(toolsForRun({ state: s.state, selection: null, capabilities: constrained, codeEnabled: false, definitionOps: false, ask: true, sourceRequest: true }))).toContain('inspect_source_sample');
     const small = toolsForRun({ state: s.state, selection: null, capabilities: constrained, codeEnabled: false, definitionOps: false, sourceRequest: true });
     for (const t of small.tools.filter((x) => x.name.includes('source'))) {
       expect(findForbiddenShapes(toStrictSchema(t.parameters)), t.name).toEqual([]);
@@ -310,7 +365,14 @@ describe('what a model is offered', () => {
     expect(fit.clipped).toBe(true);
     expect(JSON.stringify(fit.records).length).toBeLessThanOrEqual(SAMPLE_CHARS);
     expect(fit.records).toHaveLength(3);
-    for (const r of fit.records as Array<Record<string, unknown>>) expect(Object.keys(r)).toEqual(['id', 'title', 'body', 'tags', 'nested']);
+    for (const r of fit.records as Array<Record<string, unknown>>) {
+      expect(Object.keys(r)).toEqual(['id', 'title', 'body', 'tags', 'nested']);
+      expect(r.title).toMatch(/^Record \d$/);
+      expect(JSON.stringify(r.nested)).toMatch(/"a":\{"b":/);
+    }
+    // A record whose very detail names are too long to show is said, never shown past the room for it.
+    const named = fitSample([{ ['k'.repeat(20_000)]: 1 }]);
+    expect(JSON.stringify(named.records).length).toBeLessThanOrEqual(SAMPLE_CHARS);
     expect(fitSample([{ id: 'small' }])).toEqual({ records: [{ id: 'small' }], clipped: false });
   });
 });

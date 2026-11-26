@@ -176,7 +176,7 @@ function converterMissing(source: SourceDoc): string | null {
  * its collection. Nothing is written and no picture fetched. The records are shown only once nothing in them is one of
  * the user's secrets.
  */
-export async function sampleSource(deps: Pick<SyncDeps, 'runner' | 'secrets' | 'signal' | 'now'>, state: ProjectState, source: SourceDoc): Promise<SourceSampleResult> {
+export async function sampleSource(deps: Pick<SyncDeps, 'runner' | 'secrets' | 'signal' | 'now'>, state: ProjectState, source: SourceDoc, opts: { offline?: boolean } = {}): Promise<SourceSampleResult> {
   const missing = converterMissing(source);
   if (missing) return { ok: false, code: 'converter', message: missing };
   const projectId = state.manifest.projectId;
@@ -190,7 +190,7 @@ export async function sampleSource(deps: Pick<SyncDeps, 'runner' | 'secrets' | '
   }
   let result;
   try {
-    result = await deps.runner.run(source.name, { ...sourceRequest(state, source), mode: 'sample', secrets, known: {} }, { signal: deps.signal, timeoutMs: SAMPLE_TIMEOUT_MS });
+    result = await deps.runner.run(source.name, { ...sourceRequest(state, source), mode: 'sample', secrets, known: {}, ...(opts.offline ? { offline: true } : {}) }, { signal: deps.signal, timeoutMs: SAMPLE_TIMEOUT_MS });
   } catch (e) {
     const message = e instanceof SyncError ? redactSecrets(e.message, values) : syncFailureMessage(source.name, 'failed');
     return { ok: false, ...(e instanceof SyncError ? { code: e.code } : {}), message: message.replace('was not synced', 'could not be tested') };

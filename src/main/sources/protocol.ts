@@ -81,6 +81,8 @@ export interface SyncRequest {
   mode?: 'sync' | 'sample' | 'inspect';
   /** The secrets the source's settings name, by name: only these. */
   secrets: Record<string, string>;
+  /** A sample's pictures' addresses checked as written, never looked up by name (the assistant's test: nothing it wrote is asked anything). */
+  offline?: boolean;
   /** The content hash each record had when it was last synced, by external ID: their pictures are not fetched again. */
   known: Record<string, string>;
 }

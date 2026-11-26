@@ -9,10 +9,10 @@ import { randomUUID } from 'node:crypto';
 import type { ProjectState, SourceDoc } from '@shared/types';
 import type { EditOperation } from '@shared/ops';
 import type { SourceSettingsDraft } from '@shared/api';
-import { sourceFingerprint, sourceSecretNames } from '@shared/sources';
+import { sourceConversionKey, sourceFingerprint, sourceSecretNames } from '@shared/sources';
 import type { SourceInspectResult, SourceToolHost, SourceToolIssue, SourceVerifyResult } from '@agent/source-tools';
 import { converterProblems, readsItsOwnWay } from './converter';
-import { inspectSource, sampleSource, signInApproved, sourceDraftState, unapprovedMessage } from './sync';
+import { holdsSecret, inspectSource, sampleSource, signInApproved, sourceDraftState, unapprovedMessage } from './sync';
 import type { SyncRunner } from './client';
 import type { SecretStore } from './secrets';
 import type { ApprovalStore } from './approvals';
@@ -66,11 +66,24 @@ export function createAgentSources(deps: AgentSourceDeps): (signal: AbortSignal)
     return { project, source };
   };
 
-  const inspect = async (sourceId: string, signal: AbortSignal): Promise<SourceInspectResult> => {
+  const inspect = async (sourceId: string, fingerprint: string, signal: AbortSignal): Promise<SourceInspectResult> => {
     const found = named(sourceId);
     if ('message' in found) return { ok: false, ...(found.code ? { code: found.code } : {}), message: found.message };
+    // Read for the settings the run read: records of other settings would be shown beside these.
+    const stale = { ok: false as const, code: 'stale', message: `“${found.source.name}” changed while it was being read. Read the project again.` };
+    if (sourceFingerprint(found.source) !== fingerprint) return stale;
+    // What the tool shows of how the source reads them now is checked too: a converter edited outside the app can hold anything.
+    let values: string[];
+    try {
+      values = await deps.secrets.values(found.project.state.manifest.projectId);
+    } catch (e) {
+      return { ok: false, code: 'secrets', message: `${(e as Error).message} The source cannot be checked for them.` };
+    }
+    if (holdsSecret(sourceConversionKey(found.source), values)) return { ok: false, code: 'secret', message: `“${found.source.name}”’s mapping or converter holds one of your secrets, which is never shown.` };
     const r = await inspectSource({ runner: deps.runner, secrets: deps.secrets, approvals: deps.approvals, signal }, found.project.state, found.source);
-    return deps.project() === found.project ? r : { ok: false, message: 'The project was closed before the source was read.' };
+    if (deps.project() !== found.project) return { ok: false, message: 'The project was closed before the source was read.' };
+    const now = Object.hasOwn(found.project.state.sources ?? {}, sourceId) ? found.project.state.sources![sourceId] : undefined;
+    return now && sourceFingerprint(now) === fingerprint ? r : stale;
   };
 
   const verify: (sourceId: string, change: Parameters<SourceToolHost['verify']>[1], signal: AbortSignal) => Promise<SourceVerifyResult> = async (sourceId, change, signal) => {
@@ -97,7 +110,8 @@ export function createAgentSources(deps: AgentSourceDeps): (signal: AbortSignal)
     const made = await sourceDraftState(project.state, draft, deps.secrets);
     if ('message' in made) return fail(made.message, [{ stage: 'settings', message: made.message }]);
     const base = sourceFingerprint(source);
-    const r = await sampleSource({ runner: deps.runner, secrets: deps.secrets, signal }, made.state, made.source);
+    // Offline: no name a picture's address gives is looked up while nothing is saved.
+    const r = await sampleSource({ runner: deps.runner, secrets: deps.secrets, signal }, made.state, made.source, { offline: true });
     if (deps.project() !== project) return fail('The project was closed before the source was tested.', [], false);
     if (!r.ok) {
       // What can be put right by writing it again: its code, the records it gives, or how they fit the collection.
@@ -106,12 +120,13 @@ export function createAgentSources(deps: AgentSourceDeps): (signal: AbortSignal)
       const line = /\(line (\d+)\)/.exec(r.message)?.[1];
       return fail(r.message, recoverable ? [{ stage, message: r.message, ...(line ? { line: Number(line) } : {}) }] : [], recoverable);
     }
-    if (!r.total) return fail(`“${source.name}” has no records now, so nothing shows the ${'converter' in change ? 'converter' : 'mapping'} is right. Ask the author to add one at the source first.`, [], false);
+    // The records it read, not those it gave: a converter that makes up an entry shows nothing about the source.
+    if (!r.raw.length) return fail(`“${source.name}” has no records now, so nothing shows the ${'converter' in change ? 'converter' : 'mapping'} is right. Ask the author to add one at the source first.`, [], false);
     const ticket = randomUUID();
     tickets.set(ticket, { project, sourceId, candidate: sourceFingerprint(made.source) });
     // A run that never applied what it tested leaves nothing behind for long.
     while (tickets.size > 20) tickets.delete(tickets.keys().next().value!);
-    return { ok: true, operation: { ...draft, type: 'source.upsert' } as EditOperation, base, ticket, records: r.records, total: r.total, created: r.created, updated: r.updated, unchanged: r.unchanged, unpublished: r.unpublished, removed: r.removed, kept: r.kept };
+    return { ok: true, operation: { ...draft, type: 'source.upsert' } as EditOperation, grant: { sourceId, base, change: sourceConversionKey(draft) }, ticket, records: r.records, total: r.total, created: r.created, updated: r.updated, unchanged: r.unchanged, unpublished: r.unpublished, removed: r.removed, kept: r.kept };
   };
 
   /**
@@ -135,7 +150,7 @@ export function createAgentSources(deps: AgentSourceDeps): (signal: AbortSignal)
   };
 
   return (signal) => ({
-    inspect: (sourceId) => linked(signal, (s) => inspect(sourceId, s)),
+    inspect: (sourceId, fingerprint) => linked(signal, (s) => inspect(sourceId, fingerprint, s)),
     verify: (sourceId, change) => linked(signal, (s) => verify(sourceId, change, s)),
     approve
   });

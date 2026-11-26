@@ -166,7 +166,23 @@ export function readsItsOwnWay(code: string): boolean {
 /** The problems, one per line, as an author reads them. */
 export const converterProblemText = (problems: readonly ConverterProblem[]): string => problems.map((p) => (p.line ? `Line ${p.line}: ${p.message}` : p.message)).join('\n');
 
-/** The module as one script: its exports declared as they are, the two that are read returned. */
+/** The names a module exports, as its declarations write them. */
+function exportedNames(ast: AnyNode): Set<string> {
+  const out = new Set<string>();
+  for (const s of ast.body as AnyNode[]) {
+    if (s.type !== 'ExportNamedDeclaration' || !s.declaration) continue;
+    const d = s.declaration as AnyNode;
+    if (d.type === 'FunctionDeclaration') out.add((d.id as AnyNode).name as string);
+    else if (d.type === 'VariableDeclaration') for (const x of d.declarations as AnyNode[]) if ((x.id as AnyNode).type === 'Identifier') out.add((x.id as AnyNode).name as string);
+  }
+  return out;
+}
+
+/**
+ * The module as one script: its exports declared as they are, the two that are read returned. Each is the module's
+ * own exported binding or nothing, decided from its syntax tree: no name the module makes some other way is ever run
+ * as its reader.
+ */
 function asScript(code: string, ast: AnyNode): string {
   let out = '';
   let from = 0;
@@ -176,8 +192,10 @@ function asScript(code: string, ast: AnyNode): string {
     from = (s.declaration as AnyNode).start;
   }
   out += code.slice(from);
+  const names = exportedNames(ast);
+  const read = (n: string) => (names.has(n) ? `typeof ${n} === 'function' ? ${n} : undefined` : 'undefined');
   // On the module's first line, so a problem's line is the author's.
-  return `(function () { 'use strict'; ${out}\n;return { convert: typeof convert === 'function' ? convert : undefined, fetchAll: typeof fetchAll === 'function' ? fetchAll : undefined }; })()`;
+  return `(function () { 'use strict'; ${out}\n;return { convert: ${read('convert')}, fetchAll: ${read('fetchAll')} }; })()`;
 }
 
 /**

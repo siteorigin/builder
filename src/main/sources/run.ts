@@ -233,7 +233,7 @@ export async function runSync(req: SyncRequest, deps: RunDeps): Promise<SyncRepl
       for (const img of recordImages(r)) {
         if (seen.has(img.url)) continue;
         seen.add(img.url);
-        const refused = checkAddress(img.url) ?? (deps.checkHost ? await deps.checkHost(img.url) : null);
+        const refused = checkAddress(img.url) ?? (deps.checkHost && !req.offline ? await deps.checkHost(img.url) : null);
         if (refused) return failed('image', refused);
       }
     try {
