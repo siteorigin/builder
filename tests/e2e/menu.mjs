@@ -291,8 +291,15 @@ const inPage = (code) =>
     'Reading the page'
   );
 await inPage('window.beforeCrash = true');
-await app.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows()[0].webContents.forcefullyCrashRenderer());
-await eventually(async () => assert.ok(await app.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows()[0].webContents.isCrashed()), 'the renderer crashed'));
+// The crash itself asks to load the editor again (#886), and an unanswered question does: the crash is awaited, not
+// polled for, since the editor may be back before a poll would see it crashed.
+const crashed = await app.evaluate(({ BrowserWindow }) => {
+  const contents = BrowserWindow.getAllWindows()[0].webContents;
+  const gone = new Promise((resolve) => contents.once('render-process-gone', (_e, details) => resolve(details.reason)));
+  contents.forcefullyCrashRenderer();
+  return gone;
+});
+assert.notEqual(crashed, 'clean-exit', 'the renderer crashed');
 await choose('New Project…');
 await eventually(
   async () =>
