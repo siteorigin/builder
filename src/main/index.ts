@@ -2,7 +2,6 @@ import { app, BrowserWindow, dialog, ipcMain, nativeTheme, protocol, net, sessio
 import type { BaseWindow, KeyboardEvent, MenuItem } from 'electron';
 import { join, dirname, normalize, relative, isAbsolute } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
-import { readFileSync } from 'node:fs';
 import type { Appearance, ConflictChoice, ImportChoices, InspectLayoutOptions, LocalWorkspaceState, ProviderId, SettingsPatch } from '@shared/api';
 import type { ComponentPreviewMeasure, ComponentPreviewResult, ComponentPreviewStep } from '@shared/component-preview';
 import { editorBackground, editorScheme } from '@shared/appearance';
@@ -1010,5 +1009,3 @@ app.on('before-quit', (e) => {
     }
   });
 });
-
-void readFileSync;

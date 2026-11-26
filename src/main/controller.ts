@@ -22,7 +22,7 @@ import { zipDirectory } from './zip';
 import { NOT_A_PROJECT_ZIP, readProjectZip, unpackProject, WEBSITE_ZIP, ZipError } from './unzip';
 import { StaticPreviews } from './static-preview';
 import { isPlainFile, builtPhotosMessage, deliverVercelConfig, pageLanguageWarning, publicUrlNote, rivalHookStop, cleanBuiltSite, cleanWebsitePhotos, copyProjectSource, draftLinksStop, draftSourceNotes, publishedChanged, withheldRoutes, withheldStaticFiles, editedGeneratedFile, explainBuildFailure, exportedAssetFilter, finishExportedSource, leaveOutDrafts, listFiles, locatedPhotos, locationKeptNote, locationRemovedNote, missingAssetsStop, missingSourceWarnings, missingUnusedWarnings, missingWebsiteAssets, notFoundAddressWarning, notFoundHostNote, notFoundPageProblem, omittedAssetsWarning, ownNotFoundFileNote, ownNotFoundFileStop, readNotFoundPage, settleServerHook, stripPartMarkers, carriesPartMarker, projectFingerprint, projectReadme, publishFolder, pruneWebsiteAssets, replaceEmptyFolder, readLibraryImage, sectionLinkWarnings, uncleanablePhotosMessage, uniqueChild, unlinkedButtonWarnings, unlinkedMenuLinkWarnings, formNameWarnings, runtimeFontWarnings, variantCredits, writeExportedSources, exportedSourcesProblem } from './export';
-import { LOCAL_DIR, NO_LOCK, ProjectLockedError, ProjectSession, ThemeUnavailableError } from './project/session';
+import { LOCAL_DIR, LOCK_HEARTBEAT_MS, NO_LOCK, ProjectLockedError, ProjectSession, ThemeUnavailableError } from './project/session';
 import { DOC_DIR, MANIFEST_FILE, ProjectFormatError } from './project/documents';
 import { DOCUMENT_EXTENSIONS, FONT_EXTENSIONS, IMAGE_EXTENSIONS, IMPORT_IMAGE_EXTENSIONS, importAsset, importPackageImage, isAssetOfKind, isOpaquePicture, libraryWebCopyPlan, locateAssetFile, originalNameOf, pictureMime, releaseMediaWorkers, restoreAssetFiles, reviewImportFile, storeLibraryWebCopy } from './project/assets';
 import { postReader, stopPostReads } from './posts-import/process';
@@ -255,6 +255,8 @@ export class Controller {
   private watchers: FSWatcher[] = [];
   private watchTimer: NodeJS.Timeout | null = null;
   private assetTimer: NodeJS.Timeout | null = null;
+  private folderTimer: NodeJS.Timeout | null = null;
+  private folderPoll: NodeJS.Timeout | null = null;
   /** The private copy the preview runs from while the project may not be written to (spec 16.6, 18.1). */
   private stage: string | null = null;
   private stageSync: Promise<unknown> = Promise.resolve();
@@ -892,7 +894,8 @@ export class Controller {
     session.on('lock-lost', () => {
       if (this.session !== session) return;
       this.prepareAbort?.abort();
-      if (!this.stage) void this.dev?.stop();
+      // A private copy's preview goes on only where there is still a project to copy.
+      if (!this.stage || previewUnavailable(session)) void this.dev?.stop();
       void this.startRuntime().catch(() => undefined);
     });
     // A save's files reach the preview as one update (#735). A preview of a private copy holds while the copy is
@@ -1106,6 +1109,31 @@ export class Controller {
       });
   }
 
+  /**
+   * Watch a folder of the open project. A watch that fails (its folder went, too many files) just stops: unhandled, its
+   * error would be thrown. Whatever a watch reports may be the project folder going, so that is looked at too.
+   */
+  private watchFolder(session: ProjectSession, dir: string, listener: (event: string, file: string | null) => void): FSWatcher {
+    const w = watch(dir, { recursive: true }, (event, file) => {
+      this.checkFolderSoon(session);
+      listener(event, file === null ? null : String(file));
+    });
+    w.on('error', () => {
+      w.close();
+      this.checkFolderSoon(session);
+    });
+    return w;
+  }
+
+  /** Once things settle, report the open project as gone if its folder was moved, renamed or deleted. */
+  private checkFolderSoon(session: ProjectSession) {
+    if (this.folderTimer) clearTimeout(this.folderTimer);
+    this.folderTimer = setTimeout(() => {
+      this.folderTimer = null;
+      if (this.session === session) void session.checkFolder().catch(() => false);
+    }, 300);
+  }
+
   /** Follow the files the copy is made from (generated pages, public files, the editor's variants), read-only. */
   private watchStageSources(session: ProjectSession) {
     const onChange = () => {
@@ -1116,10 +1144,8 @@ export class Controller {
       try {
         const dir = join(session.dir, rel);
         if (!existsSync(dir)) continue;
-        const w = watch(dir, { recursive: true }, onChange);
-        // A watch that fails (the folder went, too many files) just stops; accepted document changes still sync.
-        w.on('error', () => w.close());
-        this.stageWatchers.push(w);
+        // If a watch stops, accepted document changes still sync.
+        this.stageWatchers.push(this.watchFolder(session, dir, onChange));
       } catch {
         /* watching is best-effort: accepted document changes still bring the copy up to date */
       }
@@ -1205,6 +1231,8 @@ export class Controller {
 
   /** Look for the library's image files again, and tell the window when what is missing changed. */
   private async checkAssetFiles(session: ProjectSession): Promise<void> {
+    // A folder that is gone is reported as that, not as every picture missing, and nothing is made at its old address.
+    if (await session.checkFolder()) return;
     const changed = await session.refreshAssetFiles().catch(() => false);
     if (changed && this.session === session) this.broadcast();
     // The website's icons follow a favicon file put back or replaced in the folder.
@@ -1218,6 +1246,10 @@ export class Controller {
   private watchExternalChanges(session: ProjectSession) {
     for (const w of this.watchers) w.close();
     this.watchers = [];
+    // A folder moved with a parent of it may tell no watch, and a read-only project has no lock heartbeat to notice.
+    if (this.folderPoll) clearInterval(this.folderPoll);
+    this.folderPoll = setInterval(() => this.checkFolderSoon(session), LOCK_HEARTBEAT_MS);
+    this.folderPoll.unref?.();
     if (this.assetTimer) clearTimeout(this.assetTimer);
     this.assetTimer = null;
     const onAssetChange = () => {
@@ -1232,10 +1264,7 @@ export class Controller {
       const dir = join(session.dir, 'static');
       if (existsSync(dir)) {
         // An event without a file name may be about anything in static/, so it is looked at too.
-        const w = watch(dir, { recursive: true }, (_e, f) => (!f || /^assets([\\/]|$)/.test(String(f))) && onAssetChange());
-        // The folder going away can end the watch with an error (Windows); unhandled, it would be thrown.
-        w.on('error', () => w.close());
-        this.watchers.push(w);
+        this.watchers.push(this.watchFolder(session, dir, (_e, f) => (!f || /^assets([\\/]|$)/.test(f)) && onAssetChange()));
       }
     } catch {
       /* watching is best-effort: the check still runs when the library changes and before every export */
@@ -1244,7 +1273,8 @@ export class Controller {
       if (this.watchTimer) clearTimeout(this.watchTimer);
       this.watchTimer = setTimeout(async () => {
         if (this.session !== session || this.aiBusy()) return;
-        const r = await session.reloadFromDisk();
+        if (await session.checkFolder()) return;
+        const r = await session.reloadFromDisk().catch((e: Error) => ({ ok: false, message: e.message }));
         if (!r.ok && r.message && r.message !== 'Busy') this.send('runtime:status', this.runtimeStatus());
       }, 400);
     };
@@ -1256,7 +1286,7 @@ export class Controller {
     ] as const) {
       try {
         const dir = join(session.dir, rel);
-        if (existsSync(dir)) this.watchers.push(watch(dir, { recursive: true }, (_e, f) => f && accept(String(f)) && !String(f).endsWith('.tmp') && onChange()));
+        if (existsSync(dir)) this.watchers.push(this.watchFolder(session, dir, (_e, f) => f && accept(f) && !f.endsWith('.tmp') && onChange()));
       } catch {
         /* watching is best-effort */
       }
@@ -1333,7 +1363,7 @@ export class Controller {
   close(): Promise<void> {
     const [key, session] = [this.workspaceKey, this.session];
     // A close that fails leaves the project open and editable under the same opening, and tells the editor.
-    this.closing ??= this.closeNow().catch((e) => { if (session && this.session === session && !this.workspaceKey) (this.workspaceKey = key), this.onOpeningChange?.(), this.broadcast(); throw e; }).finally(() => (this.closing = null));
+    this.closing ??= this.closeNow().catch((e) => { if (session && this.session === session && !this.workspaceKey) (this.workspaceKey = key), this.watchExternalChanges(session), this.onOpeningChange?.(), this.broadcast(); throw e; }).finally(() => (this.closing = null));
     return this.closing;
   }
 
@@ -1348,6 +1378,10 @@ export class Controller {
     this.watchTimer = null;
     if (this.assetTimer) clearTimeout(this.assetTimer);
     this.assetTimer = null;
+    if (this.folderTimer) clearTimeout(this.folderTimer);
+    this.folderTimer = null;
+    if (this.folderPoll) clearInterval(this.folderPoll);
+    this.folderPoll = null;
     const s = this.session;
     if (!s) return this.endExports();
     this.closings++;
