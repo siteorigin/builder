@@ -61,6 +61,14 @@ assert.equal(await framePath(), home.route, 'the frame stays on Home');
 await pill.getByRole('button', { name: 'Back to editing' }).click();
 await eventually(async () => assert.equal(await framePath(), home.route, 'the canvas stays on Home'), 15000);
 
+step('a document the page opens on its own after Edit began goes back to Home');
+// As a visitor's link that loads in full just as the author goes back to editing.
+await eventually(async () => assert.equal(await frame.locator('html').evaluate((html) => html.hasAttribute('data-so-editing')), true, 'the page is in Edit'), 15000);
+await frame.locator('html').evaluate((html, to) => location.assign(to), index);
+await eventually(async () => assert.equal(await framePath(), home.route, 'the canvas is back on Home'), 30000);
+await eventually(async () => assert.equal(await frame.getByText('Second firing').count(), 0, 'the blog list is gone from the canvas'), 20000);
+await emptyCard.waitFor({ timeout: 20000 });
+
 assert.deepEqual(errors, [], 'no uncaught errors in the editor');
 await app.close();
 cleanup();

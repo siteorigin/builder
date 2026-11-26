@@ -1250,6 +1250,8 @@ function CollectionArchive({ collectionId, name, route, pageSize, categories, de
     setMode('preview');
     // Once the canvas shows the preview; one still starting opens the index once it is ready.
     requestAnimationFrame(() => {
+      // Edit chosen meanwhile shows the page being edited, not the index.
+      if (getState().mode !== 'preview') return;
       if (!visitAddress(route)) toast(`The preview is starting: the ${name} index opens in it once it is ready.`, 'info');
     });
   };
