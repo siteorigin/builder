@@ -201,8 +201,10 @@
   .asset-note-actions { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 8px; }
   .asset-note.asset-alt-review { background: var(--amber-soft); }
   .asset-note.asset-alt-review > svg { color: var(--amber); }
-  .asset-note.asset-alt-review > div { flex: 1; min-width: 0; }
-  .asset-alt-review ul { display: flex; flex-direction: column; margin: 6px -6px 0; padding: 0; list-style: none; }
+  /* The list of places takes the note's full width too, and its rows wrap: each one is there to be read in full. */
+  .asset-alt-review ul { grid-column: 1 / -1; display: flex; flex-direction: column; margin: 6px -6px 0; padding: 0; list-style: none; }
+  .asset-alt-review .asset-use :is(.where, .what) { overflow-wrap: anywhere; white-space: normal; }
+  .asset-alt-review .asset-use .where { flex: 0 1 auto; min-width: 0; max-width: 45%; }
   .asset-alt-review .asset-alt-text { display: block; padding: 0 6px 4px 25px; overflow-wrap: anywhere; color: var(--text-2); }
   .asset-tile-id { margin-top: -4px; font-size: 10px; line-height: 1.3; color: var(--text-3); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-variant-numeric: tabular-nums; }
   .asset-missing-actions { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 8px; }
