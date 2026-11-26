@@ -100,7 +100,7 @@ describe('the blank starter (#15)', () => {
     // The footer still renders, with what is true of any site: the copyright and the Home link.
     const layout = files.get('src/routes/+layout.svelte')!;
     const footerTag = /<C_foundation_shell_footer_\w+[^]*?\/>/.exec(layout)?.[0] ?? '';
-    expect(footerTag).toContain('copyright={"© " + new Date().getFullYear() + " Kloof."}');
+    expect(footerTag).toContain('copyright={"© " + new globalThis.Date().getFullYear() + " Kloof."}');
     expect(footerTag).toMatch(/links=\{\[\{[^}]*"label":"Home","link":\{"href":"\/"\}\}\]\}/);
     expect(footerTag).toContain('contact={[]}');
   });
@@ -127,8 +127,7 @@ describe('the starters’ copyright year (#828)', () => {
       const footer = s.site.shell.footer.nodes[s.site.shell.footer.rootIds[0]] as InstanceNode;
       expect(footer.props.copyright).toBe(line);
       // The same project, built in later years, says each of them, in the export and in the editor's preview.
-      expect(shownIn(s, 2031)).toBe(line.replace('{year}', '2031'));
-      expect(shownIn(s, 2032, true)).toBe(line.replace('{year}', '2032'));
+      for (const year of [2031, 2032]) for (const instrument of [false, true]) expect(shownIn(s, year, instrument)).toBe(line.replace('{year}', String(year)));
     });
 
   it('reads only a {year} in the year position, and leaves a fixed year and every other brace as written', () => {

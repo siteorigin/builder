@@ -46,6 +46,7 @@ const actions = (await load('../../src/renderer/src/lib/actions')) as {
   moveLayers: (dir: -1 | 1) => Promise<void>;
   duplicateLayers: () => Promise<void>;
   commitText: (ref: ElementRef, text: string | RichText) => Promise<'restore' | void>;
+  showsInlineText: (snapshot: ProjectSnapshot, ref: ElementRef, shown: string) => boolean;
 };
 const { setState } = (await load('../../src/renderer/src/store')) as { setState: (p: Partial<EditorState>) => void };
 
@@ -215,6 +216,10 @@ describe('editing the footer’s copyright line on the page (#828)', () => {
     const copyright = () => (session.state.site.shell.footer.nodes[instanceId] as InstanceNode).props.copyright;
     const year = new Date().getFullYear();
     expect(copyright()).toBe('© {year} Studio. All rights reserved.');
+    // The page shows the line with the year, which is the text the edit began from, not something else.
+    const now = () => ({ state: session.state, revision: session.revision }) as unknown as ProjectSnapshot;
+    expect(actions.showsInlineText(now(), ref, `© ${year} Studio. All rights reserved.`)).toBe(true);
+    expect(actions.showsInlineText(now(), ref, '© {year} Studio. All rights reserved.')).toBe(false);
     // The page shows the year: typing after it changes the words and keeps the year current.
     await actions.commitText(ref, `© ${year} Studio. Photos by Ana Lee.`);
     expect(copyright()).toBe('© {year} Studio. Photos by Ana Lee.');
@@ -225,5 +230,15 @@ describe('editing the footer’s copyright line on the page (#828)', () => {
     // Another year typed in its place is the author's fixed year.
     await actions.commitText(ref, `© ${year - 1} Studio.`);
     expect(copyright()).toBe(`© ${year - 1} Studio.`);
+  });
+
+  it('leaves other text that happens to start “© {year}” as the author typed it', async () => {
+    const made = await bridge.project.apply({ operations: [{ type: 'node.insert', newNodeId: 'n_note', owner: home(), parentId: null, index: 0, primitive: 'heading', text: '© {year} Studio.' }] }, { label: 'Add heading' });
+    expect(made.ok).toBe(true);
+    const ref = refTo(home(), 'n_note');
+    const now = () => ({ state: session.state, revision: session.revision }) as unknown as ProjectSnapshot;
+    expect(actions.showsInlineText(now(), ref, `© ${new Date().getFullYear()} Studio.`)).toBe(false);
+    await actions.commitText(ref, `© ${new Date().getFullYear()} Studio Co.`);
+    expect(JSON.stringify(session.state.pages[homeId()].nodes.n_note)).toContain(`© ${new Date().getFullYear()} Studio Co.`);
   });
 });

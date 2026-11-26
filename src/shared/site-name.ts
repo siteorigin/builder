@@ -21,7 +21,9 @@ export const COPYRIGHT_PROP = 'copyright';
  * the year when it runs; the project keeps the token.
  */
 export const COPYRIGHT_YEAR = '{year}';
-const YEAR_LINE = /^(©\s*(?:\d{4}\s*[-–—]\s*)?)\{year\}/;
+const YEAR_LINE = /^(©\s*(?:\d{4}\s*[-–—]\s*)?)\{year\}(?!\d)/;
+/** The year position of a line as the site shows it: the ©, a first year and dash when it gives a range, then the year. */
+const SHOWN_YEAR = /^(©\s*(?:\d{4}\s*[-–—]\s*)?)(\d{4})(?!\d)/;
 
 /** A copyright line's words before and after its `{year}`, or null when it names no year that way. */
 export function copyrightYearParts(line: string): [string, string] | null {
@@ -37,15 +39,14 @@ export function shownCopyright(line: string, year: number = new Date().getFullYe
 
 /**
  * What an edit of a copyright line typed over the words the site showed (`next`) stores, when the line says
- * `{year}`: the year the edit left where it was shown stays the token, so editing the rest keeps the year current.
- * Typing another year in its place makes it that fixed year.
+ * `{year}`: the year the edit left where it was shown stays the token, so editing the rest (the words, the © and a
+ * first year before it) keeps the year current. Typing another year in its place makes it that fixed year.
  */
 export function keptCopyrightYear<T>(current: unknown, next: T, year: number = new Date().getFullYear()): T {
   if (typeof current !== 'string' || typeof next !== 'string') return next;
-  const parts = copyrightYearParts(current);
-  if (!parts) return next;
-  const shown = new RegExp(`^(${escape(parts[0]).replace(/\s+/g, '\\s*')})${year}(?!\\d)`).exec(next);
-  return (shown ? `${shown[1]}${COPYRIGHT_YEAR}${next.slice(shown[0].length)}` : next) as T;
+  if (!copyrightYearParts(current)) return next;
+  const shown = SHOWN_YEAR.exec(next);
+  return (shown && shown[2] === String(year) ? `${shown[1]}${COPYRIGHT_YEAR}${next.slice(shown[0].length)}` : next) as T;
 }
 
 /** The properties that follow the site's name. */
@@ -98,13 +99,13 @@ const escape = (s: string) => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 
 /**
  * The copyright line with `next` in place of `previous`, when the line gives `previous` as its holder: right after
- * the © and the year (or years, either of which may be `{year}`), and ending there or at a full stop. Null for any
+ * the © and the year (or years, the last of which may be `{year}`), and ending there or at a full stop. Null for any
  * other line, such as one naming "Acme, Inc." or "Acme Photography" for a site called Acme.
  */
 export function renamedCopyright(line: string, previous: string, next: string): string | null {
   if (!previous) return null;
-  const year = '(?:\\d{4}|\\{year\\})';
-  const m = line.match(new RegExp(`^(©\\s*${year}(?:\\s*[-–—]\\s*${year})?\\s+)${escape(previous)}(?=$|\\.(?:\\s|$))`));
+  const years = '(?:\\d{4}(?:\\s*[-–—]\\s*(?:\\d{4}|\\{year\\}))?|\\{year\\})';
+  const m = line.match(new RegExp(`^(©\\s*${years}\\s+)${escape(previous)}(?=$|\\.(?:\\s|$))`));
   return m ? `${m[1]}${next}${line.slice(m[0].length)}` : null;
 }
 
@@ -175,7 +176,9 @@ export function followNote(state: ProjectState, node: InstanceNode, prop: string
   const follows = followsSiteName(state, node, prop);
   if (follows === undefined) return undefined;
   if (prop === BRAND_PROP) return { follows, text: follows ? 'Follows the site name: renaming the site changes it too.' : 'Its own name: renaming the site leaves it as it is.' };
-  return { follows, text: follows ? 'Names the site, so renaming the site changes it too.' : 'Its own wording: renaming the site leaves it as it is.' };
+  const said = follows ? 'Names the site, so renaming the site changes it too.' : 'Its own wording: renaming the site leaves it as it is.';
+  const line = node.props[prop] ?? state.components[node.definitionId]?.properties[prop]?.default;
+  return { follows, text: typeof line === 'string' && copyrightYearParts(line) ? `${said} {year} shows the year the site is built in.` : said };
 }
 
 /**

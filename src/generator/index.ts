@@ -212,7 +212,8 @@ const attrJs = (v: unknown) => `{${js(v)}}`;
  */
 function valueExpr(propName: string, schema: PropSchema, value: unknown, ctx: ResolveContext): string {
   const parts = propName === COPYRIGHT_PROP && schema.type === 'string' && typeof value === 'string' ? copyrightYearParts(value) : null;
-  return parts ? `${js(parts[0])} + new Date().getFullYear() + ${js(parts[1])}` : js(resolveValue(schema, value, ctx));
+  // `globalThis` so that a property the design names `Date` cannot stand in for the clock.
+  return parts ? `${js(parts[0])} + new globalThis.Date().getFullYear() + ${js(parts[1])}` : js(resolveValue(schema, value, ctx));
 }
 
 const RESERVED_WORDS = new Set(

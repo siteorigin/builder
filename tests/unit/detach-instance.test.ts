@@ -787,3 +787,18 @@ describe('flattenStyles', () => {
 
 const sessions: string[] = [];
 afterEach(() => sessions.splice(0).forEach((d) => rmSync(d, { recursive: true, force: true })));
+
+describe('detaching a placement that shows a copyright line (#828)', () => {
+  it('writes the year it shows into the copyright text, which no longer reads {year}', () => {
+    const s = createStarterState('blank', 'Kloof', false);
+    const home = s.pages[s.site.homePageId];
+    const footer = s.site.shell.footer.nodes[s.site.shell.footer.rootIds[0]] as InstanceNode;
+    const placed = { ...structuredClone(footer), id: 'n_footer_copy' };
+    home.nodes[placed.id] = placed;
+    home.rootIds.push(placed.id);
+    const r = applyOperations(s, [{ type: 'component.detachInstance', owner: { kind: 'page', id: home.id }, nodeId: placed.id } as EditOperation]);
+    const texts = Object.values(r.state.pages[home.id].nodes).filter((n): n is TextNode => n.kind === 'text').map((n) => n.text);
+    expect(texts).toContain(`© ${new Date().getFullYear()} Kloof.`);
+    expect(JSON.stringify(texts)).not.toContain('{year}');
+  });
+});

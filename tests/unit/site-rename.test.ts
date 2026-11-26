@@ -73,7 +73,7 @@ describe('what follows a rename and what the author keeps', () => {
     // A line showing the year it is built in (#828) follows the same way, and keeps its {year}.
     expect(line('© {year} Acme. All rights reserved.')).toBe('© {year} Northstar. All rights reserved.');
     expect(line('© 2019–{year} Acme.')).toBe('© 2019–{year} Northstar.');
-    for (const own of ['© {year} Acme Photography.', '© {year} Acme, Inc.']) expect(line(own)).toBe(own);
+    for (const own of ['© {year} Acme Photography.', '© {year} Acme, Inc.', '© {year}–{year} Acme.', '© {year}2 Acme.']) expect(line(own)).toBe(own);
     for (const own of ['© 2019–2026 Acme, Inc. Photos by Ana.', '© 2026 Acme Photography.', '© 2026 Acme.com', 'Acme, 2026', 'All of Acme, always.']) expect(line(own)).toBe(own);
     // A name with characters that mean something in a pattern is matched as it is written.
     expect(line('© 2026 A+B (Studio). All rights reserved.', 'A+B (Studio)', 'AB')).toBe('© 2026 AB. All rights reserved.');
@@ -148,6 +148,10 @@ describe('what the editor says about the site’s name', () => {
     expect(followNote(s, shell(s, 'footer'), 'copyright')).toEqual({ follows: false, text: expect.stringContaining('Its own wording') });
     shell(s, 'footer').props.copyright = '© 2026 Morning Press.';
     expect(followNote(s, shell(s, 'footer'), 'copyright')).toEqual({ follows: true, text: expect.stringContaining('Names the site') });
+    expect(followNote(s, shell(s, 'footer'), 'copyright')?.text).not.toContain('{year}');
+    // A line that shows the year it is built in says what its {year} does (#828).
+    shell(s, 'footer').props.copyright = '© {year} Morning Press.';
+    expect(followNote(s, shell(s, 'footer'), 'copyright')).toEqual({ follows: true, text: expect.stringContaining('{year} shows the year the site is built in') });
     shell(s, 'header').props.siteName = 'MP';
     expect(followNote(s, shell(s, 'header'), 'siteName')).toEqual({ follows: false, text: expect.stringContaining('Its own name') });
     expect(followNote(s, shell(s, 'footer'), 'tagline')).toBeUndefined();
@@ -161,7 +165,7 @@ describe('a copyright line that shows the year it is built in (#828)', () => {
     expect(shownCopyright('© {year} Acme. All rights reserved.', 2031)).toBe('© 2031 Acme. All rights reserved.');
     expect(shownCopyright('©{year} Acme', 2031)).toBe('©2031 Acme');
     expect(shownCopyright('© 2019 – {year} Acme', 2031)).toBe('© 2019 – 2031 Acme');
-    for (const line of ['© 2026 Acme.', 'Acme {year}', '© Acme {year}', '{year} Acme']) expect(shownCopyright(line, 2031)).toBe(line);
+    for (const line of ['© 2026 Acme.', 'Acme {year}', '© Acme {year}', '{year} Acme', '© {year}2 Acme']) expect(shownCopyright(line, 2031)).toBe(line);
   });
 
   it('keeps {year} through an edit typed over the shown line, unless the edit changes the year', () => {
@@ -170,6 +174,10 @@ describe('a copyright line that shows the year it is built in (#828)', () => {
     // The page's text, read back from the canvas, may collapse its spaces.
     expect(keptCopyrightYear('©  {year} Acme.', '© 2031 Acme Studio.', 2031)).toBe('© {year} Acme Studio.');
     expect(keptCopyrightYear('© 2019–{year} Acme.', '© 2019–2031 Acme Co.', 2031)).toBe('© 2019–{year} Acme Co.');
+    // Changing what comes before the year (the first year of a range, its dash, the space after the ©) keeps it too.
+    expect(keptCopyrightYear('© 2019–{year} Acme.', '© 2020-2031 Acme.', 2031)).toBe('© 2020-{year} Acme.');
+    expect(keptCopyrightYear(current, '© 2019–2031 Acme.', 2031)).toBe('© 2019–{year} Acme.');
+    expect(keptCopyrightYear('©{year} Acme.', '© 2031 Acme.', 2031)).toBe('© {year} Acme.');
     // Another year typed in its place is the author's fixed year, and a line that never said {year} is stored as typed.
     expect(keptCopyrightYear(current, '© 2030 Acme.', 2031)).toBe('© 2030 Acme.');
     expect(keptCopyrightYear(current, '© 20310 Acme.', 2031)).toBe('© 20310 Acme.');
