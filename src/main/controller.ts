@@ -1436,7 +1436,10 @@ export class Controller {
       // opening it was asked in is still the open one.
       await s.exclusive(async () => {
         if (!current()) throw Object.assign(new Error('stale'), { code: 'STALE_OPENING' });
-        // The copy is the project itself, brief and all, with its sources' settings as the project holds them.
+        // The copy is the project itself, brief and all, with its sources' settings as the project holds them, and as
+        // the folder holds them too, so they match the collections copied beside them.
+        const sources = await this.sourcesCopyProblem(s);
+        if (sources) throw Object.assign(new Error(sources), { code: 'SOURCES' });
         await copyProjectSource(s.dir, tmp, { keepBrief: true });
         await writeExportedSources(tmp, s.state, { keep: true });
       });
@@ -2212,6 +2215,22 @@ export class Controller {
     }
   }
 
+  /**
+   * Why the project's external sources' settings cannot go into a copy of it, or null: the folder holds them otherwise
+   * than the project does, or they hold one of the user's saved secrets. Secrets that cannot be read stop a copy of a
+   * project that has sources, since nothing then says they are not there.
+   */
+  private async sourcesCopyProblem(s: ProjectSession): Promise<string | null> {
+    const has = Object.keys(s.state.sources ?? {}).length > 0;
+    let values: string[] = [];
+    try {
+      values = await sourceSecrets.values(s.state.manifest.projectId);
+    } catch (e) {
+      if (has) return `${(e as Error).message} The project's external sources cannot be checked for them.`;
+    }
+    return exportedSourcesProblem(s.dir, s.state, values);
+  }
+
   /** The names of the secrets the open project's sources can sign in with, never their values. */
   async sourceSecretNames(): Promise<string[]> {
     const s = this.session;
@@ -2636,7 +2655,7 @@ export class Controller {
       const rival = await rivalHookStop(s.dir, publishedState(s.state));
       if (rival) return stop(rival);
       // A source's settings go out as the project holds them, and only when the folder holds them so too.
-      const sources = opts.forBuild ? null : await exportedSourcesProblem(s.dir, s.state, await sourceSecrets.values(s.state.manifest.projectId).catch(() => []));
+      const sources = opts.forBuild ? null : await this.sourcesCopyProblem(s);
       if (sources) return stop(sources);
       await copyProjectSource(s.dir, dest, { keepAsset: exportedAssetFilter(s.state) });
       await writeExportedSources(dest, s.state, { keep: !opts.forBuild });

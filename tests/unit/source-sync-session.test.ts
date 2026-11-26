@@ -215,6 +215,10 @@ describe('syncing a source into a project', () => {
     pictures[`https://cdn.example/${encodeURIComponent(other)}.png`] = pictures['https://cdn.example/ana.png'];
     await expect(syncSource(deps, 'people')).resolves.toMatchObject({ ok: false, code: 'secret' });
     expect(Object.keys(s.state.assets.assets).some((id) => s.state.assets.assets[id].name.includes(other))).toBe(false);
+    // Or one only a picture's bytes carry (a text chunk), which the library would keep as they are.
+    pictures['https://cdn.example/inked.png'] = Buffer.concat([pictures['https://cdn.example/ana.png'], Buffer.from(SECRET)]);
+    world.records = [person('1', 'Ana', { featuredImage: { $image: { url: 'https://cdn.example/inked.png' } } })];
+    await expect(syncSource(deps, 'people')).resolves.toMatchObject({ ok: false, code: 'secret' });
     // A project closed meanwhile: nothing lands.
     world.records = [person('1', 'Ana')];
     await expect(syncSource({ ...deps, current: () => false }, 'people')).resolves.toMatchObject({ ok: false, code: 'closed' });
@@ -256,7 +260,7 @@ describe('syncing a source into a project', () => {
     expect(s.state.collections.team.entries[syncedEntryId('people', '1', () => false)].featuredImage).toBe(record.id);
     const undo = await s.undo();
     expect(undo.ok).toBe(false);
-    expect(undo.error?.message).toMatch(/“Ana” in the Team collection shows/);
+    expect(undo.error?.message).toMatch(/“Ana” in the Team collection uses/);
     expect(s.state.assets.assets[record.id]).toBeDefined();
   });
 
@@ -385,8 +389,12 @@ describe('a source’s settings in the project', () => {
     expect(JSON.parse(readFileSync(join(dest, 'siteorigin/sources/people/source.json'), 'utf8'))).toEqual(s.state.sources!.people);
     expect(inProjectSource(dir, join(dir, 'static/deep/source-secrets.json~'))).toBe(false);
     expect(inProjectSource(dir, join(dir, 'static/deep/.API-KEYS.json.swp'))).toBe(false);
-    // Put back as the project holds it, the settings go out; holding a saved secret in its name, they do not.
-    writeFileSync(file, readFileSync(join(dest, 'siteorigin/sources/people/source.json'), 'utf8'));
+    // A library image named after them is no credential file.
+    writeFileSync(join(dir, 'static/deep/api-keys-guide-1a2b3c4d.png'), 'png');
+    expect(inProjectSource(dir, join(dir, 'static/deep/api-keys-guide-1a2b3c4d.png'))).toBe(true);
+    // Put back as the project holds them, however laid out, the settings go out; holding a saved secret in their name,
+    // they do not.
+    writeFileSync(file, JSON.stringify(JSON.parse(readFileSync(join(dest, 'siteorigin/sources/people/source.json'), 'utf8'))));
     expect(await exportedSourcesProblem(dir, s.state, [SECRET])).toBeNull();
     expect(await exportedSourcesProblem(dir, s.state, ['People API'])).toMatch(/hold one of your secrets/);
     // A website build carries no source at all.

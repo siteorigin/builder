@@ -179,6 +179,10 @@ describe('a sync as the worker runs it', () => {
     const { asked, fetchImage } = fetcher();
     const one = (url: string) => runSync({ ...request, id: 2 }, { adapters: adapter(async () => [record('1', { values: { photo: { $image: { url } } } })]), fetchImage });
     expect(await one(`https://cdn.example/a.png?token=${SECRET}`)).toMatchObject({ ok: false, code: 'image', detail: 'a picture’s address holds a secret' });
+    // However the address spells it: a letter escaped, an escape in capitals, a form's spelling.
+    expect(await one(`https://cdn.example/a.png?token=%74${SECRET.slice(1)}`)).toMatchObject({ ok: false, code: 'image', detail: 'a picture’s address holds a secret' });
+    expect(await one(`https://cdn.example/${encodeURIComponent(SECRET).replace(/-/g, '%2D')}.png`)).toMatchObject({ ok: false, code: 'image', detail: 'a picture’s address holds a secret' });
+    expect(await one('http://localhost./a.png')).toMatchObject({ ok: false, code: 'image' });
     expect(await one('http://192.168.1.1/a.png')).toMatchObject({ ok: false, code: 'image' });
     expect(await one('http://localhost:8080/a.png')).toMatchObject({ ok: false, code: 'image' });
     expect(await one('https://user:pw@cdn.example/a.png')).toMatchObject({ ok: false, code: 'image' });
@@ -188,8 +192,8 @@ describe('a sync as the worker runs it', () => {
     // The real fetcher checks where a redirect leads before following it.
     const { fetchImage: real } = await import('../../src/main/sources/fetch-image');
     const seen: string[] = [];
-    const fetchStub = async (u: string | URL) => {
-      seen.push(String(u));
+    const fetchStub = async (u: string | URL, init?: RequestInit) => {
+      seen.push(`${String(u)} ${init?.redirect}`);
       return new Response(null, { status: 302, headers: { location: 'http://127.0.0.1/admin.png' } });
     };
     const original = globalThis.fetch;
@@ -199,7 +203,8 @@ describe('a sync as the worker runs it', () => {
     } finally {
       globalThis.fetch = original;
     }
-    expect(seen).toEqual(['https://cdn.example/a.png']);
+    // Asked once, following no redirect itself.
+    expect(seen).toEqual(['https://cdn.example/a.png manual']);
   });
 
   it('fails the whole sync, in fixed words, on a reader that fails part way, a bad record or a picture that will not load', async () => {

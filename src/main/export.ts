@@ -6,7 +6,7 @@ import { markdownMirrorRoute } from '@shared/llms';
 import { randomUUID } from 'node:crypto';
 import { existsSync, lstatSync, promises as fs, readdirSync, statSync } from 'node:fs';
 import { basename, dirname, join, relative, sep } from 'node:path';
-import type { AssetRecord, NodeTree, PageDoc, ProjectState } from '@shared/types';
+import type { AssetRecord, NodeTree, PageDoc, ProjectState, SourceDoc } from '@shared/types';
 import { documentFormat } from '@shared/document-files';
 import { declaredDirection, declaredLanguage, pageDirection, pageLanguage, sameLanguage } from '@shared/languages';
 import { checkPublicUrl } from '@shared/public-url';
@@ -26,7 +26,14 @@ import { redirectHost, VERCEL_CONFIG_FILE } from '@generator/host-redirects';
 import { atomicWrite, readIfExists, removeEmptyDirs, safeJoin, sha, toJson } from './project/fsutil';
 import { isPrivateFileName } from './project/private-files';
 import { sourceDocPath } from './project/documents';
-import { holdsSecretValue } from '@shared/sources';
+import { holdsSecretValue, isSourceId } from '@shared/sources';
+
+/** JSON with every object's keys sorted, so two documents that say the same compare equal. */
+function canonicalJson(v: unknown): string {
+  if (Array.isArray(v)) return `[${v.map(canonicalJson).join(',')}]`;
+  if (v && typeof v === 'object') return `{${Object.keys(v).sort().map((k) => `${JSON.stringify(k)}:${canonicalJson((v as Record<string, unknown>)[k])}`).join(',')}}`;
+  return JSON.stringify(v);
+}
 import { withoutPartMarkers } from './codecheck';
 import { pageTitle, readBuildFailure, type BuildFailureContext, type BuildReport, type ExplainedBuild } from './build-failure';
 import { addCredits, cleanPhoto, hasCredits, photoMetadata, sniffImageType, type PhotoCredits } from './project/photo-metadata';
@@ -104,11 +111,20 @@ export async function writeExportedSources(dest: string, state: ProjectState, op
 export async function exportedSourcesProblem(dir: string, state: ProjectState, values: readonly string[]): Promise<string | null> {
   const held = state.sources ?? {};
   const folders = await fs.readdir(join(dir, 'siteorigin', 'sources')).catch(() => [] as string[]);
+  // The same document however it is laid out: an edit that only spaces it differently is the same settings.
+  const same = (disk: string | null, mine: SourceDoc | undefined) => {
+    if (disk === null || mine === undefined) return disk === null && mine === undefined;
+    try {
+      return canonicalJson(JSON.parse(disk)) === canonicalJson(mine);
+    } catch {
+      return false;
+    }
+  };
   for (const d of new Set([...folders, ...Object.keys(held)])) {
-    const rel = sourceDocPath(d);
-    const disk = await readIfExists(safeJoin(dir, rel)).catch(() => null);
-    const mine = Object.hasOwn(held, d) ? toJson(held[d]) : null;
-    if (disk !== mine && !(disk === null && mine === null)) return `${rel} was changed outside SiteOrigin Builder. Open the project again to load it, or put it back, then export again.`;
+    const disk = await readIfExists(join(dir, 'siteorigin', 'sources', d, 'source.json')).catch(() => null);
+    if (same(disk, Object.hasOwn(held, d) ? held[d] : undefined)) continue;
+    // Named only when it is a source's own name: a folder may be called anything, a credential included.
+    return `${isSourceId(d) ? sourceDocPath(d) : 'An external source’s settings'} ${isSourceId(d) ? 'was' : 'were'} changed outside SiteOrigin Builder. Open the project again to load ${isSourceId(d) ? 'it' : 'them'}, or put ${isSourceId(d) ? 'it' : 'them'} back, then export again.`;
   }
   if (holdsSecretValue(JSON.stringify(held), values)) return 'An external source’s settings hold one of your secrets. Take it out of the source’s settings, then export again.';
   return null;

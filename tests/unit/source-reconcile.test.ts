@@ -11,6 +11,7 @@ import { createStarterState } from '@catalogue/starters';
 import { applyOperations } from '@engine/apply';
 import { validateState } from '@engine/validate';
 import { knownHashes, planIsEmpty, planSourceSync, SyncPlanError, syncedEntryId, syncOperations } from '../../src/main/sources/reconcile';
+import { sourceIntegrityChange, syncedDependencyLoss } from '@engine/sources';
 import { recordHash } from '../../src/main/sources/hash';
 import type { NormalizedRecord } from '../../src/main/sources/protocol';
 
@@ -185,5 +186,38 @@ describe('the sync grant', () => {
     const moved = structuredClone(synced);
     moved.sources!.people = { ...moved.sources!.people, collectionId: 'more' };
     expect(() => applyOperations(moved, [{ type: 'entry.update', collectionId: 'team', entryId: id, title: 'Edited' }], { sourceSync: grant })).toThrow(/changed while it was being synced/);
+  });
+});
+
+describe('what History may not undo around a sync', () => {
+  it('tells one broken source from another, and an existing problem from a new one', () => {
+    const s = project();
+    const missingA = structuredClone(s);
+    missingA.sources!.people = { ...missingA.sources!.people, collectionId: 'gone-a' };
+    const missingB = structuredClone(s);
+    missingB.sources!.people = { ...missingB.sources!.people, collectionId: 'gone-b' };
+    expect(sourceIntegrityChange(missingA, missingB)).toMatch(/syncs into a collection that no longer exists/);
+    expect(sourceIntegrityChange(missingA, missingA)).toBeNull();
+    expect(sourceIntegrityChange(s, s)).toBeNull();
+  });
+
+  it('reads what a synced entry needs from where its schema puts it, never from a plain value', () => {
+    const base = applyOperations(project(), [
+      { type: 'collection.update', collectionId: 'team', fields: { role: { type: 'string', label: 'Role', default: '' }, assetId: { type: 'string', label: 'Code', default: '' }, photo: { type: 'image', label: 'Photo', default: { assetId: null, alt: '' } } } }
+    ] as EditOperation[]).state;
+    const asset = 'img_photo1';
+    base.assets.assets[asset] = { id: asset, name: 'Photo', file: 'static/assets/photo-1a2b3c4d.png', mime: 'image/png', bytes: 10, width: 8, height: 8, hash: 'x', kind: 'image', createdAt: AT };
+    const synced = sync(base, [rec('1', { values: { role: 'Maker', assetId: asset } })]).next;
+    const without = structuredClone(synced);
+    delete without.assets.assets[asset];
+    // A text field that happens to hold an image's ID needs no image.
+    expect(syncedDependencyLoss(synced, without)).toBeNull();
+    // A picture in the entry's text does.
+    const inText = structuredClone(synced);
+    const id = syncedEntryId('people', '1', () => false);
+    inText.collections.team.entries[id].body = [{ type: 'image', assetId: asset, alt: '' }];
+    const gone = structuredClone(inText);
+    delete gone.assets.assets[asset];
+    expect(syncedDependencyLoss(inText, gone)).toMatch(/from the library, which “Person 1” in the Team collection uses/);
   });
 });

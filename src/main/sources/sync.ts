@@ -148,6 +148,10 @@ export async function syncSource(deps: SyncDeps, sourceId: string): Promise<Sour
       if (e instanceof SyncPlanError) return { ok: false, message: e.message };
       throw e;
     }
+    // What it would write, library file names included, as a last look: a secret may also come out of a name made
+    // into a file's, lowercased and hyphenated.
+    const written = JSON.stringify(operations);
+    if (holdsSecretValue(written, values) || holdsSecretValue(written.toLowerCase(), values.map((v) => v.toLowerCase()))) return leaked;
     const r = await session.apply({ operations, expectedRevision: revision }, { label, source: 'system', history: false, sourceSync: grant, stillWanted: deps.current });
     if (!r.ok) {
       if (r.error?.code === 'STALE_REVISION') return stale;

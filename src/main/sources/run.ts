@@ -38,6 +38,27 @@ export interface RunDeps {
 /** The pictures the library takes from a sync, by type. */
 export const IMAGE_EXTENSIONS: Readonly<Record<string, string>> = { 'image/jpeg': '.jpg', 'image/png': '.png', 'image/webp': '.webp', 'image/gif': '.gif', 'image/avif': '.avif' };
 
+/** An address as a server reads it, as well as written: decoded, and its query's names and values as a form reads them. */
+function addressViews(url: string): string {
+  const out = [url];
+  const decode = (s: string) => {
+    try {
+      return decodeURIComponent(s);
+    } catch {
+      return s;
+    }
+  };
+  out.push(decode(url));
+  try {
+    const u = new URL(url);
+    out.push(u.href, decode(u.pathname), decode(u.hash));
+    for (const [k, v] of u.searchParams) out.push(k, v);
+  } catch {
+    // Not an address: checked as written.
+  }
+  return out.join('\n');
+}
+
 export async function runSync(req: SyncRequest, deps: RunDeps): Promise<SyncReply> {
   const secrets = Object.values(req.secrets ?? {});
   const failed = (code: SyncFailure, detail?: string): SyncReply => ({
@@ -81,7 +102,7 @@ export async function runSync(req: SyncRequest, deps: RunDeps): Promise<SyncRepl
   }
   // Never an address that carries a secret (an image host is not the source, and need not see it), nor one on this
   // computer or the local network.
-  const checkAddress = (url: string) => (holdsSecretValue(url, secrets) ? 'a picture’s address holds a secret' : imageAddressProblem(url));
+  const checkAddress = (url: string) => (holdsSecretValue(addressViews(url), secrets) ? 'a picture’s address holds a secret' : imageAddressProblem(url));
   const images: SyncImage[] = [];
   let total = 0;
   for (const [key, img] of wanted) {

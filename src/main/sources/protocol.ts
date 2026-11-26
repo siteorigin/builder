@@ -87,6 +87,7 @@ export const MAX_DETAIL = 300;
  * written. A name that only resolves to such an address is not caught here.
  */
 export function imageAddressProblem(url: string): string | null {
+  const local = 'a picture is on this computer or the local network, which a sync never reads';
   let u: URL;
   try {
     u = new URL(url);
@@ -95,17 +96,26 @@ export function imageAddressProblem(url: string): string | null {
   }
   if (u.protocol !== 'https:' && u.protocol !== 'http:') return 'a picture is not at a web address';
   if (u.username || u.password) return 'a picture’s address signs in';
-  const host = u.hostname.toLowerCase().replace(/^\[|\]$/g, '');
+  // Without the root's dot: "localhost." is localhost.
+  const host = u.hostname.toLowerCase().replace(/^\[|\]$/g, '').replace(/\.+$/, '');
   const v4 = /^(\d+)\.(\d+)\.(\d+)\.(\d+)$/.exec(host)?.slice(1).map(Number);
-  const local =
+  const isLocal =
     host === 'localhost' ||
     host.endsWith('.localhost') ||
     host.endsWith('.local') ||
     host.endsWith('.internal') ||
     !host.includes('.') && !host.includes(':') ||
     (v4 && (v4[0] === 0 || v4[0] === 10 || v4[0] === 127 || (v4[0] === 169 && v4[1] === 254) || (v4[0] === 172 && v4[1] >= 16 && v4[1] <= 31) || (v4[0] === 192 && v4[1] === 168) || (v4[0] === 100 && v4[1] >= 64 && v4[1] <= 127))) ||
-    (host.includes(':') && (host === '::' || host === '::1' || /^f[cd]/.test(host) || /^fe[89ab]/.test(host) || host.startsWith('::ffff:')));
-  return local ? 'a picture is on this computer or the local network, which a sync never reads' : null;
+    (host.includes(':') && isLocalAddress(host));
+  return isLocal ? local : null;
+}
+
+/** Whether an IP address (as a name resolves to it) is this computer's or the local network's. */
+export function isLocalAddress(ip: string): boolean {
+  const a = ip.toLowerCase();
+  const v4 = /^(?:::ffff:)?(\d+)\.(\d+)\.(\d+)\.(\d+)$/.exec(a)?.slice(1).map(Number);
+  if (v4) return v4[0] === 0 || v4[0] === 10 || v4[0] === 127 || (v4[0] === 169 && v4[1] === 254) || (v4[0] === 172 && v4[1] >= 16 && v4[1] <= 31) || (v4[0] === 192 && v4[1] === 168) || (v4[0] === 100 && v4[1] >= 64 && v4[1] <= 127);
+  return a === '::' || a === '::1' || /^f[cd]/.test(a) || /^fe[89ab]/.test(a) || a.startsWith('::ffff:');
 }
 
 /** A picture's identity: what it is called by whatever address it is read at. */
