@@ -29,7 +29,7 @@ class FakeWorker extends EventEmitter {
   }
 }
 
-const env = vi.hoisted(() => ({ userData: '', prepare: null as null | ((dir: string, signal?: AbortSignal) => Promise<void>) }));
+const env = vi.hoisted(() => ({ userData: '', prepare: null as null | ((dir: string, signal?: AbortSignal) => Promise<void>), onFork: null as null | ((cwd: string) => void) }));
 const workers: FakeWorker[] = [];
 vi.mock('electron', () => ({
   app: { isPackaged: false, getPath: () => env.userData, getVersion: () => '0.0.0', getAppPath: () => process.cwd() },
@@ -41,6 +41,7 @@ vi.mock('electron', () => ({
     fork: (_path: string, _args: string[], opts: { cwd: string }) => {
       const w = new FakeWorker(opts.cwd);
       workers.push(w);
+      env.onFork?.(opts.cwd);
       return w;
     }
   }
@@ -76,6 +77,7 @@ const temp = (name: string) => {
 beforeEach(() => {
   env.userData = temp('userdata');
   env.prepare = null;
+  env.onFork = null;
 });
 afterEach(async () => {
   for (const c of controllers.splice(0)) await c.close();
@@ -600,5 +602,123 @@ describe('the recent-projects entry of a renamed site (#31)', () => {
     expect((await c.create({ ...orchid(parent), attempt: 'attempt-1' })).ok).toBe(true);
     const list = (await recents()).filter((r) => r.dir === kloof || r.dir.startsWith(parent));
     expect(list.map((r) => r.name)).toEqual(['Orchid Garden', 'New Kloof Studio']);
+  });
+});
+
+describe('the preview started while a project opens (#960)', () => {
+  /** What the open project's preview served came from the worker that is running now. */
+  const serving = (c: InstanceType<typeof Controller>) => c.dev?.url ?? null;
+  /**
+   * Hold each publication of an opening until a preview process has been forked for its folder (or 2 s pass), and
+   * say for each whether one was: a preview that waited for the opening to finish would never be.
+   */
+  function holdPublicationForFork() {
+    const forked: boolean[] = [];
+    const proto = ProjectSession.prototype as unknown as { publishGenerated(initial: boolean): Promise<string[]> };
+    const real = proto.publishGenerated;
+    vi.spyOn(proto, 'publishGenerated').mockImplementation(async function (this: { dir: string }, initial: boolean) {
+      const dir = this.dir;
+      for (let i = 0; i < 200 && !workers.some((w) => w.cwd === dir); i++) await new Promise((r) => setTimeout(r, 10));
+      forked.push(workers.some((w) => w.cwd === dir));
+      return real.call(this, initial);
+    });
+    return forked;
+  }
+  afterEach(() => vi.restoreAllMocks());
+
+  it('forks the preview before the opening publishes its files, and takes that same server over', async () => {
+    const dir = await makeProject('early');
+    const forked = holdPublicationForFork();
+    const { c } = controller();
+    expect((await c.trustAndOpen(dir)).ok).toBe(true);
+    await until(() => c.snapshot()?.runtime.state === 'ready', 'the preview');
+    // The opening's own publication (the first: others may follow it, an icon refresh) found the preview forked.
+    expect(forked[0]).toBe(true);
+    expect(workers).toHaveLength(1);
+    expect(workers[0].cwd).toBe(dir);
+    expect(workers[0].exited).toBe(false);
+    expect(serving(c)).toBe('http://127.0.0.1:1');
+  });
+
+  it('starts afresh when the opening’s publication changed the project’s files, so nothing read before it is served', async () => {
+    const dir = await makeProject('changed');
+    // A generated file gone from the folder: the opening writes it again.
+    const manifest = JSON.parse(readFileSync(join(dir, 'siteorigin/generated-manifest.json'), 'utf8')) as { files: Record<string, string> };
+    const gone = Object.keys(manifest.files).find((f) => f.startsWith('src/routes/'))!;
+    rmSync(join(dir, gone));
+    const forked = holdPublicationForFork();
+    const sawFile: boolean[] = [];
+    env.onFork = (cwd) => void (cwd === dir && sawFile.push(existsSync(join(dir, gone))));
+    const { c } = controller();
+    expect((await c.trustAndOpen(dir)).ok).toBe(true);
+    await until(() => c.snapshot()?.runtime.state === 'ready', 'the preview');
+    expect(existsSync(join(dir, gone))).toBe(true);
+    expect(forked[0]).toBe(true);
+    // The first was forked before the file was written again, the one now serving after.
+    expect(sawFile).toEqual([false, true]);
+    // The server started early was stopped, and the one serving was started after the files landed.
+    expect(workers).toHaveLength(2);
+    expect(workers[0].exited).toBe(true);
+    expect(workers[1].exited).toBe(false);
+    expect(serving(c)).toBe('http://127.0.0.1:1');
+  });
+
+  it('stops the preview it started at once when the lock is lost while the project is still opening', async () => {
+    const dir = await makeProject('taken');
+    const stoppedBeforePublishing: boolean[] = [];
+    const proto = ProjectSession.prototype as unknown as { publishGenerated(initial: boolean): Promise<string[]>; emit(e: string): boolean };
+    const real = proto.publishGenerated;
+    vi.spyOn(proto, 'publishGenerated').mockImplementation(async function (this: { dir: string; emit(e: string): boolean }, initial: boolean) {
+      const w = await (async () => {
+        for (let i = 0; i < 200 && !workers.some((x) => x.cwd === dir); i++) await new Promise((r) => setTimeout(r, 10));
+        return workers.find((x) => x.cwd === dir);
+      })();
+      if (w && stoppedBeforePublishing.length === 0) {
+        // Another app took the project while it was opening (the heartbeat says so).
+        this.emit('lock-lost');
+        for (let i = 0; i < 200 && !w.exited; i++) await new Promise((r) => setTimeout(r, 10));
+        stoppedBeforePublishing.push(w.exited);
+      }
+      return real.call(this, initial);
+    });
+    const { c } = controller();
+    await c.trustAndOpen(dir);
+    expect(stoppedBeforePublishing).toEqual([true]);
+  });
+
+  it('stops the preview it started when the opening does not go ahead', async () => {
+    const current = await makeProject('current');
+    const next = await makeProject('next');
+    const { c } = controller();
+    const open = await openCurrent(c, current);
+    // The author keeps editing the open project: the switch does not happen.
+    c.beforeLeave = async () => false;
+    expect((await c.trustAndOpen(next)).ok).toBe(false);
+    const started = workers.find((w) => w.cwd === next);
+    expect(started).toBeDefined();
+    await until(() => started!.exited, 'the preview started for the project that did not open to stop');
+    expect(c.session).toBe(open.session);
+    expect(open.worker.exited).toBe(false);
+    expect(existsSync(join(next, '.siteorigin/lock.json'))).toBe(false);
+    c.beforeLeave = null;
+  });
+
+  it('on a switch, starts the new preview before the old one is asked to stop, and still stops the old one', async () => {
+    const current = await makeProject('current');
+    const next = await makeProject('next');
+    const { c } = controller();
+    const open = await openCurrent(c, current);
+    let forkedWhenStopped = -1;
+    const post = open.worker.postMessage.bind(open.worker);
+    open.worker.postMessage = (m: { type: string }) => {
+      if (m.type === 'stop') forkedWhenStopped = workers.filter((w) => w.cwd === next).length;
+      post(m);
+    };
+    expect((await c.trustAndOpen(next)).ok).toBe(true);
+    await until(() => c.snapshot()?.runtime.state === 'ready', 'the new project’s preview');
+    expect(forkedWhenStopped).toBe(1);
+    expect(open.worker.exited).toBe(true);
+    expect(workers.filter((w) => w.cwd === next)).toHaveLength(1);
+    expect(c.session?.dir).toBe(next);
   });
 });
