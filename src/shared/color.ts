@@ -7,6 +7,7 @@
  * Values the parser cannot resolve on its own (`currentcolor`, `var()`, `color-mix()`, relative colours)
  * give null: callers must never mistake that for black.
  */
+import { namedColorHex } from './color-names';
 import { isSafeCssValue } from './styles';
 
 /** A colour in sRGB: channels 0-255 (not rounded), alpha 0-1. */
@@ -136,10 +137,9 @@ const done = (rgb: [number, number, number], a: number | null): Rgba | null => (
 export function parseColor(value: string): Rgba | null {
   const s = value.trim().toLowerCase();
   if (s === 'transparent') return { r: 0, g: 0, b: 0, a: 0 };
-  if (s === 'white') return { r: 255, g: 255, b: 255, a: 1 };
-  if (s === 'black') return { r: 0, g: 0, b: 0, a: 1 };
-  if (s.startsWith('#')) {
-    const h = s.slice(1);
+  const named = namedColorHex(s);
+  if (named || s.startsWith('#')) {
+    const h = (named ?? s).slice(1);
     if (!/^[0-9a-f]+$/.test(h) || ![3, 4, 6, 8].includes(h.length)) return null;
     const wide = h.length <= 4;
     const byte = (i: number) => parseInt(wide ? h[i] + h[i] : h.slice(i * 2, i * 2 + 2), 16);

@@ -1,4 +1,6 @@
 import { parseColor, type Rgba } from '@shared/color';
+import { normalizeColorText } from '@shared/color-names';
+import { validateStyleValue } from '@shared/styles';
 
 let probe: HTMLElement | null = null;
 const SRGB = /^color\(srgb ([-+\d.e]+) ([-+\d.e]+) ([-+\d.e]+)(?: \/ ([-+\d.e]+%?))?\)$/i;
@@ -28,4 +30,15 @@ function browserColor(value: string): Rgba | null {
 /** A saved CSS colour as sRGB: the pure parser first, then the browser; null when neither can resolve it. */
 export function resolveCssColor(value: string): Rgba | null {
   return parseColor(value) ?? browserColor(value);
+}
+
+/**
+ * Why text typed in a colour field can't be saved as `propId` (a site colour is checked as 'color'), or null when it
+ * can, written as `normalizeColorText` saves it. Empty text is the field's own to handle (it puts the value back).
+ * Refused text is never sent, so it stays in the field with this reason beside it, and nothing is left over the canvas.
+ */
+export function colorFieldProblem(text: string, propId = 'color'): { message: string } | null {
+  if (!text.trim()) return null;
+  const err = validateStyleValue(propId, normalizeColorText(text));
+  return err ? { message: err } : null;
 }

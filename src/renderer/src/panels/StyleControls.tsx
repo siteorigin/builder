@@ -12,6 +12,7 @@ import { ColorPick } from '../components/ColorPick';
 import { FocusEditor, type FocusImage } from './FocusEditor';
 import { BackgroundImageControl, describeBackgroundImage } from './BackgroundImageControl';
 import { DraftInput } from '../components/ui';
+import { ColorTextInput } from '../components/ColorTextInput';
 import { setState, setViewport, useStore } from '../store';
 import { allSizesReach, readStyleNumber, refinementShown, stateChangeCount, stateUnder, statesWithChanges, styleReached, styleUnder } from '../lib/style-source';
 import { STATE_LABEL, StatePicker } from './StatePicker';
@@ -949,14 +950,15 @@ function Control({
           }}
         >
           {def.kind === 'color' && <ColorPick key={`${scope}:${styleState ?? ''}`} className="md" value={literal ? String(value) : colorText} onPick={onSet} label={`${label}: pick a color`} />}
-          <DraftInput
+          <CustomValueInput
+            def={def}
             className={`input sm grow style-input${def.kind === 'color' ? ' mono' : ''}${literal ? ' is-set' : ''}`}
             value={literal ? String(value) : ''}
             placeholder={currentText ?? (def.kind === 'color' ? '#1c2742' : def.placeholder ? `For example ${def.placeholder}` : undefined)}
             autoFocus={!literal}
-            onCommit={(t) => (t.trim() ? onSet(t.trim()) : false)}
+            onSet={onSet}
             ariaLabel={`${label} value`}
-            aria-describedby={[describedBy, literal ? undefined : draftId].filter(Boolean).join(' ') || undefined}
+            describedBy={[describedBy, literal ? undefined : draftId].filter(Boolean).join(' ') || undefined}
           />
           {!literal && (
             <p className="style-custom-hint">
@@ -980,4 +982,10 @@ function Control({
       )}
     </>
   );
+}
+
+/** A custom value's field: a colour is checked before it is sent (ColorTextInput), anything else is sent as typed. */
+function CustomValueInput({ def, className, value, placeholder, autoFocus, onSet, ariaLabel, describedBy }: { def: StylePropDef; className: string; value: string; placeholder?: string; autoFocus: boolean; onSet: (v: StyleValue | null) => void; ariaLabel: string; describedBy?: string }) {
+  if (def.kind === 'color') return <ColorTextInput propId={def.id} className={className} errorClassName="style-custom-error" value={value} placeholder={placeholder} autoFocus={autoFocus} onSave={onSet} ariaLabel={ariaLabel} describedBy={describedBy} />;
+  return <DraftInput className={className} value={value} placeholder={placeholder} autoFocus={autoFocus} onCommit={(t) => (t.trim() ? onSet(t.trim()) : false)} ariaLabel={ariaLabel} aria-describedby={describedBy} />;
 }

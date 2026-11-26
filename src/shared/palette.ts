@@ -20,6 +20,7 @@
  */
 import type { TokenDef } from './types';
 import { READABLE_TEXT_COLORS, TEXT_CONTRAST, compositeOver, contrastBetween, evaluatePairs, isFailing, pairsOf, type ColorReader, type ContrastPair, type PairResult } from './contrast';
+import { HEX_COLOR_RE, isNamedColor } from './color-names';
 import { oklabToLinearRgb, oklabToRgb, parseColor, rgbToOklab, toHex6 } from './color';
 import { darkValue, resolvedCss, withDarkPalette } from './color-scheme';
 import { tokenVar } from './styles';
@@ -461,10 +462,10 @@ export function paletteChanges(tokens: readonly TokenDef[], values: Partial<Reco
     if (!was) continue;
     // Keeping one that already lands on its colour leaves every colour kept before it landing where it did.
     const kept = after.map((t) => (t.id === id ? was : t));
-    // Only a hex that is the saved colour exactly: a value that rounds to it (an oklch()) is measured otherwise, and
-    // one with missing channels (rgb(none none none)) mixes otherwise in a hover colour.
+    // Only a hex or a colour name that is the saved colour exactly: a value that rounds to it (an oklch()) is measured
+    // otherwise, and one with missing channels (rgb(none none none)) mixes otherwise in a hover colour.
     const css = resolvedCss(kept, id) ?? '';
-    const shown = /^#([0-9a-f]{3,4}|[0-9a-f]{6}|[0-9a-f]{8})$/i.test(css) ? parseColor(css) : null;
+    const shown = HEX_COLOR_RE.test(css) || isNamedColor(css) ? parseColor(css) : null;
     const saved = rgbOf(hex);
     if (shown && shown.a === 1 && shown.r === saved.r && shown.g === saved.g && shown.b === saved.b) after = kept;
     else out.push([id, hex]);

@@ -1,4 +1,5 @@
 import { isFocusValue } from './focus';
+import { HEX_COLOR_RE, isNamedColor } from './color-names';
 import { backgroundImageError, canonicalBackgroundImage, isBackgroundImageValue } from './background-image';
 import type { ComponentDefinition, ContainerScope, ResponsiveScope, ResponsiveStyles, StyleScope, StyleProps, StyleState, StyleTokenRef, StyleValue, TextStyleValue, TokenDef, TokenGroup, TokenValue } from './types';
 import { isContainerScope, parseStyleScopeKey, STYLE_STATES, styleScopeKey } from './types';
@@ -414,7 +415,11 @@ const NON_NEGATIVE_LENGTHS = new Set([
   'gap', 'rowGap', 'columnGap', 'width', 'height', 'minWidth', 'maxWidth', 'minHeight', 'maxHeight', 'radius', 'fontSize', 'lineHeight'
 ]);
 const FN_RE = /^(clamp|min|max|calc)\([0-9a-z.,%+\-*/ ()]+\)$/i;
-const COLOR_RE = /^(#[0-9a-f]{3,8}|(rgb|rgba|hsl|hsla|oklch|oklab|lab|lch|color-mix)\([0-9a-z.,%+\-/ ()#]+\)|transparent|currentcolor|white|black)$/i;
+const COLOR_FN_RE = /^(rgb|rgba|hsl|hsla|oklch|oklab|lab|lch|color-mix)\([0-9a-z.,%+\-/ ()#]+\)$/i;
+/** A colour as a style holds it: hex (3, 4, 6 or 8 digits), a colour function, a CSS colour name, transparent or currentcolor. */
+export function isColorText(value: string): boolean {
+  return HEX_COLOR_RE.test(value) || COLOR_FN_RE.test(value) || /^(transparent|currentcolor)$/i.test(value) || isNamedColor(value);
+}
 const SAFE_RE = /^[^;{}<>\\]*$/;
 const TEXT_TOKEN_RE = /^text\.[a-z0-9-]+$/;
 /** CSS comments can swallow the rest of a stylesheet, and these functions load remote content: none is a style value. */
@@ -853,7 +858,7 @@ export function isValidGradient(raw: string): boolean {
   const value = raw.trim();
   if (value.length > 400 || !/^[0-9a-z.,%+\-*/ ()#]+$/i.test(value) || !balanced(value) || !functionsAllowed(value, GRADIENT_FUNCTIONS)) return false;
   const layers = splitTop(value, (ch) => ch === ',');
-  return layers.length > 0 && isGradient(layers[0]) && layers.every((l, i) => (isGradient(l) && wholeCall(l)) || (i > 0 && i === layers.length - 1 && COLOR_RE.test(l)));
+  return layers.length > 0 && isGradient(layers[0]) && layers.every((l, i) => (isGradient(l) && wholeCall(l)) || (i > 0 && i === layers.length - 1 && isColorText(l)));
 }
 
 /**
@@ -1013,7 +1018,15 @@ const SCRIM_STOP_RE = /^(0|-?(\d+(\.\d+)?|\.\d+)(%|px))$/;
 export function backgroundImageLayers(v: StyleValue): string {
   if (typeof v !== 'string' || !isSafeCssValue(v.trim()) || !isValidGradient(v)) return 'none';
   const layers = splitTop(v.trim(), (ch) => ch === ',');
-  return (COLOR_RE.test(layers[layers.length - 1]) ? layers.slice(0, -1) : layers).join(', ') || 'none';
+  return (isColorText(layers[layers.length - 1]) ? layers.slice(0, -1) : layers).join(', ') || 'none';
+}
+
+/** Why text is not a colour, and what to write instead. */
+function colorError(s: string): string {
+  const shown = s.length > 40 ? `${s.slice(0, 40)}…` : s;
+  if (!s) return 'Type a color, such as #1c2742 or red.';
+  if (/^#?[0-9a-f]+$/i.test(s)) return `"${shown}" is not a hex color. Use 3, 4, 6 or 8 hex digits, such as #1c2742.`;
+  return `"${shown}" is not a color. Use a hex value such as #1c2742, a color name such as red, rgb(), hsl() or oklch().`;
 }
 
 /** Validate a literal style value. Returns an error message or null. */
@@ -1031,6 +1044,11 @@ export function validateStyleValue(propId: string, value: StyleValue): string | 
   }
   const s = String(value).trim();
   if (def.kind === 'css') return typeof value === 'string' ? parseCustomCss(s).error : `${def.label} must be text.`;
+  if (def.kind === 'color' && typeof value === 'string') {
+    // A picture is never a colour: a background has a picture of its own.
+    if (/url\s*\(/i.test(s)) return propId === 'background' ? 'Background takes a color or a gradient, not a picture. Add a picture with Background image instead.' : `${def.label} takes a color, not a picture.`;
+    if (!isSafeCssValue(s)) return colorError(s);
+  }
   if (!isSafeCssValue(s)) return `Invalid characters in ${def.label}.`;
   switch (def.kind) {
     case 'boolean':
@@ -1054,7 +1072,7 @@ export function validateStyleValue(propId: string, value: StyleValue): string | 
       return typeof value === 'string' && isFocusValue(s) ? null : `${def.label} must be one of ${def.options!.map((o) => o.value).join(', ')}, or two percentages across and down such as "50% 20%".`;
     case 'color':
       if (propId === 'background' && isGradient(s)) return isValidGradient(s) ? null : `"${s.slice(0, 60)}" is not a supported gradient. Use colors, angles and percentages inside linear-gradient(), radial-gradient() or conic-gradient().`;
-      return COLOR_RE.test(s) ? null : `"${s}" is not a supported color. Use a hex value, rgb(), hsl() or oklch().`;
+      return isColorText(s) ? null : colorError(s);
     case 'length':
       if (def.options?.some((o) => o.value === s)) return null;
       if (propId === 'lineHeight' && /^\d*\.?\d+$/.test(s)) return null;
