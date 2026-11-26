@@ -659,7 +659,7 @@ describe('the folder a new project is made in (#808)', () => {
   const named = (parent: string, name: string) => ({ ...opts(parent), name });
   const long = 'Kowhai Garden Supplies and Landscaping Co-operative of Greater Wellington and the Hutt Valley';
 
-  it('is the folder the dialog shows for a long name, cut at the end of a word', async () => {
+  it('is the folder projectFolderName gives for a long name, cut at the end of a word', async () => {
     const { c, parent } = setup();
     const folder = projectFolderName(long);
     expect(folder).toBe('kowhai-garden-supplies-and-landscaping-co-operative-of');
@@ -667,7 +667,7 @@ describe('the folder a new project is made in (#808)', () => {
     expect(readdirSync(parent)).toEqual([folder]);
     expect(c.session!.dir).toBe(join(parent, folder));
     // The package keeps an npm-safe name.
-    expect(JSON.parse(readFileSync(join(parent, folder, 'package.json'), 'utf8')).name).toMatch(/^[a-z0-9-]+$/);
+    expect(JSON.parse(readFileSync(join(parent, folder, 'package.json'), 'utf8')).name).toBe('kowhai-garden-supplies-and-landscaping-co-operative-of-great');
   });
 
   it('keeps a name in another script as written, so two such projects can share a parent folder beside “website”', async () => {
@@ -694,6 +694,37 @@ describe('the folder a new project is made in (#808)', () => {
     // A project really named Website is told the folder is taken, as for any other name.
     expect((await c.create(named(parent, 'Website'))).message).toBe(`${join(parent, 'website')} already exists and is not empty. Choose another name or folder.`);
     expect(readdirSync(join(parent, 'website'))).toEqual(['notes.txt']);
+  });
+
+  it('never gives a folder Windows keeps for a device', async () => {
+    const { c, parent } = setup();
+    expect(await c.create(named(parent, 'Con'))).toEqual({ ok: true });
+    expect(readdirSync(parent)).toEqual(['con-site']);
+  });
+
+  it('treats a file in the folder’s place as taken, and leaves it', async () => {
+    const { c, parent } = setup();
+    writeFileSync(join(parent, 'website'), 'mine');
+    const r = await c.create(named(parent, '🌸🌸'));
+    expect(r).toEqual({ ok: false, message: expect.stringMatching(/^“🌸🌸” has no letters or numbers to name its folder.*already exists and is not empty/) });
+    expect(readFileSync(join(parent, 'website'), 'utf8')).toBe('mine');
+  });
+
+  it('says the name is the problem when “website” fills up just before the claim, and leaves what arrived', async () => {
+    const { c, parent } = setup();
+    const dir = join(parent, 'website');
+    mkdirSync(dir);
+    const readdir = fs.readdir.bind(fs);
+    let looks = 0;
+    vi.spyOn(fs, 'readdir').mockImplementation((async (p: string, ...rest: unknown[]) => {
+      const seen = await (readdir as (...a: unknown[]) => Promise<string[]>)(p, ...rest);
+      if (p === dir && ++looks === 2) writeFileSync(join(dir, 'notes.txt'), 'theirs');
+      return seen;
+    }) as never);
+    const r = await c.create(named(parent, '...'));
+    expect(r).toEqual({ ok: false, message: `“...” has no letters or numbers to name its folder, so it would go in ${dir}, which already exists and is not empty. Add a letter or number to the name, or choose another folder.` });
+    expect(readdirSync(dir)).toEqual(['notes.txt']);
+    expect(readFileSync(join(dir, 'notes.txt'), 'utf8')).toBe('theirs');
   });
 
   it('tells a folder taken while it waited the same way, however long the message', async () => {

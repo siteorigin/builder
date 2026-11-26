@@ -405,7 +405,7 @@ export class Controller {
           ? `“${name}” has no letters or numbers to name its folder, so it would go in ${dir}, which already exists and is not empty. Add a letter or number to the name, or choose another folder.`
           : `${dir} already exists and is not empty. Choose another name or folder.`
       );
-    if (existsSync(dir) && (await fs.readdir(dir)).length) return { ok: false, message: taken().message };
+    if (await occupied(dir)) return { ok: false, message: taken().message };
     // Asked before the new project is made, so keeping editing costs no setup, and again at the switch, for anything
     // typed meanwhile (on macOS a window reopened during setup shows the open project without this dialog).
     if (!(await this.mayLeave())) return { ok: false };
@@ -444,7 +444,7 @@ export class Controller {
       } catch (e) {
         if ((e as NodeJS.ErrnoException).code !== 'EEXIST') throw e;
         // Another app may have made it meanwhile: never write into a folder that is no longer empty.
-        if ((await fs.readdir(dir)).length) throw taken();
+        if (await occupied(dir)) throw taken();
       }
       // Claim the folder before writing to it. Only one creation, in this app or another, can make its local folder,
       // so two creating into the same empty folder never write over, or clean up, each other's files.
@@ -2827,6 +2827,12 @@ function safeUsages(s: ProjectSession): Record<string, number> {
 }
 
 /** Plain-language explanations for setup failures; the technical detail stays available in diagnostics. */
+/** Whether a new project cannot be made at `dir`: a file is there, or a folder that holds anything. */
+async function occupied(dir: string): Promise<boolean> {
+  const st = await fs.stat(dir).catch(() => null);
+  return !!st && (!st.isDirectory() || (await fs.readdir(dir)).length > 0);
+}
+
 /** The new project's folder was found taken: told as written, never mistaken for another failure by its wording. */
 class FolderTakenError extends Error {}
 
