@@ -198,7 +198,7 @@ const hold = async (route) => {
 };
 await app.context().route(`${held}/**`, hold);
 await issue.getByRole('button', { name: 'Try again' }).click();
-await shot('problem-restarting', () => text(issue, /Restarting preview/));
+await shot('problem-restarting', () => text(issue, /Reloading the page/));
 release();
 await app.context().unroute(`${held}/**`, hold);
 await issue.waitFor({ state: 'detached', timeout: 60000 });

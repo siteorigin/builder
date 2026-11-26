@@ -1,0 +1,52 @@
+@layer components {
+  /* What the canvas shows while the preview is not running (PreviewStatus.tsx), and a layout with no entry to show
+     it on (TemplateNoEntries in Canvas.tsx). One card for all of them, built like the failure screen
+     (FailureScreen.css) at canvas size: the mark, the title, what happened and what is safe on the leading edge, and a
+     footer band with help on the leading edge and the way on trailing, the one filled button last. A card is --r-md
+     (tokens.css), and keeps one width from state to state, so it never jumps as setting up turns into starting. */
+  /* The layer itself lets clicks through (Preview's pill stays usable beneath it); only the card takes them. On a short
+     canvas the card keeps its footer in view and its body scrolls. */
+  .canvas-state { position: absolute; inset: 0; display: flex; align-items: center; justify-content: center; padding: 16px; z-index: 6; pointer-events: none; }
+  /* In Preview the pill sits at the foot of the canvas; the card keeps clear of it, so Back to editing is always there. */
+  .canvas:not(.edit-mode) > .canvas-state { padding-bottom: 66px; }
+  .status-card { pointer-events: auto; display: flex; flex-direction: column; max-height: 100%; width: min(500px, 100%); border-radius: var(--r-md); background: var(--panel); border: 1px solid var(--border-strong); box-shadow: var(--shadow-md); overflow: hidden; color: var(--text); font-size: 13px; line-height: 1.5; }
+  .status-card-body { display: flex; flex-direction: column; min-height: 0; overflow: auto; padding: 22px 24px 20px; }
+  .status-card-mark { display: flex; margin-bottom: 14px; }
+  .status-card h3 { margin: 0 0 6px; font-size: 15px; line-height: 1.35; font-weight: 600; text-wrap: balance; }
+  .status-card-text { display: flex; flex-direction: column; gap: 8px; color: var(--text-2); text-wrap: pretty; overflow-wrap: anywhere; }
+  .status-card-text p { margin: 0; }
+  /* What stays safe is the one line in full ink, as on the failure screen: it answers the first thing a person asks. */
+  .status-card-text .status-card-safe { color: var(--text); font-weight: 500; }
+
+  /* Technical details: folded away, for everyone, selectable, in a scrolling box so a long log never pushes the way
+     back off the card. */
+  .status-card-details { margin-top: 14px; }
+  .status-card-details summary { display: inline-flex; align-items: center; gap: 4px; min-height: 24px; cursor: default; list-style: none; color: var(--text-2); font-size: 12px; font-weight: 500; border-radius: var(--r-xs); }
+  .status-card-details summary::-webkit-details-marker { display: none; }
+  .status-card-details summary:hover { color: var(--text); }
+  .status-card-details summary svg { width: 14px; height: 14px; transition: transform 120ms; }
+  .status-card-details[open] summary svg { transform: rotate(90deg); }
+  .status-card-details pre { margin: 6px 0 0; padding: 9px 11px; max-height: min(24vh, 180px); overflow: auto; border-radius: var(--r-sm); background: var(--panel-2); border: 1px solid var(--border); color: var(--text-2); font: 12px/1.55 var(--mono); white-space: pre-wrap; overflow-wrap: anywhere; user-select: text; }
+
+  /* A help action that did not work, said where the person is looking, with what to do by hand. Empty until then: out
+     of the flow, still in the page so a screen reader hears it fill. */
+  .status-card-note { margin-top: 12px; color: var(--text); }
+  .status-card-note:empty { position: absolute; margin: 0; }
+  .status-card-note p { margin: 0; }
+  .status-card-report { display: block; box-sizing: border-box; width: 100%; height: min(24vh, 180px); resize: none; margin: 6px 0 0; padding: 9px 11px; overflow: auto; border-radius: var(--r-sm); background: var(--panel-2); border: 1px solid var(--border-control); color: var(--text-2); font: 12px/1.55 var(--mono); white-space: pre-wrap; overflow-wrap: anywhere; user-select: text; }
+  .status-card-path { font: 12px/1.5 var(--mono); overflow-wrap: anywhere; user-select: text; }
+
+  .status-card-foot { flex: none; display: flex; flex-wrap: wrap; align-items: center; gap: 8px; padding: 10px 14px 10px 16px; border-top: 1px solid var(--border); background: var(--panel-2); }
+  .status-card-help { display: flex; align-items: center; gap: 2px; margin-left: -8px; margin-right: auto; }
+  .status-card-help .btn { color: var(--text-2); }
+  .status-card-help .btn:hover { color: var(--text); }
+  .status-card-help .btn svg { width: 13px; height: 13px; }
+  .status-card-actions { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: 8px; margin-left: auto; }
+
+  /* The mark inside its progress ring, while the preview is on its way. */
+  .starting-mark { position: relative; display: grid; place-items: center; width: 52px; height: 52px; }
+  .starting-mark > svg { position: absolute; }
+  .starting-mark .spinner.lg { width: 52px; height: 52px; border-width: 2px; border-color: color-mix(in srgb, var(--accent) 18%, transparent); border-top-color: var(--accent); }
+
+  @media (forced-colors: active) { .status-card { border-color: CanvasText; } }
+}

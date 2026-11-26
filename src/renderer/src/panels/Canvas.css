@@ -262,11 +262,9 @@
   .canvas-empty .empty-card { pointer-events: auto; max-width: 340px; padding: 22px 24px; gap: 8px; border-color: var(--border-strong); }
   :where(:root[data-appearance='dark']) { .canvas-empty .empty-card { box-shadow: 0 0 0 1px rgb(255 255 255 / 0.1), var(--shadow-md); } }
   .canvas-empty .empty-card .empty-actions { display: flex; flex-wrap: wrap; justify-content: center; gap: 8px; margin-top: 6px; }
-  .canvas-state { position: absolute; inset: 0; display: grid; place-items: center; z-index: 6; }
   .canvas-card { display: flex; flex-direction: column; align-items: center; gap: 12px; max-width: 420px; padding: 28px; text-align: center; border-radius: var(--r-md); background: var(--panel); border: 1px solid var(--border); box-shadow: var(--shadow-md); }
   .canvas-card h3 { margin: 0; font-size: 15px; font-weight: 600; }
   .canvas-card p { margin: 0; color: var(--text-2); text-wrap: balance; }
-  .canvas-card pre { max-width: 100%; max-height: 140px; overflow: auto; margin: 0; padding: 10px; border-radius: var(--r-sm); background: var(--panel-2); font-family: var(--mono); font-size: 11px; text-align: left; white-space: pre-wrap; color: var(--text-2); user-select: text; }
   .preview-pill { position: absolute; bottom: 18px; left: 50%; transform: translateX(-50%); z-index: 5; width: max-content; max-width: calc(100% - 24px); white-space: nowrap; display: inline-flex; align-items: center; gap: 10px; height: 36px; padding: 0 5px 0 14px; border-radius: 99px; background: var(--ink); color: #fff; box-shadow: 0 0 0 1px rgb(255 255 255 / 0.18), var(--shadow-lg); font-size: 13px; font-weight: 500; }
   .preview-pill svg { width: 15px; height: 15px; }
   .preview-pill button { flex: none; white-space: nowrap; display: inline-flex; align-items: center; gap: 5px; height: 26px; padding: 0 12px; border: 0; border-radius: 99px; background: var(--sky-2); color: var(--ink); font-size: 12px; font-weight: 600; }
@@ -328,18 +326,19 @@
   .ai-veil .spark { color: var(--accent-text); }
 
 
-  .starting-mark { position: relative; display: grid; place-items: center; width: 64px; height: 64px; }
-  .starting-mark > svg { position: absolute; }
-  .starting-mark .spinner.lg { width: 64px; height: 64px; border-width: 2px; border-color: color-mix(in srgb, var(--accent) 18%, transparent); border-top-color: var(--accent); }
-  .ai-veil.issue { width: min(560px, calc(100% - 24px)); border-radius: 18px; background: color-mix(in srgb, var(--red) 6%, var(--raised)); border-color: color-mix(in srgb, var(--red) 45%, var(--border)); }
-  /* While editing, the bar sits below the page as a status card: a card's corners and a 3:1 edge. Preview's is its own. */
-  .canvas.edit-mode .ai-veil.issue:not(.retrying) { border-radius: var(--r-md); border-color: color-mix(in srgb, var(--red) 75%, var(--border-control)); }
-  .canvas.edit-mode .ai-veil.issue.retrying { border-radius: var(--r-md); }
-  .ai-veil.issue > span:not(.spinner) { flex: 1; min-width: 0; }
+  /* A page problem: a card (--r-md, a 3:1 red edge) in both modes, the words first and the actions after them as one
+     group. Where both fit they share a row; on a narrow canvas the actions wrap below the words as a row of their own,
+     trailing, so the words never shrink to a column. Its height is measured (issueH), so whatever stands on it moves. */
+  .ai-veil.issue { width: min(760px, calc(100% - 24px)); flex-wrap: wrap; row-gap: 8px; padding: 7px 7px 7px 14px; border-radius: var(--r-md); background: color-mix(in srgb, var(--red) 6%, var(--raised)); border-color: color-mix(in srgb, var(--red) 75%, var(--border-control)); line-height: 1.4; }
+  .ai-veil.issue > .issue-text { flex: 1 1 210px; min-width: 0; text-wrap: balance; }
+  /* The sentence stays whole: where the words take two lines, they break between it and the reassurance. */
+  .ai-veil.issue .issue-text strong { display: inline-block; }
+  .ai-veil.issue .issue-safe { white-space: nowrap; }
   .ai-veil.issue > .spinner { flex: none; }
-  /* Restarting is progress, not a fresh failure. */
-  .ai-veil.issue.retrying { background: var(--raised); border-color: var(--border-strong); }
   .ai-veil.issue > svg { flex: none; color: var(--red); }
+  .ai-veil.issue .issue-actions { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: 6px; margin-left: auto; }
+  /* Reloading is progress, not a fresh failure. */
+  .ai-veil.issue.retrying { background: var(--raised); border-color: var(--border-strong); }
   .ai-veil.issue .btn { flex: none; }
   .ai-veil.issue .btn[aria-disabled='true'] { cursor: not-allowed; }
   /* Focus on filled dark surfaces (selection chip, preview pill): a white ring that reads on the fill. */
@@ -373,11 +372,13 @@
   /* A collection's layout being edited: whose layout, the entry it is shown on, and Done, in the strip above the page. */
   .frame-status.template-strip { gap: 6px; color: var(--text); overflow: visible; }
   .frame-status.template-strip svg { flex: none; width: 14px; height: 14px; color: var(--accent-text); }
-  .template-strip-name { font-weight: 600; flex: none; }
+  /* The name keeps its width; a long one stops at under half the strip, so the entry picker and Done keep their room. */
+  .template-strip-name { font-weight: 600; flex: none; max-width: 45%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .template-strip-sample { display: inline-flex; align-items: center; gap: 6px; min-width: 0; color: var(--text-2); }
   .template-strip-sample .select { height: 24px; max-width: 220px; padding-block: 0; font-size: 12px; }
   .frame-status.template-strip .link-btn { flex: none; min-height: 24px; }
-  .template-no-entries { position: absolute; inset: 0; z-index: 4; display: flex; align-items: flex-start; justify-content: center; padding-top: 80px; background: color-mix(in srgb, var(--canvas-bg, #eef0f3) 88%, transparent); }
+  .template-no-entries { position: absolute; inset: 0; z-index: 4; display: flex; align-items: flex-start; justify-content: center; padding-top: 80px; background: var(--canvas); }
+  .template-no-entries .status-card-icon { width: 22px; height: 22px; color: var(--accent-text); }
   /* The drop line: 2px of the selection colour between opaque keylines (white, then ink), so it holds at 3:1 on any
      page, with a ring at its start (inside the page, so the page edge never clips it). */
   .ov-drop { position: absolute; background: var(--select); border-radius: 1px; box-shadow: 0 0 0 1px #fff, 0 0 0 2px #101828; pointer-events: none; }
