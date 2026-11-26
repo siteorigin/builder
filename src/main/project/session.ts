@@ -2518,7 +2518,7 @@ export class ProjectSession extends EventEmitter {
         introduced = importing ? this.introducedProblems(next) : introducedDiagnostics(this.savingProblems(this.state), this.savingProblems(next));
         // A property made required reports each placement already missing it, rather than refusing the change.
         const asked: ReadonlyArray<{ type: string; definitionId?: unknown }> = ops;
-        introduced = introduced.filter((d) => !madeRequiredBy(next, asked, d));
+        introduced = introduced.filter((d) => !madeRequiredBy(this.state, next, asked, d));
       } catch (e) {
         if (!importing) throw e;
         return { ok: false, revision: this.revision, error: { code: 'VALIDATION_FAILED', message: `The package's components are damaged: ${(e as Error).message}`, recoverable: true } };

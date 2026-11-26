@@ -178,9 +178,15 @@ describe('required properties: schema edits and bindings', () => {
     // The session lets the change through for the placement it made required, and for nothing else.
     const found = introducedDiagnostics(saving(emptied), saving(tightened));
     expect(found.map((d) => d.code)).toEqual(['PROP_REQUIRED_EMPTY']);
-    expect(found.every((d) => madeRequiredBy(tightened, ops, d))).toBe(true);
-    expect(found.some((d) => madeRequiredBy(tightened, [{ type: 'instance.setProp' }], d))).toBe(false);
-    expect(found.some((d) => madeRequiredBy(tightened, [{ type: 'component.setPropSchema', definitionId: 'other' }], d))).toBe(false);
+    expect(found.every((d) => madeRequiredBy(emptied, tightened, ops, d))).toBe(true);
+    expect(found.some((d) => madeRequiredBy(emptied, tightened, [{ type: 'instance.setProp' }], d))).toBe(false);
+    expect(found.some((d) => madeRequiredBy(emptied, tightened, [{ type: 'component.setPropSchema', definitionId: 'other' }], d))).toBe(false);
+    // Emptied and made required in one batch: the value held something before it, so the batch is refused.
+    const both = [{ type: 'instance.setProp' as const, owner: home(state), nodeId, prop: 'title', value: '' }, ...ops];
+    const cleared = applyOperations(state, both).state;
+    const brought = introducedDiagnostics(saving(state), saving(cleared));
+    expect(brought.map((d) => d.code)).toEqual(['PROP_REQUIRED_EMPTY']);
+    expect(brought.some((d) => madeRequiredBy(state, cleared, both, d))).toBe(false);
     // An edit beside it, or one that fills it, goes through; one that empties another value is still refused.
     const filled = applyOperations(tightened, [{ type: 'instance.setProp', owner: home(tightened), nodeId, prop: 'title', value: 'Back' }]).state;
     expect(requiredProblems(filled)).toEqual([]);
@@ -312,6 +318,29 @@ describe('required values a placement already leaves empty (#748)', () => {
     const blank = applyOperations(state, [{ type: 'instance.setProp', owner: page, nodeId, prop: 'intro', value: '' }]).state;
     const kept = applyOperations(blank, [{ type: 'component.setPropSchema', definitionId, prop: 'intro', schema: { type: 'richtext', label: 'Intro', default: 'Hello', required: true } }]).state;
     expect(requiredProblems(kept).map((p) => p.message)).toEqual(['Home: Card → Intro is required: it needs some text.']);
+  });
+
+  it('refuses a schema change that empties a sparse object through its new default', () => {
+    const s = project();
+    const action = { type: 'object', label: 'Action', fields: { label: { type: 'string', label: 'Label' }, note: { type: 'string', label: 'Note' } }, default: { label: 'Go', note: '' } };
+    const { state, definitionId, nodeId } = placed(s, { action });
+    const sparse = structuredClone(state);
+    (sparse.pages[sparse.site.homePageId].nodes[nodeId] as InstanceNode).props.action = { note: '' };
+    expect(() => applyOperations(sparse, [{ type: 'component.setPropSchema', definitionId, prop: 'action', schema: { ...action, required: true, default: { label: '', note: 'Seed' } } }])).toThrow(/Home: Card → Action is required/);
+  });
+
+  it('starts a swap’s required value from the new design’s default rather than carrying an empty one', () => {
+    const s = project();
+    const from = placed(s, { title: { type: 'string', label: 'Title', default: 'Old' } });
+    const page = home(from.state);
+    let st = applyOperations(from.state, [{ type: 'instance.setProp', owner: page, nodeId: from.nodeId, prop: 'title', value: '' }]).state;
+    const made = applyOperations(st, [{ type: 'component.create', name: 'Strict' }]);
+    const strict = (made.results[0] as { definitionId: string }).definitionId;
+    st = applyOperations(made.state, [{ type: 'component.setPropSchema', definitionId: strict, prop: 'title', schema: { type: 'string', label: 'Title', default: 'Fresh', required: true } }]).state;
+    const swapped = applyOperations(st, [{ type: 'instance.swapComponent', owner: page, nodeId: from.nodeId, definitionId: strict }]).state;
+    const node = Object.values(swapped.pages[swapped.site.homePageId].nodes).find((n) => n.kind === 'instance' && n.definitionId === strict) as InstanceNode;
+    expect(node.props.title).toBe('Fresh');
+    expect(introducedDiagnostics(saving(st), saving(swapped))).toEqual([]);
   });
 
   it('reports a placement showing a default a hand edit left empty, and reads its field back from the problem’s key', () => {

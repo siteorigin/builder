@@ -6,6 +6,7 @@
 import type { BindingRef, ComponentDefinition, InstanceNode, ItemStyles, ListItem, ListProp, NodeTree, OwnerRef, ProjectState, PropSchema, ResponsiveStyles, ScalarPropSchema } from '@shared/types';
 import { isBinding, isBindingRef } from '@shared/types';
 import { toRichText, type RichText } from '@shared/richtext';
+import { hasRequired, isEmptyPropValue } from '@shared/required';
 import { repeatedPartList } from '@shared/item-styles';
 import { newId } from '@shared/ids';
 import { isWebMcpForm, toolOverrides } from '@shared/webmcp';
@@ -195,7 +196,9 @@ function carryScalar(state: ProjectState, from: ScalarPropSchema, to: ScalarProp
     value = plain;
   }
   try {
-    return { value: normalizeScalar(to, value, state, label, from.type === to.type ? v : undefined) };
+    // An empty value is never carried into one the new design requires: it starts from that design's default instead.
+    const stored = from.type === to.type && !(to.required && isEmptyPropValue(to, v)) ? v : undefined;
+    return { value: normalizeScalar(to, value, state, label, stored) };
   } catch (e) {
     return { reason: reasonOf(e) };
   }
@@ -293,7 +296,8 @@ export function planSwap(state: ProjectState, owner: OwnerRef, tree: NodeTree, n
     let r: { value: unknown } | { reason: string };
     if (fromSchema.type === 'table' || fromSchema.type === 'object') {
       try {
-        r = { value: normalizeProp(schema, clone(v), state, label, v) };
+        // Nothing empty is carried into a value the new design requires (it is refused, and the default taken).
+        r = { value: normalizeProp(schema, clone(v), state, label, hasRequired(schema) ? undefined : v) };
       } catch (e) {
         r = { reason: reasonOf(e) };
       }

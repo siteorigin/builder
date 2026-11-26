@@ -9,7 +9,7 @@ import { ICONS } from '@catalogue/foundation/icons';
 import { normalizeTable } from './table';
 import { declaredTokens } from './tokens';
 import { TEXT_LIMITS, tooLongMessage } from '@shared/text-limits';
-import { REQUIRED_REFUSAL, isEmptyPropValue, requiredMessage } from '@shared/required';
+import { REQUIRED_REFUSAL, isEmptyPropValue, requiredMessage, shownValue } from '@shared/required';
 
 const own = <T>(rec: Record<string, T>, key: string): T | undefined => (Object.hasOwn(rec, key) ? rec[key] : undefined);
 
@@ -312,15 +312,7 @@ export function normalizeScalar(schema: ScalarPropSchema, v: unknown, state: Pro
  * Whether `stored`, the value saved before an edit, was already empty: one the project reports, not one the edit
  * empties. An object's left-out fields show its defaults, so they count as what it held.
  */
-function wasEmpty(schema: PropSchema, stored: unknown): boolean {
-  if (stored === undefined) return false;
-  if (schema.type === 'object' && stored && typeof stored === 'object' && !Array.isArray(stored)) {
-    const o = stored as Record<string, unknown>;
-    const defaults = schema.default && typeof schema.default === 'object' ? (schema.default as Record<string, unknown>) : {};
-    return isEmptyPropValue(schema, Object.fromEntries(Object.entries(schema.fields).map(([k, f]) => [k, Object.hasOwn(o, k) ? o[k] : Object.hasOwn(defaults, k) ? defaults[k] : f.default])));
-  }
-  return isEmptyPropValue(schema, stored);
-}
+const wasEmpty = (schema: PropSchema, stored: unknown): boolean => stored !== undefined && isEmptyPropValue(schema, shownValue(schema, stored));
 
 /**
  * `v` itself when `schema` is not required or `v` is not empty; otherwise the edit fails with the property's path. A

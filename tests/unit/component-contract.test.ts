@@ -481,7 +481,7 @@ describe('the Required switch of a property or one of its fields', () => {
     // What it brings in is only the placement it made required, which the session lets through.
     const brought = introducedDiagnostics(errors(s), errors(on));
     expect(brought.map((d) => [d.code, d.nodeId])).toEqual([['PROP_REQUIRED_EMPTY', second]]);
-    expect(brought.every((d) => madeRequiredBy(on, [op], d))).toBe(true);
+    expect(brought.every((d) => madeRequiredBy(s, on, [op], d))).toBe(true);
     expect(requiredProblems(on).map((p) => p.nodeId)).toEqual([second]);
     expect(setRequiredOp(def(on), 'monthly', undefined, true)).toBeNull();
     const off = apply(on, [setRequiredOp(def(on), 'monthly', undefined, false)!]);

@@ -138,6 +138,14 @@ export function optionalSchema<T extends PropSchema | ScalarPropSchema>(schema: 
   return rest as unknown as T;
 }
 
+/** What a value shows: an object's left-out fields take the object's default, or the field's own. Anything else as it is. */
+export function shownValue(schema: PropSchema, v: unknown): unknown {
+  if (schema.type !== 'object' || !v || typeof v !== 'object' || Array.isArray(v)) return v;
+  const o = v as Record<string, unknown>;
+  const defaults = schema.default && typeof schema.default === 'object' ? (schema.default as Record<string, unknown>) : {};
+  return Object.fromEntries(fieldsOf(schema).map(([k, f]) => [k, Object.hasOwn(o, k) ? o[k] : Object.hasOwn(defaults, k) ? defaults[k] : f.default]));
+}
+
 /** Whether a property or any of its fields is required. */
 export const hasRequired = (schema: PropSchema): boolean =>
   !!schema.required || ((schema.type === 'list' || schema.type === 'object') && fieldsOf(schema).some(([, f]) => !!f?.required));

@@ -16,7 +16,7 @@ import { defKey } from '@generator/index';
 import { EngineError, fail, findParent, getNode, getTree, instancesOf, subtreeIds } from './tree';
 import { clone, placedDefaultItems, placedItemId } from './install';
 import { bindingSource, requiredValueProblems } from './required';
-import { REQUIRED_REFUSAL, isEmptyPropValue, optionalSchema, requiredGap } from '@shared/required';
+import { REQUIRED_REFUSAL, isEmptyPropValue, optionalSchema, requiredGap, shownValue } from '@shared/required';
 import { normalizeProp } from './values';
 import { releaseKept } from '@shared/site-name';
 import {
@@ -251,7 +251,7 @@ function applyPropSchema(state: ProjectState, def: ComponentDefinition, name: st
       node.props[name] = next;
     } catch (e) {
       if (!(e instanceof EngineError)) throw e;
-      fail(`${label}: ${e.message} Change that content first, or remove the property and add it again.`);
+      fail(`${label}: ${e.message} Change that content first, or remove the property and add it again.`, e.details);
     }
   }
   def.properties[name] = schema;
@@ -267,7 +267,7 @@ function emptiedByChange(prev: PropSchema | undefined, schema: PropSchema, befor
   for (const p of requiredValueProblems(schema, after, label)) {
     let was: unknown;
     let wasSchema: PropSchema | ScalarPropSchema | undefined;
-    if (!p.key) [was, wasSchema] = [before, prev];
+    if (!p.key) [was, wasSchema] = [shownValue(prev, before), prev];
     else if (!p.key.includes('|')) {
       // One field of an object, as the placement held it (a field it left out showed a default, and still does).
       const o = before && typeof before === 'object' && !Array.isArray(before) ? (before as Record<string, unknown>) : {};
