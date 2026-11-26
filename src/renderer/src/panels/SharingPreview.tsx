@@ -2,10 +2,10 @@ import { useState, type CSSProperties } from 'react';
 import { Image as ImageIcon, ImageOff } from 'lucide-react';
 import { useStore } from '../store';
 import { AssetImage } from '../components/AssetImage';
-import { openSection, Segmented } from '../components/ui';
+import { openSection } from '../components/ui';
 import { openSiteStyles } from '../lib/actions';
 import type { LinkCard } from '../lib/seo-preview';
-import { fitWithin, pictureWarning, SHARE_PLATFORMS, shareCardLayout, type ShareImageBox, type SharePlatform } from '../lib/share-card-layout';
+import { fitWithin, pictureWarning, SHARE_PLATFORMS, shareCardLayout, type ShareImageBox } from '../lib/share-card-layout';
 import { missingKey } from './ImagesPicker';
 
 /** Site details, with the cursor on the site's sharing image (the one a page without an image of its own follows) or its public URL. */
@@ -51,7 +51,7 @@ function CardPicture({ picture, alt, box, devUrl }: { picture: LinkCard['image']
 }
 
 /** One platform's card, with what that platform does with this picture said under it. */
-function PlatformCard({ platform, card, gone, labelled }: { platform: (typeof SHARE_PLATFORMS)[number]; card: LinkCard; gone: boolean; labelled: boolean }) {
+function PlatformCard({ platform, card, gone }: { platform: (typeof SHARE_PLATFORMS)[number]; card: LinkCard; gone: boolean }) {
   const runtime = useStore((s) => s.runtime);
   const snapshot = useStore((s) => s.snapshot);
   const devUrl = runtime.state === 'ready' ? runtime.url : null;
@@ -77,11 +77,9 @@ function PlatformCard({ platform, card, gone, labelled }: { platform: (typeof SH
   const style = { '--w': layout.width, '--title-lines': layout.titleLines, '--desc-lines': layout.descriptionLines } as CSSProperties;
   return (
     <div className="share-sample" role="group" aria-label={`${platform.name} link preview`}>
-      {labelled && (
-        <p className="share-sample-name">
-          {platform.place} · {platform.name}
-        </p>
-      )}
+      <p className="share-sample-name">
+        {platform.place} · {platform.name}
+      </p>
       <div className="share-card-fit">
         <div className={`share-card share-card-${platform.id}${layout.overlay ? ' overlay' : ''}`} data-platform={platform.id} style={style}>
           {layout.overlay ? (
@@ -118,23 +116,20 @@ function PlatformCard({ platform, card, gone, labelled }: { platform: (typeof SH
  * A page or a post as a shared link shows it where people share links: the effective image, title, description and
  * host, whichever of the document and the site each comes from, laid out as each platform lays a card out (see
  * lib/share-card-layout). It reads what the generator writes into the document's `<head>` (see lib/seo-preview
- * `previewDocument`). With `all`, every platform shows; otherwise one at a time, as chosen.
+ * `previewDocument`). Every platform shows, each named (the SEO view, #708).
  */
-export function SharingPreview({ card, all = false }: { card: LinkCard; all?: boolean }) {
+export function SharingPreview({ card }: { card: LinkCard }) {
   const snapshot = useStore((s) => s.snapshot);
-  const [chosen, setChosen] = useState<SharePlatform>('feed');
   const gone = !!card.image && !!snapshot?.missingAssets.some((m) => m.assetId === card.image!.id && m.original);
   const warning = pictureWarning(card.image, gone);
-  const shown = all ? SHARE_PLATFORMS : SHARE_PLATFORMS.filter((p) => p.id === chosen);
   return (
     <div className="share-preview">
-      {!all && <Segmented<SharePlatform> full radio label="Platform" value={chosen} onChange={setChosen} options={SHARE_PLATFORMS.map((p) => ({ value: p.id, label: p.name }))} />}
       <p className="field-hint share-preview-image">
         {card.imageSaid}
         {warning && ` ${warning}`}
       </p>
-      {shown.map((p) => (
-        <PlatformCard key={p.id} platform={p} card={card} gone={gone} labelled={all} />
+      {SHARE_PLATFORMS.map((p) => (
+        <PlatformCard key={p.id} platform={p} card={card} gone={gone} />
       ))}
       <p className="field-hint share-preview-note">How each platform likely crops the picture and cuts the text short. Their apps change, and differ between devices.</p>
       {card.addressNote && (

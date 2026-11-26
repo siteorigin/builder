@@ -36,8 +36,9 @@ interface EditorState {
 }
 const load = (path: string) => import(/* @vite-ignore */ path);
 const { getState, setState } = (await load('../../src/renderer/src/store')) as { getState: () => EditorState; setState: (p: Partial<EditorState>) => void };
-const { openSeoView, pageOutOfSight, selectPage } = (await load('../../src/renderer/src/lib/actions')) as {
+const { openSeoView, openSeoViewFrom, pageOutOfSight, selectPage } = (await load('../../src/renderer/src/lib/actions')) as {
   openSeoView: (subject?: SeoSubject | null) => boolean;
+  openSeoViewFrom: (subject: SeoSubject, place: { leave: () => void; refused: () => { name: string; focus: () => void } | null }) => boolean;
   pageOutOfSight: (s: EditorState, pageId: string) => boolean;
   selectPage: (pageId: string, target?: ElementRef | null) => void;
 };
@@ -312,6 +313,40 @@ describe('the SEO view in the editor', () => {
     // A scope said in the same update is kept.
     setState({ leftTab: 'seo', seoSubject: page(about), chatContextEnabled: { page: true, scope: 'page' } });
     expect(getState().chatContextEnabled.scope, 'its own scope, said with the change').toBe('page');
+  });
+
+  // Open in SEO view, beside a document's own settings (#708): what is typed is saved first, and nothing is lost.
+  it('opens from a document’s own settings once the field being typed in is left', () => {
+    const steps: string[] = [];
+    const place = {
+      leave: () => steps.push(`left with ${getState().leftTab}`),
+      refused: () => (steps.push('looked'), null)
+    };
+    expect(openSeoViewFrom(entry('posts', 'en_spring'), place)).toBe(true);
+    expect(steps, 'the field is left before the view opens, and checked after').toEqual(['left with pages', 'looked']);
+    expect(getState()).toMatchObject({ leftTab: 'seo', seoSubject: entry('posts', 'en_spring') });
+  });
+
+  it('carries a page’s refused text to the view’s field, and keeps a post’s refused text where it was typed', () => {
+    const focused: string[] = [];
+    const held = (name: string) => ({ leave: () => undefined, refused: () => ({ name, focus: () => focused.push(name) }) });
+    // A page's refused text goes with its field (#702): the view's field shows it, so the view opens.
+    expect(openSeoViewFrom(page(about), held('Browser title'))).toBe(true);
+    expect(getState()).toMatchObject({ leftTab: 'seo', seoSubject: page(about) });
+    expect(focused).toEqual([]);
+    // A post's stays in the writer's control (#703): the view, which would show the saved text, does not open over it.
+    setState({ leftTab: 'posts', seoSubject: null, toasts: [] } as Partial<EditorState>);
+    expect(openSeoViewFrom(entry('posts', 'en_spring'), held('Canonical URL'))).toBe(false);
+    expect(getState()).toMatchObject({ leftTab: 'posts', seoSubject: null });
+    expect(focused, 'the field with the refused text has focus again').toEqual(['Canonical URL']);
+    const said = (getState() as unknown as { toasts: { text: string; kind: string }[] }).toasts.at(-1);
+    expect(said).toMatchObject({ kind: 'error' });
+    expect(said?.text).toMatch(/^What is typed in Canonical URL is not saved yet\./);
+  });
+
+  it('opens from a document’s own settings only on a document the project still has', () => {
+    expect(openSeoViewFrom(entry('posts', 'en_gone'), { leave: () => undefined, refused: () => null })).toBe(false);
+    expect(getState()).toMatchObject({ leftTab: 'pages', seoSubject: null });
   });
 
   it('puts a post’s preview under it away too when a page is chosen', () => {

@@ -537,7 +537,7 @@ export const INTERACTIONS: Interaction[] = [
     outcome: 'The search result, title meter, link card and structured data follow what is typed before it is saved; a page’s own sharing photo or the site’s is shown and labelled; the exported pages carry the same og:image addresses after a reopen; over-long text is kept whole and refused',
     scenario: 'Business starter · none',
     proof: [
-      { test: 'tests/e2e/page-sharing.mjs', kind: 'e2e', step: 'the search result and the title meter follow the browser title as it is typed, before it is saved (#597)' },
+      { test: 'tests/e2e/seo-view.mjs', kind: 'e2e', step: 'the search result and the title meter follow the browser title as it is typed, before it is saved (#597)' },
       { test: 'tests/e2e/page-sharing.mjs', kind: 'e2e', step: 'two pages with different photos, chosen from the visual picker' },
       { test: 'tests/e2e/page-sharing.mjs', kind: 'e2e', step: 'the exported pages carry the same og:image addresses' },
       { test: 'tests/e2e/text-limits.mjs', kind: 'e2e', step: 'a pasted 342-character description stays whole, refused beside the field, and nothing is saved' },
@@ -2212,7 +2212,8 @@ export const INTERACTIONS: Interaction[] = [
       { test: 'tests/e2e/export.mjs', kind: 'e2e', step: '#393: the sitemap under /studio lists each published post with the day it last changed, and no draft' },
       { test: 'tests/unit/posts-articles.test.ts', kind: 'unit' },
       { test: 'tests/unit/collection-routes.test.ts', kind: 'unit' },
-      { test: 'tests/e2e/posts.mjs', kind: 'e2e', step: 'Search & sharing shows the post as results list it, as a shared link and as structured data' },
+      { test: 'tests/e2e/seo-view.mjs', kind: 'e2e', step: 'a post’s search result, link preview and structured data follow what is typed before it is saved (#597)' },
+      { test: 'tests/e2e/posts.mjs', kind: 'e2e', step: 'Search & sharing keeps its fields and meters, and opens the post in the SEO view with what is typed saved first (#708)' },
       { test: 'tests/e2e/seo-health.mjs', kind: 'e2e', step: 'entry: from a page, Open post opens the post with its excerpt focused' },
       { test: 'tests/unit/entry-seo.test.ts', kind: 'unit' }
     ]

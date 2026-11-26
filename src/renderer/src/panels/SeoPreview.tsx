@@ -1,5 +1,6 @@
 import './SeoPreview.css';
 import { useEffect, useId, useLayoutEffect, useMemo, useRef, useState, type CSSProperties, type ReactNode } from 'react';
+import { flushSync } from 'react-dom';
 import { Globe, Search } from 'lucide-react';
 import type { ProjectState } from '@shared/types';
 import type { SeoSubject } from '@shared/seo';
@@ -7,7 +8,7 @@ import { createSeoResolver } from '@generator/seo-metadata';
 import { SERP_LAYOUT, type SerpDevice } from '@shared/serp';
 import { setSerpView, useStore } from '../store';
 import { FILLER_RESULTS, PHONE_BEZEL, SAMPLE_QUERY, SERP_MARGIN, serpPageWidth, serpScale, type FillerResult } from '../lib/serp-page';
-import { postPreviewHandoff } from '../lib/actions';
+import { openSeoViewFrom, postPreviewHandoff } from '../lib/actions';
 import { AssetImage } from '../components/AssetImage';
 import { Segmented, Switch, Tabs } from '../components/ui';
 import { lengthMeter, previewDocument, structuredPreview, withTypedSeo, type DocumentPreview, type LengthMeter as Meter, type StructuredPreview, type TypedSeo } from '../lib/seo-preview';
@@ -353,13 +354,72 @@ function StructuredData({ structured }: { structured: StructuredPreview | null |
 }
 
 /**
- * A page's or a post's Search & sharing previews, in tabs: its search result on a computer or a phone, the card a
- * shared link makes, and its structured data with where it is published. `shown` says whether the previews are on
- * screen: the structured data, which reads the whole website, is worked out only while its tab shows. `typed` is the
- * text typed into the document's fields and not saved yet, which `overlay` lays over the project. Optimize with AI
- * opens the AI panel about them (#599): an edit of a page's search title and description, or for a post, which the AI
- * can't change yet, a question that suggests them, from what is typed in its fields now. `place` says where they are:
- * beside the document's own settings (the Inspector, the post writer), or in the SEO view on the document chosen there.
+ * Optimize with AI for one document (#599): it opens the AI panel with an edit of a page's search title and
+ * description, or for a post, which the AI can't change yet, a question that suggests them, from what is typed in its
+ * fields now (`typed`, laid over the project as `overlay`). `from` says where it is pressed: beside the document's own
+ * settings (the Inspector, the post writer), or in the SEO view on the document chosen there.
+ */
+export function SeoAiAction({ subject, overlay, typed, from }: { subject: SeoSubject; overlay: ProjectState; typed: TypedSeo; from: 'inline' | 'view' }) {
+  const readOnly = useStore((s) => !!s.snapshot?.readOnly);
+  if (readOnly) return null;
+  return (
+    <div className="seo-preview-ai">
+      <AiHandoffButton
+        label="Optimize with AI"
+        request={() =>
+          // A page's request names the page alone. A post's other fields (its excerpt, its text) are saved first when
+          // the writer holds it, so the question quotes them as typed; its search title and description are what its
+          // fields show, typed or saved.
+          subject.kind === 'page' ? previewHandoff(overlay, subject) : postPreviewHandoff(subject, typed, from === 'view' ? 'view' : 'writer')
+        }
+      />
+      {subject.kind === 'entry' && <span className="field-hint">Suggests a title and description for you to paste in.</span>}
+    </div>
+  );
+}
+
+/**
+ * At the top of a page's or a post's Search & sharing settings beside the document itself (the Inspector, the post
+ * writer), where its previews used to be (#708): Open in SEO view, which shows its search result, link preview and
+ * structured data with the same fields beside them, and Optimize with AI. A field being typed in is left first, as a
+ * click away leaves it, so what it holds is saved, or kept as refused, by its own control before the view opens on it.
+ */
+export function SeoInlineActions({ subject, overlay, typed }: { subject: SeoSubject; overlay: ProjectState; typed: TypedSeo }) {
+  const ref = useRef<HTMLDivElement>(null);
+  const open = () => {
+    const settings = ref.current?.parentElement ?? null;
+    const opened = openSeoViewFrom(subject, {
+      leave: () => {
+        const at = document.activeElement;
+        // At once, with what the field shows after: whether it refused the text is read straight after.
+        if (settings && at instanceof HTMLElement && settings.contains(at) && at.matches('input, textarea')) flushSync(() => at.blur());
+      },
+      refused: () => {
+        const el = settings?.querySelector<HTMLInputElement | HTMLTextAreaElement>('input[aria-invalid="true"], textarea[aria-invalid="true"]');
+        if (!el) return null;
+        const label = el.labels?.[0];
+        const name = (label?.querySelector('.grow')?.textContent ?? label?.textContent ?? '').trim();
+        return { name: name || 'Search & sharing', focus: () => el.focus() };
+      }
+    });
+    // The button goes with the settings it was in: focus moves to the view's way back to the overview.
+    if (opened) requestAnimationFrame(() => document.querySelector<HTMLElement>('.seo-view .seo-back')?.focus());
+  };
+  return (
+    <div className="seo-inline-actions" ref={ref}>
+      <button type="button" className="btn btn-sm" onClick={open}>
+        <Search aria-hidden /> Open in SEO view
+      </button>
+      <SeoAiAction subject={subject} overlay={overlay} typed={typed} from="inline" />
+    </div>
+  );
+}
+
+/**
+ * A page's or a post's Search & sharing previews in the SEO view, in tabs: its search result on a computer or a phone,
+ * the card a shared link makes, and its structured data with where it is published. `shown` says whether the previews
+ * are on screen: the structured data, which reads the whole website, is worked out only while its tab shows. `typed`
+ * is the text typed into the document's fields and not saved yet, which `overlay` lays over the project.
  */
 export function SeoPreview({
   state,
@@ -367,8 +427,7 @@ export function SeoPreview({
   overlay,
   typed,
   doc,
-  shown = true,
-  place = 'inline'
+  shown = true
 }: {
   state: ProjectState;
   subject: SeoSubject;
@@ -376,10 +435,9 @@ export function SeoPreview({
   typed: TypedSeo;
   doc: DocumentPreview | null;
   shown?: boolean;
-  place?: 'inline' | 'view';
 }) {
   const key = subjectKey(subject);
-  // The same document's previews can be in two places at once (the SEO view, and the writer out of sight under it).
+  // Ids of their own, so the tabs never share one with another mount's.
   const uid = useId();
   // Each document opens on its search result.
   const [chosen, setChosen] = useState<{ key: string; tab: PreviewTab }>({ key, tab: 'search' });
@@ -387,7 +445,6 @@ export function SeoPreview({
   const [structured, setStructured] = useState<{ key: string; value: StructuredPreview | null } | null>(null);
   const showing = shown && tab === 'data' && !!doc;
   const ready = structured?.key === key;
-  const readOnly = useStore((s) => !!s.snapshot?.readOnly);
   // Whether the tab has shown this document's structured data since it was last opened.
   const settled = useRef(false);
   useEffect(() => {
@@ -408,32 +465,19 @@ export function SeoPreview({
   }, [showing, overlay, key]);
   if (!doc) return null;
   return (
-    <div className={`seo-preview${place === 'view' ? ' seo-preview-wide' : ''}`} data-seo-preview={key}>
+    <div className="seo-preview seo-preview-wide" data-seo-preview={key}>
       <Tabs<PreviewTab>
         value={tab}
         onChange={(v) => setChosen({ key, tab: v })}
-        label={place === 'view' ? 'Preview surface' : 'Preview'}
+        label="Preview surface"
         idBase={`seo-preview-${uid.replace(/[^A-Za-z0-9_-]/g, '')}-${key.replace(/[^A-Za-z0-9_-]/g, '-')}`}
         options={[
           { value: 'search', label: 'Search result', panel: () => <SearchResults state={state} doc={doc} /> },
-          { value: 'link', label: 'Link preview', panel: () => <SharingPreview card={doc.card} all={place === 'view'} /> },
+          { value: 'link', label: 'Link preview', panel: () => <SharingPreview card={doc.card} /> },
           { value: 'data', label: 'Structured data', panel: () => <StructuredData key={key} structured={ready && settled.current ? structured!.value : undefined} /> }
         ]}
       />
-      {!readOnly && (
-        <div className="seo-preview-ai">
-          <AiHandoffButton
-            label="Optimize with AI"
-            request={() =>
-              // A page's request names the page alone. A post's other fields (its excerpt, its text) are saved first when
-              // the writer holds it, so the question quotes them as typed; its search title and description are what the
-              // previews show, typed or saved.
-              subject.kind === 'page' ? previewHandoff(overlay, subject) : postPreviewHandoff(subject, typed, place === 'view' ? 'view' : 'writer')
-            }
-          />
-          {subject.kind === 'entry' && <span className="field-hint">Suggests a title and description for you to paste in.</span>}
-        </div>
-      )}
+      <SeoAiAction subject={subject} overlay={overlay} typed={typed} from="view" />
     </div>
   );
 }

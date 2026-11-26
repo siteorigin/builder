@@ -30,7 +30,7 @@ import { entryTermLabels } from '@shared/entry-fields';
 import type { EditOperation } from '@shared/ops';
 import { openSeoView, setMode } from '../lib/actions';
 import { visitAddress } from './Canvas';
-import { SeoPreview, subjectKey, useDocumentPreview, useTypedSeo } from './SeoPreview';
+import { SeoInlineActions, subjectKey, useDocumentPreview, useTypedSeo } from './SeoPreview';
 import { PostSearchFields } from './PostSearchFields';
 
 const MAX_EXCERPT = 320;
@@ -670,7 +670,7 @@ function PostEditor({ post, hidden }: { post: PostRef; hidden: boolean }) {
               <PostTermFields post={post} collection={collection} entry={entry} sendAt={sendAt} track={track} refused={refused} />
             </div>
           </details>
-          <PostSearchSettings state={state} post={post} collection={collection} entry={entry} hidden={hidden} update={update} />
+          <PostSearchSettings state={state} post={post} collection={collection} entry={entry} update={update} />
           <div className="post-tools" role="toolbar" aria-label="Formatting">
             {tools.map((t) => (
               <button
@@ -948,22 +948,20 @@ function LinkDialog({ dialog, state, self, onChange, onApply }: { dialog: Extrac
 }
 
 /**
- * A post's Search & sharing settings, with previews of its search result, link card and structured data that follow
- * its title, description and canonical URL as they are typed. Its own component, so typing re-renders only this, not
- * the writer.
+ * A post's Search & sharing settings, under Open in SEO view, where its previews are (#708), and Optimize with AI.
+ * The title and description meters follow what is typed before it is saved. Its own component, so typing re-renders
+ * only this, not the writer.
  */
-function PostSearchSettings({ state, post, collection, entry, hidden, update }: { state: ProjectState; post: PostRef; collection: Collection; entry: EntryDoc; hidden: boolean; update: (fields: Record<string, unknown>, label: string) => unknown }) {
+function PostSearchSettings({ state, post, collection, entry, update }: { state: ProjectState; post: PostRef; collection: Collection; entry: EntryDoc; update: (fields: Record<string, unknown>, label: string) => unknown }) {
   const seoScope = seoSummary(entry.seo && typeof entry.seo === 'object' ? entry.seo : {});
   const seoSubject = useMemo<SeoSubject>(() => ({ kind: 'entry', collectionId: post.collectionId, entryId: post.entryId }), [post.collectionId, post.entryId]);
   const { typed: seoTyped, on: seoOn } = useTypedSeo(subjectKey(seoSubject));
   const { overlay: seoOverlay, doc: seoDoc } = useDocumentPreview(state, seoSubject, seoTyped);
-  // Its structured data reads the whole website: it is worked out only while the settings are open on screen.
-  const [seoOpen, setSeoOpen] = useState(false);
   return (
-    <details className="post-details post-seo" onToggle={(e) => setSeoOpen(e.currentTarget.open)}>
+    <details className="post-details post-seo">
       <summary>Search & sharing{seoScope ? ` · ${seoScope}` : ''}</summary>
       <div className="post-fields">
-        <SeoPreview state={state} subject={seoSubject} overlay={seoOverlay} typed={seoTyped} doc={seoDoc} shown={seoOpen && !hidden} />
+        <SeoInlineActions subject={seoSubject} overlay={seoOverlay} typed={seoTyped} />
         <PostSearchFields state={state} collection={collection} entry={entry} doc={seoDoc} on={seoOn} save={(edit) => update(edit.fields, edit.label)} />
       </div>
     </details>
