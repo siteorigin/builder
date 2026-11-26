@@ -76,7 +76,7 @@ try {
     [/^@codemirror\/view \d/, 'MIT', 'compiled into the editor', /Copyright \(C\) .*Marijn Haverbeke/],
     [/^@radix-ui\/react-dropdown-menu \d/, 'MIT', 'compiled into the editor', /Copyright \(c\) .*WorkOS/],
     [/^lucide-react \d/, 'ISC', 'compiled into the editor', /Copyright \(c\) 2013-present Cole Bemis/],
-    [/^rolldown \d/, 'MIT', 'compiled into the editor', /--- THIRD-PARTY-LICENSE ---\n\n[\s\S]*Rollup/],
+    [/^rolldown \d/, 'MIT', 'compiled into the editor', /--- THIRD-PARTY-LICENSE ---\n\n[\s\S]*github\.com\/rollup\/rollup[\s\S]*Copyright \(c\) 2020 Evan Wallace/],
     [/^@oxc-project\/runtime \d/, 'MIT', 'compiled into the app', /Sebastian McKenzie/],
     [/^svelte \d/, 'MIT', 'shipped with the app', /Copyright \(c\) .*Svelte Contributors/],
     [/^sharp \d/, 'Apache-2.0', 'shipped with the app', /Apache License/],
