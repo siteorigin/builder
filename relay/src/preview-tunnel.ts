@@ -1,7 +1,6 @@
 import { fromBase64Url } from '../../src/shared/live/crypto';
 import type { Frame } from '../../src/shared/live/messages';
-import { PREVIEW_CACHE_CONTROL, PreviewStream, previewBrowserLocation, type PreviewAbortCode, type PreviewMethod } from '../../src/shared/live/preview';
-import { roomPreviewPath } from '../../src/shared/live/relay-url';
+import { PREVIEW_CACHE_CONTROL, PreviewStream, isPreviewLocation, type PreviewAbortCode, type PreviewMethod } from '../../src/shared/live/preview';
 import { textResponse } from './http';
 import { randomToken } from './tokens';
 
@@ -217,11 +216,8 @@ export class PreviewTunnel {
     for (const [name, value] of frame.headers) {
       // The body is streamed, so the runtime frames it; a length the host claims is checked, not passed on.
       if (name === 'content-length') continue;
-      if (name === 'location') {
-        const location = previewBrowserLocation(roomPreviewPath(pending.roomId), value);
-        if (location) headers.append('location', location);
-        continue;
-      }
+      // The preview is the site at its origin's root, so a redirect within it goes to the browser as the host gave it.
+      if (name === 'location' && !isPreviewLocation(value)) continue;
       headers.append(name, value);
     }
     headers.set('cache-control', PREVIEW_CACHE_CONTROL);

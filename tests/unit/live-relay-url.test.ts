@@ -1,5 +1,7 @@
 import { describe, expect, it } from 'vitest';
-import { checkRelayUrl, DEFAULT_RELAY_URL, formatInviteLink, parseInviteLink, RELAY_URL_ENV, relaySocketUrl, resolveRelayUrl, roomPreviewPath, roomSocketPath, HOST_SOCKET_PATH } from '@shared/live/relay-url';
+import { previewHostLabel } from '@shared/live/crypto';
+import { isPreviewTarget } from '@shared/live/preview';
+import { checkRelayUrl, DEFAULT_RELAY_URL, formatInviteLink, parseInviteLink, RELAY_URL_ENV, relaySocketUrl, resolveRelayUrl, roomPreviewOrigin, roomSocketPath, HOST_SOCKET_PATH, PREVIEW_ADMISSION_PATH } from '@shared/live/relay-url';
 
 const ROOM = 'abcdefghijkmnpqrstuvwxyz';
 
@@ -120,9 +122,36 @@ describe('relay routes', () => {
   it('names the sockets and preview under each room, on ws:// or wss:// to match the relay', () => {
     expect(relaySocketUrl('https://live.siteorigin.com', HOST_SOCKET_PATH)).toBe('wss://live.siteorigin.com/ws/host');
     expect(relaySocketUrl('http://127.0.0.1:8787/', roomSocketPath(ROOM))).toBe(`ws://127.0.0.1:8787/s/${ROOM}/ws`);
-    expect(roomPreviewPath(ROOM)).toBe(`/s/${ROOM}/preview`);
     expect(() => relaySocketUrl('ftp://x', HOST_SOCKET_PATH)).toThrow();
     // Only the relay's own sockets: never a path glued onto the host name, or a room that is not one.
     for (const bad of ['ws/host', '', '/ws/host/', `/s/${ROOM}/ws/x`, '/s/BAD/ws', `/s/${ROOM}`, `/S/${ROOM}/ws`, `/s/${ROOM}/WS`, '/WS/HOST']) expect(() => relaySocketUrl('https://relay.example', bad), bad).toThrow();
+  });
+});
+
+describe('room preview origins', () => {
+  it('gives each room its own origin under the relay’s host, named by a digest of the room ID, never the ID itself', async () => {
+    const origin = await roomPreviewOrigin('https://live.siteorigin.com', ROOM);
+    expect(origin).toMatch(/^https:\/\/p-[23456789abcdefghijkmnpqrstuvwxyz]{32}\.live\.siteorigin\.com$/);
+    expect(origin).not.toContain(ROOM);
+    // The same for every side that works it out, and different for every room.
+    expect(await roomPreviewOrigin('https://Live.SiteOrigin.com/', ROOM)).toBe(origin);
+    expect(await roomPreviewOrigin('https://live.siteorigin.com', 'bcdefghijkmnpqrstuvwxyz2')).not.toBe(origin);
+    expect(await previewHostLabel(ROOM)).toBe(origin.slice('https://'.length, origin.indexOf('.')));
+    // A fixed vector: the label names each room's Durable Object, so a change to how it is made moves every room.
+    expect(await previewHostLabel(ROOM)).toBe('p-sdg4ge463rrxek2zpgjsdcfk2gg3kebv');
+  });
+
+  it('keeps the relay’s scheme and port, and refuses a relay on an IP address, which has no subdomains', async () => {
+    expect(await roomPreviewOrigin('http://relay.localhost:8787', ROOM)).toBe(`http://${await previewHostLabel(ROOM)}.relay.localhost:8787`);
+    // `p-….localhost` and `localhost` are different sites, so the viewer's cookie would never reach the preview.
+    await expect(roomPreviewOrigin('http://localhost:8787', ROOM)).rejects.toThrow(/with a dot/);
+    await expect(roomPreviewOrigin('http://127.0.0.1:8787', ROOM)).rejects.toThrow(/IP address/);
+    await expect(roomPreviewOrigin('http://[::1]:8787', ROOM)).rejects.toThrow(/IP address/);
+    await expect(roomPreviewOrigin('https://live.siteorigin.com', 'BAD')).rejects.toThrow();
+  });
+
+  it('keeps ticket redemption at a path no page of the host’s site can have', () => {
+    expect(PREVIEW_ADMISSION_PATH).toBe('/__siteorigin/admission');
+    expect(isPreviewTarget(PREVIEW_ADMISSION_PATH)).toBe(false);
   });
 });

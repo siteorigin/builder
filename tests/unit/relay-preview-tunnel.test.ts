@@ -51,7 +51,8 @@ describe('bodies', () => {
     t.head(moved.requestId, 304, [['location', '/next/#top']]);
     const notModified = await moved.response;
     expect(notModified.body).toBeNull();
-    expect(notModified.headers.get('location')).toBe(`/s/${ROOM}/preview/next/#top`);
+    // The site is at its preview origin's root: a redirect within it reaches the browser as the host gave it.
+    expect(notModified.headers.get('location')).toBe('/next/#top');
   });
 
   it('lets a response go as soon as the host ends it with nothing left to read', async () => {

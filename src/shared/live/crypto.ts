@@ -84,6 +84,38 @@ export function newRoomId(): string {
   return out;
 }
 
+/** The first line hashed into a preview host's label, so the digest is never one made for anything else. */
+export const PREVIEW_HOST_CONTEXT = 'siteorigin-live/preview-host/v1';
+/** A preview host's first DNS label: `p-` and 32 letters of the room ID alphabet (160 bits of the digest). */
+export const PREVIEW_HOST_LABEL_RE = /^p-[23456789abcdefghijkmnpqrstuvwxyz]{32}$/;
+
+/**
+ * The first DNS label of a room's preview origin, `p-<32 letters>`: a one-way digest of the room ID. Each room's
+ * preview is its own origin, so one room's site code can never read another room's preview or the viewer's pages. The
+ * label is not the room ID because a host name is not private: it travels in DNS lookups and TLS SNI, and in the
+ * `Origin` header of every font and CDN request the preview makes, and the room ID is the invite. The room ID's 120
+ * random bits make the digest impossible to walk back. It needs no secret, so the relay, the viewer and the app all
+ * work it out alike, and the relay names each room's object by it, so a preview request finds its room by host alone.
+ */
+export async function previewHostLabel(roomId: string): Promise<string> {
+  if (typeof roomId !== 'string' || !ROOM_ID_RE.test(roomId)) throw new Error('Not a live session room ID.');
+  const digest = new Uint8Array(await crypto.subtle.digest('SHA-256', new TextEncoder().encode(`${PREVIEW_HOST_CONTEXT}\n${roomId}`)));
+  // Five bits a letter from the digest's first 20 bytes, most significant first.
+  let out = '';
+  let bits = 0;
+  let value = 0;
+  for (const byte of digest.subarray(0, 20)) {
+    value = (value << 8) | byte;
+    bits += 8;
+    while (bits >= 5) {
+      bits -= 5;
+      out += ROOM_ID_ALPHABET[(value >>> bits) & 31];
+    }
+    value &= (1 << bits) - 1;
+  }
+  return `p-${out}`;
+}
+
 export interface HostKeyPair {
   /** Never leaves the process that made it: it cannot be exported. */
   privateKey: LiveCryptoKey;

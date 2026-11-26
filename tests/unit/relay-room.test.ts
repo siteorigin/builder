@@ -163,7 +163,7 @@ describe('the host proving itself again', () => {
     const room = await openRoom(relay);
     const guest = await admittedGuest(relay, room);
     // A preview the old connection was answering fails at once, not at its timeout.
-    const answering = relay.fetch(`/s/${room.roomId}/preview/slow`, { headers: { cookie: guest.cookie } });
+    const answering = relay.fetch(`${room.previewOrigin}/slow`, { headers: { cookie: guest.cookie } });
     await room.host.next('preview:request');
     const { host: replacement } = await reconnectHost(relay, room.roomId, room.keys);
     expect((await room.host.closed()).code).toBe(LIVE_CLOSE_CODES.REPLACED);
@@ -183,7 +183,7 @@ describe('ending a session', () => {
     const room = await openRoom(relay);
     const admitted = await admittedGuest(relay, room);
     const waiting = await joinGuest(relay, room.roomId, 'Bea');
-    const answering = relay.fetch(`/s/${room.roomId}/preview/`, { headers: { cookie: admitted.cookie } });
+    const answering = relay.fetch(`${room.previewOrigin}/`, { headers: { cookie: admitted.cookie } });
     await room.host.next('preview:request');
     room.host.send('host-to-relay', { type: 'room:end' });
     expect((await answering).status).toBe(404);
@@ -193,7 +193,7 @@ describe('ending a session', () => {
     }
     expect((await (room.host as HostPeer).closed()).code).toBe(LIVE_CLOSE_CODES.ENDED);
     expect((await relay.fetch(`/s/${room.roomId}/ws`, { headers: { upgrade: 'websocket' } })).status).toBe(404);
-    expect((await relay.fetch(`/s/${room.roomId}/preview/`, { headers: { cookie: admitted.cookie } })).status).toBe(404);
+    expect((await relay.fetch(`${room.previewOrigin}/`, { headers: { cookie: admitted.cookie } })).status).toBe(404);
   });
 });
 

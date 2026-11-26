@@ -1,9 +1,12 @@
 import type { Miniflare, WebSocket as SimulatedWebSocket } from 'miniflare';
 import { unstable_startWorker } from 'wrangler';
-import { generateHostKeyPair, signHostChallenge, toBase64Url, type HostKeyPair } from '../../src/shared/live/crypto';
+import { request as httpRequest } from 'node:http';
+import { Readable } from 'node:stream';
+import { generateHostKeyPair, previewHostLabel, signHostChallenge, toBase64Url, type HostKeyPair } from '../../src/shared/live/crypto';
 import type { SessionDuration } from '../../src/shared/live/expiry';
 import { PREVIEW_CHUNK_BYTES, type GuestRole } from '../../src/shared/live/limits';
 import { encodeFrame, type Direction, type Frame, type FrameOf } from '../../src/shared/live/messages';
+import { PREVIEW_ADMISSION_PATH, roomPreviewOrigin } from '../../src/shared/live/relay-url';
 
 /**
  * Runs the relay in Cloudflare's local simulator for the relay tests: wrangler reads relay/wrangler.toml, bundles the
@@ -15,7 +18,7 @@ export const WORKER_NAME = 'siteorigin-live-relay';
 export const SIGNING_KEY = 'relay-test-signing-key-0123456789abcdefghijkl';
 export const ORIGIN = 'http://relay.test';
 
-export type RelayVars = Partial<Record<'HOST_RECONNECT_GRACE_MS' | 'GUEST_RECONNECT_GRACE_MS' | 'HANDSHAKE_TIMEOUT_MS' | 'PREVIEW_HEAD_TIMEOUT_MS' | 'PREVIEW_IDLE_TIMEOUT_MS' | 'SESSION_SIGNING_KEY', string>>;
+export type RelayVars = Partial<Record<'HOST_RECONNECT_GRACE_MS' | 'GUEST_RECONNECT_GRACE_MS' | 'HANDSHAKE_TIMEOUT_MS' | 'PREVIEW_HEAD_TIMEOUT_MS' | 'PREVIEW_IDLE_TIMEOUT_MS' | 'SESSION_SIGNING_KEY' | 'RELAY_ORIGIN', string>>;
 
 type Worker = Awaited<ReturnType<typeof unstable_startWorker>>;
 type SimulatedResponse = Awaited<ReturnType<Worker['fetch']>>;
@@ -35,10 +38,29 @@ export class Relay {
   /**
    * An HTTP request over a real local connection to the simulator, as a browser would make it. The simulator's own
    * fetch follows redirects whatever it is asked, and wrangler's dev proxy does not pass on a client going away, so
-   * tests of redirects and of guests leaving midway go this way.
+   * tests of redirects and of guests leaving midway go this way. `path` may be a full URL on a room's preview origin:
+   * the connection goes to the simulator and the URL's host is sent as the Host header, as a browser resolving it
+   * there would send it.
    */
-  async http(path: string, init: RequestInit = {}): Promise<Response> {
-    return fetch(new URL(path, await this.miniflare.ready), init);
+  async http(path: string, init: { method?: string; headers?: Record<string, string>; signal?: AbortSignal; redirect?: 'manual' } = {}): Promise<Response> {
+    // Node's own HTTP client never follows a redirect, so `redirect: 'manual'` is how every request here behaves.
+    const target = new URL(path, ORIGIN);
+    const server = await this.miniflare.ready;
+    return new Promise((resolve, reject) => {
+      const req = httpRequest(
+        { host: server.hostname, port: server.port, method: init.method ?? 'GET', path: `${target.pathname}${target.search}`, headers: { ...init.headers, host: target.host }, signal: init.signal },
+        (res) => {
+          const headers = new Headers();
+          for (const [name, value] of Object.entries(res.headers)) for (const one of Array.isArray(value) ? value : value === undefined ? [] : [value]) headers.append(name, one);
+          const status = res.statusCode ?? 502;
+          const bodyless = status === 204 || status === 304 || (init.method ?? 'GET') === 'HEAD';
+          if (bodyless) res.resume();
+          resolve(new Response(bodyless ? null : (Readable.toWeb(res) as ReadableStream<Uint8Array>), { status, headers }));
+        }
+      );
+      req.on('error', reject);
+      req.end();
+    });
   }
 
   /** Open a WebSocket to the relay, collecting what arrives from the moment it is accepted. */
@@ -59,7 +81,8 @@ export class Relay {
 
   /** Evict a room's object as Cloudflare does when it hibernates: memory goes, sockets stay connected. */
   async hibernate(roomId: string): Promise<void> {
-    await this.miniflare.unsafeEvictDurableObject(WORKER_NAME, 'SessionRoom', { name: roomId, webSockets: 'hibernate' });
+    // Rooms' objects are named by their preview host's label (relay/src/index.ts).
+    await this.miniflare.unsafeEvictDurableObject(WORKER_NAME, 'SessionRoom', { name: await previewHostLabel(roomId), webSockets: 'hibernate' });
   }
 
   async dispose(): Promise<void> {
@@ -162,8 +185,13 @@ export interface OpenedRoom {
   host: HostPeer;
   keys: HostKeyPair;
   roomId: string;
+  /** The room's preview origin as the tests' relay host gives it: `http://p-<label>.relay.test`. */
+  previewOrigin: string;
   ready: Frame<'relay-to-host', 'room:ready'>;
 }
+
+/** A room's preview origin on the tests' relay host. */
+export const previewOrigin = (roomId: string) => roomPreviewOrigin(ORIGIN, roomId);
 
 /** Open a room as a host would: a fresh key pair, room:create on the host socket, room:ready back. */
 export async function openRoom(relay: Relay, options: { duration?: SessionDuration; projectName?: string; ip?: string } = {}): Promise<OpenedRoom> {
@@ -173,7 +201,7 @@ export async function openRoom(relay: Relay, options: { duration?: SessionDurati
   host.send('host-to-relay', { type: 'room:create', version: 1, publicKey: keys.publicKey, duration: options.duration ?? '2h', projectName: options.projectName ?? 'Test site' });
   const ready = await host.next('room:ready');
   await host.next('room:roster');
-  return { host, keys, roomId: ready.roomId, ready };
+  return { host, keys, roomId: ready.roomId, previewOrigin: await previewOrigin(ready.roomId), ready };
 }
 
 /** Take a room back as its host: host:reconnect, sign the challenge, room:ready back. */
@@ -208,12 +236,12 @@ export async function admitGuest(host: HostPeer, joined: JoinedGuest, role: Gues
   return status;
 }
 
-/** Redeem a preview ticket; resolves with the response and the cookie to send back (`so_preview=…`), if one was set. */
-export async function redeemTicket(relay: Relay, roomId: string, ticket: string | undefined, headers: Record<string, string> = {}): Promise<{ status: number; setCookie: string | null; cookie: string | null }> {
-  const response = await relay.fetch(`/s/${roomId}/admission`, { method: 'POST', headers: { 'content-type': 'application/json', ...headers }, body: JSON.stringify({ ticket }) });
+/** Redeem a preview ticket on the room's preview origin; resolves with the response and the cookie to send back (`so_preview=…`), if one was set. */
+export async function redeemTicket(relay: Relay, roomId: string, ticket: string | undefined, headers: Record<string, string> = {}): Promise<{ status: number; setCookie: string | null; cookie: string | null; response: SimulatedResponse }> {
+  const response = await relay.fetch(`${await previewOrigin(roomId)}${PREVIEW_ADMISSION_PATH}`, { method: 'POST', headers: { 'content-type': 'application/json', ...headers }, body: JSON.stringify({ ticket }) });
   await response.arrayBuffer();
   const setCookie = response.headers.get('set-cookie');
-  return { status: response.status, setCookie, cookie: setCookie ? setCookie.split(';')[0] : null };
+  return { status: response.status, setCookie, cookie: setCookie ? setCookie.split(';')[0] : null, response };
 }
 
 /** A guest that is in the room and holds a working preview cookie. */
@@ -247,7 +275,7 @@ export async function previewStatus(relay: Relay, room: OpenedRoom, cookie: stri
   const timeout = setTimeout(() => abort.abort(), 5000);
   let settled: SimulatedResponse | null = null;
   let failed = false;
-  const pending = relay.fetch(`/s/${room.roomId}/preview${target}`, { headers: { cookie }, signal: abort.signal }).then(
+  const pending = relay.fetch(`${room.previewOrigin}${target}`, { headers: { cookie }, signal: abort.signal }).then(
     (response) => (settled = response),
     (error: unknown) => {
       failed = true;

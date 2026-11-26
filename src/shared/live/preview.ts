@@ -100,15 +100,6 @@ export function isPreviewLocation(location: unknown): location is string {
   return isPreviewTarget(location.slice(0, at)) && !/[\s\u0000-\u001f\u007f\\#]/.test(location.slice(at + 1));
 }
 
-/**
- * The address a guest's browser is sent to for a redirect within the preview: the same place under the room's
- * preview path. The host's preview answers as if it were the whole site, so its `/about/` is the room's
- * `<previewPath>/about/`, never the relay's own `/about/`. Null when the location leaves the preview.
- */
-export function previewBrowserLocation(previewPath: string, location: string): string | null {
-  return isPreviewLocation(location) ? `${previewPath.replace(/\/+$/, '')}${location}` : null;
-}
-
 /** The number of bytes unpadded base64url text of this length holds. */
 export function base64UrlByteLength(text: string): number {
   return Math.floor((text.length * 3) / 4);

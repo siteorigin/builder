@@ -1,17 +1,25 @@
 import { fromBase64Url, toBase64Url } from '../../src/shared/live/crypto';
 import { GUEST_ID_RE, GUEST_ROLES, ROOM_ID_RE, type GuestRole } from '../../src/shared/live/limits';
-import { roomPreviewPath } from '../../src/shared/live/relay-url';
 
 /**
  * How an admitted guest's browser gets into the room's preview. The guest's socket is sent a short-lived single-use
- * ticket; the guest's page redeems it at the room's admission path, and the relay answers with a signed cookie scoped
- * to the room's preview path. The cookie names the room, the guest, its role, when its access ends and which version
- * of its grant it was minted for, so the relay can check every preview request against the guest's grant as it is now.
+ * ticket; the guest's page redeems it on the room's own preview origin (PREVIEW_ADMISSION_PATH), and the relay answers
+ * with a signed cookie for that origin alone. The cookie names the room, the guest, its role, when its access ends and
+ * which version of its grant it was minted for, so the relay can check every preview request against the guest's
+ * grant as it is now.
  */
 
 /** How long a preview ticket can be redeemed for after it is issued. */
 export const PREVIEW_TICKET_TTL_MS = 60_000;
-export const PREVIEW_COOKIE_NAME = 'so_preview';
+/**
+ * The cookie's name over HTTPS. `__Host-` makes the browser keep it Secure, host-only and at `/`, so another room's
+ * preview, a sibling host under the same parent, can never set or replace it.
+ */
+export const PREVIEW_COOKIE_NAME = '__Host-so_preview';
+/** Its name over plain HTTP, in local development only: browsers refuse a `__Host-` cookie that is not Secure. */
+export const LOCAL_PREVIEW_COOKIE_NAME = 'so_preview';
+/** The preview cookie's name for a relay reached over HTTPS or not. */
+export const previewCookieName = (secure: boolean) => (secure ? PREVIEW_COOKIE_NAME : LOCAL_PREVIEW_COOKIE_NAME);
 /** Ticket redemption bodies are tiny: `{"ticket":"…"}`. */
 export const MAX_ADMISSION_BODY_BYTES = 1024;
 const COOKIE_VERSION = 'v1';
@@ -66,22 +74,27 @@ export async function verifyPreviewCookie(key: CryptoKey, value: string): Promis
 }
 
 /**
- * The Set-Cookie header for a grant: host-only, scoped to the room's preview path, unreadable by scripts, sent on
- * top-level navigation but not cross-site subrequests, Secure when the relay is reached over HTTPS, and gone from the
- * browser once the guest's access ends.
+ * The Set-Cookie header for a grant: host-only on the room's preview origin, for its whole path (the site is at its
+ * root), unreadable by scripts, sent on top-level and same-site navigation but not cross-site subrequests, Secure and
+ * `__Host-` when the relay is reached over HTTPS, and gone from the browser once the guest's access ends.
  */
 export function previewCookieHeader(value: string, grant: PreviewGrant, now: number, secure: boolean): string {
   const maxAge = Math.max(0, Math.ceil((grant.expiresAt - now) / 1000));
-  return [`${PREVIEW_COOKIE_NAME}=${value}`, `Path=${roomPreviewPath(grant.roomId)}`, `Max-Age=${maxAge}`, 'HttpOnly', 'SameSite=Lax', ...(secure ? ['Secure'] : [])].join('; ');
+  return [`${previewCookieName(secure)}=${value}`, 'Path=/', `Max-Age=${maxAge}`, 'HttpOnly', 'SameSite=Lax', ...(secure ? ['Secure'] : [])].join('; ');
 }
 
-/** Every value the request's Cookie header gives the preview cookie, at most a few. */
-export function previewCookieValues(header: string | null): string[] {
+/**
+ * Every value the request's Cookie header gives the preview cookie, at most a few. Only the name for this scheme
+ * counts, compared as sent (never percent-decoded): over HTTPS a plain `so_preview`, which any host under the parent
+ * domain could set, is ignored, so another room cannot crowd out the real cookie with copies of it.
+ */
+export function previewCookieValues(header: string | null, secure: boolean): string[] {
   if (!header) return [];
+  const name = previewCookieName(secure);
   const values: string[] = [];
   for (const part of header.split(';')) {
     const at = part.indexOf('=');
-    if (at < 0 || part.slice(0, at).trim() !== PREVIEW_COOKIE_NAME) continue;
+    if (at < 0 || part.slice(0, at).trim() !== name) continue;
     values.push(part.slice(at + 1).trim());
     if (values.length === 4) break;
   }

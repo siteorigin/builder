@@ -12,6 +12,11 @@ export interface Env {
   HANDSHAKE_TIMEOUT_MS?: string;
   PREVIEW_HEAD_TIMEOUT_MS?: string;
   PREVIEW_IDLE_TIMEOUT_MS?: string;
+  /**
+   * The relay's public origin, such as `https://siteorigin.live`, set in production. The viewer's routes are served
+   * only there and preview origins only directly under it. Unset (local development, tests), any host serves them.
+   */
+  RELAY_ORIGIN?: string;
 }
 
 export interface RelayConfig {
@@ -66,4 +71,20 @@ export function signingKey(env: Env): Promise<CryptoKey> | null {
     cachedKey = { secret, key };
   }
   return cachedKey.key;
+}
+
+/**
+ * RELAY_ORIGIN as a canonical origin, null when it is unset, or `false` when it is set to something that is not an
+ * origin (a path, a query, another scheme). A bad value never turns pinning off: the relay then serves nothing.
+ */
+export function relayOrigin(env: Env): string | null | false {
+  const raw = env.RELAY_ORIGIN?.trim();
+  if (!raw) return null;
+  try {
+    const url = new URL(raw);
+    if ((url.protocol !== 'https:' && url.protocol !== 'http:') || url.username || url.password || url.pathname !== '/' || url.search || url.hash) return false;
+    return url.origin;
+  } catch {
+    return false;
+  }
 }

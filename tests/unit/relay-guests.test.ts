@@ -2,7 +2,8 @@ import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { LIVE_CLOSE_CODES } from '../../src/shared/live/close-codes';
 import { createHmac } from 'node:crypto';
 import { fromBase64Url } from '../../src/shared/live/crypto';
-import { admitGuest, admittedGuest, joinGuest, openRoom, previewStatus, redeemTicket, SIGNING_KEY, startRelay, wait, type Relay } from './relay-harness';
+import { PREVIEW_ADMISSION_PATH } from '../../src/shared/live/relay-url';
+import { admitGuest, admittedGuest, joinGuest, openRoom, ORIGIN, previewStatus, redeemTicket, SIGNING_KEY, startRelay, wait, type Relay } from './relay-harness';
 
 /** Guests on the relay: the waiting room, admission, the preview cookie, roles, calls, and removal. */
 
@@ -24,8 +25,8 @@ describe('the waiting room', () => {
     guest.send('guest-to-relay', { type: 'presence:update', presence: { pageId: null, viewportWidth: 1280, selection: null } });
     expect((await guest.next('protocol:error')).code).toBe('FORBIDDEN');
 
-    expect((await relay.fetch(`/s/${room.roomId}/preview/`)).status).toBe(401);
-    expect((await relay.fetch(`/s/${room.roomId}/preview/about`, { headers: { cookie: 'so_preview=v1.forged.mac' } })).status).toBe(401);
+    expect((await relay.fetch(`${room.previewOrigin}/`)).status).toBe(401);
+    expect((await relay.fetch(`${room.previewOrigin}/about`, { headers: { cookie: 'so_preview=v1.forged.mac' } })).status).toBe(401);
     // Nothing reached the host, and the guest has been told nothing about the room.
     await wait(100);
     expect(room.host.has('rpc:request')).toBe(false);
@@ -34,7 +35,7 @@ describe('the waiting room', () => {
     room.host.close();
   });
 
-  it('admits a guest with a ticket the guest redeems once for a room-scoped preview cookie', async () => {
+  it('admits a guest with a ticket the guest redeems once for a cookie on the room’s own preview origin', async () => {
     const room = await openRoom(relay, { projectName: 'Bakery' });
     const joined = await joinGuest(relay, room.roomId);
     await room.host.next('room:roster');
@@ -48,7 +49,9 @@ describe('the waiting room', () => {
     expect([first.status, second.status].sort()).toEqual([204, 403]);
     const setCookie = (first.setCookie ?? second.setCookie)!;
     expect(setCookie).toMatch(/^so_preview=v1\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+; /);
-    expect(setCookie).toContain(`; Path=/s/${room.roomId}/preview`);
+    // Host-only (no Domain) on the room's preview origin, for the whole site.
+    expect(setCookie).toContain('; Path=/;');
+    expect(setCookie).not.toMatch(/Domain=/i);
     expect(setCookie).toContain('; HttpOnly');
     expect(setCookie).toContain('; SameSite=Lax');
     expect(setCookie).not.toContain('Secure');
@@ -68,7 +71,44 @@ describe('the waiting room', () => {
     // The simulator always hands the Worker an http:// URL; Cloudflare says how the guest connected in this header.
     const redeemed = await redeemTicket(relay, room.roomId, status.previewTicket, { 'x-forwarded-proto': 'https' });
     expect(redeemed.status).toBe(204);
+    // `__Host-`, so no other host under the same parent (another room's preview) can set or replace it.
+    expect(redeemed.setCookie).toMatch(/^__Host-so_preview=v1\./);
+    expect(redeemed.setCookie).toContain('; Path=/;');
     expect(redeemed.setCookie).toContain('; Secure');
+    expect(redeemed.setCookie).not.toMatch(/Domain=/i);
+    room.host.close();
+  });
+
+  it('lets only the room’s own viewer redeem its tickets from a browser', async () => {
+    const room = await openRoom(relay);
+    const joined = await joinGuest(relay, room.roomId);
+    const status = await admitGuest(room.host, joined);
+    const admission = `${room.previewOrigin}${PREVIEW_ADMISSION_PATH}`;
+    const ask = (origin: string) => relay.fetch(admission, { method: 'OPTIONS', headers: { origin, 'access-control-request-method': 'POST', 'access-control-request-headers': 'content-type' } });
+
+    // The viewer's preflight is answered for its origin alone, with credentials; any other page's is refused.
+    const preflight = await ask(ORIGIN);
+    expect(preflight.status).toBe(204);
+    expect(preflight.headers.get('access-control-allow-origin')).toBe(ORIGIN);
+    expect(preflight.headers.get('access-control-allow-credentials')).toBe('true');
+    expect(preflight.headers.get('access-control-allow-methods')).toBe('POST');
+    // The redemption is JSON, so the browser sends the POST only if Content-Type is allowed.
+    expect(preflight.headers.get('access-control-allow-headers')).toBe('content-type');
+    // A preflight for anything but POST is not one the viewer makes.
+    expect((await relay.fetch(admission, { method: 'OPTIONS', headers: { origin: ORIGIN, 'access-control-request-method': 'PUT' } })).status).toBe(403);
+    for (const stranger of [room.previewOrigin, 'http://evil.test', (await openRoom(relay)).previewOrigin]) {
+      const refused = await ask(stranger);
+      expect(refused.status, stranger).toBe(403);
+      expect(refused.headers.get('access-control-allow-origin')).toBeNull();
+    }
+
+    // Another page's POST is refused without spending the ticket; the viewer's then gets the cookie, readable by it.
+    expect((await redeemTicket(relay, room.roomId, status.previewTicket, { origin: room.previewOrigin })).status).toBe(403);
+    const redeemed = await redeemTicket(relay, room.roomId, status.previewTicket, { origin: ORIGIN });
+    expect(redeemed.status).toBe(204);
+    expect(redeemed.setCookie).toMatch(/^so_preview=v1\./);
+    expect(redeemed.response.headers.get('access-control-allow-origin')).toBe(ORIGIN);
+    expect(redeemed.response.headers.get('access-control-allow-credentials')).toBe('true');
     room.host.close();
   });
 
@@ -79,8 +119,10 @@ describe('the waiting room', () => {
     const status = await admitGuest(room.host, joined);
     expect((await redeemTicket(relay, other.roomId, status.previewTicket)).status).toBe(403);
     expect((await redeemTicket(relay, room.roomId, 'short')).status).toBe(400);
-    expect((await relay.fetch(`/s/${room.roomId}/admission`, { method: 'POST', body: JSON.stringify({ ticket: status.previewTicket }) })).status).toBe(415);
-    expect((await relay.fetch(`/s/${room.roomId}/admission`)).status).toBe(405);
+    expect((await relay.fetch(`${room.previewOrigin}${PREVIEW_ADMISSION_PATH}`, { method: 'POST', body: JSON.stringify({ ticket: status.previewTicket }) })).status).toBe(415);
+    expect((await relay.fetch(`${room.previewOrigin}${PREVIEW_ADMISSION_PATH}`)).status).toBe(405);
+    // Tickets are redeemed on the room's preview origin only: the relay's own host has no admission route.
+    expect((await relay.fetch(`/s/${room.roomId}/admission`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ ticket: status.previewTicket }) })).status).toBe(404);
     expect((await redeemTicket(relay, room.roomId, status.previewTicket)).status).toBe(204);
     room.host.close();
     other.host.close();

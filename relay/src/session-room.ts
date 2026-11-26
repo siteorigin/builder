@@ -96,20 +96,18 @@ export class SessionRoom extends DurableObject<Env> {
   }
 
   async fetch(request: Request): Promise<Response> {
+    const path = new URL(request.url).pathname;
+    // Preview requests arrive by the preview host, which named this object (index.ts); they are for the room it holds.
+    if (path === '/admission' || path === '/preview') {
+      const roomId = this.room?.roomId;
+      if (!roomId) return textResponse(404, 'There is no live session here. It may have ended.');
+      return path === '/admission' ? this.redeemTicket(roomId, request) : this.preview(roomId, request);
+    }
     const roomId = request.headers.get(INTERNAL_HEADERS.room) ?? '';
     if (!ROOM_ID_RE.test(roomId)) return textResponse(400, 'Bad request.');
-    switch (new URL(request.url).pathname) {
-      case '/create':
-        return this.openHostSocket(roomId);
-      case '/connect':
-        return this.openRoomSocket(roomId);
-      case '/admission':
-        return this.redeemTicket(roomId, request);
-      case '/preview':
-        return this.preview(roomId, request);
-      default:
-        return textResponse(404, 'Not found.');
-    }
+    if (path === '/create') return this.openHostSocket(roomId);
+    if (path === '/connect') return this.openRoomSocket(roomId);
+    return textResponse(404, 'Not found.');
   }
 
   async alarm(): Promise<void> {
@@ -524,7 +522,7 @@ export class SessionRoom extends DurableObject<Env> {
     if ((method !== 'GET' && method !== 'HEAD') || !isPreviewTarget(target)) return textResponse(400, 'Bad request.');
     const key = await keyReady;
     let grant: PreviewGrant | null = null;
-    for (const value of previewCookieValues(request.headers.get('cookie'))) {
+    for (const value of previewCookieValues(request.headers.get('cookie'), request.headers.get(INTERNAL_HEADERS.secure) === '1')) {
       const claimed = await verifyPreviewCookie(key, value);
       if (claimed && claimed.roomId === roomId) {
         grant = claimed;

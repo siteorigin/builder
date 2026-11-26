@@ -10,10 +10,11 @@ export const INTERNAL_HEADERS = {
 } as const;
 
 /** A request from the Worker to a room's object, at one of the object's own paths. */
-export function roomRequest(path: '/create' | '/connect' | '/admission' | '/preview', roomId: string, init: { method?: string; headers?: Record<string, string>; body?: string; signal?: AbortSignal | null } = {}): Request {
+export function roomRequest(path: '/create' | '/connect' | '/admission' | '/preview', roomId: string | null, init: { method?: string; headers?: Record<string, string>; body?: string; signal?: AbortSignal | null } = {}): Request {
   return new Request(`https://session-room${path}`, {
     method: init.method ?? 'GET',
-    headers: { ...init.headers, [INTERNAL_HEADERS.room]: roomId },
+    // The room's own routes carry the room ID; preview requests come by the preview host alone, which named the object.
+    headers: { ...init.headers, ...(roomId ? { [INTERNAL_HEADERS.room]: roomId } : {}) },
     body: init.body,
     signal: init.signal ?? undefined,
     // A preview redirect is the guest's browser's to follow, never the Worker's.

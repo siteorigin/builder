@@ -26,6 +26,9 @@ simple = { limit = 30, period = 60 }
 
 # Tunables, in milliseconds. SESSION_SIGNING_KEY is a secret: `wrangler secret put SESSION_SIGNING_KEY` in production,
 # relay/.dev.vars locally (see .dev.vars.example).
+# RELAY_ORIGIN (the viewer's public origin, e.g. "https://example.live") and the routes for the apex and
+# `*.` wildcard belong in a production environment only: with routes set, `wrangler dev` rewrites the request's host,
+# and each room's preview is found by its host (`p-<label>.<relay host>`). See README.md, Configuration.
 [vars]
 HOST_RECONNECT_GRACE_MS = "120000"
 GUEST_RECONNECT_GRACE_MS = "120000"
