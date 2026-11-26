@@ -2152,7 +2152,7 @@ export const INTERACTIONS: Interaction[] = [
     area: 'assistant',
     intent: 'Find, rename or delete a conversation, and come back to a message I had not sent',
     start: 'A project with several conversations and unsent text',
-    routes: ['chat:Conversations', 'chat:New conversation', 'item:Chat:Find, rename or remove…', 'item:Chat:Clear history…', 'chat:Message', 'item:Chat:Message with *', 'chat:Continue', 'item:Chat:<data>'],
+    routes: ['chat:Conversations', 'chat:New conversation', 'item:Chat:Find, rename or delete…', 'item:Chat:Clear history…', 'chat:Message', 'item:Chat:Message with *', 'chat:Continue', 'item:Chat:<data>'],
     outcome: 'A continued conversation moves to the top; it is renamed and found by a phrase from a later request; one is deleted after a cancelled attempt, its draft with it; each conversation keeps its own draft across switches, projects and a restart; an unfinished request offers Continue; after a reopen the kept threads and the site edit are there',
     scenario: 'Blank starter · scripted model server',
     proof: [
