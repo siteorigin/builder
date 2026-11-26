@@ -1,8 +1,8 @@
 import { z } from 'zod';
-import type { AssetRecord, ElementRef, ProjectState } from '@shared/types';
+import type { AssetRecord, ElementRef, OwnerRef, ProjectState } from '@shared/types';
 import type { ChatImageRef, FieldLocation, InspectLayoutOptions } from '@shared/api';
 import type { EditOperation, ToolError } from '@shared/ops';
-import { EditOperationSchema, legacyShellError, MODEL_BINDING, OPERATION_SCHEMAS, type OperationType } from '@shared/ops';
+import { EditOperationSchema, LAYOUT_BINDING, legacyShellError, MODEL_BINDING, OPERATION_SCHEMAS, type OperationType } from '@shared/ops';
 import { BLUR_LIMITS, MAX_GRID_TRACKS, STYLE_PROPS, TRANSLATE_LIMITS, type StylePropDef } from '@shared/styles';
 import { addressSlug, normalizeRoute } from '@shared/routes';
 import { FOCUSED_WINDOW_TOKENS } from '@shared/tokens';
@@ -12,13 +12,14 @@ import { sourceHash } from '@engine/apply';
 import type { Diagnostic } from '@engine/validate';
 import type { ModelCapabilities, ToolDefinition } from './types';
 import { colorSchemeMode } from '@shared/color-scheme';
-import { agentProps, catalogueIndex, compactNode, componentDetail, componentStructure, pageDetail, pageIdFor, projectSummary, readField, selectionAbridged, tokensSummary } from './context';
+import { agentProps, catalogueIndex, compactNode, componentDetail, componentStructure, layoutDetail, layoutTree, pageDetail, pageIdFor, projectSummary, readField, selectionAbridged, tokensSummary } from './context';
 import { AUDIT_SEO_ARGS, seoReport } from './seo-report';
 import { getTree, findParent, displayName } from '@engine/tree';
 import { newMacroMemory, runUpsert, UPSERT_ARGS, UPSERT_BRIEF, UPSERT_DESCRIPTION, upsertToolSchema, type MacroMemory } from './macros';
 import { BRAND_ARGS, BRAND_BRIEF, BRAND_DESCRIPTION, brandToolSchema, runBrand } from './brand';
 import { PAGE_SEO_ARGS, PAGE_SEO_BRIEF, PAGE_SEO_DESCRIPTION, pageSeoToolSchema, runPageSeo, runSiteSeo, SITE_SEO_ARGS, SITE_SEO_BRIEF, SITE_SEO_DESCRIPTION, siteSeoToolSchema } from './seo-tools';
-import { collectionToolSchemas, UPSERT_PINNED_ENTRY_BRIEF, UPSERT_PINNED_ENTRY_DESCRIPTION, LIST_ENTRIES_ARGS, LIST_ENTRIES_BRIEF, LIST_ENTRIES_DESCRIPTION, READ_ENTRY_ARGS, READ_ENTRY_BRIEF, READ_ENTRY_DESCRIPTION, runListEntries, runReadEntry, runUpsertEntry, UPSERT_ENTRY_ARGS, UPSERT_ENTRY_BRIEF, UPSERT_ENTRY_DESCRIPTION } from './collection-tools';
+import { CONNECT_LIST_ARGS, CONNECT_LIST_BRIEF, CONNECT_LIST_DESCRIPTION, connectListSchema, runConnectList } from './collection-lists';
+import { collectionToolSchemas, DEFINE_COLLECTION_ARGS, DEFINE_COLLECTION_BRIEF, DEFINE_COLLECTION_DESCRIPTION, defineCollectionSchema, runDefineCollection, UPSERT_PINNED_ENTRY_BRIEF, UPSERT_PINNED_ENTRY_DESCRIPTION, LIST_ENTRIES_ARGS, LIST_ENTRIES_BRIEF, LIST_ENTRIES_DESCRIPTION, READ_ENTRY_ARGS, READ_ENTRY_BRIEF, READ_ENTRY_DESCRIPTION, runListEntries, runReadEntry, runUpsertEntry, UPSERT_ENTRY_ARGS, UPSERT_ENTRY_BRIEF, UPSERT_ENTRY_DESCRIPTION } from './collection-tools';
 import { PROJECT_SECTIONS } from './budget';
 import { hasCollections } from '@shared/entry-feed';
 import { MANAGED_COMPONENT_ARGS, MANAGED_COMPONENT_BRIEF, MANAGED_COMPONENT_DESCRIPTION, managedComponentSchema, runManagedComponent } from './managed-component';
@@ -32,6 +33,7 @@ import { runValidateProject, VALIDATE_ARGS, VALIDATE_BRIEF, VALIDATE_DESCRIPTION
 import { OP_REACH, type AuthorityGrants, type RequestedScope } from './scope';
 import { digestComponentInspection, inspectionSteps, MAX_CASES, planComponentInspection, resolveInspectTarget } from './component-inspection';
 import type { ComponentPreviewResult, ComponentPreviewStep } from '@shared/component-preview';
+import type { LayoutOwner } from '@shared/collection-grant';
 import { LAYOUT_TARGET, MAX_LAYOUT_TARGETS, resolveLayoutTargets, targetRef } from './layout-targets';
 import { applyFailure, MAX_RESULT_CHARS, stamp, toolError, type ResultOutcome, type ToolOutcome } from './result';
 import { runUpdateThemeComponent, themeUpdateNote, UPDATE_THEME_COMPONENT_ARGS, UPDATE_THEME_COMPONENT_BRIEF, UPDATE_THEME_COMPONENT_DESCRIPTION, updateThemeComponentTool, wholeSelection, type UpdateReach } from './theme-update';
@@ -125,6 +127,9 @@ export const TOOL_ARGS = {
   list_collection_entries: LIST_ENTRIES_ARGS,
   read_collection_entry: READ_ENTRY_ARGS,
   upsert_collection_entry: UPSERT_ENTRY_ARGS,
+  define_collection: DEFINE_COLLECTION_ARGS,
+  connect_collection_list: CONNECT_LIST_ARGS,
+  read_layout: z.object({ nodeId: z.string().optional().describe('Optional subtree to read.') }),
   update_theme_component: UPDATE_THEME_COMPONENT_ARGS,
   ...SELECTION_ARGS,
   ...DEFINITION_ARGS
@@ -165,6 +170,9 @@ const DESCRIPTIONS: Record<ToolName, string> = {
   list_collection_entries: LIST_ENTRIES_DESCRIPTION,
   read_collection_entry: READ_ENTRY_DESCRIPTION,
   upsert_collection_entry: UPSERT_ENTRY_DESCRIPTION,
+  define_collection: DEFINE_COLLECTION_DESCRIPTION,
+  connect_collection_list: CONNECT_LIST_DESCRIPTION,
+  read_layout: "Read the collection layout this request may change, as it is now: its sections with their props, styles, bindings and nested content, or one node's subtree. Its owner is the layout's, for every operation.",
   update_theme_component: UPDATE_THEME_COMPONENT_DESCRIPTION,
   ...SELECTION_DESCRIPTIONS,
   ...DEFINITION_DESCRIPTIONS
@@ -198,6 +206,9 @@ const BRIEFS: Partial<Record<ToolName, string>> = {
   list_collection_entries: LIST_ENTRIES_BRIEF,
   read_collection_entry: READ_ENTRY_BRIEF,
   upsert_collection_entry: UPSERT_ENTRY_BRIEF,
+  define_collection: DEFINE_COLLECTION_BRIEF,
+  connect_collection_list: CONNECT_LIST_BRIEF,
+  read_layout: 'The layout this request may change, as it is now, or one node of it.',
   update_theme_component: UPDATE_THEME_COMPONENT_BRIEF,
   ...SELECTION_BRIEFS,
   ...DEFINITION_BRIEFS
@@ -208,7 +219,7 @@ const describe = (name: ToolName) => ({ description: DESCRIPTIONS[name], ...(BRI
 
 /** Operations the assistant never sends: images and component packages are added only by the verified importer,
  *  a theme update one component at a time through update_theme_component, pastes come from the editor's own Copy, and a component's properties are reordered
- *  in Edit everywhere, where its placement role is chosen too. A post is written with upsert_collection_entry, the only way a run reaches a collection. */
+ *  in Edit everywhere, where its placement role is chosen too. A collection is shaped with define_collection, its entries written with upsert_collection_entry and shown with connect_collection_list: a run reaches collections only through them. */
 const NEVER_OFFERED = new Set<OperationType>([
   // A whole design in one call reaches the assistant through a tool of its own, never as a raw operation.
   'component.upsert',
@@ -231,6 +242,9 @@ const NEVER_OFFERED = new Set<OperationType>([
   'entry.update',
   'entry.reorder',
   'entry.remove',
+  // A list or loop is connected to a collection with connect_collection_list, whose query a small model can send.
+  'instance.setListSource',
+  'node.setRepeatSource',
   // The project brief is the author's own (#518), and session.apply refuses it from a run.
   'brief.update',
   // So are external sources' settings (#676).
@@ -274,6 +288,18 @@ export const PAGE_OPERATIONS = new Set<OperationType>([
  * holds) or reorder it, and set the page's own settings.
  */
 export const FOCUSED_PAGE_OPERATIONS = new Set<OperationType>(['node.remove', 'node.removeKeepContent', 'node.move', 'page.update']);
+
+/**
+ * What a run limited to a collection's layout can do with operations (#679): its sections and elements, their content,
+ * styles and bindings to the entry, and the placements in it. Nothing reaches a page, the shared header and footer, a
+ * component's design or the collection's entries. A copy and a detached placement are left out: the engine does those
+ * only on a page.
+ */
+export const LAYOUT_OPERATIONS = new Set<OperationType>([...[...PAGE_OPERATIONS].filter((t) => t !== 'page.update' && t !== 'node.copy' && t !== 'component.detachInstance'), 'node.setBinding']);
+/** A small model's layout run: the few that build and bind it one element at a time. */
+export const FOCUSED_LAYOUT_OPERATIONS = new Set<OperationType>(['node.insert', 'node.remove', 'node.move', 'node.setContent', 'node.setBinding', 'node.setStyle', 'instance.setProp']);
+/** What a layout run reads and asks with, beside its own operations and tools. */
+const LAYOUT_READS = new Set<ToolName>(['read_project', 'inspect_element', 'search_components', 'read_component', 'search_assets', 'validate_project', 'apply_operations']);
 
 /** What building a new component takes: making it, its design, its contract and its placement. */
 const COMPONENT_BUILD_OPERATIONS = new Set<OperationType>([
@@ -319,10 +345,14 @@ const MODEL_PAGE_STARTER = z
   .optional()
   .describe('"intro" adds a page introduction section. "article" makes a dated article (news, an announcement): it adds an Article header showing the title, date, byline and excerpt, and a text section for the body.');
 
-/** The operation union the model is shown for a run; the app still checks every operation it receives. `only` narrows it. */
-function offeredOperations(codeEnabled: boolean, definitionOps: boolean, only?: ReadonlySet<OperationType>) {
+/**
+ * The operation union the model is shown for a run; the app still checks every operation it receives. `only` narrows it.
+ * `layout`: a run limited to a collection's layout binds its elements there: to the entry its page is for (`entry`, the
+ * entry layout) or to a loop's row alone (`row`, the index layout).
+ */
+function offeredOperations(codeEnabled: boolean, definitionOps: boolean, only?: ReadonlySet<OperationType>, layout?: 'entry' | 'row') {
   const schemas = (Object.keys(OPERATION_SCHEMAS) as OperationType[])
-    .filter((t) => !NEVER_OFFERED.has(t) && (codeEnabled || !CODE_OPERATIONS.has(t)) && (definitionOps || !DEFINITION_OPERATIONS.has(t)) && (!only || only.has(t)))
+    .filter((t) => !NEVER_OFFERED.has(t) && (codeEnabled || !CODE_OPERATIONS.has(t)) && (definitionOps || !DEFINITION_OPERATIONS.has(t) || (layout && t === 'node.setBinding')) && (!only || only.has(t)))
     .map((t) =>
       t === 'page.create'
         ? OPERATION_SCHEMAS[t].omit({ pageId: true }).extend({ starter: MODEL_PAGE_STARTER })
@@ -344,7 +374,7 @@ function offeredOperations(codeEnabled: boolean, definitionOps: boolean, only?: 
                 ? // What a page is for search engines states facts only the author has (a price, an event's date).
                   OPERATION_SCHEMAS[t].omit({ structuredData: true })
               : t === 'node.setBinding'
-                ? OPERATION_SCHEMAS[t].extend({ binding: MODEL_BINDING })
+                ? OPERATION_SCHEMAS[t].extend({ binding: layout === 'entry' ? LAYOUT_BINDING : MODEL_BINDING })
                 : OPERATION_SCHEMAS[t]
     );
   return z.discriminatedUnion('type', schemas as unknown as [z.ZodObject<{ type: z.ZodLiteral<string> }>, ...z.ZodObject<{ type: z.ZodLiteral<string> }>[]]);
@@ -354,13 +384,13 @@ function offeredOperations(codeEnabled: boolean, definitionOps: boolean, only?: 
  * Tool definitions for one run. Without Developer mode, code tools and code operations are left out. Component
  * contract operations are offered when `definitionOps` says the run may change a component's design.
  */
-export function toolDefinitions(opts: { codeEnabled?: boolean; definitionOps?: boolean; operations?: ReadonlySet<OperationType> } = {}): ToolDefinition[] {
+export function toolDefinitions(opts: { codeEnabled?: boolean; definitionOps?: boolean; operations?: ReadonlySet<OperationType>; layout?: 'entry' | 'row' } = {}): ToolDefinition[] {
   const codeEnabled = opts.codeEnabled ?? true;
   const definitionOps = opts.definitionOps ?? codeEnabled;
   return (Object.keys(TOOL_ARGS) as ToolName[])
     .filter((name) => !TASK_TOOLS.has(name) && (codeEnabled || !CODE_TOOLS.has(name)))
     .map((name) => {
-      const args = name === 'apply_operations' ? TOOL_ARGS.apply_operations.extend({ operations: z.array(offeredOperations(codeEnabled, definitionOps, opts.operations)).min(1).max(MAX_BATCH_OPERATIONS) }) : TOOL_ARGS[name];
+      const args = name === 'apply_operations' ? TOOL_ARGS.apply_operations.extend({ operations: z.array(offeredOperations(codeEnabled, definitionOps, opts.operations, opts.layout)).min(1).max(MAX_BATCH_OPERATIONS) }) : TOOL_ARGS[name];
       const schema = z.toJSONSchema(args, { unrepresentable: 'any', io: 'input' }) as Record<string, unknown>;
       delete schema.$schema;
       return { name, ...describe(name), parameters: schema };
@@ -369,13 +399,13 @@ export function toolDefinitions(opts: { codeEnabled?: boolean; definitionOps?: b
 
 /** Tools that take a revision or hash the model read earlier: only one of these can run per turn. */
 export const REVISION_BOUND_TOOLS = new Set<ToolName>(['apply_operations', 'apply_source_patch']);
-const MACRO_TOOLS: ToolName[] = ['upsert_page_with_sections', 'update_site_brand', 'update_page_seo', 'update_site_seo', 'upsert_managed_component', 'upsert_collection_entry'];
+const MACRO_TOOLS: ToolName[] = ['upsert_page_with_sections', 'update_site_brand', 'update_page_seo', 'update_site_seo', 'upsert_managed_component', 'upsert_collection_entry', 'define_collection', 'connect_collection_list'];
 /** Reads of a collection's entries, offered with the tools of a run that has collections to read. */
 const ENTRY_READS: ToolName[] = ['list_collection_entries', 'read_collection_entry'];
 const SELECTION_TOOLS = Object.keys(SELECTION_ARGS) as ToolName[];
 const DEFINITION_TOOLS = Object.keys(DEFINITION_ARGS) as DefinitionToolName[];
 /** Offered by task mode (see toolsForRun), never as part of the general set. */
-const TASK_TOOLS = new Set<ToolName>([...MACRO_TOOLS, ...ENTRY_READS, ...SELECTION_TOOLS, ...DEFINITION_TOOLS, 'locate_field', 'update_theme_component']);
+const TASK_TOOLS = new Set<ToolName>([...MACRO_TOOLS, ...ENTRY_READS, ...SELECTION_TOOLS, ...DEFINITION_TOOLS, 'locate_field', 'update_theme_component', 'read_layout']);
 /**
  * Everything a read-only question may use: reads of the project, the catalogue and images, its SEO audit, finding a
  * field, and a plain question to the author. Nothing that changes the site, measures the live preview or builds the
@@ -387,11 +417,11 @@ export const MUTATING_TOOLS = new Set<ToolName>([...REVISION_BOUND_TOOLS, ...MAC
 /** Below this window a model only gets the focused tools: the general operation schema alone would crowd it out. */
 export { FOCUSED_WINDOW_TOKENS };
 
-export type ToolMode = 'selection' | 'page' | 'site' | 'definition' | 'general' | 'ask' | 'entry';
+export type ToolMode = 'selection' | 'page' | 'site' | 'definition' | 'general' | 'ask' | 'entry' | 'layout';
 
 export interface RunTools {
   tools: ToolDefinition[];
-  /** selection: the selected element's tools. page: the page tool for one page. site: page and brand tools. definition: a component's own design, on a small model. general: a selection they cannot cover, or a design on a larger model. ask: reading only. entry: one post, open in the Posts workspace. */
+  /** selection: the selected element's tools. page: the page tool for one page. site: page and brand tools. definition: a component's own design, on a small model. general: a selection they cannot cover, or a design on a larger model. ask: reading only. entry: one post, open in the Posts workspace. layout: one collection layout, open on the canvas. */
   mode: ToolMode;
   /** Only the small tool set is offered. */
   focused: boolean;
@@ -403,7 +433,7 @@ const usesImage = (tools: ToolDefinition[]) => JSON.stringify(tools[0].parameter
 
 /** The tools of a read-only question: the same small set for every model, with or without a selection. A project with
  *  collections can also have its posts read. */
-function askTools(state: ProjectState, codeEnabled: boolean, entry?: { collectionId: string; entryId: string } | null): ToolDefinition[] {
+function askTools(state: ProjectState, codeEnabled: boolean, entry?: { collectionId: string; entryId: string } | null, layout?: { owner: LayoutOwner } | null): ToolDefinition[] {
   const names: ToolName[] = [...ASK_TOOLS, ...(codeEnabled ? (['read_source'] as const) : [])];
   const tools = names.map((name): ToolDefinition => {
     // A question can never widen what may change: nothing may.
@@ -416,7 +446,8 @@ function askTools(state: ProjectState, codeEnabled: boolean, entry?: { collectio
   // A question reads component contracts alone: a design is read to build a component, which a question never does.
   // A question about the post open in the Posts workspace reads that post, never another with a title like it.
   const posts = entry ? [{ name: 'read_collection_entry', ...describe('read_collection_entry'), parameters: collectionToolSchemas(state, entry).read }] : entryReads(state);
-  return [...tools.map(contractRead), ...posts];
+  // A question asked with a collection's layout open reads that layout as it is.
+  return [...tools.map(contractRead), ...posts, ...(layout ? [plainTool('read_layout')] : [])];
 }
 
 /** The reads of a collection's entries, while the project has a collection to read. */
@@ -427,6 +458,45 @@ function entryReads(state: ProjectState): ToolDefinition[] {
     { name: 'list_collection_entries', ...describe('list_collection_entries'), parameters: schemas.list },
     { name: 'read_collection_entry', ...describe('read_collection_entry'), parameters: schemas.read }
   ];
+}
+
+/**
+ * Whether a request typed into the chat asks for a collection or its entries, which a small site or page run is then
+ * offered the tools for: in so many words, or by naming one of the project's collections (its ID, its name or what one
+ * entry is called, "Add a Role field to Team").
+ */
+export function asksForCollection(text: string, state?: ProjectState): boolean {
+  if (/\b(?:collections?|entries|entry|team members?|staff|directory|records?|loop)\b/i.test(text)) return true;
+  const fold = (s: string) => s.normalize('NFKC').toLowerCase();
+  const words = fold(text);
+  const named = (n: unknown) => {
+    const w = typeof n === 'string' ? fold(n.trim()) : '';
+    if (!w) return false;
+    // A name in a script written without spaces (チーム, 团队) is found anywhere in the request; a Latin one as a word, or its plural.
+    if (!/^[\p{Script=Latin}\p{N}\s\p{P}]+$/u.test(w)) return words.includes(w);
+    return w.length > 1 && new RegExp(`(^|[^\\p{L}\\p{N}])${w.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}(s)?($|[^\\p{L}\\p{N}])`, 'u').test(words);
+  };
+  return Object.entries(state?.collections ?? {}).some(([id, c]) => named(id) || named(id.replace(/-/g, ' ')) || named(c?.settings?.name) || named(c?.settings?.singularName));
+}
+
+/**
+ * The collection's shape, and connecting lists to its entries (#679). `owner`: the one owner a run limited to a page or
+ * a layout connects lists in. Connecting needs a collection to connect to.
+ */
+const defineCollectionTool = (): ToolDefinition => ({ name: 'define_collection', ...describe('define_collection'), parameters: defineCollectionSchema() });
+const connectListTools = (state: ProjectState, owner?: OwnerRef): ToolDefinition[] =>
+  hasCollections(state) ? [{ name: 'connect_collection_list', ...describe('connect_collection_list'), parameters: connectListSchema(state, owner) }] : [];
+
+/**
+ * The tools of a run limited to one collection layout (#679): the layout read as it is now, its nodes one at a time,
+ * operations on it alone (an element bound to the entry its page is for, on the entry layout), lists connected to
+ * collections there, and the catalogue, images and the author to ask. Nothing reaches a page or widens the run.
+ */
+function layoutTools(state: ProjectState, owner: LayoutOwner, focused: boolean): ToolDefinition[] {
+  const general = toolDefinitions({ codeEnabled: false, definitionOps: false, operations: focused ? FOCUSED_LAYOUT_OPERATIONS : LAYOUT_OPERATIONS, layout: owner.kind === 'archive' ? 'row' : 'entry' }).filter((t) => LAYOUT_READS.has(t.name as ToolName) && (!focused || t.name !== 'validate_project'));
+  const ask = z.toJSONSchema(TOOL_ARGS.request_clarification.omit({ widenScope: true }), { unrepresentable: 'any', io: 'input' }) as Record<string, unknown>;
+  delete ask.$schema;
+  return [plainTool('read_layout'), ...general, ...connectListTools(state, owner), { name: 'request_clarification', ...describe('request_clarification'), parameters: ask }];
 }
 
 /** The tool that writes a post, while the project has a collection to write one in. */
@@ -483,10 +553,17 @@ function runTools(opts: {
   componentRequest?: boolean;
   /** The post a run is limited to (sent from the Posts workspace): it reads and writes only that entry. */
   entry?: { collectionId: string; entryId: string } | null;
+  /** The collection layout a run is limited to (sent while it was open on the canvas): it reads and writes only that layout. */
+  layout?: { owner: LayoutOwner } | null;
+  /** The request typed into the chat asks for a collection (see asksForCollection): a small site run is offered the
+   *  collection tools, which it otherwise leaves out to keep its window for pages. */
+  collectionRequest?: boolean;
 }): RunTools {
   const { state, selection, capabilities, codeEnabled, definitionOps } = opts;
   const focused = !!opts.focused || capabilities.toolCalling === 'constrained-json' || capabilities.contextWindowTokens < FOCUSED_WINDOW_TOKENS;
-  if (opts.ask) return { tools: askTools(state, codeEnabled, opts.entry), mode: 'ask', focused };
+  if (opts.ask) return { tools: askTools(state, codeEnabled, opts.entry, opts.layout), mode: 'ask', focused };
+  // One collection layout, for every model: nothing else is in reach, and nothing widens it.
+  if (opts.layout) return { tools: layoutTools(state, opts.layout.owner, focused), mode: 'layout', focused };
   // One post, for every model: its text read a part at a time and written back, and the author to ask for more. Nothing
   // names another entry, nor creates one.
   if (opts.entry) {
@@ -528,16 +605,22 @@ function runTools(opts: {
     // A part of a placement never changes its component; a small model's selection tools change the selected placement alone.
     const whole = opts.selectionPart === undefined ? wholeSelection(state, selection) : !opts.selectionPart;
     const mine = (ownOnly: boolean) => (whole ? update({ kind: 'selection', owner: selection.owner, nodeId: selection.nodeId, ownOnly }) : []);
-    if (!micro) return { tools: [...mine(false), ...general], mode: 'general', focused: false };
+    // A whole placement's list, or a loop in it, is connected to a collection with its own tool (the raw operations are never offered).
+    const lists = whole ? connectListTools(state, selection.owner) : [];
+    if (!micro) return { tools: [...mine(false), ...general, ...lists], mode: 'general', focused: false };
     // An image can only be chosen by its asset ID, so a selection with one (a background image included), or a request that attached images, can
     // also look them up and ask the user to choose between them by sight.
     const assets = usesImage(micro) || selectionTakesBackground(state, selection) || opts.attachedImages ? general.filter((t) => t.name === 'search_assets' || t.name === 'request_clarification') : [];
     // Content too long to show whole in the selection can still be read whole, a part at a time, before it is changed.
     const reads = selectionAbridged(state, selection) ? general.filter((t) => t.name === 'inspect_element') : [];
-    return { tools: focused ? [...micro, ...mine(true), ...reads, ...assets] : [...micro, ...mine(false), ...general], mode: 'selection', focused };
+    return { tools: focused ? [...micro, ...mine(true), ...reads, ...assets] : [...micro, ...mine(false), ...general, ...lists], mode: 'selection', focused };
   }
   // A component's own design changes no placement; once the user lets the run change more, it may update one.
-  if (opts.definition) return { tools: opts.definitionTarget ? general : [...update({ kind: 'site' }), ...general], mode: 'general', focused: false };
+  // So is a collection loop in a component's design, or a list of a component placed in it.
+  if (opts.definition) {
+    const lists = connectListTools(state, opts.definitionTarget ? { kind: 'component', id: opts.definitionTarget.definitionId } : undefined);
+    return { tools: opts.definitionTarget ? [...general, ...lists] : [...update({ kind: 'site' }), ...general, ...lists], mode: 'general', focused: false };
+  }
   if (opts.page) {
     // Operations only for the page's own sections and settings, and no code edits: a component's source shows on every
     // page. A small model gets the few that address one section by its ID, which the page tool cannot.
@@ -548,7 +631,9 @@ function runTools(opts: {
     const seo: ToolDefinition[] = pageId ? [{ name: 'update_page_seo', ...describe('update_page_seo'), parameters: pageSeoToolSchema(pageId) }] : [];
     // A feed of posts is placed with the page tool; the posts themselves can be read, and are changed once widened.
     const updates = pageId ? update({ kind: 'page', pageId, sectionsOnly: focused }) : [];
-    return { tools: [upsert, ...seo, ...own, ...updates, ...entryReads(state)], mode: 'page', focused };
+    // A list on the page shows a collection's entries through connect_collection_list, for this page's own sections.
+    const lists = pageId && (!focused || opts.collectionRequest) ? connectListTools(state, { kind: 'page', id: pageId }) : [];
+    return { tools: [upsert, ...seo, ...own, ...updates, ...lists, ...entryReads(state)], mode: 'page', focused };
   }
   const macros: ToolDefinition[] = [
     { name: 'upsert_page_with_sections', ...describe('upsert_page_with_sections'), parameters: upsertToolSchema(state, undefined, focused) },
@@ -556,6 +641,9 @@ function runTools(opts: {
     { name: 'update_page_seo', ...describe('update_page_seo'), parameters: pageSeoToolSchema() },
     { name: 'update_site_seo', ...describe('update_site_seo'), parameters: siteSeoToolSchema() },
     ...(!focused || opts.componentRequest ? [managedComponentTool()] : []),
+    // A new kind of content (a Team, Projects) is a collection, made and shown with these: a small model gets them when
+    // the request asks for one or names one the project has, so its window stays for pages otherwise.
+    ...(!focused || opts.collectionRequest ? [defineCollectionTool(), ...connectListTools(state)] : []),
     ...entryWrite(state),
     ...entryReads(state)
   ];
@@ -693,6 +781,9 @@ export interface ToolHost {
   /** The post the run is limited to (sent from the Posts workspace), and how it is named, or null once it may change
    *  more: it then reads and writes that post alone. */
   entryLimit?(): { collectionId: string; entryId: string; label: string } | null;
+  /** The collection layout the run is limited to (sent while it was open), and how it is named: it reads and writes
+   *  only that layout. */
+  layoutLimit?(): { owner: LayoutOwner; label: string } | null;
   /** The pages that show this run's changes, as the preview check before it finishes would measure them (validate_project's preview). */
   changedPageIds?(): string[];
   /** Problems with the project's files on disk, such as image files missing from the project folder, looked for again. */
@@ -887,6 +978,9 @@ async function runTool(name: string, rawArgs: string, host: ToolHost, callId: st
     }
     case 'inspect_element': {
       const a = args as z.infer<(typeof TOOL_ARGS)['inspect_element']>;
+      // A run limited to a collection's layout reads that layout alone, never the page behind it.
+      const layout = host.layoutLimit?.() ?? null;
+      if (layout && (a.owner.kind !== layout.owner.kind || a.owner.id !== layout.owner.id)) return toolError('SCOPE_MISMATCH', `This request is about ${layout.label}: read its nodes with owner { "kind": "${layout.owner.kind}", "id": "${layout.owner.id}" }.`);
       if (a.prop !== undefined) {
         const read = readField(state, { owner: a.owner, nodeId: a.nodeId, prop: a.prop, itemId: a.itemId, field: a.field, offset: a.offset });
         if (!read.ok) return toolError('INVALID_ARGUMENT', read.message);
@@ -981,6 +1075,9 @@ async function runTool(name: string, rawArgs: string, host: ToolHost, callId: st
       // Source is patched through its own tool, against the revision and hash it was read at.
       if (ops.some((o) => o.type === 'component.updateSource'))
         return toolError('INVALID_ARGUMENT', "component.updateSource is not available here. Change a code component's source with apply_source_patch, with the revision and hash read_source returns.");
+      // A list or loop is connected through its own tool, whose query is checked closed.
+      if (ops.some((o) => o.type === 'instance.setListSource' || o.type === 'node.setRepeatSource'))
+        return toolError('INVALID_ARGUMENT', 'instance.setListSource and node.setRepeatSource are not available here. Connect a list, or change a collection loop\'s entries, with connect_collection_list.');
       // A theme update is one component the request needs, through its own tool: never every outdated one at once.
       if (ops.some((o) => o.type === 'theme.refresh'))
         return toolError('INVALID_ARGUMENT', 'theme.refresh is not available here. Update one installed theme component the request needs with update_theme_component, then make the change.');
@@ -1154,6 +1251,16 @@ async function runTool(name: string, rawArgs: string, host: ToolHost, callId: st
       return runReadEntry(args as z.infer<typeof READ_ENTRY_ARGS>, host);
     case 'upsert_collection_entry':
       return runUpsertEntry(args as z.infer<typeof UPSERT_ENTRY_ARGS>, host, callId);
+    case 'define_collection':
+      return runDefineCollection(args as z.infer<typeof DEFINE_COLLECTION_ARGS>, host, callId);
+    case 'connect_collection_list': {
+      const a = args as z.infer<typeof CONNECT_LIST_ARGS>;
+      const layout = host.layoutLimit?.() ?? null;
+      if (layout && (a.owner.kind !== layout.owner.kind || a.owner.id !== layout.owner.id)) return toolError('SCOPE_MISMATCH', `This request may change only ${layout.label}. Nothing was applied.`);
+      return runConnectList(a, host, callId);
+    }
+    case 'read_layout':
+      return readLayout(args as z.infer<(typeof TOOL_ARGS)['read_layout']>, host);
     case 'update_theme_component':
       return runUpdateThemeComponent(args as z.infer<typeof UPDATE_THEME_COMPONENT_ARGS>, host, callId);
     case 'update_selected_props':
@@ -1172,6 +1279,15 @@ async function runTool(name: string, rawArgs: string, host: ToolHost, callId: st
     case 'remove_definition_node':
       return runDefinitionTool(name as DefinitionToolName, args, host, callId);
   }
+}
+
+/** read_layout: the collection layout a run limited to one reads, as it is now (#679). */
+function readLayout(args: { nodeId?: string }, host: ToolHost): ToolOutcome {
+  const layout = host.layoutLimit?.() ?? null;
+  if (!layout) return toolError('INVALID_ARGUMENT', 'read_layout reads the collection layout a request was sent from while it was open; this request was not.');
+  const detail = layoutDetail(host.state(), layout.owner, args.nodeId);
+  if (!detail) return toolError('INVALID_ARGUMENT', args.nodeId !== undefined && layoutTree(host.state(), layout.owner) ? `No node "${args.nodeId}" in ${layout.label}.` : `${layout.label[0].toUpperCase()}${layout.label.slice(1)} is no longer in the site.`);
+  return { ok: true, content: { revision: host.revision(), ...detail } };
 }
 
 /** Whether a rejected batch failed on a page it was creating itself, named by its route or title. */

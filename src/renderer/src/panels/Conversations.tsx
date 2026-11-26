@@ -6,6 +6,7 @@ import { cleanTitle, matchConversation, TITLE_MAX, type ConversationMatch } from
 import { api, confirmDialog, errorText, getState, setState, toast, useStore } from '../store';
 import { Modal, Spinner } from '../components/ui';
 import { draftFor, imagesFor, withDraft, withImages } from '../lib/chatDrafts';
+import { retargetDrops } from '../lib/chat-drop';
 import { activityPhrase, matchExcerpt } from '../lib/conversations';
 import { isImeComposing } from '../lib/ime';
 import { plural } from '../lib/storage';
@@ -152,7 +153,9 @@ export function ConversationsModal({ list, opening, onOpened, onClose }: { list:
     if (!r.ok) return setError(r.message || 'The conversation could not be deleted.');
     setItems((all) => all.filter((x) => x.id !== c.id));
     if (renaming?.id === c.id) setRenaming(null);
-    // Its unsent message and images go with it; the one on screen gives way to the conversation main left open.
+    // Its unsent message and images go with it, images still being added included; the one on screen gives way to the
+    // conversation main left open.
+    retargetDrops(c.id, null);
     const now = getState();
     setState({
       chatDrafts: withDraft(now.chatDrafts, c.id, ''),

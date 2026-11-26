@@ -85,8 +85,8 @@ function project(): { state: ProjectState; note: string; design: string } {
   return { state: s, note, design };
 }
 
-/** Where a tool is offered: the whole site, a question, a selection on Home, or a component's design edited everywhere. */
-type Where = 'site' | 'ask' | 'hero' | 'grid' | 'table' | 'design';
+/** Where a tool is offered: the whole site, a question, a selection on Home, a component's design edited everywhere, or the blog's entry layout. */
+type Where = 'site' | 'ask' | 'hero' | 'grid' | 'table' | 'design' | 'layout';
 
 interface Case {
   where: Where;
@@ -150,6 +150,19 @@ const CASES = {
   list_collection_entries: { where: 'site', ok: () => ({ collectionId: 'posts' }), fail: () => ({ collectionId: 'nothing' }), code: 'VALIDATION_FAILED' },
   read_collection_entry: { where: 'site', ok: () => ({ collectionId: 'posts', entryId: 'en_spring' }), fail: () => ({ collectionId: 'posts', entryId: 'en_gone' }), code: 'VALIDATION_FAILED' },
   upsert_collection_entry: { where: 'site', ok: () => ({ collectionId: 'posts', entryId: 'en_spring', excerpt: 'Twenty makers open their doors.' }), fail: () => ({ collectionId: 'posts', entryId: 'en_spring', publishedAt: 'April 1st' }), code: 'VALIDATION_FAILED' },
+  define_collection: {
+    where: 'site',
+    ok: () => ({ action: 'create', collectionId: 'team', name: 'Team', kind: 'structured', fields: [{ name: 'role', type: 'string', label: 'Role' }] }),
+    fail: () => ({ action: 'update', collectionId: 'posts', fields: [{ name: 'level', type: 'enum' }] }),
+    code: 'VALIDATION_FAILED'
+  },
+  connect_collection_list: {
+    where: 'site',
+    ok: (s) => ({ owner: onHome(s), nodeId: rootAt(s, 2), prop: 'items', query: { collectionId: 'posts', limit: 3 }, fields: [{ itemField: 'title', entryField: 'title' }, { itemField: 'description', entryField: 'excerpt' }] }),
+    fail: (s) => ({ owner: onHome(s), nodeId: 'n_missing', prop: 'items', query: { collectionId: 'posts' } }),
+    code: 'VALIDATION_FAILED'
+  },
+  read_layout: { where: 'layout', ok: () => ({}), fail: () => ({ nodeId: 'n_missing' }), code: 'INVALID_ARGUMENT' },
   update_theme_component: { where: 'site', ok: () => ({ definitionId: HEADER }), fail: () => ({ definitionId: 'proj.nothing-abcde' }), code: 'INVALID_ARGUMENT', sameStep: { fail: () => ({ definitionId: HEADER }) } },
   update_selected_props: { where: 'hero', ok: () => ({ props: { heading: 'Thoughtful spaces' } }), fail: () => ({ props: { nothing: 'here' } }), code: 'VALIDATION_FAILED' },
   edit_selected_list: { where: 'grid', ok: (s) => ({ prop: 'items', action: 'update', itemId: firstItem(s), fields: { title: 'Renamed' } }), fail: () => ({ prop: 'items', action: 'update', itemId: 'item_gone', fields: { title: 'Nowhere' } }), code: 'VALIDATION_FAILED' },
@@ -199,7 +212,8 @@ function hostFor(session: ProjectSession, where: Where, design: string): ToolHos
     definitionTarget: () => (where === 'design' ? { definitionId: design } : null),
     selectionLimited: () => !!sel,
     pageLimit: () => null,
-    entryLimit: () => null
+    entryLimit: () => null,
+    layoutLimit: () => (where === 'layout' ? { owner: { kind: 'template', id: 'posts' }, label: 'the Posts layout' } : null)
   };
 }
 
@@ -277,7 +291,7 @@ describe('one result envelope for every tool (#744)', () => {
     const caps: Partial<ModelCapabilities> = c.where === 'design' ? { contextWindowTokens: 48_000, maxOutputTokens: 4000 } : {};
     const { run } = runner(session, turns, caps);
     const sel = selectionAt(session.state, c.where);
-    await run('Go on', { selection: sel, selectionLabel: sel ? 'the selection' : null, ...(c.where === 'design' ? { component: { id: ids.design, name: 'Split hero' } } : {}), ...(c.where === 'ask' ? { mode: 'ask' as const } : {}) });
+    await run('Go on', { selection: sel, selectionLabel: sel ? 'the selection' : null, ...(c.where === 'design' ? { component: { id: ids.design, name: 'Split hero' } } : {}), ...(c.where === 'ask' ? { mode: 'ask' as const } : {}), ...(c.where === 'layout' ? { template: { collectionId: 'posts', name: 'Posts' } } : {}) });
     // Offered at each call, so each result is the tool's own, never a refusal of a tool the step did not offer.
     for (const tools of offered) expect(tools, `${name} is offered ${c.where === 'site' ? 'to a site run' : `with ${c.where}`}`).toContain(name);
     const ok = results.get('call_ok')!;

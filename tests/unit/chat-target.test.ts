@@ -307,6 +307,61 @@ describe('the composer with a post open in the Posts workspace (#400)', () => {
   });
 });
 
+describe('the composer with a collection layout open on the canvas (#679)', () => {
+  /** The starter project with a Team whose entries have pages, one member, and an index layout. */
+  function teamSite() {
+    const { state: start, home, hero } = project();
+    const state = applyOperations(start, [
+      { type: 'collection.create', collectionId: 'team', name: 'Team', kind: 'structured', route: '/team/', archiveTemplate: 'start' },
+      { type: 'entry.create', collectionId: 'team', entryId: 'en_ana', title: 'Ana Ruiz', draft: false }
+    ]).state;
+    return { state, home, hero };
+  }
+
+  it('is about the layout, never the page or selection behind it, and names it', () => {
+    const { state, home } = teamSite();
+    const picked: ElementRef = { owner: { kind: 'page', id: home }, instancePath: [], nodeId: state.pages[home].rootIds[0] };
+    const scope = composerScope(state, { pageId: home, selection: picked, definitionMode: null, template: { collectionId: 'team', entryId: 'en_ana' } });
+    expect(scope).toMatchObject({ component: null, selection: null, template: { collectionId: 'team', entryId: 'en_ana', name: 'Team' } });
+    for (const chosen of ['selection', 'page', 'site'] as const) {
+      const ctx = chatContextFor(state, scope, { enabled: { page: true, scope: chosen }, viewport: 1280 });
+      expect(ctx).toEqual({ pageId: home, pageTitle: state.pages[home].title, selection: null, selectionLabel: null, template: { collectionId: 'team', entryId: 'en_ana', name: 'Team' }, viewport: 1280 });
+      expect(targetOf(ctx)).toBe('Team layout');
+    }
+    // A post open in front of the layout is the target instead.
+    const blog = applyOperations(state, [{ type: 'collection.create', collectionId: 'posts' }, { type: 'entry.create', collectionId: 'posts', entryId: 'en_spring', title: 'Spring' }]).state;
+    expect(composerScope(blog, { pageId: home, selection: null, definitionMode: null, post: { collectionId: 'posts', entryId: 'en_spring' }, template: { collectionId: 'team', entryId: 'en_ana' } })).toMatchObject({ post: { entryId: 'en_spring' } });
+    expect(composerScope(blog, { pageId: home, selection: null, definitionMode: null, post: { collectionId: 'posts', entryId: 'en_spring' }, template: { collectionId: 'team', entryId: 'en_ana' } }).template).toBeUndefined();
+    // The index layout is its own target; a layout that has gone is no target.
+    expect(composerScope(state, { pageId: home, selection: null, definitionMode: null, template: { collectionId: 'team', entryId: null, archive: true } }).template).toEqual({ collectionId: 'team', archive: true, name: 'Team' });
+    expect(composerScope(state, { pageId: home, selection: picked, definitionMode: null, template: { collectionId: 'gone', entryId: null } })).toMatchObject({ selection: picked });
+    expect(composerScope(state, { pageId: home, selection: null, definitionMode: null, template: null }).template).toBeUndefined();
+    // Two requests about the two layouts are told apart.
+    const detail = { pageId: home, pageTitle: 'Home', selection: null, selectionLabel: null, viewport: 1280, template: { collectionId: 'team', name: 'Team' } };
+    expect(requestTarget({ context: detail })).not.toBe(requestTarget({ context: { ...detail, template: { ...detail.template, archive: true as const } } }));
+  });
+
+  it('tries a layout request again on that layout, and continues it, but never one whose layout has gone', () => {
+    const { state, home } = teamSite();
+    const ctx: ChatContext = { pageId: home, pageTitle: 'Home', selection: null, selectionLabel: null, template: { collectionId: 'team', entryId: 'en_ana', name: 'Team' }, viewport: 1280 };
+    expect(retryView(state, ctx, { pageId: home, definitionMode: null })).toMatchObject({ template: { collectionId: 'team', entryId: 'en_ana' }, selection: null, definitionMode: null, missing: null });
+    expect(continueContext(user('u', ctx), state, 1280)).toEqual({ ctx });
+    expect(continueContext(user('u', { ...ctx, pageId: 'pg_gone' }), state, 1280)).toMatchObject({ ctx: { pageId: home, template: { collectionId: 'team' } } });
+    const gone = structuredClone(state);
+    delete gone.collections.team;
+    // Put back without its layout, it keeps to the page: never the whole site, which a request with no scope once meant.
+    expect(retryView(gone, ctx, { pageId: home, definitionMode: null })).toMatchObject({ template: null, missing: 'The Team layout', scope: 'page' });
+    // The index layout is tried again as the index layout, and continued only while the collection has an index.
+    const index: ChatContext = { ...ctx, template: { collectionId: 'team', archive: true, name: 'Team' } };
+    expect(retryView(state, index, { pageId: home, definitionMode: null })).toMatchObject({ template: { collectionId: 'team', entryId: null, archive: true }, missing: null });
+    expect(continueContext(user('u', index), state, 1280)).toEqual({ ctx: index });
+    const noIndex = applyOperations(state, [{ type: 'collection.update', collectionId: 'team', pages: { detail: true, archive: false } }]).state;
+    expect(retryView(noIndex, index, { pageId: home, definitionMode: null })).toMatchObject({ template: null, missing: 'The Team index layout' });
+    expect(continueContext(user('u', index), noIndex, 1280)).toMatchObject({ error: expect.stringMatching(/^The Team index layout is no longer in the site/) });
+    expect(continueContext(user('u', ctx), gone, 1280)).toEqual({ error: 'The Team layout is no longer in the site. Open a layout or page, then send "Continue".' });
+  });
+});
+
 describe('what a request was aimed at', () => {
   const ctx = (extra: Partial<ChatContext>): ChatContext => ({ pageId: 'pg_home', pageTitle: 'Home', selection: null, selectionLabel: null, viewport: 1280, ...extra });
   const req = (c: ChatContext): Pick<ChatMessage, 'context'> => ({ context: c });

@@ -12,7 +12,7 @@ import { createStarterState } from '@catalogue/starters';
 import { Orchestrator } from '@agent/orchestrator';
 import type { AgentModelAdapter, ModelEvent } from '@agent/types';
 import { ProjectSession } from '../../src/main/project/session';
-import { afterSend, afterSendMessage, attachImage, chatStatePatch, cleanDrafts, cleanImages, draftFor, imagesFor, moveDraft, moveImages, restorePlan, unsentDrafts, withDraft, withImages, type ChatDrafts, type ChatImages } from '../../src/renderer/src/lib/chatDrafts';
+import { afterSend, afterSendMessage, attachImage, attachImages, chatStatePatch, droppedImagesNote, isFileDrag, cleanDrafts, cleanImages, draftFor, imagesFor, moveDraft, moveImages, restorePlan, unsentDrafts, withDraft, withImages, type ChatDrafts, type ChatImages } from '../../src/renderer/src/lib/chatDrafts';
 
 describe('drafts per conversation', () => {
   it('a new conversation starts empty, and returning to the first restores its draft', () => {
@@ -359,5 +359,28 @@ describe('images attached to an unsent message (#12)', () => {
     // Another opening, or no change, saves nothing.
     expect(chatStatePatch(prev, { ...prev, key: 'k2', images: { c_one: ['a_1'] } })).toBeNull();
     expect(chatStatePatch(prev, prev)).toBeNull();
+  });
+});
+
+describe('image files dropped on the composer (#679)', () => {
+  it('attaches what the importer returned, in order, each once, up to a message’s worth, and says what happened', () => {
+    let images: ChatImages = withImages({}, 'c_home', ['a_kiln']);
+    const r = attachImages(images, 'c_home', ['a_ana', 'a_kiln', 'a_bo', 'a_ana', 'a_cy', 'a_di']);
+    expect(imagesFor(r.images, 'c_home')).toEqual(['a_kiln', 'a_ana', 'a_bo', 'a_cy']);
+    expect(r).toMatchObject({ added: ['a_ana', 'a_bo', 'a_cy'], already: 1, full: 1 });
+    expect(droppedImagesNote({ added: r.added.length, already: r.already, full: r.full })).toBe('Attached 3 images to your message. They are in Assets too. 1 image is already in your message. 1 image is in Assets but not in your message: a message carries at most 4 images.');
+    // Another conversation's draft is never touched, and nothing to attach changes nothing.
+    images = r.images;
+    const other = attachImages(images, 'c_other', ['a_ana']).images;
+    expect(imagesFor(other, 'c_home')).toEqual(imagesFor(images, 'c_home'));
+    expect(imagesFor(other, 'c_other')).toEqual(['a_ana']);
+    expect(attachImages(images, 'c_home', []).images).toBe(images);
+    expect(droppedImagesNote({ added: 1, already: 0, full: 0 })).toBe('Attached 1 image to your message. It is in Assets too.');
+  });
+
+  it('takes only a drag of files from the desktop', () => {
+    expect(isFileDrag(['Files'])).toBe(true);
+    expect(isFileDrag(['text/plain', 'Files'])).toBe(true);
+    expect(isFileDrag(['text/plain', 'text/uri-list'])).toBe(false);
   });
 });

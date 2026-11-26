@@ -1,15 +1,16 @@
 import { useEffect, useId, useLayoutEffect, useMemo, useRef, useState, type MouseEvent, type ReactNode } from 'react';
 import { createPortal } from 'react-dom';
-import { ArrowDown, ArrowUp, BookOpen, Check, ChevronDown, CircleAlert, CircleCheck, CircleDashed, CircleHelp, CircleStop, Component, Cpu, FileText, Globe, History, ImagePlus, Info, KeyRound, MessageCircleQuestionMark, MousePointerClick, Pencil, Play, Plus, RefreshCw, RotateCcw, Search, Settings2, SlidersHorizontal, Sparkles, Square, Trash2, TriangleAlert } from 'lucide-react';
+import { ArrowDown, ArrowUp, BookOpen, Check, ChevronDown, CircleAlert, CircleCheck, CircleDashed, CircleHelp, CircleStop, Component, Cpu, FileText, Globe, History, ImagePlus, Info, KeyRound, LayoutTemplate, MessageCircleQuestionMark, MousePointerClick, Pencil, Play, Plus, RefreshCw, RotateCcw, Search, Settings2, SlidersHorizontal, Sparkles, Square, Trash2, TriangleAlert } from 'lucide-react';
 import { turnQuestions, type ChatActivity, type ChatChange, type ChatContext, type ChatEditScope, type ChatImageRef, type ChatMessage, type ConversationSummary, type FieldLocation } from '@shared/api';
 import { NEW_CONVERSATION, storedTitle } from '@shared/conversations';
 import type { ElementRef, ProjectState } from '@shared/types';
 import { refLabel } from '../lib/model';
 import { api, getState, saveLocal, setState, toast, useStore, confirmDialog, selectChatDraft, selectChatImages, setChatDraft, inspectorFocusRequest } from '../store';
 import { afterSendMessage, draftFor, imagesFor, moveDraft, moveImages, unsentDrafts, withDraft, withImages } from '../lib/chatDrafts';
+import { importIntoChat, isFileDrag, retargetDrops } from '../lib/chat-drop';
 import { modelLines, nextRecipient, recipientText, sameRecipient, switchNotice, switchNoticeText, turnRecipient } from '../lib/chatRecipient';
 import { PROVIDER_LABELS, turnModelText, type TurnModel } from '@shared/turn-model';
-import { chatContextFor, composerScope, editScope, requestTarget, retryView, targetOf, uneditableDesign } from '../lib/chatTarget';
+import { chatContextFor, composerScope, editScope, layoutName, requestTarget, retryView, targetOf, uneditableDesign } from '../lib/chatTarget';
 import { CHAT_FOCUS_WAIT_MS, chatFocusStep } from '../lib/page-start';
 import { chatSuggestions } from '../lib/chatSuggestions';
 import { auditOnce } from '../lib/seo-health';
@@ -234,6 +235,8 @@ function scopeOf(ctx?: ChatContext | null, state?: ProjectState): string {
   if (!ctx) return '';
   // A post's request reaches that post alone, which its target names.
   if (ctx.post && typeof ctx.post === 'object') return targetOf(ctx);
+  // So does a layout's.
+  if (ctx.template && typeof ctx.template === 'object') return targetOf(ctx);
   const inComponent = typeof ctx.component?.name === 'string';
   if (ctx.mode !== 'ask' && !ctx.selectionLabel && !inComponent && ctx.pageTitle) return ctx.scope === 'page' ? `This page · ${ctx.pageTitle}` : `Whole site · from ${ctx.pageTitle}`;
   // A part of a placed component can change the whole placement (agent/scope.ts), which is the real boundary.
@@ -297,6 +300,7 @@ export function Chat() {
   const selection = useStore((s) => s.selection);
   const pageId = useStore((s) => s.pageId);
   const definitionMode = useStore((s) => s.definitionMode);
+  const templateMode = useStore((s) => s.templateMode);
   // The post the Posts workspace shows, written or previewed: the next message is about it, not the page under it.
   const openPostRef = useStore((s) => s.post);
   const leftTab = useStore((s) => s.leftTab);
@@ -320,6 +324,25 @@ export function Chat() {
   const [draftFirst, setDraftFirst] = useState(false);
   const logRef = useRef<HTMLDivElement>(null);
   const taRef = useRef<HTMLTextAreaElement>(null);
+  // Image files dragged over the composer from the desktop: it shows it takes them (#679), and how many drops are still
+  // being added, which the next message waits for.
+  const [fileOver, setFileOver] = useState(false);
+  const fileDepth = useRef(0);
+  const [droppingCount, setDroppingCount] = useState(0);
+  const dropping = droppingCount > 0;
+  // A drag that ends anywhere (dropped elsewhere, or cancelled) leaves the composer unhighlighted.
+  useEffect(() => {
+    const done = () => {
+      fileDepth.current = 0;
+      setFileOver(false);
+    };
+    window.addEventListener('drop', done);
+    window.addEventListener('dragend', done);
+    return () => {
+      window.removeEventListener('drop', done);
+      window.removeEventListener('dragend', done);
+    };
+  }, []);
   const nearBottom = useRef(true);
   // Scrolled back far enough that the latest turn is out of sight: offer the way back.
   const [away, setAway] = useState(false);
@@ -589,6 +612,8 @@ export function Chat() {
   };
   /** A draft moved to another conversation takes its widened scope along. */
   const moveWidened = (from: string, to: string) => {
+    // Images still being added go with the draft too.
+    retargetDrops(from, to);
     const scope = starterWidened.current.get(from);
     if (scope === undefined) return;
     starterWidened.current.delete(from);
@@ -641,7 +666,8 @@ export function Chat() {
     selection: workspace ? null : selection,
     definitionMode: workspace ? null : definitionMode,
     writer: workspace === 'write',
-    post: seoChosen?.kind === 'entry' ? { collectionId: seoChosen.collectionId, entryId: seoChosen.entryId } : shownPost?.kind === 'post' ? shownPost.ref : null
+    post: seoChosen?.kind === 'entry' ? { collectionId: seoChosen.collectionId, entryId: seoChosen.entryId } : shownPost?.kind === 'post' ? shownPost.ref : null,
+    template: workspace ? null : templateMode
   });
   const { page, component } = scope;
   const selLabel = scope.selectionLabel;
@@ -654,13 +680,13 @@ export function Chat() {
   const localModel = configured && provider?.id === 'local';
   const headroom =
     localModel && !asking && settings
-      ? headroomWarning({ draft, history: replayed, contextWindow: settings.ai.local.contextWindow, model: contextModel, reportedWindow, toolMode: settings.ai.local.toolMode, pageTools: !askMode && !component && !scope.post && !(toSelection && !!scope.selection && smallToolsCover(st, scope.selection)) })
+      ? headroomWarning({ draft, history: replayed, contextWindow: settings.ai.local.contextWindow, model: contextModel, reportedWindow, toolMode: settings.ai.local.toolMode, pageTools: !askMode && !component && !scope.post && !scope.template && !(toSelection && !!scope.selection && smallToolsCover(st, scope.selection)) })
       : null;
   // Starters come from what this project holds: the page, the selection, the pages and the images that exist.
   // The starters are changes to make, so a question starts from an empty box. They are about pages, so a component
   // edited everywhere offers none.
   // A local server or model that failed its last check is said instead, so no starters are offered.
-  const fresh = !component && !scope.post && !scope.empty && msgs.length === 0 && configured && !notReady && !!conversation && !draft.trim();
+  const fresh = !component && !scope.post && !scope.empty && !scope.template && msgs.length === 0 && configured && !notReady && !!conversation && !draft.trim();
   const suggestions: Array<{ text: string; kind: string }> = !fresh
     ? []
     : askMode
@@ -732,6 +758,9 @@ export function Chat() {
     : scope.empty
     ? // The writer with no post open shows no page: a change waits for a post, and a question reads the site.
       [askMode ? { value: 'page' as const, label: 'Whole site', description: 'Its posts and pages', icon: <Globe />, title: 'The whole site', chip: 'Whole site' } : { value: 'page' as const, label: 'No post open', description: 'Open a post to ask for a change to it', icon: <Pencil />, title: 'No post open: open a post to ask for a change to it', chip: 'No post open' }]
+    : scope.template
+    ? // So is a collection's layout: every entry's page shown through it, never the page behind it.
+      [{ value: 'page' as const, label: 'This layout', description: askMode ? 'The layout you have open' : 'Every entry shown through it', icon: <LayoutTemplate />, title: askMode ? `The ${layoutName(scope.template)}` : `Only the ${layoutName(scope.template)}, for every entry`, chip: layoutName(scope.template), where: scope.template.archive ? 'the index' : 'every entry' }]
     : component
     ? [
         ...(selLabel ? [{ value: 'selection' as const, label: selLabel, description: 'Only this element', icon: <MousePointerClick />, title: askMode ? `${selLabel}, in ${component.name}` : `Only ${selLabel}, in ${component.name} everywhere it is used`, chip: selLabel, where: `${component.name} everywhere` }] : []),
@@ -857,11 +886,13 @@ export function Chat() {
   const send = async (text = draft, context?: ChatContext): Promise<boolean> => {
     if (!text.trim() || running || sending || !conversation) return false;
     if (!configured) return (openSettings(), false);
-    // The assistant has no tools for collection layouts: an edit sent from one would land on the page behind it. A post
-    // open in the Posts workspace, or the page its preview went on to, is a target of its own instead.
-    const ownTarget = context ? !!context.post : !!scope.post || shownPost?.kind === 'page' || !!seoPage;
-    if (getState().templateMode && !ownTarget && (context ? context.mode !== 'ask' : !askMode))
-      return (toast('The assistant can’t change a collection’s layout yet. Click Done to go back to the page, or ask it a question.', 'info'), false);
+    // A post open in the Posts workspace, the page its preview went on to, or a collection layout open on the canvas
+    // (#679) is a target of its own.
+    const ownTarget = context ? !!context.post || !!context.template : !!scope.post || !!scope.template || shownPost?.kind === 'page' || !!seoPage;
+    // Image files dropped on the composer are still being added: an edit started now would miss them, and would hold the
+    // project while their records are saved (#679). Continue and Try again wait for them too.
+    // A question asked now would go without them too; only one put back with its own images (Try again) need not wait.
+    if (dropping && !(context && context.mode === 'ask')) return (toast('The dropped images are still being added. Send once they show under your message.', 'info'), false);
     // A code component open in Component Studio is not one the AI edits: an edit sent now would reach the page behind
     // it. A question changes nothing, so it is still asked.
     const code = !context && !askMode && !ownTarget ? uneditableDesign(st, definitionMode) : null;
@@ -1013,7 +1044,7 @@ export function Chat() {
         { separator: true },
         ...(list.length ? [{ label: 'Find, rename or remove…', icon: <Search />, onSelect: () => stillOpen() && setManaging({ opening, list }) }] : []),
         // Unsent drafts belong to the conversations being removed, so they go with them.
-        { label: 'Clear history…', icon: <Trash2 />, danger: true, onSelect: () => void confirmDialog({ title: 'Clear AI conversation history?', body: 'Every AI conversation in this project is deleted, including this one and any message you haven’t sent yet.', details: [{ kind: 'keep', text: 'Changes the AI made to your site stay, and you can still undo them.' }, { kind: 'final', text: 'Deleted conversations can’t be brought back.' }], confirmLabel: 'Clear history', tone: 'danger', icon: 'delete' }).then((ok) => ok === true && stillOpen() && show(api.ai.clearHistory(opening), () => ({ chatDrafts: {}, chatImages: {} }))) }
+        { label: 'Clear history…', icon: <Trash2 />, danger: true, onSelect: () => void confirmDialog({ title: 'Clear AI conversation history?', body: 'Every AI conversation in this project is deleted, including this one and any message you haven’t sent yet.', details: [{ kind: 'keep', text: 'Changes the AI made to your site stay, and you can still undo them.' }, { kind: 'final', text: 'Deleted conversations can’t be brought back.' }], confirmLabel: 'Clear history', tone: 'danger', icon: 'delete' }).then((ok) => ok === true && stillOpen() && show(api.ai.clearHistory(opening), () => (retargetDrops(null, null), { chatDrafts: {}, chatImages: {} }))) }
       ],
       'Conversations'
     );
@@ -1374,7 +1405,46 @@ export function Chat() {
         // One box, written in first: the text, then one row of what goes with it. Answering, it is one row: the reply
         // and its Send. Anywhere in the box that is not a control puts the caret in the text.
         <div
-          className={`composer${asking ? ' answering' : ''}`}
+          className={`composer${asking ? ' answering' : ''}${fileOver ? ' file-over' : ''}`}
+          // Image files dropped here are imported into Assets and attached to this conversation's next message.
+          onDragEnter={(e) => {
+            if (!isFileDrag([...e.dataTransfer.types]) || !conversation || asking) return;
+            e.preventDefault();
+            fileDepth.current++;
+            setFileOver(true);
+          }}
+          onDragOver={(e) => {
+            if (!isFileDrag([...e.dataTransfer.types]) || !conversation) return;
+            e.preventDefault();
+            // The answer box takes words only: images go with the next message, once the question is answered.
+            e.dataTransfer.dropEffect = asking ? 'none' : 'copy';
+            if (!fileOver && !asking) setFileOver(true);
+          }}
+          onDragLeave={(e) => {
+            // Leaving the composer itself, whatever the drag carries, always ends its highlight.
+            if (!e.currentTarget.contains(e.relatedTarget as Node | null)) {
+              fileDepth.current = 0;
+              return setFileOver(false);
+            }
+            if (!isFileDrag([...e.dataTransfer.types])) return;
+            fileDepth.current = Math.max(0, fileDepth.current - 1);
+            if (!fileDepth.current) setFileOver(false);
+          }}
+          onDrop={(e) => {
+            if (!isFileDrag([...e.dataTransfer.types])) return;
+            e.preventDefault();
+            fileDepth.current = 0;
+            setFileOver(false);
+            if (!conversation) return;
+            if (asking) return void toast('Answer the question first. Images can go with your next message.', 'info');
+            const paths = [...e.dataTransfer.files].map((f) => api.pathForFile(f)).filter(Boolean);
+            if (!paths.length) return;
+            setDroppingCount((n) => n + 1);
+            void importIntoChat(paths, conversation.id)
+              // The composer is focused for the images only while it shows their message, and nothing else has focus.
+              .then(({ ids, to }) => ids.length && to === getState().conversation?.id && (document.activeElement === document.body || document.activeElement === taRef.current) && focusComposer())
+              .finally(() => setDroppingCount((n) => Math.max(0, n - 1)));
+          }}
           onMouseDown={(e) => {
             const t = e.target as HTMLElement;
             if (t === taRef.current || t.closest('button, a, input, textarea, [role="menu"]')) return;
@@ -2017,15 +2087,20 @@ function ResultCard({
       if (view?.post && (draftFor(getState().chatDrafts, conv.id).trim() !== typed || imagesFor(getState().chatImages, conv.id).join('\n') !== attached.join('\n')))
         return void toast('The post is open. What you wrote meanwhile is kept, so the earlier request was not put back.', 'info');
       // A request about a page leaves the Posts workspace or the SEO view, and a collection's layout behind it, whose
-      // post, view or layout would otherwise stay in front of the page it is about.
+      // post, view or layout would otherwise stay in front of the page it is about. A request about a layout goes back
+      // to that layout, in Edit, so the request put back is about it again (#679).
       const covering = activeWorkspace(getState());
       const previewing = postWorkspace(getState()) === 'preview';
       const leavePosts =
         ctx?.post === undefined && covering
-          ? { ...(getState().leftTab === 'posts' || getState().leftTab === 'seo' ? { leftTab: 'pages' as const } : {}), ...(previewing ? { mode: 'edit' as const } : {}), ...(getState().templateMode && !view?.definitionMode ? { templateMode: null } : {}) }
+          ? { ...(getState().leftTab === 'posts' || getState().leftTab === 'seo' ? { leftTab: 'pages' as const } : {}), ...(previewing ? { mode: 'edit' as const } : {}) }
           : {};
+      const layout = view?.template ? { templateMode: view.template, mode: 'edit' as const } : getState().templateMode && ctx?.post === undefined && !view?.definitionMode ? { templateMode: null } : {};
+      // Images still being added to the draft this replaces were for that draft, not this one.
+      retargetDrops(conv.id, null);
       setState({
         ...leavePosts,
+        ...layout,
         chatDrafts: withDraft(getState().chatDrafts, conv.id, user.text),
         chatImages: withImages(getState().chatImages, conv.id, originalImages),
         // Editing a component everywhere happens in Edit, never in Preview.

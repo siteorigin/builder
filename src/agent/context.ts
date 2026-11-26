@@ -2,7 +2,7 @@ import { axesOf, selectedVariants } from '@shared/variants';
 import { agentDiscovery, oneLine } from '@shared/llms';
 import { toolOverrides, webMcpOn } from '@shared/webmcp';
 import { crawlerRules, storedCrawlerPolicy } from '@shared/crawler-policy';
-import type { ComponentDefinition, ElementRef, GraphNode, InstanceNode, NodeTree, OwnerRef, PageDoc, ProjectState, PropSchema, SlotDef } from '@shared/types';
+import type { CollectionFieldSchema, ComponentDefinition, ElementRef, GraphNode, InstanceNode, NodeTree, OwnerRef, PageDoc, ProjectState, PropSchema, SlotDef } from '@shared/types';
 import { isBinding, slotChildren } from '@shared/types';
 import { partStyleControls } from '@shared/styles';
 import { isRichBlock, richTextToMarkdown, type RichPages } from '@shared/richtext';
@@ -14,6 +14,7 @@ import { effectiveTokens, isDraftPage } from '@generator/index';
 import { hasDarkPalette } from '@shared/color-scheme';
 import { catalogueEntries, getTheme } from '@catalogue/index';
 import { hasCollections } from '@shared/entry-feed';
+import { collectionHasBody, collectionKind, hasArchivePages, hasDetailPages, isSyncedCollection, pagesPrefix } from '@shared/collections';
 import { teaserFields } from '@shared/page-teasers';
 import { pageParents } from '@shared/page-tree';
 import { notFoundCopy } from '@shared/not-found';
@@ -229,7 +230,7 @@ export function projectSummary(state: ProjectState, revision: number) {
       .map((d) => ({ definitionId: d.id, name: d.name, kind: d.kind, description: d.description })),
     // Installed theme components the theme has a newer version of: what each adds, and whether this project can take it.
     ...withThemeUpdates(state),
-    // What a post section's collection, category and tag can name.
+    // What each collection holds and how it is shaped: what a post section, a connected list or a loop can name.
     ...(hasCollections(state) ? { collections: collectionsSummary(state) } : {}),
     assets: Object.keys(state.assets.assets).length
   };
@@ -254,14 +255,49 @@ export function withThemeUpdates(state: ProjectState, only?: (definitionId: stri
   return u ? { themeUpdates: u } : {};
 }
 
-/** Each collection by ID, with its address, how many entries it publishes, and its categories' and tags' IDs and names. */
-function collectionsSummary(state: ProjectState) {
+/** A collection's custom field as the assistant reads it: its type, label, and what it takes (options, the collection it names). */
+function collectionFieldSummary(name: string, f: CollectionFieldSchema) {
+  // A document edited by hand can hold anything: what cannot be read is left out, never read as a field.
+  if (!f || typeof f !== 'object') return null;
+  return {
+    name,
+    type: f.type,
+    label: f.label,
+    ...(f.required ? { required: true } : {}),
+    ...(f.type === 'enum' ? { options: (Array.isArray(f.options) ? f.options : []).flatMap((o) => (o && typeof o === 'object' && typeof o.value === 'string' ? [o.value] : [])) } : {}),
+    ...(f.type === 'reference' ? { collection: f.collection, ...(f.multiple ? { multiple: true } : {}) } : {})
+  };
+}
+
+/**
+ * Each collection by ID: what it holds (kind, what one entry is called), the pages the site has for it and its address,
+ * how many entries it has and publishes, its custom fields, and every grouping with its terms' IDs and names. One synced
+ * from an external source says so: its entries are read-only until it is detached in the editor.
+ */
+export function collectionsSummary(state: ProjectState) {
   return Object.keys(state.collections)
     .sort()
     .map((id) => {
       const c = state.collections[id];
-      const terms = (t: string) => Object.fromEntries(Object.entries(c.settings?.taxonomies?.[t]?.terms ?? {}).map(([k, v]) => [k, v?.label]));
-      return { id, name: c.settings?.name, route: c.settings?.route, published: Object.values(c.entries ?? {}).filter((e) => e?.draft === false).length, categories: terms('categories'), tags: terms('tags') };
+      const s = c.settings;
+      const entries = Object.values(c.entries ?? {});
+      const taxonomies = Object.fromEntries(Object.entries(s?.taxonomies && typeof s.taxonomies === 'object' ? s.taxonomies : {}).map(([t, tax]) => [t, { label: tax?.label, terms: Object.fromEntries(Object.entries(tax?.terms && typeof tax.terms === 'object' ? tax.terms : {}).map(([k, v]) => [k, v?.label])) }]));
+      const fields = Object.entries(s?.fields && typeof s.fields === 'object' ? s.fields : {}).flatMap(([name, f]) => collectionFieldSummary(name, f) ?? []);
+      return {
+        id,
+        name: s?.name,
+        kind: collectionKind(s),
+        ...(s?.singularName ? { singularName: s.singularName } : {}),
+        pages: { detail: hasDetailPages(s), archive: hasArchivePages(s) },
+        ...(pagesPrefix(c) !== undefined ? { route: pagesPrefix(c) } : {}),
+        ...(!collectionHasBody(s) ? { hasBody: false } : {}),
+        // Its entries come from an external source: they are read-only until the author detaches it in the editor.
+        ...(isSyncedCollection(s) ? { sourceId: s.sourceId, readOnly: true } : {}),
+        entries: entries.length,
+        published: entries.filter((e) => e?.draft === false).length,
+        ...(fields.length ? { fields } : {}),
+        taxonomies
+      };
     });
 }
 
@@ -412,6 +448,61 @@ export function pageDetail(state: ProjectState, pageId: string) {
     owner: { kind: 'page', id: p.id },
     sections: p.rootIds.map((id) => compactNode(state, p, id))
   };
+}
+
+/** A document's words, when they are words: a hand-edited file can hold anything. */
+const text = (v: unknown) => (typeof v === 'string' ? v.trim() : '');
+
+/** A collection's layout as a run reads it: its entry pages' layout (template) or its index layout (archive). */
+export function layoutTree(state: ProjectState, owner: { kind: 'template' | 'archive'; id: string }): NodeTree | null {
+  const c = Object.hasOwn(state.collections ?? {}, owner.id) ? state.collections[owner.id] : undefined;
+  const tree = owner.kind === 'archive' ? c?.settings.archiveTemplate : c?.settings.template;
+  return tree && Array.isArray(tree.rootIds) && tree.nodes ? tree : null;
+}
+
+/**
+ * A collection's layout as read_layout and a layout run's context show it: its owner, what it is for, and its sections
+ * as read_page shows a page's (with `nodeId`, that node's subtree alone). Null when the layout or node is gone.
+ */
+export function layoutDetail(state: ProjectState, owner: { kind: 'template' | 'archive'; id: string }, nodeId?: string): Record<string, unknown> | null {
+  const tree = layoutTree(state, owner);
+  if (!tree) return null;
+  if (nodeId !== undefined) return Object.hasOwn(tree.nodes, nodeId) ? { owner, node: compactNode(state, tree, nodeId) } : null;
+  const c = state.collections[owner.id];
+  return {
+    owner,
+    collectionId: owner.id,
+    // The entry layout shows one entry, which its elements read with { $entry: field }; the index lists entries.
+    layout: owner.kind === 'archive' ? `the index of ${text(c.settings.name) || owner.id}: a collection loop over { "$archive": true } repeats once for each entry the page lists` : `every ${text(c.settings.singularName) || text(c.settings.name) || owner.id} entry's page`,
+    sections: tree.rootIds.map((id) => compactNode(state, tree, id))
+  };
+}
+
+/**
+ * A layout run's first look at its layout (#679): the layout whole, with the collection whose entries it shows, while it
+ * fits `maxChars`; else each section by its ID, kind and name, and the collection's groupings by ID, which read_layout
+ * (with a nodeId) and read_project read whole.
+ */
+export function layoutGlance(state: ProjectState, owner: { kind: 'template' | 'archive'; id: string }, label: string, maxChars: number, indent?: number): Record<string, unknown> {
+  const collection = collectionsSummary(state).find((c) => c.id === owner.id) ?? null;
+  const whole = { ...layoutDetail(state, owner), label, collection };
+  if (JSON.stringify(whole, null, indent).length <= maxChars) return whole;
+  const tree = layoutTree(state, owner);
+  const sections = (tree?.rootIds ?? []).map((id) => {
+    const n = tree!.nodes[id];
+    if (!n) return { id, missing: true };
+    return { id, kind: n.kind, name: displayName(state, n), ...(n.kind === 'instance' ? { componentId: state.components[n.definitionId]?.componentId } : {}) };
+  });
+  const shortened = 'Too long to show whole here: read_layout with a section\'s nodeId reads it whole, and read_project its collection.';
+  const brief = collection ? { id: collection.id, name: collection.name, kind: collection.kind, fields: (collection.fields ?? []).map((f) => `${f.name}:${f.type}`), taxonomies: Object.keys(collection.taxonomies) } : null;
+  // Still too long: as many sections as fit, the rest counted, so the request always fits beside its tools.
+  const glance = (shown: number) => ({ owner, collectionId: owner.id, label, ...(brief ? { collection: brief } : {}), sections: sections.slice(0, shown), ...(sections.length > shown ? { omittedSections: sections.length - shown } : {}), shortened });
+  let shown = sections.length;
+  while (shown > 0 && JSON.stringify(glance(shown), null, indent).length > maxChars) shown = Math.floor(shown / 2);
+  const fitted = glance(shown);
+  // A collection with too many fields for even that: the owner alone, and how many sections there are.
+  if (JSON.stringify(fitted, null, indent).length <= maxChars) return fitted;
+  return { owner, collectionId: owner.id, label, sectionCount: sections.length, shortened };
 }
 
 /** Most sections a request's first look at its page lists; the rest are counted. */

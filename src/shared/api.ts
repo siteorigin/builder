@@ -565,8 +565,15 @@ export interface ChatContext {
    * writer, so it is sent with no selection, component or scope. Absent for a request about a page or the site.
    */
   post?: { collectionId: string; entryId: string; title: string };
+  /**
+   * The collection layout open on the canvas when the request was sent (#679): its entry pages' layout, or with
+   * `archive` its index layout, and the entry it was shown with (a sample, never what the request changes). The
+   * request may change only that layout, so it is sent with no selection, component, post or scope. `name` is the
+   * collection's name then, for the transcript.
+   */
+  template?: { collectionId: string; archive?: true; entryId?: string; name: string };
   viewport: number;
-  /** Library images the author attached to the request, by asset ID. The AI is told their IDs and what the library says about them (name, size, description, alt text), never the pictures or their files. */
+  /** Library images the author attached to the request, by asset ID. The AI is told their names and IDs alone, never the pictures or their files (search_assets reads what the library says about them). */
   assetIds?: string[];
   /** Absent in messages sent before questions existed, which were all edits. */
   mode?: ChatMode;

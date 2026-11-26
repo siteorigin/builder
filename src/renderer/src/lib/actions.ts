@@ -1075,8 +1075,9 @@ export async function openArchiveLayout(collectionId: string) {
  * workspace or the SEO view is in front of the page (#578, #700). A jump to something on the page (a match, a broken
  * link) opens it first.
  */
-export function pageOutOfSight(s: Pick<State, 'pageId' | 'definitionMode' | 'leftTab' | 'postView' | 'mode' | 'post'>, pageId: string): boolean {
-  return s.pageId !== pageId || !!s.definitionMode || !!activeWorkspace(s);
+export function pageOutOfSight(s: Pick<State, 'pageId' | 'definitionMode' | 'templateMode' | 'leftTab' | 'postView' | 'mode' | 'post'>, pageId: string): boolean {
+  // A collection's layout open on the canvas covers its page too (#679).
+  return s.pageId !== pageId || !!s.definitionMode || !!s.templateMode || !!activeWorkspace(s);
 }
 
 /**

@@ -97,6 +97,7 @@ const MORE: Record<string, string> = {
   search_assets: 'Search with a lower limit or narrower words.',
   list_collection_entries: 'List the rest from a later offset.',
   read_collection_entry: 'Read the rest from a later offset.',
+  read_layout: 'Read one section at a time with read_layout and its nodeId.',
   audit_seo: 'Audit one page or one pillar, or page through the findings with offset.'
 };
 

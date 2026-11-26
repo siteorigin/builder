@@ -190,7 +190,7 @@ describe('collection tools for every model', () => {
     expect(links).toContain('"type":"entry","target":"en_spring"');
     // The categories first, then the one post, with the grant for exactly that.
     expect(r.ops!.map((o) => o.type)).toEqual(['collection.createTerm', 'entry.create']);
-    expect(grants.at(-1)).toEqual({ collectionWrite: { collectionId: 'posts' } });
+    expect(grants.at(-1)).toEqual({ collectionWrite: { kind: 'entry', collectionId: 'posts' } });
   });
 
   it('edits only the fields it is sent, keeping every other detail, and keeps the pictures a rewrite reads back', async () => {
@@ -294,7 +294,7 @@ describe('the project lets a run reach a collection only through the post tool',
     const ai = { label: 'AI', source: 'ai' as const };
     const before = structuredClone(s.state);
     const refused = async (ops: unknown[], grant?: { collectionId: string; entryId?: string }) => {
-      const r = await s.apply({ operations: ops as EditOperation[] }, { ...ai, ...(grant ? { collectionWrite: grant } : {}) });
+      const r = await s.apply({ operations: ops as EditOperation[] }, { ...ai, ...(grant ? { collectionWrite: { kind: 'entry' as const, ...grant } } : {}) });
       expect(r, JSON.stringify(ops)).toMatchObject({ ok: false, error: { code: 'SCOPE_MISMATCH' } });
     };
     const update = { type: 'entry.update', collectionId: 'posts', entryId: 'en_spring', title: 'Spring' };
@@ -323,7 +323,7 @@ describe('the project lets a run reach a collection only through the post tool',
     // The tool's own batch lands.
     const ok = await s.apply(
       { operations: [{ type: 'collection.createTerm', collectionId: 'posts', taxonomyId: 'categories', label: 'Events', termId: 'events' }, { ...update, terms: { categories: ['news', 'events'] } }] as EditOperation[] },
-      { ...ai, collectionWrite: { collectionId: 'posts', entryId: 'en_spring' } }
+      { ...ai, collectionWrite: { kind: 'entry', collectionId: 'posts', entryId: 'en_spring' } }
     );
     expect(ok.error).toBeUndefined();
     expect(entry(s.state, 'en_spring')).toMatchObject({ title: 'Spring', terms: { categories: ['news', 'events'], tags: ['glaze'] } });
