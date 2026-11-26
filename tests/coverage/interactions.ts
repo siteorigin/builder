@@ -1177,7 +1177,7 @@ export const INTERACTIONS: Interaction[] = [
       { test: 'tests/e2e/carousel.mjs', kind: 'e2e', step: 'Insert > Media offers the Carousel, and it is placed on Home' },
       { test: 'tests/e2e/carousel.mjs', kind: 'e2e', step: 'without JavaScript every slide is still reachable' },
       { test: 'tests/e2e/showcase-pricing.mjs', kind: 'e2e', step: 'Insert offers the Tabbed showcase under Content and Pricing with billing switch under Conversion' },
-      { test: 'tests/e2e/showcase-pricing.mjs', kind: 'e2e', step: 'without JavaScript the first tab and the monthly prices show' },
+      { test: 'tests/e2e/showcase-pricing.mjs', kind: 'e2e', step: 'without JavaScript every tab’s panel shows under its label, and both periods’ prices, with no tab row or switch' },
       { test: 'tests/unit/carousel.test.ts', kind: 'unit' },
       { test: 'tests/unit/foundation-interactive.test.ts', kind: 'unit' }
     ]
