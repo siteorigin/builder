@@ -47,6 +47,7 @@ import { HOST_REDIRECTS_FILE, VERCEL_CONFIG_FILE } from '@generator/host-redirec
 import { atomicWrite, ensureDir, readBytesIfExists, readIfExists, readJson, removeDurable, removeEmptyDirs, safeJoin, sha, syncDir, toJson } from './fsutil';
 import { designAt, relocateSource, textOfBytes } from './edited-design';
 import { collectionDocPath, collectionPathOf, collectionsFromDocs, componentDocPath, converterPathOf, CUSTOM_SOURCE_RE, DOC_DIR, isCanonicalPath, MANIFEST_FILE, newestStoredVersion, ProjectFormatError, readProject, readState, sourcePathOf, sourcesFromDocs, stateToAuthoredSources, stateToDocs } from './documents';
+import { perf, timed } from '../perf';
 import { heldAsMedia, isVersionMedia, newVersionId, sameContents, VERSION_DAMAGED, VERSION_NAME_MAX, VersionStore, type SavedVersion } from './versions';
 
 export const LOCAL_DIR = '.siteorigin';
@@ -106,6 +107,7 @@ async function readFileAt(abs: string): Promise<{ bytes: Buffer; stamp: string }
     // Only a regular file is read: a pipe or device could block, or never end.
     if (!before.isFile()) return 'failed';
     const bytes = await handle.readFile();
+    perf.count('files.read');
     const after = await handle.stat({ bigint: true });
     return stampOf(after) === stampOf(before) ? { bytes, stamp: stampOf(before) } : 'changed';
   } catch {
@@ -678,14 +680,20 @@ export class ProjectSession extends EventEmitter {
     return s;
   }
 
-  static async open(dir: string, instanceId: string, opts: { force?: boolean | string } = {}): Promise<ProjectSession> {
+  static open(dir: string, instanceId: string, opts: { force?: boolean | string } = {}): Promise<ProjectSession> {
+    return timed('session.open', () => ProjectSession.openTimed(dir, instanceId, opts), (s) => ({ ok: !!s }))();
+  }
+
+  private static async openTimed(dir: string, instanceId: string, opts: { force?: boolean | string }): Promise<ProjectSession> {
     const s = new ProjectSession(dir);
+    const locking = perf.span('session.open.lock');
     // A project from a newer version is never written to, not even its local folders.
     await assertKnownFormat(dir);
     // The lock comes first: recovery must never touch a project another window is editing, and a project
     // that turns out to be locked is opened read-only with nothing written.
     await ensureDir(s.local());
     const lockErr = await s.acquireLock(instanceId, opts.force);
+    locking();
     if (lockErr) throw lockErr;
     try {
       // Recovery writes too, so it runs fenced like any command.
@@ -724,15 +732,20 @@ export class ProjectSession extends EventEmitter {
   private async openLocked() {
     const s = this;
     const dir = this.dir;
+    const recovering = perf.span('session.open.recover');
     await s.loadSavedCopies();
     await s.loadConflicts();
     // Both recoveries run before the documents are first read: a file a crash left broken may be one they restore.
     await s.recoverJournal();
     await s.recoverInterruptedRun();
+    recovering();
+    const reading = perf.span('session.open.read');
     const read = await readProject(dir, { overlay: s.pending });
     s.state = read.state;
     s.migrationDue = !!read.migration;
     s.docs = stateToDocs(s.state);
+    reading({ docs: s.docs.size });
+    const loading = perf.span('session.open.localState');
     s.history = usableHistory(await readIfExists(s.local('history', 'history.json')).then((t) => (t ? (JSON.parse(t) as HistoryFile) : null)));
     // Before the first sweep, which collects what no saved version names.
     await s.versions.load();
@@ -741,8 +754,11 @@ export class ProjectSession extends EventEmitter {
     s.generated = (await readIfExists(join(dir, 'siteorigin', 'generated-manifest.json')).then((t) => (t ? JSON.parse(t) : null))) ?? s.generated;
     const local = await readIfExists(s.local('state.json'));
     if (local) s.revision = JSON.parse(local).revision ?? 0;
+    loading();
     // Validate the final state (after any rollback) before generating anything from it.
+    const validating = perf.span('session.open.validate');
     const fatal = validateState(s.state).filter((d) => d.severity === 'error' && FATAL_CODES.has(d.code));
+    validating();
     if (fatal.length) throw new ProjectFormatError(`This project's documents are inconsistent, so it was not opened to protect your site: ${fatal.slice(0, 4).map((d) => d.message).join(' ')}`);
     // Generating from another copy of the site's theme would restyle it before anyone edited anything.
     const pin = themePinProblem(s.state);
@@ -750,7 +766,9 @@ export class ProjectSession extends EventEmitter {
     // With a file in conflict the update waits: its stored version is the user's to choose first.
     if (s.migrationDue && !s.pending.size) await s.publishMigration();
     else await s.publishGenerated(false);
+    const sweeping = perf.span('session.open.sweep');
     await s.sweep();
+    sweeping();
   }
 
   /**
@@ -1844,7 +1862,12 @@ export class ProjectSession extends EventEmitter {
     const pin = themePinProblem(next);
     if (pin) throw new Error(pin);
     // Generate first: a generator failure must not leave canonical documents half-published.
-    const generated = { clean: this.generate(next, false), dev: this.generate(next, true) };
+    const generatingClean = perf.span('session.generate', { variant: 'clean' });
+    const clean = this.generate(next, false);
+    generatingClean();
+    const generatingDev = perf.span('session.generate', { variant: 'dev' });
+    const generated = { clean, dev: this.generate(next, true) };
+    generatingDev();
     const nextDocs = stateToDocs(next);
     const changed: Record<string, { before: string | null; after: string | null }> = {};
     const writes: Array<{ path: string; blob: string; content: string; before: string | null }> = [];
@@ -1962,6 +1985,7 @@ export class ProjectSession extends EventEmitter {
     this.failedSave = null;
     if (planned && (planned.pruned || --this.gcCountdown <= 0)) await this.sweep();
     const event: SessionEvent = { revision: this.revision, changedDocs: Object.keys(changed), changedFiles, label: opts.label, source: opts.source ?? 'user', entryId: planned?.entryId };
+    perf.mark('session.changed', { revision: this.revision, docs: event.changedDocs.length, files: changedFiles.length });
     this.emit('changed', event);
     return event;
   }
@@ -2010,6 +2034,7 @@ export class ProjectSession extends EventEmitter {
       if ((await handleStamp(abs)) !== read.stamp || typeof after === 'string' || stampOf(after) !== stampOf(before)) continue;
       if (process.platform !== 'win32' && stampOf(before) !== read.stamp) continue;
       const hash = sha(read.bytes);
+      perf.count('files.hashed');
       const stamp = stampOf(before);
       if (statTrusted(before, started, this.settleMs)) this.seenOnDisk.set(abs, { stamp, hash });
       return { hash, stamp };
@@ -2039,7 +2064,7 @@ export class ProjectSession extends EventEmitter {
 
   /** Regenerate derived files. Files edited externally since the last generation are preserved and reported. */
   private publishGenerated(initial: boolean, pre?: { clean: Map<string, string>; dev: Map<string, string> }): Promise<string[]> {
-    return this.publishing(() => this.publishGeneratedNow(initial, pre));
+    return this.publishing(timed('session.publish', () => this.publishGeneratedNow(initial, pre), (files) => ({ initial, changed: files?.length ?? null })));
   }
 
   private async publishGeneratedNow(initial: boolean, pre?: { clean: Map<string, string>; dev: Map<string, string> }): Promise<string[]> {
@@ -2060,7 +2085,9 @@ export class ProjectSession extends EventEmitter {
     const hashes = new Map<string, { content: string | Buffer; hash: string }>();
     const hashOf = (abs: string, content: string | Buffer) => {
       const was = this.contentHashes.get(abs);
-      const hash = was && was.content === content ? was.hash : sha(content);
+      const cached = !!was && was.content === content;
+      const hash = cached ? was!.hash : sha(content);
+      if (!cached) perf.count('files.hashed');
       hashes.set(abs, { content, hash });
       return hash;
     };
@@ -2509,7 +2536,8 @@ export class ProjectSession extends EventEmitter {
     batch: EditBatch,
     opts: CommitOptions & { runId?: string; idempotencyKey?: string; codeAllowed?: boolean; componentImport?: ComponentImport; collectionWrite?: CollectionWriteGrant; sourceSync?: SourceSyncGrant; stillWanted?: () => boolean }
   ): Promise<ApplyResult> {
-    return this.serialize(async () => {
+    // An edit's own work, once it is its turn (src/shared/perf.ts): the wait for that is the rest of controller.apply.
+    return this.serialize(timed('session.apply', async (): Promise<ApplyResult> => {
       const refused = opts.guard?.(null);
       if (refused) return { ok: false, revision: this.revision, error: refused };
       const fingerprint = sha(JSON.stringify(batch.operations));
@@ -2527,6 +2555,7 @@ export class ProjectSession extends EventEmitter {
       const blocked = await this.writeBlocked();
       if (blocked) return blocked;
       const ops = [];
+      const decoding = perf.span('session.validateOperations', { operations: batch.operations.length });
       for (const raw of batch.operations) {
         const v = validateOperation(raw);
         // A source's settings may hold the very credential they should only name: the problem is said in fixed words.
@@ -2535,6 +2564,7 @@ export class ProjectSession extends EventEmitter {
           return { ok: false, revision: this.revision, error: { code: 'INVALID_ARGUMENT', message: settings ? 'A source’s settings are not valid: name each credential it signs in with as { "$secret": "<name>" }, never its value.' : v.message, recoverable: true } };
         ops.push(v.op);
       }
+      decoding();
       // Checked here, in turn with every other edit and with the editor's clipboard, so what it copies is what lands.
       const importing = ops.some((o) => o.type === 'component.import');
       // A package is read and checked by the editor's import, which is the only way one reaches a project.
@@ -2594,12 +2624,15 @@ export class ProjectSession extends EventEmitter {
         return { ok: false, revision: this.revision, error: { code: 'SCOPE_MISMATCH', message: 'Only the editor can remove a file of a font the site uses. Change the styles that use the font first, or ask the user to remove the file in Assets, where they see what changes.', recoverable: true } };
       let next: ProjectState;
       let results;
+      const applying = perf.span('session.applyOperations');
       try {
         ({ state: next, results } = applyOperations(this.state, ops, context));
       } catch (e) {
+        applying({ ok: false });
         if (e instanceof EngineError) return { ok: false, revision: this.revision, error: { code: e.code, message: e.message, recoverable: true, details: e.details } };
         return { ok: false, revision: this.revision, error: { code: 'VALIDATION_FAILED', message: (e as Error).message, recoverable: true } };
       }
+      applying({ ok: true });
       const pin = themePinProblem(next);
       if (pin) return { ok: false, revision: this.revision, error: { code: 'CONFLICT', message: pin, recoverable: false } };
       // Any authored code that is new or changed must pass the safety checks before it can be saved. Imports
@@ -2663,6 +2696,7 @@ export class ProjectSession extends EventEmitter {
       }
       // An import is checked place by place: a problem in what it brings is new even if another component has the same.
       let introduced: Diagnostic[];
+      const validating = perf.span('session.validateState');
       try {
         introduced = importing ? this.introducedProblems(next) : introducedDiagnostics(this.savingProblems(this.state), this.savingProblems(next));
         // A property made required reports each placement already missing it, rather than refusing the change.
@@ -2672,9 +2706,11 @@ export class ProjectSession extends EventEmitter {
         if (!importing) throw e;
         return { ok: false, revision: this.revision, error: { code: 'VALIDATION_FAILED', message: `The package's components are damaged: ${(e as Error).message}`, recoverable: true } };
       }
+      validating({ introduced: introduced.length });
       if (introduced.length)
         return { ok: false, revision: this.revision, error: { code: 'VALIDATION_FAILED', message: introduced.map((d) => d.message).join(' '), recoverable: true, details: introduced } };
       let ev: SessionEvent;
+      const persisting = perf.span('session.persist');
       try {
         // A sync is planned from the whole collection, its source's settings and every link to its entries.
         ev = await this.persist(next, { ...opts, wholeProject: !!opts.sourceSync || ops.some((o) => o.type === 'theme.refresh' || o.type === 'theme.apply' || readsWholeProject(o, this.state)) });
@@ -2682,11 +2718,13 @@ export class ProjectSession extends EventEmitter {
         if (e instanceof DiskConflictError) return { ok: false, revision: this.revision, error: this.diskConflict(e) };
         if (e instanceof GuardRefusal) return { ok: false, revision: this.revision, error: e.refusal };
         throw e;
+      } finally {
+        persisting();
       }
       const result: ApplyResult = { ok: true, revision: this.revision, results, changed: ev.changedDocs, entryId: ev.entryId };
       if (opts.idempotencyKey) this.idempotency.set(opts.idempotencyKey, { fingerprint, result });
       return result;
-    });
+    }, (r) => ({ ok: r?.ok ?? false, revision: this.revision })));
   }
 
   /** The definitions a batch's `component.import` brought or kept from the theme, as they are in `next`. */
@@ -4429,6 +4467,9 @@ export class ProjectSession extends EventEmitter {
 
   /** Re-read canonical documents after an external edit, accepting them only when valid. */
   async reloadFromDisk(): Promise<{ ok: boolean; message?: string }> {
+    // Every call counts, refused or not: a reload the app's own save set off is work even when it finds nothing.
+    perf.count('session.reloadFromDisk');
+    perf.mark('session.reloadFromDisk');
     return this.serialize(async () => {
       if (this.activeRun) return { ok: false, message: 'Busy' };
       if (this.readOnly) return this.reloadReadOnly();

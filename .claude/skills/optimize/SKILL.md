@@ -69,52 +69,55 @@ Goal: a PR for #N with a before/after/% table for {surface}, reviewed by Codex a
 
 Flags: `--budget <Nh>` wall-clock ceiling (default 4h); `--no-pr` commit on the branch and report its name; `--dry-run` stop after §3 with the scenario, the precommit record and the Codex plan, measuring only the baseline.
 
-**Blockers.** If the issue has an open blocked-by edge (`gh issue view N --json` or the body's `Blocked by #M`), the thing it needs does not exist yet. End with `OPTIMIZE_BLOCKED` naming the blocker. The one exception is the harness issue itself, which is built by this skill (§The harness).
+**Blockers.** If the issue has an open blocked-by edge (`gh issue view N --json` or the body's `Blocked by #M`), the thing it needs does not exist yet. End with `OPTIMIZE_BLOCKED` naming the blocker. A `Blocked by #956` edge is the harness itself: once `scripts/perf/` is on `origin/develop` it is met, whatever the issue's state says.
 
 ## The harness
 
-Measurement lives in `scripts/perf/` and is documented in `scripts/perf/README.md`. Read that file first, every run: it is the authority on commands and file formats, and where it differs from this document, it wins.
+Measurement lives in `scripts/perf/` (built by #956) and is documented in `scripts/perf/README.md`. Read that file first, every run: it is the authority on commands, flags, metric names and file formats, and where it differs from this document, it wins. A checkout without `scripts/perf/` predates it: rebase onto `origin/develop`.
 
-What the harness provides, and what this skill relies on:
+What it provides, and how this skill uses it:
 
-- **Timing marks in the app.** With an environment variable naming a file, the main process and the renderer append marks as NDJSON: launch, project open and edit phases. Off by default.
-- **Counters beside durations.** Durable writes per edit, bytes on `project:changed`, files read and hashed per publish, `reloadFromDisk` calls, renderer commits. Counts compare across machines and need no statistics; durations do not.
-- **A scenario runner** that drives the built app headless through `tests/driver`, repeats a scenario, and writes one JSON result with the median and spread per metric and the commit it measured.
-- **A correctness predicate per scenario**, checked on every iteration.
-- **Fixture projects**, built deterministically: the small starter and a large one (about 50 pages, 500 collection entries, 300 assets, 30 project components).
-- **A compare command** that prints before, after and percent change for two result files.
-- **A static report** of built output sizes and what the main process loads before the window exists.
-
-**If `scripts/perf/` does not exist,** the run's issue must be the harness issue: build it to that issue's acceptance, with unit tests for the compare and aggregation logic, and open the pull request. Its table is the first baseline: the launch, open and edit scenarios on both fixtures, with no "after" column. For any other issue, a missing harness is `OPTIMIZE_BLOCKED`.
+- **Timing marks in the app.** With `SITEORIGIN_PERF_FILE` naming a file, the main process and the editor append NDJSON records: marks, spans and counters (`src/shared/perf.ts`). Off by default, and free when off. Hooks: `perf.mark`, `perf.span`, `perf.count` and `timed` in `src/main/perf.ts`; `perfMark` in `src/renderer/src/lib/perf.ts`.
+- **Counters beside durations.** `fs.writes`, `fs.durableWrites`, `fs.fsyncs`, `files.read`, `files.hashed`, `ipc.projectChanged.sends` and `.bytes`, `session.reloadFromDisk`, `react.commits`, and main-process stalls of 50 ms or more. Counts compare across machines and need no statistics; durations do not.
+- **Scenarios** in `scripts/perf/scenarios.ts`: `launch` (to an interactive Welcome), `open` (Welcome's recent card to an editable canvas) and `edit` (one Inspector property to the preview showing it), each with a predicate checked on every iteration. They run as a chain in one launch, each after the one it follows, so `--scenario edit` also runs `launch` and `open` as setup and reports only `edit`. New scenarios join the chain after `launch` or `open`.
+- **Fixtures**, deterministic and hashed: `small` (the Business starter) and `large` (50 pages, 500 posts, 300 images, 30 project components), built once per machine under `.tmp/perf/fixtures/`.
+- **The runner**, `npm run perf:run -- --scenario <names> --fixture <small,large> --iterations <n> --out <file> [--app <checkout>] [--cold]`: one untimed warm-up per fixture, then each iteration a fresh headless launch on the same project and profile files, put back each time. The result JSON holds every iteration's metrics and trace path, the median, min, max and MAD per metric, the commit the app stamped into its build, the checkout's HEAD and the machine. A case with any failed iteration is `failed` and has no timings; the command exits 1.
+- **`--app <checkout>`** measures that checkout's `out/` with this checkout's harness and fixtures: the way to measure a second build without rebuilding between arms (§Durations).
+- **`--cold`** clears Chromium's caches from the profile before every iteration (a first launch after an update); the default is the everyday warm launch. They are different metrics.
+- **The compare command**, `npm run perf:compare -- before.json after.json`: before, after, change and a verdict per metric, with the noise band (three times the larger MAD, at least 10% of the before median and 1 ms) for durations and exact counts. `--markdown` prints §The table, ready for the pull request.
+- **The static report**, `npm run perf:static`: raw and gzip size of the editor's script and stylesheet, the main bundle, the preload and each worker, and the main entry's static dependency closure (the packages it evaluates before its first line runs), each beside `scripts/perf/baseline/static.json`. `--json <file>` keeps a full report; `--update-baseline` refreshes the baseline after a change that moves it on purpose.
 
 **Rules the harness and every scenario must keep** (they come from `CLAUDE.md`):
 
 - It drives the **built** app in `out/`. Every tree that is measured is built first with `npm run build`, and the result file records the commit that build came from. A measurement of a stale build is a measurement of some other tree.
 - Headless, always. No window shown, no focus taken. A headless launch never shows its window, so launch is timed to the window being ready to show and the renderer being interactive.
 - Native choosers are answered through the driver (`answerChoosers`, `desktop.setAnswers`), never by patching `dialog` or `shell`.
-- No live AI provider calls. AI scenarios use the fake adapter. A claim that needs a live provider (prompt cache hits) gets at most a handful of calls, named in the report.
+- No live AI provider calls in a scenario. AI scenarios use the scripted model server (`MockOpenAIServer`, as `scripts/perf/README.md` says). A claim that needs a live provider (prompt cache hits, #977) gets at most a handful of calls outside the harness, named in the report.
 - Scratch output goes in `.tmp/`, never the repo root. Nothing here runs in pull request CI.
 
 ## Phases
 
-Open every transition with a position line, `Phase N/9 {name} done. Next: {next}.`, and start the next phase in the same turn. The ledger at `.tmp/optimize/<issue-or-slug>/ledger.md` is the durable state: the input, branch, branch-point sha, champion sha, the precommit record, every measurement file with the sha it measured, and the hypothesis log. Update it at each transition and re-read it after any loss of place. `.tmp` is gitignored; never commit it.
+Open every transition with a position line, `Phase N/9 {name} done. Next: {next}.`, and start the next phase in the same turn. The ledger at `.tmp/optimize/<issue-or-slug>/ledger.md` is the durable state: the input, branch, branch-point sha, champion sha, the precommit record, every measurement file (`perf:run`'s `--out`) with the build commit its result records, and the hypothesis log. Update it at each transition and re-read it after any loss of place. `.tmp` is gitignored; never commit it.
 
 ### 1. Intake
 
 1. Read `CLAUDE.md`, the issue and `scripts/perf/README.md`.
 2. `git fetch origin`, confirm a clean tree, and branch from `origin/develop`: `perf/issue-<N>-<slug>`. In a batch run, work in the worktree you were given.
-3. Record the machine (model, OS, power state) in the ledger. Plug in, turn low-power mode off, and make sure nothing else is building or running: no dev server, no other agent's test run, no `npm install`.
+3. Record the machine (model, OS, power state) in the ledger; every result file records the CPU and OS too. Plug in, turn low-power mode off, and make sure nothing else is building or running: no dev server, no other agent's test run, no `npm install`.
 
 ### 2. Scenario
 
 Find the scenario that measures this surface, or write it.
 
 - **A scenario exists:** read its definition, its fixture and its predicate. Do not edit it.
-- **None exists:** write it before anything else, as its own commit, from the issue's Acceptance section: the actions a person takes, the marks and counters to report, the fixture, and the predicate. Add any timing mark or counter it needs to the app in the same commit. A new mark must cost nothing when marks are off. Then freeze it.
+- **An existing scenario lacks a metric the issue names:** add the mark or counter to the app and the metric to that scenario's `measure`, as the scenario commit. Leave its actions and predicate alone.
+- **None exists:** write it before anything else, as its own commit, from the issue's Acceptance section, as `scripts/perf/README.md` ("Adding a scenario", "Adding a mark or a counter") says: the actions a person takes (`run`, after `launch` or `open`), the marks and counters to report (`measure`), the fixture, the predicate (`expect`), and a unit test of `measure` on a small trace. Add any timing mark or counter it needs to the app in the same commit. A new mark must cost nothing when marks are off. Then freeze it.
 
-**The predicate is mandatory.** A count goes to zero when the feature is broken: a save that writes nothing is very fast, a panel that renders nothing commits instantly. The predicate asserts on every iteration that the surface still did its job: the preview shows the edit, the project opened with the right documents, the exported site contains the pages. Prove it can fail once: break the subject on a throwaway commit, run three iterations, confirm the scenario reports failure, and reset. A scenario whose predicate cannot fail measures nothing.
+**The predicate is mandatory.** A count goes to zero when the feature is broken: a save that writes nothing is very fast, a panel that renders nothing commits instantly. The predicate asserts on every iteration that the surface still did its job: the preview shows the edit, the project opened with the right documents, the exported site contains the pages. Prove it can fail once: break the subject on a throwaway commit, `npm run build`, `npm run perf:run -- --scenario <name> --iterations 3`, confirm the case is reported `FAILED` with the predicate's message and the command exits 1, and reset. A scenario whose predicate cannot fail measures nothing.
 
-**The scenario is frozen once the baseline is taken.** After that, a change to the scenario, its fixture or the harness invalidates every number: fix it on the base, re-take the baseline, and say so in the report. The final diff's changes under `scripts/perf/` are only the scenario commit from this phase.
+**The scenario is frozen once the baseline is taken.** After that, a change to the scenario, its fixture or the harness invalidates every number: fix it on the base, re-take the baseline, and say so in the report. The final diff's changes under `scripts/perf/` are only the scenario commit from this phase, and `scripts/perf/baseline/static.json` refreshed in the final commit when the change moves the static report.
+
+**The branch point is `origin/develop` plus the scenario commit.** Its marks are in the app, so the base build must carry them: an arm whose trace lacks a mark the scenario needs fails, it is never measured as zero.
 
 **Do not make the inputs easy.** The scenario runs on both fixtures when the cost can grow with project size. Most of the issues exist because cost follows the whole project instead of the edit, and only the large fixture shows that.
 
@@ -128,11 +131,12 @@ Find the scenario that measures this surface, or write it.
 - **The threshold:** the smallest improvement you will call real. For a count, any reproducible change. For a duration, the larger of 5% and twice the noise floor.
 - **The protocol:** fixture, iterations and warm-ups, identical for every arm.
 
-Then measure:
+Then measure, with nothing else running:
 
-1. Build the branch point and run the scenario. That is `before`, and the first champion.
-2. Run it a second time on the same build. The difference between the two is the **noise floor**. A duration that moves less than that has not been shown to move.
-3. Take a profile where the harness offers one (a CPU profile of the main process, a React commit trace). The baseline says how much; the profile says where.
+1. Build the branch point once into a second worktree, `git worktree add --detach .tmp/optimize/<N>/base <scenario commit>`, then `npm ci` and `npm run build` there. Run the scenario against it from the working checkout: `npm run perf:run -- --app .tmp/optimize/<N>/base --scenario <name> --fixture <fixtures> --iterations <n> --out .tmp/optimize/<N>/before-1.json`. That is `before`, and the first champion. The result records the commit the build was stamped with: check it is the branch point.
+2. Run it a second time on the same build (`.tmp/optimize/<N>/before-2.json`) and `npm run perf:compare -- .tmp/optimize/<N>/before-1.json .tmp/optimize/<N>/before-2.json`. The differences between the two are the **noise floor**: counts should not move at all, and a duration that moves less than that, or less than the noise band the command prints, has not been shown to move.
+3. Read where the time goes in the traces (`.tmp/perf/runs/<time>/<fixture>/trace-<n>.ndjson`): list the spans of the measured window by duration, and the counters they gained (`dc`). The harness takes no CPU profile; when the spans do not say enough, add finer spans in the scenario commit, before the baseline, or take a profile by hand and say so. The baseline says how much; the spans say where.
+4. For boot and bundle issues, also run `npm run perf:static -- --app .tmp/optimize/<N>/base --json .tmp/optimize/<N>/static-before.json`.
 
 Then plan with Codex. Invoke the `codex` skill in `plan` mode with a self-contained brief: the issue's text, the scenario, the baseline numbers per phase, the profile's hot spots, and the suspected causes. Ask for hypotheses ranked by expected effect on the target, each naming the mechanism and where it lives, what would disprove it, and what it risks from §Boundaries. Codex's plan is a set of leads: read the two or three files it leans on hardest and drop what the baseline already contradicts. A suspected cause that measures as a small share of the total is left alone, and the report says so with its number.
 
@@ -144,7 +148,7 @@ One hypothesis per round, until the budget is spent or the credible ones run out
 
 1. **Name the mechanism.** "This looks inefficient" is not a hypothesis. "`reloadFromDisk` runs after every save because the watcher cannot tell the app's own rename from an outside one" is.
 2. **Make the smallest change that tests it, and commit it.** Every measurement is of a committed, built tree.
-3. **Build, then measure with the identical protocol.** Compare with the current champion, not the original baseline: judging against the baseline keeps a change that made the best result worse.
+3. **Build, then measure with the identical protocol.** `npm run build`, then `npm run perf:run` with the same scenario, fixtures and iterations, `--out .tmp/optimize/<N>/round-<k>.json`, and `npm run perf:compare -- <champion>.json round-<k>.json`. Compare with the current champion, not the original baseline: judging against the baseline keeps a change that made the best result worse.
 4. **Check the predicate and the guards** before reading the target.
 5. **Decide on the evidence:**
    - Target improved past the threshold, predicate healthy, guards within tolerance: confirm it reproduces with one more run for a count, or an interleaved pair (§Durations) for a duration. Then keep: the commit is the new champion.
@@ -159,7 +163,7 @@ Reserve the last third of the budget for phases 5 to 8. A run that spends everyt
 
 ### 5. Headline
 
-After the last code change, squash the kept commits into one focused commit, `perf(<scope>): <what>` (the scenario commit from phase 2 stays separate). Then measure the numbers the pull request will quote: the **branch point** against the **final tree**, on the scenario's full protocol, on every fixture.
+After the last code change, squash the kept commits into one focused commit, `perf(<scope>): <what>` (the scenario commit from phase 2 stays separate). Then measure the numbers the pull request will quote: the **branch point** against the **final tree**, on the scenario's full protocol, on every fixture: the base worktree's build through `--app`, the final tree built here, interleaved as §Durations says. `npm run perf:compare -- <base>.json <final>.json --markdown` prints the tables; for boot and bundle issues, add the static report's rows before and after (`perf:static`).
 
 Every number taken earlier belongs to a tree that no longer exists, and a run that tried many hypotheses will have kept one or two on luck. The table never comes from the round that selected a hypothesis. It comes from this one measurement, taken once, after selection is over.
 
@@ -178,7 +182,7 @@ Per `CLAUDE.md`'s definition of done:
 1. `npm run typecheck`.
 2. The unit tests covering the change, and any added, green. Run the whole `npm test` when the change crosses the engine, the session or the generator.
 3. The e2e script that covers the surface, when there is one (`npm run build` first; it runs headless). Not `tests/e2e/ai.mjs`.
-4. `git diff --stat origin/develop`: only the scenario commit touches `scripts/perf/`, and nothing unrelated came along.
+4. `git diff --stat origin/develop`: only the scenario commit touches `scripts/perf/` (and the final commit's refreshed `scripts/perf/baseline/static.json`, when the change moves the static report), and nothing unrelated came along.
 
 Run verbose checks through a subagent that returns only failures. Never run measurements through one, and never alongside anything else: a measurement competing with a test run is the contamination the protocol exists to prevent.
 
@@ -204,7 +208,7 @@ Print the table, the ledger summary and the pull request link, and end with `OPT
 
 ## The table
 
-One per fixture, from phase 5 only.
+One per fixture, from phase 5 only. `npm run perf:compare -- <base>.json <final>.json --markdown` prints it in this form; bold the target row, keep every other row as a guard, and add the predicate's words.
 
 ```
 ### {scenario} · {fixture}
@@ -213,27 +217,28 @@ One per fixture, from phase 5 only.
 | --- | ---: | ---: | ---: |
 | **{target metric}** | 1,480 ms | 610 ms | **58.8%** |
 | {other reported metric} | 14 | 3 | 78.6% |
-| {guard} | 212 ms | 215 ms | −1.4% (noise) |
+| {guard} | 212 ms | 215 ms | (noise) |
 | Predicate: {what it asserts} | pass | pass | ok |
 
-Machine: {model, OS} · {N} iterations, {W} warm-ups · median · noise floor {x}%
+Machine: {cpu}, {os} · {N} iterations, 1 warm-up · {warm | cold} profile · median · noise band max(3 × MAD, 10%, 1 ms)
 Trees: {branch point sha} → {final sha}, both built with `npm run build`
 ```
 
 - Improvement is `(before − after) / before`, positive when the number fell. A metric that got worse shows as negative, in the table, not in a footnote.
 - The predicate is always a row. A reader must see that the feature still works.
 - Every guard is a row, including the ones that moved the wrong way.
-- A percentage appears only where it can be defended: any count, and a duration whose change exceeds the noise floor. Otherwise print the two numbers and `(noise)`.
+- A percentage appears only where it can be defended: any count, and a duration whose change exceeds the noise floor. Otherwise print the two numbers and `(noise)`, as the compare command does.
 - Counts are stated as counts ("16 → 2 durable writes per edit"); they are the most portable evidence in the table.
 
 ## Durations
 
 A duration is the weakest thing the harness measures and the easiest to fool yourself with.
 
-- **Both arms now, alternating.** A result file from an hour ago is not an opponent: the machine has heated and its background load has shifted. For a headline on a duration, measure base and candidate in the order base, candidate, candidate, base, base, candidate, uninterrupted, and require the candidate to win all three pairs by more than the noise floor.
-- **Keep both builds.** Build the branch point once into a second worktree under `.tmp/optimize/<N>/base` so arms alternate without rebuilding between them.
+- **Both arms now, alternating.** A result file from an hour ago is not an opponent: the machine has heated and its background load has shifted. For a headline on a duration, measure base and candidate in the order base, candidate, candidate, base, base, candidate, uninterrupted, and require the candidate to win all three pairs by more than the noise floor: six `perf:run` calls with the same flags, the base ones with `--app .tmp/optimize/<N>/base`, each to its own `--out`, then `perf:compare` on each pair.
+- **The published duration is decided before it is measured.** It is the median of the three pairs' improvements, with all three shown beside it; the table carries the pair whose improvement is that median. Never the best pair.
+- **Keep both builds.** The base worktree under `.tmp/optimize/<N>/base` keeps the branch point's build, so arms alternate without rebuilding between them, and `--app` measures it with the working checkout's harness and fixtures, the same for both arms.
 - **Median, not tail.** At 10 or 20 iterations a p95 is one of the two largest samples.
-- **Cold and warm are different metrics.** State which was measured. A first launch after a build and a second launch are both worth reporting for boot; never mix them in one median.
+- **Cold and warm are different metrics.** State which was measured. A first launch after a build (`--cold`) and the everyday launch (the default) are both worth reporting for boot; never mix them in one median or compare one with the other.
 - **Never delete an inconvenient sample after seeing it.** If something else ran during an arm, redo the whole interleave.
 - fsync cost differs widely between macOS, Windows and Linux. Claim durations for this machine only. Counts travel. When a change is about disk syncs, say that the Windows figure is unmeasured, or measure it on the Windows test laptop (`~/.claude/windows-test-node.md`) and give it its own table.
 

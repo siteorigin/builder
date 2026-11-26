@@ -1,5 +1,6 @@
-import { create } from 'zustand';
-import type { AiEvent, AppSettings, ChatContext, ChatEditScope, ChatMessage, ChatMode, Conversation, ImportReviewRow, LiveHostState, LocalWorkspaceState, PostImportPreview, PackRefusal, ProjectSnapshot, ProviderStatus, RemotePresence, RemoteState, RunStatus, RuntimeState } from '@shared/api';
+import { createContext, useContext } from 'react';
+import { create, useStore as useStoreOf, type StoreApi } from 'zustand';
+import type { AiEvent, AppSettings, BuilderApi, ChatContext, ChatEditScope, ChatMessage, ChatMode, Conversation, ImportReviewRow, LiveHostState, LocalWorkspaceState, PostImportPreview, PackRefusal, ProjectSnapshot, ProviderStatus, RemotePresence, RemoteState, RunStatus, RuntimeState } from '@shared/api';
 import type { ApplyResult, EditOperation } from '@shared/ops';
 import { refKey, type ElementRef, type OwnerRef, type ResponsiveScope, type StyleState } from '@shared/types';
 import type { SampleContactKind } from '@shared/sample-contact';
@@ -18,6 +19,7 @@ import type { LayerSet } from './lib/layer-set';
 import { slotTargetHolds, type SlotTarget } from './lib/slot-target';
 import { leaveField } from './lib/leave-field';
 import type { PostRef } from './lib/posts';
+import { perfMark, perfOn } from './lib/perf';
 import { notePlace, type PagePlaces } from './lib/page-place';
 import { changedPages, historyNotice } from './lib/history-notice';
 import type { TemplateMode } from './lib/template-view';
@@ -371,7 +373,7 @@ const oneView = (p: Partial<State>): Partial<State> => {
   return { ...p, templateMode: null, ...(selection?.owner.kind === 'template' || selection?.owner.kind === 'archive' ? { selection: null } : {}) };
 };
 
-export const useStore = create<State>((set) => ({
+const live = create<State>((set) => ({
   screen: 'welcome',
   packs: { refused: [], userDir: '' },
   snapshot: null,
@@ -451,6 +453,26 @@ export const useStore = create<State>((set) => ({
   setState: (p) => set(slotFollows(oneSelection(p)))
 }));
 
+/** What the editor's components read the store through: the store itself, or a hidden panel's view of it. */
+export type StoreView = Pick<StoreApi<State>, 'getState' | 'getInitialState' | 'subscribe'>;
+/**
+ * The view of the store for the components inside it, when that is not the store itself: a panel that can be hidden
+ * gives its contents one that holds still while it is (lib/hideable.tsx).
+ */
+export const StoreViewContext = createContext<StoreView | null>(null);
+
+/** The part of the state `selector` picks, re-rendering when it changes, as the component's view of the store has it. */
+function useStoreView<T>(selector: (s: State) => T): T {
+  return useStoreOf(useContext(StoreViewContext) ?? live, selector);
+}
+
+/**
+ * The editor's store. As a hook, it is read through the view of the panel the component is in (StoreViewContext);
+ * `getState`, `setState` and `subscribe` are always the store's own, so what code does outside rendering sees every
+ * change at once, in a hidden panel too.
+ */
+export const useStore = Object.assign(useStoreView, { getState: live.getState, setState: live.setState, subscribe: live.subscribe, getInitialState: live.getInitialState });
+
 /** Changes how search results are previewed everywhere at once, and remembers it where storage allows. */
 export function setSerpView(change: Partial<SerpView>) {
   const serpView = { ...useStore.getState().serpView, ...change };
@@ -519,6 +541,12 @@ function leaveInspectorField(p: Partial<State>) {
 }
 
 export const getState = () => useStore.getState();
+
+/** Send an edit to the main process; while timing marks are on, the moment it leaves is marked (src/shared/perf.ts). */
+function sendEdit(batch: Parameters<BuilderApi['project']['apply']>[0], opts: Parameters<BuilderApi['project']['apply']>[1]): ReturnType<BuilderApi['project']['apply']> {
+  if (perfOn) perfMark('edit.requested', { operations: batch.operations.length, revision: getState().snapshot?.revision ?? null });
+  return api.project.apply(batch, opts);
+}
 export const setState = (p: Partial<State>) => {
   // The last panel shown besides the SEO view is where leaving the view goes back to.
   // A hidden sidebar, or a project just opened with the view showing, goes back to Pages.
@@ -860,7 +888,7 @@ export async function commitOps(operations: EditOperation[], label: string, coal
       r = kept.result;
     }
     // Named by the opening of its project, so a change sent just as that project closes never lands in the next.
-    else r = await api.project.apply(expectedRevision === undefined ? { operations } : { operations, expectedRevision }, { label, coalesceKey, opening: s.snapshot?.workspaceKey });
+    else r = await sendEdit(expectedRevision === undefined ? { operations } : { operations, expectedRevision }, { label, coalesceKey, opening: s.snapshot?.workspaceKey });
     if (!r.ok && opts.replanStale && r.error?.code === 'STALE_REVISION') {
       landed({ ok: true });
       return { ...r, workspaceKey };
@@ -929,7 +957,7 @@ async function writeTyped(
   let snap: ProjectSnapshot | null = getState().snapshot;
   for (let tries = 0; ; tries++) {
     // The project closed (or another opened): sent as it is, for the project to refuse.
-    if (!snap || snap.workspaceKey !== base.workspaceKey) return { held: false, result: await api.project.apply({ operations }, { label, coalesceKey, opening: base.workspaceKey }) };
+    if (!snap || snap.workspaceKey !== base.workspaceKey) return { held: false, result: await sendEdit({ operations }, { label, coalesceKey, opening: base.workspaceKey }) };
     if (snap.revision !== base.revision || typed.review) {
       const check = checkHeld(snap.state, operations, before);
       if (check.kind === 'gone') return hold({ phase: 'gone', note: check.what });
@@ -954,7 +982,7 @@ async function writeTyped(
       const asShown = typed.shown !== undefined && typeof now === 'string' && words(now) === words(typed.shown);
       if (typed.review ? !asShown : check.kind === 'changed' && !ownOnly && !ownRowName) return hold({ phase: 'changed', current });
     }
-    const r = await api.project.apply({ operations, expectedRevision: expected ?? snap.revision }, { label, coalesceKey, opening: base.workspaceKey });
+    const r = await sendEdit({ operations, expectedRevision: expected ?? snap.revision }, { label, coalesceKey, opening: base.workspaceKey });
     if (r.ok) {
       const [op] = operations;
       const text = operations.length === 1 && op.type === 'instance.editTable' && op.action === 'setCell' ? typed.text : null;

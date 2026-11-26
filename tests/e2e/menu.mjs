@@ -351,7 +351,7 @@ await eventually(
   60000
 );
 assert.deepEqual(
-  (await choosersShown(app, crashMark)).filter((c) => c.message === 'The editor stopped unexpectedly'),
+  (await choosersShown(app, crashMark)).filter((c) => c.message === 'The editor stopped working'),
   [],
   'the File command loaded the editor again, so the crash was not asked about'
 );

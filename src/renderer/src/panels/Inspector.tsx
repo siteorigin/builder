@@ -57,6 +57,7 @@ import { findEntry } from '@shared/collections';
 import { postAt, postShown, postsCollection } from '../lib/posts';
 import { entryNounLower } from '../lib/content';
 import { activeWorkspace } from '../lib/workspace';
+import { usePanelHidden } from '../lib/hideable';
 import { seoDocument } from '../lib/seo-view';
 import { STATE_WORDS, cascadeStyles, columnLayoutPart, partStyleControls, placementStyleControls, styleSetFor } from '@shared/styles';
 import { richTextToMarkdown, toRichText } from '@shared/richtext';
@@ -1031,12 +1032,18 @@ type RefusedAt = { field?: string; itemId?: string };
 /**
  * Refused edits of the selected placement's content, said at the field they were made in rather than in a toast: one
  * that would empty a value the component requires (see claimRefusals). Each stays until that field is edited again or
- * another element is selected. A refusal that arrives once its field has gone is a toast, as any other.
+ * another element is selected. A refusal that arrives once its field has gone, or while the Inspector is hidden, is a
+ * toast, as any other.
  */
 function useFieldRefusals(scope: string) {
   const [refusals, setRefusals] = useState<Record<string, string>>({});
   const live = useRef(scope);
   live.current = scope;
+  // Hidden, the Inspector is held as it was (lib/hideable): its field is out of sight, and may no longer be the one
+  // the selection would show.
+  const hidden = usePanelHidden();
+  const out = useRef(hidden);
+  out.current = hidden;
   useEffect(() => {
     setRefusals({});
     attempts.current.clear();
@@ -1058,7 +1065,7 @@ function useFieldRefusals(scope: string) {
       return rest;
     });
     return claimRefusals((e) => {
-      if (!isRequiredRefusal(e.details) || live.current !== scope) return false;
+      if (!isRequiredRefusal(e.details) || live.current !== scope || out.current) return false;
       if (attempts.current.get(key) === attempt) setRefusals((r) => ({ ...r, [key]: e.message }));
       return true;
     }, commit);
@@ -1599,8 +1606,10 @@ function PartInspector({ state, selection, tokens, everywhere }: { state: Projec
     if (reachKey) reachByItem.set(reachKey, r);
     setReachState(r);
   };
-  // The canvas's spacing handles write where this says.
-  useEffect(() => (reachKey ? showReach(reachKey, reach) : undefined), [reachKey, reach]);
+  // The canvas's spacing handles write where this says, while the Inspector shows it: hidden, it says nothing, and the
+  // handles follow the card's remembered reach, as they do with nothing open here (lib/hideable).
+  const hidden = usePanelHidden();
+  useEffect(() => (reachKey && !hidden ? showReach(reachKey, reach) : undefined), [reachKey, reach, hidden]);
   const oneItem = canStyleItem && reach === 'item';
   const itemName = (it: Record<string, unknown> | undefined, i: number) => {
     const t = listSchema?.titleField ? it?.[listSchema.titleField] : undefined;

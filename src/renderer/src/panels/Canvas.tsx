@@ -8,6 +8,7 @@ import { applyOps, commitOps } from '../store';
 import { activeWorkspace, canvasCovered } from '../lib/workspace';
 import { CANVAS_DRAFT, reportRefused, setCanvasCommit } from '../lib/pending';
 import { clickTargetIn, treeFor } from '../lib/model';
+import { slotOverviews } from '../lib/slot-overview';
 import { openInsertSearch } from '../lib/insert-focus';
 import { editLabel } from '../lib/edit-label';
 import type { ElementRef, OwnerRef, ProjectState } from '@shared/types';
@@ -62,6 +63,7 @@ import { addressPath, frameEntry, NO_HISTORY, observe, siteAddresses, startJourn
 import { shortcutLabel } from '../lib/shortcut-keys';
 import { settlePageClick } from '../lib/page-clicks';
 import { askAiHint, useAskAiKeys } from '../lib/ask-ai-key';
+import { perfMark } from '../lib/perf';
 
 /** True while an inline text edit is open in the preview; shortcuts must not act on the selection then. */
 export const inlineEdit = { active: false };
@@ -361,9 +363,10 @@ export function Canvas() {
   /**
    * The Add button whose list is open (#387): its place, its button, where the button was drawn (in the overlay) and
    * its box on screen as it opened, what it offers, and the project, page and revision it was opened on (any change
-   * puts it away). `refused`: why the last choice can't go there.
+   * puts it away). `empty`: why nothing fits, when its place is a slot that is full or takes nothing. `refused`: why the
+   * last choice can't go there.
    */
-  const [adding, setAdding] = useState<{ point: AddPoint; trigger: HTMLElement; at: { left: number; top: number }; box: AddBox; anchor: { left: number; top: number; width: number; height: number }; items: QuickItem[]; opening: string; view: string; revision: number; refused: string | null } | null>(null);
+  const [adding, setAdding] = useState<{ point: AddPoint; trigger: HTMLElement; at: { left: number; top: number }; box: AddBox; anchor: { left: number; top: number; width: number; height: number }; items: QuickItem[]; empty: string | null; opening: string; view: string; revision: number; refused: string | null } | null>(null);
   /** Set while a choice from it is being added, so a second Enter adds nothing more. */
   const choosing = useRef(false);
   /** An Add button has keyboard focus. One that goes away with it (its hover moved on, its section scrolled out of
@@ -840,6 +843,8 @@ export function Canvas() {
           const sameFrame = readySession.current === session;
           const reloaded = sameFrame && s.mode === 'preview';
           readySession.current = session;
+          // The page's bridge is ready for the author to work on it (src/shared/perf.ts).
+          perfMark('canvas.ready', { revision: shownRevision.current, path, mode: s.mode, studio });
           // The visitor left the page they were on.
           if (reloaded && s.previewReturn) setState({ previewReturn: null });
           setReady(true);
@@ -1023,6 +1028,7 @@ export function Canvas() {
           // covers the canvas (#700): the page is out of sight. One on a page a save has not reached yet waits for it
           // (#735, #755: see the gate above the switch).
           if (!st || !s.frameReady || leavingForPage() || canvasCovered(activeWorkspace(s))) return;
+          perfMark('canvas.select');
           pagePick();
           const chain = chainOf(p.chain);
           const next = pick(chain, !!p.alt || !!p.meta);
@@ -1187,6 +1193,8 @@ export function Canvas() {
         }
         case 'revisionApplied': {
           const at = typeof p.revision === 'number' && Number.isSafeInteger(p.revision) ? p.revision : undefined;
+          // The page shows that revision now (src/shared/perf.ts).
+          perfMark('canvas.revisionApplied', { revision: at ?? null });
           if (at !== undefined) {
             shownRevision.current = at;
             gate.current!.shown(at);
@@ -2377,7 +2385,11 @@ export function Canvas() {
     const to = snap && resolvePoint(snap.state, p);
     if (!snap || !view || !to || pageBehind()) return;
     const r = trigger.getBoundingClientRect();
-    setAdding({ point: p, trigger, at, box, anchor: { left: r.left, top: r.top, width: r.width, height: r.height }, items: offeredAt(snap.state, to, p.role, !!s.settings?.developerMode), opening: snap.workspaceKey, view: view.key, revision: snap.revision, refused: null });
+    const items = offeredAt(snap.state, to, p.role, !!s.settings?.developerMode);
+    // Nothing fits a placed component's slot that is full or takes nothing: the list says so, as the Inspector does.
+    const parent = !items.length && to.parentId && to.slot !== undefined ? treeFor(snap.state, to.owner)?.nodes[to.parentId] : undefined;
+    const empty = parent?.kind === 'instance' ? (slotOverviews(snap.state, to.owner, parent).find((o) => o.slot === to.slot)?.closed ?? null) : null;
+    setAdding({ point: p, trigger, at, box, anchor: { left: r.left, top: r.top, width: r.width, height: r.height }, items, empty, opening: snap.workspaceKey, view: view.key, revision: snap.revision, refused: null });
   }
   /** Put the list away; `back` hands focus back to its button (or the canvas, once the button has gone). */
   function closeAdd(back: boolean) {
@@ -3469,7 +3481,7 @@ export function Canvas() {
         )}
       </div>
       {menu.node}
-      {adding && <QuickInsert title={pointLabel(adding.point)} search={adding.point.role === 'section' ? 'Search sections' : 'Search elements'} items={adding.items} anchor={adding.anchor} trigger={adding.trigger} refused={adding.refused} onChoose={chooseAdd} onClose={closeAdd} />}
+      {adding && <QuickInsert title={pointLabel(adding.point)} search={adding.point.role === 'section' ? 'Search sections' : 'Search elements'} items={adding.items} anchor={adding.anchor} trigger={adding.trigger} empty={adding.empty} refused={adding.refused} onChoose={chooseAdd} onClose={closeAdd} />}
       {/* The image a drag from Assets carries, beside the pointer wherever it is in the window. */}
       {imageDrop &&
         createPortal(

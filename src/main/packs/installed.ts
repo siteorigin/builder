@@ -1,7 +1,7 @@
 /**
- * The theme packs this run of the app uses: loaded once at startup, before any project opens or the editor
- * window is created, from the releases in the app's resources and the person's `userData/packs` folder. Adding,
- * changing or removing a pack takes effect at the next start.
+ * The theme packs this run of the app uses: loaded once at startup, while the first editor window loads and before
+ * anything can open a project or read the catalogue (packs/gate.ts), from the releases in the app's resources and the
+ * person's `userData/packs` folder. Adding, changing or removing a pack takes effect at the next start.
  */
 import { join } from 'node:path';
 import { registerPacks } from '@catalogue/index';
@@ -27,9 +27,11 @@ export function packRoots(resources: string, userData: string): PackRoot[] {
 export async function loadInstalledPacks(roots: PackRoot[]): Promise<PackCatalogue> {
   const { packs, refused } = await loadPacks(roots);
   const userDir = roots.find((r) => r.source === 'user')?.dir ?? '';
-  if (!packs.some((p) => p.pack.source === 'bundled' && !p.pack.devOnly))
-    refused.unshift({ dir: roots[0]?.dir ?? '', reason: 'The built-in theme is missing, so no project can be created or edited. Run "npm run build:packs" (or reinstall SiteOrigin Builder).' });
+  const builtInMissing = !packs.some((p) => p.pack.source === 'bundled' && !p.pack.devOnly);
+  if (builtInMissing) refused.unshift({ dir: roots[0]?.dir ?? '', reason: 'Missing from this installation of SiteOrigin Builder.' });
   for (const r of refused) console.warn(`Theme pack refused (${r.dir}): ${r.reason}`);
+  // A development build makes its built-in theme with a script; a person reinstalls instead (StartupFailure.tsx says so).
+  if (builtInMissing) console.warn('Run "npm run build:packs" to build the built-in theme.');
   clearPackFiles();
   registerPacks(packs.map((p) => p.pack));
   for (const p of packs) registerPackFiles(p.pack.id, p.files);

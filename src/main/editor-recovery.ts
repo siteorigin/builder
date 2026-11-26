@@ -29,7 +29,10 @@ export interface EditorRecoveryOptions {
 /** Buttons of the crash question, in order: Reload Editor is the default and what Esc chooses. */
 export const RECOVERY_BUTTONS = ['Reload Editor', 'Close Window'] as const;
 
-/** The crash question's wording: the project open in the main process is what a reload returns to. */
+/**
+ * The crash question's wording: the project open in the main process is what a reload returns to. The editor failing
+ * has one name, here and on the in-window failure screen (RenderFailure.tsx), and the same words for what is safe.
+ */
 export function crashQuestion(projectOpen: boolean) {
   return {
     type: 'warning' as const,
@@ -37,10 +40,10 @@ export function crashQuestion(projectOpen: boolean) {
     defaultId: 0,
     // Closing the window is never what Esc does: on Windows and Linux it quits the app.
     cancelId: 0,
-    message: 'The editor stopped unexpectedly',
+    message: 'The editor stopped working',
     detail: projectOpen
-      ? 'Reload the editor to return to your project. Text you were still typing may need to be entered again.'
-      : 'Reload the editor to return to SiteOrigin Builder.'
+      ? 'Your work is safe. Only text you were still typing may need to be entered again.\n\nReload the editor to go back to your project. If this keeps happening, choose Help > Report a Problem.'
+      : 'Your projects are safe. Reload the editor to carry on. If this keeps happening, choose Help > Report a Problem.'
   };
 }
 

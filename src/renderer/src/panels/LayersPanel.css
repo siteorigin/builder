@@ -157,39 +157,69 @@
   .editor.defining .layers-picked :is(.layers-picked-actions, .icon-btn):hover, .editor.defining .layers-picked-actions[aria-expanded='true'] { background: color-mix(in srgb, var(--plum) 7%, transparent); }
   .status-bar .crumbs-count { flex: none; margin-left: 6px; padding: 0 6px; border-radius: var(--r-sm); background: var(--accent-soft); color: var(--accent-text); font-size: 12px; line-height: 20px; white-space: nowrap; }
   .editor.defining .status-bar .crumbs-count { background: var(--plum-soft); color: var(--plum); }
-  /* The heading outline: the page's headings in the order screen readers list them, indented by level. Its right
-     padding gives way to the panel's stable scrollbar gutter, so the summary lines up with Layers | Headings above. */
-  .outline-view { padding: 0 2px 12px 10px; }
+  /* The heading outline: the page's headings in the order screen readers list them, indented by level. The summary
+     and the rows end where Layers | Headings above ends, and the summary starts where it starts. */
+  .outline-view { container: outline / inline-size; padding: 0 12px 12px 10px; }
   .outline-summary { padding: 0 0 10px 4px; }
-  .outline-summary-action { display: block; height: auto; min-height: 26px; max-width: 100%; margin-top: 8px; padding-block: 4px; white-space: normal; text-align: start; }
-  .outline-list { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 1px; }
-  /* Indented by level, so the outline reads as the nesting a screen reader announces. The shared header's or footer's
-     label sits outside the indent: it names a part of the site, not a level. */
-  .outline-item { display: flex; flex-direction: column; min-width: 0; margin-inline-start: calc((min(var(--level), 6) - 1) * 12px); }
-  .outline-group { display: block; margin: 4px 0 3px 6px; font-size: 11px; font-weight: 600; color: var(--text-3); text-transform: uppercase; letter-spacing: 0.04em; }
+  .outline-summary:empty { padding: 0; }
+  .outline-summary-action { display: flex; align-items: center; gap: 5px; height: auto; min-height: 26px; max-width: 100%; margin-top: 8px; padding-block: 4px; white-space: normal; text-align: start; }
+  .outline-summary-action svg, .outline-empty .btn svg { width: 14px; height: 14px; }
+  /* Something to check: the neutral note with the warning's amber icon, the hue the status bar and SEO use for it. A
+     healthy page gets one quiet line. */
+  .outline-summary .scope-note.outline-check > svg { color: var(--amber); }
+  .outline-summary .scope-note .grow { text-wrap: pretty; }
+  /* An empty page: the same quiet words and Add sections as an empty page in Layers. */
+  .outline-empty { display: flex; flex-direction: column; align-items: flex-start; gap: 8px; padding: 2px 4px 12px; }
+  .outline-empty p { margin: 0; font-size: 12px; line-height: 1.45; color: var(--text-2); text-wrap: pretty; }
+  .outline-empty strong { font-weight: 600; color: var(--text); }
+  /* Indented by level, 12px a step to Heading 4, then 6px, so Headings 5 and 6 keep their words; tighter again in a
+     narrow sidebar. As in the Layers tree the indent is inside the row, so hover, selection and focus span the list.
+     The shared header's or footer's label sits outside the indent: it names a part of the site. */
+  .outline-list { --step: 12px; --step-deep: 6px; list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 1px; }
+  @container outline (max-width: 236px) { .outline-list { --step: 8px; --step-deep: 4px; } }
+  .outline-item { --indent: calc(min(var(--level) - 1, 3) * var(--step) + max(0, min(var(--level), 6) - 4) * var(--step-deep)); display: flex; flex-direction: column; min-width: 0; border-radius: var(--r-sm); }
+  /* The Layers tree's section label: the part's icon, then its name. */
+  .outline-group { display: flex; align-items: center; gap: 6px; margin: 4px 0 4px 6px; font-size: 12px; font-weight: 600; color: var(--text-2); }
+  .outline-group svg { flex: none; width: 13px; height: 13px; color: var(--text-3); }
   .outline-list > li:not(:first-child) > .outline-group { margin-top: 8px; padding-top: 10px; border-top: 1px solid var(--border); }
-  .outline-row { width: 100%; min-width: 0; display: flex; align-items: flex-start; gap: 8px; min-height: 30px; padding: 4px 6px; border: 0; border-radius: var(--r-sm); background: transparent; color: var(--text); font-size: 13px; text-align: start; }
+  .outline-row { width: 100%; min-width: 0; display: flex; align-items: flex-start; gap: 8px; min-height: 30px; padding: 4px 6px 4px calc(6px + var(--indent)); border: 0; border-radius: var(--r-sm); background: transparent; color: var(--text); font-size: 13px; text-align: start; }
   .outline-row:hover { background: var(--hover); }
-  .outline-row[aria-current='true'] { background: var(--accent-soft); box-shadow: inset 0 0 0 1px var(--accent); }
-  .outline-row:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; }
-  .outline-level { flex: none; min-width: 26px; height: 20px; padding: 0 5px; border-radius: var(--r-xs); background: var(--active); color: var(--text-2); font-size: 11px; font-weight: 700; display: inline-flex; align-items: center; justify-content: center; font-variant-numeric: tabular-nums; }
-  .outline-row.warn .outline-level { background: var(--amber-soft); color: var(--amber); }
-  /* On a selected row the amber tints sit on an opaque ground, so their text keeps 4.5:1 over the selection's fill. */
-  .outline-row.warn[aria-current='true'] :is(.outline-level, .badge.amber) { background: linear-gradient(var(--amber-soft), var(--amber-soft)), var(--raised); }
-  .outline-row:not(.warn)[aria-current='true'] .outline-level { background: linear-gradient(var(--active), var(--active)), var(--panel); }
+  .outline-row:focus-visible { outline: 2px solid var(--focus); outline-offset: -2px; }
+  /* The selected heading: fill and ring around the row and its next step together, so the fix reads as its own. */
+  .outline-item:has(> .outline-row[aria-current='true']) { background: var(--accent-soft); box-shadow: inset 0 0 0 1px var(--accent); }
+  .outline-row[aria-current='true']:hover { background: transparent; }
+  /* Focus on the selected heading rings the whole item (ring, a gap of panel, then the fill), as in the Layers tree,
+     rather than a second box inside it; Tab on to its fix leaves the item its 1px selection ring. */
+  .outline-item:has(> .outline-row[aria-current='true']:focus-visible) { outline: 2px solid var(--focus); outline-offset: -2px; box-shadow: inset 0 0 0 3px var(--panel); }
+  .outline-row[aria-current='true']:focus-visible { outline: none; }
+  .outline-level { flex: none; min-width: 26px; height: 20px; padding: 0 5px; border-radius: var(--r-sm); background: var(--active); color: var(--text-2); font-size: 11px; font-weight: 700; display: inline-flex; align-items: center; justify-content: center; font-variant-numeric: tabular-nums; }
+  /* On the selected heading the chip and the amber badge sit on an opaque ground, so their text keeps 4.5:1. */
+  .outline-row[aria-current='true'] .outline-level { background: linear-gradient(var(--active), var(--active)), var(--panel); }
+  .outline-row[aria-current='true'] .badge { background: linear-gradient(var(--active), var(--active)), var(--raised); }
+  .outline-row[aria-current='true'] .badge.amber { background: linear-gradient(var(--amber-soft), var(--amber-soft)), var(--raised); }
   .outline-text { flex: 1; min-width: 0; display: flex; flex-direction: column; align-items: flex-start; gap: 3px; }
-  /* Up to two lines for every heading, three for a flagged one, so headings tell apart at rest and a long flagged one
-     doesn't push its next step away; the row's tooltip holds the full words. */
+  /* Up to two lines for every heading, three for a flagged one, so headings tell apart at rest; the focused or
+     selected heading shows all its words, and the tooltip holds them too. */
   .outline-words { display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 2; width: 100%; line-height: 20px; overflow: hidden; overflow-wrap: anywhere; text-wrap: pretty; }
   .outline-row.warn .outline-words { -webkit-line-clamp: 3; }
+  .outline-row:is(:focus-visible, [aria-current='true']) .outline-words { -webkit-line-clamp: unset; }
   .outline-words.empty { color: var(--text-3); font-style: italic; }
   .outline-row[aria-current='true'] .outline-words.empty { color: var(--text-2); }
-  .outline-row .badge { flex: none; max-width: 100%; }
-  /* Lines up under the heading's words: the row's padding, its level chip and their gap. */
-  .outline-next { display: flex; flex-direction: column; align-items: flex-start; gap: 4px; padding: 4px 6px 6px 40px; }
+  /* A badge wraps its words rather than squeezing out its icon in a narrow sidebar. */
+  .outline-row .badge { flex: none; max-width: 100%; height: auto; min-height: 20px; padding-block: 2px; white-space: normal; line-height: 16px; }
+  .outline-row .badge svg { flex: none; }
+  /* Lines up under the heading's words: the row's padding, its level chip and their gap; under the chip when narrow. */
+  .outline-next { display: flex; flex-direction: column; align-items: flex-start; gap: 4px; padding: 2px 6px 8px calc(40px + var(--indent)); }
+  /* Narrow: the flag drops to its own line under the chip, beside its fix's left edge, and stays one line. */
+  @container outline (max-width: 236px) {
+    .outline-next { padding-left: calc(6px + var(--indent)); }
+    .outline-row { flex-wrap: wrap; row-gap: 3px; }
+    .outline-text { display: contents; }
+    .outline-words { flex: 1 1 calc(100% - 40px); width: auto; min-width: 0; }
+  }
+  .outline-next .btn { max-width: 100%; height: auto; min-height: 26px; padding-block: 4px; white-space: normal; text-align: start; }
   .outline-hint { font-size: 12px; line-height: 1.4; color: var(--text-2); }
-  .outline-view:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; }
+  .outline-view:focus-visible { outline: 2px solid var(--focus); outline-offset: -2px; }
   .outline-note { margin: 10px 6px 0; font-size: 12px; }
-  .outline-summary .scope-note .grow { text-wrap: pretty; }
-  @media (forced-colors: active) { .outline-row[aria-current='true'] { border: 1px solid Highlight; } }
+  @media (forced-colors: active) { .outline-item:has(> .outline-row[aria-current='true']) { border: 1px solid Highlight; } }
 }

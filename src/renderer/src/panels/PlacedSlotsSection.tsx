@@ -184,7 +184,7 @@ function SlotRows({ rows, state, owner, node, selection, onSelect }: Omit<Props,
           </div>
         );
       })}
-      {adding && <QuickInsert title={`Add to ${adding.label}`} search="Search what fits" items={adding.items} anchor={adding.anchor} trigger={adding.trigger} refused={adding.refused} onChoose={choose} onClose={close} />}
+      {adding && <QuickInsert title={`Add to ${adding.label}`} search="Search what fits" items={adding.items} anchor={adding.anchor} trigger={adding.trigger} under={adding.trigger.closest<HTMLElement>('.contract-row')} refused={adding.refused} onChoose={choose} onClose={close} />}
     </>
   );
 }

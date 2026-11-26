@@ -359,7 +359,7 @@ export const INTERACTIONS: Interaction[] = [
     area: 'projects',
     intent: 'Get back to the editor after it crashed or failed',
     start: 'A project open when the editor page crashes, a screen fails while rendering, or the main process meets an error nothing caught',
-    routes: ['dialog:The editor stopped unexpectedly › Reload Editor', 'dialog:The editor stopped working › Reload editor', 'dialog:The editor stopped working › Close project'],
+    routes: ['dialog:The editor stopped working › Reload Editor', 'dialog:The editor stopped working › Reload editor', 'dialog:The editor stopped working › Close project'],
     outcome:
       'A crashed editor asks over its window to be loaded again, and Reload Editor brings back the same opening of the project; a screen that fails while rendering says so and reloads, or closes the project; an uncaught main-process error is reported in the app’s own words and the app keeps running',
     scenario: 'Business starter · none; browser and unit fixtures',
@@ -2152,7 +2152,7 @@ export const INTERACTIONS: Interaction[] = [
     area: 'assistant',
     intent: 'Find, rename or delete a conversation, and come back to a message I had not sent',
     start: 'A project with several conversations and unsent text',
-    routes: ['chat:Conversations', 'chat:New conversation', 'item:Chat:Find, rename or remove…', 'item:Chat:Clear history…', 'chat:Message', 'item:Chat:Message with *', 'chat:Continue', 'item:Chat:<data>'],
+    routes: ['chat:Conversations', 'chat:New conversation', 'item:Chat:Find, rename or delete…', 'item:Chat:Clear history…', 'chat:Message', 'item:Chat:Message with *', 'chat:Continue', 'item:Chat:<data>'],
     outcome: 'A continued conversation moves to the top; it is renamed and found by a phrase from a later request; one is deleted after a cancelled attempt, its draft with it; each conversation keeps its own draft across switches, projects and a restart; an unfinished request offers Continue; after a reopen the kept threads and the site edit are there',
     scenario: 'Blank starter · scripted model server',
     proof: [

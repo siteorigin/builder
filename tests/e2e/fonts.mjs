@@ -132,14 +132,26 @@ const chrome = await painted(win, '#dock-panel-styles [data-token-id="font.displ
 assert.ok(chrome.length > 0 && chrome.reduce((n, f) => n + f.glyphCount, 0) > 0, 'the label was painted');
 assert.ok(chrome.every((f) => !f.isCustomFont), `the editor's labels keep the system font: ${JSON.stringify(chrome)}`);
 
-step('Assets names each file by style, weight, alphabet and file, and shows it in its own face');
+step('Assets lists each family once, says where it is used, and names each file by style, alphabet and weights in its own face');
 await win.getByRole('button', { name: 'Assets', exact: true }).click();
 await win.locator('aside.side-panel').getByRole('tab', { name: /^Fonts/ }).click();
+const family = (name) => win.locator(`.font-family[data-font-family="${name}"]`);
+await eventually(async () => assert.equal(await win.locator('.font-family').count(), 2, 'one card a family'));
+await eventually(async () => assert.match(await family('Lora').locator('.font-family-head').innerText(), /In use[\s\S]*3 files · .* · Used for Display font/));
+assert.match(await family('Plus Jakarta Sans').locator('.font-family-head').innerText(), /In use[\s\S]*Used for Body font/);
+for (const name of ['Lora', 'Plus Jakarta Sans']) {
+  const toggle = family(name).locator('.font-family-toggle');
+  assert.equal(await toggle.getAttribute('aria-expanded'), 'false', `${name} starts closed`);
+  await toggle.click();
+  assert.equal(await toggle.getAttribute('aria-expanded'), 'true', `${name} opens`);
+}
 const row = (id) => win.locator(`.font-face[data-font-file="${assets[id].file.split('/').pop()}"]`);
-await eventually(async () => assert.match(await row(ids.loraLatin).locator('.font-face-meta').innerText(), /Variable \(400–700\) · Latin · .* · Family in use/));
-await eventually(async () => assert.match(await row(ids.loraCyrillic).locator('.font-face-meta').innerText(), /Variable \(400–700\) · Cyrillic · /));
-await eventually(async () => assert.match(await row(ids.loraItalic).locator('.font-face-meta').innerText(), /Variable \(400–700\) italic · Latin/));
-await eventually(async () => assert.match(await row(ids.sans).locator('.font-face-meta').innerText(), /Variable \(200–800\) · Latin/));
+await eventually(async () => assert.match(await row(ids.loraLatin).locator('.font-face-title').innerText(), /^Upright · Latin · [\d.]+ KB$/));
+await eventually(async () => assert.match(await row(ids.loraCyrillic).locator('.font-face-title').innerText(), /^Upright · Cyrillic · /));
+await eventually(async () => assert.match(await row(ids.loraItalic).locator('.font-face-title').innerText(), /^Italic · Latin · /));
+assert.equal(await row(ids.loraItalic).locator('.font-face-weight').innerText(), '400–700, variable');
+await eventually(async () => assert.match(await row(ids.sans).locator('.font-face-title').innerText(), /^Upright · Latin · /));
+assert.equal(await row(ids.sans).locator('.font-face-weight').innerText(), '200–800, variable');
 assert.equal(await row(ids.loraCyrillic).locator('.font-face-file').innerText(), 'lora-cyrillic-wght-normal.woff2', 'the row names the file it was imported from');
 assert.equal(await row(ids.loraCyrillic).locator('.font-face-sample').innerText(), 'Аа Бб Жж', 'the Cyrillic file shows Cyrillic letters');
 await paintedWith(win, `[data-font-sample="${ids.loraCyrillic}"]`, IN_LORA, 'the Cyrillic file’s sample');
@@ -152,17 +164,17 @@ step('removing the upright body file says body text would turn italic, and Cance
 await removeButton(ids.sans).click();
 await dialog.waitFor();
 const said = await dialog.innerText();
-assert.match(said, /Your site uses Plus Jakarta Sans in 1 place/);
-assert.match(said, /Body/);
-assert.match(said, /Upright text in Plus Jakarta Sans would be drawn with its italic file \(plus-jakarta-sans-latin-wght-italic\.woff2\): ordinary paragraphs and headings set in it would turn italic\./);
+assert.match(said, /Your site uses Plus Jakarta Sans in one place: Body/);
+assert.match(said, /Text in Plus Jakarta Sans would turn italic, ordinary paragraphs and headings included: only its italic file \(plus-jakarta-sans-latin-wght-italic\.woff2\) would be left\./);
 assert.equal(await win.getByRole('button', { name: 'Remove file' }).isDisabled(), true, 'nothing is removed until the author chooses');
+assert.equal(await win.locator('.modal .page-dialog-status').innerText(), 'Choose an option above to remove this file.', 'and the dialog says why');
 await win.getByRole('button', { name: 'Cancel' }).click();
 await dialog.waitFor({ state: 'detached' });
 assert.ok((await snapshot()).state.assets.assets[ids.sans], 'Cancel keeps the file');
 
 step('knowingly keeping the family on its italic file draws body text in italic, and Undo brings the upright back');
 await removeButton(ids.sans).click();
-await dialog.getByRole('radio', { name: /Keep using Plus Jakarta Sans’s other file/ }).check();
+await dialog.getByRole('radio', { name: 'Plus Jakarta Sans’s other file' }).check();
 await win.getByRole('button', { name: 'Remove file' }).click();
 await dialog.waitFor({ state: 'detached' });
 await eventually(async () => assert.equal((await snapshot()).state.assets.assets[ids.sans], undefined, 'the upright file is gone'));
@@ -173,7 +185,7 @@ await paintedWith(canvasFrame(), uprightSel, IN_SANS_UPRIGHT, 'body text after U
 step('choosing another font moves body text to it in one step');
 await row(ids.sans).waitFor();
 await removeButton(ids.sans).click();
-await dialog.getByRole('radio', { name: 'Use another font instead' }).check();
+await dialog.getByRole('radio', { name: 'Another font' }).check();
 await dialog.getByLabel('Font to use instead').selectOption({ label: 'Lora' });
 await win.getByRole('button', { name: 'Remove file' }).click();
 await dialog.waitFor({ state: 'detached' });
@@ -189,8 +201,8 @@ assert.equal((await snapshot()).state.tokens.overrides['font.body'], "'Plus Jaka
 step('removing the Cyrillic file says which letters would fall back, and they do');
 await row(ids.loraCyrillic).waitFor();
 await removeButton(ids.loraCyrillic).click();
-await eventually(async () => assert.match(await dialog.innerText(), /Cyrillic letters in upright Lora would be drawn with a fallback font: that file doesn’t have them\./));
-await dialog.getByRole('radio', { name: /Keep using Lora’s other files/ }).check();
+await eventually(async () => assert.match(await dialog.innerText(), /Cyrillic text in upright Lora would use a fallback font: Lora’s other upright file \(lora-latin-wght-normal\.woff2\) doesn’t have those letters\./));
+await dialog.getByRole('radio', { name: 'Lora’s other files' }).check();
 await win.getByRole('button', { name: 'Remove file' }).click();
 await dialog.waitFor({ state: 'detached' });
 await eventually(async () => {
@@ -204,13 +216,13 @@ await paintedWith(canvasFrame(), cyrillicSel, IN_LORA, 'the Cyrillic heading aft
 step('the last file of a family falls back when the author lets it');
 await row(ids.sansItalic).waitFor();
 await removeButton(ids.sansItalic).click();
-await dialog.getByRole('radio', { name: /Keep using Plus Jakarta Sans’s other file/ }).check();
+await dialog.getByRole('radio', { name: 'Plus Jakarta Sans’s other file' }).check();
 await win.getByRole('button', { name: 'Remove file' }).click();
 await dialog.waitFor({ state: 'detached' });
 await removeButton(ids.sans).click();
-await eventually(async () => assert.match(await dialog.innerText(), /Text set in Plus Jakarta Sans would be drawn with the next font of each style that names it/));
-assert.equal(await dialog.getByRole('radio', { name: /Keep using/ }).count(), 0, 'the last file cannot be kept');
-await dialog.getByRole('radio', { name: 'Let them fall back' }).check();
+await eventually(async () => assert.match(await dialog.innerText(), /This is the last Plus Jakarta Sans file, so Plus Jakarta Sans is taken out of every style that names it/));
+assert.equal(await dialog.getByRole('radio', { name: /other files?$/ }).count(), 0, 'the last file cannot be kept');
+await dialog.getByRole('radio', { name: 'A fallback font' }).check();
 await win.getByRole('button', { name: 'Remove file' }).click();
 await dialog.waitFor({ state: 'detached' });
 await eventually(async () => {

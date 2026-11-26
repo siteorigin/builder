@@ -1,8 +1,9 @@
 /**
  * Signal's site styles. The IDs are Foundation's, one for one, so a site's own choices (an element's colour, a text
  * style it picked) keep meaning the same thing whichever of the two themes it switches to; only the values differ.
- * A cool near-white page, soft indigo-tinted panels, an electric indigo brand with a signal-orange accent, geometric
- * headings in Sora, DM Sans for reading, JetBrains Mono for eyebrow labels, and generous corners.
+ * A cool near-white page, soft indigo-tinted panels with a hairline edge, an electric indigo brand with a signal-orange
+ * accent, geometric headings in Sora, DM Sans for reading, JetBrains Mono for eyebrow labels, generous corners, and a
+ * tighter product rhythm: a narrower content column and less air between sections than Foundation's brochure pace.
  */
 import type { TokenDef } from '@shared/types';
 import { builtinFontStack } from '../builtin-fonts';
@@ -14,16 +15,16 @@ export const SIGNAL_TOKENS: TokenDef[] = [
   // Colors
   { id: 'color.background', label: 'Background', group: 'color', value: '#f6f7fb' },
   { id: 'color.surface', label: 'Cards and panels', group: 'color', value: '#ffffff' },
-  { id: 'color.surface-alt', label: 'Alternate background', group: 'color', value: '#eceffa' },
+  { id: 'color.surface-alt', label: 'Alternate background', group: 'color', value: '#e6e9f8' },
   { id: 'color.text', label: 'Primary text', group: 'color', value: '#0e1124' },
   { id: 'color.muted', label: 'Muted text', group: 'color', value: '#4f566b' },
-  { id: 'color.brand', label: 'Brand', group: 'color', value: '#4338ca' },
-  { id: 'color.brand-strong', label: 'Brand (strong)', group: 'color', value: '#2e2a8f' },
+  { id: 'color.brand', label: 'Brand', group: 'color', value: '#4636e0' },
+  { id: 'color.brand-strong', label: 'Brand (strong)', group: 'color', value: '#3024a8' },
   { id: 'color.on-brand', label: 'Text on brand color', group: 'color', value: '#ffffff' },
   { id: 'color.accent', label: 'Accent', group: 'color', value: '#ff7a45' },
   { id: 'color.inverse', label: 'Dark sections', group: 'color', value: '#0e1124' },
   { id: 'color.on-inverse', label: 'Text on dark sections', group: 'color', value: '#eef0f8' },
-  { id: 'color.border', label: 'Border', group: 'color', value: '#e1e4ee' },
+  { id: 'color.border', label: 'Border', group: 'color', value: '#d3d8e9' },
   { id: 'color.focus', label: 'Keyboard focus outline', group: 'color', value: '#2f5bea' },
 
   // Font families
@@ -48,13 +49,13 @@ export const SIGNAL_TOKENS: TokenDef[] = [
   { id: 'space.md', label: 'Medium', group: 'space', value: '16px' },
   { id: 'space.lg', label: 'Large', group: 'space', value: '24px' },
   { id: 'space.xl', label: 'XL', group: 'space', value: '32px' },
-  { id: 'space.2xl', label: '2XL', group: 'space', value: '48px' },
-  { id: 'space.3xl', label: '3XL', group: 'space', value: '72px' },
-  { id: 'space.section', label: 'Section', group: 'space', value: 'clamp(4rem, 2.6rem + 5.5vw, 7.5rem)' },
+  { id: 'space.2xl', label: '2XL', group: 'space', value: '44px' },
+  { id: 'space.3xl', label: '3XL', group: 'space', value: '64px' },
+  { id: 'space.section', label: 'Section', group: 'space', value: 'clamp(3.75rem, 2.4rem + 5vw, 6.75rem)' },
 
   // Containers
-  { id: 'container.reading', label: 'Reading width', group: 'container', value: '720px' },
-  { id: 'container.content', label: 'Content width', group: 'container', value: '1200px' },
+  { id: 'container.reading', label: 'Reading width', group: 'container', value: '680px' },
+  { id: 'container.content', label: 'Content width', group: 'container', value: '1160px' },
   { id: 'container.gutter', label: 'Page gutter', group: 'container', value: 'clamp(1.25rem, 0.8rem + 2.4vw, 2.5rem)' },
 
   // Radii: generous, so cards and panels read as soft tiles.

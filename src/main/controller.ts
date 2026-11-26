@@ -69,6 +69,7 @@ import { codeBrought, importedCode, migratePackage, packagedDefinitions, planCom
 import { definitionRole } from '@engine/insert-role';
 import { findSaved, listSaved, removeSaved, saveToLibrary, savedPackagePath } from './saved-components';
 import { buildComponentPackage, preparePackageImport, readComponentPackage, type PreparedImport } from './project/component-package';
+import { perf, perfNow, serializedSize, timed } from './perf';
 
 /** Said with every editable project export: a statement, never a note to review, since nothing needs doing about it. */
 const PRIVATE_FILES_LEFT_OUT = 'Private files such as .env, keys and credentials were left out.';
@@ -395,7 +396,17 @@ export class Controller {
 
   send(channel: string, payload?: unknown) {
     const w = this.getWindow();
-    if (w && !w.isDestroyed()) w.webContents.send(channel, payload);
+    if (!w || w.isDestroyed()) return;
+    w.webContents.send(channel, payload);
+    // What the editor is sent on every change (src/shared/perf.ts), only while marks are on: marked as sent now, then
+    // sized as IPC serializes it, after the send so the editor gets it no later than it would. Sizing never throws.
+    if (perf.on && channel === 'project:changed') {
+      const at = perfNow();
+      const bytes = serializedSize(payload);
+      perf.count('ipc.projectChanged.sends');
+      if (bytes !== null) perf.count('ipc.projectChanged.bytes', bytes);
+      perf.mark('controller.snapshotSent', { revision: (payload as ProjectSnapshot).revision, bytes }, at);
+    }
   }
 
   // -------------------------------------------------------------------------
@@ -772,7 +783,11 @@ export class Controller {
    * Open a project folder, or a project ZIP file (#263). With no path, the author chooses one (`folder`: a folder).
    * `replaces` is the missing recent entry the author is finding this project for (#217): see addRecent.
    */
-  async open(dirArg?: string, opts: { folder?: boolean; replaces?: string } = {}): Promise<OpenResult> {
+  open(dirArg?: string, opts: { folder?: boolean; replaces?: string } = {}): Promise<OpenResult> {
+    return timed('controller.open', () => this.openNow(dirArg, opts), (r) => ({ ok: r?.ok ?? false }))();
+  }
+
+  private async openNow(dirArg: string | undefined, opts: { folder?: boolean; replaces?: string }): Promise<OpenResult> {
     // Called off from the start, so a window that goes while its picker is up never gets a ZIP file unpacked for it.
     const abort = new AbortController();
     this.openAborts.add(abort);
@@ -1019,6 +1034,7 @@ export class Controller {
    * preview is not started: the project opens showing that error, and Try again starts it.
    */
   private async attach(session: ProjectSession, workspace: LocalWorkspaceState, runtimeError: RuntimeState | null = null) {
+    const attaching = perf.span('controller.attach');
     // The handover that closed the open project for this one ends here, as this one becomes the open project.
     this.handingOver = false;
     // A new opening lists only its own exports, even if an earlier one was never closed.
@@ -1075,10 +1091,13 @@ export class Controller {
     // Watching starts before the first look, so a file removed while it runs is seen too.
     this.watchExternalChanges(session);
     // Project health lists missing image files from the first moment the project shows.
+    const assetCheck = perf.span('controller.assetCheck');
     await session.refreshAssetFiles().catch(() => false);
+    assetCheck();
     // Icons a save stopped waiting for before this app held the project's lock (a new project's) are published now.
     void session.refreshSiteIcons().catch(() => null);
     this.broadcast();
+    attaching({ revision: session.revision });
     if (runtimeError) this.send('runtime:status', runtimeError);
     else await this.startRuntime();
   }
@@ -1097,7 +1116,11 @@ export class Controller {
     return run;
   }
 
-  private async startRuntimeNow() {
+  private startRuntimeNow(): Promise<void> {
+    return timed('controller.startRuntime', () => this.startRuntimeWork(), () => ({ state: this.dev?.status.state ?? 'none' }))();
+  }
+
+  private async startRuntimeWork() {
     const session = this.session;
     if (!session) return;
     await this.stopPreview();
@@ -1814,7 +1837,12 @@ export class Controller {
   // Editing
   // -------------------------------------------------------------------------
 
-  async apply(batch: EditBatch, opts: { label?: string; coalesceKey?: string; opening?: string } = {}): Promise<ApplyResult> {
+  apply(batch: EditBatch, opts: { label?: string; coalesceKey?: string; opening?: string } = {}): Promise<ApplyResult> {
+    // An edit's whole time in the main process, from the editor's request to its answer (src/shared/perf.ts).
+    return timed('controller.apply', () => this.applyNow(batch, opts), (r) => ({ operations: Array.isArray(batch?.operations) ? batch.operations.length : 0, ok: r?.ok ?? false, revision: r?.revision ?? null }))();
+  }
+
+  private async applyNow(batch: EditBatch, opts: { label?: string; coalesceKey?: string; opening?: string }): Promise<ApplyResult> {
     const session = this.session;
     if (!session) return { ok: false, revision: 0, error: { code: 'INVALID_ARGUMENT', message: 'No project is open.', recoverable: false } };
     // Made in an opening of a project that has since started closing, closed or been switched away from (even

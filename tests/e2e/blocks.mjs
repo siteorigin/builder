@@ -188,10 +188,12 @@ await eventually(async () => assert.equal((await newest())?.id, before?.id, 'and
 step('the + inside an empty column offers every block, in its own group');
 await win.keyboard.press('Escape');
 await openPlus(addButton('inside', col2), () => pointIn(inPage(col2), 0.5, 0.5));
-const offered = async () => (await list.getByRole('option').allInnerTexts()).map((t) => t.replace(/\s+/g, ' ').trim());
+/** What the list offers, by name, and the group each is listed under. */
+const offered = () => list.getByRole('option').evaluateAll((els) => els.map((el) => ({ name: el.querySelector('.qi-name')?.textContent ?? '', group: el.dataset.group })));
 for (const name of ['Feature card', 'Stat card', 'Testimonial card', 'Callout box', 'Signup form', 'Compact video'])
-  assert.ok((await offered()).some((t) => t.startsWith(name) && t.endsWith('Blocks')), `${name} is offered under Blocks`);
-assert.equal((await offered()).some((t) => t.startsWith('Statistics')), false, 'sections are not offered inside a column');
+  assert.ok((await offered()).some((o) => o.name === name && o.group === 'Blocks'), `${name} is offered under Blocks`);
+assert.equal(await list.getByRole('group', { name: 'Blocks' }).count(), 1, 'under a Blocks heading');
+assert.equal((await offered()).some((o) => o.name.startsWith('Statistics')), false, 'sections are not offered inside a column');
 await win.screenshot({ path: join(SHOTS, 'blocks-column-plus.png') });
 await win.keyboard.press('Escape');
 await list.waitFor({ state: 'detached' });
@@ -217,7 +219,7 @@ await eventually(async () => assert.equal((await newest())?.id, before?.id, 'and
 step('the + inside the Proof section offers only the blocks its slot takes');
 await win.keyboard.press('Escape');
 await openPlus(addButton('inside', proof), () => pointIn(inPage(proof), 0.5, 0.5));
-const proofBlocks = (await offered()).filter((t) => t.endsWith('Blocks')).map((t) => t.replace(/\s*Blocks$/, ''));
+const proofBlocks = (await offered()).filter((o) => o.group === 'Blocks').map((o) => o.name);
 assert.deepEqual(proofBlocks, ['Stat card', 'Testimonial card'], 'social proof only');
 await win.screenshot({ path: join(SHOTS, 'blocks-slot-plus.png') });
 before = await newest();

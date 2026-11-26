@@ -1,6 +1,7 @@
 import { contextBridge, ipcRenderer, webUtils } from 'electron';
 import type { BuilderApi } from '@shared/api';
 import { editorScheme } from '@shared/appearance';
+import { PERF_ARG } from '@shared/perf';
 
 // The editor's first paint is in its Appearance: its root element is marked as soon as it exists, before any style
 // is computed, with the Appearance saved now (asked for on every page load, so a reload is not left with an older
@@ -29,7 +30,7 @@ const ALLOWED_EVENTS = new Set(['project:changed', 'project:closed', 'create:pro
 
 const api: BuilderApi = {
   platform: process.platform,
-  app: { info: invoke('app:info'), catalogue: invoke('app:catalogue'), packPreview: invoke('packs:preview'), getSettings: invoke('app:getSettings'), setSettings: invoke('app:setSettings'), openExternal: invoke('app:openExternal'), recordShortcut: invoke('app:recordShortcut') } as BuilderApi['app'],
+  app: { info: invoke('app:info'), catalogue: invoke('app:catalogue'), packPreview: invoke('packs:preview'), getSettings: invoke('app:getSettings'), setSettings: invoke('app:setSettings'), openExternal: invoke('app:openExternal'), buildDetails: invoke('app:buildDetails'), showThemesFolder: invoke('app:showThemesFolder'), quit: invoke('app:quit'), recordShortcut: invoke('app:recordShortcut') } as BuilderApi['app'],
   edit: { undo: invoke('edit:undo'), redo: invoke('edit:redo') } as BuilderApi['edit'],
   dialogs: { chooseFolder: invoke('dialogs:chooseFolder'), chooseImages: async () => [], defaultProjectsFolder: invoke('dialogs:defaultProjectsFolder') } as BuilderApi['dialogs'],
   projects: {
@@ -160,6 +161,8 @@ const api: BuilderApi = {
 };
 
 contextBridge.exposeInMainWorld('builder', api);
+// Timing marks (src/shared/perf.ts), offered only while they are on: the main process gives this window PERF_ARG then.
+if (process.argv.includes(PERF_ARG)) contextBridge.exposeInMainWorld('builderPerf', { send: (record: unknown) => ipcRenderer.send('perf:record', record) });
 // Development-only hooks; the main process registers these handlers only in unpackaged builds.
 contextBridge.exposeInMainWorld('builderTest', {
   exportStatic: invoke('test:exportStatic'),

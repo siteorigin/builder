@@ -1,8 +1,9 @@
 // The canvas's own Add buttons (#387), against the real app. The + below Home's first section, reached by the pointer
 // from the section itself, adds a Gallery between Home's first two sections; the + inside a selected Row, opened and
 // searched from the keyboard, adds a Button inside that Row. Each is one change that one Undo takes away. Escape puts
-// the list away and hands focus back to its button, Backspace in its search changes nothing on the page, a press
-// outside only puts it away, and Preview shows no Add buttons at all.
+// the list away and hands focus back to its button, Backspace in its search changes nothing on the page, Tab and
+// Shift+Tab put it away and move on from its button, a search with no match offers Clear search and Insert (which
+// opens on the same search), a press outside only puts it away, and Preview shows no Add buttons at all.
 import assert from 'node:assert/strict';
 import { join } from 'node:path';
 import { createProject, eventually, launch, scratch, step } from './harness.mjs';
@@ -176,6 +177,41 @@ await list.waitFor({ state: 'detached' });
 await eventually(async () => assert.equal(await inside.evaluate((el) => el === document.activeElement), true, 'focus is back on the +'));
 assert.equal(await win.locator('.canvas').getAttribute('data-selected-ref'), selectedBefore, 'the Row is still selected');
 assert.deepEqual((await home()).nodes[row].children, rowBefore, 'nothing was removed or added');
+
+step('Tab puts the list away and moves on from its +, as from any other control; Shift+Tab moves back from it');
+/** What the + hands focus to on `key` with no list open: where the same key should land from an open list. */
+const focusedHtml = () => win.evaluate(() => document.activeElement?.outerHTML.slice(0, 120) ?? null);
+for (const key of ['Tab', 'Shift+Tab']) {
+  await inside.focus();
+  await win.keyboard.press(key);
+  const expected = await focusedHtml();
+  await inside.focus();
+  await win.keyboard.press('Enter');
+  await list.waitFor();
+  await win.keyboard.press(key);
+  await list.waitFor({ state: 'detached' });
+  await eventually(async () => assert.equal(await focusedHtml(), expected, `${key} lands where it would from the +`));
+}
+assert.deepEqual((await home()).nodes[row].children, rowBefore, 'and adds nothing');
+
+step('a search that matches nothing says so, and Open Insert takes the search with it');
+await inside.click();
+await list.waitFor();
+await search.fill('zzqx');
+await list.locator('.qi-empty strong', { hasText: 'No matches for “zzqx”' }).waitFor();
+await eventually(async () => assert.equal(await list.getByRole('status').innerText(), 'No matches for “zzqx”', 'and the status region says so'));
+assert.equal(await list.getByRole('option').count(), 0, 'no options');
+assert.equal(await search.getAttribute('aria-expanded'), 'false', 'and the search says its list is closed');
+await list.locator('.qi-empty').getByRole('button', { name: 'Clear search' }).click();
+assert.equal(await search.inputValue(), '', 'Clear search empties it');
+assert.ok((await list.getByRole('option').count()) > 0, 'and everything is listed again');
+await search.fill('zzqx');
+await list.locator('.qi-empty').getByRole('button', { name: 'Open Insert' }).click();
+await list.waitFor({ state: 'detached' });
+await eventually(async () => assert.equal(await win.locator('.side-panel-view:not([hidden]) .insert-search input').inputValue(), 'zzqx', 'Insert opens searching for it'));
+await win.locator('.side-panel-view:not([hidden]) .insert-search input').fill('');
+assert.match(await chip(), /^Row/, 'the Row is still selected');
+await inside.waitFor();
 
 step('a press outside only puts the list away');
 await inside.click();

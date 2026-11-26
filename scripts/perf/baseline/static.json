@@ -1,0 +1,58 @@
+{
+  "schemaVersion": 1,
+  "rows": {
+    "renderer.script": {
+      "raw": 9316832,
+      "gzip": 2231287,
+      "files": []
+    },
+    "renderer.style": {
+      "raw": 595405,
+      "gzip": 122335,
+      "files": []
+    },
+    "renderer.later": {
+      "raw": 0,
+      "gzip": 0,
+      "files": []
+    },
+    "main": {
+      "raw": 4537360,
+      "gzip": 1303194,
+      "files": []
+    },
+    "preload": {
+      "raw": 8745,
+      "gzip": 2550,
+      "files": []
+    },
+    "worker.media-worker": {
+      "raw": 130876,
+      "gzip": 43203,
+      "files": []
+    },
+    "worker.posts-import-worker": {
+      "raw": 171732,
+      "gzip": 57540,
+      "files": []
+    },
+    "worker.runtime-worker": {
+      "raw": 353304,
+      "gzip": 110354,
+      "files": []
+    },
+    "worker.source-sync-worker": {
+      "raw": 230406,
+      "gzip": 73517,
+      "files": []
+    }
+  },
+  "packages": {
+    "acorn": {
+      "version": "8.19.0",
+      "files": 1,
+      "bytes": 234658
+    }
+  },
+  "unresolved": []
+}

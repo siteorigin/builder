@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useLayoutEffect, useState } from 'react';
 import { api, applyAiEvent, getState, persistChatState, persistPlaces, projectHistory, restoreRightTab, saveLocal, setState, toast, useStore } from './store';
 import { cleanDrafts, cleanImages, moveDraft, moveImages, restorePlan } from './lib/chatDrafts';
 import { Welcome } from './Welcome';
@@ -26,6 +26,7 @@ import { followRemote, syncRemotePresence } from './lib/remote-session';
 import { JoinLiveDialog } from './components/JoinLive';
 import { isRemoteOpening } from './lib/remote-snapshot';
 import { projectDisplayName, windowTitle } from '@shared/project-name';
+import { perfMark, perfMarkAtCommit, perfOn } from './lib/perf';
 
 /** What Undo and Redo, and keys forwarded from the preview frame, act on right now. */
 function historyContext(): HistoryContext {
@@ -57,6 +58,7 @@ export function App() {
     let unmounted = false;
     const offs = [
       api.on('project:changed', (snap) => {
+        perfMark('renderer.snapshotReceived', { revision: snap.revision });
         superseded = true;
         const s = getState();
         // Another opening (of another project, or of this one again) loads its own state, drafts included. A project
@@ -166,8 +168,24 @@ export function App() {
       <UnpackingModal />
       <Toasts />
       <ConfirmHost />
+      {perfOn && <PerfProbe />}
     </>
   );
+}
+
+/**
+ * Marks the commit that first shows each revision, screen and opening (src/shared/perf.ts), and each selection: its
+ * layout effect runs in the same commit as everything else the snapshot or selection changed. Rendered only while
+ * timing marks are on.
+ */
+function PerfProbe() {
+  const revision = useStore((s) => s.snapshot?.revision ?? null);
+  const opening = useStore((s) => s.snapshot?.workspaceKey ?? null);
+  const screen = useStore((s) => s.screen);
+  const selection = useStore((s) => s.selection);
+  useLayoutEffect(() => perfMarkAtCommit('renderer.commit', { revision, screen, opening: opening !== null }), [revision, opening, screen]);
+  useLayoutEffect(() => perfMarkAtCommit('renderer.selectionCommit', { selected: selection !== null }), [selection]);
+  return null;
 }
 
 export function openSnapshot(snap: NonNullable<ReturnType<typeof getState>['snapshot']>) {
