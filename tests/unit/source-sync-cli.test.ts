@@ -8,6 +8,7 @@ import { createServer, type Server } from 'node:http';
 import { EventEmitter } from 'node:events';
 import { execFile } from 'node:child_process';
 import { createHash } from 'node:crypto';
+import { crc32, deflateSync } from 'node:zlib';
 import { copyFileSync, cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, statSync, symlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -223,6 +224,58 @@ describe('syncing a project without the app', () => {
     expect(Object.values((await readState(dir)).collections.team.entries).map((e) => e.title)).toEqual(['Ben Okafor']);
   });
 
+  it('brings a picture two sources show into the library once', async () => {
+    const shared = 'https://images.example.test/studio.png';
+    const server = await api(() => [person('1', 'Ana Ruiz', 'Architect', shared)]);
+    const dir = await project(server.origin);
+    // A second collection synced from a second source, showing the very same picture.
+    const s = await ProjectSession.open(dir, 'second');
+    const r = await s.apply(
+      {
+        operations: [
+          { type: 'collection.create', collectionId: 'guests', name: 'Guests', kind: 'structured', pages: { detail: false, archive: false }, fields: { role: { type: 'string', label: 'Role', default: '' } } },
+          { type: 'source.upsert', sourceId: 'guests', name: 'Guests API', adapter: 'rest', collectionId: 'guests', config: { url: `${server.origin}/v1/guests`, itemsPath: 'data', headers: { Authorization: 'Bearer ${secret:crew-token}' } }, mapping: { externalId: 'id', title: 'name', featuredImageUrl: 'photo', values: { role: 'role' } } }
+        ] as EditOperation[]
+      },
+      { label: 'Guests' }
+    );
+    expect(r.error?.message).toBeUndefined();
+    await s.close();
+    const { runner } = await inline();
+    expect((await syncProject(dir, { env, runner, now })).map((x) => [x.sourceId, x.created, x.images])).toEqual([
+      ['crew', 1, 1],
+      ['guests', 1, 0]
+    ]);
+    const state = await readState(dir);
+    const [crew] = Object.values(state.collections.team.entries);
+    const [guest] = Object.values(state.collections.guests.entries);
+    expect(guest.featuredImage).toBe(crew.featuredImage);
+  });
+
+  it('never brings in a picture whose compressed text holds the secret it was sent', async () => {
+    const server = await api(() => [person('1', 'Ana Ruiz', 'Architect', 'https://images.example.test/ana.png')]);
+    const dir = await project(server.origin);
+    const png = await sharp({ create: { width: 4, height: 4, channels: 3, background: { r: 1, g: 2, b: 3 } } }).png().toBuffer();
+    // A zTXt chunk (keyword, NUL, method 0, deflated text) just before IEND.
+    const body = Buffer.concat([Buffer.from('Comment\0\0', 'latin1'), deflateSync(Buffer.from(`token=${SECRET}`))]);
+    const type = Buffer.from('zTXt', 'latin1');
+    const chunk = Buffer.concat([Buffer.alloc(4), type, body, Buffer.alloc(4)]);
+    chunk.writeUInt32BE(body.length, 0);
+    chunk.writeUInt32BE(crc32(Buffer.concat([type, body])), 8 + body.length);
+    const marked = Buffer.concat([png.subarray(0, png.length - 12), chunk, png.subarray(png.length - 12)]);
+    const spawn = (): SyncHandle => {
+      const e = new EventEmitter();
+      return {
+        postMessage: (m: SyncRequest) => void runSync(m, { adapters: ADAPTERS, fetchImage: async () => ({ bytes: new Uint8Array(marked), mime: 'image/png' }) }).then((reply: SyncReply) => e.emit('message', reply)),
+        on: (ev: string, l: (x: never) => void) => (e.on(ev, l as (x: unknown) => void), undefined),
+        kill: () => true
+      } as unknown as SyncHandle;
+    };
+    const before = fileTimes(dir);
+    await expect(syncProject(dir, { env, runner: createSyncRunner(spawn), now })).rejects.toThrow(/holds one of your secrets/);
+    expect(fileTimes(dir)).toEqual(before);
+  });
+
   it('changes nothing when the plan of a sync cut short is damaged, or a file it names was lost', async () => {
     const dir = temp('so-sync-damaged-');
     mkdirSync(join(dir, 'siteorigin'), { recursive: true });
@@ -245,6 +298,12 @@ describe('syncing a project without the app', () => {
       { rel: 'siteorigin/assets.json', staged: '1', sha: 'c'.repeat(64) }
     ]));
     await expect(finishPending(dir)).rejects.toThrow(/damaged/);
+    // A staged copy that is not the file the plan names, or a place that is a folder: refused before anything moves.
+    writeFileSync(join(pending, '1'), '{"assets":"other"}');
+    await expect(finishPending(dir)).rejects.toThrow(/damaged/);
+    rmSync(join(dir, 'siteorigin/assets.json'));
+    mkdirSync(join(dir, 'siteorigin/assets.json'));
+    await expect(finishPending(dir)).rejects.toThrow(/is not a file/);
     expect(readFileSync(join(dir, 'siteorigin/site.json'), 'utf8')).toBe('{"keep":true}');
     expect(existsSync(join(pending, 'plan.json'))).toBe(true);
   });
@@ -260,6 +319,11 @@ describe('syncing a project without the app', () => {
     symlinkSync(outside, join(dir, 'siteorigin/collections/team/entries'));
     await expect(commitWrites(dir, [{ rel: 'siteorigin/collections/team/entries/en_x.json', data: '{}' }])).rejects.toThrow(/link that leads out of the project/);
     expect(readdirSync(outside)).toEqual([]);
+    // Nor a file that is itself a link.
+    writeFileSync(join(outside, 'site.json'), 'theirs');
+    symlinkSync(join(outside, 'site.json'), join(dir, 'siteorigin/site.json'));
+    await expect(commitWrites(dir, [{ rel: 'siteorigin/site.json', data: '{}' }])).rejects.toThrow(/is a link/);
+    expect(readFileSync(join(outside, 'site.json'), 'utf8')).toBe('theirs');
   });
 });
 

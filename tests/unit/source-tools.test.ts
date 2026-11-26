@@ -29,6 +29,7 @@ const { syncSource } = await import('../../src/main/sources/sync');
 const { createAgentSources } = await import('../../src/main/sources/agent');
 const { Orchestrator } = await import('@agent/orchestrator');
 const { asksForSource, toolsForRun } = await import('@agent/tools');
+const { sourcesSummary } = await import('@agent/context');
 const { fitSample, SAMPLE_CHARS } = await import('@agent/source-tools');
 const { findForbiddenShapes, toStrictSchema } = await import('@agent/strict-schema');
 const { envelopeSchema } = await import('@agent/constrained');
@@ -305,12 +306,18 @@ describe('the source tools’ host', () => {
     disk.converter!.code = `// ${SECRET}\n${GOOD}`;
     expect(await leaky.host.inspect('crew', fp(leaky.s))).toMatchObject({ ok: false, code: 'secret', message: expect.not.stringContaining(SECRET) });
     expect(await leaky.host.verify('crew', { converter: GOOD })).toMatchObject({ ok: false, code: 'secret' });
-    // Its name, too.
+    // Its name, too, whatever else would be said of it first: changed since it was read, or read by its own fetchAll.
     disk.converter!.code = GOOD;
     disk.name = `Crew ${SECRET}`;
     expect(await leaky.host.inspect('crew', fp(leaky.s))).toMatchObject({ ok: false, code: 'secret', message: expect.not.stringContaining(SECRET) });
+    expect(await leaky.host.inspect('crew', 'an earlier fingerprint')).toMatchObject({ ok: false, code: 'secret' });
+    disk.converter!.code = 'export async function fetchAll() { return []; }\nexport function convert(i) { return i; }\n';
+    for (const r of [await leaky.host.inspect('crew', fp(leaky.s)), await leaky.host.verify('crew', { converter: GOOD })]) {
+      expect(r).toMatchObject({ ok: false, code: 'secret' });
+      expect(JSON.stringify(r)).not.toContain(SECRET);
+    }
     // The settings the run read, or none: settings saved since are not read in their place.
-    expect(await leaky.host.inspect('crew', 'an earlier fingerprint')).toMatchObject({ ok: false, code: 'stale' });
+    expect(await empty.host.inspect('crew', 'an earlier fingerprint')).toMatchObject({ ok: false, code: 'stale', message: expect.stringContaining('crew') });
   });
 });
 
@@ -367,6 +374,8 @@ describe('what a model is offered', () => {
     expect(asksForSource('Map the Crew API into Team', s.state)).toBe(true);
     expect(asksForSource('Fix the converter for crew', s.state)).toBe(true);
     expect(asksForSource('Make the hero teal', s.state)).toBe(false);
+    // read_project names each source by ID, never by a name settings edited outside the app could hold anything in.
+    expect(sourcesSummary(s.state)).toEqual([{ sourceId: 'crew', kind: 'rest', collectionId: 'team', readsWith: 'its kind of source’s own reading' }]);
   });
 
   it('cuts a large sample to fit, keeping every record’s detail names', () => {
@@ -382,7 +391,7 @@ describe('what a model is offered', () => {
     }
     // A record whose very detail names are too long to show is said, never shown past the room for it.
     const named = fitSample([{ ['k'.repeat(20_000)]: 1 }]);
-    expect(JSON.stringify(named.records).length).toBeLessThanOrEqual(SAMPLE_CHARS);
+    expect(named.records).toEqual(['(The first record is too large to show here.)']);
     expect(fitSample([{ id: 'small' }])).toEqual({ records: [{ id: 'small' }], clipped: false });
   });
 });

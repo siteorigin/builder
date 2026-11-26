@@ -304,15 +304,16 @@ export function collectionsSummary(state: ProjectState) {
 }
 
 /**
- * The external sources the project has, as the assistant names them: which collection each is synced into and how it
- * reads its records now. Never where a source is read or which secrets it signs in with.
+ * The external sources the project has, by ID: which collection each is synced into and how it reads its records now.
+ * Never where a source is read or which secrets it signs in with, nor its name (settings edited outside the app can
+ * hold anything there): inspect_source_sample gives that once its settings are checked.
  */
 export function sourcesSummary(state: ProjectState) {
   return Object.keys(state.sources ?? {})
     .sort()
     .map((id) => {
       const s = state.sources![id];
-      return { sourceId: id, name: s.name, kind: s.adapter, collectionId: s.collectionId, readsWith: s.converter ? 'converter' : s.mapping ? 'mapping' : 'its kind of source’s own reading' };
+      return { sourceId: id, kind: s.adapter, collectionId: s.collectionId, readsWith: s.converter ? 'converter' : s.mapping ? 'mapping' : 'its kind of source’s own reading' };
     });
 }
 

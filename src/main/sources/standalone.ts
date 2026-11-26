@@ -25,7 +25,7 @@ import { readState, stateToDocs } from '../project/documents';
 import { imageProblem, imageInfo } from '../project/media';
 import { sha } from '../project/fsutil';
 import { createSyncRunner, SyncError, type SyncHandle, type SyncRunner } from './client';
-import { holdsSecret, pictureName, SECRET_IN_RECORDS, sourceRequest, syncPreflight } from './sync';
+import { holdsSecret, pictureHoldsSecret, pictureName, SECRET_IN_RECORDS, sourceRequest, syncPreflight } from './sync';
 import { knownHashes, planIsEmpty, planSourceSync, SyncPlanError, syncOperations } from './reconcile';
 import { redactSecrets } from './redact';
 import type { SyncImage, SyncReply, SyncRequest } from './protocol';
@@ -157,6 +157,9 @@ export async function finishPending(dir: string): Promise<boolean> {
   // was cut short) in place as the plan says it.
   const moves: boolean[] = [];
   for (const [i, step] of plan.entries()) {
+    // Only a file, or nothing yet, is replaced or taken away: never a folder or a pipe, which a read could wait on.
+    const at = await fs.lstat(targets[i]).catch(() => null);
+    if (at && !at.isFile()) throw new SyncCliError(`${step.rel} is not a file, so the sync was not finished.`);
     if (step.staged === null) {
       moves.push(false);
       continue;
@@ -260,7 +263,6 @@ export async function syncProject(dir: string, opts: SyncCliOptions): Promise<Ar
   const lines: string[] = [];
   if (await finishPending(dir)) opts.log?.('Finished the files of a sync that was cut short.');
   const start = await readState(dir);
-  let state: ProjectState = start;
   const sources = Object.keys(start.sources ?? {})
     .sort()
     .map((id) => start.sources![id]);
@@ -270,6 +272,17 @@ export async function syncProject(dir: string, opts: SyncCliOptions): Promise<Ar
   }
   const secrets = secretsFromEnv(sources, opts.env);
   const values = [...new Set(Object.values(secrets))];
+  // Whatever stops it is said without the secrets it signs in with: a file's name, a source's, a server's reply.
+  try {
+    return await syncSources(dir, start, sources, secrets, values, lines, opts);
+  } catch (e) {
+    throw new SyncCliError(redactSecrets(e instanceof Error ? e.message : String(e), values));
+  }
+}
+
+/** syncProject's work once the secrets are known. */
+async function syncSources(dir: string, start: ProjectState, sources: readonly SourceDoc[], secrets: Record<string, string>, values: string[], lines: string[], opts: SyncCliOptions) {
+  let state: ProjectState = start;
   const now = (opts.now ?? (() => new Date()))().toISOString();
   const log = (line: string) => lines.push(redactSecrets(line, values));
   const images: PlannedWrite[] = [];
@@ -308,11 +321,11 @@ export async function syncProject(dir: string, opts: SyncCliOptions): Promise<Ar
       if (!img) throw say('a picture could not be fetched.');
       const name = pictureName(wanted.name, wanted.url);
       // Nor in its bytes, a text chunk's included, in any form a secret can be written.
-      const bytes = Buffer.from(img.bytes);
-      if (holdsSecret(name, values) || values.some((v) => v.length >= MIN_SECRET_LENGTH && bytes.includes(v)) || holdsSecret(bytes.toString('latin1'), values)) throw say(`${SECRET_IN_RECORDS}.`);
+      if (holdsSecret(name, values) || pictureHoldsSecret(Buffer.from(img.bytes), values)) throw say(`${SECRET_IN_RECORDS}.`);
       const got = await libraryImage(dir, img, name, [...known, ...added], staged, now);
       if (holdsSecret(got.record.file, values)) throw say(`${SECRET_IN_RECORDS}.`);
-      if (!known.includes(got.record) && !added.includes(got.record)) added.push(got.record);
+      // Already in the library (or brought in for an earlier source of this sync, and so in it now): never added twice.
+      if (!known.some((a) => a.id === got.record.id) && !added.some((a) => a.id === got.record.id)) added.push(got.record);
       if (got.file && !images.some((f) => f.rel === got.file!.rel)) images.push(got.file);
       assetIds.set(key, got.record.id);
     }

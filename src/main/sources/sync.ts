@@ -21,6 +21,7 @@ import type { ApprovalStore } from './approvals';
 import { SAMPLE_SIZE, type FieldKinds, type NormalizedRecord, type SyncImage } from './protocol';
 import { knownHashes, planIsEmpty, planSourceSync, SyncPlanError, syncOperations, type SyncPlan } from './reconcile';
 import { redactSecrets } from './redact';
+import { pngTextValues } from '../project/photo-metadata';
 
 /** The project session as a sync uses it. */
 export interface SyncSession {
@@ -86,6 +87,14 @@ const slugged = (t: string) => folded(t).replace(/[^\p{L}\p{N}]+/gu, '-');
 export function holdsSecret(text: string, values: readonly string[]): boolean {
   const long = values.filter((v) => v.length >= MIN_SECRET_LENGTH);
   return holdsSecretValue(text, long) || holdsSecretValue(folded(text), long.map(folded)) || holdsSecretValue(slugged(text), long.map(slugged).filter((v) => v.replace(/-/g, '').length >= MIN_SECRET_LENGTH));
+}
+
+/**
+ * Whether a picture's bytes hold one of `values`: as they are, read as text either way, and in its PNG text chunks,
+ * compressed ones included. The library keeps a picture's bytes as they are, so none may carry a secret.
+ */
+export function pictureHoldsSecret(bytes: Buffer, values: readonly string[]): boolean {
+  return values.some((v) => v.length >= MIN_SECRET_LENGTH && bytes.includes(v)) || holdsSecret(bytes.toString('latin1'), values) || holdsSecret(pngTextValues(bytes).join('\n'), values);
 }
 
 /** What to call a picture in the library: the name the source gives it, or its file's name. */
@@ -363,7 +372,7 @@ export async function syncSource(deps: SyncDeps, sourceId: string): Promise<Sour
       // Nor in what a picture brings: its name, as an address may carry it, or its bytes (a text chunk), which the
       // library keeps as they are.
       const bytes = Buffer.from(img.bytes);
-      if (holdsSecret(name, values) || values.some((v) => v.length >= MIN_SECRET_LENGTH && bytes.includes(v))) return leaked;
+      if (holdsSecret(name, values) || pictureHoldsSecret(bytes, values)) return leaked;
       try {
         const { record, existing } = await deps.importImage({ ...img, name }, known, createdAt);
         // The file name the library made of it ("Arts & Crafts" is arts-and-crafts): never one that holds a secret.

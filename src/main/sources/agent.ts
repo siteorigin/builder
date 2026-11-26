@@ -54,12 +54,17 @@ export function createAgentSources(deps: AgentSourceDeps): (signal: AbortSignal)
     }
   };
 
-  /** The saved source named, or why the tools leave it alone. */
-  const named = (sourceId: string): { project: AgentSourceProject; source: SourceDoc } | { code?: string; message: string } => {
+  /**
+   * The saved source named, or why the tools leave it alone. Settings that hold one of the user's secrets are refused
+   * first, by ID, so no later word about the source can show it.
+   */
+  const named = async (sourceId: string): Promise<{ project: AgentSourceProject; source: SourceDoc } | { code?: string; message: string }> => {
     const project = deps.project();
     if (!project) return { message: 'No project is open.' };
     const source = Object.hasOwn(project.state.sources ?? {}, sourceId) ? project.state.sources![sourceId] : undefined;
     if (!source) return { message: 'That source is no longer in the project.' };
+    const leaked = await holdsUserSecret(project, source);
+    if (leaked) return leaked;
     // Neither the source's own reader nor a converter in place of that code may sign in where the approved settings never did.
     if (readByItsCode(source))
       return { code: 'converter', message: `“${source.name}” is read by its converter’s own fetchAll${typeof source.converter?.code !== 'string' ? ', which is missing' : ''}: only the author changes how it is read, in Connect external source.` };
@@ -67,13 +72,11 @@ export function createAgentSources(deps: AgentSourceDeps): (signal: AbortSignal)
   };
 
   const inspect = async (sourceId: string, fingerprint: string, signal: AbortSignal): Promise<SourceInspectResult> => {
-    const found = named(sourceId);
+    const found = await named(sourceId);
     if ('message' in found) return { ok: false, ...(found.code ? { code: found.code } : {}), message: found.message };
     // Read for the settings the run read: records of other settings would be shown beside these.
-    const stale = { ok: false as const, code: 'stale', message: `“${found.source.name}” changed while it was being read. Read the project again.` };
+    const stale = { ok: false as const, code: 'stale', message: `The source ${sourceId} changed while it was being read. Read the project again.` };
     if (sourceFingerprint(found.source) !== fingerprint) return stale;
-    const leaked = await holdsUserSecret(found.project, found.source);
-    if (leaked) return leaked;
     const r = await inspectSource({ runner: deps.runner, secrets: deps.secrets, approvals: deps.approvals, signal }, found.project.state, found.source);
     if (deps.project() !== found.project) return { ok: false, message: 'The project was closed before the source was read.' };
     const now = Object.hasOwn(found.project.state.sources ?? {}, sourceId) ? found.project.state.sources![sourceId] : undefined;
@@ -96,7 +99,7 @@ export function createAgentSources(deps: AgentSourceDeps): (signal: AbortSignal)
 
   const verify: (sourceId: string, change: Parameters<SourceToolHost['verify']>[1], signal: AbortSignal) => Promise<SourceVerifyResult> = async (sourceId, change, signal) => {
     const fail = (message: string, issues: SourceToolIssue[] = [], recoverable = true): SourceVerifyResult => ({ ok: false, message, ...(issues.length ? { issues } : {}), recoverable });
-    const found = named(sourceId);
+    const found = await named(sourceId);
     if ('message' in found) return { ...fail(found.message, [], false), ...(found.code ? { code: found.code } : {}) };
     const { project, source } = found;
     if ('converter' in change) {
@@ -114,8 +117,6 @@ export function createAgentSources(deps: AgentSourceDeps): (signal: AbortSignal)
       ...('converter' in change ? { converter: change.converter } : { mapping: change.mapping }),
       ...(source.removal !== undefined ? { removal: source.removal } : {})
     } as SourceSettingsDraft;
-    const leaked = await holdsUserSecret(project, source);
-    if (leaked) return { ...fail(leaked.message, [], false), code: leaked.code };
     if (!(await signInApproved(deps.approvals, project.state.manifest.projectId, source))) return fail(unapprovedMessage(source), [], false);
     const made = await sourceDraftState(project.state, draft, deps.secrets);
     if ('message' in made) return fail(made.message, [{ stage: 'settings', message: made.message }]);

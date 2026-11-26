@@ -1810,3 +1810,30 @@ function heifLocations(buf: Buffer, iloc: { body: number; end: number }, idat: {
   }
   return out;
 }
+
+/**
+ * Every text chunk of a PNG as text, compressed or not (tEXt, zTXt, iTXt): what a picture says of itself in words, to
+ * be checked for what may never be published. Empty for anything that is not a PNG; a chunk that cannot be read is
+ * left out.
+ */
+export function pngTextValues(buf: Buffer): string[] {
+  const out: string[] = [];
+  if (buf.length < 8 || buf.readUInt32BE(0) !== 0x89504e47) return out;
+  for (let at = 8; at + 12 <= buf.length; ) {
+    const len = buf.readUInt32BE(at);
+    const type = buf.toString('latin1', at + 4, at + 8);
+    if (at + 12 + len > buf.length) break;
+    const data = buf.subarray(at + 8, at + 8 + len);
+    if (type === 'tEXt' || type === 'zTXt' || type === 'iTXt') {
+      const nul = data.indexOf(0);
+      try {
+        const value = type === 'tEXt' ? data.toString('latin1', nul + 1) : type === 'zTXt' ? inflateSync(data.subarray(nul + 2), { maxOutputLength: MAX_INFLATE }).toString('latin1') : pngItxtText(data, nul).toString('utf8');
+        out.push(`${data.toString('latin1', 0, Math.max(nul, 0))}\n${value}`);
+      } catch {
+        // Unreadable: nothing it holds is shown anywhere.
+      }
+    }
+    at += 12 + len;
+  }
+  return out;
+}
