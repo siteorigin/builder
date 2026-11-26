@@ -253,6 +253,27 @@ await mark.click();
 await win.waitForSelector('.welcome');
 assert.equal(savedHeading(dirA), 'Kept through clicking All projects', 'a click saves the focused field too');
 
+step('New project creates the folder it shows, for a name too long to keep whole (#808)');
+const longName = 'Kowhai Garden Supplies and Landscaping Co-operative of Greater Wellington and the Hutt Valley';
+const longDir = join(realpathSync(join(WORK, 'sites')), 'kowhai-garden-supplies-and-landscaping-co-operative-of');
+await answerChoosers(app, [{ dialog: 'open', title: 'Choose where to create the project', paths: [join(WORK, 'sites')] }]);
+await win.locator('.welcome-action', { hasText: 'New project' }).click();
+const longForm = win.getByRole('dialog', { name: 'New project' });
+await longForm.waitFor();
+await longForm.getByLabel('Project name').fill(longName);
+await longForm.getByRole('radio', { name: 'Blank site' }).click();
+await longForm.getByRole('button', { name: 'Choose…' }).click();
+const shownPath = (scope) => scope.locator('.path-text').first().textContent();
+await eventually(async () => assert.equal(await shownPath(longForm.locator('#new-project-path')), longDir, 'the form shows the folder cut at the end of a word'));
+await longForm.getByRole('button', { name: 'Create project' }).click();
+const creating = win.getByRole('dialog', { name: `Creating ${longName}` });
+await creating.waitFor();
+assert.equal(await shownPath(creating.locator('.path-group')), longDir, 'the progress screen shows the same folder');
+await win.waitForSelector('.editor', { timeout: 180000 });
+await eventually(async () => assert.equal(await openDir(), longDir, 'the project is made, and opened, in the folder shown'), 30000);
+await menu('Close Project');
+await win.waitForSelector('.welcome');
+
 step('closing the window saves the focused field');
 await openProject(dirA);
 heading = await heroHeading();
