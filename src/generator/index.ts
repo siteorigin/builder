@@ -103,7 +103,7 @@ import { NO_QUERY, codeEntryQueries, entryQuery, entryQueryKey, feedRowFields, f
 import { entryRoute, findEntry, isDraftEntry, isEntryPath, orderedEntries, siteEntries, type SiteEntry } from '@shared/collections';
 import { entryNeighbours, materializeTemplate } from './entry-template';
 import { connectedListItems, prepareLoops, type LoopRows } from './collection-loops';
-import { archiveFile, generateArchive, siteArchives } from './archive';
+import { archiveFile, generateArchive, hasArchiveLayout, siteArchives } from './archive';
 import { archivePages } from '@shared/archives';
 import { actionWraps, brokenCardKeys, cardKey, isCardLink, isCarouselTrack } from './card-links';
 import { booleanStateGuard, declaredState, overlayProblem, repeatFilterProblem, stateActionProblem } from '@engine/schema';
@@ -5142,7 +5142,7 @@ function generateFiles(state: ProjectState, opts: GenerateOptions, cache?: Gener
   // pages before and after it) and those entries, so a post published, backdated or turned back into a draft makes
   // again only the pages it moves across. Written after everything else: where a draft made before archive pages sits
   // at one's address, the archive page is what the website has there, in the preview too.
-  for (const { collectionId, route } of archivePages(state)) files.set(archiveFile(route), file(`archive:${collectionId}:${route}${mode}`, (s) => generateArchive(s, collectionId, route, opts)));
+  for (const { collectionId, route } of archivePages(state)) files.set(archiveFile(route), file(`archive:${collectionId}:${route}${hasArchiveLayout(state.collections[collectionId].settings) ? mode : ''}`, (s) => generateArchive(s, collectionId, route, opts)));
   // The not-found page and the hook that makes it work at any address both read the whole site's sections; the hook
   // also gives each page in another language than the site's its own <html lang>.
   files.set(`${NOT_FOUND_DIR}/+page.svelte`, file('not-found', generateNotFound));

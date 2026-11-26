@@ -49,6 +49,8 @@ export const COLLABORATOR_OPERATIONS = [
   'node.setBinding',
   'node.setStateAction',
   'instance.setProp',
+  'instance.setListSource',
+  'node.setRepeatSource',
   'instance.listInsert',
   'instance.listRemove',
   'instance.listMove',
