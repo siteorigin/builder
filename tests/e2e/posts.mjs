@@ -52,8 +52,9 @@ const sectionName = await eventually(async () => {
 });
 assert.equal(await placeShown.innerText(), home.title, 'the toolbar names Home');
 
-step('a new post from the Posts panel creates the blog and opens the writer');
-await win.locator('.rail [aria-label="Posts"]').click();
+step('the Content tab starts the blog in one click, and a new post opens the writer');
+await win.locator('.rail [aria-label="Content"]').click();
+await win.locator('.posts-panel [data-starter="posts"]').click();
 await win.locator('.posts-panel').getByRole('button', { name: 'New post' }).click();
 await win.getByLabel('New post title').fill('Opening the kiln');
 await win.getByRole('button', { name: 'Create draft' }).click();
@@ -114,7 +115,7 @@ await win.getByRole('menu').getByRole('menuitemradio').filter({ hasText: home.ti
 await eventually(async () => assert.equal(await win.locator('.post-writer-holder').isVisible(), false, 'the writer goes away'));
 await eventually(async () => assert.equal(await inspected.innerText(), sectionName, 'Home opens at the section still selected'));
 assert.equal(await placeShown.innerText(), home.title, 'and the toolbar names Home');
-await win.locator('.rail [aria-label="Posts"]').click();
+await win.locator('.rail [aria-label="Content"]').click();
 await eventually(async () => assert.equal(await win.locator('.post-writer-holder').isVisible(), true, 'the writer is back'));
 await eventually(async () => assert.equal(await inspected.innerText(), 'Opening the kiln', 'with the post in the Inspector'));
 
@@ -161,7 +162,7 @@ await win.keyboard.type('Thanks for coming.');
 // Well inside the pause before a save.
 await win.locator('.rail [aria-label="Assets"]').click();
 await eventually(() => assert.match(words(entryFile(entryId).body), /Thanks for coming\./, 'the last words reach the post file'), 20000).catch(async (e) => {
-  await win.locator('.rail [aria-label="Posts"]').click();
+  await win.locator('.rail [aria-label="Content"]').click();
   console.log('writer:', await win.locator('.post-save-state').innerText().catch(() => '?'), '|', await win.locator('.post-problem').innerText().catch(() => 'no problem'));
   console.log('dom:', await body.innerHTML());
   console.log('toasts:', await win.locator('.toast').allInnerTexts().catch(() => []));

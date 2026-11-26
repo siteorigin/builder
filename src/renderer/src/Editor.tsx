@@ -561,11 +561,16 @@ export function Editor() {
               setMode('edit');
               return toast('Part of the post is not saved yet, so the preview would not show it. See the note above its text.', 'error');
             }
-            setState({ postView: 'preview' });
             const c = now.post && now.snapshot?.state.collections[now.post.collectionId];
             const e = c && now.post && Object.hasOwn(c.entries, now.post.entryId) ? c.entries[now.post.entryId] : undefined;
-            // Unless the preview ended meanwhile (a page chosen): the canvas stays on that page, which the editor names.
             const route = c && e ? entryRoute(c, e) : undefined;
+            // A record with no page of its own (#675) has nothing to preview: the writer stays.
+            if (c && e && route === undefined) {
+              setMode('edit');
+              return toast(`“${e.title}” has no page of its own: it shows wherever a list of ${c.settings.name} does.`, 'info');
+            }
+            setState({ postView: 'preview' });
+            // Unless the preview ended meanwhile (a page chosen): the canvas stays on that page, which the editor names.
             if (e && route !== undefined) requestAnimationFrame(() => getState().postView === 'preview' && getState().post?.entryId === e.id && visitAddress(route));
           });
         }

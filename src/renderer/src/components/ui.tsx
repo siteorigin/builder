@@ -668,7 +668,7 @@ export function Segmented<T extends string>({ value, options, onChange, full, la
   return (
     <div className={`segmented${full ? ' full' : ''}`} role={radio ? 'radiogroup' : 'group'} aria-label={labelledBy ? undefined : label} aria-labelledby={labelledBy} aria-describedby={describedBy} onKeyDown={radio ? move : undefined}>
       {options.map((o, i) => (
-        <button key={o.value} {...(radio ? { role: 'radio', 'aria-checked': value === o.value, tabIndex: i === current ? 0 : -1 } : { 'aria-pressed': value === o.value })} onClick={() => onChange(o.value)} title={o.title} aria-label={o.title}>
+        <button key={o.value} type="button" {...(radio ? { role: 'radio', 'aria-checked': value === o.value, tabIndex: i === current ? 0 : -1 } : { 'aria-pressed': value === o.value })} onClick={() => onChange(o.value)} title={o.title} aria-label={o.title}>
           {o.icon}
           {o.label}
         </button>

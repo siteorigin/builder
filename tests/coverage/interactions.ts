@@ -2205,7 +2205,7 @@ export const INTERACTIONS: Interaction[] = [
     outcome: 'A new post creates the blog and opens the centred writer; headings, lists, a page link and a library picture with its caption are saved; nothing typed is lost on switching panels; Undo and Redo are the project’s; the featured image is chosen, imported and removed in the visual picker, each an undo step',
     scenario: 'Business starter · none',
     proof: [
-      { test: 'tests/e2e/posts.mjs', kind: 'e2e', step: 'a new post from the Posts panel creates the blog and opens the writer' },
+      { test: 'tests/e2e/posts.mjs', kind: 'e2e', step: 'the Content tab starts the blog in one click, and a new post opens the writer' },
       { test: 'tests/e2e/posts.mjs', kind: 'e2e', step: 'writing: paragraphs, a section heading, a list and a link to a page' },
       { test: 'tests/e2e/posts.mjs', kind: 'e2e', step: 'the last words, then straight to Assets: nothing typed is lost' },
       { test: 'tests/e2e/posts.mjs', kind: 'e2e', step: 'Undo and Redo are the project’s, kept with it' },

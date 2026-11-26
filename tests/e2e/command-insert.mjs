@@ -153,7 +153,7 @@ await openCmdk('panel');
 const panelRow = (label) => cmdk.getByRole('option', { name: new RegExp(`^Show the ${label} panel`) });
 assert.equal(await panelRow('Insert').getAttribute('aria-disabled'), 'true');
 assert.match(text(await panelRow('Insert').innerText()), /Already open$/);
-for (const label of ['Pages', 'Posts', 'Layers', 'Assets', 'SEO']) assert.equal(await panelRow(label).getAttribute('aria-disabled'), null, `${label} can be opened`);
+for (const label of ['Pages', 'Content', 'Layers', 'Assets', 'SEO']) assert.equal(await panelRow(label).getAttribute('aria-disabled'), null, `${label} can be opened`);
 await highlight(panelRow('Insert'));
 await win.keyboard.press('Enter');
 await win.waitForTimeout(200);

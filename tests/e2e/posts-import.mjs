@@ -39,7 +39,7 @@ cpSync(join(FIXTURES, 'markdown'), md, { recursive: true });
 await picture(join(md, 'images/oven.png'), 900, 600, 'png');
 await picture(join(md, 'winter-hours/snow.jpg'), 700, 500, 'jpg');
 
-await win.locator('.rail [aria-label="Posts"]').click();
+await win.locator('.rail [aria-label="Content"]').click();
 const panel = win.locator('.posts-panel');
 const modal = win.locator('.modal');
 /** Choose Import… → `item` in the Posts panel, with the chooser answered `answer`. */

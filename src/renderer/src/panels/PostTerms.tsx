@@ -12,16 +12,21 @@ import { isImeComposing } from '../lib/ime';
 import { trackApply } from '../lib/pending';
 import { postAt, type PostRef } from '../lib/posts';
 
-/** The groupings a post is filed under: the collection's own, and categories and tags, which the first term adds. */
+/**
+ * The groupings a post is filed under: those its collection declares (the blog starts with categories and tags). One
+ * removed in the collection's settings is gone from here too (#675), so filing a post never brings it back.
+ */
 export function postTaxonomies(collection: Collection): Array<{ id: string; label: string }> {
   const own = collection.settings.taxonomies && typeof collection.settings.taxonomies === 'object' ? collection.settings.taxonomies : {};
-  const out = Object.entries(own).map(([id, t]) => ({ id, label: typeof t?.label === 'string' ? t.label : id }));
-  for (const [id, label] of [
-    ['categories', 'Categories'],
-    ['tags', 'Tags']
-  ])
-    if (!Object.hasOwn(own, id)) out.push({ id, label });
-  return out;
+  return Object.entries(own).map(([id, t]) => ({ id, label: typeof t?.label === 'string' ? t.label : id }));
+}
+
+/** What the terms manager is called: "Categories and tags" for articles, the groupings' own names for records. */
+export function termsManagerTitle(collection: Collection): string {
+  const groupings = postTaxonomies(collection);
+  const named = groupings.map((g) => g.label);
+  if (groupings.length === 2 && groupings[0].id === 'categories' && groupings[1].id === 'tags') return 'Categories and tags';
+  return named.length === 1 ? named[0] : named.length ? `${named.slice(0, -1).join(', ')} and ${named.at(-1)!.toLowerCase()}` : 'Groupings';
 }
 
 /** "category", "tag", or "term" for any other grouping. */
@@ -259,10 +264,11 @@ export function TermsManager({ collectionId, onClose, onRenamed }: { collectionI
   const collection = snap?.state.collections[collectionId];
   if (!snap || !collection) return null;
   const groupings = postTaxonomies(collection);
+  if (!groupings.length) return null;
   const current = groupings.some((g) => g.id === tab) ? tab : groupings[0].id;
   return (
     <Modal
-      title="Categories and tags"
+      title={termsManagerTitle(collection)}
       onClose={onClose}
       footer={
         <>

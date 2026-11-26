@@ -213,7 +213,17 @@ export function readField(state: ProjectState, op: EditOperation): FieldRead | n
       const entry = c ? has(c.entries, op.entryId) : undefined;
       if (!entry) return gone('post');
       const keys = Object.keys(ENTRY_FIELDS).filter((k) => (op as Record<string, unknown>)[k] !== undefined);
-      return found(Object.fromEntries(keys.map((k) => [k, at(entry, ENTRY_FIELDS[k])])));
+      const read: Record<string, unknown> = Object.fromEntries(keys.map((k) => [k, at(entry, ENTRY_FIELDS[k])]));
+      // Custom fields and groupings one by one, so a value typed for one field never waits on, or replaces, another's.
+      // A field is read with its schema: one removed, made another kind or given another default meanwhile is a conflict.
+      if (op.values) {
+        const fields = c?.settings.fields && typeof c.settings.fields === 'object' ? c.settings.fields : {};
+        // A field removed meanwhile has nowhere for the value to go: its text is offered to copy, never to replace.
+        if (Object.keys(op.values).some((k) => !Object.hasOwn(fields, k))) return gone('field');
+        read.values = Object.fromEntries(Object.keys(op.values).map((k) => [k, { value: at(entry, ['values', k]), schema: Object.hasOwn(fields, k) ? fields[k] : null }]));
+      }
+      if (op.terms) read.terms = Object.fromEntries(Object.keys(op.terms).map((k) => [k, at(entry, ['terms', k])]));
+      return found(read);
     }
     case 'site.update': {
       const keys = SITE_FIELDS.filter((k) => (op as Record<string, unknown>)[k] !== undefined);
@@ -449,6 +459,8 @@ export function fieldKey(operations: EditOperation[]): string {
           if (op.type === 'site.update' && k === 'crawlerPolicy') return [k, op.crawlerPolicy ? identityKeys(op.crawlerPolicy) : null];
           // And what a page is, fact by fact; choosing its type is a field of its own.
           if (op.type === 'page.update' && k === 'structuredData' && op.structuredData) return [k, identityKeys(op.structuredData)];
+          // And an entry's custom fields and groupings, each its own.
+          if (op.type === 'entry.update' && (k === 'values' || k === 'terms') && v && typeof v === 'object') return [k, Object.keys(v).sort()];
           return [k];
         })
         .sort((a, b) => String(a[0]).localeCompare(String(b[0])));
@@ -501,6 +513,11 @@ export function typedText(op: EditOperation): string | null {
       return given.length === 1 ? shownValue(listText(given[0])) : null;
     }
     if (key === 'crawlerPolicy') return crawlerPolicyText(o.crawlerPolicy, (k) => (o.crawlerPolicy as Record<string, unknown>)[k]);
+    // One custom field's value.
+    if (key === 'values') {
+      const given = Object.values((o.values ?? {}) as Record<string, unknown>);
+      return given.length === 1 ? shownValue(given[0]) : null;
+    }
     return key ? shownValue(o[key]) : null;
   }
   if (op.type === 'node.rename' || op.type === 'component.rename') return shownValue(op.name);
@@ -513,7 +530,15 @@ export function typedText(op: EditOperation): string | null {
 export function shownField(op: EditOperation, read: unknown): string | null {
   const o = (read && typeof read === 'object' ? read : {}) as Record<string, unknown>;
   let v: unknown = read;
-  if (op.type === 'entry.update') v = Object.values(o)[0];
+  if (op.type === 'entry.update') {
+    v = Object.values(o)[0];
+    // A custom field is read with its schema (see readField): its value is what it holds.
+    if (op.values && o.values && typeof o.values === 'object') {
+      const reads = Object.values(o.values as Record<string, { value?: unknown; schema?: { default?: unknown } | null }>);
+      // A field the entry has no value of its own for shows its default.
+      v = reads.length === 1 ? (reads[0]?.value !== undefined ? reads[0].value : reads[0]?.schema?.default) : undefined;
+    }
+  }
   else if (op.type === 'site.update' && op.crawlerPolicy) {
     const part = (o.crawlerPolicy && typeof o.crawlerPolicy === 'object' ? o.crawlerPolicy : {}) as Record<string, unknown>;
     return crawlerPolicyText(op.crawlerPolicy, (k) => part[k]);

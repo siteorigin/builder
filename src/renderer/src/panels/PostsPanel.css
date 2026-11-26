@@ -45,8 +45,50 @@
   .post-link-kind { display: inline-flex; align-items: center; gap: 6px; }
 
   .posts-panel { display: flex; flex-direction: column; flex: 1; min-height: 0; }
-  .posts-collection { padding: 0 10px 6px; }
-  .posts-collection .select { width: 100%; }
+  /* The Content tab (#675): the project's collections, with the current one's settings and layout beside it. */
+  /* Bounded, so many collections never squeeze the entries out of the sidebar: past it they scroll. */
+  .content-collections { flex: none; max-height: 34%; overflow-y: auto; list-style: none; margin: 0 0 8px; padding: 0 6px 6px; border-bottom: 1px solid var(--border); }
+  .content-collection { display: flex; align-items: center; border-radius: var(--r-sm); }
+  .content-collection:hover, .content-collection:focus-within { background: var(--hover); }
+  .content-collection.current { background: var(--accent-soft); }
+  .content-collection-open { flex: 1; min-width: 0; display: flex; align-items: center; gap: 8px; padding: 6px 8px; border: 0; background: transparent; color: var(--text); text-align: left; border-radius: var(--r-sm); font-weight: 500; }
+  .content-count { margin-left: auto; font-size: 11px; color: var(--text-3); font-variant-numeric: tabular-nums; }
+  .content-collection-actions { display: flex; gap: 2px; padding-right: 4px; }
+  .content-collection-add { margin: 4px 2px 0; }
+  .content-add { display: flex; flex-direction: column; gap: 8px; margin: 0 10px 10px; }
+  .content-starters { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 6px; width: 100%; }
+  .content-starter { display: flex; flex-direction: column; align-items: flex-start; gap: 2px; width: 100%; padding: 8px 10px; border: 1px solid var(--border); border-radius: var(--r-sm); background: var(--panel); color: var(--text); text-align: left; font-size: 13px; }
+  .content-starter:hover:not(:disabled) { border-color: var(--accent); background: var(--hover); }
+  .content-starter span { font-size: 12px; color: var(--text-3); }
+  .content-empty { align-items: stretch; }
+  .content-empty > p { margin: 0; }
+  .content-custom { display: flex; flex-direction: column; gap: 8px; margin: 0 10px 10px; padding: 10px; border: 1px solid var(--border); border-radius: var(--r-sm); background: var(--panel-2); }
+  .content-empty .content-custom, .content-empty .content-add { margin: 0; }
+  .content-check { display: flex; align-items: center; gap: 6px; font-size: 12px; color: var(--text-2); }
+
+  /* An entry's custom fields, in the writer: a form for records, beside the text for articles. */
+  .post-fieldset { margin: 0; padding: 0; border: 0; min-width: 0; }
+  .entry-values { display: flex; flex-direction: column; gap: 4px; margin: 0; padding: 0; border: 0; min-width: 0; }
+  .entry-refs { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 4px; font-size: 13px; }
+  .entry-refs label { display: flex; align-items: center; gap: 6px; }
+  .post-record { margin: 8px 0 18px; }
+  .post-record-section { margin: 14px 0 6px; font-size: 12px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.04em; color: var(--text-3); }
+  .post-readonly { margin: 0 0 12px; padding: 8px 12px; border-radius: var(--r-sm); background: var(--panel-2); color: var(--text-2); font-size: 13px; }
+
+  /* A collection's settings. */
+  .schema-dialog { display: flex; flex-direction: column; gap: 18px; }
+  .schema-dialog section { display: flex; flex-direction: column; gap: 8px; }
+  .schema-dialog h4 { margin: 0; font-size: 13px; }
+  .schema-fields { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 8px; }
+  .schema-field { display: flex; align-items: flex-start; gap: 8px; padding: 8px; border: 1px solid var(--border); border-radius: var(--r-sm); }
+  .schema-field > .input { flex: 1; }
+  .schema-field-body { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 6px; }
+  .schema-field-head, .schema-field-row { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+  .schema-field-head > .input { flex: 1 1 160px; }
+  .schema-options { display: flex; flex-direction: column; gap: 4px; font-size: 12px; }
+  .schema-check { display: inline-flex; align-items: center; gap: 4px; font-size: 12px; color: var(--text-2); }
+  .schema-add { display: inline-flex; align-items: center; gap: 6px; }
+  .schema-error { margin: 0; }
   .posts-add { display: flex; flex-direction: column; gap: 8px; margin: 0 10px 10px; padding: 10px; border: 1px solid var(--border); border-radius: var(--r-sm); background: var(--panel-2); }
   .posts-add-actions { display: flex; gap: 6px; }
   .posts-note { margin: 4px 12px; font-size: 12px; color: var(--text-3); }
