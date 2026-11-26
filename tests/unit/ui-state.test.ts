@@ -1306,8 +1306,8 @@ describe('optional tabs, unnamed tabs and groups of a choice’s buttons', () =>
             b.repeat('items', 'items', [
               b.el('item', 'li', {}, [
                 b.el('item-terms', 'details', {}, [
-                  b.text('item-monthly', { $item: 'tag' } as never, 'Item monthly', { when: eq(uiState('billing'), 'monthly') }),
-                  b.text('item-annual', 'summary', 'Item annual', { when: eq(uiState('billing'), 'annual') })
+                  b.el('item-monthly', { $item: 'tag' }, { when: eq(uiState('billing'), 'monthly') }, [b.text('item-monthly-text', 'span', 'Item monthly')]),
+                  b.el('item-annual', 'summary', { when: eq(uiState('billing'), 'annual') }, [b.text('item-annual-text', 'span', 'Item annual')])
                 ])
               ])
             ])
