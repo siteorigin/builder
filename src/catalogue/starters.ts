@@ -148,7 +148,7 @@ export function createStarterState(starter: StarterId, siteName: string, withSam
     s.site.homePageId = home;
     s.site.pageOrder = [home];
     s.site.shell.header = tree(inst(s, 'shell.header', { siteName, links: [{ id: 'i1', label: 'Home', link: pageLink(home) }] }));
-    s.site.shell.footer = tree(inst(s, 'shell.footer', { siteName, tagline: '', links: [{ id: 'i1', label: 'Home', link: pageLink(home) }], contact: [], copyright: `© ${new Date().getFullYear()} ${siteName}.` }));
+    s.site.shell.footer = tree(inst(s, 'shell.footer', { siteName, tagline: '', links: [{ id: 'i1', label: 'Home', link: pageLink(home) }], contact: [], copyright: `© {year} ${siteName}.` }));
     return s;
   }
 
@@ -212,7 +212,7 @@ export function createStarterState(starter: StarterId, siteName: string, withSam
       eyebrow: 'Our story',
       heading: 'Fifteen years of homes, studios and cafés',
       body: [
-        'We started as a two-person practice working on family homes. Today we are a team of five, still working from the same small studio on Harbor Lane.',
+        'We started as a two-person practice working on family homes. Today we are a team of three, still working from the same small studio on Harbor Lane.',
         'We take on a limited number of projects each year so that every client gets our full attention.'
       ],
       image: img(A('a_dining'), alt('a_dining')),
@@ -250,7 +250,7 @@ export function createStarterState(starter: StarterId, siteName: string, withSam
       siteName,
       tagline: 'Calm, considered interiors for homes and small workplaces.',
       links: nav,
-      copyright: `© ${new Date().getFullYear()} ${siteName}. All rights reserved.`
+      copyright: `© {year} ${siteName}. All rights reserved.`
     })
   );
   return s;

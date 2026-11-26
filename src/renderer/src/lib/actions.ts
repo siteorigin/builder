@@ -18,6 +18,7 @@ import { imageDropOps, imageInsertOps, type ImageTarget } from './image-drop';
 import { flushOpenPost, savePostIfOpen } from './post-draft';
 import { appliesLanded, trackApply, type ApplyOutcome } from './pending';
 import { storedEdit } from './richtext';
+import { keptCopyrightYear, shownCopyright } from '@shared/site-name';
 import { showAsset } from './place';
 import { endArrival, markArrival } from './arrival';
 import type { InsertSpec } from './insert-search';
@@ -947,7 +948,7 @@ export function showsInlineText(snapshot: ProjectSnapshot, ref: ElementRef, show
   if (!target) return false;
   const v = shownOrDefault(snapshot.state, ref, target.value);
   const words = (t: string) => t.replace(/\s+/g, ' ').trim();
-  return typeof v === 'string' ? words(v) === words(shown) : !v && !words(shown);
+  return typeof v === 'string' ? words(shownCopyright(v)) === words(shown) || words(v) === words(shown) : !v && !words(shown);
 }
 
 /**
@@ -963,7 +964,8 @@ export async function commitText(ref: ElementRef, text: string | RichText, snaps
   if (!target) return 'restore';
   // A repeated item without the field shows the field's default, which is what the edit started from.
   const current = shownOrDefault(snapshot.state, ref, target.value);
-  text = storedEdit(r.node as GraphNode | undefined, current, text);
+  // A copyright line showing the current year keeps its `{year}` where the edit left the year it showed.
+  text = keptCopyrightYear(current, storedEdit(r.node as GraphNode | undefined, current, text));
   // Nothing to store (an empty line added at the end, say): the page shows the text as stored again.
   if (sameValue(current, text)) return 'restore';
   // A news card or article header shows a page's settings: typing over it would change nothing, so it goes back.

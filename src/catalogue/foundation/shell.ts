@@ -826,7 +826,7 @@ export const footer = managed({
       { label: SAMPLE_CONTACT.email, link: { type: 'email', target: SAMPLE_CONTACT.email } },
       { label: SAMPLE_CONTACT.phone, link: { type: 'tel', target: SAMPLE_CONTACT.phoneDial } }
     ], { titleField: 'label', max: 8 }),
-    copyright: P.str('Copyright', '© 2026 Studio. All rights reserved.')
+    copyright: P.str('Copyright', '© {year} Studio. All rights reserved.', { description: '{year} after the © shows the year the site is built in.' })
   },
   parts: {
     root: { nodeId: 'root', label: 'Footer', styleControls: ['paddingBlock', 'background', 'color'] },

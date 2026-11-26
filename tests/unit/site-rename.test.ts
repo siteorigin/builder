@@ -7,11 +7,10 @@ import type { InstanceNode, ProjectState } from '@shared/types';
 import { createStarterState } from '@catalogue/starters';
 import { applyOperations } from '@engine/apply';
 import { makeInstance } from '@engine/install';
-import { followNote, followsSiteName, siteNameNote } from '@shared/site-name';
+import { followNote, followsSiteName, keptCopyrightYear, shownCopyright, siteNameNote } from '@shared/site-name';
 
 const apply = (s: ProjectState, ...ops: Parameters<typeof applyOperations>[1]) => applyOperations(s, ops).state;
 const shell = (s: ProjectState, part: 'header' | 'footer') => s.site.shell[part].nodes[s.site.shell[part].rootIds[0]] as InstanceNode;
-const year = new Date().getFullYear();
 
 describe('renaming the site', () => {
   for (const starter of ['business', 'blank'] as const) {
@@ -20,7 +19,7 @@ describe('renaming the site', () => {
       expect(s.site.name).toBe('Morning Paper');
       expect(shell(s, 'header').props.siteName).toBe('Morning Paper');
       expect(shell(s, 'footer').props.siteName).toBe('Morning Paper');
-      expect(shell(s, 'footer').props.copyright).toBe(starter === 'business' ? `© ${year} Morning Paper. All rights reserved.` : `© ${year} Morning Paper.`);
+      expect(shell(s, 'footer').props.copyright).toBe(starter === 'business' ? '© {year} Morning Paper. All rights reserved.' : '© {year} Morning Paper.');
     });
   }
 
@@ -71,6 +70,10 @@ describe('what follows a rename and what the author keeps', () => {
     expect(line('© 2019–2026 Acme. All rights reserved.')).toBe('© 2019–2026 Northstar. All rights reserved.');
     expect(line('© 2026 Acme. Photos by Ana.')).toBe('© 2026 Northstar. Photos by Ana.');
     expect(line('© 2026 Acme')).toBe('© 2026 Northstar');
+    // A line showing the year it is built in (#828) follows the same way, and keeps its {year}.
+    expect(line('© {year} Acme. All rights reserved.')).toBe('© {year} Northstar. All rights reserved.');
+    expect(line('© 2019–{year} Acme.')).toBe('© 2019–{year} Northstar.');
+    for (const own of ['© {year} Acme Photography.', '© {year} Acme, Inc.']) expect(line(own)).toBe(own);
     for (const own of ['© 2019–2026 Acme, Inc. Photos by Ana.', '© 2026 Acme Photography.', '© 2026 Acme.com', 'Acme, 2026', 'All of Acme, always.']) expect(line(own)).toBe(own);
     // A name with characters that mean something in a pattern is matched as it is written.
     expect(line('© 2026 A+B (Studio). All rights reserved.', 'A+B (Studio)', 'AB')).toBe('© 2026 AB. All rights reserved.');
@@ -94,7 +97,7 @@ describe('what follows a rename and what the author keeps', () => {
 
   it('keeps a site name on one line', () => {
     const s = apply(business(), { type: 'site.update', name: 'Morning\n  Paper\r\n' });
-    expect([s.site.name, shell(s, 'header').props.siteName, shell(s, 'footer').props.copyright]).toEqual(['Morning Paper', 'Morning Paper', `© ${year} Morning Paper. All rights reserved.`]);
+    expect([s.site.name, shell(s, 'header').props.siteName, shell(s, 'footer').props.copyright]).toEqual(['Morning Paper', 'Morning Paper', '© {year} Morning Paper. All rights reserved.']);
   });
 
   it('leaves the site’s other words, and any placement in the footer’s tree other than the footer itself, as they were', () => {
@@ -150,5 +153,29 @@ describe('what the editor says about the site’s name', () => {
     expect(followNote(s, shell(s, 'footer'), 'tagline')).toBeUndefined();
     const home = s.pages[s.site.homePageId];
     expect(followNote(s, home.nodes[home.rootIds[0]] as InstanceNode, 'siteName')).toBeUndefined();
+  });
+});
+
+describe('a copyright line that shows the year it is built in (#828)', () => {
+  it('shows the year in place of {year} only in its year position', () => {
+    expect(shownCopyright('© {year} Acme. All rights reserved.', 2031)).toBe('© 2031 Acme. All rights reserved.');
+    expect(shownCopyright('©{year} Acme', 2031)).toBe('©2031 Acme');
+    expect(shownCopyright('© 2019 – {year} Acme', 2031)).toBe('© 2019 – 2031 Acme');
+    for (const line of ['© 2026 Acme.', 'Acme {year}', '© Acme {year}', '{year} Acme']) expect(shownCopyright(line, 2031)).toBe(line);
+  });
+
+  it('keeps {year} through an edit typed over the shown line, unless the edit changes the year', () => {
+    const current = '© {year} Acme. All rights reserved.';
+    expect(keptCopyrightYear(current, '© 2031 Acme. Photos by Ana.', 2031)).toBe('© {year} Acme. Photos by Ana.');
+    // The page's text, read back from the canvas, may collapse its spaces.
+    expect(keptCopyrightYear('©  {year} Acme.', '© 2031 Acme Studio.', 2031)).toBe('© {year} Acme Studio.');
+    expect(keptCopyrightYear('© 2019–{year} Acme.', '© 2019–2031 Acme Co.', 2031)).toBe('© 2019–{year} Acme Co.');
+    // Another year typed in its place is the author's fixed year, and a line that never said {year} is stored as typed.
+    expect(keptCopyrightYear(current, '© 2030 Acme.', 2031)).toBe('© 2030 Acme.');
+    expect(keptCopyrightYear(current, '© 20310 Acme.', 2031)).toBe('© 20310 Acme.');
+    expect(keptCopyrightYear('© 2031 Acme.', '© 2031 Acme Co.', 2031)).toBe('© 2031 Acme Co.');
+    expect(keptCopyrightYear(current, 'Words by Acme.', 2031)).toBe('Words by Acme.');
+    const rich = [{ type: 'p' as const, spans: [{ text: '© 2031 Acme' }] }];
+    expect(keptCopyrightYear(current, rich, 2031)).toBe(rich);
   });
 });

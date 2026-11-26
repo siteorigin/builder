@@ -206,3 +206,24 @@ describe('manual edits in History', () => {
     expect(newest()).toBe('Edit Heading 2 in the Welcome band design');
   });
 });
+
+describe('editing the footer’s copyright line on the page (#828)', () => {
+  it('keeps the line on the year the site is built in while the edit leaves the shown year as it was', async () => {
+    const footer = { kind: 'shell', id: 'footer' } as const;
+    const instanceId = session.state.site.shell.footer.rootIds[0];
+    const ref: ElementRef = { owner: footer, instancePath: [instanceId], nodeId: 'copyright' };
+    const copyright = () => (session.state.site.shell.footer.nodes[instanceId] as InstanceNode).props.copyright;
+    const year = new Date().getFullYear();
+    expect(copyright()).toBe('© {year} Studio. All rights reserved.');
+    // The page shows the year: typing after it changes the words and keeps the year current.
+    await actions.commitText(ref, `© ${year} Studio. Photos by Ana Lee.`);
+    expect(copyright()).toBe('© {year} Studio. Photos by Ana Lee.');
+    // Nothing changed but the shown year read back: no edit is made.
+    const entries = session.historyInfo().entries.length;
+    expect(await actions.commitText(ref, `© ${year} Studio. Photos by Ana Lee.`)).toBe('restore');
+    expect(session.historyInfo().entries.length).toBe(entries);
+    // Another year typed in its place is the author's fixed year.
+    await actions.commitText(ref, `© ${year - 1} Studio.`);
+    expect(copyright()).toBe(`© ${year - 1} Studio.`);
+  });
+});
