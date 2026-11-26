@@ -6,7 +6,8 @@
  * for it and is measured too. `launch` starts the app to Welcome, `open` opens the fixture from Welcome's recent
  * projects to an editable canvas, and `edit` changes the home hero's heading in the Inspector until the preview shows
  * it. `run` throws a PredicateError when the feature did not do its job, and the iteration fails: a scenario never
- * gets faster by doing less.
+ * gets faster by doing less. `memory` (after `launch`) reads the memory of every process of the app at named points
+ * (memory.ts), and is never reported beside a timing scenario.
  */
 import { existsSync, mkdirSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
@@ -18,6 +19,7 @@ import type { ProjectState } from '../../src/shared/types';
 import type { ChatMessage, Conversation } from '../../src/shared/api';
 import { MockOpenAIServer, textReply } from '../../tests/unit/mock-openai-server';
 import type { FixtureSpec } from './fixtures';
+import { growthMetrics, readingMetrics, type MemoryProbe, type MemoryReading } from './memory';
 import { atRevision, Collector, counter, delta, forScenario, inProc, median, type Measured, type Trace } from './results';
 
 /** The feature did not do its job: the iteration fails, whatever its timings. */
@@ -97,6 +99,8 @@ export interface ScenarioContext {
    * did not arrive is the measurement's to report (a missing mark), not a sign that the app is not where it should be.
    */
   waitTrace(done: (t: Trace) => boolean, timeoutMs?: number): Promise<Trace>;
+  /** Memory readings (memory.ts): only in a chain with a memory scenario, so nothing else ever reads or collects. */
+  memory?: MemoryProbe;
 }
 
 export interface Scenario {
@@ -105,8 +109,12 @@ export interface Scenario {
   after: string | null;
   description: string;
   run(ctx: ScenarioContext): Promise<void>;
-  /** This scenario's metrics from the iteration's trace. */
-  measure(trace: Trace, fixture: FixtureFacts): Collector;
+  /** This scenario's metrics from the iteration's trace, and the memory readings its run took (in the order taken). */
+  measure(trace: Trace, fixture: FixtureFacts, readings?: MemoryReading[]): Collector;
+  /** A memory scenario: it collects garbage and waits for the app to settle, so it is never reported beside a timing one. */
+  memory?: boolean;
+  /** How long its run may take, when not the runner's usual deadline. */
+  deadlineMs?: number;
 }
 
 /** The editor page's globals, inside `win.evaluate` (the scripts are not compiled with the DOM's types). Cast inline:
@@ -205,24 +213,13 @@ export const open: Scenario = {
   after: 'launch',
   description: 'Open the fixture from its recent-project card on Welcome, to the canvas bridge reporting the home page ready to edit.',
   async run(ctx) {
-    const { win, fixture } = ctx;
+    const { fixture } = ctx;
     // A person's project has been left alone a while: freshly copied files are read in full, so they settle first.
     const wait = ctx.restoredAt + FILES_SETTLE_MS - Date.now();
     if (wait > 0) await sleep(wait);
     await ctx.mark('scenario.start', { scenario: 'open' });
-    await win.locator('.recent-card', { hasText: fixture.spec.title }).first().click();
-    await win.locator('.editor').waitFor({ timeout: 120_000 });
-    const frame = preview(win);
-    await frame.locator('html[data-so-editing]').waitFor({ state: 'attached', timeout: 120_000 });
-    await frame.getByRole('heading', { name: fixture.heading, exact: true, level: 1 }).first().waitFor({ timeout: 30_000 });
-    const snap = await win.evaluate(() => (globalThis as unknown as EditorPage).builder.project.snapshot());
-    expect(snap, 'no project is open');
-    expect(!snap.readOnly, `the project opened read-only: ${snap.readOnly?.reason ?? ''}`);
-    expect(snap.dir === ctx.projectDir, `another project opened: ${snap.dir}`);
-    const facts = { pages: Object.keys(snap.state.pages).length, entries: Object.values(snap.state.collections ?? {}).reduce((n, c) => n + Object.keys((c as { entries?: object }).entries ?? {}).length, 0), assets: Object.keys(snap.state.assets.assets).length, projectComponents: Object.values(snap.state.components).filter((c) => c.owner === 'project').length };
-    for (const k of ['pages', 'entries', 'assets', 'projectComponents'] as const) expect(facts[k] === fixture[k], `the project opened with ${facts[k]} ${k}, not ${fixture[k]}`);
-    expect(snap.state.site.homePageId === fixture.homePageId, 'the project opened with another home page');
-    expect(findHeading(snap.state.pages[fixture.homePageId], fixture.heroId)?.heading === fixture.heading, 'the home hero opened with another heading');
+    await openFromWelcome(ctx);
+    await checkOpened(ctx);
     await ctx.waitTrace((t) => !!t.first('canvas.ready', homeReady(fixture), forScenarioStart(t, 'open')), 15_000);
     await sleep(ctx.settleMs);
     await ctx.mark('scenario.end', { scenario: 'open' });
@@ -307,6 +304,29 @@ function previewStart(m: Collector, trace: Trace, prefix: string, req: PerfRecor
   m.since(`${prefix}.forkToListen`, forked, listening);
   m.since(`${prefix}.listenToFirstResponse`, listening, answered);
   m.since(`${prefix}.firstResponseToCanvasReady`, answered, ready);
+}
+
+/** Open the fixture from its recent-project card on Welcome, to the preview showing the home hero's heading, editable. */
+async function openFromWelcome(ctx: ScenarioContext): Promise<void> {
+  const { win, fixture } = ctx;
+  await win.locator('.recent-card', { hasText: fixture.spec.title }).first().click();
+  await win.locator('.editor').waitFor({ timeout: 120_000 });
+  const frame = preview(win);
+  await frame.locator('html[data-so-editing]').waitFor({ state: 'attached', timeout: 120_000 });
+  await frame.getByRole('heading', { name: fixture.heading, exact: true, level: 1 }).first().waitFor({ timeout: 30_000 });
+}
+
+/** The fixture opened whole and writable, from its own folder: its pages, posts, images, components and home hero. */
+async function checkOpened(ctx: ScenarioContext): Promise<void> {
+  const { win, fixture } = ctx;
+  const snap = await win.evaluate(() => (globalThis as unknown as EditorPage).builder.project.snapshot());
+  expect(snap, 'no project is open');
+  expect(!snap.readOnly, `the project opened read-only: ${snap.readOnly?.reason ?? ''}`);
+  expect(snap.dir === ctx.projectDir, `another project opened: ${snap.dir}`);
+  const facts = { pages: Object.keys(snap.state.pages).length, entries: Object.values(snap.state.collections ?? {}).reduce((n, c) => n + Object.keys((c as { entries?: object }).entries ?? {}).length, 0), assets: Object.keys(snap.state.assets.assets).length, projectComponents: Object.values(snap.state.components).filter((c) => c.owner === 'project').length };
+  for (const k of ['pages', 'entries', 'assets', 'projectComponents'] as const) expect(facts[k] === fixture[k], `the project opened with ${facts[k]} ${k}, not ${fixture[k]}`);
+  expect(snap.state.site.homePageId === fixture.homePageId, 'the project opened with another home page');
+  expect(findHeading(snap.state.pages[fixture.homePageId], fixture.heroId)?.heading === fixture.heading, 'the home hero opened with another heading');
 }
 
 /** When a scenario's start mark reached the trace from the editor; Infinity before it has. */
@@ -1060,7 +1080,104 @@ const SCENARIO_EXPORT_MS = 280_000;
 export const exportSite = exportScenario('export', 'open');
 export const exportAgain = exportScenario('exportAgain', 'export');
 
-export const SCENARIOS: Scenario[] = [launch, open, edit, panels, chat, exportSite, exportAgain, switchProject];
+// ---------------------------------------------------------------------------
+// memory
+// ---------------------------------------------------------------------------
+
+/** How many edits `memory` makes to the home hero's Heading; `edits` growth is what the 2nd to the last left behind. */
+export const MEMORY_EDITS = 50;
+/** The readings `memory` takes, in order, and their kinds. */
+export const MEMORY_READINGS = [
+  ['welcome', 'rest'],
+  ['open', 'peak'],
+  ['canvas', 'rest'],
+  ['edit1', 'rest'],
+  [`edit${MEMORY_EDITS}`, 'rest'],
+  ['closed', 'rest']
+] as const;
+/** How long after the project has closed `closed` is read: always the same age, so a build that lets go of a process
+ *  later than another shows it (Chromium ends the preview frame's renderer some 10 s after the frame goes). */
+export const CLOSED_AFTER_MS = 20_000;
+/** How long `memory` leaves the app after each edit is applied: past the file watcher's look at the save (400 ms
+ *  after it), so the next edit never lands in the middle of it. */
+export const EDIT_PACE_MS = 600;
+
+type Snapshot = Awaited<ReturnType<BuilderApi['project']['snapshot']>>;
+const snapshotOf = (win: Page): Promise<Snapshot> => win.evaluate(() => (globalThis as unknown as EditorPage).builder.project.snapshot());
+
+export const memory: Scenario = {
+  name: 'memory',
+  after: 'launch',
+  memory: true,
+  deadlineMs: 15 * 60_000,
+  description: `The memory of every process of the app at rest on a fresh Welcome, with the fixture open on the canvas, after 1 and ${MEMORY_EDITS} edits of the home hero's Heading, and back on Welcome once the project is closed; and its peak while the fixture opens.`,
+  async run(ctx) {
+    const { win, fixture } = ctx;
+    const probe = ctx.memory;
+    if (!probe) throw new Error('the memory scenario was run without a memory probe');
+    await probe.rest('welcome');
+    // Opened as `open` opens it, after the files have settled, to the canvas reporting the home page ready to edit;
+    // not timed, and sampled throughout for its peak.
+    const wait = ctx.restoredAt + FILES_SETTLE_MS - Date.now();
+    if (wait > 0) await sleep(wait);
+    await probe.peak('open', async () => {
+      await openFromWelcome(ctx);
+      const ready = (t: Trace) => {
+        const asked = t.first('open.requested', inProc('renderer'));
+        return asked ? t.first('canvas.ready', homeReady(fixture), asked.t) : undefined;
+      };
+      expect(ready(await ctx.waitTrace((t) => !!ready(t), 15_000)), 'the canvas never reported the home page ready to edit');
+    });
+    await checkOpened(ctx);
+    await probe.rest('canvas');
+    const before = await snapshotOf(win);
+    expect(before, 'no project is open');
+    // The hero chosen in Layers and its Heading shown in the Inspector once; each edit is one commit of that field.
+    await win.getByRole('button', { name: 'Layers', exact: true }).first().click();
+    await win.getByRole('treeitem', { name: HERO_NAME }).first().click();
+    await win.getByRole('tab', { name: 'Inspector', exact: true }).first().click();
+    const field = win.getByRole('textbox', { name: 'Heading', exact: true }).first();
+    await field.waitFor({ timeout: 15_000 });
+    const heading = (i: number) => `Memory heading ${ctx.iteration}.${i}`;
+    /** The canvas reporting the edit `n` applied: the preview can show a heading before its bridge says so. */
+    const applied = async (n: number) => {
+      // Applied in place, or by a full reload of the preview, whose new page reports itself ready at that revision.
+      const shown = (x: Trace) => x.first('canvas.revisionApplied', atRevision(before.revision + n)) ?? x.first('canvas.ready', (r) => homeReady(fixture)(r) && r.attrs?.revision === before.revision + n);
+      expect(shown(await ctx.waitTrace((x) => !!shown(x), 30_000)), `the canvas never reported edit ${n} applied`);
+    };
+    for (let i = 1; i <= MEMORY_EDITS; i++) {
+      await field.fill(heading(i));
+      await win.keyboard.press('Tab');
+      await preview(win).getByRole('heading', { name: heading(i), exact: true, level: 1 }).first().waitFor({ timeout: 60_000 });
+      await applied(i);
+      if (i === 1) await probe.rest('edit1');
+      else await sleep(EDIT_PACE_MS);
+    }
+    const after = await snapshotOf(win);
+    expect(after && after.revision === before.revision + MEMORY_EDITS, `the edits left the project at revision ${after?.revision}, not ${before.revision + MEMORY_EDITS}`);
+    expect(findHeading(after.state.pages[fixture.homePageId], fixture.heroId)?.heading === heading(MEMORY_EDITS), 'the project does not hold the last heading on the home hero');
+    const doc = join(ctx.projectDir, 'siteorigin', 'pages', `${fixture.homePageId}.json`);
+    const saved = existsSync(doc) ? (JSON.parse(readFileSync(doc, 'utf8')) as unknown) : null;
+    expect(findHeading(saved, fixture.heroId)?.heading === heading(MEMORY_EDITS), 'the home page’s document on disk does not hold the last heading on the home hero');
+    await probe.rest(`edit${MEMORY_EDITS}`);
+    const closed = await win.evaluate(() => (globalThis as unknown as EditorPage).builder.projects.close());
+    expect(closed.ok, 'the project did not close');
+    await win.locator('.welcome').waitFor({ timeout: 60_000 });
+    expect((await snapshotOf(win)) === null, 'a project is still open after it was closed');
+    await sleep(CLOSED_AFTER_MS);
+    await probe.rest('closed');
+  },
+  measure(_trace, _fixture, readings = []) {
+    const m = new Collector();
+    const reading = (label: string, kind: 'rest' | 'peak' = 'rest') => readings.find((r) => r.label === label && r.kind === kind);
+    for (const [label, kind] of MEMORY_READINGS) readingMetrics(m, label, reading(label, kind));
+    growthMetrics(m, 'edits', reading('edit1'), reading(`edit${MEMORY_EDITS}`));
+    growthMetrics(m, 'close', reading('welcome'), reading('closed'));
+    return m;
+  }
+};
+
+export const SCENARIOS: Scenario[] = [launch, open, edit, panels, chat, exportSite, exportAgain, switchProject, memory];
 
 /**
  * The scenarios to run in one launch for those asked for: each with every one it follows, in the order of SCENARIOS
@@ -1070,6 +1187,9 @@ export const SCENARIOS: Scenario[] = [launch, open, edit, panels, chat, exportSi
 export function chainFor(names: string[]): Scenario[] {
   const byName = new Map(SCENARIOS.map((s) => [s.name, s]));
   const wanted = new Set<string>();
+  const memoryAsked = names.filter((n) => byName.get(n)?.memory);
+  if (memoryAsked.length && memoryAsked.length !== names.length && names.every((n) => byName.has(n)))
+    throw new Error(`Memory scenarios (${memoryAsked.join(', ')}) are run on their own: their waits and garbage collections would change the numbers of ${names.filter((n) => !memoryAsked.includes(n)).join(', ')}. Run them in a separate perf:run.`);
   for (const name of names) {
     let s = byName.get(name);
     if (!s) throw new Error(`Unknown scenario "${name}". Scenarios: ${SCENARIOS.map((x) => x.name).join(', ')}.`);
@@ -1096,6 +1216,8 @@ export interface ChainOutcome {
   ok: boolean;
   metrics?: Record<string, Measured>;
   error?: { stage: string; message: string };
+  /** The memory readings the scenario took, those before a failure included. */
+  memory?: MemoryReading[];
 }
 
 /**
@@ -1111,21 +1233,26 @@ export async function runChain(chain: Scenario[], ctx: ScenarioContext, readTrac
       out.push({ scenario: s.name, ok: false, error: { stage: blocked.stage, message: `not run: ${blocked.stage} failed (${blocked.message})` } });
       continue;
     }
+    const from = ctx.memory?.readings.length ?? 0;
+    const taken = () => {
+      const readings = ctx.memory?.readings.slice(from) ?? [];
+      return readings.length ? { memory: readings } : {};
+    };
     try {
-      await withDeadline(s.run(ctx), deadlineMs, s.name);
+      await withDeadline(s.run(ctx), s.deadlineMs ?? deadlineMs, s.name);
     } catch (e) {
       blocked = { stage: s.name, message: `${e instanceof PredicateError ? 'predicate: ' : ''}${(e as Error).message.split('\n')[0]}` };
-      out.push({ scenario: s.name, ok: false, error: blocked });
+      out.push({ scenario: s.name, ok: false, error: blocked, ...taken() });
       continue;
     }
     const trace = await readTrace();
     if (trace.incomplete) {
-      out.push({ scenario: s.name, ok: false, error: { stage: s.name, message: 'the trace has a line that could not be read' } });
+      out.push({ scenario: s.name, ok: false, error: { stage: s.name, message: 'the trace has a line that could not be read' }, ...taken() });
       continue;
     }
-    const m = s.measure(trace, ctx.fixture);
-    if (m.missing.length) out.push({ scenario: s.name, ok: false, error: { stage: s.name, message: `missing from the trace: ${m.missing.join(', ')}` } });
-    else out.push({ scenario: s.name, ok: true, metrics: m.metrics });
+    const m = s.measure(trace, ctx.fixture, ctx.memory?.readings.slice(from) ?? []);
+    if (m.missing.length) out.push({ scenario: s.name, ok: false, error: { stage: s.name, message: `missing from the trace: ${m.missing.join(', ')}` }, ...taken() });
+    else out.push({ scenario: s.name, ok: true, metrics: m.metrics, ...taken() });
   }
   return out;
 }

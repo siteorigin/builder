@@ -1,7 +1,8 @@
 import { describe, expect, it } from 'vitest';
 import type { PerfRecord } from '../../src/shared/perf';
 import { Collector, Trace } from '../../scripts/perf/results';
-import { CHAT_CASES, CHAT_REPLY_CHECKPOINTS, CHAT_TYPED, chainFor, chat, chatReply, chatReplyFirst, chatReplyLast, chatSeed, edit, exportAgain, exportSite, expect as check, findHeading, launch, open, PANELS, panels, runChain, SHOWN_PANELS, type FixtureFacts, type Scenario, type ScenarioContext, switchProject } from '../../scripts/perf/scenarios';
+import { CHAT_CASES, CHAT_REPLY_CHECKPOINTS, CHAT_TYPED, chainFor, chat, chatReply, chatReplyFirst, chatReplyLast, chatSeed, edit, exportAgain, exportSite, expect as check, findHeading, launch, memory, MEMORY_EDITS, open, PANELS, panels, runChain, SHOWN_PANELS, type FixtureFacts, type Scenario, type ScenarioContext, switchProject } from '../../scripts/perf/scenarios';
+import type { MemoryProbe, MemoryReading } from '../../scripts/perf/memory';
 import { FIXTURES } from '../../scripts/perf/fixtures';
 
 let seq = 0;
@@ -664,5 +665,103 @@ describe('fixture facts', () => {
     expect(findHeading(page)).toEqual({ id: 'b', heading: 'First' });
     expect(findHeading(page, 'd')).toEqual({ id: 'd', heading: 'Later' });
     expect(findHeading(page, 'zz')).toBeNull();
+  });
+});
+
+describe('memory', () => {
+  const MiB = 2 ** 20;
+  const reading = (label: string, mainMiB: number, kind: 'rest' | 'peak' = 'rest', extra: Record<string, number> = {}): MemoryReading => {
+    const roles = Object.fromEntries(Object.entries({ main: mainMiB, ...extra }).map(([k, v]) => [k, { processes: 1, bytes: v * MiB }]));
+    const total = Object.values(roles).reduce((n, r) => n + r.bytes, 0);
+    return { label, kind, at: 0, processes: [], roles, total, count: Object.keys(roles).length, ...(kind === 'rest' ? { heap: { main: 10 * MiB, editor: 20 * MiB } } : {}), how: {} as MemoryReading['how'] };
+  };
+
+  it('runs on its own after the launch it needs, and never beside a timing scenario', () => {
+    expect(chainFor(['memory']).map((s) => s.name)).toEqual(['launch', 'memory']);
+    expect(() => chainFor(['memory', 'edit'])).toThrow('Memory scenarios (memory) are run on their own: their waits and garbage collections would change the numbers of edit.');
+    expect(() => chainFor(['launch', 'memory'])).toThrow('are run on their own');
+    expect(() => chainFor(['memory', 'nope'])).toThrow('Unknown scenario "nope"');
+    // A timing chain never makes a memory probe.
+    expect(chainFor(['launch', 'open', 'edit', 'panels']).some((s) => s.memory)).toBe(false);
+  });
+
+  it('report every reading and both growths, and a reading not taken as missing', () => {
+    const all = [reading('welcome', 150, 'rest', { editor: 100 }), reading('open', 300, 'peak', { editor: 200, devServer: 400 }), reading('canvas', 200, 'rest', { editor: 140, devServer: 300 }), reading('edit1', 210, 'rest', { editor: 150, devServer: 300 }), reading(`edit${MEMORY_EDITS}`, 260, 'rest', { editor: 160, devServer: 310 }), reading('closed', 170, 'rest', { editor: 101, preview: 90 })];
+    const got = memory.measure(new Trace([]), facts, all);
+    expect(got.missing).toEqual([]);
+    const v = (k: string) => got.metrics[k].value / (got.metrics[k].unit === 'memory' ? MiB : 1);
+    expect([v('memory.welcome.total'), v('memory.open.peak.total'), v('memory.open.peak.mem.devServer'), v('memory.canvas.processes'), v('memory.canvas.heap.editor')]).toEqual([250, 900, 400, 3, 20]);
+    expect([v('memory.edits.growth.mem.main'), v('memory.edits.growth.mem.devServer'), v('memory.edits.growth.total'), v('memory.edits.growth.heap.main')]).toEqual([50, 10, 70, 0]);
+    expect([v('memory.close.growth.mem.main'), v('memory.close.growth.mem.preview'), v('memory.close.growth.processes'), v('memory.close.growth.total')]).toEqual([20, 90, 1, 111]);
+    const lacking = memory.measure(new Trace([]), facts, all.slice(0, -1));
+    expect(lacking.missing).toEqual(['memory reading closed']);
+    expect(Object.keys(lacking.metrics).some((k) => k.startsWith('memory.close'))).toBe(false);
+    // A reading at rest named like the peak is not the peak.
+    expect(memory.measure(new Trace([]), facts, all.map((r) => (r.label === 'open' ? { ...r, kind: 'rest' as const } : r))).missing).toEqual(['memory reading open']);
+  });
+
+  it('make 50 edits and give itself longer than a timing scenario, as a memory scenario', () => {
+    expect(MEMORY_EDITS).toBe(50);
+    expect([memory.memory, memory.after, memory.deadlineMs]).toEqual([true, 'launch', 15 * 60_000]);
+    expect([launch, open, edit, panels, chat].some((s) => s.memory)).toBe(false);
+  });
+
+  const scenario = (name: string, run: () => Promise<void>, seen: string[][]): Scenario => ({
+    name,
+    after: null,
+    description: name,
+    run,
+    measure: (_t, _f, readings = []) => {
+      seen.push(readings.map((r) => r.label));
+      const c = new Collector();
+      c.count(`${name}.n`, readings.length);
+      return c;
+    }
+  });
+
+  it('give each scenario the readings its run took, and keep them on its outcome, a failed one’s too', async () => {
+    const probe = { readings: [] as MemoryReading[] } as unknown as MemoryProbe;
+    const take = (label: string) => probe.readings.push(reading(label, 1));
+    const seen: string[][] = [];
+    const ctx = { fixture: facts, memory: probe } as unknown as ScenarioContext;
+    const out = await runChain(
+      [
+        scenario('a', async () => {}, seen),
+        scenario('b', async () => void (take('x'), take('y')), seen),
+        scenario('b2', async () => void take('w'), seen),
+        scenario('c', async () => (take('z'), check(false, 'the project did not close')), seen)
+      ],
+      ctx,
+      async () => new Trace([]),
+      1000
+    );
+    // Each scenario's own readings, never the ones before it.
+    expect(seen).toEqual([[], ['x', 'y'], ['w']]);
+    expect(out.map((o) => [o.scenario, o.ok, o.memory?.map((r) => r.label)])).toEqual([
+      ['a', true, undefined],
+      ['b', true, ['x', 'y']],
+      ['b2', true, ['w']],
+      ['c', false, ['z']]
+    ]);
+    // A scenario failed on its trace or its measure keeps the readings it took too.
+    const missing: Scenario = {
+      ...scenario('m', async () => void take('v'), []),
+      measure: () => {
+        const c = new Collector();
+        c.need('x', undefined);
+        return c;
+      }
+    };
+    const [broken] = await runChain([scenario('t', async () => void take('u'), [])], ctx, async () => new Trace([], true), 1000);
+    const [lacking] = await runChain([missing], ctx, async () => new Trace([]), 1000);
+    expect([broken.ok, broken.memory?.map((r) => r.label), lacking.ok, lacking.memory?.map((r) => r.label)]).toEqual([false, ['u'], false, ['v']]);
+  });
+
+  it('give a scenario its own deadline when it names one', async () => {
+    const ctx = { fixture: facts } as unknown as ScenarioContext;
+    const slow = { ...scenario('m', () => new Promise((r) => setTimeout(r, 200)), []), deadlineMs: 10 };
+    expect((await runChain([slow], ctx, async () => new Trace([]), 60_000))[0].error?.message).toBe('m did not finish within 0s');
+    const patient = { ...scenario('m', () => new Promise((r) => setTimeout(r, 30)), []), deadlineMs: 60_000 };
+    expect((await runChain([patient], ctx, async () => new Trace([]), 10))[0].ok).toBe(true);
   });
 });

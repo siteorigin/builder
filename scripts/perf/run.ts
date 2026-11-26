@@ -6,6 +6,7 @@
  * once per iteration: each iteration is a fresh launch on the same profile and project files, put back from the state
  * a warm-up launch left, and runs the chain of scenarios asked for. It writes one JSON result with each case's
  * iterations and, when all of them passed, the median and spread of every metric; and it exits 1 when any case failed.
+ * A chain with a memory scenario (`--scenario memory`) gets a memory probe (memory.ts); no other launch reads memory.
  */
 import { constants, cpSync, existsSync, mkdirSync, readdirSync, readFileSync, renameSync, rmSync, writeFileSync } from 'node:fs';
 import { arch, cpus, platform, release, totalmem } from 'node:os';
@@ -18,7 +19,8 @@ import { PERF_ENV, PERF_GLOBAL, type PerfAttrs } from '../../src/shared/perf';
 import type { BuilderApi } from '../../src/shared/api';
 import { registerBuiltinPacks } from '../../src/main/packs/build';
 import { FIXTURES, ROOT, fixtureHash, fixtureState, templateHash, writeFixture, type FixtureName } from './fixtures';
-import { caseTable, summarizeCase, Trace, type CaseResult, type Iteration, type RunResult } from './results';
+import { caseTable, summarizeCase, Trace, withAbsentRoles, type CaseResult, type Iteration, type RunResult } from './results';
+import { electronSource, MEMORY_PROTOCOL, MemoryProbe, memorySource } from './memory';
 import { chainFor, fixtureFacts, runChain, withDeadline, type ChainOutcome, type FixtureFacts, type ScenarioContext } from './scenarios';
 
 const PERF_DIR = join(ROOT, '.tmp', 'perf');
@@ -200,6 +202,9 @@ async function mark(app: ElectronApplication, win: Page, name: string, attrs?: P
 async function iterate(opts: Options, c: { dir: string; profile: string; project: string; other: string | null; facts: FixtureFacts; restoredAt: number }, index: number, trace: string): Promise<ChainOutcome[]> {
   rmSync(trace, { force: true });
   const { app, win, pid, root } = await start(opts.app, join(c.dir, 'launch'), c.profile, trace);
+  // Only a chain with a memory scenario reads memory; the probe is closed before the app is quit, so a scenario that
+  // ran past its deadline leaves no sampling behind.
+  const probe = opts.chain.some((s) => s.memory) ? new MemoryProbe(electronSource(app, win)) : undefined;
   try {
     const ctx: ScenarioContext = {
       app,
@@ -211,11 +216,14 @@ async function iterate(opts: Options, c: { dir: string; profile: string; project
       settleMs: opts.settleMs,
       restoredAt: c.restoredAt,
       mark: (name, attrs) => mark(app, win, name, attrs),
-      waitTrace: (done, timeoutMs = 10_000) => poll(trace, done, timeoutMs)
+      waitTrace: (done, timeoutMs = 10_000) => poll(trace, done, timeoutMs),
+      ...(probe ? { memory: probe } : {})
     };
     return await runChain(opts.chain, ctx, () => poll(trace, () => false, 0), SCENARIO_MS);
   } finally {
-    await stop(app, pid, root);
+    await probe?.dispose();
+    // What the probe saw as the app's is swept too: a helper's child it still counted may be one no walk from the root finds.
+    await stop(app, pid, probe ? [...root, ...probe.seen()] : root);
   }
 }
 
@@ -322,12 +330,13 @@ async function main() {
       if (t.build().commit) stamped = t.build();
       electron = (t.first('perf.start')?.attrs?.electron as string | null) ?? electron;
       counters = (t.first('perf.start')?.attrs?.counters as number | null) ?? counters;
-      for (const o of outcomes) perScenario.get(o.scenario)!.push({ index: i, ok: o.ok, trace: rel, ...(o.metrics ? { metrics: o.metrics } : {}), ...(o.error ? { error: o.error } : {}) });
+      for (const o of outcomes) perScenario.get(o.scenario)!.push({ index: i, ok: o.ok, trace: rel, ...(o.metrics ? { metrics: o.metrics } : {}), ...(o.error ? { error: o.error } : {}), ...(o.memory ? { memory: o.memory } : {}) });
       console.log(`perf: ${name} #${i}: ${outcomes.map((o) => `${o.scenario} ${o.ok ? 'ok' : `FAILED (${o.error?.stage}: ${o.error?.message})`}`).join(', ')}`);
     }
     for (const s of reported) {
       const iterations = perScenario.get(s.name)!;
-      const metrics = summarizeCase(iterations);
+      // A process role some launches had and others did not counts as none where it was absent (memory.ts).
+      const metrics = summarizeCase(withAbsentRoles(iterations));
       cases.push({ scenario: s.name, fixture: name, fixtureHash: fx.hash, templateHash: fx.tools, status: metrics ? 'passed' : 'failed', iterations, ...(metrics ? { metrics } : {}) });
     }
   }
@@ -336,7 +345,7 @@ async function main() {
     createdAt: new Date().toISOString(),
     build: { commit: stamped.commit, builtAt: stamped.builtAt, fingerprint: build.fingerprint, head: build.git?.head ?? null, dirty: build.git?.dirty ?? null, appDir: opts.app, counters },
     machine: { platform: platform(), arch: arch(), osRelease: release(), cpu: cpus()[0]?.model ?? null, cores: cpus().length, memoryGiB: Math.round(totalmem() / 2 ** 30), node: process.versions.node, electron },
-    config: { iterations: opts.iterations, scenarios: reported.map((s) => s.name), fixtures: opts.fixtures, settleMs: opts.settleMs, cold: opts.cold },
+    config: { iterations: opts.iterations, scenarios: reported.map((s) => s.name), fixtures: opts.fixtures, settleMs: opts.settleMs, cold: opts.cold, ...(opts.chain.some((s) => s.memory) ? { memoryProtocol: MEMORY_PROTOCOL, memorySource: memorySource() } : {}) },
     cases
   };
   mkdirSync(dirname(out), { recursive: true });

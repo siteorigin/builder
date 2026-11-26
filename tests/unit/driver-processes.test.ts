@@ -46,6 +46,26 @@ describe('the process table', () => {
     const later = parseProcessTable('1 0 1 Mon Nov 24 09:00:00 2026\n30 1 30 Mon Nov 24 13:00:05 2026\n32 30 30 Mon Nov 24 13:10:00 2026\n33 32 33 Mon Nov 24 13:10:01 2026');
     expect(ownedEntries(later, 10, known).map((e) => e.pid)).toEqual([30, 32, 33]);
   });
+
+  it('never takes a Windows process for the child of a later one that got its dead parent’s pid', () => {
+    // 20 is the app's helper; 30 is an older program whose parent once had pid 20, and 31 its child. 21 started with
+    // 20 (the same tick), so it is 20's.
+    const table = parseProcessTable('10 1 - 100\n20 10 - 200\n21 20 - 200\n30 20 - 50\n31 30 - 60');
+    expect(descendants(table, 10)).toEqual([20, 21]);
+    expect(ownedEntries(table, 10).map((e) => e.pid)).toEqual([10, 20, 21]);
+    // A process seen as the app's earlier stays the app's whatever its parent now is, and what it started with it.
+    const kept = parseProcessTable('10 1 - 100\n20 10 - 200\n40 20 - 150\n41 40 - 160');
+    expect(ownedEntries(kept, 10, [{ pid: 40, ppid: 1, started: '150' }]).map((e) => e.pid)).toEqual([10, 20, 40, 41]);
+    // POSIX start times are words: nothing is compared there.
+    expect(descendants(parseProcessTable('10 1 10 Mon Nov 24 14:00:00 2026\n11 10 10 Mon Nov 24 13:00:00 2026'), 10)).toEqual([11]);
+  });
+
+  it('checks a Windows child of a root that has exited against the root’s start, read while it ran', () => {
+    // The app (10, started at tick 100) has quit: 20 is its helper, 30 an older program a previous pid 10 started.
+    const table = parseProcessTable('20 10 - 200\n21 20 - 210\n30 10 - 50\n31 30 - 60');
+    expect(ownedEntries(table, 10, [{ pid: 10, ppid: 1, started: '100' }]).map((e) => e.pid)).toEqual([20, 21]);
+    expect(descendants(table, 10, '100')).toEqual([20, 21]);
+  });
 });
 
 describe.skipIf(process.platform === 'win32')('killing a tree', () => {

@@ -1,13 +1,14 @@
 # Performance benchmarks
 
-How long things take in the built app, and how much work they do, measured the same way every time, so a change can
-show a number before and a number after. Nothing here runs in pull request CI and no number fails a build: the results
+How long things take in the built app, how much work they do and how much memory each of its processes holds,
+measured the same way every time, so a change can show a number before and a number after. Nothing here runs in pull request CI and no number fails a build: the results
 are evidence for a pull request. The `optimize` skill (`.claude/skills/optimize/SKILL.md`) is built on these commands.
 
 ```sh
 npm run build                                   # every measured tree is built first
 npm run perf:run                                # launch, open and edit on both fixtures, 5 iterations
 npm run perf:run -- --scenario edit --fixture large --iterations 7 --out .tmp/perf/results/edit.json
+npm run perf:run -- --scenario memory           # memory of every process at named points, on both fixtures
 npm run perf:compare -- before.json after.json  # before, after, change and verdict per metric
 npm run perf:compare -- before.json after.json --markdown   # the tables a pull request carries
 npm run perf:static                             # built output sizes and the main entry's packages, beside the baseline
@@ -156,6 +157,18 @@ and `cleanup` (the staging folder removed). Counts: files and bytes the export r
 library's files and bytes beside them, and the files and bytes of the exported folder; the longest main-process stall.
 The fixture has no drafts, and only the folder format is measured.
 
+**`memory`** (after `launch`, and only on its own: see Memory below): the memory of every process of the app at rest on
+a fresh Welcome (`welcome`); the fixture opened from its card as `open` opens it, untimed, sampled throughout for its
+peak (`open.peak`); at rest on the canvas (`canvas`); after one change of the home hero's Heading in the Inspector
+(`edit1`) and after 49 more (`edit50`), each applied and left 600 ms before the next, past the file watcher's look at
+its save; and back on Welcome, starting 20 s after the project closed (`closed`). Checks: everything
+`open` checks, the canvas reporting the home page ready before the peak ends, each edit shown in the preview and
+reported applied by the canvas, the project 50 revisions on with the last heading in the project and on disk, the
+project closed and Welcome shown. For each reading: `memory.<reading>.total` (the memory all the app's processes hold), `.processes` (how many), `.mem.<role>` and `.processes.<role>` (each role's), and, at rest,
+`.heap.main` and `.heap.editor` (the JavaScript heap in use); the peak's are `memory.open.peak.*`. Growth, the
+difference of two readings in the same launch: `memory.edits.growth.*` (`edit50` − `edit1`: what 49 edits left behind)
+and `memory.close.growth.*` (`closed` − `welcome`: what a project left behind once closed).
+
 ## Reading and comparing results
 
 Counts and sizes are the portable evidence: they do not depend on the machine, and two runs of the same build give the
@@ -174,6 +187,91 @@ needs the `optimize` skill's interleaved arms before it is a headline. A result 
 `--markdown` prints one table per case with Improvement as (before − after) / before, positive when the number fell, the
 form the `optimize` skill's pull requests carry. A case that failed on either side is shown as not compared, and the
 command exits 1.
+
+## Memory
+
+The harness reads memory; the app never does. Only a chain with a memory scenario makes a memory probe
+(`scripts/perf/memory.ts`), so a timing run takes no reading and collects no garbage, and a memory scenario is never
+run beside a timing one: `perf:run` refuses `--scenario memory,edit`. The timing scenarios a memory scenario follows
+(`launch`) still run before it, unreported.
+
+**What a reading holds.** Every process the app owns (its main process and everything below it, and on macOS and Linux
+its process group, as the teardown sweep finds them), each with the memory the OS says it holds: on macOS its physical
+footprint (`top`'s MEM, what Activity Monitor shows: what it holds in RAM and compressed, without pages it has handed
+back), with `ps` giving who is whose at the same moment; on Linux `ps` RSS; on Windows the working set. macOS reads the
+footprint because RSS there follows the machine's memory pressure: it keeps counting pages a process has freed until
+the system takes them back, and stops counting pages it compresses. Two runs of one build on a busy machine, the main
+process's JavaScript heap identical in every launch, had its RSS 40 to 70 MiB apart, and the editor's a third. Each
+process is named by its role, never by its pid:
+
+- `main`, `editor` (the editor window's renderer), `preview` (the renderer of the canvas's preview frame, found by the
+  frame's name; one that shares the editor's process is counted once, as the editor), `thumbnails` (the hidden window
+  that photographs project components), `gpu`, and Chromium's services by name (`network`, `storage`, …).
+- The app's helpers by what they are: `devServer` (the preview's dev server, "SiteOrigin project runtime"),
+  `projectBuild`, `media`, `importReader`, `sourceSync`; a new helper by its service name.
+- A process Electron does not list, by its parent's role and its executable: `devServer.esbuild`, and `main.unlisted`
+  for one the app's own executable runs (npm while it installs a project's tools, or on Windows, where every Chromium
+  helper runs that executable, a helper Electron has not reported yet). Arguments are never read.
+- A renderer keeps the role it was last seen in: Chromium keeps the preview's renderer some 10 s after its frame goes,
+  and it is still the preview then.
+
+Two processes of one role are summed (`.mem.<role>`) and counted (`.processes.<role>`); the result keeps each process
+of every reading with its role. Where the figure is RSS (Linux), pages two processes share count in both. Read figures
+on one machine, never across machines: compare refuses results read from another source or protocol.
+
+**At rest.** A reading at rest (`ctx.memory.rest(label)`) leaves the app alone for 3 s (work the last step set off: a
+workspace save, a thumbnail), waits until two process tables 500 ms apart list the same processes, then collects
+garbage twice in the main process (an inspector session inside it), the editor and the preview's frame (CDP sessions on
+each), waits 1 s, reads the two heaps, and takes one sample: the process table and what the app says each process is.
+If the processes changed meanwhile (or a collection failed because one went, or on macOS `top` had not listed one yet)
+it starts again, up to three times; a set that does not hold still for one gap within 15 s fails the reading. A reading is taken at a fixed point, never "once
+things look done": `closed` starts 20 s after the close (its sample comes some 4.5 s later, after the settle and the
+collection), so a build that lets go of the preview's renderer later than another shows it. Helpers are never collected (the dev server's own garbage is its business), so their figures move
+more between launches than the main process's or the editor's. Each reading says how it was taken (`how`: the source,
+the protocol, the waits, what was collected, the retries), and the result records `memoryProtocol`
+(`MEMORY_PROTOCOL` in memory.ts), raised whenever any of this changes, and `memorySource`: results read differently,
+from another source, or by a protocol this harness no longer reads are never compared.
+
+**Peaks.** `ctx.memory.peak(label, work)` samples the process table every 200 ms from before `work` starts until after
+it ends, never waiting on the app (a busy main process cannot hide its own spike): the app is asked what a process is
+only when one appears. The peak is the highest total over the samples, and for each role its highest sum and count:
+they need not come at once, so the roles' peaks can add up to more than the total's. A process that lives less than a
+period can go unseen; `how` gives the samples taken, the longest gap between two, and how many were left out because a
+process in them had no figure yet (macOS: `top` had not listed it).
+
+**Comparing.** Memory figures (unit `memory`, shown in MiB) have their own noise band: **three times the larger MAD of
+the two runs, and never under 10% of the before median or 8 MiB**. Process counts have none: any difference is
+`changed`. A role one launch had and another did not (a helper that ends a while after its last job, caught by one
+launch and not another) counts as none in the launch
+without it, within a run and between two runs; a reading that was not taken fails its case. `--markdown` prints a table
+per reading in the order they were taken, then each growth: a row per role with its process count, before, after, the
+change in MiB and Improvement, then all processes and the two heaps. Growth can be below zero; its change is read in
+MiB, never as a percentage of it, in both formats.
+
+How the band was arrived at: on an M4 Max (36 GB, macOS, shared with other work), two runs of one build, 5 iterations
+each on both fixtures, were compared, and a third with 40 MiB held in the main process (a filled `Buffer`, made at
+startup on a throwaway build). Between the two runs every process count was identical; on the small fixture every
+memory figure stayed inside the band (the largest move 9 MiB on a 548 MiB total, 6 MiB on the main process); on the
+large one all but four did: at `canvas` the GPU process still held its open-time memory (about 430 MiB) in 4 of one
+run's 5 launches and in none of the other's, which moved its figure and the total, and the preview's renderer moved by
+24 and 10 MiB. Read `canvas`'s GPU figure as a state the app is in or not, not a level. With 5% and 4 MiB, the main
+process at Welcome (5 MiB) fell outside too. The 40 MiB came out as +39 to +44 MiB in the main process, outside the
+band, at every reading of the small fixture and at Welcome, the open's peak, `canvas` and `edit1` of the large one,
+with its heap unchanged and no other process's figure moved but the dev server's growth over the edits (its garbage is
+never collected). After 50 edits and after the close the large fixture's main process varies by up to 60 MiB from one
+launch to the next (the band there is ±51 to 57 MiB), so a change it must show belongs in an earlier reading. One
+launch in the 35 of these runs failed: after a reload from disk the preview never showed an edit its bridge reported
+applied, an app race the 50 quick edits find, not the reading's.
+
+**Adding a reading.** A memory scenario is a `Scenario` with `memory: true` (its `deadlineMs` may be longer than the
+usual five minutes), after `launch` for something done from Welcome. In `run`, take readings with
+`ctx.memory.rest(label)` once the app is where the reading belongs (after the step's own check) and wrap work whose
+cost is a spike in `ctx.memory.peak(label, () => work)`; never inside a timed window, and never in a timing scenario.
+In `measure(trace, fixture, readings)`, `readingMetrics(m, label, reading)` for each and `growthMetrics(m, name, from,
+to)` for each difference; a reading the run did not take is reported missing. Labels are lowercase-first words
+(`canvas`, `edit50`). A role one side of a comparison has in a reading and the other does not counts as none on the
+other side, so a helper that appears or goes is `changed` (its count exactly, its memory against the band); a metric
+of a reading only one side took is `new` or `gone`.
 
 ## The static report
 
