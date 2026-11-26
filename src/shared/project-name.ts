@@ -16,7 +16,8 @@ export function projectDisplayName(state: { manifest: Pick<ProjectManifest, 'wor
  * name before the app's, or the app's alone with no project open (Welcome).
  */
 export function windowTitle(projectName: string | null): string {
-  const name = projectName?.trim();
+  // The documents are read as they are on disk: a name edited into something else must never blank the editor.
+  const name = typeof projectName === 'string' ? projectName.trim() : '';
   return name ? `${name} — ${APP_NAME}` : APP_NAME;
 }
 
