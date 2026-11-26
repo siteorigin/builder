@@ -7,12 +7,12 @@ import type { GuestRole } from './limits';
  */
 
 /**
- * A viewer reads the project as it is now; the preview, presence and the editor events come with admission. The host
- * answers `project.snapshot`, and sends `project:changed`, with a copy made safe to share (#765), never the editor's
- * own snapshot, which names the project's folder and holds private state.
+ * A viewer reads the project as it is now; the preview, the others' presence and the editor events come with admission.
+ * The host answers `project.snapshot`, and sends `project:changed`, with a copy made safe to share (snapshot.ts),
+ * never the editor's own snapshot, which names the project's folder and holds private state.
  */
 export const VIEWER_METHODS = ['project.snapshot'] as const;
-/** A collaborator also makes visual edits. */
+/** A collaborator also makes visual edits, and shares its own presence (the relay passes on no viewer's). */
 export const COLLABORATOR_METHODS = [...VIEWER_METHODS, 'project.apply'] as const;
 /** Every method any guest may call: all a forwarded call or the host's answer can name. */
 export const LIVE_METHODS = COLLABORATOR_METHODS;
