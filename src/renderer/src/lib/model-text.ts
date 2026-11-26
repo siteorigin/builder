@@ -5,6 +5,8 @@
  * line. This is the small part of Markdown that models use, not all of it, and none of it is ever read as HTML.
  * Text is read while it streams in, so an unfinished fence is code already.
  */
+import { externalLink } from '@shared/links';
+
 export type ListItem = { lines: string[]; blocks: TextBlock[] };
 export type TextBlock =
   | { kind: 'p' | 'lead' | 'code'; lines: string[] }
@@ -14,7 +16,7 @@ export type TextBlock =
   | { kind: 'table'; head: string[]; rows: string[][] }
   | { kind: 'hr' };
 
-export type TextSpan = string | { kind: 'code'; text: string } | { kind: 'strong' | 'em' | 'del'; spans: TextSpan[] };
+export type TextSpan = string | { kind: 'code'; text: string } | { kind: 'strong' | 'em' | 'del'; spans: TextSpan[] } | { kind: 'link'; href: string; spans: TextSpan[] };
 
 /** A line of a bulleted or numbered list, as models write them: "- ", "* ", "• ", "1. " or "1) ". */
 const LIST_ITEM = /^([ \t]*)([-*+•]|\d{1,2}[.)])\s+(?=\S)/;
@@ -228,6 +230,15 @@ export function textBlocks(text: string): TextBlock[] {
 
 /** A link or image, read as its words, or its address when it has none. The address may hold one level of parentheses. */
 const LINK = /!?\[((?:[^[\]\n]|\[[^[\]\n]{0,200}\]){0,500})\]\(((?:[^()\n]|\([^()\n]{0,500}\)){0,2000})\)/y;
+/**
+ * An address written out in the text, up to the first space, double quote or escape. An apostrophe may be part of it,
+ * as in /O'Reilly; what it ends with is checked (urlAt).
+ */
+const BARE_URL = /https?:\/\/[^\s<>`"“”\\]{1,2100}/iy;
+/** Marks that end a sentence or close a single quote, which an address written at the end of one leaves to the prose. */
+const URL_TAIL = /[.,:;!?'‘’]/;
+/** What an address can't follow: a letter or number, or a character that makes it part of a longer name or address. */
+const URL_AFTER = /[\p{L}\p{N}\p{M}/@.+-]/u;
 const ESCAPABLE = /[\\`*_~[\](){}#+\-.!|>]/;
 const SPACE = /^\s?$/;
 const PUNCTUATION = /^[\p{P}\p{S}]$/u;
@@ -255,11 +266,44 @@ function flanks(mark: string, length: number, before: string, after: string): { 
   return { opens: left, closes: right };
 }
 
+/** A web page's address that may become a link: http(s), with no credentials in it (externalLink). */
+function webHref(address: string): string | null {
+  // A title after the address, as in [docs](https://example.com "Docs"), is not part of it.
+  const link = externalLink(address.trim().replace(/\s+(?:"[^"]*"|'[^']*')$/, ''));
+  // Checked again as it will be opened, since the browser's form of an address can be longer than its typed one.
+  return link?.kind === 'web' && externalLink(link.href) ? link.href : null;
+}
+
 /**
- * One line or paragraph of model text as spans: bold, italic, struck through and code, with links as their words.
- * A mark with no partner stays as typed.
+ * The address written out at `at`, as typed, without what follows it in the sentence: a full stop, a mark that closes
+ * emphasis still open (`closes`), or a bracket it didn't open. Brackets it opens and closes are part of it, as in a
+ * wiki page's address, and so is an underscore or star with nothing open to close.
  */
-export function textSpans(text: string): TextSpan[] {
+function urlAt(text: string, at: number, closes: (mark: string) => boolean): string | null {
+  BARE_URL.lastIndex = at;
+  const url = BARE_URL.exec(text)?.[0];
+  if (!url) return null;
+  // How many of each bracket the address holds, counted once and kept as its end is taken off.
+  const count: Record<string, number> = { '(': 0, ')': 0, '[': 0, ']': 0 };
+  for (const ch of url) if (ch in count) count[ch]++;
+  let end = url.length;
+  for (; end; end--) {
+    const last = url[end - 1];
+    const pair = last === ')' ? '(' : last === ']' ? '[' : null;
+    if (pair ? count[pair] < count[last] : URL_TAIL.test(last) || ('*_~'.includes(last) && closes(last))) {
+      if (pair) count[last]--;
+    } else break;
+  }
+  const kept = url.slice(0, end);
+  return /^https?:\/\/[^/?#]/i.test(kept) ? kept : null;
+}
+
+/**
+ * One line or paragraph of model text as spans: bold, italic, struck through and code, and links to web pages, written
+ * as Markdown or as a bare address. A link to anything else is shown as its words. A mark with no partner stays as
+ * typed. `links` is off inside a link's own words, so a link never holds another.
+ */
+export function textSpans(text: string, links = true): TextSpan[] {
   const out: TextSpan[] = [];
   // The marks still waiting for a partner, by character: where each sits in `out`.
   const openers: Record<string, Opener[]> = { '*': [], _: [], '~': [] };
@@ -297,9 +341,21 @@ export function textSpans(text: string): TextSpan[] {
       const link = LINK.exec(text);
       if (link) {
         flush();
-        if (link[1].trim()) out.push(...textSpans(link[1]));
-        else out.push(link[2]);
+        const words = link[1].trim() ? textSpans(link[1], false) : [link[2]];
+        const href = links && c === '[' ? webHref(link[2]) : null;
+        if (href) out.push({ kind: 'link', href, spans: words });
+        else out.push(...words);
         i += link[0].length;
+        continue;
+      }
+    }
+    if (links && (c === 'h' || c === 'H') && !URL_AFTER.test(String.fromCodePoint(text.codePointAt(i - (/[\udc00-\udfff]/.test(text[i - 1] ?? '') ? 2 : 1)) ?? 32))) {
+      const url = urlAt(text, i, (mark) => openers[mark].length > 0);
+      const href = url && webHref(url);
+      if (url && href) {
+        flush();
+        out.push({ kind: 'link', href, spans: [url] });
+        i += url.length;
         continue;
       }
     }

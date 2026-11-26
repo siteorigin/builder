@@ -12,6 +12,7 @@ const strong = (...spans: TextSpan[]): TextSpan => ({ kind: 'strong', spans });
 const em = (...spans: TextSpan[]): TextSpan => ({ kind: 'em', spans });
 const del = (...spans: TextSpan[]): TextSpan => ({ kind: 'del', spans });
 const mono = (text: string): TextSpan => ({ kind: 'code', text });
+const link = (href: string, ...spans: TextSpan[]): TextSpan => ({ kind: 'link', href, spans });
 
 describe('model text blocks', () => {
   it('keeps a plain reply as one paragraph, single line breaks and all', () => {
@@ -194,10 +195,56 @@ describe('model text spans', () => {
     expect(textSpans('` a` `  b  ` `  `')).toEqual([mono(' a'), ' ', mono(' b '), ' ', mono('  ')]);
   });
 
-  it('shows a link or image as its words', () => {
-    expect(textSpans('See [the **docs**](https://example.com/a_(b)) and ![a photo](x.jpg).')).toEqual(['See the ', strong('docs'), ' and a photo.']);
+  it('keeps a link to a web page as a link, its words and its address both (issue #889)', () => {
+    expect(textSpans('See [the **docs**](https://example.com/a_(b)) and ![a photo](x.jpg).')).toEqual(['See ', link('https://example.com/a_(b)', 'the ', strong('docs')), ' and a photo.']);
+    expect(textSpans('[Docs](https://example.com/docs "The docs")')).toEqual([link('https://example.com/docs', 'Docs')]);
+    expect(textSpans('**[Docs](HTTP://Example.com)**')).toEqual([strong(link('http://example.com/', 'Docs'))]);
+    expect(textSpans('[](https://example.com/a)')).toEqual([link('https://example.com/a', 'https://example.com/a')]);
+    // A link's words never hold another link.
+    expect(textSpans('[https://a.example](https://b.example)')).toEqual([link('https://b.example/', 'https://a.example')]);
+  });
+
+  it('shows a link to anything but a web page, and an image, as its words', () => {
     expect(textSpans('[`a[0]`](u) [slug]')).toEqual([mono('a[0]'), ' [slug]']);
     expect(textSpans('[A](u) and [B](v); ![](hero.jpg)')).toEqual(['A and B; hero.jpg']);
+    expect(textSpans('[run](javascript:alert(1)) [file](file:///etc/passwd) [mail](mailto:a@b.example) [me](https://user:pw@example.com)')).toEqual(['run file mail me']);
+    expect(textSpans('![logo](https://example.com/logo.png)')).toEqual(['logo']);
+  });
+
+  it('makes an address written out a link, leaving the punctuation after it to the sentence (issue #889)', () => {
+    expect(textSpans('Go to https://example.com/pricing.')).toEqual(['Go to ', link('https://example.com/pricing', 'https://example.com/pricing'), '.']);
+    expect(textSpans('(see https://en.wikipedia.org/wiki/Foo_(bar)), then')).toEqual(['(see ', link('https://en.wikipedia.org/wiki/Foo_(bar)', 'https://en.wikipedia.org/wiki/Foo_(bar)'), '), then']);
+    expect(textSpans('**https://example.com/a_b_c**!')).toEqual([strong(link('https://example.com/a_b_c', 'https://example.com/a_b_c')), '!']);
+    expect(textSpans('Try http://localhost:5173/?q=a*b, or not')).toEqual(['Try ', link('http://localhost:5173/?q=a*b', 'http://localhost:5173/?q=a*b'), ', or not']);
+    expect(textSpans('"https://example.com"')).toEqual(['"', link('https://example.com/', 'https://example.com'), '"']);
+    expect(textSpans('“https://example.com/a”, and Source:https://example.com/b')).toEqual(['“', link('https://example.com/a', 'https://example.com/a'), '”, and Source:', link('https://example.com/b', 'https://example.com/b')]);
+    expect(textSpans("See https://example.com/O'Reilly and 'https://example.com/a’s', ‘https://example.com/b’.")).toEqual([
+      'See ',
+      link("https://example.com/O'Reilly", "https://example.com/O'Reilly"),
+      " and '",
+      link('https://example.com/a%E2%80%99s', 'https://example.com/a’s'),
+      "', ‘",
+      link('https://example.com/b', 'https://example.com/b'),
+      '’.'
+    ]);
+    // A mark closes emphasis only when one is open; otherwise it is part of the address.
+    expect(textSpans('**https://example.com/docs**,” and https://example.com/user_ or _https://example.com/x_')).toEqual([
+      strong(link('https://example.com/docs', 'https://example.com/docs')),
+      ',” and ',
+      link('https://example.com/user_', 'https://example.com/user_'),
+      ' or ',
+      em(link('https://example.com/x', 'https://example.com/x'))
+    ]);
+    expect(textSpans('https://example.com/a\\`b` and [x](https://example.com/a)]')).toEqual([link('https://example.com/a', 'https://example.com/a'), '`b` and ', link('https://example.com/a', 'x'), ']']);
+  });
+
+  it('leaves an address in code, in a word or without a host as typed', () => {
+    expect(textSpans('Run `curl https://example.com` first')).toEqual(['Run ', mono('curl https://example.com'), ' first']);
+    expect(textSpans('xhttps://example.com and https:// and https://user:pw@example.com and git+https://example.com')).toEqual(['xhttps://example.com and https:// and https://user:pw@example.com and git+https://example.com']);
+    expect(textSpans('𝒳https://example.com')).toEqual(['𝒳https://example.com']);
+    // Too long to open once the browser writes it out in full, so not a link at all.
+    expect(textSpans(`[long](https://example.com/${'é'.repeat(350)})`)).toEqual(['long']);
+    expect(textBlocks('```\nhttps://example.com\n```')).toEqual([code('https://example.com')]);
   });
 
   it('leaves marks that are not emphasis as typed', () => {
@@ -230,7 +277,7 @@ describe('model text spans', () => {
 
   it('reads a long run of unpartnered marks quickly', () => {
     const started = performance.now();
-    for (const text of ['*a '.repeat(20_000), ' a_'.repeat(20_000), '['.repeat(20_000), '`a``b'.repeat(10_000), '[a]('.repeat(5_000), `\` ${'a '.repeat(50_000)}b\``, `a${'__b'.repeat(30_000)}`]) textSpans(text);
+    for (const text of ['*a '.repeat(20_000), ' a_'.repeat(20_000), '['.repeat(20_000), '`a``b'.repeat(10_000), '[a]('.repeat(5_000), `https://example.com/${')'.repeat(2_000)} `.repeat(30), `https://a.example/${'.)'.repeat(2_000)}`, `\` ${'a '.repeat(50_000)}b\``, `a${'__b'.repeat(30_000)}`]) textSpans(text);
     textBlocks(`| ${' '.repeat(50_000)}x\n|${' '.repeat(50_000)}x`);
     expect(performance.now() - started).toBeLessThan(15_000);
   }, 30_000);
