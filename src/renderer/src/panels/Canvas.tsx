@@ -11,7 +11,7 @@ import { clickTargetIn, treeFor } from '../lib/model';
 import { editLabel } from '../lib/edit-label';
 import type { ElementRef, OwnerRef, ProjectState } from '@shared/types';
 import { refKey, sameRef } from '@shared/types';
-import { aiActivity, api, commitDraft, confirmDialog, errorText, getState, markDraft, saveLocal, setState, setViewport, stepHistory, toast, useStore, type Rect } from '../store';
+import { aiActivity, api, commitDraft, errorText, getState, markDraft, saveLocal, setState, setViewport, stepHistory, toast, useStore, type Rect } from '../store';
 import { appliedSteps, errorComponent, revertStep, stillNewest } from '../lib/preview-error';
 import { acceptMessage, newSessionId, postToFrame, staleFor, viewAfter, type BridgeMessage, type FrameView } from '../lib/bridge';
 import { chainOf, descOrNull, measuredRects, pointedAt, rectList, slotBoxes, spaceSizes, spacingOf, type FrameSpacing, type SlotBox } from '../lib/payload';
@@ -28,6 +28,7 @@ import { inlineLinkProblem } from '../lib/link-problems';
 import { revealTarget, sameTarget, type RevealTarget } from '../lib/reveal';
 import { ARRIVAL_MS, arrivalShown, takeArrival } from '../lib/arrival';
 import { externalLink } from '@shared/links';
+import { confirmOpenExternal } from '../lib/open-external';
 import { richTextToMarkdown } from '@shared/richtext';
 import { hasDarkPalette } from '@shared/color-scheme';
 import { repeatAsListTarget } from '../lib/repeat-as-list';
@@ -1093,21 +1094,7 @@ export function Canvas() {
             toast('This link can’t be opened from the preview.', 'error');
             break;
           }
-          const ask =
-            link.kind === 'email'
-              ? { title: 'Write an email?', confirmLabel: 'Open email app' }
-              : link.kind === 'phone'
-                ? { title: 'Call this number?', confirmLabel: 'Open phone app' }
-                : { title: 'Open this link in your browser?', confirmLabel: 'Open in browser' };
-          void confirmDialog({
-            ...ask,
-            // The button opens the phone app; it never places the call itself.
-            title: link.kind === 'phone' ? 'Open this number in your phone app?' : ask.title,
-            body: link.kind === 'email' ? 'A new email to this address opens in your email app.' : link.kind === 'phone' ? 'Your phone app opens, ready to call this number.' : 'It opens in your web browser, outside SiteOrigin Builder.',
-            subject: link.target,
-            subjectKind: link.kind,
-            icon: link.kind
-          }).then((ok) => ok === true && void api.app.openExternal(link.href));
+          confirmOpenExternal(link);
           break;
         }
         case 'runtimeError': {

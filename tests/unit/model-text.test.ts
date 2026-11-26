@@ -12,6 +12,7 @@ const strong = (...spans: TextSpan[]): TextSpan => ({ kind: 'strong', spans });
 const em = (...spans: TextSpan[]): TextSpan => ({ kind: 'em', spans });
 const del = (...spans: TextSpan[]): TextSpan => ({ kind: 'del', spans });
 const mono = (text: string): TextSpan => ({ kind: 'code', text });
+const link = (href: string, ...spans: TextSpan[]): TextSpan => ({ kind: 'link', href, spans });
 
 describe('model text blocks', () => {
   it('keeps a plain reply as one paragraph, single line breaks and all', () => {
@@ -194,10 +195,34 @@ describe('model text spans', () => {
     expect(textSpans('` a` `  b  ` `  `')).toEqual([mono(' a'), ' ', mono(' b '), ' ', mono('  ')]);
   });
 
-  it('shows a link or image as its words', () => {
-    expect(textSpans('See [the **docs**](https://example.com/a_(b)) and ![a photo](x.jpg).')).toEqual(['See the ', strong('docs'), ' and a photo.']);
+  it('keeps a link to a web page as a link, its words and its address both (issue #889)', () => {
+    expect(textSpans('See [the **docs**](https://example.com/a_(b)) and ![a photo](x.jpg).')).toEqual(['See ', link('https://example.com/a_(b)', 'the ', strong('docs')), ' and a photo.']);
+    expect(textSpans('[Docs](https://example.com/docs "The docs")')).toEqual([link('https://example.com/docs', 'Docs')]);
+    expect(textSpans('**[Docs](HTTP://Example.com)**')).toEqual([strong(link('http://example.com/', 'Docs'))]);
+    expect(textSpans('[](https://example.com/a)')).toEqual([link('https://example.com/a', 'https://example.com/a')]);
+    // A link's words never hold another link.
+    expect(textSpans('[https://a.example](https://b.example)')).toEqual([link('https://b.example/', 'https://a.example')]);
+  });
+
+  it('shows a link to anything but a web page, and an image, as its words', () => {
     expect(textSpans('[`a[0]`](u) [slug]')).toEqual([mono('a[0]'), ' [slug]']);
     expect(textSpans('[A](u) and [B](v); ![](hero.jpg)')).toEqual(['A and B; hero.jpg']);
+    expect(textSpans('[run](javascript:alert(1)) [file](file:///etc/passwd) [mail](mailto:a@b.example) [me](https://user:pw@example.com)')).toEqual(['run file mail me']);
+    expect(textSpans('![logo](https://example.com/logo.png)')).toEqual(['logo']);
+  });
+
+  it('makes an address written out a link, leaving the punctuation after it to the sentence (issue #889)', () => {
+    expect(textSpans('Go to https://example.com/pricing.')).toEqual(['Go to ', link('https://example.com/pricing', 'https://example.com/pricing'), '.']);
+    expect(textSpans('(see https://en.wikipedia.org/wiki/Foo_(bar)), then')).toEqual(['(see ', link('https://en.wikipedia.org/wiki/Foo_(bar)', 'https://en.wikipedia.org/wiki/Foo_(bar)'), '), then']);
+    expect(textSpans('**https://example.com/a_b_c**!')).toEqual([strong(link('https://example.com/a_b_c', 'https://example.com/a_b_c')), '!']);
+    expect(textSpans('Try http://localhost:5173/?q=a*b, or not')).toEqual(['Try ', link('http://localhost:5173/?q=a*b', 'http://localhost:5173/?q=a*b'), ', or not']);
+    expect(textSpans('"https://example.com"')).toEqual(['"', link('https://example.com/', 'https://example.com'), '"']);
+  });
+
+  it('leaves an address in code, in a word or without a host as typed', () => {
+    expect(textSpans('Run `curl https://example.com` first')).toEqual(['Run ', mono('curl https://example.com'), ' first']);
+    expect(textSpans('xhttps://example.com and https:// and https://user:pw@example.com')).toEqual(['xhttps://example.com and https:// and https://user:pw@example.com']);
+    expect(textBlocks('```\nhttps://example.com\n```')).toEqual([code('https://example.com')]);
   });
 
   it('leaves marks that are not emphasis as typed', () => {

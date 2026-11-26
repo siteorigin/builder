@@ -1,4 +1,4 @@
-import { useEffect, useId, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from 'react';
+import { useEffect, useId, useLayoutEffect, useMemo, useRef, useState, type MouseEvent, type ReactNode } from 'react';
 import { createPortal } from 'react-dom';
 import { ArrowDown, ArrowUp, BookOpen, Check, ChevronDown, CircleAlert, CircleCheck, CircleDashed, CircleHelp, CircleStop, Component, Cpu, FileText, Globe, History, ImagePlus, Info, KeyRound, MessageCircleQuestionMark, MousePointerClick, Pencil, Play, Plus, RefreshCw, RotateCcw, Search, Settings2, SlidersHorizontal, Sparkles, Square, Trash2, TriangleAlert } from 'lucide-react';
 import { turnQuestions, type ChatActivity, type ChatChange, type ChatContext, type ChatEditScope, type ChatImageRef, type ChatMessage, type ConversationSummary, type FieldLocation } from '@shared/api';
@@ -24,19 +24,44 @@ import { summaryNow, turnState } from '@shared/turns';
 import { chatBusy, composerAction, imageLabels, isPaused, offeredImages, questionHint, shownQuestions, waitingQuestion, type WaitingQuestion } from '../lib/chatQuestions';
 import { isImeComposing } from '../lib/ime';
 import { textBlocks, textSpans, type TextBlock, type TextSpan } from '../lib/model-text';
+import { externalLink } from '@shared/links';
+import { confirmOpenExternal } from '../lib/open-external';
 import { Spinner, useMenu } from '../components/ui';
 import { ImageChips, ImageChoices } from '../components/ChatImages';
 import { ConversationsModal } from './Conversations';
 import { activityHint } from '../lib/conversations';
 import './Chat.css';
 
-/** The spans of a line of model text: bold, italic, struck through and code, all as plain React text. */
+/**
+ * A link in model text: its words, with the address it goes to on hover. It never navigates the editor; a click (also
+ * a middle click) shows the address in the confirmation, and the page opens in the browser from there.
+ */
+function MdLink({ href, children }: { href: string; children: ReactNode }) {
+  const open = (e: MouseEvent) => {
+    e.preventDefault();
+    const link = externalLink(href);
+    if (link) confirmOpenExternal(link);
+  };
+  return (
+    <a className="md-link" href={href} title={href} onClick={open} onAuxClick={(e) => e.button === 1 && open(e)}>
+      {children}
+    </a>
+  );
+}
+
+/** The spans of a line of model text: bold, italic, struck through, code and links, all as plain React text. */
 function Spans({ spans }: { spans: TextSpan[] }) {
   return (
     <>
       {spans.map((s, i) => {
         if (typeof s === 'string') return s;
         if (s.kind === 'code') return <code key={i}>{s.text}</code>;
+        if (s.kind === 'link')
+          return (
+            <MdLink key={i} href={s.href}>
+              <Spans spans={s.spans} />
+            </MdLink>
+          );
         const Tag = s.kind;
         return (
           <Tag key={i}>
@@ -48,7 +73,7 @@ function Spans({ spans }: { spans: TextSpan[] }) {
   );
 }
 
-/** Minimal, safe inline formatting for model text (textSpans): never HTML, and links shown as their words. */
+/** Minimal, safe inline formatting for model text (textSpans): never HTML, and only web pages as links. */
 function Inline({ text }: { text: string }) {
   return <Spans spans={textSpans(text)} />;
 }
