@@ -195,7 +195,7 @@ export function QuickInsert({ title, search, items, anchor, trigger, under, empt
               </>
             ) : (
               <>
-                <span>Insert has the full catalogue for other places on the page.</span>
+                <span>Insert has the full catalog for other places on the page.</span>
                 <button ref={insertRef} type="button" className="btn btn-sm" onClick={toInsert}>
                   Open Insert
                 </button>

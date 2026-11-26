@@ -223,10 +223,17 @@ export const open: Scenario = {
     const runtime = span('controller.startRuntime');
     m.span('open.controller', controllerOpen);
     m.span('open.session', session);
-    for (const phase of ['lock', 'recover', 'read', 'localState', 'validate', 'sweep']) m.span(`open.session.${phase}`, span(`session.open.${phase}`));
+    for (const phase of ['formatCheck', 'lock', 'recover', 'read', 'localState', 'validate', 'sweep']) m.span(`open.session.${phase}`, span(`session.open.${phase}`));
     // The open's own publication runs inside session.open.
     const publish = m.need('session.publish', trace.first('session.publish', inProc('main'), at, session?.t));
     m.span('open.publish', publish);
+    // Both of its generations, the website's and the preview's: a sum missing one would look faster than it is.
+    const variant = (v: string) => trace.all('session.generate', (r) => r.proc === 'main' && r.attrs?.variant === v, at, session?.t);
+    const clean = variant('clean');
+    const dev = variant('dev');
+    if (!clean.length) m.need('session.generate (clean)', undefined);
+    if (!dev.length) m.need('session.generate (dev)', undefined);
+    if (clean.length && dev.length) m.ms('open.generate', [...clean, ...dev].reduce((n, r) => n + (r.ms ?? NaN), 0));
     m.span('open.attach', attach);
     m.span('open.assetCheck', span('controller.assetCheck'));
     m.span('open.startRuntime', runtime);
@@ -237,6 +244,7 @@ export const open: Scenario = {
     m.since('open.canvasReady', req, ready);
     const sum = (name: string) => [session, attach, runtime].reduce((n, r) => n + delta(r, name), 0);
     m.count('open.filesRead', sum('files.read'));
+    m.count('open.docsRead', sum('docs.read'));
     m.count('open.filesHashed', sum('files.hashed'));
     m.count('open.durableWrites', sum('fs.durableWrites'));
     m.count('open.fsyncs', sum('fs.fsyncs'));

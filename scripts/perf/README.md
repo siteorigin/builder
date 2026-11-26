@@ -68,9 +68,10 @@ show; the longest main-process stall.
 **`open`**: open the fixture from its card on Welcome, to the canvas bridge reporting the home page ready to edit.
 Checks: the project opened writable, from the fixture's folder, with its pages, posts, images, project components and
 home page, and the home hero's heading in the preview. Times from `open.requested` (the click): `controller` (the open
-call), `session` and its phases `session.lock`, `.recover`, `.read`, `.localState`, `.validate`, `.sweep`, `publish`
-(generated files checked and written), `attach`, `assetCheck`, `startRuntime` (spans); `firstSnapshotSent`,
-`editorShown`, `runtimeForked`, `runtimeReady` and `canvasReady` (the headline). Counts: files read and hashed, durable
+call), `session` and its phases `session.formatCheck` (the scan for a newer format), `.lock`, `.recover`, `.read`,
+`.localState`, `.validate`, `.sweep`, `publish` (generated files checked and written), `generate` (its two generator
+runs), `attach`, `assetCheck`, `startRuntime` (spans); `firstSnapshotSent`, `editorShown`, `runtimeForked`,
+`runtimeReady` and `canvasReady` (the headline). Counts: files read and hashed, document files read, durable
 writes and fsyncs (session open, attach and preview start), the publication's files read, hashed and written,
 `project:changed` sends and their bytes until the canvas is ready, `reloadFromDisk` calls, React commits; the longest
 main-process stall.
@@ -178,14 +179,15 @@ them over IPC). Unset, no file is opened, no IPC channel is registered and every
 - `c` on a mark: every counter of its process, cumulative. `dc` on a span: what each counter gained while it ran.
 
 Counters: `fs.writes`, `fs.durableWrites`, `fs.fsyncs` (`src/main/project/fsutil.ts`), `files.read`, `files.hashed`
-(project, generated and theme pack files), `export.filesRead`, `export.bytesRead` (what an export reads in the main
-process, `src/main/export.ts`), `ipc.projectChanged.sends`, `ipc.projectChanged.bytes` (as IPC serializes
-the snapshot), `ipc.aiEvent.sends`, `ipc.aiEvent.bytes` and `ipc.aiEvent.unsized` (the assistant's events, sized the
-same way), `session.reloadFromDisk`, `main.stalls` (main), and `react.commits`, `react.renders` (components rendered,
-counted from each commit's fibers), per panel marked with `timedPanel` (`src/renderer/src/lib/perf-panels.tsx`)
-`panel.<id>.renders` and `panel.<id>.renderMs` (the time between two probes React renders before and after the panel),
-`chat.messageRenders` (a Chat message rendered) and `chat.textParses` (model text read into blocks) (renderer). The main
-process also
+(project, generated and theme pack files), `docs.read` (canonical document files read from the project folder, also
+counted in `files.read`; `src/main/project/documents.ts`), `export.filesRead`, `export.bytesRead` (what an export reads
+in the main process, `src/main/export.ts`), `ipc.projectChanged.sends`, `ipc.projectChanged.bytes` (as
+IPC serializes the snapshot), `ipc.aiEvent.sends`, `ipc.aiEvent.bytes` and `ipc.aiEvent.unsized` (the assistant's
+events, sized the same way), `session.reloadFromDisk`, `main.stalls` (main), and `react.commits`, `react.renders`
+(components rendered, counted from each commit's fibers), per panel marked with `timedPanel`
+(`src/renderer/src/lib/perf-panels.tsx`) `panel.<id>.renders` and `panel.<id>.renderMs` (the time between two probes
+React renders before and after the panel), `chat.messageRenders` (a Chat message rendered) and `chat.textParses` (model
+text read into blocks) (renderer). The main process also
 watches its event loop every 20 ms and records each time the watch ran 50 ms or more late as a `main.stall` span of that
 lateness (a block shorter than about 70 ms can go unseen).
 

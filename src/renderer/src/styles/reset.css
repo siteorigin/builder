@@ -9,8 +9,10 @@
      down. A portal mounted on body must stay fixed or top-layer for the same reason. */
   #root { position: relative; overflow: clip; display: flow-root; }
   /* A failure screen (FailureScreen.tsx) is the one view taller than its window can be (a long list of themes that
-     failed, a short window): it scrolls inside #root, so every reason stays reachable and the document never grows. */
-  #root:has(> .fatal) { overflow: auto; }
+     failed, a short window): it scrolls inside #root, so every reason stays reachable and the document never grows.
+     #root scrolls by whole pixels while lines of text are fractions of one tall (13px at 1.45), so a reason scrolled
+     into view could stop a fraction of a pixel past the window's edge: a pixel of scroll padding keeps it inside. */
+  #root:has(> .fatal) { overflow: auto; scroll-padding-block-end: 1px; }
   body {
     font-family: var(--font);
     font-size: 13px;

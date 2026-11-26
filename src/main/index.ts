@@ -1193,7 +1193,12 @@ app.whenReady().then(async () => {
   electronSession.defaultSession.setPermissionRequestHandler((_wc, permission, cb) => cb(permission === 'clipboard-sanitized-write'));
   electronSession.defaultSession.on('will-download', (e) => e.preventDefault());
   // The website's icons are drawn in the media worker, from before any project opens.
-  setSiteIconRenderer(renderSiteIconsInWorker);
+  // Named by this build on this system: icons it drew for a project are taken as they are when that project is opened
+  // again. The record of them is the app's own, in its profile.
+  setSiteIconRenderer(renderSiteIconsInWorker, {
+    id: `${app.getVersion()} ${BUILD.commit ?? 'unbundled'} ${BUILD.builtAt ?? ''} ${process.platform} ${release()}`,
+    records: join(app.getPath('userData'), 'site-icons')
+  });
   // Theme packs are verified once the first window is loading (createWindow): every request waits for them (handle()).
   registerIpc();
   developerModeOn = (await loadSettings()).settings.developerMode;

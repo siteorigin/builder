@@ -113,14 +113,17 @@ describe('open metrics', () => {
         r('scenario.start', 900, { attrs: { scenario: 'open' } }),
         m('scenario.start', 900, { attrs: { scenario: 'open' } }),
         r('open.requested', 1000, { c: { 'react.commits': 6 } }),
+        span('session.open.formatCheck', 1004, 3, { dc: { 'files.read': 4, 'docs.read': 4 } }),
         span('session.open.lock', 1010, 5),
         span('session.open.recover', 1012, 1),
         span('session.open.read', 1030, 15),
         span('session.open.localState', 1032, 1),
         span('session.open.validate', 1050, 16),
+        span('session.generate', 1100, 30, { attrs: { variant: 'clean' } }),
+        span('session.generate', 1125, 25, { attrs: { variant: 'dev' } }),
         span('session.publish', 1600, 540, { dc: { 'files.read': 100, 'files.hashed': 200, 'fs.writes': 2 } }),
         span('session.open.sweep', 1602, 1),
-        span('session.open', 1603, 600, { dc: { 'files.read': 170, 'files.hashed': 210, 'fs.durableWrites': 1, 'fs.fsyncs': 4 } }),
+        span('session.open', 1603, 600, { dc: { 'files.read': 170, 'docs.read': 12, 'files.hashed': 210, 'fs.durableWrites': 1, 'fs.fsyncs': 4 } }),
         span('controller.open', 1690, 680),
         m('controller.snapshotSent', 1700, { attrs: { revision: 0, bytes: 300 } }),
         span('controller.assetCheck', 1701, 1),
@@ -130,6 +133,8 @@ describe('open metrics', () => {
         m('runtime.forked', 1740),
         m('runtime.ready', 2000),
         span('controller.startRuntime', 2001, 290, { dc: { 'files.read': 4, 'files.hashed': 1 } }),
+        // A later publication's generation (the site's icons, say): not the open's.
+        span('session.generate', 2050, 40, { attrs: { variant: 'clean' } }),
         m('controller.snapshotSent', 2002, { attrs: { revision: 0, bytes: 200 } }),
         // Not the home page ready to edit: Preview mode, a component preview, another page.
         r('canvas.ready', 2100, { attrs: { revision: 0, path: '/', mode: 'preview', studio: false } }),
@@ -150,7 +155,8 @@ describe('open metrics', () => {
     const v = (k: string) => got.metrics[k]?.value;
     expect(v('open.canvasReady')).toBe(1500);
     expect([v('open.controller'), v('open.session'), v('open.publish'), v('open.attach'), v('open.startRuntime')]).toEqual([680, 600, 540, 15, 290]);
-    expect([v('open.session.lock'), v('open.session.read'), v('open.session.validate'), v('open.session.sweep')]).toEqual([5, 15, 16, 1]);
+    expect([v('open.session.formatCheck'), v('open.session.lock'), v('open.session.read'), v('open.session.validate'), v('open.session.sweep')]).toEqual([3, 5, 15, 16, 1]);
+    expect([v('open.generate'), v('open.docsRead')]).toEqual([55, 12]);
     expect([v('open.firstSnapshotSent'), v('open.editorShown'), v('open.runtimeForked'), v('open.runtimeReady')]).toEqual([700, 730, 740, 1000]);
     expect([v('open.filesRead'), v('open.filesHashed'), v('open.durableWrites'), v('open.fsyncs')]).toEqual([177, 211, 2, 6]);
     expect([v('open.publishFilesRead'), v('open.publishFilesHashed'), v('open.publishFilesWritten')]).toEqual([100, 200, 2]);
@@ -163,6 +169,10 @@ describe('open metrics', () => {
     expect(open.measure(trace((x) => x.name === 'canvas.ready' && x.t === 2500), facts).metrics['open.canvasReady']).toBeUndefined();
     expect(open.measure(trace((x) => x.name === 'scenario.end'), facts).missing).toEqual(['scenario.end (main)']);
     expect(open.measure(trace((x) => x.name === 'session.publish'), facts).missing).toEqual(['session.publish']);
+    expect(open.measure(trace((x) => x.name === 'session.open.formatCheck'), facts).missing).toEqual(['session.open.formatCheck']);
+    const noDev = open.measure(trace((x) => x.name === 'session.generate' && x.attrs?.variant === 'dev'), facts);
+    expect(noDev.missing).toEqual(['session.generate (dev)']);
+    expect(noDev.metrics['open.generate']).toBeUndefined();
   });
 });
 

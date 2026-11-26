@@ -217,18 +217,22 @@ export async function renderSiteIcons(buf: Buffer, mime: string, icons: IconSpec
       .resize(size, size, { fit: 'contain', position: 'centre', background: background ?? clear });
     return (background ? img.flatten({ background }) : img).toColourspace('srgb');
   };
-  const out: Buffer[] = [];
-  for (const icon of icons) {
-    if (!icon.ico) {
-      out.push(await square(icon.size, icon.background).png().toBuffer());
-      continue;
-    }
-    const images: Array<{ size: number; png: Buffer }> = [];
-    // The PNGs in an ICO are 32-bit RGBA (Windows reads no others), whatever channels the picture has.
-    for (const size of icon.ico) images.push({ size, png: await square(size, icon.background).ensureAlpha().png().toBuffer() });
-    out.push(packIco(images));
-  }
-  return out;
+  // The PNGs in an ICO are 32-bit RGBA (Windows reads no others), whatever channels the picture has.
+  const draw = (size: number, icon: IconSpec) => (icon.ico ? square(size, icon.background).ensureAlpha() : square(size, icon.background)).png().toBuffer();
+  // Every image is drawn from the picture on its own, so the bytes are the same however many are drawn at a time. An
+  // SVG (the monogram, a logo) is drawn at the largest icon's density for each of them: all at once, the set takes as
+  // long as its slowest image rather than all of them together. A photo is decoded once per image, so one at a time.
+  const at = density ? <T>(items: readonly T[], fn: (item: T) => Promise<Buffer>) => Promise.all(items.map(fn)) : async <T>(items: readonly T[], fn: (item: T) => Promise<Buffer>) => {
+    const out: Buffer[] = [];
+    for (const item of items) out.push(await fn(item));
+    return out;
+  };
+  return at(icons, async (icon) => {
+    if (!icon.ico) return draw(icon.size, icon);
+    const sizes = icon.ico;
+    const pngs = await at(sizes, (size) => draw(size, icon));
+    return packIco(sizes.map((size, n) => ({ size, png: pngs[n] })));
+  });
 }
 
 /** An ICO file of square PNG images of at most 256 pixels: a header, one directory entry for each, then the images. */
