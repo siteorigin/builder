@@ -1,7 +1,7 @@
 /**
- * The theme packs this run of the app uses: loaded once at startup, before any project opens or the editor
- * window is created, from the releases in the app's resources and the person's `userData/packs` folder. Adding,
- * changing or removing a pack takes effect at the next start.
+ * The theme packs this run of the app uses: loaded once at startup, while the first editor window loads and before
+ * anything can open a project or read the catalogue (packs/gate.ts), from the releases in the app's resources and the
+ * person's `userData/packs` folder. Adding, changing or removing a pack takes effect at the next start.
  */
 import { join } from 'node:path';
 import { registerPacks } from '@catalogue/index';
