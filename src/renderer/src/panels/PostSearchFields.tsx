@@ -38,7 +38,9 @@ export function PostSearchFields({
   const seo: EntrySeo = entry.seo && typeof entry.seo === 'object' ? entry.seo : {};
   const defaultTitle = `${entry.title} · ${state.site.name}`;
   const base = publicUrl(state.site);
-  const ownUrl = base ? base + routeUrl(entryRoute(collection, entry)) : null;
+  // An entry with no page of its own (see pagesPrefix) has no address of its own either.
+  const route = entryRoute(collection, entry);
+  const ownUrl = base && route !== undefined ? base + routeUrl(route) : null;
   const published = entry.draft === false;
   const featured = entry.featuredImage && state.assets.assets[entry.featuredImage]?.kind === 'image';
   const inheritedImage = featured ? 'The featured image' : state.site.socialImage ? 'The site’s sharing image' : 'None';
