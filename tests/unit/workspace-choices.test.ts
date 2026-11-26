@@ -204,3 +204,132 @@ describe('Save', () => {
     expect(pending.isSettling()).toBe(false);
   });
 });
+
+// Loading the editor's actions hands the store the way to open a page, as the editor does.
+await load('../../src/renderer/src/lib/actions');
+
+describe('an Undo or Redo of a change on another page (#903)', () => {
+  const CONTACT_DOC = 'siteorigin/pages/contact.json';
+  const pages = (contact: string | null) => ({ home: { id: 'home', title: 'Home', rootIds: [], nodes: {} }, ...(contact ? { contact: { id: 'contact', title: contact, rootIds: [], nodes: {} } } : {}) });
+  const show = (workspaceKey: string, revision: number, contact: string | null = 'Contact') =>
+    store.setState({ snapshot: { workspaceKey, revision, state: { pages: pages(contact) } } as unknown as ProjectSnapshot } as Partial<EditorState>);
+  const at = (place: Record<string, unknown>) => store.setState({ pageId: 'home', definitionMode: null, templateMode: null, leftTab: 'pages', postView: 'write', mode: 'edit', post: null, modal: null, ...place } as Partial<EditorState>);
+  const view = () => store.getState() as unknown as { pageId: string | null; modal: { kind: string } | null; toasts: Array<{ text: string; action?: { label: string; run: () => void } }> };
+  const landed = async (r: ApplyResult, next: () => void) => {
+    undos.at(-1)!(r);
+    await tick();
+    next();
+    await tick();
+  };
+
+  it('says what it undid and where while Home is shown, and Show Contact opens that page', async () => {
+    open('opening#a');
+    show('opening#a', 4);
+    at({ modal: { kind: 'history' } });
+    store.projectHistory('undo');
+    await landed({ ok: true, revision: 5, changed: [CONTACT_DOC], label: 'Duplicate Split hero on Contact' }, () => show('opening#a', 5));
+    // The label already says where: it is not said twice. Home stays shown until the author asks.
+    expect(notices()).toEqual(['Undid “Duplicate Split hero on Contact”.']);
+    expect(view().pageId).toBe('home');
+    const action = view().toasts[0].action!;
+    expect(action.label).toBe('Show Contact');
+    action.run();
+    expect(view().pageId).toBe('contact');
+    // History was in front of the page, so it is put away for the page to show.
+    expect(view().modal).toBeNull();
+  });
+
+  it('names the page a label does not, for a Redo too, and says nothing when the change is on the page shown', async () => {
+    open('opening#a');
+    show('opening#a', 4);
+    at({});
+    store.projectHistory('redo');
+    await landed({ ok: true, revision: 5, changed: [CONTACT_DOC, 'siteorigin/site.json'], label: 'Change link to Contact' }, () => show('opening#a', 5));
+    expect(notices()).toEqual(['Redid “Change link to Contact” on Contact.']);
+
+    // A step that changed Home as well as Contact may look no different on Home: Contact is still named.
+    open('opening#a');
+    show('opening#a', 4);
+    at({});
+    store.projectHistory('undo');
+    await landed({ ok: true, revision: 5, changed: ['siteorigin/pages/home.json', CONTACT_DOC], label: 'Delete page Contact' }, () => show('opening#a', 5));
+    expect(notices()).toEqual(['Undid “Delete page Contact” on Contact.']);
+
+    open('opening#a');
+    show('opening#a', 5);
+    at({ pageId: 'contact' });
+    store.projectHistory('undo');
+    await landed({ ok: true, revision: 6, changed: [CONTACT_DOC], label: 'Duplicate Split hero on Contact' }, () => show('opening#a', 6));
+    expect(notices()).toEqual([]);
+  });
+
+  it('speaks up when Contact is open but a component, a layout or a post is in front of it', async () => {
+    for (const place of [{ definitionMode: { definitionId: 'card' } }, { templateMode: { collectionId: 'posts' } }, { leftTab: 'posts', post: { collectionId: 'posts', entryId: 'p1' } }, { leftTab: 'seo' }]) {
+      open('opening#a');
+      show('opening#a', 4);
+      at({ pageId: 'contact', ...place });
+      store.projectHistory('undo');
+      await landed({ ok: true, revision: 5, changed: [CONTACT_DOC], label: 'Duplicate Split hero on Contact' }, () => show('opening#a', 5));
+      expect(notices()).toEqual(['Undid “Duplicate Split hero on Contact”.']);
+    }
+  });
+
+  it('names a page the step removed without offering it, and says nothing about a step that changed no page', async () => {
+    open('opening#a');
+    show('opening#a', 4);
+    at({});
+    store.projectHistory('undo');
+    await landed({ ok: true, revision: 5, changed: [CONTACT_DOC, 'siteorigin/site.json'], label: 'Add page' }, () => show('opening#a', 5, null));
+    expect(notices()).toEqual(['Undid “Add page” on Contact.']);
+    expect(view().toasts[0].action).toBeUndefined();
+
+    open('opening#a');
+    show('opening#a', 5);
+    at({});
+    store.projectHistory('undo');
+    await landed({ ok: true, revision: 6, changed: ['siteorigin/site.json'], label: 'Change site name' }, () => show('opening#a', 6));
+    expect(notices()).toEqual([]);
+  });
+
+  it('says where a notification’s Undo undid its change, by History’s name for it, once another page is shown', async () => {
+    open('opening#a');
+    store.setState({ snapshot: { workspaceKey: 'opening#a', revision: 4, state: { pages: pages('Contact') }, history: { entries: [{ id: 'h_delete', label: 'Delete Gallery on Contact' }] } } as unknown as ProjectSnapshot });
+    at({});
+    store.undoAction({ entryId: 'h_delete', revision: 4, workspaceKey: 'opening#a' })!.run();
+    await landed({ ok: true, revision: 5, changed: [CONTACT_DOC] }, () => show('opening#a', 5));
+    expect(notices()).toEqual(['Undid “Delete Gallery on Contact”.']);
+  });
+
+  it('says nothing about a step the editor has not shown in time, judged on a project that has not heard of it', async () => {
+    vi.useFakeTimers();
+    try {
+      open('opening#a');
+      show('opening#a', 4);
+      at({});
+      store.projectHistory('undo');
+      undos.at(-1)!({ ok: true, revision: 5, changed: [CONTACT_DOC], label: 'Duplicate Split hero on Contact' });
+      await vi.advanceTimersByTimeAsync(3100);
+      expect(notices()).toEqual([]);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('says nothing once another project is open, and withdraws Show for a page gone since', async () => {
+    open('opening#a');
+    show('opening#a', 4);
+    at({});
+    store.projectHistory('undo');
+    await landed({ ok: true, revision: 5, changed: [CONTACT_DOC], label: 'Duplicate Split hero on Contact' }, () => show('opening#b', 9));
+    expect(notices()).toEqual([]);
+
+    open('opening#a');
+    show('opening#a', 5);
+    at({});
+    store.projectHistory('undo');
+    await landed({ ok: true, revision: 6, changed: [CONTACT_DOC], label: 'Duplicate Split hero on Contact' }, () => show('opening#a', 6));
+    show('opening#a', 7, null);
+    view().toasts[0].action!.run();
+    expect(view().pageId).toBe('home');
+  });
+});

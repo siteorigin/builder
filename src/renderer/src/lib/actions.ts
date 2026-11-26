@@ -8,7 +8,7 @@ import type { ProjectSnapshot } from '@shared/api';
 import { pageShowing } from '@shared/page-shell';
 import { applyOperations, ungroupRefusal } from '@engine/apply';
 import { missingSectionLinks } from '@generator/checks';
-import { api, applyOps, commitOps, confirmDialog, getState, inspectorFocusRequest, saveLocal, setState, toast, undoAction, useStore, type ConfirmDetail, type State } from '../store';
+import { api, applyOps, commitOps, confirmDialog, setPageOpener, getState, inspectorFocusRequest, saveLocal, setState, toast, undoAction, useStore, type ConfirmDetail, type State } from '../store';
 import { activeWorkspace, canvasCovered } from './workspace';
 import { sameSubject, seoDocument } from './seo-view';
 import { postAt, postWorkspace } from './posts';
@@ -1088,6 +1088,7 @@ export function selectPage(pageId: string, target?: ElementRef | null) {
   setState({ pageId, selection, definitionMode: null, templateMode: null, previewReturn: null, ...(itself ? { pagePlaces: forgetPlace(s.pagePlaces, pageId) } : {}) });
   saveLocal({ pageId });
 }
+setPageOpener((pageId) => selectPage(pageId));
 
 /**
  * Open a page that shows the shared header or footer, when the page on screen does not: each page chooses them on its

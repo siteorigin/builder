@@ -1123,6 +1123,8 @@ export interface ApplyResult {
   changed?: string[];
   /** The history entry the change was recorded in, so an Undo offered for it reverses that entry and no other. */
   entryId?: string;
+  /** An Undo or Redo of one History step: that step's label, as History names it. */
+  label?: string;
   error?: ToolError;
 }
 
