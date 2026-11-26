@@ -1345,7 +1345,10 @@ export function Canvas() {
     shownFor.current = showSelection;
     const quiet = takeUnscrolled(selection);
     const desc = ready && (showsStudio() || (view?.route && samePath(view.route, frameAt.current))) ? descFor(selection) : null;
-    showOnArrival.current = show && !desc && selection ? refKey(selection) : null;
+    // Kept through the frame becoming ready on the page it is leaving; let go once delivered or another is selected.
+    const key = selection ? refKey(selection) : null;
+    if (show && !desc) showOnArrival.current = key;
+    else if (desc || showOnArrival.current !== key) showOnArrival.current = null;
     if (desc && (show || !quiet)) post('scrollTo', show ? { desc, show } : { desc });
   }, [ready, selection && refKey(selection), showSelection]); // eslint-disable-line react-hooks/exhaustive-deps
 

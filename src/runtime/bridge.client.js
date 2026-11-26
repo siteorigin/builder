@@ -819,7 +819,7 @@ function stopShowing() {
  * Once `waiting` for one that was not there, a hidden copy mounting first (one a component shows at another width)
  * is not it: the wait goes on for one that shows.
  */
-function scrollToDesc(desc, show, waiting = false) {
+function scrollToDesc(desc, show, waiting = false, moved = false) {
   const all = findAll(desc);
   let el = all.find((e) => rectOf(e));
   // Kept in view while the page settles only when it shows now and is scrolled to here: one hidden when asked is not
@@ -841,11 +841,14 @@ function scrollToDesc(desc, show, waiting = false) {
   // Shown from Layers (`show`), one taller than the frame shows from its top. A pick on the page itself keeps its
   // place on the page.
   const block = show && r.height > innerHeight - 80 ? 'start' : 'center';
-  if (comfortable(r)) return true;
-  if (shows) {
-    shownHold = { desc, show, until: performance.now() + SHOWN_SETTLE_MS, still: 0, lastY: scrollY, at: null };
+  const fits = comfortable(r);
+  // Asked for in so many words (`show`: the command menu, Layers) or just moved, one in view already is still kept
+  // there while the page settles: from where it shows now, so the author's own scrolling ends that at once.
+  if (shows && (!fits || show || moved)) {
+    shownHold = { desc, show, until: performance.now() + SHOWN_SETTLE_MS, still: 0, lastY: scrollY, at: fits ? r.top + scrollY : null };
     scheduleRects();
   }
+  if (fits) return true;
   target.scrollIntoView({ block, behavior: matchMedia('(prefers-reduced-motion: reduce)').matches ? 'auto' : 'smooth' });
   return true;
 }
@@ -860,7 +863,7 @@ function retryScroll() {
   else if (p.after) {
     // The page has the change: its element is where the change put it (already on the page, for a move).
     pendingScroll = null;
-    if (!scrollToDesc(p.desc, p.show)) pendingScroll = { desc: p.desc, show: p.show, until: performance.now() + SCROLL_WAIT_MS, after: 0 };
+    if (!scrollToDesc(p.desc, p.show, false, true)) pendingScroll = { desc: p.desc, show: p.show, until: performance.now() + SCROLL_WAIT_MS, after: 0 };
   } else if (scrollToDesc(p.desc, p.show, true)) pendingScroll = null;
 }
 /**

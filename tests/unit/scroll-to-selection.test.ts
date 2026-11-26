@@ -148,6 +148,17 @@ describe.skipIf(!browserInstalled)('showing the section the editor asks for once
     expect(await scrollY()).toBe(1800);
   });
 
+  it('keeps a section picked from the command menu in view when it showed already and the page above it grows', async () => {
+    await send('track', { selected: sel('about'), hovered: null });
+    await inFrame(`win.scrollTo({ top: 360, behavior: 'instant' });`);
+    await settle();
+    await send('scrollTo', { desc: sel('about'), show: true });
+    expect(await scrollY()).toBe(360);
+    await grow('hero', 420);
+    await scrolled();
+    expect(await inView('about')).toBe(true);
+  });
+
   it('lets a scrollbar drag after the section has shown have the last word', async () => {
     await send('track', { selected: sel('faq'), hovered: null });
     await send('scrollTo', { desc: sel('faq') });
