@@ -1,10 +1,20 @@
 import { createHash, randomBytes } from 'node:crypto';
-import { promises as fs, existsSync, realpathSync } from 'node:fs';
+import { promises as fs, existsSync, lstatSync, realpathSync } from 'node:fs';
 import type { FileHandle } from 'node:fs/promises';
 import { dirname, isAbsolute, join, relative, resolve, sep } from 'node:path';
 import { perf } from '../perf';
 
 export const sha = (data: string | Buffer) => createHash('sha256').update(data).digest('hex');
+
+/**
+ * `fn` over every item, a few at a time: enough to overlap the disk's waits, never so many open files that one fails
+ * to open (and an unreadable file would look like a missing one).
+ */
+export async function inBatches<T, R>(items: T[], fn: (item: T) => Promise<R> | R, size = 16): Promise<R[]> {
+  const out: R[] = [];
+  for (let i = 0; i < items.length; i += size) out.push(...(await Promise.all(items.slice(i, i + size).map(fn))));
+  return out;
+}
 
 /** Resolve a project-relative path, rejecting traversal and symlink escape. */
 export function safeJoin(root: string, rel: string): string {
@@ -12,6 +22,12 @@ export function safeJoin(root: string, rel: string): string {
   const abs = resolve(root, rel);
   const r = relative(root, abs);
   if (!r || r === '..' || r.startsWith(`..${sep}`) || isAbsolute(r)) throw new Error(`Path escapes the project: ${rel}`);
+  // With no link on the way down from the project's folder, the path's real location is inside the project's, wherever
+  // that is: nothing more to check. Looking costs one lstat a part, where the real paths below cost one for every
+  // folder from the top of the disk, and a project's files are looked up by the thousand as it opens.
+  // Only for the very path returned: on Windows, relative() matches folder names whatever their case, so `r` could
+  // name a sibling folder whose name differs from the project's by case alone.
+  if (join(root, r) === abs && noLinkBelow(root, r)) return abs;
   // Walk up to the nearest existing ancestor and make sure its real path is inside the project.
   let probe = abs;
   while (!existsSync(probe) && probe !== root) probe = dirname(probe);
@@ -19,6 +35,27 @@ export function safeJoin(root: string, rel: string): string {
   const realProbe = realpathSync(probe);
   if (realProbe !== realRoot && !realProbe.startsWith(realRoot + sep)) throw new Error(`Path escapes the project through a link: ${rel}`);
   return abs;
+}
+
+/**
+ * Whether each part of `rel` (relative to `root`, normalized) that is there is a folder or file of its own, not a link
+ * or a junction: looked at from the top down, without following any. Once one part is not there, the parts below it
+ * cannot be either. Anything else (a link, a part that cannot be looked at, a project folder that is not there) is
+ * left to the full check of real paths, which then decides as it always has.
+ */
+function noLinkBelow(root: string, rel: string): boolean {
+  let at = root;
+  const parts = rel.split(sep);
+  for (let i = 0; i < parts.length; i++) {
+    at = join(at, parts[i]);
+    try {
+      if (lstatSync(at).isSymbolicLink()) return false;
+    } catch (e) {
+      // Below a part that is there (the project's own folder, past its first part): nothing further is.
+      return i > 0 && (e as NodeJS.ErrnoException).code === 'ENOENT';
+    }
+  }
+  return true;
 }
 
 /**

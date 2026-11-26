@@ -36,7 +36,7 @@ import { sendsFormMessages, type ComponentImport } from '@engine/component-packa
 import { GenerationCache } from '@generator/cache';
 import { themeUpdates, type ThemeUpdates } from '@engine/theme-updates';
 import { packFileInfo, readPackFile } from '../packs/files';
-import { SITE_ICON_PATHS, SiteIconMaker } from './site-icons';
+import { SITE_ICON_PATHS, SiteIconMaker, siteIconRecord, type IconInput } from './site-icons';
 import { ownServerHook } from './server-hook';
 import { checkSvelteSource, codeContractNames, componentSources } from '../codecheck';
 import { isWebMcpForm } from '@shared/webmcp';
@@ -44,9 +44,9 @@ import { asRoute, COMPONENT_DOC, componentCycle, linksInto, ownUrlLinks, placeme
 import { isDiscoveryPath } from '@shared/llms';
 import { RSS_PATH } from '@generator/rss';
 import { HOST_REDIRECTS_FILE, VERCEL_CONFIG_FILE } from '@generator/host-redirects';
-import { atomicWrite, ensureDir, readBytesIfExists, readIfExists, readJson, removeDurable, removeEmptyDirs, safeJoin, sha, syncDir, toJson } from './fsutil';
+import { atomicWrite, ensureDir, inBatches, readBytesIfExists, readIfExists, readJson, removeDurable, removeEmptyDirs, safeJoin, sha, syncDir, toJson } from './fsutil';
 import { designAt, relocateSource, textOfBytes } from './edited-design';
-import { collectionDocPath, collectionPathOf, collectionsFromDocs, componentDocPath, converterPathOf, CUSTOM_SOURCE_RE, DOC_DIR, isCanonicalPath, MANIFEST_FILE, newestStoredVersion, ProjectFormatError, readProject, readState, sourcePathOf, sourcesFromDocs, stateToAuthoredSources, stateToDocs } from './documents';
+import { collectionDocPath, collectionPathOf, collectionsFromDocs, componentDocPath, converterPathOf, CUSTOM_SOURCE_RE, DOC_DIR, isCanonicalPath, MANIFEST_FILE, newestStoredVersion, ProjectFormatError, readProject, readState, sourcePathOf, sourcesFromDocs, stateToAuthoredSources, stateToDocs, type DocReader } from './documents';
 import { perf, timed } from '../perf';
 import { heldAsMedia, isVersionMedia, newVersionId, sameContents, VERSION_DAMAGED, VERSION_NAME_MAX, VersionStore, type SavedVersion } from './versions';
 
@@ -57,16 +57,6 @@ export const SOURCE_DRAFTS = 'ai-runs';
 const RUN_ID = /^[A-Za-z0-9_-]{1,64}$/;
 /** In the dev cache: hashes of the generated project files the dev variants stand in for. */
 export const CLEAN_HASHES = '.clean-hashes.json';
-
-/**
- * `fn` over every item, a few at a time: enough to overlap the disk's waits, never so many open files that one fails
- * to open (and an unreadable file would look like a missing one).
- */
-async function inBatches<T, R>(items: T[], fn: (item: T) => Promise<R> | R, size = 16): Promise<R[]> {
-  const out: R[] = [];
-  for (let i = 0; i < items.length; i += size) out.push(...(await Promise.all(items.slice(i, i + size).map(fn))));
-  return out;
-}
 
 /** What a generated file that is there but cannot be read hashes to: never ours, never missing. */
 const UNREADABLE = 'unreadable';
@@ -135,6 +125,30 @@ async function handleStamp(abs: string): Promise<string | null> {
   }
   try {
     return stampOf(await handle.stat({ bigint: true }));
+  } catch {
+    return null;
+  } finally {
+    await handle.close().catch(() => undefined);
+  }
+}
+
+/**
+ * A document's text, read through one handle, with that handle's stat when it did not change while the text was read;
+ * null when there is no regular file to read (as readIfExists gives null for anything it cannot read).
+ */
+async function readTextAt(abs: string): Promise<{ text: string; st: BigIntStats | null } | null> {
+  let handle: FileHandle;
+  try {
+    handle = await fs.open(abs, OPEN_READ);
+  } catch {
+    return null;
+  }
+  try {
+    const before = await handle.stat({ bigint: true });
+    if (!before.isFile()) return null;
+    const text = await handle.readFile('utf8');
+    const after = await handle.stat({ bigint: true });
+    return { text, st: stampOf(after) === stampOf(before) ? before : null };
   } catch {
     return null;
   } finally {
@@ -566,6 +580,11 @@ export class ProjectSession extends EventEmitter {
   private docs = new Map<string, string>();
   private history: HistoryFile = emptyHistory();
   private generated: GeneratedManifest = { generator: GENERATOR_VERSION, files: {} };
+  /**
+   * The generated manifest as opening read it, with the stat of its file when that can stand for its text
+   * (statTrusted); null once anything has written it since. A publication that would write it unchanged leaves it.
+   */
+  private manifestRead: { text: string; stamp: string } | null = null;
   /** Generated files kept between generations, each given back while what it was made from is unchanged. */
   private generation = new GenerationCache();
   /**
@@ -597,6 +616,10 @@ export class ProjectSession extends EventEmitter {
   private iconsPublished: { key: string; id: number | null } | null = null;
   /** What the icons the last publication asked for are made from. */
   private iconsAsked: string | null = null;
+  /** Whether this session has looked for the last publication's record of its icons (once, as it opens). */
+  private iconsRecalled = false;
+  /** The record of the icons as this session last read or wrote it, so an unchanged one is not written again. */
+  private iconsRecord: string | null = null;
   /**
    * How long a file must have been left alone before its stat alone is trusted to show a later change: well past the
    * coarsest timestamps (two seconds on FAT), so a change in the same tick as the last one is never missed.
@@ -686,9 +709,11 @@ export class ProjectSession extends EventEmitter {
 
   private static async openTimed(dir: string, instanceId: string, opts: { force?: boolean | string }): Promise<ProjectSession> {
     const s = new ProjectSession(dir);
-    const locking = perf.span('session.open.lock');
+    const checking = perf.span('session.open.formatCheck');
     // A project from a newer version is never written to, not even its local folders.
-    await assertKnownFormat(dir);
+    await assertKnownFormat(dir, s.scanReader());
+    checking();
+    const locking = perf.span('session.open.lock');
     // The lock comes first: recovery must never touch a project another window is editing, and a project
     // that turns out to be locked is opened read-only with nothing written.
     await ensureDir(s.local());
@@ -729,6 +754,53 @@ export class ProjectSession extends EventEmitter {
     return s;
   }
 
+  /**
+   * Documents the format scan read, by project-relative path, each with the stat of the file it was read from. Kept
+   * only for the open that follows the scan, which uses a text instead of reading its file again while the file's
+   * stat is still that one (stillScanned).
+   */
+  private scanned: Map<string, { text: string; stamp: string }> | null = null;
+
+  /** How the format scan reads each document: through one handle, keeping the text when its stat can stand for it. */
+  private scanReader(): DocReader {
+    const scanned = new Map<string, { text: string; stamp: string }>();
+    this.scanned = scanned;
+    return async (abs, rel) => {
+      const started = Date.now();
+      const read = await readTextAt(abs);
+      if (!read) return null;
+      perf.count('files.read');
+      perf.count('docs.read');
+      // Only a file left alone long enough that a later change cannot share its timestamps (statTrusted).
+      if (read.st && statTrusted(read.st, started, this.settleMs)) scanned.set(rel, { text: read.text, stamp: stampOf(read.st) });
+      return read.text;
+    };
+  }
+
+  /**
+   * The format scan's texts that still stand for their files, by project-relative path: each file's stat is the one
+   * its text was read under, so it holds those bytes still. A file replaced or changed since (by recovery, by another
+   * app) is read again, as is one whose stat cannot be compared (on Windows, a handle's and a path's differ in form).
+   */
+  private async stillScanned(): Promise<Map<string, string>> {
+    const scanned = [...(this.scanned ?? [])];
+    this.scanned = null;
+    // Through safeJoin, as reading it would be: a folder swapped for a link since is read, and refused, as before.
+    const now = await inBatches(scanned, ([rel]) => {
+      try {
+        return lookAt(safeJoin(this.dir, rel));
+      } catch {
+        return 'failed' as const;
+      }
+    });
+    const out = new Map<string, string>();
+    scanned.forEach(([rel, { text, stamp }], i) => {
+      const st = now[i];
+      if (typeof st === 'object' && stampOf(st) === stamp) out.set(rel, text);
+    });
+    return out;
+  }
+
   private async openLocked() {
     const s = this;
     const dir = this.dir;
@@ -740,7 +812,7 @@ export class ProjectSession extends EventEmitter {
     await s.recoverInterruptedRun();
     recovering();
     const reading = perf.span('session.open.read');
-    const read = await readProject(dir, { overlay: s.pending });
+    const read = await readProject(dir, { overlay: s.pending, known: await s.stillScanned() });
     s.state = read.state;
     s.migrationDue = !!read.migration;
     s.docs = stateToDocs(s.state);
@@ -751,13 +823,18 @@ export class ProjectSession extends EventEmitter {
     await s.versions.load();
     const interrupted = await s.versions.takeRestoring().catch(() => null);
     if (interrupted) s.recoveryNotes.push(`Restoring “${interrupted.version}” was interrupted, so some of it may be missing. Your work from before is saved as “${interrupted.backup}” in History, under Saved versions.`);
-    s.generated = (await readIfExists(join(dir, 'siteorigin', 'generated-manifest.json')).then((t) => (t ? JSON.parse(t) : null))) ?? s.generated;
+    const manifestAt = Date.now();
+    const manifest = await readTextAt(join(dir, 'siteorigin', 'generated-manifest.json'));
+    if (manifest) perf.count('files.read');
+    s.generated = (manifest?.text ? JSON.parse(manifest.text) : null) ?? s.generated;
+    if (manifest?.st && statTrusted(manifest.st, manifestAt, s.settleMs)) s.manifestRead = { text: manifest.text, stamp: stampOf(manifest.st) };
     const local = await readIfExists(s.local('state.json'));
     if (local) s.revision = JSON.parse(local).revision ?? 0;
     loading();
     // Validate the final state (after any rollback) before generating anything from it.
     const validating = perf.span('session.open.validate');
-    const fatal = validateState(s.state).filter((d) => d.severity === 'error' && FATAL_CODES.has(d.code));
+    // The checks the editor's first snapshot shows (diagnostics), worked out once for this state.
+    const fatal = s.diagnostics().filter((d) => d.severity === 'error' && FATAL_CODES.has(d.code));
     validating();
     if (fatal.length) throw new ProjectFormatError(`This project's documents are inconsistent, so it was not opened to protect your site: ${fatal.slice(0, 4).map((d) => d.message).join(' ')}`);
     // Generating from another copy of the site's theme would restyle it before anyone edited anything.
@@ -1999,6 +2076,14 @@ export class ProjectSession extends EventEmitter {
     return generateProject(state, { instrument }, this.generation);
   }
 
+  /** `generate`, timed as a save's generations are (writeState), for a publication that generates its own. */
+  private generateTimed(state: ProjectState, instrument: boolean): Map<string, string> {
+    const generating = perf.span('session.generate', { variant: instrument ? 'dev' : 'clean' });
+    const files = this.generate(state, instrument);
+    generating();
+    return files;
+  }
+
   /**
    * The hash a generated file's bytes had when last read, while its stat is still what it was then: looking costs a
    * stat, never a read. Undefined when the file has to be read to be known.
@@ -2018,7 +2103,7 @@ export class ProjectSession extends EventEmitter {
    * taken the same way (path with path, handle with handle), since the two can differ in form on some systems.
    * Remembered by its stat when it can stand for its bytes.
    */
-  private async readHash(abs: string): Promise<{ hash: string | null; stamp: string | null }> {
+  private async readHash(abs: string, keep?: (bytes: Buffer) => void): Promise<{ hash: string | null; stamp: string | null }> {
     this.seenOnDisk.delete(abs);
     for (let attempt = 0; attempt < 3; attempt++) {
       const started = Date.now();
@@ -2037,6 +2122,7 @@ export class ProjectSession extends EventEmitter {
       perf.count('files.hashed');
       const stamp = stampOf(before);
       if (statTrusted(before, started, this.settleMs)) this.seenOnDisk.set(abs, { stamp, hash });
+      keep?.(read.bytes);
       return { hash, stamp };
     }
     // Changing under every read: someone else is writing it.
@@ -2068,8 +2154,11 @@ export class ProjectSession extends EventEmitter {
   }
 
   private async publishGeneratedNow(initial: boolean, pre?: { clean: Map<string, string>; dev: Map<string, string> }): Promise<string[]> {
-    const clean = new Map(pre?.clean ?? this.generate(this.state, false));
-    const dev = new Map(pre?.dev ?? this.generate(this.state, true));
+    // The website's icons are drawn in the media worker while this generates and checks the files (on opening, when
+    // none are kept yet, that takes as long as everything else here); they are waited for below, as before.
+    if (!pre) await this.siteIcons.prepare(this.dir, this.state, await this.recallSiteIcons());
+    const clean = new Map(pre?.clean ?? this.generateTimed(this.state, false));
+    const dev = new Map(pre?.dev ?? this.generateTimed(this.state, true));
     const devRoot = this.local('cache', 'dev');
     const changedFiles: string[] = [];
     const prev = this.generated.files;
@@ -2151,16 +2240,24 @@ export class ProjectSession extends EventEmitter {
     // Decide first which project files are someone else's now, so no editor variant shadows them in the preview.
     const plan: Array<{ path: string; content: string | Buffer; abs: string; hash: string; stamp: string | null }> = [];
     const desired: Record<string, string> = {};
-    for (const [i, { path, content, abs }] of project.entries()) {
+    // Generated the same as last time, and still the bytes it was then: nothing to decide.
+    const wanted = project.map(({ abs, content }, i) => {
       const was = this.contentHashes.get(abs)?.hash;
       const h = hashOf(abs, content);
+      return { h, settled: seen[i] === h && was === h };
+    });
+    // Any other is replaced, kept as someone else's, or found already right: decided on its bytes as they are now,
+    // read a few at a time. A replacement looks at the file again just before it takes its path (`replace`, below).
+    const onDisk = await inBatches(
+      project.map((f, i) => ({ abs: f.abs, settled: wanted[i].settled })),
+      (f) => (f.settled ? null : this.readHash(f.abs))
+    );
+    for (const [i, { path, content, abs }] of project.entries()) {
+      const { h, settled } = wanted[i];
       desired[path] = h;
       nextFiles[path] = h;
-      // Generated the same as last time, and still the bytes it was then: nothing to decide.
-      if (seen[i] === h && was === h) continue;
-      // To be replaced, kept as someone else's, or found already right: decided on its bytes as they are now, read
-      // one file at a time so each decision is as close to the write as the old full pass made it.
-      const { hash: diskHash, stamp } = await this.readHash(abs);
+      if (settled) continue;
+      const { hash: diskHash, stamp } = onDisk[i]!;
       if (diskHash === h) continue;
       if (!initial && diskHash !== null && known(path) && !ours(path, diskHash)) {
         // Edited outside the app (or no longer readable by it): keep the external version.
@@ -2302,7 +2399,10 @@ export class ProjectSession extends EventEmitter {
     }
     await this.writeManifest(nextFiles);
     // The icons count as published only now, once every file and the manifest claiming them are in place.
-    if (icons.files) this.iconsPublished = { key: icons.key, id: icons.id };
+    if (icons.files) {
+      this.iconsPublished = { key: icons.key, id: icons.id };
+      await this.recordSiteIcons(icons, hashes);
+    }
     this.contentHashes = hashes;
     // Only files still generated are worth remembering.
     for (const abs of this.seenOnDisk.keys()) if (!hashes.has(abs)) this.seenOnDisk.delete(abs);
@@ -2317,13 +2417,86 @@ export class ProjectSession extends EventEmitter {
     return changedFiles;
   }
 
+  /**
+   * On opening, take the website's icons in the project as the set for the project as it is when the record their
+   * publication left says they are that very drawing: made from the same input (the favicon's bytes, the monogram, each
+   * icon's size and background) by the same build of the renderer, and each still the bytes the generated manifest
+   * claims for it. Nothing is drawn for them then. Any difference, or anything that cannot be read, and they are drawn.
+   */
+  private async recallSiteIcons(): Promise<IconInput | undefined> {
+    if (this.iconsRecalled) return undefined;
+    this.iconsRecalled = true;
+    const where = siteIconRecord(this.dir);
+    if (!where) return undefined;
+    // A regular file of the app's own, read without waiting: anything else there is no record.
+    const text = (await readTextAt(where.file))?.text ?? null;
+    let record: { renderer?: unknown; dir?: unknown; key?: unknown; files?: Record<string, unknown> } | null = null;
+    try {
+      record = text ? JSON.parse(text) : null;
+    } catch {
+      record = null;
+    }
+    const input = await this.siteIcons.input(this.dir, this.state);
+    if (!record || record.renderer !== where.renderer || record.dir !== this.dir || record.key !== input.key || !record.files || typeof record.files !== 'object') return input;
+    const files = new Map<string, Buffer>();
+    const known = new Map<string, { content: Buffer; hash: string }>();
+    for (const { path } of input.icons) {
+      const want = Object.hasOwn(record.files, path) ? record.files[path] : undefined;
+      if (typeof want !== 'string' || this.generated.files[path] !== want) return input;
+      const abs = safeJoin(this.dir, path);
+      let bytes: Buffer | null = null;
+      const { hash } = await this.readHash(abs, (b) => (bytes = b));
+      if (hash !== want || !bytes) return input;
+      files.set(path, bytes);
+      known.set(abs, { content: bytes, hash });
+    }
+    this.iconsRecord = text;
+    // Read and hashed just now: the publication finds them so, as it finds a file it generated before.
+    for (const [abs, k] of known) this.contentHashes.set(abs, k);
+    this.siteIcons.adopt(input.key, files);
+    return input;
+  }
+
+  /** Note which drawing the icons a publication carried are, for the next opening (recallSiteIcons). A cache: never durable. */
+  private async recordSiteIcons(icons: { key: string; files: Map<string, Buffer> | null; standIn: boolean }, hashes: Map<string, { hash: string }>): Promise<void> {
+    const where = siteIconRecord(this.dir);
+    // A stand-in for a picture that could not be decoded is drawn again in a while: never taken as the picture's.
+    if (!where || !icons.files || icons.standIn) return;
+    const files: Record<string, string> = {};
+    for (const path of [...icons.files.keys()].sort()) {
+      const hash = hashes.get(safeJoin(this.dir, path))?.hash;
+      if (!hash) return;
+      files[path] = hash;
+    }
+    const text = toJson({ renderer: where.renderer, dir: this.dir, key: icons.key, files });
+    if (text === this.iconsRecord) return;
+    await atomicWrite(where.file, text, { durable: false }).then(
+      () => (this.iconsRecord = text),
+      () => undefined
+    );
+  }
+
   private async writeManifest(files: Record<string, string>, pending?: Record<string, string>) {
     this.generated = { generator: GENERATOR_VERSION, files, ...(pending ? { pending } : {}) };
     const sorted = (r: Record<string, string>) => Object.fromEntries(Object.entries(r).sort());
-    await atomicWrite(
-      join(this.dir, 'siteorigin', 'generated-manifest.json'),
-      toJson({ generator: GENERATOR_VERSION, note: 'Hashes of files generated by SiteOrigin Builder.', files: sorted(files), ...(pending ? { pending: sorted(pending) } : {}) })
-    );
+    const path = join(this.dir, 'siteorigin', 'generated-manifest.json');
+    const text = toJson({ generator: GENERATOR_VERSION, note: 'Hashes of files generated by SiteOrigin Builder.', files: sorted(files), ...(pending ? { pending: sorted(pending) } : {}) });
+    // The file holds this very text already, as opening read it and unchanged since (reopening a project whose files
+    // are current): writing it again would change nothing on disk. Only the final manifest: claims written ahead of
+    // replacing files are always written, and made to last, before any file is replaced. The folder is flushed, so the
+    // file the last writer put there stays even if that writer stopped before flushing it.
+    const read = this.manifestRead;
+    this.manifestRead = null;
+    if (!pending && read?.text === text) {
+      // The very file read, in place: a link there is replaced by the manifest itself, as any write would.
+      const now = await fs.lstat(path, { bigint: true }).catch(() => null);
+      if (now?.isFile() && stampOf(now) === read.stamp) {
+        await syncDir(dirname(path));
+        this.manifestRead = read;
+        return;
+      }
+    }
+    await atomicWrite(path, text);
   }
 
   /** Restore a generated file from the managed documents, discarding the external edit. */
@@ -4782,17 +4955,13 @@ function settledOnDisk(path: string, disk: string | null, builder: string | null
 }
 
 /** Refuse to open a project written by a newer version for editing (it can still be opened read-only). */
-async function assertKnownFormat(dir: string) {
-  // Every document file is scanned on its own first: the full read stops at the first broken document, which may
-  // sort before a newer one, and it keys documents by id, which a crafted id can hide.
-  const newest = await newestStoredVersion(dir);
+async function assertKnownFormat(dir: string, read?: DocReader) {
+  // Every document file is scanned on its own: the full read stops at the first broken document, which may sort before
+  // a newer one, and it keys documents by id, which a crafted id can hide. The scan looks at every document the read
+  // takes, and judges each one's format as the read does, so the read finds nothing newer that the scan let through.
+  // Anything else wrong with the documents is reported by the normal open, after recovery has had its chance.
+  const newest = await newestStoredVersion(dir, read);
   if (newest > SCHEMA_VERSION) throw new ProjectFormatError(`This project was created by a newer version of SiteOrigin Builder (format ${newest}). Update the app to edit it.`, true);
-  try {
-    await readState(dir);
-  } catch (e) {
-    if (e instanceof ProjectFormatError && e.readOnly) throw e;
-    // Anything else is reported by the normal open, after recovery has had its chance.
-  }
   // An interrupted save from a newer version is that version's to finish: replaying it here would write its format.
   const journal = await readIfExists(join(dir, LOCAL_DIR, 'journal.json'));
   let version: unknown;
