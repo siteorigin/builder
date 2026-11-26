@@ -1028,6 +1028,7 @@ export function Canvas() {
           // covers the canvas (#700): the page is out of sight. One on a page a save has not reached yet waits for it
           // (#735, #755: see the gate above the switch).
           if (!st || !s.frameReady || leavingForPage() || canvasCovered(activeWorkspace(s))) return;
+          perfMark('canvas.select');
           pagePick();
           const chain = chainOf(p.chain);
           const next = pick(chain, !!p.alt || !!p.meta);

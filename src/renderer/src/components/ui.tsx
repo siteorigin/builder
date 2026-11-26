@@ -5,7 +5,7 @@ import { Children, cloneElement, createContext, isValidElement, useCallback, use
 import * as DropdownMenu from '@radix-ui/react-dropdown-menu';
 import { createPortal, flushSync } from 'react-dom';
 import { Check, ChevronDown, CircleAlert, CircleCheck, Info, Pencil, X } from 'lucide-react';
-import { aiActivity, api, applyHeld, commitDraft, discardHeld, dismissToast, editRunStatus, markDraft, toast, undoAvailable, useStore, type HeldEdit, type PendingEdit } from '../store';
+import { aiActivity, api, applyHeld, commitDraft, discardHeld, dismissToast, editRunStatus, markDraft, StoreViewContext, toast, undoAvailable, useStore, type HeldEdit, type PendingEdit } from '../store';
 import { afterLanding, isSettling, reportRefused, retainRefused, type Refocusable } from '../lib/pending';
 import { heldPrompt, type HeldAction } from '../lib/held';
 import { dropKeptDraft, goneReport, keepDraft, keptDraft, keptDraftKey, keptField, keptOnLeave, keptRefusal, limitNote, tooLongReport, unsavedReport } from '../lib/kept-drafts';
@@ -152,25 +152,29 @@ export function Modal({ title, icon, onClose, children, footer, wide, describedB
   // While busy (creating a project, opening a trusted one), only the dialog's own buttons can end it.
   const close = () => !busy && onClose();
   const onKeyDown = useDialogFocus(ref, close);
+  // A dialog is on screen whatever opened it: one opened from a hidden panel (lib/hideable) still reads the store as
+  // it is now.
   return createPortal(
-    <div className="overlay-backdrop" onMouseDown={(e) => dismissOnBackdrop && e.target === e.currentTarget && close()}>
-      <div ref={ref} tabIndex={-1} className={`modal${wide ? ' wide' : ''}`} role="dialog" aria-modal="true" aria-labelledby={titleId} aria-describedby={describedBy} onKeyDown={onKeyDown}>
-        <div className="modal-head">
-          {icon}
-          <h2 className="grow" id={titleId}>
-            {title}
-          </h2>
-          <button className="icon-btn" onClick={close} disabled={busy} aria-label="Close" title={busy ? undefined : 'Close (Esc)'}>
-            <X />
-          </button>
+    <StoreViewContext.Provider value={null}>
+      <div className="overlay-backdrop" onMouseDown={(e) => dismissOnBackdrop && e.target === e.currentTarget && close()}>
+        <div ref={ref} tabIndex={-1} className={`modal${wide ? ' wide' : ''}`} role="dialog" aria-modal="true" aria-labelledby={titleId} aria-describedby={describedBy} onKeyDown={onKeyDown}>
+          <div className="modal-head">
+            {icon}
+            <h2 className="grow" id={titleId}>
+              {title}
+            </h2>
+            <button className="icon-btn" onClick={close} disabled={busy} aria-label="Close" title={busy ? undefined : 'Close (Esc)'}>
+              <X />
+            </button>
+          </div>
+          {/* Scrolled, the dialog is marked so its header draws a rule over the content that has gone under it. */}
+          <div className="modal-body" onScroll={(e) => ref.current?.toggleAttribute('data-scrolled', e.currentTarget.scrollTop > 0)}>
+            {children}
+          </div>
+          {footer && <div className="modal-foot">{footer}</div>}
         </div>
-        {/* Scrolled, the dialog is marked so its header draws a rule over the content that has gone under it. */}
-        <div className="modal-body" onScroll={(e) => ref.current?.toggleAttribute('data-scrolled', e.currentTarget.scrollTop > 0)}>
-          {children}
-        </div>
-        {footer && <div className="modal-foot">{footer}</div>}
       </div>
-    </div>,
+    </StoreViewContext.Provider>,
     document.body
   );
 }

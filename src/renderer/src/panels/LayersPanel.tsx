@@ -1074,7 +1074,9 @@ function LayerRow({ state, owner, tree, id, depth, onMenu, path, parentId, inSlo
     return () => markDraft(`layer-rename:${id}`, false);
   }, [renaming, id]);
   if (!n) return null;
-  const isOpen = open && expandable;
+  // Open already in the render that first shows the selection inside it (a panel shown again, lib/hideable), not only
+  // once the latch above has run.
+  const isOpen = (open || containsSel) && expandable;
   // An unnamed text or button is told apart by its words; the root of a component being edited is the component.
   const ownerDef = owner.kind === 'component' ? state.components[owner.id] : undefined;
   const label = isDefRoot ? { label: ownerDef?.name ?? displayName(state, n), kind: ownerDef?.name ?? displayName(state, n), full: ownerDef?.name ?? displayName(state, n) } : layerLabel(state, n, ownerDef);

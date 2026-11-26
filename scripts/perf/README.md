@@ -84,6 +84,20 @@ and `previewApplied` (the headline). Counts: durable writes, fsyncs and file wri
 read, hashed and written, `project:changed` sends and bytes, `reloadFromDisk` calls and React commits until the scenario
 ends; the longest main-process stall.
 
+**`panels`** (after `open`): with the sidebar closed and the dock on its Project view, so every other panel is hidden,
+click the home hero on the canvas; then show the Inspector and change the hero's Heading there. Checks: every sidebar
+view and dock panel is in the page before, and the same elements after (hidden, not unmounted or replaced), the canvas's selection toolbar names
+the hero after the click, the Inspector names it the moment it is shown again, the edit moved exactly one revision with
+the new heading in the project, on disk and in the preview, and Layers, shown again afterwards, has the hero selected at
+once. Times: `click.commit` (the canvas reporting the click to the commit that shows the selection) and `edit.commit`
+(the editor receiving the edited project to the commit that shows it), with `edit.rendererCommit` from the edit being
+sent. Per panel, in the click's window and in the edit's: `renders.<panel>` (its components React rendered) and
+`renderMs.<panel>` (React's time rendering it, in the updates its probes render in: every store update and every
+render of what holds it; a render of the panel's own state alone is counted but not timed), with `hiddenRenders` and `hiddenRenderMs`, their sums over the panels not
+shown in that window (all but Project for the click, all but the Inspector for the edit), `renders` (every component
+rendered) and React commits. The panels are the sidebar's six views, the post writer and SEO view over the canvas, and
+the dock's four. Showing the Inspector between the two windows is in neither.
+
 ## Reading and comparing results
 
 Counts and sizes are the portable evidence: they do not depend on the machine, and two runs of the same build give the
@@ -134,7 +148,10 @@ them over IPC). Unset, no file is opened, no IPC channel is registered and every
 
 Counters: `fs.writes`, `fs.durableWrites`, `fs.fsyncs` (`src/main/project/fsutil.ts`), `files.read`, `files.hashed`
 (project, generated and theme pack files), `ipc.projectChanged.sends`, `ipc.projectChanged.bytes` (as IPC serializes
-the snapshot), `session.reloadFromDisk`, `main.stalls` (main), and `react.commits` (renderer). The main process also
+the snapshot), `session.reloadFromDisk`, `main.stalls` (main), and `react.commits`, `react.renders` (components rendered,
+counted from each commit's fibers) and, per panel marked with `timedPanel` (`src/renderer/src/lib/perf-panels.tsx`),
+`panel.<id>.renders` and `panel.<id>.renderMs` (the time between two probes React renders before and after the panel)
+(renderer). The main process also
 watches its event loop every 20 ms and records each time the watch ran 50 ms or more late as a `main.stall` span of that
 lateness (a block shorter than about 70 ms can go unseen).
 
