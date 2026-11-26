@@ -693,6 +693,7 @@ export const INTERACTIONS: Interaction[] = [
       { test: 'tests/e2e/delete-nested-content.mjs', kind: 'e2e', step: 'Delete all takes the Split and everything in it as one change; the library keeps its components; one Undo puts it all back' },
       { test: 'tests/e2e/delete-nested-content.mjs', kind: 'e2e', step: 'Remove wrapper & keep content, from the Layers menu, puts what the Split held in its place, selected, as one change' },
       { test: 'tests/e2e/delete-nested-content.mjs', kind: 'e2e', step: 'an empty Section is deleted at once, with no question' },
+      { test: 'tests/e2e/copy-paste.mjs', kind: 'e2e', step: 'an element just inserted from the Insert panel answers ⌘C and Backspace, with focus still on its tile (#898)' },
       { test: 'tests/unit/delete-nested.test.ts', kind: 'unit' }
     ],
     gaps: [

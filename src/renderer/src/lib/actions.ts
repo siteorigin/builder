@@ -654,6 +654,7 @@ export async function insert(spec: InsertSpec, label: string, tile?: unknown): P
   // change made.
   const id = newId('n');
   const ops = insertOps(at, spec, role, id);
+  const from = getState();
   const done = await commitOps(ops, `Insert ${label} ${placeWords(st, at.owner)}`);
   const r = done?.ok ? (done.results ?? []) : null;
   if (!r?.some((x) => x?.nodeId === id)) return;
@@ -662,7 +663,9 @@ export async function insert(spec: InsertSpec, label: string, tile?: unknown): P
   const ref: ElementRef = { owner: at.owner, instancePath: [], nodeId: insertSelection(ops, id) };
   if (getState().mode === 'edit') markArrival(ref);
   setState({ selection: ref, rightTab: 'inspect' });
-  claimForInsert(tile, ref);
+  // Not once the author has gone to another view while it landed: what it made may be out of sight there.
+  const now = getState();
+  if (now.pageId === from.pageId && now.templateMode === from.templateMode && now.definitionMode === from.definitionMode) claimForInsert(tile, ref);
   return done?.entryId;
 }
 

@@ -29,8 +29,9 @@ export function forgetInsert(): void {
 
 const fromInsert = (target: Target, selection: unknown) => !!target && inserted?.control === target && inserted.selection === selection;
 
-export function deleteKeyIsEditors(target: Target, body: unknown, selection: unknown): boolean {
-  return target === body || !!target?.closest?.(DELETE_FROM) || fromInsert(target, selection);
+/** `repeat`: a held key never deletes from the tile, where the press may have begun before the insert landed. */
+export function deleteKeyIsEditors(target: Target, body: unknown, selection: unknown, repeat = false): boolean {
+  return target === body || !!target?.closest?.(DELETE_FROM) || (!repeat && fromInsert(target, selection));
 }
 
 export function clipKeyIsEditors(chord: 'copy' | 'paste', target: Target, body: unknown, selection?: unknown): boolean {

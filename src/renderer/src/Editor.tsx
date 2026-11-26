@@ -494,7 +494,7 @@ export function Editor() {
       if (typing && !history && !askAi && !(mod && ['k', 'e', 's', '\\', '|'].includes(e.key.toLowerCase())) && !(mod && e.shiftKey && e.key.toLowerCase() === 'f')) return;
       // Delete removes the canvas selection only from the canvas, Layers or the Insert tile that just made it, never
       // from a button or row in another panel (an Assets tile, a page row) (lib/clip-keys).
-      if (!mod && (e.key === 'Delete' || e.key === 'Backspace') && !deleteKeyIsEditors(e.target as HTMLElement, document.body, getState().selection)) return;
+      if (!mod && (e.key === 'Delete' || e.key === 'Backspace') && !deleteKeyIsEditors(e.target as HTMLElement, document.body, getState().selection, e.repeat)) return;
       // Copy and paste of sections and elements: Copy only from the page, Layers, the selection's own controls and that
       // Insert tile, Paste from any control that takes no typing.
       if (mod && !askAi && ['c', 'v'].includes(e.key.toLowerCase()) && !clipKeyIsEditors(e.key.toLowerCase() === 'c' ? 'copy' : 'paste', e.target as HTMLElement, document.body, getState().selection)) return;

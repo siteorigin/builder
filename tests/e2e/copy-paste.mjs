@@ -242,14 +242,30 @@ assert.deepEqual(await blankIds(), afterDelete, 'one Backspace, one delete');
 // The keyboard's own insert, and Delete: the same.
 await basicTile('Button').focus();
 button = await inserting('Button', () => win.keyboard.press('Enter'));
-// Another tile never deletes what this one inserted.
+// Another tile never takes what this one inserted: the editor leaves both keys alone there.
+await win.evaluate(() => {
+  window.keysTaken = [];
+  window.addEventListener('keydown', (e) => ['Delete', 'Backspace'].includes(e.key) && window.keysTaken.push(e.defaultPrevented));
+});
 await basicTile('Paragraph').focus();
 await win.keyboard.press('Delete');
-await win.waitForTimeout(500);
-assert.equal(await present(button), button.length, 'Delete on another tile leaves the Button');
+await win.keyboard.press('Backspace');
+assert.deepEqual(await win.evaluate(() => window.keysTaken), [false, false], 'neither key is the editor’s on another tile');
+assert.equal(await present(button), button.length, 'and the Button stays');
 await basicTile('Button').focus();
 await win.keyboard.press('Delete');
 await eventually(async () => assert.equal(await present(button), 0, 'Delete on the tile that inserted it deletes it'));
+// Hiding the panel ends it, though the Button is still selected when the panel comes back.
+await basicTile('Button').focus();
+button = await inserting('Button', () => win.keyboard.press('Enter'));
+await win.locator('.rail [aria-label="Insert"]').click();
+await panel.locator('.insert-tile').first().waitFor({ state: 'hidden' }).catch(() => {});
+await win.locator('.rail [aria-label="Insert"]').click();
+await basicTile('Button').focus();
+await win.evaluate(() => (window.keysTaken = []));
+await win.keyboard.press('Delete');
+assert.deepEqual(await win.evaluate(() => window.keysTaken), [false], 'the tile’s claim ended with the panel hidden');
+assert.equal(await present(button), button.length);
 
 assert.deepEqual(errors, [], 'no uncaught errors in the editor');
 await app.close();

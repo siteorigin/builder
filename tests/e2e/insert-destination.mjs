@@ -237,6 +237,13 @@ await secondCard.waitFor();
   });
   assert.notEqual((await newest()).id, changes?.id);
   assert.equal((await newest()).label, 'Insert Paragraph on Home', 'one change');
+  // Focus is still on the tile dragged from, which takes Delete for what the drop selected (#898).
+  await win.locator('.toast', { hasText: 'Added Paragraph' }).first().waitFor();
+  assert.ok(await basicTile('Paragraph').evaluate((el) => el === document.activeElement), 'focus stays on the tile');
+  await win.keyboard.press('Delete');
+  await eventually(async () => assert.deepEqual((await home()).nodes[grid].children, [card, card2], 'Delete takes the dropped Paragraph'));
+  await undo();
+  await eventually(async () => assert.equal((await home()).nodes[grid].children.length, 3, 'one Undo puts it back'));
   await undo();
   await eventually(async () => assert.deepEqual((await home()).nodes[grid].children, [card, card2], 'one Undo takes it away'));
 }

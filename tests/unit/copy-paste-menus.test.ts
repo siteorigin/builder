@@ -65,7 +65,7 @@ let clipboard: {
 };
 let clipKeys: {
   clipKeyIsEditors: (chord: 'copy' | 'paste', target: Control | null, body: unknown, selection?: unknown) => boolean;
-  deleteKeyIsEditors: (target: Control | null, body: unknown, selection: unknown) => boolean;
+  deleteKeyIsEditors: (target: Control | null, body: unknown, selection: unknown, repeat?: boolean) => boolean;
   claimForInsert: (control: unknown, selection: unknown) => void;
   forgetInsert: () => void;
 };
@@ -461,6 +461,10 @@ describe('which controls let ⌘C and ⌘V through to the editor', () => {
     expect(takes(tile, inserted)).toEqual([false, false]);
     clipKeys.claimForInsert(tile, inserted);
     expect(takes(tile, inserted)).toEqual([true, true]);
+    expect(clipKeys.deleteKeyIsEditors(tile, body, inserted, true)).toBe(false);
+    expect(clipKeys.deleteKeyIsEditors(body, body, inserted, true)).toBe(true);
+    // The claim widens nothing else: the Inspector's heading and the Pages list still take no Delete.
+    for (const control of [inside('.insp-head'), inside('.pages-list'), switcher]) expect(clipKeys.deleteKeyIsEditors(control, body, inserted)).toBe(false);
     expect(takes(otherTile, inserted)).toEqual([false, false]);
     expect(takes(tile, other)).toEqual([false, false]);
     expect(takes(tile, null)).toEqual([false, false]);
@@ -479,6 +483,15 @@ describe('which controls let ⌘C and ⌘V through to the editor', () => {
     expect(selection).not.toBeNull();
     expect(clipKeys.deleteKeyIsEditors(tile, body, selection)).toBe(true);
     await actions.insert({ primitive: 'paragraph' }, 'Paragraph');
+    expect(clipKeys.deleteKeyIsEditors(tile, body, getState().selection)).toBe(false);
+  });
+
+  it('claims nothing when the author has gone to another page while the insert landed', async () => {
+    const tile = inside('.insert-body');
+    const landing = actions.insert({ primitive: 'heading' }, 'Heading', tile);
+    setState({ pageId: 'p_elsewhere' });
+    await landing;
+    expect(getState().selection).not.toBeNull();
     expect(clipKeys.deleteKeyIsEditors(tile, body, getState().selection)).toBe(false);
   });
 

@@ -1044,8 +1044,6 @@ export function InsertPanel() {
     if (!refocus.current || !snap || Object.hasOwn(snap.state.components, refocus.current.id)) return;
     const { index } = refocus.current;
     refocus.current = null;
-    // Focus ends up in the library after a removal, maybe on the tile that last inserted: Delete there must do nothing.
-    forgetInsert();
     const a = document.activeElement;
     if (a && a !== document.body && a.isConnected) return;
     // The row that took the deleted one's place, else the one before it.
@@ -1169,7 +1167,6 @@ export function InsertPanel() {
     if (!savedRefocus.current || library?.list.some((c) => c.id === savedRefocus.current!.id)) return;
     const { index } = savedRefocus.current;
     savedRefocus.current = null;
-    forgetInsert();
     const a = document.activeElement;
     if (a && a !== document.body && a.isConnected) return;
     const rows = [...(bodyRef.current?.querySelectorAll<HTMLElement>('.insert-group[data-kind="saved"] .insert-tile.saved') ?? [])];
@@ -1712,6 +1709,8 @@ export function InsertPanel() {
     else void removeDefinition(def);
   };
   const removeDefinition = async (def: ComponentDefinition) => {
+    // Focus ends up in the library after a removal, maybe on the tile that last inserted: Delete there must do nothing.
+    forgetInsert();
     const rows = [...(bodyRef.current?.querySelectorAll<HTMLElement>('.insert-group[data-kind="component"] .insert-tile.project') ?? [])];
     refocus.current = { id: def.id, index: Math.max(0, rows.findIndex((r) => r.dataset.key === `c:${def.id}`)) };
     const r = await commitOps([{ type: 'component.remove', definitionId: def.id }], `Delete component ${def.name}`);
@@ -1732,11 +1731,12 @@ export function InsertPanel() {
   const savedItemsMenu = (c: SavedComponent): MenuItem[] => [
     { heading: c.name },
     ...(c.from ? [{ heading: `Saved from ${c.from}` }] : []),
-    { label: 'Insert here', icon: <Plus />, onSelect: () => void add(byKey.get(`saved:${c.id}`)!) },
+    { label: 'Insert here', icon: <Plus />, onSelect: () => void add(byKey.get(`saved:${c.id}`)!, bodyRef.current?.querySelector<HTMLElement>(`.insert-tile[data-key="${CSS.escape(`saved:${c.id}`)}"]`) ?? undefined) },
     { separator: true },
     { label: 'Remove from library', icon: <Trash2 />, danger: true, hint: 'Projects keep their copies', onSelect: () => void removeSavedRow(c) }
   ];
   const removeSavedRow = async (c: SavedComponent) => {
+    forgetInsert();
     const rows = [...(bodyRef.current?.querySelectorAll<HTMLElement>('.insert-group[data-kind="saved"] .insert-tile.saved') ?? [])];
     savedRefocus.current = { id: c.id, index: Math.max(0, rows.findIndex((r) => r.dataset.key === `saved:${c.id}`)) };
     if (!(await removeFromLibrary(c))) savedRefocus.current = null;
