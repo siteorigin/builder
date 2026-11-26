@@ -253,7 +253,9 @@ export function readField(state: ProjectState, op: EditOperation): FieldRead | n
       if (op.categoryDescription) {
         const term = has(c.settings.taxonomies?.categories?.terms ?? {}, op.categoryDescription.termId);
         if (!term) return gone('category');
+        // Read with the category's name: another category given the ID meanwhile is not the one it was typed for.
         read.categoryDescription = term.description ?? '';
+        read.category = term.label;
       }
       return found(read);
     }
@@ -562,6 +564,7 @@ export function shownField(op: EditOperation, read: unknown): string | null {
     const part = (o.crawlerPolicy && typeof o.crawlerPolicy === 'object' ? o.crawlerPolicy : {}) as Record<string, unknown>;
     return crawlerPolicyText(op.crawlerPolicy, (k) => part[k]);
   } else if (op.type === 'page.update' || op.type === 'site.update' || op.type === 'component.rename' || op.type === 'brief.update') v = listText(Object.values(o)[0]);
+  else if (op.type === 'collection.update') v = op.categoryDescription ? o.categoryDescription : o.description;
   else if (op.type === 'asset.update') {
     const asset = (o.asset ?? {}) as Record<string, unknown>;
     const key = Object.keys(op).find((k) => k !== 'type' && k !== 'assetId');
@@ -604,6 +607,12 @@ export function placeOf(state: ProjectState, op: EditOperation): string {
   if (typeof o.assetId === 'string') return has(state.assets.assets, o.assetId)?.name ?? 'File';
   if (typeof o.definitionId === 'string') return has(state.components, o.definitionId)?.name ?? 'Component';
   if (op.type === 'brief.update') return 'Project brief';
+  if (op.type === 'collection.update') {
+    const c = has(state.collections ?? {}, op.collectionId);
+    const name = c?.settings.name ?? 'Collection';
+    const term = op.categoryDescription ? has(c?.settings.taxonomies?.categories?.terms ?? {}, op.categoryDescription.termId) : undefined;
+    return op.categoryDescription ? `${term?.label ?? 'Category'} archive of ${name}` : `${name} index`;
+  }
   return 'Site settings';
 }
 

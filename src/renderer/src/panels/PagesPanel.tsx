@@ -1310,7 +1310,7 @@ function CollectionArchive(props: { collectionId: string; name: string; route: s
               const c = getState().snapshot?.state.collections[collectionId];
               return !!c && hasArchivePages(c.settings);
             }}
-            ariaLabel={`What the ${name} index tells search engines and link previews`}
+            ariaLabel={`Index description of ${name}, for search engines and link previews`}
             value={description}
             placeholder={fallback}
             onCommit={(v) => update({ description: v }, `Change the ${name} index description`)}

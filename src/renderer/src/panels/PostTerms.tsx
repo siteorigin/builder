@@ -429,7 +429,7 @@ function TermList({ collection, taxonomy, onRenamed }: { collection: Collection;
                             const c = getState().snapshot?.state.collections[collectionId];
                             return !!c && hasArchivePages(c.settings) && c.settings.categoryArchives !== false && Object.hasOwn(c.settings.taxonomies?.categories?.terms ?? {}, t.id);
                           }}
-                          ariaLabel={`What the “${t.label}” archive tells search engines and link previews`}
+                          ariaLabel={`Archive description of “${t.label}”, for search engines and link previews`}
                           value={collection.settings.taxonomies.categories?.terms[t.id]?.description ?? ''}
                           placeholder={defaultArchiveDescription({ site, collections: { [collectionId]: collection } }, collectionId, t.id)}
                           onCommit={(v) => commitOps([{ type: 'collection.update', collectionId, categoryDescription: { termId: t.id, description: v } }], `Change the “${t.label}” archive description`)}

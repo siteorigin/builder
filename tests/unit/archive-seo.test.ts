@@ -9,7 +9,7 @@ import type { EditOperation } from '@shared/ops';
 import { createStarterState } from '@catalogue/starters';
 import { applyOperations } from '@engine/apply';
 import { generateProject, publishedState } from '@generator/index';
-import { checkHeld, fieldKey, readFields } from '../../src/renderer/src/lib/held';
+import { checkHeld, fieldKey, placeOf, readFields, shownField } from '../../src/renderer/src/lib/held';
 
 const run = (s: ProjectState, ...ops: EditOperation[]) => applyOperations(s, ops).state;
 const route = (f: string) => `src/routes/${f.replace(/^\/|\/$/g, '')}/+page.svelte`;
@@ -170,7 +170,9 @@ describe('a collection’s archive pages when found or shared', () => {
     const news: EditOperation = { type: 'collection.update', collectionId: 'posts', categoryDescription: { termId: 'news', description: 'New.' } };
     const craft: EditOperation = { type: 'collection.update', collectionId: 'posts', categoryDescription: { termId: 'craft', description: 'Craft.' } };
     const index: EditOperation = { type: 'collection.update', collectionId: 'posts', description: 'Index.' };
-    expect(readFields(s, [news])).toEqual([{ found: true, value: { categoryDescription: 'Old.' } }]);
+    expect(readFields(s, [news])).toEqual([{ found: true, value: { categoryDescription: 'Old.', category: 'News' } }]);
+    expect(shownField(news, readFields(s, [news])![0].found ? (readFields(s, [news])![0] as { value: unknown }).value : null)).toBe('Old.');
+    expect(placeOf(s, news)).toBe('News archive of Posts');
     expect(readFields(s, [index])).toEqual([{ found: true, value: { description: '' } }]);
     expect(fieldKey([news])).not.toBe(fieldKey([craft]));
     // Changed meanwhile, it is a conflict, not overwritten; another category's change is not.
@@ -179,6 +181,14 @@ describe('a collection’s archive pages when found or shared', () => {
     expect(checkHeld(elsewhere, [news], base).kind).toBe('apply');
     const changed = run(s, { type: 'collection.update', collectionId: 'posts', categoryDescription: { termId: 'news', description: 'Theirs.' } });
     expect(checkHeld(changed, [news], base).kind).toBe('changed');
+    // Another category given its ID meanwhile is not the one it was typed for.
+    const swapped = run(
+      s,
+      { type: 'collection.renameTerm', collectionId: 'posts', taxonomyId: 'categories', termId: 'news', label: 'Studio news' },
+      { type: 'collection.createTerm', collectionId: 'posts', taxonomyId: 'categories', label: 'Updates', termId: 'news' } as EditOperation,
+      { type: 'collection.update', collectionId: 'posts', categoryDescription: { termId: 'news', description: 'Old.' } }
+    );
+    expect(checkHeld(swapped, [news], base).kind).toBe('changed');
     // Other settings of a collection are never held.
     expect(readFields(s, [{ type: 'collection.update', collectionId: 'posts', pageSize: 3 }])).toBeNull();
   });
