@@ -6,7 +6,7 @@
 
 <p align="center">
   <strong>Websites you own, built visually.</strong><br>
-  A free, open-source desktop editor for brochure websites, with an AI assistant that can run on your own computer.
+  A free, open-source desktop editor for small and mid-sized websites, with an AI assistant that can run on your own computer.
 </p>
 
 <p align="center">
@@ -24,7 +24,9 @@
   </picture>
 </p>
 
-SiteOrigin Builder is a desktop app for building brochure websites. You edit the site directly on the canvas, and you can ask an AI assistant to do the heavy lifting when that's quicker.
+SiteOrigin Builder is a desktop app for building websites. You edit the site directly on the canvas, and you can ask an AI assistant to do the heavy lifting when that's quicker.
+
+It's aimed at the middle ground. Think a business site with a blog, a studio portfolio with case studies and a team page, or a small publication. Posts, collections and archives cover the content side, so you're not limited to a handful of static pages. It isn't meant for web apps, online stores or sites with user accounts.
 
 Every site you make is a normal SvelteKit project in a folder on your computer. You can export it, put it in git, host it anywhere or hand it to a developer. There's no account to create, no hosted database and nothing your published site depends on.
 
@@ -100,7 +102,7 @@ Each theme covers more than thirty sections and blocks: heroes, service grids, g
 
 Turn on **Developer mode** in Settings and you can view the generated Svelte for any component, convert a component to code, or write your own Svelte components in a built-in editor with live compiler diagnostics. Before saving, the editor checks that the component compiles for browser and server, imports only allowed modules, and avoids raw HTML and `eval`. If a check fails, it blocks the save and shows you why. With an AI provider set up, a small repair agent can fix the code and run the checks again.
 
-Developer mode is off by default, because most people building a brochure site never need it.
+Developer mode is off by default, because most people building a site like this never need it.
 
 ## The AI assistant
 
