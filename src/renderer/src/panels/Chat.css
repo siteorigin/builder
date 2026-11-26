@@ -32,6 +32,16 @@
   .md li + li { margin-top: 4px; }
   .md ol, .result-body .md ol { list-style: decimal; }
   .md li::marker { color: var(--text-3); }
+  .md li > :is(ul, ol, pre, p, blockquote, hr, .md-table) { margin-top: 4px; }
+  /* Code keeps its own lines and indent, and scrolls sideways rather than wrapping or widening the panel. */
+  .md pre { margin: 0; padding: 8px 10px; overflow-x: auto; border-radius: var(--r-sm); background: var(--panel-2); box-shadow: inset 0 0 0 1px var(--border); font-family: var(--mono); font-size: 12px; font-weight: 400; line-height: 1.5; white-space: pre; overflow-wrap: normal; tab-size: 2; user-select: text; }
+  .md blockquote { display: flex; flex-direction: column; gap: 8px; margin: 0; padding: 0 0 0 10px; border-left: 2px solid var(--border-strong); color: var(--text-2); }
+  .md hr { width: 100%; margin: 0; border: 0; border-top: 1px solid var(--border-strong); }
+  /* A wide table scrolls inside its own box; its words wrap, but never in the middle of one. */
+  .md-table { overflow-x: auto; }
+  .md table { border-collapse: collapse; font-size: 12px; line-height: 18px; overflow-wrap: normal; }
+  .md :is(th, td) { padding: 3px 8px; border: 1px solid var(--border); text-align: left; vertical-align: top; }
+  .md th { font-weight: 600; background: var(--panel-2); }
   /* A turn that changed nothing is its answer: the words, with no card around them, then one quiet line that says the
      site is unchanged and opens what the turn did on the way. */
   .reply { display: flex; flex-direction: column; gap: 6px; }
@@ -366,4 +376,5 @@
   .chip:not(:has(button)) { padding-right: 8px; }
   .composer textarea:focus-visible { box-shadow: none; }
   .md code { font-family: var(--mono); font-size: 12px; padding: 1px 4px; border-radius: var(--r-xs); background: var(--active); }
+  .md pre code { padding: 0; border-radius: 0; background: none; }
 }
