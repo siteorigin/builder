@@ -3,15 +3,24 @@
  * and groupings its entries fill in. Everything changed is saved together, as one step to undo, when the dialog's Save
  * is pressed; the engine's refusal (an address taken, a field a layout shows) is said inside the dialog, which stays
  * open with what was typed.
+ *
+ * Every control in a field's card has a visible label; fields move up and down with buttons (their order is the order
+ * an entry's form shows them in), and a refusal stays said in the footer until the settings are reloaded.
  */
 import { useId, useRef, useState } from 'react';
-import { Plus, Trash2 } from 'lucide-react';
+import { ArrowDown, ArrowUp, Plus, Trash2 } from 'lucide-react';
 import type { CollectionFieldSchema, CollectionKind } from '@shared/types';
 import { COLLECTION_FIELD_TYPES } from '@shared/types';
 import { claimRefusals, commitOps, confirmDialog, getState, useStore } from '../store';
-import { Field, Modal, Segmented, SwitchRow } from '../components/ui';
+import { ChoiceField, Field, Modal, SwitchRow, useMenu } from '../components/ui';
 import { FIELD_TYPE_LABELS, entryNoun, newFieldSchema, retypeField, schemaDraftOf, schemaLosses, schemaUpdateOp, settleDraft, type CollectionFieldType, type FieldRow, type SchemaDraft } from '../lib/content';
 import { isImeComposing } from '../lib/ime';
+import './CollectionSchemaDialog.css';
+
+const KIND_HINTS: Record<CollectionKind, string> = {
+  editorial: 'Dated pieces written in a distraction-free editor, such as blog posts.',
+  structured: 'Entries made of fields, such as team members or projects.'
+};
 
 export function CollectionSchemaDialog({ collectionId, onClose }: { collectionId: string; onClose: () => void }) {
   const snap = useStore((s) => s.snapshot);
@@ -31,9 +40,23 @@ export function CollectionSchemaDialog({ collectionId, onClose }: { collectionId
   /** How many rows were added, for each one's key while its name is not settled. */
   const added = useRef(0);
   const uid = useId();
+  const addMenu = useMenu();
   if (!snap || !collection || !draft || !base || snap.workspaceKey !== opening) return null;
   const state = snap.state;
-  const set = (patch: Partial<SchemaDraft>) => (setDraft({ ...draft, ...patch }), setError(null));
+  // A refusal stays said while it still holds: one made stale by a change elsewhere goes only when the settings reload.
+  const set = (patch: Partial<SchemaDraft>) => (setDraft({ ...draft, ...patch }), !stale && setError(null));
+  /** Move field `i` by `step`, keeping focus on the button that moved it. */
+  const move = (i: number, step: -1 | 1) => {
+    const j = i + step;
+    if (j < 0 || j >= draft.fields.length) return;
+    const fields = [...draft.fields];
+    [fields[i], fields[j]] = [fields[j], fields[i]];
+    set({ fields });
+    const rowKey = fields[j].key ?? fields[j].name;
+    // At the end it moved to, its button there is disabled: the other one takes focus.
+    const dir = (j === 0 && step === -1) || (j === fields.length - 1 && step === 1) ? (step === -1 ? 'down' : 'up') : step === -1 ? 'up' : 'down';
+    requestAnimationFrame(() => document.querySelector<HTMLElement>(`[data-move="${CSS.escape(`${rowKey}:${dir}`)}"]`)?.focus());
+  };
   const setField = (i: number, row: FieldRow) => set({ fields: draft.fields.map((f, j) => (j === i ? row : f)) });
   const collections = Object.values(state.collections)
     .map((c) => c.settings)
@@ -48,10 +71,14 @@ export function CollectionSchemaDialog({ collectionId, onClose }: { collectionId
     setDraft(schemaDraftOf(c));
     setStale(false);
     setError(null);
+    // The Reload button goes with the refusal: editing resumes at the name.
+    requestAnimationFrame(() => document.getElementById(`${uid}-name`)?.focus());
   };
   const changedMeanwhile = () => {
     setStale(true);
-    setError(`${base.collection.settings.name} changed while these settings were open. Show its settings as they are now, and make your changes again.`);
+    setError(`The project changed while these settings were open, so they can’t be saved over it. Reload them and make your changes again; what you changed here is discarded.`);
+    // Save is disabled under the focus that pressed it: Reload, the way on, takes it.
+    requestAnimationFrame(() => document.getElementById(`${uid}-reload`)?.focus());
   };
 
   const save = async () => {
@@ -97,6 +124,9 @@ export function CollectionSchemaDialog({ collectionId, onClose }: { collectionId
 
   const addField = (type: CollectionFieldType) => {
     const label = FIELD_TYPE_LABELS[type];
+    const key = `new-${++added.current}`;
+    // The new field's label takes focus, so the next keystrokes name it.
+    requestAnimationFrame(() => document.querySelector<HTMLInputElement>(`[data-row="${key}"] input`)?.select());
     set({
       fields: [
         ...draft.fields,
@@ -104,7 +134,7 @@ export function CollectionSchemaDialog({ collectionId, onClose }: { collectionId
           name: '',
           schema: newFieldSchema(type, label, collectionId),
           added: true,
-          key: `new-${++added.current}`
+          key
         }
       ]
     });
@@ -128,16 +158,18 @@ export function CollectionSchemaDialog({ collectionId, onClose }: { collectionId
       onClose={onClose}
       busy={busy}
       wide
+      // A draft can hold many fields' edits: only Cancel, Close and Escape end it.
+      dismissOnBackdrop={false}
       footer={
         <>
           {error && (
-            <p className="field-error schema-error" role="alert">
+            <p className="field-error cs-error" role="alert">
               {error}
             </p>
           )}
           {stale && (
-            <button className="btn" onClick={reload} disabled={busy}>
-              Show current settings
+            <button id={`${uid}-reload`} className="btn" onClick={reload} disabled={busy}>
+              Reload settings
             </button>
           )}
           <span className="grow" />
@@ -150,99 +182,114 @@ export function CollectionSchemaDialog({ collectionId, onClose }: { collectionId
         </>
       }
     >
-      <div className="schema-dialog">
-        <section aria-labelledby={`${uid}-what`}>
-          <h4 id={`${uid}-what`}>What it holds</h4>
-          <Field label="Name" controlId={`${uid}-name`}>
-            <input id={`${uid}-name`} className="input" maxLength={80} value={draft.name} onChange={(e) => set({ name: e.target.value })} />
-          </Field>
-          <Field label="One entry is called" controlId={`${uid}-singular`} hint={`Shown as “New ${entryNoun({ settings: { ...collection.settings, singularName: draft.singularName } }).toLowerCase()}”.`}>
-            <input id={`${uid}-singular`} className="input" maxLength={80} placeholder="Entry" value={draft.singularName} onChange={(e) => set({ singularName: e.target.value })} />
-          </Field>
-          <Segmented<CollectionKind>
-            radio
+      <div className="cs">
+        <section className="cs-part" aria-labelledby={`${uid}-what`}>
+          <h3 id={`${uid}-what`}>What it holds</h3>
+          <div className="cs-row">
+            <Field label="Name" controlId={`${uid}-name`}>
+              <input id={`${uid}-name`} className="input" maxLength={80} value={draft.name} onChange={(e) => set({ name: e.target.value })} />
+            </Field>
+            <Field label="One entry is called" controlId={`${uid}-singular`} hint={`Shown as “New ${entryNoun({ settings: { ...collection.settings, singularName: draft.singularName } }).toLowerCase()}”.`}>
+              <input id={`${uid}-singular`} className="input" maxLength={80} placeholder={entryNoun({ settings: { ...collection.settings, singularName: '' } })} value={draft.singularName} onChange={(e) => set({ singularName: e.target.value })} />
+            </Field>
+          </div>
+          <ChoiceField<CollectionKind>
             label="Kind"
+            hint={KIND_HINTS[draft.kind]}
             value={draft.kind}
             onChange={(kind) => set({ kind })}
             options={[
-              {
-                value: 'editorial',
-                label: 'Articles',
-                title: 'Dated pieces written in a distraction-free editor, such as blog posts'
-              },
-              {
-                value: 'structured',
-                label: 'Records',
-                title: 'Entries made of fields, such as team members or projects'
-              }
+              { value: 'editorial', label: 'Articles' },
+              { value: 'structured', label: 'Records' }
             ]}
           />
           <SwitchRow checked={draft.hasBody} onChange={(hasBody) => set({ hasBody })} label="Entries have text of their own" hint="Turning it off needs every entry’s text cleared first." />
         </section>
-        <section aria-labelledby={`${uid}-pages`}>
-          <h4 id={`${uid}-pages`}>Pages</h4>
+        <section className="cs-part" aria-labelledby={`${uid}-pages`}>
+          <h3 id={`${uid}-pages`}>Pages</h3>
           <SwitchRow checked={draft.detail} onChange={(detail) => set({ detail, archive: detail && draft.archive })} label="A page for each entry" hint="Off, the entries are records other pages show, with no address of their own." />
           {draft.detail && (
             <>
-              <SwitchRow checked={draft.archive} onChange={(archive) => set({ archive })} label="A page listing them all" />
+              <SwitchRow checked={draft.archive} onChange={(archive) => set({ archive })} label="A page listing them all" hint="At the address below, with a page for each category." />
               <Field label="Address" controlId={`${uid}-route`} hint={`Each entry’s address starts with it, such as ${draft.route.replace(/\/?$/, '/')}an-entry/.`}>
                 <input id={`${uid}-route`} className="input" maxLength={200} spellCheck={false} value={draft.route} onChange={(e) => set({ route: e.target.value })} />
               </Field>
             </>
           )}
         </section>
-        <section aria-labelledby={`${uid}-fields`}>
-          <h4 id={`${uid}-fields`}>Fields</h4>
-          {!draft.fields.length && <p className="posts-note">No custom fields yet. Add one for each thing every entry states, such as a role or a price.</p>}
+        <section className="cs-part" aria-labelledby={`${uid}-fields`}>
+          <h3 id={`${uid}-fields`}>Fields</h3>
+          <p className="cs-note">{draft.fields.length ? 'Each entry fills these in, in this order, and a hint is shown under its field. A saved field keeps its kind: to change it, remove the field and add another.' : 'No custom fields yet. Add one for each thing every entry states, such as a role or a price.'}</p>
           {draft.fields.length > 0 && (
-            <ul className="collection-fields">
-              {draft.fields.map((f, i) => (
-                <li key={f.key ?? f.name} className="collection-field" data-field={f.name || undefined}>
-                  <FieldSettings row={f} collectionId={collectionId} collections={collections} onChange={(row) => setField(i, row)} />
-                  <button className="icon-btn sm" aria-label={`Remove ${f.schema.label || f.name}`} title="Remove field" onClick={() => set({ fields: draft.fields.filter((_, j) => j !== i) })}>
-                    <Trash2 />
-                  </button>
-                </li>
-              ))}
-            </ul>
+            <ol className="cs-fields">
+              {draft.fields.map((f, i) => {
+                const rowKey = f.key ?? f.name;
+                const name = f.schema.label || f.name || 'this field';
+                return (
+                  <li key={rowKey} className="cs-field" data-field={f.name || undefined} data-row={rowKey}>
+                    <div className="cs-field-head">
+                      <span className="cs-field-title">{f.schema.label || 'Untitled field'}</span>
+                      {!f.added && <span className="badge">{FIELD_TYPE_LABELS[f.schema.type]}</span>}
+                      {f.added ? (
+                        <span className="badge accent">New</span>
+                      ) : (
+                        <span className="cs-field-key">
+                          Name in layouts: <code>{f.name}</code>
+                        </span>
+                      )}
+                      <span className="grow" />
+                      <button className="icon-btn sm" aria-label={`Move ${name} up`} title="Move up" disabled={i === 0} data-move={`${rowKey}:up`} onClick={() => move(i, -1)}>
+                        <ArrowUp />
+                      </button>
+                      <button className="icon-btn sm" aria-label={`Move ${name} down`} title="Move down" disabled={i === draft.fields.length - 1} data-move={`${rowKey}:down`} onClick={() => move(i, 1)}>
+                        <ArrowDown />
+                      </button>
+                      <button className="icon-btn sm" aria-label={`Remove ${name}`} title="Remove field" onClick={() => set({ fields: draft.fields.filter((_, j) => j !== i) })}>
+                        <Trash2 />
+                      </button>
+                    </div>
+                    <FieldSettings row={f} collectionId={collectionId} collections={collections} onChange={(row) => setField(i, row)} />
+                  </li>
+                );
+              })}
+            </ol>
           )}
-          <label className="schema-add">
-            <Plus aria-hidden="true" />
-            <select
-              className="select sm"
-              aria-label="Add a field"
-              value=""
-              onChange={(e) => {
-                if (e.target.value) addField(e.target.value as CollectionFieldType);
-              }}
-            >
-              <option value="">Add a field…</option>
-              {COLLECTION_FIELD_TYPES.map((t) => (
-                <option key={t} value={t}>
-                  {FIELD_TYPE_LABELS[t]}
-                </option>
-              ))}
-            </select>
-          </label>
+          <button
+            className="btn btn-sm cs-add"
+            aria-haspopup="menu"
+            aria-expanded="false"
+            onClick={(e) =>
+              addMenu.openAt(
+                e.currentTarget,
+                COLLECTION_FIELD_TYPES.map((t) => ({ label: FIELD_TYPE_LABELS[t], onSelect: () => addField(t) })),
+                'Add a field'
+              )
+            }
+          >
+            <Plus aria-hidden="true" /> Add a field
+          </button>
+          {addMenu.node}
         </section>
-        <section aria-labelledby={`${uid}-groups`}>
-          <h4 id={`${uid}-groups`}>Groupings</h4>
-          <p className="posts-note">Ways of filing entries, such as categories or departments. Their terms are added in the list of entries.</p>
+        <section className="cs-part" aria-labelledby={`${uid}-groups`}>
+          <h3 id={`${uid}-groups`}>Groupings</h3>
+          <p className="cs-note">Ways of filing entries, such as categories or departments. Their terms are added in the list of entries.</p>
           {draft.taxonomies.length > 0 && (
-            <ul className="collection-fields">
+            <ul className="cs-groups" aria-label="Groupings">
               {draft.taxonomies.map((t, i) => (
-                <li key={t.key ?? t.id} className="collection-field">
-                  <input
-                    className="input"
-                    aria-label={`Name of grouping ${i + 1}`}
-                    maxLength={60}
-                    value={t.label}
-                    onChange={(e) =>
-                      set({
-                        taxonomies: draft.taxonomies.map((x, j) => (j === i ? { ...x, label: e.target.value } : x))
-                      })
-                    }
-                  />
+                <li key={t.key ?? t.id} className="cs-group">
+                  <Field label="Grouping name" controlId={`${uid}-group-${i}`}>
+                    <input
+                      id={`${uid}-group-${i}`}
+                      className="input"
+                      maxLength={60}
+                      value={t.label}
+                      onChange={(e) =>
+                        set({
+                          taxonomies: draft.taxonomies.map((x, j) => (j === i ? { ...x, label: e.target.value } : x))
+                        })
+                      }
+                    />
+                  </Field>
                   <button
                     className="icon-btn sm"
                     aria-label={`Remove ${t.label || t.id}`}
@@ -259,7 +306,7 @@ export function CollectionSchemaDialog({ collectionId, onClose }: { collectionId
               ))}
             </ul>
           )}
-          <button className="btn btn-sm btn-ghost" onClick={addGrouping}>
+          <button className="btn btn-sm cs-add" onClick={addGrouping}>
             <Plus aria-hidden="true" /> Add a grouping
           </button>
         </section>
@@ -268,67 +315,99 @@ export function CollectionSchemaDialog({ collectionId, onClose }: { collectionId
   );
 }
 
-/** One field's settings: its label (its name follows it until saved), kind, and what that kind takes. */
+/** One field's settings: its label (its name follows it until saved), kind, and what that kind takes, each labelled. */
 function FieldSettings({ row, collectionId, collections, onChange }: { row: FieldRow; collectionId: string; collections: Array<{ id: string; name: string }>; onChange: (row: FieldRow) => void }) {
   const uid = useId();
   const s = row.schema;
   const put = (schema: CollectionFieldSchema) => onChange({ ...row, schema });
   return (
-    <div className="schema-field-body">
-      <div className="schema-field-head">
-        <input
-          className="input"
-          aria-label="Field label"
-          maxLength={80}
-          value={s.label}
-          onChange={(e) =>
-            onChange({
-              ...row,
-              schema: { ...s, label: e.target.value } as CollectionFieldSchema
-            })
-          }
-          onKeyDown={(e) => {
-            if (e.key === 'Enter' && !isImeComposing(e)) e.preventDefault();
-          }}
-        />
-        {row.added ? (
-          <select className="select sm" aria-label={`Kind of ${s.label || 'field'}`} value={s.type} onChange={(e) => put(retypeField(s, e.target.value as CollectionFieldType, collectionId))}>
-            {COLLECTION_FIELD_TYPES.map((t) => (
-              <option key={t} value={t}>
-                {FIELD_TYPE_LABELS[t]}
-              </option>
-            ))}
-          </select>
-        ) : (
-          <span className="badge" title="A saved field keeps its kind: remove it and add another to change it.">
-            {FIELD_TYPE_LABELS[s.type]}
-          </span>
+    <div className="cs-field-body">
+      <div className="cs-field-grid">
+        <Field label="Label" controlId={`${uid}-label`}>
+          <input
+            id={`${uid}-label`}
+            className="input"
+            maxLength={80}
+            value={s.label}
+            onChange={(e) =>
+              onChange({
+                ...row,
+                schema: { ...s, label: e.target.value } as CollectionFieldSchema
+              })
+            }
+            onKeyDown={(e) => {
+              if (e.key === 'Enter' && !isImeComposing(e)) e.preventDefault();
+            }}
+          />
+        </Field>
+        {row.added && (
+          <Field label="Kind" controlId={`${uid}-kind`}>
+            <select id={`${uid}-kind`} className="select" value={s.type} onChange={(e) => put(retypeField(s, e.target.value as CollectionFieldType, collectionId))}>
+              {COLLECTION_FIELD_TYPES.map((t) => (
+                <option key={t} value={t}>
+                  {FIELD_TYPE_LABELS[t]}
+                </option>
+              ))}
+            </select>
+          </Field>
         )}
-        {!row.added && (
-          <code className="faint" title="The name layouts and lists read it by">
-            {row.name}
-          </code>
+        {s.type === 'number' &&
+          (['min', 'max'] as const).map((k) => (
+            <Field key={k} label={k === 'min' ? 'Smallest' : 'Largest'} controlId={`${uid}-${k}`}>
+              <input
+                id={`${uid}-${k}`}
+                className="input"
+                type="number"
+                placeholder="Any"
+                value={s[k] ?? ''}
+                onChange={(e) => {
+                  const v = e.target.value === '' ? undefined : Number(e.target.value);
+                  put({ ...s, [k]: Number.isFinite(v) ? v : undefined });
+                }}
+              />
+            </Field>
+          ))}
+        {s.type === 'reference' && (
+          <div className="cs-wide">
+            <Field label="Names entries of" controlId={`${uid}-ref`}>
+            <select id={`${uid}-ref`} className="select" value={s.collection} onChange={(e) => put({ ...s, collection: e.target.value })}>
+              {collections.map((c) => (
+                <option key={c.id} value={c.id}>
+                  {c.name}
+                </option>
+              ))}
+            </select>
+            </Field>
+          </div>
         )}
+        <div className="cs-hint">
+          <Field label="Hint (optional)" controlId={`${uid}-hint`}>
+            <input
+              id={`${uid}-hint`}
+              className="input"
+              maxLength={300}
+              value={s.description ?? ''}
+              onChange={(e) =>
+                put({
+                  ...s,
+                  description: e.target.value || undefined
+                } as CollectionFieldSchema)
+              }
+            />
+          </Field>
+        </div>
       </div>
       {s.type === 'string' && (
-        <label className="schema-check">
+        <label className="cs-check">
           <input type="checkbox" checked={!!s.multiline} onChange={(e) => put({ ...s, multiline: e.target.checked || undefined })} /> Several lines
         </label>
       )}
-      {s.type === 'reference' && (
-        <div className="schema-field-row">
-          <select className="select sm" aria-label={`Collection ${s.label || 'it'} names entries of`} value={s.collection} onChange={(e) => put({ ...s, collection: e.target.value })}>
-            {collections.map((c) => (
-              <option key={c.id} value={c.id}>
-                {c.name}
-              </option>
-            ))}
-          </select>
-          <label className="schema-check">
+      {s.type === 'reference' &&
+        (row.added ? (
+          <label className="cs-check">
             <input
               type="checkbox"
               checked={!!s.multiple}
-              disabled={!row.added}
               onChange={(e) =>
                 put({
                   ...s,
@@ -337,19 +416,22 @@ function FieldSettings({ row, collectionId, collections, onChange }: { row: Fiel
                 })
               }
             />{' '}
-            Several
+            Can name several entries
           </label>
-        </div>
-      )}
+        ) : (
+          <p className="cs-fact">{s.multiple ? 'Names several entries.' : 'Names one entry.'} Kept as it is once saved.</p>
+        ))}
       {s.type === 'enum' && (
-        <div className="schema-options" role="group" aria-labelledby={`${uid}-opts`}>
-          <span id={`${uid}-opts`} className="faint">
-            Options
-          </span>
+        <div className="cs-options" role="group" aria-labelledby={`${uid}-opts`}>
+          <div className="cs-option cs-option-cols">
+            <span id={`${uid}-opts`}>Options</span>
+            <span id={`${uid}-default`}>Default</span>
+            <span />
+          </div>
           {s.options.map((o, i) => (
-            <div key={o.value} className="schema-field-row">
+            <div key={o.value} className="cs-option">
               <input
-                className="input sm"
+                className="input"
                 aria-label={`Option ${i + 1}`}
                 maxLength={80}
                 value={o.label}
@@ -360,12 +442,13 @@ function FieldSettings({ row, collectionId, collections, onChange }: { row: Fiel
                   })
                 }
               />
-              <label className="schema-check">
-                <input type="radio" name={`${uid}-default`} checked={s.default === o.value} onChange={() => put({ ...s, default: o.value })} /> Default
-              </label>
+              <span className="cs-option-default">
+                <input type="radio" name={`${uid}-default`} aria-label={o.label || `Option ${i + 1}`} aria-describedby={`${uid}-default`} checked={s.default === o.value} onChange={() => put({ ...s, default: o.value })} />
+              </span>
               <button
                 className="icon-btn sm"
                 aria-label={`Remove option ${o.label}`}
+                title="Remove option"
                 disabled={s.options.length <= 1}
                 onClick={() => {
                   const options = s.options.filter((_, j) => j !== i);
@@ -381,7 +464,7 @@ function FieldSettings({ row, collectionId, collections, onChange }: { row: Fiel
             </div>
           ))}
           <button
-            className="btn btn-sm btn-ghost"
+            className="btn btn-sm btn-ghost cs-add-inline"
             onClick={() => {
               const taken = new Set(s.options.map((o) => o.value));
               let n = s.options.length + 1;
@@ -396,37 +479,6 @@ function FieldSettings({ row, collectionId, collections, onChange }: { row: Fiel
           </button>
         </div>
       )}
-      {s.type === 'number' && (
-        <div className="schema-field-row">
-          {(['min', 'max'] as const).map((k) => (
-            <input
-              key={k}
-              className="input sm"
-              type="number"
-              aria-label={k === 'min' ? 'Smallest' : 'Largest'}
-              placeholder={k === 'min' ? 'Smallest' : 'Largest'}
-              value={s[k] ?? ''}
-              onChange={(e) => {
-                const v = e.target.value === '' ? undefined : Number(e.target.value);
-                put({ ...s, [k]: Number.isFinite(v) ? v : undefined });
-              }}
-            />
-          ))}
-        </div>
-      )}
-      <input
-        className="input sm"
-        aria-label={`Hint for ${s.label || 'the field'}`}
-        placeholder="Hint shown under the field (optional)"
-        maxLength={300}
-        value={s.description ?? ''}
-        onChange={(e) =>
-          put({
-            ...s,
-            description: e.target.value || undefined
-          } as CollectionFieldSchema)
-        }
-      />
     </div>
   );
 }

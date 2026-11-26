@@ -1,0 +1,54 @@
+@layer components {
+  /* ---------- Connect external source (SourceDialog.tsx) ----------
+     Headed parts in the order the task runs, each a column of fields at the app's field gap; short fields share a row.
+     The footer's status line says where the Test stands, so its result is seen at any scroll position. */
+  .sd { margin: 0; padding: 0; border: 0; min-width: 0; display: flex; flex-direction: column; gap: 22px; }
+  .sd-intro { margin: 0; color: var(--text-2); }
+  .sd-part { display: flex; flex-direction: column; gap: 12px; min-width: 0; }
+  .sd-part + .sd-part { padding-top: 18px; border-top: 1px solid var(--border); }
+  .sd-part > h3 { display: flex; align-items: center; gap: 8px; margin: 0; font-size: 13px; font-weight: 600; color: var(--text); }
+  .sd-part-hint { margin: -6px 0 0; font-size: 12px; line-height: 1.5; color: var(--text-3); }
+  .sd-part-hint code, .sd-pairs .field-hint code, .sd-sample-warn code { font-size: 11.5px; font-variant-ligatures: none; color: var(--text-2); }
+  .sd-subhead { margin: 4px 0 0; font-size: 12px; font-weight: 600; color: var(--text-2); }
+  .sd-row { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; align-items: start; }
+  .sd-row-3 { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+
+  /* Name and value pairs: the heading and its Add on one line, column labels once, then rows. */
+  .sd-pairs { display: flex; flex-direction: column; gap: 6px; min-width: 0; padding-bottom: 2px; }
+  .sd-pairs-head { display: flex; align-items: center; gap: 8px; min-height: 26px; }
+  .sd-pairs-head .btn { margin-right: -9px; }
+  .sd-pair { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1.5fr) 24px; gap: 8px; align-items: center; }
+  .sd-pair-cols { font-size: 11px; font-weight: 500; color: var(--text-3); margin-bottom: -2px; }
+
+  /* Secrets: the name, whether this computer keeps it, then its value and the button that keeps it. */
+  .sd-secrets { display: flex; flex-direction: column; gap: 10px; }
+  .sd-secret { display: flex; flex-direction: column; gap: 6px; padding: 10px 12px; border: 1px solid var(--border); border-radius: var(--r-sm); background: var(--panel-2); }
+  .sd-secret-name { display: flex; align-items: center; gap: 8px; min-width: 0; font-size: 12px; font-weight: 500; color: var(--text-2); }
+  .sd-secret-name svg { width: 14px; height: 14px; flex: none; color: var(--text-3); }
+  .sd-secret-key { font-family: var(--font-mono, ui-monospace, monospace); font-variant-ligatures: none; color: var(--text); }
+  .sd-secret-entry { display: flex; gap: 8px; }
+  .sd-secret-entry .input { flex: 1; min-width: 0; }
+  .sd-secret-entry .btn { flex: none; }
+
+  .sd-map { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 10px 12px; }
+  .sd-code { font-family: var(--font-mono, ui-monospace, monospace); font-size: 12px; max-height: 420px; }
+
+  /* The footer's status line. */
+  .sd-status { min-width: 0; font-size: 12px; line-height: 1.4; }
+  .sd-status .field-error { display: block; }
+  .sd-status-ok { display: inline-flex; align-items: center; gap: 8px; color: var(--text-2); }
+
+  /* The sample a passing Test read. */
+  .sd-sample-summary { margin: 0; }
+  .sd-sample-warn { display: flex; align-items: baseline; gap: 8px; margin: 0; font-size: 12px; line-height: 1.5; color: var(--text-2); }
+  .sd-sample-warn .badge { flex: none; }
+  .sd-sample > h3:focus-visible { outline: 2px solid var(--focus); outline-offset: 3px; border-radius: var(--r-xs); }
+  .sd-sample > h3:focus:not(:focus-visible) { outline: none; }
+  .sd-sample-row { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 12px; }
+  .sd-sample details { min-width: 0; border: 1px solid var(--border); border-radius: var(--r-sm); background: var(--panel-2); }
+  .sd-sample summary { display: flex; align-items: center; gap: 6px; padding: 6px 10px; font-size: 12px; font-weight: 500; color: var(--text-2); cursor: default; list-style: none; }
+  .sd-sample summary::-webkit-details-marker { display: none; }
+  .sd-sample summary::before { content: ''; width: 6px; height: 6px; margin: 0 2px; border-right: 1.5px solid currentColor; border-bottom: 1.5px solid currentColor; transform: rotate(-45deg); flex: none; }
+  .sd-sample details[open] > summary::before { transform: rotate(45deg); margin-top: -3px; }
+  .sd-sample pre { margin: 0; padding: 8px 10px; max-height: 220px; overflow: auto; border-top: 1px solid var(--border); font-size: 11px; white-space: pre-wrap; word-break: break-word; color: var(--text); }
+}

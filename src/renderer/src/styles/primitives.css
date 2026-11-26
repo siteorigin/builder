@@ -241,6 +241,9 @@
      amber trust, plum component), colours it. Blue stays for the dialog's own controls. */
   .modal-head > svg { width: 18px; height: 18px; flex: none; color: var(--text-2); }
   .modal-body { padding: 4px 18px 18px; overflow: auto; font-size: 13px; color: var(--text); }
+  /* Once the body is scrolled (Modal marks it), a hairline under the header, as the footer has, says the content
+     continues above it. */
+  .modal[data-scrolled] > .modal-head { box-shadow: inset 0 -1px 0 var(--border); }
   .modal-foot { display: flex; align-items: center; justify-content: flex-end; gap: 8px; padding: 12px 18px; border-top: 1px solid var(--border); background: var(--panel-2); }
   /* The safe default in a dialog is visibly focused from the start, even when it was focused by the app. */
   .modal [data-autofocus]:focus { outline: 2px solid var(--focus); outline-offset: 2px; }
