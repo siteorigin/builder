@@ -14,7 +14,7 @@ import { EngineError, fail } from './tree';
 const own = <T>(rec: Record<string, T> | undefined, key: string): T | undefined => (rec && Object.hasOwn(rec, key) ? rec[key] : undefined);
 
 export function sourceUpsert(state: ProjectState, op: Op<'source.upsert'>) {
-  if (!isSourceId(op.sourceId)) fail(`"${op.sourceId.slice(0, 60)}" cannot be a source's ID: use lowercase letters, numbers and single hyphens.`);
+  if (!isSourceId(op.sourceId)) fail(`"${String(op.sourceId).slice(0, 60)}" cannot be a source's ID: use lowercase letters, numbers and single hyphens.`);
   const was = own(state.sources, op.sourceId);
   const doc: SourceDoc = {
     schemaVersion: SCHEMA_VERSION,
