@@ -44,12 +44,11 @@ const bodyIndent = (lines: string[], marker: number) => lines.reduce((least, lin
 
 type Fence = { mark: string; indent: number };
 
-/** The fence a line opens, also one on the same line as the list markers it sits under. */
+/** The fence a line opens, also one on the same line as the list marker it sits under. */
 function fenceAt(line: string): Fence | null {
-  let rest = line;
-  for (let depth = 0; depth < MAX_DEPTH && LIST_ITEM.test(rest) && !RULE.test(rest); depth++) rest = rest.slice(LIST_ITEM.exec(rest)![0].length);
+  const rest = line.slice(LIST_ITEM.exec(line)?.[0].length ?? 0);
   const mark = FENCE.exec(rest)?.[2];
-  return mark ? { mark, indent: indentOf(line) + line.trimStart().length - rest.trimStart().length } : null;
+  return mark ? { mark, indent: widthOf(line.slice(0, line.length - rest.trimStart().length)) } : null;
 }
 
 /** Whether this line closes the fence. One indented well past its opening is part of the code. */
@@ -192,12 +191,14 @@ function parse(lines: string[], depth: number): TextBlock[] {
       const nests = depth < MAX_DEPTH;
       // A fence opened on the marker's own line is held from there.
       const fenced = nests ? FENCE.exec(first)?.[2] : undefined;
-      const under = nests ? itemBody(lines, i + 1, widthOf(spaces), fenced ? { mark: fenced, indent: marker.length } : null) : [];
+      const under = nests ? itemBody(lines, i + 1, widthOf(spaces), fenced ? { mark: fenced, indent: widthOf(marker) } : null) : [];
       const by = bodyIndent(under, marker.length);
       const body = under.map((l) => dedent(l, by));
-      // So is a block that starts there. A ">" before a number reads as "more than".
-      const blocky = !!fenced || (nests && (/^>(?!\s*\d)/.test(first) || startsTable(first, body[0])));
-      const inner = parse(blocky ? [first, ...body] : body, depth + 1);
+      // So is a block that starts there. Only a spaced ">" before words is a quote: ">= 100" and "> 100" are amounts.
+      const blocky = !!fenced || (nests && (/^> +(?![\d=\s])/.test(first) || startsTable(first, body[0])));
+      // A fence there keeps its place past the lines under it, so it closes at the same line here as above.
+      const head = fenced ? ' '.repeat(Math.max(0, widthOf(marker) - by)) + first : first;
+      const inner = parse(blocky ? [head, ...body] : body, depth + 1);
       // Lines that carry straight on from the marker's own line are still the item's text.
       const carried = !blocky && under[0]?.trim() && inner[0]?.kind === 'p' ? (inner.shift() as { lines: string[] }).lines : [];
       const entry: ListItem = { lines: blocky ? [] : [first, ...carried], blocks: inner };
@@ -234,7 +235,7 @@ const WORD = /^[\p{L}\p{N}]$/u;
 /** A file pattern's star, as in *.png. */
 const EXTENSION = /^\.[A-Za-z0-9]/;
 /** The names code writes between double underscores. Any other word between them is bold. */
-const DUNDER = /__(?:init|main|name|file|dirname|filename|proto|all|doc|dict|str|repr|call|len|iter|next|enter|exit|new|eq|hash|getitem|setitem|getattr|setattr|slots|class|module|version)__(?![A-Za-z0-9_])/y;
+const DUNDER = /__(?:init|main|name|file|dirname|filename|proto|all|doc|dict|str|repr|call|len|iter|next|enter|exit|new|eq|hash|getitem|setitem|getattr|setattr|post_init|slots|class|module|version)__(?![A-Za-z0-9_])/y;
 
 type Opener = { at: number; length: number };
 

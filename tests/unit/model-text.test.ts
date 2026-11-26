@@ -104,6 +104,12 @@ describe('model text blocks', () => {
     expect(textBlocks('- > Approved\n  > by the owner')).toEqual([ul({ lines: [], blocks: [{ kind: 'quote', blocks: [p('Approved', 'by the owner')] }] })]);
     expect(textBlocks('- | A |\n  | - |')).toEqual([ul({ lines: [], blocks: [{ kind: 'table', head: ['A'], rows: [] }] })]);
     expect(textBlocks('- > 100 visitors')).toEqual([ul(item('> 100 visitors'))]);
+    for (const amount of ['>= 100 visitors', '>100 visitors']) expect(textBlocks(`- ${amount}`)).toEqual([ul(item(amount))]);
+    // The closing line is found at the same place however far the code under the marker stands out, tabs included.
+    expect(textBlocks('1. ```js\nx()\n    ```\n   Continue.\n2. Next')).toEqual([ol({ lines: [], blocks: [code('x()'), p('Continue.')] }, item('Next'))]);
+    expect(textBlocks('-\t```js\n\tx()\n       ```\n- Next\nDone.')).toEqual([ul({ lines: [], blocks: [code('x()')] }, item('Next')), p('Done.')]);
+    // Only a fence the list reader would open is held.
+    expect(textBlocks('- Parent\n  - - ```js\n- Next\nDone.')).toEqual([ul(item('Parent', ul(item('- ```js'))), item('Next')), p('Done.')]);
   });
 
   it('closes a fence only with a line that is not indented well past it, and leaves a tab’s other columns', () => {
@@ -111,6 +117,7 @@ describe('model text blocks', () => {
     expect(textBlocks('  ```py\n  if ok:\n\tpass  \n  ```')).toEqual([code('if ok:', '  pass  ')]);
     expect(textBlocks('- Card\n\t- Body\n    - Title')).toEqual([ul(item('Card', ul(item('Body'), item('Title'))))]);
     expect(textBlocks('~~~sh\nx')).toEqual([code('x')]);
+    expect(textBlocks('```\n   ```\nAfter')).toEqual([code(), p('After')]);
   });
 
   it('keeps a paragraph after a blank line apart from its item’s words, and a very long item whole', () => {

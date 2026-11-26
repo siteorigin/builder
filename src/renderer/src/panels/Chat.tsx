@@ -190,8 +190,10 @@ function summaryOf(r: NonNullable<ChatMessage['result']>) {
   // A failed edit that changed nothing says so, unless its own words already do.
   if (r.status === 'failed' && !r.ask && !r.changes.length && !/restored|unchanged|not changed|no changes|nothing (was|has been) changed/i.test(r.summary)) {
     const words = r.summary.trim();
-    // After more than one line it stands apart, so code the words end with does not take it in.
-    return `${words}${words.includes('\n') ? '\n\n' : ' '}Nothing on your site was changed.`;
+    const unchanged = 'Nothing on your site was changed.';
+    // Before words that hold a code fence, closed or not, so the code cannot take it in.
+    if (/```|~~~/.test(words)) return `${unchanged}\n\n${words}`;
+    return `${words} ${unchanged}`;
   }
   return r.summary;
 }
