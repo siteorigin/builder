@@ -346,6 +346,7 @@ describe('saysUnchanged', () => {
   it('recognises the run\'s own wording so the chat does not repeat it', () => {
     expect(saysUnchanged('The provider rejected the key. Nothing in the site was changed.')).toBe(true);
     expect(saysUnchanged('Nothing on your site was changed.')).toBe(true);
+    expect(saysUnchanged('Nothing in the request was changed.')).toBe(false);
     expect(saysUnchanged('The provider returned an error.')).toBe(false);
   });
 });
