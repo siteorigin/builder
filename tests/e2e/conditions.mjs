@@ -44,7 +44,7 @@ await win.locator('.mode-band').waitFor();
 await eventually(async () => assert.equal((await grid()).owner, 'project', 'the placement now uses the project’s copy'));
 const { pageId, nodeId: placedId, defId, items } = await grid();
 const itemId = (title) => items.find((i) => i.title === title).id;
-const [planning, materials, delivery] = ['Planning & layout', 'Materials & colour', 'Project delivery'].map(itemId);
+const [planning, materials, delivery] = ['Planning & layout', 'Materials & color', 'Project delivery'].map(itemId);
 const everyCard = [planning, materials, delivery].sort();
 
 /** The cards (by item ID) for which the preview shows a node of the copied design, read in one go. */
@@ -78,13 +78,13 @@ await inspector.getByLabel('Show when test').selectOption('eq');
 await eventually(async () => assert.equal((await grid()).nodes['card-icon'].when?.eq, 'Service', 'comparing starts from the field’s default'));
 await eventually(async () => assert.deepEqual(await shownFor('card-icon'), [], 'no card is titled Service'));
 const showValue = inspector.getByLabel('Show when value');
-await showValue.fill('Materials & colour');
+await showValue.fill('Materials & color');
 await showValue.press('Enter');
-await eventually(async () => assert.deepEqual((await grid()).nodes['card-icon'].when, { ref: { $item: 'title' }, eq: 'Materials & colour' }, 'the typed value is saved'));
-await eventually(async () => assert.deepEqual(await shownFor('card-icon'), [materials], 'only the Materials & colour card shows its icon'));
+await eventually(async () => assert.deepEqual((await grid()).nodes['card-icon'].when, { ref: { $item: 'title' }, eq: 'Materials & color' }, 'the typed value is saved'));
+await eventually(async () => assert.deepEqual(await shownFor('card-icon'), [materials], 'only the Materials & color card shows its icon'));
 await eventually(async () => assert.deepEqual(await shownFor('card-icon-wrap'), everyCard, 'the other cards keep an empty icon badge'));
-await eventually(async () => assert.match((await row('card-icon').locator('.layer-cond').getAttribute('title')) ?? '', /Show when Card title is “Materials & colour”/, 'Layers marks the icon with its rule'));
-assert.match((await row('card-icon').getAttribute('aria-description')) ?? '', /Show when Card title is “Materials & colour”/, 'and the row says it to assistive technology');
+await eventually(async () => assert.match((await row('card-icon').locator('.layer-cond').getAttribute('title')) ?? '', /Show when Card title is “Materials & color”/, 'Layers marks the icon with its rule'));
+assert.match((await row('card-icon').getAttribute('aria-description')) ?? '', /Show when Card title is “Materials & color”/, 'and the row says it to assistive technology');
 
 step('hide the empty badges, and show them again');
 await selectRow('card-icon-wrap');
@@ -144,7 +144,7 @@ await eventually(async () => assert.deepEqual(await shownFor('card-icon'), every
 await eventually(async () => assert.equal(await row('card-icon').locator('.layer-cond').count(), 0, 'Layers no longer marks the icon'));
 assert.equal(await row('card-icon-wrap').locator('.layer-cond').count(), 1, 'the badge keeps its own rule');
 await menu('edit-undo');
-await eventually(async () => assert.deepEqual((await grid()).nodes['card-icon'].when, { ref: { $item: 'title' }, eq: 'Materials & colour' }, 'undo restores the cleared rule'));
+await eventually(async () => assert.deepEqual((await grid()).nodes['card-icon'].when, { ref: { $item: 'title' }, eq: 'Materials & color' }, 'undo restores the cleared rule'));
 await eventually(async () => assert.deepEqual(await shownFor('card-icon'), [materials], 'and the preview follows it'));
 await eventually(async () => assert.equal(await showWhen.inputValue(), 'item:title', 'the Inspector shows the restored rule'));
 
@@ -164,7 +164,7 @@ await selectRow('card-title');
 await selectRow('card-icon');
 await eventually(async () => assert.equal(await showWhen.inputValue(), 'item:title', 'the icon’s rule is shown'));
 assert.equal(await inspector.getByLabel('Show when test').inputValue(), 'eq');
-assert.equal(await inspector.getByLabel('Show when value').inputValue(), 'Materials & colour');
+assert.equal(await inspector.getByLabel('Show when value').inputValue(), 'Materials & color');
 
 await menu('edit-undo');
 await eventually(async () => assert.deepEqual(await shownFor('card-text'), everyCard, 'undo brings the eyebrow back, and the descriptions'));

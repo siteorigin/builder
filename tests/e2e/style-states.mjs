@@ -22,7 +22,7 @@ const cardStyles = () =>
 
 const RED = 'rgb(255, 0, 0)';
 const card = frame.locator('li', { hasText: 'Planning & layout' }).first();
-const other = frame.locator('li', { hasText: 'Materials & colour' }).first();
+const other = frame.locator('li', { hasText: 'Materials & color' }).first();
 const bg = (loc) => loc.evaluate((el) => getComputedStyle(el).backgroundColor);
 const forcedOnPage = () => frame.locator('[data-so-force-state]').count();
 const states = win.getByRole('radiogroup', { name: 'State', exact: true });

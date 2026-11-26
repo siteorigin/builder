@@ -814,7 +814,7 @@ export function NewProjectModal({ onClose }: { onClose: () => void }) {
               id="new-project-name"
               className="input"
               autoFocus
-              placeholder="For example, Harbour Lane Studio"
+              placeholder="For example, Harbor Lane Studio"
               value={name}
               aria-invalid={onName ? true : undefined}
               aria-describedby={shown && (shown.about === 'name' || shown.about === 'other') ? 'new-project-error' : undefined}

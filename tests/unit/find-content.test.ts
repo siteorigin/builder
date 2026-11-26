@@ -551,7 +551,7 @@ describe('the starter’s sample contact details (#15)', () => {
     expect(sampleContactMatches(s).map((g) => [g.kind, g.value, g.matches.length])).toEqual([
       ['email', 'hello@example.com', 5],
       ['phone', '+1 555 0134', 4],
-      ['address', '12 Harbour Lane, Millbrook', 1]
+      ['address', '12 Harbor Lane, Millbrook', 1]
     ]);
     // The visible address, the contact method's link, the section's call to action, and the shared footer.
     expect(rows(group(s, 'email'))).toEqual([
@@ -583,12 +583,12 @@ describe('the starter’s sample contact details (#15)', () => {
         spans: [
           // A link that starts the paragraph is found like any other, and keeps its subject when it is replaced.
           { text: 'Email us', link: { type: 'email', target: 'hello@example.com?subject=Hi' } },
-          { text: ' or write to Hello@Example.com, call +1\u00a0555-0134 (24 hours) or + 1 555 0134, or visit 12 Harbour  Lane,Millbrook. ' },
+          { text: ' or write to Hello@Example.com, call +1\u00a0555-0134 (24 hours) or + 1 555 0134, or visit 12 Harbor  Lane,Millbrook. ' },
           // Someone else's, never found: a longer mailbox or domain, a longer number.
           { text: 'Not myhello@example.com, hello@example.com.au or +1 555 01345. ' },
           // Perhaps someone else's: found, so none goes out unreviewed, but changed only in the inspector.
-          { text: "Maybe o'hello@example.com, 'hello@example.com', ops@hello@example.com, +1 555 0134 24/7, +1 555 0134-5, +1 555\u20130134 -5, +44 (20) 1555 0134, +44 (20) / 1555\u20130134, +44 20/1555 0134, 12 Harbour Lane, Millbrook\u2011East or 12 Harbour Lane, Millbrook--East. " },
-          { text: 'Also +1 555 0134 (567), Call+1 555 0134, 12 Harbour Lane, Millbrook\u2013 East and "hello@example.com"@company.org. ' },
+          { text: "Maybe o'hello@example.com, 'hello@example.com', ops@hello@example.com, +1 555 0134 24/7, +1 555 0134-5, +1 555\u20130134 -5, +44 (20) 1555 0134, +44 (20) / 1555\u20130134, +44 20/1555 0134, 12 Harbor Lane, Millbrook\u2011East or 12 Harbor Lane, Millbrook--East. " },
+          { text: 'Also +1 555 0134 (567), Call+1 555 0134, 12 Harbor Lane, Millbrook\u2013 East and "hello@example.com"@company.org. ' },
           { text: 'Directions', link: { type: 'url', target: 'https://maps.example.org/?q=+15550134' } },
           { text: ' or ' },
           { text: 'the front desk', link: { type: 'email', target: 'HELLO@example.com' } }
@@ -623,10 +623,10 @@ describe('the starter’s sample contact details (#15)', () => {
     ]);
     expect(on('phone')[2].blocked).toMatch(/runs into other digits/);
     expect(shown('address')).toEqual([
-      ['text', '12 Harbour Lane,Millbrook', false],
-      ['text', '12 Harbour Lane, Millbrook', true],
-      ['text', '12 Harbour Lane, Millbrook', true],
-      ['text', '12 Harbour Lane, Millbrook', true]
+      ['text', '12 Harbor Lane,Millbrook', false],
+      ['text', '12 Harbor Lane, Millbrook', true],
+      ['text', '12 Harbor Lane, Millbrook', true],
+      ['text', '12 Harbor Lane, Millbrook', true]
     ]);
 
     const mid = apply(s, on('email'), 'studio@kloof.example').after;
@@ -638,8 +638,8 @@ describe('the starter’s sample contact details (#15)', () => {
     expect(words).toContain('write to studio@kloof.example, call +1\u00a0555-0134 (24 hours) or +27 21 555 0199, or visit');
     expect(words).toContain('Not myhello@example.com, hello@example.com.au or +1 555 01345.');
     // What was held is as it was.
-    expect(words).toContain("Maybe o'hello@example.com, 'hello@example.com', ops@hello@example.com, +1 555 0134 24/7, +1 555 0134-5, +1 555\u20130134 -5, +44 (20) 1555 0134, +44 (20) / 1555\u20130134, +44 20/1555 0134, 12 Harbour Lane, Millbrook\u2011East or 12 Harbour Lane, Millbrook--East.");
-    expect(words).toContain('Also +1 555 0134 (567), Call+1 555 0134, 12 Harbour Lane, Millbrook\u2013 East and "hello@example.com"@company.org.');
+    expect(words).toContain("Maybe o'hello@example.com, 'hello@example.com', ops@hello@example.com, +1 555 0134 24/7, +1 555 0134-5, +1 555\u20130134 -5, +44 (20) 1555 0134, +44 (20) / 1555\u20130134, +44 20/1555 0134, 12 Harbor Lane, Millbrook\u2011East or 12 Harbor Lane, Millbrook--East.");
+    expect(words).toContain('Also +1 555 0134 (567), Call+1 555 0134, 12 Harbor Lane, Millbrook\u2013 East and "hello@example.com"@company.org.');
   });
 
   it('finds the sample among the recipients of an email link, and leaves that link to the inspector', () => {

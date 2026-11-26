@@ -57,7 +57,7 @@ export type ComponentPreview = { files: FileMap; definitionId: string; name: str
  */
 export function generateComponentPreview(state: ProjectState, spec: ComponentPreviewSpec): ComponentPreview {
   const named = [spec.definitionId, spec.componentId].filter((v) => v !== undefined);
-  if (named.length !== 1 || typeof named[0] !== 'string') return { error: 'Name one component to preview: a component definition ID, or a catalogue component ID.' };
+  if (named.length !== 1 || typeof named[0] !== 'string') return { error: 'Name one component to preview: a component definition ID, or a catalog component ID.' };
   let shown = state;
   let def: ComponentDefinition | undefined;
   if (spec.definitionId !== undefined) {

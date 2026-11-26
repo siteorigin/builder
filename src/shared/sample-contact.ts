@@ -7,7 +7,7 @@ export const SAMPLE_CONTACT = {
   /** The telephone number as the sections show it, and as their links dial it. */
   phone: '+1 555 0134',
   phoneDial: '+15550134',
-  address: '12 Harbour Lane, Millbrook'
+  address: '12 Harbor Lane, Millbrook'
 } as const;
 
 export type SampleContactKind = 'email' | 'phone' | 'address';

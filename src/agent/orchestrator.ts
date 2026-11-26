@@ -240,7 +240,7 @@ const COPY_RULES =
   'When you write copy yourself, from a short request, make it natural and specific to the site, with short headings. Copy the user supplies (pasted text, notes or a draft) is the source: keep its wording, headings, figures, lists, quotes and links as written, add no filler, and shorten or rewrite it only when they ask.';
 /** How supplied copy becomes a page, for the runs that build pages. */
 const PAGE_FROM_COPY =
-  'To populate a page from supplied copy, put every distinct block of it, in reading order, in the theme catalogue section that fits it (a hero or intro, prose or a media split, feature cards, stats, testimonials, FAQs, a table, contact details, a call to action), add no section or text the copy does not call for, and set or clear the sample text those sections show so only the supplied copy remains.';
+  'To populate a page from supplied copy, put every distinct block of it, in reading order, in the theme catalog section that fits it (a hero or intro, prose or a media split, feature cards, stats, testimonials, FAQs, a table, contact details, a call to action), add no section or text the copy does not call for, and set or clear the sample text those sections show so only the supplied copy remains.';
 /** When a page's existing sections go: placeholders under a draft of the whole page, the author's own only when asked. */
 const REPLACE_PLACEHOLDERS =
   'removeOtherSections: true replaces the sections already there: pass it when supplied copy is the whole page and the page holds only its title-only introduction or starter sample sections, or when the user asks to replace the page. When they ask to add to the page, or it has sections the author wrote, keep the sections already there; a section of a kind the page already has is updated in place, and a list you send replaces its items, so send its existing items with the new ones.';
@@ -408,7 +408,7 @@ function headerNoticeGuidance(state: ProjectState, tools: RunTools['tools']): st
       ? `${before} When the user wants a notice on every page (a closure, an announcement), update the header with update_theme_component (definitionId "${def!.id}"), then set its "notice" text. ${never}`
       : `${before} When the user wants a notice on every page (a closure, an announcement), ask them to allow a wider change: updating the header changes every page that shows it. Then update it with update_theme_component and set its "notice" text. ${never}`;
   }
-  return `This project's header has no notice field. When the user wants a notice on every page (a closure, an announcement), say that updating the theme's components (Update, in the status bar's problems panel) adds one to the header, unless the header was customised. ${never}`;
+  return `This project's header has no notice field. When the user wants a notice on every page (a closure, an announcement), say that updating the theme's components (Update, in the status bar's problems panel) adds one to the header, unless the header was customized. ${never}`;
 }
 
 /** How a new reusable component is made: from the designs already here, as a managed design with a clean contract. */
@@ -493,7 +493,7 @@ function basePrompt(state: ProjectState, run: RunTools, constrained: boolean): s
         : '';
   return `You are the website editing assistant inside SiteOrigin Builder, a desktop editor for small business websites. You change the website only through the provided tools, which apply the same validated operations as the visual editor.
 
-How the website is modelled:
+How the website is modeled:
 - Pages (IDs like "pg_…") have a route and an ordered list of sections. Most sections are component instances: { kind: "instance", componentId, props, variants } (variants holds one option per axis, such as tone and layout, and they combine).
 - Props are typed. Lists (cards, FAQs, plans, links) have items with stable "id" values; edit one item with instance.setProp using itemId + field, add with instance.listInsert, remove with instance.listRemove.
 - The shared header and footer are owned by { kind: "shell", id: "header" | "footer" }. Each already has exactly one component instance (its node ID is in the project summary's "shell" section). Never insert, remove or replace them: edit that instance with instance.setProp / instance.listInsert. Navigation links live in the header's "links" list and the footer's "links" list. ${headerNoticeGuidance(state, run.tools)} Each page shows or hides the header and the footer on its own: page.update showHeader / showFooter (false hides it on that page only).
@@ -1495,7 +1495,7 @@ export class Orchestrator {
         // A question is offered no tool that changes the site; anything that tries anyway is refused here.
         // Nothing in this run can get past these: no corrected call would be applied.
         if (ask) return refused('SCOPE_MISMATCH', READ_ONLY_REFUSAL, false);
-        if (signal.aborted) return refused('CANCELLED', 'Cancelled', false);
+        if (signal.aborted) return refused('CANCELLED', 'Canceled', false);
         // Asset records are created only by the verified importer, never by the model.
         if (operations.some((o) => o.type === 'asset.add' || o.type === 'asset.relink')) return refused('SCOPE_MISMATCH', 'The assistant cannot add images. Ask the user to import them, then use search_assets.', false);
         if (operations.some((o) => o.type === 'component.import')) return refused('SCOPE_MISMATCH', 'The assistant cannot import component packages. Ask the user to import the package from the component library.', false);
@@ -1543,7 +1543,7 @@ export class Orchestrator {
         // The pages the batch will change are measured as they are, before this run reached them, for the preview check.
         await preview.beforeApply(operations, session.state, measureLive, (pageId, viewport) => inspections.fresh(pageId, viewport));
         // Stopped while the preview measured: the batch never lands.
-        if (signal.aborted) return refused('CANCELLED', 'Cancelled', false);
+        if (signal.aborted) return refused('CANCELLED', 'Canceled', false);
         const before = session.state;
         const revision = session.revision;
         let res: Awaited<ReturnType<typeof session.apply>>;
@@ -1686,9 +1686,9 @@ export class Orchestrator {
       if (unmeasured.length) {
         const p = addActivity('Checking the changed pages in the preview', 'inspect_layout');
         for (const t of unmeasured) {
-          if (signal.aborted) throw new Error('Cancelled');
+          if (signal.aborted) throw new Error('Canceled');
           const m = await measureLive(t.pageId, t.viewport, until);
-          if (signal.aborted) throw new Error('Cancelled');
+          if (signal.aborted) throw new Error('Canceled');
           // A check that could not run names its page and width in its error's details.
           inspections.record(t.pageId, t.viewport, m.ok, m.ok ? m.content : (m.content.error.details ?? {}), m.ok ? m.report : undefined);
         }
@@ -1717,9 +1717,9 @@ export class Orchestrator {
       this.setStatus('validating');
       const v = addActivity('Checking the changes so far', 'validate');
       const links = await connectLinks();
-      if (signal.aborted) throw new Error('Cancelled');
+      if (signal.aborted) throw new Error('Canceled');
       const diags = [...session.diagnostics(), ...(await this.deps.compileAll())];
-      if (signal.aborted) throw new Error('Cancelled');
+      if (signal.aborted) throw new Error('Canceled');
       const { fresh } = sortErrors(diags);
       if (fresh.length) {
         v.status = 'error';
@@ -1861,7 +1861,7 @@ export class Orchestrator {
 
     try {
       outer: while (true) {
-        if (signal.aborted) throw new Error('Cancelled');
+        if (signal.aborted) throw new Error('Canceled');
         if (++turns > LIMITS.modelTurns) {
           await stopAtLimit(`the limit of ${LIMITS.modelTurns} steps`, 'turn limit');
           return;
@@ -1964,7 +1964,7 @@ export class Orchestrator {
             for await (const ev of ad.adapter.streamTurn({ model: ad.model, system, items, tools, maxOutputTokens: budget.maxOutputTokens }, turn.signal)) {
               // Anything but an error is the model answering, so it has this turn's request.
               if (ev.type !== 'error') run.reached = true;
-              if (signal.aborted) throw new Error('Cancelled');
+              if (signal.aborted) throw new Error('Canceled');
               if (expired) break;
               if (ev.type === 'text') {
                 turnText += ev.delta;
@@ -1973,16 +1973,16 @@ export class Orchestrator {
               } else if (ev.type === 'done') done = ev;
               else if (ev.type === 'error') err = ev;
             }
-            if (signal.aborted) throw new Error('Cancelled');
+            if (signal.aborted) throw new Error('Canceled');
             // A reply that finished in time is used; one cut off by the limit is not.
             if (done) break;
             if (expired) break;
-            if (!err || err.code === 'cancelled') throw new Error('Cancelled');
+            if (!err || err.code === 'cancelled') throw new Error('Canceled');
             if (['rate_limit', 'overloaded', 'network'].includes(err.code) && attempt < LIMITS.providerRetries) {
               const wait = Math.min(err.retryAfterMs ?? 1000 * 3 ** attempt, 20000);
               const a = addActivity(`${err.message} Retrying…`, 'provider');
               await sleep(wait, turn.signal);
-              if (signal.aborted) throw new Error('Cancelled');
+              if (signal.aborted) throw new Error('Canceled');
               if (expired || remaining() <= 0) {
                 expired = true;
                 break;
@@ -2058,7 +2058,7 @@ export class Orchestrator {
           await revertAndFinish('failed', failed.code === 'auth' ? 'The AI provider rejected the API key. Update it in Settings.' : `The AI request failed: ${failed.message}`, failed.message, repair);
           return;
         }
-        if (!done) throw new Error('Cancelled');
+        if (!done) throw new Error('Canceled');
         if (done.usage) usage = { inputTokens: usage.inputTokens + done.usage.inputTokens, outputTokens: usage.outputTokens + done.usage.outputTokens };
         if (done.stopReason === 'max_tokens' && !done.toolCalls.length) {
           // A cut-off turn is dropped from the history (an empty assistant message is invalid for some
@@ -2113,7 +2113,7 @@ export class Orchestrator {
           // Links a "continue" brought back connect as soon as their page exists, even when nothing else changed.
           const carried = !session.runChanged() && macros.pendingLinks.length ? await connectLinks() : null;
           const waiting = carried?.missing ?? [];
-          if (signal.aborted) throw new Error('Cancelled');
+          if (signal.aborted) throw new Error('Canceled');
           // A page that was rejected or skipped and never retried counts even if nothing else changed.
           if (!session.runChanged() && (macros.drafts.size || missing().length || waiting.length) && !nudged) {
             resumeForNudge(completenessNudge([], waiting, current.tools.some((t) => t.name === 'upsert_page_with_sections'), [...macros.drafts.keys()], missing(), authority.kind === 'page' ? authority.label : undefined));
@@ -2125,9 +2125,9 @@ export class Orchestrator {
             const v = addActivity('Checking the result', 'validate');
             // Before validating, so a link write is checked with everything else.
             const links = await connectLinks();
-            if (signal.aborted) throw new Error('Cancelled');
+            if (signal.aborted) throw new Error('Canceled');
             const diags = [...session.diagnostics(), ...(await this.deps.compileAll())];
-            if (signal.aborted) throw new Error('Cancelled');
+            if (signal.aborted) throw new Error('Canceled');
             const { fresh } = sortErrors(diags);
             if (fresh.length) {
               v.status = 'error';
@@ -2230,7 +2230,7 @@ export class Orchestrator {
         // each change moves the revision, so later ones in the same turn were planned against stale state.
         let mutationTried = false;
         for (const call of done.toolCalls) {
-          if (signal.aborted) throw new Error('Cancelled');
+          if (signal.aborted) throw new Error('Canceled');
           const mutating = MUTATING_TOOLS.has(call.name as never);
           // Page and selection tools work from the current project, so several can safely run in one turn.
           const revisionBound = REVISION_BOUND_TOOLS.has(call.name as never);
@@ -2277,7 +2277,7 @@ export class Orchestrator {
             executedOps.push(...(outcome.ops ?? []));
             opResults.push(...(outcome.results ?? (outcome.ops ?? []).map(() => ({}))));
           }
-          if (signal.aborted) throw new Error('Cancelled');
+          if (signal.aborted) throw new Error('Canceled');
           activity.status = outcome.ok ? 'done' : 'error';
           if (outcome.ok && outcome.location) {
             const l = outcome.location;
@@ -2326,7 +2326,7 @@ export class Orchestrator {
         }
       }
     } catch (e) {
-      const cancelled = signal.aborted || (e as Error).message === 'Cancelled';
+      const cancelled = signal.aborted || (e as Error).message === 'Canceled';
       if (cancelled) await revertAndFinish('cancelled', 'Stopped.');
       else await revertAndFinish('failed', `Something went wrong: ${(e as Error).message}`, (e as Error).message);
     }

@@ -106,7 +106,7 @@ export function formSendNote(send: FormSend, form?: PreviewForm): string {
   const to = send.destination || form?.destination;
   const where = to ? shortDestination(to) : 'the form service';
   if (send.kind === 'practice') {
-    if (send.result === 'sending') return 'Practising a send. Nothing is being sent.';
+    if (send.result === 'sending') return 'Practicing a send. Nothing is being sent.';
     return `Practice send: the form showed its ${send.result === 'error' ? 'error' : 'sent'} message. Nothing was sent.`;
   }
   switch (send.result) {

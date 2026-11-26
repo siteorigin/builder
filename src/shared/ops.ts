@@ -380,7 +380,7 @@ export const OPERATION_SCHEMAS = {
     parentId: z.string().nullable().optional().describe('Parent element or instance node. Omit or null to insert a top-level section on a page; a component definition has one top-level element, so insert inside it.'),
     slot: z.string().optional().describe('Slot name when inserting into a component instance slot (e.g. "content").'),
     index: z.number().int().min(0).optional().describe('Position among siblings. Defaults to the end.'),
-    componentId: z.string().optional().describe('Catalogue component ID such as "features.grid".'),
+    componentId: z.string().optional().describe('Catalog component ID such as "features.grid".'),
     definitionId: z.string().optional().describe('An installed project component definition ID.'),
     primitive: z
       .enum(['container', 'stack', 'row', 'grid', 'heading', 'paragraph', 'richtext', 'image', 'button', 'icon', 'divider', 'badge', 'figure', 'slot', 'repeat'])
@@ -558,7 +558,7 @@ export const OPERATION_SCHEMAS = {
       type: z.literal('instance.swapComponent'),
       owner,
       nodeId: z.string().describe('The placed component to change.'),
-      componentId: z.string().optional().describe('The catalogue component to change it to, such as "hero.split".'),
+      componentId: z.string().optional().describe('The catalog component to change it to, such as "hero.split".'),
       definitionId: z.string().optional().describe('Or the project component definition ID to change it to.'),
       allowDrops: z
         .boolean()
@@ -884,7 +884,7 @@ export const OPERATION_SCHEMAS = {
       .max(50)
       .nullable()
       .optional()
-      .describe('Components the slot takes by ID, whatever their category: a catalogue contract ID (such as "features.grid") or a project component definition ID. Left out keeps it; null removes the restriction.'),
+      .describe('Components the slot takes by ID, whatever their category: a catalog contract ID (such as "features.grid") or a project component definition ID. Left out keeps it; null removes the restriction.'),
     primitives: z
       .array(z.enum(SLOT_PRIMITIVES as unknown as [string, ...string[]]))
       .max(6)

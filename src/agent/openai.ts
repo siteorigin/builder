@@ -112,7 +112,7 @@ export class OpenAIAdapter implements AgentModelAdapter {
         stream = (await this.client.responses.create(params as never, { signal })) as unknown as AsyncIterable<unknown>;
       } catch (e) {
         if (!signal.aborted && attempt < 5 && this.fallBack(e, Number(params.max_output_tokens))) continue;
-        yield signal.aborted ? { type: 'error', code: 'cancelled', message: 'Cancelled' } : { type: 'error', ...classifyHttpError(e) };
+        yield signal.aborted ? { type: 'error', code: 'cancelled', message: 'Canceled' } : { type: 'error', ...classifyHttpError(e) };
         return;
       }
     }
@@ -120,7 +120,7 @@ export class OpenAIAdapter implements AgentModelAdapter {
     try {
       for await (const ev of stream as AsyncIterable<{ type: string; delta?: string; response?: Record<string, unknown>; message?: string; code?: string }>) {
         if (signal.aborted) {
-          yield { type: 'error', code: 'cancelled', message: 'Cancelled' };
+          yield { type: 'error', code: 'cancelled', message: 'Canceled' };
           return;
         }
         if (ev.type === 'response.output_text.delta' && ev.delta) {
@@ -161,9 +161,9 @@ export class OpenAIAdapter implements AgentModelAdapter {
           return;
         }
       }
-      yield signal.aborted ? { type: 'error', code: 'cancelled', message: 'Cancelled' } : { type: 'error', code: 'network', message: 'The response ended unexpectedly.' };
+      yield signal.aborted ? { type: 'error', code: 'cancelled', message: 'Canceled' } : { type: 'error', code: 'network', message: 'The response ended unexpectedly.' };
     } catch (e) {
-      yield signal.aborted ? { type: 'error', code: 'cancelled', message: 'Cancelled' } : { type: 'error', ...classifyHttpError(e) };
+      yield signal.aborted ? { type: 'error', code: 'cancelled', message: 'Canceled' } : { type: 'error', ...classifyHttpError(e) };
     }
   }
 }

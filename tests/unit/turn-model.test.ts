@@ -35,7 +35,7 @@ class HeldAdapter implements AgentModelAdapter {
     // Stop ends the wait, as a provider's aborted request would.
     if (this.gate) await Promise.race([this.gate, new Promise((resolve) => signal.addEventListener('abort', resolve, { once: true }))]);
     if (signal.aborted) {
-      yield { type: 'error', code: 'cancelled', message: 'Cancelled' };
+      yield { type: 'error', code: 'cancelled', message: 'Canceled' };
       return;
     }
     yield { type: 'done', stopReason: 'end', text: this.reply, toolCalls: [] };

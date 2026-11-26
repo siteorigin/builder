@@ -290,7 +290,7 @@ export const contact = managed({
       eyebrow: P.str('Eyebrow', 'Contact'),
       heading: P.str('Heading', 'Let’s talk about your project'),
       headingLevel: headingLevel('h2'),
-      lead: P.text('Supporting text', 'The quickest way to reach us is by email or phone. We reply to every enquiry within two working days.')
+      lead: P.text('Supporting text', 'The quickest way to reach us is by email or phone. We reply to every inquiry within two working days.')
     }),
     items: P.list(
       'Contact methods',

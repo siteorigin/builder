@@ -9,7 +9,7 @@ const { WORK, SHOTS, cleanup } = scratch('item-step');
 const { app, win, errors } = await launch(WORK);
 const frame = await createProject(win, { name: 'Step Studio', parentDir: join(WORK, 'sites'), starter: 'business', sampleImages: false });
 
-const TITLES = ['Planning & layout', 'Materials & colour', 'Project delivery'];
+const TITLES = ['Planning & layout', 'Materials & color', 'Project delivery'];
 const chip = win.locator('.ov-chip:not(.editing)');
 const prev = chip.getByRole('button', { name: 'Previous item', exact: true });
 const next = chip.getByRole('button', { name: 'Next item', exact: true });

@@ -1110,7 +1110,7 @@ describe('structured data on a page with contact details and an FAQ', () => {
     const details = makeInstance(s.components[installComponent(s, 'contact.details')], {});
     s.site.shell.footer.nodes[details.id] = details;
     s.site.shell.footer.rootIds.push(details.id);
-    expect(contactFacts((await renderPage(s, about)).head)).toEqual([['hello@example.com', '+1 555 0134', '12 Harbour Lane, Millbrook']]);
+    expect(contactFacts((await renderPage(s, about)).head)).toEqual([['hello@example.com', '+1 555 0134', '12 Harbor Lane, Millbrook']]);
     // A cached run follows what the footer shows into every page, and an edit elsewhere in it changes no page.
     const cache = new GenerationCache();
     const page = pageFile(about);
@@ -1148,7 +1148,7 @@ describe('structured data on a page with contact details and an FAQ', () => {
         isPartOf: { '@id': `${page}#webpage` },
         about: [
           { '@type': 'ContactPoint', email: 'hello@example.com', telephone: '+1 555 0134' },
-          { '@type': 'Place', address: '12 Harbour Lane, Millbrook' }
+          { '@type': 'Place', address: '12 Harbor Lane, Millbrook' }
         ]
       }
     ]);
@@ -1243,7 +1243,7 @@ describe('structured data on a page with contact details and an FAQ', () => {
     expect((faqPage.mainEntity as Array<{ name: string }>).map((e) => e.name)).toEqual((copied.props.items as Array<{ question: string }>).map((i) => i.question));
     // A number shown as words gives the number it dials; words beside a map icon are not an address.
     expect(contactFacts(head)).toEqual([
-      ['hello@example.com', '+1 555 0134', '12 Harbour Lane, Millbrook'],
+      ['hello@example.com', '+1 555 0134', '12 Harbor Lane, Millbrook'],
       [['depot@example.com', 'sales@example.com'], ['+1 555 0199', '+15550100'], '4 Mill Road']
     ]);
   });

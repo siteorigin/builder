@@ -250,7 +250,7 @@ async function untilStopped<T>(work: Promise<T>, signal: AbortSignal | undefined
   if (!signal) return work;
   let onAbort: (() => void) | undefined;
   const stopped = new Promise<never>((_, reject) => {
-    onAbort = () => reject(new Error('Cancelled'));
+    onAbort = () => reject(new Error('Canceled'));
     if (signal.aborted) onAbort();
     else signal.addEventListener('abort', onAbort, { once: true });
   });

@@ -1836,7 +1836,7 @@ function unwrapProblem(state: ProjectState, def: ComponentDefinition | undefined
   if (held.some(choosesState)) return `${name} holds the buttons that choose what the component shows (its tabs), which are known by this list, so it can’t be ungrouped.`;
   // A detached design's option classes (its tone) are what the theme's colours inside it read, as variant styles are.
   const axes = Object.keys(n.detachedFrom?.options ?? {});
-  if (axes.length) return `${name} keeps the “${axes[0]}” look of the component it was detached from, which what it holds takes its colours from, so it can’t be ungrouped.`;
+  if (axes.length) return `${name} keeps the “${axes[0]}” look of the component it was detached from, which what it holds takes its colors from, so it can’t be ungrouped.`;
   if (def) {
     const part = Object.values(def.parts).find((p) => p.nodeId === n.id);
     if (part) return `${name} is the “${part.label}” part of this component, which placements can style, so it can’t be ungrouped. Remove the part first.`;

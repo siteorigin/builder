@@ -171,7 +171,7 @@ export function createStarterState(starter: StarterId, siteName: string, withSam
       lead: 'Choose a single stage or let us guide the whole project from first sketch to final styling.',
       items: [
         { id: 'i1', icon: 'compass', title: 'Planning & layout', description: 'Room-by-room plans that make the most of light, flow and storage before anything is built.', linkLabel: '', link: { type: 'none', target: '' } },
-        { id: 'i2', icon: 'palette', title: 'Materials & colour', description: 'Finishes, colours and lighting chosen to work together and to last for years.', linkLabel: '', link: { type: 'none', target: '' } },
+        { id: 'i2', icon: 'palette', title: 'Materials & color', description: 'Finishes, colors and lighting chosen to work together and to last for years.', linkLabel: '', link: { type: 'none', target: '' } },
         { id: 'i3', icon: 'hammer', title: 'Project delivery', description: 'We coordinate trusted trades and keep you informed until the final handover.', linkLabel: '', link: { type: 'none', target: '' } }
       ]
     }),
@@ -212,7 +212,7 @@ export function createStarterState(starter: StarterId, siteName: string, withSam
       eyebrow: 'Our story',
       heading: 'Fifteen years of homes, studios and cafés',
       body: [
-        'We started as a two-person practice working on family homes. Today we are a team of five, still working from the same small studio on Harbour Lane.',
+        'We started as a two-person practice working on family homes. Today we are a team of five, still working from the same small studio on Harbor Lane.',
         'We take on a limited number of projects each year so that every client gets our full attention.'
       ],
       image: img(A('a_dining'), alt('a_dining')),
@@ -223,7 +223,7 @@ export function createStarterState(starter: StarterId, siteName: string, withSam
       people: [
         { id: 'i1', portrait: img(A('a_person1'), alt('a_person1')), name: 'Hannah Wells', role: 'Founder & lead designer', bio: 'Fifteen years designing homes and small workplaces.' },
         { id: 'i2', portrait: img(A('a_person2'), alt('a_person2')), name: 'Marcus Lee', role: 'Project manager', bio: 'Keeps every schedule, budget and contractor on track.' },
-        { id: 'i3', portrait: img(A('a_person3'), alt('a_person3')), name: 'Sofia Alvarez', role: 'Interior designer', bio: 'Specialises in materials, colour and lighting.' }
+        { id: 'i3', portrait: img(A('a_person3'), alt('a_person3')), name: 'Sofia Alvarez', role: 'Interior designer', bio: 'Specializes in materials, color and lighting.' }
       ]
     }, 'muted'),
     inst(s, 'cta.banner', { heading: 'Have a project in mind?', primaryLabel: 'Contact the studio', primaryLink: pageLink(contact) })

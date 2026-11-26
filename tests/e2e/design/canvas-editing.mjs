@@ -193,7 +193,7 @@ await pause(400);
 
 // 9. One card's title picked on the page: "one of 3".
 await clearSelection();
-await deepPick(frame.getByText('Materials & colour', { exact: true }).first());
+await deepPick(frame.getByText('Materials & color', { exact: true }).first());
 await chipSays('of 3');
 await shot('card-picked', '.ov-chip', { themes: LIGHT });
 

@@ -882,7 +882,7 @@ This project has draft collection entries. Their documents are in \`siteorigin/c
 
 /** The notices of a site with this theme: its name and licence, the icons' and the fonts' (whose own notice travels with them). */
 export function themeNotice(theme: { name: string; license: string }): string {
-  return `The ${theme.name} theme is licensed under ${theme.license}. Icons come from Lucide (ISC licence). The fonts come with the theme, in \`src/lib/siteorigin/fonts/\`, whose NOTICE.txt gives their licences. Sample images from the Business starter, where still used, are described in NOTICE.md.`;
+  return `The ${theme.name} theme is licensed under ${theme.license}. Icons come from Lucide (ISC license). The fonts come with the theme, in \`src/lib/siteorigin/fonts/\`, whose NOTICE.txt gives their licenses. Sample images from the Business starter, where still used, are described in NOTICE.md.`;
 }
 /** The notices of a site on Foundation, the theme every new project starts with. */
 const NOTICE = themeNotice({ name: 'Foundation', license: 'MIT-0' });

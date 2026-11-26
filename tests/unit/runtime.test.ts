@@ -415,7 +415,7 @@ describe('installing the website tools', () => {
   it('runs nothing in a project that is no longer this app’s to write', async () => {
     const dir = mkdtempSync(join(tmpdir(), 'so-install-'));
     try {
-      await expect(prepareDependencies(dir, () => undefined, undefined, async () => false)).rejects.toThrow('Cancelled');
+      await expect(prepareDependencies(dir, () => undefined, undefined, async () => false)).rejects.toThrow('Canceled');
       expect(readdirSync(dir)).toEqual([]);
     } finally {
       rmSync(dir, { recursive: true, force: true });

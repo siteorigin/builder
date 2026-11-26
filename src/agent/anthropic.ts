@@ -125,7 +125,7 @@ export class AnthropicAdapter implements AgentModelAdapter {
       } catch (e) {
         settled = true;
         if (signal.aborted) {
-          yield { type: 'error', code: 'cancelled', message: 'Cancelled' };
+          yield { type: 'error', code: 'cancelled', message: 'Canceled' };
           return;
         }
         // The SDK parses tool input as it streams; input it cannot parse means the turn was cut off.

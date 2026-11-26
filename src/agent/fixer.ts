@@ -39,7 +39,7 @@ export async function fixComponentSource(
   let problems = await check(current);
   let explanation = '';
   for (let attempt = 1; attempt <= maxAttempts; attempt++) {
-    if (signal.aborted) return { ok: false, cancelled: true, message: 'Cancelled', attempts: attempt - 1 };
+    if (signal.aborted) return { ok: false, cancelled: true, message: 'Canceled', attempts: attempt - 1 };
     const list = problems.map((p) => `- ${p.severity}${p.line ? ` (line ${p.line})` : ''}: ${p.message}`).join('\n');
     let text = '';
     let failed: string | null = null;
@@ -72,7 +72,7 @@ export async function fixComponentSource(
         cancelled = ev.code === 'cancelled';
       }
     }
-    if (signal.aborted || cancelled) return { ok: false, cancelled: true, message: 'Cancelled', attempts: attempt };
+    if (signal.aborted || cancelled) return { ok: false, cancelled: true, message: 'Canceled', attempts: attempt };
     if (failed) return { ok: false, message: failed, attempts: attempt };
     const code = text.match(/```(?:svelte|html)?\s*\n([\s\S]*?)```/)?.[1];
     if (!code) return { ok: false, message: 'The fixer did not return a component.', attempts: attempt };
@@ -80,7 +80,7 @@ export async function fixComponentSource(
     current = code.replace(/\s+$/, '\n');
     problems = await check(current);
     // Closing the editor while the result is being checked still cancels it.
-    if (signal.aborted) return { ok: false, cancelled: true, message: 'Cancelled', attempts: attempt };
+    if (signal.aborted) return { ok: false, cancelled: true, message: 'Canceled', attempts: attempt };
     if (!problems.some((p) => p.severity === 'error') && !problems.some((p) => p.message.startsWith('Browser-only'))) {
       return { ok: true, source: current, explanation: explanation || 'Fixed the problems.', attempts: attempt };
     }

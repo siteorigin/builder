@@ -157,7 +157,7 @@ await pause(700);
 await shot('layers-part', '[role="tree"] .list-item.selected');
 
 // One card's title picked on the page: "one of 3", and "This card only" on Content.
-await frame.getByText('Materials & colour', { exact: true }).first().dispatchEvent('click');
+await frame.getByText('Materials & color', { exact: true }).first().dispatchEvent('click');
 await pause(700);
 await shot('card-picked', '.ov-chip', ['light']);
 
