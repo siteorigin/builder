@@ -29,6 +29,9 @@ const isGone = (e: unknown) => {
   return code === 'ENOENT' || code === 'ENOTDIR';
 };
 
+/** Failures about a path rather than the system: below a folder that has since been replaced, they are about it. */
+const PATH_CODES = new Set(['EACCES', 'EPERM', 'ELOOP']);
+
 /** What a folder is, so one put in place of another under the same name is told apart from it. */
 const identity = (stat: fs.Stats) => `${stat.dev}:${stat.ino}`;
 
@@ -47,6 +50,8 @@ class TreeWatch extends EventEmitter implements FolderWatch {
   /** Every watched folder, by absolute path, with what the folder its watch was made for is. */
   private readonly folders = new Map<string, { watcher: FSWatcher; id: string }>();
   private readonly root: string;
+  /** Folders whose own watch said they were moved or removed: watched afresh once the events read with that are handled. */
+  private readonly rearm = new Set<string>();
   private closed = false;
 
   constructor(
@@ -66,6 +71,7 @@ class TreeWatch extends EventEmitter implements FolderWatch {
   close() {
     if (this.closed) return;
     this.closed = true;
+    this.rearm.clear();
     for (const { watcher } of this.folders.values()) watcher.close();
     this.folders.clear();
     this.emit('close');
@@ -112,17 +118,33 @@ class TreeWatch extends EventEmitter implements FolderWatch {
       }
       const path = join(dir, name);
       this.report(event, path);
-      // Something new under this name, or one gone from it: what was watched there is watched afresh, as a folder made
-      // again may be given the number of the one it replaces.
-      this.recheck(path, event === 'rename' && path !== this.root);
+      this.recheck(path, false);
       // A watched folder's own change is told under its own name, as if about something in it: it is looked at too.
-      if (name === basename(dir)) this.recheck(dir, false);
-      else if (dir === this.root && !this.stillSame(dir)) this.gone(dir);
+      if (name === basename(dir)) {
+        this.recheck(dir, false);
+        // Moved or removed, it may be back already, even as a new folder given the old one's number: so its watch, which
+        // may now be watching nothing, is made again.
+        if (event === 'rename' && dir !== this.root) this.rearmSoon(dir);
+      } else if (dir === this.root && !this.stillSame(dir)) this.gone(dir);
     } catch (e) {
       // A failure below a folder that is no longer the one watched (moved, replaced) is its going, not the watch's end.
-      if (this.closed || this.stillSame(dir)) throw e;
+      if (this.closed || !PATH_CODES.has((e as NodeJS.ErrnoException | null)?.code ?? '') || this.stillSame(dir)) throw e;
       this.gone(dir);
     }
+  }
+
+  /** Watch a folder afresh once the events read with this one are handled, once however many asked for it. */
+  private rearmSoon(dir: string) {
+    if (this.rearm.size === 0) {
+      setImmediate(() =>
+        this.guard(() => {
+          const dirs = [...this.rearm].sort((a, b) => a.length - b.length);
+          this.rearm.clear();
+          for (const d of dirs) if (this.folders.has(d)) this.recheck(d, true);
+        })
+      );
+    }
+    this.rearm.add(dir);
   }
 
   /** Bring the watches for `path` up to date with what is there now: a new folder is watched, a gone one forgotten. */
@@ -205,8 +227,9 @@ class TreeWatch extends EventEmitter implements FolderWatch {
     try {
       return fs.readdirSync(dir, { withFileTypes: true });
     } catch (e) {
-      if (!isGone(e)) throw e;
-      return this.stillSame(dir) ? [] : null;
+      // Still there, yet it cannot be read through: what it holds would go unwatched.
+      if (!isGone(e) || this.stillSame(dir)) throw e;
+      return null;
     }
   }
 

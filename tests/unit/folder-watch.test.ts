@@ -166,6 +166,23 @@ describe('watching a folder and everything in it', { timeout: 30_000 }, () => {
     expect(errors).toEqual([]);
   });
 
+  it('still watches a folder moved away and back many times before any of it is told', async () => {
+    const dir = temp();
+    const outside = temp();
+    mkdirSync(join(dir, 'sub', 'deep'), { recursive: true });
+    const { events, errors } = start(dir);
+    await untilWatching(dir, events);
+    await reported(events, dir, join('sub', 'deep', 'seen.txt'));
+    for (let i = 0; i < 20; i++) {
+      renameSync(join(dir, 'sub'), join(outside, 'aside'));
+      renameSync(join(outside, 'aside'), join(dir, 'sub'));
+    }
+    await settle();
+    await reported(events, dir, join('sub', 'deep', 'later.txt'));
+    await reported(events, dir, join('sub', 'later.txt'));
+    expect(errors).toEqual([]);
+  });
+
   it.each([
     ['removed', (dir: string) => rmSync(dir, { recursive: true })],
     // The old one is kept, under another name, so the new one cannot be given its number.
