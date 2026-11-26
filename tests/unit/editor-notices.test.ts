@@ -228,6 +228,24 @@ describe.skipIf(!browserInstalled)('notices (#827)', { timeout: 30_000 }, () => 
     await dismiss('The project could not be read').focus();
     await say('The project could not be read');
     await expect.poll(shown).toEqual(['The project could not be read']);
+    await expect.poll(focus).toBe('The project could not be read');
+  });
+
+  it('dismisses once when Enter is let go, so a held key never presses what takes focus next', async () => {
+    await say('First');
+    await say('Second');
+    await page.evaluate(`openModal(true)`);
+    await page.locator('#done').focus();
+    await page.keyboard.press('Tab');
+    await page.keyboard.press('Tab');
+    expect(await focus()).toBe('Second');
+    // A key held down repeats: each further down() is a repeat.
+    for (let i = 0; i < 4; i++) await page.keyboard.down('Enter');
+    expect(await shown()).toEqual(['First', 'Second']);
+    await page.keyboard.up('Enter');
+    expect(await shown()).toEqual(['First']);
+    expect(await focus()).toBe('First');
+    expect(await page.getByRole('dialog').count()).toBe(1);
   });
 
   it('does not bring expired information back after a dialog', async () => {

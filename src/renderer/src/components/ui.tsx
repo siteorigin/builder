@@ -1344,6 +1344,8 @@ function useActionTimes(toasts: ToastItem[], dialogOpen: boolean, savedRetired: 
   const round = useRef(new Map<number, number>());
   // Notices waiting for one of the visible slots: their time starts when they get one.
   const waiting = useRef(new Set<number>());
+  // The text of an error that was said again while focus was in it: focus goes on to the one that replaced it.
+  const refocus = useRef<string | null>(null);
   const wasOpen = useRef(dialogOpen);
   const [, setTick] = useState(0);
   const refresh = () => setTick((n) => n + 1);
@@ -1363,7 +1365,9 @@ function useActionTimes(toasts: ToastItem[], dialogOpen: boolean, savedRetired: 
   // notice: however they are held, neither is kept.
   for (const t of [...known.current.values()]) {
     const saved = !t.action && t.kind === 'success' && t.id <= savedRetired;
-    if (!live(t.id) && (t.kind === 'error' || saved)) forget(t.id);
+    if (live(t.id) || !(t.kind === 'error' || saved)) continue;
+    if (t.kind === 'error' && focused.current.has(t.id)) refocus.current = t.text;
+    forget(t.id);
   }
   // Worked out while rendering, so a held notice never leaves the page between the store dropping it and this
   // taking it over: the same element stays, and so does any focus in it.
@@ -1403,6 +1407,7 @@ function useActionTimes(toasts: ToastItem[], dialogOpen: boolean, savedRetired: 
   });
   return {
     kept,
+    refocus,
     key: (t: ToastItem) => `${t.id}.${round.current.get(t.id) ?? 0}`,
     held: engaged,
     /** Of `candidates` (every notice that could show), those not in `visible` wait, and their time starts
@@ -1467,6 +1472,13 @@ export function Toasts() {
   useEffect(() => {
     if (!dialogOpen) times.slots(ordered, new Set(shownToasts.map((t) => t.id)));
   });
+  useLayoutEffect(() => {
+    const text = times.refocus.current;
+    if (text === null) return;
+    times.refocus.current = null;
+    const again = [...shownToasts].reverse().find((t) => t.kind === 'error' && t.text === text);
+    if (again) document.getElementById(`toast-text-${again.id}`)?.parentElement?.querySelector<HTMLElement>('.toast-dismiss')?.focus();
+  });
   // The notices' band at the bottom of the window (their height plus clearance), which dialogs stop short of.
   const stack = useRef<HTMLDivElement>(null);
   useLayoutEffect(() => {
@@ -1487,6 +1499,8 @@ export function Toasts() {
   }, []);
   // Where focus was before it came into the notices, to go back there once none is left to take it.
   const cameFrom = useRef<HTMLElement | null>(null);
+  // The dismiss button Enter went down on.
+  const pressed = useRef<EventTarget | null>(null);
   const dismiss = (t: ToastItem, button: HTMLButtonElement) => {
     const buttons = () => [...stack.current!.querySelectorAll<HTMLButtonElement>('.toast-dismiss')];
     const at = buttons().indexOf(button);
@@ -1560,6 +1574,18 @@ export function Toasts() {
               title="Dismiss"
               onMouseDown={(e) => e.preventDefault()}
               onClick={(e) => dismiss(t, e.currentTarget)}
+              // Enter dismisses as it is let go, as Space does: dismissing moves focus, and a held key's repeats
+              // would then press whatever took it, which in a dialog can be the button that deletes.
+              onKeyDown={(e) => {
+                if (e.key !== 'Enter') return;
+                e.preventDefault();
+                if (!e.repeat) pressed.current = e.currentTarget;
+              }}
+              onKeyUp={(e) => {
+                if (e.key !== 'Enter' || pressed.current !== e.currentTarget) return;
+                pressed.current = null;
+                e.currentTarget.click();
+              }}
             >
               <X />
             </button>
