@@ -1,5 +1,5 @@
 import { EventEmitter } from 'node:events';
-import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
@@ -39,14 +39,26 @@ describe('the main process log (#887)', () => {
 
   it('moves the file aside past its cap, keeping one earlier file, and cuts an overlong entry', () => {
     const file = join(scratch(), 'main.log');
-    const log = createMainLog({ file, now, maxBytes: 120, maxEntry: 50 });
-    log.write('error', 'x'.repeat(500));
-    expect(readFileSync(file, 'utf8')).toContain(`${'x'.repeat(50)}… (450 more characters)`);
+    const log = createMainLog({ file, now, maxBytes: 120, maxEntry: 50, header: () => 'SiteOrigin Builder 0.1.0 (a1b2c3d)' });
+    log.write('error', `${'x'.repeat(49)}z${'x'.repeat(450)}`);
+    expect(readFileSync(file, 'utf8')).toBe(`2026-11-26T14:03:27.512Z [error] ${'x'.repeat(49)}z… (450 more characters)\n`);
     log.write('error', 'second');
     expect(readFileSync(`${file}.1`, 'utf8')).toContain('more characters');
-    expect(readFileSync(file, 'utf8')).toMatch(/\[error\] second\n$/);
+    // The file started past the cap names the build first.
+    expect(readFileSync(file, 'utf8')).toBe('2026-11-26T14:03:27.512Z [build] SiteOrigin Builder 0.1.0 (a1b2c3d)\n2026-11-26T14:03:27.512Z [error] second\n');
     log.write('error', 'y'.repeat(200));
     expect(readFileSync(`${file}.1`, 'utf8')).toMatch(/\[error\] second\n$/);
+    expect(readFileSync(file, 'utf8')).toMatch(/^.{24} \[build\] .*\n.{24} \[error\] y{50}… \(150 more characters\)\n$/);
+  });
+
+  it('keeps writing past the cap when the file cannot move aside, rather than dropping entries', () => {
+    const file = join(scratch(), 'main.log');
+    // A folder where the earlier file goes: the move aside fails, as it does on Windows while the file is held open.
+    mkdirSync(join(`${file}.1`, 'busy'), { recursive: true });
+    const log = createMainLog({ file, now, maxBytes: 60 });
+    log.write('error', 'first entry, filling the file');
+    log.write('error', 'second entry');
+    expect(readFileSync(file, 'utf8').split('\n').filter(Boolean).map((l) => l.slice(25))).toEqual(['[error] first entry, filling the file', '[error] second entry']);
   });
 
   it('never throws when the file cannot be written, and says so when it cannot be made', () => {
@@ -66,20 +78,26 @@ describe('the main process log (#887)', () => {
     expect(readFileSync(file, 'utf8')).toBe('');
   });
 
-  it('records console errors and warnings, uncaught exceptions and process warnings, still printing them, until undone', () => {
+  it('records console errors and warnings, uncaught exceptions and process warnings, still printing them, until undone', async () => {
     const file = join(scratch(), 'main.log');
     const log = createMainLog({ file, now });
     const error = vi.fn();
     const warn = vi.fn();
     const con = { error, warn } as unknown as Console;
-    const proc = new EventEmitter() as unknown as NodeJS.Process;
+    const emitter = new EventEmitter();
+    const proc = emitter as unknown as NodeJS.Process;
+    // Node's own listener, there from the start, prints each warning through console.error.
+    const nodePrints = (w: Error) => con.error(`(node) ${w.name}: ${w.message}`);
+    emitter.on('warning', nodePrints);
     const undo = captureMainErrors(log, { console: con, process: proc });
     con.error('could not save', 42);
     con.warn('slow');
-    proc.emit('uncaughtExceptionMonitor', new Error('crashed'), 'uncaughtException');
+    emitter.emit('uncaughtExceptionMonitor', new Error('crashed'), 'uncaughtException');
     const w = new Error('a promise was rejected');
     w.name = 'UnhandledPromiseRejectionWarning';
-    proc.emit('warning', w);
+    emitter.emit('warning', w);
+    await Promise.resolve();
+    con.error('later');
     expect(error).toHaveBeenCalledWith('could not save', 42);
     expect(warn).toHaveBeenCalledWith('slow');
     const text = readFileSync(file, 'utf8');
@@ -87,12 +105,18 @@ describe('the main process log (#887)', () => {
     expect(text).toContain('[warn] slow\n');
     expect(text).toContain('[uncaught] uncaughtException: Error: crashed');
     expect(text).toContain('[warn] UnhandledPromiseRejectionWarning: a promise was rejected');
+    // Node's printing of that warning is not recorded a second time; the next error is.
+    expect(error).toHaveBeenCalledWith('(node) UnhandledPromiseRejectionWarning: a promise was rejected');
+    expect(text).not.toContain('(node)');
+    expect(text).toContain('[error] later\n');
+    expect(text.match(/^2026-11-26T14:03:27\.512Z \[/gm)).toHaveLength(5);
 
     undo();
     expect(con.error).toBe(error);
     expect(con.warn).toBe(warn);
-    expect((proc as unknown as EventEmitter).listenerCount('uncaughtExceptionMonitor')).toBe(0);
-    expect((proc as unknown as EventEmitter).listenerCount('warning')).toBe(0);
+    expect(emitter.listenerCount('uncaughtExceptionMonitor')).toBe(0);
+    // Only the capture's own listener goes; Node's stays.
+    expect(emitter.listeners('warning')).toEqual([nodePrints]);
     con.error('after');
     expect(readFileSync(file, 'utf8')).not.toContain('after');
   });

@@ -969,11 +969,12 @@ function openNotices() {
 if (!app.requestSingleInstanceLock()) app.exit(0);
 // The errors and warnings the main process meets are kept in a log on this computer, for a person to attach to a
 // report (main-log.ts). An automated run logs only into the profile it was given, never a person's own.
-const mainLog = createMainLog({ file: join(app.getPath('userData'), 'logs', 'main.log') });
+const launchLine = () => `${app.name} ${buildVersion(app.getVersion(), BUILD)} on ${process.platform} ${process.arch}`;
+const mainLog = createMainLog({ file: join(app.getPath('userData'), 'logs', 'main.log'), header: launchLine });
 const logging = !automated || !!process.env.SITEORIGIN_USER_DATA;
 if (logging) {
   captureMainErrors(mainLog, { console, process });
-  mainLog.write('start', `${app.name} ${buildVersion(app.getVersion(), BUILD)} on ${process.platform} ${process.arch}`);
+  mainLog.write('start', launchLine());
 }
 /** Settles once startup (theme packs, IPC, the menu) is done: no window may open before then. */
 let markStarted!: () => void;

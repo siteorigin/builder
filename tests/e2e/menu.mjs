@@ -126,6 +126,9 @@ const linkMark = await desktopCursor(app);
 await chooseMenu(app, ['Help', 'SiteOrigin Website']);
 await eventually(async () => assert.deepEqual((await desktopIntents(app, linkMark)).filter((x) => x.kind === 'open-external').map((x) => x.target), ['https://siteorigin.com/'], 'the website opens in the browser'));
 
+/** The build beside the version: the commit (or none, for a build made without git) and when it was built. */
+const BUILD_LABEL = /\((?:[0-9a-f]{7,}|commit unknown), built \d{4}-\d{2}-\d{2} \d{2}:\d{2} UTC\)/;
+
 step('Help: Report a Problem opens a new issue on the repository');
 const reportMark = await desktopCursor(app);
 await chooseMenu(app, ['Help', 'Report a Problem…']);
@@ -142,7 +145,8 @@ await eventually(async () => assert.deepEqual((await desktopIntents(app, logMark
   const version = await app.evaluate(({ app: a }) => a.getVersion());
   const launched = readFileSync(logFile, 'utf8').split('\n').filter((l) => l.includes('[start]'));
   assert.ok(launched.length >= 1, 'each launch writes a line to the log');
-  assert.match(launched.at(-1), new RegExp(`\\[start\\] SiteOrigin Builder ${version.replaceAll('.', '\\.')} \\([0-9a-f]{7,}, built \\d{4}-\\d{2}-\\d{2} \\d{2}:\\d{2} UTC\\)`), 'the launch line names the commit and build time');
+  assert.ok(launched.at(-1).includes(`[start] SiteOrigin Builder ${version} (`), 'the launch line names the app and its version');
+  assert.match(launched.at(-1), BUILD_LABEL, 'the launch line names the commit and build time');
 }
 
 if (process.platform !== 'darwin') {
@@ -153,7 +157,7 @@ if (process.platform !== 'darwin') {
   await chooseMenu(app, ['Help', 'About SiteOrigin Builder']);
   await eventually(async () =>
     assert.deepEqual(
-      (await choosersShown(app, aboutMark)).map((c) => [c.dialog, c.message, c.detail.startsWith(`Version ${version} (`) && c.detail.includes(', built '), c.window, c.outcome]),
+      (await choosersShown(app, aboutMark)).map((c) => [c.dialog, c.message, c.detail.startsWith(`Version ${version} (`) && BUILD_LABEL.test(c.detail), c.window, c.outcome]),
       [['message', 'SiteOrigin Builder', true, await windowId(), 'chosen']],
       'About names the app, its version and its build, over the editor window'
     )

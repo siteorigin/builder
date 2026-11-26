@@ -19,10 +19,12 @@ export interface MainLogOptions {
   maxBytes?: number;
   /** One entry's text is cut to this many characters (default 8000). */
   maxEntry?: number;
+  /** What a file started past the cap opens with, so its entries can still be read against the build that wrote them. */
+  header?: () => string;
   now?: () => Date;
 }
 
-export type LogLevel = 'start' | 'error' | 'warn' | 'uncaught';
+export type LogLevel = 'start' | 'build' | 'error' | 'warn' | 'uncaught';
 
 export interface MainLog {
   readonly file: string;
@@ -32,7 +34,7 @@ export interface MainLog {
   ensure(): boolean;
 }
 
-export function createMainLog({ file, maxBytes = 1024 * 1024, maxEntry = 8000, now = () => new Date() }: MainLogOptions): MainLog {
+export function createMainLog({ file, maxBytes = 1024 * 1024, maxEntry = 8000, header, now = () => new Date() }: MainLogOptions): MainLog {
   const ensure = () => {
     try {
       mkdirSync(dirname(file), { recursive: true });
@@ -49,7 +51,8 @@ export function createMainLog({ file, maxBytes = 1024 * 1024, maxEntry = 8000, n
       try {
         let text = format(...args.map((a) => (a instanceof Error ? inspect(a) : a)));
         if (text.length > maxEntry) text = `${text.slice(0, maxEntry)}… (${text.length - maxEntry} more characters)`;
-        const line = `${now().toISOString()} [${level}] ${text}\n`;
+        const stamp = now().toISOString();
+        let line = `${stamp} [${level}] ${text}\n`;
         mkdirSync(dirname(file), { recursive: true });
         let size = 0;
         try {
@@ -57,7 +60,15 @@ export function createMainLog({ file, maxBytes = 1024 * 1024, maxEntry = 8000, n
         } catch {
           size = 0;
         }
-        if (size > 0 && size + Buffer.byteLength(line) > maxBytes) renameSync(file, `${file}.1`);
+        if (size > 0 && size + Buffer.byteLength(line) > maxBytes) {
+          try {
+            renameSync(file, `${file}.1`);
+            if (header) line = `${stamp} [build] ${header()}\n${line}`;
+          } catch {
+            // The file could not move aside (on Windows, while something holds it open): it grows past the cap
+            // rather than losing the entry.
+          }
+        }
         appendFileSync(file, line);
       } catch {
         // Logging never throws.
@@ -69,29 +80,38 @@ export function createMainLog({ file, maxBytes = 1024 * 1024, maxEntry = 8000, n
 /** Where the log hears from: the console's error and warning output, and the process's uncaught exceptions and warnings. */
 export interface LogSources {
   console: Pick<Console, 'error' | 'warn'>;
-  process: Pick<NodeJS.Process, 'on' | 'off'>;
+  process: Pick<NodeJS.Process, 'prependListener' | 'off'>;
 }
 
 /**
  * Keep what the main process reports in the log as well: console.error and console.warn still print as before, an
  * uncaught exception is recorded without changing how the process handles it (uncaughtExceptionMonitor), and process
- * warnings (an unhandled rejection Node only warns about, a deprecation) are recorded too. Returns what undoes it.
+ * warnings (an unhandled rejection Node only warns about, a deprecation) are recorded too, once: Node prints a warning
+ * through console.error right after its listeners hear it, and that printing is not recorded again. Returns what
+ * undoes it.
  */
 export function captureMainErrors(log: MainLog, { console: con, process: proc }: LogSources): () => void {
   const error = con.error;
   const warn = con.warn;
+  /** While Node prints the warning just recorded. */
+  let printingWarning = false;
   con.error = (...args: unknown[]) => {
     error.apply(con, args);
-    log.write('error', ...args);
+    if (!printingWarning) log.write('error', ...args);
   };
   con.warn = (...args: unknown[]) => {
     warn.apply(con, args);
     log.write('warn', ...args);
   };
   const uncaught = (e: unknown, origin: string) => log.write('uncaught', `${origin}:`, e);
-  const warning = (w: Error) => log.write('warn', w);
-  proc.on('uncaughtExceptionMonitor', uncaught);
-  proc.on('warning', warning);
+  // Heard before Node's own listener prints it, which happens in the same turn.
+  const warning = (w: Error) => {
+    log.write('warn', w);
+    printingWarning = true;
+    queueMicrotask(() => (printingWarning = false));
+  };
+  proc.prependListener('uncaughtExceptionMonitor', uncaught);
+  proc.prependListener('warning', warning);
   return () => {
     con.error = error;
     con.warn = warn;
