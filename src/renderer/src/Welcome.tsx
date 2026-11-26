@@ -8,6 +8,7 @@ import { recentGroups, whereLabels } from './lib/recent-places';
 import { SettingsModal } from './panels/SettingsModal';
 import { AppMark, MARK_COLORS } from './components/AppMark';
 import { switchScheme, useEditorScheme } from './lib/appearance';
+import { perfMark, perfMarkOnce } from './lib/perf';
 import './Welcome.css';
 
 export function BrandMark() {
@@ -114,6 +115,10 @@ const FILTER_FROM = 8;
 export function Welcome() {
   // null until the first load, so returning users never see a flash of the first-run screen.
   const [recents, setRecents] = useState<RecentProject[] | null>(null);
+  // The first time Welcome lists its recent projects in this page (src/shared/perf.ts).
+  useEffect(() => {
+    if (recents !== null) perfMarkOnce('launch.recentsShown', { count: recents.length });
+  }, [recents]);
   const refusedPacks = useStore((st) => st.packs.refused);
   const [creating, setCreating] = useState(false);
   // A project to trust before it opens, with the missing entry it was chosen for (Find folder…), if any.
@@ -187,6 +192,7 @@ export function Welcome() {
     window.addEventListener('builder-command', onCmd);
     // A File menu command chosen while there was no window (macOS) is sent now that Welcome can act on it.
     api.menuReady();
+    perfMarkOnce('launch.firstInteractive');
     return () => window.removeEventListener('builder-command', onCmd);
   }, []);
 
@@ -218,6 +224,7 @@ export function Welcome() {
     // The disabled buttons show it; this also stops the Open project menu command, which no button state reaches.
     if (openingRef.current) return;
     openingRef.current = true;
+    perfMark('open.requested', { chosen: dir === undefined ? 'dialog' : 'path' });
     returnFocus.current = document.activeElement instanceof HTMLElement && document.activeElement !== document.body ? document.activeElement : null;
     setOpening(dir ?? opts?.replaces ?? (opts?.folder ? 'folder-dialog' : 'dialog'));
     try {

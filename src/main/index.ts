@@ -3,6 +3,9 @@ import type { BaseWindow, KeyboardEvent, MenuItem } from 'electron';
 import { join, dirname, normalize, relative, isAbsolute } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { release } from 'node:os';
+// First, so the trace (src/main/perf.ts) starts before anything else this module imports is evaluated.
+import { perf } from './perf';
+import { PERF_ARG, PERF_GLOBAL } from '@shared/perf';
 import type { Appearance, ConflictChoice, ImportChoices, InspectLayoutOptions, LocalWorkspaceState, ProviderId, SettingsPatch, SourceSettingsDraft } from '@shared/api';
 import type { ComponentPreviewMeasure, ComponentPreviewResult, ComponentPreviewStep } from '@shared/component-preview';
 import { editorBackground, editorScheme } from '@shared/appearance';
@@ -43,6 +46,13 @@ import { declareCodeNames } from '@engine/definitions';
 import type { ComponentDefinition } from '@shared/types';
 
 const here = dirname(fileURLToPath(import.meta.url));
+// Timing marks (scripts/perf/README.md): when this process was created, and that every static import has now run. A
+// driver reaches the hooks through a global, to mark the edges of what it measures.
+if (perf.on) {
+  perf.mark('launch.processStart', { clock: process.getCreationTime() === null ? 'timeOrigin' : 'creationTime' }, process.getCreationTime() ?? performance.timeOrigin);
+  perf.mark('launch.mainLoaded');
+  (globalThis as Record<symbol, unknown>)[Symbol.for(PERF_GLOBAL)] = perf;
+}
 // An error nothing in the main process caught is reported in the app's own words, not Electron's raw stack dialog
 // (main-errors.ts), from as early as it can be: before startup is done it says the app could not start, and exits.
 // In an automated run the question is answered by the test, or closed as Keep Working.
@@ -735,6 +745,12 @@ function registerIpc() {
   ipcMain.on('app:appearance', (event) => {
     event.returnValue = event.sender === win?.webContents ? appearance : 'system';
   });
+  // The editor's timing marks, written beside the main process's own: registered only while marks are on.
+  if (perf.on)
+    ipcMain.on('perf:record', (event, record: unknown) => {
+      if (!win || event.sender !== win.webContents || event.senderFrame !== win.webContents.mainFrame || !isEditorUrl(event.senderFrame.url)) return;
+      perf.take(record, { proc: 'renderer', pid: event.sender.getOSProcessId() });
+    });
   ipcMain.on('lifecycle:result', (event, requestId: string, answer: LeaveAnswer) => {
     if (event.sender !== win?.webContents || event.senderFrame !== win.webContents.mainFrame) return;
     leaveGate.reply(requestId, answer);
@@ -808,11 +824,16 @@ async function createWindow() {
       sandbox: true,
       webSecurity: true,
       spellcheck: true,
-      backgroundThrottling: !headless
+      backgroundThrottling: !headless,
+      // Its preload offers the editor a way to send timing marks only while they are on (src/shared/perf.ts).
+      ...(perf.on ? { additionalArguments: [PERF_ARG] } : {})
     }
   });
+  perf.mark('launch.windowCreated', { window: win.id });
   // Open maximized: the editor is used with as much room for the site preview as the screen allows.
   win.once('ready-to-show', () => {
+    // A headless launch never shows its window, so this is as far as launch timing goes in main.
+    perf.mark('launch.readyToShow');
     if (headless) return;
     win?.maximize();
     win?.show();
@@ -1012,6 +1033,8 @@ const BUILD: BuildStamp = {
   commit: typeof __BUILD_COMMIT__ === 'string' ? __BUILD_COMMIT__ : null,
   builtAt: typeof __BUILD_DATE__ === 'string' ? __BUILD_DATE__ : null
 };
+// A trace names the build it timed, so a result always says which tree it measured.
+if (perf.on) perf.mark('launch.build', { commit: BUILD.commit, builtAt: BUILD.builtAt, version: app.getVersion() });
 
 /** What a bug report quotes to say which build it was. */
 const buildDetails = () =>
@@ -1101,6 +1124,7 @@ app.on('second-instance', () => {
 });
 
 app.whenReady().then(async () => {
+  perf.mark('launch.appReady');
   // Packaged builds carry the icon in the bundle; in development the dock would otherwise show Electron's.
   if (!app.isPackaged && !headless && process.platform === 'darwin') app.dock?.setIcon(join(here, '../../build/icon.png'));
   // Serve the packaged editor from an app-controlled secure origin.
@@ -1120,7 +1144,9 @@ app.whenReady().then(async () => {
   // The website's icons are drawn in the media worker, from before any project opens.
   setSiteIconRenderer(renderSiteIconsInWorker);
   // Theme packs are loaded before anything can open a project or ask for the catalogue.
+  const packsLoaded = perf.span('launch.loadPacks');
   await loadInstalledPacks(packRoots(resourcesDir(), app.getPath('userData')));
+  packsLoaded();
   registerIpc();
   developerModeOn = (await loadSettings()).settings.developerMode;
   // The About panel names this app and its version, not the Electron bundle a development build runs in, with the
@@ -1147,6 +1173,7 @@ app.on('window-all-closed', () => {
 
 // The media worker would be ended with the app anyway; stopping it first settles any import still waiting on it.
 app.on('will-quit', () => {
+  perf.stop();
   controller.remote.dispose();
   stopMediaWorker();
   stopPhotoDecoders();

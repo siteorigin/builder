@@ -1,3 +1,5 @@
+// First: while timing marks are on it installs the hook React DOM finds as it loads, to count commits (lib/perf.ts).
+import './lib/perf';
 import { createRoot } from 'react-dom/client';
 import './styles/index.css';
 import { App, abandonLeaves } from './App';

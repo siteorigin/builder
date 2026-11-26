@@ -10,6 +10,7 @@ import { sha } from '../project/fsutil';
 import { statesFailure, type BuildErrorInfo } from '../../runtime/build-diagnostics';
 import { LineTail } from './line-tail';
 import { NETWORK_CODES, ToolsDownloadError, cacheCoverage, lockedPackages, nativeNotInstalled, npmErrorCode, npmLibc, type LockedPackage, type ToolsAvailability } from './availability';
+import { perf } from '../perf';
 
 const nodeRequire = createRequire(import.meta.url);
 
@@ -330,6 +331,7 @@ export class DevServer {
       serviceName: 'SiteOrigin project runtime',
       stdio: 'pipe'
     });
+    perf.mark('runtime.forked');
     this.proc = proc;
     proc.stdout?.on('data', (d) => this.log('info', String(d)));
     proc.stderr?.on('data', (d) => this.log('error', String(d)));
@@ -346,8 +348,11 @@ export class DevServer {
         // A process that has been stopped or replaced no longer speaks for this server.
         if (this.proc !== proc) return;
         if (m.type === 'held') this.holdAcks.get(String(m.id))?.();
-        else if (m.type === 'published') for (const fn of this.publishedListeners) fn(Number(m.revision));
-        else if (m.type === 'ready') {
+        else if (m.type === 'published') {
+          perf.mark('runtime.published', { revision: Number(m.revision) });
+          for (const fn of this.publishedListeners) fn(Number(m.revision));
+        } else if (m.type === 'ready') {
+          perf.mark('runtime.ready');
           clearTimeout(timer);
           this.restarts = 0;
           this.set({ state: 'ready', url: m.url! });
@@ -426,6 +431,7 @@ export class DevServer {
       if (this.proc !== proc) return;
       try {
         proc.postMessage({ type: 'release', id, files });
+        perf.mark('runtime.release', { files: files.length });
       } catch {
         /* the process is gone */
       }
