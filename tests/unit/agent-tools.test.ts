@@ -753,8 +753,8 @@ describe('update_site_brand', () => {
     const { session, adapter, run } = await setup([() => [call('t1', 'update_site_brand', { theme: 'signal', brandColor: '#0f766e', headingFont: 'JetBrains Mono' })], () => finish()], small);
     const before = structuredClone(session.state);
     const { result } = await run('Make the site look like a modern software product, in teal');
-    // A small site run ends with its one macro call.
-    expect(result?.status).toBe('completed');
+    // A small site run ends with its one macro call, at the context limit: kept, and partial.
+    expect(result?.status).toBe('partial');
     const schema = adapter.requests[0].tools.find((t) => t.name === 'update_site_brand')!.parameters as { properties: Record<string, { enum?: string[]; description?: string }> };
     // The shipped themes it can switch to, each described so the model can choose.
     expect(schema.properties.theme.enum).toEqual(['editorial', 'signal']);
@@ -786,7 +786,7 @@ describe('update_site_brand', () => {
     const { result } = await run('Rebrand the site in navy, with matching backgrounds');
     // A small model re-skins the site in its one call: the call lands as one change, and the 8,000-token run stops
     // after it at the context limit, as every small site run does, with the change kept and undoable.
-    expect(result?.status).toBe('completed');
+    expect(result?.status).toBe('partial');
     expect(result).toMatchObject({ canUndo: true, error: 'context limit' });
     expect(adapter.requests).toHaveLength(1);
     expect(session.revision).toBe(1);
@@ -1894,7 +1894,7 @@ describe('context budget', () => {
       { contextWindowTokens: 30000, maxOutputTokens: 4000 }
     );
     const { result } = await run('Add a services page');
-    expect(result?.status).toBe('completed');
+    expect(result?.status).toBe('partial');
     expect(result?.incomplete).toBe(true);
     expect(result?.summary).toContain('context limit');
     expect(pageAt(session.state, '/services/')).toBeDefined();
@@ -1928,7 +1928,7 @@ describe('completeness check', () => {
     const { adapter, run } = await setup([() => [call('a', 'upsert_page_with_sections', stub('services'))], () => finish('Done.'), () => finish('Still done.')]);
     const { result } = await run('Build a Services page');
     expect(adapter.requests).toHaveLength(3);
-    expect(result?.status).toBe('completed');
+    expect(result?.status).toBe('partial');
     expect(result?.incomplete).toBe(true);
     expect(result?.validation.join(' ')).toContain('Services still has only an opening section');
   });
