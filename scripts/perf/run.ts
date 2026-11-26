@@ -81,14 +81,30 @@ function paths(dir: string, profile: string) {
   return p;
 }
 
-/** Ending a launch failed: something of it may still run, so the run stops rather than measure beside it. */
-class TeardownError extends Error {}
+/**
+ * Something of a launch may still be running (it would not start, or would not end): nothing more is measured beside
+ * it. The result is still written, with what was not measured reported as failed.
+ */
+class StopRun extends Error {}
 
-/** A launch, with the identity of its main process read while it is surely running, for its teardown to check against. */
+/**
+ * A launch, with the identity of its main process read while it is surely running, for its teardown to check against.
+ * A launch that fails, or whose identity cannot be read, stops the run: what it started cannot be told apart from
+ * another process later.
+ */
 async function start(appDir: string, dir: string, profile: string, trace: string | null) {
   const env = { ...sessionEnv(paths(dir, profile)), ...(trace ? { [PERF_ENV]: trace } : {}) };
-  const launched = await launchApp({ env, cwd: appDir, timeoutMs: 120_000, viewport: { width: 1440, height: 900 } });
+  let launched: Awaited<ReturnType<typeof launchApp>>;
+  try {
+    launched = await launchApp({ env, cwd: appDir, timeoutMs: 120_000, viewport: { width: 1440, height: 900 } });
+  } catch (e) {
+    throw new StopRun(`The app did not start (${(e as Error).message.split('\n')[0]}).`);
+  }
   const root = (await processTable().catch(() => [])).filter((p) => p.pid === launched.pid);
+  if (!root.length) {
+    await launched.app.close().catch(() => undefined);
+    throw new StopRun(`Could not read the launched app's process (${launched.pid}), so its processes could not be told apart from others when it ends.`);
+  }
   return { ...launched, root };
 }
 
@@ -112,9 +128,9 @@ async function stop(app: ElectronApplication, pid: number, root: ProcessEntry[])
   try {
     ({ survivors } = await killTree(pid, { known }));
   } catch (e) {
-    throw new TeardownError(`Could not check that the app's processes ended: ${(e as Error).message}`);
+    throw new StopRun(`Could not check that the app's processes ended: ${(e as Error).message}`);
   }
-  if (survivors.length) throw new TeardownError(`Processes the app started would not end (${survivors.map((s) => s.pid).join(', ')}): stopping before the next iteration shares the machine with them.`);
+  if (survivors.length) throw new StopRun(`Processes the app started would not end (${survivors.map((s) => s.pid).join(', ')}): stopping before the next iteration shares the machine with them.`);
 }
 
 /** Open `dir` in a launch with no marks, trusting it as the trust prompt would, and wait for its canvas. */
@@ -177,14 +193,7 @@ async function mark(app: ElectronApplication, win: Page, name: string, attrs?: P
 /** One iteration: a launch with marks on and the chain run in it. */
 async function iterate(opts: Options, c: { dir: string; profile: string; project: string; facts: FixtureFacts; restoredAt: number }, index: number, trace: string): Promise<ChainOutcome[]> {
   rmSync(trace, { force: true });
-  let launched: Awaited<ReturnType<typeof start>>;
-  try {
-    launched = await start(opts.app, join(c.dir, 'launch'), c.profile, trace);
-  } catch (e) {
-    const error = { stage: 'launch', message: (e as Error).message.split('\n')[0] };
-    return opts.chain.map((s) => ({ scenario: s.name, ok: false, error }));
-  }
-  const { app, win, pid, root } = launched;
+  const { app, win, pid, root } = await start(opts.app, join(c.dir, 'launch'), c.profile, trace);
   try {
     const ctx: ScenarioContext = {
       app,
@@ -230,7 +239,16 @@ async function main() {
   const cases: CaseResult[] = [];
   let stamped: { commit: string | null; builtAt: string | null } = { commit: null, builtAt: null };
   let electron: string | null = null;
+  let counters: number | null = null;
+  let stopped: string | null = null;
+  const unmeasured = (fixture: string, message: string, hash = '', tools = '') => {
+    for (const s of reported) if (!cases.some((c) => c.scenario === s.name && c.fixture === fixture)) cases.push({ scenario: s.name, fixture, fixtureHash: hash, templateHash: tools, status: 'failed', iterations: [{ index: 0, ok: false, trace: '', error: { stage: 'run', message } }] });
+  };
   for (const name of opts.fixtures) {
+    if (stopped) {
+      unmeasured(name, `not measured: ${stopped}`);
+      continue;
+    }
     const dir = join(runDir, name);
     const project = join(dir, 'project');
     const profile = join(dir, 'profile');
@@ -247,25 +265,39 @@ async function main() {
       toolCaches(project, join(dir, 'tools-start'), false);
       restore(profile, join(dir, 'profile-start'));
     } catch (e) {
-      // A launch that could not be ended may still be running: nothing more is measured beside it.
-      if (e instanceof TeardownError) throw e;
+      // A launch that would not start or end may still be running: nothing more is measured beside it.
+      if (e instanceof StopRun) {
+        stopped = e.message;
+        console.log(`perf: ${name}: stopping the run (${stopped})`);
+        unmeasured(name, `not measured: ${stopped}`, fx?.hash, fx?.tools);
+        continue;
+      }
       // A fixture that cannot be set up fails its own cases; the other fixtures are still measured.
       const error = { stage: 'warm-up', message: (e as Error).message.split('\n')[0] };
       console.log(`perf: ${name}: FAILED to set up (${error.message})`);
       for (const s of reported) cases.push({ scenario: s.name, fixture: name, fixtureHash: fx?.hash ?? '', templateHash: fx?.tools ?? '', status: 'failed', iterations: [{ index: 0, ok: false, trace: '', error }] });
       continue;
     }
-    for (let i = 1; i <= opts.iterations; i++) {
+    for (let i = 1; i <= opts.iterations && !stopped; i++) {
       restore(join(dir, 'project-start'), project, ['node_modules']);
       toolCaches(project, join(dir, 'tools-start'), true);
       restore(join(dir, 'profile-start'), profile);
       if (opts.cold) for (const cache of BROWSER_CACHES) rmSync(join(profile, cache), { recursive: true, force: true });
       const trace = join(dir, `trace-${i}.ndjson`);
       const rel = relative(dirname(out), trace);
-      const outcomes = await iterate(opts, { dir, profile, project, facts: fx.facts, restoredAt: Date.now() }, i, trace);
+      let outcomes: ChainOutcome[];
+      try {
+        outcomes = await iterate(opts, { dir, profile, project, facts: fx.facts, restoredAt: Date.now() }, i, trace);
+      } catch (e) {
+        if (!(e instanceof StopRun)) throw e;
+        stopped = e.message;
+        console.log(`perf: ${name} #${i}: stopping the run (${stopped})`);
+        outcomes = opts.chain.map((s) => ({ scenario: s.name, ok: false, error: { stage: 'run', message: stopped! } }));
+      }
       const t = Trace.parse(existsSync(trace) ? readFileSync(trace, 'utf8') : '');
       if (t.build().commit) stamped = t.build();
       electron = (t.first('perf.start')?.attrs?.electron as string | null) ?? electron;
+      counters = (t.first('perf.start')?.attrs?.counters as number | null) ?? counters;
       for (const o of outcomes) perScenario.get(o.scenario)!.push({ index: i, ok: o.ok, trace: rel, ...(o.metrics ? { metrics: o.metrics } : {}), ...(o.error ? { error: o.error } : {}) });
       console.log(`perf: ${name} #${i}: ${outcomes.map((o) => `${o.scenario} ${o.ok ? 'ok' : `FAILED (${o.error?.stage}: ${o.error?.message})`}`).join(', ')}`);
     }
@@ -278,7 +310,7 @@ async function main() {
   const result: RunResult = {
     schemaVersion: 1,
     createdAt: new Date().toISOString(),
-    build: { commit: stamped.commit, builtAt: stamped.builtAt, fingerprint: build.fingerprint, head: build.git?.head ?? null, dirty: build.git?.dirty ?? null, appDir: opts.app },
+    build: { commit: stamped.commit, builtAt: stamped.builtAt, fingerprint: build.fingerprint, head: build.git?.head ?? null, dirty: build.git?.dirty ?? null, appDir: opts.app, counters },
     machine: { platform: platform(), arch: arch(), osRelease: release(), cpu: cpus()[0]?.model ?? null, cores: cpus().length, memoryGiB: Math.round(totalmem() / 2 ** 30), node: process.versions.node, electron },
     config: { iterations: opts.iterations, scenarios: reported.map((s) => s.name), fixtures: opts.fixtures, settleMs: opts.settleMs, cold: opts.cold },
     cases

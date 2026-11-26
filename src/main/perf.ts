@@ -9,7 +9,7 @@
  */
 import { closeSync, constants, fstatSync, openSync, writeSync } from 'node:fs';
 import { serialize } from 'node:v8';
-import { PERF_ENV, readSent, type PerfAttrs, type PerfProc, type PerfRecord } from '@shared/perf';
+import { PERF_COUNTERS_VERSION, PERF_ENV, readSent, type PerfAttrs, type PerfProc, type PerfRecord } from '@shared/perf';
 
 export interface Perf {
   readonly on: boolean;
@@ -171,7 +171,7 @@ export const perf: Perf = sink
       write: sink,
       now: perfNow,
       pid: process.pid,
-      meta: { platform: process.platform, arch: process.arch, electron: process.versions.electron ?? null, node: process.versions.node },
+      meta: { platform: process.platform, arch: process.arch, electron: process.versions.electron ?? null, node: process.versions.node, counters: PERF_COUNTERS_VERSION },
       stallMs: 50
     })
   : PERF_OFF;

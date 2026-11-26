@@ -47,7 +47,8 @@ export interface CaseResult {
 export interface RunResult {
   schemaVersion: 1;
   createdAt: string;
-  build: { commit: string | null; builtAt: string | null; fingerprint: string; head: string | null; dirty: boolean | null; appDir: string };
+  /** `counters`: what the app's counters count (PERF_COUNTERS_VERSION), as its trace said. */
+  build: { commit: string | null; builtAt: string | null; fingerprint: string; head: string | null; dirty: boolean | null; appDir: string; counters?: number | null };
   machine: Record<string, string | number | null>;
   config: { iterations: number; scenarios: string[]; fixtures: string[]; settleMs: number; cold?: boolean };
   cases: CaseResult[];
@@ -72,7 +73,7 @@ export class Trace {
       try {
         const r = JSON.parse(line) as PerfRecord | null;
         // A line that is JSON but not a record is as unreadable as one cut short.
-        if (r && typeof r === 'object' && typeof r.name === 'string' && typeof r.t === 'number' && Number.isFinite(r.t)) records.push(r);
+        if (r && typeof r === 'object' && typeof r.name === 'string' && typeof r.kind === 'string' && typeof r.proc === 'string' && typeof r.t === 'number' && Number.isFinite(r.t)) records.push(r);
         else incomplete = true;
       } catch {
         incomplete = true;
@@ -240,6 +241,8 @@ export function compareMetric(metric: string, a: Summary | undefined, b: Summary
 export function protocolDifference(before: RunResult, after: RunResult): string | null {
   if (!!before.config.cold !== !!after.config.cold) return `one used a cold profile and the other a warm one`;
   if (before.config.settleMs !== after.config.settleMs) return `they waited ${before.config.settleMs} and ${after.config.settleMs} ms after each scenario`;
+  const [a, b] = [before.build.counters ?? null, after.build.counters ?? null];
+  if (a !== b) return `their counters count different things (counter versions ${a ?? 'unknown'} and ${b ?? 'unknown'})`;
   return null;
 }
 

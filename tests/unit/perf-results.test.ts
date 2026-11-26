@@ -145,6 +145,10 @@ describe('benchmark results, at their edges', () => {
     const settled = { ...warm, config: { ...warm.config, settleMs: 0 } };
     expect(compareResults(warm, cold)[0]).toMatchObject({ status: 'protocol-differs', metrics: [] });
     expect(compareResults(warm, settled)[0].status).toBe('protocol-differs');
+    // Counters that count different things (another version of their definitions) are not compared either.
+    const counted = (n: number) => ({ ...warm, build: { ...warm.build, counters: n } });
+    expect(compareResults(counted(1), counted(2))[0].status).toBe('protocol-differs');
+    expect(compareResults(counted(1), counted(1))[0].status).toBe('compared');
     const elsewhere = { ...warm, machine: { cpu: 'Other CPU', platform: 'linux', osRelease: '6' } };
     expect(changeMarkdown(compareResults(warm, elsewhere), warm, elsewhere)).toContain('Durations are not comparable');
   });
@@ -162,7 +166,7 @@ describe('benchmark results, at their edges', () => {
     expect(t.records.map((x) => x.name)).toEqual(['first', 'second', 'later']);
     expect(t.incomplete).toBe(true);
     // JSON that is not a record is as unreadable as a line cut short.
-    const odd = Trace.parse(['null', '{"name":"x"}', JSON.stringify(rec('kept', 1))].join('\n'));
+    const odd = Trace.parse(['null', '{"name":"x"}', '{"name":"x","t":1}', JSON.stringify(rec('kept', 1))].join('\n'));
     expect([odd.records.map((x) => x.name), odd.incomplete]).toEqual([['kept'], true]);
   });
 

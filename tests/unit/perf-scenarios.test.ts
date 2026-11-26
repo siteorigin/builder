@@ -255,6 +255,13 @@ describe('edit metrics', () => {
     expect(edit.measure(lengthless, facts).missing).toEqual(['edit.generate (a finite time)']);
   });
 
+  it('leave React commits missing when the editor could not count them, never a false zero', () => {
+    const uncounted = new Trace([...trace().records, r('perf.reactCommitsUncounted', 100)]);
+    const got = edit.measure(uncounted, facts);
+    expect(got.missing).toEqual(['edit.rendererCommits (the editor could not count React commits)']);
+    expect(got.metrics['edit.rendererCommits']).toBeUndefined();
+  });
+
   it('leave the bytes sent missing when a snapshot’s size could not be told, never short', () => {
     const unsized = new Trace(trace().records.map((x) => (x.name === 'controller.snapshotSent' && x.t === 10_600 ? { ...x, attrs: { revision: target, bytes: null } } : x)));
     const got = edit.measure(unsized, facts);

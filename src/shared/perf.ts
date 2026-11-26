@@ -16,6 +16,11 @@
 export const PERF_ENV = 'SITEORIGIN_PERF_FILE';
 /** The argument the editor window gets when marks are on, which tells its preload to offer the perf bridge. */
 export const PERF_ARG = '--siteorigin-perf';
+/**
+ * What the counters count, as a version: raised whenever an existing counter starts counting something else (another
+ * read site, another kind of write), so results whose counts mean different things are never compared.
+ */
+export const PERF_COUNTERS_VERSION = 1;
 /** Where the main process exposes its perf hooks to a driver (`app.evaluate`), only when marks are on. */
 export const PERF_GLOBAL = 'siteorigin.perf';
 

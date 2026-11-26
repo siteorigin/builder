@@ -259,21 +259,22 @@ function listFiles(dir: string): string[] {
 /** The report of the build in `outDir`. */
 export function analyzeBuild(outDir: string): StaticReport {
   const rendererDir = join(outDir, 'renderer');
+  // A built file some row's files import that is not there is listed, so no row is taken as whole when it is not.
+  const unresolved = new Set<string>();
   const { scripts: entry, styles } = pageAssets(rendererDir, readFileSync(join(rendererDir, 'index.html'), 'utf8'));
-  const scripts = localClosure(entry);
+  const scripts = localClosure(entry, unresolved);
   const eager = new Set([...scripts, ...styles]);
   const later = listFiles(join(rendererDir, 'assets')).filter((f) => /\.(js|css)$/.test(f) && !eager.has(f));
   const mainDir = join(outDir, 'main');
-  const unresolved = new Set<string>();
   const mainEntry = localClosure([join(mainDir, 'index.js')], unresolved);
   const rows: Record<string, StaticRow> = {
     'renderer.script': row(outDir, scripts),
     'renderer.style': row(outDir, styles),
     'renderer.later': row(outDir, later),
     main: row(outDir, mainEntry),
-    preload: row(outDir, localClosure(readdirSync(join(outDir, 'preload')).filter((f) => /\.(m|c)?js$/.test(f)).map((f) => join(outDir, 'preload', f))))
+    preload: row(outDir, localClosure(readdirSync(join(outDir, 'preload')).filter((f) => /\.(m|c)?js$/.test(f)).map((f) => join(outDir, 'preload', f)), unresolved))
   };
-  for (const f of readdirSync(mainDir).sort()) if (f !== 'index.js' && f.endsWith('.js')) rows[`worker.${basename(f, extname(f))}`] = row(outDir, localClosure([join(mainDir, f)]));
+  for (const f of readdirSync(mainDir).sort()) if (f !== 'index.js' && f.endsWith('.js')) rows[`worker.${basename(f, extname(f))}`] = row(outDir, localClosure([join(mainDir, f)], unresolved));
   const packages = packageClosure(mainEntry, unresolved);
   return { schemaVersion: 1, rows, packages, unresolved: [...unresolved].sort() };
 }

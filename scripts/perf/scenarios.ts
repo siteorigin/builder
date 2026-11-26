@@ -122,6 +122,12 @@ function bytesSent(m: Collector, name: string, sent: PerfRecord[]) {
   else m.count(name, sent.reduce((n, r) => n + (r.attrs!.bytes as number), 0), 'bytes');
 }
 
+/** React commits between two editor marks; missing when the editor said it could not count them (never a false zero). */
+function commits(m: Collector, trace: Trace, name: string, from: PerfRecord | undefined, to: PerfRecord | undefined) {
+  if (trace.first('perf.reactCommitsUncounted')) m.need(`${name} (the editor could not count React commits)`, undefined);
+  else m.count(name, counter(to, 'react.commits') - counter(from, 'react.commits'));
+}
+
 /** The longest main-process stall in [from, to], 0 when there was none. */
 function stallMax(trace: Trace, from: PerfRecord | undefined, to: PerfRecord | undefined): number {
   if (!from || !to) return 0;
@@ -154,7 +160,7 @@ export const launch: Scenario = {
     for (const name of ['launch.mainLoaded', 'launch.appReady', 'launch.windowCreated', 'launch.readyToShow', 'launch.firstRender', 'launch.firstInteractive', 'launch.recentsShown']) m.since(name, start, m.need(name, trace.first(name)));
     m.span('launch.loadPacks', m.need('launch.loadPacks', trace.first('launch.loadPacks')));
     const shown = trace.first('launch.recentsShown');
-    m.count('launch.rendererCommits', counter(shown, 'react.commits'));
+    commits(m, trace, 'launch.rendererCommits', undefined, shown);
     // What the main process read and hashed before it made the window (theme packs are verified file by file).
     const made = trace.first('launch.windowCreated');
     m.count('launch.filesReadBeforeWindow', counter(made, 'files.read'));
@@ -182,7 +188,7 @@ export const open: Scenario = {
     await win.locator('.editor').waitFor({ timeout: 120_000 });
     const frame = preview(win);
     await frame.locator('html[data-so-editing]').waitFor({ state: 'attached', timeout: 120_000 });
-    await frame.getByRole('heading', { name: fixture.heading, exact: true }).first().waitFor({ timeout: 30_000 });
+    await frame.getByRole('heading', { name: fixture.heading, exact: true, level: 1 }).first().waitFor({ timeout: 30_000 });
     const snap = await win.evaluate(() => (globalThis as unknown as EditorPage).builder.project.snapshot());
     expect(snap, 'no project is open');
     expect(!snap.readOnly, `the project opened read-only: ${snap.readOnly?.reason ?? ''}`);
@@ -235,7 +241,7 @@ export const open: Scenario = {
     m.count('open.snapshotsSent', sent.length);
     bytesSent(m, 'open.snapshotBytes', sent);
     m.count('open.reloadFromDisk', trace.all('session.reloadFromDisk', inProc('main'), at, m.need('scenario.end (main)', end)?.t).length);
-    m.count('open.rendererCommits', counter(ready, 'react.commits') - counter(req, 'react.commits'));
+    commits(m, trace, 'open.rendererCommits', req, ready);
     m.ms('open.mainStallMax', stallMax(trace, req, ready));
     return m;
   }
@@ -279,7 +285,7 @@ export const edit: Scenario = {
     await ctx.mark('scenario.start', { scenario: 'edit' });
     await field.fill(heading);
     await win.keyboard.press('Tab');
-    await preview(win).getByRole('heading', { name: heading, exact: true }).first().waitFor({ timeout: 60_000 });
+    await preview(win).getByRole('heading', { name: heading, exact: true, level: 1 }).first().waitFor({ timeout: 60_000 });
     const target = before.revision + 1;
     await ctx.waitTrace((t) => !!t.first('canvas.revisionApplied', atRevision(target)), 30_000);
     const after = await win.evaluate(() => (globalThis as unknown as EditorPage).builder.project.snapshot());
@@ -336,7 +342,7 @@ export const edit: Scenario = {
     m.count('edit.snapshotsSent', sent.length);
     bytesSent(m, 'edit.snapshotBytes', sent);
     m.count('edit.reloadFromDisk', trace.all('session.reloadFromDisk', inProc('main'), at, endMain?.t).length);
-    m.count('edit.rendererCommits', counter(endRenderer, 'react.commits') - counter(req, 'react.commits'));
+    commits(m, trace, 'edit.rendererCommits', req, endRenderer);
     m.ms('edit.mainStallMax', stallMax(trace, req, shown));
     return m;
   }

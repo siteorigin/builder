@@ -30,7 +30,9 @@ run itself could not go on.
    That trusts it and lists it in Recent projects. What the warm-up leaves (the project, the preview tools' caches in its
    `node_modules`, and the profile) is put back before every iteration, so each iteration starts from the same files.
    A fixture whose preparation or warm-up fails has its cases reported as failed, and the other fixtures are still
-   measured. Each launch ends with a sweep of every process it started; one that will not end stops the run.
+   measured. Each launch ends with a sweep of every process it started, checked against the identity read at launch.
+   A launch that will not start, or a process that will not end, stops the run: the result is still written, with
+   what was not measured reported as failed.
 3. **Iterations.** Each is a fresh launch of the built app, headless (no window shown, no focus taken), with
    `SITEORIGIN_PERF_FILE` naming the iteration's trace file. The scenarios asked for run in one launch, in order, each
    after the one it follows (`launch` → `open` → `edit`), so `--scenario edit` costs the same as all three and reports
@@ -152,6 +154,9 @@ the `edit` scenario waits for the workspace save its own panel choice set off be
   state) goes behind `if (perf.on)` / `if (perfOn)`. Names are lowercase-first, dotted (`session.publish`). A mark that
   belongs to a revision carries `revision`, so a scenario can match it across processes.
 - Never put paths, page text or snapshots in `attrs`, and never change what the app does because marks are on.
+- A new counter, or a new mark, needs nothing more. Making an existing counter count something else (another read
+  site, another kind of write) raises `PERF_COUNTERS_VERSION` in `src/shared/perf.ts`: results whose counters mean
+  different things are then never compared.
 
 ## Adding a scenario
 
