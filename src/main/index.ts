@@ -6,7 +6,7 @@ import type { Appearance, ConflictChoice, ImportChoices, InspectLayoutOptions, L
 import type { ComponentPreviewMeasure, ComponentPreviewResult, ComponentPreviewStep } from '@shared/component-preview';
 import { editorBackground, editorScheme } from '@shared/appearance';
 import { externalLink } from '@shared/links';
-import { Controller, defaultProjectsFolder, resourcesDir } from './controller';
+import { Controller, resourcesDir, suggestedProjectsFolder } from './controller';
 import { installedCatalogue, loadInstalledPacks, packPreview, packRoots } from './packs/installed';
 import { createLeaveGate, type LeaveAnswer } from './leave-gate';
 import { forwardsKey, menuKeyCopy } from './history-keys';
@@ -357,7 +357,7 @@ function registerIpc() {
     const r = await dialog.showOpenDialog(win!, { title, defaultPath, properties: ['openDirectory', 'createDirectory'] });
     return r.canceled ? null : r.filePaths[0];
   });
-  handle('dialogs:defaultProjectsFolder', () => defaultProjectsFolder());
+  handle('dialogs:defaultProjectsFolder', () => suggestedProjectsFolder());
   handle('projects:recents', () => recents());
   handle('projects:removeRecent', (dir: string) => removeRecent(dir));
   handle('projects:pinRecent', (dir: unknown, pinned: unknown) => {

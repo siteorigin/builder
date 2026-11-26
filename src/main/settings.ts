@@ -17,6 +17,8 @@ interface SettingsFile {
   settings: AppSettings;
   recents: RecentProject[];
   trusted: Record<string, string>;
+  /** The folder the last new project was created in, so the next New project proposes it. */
+  lastProjectParent?: string;
 }
 
 const DEFAULTS: SettingsFile = {
@@ -109,7 +111,8 @@ export async function loadSettings(): Promise<SettingsFile> {
     cache = {
       settings: { ...DEFAULTS.settings, ...raw.settings, shortcuts: storedShortcuts(raw.settings?.shortcuts), ai: withLocalModel({ ...DEFAULTS.settings.ai, ...raw.settings?.ai, models: { ...DEFAULTS.settings.ai.models, ...raw.settings?.ai?.models }, local }) },
       recents: raw.recents ?? [],
-      trusted: raw.trusted ?? {}
+      trusted: raw.trusted ?? {},
+      ...(typeof raw.lastProjectParent === 'string' && raw.lastProjectParent ? { lastProjectParent: raw.lastProjectParent } : {})
     };
     savedShortcuts = cache.settings.shortcuts;
     // A hand-edited file can hold any value; one that is not a usable size means automatic.
@@ -266,6 +269,24 @@ export async function addRecent(dir: string, name: string, projectId: string, re
   // A pinned project opened again takes no other project's place, even one an unpin has left past the end.
   s.recents = pinned ? [withPin(entry, true), ...rest] : capped([entry, ...rest], old);
   await saveSettings();
+}
+
+/** Remembers the folder a new project was just created in. */
+export async function rememberProjectParent(parent: string) {
+  const s = await loadSettings();
+  s.lastProjectParent = parent;
+  await saveSettings();
+}
+
+/** The folder the last new project was created in, when it is still a folder. */
+export async function usableProjectParent(): Promise<string | undefined> {
+  const last = (await loadSettings()).lastProjectParent;
+  if (!last) return undefined;
+  try {
+    return (await fs.stat(last)).isDirectory() ? last : undefined;
+  } catch {
+    return undefined;
+  }
 }
 
 /**

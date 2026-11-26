@@ -582,11 +582,13 @@ export function NewProjectModal({ onClose }: { onClose: () => void }) {
   // window closed meanwhile, or one that replaced the open project and is starting its preview) reports nothing
   // here. Once this dialog has gone, its attempt's answer is only told as a notice.
   const attempt = useRef<string | null>(null);
+  // Set once the author picks a folder: the suggested one arriving later must not replace it.
+  const chosenParent = useRef(false);
   const live = useRef(true);
   const stepRef = useRef<ProgressEvent['step'] | null>(null);
   useEffect(() => {
     live.current = true;
-    void api.dialogs.defaultProjectsFolder().then(setParent, () => undefined);
+    void api.dialogs.defaultProjectsFolder().then((d) => !chosenParent.current && setParent(d), () => undefined);
     void api.projects.websiteTools().then(
       (t) => live.current && setTools(t),
       () => live.current && setTools('unknown')
@@ -838,6 +840,7 @@ export function NewProjectModal({ onClose }: { onClose: () => void }) {
                 onClick={async () => {
                   const d = await api.dialogs.chooseFolder('Choose where to create the project', parent);
                   if (d) {
+                    chosenParent.current = true;
                     setParent(d);
                     if (problem && problem.about !== 'other') setProblem(null);
                   }

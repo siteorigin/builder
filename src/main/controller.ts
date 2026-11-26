@@ -50,7 +50,7 @@ import { ComponentThumbs, writeThumb, type CaptureResult } from './runtime/compo
 import type { ComponentThumb } from '@shared/component-thumbs';
 import { generateComponentPreview } from '@generator/preview';
 import { canonicalDir } from '../runtime/policy';
-import { addRecent, isTrusted, loadSettings, renameRecent, trust, untrust } from './settings';
+import { addRecent, isTrusted, loadSettings, rememberProjectParent, usableProjectParent, renameRecent, trust, untrust } from './settings';
 import { MAX_COPY_NAME, projectDisplayName, projectFolder, projectFolderName } from '@shared/project-name';
 import { RELAY_URL_ENV, resolveRelayUrl } from '@shared/live/relay-url';
 import { LIVE_BATCH_LABEL_MAX, type LiveEditBatch } from '@shared/live/capabilities';
@@ -88,6 +88,11 @@ class ExportStopped extends Error {}
 /** Where new projects go by default: Documents/SiteOrigin. */
 export function defaultProjectsFolder(): string {
   return join(app.getPath('documents'), 'SiteOrigin');
+}
+
+/** Where New project starts: the folder the last project was created in, or Documents/SiteOrigin when that is gone. */
+export async function suggestedProjectsFolder(): Promise<string> {
+  return (await usableProjectParent().catch(() => undefined)) ?? defaultProjectsFolder();
 }
 
 /** The image a recovery was made for changed (relinked, removed) before its files could be written. */
@@ -663,6 +668,9 @@ export class Controller {
         refused = way;
         throw new Error(way.message ?? 'The open project was kept.');
       }
+      // Before the switch and its ownership check, so a New project opened at once already proposes this folder and the
+      // write cannot outlast the lock check.
+      await Promise.resolve().then(() => rememberProjectParent(opts.parentDir)).catch(() => undefined);
       committed = true;
       staged.off('lock-lost', stop);
       // Opened without its preview, nothing reads its lock again before the editor has it: read it now, since another
