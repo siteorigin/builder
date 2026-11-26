@@ -33,8 +33,8 @@ import { activityHint } from '../lib/conversations';
 import './Chat.css';
 
 /**
- * A link in model text: its words, with the address it goes to on hover. It never navigates the editor; a click (also
- * a middle click) shows the address in the confirmation, and the page opens in the browser from there.
+ * A link in model text: its words, with the address it goes to on hover. It never navigates the editor and can't be
+ * dragged out; a click (also a middle click) shows the address in the confirmation, and the page opens from there.
  */
 function MdLink({ href, children }: { href: string; children: ReactNode }) {
   const open = (e: MouseEvent) => {
@@ -43,7 +43,8 @@ function MdLink({ href, children }: { href: string; children: ReactNode }) {
     if (link) confirmOpenExternal(link);
   };
   return (
-    <a className="md-link" href={href} title={href} onClick={open} onAuxClick={(e) => e.button === 1 && open(e)}>
+    // Not draggable: a link dropped on a browser would open there without the confirmation.
+    <a className="md-link" href={href} title={href} draggable={false} onDragStart={(e) => e.preventDefault()} onClick={open} onAuxClick={(e) => e.button === 1 && open(e)}>
       {children}
     </a>
   );

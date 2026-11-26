@@ -230,10 +230,12 @@ export function textBlocks(text: string): TextBlock[] {
 
 /** A link or image, read as its words, or its address when it has none. The address may hold one level of parentheses. */
 const LINK = /!?\[((?:[^[\]\n]|\[[^[\]\n]{0,200}\]){0,500})\]\(((?:[^()\n]|\([^()\n]{0,500}\)){0,2000})\)/y;
-/** An address written out in the text, up to the first space. What it ends with is checked (urlAt). */
-const BARE_URL = /https?:\/\/[^\s<>`]{1,2100}/iy;
-/** Marks that end a sentence or close emphasis, which an address written at the end of one leaves to the prose. */
-const URL_TAIL = /[.,:;!?'"*_~]/;
+/** An address written out in the text, up to the first space, quote or escape. What it ends with is checked (urlAt). */
+const BARE_URL = /https?:\/\/[^\s<>`"'“”‘’\\]{1,2100}/iy;
+/** Marks that end a sentence, which an address written at the end of one leaves to the prose. */
+const URL_TAIL = /[.,:;!?]/;
+/** What an address can't follow: a letter or number, or a character that makes it part of a longer name or address. */
+const URL_AFTER = /[\p{L}\p{N}\p{M}/@.+-]/u;
 const ESCAPABLE = /[\\`*_~[\](){}#+\-.!|>]/;
 const SPACE = /^\s?$/;
 const PUNCTUATION = /^[\p{P}\p{S}]$/u;
@@ -265,24 +267,32 @@ function flanks(mark: string, length: number, before: string, after: string): { 
 function webHref(address: string): string | null {
   // A title after the address, as in [docs](https://example.com "Docs"), is not part of it.
   const link = externalLink(address.trim().replace(/\s+(?:"[^"]*"|'[^']*')$/, ''));
-  return link?.kind === 'web' ? link.href : null;
+  // Checked again as it will be opened, since the browser's form of an address can be longer than its typed one.
+  return link?.kind === 'web' && externalLink(link.href) ? link.href : null;
 }
 
 /**
- * The address written out at `at`, as typed, without the punctuation after it: a full stop, a closing mark of
- * emphasis, or a bracket it didn't open. Brackets it opens and closes are part of it, as in a wiki page's address.
+ * The address written out at `at`, as typed, without what follows it in the sentence: a full stop, a mark that closes
+ * emphasis still open (`closes`), or a bracket it didn't open. Brackets it opens and closes are part of it, as in a
+ * wiki page's address, and so is an underscore or star with nothing open to close.
  */
-function urlAt(text: string, at: number): string | null {
+function urlAt(text: string, at: number, closes: (mark: string) => boolean): string | null {
   BARE_URL.lastIndex = at;
-  let url = BARE_URL.exec(text)?.[0];
+  const url = BARE_URL.exec(text)?.[0];
   if (!url) return null;
-  for (;;) {
-    const last = url[url.length - 1];
+  // How many of each bracket the address holds, counted once and kept as its end is taken off.
+  const count: Record<string, number> = { '(': 0, ')': 0, '[': 0, ']': 0 };
+  for (const ch of url) if (ch in count) count[ch]++;
+  let end = url.length;
+  for (; end; end--) {
+    const last = url[end - 1];
     const pair = last === ')' ? '(' : last === ']' ? '[' : null;
-    if (URL_TAIL.test(last) || (pair && url.split(pair).length <= url.split(last).length - 1)) url = url.slice(0, -1);
-    else break;
+    if (pair ? count[pair] < count[last] : URL_TAIL.test(last) || ('*_~'.includes(last) && closes(last))) {
+      if (pair) count[last]--;
+    } else break;
   }
-  return /^https?:\/\/[^/?#]/i.test(url) ? url : null;
+  const kept = url.slice(0, end);
+  return /^https?:\/\/[^/?#]/i.test(kept) ? kept : null;
 }
 
 /**
@@ -336,8 +346,8 @@ export function textSpans(text: string, links = true): TextSpan[] {
         continue;
       }
     }
-    if (links && (c === 'h' || c === 'H') && !WORD.test(text[i - 1] ?? '') && !/[/@.:]/.test(text[i - 1] ?? '')) {
-      const url = urlAt(text, i);
+    if (links && (c === 'h' || c === 'H') && !URL_AFTER.test(String.fromCodePoint(text.codePointAt(i - (/[\udc00-\udfff]/.test(text[i - 1] ?? '') ? 2 : 1)) ?? 32))) {
+      const url = urlAt(text, i, (mark) => openers[mark].length > 0);
       const href = url && webHref(url);
       if (url && href) {
         flush();

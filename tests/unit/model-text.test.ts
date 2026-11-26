@@ -217,11 +217,24 @@ describe('model text spans', () => {
     expect(textSpans('**https://example.com/a_b_c**!')).toEqual([strong(link('https://example.com/a_b_c', 'https://example.com/a_b_c')), '!']);
     expect(textSpans('Try http://localhost:5173/?q=a*b, or not')).toEqual(['Try ', link('http://localhost:5173/?q=a*b', 'http://localhost:5173/?q=a*b'), ', or not']);
     expect(textSpans('"https://example.com"')).toEqual(['"', link('https://example.com/', 'https://example.com'), '"']);
+    expect(textSpans('“https://example.com/a”, and Source:https://example.com/b')).toEqual(['“', link('https://example.com/a', 'https://example.com/a'), '”, and Source:', link('https://example.com/b', 'https://example.com/b')]);
+    // A mark closes emphasis only when one is open; otherwise it is part of the address.
+    expect(textSpans('**https://example.com/docs**,” and https://example.com/user_ or _https://example.com/x_')).toEqual([
+      strong(link('https://example.com/docs', 'https://example.com/docs')),
+      ',” and ',
+      link('https://example.com/user_', 'https://example.com/user_'),
+      ' or ',
+      em(link('https://example.com/x', 'https://example.com/x'))
+    ]);
+    expect(textSpans('https://example.com/a\\`b` and [x](https://example.com/a)]')).toEqual([link('https://example.com/a', 'https://example.com/a'), '`b` and ', link('https://example.com/a', 'x'), ']']);
   });
 
   it('leaves an address in code, in a word or without a host as typed', () => {
     expect(textSpans('Run `curl https://example.com` first')).toEqual(['Run ', mono('curl https://example.com'), ' first']);
-    expect(textSpans('xhttps://example.com and https:// and https://user:pw@example.com')).toEqual(['xhttps://example.com and https:// and https://user:pw@example.com']);
+    expect(textSpans('xhttps://example.com and https:// and https://user:pw@example.com and git+https://example.com')).toEqual(['xhttps://example.com and https:// and https://user:pw@example.com and git+https://example.com']);
+    expect(textSpans('𝒳https://example.com')).toEqual(['𝒳https://example.com']);
+    // Too long to open once the browser writes it out in full, so not a link at all.
+    expect(textSpans(`[long](https://example.com/${'é'.repeat(350)})`)).toEqual(['long']);
     expect(textBlocks('```\nhttps://example.com\n```')).toEqual([code('https://example.com')]);
   });
 
@@ -255,7 +268,7 @@ describe('model text spans', () => {
 
   it('reads a long run of unpartnered marks quickly', () => {
     const started = performance.now();
-    for (const text of ['*a '.repeat(20_000), ' a_'.repeat(20_000), '['.repeat(20_000), '`a``b'.repeat(10_000), '[a]('.repeat(5_000), `\` ${'a '.repeat(50_000)}b\``, `a${'__b'.repeat(30_000)}`]) textSpans(text);
+    for (const text of ['*a '.repeat(20_000), ' a_'.repeat(20_000), '['.repeat(20_000), '`a``b'.repeat(10_000), '[a]('.repeat(5_000), `https://example.com/${')'.repeat(2_000)} `.repeat(30), `https://a.example/${'.)'.repeat(2_000)}`, `\` ${'a '.repeat(50_000)}b\``, `a${'__b'.repeat(30_000)}`]) textSpans(text);
     textBlocks(`| ${' '.repeat(50_000)}x\n|${' '.repeat(50_000)}x`);
     expect(performance.now() - started).toBeLessThan(15_000);
   }, 30_000);
