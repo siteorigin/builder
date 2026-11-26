@@ -310,7 +310,8 @@ export const INTERACTIONS: Interaction[] = [
       { test: 'tests/e2e/desktop.mjs', kind: 'driver', step: 'File > Close Project returns to Welcome in the same window' },
       { test: 'tests/e2e/lifecycle.mjs', kind: 'e2e', step: 'File > Close Project saves the focused Inspector field' },
       { test: 'tests/e2e/lifecycle.mjs', kind: 'e2e', step: 'the toolbar mark, pressed from the keyboard or clicked, saves the focused field and lands on Welcome (#517)' },
-      { test: 'tests/e2e/menu.mjs', kind: 'e2e', step: 'a project: Export and Close Project become available and act' }
+      { test: 'tests/e2e/menu.mjs', kind: 'e2e', step: 'a project: Export and Close Project become available and act' },
+      { test: 'tests/e2e/project-footprint.mjs', kind: 'e2e', step: 'memory at Welcome stays near a fresh launch’s and does not grow with each close' }
     ],
     gaps: [{ missing: 'Close project from the command menu and from the toolbar’s project menu is never chosen by a test', owner: 'projects' }]
   },
