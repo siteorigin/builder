@@ -508,6 +508,27 @@ describe('what the review found (#766)', () => {
     expect(g.reloads.at(-1)).toEqual({ joinId, revision: 6 });
   });
 
+  it('opens once the host’s project fits again, after a first answer that it was too large', async () => {
+    const g = guest();
+    const joined = g.manager.join({ inviteLink: INVITE, displayName: 'Sarah' });
+    await until(() => g.sockets.length, 'the socket');
+    g.socket().open();
+    g.socket().receive(pending);
+    await joined;
+    g.socket().receive(admitted());
+    const ask = g.socket().last('rpc:request')!;
+    g.socket().receive({ type: 'rpc:response', requestId: ask.requestId, method: 'project.snapshot', ok: false, error: { code: 'TOO_LARGE', message: 'Too large', recoverable: false } });
+    await flush();
+    expect(g.manager.state).toMatchObject({ tooLarge: true });
+    // The host's project shrinks: its next change is pushed, and the guest asks for it whole.
+    g.socket().receive({ type: 'rpc:event', event: 'project:changed', payload: { kind: 'snapshot', snapshot: snapshotAt(7) } });
+    const again = g.socket().last('rpc:request')!;
+    expect(again.requestId).not.toBe(ask.requestId);
+    g.socket().receive({ type: 'rpc:response', requestId: again.requestId, method: 'project.snapshot', ok: true, result: snapshotAt(7) });
+    await until(() => g.changed.length, 'the project');
+    expect(g.changed.map((c) => c.snapshot.revision)).toEqual([7]);
+  });
+
   it('says a fresh read of the host’s project failed, rather than handing back the copy it had', async () => {
     const g = guest();
     const joinId = await inRoom(g);

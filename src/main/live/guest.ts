@@ -591,6 +591,8 @@ export class LiveGuestManager {
     join.tooLarge = false;
     join.hostRuntime = snapshot.runtime.state;
     if (join.opened) this.ctx.emit('remote:changed', { joinId: join.joinId, snapshot });
+    // Not handed over yet (the first request failed, or was too large): a project the host could send now is asked for.
+    else if (!join.fetching) void this.fetchSnapshot(join);
     if (runtimeChanged || sizeChanged) this.publish();
   }
 
@@ -622,7 +624,7 @@ export class LiveGuestManager {
         } else if (!answer.ok && answer.error.code === 'TOO_LARGE') {
           join.tooLarge = true;
           this.publish();
-        } else if (!answer.ok && (answer.error.code === 'BUSY' || (!join.latest && answer.error.recoverable)) && !join.busyTimer) {
+        } else if (!answer.ok && (answer.error.code === 'BUSY' || (!join.opened && answer.error.recoverable)) && !join.busyTimer) {
           // The host lets a guest ask only so often, and may be briefly unable to answer: asked again shortly, so a guest
           // let in never waits for a project that is not coming.
           join.busyTimer = setTimeout(() => {
