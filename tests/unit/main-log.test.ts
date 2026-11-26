@@ -87,7 +87,11 @@ describe('the main process log (#887)', () => {
     const emitter = new EventEmitter();
     const proc = emitter as unknown as NodeJS.Process;
     // Node's own listener, there from the start, prints each warning through console.error.
-    const nodePrints = (w: Error) => con.error(`(node) ${w.name}: ${w.message}`);
+    const nodePrints = (w: Error) => {
+      // A listener that runs before Node's in the same turn logs an unrelated error, which is kept.
+      con.error('unrelated, in the same turn');
+      con.error(`(node:4242) ${w.name}: ${w.message}\n(Use \`electron --trace-warnings ...\` to show where the warning was created)`);
+    };
     emitter.on('warning', nodePrints);
     const undo = captureMainErrors(log, { console: con, process: proc });
     con.error('could not save', 42);
@@ -106,10 +110,11 @@ describe('the main process log (#887)', () => {
     expect(text).toContain('[uncaught] uncaughtException: Error: crashed');
     expect(text).toContain('[warn] UnhandledPromiseRejectionWarning: a promise was rejected');
     // Node's printing of that warning is not recorded a second time; the next error is.
-    expect(error).toHaveBeenCalledWith('(node) UnhandledPromiseRejectionWarning: a promise was rejected');
-    expect(text).not.toContain('(node)');
+    expect(error).toHaveBeenCalledWith(expect.stringContaining('(node:4242) UnhandledPromiseRejectionWarning: a promise was rejected'));
+    expect(text).not.toContain('(node:4242)');
+    expect(text).toContain('[error] unrelated, in the same turn\n');
     expect(text).toContain('[error] later\n');
-    expect(text.match(/^2026-11-26T14:03:27\.512Z \[/gm)).toHaveLength(5);
+    expect(text.match(/^2026-11-26T14:03:27\.512Z \[/gm)).toHaveLength(6);
 
     undo();
     expect(con.error).toBe(error);

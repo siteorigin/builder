@@ -87,17 +87,21 @@ export interface LogSources {
  * Keep what the main process reports in the log as well: console.error and console.warn still print as before, an
  * uncaught exception is recorded without changing how the process handles it (uncaughtExceptionMonitor), and process
  * warnings (an unhandled rejection Node only warns about, a deprecation) are recorded too, once: Node prints a warning
- * through console.error right after its listeners hear it, and that printing is not recorded again. Returns what
- * undoes it.
+ * through console.error right after its listeners hear it, and the printed line carrying that warning's own text in
+ * the same turn is not recorded again (any other error is). Returns what undoes it.
  */
 export function captureMainErrors(log: MainLog, { console: con, process: proc }: LogSources): () => void {
   const error = con.error;
   const warn = con.warn;
-  /** While Node prints the warning just recorded. */
-  let printingWarning = false;
+  /** The warning just recorded, as Node is about to print it, until it is printed or the turn ends. */
+  let printing: string | null = null;
   con.error = (...args: unknown[]) => {
     error.apply(con, args);
-    if (!printingWarning) log.write('error', ...args);
+    if (printing !== null && format(...args).includes(printing)) {
+      printing = null;
+      return;
+    }
+    log.write('error', ...args);
   };
   con.warn = (...args: unknown[]) => {
     warn.apply(con, args);
@@ -107,8 +111,11 @@ export function captureMainErrors(log: MainLog, { console: con, process: proc }:
   // Heard before Node's own listener prints it, which happens in the same turn.
   const warning = (w: Error) => {
     log.write('warn', w);
-    printingWarning = true;
-    queueMicrotask(() => (printingWarning = false));
+    const text = `${w.name}: ${w.message}`;
+    printing = text;
+    queueMicrotask(() => {
+      if (printing === text) printing = null;
+    });
   };
   proc.prependListener('uncaughtExceptionMonitor', uncaught);
   proc.prependListener('warning', warning);
