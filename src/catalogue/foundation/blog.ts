@@ -137,8 +137,8 @@ export const blogGrid = managed({
       b.el('grid', 'ul', { name: 'Card grid', collapseEmpty: true, styles: { base: { layout: 'grid', columns: 1, gap: tok('space.xl') }, tablet: { columns: 2 }, desktop: { columns: 3 } } }, [
         b.repeat('cards', 'items', [
           b.el('card-item', 'li', { name: 'Card item', when: { $item: 'pageLink' } }, [
-            // Each card is a bounded surface, so a post without a picture is plainly its own and does not read as the caption of the picture beside it.
-            b.el('card', 'article', { name: 'Card', styles: { layout: 'stack', gap: tok('space.sm'), paddingBlock: tok('space.md'), paddingInline: tok('space.md'), border: tok('border.default'), radius: tok('radius.lg'), background: tok('color.surface') } }, [
+            // Each card is a bordered box (no fill, so the section's tone still decides the text colours), so a post without a picture is plainly its own and does not read as the caption of the picture beside it.
+            b.el('card', 'article', { name: 'Card', styles: { layout: 'stack', gap: tok('space.sm'), paddingBlock: tok('space.md'), paddingInline: tok('space.md'), border: tok('border.default'), radius: tok('radius.lg') } }, [
               b.image('card-image', { $item: 'image' }, { name: 'Card image', when: { $item: 'image' }, styles: { width: 'fill', aspectRatio: '3/2', radius: tok('radius.md'), objectFit: 'cover', marginBlockEnd: tok('space.xs') } }),
               b.text('card-category', 'p', { $item: 'category' }, { name: 'Category', when: { $item: 'category' }, styles: eyebrowStyles }),
               b.link('card-title', { $item: 'pageLink' }, { $item: 'title' }, 'plain', { name: 'Title', styles: { textStyle: tok('text.h3') } }),

@@ -54,7 +54,7 @@ export function buildFont(font: PackFontSource, root: string): { font: PackFont;
     if (f.format !== 'woff2' && f.format !== 'woff2-variations') throw new Error(`${font.css}: only woff2 fonts can be bundled, not ${f.format}.`);
     if (f.style !== 'normal' && f.style !== 'italic') throw new Error(`${font.css}: unsupported font-style ${f.style}.`);
     const file = `fonts/${basename(f.url)}`;
-    if (font.subsets && !font.subsets.some((s) => basename(f.url).startsWith(`${font.css.split('/')[1]}-${s}-`))) continue;
+    if (font.subsets && !font.subsets.some((s) => basename(f.url).includes(`-${s}-wght-`))) continue;
     if (!PACK_FILE_RE.test(file)) throw new Error(`${font.css}: ${f.url} is not a usable font file name.`);
     files.set(file, join(dirname(cssFile), f.url));
     faces.push({ file, weight: f.weight, style: f.style, ...(f.unicodeRange ? { unicodeRange: f.unicodeRange } : {}), format: f.format });
