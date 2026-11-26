@@ -185,8 +185,12 @@ for (const long of ['<p>' + 'x'.repeat(20001) + '</p>', '<p>' + 'x'.repeat(10001
   assert.equal(await win.evaluate(async () => (await window.builder.project.snapshot()).revision), before, 'nothing was stored');
   await eventually(async () => assert.ok((await win.locator('.toast').allInnerTexts()).some((t) => /could not be saved|too long/i.test(t)), 'the author is told why'));
 }
-// Those messages go in their own time, before the steps that check no error is shown.
-await eventually(async () => assert.equal(await win.locator('.toast.error').count(), 0, 'the refusals are no longer shown'), 20000);
+// An error stays until it is dismissed: these are, before the steps that check no error is shown.
+const refusals = win.locator('.toast.error').getByRole('button', { name: 'Dismiss notice' });
+await eventually(async () => {
+  while (await refusals.count()) await refusals.first().click({ timeout: 2000 });
+  assert.equal(await win.locator('.toast.error').count(), 0, 'the refusals are no longer shown');
+}, 20000);
 
 step('insert pricing via Insert panel');
 await win.getByRole('button', { name: 'Insert', exact: true }).click();

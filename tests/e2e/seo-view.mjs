@@ -888,7 +888,12 @@ await writerHolder.getByRole('button', { name: 'Move to drafts' }).click();
 await eventually(async () => assert.notEqual((await entryNow('en_winter')).draft, false, 'then it moves to drafts'));
 assert.equal((await entryNow('en_winter')).seo.canonical, undefined, 'and no address was saved');
 // Its notices go before the next step looks at what is painted where the Preview pill sits, which is where they show.
-await eventually(async () => assert.equal(await win.locator('.toast').count(), 0, 'the notices have gone'), 15000);
+// An error stays until it is dismissed; the rest may also go in their own time.
+await eventually(async () => {
+  const dismissals = win.locator('.toast').getByRole('button', { name: 'Dismiss notice' });
+  if (await dismissals.count()) await dismissals.first().click({ timeout: 2000 });
+  assert.equal(await win.locator('.toast').count(), 0, 'the notices have gone');
+}, 15000);
 
 step('opened from Preview, the view covers the canvas’s own controls, and leaving it returns to the same Preview');
 await rail('pages').click();
