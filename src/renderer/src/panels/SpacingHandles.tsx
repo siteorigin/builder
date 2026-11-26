@@ -194,13 +194,9 @@ export function SpacingHandles({ state, selection, desc, box, spacing, zoom, pos
     const dragged = drag.current?.grip;
     const spaceAt = (h: SpacingHandle) => {
       if (h.box === 'margin') return h.side === 'top' ? { x: midX + aside, y: box.top - mg.top * z } : { x: midX + aside, y: box.top + box.height + mg.bottom * z };
-      // The padding being dragged moves its grip with its content edge, as far as the pointer has taken it, rather
-      // than to the middle of the new band, which would leave the pointer behind.
-      if (dragged?.id === `spacing-padding-${h.side}`) {
-        const d = (pd[h.side] - dragged.start) * z;
-        return h.axis === 'y' ? { x: dragged.at.x, y: dragged.at.y + (h.side === 'top' ? d : -d) } : { x: dragged.at.x + (h.side === 'left' ? d : -d), y: dragged.at.y };
-      }
-      return paddingGripAt(box, bd, pd, h.side, z);
+      // The padding being dragged keeps its grip by its content's edge, as the pointer moves it, rather than in the
+      // middle of the new band, which would leave the pointer behind.
+      return paddingGripAt(box, bd, pd, h.side, z, dragged?.id === `spacing-padding-${h.side}` ? dragged.start : undefined);
     };
     const band = (b: SpacingHandle['box'], side: SpacingHandle['side']): Rect => {
       const innerW = box.width - (bd.left + bd.right) * z;

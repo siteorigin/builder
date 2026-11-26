@@ -72,6 +72,8 @@ describe('telephone links', () => {
     // It goes nowhere on the site, where it used to be an empty tel: link.
     expect(resolveLink({ type: 'tel', target: '---' }, { state: s })).toBeNull();
     expect(resolveLink({ type: 'tel', target: '(1)-2' }, { state: s })).toBeNull();
+    // A country code and its trunk zero alone dial nothing either (#905).
+    expect(resolveLink({ type: 'tel', target: '+27 (0)' }, { state: s })).toBeNull();
     const at = { owner: { kind: 'shell' as const, id: 'header' }, nodeId: header.id, prop: 'links', itemId: 'i_call' };
     const r = applyOperations(s, [{ type: 'instance.setProp', ...at, field: 'label', value: 'Call us' }]);
     expect(headerOf(r.state).props.links).toMatchObject([{ id: 'i_call', label: 'Call us', link: { type: 'tel', target: '---' } }]);
@@ -92,6 +94,8 @@ describe('telephone links', () => {
       ['+44 (0) 20 7946 0958', 'tel:+442079460958'],
       ['+39 (0)6 3691 2666', 'tel:+390636912666'],
       ['(0)21 555-0100', 'tel:0215550100'],
+      // Only straight after the country code: a "(0)" later in the number is one of its digits.
+      ['+1 202 555 (0)142', 'tel:+12025550142'],
       ['1'.repeat(30), `tel:${'1'.repeat(30)}`]
     ];
     for (const [target, href] of dials) {

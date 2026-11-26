@@ -5,21 +5,15 @@
 
 /** The chip's height, in screen pixels. */
 export const CHIP_H = 28;
-/** Room between the chip and the edge it sits by, in screen pixels. */
-export const CHIP_GAP = 4;
-
-export type ChipPlacement = 'inside' | 'strip';
 
 /**
- * Where the chip goes. It never covers what is around the selection, nor what the selection itself shows (#905). A
- * tall top-level box (a section) carries it inside its top edge only when the room its own border and padding leave
- * there (`roomInside`, in the same zoomed pixels as the box; null while the page has not measured it) holds the whole
- * chip, and its top is on screen. Everything else (a button among others in a column, a part of a component, text
- * being typed, a box with no padding to spare, or one scrolled past the top or bottom of the page) parks the chip in
- * the strip above the page frame, lined up with the selection. `frameHeight` is the visible page's height.
+ * Where the chip starts along the strip above the page frame, in screen pixels from the frame's left. The chip is
+ * always parked in that strip, never on the page, so it covers neither what is around the selection (the Button just
+ * above a second one) nor what the selection shows (#905). It lines up with the selection and stays inside the frame,
+ * after what the strip already shows on its left (`taken`: a collection layout's entry picker and Done), when there is
+ * room beside it.
  */
-export function chipPlacement(box: { top: number; height: number }, topLevel: boolean, frameHeight: number, roomInside: number | null): ChipPlacement {
-  if (!topLevel || roomInside === null) return 'strip';
-  const needs = CHIP_GAP + 2 + CHIP_H + 2;
-  return box.top >= 0 && box.height > 120 && roomInside >= needs && box.top + needs <= frameHeight ? 'inside' : 'strip';
+export function chipLeft(selectionLeft: number, chipWidth: number, frameWidth: number, taken = 0): number {
+  const within = Math.max(0, Math.min(selectionLeft, frameWidth - chipWidth));
+  return taken > 0 && taken + chipWidth <= frameWidth ? Math.max(taken, within) : within;
 }

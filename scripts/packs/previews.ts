@@ -29,6 +29,8 @@ import { thumbCrop, type Box } from '../../src/main/runtime/component-thumbs';
  * block fills its Insert tile rather than sitting in a corner of the whole desktop window (#905).
  */
 const VIEW = { width: 1280, height: 800 };
+/** A block's page: as wide, and tall enough for any block to be framed whole below the room above it. */
+const BLOCK_VIEW = { width: 1280, height: 1400 };
 const THUMB_SIZE = { width: 320, height: 200 };
 /**
  * How wide a block (a feature card, a stat card, a signup form) is shown: about the column of a three- or four-up
@@ -219,16 +221,18 @@ const REPAINT_BANDS = `(() => {
  * width bands hold), or the top of the window when it paints nothing that can be measured.
  */
 export async function frameOf(page: Page, ink: string, block: boolean): Promise<Box> {
+  const view = block ? BLOCK_VIEW : VIEW;
   if (!block) await page.evaluate(UNPAINT_BANDS);
   const painted: Box | null = await page.evaluate(ink);
   if (!block) await page.evaluate(REPAINT_BANDS);
   // A block is shown whole (a form with its button): one taller than its frame is framed wider, centred across.
-  if (block && painted && painted.height * 1.6 > painted.width) {
-    const width = Math.min(VIEW.width, painted.height * 1.6);
-    return thumbCrop(null, { ...painted, x: painted.x + painted.width / 2 - width / 2, width }, VIEW) ?? { x: 0, y: 0, ...VIEW };
+  // (The frame adds room on every side: the width allows for it, so the room below the block is kept too.)
+  if (block && painted && painted.height * 1.6 + 20 > painted.width) {
+    const width = Math.min(view.width, painted.height * 1.6 + 20);
+    return thumbCrop(null, { ...painted, x: painted.x + painted.width / 2 - width / 2, width }, view) ?? { x: 0, y: 0, ...VIEW };
   }
   const bounds: Box | null = await page.evaluate(`(() => { const r = document.getElementById('main')?.getBoundingClientRect(); return r && { x: r.x, y: r.y, width: r.width, height: r.height }; })()`);
-  return thumbCrop(bounds, painted, VIEW) ?? { x: 0, y: 0, ...VIEW };
+  return thumbCrop(bounds, painted, view) ?? { x: 0, y: 0, ...VIEW };
 }
 
 /**
@@ -244,11 +248,14 @@ export async function renderPreviews(pack: ThemePack, files: Map<string, string>
   const fontBytes = new Map([...files].filter(([rel]) => rel.startsWith('fonts/')).map(([rel, abs]) => [rel.slice('fonts/'.length), readFileSync(abs)]));
   const fontKey = createHash('sha256').update([...fontBytes].map(([k, v]) => `${k}:${createHash('sha256').update(v).digest('hex')}`).join('\n')).digest('hex');
   mkdirSync(cacheDir, { recursive: true });
+  // How a thumbnail is framed, from the code that does it, so a change to the shared measure or crop draws them again.
+  const ink = inkBoundsSource();
+  const framing = createHash('sha256').update(JSON.stringify([VIEW, BLOCK_VIEW, THUMB_SIZE, ink, UNPAINT_BANDS, String(thumbCrop), String(frameOf)])).digest('hex');
 
   const docs = cases.map((c, i) => {
     const { body, head } = module.render(module.pages[i], { props: {} });
     const html = previewHtml(css, head, body, c.block);
-    const key = createHash('sha256').update(`${RENDERER}\n${VIEW.width}x${VIEW.height} ${THUMB_SIZE.width}x${THUMB_SIZE.height}\n${fontKey}\n${html}`).digest('hex');
+    const key = createHash('sha256').update(`${RENDERER}\n${framing}\n${fontKey}\n${html}`).digest('hex');
     return { c, html, cached: join(cacheDir, `${key}.webp`) };
   });
   rmSync(dir, { recursive: true, force: true });
@@ -268,7 +275,6 @@ export async function renderPreviews(pack: ThemePack, files: Map<string, string>
   if (browser) {
     try {
       const page = await browser.newPage({ viewport: VIEW, deviceScaleFactor: 1, locale: 'en-US', colorScheme: 'light', reducedMotion: 'reduce' });
-      const ink = inkBoundsSource();
       let current = '';
       // The page and its fonts come from memory; nothing else may load.
       await page.route('**/*', async (route) => {
@@ -280,6 +286,7 @@ export async function renderPreviews(pack: ThemePack, files: Map<string, string>
       });
       for (const d of missing) {
         current = d.html;
+        await page.setViewportSize(d.c.block ? BLOCK_VIEW : VIEW);
         await page.goto(`${ORIGIN}/styles/preview.html`, { waitUntil: 'load' });
         await page.evaluate('document.fonts.ready.then(() => undefined)');
         const png = await page.screenshot({ clip: await frameOf(page, ink, d.c.block), type: 'png' });

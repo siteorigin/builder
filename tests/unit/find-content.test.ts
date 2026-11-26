@@ -665,14 +665,16 @@ describe('the starter’s sample contact details (#15)', () => {
     const s = fresh();
     const footer = footerOf(s);
     const tel = (target: string, i: number) => ({ id: `i_tel${i}`, label: 'Call', link: { type: 'tel', target } });
-    footer.props.contact = ['+ 1 555 0134', '1-555-0134', '+1 555 0134-5', '+44 20 1555 0134'].map(tel);
+    // A bracketed trunk zero after the country code is left out when the site dials it (#905), so it still dials the sample.
+    footer.props.contact = ['+ 1 555 0134', '1-555-0134', '+1 555 0134-5', '+44 20 1555 0134', '+1 (0)555 0134'].map(tel);
     const links = group(s, 'phone').filter((m) => m.field.where === 'Footer');
     expect(links.map((m) => [m.field.label, m.match])).toEqual([
       ['Contact links › Call › Destination', '+ 1 555 0134'],
-      ['Contact links › Call › Destination', '1-555-0134']
+      ['Contact links › Call › Destination', '1-555-0134'],
+      ['Contact links › Call › Destination', '+1 (0)555 0134']
     ]);
     const after = apply(s, links, '+27 21 555 0199').after;
-    expect((footerOf(after).props.contact as ListItem[]).map((i) => (i.link as LinkValue).target)).toEqual(['+27 21 555 0199', '+27 21 555 0199', '+1 555 0134-5', '+44 20 1555 0134']);
+    expect((footerOf(after).props.contact as ListItem[]).map((i) => (i.link as LinkValue).target)).toEqual(['+27 21 555 0199', '+27 21 555 0199', '+1 555 0134-5', '+44 20 1555 0134', '+27 21 555 0199']);
   });
 
   it('counts what the published website shows: not a draft, and the shared footer only while a published page shows it', () => {

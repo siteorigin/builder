@@ -13,7 +13,7 @@ import { afterAll, describe, expect, it } from 'vitest';
 import { BUILTIN_PACKS } from '@catalogue/builtin';
 import { generateProject, pageFile } from '@generator/index';
 import { buildPack } from '../../src/main/packs/build';
-import { previewProject, renderPreviews } from '../../scripts/packs/previews';
+import { frameOf, inkBoundsSource, previewHtml, previewProject, renderPreviews } from '../../scripts/packs/previews';
 
 const browserInstalled = existsSync(chromium.executablePath());
 const dirs: string[] = [];
@@ -56,6 +56,23 @@ describe('the pages theme thumbnails are drawn from', () => {
 });
 
 describe.skipIf(!browserInstalled)('theme thumbnails', () => {
+  it('frame a tall block whole, from its top to its last button', async () => {
+    const browser = await chromium.launch();
+    try {
+      const page = await browser.newPage({ viewport: { width: 1280, height: 1400 }, deviceScaleFactor: 1 });
+      for (const height of [180, 520, 760]) {
+        await page.setContent(previewHtml('', '', `<div id="block" style="height:${height}px;border:1px solid #333;background:#eee"></div>`, true));
+        const block: { y: number; bottom: number } = await page.evaluate(`document.getElementById('block').getBoundingClientRect().toJSON()`);
+        const frame = await frameOf(page, inkBoundsSource(), true);
+        expect(frame.y, `${height}px tall`).toBeLessThanOrEqual(block.y);
+        expect(frame.y + frame.height, `${height}px tall`).toBeGreaterThanOrEqual(block.bottom);
+        expect(frame.width / frame.height).toBeCloseTo(1.6, 1);
+      }
+    } finally {
+      await browser.close();
+    }
+  });
+
   it('fill the frame with a block and with a short section', async () => {
     const { pack, files } = foundation();
     const shown = new Set(['block.stat', 'block.feature', 'block.signup', 'content.article', 'blog.list']);

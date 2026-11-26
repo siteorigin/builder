@@ -48,13 +48,15 @@ export const GRIP_HALF = 6;
  * edge and the rest stands out over the box's own edge, never over its text or a small button's label (#905).
  * `box` is the selected box on screen; `border` and `padding` are in page pixels, at zoom `z`.
  */
-export function paddingGripAt(box: { left: number; top: number; width: number; height: number }, border: Record<SpacingSide, number>, padding: Record<SpacingSide, number>, side: SpacingSide, z: number): { x: number; y: number } {
+export function paddingGripAt(box: { left: number; top: number; width: number; height: number }, border: Record<SpacingSide, number>, padding: Record<SpacingSide, number>, side: SpacingSide, z: number, from?: number): { x: number; y: number } {
   const midX = box.left + box.width / 2;
   const midY = box.top + box.height / 2;
-  // From the box's outer edge inwards: where the band starts (inside the border) and where the content begins.
-  const outer = border[side] * z;
+  // From the box's outer edge inwards, for a padding of `pad`: the middle of its band, kept clear of the content.
+  const depthAt = (pad: number) => Math.min(((border[side] + border[side] + pad) * z) / 2, (border[side] + pad) * z - GRIP_HALF);
   const inner = (border[side] + padding[side]) * z;
-  const depth = Math.min((outer + inner) / 2, inner - GRIP_HALF);
+  // While a drag that started at a padding of `from` runs, the grip keeps the distance from the content's edge it had
+  // then: it moves with that edge, as the pointer does, and never onto the content.
+  const depth = from === undefined ? depthAt(padding[side]) : inner - ((border[side] + from) * z - depthAt(from));
   if (side === 'top') return { x: midX, y: box.top + depth };
   if (side === 'bottom') return { x: midX, y: box.top + box.height - depth };
   if (side === 'left') return { x: box.left + depth, y: midY };
