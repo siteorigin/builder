@@ -4,12 +4,14 @@
 //    cache shipped with the app, so creating a project needs no network on first use.
 // 3. Writes THIRD_PARTY_NOTICES.txt beside LICENSE.txt: everything the bundles compile in, the node_modules in the
 //    archive, npm, the starter's cached packages and the theme packs' fonts (build/notices.cjs).
-const { cpSync, mkdtempSync, rmSync, existsSync, writeFileSync } = require('node:fs');
+const { cpSync, mkdtempSync, rmSync, existsSync, readFileSync, writeFileSync } = require('node:fs');
 const { execFileSync } = require('node:child_process');
-const { dirname, join } = require('node:path');
+const { dirname, join, relative, sep } = require('node:path');
 const { tmpdir } = require('node:os');
 const { listPackage, extractFile } = require('@electron/asar');
 const notices = require('./notices.cjs');
+const { copyNpm } = require('./copy-npm.cjs');
+const { findMachO, macOnlyPackages, stripMacOnly } = require('./strip-mac-cache.cjs');
 
 const ARCH = { 0: 'ia32', 1: 'x64', 2: 'armv7l', 3: 'arm64', 4: 'universal' };
 
@@ -19,7 +21,7 @@ exports.default = async function afterPack(context) {
     context.electronPlatformName === 'darwin'
       ? join(context.appOutDir, `${context.packager.appInfo.productFilename}.app`, 'Contents', 'Resources')
       : join(context.appOutDir, 'resources');
-  cpSync(join(root, 'node_modules', 'npm'), join(resources, 'npm'), { recursive: true, dereference: true });
+  copyNpm(join(root, 'node_modules', 'npm'), join(resources, 'npm'));
 
   const arch = ARCH[context.arch] ?? 'x64';
   const work = mkdtempSync(join(tmpdir(), 'so-deps-'));
@@ -28,7 +30,12 @@ exports.default = async function afterPack(context) {
   for (const f of ['package.json', 'package-lock.json']) cpSync(join(root, 'templates/sveltekit-brochure/files', f), join(work, f));
   const npmCli = join(root, 'node_modules', 'npm', 'bin', 'npm-cli.js');
   const cpus = arch === 'universal' ? ['x64', 'arm64'] : [arch];
-  // The starter's packages are read for the notices before the next CPU's install replaces them.
+  // The starter's packages are read for the notices before the next CPU's install replaces them. The Mac app leaves
+  // its macOS-only ones out of the cache (below), so they are not listed as shipped.
+  const starterLock = join(root, 'templates/sveltekit-brochure/files/package-lock.json');
+  const notShipped = new Set(
+    context.electronPlatformName === 'darwin' ? macOnlyPackages(JSON.parse(readFileSync(starterLock, 'utf8'))).map((p) => p.location) : []
+  );
   const starter = [];
   for (const cpu of cpus) {
     rmSync(join(work, 'node_modules'), { recursive: true, force: true });
@@ -37,10 +44,21 @@ exports.default = async function afterPack(context) {
       stdio: 'inherit'
     });
     // Every copy is kept: the notices merge the distinct texts of one package version.
-    for (const dir of notices.packagesUnder(join(work, 'node_modules'))) starter.push(notices.readPackage(dir));
+    for (const dir of notices.packagesUnder(join(work, 'node_modules'))) {
+      if (!notShipped.has(relative(work, dir).split(sep).join('/'))) starter.push(notices.readPackage(dir));
+    }
   }
   rmSync(work, { recursive: true, force: true });
   if (!existsSync(cache)) throw new Error('Bundled dependency cache was not created.');
+  // The Mac app ships without the starter's macOS-only native packages, which Apple's notary rejects (strip-mac-cache.cjs).
+  if (context.electronPlatformName === 'darwin') {
+    const removed = stripMacOnly(cache, starterLock);
+    console.log(`Left out of the Mac npm cache, downloaded with the first project: ${removed.join(', ')}`);
+    // Anything native still in the cache (a package that ships Mac code without saying so in \`os\`) fails here
+    // rather than at Apple's notary.
+    const left = findMachO(cache);
+    if (left.length) throw new Error(`The Mac npm cache still holds native code Apple's notary will reject: ${left.map((f) => `${f.member} (${f.file})`).join(', ')}`);
+  }
 
   writeNotices(root, resources, starter);
 

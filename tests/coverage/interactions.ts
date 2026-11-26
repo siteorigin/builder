@@ -670,12 +670,14 @@ export const INTERACTIONS: Interaction[] = [
     intent: 'Reorder sections by dragging them',
     start: 'Business site Home, a section selected',
     routes: ['canvas:drag section grip', 'panel:Layers › drag row'],
-    outcome: 'The section dragged by its canvas grip, or its Layers row dragged, lands in its new place as one change, saved in the page document',
+    outcome: 'The section dragged by its canvas grip, or its Layers row dragged, lands in its new place as one change, saved in the page document; a grip drag held at the canvas edge scrolls the page and drops where the line shows',
     scenario: 'welcome · none; Business starter · none',
     proof: [
       { test: 'tests/e2e/actions.mjs', kind: 'driver', step: 'reorder by the canvas grip' },
       { test: 'tests/e2e/actions.mjs', kind: 'driver', step: 'reorder in Layers' },
-      { test: 'tests/e2e/flows.mjs', kind: 'e2e', step: 'drag to reorder: canvas grip and layers' }
+      { test: 'tests/e2e/flows.mjs', kind: 'e2e', step: 'drag to reorder: canvas grip and layers' },
+      { test: 'tests/e2e/drag-scroll.mjs', kind: 'e2e', step: 'held at the bottom edge, the page scrolls with no more movement' },
+      { test: 'tests/e2e/drag-scroll.mjs', kind: 'e2e', step: 'the release moves the section to the place shown' }
     ]
   },
   {

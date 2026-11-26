@@ -1,3 +1,4 @@
+import { readFileSync } from 'node:fs';
 import { describe, expect, it } from 'vitest';
 import type { ElementRef, InstanceNode, ListItem, ProjectState, ResponsiveScope, StyleValue } from '@shared/types';
 import { createStarterState } from '@catalogue/starters';
@@ -6,9 +7,11 @@ import { validateOperation } from '@shared/ops';
 import {
   SPACING_HANDLES,
   dragLabel,
+  GRIP_HALF,
   dragValue,
   draggedSize,
   onScreen,
+  paddingGripAt,
   planHandle,
   previewDecls,
   previewMedia,
@@ -432,5 +435,81 @@ describe('the frame\u2019s spacing report', () => {
   it('reads the measured scale in request order', () => {
     expect(spaceSizes([4, null, 'x', -1, 24], 5)).toEqual([4, null, null, null, 24]);
     expect(spaceSizes([4], 2)).toBeNull();
+  });
+});
+
+describe('where a padding handle is drawn (#905)', () => {
+  const sides = (top: number, right: number, bottom: number, left: number) => ({ top, right, bottom, left });
+  const none = sides(0, 0, 0, 0);
+  /** How far the grip reaches into the content box along its axis, in screen pixels (0: it covers none of it). */
+  const intoContent = (box: { left: number; top: number; width: number; height: number }, border: ReturnType<typeof sides>, padding: ReturnType<typeof sides>, z: number) => {
+    const content = { top: box.top + (border.top + padding.top) * z, bottom: box.top + box.height - (border.bottom + padding.bottom) * z, left: box.left + (border.left + padding.left) * z, right: box.left + box.width - (border.right + padding.right) * z };
+    const at = (side: 'top' | 'bottom' | 'left' | 'right') => paddingGripAt(box, border, padding, side, z);
+    return {
+      top: Math.max(0, at('top').y + GRIP_HALF - content.top),
+      bottom: Math.max(0, content.bottom - (at('bottom').y - GRIP_HALF)),
+      left: Math.max(0, at('left').x + GRIP_HALF - content.left),
+      right: Math.max(0, content.right - (at('right').x - GRIP_HALF))
+    };
+  };
+
+  it('sits in the middle of a padding band wide enough to hold it, clear of the content', () => {
+    // A Logo strip: deep vertical padding around a line of text.
+    const box = { left: 100, top: 50, width: 800, height: 200 };
+    const padding = sides(64, 24, 64, 24);
+    expect(paddingGripAt(box, none, padding, 'top', 1)).toEqual({ x: 500, y: 50 + 32 });
+    expect(paddingGripAt(box, none, padding, 'bottom', 1)).toEqual({ x: 500, y: 250 - 32 });
+    expect(paddingGripAt(box, none, padding, 'left', 1)).toEqual({ x: 100 + 12, y: 150 });
+    expect(paddingGripAt(box, none, padding, 'right', 1)).toEqual({ x: 900 - 12, y: 150 });
+    expect(intoContent(box, none, padding, 1)).toEqual({ top: 0, bottom: 0, left: 0, right: 0 });
+    // Inside the border, at the canvas zoom.
+    expect(paddingGripAt(box, sides(2, 2, 2, 2), padding, 'top', 0.5)).toEqual({ x: 500, y: 50 + 1 + 16 });
+  });
+
+  it('never covers a small button’s label, standing out over its edge instead', () => {
+    // A small button at a zoom that leaves its padding thinner than a grip: before, half of each grip lay on the label.
+    const box = { left: 10, top: 10, width: 90, height: 30 };
+    for (const z of [1, 0.6, 0.35]) {
+      const padding = sides(8, 16, 8, 16);
+      expect(intoContent(box, sides(1, 1, 1, 1), padding, z), `zoom ${z}`).toEqual({ top: 0, bottom: 0, left: 0, right: 0 });
+    }
+    // No padding at all: the grip sits just outside the box, its inner edge on the box's.
+    expect(paddingGripAt(box, none, none, 'top', 1)).toEqual({ x: 55, y: 10 - GRIP_HALF });
+    expect(paddingGripAt(box, none, none, 'right', 1)).toEqual({ x: 100 + GRIP_HALF, y: 25 });
+  });
+
+  it('measures the grip as the canvas draws it', () => {
+    // GRIP_HALF is half the 12px a grip is across its edge in Canvas.css; a mismatch would let the grip onto content.
+    const css = readFileSync('src/renderer/src/panels/Canvas.css', 'utf8');
+    expect(css).toMatch(new RegExp(`\\.ov-space-handle \\{[^}]*width: 24px; height: ${GRIP_HALF * 2}px;`));
+    expect(css).toMatch(new RegExp(`\\.ov-space-handle\\.x \\{ width: ${GRIP_HALF * 2}px;`));
+  });
+
+  it('keeps a grip that would stand past the page’s edge on the page, so it can still be dragged', () => {
+    // A full-width section with no side padding: its side grips would sit wholly outside the page, out of reach.
+    const box = { left: 0, top: 40, width: 1000, height: 300 };
+    const frame = { width: 1000, height: 600 };
+    expect(paddingGripAt(box, none, none, 'left', 1, undefined, frame)).toEqual({ x: GRIP_HALF, y: 190 });
+    expect(paddingGripAt(box, none, none, 'right', 1, undefined, frame)).toEqual({ x: 1000 - GRIP_HALF, y: 190 });
+    // One at the very top of the page, likewise.
+    expect(paddingGripAt({ ...box, top: 0 }, none, none, 'top', 1, undefined, frame).y).toBe(GRIP_HALF);
+    // A grip inside its band is where it was.
+    expect(paddingGripAt(box, none, sides(32, 32, 32, 32), 'left', 1, undefined, frame)).toEqual({ x: 16, y: 190 });
+    // An edge scrolled out of view keeps its grip with it, rather than one drawn over what is shown.
+    expect(paddingGripAt({ ...box, top: -200 }, none, sides(32, 0, 32, 0), 'top', 1, undefined, frame).y).toBe(-200 + 16);
+  });
+
+  it('keeps a dragged grip by its content edge, never on the content, as the box grows under it', () => {
+    // An auto-height section 100px down: 16px of vertical padding around 68px of content, at 100%.
+    const at = (pad: number, from?: number) => paddingGripAt({ left: 0, top: 100, width: 400, height: 68 + pad * 2 }, none, sides(pad, 0, pad, 0), 'bottom', 1, from);
+    const start = at(16);
+    expect(start.y).toBe(100 + 100 - 8);
+    // Dragged to 48px of vertical padding: the box is 164px tall and its content ends at 216.
+    const held = at(48, 16);
+    expect(held.y).toBe(216 + 8);
+    // The same distance from the content's edge as when the drag began, so the grip stays off the content.
+    expect(216 - (held.y - GRIP_HALF)).toBeLessThanOrEqual(0);
+    // Without a drag, the grip goes to the middle of the band.
+    expect(at(48).y).toBe(100 + 164 - 24);
   });
 });

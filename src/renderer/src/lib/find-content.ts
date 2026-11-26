@@ -14,6 +14,7 @@ import { childLists, displayName, itemLinkPairs } from '@engine/tree';
 import { partIdFor } from './model';
 import { pageShowing, pagesShowing } from '@shared/page-shell';
 import { SAMPLE_CONTACT, SAMPLE_CONTACT_VALUES, type SampleContactKind } from '@shared/sample-contact';
+import { dialString } from '@shared/contact-links';
 import { publishedState } from '@generator/index';
 
 /** One field of the site that shows content: a text, a button's label, a list item's field, or a destination. */
@@ -431,7 +432,8 @@ function sampleInLink(kind: SampleContactKind, type: 'email' | 'tel', target: st
     if (new RegExp(SAMPLE_PATTERNS.email.source, 'iu').test(query)) out.push([to.length, target.length, 'This link copies the sample address in too. Change it in the inspector.']);
     return out;
   }
-  return kind === 'phone' && type === 'tel' && dialsSample(target) ? [[0, target.length]] : [];
+  // Read as the site dials it, so a bracketed trunk zero ("+1 (0)555 0134") still dials the sample.
+  return kind === 'phone' && type === 'tel' && dialsSample(dialString(target)) ? [[0, target.length]] : [];
 }
 
 /** The kind of contact a destination reaches, when it reaches one: only email and phone links send anything. */

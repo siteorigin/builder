@@ -16,7 +16,7 @@ import { getTheme, listThemes } from '@catalogue/index';
 import { applyOperations } from '@engine/apply';
 import { TYPE_SCALE_CHOICES, scaleRoles, typeScaleOps } from '@shared/type-scale';
 import { normalizeLink } from '@engine/values';
-import { contactInText } from '@shared/contact-links';
+import { contactInText, dialString } from '@shared/contact-links';
 import { isLanguageCode } from '@shared/languages';
 import { checkPublicUrl } from '@shared/public-url';
 import { BRAND_PROP, COPYRIGHT_PROP, brandLabel, brandPlacements, followsSiteName, siteNameText } from '@shared/site-name';
@@ -271,7 +271,7 @@ export async function runBrand(args: BrandArgs, host: ToolHost, callId: string):
       issues.push({ field, message: 'use digits only, without an extension' });
       return null;
     }
-    const target = type === 'tel' ? value.replace(/[^+0-9]/g, '') : value.trim();
+    const target = type === 'tel' ? dialString(value) : value.trim();
     try {
       return normalizeLink({ type, target }, state, field);
     } catch (e) {
