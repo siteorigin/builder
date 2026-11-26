@@ -128,13 +128,41 @@ describe('watching a folder and everything in it', { timeout: 30_000 }, () => {
     expect(errors).toEqual([]);
   });
 
-  it('reports the folder itself going, under an empty name', async () => {
-    const dir = join(temp(), 'watched');
-    mkdirSync(join(dir, 'a'), { recursive: true });
+  it('watches a filled folder moved in place of a watched one, not the one moved away', async () => {
+    const dir = temp();
+    const outside = temp();
+    mkdirSync(join(dir, 'sub'));
+    mkdirSync(join(outside, 'other', 'deep'), { recursive: true });
+    writeFileSync(join(outside, 'other', 'held.txt'), '');
     const { events, errors } = start(dir);
     await untilWatching(dir, events);
-    rmSync(dir, { recursive: true });
+    await reported(events, dir, join('sub', 'seen.txt'));
+    // Both before either move is told.
+    renameSync(join(dir, 'sub'), join(outside, 'aside'));
+    renameSync(join(outside, 'other'), join(dir, 'sub'));
+    await vi.waitFor(() => expect(events).toContain(join('sub', 'held.txt')), { timeout: 15_000 });
+    await reported(events, dir, join('sub', 'deep', 'later.txt'));
+    // The folder moved away is no longer watched as sub/.
+    const seen = events.length;
+    writeFileSync(join(outside, 'aside', 'gone.txt'), '');
+    await settle();
+    expect(events.slice(seen)).not.toContain(join('sub', 'gone.txt'));
+    expect(errors).toEqual([]);
+  });
+
+  it.each([
+    ['removed', (dir: string) => rmSync(dir, { recursive: true })],
+    ['replaced by another folder', (dir: string) => (rmSync(dir, { recursive: true }), mkdirSync(dir))]
+  ])('reports the folder itself %s under an empty name, and ends without an error', async (_name, change) => {
+    const dir = join(temp(), 'watched');
+    mkdirSync(join(dir, 'a'), { recursive: true });
+    const { w, events, errors } = start(dir);
+    const closed = vi.fn();
+    w.on('close', closed);
+    await untilWatching(dir, events);
+    change(dir);
     await vi.waitFor(() => expect(events).toContain(''), { timeout: 15_000 });
+    expect(closed).toHaveBeenCalledTimes(1);
     expect(errors).toEqual([]);
   });
 
@@ -182,6 +210,19 @@ describe('watching a folder and everything in it', { timeout: 30_000 }, () => {
     await settle();
     expect(events).toHaveLength(seen);
     expect(errors).toHaveLength(1);
+  });
+
+  it('ends with one error, after it is returned, when no watch is left for a folder it starts with (ENOSPC)', async () => {
+    const dir = temp();
+    mkdirSync(join(dir, 'old', 'full'), { recursive: true });
+    const watch = fs.watch;
+    vi.spyOn(fs, 'watch').mockImplementation(((path: fs.PathLike, ...rest: unknown[]) => {
+      if (String(path) === join(dir, 'old', 'full')) throw Object.assign(new Error('ENOSPC: System limit for number of file watchers reached'), { code: 'ENOSPC' });
+      return (watch as (...args: unknown[]) => fs.FSWatcher)(path, ...rest);
+    }) as typeof fs.watch);
+    const { errors } = start(dir);
+    expect(errors).toEqual([]);
+    await vi.waitFor(() => expect(errors.map((e) => e.code)).toEqual(['ENOSPC']));
   });
 
   it.skipIf(process.platform === 'win32' || process.getuid?.() === 0)('ends with an error when a folder in it cannot be read (EACCES)', async () => {
