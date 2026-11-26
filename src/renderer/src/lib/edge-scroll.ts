@@ -58,8 +58,11 @@ export function dropLineBox(b: DrawnBox, clip: EdgeView, snap: (v: number) => nu
     // As far in from each side as a gap on the frame's own edge starts and ends.
     const from = Math.max(start, lo + 7);
     const to = Math.min(start + length, hi - 2);
-    // Nothing of its length shows on this side: it keeps its own length, pinned across the other way.
-    return to - from >= 4 ? { start: from, length: to - from } : { start, length };
+    if (to - from >= 4) return { start: from, length: to - from };
+    // None of its length shows (a gap beside a narrow item off to the side): a short stretch of it at the edge it is
+    // past, so the place still shows.
+    const short = Math.max(4, Math.min(length, 24, hi - lo - 9));
+    return { start: start >= hi - 2 ? hi - 2 - short : lo + 7, length: short };
   };
   if (vertical) {
     const s = span(b.top + 7, Math.max(4, b.height - 9), clip.top, clip.bottom);

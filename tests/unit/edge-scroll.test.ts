@@ -35,6 +35,14 @@ describe('edgeSpeed (#904)', () => {
     expect(edgeSpeed(50, 50, short)).toBeGreaterThan(0);
     expect(edgeSpeed(50, 29, short)).toBeLessThan(0);
     expect(edgeSpeed(50, 31, short)).toBeGreaterThan(0);
+    expect(edgeSpeed(50, 30, short)).toBe(0);
+  });
+
+  it('starts slow and quickens more toward the edge than a straight ramp would', () => {
+    const half = edgeSpeed(500, view.bottom - EDGE_BAND / 2, view);
+    expect(half).toBeLessThan(EDGE_MAX_SPEED / 2);
+    expect(edgeSpeed(500, view.bottom - EDGE_BAND + 0.5, view)).toBeGreaterThan(100);
+    expect(edgeSpeed(500, view.top + 4, { ...view, top: NaN })).toBe(0);
   });
 });
 
@@ -64,5 +72,25 @@ describe('dropLineBox (#904)', () => {
     const line = dropLineBox({ left: 0, top: 100, width: 1000, height: 0 }, narrow);
     expect(line.left).toBe(207);
     expect(line.left + line.width).toBe(498);
+  });
+});
+
+describe('dropLineBox when none of the line shows (#904)', () => {
+  const shown = { left: 0, top: 0, right: 500, bottom: 278 };
+
+  it('draws a short stretch at the edge a gap off to the side is past', () => {
+    const right = dropLineBox({ left: 600, top: 100, width: 140, height: 0 }, shown);
+    expect(right.left + right.width).toBe(498);
+    expect(right.width).toBe(24);
+    const left = dropLineBox({ left: 600, top: 100, width: 140, height: 0 }, { left: 800, top: 0, right: 1300, bottom: 278 });
+    expect(left.left).toBe(807);
+  });
+
+  it('does the same along a gap between items in a row that is out of sight above or below', () => {
+    const below = dropLineBox({ left: 200, top: 400, width: 0, height: 120 }, shown);
+    expect(below.vertical).toBe(true);
+    expect(below.top + below.height).toBe(276);
+    const above = dropLineBox({ left: 200, top: -300, width: 0, height: 120 }, { left: 0, top: 50, right: 500, bottom: 278 });
+    expect(above.top).toBe(57);
   });
 });

@@ -1783,15 +1783,18 @@ export function Canvas() {
     // The line shows only where a drop would change the order; over the element's own place there is none.
     setReorder({ line: null, name });
     const move = (ev: PointerEvent) => {
-      const box = wrapRef.current?.getBoundingClientRect();
-      if (!box) return;
+      const seen = shownFrame();
+      if (!seen) return;
+      const box = seen.wrap;
       const z = currentZoom();
-      const inside = ev.clientX >= box.left && ev.clientX <= box.right && ev.clientY >= box.top && ev.clientY <= box.bottom;
+      // On the part of the page the canvas shows: a frame larger than the canvas runs on under the panels beside it.
+      const v = seen.view;
+      const inside = ev.clientX >= v.left && ev.clientX <= v.right && ev.clientY >= v.top && ev.clientY <= v.bottom;
       const drop = dropAt(boxes, (ev.clientX - box.left) / z, (ev.clientY - box.top) / z);
       // Outside the page, or over the element's own place, a release moves nothing. A gap among siblings of
       // another order is one no move reaches: no line shows there either.
       to = inside ? drop.to : null;
-      setReorder({ line: to !== null && moveIndex(shown, from, to, order) !== null ? drop.line : null, name, clip: shownFrame()?.clip ?? null });
+      setReorder({ line: to !== null && moveIndex(shown, from, to, order) !== null ? drop.line : null, name, clip: seen.clip });
     };
     const end = (commit: boolean) => {
       window.removeEventListener('pointermove', move);
@@ -2105,8 +2108,8 @@ export function Canvas() {
     /** The lists were measured while the page still showed an older version of the project. */
     let listsBehind = false;
     let again = false;
-    /** The lists were measured after the page's last scroll: only then does a release drop by them. Until then the
-     *  ones measured before it still show the line, so a scroll never takes it away. */
+    /** The lists were measured after the page's last scroll. Until they are, the ones measured before it still show the
+     *  line, so a scroll never takes it away, and a release drops where that line shows: what the author saw. */
     let fresh = false;
     /** A measure asked for since the one on its way was asked for, of a page that has changed (not only scrolled): what
      *  that one finds is of the page before the change, and shows nothing. */
@@ -2216,13 +2219,8 @@ export function Canvas() {
       scrollFrame = 0;
       if (done || released) return;
       const shown = shownFrame();
-      const v = shown?.view;
-      const room = shown?.scroller;
-      // In the canvas beside the page's top or bottom edge (the room above the page, say) is at that edge.
-      const speed =
-        v && room && !d.still?.(point) && point.x >= v.left && point.x <= v.right && point.y >= room.top && point.y <= room.bottom
-          ? edgeSpeed(point.x, Math.max(v.top, Math.min(point.y, v.bottom)), v)
-          : 0;
+      // Only on the page: off it (the room above it, say) a release cancels, and nothing scrolls under the pointer.
+      const speed = shown && !d.still?.(point) ? edgeSpeed(point.x, point.y, shown.view) : 0;
       if (!speed) {
         // Out of the band it stops, until the pointer comes back to it.
         lastFrame = 0;
@@ -2232,6 +2230,8 @@ export function Canvas() {
       // A frame that came late (a busy renderer) scrolls no further than a tenth of a second does.
       const dt = lastFrame ? Math.min(now - lastFrame, 100) : 16;
       lastFrame = now;
+      // Gone over to the other edge while a measure was on its way: what was owed the old way is dropped.
+      if (owed * speed < 0) owed = 0;
       owed = Math.max(-200, Math.min(200, owed + (speed * dt) / 1000));
       if (!measuring && Math.abs(owed) >= 1) {
         const px = owed;
@@ -2255,9 +2255,8 @@ export function Canvas() {
       point = { x: ev.clientX, y: ev.clientY };
       if (d.still?.(point)) return end(false);
       show();
-      if ((lists && fresh) || !aim.over) return end(true);
-      // Released on the page before it was measured where it now shows (scrolled since, say): dropped where it was let
-      // go, once it is.
+      if (lists || !aim.over) return end(true);
+      // Released on the page before it was measured: dropped where it was let go, once it is.
       released = true;
       cancelAnimationFrame(scrollFrame);
       scrollFrame = 0;
@@ -2300,6 +2299,8 @@ export function Canvas() {
     setDragging(true);
     show();
     measure();
+    // Picked up already in the band along an edge (a tile dragged straight there): it scrolls without another move.
+    edge();
   }
   useEffect(() => {
     setInsertDropTarget(startInsertDrag);

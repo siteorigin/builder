@@ -76,6 +76,31 @@ await wait(600);
 assert.equal(await scrollY(), still, 'the page stays put with the pointer away from the edges');
 await eventually(async () => assert.ok(await dropLine.boundingBox(), 'the line shows where the pointer now is'));
 
+step('the wheel scrolls the page during the drag without taking the line away');
+// Every time the line leaves the overlay is counted, however briefly: a wheel step used to clear it until the page was
+// measured again.
+await win.evaluate(() => {
+  const w = window;
+  w.__lineGone = 0;
+  w.__lineWatch = new MutationObserver((list) => {
+    for (const m of list) for (const n of m.removedNodes) if (n instanceof Element && n.matches('[data-testid="insert-drop-line"]')) w.__lineGone++;
+  });
+  w.__lineWatch.observe(document.querySelector('.frame-wrap'), { childList: true, subtree: true });
+});
+const wheelFrom = await scrollY();
+for (let i = 0; i < 4; i++) {
+  await win.mouse.wheel(0, 120);
+  await wait(120);
+}
+await eventually(async () => assert.ok((await scrollY()) > wheelFrom, 'the wheel scrolls the page'));
+await wait(300);
+const gone = await win.evaluate(() => {
+  window.__lineWatch.disconnect();
+  return window.__lineGone;
+});
+assert.equal(gone, 0, 'the line stays drawn while the page scrolls under the wheel');
+assert.ok(await dropLine.boundingBox(), 'and shows where the pointer is after it');
+
 step('the release moves the section to the place shown');
 await win.mouse.up();
 await eventually(async () => {
