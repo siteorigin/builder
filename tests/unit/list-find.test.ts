@@ -1,12 +1,13 @@
 // The sidebar lists' find (Pages, Posts): text folded once for finding and marking, and the letters a find marks.
 import { describe, expect, it } from 'vitest';
 import { fold, folded } from '../../src/renderer/src/lib/fold';
+// @ts-expect-error TS6142: the Node type-check project sets no --jsx; Vitest compiles the component itself.
 import { found } from '../../src/renderer/src/components/ListText';
 
 const marked = (text: string, word: string) => {
   const chars = [...text];
   return found(text, [fold(word)])
-    .map((on, i) => (on ? chars[i] : ''))
+    .map((on: boolean, i: number) => (on ? chars[i] : ''))
     .join('');
 };
 
