@@ -1,218 +1,254 @@
 <p align="center">
-  <img src="build/icon.png" width="96" height="96" alt="SiteOrigin Builder">
+  <img src="build/icon.png" width="64" height="64" alt="SiteOrigin Builder icon">
 </p>
 
 <h1 align="center">SiteOrigin Builder</h1>
 
 <p align="center">
   <strong>Websites you own, built visually.</strong><br>
-  A free, open-source desktop editor for small and mid-sized websites, with an AI assistant that can run on your own computer.
+  A free, open-source desktop editor for small and mid-sized websites, from a business site with a blog to a portfolio or a small publication. Every site is a plain SvelteKit project on your own computer.
 </p>
 
 <p align="center">
-  <a href="#what-you-can-build">Features</a> ·
-  <a href="#the-ai-assistant">AI assistant</a> ·
-  <a href="#your-site-is-just-a-sveltekit-project">Your code</a> ·
-  <a href="#future-work-a-local-first-model">Local model</a> ·
-  <a href="#development">Development</a>
+  <a href="LICENSE"><img src="https://img.shields.io/badge/licence-Apache--2.0-blue" alt="Licence: Apache-2.0"></a>
+  <img src="https://img.shields.io/badge/status-v0.1%20prototype-orange" alt="Status: v0.1 prototype">
+  <img src="https://img.shields.io/badge/runs%20on-macOS%20%C2%B7%20Windows%20%C2%B7%20Linux-lightgrey" alt="Runs on macOS, Windows and Linux">
+</p>
+
+<p align="center">
+  <a href="#run-it-from-source">Run it from source</a> ·
+  <a href="#features">Features</a> ·
+  <a href="#roadmap">Roadmap</a>
 </p>
 
 <p align="center">
   <picture>
     <source media="(prefers-color-scheme: dark)" srcset="docs/images/readme/editor-dark.webp">
-    <img src="docs/images/readme/editor-light.webp" alt="The SiteOrigin Builder editor: a dark-sky lodge website on the canvas with its hero section selected, the layers panel on the left and the inspector on the right" width="100%">
+    <img src="docs/images/readme/editor-light.webp" alt="The SiteOrigin Builder editor with a dark-sky lodge website on the canvas, its hero section selected in the layers tree and open in the inspector" width="100%">
   </picture>
+  <br>
+  <sub>Editing the home page of Kestrel Ridge, a made-up lodge site. The selection is shared by the canvas, the layers tree and the inspector.</sub>
 </p>
 
-SiteOrigin Builder is a desktop app for building websites. You edit the site directly on the canvas, and you can ask an AI assistant to do the heavy lifting when that's quicker.
+You edit the site directly on the canvas, and you can ask an AI assistant when that's quicker, using a cloud model or one running on your own machine. Builder also shows you how every page will look in search results and shared links, and you can invite people into a live session to watch or edit with you.
 
-It's aimed at the middle ground. Think a business site with a blog, a studio portfolio with case studies and a team page, or a small publication. Posts, collections and archives cover the content side, so you're not limited to a handful of static pages. It isn't meant for web apps, online stores or sites with user accounts.
-
-Every site you make is a normal SvelteKit project in a folder on your computer. You can export it, put it in git, host it anywhere or hand it to a developer. There's no account to create, no hosted database and nothing your published site depends on.
+What you build is yours: a folder you can put in git, host anywhere or hand to a developer. There's no account to create, and your published site runs without Builder. It isn't meant for web apps, online stores or sites with user accounts.
 
 > [!NOTE]
-> This is a prototype (version 0.1). It already builds real multi-page sites, but the project format will still change before 1.0. The screenshots in this README are of the real app, editing a made-up dark-sky lodge called Kestrel Ridge.
+> This is a prototype (version 0.1). It already builds real multi-page sites, but the project format will still change before 1.0. The screenshots here are of the real app.
 
-## Why it exists
+## Run it from source
 
-Most website builders keep your site on their servers. You rent it, and if you leave, you start again.
+Downloadable installers are planned. For now, run Builder from source with Node 24.15+ (22.22.2+ and 26+ also work).
 
-With SiteOrigin Builder, the editor runs on your computer and writes standard SvelteKit code into your project folder. You use the app to build the site, then deploy the output wherever you want.
+```sh
+git clone https://github.com/siteorigin/builder.git
+cd builder
+npm install
+npm run dev
+```
 
-A few practical choices shape the editor:
+When the app opens, choose **New project**, pick the Business starter and start editing. **Export** gives you the finished site. The AI assistant is optional: add a key or point it at a local model in **Settings → AI assistant**.
 
-- **The page stays front and centre.** The live preview gets most of the window, with sidebars for pages, layers, styles and chat around it.
-- **You don't need AI.** Manual editing does everything on its own. The assistant is there when it's quicker to ask.
-- **One edit path for you and the AI.** Assistant changes go through the same validation and undo history as your own edits.
-- **Crash recovery is built in.** Edits are written to a journal and grouped into undo steps, so interrupted work can be recovered.
+## Features
 
-## What you can build
+### Design on the canvas
 
-### Editing on the canvas
+Click anything on the page to select it, and edit text right where it sits. The inspector shows the controls for whatever you picked, from text, links and images to layout, spacing, typography and appearance.
 
-Click anything on the canvas to select it, and edit text right where it sits. The inspector shows typed controls for whatever you picked (text, links, images, icons, lists), plus layout, spacing, size, typography and appearance. Selection stays in sync across the canvas, the layers tree, the breadcrumb and the inspector.
-
-Drag sections to reorder them, or move elements between containers in Layers. Wrap things in a stack, row or grid, turn a repeated element into a list, or save a section as a component to reuse across the site.
-
-<p align="center">
-  <picture>
-    <source media="(prefers-color-scheme: dark)" srcset="docs/images/readme/phone-insert-dark.webp">
-    <img src="docs/images/readme/phone-insert.webp" alt="The Insert panel listing column layouts and blocks, with the site previewed at phone width and the hero section selected" width="100%">
-  </picture>
-</p>
-
-### Responsive overrides
-
-Every page has one content tree and one set of styles, with optional overrides for phone, tablet and desktop. Switch the preview width and override only the styles that need to change at that size.
-
-### Site-wide styles
-
-Colours, fonts, text styles, spacing, containers, radii, shadows and borders all live in one place as site-wide tokens. Change the brand colour once and every button, link and badge follows. Contrast is checked as you go, so you can see whether button text is still readable before you ship it.
+- **Sections and layouts.** Insert sections, drag them into order, or wrap elements in a stack, row or grid.
+- **Reusable components.** Save a section as a component, edit it everywhere at once, or make one copy unique.
+- **Responsive overrides.** One page and one set of styles, with overrides for phone, tablet and desktop only where you need them.
+- **History and versions.** Undo survives a restart, and you can save named versions and restore any of them.
 
 <p align="center">
   <picture>
-    <source media="(prefers-color-scheme: dark)" srcset="docs/images/readme/site-styles-dark.webp">
-    <img src="docs/images/readme/site-styles.webp" alt="The Site styles panel showing the Signal theme, the brand colour with live contrast checks, and the display font set to Fraunces" width="100%">
+    <source media="(prefers-color-scheme: dark)" srcset="docs/images/readme/phone-dark.webp">
+    <img src="docs/images/readme/phone.webp" alt="The lodge site previewed at 390 pixels wide, with its hero section selected and its eyebrow, heading, text and buttons open in the inspector" width="100%">
   </picture>
+  <br>
+  <sub>The same page at phone width. The content is shared, so only styles you override for phone change.</sub>
 </p>
 
-### Three themes, one set of components
+### Search and sharing
 
-SiteOrigin Builder includes three themes built on the same component contracts, so you can switch themes without losing any of your content.
+The **SEO view** takes over the canvas. It opens on an overview of every page and post and flags the ones that still need a search title, description or sharing image. Choose one and you get a realistic results page, with your own result marked among placeholder results, and it updates as you type.
+
+- **Search results and link previews.** Computer or phone, light or dark, plus each platform's share card, so you can see where a title gets cut short or an image is missing.
+- **Structured data in plain words.** What search engines are told about the page, with the raw JSON-LD tucked away.
+- **Optimize with AI.** Ask the assistant to improve the chosen page's title and description.
+- **Built into the export.** Every site gets `sitemap.xml`, `robots.txt` with a crawler policy and canonical links. Translated pages get `hreflang` alternates, and moved pages get redirect rules for Cloudflare, Netlify or Vercel.
+- **Ready for AI agents.** Every site gets `llms.txt`, and you can turn on Markdown copies of each page and WebMCP declarations for your forms and search.
+
+<p align="center">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="docs/images/readme/seo-dark.webp">
+    <img src="docs/images/readme/seo.webp" alt="The SEO view listing the site's pages and posts, with a realistic search results page in which the Kestrel Ridge home page is marked among placeholder results" width="100%">
+  </picture>
+  <br>
+  <sub>The SEO view. The arrow marks the Kestrel Ridge result, and you can see where its title gets cut off. The other results are placeholders for comparison.</sub>
+</p>
+
+### The AI assistant
+
+The assistant uses the same validated edit operations as the visual editor, so its changes behave exactly like yours. Ask for something and it reads the page, makes its changes, checks them and reports back. Each request lands as a single undo step.
+
+It works within strict limits:
+
+- **Scope is explicit.** With an element selected, a request can only change that element. Anything wider needs your approval, and the assistant asks for it.
+- **Typed tools only.** It has no shell, filesystem or network access, so it can only act through the editor's own tools.
+- **No image pixels go to the model.** It refers to images by name and ID instead of uploading them.
+- **No custom code unless Developer mode is on.** By default it works with theme components and site styles.
+
+<p align="center">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="docs/images/readme/ai-running-dark.webp">
+    <img src="docs/images/readme/ai-running.webp" alt="The AI panel partway through a request: an earlier turn has finished with a summary of its changes, and the current turn has added an Aurora season section, which is visible on the canvas, with Stop and undo beside it" width="100%">
+  </picture>
+  <br>
+  <sub>A request in progress. The new section is already on the page, and <strong>Stop and undo</strong> is one click away.</sub>
+</p>
+
+It can also set up a collection, fill it from images you drag into the chat and design its page template.
+
+Page text and structure go to the provider you choose: **OpenAI**, **Anthropic**, or a **local model** through any OpenAI-compatible server, with presets for llama.cpp, Ollama, LM Studio and MLX. Run the model server on your own computer and the assistant's requests stay on that machine. Qwen3.5-2B, the base of our own model, has a built-in profile that knows its real context window.
+
+### Themes and site styles
+
+Three themes ship with Builder. They share one set of component contracts, so you can switch themes and keep all of your content.
 
 | Theme | Character |
 | --- | --- |
 | **Foundation** | Clean and restrained, for service businesses, studios and personal sites. |
-| **Editorial** | High-contrast and typographic: a display serif, hairline rules and asymmetric columns. |
+| **Editorial** | High-contrast and typographic, for magazines, architects and studios: a display serif, hairline rules and asymmetric columns. |
 | **Signal** | Geometric and crisp, for product teams, consultancies and modern trades. |
 
-Each theme covers more than thirty sections and blocks: heroes, service grids, galleries, carousels, pricing tables, team grids, testimonials, FAQs, data tables, video, contact forms, site search, blog layouts and more. Contact forms post to Formspree, Basin, Getform, Web3Forms or Netlify Forms, so you don't need a server.
-
-### Pages, posts and site tools
-
-- **Pages and posts.** Add, nest and reorder pages, set routes and SEO, and mark drafts. Posts have categories, tags, archives and an RSS feed. You can import existing posts from a WordPress export file or a folder of Markdown (Jekyll, Hugo, Eleventy and Astro front matter all work).
-- **Collections.** Structured content like team members, projects or events, each with its own fields and an optional page per entry.
-- **Languages.** Give a page a language and link its translations. The export declares `hreflang` alternates for you.
-- **SEO and AI discovery.** A dedicated SEO view checks titles, descriptions and sharing images across the whole site. SiteOrigin Builder can also write `llms.txt`, Markdown mirrors of each page and WebMCP declarations for AI agents.
-- **Assets.** Import images (with responsive copies made for you), fonts and documents. You can see where each one is used, replace it everywhere at once or clear out anything unused.
-- **History and versions.** Undo survives a restart, the history is grouped into readable steps, and you can save named versions and restore any of them.
-- **Find and replace, command menu, spelling.** Replace text across every page, run any action from the command menu (Cmd/Ctrl+K), and fix spelling with a right-click.
-
-### Custom Svelte code
-
-Turn on **Developer mode** in Settings and you can view the generated Svelte for any component, convert a component to code, or write your own Svelte components in a built-in editor with live compiler diagnostics. Before saving, the editor checks that the component compiles for browser and server, imports only allowed modules, and avoids raw HTML and `eval`. If a check fails, it blocks the save and shows you why. With an AI provider set up, a small repair agent can fix the code and run the checks again.
-
-Developer mode is off by default, because most people building a site like this never need it.
-
-## The AI assistant
+Each covers more than thirty sections and blocks, from heroes, galleries and carousels to pricing tables, FAQs, contact forms and blog layouts. Colours, fonts, text styles, spacing, radii, shadows and borders live in **Site styles** as site-wide tokens. Change the brand colour once and every button and link that uses it follows, with contrast checked as you go.
 
 <p align="center">
-  <img src="docs/images/readme/ai-running.webp" alt="The AI panel partway through a request: an earlier turn completed, the current one has read the page and added an aurora season section, which is already visible on the canvas" width="100%">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="docs/images/readme/site-styles-dark.webp">
+    <img src="docs/images/readme/site-styles.webp" alt="The Site styles panel showing the Signal theme and the amber brand colour with its contrast checks, beside the lodge site's story and statistics sections" width="100%">
+  </picture>
+  <br>
+  <sub>Site styles. Button text on the amber brand colour is checked at 10.18:1.</sub>
 </p>
 
-The assistant uses the same validated edit operations as the visual editor, so an AI change behaves exactly like one you made by hand. Ask for something, and it reads the page, makes its changes, checks them and reports back. Each request lands as a single undo step, and you can stop and revert at any point.
+### Content: posts, collections and outside data
 
-It works within strict limits:
+Builder includes an optional flat-file CMS. A site that doesn't need it stays simple.
 
-- **Scope is explicit.** If you have an element selected, the request can only change that element. Anything wider needs your approval, and the assistant asks for it.
-- **Typed tools only.** It has no shell, filesystem or network access, so it can only act through the editor's own tools.
-- **No image pixels go to the model.** The assistant refers to images by name and ID instead of uploading them.
-- **No custom code unless Developer mode is on.** By default, the assistant works with theme components and site styles.
+- **Posts.** Categories, tags, archives and an RSS feed, with drafts and a writer of their own.
+- **Collections.** Structured content like team members, projects or events, each with its own fields, edited in the **Content** workspace, with an optional page per entry.
+- **Loops and queries.** Any section can repeat over a collection with filters, sorting and limits. It all resolves to plain Svelte at build time.
+- **Outside sources.** Pull content read-only from a headless CMS like Contentful, Sanity or Strapi, a GraphQL endpoint or your own REST API, with field mapping. API tokens stay in your user folder, never in the project or the export.
+- **Mapping and sync.** The assistant can write the field mapping from a sample response, and an exported project can refresh its content with `npm run sync`, in CI or on a webhook, without Builder.
 
-SiteOrigin Builder works with **OpenAI** and **Anthropic**, or with a **local model** through any OpenAI-compatible server. There are presets for llama.cpp, Ollama, LM Studio and MLX. Local servers are loopback-only unless you explicitly allow a remote address, so your site's content stays on your machine.
+<p align="center">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="docs/images/readme/posts-dark.webp">
+    <img src="docs/images/readme/posts.webp" alt="The Posts panel listing three published lodge blog posts, with the first open in the post writer showing its title, date, author, address and text" width="100%">
+  </picture>
+  <br>
+  <sub>A post open in the writer. Each post gets its own page under /blog/, plus archives and a feed.</sub>
+</p>
 
-## Your site is just a SvelteKit project
+### Working together
 
-Visual edits are saved as JSON documents under `siteorigin/`, and a generator turns them into ordinary Svelte and CSS.
+Click **Share** and you get a link. Guests type a name in a waiting room, and you let them in. It's built for walking a client or a colleague through the site while you talk, so there's no chat.
+
+- **Viewers.** Watch the live site in any browser, with nothing to install and no account.
+- **Collaborators.** Join from their own copy of Builder and make visual edits to your project. Your computer stays the only place the project is written, and guests never see your files, settings, API keys or other projects.
+- **See what each other is doing.** Selections and clicks are highlighted on the canvas, and anyone can pin a short note to a page or element. Notes stay on your machine as a checklist.
+- **You stay in control.** Sessions end after a time you pick, at most 24 hours. You can let a trusted collaborator use AI, which runs on your machine with your provider, and take it back at any time.
+- **An open relay.** The relay is an open-source Cloudflare Worker in this repository. It stores no project files and no accounts.
+
+### Your site is a SvelteKit project
+
+Visual edits are saved as JSON documents under `siteorigin/`, and a generator turns them into ordinary Svelte and CSS. The exported site has no Builder runtime in it.
 
 ```text
 kestrel-ridge/
-├── siteorigin.project.json     # marks the folder as a Builder project
-├── siteorigin/                 # your pages, components and styles, as JSON
-├── src/
-│   ├── routes/                 # generated SvelteKit routes
-│   └── lib/siteorigin/         # generated components and your own code components
-├── static/                     # your images, plus the generated sitemap, robots.txt and llms.txt
-└── .siteorigin/                # private editor state: history, chat, caches (never exported)
+├── siteorigin.project.json   # marks a Builder project
+├── siteorigin/               # pages, components, styles (JSON)
+├── src/routes/               # generated SvelteKit routes
+├── src/lib/siteorigin/       # generated and custom components
+├── static/                   # images, sitemap, robots.txt, llms.txt
+└── .siteorigin/              # private editor state, never exported
 ```
-
-The exported site has no Builder runtime in it. You can ship it two ways:
 
 - **Website files, ready to upload.** Every page is prerendered and checked for editor-only markup, and photo location and camera data are stripped.
-- **The editable source project.** It builds with plain `npm ci && npm run build`, and the output in `build/` works on any static host. Redirect rules can be written for Cloudflare, Netlify or Vercel.
+- **The editable source project.** It builds with plain `npm ci && npm run build`, and the output in `build/` works on any static host.
 
-Both exports work as a folder or a ZIP file, and an exported source ZIP opens straight back up as a working project. The editor's own state lives in `.siteorigin/`, which never leaves your computer.
+Both exports work as a folder or a ZIP file, and an exported source ZIP opens straight back up as a working project.
 
-## How it works
+### Custom Svelte code
 
-```mermaid
-flowchart LR
-  subgraph App["SiteOrigin Builder (Electron)"]
-    UI["Editor UI<br/>React"]
-    Agent["AI assistant<br/>typed tools"]
-    Engine["Edit engine<br/>validated operations, undo, journal"]
-    Gen["Generator<br/>JSON to Svelte and CSS"]
-  end
-  Docs[("siteorigin/<br/>JSON documents")]
-  Src["src/<br/>plain SvelteKit"]
-  Preview["Live preview<br/>project's own Vite server,<br/>sandboxed iframe"]
+Turn on **Developer mode** in Settings to view the generated Svelte for any component, convert a component to code, or write your own Svelte components with live compiler diagnostics. Before saving, the editor checks that the code compiles for browser and server, imports only allowed modules, and avoids raw HTML and `eval`. If a check fails, the save is blocked and you see why.
 
-  UI --> Engine
-  Agent --> Engine
-  Engine --> Docs
-  Docs --> Gen
-  Gen --> Src
-  Src --> Preview
-  Preview -. selection .-> UI
-```
+Developer mode is off by default, because most people building a site like this never need it.
 
-- **One edit pipeline.** Manual edits and AI edits are both `EditOperation`s, checked against the same schemas and scope rules before anything is written.
-- **Real preview.** The project's own Vite and SvelteKit dev server runs in an isolated utility process on loopback, so the canvas shows the actual site inside a sandboxed iframe.
-- **Bundled runtime.** The app bundles its own Node runtime, npm and an offline copy of the starter project's locked packages. Creating a project takes a second or two and needs no network.
+### Also included
 
-The full product and technical design is in the [v0.1 specification](docs/specification-v0.1.md).
+| Area | What you get |
+| --- | --- |
+| **Forms** | Contact forms that post to Formspree, Basin, Getform, Web3Forms or Netlify Forms, so you don't need a server. |
+| **Images and files** | Responsive copies made on import, a list of where each one is used, replace everywhere, and fonts and documents alongside. |
+| **Languages** | Pages linked to their translations, with `hreflang` in the export. |
+| **Imports** | Existing posts from a WordPress export file or a folder of Markdown (Jekyll, Hugo, Eleventy and Astro front matter). |
+| **Project health** | Broken links, missing images and search readiness, flagged before you export. |
+| **Everyday tools** | Find and replace across pages, a command menu (Cmd/Ctrl+K) and right-click spelling suggestions. |
+| **The export itself** | A README with hosting notes for your host, a not-found page, a favicon and an RSS feed with a description for every post. |
 
-## Future work: a local-first model
+## Roadmap
 
-The long-term goal is a free, private website builder whose assistant runs on your own computer out of the box. Cloud models are the practical way to test full-site building right now, while we work toward that local model.
+### A local-first model
 
-We want to ship one official model, fine-tuned for SiteOrigin Builder:
+The long-term goal is a free, private website builder whose assistant runs on your own computer out of the box. Cloud models are the practical way to test full-site building today, and we're aiming to ship our own local model in early 2027.
 
-- **The base model.** We're starting with Qwen3.5-2B under Apache-2.0, trying LoRA first and moving to a full fine-tune only if LoRA plateaus. If Qwen 4 2B ships under the same licence and scores better on our eval set, we'll move to it. The licence matters: it has to let anyone use the model commercially, including fine-tunes, without a revenue cap.
-- **Built for a small model from the start.** The agent already uses compact tool schemas, bounded context, deterministic validation, and grammar-constrained decoding, where every turn is one JSON object enforced token by token. Because the grammar only allows valid operations, a 2B model can handle routine editing reliably.
-- **Training on the right data.** Training and evaluation use real editor operations (changing properties, inserting components, adjusting responsive styles, editing tokens) built from synthetic or explicitly contributed examples. User projects and chat transcripts are never collected.
-- **Reusable training and eval sets.** The long-term work lives in the dataset and the benchmark, so moving to a better base model should mostly mean retraining and running the evals again.
+- **One official model.** We're starting with Qwen3.5-2B under Apache-2.0, fine-tuned for Builder with LoRA first and a full fine-tune only if LoRA plateaus. If Qwen 4 2B ships under the same licence and scores better on our eval set, we'll move to it. The licence has to let anyone use the model commercially, fine-tunes included, without a revenue cap.
+- **Built for a small model.** The agent already uses compact tool schemas, bounded context and grammar-constrained decoding. The grammar keeps every reply in a valid shape, the editor checks every edit, and the benchmark measures how often a model actually finishes the job.
+- **Trained on the right data.** Training and evaluation use real editor operations, built from synthetic or explicitly contributed examples. User projects and chat transcripts are never collected.
 
-We're aiming for early 2027. The plumbing is already in place: the local adapter, runtime presets, per-model capability profiles and a headless benchmark (`npm run eval:agent`, with more than fifty graded cases) that runs against both cloud and local models.
+Other providers will keep working through the same adapter, as optional extras rather than the main path.
 
-Other providers will keep working through the same adapter, but they'll be optional extras rather than the main path.
+### Also planned
 
-### Also on the horizon
-
-- **SiteOrigin Hosting** for one-click publishing. Export stays the default, and you'll always be able to host your site anywhere.
-- **Live collaboration.** The protocol and a relay are in progress, though there's no editor UI for it yet.
-- **More themes**, installable as packs and pinned by digest.
-- **Signed installers and full CI** for macOS, Windows and Linux before the first public release. See [docs/releasing.md](docs/releasing.md).
+- **SiteOrigin Hosting** for one-click publishing. Export stays the default, and you can always host anywhere.
+- **More themes**, installable as packs, and the component library in its own repository.
+- **Installers** for macOS, Windows and Linux, signed on macOS and Windows. See the [release checklist](docs/releasing.md).
 
 ## Development
 
-Node 24.15+ is recommended for development (22.22.2+ and 26+ also work). You don't need Node installed to run the packaged app.
+The [contributor guide](CONTRIBUTING.md) has the full test setup and house rules, and the [v0.1 specification](docs/specification-v0.1.md) has the full design. Development uses the same Node as above; the packaged app bundles its own.
 
 ```sh
-npm install
-npm run dev                          # the app with hot reload
+npm run dev                  # the app with hot reload
 npm run typecheck
-npm test                             # unit and integration tests
-npm run build && npm run test:e2e    # drive the built app with Playwright, headless
-npm run test:export-build            # export integrity, plus a standalone build of the exported source
-npm run eval:agent                   # the agent benchmark (scripted by default; --live costs money)
-npm run pack                         # an unpacked app in dist/
-npm run dist                         # installers: DMG, NSIS and AppImage
+npm test                     # unit and integration tests
+npm run build
+npm run test:e2e             # the built app, driven headless
+npm run eval:agent           # agent benchmark (--live costs money)
+npm run dist                 # installers: DMG, NSIS, AppImage
 ```
 
-End-to-end scripts run the real app headless, so nothing pops up on your screen while they run. In development builds, `OPENAI_API_KEY` and `ANTHROPIC_API_KEY` are read from the environment when no key is saved in Settings. Packaged builds keep saved keys in `api-keys.json` in the app's data folder, readable only by your user account. The app doesn't use the OS keychain, so it never triggers a system password prompt.
+End-to-end scripts run the real app headless, so nothing pops up while they run. In development builds, `OPENAI_API_KEY` and `ANTHROPIC_API_KEY` are read from the environment when no key is saved. Saved keys live in `api-keys.json` in the app's data folder, readable only by your user account on macOS and Linux. The app doesn't use the OS keychain, so it never triggers a system password prompt.
 
-[CONTRIBUTING.md](CONTRIBUTING.md) has the full test guide and the rules that keep projects safe and portable.
+### How it works
+
+Manual edits, assistant edits and collaborators' edits all go through one edit engine, which validates them and writes the project's JSON documents. A generator turns those documents into plain SvelteKit, and the project's own dev server shows it in the canvas.
+
+```mermaid
+flowchart LR
+  Edits["You, the assistant<br/>and collaborators"] --> Engine["Edit engine<br/>validation, undo"]
+  Engine --> Docs[("siteorigin/<br/>JSON")]
+  Docs -->|generates| Src["src/<br/>SvelteKit"]
+  Src --> Preview["Live preview"]
+```
+
+- **One edit pipeline.** Every change is an `EditOperation`, checked against the same schemas and scope rules before anything is written.
+- **Real preview.** The project's own Vite and SvelteKit dev server runs in an isolated utility process on loopback, so the canvas shows the actual site.
+- **Bundled runtime.** The app ships its own Node, npm and an offline copy of the starter's locked packages, so creating a project takes a second or two and needs no network.
 
 ## Licence
 
