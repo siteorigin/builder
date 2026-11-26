@@ -81,12 +81,6 @@ function problemText(p: DraftProblem): string {
 export function PostWriter({ hidden }: { hidden: boolean }) {
   const post = useStore((s) => s.post);
   const exists = useStore((s) => !!(s.snapshot && postAt(s.snapshot.state, s.post)));
-  // Entry text turned on or off in the collection's settings: the writer starts again with the text editor or without it.
-  // Kept as last seen while the collection is gone (removed, undone away), so the writer holding its unsaved text stays.
-  const hasBodyNow = useStore((s) => (s.snapshot && s.post && Object.hasOwn(s.snapshot.state.collections, s.post.collectionId) ? collectionHasBody(s.snapshot.state.collections[s.post.collectionId].settings) : undefined));
-  const lastBody = useRef(true);
-  if (hasBodyNow !== undefined) lastBody.current = hasBodyNow;
-  const hasBody = lastBody.current;
   // A writer already open stays while the post is gone from the project (the AI, an Undo): it may hold unsaved text,
   // which it offers to keep. It lets go of the post itself once nothing is left unsaved.
   const shown = useRef<string | null>(null);
@@ -96,7 +90,7 @@ export function PostWriter({ hidden }: { hidden: boolean }) {
   return (
     <div className="post-writer" hidden={hidden}>
       {post && keep ? (
-        <PostEditor key={`${post.collectionId}/${post.entryId}/${hasBody ? 'text' : 'record'}`} post={post} hidden={hidden} />
+        <PostEditor key={`${post.collectionId}/${post.entryId}`} post={post} hidden={hidden} />
       ) : (
         <div className="post-none">
           <Newspaper aria-hidden="true" />
@@ -143,6 +137,11 @@ function PostEditor({ post, hidden }: { post: PostRef; hidden: boolean }) {
   const caretAfterHistory = useRef<ArticleCaret | null>(null);
   const [status, setStatus] = useState<{ dirty: boolean; saving: boolean; problem: DraftProblem | null }>({ dirty: false, saving: false, problem: null });
   const [dialog, setDialog] = useState<Dialog>(null);
+  /**
+   * Whether the text editor shows: while the collection's entries have text (#675), and while it holds text not saved
+   * yet, so entry text turned off meanwhile never takes away what was typed. Turned on again, it shows the saved text.
+   */
+  const bodyOn = collectionHasBody(collection.settings) || status.dirty || !!status.problem;
   const [pressed, setPressed] = useState<{ bold: boolean; italic: boolean; block: string }>({ bold: false, italic: false, block: 'p' });
   const draftKey = `post-text:${post.entryId}`;
 
@@ -196,16 +195,26 @@ function PostEditor({ post, hidden }: { post: PostRef; hidden: boolean }) {
     return agreedIn(now) ?? agreedIn(last.current.snap);
   };
 
-  // Show the post's text once, then only when it changes in the project while nothing here is unsaved (an Undo).
+  // Show the post's text once the editor shows, then only when it changes in the project while nothing here is unsaved
+  // (an Undo). Edit → Undo and Redo reach the text as the browser's own history: they are the project's here too.
   useEffect(() => {
     const el = root.current;
+    if (!el) return;
     rootEl.current = el;
-    if (!el || unreadable) return;
-    // Enter starts a paragraph, as the site's text has them.
-    document.execCommand('defaultParagraphSeparator', false, 'p');
-    renderArticle(el, entry.body, state, devUrl);
-    agreed.current = entry.body;
-  }, []); // eslint-disable-line react-hooks/exhaustive-deps
+    const onBeforeInput = (e: InputEvent) => {
+      if (e.inputType !== 'historyUndo' && e.inputType !== 'historyRedo') return;
+      e.preventDefault();
+      void history(e.inputType === 'historyRedo' ? 'redo' : 'undo');
+    };
+    el.addEventListener('beforeinput', onBeforeInput);
+    if (!unreadable) {
+      // Enter starts a paragraph, as the site's text has them.
+      document.execCommand('defaultParagraphSeparator', false, 'p');
+      renderArticle(el, entry.body, state, devUrl);
+      agreed.current = entry.body;
+    }
+    return () => el.removeEventListener('beforeinput', onBeforeInput);
+  }, [bodyOn]); // eslint-disable-line react-hooks/exhaustive-deps
   useEffect(() => {
     const el = root.current;
     if (!el || !live || unreadable || sameRichText(entry.body, agreed.current)) return;
@@ -247,19 +256,10 @@ function PostEditor({ post, hidden }: { post: PostRef; hidden: boolean }) {
       (change) => void follow(change)
     );
     const offHistory = setWriterHistory((action) => void history(action));
-    // Edit → Undo and Redo reach the text as the browser's own history: they are the project's here too.
-    const el = root.current;
-    const onBeforeInput = (e: InputEvent) => {
-      if (e.inputType !== 'historyUndo' && e.inputType !== 'historyRedo') return;
-      e.preventDefault();
-      void history(e.inputType === 'historyRedo' ? 'redo' : 'undo');
-    };
-    el?.addEventListener('beforeinput', onBeforeInput);
     return () => {
       offFlush();
       offOpen();
       offHistory();
-      el?.removeEventListener('beforeinput', onBeforeInput);
       // Gone without being saved first (the project closed): what it held is read now, from the element kept for it.
       if (draft.dirty) void draft.flush().finally(() => draft.close());
       else draft.close();
@@ -511,6 +511,8 @@ function PostEditor({ post, hidden }: { post: PostRef; hidden: boolean }) {
    * it loses focus. False, said beside the field or above the text, when any of it could not be.
    */
   const saveAll = async (): Promise<boolean> => {
+    // A synced entry holds nothing typed here: a saved value its controls mark (a link to a section gone) is not unsaved.
+    if (isReadOnlyCollection(getState().snapshot?.state.collections[post.collectionId] ?? collection)) return draft.flush();
     // The button pressed takes focus from the field being typed in, which commits it just before this runs: a refusal
     // from that moment on (an address another page has, an empty title) stops what the button does.
     const since = performance.now() - REFUSAL_WINDOW_MS;
@@ -598,14 +600,15 @@ function PostEditor({ post, hidden }: { post: PostRef; hidden: boolean }) {
   // What the collection is (#675): records get a form of their fields, articles the writer with their fields beside it;
   // a collection without entry pages has no address, preview or search settings; a synced one is only read here.
   const structured = collectionKind(collection.settings) === 'structured';
-  const hasBody = collectionHasBody(collection.settings);
   const paged = hasDetailPages(collection.settings);
   const readOnly = isReadOnlyCollection(collection);
   const noun = entryNoun(collection);
   const nounLower = entryNounLower(collection);
   // One field's value; a link to a section without an anchor comes with the change that gives it one, sent together.
+  // An "On this page" link is the entry's own page, which the picker does not know: a section it gives an anchor is the
+  // canvas's page, so only the link is kept.
   const setValue = (name: string, value: unknown, label: string, edit?: PendingEdit) =>
-    edit ? follow(applyWith(edit, [{ type: 'entry.update', collectionId: post.collectionId, entryId: post.entryId, values: { [name]: value } } as never], label)) : update({ values: { [name]: value } }, label);
+    edit && (value as { type?: unknown } | null)?.type !== 'anchor' ? follow(applyWith(edit, [{ type: 'entry.update', collectionId: post.collectionId, entryId: post.entryId, values: { [name]: value } } as never], label)) : update({ values: { [name]: value } }, label);
   const details = (
     <div className="post-fields">
       <Field label="Publication date" hint={`A date in the past backdates the ${nounLower}.`}>
@@ -743,8 +746,8 @@ function PostEditor({ post, hidden }: { post: PostRef; hidden: boolean }) {
             </>
           )}
           {paged && <PostSearchSettings state={state} post={post} collection={collection} entry={entry} update={update} />}
-          {hasBody && structured && <h3 className="post-record-section">Text</h3>}
-          {hasBody && (
+          {bodyOn && structured && <h3 className="post-record-section">Text</h3>}
+          {bodyOn && (
           <>
           <div className="post-tools" role="toolbar" aria-label="Formatting">
             {tools.map((t) => (

@@ -11,6 +11,7 @@ import { applyOperations } from '@engine/apply';
 import { validateState } from '@engine/validate';
 import { hasArchivePages, hasDetailPages } from '@shared/collections';
 import { checkPropName } from '@engine/schema';
+import { validateOperation } from '@shared/ops';
 import {
   STARTER_COLLECTIONS,
   contentRows,
@@ -323,6 +324,45 @@ describe('the schema dialog', () => {
     expect(saved.rating).toMatchObject({ type: 'number', default: 1, min: 1, max: 5 });
   });
 
+  it('keeps the values of a choice’s saved options, gives a new option its name’s, and keeps a default under a lowered maximum', () => {
+    let s = team();
+    s = run(s, [
+      {
+        type: 'collection.update',
+        collectionId: 'team',
+        fields: { ...structuredClone(s.collections.team.settings.fields), level: { type: 'enum', label: 'Level', default: 'junior', options: [{ value: 'junior', label: 'Junior' }] }, years: { type: 'number', label: 'Years', default: 8 } }
+      } as EditOperation
+    ]);
+    const c = s.collections.team;
+    const draft = schemaDraftOf(c);
+    draft.fields = draft.fields.map((f) => {
+      if (f.schema.type === 'enum')
+        return {
+          ...f,
+          schema: {
+            ...f.schema,
+            options: [
+              { value: 'junior', label: 'Apprentice' },
+              { value: 'option-2', label: 'Senior lead' }
+            ]
+          }
+        };
+      if (f.schema.type === 'number') return { ...f, schema: { ...f.schema, max: 5 } };
+      return f;
+    });
+    const settled = settleDraft(c, draft);
+    if (typeof settled === 'string') throw new Error(settled);
+    const saved = run(s, [schemaUpdateOp(c, settled)!]).collections.team.settings.fields;
+    expect(saved.level).toMatchObject({
+      default: 'junior',
+      options: [
+        { value: 'junior', label: 'Apprentice' },
+        { value: 'senior-lead', label: 'Senior lead' }
+      ]
+    });
+    expect(saved.years).toMatchObject({ default: 5, max: 5 });
+  });
+
   it('names fields in camelCase, free of reserved and taken names', () => {
     expect(fieldNameFor('Job title', [])).toBe('jobTitle');
     expect(fieldNameFor('Job title', ['jobTitle'])).toBe('jobTitle2');
@@ -333,6 +373,7 @@ describe('the schema dialog', () => {
     for (const label of ['Return', 'To string', 'Public', 'Prototype', 'Constructor', 'Item', `Item ${'9'.repeat(40)}`, 'x'.repeat(80)]) {
       const name = fieldNameFor(label, []);
       expect(() => checkPropName(name, 'Field'), `${label} → ${name}`).not.toThrow();
+      expect(validateOperation({ type: 'collection.update', collectionId: 'team', fields: { [name]: { type: 'string', label, default: '' } } }).ok, `${label} → ${name}`).toBe(true);
       expect(name in Object.prototype).toBe(false);
     }
   });

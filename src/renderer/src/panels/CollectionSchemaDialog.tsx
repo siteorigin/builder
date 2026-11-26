@@ -75,8 +75,11 @@ export function CollectionSchemaDialog({ collectionId, onClose }: { collectionId
         details: [{ kind: 'undo', text: 'You can undo it.' }]
       });
       if (!ok) return;
+      // Another project opened while the question was open: nothing of this draft is its.
+      const after = getState().snapshot;
+      if (!after || after.workspaceKey !== opening) return onClose();
       // Changed while the question was open: what it said may no longer be all that goes.
-      if (getState().snapshot?.revision !== base.revision) return changedMeanwhile();
+      if (after.revision !== base.revision) return changedMeanwhile();
     }
     setBusy(true);
     let refused: string | null = null;

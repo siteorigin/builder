@@ -259,6 +259,7 @@ export function PostsPanel() {
   const addTarget = useRef<{ collectionId: string; workspaceKey: string | undefined } | null>(null);
   /** Counts each choice of what the panel shows, so one still saving the open entry never undoes a later one. */
   const navigation = useRef(0);
+  const creating = useRef(false);
   const importMenu = useMenu();
   const findInput = useRef<HTMLInputElement>(null);
   const addInput = useRef<HTMLInputElement>(null);
@@ -296,6 +297,8 @@ export function PostsPanel() {
   // "posts" for a blog's entries, "entries" for anything else's, where a count is said.
   const plural = (n: number) => (n === 1 ? noun : isBlog || collectionKind(collection?.settings) === 'editorial' ? `${noun}s` : 'entries');
   const readOnly = isReadOnlyCollection(collection);
+  // What the new-entry form makes, named as the collection it was opened for, whichever the list shows by now.
+  const formTarget = addTarget.current && Object.hasOwn(state.collections, addTarget.current.collectionId) ? state.collections[addTarget.current.collectionId] : collection;
   const dated = collectionKind(collection?.settings) === 'editorial';
   const groupings = collection ? postTaxonomies(collection) : [];
   const canImport = !collection || isBlog;
@@ -306,8 +309,9 @@ export function PostsPanel() {
 
   /** Show another collection's entries, once the entry being written is saved; the writer lets go of it. */
   const choose = async (id: string) => {
-    if (id === collection?.settings.id) return;
+    // Choosing the one shown is a choice too: a switch still saving the open entry gives way to it.
     const seq = ++navigation.current;
+    if (id === collection?.settings.id) return;
     const workspaceKey = getState().snapshot?.workspaceKey;
     if (post && post.collectionId !== id) {
       if (!(await openSaved())) return;
@@ -330,8 +334,8 @@ export function PostsPanel() {
   /** Open a post, once the one being written is saved; never over text that could not be (the writer says why). */
   const open = async (entryId: string) => {
     if (!collection) return;
-    if (post?.entryId === entryId && post.collectionId === collection.settings.id) return setState({ postView: 'write' });
     const seq = ++navigation.current;
+    if (post?.entryId === entryId && post.collectionId === collection.settings.id) return setState({ postView: 'write' });
     const workspaceKey = getState().snapshot?.workspaceKey;
     if (!(await openSaved())) return;
     if (seq !== navigation.current || getState().snapshot?.workspaceKey !== workspaceKey) return;
@@ -341,7 +345,16 @@ export function PostsPanel() {
   const create = async () => {
     const t = title.trim();
     const to = addTarget.current;
-    if (!t || busy || !to) return;
+    if (!t || busy || creating.current || !to) return;
+    // One at a time: a second press while the open entry saves makes no second draft.
+    creating.current = true;
+    try {
+      await createIn(to, t);
+    } finally {
+      creating.current = false;
+    }
+  };
+  const createIn = async (to: { collectionId: string; workspaceKey: string | undefined }, t: string) => {
     if (!(await openSaved())) return;
     const s = getState().snapshot;
     if (!s) return;
@@ -540,7 +553,7 @@ export function PostsPanel() {
             }
           }}
         >
-          <input ref={addInput} className="input" placeholder={dated ? `${entryNoun(collection)} title` : 'Name or title'} aria-label={`New ${noun} title`} maxLength={MAX_POST_TITLE} value={title} readOnly={busy} onChange={(e) => setTitle(e.target.value)} />
+          <input ref={addInput} className="input" placeholder={collectionKind(formTarget?.settings) === 'editorial' ? `${entryNoun(formTarget)} title` : 'Name or title'} aria-label={`New ${entryNounLower(formTarget)} title`} maxLength={MAX_POST_TITLE} value={title} readOnly={busy} onChange={(e) => setTitle(e.target.value)} />
           <div className="posts-add-actions">
             <button type="submit" className="btn btn-sm btn-primary" disabled={!title.trim() || busy}>
               Create draft

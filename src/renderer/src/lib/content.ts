@@ -320,7 +320,8 @@ export function schemaDraftOf(collection: Collection): SchemaDraft {
 
 /** Whether the engine takes a name for a custom field (see checkPropName): camelCase, at most 40 characters, not reserved. */
 function validFieldName(name: string): boolean {
-  if (name in Object.prototype) return false;
+  // Nor a name operations refuse as an object's own ("prototype", "constructor").
+  if (name in Object.prototype || name === 'prototype' || name === 'constructor' || name === '__proto__') return false;
   try {
     checkPropName(name, 'Field');
     return true;
@@ -415,11 +416,14 @@ export function settleDraft(collection: Collection, draft: SchemaDraft): SchemaD
       ...f.schema,
       label: f.schema.label.trim()
     } as CollectionFieldSchema;
-    if (!f.added) return { name: f.name, schema };
-    // A new choice stores a value of each option's name ("small" for Small), so a layout's own choice can match it.
+    // A new option stores a value of its name ("small" for Small), so a layout's own choice can match it; an option the
+    // field already had keeps its value, which entries may have chosen.
     if (schema.type === 'enum') {
-      const values: string[] = [];
+      const before = !f.added ? collection.settings.fields?.[f.name] : undefined;
+      const kept = new Set(before?.type === 'enum' ? before.options.map((o) => o.value) : []);
+      const values = schema.options.filter((o) => kept.has(o.value)).map((o) => o.value);
       const options = schema.options.map((o) => {
+        if (kept.has(o.value)) return { value: o.value, label: o.label.trim() || o.value };
         const value = optionValueFor(o.label, values);
         values.push(value);
         return { value, label: o.label.trim() || value };
@@ -427,8 +431,9 @@ export function settleDraft(collection: Collection, draft: SchemaDraft): SchemaD
       const at = schema.options.findIndex((o) => o.value === schema.default);
       Object.assign(schema, { options, default: options[Math.max(0, at)].value });
     }
-    // A new number starts within the range it is given.
+    // A number's default stays within the range it is given.
     if (schema.type === 'number') schema.default = Math.min(schema.max ?? Infinity, Math.max(schema.min ?? -Infinity, schema.default));
+    if (!f.added) return { name: f.name, schema };
     const name = fieldNameFor(schema.label, names);
     names.add(name);
     return { name, schema };
