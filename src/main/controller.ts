@@ -3128,11 +3128,6 @@ export class Controller {
   }
 
   /**
-   * Remember an export of the open project so the export dialog can list it, newest first. A new export where an
-   * earlier one was (its folder deleted since, or a ZIP file replaced) supersedes it, and stops its preview, which
-   * would otherwise serve the new files under the old proof's address.
-   */
-  /**
    * Record the page addresses an export delivered, so pages that move from them keep them working. The export is done
    * either way: a record that cannot be written is a note, since a page moved later then leaves no old address.
    */
@@ -3148,6 +3143,11 @@ export class Controller {
     }
   }
 
+  /**
+   * Remember an export of the open project so the export dialog can list it, newest first. A new export where an
+   * earlier one was (its folder deleted since, or a ZIP file replaced) supersedes it, and stops its preview, which
+   * would otherwise serve the new files under the old proof's address.
+   */
   private recordExport(s: ProjectSession, record: RecentExport): boolean {
     if (this.session !== s) {
       if (record.previewUrl) this.previews.stop(record.previewUrl);
