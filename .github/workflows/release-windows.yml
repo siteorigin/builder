@@ -1,0 +1,122 @@
+name: Release (Windows)
+
+# The Windows half of a release (the release skill, .agents/skills/release, runs
+# all three): on a `vX.Y.Z` tag, the whole unit suite, then an x64 NSIS installer, its update
+# feed, and the publish to R2 (downloads.siteorigin.com). Each OS's workflow
+# publishes the moment its own run is green, so one OS failing only delays that
+# OS. A manual run with dry_run builds the same way and publishes nothing.
+# Secrets for the publish: R2_ACCESS_KEY_ID, R2_SECRET_ACCESS_KEY, R2_ENDPOINT,
+# R2_BUCKET and (optional) WEBSITE_WEBHOOK_SECRET with the WEBSITE_REFRESH_URL
+# variable.
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: "Dry run: unit tests and build, without publishing"
+        required: false
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+
+# Tag runs on one ref queue behind each other; a dry run gets a group of its own.
+concurrency:
+  group: release-windows-${{ github.ref }}-${{ github.event_name == 'workflow_dispatch' && inputs.dry_run && github.run_id || 'release' }}
+  cancel-in-progress: false
+
+jobs:
+  unit-tests:
+    name: Unit tests
+    runs-on: ubuntu-latest
+    # The whole suite on one runner takes about 20 minutes.
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 24
+          cache: npm
+      - run: npm ci
+      # No browser here: the unit tests that need Chromium skip themselves, and
+      # PR CI and the local stabilize pass run them. The whole suite has
+      # timing-sensitive tests that fail now and then on a busy runner (a
+      # different one each run), so a failing test gets three more tries; one
+      # that fails all four still stops the release.
+      - run: npx vitest run --retry=3
+
+  build:
+    name: Build (x64)
+    needs: unit-tests
+    runs-on: windows-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 24
+          cache: npm
+      - name: Check the tag matches package.json
+        if: startsWith(github.ref, 'refs/tags/')
+        shell: bash
+        run: |
+          version="$(node -p "require('./package.json').version")"
+          if [[ "$GITHUB_REF_NAME" != "v$version" ]]; then
+            echo "::error::Tag $GITHUB_REF_NAME does not match package.json version $version"
+            exit 1
+          fi
+      - run: npm ci
+      # The theme pack thumbnails are drawn in Chromium (`--require-previews`).
+      - run: npx playwright install chromium
+      # Not Authenticode-signed yet, so SmartScreen warns on the installer.
+      - run: npm run dist -- --win --x64 --publish never
+      - uses: ./.github/actions/resolve-update-metadata-prefix
+      # Windows clients poll `<channel>.yml`, with no platform suffix.
+      - name: Write the update feed
+        shell: bash
+        run: |
+          set -euo pipefail
+          node scripts/release/generate-update-metadata.ts windows "dist/${UPDATE_METADATA_PREFIX}.yml" dist
+          node scripts/release/validate-update-metadata.ts "dist/${UPDATE_METADATA_PREFIX}.yml"
+          cat "dist/${UPDATE_METADATA_PREFIX}.yml"
+      - uses: actions/upload-artifact@v7
+        with:
+          name: release-windows
+          path: |
+            dist/*.exe
+            dist/*.exe.blockmap
+            dist/${{ env.UPDATE_METADATA_PREFIX }}.yml
+          if-no-files-found: error
+          retention-days: 7
+          # A re-run of all jobs uploads under the same name again.
+          overwrite: true
+
+  publish:
+    name: Publish to R2
+    needs: build
+    if: startsWith(github.ref, 'refs/tags/v') && inputs.dry_run != true
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+      - uses: ./.github/actions/publish-release
+        with:
+          artifact_name: release-windows
+          include_globs: "*.exe *.blockmap"
+          metadata_suffix: ""
+          release_platforms: win
+          r2_access_key_id: ${{ secrets.R2_ACCESS_KEY_ID }}
+          r2_secret_access_key: ${{ secrets.R2_SECRET_ACCESS_KEY }}
+          r2_endpoint: ${{ secrets.R2_ENDPOINT }}
+          r2_bucket: ${{ secrets.R2_BUCKET }}
+          website_url: ${{ vars.WEBSITE_REFRESH_URL }}
+          website_webhook_secret: ${{ secrets.WEBSITE_WEBHOOK_SECRET }}

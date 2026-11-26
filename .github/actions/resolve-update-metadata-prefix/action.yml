@@ -1,0 +1,27 @@
+name: Resolve update metadata prefix
+description: Set UPDATE_METADATA_PREFIX (latest, rc or beta) from the triggering tag
+
+outputs:
+  prefix:
+    description: The release channel the run publishes to
+    value: ${{ steps.resolve.outputs.prefix }}
+
+runs:
+  using: composite
+  steps:
+    # The same rule as channelOf in scripts/release/feed.ts. A run that isn't
+    # on a tag (a dry run from a branch) resolves to latest.
+    - name: Resolve the channel from the tag
+      id: resolve
+      shell: bash
+      run: |
+        TAG_VERSION="${GITHUB_REF_NAME#v}"
+        if [[ "$TAG_VERSION" == *-rc* ]]; then
+          PREFIX="rc"
+        elif [[ "$TAG_VERSION" == *-beta* ]]; then
+          PREFIX="beta"
+        else
+          PREFIX="latest"
+        fi
+        echo "UPDATE_METADATA_PREFIX=${PREFIX}" >> "$GITHUB_ENV"
+        echo "prefix=${PREFIX}" >> "$GITHUB_OUTPUT"
