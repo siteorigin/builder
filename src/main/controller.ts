@@ -22,7 +22,7 @@ import { zipDirectory } from './zip';
 import { NOT_A_PROJECT_ZIP, readProjectZip, unpackProject, WEBSITE_ZIP, ZipError } from './unzip';
 import { StaticPreviews } from './static-preview';
 import { isPlainFile, builtPhotosMessage, deliverVercelConfig, pageLanguageWarning, publicUrlNote, rivalHookStop, cleanBuiltSite, cleanWebsitePhotos, copyProjectSource, draftLinksStop, draftSourceNotes, publishedChanged, withheldRoutes, withheldStaticFiles, editedGeneratedFile, explainBuildFailure, exportedAssetFilter, finishExportedSource, leaveOutDrafts, listFiles, locatedPhotos, locationKeptNote, locationRemovedNote, missingAssetsStop, missingSourceWarnings, missingUnusedWarnings, missingWebsiteAssets, notFoundAddressWarning, notFoundHostNote, notFoundPageProblem, omittedAssetsWarning, ownNotFoundFileNote, ownNotFoundFileStop, readNotFoundPage, settleServerHook, stripPartMarkers, carriesPartMarker, projectFingerprint, projectReadme, publishFolder, pruneWebsiteAssets, replaceEmptyFolder, readLibraryImage, sectionLinkWarnings, uncleanablePhotosMessage, uniqueChild, unlinkedButtonWarnings, unlinkedMenuLinkWarnings, formNameWarnings, runtimeFontWarnings, variantCredits, writeExportedSources, exportedSourcesProblem } from './export';
-import { LOCAL_DIR, NO_LOCK, ProjectLockedError, ProjectSession, ThemeUnavailableError } from './project/session';
+import { LOCAL_DIR, LOCK_HEARTBEAT_MS, NO_LOCK, ProjectLockedError, ProjectSession, ThemeUnavailableError } from './project/session';
 import { DOC_DIR, MANIFEST_FILE, ProjectFormatError } from './project/documents';
 import { DOCUMENT_EXTENSIONS, FONT_EXTENSIONS, IMAGE_EXTENSIONS, IMPORT_IMAGE_EXTENSIONS, importAsset, importPackageImage, isAssetOfKind, isOpaquePicture, libraryWebCopyPlan, locateAssetFile, originalNameOf, pictureMime, restoreAssetFiles, reviewImportFile, storeLibraryWebCopy } from './project/assets';
 import { postReader, stopPostReads } from './posts-import/process';
@@ -256,6 +256,7 @@ export class Controller {
   private watchTimer: NodeJS.Timeout | null = null;
   private assetTimer: NodeJS.Timeout | null = null;
   private folderTimer: NodeJS.Timeout | null = null;
+  private folderPoll: NodeJS.Timeout | null = null;
   /** The private copy the preview runs from while the project may not be written to (spec 16.6, 18.1). */
   private stage: string | null = null;
   private stageSync: Promise<unknown> = Promise.resolve();
@@ -882,7 +883,8 @@ export class Controller {
     session.on('lock-lost', () => {
       if (this.session !== session) return;
       this.prepareAbort?.abort();
-      if (!this.stage) void this.dev?.stop();
+      // A private copy's preview goes on only where there is still a project to copy.
+      if (!this.stage || previewUnavailable(session)) void this.dev?.stop();
       void this.startRuntime().catch(() => undefined);
     });
     // A save's files reach the preview as one update (#735). A preview of a private copy holds while the copy is
@@ -1233,6 +1235,10 @@ export class Controller {
   private watchExternalChanges(session: ProjectSession) {
     for (const w of this.watchers) w.close();
     this.watchers = [];
+    // A folder moved with a parent of it may tell no watch, and a read-only project has no lock heartbeat to notice.
+    if (this.folderPoll) clearInterval(this.folderPoll);
+    this.folderPoll = setInterval(() => this.checkFolderSoon(session), LOCK_HEARTBEAT_MS);
+    this.folderPoll.unref?.();
     if (this.assetTimer) clearTimeout(this.assetTimer);
     this.assetTimer = null;
     const onAssetChange = () => {
@@ -1363,6 +1369,8 @@ export class Controller {
     this.assetTimer = null;
     if (this.folderTimer) clearTimeout(this.folderTimer);
     this.folderTimer = null;
+    if (this.folderPoll) clearInterval(this.folderPoll);
+    this.folderPoll = null;
     const s = this.session;
     if (!s) return this.endExports();
     this.closings++;

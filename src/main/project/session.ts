@@ -922,8 +922,11 @@ export class ProjectSession extends EventEmitter {
   async checkFolder(): Promise<boolean> {
     if (this.folderGone) return true;
     const missing = (path: string) => fs.stat(path).then(() => false, (e: NodeJS.ErrnoException) => e.code === 'ENOENT' || e.code === 'ENOTDIR');
-    // Both, so the manifest being replaced by another tool never looks like the whole folder going.
-    if (!(await missing(join(this.dir, MANIFEST_FILE))) || !(await missing(this.local('lock.json')))) return false;
+    // While the lock is held, both of the project's own files are looked for: a manifest being replaced by another tool
+    // never looks like the whole folder going, and an empty folder made again at the old address still does. Without
+    // the lock (read-only, or taken over) there may rightly be no lock file, so only the folder says.
+    const markers = this.lockState === 'held' ? [join(this.dir, MANIFEST_FILE), this.local('lock.json')] : [this.dir];
+    if (!(await Promise.all(markers.map(missing))).every(Boolean)) return false;
     if (this.folderGone) return true;
     this.folderGone = true;
     this.stopHeartbeat();
@@ -967,6 +970,10 @@ export class ProjectSession extends EventEmitter {
       return 'unknown';
     }
     const l = seen && parseLock(seen.text);
+    // No lock because there is no folder is not a lock someone removed. Either look may have found the folder gone,
+    // here or elsewhere, which already settled what this session is.
+    if (!seen) await this.checkFolder();
+    if (this.lockState !== 'held') return 'unknown';
     // Unreadable is most likely a lock being written: not proof of another owner, and not proof of this one.
     if (seen && !l) return 'unknown';
     // Another owner, or none: with this generation's claim held here no takeover can be part way through, so a

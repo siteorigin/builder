@@ -3,7 +3,7 @@
  * as gone rather than left to fail at the next write.
  */
 import type { FSWatcher } from 'node:fs';
-import { existsSync, mkdtempSync, realpathSync, renameSync, rmSync } from 'node:fs';
+import { existsSync, mkdtempSync, promises as fs, realpathSync, renameSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
@@ -19,7 +19,7 @@ vi.mock('electron', () => ({
 }));
 
 const { Controller } = await import('../../src/main/controller');
-const { ProjectSession } = await import('../../src/main/project/session');
+const { LOCK_HEARTBEAT_MS, ProjectSession } = await import('../../src/main/project/session');
 const { createStarterState } = await import('@catalogue/starters');
 
 const dirs: string[] = [];
@@ -34,6 +34,8 @@ beforeEach(() => {
   env.userData = temp('userdata');
 });
 afterEach(async () => {
+  vi.restoreAllMocks();
+  vi.useRealTimers();
   for (const c of controllers.splice(0)) await c.close();
   dirs.splice(0).forEach((d) => rmSync(d, { recursive: true, force: true }));
 });
@@ -86,6 +88,35 @@ describe('an open project whose folder goes away', () => {
     await expectReportedGone(c);
     await expect(session.stillOwner()).resolves.toBe(false);
     expect(existsSync(dir)).toBe(false);
+  });
+
+  it('is not mistaken for a removed lock when it goes during a lock check', async () => {
+    const { dir, c, session, watchers } = await openProject();
+    for (const w of watchers) w.close();
+    const open = fs.open;
+    // The folder goes once the check has its claim, just as it reads the lock.
+    vi.spyOn(fs, 'open').mockImplementation(async (path, flags, mode) => {
+      if (flags === 'r' && String(path).endsWith('lock.json')) rmSync(dir, { recursive: true, force: true });
+      return open(path, flags, mode);
+    });
+    await expect(session.refreshLock()).resolves.toBe('unknown');
+    await expectReportedGone(c);
+  });
+
+  it('is reported as gone when a read-only project moves and no watch says so', async () => {
+    const dir = join(temp('project'), 'site');
+    await (await ProjectSession.create(dir, createStarterState('blank', 'Gone Site', false))).close();
+    const session = await ProjectSession.openReadOnly(dir, { reason: 'Another app has it.', canUnlock: true });
+    const c = new Controller(() => null);
+    c.send = () => undefined;
+    controllers.push(c);
+    const inside = c as unknown as Watching;
+    vi.useFakeTimers({ toFake: ['setInterval', 'clearInterval'] });
+    await inside.attach(session, {}, { state: 'error', message: 'No preview in this test.' });
+    for (const w of inside.watchers) w.close();
+    renameSync(dir, `${dir}-moved`);
+    vi.advanceTimersByTime(LOCK_HEARTBEAT_MS);
+    await expectReportedGone(c);
   });
 
   it('can be closed when nothing noticed before the close', async () => {
