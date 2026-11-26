@@ -4,7 +4,7 @@
  * `{ $entry: field }`. Editing the layout once changes every entry's page; each entry keeps its own words and details.
  */
 import { describe, expect, it } from 'vitest';
-import type { GraphNode, InstanceNode, NodeTree, OwnerRef, ProjectState, TextNode } from '@shared/types';
+import type { ElementNode, GraphNode, InstanceNode, LinkNode, NodeTree, OwnerRef, ProjectState, TextNode } from '@shared/types';
 import { SCHEMA_VERSION } from '@shared/types';
 import type { EditOperation } from '@shared/ops';
 import { validateOperation } from '@shared/ops';
@@ -24,9 +24,10 @@ const run = (s: ProjectState, ...ops: EditOperation[]) => applyOperations(s, ops
 const POSTS: OwnerRef = { kind: 'template', id: 'posts' };
 
 /** The ready-made blog: two published posts (the later one first in the order) and a draft between them by date. */
-function blog() {
+function blog(theme = 'foundation') {
   return run(
     createStarterState('business', 'Riverside Studio', false),
+    { type: 'theme.apply', themeId: theme },
     { type: 'site.update', baseUrl: 'https://example.com' },
     {
       type: 'collection.create',
@@ -151,14 +152,56 @@ describe('entry fields', () => {
     expect(entryNeighbours(s, 'posts', 'en_secret')).toEqual({ prev: s.collections.posts.entries.en_spring, next: s.collections.posts.entries.en_winter });
     let files = generateProject(publishedState(s));
     expect(pageOf(files, 'spring-open-studio')).toContain('"href":"/blog/winter-workshop/"');
-    expect(pageOf(files, 'spring-open-studio')).toContain('{"Winter workshop"}');
+    expect(pageOf(files, 'spring-open-studio')).toContain('{"Next: Winter workshop"}');
     expect(pageOf(files, 'winter-workshop')).toContain('"href":"/blog/spring-open-studio/"');
     expect(pageOf(files, 'winter-workshop')).not.toContain('secret');
     // An editorial order decides it instead.
     s = run(s, { type: 'entry.reorder', collectionId: 'posts', entryIds: ['en_winter', 'en_secret', 'en_spring'] });
     files = generateProject(publishedState(s));
     expect(entryNeighbours(s, 'posts', 'en_winter')).toEqual({ next: s.collections.posts.entries.en_spring });
-    expect(pageOf(files, 'winter-workshop')).toContain('{"Spring open studio"}');
+    expect(pageOf(files, 'winter-workshop')).toContain('{"Next: Spring open studio"}');
+  });
+
+  it.each(['foundation', 'editorial', 'signal'])('names the links to the posts beside one, with one arrow, in a named nav (%s)', (theme) => {
+    const s = run(blog(theme), { type: 'entry.update', collectionId: 'posts', entryId: 'en_secret', draft: false });
+    const c = s.collections.posts;
+    const shownOn = (state: ProjectState, id: string) => materializeTemplate(state, state.collections.posts, state.collections.posts.entries[id], entryNeighbours(state, 'posts', id));
+    const article = shownOn(s, 'en_secret');
+    const nav = Object.values(article.nodes).find((n) => n.name === 'Previous and next') as ElementNode;
+    expect(nav).toMatchObject({ tag: 'nav', ariaLabel: 'Previous and next' });
+    const prev = Object.values(article.nodes).find((n) => n.name === 'Previous entry') as LinkNode;
+    const next = Object.values(article.nodes).find((n) => n.name === 'Next entry') as LinkNode;
+    // A plain link has no arrow; a text button has the theme's one, after it. Neither adds an icon of its own.
+    expect(prev).toMatchObject({ appearance: 'link', label: 'Previous: Spring open studio', link: { type: 'entry', target: 'en_spring' } });
+    expect(next).toMatchObject({ appearance: 'text', label: 'Next: Winter workshop', link: { type: 'entry', target: 'en_winter' } });
+    expect([prev.icon, next.icon]).toEqual([undefined, undefined]);
+    const page = generateProject(publishedState(s)).get('src/routes/blog/secret-plans/+page.svelte')!;
+    expect(page).toMatch(/<nav [^>]*aria-label=\{"Previous and next"\}>/);
+    expect(page).toContain('{"Previous: Spring open studio"}');
+    expect(page).toContain('{"Next: Winter workshop"}');
+    expect(page).not.toContain('so-link__icon');
+    // A post with no post beside it has no empty landmark.
+    const lone = run(s, { type: 'entry.update', collectionId: 'posts', entryId: 'en_spring', draft: true }, { type: 'entry.update', collectionId: 'posts', entryId: 'en_winter', draft: true });
+    expect(generateProject(publishedState(lone)).get('src/routes/blog/secret-plans/+page.svelte')).not.toContain('<nav ');
+    expect(entryFieldValue({ state: s, collection: c, entry: c.entries.en_spring, neighbours: entryNeighbours(s, 'posts', 'en_spring') }, 'prevEntry.label')).toBe('');
+  });
+
+  it('words the links beside a post as the site does, and keeps the title when the wording leaves it out', () => {
+    // Set after the layout is made: the layout reads the wording rather than holding a copy of it.
+    const s = run(
+      blog(),
+      { type: 'entry.update', collectionId: 'posts', entryId: 'en_secret', draft: false, title: 'Costs $& more' },
+      { type: 'site.update', language: 'he' }
+    );
+    const words = (state: ProjectState) => {
+      const article = materializeTemplate(state, state.collections.posts, state.collections.posts.entries.en_winter, entryNeighbours(state, 'posts', 'en_winter'));
+      return Object.values(article.nodes).flatMap((n) => (n.name === 'Previous and next' ? [(n as ElementNode).ariaLabel] : n.name === 'Previous entry' ? [(n as LinkNode).label] : []));
+    };
+    expect(words(s).sort()).toEqual(['הקודם והבא', 'הקודם: Costs $& more'].sort());
+    const own = run(s, { type: 'site.update', visitorText: { language: 'he', text: { entryNav: 'More', entryPrevious: 'Before: {title}.' } } });
+    expect(words(own).sort()).toEqual(['Before: Costs $& more.', 'More']);
+    const bare = run(s, { type: 'site.update', visitorText: { language: 'he', text: { entryNav: 'More', entryPrevious: 'Go back' } } });
+    expect(words(bare).sort()).toEqual(['Go back Costs $& more', 'More']);
   });
 
   it('shows an element only for the entries its condition holds for, and a collapsing one only with something in it', () => {

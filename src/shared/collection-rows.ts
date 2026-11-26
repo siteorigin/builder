@@ -21,7 +21,7 @@ import { normalizeCollectionQuery } from './collection-query';
 export const ENTRY_LINK_FIELD = 'entryLink';
 
 /** The fields of one entry's page that no list reads. */
-const NEIGHBOUR_FIELDS: ReadonlySet<string> = new Set(['prevEntry', 'prevEntry.title', 'nextEntry', 'nextEntry.title']);
+const NEIGHBOUR_FIELDS: ReadonlySet<string> = new Set(['prevEntry', 'prevEntry.title', 'prevEntry.label', 'nextEntry', 'nextEntry.title', 'nextEntry.label', 'entryNavLabel']);
 
 const NO_LINK: LinkValue = { type: 'none', target: '' };
 const EMPTY_IMAGE: ImageValue = { assetId: null, alt: '' };
