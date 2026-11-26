@@ -331,7 +331,7 @@ async function guestPage(request: Request, relay: string, roomId: string): Promi
 </div>
 <main class="stage" id="stage" hidden>
   <div class="frame" id="frame"></div>
-  <div class="veil" id="veil" hidden><p id="veil-text"></p></div>
+  <div class="veil" id="veil" hidden><p id="veil-text"></p><button type="button" id="veil-action" hidden>Try again</button></div>
 </main>
 <section class="screen" id="screen" aria-live="polite">
   <div class="card">

@@ -37,6 +37,7 @@ const ui = {
   handoffCopy: $('handoff-copy'),
   handoffClose: $('handoff-close'),
   stage: $('stage'),
+  veilAction: /** @type {HTMLButtonElement} */ ($('veil-action')),
   frame: $('frame'),
   veil: $('veil'),
   veilText: $('veil-text'),
@@ -106,8 +107,6 @@ let redemption = null;
 /** The last ticket taken up: the relay sends an unused ticket again with any grant update, and each is good once. */
 /** @type {string | null} */
 let lastTicket = null;
-/** Redemptions that failed in a row on a working socket; each is retried by taking the place back for a fresh ticket. */
-let previewRetries = 0;
 /** Whether the guest's access ran out on the relay's clock and the relay has not yet said otherwise. */
 let pastDeadline = false;
 /** Whether the frame may be behind the host: it was kept while the socket was down, when reloads could be missed. */
@@ -363,7 +362,6 @@ function endAccess() {
   grant++;
   queuedTicket = null;
   pastDeadline = false;
-  previewRetries = 0;
   framePath = '/';
   redemption?.abort();
   stale = false;
@@ -442,18 +440,11 @@ async function drainTickets() {
     if (ok) {
       previewReady = true;
       previewFailed = false;
-      previewRetries = 0;
       if (!iframe) mountFrame();
-      else if (stale) refreshFrame();
+      else if (stale && hostConnected) catchUp();
       else applyFollow();
-      stale = false;
-    } else if (previewRetries < 2) {
-      // The ticket is spent or lost either way: taking the place back on a new socket brings a fresh one.
-      previewRetries++;
-      closeSocket();
-      scheduleReconnect();
-      continue;
     } else {
+      // The ticket is spent or lost either way; the guest can take the place back for a fresh one (Try again).
       previewFailed = true;
     }
     render();
@@ -490,11 +481,19 @@ function navigate(path) {
 }
 
 /**
- * Catch the frame up after anything that may have left it behind (the host away, the socket down): to the host's page
- * when following a host that is elsewhere, otherwise the page the guest is on, reloaded where it is scrolled to.
+ * The frame may be behind (the host was away, the socket was down): catch it up now if it can load anything, or as
+ * soon as it can. It can while its cookie is the newest grant's, the host is there and the socket is in the room;
+ * until then it is only marked, and the redemption that completes the grant, or the host's return, catches it up.
  */
 function refreshFrame() {
-  if (!iframe || !previewReady) return;
+  if (!iframe) return;
+  stale = true;
+  if (previewReady && !redeeming && hostConnected && !reconnecting) catchUp();
+}
+
+/** To the host's page when following a host that is elsewhere, otherwise the guest's own page, reloaded where it is scrolled to. */
+function catchUp() {
+  stale = false;
   layout();
   if (follow && hostPage?.previewPath && hostPage.previewPath !== framePath) navigate(hostPage.previewPath);
   else reloadPreview();
@@ -686,12 +685,13 @@ function renderRoom() {
   let veil = '';
   if (pastDeadline) veil = 'Your time in this session is up.';
   else if (reconnecting) veil = 'Reconnecting to the live session…';
-  else if (previewFailed) veil = 'The preview could not be opened. Reload this page to try again.';
+  else if (previewFailed) veil = 'The preview could not be opened.';
   else if (!previewReady) veil = 'Opening the preview…';
   else if (!hostConnected) veil = 'The host’s connection dropped. The page will update when they’re back.';
   ui.veil.hidden = !veil;
-  ui.veil.dataset.soft = String(previewReady && !reconnecting);
+  ui.veil.dataset.soft = String(previewReady && !reconnecting && !pastDeadline);
   ui.veilText.textContent = veil;
+  ui.veilAction.hidden = !previewFailed || reconnecting;
   layout();
 }
 
@@ -721,6 +721,14 @@ ui.form.addEventListener('submit', (event) => {
   wasAdmitted = false;
   place = { displayName: name };
   savePlace();
+  connect();
+});
+
+// Taking the place back on a new socket brings a fresh ticket.
+ui.veilAction.addEventListener('click', () => {
+  previewFailed = false;
+  closeSocket();
+  markLost();
   connect();
 });
 
@@ -773,9 +781,9 @@ window.addEventListener('pagehide', (event) => {
   if (!event.persisted || isFinal(phase) || !place?.resumeToken) return;
   closeSocket();
   clearTimeout(reconnectTimer);
+  // A page brought back from the cache keeps its frame, where the guest was, but covered until the relay lets the
+  // guest back in; a guest who is no longer let in never sees it again.
   markLost();
-  // A page brought back from the cache shows nothing of the site until the relay has let the guest back in.
-  unmountFrame();
   render();
 });
 window.addEventListener('pageshow', (event) => {

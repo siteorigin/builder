@@ -395,8 +395,20 @@ label {
   display: grid;
   place-items: center;
   padding: 16px;
-  background: color-mix(in srgb, var(--bg) 88%, transparent);
+  /* Opaque: while the guest is not in the room, nothing of the site shows through. */
+  background: var(--bg);
   text-align: center;
+  align-content: center;
+  gap: 12px;
+}
+
+#veil-action {
+  border: 0;
+  border-radius: 8px;
+  padding: 10px 16px;
+  background: var(--accent);
+  color: var(--accent-text);
+  font-weight: 600;
 }
 
 .veil p {

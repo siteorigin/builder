@@ -280,7 +280,9 @@ const presence = z
     selection: elementRef.nullable(),
     previewPath: z
       .string()
-      .refine((path) => /^[A-Za-z0-9\-._~!$&'()*+,;=:@/?%]+$/.test(path) && isPreviewTarget(path), { message: 'Not a path within the preview, in its URL-encoded form.' })
+      // Printable ASCII, less what a URL serializer would percent-encode in a path or query, so it compares equal to
+      // the address the guest's browser reports for the same page.
+      .refine((path) => /^[\x21-\x7e]+$/.test(path) && !/["'<>`{}]/.test(path) && isPreviewTarget(path), { message: 'Not a path within the preview, in its URL-encoded form.' })
       .nullable()
   })
   .strict();
