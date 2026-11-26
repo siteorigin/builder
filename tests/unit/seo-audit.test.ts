@@ -13,6 +13,10 @@ import { diagnosticKey, validateState } from '@engine/validate';
 import { treeFor } from '../../src/renderer/src/lib/model';
 import { destinationLabel, noteState } from '../../src/renderer/src/lib/destinations';
 import { copy, POST_BODY, run, seoSite } from './fixtures/seo-site';
+import { withPublished } from '@shared/published';
+
+/** The project once the website has been exported as it is now: its pages' addresses are kept working when they move (#890). */
+const exported = (s: ProjectState): ProjectState => ({ ...s, published: withPublished(s.published, s) ?? s.published });
 
 const codes = (s: ProjectState) => runSeoAudit(s).map((f) => f.code);
 /** The SEO fixture as a project made before #586 has it: nothing said of who publishes the site. */
@@ -222,7 +226,7 @@ describe('baseline rules', () => {
     // So does a typed address of the page on the site's public URL, or of an old address kept for it.
     expect(codes(run(s, { type: 'entry.update', collectionId: 'posts', entryId: 'en_spring', body: linkTo({ type: 'url', target: 'https://example.com/studio/kiln-hire/' }) }))).toEqual([]);
     expect(codes(run(s, { type: 'entry.update', collectionId: 'posts', entryId: 'en_spring', body: linkTo({ type: 'url', target: 'https://example.com/studio/kiln-hire/index.html' }) }))).toEqual([]);
-    const moved = run(s, { type: 'page.update', pageId: 'pg_kilns', route: '/kilns/' });
+    const moved = run(exported(s), { type: 'page.update', pageId: 'pg_kilns', route: '/kilns/' });
     expect(moved.site.redirects).toContainEqual({ from: '/kiln-hire/', pageId: 'pg_kilns' });
     expect(codes(run(moved, { type: 'entry.update', collectionId: 'posts', entryId: 'en_spring', body: linkTo({ type: 'url', target: 'https://example.com/studio/kiln-hire/' }) }))).toEqual([]);
     // An address elsewhere, or outside the site's sub-path, is no link to it; nor is a link to it from a draft page.

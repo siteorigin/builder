@@ -10,6 +10,10 @@ import { GenerationCache } from '@generator/cache';
 import { SEARCH_INDEX_FILE } from '@generator/search';
 import { usedIcons } from '@generator/runtime-files';
 import { sameValue } from '@shared/same';
+import { withPublished } from '@shared/published';
+
+/** The project once the website has been exported as it is now: its pages' addresses are kept working when they move (#890). */
+const exported = (s: ProjectState): ProjectState => ({ ...s, published: withPublished(s.published, s) ?? s.published });
 
 const apply = (s: ProjectState, ...ops: EditOperation[]) => applyOperations(s, ops).state;
 const page = (id: string) => ({ kind: 'page' as const, id });
@@ -120,7 +124,7 @@ describe('incremental generation (#183)', () => {
     // new and a removed page.
     s = apply(s, { type: 'component.updateSource', definitionId: codeId, source: s.components[codeId].source!.replace('Open', 'Opening') } as EditOperation);
     check(s, cache);
-    s = apply(s, { type: 'page.update', pageId: about, route: '/about-us/' });
+    s = exported(apply(s, { type: 'page.update', pageId: about, route: '/about-us/' }));
     check(s, cache);
     expect(generateProject(s).has('src/routes/about-us/+page.svelte')).toBe(true);
     s = apply(s, { type: 'page.setHome', pageId: about });

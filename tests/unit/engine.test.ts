@@ -14,6 +14,7 @@ import { effectiveTokens, generateProject, resolveInstanceProps } from '@generat
 import { tokenUsageCounts } from '@engine/tokens';
 import { slotFill } from '@engine/slots';
 import { validateOperation } from '@shared/ops';
+import { withPublished } from '@shared/published';
 
 const fresh = () => createStarterState('business', 'Test Studio', false);
 const home = (s: ProjectState) => s.pages[s.site.homePageId];
@@ -1754,6 +1755,8 @@ describe('duplicating a page', () => {
 });
 
 describe('making another page Home keeps its old address working (#37)', () => {
+  /** The project once the website has been exported as it is now: its pages' addresses are kept working when they move (#890). */
+  const published = (s: ProjectState): ProjectState => ({ ...s, published: withPublished(s.published, s) ?? s.published });
   const byTitle = (s: ProjectState, title: string) => Object.values(s.pages).find((p) => p.title === title)!;
   const setHome = (s: ProjectState, pageId: string, keepOldAddress?: boolean) => applyOperations(s, [{ type: 'page.setHome', pageId, ...(keepOldAddress === undefined ? {} : { keepOldAddress }) }]);
   const errors = (s: ProjectState) => validateState(s).filter((d) => d.severity === 'error');
@@ -1765,7 +1768,7 @@ describe('making another page Home keeps its old address working (#37)', () => {
   };
 
   it('moves both pages, reports it, and generates a redirect at the vacated address', () => {
-    const s = fresh();
+    const s = published(fresh());
     const about = byTitle(s, 'About').id;
     const homeId = s.site.homePageId;
     const r = setHome(s, about);
@@ -1781,7 +1784,7 @@ describe('making another page Home keeps its old address working (#37)', () => {
   });
 
   it('never gives the previous Home the address it keeps, even when the titles match', () => {
-    let s = fresh();
+    let s = published(fresh());
     const about = byTitle(s, 'About').id;
     const homeId = s.site.homePageId;
     s = applyOperations(s, [{ type: 'page.update', pageId: homeId, title: 'About' }]).state;
@@ -1799,7 +1802,7 @@ describe('making another page Home keeps its old address working (#37)', () => {
   });
 
   it('keeps nothing when asked not to', () => {
-    const s = fresh();
+    const s = published(fresh());
     const r = setHome(s, byTitle(s, 'About').id, false);
     expect(r.results[0]).toEqual({ moved: expect.any(Array) });
     expect(r.state.site.redirects).toBeUndefined();
@@ -1808,10 +1811,10 @@ describe('making another page Home keeps its old address working (#37)', () => {
   });
 
   it('gives a page its own old address back when it stops being Home', () => {
-    let s = fresh();
+    let s = published(fresh());
     const about = byTitle(s, 'About').id;
     const homeId = s.site.homePageId;
-    s = setHome(s, about).state;
+    s = published(setHome(s, about).state);
     const r = setHome(s, homeId);
     expect(r.state.pages[homeId].route).toBe('/');
     expect(r.state.pages[about].route).toBe('/about/');
@@ -1823,7 +1826,7 @@ describe('making another page Home keeps its old address working (#37)', () => {
   });
 
   it('changes no link, menu label or unrelated link: page links follow the pages', () => {
-    let s = fresh();
+    let s = published(fresh());
     const about = byTitle(s, 'About').id;
     const homeId = s.site.homePageId;
     const header = s.site.shell.header.rootIds[0];
@@ -1842,7 +1845,7 @@ describe('making another page Home keeps its old address working (#37)', () => {
   });
 
   it('lets a page take over a kept address it is given, and skips one when choosing an address itself', () => {
-    let s = fresh();
+    let s = published(fresh());
     const about = byTitle(s, 'About').id;
     s = setHome(s, about).state;
     const auto = applyOperations(s, [{ type: 'page.create', title: 'About' }]);
@@ -1863,7 +1866,7 @@ describe('making another page Home keeps its old address working (#37)', () => {
   });
 
   it('sends a kept address to the replacement when its page is removed, or drops it', () => {
-    let s = fresh();
+    let s = published(fresh());
     const about = byTitle(s, 'About').id;
     const contact = byTitle(s, 'Contact').id;
     s = setHome(s, about).state;
@@ -1872,11 +1875,11 @@ describe('making another page Home keeps its old address working (#37)', () => {
     expect(replaced.site.redirects).toEqual([{ from: '/about/', pageId: contact }]);
     expect(errors(replaced)).toEqual([]);
     // A page nothing links to can go without a replacement; its kept address goes with it.
-    let t = fresh();
+    let t = published(fresh());
     const homeId = t.site.homePageId;
     const extra = applyOperations(t, [{ type: 'page.create', title: 'Team' }]);
     const team = extra.results[0].pageId as string;
-    t = setHome(extra.state, team).state;
+    t = published(setHome(published(extra.state), team).state);
     t = applyOperations(t, [{ type: 'page.update', pageId: team, title: 'Crew' }]).state;
     t = setHome(t, homeId).state;
     expect(t.pages[team].route).toBe('/crew/');
@@ -1891,7 +1894,7 @@ describe('making another page Home keeps its old address working (#37)', () => {
   });
 
   it('gives the previous Home a valid address when its title is a reserved name', () => {
-    let s = fresh();
+    let s = published(fresh());
     const homeId = s.site.homePageId;
     s = applyOperations(s, [{ type: 'page.update', pageId: homeId, title: 'API' }]).state;
     const r = setHome(s, byTitle(s, 'About').id);
@@ -1900,7 +1903,7 @@ describe('making another page Home keeps its old address working (#37)', () => {
   });
 
   it('previews the change without making it', () => {
-    const s = fresh();
+    const s = published(fresh());
     const before = structuredClone(s);
     const about = byTitle(s, 'About').id;
     expect(planHomeChange(s, about, true)).toEqual(setHome(s, about).results[0]);
@@ -1910,7 +1913,7 @@ describe('making another page Home keeps its old address working (#37)', () => {
   });
 
   it('reports damaged or colliding kept addresses, and never generates one outside the routes folder', () => {
-    const s = fresh();
+    const s = published(fresh());
     const about = byTitle(s, 'About').id;
     s.site.redirects = [
       { from: '/about/', pageId: about },
@@ -1931,12 +1934,12 @@ describe('making another page Home keeps its old address working (#37)', () => {
   });
 
   it('refuses a replacement Home that is not one of the pages', () => {
-    const s = fresh();
+    const s = published(fresh());
     expect(() => applyOperations(s, [{ type: 'page.remove', pageId: s.site.homePageId, replacementPageId: 'toString' }])).toThrow(/replacement page does not exist/);
   });
 
   it('removes the list once its last kept address goes', () => {
-    let s = fresh();
+    let s = published(fresh());
     const about = byTitle(s, 'About').id;
     s = setHome(s, about).state;
     expect(s.site.redirects).toHaveLength(1);
@@ -1950,7 +1953,7 @@ describe('making another page Home keeps its old address working (#37)', () => {
   });
 
   it('lists the header and footer links visitors see, with their own words, wherever they are', () => {
-    let s = fresh();
+    let s = published(fresh());
     const about = byTitle(s, 'About').id;
     const header = s.site.shell.header.rootIds[0];
     // A labelled call to action counts; one without a label is not shown, so it is not listed.

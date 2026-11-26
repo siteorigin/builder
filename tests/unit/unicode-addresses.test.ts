@@ -12,6 +12,10 @@ import { generateProject, pageFile, redirectFile } from '@generator/index';
 import { linkFromTarget } from '@shared/richtext';
 import { normalizeRichText } from '@engine/values';
 import { toolDefinitions } from '@agent/tools';
+import { withPublished } from '@shared/published';
+
+/** The project once the website has been exported as it is now: its pages' addresses are kept working when they move (#890). */
+const exported = (s: ProjectState): ProjectState => ({ ...s, published: withPublished(s.published, s) ?? s.published });
 
 const blank = () => createStarterState('blank', '灯台', false);
 const byTitle = (s: ProjectState, title: string) => Object.values(s.pages).find((p) => p.title === title)!;
@@ -22,7 +26,7 @@ describe('page addresses in other scripts', () => {
     let s = applyOperations(blank(), [{ type: 'page.create', pageId: 'pg_contact1', title: 'お問い合わせ', addToNavigation: true }]).state;
     expect(s.pages.pg_contact1.route).toBe('/お問い合わせ/');
     // What the Page address field commits: the address typed, or copied from a browser with its escapes.
-    s = applyOperations(s, [{ type: 'page.update', pageId: 'pg_contact1', route: '/連絡先/' }]).state;
+    s = exported(applyOperations(s, [{ type: 'page.update', pageId: 'pg_contact1', route: '/連絡先/' }]).state);
     expect(s.pages.pg_contact1.route).toBe('/連絡先/');
     s = applyOperations(s, [{ type: 'page.update', pageId: 'pg_contact1', route: encodeURI('/お問い合わせ/') }]).state;
     expect(s.pages.pg_contact1.route).toBe('/お問い合わせ/');
@@ -64,7 +68,7 @@ describe('page addresses in other scripts', () => {
       { type: 'page.create', pageId: 'pg_contact1', title: 'お問い合わせ', addToNavigation: true },
       { type: 'page.create', pageId: 'pg_access01', title: 'アクセス', route: '/お問い合わせ/アクセス/' }
     ]).state;
-    const s = applyOperations(made, [{ type: 'page.update', pageId: 'pg_access01', route: '/会社/アクセス/' }]).state;
+    const s = applyOperations(exported(made), [{ type: 'page.update', pageId: 'pg_access01', route: '/会社/アクセス/' }]).state;
     s.site.baseUrl = 'https://example.com';
     const files = generateProject(s);
     expect(pageFile(s.pages.pg_contact1)).toBe('src/routes/お問い合わせ/+page.svelte');

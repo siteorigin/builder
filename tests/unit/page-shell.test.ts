@@ -17,6 +17,10 @@ import { changeTarget } from '../../src/renderer/src/lib/result';
 import { placementsOn, shellPageNames, shellReach } from '../../src/renderer/src/lib/model';
 import { contentTarget, findContent } from '../../src/renderer/src/lib/find-content';
 import { sectionOptions } from '../../src/renderer/src/lib/sections';
+import { withPublished } from '@shared/published';
+
+/** The project once the website has been exported as it is now: its pages' addresses are kept working when they move (#890). */
+const exported = (s: ProjectState): ProjectState => ({ ...s, published: withPublished(s.published, s) ?? s.published });
 
 const LAYOUT = 'src/routes/+layout.svelte';
 const header = { kind: 'shell' as const, id: 'header' };
@@ -108,7 +112,7 @@ describe('choosing the shared header and footer per page', () => {
   it('keeps an old address of a page free of both parts, whatever its page shows', () => {
     const { s, home, kitchen } = site();
     // Kitchen becomes Home, keeping /work/kitchen/ working as an address that sends visitors on.
-    const moved = applyOperations(s, [{ type: 'page.setHome', pageId: kitchen, keepOldAddress: true }]).state;
+    const moved = applyOperations(exported(s), [{ type: 'page.setHome', pageId: kitchen, keepOldAddress: true }]).state;
     expect(moved.site.redirects).toEqual([{ from: '/work/kitchen/', pageId: kitchen }]);
     const g = guarded(generateProject(moved).get(LAYOUT)!);
     const previous = moved.pages[home].route.replace(/\/$/, '');

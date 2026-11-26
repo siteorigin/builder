@@ -14,6 +14,7 @@ import { DRAFTS_JS, usedIcons } from '@generator/runtime-files';
 import { contactForm } from '@catalogue/foundation/form';
 import { checkSvelteSource } from '../../src/main/codecheck';
 import { pageIds, pageSections, placeholderImageCount, planSectionPick, sharedPageIds } from '@generator/checks';
+import { withPublished } from '@shared/published';
 
 const fresh = () => createStarterState('business', 'Test Studio', false);
 const home = (s: ProjectState) => s.pages[s.site.homePageId];
@@ -1420,15 +1421,17 @@ describe('choosing a section to link to', () => {
 });
 
 describe('old addresses kept working (#37)', () => {
+  /** The project once the website has been exported as it is now: its pages' addresses are kept working when they move (#890). */
+  const exported = (s: ProjectState): ProjectState => ({ ...s, published: withPublished(s.published, s) ?? s.published });
   const titled = (s: ProjectState, title: string) => Object.values(s.pages).find((p) => p.title === title)!.id;
   const isRedirect = (f: string | undefined) => !!f && f.includes('http-equiv="refresh"');
 
   it('redirects through the published sub-path, beside a real page nested under the old address', () => {
-    let s = fresh();
+    let s = exported(fresh());
     s.site.baseUrl = 'https://me.github.io/studio/';
     const about = titled(s, 'About');
-    s = applyOperations(s, [{ type: 'page.setHome', pageId: about }]).state;
-    s = applyOperations(s, [{ type: 'page.create', title: 'Team', route: '/about/team/' }]).state;
+    s = exported(applyOperations(s, [{ type: 'page.setHome', pageId: about }]).state);
+    s = exported(applyOperations(s, [{ type: 'page.create', title: 'Team', route: '/about/team/' }]).state);
     expect(validateState(s).filter((d) => d.severity === 'error')).toEqual([]);
     const files = generateProject(s);
     const redirect = files.get('src/routes/about/+page.svelte')!;
@@ -1455,8 +1458,8 @@ describe('old addresses kept working (#37)', () => {
   });
 
   it('compiles, and its script reads the destination as data', () => {
-    let s = fresh();
-    s = applyOperations(s, [{ type: 'page.setHome', pageId: titled(s, 'About') }]).state;
+    let s = exported(fresh());
+    s = exported(applyOperations(s, [{ type: 'page.setHome', pageId: titled(s, 'About') }]).state);
     const file = generateProject(s).get('src/routes/about/+page.svelte')!;
     expect(file).toContain('\t{@html go}\n');
     // Reached by a link inside the running site, the head script never runs; the page goes once it is mounted.
@@ -1470,13 +1473,13 @@ describe('old addresses kept working (#37)', () => {
   });
 
   it('follows its page to a later address, at any depth', () => {
-    let s = fresh();
+    let s = exported(fresh());
     const about = titled(s, 'About');
     const homeId = s.site.homePageId;
-    s = applyOperations(s, [{ type: 'page.update', pageId: about, route: '/work/about/' }]).state;
-    s = applyOperations(s, [{ type: 'page.setHome', pageId: about }]).state;
-    s = applyOperations(s, [{ type: 'page.update', pageId: about, title: 'Studio' }]).state;
-    s = applyOperations(s, [{ type: 'page.setHome', pageId: homeId }]).state;
+    s = exported(applyOperations(s, [{ type: 'page.update', pageId: about, route: '/work/about/' }]).state);
+    s = exported(applyOperations(s, [{ type: 'page.setHome', pageId: about }]).state);
+    s = exported(applyOperations(s, [{ type: 'page.update', pageId: about, title: 'Studio' }]).state);
+    s = exported(applyOperations(s, [{ type: 'page.setHome', pageId: homeId }]).state);
     expect(s.pages[about].route).toBe('/studio/');
     const files = generateProject(s);
     expect(files.get('src/routes/work/about/+page.svelte')).toContain('const to = resolve("/studio/");');
@@ -1485,8 +1488,8 @@ describe('old addresses kept working (#37)', () => {
   });
 
   it('writes the same files for the same project', () => {
-    let s = fresh();
-    s = applyOperations(s, [{ type: 'page.setHome', pageId: titled(s, 'About') }]).state;
+    let s = exported(fresh());
+    s = exported(applyOperations(s, [{ type: 'page.setHome', pageId: titled(s, 'About') }]).state);
     const files = generateProject(s);
     expect(isRedirect(files.get('src/routes/about/+page.svelte'))).toBe(true);
     expect([...files.entries()]).toEqual([...generateProject(structuredClone(s)).entries()]);

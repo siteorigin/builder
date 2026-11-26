@@ -5,6 +5,7 @@ import { describeOps, InspectionLog, inspectionChecks, joinWords, pagesTouched }
 import { fitInspection, serializeResult } from '@agent/tools';
 import { OPERATION_SCHEMAS, type EditOperation } from '@shared/ops';
 import type { ProjectState } from '@shared/types';
+import { withPublished } from '@shared/published';
 
 /** A project with a library photo and a second page titled お問い合わせ, as in the original report. */
 function project() {
@@ -39,7 +40,9 @@ const RAW = new RegExp(`\\b(${Object.keys(OPERATION_SCHEMAS).join('|').replace(/
 
 describe('change descriptions', () => {
   it('names both address changes, the address kept working and the menu links to check when a page becomes Home (#37)', () => {
-    const start = createStarterState('business', 'Test', false);
+    // Exported before: its old address is kept working (#890).
+    const made = createStarterState('business', 'Test', false);
+    const start = { ...made, published: withPublished(undefined, made) };
     const about = Object.values(start.pages).find((p) => p.title === 'About')!.id;
     const { changes } = run(start, [() => [{ type: 'page.setHome', pageId: about }]]);
     expect(changes).toHaveLength(1);
@@ -57,7 +60,9 @@ describe('change descriptions', () => {
     const twice = run(start, [() => [{ type: 'page.setHome', pageId: about }], () => [{ type: 'page.setHome', pageId: start.site.homePageId }]]).changes.map((c) => c.label);
     // /about/ was About's again by the end, so the first promotion no longer claims it still sends visitors on.
     expect(twice[0]).toBe('Made About the home page: “About” moved from /about/ to / and “Home” moved from / to /home/. Check the header and footer links “Home” and “About”: they keep their words and go to the new addresses.');
-    expect(twice[1]).toMatch(/^Made Home the home page: “Home” moved from \/home\/ to \/ and “About” moved from \/ to \/about\/\. \/home\/ still works/);
+    // /home/ was Home's address only within the run, never exported, so nothing is kept there (#890).
+    expect(twice[1]).toMatch(/^Made Home the home page: “Home” moved from \/home\/ to \/ and “About” moved from \/ to \/about\/\. Check the header and footer links/);
+    expect(twice[1]).not.toContain('still works');
   });
 
   it('describes an image inserted and given a photo and alt text in the same request, linked to the image', () => {
