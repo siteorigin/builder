@@ -401,8 +401,9 @@ export class SessionRoom extends DurableObject<Env> {
         const { guestId, ...reply } = frame;
         const target = this.admittedSocket(guestId);
         if (!target) return;
-        // A guest too far behind to take an answer (a whole project, perhaps) is told so instead, in a few bytes.
-        if (backedUp(target) && reply.ok)
+        // A guest too far behind to take a whole project is told so instead, in a few bytes. Any other answer is small and
+        // goes as it is: an edit's says it was saved.
+        if (backedUp(target) && reply.ok && reply.method === 'project.snapshot')
           return void this.send(target, 'relay-to-guest', { type: 'rpc:response', requestId: reply.requestId, method: reply.method, ok: false, error: { code: 'UNAVAILABLE', message: 'Your connection is too far behind. Try again shortly.', recoverable: true } });
         this.send(target, 'relay-to-guest', reply);
         return;
