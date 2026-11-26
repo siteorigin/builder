@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { createPageGate, gatedPick, PAGE_CATCH_UP_MS, type GateClock } from '../../src/renderer/src/lib/page-gate';
+import { createPageGate, failedWithRevision, gatedPick, PAGE_CATCH_UP_MS, type GateClock } from '../../src/renderer/src/lib/page-gate';
 
 /** A clock the test moves by hand, with timers that fire as it passes them. */
 function fakeClock() {
@@ -161,5 +161,21 @@ describe('which page messages the gate holds (#755)', () => {
 
   it('gates nothing in Preview', () => {
     for (const type of ['select', 'dblclick', 'contextmenu', 'link']) expect(gatedPick(type, 'preview')).toBeNull();
+  });
+});
+
+describe('a failed save and the gate (#755)', () => {
+  const failure = JSON.stringify({ label: 'Hero lead', message: 'EACCES: permission denied' });
+  it('opens it for a failure that arrives with the revision it was taken at', () => {
+    expect(failedWithRevision({ revision: 4, failure: null }, { revision: 5, failure })).toBe(true);
+  });
+
+  it('keeps it shut for a failure before the revision moved, while the one before is still publishing', () => {
+    expect(failedWithRevision({ revision: 5, failure: null }, { revision: 5, failure })).toBe(false);
+  });
+
+  it('keeps it shut for a later revision while an earlier failure is still shown', () => {
+    expect(failedWithRevision({ revision: 5, failure }, { revision: 6, failure })).toBe(false);
+    expect(failedWithRevision({ revision: 5, failure: null }, { revision: 6, failure: null })).toBe(false);
   });
 });

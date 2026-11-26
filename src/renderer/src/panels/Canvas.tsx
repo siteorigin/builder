@@ -17,7 +17,7 @@ import { acceptMessage, newSessionId, postToFrame, staleFor, viewAfter, type Bri
 import { chainOf, descOrNull, measuredRects, pointedAt, rectList, slotBoxes, spaceSizes, spacingOf, type FrameSpacing, type SlotBox } from '../lib/payload';
 import { blocksFromDom, richDom } from '../lib/richtext';
 import { dropAt, dropReaches, moveIndex, shownOrder } from '../lib/reorder';
-import { createPageGate, gatedPick, type PageGate } from '../lib/page-gate';
+import { createPageGate, failedWithRevision, gatedPick, type PageGate, type SeenFailure } from '../lib/page-gate';
 import { insertOps, insertRole, whereText, type InsertAt, type Where } from '../lib/insert-at';
 import { dropRefusal, incomingOrder, insertDestination, measureIds, moveDestination, savingProblems, slotOfKey, type DropList, type ListSpec, type Measured, type MoveAim, type SlotSurface } from '../lib/insert-drop';
 import { setInsertDropTarget, type InsertDrag } from '../lib/insert-drag';
@@ -1309,10 +1309,14 @@ export function Canvas() {
   // revision was taken (its files had reached the preview) arrives as that revision with the failure, and sends the
   // page no revision: picks stop waiting for one, and the save indicator shows the failure. A save that failed before
   // its revision moved leaves the one still publishing to be waited for.
+  const saveFailed = snapshot?.saveFailure ? JSON.stringify(snapshot.saveFailure) : null;
+  const seenFailure = useRef<SeenFailure>({ revision: 0, failure: null });
   useEffect(() => {
-    gate.current!.took(snapshot?.revision ?? 0);
-    if (getState().snapshot?.saveFailure) gate.current!.failed();
-  }, [snapshot?.revision]);
+    const now = { revision: snapshot?.revision ?? 0, failure: saveFailed };
+    gate.current!.took(now.revision);
+    if (failedWithRevision(seenFailure.current, now)) gate.current!.failed();
+    seenFailure.current = now;
+  }, [snapshot?.revision, saveFailed]);
 
   // Keep the bridge in sync with selection, hover and document revisions.
   useEffect(() => {

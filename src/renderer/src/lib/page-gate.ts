@@ -51,6 +51,19 @@ export function gatedPick(type: string, mode: 'edit' | 'preview'): 'hold' | 'dro
   return null;
 }
 
+/** A save failure as the editor last saw it: with the revision the project was at, and the failure's own text. */
+export type SeenFailure = { revision: number; failure: string | null };
+
+/**
+ * Whether the project's latest snapshot reports a save that failed once its revision was taken (its files had reached
+ * the preview, which is sent no revision for it): a new failure that arrives with a new revision. A failure before the
+ * revision moved leaves the one still publishing to be waited for, and one still shown from an earlier save says
+ * nothing about a later revision.
+ */
+export function failedWithRevision(seen: SeenFailure, now: SeenFailure): boolean {
+  return now.failure !== null && now.revision !== seen.revision && now.failure !== seen.failure;
+}
+
 /** A gate for the editor's revision, read from `revision()` whenever it is asked about. */
 export function createPageGate(revision: () => number, clock: GateClock = realClock, waitMs = PAGE_CATCH_UP_MS): PageGate {
   let shownRevision = 0;

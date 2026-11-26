@@ -201,6 +201,9 @@ export function clickTargetIn(state: ProjectState, chain: BridgeDesc[]): boolean
   const refs = chain.map((d) => refFromDesc(state, d));
   const target = refs[0];
   if (!target || !refExists(state, target)) return false;
+  // One repeated item of a list further in than a placement's own, whose items refExists does not read: it may be one
+  // the save removed.
+  if (target.itemPath?.length && (target.owner.kind === 'component' ? target.instancePath.length > 0 : target.instancePath.length !== 1)) return false;
   const around = ancestry(state, target);
   const bare = (owner: OwnerRef, instancePath: string[], nodeId: string) => refKey({ owner, instancePath, nodeId });
   // An empty slot's box is inside its own placement, whose parts the chain goes on through.

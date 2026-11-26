@@ -5041,6 +5041,9 @@ if (import.meta.hot) {
     const applied = data.revision;
     const batch = data.batch;
     revision = applied;
+    // The selection's boxes and spacing are reported again before the revision is acknowledged: an update of styles
+    // alone changes no element the page watches, and the editor's handles go on what was reported last.
+    scheduleRects();
     requestAnimationFrame(() =>
       requestAnimationFrame(() => {
         settleDrafts();
