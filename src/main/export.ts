@@ -872,7 +872,7 @@ const NOTICE = themeNotice({ name: 'Foundation', license: 'MIT-0' });
 /** What the README says about each host a site's redirect rules can be written for (see redirectHost). */
 const README_HOSTS: Record<RedirectHost, { notFound: string; redirects: string }> = {
   cloudflare: {
-    notFound: 'Cloudflare Pages, Netlify and GitHub Pages use it automatically',
+    notFound: 'Cloudflare Pages, Netlify and Vercel use it automatically',
     redirects:
       'The rules are in `static/_redirects`, written for Cloudflare Pages. The build copies the file to `build/_redirects`. Cloudflare Pages reads it only at the root of the folder you publish: if the contents of `build/` go into a sub-folder of that, move the file up to the root (its addresses already include the sub-folder). On another host, set up the redirects in its own settings. For rules written for Netlify or Vercel, choose that host in SiteOrigin Builder (Site settings, under Redirects) and export again.'
   },

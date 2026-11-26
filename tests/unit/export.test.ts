@@ -564,7 +564,7 @@ describe('source export helpers', () => {
     const readme = projectReadme('Old');
     expect(readme).toContain('## Deploying');
     expect(readme).toContain('`build/404.html`');
-    expect(readme).toContain('Cloudflare Pages, Netlify and GitHub Pages use it automatically');
+    expect(readme).toContain('Cloudflare Pages, Netlify and Vercel use it automatically');
     expect(readme).toContain('if the host has a 404 error document setting, set it to `/404.html`');
     expect(readme).toContain('`/my-site/404.html`');
     expect(readme).toContain('`src/lib/siteorigin/paths.json`');

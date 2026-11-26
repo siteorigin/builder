@@ -108,7 +108,8 @@ const PATCHES: Record<string, (def: ComponentDefinition) => void> = {
     restyle(def, 'method-value', { base: { layout: 'row', align: 'center', minHeight: '44px' } });
   },
   'blog.grid': (def) => {
-    restyle(def, 'card', { base: { paddingBlockStart: tok('space.md'), borderBlockStart: RULE }, 'base:hover': { borderBlockStart: '1px solid var(--so-color-brand)' } });
+    // Each post sits in its own ruled box (Foundation's bounded card, squared and unfilled), so a post without a picture is not read as the caption of the picture beside it.
+    restyle(def, 'card', { base: { radius: null, background: null, border: RULE }, 'base:hover': { border: '1px solid var(--so-color-brand)' } });
   },
   'content.pages': (def) => {
     restyle(def, 'card', { base: { paddingBlockStart: tok('space.md'), borderBlockStart: RULE }, 'base:hover': { borderBlockStart: '1px solid var(--so-color-brand)' } });

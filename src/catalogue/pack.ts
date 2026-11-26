@@ -104,6 +104,8 @@ export interface PackFontSource extends Omit<PackFont, 'faces' | 'notice'> {
   css: string;
   /** Module path of the licence file shipped beside it. */
   noticeFile: string;
+  /** The script subsets to ship (`latin`, `latin-ext`, ...), by the name in each file (`inter-latin-wght-normal.woff2`); all of them when absent. */
+  subsets?: string[];
 }
 
 /** An authored pack, ready to be built into release files. */
