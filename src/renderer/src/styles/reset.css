@@ -8,6 +8,9 @@
      formatting context keeps a child's top margin (the startup error's) from collapsing through it and pushing it
      down. A portal mounted on body must stay fixed or top-layer for the same reason. */
   #root { position: relative; overflow: clip; display: flow-root; }
+  /* The startup error is the one view taller than its window can be (a long list of themes that failed): it scrolls
+     inside #root, so every reason stays reachable and the document still never grows. */
+  #root:has(> .fatal) { overflow: auto; }
   body {
     font-family: var(--font);
     font-size: 13px;

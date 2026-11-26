@@ -14,7 +14,8 @@ const css = ['tokens.css', 'reset.css', 'layout.css'].map((f) => readFileSync(re
 
 /**
  * The editor's shell: a toolbar, a canvas with a frame whose page is far taller than it, and a dock whose scrolling
- * body holds a long Inspector and, positioned against the dock, a marker at its static place below that content.
+ * body holds a long Inspector and, positioned against the dock, a marker at its static place below that content. One
+ * more, directly under #root, is placed below the window against no positioned ancestor of its own.
  */
 const shell = `<!doctype html><html><head><style>${css}</style>
 <style>.toolbar { height: 44px; } .canvas { flex: 1; min-width: 0; } .canvas iframe { width: 100%; height: 100%; border: 0; display: block; }</style></head>
@@ -30,7 +31,7 @@ const shell = `<!doctype html><html><head><style>${css}</style>
     </aside>
   </div>
   <footer>status</footer>
-</div></div></body></html>`;
+</div><div class="stray" style="position: absolute; top: 120vh; width: 1px; height: 96px"></div></div></body></html>`;
 
 describe.skipIf(!browserInstalled)('the editor document in a browser', () => {
   let browser: Browser;
@@ -75,5 +76,18 @@ describe.skipIf(!browserInstalled)('the editor document in a browser', () => {
     const { scrollHeight, innerHeight, rootTop } = await page.evaluate(() => ({ scrollHeight: document.documentElement.scrollHeight, innerHeight, rootTop: document.getElementById('root')!.getBoundingClientRect().top }));
     expect(rootTop).toBe(0);
     expect(scrollHeight).toBeLessThanOrEqual(innerHeight);
+  });
+
+  it('lets a startup error longer than the window scroll to its last reason, inside the window', async () => {
+    const reasons = Array.from({ length: 80 }, (_, i) => `<li>Theme ${i} could not be read.</li>`).join('');
+    await page.setContent(`<!doctype html><html><head><style>${css}</style></head><body><div id="root"><div class="fatal"><p>No themes.</p><ul>${reasons}</ul></div></div></body></html>`);
+    const r = await page.evaluate(() => {
+      const last = document.querySelector('.fatal li:last-child')!;
+      last.scrollIntoView({ block: 'end' });
+      return { scrollHeight: document.documentElement.scrollHeight, innerHeight, docTop: document.scrollingElement!.scrollTop, bottom: last.getBoundingClientRect().bottom };
+    });
+    expect(r.scrollHeight).toBeLessThanOrEqual(r.innerHeight);
+    expect(r.docTop).toBe(0);
+    expect(r.bottom).toBeLessThanOrEqual(r.innerHeight);
   });
 });
