@@ -32,8 +32,8 @@ export function propertiesHash(properties: Record<string, unknown> | undefined):
 
 const owner = z
   .object({
-    kind: z.enum(['page', 'shell', 'component', 'template', 'archive']).describe("Document that owns the node: a page, the shared shell (header/footer), a component definition, a collection's layout template, or a collection's archive layout."),
-    id: z.string().describe('Page ID, "header" or "footer" for the shell, a component definition ID, or (for a template) the collection ID.')
+    kind: z.enum(['page', 'shell', 'component', 'template', 'archive']).describe("A page, the shared shell (header/footer), a component definition, a collection's layout template or its archive layout."),
+    id: z.string().describe('Page ID, "header" or "footer" for the shell, a component definition ID, or (for a template or archive) the collection ID.')
   })
   .describe('Owner document of the node.');
 

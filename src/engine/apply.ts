@@ -4195,8 +4195,9 @@ export function applyOperations(state: ProjectState, ops: EditOperation[], ctx: 
   }
   // A list connected to a collection, a collection loop or what its elements read that the batch leaves broken (its
   // collection removed, a field it reads retyped, the list property renamed) is refused, whichever operation did it.
-  // Problems the project already had (a hand edit) are left for validation to report.
-  const sourcesAfter = collectionSourceProblems(draft);
+  // Problems the project already had (a hand edit) are left for validation to report. Adding, describing or removing
+  // assets changes no tree, list or collection, so a batch of only those skips the walk.
+  const sourcesAfter = ops.every((op) => op.type === 'asset.add' || op.type === 'asset.update' || op.type === 'asset.remove') ? [] : collectionSourceProblems(draft);
   if (sourcesAfter.length) {
     const before = new Set(collectionSourceProblems(state).map((p) => p.key));
     const added = sourcesAfter.find((p) => !before.has(p.key));
