@@ -65,6 +65,7 @@ function DeletePostDialog({ target, onClose }: { target: PostRef; onClose: () =>
   const state = snap?.state;
   const e = state && postAt(state, target);
   if (!state || !e) return null;
+  const noun = entryNounLower(state.collections[target.collectionId]);
   const uses = entryLinkUses(state, target.entryId);
   const kept = keptAddresses(state, target.entryId);
   const where = [...new Set(uses.map((u) => u.where))];
@@ -87,7 +88,7 @@ function DeletePostDialog({ target, onClose }: { target: PostRef; onClose: () =>
   };
   return (
     <Modal
-      title="Delete this post?"
+      title={`Delete this ${noun}?`}
       onClose={onClose}
       busy={busy}
       footer={
@@ -97,7 +98,7 @@ function DeletePostDialog({ target, onClose }: { target: PostRef; onClose: () =>
             Cancel
           </button>
           <button className="btn btn-danger-fill" onClick={() => void confirm()} disabled={busy}>
-            Delete post
+            Delete {noun}
           </button>
         </>
       }
