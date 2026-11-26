@@ -189,7 +189,7 @@ await arrived(heading);
 step('what a slot holds is a click away, each named as Layers names it');
 const contents = row('actions').getByRole('list', { name: 'In Actions' }).getByRole('button');
 await selectCard();
-assert.deepEqual(await contents.allInnerTexts(), ['Button · Button', 'Text · Write something here.']);
+assert.deepEqual(await contents.allInnerTexts(), ['Button', 'Text · Write something here.']);
 await contents.nth(1).click();
 await arrived(words);
 await selectCard();
