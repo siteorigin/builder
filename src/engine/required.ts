@@ -93,6 +93,21 @@ function defaultProblems(def: ComponentDefinition): RequiredProblem[] {
   return out;
 }
 
+/**
+ * Where in a placement a required problem is, read back from its key (`site`): the property, and one field of an
+ * object or of a list item. Null for a key that is not a placement's value (a default, or a binding).
+ */
+export function requiredSite(key: string, owner: OwnerRef, nodeId: string): { prop: string; itemId?: string; field?: string } | null {
+  const head = `${owner.kind}|${owner.id}|${nodeId}|`;
+  if (!key.startsWith(head)) return null;
+  const parts = key.slice(head.length).split('|');
+  // A binding's problem names only the property; a value's names the place within it after it, empty for the whole.
+  if (parts.length < 2 || !parts[0]) return null;
+  const [prop, ...rest] = parts;
+  if (rest.length === 1) return rest[0] ? { prop, field: rest[0] } : { prop };
+  return rest.length === 2 && rest[0] && rest[1] ? { prop, itemId: rest[0], field: rest[1] } : null;
+}
+
 /** What one placement of a component with required properties leaves empty, in its own values or (with `bindings`) through a binding. */
 function placementProblems(state: ProjectState, owner: OwnerRef, n: InstanceNode, label: string, bindings: boolean): RequiredProblem[] {
   const out: RequiredProblem[] = [];

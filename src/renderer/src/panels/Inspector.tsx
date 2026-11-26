@@ -69,7 +69,8 @@ import { inferredRole, placementRole, type InsertRole } from '@engine/insert-rol
 import { previewedState } from '../lib/studio';
 import { listEditLabel } from '../lib/list-editor';
 import { contentLabel, editLabel, fieldLabel, forLabel, refTo, styleLabel, styleWords, subjectWords } from '../lib/edit-label';
-import { applyOps, applyWith, commitOps, getState, renamePage, setState, toast, undoAction, useStore, type InspectorFocus, type PendingEdit } from '../store';
+import { applyOps, applyWith, claimRefusals, commitOps, getState, renamePage, setState, toast, undoAction, useStore, type InspectorFocus, type PendingEdit } from '../store';
+import { isRequiredRefusal } from '@shared/required';
 import { DraftInput, Field, FieldHome, openSection, Section, Segmented, SwitchRow, useMenu, type MenuItem } from '../components/ui';
 import { StructuredDataFields, structuredSummary } from '../components/StructuredDataFields';
 import { TEXT_LIMITS } from '@shared/text-limits';
@@ -1012,6 +1013,43 @@ function ColumnLayout({ owner, def, node, variants, tokens, onSet }: { owner: Ow
   );
 }
 
+/** Where a refused edit of a placement's content was made: a property, one field of an object, or one field of a list item. */
+type RefusedAt = { field?: string; itemId?: string };
+
+/**
+ * Refused edits of the selected placement's content, said at the field they were made in rather than in a toast: one
+ * that would empty a value the component requires (see claimRefusals). Each stays until that field is edited again or
+ * another element is selected. A refusal that arrives once its field has gone is a toast, as any other.
+ */
+function useFieldRefusals(scope: string) {
+  const [refusals, setRefusals] = useState<Record<string, string>>({});
+  const live = useRef(scope);
+  live.current = scope;
+  useEffect(() => {
+    setRefusals({});
+    return () => {
+      live.current = '';
+    };
+  }, [scope]);
+  const keyOf = (prop: string, at: RefusedAt) => `${prop}|${at.itemId ?? ''}|${at.field ?? ''}`;
+  /** Commit an edit of one field, whose refusal (if it would empty a required value) is said at that field. */
+  const claim = <T,>(prop: string, at: RefusedAt, commit: () => T): T => {
+    const key = keyOf(prop, at);
+    setRefusals((r) => {
+      if (!Object.hasOwn(r, key)) return r;
+      const { [key]: _gone, ...rest } = r;
+      return rest;
+    });
+    return claimRefusals((e) => {
+      if (!isRequiredRefusal(e.details) || live.current !== scope) return false;
+      setRefusals((r) => ({ ...r, [key]: e.message }));
+      return true;
+    }, commit);
+  };
+  const refused = (prop: string) => (at: RefusedAt) => refusals[keyOf(prop, at)];
+  return { claim, refused };
+}
+
 function InstanceInspector({ state, owner, node, tokens, selection }: { state: ProjectState; owner: OwnerRef; node: InstanceNode; tokens: Tokens; selection: ElementRef }) {
   // Layers selected together with this one (the menu's Duplicate and Delete act on them all): followed so the menu
   // is rebuilt when they change, and planned with it, so what the menu says is what it does.
@@ -1166,6 +1204,8 @@ function InstanceInspector({ state, owner, node, tokens, selection }: { state: P
   const what = node.name && node.name !== def.name ? def.name : noun === 'component' ? 'Component' : shell ? `Shared ${owner.id}` : 'Section';
   const whole = `Whole ${noun}`;
   const goToField = (prop: string, field?: string) => revealContentField('content', prop, field);
+  // A refused edit that would empty a required value is said at its field, not in a toast.
+  const { claim, refused } = useFieldRefusals(`${owner.kind}:${owner.id}:${node.id}`);
   return (
     <>
       <Header
@@ -1240,13 +1280,14 @@ function InstanceInspector({ state, owner, node, tokens, selection }: { state: P
                   label={label}
                   hint={service && key === service.prop ? formServiceHint(service, !!String(node.props[key] ?? '').trim()) : (videoHint(videoNote(key)) ?? siteNameHint(state, node, key, () => void applyOps([{ type: 'instance.setProp', owner, nodeId: node.id, prop: key, value: state.site.name }], `Use the site name in ${subjectWords(state, here)}`)))}
                   value={node.props[key] ?? schema.default}
-                  onChange={(v, edit) => set(key, v, edit)}
-                  onField={(field, v, edit) => applyWith(edit, [{ type: 'instance.setProp', owner, nodeId: node.id, prop: key, field, value: v }], fieldLabel(state, schema.label, here), `${node.id}:${key}:${field}`)}
-                  onList={(op) => applyListOp(owner, node.id, key, op, fieldLabel(state, schema.label, here), op.kind === 'field' ? `${node.id}:${key}:${op.itemId}:${op.field}` : undefined)}
+                  onChange={(v, edit) => claim(key, {}, () => set(key, v, edit))}
+                  onField={(field, v, edit) => claim(key, { field }, () => applyWith(edit, [{ type: 'instance.setProp', owner, nodeId: node.id, prop: key, field, value: v }], fieldLabel(state, schema.label, here), `${node.id}:${key}:${field}`))}
+                  onList={(op) => claim(key, op.kind === 'field' ? { itemId: op.itemId, field: op.field } : {}, () => applyListOp(owner, node.id, key, op, fieldLabel(state, schema.label, here), op.kind === 'field' ? `${node.id}:${key}:${op.itemId}:${op.field}` : undefined))}
                   read={() => readProp(owner, node.id, key)}
                   alive={propAlive(owner, node.id, key)}
                   itemAlive={(itemId, field) => rowAlive(owner, node.id, key, itemId, field)}
-                  onTable={(edit) => applyTableEdit(owner, node.id, key, edit, fieldLabel(state, schema.label, here))}
+                  onTable={(edit) => claim(key, {}, () => applyTableEdit(owner, node.id, key, edit, fieldLabel(state, schema.label, here)))}
+                  refused={refused(key)}
                   state={state}
                   openItem={reveal?.prop === key && reveal.itemId ? { seq: reveal.seq, itemId: reveal.itemId } : undefined}
                   annotate={notes(key)}

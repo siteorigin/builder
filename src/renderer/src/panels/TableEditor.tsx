@@ -2,7 +2,7 @@ import { Fragment, useEffect, useId, useLayoutEffect, useRef, useState } from 'r
 import { ArrowDown, ArrowLeft, ArrowRight, ArrowUp, ChevronRight, Plus, Trash2 } from 'lucide-react';
 import type { TableProp } from '@shared/types';
 import type { TableEdit } from '@engine/table';
-import { DraftInput, Field } from '../components/ui';
+import { DraftInput, Field, missingNote, RequiredMark } from '../components/ui';
 import { announcementText } from '../lib/announce';
 import './TableEditor.css';
 import {
@@ -39,7 +39,7 @@ type After = { at: number; from: string } & (
  * naming its row and column by ID (`onTable`), so a step taken right after typing in a cell never puts back what
  * the cell held before.
  */
-export function TableEditor({ name, schema, value, onTable }: { name: string; schema: TableProp; value: unknown; onTable: (edit: TableEdit) => Promise<boolean> }) {
+export function TableEditor({ name, schema, value, onTable, refused }: { name: string; schema: TableProp; value: unknown; onTable: (edit: TableEdit) => Promise<boolean>; /** Why its last edit was refused, said here in place of a toast. */ refused?: string }) {
   const table = readTable(value, schema.default);
   const { columns, rows } = table;
   const [open, setOpen] = useState<string | null>(null);
@@ -169,9 +169,13 @@ export function TableEditor({ name, schema, value, onTable }: { name: string; sc
   return (
     <div className="field table-editor" role="group" aria-labelledby={key('label')} data-table={name}>
       <div className="field-label" id={key('label')}>
-        <span className="grow">{schema.label}</span>
+        <span className="grow">
+          {schema.label}
+          {schema.required && <RequiredMark />}
+        </span>
         <span className="insp-count">{tableCount(table)}</span>
       </div>
+      {(refused ?? missingNote(schema, table)) && <div className="field-error">{refused ?? missingNote(schema, table)}</div>}
 
       <div className="table-editor-part" role="group" aria-labelledby={key('rows')}>
         <div className="table-editor-heading">

@@ -9,7 +9,7 @@ import { isImeComposing } from '../lib/ime';
 import { linkFieldProblem } from '../lib/link-problems';
 import { readNumberDraft } from '../lib/number-draft';
 import type { ListPlace } from '../lib/reveal';
-import { DraftInput, Field, FieldHome, openSection, Switch, SwitchRow, useFieldHome } from '../components/ui';
+import { DraftInput, Field, FieldHome, missingNote, openSection, RequiredMark, Switch, SwitchRow, useFieldHome } from '../components/ui';
 import { TEXT_LIMITS } from '@shared/text-limits';
 import { isSettling, refusedWithin, savesInFlight } from '../lib/pending';
 import { announcementText } from '../lib/announce';
@@ -488,7 +488,7 @@ const carryKey = (x: ImageValue | null | undefined, project: string | undefined)
  * picture and nothing else, with no description to write and never decorative (a page's sharing image; see
  * PictureStandIn).
  */
-export function ImageEditor({ value, onChange, state, title, plain, picture }: { value: ImageValue; onChange: (v: ImageValue) => void; state: ProjectState; title?: string; plain?: PlainImage; picture?: PictureStandIn }) {
+export function ImageEditor({ value, onChange, state, title, plain, picture, mark, describedBy }: { value: ImageValue; onChange: (v: ImageValue) => void; state: ProjectState; title?: string; plain?: PlainImage; picture?: PictureStandIn; /** Said after the title (that the component requires a picture). */ mark?: ReactNode; describedBy?: string }) {
   const runtime = useStore((s) => s.runtime);
   // The project as this editor shows it: an import checks its placement against it.
   const snapshot = useStore((s) => s.snapshot);
@@ -655,6 +655,7 @@ export function ImageEditor({ value, onChange, state, title, plain, picture }: {
       className={`insp-image${over ? ' drop-over' : ''}${plain ? ` plain-${plain}` : ''}`}
       role={title ? 'group' : undefined}
       aria-labelledby={title ? titleId : undefined}
+      aria-describedby={title ? describedBy : undefined}
       onKeyDown={(e) => {
         if (e.key === 'Escape' && browsing) (e.stopPropagation(), closeBrowser());
       }}
@@ -663,6 +664,7 @@ export function ImageEditor({ value, onChange, state, title, plain, picture }: {
       {title && (
         <div className="insp-group-title" id={titleId}>
           {title}
+          {mark}
         </div>
       )}
       <span className="sr-only" role="status">
@@ -1161,7 +1163,7 @@ function ChoiceLabel({ choice, index, describedBy, onRename, clash, onClash }: {
  * it; and changes still waiting when the question is closed are still made. While the AI is working every change is
  * refused, as moving a list item is.
  */
-function ChoicesEditor({ schema, value, onChange, read, label }: { schema: ChoicesProp; value: unknown; onChange: (v: unknown, edit?: PendingEdit) => unknown; read?: () => ReadValue | undefined; label?: string }) {
+function ChoicesEditor({ schema, value, onChange, read, label, error }: { schema: ChoicesProp; value: unknown; onChange: (v: unknown, edit?: PendingEdit) => unknown; read?: () => ReadValue | undefined; label?: string; error?: string }) {
   const choices = choiceRows(value);
   const labelId = useId();
   const hintId = useId();
@@ -1271,9 +1273,12 @@ function ChoicesEditor({ schema, value, onChange, read, label }: { schema: Choic
     void act({ kind: 'remove', id: c.id });
   };
   return (
-    <div className="field choices-editor" role="group" aria-labelledby={labelId} aria-describedby={schema.description ? hintId : undefined} ref={rootRef}>
+    <div className="field choices-editor" role="group" aria-labelledby={labelId} aria-describedby={[error ? `${hintId}-error` : '', schema.description ? hintId : ''].filter(Boolean).join(' ') || undefined} ref={rootRef}>
       <div className="field-label" id={labelId}>
-        <span className="grow">{shown}</span>
+        <span className="grow">
+          {shown}
+          {schema.required && <RequiredMark />}
+        </span>
         <span className="insp-count">
           <span aria-hidden="true">{countText(choices.length, MAX_CHOICE_ROWS)}</span>
           <span className="sr-only">{`${choices.length} of at most ${MAX_CHOICE_ROWS} choices`}</span>
@@ -1353,6 +1358,11 @@ function ChoicesEditor({ schema, value, onChange, read, label }: { schema: Choic
         </div>
       )}
       {full && <p className="field-hint insp-note" id={`${addId}-full`}>This question has the most choices it can hold, {MAX_CHOICE_ROWS}. Remove one to add another.</p>}
+      {error && (
+        <div className="field-error" id={`${hintId}-error`}>
+          {error}
+        </div>
+      )}
       {schema.description && (
         <div className="field-hint" id={hintId}>
           {schema.description}
@@ -1394,24 +1404,35 @@ export function ScalarField({ schema, value, onChange, read, state, label, hint,
   const id = useId();
   const shown = label ?? schema.label;
   const note = hint ?? schema.description;
+  // A value the component requires says so in its name, and while it is empty, that it needs one.
+  const mark = schema.required ? <RequiredMark /> : null;
+  const named = (
+    <>
+      {shown}
+      {mark}
+    </>
+  );
+  error ??= missingNote(schema, value);
   // A set of choices names itself and says what it is under its own rows.
-  if (schema.type === 'choices') return <ChoicesEditor schema={schema} value={value} onChange={onChange} read={read} label={shown} />;
+  if (schema.type === 'choices') return <ChoicesEditor schema={schema} value={value} onChange={onChange} read={read} label={shown} error={error} />;
   if (schema.type === 'boolean') return <SwitchRow checked={!!value} onChange={onChange} label={shown} hint={schema.description} />;
   if (schema.type === 'image')
-    return hint ? (
+    return hint || error ? (
       <div className="col" style={{ gap: 4 }}>
-        <ImageEditor value={value as ImageValue} onChange={onChange} state={state} title={shown} />
-        <div className="field-hint">{hint}</div>
+        <ImageEditor value={value as ImageValue} onChange={onChange} state={state} title={shown} mark={mark} describedBy={`${id}-note`} />
+        <div className={error ? 'field-error' : 'field-hint'} id={`${id}-note`}>
+          {error ?? hint}
+        </div>
       </div>
     ) : (
-      <ImageEditor value={value as ImageValue} onChange={onChange} state={state} title={shown} />
+      <ImageEditor value={value as ImageValue} onChange={onChange} state={state} title={shown} mark={mark} />
     );
   // A link is two controls (kind and destination) that name themselves; the label names the pair.
   if (schema.type === 'link')
     return (
       <div className="field" role="group" aria-labelledby={`${id}-l`} aria-describedby={error || note ? `${id}-note` : undefined}>
         <div className="field-label" id={`${id}-l`}>
-          {shown}
+          {named}
         </div>
         <LinkEditor value={value as LinkValue} onChange={onChange} state={state} label={schema.label} everywhere={everywhere} invalid={!!error} describedBy={[error ? `${id}-note` : '', notedBy ?? ''].filter(Boolean).join(' ') || undefined} />
         {error ? (
@@ -1431,7 +1452,7 @@ export function ScalarField({ schema, value, onChange, read, state, label, hint,
       </div>
     );
   return (
-    <Field label={shown} hint={note} error={error} controlId={id}>
+    <Field label={named} hint={note} error={error} controlId={id}>
       <ScalarEditor schema={schema} value={value} onChange={onChange} state={state} id={id} describedBy={note || error ? `${id}-note` : undefined} invalid={!!error} onLive={onLive} placeholder={placeholder} everywhere={everywhere} />
     </Field>
   );
@@ -1471,6 +1492,9 @@ export interface ListReveal {
  */
 const fillRoots = new Map<string, HTMLElement>();
 
+/** "A", "A and B", "A, B and C". */
+const listWords = (names: string[]) => (names.length > 1 ? `${names.slice(0, -1).join(', ')} and ${names[names.length - 1]}` : (names[0] ?? ''));
+
 /** Item fields that are one link's visible text and its destination (see itemLinkPairs). */
 export type LinkPairs = ReadonlyArray<{ text: string; link: string }>;
 
@@ -1500,7 +1524,7 @@ export interface ListOrder {
   locked: string | null;
 }
 
-export function PropField({ name, schema, value, onChange, onField, onList, onTable, read, alive, itemAlive, state, focusItem, openItem, label, hint, annotate, hiddenFields, linkPairs, error, action, place, everywhere, pickImages, fill, order }: {
+export function PropField({ name, schema, value, onChange, onField, onList, onTable, read, alive, itemAlive, state, focusItem, openItem, label, hint, annotate, hiddenFields, linkPairs, error, action, place, everywhere, pickImages, fill, order, refused }: {
   name: string;
   schema: PropSchema;
   value: unknown;
@@ -1542,41 +1566,49 @@ export function PropField({ name, schema, value, onChange, onField, onList, onTa
   fill?: ListFill;
   /** For a list: its order, when that is chosen elsewhere. */
   order?: ListOrder;
+  /**
+   * Why the last edit of the property, one field of an object (`field`) or one field of a list item (`itemId` and
+   * `field`) was refused, said at that field in place of an error toast (see claimRefusals).
+   */
+  refused?: (at: { field?: string; itemId?: string }) => string | undefined;
 }) {
   if (schema.type === 'list' && schema.feed) return <ComputedList name={name} schema={schema} state={state} place={place} />;
   // Fields inside belong to this property of the node around them (see FieldHome).
   if (schema.type === 'list')
     return (
       <FieldHome part={`prop:${name}`} alive={alive}>
-        <ListEditor name={name} schema={schema} items={Array.isArray(value) ? (value as ListItem[]) : []} onList={onList} itemAlive={itemAlive} state={state} focusItem={focusItem} openItem={openItem} annotate={annotate} hiddenFields={hiddenFields} linkPairs={linkPairs} place={place} read={read} everywhere={everywhere} pickImages={pickImages ?? undefined} fill={fill} order={order} />
+        <ListEditor name={name} schema={schema} items={Array.isArray(value) ? (value as ListItem[]) : []} onList={onList} itemAlive={itemAlive} state={state} focusItem={focusItem} openItem={openItem} annotate={annotate} hiddenFields={hiddenFields} linkPairs={linkPairs} place={place} read={read} everywhere={everywhere} pickImages={pickImages ?? undefined} fill={fill} order={order} refused={refused} error={refused?.({}) ?? missingNote(schema, value)} />
       </FieldHome>
     );
-  if (schema.type === 'table') return <TableEditor name={name} schema={schema} value={value} onTable={onTable} />;
+  if (schema.type === 'table') return <TableEditor name={name} schema={schema} value={value} onTable={onTable} refused={refused?.({})} />;
   if (schema.type === 'object')
     return (
       <FieldHome part={`prop:${name}`} alive={alive}>
-        <ObjectEditor name={name} schema={schema} value={value} onField={onField ?? ((f, v, edit) => onChange({ [f]: v }, edit))} state={state} label={label} everywhere={everywhere} error={error} action={action} />
+        <ObjectEditor name={name} schema={schema} value={value} onField={onField ?? ((f, v, edit) => onChange({ [f]: v }, edit))} state={state} label={label} everywhere={everywhere} error={error ?? refused?.({}) ?? missingNote(schema, value)} action={action} refused={refused && ((field) => refused({ field }))} />
       </FieldHome>
     );
   return (
     <FieldHome part={`prop:${name}`} alive={alive}>
-      <ScalarField schema={schema} value={value} onChange={onChange} read={read} state={state} label={label} hint={hint} error={error} action={action} everywhere={everywhere} />
+      <ScalarField schema={schema} value={value} onChange={onChange} read={read} state={state} label={label} hint={hint} error={refused?.({}) ?? error} action={action} everywhere={everywhere} />
     </FieldHome>
   );
 }
 
 /** An object property: its fields under its name, each edited on its own. */
-function ObjectEditor({ name, schema, value, onField, state, label, everywhere, error, action }: { name: string; schema: ObjectProp; value: unknown; onField: (field: string, v: unknown, edit?: PendingEdit) => unknown; state: ProjectState; label?: string; everywhere?: boolean; error?: string; action?: FieldAction }) {
+function ObjectEditor({ name, schema, value, onField, state, label, everywhere, error, action, refused }: { name: string; schema: ObjectProp; value: unknown; onField: (field: string, v: unknown, edit?: PendingEdit) => unknown; state: ProjectState; label?: string; everywhere?: boolean; error?: string; action?: FieldAction; refused?: (field: string) => string | undefined }) {
   const v = value && typeof value === 'object' && !Array.isArray(value) ? (value as Record<string, unknown>) : schema.default;
   return (
     <fieldset className="insp-group" data-object={name}>
-      <legend className="insp-group-title">{label ?? schema.label}</legend>
+      <legend className="insp-group-title">
+        {label ?? schema.label}
+        {schema.required && <RequiredMark />}
+      </legend>
       {schema.description && <div className="field-hint">{schema.description}</div>}
       {Object.entries(schema.fields).map(([key, f]) => (
         <div key={key} data-object-field={key} style={{ display: 'contents' }}>
           {/* Each field is its own place within the object's (see FieldHome). */}
           <FieldHome part={`field:${key}`}>
-            <ScalarField schema={f} value={Object.hasOwn(v, key) ? v[key] : Object.hasOwn(schema.default, key) ? schema.default[key] : f.default} onChange={(x, edit) => onField(key, x, edit)} state={state} everywhere={everywhere} />
+            <ScalarField schema={f} value={Object.hasOwn(v, key) ? v[key] : Object.hasOwn(schema.default, key) ? schema.default[key] : f.default} onChange={(x, edit) => onField(key, x, edit)} state={state} everywhere={everywhere} error={refused?.(key)} />
           </FieldHome>
         </div>
       ))}
@@ -1858,7 +1890,7 @@ export function useRevealedItem(place: ListPlace | undefined, item: ListItem | u
  * announced. The limits are stated where they bite: the count shows the maximum, and Add and Remove stay focusable
  * with the reason once the list is full or at its minimum.
  */
-function ListEditor({ name, schema, items, onList, read, itemAlive, state, focusItem, openItem, annotate, hiddenFields, linkPairs, place, everywhere, pickImages, fill, order }: { name: string; schema: ListProp; items: ListItem[]; onList: (op: ListOp) => unknown; read?: () => ReadValue | undefined; itemAlive?: (itemId: string, field: string) => () => boolean; state: ProjectState; focusItem?: string; openItem?: ListReveal; annotate?: (item: ListItem, index: number) => ListItemNote | undefined; hiddenFields?: (item: ListItem) => readonly string[]; linkPairs?: LinkPairs; place?: ListPlace; everywhere?: boolean; pickImages?: string; fill?: ListFill; order?: ListOrder }) {
+function ListEditor({ name, schema, items, onList, read, itemAlive, state, focusItem, openItem, annotate, hiddenFields, linkPairs, place, everywhere, pickImages, fill, order, refused, error }: { name: string; schema: ListProp; items: ListItem[]; onList: (op: ListOp) => unknown; read?: () => ReadValue | undefined; itemAlive?: (itemId: string, field: string) => () => boolean; state: ProjectState; focusItem?: string; openItem?: ListReveal; annotate?: (item: ListItem, index: number) => ListItemNote | undefined; hiddenFields?: (item: ListItem) => readonly string[]; linkPairs?: LinkPairs; place?: ListPlace; everywhere?: boolean; pickImages?: string; fill?: ListFill; order?: ListOrder; refused?: (at: { field?: string; itemId?: string }) => string | undefined; /** A problem with the list as a whole (a required list with no items, or a refused removal of its last). */ error?: string }) {
   // Opens on the item of this list already revealed on the page (a part of it was selected, and the list is shown
   // now), so the page keeps that item open while the list takes it over.
   const [open, setOpen] = useState<string | null>(() => {
@@ -2031,14 +2063,22 @@ function ListEditor({ name, schema, items, onList, read, itemAlive, state, focus
     return hidden?.length ? groupFields(Object.entries(schema.fields).filter(([key]) => !hidden.includes(key)).map(([key, s]) => ({ key, schema: s, data: null }))) : fields;
   };
   return (
-    <div className="field" role="group" aria-labelledby={labelId} data-list={name} ref={rootRef}>
+    <div className="field" role="group" aria-labelledby={labelId} aria-describedby={error ? `${labelId}-error` : undefined} data-list={name} ref={rootRef}>
       <div className="field-label" id={labelId}>
-        <span className="grow">{schema.label}</span>
+        <span className="grow">
+          {schema.label}
+          {schema.required && <RequiredMark />}
+        </span>
         <span className="insp-count">
           <span aria-hidden="true">{countText(items.length, schema.max)}</span>
           <span className="sr-only">{countLabel(items.length, schema.itemLabel, schema.max)}</span>
         </span>
       </div>
+      {error && (
+        <div className="field-error" id={`${labelId}-error`}>
+          {error}
+        </div>
+      )}
       <div className="list-editor">
         {order && (
           <div className="list-editor-order">
@@ -2084,8 +2124,11 @@ function ListEditor({ name, schema, items, onList, read, itemAlive, state, focus
           const title = titleOf(it, i);
           // A row with nothing to name it by says so, rather than passing its place in the list off as a title.
           const untitled = !thumb && !ownTitle(effectiveItem(state, schema, it));
+          // Fields the component requires that this item leaves empty: the closed row says it is incomplete.
+          const empty = Object.entries(schema.fields).filter(([k, f]) => !hiddenFields?.(it).includes(k) && missingNote(f, Object.hasOwn(it, k) ? it[k] : f.default));
+          const incomplete = empty.length ? `Incomplete: ${listWords(empty.map(([, f]) => f.label))} ${empty.length === 1 ? 'is' : 'are'} required.` : undefined;
           // A contact link that opens something other than its text is flagged on the closed row too.
-          const flag = note?.error ?? (linkPairs?.some((p) => contactMismatch(it[p.text], it[p.link])) ? 'The link doesn’t open what visitors see.' : undefined);
+          const flag = note?.error ?? (linkPairs?.some((p) => contactMismatch(it[p.text], it[p.link])) ? 'The link doesn’t open what visitors see.' : undefined) ?? incomplete;
           return (
           <div key={it.id} className={`list-editor-item${focusItem === it.id ? ' focused' : ''}${underOf[i] ? ' nested' : ''}`}>
             <div className="list-editor-head">
@@ -2104,8 +2147,13 @@ function ListEditor({ name, schema, items, onList, read, itemAlive, state, focus
                   {untitled && <span className="sr-only">, {title}</span>}
                 </span>
                 {underOf[i] && <span className="sr-only">, under {underOf[i]}</span>}
+                {incomplete && (
+                  <span className="list-editor-incomplete" aria-hidden="true">
+                    Incomplete
+                  </span>
+                )}
                 {/* A closed item still shows it needs attention. */}
-                {flag && (
+                {flag && flag !== incomplete && (
                   <span className="list-editor-flag" title={flag} aria-hidden="true">
                     <TriangleAlert />
                   </span>
@@ -2114,7 +2162,7 @@ function ListEditor({ name, schema, items, onList, read, itemAlive, state, focus
               {/* Outside the button, so the problem describes the row without becoming part of its name. */}
               {flag && (
                 <span className="sr-only" id={`list-flag-${it.id}`}>
-                  {flag}
+                  {flag === incomplete || !incomplete ? flag : `${flag} ${incomplete}`}
                 </span>
               )}
               <button className="icon-btn sm" aria-label={`Move ${titleOf(it, i)} up`} id={`list-up-${it.id}`} disabled={!locked && i === 0} aria-disabled={locked ? true : undefined} aria-describedby={locked ? lockedNoteId : undefined} title={locked ?? undefined} onClick={() => move(it, i, 'up')}>
@@ -2150,7 +2198,7 @@ function ListEditor({ name, schema, items, onList, read, itemAlive, state, focus
                             state={state}
                             hint={note?.field === key ? note.hint : teaser?.hint}
                             placeholder={teaser?.placeholder}
-                            error={note?.field === key ? note.error : undefined}
+                            error={refused?.({ itemId: it.id, field: key }) ?? (note?.field === key ? note.error : undefined)}
                             action={note?.field === key ? note.action : undefined}
                             onLive={fs.type === 'string' ? reveal.typed(key) : undefined}
                             notedBy={linkPairs?.some((p) => p.link === key && contactMismatch(it[p.text], it[p.link])) ? `contact-${it.id}-${key}` : undefined}

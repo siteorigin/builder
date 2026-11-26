@@ -9,7 +9,7 @@ import { ICONS } from '@catalogue/foundation/icons';
 import { normalizeTable } from './table';
 import { declaredTokens } from './tokens';
 import { TEXT_LIMITS, tooLongMessage } from '@shared/text-limits';
-import { isEmptyPropValue, optionalSchema, requiredMessage } from '@shared/required';
+import { REQUIRED_REFUSAL, isEmptyPropValue, optionalSchema, requiredMessage } from '@shared/required';
 
 const own = <T>(rec: Record<string, T>, key: string): T | undefined => (Object.hasOwn(rec, key) ? rec[key] : undefined);
 
@@ -302,7 +302,7 @@ export const storedAlt = (stored: unknown): string | undefined => (stored && typ
  */
 export function normalizeScalar(schema: ScalarPropSchema, v: unknown, state: ProjectState, label: string, stored?: unknown): unknown {
   // Number(null) and Number("") are 0: clearing a required number is refused, not read as zero.
-  if (schema.required && schema.type === 'number' && (v === null || v === undefined || (typeof v === 'string' && !v.trim())) && !wasEmpty(schema, stored)) fail(requiredMessage(schema, label));
+  if (schema.required && schema.type === 'number' && (v === null || v === undefined || (typeof v === 'string' && !v.trim())) && !wasEmpty(schema, stored)) fail(requiredMessage(schema, label), REQUIRED_REFUSAL);
   // Checked on the value as it is kept, whichever way it was kept: a value saved under older rules stays only while it
   // is not empty.
   return requireValue(schema, scalarValue(schema, v, state, label, stored), label, stored);
@@ -317,7 +317,7 @@ const wasEmpty = (schema: PropSchema, stored: unknown) => stored !== undefined &
  * stay empty, so an edit of something else beside it still goes through: the project reports it until it is filled.
  */
 export function requireValue<T>(schema: PropSchema, v: T, label: string, stored?: unknown): T {
-  if (schema.required && isEmptyPropValue(schema, v) && !wasEmpty(schema, stored)) fail(requiredMessage(schema, label));
+  if (schema.required && isEmptyPropValue(schema, v) && !wasEmpty(schema, stored)) fail(requiredMessage(schema, label), REQUIRED_REFUSAL);
   return v;
 }
 

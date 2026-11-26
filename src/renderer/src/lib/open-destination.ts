@@ -1,6 +1,6 @@
 import type { EditorDestination } from '@shared/api';
 import type { ElementRef, ProjectState } from '@shared/types';
-import { getState, inspectorFocusRequest, setState, toast } from '../store';
+import { getState, inspectorFocusRequest, setState, toast, type InspectorFocus } from '../store';
 import { openSection } from '../components/ui';
 import { pageShowing } from '@shared/page-shell';
 import { siteEntries } from '@generator/index';
@@ -72,6 +72,7 @@ export function openEditorDestination(dest: EditorDestination) {
     });
   }
   if (dest.kind === 'element') return showElement(snap.state, dest);
+  if (dest.kind === 'prop') return showField(snap.state, snap.workspaceKey, dest);
   const field = formDestinationField(snap.state, dest);
   if (!field) return toast('That form is no longer on the site.', 'info');
   const { owner, nodeId } = dest;
@@ -107,7 +108,7 @@ export function openEditorDestination(dest: EditorDestination) {
  * Select an element where it is: its page, a page showing the shared header or footer, or its collection's layout
  * (on the entry named, else the first). One no longer there is said, and nothing moves.
  */
-function showElement(state: ProjectState, dest: Extract<EditorDestination, { kind: 'element' }>) {
+function showElement(state: ProjectState, dest: Extract<EditorDestination, { kind: 'element' }>, focus?: InspectorFocus) {
   const s = getState();
   const { owner, nodeId } = dest;
   const tree = treeFor(state, owner);
@@ -129,7 +130,23 @@ function showElement(state: ProjectState, dest: Extract<EditorDestination, { kin
     else return toast(`No page shows the shared ${owner.id} right now.`, 'info');
   }
   // Opened from the post writer or the SEO view, Layers takes its place, so the canvas shows the element where it is.
-  setState({ modal: null, selection: ref, rightTab: 'inspect', dockOpen: true, ...(getState().leftTab === 'posts' || getState().leftTab === 'seo' ? { leftTab: 'layers' as const } : {}) });
+  setState({ modal: null, selection: ref, rightTab: 'inspect', dockOpen: true, ...(focus ? { inspectorFocus: focus } : {}), ...(getState().leftTab === 'posts' || getState().leftTab === 'seo' ? { leftTab: 'layers' as const } : {}) });
+}
+
+/**
+ * Select a placement where it is (as showElement does) with Content open at one of its fields: a list item's row is
+ * opened first. One whose property has gone since is said, and nothing moves.
+ */
+function showField(state: ProjectState, opening: string, dest: Extract<EditorDestination, { kind: 'prop' }>) {
+  const tree = treeFor(state, dest.owner);
+  const node = tree && Object.hasOwn(tree.nodes, dest.nodeId) ? tree.nodes[dest.nodeId] : undefined;
+  const def = node?.kind === 'instance' && Object.hasOwn(state.components, node.definitionId) ? state.components[node.definitionId] : undefined;
+  const schema = def && Object.hasOwn(def.properties, dest.prop) ? def.properties[dest.prop] : undefined;
+  if (!schema) return toast('That field is no longer on the site.', 'info');
+  const field = dest.field !== undefined && (schema.type === 'list' || schema.type === 'object') && Object.hasOwn(schema.fields, dest.field) ? schema.fields[dest.field] : undefined;
+  const { owner, nodeId, prop, itemId } = dest;
+  const focus = inspectorFocusRequest({ opening, owner, nodeId, prop, ...(itemId ? { itemId } : {}), ...(dest.field !== undefined ? { field: dest.field } : {}), label: field ? `${schema.label} → ${field.label}` : schema.label });
+  showElement(state, { kind: 'element', owner, nodeId }, focus);
 }
 
 /** Frames to wait for the Inspector of a new selection (or the post writer) to show a control, before giving up quietly. */
