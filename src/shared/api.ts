@@ -112,6 +112,12 @@ export interface Diagnostic {
   site?: string;
 }
 
+/**
+ * What a web-sized copy of a large library image would be, measured by making it: its format and size, `lighter:
+ * false` when it would hardly be lighter than the original (so none is offered), or null when none can be made.
+ */
+export type WebCopyPlan = { format: 'JPEG' | 'PNG'; width: number; height: number } | { lighter: false } | null;
+
 /** A library image whose files are not in the project folder: its original, and which listed copies. */
 export interface MissingAssetFiles {
   assetId: string;
@@ -1150,8 +1156,8 @@ export interface BuilderApi {
     sourceSecretNames(opening: string): Promise<string[]>;
     /** Keep `value` as the open project's source secret `name`, outside the project, or forget it (null). */
     setSourceSecret(name: string, value: string | null, opening: string): Promise<{ ok: boolean; message?: string }>;
-    /** What a web-sized copy of a large library image would be, or null when none can be made from it. */
-    webCopyPlan(assetId: string): Promise<{ format: 'JPEG' | 'PNG' | 'JPEG or PNG'; width: number; height: number } | null>;
+    /** What a web-sized copy of a large library image would be (see WebCopyPlan). */
+    webCopyPlan(assetId: string): Promise<WebCopyPlan>;
     /**
      * Add a web-sized copy of a large library image to Assets, and with `replace` show it in every place the image
      * is used, in one change that can be undone. The original stays in Assets. `opening` is the snapshot's

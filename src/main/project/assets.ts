@@ -2,7 +2,7 @@ import { promises as fs } from 'node:fs';
 import { utilityProcess } from 'electron';
 import { basename, dirname, extname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import type { ImportReviewRow } from '@shared/api';
+import type { ImportReviewRow, WebCopyPlan } from '@shared/api';
 import type { AssetRecord } from '@shared/types';
 import { newId } from '@shared/ids';
 import { slugify } from '@shared/routes';
@@ -662,19 +662,52 @@ export async function locateAssetFile(projectDir: string, record: AssetRecord, s
   return { same: false, stored: { ...stored, originalName: originalNameOf(sourcePath) } };
 }
 
-/** What a web-sized copy of a library image (its original's bytes) would be, or null when none can be made from it. */
-export async function libraryWebCopyPlan(record: AssetRecord, buf: Buffer): Promise<{ format: CopyFormat; width: number; height: number } | null> {
+/**
+ * A web-sized copy is worth making only when it is at most this share of the original's bytes. A copy that saves
+ * less, such as the app's own web-sized copy made again (which can save a quarter on a sharp-edged picture), would
+ * mostly lose detail.
+ */
+export const LIGHTER_SHARE = 2 / 3;
+const worthwhile = (copy: Buffer, original: Buffer) => copy.length <= original.length * LIGHTER_SHARE;
+
+/**
+ * Plans measured or being measured, by the original's content: opening the same picture again, or going back to it
+ * before its answer came, never encodes it again.
+ */
+const measured = new Map<string, Promise<WebCopyPlan>>();
+const MEASURED_MAX = 32;
+
+/**
+ * What a web-sized copy of a library image (its original's bytes) would be, found by making it and weighing it as it
+ * would be stored. A copy that could not be made this time is not remembered, so it is tried again next time.
+ */
+export async function libraryWebCopyPlan(record: AssetRecord, buf: Buffer): Promise<WebCopyPlan> {
   if (record.kind !== 'image' || (record.mime !== 'image/jpeg' && record.mime !== 'image/png')) return null;
   if (record.mime === 'image/png' && isAnimatedPng(buf)) return null;
   const info = imageInfo(buf, record.mime);
   if (!info || imageProblem(buf, record.mime) || info.width * info.height > MAX_VARIANT_PIXELS) return null;
-  const clear = record.mime === 'image/png' && pngMayBeClear(buf) ? await mediaWorker.opaque(buf, record.mime).then((o) => (o === null ? null : !o)) : false;
-  return { format: copyFormat(clear), ...webCopySize(info.width, info.height) };
+  const key = `${sha(buf)}:${record.mime}`;
+  const known = measured.get(key);
+  if (known) return known;
+  const plan = measureWebCopy(record, buf).catch(() => null);
+  measured.set(key, plan);
+  if (measured.size > MEASURED_MAX) measured.delete(measured.keys().next().value!);
+  void plan.then((p) => p === null && measured.get(key) === plan && measured.delete(key));
+  return plan;
+}
+
+async function measureWebCopy(record: AssetRecord, buf: Buffer): Promise<WebCopyPlan> {
+  const result = await mediaWorker.webCopy({ data: buf, mime: record.mime }, WEB_EDGE);
+  if (!result.ok) return null;
+  const p = preparedCopy(record.file, buf, result.copy);
+  if (p.buf.length > MAX_BYTES) return null;
+  return worthwhile(p.buf, buf) ? { format: p.mime === 'image/png' ? 'PNG' : 'JPEG', width: result.copy.width, height: result.copy.height } : { lighter: false };
 }
 
 /**
  * Make a web-sized copy of a library image from its original's bytes and store it in the project, with its
- * responsive copies, as an import of it would be. A copy that would be no smaller is not made (`smaller: false`).
+ * responsive copies, as an import of it would be. A copy that would hardly be lighter (see LIGHTER_SHARE) is not
+ * made (`lighter: false`).
  * The record returned is new (named after the image, with its description and suggested alt text) or the library
  * image that already has those bytes (`existing`).
  */
@@ -684,14 +717,14 @@ export async function storeLibraryWebCopy(
   buf: Buffer,
   existing: AssetRecord[],
   fence: WriteFence = unfenced
-): Promise<{ record: AssetRecord; existing: boolean } | { smaller: false }> {
+): Promise<{ record: AssetRecord; existing: boolean } | { lighter: false }> {
   const name = record.name.trim() || 'Image';
   const refuse = refusal(`${name}.${record.file.split('.').pop()}`, "couldn't be copied");
   if (sha(buf) !== record.hash) throw refuse('its file is not the picture the library recorded. Locate the original first.');
   const result = await mediaWorker.webCopy({ data: buf, mime: record.mime }, WEB_EDGE);
   if (!result.ok) throw refuse(result.unreadable ? unusableReason('damaged', record.mime) : 'the web-sized copy could not be made. Try again.');
   const p = { ...preparedCopy(`${name} web`, buf, result.copy), stem: `${name} web` };
-  if (p.buf.length >= buf.length) return { smaller: false };
+  if (!worthwhile(p.buf, buf)) return { lighter: false };
   if (p.buf.length > MAX_BYTES) throw refuse('even its web-sized copy is larger than 25 MB.');
   const dup = existing.find((a) => a.hash === p.hash);
   if (dup) {

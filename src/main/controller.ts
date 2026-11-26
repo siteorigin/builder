@@ -4,7 +4,7 @@ import { constants as fsConstants, existsSync, mkdtempSync, promises as fs, stat
 import { homedir, tmpdir } from 'node:os';
 import { basename, dirname, extname, isAbsolute, join, relative, sep } from 'node:path';
 import { randomUUID } from 'node:crypto';
-import type { AiTurnReview, ComponentExportResult, ConflictChoice, ComponentImportResult, SavedComponent, SavedInsertPlace, SavedInsertResult, SaveToLibraryResult, PostImportKind, PostImportResult, PostImportReviewResult, CreateProjectOptions, DuplicateProjectOptions, DuplicateProjectResult, ExportFormat, ExportNote, ExportResult, FileText, FontFileData, ImportChoices, ImportReview, ImportReviewRow, LocalWorkspaceState, ProjectSnapshot, ProgressEvent, RecentExport, RestoreVersionResult, RuntimeState, StorageInfo, VersionReview, WebsiteTools } from '@shared/api';
+import type { AiTurnReview, ComponentExportResult, ConflictChoice, ComponentImportResult, SavedComponent, SavedInsertPlace, SavedInsertResult, SaveToLibraryResult, PostImportKind, PostImportResult, PostImportReviewResult, CreateProjectOptions, DuplicateProjectOptions, DuplicateProjectResult, ExportFormat, ExportNote, ExportResult, FileText, FontFileData, ImportChoices, ImportReview, ImportReviewRow, LocalWorkspaceState, ProjectSnapshot, ProgressEvent, RecentExport, RestoreVersionResult, RuntimeState, StorageInfo, VersionReview, WebCopyPlan, WebsiteTools } from '@shared/api';
 import { validateOperation, type ApplyResult, type EditBatch, type EditOperation } from '@shared/ops';
 import type { AssetRecord, ProjectState, SourceDoc } from '@shared/types';
 import type { SourceSettingsDraft } from '@shared/api';
@@ -2551,8 +2551,8 @@ export class Controller {
     }
   }
 
-  /** What a web-sized copy of a large library image would be, or null when none can be made from it. */
-  async webCopyPlan(assetId: string): Promise<{ format: 'JPEG' | 'PNG' | 'JPEG or PNG'; width: number; height: number } | null> {
+  /** What a web-sized copy of a large library image would be (see libraryWebCopyPlan). */
+  async webCopyPlan(assetId: string): Promise<WebCopyPlan> {
     const s = this.session;
     const a = s?.state.assets.assets[assetId];
     const buf = s && a ? await readLibraryImage(s.dir, a) : null;
@@ -2578,7 +2578,7 @@ export class Controller {
         try {
           const at = { revision: -1 };
           const made = await storeLibraryWebCopy(s.dir, record, buf, Object.values(s.state.assets.assets), this.assetFence(s, record, at));
-          if ('smaller' in made) return { ok: false, message: `A web-sized copy of ${name} would be no smaller, so it was left as it is.` };
+          if ('lighter' in made) return { ok: false, message: `A web-sized copy of ${name} would hardly be lighter, so it was left as it is.` };
           const ops = [
             ...(made.existing ? [] : [{ type: 'asset.add' as const, asset: made.record }]),
             // The copy is the same picture: every use keeps its alt text, whatever the copy's own suggestion says.
