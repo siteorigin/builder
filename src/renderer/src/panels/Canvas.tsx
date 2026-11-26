@@ -840,6 +840,8 @@ export function Canvas() {
             syncPage(path);
             followed(nav.current, viewKey(getState()));
           }
+          // A document a visitor opened in full that loads after Edit began goes back to the editor's page.
+          else if (sameFrame) backToShownPage(path);
           notePostPreviewAt(path);
           break;
         }
@@ -861,7 +863,11 @@ export function Canvas() {
           // visitor's own link clicks then move the editor along with them; while editing, the page goes
           // nowhere the editor did not send it.
           const path = String(p.path);
-          if (!followReport(nav.current, path, typeof p.navId === 'number' ? p.navId : null, viewKey(getState()), getState().mode === 'preview')) break;
+          if (!followReport(nav.current, path, typeof p.navId === 'number' ? p.navId : null, viewKey(getState()), getState().mode === 'preview')) {
+            // A visitor's own step that lands after Edit began goes back to the editor's page.
+            if (typeof p.navId !== 'number') backToShownPage(path);
+            break;
+          }
           // The page the frame is showing, so following it below does not send the frame back there (which would
           // drop a #section the visitor's link went to, and its scroll position).
           frameAt.current = path;
@@ -882,6 +888,9 @@ export function Canvas() {
           }
           syncPage(path);
           followed(nav.current, viewKey(getState()));
+          // A visitor's step followed in Edit (the frame was never asked for a page, so any address is followed) that
+          // left the editor's page goes back to it.
+          if (typeof p.navId !== 'number') backToShownPage(path);
           // What is outlined may be shown through a different placement on this page.
           syncTrack();
           // What the panel said about the last page's sends is not about this one, and nor is a live test's answer.
@@ -1405,7 +1414,20 @@ export function Canvas() {
   useEffect(() => {
     if (getState().mode === 'preview' && previewReturn) previewFrom.current = frameAt.current !== null ? journeyRef.current.at : null;
   }, [previewReturn]);
+  const modeBefore = useRef(mode);
+  /** The page and the address the frame was last sent back from while editing (see backToShownPage). */
+  const sentBack = useRef<string | null>(null);
   useEffect(() => {
+    const left = modeBefore.current === 'preview' && mode === 'edit';
+    modeBefore.current = mode;
+    if (mode === 'preview') sentBack.current = null;
+    // Back in Edit, the canvas shows the page the editor names, wherever Preview went (the blog index, a post): an
+    // address visited there is not reopened, and the frame goes back unless it is on that page already (#868). Called
+    // here rather than through showEditedPage, whose frameVisit is not set again until a later effect of this render.
+    if (left) {
+      visitWanted = null;
+      if (ready) openShownPage();
+    }
     // Where the frame is when Preview is entered (or, while a page is still opening, the first entry it reports).
     previewFrom.current = mode === 'preview' && frameAt.current !== null ? journeyRef.current.at : null;
     if (mode !== 'preview') return;
@@ -1456,6 +1478,24 @@ export function Canvas() {
     // A post previewed is on its way: what the frame showed before is not named in its place (see notePostPreviewAt).
     if (getState().postView === 'preview' && getState().postPreviewAt !== null) setState({ postPreviewAt: null });
     return true;
+  }
+
+  /**
+   * While editing, the frame shows the editor's page: one it reached on its own at `path` (a visitor's link or Back
+   * followed just as Preview ended) is sent back, unless the editor has a request of its own on the way (#868).
+   */
+  function backToShownPage(path: string) {
+    const s = getState();
+    if (s.mode !== 'edit' || nav.current.request || showsStudio() || !s.snapshot) return;
+    const shown = shownView(s.snapshot.state, s.pageId, s.templateMode);
+    if (!shown?.route || samePath(shown.route, path)) return;
+    // Once for each page and address until Preview is entered again: a page that sends itself on to `path` each time
+    // it loads stays where it went rather than going back and forth.
+    const from = `${shown.key}\n${path}`;
+    if (sentBack.current === from) return;
+    sentBack.current = from;
+    frameAt.current = path;
+    openShownPage();
   }
 
   /** Ask the frame for the page the editor shows, unless it is there already or already asked for. */
