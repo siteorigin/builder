@@ -15,7 +15,14 @@ perfMark('launch.scriptEvaluated');
 // For the app's lifetime: the editor follows its Appearance from before anything renders.
 followAppearance();
 const root = createRoot(document.getElementById('root')!);
-// The theme packs main loaded at startup are registered before anything reads the catalogue.
+// Welcome needs no theme, so it shows while the main process verifies the theme packs. The catalogue is registered
+// before anything reads it: a project opens only once the packs are verified, and the editor waits for it (App.tsx).
+// Anything else that fails while rendering (a notice, a dialog host) still leaves a way back.
+root.render(
+  <RenderFailure onFailure={abandonLeaves}>
+    <App />
+  </RenderFailure>
+);
 api.app
   .catalogue()
   .then((catalogue) => {
@@ -25,14 +32,8 @@ api.app
       return;
     }
     registerPacks(catalogue.packs);
-    setState({ packs: { refused: catalogue.refused, userDir: catalogue.userDir } });
+    setState({ packs: { ready: true, refused: catalogue.refused, userDir: catalogue.userDir } });
     perfMark('launch.catalogueReceived');
-    // Anything else that fails while rendering (a notice, a dialog host) still leaves a way back.
-    root.render(
-      <RenderFailure onFailure={abandonLeaves}>
-        <App />
-      </RenderFailure>
-    );
   })
   .catch((e: Error) => {
     root.render(<CatalogueFailed message={e.message} />);
