@@ -10,6 +10,7 @@ const { dirname, join } = require('node:path');
 const { tmpdir } = require('node:os');
 const { listPackage, extractFile } = require('@electron/asar');
 const notices = require('./notices.cjs');
+const { copyNpm } = require('./copy-npm.cjs');
 
 const ARCH = { 0: 'ia32', 1: 'x64', 2: 'armv7l', 3: 'arm64', 4: 'universal' };
 
@@ -19,7 +20,7 @@ exports.default = async function afterPack(context) {
     context.electronPlatformName === 'darwin'
       ? join(context.appOutDir, `${context.packager.appInfo.productFilename}.app`, 'Contents', 'Resources')
       : join(context.appOutDir, 'resources');
-  cpSync(join(root, 'node_modules', 'npm'), join(resources, 'npm'), { recursive: true, dereference: true });
+  copyNpm(join(root, 'node_modules', 'npm'), join(resources, 'npm'));
 
   const arch = ARCH[context.arch] ?? 'x64';
   const work = mkdtempSync(join(tmpdir(), 'so-deps-'));
