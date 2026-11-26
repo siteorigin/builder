@@ -155,7 +155,7 @@ describe('dragValue: snapping to the spacing scale', () => {
     expect(dragLabel(dragValue(25, SCALE, false))).toBe('Large · 24px');
     expect(dragLabel(dragValue(37.4, SCALE, true))).toBe('37px');
     expect(dragLabel(dragValue(1, SCALE, false))).toBe('0px');
-    expect(dragLabel(dragValue(100, [{ token: 'space.section', label: 'Section', px: 101.25 }], false))).toBe('Section · 101.3px');
+    expect(dragLabel(dragValue(100, [{ token: 'space.section', label: 'Section', px: 101.25 }], false))).toBe('Section · 101px');
   });
 });
 

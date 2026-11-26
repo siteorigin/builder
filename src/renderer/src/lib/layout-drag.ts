@@ -252,7 +252,8 @@ export const widthDecls = (value: StyleValue): Array<[string, string]> => [['max
 /** The splits a column divider snaps to, as the left column's part of the two: 1:4, 1:3, 1:2, 2:3, 1:1 and back. */
 export const RATIO_STOPS = [1 / 5, 1 / 4, 1 / 3, 2 / 5, 1 / 2, 3 / 5, 2 / 3, 3 / 4, 4 / 5];
 /** The narrowest either column of a pair gets, as its part of the two. */
-const MIN_SPLIT = 0.05;
+/** The least share of its pair a column keeps when a divider is dragged. */
+export const MIN_SPLIT = 0.05;
 /** Where column sizes for All sizes apply: from tablet up, as the stylesheet writes them. */
 export const WIDE_MEDIA = '(min-width: 768px)';
 
@@ -271,6 +272,17 @@ function targetLayers(state: ProjectState, target: SpacingTarget): StyleLayer[] 
   layers.push({ styles: target.itemId ? inst.overrides?.[target.partId] : target.styles, strength: 3, wideColumns: true });
   if (target.itemId) layers.push({ styles: target.styles, strength: 4, wideColumns: true });
   return layers;
+}
+
+/**
+ * The value a selection shows at a size for the first of `properties` set, as the stylesheet cascades it (its design
+ * with its variants, the placement, a card's own): what the readout names before a drag. Undefined when none of
+ * these sets it (the theme's own CSS does), so a size is never named after a style it was not given.
+ */
+export function shownSpacing(state: ProjectState, target: SpacingTarget, shown: Size, properties: string[]): StyleValue | undefined {
+  const at = cascadeStyles(targetLayers(state, target))[shown] ?? {};
+  for (const p of properties) if (at[p] !== undefined) return at[p];
+  return undefined;
 }
 
 /** The columns a target's grid has at a size, as fr shares: from its column sizes, or its column count. Null for
@@ -326,6 +338,12 @@ const roundIn = (n: number, pair: number) => {
 
 /** Column sizes as written: each share as fr. */
 export const sharesText = (shares: number[]) => shares.map((n) => `${n}fr`).join(' ');
+
+/** Column sizes as a person reads them: each column's part of the row, in whole percent ("60% · 40%"). */
+export function sharesPercent(shares: number[]): string {
+  const total = sum(shares);
+  return total > 0 ? shares.map((n) => `${Math.round((n / total) * 100)}%`).join(' · ') : '';
+}
 
 /**
  * Where dragging the divider after column `index` by `travel` frame pixels gets to, from columns `a` and `b` pixels
@@ -383,8 +401,8 @@ export interface Spot {
   y: number;
   axis: 'x' | 'y';
 }
-/** Each handle's hit box in overlay pixels, as .ov-space-handle draws it. */
-const HIT = { x: { w: 12, h: 24 }, y: { w: 24, h: 12 } };
+/** Each handle's hit box in overlay pixels, as .ov-space-handle draws it: 24px square either way (WCAG 2.5.8). */
+const HIT = { x: { w: 24, h: 24 }, y: { w: 24, h: 24 } };
 const overlaps = (a: Spot, b: Spot) => Math.abs(a.x - b.x) * 2 < HIT[a.axis].w + HIT[b.axis].w && Math.abs(a.y - b.y) * 2 < HIT[a.axis].h + HIT[b.axis].h;
 
 /**
