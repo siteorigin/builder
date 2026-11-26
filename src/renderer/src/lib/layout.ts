@@ -16,6 +16,14 @@ export const PANEL_LIMITS: Record<PanelSide, { min: number; max: number }> = {
 };
 export const PANEL_DEFAULTS: Record<PanelSide, number> = { left: 260, right: 340 };
 
+/** The Insert panel's own width (its scrollbar included) at or under which it lays out narrow: one column of tiles, icons for its actions. */
+export const INSERT_NARROW_MAX = 232;
+/**
+ * Whether the Insert panel lays out narrow at `width`. A panel with no width at all is hidden (another sidebar tab
+ * shows): it keeps the layout it had (`was`), since it has none of its own until it shows again.
+ */
+export const narrowLayout = (width: number, was: boolean) => (width > 0 ? width <= INSERT_NARROW_MAX : was);
+
 /** Each panel's preferred width, or null while it is closed. */
 export type PanelPrefs = Record<PanelSide, number | null>;
 /** The width each panel is drawn at; 0 while it is closed. */

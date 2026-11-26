@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { CANVAS_MIN, DEFAULT_VIEWPORT, FRAME_KEY_STEP, PANEL_DEFAULTS, PANEL_LIMITS, RAIL_WIDTH, VIEWPORT_LIMITS, ZOOM_LEVELS, clampViewport, fitPanels, frameKeyResize, panelMax, resizePanel, restorePanelWidth, restoreViewport, restoreZoom, toolbarTier } from '../../src/renderer/src/lib/layout';
+import { CANVAS_MIN, DEFAULT_VIEWPORT, FRAME_KEY_STEP, INSERT_NARROW_MAX, PANEL_DEFAULTS, PANEL_LIMITS, RAIL_WIDTH, VIEWPORT_LIMITS, ZOOM_LEVELS, clampViewport, fitPanels, frameKeyResize, narrowLayout, panelMax, resizePanel, restorePanelWidth, restoreViewport, restoreZoom, toolbarTier } from '../../src/renderer/src/lib/layout';
 
 const canvas = (win: number, w: { left: number; right: number }) => win - RAIL_WIDTH - w.left - w.right;
 
@@ -198,5 +198,20 @@ describe('preview width and zoom', () => {
     for (const z of [0.5, 0.75, 1, 1.25]) expect(restoreZoom(z)).toBe(z);
     // The canvas divides by the zoom: nothing else is restored, not even a level between the menu's.
     for (const bad of [undefined, 0, -1, 0.6, 1.5, 3, '0.5', Number.NaN]) expect(restoreZoom(bad)).toBe('fit');
+  });
+});
+
+describe('Insert panel layout', () => {
+  it('is narrow at its own width or under, scrollbar included', () => {
+    expect(narrowLayout(INSERT_NARROW_MAX, false)).toBe(true);
+    expect(narrowLayout(INSERT_NARROW_MAX + 1, true)).toBe(false);
+    // The sidebar at its usual width, as Windows draws it at 125%: not narrow.
+    expect(narrowLayout(PANEL_DEFAULTS.left - 1, false)).toBe(false);
+  });
+
+  it('keeps its layout while hidden, so opening it never shows the narrow one first', () => {
+    // Mounted behind another sidebar tab, the panel has no width: that is not a narrow panel.
+    expect(narrowLayout(0, false)).toBe(false);
+    expect(narrowLayout(0, true)).toBe(true);
   });
 });

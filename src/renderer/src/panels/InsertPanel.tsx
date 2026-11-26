@@ -20,6 +20,7 @@ import { forgetInsert } from '../lib/clip-keys';
 import { placementMap } from '../lib/placement-map';
 import { documentOrder, whereIn } from '../lib/removal-review';
 import { ownerLabel, treeFor } from '../lib/model';
+import { narrowLayout } from '../lib/layout';
 import { gridKeys, openMenus, useGridTabStops, useMenu, type MenuItem } from '../components/ui';
 import { pageShowing, partName } from '@shared/page-shell';
 import { usePackPreview, usePreviewExtent } from '../components/PackPreview';
@@ -1113,11 +1114,14 @@ export function InsertPanel() {
     }
   }, [searching]);
   // A narrow sidebar gives element tiles one column (and the grid one cell per row), so names never clip, and the
-  // header's actions become icons.
+  // header's actions become icons. The panel's own width, scrollbar included: Windows and Linux draw a scrollbar that
+  // takes room (macOS overlays its own), and the sidebar at its usual width is not narrow there either. The panel stays
+  // mounted while another sidebar tab shows, with no width at all: it keeps its layout then, so opening it never shows
+  // the narrow layout first and swaps every tile for the wide one a moment later.
   useEffect(() => {
     const body = bodyRef.current;
     if (!body) return;
-    const ro = new ResizeObserver(() => setNarrow(body.clientWidth <= 232));
+    const ro = new ResizeObserver(() => setNarrow((was) => narrowLayout(body.offsetWidth, was)));
     ro.observe(body);
     return () => ro.disconnect();
   }, []);
