@@ -962,7 +962,7 @@ export function SiteStyles() {
               </>
             )}
           </div>
-          <FontSelect id={selectId} state={st} stack={stack} follows={ref ? (byId(ref)?.label ?? 'a style that is no longer available') : null} onChoose={(next) => set(t.id, next)} />
+          <FontSelect id={selectId} state={st} stack={stack} follows={ref ? (byId(ref)?.label ?? 'a style that is no longer available') : null} importable={t.label} onChoose={(next) => set(t.id, next)} />
         </div>
       </div>
     );
