@@ -27,11 +27,11 @@ const focusById = (id: string) => requestAnimationFrame(() => document.getElemen
 
 export function SettingsModal() {
   const settings = useStore((s) => s.settings);
+  // The provider whose settings are on screen. Looking at one never changes the one the assistant uses.
+  const [viewed, setViewed] = useState<ProviderId | null>(null);
   const providers = useStore((s) => s.providers);
   const modal = useStore((s) => s.modal);
   const [tab, setTab] = useState<string>(modal?.kind === 'settings' && modal.tab ? modal.tab : 'general');
-  // The provider whose settings are on screen. Looking at one never changes the one the assistant uses.
-  const [viewed, setViewed] = useState<ProviderId | null>(null);
   const [showKey, setShowKey] = useState(false);
   const [keys, setKeys] = useState<Record<ProviderId, string>>({ openai: '', anthropic: '', local: '' });
   const [testing, setTesting] = useState<ProviderId | null>(null);
@@ -49,7 +49,8 @@ export function SettingsModal() {
   // and a test still running for the old one is dropped when it answers.
   const testRun = useRef(0);
   // For a local server, the address and its saved key are part of the setup too.
-  const testedSetup = [settings?.ai.provider ?? 'openai', settings?.ai.models[settings?.ai.provider ?? 'openai'] ?? '', settings?.ai.provider === 'local' ? `${settings.ai.local.baseURL}\n${keyRevision}` : ''].join('\n');
+  const viewedProvider = viewed ?? settings?.ai.provider ?? 'openai';
+  const testedSetup = [viewedProvider, settings?.ai.models[viewedProvider] ?? '', viewedProvider === 'local' ? `${settings?.ai.local.baseURL}\n${keyRevision}` : ''].join('\n');
   const lastSetup = useRef(testedSetup);
   useEffect(() => {
     if (lastSetup.current === testedSetup) return;
@@ -132,14 +133,18 @@ export function SettingsModal() {
             keyWrite.current = true;
             setKeyBusy(true);
             try {
+              // Every doubtful key is asked about before any is written, so Keep editing never leaves a partial save.
               for (const p of unsavedProviders) {
-                const submitted = keys[p].trim();
-                if (!(await confirmKeyShape(p, submitted))) {
+                if (!(await confirmKeyShape(p, keys[p].trim()))) {
                   setTab('ai');
                   setViewed(p);
+                  setShowKey(false);
                   focusById('settings-api-key');
                   return;
                 }
+              }
+              for (const p of unsavedProviders) {
+                const submitted = keys[p].trim();
                 try {
                   setProviders(await api.ai.setKey(p, submitted));
                   setKeys((k) => (k[p].trim() === submitted ? { ...k, [p]: '' } : k));
@@ -210,6 +215,7 @@ export function SettingsModal() {
     setKeys((k) => (k[provider].trim() === submitted ? { ...k, [provider]: '' } : k));
     setReplacing({ ...replacing, [provider]: false });
     setKeyRevision((n) => n + 1);
+    setShowKey(false);
     setKeyNotice({ provider, kind: 'saved' });
     if (tested) setTest({ ...tested, draft: false, signature: signatureFor(undefined, 0, 'saved', keyRevision + 1) });
     void update({ ai: { setupAcknowledged: true } });
@@ -545,13 +551,13 @@ export function SettingsModal() {
       <Shield aria-hidden="true" />
       <span>
         {!isLocal ? (
-          `Your request and the relevant page text go to ${label}, which bills your account for usage. Images and screenshots are never sent.`
+          `${provider === activeProvider ? 'Your request' : `With ${label} in use, your request`} and the relevant page text go to ${label}, which bills your account for usage. Images and screenshots are never sent.`
         ) : localRemoteHost ? (
           <>
-            When you use the assistant, your requests and page content go to <strong className="settings-host">{localRemoteHost}</strong>.
+            When you use the assistant{provider === activeProvider ? '' : ' with this server'}, your requests and page content go to <strong className="settings-host">{localRemoteHost}</strong>.
           </>
         ) : (
-          'Your requests and page content stay on this computer.'
+          provider === activeProvider ? 'Your requests and page content stay on this computer.' : 'With this server in use, your requests and page content stay on this computer.'
         )}
       </span>
     </div>
@@ -684,7 +690,10 @@ export function SettingsModal() {
                       labelledBy="settings-provider-label"
                       describedBy="settings-provider-note"
                       value={provider}
-                      onChange={setViewed}
+                      onChange={(p) => {
+                        setViewed(p);
+                        setShowKey(false);
+                      }}
                       options={providers.map((p) => ({ value: p.id, label: p.label, icon: p.id === 'local' ? <Laptop /> : <Cloud /> }))}
                     />
                     {providerNote}

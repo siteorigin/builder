@@ -66,9 +66,9 @@ export type LocalURLCheck = { ok: true; url: string; remote: boolean } | { ok: f
 export function checkLocalBaseURL(raw: string, allowRemote = false): LocalURLCheck {
   let u: URL;
   try {
-    // A bare host and port (`localhost:11434`) is taken as http://, which is what every local server speaks.
+    // A bare host and port (`localhost:11434`) is taken as http://, which is what every local server speaks. Only `localhost`, an IPv6 literal or a dotted name qualifies, so `file:8080` or `https:443` is never read as a host.
     const typed = String(raw).trim();
-    u = new URL(/^[a-z][a-z0-9+.-]*:\/\//i.test(typed) || !/^(\[[0-9a-f:.]+\]|[a-z0-9_.-]+)(:\d+)?(\/|$)/i.test(typed) ? typed : `http://${typed}`);
+    u = new URL(/^[a-z][a-z0-9+.-]*:\/\//i.test(typed) || !/^(localhost|\[[0-9a-f:.]+\]|[a-z0-9_-]+(\.[a-z0-9_-]+)+)(:\d+)?(\/|$)/i.test(typed) ? typed : `http://${typed}`);
   } catch {
     return { ok: false, message: 'Enter a full server URL, such as http://127.0.0.1:8080/v1.' };
   }
