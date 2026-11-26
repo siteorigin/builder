@@ -1,0 +1,157 @@
+name: Publish a release
+description: Upload one platform's installers and update metadata to R2, safely ordered, then notify the website
+
+inputs:
+  artifact_name:
+    description: The build artifact holding the installers and the platform's metadata file
+    required: true
+  include_globs:
+    description: Space-separated globs of the installer files to upload (e.g. "*.dmg *.zip *.blockmap")
+    required: true
+  metadata_suffix:
+    description: The metadata file's suffix after the channel ("-mac", "-linux", or "" for Windows)
+    required: false
+    default: ""
+  release_platforms:
+    description: The platform the version gate checks (mac, linux or win)
+    required: true
+  publish_url:
+    description: Where the bucket's releases/ prefix is served from
+    required: false
+    default: https://downloads.siteorigin.com/releases/
+  r2_access_key_id:
+    description: R2 access key ID
+    required: true
+  r2_secret_access_key:
+    description: R2 secret access key
+    required: true
+  r2_endpoint:
+    description: R2 S3 endpoint URL
+    required: true
+  r2_bucket:
+    description: R2 bucket name
+    required: true
+  website_url:
+    description: The website's refresh-releases webhook URL (optional)
+    required: false
+    default: ""
+  website_webhook_secret:
+    description: The website webhook's bearer token (optional)
+    required: false
+    default: ""
+
+runs:
+  using: composite
+  steps:
+    - name: Check the R2 settings
+      shell: bash
+      env:
+        R2_ACCESS_KEY_ID: ${{ inputs.r2_access_key_id }}
+        R2_SECRET_ACCESS_KEY: ${{ inputs.r2_secret_access_key }}
+        R2_ENDPOINT: ${{ inputs.r2_endpoint }}
+        R2_BUCKET: ${{ inputs.r2_bucket }}
+      run: |
+        missing=0
+        for name in R2_ACCESS_KEY_ID R2_SECRET_ACCESS_KEY R2_ENDPOINT R2_BUCKET; do
+          if [[ -z "${!name}" ]]; then
+            echo "::error::The $name secret is not set"
+            missing=1
+          fi
+        done
+        exit $missing
+
+    # The calling job has checked the repository out: that is how it loads this action.
+    - uses: actions/setup-node@v6
+      with:
+        node-version: 24
+        cache: npm
+
+    # js-yaml and semver for the scripts below, at the lockfile's versions.
+    - name: Install the release scripts' dependencies
+      shell: bash
+      run: npm ci --ignore-scripts --no-audit --no-fund
+
+    - name: Resolve update metadata prefix
+      uses: ./.github/actions/resolve-update-metadata-prefix
+
+    - uses: actions/download-artifact@v8
+      with:
+        name: ${{ inputs.artifact_name }}
+        path: release/
+
+    - name: List the release files
+      shell: bash
+      run: ls -lah release/
+
+    - name: Check the version is newer than the live one
+      id: version-check
+      shell: bash
+      env:
+        RELEASE_PLATFORMS: ${{ inputs.release_platforms }}
+        PUBLISH_URL: ${{ inputs.publish_url }}
+      run: node scripts/release/check-version-monotonic.ts
+
+    # Installers first, cached for good (a version's files never change), then
+    # checked on the download domain at full size, and only then the metadata,
+    # never cached, so the feed never advertises a file that isn't there.
+    - name: Upload the installers to R2
+      if: steps.version-check.outputs.skip_upload != 'true'
+      shell: bash
+      env:
+        AWS_ACCESS_KEY_ID: ${{ inputs.r2_access_key_id }}
+        AWS_SECRET_ACCESS_KEY: ${{ inputs.r2_secret_access_key }}
+        AWS_DEFAULT_REGION: auto
+        R2_ENDPOINT: ${{ inputs.r2_endpoint }}
+        R2_BUCKET: ${{ inputs.r2_bucket }}
+        INCLUDE_GLOBS: ${{ inputs.include_globs }}
+      run: |
+        read -ra GLOBS <<< "$INCLUDE_GLOBS"
+        INCLUDE_FLAGS=()
+        for glob in "${GLOBS[@]}"; do
+          INCLUDE_FLAGS+=(--include "$glob")
+        done
+        aws s3 sync release/ "s3://${R2_BUCKET}/releases/" \
+          --endpoint-url "${R2_ENDPOINT}" \
+          --no-progress \
+          --exclude "*" \
+          "${INCLUDE_FLAGS[@]}" \
+          --cache-control "public, max-age=31536000, immutable"
+
+    - name: Check the installers are served
+      if: steps.version-check.outputs.skip_upload != 'true'
+      shell: bash
+      env:
+        PUBLISH_URL: ${{ inputs.publish_url }}
+      run: node scripts/release/verify-r2-uploads.ts
+
+    - name: Upload the update metadata to R2
+      if: steps.version-check.outputs.skip_upload != 'true'
+      shell: bash
+      env:
+        AWS_ACCESS_KEY_ID: ${{ inputs.r2_access_key_id }}
+        AWS_SECRET_ACCESS_KEY: ${{ inputs.r2_secret_access_key }}
+        AWS_DEFAULT_REGION: auto
+        R2_ENDPOINT: ${{ inputs.r2_endpoint }}
+        R2_BUCKET: ${{ inputs.r2_bucket }}
+        METADATA_SUFFIX: ${{ inputs.metadata_suffix }}
+      run: |
+        aws s3 sync release/ "s3://${R2_BUCKET}/releases/" \
+          --endpoint-url "${R2_ENDPOINT}" \
+          --no-progress \
+          --exclude "*" \
+          --include "${UPDATE_METADATA_PREFIX}${METADATA_SUFFIX}.yml" \
+          --cache-control "no-cache, no-store, must-revalidate"
+
+    - name: Check the served metadata
+      if: steps.version-check.outputs.skip_upload != 'true'
+      shell: bash
+      env:
+        PUBLISH_URL: ${{ inputs.publish_url }}
+        METADATA_SUFFIX: ${{ inputs.metadata_suffix }}
+      run: node scripts/release/verify-r2-metadata.ts
+
+    - name: Notify the website
+      uses: ./.github/actions/website-notify
+      with:
+        url: ${{ inputs.website_url }}
+        webhook_secret: ${{ inputs.website_webhook_secret }}

@@ -1,0 +1,38 @@
+name: Notify the website of a new release
+description: POST the website's refresh-releases webhook, so it reads the new update metadata
+
+inputs:
+  url:
+    description: The webhook URL (the WEBSITE_REFRESH_URL repository variable); the step skips when it is empty
+    required: false
+    default: ""
+  webhook_secret:
+    description: The bearer token the website checks (WEBSITE_WEBHOOK_SECRET); the step skips when it is empty
+    required: false
+    default: ""
+
+runs:
+  using: composite
+  steps:
+    # The website reads the feed's metadata itself; this only tells it to look
+    # now rather than when its cache expires. So a failure is a warning, never a
+    # failed release.
+    - name: Notify the website
+      shell: bash
+      env:
+        WEBSITE_REFRESH_URL: ${{ inputs.url }}
+        WEBSITE_WEBHOOK_SECRET: ${{ inputs.webhook_secret }}
+      run: |
+        if [[ -z "$WEBSITE_REFRESH_URL" || -z "$WEBSITE_WEBHOOK_SECRET" ]]; then
+          echo "::notice::Website refresh skipped: the WEBSITE_REFRESH_URL variable or the WEBSITE_WEBHOOK_SECRET secret isn't set."
+          exit 0
+        fi
+        sleep 1
+        RESPONSE=$(curl -s --max-time 30 -w "\n%{http_code}" -X POST "$WEBSITE_REFRESH_URL" \
+          -H "Authorization: Bearer ${WEBSITE_WEBHOOK_SECRET}" || true)
+        HTTP_CODE=$(echo "$RESPONSE" | tail -1)
+        BODY=$(echo "$RESPONSE" | sed '$d')
+        echo "Response (HTTP ${HTTP_CODE}): ${BODY}"
+        if [[ "$HTTP_CODE" != "200" ]]; then
+          echo "::warning::Website refresh failed (HTTP ${HTTP_CODE})"
+        fi

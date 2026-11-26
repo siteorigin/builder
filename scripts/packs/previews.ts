@@ -135,7 +135,15 @@ export function previewProject(pack: ThemePack): { state: ProjectState; cases: C
  * page, so a theme's thumbnails are framed exactly as a project component's are.
  */
 export function inkBoundsSource(): string {
-  const bridge = readFileSync(fileURLToPath(new URL('../../src/runtime/bridge.client.js', import.meta.url)), 'utf8');
+  return inkBoundsFrom(readFileSync(fileURLToPath(new URL('../../src/runtime/bridge.client.js', import.meta.url)), 'utf8'));
+}
+
+/**
+ * inkBounds() out of the bridge's source, as an expression that runs it. Line endings are normalised first: a Windows
+ * checkout has CRLF, and the function's closing `\n}\n` would never be found.
+ */
+export function inkBoundsFrom(source: string): string {
+  const bridge = source.replace(/\r\n/g, '\n');
   const start = bridge.indexOf('\nfunction inkBounds() {');
   const end = start < 0 ? -1 : bridge.indexOf('\n}\n', start);
   if (end < 0) throw new Error('The preview bridge has no inkBounds() to frame thumbnails with.');
