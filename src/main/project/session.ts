@@ -45,7 +45,7 @@ import { RSS_PATH } from '@generator/rss';
 import { HOST_REDIRECTS_FILE, VERCEL_CONFIG_FILE } from '@generator/host-redirects';
 import { atomicWrite, ensureDir, readBytesIfExists, readIfExists, readJson, removeDurable, removeEmptyDirs, safeJoin, sha, syncDir, toJson } from './fsutil';
 import { designAt, relocateSource, textOfBytes } from './edited-design';
-import { collectionDocPath, collectionPathOf, collectionsFromDocs, componentDocPath, CUSTOM_SOURCE_RE, DOC_DIR, isCanonicalPath, newestStoredVersion, ProjectFormatError, readProject, readState, sourcePathOf, sourcesFromDocs, stateToAuthoredSources, stateToDocs } from './documents';
+import { collectionDocPath, collectionPathOf, collectionsFromDocs, componentDocPath, CUSTOM_SOURCE_RE, DOC_DIR, isCanonicalPath, MANIFEST_FILE, newestStoredVersion, ProjectFormatError, readProject, readState, sourcePathOf, sourcesFromDocs, stateToAuthoredSources, stateToDocs } from './documents';
 import { heldAsMedia, isVersionMedia, newVersionId, sameContents, VERSION_DAMAGED, VERSION_NAME_MAX, VersionStore, type SavedVersion } from './versions';
 
 export const LOCAL_DIR = '.siteorigin';
@@ -280,6 +280,12 @@ async function searchFile(abs: string, tokens: string[]): Promise<Set<string>> {
 }
 const UNSETTLED = 'A save did not finish. Close and reopen the project to recover it.';
 const LOCK_UNCHECKED = 'The project lock could not be checked, so nothing was changed. Try again.';
+/** Why a project whose folder went while it was open is read-only. */
+const FOLDER_GONE: ReadOnlyInfo = {
+  reason: 'The project folder is gone: it was moved, renamed or deleted, so nothing more can be saved. Close the project, then open it from where it is now.',
+  preview: 'There is no preview: the project folder is gone.',
+  canUnlock: false
+};
 
 /** The project is open in another live SiteOrigin Builder (on this or another computer). */
 export class ProjectLockedError extends ProjectFormatError {
@@ -604,6 +610,7 @@ export class ProjectSession extends EventEmitter {
   historyByteLimit = 512 * 1024 * 1024;
   private gcCountdown = 0;
   private heartbeat: NodeJS.Timeout | null = null;
+  private folderGone = false;
   /** Run currently holding the writer lock. */
   activeRun: { id: string; before: Map<string, string>; beforeState: ProjectState; startRevision: number; written: Map<string, Set<string | null>> } | null = null;
   private writing: Promise<unknown> = Promise.resolve();
@@ -877,7 +884,14 @@ export class ProjectSession extends EventEmitter {
     this.claimMutex = new Promise<void>((r) => (release = r));
     await prior;
     try {
-      const claim = this.lockState === 'held' ? await claimLock(this.local('lock.json'), this.lockToken!, { holder: this.lockToken!, waitMs: 1000 }) : null;
+      const claim =
+        this.lockState === 'held'
+          ? await claimLock(this.local('lock.json'), this.lockToken!, { holder: this.lockToken!, waitMs: 1000 }).catch(async (e: unknown) => {
+              // There is nowhere to make a claim in a folder that is gone.
+              if (await this.checkFolder()) return null;
+              throw e;
+            })
+          : null;
       try {
         return await fn(!!claim);
       } finally {
@@ -899,6 +913,27 @@ export class ProjectSession extends EventEmitter {
         this.fence = null;
       }
     });
+  }
+
+  /**
+   * Whether the project folder is gone: moved, renamed or deleted while open. Once found gone, this session never writes
+   * again (that would make a folder at the old address) and is read-only, saying why, even if the folder comes back.
+   */
+  async checkFolder(): Promise<boolean> {
+    if (this.folderGone) return true;
+    const missing = (path: string) => fs.stat(path).then(() => false, (e: NodeJS.ErrnoException) => e.code === 'ENOENT' || e.code === 'ENOTDIR');
+    // Both, so the manifest being replaced by another tool never looks like the whole folder going.
+    if (!(await missing(join(this.dir, MANIFEST_FILE))) || !(await missing(this.local('lock.json')))) return false;
+    if (this.folderGone) return true;
+    this.folderGone = true;
+    this.stopHeartbeat();
+    this.lockState = 'released';
+    this.lockToken = null;
+    this.readOnly = { ...FOLDER_GONE };
+    // As for a takeover: whatever is writing into the folder, or running there, stops.
+    this.emit('lock-lost');
+    this.emit('history');
+    return true;
   }
 
   /** Keep the lock fresh, and notice when another app has taken it over (it was unlocked from elsewhere). */
