@@ -1927,6 +1927,13 @@ export class Controller {
     return s.restoreVersion(id, revision, reviewed);
   }
 
+  /** Rename saved version `id` in the opening `key` only. */
+  async renameVersion(id: string, name: string, key: string): Promise<{ ok: boolean; message?: string }> {
+    const s = this.openedAs(key);
+    if (!s) return { ok: false, message: 'That project is no longer open.' };
+    return s.renameVersion(id, name);
+  }
+
   /** Delete saved version `id` in the opening `key` only. */
   async deleteVersion(id: string, key: string): Promise<{ ok: boolean; message?: string; freed?: number }> {
     const s = this.openedAs(key);

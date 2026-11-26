@@ -210,7 +210,7 @@ for (const name of ['Approved by client', LONG_VERSION]) {
   await history.waitFor({ state: 'detached' });
 }
 await projectMenu('History…');
-await history.getByRole('button', { name: 'Saved versions' }).click();
+await history.getByRole('tab', { name: 'Saved versions' }).click();
 const DELETE = 'Delete saved version?';
 await history.getByRole('button', { name: 'Delete “Approved by client”' }).click();
 await shot('delete-version', DELETE, 'Cancel');

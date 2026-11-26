@@ -84,6 +84,7 @@ const api: BuilderApi = {
     saveVersion: invoke('project:saveVersion'),
     reviewVersion: invoke('project:reviewVersion'),
     restoreVersion: invoke('project:restoreVersion'),
+    renameVersion: invoke('project:renameVersion'),
     deleteVersion: invoke('project:deleteVersion'),
     exportSource: invoke('project:exportSource'),
     exportStatic: invoke('project:exportStatic'),

@@ -41,19 +41,73 @@
   }
 
 
-  /* Changes: each row is a button that steps History to it; the action it takes shows on hover and focus. */
+  /* History (HistoryModal): one dialog with the shared tabs flush under its head, as Settings has them. It keeps one
+     height whichever tab is shown and however long the list, so switching never moves its edges. Each panel pins
+     what it needs (why History is held, the intro, the save form) and scrolls only its list, in a reserved gutter. */
+  .modal:has(.history-body) { height: min(640px, max(240px, calc(89vh - max(32px, var(--toast-band, 0px))))); }
+  .modal:has(.history-body) .modal-body { display: flex; flex-direction: column; flex: 1 1 auto; min-height: 0; padding: 0; overflow: hidden; }
+  .history-body { display: flex; flex-direction: column; flex: 1 1 auto; min-height: 0; }
+  .history-body > .tabs { flex: none; margin: 0; padding: 0 12px; }
+  .history-body .tab:focus-visible { outline-offset: -7px; border-radius: var(--r-sm); }
+  .history-body .tab[aria-selected='true'] svg { color: var(--accent-text); }
+  .history-panel[hidden] { display: none; }
+  .history-panel:not([hidden]) { display: flex; flex-direction: column; flex: 1 1 auto; min-height: 0; }
+  .history-pinned { flex: none; display: flex; flex-direction: column; gap: 10px; padding: 14px 18px 12px; }
+  .history-intro { margin: 0; color: var(--text-2); line-height: 1.45; text-wrap: pretty; }
+  /* Where History stands, by name, with a way to bring its row into view when it has scrolled away. */
+  .history-now { display: flex; align-items: baseline; min-width: 0; margin: -4px 0 0; font-size: 12px; color: var(--text-2); white-space: nowrap; }
+  /* A long name gives way first, so when it was and what is undone after it always show. */
+  .history-now-what { flex: 0 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+  .history-now strong { font-weight: 600; color: var(--text); }
+  .history-now-where { flex: none; color: var(--text-3); font-variant-numeric: tabular-nums; }
+  .history-now .link { flex: none; margin-left: 10px; border: 0; background: none; padding: 0; font: inherit; font-weight: 600; color: var(--accent-text); text-decoration: underline; text-underline-offset: 2px; }
+  .history-note { align-items: flex-start; text-wrap: pretty; }
+  .history-scroll { flex: 1 1 auto; min-height: 0; overflow-y: auto; scrollbar-gutter: stable; padding: 0 8px 18px 18px; scroll-padding-block: 34px 8px; }
+  /* Once the list has scrolled under the pinned part, a hairline and a faint shade mark the edge it goes under. */
+  .history-pinned { position: relative; z-index: 2; }
+  .history-pinned.scrolled { box-shadow: 0 1px 0 var(--border), 0 6px 8px -6px color-mix(in srgb, var(--text) 22%, transparent); }
+  .history-scroll::-webkit-scrollbar { width: 10px; }
+  .history-scroll::-webkit-scrollbar-thumb { border: 2px solid transparent; border-radius: 99px; background: var(--border-control) content-box; }
+  .history-scroll::-webkit-scrollbar-thumb:hover, .history-scroll::-webkit-scrollbar-thumb:active { background-color: var(--text-3); }
+  .history-scroll:has(> .history-empty) { display: grid; place-items: center; }
+  .history-empty { padding: 24px 12px 48px; }
+  .history-foot { display: contents; }
+  .history-foot-note { min-width: 0; font-size: 12px; color: var(--text-2); font-variant-numeric: tabular-nums; }
+
+  /* Changes: one bordered list under day headings that stay in sight as it scrolls. Each row is a button that steps
+     History to it: what it does (Undo 5 changes) stands at the row's end at rest, and pointing at or focusing a row
+     tints every row that step takes, the aimed one strongest. Who and when sit under the label; Current and Undone lead that
+     line, so they line up row to row. */
+  .history-steps { border: 1px solid var(--border); border-radius: var(--r-md); overflow: clip; }
+  .history-day + .history-day .history-day-head { border-top: 1px solid var(--border); }
+  .history-day-head { position: sticky; top: 0; z-index: 1; margin: 0; padding: 5px 12px; font-size: 12px; font-weight: 600; color: var(--text-2); background: var(--panel-2); border-bottom: 1px solid var(--border); }
+  .history-steps .history-list { border: 0; border-radius: 0; overflow: visible; }
   .history-steps li { padding: 0; }
-  .history-step { display: flex; align-items: center; gap: 10px; width: 100%; min-height: 34px; padding: 0 12px; border: 0; background: transparent; color: inherit; font: inherit; text-align: start; outline-offset: -2px; }
+  .history-steps li.in-step { background: color-mix(in srgb, var(--accent-soft) 55%, transparent); }
+  /* The row aimed at is part of its own step: the same wash, stronger, in place of the plain hover. */
+  .history-steps li.aim { background: var(--accent-soft); }
+  .history-steps li.aim .history-step:hover { background: transparent; }
+  .history-step { display: flex; align-items: center; gap: 10px; width: 100%; min-height: 46px; padding: 6px 12px; border: 0; background: transparent; color: inherit; font: inherit; text-align: start; outline-offset: -2px; }
   .history-step:hover { background: var(--hover); }
-  .history-step:focus-visible { outline: 2px solid var(--focus); }
-  .history-step[aria-disabled='true'] { cursor: progress; }
+  .history-step:focus-visible, .modal .history-step[data-autofocus]:focus { outline: 2px solid var(--focus); outline-offset: -2px; }
   .history-step > svg { width: 14px; height: 14px; flex: none; color: var(--text-3); }
-  .history-step .step-action { font-size: 12px; font-weight: 500; color: var(--accent-text); white-space: nowrap; opacity: 0; }
-  .history-step:hover .step-action, .history-step:focus-visible .step-action { opacity: 1; }
-  .history-start { color: var(--text-3); }
-  .history-said { flex: 1; min-width: 0; font-size: 12px; color: var(--text-2); }
-  .history-said.failed { color: var(--red-ink); }
-  .history-tabs { margin-bottom: 12px; }
+  .history-step > svg.lucide-sparkles { color: var(--plum); }
+  .history-step-text { display: flex; flex-direction: column; gap: 2px; flex: 1 1 auto; min-width: 0; }
+  .history-step-meta { display: flex; align-items: center; gap: 6px; min-width: 0; font-size: 12px; color: var(--text-3); font-variant-numeric: tabular-nums; }
+  .history-step-meta .badge { height: 18px; padding: 0 6px; }
+  .history-step .step-action { flex: none; min-width: 6.5em; text-align: end; font-size: 12px; font-weight: 500; color: var(--text-2); white-space: nowrap; font-variant-numeric: tabular-nums; }
+  .history-step:hover .step-action, .history-step:focus-visible .step-action { color: var(--accent-text); }
+  .history-steps.locked .history-step { cursor: not-allowed; }
+  .history-steps.locked .history-step:hover { background: transparent; }
+  .history-steps.locked .step-action, .history-steps.locked .history-step:hover .step-action { color: var(--disabled-ink); }
+  .history-start { min-height: 40px; color: var(--text-3); }
+  .history-said { display: flex; flex: 1; min-width: 0; font-size: 12px; color: var(--text-2); }
+  .history-said-failed { display: flex; align-items: center; gap: 6px; min-width: 0; color: var(--red-ink); }
+  .history-said-failed svg { width: 14px; height: 14px; flex: none; }
+  @media (forced-colors: active) {
+    .history-steps li.in-step { outline: 1px dashed CanvasText; outline-offset: -3px; }
+    .history-steps li.aim { outline-style: solid; }
+  }
   /* An AI turn reviewed in History (issue 164): what it changed, what came after it, and the two ways back. */
   .turn-review { display: flex; flex-direction: column; gap: 8px; margin-bottom: 14px; padding: 12px 14px; border: 1px solid var(--border); border-radius: var(--r-md); background: var(--panel-2); font-size: 13px; }
   .turn-review h3 { display: flex; align-items: center; gap: 8px; margin: 0; font-size: 14px; font-weight: 600; outline-offset: 2px; }
@@ -74,13 +128,24 @@
   .turn-review-action > p { align-self: center; color: var(--text-2); font-size: 12px; }
   .turn-review-action > ol { grid-column: 2; color: var(--text-2); font-size: 12px; }
   .turn-review-standing { font-size: 12px; }
-  .version-save { display: flex; gap: 8px; margin: 0 0 12px; }
+  /* Saved versions: the save form pinned above the list; each row names the version, says when it was saved, and
+     offers Restore… (which reviews first), Rename and Delete, all in sight. */
+  .version-save { display: flex; gap: 8px; margin: 0; }
   .version-save .input { flex: 1; min-width: 0; }
-  .version-save + .scope-note { margin-bottom: 12px; }
-  .versions-list li { min-height: 48px; padding: 6px 8px 6px 12px; }
-  .version-text { display: flex; flex-direction: column; gap: 1px; min-width: 0; }
+  .versions-list li { min-height: 52px; padding: 6px 6px 6px 12px; }
+  .versions-list li > svg { align-self: center; }
+  .version-text { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
+  .version-name { font-weight: 500; }
   .version-text small { font-size: 12px; color: var(--text-3); font-variant-numeric: tabular-nums; overflow-wrap: anywhere; }
-  .version-total { margin: 8px 0 0; font-size: 12px; }
+  /* Renaming swaps the name for a field of the same line height, so the row keeps its height and its columns. */
+  .version-rename { height: 22px; margin: -2px 0 -2px -5px; padding: 0 4px; font-weight: 500; }
+  /* Its ring is drawn inside the field, so it never covers the date line under it. */
+  .version-rename:focus { outline-offset: -1px; }
+  .version-tools { display: flex; flex: none; gap: 2px; }
+  .version-tools .icon-btn { color: var(--text-2); }
+  .version-tools .icon-btn:hover:not(:disabled, [aria-disabled='true']) { color: var(--text); }
+  .version-tools .icon-btn[aria-disabled='true'] { color: var(--disabled-ink); cursor: not-allowed; }
+  .version-tools .icon-btn.version-rename-save { color: var(--accent-text); }
 
   /* ---------- Page dialogs (Dialogs.tsx: Delete page, Make home page) ----------
      Members of the confirmation family (.confirm-*): the page set apart with its address, then the decision the action

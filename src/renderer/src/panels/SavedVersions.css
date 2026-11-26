@@ -1,6 +1,12 @@
 @layer components {
-  .version-review h3 { margin: 0 0 2px; font-size: 15px; font-weight: 600; }
-  .version-review > .muted:first-of-type { margin-top: 0; }
-  .version-review .scope-note { margin-top: 12px; }
+  /* Reviewing a saved version: its name under its glyph, when it was saved, then what restoring it changes. */
+  .version-review { display: flex; flex-direction: column; gap: 8px; padding-top: 14px; }
+  .version-review > * { margin: 0; }
+  .version-review h3 { display: flex; align-items: flex-start; gap: 8px; font-size: 14px; font-weight: 600; overflow-wrap: anywhere; outline-offset: 2px; }
+  .version-review h3:focus-visible { outline: 2px solid var(--focus); border-radius: var(--r-sm); }
+  .version-review h3 svg { width: 14px; height: 14px; flex: none; margin-top: 3px; color: var(--text-3); }
+  .version-review-when { margin-top: -6px !important; padding-left: 22px; font-size: 12px; }
+  .version-review-lead { margin-top: 6px !important; font-weight: 500; }
+  .version-review .storage-steps { margin: 0; }
   .version-loading { display: flex; align-items: center; gap: 8px; color: var(--text-2); }
 }

@@ -557,6 +557,9 @@ function registerIpc() {
       ? controller.restoreVersion(id, revision as number, { files: r.files, replaced: r.replaced }, key)
       : { ok: false, message: 'That saved version is no longer there.' };
   });
+  handle('project:renameVersion', (id: unknown, name: unknown, key: unknown) =>
+    typeof id === 'string' && typeof name === 'string' && typeof key === 'string' ? controller.renameVersion(id, name, key) : { ok: false, message: 'Give the version a name.' }
+  );
   handle('project:deleteVersion', (id: unknown, key: unknown) =>
     typeof id === 'string' && typeof key === 'string' ? controller.deleteVersion(id, key) : { ok: false, message: 'That saved version is no longer there.' }
   );
