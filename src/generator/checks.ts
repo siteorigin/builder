@@ -969,6 +969,136 @@ export function unlinkedButtons(state: ProjectState, tree: NodeTree): UnlinkedBu
   return out;
 }
 
+export interface EmptySection {
+  /** Node in the page or shell tree (the outermost placement, for a section inside a component's design). */
+  nodeId: string;
+  /** The placement that has nothing to show: `nodeId`, or the one inside that placement's design. */
+  placementId: string;
+  /** What the placement is called, such as “Gallery”. */
+  name: string;
+  /** The heading it shows, as visitors read it; empty when it shows none. */
+  heading: string;
+  /** What it has none of, such as “images” or “a video”. */
+  what: string;
+  /** What fills it, as the start of a sentence: “Choose its images from Assets”. */
+  fix: string;
+}
+
+/**
+ * The list a design shows its content in: a `collapseEmpty` element holding a repeat of one of its list properties,
+ * reached from its roots through plain elements (not inside another list or component). Null for a design with none,
+ * such as a text section or one whose only optional part is a button.
+ */
+function contentListOf(def: ComponentDefinition): { prop: string; schema: Extract<PropSchema, { type: 'list' }> } | null {
+  const tree = def.tree;
+  if (def.kind !== 'managed' || !tree) return null;
+  const seen = new Set<string>();
+  const find = (id: string): { prop: string; schema: Extract<PropSchema, { type: 'list' }> } | null => {
+    const n = tree.nodes[id];
+    if (!n || n.kind !== 'element' || seen.has(id)) return null;
+    seen.add(id);
+    if (n.collapseEmpty)
+      for (const c of n.children) {
+        const r = tree.nodes[c];
+        const prop = r?.kind === 'repeat' ? repeatProp(r) : undefined;
+        const schema = prop !== undefined && Object.hasOwn(def.properties, prop) ? def.properties[prop] : undefined;
+        if (prop !== undefined && schema?.type === 'list') return { prop, schema };
+      }
+    for (const c of n.children) {
+      const found = find(c);
+      if (found) return found;
+    }
+    return null;
+  };
+  for (const r of tree.rootIds) {
+    const found = find(r);
+    if (found) return found;
+  }
+  return null;
+}
+
+/** What fills a design's content list, for a finding about it being empty. */
+function listFix(n: GraphNode & { kind: 'instance' }, prop: string, schema: Extract<PropSchema, { type: 'list' }>): { what: string; fix: string } {
+  const what = ((typeof schema.label === 'string' && schema.label.trim()) || 'items').toLowerCase();
+  if (n.listSources && Object.hasOwn(n.listSources, prop)) return { what: 'entries', fix: 'Add entries to the collection it shows, or show another one' };
+  if (schema.feed === 'articles') return { what: 'articles', fix: 'Publish a dated article that news lists show' };
+  if (schema.feed) return { what, fix: `It fills itself from the site’s ${what}: add some` };
+  if (schema.pageTeaser) return { what, fix: 'Choose the pages it links to' };
+  if (Object.values(schema.fields).some((f) => f.type === 'image')) return { what, fix: `Choose its ${what} from Assets` };
+  return { what, fix: `Add its ${what}` };
+}
+
+/**
+ * Sections a visitor sees with nothing under their heading: a design whose content list (see contentListOf) shows no
+ * item in this placement, with nothing but text rendered around it, and a Video section with no video it can play.
+ * The site still publishes their heading, so Project health and the export notes name each one. What a visitor never
+ * sees (a placement hidden at every size, or left out by a condition) is not reported, and each placement is named
+ * once however often a design shows it.
+ */
+export function emptySections(state: ProjectState, tree: NodeTree, entry?: { collectionId: string; entryId: string }): EmptySection[] {
+  const out: EmptySection[] = [];
+  const reported = new Set<string>();
+  const lists = new Map<string, ReturnType<typeof contentListOf>>();
+  const listOf = (def: ComponentDefinition) => (lists.has(def.id) ? lists.get(def.id)! : lists.set(def.id, contentListOf(def)).get(def.id)!);
+  // The sizes each node on the way down hides what is inside it at (see firstSectionImages).
+  const hiding: Array<[Set<Size>, Set<Size>]> = [];
+  const hidden = () => hiddenEverySize(hiding.map((h) => h[0])) && hiddenEverySize(hiding.map((h) => h[1]));
+  // The placements being walked that may have nothing to show, innermost last, until something they render says otherwise.
+  const open: Array<{ found: EmptySection; filled: boolean; instance: GraphNode; read: boolean }> = [];
+  const filled = () => open.forEach((o) => (o.filled = true));
+  const report = (found: EmptySection) => {
+    const key = `${found.nodeId}|${found.placementId}`;
+    if (reported.has(key)) return;
+    reported.add(key);
+    out.push(found);
+  };
+  walkRendered(state, tree, {
+    ...(entry ? { entry } : {}),
+    node: (n, scope, reportId, _inDef, def) => {
+      // The placement's heading, from its values as the walk reads them inside its design.
+      const last = open[open.length - 1];
+      if (last && !last.read && scope.instance === last.instance) {
+        last.read = true;
+        last.found.heading = plainText(scope.props.heading);
+      }
+      const page = !def ? hiddenSizes([n.styles, n.kind === 'instance' ? n.overrides?.root : undefined]) : undefined;
+      hiding.push(page ? [page, page] : [hiddenInDesign(def!, n.id, scope, false)[0] ?? new Set(), hiddenInDesign(def!, n.id, scope)[0] ?? new Set()]);
+      // A slot shows whatever the page or the design gives it, a list's row whatever it holds, and pictures and links are
+      // content wherever they are. Text outside a list is the section's heading and introduction.
+      if (n.kind === 'slot' || n.kind === 'image' || n.kind === 'link' || (scope.item && n.kind !== 'element' && n.kind !== 'repeat')) filled();
+      if (n.kind !== 'instance') return;
+      const placed = state.components[n.definitionId];
+      const list = placed ? listOf(placed) : null;
+      if (!placed || !list || hidden()) return;
+      const { what, fix } = listFix(n, list.prop, list.schema);
+      open.push({ found: { nodeId: reportId, placementId: n.id, name: displayName(state, n), heading: '', what, fix }, filled: false, instance: n, read: false });
+    },
+    code: (def, props, reportId, _placement, n) => {
+      // The theme's Video section shows its heading and no player while it has no address its player can play.
+      if (isComponent(def, 'media.video') && !parseVideoUrl(props.url)) {
+        if (!hidden()) report({ nodeId: reportId, placementId: n.id, name: displayName(state, n), heading: plainText(props.heading), what: 'video', fix: 'Paste the address of a YouTube or Vimeo video' });
+        return;
+      }
+      // Any other code shows what its own markup says.
+      filled();
+    },
+    done: (n) => {
+      hiding.pop();
+      const last = open[open.length - 1];
+      if (n.kind !== 'instance' || last?.instance !== n) return;
+      open.pop();
+      if (!last.filled) report(last.found);
+    }
+  });
+  return out;
+}
+
+/** What Project health says of an empty section, after where it is: what it lacks, what visitors see, and what to do. */
+export function emptySectionMessage(e: EmptySection): string {
+  const seen = e.heading ? 'its heading with nothing under it' : 'an empty section';
+  return `the ${e.name}${e.heading ? ` “${e.heading}”` : ''} has no ${e.what} to show, so visitors see ${seen}. ${e.fix}, or remove the section.`;
+}
+
 /** The unlinked buttons one node of a page or shell tree renders: the node itself, or those inside a placement. */
 export function unlinkedButtonsAt(state: ProjectState, tree: NodeTree, nodeId: string): UnlinkedButton[] {
   return tree.nodes[nodeId] ? unlinkedButtons(state, { ...tree, rootIds: [nodeId] }) : [];
