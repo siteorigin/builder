@@ -107,6 +107,20 @@ describe('content operations', () => {
     const r = applyOperations(s, [{ type: 'page.remove', pageId: contact, replacementPageId: s.site.homePageId }]).state;
     expect(validateState(r).filter((d) => d.severity === 'error')).toEqual([]);
   });
+
+  it('keeps one header link to the page promoted when Home is deleted, in a menu with its own order', () => {
+    const s = fresh();
+    const about = Object.values(s.pages).find((p) => p.title === 'About')!.id;
+    const header = s.site.shell.header.rootIds[0];
+    const linksTo = (st: ProjectState, id: string) =>
+      ((st.site.shell.header.nodes[header] as InstanceNode).props.links as Array<{ link: { type: string; target: string; anchor?: string } }>).filter((l) => l.link.type === 'page' && l.link.target === id);
+    expect(linksTo(s, s.site.homePageId)).toHaveLength(1);
+    expect(linksTo(s, about)).toHaveLength(1);
+    const r = applyOperations(s, [{ type: 'page.remove', pageId: s.site.homePageId, replacementPageId: about }]).state;
+    expect(r.site.homePageId).toBe(about);
+    expect(linksTo(r, about)).toHaveLength(1);
+    expect(validateState(r).filter((d) => d.severity === 'error')).toEqual([]);
+  });
 });
 
 describe('components', () => {

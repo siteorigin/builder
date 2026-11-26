@@ -1276,6 +1276,9 @@ function pageRemove(state: ProjectState, op: Op<'page.remove'>): OpResult {
   // A header menu that follows the pages loses its links to the page rather than pointing them at another. A new
   // blank Home stands in the removed Home's place in the pages, so its menu links follow to it like every other link.
   if (followsPageOrder(state) && !op.newHome) dropHeaderLinks(state, page.id);
+  // A menu with its own order that already links to the replacement drops the removed page's plain link instead of
+  // pointing it at the same page a second time.
+  else if (op.replacementPageId && op.replacementPageId !== page.id && own(state.pages, op.replacementPageId)) dropHeaderLinks(state, page.id, op.replacementPageId);
   const all = pageLinkUses(state, page.id);
   // Page lists' cards for this page go with it; every other link is pointed at the replacement.
   const cards = all.filter((u) => u.card);
