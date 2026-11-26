@@ -8,13 +8,14 @@ import { applyOps, commitOps } from '../store';
 import { activeWorkspace, canvasCovered } from '../lib/workspace';
 import { CANVAS_DRAFT, reportRefused, setCanvasCommit } from '../lib/pending';
 import { clickTargetIn, treeFor } from '../lib/model';
+import { openInsertSearch } from '../lib/insert-focus';
 import { editLabel } from '../lib/edit-label';
 import type { ElementRef, OwnerRef, ProjectState } from '@shared/types';
 import { refKey, sameRef } from '@shared/types';
 import { aiActivity, api, commitDraft, confirmDialog, errorText, getState, markDraft, saveLocal, setState, setViewport, stepHistory, toast, useStore, type Rect } from '../store';
 import { appliedSteps, errorComponent, revertStep, stillNewest } from '../lib/preview-error';
 import { acceptMessage, newSessionId, postToFrame, staleFor, viewAfter, type BridgeMessage, type FrameView } from '../lib/bridge';
-import { chainOf, descOrNull, measuredRects, pointedAt, rectList, slotBoxes, spaceSizes, spacingOf, type FrameSpacing, type SlotBox } from '../lib/payload';
+import { chainOf, descOrNull, emptyAreaOf, measuredRects, pointedAt, rectList, slotBoxes, spaceSizes, spacingOf, type FrameEmptyArea, type FrameSpacing, type SlotBox } from '../lib/payload';
 import { blocksFromDom, richDom } from '../lib/richtext';
 import { dropAt, dropReaches, moveIndex, shownOrder } from '../lib/reorder';
 import { createPageGate, failedWithRevision, gatedPick, type PageGate, type SeenFailure } from '../lib/page-gate';
@@ -538,34 +539,32 @@ export function Canvas() {
   });
 
   /** A page with nothing on it (only the shared header and footer, if it shows them): the canvas offers the first
-   *  step in the open space below them. `emptyTop` is where that space starts, in page pixels. */
+   *  step between them, where the page's sections will go. The page keeps that much room in its empty <main> while
+   *  editing, and reports where it is with its other outlines, so the card follows a scroll. */
   const emptyPage = mode === 'edit' && !definitionMode && !templateMode && !!page && page.rootIds.length === 0;
   /** A page with only its title (see titleOnlyPage): the strip offers the same first steps as an empty page. A project
    *  open read-only takes none of them. */
   const titleOnly = mode === 'edit' && !definitionMode && !templateMode && !!page && !!state && !snapshot?.readOnly && titleOnlyPage(state, page);
-  const [emptyTop, setEmptyTop] = useState<number | null>(null);
+  const [emptyArea, setEmptyArea] = useState<FrameEmptyArea | null>(null);
   // Cleared only when the page changes or stops being empty, so the card does not blink while the frame is resized.
-  useEffect(() => setEmptyTop(null), [pageId, emptyPage]);
+  useEffect(() => setEmptyArea(null), [session, pageId, emptyPage]);
+  /** The card's height as last drawn (its actions wrap in a narrow page); until then, its height on one row. */
+  const emptyCardRef = useRef<HTMLDivElement>(null);
+  const [emptyCardH, setEmptyCardH] = useState(186);
+  useLayoutEffect(() => {
+    const h = emptyCardRef.current?.offsetHeight;
+    if (h && h !== emptyCardH) setEmptyCardH(h);
+  });
+  // The card and the same space above and below it, in page pixels.
+  const emptyRoom = Math.ceil((emptyCardH + 48) / zoom);
   useEffect(() => {
-    if (!emptyPage || !frameReady || !page) return;
+    if (!frameReady) return;
     const st = getState().snapshot?.state;
-    if (!st) return;
-    const parts = (['header', 'footer'] as const).filter((part) => showsPart(page, part));
-    const descs = parts.flatMap((part) => st.site.shell[part].rootIds.map((id) => descOf(st, { owner: { kind: 'shell', id: part }, instancePath: [], nodeId: id }) ?? { ctx: '', node: '', items: '' }));
-    if (!descs.length) return setEmptyTop(0);
-    const requestId = Math.random().toString(36).slice(2);
-    let live = true;
-    measureWaiters.current.set(requestId, (raw) => {
-      if (!live) return;
-      const found = (measuredRects(raw, descs.length) ?? []).filter((r): r is Rect & { order: number } => !!r);
-      setEmptyTop(found.length ? Math.max(...found.map((r) => r.y + r.height)) : 0);
-    });
-    post('measure', { requestId, descs });
-    return () => {
-      live = false;
-      measureWaiters.current.delete(requestId);
-    };
-  }, [emptyPage, frameReady, pageId, viewport, snapshot?.revision, applied]); // eslint-disable-line react-hooks/exhaustive-deps
+    if (!emptyPage || !page || !st) return post('emptySpace', { space: null });
+    const header = showsPart(page, 'header') ? st.site.shell.header.rootIds.flatMap((id) => descOf(st, { owner: { kind: 'shell', id: 'header' }, instancePath: [], nodeId: id }) ?? []) : [];
+    post('emptySpace', { space: { key: page.id, height: emptyRoom, header } });
+    // Said again to every page the frame loads or arrives at (formsView counts those), and after every change it shows.
+  }, [emptyPage, emptyRoom, frameReady, pageId, formsView, snapshot?.revision, applied]); // eslint-disable-line react-hooks/exhaustive-deps
 
   /** What the frame of the current session shows, as it last reported (null before it reported a page). */
   const viewNow = () => (frameView.current.session === session ? frameView.current.view : null);
@@ -933,6 +932,8 @@ export function Canvas() {
           const drawn = s.mode === 'edit' && s.frameReady && !(s.rightTab === 'styles' && s.dockOpen);
           const own = drawn && shownPage && samePath(shownPage.route, frameAt.current) ? descFor(s.selection) : null;
           if (takeArrival(s.selection, arrivalShown(descOrNull(p.selectedDesc), own, selected[0], p.viewport)) && s.selection) setArrival({ key: refKey(s.selection), n: ++arrivals.current });
+          const area = emptyAreaOf(p.empty);
+          setEmptyArea((was) => (JSON.stringify(was) === JSON.stringify(area) ? was : area));
           // Kept only when it changes: the page reports every frame while it scrolls.
           const sp = spacingOf(p.spacing);
           const seen = JSON.stringify(sp);
@@ -2813,14 +2814,10 @@ export function Canvas() {
   const leftEnd = chipEnd || (stripLeftW ? stripLeftW + 12 : 0);
   const labelMode = resizing || leftEnd + labelW.full <= frameW ? 'full' : scalePct !== 100 && leftEnd + labelW.mid <= frameW ? 'mid' : leftEnd + labelW.short <= frameW ? 'short' : 'gone';
   const stripRoom = Math.max(80, frameW - labelW.short - 12);
-  // The empty-page card needs about 210px under the shared header and footer (its height and margins); with less,
-  // the strip says it instead.
-  const emptyFits = emptyTop !== null && emptyTop * z + 24 + 186 <= frameH * z;
-  const addSections = () => {
-    setState({ leftTab: 'insert' });
-    // Into the Insert panel, where the first section is chosen; it goes on this page.
-    requestAnimationFrame(() => document.querySelector<HTMLElement>('.side-panel-view:not([hidden]) :is(input, button, [tabindex="0"])')?.focus());
-  };
+  // Where the card goes, in page pixels: at the top of the empty page's room, below a header that covers its start.
+  // Where the room or the frame is too short for it (scrolled away, a low window), the strip says it instead.
+  const emptyAt = emptyArea && emptyArea.key === pageId ? Math.max(emptyArea.top, emptyArea.headerBottom) : null;
+  const emptyFits = emptyAt !== null && (emptyAt * z + 24 + emptyCardH <= frameH * z) && 24 + emptyCardH <= (emptyArea!.top + emptyArea!.height - emptyAt) * z + 1;
   // While the AI works, the page's copy waits: a question it asks would take over the message box, and the copy would
   // become the answer. A project open read-only takes no AI edits.
   const aiWorking = !!runStatus || turnOpen;
@@ -2838,7 +2835,7 @@ export function Canvas() {
   // The strip offers the first steps when there is no room for the card, or on a page that has only its title.
   // Where a drag of something new would go between content, the same for a tile from Insert and an image from Assets.
   const between = insertDrop ?? (imageDrop && { outline: imageDrop.list, line: imageDrop.line, refused: imageDrop.refused });
-  const stripStart = !staleFrame && !resizing && !reorder && !insertDrop && !imageDrop && !(placement === 'strip' && firstSel) && ((emptyPage && emptyTop !== null && !emptyFits) || titleOnly);
+  const stripStart = !staleFrame && !resizing && !reorder && !insertDrop && !imageDrop && !(placement === 'strip' && firstSel) && ((emptyPage && emptyAt !== null && !emptyFits) || titleOnly);
 
   return (
     <main
@@ -3043,7 +3040,7 @@ export function Canvas() {
             {stripStart && (
               <div className="frame-status empty" ref={stripLeft} style={{ maxWidth: stripRoom }} data-testid="canvas-start-strip">
                 <span>{emptyPage ? 'This page has no sections yet' : 'Start this page'}</span>
-                <button className="link-btn" onClick={addSections}>
+                <button className="link-btn" onClick={openInsertSearch}>
                   <Plus /> <span>Add a section</span>
                 </button>
                 {writeWithAi('link-btn')}
@@ -3210,13 +3207,13 @@ export function Canvas() {
                     return <div className={`ov-drop${d.vertical ? ' vertical' : ''}`} style={{ left: d.left, top: d.top, width: d.width, height: d.height }} role="presentation" data-testid="insert-drop-line" />;
                   })()}
               </div>
-              {emptyPage && emptyTop !== null && !staleFrame && emptyFits && (
-                <div className="canvas-empty" style={{ top: emptyTop * z + 24 }}>
-                  <div className="canvas-card empty-card" role="group" aria-labelledby="canvas-empty-title" data-testid="canvas-empty-page">
+              {emptyPage && !staleFrame && emptyFits && (
+                <div className="canvas-empty" style={{ top: emptyAt! * z + 24 }}>
+                  <div className="canvas-card empty-card" ref={emptyCardRef} role="group" aria-labelledby="canvas-empty-title" data-testid="canvas-empty-page">
                     <h3 id="canvas-empty-title">This page has no sections yet</h3>
                     <p>{snapshot?.readOnly ? 'Add a first section to start building it.' : 'Add a first section, or write it with AI.'} Visitors never see this note.</p>
                     <div className="empty-actions">
-                      <button className="btn btn-primary" onClick={addSections}>
+                      <button className="btn btn-primary" onClick={openInsertSearch}>
                         <Plus /> Add a section
                       </button>
                       {writeWithAi('btn')}

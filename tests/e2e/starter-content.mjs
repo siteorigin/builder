@@ -7,7 +7,7 @@ import { mkdirSync, readFileSync, readdirSync } from 'node:fs';
 import { join } from 'node:path';
 import { createProject, eventually, launch, scratch, step, withTimeout } from './harness.mjs';
 
-const { WORK, cleanup } = scratch('starter-content');
+const { WORK, SHOTS, cleanup } = scratch('starter-content');
 const { app, win, errors } = await launch(WORK);
 const snapshot = () => win.evaluate(() => window.builder.project.snapshot());
 const exportDialog = win.getByRole('dialog', { name: 'Export your website' });
@@ -141,6 +141,17 @@ try {
   const card = win.getByTestId('canvas-empty-page');
   await card.waitFor({ timeout: 30000 });
   assert.match(await card.innerText(), /This page has no sections yet/);
+  // The card sits where the page's sections will go: under the shared header, and above the shared footer.
+  await eventually(async () => {
+    // Read inside the page, then placed through the zoomed frame: boundingBox() leaves the zoom out.
+    const shown = await win.locator('iframe[title="Website preview"]').evaluate((el) => ({ y: el.getBoundingClientRect().y, zoom: el.getBoundingClientRect().width / el.offsetWidth }));
+    const onScreen = (y) => shown.y + y * shown.zoom;
+    const headerEnd = onScreen(await frame.locator('header').first().evaluate((el) => el.getBoundingClientRect().bottom));
+    const footerStart = onScreen(await frame.locator('footer').last().evaluate((el) => el.getBoundingClientRect().top));
+    const note = await card.boundingBox();
+    assert.ok(headerEnd <= note.y && note.y + note.height <= footerStart, `the card is between the header and footer: ${JSON.stringify({ shown, headerEnd, note, footerStart })}`);
+  });
+  await win.screenshot({ path: join(SHOTS, 'blank-empty-page.png') });
   const leftovers = ['Select this text', 'Insert panel', 'A short sentence', 'example.com', '555 0134', '15550134', 'Harbor Lane', 'no sections yet', 'Visitors never see'];
   const live = await frame.locator('body').innerText();
   for (const t of leftovers) assert.ok(!live.includes(t), `the live preview does not show “${t}”: ${live}`);
@@ -155,7 +166,12 @@ try {
 
   step('Add a section opens Insert, and the first section placed takes the note’s place');
   await card.getByRole('button', { name: 'Add a section' }).click();
-  await eventually(async () => assert.equal(await win.evaluate(() => !!document.activeElement?.closest('.side-panel-view:not([hidden])')), true, 'focus moves into the Insert panel'));
+  const search = win.locator('.side-panel-view:not([hidden])').getByRole('combobox', { name: 'Search items to add' });
+  const searching = () => eventually(async () => assert.equal(await search.evaluate((el) => el === document.activeElement), true, 'focus is in Insert’s search'));
+  await searching();
+  // With Insert already open, the card's button still returns to search.
+  await card.getByRole('button', { name: 'Add a section' }).click();
+  await searching();
   await win.locator('.side-panel-view:not([hidden]) .insert-tile.section').first().click();
   await card.waitFor({ state: 'detached' });
   const homeId = (await snapshot()).state.site.homePageId;

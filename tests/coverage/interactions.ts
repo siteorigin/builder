@@ -1139,7 +1139,7 @@ export const INTERACTIONS: Interaction[] = [
     intent: 'Begin filling an empty page',
     start: 'A Blank site’s empty Home',
     routes: ['canvas:Add a section', 'canvas:Write with AI', 'canvas:Paste'],
-    outcome: 'The canvas says how to begin in the editor only; Add a section opens Insert and the first section takes the note’s place; Paste is offered where the first section would go',
+    outcome: 'The canvas says how to begin between the shared header and footer, in the editor only; Add a section opens Insert with its search focused and the first section takes the note’s place; Paste is offered where the first section would go',
     scenario: 'Blank starter · none',
     proof: [
       { test: 'tests/e2e/starter-content.mjs', kind: 'e2e', step: 'Add a section opens Insert, and the first section placed takes the note’s place' },
