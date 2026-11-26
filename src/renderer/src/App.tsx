@@ -174,14 +174,17 @@ export function App() {
 }
 
 /**
- * Marks the commit that first shows each revision, screen and opening (src/shared/perf.ts): its layout effect runs in
- * the same commit as everything else the snapshot changed. Rendered only while timing marks are on.
+ * Marks the commit that first shows each revision, screen and opening (src/shared/perf.ts), and each selection: its
+ * layout effect runs in the same commit as everything else the snapshot or selection changed. Rendered only while
+ * timing marks are on.
  */
 function PerfProbe() {
   const revision = useStore((s) => s.snapshot?.revision ?? null);
   const opening = useStore((s) => s.snapshot?.workspaceKey ?? null);
   const screen = useStore((s) => s.screen);
+  const selection = useStore((s) => s.selection);
   useLayoutEffect(() => perfMarkAtCommit('renderer.commit', { revision, screen, opening: opening !== null }), [revision, opening, screen]);
+  useLayoutEffect(() => perfMarkAtCommit('renderer.selectionCommit', { selected: selection !== null }), [selection]);
   return null;
 }
 

@@ -348,7 +348,150 @@ export const edit: Scenario = {
   }
 };
 
-export const SCENARIOS: Scenario[] = [launch, open, edit];
+// ---------------------------------------------------------------------------
+// panels
+// ---------------------------------------------------------------------------
+
+/** The editor's panels, as its counters name them (src/renderer/src/lib/perf-panels.tsx): the sidebar's six views, the
+ *  post writer and SEO view that cover the canvas, and the dock's four. */
+export const PANELS = ['pages', 'posts', 'layers', 'insert', 'assets', 'seo', 'postWriter', 'seoView', 'chat', 'inspect', 'styles', 'project'] as const;
+/** The one panel on screen in each of `panels`' windows: the dock's Project view for the click (so the Inspector is
+ *  hidden too), the Inspector for the edit, which is made there. */
+export const SHOWN_PANELS = { click: 'project', edit: 'inspect' } as const;
+/** The placement the canvas click selects, as the canvas, Layers and the Inspector name it. */
+const HERO_NAME = 'Split hero';
+/** The canvas's toolbar for what is selected, which names it. */
+const heroChip = (win: Page) => win.getByRole('toolbar', { name: `${HERO_NAME} actions`, exact: true });
+/** The Inspector's name for what is selected. */
+const inspectorName = (win: Page) => win.locator('#dock-panel-inspect .insp-name h3');
+
+/** Each panel's renders and render time between two editor marks; missing when the editor never counted the panel. */
+function perPanel(m: Collector, prefix: string, shown: string, from: PerfRecord | undefined, to: PerfRecord | undefined) {
+  if (!from || !to) return;
+  if (trackless(from) || trackless(to)) return void m.need(`${prefix} (the editor did not count component renders)`, undefined);
+  let hiddenMs = 0;
+  let hiddenRenders = 0;
+  for (const id of PANELS) {
+    const renders = `panel.${id}.renders`;
+    const time = `panel.${id}.renderMs`;
+    if (from.c?.[renders] === undefined || to.c?.[time] === undefined) {
+      m.need(`${prefix} (the ${id} panel was not mounted)`, undefined);
+      continue;
+    }
+    const n = counter(to, renders) - counter(from, renders);
+    const ms = counter(to, time) - counter(from, time);
+    m.count(`${prefix}.renders.${id}`, n);
+    m.ms(`${prefix}.renderMs.${id}`, ms);
+    if (id !== shown) {
+      hiddenRenders += n;
+      hiddenMs += ms;
+    }
+  }
+  m.count(`${prefix}.hiddenRenders`, hiddenRenders);
+  m.ms(`${prefix}.hiddenRenderMs`, hiddenMs);
+  m.count(`${prefix}.renders`, counter(to, 'react.renders') - counter(from, 'react.renders'));
+}
+const trackless = (r: PerfRecord) => r.c?.['react.renders'] === undefined;
+const atPhase =
+  (phase: string) =>
+  (r: PerfRecord): boolean =>
+    r.proc === 'renderer' && r.attrs?.scenario === 'panels' && r.attrs?.phase === phase;
+
+export const panels: Scenario = {
+  name: 'panels',
+  after: 'open',
+  description: 'With every panel hidden but the dock’s Project view, click the home hero on the canvas; then, with the Inspector shown, change its Heading there.',
+  async run(ctx) {
+    const { win, fixture } = ctx;
+    // Its own heading, never the one another scenario in the chain (edit) may have left.
+    const heading = `Panels heading ${ctx.iteration}`;
+    const before = await win.evaluate(() => (globalThis as unknown as EditorPage).builder.project.snapshot());
+    expect(before, 'no project is open');
+    const shownHeading = findHeading(before.state.pages[fixture.homePageId], fixture.heroId)?.heading ?? fixture.heading;
+    // Not timed: every sidebar view hidden (the open one's rail button pressed again), the dock open on Project.
+    const pressed = win.locator('.rail button[aria-pressed="true"]:not([data-rail="styles"])');
+    if (await pressed.count()) await pressed.first().click();
+    await win.locator('#editor-sidebar').waitFor({ state: 'hidden', timeout: 15_000 });
+    if (!(await win.locator('#editor-dock').isVisible())) await win.getByRole('button', { name: 'Right panel', exact: true }).click();
+    await win.getByRole('tab', { name: 'Project', exact: true }).first().click();
+    await win.locator('#dock-panel-project').waitFor({ state: 'visible', timeout: 15_000 });
+    // Nothing of the hero selected (a scenario before this one may have left it so), so the click changes the selection.
+    for (let i = 0; i < 4 && (await heroChip(win).count()); i++) await win.keyboard.press('Escape');
+    expect(!(await heroChip(win).count()), `the ${HERO_NAME} is still selected, so the click would change nothing`);
+    // Hidden, not gone: every panel's content is in the page, and stays the same elements through the scenario (each is
+    // tagged here and looked for afterwards), so a panel shown again has what it had, not a new copy.
+    const holders = '#editor-sidebar .side-panel-view, #editor-dock [role="tabpanel"]';
+    type Holder = { firstElementChild: Record<string, unknown> | null };
+    const views = await win.locator(holders).evaluateAll((els) => els.map((el) => !!(el as unknown as Holder).firstElementChild && ((el as unknown as Holder).firstElementChild!.__perfKept = true)));
+    expect(views.length >= 10 && views.every(Boolean), `only ${views.filter(Boolean).length} of the sidebar's and dock's ${views.length} panels are in the page`);
+    // Choosing the panels saves the workspace 300 ms later: that save lands before the click, not in it.
+    await sleep(Math.max(ctx.settleMs, WORKSPACE_SAVE_WAIT_MS));
+    await ctx.mark('scenario.start', { scenario: 'panels' });
+    // A click on the canvas selects the hero, as the canvas's selection toolbar shows.
+    await preview(win).getByRole('heading', { name: shownHeading, exact: true, level: 1 }).first().click();
+    await heroChip(win).waitFor({ timeout: 30_000 });
+    await ctx.waitTrace((t) => !!t.first('renderer.selectionCommit', (r) => r.attrs?.selected === true, forScenarioStart(t, 'panels')), 15_000);
+    await sleep(ctx.settleMs);
+    await ctx.mark('scenario.phase', { scenario: 'panels', phase: 'clicked' });
+    // Not timed: the Inspector, hidden through the click, shows the hero as soon as it is shown again.
+    await win.getByRole('tab', { name: 'Inspector', exact: true }).first().click();
+    await win.locator('#dock-panel-inspect').waitFor({ state: 'visible', timeout: 15_000 });
+    const named = (await inspectorName(win).first().textContent())?.trim();
+    expect(named === HERO_NAME, `the Inspector, shown again, names ${named ? `“${named}”` : 'nothing'}, not the ${HERO_NAME} the canvas selected`);
+    await sleep(Math.max(ctx.settleMs, WORKSPACE_SAVE_WAIT_MS));
+    await ctx.mark('scenario.phase', { scenario: 'panels', phase: 'edit' });
+    // One property changed in the Inspector, to the preview showing it.
+    const field = win.getByRole('textbox', { name: 'Heading', exact: true }).first();
+    await field.waitFor({ timeout: 15_000 });
+    await field.fill(heading);
+    await win.keyboard.press('Tab');
+    await preview(win).getByRole('heading', { name: heading, exact: true, level: 1 }).first().waitFor({ timeout: 60_000 });
+    const target = before.revision + 1;
+    await ctx.waitTrace((t) => !!t.first('canvas.revisionApplied', atRevision(target)), 30_000);
+    const after = await win.evaluate(() => (globalThis as unknown as EditorPage).builder.project.snapshot());
+    expect(after && after.revision === target, `the edit left the project at revision ${after?.revision}, not ${target}`);
+    expect(findHeading(after.state.pages[fixture.homePageId], fixture.heroId)?.heading === heading, 'the project does not hold the new heading on the home hero');
+    const doc = join(ctx.projectDir, 'siteorigin', 'pages', `${fixture.homePageId}.json`);
+    const saved = existsSync(doc) ? (JSON.parse(readFileSync(doc, 'utf8')) as unknown) : null;
+    expect(findHeading(saved, fixture.heroId)?.heading === heading, 'the home page’s document on disk does not hold the new heading on the home hero');
+    await sleep(ctx.settleMs);
+    await ctx.mark('scenario.end', { scenario: 'panels' });
+    await ctx.waitTrace((t) => !!t.first('scenario.end', forScenario('panels', 'renderer')) && !!t.first('scenario.end', forScenario('panels', 'main')));
+    // After the window: the panels hidden through it are still there, and Layers, shown again, is up to date at once.
+    const still = await win.locator(holders).evaluateAll((els) => els.map((el) => (el as unknown as Holder).firstElementChild?.__perfKept === true));
+    expect(still.length === views.length && still.every(Boolean), `${still.filter((x) => !x).length} of the panels were replaced or left the page while hidden`);
+    await win.getByRole('button', { name: 'Layers', exact: true }).first().click();
+    await win.locator('#editor-sidebar').waitFor({ state: 'visible', timeout: 15_000 });
+    const chosen = await win.locator('#editor-sidebar').getByRole('treeitem', { name: HERO_NAME, selected: true }).count();
+    expect(chosen > 0, `Layers, shown again, does not have the ${HERO_NAME} selected`);
+  },
+  measure(trace) {
+    const m = new Collector();
+    const begin = m.need('scenario.start (renderer)', trace.first('scenario.start', forScenario('panels', 'renderer')));
+    const clicked = m.need('scenario.phase clicked (renderer)', trace.first('scenario.phase', atPhase('clicked')));
+    const editing = m.need('scenario.phase edit (renderer)', trace.first('scenario.phase', atPhase('edit')));
+    const end = m.need('scenario.end (renderer)', trace.first('scenario.end', forScenario('panels', 'renderer')));
+    // The click: from the canvas telling the editor of it to the commit that shows the selection.
+    const select = m.need('canvas.select', trace.first('canvas.select', inProc('renderer'), begin?.t ?? Infinity, clicked?.t));
+    const shown = m.need('renderer.selectionCommit', trace.first('renderer.selectionCommit', (r) => r.proc === 'renderer' && r.attrs?.selected === true, select?.t ?? Infinity, clicked?.t));
+    m.since('panels.click.commit', select, shown);
+    perPanel(m, 'panels.click', SHOWN_PANELS.click, begin, clicked);
+    commits(m, trace, 'panels.click.rendererCommits', begin, clicked);
+    // The edit: from the editor receiving the edited project to the commit that shows it.
+    const req = m.need('edit.requested', trace.first('edit.requested', inProc('renderer'), editing?.t ?? Infinity, end?.t));
+    const target = typeof req?.attrs?.revision === 'number' ? req.attrs.revision + 1 : NaN;
+    const at = req?.t ?? Infinity;
+    const received = m.need('renderer.snapshotReceived', trace.first('renderer.snapshotReceived', atRevision(target), at));
+    const committed = m.need('renderer.commit', trace.first('renderer.commit', atRevision(target), at));
+    m.since('panels.edit.commit', received, committed);
+    m.since('panels.edit.rendererCommit', req, committed);
+    perPanel(m, 'panels.edit', SHOWN_PANELS.edit, editing, end);
+    commits(m, trace, 'panels.edit.rendererCommits', editing, end);
+    return m;
+  }
+};
+
+export const SCENARIOS: Scenario[] = [launch, open, edit, panels];
 
 /**
  * The scenarios to run in one launch for those asked for: each with every one it follows, in the order of SCENARIOS

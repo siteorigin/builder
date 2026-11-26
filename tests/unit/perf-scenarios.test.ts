@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import type { PerfRecord } from '../../src/shared/perf';
 import { Collector, Trace } from '../../scripts/perf/results';
-import { chainFor, edit, expect as check, findHeading, launch, open, runChain, type FixtureFacts, type Scenario, type ScenarioContext } from '../../scripts/perf/scenarios';
+import { chainFor, edit, expect as check, findHeading, launch, open, PANELS, panels, runChain, SHOWN_PANELS, type FixtureFacts, type Scenario, type ScenarioContext } from '../../scripts/perf/scenarios';
 import { FIXTURES } from '../../scripts/perf/fixtures';
 
 let seq = 0;
@@ -17,6 +17,8 @@ describe('the scenario chain', () => {
     expect(chainFor(['open']).map((s) => s.name)).toEqual(['launch', 'open']);
     expect(chainFor(['launch']).map((s) => s.name)).toEqual(['launch']);
     expect(chainFor(['edit', 'launch', 'open']).map((s) => s.name)).toEqual(['launch', 'open', 'edit']);
+    expect(chainFor(['panels']).map((s) => s.name)).toEqual(['launch', 'open', 'panels']);
+    expect(chainFor(['panels', 'edit']).map((s) => s.name)).toEqual(['launch', 'open', 'edit', 'panels']);
     expect(chainFor([])).toEqual([]);
     expect(() => chainFor(['nope'])).toThrow('Unknown scenario');
   });
@@ -268,6 +270,83 @@ describe('edit metrics', () => {
     expect(got.missing).toEqual(['edit.snapshotBytes (a snapshot whose size could not be told)']);
     expect(got.metrics['edit.snapshotBytes']).toBeUndefined();
     expect(got.metrics['edit.snapshotsSent'].value).toBe(3);
+  });
+});
+
+describe('panels metrics', () => {
+  const base = 4;
+  const target = 5;
+  /** The editor's counters at a mark: React's, and each panel's renders and render time, scaled by `k`. */
+  const counters = (commits: number, renders: number, k: number, drop?: string): Record<string, number> => {
+    const c: Record<string, number> = { 'react.commits': commits, 'react.renders': renders };
+    PANELS.forEach((id, i) => {
+      if (id === drop) return;
+      c[`panel.${id}.renders`] = k * (i + 1);
+      c[`panel.${id}.renderMs`] = k * (i + 1) * 0.5;
+    });
+    return c;
+  };
+  const phase = (name: string) => ({ attrs: { scenario: 'panels', phase: name } });
+  function trace(drop: (x: PerfRecord) => boolean = () => false, unmounted?: string) {
+    return new Trace(
+      [
+        // Before the scenario: a selection commit, never the click's.
+        r('renderer.selectionCommit', 4000, { attrs: { selected: true } }),
+        r('scenario.start', 5000, { attrs: { scenario: 'panels' }, c: counters(100, 1000, 1, unmounted) }),
+        m('scenario.start', 5000, { attrs: { scenario: 'panels' } }),
+        r('canvas.select', 5100),
+        // The selection cleared on the way to the new one: not the commit that shows it.
+        r('renderer.selectionCommit', 5104, { attrs: { selected: false } }),
+        r('renderer.selectionCommit', 5130, { attrs: { selected: true } }),
+        r('scenario.phase', 7000, { ...phase('clicked'), c: counters(110, 1600, 3) }),
+        m('scenario.phase', 7000, phase('clicked')),
+        // Showing the Inspector, between the windows: in neither.
+        r('renderer.selectionCommit', 7100, { attrs: { selected: true } }),
+        r('scenario.phase', 8000, { ...phase('edit'), c: counters(130, 2000, 10) }),
+        m('scenario.phase', 8000, phase('edit')),
+        r('edit.requested', 8200, { attrs: { revision: base, operations: 1 } }),
+        // Another revision's records: never this edit's.
+        r('renderer.snapshotReceived', 8201, { attrs: { revision: base } }),
+        r('renderer.commit', 8202, { attrs: { revision: base } }),
+        r('renderer.snapshotReceived', 8300, { attrs: { revision: target } }),
+        r('renderer.commit', 8345, { attrs: { revision: target } }),
+        r('scenario.end', 9000, { attrs: { scenario: 'panels' }, c: counters(145, 3000, 14) }),
+        m('scenario.end', 9000, { attrs: { scenario: 'panels' } })
+      ].filter((x) => !drop(x))
+    );
+  }
+
+  it('time the click and the edit to their commits, and each panel’s renders in each window', () => {
+    const got = panels.measure(trace(), facts);
+    expect(got.missing).toEqual([]);
+    const v = (k: string) => got.metrics[k]?.value;
+    expect([v('panels.click.commit'), v('panels.edit.commit'), v('panels.edit.rendererCommit')]).toEqual([30, 45, 145]);
+    expect([v('panels.click.rendererCommits'), v('panels.edit.rendererCommits'), v('panels.click.renders'), v('panels.edit.renders')]).toEqual([10, 15, 600, 1000]);
+    // Each panel gained (k₂ − k₁)·(its place) renders, and half that in ms; nothing between the windows is counted.
+    PANELS.forEach((id, i) => {
+      expect(v(`panels.click.renders.${id}`)).toBe(2 * (i + 1));
+      expect(v(`panels.click.renderMs.${id}`)).toBe(i + 1);
+      expect(v(`panels.edit.renders.${id}`)).toBe(4 * (i + 1));
+      expect(got.metrics[`panels.edit.renderMs.${id}`].unit).toBe('ms');
+    });
+    // The hidden panels are every one but the window's shown one: Project for the click, the Inspector for the edit.
+    const all = PANELS.reduce((n, _, i) => n + i + 1, 0);
+    const place = (id: string) => PANELS.indexOf(id as (typeof PANELS)[number]) + 1;
+    expect([v('panels.click.hiddenRenders'), v('panels.click.hiddenRenderMs')]).toEqual([2 * (all - place(SHOWN_PANELS.click)), all - place(SHOWN_PANELS.click)]);
+    expect(v('panels.edit.hiddenRenders')).toBe(4 * (all - place(SHOWN_PANELS.edit)));
+  });
+
+  it('name what is missing, and never count a panel the editor never had as doing nothing', () => {
+    // The selection's commit is looked for only after the click: without the click there is neither.
+    expect(panels.measure(trace((x) => x.name === 'canvas.select'), facts).missing).toEqual(['canvas.select', 'renderer.selectionCommit']);
+    expect(panels.measure(trace((x) => x.name === 'renderer.selectionCommit' && x.t === 5130), facts).missing).toEqual(['renderer.selectionCommit']);
+    expect(panels.measure(trace((x) => x.name === 'renderer.commit' && x.attrs?.revision === target), facts).missing).toEqual(['renderer.commit']);
+    expect(panels.measure(trace((x) => x.name === 'scenario.phase' && x.attrs?.phase === 'edit'), facts).missing).toContain('scenario.phase edit (renderer)');
+    const gone = panels.measure(trace(undefined, 'insert'), facts);
+    expect(gone.missing).toEqual(['panels.click (the insert panel was not mounted)']);
+    expect(gone.metrics['panels.click.renders.insert']).toBeUndefined();
+    const uncounted = new Trace(trace().records.map((x) => (x.name === 'scenario.start' && x.proc === 'renderer' ? { ...x, c: { 'react.commits': 100 } } : x)));
+    expect(panels.measure(uncounted, facts).missing).toEqual(['panels.click (the editor did not count component renders)']);
   });
 });
 

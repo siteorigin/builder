@@ -50,6 +50,7 @@ import { closeProject, endEditingHold, saveNow } from './lib/leave';
 import { shortcutLabel } from './lib/shortcut-keys';
 import { isAskAiKey } from './lib/ask-ai-key';
 import { isRemoteShell, leaveLive, LOCAL_PROJECT_COMMANDS, REMOTE_LEFT_TABS, REMOTE_MODALS, REMOTE_RIGHT_TABS, showsRemote } from './lib/remote-session';
+import { timedPanel } from './lib/perf-panels';
 
 /** Leave "editing everywhere" for the page it was entered from. However it is left (Done editing, Esc), focus
  *  lands on the page switcher, where the page now being edited is named. */
@@ -699,11 +700,11 @@ export function Editor() {
   // Entering and leaving the mode is announced from a region that is always mounted, so it is heard.
   const modeAnnouncement = useTransitionAnnouncement(defName, (prev, next) => (next ? `Editing ${next} everywhere. Layout and style changes apply wherever it is used.` : prev ? `Finished editing ${prev} everywhere` : null));
   const dockViews: Record<RightTab, { label: ReactNode; icon: ReactNode; extra?: ReactNode; panel: () => ReactNode }> = {
-    chat: { label: aiBusy ? <span title={`AI: ${aiLabel}`}>AI</span> : 'AI', icon: <Sparkles />, extra: aiBusy ? <span className={`live${aiPhase === 'asking' ? ' asking' : ''}`} role="img" aria-label={aiLabel} title={`AI: ${aiLabel}`} /> : undefined, panel: () => <Chat /> },
-    inspect: { label: 'Inspector', icon: <SlidersHorizontal />, panel: () => <Inspector /> },
-    styles: { label: 'Site styles', icon: <Palette />, panel: () => <SiteStyles /> },
+    chat: { label: aiBusy ? <span title={`AI: ${aiLabel}`}>AI</span> : 'AI', icon: <Sparkles />, extra: aiBusy ? <span className={`live${aiPhase === 'asking' ? ' asking' : ''}`} role="img" aria-label={aiLabel} title={`AI: ${aiLabel}`} /> : undefined, panel: () => timedPanel('chat', <Chat />) },
+    inspect: { label: 'Inspector', icon: <SlidersHorizontal />, panel: () => timedPanel('inspect', <Inspector />) },
+    styles: { label: 'Site styles', icon: <Palette />, panel: () => timedPanel('styles', <SiteStyles />) },
     // The project's private brief (#518), apart from Site details' visitor-facing description.
-    project: { label: 'Project', icon: <NotebookPen />, panel: () => <ProjectBrief /> }
+    project: { label: 'Project', icon: <NotebookPen />, panel: () => timedPanel('project', <ProjectBrief />) }
   };
 
   return (
@@ -783,12 +784,12 @@ export function Editor() {
         <aside id="editor-sidebar" className={`side-panel${shown.left < 250 ? ' narrow' : ''}`} style={{ width: shown.left, display: leftTab ? undefined : 'none' }} aria-label="Sidebar">
           {leftTabs.map(({ id: t }) => (
             <div key={t} className="side-panel-view" hidden={leftTab !== t}>
-              {t === 'pages' && <PagesPanel />}
-              {t === 'posts' && <PostsPanel />}
-              {t === 'layers' && <LayersPanel />}
-              {t === 'insert' && <InsertPanel />}
-              {t === 'assets' && <AssetsPanel narrow={shown.left < 240} />}
-              {t === 'seo' && <SeoPanel />}
+              {t === 'pages' && timedPanel('pages', <PagesPanel />)}
+              {t === 'posts' && timedPanel('posts', <PostsPanel />)}
+              {t === 'layers' && timedPanel('layers', <LayersPanel />)}
+              {t === 'insert' && timedPanel('insert', <InsertPanel />)}
+              {t === 'assets' && timedPanel('assets', <AssetsPanel narrow={shown.left < 240} />)}
+              {t === 'seo' && timedPanel('seo', <SeoPanel />)}
             </div>
           ))}
         </aside>
@@ -798,10 +799,10 @@ export function Editor() {
           <Canvas />
         </div>
         <div className="post-writer-holder" style={{ left: RAIL_WIDTH + shown.left, right: shown.right }} hidden={!writing}>
-          <PostWriter hidden={!writing} />
+          {timedPanel('postWriter', <PostWriter hidden={!writing} />)}
         </div>
         <div className="seo-view-holder" style={{ left: RAIL_WIDTH + shown.left, right: shown.right }} hidden={!seoing}>
-          <SeoView shown={seoing} />
+          {timedPanel('seoView', <SeoView shown={seoing} />)}
         </div>
         <Seam side="right" width={shown.right} max={panelMax('right', windowWidth, prefs)} at={shown.right} restore={() => setState({ dockOpen: true })} />
         <aside id="editor-dock" className="dock" style={{ width: shown.right, display: dockOpen ? undefined : 'none' }} aria-label="Right panel">
