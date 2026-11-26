@@ -924,12 +924,7 @@ export class Controller {
       }
       this.filesChangedAt = Date.now();
       if (this.stage) this.syncStage(session);
-      else {
-        this.dev?.notifyRevision(ev.revision);
-        // The change's files are on disk before it is announced: a live session's guests reload to see it. A private
-        // copy's guests reload once the copy has it (syncStage).
-        this.live.projectChanged();
-      }
+      else this.dev?.notifyRevision(ev.revision);
       this.broadcast();
       // An import, a relink, an undo or an outside edit of the library may name files that are, or are not, there.
       if (ev.changedDocs.includes('siteorigin/assets.json')) void this.checkAssetFiles(session);
@@ -1029,6 +1024,11 @@ export class Controller {
       this.live.previewChanged();
       this.broadcast();
     });
+    // A live session's guests reload once a change has reached the preview: its files are in Vite's hands, so what
+    // they load is the new revision (the project's own folder, or the private copy once it has the change).
+    dev.onPublished(() => {
+      if (this.dev === dev) this.live.projectChanged();
+    });
     await dev.start();
     // Anything the other app wrote between the copy and the watches.
     if (stage) this.syncStage(session);
@@ -1116,7 +1116,6 @@ export class Controller {
         if (this.stage === stage) {
           this.stagedRevision = revision;
           this.dev?.notifyRevision(revision);
-          if (this.session === session) this.live.projectChanged();
         }
       })
       .catch(() => {

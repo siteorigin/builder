@@ -2,6 +2,7 @@ import { Agent, request as httpRequest, type ClientRequest, type IncomingMessage
 import { MAX_GUESTS, MAX_PREVIEW_HEADERS, MAX_PREVIEW_REQUESTS_IN_FLIGHT, MAX_PREVIEW_RESPONSE_BYTES, PREVIEW_CHUNK_BYTES } from '@shared/live/limits';
 import type { Frame } from '@shared/live/messages';
 import { isPreviewHeaderName, isPreviewHeaderValue, isPreviewLocation, isPreviewTarget, PREVIEW_METHODS, PreviewStream, type PreviewAbortCode, type PreviewMethod } from '@shared/live/preview';
+import { LIVE_GUEST_HEADER } from '../../runtime/policy';
 
 /**
  * The host's end of the preview tunnel: a guest's preview request, passed on by the relay, is asked of the open
@@ -54,6 +55,11 @@ export const SOCKET_HIGH_WATER_BYTES = 4 * PREVIEW_CHUNK_BYTES;
 export const SOCKET_LOW_WATER_BYTES = PREVIEW_CHUNK_BYTES;
 /** How long the preview server may go without sending anything before the request is given up. */
 export const UPSTREAM_IDLE_MS = 60_000;
+/**
+ * A body arriving slowly goes out in whatever has come after this long, rather than waiting to fill a chunk: the relay
+ * gives up on a response that sends nothing for a while (its idle deadline).
+ */
+export const FLUSH_MS = 50;
 const DRAIN_POLL_MS = 20;
 
 /** Statuses that never carry a body. */
@@ -67,6 +73,9 @@ interface Pending {
   req: ClientRequest | null;
   res: IncomingMessage | null;
   drain: ReturnType<typeof setTimeout> | null;
+  flush: ReturnType<typeof setTimeout> | null;
+  /** The guest has its whole answer; what is left is the preview server's message ending on its own connection. */
+  answered: boolean;
   done: boolean;
 }
 
@@ -145,8 +154,10 @@ export class PreviewProxy {
     let guestCount = 0;
     for (const p of this.pending.values()) if (p.guestId === guestId) guestCount++;
     if (this.pending.size >= MAX_PROXY_REQUESTS || guestCount >= MAX_PREVIEW_REQUESTS_IN_FLIGHT) return void this.options.send({ type: 'preview:abort', requestId, code: 'UNAVAILABLE' });
-    // The relay has checked all of this already; the host checks again, since only it knows what it would reach.
-    if (!(PREVIEW_METHODS as readonly string[]).includes(frame.method) || !isPreviewTarget(frame.target)) return this.refuse(requestId);
+    // The relay has checked all of this already; the host checks again, since only it knows what it would reach. The
+    // target is asked exactly as written, so it must be printable ASCII (a guest's address reaches the relay
+    // percent-encoded): nothing reaches the request line that Node would refuse or read another way.
+    if (!(PREVIEW_METHODS as readonly string[]).includes(frame.method) || !isPreviewTarget(frame.target) || /[^\x21-\x7e]/.test(frame.target)) return this.refuse(requestId);
 
     const headers: Record<string, string> = {};
     for (const [rawName, value] of frame.headers) {
@@ -158,13 +169,29 @@ export class PreviewProxy {
     headers['accept-encoding'] = 'identity';
     // The preview server is asked as the editor asks it: the guest's host name never reaches it.
     headers.host = `127.0.0.1:${preview.port}`;
+    // Marked as a guest's, so the preview server refuses it anything the project's own configuration would send on to
+    // another server (src/runtime/policy.ts).
+    headers[LIVE_GUEST_HEADER] = '1';
 
-    const pending: Pending = { requestId, guestId, stream: new PreviewStream(frame.method as PreviewMethod), req: null, res: null, drain: null, done: false };
+    const pending: Pending = { requestId, guestId, stream: new PreviewStream(frame.method as PreviewMethod), req: null, res: null, drain: null, flush: null, answered: false, done: false };
     this.pending.set(requestId, pending);
-    const req = httpRequest({ host: '127.0.0.1', port: preview.port, method: frame.method, path: frame.target, headers, agent: this.agent, setHost: false });
+    let req: ClientRequest;
+    try {
+      req = httpRequest({ host: '127.0.0.1', port: preview.port, method: frame.method, path: frame.target, headers, agent: this.agent, setHost: false });
+    } catch {
+      return this.fail(pending, 'UNAVAILABLE');
+    }
     pending.req = req;
     req.setTimeout(UPSTREAM_IDLE_MS, () => this.fail(pending, 'TIMEOUT'));
     req.on('error', () => this.fail(pending, 'UNAVAILABLE'));
+    // A switch to another protocol is nothing the tunnel can carry; Node hands the connection over instead of a response.
+    req.on('upgrade', (_res, socket) => {
+      socket.destroy();
+      this.fail(pending, 'INVALID_RESPONSE');
+    });
+    req.on('close', () => {
+      if (!pending.res) this.fail(pending, 'UNAVAILABLE');
+    });
     req.on('response', (res) => this.respond(pending, frame, preview.port, res));
     req.end();
   }
@@ -175,9 +202,14 @@ export class PreviewProxy {
     if (pending) this.finish(pending);
   }
 
-  /** Stop every request: the socket they answer on has gone, or the session ended. */
+  /** Stop every request without a word: the socket they answer on has gone, or the session ended. */
   abortAll(): void {
     for (const pending of [...this.pending.values()]) this.finish(pending);
+  }
+
+  /** Stop every request and tell the relay why, so each guest is answered at once: the preview server stopped or moved. */
+  cancelAll(code: PreviewAbortCode): void {
+    for (const pending of [...this.pending.values()]) this.fail(pending, code);
   }
 
   /** Stop everything and close the connections to the preview server. */
@@ -201,18 +233,32 @@ export class PreviewProxy {
     const { requestId } = pending;
     const status = res.statusCode ?? 0;
     if (status < 200 || status > 599) return this.fail(pending, 'INVALID_RESPONSE');
-    // The body goes to the guest as it is, and the protocol has no way to say it is compressed: asked for none, any
-    // other encoding is a body the guest could not read.
-    const encoding = res.headers['content-encoding'];
-    if (encoding !== undefined && encoding.trim().toLowerCase() !== 'identity') return this.fail(pending, 'INVALID_RESPONSE');
-    const headers = previewResponseHeaders(res.rawHeaders, frame.target, port);
     const bodyless = frame.method === 'HEAD' || BODYLESS.has(status);
-    const declared = headers.find(([name]) => name === 'content-length')?.[1];
-    if (!bodyless && declared !== undefined && Number(declared) > MAX_PREVIEW_RESPONSE_BYTES) return this.fail(pending, 'TOO_LARGE');
+    if (!bodyless) {
+      // The body goes to the guest as it is, and the protocol has no way to say it is compressed or otherwise coded:
+      // asked for none, any other coding is a body the guest could not read.
+      const encoding = res.headers['content-encoding'];
+      if (encoding !== undefined && encoding.trim().toLowerCase() !== 'identity') return this.fail(pending, 'INVALID_RESPONSE');
+      const transfer = res.headers['transfer-encoding'];
+      if (transfer !== undefined && transfer.split(',').some((coding) => !['chunked', 'identity'].includes(coding.trim().toLowerCase()))) return this.fail(pending, 'INVALID_RESPONSE');
+      // The length as the preview server declared it, whatever of its headers are passed on.
+      const declared = res.headers['content-length'];
+      if (declared !== undefined && Number(declared) > MAX_PREVIEW_RESPONSE_BYTES) return this.fail(pending, 'TOO_LARGE');
+    }
+    const headers = previewResponseHeaders(res.rawHeaders, frame.target, port);
     if (!this.send(pending, { type: 'preview:response-head', requestId, status, headers })) return;
+    // A failure from here stops the guest's response midway.
+    res.on('error', () => this.fail(pending, 'INVALID_RESPONSE'));
+    res.on('close', () => {
+      if (!res.complete) this.fail(pending, 'INVALID_RESPONSE');
+    });
     if (bodyless) {
+      // The guest has its whole answer now. The request is let go once the preview server's message has ended too, so
+      // a connection it keeps busy is never left to the next request, and is closed if it never ends.
+      if (!this.send(pending, { type: 'preview:response-end', requestId, totalBytes: 0 })) return;
+      pending.answered = true;
+      res.on('end', () => this.finish(pending, true));
       res.resume();
-      if (this.send(pending, { type: 'preview:response-end', requestId, totalBytes: 0 })) this.finish(pending, true);
       return;
     }
 
@@ -238,17 +284,20 @@ export class PreviewProxy {
       held.push(data);
       heldBytes += data.length;
       if (!flush(false)) return;
+      // What is left of a chunk goes out soon even if no more comes for a while.
+      if (heldBytes > 0 && !pending.flush)
+        pending.flush = setTimeout(() => {
+          pending.flush = null;
+          if (!pending.done) flush(true);
+        }, FLUSH_MS);
       if (this.options.buffered() > SOCKET_HIGH_WATER_BYTES) this.waitForDrain(pending, res);
     });
     res.on('end', () => {
       if (pending.done) return;
+      if (pending.flush) clearTimeout(pending.flush);
+      pending.flush = null;
       if (!flush(true)) return;
       if (this.send(pending, { type: 'preview:response-end', requestId, totalBytes: total })) this.finish(pending, true);
-    });
-    // A response that stops before its end (the preview server failed or restarted) is stopped for the guest too.
-    res.on('error', () => this.fail(pending, 'INVALID_RESPONSE'));
-    res.on('close', () => {
-      if (!res.complete) this.fail(pending, 'INVALID_RESPONSE');
     });
   }
 
@@ -286,11 +335,15 @@ export class PreviewProxy {
     return false;
   }
 
-  /** End a request that cannot be answered: the relay is told why, and the preview server is asked no more. */
+  /**
+   * End a request that cannot be answered: the relay is told why (unless the guest already has its whole answer), and
+   * the preview server is asked no more.
+   */
   private fail(pending: Pending, code: PreviewAbortCode): void {
     if (pending.done) return;
+    const answered = pending.answered;
     this.finish(pending);
-    this.options.send({ type: 'preview:abort', requestId: pending.requestId, code });
+    if (!answered) this.options.send({ type: 'preview:abort', requestId: pending.requestId, code });
   }
 
   /**
@@ -301,7 +354,8 @@ export class PreviewProxy {
     if (pending.done) return;
     pending.done = true;
     if (pending.drain) clearTimeout(pending.drain);
-    pending.drain = null;
+    if (pending.flush) clearTimeout(pending.flush);
+    pending.drain = pending.flush = null;
     this.pending.delete(pending.requestId);
     if (complete) return;
     pending.res?.destroy();

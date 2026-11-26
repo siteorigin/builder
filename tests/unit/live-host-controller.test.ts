@@ -13,13 +13,23 @@ import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } 
 import type { LiveHostState, LiveJoinRequest, LiveRun } from '../../src/shared/api';
 import { joinGuest, previewOrigin, randomAddress, redeemTicket, startRelay, wait, type Relay } from './relay-harness';
 
-/** A stand-in for Electron's utility process that reports the test's preview server as ready, and exits when asked to stop. */
+/**
+ * A stand-in for Electron's utility process that reports the test's preview server as ready, holds a save's updates
+ * when asked, says when each revision has reached Vite (as src/runtime/worker.ts does), and exits when asked to stop.
+ */
 class FakeWorker extends EventEmitter {
   stdout = new EventEmitter();
   stderr = new EventEmitter();
   exited = false;
-  postMessage(m: { type: string }) {
+  published: number[] = [];
+  postMessage(m: { type: string; id?: string; revision?: number }) {
     if (m.type === 'start') queueMicrotask(() => this.emit('message', { type: 'ready', url: env.previewUrl }));
+    if (m.type === 'hold') queueMicrotask(() => this.emit('message', { type: 'held', id: m.id }));
+    if (m.type === 'revision')
+      queueMicrotask(() => {
+        this.published.push(m.revision!);
+        this.emit('message', { type: 'published', revision: m.revision });
+      });
     if (m.type === 'stop') this.kill();
   }
   kill() {
@@ -31,13 +41,14 @@ class FakeWorker extends EventEmitter {
 }
 
 const env = vi.hoisted(() => ({ userData: '', previewUrl: '' }));
+const workers: FakeWorker[] = [];
 vi.mock('electron', () => ({
   app: { isPackaged: false, getPath: () => env.userData, getVersion: () => '0.0.0', getAppPath: () => process.cwd() },
   BrowserWindow: class {},
   shell: { showItemInFolder: () => undefined },
   nativeImage: { createFromPath: () => ({ isEmpty: () => true }) },
   dialog: { showOpenDialog: async () => ({ canceled: true, filePaths: [] }) },
-  utilityProcess: { fork: () => new FakeWorker() }
+  utilityProcess: { fork: () => workers[workers.push(new FakeWorker()) - 1] }
 }));
 
 const { Controller } = await import('../../src/main/controller');
@@ -122,7 +133,8 @@ async function hosting(c: InstanceType<typeof Controller>, sent: Array<[string, 
   const opening = c.snapshot()!.workspaceKey;
   const started = await c.live.start({ opening, duration: '2h' });
   if (!started.ok) throw new Error(started.message);
-  const state = started.state as Extract<LiveHostState, { phase: 'active' }>;
+  const state = started.state;
+  if (state.phase !== 'active') throw new Error(`Expected an active session, got ${state.phase}`);
   const run: LiveRun = { workspaceKey: state.workspaceKey, runId: state.runId };
   expect(state.workspaceKey).toBe(opening);
   expect(started.inviteUrl).toBe(`${process.env.SITEORIGIN_LIVE_RELAY_URL}/s/${state.roomId}`);
@@ -144,10 +156,12 @@ describe('a live session hosted by the open project', () => {
     const page = await relay.fetch(`${await previewOrigin(state.roomId)}/`, { headers: { cookie } });
     expect(page.status).toBe(200);
     expect(await page.text()).toContain('From the project preview');
-    // A save reaches the preview, and the guests reload to see it.
+    // A save reaches the preview, and once Vite has it the guests reload to see it.
     const home = c.session!.state.site.homePageId;
+    const worker = workers.at(-1)!;
     expect((await c.apply({ operations: [{ type: 'page.update', pageId: home, seoTitle: 'Fresh bread daily' }] })).ok).toBe(true);
     await guest.guest.next('preview:reload');
+    expect(worker.published).toContain(c.session!.revision);
     // The editor was told of every change to the session.
     expect(sent.some(([ch, p]) => ch === 'live:state' && (p as LiveHostState).phase === 'active')).toBe(true);
   });

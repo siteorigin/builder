@@ -147,6 +147,9 @@ describe('starting a live session', () => {
     expect(bad.sockets).toEqual([]);
     const h = host();
     expect(await h.manager.start({ opening: '/sites/other#4', duration: '2h' })).toEqual({ ok: false, message: 'That project is no longer open.' });
+    h.env.opening = null;
+    expect(await h.manager.start({ opening: '/sites/acme#1', duration: '2h' })).toEqual({ ok: false, message: 'That project is no longer open.' });
+    h.env.opening = { workspaceKey: '/sites/acme#1', projectName: 'Acme Bakery' };
     expect(await h.manager.start({ opening: '/sites/acme#1', duration: '3 weeks' })).toMatchObject({ ok: false });
     expect(h.sockets).toEqual([]);
   });
@@ -183,6 +186,12 @@ describe('the waiting room and guests', () => {
     const carol = await relay.socket<'relay-to-guest', 'guest-to-relay'>(`/s/${state.roomId}/ws`);
     carol.send('guest-to-relay', { type: 'guest:join', version: 1, displayName: 'Carol' });
     expect(await carol.next('guest:status')).toEqual({ type: 'guest:status', status: 'locked' });
+    // Unlocked again, the next guest waits as usual.
+    expect(h.manager.setLocked(run, false)).toEqual({ ok: true });
+    await until(() => active(h.manager)?.locked === false, 'the room unlocked');
+    const dan = await joinGuest(relay, state.roomId, 'Dan');
+    await until(() => h.requests.find((r) => r.guestId === dan.guestId), "Dan's join request");
+    expect(h.manager.decline(run, dan.guestId)).toEqual({ ok: true });
 
     // Extended: later, and never past 24 hours from the start.
     expect(h.manager.extend(run, state.expiresAt + 60_000)).toEqual({ ok: true });
@@ -195,19 +204,20 @@ describe('the waiting room and guests', () => {
     expect(await ann.guest.next('guest:status')).toEqual({ type: 'guest:status', status: 'kicked' });
     await until(() => active(h.manager)?.participants.length === 0, 'an empty roster');
     // Each waiting guest was announced once.
-    expect(h.requests.map((r) => r.displayName)).toEqual(['Ann', 'Bob']);
-  });
+    expect(h.requests.map((r) => r.displayName)).toEqual(['Ann', 'Bob', 'Dan']);
+  }, 20_000);
 
   it('lets a guest’s own access run out', async () => {
     const h = host();
     const { state, run } = await started(h);
     const joined = await joinGuest(relay, state.roomId, 'Dee');
     await until(() => h.requests.find((r) => r.guestId === joined.guestId), "Dee's join request");
-    expect(h.manager.admit(run, joined.guestId, 'viewer', Date.now() + state.relayClockOffsetMs + 1500)).toEqual({ ok: true });
-    expect(await joined.guest.next('guest:status')).toMatchObject({ status: 'admitted' });
-    expect(await joined.guest.next('guest:status', 10_000)).toEqual({ type: 'guest:status', status: 'expired', scope: 'guest' });
+    const until3s = Date.now() + state.relayClockOffsetMs + 3000;
+    expect(h.manager.admit(run, joined.guestId, 'viewer', until3s)).toEqual({ ok: true });
+    expect(await joined.guest.next('guest:status')).toMatchObject({ status: 'admitted', guestExpiresAt: until3s });
+    expect(await joined.guest.next('guest:status', 15_000)).toEqual({ type: 'guest:status', status: 'expired', scope: 'guest' });
     await until(() => active(h.manager)?.participants.length === 0, 'Dee gone from the roster', 10_000);
-  });
+  }, 30_000);
 
   it('refuses commands for a session that has ended, or another opening’s', async () => {
     const h = host();
@@ -286,20 +296,25 @@ describe('the preview tunnel', () => {
 
 describe('losing the relay connection', () => {
   it('takes the room back with the session key, and admitted guests keep their places and their access', async () => {
-    const h = host({ timings: { reloadMs: 20 } });
+    // Reconnects wait long enough that the change below is made while the host is away.
+    const h = host({ timings: { reloadMs: 20, backoffBaseMs: 400, backoffMaxMs: 400 } });
     const { state, run } = await started(h);
     const ann = await admitted(h, run, state.roomId);
     // The connection drops (closed from this end with a code that means nothing to the relay, so nothing is ended).
     h.sockets[0].socket.close(3999);
-    await until(() => h.states.some((s) => s.phase === 'reconnecting'), 'reconnecting');
-    // Changes made while it was away reach guests once it is back.
+    await until(() => h.manager.state.phase === 'reconnecting', 'reconnecting');
+    // A change made while it is away reaches guests once it is back, as one reload.
     h.manager.projectChanged();
+    await wait(60);
+    expect(ann.guest.has('preview:reload')).toBe(false);
     await until(() => h.manager.state.phase === 'active' && h.sockets.length === 2, 'the room taken back');
     expect(new URL(h.sockets[1].url).pathname).toBe(`/s/${state.roomId}/ws`);
     const back = active(h.manager)!;
     expect(back).toMatchObject({ roomId: state.roomId, inviteUrl: state.inviteUrl, runId: state.runId });
     expect(back.participants).toEqual([expect.objectContaining({ guestId: ann.guestId, status: 'admitted', role: 'viewer' })]);
     await ann.guest.next('preview:reload');
+    await wait(150);
+    expect(ann.guest.has('preview:reload')).toBe(false);
     // The guest's cookie still works, through the new connection, and the host still runs the room.
     expect(Buffer.compare((await preview(state.roomId, ann.cookie, '/photo.bin')).body, Buffer.from(BINARY))).toBe(0);
     expect(h.manager.setRole(run, ann.guestId, 'collaborator')).toEqual({ ok: true });
@@ -311,13 +326,13 @@ describe('losing the relay connection', () => {
   it('refuses commands while reconnecting, and gives up once the outage outlasts its budget', async () => {
     const h = host({ relayUrl: undefined, timings: { outageMs: 300, backoffBaseMs: 1000, backoffMaxMs: 1000 } });
     const { run } = await started(h);
-    h.sockets[0].socket.close(3999);
-    await until(() => h.manager.state.phase === 'reconnecting', 'reconnecting');
-    expect(h.manager.setLocked(run, true)).toMatchObject({ ok: false, message: expect.stringContaining('reconnecting') });
-    // The only retry falls at the budget's end; make it fail, and the session ends.
+    // From here the relay cannot be reached: the only retry, at the budget's end, fails, and the session ends.
     h.manager.createSocket = () => {
       throw new Error('offline');
     };
+    h.sockets[0].socket.close(3999);
+    await until(() => h.manager.state.phase === 'reconnecting', 'reconnecting');
+    expect(h.manager.setLocked(run, true)).toMatchObject({ ok: false, message: expect.stringContaining('reconnecting') });
     await until(() => h.manager.state.phase === 'idle', 'giving up', 5000);
     expect(h.manager.state).toEqual({ phase: 'idle', lastError: expect.stringContaining('could not get it back') });
   });

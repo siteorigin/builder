@@ -39,6 +39,51 @@ export function frameAncestorsCsp(packaged: boolean): string {
  * sources' settings and any copy of a credential file (#676). Vite's own defaults
  * are repeated because setting `deny` replaces them.
  */
+/**
+ * The header the host's live session tunnel marks every guest's preview request with (src/main/live/preview-proxy.ts).
+ * A guest is shown the site and nothing more: the project's own dev-server proxy rules, which pass requests on to other
+ * servers, never apply to one of its requests.
+ */
+export const LIVE_GUEST_HEADER = 'x-siteorigin-live-guest';
+
+/** Whether Vite's `server.proxy` would pass `url` on, by its own rule for each context: a `^` pattern, or a prefix. */
+export function proxiedByVite(contexts: readonly string[], url: string): boolean {
+  return contexts.some((context) => {
+    if (!context.startsWith('^')) return url.startsWith(context);
+    try {
+      return new RegExp(context).test(url);
+    } catch {
+      // A pattern Vite could not use either: refused rather than guessed at.
+      return true;
+    }
+  });
+}
+
+type GuestReq = { headers: Record<string, string | string[] | undefined>; url?: string };
+type GuestRes = { statusCode: number; setHeader(name: string, value: string): unknown; end(body?: string): unknown };
+
+/**
+ * A Vite plugin that answers a live session guest's request as not found when the project's `server.proxy` would pass
+ * it on to another server. Its middleware is added in configureServer, so it runs ahead of Vite's proxy.
+ */
+export function liveGuestPlugin() {
+  return {
+    name: 'siteorigin-live-guest',
+    configureServer(server: { config: { server: { proxy?: Record<string, unknown> } }; middlewares: { use: (fn: (req: GuestReq, res: GuestRes, next: () => void) => void) => unknown } }) {
+      const contexts = Object.entries(server.config.server.proxy ?? {})
+        .filter(([, options]) => options)
+        .map(([context]) => context);
+      if (!contexts.length) return;
+      server.middlewares.use((req, res, next) => {
+        if (req.headers[LIVE_GUEST_HEADER] === undefined || !proxiedByVite(contexts, req.url ?? '/')) return next();
+        res.statusCode = 404;
+        res.setHeader('content-type', 'text/plain; charset=utf-8');
+        res.end('Not found.');
+      });
+    }
+  };
+}
+
 export function previewFsPolicy(dir: string) {
   return { strict: true, allow: [dir], deny: ['.env', '.env.*', '*.{crt,pem,key,p12,pfx,cer,der}', '.npmrc', '.yarnrc.yml', '**/.git/**', '**/.siteorigin/**', '**/siteorigin/brief.json*', '**/siteorigin/.brief.json*', '**/siteorigin/#brief.json#', '**/siteorigin/sources/**', '**/*source-secrets.json*', '**/*api-keys.json*'] };
 }

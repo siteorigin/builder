@@ -255,6 +255,7 @@ export class DevServer {
   status: RuntimeStatus = { state: 'idle' };
   private restarts = 0;
   private listeners = new Set<(s: RuntimeStatus) => void>();
+  private publishedListeners = new Set<(revision: number) => void>();
   logs: Array<{ level: string; message: string; time: number }> = [];
   private stopped = false;
   /** Ends a start still waiting for its process: a stopped server has nothing left to wait for. */
@@ -272,6 +273,15 @@ export class DevServer {
   onStatus(fn: (s: RuntimeStatus) => void) {
     this.listeners.add(fn);
     return () => this.listeners.delete(fn);
+  }
+
+  /**
+   * Called each time a revision told to the preview (notifyRevision) has reached Vite: its files' updates have gone, so
+   * a page loaded from here on is that revision.
+   */
+  onPublished(fn: (revision: number) => void) {
+    this.publishedListeners.add(fn);
+    return () => this.publishedListeners.delete(fn);
   }
 
   /**
@@ -314,10 +324,11 @@ export class DevServer {
         clearTimeout(timer);
         resolve();
       };
-      proc.on('message', (m: { type: string; url?: string; message?: string; level?: string; id?: string }) => {
+      proc.on('message', (m: { type: string; url?: string; message?: string; level?: string; id?: string; revision?: number }) => {
         // A process that has been stopped or replaced no longer speaks for this server.
         if (this.proc !== proc) return;
         if (m.type === 'held') this.holdAcks.get(String(m.id))?.();
+        else if (m.type === 'published') for (const fn of this.publishedListeners) fn(Number(m.revision));
         else if (m.type === 'ready') {
           clearTimeout(timer);
           this.restarts = 0;

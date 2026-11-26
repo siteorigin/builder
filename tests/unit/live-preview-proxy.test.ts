@@ -4,7 +4,8 @@ import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import { PREVIEW_CHUNK_BYTES } from '../../src/shared/live/limits';
 import { checkFrame } from '../../src/shared/live/messages';
 import { PreviewStream } from '../../src/shared/live/preview';
-import { loopbackPreview, PreviewProxy, previewRedirect, SOCKET_HIGH_WATER_BYTES, type PreviewReplyFrame, type PreviewRequestFrame } from '../../src/main/live/preview-proxy';
+import { FLUSH_MS, loopbackPreview, PreviewProxy, previewRedirect, previewResponseHeaders, SOCKET_HIGH_WATER_BYTES, type PreviewReplyFrame, type PreviewRequestFrame } from '../../src/main/live/preview-proxy';
+import { LIVE_GUEST_HEADER } from '../../src/runtime/policy';
 
 /**
  * The host's end of the preview tunnel, against a loopback server standing in for the project's Vite preview: what is
@@ -64,6 +65,28 @@ function routes(url: string, res: ServerResponse) {
     case '/gzip':
       res.writeHead(200, { 'content-type': 'text/plain', 'content-encoding': 'gzip' });
       return res.end('not really gzip');
+    case '/identity':
+      res.writeHead(200, { 'content-type': 'text/plain', 'content-encoding': 'identity' });
+      return res.end('plain');
+    case '/coded':
+      res.writeHead(200, { 'content-type': 'text/plain', 'transfer-encoding': 'gzip, chunked' });
+      return res.end('not really gzip');
+    case '/hidden-length':
+      // A length too large to carry, named as the connection's own so it is not passed on.
+      res.writeHead(200, { 'content-type': 'application/octet-stream', 'content-length': String(40 * 1024 * 1024), connection: 'content-length' });
+      return res.write('a');
+    case '/nominated-two':
+      res.writeHead(200, { 'content-type': 'text/plain', connection: 'etag, last-modified', etag: '"x"', 'last-modified': 'Mon, 01 Jan 2024 00:00:00 GMT' });
+      return res.end('ok');
+    case '/trickle':
+      res.writeHead(200, { 'content-type': 'text/plain' });
+      res.write('first');
+      return setTimeout(() => res.end('last'), FLUSH_MS * 6);
+    case '/hangup':
+      return res.socket?.destroy();
+    case '/upgrade':
+      res.socket?.write('HTTP/1.1 101 Switching Protocols\r\nConnection: Upgrade\r\nUpgrade: other\r\n\r\n');
+      return;
     case '/huge':
       res.writeHead(200, { 'content-type': 'application/octet-stream', 'content-length': String(40 * 1024 * 1024) });
       return res.write('a');
@@ -92,10 +115,25 @@ beforeAll(async () => {
   await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
   port = (server.address() as AddressInfo).port;
 });
-afterAll(() => new Promise<void>((resolve) => server.close(() => resolve())));
+afterAll(
+  () =>
+    new Promise<void>((resolve) => {
+      // Responses held open by the tests, and kept-alive connections, would keep the server from closing.
+      server.closeAllConnections();
+      server.close(() => resolve());
+    })
+);
 beforeEach(() => {
   seen.length = 0;
 });
+
+async function until(check: () => unknown, what: string, ms = 5000) {
+  const deadline = Date.now() + ms;
+  while (!check()) {
+    if (Date.now() > deadline) throw new Error(`Timed out waiting for ${what}`);
+    await new Promise((r) => setTimeout(r, 5));
+  }
+}
 
 let nextId = 0;
 const request = (target: string, extra: Partial<PreviewRequestFrame> = {}): PreviewRequestFrame => ({ type: 'preview:request', requestId: `r${++nextId}`, guestId: 'g1', method: 'GET', target, headers: [], ...extra });
@@ -141,7 +179,7 @@ describe('the loopback preview address', () => {
   it('is only ever http://127.0.0.1 on a port', () => {
     expect(loopbackPreview('http://127.0.0.1:5173')).toEqual({ port: 5173 });
     expect(loopbackPreview('http://127.0.0.1:5173/')).toEqual({ port: 5173 });
-    for (const url of ['http://localhost:5173', 'http://10.0.0.2:5173', 'https://127.0.0.1:5173', 'http://u:p@127.0.0.1:5173', 'http://127.0.0.1:5173/base/', 'http://127.0.0.1', 'nonsense', null, undefined])
+    for (const url of ['http://localhost:5173', 'http://10.0.0.2:5173', 'https://127.0.0.1:5173', 'http://u:p@127.0.0.1:5173', 'http://127.0.0.1:5173/base/', 'http://127.0.0.1:5173/?x=1', 'http://127.0.0.1:5173/#x', 'http://127.0.0.1', 'nonsense', null, undefined])
       expect(loopbackPreview(url)).toBeNull();
   });
 });
@@ -155,6 +193,11 @@ describe('redirects', () => {
     expect(previewRedirect('https://evil.example/', '/', 5173)).toBeNull();
     expect(previewRedirect('//evil.example/', '/', 5173)).toBeNull();
     expect(previewRedirect('/__open-in-editor?file=/etc/passwd', '/', 5173)).toBeNull();
+    expect(previewRedirect('http://u:p@127.0.0.1:5173/a', '/', 5173)).toBeNull();
+  });
+
+  it('passes on one redirect only', () => {
+    expect(previewResponseHeaders(['Location', '/one', 'Location', '/two', 'Content-Type', 'text/plain'], '/', 5173)).toEqual([['location', '/one'], ['content-type', 'text/plain']]);
   });
 });
 
@@ -202,6 +245,27 @@ describe('tunnelling a preview request', () => {
     expect(asked.headers.host).toBe(`127.0.0.1:${port}`);
     expect(asked.headers['accept-encoding']).toBe('identity');
     expect(asked.headers['if-none-match']).toBe('"v0"');
+    // Marked as a guest's, so the preview server applies none of the project's own proxy rules to it.
+    expect(asked.headers[LIVE_GUEST_HEADER]).toBe('1');
+  });
+
+  it('passes on the request headers the protocol allows, joining one given twice', async () => {
+    const { proxy, result } = harness();
+    const frame = request('/app.js', { headers: [['accept', 'text/javascript'], ['accept-language', 'en'], ['accept-language', 'fr;q=0.5']] });
+    proxy.handle(frame);
+    await result(frame.requestId);
+    expect(seen.find((x) => x.url === '/app.js')?.headers).toMatchObject({ accept: 'text/javascript', 'accept-language': 'en, fr;q=0.5' });
+  });
+
+  it('refuses a method other than GET or HEAD, and a target that is not plain ASCII, without asking the preview server', async () => {
+    const { proxy, result } = harness();
+    for (const extra of [{ method: 'POST' as never, target: '/app.css' }, { target: '/caf\u00e9' }, { target: '/\u0101' }, { target: '/q?x=\u4e2d' }]) {
+      const frame = request(extra.target, extra);
+      expect(() => proxy.handle(frame)).not.toThrow();
+      expect((await result(frame.requestId)).head?.status).toBe(404);
+    }
+    expect(seen).toEqual([]);
+    expect(proxy.size).toBe(0);
   });
 
   it('never asks the preview server for a path outside the preview or one of the development server’s own routes', async () => {
@@ -237,6 +301,7 @@ describe('tunnelling a preview request', () => {
     proxy.handle(cached);
     proxy.handle(reset);
     const h = await result(head.requestId, 'HEAD');
+    expect(seen.find((x) => x.url === '/photo.bin')?.method).toBe('HEAD');
     expect(h.head?.status).toBe(200);
     expect(h.chunks).toEqual([]);
     expect(h.headers['content-length']).toBe(String(BINARY.length));
@@ -267,13 +332,53 @@ describe('tunnelling a preview request', () => {
     expect(proxy.size).toBe(0);
   });
 
-  it('refuses a compressed body, which the guest could not read without its encoding', async () => {
+  it('refuses a compressed or otherwise coded body, which the guest could not read, and passes an identity one', async () => {
     const { proxy, result } = harness();
-    const frame = request('/gzip');
+    for (const target of ['/gzip', '/coded']) {
+      const frame = request(target);
+      proxy.handle(frame);
+      const r = await result(frame.requestId);
+      expect(r.head).toBeUndefined();
+      expect(r.abort?.code).toBe('INVALID_RESPONSE');
+    }
+    const plain = request('/identity');
+    proxy.handle(plain);
+    expect((await result(plain.requestId)).body.toString()).toBe('plain');
+    // A HEAD has no body to decode, whatever coding it describes.
+    const head = request('/gzip', { method: 'HEAD' });
+    proxy.handle(head);
+    expect((await result(head.requestId, 'HEAD')).head?.status).toBe(200);
+  });
+
+  it('stops a response whose declared length is too large even when the length is not passed on', async () => {
+    const { proxy, result } = harness();
+    const frame = request('/hidden-length');
     proxy.handle(frame);
     const r = await result(frame.requestId);
     expect(r.head).toBeUndefined();
-    expect(r.abort?.code).toBe('INVALID_RESPONSE');
+    expect(r.abort?.code).toBe('TOO_LARGE');
+  });
+
+  it('sends what has arrived of a slow body without waiting to fill a chunk', async () => {
+    const { proxy, frames, result } = harness();
+    const frame = request('/trickle');
+    proxy.handle(frame);
+    await until(() => frames.some((f) => f.requestId === frame.requestId && f.type === 'preview:response-chunk'), 'the first part', 2000);
+    expect(frames.some((f) => f.requestId === frame.requestId && f.type === 'preview:response-end')).toBe(false);
+    const r = await result(frame.requestId);
+    expect(r.chunks.length).toBe(2);
+    expect(r.body.toString()).toBe('firstlast');
+  });
+
+  it('says the preview is unavailable when the preview server hangs up before answering, or switches protocol', async () => {
+    const { proxy, result } = harness();
+    const hangup = request('/hangup');
+    const upgrade = request('/upgrade');
+    proxy.handle(hangup);
+    proxy.handle(upgrade);
+    expect((await result(hangup.requestId)).abort?.code).toBe('UNAVAILABLE');
+    expect((await result(upgrade.requestId)).abort?.code).toBe('INVALID_RESPONSE');
+    expect(proxy.size).toBe(0);
   });
 
   it('passes ranges and their headers on, and drops headers the response names as its connection’s own', async () => {
@@ -291,6 +396,10 @@ describe('tunnelling a preview request', () => {
     const n = await result(nominated.requestId);
     expect(n.body.toString()).toBe('ok');
     expect(n.headers.etag).toBeUndefined();
+    const two = request('/nominated-two');
+    proxy.handle(two);
+    const t = await result(two.requestId);
+    expect(t.headers).toEqual({ 'content-type': 'text/plain' });
   });
 
   it('answers that the preview is unavailable while no preview server is ready', async () => {
@@ -306,7 +415,7 @@ describe('tunnelling a preview request', () => {
     const frame = request('/slow');
     const before = closedEarly;
     proxy.handle(frame);
-    while (!frames.some((f) => f.requestId === frame.requestId && f.type === 'preview:response-head')) await new Promise((r) => setTimeout(r, 5));
+    await until(() => frames.some((f) => f.requestId === frame.requestId && f.type === 'preview:response-head'), 'the head');
     proxy.abort(frame.requestId);
     const deadline = Date.now() + 2000;
     while (closedEarly === before && Date.now() < deadline) await new Promise((r) => setTimeout(r, 5));
@@ -332,13 +441,41 @@ describe('tunnelling a preview request', () => {
     expect(Buffer.compare(r.body, Buffer.from(BINARY))).toBe(0);
   });
 
+  it('holds each guest to its share of requests in flight, and stops only the one the relay names', async () => {
+    const { proxy, frames } = harness();
+    const mine = Array.from({ length: 16 }, () => request('/slow'));
+    for (const f of mine) proxy.handle(f);
+    const extra = request('/slow');
+    proxy.handle(extra);
+    expect(frames.find((f) => f.requestId === extra.requestId)).toEqual({ type: 'preview:abort', requestId: extra.requestId, code: 'UNAVAILABLE' });
+    // Another guest still gets its own.
+    const other = request('/slow', { guestId: 'g2' });
+    proxy.handle(other);
+    expect(proxy.size).toBe(17);
+    proxy.abort(mine[0].requestId);
+    expect(proxy.size).toBe(16);
+    proxy.abortAll();
+  });
+
+  it('tells the relay each request was stopped when the preview server stops or moves', async () => {
+    const { proxy, frames } = harness();
+    const a = request('/slow');
+    const b = request('/slow');
+    proxy.handle(a);
+    proxy.handle(b);
+    await until(() => frames.filter((f) => f.type === 'preview:response-head' && (f.requestId === a.requestId || f.requestId === b.requestId)).length === 2, 'both heads');
+    proxy.cancelAll('UNAVAILABLE');
+    expect(proxy.size).toBe(0);
+    for (const id of [a.requestId, b.requestId]) expect(frames.filter((f) => f.requestId === id).at(-1)).toEqual({ type: 'preview:abort', requestId: id, code: 'UNAVAILABLE' });
+  });
+
   it('stops every request when the socket goes', async () => {
     const { proxy } = harness();
     const before = closedEarly;
     proxy.handle(request('/slow'));
     proxy.handle(request('/slow'));
-    while (proxy.size < 2) await new Promise((r) => setTimeout(r, 5));
-    await new Promise((r) => setTimeout(r, 50));
+    // Both have reached the preview server before the socket goes.
+    await until(() => seen.filter((x) => x.url === '/slow').length === 2, 'both requests upstream');
     proxy.abortAll();
     expect(proxy.size).toBe(0);
     const deadline = Date.now() + 2000;
