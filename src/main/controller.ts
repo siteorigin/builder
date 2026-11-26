@@ -69,8 +69,7 @@ import { codeBrought, importedCode, migratePackage, packagedDefinitions, planCom
 import { definitionRole } from '@engine/insert-role';
 import { findSaved, listSaved, removeSaved, saveToLibrary, savedPackagePath } from './saved-components';
 import { buildComponentPackage, preparePackageImport, readComponentPackage, type PreparedImport } from './project/component-package';
-import { serialize as v8Serialize } from 'node:v8';
-import { perf } from './perf';
+import { perf, perfNow, serializedSize, timed } from './perf';
 
 /** Said with every editable project export: a statement, never a note to review, since nothing needs doing about it. */
 const PRIVATE_FILES_LEFT_OUT = 'Private files such as .env, keys and credentials were left out.';
@@ -399,13 +398,14 @@ export class Controller {
     const w = this.getWindow();
     if (!w || w.isDestroyed()) return;
     w.webContents.send(channel, payload);
-    // What the editor is sent on every change (src/shared/perf.ts): its size as IPC serializes it, measured only while
-    // marks are on, after the send so the editor gets it no later than it would.
+    // What the editor is sent on every change (src/shared/perf.ts), only while marks are on: marked as sent now, then
+    // sized as IPC serializes it, after the send so the editor gets it no later than it would. Sizing never throws.
     if (perf.on && channel === 'project:changed') {
-      const bytes = v8Serialize(payload).byteLength;
+      const at = perfNow();
+      const bytes = serializedSize(payload);
       perf.count('ipc.projectChanged.sends');
-      perf.count('ipc.projectChanged.bytes', bytes);
-      perf.mark('controller.snapshotSent', { revision: (payload as ProjectSnapshot).revision, bytes });
+      if (bytes !== null) perf.count('ipc.projectChanged.bytes', bytes);
+      perf.mark('controller.snapshotSent', { revision: (payload as ProjectSnapshot).revision, bytes }, at);
     }
   }
 
@@ -783,22 +783,21 @@ export class Controller {
    * Open a project folder, or a project ZIP file (#263). With no path, the author chooses one (`folder`: a folder).
    * `replaces` is the missing recent entry the author is finding this project for (#217): see addRecent.
    */
-  async open(dirArg?: string, opts: { folder?: boolean; replaces?: string } = {}): Promise<OpenResult> {
+  open(dirArg?: string, opts: { folder?: boolean; replaces?: string } = {}): Promise<OpenResult> {
+    return timed('controller.open', () => this.openNow(dirArg, opts), (r) => ({ ok: r?.ok ?? false }))();
+  }
+
+  private async openNow(dirArg: string | undefined, opts: { folder?: boolean; replaces?: string }): Promise<OpenResult> {
     // Called off from the start, so a window that goes while its picker is up never gets a ZIP file unpacked for it.
     const abort = new AbortController();
     this.openAborts.add(abort);
-    const timed = perf.span('controller.open');
-    let ok = false;
     // Every exit is a structured result: a thrown error would reject the IPC call and leave the Welcome screen busy.
     try {
-      const r = await this.openChosen(dirArg, opts.folder === true, abort, opts.replaces);
-      ok = r.ok;
-      return r;
+      return await this.openChosen(dirArg, opts.folder === true, abort, opts.replaces);
     } catch (e) {
       return { ok: false, message: `Could not open the project: ${(e as Error).message}` };
     } finally {
       this.openAborts.delete(abort);
-      timed({ ok });
     }
   }
 
@@ -1117,18 +1116,13 @@ export class Controller {
     return run;
   }
 
-  private async startRuntimeNow() {
-    const session = this.session;
-    if (!session) return;
-    const timed = perf.span('controller.startRuntime');
-    try {
-      await this.startRuntimeTimed(session);
-    } finally {
-      timed({ state: this.dev?.status.state ?? 'none' });
-    }
+  private startRuntimeNow(): Promise<void> {
+    return timed('controller.startRuntime', () => this.startRuntimeWork(), () => ({ state: this.dev?.status.state ?? 'none' }))();
   }
 
-  private async startRuntimeTimed(session: ProjectSession) {
+  private async startRuntimeWork() {
+    const session = this.session;
+    if (!session) return;
     await this.stopPreview();
     if (this.session !== session) return;
     // Nothing to start and nothing to retry: no worker is ever forked for it.
@@ -1843,15 +1837,9 @@ export class Controller {
   // Editing
   // -------------------------------------------------------------------------
 
-  async apply(batch: EditBatch, opts: { label?: string; coalesceKey?: string; opening?: string } = {}): Promise<ApplyResult> {
+  apply(batch: EditBatch, opts: { label?: string; coalesceKey?: string; opening?: string } = {}): Promise<ApplyResult> {
     // An edit's whole time in the main process, from the editor's request to its answer (src/shared/perf.ts).
-    const timed = perf.span('controller.apply', { operations: Array.isArray(batch?.operations) ? batch.operations.length : 0 });
-    let r: ApplyResult | undefined;
-    try {
-      return (r = await this.applyNow(batch, opts));
-    } finally {
-      timed({ ok: r?.ok ?? false, revision: r?.revision ?? null });
-    }
+    return timed('controller.apply', () => this.applyNow(batch, opts), (r) => ({ operations: Array.isArray(batch?.operations) ? batch.operations.length : 0, ok: r?.ok ?? false, revision: r?.revision ?? null }))();
   }
 
   private async applyNow(batch: EditBatch, opts: { label?: string; coalesceKey?: string; opening?: string }): Promise<ApplyResult> {

@@ -51,7 +51,7 @@ export async function readPackFile(packId: string, file: string): Promise<Buffer
   const src = packFileInfo(packId, file);
   if (!src) throw new Error(`The ${packId} theme has no file ${file}.`);
   const bytes = await readRegularFile(src.abs, src.size).catch(() => null);
-  if (bytes) perf.count('files.hashed');
+  if (bytes && bytes.length === src.size) perf.count('files.hashed');
   if (!bytes || bytes.length !== src.size || sha(bytes) !== src.sha256) throw new Error(`The ${packId} theme's file ${file} changed after it was loaded. Restart SiteOrigin Builder to load the theme again.`);
   return bytes;
 }

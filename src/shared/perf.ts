@@ -52,11 +52,24 @@ const MAX_COUNTERS = 32;
 /** A mark or counter name: lowercase first, then letters, digits and `._:-`, at most 100 characters. */
 export const perfName = (name: unknown): name is string => typeof name === 'string' && NAME.test(name);
 
+/** The entries of a plain object of at most `max` keys, or null: anything else is refused before it is walked. */
+function plainEntries(raw: unknown, max: number): Array<[string, unknown]> | null {
+  if (!raw || typeof raw !== 'object') return null;
+  const proto = Object.getPrototypeOf(raw);
+  if (proto !== Object.prototype && proto !== null) return null;
+  const entries: Array<[string, unknown]> = [];
+  for (const k in raw) {
+    if (!Object.hasOwn(raw, k)) continue;
+    if (entries.length === max) return null;
+    entries.push([k, (raw as Record<string, unknown>)[k]]);
+  }
+  return entries;
+}
+
 function attrsOf(raw: unknown): PerfAttrs | undefined | null {
   if (raw === undefined) return undefined;
-  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return null;
-  const entries = Object.entries(raw);
-  if (entries.length > MAX_ATTRS) return null;
+  const entries = plainEntries(raw, MAX_ATTRS);
+  if (!entries) return null;
   const out: PerfAttrs = {};
   for (const [k, v] of entries) {
     if (!perfName(k)) return null;
@@ -69,9 +82,8 @@ function attrsOf(raw: unknown): PerfAttrs | undefined | null {
 
 function countersOf(raw: unknown): Record<string, number> | undefined | null {
   if (raw === undefined) return undefined;
-  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return null;
-  const entries = Object.entries(raw);
-  if (entries.length > MAX_COUNTERS) return null;
+  const entries = plainEntries(raw, MAX_COUNTERS);
+  if (!entries) return null;
   const out: Record<string, number> = {};
   for (const [k, v] of entries) {
     if (!perfName(k) || typeof v !== 'number' || !Number.isFinite(v)) return null;

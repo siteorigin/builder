@@ -1,11 +1,9 @@
 import { describe, expect, it } from 'vitest';
 import type { PerfRecord } from '../../src/shared/perf';
-import { changeMarkdown, changeTables, compareResults, median, noiseBand, summarize, summarizeCase, Trace, type CaseResult, type Iteration, type RunResult } from '../../scripts/perf/results';
-import { chainFor, edit, launch } from '../../scripts/perf/scenarios';
+import { changeMarkdown, changeTables, compareMetric, compareResults, median, noiseBand, summarize, summarizeCase, Trace, type CaseResult, type Iteration, type RunResult } from '../../scripts/perf/results';
 
 let seq = 0;
 const rec = (name: string, t: number, extra: Partial<PerfRecord> = {}): PerfRecord => ({ kind: 'mark', name, t, proc: 'main', pid: 1, seq: ++seq, ...extra });
-const r = (name: string, t: number, extra: Partial<PerfRecord> = {}) => rec(name, t, { proc: 'renderer', pid: 2, ...extra });
 
 function result(cases: CaseResult[], iterations = 3): RunResult {
   return {
@@ -18,10 +16,10 @@ function result(cases: CaseResult[], iterations = 3): RunResult {
   };
 }
 
-const passed = (metrics: Record<string, { unit: 'ms' | 'count' | 'bytes'; values: number[] }>, fixtureHash = 'f1'): CaseResult => {
+const passed = (metrics: Record<string, { unit: 'ms' | 'count' | 'bytes'; values: number[] }>, fixtureHash = 'f1', scenario = 'edit', fixture = 'small'): CaseResult => {
   const n = Object.values(metrics)[0].values.length;
   const iterations: Iteration[] = Array.from({ length: n }, (_, i) => ({ index: i + 1, ok: true, trace: `t${i}`, metrics: Object.fromEntries(Object.entries(metrics).map(([k, m]) => [k, { unit: m.unit, value: m.values[i] }])) }));
-  return { scenario: 'edit', fixture: 'small', fixtureHash, status: 'passed', iterations, metrics: summarizeCase(iterations)! };
+  return { scenario, fixture, fixtureHash, status: 'passed', iterations, metrics: summarizeCase(iterations)! };
 };
 
 describe('benchmark results', () => {
@@ -98,86 +96,70 @@ describe('benchmark results', () => {
   });
 });
 
-describe('benchmark scenarios', () => {
-  it('run each scenario after the ones it follows', () => {
-    expect(chainFor(['edit']).map((s) => s.name)).toEqual(['launch', 'open', 'edit']);
-    expect(chainFor(['launch']).map((s) => s.name)).toEqual(['launch']);
-    expect(chainFor(['edit', 'launch', 'open']).map((s) => s.name)).toEqual(['launch', 'open', 'edit']);
-    expect(() => chainFor(['nope'])).toThrow('Unknown scenario');
+describe('benchmark results, at their edges', () => {
+  const ok = (i: number, metrics: Record<string, number>): Iteration => ({ index: i, ok: true, trace: '', metrics: Object.fromEntries(Object.entries(metrics).map(([k, v]) => [k, { unit: 'ms' as const, value: v }])) });
+
+  it('never summarise a case whose failed iteration still has metrics, or whose iterations report different metrics', () => {
+    const failedWithMetrics: Iteration = { ...ok(2, { x: 1 }), ok: false, error: { stage: 'edit', message: 'predicate: no heading' } };
+    expect(summarizeCase([ok(1, { x: 5 }), failedWithMetrics])).toBeNull();
+    expect(summarizeCase([ok(1, { x: 5 }), ok(2, { x: 6, y: 1 })])).toBeNull();
+    expect(summarizeCase([ok(1, { x: 5, y: 1 }), ok(2, { x: 6, y: 2 })])).toMatchObject({ x: { median: 5.5, values: [5, 6] }, y: { median: 1.5 } });
   });
 
-  it('time launch from the process being created', () => {
-    const t = new Trace([
-      rec('launch.processStart', 1000),
-      rec('launch.mainLoaded', 1150),
-      rec('launch.appReady', 1200),
-      rec('launch.loadPacks', 1350, { kind: 'span', ms: 140 }),
-      rec('launch.windowCreated', 1400, { c: { 'files.read': 40, 'files.hashed': 38 } }),
-      rec('launch.readyToShow', 1600),
-      r('launch.firstRender', 1620),
-      r('launch.firstInteractive', 1640),
-      r('launch.recentsShown', 1660, { c: { 'react.commits': 5 } }),
-      rec('main.stall', 1300, { kind: 'span', ms: 80 })
+  it('take the larger spread of the two runs, inside the band and just past it', () => {
+    const a = summarize('ms', [99, 100, 101]); // MAD 1
+    const b = summarize('ms', [92, 100, 108]); // MAD 8
+    expect(noiseBand(a, b)).toBe(24);
+    expect(noiseBand(b, a)).toBe(24);
+    const at = (median: number) => compareMetric('d', a, { ...b, median });
+    expect(at(124).verdict).toBe('noise');
+    expect(at(76).verdict).toBe('noise');
+    expect(at(124.5).verdict).toBe('changed');
+    expect(compareMetric('b', summarize('bytes', [100, 100]), summarize('bytes', [101, 101]))).toMatchObject({ verdict: 'changed', noise: 0, delta: 1 });
+    expect(compareMetric('u', summarize('ms', [1]), summarize('count', [1])).verdict).toBe('incompatible');
+  });
+
+  it('show a metric on one side only as new or gone', () => {
+    const [c] = compareResults(result([passed({ kept: { unit: 'count', values: [1] }, old: { unit: 'count', values: [2] } })]), result([passed({ kept: { unit: 'count', values: [1] }, fresh: { unit: 'ms', values: [3] } })]));
+    expect(c.metrics.map((m) => [m.metric, m.verdict, m.before, m.after, m.delta, m.changePct])).toEqual([
+      ['fresh', 'new', null, 3, null, null],
+      ['kept', 'same', 1, 1, 0, 0],
+      ['old', 'gone', 2, null, null, null]
     ]);
-    const m = launch.measure(t);
-    expect(m.missing).toEqual([]);
-    expect(m.metrics['launch.windowCreated']).toEqual({ unit: 'ms', value: 400 });
-    expect(m.metrics['launch.firstInteractive'].value).toBe(640);
-    expect(m.metrics['launch.loadPacks'].value).toBe(140);
-    expect(m.metrics['launch.filesHashedBeforeWindow']).toEqual({ unit: 'count', value: 38 });
-    expect(m.metrics['launch.rendererCommits'].value).toBe(5);
-    expect(m.metrics['launch.mainStallMax'].value).toBe(80);
   });
 
-  function editTrace(opts: { drop?: string } = {}) {
-    const all = [
-      r('scenario.start', 9000, { attrs: { scenario: 'edit' }, c: { 'react.commits': 100 } }),
-      rec('scenario.start', 9000, { attrs: { scenario: 'edit' } }),
-      // An older revision's acknowledgement, before this edit: never taken for it.
-      r('canvas.revisionApplied', 9005, { attrs: { revision: 4 } }),
-      r('edit.requested', 10_000, { attrs: { revision: 4, operations: 1 }, c: { 'react.commits': 110 } }),
-      rec('session.validateOperations', 10_010, { kind: 'span', ms: 1 }),
-      rec('session.applyOperations', 10_012, { kind: 'span', ms: 2 }),
-      rec('session.validateState', 10_020, { kind: 'span', ms: 5 }),
-      rec('session.generate', 10_030, { kind: 'span', ms: 4, attrs: { variant: 'clean' } }),
-      rec('session.generate', 10_034, { kind: 'span', ms: 3, attrs: { variant: 'dev' } }),
-      rec('session.publish', 10_080, { kind: 'span', ms: 30, dc: { 'files.read': 1, 'files.hashed': 13, 'fs.writes': 5 } }),
-      rec('runtime.release', 10_082),
-      rec('session.persist', 10_100, { kind: 'span', ms: 70 }),
-      rec('session.changed', 10_101, { attrs: { revision: 5 } }),
-      rec('controller.snapshotSent', 10_105, { attrs: { revision: 5, bytes: 120_000 } }),
-      rec('session.apply', 10_106, { kind: 'span', ms: 95, attrs: { revision: 5 } }),
-      rec('controller.apply', 10_107, { kind: 'span', ms: 105, attrs: { revision: 5 }, dc: { 'fs.durableWrites': 9, 'fs.fsyncs': 19, 'fs.writes': 11 } }),
-      r('renderer.snapshotReceived', 10_108, { attrs: { revision: 5 } }),
-      r('renderer.commit', 10_115, { attrs: { revision: 5 } }),
-      rec('runtime.published', 10_110, { attrs: { revision: 5 } }),
-      r('canvas.revisionApplied', 10_140, { attrs: { revision: 5 } }),
-      rec('session.reloadFromDisk', 10_500),
-      rec('scenario.end', 11_640, { attrs: { scenario: 'edit' } }),
-      r('scenario.end', 11_641, { attrs: { scenario: 'edit' }, c: { 'react.commits': 160 } })
-    ];
-    return new Trace(all.filter((x) => !(x.name === opts.drop && x.attrs?.revision === 5) && x.name !== `${opts.drop}!`));
-  }
-
-  it('time an edit from the editor sending it, by the revision it made', () => {
-    const m = edit.measure(editTrace());
-    expect(m.missing).toEqual([]);
-    expect(m.metrics['edit.previewApplied']).toEqual({ unit: 'ms', value: 140 });
-    expect(m.metrics['edit.rendererCommit'].value).toBe(115);
-    expect(m.metrics['edit.generate'].value).toBe(7);
-    expect(m.metrics['edit.publish'].value).toBe(30);
-    expect(m.metrics['edit.apply'].value).toBe(105);
-    expect(m.metrics['edit.durableWrites']).toEqual({ unit: 'count', value: 9 });
-    expect(m.metrics['edit.publishFilesHashed'].value).toBe(13);
-    expect(m.metrics['edit.snapshotBytes']).toEqual({ unit: 'bytes', value: 120_000 });
-    expect(m.metrics['edit.reloadFromDisk'].value).toBe(1);
-    expect(m.metrics['edit.rendererCommits'].value).toBe(50);
+  it('match cases by scenario and fixture together', () => {
+    const before = result([passed({ m: { unit: 'count', values: [1] } }, 'f', 'open', 'small'), passed({ m: { unit: 'count', values: [2] } }, 'g', 'edit', 'large')]);
+    const after = result([passed({ m: { unit: 'count', values: [5] } }, 'g', 'edit', 'large'), passed({ m: { unit: 'count', values: [1] } }, 'f', 'edit', 'small')]);
+    const got = compareResults(before, after).map((c) => [c.scenario, c.fixture, c.status, c.metrics[0]?.delta ?? null]);
+    expect(got).toEqual([
+      ['open', 'small', 'missing-after', null],
+      ['edit', 'large', 'compared', 3],
+      ['edit', 'small', 'missing-before', null]
+    ]);
   });
 
-  it('name a mark that is missing instead of reporting a time without it', () => {
-    const m = edit.measure(editTrace({ drop: 'canvas.revisionApplied' }));
-    expect(m.missing).toEqual(['canvas.revisionApplied']);
-    expect(m.metrics['edit.previewApplied']).toBeUndefined();
-    expect(edit.measure(editTrace({ drop: 'session.changed' })).missing).toEqual(['session.changed']);
+  it('refuse results measured differently', () => {
+    const warm = result([passed({ d: { unit: 'ms', values: [1, 2, 3] } })]);
+    const cold = { ...warm, config: { ...warm.config, cold: true } };
+    const settled = { ...warm, config: { ...warm.config, settleMs: 0 } };
+    expect(compareResults(warm, cold)[0]).toMatchObject({ status: 'protocol-differs', metrics: [] });
+    expect(compareResults(warm, settled)[0].status).toBe('protocol-differs');
+    const elsewhere = { ...warm, machine: { cpu: 'Other CPU', platform: 'linux', osRelease: '6' } };
+    expect(changeMarkdown(compareResults(warm, elsewhere), warm, elsewhere)).toContain('Durations are not comparable');
+  });
+
+  it('print a number that grew as a negative improvement, and an unmoved duration as noise', () => {
+    const a = result([passed({ n: { unit: 'count', values: [4, 4, 4] }, d: { unit: 'ms', values: [50, 50, 50] } })]);
+    const b = result([passed({ n: { unit: 'count', values: [5, 5, 5] }, d: { unit: 'ms', values: [50, 50, 50] } })]);
+    const md = changeMarkdown(compareResults(a, b), a, b);
+    expect(md).toContain('| n | 4 | 5 | −25.0% |');
+    expect(md).toContain('| d | 50.0 ms | 50.0 ms | (noise) |');
+  });
+
+  it('keep a record’s sequence for equal times, and the records after a broken line', () => {
+    const t = Trace.parse([JSON.stringify(rec('second', 5, { seq: 2 })), 'broken', JSON.stringify(rec('first', 5, { seq: 1 })), JSON.stringify(rec('later', 9))].join('\n'));
+    expect(t.records.map((x) => x.name)).toEqual(['first', 'second', 'later']);
+    expect(t.incomplete).toBe(true);
   });
 });

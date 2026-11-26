@@ -15,7 +15,7 @@ import type { BuilderApi } from '../../src/shared/api';
 import type { PerfAttrs, PerfRecord } from '../../src/shared/perf';
 import type { ProjectState } from '../../src/shared/types';
 import type { FixtureSpec } from './fixtures';
-import { atRevision, Collector, counter, delta, forScenario, inProc, type Trace } from './results';
+import { atRevision, Collector, counter, delta, forScenario, inProc, type Measured, type Trace } from './results';
 
 /** The feature did not do its job: the iteration fails, whatever its timings. */
 export class PredicateError extends Error {}
@@ -32,13 +32,32 @@ export interface FixtureFacts {
   assets: number;
   projectComponents: number;
   homePageId: string;
-  /** The home hero's heading, as the preview first shows it. */
+  /** The home page's address, which the canvas reports when its page is ready. */
+  homeRoute: string;
+  /** The home hero, the first placement on the home page with a Heading. */
+  heroId: string;
+  /** Its heading, as the preview first shows it. */
   heading: string;
+}
+
+/** The first node in `doc` (depth first, in document order) with a string `props.heading`. */
+export function findHeading(doc: unknown, id?: string): { id: string; heading: string } | null {
+  const stack: unknown[] = [doc];
+  while (stack.length) {
+    const v = stack.pop();
+    if (!v || typeof v !== 'object') continue;
+    const node = v as { id?: unknown; props?: { heading?: unknown } };
+    if (typeof node.id === 'string' && typeof node.props?.heading === 'string' && (id === undefined || node.id === id)) return { id: node.id, heading: node.props.heading };
+    const children = Array.isArray(v) ? v : Object.values(v);
+    for (let i = children.length - 1; i >= 0; i--) stack.push(children[i]);
+  }
+  return null;
 }
 
 export function fixtureFacts(spec: FixtureSpec, state: ProjectState): FixtureFacts {
   const home = state.pages[state.site.homePageId];
-  const heading = JSON.stringify(home).match(/"heading":"([^"]+)"/)?.[1] ?? '';
+  const hero = findHeading(home);
+  if (!hero) throw new Error(`The ${spec.name} fixture's home page has no placement with a Heading to edit.`);
   return {
     spec,
     pages: Object.keys(state.pages).length,
@@ -46,7 +65,9 @@ export function fixtureFacts(spec: FixtureSpec, state: ProjectState): FixtureFac
     assets: Object.keys(state.assets.assets).length,
     projectComponents: Object.values(state.components).filter((c) => c.owner === 'project').length,
     homePageId: state.site.homePageId,
-    heading
+    homeRoute: home.route,
+    heroId: hero.id,
+    heading: hero.heading
   };
 }
 
@@ -63,8 +84,8 @@ export interface ScenarioContext {
   restoredAt: number;
   /** Mark a point in both processes, with each one's counters. */
   mark(name: string, attrs?: PerfAttrs): Promise<void>;
-  /** The trace once `done` says it has what is needed, or the trace as it is when `timeoutMs` passes. */
-  waitTrace(done: (t: Trace) => boolean, timeoutMs?: number): Promise<Trace>;
+  /** The trace once `done` says it has what is needed; throws, naming `what`, when `timeoutMs` passes first. */
+  waitTrace(done: (t: Trace) => boolean, what: string, timeoutMs?: number): Promise<Trace>;
 }
 
 export interface Scenario {
@@ -74,7 +95,7 @@ export interface Scenario {
   description: string;
   run(ctx: ScenarioContext): Promise<void>;
   /** This scenario's metrics from the iteration's trace. */
-  measure(trace: Trace): Collector;
+  measure(trace: Trace, fixture: FixtureFacts): Collector;
 }
 
 /** The editor page's globals, inside `win.evaluate` (the scripts are not compiled with the DOM's types). Cast inline:
@@ -113,7 +134,7 @@ export const launch: Scenario = {
     expect((await win.evaluate(() => (globalThis as unknown as EditorPage).builder.project.snapshot())) === null, 'a project is open at launch');
     const shown = await app.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows().some((w) => w.isVisible()));
     expect(!shown, 'a window was shown: the run must stay headless');
-    await ctx.waitTrace((t) => !!t.first('launch.recentsShown') && !!t.first('launch.firstInteractive'), 15_000);
+    await ctx.waitTrace((t) => !!t.first('launch.recentsShown') && !!t.first('launch.firstInteractive'), 'launch.recentsShown and launch.firstInteractive', 15_000);
   },
   measure(trace) {
     const m = new Collector();
@@ -149,7 +170,7 @@ export const open: Scenario = {
     await win.locator('.editor').waitFor({ timeout: 120_000 });
     const frame = preview(win);
     await frame.locator('html[data-so-editing]').waitFor({ state: 'attached', timeout: 120_000 });
-    await frame.locator('h1', { hasText: fixture.heading }).first().waitFor({ timeout: 30_000 });
+    await frame.getByRole('heading', { name: fixture.heading, exact: true }).first().waitFor({ timeout: 30_000 });
     const snap = await win.evaluate(() => (globalThis as unknown as EditorPage).builder.project.snapshot());
     expect(snap, 'no project is open');
     expect(!snap.readOnly, `the project opened read-only: ${snap.readOnly?.reason ?? ''}`);
@@ -157,19 +178,20 @@ export const open: Scenario = {
     const facts = { pages: Object.keys(snap.state.pages).length, entries: Object.values(snap.state.collections ?? {}).reduce((n, c) => n + Object.keys((c as { entries?: object }).entries ?? {}).length, 0), assets: Object.keys(snap.state.assets.assets).length, projectComponents: Object.values(snap.state.components).filter((c) => c.owner === 'project').length };
     for (const k of ['pages', 'entries', 'assets', 'projectComponents'] as const) expect(facts[k] === fixture[k], `the project opened with ${facts[k]} ${k}, not ${fixture[k]}`);
     expect(snap.state.site.homePageId === fixture.homePageId, 'the project opened with another home page');
-    await ctx.waitTrace((t) => !!t.first('canvas.ready', forScenarioAfter(t, 'open')), 15_000);
+    expect(findHeading(snap.state.pages[fixture.homePageId], fixture.heroId)?.heading === fixture.heading, 'the home hero opened with another heading');
+    await ctx.waitTrace((t) => !!t.first('canvas.ready', homeReady(fixture), forScenarioStart(t, 'open')), 'canvas.ready for the home page', 15_000);
     await sleep(ctx.settleMs);
     await ctx.mark('scenario.end', { scenario: 'open' });
-    await ctx.waitTrace((t) => !!t.first('scenario.end', forScenario('open', 'renderer')), 10_000);
+    await ctx.waitTrace((t) => !!t.first('scenario.end', forScenario('open', 'renderer')) && !!t.first('scenario.end', forScenario('open', 'main')), 'the open scenario’s end marks');
   },
-  measure(trace) {
+  measure(trace, fixture) {
     const m = new Collector();
     const begin = trace.first('scenario.start', forScenario('open', 'renderer'));
     const end = trace.first('scenario.end', forScenario('open', 'main'));
     const from = begin?.t ?? Infinity;
     const req = m.need('open.requested', trace.first('open.requested', inProc('renderer'), from));
     const at = req?.t ?? Infinity;
-    const ready = m.need('canvas.ready', trace.first('canvas.ready', (r) => r.attrs?.mode === 'edit', at));
+    const ready = m.need('canvas.ready', trace.first('canvas.ready', homeReady(fixture), at));
     const span = (name: string) => m.need(name, trace.first(name, inProc('main'), at));
     const controllerOpen = span('controller.open');
     const session = span('session.open');
@@ -207,11 +229,16 @@ export const open: Scenario = {
   }
 };
 
-/** Records after a scenario's start mark in the renderer. */
-function forScenarioAfter(t: Trace, scenario: string): (r: PerfRecord) => boolean {
-  const start = t.first('scenario.start', forScenario(scenario, 'renderer'))?.t ?? Infinity;
-  return (r) => r.t >= start;
+/** When a scenario's start mark reached the trace from the editor; Infinity before it has. */
+function forScenarioStart(t: Trace, scenario: string): number {
+  return t.first('scenario.start', forScenario(scenario, 'renderer'))?.t ?? Infinity;
 }
+
+/** The canvas reporting the fixture's home page ready to edit: not another page, a component preview, or Preview mode. */
+const homeReady =
+  (fixture: FixtureFacts) =>
+  (r: PerfRecord): boolean =>
+    r.proc === 'renderer' && r.attrs?.mode === 'edit' && r.attrs?.studio === false && r.attrs?.path === fixture.homeRoute;
 
 // ---------------------------------------------------------------------------
 // edit
@@ -234,19 +261,23 @@ export const edit: Scenario = {
     await win.getByRole('tab', { name: 'Inspector', exact: true }).first().click();
     const field = win.getByRole('textbox', { name: 'Heading', exact: true }).first();
     await field.waitFor({ timeout: 15_000 });
+    // Choosing the panel and tab saves the workspace a moment later: that save lands before the edit starts, not in it.
+    await sleep(ctx.settleMs);
     await ctx.mark('scenario.start', { scenario: 'edit' });
     await field.fill(heading);
     await win.keyboard.press('Tab');
-    await preview(win).locator('h1', { hasText: heading }).first().waitFor({ timeout: 60_000 });
+    await preview(win).getByRole('heading', { name: heading, exact: true }).first().waitFor({ timeout: 60_000 });
     const target = before.revision + 1;
-    await ctx.waitTrace((t) => !!t.first('canvas.revisionApplied', atRevision(target)), 30_000);
+    await ctx.waitTrace((t) => !!t.first('canvas.revisionApplied', atRevision(target)), `canvas.revisionApplied for revision ${target}`, 30_000);
     const after = await win.evaluate(() => (globalThis as unknown as EditorPage).builder.project.snapshot());
-    expect(after?.revision === target, `the edit left the project at revision ${after?.revision}, not ${target}`);
+    expect(after && after.revision === target, `the edit left the project at revision ${after?.revision}, not ${target}`);
+    expect(findHeading(after.state.pages[fixture.homePageId], fixture.heroId)?.heading === heading, 'the project does not hold the new heading on the home hero');
     const doc = join(ctx.projectDir, 'siteorigin', 'pages', `${fixture.homePageId}.json`);
-    expect(existsSync(doc) && readFileSync(doc, 'utf8').includes(JSON.stringify(heading)), 'the home page’s document on disk does not hold the new heading');
+    const saved = existsSync(doc) ? (JSON.parse(readFileSync(doc, 'utf8')) as unknown) : null;
+    expect(findHeading(saved, fixture.heroId)?.heading === heading, 'the home page’s document on disk does not hold the new heading on the home hero');
     await sleep(ctx.settleMs);
     await ctx.mark('scenario.end', { scenario: 'edit' });
-    await ctx.waitTrace((t) => !!t.first('scenario.end', forScenario('edit', 'renderer')), 10_000);
+    await ctx.waitTrace((t) => !!t.first('scenario.end', forScenario('edit', 'renderer')) && !!t.first('scenario.end', forScenario('edit', 'main')), 'the edit scenario’s end marks');
   },
   measure(trace) {
     const m = new Collector();
@@ -262,9 +293,10 @@ export const edit: Scenario = {
     m.span('edit.validateOperations', inApply('session.validateOperations'));
     m.span('edit.applyOperations', inApply('session.applyOperations'));
     m.span('edit.validate', inApply('session.validateState'));
-    const generated = trace.all('session.generate', inProc('main'), at, until);
-    if (!generated.length) m.need('session.generate', undefined);
-    else m.ms('edit.generate', generated.reduce((n, r) => n + (r.ms ?? 0), 0));
+    // Both variants, the website's and the preview's: a sum missing one would look faster than it is.
+    const clean = m.need('session.generate (clean)', trace.first('session.generate', (r) => r.proc === 'main' && r.attrs?.variant === 'clean', at, until));
+    const dev = m.need('session.generate (dev)', trace.first('session.generate', (r) => r.proc === 'main' && r.attrs?.variant === 'dev', at, until));
+    if (clean && dev) m.ms('edit.generate', (clean.ms ?? NaN) + (dev.ms ?? NaN));
     m.span('edit.persist', inApply('session.persist'));
     const publish = inApply('session.publish');
     m.span('edit.publish', publish);
@@ -298,7 +330,8 @@ export const SCENARIOS: Scenario[] = [launch, open, edit];
 
 /**
  * The scenarios to run in one launch for those asked for: each with every one it follows, in the order of SCENARIOS
- * (where a scenario always comes after the one it follows).
+ * (where a scenario always comes after the one it follows). Scenarios that follow the same one run one after the other,
+ * so a later one starts from what the earlier left.
  */
 export function chainFor(names: string[]): Scenario[] {
   const byName = new Map(SCENARIOS.map((s) => [s.name, s]));
@@ -312,4 +345,53 @@ export function chainFor(names: string[]): Scenario[] {
     }
   }
   return SCENARIOS.filter((s) => wanted.has(s.name));
+}
+
+/** `promise`, or an error naming `what` once `ms` pass first. */
+export async function withDeadline<T>(promise: Promise<T>, ms: number, what: string): Promise<T> {
+  let timer: NodeJS.Timeout | undefined;
+  try {
+    return await Promise.race([promise, new Promise<never>((_, reject) => (timer = setTimeout(() => reject(new Error(`${what} did not finish within ${Math.round(ms / 1000)}s`)), ms)))]);
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+export interface ChainOutcome {
+  scenario: string;
+  ok: boolean;
+  metrics?: Record<string, Measured>;
+  error?: { stage: string; message: string };
+}
+
+/**
+ * Run `chain` in one launch. A scenario that did not get the app where the next one starts (its run threw, or its check
+ * failed) stops the chain: the ones after it are not run, and say why. One whose trace lacks a mark it measures fails
+ * on its own, and the chain goes on, since the app is where the next scenario expects it.
+ */
+export async function runChain(chain: Scenario[], ctx: ScenarioContext, readTrace: () => Promise<Trace>, deadlineMs: number): Promise<ChainOutcome[]> {
+  const out: ChainOutcome[] = [];
+  let blocked: { stage: string; message: string } | null = null;
+  for (const s of chain) {
+    if (blocked) {
+      out.push({ scenario: s.name, ok: false, error: { stage: blocked.stage, message: `not run: ${blocked.stage} failed (${blocked.message})` } });
+      continue;
+    }
+    try {
+      await withDeadline(s.run(ctx), deadlineMs, s.name);
+    } catch (e) {
+      blocked = { stage: s.name, message: `${e instanceof PredicateError ? 'predicate: ' : ''}${(e as Error).message.split('\n')[0]}` };
+      out.push({ scenario: s.name, ok: false, error: blocked });
+      continue;
+    }
+    const trace = await readTrace();
+    if (trace.incomplete) {
+      out.push({ scenario: s.name, ok: false, error: { stage: s.name, message: 'the trace has a line that could not be read' } });
+      continue;
+    }
+    const m = s.measure(trace, ctx.fixture);
+    if (m.missing.length) out.push({ scenario: s.name, ok: false, error: { stage: s.name, message: `missing from the trace: ${m.missing.join(', ')}` } });
+    else out.push({ scenario: s.name, ok: true, metrics: m.metrics });
+  }
+  return out;
 }

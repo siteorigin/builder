@@ -26,7 +26,7 @@ import { followRemote, syncRemotePresence } from './lib/remote-session';
 import { JoinLiveDialog } from './components/JoinLive';
 import { isRemoteOpening } from './lib/remote-snapshot';
 import { projectDisplayName, windowTitle } from '@shared/project-name';
-import { perfMark, perfOn } from './lib/perf';
+import { perfMark, perfMarkAtCommit, perfOn } from './lib/perf';
 
 /** What Undo and Redo, and keys forwarded from the preview frame, act on right now. */
 function historyContext(): HistoryContext {
@@ -181,7 +181,7 @@ function PerfProbe() {
   const revision = useStore((s) => s.snapshot?.revision ?? null);
   const opening = useStore((s) => s.snapshot?.workspaceKey ?? null);
   const screen = useStore((s) => s.screen);
-  useLayoutEffect(() => perfMark('renderer.commit', { revision, screen, opening: opening !== null }), [revision, opening, screen]);
+  useLayoutEffect(() => perfMarkAtCommit('renderer.commit', { revision, screen, opening: opening !== null }), [revision, opening, screen]);
   return null;
 }
 

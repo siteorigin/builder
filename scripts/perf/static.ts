@@ -17,6 +17,7 @@ import { existsSync, readdirSync, readFileSync, statSync, writeFileSync } from '
 import { builtinModules } from 'node:module';
 import { basename, dirname, extname, join, relative, resolve, sep } from 'node:path';
 import { gzipSync } from 'node:zlib';
+import { parse } from 'acorn';
 import { formatValue, table } from './results';
 
 export interface StaticRow {
@@ -36,23 +37,67 @@ export interface StaticReport {
   schemaVersion: 1;
   rows: Record<string, StaticRow>;
   packages: Record<string, StaticPackage>;
+  /** Static loads of the closure that could not be followed (`specifier (from package)`), so the list is not taken as whole. */
+  unresolved?: string[];
 }
 
 const BUILTINS = new Set([...builtinModules, 'electron']);
 const isBuiltin = (spec: string) => spec.startsWith('node:') || BUILTINS.has(spec) || BUILTINS.has(spec.split('/')[0]);
 const isRelative = (spec: string) => spec.startsWith('./') || spec.startsWith('../') || spec.startsWith('/');
 
-// Static imports and re-exports, minified or not; `import(` (a dynamic import) and `import.meta` never match.
+// Only for a file the parser cannot read: static imports and re-exports, and literal require() calls.
 const IMPORT_RE = /(?:^|[^.\w$])(?:import|export)\s*(?:[\w$*{}\s,]*?\bfrom\s*)?["']([^"'\n]+)["']/g;
 const REQUIRE_RE = /(?:^|[^.\w$])require\s*\(\s*["']([^"'\n]+)["']\s*\)/g;
 
-/** The specifiers a file loads statically, by how it loads them. */
-export function specifiers(source: string): { imports: string[]; requires: string[] } {
-  const all = (re: RegExp) => [...source.matchAll(re)].map((m) => m[1]);
-  return { imports: all(IMPORT_RE), requires: all(REQUIRE_RE) };
+interface AstNode {
+  type: string;
+  [key: string]: unknown;
 }
 
-const EXTENSIONS = ['', '.js', '.mjs', '.cjs', '.json'];
+/**
+ * The specifiers a file loads statically, by how it loads them: import declarations and re-exports with a source, and
+ * `require()` called with one string. Read from its syntax tree, so an import written inside a string (the generator's
+ * templates of the website's code) or a comment is not one; `import()` is dynamic and not counted.
+ */
+export function specifiers(source: string): { imports: string[]; requires: string[] } {
+  let ast: AstNode | null = null;
+  for (const sourceType of ['module', 'script'] as const) {
+    try {
+      ast = parse(source, { ecmaVersion: 'latest', sourceType, allowHashBang: true, allowReturnOutsideFunction: true, allowImportExportEverywhere: true, allowAwaitOutsideFunction: true }) as unknown as AstNode;
+      break;
+    } catch {
+      // Tried as the other kind of source, then read by pattern.
+    }
+  }
+  if (!ast) {
+    const all = (re: RegExp) => [...source.matchAll(re)].map((m) => m[1]);
+    return { imports: all(IMPORT_RE), requires: all(REQUIRE_RE) };
+  }
+  const imports: string[] = [];
+  const requires: string[] = [];
+  const literal = (n: unknown) => (n && typeof n === 'object' && (n as AstNode).type === 'Literal' && typeof (n as AstNode).value === 'string' ? ((n as AstNode).value as string) : null);
+  const stack: unknown[] = [ast];
+  while (stack.length) {
+    const v = stack.pop();
+    if (!v || typeof v !== 'object') continue;
+    if (Array.isArray(v)) {
+      for (let i = v.length - 1; i >= 0; i--) stack.push(v[i]);
+      continue;
+    }
+    const n = v as AstNode;
+    if (n.type === 'ImportDeclaration' || ((n.type === 'ExportNamedDeclaration' || n.type === 'ExportAllDeclaration') && n.source)) {
+      const spec = literal(n.source);
+      if (spec !== null) imports.push(spec);
+    } else if (n.type === 'CallExpression' && (n.callee as AstNode | undefined)?.type === 'Identifier' && (n.callee as AstNode).name === 'require' && Array.isArray(n.arguments) && n.arguments.length === 1) {
+      const spec = literal(n.arguments[0]);
+      if (spec !== null) requires.push(spec);
+    }
+    for (const [k, child] of Object.entries(n)) if (k !== 'type' && child && typeof child === 'object') stack.push(child);
+  }
+  return { imports, requires };
+}
+
+const EXTENSIONS = ['', '.js', '.mjs', '.cjs', '.json', '.node'];
 
 function asFile(path: string): string | null {
   for (const ext of EXTENSIONS) {
@@ -92,15 +137,18 @@ export function resolveExports(exports: unknown, subpath: string, conditions: st
   if (!exports || typeof exports !== 'object') return null;
   const map = exports as Record<string, unknown>;
   if (!Object.keys(map).some((k) => k.startsWith('.'))) return subpath === '.' ? exportTarget(map, conditions, '') : null;
-  if (Object.hasOwn(map, subpath)) return exportTarget(map[subpath], conditions, '');
+  if (Object.hasOwn(map, subpath) && !subpath.includes('*')) return exportTarget(map[subpath], conditions, '');
+  // The most specific pattern wins, as Node orders them: the longest part before the `*`, then the longest key.
+  let best: { key: string; pre: string; post: string } | null = null;
   for (const key of Object.keys(map)) {
     const at = key.indexOf('*');
-    if (at < 0) continue;
+    if (at < 0 || key.indexOf('*', at + 1) >= 0) continue;
     const pre = key.slice(0, at);
     const post = key.slice(at + 1);
-    if (subpath.startsWith(pre) && subpath.endsWith(post) && subpath.length >= pre.length + post.length) return exportTarget(map[key], conditions, subpath.slice(pre.length, subpath.length - post.length));
+    if (!subpath.startsWith(pre) || !subpath.endsWith(post) || subpath.length < pre.length + post.length) continue;
+    if (!best || pre.length > best.pre.length || (pre.length === best.pre.length && key.length > best.key.length)) best = { key, pre, post };
   }
-  return null;
+  return best ? exportTarget(map[best.key], conditions, subpath.slice(best.pre.length, subpath.length - best.post.length)) : null;
 }
 
 const CONDITIONS = { import: ['node', 'import', 'default'], require: ['node', 'require', 'default'] };
@@ -108,6 +156,8 @@ const CONDITIONS = { import: ['node', 'import', 'default'], require: ['node', 'r
 /** Where `spec` leads from the file `from`, loaded by `how`, as Node would find it; null when it cannot be found. */
 export function resolveSpecifier(from: string, spec: string, how: 'import' | 'require'): string | null {
   if (isRelative(spec)) return asFile(resolve(dirname(from), spec.split('?')[0]));
+  // A package's own `#imports` map is not followed: such a load is reported as unresolved.
+  if (spec.startsWith('#')) return null;
   const parts = spec.split('/');
   const name = spec.startsWith('@') ? parts.slice(0, 2).join('/') : parts[0];
   const subpath = `.${spec.slice(name.length)}` || '.';
@@ -151,7 +201,7 @@ export function localClosure(entries: string[]): string[] {
 }
 
 /** The installed packages `files` load statically, followed through their own static loads. */
-export function packageClosure(files: string[]): Record<string, StaticPackage> {
+export function packageClosure(files: string[], unresolved: Set<string> = new Set()): Record<string, StaticPackage> {
   const seen = new Set<string>();
   const todo: Array<{ from: string; spec: string; how: 'import' | 'require' }> = [];
   const queue = (file: string) => {
@@ -168,7 +218,11 @@ export function packageClosure(files: string[]): Record<string, StaticPackage> {
   while (todo.length && seen.size < 50_000) {
     const { from, spec, how } = todo.pop()!;
     const file = resolveSpecifier(from, spec, how);
-    if (!file || seen.has(file)) continue;
+    if (!file) {
+      unresolved.add(`${spec} (from ${packageOf(from)?.name ?? relative(process.cwd(), from)})`);
+      continue;
+    }
+    if (seen.has(file)) continue;
     seen.add(file);
     const pkg = packageOf(file);
     if (!pkg) continue;
@@ -201,10 +255,8 @@ function listFiles(dir: string): string[] {
 /** The report of the build in `outDir`. */
 export function analyzeBuild(outDir: string): StaticReport {
   const rendererDir = join(outDir, 'renderer');
-  const html = readFileSync(join(rendererDir, 'index.html'), 'utf8');
-  const refs = (re: RegExp) => [...html.matchAll(re)].map((m) => join(rendererDir, m[1].replace(/^\.?\//, '')));
-  const scripts = localClosure([...refs(/<script[^>]+src="([^"]+)"/g), ...refs(/<link[^>]+rel="modulepreload"[^>]+href="([^"]+)"/g)]);
-  const styles = refs(/<link[^>]+rel="stylesheet"[^>]+href="([^"]+)"/g);
+  const { scripts: entry, styles } = pageAssets(rendererDir, readFileSync(join(rendererDir, 'index.html'), 'utf8'));
+  const scripts = localClosure(entry);
   const eager = new Set([...scripts, ...styles]);
   const later = listFiles(join(rendererDir, 'assets')).filter((f) => /\.(js|css)$/.test(f) && !eager.has(f));
   const mainDir = join(outDir, 'main');
@@ -217,7 +269,29 @@ export function analyzeBuild(outDir: string): StaticReport {
     preload: row(outDir, localClosure(readdirSync(join(outDir, 'preload')).filter((f) => /\.(m|c)?js$/.test(f)).map((f) => join(outDir, 'preload', f))))
   };
   for (const f of readdirSync(mainDir).sort()) if (f !== 'index.js' && f.endsWith('.js')) rows[`worker.${basename(f, extname(f))}`] = row(outDir, localClosure([join(mainDir, f)]));
-  return { schemaVersion: 1, rows, packages: packageClosure(mainEntry) };
+  const unresolved = new Set<string>();
+  const packages = packageClosure(mainEntry, unresolved);
+  return { schemaVersion: 1, rows, packages, unresolved: [...unresolved].sort() };
+}
+
+/** The scripts (with module preloads) and stylesheets the editor page loads, as files; any it names that is missing throws. */
+export function pageAssets(dir: string, html: string): { scripts: string[]; styles: string[] } {
+  const scripts: string[] = [];
+  const styles: string[] = [];
+  for (const tag of html.matchAll(/<(script|link)\b([^>]*)>/gi)) {
+    const attrs: Record<string, string> = {};
+    for (const a of tag[2].matchAll(/([\w-]+)\s*=\s*(?:"([^"]*)"|'([^']*)'|([^\s"'>]+))/g)) attrs[a[1].toLowerCase()] = a[2] ?? a[3] ?? a[4];
+    const kind = tag[1].toLowerCase();
+    const rel = (attrs.rel ?? '').toLowerCase().split(/\s+/);
+    const url = kind === 'script' ? attrs.src : attrs.href;
+    if (!url || /^[a-z]+:/i.test(url) || url.startsWith('//')) continue;
+    const file = join(dir, decodeURI(url.split(/[?#]/)[0]).replace(/^\.?\//, ''));
+    const list = kind === 'script' || rel.includes('modulepreload') ? scripts : rel.includes('stylesheet') ? styles : null;
+    if (!list) continue;
+    if (!existsSync(file)) throw new Error(`The editor page loads ${url}, which is not in ${dir}.`);
+    list.push(file);
+  }
+  return { scripts, styles };
 }
 
 /** The report beside its baseline: one table of rows, one of the packages that differ. */
@@ -236,7 +310,9 @@ export function staticTables(base: StaticReport | null, now: StaticReport): stri
     return [[name, b?.version ?? a!.version, b ? formatValue(b.bytes, 'bytes') : '–', a ? formatValue(a.bytes, 'bytes') : '–', !a ? 'added' : !b ? 'removed' : a.version !== b.version ? `${a.version} → ${b.version}` : d(a.bytes, b.bytes)]];
   });
   const total = (r: StaticReport | null) => Object.values(r?.packages ?? {}).reduce((n, p) => n + p.bytes, 0);
-  const summary = `Main entry's static dependency closure: ${Object.keys(now.packages).length} packages, ${formatValue(total(now), 'bytes')}${base ? ` (baseline ${Object.keys(base.packages).length}, ${formatValue(total(base), 'bytes')})` : ''}`;
+  const summary =
+    `Main entry's static dependency closure: ${Object.keys(now.packages).length} packages, ${formatValue(total(now), 'bytes')}${base ? ` (baseline ${Object.keys(base.packages).length}, ${formatValue(total(base), 'bytes')})` : ''}` +
+    (now.unresolved?.length ? `\n${now.unresolved.length} static load(s) could not be followed: ${now.unresolved.slice(0, 8).join(', ')}${now.unresolved.length > 8 ? ', …' : ''}` : '');
   return [
     table(['output', 'raw', 'baseline', 'Δ raw', 'gzip', 'baseline', 'Δ gzip'], rows),
     summary,

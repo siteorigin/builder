@@ -24,17 +24,22 @@ run itself could not go on.
 1. **Fixtures.** `small` is a new project from the Business starter; `large` is that starter grown to 50 pages, 500
    published posts, 300 library images and 30 project components (`fixtures.ts`). Both are built deterministically (seeded
    IDs, constant dates, images drawn uncompressed), so a fixture's hash only changes when the fixture or the document
-   format does. Each is written once per machine and hash under `.tmp/perf/fixtures/<name>-<hash>/`, then opened once in
-   the app, which installs its website tools as for a new project (the first time needs the network).
+   format does. Each is written once per fixture hash, starter template and platform under `.tmp/perf/fixtures/`, then
+   opened once in the app, which installs its website tools as for a new project (the first time needs the network).
 2. **Warm-up.** For each fixture the project is copied into the run's folder and opened once in a fresh profile, untimed.
-   That trusts it and lists it in Recent projects. What the warm-up leaves, project and profile, is put back before every
-   iteration, so each iteration starts from the same files.
+   That trusts it and lists it in Recent projects. What the warm-up leaves (the project, the preview tools' caches in its
+   `node_modules`, and the profile) is put back before every iteration, so each iteration starts from the same files.
+   A fixture whose preparation or warm-up fails has its cases reported as failed, and the other fixtures are still
+   measured. Each launch ends with a sweep of every process it started; one that will not end stops the run.
 3. **Iterations.** Each is a fresh launch of the built app, headless (no window shown, no focus taken), with
    `SITEORIGIN_PERF_FILE` naming the iteration's trace file. The scenarios asked for run in one launch, in order, each
    after the one it follows (`launch` → `open` → `edit`), so `--scenario edit` costs the same as all three and reports
-   only `edit`. Opening waits until the project's files are 3.5 s old: freshly copied files are read in full, a
-   person's are not (`ProjectSession.settleMs`). After a scenario's job is done the runner waits `--settle` ms before
-   ending it, so work it set off (a reload the file watcher starts 400 ms after a save) is counted.
+   only `edit`. A scenario whose actions or check fail stops the chain (the ones after it say why); one whose trace only
+   lacks a mark fails on its own. Scenarios that follow the same one run one after the other, so the later one starts
+   from what the earlier left. Opening waits until the project's files are 3.5 s old: freshly copied files are read in
+   full, a person's are not (`ProjectSession.settleMs`). After a scenario's job is done the runner waits `--settle` ms
+   before ending it, so work it set off (a reload the file watcher starts 400 ms after a save) is counted. Each scenario
+   has five minutes, and the warm-up fifteen.
 4. **Result.** One JSON file: the build (the commit the app stamped into itself, the checkout's HEAD and whether it was
    dirty, a fingerprint of `out/`), the machine, the config, and per case (scenario × fixture) every iteration's metrics
    with its trace file, and, when every iteration passed, the median, min, max and MAD of each metric. The run prints the
@@ -83,7 +88,9 @@ Counts and sizes are the portable evidence: they do not depend on the machine, a
 same median. Durations are for this machine only, and move between runs; the median is what is compared, never a max or
 a tail from a handful of iterations.
 
-`perf:compare` matches cases by scenario and fixture (and refuses fixtures whose hash differs) and prints, per metric,
+`perf:compare` matches cases by scenario and fixture, refuses fixtures whose hash differs and results measured
+differently (`--cold` against warm, or another `--settle`), notes results from different machines (their durations do
+not compare; their counts do) or website tools installed from a different template, and prints, per metric,
 before and after medians, the difference, the change in percent and a verdict: `same`, `changed`, or `noise` for a
 duration whose difference is within the **noise band**: three times the larger MAD of the two runs, and never under 10%
 of the before median or 1 ms. Two full runs of the same build on a quiet M4 Max kept every duration inside it (with
@@ -100,9 +107,12 @@ command exits 1.
 render: its entry, everything that imports statically, its stylesheet), `renderer.later` (its other files, loaded on
 demand), `main`, `preload` and each `worker.*`, each in raw and gzip bytes (level 9, file by file). Below them, the
 **main entry's static dependency closure**: the installed packages the main entry's static imports reach, followed through
-their own static imports and literal `require()` calls, with their files and bytes. That is what the main process
-evaluates before its first line runs, so before the window can be created. It is not a runtime trace: an
-`await import()` made before the window is not in it, and a `require()` in a function that never runs is counted.
+their own static imports and `require()` calls with one string, resolved from the importing file as Node resolves them,
+with their files and bytes. Imports are read from each file's syntax tree, so one written inside a string (the
+generator's templates of website code) does not count. That is what the main process evaluates before its first line
+runs, so before the window can be created. It is not a runtime trace: an `await import()` made before the window is not
+in it, and a `require()` in a function that never runs is counted. A load that cannot be followed (a package's own
+`#imports`, a missing file) is listed, so the closure is never taken as whole when it is not.
 
 Each row and package is shown beside `baseline/static.json`, with what changed. After a change that moves them on
 purpose, rebuild and refresh it with `npm run perf:static -- --update-baseline`, in the same pull request.
@@ -123,7 +133,12 @@ them over IPC). Unset, no file is opened, no IPC channel is registered and every
 Counters: `fs.writes`, `fs.durableWrites`, `fs.fsyncs` (`src/main/project/fsutil.ts`), `files.read`, `files.hashed`
 (project, generated and theme pack files), `ipc.projectChanged.sends`, `ipc.projectChanged.bytes` (as IPC serializes
 the snapshot), `session.reloadFromDisk`, `main.stalls` (main), and `react.commits` (renderer). The main process also
-records each stall of its event loop of 50 ms or more as a `main.stall` span.
+watches its event loop every 20 ms and records each time the watch ran 50 ms or more late as a `main.stall` span of that
+lateness (a block shorter than about 70 ms can go unseen).
+
+A span's `dc` is everything the process counted while it ran, its own work and anything else running at the same time
+(a lock heartbeat every 30 s, a workspace save 300 ms after a panel changes). A scenario keeps that out of its window:
+the `edit` scenario waits for the workspace save its own panel choice set off before it starts.
 
 ## Adding a mark or a counter
 

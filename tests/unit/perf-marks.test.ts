@@ -1,9 +1,9 @@
-import { existsSync, mkdtempSync, readFileSync, rmSync } from 'node:fs';
-import { appendFileSync } from 'node:fs';
+import { execFileSync } from 'node:child_process';
+import { appendFileSync, mkdirSync, mkdtempSync, readFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
-import { createPerf, perf, PERF_OFF, perfFile, timed } from '../../src/main/perf';
+import { createPerf, openTraceSink, perf, PERF_OFF, perfFile, serializedSize, timed } from '../../src/main/perf';
 import { PERF_ENV, readSent, type PerfRecord } from '../../src/shared/perf';
 
 function memory(stallMs = 0) {
@@ -32,6 +32,8 @@ describe('timing marks', () => {
     PERF_OFF.mark('a');
     PERF_OFF.count('b');
     PERF_OFF.span('c')();
+    // One shared empty function, nothing made per call.
+    expect(PERF_OFF.span('c')).toBe(PERF_OFF.span('d'));
     expect(PERF_OFF.take({ kind: 'mark', name: 'x', t: 1 }, { proc: 'renderer', pid: 1 })).toBe(false);
   });
 
@@ -71,13 +73,35 @@ describe('timing marks', () => {
       expect(p.take(bad, { proc: 'renderer', pid: 99 })).toBe(false);
     const sent = records().filter((r) => r.proc === 'renderer');
     expect(sent).toEqual([{ kind: 'mark', name: 'canvas.ready', t: 1234.5, attrs: { revision: 4, mode: 'edit' }, c: { 'react.commits': 9 }, proc: 'renderer', pid: 99, seq: 2 }]);
-    expect(readSent({ kind: 'mark', name: 'a', t: 1, attrs: { s: 'x'.repeat(500) } })?.attrs?.s).toHaveLength(200);
+    const long = Array.from({ length: 300 }, (_, i) => String.fromCharCode(97 + (i % 26))).join('');
+    expect(readSent({ kind: 'mark', name: 'a', t: 1, attrs: { s: long } })?.attrs?.s).toBe(long.slice(0, 200));
+    expect(readSent({ kind: 'span', name: 'a', t: 1, ms: 0 })).toEqual({ kind: 'span', name: 'a', t: 1, ms: 0 });
+    expect(readSent({ kind: 'mark', name: 'a', t: 1, ms: 3 })).toBeNull();
+    expect(readSent({ kind: 'span', name: 'a', t: 1, ms: Infinity })).toBeNull();
+    // Plain objects only, of at most 16 attributes and 32 counters.
+    const many = (n: number) => Object.fromEntries(Array.from({ length: n }, (_, i) => [`k${i}`, i]));
+    expect(readSent({ kind: 'mark', name: 'a', t: 1, attrs: many(16), c: many(32) })).not.toBeNull();
+    expect(readSent({ kind: 'mark', name: 'a', t: 1, attrs: many(17) })).toBeNull();
+    expect(readSent({ kind: 'mark', name: 'a', t: 1, c: many(33) })).toBeNull();
+    expect(readSent({ kind: 'mark', name: 'a', t: 1, attrs: new Date() })).toBeNull();
+    expect(readSent({ kind: 'mark', name: 'a', t: 1, attrs: new Map([['a', 1]]) })).toBeNull();
+    expect(readSent({ kind: 'mark', name: 'a', t: 1, attrs: [1] })).toBeNull();
   });
 
-  it('never let a failed write reach the work being timed', () => {
-    const p = createPerf({ write: () => { throw new Error('ENOSPC'); }, now: () => 1, pid: 1 });
+  it('size a payload as IPC would, and never fail on one it cannot size', () => {
+    expect(serializedSize({ a: 'x'.repeat(1000) })).toBeGreaterThan(1000);
+    expect(serializedSize({ f: () => 1 })).toBeNull();
+  });
+
+  it('never let a failed write reach the work being timed, and write again once it can', () => {
+    const lines: string[] = [];
+    let failing = true;
+    const p = createPerf({ write: (l) => { if (failing) throw new Error('ENOSPC'); lines.push(l); }, now: () => 1, pid: 1 });
     expect(() => p.mark('a')).not.toThrow();
     expect(() => p.span('b')()).not.toThrow();
+    failing = false;
+    p.mark('c');
+    expect(lines.map((l) => JSON.parse(l).name)).toEqual(['c']);
   });
 
   it('report main-process stalls as spans', async () => {
@@ -100,16 +124,26 @@ describe('timing marks', () => {
   describe('a real file', () => {
     let dir: string;
     afterEach(() => rmSync(dir, { recursive: true, force: true }));
-    it('is appended to, and nothing is written for a process with marks off', () => {
+    it('is opened once and appended to', () => {
       dir = mkdtempSync(join(tmpdir(), 'perf-marks-'));
       const file = join(dir, 'trace.ndjson');
-      const p = createPerf({ write: (l) => appendFileSync(file, l), now: () => 5, pid: 3 });
+      appendFileSync(file, 'kept\n');
+      const write = openTraceSink(file)!;
+      const p = createPerf({ write, now: () => 5, pid: 3 });
       p.mark('a');
       p.mark('b');
-      expect(readFileSync(file, 'utf8').trim().split('\n').map((l) => JSON.parse(l).name)).toEqual(['perf.start', 'a', 'b']);
-      const off = join(dir, 'off.ndjson');
-      PERF_OFF.mark('a');
-      expect(existsSync(off)).toBe(false);
+      expect(readFileSync(file, 'utf8').trim().split('\n')).toEqual(['kept', ...['perf.start', 'a', 'b'].map((n) => expect.stringContaining(`"name":"${n}"`))]);
+    });
+    it('is refused when it is not a regular file, without waiting on it', () => {
+      dir = mkdtempSync(join(tmpdir(), 'perf-marks-'));
+      mkdirSync(join(dir, 'folder'));
+      expect(openTraceSink(join(dir, 'folder'))).toBeNull();
+      expect(openTraceSink(join(dir, 'missing', 'trace.ndjson'))).toBeNull();
+      if (process.platform !== 'win32') {
+        // A pipe nobody reads would block an ordinary open for as long as nobody does.
+        execFileSync('mkfifo', [join(dir, 'pipe')]);
+        expect(openTraceSink(join(dir, 'pipe'))).toBeNull();
+      }
     });
   });
 });

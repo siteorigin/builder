@@ -447,6 +447,7 @@ export async function loadPackDir(dir: string, root: PackRoot, reviewed: Readonl
   void _f;
   void _s;
   void _files;
+  perf.count('files.hashed');
   return { pack: { ...data, digest: sha(raw), source: root.source }, files };
 }
 

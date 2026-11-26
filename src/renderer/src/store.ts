@@ -522,9 +522,9 @@ function leaveInspectorField(p: Partial<State>) {
 export const getState = () => useStore.getState();
 
 /** Send an edit to the main process; while timing marks are on, the moment it leaves is marked (src/shared/perf.ts). */
-function sendEdit(...args: Parameters<BuilderApi['project']['apply']>): ReturnType<BuilderApi['project']['apply']> {
-  if (perfOn) perfMark('edit.requested', { operations: args[0].operations.length, revision: getState().snapshot?.revision ?? null });
-  return api.project.apply(...args);
+function sendEdit(batch: Parameters<BuilderApi['project']['apply']>[0], opts: Parameters<BuilderApi['project']['apply']>[1]): ReturnType<BuilderApi['project']['apply']> {
+  if (perfOn) perfMark('edit.requested', { operations: batch.operations.length, revision: getState().snapshot?.revision ?? null });
+  return api.project.apply(batch, opts);
 }
 export const setState = (p: Partial<State>) => {
   // The last panel shown besides the SEO view is where leaving the view goes back to.

@@ -2,7 +2,7 @@ import { appendFileSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'n
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
-import { analyzeBuild, resolveExports, specifiers, staticTables, type StaticReport } from '../../scripts/perf/static';
+import { analyzeBuild, packageClosure, pageAssets, resolveExports, resolveSpecifier, specifiers, staticTables, type StaticReport } from '../../scripts/perf/static';
 
 let root: string;
 const put = (rel: string, text: string) => {
@@ -17,7 +17,7 @@ function build() {
   put('out/renderer/assets/chunk-b2.js', 'export const b=(f)=>f;');
   put('out/renderer/assets/lazy-d4.js', 'export default 1;');
   put('out/renderer/assets/index-c3.css', 'body{color:red}');
-  put('out/main/index.js', 'import { shared } from "./chunks/shared-e5.js";\nimport big from "bigpkg";\nimport { readFile } from "node:fs";\nimport electron from "electron";\nconst ai = () => import("lazypkg");\nshared(big, ai, readFile, electron);\n');
+  put('out/main/index.js', 'import { shared } from "./chunks/shared-e5.js";\nimport big from "bigpkg";\nimport { readFile } from "node:fs";\nimport electron from "electron";\nconst ai = () => import("lazypkg");\nconst site = `import { onMount } from "templated";`;\nshared(big, ai, readFile, electron, site);\n');
   put('out/main/chunks/shared-e5.js', 'export const shared = () => {};\n');
   put('out/main/media-worker.js', 'import { shared } from "./chunks/shared-e5.js";\nimport only from "workeronly";\nshared(only);\n');
   put('out/preload/index.cjs', 'const { contextBridge } = require("electron");\n');
@@ -33,6 +33,11 @@ function build() {
   put('node_modules/lazypkg/index.js', 'export default 1;\n');
   put('node_modules/workeronly/package.json', JSON.stringify({ name: 'workeronly', version: '1.0.0', main: 'index.js' }));
   put('node_modules/workeronly/index.js', 'export default 1;\n');
+  put('node_modules/templated/package.json', JSON.stringify({ name: 'templated', version: '1.0.0', main: 'index.js' }));
+  put('node_modules/templated/index.js', 'export default 1;\n');
+  // Installed, so following the require build of bigpkg would find it: it must not be followed.
+  put('node_modules/never-loaded/package.json', JSON.stringify({ name: 'never-loaded', version: '1.0.0', main: 'index.js' }));
+  put('node_modules/never-loaded/index.js', 'module.exports = 1;\n');
 }
 
 describe('the static report', () => {
@@ -42,9 +47,11 @@ describe('the static report', () => {
   });
   afterEach(() => rmSync(root, { recursive: true, force: true }));
 
-  it('reads static imports only, minified or not', () => {
-    expect(specifiers('import{a}from"x";import "y";export*from"z";const q=import("lazy");import.meta.url;')).toEqual({ imports: ['x', 'y', 'z'], requires: [] });
-    expect(specifiers('const a = require("a"); x.require("not");').requires).toEqual(['a']);
+  it('reads static imports only, minified or not, and never one written inside a string or a comment', () => {
+    expect(specifiers('import{a}from"x";import \'y\';export*from"z";const q=import("lazy");import.meta.url;')).toEqual({ imports: ['x', 'y', 'z'], requires: [] });
+    expect(specifiers('const a = require("a"); x.require("not"); require(name); require("b", 2);').requires).toEqual(['a']);
+    // The generator's templates of website code, and a comment: text, not imports.
+    expect(specifiers('const page = `import { onMount } from "svelte";`; // import x from "y"\n/* require("z") */ export const s = \'import "w"\';')).toEqual({ imports: [], requires: [] });
   });
 
   it('resolves exports as Node does, by condition and pattern', () => {
@@ -54,6 +61,39 @@ describe('the static report', () => {
     expect(resolveExports(exp, './features/a', ['node', 'import', 'default'])).toBe('./f/a.mjs');
     expect(resolveExports(exp, './skip', ['node', 'import', 'default'])).toBeNull();
     expect(resolveExports('./main.js', '.', ['import'])).toBe('./main.js');
+    // The most specific pattern wins, whatever order the package lists them in.
+    expect(resolveExports({ './*': './common/*.js', './features/*': './features/*.js' }, './features/x', ['default'])).toBe('./features/x.js');
+    expect(resolveExports({ './*.js': './a/*.js' }, './x.mjs', ['default'])).toBeNull();
+    expect(resolveExports({ '.': [{ worker: './w.js' }, './fallback.js'] }, '.', ['import', 'default'])).toBe('./fallback.js');
+  });
+
+  it('resolves from the importing file, so the nearest installed copy wins', () => {
+    put('node_modules/shared/package.json', JSON.stringify({ name: 'shared', version: '1.0.0', main: 'index.js' }));
+    put('node_modules/shared/index.js', '');
+    put('node_modules/outer/package.json', JSON.stringify({ name: 'outer', version: '1.0.0', main: 'index.js' }));
+    put('node_modules/outer/index.js', 'require("shared"); require("cond"); require("#own");');
+    put('node_modules/outer/node_modules/shared/package.json', JSON.stringify({ name: 'shared', version: '2.0.0', main: 'index.js' }));
+    put('node_modules/outer/node_modules/shared/index.js', 'module.exports = 2;');
+    put('node_modules/cond/package.json', JSON.stringify({ name: 'cond', version: '1.0.0', exports: { import: './esm.js', require: './cjs.js' } }));
+    put('node_modules/cond/esm.js', 'export default 1;');
+    put('node_modules/cond/cjs.js', 'module.exports = 1;');
+    put('entry.js', 'import "outer";');
+    expect(resolveSpecifier(join(root, 'node_modules/outer/index.js'), 'shared', 'require')).toBe(join(root, 'node_modules/outer/node_modules/shared/index.js'));
+    expect(resolveSpecifier(join(root, 'node_modules/outer/index.js'), 'cond', 'require')).toBe(join(root, 'node_modules/cond/cjs.js'));
+    expect(resolveSpecifier(join(root, 'entry.js'), 'cond', 'import')).toBe(join(root, 'node_modules/cond/esm.js'));
+    const unresolved = new Set<string>();
+    const pkgs = packageClosure([join(root, 'entry.js')], unresolved);
+    expect(Object.keys(pkgs)).toEqual(['cond', 'outer', 'shared']);
+    expect(pkgs.shared.version).toBe('2.0.0');
+    // A package's own #imports are not followed, and say so.
+    expect([...unresolved]).toEqual(['#own (from outer)']);
+  });
+
+  it('finds the editor page’s assets whatever order and quotes its tags use, and refuses one that is missing', () => {
+    const dir = join(root, 'out/renderer');
+    const html = `<link href='./assets/index-c3.css' rel="stylesheet"><script src="./assets/index-a1.js" type=module></script><link rel="modulepreload" href="./assets/chunk-b2.js"><link rel="icon" href="./x.png">`;
+    expect(pageAssets(dir, html)).toEqual({ scripts: [join(dir, 'assets/index-a1.js'), join(dir, 'assets/chunk-b2.js')], styles: [join(dir, 'assets/index-c3.css')] });
+    expect(() => pageAssets(dir, '<script src="./assets/gone.js"></script>')).toThrow('gone.js');
   });
 
   it('counts the editor page’s script as it loads, and the main entry’s packages from its static imports', () => {
@@ -65,8 +105,10 @@ describe('the static report', () => {
     expect(r.rows['worker.media-worker'].files).toEqual(['main/chunks/shared-e5.js', 'main/media-worker.js']);
     expect(r.rows.preload.files).toEqual(['preload/index.cjs']);
     expect(r.rows.main.gzip).toBeGreaterThan(0);
-    // A dynamic import, a worker's own package and the require build an import never loads are not part of startup.
+    // A dynamic import, a package only named inside a string, a worker's own package and the require build an import
+    // never loads are not part of startup.
     expect(Object.keys(r.packages)).toEqual(['bigpkg', 'depdep']);
+    expect(r.unresolved).toEqual([]);
     expect(r.packages.bigpkg).toMatchObject({ version: '2.0.0', files: 2 });
     expect(r.packages.depdep).toMatchObject({ version: '1.0.0', files: 2 });
   });

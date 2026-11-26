@@ -5,7 +5,7 @@
  */
 import { readFileSync } from 'node:fs';
 import { parseArgs } from 'node:util';
-import { changeMarkdown, changeTables, compareResults, type RunResult } from './results';
+import { changeMarkdown, changeTables, compareResults, machineDifference, protocolDifference, type RunResult } from './results';
 
 const { values, positionals } = parseArgs({ allowPositionals: true, options: { markdown: { type: 'boolean', default: false } } });
 if (positionals.length !== 2) {
@@ -15,6 +15,12 @@ if (positionals.length !== 2) {
 const [before, after] = positionals.map((p) => JSON.parse(readFileSync(p, 'utf8')) as RunResult);
 for (const [label, r] of [['before', before], ['after', after]] as const) if (r.schemaVersion !== 1) throw new Error(`${label}: not a benchmark result this command reads (schemaVersion ${r.schemaVersion}).`);
 const changes = compareResults(before, after);
+const protocol = protocolDifference(before, after);
+if (protocol) console.error(`Not compared: the two results were measured differently (${protocol}).`);
+const machines = machineDifference(before, after);
+if (machines && !values.markdown) console.error(`Note: durations are not comparable across machines (${machines}); counts and sizes are.`);
+const tools = before.cases.filter((c) => after.cases.some((d) => d.fixture === c.fixture && d.templateHash && c.templateHash && d.templateHash !== c.templateHash));
+if (tools.length) console.error(`Note: the fixtures' website tools were installed from different templates (${[...new Set(tools.map((c) => c.fixture))].join(', ')}).`);
 const tree = (r: RunResult) => `${r.build.commit ?? r.build.head ?? '?'}${r.build.dirty ? ' (dirty checkout)' : ''}, ${r.config.iterations} iterations`;
 if (values.markdown) console.log(changeMarkdown(changes, before, after));
 else console.log(`before: ${tree(before)}\nafter:  ${tree(after)}\n\n${changeTables(changes)}`);

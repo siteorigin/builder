@@ -7,7 +7,8 @@
  * and nothing is buffered to flush at exit. A record that cannot be written is dropped: a trace never makes a save,
  * an open or a launch fail.
  */
-import { appendFileSync } from 'node:fs';
+import { closeSync, constants, fstatSync, openSync, writeSync } from 'node:fs';
+import { serialize } from 'node:v8';
 import { PERF_ENV, readSent, type PerfAttrs, type PerfProc, type PerfRecord } from '@shared/perf';
 
 export interface Perf {
@@ -123,6 +124,39 @@ export function timed<T>(name: string, fn: () => Promise<T>, attrs?: (result: T 
   };
 }
 
+/** Now, on the trace's clock (epoch ms with sub-ms precision). */
+export const perfNow = () => performance.timeOrigin + performance.now();
+
+/** The size of `payload` as IPC serializes it, or null when it cannot be told: sizing never fails what it measures. */
+export function serializedSize(payload: unknown): number | null {
+  try {
+    return serialize(payload).byteLength;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * A writer appending to `file`, opened once: null when it cannot be opened without waiting, or is not a regular file (a
+ * pipe nobody reads, a folder), so a trace never holds up the app. Each line is one write to a descriptor opened for
+ * appending, so it lands whole even when the app is killed after it.
+ */
+export function openTraceSink(file: string): ((line: string) => void) | null {
+  let fd: number;
+  try {
+    fd = openSync(file, constants.O_WRONLY | constants.O_APPEND | constants.O_CREAT | (constants.O_NONBLOCK ?? 0), 0o644);
+  } catch {
+    return null;
+  }
+  try {
+    if (!fstatSync(fd).isFile()) throw new Error('not a file');
+  } catch {
+    closeSync(fd);
+    return null;
+  }
+  return (line) => void writeSync(fd, line);
+}
+
 /** The trace file this process writes, or null when marks are off for it. */
 export function perfFile(env: NodeJS.ProcessEnv = process.env, proc: { type?: string } = process as { type?: string }): string | null {
   const file = env[PERF_ENV];
@@ -130,11 +164,12 @@ export function perfFile(env: NodeJS.ProcessEnv = process.env, proc: { type?: st
 }
 
 const file = perfFile();
-/** This process's marks: PERF_OFF unless this is the Electron main process with SITEORIGIN_PERF_FILE set. */
-export const perf: Perf = file
+const sink = file ? openTraceSink(file) : null;
+/** This process's marks: PERF_OFF unless this is the Electron main process with SITEORIGIN_PERF_FILE naming a file it can write. */
+export const perf: Perf = sink
   ? createPerf({
-      write: (line) => appendFileSync(file, line),
-      now: () => performance.timeOrigin + performance.now(),
+      write: sink,
+      now: perfNow,
       pid: process.pid,
       meta: { platform: process.platform, arch: process.arch, electron: process.versions.electron ?? null, node: process.versions.node },
       stallMs: 50

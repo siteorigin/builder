@@ -93,7 +93,7 @@ What it provides, and how this skill uses it:
 - It drives the **built** app in `out/`. Every tree that is measured is built first with `npm run build`, and the result file records the commit that build came from. A measurement of a stale build is a measurement of some other tree.
 - Headless, always. No window shown, no focus taken. A headless launch never shows its window, so launch is timed to the window being ready to show and the renderer being interactive.
 - Native choosers are answered through the driver (`answerChoosers`, `desktop.setAnswers`), never by patching `dialog` or `shell`.
-- No live AI provider calls. AI scenarios use the fake adapter. A claim that needs a live provider (prompt cache hits) gets at most a handful of calls, named in the report.
+- No live AI provider calls in a scenario. AI scenarios use the scripted model server (`MockOpenAIServer`, as `scripts/perf/README.md` says). A claim that needs a live provider (prompt cache hits, #977) gets at most a handful of calls outside the harness, named in the report.
 - Scratch output goes in `.tmp/`, never the repo root. Nothing here runs in pull request CI.
 
 ## Phases
@@ -135,7 +135,7 @@ Find the scenario that measures this surface, or write it.
 Then measure, with nothing else running:
 
 1. Build the branch point once into a second worktree, `git worktree add --detach .tmp/optimize/<N>/base <scenario commit>`, then `npm ci` and `npm run build` there. Run the scenario against it from the working checkout: `npm run perf:run -- --app .tmp/optimize/<N>/base --scenario <name> --fixture <fixtures> --iterations <n> --out .tmp/optimize/<N>/before-1.json`. That is `before`, and the first champion. The result records the commit the build was stamped with: check it is the branch point.
-2. Run it a second time on the same build (`before-2.json`) and `npm run perf:compare -- before-1.json before-2.json`. The differences between the two are the **noise floor**: counts should not move at all, and a duration that moves less than that, or less than the noise band the command prints, has not been shown to move.
+2. Run it a second time on the same build (`.tmp/optimize/<N>/before-2.json`) and `npm run perf:compare -- .tmp/optimize/<N>/before-1.json .tmp/optimize/<N>/before-2.json`. The differences between the two are the **noise floor**: counts should not move at all, and a duration that moves less than that, or less than the noise band the command prints, has not been shown to move.
 3. Read where the time goes in the traces (`.tmp/perf/runs/<time>/<fixture>/trace-<n>.ndjson`): list the spans of the measured window by duration, and the counters they gained (`dc`). The harness takes no CPU profile; when the spans do not say enough, add finer spans in the scenario commit, before the baseline, or take a profile by hand and say so. The baseline says how much; the spans say where.
 4. For boot and bundle issues, also run `npm run perf:static -- --app .tmp/optimize/<N>/base --json .tmp/optimize/<N>/static-before.json`.
 
@@ -183,7 +183,7 @@ Per `CLAUDE.md`'s definition of done:
 1. `npm run typecheck`.
 2. The unit tests covering the change, and any added, green. Run the whole `npm test` when the change crosses the engine, the session or the generator.
 3. The e2e script that covers the surface, when there is one (`npm run build` first; it runs headless). Not `tests/e2e/ai.mjs`.
-4. `git diff --stat origin/develop`: only the scenario commit touches `scripts/perf/`, and nothing unrelated came along.
+4. `git diff --stat origin/develop`: only the scenario commit touches `scripts/perf/` (and the final commit's refreshed `scripts/perf/baseline/static.json`, when the change moves the static report), and nothing unrelated came along.
 
 Run verbose checks through a subagent that returns only failures. Never run measurements through one, and never alongside anything else: a measurement competing with a test run is the contamination the protocol exists to prevent.
 
@@ -236,6 +236,7 @@ Trees: {branch point sha} → {final sha}, both built with `npm run build`
 A duration is the weakest thing the harness measures and the easiest to fool yourself with.
 
 - **Both arms now, alternating.** A result file from an hour ago is not an opponent: the machine has heated and its background load has shifted. For a headline on a duration, measure base and candidate in the order base, candidate, candidate, base, base, candidate, uninterrupted, and require the candidate to win all three pairs by more than the noise floor: six `perf:run` calls with the same flags, the base ones with `--app .tmp/optimize/<N>/base`, each to its own `--out`, then `perf:compare` on each pair.
+- **The published duration is decided before it is measured.** It is the median of the three pairs' improvements, with all three shown beside it; the table carries the pair whose improvement is that median. Never the best pair.
 - **Keep both builds.** The base worktree under `.tmp/optimize/<N>/base` keeps the branch point's build, so arms alternate without rebuilding between them, and `--app` measures it with the working checkout's harness and fixtures, the same for both arms.
 - **Median, not tail.** At 10 or 20 iterations a p95 is one of the two largest samples.
 - **Cold and warm are different metrics.** State which was measured. A first launch after a build (`--cold`) and the everyday launch (the default) are both worth reporting for boot; never mix them in one median or compare one with the other.

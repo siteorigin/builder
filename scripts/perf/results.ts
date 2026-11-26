@@ -36,6 +36,8 @@ export interface CaseResult {
   scenario: string;
   fixture: string;
   fixtureHash: string;
+  /** The starter template the fixture's website tools were installed from. */
+  templateHash?: string;
   status: 'passed' | 'failed';
   iterations: Iteration[];
   /** Only when every iteration passed: a case that failed once has no timings at all. */
@@ -139,7 +141,9 @@ export class Collector {
   }
 
   span(name: string, r: PerfRecord | undefined) {
-    if (r) this.ms(name, r.ms);
+    if (!r) return;
+    if (typeof r.ms !== 'number' || !Number.isFinite(r.ms)) this.need(`${r.name} (a span with a length)`, undefined);
+    else this.ms(name, r.ms);
   }
 
   count(name: string, value: number, unit: 'count' | 'bytes' = 'count') {
@@ -204,19 +208,20 @@ export interface MetricChange {
   changePct: number | null;
   noise: number;
   /** `noise` for a duration that moved less than the band; `new` / `gone` for a metric on one side only. */
-  verdict: 'same' | 'changed' | 'noise' | 'new' | 'gone';
+  verdict: 'same' | 'changed' | 'noise' | 'new' | 'gone' | 'incompatible';
 }
 
 export interface CaseChange {
   scenario: string;
   fixture: string;
-  status: 'compared' | 'failed-before' | 'failed-after' | 'missing-before' | 'missing-after' | 'fixture-differs';
+  status: 'compared' | 'failed-before' | 'failed-after' | 'missing-before' | 'missing-after' | 'fixture-differs' | 'protocol-differs';
   metrics: MetricChange[];
 }
 
 export function compareMetric(metric: string, a: Summary | undefined, b: Summary | undefined): MetricChange {
   const unit = (a ?? b)!.unit;
   if (!a || !b) return { metric, unit, before: a?.median ?? null, after: b?.median ?? null, delta: null, changePct: null, noise: 0, verdict: a ? 'gone' : 'new' };
+  if (a.unit !== b.unit) return { metric, unit, before: a.median, after: b.median, delta: null, changePct: null, noise: 0, verdict: 'incompatible' };
   const d = b.median - a.median;
   const noise = noiseBand(a, b);
   const changePct = a.median === 0 ? (b.median === 0 ? 0 : null) : (d / a.median) * 100;
@@ -224,8 +229,22 @@ export function compareMetric(metric: string, a: Summary | undefined, b: Summary
   return { metric, unit, before: a.median, after: b.median, delta: d, changePct, noise, verdict };
 }
 
-/** Every case of either result, metric by metric. */
+/** Why two results cannot be compared at all (they were measured differently), or null. */
+export function protocolDifference(before: RunResult, after: RunResult): string | null {
+  if (!!before.config.cold !== !!after.config.cold) return `one used a cold profile and the other a warm one`;
+  if (before.config.settleMs !== after.config.settleMs) return `they waited ${before.config.settleMs} and ${after.config.settleMs} ms after each scenario`;
+  return null;
+}
+
+/** How the machines two results were measured on differ, or null: their counts compare, their durations do not. */
+export function machineDifference(before: RunResult, after: RunResult): string | null {
+  const id = (r: RunResult) => `${r.machine.cpu ?? '?'} (${r.machine.platform ?? '?'} ${r.machine.osRelease ?? '?'})`;
+  return id(before) === id(after) ? null : `measured on ${id(before)} and ${id(after)}`;
+}
+
+/** Every case of either result, metric by metric. Results measured differently compare nothing. */
 export function compareResults(before: RunResult, after: RunResult): CaseChange[] {
+  const protocol = protocolDifference(before, after);
   const key = (c: CaseResult) => `${c.scenario}\0${c.fixture}`;
   const a = new Map(before.cases.map((c) => [key(c), c]));
   const b = new Map(after.cases.map((c) => [key(c), c]));
@@ -234,7 +253,7 @@ export function compareResults(before: RunResult, after: RunResult): CaseChange[
     const x = a.get(k);
     const y = b.get(k);
     const [scenario, fixture] = k.split('\0');
-    const status: CaseChange['status'] = !x ? 'missing-before' : !y ? 'missing-after' : x.status === 'failed' ? 'failed-before' : y.status === 'failed' ? 'failed-after' : x.fixtureHash !== y.fixtureHash ? 'fixture-differs' : 'compared';
+    const status: CaseChange['status'] = !x ? 'missing-before' : !y ? 'missing-after' : x.status === 'failed' ? 'failed-before' : y.status === 'failed' ? 'failed-after' : x.fixtureHash !== y.fixtureHash ? 'fixture-differs' : protocol ? 'protocol-differs' : 'compared';
     if (status !== 'compared') return { scenario, fixture, status, metrics: [] };
     const names = [...new Set([...Object.keys(x!.metrics ?? {}), ...Object.keys(y!.metrics ?? {})])].sort();
     return { scenario, fixture, status, metrics: names.map((n) => compareMetric(n, x!.metrics?.[n], y!.metrics?.[n])) };
@@ -292,6 +311,8 @@ export function changeMarkdown(changes: CaseChange[], before: RunResult, after: 
   const signed = (v: number) => `${v < 0 ? '−' : ''}${Math.abs(v).toFixed(1)}%`;
   const improvement = (m: MetricChange) => {
     if (m.before === null || m.after === null) return m.verdict;
+    // A duration that did not move past the noise band has no percentage to defend.
+    if (m.unit === 'ms' && (m.verdict === 'noise' || m.verdict === 'same')) return '(noise)';
     if (m.before === 0) return m.after === 0 ? '0.0%' : 'new';
     const v = ((m.before - m.after) / m.before) * 100;
     // A duration inside the noise band has not been shown to move: no percentage is claimed for it.
@@ -301,7 +322,8 @@ export function changeMarkdown(changes: CaseChange[], before: RunResult, after: 
   const profile = (r: RunResult) => (r.config.cold ? 'cold profile' : 'warm profile');
   const footer = [
     `Machine: ${m.cpu ?? '?'}, ${m.platform ?? '?'} ${m.osRelease ?? ''}`.trim() + ` · ${before.config.iterations} → ${after.config.iterations} iterations, 1 warm-up · ${profile(after)} · median · noise band ${NOISE_RULE}`,
-    `Trees: ${before.build.commit ?? before.build.head ?? '?'} → ${after.build.commit ?? after.build.head ?? '?'}, both built with \`npm run build\``
+    `Trees: ${before.build.commit ?? before.build.head ?? '?'} → ${after.build.commit ?? after.build.head ?? '?'}, both built with \`npm run build\``,
+    ...(machineDifference(before, after) ? [`Durations are not comparable: ${machineDifference(before, after)}.`] : [])
   ].join('  \n');
   return changes
     .map((c) => {

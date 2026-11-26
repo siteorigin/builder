@@ -8,8 +8,8 @@
  * the canonical documents and the asset files, so two builds of a fixture can be compared byte for byte.
  */
 import { createHash } from 'node:crypto';
-import { cpSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
-import { join, resolve } from 'node:path';
+import { cpSync, mkdirSync, readdirSync, readFileSync, writeFileSync } from 'node:fs';
+import { join, relative, resolve } from 'node:path';
 import { crc32, deflateSync } from 'node:zlib';
 import { applyOperations } from '@engine/apply';
 import { createStarterState } from '@catalogue/starters';
@@ -59,12 +59,23 @@ export function seeded<T>(seed: string, fn: () => T): T {
     }
     return array;
   };
+  // Whatever was there before (the prototype's method, or an own one) is exactly what is left after.
+  const own = Object.getOwnPropertyDescriptor(crypto, 'getRandomValues');
   Object.defineProperty(crypto, 'getRandomValues', { value: fill, configurable: true, writable: true });
   try {
     return fn();
   } finally {
-    delete (crypto as { getRandomValues?: unknown }).getRandomValues;
+    if (own) Object.defineProperty(crypto, 'getRandomValues', own);
+    else delete (crypto as { getRandomValues?: unknown }).getRandomValues;
   }
+}
+
+/** SHA-256 over the starter template's files, by path: what a fixture's website tools are installed from. */
+export function templateHash(dir = TEMPLATE): string {
+  const hash = createHash('sha256');
+  const walk = (d: string): string[] => readdirSync(d, { withFileTypes: true }).flatMap((e) => (e.isDirectory() ? walk(join(d, e.name)) : [join(d, e.name)]));
+  for (const file of walk(dir).sort()) hash.update(relative(dir, file).split('\\').join('/')).update('\0').update(readFileSync(file)).update('\0');
+  return hash.digest('hex').slice(0, 12);
 }
 
 /** A small PNG drawn from `i`: a two-colour gradient, stored uncompressed so its bytes never depend on zlib's version. */

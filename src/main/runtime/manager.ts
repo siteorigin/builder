@@ -61,13 +61,18 @@ export async function freePort(): Promise<number> {
 }
 
 async function lockHash(dir: string): Promise<string> {
-  return sha((await fs.readFile(join(dir, 'package-lock.json'), 'utf8').catch(() => '')) + (await fs.readFile(join(dir, 'package.json'), 'utf8')));
+  const lock = await fs.readFile(join(dir, 'package-lock.json'), 'utf8').catch(() => '');
+  const pkg = await fs.readFile(join(dir, 'package.json'), 'utf8');
+  perf.count('files.read', lock ? 2 : 1);
+  perf.count('files.hashed');
+  return sha(lock + pkg);
 }
 
 export async function dependenciesReady(dir: string): Promise<boolean> {
   if (!existsSync(join(dir, 'node_modules', '@sveltejs', 'kit', 'package.json'))) return false;
   const marker = await fs.readFile(join(dir, '.siteorigin', 'cache', 'deps.json'), 'utf8').catch(() => null);
   if (!marker) return false;
+  perf.count('files.read');
   // A damaged marker says nothing about the install: it is set up again, as with none.
   let prepared: { lockHash?: unknown };
   try {
