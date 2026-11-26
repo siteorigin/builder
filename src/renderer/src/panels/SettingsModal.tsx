@@ -1,11 +1,11 @@
 import './SettingsModal.css';
 import { useCallback, useEffect, useRef, useState, type ReactNode } from 'react';
-import { TriangleAlert, Check, CircleAlert, CircleDashed, Cloud, ExternalLink, History, Info, KeyRound, Laptop, Monitor, Moon, Server, Settings, Shield, SlidersHorizontal, Sparkles, Sun, Trash2 } from 'lucide-react';
+import { TriangleAlert, Check, CircleAlert, CircleDashed, Cloud, ExternalLink, Eye, EyeOff, History, Info, KeyRound, Laptop, Monitor, Moon, Server, Settings, Shield, SlidersHorizontal, Sparkles, Sun, Trash2 } from 'lucide-react';
 import type { AppSettings, SettingsPatch, ProviderId } from '@shared/api';
 import { api, setState, useStore, confirmDialog, refreshProviders, setProviders } from '../store';
 import { Modal, Segmented, Spinner, SwitchRow, Tabs } from '../components/ui';
 import { InlineRow, LocalModelSettings, StackedRow, type LocalServerStatus } from './LocalModelSettings';
-import { checkLocalBaseURL, localKeyProblem } from '@shared/local';
+import { checkLocalBaseURL, keyDoubt, localKeyProblem } from '@shared/local';
 import { AskAiShortcut } from './ShortcutSettings';
 import { sendOnEnterHint } from '../lib/shortcut-keys';
 
@@ -27,9 +27,12 @@ const focusById = (id: string) => requestAnimationFrame(() => document.getElemen
 
 export function SettingsModal() {
   const settings = useStore((s) => s.settings);
+  // The provider whose settings are on screen. Looking at one never changes the one the assistant uses.
+  const [viewed, setViewed] = useState<ProviderId | null>(null);
   const providers = useStore((s) => s.providers);
   const modal = useStore((s) => s.modal);
   const [tab, setTab] = useState<string>(modal?.kind === 'settings' && modal.tab ? modal.tab : 'general');
+  const [showKey, setShowKey] = useState(false);
   const [keys, setKeys] = useState<Record<ProviderId, string>>({ openai: '', anthropic: '', local: '' });
   const [testing, setTesting] = useState<ProviderId | null>(null);
   // What the running test was started with, so editing the key or model mid-test shows the new draft as untested.
@@ -46,7 +49,8 @@ export function SettingsModal() {
   // and a test still running for the old one is dropped when it answers.
   const testRun = useRef(0);
   // For a local server, the address and its saved key are part of the setup too.
-  const testedSetup = [settings?.ai.provider ?? 'openai', settings?.ai.models[settings?.ai.provider ?? 'openai'] ?? '', settings?.ai.provider === 'local' ? `${settings.ai.local.baseURL}\n${keyRevision}` : ''].join('\n');
+  const viewedProvider = viewed ?? settings?.ai.provider ?? 'openai';
+  const testedSetup = [viewedProvider, settings?.ai.models[viewedProvider] ?? '', viewedProvider === 'local' ? `${settings?.ai.local.baseURL}\n${keyRevision}` : ''].join('\n');
   const lastSetup = useRef(testedSetup);
   useEffect(() => {
     if (lastSetup.current === testedSetup) return;
@@ -79,6 +83,13 @@ export function SettingsModal() {
   }, [loaded]);
   if (!settings) return null;
   // A cloud key typed for a local server is refused anyway, so it is never offered for saving on close.
+  // A key that cannot belong to its provider is questioned before it is saved: by its shape, with no network call.
+  const confirmKeyShape = async (p: ProviderId, key: string) => {
+    const doubt = keyDoubt(p, key);
+    if (!doubt) return true;
+    const name = providers.find((x) => x.id === p)?.label ?? p;
+    return !!(await confirmDialog({ title: `Save this as the ${name} key?`, body: doubt, details: [{ kind: 'note', text: 'Saving it anyway is fine if you know it is right. A wrong key only shows up later, as a failed request.' }], confirmLabel: 'Save anyway', cancelLabel: 'Keep editing', icon: 'key' }));
+  };
   const unsavedProviders = (Object.keys(keys) as ProviderId[]).filter((p) => keys[p].trim() && !(p === 'local' && localKeyProblem(keys.local)));
   const nameOf = (p: ProviderId) => providers.find((x) => x.id === p)?.label ?? p;
   // Typed keys that failed their last test, for whichever provider they were typed under.
@@ -122,6 +133,16 @@ export function SettingsModal() {
             keyWrite.current = true;
             setKeyBusy(true);
             try {
+              // Every doubtful key is asked about before any is written, so Keep editing never leaves a partial save.
+              for (const p of unsavedProviders) {
+                if (!(await confirmKeyShape(p, keys[p].trim()))) {
+                  setTab('ai');
+                  setViewed(p);
+                  setShowKey(false);
+                  focusById('settings-api-key');
+                  return;
+                }
+              }
               for (const p of unsavedProviders) {
                 const submitted = keys[p].trim();
                 try {
@@ -131,7 +152,7 @@ export function SettingsModal() {
                   // Settings stays open on the key that failed, still typed, and says why.
                   setKeyNotice({ provider: p, kind: 'failed', message: errorText(e) });
                   setTab('ai');
-                  if (p !== provider) await update({ ai: { provider: p } });
+                  setViewed(p);
                   focusById('settings-api-key');
                   return;
                 }
@@ -145,7 +166,8 @@ export function SettingsModal() {
         })
       : setState({ modal: null });
   const update = updateSettings;
-  const provider = settings.ai.provider ?? 'openai';
+  const activeProvider = settings.ai.provider ?? 'openai';
+  const provider = viewed ?? activeProvider;
   const status = providers.find((p) => p.id === provider);
   const model = settings.ai.models[provider];
   const known = !!status?.models.some((m) => m.id === model);
@@ -174,6 +196,11 @@ export function SettingsModal() {
     // A test of exactly this typed key, passed or failed, still describes it once it is saved.
     const tested = test?.draft && test.signature === signatureFor() ? test : null;
     keyWrite.current = true;
+    if (!(await confirmKeyShape(provider, submitted))) {
+      keyWrite.current = false;
+      focusById('settings-api-key');
+      return;
+    }
     setKeyBusy(true);
     try {
       setProviders(await api.ai.setKey(provider, submitted));
@@ -188,6 +215,7 @@ export function SettingsModal() {
     setKeys((k) => (k[provider].trim() === submitted ? { ...k, [provider]: '' } : k));
     setReplacing({ ...replacing, [provider]: false });
     setKeyRevision((n) => n + 1);
+    setShowKey(false);
     setKeyNotice({ provider, kind: 'saved' });
     if (tested) setTest({ ...tested, draft: false, signature: signatureFor(undefined, 0, 'saved', keyRevision + 1) });
     void update({ ai: { setupAcknowledged: true } });
@@ -455,7 +483,8 @@ export function SettingsModal() {
             aria-describedby="settings-api-key-note settings-connection"
             aria-invalid={keyProblem ? true : undefined}
             className="input grow mono"
-            type="password"
+            type={showKey ? 'text' : 'password'}
+            spellCheck={false}
             autoComplete="off"
             placeholder={isLocal ? 'Paste a key' : provider === 'openai' ? 'Paste your key, starting sk-' : 'Paste your key, starting sk-ant-'}
             value={keys[provider]}
@@ -466,6 +495,9 @@ export function SettingsModal() {
             }}
             onKeyDown={(e) => e.key === 'Enter' && !e.nativeEvent.isComposing && keys[provider].trim() && !keyProblem && void saveKey()}
           />
+          <button type="button" className="btn btn-icon" aria-pressed={showKey} aria-label={showKey ? 'Hide key' : 'Show key'} title={showKey ? 'Hide key' : 'Show key'} onClick={() => setShowKey((v) => !v)}>
+            {showKey ? <EyeOff aria-hidden="true" /> : <Eye aria-hidden="true" />}
+          </button>
           {replacing[provider] && (
             <button
               className="btn"
@@ -519,13 +551,13 @@ export function SettingsModal() {
       <Shield aria-hidden="true" />
       <span>
         {!isLocal ? (
-          `Your request and the relevant page text go to ${label}, which bills your account for usage. Images and screenshots are never sent.`
+          `${provider === activeProvider ? 'Your request' : `With ${label} in use, your request`} and the relevant page text go to ${label}, which bills your account for usage. Images and screenshots are never sent.`
         ) : localRemoteHost ? (
           <>
-            When you use the assistant, your requests and page content go to <strong className="settings-host">{localRemoteHost}</strong>.
+            When you use the assistant{provider === activeProvider ? '' : ' with this server'}, your requests and page content go to <strong className="settings-host">{localRemoteHost}</strong>.
           </>
         ) : (
-          'Your requests and page content stay on this computer.'
+          provider === activeProvider ? 'Your requests and page content stay on this computer.' : 'With this server in use, your requests and page content stay on this computer.'
         )}
       </span>
     </div>
@@ -658,10 +690,21 @@ export function SettingsModal() {
                       labelledBy="settings-provider-label"
                       describedBy="settings-provider-note"
                       value={provider}
-                      onChange={(p) => void update({ ai: { provider: p } })}
+                      onChange={(p) => {
+                        setViewed(p);
+                        setShowKey(false);
+                      }}
                       options={providers.map((p) => ({ value: p.id, label: p.label, icon: p.id === 'local' ? <Laptop /> : <Cloud /> }))}
                     />
                     {providerNote}
+                    {provider !== activeProvider && (
+                      <div className="row">
+                        <span className="grow">The assistant is using {providers.find((x) => x.id === activeProvider)?.label ?? activeProvider}.</span>
+                        <button className="btn btn-primary" onClick={() => void update({ ai: { provider } })}>
+                          Use {label}
+                        </button>
+                      </div>
+                    )}
                   </div>
                   {isLocal ? (
                     <LocalModelSettings settings={settings} update={update} keyRevision={keyRevision} keySaved={keySaved} revealKey={(keyNotice?.provider === 'local' && keyNotice.kind === 'failed') || !!keys.local.trim()} status={connection} keyField={keyField} onBlocked={setLocalBlocked} />

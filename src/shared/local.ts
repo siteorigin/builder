@@ -66,7 +66,9 @@ export type LocalURLCheck = { ok: true; url: string; remote: boolean } | { ok: f
 export function checkLocalBaseURL(raw: string, allowRemote = false): LocalURLCheck {
   let u: URL;
   try {
-    u = new URL(String(raw).trim());
+    // A bare host and port (`localhost:11434`) is taken as http://, which is what every local server speaks. Only `localhost`, an IPv6 literal or a dotted name qualifies, so `file:8080` or `https:443` is never read as a host.
+    const typed = String(raw).trim();
+    u = new URL(/^[a-z][a-z0-9+.-]*:\/\//i.test(typed) || !/^(localhost|\[[0-9a-f:.]+\]|[a-z0-9_-]+(\.[a-z0-9_-]+)+)(:\d+)?(\/|$)/i.test(typed) ? typed : `http://${typed}`);
   } catch {
     return { ok: false, message: 'Enter a full server URL, such as http://127.0.0.1:8080/v1.' };
   }
@@ -102,7 +104,7 @@ export function localModelFor(local: Pick<LocalProviderSettings, 'baseURL' | 'mo
  * Which cloud provider issued a key: by its prefix, at the length every such key has (a short `sk-proj-local` is
  * someone's own name for a local key), or by the marker every OpenAI secret key carries.
  */
-function cloudKeyProvider(token: string): 'OpenAI' | 'Anthropic' | null {
+export function cloudKeyProvider(token: string): 'OpenAI' | 'Anthropic' | null {
   if (/^sk-ant-\S{33,}$/.test(token)) return 'Anthropic';
   if (/^sk-(proj|svcacct|admin|None)-\S{30,}$/.test(token) || /^sk-\S*T3BlbkFJ/.test(token)) return 'OpenAI';
   return null;
@@ -118,4 +120,20 @@ export function localKeyProblem(key: string | null | undefined): string | null {
   const tokens = String(key ?? '').split(/[\s"'`=:,;()[\]<>{}]+/);
   const provider = tokens.map(cloudKeyProvider).find(Boolean);
   return provider ? `This looks like an ${provider} API key, which is never sent to a local server. Enter the key your local server was started with, or leave the field empty.` : null;
+}
+
+/**
+ * A reason to question a key before it is saved for a hosted provider, or null when it looks right. Judged by
+ * shape alone, with no network call: it is a question, never a refusal, because key formats change.
+ */
+export function keyDoubt(provider: 'openai' | 'anthropic' | 'local', key: string): string | null {
+  const k = key.trim();
+  if (provider === 'local' || !k) return null;
+  const anthropic = /^sk-ant-\S{16,}$/.test(k);
+  if (provider === 'anthropic') {
+    if (anthropic) return null;
+    return /^sk-\S{16,}$/.test(k) ? 'This looks like an OpenAI key, but Anthropic keys start with sk-ant-.' : 'Anthropic keys start with sk-ant- and have no spaces, and this text does not look like one.';
+  }
+  if (anthropic) return 'This looks like an Anthropic key, but OpenAI keys start with sk-.';
+  return /^sk-\S{16,}$/.test(k) ? null : 'OpenAI keys start with sk- and have no spaces, and this text does not look like one.';
 }

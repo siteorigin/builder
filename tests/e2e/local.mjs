@@ -75,6 +75,9 @@ try {
   const dialog = win.locator('.modal');
   await dialog.getByRole('tab', { name: 'AI assistant' }).click();
   await dialog.getByRole('radio', { name: 'Local model' }).click();
+  // Looking at a provider's settings does not switch the one in use; the button does.
+  assert.notEqual((await settings()).ai.provider, 'local');
+  await dialog.getByRole('button', { name: 'Use Local model', exact: true }).click();
   await eventually(async () => assert.equal((await settings()).ai.provider, 'local'));
 
   step(`the ${preset.label} preset`);
@@ -285,6 +288,9 @@ try {
   await win.locator('[aria-label="Settings"]').click();
   await dialog.getByRole('tab', { name: 'AI assistant' }).click();
   await dialog.getByRole('radio', { name: 'OpenAI' }).click();
+  // Looking at a provider's settings does not switch the one in use; the button does.
+  assert.notEqual((await settings()).ai.provider, 'openai');
+  await dialog.getByRole('button', { name: 'Use OpenAI', exact: true }).click();
   await eventually(async () => assert.equal((await settings()).ai.provider, 'openai'));
   await dialog.locator('button.btn', { hasText: /^Close$/ }).click();
   await dialog.waitFor({ state: 'detached' });
