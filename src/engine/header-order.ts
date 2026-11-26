@@ -224,15 +224,24 @@ export function followingSlot(state: ProjectState, items: ReadonlyArray<MenuItem
 
 /**
  * Take the header menu's links to `pageId` out of it, as deleting the page does while the menu follows the pages.
+ * With `duplicateOf` (the page its links are about to be pointed at), only its plain links go, and only when the menu
+ * already links plainly to that page, so the menu never shows two links to one page.
  * A link that had links under it leaves them together, under the first of them. Returns their labels; none, and
  * nothing changes, when the menu would end up with fewer links than it must hold.
  */
-export function dropHeaderLinks(state: ProjectState, pageId: string): string[] {
+export function dropHeaderLinks(state: ProjectState, pageId: string, duplicateOf?: string): string[] {
   const menu = headerMenu(state);
   const items = menu && menuItems(menu);
   if (!menu || !items) return [];
+  const plain = (it: MenuItem, id: string) => {
+    const link = it?.link as LinkValue | undefined;
+    return !!link && typeof link === 'object' && link.type === 'page' && link.target === id && !link.anchor;
+  };
+  // With `duplicateOf`: only the plain links to the page that would repeat a plain link the menu already has to that page.
+  if (duplicateOf !== undefined && !items.some((it) => plain(it, duplicateOf))) return [];
   const goes = (it: MenuItem) => {
     const link = it?.link as LinkValue | undefined;
+    if (duplicateOf !== undefined) return plain(it, pageId);
     return !!link && typeof link === 'object' && link.type === 'page' && link.target === pageId;
   };
   if (!items.some(goes)) return [];

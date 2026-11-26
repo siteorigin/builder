@@ -1011,6 +1011,7 @@ export function DeletePageModal({ pageId }: { pageId: string }) {
   const [busy, setBusy] = useState(false);
   const body = useRef<HTMLDivElement>(null);
   const review = reviewPageRemoval(st, pageId, replacement);
+  const follows = st.site.headerMenuOrder === 'follow';
   const refs = review.uses.length;
   const plan = planPageRemoval(st, pageId, replacement, choices);
   const target = pagePicked ? st.pages[pagePicked] : undefined;
@@ -1162,7 +1163,7 @@ export function DeletePageModal({ pageId }: { pageId: string }) {
       icon: <CircleMinus />,
       text: (
         <>
-          <span id="delete-page-menu">{review.menu.length === 1 ? 'Its link is removed from the header menu, which follows the page order.' : `Its ${review.menu.length} links are removed from the header menu, which follows the page order.`}</span>
+          <span id="delete-page-menu">{review.menu.length === 1 ? (follows ? 'Its link is removed from the header menu, which follows the page order.' : 'Its link is removed from the header menu, which already links to the new Home page.') : `Its ${review.menu.length} links are removed from the header menu, which ${follows ? 'follows the page order' : 'already links to the new Home page'}.`}</span>
           <ScrollList className="page-dialog-list" labelledBy="delete-page-menu">
             {review.menu.map((label, i) => (
               <li key={i}>
