@@ -1311,8 +1311,10 @@ export function notFoundAddressWarning(html: string): string | null {
 export function notFoundHostNote(base: string, host: RedirectHost): string {
   const path = notFoundPath(base);
   const page = `Addresses your site does not have show its not-found page, ${NOT_FOUND_FILE}.`;
-  if (host === 'netlify') return `${page} Netlify uses it automatically when it publishes the exported website as it is.`;
-  if (host === 'vercel') return `${page} Vercel uses it automatically when it publishes the exported website as it is.`;
+  // Those hosts find 404.html at the root they publish: a site built for a sub-path has to be published there.
+  const mounted = base ? ` The website is built to be served under ${base}/, so publish it there.` : '';
+  if (host === 'netlify') return `${page} Netlify uses it automatically when it publishes the exported website as it is.${mounted}`;
+  if (host === 'vercel') return `${page} Vercel uses it automatically when it publishes the exported website as it is.${mounted}`;
   return `${page} Cloudflare Pages, Netlify and Vercel use it automatically when they publish the exported website as it is. On another host, set the 404 error document to ${path} (on Apache: ErrorDocument 404 ${path}).`;
 }
 

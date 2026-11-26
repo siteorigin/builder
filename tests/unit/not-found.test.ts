@@ -409,7 +409,7 @@ describe('exporting the not-found page', () => {
     const netlify = notFoundHostNote('', 'netlify');
     expect(netlify).toBe('Addresses your site does not have show its not-found page, 404.html. Netlify uses it automatically when it publishes the exported website as it is.');
     const vercel = notFoundHostNote('/studio', 'vercel');
-    expect(vercel).toBe('Addresses your site does not have show its not-found page, 404.html. Vercel uses it automatically when it publishes the exported website as it is.');
+    expect(vercel).toBe('Addresses your site does not have show its not-found page, 404.html. Vercel uses it automatically when it publishes the exported website as it is. The website is built to be served under /studio/, so publish it there.');
     for (const note of [netlify, vercel]) expect(note).not.toMatch(/Cloudflare|GitHub|error document|Apache/);
     expect(notFoundHostNote('', 'cloudflare')).not.toMatch(/GitHub/);
   });

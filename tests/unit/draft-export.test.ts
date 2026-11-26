@@ -123,6 +123,23 @@ describe('exporting a project with a draft', () => {
     expect(c.snapshot()!.state.pages.pg_winter01.draft).toBe(true);
   });
 
+  it('#817: a clean site with a public URL exports with nothing to fix, and its hosting guidance beside the warnings', async () => {
+    const dir = temp('project');
+    const state = createStarterState('blank', 'Bookshop', false);
+    state.site.baseUrl = 'https://books.example';
+    await (await ProjectSession.create(dir, state)).close();
+    const c = await open(dir);
+    const r = await c.buildStaticTo(join(temp('out'), 'site'));
+    expect(r.ok).toBe(true);
+    // This file's stand-in build writes each page's Svelte source, which has no <html lang>: the one note that gives
+    // rise to is the stand-in's. tests/e2e/export.mjs runs the real build and expects no notes at all.
+    const stand = /^“Home” \(\/\) was built without a language/;
+    expect(r.warnings.filter((w) => !stand.test(w))).toEqual([]);
+    expect((r.notes ?? []).filter((n) => !stand.test(n.message))).toEqual([]);
+    expect(r.hosting).toMatch(/^Addresses your site does not have show its not-found page, 404\.html\. Cloudflare Pages, Netlify and Vercel /);
+    expect((c.snapshot()!.recentExports[0].notes ?? []).filter((n) => /404\.html/.test(n.message))).toEqual([]);
+  });
+
   it('publishes the hosts’ 301 rules for the published redirects only, with vercel.json at the website’s root (#581)', async () => {
     const dir = temp('project');
     let state = createStarterState('business', 'Bookshop', false);

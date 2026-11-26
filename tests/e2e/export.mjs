@@ -713,7 +713,8 @@ assert.equal(await homeLink.evaluate((a) => a.href), stat.previewUrl, 'its Home 
 await homeLink.click();
 await eventually(async () => assert.equal(await lost.title(), 'Client proof 1', 'following it reaches the Home page'));
 await lost.close();
-assert.ok(stat.warnings.some((w) => w.includes('set the 404 error document to /404.html')), `the website export says how to point a host at the not-found page: ${stat.warnings.join(' ')}`);
+assert.ok(stat.hosting?.includes('set the 404 error document to /404.html'), `the website export says how to point a host at the not-found page: ${stat.hosting}`);
+assert.ok(!stat.warnings.some((w) => /404\.html/.test(w)), `#817: the hosting guidance is not one of the warnings: ${stat.warnings.join(' ')}`);
 
 step('#75: the exported gallery on a desktop and on a 390px phone');
 /** What the page has fetched so far (the browser's own record, which includes lazy images). */
@@ -873,7 +874,7 @@ assert.equal(statZip.ok, true, `static ZIP export succeeds: ${statZip.message}`)
 assert.equal(statZip.path, staticZip);
 assert.ok(statZip.warnings.some((w) => w.includes(draft.name) && /left out of the website/i.test(w)), `the website ZIP export names the draft it left out: ${statZip.warnings.join(' ')}`);
 assert.ok(statZip.warnings.some((w) => w.includes(photo.name) && /leaves out where/.test(w)), `the website ZIP export says it left out where the photo was taken: ${statZip.warnings.join(' ')}`);
-assert.ok(statZip.warnings.some((w) => w.includes('set the 404 error document to /404.html')), `the website ZIP export says how to point a host at the not-found page: ${statZip.warnings.join(' ')}`);
+assert.ok(statZip.hosting?.includes('set the 404 error document to /404.html'), `the website ZIP export says how to point a host at the not-found page: ${statZip.hosting}`);
 
 step('issue 212: a second website proof keeps the first one serving its own files');
 await titleProof('Client proof 2');
@@ -1084,7 +1085,7 @@ step('#393: the sitemap under /studio lists each published post with the day it 
   assert.ok(!sitemap.includes('category/events'), 'the sitemap lists no archive of a category with only a draft');
   assert.match(readFileSync(join(studioStat.path, 'blog', 'opening-times', 'index.html'), 'utf8'), /<link rel="canonical" href="https:\/\/example.com\/studio\/blog\/opening-times\/"/, 'the post names its public address');
 }
-assert.ok(studioStat.warnings.some((w) => w.includes('set the 404 error document to /studio/404.html (on Apache: ErrorDocument 404 /studio/404.html)')), `the export names the not-found page under /studio: ${studioStat.warnings.join(' ')}`);
+assert.ok(studioStat.hosting?.includes('set the 404 error document to /studio/404.html (on Apache: ErrorDocument 404 /studio/404.html)'), `the export names the not-found page under /studio: ${studioStat.hosting}`);
 const missingStudio = new URL('customer-storie/deep/', studioStat.previewUrl).href;
 assert.equal((await fetch(missingStudio)).status, 404, 'a missing address under /studio is answered with HTTP 404');
 const lostStudio = await proofTab(missingStudio);
@@ -1095,6 +1096,34 @@ assert.equal(await studioHome.evaluate((a) => a.href), studioStat.previewUrl, 'i
 await studioHome.click();
 await eventually(async () => assert.equal(await lostStudio.title(), 'Client proof 2', 'following it reaches the Home page under /studio'));
 await lostStudio.close();
+
+step('#817: a clean site with a public URL exports with nothing to fix, and its hosting guidance as information');
+{
+  await win.evaluate(() => window.builder.projects.close());
+  await win.waitForSelector('.welcome');
+  await createProject(win, { name: 'Quiet Shelf', parentDir: join(WORK, 'sites'), starter: 'blank', sampleImages: false });
+  const publicUrl = await win.evaluate(() => window.builder.project.apply({ operations: [{ type: 'site.update', baseUrl: 'https://quiet.example' }] }, { label: 'Set the public URL' }));
+  assert.equal(publicUrl.ok, true, `the public URL is set: ${publicUrl.error?.message}`);
+  await win.getByRole('button', { name: 'Export', exact: true }).click();
+  const dialog = win.locator('.modal');
+  await intoFolder();
+  await dialog.getByRole('button', { name: /Website files, ready to upload/ }).click();
+  const outcome = dialog.locator('.export-result');
+  await outcome.waitFor({ timeout: 300000 });
+  const said = await outcome.innerText();
+  assert.match(said, /^Exported \d+ pages?\./, `the clean export succeeds: ${await dialog.innerText()}`);
+  assert.match(said, /Nothing to fix\./, `an export with nothing to fix says so: ${said}`);
+  assert.doesNotMatch(said, /to review/, `nothing is counted for review: ${said}`);
+  const guide = dialog.getByTestId('export-hosting');
+  assert.equal(await guide.count(), 1, 'the hosting guidance is shown');
+  assert.match(await guide.innerText(), /Cloudflare Pages, Netlify and Vercel use it automatically.*set the 404 error document to \/404\.html/s, 'the guidance names the hosts the Redirects setting offers');
+  const latest = dialog.getByRole('region', { name: 'Recent exports' }).getByRole('listitem').first();
+  assert.equal(await latest.locator('.export-row-notes-wrap').count(), 0, 'the export row lists no notes');
+  const recent = (await win.evaluate(() => window.builder.project.snapshot())).recentExports[0];
+  assert.deepEqual(recent.notes, [], `the export recorded no notes: ${JSON.stringify(recent.notes)}`);
+  await dialog.getByRole('button', { name: 'Close', exact: true }).last().click();
+  await dialog.waitFor({ state: 'detached' });
+}
 
 assert.deepEqual(errors, [], 'no uncaught errors in the editor');
 await app.close();
