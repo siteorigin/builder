@@ -759,6 +759,8 @@ function Control({
   const valueKey = JSON.stringify(value ?? null);
   const here = `${scope}:${styleState ?? ''}:${valueKey}`;
   const drafting = draftingAt === here;
+  // Gone for good once left: coming back to the same size, state and value never opens it again.
+  useEffect(() => setDraftingAt((at) => (at === here ? at : null)), [here]);
   const setDrafting = (on: boolean) => setDraftingAt(on ? here : null);
   const tokOpts = tokenOptions(tokens, def.tokenGroup);
   const set = value !== undefined;
