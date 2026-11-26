@@ -7,6 +7,7 @@
 import type { EditOperation } from '@shared/ops';
 import type { ComponentDefinition, ElementRef, InstanceNode, OwnerRef, ProjectState, ResponsiveScope, ResponsiveStyles, StyleScope, StyleScopeKey, StyleState, StyleValue } from '@shared/types';
 import { CONTAINER_SCOPES, STYLE_STATES, isContainerScope, parseStyleScopeKey, styleScopeKey } from '@shared/types';
+import { GRID_CHILD_PROPS } from './grid-child';
 import { CONTAINER_SCOPE_LABEL, STYLE_PROP_MAP, containerStyleError, canonicalStyleValue, isStateStyleProp, offeredStyleProps, placementStyleControls, stateStyleError, styleSetFor, tokenVar, validateStyleValue } from '@shared/styles';
 import { codeTakesOverrides, enclosingRepeatProp } from '@engine/tree';
 import { isBackgroundImageValue, isPictureAsset } from '@shared/background-image';
@@ -288,7 +289,9 @@ export function planStylePaste(state: ProjectState, copy: StyleCopy, ref: Elemen
       if (!target) skip(missing);
       else if (!def) skip('This version of the builder doesn’t know this style.');
       else if (property === 'customCss') skip('Custom CSS can set several properties at once, so it isn’t pasted. Copy it by hand.');
-      else if (!target.offered.includes(property)) skip(`${destination.kind === 'section' ? `${destination.label}’s ${target.label.toLowerCase()}` : destination.label} doesn’t offer ${label.toLowerCase()}.`);
+      // A placement takes spans whatever its design lists: they place it in the box around it. Whether that box is a
+      // grid can change with this same paste, and outside one they do nothing. (An element's own set offers them.)
+      else if (!target.offered.includes(property) && !(target.partId && GRID_CHILD_PROPS.includes(property))) skip(`${destination.kind === 'section' ? `${destination.label}’s ${target.label.toLowerCase()}` : destination.label} doesn’t offer ${label.toLowerCase()}.`);
       else if (!scopes.some((sc) => set.styles[sc]?.[property] !== undefined)) skip(`The copy sets it for ${scopeList(set.styles, property).join(', ')}, not ${SCOPE_LABELS[scope as ResponsiveScope]}.`);
       else {
         // Every size the paste writes is checked first: a property with one value that can't be written changes nowhere.

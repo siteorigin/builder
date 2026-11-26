@@ -114,7 +114,7 @@ export const blogGrid = managed({
   parts: {
     root: { nodeId: 'root', label: 'Section', styleControls: ['paddingBlock', 'background'] },
     heading: { nodeId: 'heading', label: 'Heading', styleControls: ['textStyle', 'color'] },
-    grid: { nodeId: 'grid', label: 'Card grid', styleControls: ['columns', 'gap'] },
+    grid: { nodeId: 'grid', label: 'Card grid', styleControls: ['columns', 'gridAutoFlow', 'gridAutoRows', 'gap'] },
     card: { nodeId: 'card', label: 'Card', styleControls: ['background', 'border', 'radius', 'shadow', 'paddingBlock', 'paddingInline', 'gap'] },
     cardImage: { nodeId: 'card-image', label: 'Card image', styleControls: ['aspectRatio', 'radius'] },
     cardCategory: { nodeId: 'card-category', label: 'Category', styleControls: ['textStyle', 'color'] },

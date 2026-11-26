@@ -5,7 +5,8 @@
 // Inspector without Parts: Column layout turns its Container into a narrow-and-wide grid with separate row and column
 // gaps, on that Section alone. The uneven starters (#665) work the same way: a Bento grid of a two-wide featured tile
 // and a two-tall tile, a main column beside a sidebar pinned below the site header, and a wide-and-narrow split, each
-// laid out on desktop and stacked on phones.
+// laid out on desktop and stacked on phones. A grid's row heights and packing are set there too, and an item in a grid
+// shows its Column span and Row span without opening a group (#666).
 import assert from 'node:assert/strict';
 import { join } from 'node:path';
 import { MOD, createProject, eventually, launch, scratch, step } from './harness.mjs';
@@ -349,6 +350,46 @@ try {
   }, 15000);
   await eventually(async () => assert.match(await columnLayout.locator('.section-head').innerText(), /(^|\D)4 changes/), 15000);
   await columnLayout.screenshot({ path: join(OUT, 'section-column-layout.png') });
+
+  step('a grid’s row heights and packing are set beside its columns (#666)');
+  await row('gridAutoRows').locator('select').first().selectOption('minmax(12rem, auto)');
+  await row('gridAutoFlow').locator('select').selectOption('dense');
+  await eventually(async () => {
+    const css = await inner.evaluate((el) => {
+      const s = getComputedStyle(el);
+      return [s.gridAutoFlow, s.gridAutoRows];
+    });
+    assert.deepEqual(css, ['dense', 'minmax(192px, auto)']);
+  }, 30000);
+
+  step('a grid item shows Column span and Row span in Layout with every group closed; an item outside a grid does not');
+  const spanRows = inspector.locator('.style-group[data-group="layout"] .style-row:is([data-prop="columnSpan"], [data-prop="rowSpan"])');
+  /** Selects a paragraph inside the Section already selected, or inside another one. */
+  const pick = async (text) => {
+    // Escape steps out one level at a time: all the way, so the first click lands as it would on an untouched page.
+    await eventually(async () => {
+      await win.keyboard.press('Escape');
+      assert.equal(await selected(), null, 'nothing is selected');
+    }, 10000);
+    const target = frame.locator('p', { hasText: text }).first();
+    // The first click takes the Section and the next the paragraph in it. A click made while the canvas is still
+    // settling can miss, so it is made again until the paragraph is the selection.
+    await eventually(async () => {
+      if ((await selected()) !== 'Text actions') await clickMiddle(target);
+      await eventually(async () => assert.equal(await selected(), 'Text actions', `the paragraph “${text}” is selected`), 2000);
+    }, 30000);
+    await inspector.locator('.style-group').first().waitFor();
+    assert.equal(await inspector.locator('.style-group-toggle[aria-expanded="true"]').count(), 0, 'no group is open');
+  };
+  await pick('Narrow side');
+  await eventually(async () => assert.equal(await spanRows.count(), 2, 'both spans show for a grid item'), 10000);
+  await inspector.locator('.style-group[data-group="layout"]').screenshot({ path: join(OUT, 'grid-item-spans.png') });
+  await inspector.locator('.style-row[data-prop="columnSpan"] select').selectOption('full');
+  await eventually(async () => assert.equal(await at(made.first).evaluate((el) => getComputedStyle(el).gridColumnEnd), '-1'), 30000);
+  await inspector.locator('.style-row[data-prop="rowSpan"] select').selectOption('2');
+  await eventually(async () => assert.equal(await at(made.first).evaluate((el) => getComputedStyle(el).gridRowEnd), 'span 2'), 30000);
+  await pick('Other section');
+  await eventually(async () => assert.equal(await spanRows.count(), 0, 'outside a grid they stay behind the group’s heading'), 10000);
 
   assert.deepEqual(errors, [], 'no page errors');
 } finally {

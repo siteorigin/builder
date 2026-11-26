@@ -82,7 +82,7 @@ export const testimonials = managed({
   parts: {
     root: { nodeId: 'root', label: 'Section', styleControls: ['paddingBlock', 'background'] },
     heading: { nodeId: 'heading', label: 'Heading', styleControls: ['textStyle', 'color'] },
-    grid: { nodeId: 'grid', label: 'Grid', styleControls: ['columns', 'gap'] },
+    grid: { nodeId: 'grid', label: 'Grid', styleControls: ['columns', 'gridAutoFlow', 'gridAutoRows', 'gap'] },
     card: { nodeId: 'card', label: 'Card', styleControls: ['background', 'border', 'radius', 'shadow'] },
     quote: { nodeId: 'quote', label: 'Quote', styleControls: ['textStyle', 'color'] }
   },
@@ -137,7 +137,7 @@ export const team = managed({
   parts: {
     root: { nodeId: 'root', label: 'Section', styleControls: ['paddingBlock', 'background'] },
     heading: { nodeId: 'heading', label: 'Heading', styleControls: ['textStyle', 'color'] },
-    grid: { nodeId: 'grid', label: 'Grid', styleControls: ['columns', 'gap'] },
+    grid: { nodeId: 'grid', label: 'Grid', styleControls: ['columns', 'gridAutoFlow', 'gridAutoRows', 'gap'] },
     portrait: { nodeId: 'portrait', label: 'Portrait', styleControls: ['aspectRatio', 'radius'] },
     name: { nodeId: 'name', label: 'Name', styleControls: ['textStyle', 'color'] }
   },

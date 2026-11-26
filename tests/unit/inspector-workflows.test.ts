@@ -557,7 +557,7 @@ describe('a Section’s columns, arranged from the placement (#514)', () => {
     const { def } = withSection();
     expect(def.parts.container.styleControls).toEqual(expect.arrayContaining(['layout', 'columns', 'gridTemplate', 'rowGap', 'columnGap']));
     // The placement's inspector reaches them without Parts: the one part that holds the section's slot.
-    expect(columnLayoutPart(def)).toEqual({ partId: 'container', controls: ['layout', 'columns', 'gridTemplate', 'gap', 'rowGap', 'columnGap', 'align', 'justify'] });
+    expect(columnLayoutPart(def)).toEqual({ partId: 'container', controls: ['layout', 'columns', 'gridTemplate', 'gridAutoFlow', 'gridAutoRows', 'gap', 'rowGap', 'columnGap', 'align', 'justify'] });
   });
 
   it('offers what an older installed Section has, and the same on a copy made unique', () => {

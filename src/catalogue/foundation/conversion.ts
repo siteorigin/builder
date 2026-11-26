@@ -41,7 +41,7 @@ export const pricing = managed({
   parts: {
     root: { nodeId: 'root', label: 'Section', styleControls: ['paddingBlock', 'background'] },
     heading: { nodeId: 'heading', label: 'Heading', styleControls: ['textStyle', 'color'] },
-    grid: { nodeId: 'grid', label: 'Grid', styleControls: ['columns', 'gap'] },
+    grid: { nodeId: 'grid', label: 'Grid', styleControls: ['columns', 'gridAutoFlow', 'gridAutoRows', 'gap'] },
     plan: { nodeId: 'plan', label: 'Plan card', styleControls: ['background', 'border', 'radius', 'shadow'] },
     price: { nodeId: 'price', label: 'Price', styleControls: ['textStyle', 'color'] }
   },
@@ -132,7 +132,7 @@ export const pricingToggle = managed({
     root: { nodeId: 'root', label: 'Section', styleControls: ['paddingBlock', 'background'] },
     heading: { nodeId: 'heading', label: 'Heading', styleControls: ['textStyle', 'color'] },
     switch: { nodeId: 'switch', label: 'Billing switch', styleControls: ['gap', 'background', 'radius'] },
-    grid: { nodeId: 'grid', label: 'Grid', styleControls: ['columns', 'gap'] },
+    grid: { nodeId: 'grid', label: 'Grid', styleControls: ['columns', 'gridAutoFlow', 'gridAutoRows', 'gap'] },
     plan: { nodeId: 'plan', label: 'Plan card', styleControls: ['background', 'border', 'radius', 'shadow'] }
   },
   state: {
@@ -312,7 +312,7 @@ export const contact = managed({
   parts: {
     root: { nodeId: 'root', label: 'Section', styleControls: ['paddingBlock', 'background'] },
     heading: { nodeId: 'heading', label: 'Heading', styleControls: ['textStyle', 'color'] },
-    list: { nodeId: 'list', label: 'Contact list', styleControls: ['gap', 'columns'] },
+    list: { nodeId: 'list', label: 'Contact list', styleControls: ['gap', 'columns', 'gridAutoFlow', 'gridAutoRows'] },
     method: { nodeId: 'method', label: 'Contact method', styleControls: ['background', 'border', 'radius'] }
   },
   variantAxes: { tone: toneAxis(['lead']) },

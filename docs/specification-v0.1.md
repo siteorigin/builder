@@ -256,7 +256,7 @@ Shared component definition editing always uses an explicit **Edit definition** 
 | Group | Supported controls |
 | --- | --- |
 | Content | Plain/rich text, image, alt text, link, button label, icon and typed list items. |
-| Layout | Vertical/horizontal stack, grid columns, alignment, distribution, wrap, gap and padding. |
+| Layout | Vertical/horizontal stack, grid columns, row heights and dense packing, grid item column and row spans, alignment, distribution, wrap, gap and padding. |
 | Size | Fill, fit content, fixed size, min/max width, aspect ratio and image fit. |
 | Typography | Text style token, font family/weight, size, line height, letter spacing and alignment. |
 | Appearance | Foreground/background tokens or explicit values, border, radius, shadow and opacity. |

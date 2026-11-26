@@ -4,7 +4,7 @@ import { validateOperation, type EditOperation } from '@shared/ops';
 import { tokenUsageCounts } from '@engine/tokens';
 import { validateState } from '@engine/validate';
 import { MIGRATIONS } from '@shared/migrations';
-import { STYLE_PROPS, STYLE_PROP_MAP, gridTemplateShares, isStateStyleProp, parseCustomCss, styleFallbackCss, styleSetFor, styleToCss, validateStyleValue, wideOnlyStyle } from '@shared/styles';
+import { STYLE_PROPS, STYLE_PROP_MAP, gridTemplateShares, isStateStyleProp, parseCustomCss, parseRowSize, styleFallbackCss, styleSetFor, styleToCss, validateStyleValue, wideOnlyStyle } from '@shared/styles';
 import { createStarterState } from '@catalogue/starters';
 import { FOUNDATION_BASE_CSS } from '@catalogue/foundation/base.css';
 import { applyOperations } from '@engine/apply';
@@ -264,7 +264,7 @@ describe('grid tracks and row spans (#352)', () => {
 describe('style registry', () => {
   it('emits a declaration for every property it offers', () => {
     const sample: Record<string, unknown> = {
-      layout: 'grid', columns: 2, containerType: 'inline-size', align: 'center', justify: 'center', order: 1, wrap: true, gridTemplate: '1fr 2fr', columnSpan: 2, rowSpan: 2, alignSelf: 'center',
+      layout: 'grid', columns: 2, containerType: 'inline-size', align: 'center', justify: 'center', order: 1, wrap: true, gridTemplate: '1fr 2fr', gridAutoFlow: 'dense', columnSpan: 2, rowSpan: 2, alignSelf: 'center',
       flexGrow: 1, flexShrink: 0, textStyle: 'text.h2', fontFamily: 'serif', fontWeight: '600', fontStyle: 'italic', textTransform: 'uppercase',
       textAlign: 'center', color: '#000', background: '#fff', shadow: '0 1px 2px #000', opacity: 0.5, marginInline: 'auto', aspectRatio: '16/9',
       objectFit: 'cover', objectPosition: 'top', overflow: 'clip', position: 'sticky', inset: '0', zIndex: 2, hidden: true, customCss: 'filter: blur(2px)',
@@ -1018,5 +1018,87 @@ describe('the document format for see-through colors and backdrop blur (#353)', 
       ['error', hero.id, 'shadow']
     ]);
     expect(found[0].message).toMatch(/from 0 to 1.*Nothing is written for it/);
+  });
+});
+
+describe('grid packing and row heights (#666)', () => {
+  it('takes keeping order or packing tightly, and writes grid-auto-flow', () => {
+    for (const v of ['row', 'dense']) {
+      expect(validateStyleValue('gridAutoFlow', v), v).toBeNull();
+      expect(styleToCss('gridAutoFlow', v)).toEqual([`grid-auto-flow: ${v}`]);
+    }
+    for (const v of ['column', 'row dense', 'dense; color: red']) {
+      expect(validateStyleValue('gridAutoFlow', v), v).not.toBeNull();
+      expect(styleToCss('gridAutoFlow', v), v).toEqual([]);
+    }
+    expect(validateStyleValue('gridAutoFlow', { token: 'space.lg' })).toMatch(/cannot use a token/);
+  });
+
+  it('takes one row size, keeping a bare fr share so equal rows never shrink below their content', () => {
+    const written: Record<string, string> = {
+      auto: 'auto',
+      '1fr': '1fr',
+      'min-content': 'min-content',
+      'max-content': 'max-content',
+      '12rem': '12rem',
+      '0': '0',
+      'minmax(8rem, auto)': 'minmax(8rem, auto)',
+      'minmax(12rem, auto)': 'minmax(12rem, auto)',
+      'minmax(16rem, auto)': 'minmax(16rem, auto)',
+      'minmax(10rem, 1fr)': 'minmax(10rem, 1fr)',
+      'clamp(8rem, 20vw, 20rem)': 'max(0px, clamp(8rem, 20vw, 20rem))'
+    };
+    for (const [value, css] of Object.entries(written)) {
+      expect(validateStyleValue('gridAutoRows', value), value).toBeNull();
+      expect(styleToCss('gridAutoRows', value), value).toEqual([`grid-auto-rows: ${css}`]);
+    }
+    expect(STYLE_PROP_MAP.gridAutoRows.options!.map((o) => o.value)).toEqual(['auto', '1fr', 'minmax(8rem, auto)', 'minmax(12rem, auto)', 'minmax(16rem, auto)']);
+    for (const o of STYLE_PROP_MAP.gridAutoRows.options!) expect(validateStyleValue('gridAutoRows', o.value), o.value).toBeNull();
+    // Too long, or nested deeper than browsers read.
+    const long = `calc(${Array.from({ length: 80 }, () => '1px').join(' + ')})`;
+    const deep = `${'calc('.repeat(10)}1px${')'.repeat(10)}`;
+    for (const value of [long, deep]) expect(parseRowSize(value), value.slice(0, 20)).toBeNull();
+    const refused = ['12', '-4rem', '1fr 2fr', 'repeat(2, 1fr)', 'repeat(auto-fit, minmax(12rem, 1fr))', 'auto-fit-sm', 'minmax(1fr, auto)', 'minmax(12rem)', 'fit-content(20rem)', 'var(--row)', 'auto; color: red', 'url(x)', ''];
+    for (const value of refused) {
+      expect(validateStyleValue('gridAutoRows', value), value).toMatch(/./);
+      expect(styleToCss('gridAutoRows', value), value).toEqual([]);
+    }
+    expect(validateStyleValue('gridAutoRows', 12)).toMatch(/must be text/);
+    expect(validateStyleValue('gridAutoRows', { token: 'space.lg' })).toMatch(/cannot use a token/);
+  });
+
+  it('writes both on the grid’s own rule, phones included, with a phone value of its own over it', () => {
+    let s = createStarterState('blank', 'Blank', false);
+    const owner = { kind: 'page' as const, id: s.site.homePageId };
+    const r = applyOperations(s, [{ type: 'node.insert', owner, parentId: home(s).rootIds[0], slot: 'content', primitive: 'grid' }]);
+    const gridId = r.results[0].nodeId as string;
+    const set = (scope: 'base' | 'phone', property: string, value: string) => ({ type: 'node.setStyle' as const, owner, nodeId: gridId, scope, property, value });
+    s = applyOperations(r.state, [set('base', 'gridAutoFlow', 'dense'), set('base', 'gridAutoRows', 'minmax(12rem,   auto)'), set('phone', 'gridAutoRows', 'auto')]).state;
+    expect(home(s).nodes[gridId].styles?.base?.gridAutoRows).toBe('minmax(12rem, auto)');
+    const text = css(s, 'site');
+    const base = ruleOf(section(text, null), `.so-n-${gridId}`);
+    expect(base).toContain('grid-auto-flow: dense');
+    expect(base).toContain('grid-auto-rows: minmax(12rem, auto)');
+    expect(ruleOf(section(text, PHONE), `.so-n-${gridId}`)).toContain('grid-auto-rows: auto');
+    expect(() => applyOperations(s, [set('base', 'gridAutoRows', '1fr 2fr')])).toThrow(/not a row size/);
+  });
+
+  it('writes nothing for a hand-edited value, and says so', () => {
+    const s = createStarterState('blank', 'Blank', false);
+    const r = applyOperations(s, [{ type: 'node.insert', owner: { kind: 'page', id: s.site.homePageId }, parentId: home(s).rootIds[0], slot: 'content', primitive: 'grid' }]);
+    const gridId = r.results[0].nodeId as string;
+    const edited = structuredClone(r.state);
+    home(edited).nodes[gridId].styles = { base: { layout: 'grid', gridAutoFlow: 'sideways', gridAutoRows: 0 } };
+    const text = css(edited, 'site');
+    expect(text).not.toContain('grid-auto-flow');
+    expect(text).not.toContain('grid-auto-rows');
+    expect(styleToCss('gridAutoRows', 0)).toEqual([]);
+    const said = validateState(edited).filter((d) => d.code === 'STYLE_VALUE_INVALID').map((d) => d.message);
+    expect(said).toEqual([expect.stringContaining('Grid packing must be one of'), expect.stringContaining('Row heights must be text')]);
+  });
+
+  it('is offered on containers', () => {
+    expect(styleSetFor({ kind: 'element' })).toEqual(expect.arrayContaining(['gridAutoFlow', 'gridAutoRows']));
+    for (const kind of ['text', 'image', 'link', 'icon']) expect(styleSetFor({ kind }), kind).not.toContain('gridAutoRows');
   });
 });

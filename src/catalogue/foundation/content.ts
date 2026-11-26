@@ -43,7 +43,7 @@ export const featuresGrid = managed({
   parts: {
     root: { nodeId: 'root', label: 'Section', styleControls: ['paddingBlock', 'background'] },
     heading: { nodeId: 'heading', label: 'Heading', styleControls: ['textStyle', 'color'] },
-    grid: { nodeId: 'grid', label: 'Card grid', styleControls: ['columns', 'gap'] },
+    grid: { nodeId: 'grid', label: 'Card grid', styleControls: ['columns', 'gridAutoFlow', 'gridAutoRows', 'gap'] },
     card: { nodeId: 'card', label: 'Card', styleControls: ['background', 'border', 'radius', 'shadow', 'paddingBlock', 'paddingInline'] },
     cardTitle: { nodeId: 'card-title', label: 'Card title', styleControls: ['textStyle', 'color'] },
     cardIcon: { nodeId: 'card-icon', label: 'Card icon', styleControls: ['color', 'background'] }
@@ -420,7 +420,7 @@ export const stats = managed({
   },
   parts: {
     root: { nodeId: 'root', label: 'Section', styleControls: ['paddingBlock', 'background'] },
-    grid: { nodeId: 'grid', label: 'Grid', styleControls: ['columns', 'gap'] },
+    grid: { nodeId: 'grid', label: 'Grid', styleControls: ['columns', 'gridAutoFlow', 'gridAutoRows', 'gap'] },
     value: { nodeId: 'value', label: 'Value', styleControls: ['textStyle', 'color'] },
     label: { nodeId: 'label', label: 'Label', styleControls: ['textStyle', 'color'] }
   },
@@ -473,7 +473,7 @@ export const gallery = managed({
   },
   parts: {
     root: { nodeId: 'root', label: 'Section', styleControls: ['paddingBlock', 'background'] },
-    grid: { nodeId: 'grid', label: 'Grid', styleControls: ['columns', 'gap'] },
+    grid: { nodeId: 'grid', label: 'Grid', styleControls: ['columns', 'gridAutoFlow', 'gridAutoRows', 'gap'] },
     image: { nodeId: 'image', label: 'Image', styleControls: ['aspectRatio', 'radius'] },
     caption: { nodeId: 'caption', label: 'Caption', styleControls: ['textStyle', 'color'] }
   },
@@ -597,7 +597,7 @@ export const pageList = managed({
   parts: {
     root: { nodeId: 'root', label: 'Section', styleControls: ['paddingBlock', 'background'] },
     heading: { nodeId: 'heading', label: 'Heading', styleControls: ['textStyle', 'color'] },
-    grid: { nodeId: 'grid', label: 'Card grid', styleControls: ['columns', 'gap'] },
+    grid: { nodeId: 'grid', label: 'Card grid', styleControls: ['columns', 'gridAutoFlow', 'gridAutoRows', 'gap'] },
     card: { nodeId: 'card', label: 'Card', styleControls: ['background', 'border', 'radius', 'shadow', 'paddingBlock', 'paddingInline', 'gap'] },
     cardImage: { nodeId: 'card-image', label: 'Card image', styleControls: ['aspectRatio', 'radius'] },
     cardTitle: { nodeId: 'card-title', label: 'Card title', styleControls: ['textStyle', 'color'] },
@@ -665,7 +665,7 @@ export const newsList = managed({
   parts: {
     root: { nodeId: 'root', label: 'Section', styleControls: ['paddingBlock', 'background'] },
     heading: { nodeId: 'heading', label: 'Heading', styleControls: ['textStyle', 'color'] },
-    grid: { nodeId: 'grid', label: 'Card grid', styleControls: ['columns', 'gap'] },
+    grid: { nodeId: 'grid', label: 'Card grid', styleControls: ['columns', 'gridAutoFlow', 'gridAutoRows', 'gap'] },
     card: { nodeId: 'card', label: 'Card', styleControls: ['background', 'border', 'radius', 'shadow', 'paddingBlock', 'paddingInline', 'gap'] },
     cardTitle: { nodeId: 'card-title', label: 'Card title', styleControls: ['textStyle', 'color'] },
     cardMeta: { nodeId: 'card-meta', label: 'Date and byline', styleControls: ['textStyle', 'color'] },
@@ -756,7 +756,7 @@ export const container = managed({
   slots: { content: { label: 'Content', description: 'Headings, text, images, buttons and components placed inside the section.' } },
   parts: {
     root: { nodeId: 'root', label: 'Section', styleControls: ['paddingBlock', 'paddingInline', 'background', 'color', 'minHeight'] },
-    container: { nodeId: 'inner', label: 'Container', styleControls: ['maxWidth', 'layout', 'columns', 'gridTemplate', 'gap', 'rowGap', 'columnGap', 'align', 'justify', 'textAlign'] }
+    container: { nodeId: 'inner', label: 'Container', styleControls: ['maxWidth', 'layout', 'columns', 'gridTemplate', 'gridAutoFlow', 'gridAutoRows', 'gap', 'rowGap', 'columnGap', 'align', 'justify', 'textAlign'] }
   },
   variantAxes: { tone: toneAxis([]) },
   build: (b) => sectionShell(b, [b.slot('content-slot', 'content', { name: 'Content' })], { inner: { base: { gap: tok('space.lg') } } })
