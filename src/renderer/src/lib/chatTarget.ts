@@ -20,6 +20,11 @@ export interface ComposerScope {
   selectionLabel: string | null;
   /** The post open in the Posts workspace (written or previewed), while it is: the next message is about it alone. */
   post?: { collectionId: string; entryId: string; title: string } | null;
+  /**
+   * The Posts writer is in front with no post open: no page shows, so nothing on the page out of sight under it is
+   * offered. A change waits for a post (lib/workspace changeWithoutDocument); a question reads the site.
+   */
+  empty?: true;
 }
 
 /** How a post is named in the composer and the transcript: its title, or what an untitled one is called. */
@@ -59,12 +64,13 @@ export function requestComponentId(ctx: ChatContext | undefined): string | null 
 }
 
 /** `post`: the post the Posts workspace shows (lib/posts postShown), which the next message is about while it is there. */
-export function composerScope(state: ProjectState, view: { pageId: string | null; selection: ElementRef | null; definitionMode: DefinitionMode; post?: PostRef | null }): ComposerScope {
+export function composerScope(state: ProjectState, view: { pageId: string | null; selection: ElementRef | null; definitionMode: DefinitionMode; post?: PostRef | null; writer?: boolean }): ComposerScope {
   const p = view.pageId && Object.hasOwn(state.pages, view.pageId) ? state.pages[view.pageId] : null;
   const page = p ? { id: p.id, title: p.title } : null;
   // The writer covers the canvas: a selection or design behind it is never what the message is about.
   const entry = postAt(state, view.post);
   if (entry && view.post) return { page, component: null, selection: null, selectionLabel: null, post: { collectionId: view.post.collectionId, entryId: view.post.entryId, title: postTitle(entry.title) } };
+  if (view.writer) return { page: null, component: null, selection: null, selectionLabel: null, empty: true };
   const def = editableDesign(state, view.definitionMode?.definitionId);
   if (def) {
     // Only the design's own nodes: anything else (a pick the canvas has yet to convert) is not offered.

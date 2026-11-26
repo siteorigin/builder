@@ -23,7 +23,7 @@ import { TEXT_LIMITS } from '@shared/text-limits';
 import { isImeComposing } from '../lib/ime';
 import { appliesLanded, registerFlush, trackApply } from '../lib/pending';
 import { PostDraft, setOpenWriter, setWriterHistory, type DraftProblem, type DraftSaveOutcome } from '../lib/post-draft';
-import { articleProblem, blockAtCaret, caretIn, figureElement, fillFigure, insertFigure, placeCaret, readArticle, renderArticle, setBlock, toggleList, type ArticleBlockTag, type ArticleCaret, type ArticleListKind } from '../lib/post-dom';
+import { articleProblem, blockAtCaret, caretIn, figureElement, fillFigure, insertFigure, placeCaret, readArticle, renderArticle, setBlock, spaceShortcut, toggleList, type ArticleBlockTag, type ArticleCaret, type ArticleListKind } from '../lib/post-dom';
 import { MAX_POST_TITLE, postAt } from '../lib/posts';
 import { PostTermFields } from './PostTerms';
 import { entryTermLabels } from '@shared/entry-fields';
@@ -129,6 +129,8 @@ function PostEditor({ post, hidden }: { post: PostRef; hidden: boolean }) {
   const inView = `.seo-view [data-seo-doc="${CSS.escape(subjectKey({ kind: 'entry', collectionId: post.collectionId, entryId: post.entryId }))}"]`;
   /** The latest saveAll, for the toolbar's Preview (see setOpenWriter). */
   const saveAllRef = useRef<() => Promise<boolean>>(() => Promise.resolve(true));
+  /** The latest `command`, for the editor's own input listener. */
+  const commandRef = useRef<(run: () => void) => void>(() => {});
   /** Why the stored text cannot be edited here, if it cannot. */
   const unreadable = articleProblem(entry.body);
   /** The text the writer and the project last agreed on: what it showed from the project, or what it saved. */
@@ -202,6 +204,13 @@ function PostEditor({ post, hidden }: { post: PostRef; hidden: boolean }) {
     if (!el) return;
     rootEl.current = el;
     const onBeforeInput = (e: InputEvent) => {
+      // A space typed after `##`, `-` and the like at the start of a paragraph makes it a heading or a list.
+      const shortcut = draft.isComposing ? null : spaceShortcut(el, e);
+      if (shortcut) {
+        e.preventDefault();
+        commandRef.current(() => void shortcut());
+        return;
+      }
       if (e.inputType !== 'historyUndo' && e.inputType !== 'historyRedo') return;
       e.preventDefault();
       void history(e.inputType === 'historyRedo' ? 'redo' : 'undo');
@@ -366,6 +375,7 @@ function PostEditor({ post, hidden }: { post: PostRef; hidden: boolean }) {
     run();
     draft.checkpoint(true);
   };
+  commandRef.current = command;
   // Blocks and lists change in the DOM directly: the browser's own commands can nest a list in a paragraph.
   const block = (tag: ArticleBlockTag) => command(() => void setBlock(root.current!, tag));
   const list = (kind: ArticleListKind) => command(() => void toggleList(root.current!, kind));

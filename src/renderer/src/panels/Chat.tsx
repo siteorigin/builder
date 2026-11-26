@@ -631,7 +631,7 @@ export function Chat() {
   // What the next message is about: the page, or the component edited everywhere, and the element within it.
   // While the Posts workspace is in front, the element or design behind it is never the target: the post it shows, or
   // the page its preview went on to, is. While the SEO view is, the page or post it has chosen is (#700); with none
-  // chosen, the page under it, as the writer with no post open leaves it.
+  // chosen, or the writer with no post open, nothing: a change waits for one (#700, #895), and a question reads the site.
   const workspace = activeWorkspace({ leftTab, postView, mode: editorMode, post: openPostRef });
   const shownPost = workspace === 'write' || workspace === 'preview' ? postShown(st, workspace, openPostRef, postPreviewAt) : null;
   const seoChosen = workspace === 'seo' ? seoDocument(st, seoSubject)?.subject : undefined;
@@ -640,6 +640,7 @@ export function Chat() {
     pageId: seoPage ?? (shownPost?.kind === 'page' ? shownPost.pageId : pageId),
     selection: workspace ? null : selection,
     definitionMode: workspace ? null : definitionMode,
+    writer: workspace === 'write',
     post: seoChosen?.kind === 'entry' ? { collectionId: seoChosen.collectionId, entryId: seoChosen.entryId } : shownPost?.kind === 'post' ? shownPost.ref : null
   });
   const { page, component } = scope;
@@ -659,7 +660,7 @@ export function Chat() {
   // The starters are changes to make, so a question starts from an empty box. They are about pages, so a component
   // edited everywhere offers none.
   // A local server or model that failed its last check is said instead, so no starters are offered.
-  const fresh = !component && !scope.post && msgs.length === 0 && configured && !notReady && !!conversation && !draft.trim();
+  const fresh = !component && !scope.post && !scope.empty && msgs.length === 0 && configured && !notReady && !!conversation && !draft.trim();
   const suggestions: Array<{ text: string; kind: string }> = !fresh
     ? []
     : askMode
@@ -728,6 +729,9 @@ export function Chat() {
   const scopeOptions: ScopeChoice[] = scope.post
     ? // A post is the one thing the message is about: shown, not chosen. The AI asks before changing more.
       [{ value: 'page' as const, label: 'This post', description: askMode ? 'The post you have open' : 'Its words and details', icon: <Pencil />, title: askMode ? `The post “${scope.post.title}”` : `Only the post “${scope.post.title}”`, chip: scope.post.title, where: 'this post' }]
+    : scope.empty
+    ? // The writer with no post open shows no page: a change waits for a post, and a question reads the site.
+      [askMode ? { value: 'page' as const, label: 'Whole site', description: 'Its posts and pages', icon: <Globe />, title: 'The whole site', chip: 'Whole site' } : { value: 'page' as const, label: 'No post open', description: 'Open a post to ask for a change to it', icon: <Pencil />, title: 'No post open: open a post to ask for a change to it', chip: 'No post open' }]
     : component
     ? [
         ...(selLabel ? [{ value: 'selection' as const, label: selLabel, description: 'Only this element', icon: <MousePointerClick />, title: askMode ? `${selLabel}, in ${component.name}` : `Only ${selLabel}, in ${component.name} everywhere it is used`, chip: selLabel, where: `${component.name} everywhere` }] : []),
@@ -742,7 +746,7 @@ export function Chat() {
           ...(askMode ? [] : [{ value: 'site' as const, label: 'Whole site', description: 'Any page, the header and footer, and styles', icon: <Globe />, title: `Whole site · from ${page.title}`, chip: 'Whole site', where: `from ${page.title}` }])
         ]
       : [];
-  const scopeValue: ChatEditScope = component ? (toSelection ? 'selection' : 'site') : askMode && chosen === 'site' ? 'page' : chosen;
+  const scopeValue: ChatEditScope = scope.empty ? 'page' : component ? (toSelection ? 'selection' : 'site') : askMode && chosen === 'site' ? 'page' : chosen;
   const found = scopeOptions.find((o) => o.value === scopeValue) ?? scopeOptions[0] ?? null;
   // A selection in the shared header or footer reaches every page, so the chip says so in words, not only in green.
   const shell = !component && found?.value === 'selection' && scope.selection?.owner.kind === 'shell' ? (scope.selection.owner.id === 'footer' ? 'shared footer' : 'shared header') : null;
@@ -863,8 +867,10 @@ export function Chat() {
     const code = !context && !askMode && !ownTarget ? uneditableDesign(st, definitionMode) : null;
     if (code) return (toast(`From Component Studio, the AI can’t be asked to change a code component like ${code} yet. Edit its code, or click Done editing to ask for a change to a page.`, 'info'), false);
     // A change asked from the SEO view is about the page or post chosen there; with none (or the one chosen gone), it
-    // would reach the page under the view, so it waits for one (#700). The draft stays.
-    if (!context && changeWithoutDocument(workspace, !!seoChosen, askMode)) return (toast('Choose a page or post in the SEO list first: the change is made to the one chosen there.', 'info'), false);
+    // would reach the page under the view, so it waits for one (#700), as one from the writer with no post open does
+    // (#895). The draft stays.
+    if (!context && changeWithoutDocument(workspace, workspace === 'seo' ? !!seoChosen : !!scope.post, askMode))
+      return (toast(workspace === 'seo' ? 'Choose a page or post in the SEO list first: the change is made to the one chosen there.' : 'Open a post or start a new one first: the change is made to the one open in the writer.', 'info'), false);
     // The message belongs to the conversation (and project) it was written in.
     const conversationId = conversation.id;
     const opening = snap.workspaceKey;

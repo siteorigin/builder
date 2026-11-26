@@ -194,16 +194,18 @@ export function CollectionSchemaDialog({ collectionId, onClose }: { collectionId
         <section aria-labelledby={`${uid}-fields`}>
           <h4 id={`${uid}-fields`}>Fields</h4>
           {!draft.fields.length && <p className="posts-note">No custom fields yet. Add one for each thing every entry states, such as a role or a price.</p>}
-          <ul className="schema-fields">
-            {draft.fields.map((f, i) => (
-              <li key={f.key ?? f.name} className="schema-field" data-field={f.name || undefined}>
-                <FieldSettings row={f} collectionId={collectionId} collections={collections} onChange={(row) => setField(i, row)} />
-                <button className="icon-btn sm" aria-label={`Remove ${f.schema.label || f.name}`} title="Remove field" onClick={() => set({ fields: draft.fields.filter((_, j) => j !== i) })}>
-                  <Trash2 />
-                </button>
-              </li>
-            ))}
-          </ul>
+          {draft.fields.length > 0 && (
+            <ul className="collection-fields">
+              {draft.fields.map((f, i) => (
+                <li key={f.key ?? f.name} className="collection-field" data-field={f.name || undefined}>
+                  <FieldSettings row={f} collectionId={collectionId} collections={collections} onChange={(row) => setField(i, row)} />
+                  <button className="icon-btn sm" aria-label={`Remove ${f.schema.label || f.name}`} title="Remove field" onClick={() => set({ fields: draft.fields.filter((_, j) => j !== i) })}>
+                    <Trash2 />
+                  </button>
+                </li>
+              ))}
+            </ul>
+          )}
           <label className="schema-add">
             <Plus aria-hidden="true" />
             <select
@@ -226,36 +228,37 @@ export function CollectionSchemaDialog({ collectionId, onClose }: { collectionId
         <section aria-labelledby={`${uid}-groups`}>
           <h4 id={`${uid}-groups`}>Groupings</h4>
           <p className="posts-note">Ways of filing entries, such as categories or departments. Their terms are added in the list of entries.</p>
-          <ul className="schema-fields">
-            {draft.taxonomies.map((t, i) => (
-              <li key={t.key ?? t.id} className="schema-field">
-                <input
-                  className="input"
-                  aria-label={`Grouping name (${t.id})`}
-                  maxLength={60}
-                  value={t.label}
-                  onChange={(e) =>
-                    set({
-                      taxonomies: draft.taxonomies.map((x, j) => (j === i ? { ...x, label: e.target.value } : x))
-                    })
-                  }
-                />
-                {!t.added && <code className="faint">{t.id}</code>}
-                <button
-                  className="icon-btn sm"
-                  aria-label={`Remove ${t.label || t.id}`}
-                  title="Remove grouping"
-                  onClick={() =>
-                    set({
-                      taxonomies: draft.taxonomies.filter((_, j) => j !== i)
-                    })
-                  }
-                >
-                  <Trash2 />
-                </button>
-              </li>
-            ))}
-          </ul>
+          {draft.taxonomies.length > 0 && (
+            <ul className="collection-fields">
+              {draft.taxonomies.map((t, i) => (
+                <li key={t.key ?? t.id} className="collection-field">
+                  <input
+                    className="input"
+                    aria-label={`Name of grouping ${i + 1}`}
+                    maxLength={60}
+                    value={t.label}
+                    onChange={(e) =>
+                      set({
+                        taxonomies: draft.taxonomies.map((x, j) => (j === i ? { ...x, label: e.target.value } : x))
+                      })
+                    }
+                  />
+                  <button
+                    className="icon-btn sm"
+                    aria-label={`Remove ${t.label || t.id}`}
+                    title="Remove grouping"
+                    onClick={() =>
+                      set({
+                        taxonomies: draft.taxonomies.filter((_, j) => j !== i)
+                      })
+                    }
+                  >
+                    <Trash2 />
+                  </button>
+                </li>
+              ))}
+            </ul>
+          )}
           <button className="btn btn-sm btn-ghost" onClick={addGrouping}>
             <Plus aria-hidden="true" /> Add a grouping
           </button>

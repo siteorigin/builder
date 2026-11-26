@@ -79,9 +79,9 @@
   .schema-dialog { display: flex; flex-direction: column; gap: 18px; }
   .schema-dialog section { display: flex; flex-direction: column; gap: 8px; }
   .schema-dialog h4 { margin: 0; font-size: 13px; }
-  .schema-fields { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 8px; }
-  .schema-field { display: flex; align-items: flex-start; gap: 8px; padding: 8px; border: 1px solid var(--border); border-radius: var(--r-sm); }
-  .schema-field > .input { flex: 1; }
+  .collection-fields { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 8px; }
+  .collection-field { display: flex; align-items: flex-start; gap: 8px; padding: 8px; border: 1px solid var(--border); border-radius: var(--r-sm); }
+  .collection-field > .input { flex: 1; }
   .schema-field-body { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 6px; }
   .schema-field-head, .schema-field-row { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
   .schema-field-head > .input { flex: 1 1 160px; }
