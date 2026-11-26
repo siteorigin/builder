@@ -24,8 +24,8 @@
   .welcome-side .welcome-action .kbd { flex: none; line-height: 15px; background: var(--panel-2); }
   /* With recent projects, New project is the screen's one primary action: the filled accent, without a coloured glow,
      so it stays a calm control and the newest project keeps the first glance. Enabled only: waiting draws it neutral. */
-  .welcome-side .welcome-action.primary:not(:disabled) { background: var(--accent-fill); box-shadow: 0 1px 2px rgb(17 85 159 / 0.25); }
-  .welcome-side .welcome-action.primary:hover:not(:disabled) { background: var(--accent-fill-hover); box-shadow: 0 1px 2px rgb(17 85 159 / 0.25); }
+  .welcome-side .welcome-action.primary:not(:disabled) { background: var(--accent-fill); box-shadow: var(--shadow-sm); }
+  .welcome-side .welcome-action.primary:hover:not(:disabled) { background: var(--accent-fill-hover); box-shadow: var(--shadow-sm); }
   .welcome-side .welcome-action.primary:not(:disabled) :is(strong, span) { color: var(--on-accent); }
   .welcome-side .welcome-action.primary:not(:disabled) .grow > span:not(.title) { color: color-mix(in srgb, var(--on-accent) 88%, var(--accent-fill)); }
   .welcome-side .welcome-action.primary:not(:disabled) .ico { background: rgb(255 255 255 / 0.18); color: var(--on-accent); }

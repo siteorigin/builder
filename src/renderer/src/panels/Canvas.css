@@ -137,7 +137,7 @@
   .ov-add svg { transition: rotate 120ms ease-out; }
   .ov-add[aria-expanded='true'] svg { rotate: 45deg; }
   @media (prefers-reduced-motion: reduce) { .ov-add, .ov-add svg { transition: none; } }
-  .ov-add:focus-visible { outline: 2px solid var(--focus); outline-offset: 2px; }
+  .ov-add:focus-visible { outline: 2px solid var(--select); outline-offset: 2px; }
   .ov-add-line { position: absolute; height: 2px; margin-top: -1px; background: var(--select); box-shadow: 0 0 0 1px rgb(255 255 255 / 0.85); pointer-events: none; opacity: 0; transition: opacity 90ms ease-out; }
   .ov-add:is(:hover, :focus-visible, [aria-expanded='true']) + .ov-add-line { opacity: 1; }
   /* The quick insert list an Add button opens (the canvas's, or a slot's in the Inspector). A popover at the menus'
@@ -212,7 +212,7 @@
   .ov-chip .icon-btn:hover:not([aria-disabled='true']) { background: rgb(255 255 255 / 0.18); color: #fff; }
   /* A disabled move dims its glyph only, so its keyboard focus ring keeps full strength. */
   .ov-chip .icon-btn[aria-disabled='true'] { cursor: default; }
-  .ov-chip .icon-btn[aria-disabled='true'] svg { opacity: 0.45; }
+  .ov-chip .icon-btn[aria-disabled='true'] svg { color: rgb(255 255 255 / 0.6); }
   .ov-chip .icon-btn.grip { width: 24px; cursor: grab; }
   .ov-chip .icon-btn.grip svg { opacity: 0.85; }
   .ov-chip .icon-btn.grip:active { cursor: grabbing; }
@@ -353,6 +353,8 @@
 
   /* A tile dragged from Insert onto the page (#52): the container it goes into, outlined, and what it carries beside the pointer. */
   .ov-drop-target { outline: 2px dashed var(--select); outline-offset: -3px; background: color-mix(in srgb, var(--select) 6%, transparent); }
+  /* Refusals sit on the user's page, so their red is the same in both themes and always holds white lettering. */
+  .ov-drop-target.refused, .ov-drop-reason, .ov-moving.ov-placing.refused, .insert-ghost.refused { --red: #b02e28; --red-soft: rgb(176 46 40 / 0.09); }
   .ov-drop-target.refused { outline-color: var(--red); background: var(--red-soft); }
   /* Why the place under the pointer can't take it, on the place itself (#652). */
   .ov-drop-reason { position: absolute; left: 4px; bottom: 4px; width: max-content; max-width: max(calc(100% - 8px), 220px); padding: 3px 6px; border-radius: var(--r-xs); background: var(--red); color: #fff; font-size: 11px; font-weight: 600; line-height: 1.3; }

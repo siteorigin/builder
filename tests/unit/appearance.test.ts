@@ -22,7 +22,7 @@ describe('editor appearance', () => {
     expect(editorScheme('system', false)).toBe('light');
     expect(editorScheme(undefined, true)).toBe('dark');
     expect(editorBackground('dark')).toBe('#11151c');
-    expect(editorBackground('light')).toBe('#f2f4f7');
+    expect(editorBackground('light')).toBe('#ebeff4');
   });
 
   it('takes a saved Appearance it does not know as System, so the editor still follows this computer', () => {

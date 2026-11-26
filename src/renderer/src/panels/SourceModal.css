@@ -36,7 +36,7 @@
   .tab .code-tab-dot { position: absolute; top: 8px; right: 6px; }
   .code-dialog > :not(.tabs) + .tabs { margin-top: 2px; }
   .code-frame { --code-bg: var(--raised); --code-selection: rgb(23 102 192 / 0.08); display: flex; flex-direction: column; min-height: 0; border-radius: var(--r-md); border: 1px solid var(--border-control); background: var(--code-bg); overflow: hidden; }
-  .code-frame.readonly { --code-bg: var(--panel-2); }
+  .code-frame.readonly { --code-bg: var(--panel); }
   /* :where() keeps this at the light rule's weight, so .code-frame.readonly still wins in dark. */
   :where(:root[data-appearance='dark']) .code-frame { --code-bg: var(--bg); --code-selection: rgb(124 190 255 / 0.08); }
   .code-frame.focused { outline: 2px solid var(--focus); outline-offset: -1px; }

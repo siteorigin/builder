@@ -11,7 +11,7 @@ let { app, win, errors } = await launch(WORK);
 await win.emulateMedia({ colorScheme: null });
 await createProject(win, { name: 'Harbour Lights', parentDir: join(WORK, 'sites'), starter: 'blank', sampleImages: false });
 
-const BG = { light: '#f2f4f7', dark: '#11151c' };
+const BG = { light: '#ebeff4', dark: '#11151c' };
 /** This computer's setting, as the editor's own page sees it with Electron following it. */
 const systemDark = await win.evaluate(() => matchMedia('(prefers-color-scheme: dark)').matches);
 const system = systemDark ? 'dark' : 'light';

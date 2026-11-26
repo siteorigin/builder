@@ -88,7 +88,7 @@
   :where(:root[data-appearance='dark']) {
     .style-select.is-set, .style-input.is-set { background-color: color-mix(in srgb, var(--accent) 7%, var(--raised)); }
     .editor.defining .style-select.is-set, .editor.defining .style-input.is-set { background-color: color-mix(in srgb, var(--plum) 7%, var(--raised)); }
-    .style-select { background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='10' height='6' fill='none' stroke='%23a8b2c3' stroke-width='1.5'%3E%3Cpath d='M1 1l4 4 4-4'/%3E%3C/svg%3E"); }
+    .style-select { background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='10' height='6' fill='none' stroke='%23aeb9ca' stroke-width='1.5'%3E%3Cpath d='M1 1l4 4 4-4'/%3E%3C/svg%3E"); }
   }
   .panel-body .style-controls :is(input, select, textarea, button) { scroll-margin-top: var(--style-scroll-top, 150px); }
   /* A linked colour's strength, on its own line under the picker: a short number field with its % after it. */
