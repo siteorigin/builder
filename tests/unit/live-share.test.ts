@@ -219,6 +219,17 @@ describe('starting', () => {
     expect(store.getState().toasts.at(-1)).toMatchObject({ kind: 'error', text: 'The live session could not start: IPC gone' });
   });
 
+  it('says nothing of a start that failed after its project closed', async () => {
+    store.setState({ snapshot: snap('/sites/acme#1') });
+    let answer!: (r: LiveStartResult) => void;
+    answerStart = () => new Promise((r) => (answer = r));
+    const started = live.startLive('2h');
+    store.setState({ snapshot: snap('/sites/other#2') });
+    answer({ ok: false, message: 'The live session was stopped before it started.' });
+    expect(await started).toBe(false);
+    expect(store.getState().toasts).toEqual([]);
+  });
+
   it('says nothing of a start the host called off', async () => {
     store.setState({ snapshot: snap('/sites/acme#1') });
     let answer!: (r: LiveStartResult) => void;

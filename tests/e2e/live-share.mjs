@@ -51,7 +51,9 @@ try {
   // Started here, so the relay and the app are let go whatever fails, even while they start.
   const starting = startRelay();
   relay = await withTimeout(starting, 120000, 'The relay simulator').catch(async (e) => {
-    void starting.then((late) => late.dispose()).catch(() => undefined);
+    // One that comes up late is let go before the script ends, never left running.
+    const late = await withTimeout(starting, 30000, 'The late relay simulator').catch(() => null);
+    await late?.dispose().catch(() => undefined);
     throw e;
   });
   const origin = await relay.origin();

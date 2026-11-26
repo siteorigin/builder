@@ -107,12 +107,12 @@ export async function startLive(duration: SessionDuration): Promise<boolean> {
   try {
     result = await api.live.start({ opening, duration });
   } catch (e) {
-    toast(`The live session could not start: ${e instanceof Error ? e.message : String(e)}`, 'error');
+    if (getState().snapshot?.workspaceKey === opening) toast(`The live session could not start: ${e instanceof Error ? e.message : String(e)}`, 'error');
     return false;
   }
   if (!result.ok) {
-    // A start the host called off (Cancel) is not a failure.
-    if (cancelled !== attempt) toast(result.message, 'error');
+    // A start the host called off (Cancel), or one its project closed under, is not a failure to report.
+    if (cancelled !== attempt && getState().snapshot?.workspaceKey === opening) toast(result.message, 'error');
     return false;
   }
   const started = liveRun(result.state);

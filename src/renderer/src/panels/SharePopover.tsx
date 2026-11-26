@@ -361,11 +361,12 @@ function GuestRow({ run, live, guest, at, disabled }: { run: LiveRun; live: Live
   const [asked, setAsked] = useState<GuestRole | null>(null);
   useEffect(() => {
     if (!asked) return;
-    if (guest.role === asked) return setAsked(null);
+    // Confirmed, or the connection dropped before it may have arrived: the roster's role is what holds.
+    if (guest.role === asked || disabled) return setAsked(null);
     // One the relay refused never arrives: the roster's role shows again after a while.
     const timer = setTimeout(() => setAsked(null), 10_000);
     return () => clearTimeout(timer);
-  }, [asked, guest.role]);
+  }, [asked, guest.role, disabled]);
   const timeLeft = guestTimeLeft(live, guest, at);
   return (
     <li className="live-row">
