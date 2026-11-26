@@ -152,11 +152,12 @@ describe('responsive copies', () => {
     const bytes = (list: typeof photoCopies, mime: string) => list.filter((v) => v.mime === mime).reduce((n, v) => n + v.data.length, 0);
     expect(bytes(photoCopies, 'image/avif')).toBeGreaterThan(0);
     expect(bytes(photoCopies, 'image/avif')).toBeLessThanOrEqual(bytes(photoCopies, 'image/webp') * 0.9);
-    // Two flat colours: AVIF's larger container outweighs what it saves, so its set is left out whole.
-    const flat = await renderVariants(await halves(1200, 600, 'png'), 'image/png', 1200);
-    expect(widthsOf(flat, 'image/webp')).toEqual([160, 480, 960, 1200]);
+    // Two flat colours, small: AVIF's larger container outweighs what it saves, so its set is left out whole. (Larger,
+    // how much AVIF saves on flat colour varies with the encoder's build: Linux's makes a 1200px set smaller than WebP's.)
+    const flat = await renderVariants(await halves(600, 300, 'png'), 'image/png', 600);
+    expect(widthsOf(flat, 'image/webp')).toEqual([160, 480, 600]);
     expect(widthsOf(flat, 'image/avif')).toEqual([]);
-    const avifOfFlat = await renderVariants(await halves(1200, 600, 'png'), 'image/png', 1200, [160, 480, 960, 1200].map((width) => ({ width, mime: 'image/avif' as const })));
+    const avifOfFlat = await renderVariants(await halves(600, 300, 'png'), 'image/png', 600, [160, 480, 600].map((width) => ({ width, mime: 'image/avif' as const })));
     expect(avifOfFlat.reduce((n, v) => n + v.data.length, 0)).toBeGreaterThan(bytes(flat, 'image/webp') * 0.9);
   });
 

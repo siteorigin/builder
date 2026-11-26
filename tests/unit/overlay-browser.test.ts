@@ -305,7 +305,8 @@ describe.skipIf(!browserInstalled)('generated dialogs and drawers in a browser',
     try {
       await site.waitForFunction('document.querySelectorAll("dialog").length === 4');
       const menu = site.getByRole('button', { name: 'Menu' }).first();
-      const edges = () => site.evaluate(`(() => { const r = document.querySelectorAll('dialog')[1].getBoundingClientRect(); return [Math.round(r.left), Math.round(r.right), Math.round(r.height), innerWidth, innerHeight]; })()`) as Promise<number[]>;
+      // Where the page ends: beside the room kept for its scrollbar (scrollbar-gutter), which a classic scrollbar takes from the window.
+      const edges = () => site.evaluate(`(() => { const r = document.querySelectorAll('dialog')[1].getBoundingClientRect(); return [Math.round(r.left), Math.round(r.right), Math.round(r.height), Math.round(document.documentElement.getBoundingClientRect().right), innerHeight]; })()`) as Promise<number[]>;
       await menu.click();
       await expect.poll(async () => (await look(site)).modal).toEqual([false, true, false, false]);
       let [left, right, height, width, tall] = await edges();

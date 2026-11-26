@@ -4,7 +4,7 @@
  * as an exported site ships them, compiled for the client. A direct visit loads the rendered markup first, so the
  * browser jumps to the fragment before the site's script runs, as it does on a prerendered export.
  */
-import { existsSync } from 'node:fs';
+import { existsSync, readFileSync } from 'node:fs';
 import { posix } from 'node:path';
 import { chromium, webkit, type Browser, type BrowserType, type Page, type Route } from 'playwright';
 import { compile } from 'svelte/compiler';
@@ -21,6 +21,18 @@ const LABELS = ['Our studio', 'Heritage projects', 'Conservation services', 'Res
 const HEADING = 'visitor-bookmark';
 const SECTION = 'opening-hours';
 const ENGINES = ([['chromium', chromium], ['webkit', webkit]] as Array<[string, BrowserType]>).filter(([, engine]) => existsSync(engine.executablePath()));
+/**
+ * The theme's own fonts, as the exported site loads them, there before the first layout: the header's height turns on
+ * where its brand and labels wrap, which in a system font differs from one OS to the next. A script in the head adds
+ * them from their bytes, which loads them at once; a stylesheet's font would load after the browser's jump.
+ */
+const FONTS = `<script>${['inter', 'fraunces']
+  .map((slug) => {
+    const family = `${slug[0].toUpperCase()}${slug.slice(1)} Variable`;
+    const file = readFileSync(`node_modules/@fontsource-variable/${slug}/files/${slug}-latin-wght-normal.woff2`).toString('base64');
+    return `document.fonts.add(new FontFace(${JSON.stringify(family)}, Uint8Array.from(atob("${file}"), (c) => c.charCodeAt(0)), { weight: '100 900' }));`;
+  })
+  .join('')}</script>`;
 /** Where a revealed target lands below the header: the theme's 1rem, give or take rounding. */
 const GAP = { min: 15, max: 18 };
 
@@ -85,7 +97,7 @@ async function bundleSites(sites: Record<string, Map<string, string>>): Promise<
         resolveId(id, importer) {
           if (id === '\0entry') return id;
           if (id === '$app/paths' || id === '$app/state' || id === '$app/navigation') return `\0${id}`;
-          // Stylesheets are inlined in the page; fonts fall back to the system stack.
+          // Stylesheets are inlined in the page, the theme's fonts among them (FONTS).
           if (id.startsWith('@fontsource') || id.endsWith('.css')) return '\0empty';
           if (importer?.startsWith('\0site/') && id.startsWith('.')) {
             const path = `\0${posix.join(posix.dirname(importer.slice(1)), id)}`;
@@ -187,7 +199,7 @@ describe.each(ENGINES)('anchors below the sticky header in %s', (_name, engine) 
     const held: Route[] = [];
     try {
       const page = await context.newPage();
-      const head = `<meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><style>${sites[name].css}${extraCss}</style>`;
+      const head = `<meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">${FONTS}<style>${sites[name].css}${extraCss}</style>`;
       let rendered = '';
       await page.route(`${ORIGIN}/**`, (route) => {
         const path = new URL(route.request().url()).pathname;
@@ -273,13 +285,13 @@ describe.each(ENGINES)('anchors below the sticky header in %s', (_name, engine) 
   }
 
   // Wrapped labels make the header taller than the fallback margin on wider screens. On a phone the menu is
-  // collapsed and the name wraps beside the full-size menu button: onto three lines at 390px (taller than the
-  // margin), two at 430px (shorter).
+  // collapsed and the name wraps beside the full-size menu button: onto three lines at 360px (taller than the
+  // margin), two from 375px up (shorter).
   it.each([
     [1024, 'covered'],
     [768, 'covered'],
     [430, 'clear'],
-    [390, 'covered']
+    [360, 'covered']
   ] as const)('a direct visit to a heading or a section clears the sticky header at %ipx', async (width, start) => {
     await withSite('sticky', width, async ({ page }) => {
       for (const id of [HEADING, SECTION]) {

@@ -1,9 +1,10 @@
 name: CI
 
-# Pull requests only, and only the unit tests, on Linux. Nothing runs on a push
-# to `develop`, and nothing here builds the app, runs e2e or covers another OS:
-# the local stabilize skill (.agents/skills/stabilize) owns the full suite on
-# the merged tree (CLAUDE.md, Testing).
+# Pull requests only, and only the unit tests a pull request can affect, on
+# Linux. Nothing runs on a push to `develop`, and nothing here builds the app,
+# runs e2e or covers another OS: the local stabilize skill
+# (.agents/skills/stabilize) owns the full suite on the merged tree (CLAUDE.md,
+# Testing).
 on:
   pull_request:
 
@@ -16,23 +17,59 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  # The unit tests the diff can reach: Vitest's `--changed` follows the import
+  # graph from every changed file to the test files that import it, and runs the
+  # whole suite when a force-rerun trigger changes (package.json, the lockfile,
+  # the Vitest or Vite config, the setup file; see vitest.config.ts), or this
+  # workflow does. A test that reads a file through `fs` rather than importing
+  # it is not reached; the stabilize pass covers the whole suite.
   unit:
     name: Unit tests
     runs-on: ubuntu-latest
+    # The whole suite on one runner takes about 20 minutes.
     timeout-minutes: 45
     steps:
+      # The pull request's merge commit, and its first parent: the base it is
+      # tested against.
       - uses: actions/checkout@v6
         with:
+          fetch-depth: 2
           persist-credentials: false
       - uses: actions/setup-node@v6
         with:
           node-version: 24
           cache: npm
       - run: npm ci
+      - name: Select affected tests
+        id: select
+        shell: bash
+        run: |
+          set -euo pipefail
+          base=$(git rev-parse HEAD^1)
+          if git diff --name-only "$base" HEAD | grep -qx '.github/workflows/ci.yml'; then base=''; fi
+          # Vitest counts modified and untracked files as changed too.
+          if [ -n "$(git status --porcelain)" ]; then echo "::warning::The working tree is not clean, and its changes widen the selection:"; git status --porcelain; fi
+          selected="$RUNNER_TEMP/selected.txt"
+          npx vitest list --filesOnly ${base:+--changed "$base"} > "$selected"
+          count=$(grep -c . "$selected" || true)
+          total=$(npx vitest list --filesOnly | grep -c . || true)
+          echo "base=${base}" >> "$GITHUB_OUTPUT"
+          echo "count=${count}" >> "$GITHUB_OUTPUT"
+          {
+            echo "### Unit tests: ${count} of ${total} files"
+            echo
+            if [ -n "$base" ]; then echo "Affected by the diff against \`${base}\`."; else echo "The whole suite: this workflow changed."; fi
+          } >> "$GITHUB_STEP_SUMMARY"
+          echo "Running ${count} of ${total} test files."
       # The browser tests in tests/unit skip themselves when their browser is
       # missing, so install Chromium or a third of the suite never runs. WebKit
       # stays out: Playwright's Linux WebKit is not Safari, and the macOS
       # stabilize pass runs the WebKit cases.
       - name: Install Chromium for the browser tests
+        if: steps.select.outputs.count != '0'
         run: npx playwright install --with-deps chromium
-      - run: npm test
+      - name: Run the affected unit tests
+        if: steps.select.outputs.count != '0'
+        env:
+          BASE: ${{ steps.select.outputs.base }}
+        run: npx vitest run --passWithNoTests ${BASE:+--changed "$BASE"}
