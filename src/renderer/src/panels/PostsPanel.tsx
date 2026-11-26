@@ -168,7 +168,7 @@ function AddCollection({ state, onMade, onCancel }: { state: ProjectState; onMad
     if (!r?.ok) return;
     const asked = plan.ops.some((o) => o.type === 'collection.create' && o.addToNavigation);
     const made = r.results?.find((x, i) => plan.ops[i]?.type === 'collection.create');
-    if (asked && made?.addedToNavigation === false) toast('Added the blog. The header menu is full, so it has no link to the blog yet: make room in the header’s menu, then link one to the Posts index.', 'info');
+    if (asked && made?.addedToNavigation === false) toast('Added the blog. Its link could not join the header menu, which has no room for another: make room there, then link one to the Posts index.', 'info');
     onMade(plan.collectionId);
   };
   const starters = STARTER_COLLECTIONS.filter((c) => c.id !== POSTS_COLLECTION_ID || !Object.hasOwn(state.collections, POSTS_COLLECTION_ID));

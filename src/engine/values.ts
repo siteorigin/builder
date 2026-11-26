@@ -92,6 +92,8 @@ export function normalizeLink(v: unknown, state: ProjectState, label: string, sc
     case 'collection': {
       const c = own(state.collections ?? {}, target);
       if (!c) fail(`${label}: collection "${target.slice(0, 60)}" does not exist.`);
+      // Only an index the website has is somewhere to go: not a collection of records alone, nor one with its index off.
+      if (!Object.hasOwn(collectionIndexRoutes(state), target)) fail(`${label}: the ${c!.settings.name} collection has no index on the website to link to.`);
       // An index is one list from its top: it has no sections to jump to, and opens a tab of its own when asked to.
       return l.newTab ? { type, target, newTab: true } : { type, target };
     }

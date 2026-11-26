@@ -8,7 +8,8 @@ import { isImeComposing } from '../lib/ime';
 import { appliesLanded, isSettling, reportRefused } from '../lib/pending';
 import { DraftInput, type DraftHandle } from './ui';
 import { LinkRelControls } from './LinkRelControls';
-import { markDraft, type PendingEdit } from '../store';
+import { getState, markDraft, type PendingEdit } from '../store';
+import { collectionIndexRoutes } from '@shared/archives';
 import './RichTextField.css';
 
 type Command = 'link' | 'ul' | 'ol' | 'add' | 'remove' | 'up' | 'down';
@@ -190,7 +191,9 @@ export function RichTextField({ value, onCommit, pages, plainAs, id, describedBy
       if (!link.existing) return setLinkDraft({ ...link, error: 'Type where the link goes.' });
       return unlink();
     }
-    const to = typedLink(link.target, pages);
+    // Or a collection's index by its address, as the project has it now: it is stored, and written, by the collection.
+    const live = getState().snapshot?.state;
+    const to = typedLink(link.target, pages) ?? (live ? linkFromTarget(link.target, pages, false, undefined, collectionIndexRoutes(live)) : null);
     if (!to) return setLinkDraft({ ...link, error: 'Use a page address such as /about/, a web address, an email address or a phone number.' });
     const edit = setLink(link.at, pages, to, link.rel);
     if (typeof edit === 'string') return setLinkDraft({ ...link, error: edit });

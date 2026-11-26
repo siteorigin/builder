@@ -136,6 +136,8 @@ export interface Clipboard {
   assets: Record<string, string>;
   /** Library documents its links go to, by name. */
   documents?: Record<string, string>;
+  /** Collections whose index its links go to, by name. */
+  collections?: Record<string, string>;
 }
 
 /** State an operation can read that is not part of the project: what the editor has recently copied. */
@@ -1001,10 +1003,14 @@ function addIndexToHeaderNavigation(state: ProjectState, collectionId: string): 
   const c = own(state.collections, collectionId);
   if (!menu || !c || !hasArchivePages(c.settings)) return false;
   const { node, schema } = menu;
+  // A menu filled from somewhere else (a connected list) has no links of its own to add to.
+  if (isBinding(node.props.links)) return false;
   const list = (node.props.links ?? structuredClone(schema.default)) as Array<Record<string, unknown>>;
-  if (schema.max !== undefined && list.length >= schema.max) return false;
+  if (!Array.isArray(list) || (schema.max !== undefined && list.length >= schema.max)) return false;
   const label = collectionId === POSTS_COLLECTION_ID ? 'Blog' : c.settings.name;
-  node.props.links = [...list, normalizeItem(schema, { label, link: { type: 'collection', target: collectionId } }, state, schema.label)];
+  // A top-level link, whatever a new row of a menu that groups links starts as.
+  const top = Object.hasOwn(schema.fields, 'sub') ? { sub: false } : {};
+  node.props.links = [...list, normalizeItem(schema, { label, link: { type: 'collection', target: collectionId }, ...top }, state, schema.label)];
   return true;
 }
 
@@ -2136,6 +2142,7 @@ export function captureClipboard(state: ProjectState, pageId: string, nodeIds: s
     if (o.type === 'page' && typeof o.target === 'string') clip.pages[o.target] = own(state.pages, o.target)?.title ?? o.target;
     if (typeof o.assetId === 'string') clip.assets[o.assetId] = own(state.assets.assets, o.assetId)?.name ?? o.assetId;
     if (isDocumentLink(o)) (clip.documents ??= {})[o.target] = own(state.assets.assets, o.target)?.name ?? o.target;
+    if (o.type === 'collection' && typeof o.target === 'string') (clip.collections ??= {})[o.target] = own(state.collections ?? {}, o.target)?.settings.name ?? o.target;
     Object.values(o).forEach(walk);
   };
   walk(clip.tree.nodes);
@@ -2160,6 +2167,7 @@ function nodePaste(state: ProjectState, op: Op<'node.paste'>, clip: Clipboard | 
   for (const [id, title] of Object.entries(clip.pages)) if (!own(state.pages, id)) gone(`links to the "${title}" page`);
   for (const [id, name] of Object.entries(clip.assets)) if (!own(state.assets.assets, id)) gone(`shows the image "${name}"`);
   for (const [id, name] of Object.entries(clip.documents ?? {})) if (own(state.assets.assets, id)?.kind !== 'document') gone(`links to the document "${name}"`);
+  for (const [id, name] of Object.entries(clip.collections ?? {})) if (!own(state.collections ?? {}, id)) gone(`links to the ${name} index`);
   // Variant options and parts removed since copying are dropped, as they were from every live placement;
   // only then is what remains checked for site styles.
   const tree = clone(clip.tree);

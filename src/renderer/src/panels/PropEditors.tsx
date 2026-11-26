@@ -348,7 +348,7 @@ export function LinkEditor({ value, onChange, state, label, everywhere, invalid,
       <select className="select sm" value={type} aria-label={named('Link type')} aria-invalid={invalid || undefined} aria-describedby={describedBy} onChange={(e) => pickType(e.target.value as LinkValue['type'])}>
         <option value="none">No link</option>
         <option value="page">Page</option>
-        {(indexes.length > 0 || type === 'collection') && <option value="collection">Collection index</option>}
+        {(indexes.length > 0 || type === 'collection' || v.type === 'collection') && <option value="collection">Collection index</option>}
         <option value="url">Web address</option>
         <option value="document">Document</option>
         <option value="email">Email</option>

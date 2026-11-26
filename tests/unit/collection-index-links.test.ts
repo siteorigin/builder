@@ -8,7 +8,7 @@ import type { LinkValue, ProjectState } from '@shared/types';
 import type { EditOperation } from '@shared/ops';
 import { validateOperation } from '@shared/ops';
 import { createStarterState } from '@catalogue/starters';
-import { applyOperations } from '@engine/apply';
+import { applyOperations, captureClipboard } from '@engine/apply';
 import { normalizeLink, normalizeRichText } from '@engine/values';
 import { headerMenu } from '@engine/tree';
 import { validateState } from '@engine/validate';
@@ -58,8 +58,9 @@ describe('links to a collection index', () => {
     s = run(s, { type: 'collection.update', collectionId: 'posts', route: '/journal/' });
     expect(resolveLink(INDEX, { state: s })).toEqual({ href: '/journal/' });
     expect(collectionIndexRoutes(s)).toEqual({ posts: '/journal/' });
-    // With its index turned off there is nowhere to go.
-    const off = run(s, { type: 'collection.update', collectionId: 'posts', pages: { detail: true, archive: false } });
+    // With its index turned off (as a hand edit can leave it) there is nowhere to go.
+    const off = structuredClone(s);
+    off.collections.posts.settings.pages = { detail: true, archive: false };
     expect(resolveLink(INDEX, { state: off })).toBeNull();
     expect(linkableIndexes(off)).toEqual([]);
     expect(resolveLink({ type: 'collection', target: 'events' }, { state: s })).toBeNull();
@@ -93,8 +94,9 @@ describe('links to a collection index', () => {
   });
 
   it('keeps an index link in a post the writer reads back', () => {
-    const s = run(blog(), { type: 'entry.create', collectionId: 'posts', entryId: 'en_one', title: 'One', body: ['See [all posts](collection:posts).'] });
-    const body = s.collections.posts.entries.en_one.body;
+    const s = run(blog(), { type: 'entry.create', collectionId: 'posts', entryId: 'en_one1', title: 'One', body: ['See [all posts](collection:posts).'] });
+    const body = s.collections.posts.entries.en_one1.body;
+    expect(body).toEqual([{ type: 'p', spans: [{ text: 'See ' }, { text: 'all posts', link: INDEX }, { text: '.' }] }]);
     expect(articleProblem(body)).toBeNull();
     expect(articleLinks(s).link('collection:posts', false, [])).toEqual(INDEX);
     expect(articleLinks(s).link(`so-link:${JSON.stringify(INDEX)}`, true, [])).toEqual(INDEX);
@@ -107,8 +109,31 @@ describe('links to a collection index', () => {
     expect(collectionLinkUses(s, 'posts')).toHaveLength(1);
     expect(() => applyOperations(s, [{ type: 'collection.remove', collectionId: 'posts' }])).toThrow(/1 link outside the Posts collection point to its list or its entries \(in Header\)/);
     // Its own posts' links to it go with it.
-    const own = run(blog(), { type: 'entry.create', collectionId: 'posts', entryId: 'en_one', title: 'One', body: ['See [all posts](collection:posts).'] });
+    const own = run(blog(), { type: 'entry.create', collectionId: 'posts', entryId: 'en_one1', title: 'One', body: ['See [all posts](collection:posts).'] });
     expect(run(own, { type: 'collection.remove', collectionId: 'posts' }).collections).not.toHaveProperty('posts');
+  });
+
+  it('refuses a link to a collection with no index, and turning an index off while a page links to it', () => {
+    const team = run(blog(), { type: 'collection.create', collectionId: 'team', name: 'Team', pages: { detail: false, archive: false } });
+    expect(() => normalizeLink({ type: 'collection', target: 'team' }, team, 'Link')).toThrow(/Team collection has no index on the website/);
+    const linked = linkFirst(blog(), INDEX);
+    expect(() => applyOperations(linked, [{ type: 'collection.update', collectionId: 'posts', pages: { detail: true, archive: false } }])).toThrow(/1 link goes to the Posts index \(in Header\)/);
+    // A post's own text keeps the collection itself, so it never holds the index on.
+    const own = run(blog(), { type: 'entry.create', collectionId: 'posts', entryId: 'en_one1', title: 'One', body: ['See [all posts](collection:posts).'] });
+    expect(run(own, { type: 'collection.update', collectionId: 'posts', pages: { detail: true, archive: false } }).collections.posts.settings.pages).toEqual({ detail: true, archive: false });
+  });
+
+  it('refuses pasting a copied link to a collection that has gone since', () => {
+    const s = blog();
+    const home = s.pages[s.site.homePageId];
+    const hero = Object.values(home.nodes).find((n) => n.kind === 'instance' && s.components[n.definitionId]?.properties.primaryLink)!;
+    const op: EditOperation = { type: 'instance.setProp', owner: { kind: 'page', id: home.id }, nodeId: hero.id, prop: 'primaryLink', value: INDEX };
+    const linked = run(s, op);
+    expect((linked.pages[home.id].nodes[hero.id] as { props: Record<string, unknown> }).props.primaryLink).toEqual(INDEX);
+    const clip = captureClipboard(linked, home.id, hero.id);
+    expect(clip.collections).toEqual({ posts: 'Posts' });
+    const removed = run(linked, { ...op, value: { type: 'none', target: '' } } as EditOperation, { type: 'collection.remove', collectionId: 'posts' });
+    expect(() => applyOperations(removed, [{ type: 'node.paste', clipboardId: clip.id, toOwner: { kind: 'page', id: home.id } }], { clipboards: [clip] })).toThrow(/links to the Posts index, which has been removed/);
   });
 
   it('reports a link to a collection that is gone, as a hand edit leaves it', () => {
@@ -120,12 +145,16 @@ describe('links to a collection index', () => {
   });
 
   it('adds a Blog link to the header menu when the blog is started with one', () => {
-    const before = menuLinks(site()).length;
-    const r = applyOperations(site(), [{ type: 'collection.create', collectionId: 'posts', addToNavigation: true }]);
+    const start = site();
+    const before = menuLinks(start).length;
+    const r = applyOperations(start, [{ type: 'collection.create', collectionId: 'posts', addToNavigation: true }]);
     expect(r.results[0]).toMatchObject({ collectionId: 'posts', addedToNavigation: true });
     const links = menuLinks(r.state);
     expect(links).toHaveLength(before + 1);
+    // Every link the menu had stays as it was, and the blog's comes after them, at the top level.
+    expect(links.slice(0, before)).toEqual(menuLinks(start));
     expect(links[links.length - 1]).toMatchObject({ label: 'Blog', link: INDEX });
+    expect((links[links.length - 1] as { sub?: boolean }).sub).not.toBe(true);
     expect(resolveLink(links[links.length - 1].link, { state: r.state })).toEqual({ href: '/blog/' });
     // Without the ask nothing joins the menu, and the result says nothing about it.
     const plain = applyOperations(site(), [{ type: 'collection.create', collectionId: 'posts' }]);
@@ -142,7 +171,7 @@ describe('links to a collection index', () => {
     s = run(s, { type: 'instance.setProp', owner: { kind: 'shell', id: 'header' }, nodeId: menu.node.id, prop: 'links', value: full });
     const r = applyOperations(s, [{ type: 'collection.create', collectionId: 'posts', addToNavigation: true }]);
     expect(r.results[0]).toMatchObject({ collectionId: 'posts', addedToNavigation: false });
-    expect(menuLinks(r.state)).toHaveLength(max);
+    expect(menuLinks(r.state)).toEqual(menuLinks(s));
     expect(r.state.collections).toHaveProperty('posts');
   });
 
