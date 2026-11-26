@@ -126,6 +126,8 @@ function serverMessage(body: string, apiKey?: string | null): string {
     const v = JSON.parse(body) as { error?: string | { message?: string }; detail?: unknown; message?: string };
     const found = typeof v.error === 'string' ? v.error : (v.error?.message ?? v.message ?? (typeof v.detail === 'string' ? v.detail : undefined));
     if (found) text = found;
+    // An empty object says nothing, and "{}" is not a message.
+    else if (v && typeof v === 'object' && Object.values(v).every((x) => !x || (typeof x === 'object' && !Object.keys(x).length))) text = '';
   } catch {
     /* plain text */
   }
@@ -736,7 +738,7 @@ export class LocalAdapter implements AgentModelAdapter {
     // A refusal named in words ("model_not_found") is the setup's, as the same refusal by status would be.
     const named = error && typeof error === 'object' ? [(error as { code?: unknown }).code, (error as { type?: unknown }).type].find((v) => typeof v === 'string') : undefined;
     const setup = typeof named === 'string' && /not_?found|unsupported|unauthori[sz]ed|forbidden|permission/i.test(named) ? ('chat' as const) : undefined;
-    return { code: 'unknown', message: `The local server reported an error: ${message}`, ...(setup ? { setup } : {}) };
+    return { code: 'unknown', message: `The local server reported an error${message ? `: ${message}` : '.'}`, ...(setup ? { setup } : {}) };
   }
 
   private async *readTurn(url: string, body: Record<string, unknown>, model: string, signal: AbortSignal, constrained: boolean, showStatus: boolean): AsyncGenerator<ModelEvent, TurnResult> {
