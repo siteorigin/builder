@@ -119,7 +119,7 @@ step('Add on Actions offers only what Actions takes, and inserts into it alone, 
 await addTo('Actions').click();
 await list.waitFor();
 await focused(list.getByRole('combobox'), 'the cursor is in its search');
-assert.equal(await list.getAttribute('aria-label'), 'Add to Actions');
+assert.equal(await win.getByRole('dialog', { name: 'Add to Actions' }).count(), 1, 'the list is named for its slot');
 assert.deepEqual((await offered()).sort(), ['Bulleted list', 'Button', 'Heading', 'Numbered list', 'Paragraph']);
 await win.keyboard.press('Escape');
 await list.waitFor({ state: 'detached' });
