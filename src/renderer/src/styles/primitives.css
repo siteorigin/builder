@@ -64,7 +64,7 @@
   :is(.input, .select, .textarea)[aria-invalid='true'] { border-color: var(--red); }
   :is(.input, .select, .textarea):disabled { background-color: var(--disabled-fill); border-color: var(--border-strong); color: var(--disabled-ink); }
   :is(.input, .textarea):disabled::placeholder { color: var(--disabled-ink); }
-  .select { appearance: none; padding-right: 26px; background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='10' height='6' fill='none' stroke='%234a5670' stroke-width='1.5'%3E%3Cpath d='M1 1l4 4 4-4'/%3E%3C/svg%3E"); background-repeat: no-repeat; background-position: right 9px center; }
+  .select { appearance: none; padding-right: 26px; text-overflow: ellipsis; background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='10' height='6' fill='none' stroke='%234a5670' stroke-width='1.5'%3E%3Cpath d='M1 1l4 4 4-4'/%3E%3C/svg%3E"); background-repeat: no-repeat; background-position: right 9px center; }
   /* A disabled select's chevron dims with its label. */
   .select:disabled { background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='10' height='6' fill='none' stroke='%2376819a' stroke-width='1.5'%3E%3Cpath d='M1 1l4 4 4-4'/%3E%3C/svg%3E"); }
   :where(:root[data-appearance='dark']) {
@@ -75,8 +75,8 @@
   .textarea { height: auto; min-height: 64px; max-height: 260px; padding: 7px 9px; resize: vertical; line-height: 1.5; field-sizing: content; }
   .input.sm, .select.sm { height: 26px; font-size: 12px; }
   /* Read only: selectable but not editable, so it recedes (below the panel in dark, where --panel-2 sits above it). */
-  .input:read-only:not(:disabled) { background: var(--panel-2); color: var(--text-2); }
-  :where(:root[data-appearance='dark']) { .input:read-only:not(:disabled) { background: var(--bg); } }
+  .input:read-only:not(:disabled), .textarea:read-only:not(:disabled) { background: var(--panel-2); color: var(--text-2); }
+  :where(:root[data-appearance='dark']) { :is(.input, .textarea):read-only:not(:disabled) { background: var(--bg); } }
   .select.inherit, .input.inherit::placeholder { color: var(--text-3); }
   .select.inherit { background-color: transparent; }
   input::placeholder, textarea::placeholder { color: var(--text-3); opacity: 1; }
@@ -127,7 +127,7 @@
   /* Unavailable is drawn, not faded (tokens.css): the neutral fill and edge, a quiet thumb, which keeps its side so the
      setting can still be read. */
   .switch:disabled { background: var(--disabled-fill); box-shadow: inset 0 0 0 1px var(--border-strong); cursor: not-allowed; }
-  .switch:disabled::after { background: var(--disabled-ink); box-shadow: none; }
+  .switch:disabled::after, :where(:root[data-appearance='dark']) .switch[aria-checked='true']:disabled::after { background: var(--disabled-ink); box-shadow: none; }
 
   .badge { display: inline-flex; align-items: center; gap: 4px; height: 20px; padding: 0 7px; border-radius: var(--r-sm); font-size: 11px; font-weight: 600; background: var(--active); color: var(--text-2); white-space: nowrap; }
   .badge.accent { background: var(--accent-soft); color: var(--accent-text); }

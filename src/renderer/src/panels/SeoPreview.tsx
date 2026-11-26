@@ -324,7 +324,7 @@ function GraphSummary({ sections }: { sections: GraphSection[] }) {
  * Where the document is published, what its typed structured data still needs, and the structured data its exported
  * page carries: in words, with the exact JSON-LD a click away.
  */
-function StructuredData({ structured }: { structured: StructuredPreview | null | undefined }) {
+function StructuredData({ structured, noAddress }: { structured: StructuredPreview | null | undefined; noAddress: boolean }) {
   if (structured === undefined) return <p className="field-hint">Working out the structured data…</p>;
   if (structured === null) return <p className="field-hint">This document is no longer in the project.</p>;
   const { status, problem, graph } = structured;
@@ -361,7 +361,18 @@ function StructuredData({ structured }: { structured: StructuredPreview | null |
           </details>
         </>
       ) : graph.kind === 'none' ? (
-        <p className="field-hint seo-graph-none">{graph.reason}</p>
+        <p className="field-hint seo-graph-none">
+          {graph.reason}
+          {/* The remedy where the reason is, as the other tabs offer it. */}
+          {noAddress && (
+            <>
+              {' '}
+              <button type="button" className="link-btn" onClick={() => openSiteSharing('baseUrl')}>
+                Open Site details
+              </button>
+            </>
+          )}
+        </p>
       ) : (
         <p className="field-error" role="alert">
           The structured data couldn’t be worked out: {graph.message}
@@ -492,7 +503,7 @@ export function SeoPreview({
         options={[
           { value: 'search', label: 'Search result', panel: () => <SearchResults state={state} doc={doc} /> },
           { value: 'link', label: 'Link preview', panel: () => <SharingPreview card={doc.card} /> },
-          { value: 'data', label: 'Structured data', panel: () => <StructuredData key={key} structured={ready && settled.current ? structured!.value : undefined} /> }
+          { value: 'data', label: 'Structured data', panel: () => <StructuredData key={key} structured={ready && settled.current ? structured!.value : undefined} noAddress={!!doc.card.addressNote} /> }
         ]}
       />
       <SeoAiAction subject={subject} overlay={overlay} typed={typed} from="view" />

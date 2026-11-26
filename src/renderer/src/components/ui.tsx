@@ -673,8 +673,10 @@ export function Field({ label, children, hint, error, extra, controlId: explicit
  * A row of mutually exclusive options. With `radio` it is exposed as a radio group (WAI-ARIA APG): one tab
  * stop, and the arrow keys move and select. `labelledBy` and `describedBy` name it from visible text.
  */
-export function Segmented<T extends string>({ value, options, onChange, full, label, radio, labelledBy, describedBy }: { value: T; options: Array<{ value: T; label?: ReactNode; icon?: ReactNode; title?: string }>; onChange: (v: T) => void; full?: boolean; label?: string; radio?: boolean; labelledBy?: string; describedBy?: string }) {
-  const current = Math.max(0, options.findIndex((o) => o.value === value));
+export function Segmented<T extends string>({ value, options, onChange, full, label, radio, labelledBy, describedBy }: { value: T; options: Array<{ value: T; label?: ReactNode; icon?: ReactNode; title?: string; /** Unavailable: shown, skipped by the arrow keys. */ disabled?: boolean }>; onChange: (v: T) => void; full?: boolean; label?: string; radio?: boolean; labelledBy?: string; describedBy?: string }) {
+  const chosen = options.findIndex((o) => o.value === value);
+  // The tab stop: the chosen option, or the first available one when the chosen one is unavailable (or none is chosen).
+  const current = chosen >= 0 && !options[chosen].disabled ? chosen : Math.max(0, options.findIndex((o) => !o.disabled));
   const move = (e: React.KeyboardEvent<HTMLDivElement>) => {
     const step = e.key === 'ArrowRight' || e.key === 'ArrowDown' ? 1 : e.key === 'ArrowLeft' || e.key === 'ArrowUp' ? -1 : 0;
     if (!step || !options.length) return;
@@ -682,14 +684,19 @@ export function Segmented<T extends string>({ value, options, onChange, full, la
     // From the focused option, since a saved value can lag behind quick presses.
     const buttons = [...e.currentTarget.querySelectorAll('button')];
     const from = buttons.indexOf(document.activeElement as HTMLButtonElement);
-    const next = ((from < 0 ? current : from) + step + options.length) % options.length;
+    let next = from < 0 ? current : from;
+    for (let n = 0; n < options.length; n++) {
+      next = (next + step + options.length) % options.length;
+      if (!options[next].disabled) break;
+    }
+    if (options[next].disabled) return;
     onChange(options[next].value);
     buttons[next]?.focus();
   };
   return (
     <div className={`segmented${full ? ' full' : ''}`} role={radio ? 'radiogroup' : 'group'} aria-label={labelledBy ? undefined : label} aria-labelledby={labelledBy} aria-describedby={describedBy} onKeyDown={radio ? move : undefined}>
       {options.map((o, i) => (
-        <button key={o.value} type="button" {...(radio ? { role: 'radio', 'aria-checked': value === o.value, tabIndex: i === current ? 0 : -1 } : { 'aria-pressed': value === o.value })} onClick={() => onChange(o.value)} title={o.title} aria-label={o.label ? undefined : o.title}>
+        <button key={o.value} type="button" {...(radio ? { role: 'radio', 'aria-checked': value === o.value, tabIndex: i === current ? 0 : -1 } : { 'aria-pressed': value === o.value })} disabled={o.disabled} onClick={() => onChange(o.value)} title={o.title} aria-label={o.label ? undefined : o.title}>
           {o.icon}
           {o.label}
         </button>
@@ -732,7 +739,8 @@ export function RequiredMark() {
 /** What a field a component requires says while its value is empty: its own, or the default it shows. */
 export const missingNote = (schema: PropSchema, value: unknown): string | undefined => (schema.required && isEmptyPropValue(schema, value) ? `Required, but empty: ${requiredHint(schema)}.` : undefined);
 
-export function Switch({ checked, onChange, label, id, labelledBy, describedBy, disabled }: { checked: boolean; onChange: (v: boolean) => void; label?: string; id?: string; labelledBy?: string; describedBy?: string; disabled?: boolean }) {
+export function Switch({ checked, onChange, label, id, labelledBy, describedBy, disabled: own }: { checked: boolean; onChange: (v: boolean) => void; label?: string; id?: string; labelledBy?: string; describedBy?: string; disabled?: boolean }) {
+  const disabled = useContext(LockedFieldsContext) || own;
   return <button id={id} className="switch" role="switch" aria-checked={checked} aria-label={labelledBy ? undefined : label} aria-labelledby={labelledBy} aria-describedby={describedBy} disabled={disabled} onClick={() => onChange(!checked)} />;
 }
 
@@ -784,6 +792,15 @@ interface Home {
   alive?: () => boolean;
 }
 const FieldHomeContext = createContext<Home | null>(null);
+
+/**
+ * Fields that can be read but not changed (a project open read-only, a synced post): inside it every DraftInput is
+ * read-only, so its text can still be focused, selected and copied, and every Switch is disabled. Other controls (an
+ * image picker, a select) are disabled by their place, as a fieldset does.
+ */
+const LockedFieldsContext = createContext(false);
+export const LockedFields = LockedFieldsContext.Provider;
+export const useLockedFields = () => useContext(LockedFieldsContext);
 export function FieldHome({ root, part, alive, children }: { root?: string; part?: string; alive?: () => boolean; children: ReactNode }) {
   const outer = useContext(FieldHomeContext);
   const within = outer?.alive;
@@ -845,6 +862,8 @@ interface DraftInputProps {
   onDirty?: (dirty: boolean, draft: string) => void;
   /** Shows the field (its panel may be closed) before leaving the project's Keep editing returns to it. */
   reveal?: () => void;
+  /** Readable, selectable and focusable, never changed (also inside LockedFields). */
+  readOnly?: boolean;
 }
 
 /** Text input that commits on blur/Enter and keeps a local draft while focused. `onCommit` returns false when
@@ -902,8 +921,10 @@ function DraftField({
   onDirty,
   reveal,
   handle,
-  inputRef
+  inputRef,
+  readOnly: ownReadOnly
 }: DraftInputProps) {
+  const readOnly = useContext(LockedFieldsContext) || !!ownReadOnly;
   // Text this field refused, kept while it was off screen (another page was open, or the same page's settings showed in
   // another place): too long to save, or refused by `check`.
   const [field] = useState(() => (keep ? keptField(useStore.getState().snapshot?.workspaceKey, keep) : null));
@@ -1184,6 +1205,8 @@ function DraftField({
   const common = {
     ref: setInput,
     value: draft,
+    readOnly: readOnly || undefined,
+    'aria-readonly': readOnly || undefined,
     placeholder,
     'aria-label': ariaLabel,
     'aria-describedby': [describedBy, note ? noteId : null].filter(Boolean).join(' ') || undefined,

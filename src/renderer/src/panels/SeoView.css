@@ -9,11 +9,18 @@
   .seo-bar { display: flex; align-items: center; gap: 8px; height: 44px; padding: 0 14px; border-bottom: 1px solid var(--border); background: var(--panel); flex: none; min-width: 0; }
   .seo-bar > svg { width: 16px; height: 16px; color: var(--text-3); flex: none; }
   .seo-title { margin: 0; font-size: 14px; font-weight: 600; color: var(--text); min-width: 0; }
-  .seo-address { font-size: 12px; color: var(--text-3); min-width: 0; }
+  /* The address gives way before the title when the bar runs short: the sidebar and the previews show it too. */
+  .seo-address { font-size: 12px; color: var(--text-3); min-width: 6ch; flex-shrink: 4; margin-right: 6px; }
+  .seo-title { flex-shrink: 1; }
+  .seo-bar-sep { width: 1px; height: 18px; margin: 0 2px; background: var(--border); flex: none; }
+  /* A project open read-only says so where its settings are, with the reason, before anything is typed. */
+  .seo-locked { display: flex; align-items: flex-start; gap: 8px; margin: 0; padding: 8px 14px; border-bottom: 1px solid var(--border); background: var(--panel-2); color: var(--text-2); font-size: 12px; line-height: 1.45; flex: none; }
+  .seo-locked svg { width: 14px; height: 14px; flex: none; margin-top: 1px; color: var(--text-3); }
   /* Room for the overview's sticky header, so a row brought into view by focus is never under it. */
   .seo-scroll { flex: 1; min-height: 0; overflow-y: auto; scrollbar-gutter: stable; scroll-padding-top: 64px; }
   .seo-none { margin: 64px auto; max-width: 36ch; display: flex; flex-direction: column; align-items: center; gap: 10px; color: var(--text-3); text-align: center; padding: 24px; font-size: 13px; }
   .seo-none svg { width: 28px; height: 28px; }
+  .seo-doc-settings { min-width: 0; }
   .seo-doc { max-width: 720px; margin: 24px auto 64px; padding: 0 24px; font-size: 13px; color: var(--text-2); display: flex; flex-direction: column; gap: 10px; }
   .seo-doc-kind { margin: 0; font-size: 12px; color: var(--text-3); }
   .seo-doc .seo-note { margin: 0; }
@@ -23,30 +30,39 @@
   .seo-preview-wide .code-view.seo-graph { max-height: 60vh; }
   /* A document's settings under its previews: a post's Search & sharing (#703), its title and description, with their
      meters, a row each, and the sharing image and canonical URL sharing one where there is room. */
-  .seo-settings { display: flex; flex-direction: column; gap: 10px; min-width: 0; margin-top: 8px; padding-top: 16px; border-top: 1px solid var(--border); }
-  .seo-settings-head { margin: 0; font-size: 13px; font-weight: 600; color: var(--text); }
-  .seo-fields { display: grid; grid-template-columns: repeat(auto-fill, minmax(260px, 1fr)); gap: 12px 20px; }
-  .seo-fields > [data-entry-field] > .field, .seo-fields > .switch-row { grid-column: 1 / -1; }
-  /* A page's settings (#702) under its previews, or beside them once the view is wide enough for both: the previews then
-     stay in sight while its settings scroll, so what is typed shows in them at once. Each group carries its own rule. */
+  /* A page's or a post's settings (#702, #703) under its previews, or beside them once the view is wide enough for both:
+     the previews then stay in sight while the settings scroll, so what is typed shows in them at once. Each group carries
+     its own rule. Pages and posts share the layout, so what is learnt on one holds on the other. */
   .seo-scroll { container-type: inline-size; }
   .seo-doc-head { display: flex; flex-direction: column; gap: 10px; }
   .seo-doc-previews { min-width: 0; }
-  .seo-doc-page > .seo-settings { gap: 24px; margin-top: 0; padding-top: 8px; border-top: none; }
+  .seo-settings { display: flex; flex-direction: column; gap: 24px; min-width: 0; padding-top: 8px; }
+  /* A document's findings, carried from the overview so each sits in sight of the fields that fix it. */
+  .seo-findings { list-style: none; margin: 0; padding: 10px 12px; display: flex; flex-direction: column; gap: 4px; border-radius: var(--r-md); background: var(--panel-2); }
+  .seo-findings .seo-ov-status { font-size: 12px; }
+  .seo-finding-go { font-size: 12px; font-weight: 500; white-space: nowrap; }
+  .seo-doc-jump { align-self: flex-start; font-size: 12px; }
+  .seo-doc-lock { display: flex; align-items: flex-start; gap: 6px; }
+  .seo-doc-lock svg { width: 13px; height: 13px; flex: none; margin-top: 2px; }
+  .seo-doc-settings :is(.switch-row, [data-seo-field]):focus-visible { outline: 2px solid var(--focus); outline-offset: 2px; border-radius: var(--r-sm); }
+  .seo-field-group { min-width: 0; margin: 0; padding: 0; border: 0; }
   .seo-settings-group { display: flex; flex-direction: column; gap: 12px; }
   .seo-settings-group > h3 { margin: 0; padding-bottom: 6px; border-bottom: 1px solid var(--border); font-size: 13px; font-weight: 600; color: var(--text); }
   .seo-settings-group > .field-hint { margin: -6px 0 0; }
   /* A long address (a canonical URL the field refused, the one saved) wraps rather than widening the view. */
   .seo-settings :is(.field-hint, .field-error) { overflow-wrap: anywhere; }
   @container (min-width: 1100px) {
-    .seo-doc-page { max-width: 1160px; display: grid; grid-template-columns: minmax(0, 1fr) 340px; column-gap: 32px; row-gap: 10px; align-items: start; }
-    .seo-doc-page > .seo-doc-head { grid-column: 1 / -1; }
-    .seo-doc-page > .seo-doc-previews { grid-column: 1; grid-row: 2; position: sticky; top: 16px; }
-    .seo-doc-page > .seo-settings { grid-column: 2; grid-row: 2; padding-top: 0; }
+    .seo-doc { max-width: 1200px; display: grid; grid-template-columns: minmax(0, 1fr) minmax(340px, 400px); column-gap: 32px; row-gap: 10px; align-items: start; }
+    .seo-doc > .seo-doc-head { grid-column: 1 / -1; }
+    .seo-doc > .seo-doc-previews { grid-column: 1; grid-row: 2; position: sticky; top: 16px; }
+    .seo-doc > .seo-doc-settings { grid-column: 2; grid-row: 2; }
+    .seo-doc .seo-settings { padding-top: 0; }
+    .seo-doc-jump { display: none; }
   }
 
   .seo-leave { margin-left: auto; flex: none; }
-  .seo-back { width: 28px; height: 28px; padding: 0; justify-content: center; margin-left: -6px; flex: none; }
+  .seo-back { margin-left: -6px; flex: none; gap: 4px; padding-left: 6px; }
+  .seo-back svg { width: 15px; height: 15px; }
 
   /* The overview (#707): every page and post with where it stands, while no document is chosen. */
   .seo-ov { padding: 16px 20px 48px; font-size: 12px; color: var(--text-2); }
@@ -56,25 +72,48 @@
   .seo-ov-table { width: 100%; border-collapse: collapse; table-layout: fixed; }
   .seo-ov-table thead th { position: sticky; top: 0; z-index: 1; background: var(--bg); text-align: left; font-size: 11px; font-weight: 600; color: var(--text-3); padding: 6px 8px; border-bottom: 1px solid var(--border); }
   .seo-ov-table thead th:nth-child(1) { width: 22%; }
-  .seo-ov-table thead th:nth-child(2) { width: 26%; }
-  .seo-ov-table thead th:nth-child(3) { width: 30%; }
-  .seo-ov-table thead th:nth-child(4), .seo-ov-table thead th:nth-child(5) { width: 11%; }
-  .seo-ov-row > * { padding: 8px; vertical-align: top; border-bottom: 1px solid var(--border); text-align: left; font-weight: 400; min-width: 0; overflow-wrap: anywhere; }
-  .seo-ov-row:hover > * { background: var(--hover); }
-  .seo-ov-row[data-level='warning'] > th { box-shadow: inset 3px 0 0 var(--amber); }
-  .seo-ov-row[data-level='note'] > th { box-shadow: inset 3px 0 0 var(--border-strong); }
-  .seo-ov-open .badge { margin-top: 2px; }
+  .seo-ov-table thead th:nth-child(2) { width: 24%; }
+  .seo-ov-table thead th:nth-child(3) { width: 28%; }
+  .seo-ov-table thead th:nth-child(4) { width: 11%; }
+  .seo-ov-table thead th:nth-child(5) { width: 15%; }
+  /* A row's state is said in words with a glyph (warning, note, fine, not in search results), never by an edge or a
+     colour alone; amber is kept for what counts in search results today. */
+  .seo-ov-row { position: relative; }
+  .seo-ov-row > * { padding: 9px 8px; vertical-align: top; border-bottom: 1px solid var(--border); text-align: left; font-weight: 400; min-width: 0; overflow-wrap: break-word; }
+  .seo-ov-row:hover > *, .seo-ov-row:has(.seo-ov-open:focus-visible) > * { background: var(--hover); }
   .seo-ov-open { width: 100%; min-width: 0; display: flex; flex-direction: column; align-items: flex-start; gap: 2px; padding: 0; border: 0; background: transparent; text-align: left; color: var(--text); cursor: pointer; border-radius: var(--r-sm); }
-  .seo-ov-open:hover .seo-ov-name > span { text-decoration: underline; }
-  .seo-ov-name { max-width: 100%; display: flex; align-items: center; gap: 5px; font-weight: 600; font-size: 13px; }
+  /* The name's button covers the whole row, so wherever the highlight shows, a click opens the document. */
+  .seo-ov-open::after { content: ''; position: absolute; inset: 0; border-radius: var(--r-sm); }
+  .seo-ov-open:focus-visible { outline: none; }
+  .seo-ov-open:focus-visible::after { outline: 2px solid var(--focus); outline-offset: -2px; }
+  .seo-ov-open:hover .seo-ov-name > span:not(.badge) { text-decoration: underline; }
+  .seo-ov-row:hover .seo-ov-open .seo-ov-name > span:not(.badge) { text-decoration: underline; }
+  .seo-ov-name { max-width: 100%; display: flex; align-items: center; flex-wrap: wrap; gap: 2px 6px; font-weight: 600; font-size: 13px; line-height: 1.35; }
+  /* A long name gives two lines before it trims: the bar and the sidebar show it whole, and so does the button's title. */
+  .seo-ov-name > span:not(.badge) { display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; min-width: 0; }
   .seo-ov-name svg { width: 13px; height: 13px; flex: none; color: var(--text-3); }
   .seo-ov-where { max-width: 100%; font-size: 11px; color: var(--text-3); }
-  .seo-ov-text { overflow-wrap: anywhere; }
+  .seo-ov-lead { margin-top: 5px; }
+  .seo-ov-text { overflow-wrap: break-word; }
   .seo-ov-words { display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; color: var(--text); margin-bottom: 3px; }
-  .seo-ov-status { display: block; font-size: 11px; color: var(--text-3); }
+  .seo-ov-status { display: flex; align-items: flex-start; gap: 4px; font-size: 11px; line-height: 1.4; color: var(--text-3); overflow-wrap: break-word; }
+  .seo-ov-status > svg { width: 12px; height: 12px; flex: none; margin-top: 1px; }
   .seo-ov-status.warn { color: var(--amber); font-weight: 600; }
   .seo-ov-status.note { color: var(--text-2); }
+  .seo-ov-status.note > svg, .seo-ov-status.quiet > svg { color: var(--text-3); }
+  .seo-ov-status.quiet { color: var(--text-2); }
   .seo-ov-status.ok { color: var(--text-3); }
+  .seo-ov-detail { font-weight: 400; color: var(--text-3); }
+  /* Squeezed between the sidebar and the dock: the sharing image's column goes (a missing one still leads its row), and
+     the name and status columns keep room for whole words. */
+  @container (max-width: 760px) {
+    .seo-ov-table thead th:nth-child(1) { width: 30%; }
+    .seo-ov-table thead th:nth-child(2) { width: 25%; }
+    .seo-ov-table thead th:nth-child(3) { width: 27%; }
+    .seo-ov-table thead th:nth-child(5) { width: 18%; }
+    .seo-ov-table :is(thead th, .seo-ov-row > *):nth-child(4) { display: none; }
+    .seo-ov-detail { display: none; }
+  }
   .seo-ov-empty { margin: 40px auto; max-width: 44ch; text-align: center; color: var(--text-3); font-size: 13px; }
 
   .seo-panel { display: flex; flex-direction: column; flex: 1; min-height: 0; }
@@ -84,9 +123,15 @@
   .seo-row { border-radius: var(--r-sm); }
   .seo-row:hover, .seo-row:focus-within { background: var(--hover); }
   .seo-row.current { background: var(--accent-soft); }
+  /* On the selected fill --text-3 falls under 4.5:1 in dark; the row's second line steps up to --text-2. */
+  .seo-row.current .seo-row-meta { color: var(--text-2); }
   .seo-open { width: 100%; min-width: 0; display: flex; flex-direction: column; align-items: flex-start; gap: 2px; padding: 6px 8px; border: 0; background: transparent; text-align: left; color: var(--text); border-radius: var(--r-sm); }
   .seo-row-title { max-width: 100%; min-width: 0; font-weight: 500; display: flex; align-items: center; gap: 5px; }
   .seo-row-title svg { width: 13px; height: 13px; flex: none; color: var(--text-3); }
+  .seo-row-title .seo-mark { margin-left: auto; }
+  .seo-row-title .seo-mark.warn { color: var(--amber); }
+  .seo-row-overview { margin: 0 6px 8px; }
+  .seo-row-overview .seo-row-title { font-weight: 600; }
   .seo-row-meta { display: flex; align-items: center; gap: 6px; max-width: 100%; font-size: 11px; color: var(--text-3); }
   .seo-row-address { min-width: 0; }
   .seo-note { margin: 4px 8px; font-size: 12px; color: var(--text-3); }

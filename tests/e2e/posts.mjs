@@ -450,7 +450,7 @@ step('Search & sharing keeps its fields and meters, and opens the post in the SE
 const seoBox = win.locator('.post-seo');
 await seoBox.locator('.section-head').first().click();
 const postMeter = (kind) => seoBox.locator(`.seo-meter[data-meter="${kind}"]`);
-const postTitleBox = seoBox.getByLabel('Browser title');
+const postTitleBox = seoBox.getByLabel('Search title');
 const postCanonical = seoBox.getByLabel('Canonical URL');
 const openInView = seoBox.getByRole('button', { name: 'Open in SEO view' });
 const seoView = win.getByRole('region', { name: 'SEO view' });
@@ -484,7 +484,7 @@ await openInView.click();
 await eventually(() => assert.equal(savedSeo().title, 'Raku firing notes from the weekend', 'what was typed is saved first'), 20000);
 await eventually(async () => assert.equal(await seoView.locator('.seo-title').innerText(), `${left} ${right}`, 'the SEO view opens on the post'));
 await eventually(async () => assert.equal(await seoView.locator('.serp-desktop .serp-title').innerText(), 'Raku firing notes from the weekend', 'its result shows the saved title'));
-assert.equal(await seoView.getByLabel('Browser title', { exact: true }).inputValue(), 'Raku firing notes from the weekend', 'and so does its field');
+assert.equal(await seoView.getByLabel('Search title', { exact: true }).inputValue(), 'Raku firing notes from the weekend', 'and so does its field');
 await eventually(async () => assert.equal(await seoView.getByRole('button', { name: 'Back to overview' }).evaluate((el) => el === document.activeElement), true, 'focus moves into the view'));
 await win.screenshot({ path: join(SHOTS, 'posts-seo-view.png') });
 

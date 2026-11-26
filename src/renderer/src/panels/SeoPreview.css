@@ -84,9 +84,11 @@
   .serp-note { margin: 0; line-height: 1.45; }
   .seo-meter { display: flex; align-items: center; gap: 6px; margin-top: 4px; font-variant-numeric: tabular-nums; }
   .seo-meter-bar { position: relative; flex: none; width: 44px; height: 4px; overflow: hidden; border-radius: 2px; background: var(--border); }
-  .seo-meter-bar > span { position: absolute; inset: 0 auto 0 0; border-radius: 2px; background: var(--green); }
-  .seo-meter.short .seo-meter-bar > span, .seo-meter.none .seo-meter-bar > span { background: var(--text-3); }
-  .seo-meter.cut .seo-meter-bar > span { background: var(--amber); }
+  /* Green is the shared header and footer's hue (tokens.css), and amber is kept for what is to fix: the fill is ink. */
+  .seo-meter-bar > span { position: absolute; inset: 0 auto 0 0; border-radius: 2px; background: var(--text-3); }
+  .seo-meter.short .seo-meter-bar > span, .seo-meter.none .seo-meter-bar > span { background: var(--border-control); }
+  /* Cut short is a note, as the overview ranks a length: amber is kept for what is to fix. The words say where. */
+  .seo-meter.cut .seo-meter-bar > span { background: var(--text); }
   .seo-meter.cut .seo-meter-text { color: var(--text); }
   .seo-data { display: flex; flex-direction: column; gap: 8px; min-width: 0; }
   .seo-status { display: flex; flex-direction: column; gap: 4px; margin: 0; font-size: 12px; }
@@ -95,7 +97,7 @@
   .seo-status-row dd { margin: 0; min-width: 0; overflow-wrap: anywhere; color: var(--text-2); }
   .seo-status-row.on dd { color: var(--text); }
   .seo-status-row dd::before { content: '○ '; color: var(--text-3); }
-  .seo-status-row.on dd::before { content: '● '; color: var(--green); }
+  .seo-status-row.on dd::before { content: '● '; color: var(--text-2); }
   .seo-data-problem { display: flex; flex-direction: column; align-items: flex-start; gap: 4px; padding: 10px 12px; border: 1px solid color-mix(in srgb, var(--amber) 55%, var(--border)); border-radius: var(--r-md); background: color-mix(in srgb, var(--amber) 8%, transparent); font-size: 12px; line-height: 1.45; }
   .seo-data-problem p { margin: 0; min-width: 0; overflow-wrap: anywhere; }
   .seo-summary { display: flex; flex-direction: column; min-width: 0; }
@@ -165,7 +167,7 @@
   .share-card-messages .share-card-title { font-size: calc(var(--u) * 14); line-height: calc(var(--u) * 18); }
   .share-card-messages .share-card-desc { font-size: calc(var(--u) * 12); line-height: calc(var(--u) * 16); }
   /* A team chat: an unfurl behind a bar, the whole picture under its text. */
-  .share-card-chat .share-card-frame { border-left: calc(var(--u) * 4) solid var(--card-line); border-radius: calc(var(--u) * 2); padding: calc(var(--u) * 4) calc(var(--u) * 8); }
+  .share-card-chat .share-card-frame { border-left: calc(var(--u) * 4) solid var(--card-line); border-radius: 0; padding: calc(var(--u) * 4) calc(var(--u) * 8); }
   .share-card-chat .share-card-frame::after { content: none; }
   .share-card-chat .share-card-frame.beside { align-items: flex-start; }
   .share-card-chat .share-card-text { flex: none; padding: 0 0 calc(var(--u) * 6); }
