@@ -1,6 +1,6 @@
 import { randomBytes } from 'node:crypto';
 import { EventEmitter } from 'node:events';
-import { promises as fs, constants as fsConstants, existsSync, statSync, type BigIntStats, type Dirent } from 'node:fs';
+import { promises as fs, existsSync, statSync, type BigIntStats, type Dirent } from 'node:fs';
 import type { FileHandle } from 'node:fs/promises';
 import { hostname } from 'node:os';
 import { basename, dirname, join } from 'node:path';
@@ -48,6 +48,9 @@ import { atomicWrite, ensureDir, inBatches, readBytesIfExists, readIfExists, rea
 import { designAt, relocateSource, textOfBytes } from './edited-design';
 import { collectionDocPath, collectionPathOf, collectionsFromDocs, componentDocPath, converterPathOf, CUSTOM_SOURCE_RE, DOC_DIR, isCanonicalPath, MANIFEST_FILE, newestStoredVersion, ProjectFormatError, readProject, readState, sourcePathOf, sourcesFromDocs, stateToAuthoredSources, stateToDocs, type DocReader } from './documents';
 import { perf, timed } from '../perf';
+import { absent, handleStamp, isMissing, lookAt, OPEN_READ, readFileAt, stampOf, statTrusted } from './stable-read';
+
+export { statTrusted };
 import { heldAsMedia, isVersionMedia, newVersionId, sameContents, VERSION_DAMAGED, VERSION_NAME_MAX, VersionStore, type SavedVersion } from './versions';
 
 export const LOCAL_DIR = '.siteorigin';
@@ -71,66 +74,6 @@ const OBSOLETE_REDIRECTS_REASON = 'These redirect rules were edited outside Site
 /** An obsolete generated file that stays claimed while edited outside the app, since a build would still act on it. */
 const claimedWhenObsolete = (path: string) => publishesWords(path) || routesVisitors(path);
 const UNREADABLE_REASON = 'Generated file could not be read, so SiteOrigin Builder left it as it is. Check that it is a file you can open, then restore it.';
-
-/** Opened for reading without waiting: a pipe at the path must never hold a save up. */
-const OPEN_READ = fsConstants.O_RDONLY | (fsConstants.O_NONBLOCK ?? 0);
-
-/** The path's stat, or whether nothing is there or it could not be looked at. */
-async function lookAt(abs: string): Promise<BigIntStats | 'missing' | 'failed'> {
-  try {
-    return await fs.stat(abs, { bigint: true });
-  } catch (e) {
-    return isMissing(e) ? 'missing' : 'failed';
-  }
-}
-
-/** A regular file's bytes, read through one handle, with that handle's stat; 'changed' when it changed while read. */
-async function readFileAt(abs: string): Promise<{ bytes: Buffer; stamp: string } | 'missing' | 'failed' | 'changed'> {
-  let handle: FileHandle;
-  try {
-    handle = await fs.open(abs, OPEN_READ);
-  } catch (e) {
-    return isMissing(e) ? 'missing' : 'failed';
-  }
-  try {
-    const before = await handle.stat({ bigint: true });
-    // Only a regular file is read: a pipe or device could block, or never end.
-    if (!before.isFile()) return 'failed';
-    const bytes = await handle.readFile();
-    perf.count('files.read');
-    const after = await handle.stat({ bigint: true });
-    return stampOf(after) === stampOf(before) ? { bytes, stamp: stampOf(before) } : 'changed';
-  } catch {
-    return 'failed';
-  } finally {
-    await handle.close().catch(() => undefined);
-  }
-}
-
-/** Nothing at all is at the path: not a file that merely cannot be looked at now. */
-async function absent(abs: string): Promise<boolean> {
-  return fs.lstat(abs).then(
-    () => false,
-    (e) => isMissing(e)
-  );
-}
-
-/** The stat of whatever a new handle on the path reaches, taken as `readFileAt` takes it; null when nothing can be. */
-async function handleStamp(abs: string): Promise<string | null> {
-  let handle: FileHandle;
-  try {
-    handle = await fs.open(abs, OPEN_READ);
-  } catch {
-    return null;
-  }
-  try {
-    return stampOf(await handle.stat({ bigint: true }));
-  } catch {
-    return null;
-  } finally {
-    await handle.close().catch(() => undefined);
-  }
-}
 
 /**
  * A document's text, read through one handle, with that handle's stat when it did not change while the text was read;
@@ -156,28 +99,6 @@ async function readTextAt(abs: string): Promise<{ text: string; st: BigIntStats 
   }
 }
 
-/** Nothing at the path: the file, or a folder above it, is not there. */
-function isMissing(e: unknown): boolean {
-  const code = (e as NodeJS.ErrnoException)?.code;
-  return code === 'ENOENT' || code === 'ENOTDIR';
-}
-
-/** What a file's stat says about its bytes: any write to it, or a new file in its place, changes this. */
-function stampOf(st: BigIntStats): string {
-  return `${st.dev}:${st.ino}:${st.size}:${st.mtimeNs}:${st.ctimeNs}`;
-}
-
-/**
- * Whether a file's stat, taken at `now` (ms), can stand for its bytes later. It must have been last changed more
- * than `settleMs` before, so a later change cannot share its timestamps. A change time that only repeats a
- * whole-second modification time (SSHFS, FAT) is no change time at all: an edit that puts the old modification time
- * back would go unseen, so such files are always read.
- */
-export function statTrusted(st: Pick<BigIntStats, 'mtimeNs' | 'ctimeNs'>, now: number, settleMs: number): boolean {
-  if (st.mtimeNs === st.ctimeNs && st.mtimeNs % 1_000_000_000n === 0n) return false;
-  const settled = (ns: bigint) => now - Number(ns / 1_000_000n) > settleMs;
-  return settled(st.mtimeNs) && settled(st.ctimeNs);
-}
 /** How many let-go AI runs History remembers the standing of (see HistoryFile.droppedRuns). */
 const DROPPED_RUN_LIMIT = 200;
 /** How often an open project refreshes its lock, and how long an unrefreshed lock is still trusted. */

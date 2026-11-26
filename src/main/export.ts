@@ -4,7 +4,7 @@
  */
 import { markdownMirrorRoute } from '@shared/llms';
 import { randomUUID } from 'node:crypto';
-import { constants as fsConstants, existsSync, lstatSync, promises as fs, readdirSync, statSync } from 'node:fs';
+import { constants as fsConstants, existsSync, lstatSync, promises as fs, readdirSync, statSync, type Dirent } from 'node:fs';
 import { basename, dirname, join, relative, sep } from 'node:path';
 import type { AssetRecord, NodeTree, PageDoc, ProjectState, RedirectHost, SourceDoc } from '@shared/types';
 import { documentFormat } from '@shared/document-files';
@@ -27,8 +27,32 @@ import { atomicWrite, readIfExists, removeEmptyDirs, safeJoin, sha, toJson } fro
 import { isPrivateFileName } from './project/private-files';
 import { converterDocPath, sourceDocPath, storedSourceDoc } from './project/documents';
 import { CONVERTER_FILE, holdsSecretValue, isSourceId } from '@shared/sources';
+import { perf } from './perf';
+import { handleStamp, hashFileAt, lookAt, stampOf, statTrusted } from './project/stable-read';
 
 const UNREADABLE = Symbol('unreadable');
+
+/** A file an export reads, counted for the benchmark (export.filesRead and export.bytesRead, scripts/perf/README.md). */
+export async function readExportFile(path: string): Promise<Buffer>;
+export async function readExportFile(path: string, encoding: BufferEncoding): Promise<string>;
+export async function readExportFile(path: string, encoding?: BufferEncoding): Promise<Buffer | string> {
+  const bytes = await fs.readFile(path);
+  countExportRead(bytes.length);
+  return encoding ? bytes.toString(encoding) : bytes;
+}
+
+/** Count one read of `bytes` bytes an export made. */
+export function countExportRead(bytes: number) {
+  perf.count('export.filesRead');
+  perf.count('export.bytesRead', bytes);
+}
+
+/** readIfExists, counted as an export's read. */
+async function readExportText(path: string): Promise<string | null> {
+  const text = await readIfExists(path);
+  if (text !== null && perf.on) countExportRead(Buffer.byteLength(text));
+  return text;
+}
 
 /**
  * A settings file's text, null when there is none, or UNREADABLE for anything but a plain file (a pipe, which would
@@ -77,22 +101,76 @@ const EXCLUDE_TOP = new Set(['node_modules', '.siteorigin', '.svelte-kit', 'buil
  * sources' settings (#676) are never copied: a copy that keeps them writes the project's own (writeExportedSources).
  */
 export async function copyProjectSource(src: string, dest: string, opts: { keepAsset?: (rel: string) => boolean; keepBrief?: boolean } = {}) {
-  await fs.cp(src, dest, {
-    recursive: true,
-    verbatimSymlinks: true,
-    filter: (p) => {
-      if (!inProjectSource(src, p)) return false;
-      if (!opts.keepBrief && isProjectBrief(src, p)) return false;
-      // Sources' settings are written from the project's own (writeExportedSources), never copied as the folder has them.
-      if (isSourcesFolder(src, p)) return false;
-      const rel = relative(src, p);
-      if (!rel || !opts.keepAsset) return true;
-      try {
-        return !lstatSync(p).isFile() || opts.keepAsset(rel.split(sep).join('/'));
-      } catch {
-        return false;
-      }
+  // An entry's own type says whether it is a link, which is never copied, so nothing is looked at twice.
+  await copyTree(src, dest, (p, e) => {
+    if (e.isSymbolicLink() || !sourcePathKept(src, p)) return false;
+    if (!opts.keepBrief && isProjectBrief(src, p)) return false;
+    // Sources' settings are written from the project's own (writeExportedSources), never copied as the folder has them.
+    if (isSourcesFolder(src, p)) return false;
+    return !opts.keepAsset || !e.isFile() || opts.keepAsset(relative(src, p).split(sep).join('/'));
+  });
+}
+
+/**
+ * Copy the folder `src` to `dest` (made, or merged into when it is there, as fs.cp does), taking the entries `kept`
+ * allows (a folder it refuses is left out whole). Files are cloned where the disk can (a copy that shares blocks until
+ * either is written) and copied otherwise, a few at a time: a fresh file with the original's mode either way, as fs.cp
+ * makes. Folders get their originals' modes once their files are in. Anything else (a link) is copied as fs.cp copies
+ * it with verbatimSymlinks, and fails as it does on what it cannot copy (a pipe).
+ */
+export async function copyTree(src: string, dest: string, kept: (p: string, e: EntryType) => boolean): Promise<void> {
+  const dirs: string[] = [];
+  const files: string[] = [];
+  const walk = async (rel: string) => {
+    for (const e of await fs.readdir(join(src, rel), { withFileTypes: true })) {
+      const r = rel ? join(rel, e.name) : e.name;
+      if (!kept(join(src, r), e)) continue;
+      if (e.isDirectory()) {
+        dirs.push(r);
+        await walk(r);
+      } else files.push(r);
     }
+  };
+  await walk('');
+  // Into a folder already there (a preview's copy), as fs.cp merges into one: only the folders made here take their
+  // originals' modes.
+  const made = new Set<string>();
+  if ((await fs.mkdir(dest, { recursive: true })) !== undefined) made.add('');
+  else await existingFolder(dest);
+  for (const r of dirs) {
+    const to = join(dest, r);
+    if (await fs.mkdir(to).then(() => true, (e: NodeJS.ErrnoException) => (e.code === 'EEXIST' ? false : Promise.reject(e)))) made.add(r);
+    else await existingFolder(to);
+  }
+  await inBatches(files, async (r) => {
+    const [from, to] = [join(src, r), join(dest, r)];
+    const st = await fs.lstat(from).catch((e: NodeJS.ErrnoException) => (e.code === 'ENOENT' ? null : Promise.reject(e)));
+    // Gone since it was listed: as fs.cp's filter, which looks again, leaves it out.
+    if (!st) return;
+    if (st.isFile()) return copyFresh(from, to);
+    // Not the file it was listed as (or never one): judged again as it is now, and a folder copied entry by entry.
+    if (!kept(from, st)) return;
+    if (st.isDirectory()) return copyTree(from, to, kept);
+    await fs.cp(from, to, { recursive: true, verbatimSymlinks: true });
+  });
+  for (const r of [...dirs].reverse()) if (made.has(r)) await fs.chmod(join(dest, r), (await fs.stat(join(src, r))).mode);
+  if (made.has('')) await fs.chmod(dest, (await fs.stat(src)).mode);
+}
+
+/** What copyTree's `kept` is told of an entry: its type, as listed or as it is when it is copied. */
+type EntryType = Pick<Dirent, 'isFile' | 'isDirectory' | 'isSymbolicLink'>;
+
+/** A folder already at `path` that a copy merges into: a real folder, never a link that would lead the copy elsewhere. */
+async function existingFolder(path: string) {
+  if (!(await fs.lstat(path)).isDirectory()) throw Object.assign(new Error(`${path} is not a folder.`), { code: 'EEXIST' });
+}
+
+/** A copy of a file as a new file at `to` (cloned where the disk can), replacing one there rather than writing through it, as fs.cp does. */
+async function copyFresh(from: string, to: string) {
+  await fs.copyFile(from, to, fsConstants.COPYFILE_FICLONE | fsConstants.COPYFILE_EXCL).catch(async (e: NodeJS.ErrnoException) => {
+    if (e.code !== 'EEXIST') throw e;
+    await fs.unlink(to);
+    await fs.copyFile(from, to, fsConstants.COPYFILE_FICLONE);
   });
 }
 
@@ -165,18 +243,24 @@ export async function exportedSourcesProblem(dir: string, state: ProjectState, v
 
 /** Is `p` part of the project source in `root`: not tools, caches, builds, private files or links? */
 export function inProjectSource(root: string, p: string): boolean {
+  if (!relative(root, p)) return true;
+  if (!sourcePathKept(root, p)) return false;
+  try {
+    return !lstatSync(p).isSymbolicLink();
+  } catch {
+    return false;
+  }
+}
+
+/** Whether a path in `root` is part of its source by its name alone (inProjectSource, without looking at what it is). */
+function sourcePathKept(root: string, p: string): boolean {
   const rel = relative(root, p);
   if (!rel) return true;
   const top = rel.split(sep)[0];
   // The editor's own data (history, which holds every version of the brief) by any spelling: on a case-insensitive
   // disk, `.SiteOrigin` is the same folder.
   if (EXCLUDE_TOP.has(top) || top.toLowerCase() === '.siteorigin' || /\.tmp$/.test(p)) return false;
-  if (isPrivateFileName(basename(p))) return false;
-  try {
-    return !lstatSync(p).isSymbolicLink();
-  } catch {
-    return false;
-  }
+  return !isPrivateFileName(basename(p));
 }
 
 /** Project files (static/assets/…) of every asset record in the library and its responsive variants, used or not. */
@@ -212,7 +296,7 @@ export function exportedAssetFilter(state: ProjectState): (rel: string) => boole
 const TEXT_FILE = /\.(svelte|svx|[cm]?[jt]sx?|css|html?|json|webmanifest|xml|txt|svg|mdx?|csv|tsv|ya?ml|toml)$/i;
 
 /** Does `text` name `file` as a whole file name, so that `a-1234abcd.svg` is not found inside `ba-1234abcd.svg`? */
-function namesFile(text: string, file: string): boolean {
+export function namesFile(text: string, file: string): boolean {
   for (let i = text.indexOf(file); i >= 0; i = text.indexOf(file, i + 1)) if (i === 0 || !/[\w.-]/.test(text[i - 1])) return true;
   return false;
 }
@@ -250,7 +334,7 @@ async function websiteText(project: string, { files, candidate, draftOnly }: { f
   const held = new Map<string, string>();
   for (const rel of files) {
     if (!/^(src|static)\//.test(rel) || candidate(rel) || !TEXT_FILE.test(rel) || rel === SEARCH_INDEX) continue;
-    const text = await fs.readFile(join(project, rel), 'utf8');
+    const text = await readExportFile(join(project, rel), 'utf8');
     if (draftOnly.has(rel)) held.set(rel, text);
     else texts.push(text);
   }
@@ -272,11 +356,12 @@ export async function pruneWebsiteAssets(project: string, state: ProjectState): 
   const candidates = site.files.filter(site.candidate);
   if (!candidates.length) return [];
   const text = await websiteText(project, site);
+  const named = namesIn(text, candidates.map((rel) => basename(rel)));
   const shipped = new Set<string>();
   const removed = new Set<string>();
   for (const rel of candidates) {
     // A document by its whole name: `offer-1a2b3c4d.doc` is not named by `offer-1a2b3c4d.docx`.
-    if ((documentFormat(rel) ? namesWholeFile : namesFile)(text, basename(rel))) shipped.add(rel);
+    if ((documentFormat(rel) ? named.whole : named.file)(basename(rel))) shipped.add(rel);
     else {
       await fs.rm(join(project, rel));
       removed.add(rel);
@@ -316,8 +401,37 @@ export async function missingWebsiteAssets(project: string, state: ProjectState)
   });
 }
 
+/** Characters namesFile reads as part of a file name, around one. */
+const NAME_RUN = /[\w.-]+/g;
+const NAME_CHARS = /^[\w.-]+$/;
+
+/**
+ * namesFile and namesWholeFile for many names over one text, read once. A name made only of the characters that
+ * namesFile reads as part of a name is named exactly when some run of those characters in the text starts with it (its
+ * start then has none before it), and named whole when, within that run, nothing that namesWholeFile reads as going on
+ * follows it. Any other name is searched for on its own.
+ */
+export function namesIn(text: string, names: string[]): { file: (name: string) => boolean; whole: (name: string) => boolean } {
+  const lengths = new Map<number, Set<string>>();
+  for (const name of names) if (NAME_CHARS.test(name)) (lengths.get(name.length) ?? lengths.set(name.length, new Set()).get(name.length)!).add(name);
+  const file = new Set<string>();
+  const whole = new Set<string>();
+  if (lengths.size)
+    for (const [run] of text.matchAll(NAME_RUN))
+      for (const [length, set] of lengths) {
+        if (length > run.length) continue;
+        const name = length === run.length ? run : run.slice(0, length);
+        if (!set.has(name)) continue;
+        file.add(name);
+        const next = run[length];
+        if (next === undefined || (next === '.' && !/\w/.test(run[length + 1] ?? ''))) whole.add(name);
+      }
+  const listed = (name: string) => NAME_CHARS.test(name);
+  return { file: (name) => (listed(name) ? file.has(name) : namesFile(text, name)), whole: (name) => (listed(name) ? whole.has(name) : namesWholeFile(text, name)) };
+}
+
 /** Like namesFile, and the name also ends there: `a-1234abcd.jpg` is not found inside `a-1234abcd.jpg.webp`. */
-function namesWholeFile(text: string, file: string): boolean {
+export function namesWholeFile(text: string, file: string): boolean {
   for (let i = text.indexOf(file); i >= 0; i = text.indexOf(file, i + 1)) {
     const end = i + file.length;
     if ((i === 0 || !/[\w.-]/.test(text[i - 1])) && (end === text.length || !/[\w-]/.test(text[end]) && !(text[end] === '.' && /[\w]/.test(text[end + 1] ?? '')))) return true;
@@ -396,6 +510,7 @@ async function rasterFiles(root: string, dirs: string[]): Promise<Array<{ rel: s
       try {
         const head = Buffer.alloc(64);
         const { bytesRead } = await handle.read(head, 0, 64, 0);
+        countExportRead(bytesRead);
         if (sniffImageType(head.subarray(0, bytesRead))) out.push({ rel, named: false });
       } catch {
         out.push({ rel, named: false });
@@ -431,7 +546,7 @@ export async function readLibraryImage(root: string, a: AssetRecord): Promise<Bu
   try {
     const st = await fs.lstat(path);
     if (!st.isFile() || st.size > MAX_LIBRARY_FILE) return null;
-    return await fs.readFile(path);
+    return await readExportFile(path);
   } catch {
     return null;
   }
@@ -471,7 +586,7 @@ export async function cleanWebsitePhotos(project: string, state: ProjectState, c
   const failed = new Set<string>();
   for (const { rel } of await rasterFiles(project, ['static', 'src'])) {
     const path = join(project, rel);
-    const buf = await fs.readFile(path).catch(() => null);
+    const buf = await readExportFile(path).catch(() => null);
     const owner = owners.get(rel);
     const r = buf && cleanPhoto(buf);
     if (!r) {
@@ -512,24 +627,44 @@ function inlineBytes(params: string, payload: string): Buffer {
  * place: those that came from the cleaned sources are left exactly as they are, and any the build brought in
  * from elsewhere (a package, generated code) is cleaned now. Images inlined as data: URLs in HTML, CSS and
  * scripts are cleaned the same way and written back as base64. Returns the paths holding an image that could
- * not be read or cleaned; the export must stop if there are any.
+ * not be read or cleaned (those that could not be read as images first); the export must stop if there are any.
+ *
+ * Each file is read once. `inspect` is given every file read whole (every HTML file and script among them), as the
+ * build wrote it, before it is cleaned.
  */
-export async function cleanBuiltSite(dir: string): Promise<string[]> {
+export async function cleanBuiltSite(dir: string, inspect?: (rel: string, bytes: Buffer) => void): Promise<string[]> {
   const failed: string[] = [];
-  for (const { rel } of await rasterFiles(dir, [''])) {
-    const buf = await fs.readFile(join(dir, rel)).catch(() => null);
-    const r = buf && cleanPhoto(buf);
-    if (!r) failed.push(rel);
-    // Renamed into place, so a file the build linked from elsewhere is replaced rather than written through.
-    else if (r.changed) await rewriteBuilt(join(dir, rel), r.data);
-  }
+  const inlineFailed: string[] = [];
   for (const rel of (await listFiles(dir)).map((f) => f.split(sep).join('/'))) {
-    if (!INLINE_HOST.test(rel)) continue;
-    const text = await fs.readFile(join(dir, rel), 'latin1').catch(() => null);
-    if (text === null) {
-      failed.push(rel);
-      continue;
+    const path = join(dir, rel);
+    const host = INLINE_HOST.test(rel);
+    // A file read whole anyway shows its first bytes; any other is looked at by them alone (rasterFiles).
+    let bytes: Buffer | null = null;
+    let raster = RASTER_NAME.test(rel);
+    if (host) {
+      bytes = await readExportFile(path).catch(() => null);
+      // One that cannot be read fails by name, as an image and as a file that can hold one.
+      if (bytes === null) {
+        failed.push(rel);
+        inlineFailed.push(rel);
+        continue;
+      }
+      inspect?.(rel, bytes);
+      raster = !!sniffImageType(bytes.subarray(0, 64));
+    } else if (!raster) raster = await sniffedRaster(path);
+    if (raster) {
+      bytes ??= await readExportFile(path).catch(() => null);
+      if (bytes && !host) inspect?.(rel, bytes);
+      const r = bytes && cleanPhoto(bytes);
+      if (!r) failed.push(rel);
+      // Renamed into place, so a file the build linked from elsewhere is replaced rather than written through.
+      else if (r.changed) {
+        await rewriteBuilt(path, r.data);
+        bytes = r.data;
+      }
     }
+    if (!host || !bytes) continue;
+    const text = bytes.toString('latin1');
     if (!/data(?::|&#0*58;|&#x0*3a;|&colon;)image/i.test(text)) continue;
     let bad = false;
     const cleaned = text.replace(INLINE_IMAGE, (match, type: string, params: string, payload: string) => {
@@ -540,10 +675,26 @@ export async function cleanBuiltSite(dir: string): Promise<string[]> {
       }
       return r.changed ? `data:image/${type.toLowerCase()};base64,${r.data.toString('base64')}` : match;
     });
-    if (bad) failed.push(rel);
-    else if (cleaned !== text) await rewriteBuilt(join(dir, rel), Buffer.from(cleaned, 'latin1'));
+    if (bad) inlineFailed.push(rel);
+    else if (cleaned !== text) await rewriteBuilt(path, Buffer.from(cleaned, 'latin1'));
   }
-  return failed;
+  return [...failed, ...inlineFailed];
+}
+
+/** Whether a file's first bytes are a raster image's; true when it cannot be opened or read, so reading it fails by name. */
+async function sniffedRaster(path: string): Promise<boolean> {
+  const handle = await fs.open(path, 'r').catch(() => null);
+  if (!handle) return true;
+  try {
+    const head = Buffer.alloc(64);
+    const { bytesRead } = await handle.read(head, 0, 64, 0);
+    countExportRead(bytesRead);
+    return !!sniffImageType(head.subarray(0, bytesRead));
+  } catch {
+    return true;
+  } finally {
+    await handle.close();
+  }
 }
 
 /** Names of the library photos in a project copy that record where they were taken. */
@@ -586,13 +737,16 @@ export function locationKeptNote(located: string[]): string | undefined {
 /**
  * Copy a finished export to `dest`, which must not exist yet. The name is claimed first, so the export never merges
  * into a folder that appears meanwhile; the files go to a private folder beside it, which replaces the empty claimed
- * folder only once `beforeCommit` allows. Anything someone else puts in `dest` is never removed.
+ * folder only once `beforeCommit` allows. Anything someone else puts in `dest` is never removed. With `move`, `from`
+ * is the caller's to give up (a staging folder): it is moved there when it is on the same disk, and copied otherwise.
  */
-export async function publishFolder(from: string, dest: string, beforeCommit?: () => Promise<void>) {
+export async function publishFolder(from: string, dest: string, beforeCommit?: () => Promise<void>, opts: { move?: boolean } = {}) {
   await fs.mkdir(dest);
   const tmp = `${dest}.${randomUUID()}.tmp`;
   try {
-    await fs.cp(from, tmp, { recursive: true });
+    // Only a folder that holds nothing but folders and files no other name shares is moved: then the result is the copy's.
+    const moved = !!opts.move && (await plainTree(from).catch(() => false)) && (await fs.rename(from, tmp).then(() => true, () => false));
+    if (!moved) await fs.cp(from, tmp, { recursive: true });
     // The last chance to call the export off.
     await beforeCommit?.();
     await replaceEmptyFolder(tmp, dest);
@@ -602,6 +756,20 @@ export async function publishFolder(from: string, dest: string, beforeCommit?: (
     await fs.rmdir(dest).catch(() => undefined);
     throw e;
   }
+}
+
+/**
+ * Whether `dir` holds only folders and regular files with one name each: no link, pipe or file shared with another
+ * name (a build can link a file from elsewhere), which a copy would treat differently from a move.
+ */
+async function plainTree(dir: string): Promise<boolean> {
+  for (const e of await fs.readdir(dir, { withFileTypes: true })) {
+    const p = join(dir, e.name);
+    if (e.isDirectory()) {
+      if (!(await plainTree(p))) return false;
+    } else if (!e.isFile() || (await fs.lstat(p)).nlink !== 1) return false;
+  }
+  return true;
 }
 
 /**
@@ -630,17 +798,25 @@ export async function replaceEmptyFolder(tmp: string, dest: string, beforeMove?:
 
 const MANIFEST_PATH = 'siteorigin/generated-manifest.json';
 
-/** The first generated file whose content no longer matches generated-manifest.json, or null. */
-export async function editedGeneratedFile(dir: string): Promise<string | null> {
+/**
+ * The first generated file whose content no longer matches generated-manifest.json, or null. `known` holds hashes
+ * already taken of the project's files (projectInventory), by project path: a file it names is not read again.
+ */
+export async function editedGeneratedFile(dir: string, known?: ReadonlyMap<string, string>): Promise<string | null> {
   let manifest: { files?: Record<string, string> };
   try {
-    manifest = JSON.parse((await readIfExists(join(dir, MANIFEST_PATH))) ?? '');
+    manifest = JSON.parse((await readExportText(join(dir, MANIFEST_PATH))) ?? '');
   } catch {
     return MANIFEST_PATH;
   }
   for (const [path, hash] of Object.entries(manifest.files ?? {}).sort()) {
+    const seen = known?.get(path);
+    if (seen !== undefined) {
+      if (seen !== hash) return path;
+      continue;
+    }
     // Read as bytes: a theme's font files are generated output too.
-    const disk = await fs.readFile(join(dir, path)).catch(() => null);
+    const disk = await readExportFile(join(dir, path)).catch(() => null);
     if (disk === null || sha(disk) !== hash) return path;
   }
   return null;
@@ -658,7 +834,7 @@ export async function leaveOutDrafts(dir: string, state: ProjectState): Promise<
   if (live === state) return;
   const full = generateProject(state, { instrument: false });
   const published = generateProject(live, { instrument: false });
-  const manifest = JSON.parse((await readIfExists(join(dir, MANIFEST_PATH))) ?? '{}') as { files?: Record<string, string>; pending?: Record<string, string> };
+  const manifest = JSON.parse((await readExportText(join(dir, MANIFEST_PATH))) ?? '{}') as { files?: Record<string, string>; pending?: Record<string, string> };
   const files = manifest.files ?? {};
   for (const [path, content] of full) {
     if (!Object.hasOwn(files, path) && !Object.hasOwn(manifest.pending ?? {}, path)) continue;
@@ -691,7 +867,7 @@ export async function stripPartMarkers(project: string, state: ProjectState): Pr
     // which the website has only while it declares its tools.
     for (const path of [def.sourcePath, ...(webMcpOn(state.site) && declaresFormTool(def) ? [webMcpFormFile(def)] : [])]) {
       const abs = safeJoin(project, path);
-      const source = await readIfExists(abs);
+      const source = await readExportText(abs);
       if (source === null) continue;
       const clean = await withoutPartMarkers(source);
       if (clean !== source) await fs.writeFile(abs, clean);
@@ -788,14 +964,112 @@ export function draftSourceNotes(state: ProjectState): string[] {
 
 /** Content hash of everything an export reads: source, public files, the canonical documents and Vercel's rules. */
 export async function projectFingerprint(dir: string): Promise<string> {
-  const parts: string[] = [];
-  for (const top of ['src', 'static', 'siteorigin']) {
-    for (const f of (await listFiles(join(dir, top))).filter((n) => !n.endsWith('.tmp')).sort()) parts.push(`${top}/${f}:${sha(await fs.readFile(join(dir, top, f)))}`);
+  return (await projectInventory(dir)).fingerprint;
+}
+
+/**
+ * `fn` over every item, a few at a time: enough to overlap the disk's waits, never so many open files that one fails
+ * to open. Results in the items' order.
+ */
+async function inBatches<T, R>(items: T[], fn: (item: T) => Promise<R>, size = 16): Promise<R[]> {
+  const out: R[] = [];
+  for (let i = 0; i < items.length; i += size) {
+    // Every one of a batch is done before a failure among them is thrown: nothing is still running once it is.
+    const settled = await Promise.allSettled(items.slice(i, i + size).map(fn));
+    const failed = settled.find((r) => r.status === 'rejected');
+    if (failed) throw failed.reason;
+    for (const r of settled) out.push((r as PromiseFulfilledResult<R>).value);
   }
+  return out;
+}
+
+/** Hashes of a project's files an export has taken, by absolute path, each with the stamp it stands for. */
+export type ExportHashes = Map<string, { stamp: string; hash: string }>;
+
+/**
+ * The SHA-256 of the file at `abs`, from `known` when it holds one under the stamp the path has now. A hash is kept (in
+ * `kept`) only when its file was read whole without changing, and had been left alone for `settleMs` before it was
+ * looked at (statTrusted, the rule the session's own hashes follow): any later write to it changes its stamp, and the
+ * file is read again. Anything else is read as it always was.
+ */
+async function stableHash(abs: string, known: ExportHashes, kept: ExportHashes, settleMs: number): Promise<{ hash: string; stamp: string | null; trusted: boolean }> {
+  const started = Date.now();
+  const before = await lookAt(abs);
+  if (typeof before !== 'string') {
+    const stamp = stampOf(before);
+    // Trusted now, as when it was kept: a later rule (a longer settleMs) or a clock set back says otherwise.
+    const trusted = statTrusted(before, started, settleMs);
+    const held = known.get(abs);
+    if (held?.stamp === stamp && trusted) {
+      kept.set(abs, held);
+      return { hash: held.hash, stamp, trusted };
+    }
+    const read = await hashFileAt(abs, countExportRead);
+    if (typeof read !== 'string') {
+      // The path still reaches the file read, unchanged; where a path's stat and a handle's are taken the same way
+      // (everywhere but Windows), they must name the same file too.
+      const after = await lookAt(abs);
+      const same = typeof after !== 'string' && stampOf(after) === stamp && (await handleStamp(abs)) === read.stamp && (process.platform === 'win32' || read.stamp === stamp);
+      if (same && trusted) kept.set(abs, { stamp, hash: read.hash });
+      return { hash: read.hash, stamp, trusted: same && trusted };
+    }
+  }
+  return { hash: sha(await readExportFile(abs)), stamp: null, trusted: false };
+}
+
+/**
+ * What a fingerprint pass saw of each file, by project path: the stamp it was looked at with, and whether that stamp
+ * stands for the file's bytes (statTrusted when it was looked at, read without changing).
+ */
+export type InventoryStamps = Map<string, { stamp: string | null; trusted: boolean }>;
+
+/**
+ * Whether the project changed between two fingerprint passes: its fingerprint, or the stamp of any file the first
+ * pass could trust. A write to such a file always changes its stamp (its change time moves on), so this also sees a
+ * file changed and put back as it was while the project was being copied, which the fingerprint alone cannot.
+ */
+export function inventoryChanged(before: { fingerprint: string; stamps: InventoryStamps }, after: { fingerprint: string; stamps: InventoryStamps }): boolean {
+  if (before.fingerprint !== after.fingerprint) return true;
+  for (const [rel, seen] of before.stamps) if (seen.trusted && after.stamps.get(rel)?.stamp !== seen.stamp) return true;
+  return false;
+}
+
+/**
+ * The project's fingerprint (projectFingerprint), with the SHA-256 of each file it read by project path (forward
+ * slashes, as the disk spells it): the regular files under src/, static/ and siteorigin/, and vercel.json. With
+ * `cache`, a file whose stamp shows it unchanged since an earlier pass is not read again (stableHash), and the cache
+ * then holds this pass's files only.
+ */
+export async function projectInventory(dir: string, opts: { cache?: ExportHashes; settleMs?: number } = {}): Promise<{ fingerprint: string; hashes: Map<string, string>; stamps: InventoryStamps }> {
+  const parts: string[] = [];
+  const hashes = new Map<string, string>();
+  const stamps: InventoryStamps = new Map();
+  const known = opts.cache ?? new Map();
+  const kept: ExportHashes = new Map();
+  const hashOf = async (abs: string) => (opts.cache ? stableHash(abs, known, kept, opts.settleMs ?? 3000) : { hash: sha(await readExportFile(abs)), stamp: null, trusted: false });
+  const files: Array<{ top: string; f: string }> = [];
+  for (const top of ['src', 'static', 'siteorigin']) for (const f of (await listFiles(join(dir, top))).filter((n) => !n.endsWith('.tmp')).sort()) files.push({ top, f });
+  // A few files at a time, so the disk's waits overlap (one at a time when each is read whole); the fingerprint is put
+  // together in the same order as ever.
+  const found = await inBatches(files, ({ top, f }) => hashOf(join(dir, top, f)), opts.cache ? 16 : 1);
+  files.forEach(({ top, f }, i) => {
+    const rel = `${top}/${f.split(sep).join('/')}`;
+    hashes.set(rel, found[i].hash);
+    stamps.set(rel, { stamp: found[i].stamp, trusted: found[i].trusted });
+    parts.push(`${top}/${f}:${found[i].hash}`);
+  });
   // Read only as a plain file: anything else there (a pipe, say) is no file of the website's.
-  const vercel = isPlainFile(join(dir, VERCEL_CONFIG_FILE)) ? await fs.readFile(join(dir, VERCEL_CONFIG_FILE)).catch(() => null) : null;
-  if (vercel) parts.push(`${VERCEL_CONFIG_FILE}:${sha(vercel)}`);
-  return sha(parts.join('\n'));
+  const vercel = isPlainFile(join(dir, VERCEL_CONFIG_FILE)) ? await readExportFile(join(dir, VERCEL_CONFIG_FILE)).catch(() => null) : null;
+  if (vercel) {
+    const hash = sha(vercel);
+    hashes.set(VERCEL_CONFIG_FILE, hash);
+    parts.push(`${VERCEL_CONFIG_FILE}:${hash}`);
+  }
+  if (opts.cache) {
+    opts.cache.clear();
+    for (const [abs, held] of kept) opts.cache.set(abs, held);
+  }
+  return { fingerprint: sha(parts.join('\n')), hashes, stamps };
 }
 
 /**
@@ -810,12 +1084,12 @@ export async function deliverVercelConfig(project: string, out: string, live: Pr
   // leaveOutDrafts lists in the manifest exactly the generated files the staged copy has.
   let manifest: { files?: Record<string, string> } = {};
   try {
-    manifest = JSON.parse((await readIfExists(join(project, MANIFEST_PATH))) ?? '{}');
+    manifest = JSON.parse((await readExportText(join(project, MANIFEST_PATH))) ?? '{}');
   } catch {
     return null;
   }
   if (!Object.hasOwn(manifest.files ?? {}, VERCEL_CONFIG_FILE) || !isPlainFile(join(project, VERCEL_CONFIG_FILE))) return null;
-  const config = await fs.readFile(join(project, VERCEL_CONFIG_FILE));
+  const config = await readExportFile(join(project, VERCEL_CONFIG_FILE));
   const there = join(out, VERCEL_CONFIG_FILE);
   if (existsSync(there)) return `static/${VERCEL_CONFIG_FILE} takes the place of the redirect rules SiteOrigin Builder writes for Vercel. Delete or rename it, or choose another host in Site settings under Redirects, then export again.`;
   await fs.writeFile(there, config);
@@ -968,7 +1242,7 @@ export function brokenSectionLinks(state: ProjectState): string[] {
  */
 export async function rivalHookStop(dir: string, state: ProjectState): Promise<string | null> {
   if (!routeLanguages(state).length) return null;
-  const manifest = JSON.parse((await readIfExists(join(dir, MANIFEST_PATH))) ?? '{}') as { files?: Record<string, string>; pending?: Record<string, string> };
+  const manifest = JSON.parse((await readExportText(join(dir, MANIFEST_PATH))) ?? '{}') as { files?: Record<string, string>; pending?: Record<string, string> };
   const claimed = Object.hasOwn(manifest.files ?? {}, SERVER_HOOK_FILE) || Object.hasOwn(manifest.pending ?? {}, SERVER_HOOK_FILE);
   const own = ownServerHook(dir, claimed);
   return own ? `Pages written in another language need SiteOrigin Builder's ${SERVER_HOOK_FILE}, and this project has a server hook of its own (${own}): SvelteKit runs only one of them. Rename or remove yours, then export again.` : null;
@@ -1234,7 +1508,7 @@ export function notFoundPageProblem(html: string | null): string | null {
 export async function readNotFoundPage(out: string): Promise<string | null> {
   const file = join(out, NOT_FOUND_FILE);
   const stat = await fs.lstat(file).catch(() => null);
-  return stat?.isFile() ? fs.readFile(file, 'utf8') : null;
+  return stat?.isFile() ? readExportFile(file, 'utf8') : null;
 }
 
 /** Is there a 404.html of the project's own in static/ that the website build would copy: a file, a link or a folder with files? */
@@ -1296,7 +1570,7 @@ export function notFoundHostNote(base: string, host: RedirectHost): string {
  * and writing it when there is no hook at all. generated-manifest.json then lists what the copy has.
  */
 export async function settleServerHook(dir: string, state: ProjectState): Promise<void> {
-  const manifest = JSON.parse((await readIfExists(join(dir, MANIFEST_PATH))) ?? '{}') as { files?: Record<string, string> };
+  const manifest = JSON.parse((await readExportText(join(dir, MANIFEST_PATH))) ?? '{}') as { files?: Record<string, string> };
   const files = (manifest.files ??= {});
   const own = ownServerHook(dir, Object.hasOwn(files, SERVER_HOOK_FILE));
   if (own && Object.hasOwn(files, SERVER_HOOK_FILE)) {

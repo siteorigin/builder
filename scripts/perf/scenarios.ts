@@ -8,9 +8,10 @@
  * it. `run` throws a PredicateError when the feature did not do its job, and the iteration fails: a scenario never
  * gets faster by doing less.
  */
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
-import { join } from 'node:path';
+import { existsSync, mkdirSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { dirname, join } from 'node:path';
 import type { ElectronApplication, FrameLocator, Page } from 'playwright';
+import { desktopInMain, type DesktopCall } from '../../tests/driver/desktop';
 import type { BuilderApi } from '../../src/shared/api';
 import type { PerfAttrs, PerfRecord } from '../../src/shared/perf';
 import type { ProjectState } from '../../src/shared/types';
@@ -761,7 +762,158 @@ export const chat: Scenario = {
   }
 };
 
-export const SCENARIOS: Scenario[] = [launch, open, edit, panels, chat];
+// ---------------------------------------------------------------------------
+// export, exportAgain
+// ---------------------------------------------------------------------------
+
+/** Every file under `dir`, as paths relative to it with forward slashes. */
+function filesUnder(dir: string, base = ''): string[] {
+  return readdirSync(join(dir, base), { withFileTypes: true }).flatMap((e) => {
+    const rel = base ? `${base}/${e.name}` : e.name;
+    return e.isDirectory() ? filesUnder(dir, rel) : e.isFile() ? [rel] : [];
+  });
+}
+
+/** Text as an HTML page shows it, for the few character references Svelte writes. */
+const htmlText = (html: string) => html.replace(/&quot;/g, '"').replace(/&#39;/g, "'").replace(/&lt;/g, '<').replace(/&gt;/g, '>').replace(/&amp;/g, '&');
+
+/** Markup and code only the editor's preview carries (controller.ts's own checks look for the same). */
+const EDITOR_ONLY = /data-so-(ctx|node|part)|siteorigin-bridge/;
+
+/** A span's start, on the trace's clock. */
+const startOf = (r: PerfRecord | undefined) => (r && typeof r.ms === 'number' ? r.t - r.ms : undefined);
+
+/**
+ * Export the website as a folder from the Export dialog, as a person does: open the dialog, choose Website files, pick
+ * a folder (the chooser answered through the driver), and wait for the dialog to say what it exported. `exportAgain`
+ * does it once more with nothing changed, into a second folder beside the first.
+ */
+function exportScenario(name: 'export' | 'exportAgain', after: 'open' | 'export'): Scenario {
+  return {
+    name,
+    after,
+    description: after === 'open' ? 'Export the website as a folder from the Export dialog, to the dialog saying it is done.' : 'Export the website again with nothing changed, into a second folder.',
+    async run(ctx) {
+      const { win, app, fixture } = ctx;
+      const parent = join(dirname(ctx.projectDir), 'exports');
+      if (name === 'export') {
+        rmSync(parent, { recursive: true, force: true });
+        mkdirSync(parent, { recursive: true });
+      }
+      const before = await win.evaluate(() => (globalThis as unknown as EditorPage).builder.project.snapshot());
+      expect(before, 'no project is open');
+      const earlier = new Set(before.recentExports.map((e) => e.path));
+      await win.getByRole('button', { name: 'Export', exact: true }).first().click();
+      const modal = win.locator('.modal');
+      const card = modal.getByRole('button', { name: /Website files, ready to upload/ });
+      await card.waitFor({ timeout: 30_000 });
+      for (let end = Date.now() + 30_000; (await card.getAttribute('aria-disabled')) === 'true'; ) {
+        expect(Date.now() < end, 'the Website files card never became available');
+        await sleep(100);
+      }
+      const answer: DesktopCall = { op: 'setAnswers', answers: [{ dialog: 'open', selection: 'folder', paths: [parent] }], request: null };
+      const set = (await app.evaluate(desktopInMain, answer)) as { error?: string };
+      if (set.error) throw new Error(`The folder chooser could not be answered: ${set.error}`);
+      // Opening the dialog may set off a workspace save: it lands before the export starts, not in it.
+      await sleep(Math.max(ctx.settleMs, WORKSPACE_SAVE_WAIT_MS));
+      await ctx.mark('scenario.start', { scenario: name });
+      await card.click();
+      // The dialog's result: a status when the export finished, an alert when it stopped.
+      const result = modal.locator('.export-result');
+      await result.first().waitFor({ timeout: SCENARIO_EXPORT_MS });
+      const said = (await result.first().innerText()).trim();
+      expect((await result.first().getAttribute('role')) === 'status' && said.startsWith(`Exported ${fixture.pages} pages`), `the export did not finish: ${said.split('\n')[0]}`);
+      if (fixture.entries) expect(said.includes(`${fixture.entries} entries`), `the export did not publish the fixture's ${fixture.entries} entries: ${said.split('\n')[0]}`);
+      const after = await win.evaluate(() => (globalThis as unknown as EditorPage).builder.project.snapshot());
+      expect(after, 'no project is open');
+      const made = after.recentExports[0];
+      expect(made && !earlier.has(made.path) && dirname(made.path) === parent, 'the export was not listed as a new folder in the chosen place');
+      expect(made.kind === 'site' && made.format === 'folder', `the export listed is a ${made.kind} ${made.format}, not a website folder`);
+      // Made from the revision it started on (recording the addresses it published may move the project on after).
+      expect(made.revision === before.revision, `the export was made from revision ${made.revision}, not the ${before.revision} it started on`);
+      // The website, on disk: every page and entry, the home page's hero, and nothing of the editor's.
+      expect(existsSync(made.path), 'the exported folder is not there');
+      const files = filesUnder(made.path);
+      const pagesBuilt = files.filter((f) => f === 'index.html' || f.endsWith('/index.html')).length;
+      expect(pagesBuilt >= fixture.pages + fixture.entries, `the website has ${pagesBuilt} pages, fewer than the fixture's ${fixture.pages} pages and ${fixture.entries} entries`);
+      const home = join(made.path, 'index.html');
+      expect(existsSync(home) && htmlText(readFileSync(home, 'utf8')).includes(fixture.heading), 'the exported home page does not show the home hero’s heading');
+      let bytes = 0;
+      for (const f of files) {
+        expect(!/(^|\/)(node_modules|\.siteorigin|\.svelte-kit)(\/|$)/.test(f), `the website carries ${f}`);
+        const body = readFileSync(join(made.path, f));
+        bytes += body.length;
+        if (/\.(html|js)$/.test(f)) expect(!EDITOR_ONLY.test(body.toString('utf8')), `the website carries editor-only markup in ${f}`);
+      }
+      await ctx.mark('export.output', { scenario: name, files: files.length, bytes });
+      await sleep(ctx.settleMs);
+      await ctx.mark('scenario.end', { scenario: name });
+      await ctx.waitTrace((t) => !!t.first('scenario.end', forScenario(name, 'renderer')) && !!t.first('scenario.end', forScenario(name, 'main')));
+      // The dialog closed, as a person leaves it, so a scenario after this one starts from the editor.
+      await modal.getByRole('button', { name: 'Close', exact: true }).last().click();
+      await modal.waitFor({ state: 'detached', timeout: 15_000 });
+    },
+    measure(trace) {
+      const m = new Collector();
+      const begin = m.need('scenario.start (main)', trace.first('scenario.start', forScenario(name, 'main')));
+      const end = m.need('scenario.end (main)', trace.first('scenario.end', forScenario(name, 'main'), begin?.t));
+      // This scenario's own export: never the one before or after it in the chain.
+      const total = m.need('controller.exportStatic', trace.first('controller.exportStatic', inProc('main'), begin?.t ?? Infinity, end?.t ?? -Infinity));
+      const from = startOf(total) ?? Infinity;
+      const to = total?.t ?? -Infinity;
+      const span = (n: string) => m.need(n, trace.first(n, inProc('main'), from, to));
+      const stage = span('export.stage');
+      const lock = span('export.lockHeld');
+      const tools = span('export.copyTools');
+      const build = span('export.build');
+      const publish = span('export.publish');
+      const cleanup = span('export.cleanup');
+      const gap = (metric: string, a: PerfRecord | undefined, b: PerfRecord | undefined) => {
+        const start = startOf(b);
+        if (a && start !== undefined) m.ms(metric, start - a.t);
+      };
+      m.span(`${name}.total`, total);
+      // Staging: the site's icons, then the snapshot taken under the writer lock, while no edit can land.
+      m.span(`${name}.stage`, stage);
+      m.span(`${name}.lockHeld`, lock);
+      // The checks and asset passes on the staged copy, from the snapshot to copying the website tools.
+      gap(`${name}.assets`, stage, tools);
+      m.span(`${name}.copyTools`, tools);
+      m.span(`${name}.build`, build);
+      // The built website's checks: its pages, its scripts, and its images cleaned again.
+      gap(`${name}.verify`, build, publish);
+      m.span(`${name}.publish`, publish);
+      // Recording the export and starting its preview.
+      gap(`${name}.finish`, publish, cleanup);
+      m.span(`${name}.cleanup`, cleanup);
+      m.count(`${name}.filesRead`, delta(total, 'export.filesRead'));
+      m.count(`${name}.bytesRead`, delta(total, 'export.bytesRead'), 'bytes');
+      m.count(`${name}.lockFilesRead`, delta(lock, 'export.filesRead'));
+      m.count(`${name}.lockBytesRead`, delta(lock, 'export.bytesRead'), 'bytes');
+      m.count(`${name}.fileWrites`, delta(total, 'fs.writes'));
+      const library = m.need('export.library', trace.first('export.library', inProc('main'), from, to));
+      if (library) {
+        m.count(`${name}.libraryFiles`, Number(library.attrs?.files));
+        m.count(`${name}.libraryBytes`, Number(library.attrs?.bytes), 'bytes');
+      }
+      const output = m.need('export.output', trace.first('export.output', forScenario(name, 'main'), to, end?.t));
+      if (output) {
+        m.count(`${name}.outputFiles`, Number(output.attrs?.files));
+        m.count(`${name}.outputBytes`, Number(output.attrs?.bytes), 'bytes');
+      }
+      m.ms(`${name}.mainStallMax`, total ? Math.max(0, ...trace.all('main.stall', inProc('main'), from, to).map((r) => r.ms ?? 0)) : undefined);
+      return m;
+    }
+  };
+}
+
+/** How long one export may take before the scenario stops waiting for the dialog to say it is done. */
+const SCENARIO_EXPORT_MS = 280_000;
+
+export const exportSite = exportScenario('export', 'open');
+export const exportAgain = exportScenario('exportAgain', 'export');
+
+export const SCENARIOS: Scenario[] = [launch, open, edit, panels, chat, exportSite, exportAgain];
 
 /**
  * The scenarios to run in one launch for those asked for: each with every one it follows, in the order of SCENARIOS

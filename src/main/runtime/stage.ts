@@ -4,9 +4,9 @@
  * previewed from a copy this app owns: its source, the editor's dev variants and its own copy of the installed tools.
  * Nothing here depends on Electron, so it is unit tested directly.
  */
-import { constants, existsSync, lstatSync, mkdtempSync, readlinkSync, realpathSync, promises as fs } from 'node:fs';
+import { existsSync, lstatSync, mkdtempSync, readlinkSync, realpathSync, promises as fs } from 'node:fs';
 import { dirname, isAbsolute, join, relative, sep } from 'node:path';
-import { copyProjectSource, inProjectSource, isProjectBrief, isSourcesFolder } from '../export';
+import { copyProjectSource, copyTree, inProjectSource, isProjectBrief, isSourcesFolder } from '../export';
 import { realFileInside } from '../../runtime/policy';
 import { ISOLATED_DIR } from '@shared/component-preview';
 
@@ -47,12 +47,8 @@ export async function createPreviewStage(project: string, root: string): Promise
  */
 export async function copyProjectTools(project: string, dest: string): Promise<void> {
   const from = await fs.realpath(join(project, 'node_modules'));
-  await fs.cp(from, join(dest, 'node_modules'), {
-    recursive: true,
-    verbatimSymlinks: true,
-    mode: constants.COPYFILE_FICLONE,
-    filter: (p) => !OWN_CACHES.has(relative(from, p).split(sep)[0]) && linkStaysWithin(from, p)
-  });
+  // An entry's own type says whether it is a link: only those are looked at again.
+  await copyTree(from, join(dest, 'node_modules'), (p, e) => !OWN_CACHES.has(relative(from, p).split(sep)[0]) && (!e.isSymbolicLink() || linkStaysWithin(from, p)));
 }
 
 /**
