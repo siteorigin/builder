@@ -10,7 +10,8 @@ import { join } from 'node:path';
 import type { EditOperation } from '@shared/ops';
 import type { ProjectState } from '@shared/types';
 import { createStarterState } from '@catalogue/starters';
-import { applyOperations, keepDeliveredAddresses, planHomeChange } from '@engine/apply';
+import { applyOperations, planHomeChange } from '@engine/apply';
+import { headerMenu, headerMenuRoom } from '@engine/tree';
 import { planPageAddress } from '@shared/page-address';
 import { PUBLISHED_FILE, publishedDocProblem, publishedPageAt, wasPublishedFor, withPublished } from '@shared/published';
 import { validateRoute } from '@shared/routes';
@@ -78,6 +79,8 @@ describe('old addresses of pages never exported', () => {
     const after = applyOperations(exported(withPage()), [{ type: 'page.setHome', pageId: 'pg_services', keepOldAddress: true }]).state;
     expect(redirects(after)).toEqual([{ from: '/services/', pageId: 'pg_services' }]);
     expect(planHomeChange(exported(withPage()), 'pg_services', true).kept).toBe('/services/');
+    // Declined, an exported address is not kept either.
+    expect(redirects(applyOperations(exported(withPage()), [{ type: 'page.setHome', pageId: 'pg_services', keepOldAddress: false }]).state)).toEqual([]);
   });
 });
 
@@ -93,6 +96,9 @@ describe('the record of exported addresses', () => {
     expect(wasPublishedFor({ published: second }, '/services/', 'pg_services')).toBe(true);
     expect(wasPublishedFor({ published: second }, '/what-we-do/', 'pg_services')).toBe(true);
     expect(Object.keys(second.pages)).toEqual([...Object.keys(second.pages)].sort());
+    // An address exported later for another page belongs to that page from then on.
+    const taken = applyOperations(moved, [{ type: 'page.create', pageId: 'pg_newsvc', title: 'New services', route: '/services/' }]).state;
+    expect(publishedPageAt({ published: withPublished(second, taken) }, '/services/')).toBe('pg_newsvc');
   });
 
   it('is a canonical document of its own, written once there is a record', () => {
@@ -103,18 +109,7 @@ describe('the record of exported addresses', () => {
     expect(publishedDocProblem(JSON.parse(docs.get(PUBLISHED_FILE)!))).toBeNull();
     expect(publishedDocProblem({ pages: { services: 'pg_services' } })).toMatch(/not an address/);
     expect(publishedDocProblem([])).toMatch(/not a record/);
-  });
-
-  it('keeps an address a page was delivered at while it moved during the export', () => {
-    const atExport = withPage();
-    const now = applyOperations(atExport, [{ type: 'page.update', pageId: 'pg_services', route: '/what-we-do/' }]).state;
-    // Not exported yet when it moved, so nothing was kept then.
-    expect(redirects(now)).toEqual([]);
-    const kept = keepDeliveredAddresses(now, [{ from: '/services/', pageId: 'pg_services' }]);
-    expect(redirects(kept)).toEqual([{ from: '/services/', pageId: 'pg_services' }]);
-    // An address another page has taken meanwhile is left to it.
-    const taken = applyOperations(now, [{ type: 'page.create', pageId: 'pg_other', title: 'Other', route: '/services/' }]).state;
-    expect(keepDeliveredAddresses(taken, [{ from: '/services/', pageId: 'pg_services' }])).toBe(taken);
+    expect(publishedDocProblem({ pages: { '/services/': 42 } })).toMatch(/not an address and a page ID/);
   });
 });
 
@@ -173,13 +168,66 @@ describe('recording an export in the project', () => {
     await again.close();
   });
 
-  it('keeps the address a page was delivered at when it moved while the export ran', async () => {
+  it('records the addresses the export delivered, not where pages have moved since, and writes nothing else', async () => {
     const { s } = await session();
     const delivered = s.state;
     expect((await s.apply({ operations: [{ type: 'page.update', pageId: 'pg_services', route: '/what-we-do/' }] }, { label: 'Change page address' })).ok).toBe(true);
-    expect(s.state.site.redirects).toBeUndefined();
+    const site = JSON.stringify(s.state.site);
     expect(await s.recordPublished(delivered)).toBeNull();
-    expect(s.state.site.redirects).toEqual([{ from: '/services/', pageId: 'pg_services' }]);
+    expect(wasPublishedFor(s.state, '/services/', 'pg_services')).toBe(true);
+    expect(publishedPageAt(s.state, '/what-we-do/')).toBeUndefined();
+    expect(JSON.stringify(s.state.site)).toBe(site);
+    // So the move stays undoable.
+    expect((await s.undo()).ok).toBe(true);
+    expect(s.state.pages.pg_services.route).toBe('/services/');
     await s.close();
+  });
+
+  it('keeps an export recorded while an AI request runs, however the request ends', async () => {
+    for (const end of ['complete', 'abort'] as const) {
+      const { s } = await session();
+      expect(await s.beginRun(`run_${end}`)).toBeNull();
+      expect((await s.apply({ operations: [{ type: 'site.update', name: 'Renamed by AI' }] }, { label: 'AI', source: 'ai', runId: `run_${end}`, history: false })).ok).toBe(true);
+      expect(await s.recordPublished(s.state)).toBeNull();
+      if (end === 'complete') {
+        expect(await s.completeRun('AI: Rename the site')).toBe(true);
+        // Undoing the request takes back its edit, never the export.
+        expect((await s.undo()).ok).toBe(true);
+      } else expect((await s.abortRun()).restored).toBe(true);
+      expect(s.state.site.name).toBe('Test Studio');
+      expect(wasPublishedFor(s.state, '/services/', 'pg_services')).toBe(true);
+      await s.close();
+    }
+  });
+
+  it('keeps the record out of a version saved after an export, so restoring it takes back no later export', async () => {
+    const { s } = await session();
+    expect(await s.recordPublished(s.state)).toBeNull();
+    const saved = await s.saveVersion('After the first export');
+    expect(saved.ok).toBe(true);
+    expect((await s.apply({ operations: [{ type: 'page.create', pageId: 'pg_team0001', title: 'Team' }] }, { label: 'Add page' })).ok).toBe(true);
+    expect(await s.recordPublished(s.state)).toBeNull();
+    expect((await s.restoreVersion(saved.id!, s.revision)).ok).toBe(true);
+    expect(Object.hasOwn(s.state.pages, 'pg_team0001')).toBe(false);
+    expect(wasPublishedFor(s.state, '/team/', 'pg_team0001')).toBe(true);
+    await s.close();
+  });
+});
+
+describe('a full header menu', () => {
+  it('is full once it holds as many links as it takes, its design’s defaults counted, as adding a page finds it', () => {
+    const s = fresh();
+    const menu = headerMenu(s)!;
+    const links = (menu.node.props.links ?? menu.schema.default) as Array<Record<string, unknown>>;
+    expect(menu.schema.max).toBeGreaterThan(links.length);
+    expect(headerMenuRoom(s)).toEqual({ links, max: menu.schema.max, full: false });
+    // Filled to the cap, a submenu link counted like any other.
+    const filled = structuredClone(s);
+    const node = headerMenu(filled)!.node;
+    node.props.links = Array.from({ length: menu.schema.max! }, (_, i) => ({ ...links[0], id: `it_${i}`, ...(i === 1 ? { sub: true } : {}) }));
+    expect(headerMenuRoom(filled)?.full).toBe(true);
+    const r = applyOperations(filled, [{ type: 'page.create', title: 'Extra', addToNavigation: true }]);
+    expect(r.results[0].addedToNavigation).toBe(false);
+    expect(applyOperations(s, [{ type: 'page.create', title: 'Extra', addToNavigation: true }]).results[0].addedToNavigation).toBe(true);
   });
 });

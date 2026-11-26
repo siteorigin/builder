@@ -13,7 +13,7 @@ import { DraftInput, keepRefusedText, openSection, rovingKeys, useMenu } from '.
 import { isImeComposing } from '../lib/ime';
 import { goToShellPart, openArchiveLayout, openLayout, selectPage, setMode } from '../lib/actions';
 import { visitAddress } from './Canvas';
-import { headerMenu as findHeaderMenu, headerMenuSlotUnder } from '@engine/tree';
+import { headerMenu as findHeaderMenu, headerMenuRoom, headerMenuSlotUnder } from '@engine/tree';
 import { isDraftPage } from '@generator/index';
 import { isArticleDate, pageArticle, todayArticleDate } from '@shared/articles';
 import { catalogueComponent } from '@catalogue/index';
@@ -588,8 +588,9 @@ export function PagesPanel() {
   const slotUnder = parent && menuOf ? headerMenuSlotUnder(st, menuItems, parent.id) : null;
   const navNote = parent && slotUnder?.sub ? (slotUnder.under ? `under ${slotUnder.under}` : `in the submenu of ${parent.title}’s link`) : null;
   // A menu holding as many links as it takes has no room for the new page: shown before it is added, not after.
-  const menuMax = menuOf?.schema.max;
-  const menuFull = menuMax !== undefined && menuItems.length >= menuMax;
+  const room = headerMenuRoom(st);
+  const menuMax = room?.max;
+  const menuFull = !!room?.full;
   /** Select the shared header and land on its navigation list, ready to edit. */
   const editMenu = () => {
     if (!headerMenu) return;

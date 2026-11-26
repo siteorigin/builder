@@ -173,6 +173,8 @@ describe('moving a page', () => {
     let s = lookbook();
     const about = byTitle(s, 'About').id;
     const contact = byTitle(s, 'Contact').id;
+    // The spare address was exported for About once: only the batch's start decides it was never served now.
+    s = { ...s, published: { pages: { ...s.published!.pages, '/swap/': about } } };
     // Swapping two addresses through a spare one: both old addresses are in use again, and the spare was never served.
     const swap = applyOperations(s, [
       { type: 'page.update', pageId: about, route: '/swap/' },
@@ -191,8 +193,10 @@ describe('moving a page', () => {
     const made = applyOperations(fresh(), [{ type: 'page.create', pageId: 'pg_team0001', title: 'Team' }, { type: 'page.update', pageId: 'pg_team0001', route: '/about/team/' }]).state;
     expect(made.pages.pg_team0001.route).toBe('/about/team/');
     expect(made.site.redirects).toBeUndefined();
-    // A page that passed through an address keeps nothing there to stop a later move in the same edit.
-    const s = lookbook();
+    // A page that passed through an address keeps nothing there to stop a later move in the same edit, even one an
+    // export once had it at.
+    const exportedOnce = lookbook();
+    const s = { ...exportedOnce, published: { pages: { ...exportedOnce.published!.pages, '/work/kitchens/': byTitle(exportedOnce, 'About').id } } };
     const through = applyOperations(s, [
       { type: 'page.update', pageId: byTitle(s, 'About').id, route: '/work/kitchens/' },
       { type: 'page.update', pageId: byTitle(s, 'About').id, route: '/about-us/' },

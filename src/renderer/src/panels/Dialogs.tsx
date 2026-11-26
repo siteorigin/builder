@@ -1494,7 +1494,7 @@ export function SetHomeModal({ pageId }: { pageId: string }) {
         ) : (
           <p className="page-dialog-option-note">
             <span>
-              The website hasn’t been exported with <span className="page-dialog-address">{vacated}</span> yet, so no bookmark or link from another site leads there, and nothing is kept.
+              The website hasn’t been exported with “{page.title}” at <span className="page-dialog-address">{vacated}</span>, so no old address is kept for it there.
             </span>
           </p>
         )}

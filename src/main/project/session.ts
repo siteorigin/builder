@@ -14,7 +14,7 @@ import type { AiTurnReview, ConflictChoice, FileText, RestoreVersionResult, Save
 import { validateOperation } from '@shared/ops';
 import { choicesLost } from '@shared/variants';
 import { AXES_FORMAT, formatOf } from '@shared/migrations';
-import { applyOperations, assetUsages, captureClipboard, convertEditedDesign, keepDeliveredAddresses, type Clipboard } from '@engine/apply';
+import { applyOperations, assetUsages, captureClipboard, convertEditedDesign, type Clipboard } from '@engine/apply';
 import { clone } from '@engine/install';
 import { listThemes, themePinProblem } from '@catalogue/index';
 import { anchorsInUse, displayName, EngineError } from '@engine/tree';
@@ -2432,9 +2432,8 @@ export class ProjectSession extends EventEmitter {
 
   /**
    * Record the page addresses an export delivered (`live`, the published project it was built from), so a page that
-   * moves from one keeps it working (see shared/published). Written outside History: no undo takes back an export. A
-   * page that moved while the export ran keeps the address it was delivered at too. Null once it is recorded, or the
-   * reason it could not be.
+   * moves from one keeps it working (see shared/published). Only the record is written, outside History: no undo, and
+   * no AI request running meanwhile, takes back an export. Null once it is recorded, or the reason it could not be.
    */
   recordPublished(live: Pick<ProjectState, 'pages'>): Promise<string | null> {
     return this.serialize(async () => {
@@ -2442,11 +2441,22 @@ export class ProjectSession extends EventEmitter {
       if (!published) return null;
       const blocked = await this.writeBlocked();
       if (blocked) return blocked.error?.message ?? 'The project can’t be saved right now.';
-      const moved = Object.values(live.pages).flatMap((p) => (Object.hasOwn(this.state.pages, p.id) && this.state.pages[p.id].route !== p.route ? [{ from: p.route, pageId: p.id }] : []));
-      const next = keepDeliveredAddresses(withRecord(this.state, published), moved);
+      // An AI request running now started before the record changed: the record is part of where it started, so
+      // finishing, undoing or reverting the request never adds or takes back the export.
+      const run = this.activeRun;
+      const started = run ? { before: run.before.get(PUBLISHED_FILE), state: run.beforeState } : null;
+      if (run) {
+        run.before.set(PUBLISHED_FILE, toJson(published));
+        run.beforeState = withRecord(run.beforeState, published);
+      }
       try {
-        await this.persist(next, { label: 'Record exported addresses', history: false, source: 'system' });
+        await this.persist(withRecord(this.state, published), { label: 'Record exported addresses', history: false, source: 'system' });
       } catch (e) {
+        if (run && started) {
+          if (started.before === undefined) run.before.delete(PUBLISHED_FILE);
+          else run.before.set(PUBLISHED_FILE, started.before);
+          run.beforeState = started.state;
+        }
         return e instanceof Error && e.message ? e.message : String(e);
       }
       return null;
@@ -4301,8 +4311,7 @@ export class ProjectSession extends EventEmitter {
         for (const p of touched) if ((await this.diskContent(p)) !== (this.docs.get(p) ?? null)) changedOutside.push(p);
         if (touched.length && !changedOutside.length) {
           try {
-            // What was exported while the run worked stays recorded: reverting the run takes back its edits, not the export.
-            await this.persist(withRecord(run.beforeState, this.state.published), { label: 'Revert AI changes', history: false, source: 'system' });
+            await this.persist(run.beforeState, { label: 'Revert AI changes', history: false, source: 'system' });
           } catch (e) {
             if (!(e instanceof DiskConflictError)) throw e;
             changedOutside.push(e.path);

@@ -124,7 +124,7 @@ describe('incremental generation (#183)', () => {
     // new and a removed page.
     s = apply(s, { type: 'component.updateSource', definitionId: codeId, source: s.components[codeId].source!.replace('Open', 'Opening') } as EditOperation);
     check(s, cache);
-    s = exported(apply(s, { type: 'page.update', pageId: about, route: '/about-us/' }));
+    s = exported(apply(exported(s), { type: 'page.update', pageId: about, route: '/about-us/' }));
     check(s, cache);
     expect(generateProject(s).has('src/routes/about-us/+page.svelte')).toBe(true);
     s = apply(s, { type: 'page.setHome', pageId: about });

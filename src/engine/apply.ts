@@ -73,7 +73,7 @@ import { pageLinkUses, type PageLinkUse } from './page-links';
 import { batchTagProblem, insertsInline, tagKindProblem } from './semantic-tags';
 import { dropHeaderLinks, followingSlot, followsPageOrder, keepHeaderOrder, menuBefore } from './header-order';
 import { collectionSourceProblems, instanceSetListSource, loopNode, nodeSetRepeatSource, showsCollection } from './collection-sources';
-import { EngineError, RESERVED_ANCHORS, anchorCapable, anchorsInUse, childLists, codePlacesClass, displayName, enclosingRepeatProp, fail, findParent, getNode, getTree, headerMenu, headerMenuSlot, instancesOf, itemLinkPairs, settledRoot, subtreeIds, allTrees, type ParentInfo } from './tree';
+import { EngineError, RESERVED_ANCHORS, anchorCapable, anchorsInUse, childLists, codePlacesClass, displayName, enclosingRepeatProp, fail, findParent, getNode, getTree, headerMenu, headerMenuRoom, headerMenuSlot, instancesOf, itemLinkPairs, settledRoot, subtreeIds, allTrees, type ParentInfo } from './tree';
 import { definitionRole } from './insert-role';
 import { itemStyleRecords, liveItemStyles, placementItems, repeatedPartList } from '@shared/item-styles';
 import { followText, joinedLines } from '@shared/contact-links';
@@ -985,8 +985,8 @@ function addToHeaderNavigation(state: ProjectState, page: PageDoc): boolean {
   const menu = headerMenu(state);
   if (!menu) return false;
   const { node, schema } = menu;
+  if (headerMenuRoom(state)?.full) return false;
   const list = (node.props.links ?? structuredClone(schema.default)) as Array<Record<string, unknown>>;
-  if (schema.max !== undefined && list.length >= schema.max) return false;
   // A page inside another goes under the link to that page, when the menu has one and groups links.
   const slot = headerMenuSlot(state, list, page.id);
   // A menu that follows the pages takes it at its place in their order, at that level.
@@ -1397,19 +1397,6 @@ function pageSetHome(state: ProjectState, pageId: string, keepOldAddress: boolea
     moved.push({ pageId: old.id, from, to: old.route });
   }
   return keep ? { moved, kept: vacated } : { moved };
-}
-
-/**
- * `state` with the addresses an export delivered for pages that have moved since (while the export ran) kept working
- * for them, as a move would have kept them had the export finished first. An address a page, an old address kept
- * working or a collection now has is left to it.
- */
-export function keepDeliveredAddresses(state: ProjectState, delivered: ReadonlyArray<{ from: string; pageId: string }>): ProjectState {
-  const used = new Set(Object.values(state.pages).map((p) => p.route.toLowerCase()));
-  const kept = delivered.filter((d) => Object.hasOwn(state.pages, d.pageId) && !used.has(d.from.toLowerCase()) && redirectIndex(state, d.from) < 0 && !collectionRouteOwner(state, d.from) && !validateRoute(d.from) && d.from !== '/');
-  if (!kept.length) return state;
-  const site = { ...state.site, redirects: [...(Array.isArray(state.site.redirects) ? state.site.redirects : []), ...kept.map((d) => ({ from: d.from, pageId: d.pageId }))] };
-  return { ...state, site };
 }
 
 /** What making `pageId` Home would change, without changing anything. */

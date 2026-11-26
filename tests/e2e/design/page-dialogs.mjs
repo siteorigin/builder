@@ -204,6 +204,9 @@ await shot('delete-home', 'select', { themes: BOTH });
 await dismiss();
 
 // ---- Make home page ----
+// Exported first: the dialog offers to keep an old address only for one the website was published with (#890).
+const exported = await win.evaluate((dest) => window.builderTest.exportStatic(dest), join(WORK, 'export'));
+if (!exported.ok) throw new Error(`export failed: ${exported.message}`);
 await open(about, 'Make home page…');
 await shot('set-home', 'input[type="checkbox"]', { themes: BOTH });
 await win.locator('.modal input[type="checkbox"]').uncheck();

@@ -50,6 +50,7 @@ import { showsPart } from '@shared/page-shell';
 import { pageParents, pageRows, pagesWithin, planRouteMove, routeLeaf } from '@shared/page-tree';
 import { validateRoute } from '@shared/routes';
 import { planPageAddress } from '@shared/page-address';
+import { wasPublishedFor } from '@shared/published';
 import { isVideoContract, videoFieldNotes, type VideoFieldNotes } from '@shared/video';
 import { isArticleDate, pageArticle, todayArticleDate } from '@shared/articles';
 import { findEntry } from '@shared/collections';
@@ -3194,7 +3195,10 @@ function PageSettings({ page, state }: { page: PageDoc; state: ProjectState }) {
         <Field
           label="Address"
           error={isHome ? null : addressError}
-          hint={isHome ? 'The home page is always at /.' : `Links to this page update automatically when you change it. Once the website has been exported, its old address keeps working too.${inside.length ? ` The ${inside.length === 1 ? 'page' : `${inside.length} pages`} inside it move${inside.length === 1 ? 's' : ''} with it.` : ''}`}
+          hint={
+            isHome
+              ? 'The home page is always at /.'
+              : `Links to this page update automatically when you change it${wasPublishedFor(state, page.route, page.id) ? ', and its old address keeps working' : `. The website hasn’t been exported with it at ${page.route}, so no old address is kept`}.${inside.length ? ` The ${inside.length === 1 ? 'page' : `${inside.length} pages`} inside it move${inside.length === 1 ? 's' : ''} with it.` : ''}`}
         >
           {isHome ? (
             <input className="input" value="/" readOnly aria-label="Page address" />
@@ -3202,7 +3206,8 @@ function PageSettings({ page, state }: { page: PageDoc; state: ProjectState }) {
             <DraftInput
               value={page.route}
               keep={`page:${page.id}:route`}
-              keepWhile={pageAlive(page.id)}
+              // Kept while the page can still take an address: not once it is Home, which is always at "/".
+              keepWhile={() => pageAlive(page.id)() && useStore.getState().snapshot?.state.site.homePageId !== page.id}
               check={(v) => {
                 const plan = planPageAddress(state, page.id, v);
                 return 'error' in plan ? { message: plan.error } : null;
