@@ -116,9 +116,11 @@ describe('links to a collection index', () => {
     expect(() => normalizeLink({ type: 'collection', target: 'team' }, team, 'Link')).toThrow(/Team collection has no index on the website/);
     const linked = linkFirst(blog(), INDEX);
     expect(() => applyOperations(linked, [{ type: 'collection.update', collectionId: 'posts', pages: { detail: true, archive: false } }])).toThrow(/1 link goes to the Posts index \(in Header\)/);
-    // A post's own text keeps the collection itself, so it never holds the index on.
+    // A post's text holding one holds it on too: the post could not be saved with a link to no index.
     const own = run(blog(), { type: 'entry.create', collectionId: 'posts', entryId: 'en_one1', title: 'One', body: ['See [all posts](collection:posts).'] });
-    expect(run(own, { type: 'collection.update', collectionId: 'posts', pages: { detail: true, archive: false } }).collections.posts.settings.pages).toEqual({ detail: true, archive: false });
+    expect(() => applyOperations(own, [{ type: 'collection.update', collectionId: 'posts', pages: { detail: true, archive: false } }])).toThrow(/1 link goes to the Posts index \(in One \(Posts\)\)/);
+    // Moving it keeps its index, so nothing holds that back.
+    expect(run(linked, { type: 'collection.update', collectionId: 'posts', route: '/journal/' }).collections.posts.settings.route).toBe('/journal/');
   });
 
   it('refuses pasting a copied link to a collection that has gone since', () => {
@@ -130,8 +132,14 @@ describe('links to a collection index', () => {
     expect((linked.pages[home.id].nodes[hero.id] as { props: Record<string, unknown> }).props.primaryLink).toEqual(INDEX);
     const clip = captureClipboard(linked, home.id, hero.id);
     expect(clip.collections).toEqual({ posts: 'Posts' });
-    const removed = run(linked, { ...op, value: { type: 'none', target: '' } } as EditOperation, { type: 'collection.remove', collectionId: 'posts' });
-    expect(() => applyOperations(removed, [{ type: 'node.paste', clipboardId: clip.id, toOwner: { kind: 'page', id: home.id } }], { clipboards: [clip] })).toThrow(/links to the Posts index, which has been removed/);
+    const unlinked = run(linked, { ...op, value: { type: 'none', target: '' } } as EditOperation);
+    const paste: EditOperation = { type: 'node.paste', clipboardId: clip.id, toOwner: { kind: 'page', id: home.id } };
+    expect(applyOperations(unlinked, [paste], { clipboards: [clip] }).state).toBeTruthy();
+    const removed = run(unlinked, { type: 'collection.remove', collectionId: 'posts' });
+    expect(() => applyOperations(removed, [paste], { clipboards: [clip] })).toThrow(/links to the Posts index, which has been removed/);
+    // Its index turned off since is no place to paste a link to either.
+    const off = run(unlinked, { type: 'collection.update', collectionId: 'posts', pages: { detail: true, archive: false } });
+    expect(() => applyOperations(off, [paste], { clipboards: [clip] })).toThrow(/links to the Posts index/);
   });
 
   it('reports a link to a collection that is gone, as a hand edit leaves it', () => {
@@ -161,7 +169,8 @@ describe('links to a collection index', () => {
   });
 
   it('leaves a full menu as it is, and still starts the blog', () => {
-    let s = site();
+    const start = site();
+    let s = start;
     const menu = headerMenu(s)!;
     const max = menu.schema.max!;
     expect(max).toBeGreaterThan(0);
@@ -171,6 +180,11 @@ describe('links to a collection index', () => {
     expect(r.results[0]).toMatchObject({ collectionId: 'posts', addedToNavigation: false });
     expect(menuLinks(r.state)).toEqual(menuLinks(s));
     expect(r.state.collections).toHaveProperty('posts');
+    // With room for exactly one more, the blog takes it.
+    const room = run(start, { type: 'instance.setProp', owner: { kind: 'shell', id: 'header' }, nodeId: menu.node.id, prop: 'links', value: full.slice(1) });
+    const fits = applyOperations(room, [{ type: 'collection.create', collectionId: 'posts', addToNavigation: true }]);
+    expect(fits.results[0]).toMatchObject({ addedToNavigation: true });
+    expect(menuLinks(fits.state)).toHaveLength(max);
   });
 
   it('lists the indexes a link can go to, and starts the blog without a menu link unless asked', () => {

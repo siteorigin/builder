@@ -320,14 +320,6 @@ export function encodeMailto(target: string): string {
   return `${encoded}?${query}`;
 }
 
-/** Each state's index addresses, worked out once: a state never changes while the site is generated from it. */
-const indexRoutes = new WeakMap<ProjectState, Record<string, string>>();
-function indexRoutesOf(state: ProjectState): Record<string, string> {
-  let routes = indexRoutes.get(state);
-  if (!routes) indexRoutes.set(state, (routes = collectionIndexRoutes(state)));
-  return routes;
-}
-
 /**
  * A link as the site's components take it: where it goes, whether it opens a new tab, a document's download name,
  * and `rel` (the whole attribute, security tokens first) only when the author declared a relationship, so a link
@@ -375,7 +367,7 @@ export function resolveLink(link: LinkValue | null | undefined, ctx: ResolveCont
     case 'collection': {
       // The first page of the collection's list, at its current address: one the website has no index for shows its
       // words alone, as a link to an entry it does not publish does.
-      const routes = derived(ctx.state, 'collectionIndexRoutes', indexRoutesOf);
+      const routes = derived(ctx.state, 'collectionIndexRoutes', collectionIndexRoutes);
       if (!Object.hasOwn(routes, link.target)) return null;
       href = routes[link.target];
       break;

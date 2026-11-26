@@ -494,10 +494,10 @@ export function collectionUpdate(state: ProjectState, op: Op<'collection.update'
   const was = { route: c.settings.route, detail: hasDetailPages(c.settings), archive: hasArchivePages(c.settings) };
   const pages = op.pages !== undefined ? pagesOf(op.pages) : { detail: was.detail, archive: was.archive };
   const route = op.route !== undefined && op.route !== c.settings.route ? prefixRoute(op.route) : was.route;
-  // Its index can't go while a page, the header or footer, or a design links to it: text edited on the page keeps a link
-  // only by its address, so one shown as words alone meanwhile would be lost. A post's text keeps the collection itself.
+  // Its index can't go while anything links to it: text edited on the page keeps a link only by its address, so one
+  // shown as words alone meanwhile would be lost, and a post's text holding one could no longer be saved.
   if (was.archive && !pages.archive) {
-    const held = collectionLinkUses(state, c.settings.id).filter((u) => u.owner.kind !== 'entry');
+    const held = collectionLinkUses(state, c.settings.id);
     if (held.length)
       fail(`${held.length} link${held.length === 1 ? '' : 's'} go${held.length === 1 ? 'es' : ''} to the ${name} index (in ${[...new Set(held.map((u) => u.where))].slice(0, 3).join(', ')}). Point ${held.length === 1 ? 'it' : 'them'} elsewhere before turning the index off.`);
   }

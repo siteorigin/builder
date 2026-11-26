@@ -49,6 +49,7 @@ import { checkCanonicalUrl } from '@shared/seo';
 import { isWebMcpForm, toolOverrides, WEBMCP_DESCRIPTION_MAX, WEBMCP_TYPED_NAME_MAX, webMcpToolName } from '@shared/webmcp';
 import { feedRowFields } from '@shared/entry-feed';
 import { POSTS_COLLECTION_ID, archiveRouteOwner, collectionRouteOwner, findEntry, hasArchivePages, siteEntries } from '@shared/collections';
+import { collectionIndexRoutes } from '@shared/archives';
 import { loopText, redirectTargetProblem, resolveRedirects } from '@shared/redirects';
 import { finishSourceSync, sourceRemove, sourceUpsert, type SourceSyncGrant } from './sources';
 import { collectionCreate, collectionRemove, collectionUpdate, entryAddressesInUse, entryCreate, entryRemove, entryReorder, entryUpdate, refuseSyncedHolders, syncedEntryChange, type EntryAddress } from './collections';
@@ -1003,13 +1004,13 @@ function addIndexToHeaderNavigation(state: ProjectState, collectionId: string): 
   const c = own(state.collections, collectionId);
   if (!menu || !c || !hasArchivePages(c.settings)) return false;
   const { node, schema } = menu;
-  // A menu filled from somewhere else (a connected list) has no links of its own to add to.
-  if (isBinding(node.props.links)) return false;
+  // A menu filled from somewhere else (a binding, or a list connected to a collection) shows no links of its own.
+  if (isBinding(node.props.links) || (node.listSources && Object.hasOwn(node.listSources, 'links'))) return false;
   const list = (node.props.links ?? structuredClone(schema.default)) as Array<Record<string, unknown>>;
   if (!Array.isArray(list) || (schema.max !== undefined && list.length >= schema.max)) return false;
   const label = collectionId === POSTS_COLLECTION_ID ? 'Blog' : c.settings.name;
   // A top-level link, whatever a new row of a menu that groups links starts as.
-  const top = Object.hasOwn(schema.fields, 'sub') ? { sub: false } : {};
+  const top = schema.fields.sub?.type === 'boolean' ? { sub: false } : {};
   node.props.links = [...list, normalizeItem(schema, { label, link: { type: 'collection', target: collectionId }, ...top }, state, schema.label)];
   return true;
 }
@@ -2167,7 +2168,9 @@ function nodePaste(state: ProjectState, op: Op<'node.paste'>, clip: Clipboard | 
   for (const [id, title] of Object.entries(clip.pages)) if (!own(state.pages, id)) gone(`links to the "${title}" page`);
   for (const [id, name] of Object.entries(clip.assets)) if (!own(state.assets.assets, id)) gone(`shows the image "${name}"`);
   for (const [id, name] of Object.entries(clip.documents ?? {})) if (own(state.assets.assets, id)?.kind !== 'document') gone(`links to the document "${name}"`);
-  for (const [id, name] of Object.entries(clip.collections ?? {})) if (!own(state.collections ?? {}, id)) gone(`links to the ${name} index`);
+  // An index turned off since would show the pasted link as words alone, which the next edit of them on the page drops.
+  const indexes = clip.collections ? collectionIndexRoutes(state) : {};
+  for (const [id, name] of Object.entries(clip.collections ?? {})) if (!Object.hasOwn(indexes, id)) gone(`links to the ${name} index`);
   // Variant options and parts removed since copying are dropped, as they were from every live placement;
   // only then is what remains checked for site styles.
   const tree = clone(clip.tree);
