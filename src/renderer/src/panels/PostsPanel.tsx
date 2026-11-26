@@ -16,15 +16,16 @@ import { openLayout } from '../lib/actions';
 import type { EditOperation } from '@shared/ops';
 import { POSTS_COLLECTION_ID, collectionKind, findEntry, hasDetailPages, orderedEntries } from '@shared/collections';
 import type { CollectionKind, ProjectState } from '@shared/types';
-import { flushOpenPost, saveOpenPost } from '../lib/post-draft';
+import { saveOpenPost } from '../lib/post-draft';
 
 /**
  * Save the post open in the writer before another takes its place. False, said in a notice, when its text could not
  * be saved: the writer keeps it, with what to do about it above the text.
  */
 async function openSaved(): Promise<boolean> {
-  if (await flushOpenPost()) return true;
-  toast('The post you are writing has text that is not saved yet. See the note above its text.', 'error');
+  // Its fields as well as its text (#675): a record's form may hold a value that could not be saved.
+  if (await saveOpenPost()) return true;
+  toast('The entry you are writing has a change that is not saved yet. See the note beside it.', 'error');
   return false;
 }
 
@@ -254,6 +255,10 @@ export function PostsPanel() {
   const [managing, setManaging] = useState(false);
   const [schema, setSchema] = useState<string | null>(null);
   const [addingCollection, setAddingCollection] = useState(false);
+  /** The collection the new-entry form was opened for: what it creates in, whatever the list shows by then. */
+  const addTarget = useRef<{ collectionId: string; workspaceKey: string | undefined } | null>(null);
+  /** Counts each choice of what the panel shows, so one still saving the open entry never undoes a later one. */
+  const navigation = useRef(0);
   const importMenu = useMenu();
   const findInput = useRef<HTMLInputElement>(null);
   const addInput = useRef<HTMLInputElement>(null);
@@ -302,8 +307,12 @@ export function PostsPanel() {
   /** Show another collection's entries, once the entry being written is saved; the writer lets go of it. */
   const choose = async (id: string) => {
     if (id === collection?.settings.id) return;
+    const seq = ++navigation.current;
+    const workspaceKey = getState().snapshot?.workspaceKey;
     if (post && post.collectionId !== id) {
-      if (!(await saveOpenPost())) return void toast(`The ${entryNounLower(state.collections[post.collectionId])} you are writing has a change that is not saved yet. See the note beside it.`, 'error');
+      if (!(await openSaved())) return;
+      // Something else chosen meanwhile, or another project opened: that choice stands.
+      if (seq !== navigation.current || getState().snapshot?.workspaceKey !== workspaceKey) return;
       setState({ post: null, postView: 'write', postReveal: null });
     }
     setCollectionId(id);
@@ -322,19 +331,23 @@ export function PostsPanel() {
   const open = async (entryId: string) => {
     if (!collection) return;
     if (post?.entryId === entryId && post.collectionId === collection.settings.id) return setState({ postView: 'write' });
+    const seq = ++navigation.current;
+    const workspaceKey = getState().snapshot?.workspaceKey;
     if (!(await openSaved())) return;
+    if (seq !== navigation.current || getState().snapshot?.workspaceKey !== workspaceKey) return;
     setState({ post: { collectionId: collection.settings.id, entryId }, postView: 'write', postReveal: null });
   };
 
   const create = async () => {
     const t = title.trim();
-    if (!t || busy || !collection) return;
+    const to = addTarget.current;
+    if (!t || busy || !to) return;
     if (!(await openSaved())) return;
     const s = getState().snapshot;
     if (!s) return;
-    const target = collection.settings.id;
-    // Only ever into the collection it was typed for: one gone meanwhile (an Undo) keeps the title here.
-    if (!Object.hasOwn(s.state.collections, target)) return void toast(`The ${collection.settings.name} collection is no longer in the project.`, 'error');
+    const target = to.collectionId;
+    // Only ever into the collection it was typed for: one gone meanwhile (an Undo), or another project, keeps the title.
+    if (s.workspaceKey !== to.workspaceKey || !Object.hasOwn(s.state.collections, target)) return void toast('The collection this was typed for is no longer in the project.', 'error');
     const { ops, ref } = newPostOps(s.state, target, t);
     setBusy(true);
     const r = await commitOps(ops, `New ${noun}`);
@@ -452,6 +465,7 @@ export function PostsPanel() {
             aria-expanded={adding}
             aria-controls={adding ? `${uid}-add` : undefined}
             onClick={() => {
+              addTarget.current = { collectionId: collection.settings.id, workspaceKey: snap.workspaceKey };
               setAdding((a) => !a);
               requestAnimationFrame(() => addInput.current?.focus());
             }}
@@ -475,7 +489,7 @@ export function PostsPanel() {
               </button>
               {current && (
                 <span className="content-collection-actions">
-                  <button className="icon-btn sm" aria-label={`${c.name} settings`} title="Fields, groupings and pages" data-testid={`collection-settings-${c.id}`} onClick={() => setSchema(c.id)}>
+                  <button className="icon-btn sm" aria-label={`${c.name} settings`} title="Fields, groupings and pages" data-testid={`collection-settings-${c.id}`} onClick={() => void openSaved().then((ok) => ok && setSchema(c.id))}>
                     <Settings2 />
                   </button>
                   <button
@@ -597,7 +611,7 @@ export function PostsPanel() {
             <Newspaper aria-hidden="true" />
             <p>{isBlog ? 'Write articles, news and updates. Each post gets its own page on the site, in the site’s header and footer.' : `${collection.settings.name} has no entries yet.`}</p>
             {!readOnly && (
-              <button className="btn btn-sm btn-primary" onClick={() => (setAdding(true), requestAnimationFrame(() => addInput.current?.focus()))}>
+              <button className="btn btn-sm btn-primary" onClick={() => ((addTarget.current = { collectionId: collection.settings.id, workspaceKey: snap.workspaceKey }), setAdding(true), requestAnimationFrame(() => addInput.current?.focus()))}>
                 <Plus aria-hidden="true" /> {isBlog ? 'Write the first post' : `Add the first ${noun}`}
               </button>
             )}

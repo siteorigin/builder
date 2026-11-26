@@ -12,7 +12,7 @@ import { newId } from '@shared/ids';
 import { normalizeRichText } from '@engine/values';
 import { EngineError } from '@engine/tree';
 import { sortAssets } from '@shared/asset-order';
-import { applyOps, commitIfUnchanged, commitOps, getState, markDraft, projectHistory, setState, toast, useStore, type CheckedOutcome, type PostRef } from '../store';
+import { applyOps, applyWith, commitIfUnchanged, commitOps, getState, markDraft, projectHistory, setState, toast, useStore, type CheckedOutcome, type PendingEdit, type PostRef } from '../store';
 import { DraftInput, Field, Modal } from '../components/ui';
 import { RevisionDateField } from '../components/SeoFields';
 import { LinkRelControls } from '../components/LinkRelControls';
@@ -82,7 +82,11 @@ export function PostWriter({ hidden }: { hidden: boolean }) {
   const post = useStore((s) => s.post);
   const exists = useStore((s) => !!(s.snapshot && postAt(s.snapshot.state, s.post)));
   // Entry text turned on or off in the collection's settings: the writer starts again with the text editor or without it.
-  const hasBody = useStore((s) => (s.snapshot && s.post && Object.hasOwn(s.snapshot.state.collections, s.post.collectionId) ? collectionHasBody(s.snapshot.state.collections[s.post.collectionId].settings) : true));
+  // Kept as last seen while the collection is gone (removed, undone away), so the writer holding its unsaved text stays.
+  const hasBodyNow = useStore((s) => (s.snapshot && s.post && Object.hasOwn(s.snapshot.state.collections, s.post.collectionId) ? collectionHasBody(s.snapshot.state.collections[s.post.collectionId].settings) : undefined));
+  const lastBody = useRef(true);
+  if (hasBodyNow !== undefined) lastBody.current = hasBodyNow;
+  const hasBody = lastBody.current;
   // A writer already open stays while the post is gone from the project (the AI, an Undo): it may hold unsaved text,
   // which it offers to keep. It lets go of the post itself once nothing is left unsaved.
   const shown = useRef<string | null>(null);
@@ -356,7 +360,7 @@ function PostEditor({ post, hidden }: { post: PostRef; hidden: boolean }) {
    */
   const command = (run: () => void) => {
     const el = root.current;
-    if (!el || draft.isComposing || unreadable) return;
+    if (!el || draft.isComposing || unreadable || isReadOnlyCollection(getState().snapshot?.state.collections[post.collectionId] ?? collection)) return;
     if (!el.contains(document.getSelection()?.anchorNode ?? null)) el.focus();
     draft.checkpoint(false);
     run();
@@ -458,7 +462,7 @@ function PostEditor({ post, hidden }: { post: PostRef; hidden: boolean }) {
 
   const openImage = (fig: HTMLElement | null) => {
     const el = root.current;
-    if (!el) return;
+    if (!el || isReadOnlyCollection(getState().snapshot?.state.collections[post.collectionId] ?? collection)) return;
     const at = fig ? null : blockAtCaret(el);
     const d = fig?.dataset;
     setDialog({ kind: 'image', fig, at, value: { assetId: d?.assetId ?? null, alt: d?.alt ?? '', ...(d?.decorative ? { decorative: true } : {}) }, caption: d?.caption ?? '' });
@@ -599,7 +603,9 @@ function PostEditor({ post, hidden }: { post: PostRef; hidden: boolean }) {
   const readOnly = isReadOnlyCollection(collection);
   const noun = entryNoun(collection);
   const nounLower = entryNounLower(collection);
-  const setValue = (name: string, value: unknown, label: string) => update({ values: { [name]: value } }, label);
+  // One field's value; a link to a section without an anchor comes with the change that gives it one, sent together.
+  const setValue = (name: string, value: unknown, label: string, edit?: PendingEdit) =>
+    edit ? follow(applyWith(edit, [{ type: 'entry.update', collectionId: post.collectionId, entryId: post.entryId, values: { [name]: value } } as never], label)) : update({ values: { [name]: value } }, label);
   const details = (
     <div className="post-fields">
       <Field label="Publication date" hint={`A date in the past backdates the ${nounLower}.`}>
@@ -691,7 +697,13 @@ function PostEditor({ post, hidden }: { post: PostRef; hidden: boolean }) {
       <div className="post-scroll">
         <article className="post-page">
           {/* A synced entry is read here and changed in its source: every control below is off, its text included. */}
-          <fieldset className="post-fieldset" disabled={readOnly}>
+          <fieldset
+            className="post-fieldset"
+            disabled={readOnly}
+            // Nothing dropped on a synced entry is imported either: it would be refused once it was.
+            onDropCapture={readOnly ? (e) => (e.preventDefault(), e.stopPropagation()) : undefined}
+            onDragOverCapture={readOnly ? (e) => e.stopPropagation() : undefined}
+          >
           {readOnly && (
             <p className="post-readonly" role="note">
               Read-only: this {nounLower} is synced from an external source. Change it there, or detach the collection to edit it here.

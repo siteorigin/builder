@@ -426,6 +426,28 @@ describe('held custom field values (#675)', () => {
     expect(check(base, retyped, [op]).kind).toBe('changed');
   });
 
+  it('has nowhere to put a held value once its field is removed, and stops on the field made another kind', () => {
+    const base = team();
+    const op = set({ role: 'Glazer' });
+    const only = (fields: Record<string, unknown>) => apply(base, [{ type: 'collection.update', collectionId: 'team', fields } as EditOperation]);
+    expect(check(base, only({ department: { type: 'string', label: 'Department', default: '' } }), [op])).toEqual({ kind: 'gone', what: 'field' });
+    expect(check(base, only({ role: { type: 'string', label: 'Role', default: '', multiline: true }, department: { type: 'string', label: 'Department', default: '' } }), [op]).kind).toBe('changed');
+    // Groupings one by one too.
+    const tag = (terms: Record<string, string[]>): EditOperation => ({ type: 'entry.update', collectionId: 'team', entryId: 'en_ana1', terms });
+    expect(fieldKey([tag({ offices: [] })])).not.toBe(fieldKey([tag({ skills: [] })]));
+  });
+
+  it('shows what a field with no value of its own holds: its default', () => {
+    const base = apply(team(), [{ type: 'collection.update', collectionId: 'team', fields: { role: { type: 'string', label: 'Role', default: 'Maker' }, department: { type: 'string', label: 'Department', default: '' } } }]);
+    const op = set({ department: 'Studio' });
+    const read = readFields(base, [op])![0];
+    expect(read.found && shownField(op, read.value)).toBe('');
+    const roleOp = set({ role: 'Glazer' });
+    const fresh = apply(base, [{ type: 'entry.create', collectionId: 'team', entryId: 'en_cy1', title: 'Cy' }]);
+    const r2 = readFields(fresh, [{ ...roleOp, entryId: 'en_cy1' }])![0];
+    expect(r2.found && shownField(roleOp, r2.value)).toBe('Maker');
+  });
+
   it('shows the value typed and the value held as text', () => {
     const base = team();
     const op = set({ role: 'Glazer' });

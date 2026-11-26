@@ -3,7 +3,7 @@ import { useEffect, useId, useRef, useState } from 'react';
 import { Check, Pencil, Plus, Trash2, X } from 'lucide-react';
 import type { Collection, EntryDoc } from '@shared/types';
 import type { EditOperation } from '@shared/ops';
-import { assignedTermIds, collectionKind, entriesWithTerm, termIdFor } from '@shared/collections';
+import { assignedTermIds, entriesWithTerm, termIdFor } from '@shared/collections';
 import { archiveRoute } from '@shared/archives';
 import { termFeedUses } from '@engine/terms';
 import { commitOps, confirmDialog, getState, toast, undoAction, useStore } from '../store';
@@ -13,19 +13,12 @@ import { trackApply } from '../lib/pending';
 import { postAt, type PostRef } from '../lib/posts';
 
 /**
- * The groupings a post is filed under: the collection's own, and for articles categories and tags, which the first
- * term adds. Records have only the groupings their collection declares (#675).
+ * The groupings a post is filed under: those its collection declares (the blog starts with categories and tags). One
+ * removed in the collection's settings is gone from here too (#675), so filing a post never brings it back.
  */
 export function postTaxonomies(collection: Collection): Array<{ id: string; label: string }> {
   const own = collection.settings.taxonomies && typeof collection.settings.taxonomies === 'object' ? collection.settings.taxonomies : {};
-  const out = Object.entries(own).map(([id, t]) => ({ id, label: typeof t?.label === 'string' ? t.label : id }));
-  if (collectionKind(collection.settings) === 'structured') return out;
-  for (const [id, label] of [
-    ['categories', 'Categories'],
-    ['tags', 'Tags']
-  ])
-    if (!Object.hasOwn(own, id)) out.push({ id, label });
-  return out;
+  return Object.entries(own).map(([id, t]) => ({ id, label: typeof t?.label === 'string' ? t.label : id }));
 }
 
 /** What the terms manager is called: "Categories and tags" for articles, the groupings' own names for records. */

@@ -218,6 +218,8 @@ export function readField(state: ProjectState, op: EditOperation): FieldRead | n
       // A field is read with its schema: one removed, made another kind or given another default meanwhile is a conflict.
       if (op.values) {
         const fields = c?.settings.fields && typeof c.settings.fields === 'object' ? c.settings.fields : {};
+        // A field removed meanwhile has nowhere for the value to go: its text is offered to copy, never to replace.
+        if (Object.keys(op.values).some((k) => !Object.hasOwn(fields, k))) return gone('field');
         read.values = Object.fromEntries(Object.keys(op.values).map((k) => [k, { value: at(entry, ['values', k]), schema: Object.hasOwn(fields, k) ? fields[k] : null }]));
       }
       if (op.terms) read.terms = Object.fromEntries(Object.keys(op.terms).map((k) => [k, at(entry, ['terms', k])]));
@@ -532,8 +534,9 @@ export function shownField(op: EditOperation, read: unknown): string | null {
     v = Object.values(o)[0];
     // A custom field is read with its schema (see readField): its value is what it holds.
     if (op.values && o.values && typeof o.values === 'object') {
-      const reads = Object.values(o.values as Record<string, { value?: unknown }>);
-      v = reads.length === 1 ? reads[0]?.value : undefined;
+      const reads = Object.values(o.values as Record<string, { value?: unknown; schema?: { default?: unknown } | null }>);
+      // A field the entry has no value of its own for shows its default.
+      v = reads.length === 1 ? (reads[0]?.value !== undefined ? reads[0].value : reads[0]?.schema?.default) : undefined;
     }
   }
   else if (op.type === 'site.update' && op.crawlerPolicy) {

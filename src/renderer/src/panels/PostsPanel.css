@@ -46,7 +46,8 @@
 
   .posts-panel { display: flex; flex-direction: column; flex: 1; min-height: 0; }
   /* The Content tab (#675): the project's collections, with the current one's settings and layout beside it. */
-  .content-collections { list-style: none; margin: 0 0 8px; padding: 0 6px 6px; border-bottom: 1px solid var(--border); }
+  /* Bounded, so many collections never squeeze the entries out of the sidebar: past it they scroll. */
+  .content-collections { flex: none; max-height: 34%; overflow-y: auto; list-style: none; margin: 0 0 8px; padding: 0 6px 6px; border-bottom: 1px solid var(--border); }
   .content-collection { display: flex; align-items: center; border-radius: var(--r-sm); }
   .content-collection:hover, .content-collection:focus-within { background: var(--hover); }
   .content-collection.current { background: var(--accent-soft); }
