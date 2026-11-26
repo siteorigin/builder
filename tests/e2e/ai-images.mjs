@@ -68,7 +68,11 @@ try {
   step('the second photo, opened in Assets, says which one it is and goes to the AI chat');
   await win.getByRole('button', { name: 'Assets', exact: true }).click();
   await win.locator(`[data-asset="${second}"]`).click();
-  await win.getByTestId('asset-id').getByText(second).waitFor();
+  const apart = win.getByTestId('asset-same-name');
+  await apart.waitFor();
+  // Told apart by what an author can see of it, never by its asset ID.
+  assert.match(await apart.innerText(), /^Another image has this name\. This one: .+\.$/);
+  assert.ok(!(await apart.innerText()).includes(second), 'the asset ID stays out of it');
   await win.getByRole('button', { name: 'Use in AI chat' }).click();
   await message().waitFor();
   await eventually(async () => assert.deepEqual(await composerImages().evaluateAll((els) => els.map((e) => e.dataset.assetId)), [second]));

@@ -15,13 +15,14 @@ import { assetDropRefusal, goToShellPart, imagePlacement, openComponentStudio, o
 import { beginAssetDrag } from '../lib/asset-drag';
 import { SHOW_ASSET_EVENT } from '../lib/place';
 import { formatBytes, plural } from '../lib/storage';
+import { sameNameLabels } from '../lib/same-name';
 import { FreeSpaceDialog, StorageSummary, useProjectStorage } from './AssetStorage';
 import { assetArrived, reviewImport } from '../lib/import-review';
 import { documentDetails, documentLabels, documentName, libraryDocuments } from '../lib/documents';
 import { altChecks } from '../lib/alt-review';
 import { imageUseRows, type ImageUseRow, type PlaceLabel, type UseField } from '../lib/asset-uses';
 import { defaultEditorNode } from '../lib/design-content';
-import type { MissingAssetFiles } from '@shared/api';
+import type { MissingAssetFiles, WebCopyPlan } from '@shared/api';
 import './AssetsPanel.css';
 
 /** Whether a library file is still in the project, for text kept for its fields (see DraftInput's keepWhile). */
@@ -399,12 +400,11 @@ function useRecordsLocation(a: AssetRecord | null): boolean {
 }
 
 /**
- * What a web-sized copy of a large JPEG or PNG would be (format and size), asked for each time such a picture is
- * shown or its file changes. Null while unknown, or when no copy can be made from it.
+ * What a web-sized copy of a large JPEG or PNG would be (see WebCopyPlan), asked for each time such a picture is
+ * shown or its file changes. Undefined while unknown.
  */
-type WebPlan = { format: 'JPEG' | 'PNG' | 'JPEG or PNG'; width: number; height: number };
-function useWebCopyPlan(a: AssetRecord | null, opening: string, originalMissing: boolean): WebPlan | null | undefined {
-  const [answer, setAnswer] = useState<{ key: string; plan: WebPlan | null } | null>(null);
+function useWebCopyPlan(a: AssetRecord | null, opening: string, originalMissing: boolean): WebCopyPlan | undefined {
+  const [answer, setAnswer] = useState<{ key: string; plan: WebCopyPlan } | null>(null);
   const eligible = a?.kind === 'image' && a.bytes > LARGE && (a.mime === 'image/jpeg' || a.mime === 'image/png');
   const id = eligible ? a.id : null;
   // Asked again when the original comes back (Locate file) or the project is opened again.
@@ -499,18 +499,9 @@ export function AssetsPanel({ narrow }: { narrow: boolean }) {
     if (bodyRef.current) bodyRef.current.scrollTop = 0;
     setActiveTile(null);
   }, [q, pickQ, filter, browseSeries.key, pickSeries.key, assetSort]);
-  /** Names more than one image has, compared as the AI chat compares them. */
-  const sharedNames = useMemo(() => {
-    const seen = new Set<string>();
-    const shared = new Set<string>();
-    for (const a of assets) {
-      if (typeof a.name !== 'string') continue;
-      const n = nameOf(a).toLowerCase();
-      if (seen.has(n)) shared.add(n);
-      seen.add(n);
-    }
-    return shared;
-  }, [assets]);
+  const assetUsage = snap?.assetUsage;
+  /** What tells apart each image whose name another image has, compared as the AI chat compares names. */
+  const sameNames = useMemo(() => sameNameLabels(assets, assetUsage ?? {}, (a) => nameOf(a).toLowerCase()), [assets, assetUsage]);
   const fonts = useMemo(() => Object.values(assetsDoc ?? {}).filter(isValidFontAsset).sort((a, b) => fontLabel(a).localeCompare(fontLabel(b))), [assetsDoc]);
   const documents = useMemo(() => (snap ? libraryDocuments(snap.state) : []), [snap]);
   // The document "Open in Assets" asked for, until the list has opened it.
@@ -921,12 +912,12 @@ export function AssetsPanel({ narrow }: { narrow: boolean }) {
       </span>
       {shown.map((a) => {
         const reason = blocked?.(a) ?? null;
-        // Two imports can share a name ("hero"): the asset ID tells them apart, as the AI chat names them.
         const gone = missingOf.get(a.id);
         const hurt = damage(a, gone);
         const big = a.bytes > LARGE && !gone;
-        const shared = typeof a.name === 'string' && sharedNames.has(nameOf(a).toLowerCase());
-        const name = shared ? `${nameOf(a)} (${a.id})` : nameOf(a);
+        // Two imports can share a name ("hero"): their size, the day they were added or their uses tell them apart.
+        const apart = sameNames.get(a.id);
+        const name = apart ? `${nameOf(a)} (${apart})` : nameOf(a);
         const copies = gone?.variants.length ?? 0;
         const chip = hurt === 'all' ? 'Missing' : hurt === 'original' ? 'No original' : copies === 1 ? 'Copy missing' : 'Copies missing';
         const missingLabel = hurt === 'all' ? 'file missing' : hurt === 'original' ? 'original file missing, smaller copies still show' : copies === 1 ? 'a smaller copy missing' : 'smaller copies missing';
@@ -972,7 +963,7 @@ export function AssetsPanel({ narrow }: { narrow: boolean }) {
             )}
             {/* Smaller thumbnails are for scanning by eye: the name is in the tile's tooltip and its spoken name. */}
             {!compact && <span className="asset-name">{shortName(nameOf(a))}</span>}
-            {shared && !compact && <span className="asset-tile-id">{a.id}</span>}
+            {apart && !compact && <span className="asset-tile-id">{apart}</span>}
           </button>
         );
       })}
@@ -1243,14 +1234,15 @@ export function AssetsPanel({ narrow }: { narrow: boolean }) {
     );
   } else if (sel) {
     const used = usage[sel.id] ?? 0;
-    // Two imports can share a name ("hero"): the asset ID is what tells them apart, here and in the AI chat.
-    const sameName = typeof sel.name === 'string' && sharedNames.has(nameOf(sel).toLowerCase());
+    // Two imports can share a name ("hero"): what an author can see of them tells them apart.
+    const apart = sameNames.get(sel.id);
     const shownPlaces = allPlaces ? places : places.slice(0, 4);
     const gone = missingOf.get(sel.id);
     const hurt = damage(sel, gone);
     const copies = gone?.variants.length ?? 0;
     const placement = imagePlacement();
-    const sameSize = !!webPlan && webPlan.width === sel.width && webPlan.height === sel.height;
+    const offer = webPlan && 'format' in webPlan ? webPlan : null;
+    const sameSize = !!offer && offer.width === sel.width && offer.height === sel.height;
     const onePlace = (places.length || used) === 1;
     const place = async () => {
       if (placingNow.current || !placement.at) return;
@@ -1294,9 +1286,9 @@ export function AssetsPanel({ narrow }: { narrow: boolean }) {
               Original file: <span>{sel.originalName}</span>
             </p>
           )}
-          {sameName && (
-            <p className="asset-meta" data-testid="asset-id">
-              Another image has this name. This one is <code>{sel.id}</code>.
+          {apart && (
+            <p className="asset-meta" data-testid="asset-same-name">
+              Another image has this name. This one: {apart}.
             </p>
           )}
         </div>
@@ -1395,16 +1387,18 @@ export function AssetsPanel({ narrow }: { narrow: boolean }) {
                 {sel.variants?.length ? `Pages load smaller copies, but the ${formatBytes(sel.bytes)} original is still part of the site.` : `At ${formatBytes(sel.bytes)} it will slow pages down.`}{' '}
                 {webPlan === undefined
                   ? ''
-                  : webPlan
-                    ? `${sameSize ? `A ${webPlan.format} copy at the same ${webPlan.width} × ${webPlan.height} is usually far lighter.` : `A web-sized copy (${webPlan.format} · ${webPlan.width} × ${webPlan.height}) keeps it light.`} ${used ? `It shows in ${onePlace ? 'its place' : 'its places'} instead, and the original stays in Assets.` : 'It’s added to Assets beside the original, which you can then remove.'}`
-                    : used
+                  : offer
+                    ? `${sameSize ? `A ${offer.format} copy at the same ${offer.width} × ${offer.height} is far lighter.` : `A web-sized copy (${offer.format} · ${offer.width} × ${offer.height}) keeps it light.`} ${used ? `It shows in ${onePlace ? 'its place' : 'its places'} instead, and the original stays in Assets.` : 'It’s added to Assets beside the original, which you can then remove.'}`
+                    : webPlan
+                      ? 'A web-sized copy would be less than a third lighter, so none is offered.'
+                      : used
                       ? 'A copy under 1.5 MB keeps it light: save one, add it, and use it with Replace everywhere.'
                       : 'A copy under 1.5 MB keeps it light: save one, add it, then remove this one.'}
               </span>
-              {webPlan && (
+              {offer && (
                 <div className="asset-note-actions">
                   <button className="btn btn-sm" data-testid="asset-web-copy" disabled={copying} onClick={() => void makeWebCopy()}>
-                    {copying ? <Spinner /> : <ImagePlus />} {used ? `Use a ${sameSize ? `lighter ${webPlan.format}` : 'web-sized'} copy in ${plural(places.length || used, 'place', 'places')}` : sameSize ? `Make a lighter ${webPlan.format} copy` : 'Make a web-sized copy'}
+                    {copying ? <Spinner /> : <ImagePlus />} {used ? `Use a ${sameSize ? `lighter ${offer.format}` : 'web-sized'} copy in ${plural(places.length || used, 'place', 'places')}` : sameSize ? `Make a lighter ${offer.format} copy` : 'Make a web-sized copy'}
                   </button>
                 </div>
               )}

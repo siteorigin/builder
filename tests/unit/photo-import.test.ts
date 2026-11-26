@@ -50,7 +50,7 @@ vi.mock('electron', () => ({
   utilityProcess: { fork: (path: string) => (path.endsWith('media-worker.js') ? new InlineMediaWorker() : new FakeRuntime()) }
 }));
 
-const { importAsset, noConverterReason, reviewImportFile, isOpaquePicture, stopMediaWorker, webCopySize, WEB_EDGE } = await import('../../src/main/project/assets');
+const { importAsset, noConverterReason, reviewImportFile, isOpaquePicture, stopMediaWorker, webCopySize, WEB_EDGE, LIGHTER_SHARE } = await import('../../src/main/project/assets');
 const { heicDecoder } = await import('../../src/main/project/photo-convert');
 const { WEB_EDGE: WORKER_WEB_EDGE } = await import('../../src/main/project/image-variants');
 const { cleanPhoto, photoMetadata } = await import('../../src/main/project/photo-metadata');
@@ -495,13 +495,39 @@ describe('making a web-sized copy of a large library image', () => {
     expect(altsOf(first.assetId!)).toEqual(before);
   }, 60_000);
 
+  it('never offers a lighter copy of its own web-sized copy, or of a photo a copy would hardly lighten', async () => {
+    const { c } = await openProject();
+    const bigId = (await c.importAssets([sourceFile('big.png', await noisy(3000, 2000, 'png'))])).assetIds[0];
+    const made = await c.makeWebCopy(bigId, { replace: false, opening: c.openingKey! });
+    const copy = c.session!.state.assets.assets[made.assetId!];
+    // The copy is still large: noise does not compress.
+    expect(copy.bytes).toBeGreaterThan(1_500_000);
+    expect(await c.webCopyPlan(copy.id)).toEqual({ lighter: false });
+    const before = c.session!.revision;
+    expect(await c.makeWebCopy(copy.id, { replace: false, opening: c.openingKey! })).toEqual({ ok: false, message: 'A web-sized copy of big (web-sized) would be less than a third lighter, so it was left as it is.' });
+    expect(c.session!.revision).toBe(before);
+  }, 60_000);
+
+  it('offers no copy that saves less than a third, though it would be smaller', async () => {
+    const { c } = await openProject();
+    const photo = await sharp(await noisy(1400, 1000, 'png')).jpeg({ quality: 86 }).toBuffer();
+    // As the copy would be made (JPEG at quality 82, the same size): smaller, but not by a third.
+    const share = (await sharp(photo).jpeg({ quality: 82 }).toBuffer()).length / photo.length;
+    expect(share).toBeGreaterThan(LIGHTER_SHARE);
+    expect(share).toBeLessThan(1);
+    const id = (await c.importAssets([sourceFile('grain.jpg', photo)])).assetIds[0];
+    expect(await c.webCopyPlan(id)).toEqual({ lighter: false });
+    expect(await c.makeWebCopy(id, { replace: false, opening: c.openingKey! })).toMatchObject({ ok: false, message: 'A web-sized copy of grain would be less than a third lighter, so it was left as it is.' });
+  }, 60_000);
+
   it('offers nothing for a picture it cannot copy, and leaves an image alone when a copy would be no smaller', async () => {
     const { c } = await openProject();
     const gif = await c.importAssets([sourceFile('moving.gif', await sharp({ create: { width: 64, height: 48, channels: 3, background: '#000' } }).gif().toBuffer())]);
     expect(await c.webCopyPlan(gif.assetIds[0])).toBeNull();
     const tight = await c.importAssets([sourceFile('tight.jpg', await sharp(await noisy(1000, 800, 'jpeg')).jpeg({ quality: 20 }).toBuffer())]);
+    expect(await c.webCopyPlan(tight.assetIds[0])).toEqual({ lighter: false });
     const before = c.session!.revision;
-    expect(await c.makeWebCopy(tight.assetIds[0], { replace: false, opening: c.openingKey! })).toEqual({ ok: false, message: 'A web-sized copy of tight would be no smaller, so it was left as it is.' });
+    expect(await c.makeWebCopy(tight.assetIds[0], { replace: false, opening: c.openingKey! })).toEqual({ ok: false, message: 'A web-sized copy of tight would be less than a third lighter, so it was left as it is.' });
     expect(c.session!.revision).toBe(before);
   }, 60_000);
 });
