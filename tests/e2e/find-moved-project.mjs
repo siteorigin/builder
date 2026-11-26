@@ -80,6 +80,8 @@ const normalCard = () => win.locator('.recent-item:not(.missing) .recent-card');
 const focusWindow = () => win.evaluate(() => window.dispatchEvent(new Event('focus')));
 
 step('moved while Welcome shows, the first click says its folder was not found and the card offers Find folder…');
+// The other Mill Road's card has gone from the screen, so the one left is clicked.
+await eventually(async () => assert.equal(await win.locator('.recent-card').count(), 1));
 assert.equal(await missingCard().count(), 0);
 renameSync(old, away);
 await normalCard().first().click();
