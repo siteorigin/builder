@@ -75,7 +75,7 @@ await openDetails();
 assert.match(await nameField().innerText(), /The header and footer show it too\./, 'the field says where else the name shows');
 await rename('Morning Paper');
 await titleIs('Morning Paper');
-await eventually(() => assert.deepEqual([shellProps('header').siteName, shellProps('footer').siteName, shellProps('footer').copyright], ['Morning Paper', 'Morning Paper', `© ${year} Morning Paper. All rights reserved.`]));
+await eventually(() => assert.deepEqual([shellProps('header').siteName, shellProps('footer').siteName, shellProps('footer').copyright], ['Morning Paper', 'Morning Paper', '© {year} Morning Paper. All rights reserved.']));
 await liveIs({ header: 'Morning Paper', footer: 'Morning Paper', copyright: `© ${year} Morning Paper. All rights reserved.` }, 'the live website shows the new name');
 await eventually(async () => assert.match(await win.locator('.toolbar').innerText(), /Morning Paper/, 'the toolbar shows it too'));
 
