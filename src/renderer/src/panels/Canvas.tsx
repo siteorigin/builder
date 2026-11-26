@@ -126,6 +126,7 @@ export function Canvas() {
   const rects = useStore((s) => s.rects);
   const revealedItem = useStore((s) => s.revealedItem);
   const showSelection = useStore((s) => s.showSelection);
+  const showMoved = useStore((s) => s.showMoved);
   const inspectorShown = useStore((s) => s.dockOpen && s.rightTab === 'inspect');
   const runStatus = useStore((s) => s.runStatus);
   // A request the AI has started on, before its first status arrives (as Chat counts it).
@@ -1336,6 +1337,18 @@ export function Canvas() {
     const desc = ready && (showsStudio() || (view?.route && samePath(view.route, frameAt.current))) ? descFor(selection) : null;
     if (desc && (show || !quiet)) post('scrollTo', show ? { desc, show } : { desc });
   }, [ready, selection && refKey(selection), showSelection]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  // A selection moved from the keyboard (issue #902) is shown where it went. The page may still show it in its old
+  // place, so one the page does not have yet is asked about the move's revision: the page waits for it, and the
+  // author scrolling or clicking there meanwhile ends the wait. Asked once, and only while it is still selected.
+  useEffect(() => {
+    if (!showMoved) return;
+    setState({ showMoved: null });
+    if (!ready || getState().mode === 'preview' || getState().selection !== showMoved.ref) return;
+    const desc = showsStudio() || (view?.route && samePath(view.route, frameAt.current)) ? descFor(showMoved.ref) : null;
+    if (!desc) return;
+    post('scrollTo', shownRevision.current >= showMoved.revision ? { desc } : { desc, revision: showMoved.revision });
+  }, [showMoved]); // eslint-disable-line react-hooks/exhaustive-deps
 
   /**
    * The list item open in the inspector, revealed on the page while it is edited (see lib/reveal): only while

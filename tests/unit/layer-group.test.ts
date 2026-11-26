@@ -47,6 +47,7 @@ interface EditorState {
   pageId: string | null;
   definitionMode: unknown;
   showSelection: number;
+  showMoved: { ref: ElementRef; revision: number } | null;
   setState: (p: Partial<EditorState>) => void;
 }
 interface Plan {
@@ -315,6 +316,33 @@ describe('sections selected together in Layers', () => {
     expect(roots().slice(g, g + 3)).toEqual([r[g + 2], gallery, testimonials]);
     expect(getState().selection).toEqual(ref(home(), testimonials));
     expect(getState().layerSet).toEqual({ owner: home(), ids: [gallery, testimonials], anchor: gallery });
+  });
+
+  it('asks for the moved selection to be shown where it went, at the move\'s revision (issue #902)', async () => {
+    const { testimonials } = pickGalleryAndTestimonials();
+    setState({ showMoved: null });
+    const picked = getState().selection;
+    await actions.moveLayers(-1);
+    expect(getState().showMoved).toEqual({ ref: picked, revision: session.revision });
+    expect(getState().showMoved!.ref).toBe(picked);
+    // One section alone, moved from the keyboard.
+    const one = ref(home(), testimonials);
+    setState({ selection: one, layerSet: null, showMoved: null });
+    await actions.moveLayers(1);
+    expect(getState().showMoved).toEqual({ ref: one, revision: session.revision });
+  });
+
+  it('asks for nothing when no move happened, or the author picked something else meanwhile', async () => {
+    const first = ref(home(), roots()[0]);
+    setState({ selection: first, layerSet: null, showMoved: null });
+    await actions.moveLayers(-1);
+    expect(getState().showMoved).toBeNull();
+    const second = ref(home(), roots()[1]);
+    setState({ selection: second });
+    const moving = actions.moveLayers(1);
+    setState({ selection: first });
+    await moving;
+    expect(getState().showMoved).toBeNull();
   });
 
   it('a plan made before the project changed is refused whole, changing nothing', async () => {

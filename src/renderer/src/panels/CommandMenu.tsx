@@ -277,7 +277,8 @@ export function CommandMenu() {
             const pageId = x.pageId ?? (x.ref.owner.kind === 'shell' ? pageShowing(now, x.ref.owner.id, st.pageId) : undefined) ?? null;
             if (!pageId) return toast(`No page shows ${partName(x.ref.owner.id)}.`, 'info');
             if (pageOutOfSight(st, pageId)) selectPage(pageId);
-            setState({ mode: 'edit', selection: x.ref, rightTab: 'inspect', dockOpen: true });
+            // Shown on the page, also when it is selected already and has been scrolled away from (issue #902).
+            setState({ mode: 'edit', selection: x.ref, rightTab: 'inspect', dockOpen: true, showSelection: useStore.getState().showSelection + 1 });
           }
         };
       });
