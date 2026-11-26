@@ -29,22 +29,20 @@ exports.default = async function afterPack(context) {
   const npmCli = join(root, 'node_modules', 'npm', 'bin', 'npm-cli.js');
   const cpus = arch === 'universal' ? ['x64', 'arm64'] : [arch];
   // The starter's packages are read for the notices before the next CPU's install replaces them.
-  const starter = new Map();
+  const starter = [];
   for (const cpu of cpus) {
     rmSync(join(work, 'node_modules'), { recursive: true, force: true });
     execFileSync(process.execPath, [npmCli, 'ci', '--ignore-scripts', '--no-audit', '--no-fund', '--loglevel=error', `--cache=${cache}`, `--os=${context.electronPlatformName}`, `--cpu=${cpu}`], {
       cwd: work,
       stdio: 'inherit'
     });
-    for (const dir of notices.packagesUnder(join(work, 'node_modules'))) {
-      const pkg = notices.readPackage(dir);
-      starter.set(`${pkg.name}@${pkg.version}`, pkg);
-    }
+    // Every copy is kept: the notices merge the distinct texts of one package version.
+    for (const dir of notices.packagesUnder(join(work, 'node_modules'))) starter.push(notices.readPackage(dir));
   }
   rmSync(work, { recursive: true, force: true });
   if (!existsSync(cache)) throw new Error('Bundled dependency cache was not created.');
 
-  writeNotices(root, resources, [...starter.values()]);
+  writeNotices(root, resources, starter);
 
   // macOS: give every build a valid (ad-hoc) signature, sealing the resources added above. When a
   // Developer ID certificate is available, electron-builder signs again afterwards with the real identity.

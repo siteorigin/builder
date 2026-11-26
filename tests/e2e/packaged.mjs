@@ -70,23 +70,27 @@ try {
     assert.ok(found, `the notices have an entry for ${heading}`);
     return found[1];
   };
+  // [heading, declared licence, a part it is included in, a line of its licence text]
   const listed = [
-    [/^react \d/, 'compiled into the editor', /Permission is hereby granted/],
-    [/^@codemirror\/view \d/, 'compiled into the editor', /Copyright \(C\) .*Marijn Haverbeke/],
-    [/^@radix-ui\/react-dropdown-menu \d/, 'compiled into the editor', /Copyright \(c\) .*WorkOS/],
-    [/^lucide-react \d/, 'compiled into the editor', /Copyright \(c\) 2013-present Cole Bemis/],
-    [/^rolldown \d/, 'compiled into the editor', /--- THIRD-PARTY-LICENSE ---/],
-    [/^@oxc-project\/runtime \d/, 'compiled into the app', /Sebastian McKenzie/],
-    [/^svelte \d/, 'shipped with the app', /Copyright \(c\) .*Svelte Contributors/],
-    [/^sharp \d/, 'shipped with the app', /Apache License/],
-    [/^npm \d/, 'npm, which sets projects up', /The Artistic License 2\.0/],
-    [/^@sveltejs\/kit \d/, 'the website starter', /Copyright \(c\) 2020 \[these people\]/],
-    [/^Font: Inter \(Inter Variable\)$/, 'Licence: OFL-1.1', /The Inter Project Authors[\s\S]*SIL OPEN FONT LICENSE Version 1\.1[\s\S]*PERMISSION & CONDITIONS/]
+    [/^react \d/, 'MIT', 'compiled into the editor', /Permission is hereby granted/],
+    [/^@codemirror\/view \d/, 'MIT', 'compiled into the editor', /Copyright \(C\) .*Marijn Haverbeke/],
+    [/^@radix-ui\/react-dropdown-menu \d/, 'MIT', 'compiled into the editor', /Copyright \(c\) .*WorkOS/],
+    [/^lucide-react \d/, 'ISC', 'compiled into the editor', /Copyright \(c\) 2013-present Cole Bemis/],
+    [/^rolldown \d/, 'MIT', 'compiled into the editor', /--- THIRD-PARTY-LICENSE ---\n\n[\s\S]*Rollup/],
+    [/^@oxc-project\/runtime \d/, 'MIT', 'compiled into the app', /Sebastian McKenzie/],
+    [/^svelte \d/, 'MIT', 'shipped with the app', /Copyright \(c\) .*Svelte Contributors/],
+    [/^sharp \d/, 'Apache-2.0', 'shipped with the app', /Apache License/],
+    [/^npm \d/, 'Artistic-2.0', 'npm, which sets projects up', /The Artistic License 2\.0/],
+    [/^@sveltejs\/kit \d/, 'MIT', 'the website starter, cached for setting projects up offline', /Copyright \(c\) 2020 \[these people\]/],
+    [/^Font: Inter \(Inter Variable\)$/, 'OFL-1.1', null, /The Inter Project Authors[\s\S]*SIL OPEN FONT LICENSE Version 1\.1[\s\S]*PERMISSION & CONDITIONS/]
   ];
-  for (const [heading, label, text] of listed) {
+  for (const [heading, licence, part, text] of listed) {
     const e = entry(heading);
-    assert.ok(e.includes(label), `${heading} is listed as ${label}`);
-    assert.match(e, text, `${heading} carries its licence text`);
+    // The header is the lines before the first blank one; the licence texts follow it.
+    const header = e.slice(0, e.indexOf('\n\n')).split('\n');
+    assert.equal(header.find((l) => l.startsWith('Licence: ')), `Licence: ${licence}`, `${heading} declares ${licence}`);
+    if (part) assert.ok((header.find((l) => l.startsWith('Included in: ')) ?? '').slice('Included in: '.length).split('; ').includes(part), `${heading} is listed as ${part}`);
+    assert.match(e.slice(e.indexOf('\n\n')), text, `${heading} carries its licence text`);
   }
   // Help > Third-Party Notices hands that file to the desktop (recorded, as a test drives the app).
   const before = await desktopCursor(app);

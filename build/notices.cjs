@@ -122,7 +122,9 @@ function readmeLicence(dir) {
     let end = lines.findIndex((l, i) => i > start && /^#{1,6}\s/.test(l) && l.match(/^#+/)[0].length <= level);
     if (end < 0) end = lines.length;
     const section = lines.slice(start, end).join('\n').trim();
-    if (section.split('\n').length > 1) return { file: n, text: section, complete: /copyright|permission is hereby granted|licensed under/i.test(section) };
+    // Links do not count: a URL such as .../COPYRIGHT names a file, it holds no notice.
+    const prose = section.replace(/\]\([^)]*\)/g, ']').replace(/https?:\/\/\S+/g, '');
+    if (section.split('\n').length > 1) return { file: n, text: section, complete: /\bcopyright\b|permission is hereby granted|licensed under/i.test(prose) };
   }
   return null;
 }
@@ -253,7 +255,6 @@ function bundledPackagesPlugin(target, file) {
         }),
         ...[...virtual.values()].map((notice) => ({ name: notice.name, version: notice.version, notice }))
       ]
-        .filter((p, i, all) => all.findIndex((q) => q.name === p.name && q.version === p.version) === i)
         .sort((a, b) => compare(a.name, b.name) || compare(a.version, b.version));
       mkdirSync(dirname(file), { recursive: true });
       writeFileSync(file, `${JSON.stringify({ target, packages }, null, 2)}\n`);

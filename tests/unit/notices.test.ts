@@ -46,7 +46,7 @@ describe('the package that owns a bundled module', () => {
   it('records the packages of every chunk and asset of a build, sorted, for the notices to read', () => {
     files({ 'node_modules/react/package.json': pkg('react', '19.3.1'), 'node_modules/@fontsource-variable/inter/package.json': pkg('@fontsource-variable/inter', '5.3.0', { license: 'OFL-1.1' }) });
     const out = join(root, '.tmp/notices/renderer.json');
-    files({ 'node_modules/vite/package.json': pkg('vite', '8.3.8'), 'node_modules/rolldown/package.json': pkg('rolldown', '1.2.19') });
+    files({ 'node_modules/vite/package.json': pkg('vite', '8.3.8'), 'node_modules/rolldown/package.json': pkg('rolldown', '1.2.19'), 'node_modules/x/node_modules/react/package.json': pkg('react', '19.3.1') });
     const plugin = notices.bundledPackagesPlugin('renderer', out);
     plugin.configResolved({ root: join(root, 'src/renderer') });
     plugin.buildStart();
@@ -58,6 +58,8 @@ describe('the package that owns a bundled module', () => {
         'inter.woff2': { type: 'asset', originalFileNames: ['../../node_modules/@fontsource-variable/inter/files/inter.woff2'] },
         // The bundler's own helpers come from virtual modules.
         'vendor.js': { type: 'chunk', moduleIds: ['\0rolldown/runtime.js', '\0vite/preload-helper.js', '\0@oxc-project+runtime@0.156.0/helpers/esm/taggedTemplateLiteral.js', '\0@oxc-project+runtime@0.156.0/helpers/esm/defineProperty.js', '\0commonjsHelpers.js'] },
+        // A second copy of one package version, nested elsewhere, is listed too: the notices merge their texts.
+        'nested.js': { type: 'chunk', moduleIds: [join(root, 'node_modules/x/node_modules/react/index.js')] },
         // A module whose package is not installed where the id says is not listed.
         'gone.js': { type: 'chunk', modules: { [join(root, 'node_modules/gone/index.js')]: {} } }
       }
@@ -68,6 +70,7 @@ describe('the package that owns a bundled module', () => {
       ['@fontsource-variable/inter', '5.3.0', join(root, 'node_modules/@fontsource-variable/inter')],
       ['@oxc-project/runtime', '0.156.0', undefined],
       ['react', '19.3.1', join(root, 'node_modules/react')],
+      ['react', '19.3.1', join(root, 'node_modules/x/node_modules/react')],
       ['rolldown', '1.2.19', join(root, 'node_modules/rolldown')],
       ['vite', '8.3.8', join(root, 'node_modules/vite')]
     ]);
@@ -79,6 +82,7 @@ describe('the package that owns a bundled module', () => {
     mkdirSync(join(root, '.tmp/notices'), { recursive: true });
     writeFileSync(join(root, '.tmp/notices/renderer.json'), readFileSync(out));
     expect(notices.bundledPackages(join(root, '.tmp/notices')).renderer[1]).toEqual(oxc);
+    expect(written.packages.length).toBe(6);
   });
 
   it('refuses to package when a bundle has not been built', () => {
@@ -142,6 +146,8 @@ describe('the licence text a package carries', () => {
       'c/README.md': '# is-reference\n\nNo licence heading here.',
       'e/package.json': pkg('locate-character', '3.0.0'),
       'e/README.md': '# locate-character\n\n## License\n\nMIT',
+      'f/package.json': pkg('@img/sharp-libvips-linux-x64', '1.3.4', { license: 'LGPL-3.0-or-later' }),
+      'f/README.md': '# libvips\n\n## Licensing\n\n| libimagequant | [BSD-2-Clause](https://github.com/lovell/libimagequant/blob/main/COPYRIGHT) |\n| zlib | https://zlib.net/COPYRIGHT |',
       'd/package.json': { name: 'old', version: '0.1.0', licenses: [{ type: 'MIT' }, { type: 'Apache-2.0' }] }
     });
     const a = notices.readPackage(join(root, 'a'));
@@ -151,6 +157,8 @@ describe('the licence text a package carries', () => {
     // A section that only names the licence is kept, but the package still counts as carrying no licence text.
     const e = notices.readPackage(join(root, 'e'));
     expect([e.texts, e.missing]).toEqual([[{ file: 'README.md', text: '## License\n\nMIT' }], true]);
+    // A link to a file named COPYRIGHT is not a copyright notice.
+    expect(notices.readPackage(join(root, 'f')).missing).toBe(true);
     const c = notices.readPackage(join(root, 'c'));
     expect([c.licence, c.texts, c.missing]).toEqual(['MIT', [], true]);
     expect(notices.readPackage(join(root, 'd')).licence).toBe('(MIT OR Apache-2.0)');
