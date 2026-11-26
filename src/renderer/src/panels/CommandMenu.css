@@ -86,7 +86,7 @@
   .cmdk-foot-keys > span { display: inline-flex; align-items: center; gap: 4px; }
   .cmdk-foot-keys > span .kbd + .kbd { margin-left: -1px; }
   .cmdk-foot .kbd { display: inline-grid; place-items: center; min-width: 20px; height: 20px; padding: 0 5px; background: var(--raised); color: var(--text-2); font-size: 11px; line-height: 1; font-weight: 500; }
-  .cmdk-list { max-height: min(494px, calc(86vh - 140px)); overflow: hidden auto; padding: 0 1px 8px 10px; scroll-padding: 36px 0 6px; scrollbar-gutter: stable; }
+  .cmdk-list { max-height: min(494px, max(96px, calc(86vh - 140px - var(--toast-band, 0px)))); overflow: hidden auto; padding: 0 1px 8px 10px; scroll-padding: 36px 0 6px; scrollbar-gutter: stable; }
   /* The scrollbar has its own gutter, so rows keep the same right edge as the field whether the list scrolls or not. */
   .cmdk-list::-webkit-scrollbar { width: 9px; }
   .cmdk-list::-webkit-scrollbar-thumb { border: 2px solid transparent; border-radius: 99px; background: var(--border-control) content-box; }

@@ -3,9 +3,9 @@ import { oneLine } from '../lib/one-line';
 import { shortcutLabel } from '../lib/shortcut-keys';
 import { Children, cloneElement, createContext, isValidElement, useCallback, useContext, useEffect, useId, useLayoutEffect, useRef, useState, useSyncExternalStore, type ReactElement, type ReactNode, type RefObject } from 'react';
 import * as DropdownMenu from '@radix-ui/react-dropdown-menu';
-import { createPortal } from 'react-dom';
+import { createPortal, flushSync } from 'react-dom';
 import { Check, ChevronDown, CircleAlert, CircleCheck, Info, Pencil, X } from 'lucide-react';
-import { aiActivity, api, applyHeld, commitDraft, discardHeld, editRunStatus, markDraft, toast, undoAvailable, useStore, type HeldEdit, type PendingEdit } from '../store';
+import { aiActivity, api, applyHeld, commitDraft, discardHeld, dismissToast, editRunStatus, markDraft, toast, undoAvailable, useStore, type HeldEdit, type PendingEdit } from '../store';
 import { afterSettle, isSettling, reportRefused, retainRefused, type Refocusable } from '../lib/pending';
 import { heldPrompt, type HeldAction } from '../lib/held';
 import { dropKeptDraft, goneReport, keepDraft, keptDraft, keptDraftKey, keptField, keptOnLeave, keptRefusal, limitNote, tooLongReport, unsavedReport } from '../lib/kept-drafts';
@@ -14,8 +14,6 @@ import type { ProjectSnapshot } from '@shared/api';
 import type { PropSchema } from '@shared/types';
 import { isEmptyPropValue, requiredHint } from '@shared/required';
 import { RenameOffer } from './RenameOffer';
-
-const setToasts = (toasts: ReturnType<typeof useStore.getState>['toasts']) => useStore.setState({ toasts });
 
 // Editable content counts (the code editor's text area is one), so Tab order and wrapping inside a dialog see it.
 const FOCUSABLE = 'button:not(:disabled), [href], input:not(:disabled), select:not(:disabled), textarea:not(:disabled), [contenteditable="true"], [tabindex]:not([tabindex="-1"])';
@@ -26,6 +24,10 @@ const reachable = (n: HTMLElement) => n.offsetParent !== null && !n.closest('[in
 /** The Tab stops inside `root` (within `scope` when given): focusable, on screen and not left out of the Tab
  *  order, so a roving group (radios, tabs) counts once, at its current option. */
 const tabStops = (root: HTMLElement, scope?: string) => [...root.querySelectorAll<HTMLElement>(scope ? `${scope} :is(${FOCUSABLE})` : FOCUSABLE)].filter((n) => n.tabIndex >= 0 && reachable(n));
+
+/** The notices' dismiss buttons. They sit outside every dialog, and stay in its Tab order so a notice can be
+ *  dismissed from the keyboard while it is open. */
+const dismissStops = () => [...document.querySelectorAll<HTMLElement>('.toasts .toast-dismiss')].filter(reachable);
 
 /** Dialogs currently open, innermost last; global shortcuts stay out of the way while any is open. */
 export const openDialogs: HTMLElement[] = [];
@@ -42,8 +44,8 @@ export const useDialogOpen = () => useSyncExternalStore(watchDialogs, () => open
  * Keyboard model shared by every dialog (WAI-ARIA APG dialog pattern). Dialogs render in a portal and the
  * app root is made inert while any is open, so nothing behind can be reached. Focus moves inside on open
  * (explicit autofocus, else the first control in the body, else the footer's first action), Tab and
- * Shift+Tab stay inside, Escape closes (unless a control inside already handled it), and focus returns to
- * whatever opened the dialog. Attach the returned handler as the dialog's onKeyDown.
+ * Shift+Tab stay inside (and on the notices' dismiss buttons, which come after its last control), Escape
+ * closes (unless a control inside already handled it), and focus returns to whatever opened the dialog. Attach the returned handler as the dialog's onKeyDown.
  */
 export function useDialogFocus(ref: React.RefObject<HTMLElement | null>, onClose: () => void) {
   const closeRef = useRef(onClose);
@@ -86,10 +88,14 @@ export function useDialogFocus(ref: React.RefObject<HTMLElement | null>, onClose
       // Holding Escape on a field that has just let go of focus is still one press.
       if (e.key === 'Escape') (e.preventDefault(), !e.repeat && closeRef.current());
       else if (e.key === 'Tab') {
-        // Back in, in the direction pressed; the dialog itself when it has no stops left.
         e.preventDefault();
         const stops = tabStops(el);
-        ((e.shiftKey ? stops[stops.length - 1] : stops[0]) ?? el).focus();
+        const cycle = [...stops, ...dismissStops()];
+        const at = cycle.indexOf(e.target as HTMLElement);
+        // From a notice, on to the next stop; from anywhere else, back in, in the direction pressed (the dialog
+        // itself when it has no stops left).
+        const next = at < 0 ? (e.shiftKey ? stops[stops.length - 1] : stops[0]) : cycle[(at + (e.shiftKey ? -1 : 1) + cycle.length) % cycle.length];
+        (next ?? el).focus();
       }
     };
     window.addEventListener('keydown', stray);
@@ -103,8 +109,12 @@ export function useDialogFocus(ref: React.RefObject<HTMLElement | null>, onClose
       const visible = (n: HTMLElement | null) => !!n && document.contains(n) && reachable(n);
       const inRegion = region && document.contains(region) ? [...region.querySelectorAll<HTMLElement>('textarea, input, [tabindex="0"], button:not([disabled])')].find(visible) : undefined;
       const back = visible(opener) && !opener!.closest('[role="menu"]') ? opener : inRegion ?? [...document.querySelectorAll<HTMLElement>('[role="treeitem"][tabindex="0"], [role="option"][aria-selected="true"]')].find(visible) ?? null;
-      // Only restore when focus has nowhere better to be; a dialog action may have focused something new.
-      requestAnimationFrame(() => (!document.activeElement || document.activeElement === document.body) && back?.focus());
+      // Only restore when focus has nowhere better to be (a dialog action may have focused something new), or is
+      // still on a notice it went to from this dialog.
+      requestAnimationFrame(() => {
+        const at = document.activeElement;
+        if (!at || at === document.body || at.closest('.toast-dismiss')) back?.focus();
+      });
     };
   }, [ref]);
   return (e: React.KeyboardEvent) => {
@@ -119,11 +129,13 @@ export function useDialogFocus(ref: React.RefObject<HTMLElement | null>, onClose
     }
     if (e.key !== 'Tab') return;
     const items = tabStops(el);
-    if (!items.length) return e.preventDefault();
+    const notices = dismissStops();
+    if (!items.length && !notices.length) return e.preventDefault();
     const i = items.indexOf(document.activeElement as HTMLElement);
-    if (e.shiftKey && (i === 0 || (i === -1 && (document.activeElement === el || !el.contains(document.activeElement))))) (e.preventDefault(), items[items.length - 1].focus());
+    const outside = i === -1 && (document.activeElement === el || !el.contains(document.activeElement));
+    if (e.shiftKey && ((items.length > 0 && i === 0) || outside)) (e.preventDefault(), (notices[notices.length - 1] ?? items[items.length - 1]).focus());
     // Focus on a programmatically focusable element (tabindex -1, such as a result region) tabs on natively.
-    else if (!e.shiftKey && (i === items.length - 1 || (i === -1 && (document.activeElement === el || !el.contains(document.activeElement))))) (e.preventDefault(), items[0].focus());
+    else if (!e.shiftKey && ((items.length > 0 && i === items.length - 1) || outside)) (e.preventDefault(), (outside ? (items[0] ?? notices[0]) : (notices[0] ?? items[0])).focus());
   };
 }
 
@@ -1300,14 +1312,27 @@ const LINGER_MS = 2000;
 const MAX_SHOWN = 3;
 
 /**
+ * The notices on screen, of `ordered` (oldest first): never more than MAX_SHOWN. Those the author is pointing at
+ * or in keep their place, so a new arrival never pulls one from under them, and the newest take the rest.
+ */
+function shownNotices<T extends { id: number }>(ordered: T[], held: (id: number) => boolean): T[] {
+  const engaged = ordered.filter((t) => held(t.id)).slice(-MAX_SHOWN);
+  const room = MAX_SHOWN - engaged.length;
+  const newest = room > 0 ? ordered.filter((t) => !held(t.id)).slice(-room) : [];
+  const shown = new Set([...engaged, ...newest]);
+  return ordered.filter((t) => shown.has(t));
+}
+
+/**
  * Notices with an action (Undo) outlive their store timer while that action cannot be used yet, so it is never
  * lost. While any dialog is open every action notice is held, and one the store has already retired stays out
  * of sight; once the last dialog closes each gets a full RETURN_MS from that moment. While the pointer is over
- * a notice, or focus is in it, it is held too, and goes LINGER_MS after both have left. The store's timer is
+ * any notice, or focus is in it, it is held too, and goes LINGER_MS after both have left. The store's timer is
  * left alone: a notice it removes early is kept here, in the same place on the page, until its time is up.
  */
-function useActionTimes(toasts: ToastItem[], dialogOpen: boolean) {
-  // Every action notice still in play, and when each may go (Infinity while held).
+function useActionTimes(toasts: ToastItem[], dialogOpen: boolean, savedRetired: number) {
+  // Every action notice still in play, and any other the author has pointed at or been in, and when each may go
+  // (Infinity while held).
   const known = useRef(new Map<number, ToastItem>());
   const until = useRef(new Map<number, number>());
   // A notice's time when the pointer or focus arrived, so leaving it never shortens that time.
@@ -1319,6 +1344,8 @@ function useActionTimes(toasts: ToastItem[], dialogOpen: boolean) {
   const round = useRef(new Map<number, number>());
   // Notices waiting for one of the visible slots: their time starts when they get one.
   const waiting = useRef(new Set<number>());
+  // The text of an error that was said again while focus was in it: focus goes on to the one that replaced it.
+  const refocus = useRef<string | null>(null);
   const wasOpen = useRef(dialogOpen);
   const [, setTick] = useState(0);
   const refresh = () => setTick((n) => n + 1);
@@ -1334,6 +1361,14 @@ function useActionTimes(toasts: ToastItem[], dialogOpen: boolean) {
   if (wasOpen.current && !dialogOpen) for (const [id, t] of until.current) if (t === Infinity && !engaged(id)) round.current.set(id, (round.current.get(id) ?? 0) + 1);
   wasOpen.current = dialogOpen;
   for (const t of toasts) if (t.action) known.current.set(t.id, t);
+  // The store takes an error away only for good (dismissed, or said again), and so does a new draft a "saved"
+  // notice: however they are held, neither is kept.
+  for (const t of [...known.current.values()]) {
+    const saved = !t.action && t.kind === 'success' && t.id <= savedRetired;
+    if (live(t.id) || !(t.kind === 'error' || saved)) continue;
+    if (t.kind === 'error' && focused.current.has(t.id)) refocus.current = t.text;
+    forget(t.id);
+  }
   // Worked out while rendering, so a held notice never leaves the page between the store dropping it and this
   // taking it over: the same element stays, and so does any focus in it.
   const now = Date.now();
@@ -1343,7 +1378,11 @@ function useActionTimes(toasts: ToastItem[], dialogOpen: boolean) {
       // Nothing behind a dialog is pointed at or focused: a notice the dialog hid gets no leave event.
       hovered.current.clear();
       focused.current.clear();
-      for (const id of known.current.keys()) if (inPlay(id)) until.current.set(id, Infinity);
+      for (const [id, t] of known.current) {
+        // Only an action waits for the dialog: any other notice has no time left once nothing is holding it.
+        if (!t.action) until.current.set(id, 0);
+        else if (inPlay(id)) until.current.set(id, Infinity);
+      }
     } else {
       // The last dialog closed: everything it held back gets a full window from now.
       const end = Date.now() + RETURN_MS;
@@ -1368,6 +1407,7 @@ function useActionTimes(toasts: ToastItem[], dialogOpen: boolean) {
   });
   return {
     kept,
+    refocus,
     key: (t: ToastItem) => `${t.id}.${round.current.get(t.id) ?? 0}`,
     held: engaged,
     /** Of `candidates` (every notice that could show), those not in `visible` wait, and their time starts
@@ -1387,10 +1427,10 @@ function useActionTimes(toasts: ToastItem[], dialogOpen: boolean) {
       if (changed) refresh();
     },
     engage: (t: ToastItem, how: 'hover' | 'focus', on: boolean) => {
-      if (!t.action) return;
       const set = how === 'hover' ? hovered.current : focused.current;
       if (on) {
         if (set.has(t.id)) return;
+        known.current.set(t.id, t);
         if (!engaged(t.id)) {
           const was = until.current.get(t.id) ?? 0;
           before.current.set(t.id, Number.isFinite(was) ? was : 0);
@@ -1399,12 +1439,13 @@ function useActionTimes(toasts: ToastItem[], dialogOpen: boolean) {
         until.current.set(t.id, Infinity);
       } else {
         if (!set.delete(t.id) || engaged(t.id)) return;
-        // While a dialog is open the notice stays held; its window starts when the dialog closes.
-        if (!openDialogs.length) until.current.set(t.id, Math.max(before.current.get(t.id) ?? 0, Date.now() + LINGER_MS));
+        // While a dialog is open an action notice stays held; its window starts when the dialog closes.
+        if (!openDialogs.length || !t.action) until.current.set(t.id, Math.max(before.current.get(t.id) ?? 0, Date.now() + LINGER_MS));
         refresh();
       }
     },
-    used: (t: ToastItem) => {
+    /** The notice is finished with (its action ran, or it was dismissed): nothing here brings it back. */
+    forget: (t: ToastItem) => {
       forget(t.id);
       refresh();
     }
@@ -1417,18 +1458,26 @@ export function Toasts() {
   const snapshot = useStore((s) => s.snapshot);
   const aiRunId = useStore((s) => (s.snapshot?.aiBusy ? (s.snapshot.aiRunId ?? null) : null));
   const dialogOpen = useDialogOpen();
-  const times = useActionTimes(toasts, dialogOpen);
+  const savedRetired = useStore((s) => s.savedRetired);
+  const times = useActionTimes(toasts, dialogOpen, savedRetired);
   // A kept notice is shown only once no dialog holds it back, and only while its action still applies; it then
   // returns as a new status message, so its Undo is announced again.
-  const actionable = (t: ToastItem) => !!t.action && (!t.action.undoes || undoAvailable(t.action.undoes, snapshot));
-  // In the order they arrived (a kept notice stays where it was), and at most the newest few, so the band at
-  // the bottom stays small; any older ones show as the newer ones go.
-  const ordered = [...toasts, ...(dialogOpen ? [] : times.kept.filter(actionable))].sort((a, b) => a.id - b.id);
-  // The newest few, plus any the author is pointing at or in, so a new arrival never pulls one from under them.
-  const newest = new Set(ordered.slice(-MAX_SHOWN).map((t) => t.id));
-  const shownToasts = ordered.filter((t) => newest.has(t.id) || times.held(t.id));
+  const actionable = ({ action: a }: ToastItem) => !!a && (!a.undoes || undoAvailable(a.undoes, snapshot)) && (!a.stops || aiRunId === a.stops) && (!a.opening || snapshot?.workspaceKey === a.opening);
+  // A notice the store has retired stays while a dialog's hold or the author's pointer or focus keeps it.
+  const kept = times.kept.filter((t) => (!dialogOpen || times.held(t.id)) && (!t.action || actionable(t)));
+  // In the order they arrived (a kept notice stays where it was), and at most a few, so the band at the bottom
+  // stays small; any others show as those go.
+  const ordered = [...toasts, ...kept].sort((a, b) => a.id - b.id);
+  const shownToasts = shownNotices(ordered, times.held);
   useEffect(() => {
     if (!dialogOpen) times.slots(ordered, new Set(shownToasts.map((t) => t.id)));
+  });
+  useLayoutEffect(() => {
+    const text = times.refocus.current;
+    if (text === null) return;
+    times.refocus.current = null;
+    const again = [...shownToasts].reverse().find((t) => t.kind === 'error' && t.text === text);
+    if (again) document.getElementById(`toast-text-${again.id}`)?.parentElement?.querySelector<HTMLElement>('.toast-dismiss')?.focus();
   });
   // The notices' band at the bottom of the window (their height plus clearance), which dialogs stop short of.
   const stack = useRef<HTMLDivElement>(null);
@@ -1448,9 +1497,38 @@ export function Toasts() {
       root.style.removeProperty('--toast-band');
     };
   }, []);
+  // Where focus was before it came into the notices, to go back there once none is left to take it.
+  const cameFrom = useRef<HTMLElement | null>(null);
+  // The dismiss button Enter went down on.
+  const pressed = useRef<EventTarget | null>(null);
+  const dismiss = (t: ToastItem, button: HTMLButtonElement) => {
+    const buttons = () => [...stack.current!.querySelectorAll<HTMLButtonElement>('.toast-dismiss')];
+    const at = buttons().indexOf(button);
+    // Focus in the row goes with it. A press with the pointer leaves focus where it was, so elsewhere it stays.
+    const focused = !!button.closest('.toast')?.contains(document.activeElement);
+    flushSync(() => {
+      times.forget(t);
+      dismissToast(t.id);
+    });
+    if (!focused) return;
+    const left = buttons();
+    const next = left[Math.min(at, left.length - 1)];
+    if (next) return next.focus();
+    const dialog = openDialogs[openDialogs.length - 1];
+    const back = cameFrom.current;
+    if (back?.isConnected && reachable(back) && (!dialog || dialog.contains(back))) back.focus();
+    else if (dialog) (tabStops(dialog)[0] ?? dialog).focus();
+  };
   // Rendered outside the app root, so toasts stay readable (and actionable) while a dialog makes the root inert.
   return createPortal(
-    <div className="toasts" ref={stack}>
+    <div
+      className="toasts"
+      ref={stack}
+      onFocus={(e) => {
+        const from = e.relatedTarget as HTMLElement | null;
+        if (from && !e.currentTarget.contains(from)) cameFrom.current = from;
+      }}
+    >
       <RenameOffer />
       {held.length > 0 && (
         <div className="toast-group" role="region" aria-label="Edits not saved yet">
@@ -1459,7 +1537,8 @@ export function Toasts() {
           ))}
         </div>
       )}
-      <div className="toast-group" role="status" aria-live="polite">
+      {/* Not atomic: only what arrives is read out, never again every notice that is still waiting to be dismissed. */}
+      <div className="toast-group" role="status" aria-live="polite" aria-atomic="false">
         {shownToasts.map((t) => (
           <div
             key={times.key(t)}
@@ -1471,20 +1550,45 @@ export function Toasts() {
             onBlur={(e) => !e.currentTarget.contains(e.relatedTarget as Node) && times.engage(t, 'focus', false)}
           >
             {t.kind === 'error' ? <CircleAlert /> : t.kind === 'success' ? <CircleCheck /> : <Info />}
-            <span className="grow">{t.text}</span>
+            <span className="grow toast-text" id={`toast-text-${t.id}`}>
+              {t.text}
+            </span>
             {/* An Undo whose change has been undone some other way, or whose project has closed, is withdrawn. */}
             {actionable(t) && (
               <button
                 className="btn btn-sm btn-ghost"
                 onClick={() => {
-                  times.used(t);
+                  times.forget(t);
                   t.action!.run();
-                  setToasts(useStore.getState().toasts.filter((x) => x.id !== t.id));
+                  dismissToast(t.id);
                 }}
               >
                 {t.action!.label}
               </button>
             )}
+            <button
+              type="button"
+              className="toast-dismiss"
+              aria-label="Dismiss notice"
+              aria-describedby={`toast-text-${t.id}`}
+              title="Dismiss"
+              onMouseDown={(e) => e.preventDefault()}
+              onClick={(e) => dismiss(t, e.currentTarget)}
+              // Enter dismisses as it is let go, as Space does: dismissing moves focus, and a held key's repeats
+              // would then press whatever took it, which in a dialog can be the button that deletes.
+              onKeyDown={(e) => {
+                if (e.key !== 'Enter') return;
+                e.preventDefault();
+                if (!e.repeat) pressed.current = e.currentTarget;
+              }}
+              onKeyUp={(e) => {
+                if (e.key !== 'Enter' || pressed.current !== e.currentTarget) return;
+                pressed.current = null;
+                e.currentTarget.click();
+              }}
+            >
+              <X />
+            </button>
           </div>
         ))}
       </div>

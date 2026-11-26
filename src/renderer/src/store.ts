@@ -125,7 +125,9 @@ export interface Toast {
   id: number;
   text: string;
   kind: 'info' | 'success' | 'error';
-  action?: { label: string; run: () => void; undoes?: UndoTarget };
+  /** A notice can outlive what its action is for, so the action is withdrawn once that has gone: `stops` names the
+   *  AI request a Stop AI is for, and `opening` the opening of the project whose content the action goes to. */
+  action?: { label: string; run: () => void; undoes?: UndoTarget; stops?: string; opening?: string };
 }
 
 /** One committed change, in the opening of the project it was made in (see `undoAction`). */
@@ -225,6 +227,8 @@ export interface State {
   pendingSave: number;
   modal: Modal;
   toasts: Toast[];
+  /** The newest notice there was when a draft last began: no "saved" notice up to it is kept on screen. */
+  savedRetired: number;
   /** Definition editing mode: the project-owned definition being edited, and in Component Studio how it is shown. */
   definitionMode: DefinitionMode;
   /**
@@ -376,6 +380,7 @@ export const useStore = create<State>((set) => ({
   pendingSave: 0,
   modal: null,
   toasts: [],
+  savedRetired: 0,
   definitionMode: null,
   templateMode: null,
   variantStyle: null,
@@ -608,8 +613,15 @@ export function errorText(e: unknown): string {
 let toastId = 0;
 export function toast(text: string, kind: Toast['kind'] = 'info', action?: Toast['action']) {
   const id = ++toastId;
-  setState({ toasts: [...getState().toasts, { id, text, kind, action }] });
-  setTimeout(() => setState({ toasts: getState().toasts.filter((t) => t.id !== id) }), kind === 'error' ? 7000 : 4000);
+  // An error stays until it is dismissed, so one said again takes the earlier one's place instead of stacking. One
+  // with an action of its own stays beside it: that action can hold something else (the text for Copy text).
+  const repeats = (t: Toast) => kind === 'error' && t.kind === 'error' && t.text === text && (action ? !!action.stops && t.action?.stops === action.stops : !t.action);
+  setState({ toasts: [...getState().toasts.filter((t) => !repeats(t)), { id, text, kind, action }] });
+  if (kind !== 'error') setTimeout(() => dismissToast(id), 4000);
+}
+
+export function dismissToast(id: number) {
+  setState({ toasts: getState().toasts.filter((t) => t.id !== id) });
 }
 
 /** Options for a typed edit (see commitDraft). */
@@ -863,7 +875,9 @@ async function writeTyped(
 function refuseWhileAiBusy(typed: { base: ProjectSnapshot | null; text: string | null; seq: number; rename: PendingRename | null } | null, operations: EditOperation[], label: string): string {
   if (typed?.base && holdEdit(typed.base, operations, label, { text: typed.text, seq: typed.seq, rename: typed.rename })) return HELD_MESSAGE;
   const message = 'The AI is making changes. Stop it to edit manually.';
-  toast(message, 'error', { label: 'Stop AI', run: () => void api.ai.stop() });
+  // The notice outlives the request, so Stop AI is offered only for a request it can name, never a later one.
+  const stops = getState().snapshot?.aiRunId;
+  toast(message, 'error', stops ? { label: 'Stop AI', stops, run: () => void api.ai.stop(stops) } : undefined);
   return message;
 }
 
@@ -1099,6 +1113,7 @@ export function undoAction(r: { entryId?: string; revision: number; workspaceKey
   // History opens at the entry only while its project is still the one open.
   const history = {
     label: 'History',
+    opening: workspaceKey,
     run: () => {
       if (getState().snapshot?.workspaceKey === workspaceKey) setState({ modal: { kind: 'history', entryId } });
     }
@@ -1311,7 +1326,7 @@ export function markDraft(key: string, on: boolean, note?: string) {
   // A new draft retires any "saved" notice still on screen: it no longer describes what you are typing.
   if (on) {
     const toasts = useStore.getState().toasts;
-    if (toasts.some((t) => t.kind === 'success')) useStore.setState({ toasts: toasts.filter((t) => t.kind !== 'success') });
+    useStore.setState({ savedRetired: toastId, ...(toasts.some((t) => t.kind === 'success') ? { toasts: toasts.filter((t) => t.kind !== 'success') } : {}) });
   }
 }
 

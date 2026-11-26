@@ -97,9 +97,10 @@ function ConfirmDialog({ req }: { req: ConfirmRequest }) {
     };
     raf = requestAnimationFrame(hold);
     // A key pressed while focus is still outside goes to the safe choice first, so Enter or Space can never act
-    // on anything else and Tab starts from it. Escape keeps its meaning (stay) through the dialog's own handler.
+    // on anything else and Tab starts from it. Escape keeps its meaning (stay) through the dialog's own handler, and
+    // a notice's dismiss button keeps its keys: it acts on nothing but the notice.
     const onKey = (e: KeyboardEvent) => {
-      if (e.key === 'Escape' || !outside() || openDialogs[openDialogs.length - 1] !== safe.current?.closest('.modal')) return;
+      if (e.key === 'Escape' || (e.target as Element | null)?.closest?.('.toast-dismiss') || !outside() || openDialogs[openDialogs.length - 1] !== safe.current?.closest('.modal')) return;
       e.preventDefault();
       e.stopPropagation();
       safe.current?.focus();

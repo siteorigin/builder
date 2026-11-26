@@ -91,7 +91,7 @@ export async function importAndPlace(opts: { paths?: string[]; base: ProjectSnap
             ? `${lead}: the AI is making changes.`
             : `${lead}. ${sentenceEnd(done.message ?? 'That change could not be applied')}`;
     outcome = { ok: false, message };
-    toast(message, 'error', { label: 'Show image', run: () => showAsset(base.workspaceKey, asset.id) });
+    toast(message, 'error', { label: 'Show image', opening: base.workspaceKey, run: () => showAsset(base.workspaceKey, asset.id) });
     return { kind: 'kept', assetId: asset.id };
   } catch (e) {
     outcome = { ok: false, message: errorText(e) };
