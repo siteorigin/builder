@@ -1,5 +1,5 @@
 import { Fragment, useEffect, useId, useMemo, useRef, useState, useSyncExternalStore, type CSSProperties, type ReactNode } from 'react';
-import { ChevronRight, CircleAlert, CircleCheck, Cloud, Copy, FilePen, FolderCode, Globe, MapPin, MapPinOff, TriangleAlert, Upload } from 'lucide-react';
+import { ChevronRight, CircleAlert, CircleCheck, Cloud, Copy, FilePen, FolderCode, Globe, Info, MapPin, MapPinOff, TriangleAlert, Upload } from 'lucide-react';
 import { describeDraftLink, publicationIds, publicationPlan, type DraftLink } from '@generator/checks';
 import type { PageDoc, ProjectState } from '@shared/types';
 import type { SiteEntry } from '@shared/collections';
@@ -757,6 +757,8 @@ export function ExportModal() {
                 {shown.path && recent[0]?.path !== shown.path && <ExportPath path={shown.path} />}
                 {notesInRow ? (
                   <span>{shown.warnings.length === 1 ? '1 note to review below.' : `${shown.warnings.length} notes to review below.`}</span>
+                ) : shown.ok && !shown.warnings.length ? (
+                  <span className="export-clean">Nothing to fix.</span>
                 ) : (
                   shown.warnings.map((w, i) => (
                     <span className="export-note-line" key={i}>
@@ -767,6 +769,16 @@ export function ExportModal() {
                 {!shown.ok && shown.details && <span className="export-note-next">{shown.message === UNEXPECTED_FAILURE ? 'Try exporting again. If it keeps failing, use Copy details and send the report to your developer or support.' : 'Check the page or component named above in the editor, then export again. If you can’t fix it, use Copy details and send the report to your developer or support.'}</span>}
               </div>
             </div>
+            {/* Guidance for the host, not a note about the website: it is never counted among the notes to review. */}
+            {shown.ok && shown.hosting && (
+              <div className="scope-note info export-hosting-guide" data-testid="export-hosting">
+                <Info aria-hidden />
+                <span className="export-note-body">
+                  <strong>Publishing it</strong>
+                  <span>{shown.hosting}</span>
+                </span>
+              </div>
+            )}
             {/* Outside the alert: opening the report or copying it must not make the result announce itself again. The fix,
                 when there is one, leads the row as the dialog's primary action, and is the next stop after the result. */}
             {!shown.ok && (shown.details ? <BuildDetails text={shown.details} fix={fix} /> : fix && (

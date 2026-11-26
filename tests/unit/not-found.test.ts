@@ -398,11 +398,20 @@ describe('exporting the not-found page', () => {
 
   it('tells the author where to point a host that needs an error-document setting', () => {
     expect(notFoundPath('')).toBe('/404.html');
-    expect(notFoundHostNote('')).toBe(
-      'Addresses your site does not have show its not-found page, 404.html. Netlify, Cloudflare Pages and GitHub Pages use it automatically when they publish the exported website as it is. On other hosts, set the 404 error document to /404.html (on Apache: ErrorDocument 404 /404.html).'
+    expect(notFoundHostNote('', 'cloudflare')).toBe(
+      'Addresses your site does not have show its not-found page, 404.html. Cloudflare Pages, Netlify and Vercel use it automatically when they publish the exported website as it is. On another host, set the 404 error document to /404.html (on Apache: ErrorDocument 404 /404.html).'
     );
-    expect(notFoundHostNote('/studio')).toContain('set the 404 error document to /studio/404.html (on Apache: ErrorDocument 404 /studio/404.html).');
-    expect(notFoundHostNote('/a/b-c')).toContain('ErrorDocument 404 /a/b-c/404.html');
+    expect(notFoundHostNote('/studio', 'cloudflare')).toContain('set the 404 error document to /studio/404.html (on Apache: ErrorDocument 404 /studio/404.html).');
+    expect(notFoundHostNote('/a/b-c', 'cloudflare')).toContain('ErrorDocument 404 /a/b-c/404.html');
+  });
+
+  it('#817: says only what applies to the host the Redirects setting names', () => {
+    const netlify = notFoundHostNote('', 'netlify');
+    expect(netlify).toBe('Addresses your site does not have show its not-found page, 404.html. Netlify uses it automatically when it publishes the exported website as it is.');
+    const vercel = notFoundHostNote('/studio', 'vercel');
+    expect(vercel).toBe('Addresses your site does not have show its not-found page, 404.html. Vercel uses it automatically when it publishes the exported website as it is.');
+    for (const note of [netlify, vercel]) expect(note).not.toMatch(/Cloudflare|GitHub|error document|Apache/);
+    expect(notFoundHostNote('', 'cloudflare')).not.toMatch(/GitHub/);
   });
 
   it('reads 404.html only as a plain file, and stops a build that has a 404.html of its own', async () => {

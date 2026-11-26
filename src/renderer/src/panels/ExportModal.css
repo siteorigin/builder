@@ -151,6 +151,10 @@
   .export-outcome { display: flex; flex-direction: column; }
   .export-result { padding: 10px 12px; }
   .export-result > svg { margin-top: 2px; }
+  .export-hosting-guide { margin-top: 8px; padding: 10px 12px; }
+  .export-hosting-guide > svg { margin-top: 2px; }
+  .export-hosting-guide .export-note-body { gap: 2px; }
+  .export-hosting-guide strong { color: var(--text); }
   .scope-note.shared.export-result { box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--green) 22%, transparent); }
   .scope-note.shared.export-result .export-note-body { gap: 2px; }
   .scope-note.shared.export-result .export-note-body > span:not(.export-path) { color: var(--text-2); }

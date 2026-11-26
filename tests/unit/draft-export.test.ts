@@ -144,6 +144,9 @@ describe('exporting a project with a draft', () => {
     env.pick = async () => out;
     const r = await c.exportStatic('folder', shown);
     expect(r).toMatchObject({ ok: true });
+    // #817: the hosting guidance is for the host the Redirects setting names, and is not a warning.
+    expect(r.hosting).toBe('Addresses your site does not have show its not-found page, 404.html. Vercel uses it automatically when it publishes the exported website as it is.');
+    expect(r.warnings.filter((w) => /404\.html/.test(w))).toEqual([]);
     expect(readFileSync(join(r.path!, '_redirects'), 'utf8').split('\n').filter((l) => l && !l.startsWith('#'))).toEqual(['/team/ /about/ 301', '/team /about/ 301']);
     expect(JSON.parse(readFileSync(join(r.path!, 'vercel.json'), 'utf8'))).toEqual({
       redirects: [
@@ -240,7 +243,9 @@ describe('exporting a project with a draft', () => {
     const ok = await c.buildStaticTo(join(temp('out'), 'site'));
     expect(ok.ok).toBe(true);
     expect(readFileSync(join(ok.path!, '404.html'), 'utf8')).toContain('so-not-found__heading');
-    expect(ok.warnings.at(-1)).toMatch(/^Addresses your site does not have show its not-found page, 404\.html\..* set the 404 error document to \/404\.html /);
+    // #817: how the host shows the page is guidance beside the notes, never one of them.
+    expect(ok.hosting).toMatch(/^Addresses your site does not have show its not-found page, 404\.html\. Cloudflare Pages, Netlify and Vercel .* set the 404 error document to \/404\.html /);
+    expect([...ok.warnings, ...(ok.notes ?? []).map((n) => n.message)].filter((w) => /not-found page, 404\.html\.|error document/.test(w))).toEqual([]);
     mkdirSync(join(dir, 'static'), { recursive: true });
     writeFileSync(join(dir, 'static/404.html'), '<p>Our old page</p>');
     const dest = join(temp('out'), 'site');

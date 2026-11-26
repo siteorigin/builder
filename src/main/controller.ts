@@ -16,6 +16,7 @@ import { websiteFormNotes, type Diagnostic } from '@engine/validate';
 import { basePath, generateManagedComponent, generatePage, defFile, liveRedirects, publishedState, siteEntries } from '@generator/index';
 import { archivePages } from '@shared/archives';
 import { placeholderImageCount } from '@generator/checks';
+import { redirectHost } from '@generator/host-redirects';
 import type { BuildFailureContext } from './build-failure';
 import { zipDirectory } from './zip';
 import { NOT_A_PROJECT_ZIP, readProjectZip, unpackProject, WEBSITE_ZIP, ZipError } from './unzip';
@@ -2833,16 +2834,17 @@ export class Controller {
     const exported = `${pages} page${pages === 1 ? '' : 's'}${entries ? ` and ${entries} collection entr${entries === 1 ? 'y' : 'ies'}` : ''}`;
     const problem = await this.publish(s, out, dest, format);
     if (problem) return { ok: false, message: problem, warnings: warnings() };
-    warn(notFoundHostNote(basePath(state)));
+    // How the host shows the not-found page is guidance, not a warning: it goes beside the notes, never among them.
+    const hosting = notFoundHostNote(basePath(state), redirectHost(live.site));
     const exportedAt = new Date().toISOString();
     this.exportPaths.add(dest);
     if (format === 'zip') {
       this.recordExport(s, { kind: 'site', format, path: dest, revision, exportedAt, notes });
-      return { ok: true, path: dest, message: `Exported ${exported} as a ZIP file.`, warnings: warnings(), notes, revision };
+      return { ok: true, path: dest, message: `Exported ${exported} as a ZIP file.`, warnings: warnings(), notes, revision, hosting };
     }
     // The export is done either way; a preview that cannot start only loses the preview button.
     const previewUrl = await this.previewAndRecord(s, { kind: 'site', format, path: dest, revision, exportedAt, notes }, basePath(state));
-    return { ok: true, path: dest, message: `Exported ${exported}.`, warnings: warnings(), notes, revision, previewUrl };
+    return { ok: true, path: dest, message: `Exported ${exported}.`, warnings: warnings(), notes, revision, previewUrl, hosting };
   }
 
   /**

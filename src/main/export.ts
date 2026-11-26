@@ -1303,10 +1303,17 @@ export function notFoundAddressWarning(html: string): string | null {
     : null;
 }
 
-/** What an author needs to know to have their host show the not-found page, for a site published under `base`. */
-export function notFoundHostNote(base: string): string {
+/**
+ * What an author needs to know to have their host show the not-found page, for a site published under `base` on the
+ * host its redirect rules are written for. Information, not a warning: nothing in the project needs fixing. The hosts
+ * named are the ones the Redirects setting offers; the default is Cloudflare Pages or another host.
+ */
+export function notFoundHostNote(base: string, host: RedirectHost): string {
   const path = notFoundPath(base);
-  return `Addresses your site does not have show its not-found page, ${NOT_FOUND_FILE}. Netlify, Cloudflare Pages and GitHub Pages use it automatically when they publish the exported website as it is. On other hosts, set the 404 error document to ${path} (on Apache: ErrorDocument 404 ${path}).`;
+  const page = `Addresses your site does not have show its not-found page, ${NOT_FOUND_FILE}.`;
+  if (host === 'netlify') return `${page} Netlify uses it automatically when it publishes the exported website as it is.`;
+  if (host === 'vercel') return `${page} Vercel uses it automatically when it publishes the exported website as it is.`;
+  return `${page} Cloudflare Pages, Netlify and Vercel use it automatically when they publish the exported website as it is. On another host, set the 404 error document to ${path} (on Apache: ErrorDocument 404 ${path}).`;
 }
 
 /**
