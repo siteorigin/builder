@@ -1,6 +1,6 @@
 import './PostsPanel.css';
 import { useEffect, useId, useMemo, useRef, useState, type KeyboardEvent as ReactKeyboardEvent } from 'react';
-import { Bold, Eye, Heading2, Heading3, Heading4, ImagePlus, Italic, Link, List, ListChecks, ListOrdered, Newspaper, Pilcrow, Quote, Send, Unlink, Undo2 } from 'lucide-react';
+import { Bold, Check, CircleAlert, Clock, Eye, FileX, Heading2, Heading3, Heading4, ImagePlus, Italic, Link, List, ListChecks, ListOrdered, Newspaper, Pilcrow, Quote, Redo2, Send, TriangleAlert, Unlink, Undo2 } from 'lucide-react';
 import type { Collection, EntryDoc, ImageValue, LinkRel, LinkValue, ProjectState, RichText } from '@shared/types';
 import type { ProjectSnapshot } from '@shared/api';
 import type { SeoSubject } from '@shared/seo';
@@ -13,8 +13,8 @@ import { newId } from '@shared/ids';
 import { normalizeRichText } from '@engine/values';
 import { EngineError } from '@engine/tree';
 import { sortAssets } from '@shared/asset-order';
-import { applyOps, applyWith, commitIfUnchanged, commitOps, getState, markDraft, projectHistory, setState, toast, useStore, type CheckedOutcome, type PendingEdit, type PostRef } from '../store';
-import { DraftInput, Field, Modal } from '../components/ui';
+import { applyOps, applyWith, commitIfUnchanged, commitOps, confirmDialog, getState, markDraft, projectHistory, setState, toast, useStore, type CheckedOutcome, type PendingEdit, type PostRef } from '../store';
+import { DraftInput, Field, Modal, Section } from '../components/ui';
 import { RevisionDateField } from '../components/SeoFields';
 import { LinkRelControls } from '../components/LinkRelControls';
 import { seoSummary } from '../lib/sharing';
@@ -61,18 +61,29 @@ function draftOutcome(o: CheckedOutcome): DraftSaveOutcome {
   }
 }
 
-/** What the problem bar says about text that is not saved. */
-function problemText(p: DraftProblem): string {
+/** What the problem note says about text that is not saved, of the entry called `noun` ("post", "case study"). */
+function problemText(p: DraftProblem, noun = 'post'): string {
   switch (p.kind) {
     case 'busy':
       return 'The AI is changing the site. Your text is saved as soon as it finishes.';
     case 'changed':
-      return 'This post’s text was changed somewhere else while you were writing. Keep yours, or show the saved text instead.';
+      return `This ${noun}’s text was changed somewhere else while you were writing. Keep yours, or review the saved text and choose it instead.`;
     case 'gone':
-      return 'This post is no longer in the project. Your text is still here: copy it to keep it, or let it go.';
+      return `This ${noun} is no longer in the project. Your text is still here: copy it to keep it, or let it go.`;
     default:
-      return `Your text could not be saved${p.message ? `: ${p.message}` : '.'} Change it and it is tried again.`;
+      return `Your text could not be saved${p.message ? `: ${p.message}` : '.'} Try again now, or keep writing: it is tried again after your next change.`;
   }
+}
+
+/** Whether the caret, or any of the selection, is in a link of the text. */
+function linkAtCaret(root: HTMLElement): boolean {
+  const sel = document.getSelection();
+  if (!sel?.rangeCount) return false;
+  const at = (n: Node | null) => (n instanceof Element ? n : n?.parentElement)?.closest('a[href]');
+  const a = at(sel.anchorNode) ?? at(sel.focusNode);
+  if (a && root.contains(a)) return true;
+  const range = sel.getRangeAt(0);
+  return !range.collapsed && [...root.querySelectorAll('a[href]')].some((x) => range.intersectsNode(x));
 }
 
 /**
@@ -117,6 +128,8 @@ function PostEditor({ post, hidden }: { post: PostRef; hidden: boolean }) {
   const { entry, collection } = last.current;
   const devUrl = runtime.state === 'ready' ? runtime.url : null;
   const root = useRef<HTMLDivElement>(null);
+  /** The page: the title, the fields and the text. */
+  const pageRef = useRef<HTMLElement>(null);
   /** The editable element, kept after React lets go of it: a writer going away still saves what it held. */
   const rootEl = useRef<HTMLDivElement | null>(null);
   /** The project this writer was opened in. */
@@ -140,12 +153,22 @@ function PostEditor({ post, hidden }: { post: PostRef; hidden: boolean }) {
   const caretAfterHistory = useRef<ArticleCaret | null>(null);
   const [status, setStatus] = useState<{ dirty: boolean; saving: boolean; problem: DraftProblem | null }>({ dirty: false, saving: false, problem: null });
   const [dialog, setDialog] = useState<Dialog>(null);
+  /** The text saved elsewhere, shown to read before the author chooses it over theirs. */
+  const [reviewing, setReviewing] = useState(false);
   /**
    * Whether the text editor shows: while the collection's entries have text (#675), and while it holds text not saved
    * yet, so entry text turned off meanwhile never takes away what was typed. Turned on again, it shows the saved text.
    */
   const bodyOn = collectionHasBody(collection.settings) || status.dirty || !!status.problem;
-  const [pressed, setPressed] = useState<{ bold: boolean; italic: boolean; block: string }>({ bold: false, italic: false, block: 'p' });
+  const [pressed, setPressed] = useState<{ bold: boolean; italic: boolean; block: string; link: boolean }>({ bold: false, italic: false, block: 'p', link: false });
+  /** Changes to the post's fields (title, date…) on their way, for the bar's save state. */
+  const [fieldsSaving, setFieldsSaving] = useState(0);
+  /** Whether a field of the post holds text it could not save (marked invalid beside it), for the bar and the note. */
+  const [fieldHeld, setFieldHeld] = useState(false);
+  /** Whether a field of the post (not the text) holds typing it has not committed yet: it commits as it loses focus. */
+  const [fieldEditing, setFieldEditing] = useState(false);
+  /** The formatting button that takes Tab into the toolbar: one stop, the arrow keys move between them (roving). */
+  const [toolAt, setToolAt] = useState('p');
   const draftKey = `post-text:${post.entryId}`;
 
   const draft = useMemo(
@@ -168,7 +191,7 @@ function PostEditor({ post, hidden }: { post: PostRef; hidden: boolean }) {
           }
           let committed: Promise<unknown> = Promise.resolve();
           // One writer's steps are its own: a post opened again starts steps no earlier writer's typing joins.
-          const outcome = commitIfUnchanged(from, () => (committed = commitOps([{ type: 'entry.update', collectionId: post.collectionId, entryId: post.entryId, body }], 'Edit post text', `post-text:${post.entryId}:${instance.current}:${step}`)));
+          const outcome = commitIfUnchanged(from, () => (committed = commitOps([{ type: 'entry.update', collectionId: post.collectionId, entryId: post.entryId, body }], `Edit ${entryNounLower(from.state.collections[post.collectionId])} text`, `post-text:${post.entryId}:${instance.current}:${step}`)));
           // Followed as a save in flight: Save and leaving the project wait for it.
           trackApply(outcome.then((o) => (o.kind === 'applied' || o.kind === 'unchanged' ? { ok: true } : { ok: false, message: o.kind === 'failed' ? o.message : undefined })));
           const o = await outcome;
@@ -255,7 +278,7 @@ function PostEditor({ post, hidden }: { post: PostRef; hidden: boolean }) {
   }, [devUrl, state.assets]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // Unsaved text is a draft the whole editor knows of: Save and leaving the project wait for it, and say so if it is left.
-  useEffect(() => markDraft(draftKey, status.dirty, status.problem ? problemText(status.problem) : undefined), [draftKey, status.dirty, status.problem]);
+  useEffect(() => markDraft(draftKey, status.dirty, status.problem ? problemText(status.problem, entryNounLower(collection)) : undefined), [draftKey, status.dirty, status.problem]); // eslint-disable-line react-hooks/exhaustive-deps
   useEffect(() => {
     const offFlush = registerFlush(() => draft.flush());
     const offOpen = setOpenWriter(
@@ -306,16 +329,31 @@ function PostEditor({ post, hidden }: { post: PostRef; hidden: boolean }) {
       if (!el || !sel?.anchorNode || !el.contains(sel.anchorNode)) return;
       const block = blockAtCaret(el);
       const tag = block?.tagName.toLowerCase() ?? 'p';
-      setPressed({ bold: document.queryCommandState('bold'), italic: document.queryCommandState('italic'), block: tag === 'ul' && block?.classList.contains('so-rich--check') ? 'check' : tag });
+      setPressed({ bold: document.queryCommandState('bold'), italic: document.queryCommandState('italic'), block: tag === 'ul' && block?.classList.contains('so-rich--check') ? 'check' : tag, link: linkAtCaret(el) });
     };
     document.addEventListener('selectionchange', onSel);
     return () => document.removeEventListener('selectionchange', onSel);
+  }, []);
+  // A field holding text it could not save (too long, an address another page has) marks itself invalid beside it:
+  // the bar says so too, wherever the author has scrolled. A link's section picker marking a section gone is not counted.
+  useEffect(() => {
+    const page = pageRef.current;
+    if (!page) return;
+    const check = () => setFieldHeld([...page.querySelectorAll('[aria-invalid="true"]')].some((el) => !el.closest('.insp-link-row')));
+    check();
+    const watch = new MutationObserver(check);
+    watch.observe(page, { subtree: true, childList: true, attributes: true, attributeFilter: ['aria-invalid'] });
+    return () => watch.disconnect();
   }, []);
 
   /** Follow a change to the post on its way, so Publish and Save draft wait for it. */
   const track = <T,>(p: Promise<T>): Promise<T> => {
     fieldCommits.current.add(p);
-    void p.finally(() => fieldCommits.current.delete(p));
+    setFieldsSaving((n) => n + 1);
+    void p.finally(() => {
+      fieldCommits.current.delete(p);
+      setFieldsSaving((n) => Math.max(0, n - 1));
+    });
     return p;
   };
   /**
@@ -370,7 +408,8 @@ function PostEditor({ post, hidden }: { post: PostRef; hidden: boolean }) {
    */
   const command = (run: () => void) => {
     const el = root.current;
-    if (!el || draft.isComposing || unreadable || isReadOnlyCollection(getState().snapshot?.state.collections[post.collectionId] ?? collection)) return;
+    // A deleted entry's text is only kept to copy: nothing changes it.
+    if (!el || draft.isComposing || unreadable || draft.problem?.kind === 'gone' || isReadOnlyCollection(getState().snapshot?.state.collections[post.collectionId] ?? collection)) return;
     if (!el.contains(document.getSelection()?.anchorNode ?? null)) el.focus();
     draft.checkpoint(false);
     run();
@@ -400,9 +439,17 @@ function PostEditor({ post, hidden }: { post: PostRef; hidden: boolean }) {
   };
 
   const openLink = () => {
+    if (draft.problem?.kind === 'gone' || isReadOnlyCollection(getState().snapshot?.state.collections[post.collectionId] ?? collection)) return;
     const sel = document.getSelection();
-    const range = sel?.rangeCount && root.current?.contains(sel.anchorNode) ? sel.getRangeAt(0).cloneRange() : null;
+    let range = sel?.rangeCount && root.current?.contains(sel.anchorNode) ? sel.getRangeAt(0).cloneRange() : null;
     const a = (sel?.anchorNode instanceof Element ? sel.anchorNode : sel?.anchorNode?.parentElement)?.closest('a');
+    // The caret in a link edits that link: its words are chosen, so applying changes it in place, formatting kept.
+    if (range?.collapsed && a && root.current?.contains(a)) {
+      range = document.createRange();
+      range.selectNodeContents(a);
+      sel!.removeAllRanges();
+      sel!.addRange(range.cloneRange());
+    }
     const href = a && root.current?.contains(a) ? (a.getAttribute('href') ?? '') : '';
     // The destination the link keeps, while its address is the one shown with it (see post-dom).
     let kept: LinkValue | null = null;
@@ -425,7 +472,8 @@ function PostEditor({ post, hidden }: { post: PostRef; hidden: boolean }) {
       page: pageLink?.type === 'page' ? pageLink.target : firstPage,
       entry: entryLink || posts[0]?.id || '',
       index: indexLink || (pageLink?.type === 'collection' ? pageLink.target : '') || indexes[0]?.id || '',
-      url: pageLink || entryLink || indexLink ? '' : kept ? linkToTarget(kept, state.pages) : href,
+      // A web, email or phone link keeps its address in the field; only a page, an entry or an index is chosen from a list.
+      url: (pageLink && (pageLink.type === 'page' || pageLink.type === 'collection')) || entryLink || indexLink ? '' : kept ? linkToTarget(kept, state.pages) : href,
       // The anchor's own rel, which is what the post keeps (see post-dom), and whether it opens a new tab, which the
       // browser's new link for the words would otherwise lose.
       rel: a && root.current?.contains(a) ? relsFromAttribute(a.getAttribute('rel')) : [],
@@ -477,7 +525,7 @@ function PostEditor({ post, hidden }: { post: PostRef; hidden: boolean }) {
 
   const openImage = (fig: HTMLElement | null) => {
     const el = root.current;
-    if (!el || isReadOnlyCollection(getState().snapshot?.state.collections[post.collectionId] ?? collection)) return;
+    if (!el || draft.problem?.kind === 'gone' || isReadOnlyCollection(getState().snapshot?.state.collections[post.collectionId] ?? collection)) return;
     const at = fig ? null : blockAtCaret(el);
     const d = fig?.dataset;
     setDialog({ kind: 'image', fig, at, value: { assetId: d?.assetId ?? null, alt: d?.alt ?? '', ...(d?.decorative ? { decorative: true } : {}) }, caption: d?.caption ?? '' });
@@ -563,7 +611,7 @@ function PostEditor({ post, hidden }: { post: PostRef; hidden: boolean }) {
     const r = await update({ draft: draftOn }, draftOn ? `Move ${noun} to drafts` : `Publish ${noun}`);
     // A record without a page of its own is on the website wherever a list of its collection shows it.
     const where = hasDetailPages(collection.settings) ? 'it is on the website from the next export.' : `lists of ${collection.settings.name} show it from the next export.`;
-    if (r) toast(draftOn ? 'Moved to drafts: it is no longer on the website.' : `Published: ${where}`, 'success');
+    if (r) toast(draftOn ? 'Moved to drafts: it comes off the website at the next export.' : `Published: ${where}`, 'success');
   };
   const saveDraft = async () => {
     if (await saveAll()) toast(entry.draft === false ? 'Saved.' : 'Saved as a draft.', 'success');
@@ -573,7 +621,7 @@ function PostEditor({ post, hidden }: { post: PostRef; hidden: boolean }) {
     const key = getState().snapshot?.workspaceKey;
     const away = putAway.current;
     // The preview shows what is saved: text that could not be saved stays in view with its note.
-    if (!(await saveAll())) return notSaved('Part of the post is not saved yet, so the preview would not show it.');
+    if (!(await saveAll())) return notSaved(`Part of the ${entryNounLower(collection)} is not saved yet, so the preview would not show it.`);
     // Another post (or project) opened while this one saved: the preview was this post's, so it does not start (#578).
     // Nor once the writer was put away meanwhile (another panel, the SEO view), even if it is back: the author went
     // elsewhere (#700).
@@ -588,7 +636,7 @@ function PostEditor({ post, hidden }: { post: PostRef; hidden: boolean }) {
       const c = getState().snapshot?.state.collections[post.collectionId];
       const e = c && Object.hasOwn(c.entries, post.entryId) ? c.entries[post.entryId] : undefined;
       const route = c && e ? entryRoute(c, e) : undefined;
-      if (route !== undefined && !visitAddress(route)) toast('The preview is starting: the post opens in it once it is ready.', 'info');
+      if (route !== undefined && !visitAddress(route)) toast(`The preview is starting: the ${entryNounLower(c)} opens in it once it is ready.`, 'info');
     });
   };
 
@@ -611,8 +659,35 @@ function PostEditor({ post, hidden }: { post: PostRef; hidden: boolean }) {
     agreed.current = e.body;
     draft.reset();
   };
-  /** The post is gone and the author lets its unsaved text go too. */
-  const discard = () => draft.reset();
+  /** The post is gone and the author lets its unsaved text go too: asked first, since nothing could bring it back. */
+  const discard = async () => {
+    const ok = await confirmDialog({
+      title: 'Discard your text?',
+      body: `This ${entryNounLower(collection)} is no longer in the project, so what you typed is the only copy. Copy it first if you want to keep it.`,
+      confirmLabel: 'Discard text',
+      stayLabel: 'Keep my text',
+      danger: true,
+      icon: 'discard'
+    });
+    if (ok) draft.reset();
+  };
+  /** The post is gone: its unsaved text copied, said either way, so a copy that failed is never taken for one made. */
+  const copyText = () =>
+    void (navigator.clipboard?.writeText(`${pageRef.current?.querySelector<HTMLTextAreaElement>('.post-title-input')?.value ?? entry.title}\n\n${root.current?.innerText ?? ''}`) ?? Promise.reject(new Error('no clipboard'))).then(
+      () => toast('Copied your text. Paste it somewhere to keep it.', 'success'),
+      () => toast('Your text could not be copied. Select it and copy it yourself.', 'error')
+    );
+  /** The field holding text it could not save, in view and focused, its section opened first. */
+  const showHeld = () => {
+    const el = [...(pageRef.current?.querySelectorAll<HTMLElement>('[aria-invalid="true"]') ?? [])].find((x) => !x.closest('.insp-link-row'));
+    if (!el) return;
+    const body = el.closest<HTMLElement>('.section-body[hidden]');
+    if (body?.id) document.querySelector<HTMLButtonElement>(`.section-head[aria-controls="${CSS.escape(body.id)}"]`)?.click();
+    requestAnimationFrame(() => {
+      el.scrollIntoView({ block: 'center' });
+      el.focus({ preventScroll: true });
+    });
+  };
 
   const route = entryRoute(collection, entry) ?? '';
   const filedUnder = collection ? entryTermLabels(collection, entry, 'categories') : [];
@@ -624,6 +699,8 @@ function PostEditor({ post, hidden }: { post: PostRef; hidden: boolean }) {
   const readOnly = isReadOnlyCollection(collection);
   const noun = entryNoun(collection);
   const nounLower = entryNounLower(collection);
+  // The collection's own name in a sentence ("lists of case studies"), an acronym ("FAQs") kept as it is.
+  const pluralLower = /^[A-Z][a-z]/.test(collection.settings.name) ? collection.settings.name[0].toLowerCase() + collection.settings.name.slice(1) : collection.settings.name;
   // One field's value; a link to a section without an anchor comes with the change that gives it one, sent together.
   // An "On this page" link is the entry's own page, which the picker does not know: a section it gives an anchor is the
   // canvas's page, so only the link is kept.
@@ -645,9 +722,11 @@ function PostEditor({ post, hidden }: { post: PostRef; hidden: boolean }) {
         />
       </div>
       {paged && (
-        <Field label="Address" hint={`The last part of ${route}`}>
-          <DraftInput value={entry.slug} onCommit={(v) => (v.trim() ? (v.trim() !== entry.slug ? update({ slug: v.trim() }, `Change ${nounLower} address`) : undefined) : refuse())} />
-        </Field>
+        <div className="post-field-wide">
+          <Field label="Address" hint={`The last part of ${route}`}>
+            <DraftInput value={entry.slug} onCommit={(v) => (v.trim() ? (v.trim() !== entry.slug ? update({ slug: v.trim() }, `Change ${nounLower} address`) : undefined) : refuse())} />
+          </Field>
+        </div>
       )}
       {/* data-entry-field: where Go to form lands, for a layout's form that reads this field (see open-destination). */}
       <div data-entry-field="author" style={{ display: 'contents' }}>
@@ -655,8 +734,8 @@ function PostEditor({ post, hidden }: { post: PostRef; hidden: boolean }) {
           <DraftInput value={entry.author ?? ''} limit={MAX_AUTHOR} placeholder="Who wrote it" onCommit={(v) => (v.trim() !== (entry.author ?? '') ? update({ author: v.trim() || null }, `Change ${nounLower} author`) : undefined)} />
         </Field>
       </div>
-      <div data-entry-field="excerpt" style={{ display: 'contents' }}>
-        <Field label="Excerpt" hint={`A sentence or two for lists of ${structured ? 'entries' : 'posts'} and for search engines.`}>
+      <div data-entry-field="excerpt" className="post-field-wide">
+        <Field label="Excerpt" hint={`A sentence or two for lists of ${pluralLower} and for search engines.`}>
           <DraftInput multiline rows={3} value={entry.excerpt ?? ''} limit={MAX_EXCERPT} onCommit={(v) => (v.trim() !== (entry.excerpt ?? '') ? update({ excerpt: v.trim() || null }, `Change ${nounLower} excerpt`) : undefined)} />
         </Field>
       </div>
@@ -666,67 +745,188 @@ function PostEditor({ post, hidden }: { post: PostRef; hidden: boolean }) {
     </div>
   );
   const values = <EntryValueFields state={state} collection={collection} entry={entry} readOnly={readOnly} set={setValue} refuse={refuse} />;
-  const blockLabel = { p: 'Paragraph', h2: 'Heading 2', h3: 'Heading 3', h4: 'Heading 4', blockquote: 'Quote' } as Record<string, string>;
-  const tools: Array<{ id: string; label: string; icon: React.ReactNode; on?: boolean; run: () => void; gap?: boolean }> = [
+  const blockLabel = { p: 'Paragraph', h2: 'Heading 2', h3: 'Heading 3', h4: 'Heading 4', blockquote: 'Quote', ul: 'Bulleted list', ol: 'Numbered list', check: 'Check list' } as Record<string, string>;
+  // Undo reaches what is typed and not saved yet (it is saved first, as its own step); Redo waits for it.
+  const canUndo = snap.history.canUndo || status.dirty;
+  const canRedo = snap.history.canRedo && !status.dirty;
+  const tools: Array<{ id: string; label: string; keys?: string; icon: React.ReactNode; on?: boolean; off?: boolean; run: () => void; gap?: boolean }> = [
     { id: 'p', label: 'Paragraph', icon: <Pilcrow />, on: pressed.block === 'p' || pressed.block === 'div', run: () => block('p') },
     { id: 'h2', label: 'Heading 2', icon: <Heading2 />, on: pressed.block === 'h2', run: () => block('h2') },
     { id: 'h3', label: 'Heading 3', icon: <Heading3 />, on: pressed.block === 'h3', run: () => block('h3') },
     { id: 'h4', label: 'Heading 4', icon: <Heading4 />, on: pressed.block === 'h4', run: () => block('h4') },
     { id: 'blockquote', label: 'Quote', icon: <Quote />, on: pressed.block === 'blockquote', run: () => block('blockquote') },
-    { id: 'bold', label: 'Bold', icon: <Bold />, on: pressed.bold, run: () => command(() => document.execCommand('bold')), gap: true },
-    { id: 'italic', label: 'Italic', icon: <Italic />, on: pressed.italic, run: () => command(() => document.execCommand('italic')) },
+    { id: 'bold', label: 'Bold', keys: '⌘B', icon: <Bold />, on: pressed.bold, run: () => command(() => document.execCommand('bold')), gap: true },
+    { id: 'italic', label: 'Italic', keys: '⌘I', icon: <Italic />, on: pressed.italic, run: () => command(() => document.execCommand('italic')) },
     { id: 'ul', label: 'Bulleted list', icon: <List />, on: pressed.block === 'ul', run: () => list('ul'), gap: true },
     { id: 'ol', label: 'Numbered list', icon: <ListOrdered />, on: pressed.block === 'ol', run: () => list('ol') },
     { id: 'check', label: 'Check list', icon: <ListChecks />, on: pressed.block === 'check', run: () => list('check') },
-    { id: 'link', label: 'Link', icon: <Link />, run: openLink, gap: true },
-    { id: 'unlink', label: 'Remove link', icon: <Unlink />, run: () => command(() => document.execCommand('unlink')) },
+    { id: 'link', label: pressed.link ? 'Edit link' : 'Link', keys: '⌘K', icon: <Link />, on: pressed.link, run: openLink, gap: true },
+    { id: 'unlink', label: 'Remove link', icon: <Unlink />, off: !pressed.link, run: () => command(() => document.execCommand('unlink')) },
     { id: 'image', label: 'Picture', icon: <ImagePlus />, run: () => openImage(null), gap: true },
-    { id: 'undo', label: 'Undo', icon: <Undo2 />, run: () => void history('undo'), gap: true }
+    { id: 'undo', label: 'Undo', keys: '⌘Z', icon: <Undo2 />, off: !canUndo, run: () => void history('undo'), gap: true },
+    { id: 'redo', label: 'Redo', keys: '⇧⌘Z', icon: <Redo2 />, off: !canRedo, run: () => void history('redo') }
   ];
+  // Groups break together when the toolbar wraps, so Link never sits a row away from Remove link.
+  const groups = tools.reduce<Array<typeof tools>>((all, t) => (t.gap || !all.length ? [...all, [t]] : (all[all.length - 1].push(t), all)), []);
+  // The toolbar is one stop for Tab: the button last moved to, or the first, takes it (WAI-ARIA APG toolbar).
+  const rovingAt = tools.some((t) => t.id === toolAt) ? toolAt : tools[0].id;
+  const onToolsKey = (e: ReactKeyboardEvent<HTMLDivElement>) => {
+    const buttons = [...e.currentTarget.querySelectorAll<HTMLButtonElement>('button[data-tool]')];
+    const from = buttons.indexOf(document.activeElement as HTMLButtonElement);
+    if (from < 0) return;
+    const to = e.key === 'ArrowRight' ? (from + 1) % buttons.length : e.key === 'ArrowLeft' ? (from - 1 + buttons.length) % buttons.length : e.key === 'Home' ? 0 : e.key === 'End' ? buttons.length - 1 : -1;
+    if (to < 0) return;
+    e.preventDefault();
+    setToolAt(buttons[to].dataset.tool!);
+    buttons[to].focus();
+  };
+
+  // The bar's save state: the text and the fields together. A problem is said in words and with an icon, never by grey
+  // text alone; a wait that resolves itself (the AI working) is not a failure.
+  const problem = status.problem;
+  const blocked = !!problem && problem.kind !== 'busy';
+  const saveState: { text: string; tone: 'quiet' | 'busy' | 'problem'; icon?: React.ReactNode } = readOnly
+    ? { text: 'Synced', tone: 'quiet' }
+    : blocked || fieldHeld
+      ? { text: 'Not saved', tone: 'problem', icon: <CircleAlert aria-hidden="true" /> }
+      : problem?.kind === 'busy'
+        ? { text: 'Waiting to save', tone: 'busy', icon: <Clock aria-hidden="true" /> }
+        : status.saving || fieldsSaving > 0
+          ? { text: 'Saving…', tone: 'quiet' }
+          : status.dirty || fieldEditing
+            ? { text: 'Editing…', tone: 'quiet' }
+            : { text: published ? (paged ? 'Saved · changes go live at the next export' : 'Saved · changes show from the next export') : 'Saved', tone: 'quiet', icon: <Check aria-hidden="true" /> };
+  const gone = problem?.kind === 'gone';
+  // What needs everything saved first (Publish, Save draft, Move to drafts, Preview) is off while something cannot be.
+  const held = blocked || fieldHeld;
+  /** Typing in a field of the post (not the text, nor a box that only finds something): the bar says Editing… until it commits. */
+  const typedInField = (e: React.SyntheticEvent) => {
+    const t = e.target as HTMLElement;
+    if (t.closest('.post-body, .post-terms-add, .post-picker') || !t.matches('input, textarea')) return;
+    if ((t as HTMLInputElement).type === 'checkbox' || (t as HTMLInputElement).type === 'radio') return;
+    setFieldEditing(true);
+  };
+  // A short scope for the closed details: when, by whom, and what it is filed under. The address is inside.
+  const detailsScope = [formatArticleDate(entry.publishedAt, state.site.language), entry.author || '', filedUnder.join(', ')].filter(Boolean).join(' · ');
+  const hasFields = Object.keys(collection.settings.fields ?? {}).length > 0;
 
   return (
     <>
-      <div className="post-bar" role="toolbar" aria-label="Post">
-        <span className={`badge ${published ? 'green' : 'amber'}`}>{published ? 'Published' : 'Draft'}</span>
+      <div className="post-bar" role="group" aria-label={`${noun} status and actions`}>
+        {/* A deleted entry is neither: the band says what it is. */}
+        {!gone && (
+          <span className={`badge ${published ? 'green' : ''}`}>
+            {published && <Check aria-hidden="true" />}
+            {published ? 'Published' : 'Draft'}
+          </span>
+        )}
         {readOnly && (
           <span className="badge" data-testid="entry-read-only" title="Synced from an external source: change it there, or detach the collection to edit it here.">
             Read-only
           </span>
         )}
-        <span className="post-save-state" role="status">
-          {readOnly ? 'Synced' : status.problem ? 'Not saved' : status.saving ? 'Saving…' : status.dirty ? 'Editing…' : 'Saved'}
+        <span className={`post-save-state ${saveState.tone}`} role="status">
+          {saveState.icon}
+          {saveState.text}
         </span>
         <span className="grow" />
-        {paged && (
-          <button className="btn btn-sm" onClick={() => void preview()} title={`See the ${nounLower} on the canvas as visitors will, in the site’s header and footer`}>
-            <Eye aria-hidden="true" /> Preview in site
-          </button>
-        )}
-        {readOnly ? null : published ? (
-          <button className="btn btn-sm" onClick={() => void publish(true)} title={`Take the ${nounLower} off the website and keep it as a draft`}>
-            Move to drafts
-          </button>
-        ) : (
-          <>
-            <button className="btn btn-sm" onClick={() => void saveDraft()}>
-              Save draft
-            </button>
-            <button className="btn btn-sm btn-primary" onClick={() => void publish(false)}>
-              <Send aria-hidden="true" /> Publish
-            </button>
-          </>
+        {!gone && (
+          <div className="post-bar-actions">
+            {!readOnly && published && (
+              <button className="btn btn-sm btn-ghost" disabled={held} onClick={() => void publish(true)} title={`Take the ${nounLower} off the website at the next export and keep it as a draft`}>
+                Move to drafts
+              </button>
+            )}
+            {paged && (
+              <button className="btn btn-sm" disabled={held} onClick={() => void preview()} title={`See the ${nounLower} on the canvas as visitors will, in the site’s header and footer`}>
+                <Eye aria-hidden="true" /> Preview in site
+              </button>
+            )}
+            {!readOnly && !published && (
+              <>
+                <button className="btn btn-sm" disabled={held} onClick={() => void saveDraft()}>
+                  Save draft
+                </button>
+                <button className="btn btn-sm btn-primary" disabled={held} onClick={() => void publish(false)}>
+                  <Send aria-hidden="true" /> Publish
+                </button>
+              </>
+            )}
+          </div>
         )}
       </div>
+      {/* What is not saved stays in view above the page, wherever the author has scrolled, with what to do about it. */}
+      {problem && (
+        <div className={`post-problem scope-note ${problem.kind === 'busy' ? 'info' : 'danger'}`} role={problem.kind === 'busy' ? 'status' : 'alert'} data-problem={problem.kind}>
+          {problem.kind === 'busy' ? <Clock aria-hidden="true" /> : problem.kind === 'gone' ? <FileX aria-hidden="true" /> : <TriangleAlert aria-hidden="true" />}
+          <p>{problemText(problem, nounLower)}</p>
+          {problem.kind === 'changed' && (
+            <div className="post-problem-actions">
+              <button className="btn btn-sm btn-primary" onClick={keepMine}>
+                Keep my text
+              </button>
+              <button className="btn btn-sm" onClick={() => setReviewing(true)}>
+                Review the saved text
+              </button>
+            </div>
+          )}
+          {problem.kind === 'failed' && (
+            <div className="post-problem-actions">
+              <button className="btn btn-sm" onClick={() => void draft.retry()}>
+                Try again
+              </button>
+            </div>
+          )}
+          {problem.kind === 'gone' && (
+            <div className="post-problem-actions">
+              <button className="btn btn-sm btn-primary" onClick={copyText}>
+                Copy text
+              </button>
+              <button className="btn btn-sm btn-danger" onClick={() => void discard()}>
+                Discard my text
+              </button>
+            </div>
+          )}
+        </div>
+      )}
+      {fieldHeld && (!problem || problem.kind === 'busy') && (
+        <div className="post-problem scope-note danger" role="alert" data-problem="field">
+          <TriangleAlert aria-hidden="true" />
+          <p>Part of this {nounLower} could not be saved. The note beside it says why.</p>
+          <div className="post-problem-actions">
+            <button className="btn btn-sm" onClick={showHeld}>
+              Show the field
+            </button>
+          </div>
+        </div>
+      )}
+      {unreadable && (
+        <div className="post-problem scope-note danger" role="alert" data-problem="unreadable">
+          <TriangleAlert aria-hidden="true" />
+          <p>{unreadable}</p>
+        </div>
+      )}
       <div className="post-scroll">
-        <article className="post-page">
-          {/* A synced entry is read here and changed in its source: every control below is off, its text included. */}
-          <fieldset
-            className="post-fieldset"
-            disabled={readOnly}
-            // Nothing dropped on a synced entry is imported either: it would be refused once it was.
-            onDropCapture={readOnly ? (e) => (e.preventDefault(), e.stopPropagation()) : undefined}
-            onDragOverCapture={readOnly ? (e) => e.stopPropagation() : undefined}
-          >
+        <article
+          className="post-page"
+          ref={pageRef}
+          onInput={typedInField}
+          // A field commits as it loses focus (or Escape puts its saved text back): from then on the save state is its commit's.
+          onBlur={(e) => {
+            const t = e.target as HTMLElement;
+            if (!t.closest('.post-body') && t.matches('input, textarea')) setFieldEditing(false);
+          }}
+          // Escape puts a field's saved text back: nothing is being edited any more.
+          onKeyDown={(e) => {
+            if (e.key === 'Escape' && !(e.target as HTMLElement).closest('.post-body')) setFieldEditing(false);
+          }}
+          // Nothing dropped on a synced entry is imported either: it would be refused once it was.
+          onDropCapture={readOnly ? (e) => (e.preventDefault(), e.stopPropagation()) : undefined}
+          onDragOverCapture={readOnly ? (e) => e.stopPropagation() : undefined}
+        >
+          {/* A synced entry is read here and changed in its source, and a deleted one has nothing to save its fields to:
+              every field is off. The sections still open, so what they hold can be read. */}
+          <fieldset className="post-fieldset" disabled={readOnly || gone}>
           {readOnly && (
             <p className="post-readonly" role="note">
               Read-only: this {nounLower} is synced from an external source. Change it there, or detach the collection to edit it here.
@@ -738,94 +938,64 @@ function PostEditor({ post, hidden }: { post: PostRef; hidden: boolean }) {
             <div className="post-record">
               {values}
               <PostTermFields post={post} collection={collection} entry={entry} sendAt={sendAt} track={track} refused={refused} />
-              <details className="post-details">
-                <summary>
-                  {formatArticleDate(entry.publishedAt, state.site.language)}
-                  {paged ? ` · ${route}` : ''} · Publication date and more
-                </summary>
-                {details}
-              </details>
             </div>
-          ) : (
-            <>
-              <details className="post-details">
-                <summary>
-                  {formatArticleDate(entry.publishedAt, state.site.language)}
-                  {entry.author ? ` · ${entry.author}` : ''}
-                  {route ? ` · ${route}` : ''}
-                  {filedUnder.length ? ` · ${filedUnder.join(', ')}` : ''}
-                </summary>
-                {details}
-              </details>
-              {Object.keys(collection.settings.fields ?? {}).length > 0 && (
-                <details className="post-details post-custom" open>
-                  <summary>Fields</summary>
-                  {values}
-                </details>
-              )}
-            </>
-          )}
-          {paged && <PostSearchSettings state={state} post={post} collection={collection} entry={entry} update={update} />}
-          {bodyOn && structured && <h3 className="post-record-section">Text</h3>}
+          ) : null}
+          </fieldset>
+          {/* Settings stay closed under the title, each heading saying what it holds, so the text starts high on the page. */}
+          <div className="post-sections">
+            <div className="post-details">
+              <Section id={structured ? 'post-record-publishing' : 'post-details'} title={structured ? 'Publishing' : `${noun} details`} scope={structured ? [formatArticleDate(entry.publishedAt, state.site.language), paged ? route : ''].filter(Boolean).join(' · ') : detailsScope} defaultOpen={false} keepMounted>
+                <fieldset className="post-fieldset" disabled={readOnly || gone}>
+                  {!structured && hasFields && <div className="post-custom">{values}</div>}
+                  {details}
+                </fieldset>
+              </Section>
+            </div>
+            {paged && <PostSearchSettings state={state} post={post} collection={collection} entry={entry} update={update} off={readOnly || gone} />}
+          </div>
+          <fieldset className="post-fieldset" disabled={readOnly || gone}>
+          {bodyOn && structured && <div className="post-record-section field-label">Text</div>}
           {bodyOn && (
           <>
-          <div className="post-tools" role="toolbar" aria-label="Formatting">
-            {tools.map((t) => (
+          <div className="post-tools" role="toolbar" aria-label="Formatting" onKeyDown={onToolsKey}>
+            {groups.map((g, i) => (
+              <span key={i} className="post-tools-group">
+            {g.map((t) => (
               <button
                 key={t.id}
                 type="button"
-                className={`icon-btn sm${t.gap ? ' gap' : ''}`}
+                data-tool={t.id}
+                className={`icon-btn${t.gap ? ' gap' : ''}`}
                 aria-label={t.label}
-                title={t.label}
+                title={t.keys ? `${t.label} (${t.keys})` : t.label}
                 aria-pressed={t.on === undefined ? undefined : t.on}
+                // Off, but still reachable with the arrow keys, so the toolbar never loses its one stop.
+                aria-disabled={t.off || undefined}
+                tabIndex={t.id === rovingAt ? 0 : -1}
                 // Keeps the caret and the selection in the text.
                 onMouseDown={(e) => e.preventDefault()}
-                onClick={t.run}
+                onFocus={() => setToolAt(t.id)}
+                onClick={() => !t.off && t.run()}
               >
                 {t.icon}
               </button>
+            ))}
+              </span>
             ))}
             <span className="post-block-name" aria-hidden="true">
               {blockLabel[pressed.block] ?? ''}
             </span>
           </div>
-          {status.problem && (
-            <div className={`post-problem ${status.problem.kind}`} role="alert">
-              <p>{problemText(status.problem)}</p>
-              {status.problem.kind === 'changed' && (
-                <div className="post-problem-actions">
-                  <button className="btn btn-sm btn-primary" onClick={keepMine}>
-                    Keep my text
-                  </button>
-                  <button className="btn btn-sm" onClick={showSaved}>
-                    Show the saved text
-                  </button>
-                </div>
-              )}
-              {status.problem.kind === 'gone' && (
-                <div className="post-problem-actions">
-                  <button className="btn btn-sm btn-primary" onClick={() => void navigator.clipboard?.writeText(root.current?.innerText ?? '').catch(() => undefined)}>
-                    Copy text
-                  </button>
-                  <button className="btn btn-sm btn-danger" onClick={discard}>
-                    Discard it
-                  </button>
-                </div>
-              )}
-            </div>
-          )}
-          {unreadable && (
-            <div className="post-problem" role="alert">
-              <p>{unreadable}</p>
-            </div>
-          )}
           <div
             ref={root}
             className="post-body"
-            contentEditable={!unreadable && !readOnly}
+            contentEditable={!unreadable && !readOnly && !gone}
             suppressContentEditableWarning
             role="textbox"
             aria-multiline="true"
+            // Read only (a deleted entry's text, kept to copy): still reached with Tab and selectable.
+            aria-readonly={readOnly || gone || undefined}
+            tabIndex={gone ? 0 : undefined}
             aria-label={`${noun} text`}
             spellCheck
             onInput={() => draft.input()}
@@ -854,6 +1024,17 @@ function PostEditor({ post, hidden }: { post: PostRef; hidden: boolean }) {
           </fieldset>
         </article>
       </div>
+      {reviewing && problem?.kind === 'changed' && (
+        <SavedTextDialog
+          noun={nounLower}
+          body={postAt(state, post)?.body}
+          state={state}
+          devUrl={devUrl}
+          onClose={() => setReviewing(false)}
+          onKeepMine={() => (setReviewing(false), keepMine())}
+          onUseSaved={() => (setReviewing(false), showSaved())}
+        />
+      )}
       {dialog?.kind === 'image' && (
         <Modal
           title={dialog.fig ? 'Picture' : 'Add a picture'}
@@ -886,6 +1067,45 @@ function PostEditor({ post, hidden }: { post: PostRef; hidden: boolean }) {
   );
 }
 
+/** The text saved elsewhere, read only, to compare with the author's before choosing one (a conflict's note). */
+function SavedTextDialog({ noun, body, state, devUrl, onClose, onKeepMine, onUseSaved }: { noun: string; body: RichText | undefined; state: ProjectState; devUrl: string | null; onClose: () => void; onKeepMine: () => void; onUseSaved: () => void }) {
+  const uid = useId();
+  const shown = useRef<HTMLDivElement>(null);
+  const problem = articleProblem(body);
+  useEffect(() => {
+    if (shown.current && !problem && Array.isArray(body)) renderArticle(shown.current, body, state, devUrl);
+  }, [body]); // eslint-disable-line react-hooks/exhaustive-deps
+  return (
+    <Modal
+      title="The saved text"
+      onClose={onClose}
+      footer={
+        <>
+          <span className="grow" />
+          <button className="btn" onClick={onUseSaved} disabled={!!problem}>
+            Use the saved text
+          </button>
+          <button className="btn btn-primary" onClick={onKeepMine}>
+            Keep my text
+          </button>
+        </>
+      }
+    >
+      <p className="post-review-note" id={`${uid}-note`}>
+        This is the {noun}’s text as it was saved somewhere else. Using it replaces what you typed here.
+      </p>
+      {/* Focus opens on the text, to read, never on the button that replaces the author's: choosing is a deliberate Tab away. */}
+      {problem ? (
+        <p className="field-error" tabIndex={-1} data-autofocus>
+          {problem}
+        </p>
+      ) : (
+        <div ref={shown} className="post-body post-review" aria-label="The saved text" aria-describedby={`${uid}-note`} role="document" tabIndex={-1} data-autofocus />
+      )}
+    </Modal>
+  );
+}
+
 /**
  * A picture from the library for the text, with what it shows for people who cannot see it. Nothing reaches the project
  * until the dialog's Add or Update: new pictures are added in Assets.
@@ -906,9 +1126,26 @@ function PicturePicker({ state, devUrl, value, onChange }: { state: ProjectState
   return (
     <div className="post-picker">
       {images.length > 8 && <input type="search" className="input sm" placeholder="Search pictures" aria-label="Search pictures" value={q} onChange={(e) => setQ(e.target.value)} />}
-      <div className="post-picker-grid" role="listbox" aria-label="Library pictures">
-        {shown.map((a) => (
-          <button key={a.id} type="button" role="option" aria-selected={a.id === value.assetId} className="post-picker-tile" title={a.name} onClick={() => pick(a.id)}>
+      <div
+        className="post-picker-grid"
+        role="listbox"
+        aria-label="Library pictures"
+        // One stop for Tab; the arrow keys move and choose, Up and Down by a row of the grid.
+        onKeyDown={(e) => {
+          const tiles = [...e.currentTarget.querySelectorAll<HTMLButtonElement>('[role="option"]')];
+          const from = tiles.indexOf(document.activeElement as HTMLButtonElement);
+          if (from < 0) return;
+          const across = getComputedStyle(e.currentTarget).gridTemplateColumns.split(' ').length || 1;
+          const step = { ArrowRight: 1, ArrowLeft: -1, ArrowDown: across, ArrowUp: -across }[e.key];
+          const to = e.key === 'Home' ? 0 : e.key === 'End' ? tiles.length - 1 : step === undefined ? -1 : Math.min(tiles.length - 1, Math.max(0, from + step));
+          if (to < 0) return;
+          e.preventDefault();
+          tiles[to].focus();
+          pick(shown[to].id);
+        }}
+      >
+        {shown.map((a, i) => (
+          <button key={a.id} type="button" role="option" aria-selected={a.id === value.assetId} tabIndex={a.id === value.assetId || (i === 0 && !shown.some((x) => x.id === value.assetId)) ? 0 : -1} className="post-picker-tile" title={a.name} onClick={() => pick(a.id)}>
             {devUrl ? <AssetImage asset={a} devUrl={devUrl} cover /> : <span className="post-picker-name">{a.name}</span>}
           </button>
         ))}
@@ -1001,7 +1238,7 @@ function LinkDialog({ dialog, state, self, onChange, onApply }: { dialog: Extrac
         <div className="post-link-kinds" role="radiogroup" aria-label="Link to">
           {(['page', 'post', ...(indexes.length || dialog.to === 'index' ? (['index'] as const) : []), 'url'] as const).map((k) => (
             <label key={k} className="post-link-kind">
-              <input type="radio" name={`${uid}-to`} checked={dialog.to === k} onChange={() => set({ to: k })} /> {k === 'page' ? 'A page' : k === 'post' ? 'A post' : k === 'index' ? 'A collection index' : 'A web address'}
+              <input type="radio" name={`${uid}-to`} checked={dialog.to === k} onChange={() => set({ to: k })} /> {k === 'page' ? 'A page' : k === 'post' ? 'An entry' : k === 'index' ? 'A collection index' : 'A web address'}
             </label>
           ))}
         </div>
@@ -1020,7 +1257,7 @@ function LinkDialog({ dialog, state, self, onChange, onApply }: { dialog: Extrac
         )}
         {dialog.to === 'post' &&
           (posts.length ? (
-            <Field label="Post" controlId={`${uid}-post`}>
+            <Field label="Entry" controlId={`${uid}-post`}>
               <select id={`${uid}-post`} className="select" value={dialog.entry} onChange={(e) => set({ entry: e.target.value })}>
                 {posts.map((p) => (
                   <option key={p.id} value={p.id}>
@@ -1030,7 +1267,7 @@ function LinkDialog({ dialog, state, self, onChange, onApply }: { dialog: Extrac
               </select>
             </Field>
           ) : (
-            <p className="posts-note">There is no other post to link to yet.</p>
+            <p className="posts-note">There is no other entry to link to yet.</p>
           ))}
         {dialog.to === 'index' &&
           (indexes.length ? (
@@ -1073,18 +1310,21 @@ function LinkDialog({ dialog, state, self, onChange, onApply }: { dialog: Extrac
  * The title and description meters follow what is typed before it is saved. Its own component, so typing re-renders
  * only this, not the writer.
  */
-function PostSearchSettings({ state, post, collection, entry, update }: { state: ProjectState; post: PostRef; collection: Collection; entry: EntryDoc; update: (fields: Record<string, unknown>, label: string) => unknown }) {
+function PostSearchSettings({ state, post, collection, entry, update, off }: { state: ProjectState; post: PostRef; collection: Collection; entry: EntryDoc; update: (fields: Record<string, unknown>, label: string) => unknown; off?: boolean }) {
   const seoScope = seoSummary(entry.seo && typeof entry.seo === 'object' ? entry.seo : {});
   const seoSubject = useMemo<SeoSubject>(() => ({ kind: 'entry', collectionId: post.collectionId, entryId: post.entryId }), [post.collectionId, post.entryId]);
   const { typed: seoTyped, on: seoOn } = useTypedSeo(subjectKey(seoSubject));
   const { overlay: seoOverlay, doc: seoDoc } = useDocumentPreview(state, seoSubject, seoTyped);
   return (
-    <details className="post-details post-seo">
-      <summary>Search & sharing{seoScope ? ` · ${seoScope}` : ''}</summary>
-      <div className="post-fields">
-        <SeoInlineActions subject={seoSubject} overlay={seoOverlay} typed={seoTyped} />
-        <PostSearchFields state={state} collection={collection} entry={entry} doc={seoDoc} on={seoOn} save={(edit) => update(edit.fields, edit.label)} />
-      </div>
-    </details>
+    <div className="post-details post-seo">
+      <Section id="post-seo" title="Search & sharing" scope={seoScope || undefined} defaultOpen={false} keepMounted>
+        <fieldset className="post-fieldset" disabled={off}>
+          <div className="post-fields">
+            <SeoInlineActions subject={seoSubject} overlay={seoOverlay} typed={seoTyped} />
+            <PostSearchFields state={state} collection={collection} entry={entry} doc={seoDoc} on={seoOn} save={(edit) => update(edit.fields, edit.label)} />
+          </div>
+        </fieldset>
+      </Section>
+    </div>
   );
 }

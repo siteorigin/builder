@@ -33,7 +33,8 @@ export function CanonicalUrlField({
   keepWhile?: () => boolean;
   value: unknown;
   ownUrl: string | null;
-  what: 'page' | 'post';
+  /** What the document is called in a sentence: "page", or an entry's own noun ("post", "case study"). */
+  what: string;
   onCommit: (url: string) => unknown;
   onTyped?: (url: string | undefined) => void;
 }) {
