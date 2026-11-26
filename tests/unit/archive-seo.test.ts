@@ -9,6 +9,7 @@ import type { EditOperation } from '@shared/ops';
 import { createStarterState } from '@catalogue/starters';
 import { applyOperations } from '@engine/apply';
 import { generateProject, publishedState } from '@generator/index';
+import { checkHeld, fieldKey, readFields } from '../../src/renderer/src/lib/held';
 
 const run = (s: ProjectState, ...ops: EditOperation[]) => applyOperations(s, ops).state;
 const route = (f: string) => `src/routes/${f.replace(/^\/|\/$/g, '')}/+page.svelte`;
@@ -56,6 +57,7 @@ describe('a collection’s archive pages when found or shared', () => {
       expect(g).not.toBeNull();
       const page = g!['@graph'].find((n) => n['@id'] === `https://example.com${r}#webpage`);
       expect(page).toBeDefined();
+      expect(page!['@type']).toEqual(['WebPage', 'CollectionPage']);
       expect(page!.description).toEqual(expect.any(String));
     }
   });
@@ -67,8 +69,24 @@ describe('a collection’s archive pages when found or shared', () => {
       { type: 'collection.update', collectionId: 'posts', categoryDescription: { termId: 'news', description: 'What is new at the studio.' } }
     );
     const out = files(s);
-    expect(out.get(route('/blog/'))).toContain('<meta name="description" content={"Notes from the studio floor."} />');
-    expect(out.get(route('/blog/category/news/'))).toContain('<meta name="description" content={"What is new at the studio."} />');
+    for (const [r, text] of [
+      ['/blog/', 'Notes from the studio floor.'],
+      ['/blog/category/news/', 'What is new at the studio.']
+    ]) {
+      const source = out.get(route(r))!;
+      for (const tag of ['name="description"', 'property="og:description"', 'name="twitter:description"']) expect(source).toContain(`<meta ${tag} content={${JSON.stringify(text)}} />`);
+      expect(graph(source)!['@graph'].find((n) => n['@id'] === `https://example.com${r}#webpage`)!.description).toBe(text);
+    }
+    // The category's own words are not the index's, nor the other category's.
+    expect(out.get(route('/blog/category/craft/'))).toContain('<meta name="description" content={"Posts filed under Craft, from Riverside Studio."} />');
+    // Cleared, the index goes back to the site's description, then to a sentence naming the collection.
+    const cleared = run(s, { type: 'collection.update', collectionId: 'posts', description: '' });
+    expect(cleared.collections.posts.settings).not.toHaveProperty('description');
+    const described = run(cleared, { type: 'site.update', description: 'A pottery studio by the river.' } as EditOperation);
+    expect(files(described).get(route('/blog/'))).toContain('<meta name="description" content={"A pottery studio by the river."} />');
+    const bare = structuredClone(cleared);
+    bare.site.description = '';
+    expect(files(bare).get(route('/blog/'))).toContain('<meta name="description" content={"Posts from Riverside Studio."} />');
   });
 
   it('say the same thing in every tag and in the structured data, with a trail from Home through the index', () => {
@@ -91,18 +109,31 @@ describe('a collection’s archive pages when found or shared', () => {
       ['News', 'https://example.com/blog/category/news/'],
       ['News – Page 2 of 2', 'https://example.com/blog/category/news/page/2/']
     ]);
-    // The index falls back to the site's description, as a page does, and names the collection without one.
     const index = graph(out.get(route('/blog/'))!)!['@graph'];
     expect(index.find((n) => n['@type'] === 'BreadcrumbList')!.itemListElement).toHaveLength(2);
-    const bare = structuredClone(s);
-    bare.site.description = '';
-    expect(files(bare).get(route('/blog/'))).toContain('<meta name="description" content={"Posts from Riverside Studio."} />');
+    const index2 = graph(out.get(route('/blog/page/2/'))!)!['@graph'];
+    expect((index2.find((n) => n['@type'] === 'BreadcrumbList')!.itemListElement as Array<{ name: string }>).map((t) => t.name)).toEqual(['Home', 'Posts', 'Posts – Page 2 of 3']);
+  });
+
+  it('trail through the index of a collection whose address theirs is inside', () => {
+    const s = run(
+      blog(),
+      { type: 'collection.update', collectionId: 'posts', route: '/news/blog/' },
+      { type: 'collection.create', collectionId: 'news', name: 'News', route: '/news/' } as EditOperation,
+      { type: 'entry.create', collectionId: 'news', entryId: 'en_note', title: 'A note', publishedAt: '2026-01-01', draft: false, body: ['Hi.'] } as EditOperation
+    );
+    const trail = graph(files(s).get(route('/news/blog/category/news/'))!)!['@graph'].find((n) => n['@type'] === 'BreadcrumbList')!.itemListElement as Array<{ name: string; item: string }>;
+    expect(trail.map((t) => t.item)).toEqual(['https://example.com/', 'https://example.com/news/', 'https://example.com/news/blog/', 'https://example.com/news/blog/category/news/']);
   });
 
   it('keep their description and sharing tags without a public URL, leaving out what needs one', () => {
     const out = files(blog(''));
     const index = out.get(route('/blog/'))!;
     expect(index).toMatch(/<meta name="description" content=\{"[^"]+"\} \/>/);
+    for (const r of ['/blog/', '/blog/category/news/']) {
+      expect(out.get(route(r))).toMatch(/<meta property="og:description" content=\{"[^"]+"\} \/>/);
+      expect(out.get(route(r))).toMatch(/<meta name="twitter:description" content=\{"[^"]+"\} \/>/);
+    }
     expect(index).toContain('<meta name="twitter:card" content="summary" />');
     expect(index).not.toContain('rel="canonical"');
     expect(graph(index)).toBeNull();
@@ -132,5 +163,23 @@ describe('a collection’s archive pages when found or shared', () => {
     expect(s.collections.posts.settings.taxonomies.categories.terms['studio-news']).toEqual({ label: 'Studio news' });
     expect(s.collections.posts.settings).not.toHaveProperty('description');
     expect(() => run(s, { type: 'collection.update', collectionId: 'posts', categoryDescription: { termId: 'nope', description: 'x' } })).toThrow(/no category "nope"/);
+  });
+
+  it('hold a description typed while the AI ran as a field of its own, one per category', () => {
+    const s = run(blog(), { type: 'collection.update', collectionId: 'posts', categoryDescription: { termId: 'news', description: 'Old.' } });
+    const news: EditOperation = { type: 'collection.update', collectionId: 'posts', categoryDescription: { termId: 'news', description: 'New.' } };
+    const craft: EditOperation = { type: 'collection.update', collectionId: 'posts', categoryDescription: { termId: 'craft', description: 'Craft.' } };
+    const index: EditOperation = { type: 'collection.update', collectionId: 'posts', description: 'Index.' };
+    expect(readFields(s, [news])).toEqual([{ found: true, value: { categoryDescription: 'Old.' } }]);
+    expect(readFields(s, [index])).toEqual([{ found: true, value: { description: '' } }]);
+    expect(fieldKey([news])).not.toBe(fieldKey([craft]));
+    // Changed meanwhile, it is a conflict, not overwritten; another category's change is not.
+    const base = readFields(s, [news])!.map((r) => (r.found ? r.value : undefined));
+    const elsewhere = run(s, { type: 'collection.update', collectionId: 'posts', categoryDescription: { termId: 'craft', description: 'Theirs.' } });
+    expect(checkHeld(elsewhere, [news], base).kind).toBe('apply');
+    const changed = run(s, { type: 'collection.update', collectionId: 'posts', categoryDescription: { termId: 'news', description: 'Theirs.' } });
+    expect(checkHeld(changed, [news], base).kind).toBe('changed');
+    // Other settings of a collection are never held.
+    expect(readFields(s, [{ type: 'collection.update', collectionId: 'posts', pageSize: 3 }])).toBeNull();
   });
 });

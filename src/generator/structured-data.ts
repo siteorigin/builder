@@ -22,7 +22,9 @@ import { POSTS_COLLECTION_ID } from '@shared/collections';
 import { buildArchiveGraph, buildSeoGraph, graphScriptText, type GraphContribution, type GraphContributor, type JsonValue, type SeoGraph } from './seo-graph';
 import { derived } from './cache';
 import { archiveMetadata, createSeoResolver, type SeoResolver } from './seo-metadata';
-import { collectionArchives } from './archive';
+import { siteArchives } from './archive';
+import type { ArchivePage } from '@shared/archives';
+import { publicUrl } from '@shared/public-url';
 import { structuredContent } from './checks';
 import { searchesFromAddress } from './search';
 import { inspectPageStructuredData } from '@shared/page-structured-data';
@@ -265,14 +267,28 @@ export function graphScript(state: ProjectState, subject: SeoSubject): string | 
 }
 
 /**
+ * Each resolver's archive pages by collection and address, worked out once for every archive page's graph of a run:
+ * a resolver lasts one generator run, and a state may be edited in place between runs.
+ */
+const archivesByRoute = new WeakMap<SeoResolver, Map<string, ArchivePage>>();
+function archiveAt(state: ProjectState, resolver: SeoResolver, collectionId: string, route: string): ArchivePage | undefined {
+  let byRoute = archivesByRoute.get(resolver);
+  if (!byRoute) archivesByRoute.set(resolver, (byRoute = new Map(siteArchives(state).map((p) => [`${p.collectionId}\n${p.route}`, p]))));
+  return byRoute.get(`${collectionId}\n${route}`);
+}
+
+/**
  * The graph's script for one page of a collection's index or category archive, or null when it carries none, worked
  * out once per project state in a cached run as a page's is. The archive page is looked up in the state the script is
  * made from, so a run never reuses another state's series.
  */
 export function archiveGraphScript(state: ProjectState, collectionId: string, route: string): string | null {
   return derived(state, `seo-graph:archive:${collectionId}:${route}`, (s) => {
-    const archive = collectionArchives(s, collectionId).find((p) => p.route === route);
-    const graph = archive ? buildArchiveGraph(s, resolverFor(s), archiveMetadata(s, archive), SITE_CONTRIBUTORS) : null;
+    // Without a public URL there is no graph, and the series need not be worked out at all.
+    if (!publicUrl(s.site)) return null;
+    const resolver = resolverFor(s);
+    const archive = archiveAt(s, resolver, collectionId, route);
+    const graph = archive ? buildArchiveGraph(s, resolver, archiveMetadata(s, archive), SITE_CONTRIBUTORS) : null;
     return graph ? `<script type="application/ld+json">${graphScriptText(graph)}</script>` : null;
   });
 }

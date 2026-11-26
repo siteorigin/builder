@@ -241,6 +241,22 @@ export function readField(state: ProjectState, op: EditOperation): FieldRead | n
       if (op.crawlerPolicy !== undefined) fields.crawlerPolicy = crawlerPolicyRead(state, op.crawlerPolicy);
       return found(fields);
     }
+    case 'collection.update': {
+      // What a collection's index, or one category's archive, tells search engines: each its own field. Any other
+      // setting of a collection is a gesture, never held.
+      const keys = Object.keys(op).filter((k) => k !== 'type' && k !== 'collectionId' && (op as Record<string, unknown>)[k] !== undefined);
+      if (!keys.length || keys.some((k) => k !== 'description' && k !== 'categoryDescription')) return null;
+      const c = has(state.collections ?? {}, op.collectionId);
+      if (!c) return gone('collection');
+      const read: Record<string, unknown> = {};
+      if (op.description !== undefined) read.description = c.settings.description ?? '';
+      if (op.categoryDescription) {
+        const term = has(c.settings.taxonomies?.categories?.terms ?? {}, op.categoryDescription.termId);
+        if (!term) return gone('category');
+        read.categoryDescription = term.description ?? '';
+      }
+      return found(read);
+    }
     case 'brief.update':
       // Each field of the brief is its own, read as the panel shows it: "" for one the project has not written.
       return found(Object.fromEntries(BRIEF_FIELDS.filter((k) => op[k] !== undefined).map((k) => [k, briefText(state.brief, k)])));
@@ -460,6 +476,8 @@ export function fieldKey(operations: EditOperation[]): string {
           if (op.type === 'site.update' && k === 'crawlerPolicy') return [k, op.crawlerPolicy ? identityKeys(op.crawlerPolicy) : null];
           // And what a page is, fact by fact; choosing its type is a field of its own.
           if (op.type === 'page.update' && k === 'structuredData' && op.structuredData) return [k, identityKeys(op.structuredData)];
+          // And each category's description.
+          if (op.type === 'collection.update' && k === 'categoryDescription' && op.categoryDescription) return [k, op.categoryDescription.termId];
           // And an entry's custom fields and groupings, each its own.
           if (op.type === 'entry.update' && (k === 'values' || k === 'terms') && v && typeof v === 'object') return [k, Object.keys(v).sort()];
           return [k];

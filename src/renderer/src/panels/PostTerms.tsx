@@ -416,18 +416,25 @@ function TermList({ collection, taxonomy, onRenamed }: { collection: Collection;
                       {archived ? ` · ${archiveRoute(collection.settings.route ?? '', t.id, 1)}` : ''}
                     </span>
                     {archived && site && (
-                      <DraftInput
-                        multiline
-                        rows={2}
-                        className="term-description"
-                        limit={TEXT_LIMITS.pageDescription}
-                        keep={`collection:${collectionId}:category:${t.id}:description`}
-                        keepWhile={() => Object.hasOwn(getState().snapshot?.state.collections[collectionId]?.settings.taxonomies?.categories?.terms ?? {}, t.id)}
-                        ariaLabel={`What the “${t.label}” archive tells search engines and link previews`}
-                        value={collection.settings.taxonomies.categories?.terms[t.id]?.description ?? ''}
-                        placeholder={defaultArchiveDescription({ site, collections: { [collectionId]: collection } }, collectionId, t.id)}
-                        onCommit={(v) => commitOps([{ type: 'collection.update', collectionId, categoryDescription: { termId: t.id, description: v } }], `Change the “${t.label}” archive description`)}
-                      />
+                      <label className="term-description">
+                        Archive description
+                        <DraftInput
+                          multiline
+                          rows={2}
+                          className="textarea"
+                          limit={TEXT_LIMITS.pageDescription}
+                          keep={`collection:${collectionId}:category:${t.id}:description`}
+                          keepWhile={() => {
+                            // Only while the category has its archive, so a draft hidden by turning archives off is offered to copy.
+                            const c = getState().snapshot?.state.collections[collectionId];
+                            return !!c && hasArchivePages(c.settings) && c.settings.categoryArchives !== false && Object.hasOwn(c.settings.taxonomies?.categories?.terms ?? {}, t.id);
+                          }}
+                          ariaLabel={`What the “${t.label}” archive tells search engines and link previews`}
+                          value={collection.settings.taxonomies.categories?.terms[t.id]?.description ?? ''}
+                          placeholder={defaultArchiveDescription({ site, collections: { [collectionId]: collection } }, collectionId, t.id)}
+                          onCommit={(v) => commitOps([{ type: 'collection.update', collectionId, categoryDescription: { termId: t.id, description: v } }], `Change the “${t.label}” archive description`)}
+                        />
+                      </label>
                     )}
                   </span>
                   <span className="term-actions">

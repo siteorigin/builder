@@ -1305,7 +1305,11 @@ function CollectionArchive(props: { collectionId: string; name: string; route: s
             rows={2}
             limit={TEXT_LIMITS.pageDescription}
             keep={`collection:${collectionId}:description`}
-            keepWhile={() => Object.hasOwn(getState().snapshot?.state.collections ?? {}, collectionId)}
+            keepWhile={() => {
+              // Only while the collection has its index, so a draft hidden by turning it off is offered to copy.
+              const c = getState().snapshot?.state.collections[collectionId];
+              return !!c && hasArchivePages(c.settings);
+            }}
             ariaLabel={`What the ${name} index tells search engines and link previews`}
             value={description}
             placeholder={fallback}

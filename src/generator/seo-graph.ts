@@ -20,7 +20,7 @@ import { publicUrl } from '@shared/public-url';
 import { routeUrl } from '@shared/routes';
 import { isLanguageCode, sameLanguage, siteLanguage } from '@shared/languages';
 import { sitePublisher } from '@shared/site-identity';
-import { archiveWords } from '@shared/archives';
+import { archiveWords, type ArchivePage } from '@shared/archives';
 import { siteArchives } from './archive';
 import type { SeoResolver } from './seo-metadata';
 
@@ -150,11 +150,16 @@ function trail(state: ProjectState, resolver: SeoResolver, meta: GraphDocument, 
     const name = seoText(state.collections[collectionId]?.settings?.name);
     if (index && name) steps.push({ route: index.route, name });
   }
-  // An archive page is inside its collection's index, and a later page of a category's archive inside its first page.
+  // An archive page is inside its collection's index (and the index of any collection whose address its own is
+  // inside), and a later page of a category's archive inside its first page.
   if (meta.subject.kind === 'archive') {
     const { collectionId, category, page } = meta.subject;
-    const above = archives().filter((a) => a.collectionId === collectionId && a.page === 1 && (a.category === undefined || (a.category === category && page > 1)));
-    for (const a of above) if (a.route !== meta.route) steps.push({ route: a.route, name: archiveWords(state, a).name });
+    const own = (a: ArchivePage) => a.collectionId === collectionId && (a.category === undefined || (a.category === category && page > 1));
+    const outer = (a: ArchivePage) => a.collectionId !== collectionId && a.category === undefined && route.startsWith(a.route.toLowerCase());
+    for (const a of archives()) {
+      const r = a.route.toLowerCase();
+      if (a.page === 1 && r !== route && (own(a) || outer(a)) && !steps.some((s) => s.route.toLowerCase() === r)) steps.push({ route: a.route, name: archiveWords(state, a).name });
+    }
   }
   steps.sort((a, b) => a.route.length - b.route.length);
   const base = root.replace(/\/$/, '');
