@@ -210,8 +210,11 @@ const startDrag = async () => {
   await win.mouse.move(from.x, from.y, { steps: 3 });
   await win.mouse.down();
   await win.waitForSelector('.ov-moving', { timeout: 8000 });
+  // Over the lower part of the next section, so the drop line goes after it: anywhere between the hero and that
+  // section is where the hero already is, which draws no line.
   const wrap = await win.locator('.frame-wrap').boundingBox();
-  await win.mouse.move(wrap.x + wrap.width * 0.5, wrap.y + Math.min(wrap.height - 30, 620), { steps: 8 });
+  const next = await frame.locator('section[data-so-node="root"]').nth(1).boundingBox();
+  await win.mouse.move(wrap.x + wrap.width * 0.5, Math.min(next.y + next.height * 0.8, wrap.y + wrap.height - 30), { steps: 8 });
   await pause(250);
   return from;
 };
