@@ -77,7 +77,7 @@ try {
   // Focus starts in the popover, which is not modal: the toolbar stays reachable.
   assert.ok(await dialog.evaluate((el) => el.contains(document.activeElement)), 'focus moves into the popover');
   const lengths = dialog.getByRole('radiogroup', { name: 'Session length' });
-  assert.deepEqual(await lengths.getByRole('radio').allInnerTexts(), ['30 minutes', '2 hours', '8 hours', 'Until project closes']);
+  assert.deepEqual(await lengths.getByRole('radio').allInnerTexts(), ['30 minutes', '2 hours', '8 hours', 'Until closed']);
   await lengths.getByRole('radio', { name: '30 minutes' }).click();
   await dialog.getByRole('button', { name: 'Start live session' }).click();
   await eventually(async () => assert.match(await share().innerText(), /Live · 30m/));
@@ -89,7 +89,9 @@ try {
   await eventually(async () => assert.deepEqual(await win.evaluate(() => window.__copied), [invite], 'starting copied the invite link'), 3000);
   await dialog.getByRole('button', { name: 'Copy' }).click();
   await eventually(async () => assert.deepEqual(await win.evaluate(() => window.__copied), [invite, invite]), 3000);
-  await win.getByText('Invite link copied', { exact: true }).waitFor();
+  // The proof is at the button, and said to screen readers.
+  await dialog.getByRole('button', { name: 'Copied' }).waitFor();
+  await win.getByText('Invite link copied', { exact: true }).waitFor({ state: 'attached' });
   const roomId = parsed.roomId;
   assert.match(await share().getAttribute('aria-label'), /^Share: live session, 0 guests, 30 minutes left$/);
 
@@ -99,14 +101,14 @@ try {
   const ann = await asks(roomId, 'Ann');
   const notice = win.getByRole('region', { name: 'Join requests' });
   await notice.getByText('Ann wants to join').waitFor();
-  await eventually(async () => assert.equal(await win.locator('.toolbar [role="status"][aria-live="polite"]').last().innerText(), 'Ann wants to join the live session'));
+  await eventually(async () => assert.equal(await win.locator('.toasts .live-announce').innerText(), 'Ann wants to join the live session'));
   assert.equal(await share().locator('.share-badge').innerText(), '1');
   assert.match(await share().getAttribute('aria-label'), /^Share: live session, 0 guests, 1 waiting to join, \d+ minutes left$/);
   await win.screenshot({ path: join(SHOTS, 'live-share-waiting.png') });
-  await notice.getByRole('group', { name: 'Answer Ann' }).getByRole('button', { name: 'Admit as Collaborator' }).click();
+  await notice.getByRole('group', { name: 'Answer Ann' }).getByRole('button', { name: 'Admit as viewer' }).click();
   const annIn = await ann.guest.next('guest:status');
   assert.equal(annIn.status, 'admitted');
-  assert.equal(annIn.role, 'collaborator');
+  assert.equal(annIn.role, 'viewer', 'Admit lets a guest in to watch; editing is given in the roster');
   assert.equal((await redeemTicket(relay, roomId, annIn.previewTicket)).status, 204, 'the admitted guest can open the preview');
   await notice.waitFor({ state: 'detached' });
   await eventually(async () => assert.match(await share().getAttribute('aria-label'), /^Share: live session, 1 guest, \d+ minutes left$/));
@@ -130,7 +132,7 @@ try {
   assert.equal(await win.getByRole('dialog', { name: 'Live session' }).count(), 1);
   assert.equal(await notice.count(), 0, 'while Share is open it lists the waiting itself');
   const waiting = dialog.getByRole('region', { name: 'Waiting to join (2)' });
-  await waiting.getByRole('group', { name: 'Answer Bo' }).getByRole('button', { name: 'Admit as Viewer' }).click();
+  await waiting.getByRole('group', { name: 'Answer Bo' }).getByRole('button', { name: 'Admit as viewer' }).click();
   const boIn = await bo.guest.next('guest:status');
   assert.equal(boIn.status, 'admitted');
   assert.equal(boIn.role, 'viewer');
@@ -139,9 +141,9 @@ try {
   await dialog.getByRole('region', { name: 'In the session (2)' }).waitFor();
   assert.equal(await dialog.getByRole('region', { name: /Waiting to join/ }).count(), 0);
 
-  await dialog.getByLabel('Role for Ann').selectOption('viewer');
-  assert.equal((await ann.guest.next('guest:status')).role, 'viewer', 'the guest hears its new role');
-  await eventually(async () => assert.equal((await roster()).find((p) => p.displayName === 'Ann').role, 'viewer'));
+  await dialog.getByLabel('Role for Ann').selectOption('collaborator');
+  assert.equal((await ann.guest.next('guest:status')).role, 'collaborator', 'the guest hears its new role');
+  await eventually(async () => assert.equal((await roster()).find((p) => p.displayName === 'Ann').role, 'collaborator'));
 
   await dialog.getByLabel('Access for Bo').selectOption({ label: 'For 15 minutes' });
   const boLimited = await bo.guest.next('guest:status');
@@ -150,14 +152,14 @@ try {
   await win.screenshot({ path: join(SHOTS, 'live-share-roster.png') });
 
   step('locking turns new guests away and keeps those in');
-  await dialog.getByRole('switch', { name: 'Lock room' }).click();
+  await dialog.getByRole('switch', { name: 'Lock session' }).click();
   assert.equal((await ann.guest.next('room:state')).locked, true);
-  await eventually(async () => assert.equal(await dialog.getByRole('switch', { name: 'Lock room' }).getAttribute('aria-checked'), 'true'));
+  await eventually(async () => assert.equal(await dialog.getByRole('switch', { name: 'Lock session' }).getAttribute('aria-checked'), 'true'));
   const late = await relay.socket(`/s/${roomId}/ws`);
   guests.push(late);
   late.send('guest-to-relay', { type: 'guest:join', version: 1, displayName: 'Dee' });
   assert.equal((await late.next('guest:status')).status, 'locked', 'a locked room turns a new guest away');
-  await dialog.getByRole('switch', { name: 'Lock room' }).click();
+  await dialog.getByRole('switch', { name: 'Lock session' }).click();
   assert.equal((await ann.guest.next('room:state')).locked, false);
 
   step('extending moves the end later');
@@ -170,12 +172,15 @@ try {
 
   step('removing a guest');
   await dialog.getByRole('button', { name: 'Remove Bo' }).click();
+  // Asked first, in the app's own dialog; the popover waits behind it.
+  await win.getByRole('dialog', { name: 'Remove Bo?' }).getByRole('button', { name: 'Remove', exact: true }).click();
   await statusOf(bo.guest, 'kicked');
   await bo.guest.closed();
   await dialog.getByRole('region', { name: 'In the session (1)' }).waitFor();
 
   step('ending the session');
   await dialog.getByRole('button', { name: 'End session' }).click();
+  await win.getByRole('dialog', { name: 'End the live session?' }).getByRole('button', { name: 'End session' }).click();
   await statusOf(ann.guest, 'ended');
   await ann.guest.closed();
   await eventually(async () => assert.equal((await hostState()).phase, 'idle'));
@@ -189,7 +194,7 @@ try {
   await eventually(async () => assert.match(await share().innerText(), /Live/));
   const room2 = parseInviteLink(await dialog.getByLabel('Invite link').inputValue()).roomId;
   const eve = await asks(room2, 'Eve');
-  await dialog.getByRole('group', { name: 'Answer Eve' }).getByRole('button', { name: 'Admit as Viewer' }).click();
+  await dialog.getByRole('group', { name: 'Answer Eve' }).getByRole('button', { name: 'Admit as viewer' }).click();
   assert.equal((await eve.guest.next('guest:status')).status, 'admitted');
   const closed = await win.evaluate(() => window.builder.projects.close());
   assert.equal(closed.ok, true);

@@ -318,14 +318,34 @@ describe('where the host is', () => {
 });
 
 describe('the waiting room', () => {
-  it('offers each waiting guest the three answers, by name', () => {
-    const html = renderToStaticMarkup(createElement(join.JoinRequestList as never, { live: active('/sites/acme#1', 'run-1', [pending('Ann', 'g1'), pending('Mo', 'g3'), { guestId: 'g2', displayName: 'Quill', status: 'admitted', role: 'viewer', guestExpiresAt: null }]) }));
+  it('offers one waiting guest Admit, as a viewer, and Decline, by name', () => {
+    const html = renderToStaticMarkup(createElement(join.JoinRequestList as never, { live: active('/sites/acme#1', 'run-1', [pending('Ann', 'g1'), { guestId: 'g2', displayName: 'Quill', status: 'admitted', role: 'viewer', guestExpiresAt: null }]) }));
     expect(html).toContain('aria-label="Join requests"');
     expect(html).toContain('<strong>Ann</strong> wants to join');
     expect(html).not.toContain('Quill');
     expect(html).toContain('aria-label="Answer Ann"');
-    expect(html).toContain('aria-label="Answer Mo"');
-    for (const label of ['Admit as Viewer', 'Admit as Collaborator', 'Decline']) expect(html).toContain(`>${label}</button>`);
+    for (const label of ['Admit as viewer', 'Decline']) expect(html).toContain(`>${label}</button>`);
+    expect(html.match(/btn-primary/g)).toHaveLength(1);
+  });
+
+  it('gathers several waiting guests into one notice, answered in Share', () => {
+    const waiting = ['Ann', 'Mo', 'Bea', 'Cy'].map((name, i) => pending(name, `g${i}`));
+    const html = renderToStaticMarkup(createElement(join.JoinRequestList as never, { live: active('/sites/acme#1', 'run-1', waiting) }));
+    expect(html.match(/class="toast live-request"/g)).toHaveLength(1);
+    expect(html).toContain('<strong>4 people</strong> want to join');
+    expect(html).toContain('Ann, Mo and 2 more');
+    expect(html).toContain('>Review in Share</button>');
+    expect(html).not.toContain('Admit as viewer');
+  });
+
+  it('stays hidden until someone new asks, then counts everyone still waiting', () => {
+    const live = active('/sites/acme#1', 'run-1', [pending('Ann', 'g1'), pending('Mo', 'g3')]);
+    // Hiding declines no one: with nobody new, there is no notice.
+    expect(renderToStaticMarkup(createElement(join.JoinRequestList as never, { live, hidden: new Set(['g1', 'g3']) }))).toBe('');
+    const html = renderToStaticMarkup(createElement(join.JoinRequestList as never, { live, hidden: new Set(['g1']), onHide: () => undefined }));
+    expect(html).toContain('<strong>2 people</strong> want to join');
+    expect(html).toContain('Ann and Mo');
+    expect(html).toContain('aria-label="Hide these requests"');
   });
 
   it('shows nothing while the session is reconnecting, or when nobody waits', () => {

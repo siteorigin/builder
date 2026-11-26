@@ -89,10 +89,14 @@ export async function copyText(text: string): Promise<boolean> {
   }
 }
 
-/** Copy the invite link, and say what happened. */
-export async function copyInvite(inviteUrl: string): Promise<void> {
-  if (await copyText(inviteUrl)) toast('Invite link copied', 'success');
-  else toast('The invite link could not be copied. Select it in Share and copy it from there.', 'error');
+/**
+ * Copy the invite link. Success shows at the Copy button itself (SharePopover), so only a failure is said here, with
+ * what to do instead.
+ */
+export async function copyInvite(inviteUrl: string): Promise<boolean> {
+  if (await copyText(inviteUrl)) return true;
+  toast('The invite link could not be copied. Select it in Share and copy it from there.', 'error');
+  return false;
 }
 
 /**
@@ -118,13 +122,28 @@ export async function startLive(duration: SessionDuration): Promise<boolean> {
   const started = liveRun(result.state);
   const now = getState();
   if (now.snapshot?.workspaceKey !== opening || (now.live.phase !== 'idle' && !sameRun(liveRun(now.live), started))) return false;
-  if (await copyText(result.inviteUrl)) toast('Live session started. Invite link copied.', 'success');
+  if (await copyText(result.inviteUrl)) {
+    lastCopied = { inviteUrl: result.inviteUrl, at: Date.now() };
+    for (const fn of startCopied) fn(lastCopied.inviteUrl, lastCopied.at);
+    toast('Live session started. Invite link copied.', 'success');
+  }
   else toast('Live session started. The invite link could not be copied: copy it from Share.', 'info');
   return true;
 }
 
 let starts = 0;
 let cancelled = 0;
+
+/** The link a start copied, and when: the room it opens on shows that proof at its Copy button too. */
+let lastCopied: { inviteUrl: string; at: number } | null = null;
+const startCopied = new Set<(inviteUrl: string, at: number) => void>();
+/** Hear of each link a start copies, as it is copied. Returns the unsubscriber. */
+export function onStartCopied(fn: (inviteUrl: string, at: number) => void): () => void {
+  startCopied.add(fn);
+  return () => void startCopied.delete(fn);
+}
+/** When the start copied this link, if it was within `ms`. */
+export const copiedAtStart = (inviteUrl: string, ms: number): number => (lastCopied?.inviteUrl === inviteUrl && Date.now() - lastCopied.at < ms ? lastCopied.at : 0);
 
 /** Call off a session still starting: its start then ends quietly. */
 export function cancelStart(run: LiveRun): Promise<boolean> {

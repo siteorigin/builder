@@ -65,6 +65,9 @@
     --accent-fill: #1766c0;
     --accent-fill-hover: #11559f;
     --focus: #1766c0;
+    /* A notice's one expected answer: the notice's ink inverted (the light theme's notice is ink, the dark one's pale). */
+    --toast-action-fill: #ffffff;
+    --toast-action-ink: var(--ink);
     /* The canvas selection colour is the same in both themes: it sits on the user's website, not the app. */
     --select: #1766c0;
     --green: #0b6b45;
@@ -124,6 +127,8 @@
     --accent-fill: #86c5ff;
     --accent-fill-hover: #a2d3ff;
     --focus: #7cbeff;
+    --toast-action-fill: var(--ink);
+    --toast-action-ink: #ffffff;
     --green: #5ccf9c;
     --green-soft: rgb(92 207 156 / 0.13);
     --amber: #f0b45e;

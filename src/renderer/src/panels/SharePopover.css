@@ -10,31 +10,55 @@
   .toolbar .share-btn.reconnecting .live-dot { color: var(--amber); animation: share-pulse 1.4s ease-in-out infinite; }
   .toolbar .share-btn.busy { color: var(--text-2); }
   .toolbar .share-btn[aria-expanded='true'] { box-shadow: inset 0 0 0 1px var(--border-control); }
+  /* Room for the waiting badge, so it sits on the pill's corner and never on the people count. */
+  .toolbar .share-btn:has(.share-badge) { padding-right: 14px; }
   .share-btn .share-text { font-variant-numeric: tabular-nums; }
+  .share-btn .share-lock { width: 12px; height: 12px; color: var(--text-2); }
   .share-btn .share-count { display: inline-flex; align-items: center; gap: 2px; color: var(--text-2); font-variant-numeric: tabular-nums; }
   .share-btn .share-count svg { width: 12px; height: 12px; }
   .share-btn .share-badge { position: absolute; top: -5px; right: -5px; min-width: 16px; height: 16px; padding: 0 4px; border-radius: 8px; background: var(--accent-fill); color: var(--on-accent); font-size: 10px; font-weight: 700; line-height: 16px; text-align: center; box-shadow: 0 0 0 2px var(--panel); }
   @keyframes share-pulse { 50% { opacity: 0.35; } }
   @media (prefers-reduced-motion: reduce) { .toolbar .share-btn.reconnecting .live-dot { animation: none; } }
 
-  /* The popover: beside the toolbar, never over the whole window, and never modal. */
+  /* The popover: beside the toolbar, never over the whole window, and never modal. Its head, the session's state and
+     link, and Lock and End session stay put; only the people lists scroll, so a full room never pushes the link or
+     the way out of reach. */
   .share-popover {
-    position: fixed; z-index: 1000; width: 380px; max-width: calc(100vw - 16px); max-height: calc(100vh - 72px); overflow-y: auto;
+    position: fixed; z-index: 1000; width: 380px; max-width: calc(100vw - 16px); max-height: calc(100vh - 72px); overflow: hidden;
     display: flex; flex-direction: column; padding: 12px 14px 14px; border-radius: var(--r-md);
     background: var(--raised); border: 1px solid var(--border-strong); box-shadow: var(--shadow-md); color: var(--text); animation: pop-in 120ms ease-out;
   }
+  /* A question it asked is open: it waits under the dialog's scrim. */
+  .share-popover.behind { z-index: 850; }
   .share-popover:focus { outline: none; }
-  .share-popover .share-head { display: flex; align-items: center; justify-content: space-between; gap: 8px; margin-bottom: 6px; }
+  .share-popover .share-head { display: flex; align-items: center; justify-content: space-between; gap: 8px; margin-bottom: 6px; flex: none; }
   .share-popover h2 { margin: 0; font-size: 14px; font-weight: 600; }
-  .share-popover h3 { margin: 0 0 4px; font-size: 11px; font-weight: 600; letter-spacing: 0.02em; text-transform: uppercase; color: var(--text-2); }
-  .share-popover .share-body { display: flex; flex-direction: column; gap: 12px; }
-  .share-popover .share-lead { margin: 0; color: var(--text-2); line-height: 1.45; }
+  .share-popover h3 { margin: 0; font-size: 11px; font-weight: 600; letter-spacing: 0.02em; text-transform: uppercase; color: var(--text-2); }
+  .share-popover .share-body { display: flex; flex-direction: column; gap: 12px; min-height: 0; }
+  .share-popover .share-fixed { display: flex; flex-direction: column; gap: 12px; flex: none; }
+  /* The lists scroll inside a 3px inset, so a focused row's 2px outline is never clipped. */
+  .share-popover .share-scroll { display: flex; flex-direction: column; gap: 12px; flex: 0 1 auto; min-height: 0; overflow-y: auto; margin: -3px; padding: 3px; overscroll-behavior: contain; }
+  /* Never squeezed below about a row while it has people in it. */
+  .share-popover .share-scroll:has(.live-row) { min-height: 72px; }
+  /* More rows past an edge: the fixed part beside that edge takes a hairline and a soft lift, so a clipped list reads
+     as one that scrolls (the scrollbar is hidden at rest on macOS) without dimming a control inside it. */
+  /* The edge's room is always there (the list never changes height as the cue comes and goes); only the cue toggles. */
+  .share-popover .share-fixed { position: relative; z-index: 1; transition: box-shadow 120ms; }
+  .share-popover .share-body > .share-fixed:first-child { margin: 0 -14px -6px; padding: 0 14px 6px; }
+  .share-popover .share-body > .share-end { margin: -6px -14px 0; padding: 6px 14px 0; }
+  .share-popover .more-above > .share-fixed:first-child { box-shadow: 0 1px 0 var(--border), 0 6px 8px -6px color-mix(in srgb, var(--text) 22%, transparent); }
+  .share-popover .more-below > .share-end { box-shadow: 0 -1px 0 var(--border), 0 -6px 8px -6px color-mix(in srgb, var(--text) 22%, transparent); }
+  .share-popover .share-scroll { scroll-padding-block: 8px; }
+  .share-popover .share-end { gap: 10px; }
+  .share-popover .share-lead { margin: 0; color: var(--text-2); line-height: 1.45; text-wrap: pretty; }
   .share-popover .share-busy { display: flex; align-items: center; gap: 8px; }
-  .share-popover .share-note { margin: 0; color: var(--text-2); font-size: 12px; overflow-wrap: anywhere; }
+  .share-popover .share-cancel { align-self: flex-start; }
+  .share-popover .share-note { margin: 0; padding: 6px 8px; border-radius: var(--r-sm); background: var(--amber-soft); color: var(--text); font-size: 12px; line-height: 1.4; }
   .share-popover .share-error { margin: 0; padding: 6px 8px; border-radius: var(--r-sm); background: var(--red-soft); color: var(--red-ink); font-size: 12px; overflow-wrap: anywhere; }
   .share-popover .share-field { display: flex; flex-direction: column; gap: 5px; }
   .share-popover .share-label { font-size: 12px; font-weight: 600; color: var(--text-2); }
-  .share-popover .segmented.full button { flex: 1 1 0; padding: 0 4px; font-size: 12px; white-space: normal; line-height: 1.15; }
+  .share-popover .share-hint { font-size: 12px; color: var(--text-2); }
+  .share-popover .segmented.full button { flex: 1 1 0; padding: 0 4px; font-size: 12px; }
   .share-popover .share-start { align-self: stretch; }
   .share-popover .share-status { display: flex; align-items: center; gap: 6px; margin: 0; font-weight: 600; }
   .share-popover .share-status .live-dot { width: 15px; height: 15px; color: var(--green); }
@@ -42,20 +66,51 @@
   .share-popover .share-locked { display: inline-flex; align-items: center; gap: 3px; margin-left: auto; font-weight: 500; font-size: 12px; color: var(--text-2); }
   .share-popover .share-locked svg { width: 12px; height: 12px; }
   .share-popover .share-link { display: flex; gap: 6px; }
-  .share-popover .share-link .input { flex: 1 1 auto; min-width: 0; font-family: var(--font-mono, ui-monospace, monospace); font-size: 12px; }
+  .share-popover .share-link .input { flex: 1 1 auto; min-width: 0; font-family: var(--mono); font-size: 12px; text-overflow: ellipsis; }
+  /* Wide enough for Copied, so the field never jumps as it changes. */
+  .share-popover .share-copy { min-width: 78px; }
+  .share-popover .share-copy.copied svg { color: var(--green); }
   .share-popover .share-time { display: flex; align-items: center; justify-content: space-between; gap: 8px; font-variant-numeric: tabular-nums; }
+  .share-popover .share-time-open { display: flex; flex-direction: column; gap: 1px; }
+  .share-popover .share-time-open .share-quiet { font-size: 12px; }
+  .share-popover .share-extend { flex: none; margin-right: -6px; gap: 3px; }
+  .share-popover .share-extend svg { width: 13px; height: 13px; }
   .share-popover .share-quiet { color: var(--text-2); font-weight: 400; }
+  .share-popover .share-group-head { display: flex; align-items: center; justify-content: space-between; gap: 8px; min-height: 26px; margin-bottom: 2px; }
+  .share-popover .share-group-head .btn { margin-right: -6px; }
   .share-popover .share-group ul { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 6px; }
-  .share-popover .live-row { display: flex; flex-direction: column; gap: 5px; padding: 7px 8px; border-radius: var(--r-sm); background: var(--panel-2); }
-  .share-popover .live-name { overflow-wrap: anywhere; }
-  .share-popover .live-controls { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
-  .share-popover .live-controls .select { height: 26px; font-size: 12px; min-width: 0; flex: 1 1 110px; }
+  .share-popover .share-empty { padding: 2px 0; }
+  .share-popover .live-row { display: flex; flex-direction: column; gap: 6px; padding: 7px 8px; border-radius: var(--r-sm); background: var(--panel-2); }
+  .share-popover .live-name-line { display: flex; align-items: center; justify-content: space-between; gap: 8px; min-height: 22px; margin: -2px 0; }
+  .share-popover .live-name { min-width: 0; overflow-wrap: anywhere; }
+  /* Quiet on every row (it asks first, and a removed guest can ask again); red once it is pointed at or focused.
+     End session keeps the one red label at rest. */
+  .share-popover .live-remove { flex: none; margin: -2px -4px -2px 0; padding: 0 6px; }
+  .share-popover .live-remove:not(:disabled) { color: var(--text-2); }
+  .share-popover .live-remove:is(:hover, :focus-visible):not(:disabled) { color: var(--red-ink); }
+  .share-popover .live-settled { display: flex; align-items: center; gap: 5px; min-height: 26px; color: var(--text-2); font-size: 12px; }
+  .share-popover .live-settled.done svg { width: 14px; height: 14px; color: var(--green); }
+  .share-popover .live-settled.left svg { color: var(--text-2); }
+  .share-popover .live-row.settled:focus-visible { outline: 2px solid var(--focus); outline-offset: 2px; }
+  .share-popover .live-controls { display: flex; align-items: center; gap: 6px; }
+  .share-popover .live-controls .select { min-width: 0; flex: 1 1 0; }
+  /* Held while the session reconnects, a guest's role and access are still facts the host reads: they keep readable
+     ink on the drawn-disabled field. */
+  .share-popover .live-controls .select:disabled { color: var(--text-2); opacity: 1; }
   .share-popover .live-answers { display: flex; flex-wrap: wrap; gap: 6px; }
   .share-popover .share-foot { display: flex; justify-content: flex-end; border-top: 1px solid var(--border); padding-top: 10px; }
 
-  /* A guest waiting to join, with the notices: stays until answered, and never takes focus. */
+  /* The guests waiting to join, with the notices: one notice however many ask, which stays until it is answered or
+     hidden, and never takes focus. */
+  .toasts .live-requests { display: contents; }
   .toast.live-request { align-items: flex-start; max-width: 460px; }
   .toast.live-request .live-request-body { display: flex; flex-direction: column; gap: 6px; min-width: 0; }
   .toast.live-request .live-request-title { overflow-wrap: anywhere; }
+  .toast.live-request .live-request-names { margin-top: -4px; opacity: 0.85; font-size: 12px; overflow-wrap: anywhere; }
   .toast.live-request .live-answers { display: flex; flex-wrap: wrap; gap: 6px; }
+  .toast.live-request :is(.live-request-sending, .live-request-note) { opacity: 0.85; font-size: 12px; }
+  .toast.live-request .live-request-sending { min-height: 26px; display: flex; align-items: center; }
+  /* While a dialog holds its buttons back, it says when it can be answered instead. */
+  .toast.live-request .live-request-later { display: none; opacity: 0.85; font-size: 12px; }
+  body.dialog-open .toast.live-request .live-request-later { display: block; }
 }
