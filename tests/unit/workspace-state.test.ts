@@ -352,6 +352,27 @@ describe('the opening the File menu follows (#255)', () => {
     expect(c.openingKey).toBe(a);
     c.onSessionClosing = null;
   });
+
+  it('ends the helpers kept for the project only once its close goes through (#822)', async () => {
+    const { c, parent } = setup();
+    await create(c, parent, 'Harbour Bakery');
+    let ended = 0;
+    c.onSessionClosed = () => void ended++;
+    c.onSessionClosing = async () => {
+      throw new Error('The disk is full.');
+    };
+    // A close that fails leaves the project open, with its helpers.
+    await expect(c.close()).rejects.toThrow('The disk is full.');
+    expect(ended).toBe(0);
+    c.onSessionClosing = null;
+    await c.close();
+    expect(c.session).toBeNull();
+    expect(ended).toBe(1);
+    // Nothing open: nothing more to end.
+    await c.close();
+    expect(ended).toBe(1);
+    c.onSessionClosed = null;
+  });
 });
 
 describe('a deleted conversation’s workspace state (#235)', () => {

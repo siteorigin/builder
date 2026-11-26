@@ -196,7 +196,7 @@ describe('the project’s thumbnail cache', () => {
 });
 
 /** A host for the queue, with the project, the preview server and photographs under the test's control. */
-function fakeHost(state: ProjectState, opts: { root?: string; shots?: Array<CaptureResult | Promise<CaptureResult>>; settle?: () => void; prepareFails?: number } = {}) {
+function fakeHost(state: ProjectState, opts: { root?: string; shots?: Array<CaptureResult | Promise<CaptureResult>>; settle?: () => void; prepareFails?: number; prepareGate?: () => Promise<void> } = {}) {
   let prepareFails = opts.prepareFails ?? 0;
   const host = {
     state,
@@ -214,6 +214,7 @@ function fakeHost(state: ProjectState, opts: { root?: string; shots?: Array<Capt
     previewServer: () => host.server,
     settle: async () => opts.settle?.(),
     prepare: async (definitionId): Promise<PreparedComponentPreview> => {
+      await opts.prepareGate?.();
       if (prepareFails-- > 0) return { ok: false, message: 'Could not write the preview.' };
       const key = `p${host.prepared.length}`.padEnd(16, '0');
       host.prepared.push(definitionId);
@@ -351,6 +352,39 @@ describe('the thumbnail queue', () => {
     expect(await thumbs.get(card, 'open#1')).toEqual({ state: 'unavailable' });
     expect(host.prepared).toEqual([]);
     expect(host.captured).toBe(0);
+  });
+
+  it('photographs nothing for a project that closed while its preview was prepared, and lets the preview go (#822)', async () => {
+    const { state, card } = withCard();
+    let prepared!: () => void;
+    const gate = new Promise<void>((r) => (prepared = r));
+    let preparing!: () => void;
+    const started = new Promise<void>((r) => (preparing = r));
+    const { host, thumbs } = fakeHost(state, { prepareGate: () => (preparing(), gate) });
+    const asked = thumbs.get(card, 'open#1');
+    await started;
+    // The project closes: the opening is gone and the thumbnails are forgotten.
+    host.opening = null;
+    thumbs.forget();
+    prepared();
+    expect(await asked).toEqual({ state: 'unavailable' });
+    expect(host.captured).toBe(0);
+    expect(host.released).toHaveLength(1);
+  });
+
+  it('keeps no thumbnail in memory once forgotten (#822)', async () => {
+    const { state, card } = withCard();
+    const { host, thumbs } = fakeHost(state);
+    expect(await thumbs.get(card, 'open#1')).toMatchObject({ state: 'ready' });
+    expect(await thumbs.get(card, 'open#1')).toMatchObject({ state: 'ready' });
+    expect(host.captured).toBe(1);
+    thumbs.forget();
+    // Nothing is held while the editor is at Welcome.
+    const held = thumbs as unknown as { memory: Map<string, string>; failed: Map<string, unknown>; retried: Map<string, string> };
+    expect([held.memory.size, held.failed.size, held.retried.size]).toEqual([0, 0, 0]);
+    // Nothing kept on disk for it either (no cache root): the same opening asks again, so it is photographed afresh.
+    expect(await thumbs.get(card, 'open#1')).toMatchObject({ state: 'ready' });
+    expect(host.captured).toBe(2);
   });
 
   it('keeps nothing on disk for a project it may not write to', async () => {

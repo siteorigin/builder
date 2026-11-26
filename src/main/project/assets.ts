@@ -750,6 +750,16 @@ const iconWorker = createVariantClient(spawnMediaWorker);
 /** Draws the website's icons in the media worker: the renderer the app registers with setSiteIconRenderer. */
 export const renderSiteIconsInWorker: SiteIconRenderer = (data, mime, icons, opts) => iconWorker.icons(data, mime, icons, opts);
 
+/**
+ * End the media workers once they have nothing left to do (a project closed), so none waits out its idle time at
+ * Welcome. Work already asked for still finishes (a project being created beside the one closing makes its pictures
+ * here), and the next request starts a worker again.
+ */
+export const releaseMediaWorkers = () => {
+  mediaWorker.release();
+  iconWorker.release();
+};
+
 /** Stop the media workers (when the app quits). */
 export const stopMediaWorker = () => {
   mediaWorker.stop();

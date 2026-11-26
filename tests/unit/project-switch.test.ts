@@ -243,8 +243,13 @@ describe('opening a project that cannot be read while another is open', () => {
     const open = await openCurrent(c, current);
     sent.splice(0);
     vi.spyOn(open.session, 'close').mockRejectedValueOnce(new Error('The disk went away.'));
+    let ended = 0;
+    c.onSessionClosed = () => void ended++;
     expect((await c.trustAndOpen(next)).ok).toBe(true);
     expect(c.session?.dir).toBe(next);
+    // The project went, so its helpers did too, though putting its files away failed (#822).
+    expect(ended).toBe(1);
+    c.onSessionClosed = null;
     const closedAt = sent.findIndex(([ch]) => ch === 'project:closed');
     const shownAt = sent.findIndex(([ch, p]) => ch === 'project:changed' && (p as { dir: string }).dir === next);
     expect(closedAt).toBeGreaterThan(-1);

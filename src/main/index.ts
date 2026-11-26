@@ -52,6 +52,8 @@ const controller = new Controller(() => win);
 const thumbCapturer = createThumbCapturer();
 controller.thumbCapture = (server, path) =>
   win && !win.isDestroyed() ? thumbCapturer.capture(server, path) : Promise.resolve({ ok: false as const, message: 'The editor is closed.', transient: true });
+// The hidden window belongs to the project's previews: it closes with the project, not only with the editor.
+controller.onSessionClosed = () => thumbCapturer.dispose();
 
 // Never touch the macOS keychain (Chromium would otherwise use it for its own encrypted storage).
 app.commandLine.appendSwitch('use-mock-keychain');
