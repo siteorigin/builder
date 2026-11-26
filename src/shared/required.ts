@@ -97,6 +97,12 @@ export function requiredHint(schema: PropSchema): string {
 /** The message a required value that is empty fails with: `label` is the property's path. */
 export const requiredMessage = (schema: PropSchema, label: string) => `${label} is required: ${requiredHint(schema)}.`;
 
+/** What a refused edit that would empty a required value carries as its details, so the field it came from can say so. */
+export const REQUIRED_REFUSAL = { required: true } as const;
+
+/** Whether a refusal's details say it would have emptied a required value. */
+export const isRequiredRefusal = (details: unknown): boolean => !!details && typeof details === 'object' && (details as { required?: unknown }).required === true;
+
 /**
  * Whether every value `from` can hold satisfies a required `to`, so a binding of `to` to `from` can never hand it an
  * empty value: `from` is required too, or its type always has a value (a yes/no, a number, a token, a choice with no
@@ -117,6 +123,27 @@ export function guaranteesValue(from: PropSchema | ScalarPropSchema): boolean {
     default:
       return false;
   }
+}
+
+/**
+ * `schema` with no value required, its fields' included: what a default, or a value a placement already holds, is
+ * checked against. Either may be empty, and is reported (`requiredProblems`) rather than refused; only an edit that
+ * empties a value is refused.
+ */
+export function optionalSchema<T extends PropSchema | ScalarPropSchema>(schema: T): T {
+  if (!hasRequired(schema as PropSchema)) return schema;
+  const { required: _required, ...rest } = schema as PropSchema;
+  if ((rest.type === 'list' || rest.type === 'object') && rest.fields && typeof rest.fields === 'object')
+    return { ...rest, fields: Object.fromEntries(Object.entries(rest.fields).map(([k, f]) => [k, f && typeof f === 'object' ? optionalSchema(f) : f])) } as unknown as T;
+  return rest as unknown as T;
+}
+
+/** What a value shows: an object's left-out fields take the object's default, or the field's own. Anything else as it is. */
+export function shownValue(schema: PropSchema, v: unknown): unknown {
+  if (schema.type !== 'object' || !v || typeof v !== 'object' || Array.isArray(v)) return v;
+  const o = v as Record<string, unknown>;
+  const defaults = schema.default && typeof schema.default === 'object' ? (schema.default as Record<string, unknown>) : {};
+  return Object.fromEntries(fieldsOf(schema).map(([k, f]) => [k, Object.hasOwn(o, k) ? o[k] : Object.hasOwn(defaults, k) ? defaults[k] : f.default]));
 }
 
 /** Whether a property or any of its fields is required. */

@@ -7,7 +7,7 @@ import type { InstanceNode, ProjectState, PropSchema } from '@shared/types';
 import { createStarterState } from '@catalogue/starters';
 import { applyOperations } from '@engine/apply';
 import { normalizePropSchema } from '@engine/schema';
-import { requiredProblems } from '@engine/required';
+import { madeRequiredBy, requiredProblems, requiredSite } from '@engine/required';
 import { blocksSaving, introducedDiagnostics, validateState } from '@engine/validate';
 import { guaranteesValue, isEmptyPropValue, requiredGap } from '@shared/required';
 import { checkProps, upsertToolSchema, type FieldIssue } from '../../src/agent/macros';
@@ -166,11 +166,36 @@ describe('required fields of list items and objects', () => {
 });
 
 describe('required properties: schema edits and bindings', () => {
-  it('refuses making a property required while a placement holds it empty, naming the placement', () => {
+  it('makes a property required while a placement holds it empty, keeping that value and reporting the placement (#748)', () => {
     const s = project();
     const { state, definitionId, nodeId } = placed(s, { title: { type: 'string', label: 'Title', default: 'Hi' } });
     const emptied = applyOperations(state, [{ type: 'instance.setProp', owner: home(state), nodeId, prop: 'title', value: '' }]).state;
-    expect(() => applyOperations(emptied, [{ type: 'component.setPropSchema', definitionId, prop: 'title', schema: { type: 'string', label: 'Title', default: 'Hi', required: true } }])).toThrow(/Home: Card → Title is required: it needs some text/);
+    const ops = [{ type: 'component.setPropSchema' as const, definitionId, prop: 'title', schema: { type: 'string', label: 'Title', default: 'Hi', required: true } }];
+    const tightened = applyOperations(emptied, ops).state;
+    expect(tightened.components[definitionId].properties.title.required).toBe(true);
+    expect((tightened.pages[tightened.site.homePageId].nodes[nodeId] as InstanceNode).props.title).toBe('');
+    expect(requiredProblems(tightened).map((p) => [p.nodeId, p.message])).toEqual([[nodeId, 'Home: Card → Title is required: it needs some text.']]);
+    // The session lets the change through for the placement it made required, and for nothing else.
+    const found = introducedDiagnostics(saving(emptied), saving(tightened));
+    expect(found.map((d) => d.code)).toEqual(['PROP_REQUIRED_EMPTY']);
+    expect(found.every((d) => madeRequiredBy(emptied, tightened, ops, d))).toBe(true);
+    expect(found.some((d) => madeRequiredBy(emptied, tightened, [{ type: 'instance.setProp' }], d))).toBe(false);
+    expect(found.some((d) => madeRequiredBy(emptied, tightened, [{ type: 'component.setPropSchema', definitionId: 'other' }], d))).toBe(false);
+    // Emptied and made required in one batch: the value held something before it, so the batch is refused.
+    const both = [{ type: 'instance.setProp' as const, owner: home(state), nodeId, prop: 'title', value: '' }, ...ops];
+    const cleared = applyOperations(state, both).state;
+    const brought = introducedDiagnostics(saving(state), saving(cleared));
+    expect(brought.map((d) => d.code)).toEqual(['PROP_REQUIRED_EMPTY']);
+    expect(brought.some((d) => madeRequiredBy(state, cleared, both, d))).toBe(false);
+    // A copy of the placement already missing it (a duplicated section) is reported too, not refused.
+    const copied = applyOperations(tightened, [{ type: 'node.duplicate', owner: home(tightened), nodeId }]).state;
+    const copies = introducedDiagnostics(saving(tightened), saving(copied));
+    expect(copies.map((d) => d.code)).toEqual(['PROP_REQUIRED_EMPTY']);
+    expect(copies.every((d) => d.nodeId !== nodeId && madeRequiredBy(tightened, copied, [{ type: 'node.duplicate' }], d))).toBe(true);
+    // An edit beside it, or one that fills it, goes through; one that empties another value is still refused.
+    const filled = applyOperations(tightened, [{ type: 'instance.setProp', owner: home(tightened), nodeId, prop: 'title', value: 'Back' }]).state;
+    expect(requiredProblems(filled)).toEqual([]);
+    expect(() => applyOperations(filled, [{ type: 'instance.setProp', owner: home(filled), nodeId, prop: 'title', value: ' ' }])).toThrow(/Card → Title is required/);
     // A placement that only shows the default is fine.
     const ok = applyOperations(state, [{ type: 'component.setPropSchema', definitionId, prop: 'title', schema: { type: 'string', label: 'Title', default: 'Hi', required: true } }]).state;
     expect(ok.components[definitionId].properties.title.required).toBe(true);
@@ -235,6 +260,132 @@ describe('required properties: schema edits and bindings', () => {
     expect(requiredGap(list(str()), list(str(true)))).toMatch(/its field “S” is required, but “S” of “L” can be empty/);
     expect(requiredGap(list(str(true)), list(str(true)))).toBeNull();
     expect(requiredGap({ type: 'list', label: 'L', itemLabel: 'I', fields: {}, default: [] }, list(str(true)))).toMatch(/has no field “title”/);
+  });
+});
+
+describe('required values a placement already leaves empty (#748)', () => {
+  it('lets an item or object already missing required values be filled one field at a time, and edited beside them', () => {
+    const s = project();
+    const fields = { title: { type: 'string', label: 'Title', default: 'T' }, note: { type: 'string', label: 'Note', default: 'N' }, extra: { type: 'string', label: 'Extra', default: '' } };
+    const list = { type: 'list', label: 'Cards', itemLabel: 'Card', fields, default: [{ title: 'One', note: 'Two' }] };
+    const box = { type: 'object', label: 'Box', fields, default: { title: 'One', note: 'Two' } };
+    const { state, nodeId, definitionId } = placed(s, { cards: list, box });
+    const page = home(state);
+    const item = ((state.pages[state.site.homePageId].nodes[nodeId] as InstanceNode).props.cards as Array<{ id: string }>)[0].id;
+    // Emptied while still optional, then made required.
+    let st = applyOperations(state, [
+      { type: 'instance.setProp', owner: page, nodeId, prop: 'cards', itemId: item, value: { title: '', note: '' } },
+      { type: 'instance.setProp', owner: page, nodeId, prop: 'box', value: { title: '', note: '', extra: '' } }
+    ]).state;
+    const req = { title: { ...fields.title, required: true }, note: { ...fields.note, required: true }, extra: fields.extra };
+    st = applyOperations(st, [
+      { type: 'component.setPropSchema', definitionId, prop: 'cards', schema: { ...list, fields: req } },
+      { type: 'component.setPropSchema', definitionId, prop: 'box', schema: { ...box, fields: req } }
+    ]).state;
+    expect(requiredProblems(st)).toHaveLength(4);
+    st = applyOperations(st, [
+      { type: 'instance.setProp', owner: page, nodeId, prop: 'cards', itemId: item, field: 'extra', value: 'x' },
+      { type: 'instance.setProp', owner: page, nodeId, prop: 'cards', itemId: item, field: 'title', value: 'T' },
+      { type: 'instance.setProp', owner: page, nodeId, prop: 'box', field: 'extra', value: 'x' },
+      { type: 'instance.setProp', owner: page, nodeId, prop: 'box', field: 'note', value: 'N' }
+    ]).state;
+    const node = st.pages[st.site.homePageId].nodes[nodeId] as InstanceNode;
+    expect((node.props.cards as Array<Record<string, unknown>>)[0]).toMatchObject({ id: item, title: 'T', note: '', extra: 'x' });
+    expect(node.props.box).toEqual({ title: '', note: 'N', extra: 'x' });
+    expect(requiredProblems(st).map((p) => p.message)).toEqual(['Home: Card → Cards → Card 1 → Note is required: it needs some text.', 'Home: Card → Box → Title is required: it needs some text.']);
+    // A value once filled is never emptied again.
+    expect(() => applyOperations(st, [{ type: 'instance.setProp', owner: page, nodeId, prop: 'cards', itemId: item, field: 'title', value: '' }])).toThrow(/Card 1 → Title is required/);
+    expect(() => applyOperations(st, [{ type: 'instance.setProp', owner: page, nodeId, prop: 'box', field: 'note', value: ' ' }])).toThrow(/Box → Note is required/);
+  });
+
+  it('judges an object that leaves fields out by the defaults it shows, so clearing the last shown one is refused', () => {
+    const s = project();
+    const action = { type: 'object', label: 'Action', required: true, fields: { label: { type: 'string', label: 'Label' }, note: { type: 'string', label: 'Note' } }, default: { label: 'Go', note: '' } };
+    const { state, nodeId } = placed(s, { action });
+    const sparse = structuredClone(state);
+    (sparse.pages[sparse.site.homePageId].nodes[nodeId] as InstanceNode).props.action = { note: '' };
+    expect(requiredProblems(sparse)).toEqual([]);
+    expect(() => applyOperations(sparse, [{ type: 'instance.setProp', owner: home(sparse), nodeId, prop: 'action', field: 'label', value: '' }])).toThrow(/Card → Action is required: at least one of its fields needs a value/);
+  });
+
+  it('refuses a schema change that would empty what a placement holds, while keeping what was empty already', () => {
+    const s = project();
+    const { state, definitionId, nodeId } = placed(s, { intro: { type: 'string', label: 'Intro', default: 'Hello' }, cards: { type: 'list', label: 'Cards', itemLabel: 'Card', fields: { title: { type: 'string', label: 'Title', default: 'Card' } }, default: [{ title: 'One' }] } });
+    const page = home(state);
+    // A ">" alone is a quote with nothing in it once it is rich text.
+    const marked = applyOperations(state, [{ type: 'instance.setProp', owner: page, nodeId, prop: 'intro', value: '>' }]).state;
+    expect(() => applyOperations(marked, [{ type: 'component.setPropSchema', definitionId, prop: 'intro', schema: { type: 'richtext', label: 'Intro', default: 'Hello', required: true } }])).toThrow(/Home: Card → Intro is required: it needs some text/);
+    // The same field inside list items.
+    const item = ((marked.pages[marked.site.homePageId].nodes[nodeId] as InstanceNode).props.cards as Array<{ id: string }>)[0].id;
+    const rows = applyOperations(marked, [{ type: 'instance.setProp', owner: page, nodeId, prop: 'cards', itemId: item, field: 'title', value: '>' }]).state;
+    expect(() => applyOperations(rows, [{ type: 'component.setPropSchema', definitionId, prop: 'cards', schema: { type: 'list', label: 'Cards', itemLabel: 'Card', fields: { title: { type: 'richtext', label: 'Title', default: 'Card', required: true } }, default: [{ title: 'One' }] } }])).toThrow(/Card 1 → Title is required/);
+    // Retyped without the flag, it empties as before; empty already, it stays and is reported.
+    const blank = applyOperations(state, [{ type: 'instance.setProp', owner: page, nodeId, prop: 'intro', value: '' }]).state;
+    const kept = applyOperations(blank, [{ type: 'component.setPropSchema', definitionId, prop: 'intro', schema: { type: 'richtext', label: 'Intro', default: 'Hello', required: true } }]).state;
+    expect(requiredProblems(kept).map((p) => p.message)).toEqual(['Home: Card → Intro is required: it needs some text.']);
+  });
+
+  it('never takes a value of another type before the change for one that was empty', () => {
+    const s = project();
+    const { state, definitionId, nodeId } = placed(s, { intro: { type: 'string', label: 'Intro', default: 'Hello' } });
+    const ops = [
+      { type: 'component.setPropSchema' as const, definitionId, prop: 'intro', schema: { type: 'number', label: 'Intro', default: 1 } },
+      { type: 'component.setPropSchema' as const, definitionId, prop: 'intro', schema: { type: 'string', label: 'Intro', default: 'Hello', required: true } }
+    ];
+    const blank = applyOperations(state, [{ type: 'instance.setProp', owner: home(state), nodeId, prop: 'intro', value: '' }]).state;
+    const retyped = structuredClone(blank);
+    (retyped.components[definitionId].properties as Record<string, unknown>).intro = { type: 'number', label: 'Intro', default: 1 };
+    (retyped.pages[retyped.site.homePageId].nodes[nodeId] as InstanceNode).props.intro = 7;
+    const after = structuredClone(blank);
+    after.components[definitionId].properties.intro.required = true;
+    const d = { code: 'PROP_REQUIRED_EMPTY', owner: home(state), nodeId, site: `page|${home(state).id}|${nodeId}|intro|` };
+    expect(madeRequiredBy(blank, after, ops, d)).toBe(true);
+    // A number before is no empty text, whatever the text after is.
+    expect(madeRequiredBy(retyped, after, ops, d)).toBe(false);
+  });
+
+  it('refuses a schema change that empties a sparse object through its new default', () => {
+    const s = project();
+    const action = { type: 'object', label: 'Action', fields: { label: { type: 'string', label: 'Label' }, note: { type: 'string', label: 'Note' } }, default: { label: 'Go', note: '' } };
+    const { state, definitionId, nodeId } = placed(s, { action });
+    const sparse = structuredClone(state);
+    (sparse.pages[sparse.site.homePageId].nodes[nodeId] as InstanceNode).props.action = { note: '' };
+    expect(() => applyOperations(sparse, [{ type: 'component.setPropSchema', definitionId, prop: 'action', schema: { ...action, required: true, default: { label: '', note: 'Seed' } } }])).toThrow(/Home: Card → Action is required/);
+  });
+
+  it('starts a swap’s required value from the new design’s default rather than carrying an empty one', () => {
+    const s = project();
+    const from = placed(s, { title: { type: 'string', label: 'Title', default: 'Old' } });
+    const page = home(from.state);
+    let st = applyOperations(from.state, [{ type: 'instance.setProp', owner: page, nodeId: from.nodeId, prop: 'title', value: '' }]).state;
+    const made = applyOperations(st, [{ type: 'component.create', name: 'Strict' }]);
+    const strict = (made.results[0] as { definitionId: string }).definitionId;
+    st = applyOperations(made.state, [{ type: 'component.setPropSchema', definitionId: strict, prop: 'title', schema: { type: 'string', label: 'Title', default: 'Fresh', required: true } }]).state;
+    const swapped = applyOperations(st, [{ type: 'instance.swapComponent', owner: page, nodeId: from.nodeId, definitionId: strict }]).state;
+    const node = Object.values(swapped.pages[swapped.site.homePageId].nodes).find((n) => n.kind === 'instance' && n.definitionId === strict) as InstanceNode;
+    expect(node.props.title).toBe('Fresh');
+    expect(introducedDiagnostics(saving(st), saving(swapped))).toEqual([]);
+  });
+
+  it('reports a placement showing a default a hand edit left empty, and reads its field back from the problem’s key', () => {
+    const s = project();
+    const { state, nodeId, definitionId } = placed(s, { title: { type: 'string', label: 'Title', default: 'Hi' } });
+    const st = applyOperations(state, [{ type: 'component.setPropSchema', definitionId, prop: 'url', schema: { type: 'link', label: 'Address', default: 'https://example.com/', required: true } }]).state;
+    expect(Object.hasOwn((st.pages[st.site.homePageId].nodes[nodeId] as InstanceNode).props, 'url')).toBe(false);
+    expect(requiredProblems(st)).toEqual([]);
+    const edited = structuredClone(st);
+    (edited.components[definitionId].properties.url as { default: unknown }).default = { type: 'none', target: '' };
+    expect(requiredProblems(edited).map((p) => [p.nodeId ?? null, p.message])).toEqual([
+      [null, 'Card → Address (default) is required: it needs a destination.'],
+      [nodeId, 'Home: Card → Address is required: it needs a destination.']
+    ]);
+    const owner = home(st);
+    const key = requiredProblems(edited)[1].key;
+    expect(requiredSite(key, owner, nodeId)).toEqual({ prop: 'url' });
+    expect(requiredSite(`page|${owner.id}|${nodeId}|cards|a|b|title`, owner, nodeId)).toEqual({ prop: 'cards', itemId: 'a|b', field: 'title' });
+    expect(requiredSite(`page|${owner.id}|${nodeId}|action|label`, owner, nodeId)).toEqual({ prop: 'action', field: 'label' });
+    expect(requiredSite(`page|${owner.id}|${nodeId}|title`, owner, nodeId)).toBeNull();
+    expect(requiredSite(`default|${definitionId}|title|`, owner, nodeId)).toBeNull();
   });
 });
 

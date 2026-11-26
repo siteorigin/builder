@@ -17,6 +17,7 @@ import { applyOperations, assetUsages, captureClipboard, convertEditedDesign, ty
 import { clone } from '@engine/install';
 import { listThemes, themePinProblem } from '@catalogue/index';
 import { anchorsInUse, displayName, EngineError } from '@engine/tree';
+import { madeRequiredBy } from '@engine/required';
 import { findRemoval, restoreRemoval } from '@engine/restore';
 import { pageLinkUses } from '@engine/page-links';
 import { codeNeeds, declareCodeNames, filledSlots } from '@engine/definitions';
@@ -2515,6 +2516,9 @@ export class ProjectSession extends EventEmitter {
       let introduced: Diagnostic[];
       try {
         introduced = importing ? this.introducedProblems(next) : introducedDiagnostics(this.savingProblems(this.state), this.savingProblems(next));
+        // A property made required reports each placement already missing it, rather than refusing the change.
+        const asked: ReadonlyArray<{ type: string; definitionId?: unknown }> = ops;
+        introduced = introduced.filter((d) => !madeRequiredBy(this.state, next, asked, d));
       } catch (e) {
         if (!importing) throw e;
         return { ok: false, revision: this.revision, error: { code: 'VALIDATION_FAILED', message: `The package's components are damaged: ${(e as Error).message}`, recoverable: true } };

@@ -2,7 +2,7 @@
  * Definition-level editing of project components: removal, property schema, parts, variants, slots and
  * property bindings. Every operation keeps instances consistent with the definition it changes.
  */
-import type { ComponentDefinition, Comparison, GraphNode, InstanceNode, ListItem, OwnerRef, ProjectState, PropSchema, SlotDef, StateAction } from '@shared/types';
+import type { ComponentDefinition, Comparison, GraphNode, InstanceNode, ListItem, OwnerRef, ProjectState, PropSchema, ScalarPropSchema, SlotDef, StateAction } from '@shared/types';
 import { slotDecl, slotDeclProblem, slotFill } from './slots';
 import { propBindingName, propBindingSchema } from '@shared/bindings';
 import { isArticleDate } from '@shared/articles';
@@ -15,8 +15,8 @@ import { axesOf, findVariant, variantOptions } from '@shared/variants';
 import { defKey } from '@generator/index';
 import { EngineError, fail, findParent, getNode, getTree, instancesOf, subtreeIds } from './tree';
 import { clone, placedDefaultItems, placedItemId } from './install';
-import { bindingSource } from './required';
-import { requiredGap } from '@shared/required';
+import { bindingSource, requiredValueProblems } from './required';
+import { REQUIRED_REFUSAL, isEmptyPropValue, optionalSchema, requiredGap, shownValue } from '@shared/required';
 import { normalizeProp } from './values';
 import { releaseKept } from '@shared/site-name';
 import {
@@ -243,13 +243,46 @@ function applyPropSchema(state: ProjectState, def: ComponentDefinition, name: st
     try {
       // Rich text kept as a plain string keeps its words.
       const kept = retyped && prev!.type === 'richtext' && schema.type === 'string' ? richTextToPlain(toRichText(v)) : v;
-      node.props[name] = normalizeProp(schema, kept, state, `${def.name} → ${schema.label}`);
+      // A value left empty stays: a property made required now reports each placement still missing it, never refusing
+      // the change. One the change itself would empty (content the new type cannot keep) is refused, as an edit is.
+      const next = normalizeProp(optionalSchema(schema), kept, state, `${def.name} → ${schema.label}`);
+      const emptied = emptiedByChange(prev, schema, v, next, `${def.name} → ${schema.label}`);
+      if (emptied) fail(emptied, REQUIRED_REFUSAL);
+      node.props[name] = next;
     } catch (e) {
       if (!(e instanceof EngineError)) throw e;
-      fail(`${label}: ${e.message} Change that content first, or remove the property and add it again.`);
+      fail(`${label}: ${e.message} Change that content first, or remove the property and add it again.`, e.details);
     }
   }
   def.properties[name] = schema;
+}
+
+/**
+ * The first required value a schema change would leave empty that held something before it (under the old schema):
+ * its message, or null. One that was empty already, or new with the change, is reported instead (requiredProblems).
+ */
+function emptiedByChange(prev: PropSchema | undefined, schema: PropSchema, before: unknown, after: unknown, label: string): string | null {
+  if (!prev) return null;
+  const row = (list: unknown, id: string) => (Array.isArray(list) ? (list as Array<Record<string, unknown> | null>).find((it) => !!it && typeof it === 'object' && it.id === id) : undefined);
+  for (const p of requiredValueProblems(schema, after, label)) {
+    let was: unknown;
+    let wasSchema: PropSchema | ScalarPropSchema | undefined;
+    if (!p.key) [was, wasSchema] = [shownValue(prev, before), prev];
+    else if (!p.key.includes('|')) {
+      // One field of an object, as the placement held it (a field it left out showed a default, and still does).
+      const o = before && typeof before === 'object' && !Array.isArray(before) ? (before as Record<string, unknown>) : {};
+      if (!Object.hasOwn(o, p.key)) continue;
+      [was, wasSchema] = [o[p.key], prev.type === 'object' && Object.hasOwn(prev.fields, p.key) ? prev.fields[p.key] : undefined];
+    } else {
+      const at = p.key.lastIndexOf('|');
+      const item = row(before, p.key.slice(0, at));
+      const field = p.key.slice(at + 1);
+      if (!item || !Object.hasOwn(item, field)) continue;
+      [was, wasSchema] = [item[field], prev.type === 'list' && Object.hasOwn(prev.fields, field) ? prev.fields[field] : undefined];
+    }
+    if (wasSchema && !isEmptyPropValue(wasSchema as PropSchema, was)) return p.message;
+  }
+  return null;
 }
 
 function enclosingRepeatProp(def: ComponentDefinition, nodeId: string): string | null {

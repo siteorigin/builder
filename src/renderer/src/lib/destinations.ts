@@ -7,6 +7,7 @@ import { websiteTrees } from '@engine/validate';
 import { isDraftEntry, publishedState, siteEntries } from '@generator/index';
 import { entryInstanceProps } from '@generator/entry-template';
 import { treeFor } from './model';
+import { requiredSite } from '@engine/required';
 
 type FormDestination = Extract<EditorDestination, { kind: 'form' }>;
 
@@ -30,6 +31,11 @@ export function destinationForDiagnostic(state: ProjectState, d: Diagnostic): Ed
   if (!d.owner && (d.site === 'favicon' || d.site === 'socialImage' || d.site === 'logo')) return { kind: 'site', field: d.site };
   // An old address that sends visitors nowhere, or not straight there, is fixed in its row of Redirects.
   if (!d.owner && d.site?.startsWith('redirect:')) return { kind: 'site', field: 'redirects' };
+  // A placement missing a value its component requires: its field, in the Inspector.
+  if (d.code === 'PROP_REQUIRED_EMPTY' && d.owner && d.nodeId && d.site && ['page', 'shell', 'template', 'component'].includes(d.owner.kind)) {
+    const at = requiredSite(d.site, d.owner as OwnerRef, d.nodeId);
+    return at ? { kind: 'prop', owner: d.owner as OwnerRef, nodeId: d.nodeId, ...at } : null;
+  }
   const setting = Object.hasOwn(FORM_SETTINGS, d.code) ? FORM_SETTINGS[d.code] : null;
   if (!setting || !d.owner || !d.nodeId || !['page', 'shell', 'template', 'component'].includes(d.owner.kind)) return null;
   // A field finding names its row (`${nodeId}|fields|${itemId}`): each finding leads to its own.
@@ -114,6 +120,8 @@ export function destinationLabel(dest: EditorDestination): string {
       return dest.field === 'body' && dest.picture ? 'Go to picture' : 'Open post';
     case 'element':
       return 'Show on page';
+    case 'prop':
+      return 'Go to field';
   }
 }
 

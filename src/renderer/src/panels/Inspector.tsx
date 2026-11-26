@@ -69,7 +69,8 @@ import { inferredRole, placementRole, type InsertRole } from '@engine/insert-rol
 import { previewedState } from '../lib/studio';
 import { listEditLabel } from '../lib/list-editor';
 import { contentLabel, editLabel, fieldLabel, forLabel, refTo, styleLabel, styleWords, subjectWords } from '../lib/edit-label';
-import { applyOps, applyWith, commitOps, getState, renamePage, setState, toast, undoAction, useStore, type InspectorFocus, type PendingEdit } from '../store';
+import { applyOps, applyWith, claimRefusals, commitOps, getState, renamePage, setState, toast, undoAction, useStore, type InspectorFocus, type PendingEdit } from '../store';
+import { isRequiredRefusal } from '@shared/required';
 import { DraftInput, Field, FieldHome, openSection, Section, Segmented, SwitchRow, useMenu, type MenuItem } from '../components/ui';
 import { StructuredDataFields, structuredSummary } from '../components/StructuredDataFields';
 import { TEXT_LIMITS } from '@shared/text-limits';
@@ -1012,6 +1013,48 @@ function ColumnLayout({ owner, def, node, variants, tokens, onSet }: { owner: Ow
   );
 }
 
+/** Where a refused edit of a placement's content was made: a property, one field of an object, or one field of a list item. */
+type RefusedAt = { field?: string; itemId?: string };
+
+/**
+ * Refused edits of the selected placement's content, said at the field they were made in rather than in a toast: one
+ * that would empty a value the component requires (see claimRefusals). Each stays until that field is edited again or
+ * another element is selected. A refusal that arrives once its field has gone is a toast, as any other.
+ */
+function useFieldRefusals(scope: string) {
+  const [refusals, setRefusals] = useState<Record<string, string>>({});
+  const live = useRef(scope);
+  live.current = scope;
+  useEffect(() => {
+    setRefusals({});
+    attempts.current.clear();
+    return () => {
+      live.current = '';
+    };
+  }, [scope]);
+  const keyOf = (prop: string, at: RefusedAt) => `${prop}|${at.itemId ?? ''}|${at.field ?? ''}`;
+  // The latest edit of each field: a reply to an older one, which a newer edit has replaced, says nothing.
+  const attempts = useRef(new Map<string, number>());
+  /** Commit an edit of one field, whose refusal (if it would empty a required value) is said at that field. */
+  const claim = <T,>(prop: string, at: RefusedAt, commit: () => T): T => {
+    const key = keyOf(prop, at);
+    const attempt = (attempts.current.get(key) ?? 0) + 1;
+    attempts.current.set(key, attempt);
+    setRefusals((r) => {
+      if (!Object.hasOwn(r, key)) return r;
+      const { [key]: _gone, ...rest } = r;
+      return rest;
+    });
+    return claimRefusals((e) => {
+      if (!isRequiredRefusal(e.details) || live.current !== scope) return false;
+      if (attempts.current.get(key) === attempt) setRefusals((r) => ({ ...r, [key]: e.message }));
+      return true;
+    }, commit);
+  };
+  const refused = (prop: string) => (at: RefusedAt) => refusals[keyOf(prop, at)];
+  return { claim, refused };
+}
+
 function InstanceInspector({ state, owner, node, tokens, selection }: { state: ProjectState; owner: OwnerRef; node: InstanceNode; tokens: Tokens; selection: ElementRef }) {
   // Layers selected together with this one (the menu's Duplicate and Delete act on them all): followed so the menu
   // is rebuilt when they change, and planned with it, so what the menu says is what it does.
@@ -1166,6 +1209,8 @@ function InstanceInspector({ state, owner, node, tokens, selection }: { state: P
   const what = node.name && node.name !== def.name ? def.name : noun === 'component' ? 'Component' : shell ? `Shared ${owner.id}` : 'Section';
   const whole = `Whole ${noun}`;
   const goToField = (prop: string, field?: string) => revealContentField('content', prop, field);
+  // A refused edit that would empty a required value is said at its field, not in a toast.
+  const { claim, refused } = useFieldRefusals(`${owner.kind}:${owner.id}:${node.id}`);
   return (
     <>
       <Header
@@ -1240,13 +1285,14 @@ function InstanceInspector({ state, owner, node, tokens, selection }: { state: P
                   label={label}
                   hint={service && key === service.prop ? formServiceHint(service, !!String(node.props[key] ?? '').trim()) : (videoHint(videoNote(key)) ?? siteNameHint(state, node, key, () => void applyOps([{ type: 'instance.setProp', owner, nodeId: node.id, prop: key, value: state.site.name }], `Use the site name in ${subjectWords(state, here)}`)))}
                   value={node.props[key] ?? schema.default}
-                  onChange={(v, edit) => set(key, v, edit)}
-                  onField={(field, v, edit) => applyWith(edit, [{ type: 'instance.setProp', owner, nodeId: node.id, prop: key, field, value: v }], fieldLabel(state, schema.label, here), `${node.id}:${key}:${field}`)}
-                  onList={(op) => applyListOp(owner, node.id, key, op, fieldLabel(state, schema.label, here), op.kind === 'field' ? `${node.id}:${key}:${op.itemId}:${op.field}` : undefined)}
+                  onChange={(v, edit) => claim(key, {}, () => set(key, v, edit))}
+                  onField={(field, v, edit) => claim(key, { field }, () => applyWith(edit, [{ type: 'instance.setProp', owner, nodeId: node.id, prop: key, field, value: v }], fieldLabel(state, schema.label, here), `${node.id}:${key}:${field}`))}
+                  onList={(op) => claim(key, op.kind === 'field' ? { itemId: op.itemId, field: op.field } : {}, () => applyListOp(owner, node.id, key, op, fieldLabel(state, schema.label, here), op.kind === 'field' ? `${node.id}:${key}:${op.itemId}:${op.field}` : undefined))}
                   read={() => readProp(owner, node.id, key)}
                   alive={propAlive(owner, node.id, key)}
                   itemAlive={(itemId, field) => rowAlive(owner, node.id, key, itemId, field)}
-                  onTable={(edit) => applyTableEdit(owner, node.id, key, edit, fieldLabel(state, schema.label, here))}
+                  onTable={(edit) => claim(key, {}, () => applyTableEdit(owner, node.id, key, edit, fieldLabel(state, schema.label, here)))}
+                  refused={refused(key)}
                   state={state}
                   openItem={reveal?.prop === key && reveal.itemId ? { seq: reveal.seq, itemId: reveal.itemId } : undefined}
                   annotate={notes(key)}
@@ -1517,6 +1563,8 @@ function PartInspector({ state, selection, tokens, everywhere }: { state: Projec
   // Edits join the same field's last edit. In a component's design the same node IDs can recur in another design
   // copied from it, so the key names the design too, as its row in Layers does.
   const keyAt = everywhere ? `${everywhere.id}:${instNodeId}` : instNodeId;
+  // A refused edit that would empty a required value is said at its field, not in a toast.
+  const { claim, refused } = useFieldRefusals(`${instOwner.kind}:${instOwner.id}:${instNodeId}`);
   // A part shown once per item of the list (a card) can also be styled for the selected item alone.
   const itemList = !nested && partId && owner.kind !== 'component' ? repeatedPartList(def, partId) : undefined;
   const canStyleItem = !!itemList && itemList === listProp && !!itemId && itemIndex >= 0;
@@ -1684,13 +1732,14 @@ function PartInspector({ state, selection, tokens, everywhere }: { state: Projec
                     state={state}
                     hint={mixedReach ? `Same in every ${itemLabel}.` : everywhere ? undefined : siteNameHint(state, inst, b.prop, () => void applyOps([{ type: 'instance.setProp', owner: instOwner, nodeId: instNodeId, prop: b.prop!, value: state.site.name }], `Use the site name in ${subjectWords(state, refTo(instOwner, instNodeId))}`))}
                     everywhere={!!everywhere}
-                    onChange={(v, edit) => void applyWith(edit, [{ type: 'instance.setProp', owner: instOwner, nodeId: instNodeId, prop: b.prop!, value: v }], fieldLabel(state, schema.label, refTo(instOwner, instNodeId)), `${keyAt}:${b.prop}`)}
-                    onField={(field, v, edit) => void applyWith(edit, [{ type: 'instance.setProp', owner: instOwner, nodeId: instNodeId, prop: b.prop!, field, value: v }], fieldLabel(state, schema.label, refTo(instOwner, instNodeId)), `${keyAt}:${b.prop}:${field}`)}
-                    onList={(op) => applyListOp(instOwner, instNodeId, b.prop!, op, fieldLabel(state, schema.label, refTo(instOwner, instNodeId)), undefined, !!everywhere)}
+                    onChange={(v, edit) => void claim(b.prop!, {}, () => applyWith(edit, [{ type: 'instance.setProp', owner: instOwner, nodeId: instNodeId, prop: b.prop!, value: v }], fieldLabel(state, schema.label, refTo(instOwner, instNodeId)), `${keyAt}:${b.prop}`))}
+                    onField={(field, v, edit) => void claim(b.prop!, { field }, () => applyWith(edit, [{ type: 'instance.setProp', owner: instOwner, nodeId: instNodeId, prop: b.prop!, field, value: v }], fieldLabel(state, schema.label, refTo(instOwner, instNodeId)), `${keyAt}:${b.prop}:${field}`))}
+                    onList={(op) => claim(b.prop!, op.kind === 'field' ? { itemId: op.itemId, field: op.field } : {}, () => applyListOp(instOwner, instNodeId, b.prop!, op, fieldLabel(state, schema.label, refTo(instOwner, instNodeId)), undefined, !!everywhere))}
+                    refused={refused(b.prop!)}
                     read={() => readProp(instOwner, instNodeId, b.prop!)}
                     alive={propAlive(instOwner, instNodeId, b.prop!)}
                     itemAlive={(itemId, field) => rowAlive(instOwner, instNodeId, b.prop!, itemId, field)}
-                    onTable={(edit) => applyTableEdit(instOwner, instNodeId, b.prop!, edit, fieldLabel(state, schema.label, refTo(instOwner, instNodeId)))}
+                    onTable={(edit) => claim(b.prop!, {}, () => applyTableEdit(instOwner, instNodeId, b.prop!, edit, fieldLabel(state, schema.label, refTo(instOwner, instNodeId))))}
                     linkPairs={schema.type === 'list' ? itemLinkPairs(def, b.prop!) : undefined}
                     {...flagged(b.kind)}
                     place={schema.type === 'list' ? { ref: parent, list: b.prop! } : undefined}
@@ -1705,7 +1754,8 @@ function PartInspector({ state, selection, tokens, everywhere }: { state: Projec
                 const field = listSchema.fields[b.item!];
                 const item = listItems.find((x) => x.id === itemId);
                 if (!field || !item) return null;
-                const edit = (v: unknown, pending?: PendingEdit) => void applyWith(pending, [{ type: 'instance.setProp', owner: instOwner, nodeId: instNodeId, prop: listProp, itemId, field: b.item!, value: v }], listEditLabel(getState().snapshot?.state ?? state, instOwner, instNodeId, listProp, { kind: 'field', itemId, field: b.item! }, `Edit ${field.label}`, !!everywhere), `${keyAt}:${listProp}:${itemId}:${b.item}`);
+                const edit = (v: unknown, pending?: PendingEdit) =>
+                  void claim(listProp, { itemId, field: b.item! }, () => applyWith(pending, [{ type: 'instance.setProp', owner: instOwner, nodeId: instNodeId, prop: listProp, itemId, field: b.item!, value: v }], listEditLabel(getState().snapshot?.state ?? state, instOwner, instNodeId, listProp, { kind: 'field', itemId, field: b.item! }, `Edit ${field.label}`, !!everywhere), `${keyAt}:${listProp}:${itemId}:${b.item}`));
                 // A page list's card says where an empty field's text comes from.
                 const teaser = teaserFieldNote(state, listSchema, item, b.item!);
                 // An item without its own value for the field shows the field's default, on the site and here.
@@ -1714,7 +1764,7 @@ function PartInspector({ state, selection, tokens, everywhere }: { state: Projec
                   <div key={`${itemId}:${b.item}`} data-field={b.item} {...reveal.handlers}>
                     {/* The same place as this row's field in the section's own list, so text kept there is found here too. */}
                     <FieldHome part={`prop:${listProp}|item:${itemId}:${b.item}`} alive={rowAlive(instOwner, instNodeId, listProp, itemId, b.item!)}>
-                      <ScalarField schema={field} value={value} state={state} onChange={edit} hint={teaser?.hint ?? (mixedReach ? `This ${itemLabel} only.` : undefined)} placeholder={teaser?.placeholder} onLive={field.type === 'string' ? reveal.typed(b.item!) : undefined} {...flagged(b.kind)} />
+                      <ScalarField schema={field} value={value} state={state} onChange={edit} hint={teaser?.hint ?? (mixedReach ? `This ${itemLabel} only.` : undefined)} placeholder={teaser?.placeholder} onLive={field.type === 'string' ? reveal.typed(b.item!) : undefined} {...flagged(b.kind)} {...(refused(listProp)({ itemId, field: b.item! }) ? { error: refused(listProp)({ itemId, field: b.item! }) } : {})} />
                     </FieldHome>
                   </div>
                 );
@@ -2413,6 +2463,8 @@ function NestedInputs({ state, def, node, placedDef }: { state: ProjectState; de
   const owner: OwnerRef = { kind: 'component', id: def.id };
   // A Project health finding about a form in the design (Go to form) opens its setting here, as on a page.
   const reveal = useFieldReveal({ owner, instancePath: [], nodeId: node.id });
+  // A refused edit that would empty a required value is said at its field, not in a toast.
+  const { claim, refused } = useFieldRefusals(`${owner.kind}:${owner.id}:${node.id}`);
   const fields = groupFields(Object.entries(placedDef.properties).map(([key, schema]) => ({ key, schema: schema as PropSchema, data: null })));
   if (!fields.length) return null;
   return (
@@ -2437,13 +2489,14 @@ function NestedInputs({ state, def, node, placedDef }: { state: ProjectState; de
                 schema={schema}
                 label={label}
                 value={raw ?? schema.default}
-                onChange={(v, edit) => void applyWith(edit, [{ type: 'instance.setProp', owner, nodeId: node.id, prop: key, value: v }], fieldLabel(state, schema.label, refTo(owner, node.id)), `${def.id}:${node.id}:${key}`)}
-                onField={(field, v, edit) => void applyWith(edit, [{ type: 'instance.setProp', owner, nodeId: node.id, prop: key, field, value: v }], fieldLabel(state, schema.label, refTo(owner, node.id)), `${def.id}:${node.id}:${key}:${field}`)}
-                onList={(op) => applyListOp(owner, node.id, key, op, fieldLabel(state, schema.label, refTo(owner, node.id)), op.kind === 'field' ? `${def.id}:${node.id}:${key}:${op.itemId}:${op.field}` : undefined, true)}
+                onChange={(v, edit) => void claim(key, {}, () => applyWith(edit, [{ type: 'instance.setProp', owner, nodeId: node.id, prop: key, value: v }], fieldLabel(state, schema.label, refTo(owner, node.id)), `${def.id}:${node.id}:${key}`))}
+                onField={(field, v, edit) => void claim(key, { field }, () => applyWith(edit, [{ type: 'instance.setProp', owner, nodeId: node.id, prop: key, field, value: v }], fieldLabel(state, schema.label, refTo(owner, node.id)), `${def.id}:${node.id}:${key}:${field}`))}
+                onList={(op) => claim(key, op.kind === 'field' ? { itemId: op.itemId, field: op.field } : {}, () => applyListOp(owner, node.id, key, op, fieldLabel(state, schema.label, refTo(owner, node.id)), op.kind === 'field' ? `${def.id}:${node.id}:${key}:${op.itemId}:${op.field}` : undefined, true))}
+                refused={refused(key)}
                 read={() => readProp(owner, node.id, key)}
                 alive={propAlive(owner, node.id, key)}
                 itemAlive={(itemId, field) => rowAlive(owner, node.id, key, itemId, field)}
-                onTable={(edit) => applyTableEdit(owner, node.id, key, edit, fieldLabel(state, schema.label, refTo(owner, node.id)))}
+                onTable={(edit) => claim(key, {}, () => applyTableEdit(owner, node.id, key, edit, fieldLabel(state, schema.label, refTo(owner, node.id))))}
                 state={state}
                 linkPairs={schema.type === 'list' ? itemLinkPairs(placedDef, key) : undefined}
                 openItem={reveal?.prop === key && reveal.itemId ? { seq: reveal.seq, itemId: reveal.itemId } : undefined}

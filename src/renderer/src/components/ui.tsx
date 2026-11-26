@@ -11,6 +11,8 @@ import { heldPrompt, type HeldAction } from '../lib/held';
 import { dropKeptDraft, goneReport, keepDraft, keptDraft, keptDraftKey, keptField, keptOnLeave, keptRefusal, limitNote, tooLongReport, unsavedReport } from '../lib/kept-drafts';
 import { runPhase } from '../lib/savestate';
 import type { ProjectSnapshot } from '@shared/api';
+import type { PropSchema } from '@shared/types';
+import { isEmptyPropValue, requiredHint } from '@shared/required';
 import { RenameOffer } from './RenameOffer';
 
 const setToasts = (toasts: ReturnType<typeof useStore.getState>['toasts']) => useStore.setState({ toasts });
@@ -675,6 +677,18 @@ export function Segmented<T extends string>({ value, options, onChange, full, la
     </div>
   );
 }
+
+/** Said after a field's name when its component requires a value there: in its label, so its accessible name says so too. */
+export function RequiredMark() {
+  return (
+    <span className="field-required">
+      <span className="sr-only">, </span>required
+    </span>
+  );
+}
+
+/** What a field a component requires says while its value is empty: its own, or the default it shows. */
+export const missingNote = (schema: PropSchema, value: unknown): string | undefined => (schema.required && isEmptyPropValue(schema, value) ? `Required, but empty: ${requiredHint(schema)}.` : undefined);
 
 export function Switch({ checked, onChange, label, id, labelledBy, describedBy }: { checked: boolean; onChange: (v: boolean) => void; label?: string; id?: string; labelledBy?: string; describedBy?: string }) {
   return <button id={id} className="switch" role="switch" aria-checked={checked} aria-label={labelledBy ? undefined : label} aria-labelledby={labelledBy} aria-describedby={describedBy} onClick={() => onChange(!checked)} />;

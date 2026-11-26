@@ -469,7 +469,9 @@ export type EditorDestination =
   | { kind: 'site'; field: 'baseUrl' | 'favicon' | 'socialImage' | 'identity' | 'logo' | 'sameAs' | 'llmsTxt' | 'webmcp' | 'crawlerPolicy' | 'redirects' }
   | { kind: 'pageSeo'; pageId: string; field: 'title' | 'description' | 'noindex' | 'socialImage' | 'structuredData' | 'pageTitle' }
   | { kind: 'entry'; collectionId: string; entryId: string; field: 'title' | 'excerpt' | 'seoTitle' | 'seoDescription' | 'body'; picture?: number }
-  | { kind: 'element'; owner: OwnerRef; nodeId: string; entryId?: string };
+  | { kind: 'element'; owner: OwnerRef; nodeId: string; entryId?: string }
+  /** One field of a placement's content: a property, one field of an object (`field`), or of a list item (`itemId` and `field`). */
+  | { kind: 'prop'; owner: OwnerRef; nodeId: string; prop: string; itemId?: string; field?: string };
 
 /** One note about an export, in the order the export said it, with where to fix what it describes when it can be fixed. */
 export interface ExportNote {

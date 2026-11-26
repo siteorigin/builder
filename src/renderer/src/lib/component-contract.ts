@@ -9,6 +9,9 @@ import type { EditOperation } from '@shared/ops';
 import { acceptedTypes, bindingProblem, bindingSites, isProtoKey, type BindField } from '@engine/schema';
 import { instancesOf } from '@engine/tree';
 import { richTextToPlain, toRichText } from '@shared/richtext';
+import { fieldsOf, optionalSchema } from '@shared/required';
+import { PAGE_TEASER_VALUES } from '@shared/page-teasers';
+import { requiredValueProblems } from '@engine/required';
 import { axesOf } from '@shared/variants';
 import { toCodeName } from './prop-schema';
 import type { ContentField } from './design-content';
@@ -227,6 +230,101 @@ export function renamePropOp(def: ComponentDefinition, prop: string, label: stri
   const text = label.trim();
   if (!schema || !text || text === schema.label) return null;
   return { type: 'component.setPropSchema', definitionId: def.id, prop, schema: { ...(schema as unknown as Record<string, unknown>), label: text } };
+}
+
+/**
+ * Whether a value of this type can be empty, so marking it required means something: text, rich text, a link, an
+ * image, choices, a table, an enum with a blank option, a list the author fills in, or an object whose every field
+ * can be empty. A yes/no, a number, a site style or an icon always holds a value.
+ */
+export function canBeEmpty(schema: PropSchema | ScalarPropSchema): boolean {
+  switch (schema.type) {
+    case 'string':
+    case 'richtext':
+    case 'link':
+    case 'image':
+    case 'choices':
+    case 'table':
+      return true;
+    case 'enum':
+      return Array.isArray(schema.options) && schema.options.some((o) => typeof o?.value === 'string' && !o.value.trim());
+    // Computed from the site's pages, or one item per linked page: never the author's to fill in.
+    case 'list':
+      return !schema.feed && !schema.pageTeaser;
+    // Empty only while every field is.
+    case 'object':
+      return fieldsOf(schema).every(([, f]) => canBeEmpty(f));
+    default:
+      return false;
+  }
+}
+
+/** Fields of a list or an object that the Properties section lists, each with its own Required switch: none for a computed list. */
+export function requirableFields(schema: PropSchema): Array<[string, ScalarPropSchema]> {
+  if (schema.type === 'list' && schema.feed) return [];
+  return fieldsOf(schema);
+}
+
+/**
+ * Whether a property, or one field of a list or an object (`field`), may be marked required: a value its type can
+ * leave empty, never a computed list's field, nor a page list's field that shows the linked page's own value while
+ * it is empty.
+ */
+export function canRequire(schema: PropSchema, field?: string): boolean {
+  if (field === undefined) return canBeEmpty(schema);
+  const f = requirableFields(schema).find(([k]) => k === field)?.[1];
+  if (!f || !canBeEmpty(f)) return false;
+  if (schema.type === 'list' && schema.pageTeaser) return !PAGE_TEASER_VALUES.some((what) => schema.pageTeaser![what] === field);
+  return true;
+}
+
+/** Whether a property, or one of its fields, is marked required now. */
+export function isRequired(schema: PropSchema, field?: string): boolean {
+  if (field === undefined) return !!schema.required;
+  return !!requirableFields(schema).find(([k]) => k === field)?.[1].required;
+}
+
+/** The schema with only `required` on a property, or on one of its fields, changed. */
+function withRequired(schema: PropSchema, field: string | undefined, on: boolean): PropSchema {
+  const set = <T extends { required?: boolean }>(s: T): T => {
+    const { required: _was, ...rest } = s;
+    return (on ? { ...rest, required: true } : rest) as T;
+  };
+  if (field === undefined) return set(schema);
+  if (schema.type !== 'list' && schema.type !== 'object') return schema;
+  return { ...schema, fields: { ...schema.fields, [field]: set(schema.fields[field]) } } as PropSchema;
+}
+
+/**
+ * Mark a property, or one field of a list or an object, required or not: one change, one Undo. Placements already
+ * missing it keep what they have and are reported (see placementsMissing). Null when nothing would change, or when the
+ * type cannot be required (a switch already on can still be turned off).
+ */
+export function setRequiredOp(def: ComponentDefinition, prop: string, field: string | undefined, on: boolean): EditOperation | null {
+  const schema = Object.hasOwn(def.properties, prop) ? def.properties[prop] : undefined;
+  if (!schema || isRequired(schema, field) === on) return null;
+  if (field !== undefined && !requirableFields(schema).some(([k]) => k === field)) return null;
+  if (on && !canRequire(schema, field)) return null;
+  return { type: 'component.setPropSchema', definitionId: def.id, prop, schema: withRequired(schema, field, on) as unknown as Record<string, unknown> };
+}
+
+/**
+ * How many placements of the component would be missing a value for a property, or one of its fields, once it is
+ * required: those whose value (their own, or the default they show) leaves it empty. A placement missing it in
+ * several list items counts once; one whose value comes from the component it sits in is checked there.
+ */
+export function placementsMissing(state: ProjectState, def: ComponentDefinition, prop: string, field?: string): number {
+  const schema = Object.hasOwn(def.properties, prop) ? def.properties[prop] : undefined;
+  if (!schema) return 0;
+  // Only this property's or field's own rule: others already required are reported on their own.
+  const only = withRequired(optionalSchema(schema), field, true);
+  let n = 0;
+  for (const { node } of instancesOf(state, def.id)) {
+    const v = node.props && Object.hasOwn(node.props, prop) ? node.props[prop] : schema.default;
+    if (isBinding(v)) continue;
+    if (requiredValueProblems(only, v, '').length) n++;
+  }
+  return n;
 }
 
 /** The part a node of the design is, if any. */

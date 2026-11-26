@@ -633,6 +633,29 @@ export function commitDraft<T>(base: ProjectSnapshot | null, commit: () => T, te
   }
 }
 
+/**
+ * A refusal the control that made an edit answers itself, beside the field, instead of an error toast: it returns
+ * true when it has said so (see claimRefusals).
+ */
+export type RefusalSink = (error: { code: string; message: string; details?: unknown }) => boolean;
+
+/** The control committing an edit, which hears whether it was refused (see claimRefusals). */
+let refusalSink: RefusalSink | null = null;
+
+/**
+ * Commit edits from `commit` (it calls applyOps) whose refusal `sink` may answer at the field they were made in: a
+ * value a component requires that the edit would have emptied, say. A refusal it does not take is a toast, as usual.
+ */
+export function claimRefusals<T>(sink: RefusalSink, commit: () => T): T {
+  const prev = refusalSink;
+  refusalSink = sink;
+  try {
+    return commit();
+  } finally {
+    refusalSink = prev;
+  }
+}
+
 /** Orders commits, so a late reply for an older one never replaces a newer edit of the same field. */
 let commitSeq = 0;
 /** The newest commit of each field, by opening and field key, held or not, discarded or not. */
@@ -668,6 +691,7 @@ export async function commitOps(operations: EditOperation[], label: string, coal
   // Followed until it lands, so saving and leaving the project wait for it and hear if it failed.
   let landed!: (o: ApplyOutcome) => void;
   trackApply(new Promise<ApplyOutcome>((r) => (landed = r)));
+  const sink = refusalSink;
   const s = getState();
   // A rename being committed goes with its typed edit, so whichever way that edit is held (now, when main answers
   // that the AI has just started, or because the title changed elsewhere) it carries the rename's offer.
@@ -711,7 +735,9 @@ export async function commitOps(operations: EditOperation[], label: string, coal
       // The AI started between the last snapshot and this edit.
       const message =
         r.error?.code === 'BUSY' ? refuseWhileAiBusy(typed, operations, label) : r.error?.code === 'STALE_REVISION' ? 'The project changed while you were choosing. Choose again.' : (r.error?.message ?? 'That change could not be applied.');
-      if (r.error?.code !== 'BUSY') toast(message, 'error');
+      // The field the edit was made in may say why itself (see claimRefusals).
+      const claimed = !!r.error && r.error.code !== 'BUSY' && r.error.code !== 'STALE_REVISION' && !!sink?.({ code: r.error.code, message, details: r.error.details });
+      if (r.error?.code !== 'BUSY' && !claimed) toast(message, 'error');
       landed({ ok: false, message });
       return null;
     }

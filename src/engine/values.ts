@@ -9,7 +9,7 @@ import { ICONS } from '@catalogue/foundation/icons';
 import { normalizeTable } from './table';
 import { declaredTokens } from './tokens';
 import { TEXT_LIMITS, tooLongMessage } from '@shared/text-limits';
-import { isEmptyPropValue, requiredMessage } from '@shared/required';
+import { REQUIRED_REFUSAL, isEmptyPropValue, requiredMessage, shownValue } from '@shared/required';
 
 const own = <T>(rec: Record<string, T>, key: string): T | undefined => (Object.hasOwn(rec, key) ? rec[key] : undefined);
 
@@ -302,15 +302,25 @@ export const storedAlt = (stored: unknown): string | undefined => (stored && typ
  */
 export function normalizeScalar(schema: ScalarPropSchema, v: unknown, state: ProjectState, label: string, stored?: unknown): unknown {
   // Number(null) and Number("") are 0: clearing a required number is refused, not read as zero.
-  if (schema.required && schema.type === 'number' && (v === null || v === undefined || (typeof v === 'string' && !v.trim()))) fail(requiredMessage(schema, label));
+  if (schema.required && schema.type === 'number' && (v === null || v === undefined || (typeof v === 'string' && !v.trim())) && !wasEmpty(schema, stored)) fail(requiredMessage(schema, label), REQUIRED_REFUSAL);
   // Checked on the value as it is kept, whichever way it was kept: a value saved under older rules stays only while it
   // is not empty.
-  return requireValue(schema, scalarValue(schema, v, state, label, stored), label);
+  return requireValue(schema, scalarValue(schema, v, state, label, stored), label, stored);
 }
 
-/** `v` itself when `schema` is not required or `v` is not empty; otherwise the edit fails with the property's path. */
-export function requireValue<T>(schema: PropSchema, v: T, label: string): T {
-  if (schema.required && isEmptyPropValue(schema, v)) fail(requiredMessage(schema, label));
+/**
+ * Whether `stored`, the value saved before an edit, was already empty: one the project reports, not one the edit
+ * empties. An object's left-out fields show its defaults, so they count as what it held.
+ */
+const wasEmpty = (schema: PropSchema, stored: unknown): boolean => stored !== undefined && isEmptyPropValue(schema, shownValue(schema, stored));
+
+/**
+ * `v` itself when `schema` is not required or `v` is not empty; otherwise the edit fails with the property's path. A
+ * value that was empty already (`stored`: a property made required after it was left empty, or an empty default) may
+ * stay empty, so an edit of something else beside it still goes through: the project reports it until it is filled.
+ */
+export function requireValue<T>(schema: PropSchema, v: T, label: string, stored?: unknown): T {
+  if (schema.required && isEmptyPropValue(schema, v) && !wasEmpty(schema, stored)) fail(requiredMessage(schema, label), REQUIRED_REFUSAL);
   return v;
 }
 
@@ -407,8 +417,8 @@ export function normalizeItem(schema: Extract<PropSchema, { type: 'list' }>, ite
 
 /** `stored` is the property's current value, so unchanged legacy values inside it stay accepted. */
 export function normalizeProp(schema: PropSchema, v: unknown, state: ProjectState, label: string, stored?: unknown): unknown {
-  if (schema.type === 'table') return requireValue(schema, normalizeTable(v, label), label);
-  if (schema.type === 'object') return requireValue(schema, normalizeObject(schema, v, state, label, stored), label);
+  if (schema.type === 'table') return requireValue(schema, normalizeTable(v, label), label, stored);
+  if (schema.type === 'object') return requireValue(schema, normalizeObject(schema, v, state, label, stored), label, stored);
   if (schema.type === 'list') {
     if (!Array.isArray(v)) fail(`${label}: expected a list.`);
     if (schema.feed) {
@@ -431,7 +441,7 @@ export function normalizeProp(schema: PropSchema, v: unknown, state: ProjectStat
       seen.add(n.id);
       return n;
     });
-    return requireValue(schema, items, label);
+    return requireValue(schema, items, label, stored);
   }
   return normalizeScalar(schema, v, state, label, stored);
 }
