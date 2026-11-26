@@ -4,6 +4,7 @@ import { App } from './App';
 import { registerPacks } from '@catalogue/index';
 import { api, setState } from './store';
 import { followAppearance } from './lib/appearance';
+import { RenderFailure } from './components/RenderFailure';
 
 // For the app's lifetime: the editor follows its Appearance from before anything renders.
 followAppearance();
@@ -28,7 +29,12 @@ api.app
     }
     registerPacks(catalogue.packs);
     setState({ packs: { refused: catalogue.refused, userDir: catalogue.userDir } });
-    root.render(<App />);
+    // Anything else that fails while rendering (a notice, a dialog host) still leaves a way back.
+    root.render(
+      <RenderFailure>
+        <App />
+      </RenderFailure>
+    );
   })
   .catch((e: Error) => {
     root.render(<p className="fatal">SiteOrigin Builder could not load its themes: {e.message}</p>);

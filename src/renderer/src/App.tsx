@@ -14,7 +14,8 @@ import { forgetCopy } from './lib/clipboard';
 import { frameTextFocus, inlineEdit, stepVisitor } from './panels/Canvas';
 import { focusedSurface, forwardedKeyRuns, forwardedVisitorStep, menuHistoryOwner, type HistoryContext } from './lib/history';
 import { runWriterHistory } from './lib/post-draft';
-import { endEditingHold, forgetKeptDrafts, prepareToLeave, projectClosed } from './lib/leave';
+import { closeProject, endEditingHold, forgetKeptDrafts, prepareToLeave, projectClosed } from './lib/leave';
+import { RenderFailure } from './components/RenderFailure';
 import { keepViewValid } from './lib/model';
 import { keepSeoSubject } from './lib/seo-view';
 import { placeOn, readPlaces } from './lib/page-place';
@@ -143,7 +144,14 @@ export function App() {
 
   return (
     <>
-      {booted && (screen === 'welcome' ? <Welcome /> : <Editor />)}
+      {/* A screen that fails while rendering shows what happened instead of a blank window (#886). Only the screen goes:
+          the listeners above stay, so the main process can still ask before leaving, and a closed project brings back
+          a fresh Welcome. */}
+      {booted && (
+        <RenderFailure key={screen} onCloseProject={screen === 'editor' ? () => void closeProject() : undefined}>
+          {screen === 'welcome' ? <Welcome /> : <Editor />}
+        </RenderFailure>
+      )}
       <UnpackingModal />
       <Toasts />
       <ConfirmHost />
