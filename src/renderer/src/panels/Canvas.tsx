@@ -38,6 +38,7 @@ import { repeatAsListTarget } from '../lib/repeat-as-list';
 import { boundaryOf, computedAt, createComponentTarget, definitionPick, descOf, designCtx, inDefinition, itemStep, needsStudio, placementsOn, refExists, refLabel, resolveRef, selectionFromChain, stepItem, studioDescOf, studioDesignCtx, studioPick, throughPlacement, toDefinitionRef, withoutSlot, type BridgeDesc } from '../lib/model';
 import { NEW_STUDIO, StudioLoads, studioSpec } from '../lib/studio';
 import { titleOnlyPage } from '../lib/page-start';
+import { CHIP_GAP, CHIP_H, chipPlacement, type ChipPlacement } from '../lib/chip-place';
 import { askAiAbout, writePageWithAi, canInlineEdit, commitText, dropAsset, dropAssetAt, deleteSelection, detachable, detachPlacement, duplicateLayers, duplicateSelection, insertHere, liveGroup, moveLayers, moveSelection, planOne, setMode, showsInlineText, structuralTarget, takeUnscrolled, ungroupLayers, wrapLayers } from '../lib/actions';
 import { exportComponentFile, placedDefinition, saveToLibrary } from '../lib/saved-components';
 import { wrapItems } from './WrapItems';
@@ -2896,14 +2897,15 @@ export function Canvas() {
   const firstSel = selBoxes[0];
   // Only on the inserted element's own outline, and not once it is being moved or its text typed.
   const arriving = !!arrival && !!selection && arrival.key === refKey(selection) && !reorder && !editing;
-  // Text being edited always has its chip parked above the page, never over the words.
-  const placement = firstSel && selection ? chipPlacement(firstSel, !isPart && !editing, frameH * z) : null;
   // Spacing handles sit on the selected box itself (not its outline's breathing room), while editing and not while
   // text is being typed, a block moved, the page resized or a component's design edited everywhere.
   const spaceDesc = selection ? descFor(selection) : null;
   // The page's report must be for this selection: one from before it changed measured something else.
   // A code component's marked part has no spacing handles: a report for its placement is never one for the part.
   const spaceFor = !!spacing && !!spaceDesc && !spaceDesc.part && spaceDesc.slot === undefined && spacing.desc.ctx === spaceDesc.ctx && spacing.desc.node === spaceDesc.node && spacing.desc.items === spaceDesc.items;
+  // Text being edited always has its chip parked above the page, never over the words; a section carries it in its
+  // own top padding only once the page has measured that padding for this selection.
+  const placement = firstSel && selection ? chipPlacement(firstSel, !isPart && !editing, frameH * z, spaceFor && spacing ? (spacing.border.top + spacing.padding.top) * z : null) : null;
   const spaceShown = selBoxes.length > 0 && spaceFor && !!state && !editing && !reorder && !resizing && !definitionMode && !snapshot?.aiBusy && !snapshot?.readOnly;
   // The canvas's Add buttons (#387), on the box of the selection and of what is hovered, each only on a box the page
   // measured for it (one copy: a repeated item's place would be every item's). Below one section and above the next
@@ -3242,9 +3244,10 @@ export function Canvas() {
               <div className="overlay-clip">
                 {hovering &&
                   hovBoxes.map((b, i) => {
-                    const tall = b.height >= 40;
-                    // A tall element carries its name inside its top-left corner (kept in view when its top has scrolled
-                    // out of the page); a short one, above it, or below when it sits at the top of the page.
+                    // A tall container carries its name inside its top-left corner (kept in view when its top has
+                    // scrolled out of the page); a short element, and text or a button of any height, whose first line
+                    // the name would cover, above it, or below when it sits at the top of the page (#905).
+                    const tall = b.height >= 40 && !textKind(hover);
                     // Near the page's right edge the name is anchored to the element's right, so the page edge never cuts it.
                     const side = b.left > frameW - 160 ? (tall ? { left: 'auto', right: 4 } : { left: 'auto', right: 0 }) : tall ? {} : { left: 0 };
                     const tagAt = { ...side, ...(tall ? (b.top < 0 ? { top: 4 - b.top } : {}) : b.top >= 24 ? { top: -19 } : { top: b.height - 1 }) };
@@ -3502,31 +3505,13 @@ function stepKey(s: ReturnType<typeof getState>): string {
   return JSON.stringify([s.selection ? refKey(s.selection) : null, s.snapshot?.revision ?? null, s.pageId, s.templateMode ?? null, s.definitionMode?.definitionId ?? null, s.viewport]);
 }
 
-const CHIP_H = 28;
-/** Near a container's top or bottom edge, in screen pixels, a dragged element goes beside it rather than into it. */
-const CHIP_GAP = 4;
-
-/**
- * Where the chip goes. A tall section (with its top on screen) carries it inside its top edge, where its own
- * padding is. A smaller element gets it above, when there is room inside the page. Everything else (parts,
- * which sit among other content, and anything scrolled past the top or bottom of the visible page) parks it
- * in the strip above the page frame, lined up with the selection, so it never covers the page or floats off
- * it. `frameHeight` is the visible page's height, in the same (zoomed) pixels as the box.
- */
-function chipPlacement(box: { top: number; height: number }, topLevel: boolean, frameHeight: number): 'inside' | 'above' | 'strip' {
-  if (!topLevel) return 'strip';
-  if (box.top >= 0 && box.height > 120 && box.top + CHIP_H + CHIP_GAP + 2 <= frameHeight) return 'inside';
-  if (box.top >= CHIP_H + CHIP_GAP + 2 && box.top < frameHeight) return 'above';
-  return 'strip';
-}
-
 /**
  * The selection chip: a toolbar of the selection's name and actions. Its place comes from chipPlacement and
  * it stays inside the page frame horizontally. One Tab stop: Left/Right/Home/End move between its buttons
  * (WAI-ARIA APG toolbar); the drag handle is pointer-only, with Move up and Move down as its keyboard
  * equivalent. Delete is not here: it lives at the end of More actions, in red, and on the Delete key.
  */
-function SelectionChip({ box, frameWidth, placement, name, icon, parent, repeats, repeatsLabel, item, sib, canMove, editing, onMore, onGrip, onWidth, onLostFocus, onDone, onMove, onStep, stepBlocked, onEditText, onReveal }: { box: { left: number; top: number; width: number; height: number }; frameWidth: number; placement: 'inside' | 'above' | 'strip'; name: string; icon: React.ReactNode; parent: string | null; repeats: number; repeatsLabel: string; item: ReturnType<typeof itemStep>; sib: { index: number; count: number } | null; canMove: boolean; editing: boolean; onMore: (el: HTMLElement, focusLast?: boolean) => void; onGrip: (e: React.PointerEvent) => void; onWidth: (w: number) => void; onLostFocus: () => void; onDone: () => void; onMove: (dir: -1 | 1) => void; onStep: (dir: -1 | 1) => void; stepBlocked: { prev: boolean; next: boolean } | null; onEditText: (() => void) | null; onReveal: (() => void) | null }) {
+function SelectionChip({ box, frameWidth, placement, name, icon, parent, repeats, repeatsLabel, item, sib, canMove, editing, onMore, onGrip, onWidth, onLostFocus, onDone, onMove, onStep, stepBlocked, onEditText, onReveal }: { box: { left: number; top: number; width: number; height: number }; frameWidth: number; placement: ChipPlacement; name: string; icon: React.ReactNode; parent: string | null; repeats: number; repeatsLabel: string; item: ReturnType<typeof itemStep>; sib: { index: number; count: number } | null; canMove: boolean; editing: boolean; onMore: (el: HTMLElement, focusLast?: boolean) => void; onGrip: (e: React.PointerEvent) => void; onWidth: (w: number) => void; onLostFocus: () => void; onDone: () => void; onMove: (dir: -1 | 1) => void; onStep: (dir: -1 | 1) => void; stepBlocked: { prev: boolean; next: boolean } | null; onEditText: (() => void) | null; onReveal: (() => void) | null }) {
   const askKeys = useAskAiKeys();
   const selection = useStore((s) => s.selection);
   const layerSet = useStore((s) => s.layerSet);
@@ -3576,7 +3561,7 @@ function SelectionChip({ box, frameWidth, placement, name, icon, parent, repeats
     [] // eslint-disable-line react-hooks/exhaustive-deps
   );
   const t = structuralTarget(selection);
-  const top = placement === 'strip' ? -CHIP_H - 6 : placement === 'inside' ? box.top + CHIP_GAP + 2 : box.top - CHIP_H - CHIP_GAP;
+  const top = placement === 'strip' ? -CHIP_H - 6 : box.top + CHIP_GAP + 2;
   const left = Math.max(0, Math.min(placement === 'inside' ? box.left + CHIP_GAP + 2 : box.left, frameWidth - w));
   const parentRef = selection?.instancePath.length ? { owner: selection.owner, instancePath: selection.instancePath.slice(0, -1), nodeId: selection.instancePath[selection.instancePath.length - 1] } : null;
   const structural = !!t && !selection?.instancePath.length;

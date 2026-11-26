@@ -38,6 +38,28 @@ export const SPACING_HANDLES: SpacingHandle[] = [
 ];
 
 const OPPOSITE: Record<SpacingSide, SpacingSide> = { top: 'bottom', bottom: 'top', left: 'right', right: 'left' };
+
+/** Half a spacing grip's thickness across its edge, in screen pixels (the 12px side of .ov-space-handle). */
+export const GRIP_HALF = 6;
+
+/**
+ * Where a padding handle is drawn, in screen pixels: centred in its padding band, so it marks the space it sets
+ * without covering what the box holds. In a band thinner than the grip, the grip's inner edge meets the content's
+ * edge and the rest stands out over the box's own edge, never over its text or a small button's label (#905).
+ * `box` is the selected box on screen; `border` and `padding` are in page pixels, at zoom `z`.
+ */
+export function paddingGripAt(box: { left: number; top: number; width: number; height: number }, border: Record<SpacingSide, number>, padding: Record<SpacingSide, number>, side: SpacingSide, z: number): { x: number; y: number } {
+  const midX = box.left + box.width / 2;
+  const midY = box.top + box.height / 2;
+  // From the box's outer edge inwards: where the band starts (inside the border) and where the content begins.
+  const outer = border[side] * z;
+  const inner = (border[side] + padding[side]) * z;
+  const depth = Math.min((outer + inner) / 2, inner - GRIP_HALF);
+  if (side === 'top') return { x: midX, y: box.top + depth };
+  if (side === 'bottom') return { x: midX, y: box.top + box.height - depth };
+  if (side === 'left') return { x: box.left + depth, y: midY };
+  return { x: box.left + box.width - depth, y: midY };
+}
 const INLINE_FLIP: Record<string, string> = { paddingInlineStart: 'paddingInlineEnd', paddingInlineEnd: 'paddingInlineStart' };
 
 /** The style a handle's own side writes: on a right-to-left page the left side is where a line ends. */

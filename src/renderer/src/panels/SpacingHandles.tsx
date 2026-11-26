@@ -14,6 +14,7 @@ import {
   draggedSize,
   groupSignature,
   groupTokens,
+  paddingGripAt,
   planHandle,
   previewDecls,
   previewMedia,
@@ -188,15 +189,18 @@ export function SpacingHandles({ state, selection, desc, box, spacing, zoom, pos
     const stored = (property: string) => (v: StyleValue) => sameStyleValue(storedSpacing(t, scope, property), v);
     const { padding: pd, border: bd, margin: mg } = spacing;
     const midX = box.left + box.width / 2;
-    const midY = box.top + box.height / 2;
     // Margin handles sit beside the padding ones, so both can be reached when there is no space between them.
     const aside = Math.min(28, box.width / 4);
+    const dragged = drag.current?.grip;
     const spaceAt = (h: SpacingHandle) => {
       if (h.box === 'margin') return h.side === 'top' ? { x: midX + aside, y: box.top - mg.top * z } : { x: midX + aside, y: box.top + box.height + mg.bottom * z };
-      if (h.side === 'top') return { x: midX, y: box.top + (bd.top + pd.top) * z };
-      if (h.side === 'bottom') return { x: midX, y: box.top + box.height - (bd.bottom + pd.bottom) * z };
-      if (h.side === 'left') return { x: box.left + (bd.left + pd.left) * z, y: midY };
-      return { x: box.left + box.width - (bd.right + pd.right) * z, y: midY };
+      // The padding being dragged moves its grip with its content edge, as far as the pointer has taken it, rather
+      // than to the middle of the new band, which would leave the pointer behind.
+      if (dragged?.id === `spacing-padding-${h.side}`) {
+        const d = (pd[h.side] - dragged.start) * z;
+        return h.axis === 'y' ? { x: dragged.at.x, y: dragged.at.y + (h.side === 'top' ? d : -d) } : { x: dragged.at.x + (h.side === 'left' ? d : -d), y: dragged.at.y };
+      }
+      return paddingGripAt(box, bd, pd, h.side, z);
     };
     const band = (b: SpacingHandle['box'], side: SpacingHandle['side']): Rect => {
       const innerW = box.width - (bd.left + bd.right) * z;
