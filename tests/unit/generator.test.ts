@@ -93,7 +93,7 @@ describe('the blank starter (#15)', () => {
     const files = generateProject(s);
     // What visitors get: the pages and the shared layout (a component's own file may name its defaults).
     const shown = [...files].filter(([path]) => path.startsWith('src/routes/')).map(([, src]) => src).join('\n');
-    for (const leftover of ['Select this text', 'Insert panel', 'A short sentence', 'example.com', '555', 'Harbour Lane']) expect(shown).not.toContain(leftover);
+    for (const leftover of ['Select this text', 'Insert panel', 'A short sentence', 'example.com', '555', 'Harbor Lane']) expect(shown).not.toContain(leftover);
     // The footer keeps what is true of any site: its name, the Home link and the copyright.
     const footer = s.site.shell.footer.nodes[s.site.shell.footer.rootIds[0]] as InstanceNode;
     expect(footer.props).toMatchObject({ siteName: 'Kloof', tagline: '', contact: [] });

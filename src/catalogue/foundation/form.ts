@@ -585,7 +585,7 @@ export const contactForm: ComponentDefinition = {
   description:
     'A real contact form that sends messages to an external form service (a Formspree-style HTTPS endpoint, Web3Forms or Netlify Forms), with spam protection and clear sent and error messages. It cannot send until it is connected to a service.',
   category: 'conversion',
-  tags: ['contact', 'form', 'enquiry', 'message', 'email', 'get in touch', 'formspree', 'netlify', 'web3forms'],
+  tags: ['contact', 'form', 'enquiry', 'inquiry', 'message', 'email', 'get in touch', 'formspree', 'netlify', 'web3forms'],
   icon: 'mail',
   properties: {
     ...P.group('Text', {

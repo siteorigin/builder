@@ -141,7 +141,7 @@ try {
   const card = win.getByTestId('canvas-empty-page');
   await card.waitFor({ timeout: 30000 });
   assert.match(await card.innerText(), /This page has no sections yet/);
-  const leftovers = ['Select this text', 'Insert panel', 'A short sentence', 'example.com', '555 0134', '15550134', 'Harbour Lane', 'no sections yet', 'Visitors never see'];
+  const leftovers = ['Select this text', 'Insert panel', 'A short sentence', 'example.com', '555 0134', '15550134', 'Harbor Lane', 'no sections yet', 'Visitors never see'];
   const live = await frame.locator('body').innerText();
   for (const t of leftovers) assert.ok(!live.includes(t), `the live preview does not show “${t}”: ${live}`);
   assert.match(live, /Second Shelf/, 'the header and footer show the site’s name');

@@ -3018,7 +3018,7 @@ export function friendlyError(msg: string): string {
     return 'The website tools could not be downloaded. Check your internet connection and try again. A connection is only needed once.';
   if (/ENOSPC/i.test(msg)) return 'Your disk is full. Free up some space and try again.';
   if (/EACCES|EPERM/i.test(msg)) return 'SiteOrigin Builder does not have permission to write to that folder. Choose a folder in your Documents and try again.';
-  if (/Canceled/i.test(msg)) return 'Canceled.';
+  if (/^Canceled$/.test(msg)) return 'Canceled.';
   return msg.length > 200 ? 'Setting up the website tools failed. Open Diagnostics for details, then choose Reinstall website tools.' : msg;
 }
 
