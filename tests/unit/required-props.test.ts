@@ -187,6 +187,11 @@ describe('required properties: schema edits and bindings', () => {
     const brought = introducedDiagnostics(saving(state), saving(cleared));
     expect(brought.map((d) => d.code)).toEqual(['PROP_REQUIRED_EMPTY']);
     expect(brought.some((d) => madeRequiredBy(state, cleared, both, d))).toBe(false);
+    // A copy of the placement already missing it (a duplicated section) is reported too, not refused.
+    const copied = applyOperations(tightened, [{ type: 'node.duplicate', owner: home(tightened), nodeId }]).state;
+    const copies = introducedDiagnostics(saving(tightened), saving(copied));
+    expect(copies.map((d) => d.code)).toEqual(['PROP_REQUIRED_EMPTY']);
+    expect(copies.every((d) => d.nodeId !== nodeId && madeRequiredBy(tightened, copied, [{ type: 'node.duplicate' }], d))).toBe(true);
     // An edit beside it, or one that fills it, goes through; one that empties another value is still refused.
     const filled = applyOperations(tightened, [{ type: 'instance.setProp', owner: home(tightened), nodeId, prop: 'title', value: 'Back' }]).state;
     expect(requiredProblems(filled)).toEqual([]);
@@ -318,6 +323,25 @@ describe('required values a placement already leaves empty (#748)', () => {
     const blank = applyOperations(state, [{ type: 'instance.setProp', owner: page, nodeId, prop: 'intro', value: '' }]).state;
     const kept = applyOperations(blank, [{ type: 'component.setPropSchema', definitionId, prop: 'intro', schema: { type: 'richtext', label: 'Intro', default: 'Hello', required: true } }]).state;
     expect(requiredProblems(kept).map((p) => p.message)).toEqual(['Home: Card → Intro is required: it needs some text.']);
+  });
+
+  it('never takes a value of another type before the change for one that was empty', () => {
+    const s = project();
+    const { state, definitionId, nodeId } = placed(s, { intro: { type: 'string', label: 'Intro', default: 'Hello' } });
+    const ops = [
+      { type: 'component.setPropSchema' as const, definitionId, prop: 'intro', schema: { type: 'number', label: 'Intro', default: 1 } },
+      { type: 'component.setPropSchema' as const, definitionId, prop: 'intro', schema: { type: 'string', label: 'Intro', default: 'Hello', required: true } }
+    ];
+    const blank = applyOperations(state, [{ type: 'instance.setProp', owner: home(state), nodeId, prop: 'intro', value: '' }]).state;
+    const retyped = structuredClone(blank);
+    (retyped.components[definitionId].properties as Record<string, unknown>).intro = { type: 'number', label: 'Intro', default: 1 };
+    (retyped.pages[retyped.site.homePageId].nodes[nodeId] as InstanceNode).props.intro = 7;
+    const after = structuredClone(blank);
+    after.components[definitionId].properties.intro.required = true;
+    const d = { code: 'PROP_REQUIRED_EMPTY', owner: home(state), nodeId, site: `page|${home(state).id}|${nodeId}|intro|` };
+    expect(madeRequiredBy(blank, after, ops, d)).toBe(true);
+    // A number before is no empty text, whatever the text after is.
+    expect(madeRequiredBy(retyped, after, ops, d)).toBe(false);
   });
 
   it('refuses a schema change that empties a sparse object through its new default', () => {

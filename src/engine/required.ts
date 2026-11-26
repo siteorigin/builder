@@ -112,15 +112,16 @@ export function requiredSite(key: string, owner: OwnerRef, nodeId: string): { pr
 }
 
 /**
- * Whether a problem a change brings in is a placement that was already missing a value its component now requires:
- * the change (`operations`, from `before` to `after`) made one of that component's properties or fields required, and
- * the placement held that value empty before it. Such a placement is reported, never a reason to refuse the change;
- * any change that empties a required value, in the same batch or not, is refused.
+ * Whether a problem a change (`operations`, from `before` to `after`) brings in is a value that was already empty, so it
+ * is reported rather than a reason to refuse the change: a placement the change made a property or field required on
+ * (its component's schema changed, the value's type did not, and it held the value empty before), or a placement the
+ * change made, which can only hold an empty required value as a copy of one (a section moved or duplicated: new
+ * content is checked as it is written). Any change that empties a required value, in the same batch or not, is refused.
  */
 export function madeRequiredBy(before: ProjectState, after: ProjectState, operations: ReadonlyArray<{ type: string; definitionId?: unknown }>, d: { code: string; owner?: { kind: string; id: string }; nodeId?: string; site?: string }): boolean {
   if (d.code !== 'PROP_REQUIRED_EMPTY' || !d.owner || !d.nodeId || !d.site) return false;
-  const changed = new Set(operations.flatMap((o) => (o.type === 'component.setPropSchema' && typeof o.definitionId === 'string' ? [o.definitionId] : [])));
-  const at = changed.size ? requiredSite(d.site, d.owner as OwnerRef, d.nodeId) : null;
+  const changed = new Set(operations.flatMap((o) => ((o.type === 'component.setPropSchema' || o.type === 'component.upsert') && typeof o.definitionId === 'string' ? [o.definitionId] : [])));
+  const at = requiredSite(d.site, d.owner as OwnerRef, d.nodeId);
   if (!at) return false;
   const placement = (state: ProjectState) => {
     const found = allTrees(state).find((t) => t.owner.kind === d.owner!.kind && t.owner.id === d.owner!.id);
@@ -129,11 +130,17 @@ export function madeRequiredBy(before: ProjectState, after: ProjectState, operat
   };
   const now = placement(after);
   const was = placement(before);
-  if (!now || !was || was.definitionId !== now.definitionId || !changed.has(now.definitionId)) return false;
+  if (!now) return false;
+  if (!was) return true;
+  if (was.definitionId !== now.definitionId || !changed.has(now.definitionId)) return false;
   const schema = Object.hasOwn(after.components, now.definitionId) ? after.components[now.definitionId].properties[at.prop] : undefined;
   const prevDef = Object.hasOwn(before.components, was.definitionId) ? before.components[was.definitionId] : undefined;
-  const v = was.props && Object.hasOwn(was.props, at.prop) ? was.props[at.prop] : prevDef?.properties[at.prop]?.default;
-  if (!schema || isBinding(v)) return false;
+  const prev = prevDef?.properties[at.prop];
+  // A value of another type before is not one that was empty under this rule (a picture is no text).
+  const typeAt = (s: PropSchema | undefined) => (at.field === undefined ? s?.type : s && (s.type === 'list' || s.type === 'object') && Object.hasOwn(s.fields, at.field) ? s.fields[at.field].type : undefined);
+  if (!schema || !prev || typeAt(prev) !== typeAt(schema)) return false;
+  const v = was.props && Object.hasOwn(was.props, at.prop) ? was.props[at.prop] : prev.default;
+  if (isBinding(v)) return false;
   // Empty already before the change, judged by the rule it now has.
   const head = `${d.owner.kind}|${d.owner.id}|${d.nodeId}|${at.prop}|`;
   return requiredValueProblems(schema, v, '').some((p) => head + p.key === d.site);
