@@ -374,7 +374,7 @@ export async function reviewImportFile(sourcePath: string, opts: { converter: bo
   // is counted out here instead of in a count of files added.
   if (!heic && !large && !mime) return row;
   const label = heic ? 'HEIC' : (extname(sourcePath).slice(1) || 'Image').toUpperCase();
-  if (!heic && !large && stat.size > MAX_BYTES && stat.size <= CONVERT_MAX_BYTES) return { ...row, action: 'refuse', format: label, reason: 'it is larger than 25 MB.' };
+  if (!heic && !large && stat.size > MAX_BYTES) return { ...row, action: 'refuse', format: label, reason: 'it is larger than 25 MB.' };
   if (stat.size > CONVERT_MAX_BYTES) return { ...row, action: 'refuse', format: heic ? 'HEIC' : mime === 'image/png' ? 'PNG' : 'JPEG', reason: 'it is larger than 64 MB.' };
   const buf = await fs.readFile(sourcePath).catch(() => null);
   if (!buf) return row;
