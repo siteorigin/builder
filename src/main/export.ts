@@ -905,7 +905,7 @@ const README_HOSTS: Record<RedirectHost, { notFound: string; redirects: string }
   vercel: {
     notFound: 'Vercel uses it automatically',
     redirects:
-      'The rules for Vercel are in `vercel.json`, beside `package.json`. Vercel reads that file from the root of what you deploy. When Vercel builds this project, it is already there. When you deploy `build/` by itself, copy `vercel.json` into `build/` after each build: `npm run build` does not. If the contents of `build/` go into a sub-folder of what you deploy, put `vercel.json` at the root instead (its addresses already include the sub-folder). `static/_redirects` holds the same redirects for Cloudflare Pages.'
+      'The rules for Vercel are in `vercel.json`, beside `package.json`. Vercel reads that file from the root of what you deploy. When Vercel builds this project, it is already there; set the Vercel project’s Output Directory to `build`. When you deploy `build/` by itself, copy `vercel.json` into `build/` after each build: `npm run build` does not. If the contents of `build/` go into a sub-folder of what you deploy, put `vercel.json` at the root instead (its addresses already include the sub-folder). `static/_redirects` holds the same redirects for Cloudflare Pages.'
   }
 };
 
@@ -937,11 +937,11 @@ The static website is written to \`build/\`. Upload the contents of that folder 
 
 ### Not-found page
 
-Addresses the site does not have should show its not-found page, \`build/404.html\`. ${README_HOSTS[host].notFound} when the contents of \`build/\` are the root of what you publish. Otherwise, set the host's 404 error document to \`/404.html\`, with the sub-folder in front when the site is in one (\`/my-site/404.html\`). On Apache, that is \`ErrorDocument 404 /404.html\`.
+Addresses the site does not have should show its not-found page, \`build/404.html\`. ${README_HOSTS[host].notFound} when the contents of \`build/\` are the root of what you publish. Otherwise, if the host has a 404 error document setting, set it to \`/404.html\`, with the sub-folder in front when the site is in one (\`/my-site/404.html\`). On Apache, that is \`ErrorDocument 404 /404.html\`.
 
 ### Redirects
 
-When the site keeps old addresses (of pages that have moved, say), each gets a page of its own that sends visitors on. Those pages work on any static host, but answer as pages that are there (HTTP 200). Rules for the host give a permanent redirect (HTTP 301) instead. A site with no old addresses has no rules file.
+When the site keeps old addresses (of pages that have moved, say), each gets a page of its own that sends visitors on. Those pages work on any static host, but answer as pages that are there (HTTP 200). Rules for the host give a permanent redirect (HTTP 301) instead. A site with no old addresses has no rules file, so there is nothing more to set up.
 
 ${README_HOSTS[host].redirects}
 

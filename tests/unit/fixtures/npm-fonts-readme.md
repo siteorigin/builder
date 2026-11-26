@@ -21,11 +21,11 @@ The static website is written to `build/`. Upload the contents of that folder to
 
 ### Not-found page
 
-Addresses the site does not have should show its not-found page, `build/404.html`. Cloudflare Pages, Netlify and GitHub Pages use it automatically when the contents of `build/` are the root of what you publish. Otherwise, set the host's 404 error document to `/404.html`, with the sub-folder in front when the site is in one (`/my-site/404.html`). On Apache, that is `ErrorDocument 404 /404.html`.
+Addresses the site does not have should show its not-found page, `build/404.html`. Cloudflare Pages, Netlify and GitHub Pages use it automatically when the contents of `build/` are the root of what you publish. Otherwise, if the host has a 404 error document setting, set it to `/404.html`, with the sub-folder in front when the site is in one (`/my-site/404.html`). On Apache, that is `ErrorDocument 404 /404.html`.
 
 ### Redirects
 
-When the site keeps old addresses (of pages that have moved, say), each gets a page of its own that sends visitors on. Those pages work on any static host, but answer as pages that are there (HTTP 200). Rules for the host give a permanent redirect (HTTP 301) instead. A site with no old addresses has no rules file.
+When the site keeps old addresses (of pages that have moved, say), each gets a page of its own that sends visitors on. Those pages work on any static host, but answer as pages that are there (HTTP 200). Rules for the host give a permanent redirect (HTTP 301) instead. A site with no old addresses has no rules file, so there is nothing more to set up.
 
 The rules are in `static/_redirects`, written for Cloudflare Pages. The build copies the file to `build/_redirects`. Cloudflare Pages reads it only at the root of the folder you publish: if the contents of `build/` go into a sub-folder of that, move the file up to the root (its addresses already include the sub-folder). On another host, set up the redirects in its own settings. For rules written for Netlify or Vercel, choose that host in SiteOrigin Builder (Site settings, under Redirects) and export again.
 

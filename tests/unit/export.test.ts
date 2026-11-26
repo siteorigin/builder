@@ -601,6 +601,10 @@ describe('source export helpers', () => {
       expect(readme).toContain('HTTP 301');
       expect(isGeneratedReadme(readme)).toBe(true);
     }
+    expect(vercel).toContain('Output Directory to `build`');
+    // Each host's README is the app's with its drafts too.
+    for (const host of ['cloudflare', 'netlify', 'vercel'] as const)
+      for (const [drafts, entries] of [[true, false], [false, true], [true, true]]) expect(isGeneratedReadme(projectReadme('Old', drafts, undefined, entries, host))).toBe(true);
     // The host chosen since the README was written replaces it on export.
     for (const host of ['netlify', 'vercel'] as const) {
       const state = createStarterState('blank', 'Old', false);
