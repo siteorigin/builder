@@ -156,7 +156,7 @@ interface Rendered {
 }
 
 /** Bundle every preview page for the server, the way the exported site's prerender does. */
-async function bundlePages(files: Map<string, string>, pages: string[]): Promise<{ module: Rendered; dir: string }> {
+export async function bundlePages(files: Map<string, string>, pages: string[]): Promise<{ module: Rendered; dir: string }> {
   const entry = ["export { render } from 'svelte/server';", ...pages.map((p, i) => `import P${i} from ${JSON.stringify(GEN + p)};`), `export const pages = [${pages.map((_, i) => `P${i}`).join(', ')}];`].join('\n');
   const out = (await build({
     configFile: false,

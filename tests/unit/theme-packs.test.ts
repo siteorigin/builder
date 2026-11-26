@@ -176,17 +176,21 @@ describe('the Editorial pack (#390)', () => {
 
   it('sets copy and pictures in asymmetric columns, and its services as an open, numbered index', () => {
     const def = (id: string) => EDITORIAL_PACK.components.find((c) => c.componentId === id)!;
-    expect(def('hero.split').tree!.nodes.grid.styles?.desktop).toMatchObject({ gridTemplate: '2fr 3fr' });
+    expect(def('hero.split').tree!.nodes.grid.styles?.desktop).toMatchObject({ gridTemplate: 'minmax(0, 5fr) minmax(0, 6fr)' });
     expect(def('hero.split').tree!.nodes.grid.styles?.desktop).not.toHaveProperty('columns');
-    expect(def('hero.split').variantAxes!.layout.options['media-start'].styles?.grid?.desktop).toEqual({ gridTemplate: '3fr 2fr' });
+    expect(def('hero.split').variantAxes!.layout.options['media-start'].styles?.grid?.desktop).toEqual({ gridTemplate: 'minmax(0, 6fr) minmax(0, 5fr)' });
     expect(def('content.media').tree!.nodes.grid.styles?.desktop).toMatchObject({ gridTemplate: '3fr 2fr' });
     for (const id of ['content.text', 'faq.list']) expect(def(id).tree!.nodes.inner.styles?.desktop, id).toMatchObject({ gridTemplate: '1fr 2fr' });
     const card = def('features.grid').tree!.nodes.card.styles!.base!;
     expect(card).toMatchObject({ borderBlockStart: '1px solid currentColor', paddingInline: '0' });
     for (const gone of ['background', 'border', 'radius', 'color']) expect(card, gone).not.toHaveProperty(gone);
     expect(EDITORIAL_PACK.baseCss).toMatch(/\.so--d-editorial-features-grid__card\)::before \{\s*content: counter\(so-index, decimal-leading-zero\);/);
-    // Hover states use the style scopes a page can set too.
-    expect(def('blog.grid').tree!.nodes.card.styles?.['base:hover']).toEqual({ border: '1px solid var(--so-color-brand)' });
+    // One card: hairline sides under an ink head rule, on sections and blocks alike, and no hover on a card that is not a link.
+    for (const [id, node] of [['testimonials.grid', 'card'], ['pricing.plans', 'plan'], ['pricing.toggle', 'plan'], ['contact.details', 'method'], ['block.feature', 'root'], ['block.testimonial', 'root']])
+      expect(def(id).tree!.nodes[node].styles?.base, id).toMatchObject({ border: { token: 'border.default' }, borderBlockStart: { token: 'border.strong' } });
+    // A post card has no ground of its own, so its head rule is the section's ink; and only its title is a link.
+    expect(def('blog.grid').tree!.nodes.card.styles?.base).toMatchObject({ border: { token: 'border.default' }, borderBlockStart: '1px solid currentColor' });
+    expect(def('blog.grid').tree!.nodes.card.styles).not.toHaveProperty('base:hover');
   });
 
   it('has square corners, hairline rules, no shadows, and its own type over Foundation’s tokens and fonts', () => {
@@ -201,8 +205,8 @@ describe('the Editorial pack (#390)', () => {
     // Every font a Foundation site can choose ships with Editorial too, so a switch never stops at a font.
     expect(EDITORIAL_PACK.fonts.map((f) => f.family).sort()).toEqual(FOUNDATION_PACK.fonts.map((f) => f.family).sort());
     expect(EDITORIAL_PACK.aiProfile.guidance.join(' ')).toMatch(/asymmetric/);
-    // Its stylesheet sets the same colours against each other as Foundation's, so it declares the same pairs.
-    expect(EDITORIAL_PACK.contrastPairs!.map((p) => p.id)).toEqual(FOUNDATION_PACK.contrastPairs!.map((p) => p.id));
+    // Its stylesheet sets the same colours against each other as Foundation's, and its index on a dark section adds one.
+    expect(EDITORIAL_PACK.contrastPairs!.map((p) => p.id)).toEqual([...FOUNDATION_PACK.contrastPairs!.map((p) => p.id), 'dark-index-text', 'eyebrow-brand', 'footer-labels', 'field-edge', 'field-edge-surface-alt', 'footer-labels-light']);
   });
 
   it('starts a new project of either starter, recording Editorial and placing only its sections', () => {
