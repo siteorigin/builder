@@ -24,6 +24,8 @@ function fakeNpm(): string {
   symlinkSync('../semver/bin/semver.js', join(src, 'node_modules', '.bin', 'semver'));
   writeFileSync(join(dir, 'outside.txt'), 'outside');
   symlinkSync(join(dir, 'outside.txt'), join(src, 'node_modules', '.bin', 'outside'));
+  // A link outside .bin too: every link is left out, not only the shims.
+  symlinkSync('../semver', join(src, 'node_modules', 'semver-alias'));
   return src;
 }
 
@@ -37,7 +39,15 @@ describe('copyNpm', () => {
     // Not a link, and not a dereferenced copy either: the shims are gone.
     expect(existsSync(join(dest, 'node_modules', '.bin', 'semver'))).toBe(false);
     expect(existsSync(join(dest, 'node_modules', '.bin', 'outside'))).toBe(false);
+    expect(existsSync(join(dest, 'node_modules', 'semver-alias'))).toBe(false);
     expect(findLinks(dest)).toEqual([]);
+  });
+
+  it('fails when a link is left in the destination', () => {
+    const dest = join(dir, 'Resources', 'npm');
+    mkdirSync(dest, { recursive: true });
+    symlinkSync(join(dir, 'missing'), join(dest, 'stale'));
+    expect(() => copyNpm(fakeNpm(), dest)).toThrow(/still holds symbolic links: stale/);
   });
 
   it('copies the real npm with its CLI and no links', () => {
@@ -52,6 +62,6 @@ describe('copyNpm', () => {
 describe('findLinks', () => {
   it('finds links at any depth, and nothing else', () => {
     const src = fakeNpm();
-    expect(findLinks(src).sort()).toEqual([join(src, 'node_modules', '.bin', 'outside'), join(src, 'node_modules', '.bin', 'semver')]);
+    expect(findLinks(src).sort()).toEqual([join(src, 'node_modules', '.bin', 'outside'), join(src, 'node_modules', '.bin', 'semver'), join(src, 'node_modules', 'semver-alias')]);
   });
 });
