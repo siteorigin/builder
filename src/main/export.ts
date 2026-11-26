@@ -27,8 +27,31 @@ import { atomicWrite, readIfExists, removeEmptyDirs, safeJoin, sha, toJson } fro
 import { isPrivateFileName } from './project/private-files';
 import { converterDocPath, sourceDocPath, storedSourceDoc } from './project/documents';
 import { CONVERTER_FILE, holdsSecretValue, isSourceId } from '@shared/sources';
+import { perf } from './perf';
 
 const UNREADABLE = Symbol('unreadable');
+
+/** A file an export reads, counted for the benchmark (export.filesRead and export.bytesRead, scripts/perf/README.md). */
+export async function readExportFile(path: string): Promise<Buffer>;
+export async function readExportFile(path: string, encoding: BufferEncoding): Promise<string>;
+export async function readExportFile(path: string, encoding?: BufferEncoding): Promise<Buffer | string> {
+  const bytes = await fs.readFile(path);
+  countExportRead(bytes.length);
+  return encoding ? bytes.toString(encoding) : bytes;
+}
+
+/** Count one read of `bytes` bytes an export made. */
+export function countExportRead(bytes: number) {
+  perf.count('export.filesRead');
+  perf.count('export.bytesRead', bytes);
+}
+
+/** readIfExists, counted as an export's read. */
+async function readExportText(path: string): Promise<string | null> {
+  const text = await readIfExists(path);
+  if (text !== null && perf.on) countExportRead(Buffer.byteLength(text));
+  return text;
+}
 
 /**
  * A settings file's text, null when there is none, or UNREADABLE for anything but a plain file (a pipe, which would
@@ -250,7 +273,7 @@ async function websiteText(project: string, { files, candidate, draftOnly }: { f
   const held = new Map<string, string>();
   for (const rel of files) {
     if (!/^(src|static)\//.test(rel) || candidate(rel) || !TEXT_FILE.test(rel) || rel === SEARCH_INDEX) continue;
-    const text = await fs.readFile(join(project, rel), 'utf8');
+    const text = await readExportFile(join(project, rel), 'utf8');
     if (draftOnly.has(rel)) held.set(rel, text);
     else texts.push(text);
   }
@@ -396,6 +419,7 @@ async function rasterFiles(root: string, dirs: string[]): Promise<Array<{ rel: s
       try {
         const head = Buffer.alloc(64);
         const { bytesRead } = await handle.read(head, 0, 64, 0);
+        countExportRead(bytesRead);
         if (sniffImageType(head.subarray(0, bytesRead))) out.push({ rel, named: false });
       } catch {
         out.push({ rel, named: false });
@@ -431,7 +455,7 @@ export async function readLibraryImage(root: string, a: AssetRecord): Promise<Bu
   try {
     const st = await fs.lstat(path);
     if (!st.isFile() || st.size > MAX_LIBRARY_FILE) return null;
-    return await fs.readFile(path);
+    return await readExportFile(path);
   } catch {
     return null;
   }
@@ -471,7 +495,7 @@ export async function cleanWebsitePhotos(project: string, state: ProjectState, c
   const failed = new Set<string>();
   for (const { rel } of await rasterFiles(project, ['static', 'src'])) {
     const path = join(project, rel);
-    const buf = await fs.readFile(path).catch(() => null);
+    const buf = await readExportFile(path).catch(() => null);
     const owner = owners.get(rel);
     const r = buf && cleanPhoto(buf);
     if (!r) {
@@ -517,7 +541,7 @@ function inlineBytes(params: string, payload: string): Buffer {
 export async function cleanBuiltSite(dir: string): Promise<string[]> {
   const failed: string[] = [];
   for (const { rel } of await rasterFiles(dir, [''])) {
-    const buf = await fs.readFile(join(dir, rel)).catch(() => null);
+    const buf = await readExportFile(join(dir, rel)).catch(() => null);
     const r = buf && cleanPhoto(buf);
     if (!r) failed.push(rel);
     // Renamed into place, so a file the build linked from elsewhere is replaced rather than written through.
@@ -525,7 +549,7 @@ export async function cleanBuiltSite(dir: string): Promise<string[]> {
   }
   for (const rel of (await listFiles(dir)).map((f) => f.split(sep).join('/'))) {
     if (!INLINE_HOST.test(rel)) continue;
-    const text = await fs.readFile(join(dir, rel), 'latin1').catch(() => null);
+    const text = await readExportFile(join(dir, rel), 'latin1').catch(() => null);
     if (text === null) {
       failed.push(rel);
       continue;
@@ -634,13 +658,13 @@ const MANIFEST_PATH = 'siteorigin/generated-manifest.json';
 export async function editedGeneratedFile(dir: string): Promise<string | null> {
   let manifest: { files?: Record<string, string> };
   try {
-    manifest = JSON.parse((await readIfExists(join(dir, MANIFEST_PATH))) ?? '');
+    manifest = JSON.parse((await readExportText(join(dir, MANIFEST_PATH))) ?? '');
   } catch {
     return MANIFEST_PATH;
   }
   for (const [path, hash] of Object.entries(manifest.files ?? {}).sort()) {
     // Read as bytes: a theme's font files are generated output too.
-    const disk = await fs.readFile(join(dir, path)).catch(() => null);
+    const disk = await readExportFile(join(dir, path)).catch(() => null);
     if (disk === null || sha(disk) !== hash) return path;
   }
   return null;
@@ -658,7 +682,7 @@ export async function leaveOutDrafts(dir: string, state: ProjectState): Promise<
   if (live === state) return;
   const full = generateProject(state, { instrument: false });
   const published = generateProject(live, { instrument: false });
-  const manifest = JSON.parse((await readIfExists(join(dir, MANIFEST_PATH))) ?? '{}') as { files?: Record<string, string>; pending?: Record<string, string> };
+  const manifest = JSON.parse((await readExportText(join(dir, MANIFEST_PATH))) ?? '{}') as { files?: Record<string, string>; pending?: Record<string, string> };
   const files = manifest.files ?? {};
   for (const [path, content] of full) {
     if (!Object.hasOwn(files, path) && !Object.hasOwn(manifest.pending ?? {}, path)) continue;
@@ -691,7 +715,7 @@ export async function stripPartMarkers(project: string, state: ProjectState): Pr
     // which the website has only while it declares its tools.
     for (const path of [def.sourcePath, ...(webMcpOn(state.site) && declaresFormTool(def) ? [webMcpFormFile(def)] : [])]) {
       const abs = safeJoin(project, path);
-      const source = await readIfExists(abs);
+      const source = await readExportText(abs);
       if (source === null) continue;
       const clean = await withoutPartMarkers(source);
       if (clean !== source) await fs.writeFile(abs, clean);
@@ -790,10 +814,10 @@ export function draftSourceNotes(state: ProjectState): string[] {
 export async function projectFingerprint(dir: string): Promise<string> {
   const parts: string[] = [];
   for (const top of ['src', 'static', 'siteorigin']) {
-    for (const f of (await listFiles(join(dir, top))).filter((n) => !n.endsWith('.tmp')).sort()) parts.push(`${top}/${f}:${sha(await fs.readFile(join(dir, top, f)))}`);
+    for (const f of (await listFiles(join(dir, top))).filter((n) => !n.endsWith('.tmp')).sort()) parts.push(`${top}/${f}:${sha(await readExportFile(join(dir, top, f)))}`);
   }
   // Read only as a plain file: anything else there (a pipe, say) is no file of the website's.
-  const vercel = isPlainFile(join(dir, VERCEL_CONFIG_FILE)) ? await fs.readFile(join(dir, VERCEL_CONFIG_FILE)).catch(() => null) : null;
+  const vercel = isPlainFile(join(dir, VERCEL_CONFIG_FILE)) ? await readExportFile(join(dir, VERCEL_CONFIG_FILE)).catch(() => null) : null;
   if (vercel) parts.push(`${VERCEL_CONFIG_FILE}:${sha(vercel)}`);
   return sha(parts.join('\n'));
 }
@@ -810,12 +834,12 @@ export async function deliverVercelConfig(project: string, out: string, live: Pr
   // leaveOutDrafts lists in the manifest exactly the generated files the staged copy has.
   let manifest: { files?: Record<string, string> } = {};
   try {
-    manifest = JSON.parse((await readIfExists(join(project, MANIFEST_PATH))) ?? '{}');
+    manifest = JSON.parse((await readExportText(join(project, MANIFEST_PATH))) ?? '{}');
   } catch {
     return null;
   }
   if (!Object.hasOwn(manifest.files ?? {}, VERCEL_CONFIG_FILE) || !isPlainFile(join(project, VERCEL_CONFIG_FILE))) return null;
-  const config = await fs.readFile(join(project, VERCEL_CONFIG_FILE));
+  const config = await readExportFile(join(project, VERCEL_CONFIG_FILE));
   const there = join(out, VERCEL_CONFIG_FILE);
   if (existsSync(there)) return `static/${VERCEL_CONFIG_FILE} takes the place of the redirect rules SiteOrigin Builder writes for Vercel. Delete or rename it, or choose another host in Site settings under Redirects, then export again.`;
   await fs.writeFile(there, config);
@@ -968,7 +992,7 @@ export function brokenSectionLinks(state: ProjectState): string[] {
  */
 export async function rivalHookStop(dir: string, state: ProjectState): Promise<string | null> {
   if (!routeLanguages(state).length) return null;
-  const manifest = JSON.parse((await readIfExists(join(dir, MANIFEST_PATH))) ?? '{}') as { files?: Record<string, string>; pending?: Record<string, string> };
+  const manifest = JSON.parse((await readExportText(join(dir, MANIFEST_PATH))) ?? '{}') as { files?: Record<string, string>; pending?: Record<string, string> };
   const claimed = Object.hasOwn(manifest.files ?? {}, SERVER_HOOK_FILE) || Object.hasOwn(manifest.pending ?? {}, SERVER_HOOK_FILE);
   const own = ownServerHook(dir, claimed);
   return own ? `Pages written in another language need SiteOrigin Builder's ${SERVER_HOOK_FILE}, and this project has a server hook of its own (${own}): SvelteKit runs only one of them. Rename or remove yours, then export again.` : null;
@@ -1234,7 +1258,7 @@ export function notFoundPageProblem(html: string | null): string | null {
 export async function readNotFoundPage(out: string): Promise<string | null> {
   const file = join(out, NOT_FOUND_FILE);
   const stat = await fs.lstat(file).catch(() => null);
-  return stat?.isFile() ? fs.readFile(file, 'utf8') : null;
+  return stat?.isFile() ? readExportFile(file, 'utf8') : null;
 }
 
 /** Is there a 404.html of the project's own in static/ that the website build would copy: a file, a link or a folder with files? */
@@ -1296,7 +1320,7 @@ export function notFoundHostNote(base: string, host: RedirectHost): string {
  * and writing it when there is no hook at all. generated-manifest.json then lists what the copy has.
  */
 export async function settleServerHook(dir: string, state: ProjectState): Promise<void> {
-  const manifest = JSON.parse((await readIfExists(join(dir, MANIFEST_PATH))) ?? '{}') as { files?: Record<string, string> };
+  const manifest = JSON.parse((await readExportText(join(dir, MANIFEST_PATH))) ?? '{}') as { files?: Record<string, string> };
   const files = (manifest.files ??= {});
   const own = ownServerHook(dir, Object.hasOwn(files, SERVER_HOOK_FILE));
   if (own && Object.hasOwn(files, SERVER_HOOK_FILE)) {

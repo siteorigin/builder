@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import type { PerfRecord } from '../../src/shared/perf';
 import { Collector, Trace } from '../../scripts/perf/results';
-import { CHAT_CASES, CHAT_REPLY_CHECKPOINTS, CHAT_TYPED, chainFor, chat, chatReply, chatReplyFirst, chatReplyLast, chatSeed, edit, expect as check, findHeading, launch, open, PANELS, panels, runChain, SHOWN_PANELS, type FixtureFacts, type Scenario, type ScenarioContext } from '../../scripts/perf/scenarios';
+import { CHAT_CASES, CHAT_REPLY_CHECKPOINTS, CHAT_TYPED, chainFor, chat, chatReply, chatReplyFirst, chatReplyLast, chatSeed, edit, exportAgain, exportSite, expect as check, findHeading, launch, open, PANELS, panels, runChain, SHOWN_PANELS, type FixtureFacts, type Scenario, type ScenarioContext } from '../../scripts/perf/scenarios';
 import { FIXTURES } from '../../scripts/perf/fixtures';
 
 let seq = 0;
@@ -20,6 +20,9 @@ describe('the scenario chain', () => {
     expect(chainFor(['edit', 'launch', 'open']).map((s) => s.name)).toEqual(['launch', 'open', 'edit']);
     expect(chainFor(['panels']).map((s) => s.name)).toEqual(['launch', 'open', 'panels']);
     expect(chainFor(['panels', 'edit']).map((s) => s.name)).toEqual(['launch', 'open', 'edit', 'panels']);
+    expect(chainFor(['export']).map((s) => s.name)).toEqual(['launch', 'open', 'export']);
+    expect(chainFor(['exportAgain']).map((s) => s.name)).toEqual(['launch', 'open', 'export', 'exportAgain']);
+    expect(chainFor(['export', 'exportAgain']).map((s) => s.name)).toEqual(['launch', 'open', 'export', 'exportAgain']);
     expect(chainFor([])).toEqual([]);
     expect(() => chainFor(['nope'])).toThrow('Unknown scenario');
   });
@@ -437,6 +440,84 @@ describe('chat metrics', () => {
       expect(reply).toMatch(/^\| --- \|/m);
     }
     expect(CHAT_CASES.map((c) => c.earlier + 2)).toEqual([6, 100]);
+  });
+});
+
+describe('export metrics', () => {
+  /** One export's records from `at`, for the scenario `name`; the export runs 1000 ms from its span's start. */
+  const one = (name: string, at: number, scale = 1) => [
+    r('scenario.start', at, { attrs: { scenario: name } }),
+    m('scenario.start', at, { attrs: { scenario: name } }),
+    span('export.sweep', at + 12, 2),
+    span('export.icons', at + 20, 5),
+    span('export.fingerprint', at + 40, 15, { attrs: { pass: 'before' }, dc: { 'export.filesRead': 10, 'export.bytesRead': 5000 } }),
+    span('export.lockHeld', at + 100, 80 * scale, { dc: { 'export.filesRead': 25 * scale, 'export.bytesRead': 12_000 * scale } }),
+    span('export.stage', at + 100, 90 * scale),
+    m('export.library', at + 101, { attrs: { files: 300, bytes: 6_000_000 } }),
+    span('export.assets.prune', at + 150, 30),
+    span('main.stall', at + 160, 60),
+    span('export.copyTools', at + 300, 100),
+    span('export.build', at + 800, 450),
+    span('export.verify.cleanBuilt', at + 880, 40),
+    span('export.publish', at + 940, 30),
+    span('export.cleanup', at + 1005, 4),
+    span('controller.exportStatic', at + 1010, 1000, { dc: { 'export.filesRead': 900 * scale, 'export.bytesRead': 7_000_000 * scale, 'fs.writes': 40 } }),
+    m('export.output', at + 1500, { attrs: { scenario: name, files: 700, bytes: 3_000_000 } }),
+    r('export.output', at + 1500, { attrs: { scenario: name, files: 700, bytes: 3_000_000 } }),
+    m('scenario.end', at + 3000, { attrs: { scenario: name } })
+  ];
+  const trace = (drop: (x: PerfRecord) => boolean = () => false) => new Trace([...one('export', 10_000), ...one('exportAgain', 20_000, 0.5)].filter((x) => !drop(x)));
+  const show = (got: ReturnType<Scenario['measure']>) => Object.fromEntries(Object.entries(got.metrics).map(([k, v]) => [k, `${v.value} ${v.unit}`]));
+
+  it('time each phase of an export, from the span of the whole export, and count what it read', () => {
+    const got = exportSite.measure(trace(), facts);
+    expect(got.missing).toEqual([]);
+    expect(show(got)).toEqual({
+      'export.total': '1000 ms',
+      'export.stage': '90 ms',
+      'export.lockHeld': '80 ms',
+      // From the snapshot's end (100) to the tools' copy starting (200).
+      'export.assets': '100 ms',
+      'export.copyTools': '100 ms',
+      'export.build': '450 ms',
+      // From the build's end (800) to the publication starting (910).
+      'export.verify': '110 ms',
+      'export.publish': '30 ms',
+      // From the publication's end (940) to the cleanup starting (1001).
+      'export.finish': '61 ms',
+      'export.cleanup': '4 ms',
+      'export.filesRead': '900 count',
+      'export.bytesRead': '7000000 bytes',
+      'export.lockFilesRead': '25 count',
+      'export.lockBytesRead': '12000 bytes',
+      'export.fileWrites': '40 count',
+      'export.libraryFiles': '300 count',
+      'export.libraryBytes': '6000000 bytes',
+      'export.outputFiles': '700 count',
+      'export.outputBytes': '3000000 bytes',
+      'export.mainStallMax': '60 ms'
+    });
+  });
+
+  it('take the second export’s records for exportAgain, never the first’s', () => {
+    const got = exportAgain.measure(trace(), facts);
+    expect(got.missing).toEqual([]);
+    expect(got.metrics['exportAgain.lockHeld'].value).toBe(40);
+    expect(got.metrics['exportAgain.bytesRead'].value).toBe(3_500_000);
+    expect(got.metrics['exportAgain.lockFilesRead'].value).toBe(12.5);
+  });
+
+  it('name a phase that is missing instead of reporting the export without it', () => {
+    for (const name of ['export.lockHeld', 'export.build', 'export.copyTools', 'export.publish', 'export.cleanup', 'export.library'])
+      expect(exportSite.measure(trace((x) => x.name === name && x.t < 20_000), facts).missing).toEqual([name]);
+    // Without its own export's span, the scenario never takes the next export's.
+    const without = exportSite.measure(trace((x) => x.name === 'controller.exportStatic' && x.t < 20_000), facts);
+    expect(without.missing).toEqual(expect.arrayContaining(['controller.exportStatic', 'export.stage', 'export.lockHeld', 'export.build']));
+    expect(without.metrics['export.total']).toBeUndefined();
+    expect(exportSite.measure(trace((x) => x.name === 'scenario.end' && x.t < 20_000), facts).missing).toEqual(expect.arrayContaining(['scenario.end (main)']));
+    // The output counted on disk after the export, by the scenario's own mark.
+    expect(exportSite.measure(trace((x) => x.name === 'export.output' && x.t < 20_000), facts).missing).toEqual(['export.output']);
+    expect(exportSite.measure(trace((x) => x.name === 'export.output' && x.t < 20_000), facts).metrics['export.outputFiles']).toBeUndefined();
   });
 });
 

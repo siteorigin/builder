@@ -114,6 +114,21 @@ same for one event) and `eventMsTotal`, `replyMs` (until the editor handled the 
 message renders and text parses while it streamed (`streamCommits`, `streamMessageRenders`, `streamTextParses`), and
 the longest main-process stall.
 
+**`export`**: export the website as a folder from the Export dialog: open it, choose Website files, pick a folder (the
+chooser answered through the driver), until the dialog says what it exported. **`exportAgain`** follows it and does the
+same once more with nothing changed, into a second folder. Checks: the dialog says it exported the fixture's pages and
+entries, the export is listed as a new website folder in the chosen place, made from the revision it started on, and
+the folder holds a page for every page and entry, the home hero's heading, and nothing of the editor's (no editor
+markup in its HTML or scripts, no `node_modules`, `.siteorigin` or `.svelte-kit`). Times: `total` (the main process's
+whole export, `controller.exportStatic`), `stage` (the site's icons and the snapshot), `lockHeld` (the snapshot taken
+under the writer lock, while no edit can land), `assets` (the checks and asset passes on the staged copy, from the
+snapshot to copying the tools), `copyTools`, `build` (the production build), `verify` (the built site's pages, scripts
+and images checked again), `publish` (the folder put in place), `finish` (the export recorded and its preview started)
+and `cleanup` (the staging folder removed). Counts: files and bytes the export read in the main process (`filesRead`,
+`bytesRead`; copies are not reads), the same under the lock (`lockFilesRead`, `lockBytesRead`), file writes, the
+library's files and bytes beside them, and the files and bytes of the exported folder; the longest main-process stall.
+The fixture has no drafts, and only the folder format is measured.
+
 ## Reading and comparing results
 
 Counts and sizes are the portable evidence: they do not depend on the machine, and two runs of the same build give the
@@ -163,7 +178,8 @@ them over IPC). Unset, no file is opened, no IPC channel is registered and every
 - `c` on a mark: every counter of its process, cumulative. `dc` on a span: what each counter gained while it ran.
 
 Counters: `fs.writes`, `fs.durableWrites`, `fs.fsyncs` (`src/main/project/fsutil.ts`), `files.read`, `files.hashed`
-(project, generated and theme pack files), `ipc.projectChanged.sends`, `ipc.projectChanged.bytes` (as IPC serializes
+(project, generated and theme pack files), `export.filesRead`, `export.bytesRead` (what an export reads in the main
+process, `src/main/export.ts`), `ipc.projectChanged.sends`, `ipc.projectChanged.bytes` (as IPC serializes
 the snapshot), `ipc.aiEvent.sends`, `ipc.aiEvent.bytes` and `ipc.aiEvent.unsized` (the assistant's events, sized the
 same way), `session.reloadFromDisk`, `main.stalls` (main), and `react.commits`, `react.renders` (components rendered,
 counted from each commit's fibers), per panel marked with `timedPanel` (`src/renderer/src/lib/perf-panels.tsx`)
