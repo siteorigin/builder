@@ -47,7 +47,7 @@ describe.skipIf(!browserInstalled)('the editor document in a browser', () => {
 
   it('is never taller than the window, whatever a panel holds', async () => {
     await page.setContent(shell);
-    const { scrollHeight, innerHeight } = await page.evaluate(() => ({ scrollHeight: document.documentElement.scrollHeight, innerHeight }));
+    const { scrollHeight, innerHeight } = (await page.evaluate(`({ scrollHeight: document.documentElement.scrollHeight, innerHeight })`)) as { scrollHeight: number; innerHeight: number };
     expect(scrollHeight).toBeLessThanOrEqual(innerHeight);
   });
 
@@ -56,24 +56,24 @@ describe.skipIf(!browserInstalled)('the editor document in a browser', () => {
     const frame = page.frames()[1];
     await frame.waitForSelector('#hero');
     /** The editor document's and #root's scroll positions, which must never move. */
-    const editor = () => page.evaluate(() => [scrollX, scrollY, document.scrollingElement!.scrollTop, document.getElementById('root')!.scrollTop]);
+    const editor = () => page.evaluate(`[scrollX, scrollY, document.scrollingElement.scrollTop, document.getElementById('root').scrollTop]`);
     // The bridge scrolls the selection into view inside the preview, which also scrolls every scrollable ancestor.
-    await frame.evaluate(() => document.getElementById('hero')!.scrollIntoView({ block: 'center' }));
-    expect(await frame.evaluate(() => scrollY)).toBeGreaterThan(0);
+    await frame.evaluate(`document.getElementById('hero').scrollIntoView({ block: 'center' })`);
+    expect(await frame.evaluate(`scrollY`)).toBeGreaterThan(0);
     expect(await editor()).toEqual([0, 0, 0, 0]);
     // Then a field at the Inspector's end, which its own body scrolls to.
-    await page.evaluate(() => document.querySelector('.inspector')!.lastElementChild!.scrollIntoView({ block: 'end' }));
-    expect(await page.locator('.panel-body').evaluate((b) => b.scrollTop)).toBeGreaterThan(0);
+    await page.evaluate(`document.querySelector('.inspector').lastElementChild.scrollIntoView({ block: 'end' })`);
+    expect(await page.locator('.panel-body').evaluate((b: { scrollTop: number }) => b.scrollTop)).toBeGreaterThan(0);
     expect(await editor()).toEqual([0, 0, 0, 0]);
     // And back to the page.
-    await frame.evaluate(() => window.scrollTo(0, 0));
-    await frame.evaluate(() => document.getElementById('hero')!.scrollIntoView({ block: 'center' }));
+    await frame.evaluate(`window.scrollTo(0, 0)`);
+    await frame.evaluate(`document.getElementById('hero').scrollIntoView({ block: 'center' })`);
     expect(await editor()).toEqual([0, 0, 0, 0]);
   });
 
   it('keeps the startup error view inside the window', async () => {
     await page.setContent(`<!doctype html><html><head><style>${css}</style></head><body><div id="root"><div class="fatal"><p>No theme pack could be loaded.</p></div></div></body></html>`);
-    const { scrollHeight, innerHeight, rootTop } = await page.evaluate(() => ({ scrollHeight: document.documentElement.scrollHeight, innerHeight, rootTop: document.getElementById('root')!.getBoundingClientRect().top }));
+    const { scrollHeight, innerHeight, rootTop } = (await page.evaluate(`({ scrollHeight: document.documentElement.scrollHeight, innerHeight, rootTop: document.getElementById('root').getBoundingClientRect().top })`)) as { scrollHeight: number; innerHeight: number; rootTop: number };
     expect(rootTop).toBe(0);
     expect(scrollHeight).toBeLessThanOrEqual(innerHeight);
   });
@@ -81,11 +81,11 @@ describe.skipIf(!browserInstalled)('the editor document in a browser', () => {
   it('lets a startup error longer than the window scroll to its last reason, inside the window', async () => {
     const reasons = Array.from({ length: 80 }, (_, i) => `<li>Theme ${i} could not be read.</li>`).join('');
     await page.setContent(`<!doctype html><html><head><style>${css}</style></head><body><div id="root"><div class="fatal"><p>No themes.</p><ul>${reasons}</ul></div></div></body></html>`);
-    const r = await page.evaluate(() => {
-      const last = document.querySelector('.fatal li:last-child')!;
+    const r = (await page.evaluate(`(() => {
+      const last = document.querySelector('.fatal li:last-child');
       last.scrollIntoView({ block: 'end' });
-      return { scrollHeight: document.documentElement.scrollHeight, innerHeight, docTop: document.scrollingElement!.scrollTop, bottom: last.getBoundingClientRect().bottom };
-    });
+      return { scrollHeight: document.documentElement.scrollHeight, innerHeight, docTop: document.scrollingElement.scrollTop, bottom: last.getBoundingClientRect().bottom };
+    })()`)) as { scrollHeight: number; innerHeight: number; docTop: number; bottom: number };
     expect(r.scrollHeight).toBeLessThanOrEqual(r.innerHeight);
     expect(r.docTop).toBe(0);
     expect(r.bottom).toBeLessThanOrEqual(r.innerHeight);
