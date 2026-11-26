@@ -2814,7 +2814,10 @@ export class Controller {
       return null;
     } catch (e) {
       if (e instanceof ExportStopped) return e.message;
-      if (format === 'folder' && (e as NodeJS.ErrnoException).code === 'EEXIST') return 'Choose a new folder; the export never overwrites an existing location.';
+      const code = (e as NodeJS.ErrnoException).code;
+      if (format === 'folder' && code === 'EEXIST') return 'Choose a new folder; the export never overwrites an existing location.';
+      // Asking again cannot help: the chosen location is the problem.
+      if (code === 'EACCES' || code === 'EPERM' || code === 'EROFS') return `SiteOrigin Builder cannot write to ${dirname(dest)}. Choose another location for the export.`;
       throw e;
     }
   }

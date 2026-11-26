@@ -281,6 +281,24 @@ describe('a project taken over while it is open', () => {
     expect(readFileSync(join(dir, '.siteorigin/lock.json'), 'utf8')).toBe(theirs);
   });
 
+  it.skipIf(process.platform === 'win32' || process.getuid?.() === 0)('says an unwritable destination cannot be written, for a folder and a ZIP file', async () => {
+    const dir = await makeProject();
+    const { c } = controller();
+    await c.trustAndOpen(dir);
+    await until(() => c.snapshot()?.runtime.state === 'ready', 'the preview');
+    const out = temp('out');
+    chmodSync(out, 0o555);
+    try {
+      for (const r of [await c.exportSourceTo(join(out, 'source')), await c.exportSourceTo(join(out, 'source.zip'), 'zip')]) {
+        expect(r.ok).toBe(false);
+        expect(r.message).toContain('cannot write to');
+        expect(r.message).toContain('Choose another location');
+      }
+    } finally {
+      chmodSync(out, 0o755);
+    }
+  });
+
   it('calls off an export when the lock changed hands before the heartbeat saw it', async () => {
     const dir = await makeProject();
     const { c } = controller();
