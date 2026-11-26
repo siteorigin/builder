@@ -49,6 +49,7 @@ import { isWebMcpForm, toolOverrides, WEBMCP_DESCRIPTION_MAX, WEBMCP_TYPED_NAME_
 import { feedRowFields } from '@shared/entry-feed';
 import { archiveRouteOwner, collectionRouteOwner, findEntry, siteEntries } from '@shared/collections';
 import { loopText, redirectTargetProblem, resolveRedirects } from '@shared/redirects';
+import { finishSourceSync, sourceRemove, sourceUpsert, type SourceSyncGrant } from './sources';
 import { collectionCreate, collectionRemove, collectionUpdate, entryAddressesInUse, entryCreate, entryRemove, entryReorder, entryUpdate, refuseSyncedHolders, syncedEntryChange, type EntryAddress } from './collections';
 import { termCreate, termRemove, termRename } from './terms';
 import { isListBlock } from '@shared/richtext';
@@ -167,6 +168,11 @@ export interface ApplyContext {
    * for another hands its old addresses on to it here, for the rest of the batch. applyOperations fills it.
    */
   entryAddressesAtStart?: Map<string, EntryAddress>;
+  /**
+   * A sync of an external source (see engine/sources.ts), which only the main process's sync gives: never an edit,
+   * never the assistant. The batch's entry operations may write that one synced collection's entries.
+   */
+  sourceSync?: SourceSyncGrant;
 }
 
 /** Own-property lookup: externally supplied keys must never resolve to inherited prototype members. */
@@ -446,13 +452,17 @@ function applyOne(state: ProjectState, op: EditOperation, ctx: ApplyContext): Op
     case 'collection.removeTerm':
       return termRemove(state, op);
     case 'entry.create':
-      return entryCreate(state, op);
+      return entryCreate(state, op, ctx.sourceSync);
     case 'entry.update':
-      return entryUpdate(state, op, ctx.entryAddressesAtStart);
+      return entryUpdate(state, op, ctx.entryAddressesAtStart, ctx.sourceSync);
     case 'entry.reorder':
       return entryReorder(state, op);
     case 'entry.remove':
-      return entryRemove(state, op, ctx.entryAddressesAtStart);
+      return entryRemove(state, op, ctx.entryAddressesAtStart, ctx.sourceSync);
+    case 'source.upsert':
+      return sourceUpsert(state, op);
+    case 'source.remove':
+      return sourceRemove(state, op);
     case 'asset.remove': {
       const removing = own(state.assets.assets, op.assetId);
       if (!removing) fail(`Asset "${op.assetId}" does not exist.`);
@@ -4126,8 +4136,11 @@ export function applyOperations(state: ProjectState, ops: EditOperation[], ctx: 
       throw e;
     }
   }
-  // Synced collections' entries are what the batch began with, unless it detached them (see syncedEntryChange).
-  const synced = syncedEntryChange(state, draft);
+  // A sync attaches its collection and says where each entry it wrote came from.
+  if (ctx.sourceSync) finishSourceSync(draft, ctx.sourceSync);
+  // Synced collections' entries are what the batch began with, unless it detached them (see syncedEntryChange), or
+  // the batch is the sync of the one collection it writes.
+  const synced = syncedEntryChange(state, draft, ctx.sourceSync?.collectionId);
   if (synced) throw new EngineError('VALIDATION_FAILED', `This ${synced}`);
   // Retagged nodes must fit where they render once the batch is done (a list item in a list, say), and so must every
   // node of a design built whole, what a wrap, an ungroup or a removal that keeps content put in a new place (list items

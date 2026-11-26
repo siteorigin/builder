@@ -18,6 +18,8 @@ const REFUSED_OPERATIONS = [
   'node.paste',
   'site.update',
   'brief.update',
+  'source.upsert',
+  'source.remove',
   'redirect.add',
   'redirect.update',
   'redirect.remove',

@@ -9,7 +9,7 @@ import { displayName } from '@engine/tree';
 import { codeImports } from '@engine/definitions';
 import { publicUrl } from '@shared/public-url';
 import { BRIEF_FILE } from '@shared/brief';
-import { CUSTOM_SOURCE_RE, DOC_DIR, MANIFEST_FILE, collectionDocPath, collectionPathOf, componentDocPath, entryDocPath } from './documents';
+import { CUSTOM_SOURCE_RE, DOC_DIR, MANIFEST_FILE, collectionDocPath, collectionPathOf, componentDocPath, entryDocPath, sourcePathOf } from './documents';
 
 /** A document's two versions: absent (null) when the step added or deleted it. Each is the parsed document. */
 export interface DocVersions {
@@ -216,6 +216,8 @@ export function docChanges({ path, before, after }: DocVersions, state: ProjectS
   if (CUSTOM_SOURCE_RE.test(path)) return existence(Object.values(state.components).find((d) => d.sourcePath === path)?.name ?? path.split('/').at(-1)!.replace(/\.svelte$/, ''), 'Component code');
   const collection = collectionPathOf(path);
   if (collection) return existence(words((b ?? a)?.title) ?? words((b ?? a)?.name) ?? collection.entryId ?? collection.collectionId, collection.entryId ? 'Entry' : 'Collection');
+  const source = sourcePathOf(path);
+  if (source !== null) return existence(words((b ?? a)?.name) ?? source, 'External source');
   return existence(path, 'File');
 }
 

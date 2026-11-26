@@ -21,6 +21,7 @@ import { madeRequiredBy } from '@engine/required';
 import { findRemoval, restoreRemoval } from '@engine/restore';
 import { pageLinkUses } from '@engine/page-links';
 import { syncedEntryChange } from '@engine/collections';
+import { sourceSyncRefusal, type SourceSyncGrant } from '@engine/sources';
 import { codeNeeds, declareCodeNames, filledSlots } from '@engine/definitions';
 import { publicationPlan } from '@generator/checks';
 import { blocksSaving, diagnosticKey, introducedDiagnostics, validateState, type Diagnostic } from '@engine/validate';
@@ -44,7 +45,7 @@ import { RSS_PATH } from '@generator/rss';
 import { HOST_REDIRECTS_FILE, VERCEL_CONFIG_FILE } from '@generator/host-redirects';
 import { atomicWrite, ensureDir, readBytesIfExists, readIfExists, readJson, removeDurable, removeEmptyDirs, safeJoin, sha, syncDir, toJson } from './fsutil';
 import { designAt, relocateSource, textOfBytes } from './edited-design';
-import { collectionDocPath, collectionPathOf, collectionsFromDocs, componentDocPath, CUSTOM_SOURCE_RE, DOC_DIR, isCanonicalPath, newestStoredVersion, ProjectFormatError, readProject, readState, stateToAuthoredSources, stateToDocs } from './documents';
+import { collectionDocPath, collectionPathOf, collectionsFromDocs, componentDocPath, CUSTOM_SOURCE_RE, DOC_DIR, isCanonicalPath, newestStoredVersion, ProjectFormatError, readProject, readState, sourcePathOf, sourcesFromDocs, stateToAuthoredSources, stateToDocs } from './documents';
 import { heldAsMedia, isVersionMedia, newVersionId, sameContents, VERSION_DAMAGED, VERSION_NAME_MAX, VersionStore, type SavedVersion } from './versions';
 
 export const LOCAL_DIR = '.siteorigin';
@@ -2390,7 +2391,10 @@ export class ProjectSession extends EventEmitter {
    * `componentImport` is the checked package a `component.import` in the batch lands; only the editor's import has one.
    * `collectionWrite` is what the assistant's post tool may write in this one batch (see shared/collection-grant).
    */
-  apply(batch: EditBatch, opts: CommitOptions & { runId?: string; idempotencyKey?: string; codeAllowed?: boolean; componentImport?: ComponentImport; collectionWrite?: CollectionWriteGrant }): Promise<ApplyResult> {
+  apply(
+    batch: EditBatch,
+    opts: CommitOptions & { runId?: string; idempotencyKey?: string; codeAllowed?: boolean; componentImport?: ComponentImport; collectionWrite?: CollectionWriteGrant; sourceSync?: SourceSyncGrant }
+  ): Promise<ApplyResult> {
     return this.serialize(async () => {
       const fingerprint = sha(JSON.stringify(batch.operations));
       if (opts.idempotencyKey && this.idempotency.has(opts.idempotencyKey)) {
@@ -2424,7 +2428,18 @@ export class ProjectSession extends EventEmitter {
       // so its own later operations can fill a slot or style a part the code just gained.
       const names = new Map<string, { parts: string[]; slots: string[] } | null>();
       for (const op of ops) if ((op.type === 'component.createCode' || op.type === 'component.updateSource') && typeof op.source === 'string' && !names.has(op.source)) names.set(op.source, await codeContractNames(op.source));
-      const context = { clipboards: this.clipboards, codeNames: (source: string) => names.get(source), ...(opts.componentImport ? { componentImport: opts.componentImport } : {}) };
+      // A sync of an external source writes its collection's entries, and nothing else: only the main process's sync
+      // gives the grant, never an AI run.
+      if (opts.sourceSync && (opts.source === 'ai' || opts.runId))
+        return { ok: false, revision: this.revision, error: { code: 'SCOPE_MISMATCH', message: 'Only a sync can write a synced collection.', recoverable: false } };
+      const syncRefusal = opts.sourceSync ? sourceSyncRefusal(ops, opts.sourceSync) : null;
+      if (syncRefusal) return { ok: false, revision: this.revision, error: { code: 'SCOPE_MISMATCH', message: syncRefusal, recoverable: false } };
+      const context = {
+        clipboards: this.clipboards,
+        codeNames: (source: string) => names.get(source),
+        ...(opts.componentImport ? { componentImport: opts.componentImport } : {}),
+        ...(opts.sourceSync ? { sourceSync: opts.sourceSync } : {})
+      };
       const code = opts.codeAllowed === false ? developerModeRefusal(this.state, ops, context) : null;
       if (code) return { ok: false, revision: this.revision, error: { code: 'SCOPE_MISMATCH', message: `${code} Turn on Developer mode in Settings to work with code.`, recoverable: true } };
       // Paste places what the editor copied; an AI run never sends it.
@@ -2439,6 +2454,9 @@ export class ProjectSession extends EventEmitter {
       // The project brief is the author's own (#518): the assistant reads it as background (#519) but never changes it.
       if ((opts.source === 'ai' || opts.runId) && ops.some((o) => o.type === 'brief.update'))
         return { ok: false, revision: this.revision, error: { code: 'SCOPE_MISMATCH', message: 'The project brief can only be changed in the editor.', recoverable: true } };
+      // So are external sources' settings (#676), which name the secrets the user signs in with.
+      if ((opts.source === 'ai' || opts.runId) && ops.some((o) => o.type === 'source.upsert' || o.type === 'source.remove'))
+        return { ok: false, revision: this.revision, error: { code: 'SCOPE_MISMATCH', message: 'External sources can only be changed in the editor.', recoverable: true } };
       // The assistant writes a post only through its post tool, whose call grants exactly that batch: one entry, and the
       // categories it is filed under. Any other collection change, a layout's included, is the editor's.
       const ai = opts.source === 'ai' || !!opts.runId;
@@ -2536,7 +2554,8 @@ export class ProjectSession extends EventEmitter {
         return { ok: false, revision: this.revision, error: { code: 'VALIDATION_FAILED', message: introduced.map((d) => d.message).join(' '), recoverable: true, details: introduced } };
       let ev: SessionEvent;
       try {
-        ev = await this.persist(next, { ...opts, wholeProject: ops.some((o) => o.type === 'theme.refresh' || o.type === 'theme.apply' || readsWholeProject(o, this.state)) });
+        // A sync is planned from the whole collection, its source's settings and every link to its entries.
+        ev = await this.persist(next, { ...opts, wholeProject: !!opts.sourceSync || ops.some((o) => o.type === 'theme.refresh' || o.type === 'theme.apply' || readsWholeProject(o, this.state)) });
       } catch (e) {
         if (e instanceof DiskConflictError) return { ok: false, revision: this.revision, error: this.diskConflict(e) };
         throw e;
@@ -3542,6 +3561,11 @@ export class ProjectSession extends EventEmitter {
       for (const f of await fs.readdir(join(this.dir, DOC_DIR, 'collections', c, 'entries')).catch(() => [] as string[])) paths.push(`${DOC_DIR}/collections/${c}/entries/${f}`);
       for (const path of paths) if (isCanonicalPath(path) && !this.docs.has(path) && !skip.has(path) && existsSync(join(this.dir, path))) return path;
     }
+    // A source added outside the app.
+    for (const d of await fs.readdir(join(this.dir, DOC_DIR, 'sources')).catch(() => [] as string[])) {
+      const path = `${DOC_DIR}/sources/${d}/source.json`;
+      if (isCanonicalPath(path) && !this.docs.has(path) && !skip.has(path) && existsSync(join(this.dir, path))) return path;
+    }
     return null;
   }
 
@@ -3839,6 +3863,8 @@ export class ProjectSession extends EventEmitter {
     if (path === `${DOC_DIR}/site.json`) return 'the site settings, header or footer';
     if (path === `${DOC_DIR}/tokens.json` || path === `${DOC_DIR}/theme-lock.json`) return 'the site styles';
     if (path === `${DOC_DIR}/assets.json`) return 'the library';
+    const source = sourcePathOf(path);
+    if (source !== null) return this.state.sources?.[source]?.name ?? 'an external source';
     const component = Object.values(this.state.components).find((d) => componentDocPath(d.id) === path || d.sourcePath === path);
     return component ? component.name : path;
   }
@@ -4730,6 +4756,9 @@ function docsToState(docs: Map<string, string>, current: ProjectState): ProjectS
     components: {},
     collections: collectionsFromDocs([...docs].filter(([p]) => collectionPathOf(p)).map(([p, c]) => [p, JSON.parse(c)])).collections
   };
+  // Sources the documents lack are none: a deleted one stays deleted across undo and redo.
+  const sources = sourcesFromDocs([...docs].filter(([p]) => sourcePathOf(p) !== null).map(([p, c]) => [p, JSON.parse(c)]));
+  if (Object.keys(sources).length) next.sources = sources;
   // A brief the documents lack is none: it is only a file while it holds something.
   const brief = parse<ProjectBriefDoc>(BRIEF_FILE);
   if (brief) next.brief = brief;

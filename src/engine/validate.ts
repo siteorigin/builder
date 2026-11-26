@@ -3,6 +3,7 @@ import { isArticleDate, pageArticle } from '@shared/articles';
 import { storedCanonical } from '@shared/seo';
 import { findEntry } from '@shared/collections';
 import { collectionDiagnostics } from './collections';
+import { sourceDiagnostics } from './sources';
 import { isPictureAsset } from '@shared/background-image';
 import type { BackgroundImageValue, GraphNode, ImageValue, NodeTree, OwnerRef, ProjectState, PropSchema, ResponsiveStyles, StyleTokenRef, StyleValue } from '@shared/types';
 import { STYLE_PROP_MAP, containerStyleError, isStateStyleProp, linkShapeError, stateStyleError, validateStyleValue } from '@shared/styles';
@@ -194,6 +195,7 @@ export function validateState(state: ProjectState, opts: { sectionLinks?: boolea
   for (const p of resolveRedirects(state).problems) if (p.kind !== 'invalid') out.push(redirectDiagnostic(p));
   // Collections and their entries hold addresses of their own, in the same namespace.
   out.push(...collectionDiagnostics(state, routes));
+  out.push(...sourceDiagnostics(state));
   for (const id of Object.keys(state.pages)) if (!state.site.pageOrder.includes(id)) out.push({ severity: 'error', code: 'PAGE_ORPHAN', message: `Page ${state.pages[id].title} is not in the page order.` });
   if (new Set(state.site.pageOrder).size !== state.site.pageOrder.length) out.push({ severity: 'error', code: 'PAGE_MISSING', message: 'The page order lists a page twice.' });
   for (const p of Object.values(state.pages)) {

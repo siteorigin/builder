@@ -392,7 +392,10 @@ export const OP_REACH: Record<OperationType, OpReach> = {
   'entry.create': 'wider',
   'entry.update': 'wider',
   'entry.reorder': 'wider',
-  'entry.remove': 'wider'
+  'entry.remove': 'wider',
+  // External sources are the editor's only: the session refuses them from an AI run.
+  'source.upsert': 'wider',
+  'source.remove': 'wider'
 };
 
 /**

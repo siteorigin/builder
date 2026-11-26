@@ -476,6 +476,10 @@ export function describeOps(ops: EditOperation[], before: ProjectState, after: P
       case 'brief.update':
         // Never what it says: the brief is the author's own.
         return plain(op, 'Changed the project brief');
+      case 'source.upsert':
+        return plain(op, `Changed the external source ${quoted(op.name)}`);
+      case 'source.remove':
+        return plain(op, `Deleted the external source ${quoted(before.sources?.[op.sourceId]?.name ?? op.sourceId)}`);
       default: {
         // Every operation type has a sentence; a new one fails the type check here until it gets one.
         const unknown: never = op;

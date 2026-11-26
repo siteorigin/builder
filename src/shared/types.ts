@@ -1228,6 +1228,40 @@ export interface EntrySource {
   contentHash: string;
 }
 
+/** What a sync does with an entry whose record the source no longer has: draft it (links keep working), delete it, or leave it. */
+export type SourceRemoval = 'unpublish' | 'remove' | 'keep';
+
+/** A setting that names one of the user's secrets (kept in their own source-secrets.json) instead of holding its value. */
+export interface SecretRef {
+  $secret: string;
+}
+
+/**
+ * A source's settings for its kind of source. Credentials are only ever named, slot by slot (`{ "token": { "$secret":
+ * "team-read" } }`), so the document can be shared with the project.
+ */
+export interface SourceConfig {
+  credentials?: Record<string, SecretRef>;
+}
+
+/**
+ * An external source a collection's entries are synced from: `siteorigin/sources/<id>/source.json`. It is part of the
+ * project and travels with it, so it holds no credential, only the names of the user's secrets.
+ */
+export interface SourceDoc {
+  schemaVersion: number;
+  /** Stable lowercase slug; also its folder name. */
+  id: string;
+  name: string;
+  /** The kind of source it is, which says how its records are read ("rest", "contentful"…). */
+  adapter: string;
+  /** The collection its records are synced into. */
+  collectionId: string;
+  config: SourceConfig;
+  /** Absent: `unpublish`. */
+  removal?: SourceRemoval;
+}
+
 /** One way of grouping a collection's entries, such as categories or tags. */
 export interface CollectionTaxonomy {
   label: string;
@@ -1336,6 +1370,8 @@ export interface ProjectState {
   collections: Record<string, Collection>;
   /** The private project brief. Absent while it is empty, as for every project stored before it existed. */
   brief?: ProjectBriefDoc;
+  /** External sources by ID. Absent or empty for a project without any. */
+  sources?: Record<string, SourceDoc>;
 }
 
 // ---------------------------------------------------------------------------

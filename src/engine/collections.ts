@@ -604,7 +604,9 @@ export function collectionRemove(state: ProjectState, op: Op<'collection.remove'
  * Refuses a manual change to the entries of a synced collection: the source is where they change, and the next sync
  * would put back what it says. Detaching the collection makes them local entries again.
  */
-function refuseSynced(c: Collection, what: string) {
+function refuseSynced(c: Collection, what: string, sync?: { collectionId: string }) {
+  // Only the sync of its own source may write them (see SourceSyncGrant).
+  if (sync?.collectionId === c.settings.id) return;
   if (isSyncedCollection(c.settings))
     throw new EngineError('VALIDATION_FAILED', `The ${c.settings.name} collection is synced from an external source, so its entries are read-only here and cannot be ${what}. Change them in the source, or detach the collection from it to edit them here.`);
 }
@@ -636,9 +638,9 @@ function sameValue(a: unknown, b: unknown): boolean {
  * its order) stay the author's; a collection detached by the change, or made by it, is local. Removing a synced
  * collection is refused on its own (see collectionRemove). Worded to follow "This" or "it".
  */
-export function syncedEntryChange(before: ProjectState, after: ProjectState): string | null {
+export function syncedEntryChange(before: ProjectState, after: ProjectState, except?: string): string | null {
   for (const c of Object.values(after.collections ?? {})) {
-    if (!isSyncedCollection(c?.settings)) continue;
+    if (!isSyncedCollection(c?.settings) || c.settings.id === except) continue;
     const was = own(before.collections ?? {}, c.settings.id);
     if (!was || sameValue(was.entries, c.entries)) continue;
     return `would change the entries of the ${c.settings.name} collection, which is synced from an external source, so they are read-only here. Change them in the source, or detach the collection from it first.`;
@@ -817,9 +819,9 @@ function entryResult(c: Collection, entry: EntryDoc): OpResult {
   return { collectionId: c.settings.id, entryId: entry.id, slug: entry.slug, ...(route !== undefined ? { route } : {}) };
 }
 
-export function entryCreate(state: ProjectState, op: Op<'entry.create'>): OpResult {
+export function entryCreate(state: ProjectState, op: Op<'entry.create'>, sync?: { collectionId: string }): OpResult {
   const c = getCollection(state, op.collectionId);
-  refuseSynced(c, 'added to');
+  refuseSynced(c, 'added to', sync);
   const id = op.entryId ?? newId('en');
   if (findEntry(state, id)) fail(`An entry with the ID "${id}" already exists.`);
   const title = op.title.trim() || fail('An entry needs a title.');
@@ -839,10 +841,10 @@ export function entryCreate(state: ProjectState, op: Op<'entry.create'>): OpResu
   return entryResult(c, entry);
 }
 
-export function entryUpdate(state: ProjectState, op: Op<'entry.update'>, atStart?: ReadonlyMap<string, EntryAddress>): OpResult {
+export function entryUpdate(state: ProjectState, op: Op<'entry.update'>, atStart?: ReadonlyMap<string, EntryAddress>, sync?: { collectionId: string }): OpResult {
   const c = getCollection(state, op.collectionId);
   const entry = getEntry(c, op.entryId);
-  refuseSynced(c, 'changed');
+  refuseSynced(c, 'changed', sync);
   applyEntryFields(state, c, entry, op, atStart);
   return entryResult(c, entry);
 }
@@ -860,10 +862,10 @@ export function entryReorder(state: ProjectState, op: Op<'entry.reorder'>): OpRe
   return { collectionId: c.settings.id };
 }
 
-export function entryRemove(state: ProjectState, op: Op<'entry.remove'>, atStart?: Map<string, EntryAddress>): OpResult {
+export function entryRemove(state: ProjectState, op: Op<'entry.remove'>, atStart?: Map<string, EntryAddress>, sync?: { collectionId: string }): OpResult {
   const c = getCollection(state, op.collectionId);
   const entry = getEntry(c, op.entryId);
-  refuseSynced(c, 'removed');
+  refuseSynced(c, 'removed', sync);
   if (op.replacementEntryId !== undefined && op.replacementPageId !== undefined) fail('Choose a replacement entry or a replacement page, not both.');
   if (op.replacementEntryId === entry.id) fail('The replacement must be a different entry.');
   if (op.replacementEntryId !== undefined && !findEntry(state, op.replacementEntryId)) fail(`The replacement entry "${op.replacementEntryId.slice(0, 60)}" does not exist.`);

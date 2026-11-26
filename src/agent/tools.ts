@@ -228,7 +228,10 @@ const NEVER_OFFERED = new Set<OperationType>([
   'entry.reorder',
   'entry.remove',
   // The project brief is the author's own (#518), and session.apply refuses it from a run.
-  'brief.update'
+  'brief.update',
+  // So are external sources' settings (#676).
+  'source.upsert',
+  'source.remove'
 ]);
 /** Operations that need Developer mode, shown only to runs that have it. */
 export { CODE_OPERATIONS };
