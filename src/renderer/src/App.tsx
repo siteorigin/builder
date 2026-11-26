@@ -73,7 +73,8 @@ export function App() {
         opened++;
         projectClosed();
         // Held edits and the last AI outcome belong to the project that closed.
-        setState({ screen: 'welcome', snapshot: null, selection: null, pagePlaces: {}, previewReturn: null, seoSubject: null, conversation: null, chatDrafts: {}, chatImages: {}, chatRequest: null, definitionMode: null, templateMode: null, heldEdits: [], aiOutcome: null, inspectorFocus: null, styleCopy: null, renameOffer: null, shareOpen: false, ...openingModalsClosed() });
+        // Notices (an error stays until dismissed) belong to the project that closed.
+        setState({ toasts: [], screen: 'welcome', snapshot: null, selection: null, pagePlaces: {}, previewReturn: null, seoSubject: null, conversation: null, chatDrafts: {}, chatImages: {}, chatRequest: null, definitionMode: null, templateMode: null, heldEdits: [], aiOutcome: null, inspectorFocus: null, styleCopy: null, renameOffer: null, shareOpen: false, ...openingModalsClosed() });
       }),
       // Before the project is closed, switched or the app quits: save what is being typed, or ask the author.
       api.on('lifecycle:request', ({ requestId }) => {
@@ -150,13 +151,15 @@ export function App() {
   );
 }
 
-function openSnapshot(snap: NonNullable<ReturnType<typeof getState>['snapshot']>) {
+export function openSnapshot(snap: NonNullable<ReturnType<typeof getState>['snapshot']>) {
   const local = snap.localState ?? {};
   forgetKeptDrafts();
   const pageId = local.pageId && Object.hasOwn(snap.state.pages, local.pageId) ? local.pageId : snap.state.site.homePageId;
   // Each page's place is this opening's own; the page opens where the author left it, brought into view (see Canvas).
   const pagePlaces = readPlaces(snap.state, local.pagePlaces);
   setState({
+    // A notice from the project that was open (or from the welcome screen) is not this project's.
+    toasts: [],
     screen: 'editor',
     snapshot: snap,
     runtime: snap.runtime,
