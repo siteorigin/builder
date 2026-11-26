@@ -170,9 +170,22 @@ try {
   assert.equal(sentContext(edits[0].body).allowedScope, 'whole site');
   assert.ok(sentContext(edits[0].body).currentPage.sections.length > 0, "the open page's sections went with the request");
   // Each turn names its model, as a screen reader reads it too.
-  const turnModel = () => win.locator('.msg-ai .turn-model');
   const said = (texts) => texts.map((t) => t.replace(/\s+/g, ' ').trim());
-  const turnModels = async () => said(await turnModel().allTextContents());
+  const turnModels = async () => {
+    const texts = [];
+    for (const turn of await win.locator('.msg-ai').all()) {
+      const model = turn.locator('.turn-model, .turn-handled');
+      const details = turn.locator('.steps-toggle, .reply-toggle');
+      const openDetails = !(await model.count()) && (await details.count()) === 1 && (await details.getAttribute('aria-expanded')) === 'false';
+      if (openDetails) await details.click();
+      try {
+        texts.push(await model.textContent({ timeout: 5000 }));
+      } finally {
+        if (openDetails) await details.click();
+      }
+    }
+    return said(texts);
+  };
   await eventually(async () => assert.deepEqual(await turnModels(), ['Handled by Local model · second-model']));
 
   const openAi = async () => {
@@ -203,7 +216,6 @@ try {
   };
   let release;
   server.script({ ...envelopeReply('finish', { message: 'Noted cobalt.' }), hold: new Promise((resolve) => (release = resolve)) });
-  const heldCards = await win.locator('.result-card').count();
   const sentBefore = posts().length;
   await message.fill('Remember cobalt as the accent colour');
   await message.press('Enter');
@@ -218,11 +230,12 @@ try {
   assert.equal(await runModel(), 'Sent to Local model · second-model', 'the running turn still names the model it went to');
   assert.match(await strip.locator('.run-phase').innerText(), /Working/);
   const notice = win.locator('.switch-note');
+  assert.equal(await notice.count(), 0, 'a running turn with an empty composer has no switch notice');
+  await message.fill('A fresh question for first-model');
   await eventually(async () => assert.equal(await notice.innerText(), 'Your next message goes to Local model · first-model with recent messages from your conversation with Local model · second-model. Start fresh'));
   assert.equal(await notice.getByRole('button', { name: 'Start fresh' }).isDisabled(), true, 'a new conversation waits for the running request');
   release();
-  await eventually(async () => assert.ok((await win.locator('.result-card').count()) > heldCards, 'the held run ends'), 60000, 200);
-  await win.locator('.msg-ai').last().getByText('Noted cobalt.').waitFor();
+  await win.locator('.msg-ai').last().getByText('Noted cobalt.').waitFor({ timeout: 60000 });
   assert.equal(posts().at(-1).body.model, 'second-model', 'the held request was sent to the model chosen when it started');
   assert.deepEqual(await turnModels(), ['Handled by Local model · second-model', 'Handled by Local model · second-model']);
   // Once nothing runs, the selector shows the model, and says out loud that it is for the next message.
@@ -231,7 +244,6 @@ try {
 
   step('Start fresh takes the unsent message to a new conversation without the earlier ones');
   await notice.waitFor();
-  await message.fill('A fresh question for first-model');
   await notice.getByRole('button', { name: 'Start fresh' }).click();
   await eventually(async () => assert.equal(await win.locator('.chat-title').innerText(), 'New conversation'));
   assert.equal(await message.inputValue(), 'A fresh question for first-model', 'the unsent message came along');
@@ -361,8 +373,12 @@ try {
   const request = 'Rename the site to Harbor Tea';
   const down = await sendRequest(request);
   // The request as shown, with the page it was about.
-  const sent = await win.locator('.msg-user').last().innerText();
-  assert.ok(sent.startsWith(request));
+  const shownRequest = () => win.locator('.msg-user').last().evaluate((el) => ({
+    text: [...el.childNodes].filter((node) => node.nodeType === Node.TEXT_NODE).map((node) => node.textContent).join('').trim(),
+    context: el.lastElementChild?.textContent?.trim().replace(/^\((.*)\)$/, '$1')
+  }));
+  const sent = await shownRequest();
+  assert.equal(sent.text, request);
   assert.match((await down.getAttribute('class')) ?? '', /\bfailed\b/);
   await down.getByText('Nothing in the site was changed.', { exact: false }).waitFor();
   await down.getByText('Is your local server running?', { exact: false }).waitFor();
@@ -406,7 +422,7 @@ try {
   // With no model chosen on this server, each request asked for the one it lists.
   assert.deepEqual(new Set(second.requests.filter((r) => r.method === 'POST').map((p) => p.body.model)), new Set(['studio-b']));
   assert.equal(await win.locator('.msg-user').count(), userMessages + 1);
-  assert.equal(await win.locator('.msg-user').last().innerText(), sent, 'it was the original request, about the same page');
+  assert.deepEqual(await shownRequest(), sent, 'it was the original request, about the same page');
   assert.equal(sentContext(second.requests.filter((r) => r.method === 'POST')[beforeRetry].body).allowedScope, 'whole site', 'and as far as it reached');
   assert.equal(await message.inputValue(), 'A note for later', 'the draft was kept');
 
@@ -415,7 +431,10 @@ try {
   await eventually(async () => assert.doesNotMatch(await scopeChip.getAttribute('aria-label'), /Whole site/));
   second.script(envelopeReply('finish', { message: 'It reads well.' }));
   const pagePosts = second.requests.filter((r) => r.method === 'POST').length;
-  assert.match((await (await sendRequest('What would you change on this page?')).getAttribute('class')) ?? '', /\bno-changes\b/);
+  await message.fill('What would you change on this page?');
+  await message.press('Enter');
+  const reply = win.locator('.msg-ai').last().locator('.reply[data-status="no-changes"]');
+  await reply.getByText('It reads well.').waitFor({ timeout: 60000 });
   const pageRun = second.requests.filter((r) => r.method === 'POST')[pagePosts].body;
   assert.match(sentContext(pageRun).allowedScope, /^only the Home page \(page pg_\w+\)/);
   assert.ok(sentContext(pageRun).currentPage.sections.length > 0);

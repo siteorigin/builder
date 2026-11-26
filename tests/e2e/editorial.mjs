@@ -23,7 +23,7 @@ step('New project offers Editorial, and shows the starters in Editorial’s own 
 await win.getByRole('button', { name: /New project/ }).first().click();
 const dialog = win.getByRole('dialog', { name: 'New project' });
 const picker = dialog.getByLabel('Theme');
-assert.deepEqual(await picker.locator('option').allTextContents(), ['Foundation', 'Editorial'], 'the shipped themes, without development fixtures');
+assert.deepEqual(await picker.locator('option').allTextContents(), ['Foundation', 'Editorial', 'Signal'], 'the shipped themes, without development fixtures');
 assert.equal(await picker.inputValue(), 'foundation', 'Foundation is the default');
 const art = dialog.locator('.starter-card').first().locator('.starter-art');
 const firstShot = () => art.locator('img').first().getAttribute('src');

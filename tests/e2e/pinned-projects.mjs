@@ -8,6 +8,7 @@
 import assert from 'node:assert/strict';
 import { mkdirSync, readFileSync, realpathSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
+import { shortPath } from '../../src/renderer/src/lib/recent-places.ts';
 import { answerChoosers, choosersShown, createProject, desktopCursor, eventually, launch, scratch, step } from './harness.mjs';
 
 const { WORK, cleanup } = scratch('pinned-projects');
@@ -116,8 +117,8 @@ assert.match(harbourCard.shown, /harbour/, 'the Harbour card shows its own folde
 assert.doesNotMatch(harbourCard.shown, /delivered/);
 assert.match(deliveredCard.shown, /delivered/, 'the delivered card shows its own folder');
 assert.doesNotMatch(deliveredCard.shown, /harbour/);
-assert.equal(harbourCard.pin, `Pin Mill Road (${millHarbour})`, 'each Mill Road’s Pin names its own folder');
-assert.equal(deliveredCard.pin, `Pin Mill Road (${millDelivered})`);
+assert.equal(harbourCard.pin, `Pin Mill Road (${shortPath(millHarbour)})`, 'each Mill Road’s Pin names its own folder');
+assert.equal(deliveredCard.pin, `Pin Mill Road (${shortPath(millDelivered)})`);
 
 step('one more client is created: the oldest unpinned project rotates off, the pinned ones stay');
 const beforeRotation = await folders(recentCards());

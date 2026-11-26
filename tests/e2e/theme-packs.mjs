@@ -54,11 +54,11 @@ step('Insert shows the pack thumbnails and a layout sketch for the empty Section
 await win.getByRole('button', { name: 'Insert', exact: true }).click();
 const tiles = panel.locator('.insert-group[data-kind="section"] .insert-tile.section');
 const shots = tiles.locator('img.insert-shot');
-const emptySection = tiles.filter({ has: win.locator('strong', { hasText: /^Section$/ }) });
+const sketches = tiles.filter({ has: win.locator('.sparse .sketch') });
 await eventually(async () => {
   assert.ok((await tiles.count()) >= 18, 'the section catalogue is shown');
-  assert.equal(await emptySection.locator('.sparse .sketch').count(), 1, 'the empty Section uses a sketch');
-  assert.equal(await shots.count(), (await tiles.count()) - 1, 'every other section has a thumbnail');
+  assert.deepEqual((await sketches.locator('strong').allTextContents()).sort(), ['Section', 'Split layout'], 'the two intentionally empty layouts use sketches');
+  assert.equal(await shots.count(), (await tiles.count()) - 2, 'every other section, including Featured post, has a thumbnail');
 }, 15000);
 await eventually(async () => assert.ok((await shots.evaluateAll((imgs) => imgs.every((i) => i.complete && i.naturalWidth === 320 && i.src.startsWith('data:image/webp')))), 'each thumbnail is a decoded WebP image'));
 assert.equal(new Set(await shots.evaluateAll((imgs) => imgs.map((i) => i.src))).size, await shots.count(), 'each section has its own thumbnail');

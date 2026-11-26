@@ -834,7 +834,7 @@ export function SiteStyles() {
           </button>
         )}
         {/* Each palette has its own picker and field: a pick or a draft under way never carries over to the other. */}
-        <ColorPick key={palette} value={value} disabled={!!follows} onPick={(next) => setShown(t.id, next, 'picker')} label={`${t.label}${darkShown ? ' dark' : ''} color`} />
+        <ColorPick key={`picker-${palette}`} value={value} disabled={!!follows} onPick={(next) => setShown(t.id, next, 'picker')} label={`${t.label}${darkShown ? ' dark' : ''} color`} />
         <div className="ss-color-text">
           <div className="ss-name">
             <NameWithReset
@@ -852,7 +852,7 @@ export function SiteStyles() {
             {value || '—'}
           </span>
         ) : (
-          <DraftInput key={palette} className="input sm mono ss-hex" value={value} onCommit={(v) => (v.trim() ? setShown(t.id, v.trim()) : false)} ariaLabel={`${t.label}${darkShown ? ' dark' : ''} color value`} />
+          <DraftInput key={`field-${palette}`} className="input sm mono ss-hex" value={value} onCommit={(v) => (v.trim() ? setShown(t.id, v.trim()) : false)} ariaLabel={`${t.label}${darkShown ? ' dark' : ''} color value`} />
         )}
         {/* Below the row, under the name: what it follows, and what is unreadable. Never squeezed beside the value. */}
         {follows && (

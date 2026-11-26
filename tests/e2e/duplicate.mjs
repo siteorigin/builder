@@ -80,7 +80,7 @@ await card('Fall Campaign').waitFor();
 await card('Storefront').waitFor();
 assert.match(await card('Fall Campaign').locator('.where bdi').innerText(), /\/fall-campaign$/, 'the copy’s card shows its own folder');
 assert.match(await card('Storefront').locator('.where bdi').innerText(), /\/storefront$/, 'and the original’s its own');
-await win.locator('.recent-grid').screenshot({ path: join(SHOTS, 'duplicate-recents.png') });
+await win.getByRole('region', { name: 'Recent projects', exact: true }).screenshot({ path: join(SHOTS, 'duplicate-recents.png') });
 await card('Fall Campaign').click();
 await win.waitForSelector('.editor');
 await eventually(async () => assert.equal(await toolbarName(), 'Fall Campaign', 'opened again, it is still the copy'), 60000);

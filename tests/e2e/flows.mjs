@@ -190,7 +190,7 @@ await eventually(async () => assert.equal(await win.locator('.toast.error').coun
 
 step('insert pricing via Insert panel');
 await win.getByRole('button', { name: 'Insert', exact: true }).click();
-await win.getByRole('button', { name: 'Pricing' }).click();
+await win.getByRole('button', { name: 'Pricing', exact: true }).click();
 await eventually(async () => assert.equal(await frame.locator('text=Clear packages, no surprises').count(), 1, 'one pricing section is inserted'));
 await win.screenshot({ path: join(OUT, '11-inserted.png') });
 

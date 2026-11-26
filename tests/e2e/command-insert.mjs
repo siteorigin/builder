@@ -135,7 +135,7 @@ await openCmdk('paragraph');
 assert.ok((await rows('Insert')).includes('Insert Paragraph Element'), 'Paragraph is offered');
 await closeCmdk();
 await openCmdk('two columns');
-assert.deepEqual(await rows('Insert'), ['Insert 2 columns Layout'], 'a column layout by its other words');
+assert.deepEqual(await rows('Insert'), ['Insert 2 columns Layout', 'Insert Sidebar + main Layout', 'Insert Asymmetric split Layout'], 'the direct match leads the column layouts found by their other words');
 await closeCmdk();
 
 step('Show the Insert panel opens Insert with the cursor in its search');

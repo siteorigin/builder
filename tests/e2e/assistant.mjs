@@ -380,7 +380,7 @@ try {
   await ok('menu.invoke', { path: ['File', 'Close Project'] });
   await eventually(async () => assert.equal((await ok('ui.snapshot', { scope: 'editor', maxNodes: 5 })).context.screen, 'welcome'), 30000);
   // The one recent project (under the name the approved run gave the site), opened from its card.
-  await click('button', 'Last opened just now Open', { exact: false, region: 'Recent projects' });
+  await eventually(() => click('button', 'Open', { exact: false, region: 'Last opened project' }), 15000, 300);
   await eventually(async () => assert.equal((await ok('ui.snapshot', { scope: 'editor', maxNodes: 5 })).context.preview?.state, 'ready'), 60000);
   await click('tab', 'AI', { exact: false, region: 'Right panel views' });
   const again = await eventually(async () => {

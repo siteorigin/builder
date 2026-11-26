@@ -113,7 +113,7 @@ assert.equal(await win.locator('.recent-card', { hasText: 'Morning Press' }).cou
 // What the card shows, not what it says to a screen reader.
 assert.match(await card('New Morning Courier').locator('.where bdi').innerText(), /morning-press$/, 'the card shows the project’s own folder');
 assert.match(await card('Orchid Garden').locator('.where bdi').innerText(), /orchid-garden$/, 'so does the one beside it');
-await win.locator('.recent-grid').screenshot({ path: join(SHOTS, 'site-rename-recents.png') });
+await win.getByRole('region', { name: 'Recent projects', exact: true }).screenshot({ path: join(SHOTS, 'site-rename-recents.png') });
 
 assert.deepEqual(errors, [], 'no page errors');
 await app.close();

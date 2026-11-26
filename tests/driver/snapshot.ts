@@ -342,6 +342,8 @@ export function shape(nodes: (RawNode | string)[] | undefined, scope: Scope, reg
       continue;
     }
     if (n.ariaHidden) continue;
+    // Playwright can report an empty live region with no rendered element to address.
+    if (n.role === 'status' && !n.ref && !norm(n.name) && !norm(n.text) && !n.children?.length) continue;
     if (n.role === 'text') {
       const text = norm(n.text);
       if (text) out.push({ scope, role: 'text', text: clip(text, LIMITS.text), regions, children: [], size: 0 });

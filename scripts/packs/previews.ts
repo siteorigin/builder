@@ -17,6 +17,8 @@ import { catalogueEntries, registerPacks } from '@catalogue/index';
 import { createStarterState } from '@catalogue/starters';
 import { previewFile, type ComponentPreviews, type ThemePack } from '@catalogue/pack';
 import { installComponent, makeInstance } from '@engine/install';
+import { collectionCreate, entryCreate } from '@engine/collections';
+import { POSTS_COLLECTION_ID } from '@shared/collections';
 import { STYLES_DIR, generateProject, pageFile } from '@generator/index';
 
 /** What the photograph shows: the top of the section at desktop width, in the 16:10 shape of an Insert tile. */
@@ -64,6 +66,20 @@ function withFixedIds<T>(fn: () => T): T {
 function previewProject(pack: ThemePack): { state: ProjectState; cases: Case[] } {
   const state = createStarterState('blank', 'Studio', false);
   state.site.themeId = pack.id;
+  // Entry feeds draw their cards from published entries instead of a property's defaults.
+  if (pack.components.some((def) => Object.values(def.properties).some((prop) => prop.type === 'list' && prop.feed === 'entries'))) {
+    collectionCreate(state, { type: 'collection.create', collectionId: POSTS_COLLECTION_ID });
+    entryCreate(state, {
+      type: 'entry.create',
+      collectionId: POSTS_COLLECTION_ID,
+      entryId: 'en_preview',
+      title: 'Notes from the studio',
+      excerpt: 'A closer look at the materials and small details that shape our work.',
+      author: 'Studio team',
+      publishedAt: '2025-06-12',
+      draft: false
+    });
+  }
   const template = state.pages[state.site.homePageId];
   const cases: Case[] = [];
   for (const entry of catalogueEntries(pack.id)) {

@@ -506,6 +506,7 @@ export function Section({ title, children, defaultOpen = true, actions, id, scop
   const bodyId = useId();
   const rootRef = useRef<HTMLDivElement>(null);
   const [open, setOpen] = useState(() => (key && localStorage.getItem(key) !== null ? localStorage.getItem(key) === '1' : defaultOpen));
+  const [landing, setLanding] = useState<{ focus?: string } | null>(null);
   // A section that starts being remembered (it gained something to show) takes the saved choice.
   useEffect(() => {
     const saved = key ? localStorage.getItem(key) : null;
@@ -513,7 +514,6 @@ export function Section({ title, children, defaultOpen = true, actions, id, scop
   }, [key]);
   useEffect(() => {
     if (!id) return;
-    let frame = 0;
     const onOpen = (e: Event) => {
       // The section's ID alone (as older callers send it) opens and scrolls to it.
       const detail = (e as CustomEvent<string | { id: string; scroll?: boolean; focus?: string }>).detail;
@@ -522,28 +522,27 @@ export function Section({ title, children, defaultOpen = true, actions, id, scop
       setOpen(true);
       if (key) localStorage.setItem(key, '1');
       // Opened on the way to something inside it, which then takes the scroll and the focus itself.
-      if (!scroll) return;
-      cancelAnimationFrame(frame);
-      frame = requestAnimationFrame(() => {
-        const el = rootRef.current;
-        const scroller = el?.closest<HTMLElement>('.panel-body');
-        if (!el || !scroller) return;
-        // A control inside the section, when one was named and has rendered; else the section itself.
-        const control = (focus && el.querySelector<HTMLElement>(focus)) || null;
-        // Land below the sticky inspector header, and only animate when motion is welcome.
-        const head = scroller.querySelector<HTMLElement>('.insp-head')?.offsetHeight ?? 0;
-        const top = (control ?? el).getBoundingClientRect().top - scroller.getBoundingClientRect().top + scroller.scrollTop - head;
-        const reduce = window.matchMedia('(prefers-reduced-motion: reduce)').matches;
-        scroller.scrollTo({ top, behavior: reduce ? 'auto' : 'smooth' });
-        (control ?? el.querySelector<HTMLElement>('.section-head'))?.focus({ preventScroll: true });
-      });
+      if (scroll) setLanding({ focus });
     };
     window.addEventListener('inspector-open-section', onOpen);
-    return () => {
-      cancelAnimationFrame(frame);
-      window.removeEventListener('inspector-open-section', onOpen);
-    };
+    return () => window.removeEventListener('inspector-open-section', onOpen);
   }, [id, key]);
+  // A kept-mounted field exists while hidden. Start scrolling only after React has opened the section.
+  useLayoutEffect(() => {
+    if (!landing) return;
+    const frame = requestAnimationFrame(() => {
+      const el = rootRef.current;
+      const scroller = el?.closest<HTMLElement>('.panel-body');
+      if (!el || !scroller) return;
+      const control = (landing.focus && el.querySelector<HTMLElement>(landing.focus)) || null;
+      const head = scroller.querySelector<HTMLElement>('.insp-head')?.offsetHeight ?? 0;
+      const top = (control ?? el).getBoundingClientRect().top - scroller.getBoundingClientRect().top + scroller.scrollTop - head;
+      const reduce = window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+      scroller.scrollTo({ top, behavior: reduce ? 'auto' : 'smooth' });
+      (control ?? el.querySelector<HTMLElement>('.section-head'))?.focus({ preventScroll: true });
+    });
+    return () => cancelAnimationFrame(frame);
+  }, [landing]);
   return (
     <div className="section" ref={rootRef}>
       <div className="row" role={level ? 'heading' : undefined} aria-level={level}>

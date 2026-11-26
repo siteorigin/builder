@@ -181,7 +181,7 @@ export function leftTabs(): Surface[] {
   return out;
 }
 
-/** The keys the editor's global shortcut handler (handleShortcut in Editor.tsx) compares against. */
+/** The fixed keys and configurable bindings the editor's global shortcut handler uses. */
 export function shortcuts(): Surface[] {
   const sf = parse(join(RENDERER, 'Editor.tsx'));
   const out = new Map<string, Surface>();
@@ -190,6 +190,9 @@ export function shortcuts(): Surface[] {
     if (!ts.isFunctionDeclaration(n) || n.name?.text !== 'handleShortcut' || !n.body) return;
     handler = true;
     visit(n.body, (c) => {
+      if (ts.isIfStatement(c) && ts.isIdentifier(c.expression) && c.expression.text === 'askAi') {
+        out.set('key:askAi', { key: 'key:askAi', file: where(sf, c) });
+      }
       if (!ts.isBinaryExpression(c) || c.operatorToken.kind !== ts.SyntaxKind.EqualsEqualsEqualsToken) return;
       const left = c.left.getText(sf);
       if (left !== 'key' && left !== 'key.toLowerCase()') return;

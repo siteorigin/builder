@@ -60,7 +60,7 @@ describe('what the readers find in the app', () => {
     const cmds = commands().map((s) => s.key);
     for (const k of ['command:newproject', 'command:find', 'command:page:*', 'command:panel:*', 'command:Insert:*', 'command:sec:*:*']) expect(cmds).toContain(k);
     expect(leftTabs().map((s) => s.key)).toEqual(expect.arrayContaining(['tab:pages', 'tab:layers', 'tab:insert', 'tab:assets']));
-    expect(shortcuts().map((s) => s.key)).toEqual(expect.arrayContaining(['key:z', 'key:k', 'key:Escape', 'key:Delete']));
+    expect(shortcuts().map((s) => s.key)).toEqual(expect.arrayContaining(['key:z', 'key:k', 'key:Escape', 'key:Delete', 'key:askAi']));
     const items = menuItems().items.map((s) => s.key);
     for (const k of ['item:Canvas:Edit text', 'item:Layers:Select *', 'item:Pages:Make home page…', 'item:WrapItems:Wrap* in *']) expect(items).toContain(k);
   });

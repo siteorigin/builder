@@ -148,6 +148,7 @@ await eventually(async () => assert.equal(await picker().inputValue(), '#800080'
 await eventually(async () => assert.equal(await picker().isDisabled(), false, 'the picker is open for it'));
 await pick('#336699');
 await eventually(async () => assert.equal(await saved(), '#336699', 'a pick replaces the mix with a plain color'));
+await eventually(async () => assert.equal(await text().inputValue(), '#336699', 'the editor shows that pick before the next draft'));
 
 step('a color the picker cannot read keeps its text, paints nothing, and a pick replaces it');
 await paste('currentcolor');
@@ -157,6 +158,7 @@ assert.equal(await picker().isDisabled(), false, 'the picker still opens, so the
 assert.equal(await text().inputValue(), 'currentcolor', 'the text value is still editable');
 await pick('#336699');
 await eventually(async () => assert.equal(await saved(), '#336699', 'a pick replaces it with a plain color'));
+await eventually(async () => assert.equal(await text().inputValue(), '#336699', 'the editor shows the replacement before the next draft'));
 await paste('rgb(255, 0 0)');
 await eventually(async () => assert.equal(await swatch(), 'rgba(0, 0, 0, 0)', 'text that is not a color leaves nothing painted, not the color before it'));
 
@@ -171,7 +173,8 @@ await paste('#ffffff');
 await eventually(async () => assert.match(await pairRow('Button text').innerText(), /1\.00:1\s+Low contrast/, 'the button at rest reads as unreadable beside the color that was just set'));
 assert.match(await pairRow('Button text on hover').innerText(), /10\.92:1\s+Readable/, 'the hover state is shown separately, and readable');
 assert.match(await pairRow('Brand-colored links on the page').innerText(), /Low contrast/, 'brand-colored text on the page is flagged too');
-await eventually(async () => assert.match(await win.locator('#dock-panel-styles .sr-only[role="status"]').innerText(), /Low contrast: .*Button text/, 'the unreadable pair is announced'));
+const contrastAnnouncement = win.locator('#dock-panel-styles').getByRole('status').filter({ hasText: /^Low contrast:/ });
+await eventually(async () => assert.match(await contrastAnnouncement.innerText(), /Low contrast: .*Button text/, 'the unreadable pair is announced'));
 await eventually(async () => assert.deepEqual(await colorsOf(headerCta), { color: 'rgb(255, 255, 255)', background: 'rgb(255, 255, 255)' }, 'the header button in the preview really is white on white'), 20000);
 const onBrandRow = colorRow('Text on brand color');
 assert.equal(await onBrandRow.locator('.ss-flag').count(), 1, 'the Text on brand color row carries the flag too');

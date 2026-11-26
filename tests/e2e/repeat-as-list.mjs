@@ -74,7 +74,7 @@ step('Edit everywhere opens the design');
 if ((await win.locator('.rail [aria-label="Layers"]').getAttribute('aria-pressed')) !== 'true') await win.locator('.rail [aria-label="Layers"]').click();
 await win.locator(`.layers-tree [data-node="${first}"]`).click();
 await openInspector(win);
-const componentSection = inspector.locator('.section-head', { hasText: 'Component' });
+const componentSection = inspector.getByRole('button', { name: /^Component\b/ });
 await componentSection.waitFor();
 if ((await componentSection.getAttribute('aria-expanded')) === 'false') await componentSection.click();
 await win.getByRole('button', { name: 'Edit everywhere…' }).click();

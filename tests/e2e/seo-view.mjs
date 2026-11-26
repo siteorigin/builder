@@ -1354,7 +1354,7 @@ assert.equal(await darkResults.getAttribute('aria-checked'), 'false', 'and the l
 assert.equal((await drawn()).background, LIGHT);
 
 step('the structured data in words: a typed page and a post, what is missing with its fix, and the exact JSON-LD a click away (#706)');
-await apply([{ type: 'page.update', pageId: about.id, structuredData: { type: 'Product', price: '12' } }], 'Type the page');
+await apply([{ type: 'page.update', pageId: about.id, noindex: false, canonical: '', structuredData: { type: 'Product', price: '12' } }], 'Make About indexable and type the page');
 const entity = (name) => view.getByRole('region', { name, exact: true });
 const problem = view.locator('.seo-data-problem');
 const jsonBlock = view.locator('details.seo-json');

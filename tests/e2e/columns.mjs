@@ -9,7 +9,7 @@
 // shows its Column span and Row span without opening a group (#666).
 import assert from 'node:assert/strict';
 import { join } from 'node:path';
-import { MOD, createProject, eventually, launch, scratch, step } from './harness.mjs';
+import { createProject, eventually, launch, openInspector, scratch, step } from './harness.mjs';
 
 const { WORK, SHOTS: OUT, cleanup } = scratch('columns');
 const { app, win, errors } = await launch(WORK);
@@ -50,10 +50,7 @@ const clickMiddle = async (locator) => {
   const scale = box.width / p.width;
   await win.mouse.click(box.x + p.x * scale, box.y + p.y * scale);
 };
-const undo = async () => {
-  await win.locator('.canvas').hover({ position: { x: 4, y: 4 } }).catch(() => undefined);
-  await win.keyboard.press(`${MOD}+z`);
-};
+const undo = () => win.locator('.toolbar').getByRole('button', { name: /^Undo\b/ }).click();
 
 try {
   step('Insert offers the column layouts above the theme’s sections, beside the Row and the Grid');
@@ -315,12 +312,15 @@ try {
       { label: 'Fill them' }
     );
     if (!fill.ok) throw new Error(fill.error?.message);
-    return { one, two, first: fill.results[0].nodeId };
+    return { one, two, first: fill.results[0].nodeId, other: fill.results[2].nodeId };
   }, host);
   await eventually(async () => assert.equal(await at(made.first).count(), 1, 'the sections show'), 30000);
-  await win.keyboard.press('Escape');
-  await clickMiddle(at(made.first));
-  await eventually(async () => assert.equal(await selected(), 'Section actions', 'the first click selects the Section'), 10000);
+  const layers = win.locator('.rail [aria-label="Layers"]');
+  if ((await layers.getAttribute('aria-pressed')) !== 'true') await layers.click();
+  const layer = (id) => win.locator(`.layers-tree [role="treeitem"][data-node="${id}"]`);
+  await layer(made.one).click();
+  await eventually(async () => assert.equal(await layer(made.one).getAttribute('aria-selected'), 'true', 'the Section is selected'), 10000);
+  await openInspector(win);
   const inspector = win.locator('#dock-panel-inspect');
   const columnLayout = inspector.locator('.section', { has: win.locator('.section-head', { hasText: /Column layout/ }) });
   await columnLayout.waitFor();
@@ -365,30 +365,22 @@ try {
   step('a grid item shows Column span and Row span in Layout with every group closed; an item outside a grid does not');
   const spanRows = inspector.locator('.style-group[data-group="layout"] .style-row:is([data-prop="columnSpan"], [data-prop="rowSpan"])');
   /** Selects a paragraph inside the Section already selected, or inside another one. */
-  const pick = async (text) => {
-    // Escape steps out one level at a time: all the way, so the first click lands as it would on an untouched page.
-    await eventually(async () => {
-      await win.keyboard.press('Escape');
-      assert.equal(await selected(), null, 'nothing is selected');
-    }, 10000);
-    const target = frame.locator('p', { hasText: text }).first();
-    // The first click takes the Section and the next the paragraph in it. A click made while the canvas is still
-    // settling can miss, so it is made again until the paragraph is the selection.
-    await eventually(async () => {
-      if ((await selected()) !== 'Text actions') await clickMiddle(target);
-      await eventually(async () => assert.equal(await selected(), 'Text actions', `the paragraph “${text}” is selected`), 2000);
-    }, 30000);
+  const pick = async (section, id) => {
+    const branch = layer(section);
+    if ((await branch.getAttribute('aria-expanded')) === 'false') await branch.locator('.tree-toggle').click();
+    await layer(id).click();
+    await eventually(async () => assert.equal(await layer(id).getAttribute('aria-selected'), 'true', 'the paragraph is selected'));
     await inspector.locator('.style-group').first().waitFor();
     assert.equal(await inspector.locator('.style-group-toggle[aria-expanded="true"]').count(), 0, 'no group is open');
   };
-  await pick('Narrow side');
+  await pick(made.one, made.first);
   await eventually(async () => assert.equal(await spanRows.count(), 2, 'both spans show for a grid item'), 10000);
   await inspector.locator('.style-group[data-group="layout"]').screenshot({ path: join(OUT, 'grid-item-spans.png') });
   await inspector.locator('.style-row[data-prop="columnSpan"] select').selectOption('full');
   await eventually(async () => assert.equal(await at(made.first).evaluate((el) => getComputedStyle(el).gridColumnEnd), '-1'), 30000);
   await inspector.locator('.style-row[data-prop="rowSpan"] select').selectOption('2');
   await eventually(async () => assert.equal(await at(made.first).evaluate((el) => getComputedStyle(el).gridRowEnd), 'span 2'), 30000);
-  await pick('Other section');
+  await pick(made.two, made.other);
   await eventually(async () => assert.equal(await spanRows.count(), 0, 'outside a grid they stay behind the group’s heading'), 10000);
 
   assert.deepEqual(errors, [], 'no page errors');

@@ -1998,7 +1998,7 @@ export const INTERACTIONS: Interaction[] = [
     area: 'assistant',
     intent: 'Ask the assistant to change the element I have selected',
     start: 'Business site, the Split hero selected, a scripted model connected',
-    routes: ['chat:Message', 'command:ai', 'key:j', 'item:Canvas:Ask AI about this', 'item:Layers:Ask AI about this'],
+    routes: ['chat:Message', 'command:ai', 'key:askAi', 'item:Canvas:Ask AI about this', 'item:Layers:Ask AI about this'],
     outcome: 'The composer names the selection; the edit lands on the element that was selected when the message was sent, even if the selection changes mid-run, and is saved in the page document and shown in the preview',
     scenario: 'business-v1 · scripted',
     proof: [
@@ -2008,7 +2008,7 @@ export const INTERACTIONS: Interaction[] = [
       { test: 'tests/unit/chat-target.test.ts', kind: 'unit' },
       { test: 'tests/unit/driver-assistant.test.ts', kind: 'unit' }
     ],
-    gaps: [{ missing: 'Cmd/Ctrl+J, Ask AI… in the command menu and Ask AI about this in the canvas and Layers menus are never chosen by an e2e script', owner: 'assistant' }]
+    gaps: [{ missing: 'The configurable Ask AI shortcut, Ask AI… in the command menu and Ask AI about this in the canvas and Layers menus are never chosen by an e2e script', owner: 'assistant' }]
   },
   {
     id: 'assistant.ask',

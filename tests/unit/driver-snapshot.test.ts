@@ -211,6 +211,14 @@ describe('redaction', () => {
 });
 
 describe('shaping', () => {
+  it('keeps announcements and skips an empty status with no element ref', () => {
+    const result = shape(
+      [{ role: 'status', box: { x: 0, y: 0, width: 10, height: 0 } }, { role: 'status', text: 'Saved' }, { role: 'status', ref: 'ready', text: 'Ready' }],
+      'editor'
+    );
+    expect(result.map(({ text, pwRef }) => [text, pwRef])).toEqual([['Saved', undefined], ['Ready', 'ready']]);
+  });
+
   const raw: RawNode[] = [
     {
       role: 'generic',

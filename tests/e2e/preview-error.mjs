@@ -18,7 +18,11 @@ async function frame() {
 }
 /** Report something to the editor from the preview page, as its bridge does. */
 async function bridge(type, payload) {
-  await (await frame()).evaluate(([t, p]) => window.parent.postMessage({ protocolVersion: 1, sessionId: window.name, navigationId: location.pathname, revision: 0, type: t, payload: p }, '*'), [type, payload]);
+  await (await frame()).evaluate(([t, p]) => {
+    const navigationId = document.documentElement.dataset.soNavigation;
+    if (!navigationId) throw new Error('the preview bridge has not named its navigation');
+    window.parent.postMessage({ protocolVersion: 1, sessionId: window.name, navigationId, revision: p.revision ?? 0, type: t, payload: p }, '*');
+  }, [type, payload]);
 }
 /** The bar's buttons, by name, in order. */
 const buttons = () => issue.getByRole('button').evaluateAll((els) => els.map((e) => e.getAttribute('aria-label') ?? e.textContent.trim()));
