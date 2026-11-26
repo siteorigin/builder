@@ -8,7 +8,7 @@ import { SITE_ICON_FILES } from './site-icons';
  * generated favicon, web app manifest and home-screen icons (shared/site-icons.ts), and the hosts' redirect rules
  * (generator/host-redirects.ts).
  */
-const RESERVED = new Set(['_app', 'assets', 'api', '__data.json', 'sitemap.xml', 'robots.txt', 'favicon.ico', 'favicon.svg', '_siteorigin', 'llms.txt', 'llms-full.txt', 'rss.xml', '_redirects', 'vercel.json', ...SITE_ICON_FILES]);
+const RESERVED = new Set(['_app', 'assets', 'api', '__data.json', 'sitemap.xml', 'robots.txt', 'favicon.svg', '_siteorigin', 'llms.txt', 'llms-full.txt', 'rss.xml', '_redirects', 'vercel.json', ...SITE_ICON_FILES]);
 
 /** Combining marks NFKD splits off accented letters ("é" is "e" and an accent). */
 const ACCENTS = /[\u0300-\u036f]/g;

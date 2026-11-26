@@ -15,7 +15,8 @@ import { createStarterState } from '@catalogue/starters';
 import { generateProject } from '@generator/index';
 import { GenerationCache } from '@generator/cache';
 import { generateWebManifest, siteIconSet, themeColorMeta } from '@generator/site-icons';
-import { APPLE_TOUCH_ICON, SITE_ICON_FILES, WEB_MANIFEST } from '@shared/site-icons';
+import { APPLE_TOUCH_ICON, FAVICON_ICO, SITE_ICON_FILES, WEB_MANIFEST } from '@shared/site-icons';
+import { icoImages } from './ico';
 import { validateRoute } from '@shared/routes';
 import { heldAsMedia } from '../../src/main/project/versions';
 import { handleVariantRequest, renderSiteIcons } from '../../src/main/project/image-variants';
@@ -131,7 +132,7 @@ describe('the web app manifest', () => {
       ]
     });
     // The icons it names are the ones the editor draws.
-    expect(manifest.icons.map((i: { src: string }) => `static/${i.src}`)).toEqual(SITE_ICON_PATHS.filter((p) => !p.endsWith(APPLE_TOUCH_ICON)));
+    expect(manifest.icons.map((i: { src: string }) => `static/${i.src}`)).toEqual(SITE_ICON_PATHS.filter((p) => !p.endsWith(APPLE_TOUCH_ICON) && !p.endsWith(FAVICON_ICO)));
     // The editor's preview has the same manifest, and a run that reuses earlier files gives the same bytes.
     expect(generateProject(s, { instrument: true }).get(`static/${WEB_MANIFEST}`)).toBe(files.get(`static/${WEB_MANIFEST}`));
     const cache = new GenerationCache();
@@ -231,10 +232,12 @@ describe('what the icons are made from', () => {
     expect(set.icons).toEqual([
       { path: 'static/apple-touch-icon.png', size: 180, background: '#fbfaf7' },
       { path: 'static/icon-192.png', size: 192 },
-      { path: 'static/icon-512.png', size: 512 }
+      { path: 'static/icon-512.png', size: 512 },
+      { path: 'static/favicon.ico', size: 48, ico: [16, 32, 48] }
     ]);
     const chosen = withFavicon(tmp(), Buffer.from('png'));
     expect(siteIconSet(chosen).source).toEqual({ kind: 'file', file: 'static/assets/logo-1a2b3c4d.png', mime: 'image/png' });
+    expect(siteIconSet(chosen).icons).toContainEqual({ path: 'static/favicon.ico', size: 48, ico: [16, 32, 48] });
     // A hand edit pointing the favicon at a document, or naming the site with something other than text.
     chosen.assets.assets.as_logo.kind = 'document';
     expect(siteIconSet(chosen).source.kind).toBe('svg');
@@ -249,6 +252,7 @@ describe('what the icons are made from', () => {
       expect(validateRoute(`/${f}/`)).not.toBeNull();
       expect(heldAsMedia(`static/${f}`)).toBe(f === 'favicon.svg');
     }
+    expect(heldAsMedia('static/favicon.ico')).toBe(false);
     expect(heldAsMedia('static/assets/logo-1a2b3c4d.png')).toBe(true);
     expect(heldAsMedia('static/icons/apple-touch-icon.png')).toBe(true);
   });
@@ -273,6 +277,59 @@ describe('drawing the icons', () => {
     expect(hex(await pixel(large, 256, 2))).toBe('#1f5a4c');
     // The same picture always makes the same bytes.
     expect((await renderSiteIcons(Buffer.from(set.monogram), 'image/svg+xml', set.icons))[2].equals(large)).toBe(true);
+  });
+
+  it('makes favicon.ico from the same source, as one file of 16, 32 and 48 pixel PNGs', async () => {
+    const set = siteIconSet(fresh());
+    const spec = set.icons.find((i) => i.path === `static/${FAVICON_ICO}`)!;
+    const draw = async (data: Buffer, mime: string) => icoImages((await renderSiteIcons(data, mime, [spec]))[0]);
+    const monogram = await draw(Buffer.from(set.monogram), 'image/svg+xml');
+    expect(monogram.map((i) => i.width)).toEqual([16, 32, 48]);
+    for (const image of monogram) {
+      expect(image).toMatchObject({ height: image.width, bitCount: 32 });
+      expect(await sharp(image.png).metadata()).toMatchObject({ format: 'png', width: image.width, height: image.width, depth: 'uchar', channels: 4 });
+      expect(hex(await pixel(image.png, 1, 1))).toBe('#1f5a4c');
+    }
+    // A picture keeps its transparency, and one without an alpha channel is given one, as an ICO's PNGs must have.
+    for (const image of await draw(await wideLogo(), 'image/png')) {
+      expect((await pixel(image.png, 1, 1)).a).toBe(0);
+      // Resampled this small, the bar's edges may reach its middle by a step.
+      const middle = await pixel(image.png, image.width / 2, image.width / 2);
+      expect(middle).toMatchObject({ r: 255, g: 0, b: 0 });
+      expect(middle.a).toBeGreaterThan(250);
+    }
+    const jpeg = await sharp({ create: { width: 64, height: 64, channels: 3, background: '#0000ff' } }).jpeg().toBuffer();
+    const grey = await sharp({ create: { width: 64, height: 64, channels: 3, background: '#777777' } }).toColourspace('b-w').png().toBuffer();
+    expect((await sharp(grey).metadata()).channels).toBe(1);
+    for (const [data, mime] of [[jpeg, 'image/jpeg'], [grey, 'image/png']] as const) {
+      const images = await draw(data, mime);
+      expect(images).toHaveLength(3);
+      for (const image of images) {
+        expect(await sharp(image.png).metadata()).toMatchObject({ width: image.width, height: image.height, depth: 'uchar', channels: 4 });
+        expect((await pixel(image.png, image.width / 2, image.width / 2)).a).toBe(255);
+      }
+    }
+    // A wide picture is fitted whole, as in the PNG icons: both its ends are kept, with padding above.
+    for (const image of await draw(await wideBanner(), 'image/png')) {
+      const middle = image.width / 2;
+      for (const x of [0, image.width - 1]) {
+        const end = await pixel(image.png, x, middle);
+        expect(end.b).toBeGreaterThan(end.r);
+      }
+      expect((await pixel(image.png, middle, 1)).a).toBe(0);
+    }
+  });
+
+  it('hands favicon.ico back from the worker among the other icons', async () => {
+    const set = siteIconSet(fresh());
+    const reply = await handleVariantRequest({ id: 1, kind: 'icons', data: new Uint8Array(Buffer.from(set.monogram)), mime: 'image/svg+xml', width: 0, icons: set.icons });
+    const replied = reply.ok ? (reply.icons ?? []) : [];
+    expect(replied).toHaveLength(set.icons.length);
+    expect(icoImages(Buffer.from(replied[set.icons.findIndex((i) => i.path === `static/${FAVICON_ICO}`)])).map((i) => i.width)).toEqual([16, 32, 48]);
+    // And through the maker, whose requests carry the sizes it is made at.
+    setSiteIconRenderer(inProcess);
+    const drawn = await new SiteIconMaker().make(tmp(), fresh());
+    expect(icoImages(drawn.files!.get(`static/${FAVICON_ICO}`)!)).toHaveLength(3);
   });
 
   it('fits a wide picture whole and centred, filling see-through parts only on the iOS icon', async () => {
@@ -439,11 +496,11 @@ describe('a project’s icons', () => {
     // B is no longer wanted: told at once that it is not ready.
     expect((await b).files).toBeNull();
     gates[0]();
-    expect((await a).files?.size).toBe(3);
+    expect((await a).files?.size).toBe(4);
     expect((await again).files).toBe((await a).files);
     await vi.waitFor(() => expect(gates).toHaveLength(2));
     gates[1]();
-    expect((await c).files?.size).toBe(3);
+    expect((await c).files?.size).toBe(4);
     expect(drawn).toEqual(['A', 'C']);
     // Both sets are kept: asked for again, neither is drawn again.
     expect((await maker.make(dir, named('Alpha'))).files).toBe((await a).files);
@@ -488,11 +545,11 @@ describe('a project’s icons', () => {
     expect(late).not.toHaveBeenCalled();
     release();
     await vi.waitFor(() => expect(late).toHaveBeenCalledTimes(1));
-    expect((await maker.make(dir, fresh(), 20)).files?.size).toBe(3);
+    expect((await maker.make(dir, fresh(), 20)).files?.size).toBe(4);
     // Waited for without a limit, a set is made however long it takes.
     const s = fresh();
     s.site.name = 'Patient';
-    expect((await maker.make(dir, s, Infinity)).files?.size).toBe(3);
+    expect((await maker.make(dir, s, Infinity)).files?.size).toBe(4);
     expect(late).toHaveBeenCalledTimes(1);
   });
 
@@ -549,6 +606,6 @@ describe('a project’s icons', () => {
     // (The monogram shows the first letter only: a name with another one is another set.)
     counting();
     s.site.name = 'Zulu';
-    expect((await maker.make(dir, s)).files?.size).toBe(3);
+    expect((await maker.make(dir, s)).files?.size).toBe(4);
   });
 });

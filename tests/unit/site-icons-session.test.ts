@@ -10,7 +10,8 @@ import { join } from 'node:path';
 import sharp from 'sharp';
 import type { AssetRecord, ProjectState } from '@shared/types';
 import { createStarterState } from '@catalogue/starters';
-import { WEB_MANIFEST } from '@shared/site-icons';
+import { FAVICON_ICO, WEB_MANIFEST } from '@shared/site-icons';
+import { icoImages } from './ico';
 import { siteIconSet } from '@generator/site-icons';
 import { ProjectSession } from '../../src/main/project/session';
 import { editedGeneratedFile } from '../../src/main/export';
@@ -92,7 +93,9 @@ describe('the website’s icons in a project', () => {
     const d = tmp();
     await create(d);
     const claimed = manifest(d);
-    for (const [path, size] of SITE_ICON_PATHS.map((p, i) => [p, [180, 192, 512][i]] as const)) {
+    expect(icoImages(readFileSync(join(d, 'static', FAVICON_ICO))).map((i) => i.width)).toEqual([16, 32, 48]);
+    expect(claimed[`static/${FAVICON_ICO}`]).toBe(sha(readFileSync(join(d, 'static', FAVICON_ICO))));
+    for (const [path, size] of [['static/apple-touch-icon.png', 180], ['static/icon-192.png', 192], ['static/icon-512.png', 512]] as const) {
       const bytes = readFileSync(join(d, path));
       expect(await sharp(bytes).metadata()).toMatchObject({ format: 'png', width: size, height: size });
       expect(claimed[path]).toBe(sha(bytes));
@@ -201,6 +204,8 @@ describe('the website’s icons in a project', () => {
     // Seen when the library's files are looked at again (the app does so when static/ changes, and before an export).
     expect(await s.refreshSiteIcons()).toEqual({ key: await s.siteIconSource(), published: true, drawing: false });
     expect(await centre(readFileSync(join(d, 'static/icon-192.png')))).toEqual({ r: 0, g: 0, b: 255 });
+    const ico = async () => Promise.all(icoImages(readFileSync(join(d, 'static', FAVICON_ICO))).map((i) => centre(i.png)));
+    expect(await ico()).toEqual(Array(3).fill({ r: 0, g: 0, b: 255 }));
     expect(s.siteIconsPublished).toBe(await s.siteIconSource());
     expect(await editedGeneratedFile(d)).toBeNull();
     // A missing file gives the monogram's icons; put back, the picture's again.
@@ -211,6 +216,13 @@ describe('the website’s icons in a project', () => {
     writeFileSync(join(d, 'static/assets/logo-1a2b3c4d.png'), blue);
     await s.refreshSiteIcons();
     expect(await centre(readFileSync(join(d, 'static/apple-touch-icon.png')))).toEqual({ r: 0, g: 0, b: 255 });
+    // Choosing no favicon, and undoing that, takes favicon.ico to the monogram and back with the other icons.
+    expect((await s.apply({ operations: [{ type: 'site.update', favicon: null }] }, { label: 'No favicon' })).ok).toBe(true);
+    const corners = await Promise.all(icoImages(readFileSync(join(d, 'static', FAVICON_ICO))).map((i) => at(i.png, 1, 1)));
+    expect(corners).toEqual(Array(3).fill({ r: 0x1f, g: 0x5a, b: 0x4c }));
+    expect(manifest(d)[`static/${FAVICON_ICO}`]).toBe(sha(readFileSync(join(d, 'static', FAVICON_ICO))));
+    expect((await s.undo()).ok).toBe(true);
+    expect(await ico()).toEqual(Array(3).fill({ r: 0, g: 0, b: 255 }));
   });
 
   it('cost only their own update when they cannot be made: the save goes ahead and the icons already there stay claimed', async () => {
@@ -273,21 +285,21 @@ describe('the website’s icons in a project', () => {
     expect(s.conflicts).toEqual([]);
   });
 
-  it('never replace a file of someone else’s at an icon’s address, whether or not they can be made', async () => {
+  it.each(['static/apple-touch-icon.png', 'static/favicon.ico'])('never replace a file of someone else’s at %s, whether or not the icons can be made', async (theirs) => {
     const r = renderer();
     r.fail = true;
     const d = tmp();
     await (await create(d)).close();
-    // An older project with its own home-screen icon, opened by this version.
-    writeFileSync(join(d, 'static/apple-touch-icon.png'), 'my own icon');
+    // An older project with its own icon there, opened by this version.
+    writeFileSync(join(d, theirs), 'my own icon');
     let s = await open(d);
-    expect(s.conflicts.map((c) => c.path)).toEqual(['static/apple-touch-icon.png']);
+    expect(s.conflicts.map((c) => c.path)).toEqual([theirs]);
     await s.close();
     r.fail = false;
     s = await open(d);
-    expect(readFileSync(join(d, 'static/apple-touch-icon.png'), 'utf8')).toBe('my own icon');
-    expect(s.conflicts.map((c) => c.path)).toEqual(['static/apple-touch-icon.png']);
-    expect(manifest(d)['static/apple-touch-icon.png']).toBeUndefined();
+    expect(readFileSync(join(d, theirs), 'utf8')).toBe('my own icon');
+    expect(s.conflicts.map((c) => c.path)).toEqual([theirs]);
+    expect(manifest(d)[theirs]).toBeUndefined();
     // The others are written and claimed as usual.
     expect(manifest(d)['static/icon-192.png']).toBe(sha(readFileSync(join(d, 'static/icon-192.png'))));
   });

@@ -4900,7 +4900,7 @@ export function handle({ event, resolve }) {
 export const DEFAULT_FAVICON = 'favicon.svg';
 
 /**
- * A simple monogram favicon in the site's brand colours, so browsers never request a missing /favicon.ico. `square`
+ * A simple monogram favicon in the site's brand colours, for the tab while no favicon picture is chosen. `square`
  * leaves its corners square, for the home-screen icons made from it (see site-icons.ts), which home screens round.
  */
 export function generateFaviconSvg(state: ProjectState, opts: { square?: boolean } = {}): string {
