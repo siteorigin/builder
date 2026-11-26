@@ -25,6 +25,8 @@ import { LOCAL_DIR, NO_LOCK, ProjectLockedError, ProjectSession, ThemeUnavailabl
 import { DOC_DIR, MANIFEST_FILE, ProjectFormatError } from './project/documents';
 import { DOCUMENT_EXTENSIONS, FONT_EXTENSIONS, IMAGE_EXTENSIONS, IMPORT_IMAGE_EXTENSIONS, importAsset, importPackageImage, isAssetOfKind, isOpaquePicture, libraryWebCopyPlan, locateAssetFile, originalNameOf, pictureMime, restoreAssetFiles, reviewImportFile, storeLibraryWebCopy } from './project/assets';
 import { postReader, stopPostReads } from './posts-import/process';
+import { sourceSecrets, sourceSyncRunner, stopSourceSyncs } from './sources/process';
+import { syncSource, type SourceSyncResult } from './sources/sync';
 import { planOperations, planPostImport, type PostImportPlan } from './posts-import/plan';
 import { postImportPreview } from './posts-import/preview';
 import { readContained } from './posts-import/files';
@@ -1326,6 +1328,10 @@ export class Controller {
     // A posts import being read or reviewed belongs to this project.
     this.postImport = null;
     stopPostReads();
+    // So does a source being synced: its worker is ended, and a reply already in nothing lands.
+    for (const sync of this.sourceSyncs) sync.abort();
+    this.sourceSyncs.clear();
+    stopSourceSyncs();
     // Workspace state belongs to the project it was saved in: accept no more of it, and write it before the lock goes.
     this.workspaceKey = null;
     this.onOpeningChange?.();
@@ -2161,6 +2167,61 @@ export class Controller {
         return { ok: true, imported: n, entryId: r.entryId, revision: r.revision, firstEntryId: plan.posts[0]?.entryId, ...(notes.length ? { notes } : {}) };
       })
     );
+  }
+
+  /** The source syncs in progress: each is ended when its project closes. */
+  private sourceSyncs = new Set<AbortController>();
+
+  /**
+   * Sync external source `sourceId` of the open project into its collection (#676): its records are read in the sync
+   * worker, signed in with the secrets the source names, and land as one change against the revision the sync began
+   * from, or nothing does.
+   */
+  async syncSource(sourceId: string, opening: string): Promise<SourceSyncResult> {
+    const s = this.session;
+    const closed = { ok: false as const, message: 'The project was closed before the source was synced.' };
+    if (!s || opening !== this.workspaceKey || this.closing) return closed;
+    if (s.readOnly) return { ok: false, message: s.readOnly.reason };
+    if (this.aiBusy()) return { ok: false, message: 'The AI is making changes. Stop it before syncing a source.' };
+    const abort = new AbortController();
+    this.sourceSyncs.add(abort);
+    const current = () => !abort.signal.aborted && this.session === s && opening === this.workspaceKey && !this.closing;
+    try {
+      return await this.serialImport(async () => {
+        if (!current()) return closed;
+        return syncSource(
+          {
+            session: s,
+            runner: sourceSyncRunner,
+            secrets: sourceSecrets,
+            current,
+            signal: abort.signal,
+            importImage: (img, known, createdAt) => importPackageImage(s.dir, { name: img.name, mime: img.mime, ext: img.ext, bytes: Buffer.from(img.bytes) }, known, this.writeFence(s), createdAt)
+          },
+          sourceId
+        );
+      });
+    } finally {
+      this.sourceSyncs.delete(abort);
+    }
+  }
+
+  /** The names of the secrets the open project's sources can sign in with, never their values. */
+  async sourceSecretNames(): Promise<string[]> {
+    const s = this.session;
+    return s ? sourceSecrets.names(s.state.manifest.projectId) : [];
+  }
+
+  /** Keep `value` as the open project's source secret `name`, in the user's own source-secrets.json, or forget it (null). */
+  async setSourceSecret(name: string, value: string | null): Promise<{ ok: boolean; message?: string }> {
+    const s = this.session;
+    if (!s) return { ok: false, message: 'No project is open.' };
+    try {
+      await sourceSecrets.set(s.state.manifest.projectId, name, value);
+      return { ok: true };
+    } catch (e) {
+      return { ok: false, message: (e as Error).message };
+    }
   }
 
   /**

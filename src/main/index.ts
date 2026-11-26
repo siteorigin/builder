@@ -26,6 +26,7 @@ import { renderSiteIconsInWorker, stopMediaWorker } from './project/assets';
 import { setSiteIconRenderer } from './project/site-icons';
 import { readInsertPlace } from './saved-components';
 import { stopPostReads } from './posts-import/process';
+import { stopSourceSyncs } from './sources/process';
 import { playerFrameAllowed, sameOrigin } from './player-frames';
 import { stopPhotoDecoders } from './project/photo-convert';
 import { createThumbCapturer } from './thumb-capture';
@@ -921,6 +922,7 @@ app.on('will-quit', () => {
   stopMediaWorker();
   stopPhotoDecoders();
   stopPostReads();
+  stopSourceSyncs();
 });
 
 // Quitting saves what is being typed, then closes the project (writing its unsaved workspace state), then
