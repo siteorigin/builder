@@ -42,10 +42,28 @@ function describe(error: unknown): string {
 
 export const MAIN_ERROR_BUTTONS = ['Quit', 'Keep Working'];
 
+/** Where a report goes, as a person would type it from a dialog that has no link. */
+const REPORT_ADDRESS = 'github.com/siteorigin/builder/issues';
+
+/** What to do after an error nothing caught, in general. */
+const RUNNING = 'Your saved work is safe. Quit and open SiteOrigin Builder again to carry on. Choose Keep Working only to copy text you were still typing.';
+/** A full disk is the one cause a restart alone does not fix: it says what does. */
+const DISK_FULL = 'Your saved work is safe, but the disk is full, so new changes cannot be saved. If you were still typing, choose Keep Working to copy that text. Then quit, free up disk space, and open SiteOrigin Builder again.';
+
+function diskFull(error: unknown): boolean {
+  try {
+    return (error as { code?: unknown } | null)?.code === 'ENOSPC';
+  } catch {
+    return false;
+  }
+}
+
 export function mainErrorReport(error: unknown) {
   return {
     message: 'SiteOrigin Builder ran into a problem',
-    detail: `${errorText(error)}\n\nQuitting saves what you were typing and closes your project. Opening SiteOrigin Builder again is the safest way to carry on.`,
+    // Plain words first, the technical message last. Quitting closes the project the normal way, but a save is never
+    // promised: the error may be the reason one cannot happen (a full disk).
+    detail: `${diskFull(error) ? DISK_FULL : RUNNING}\n\nIf this keeps happening, choose Help > Report a Problem.\n\nDetails: ${errorText(error)}`,
     buttons: [...MAIN_ERROR_BUTTONS],
     defaultId: 0,
     // Closing the question keeps the app running, as Keep Working does.
@@ -54,7 +72,11 @@ export function mainErrorReport(error: unknown) {
 }
 
 export function startupErrorReport(error: unknown) {
-  return { title: 'SiteOrigin Builder could not start', content: `${errorText(error)}\n\nTry opening SiteOrigin Builder again.` };
+  // OK quits, so the app's Help menu is out of reach: the report address is given in words.
+  return {
+    title: 'SiteOrigin Builder could not start',
+    content: `Your projects are safe. Try opening SiteOrigin Builder again. If it still does not start, reinstall it, and report the problem at ${REPORT_ADDRESS}.\n\nDetails: ${errorText(error)}`
+  };
 }
 
 /** The handler for process 'uncaughtException'. It never throws, and nothing it calls can make it throw. */

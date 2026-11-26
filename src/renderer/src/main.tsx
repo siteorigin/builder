@@ -7,6 +7,7 @@ import { registerPacks } from '@catalogue/index';
 import { api, setState } from './store';
 import { followAppearance } from './lib/appearance';
 import { RenderFailure } from './components/RenderFailure';
+import { CatalogueFailed, NoThemes } from './components/StartupFailure';
 
 // For the app's lifetime: the editor follows its Appearance from before anything renders.
 followAppearance();
@@ -17,16 +18,7 @@ api.app
   .then((catalogue) => {
     // Without any theme there is nothing to make or open a site with: say why, rather than fail part way in.
     if (!catalogue.packs.length) {
-      root.render(
-        <div className="fatal">
-          <p>SiteOrigin Builder could not load any themes, so it cannot open or create a site. Reinstalling it puts the built-in theme back.</p>
-          <ul>
-            {catalogue.refused.map((r) => (
-              <li key={r.dir}>{r.reason}</li>
-            ))}
-          </ul>
-        </div>
-      );
+      root.render(<NoThemes refused={catalogue.refused} userDir={catalogue.userDir} />);
       return;
     }
     registerPacks(catalogue.packs);
@@ -39,5 +31,5 @@ api.app
     );
   })
   .catch((e: Error) => {
-    root.render(<p className="fatal">SiteOrigin Builder could not load its themes: {e.message}</p>);
+    root.render(<CatalogueFailed message={e.message} />);
   });

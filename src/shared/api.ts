@@ -1100,6 +1100,13 @@ export interface BuilderApi {
     getSettings(): Promise<AppSettings>;
     setSettings(patch: SettingsPatch): Promise<AppSettings>;
     openExternal(url: string): Promise<void>;
+    /** Which build this is, as Help > Copy Build Details copies it, to quote in a report. */
+    buildDetails(): Promise<string>;
+    /** Open the folder a person installs themes in, made if it is not there yet. Resolves with why it could not be
+     *  opened, or '' when it was. */
+    showThemesFolder(): Promise<string>;
+    /** Quit the app, the normal way. */
+    quit(): Promise<void>;
     /** While on, the app's menus take no keys, so Settings can record any key press as a shortcut (#750). */
     recordShortcut(on: boolean): Promise<void>;
   };

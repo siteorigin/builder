@@ -1,3 +1,7 @@
+/** Where a problem is reported: a new issue on the public repository, which the person fills in and submits themselves.
+ *  Help > Report a Problem and the failure screens (FailureScreen.tsx) both open it. */
+export const REPORT_URL = 'https://github.com/siteorigin/builder/issues/new';
+
 /** A link the editor may hand to the operating system: a web page, an email address or a phone number. */
 export interface ExternalLink {
   href: string;
