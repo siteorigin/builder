@@ -70,4 +70,67 @@ describe('a collection’s archive pages when found or shared', () => {
     expect(out.get(route('/blog/'))).toContain('<meta name="description" content={"Notes from the studio floor."} />');
     expect(out.get(route('/blog/category/news/'))).toContain('<meta name="description" content={"What is new at the studio."} />');
   });
+
+  it('say the same thing in every tag and in the structured data, with a trail from Home through the index', () => {
+    const s = run(blog(), { type: 'collection.update', collectionId: 'posts', pageSize: 1 });
+    const out = files(s);
+    const news2 = out.get(route('/blog/category/news/page/2/'))!;
+    const description = 'Posts filed under News, from Riverside Studio.';
+    for (const tag of ['name="description"', 'property="og:description"', 'name="twitter:description"']) expect(news2).toContain(`<meta ${tag} content={${JSON.stringify(description)}} />`);
+    expect(news2).toContain('<title>{"News – Page 2 of 2 · Riverside Studio"}</title>');
+    expect(news2).toContain('<meta property="og:locale" content="en_GB" />');
+    expect(news2).toContain('<link rel="canonical" href={"https://example.com/blog/category/news/page/2/"} />');
+    const nodes = graph(news2)!['@graph'];
+    const page = nodes.find((n) => n['@id'] === 'https://example.com/blog/category/news/page/2/#webpage')!;
+    expect(page['@type']).toEqual(['WebPage', 'CollectionPage']);
+    expect(page.description).toBe(description);
+    const trail = nodes.find((n) => n['@type'] === 'BreadcrumbList')!.itemListElement as Array<{ name: string; item: string }>;
+    expect(trail.map((t) => [t.name, t.item])).toEqual([
+      ['Home', 'https://example.com/'],
+      ['Posts', 'https://example.com/blog/'],
+      ['News', 'https://example.com/blog/category/news/'],
+      ['News – Page 2 of 2', 'https://example.com/blog/category/news/page/2/']
+    ]);
+    // The index falls back to the site's description, as a page does, and names the collection without one.
+    const index = graph(out.get(route('/blog/'))!)!['@graph'];
+    expect(index.find((n) => n['@type'] === 'BreadcrumbList')!.itemListElement).toHaveLength(2);
+    const bare = structuredClone(s);
+    bare.site.description = '';
+    expect(files(bare).get(route('/blog/'))).toContain('<meta name="description" content={"Posts from Riverside Studio."} />');
+  });
+
+  it('keep their description and sharing tags without a public URL, leaving out what needs one', () => {
+    const out = files(blog(''));
+    const index = out.get(route('/blog/'))!;
+    expect(index).toMatch(/<meta name="description" content=\{"[^"]+"\} \/>/);
+    expect(index).toContain('<meta name="twitter:card" content="summary" />');
+    expect(index).not.toContain('rel="canonical"');
+    expect(graph(index)).toBeNull();
+  });
+
+  it('write names as they are, braces and dollar signs too', () => {
+    const s = run(
+      blog(),
+      { type: 'collection.update', collectionId: 'posts', name: 'Notes {site} $&' },
+      { type: 'collection.renameTerm', collectionId: 'posts', taxonomyId: 'categories', termId: 'news', label: 'News {collection}', newTermId: 'news' }
+    );
+    const out = files(s);
+    expect(out.get(route('/blog/category/news/'))).toContain(`<meta name="description" content={${JSON.stringify('Notes {site} $& filed under News {collection}, from Riverside Studio.')}} />`);
+  });
+
+  it('keep a category’s description through a rename and a change to the groupings, and clear it when emptied', () => {
+    let s = run(blog(), { type: 'collection.update', collectionId: 'posts', categoryDescription: { termId: 'news', description: '  What is new.  ' } });
+    expect(s.collections.posts.settings.taxonomies.categories.terms.news).toEqual({ label: 'News', description: 'What is new.' });
+    s = run(s, { type: 'collection.renameTerm', collectionId: 'posts', taxonomyId: 'categories', termId: 'news', label: 'Studio news' });
+    expect(s.collections.posts.settings.taxonomies.categories.terms['studio-news']).toEqual({ label: 'Studio news', description: 'What is new.' });
+    const taxonomies = Object.fromEntries(
+      Object.entries(s.collections.posts.settings.taxonomies).map(([id, t]) => [id, { label: t.label, terms: Object.fromEntries(Object.entries(t.terms).map(([tid, x]) => [tid, { label: x.label }])) }])
+    );
+    s = run(s, { type: 'collection.update', collectionId: 'posts', taxonomies });
+    expect(s.collections.posts.settings.taxonomies.categories.terms['studio-news'].description).toBe('What is new.');
+    s = run(s, { type: 'collection.update', collectionId: 'posts', categoryDescription: { termId: 'studio-news', description: ' ' }, description: '' });
+    expect(s.collections.posts.settings.taxonomies.categories.terms['studio-news']).toEqual({ label: 'Studio news' });
+    expect(s.collections.posts.settings).not.toHaveProperty('description');
+    expect(() => run(s, { type: 'collection.update', collectionId: 'posts', categoryDescription: { termId: 'nope', description: 'x' } })).toThrow(/no category "nope"/);
+  });
 });

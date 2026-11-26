@@ -130,26 +130,35 @@ export const fillWords = (text: string, values: Record<string, string | number>)
 const ownText = (v: unknown) => (typeof v === 'string' && v.trim() ? v.trim() : '');
 
 /**
- * What one archive page is called and says of itself, in the site's language: its heading (the collection's name, or
- * the category's), its name in a trail (the heading, then its page number after the first), its browser title (that
- * name and the site's), and its description for search engines and link previews. An index's description is the
- * collection's own, else the site's, else a sentence naming the collection; a category's is the category's own, else a
- * sentence naming the category. Every page of a series says the same.
+ * What an index (no `category`) or a category's archive says of itself when the author has not said: an index the
+ * site's description, else a sentence naming the collection and the site; a category a sentence naming the category,
+ * the collection and the site, in the site's language.
  */
-export function archiveWords(state: ProjectState, archive: Pick<ArchivePage, 'collectionId' | 'category' | 'page' | 'pages'>): { heading: string; name: string; title: string; description: string } {
+export function defaultArchiveDescription(state: Pick<ProjectState, 'site' | 'collections'>, collectionId: string, category?: string): string {
   const site = state.site;
   const words = visitorTextFor(site, siteLanguage(site));
-  const collection = state.collections[archive.collectionId];
+  const collection = Object.hasOwn(state.collections ?? {}, collectionId) ? state.collections[collectionId] : undefined;
+  const fills = { collection: ownText(collection?.settings?.name) || collectionId, site: typeof site.name === 'string' ? site.name : '' };
+  if (!category) return ownText(site.description) || fillWords(words.archiveDescription, fills);
+  const term = collection ? categoryTerms(collection).find((t) => t.id === category) : undefined;
+  return fillWords(words.archiveCategoryDescription, { ...fills, category: term?.label ?? category });
+}
+
+/**
+ * What one archive page is called and says of itself, in the site's language: its heading (the collection's name, or
+ * the category's), its name in a trail (the heading, then its page number after the first), its browser title (that
+ * name and the site's), and its description for search engines and link previews: the collection's or the
+ * category's own, else the default (defaultArchiveDescription). Every page of a series says the same.
+ */
+export function archiveWords(state: Pick<ProjectState, 'site' | 'collections'>, archive: Pick<ArchivePage, 'collectionId' | 'category' | 'page' | 'pages'>): { heading: string; name: string; title: string; description: string } {
+  const site = state.site;
+  const words = visitorTextFor(site, siteLanguage(site));
+  const collection = Object.hasOwn(state.collections ?? {}, archive.collectionId) ? state.collections[archive.collectionId] : undefined;
   const settings = collection?.settings;
-  const collectionName = ownText(settings?.name) || archive.collectionId;
   const category = archive.category;
   const term = category && collection ? categoryTerms(collection).find((t) => t.id === category) : undefined;
-  const heading = category ? (term?.label ?? category) : collectionName;
+  const heading = category ? (term?.label ?? category) : ownText(settings?.name) || archive.collectionId;
   const name = `${heading}${archive.page > 1 ? ` – ${fillWords(words.archivePageOf, { page: archive.page, count: archive.pages })}` : ''}`;
-  const siteName = typeof site.name === 'string' ? site.name : '';
-  const fills = { collection: collectionName, site: siteName, ...(category ? { category: heading } : {}) };
-  const description = category
-    ? (term ? ownText(settings!.taxonomies.categories.terms[term.id]?.description) : '') || fillWords(words.archiveCategoryDescription, fills)
-    : ownText(settings?.description) || ownText(site.description) || fillWords(words.archiveDescription, fills);
-  return { heading, name, title: `${name} · ${siteName}`, description };
+  const own = category ? (term ? ownText(settings!.taxonomies.categories.terms[term.id]?.description) : '') : ownText(settings?.description);
+  return { heading, name, title: `${name} · ${typeof site.name === 'string' ? site.name : ''}`, description: own || defaultArchiveDescription(state, archive.collectionId, category) };
 }

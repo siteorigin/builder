@@ -146,4 +146,5 @@
   .pages-collection-size .select { width: auto; }
   .pages-collection-check { display: inline-flex; align-items: center; gap: 6px; }
   .pages-collection-archive .btn { margin-left: auto; }
+  .pages-collection-description { flex-basis: 100%; display: flex; flex-direction: column; gap: 4px; }
 }
