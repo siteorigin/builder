@@ -366,7 +366,7 @@ function termsValue(collection: Collection, categories: string[] | undefined, te
  * One custom field's value as the operation takes it, read as the field's type takes it: the engine checks the rest
  * (an enum's options, a reference's entries, an image in the library). Null goes back to the field's default.
  */
-function entryValue(field: string, schema: CollectionFieldSchema, v: string | number | boolean | string[] | null, issues: FieldIssue[], at: string, stored?: CollectionFieldValue): unknown {
+function entryValue(field: string, schema: CollectionFieldSchema, v: string | number | boolean | string[] | null, issues: FieldIssue[], at: string, stored?: CollectionFieldValue, library?: ProjectState['assets']['assets']): unknown {
   if (v === null) return null;
   const wrong = (wants: string) => (issues.push({ field: at, message: `“${field}” is a ${schema.type} field: ${wants}` }), undefined);
   switch (schema.type) {
@@ -388,8 +388,10 @@ function entryValue(field: string, schema: CollectionFieldSchema, v: string | nu
       if (typeof v !== 'string') return wrong("send a library image's assetId (\"\" for none)");
       const id = v.trim();
       if (!id) return { assetId: null, alt: '' };
-      // The picture it already shows keeps its alt text and whether it is decorative, as the author set them.
-      return stored && typeof stored === 'object' && 'assetId' in stored && stored.assetId === id ? structuredClone(stored) : id;
+      // The picture it already shows keeps its alt text and whether it is decorative, as the author set them, while
+      // the library still has it as a picture; otherwise the ID is checked as any other.
+      const kept = !!stored && typeof stored === 'object' && 'assetId' in stored && stored.assetId === id && library?.[id]?.kind === 'image';
+      return kept ? structuredClone(stored) : id;
     }
     default:
       return typeof v === 'string' ? v : wrong(schema.type === 'enum' ? `send one of its options (${schema.options.map((o) => o.value).join(', ')})` : schema.type === 'date' ? 'send a date written YYYY-MM-DD ("" for none)' : 'send text');
@@ -397,7 +399,7 @@ function entryValue(field: string, schema: CollectionFieldSchema, v: string | nu
 }
 
 /** The custom field values a call sends, by field name, as entry.create and entry.update take them. */
-function valuesOf(collection: Collection, values: NonNullable<UpsertEntryArgs['values']>, issues: FieldIssue[], entry?: EntryDoc): Record<string, unknown> {
+function valuesOf(collection: Collection, values: NonNullable<UpsertEntryArgs['values']>, issues: FieldIssue[], entry?: EntryDoc, library?: ProjectState['assets']['assets']): Record<string, unknown> {
   const fields = collection.settings.fields ?? {};
   const out: Record<string, unknown> = {};
   for (const [i, { field, value }] of values.entries()) {
@@ -412,7 +414,7 @@ function valuesOf(collection: Collection, values: NonNullable<UpsertEntryArgs['v
       continue;
     }
     const stored = entry?.values && Object.hasOwn(entry.values, field) ? entry.values[field] : undefined;
-    const v = entryValue(field, fields[field], value, issues, `${at}.value`, stored);
+    const v = entryValue(field, fields[field], value, issues, `${at}.value`, stored, library);
     if (v !== undefined) out[field] = v;
   }
   return out;
@@ -446,7 +448,7 @@ export async function runUpsertEntry(args: UpsertEntryArgs, host: ToolHost, call
   if (fields.excerpt !== undefined && !String(fields.excerpt).trim()) fields.excerpt = null;
   const terms = termsValue(collection, categories, groupings, issues);
   if (terms) fields.terms = terms.terms;
-  if (values?.length) fields.values = valuesOf(collection, values, issues, entry);
+  if (values?.length) fields.values = valuesOf(collection, values, issues, entry, state.assets.assets);
   if (body) fields.body = bodyValue(body, Array.isArray(entry?.body) ? entry.body : [], state.pages, issues);
   if (entry && !Object.keys(fields).length) issues.push({ field: 'arguments', message: 'send at least one field to change' });
   if (issues.length) return fieldError(issues, 'Nothing was applied.');

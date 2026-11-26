@@ -249,6 +249,11 @@ describe('upsert_collection_entry with custom fields and groupings', () => {
     const { h: h4, now: now4 } = host(alt);
     expect((await tool(h4, 'upsert_collection_entry', { collectionId: 'team', entryId: 'en_ana', values: [{ field: 'photo', value: ANA.id }, { field: 'role', value: 'Thrower' }] })).ok).toBe(true);
     expect(now4().collections.team.entries.en_ana.values.photo).toMatchObject({ assetId: ANA.id, alt: 'Ana at the wheel' });
+    // One the library no longer has is checked as any other, never kept.
+    const gone = structuredClone(alt);
+    delete gone.assets.assets[ANA.id];
+    const { h: h5 } = host(gone);
+    expect((await tool(h5, 'upsert_collection_entry', { collectionId: 'team', entryId: 'en_ana', values: [{ field: 'photo', value: ANA.id }] })).content).toMatchObject({ ok: false, error: { message: expect.stringMatching(/does not exist/) } });
     expect((await tool(h4, 'upsert_collection_entry', { collectionId: 'team', entryId: 'en_ana', values: [{ field: 'photo', value: '' }] })).ok).toBe(true);
     expect(now4().collections.team.entries.en_ana.values.photo).toMatchObject({ assetId: null });
     expect(((await tool(h4, 'read_collection_entry', { collectionId: 'team', entryId: 'en_ana' })).content as unknown as { values: Array<{ field: string; value: unknown }> }).values.find((v) => v.field === 'photo')?.value).toBe('');
