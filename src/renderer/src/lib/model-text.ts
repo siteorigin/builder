@@ -230,10 +230,13 @@ export function textBlocks(text: string): TextBlock[] {
 
 /** A link or image, read as its words, or its address when it has none. The address may hold one level of parentheses. */
 const LINK = /!?\[((?:[^[\]\n]|\[[^[\]\n]{0,200}\]){0,500})\]\(((?:[^()\n]|\([^()\n]{0,500}\)){0,2000})\)/y;
-/** An address written out in the text, up to the first space, quote or escape. What it ends with is checked (urlAt). */
-const BARE_URL = /https?:\/\/[^\s<>`"'“”‘’\\]{1,2100}/iy;
-/** Marks that end a sentence, which an address written at the end of one leaves to the prose. */
-const URL_TAIL = /[.,:;!?]/;
+/**
+ * An address written out in the text, up to the first space, double quote or escape. An apostrophe may be part of it,
+ * as in /O'Reilly; what it ends with is checked (urlAt).
+ */
+const BARE_URL = /https?:\/\/[^\s<>`"“”\\]{1,2100}/iy;
+/** Marks that end a sentence or close a single quote, which an address written at the end of one leaves to the prose. */
+const URL_TAIL = /[.,:;!?'‘’]/;
 /** What an address can't follow: a letter or number, or a character that makes it part of a longer name or address. */
 const URL_AFTER = /[\p{L}\p{N}\p{M}/@.+-]/u;
 const ESCAPABLE = /[\\`*_~[\](){}#+\-.!|>]/;

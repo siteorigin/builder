@@ -218,6 +218,15 @@ describe('model text spans', () => {
     expect(textSpans('Try http://localhost:5173/?q=a*b, or not')).toEqual(['Try ', link('http://localhost:5173/?q=a*b', 'http://localhost:5173/?q=a*b'), ', or not']);
     expect(textSpans('"https://example.com"')).toEqual(['"', link('https://example.com/', 'https://example.com'), '"']);
     expect(textSpans('“https://example.com/a”, and Source:https://example.com/b')).toEqual(['“', link('https://example.com/a', 'https://example.com/a'), '”, and Source:', link('https://example.com/b', 'https://example.com/b')]);
+    expect(textSpans("See https://example.com/O'Reilly and 'https://example.com/a’s', ‘https://example.com/b’.")).toEqual([
+      'See ',
+      link("https://example.com/O'Reilly", "https://example.com/O'Reilly"),
+      " and '",
+      link('https://example.com/a%E2%80%99s', 'https://example.com/a’s'),
+      "', ‘",
+      link('https://example.com/b', 'https://example.com/b'),
+      '’.'
+    ]);
     // A mark closes emphasis only when one is open; otherwise it is part of the address.
     expect(textSpans('**https://example.com/docs**,” and https://example.com/user_ or _https://example.com/x_')).toEqual([
       strong(link('https://example.com/docs', 'https://example.com/docs')),
