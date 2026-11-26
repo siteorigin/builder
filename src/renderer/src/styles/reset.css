@@ -1,6 +1,11 @@
 @layer reset {
   * { box-sizing: border-box; }
   html, body, #root { height: 100%; margin: 0; }
+  /* The editor is exactly its window and never scrolls (#897). Whatever a panel holds, however it is positioned,
+     stays inside #root: anything reaching past the window's edge would make the document taller than its window,
+     and a scrollIntoView (a selection in the preview, a field in the Inspector) would then slide the whole editor
+     up. `clip`, unlike `hidden`, makes #root no scroller of its own for a scrollIntoView to move. */
+  #root { position: relative; overflow: clip; }
   body {
     font-family: var(--font);
     font-size: 13px;
