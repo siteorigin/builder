@@ -6,7 +6,9 @@ export const INTERNAL_HEADERS = {
   room: 'x-relay-room',
   method: 'x-relay-method',
   target: 'x-relay-target',
-  secure: 'x-relay-secure'
+  secure: 'x-relay-secure',
+  /** On a room's answer to a preview request: the room itself turned the guest away (never set on the host's own). */
+  refused: 'x-relay-refused'
 } as const;
 
 /** A request from the Worker to a room's object, at one of the object's own paths. */

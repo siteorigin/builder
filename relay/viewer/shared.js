@@ -43,7 +43,7 @@ export const CLOSE_CODES = Object.freeze({
 export const PREVIEW_ADMISSION_PATH = '/__siteorigin/admission';
 
 /** The messages between the viewer and the reload bridge in its preview frame (preview-bridge.js). */
-export const BRIDGE_MESSAGES = Object.freeze({ ready: 'siteorigin-live:ready', reload: 'siteorigin-live:reload', reloading: 'siteorigin-live:reloading' });
+export const BRIDGE_MESSAGES = Object.freeze({ ready: 'siteorigin-live:ready', reload: 'siteorigin-live:reload', reloading: 'siteorigin-live:reloading', refused: 'siteorigin-live:refused' });
 
 /**
  * Whether `path` is a path (and query) on the preview origin the viewer may point its frame at: one leading slash,

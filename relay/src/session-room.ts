@@ -586,12 +586,13 @@ export class SessionRoom extends DurableObject<Env> {
 
     // Checked against the room as it is now, with nothing waiting between the check and the request reaching the host.
     const now = Date.now();
-    if (!grant || isExpired(grant.expiresAt, now)) return textResponse(401, 'Join this live session to see its preview.');
+    const refused = { [INTERNAL_HEADERS.refused]: '1' };
+    if (!grant || isExpired(grant.expiresAt, now)) return textResponse(401, 'Join this live session to see its preview.', refused);
     this.expireDue(now);
     const room = this.room;
     if (!room || room.roomId !== roomId) return textResponse(404, 'There is no live session here. It may have ended.');
     const guest = room.guests.find((g) => g.guestId === grant.guestId);
-    if (!guest || guest.status !== 'admitted' || guest.grantVersion !== grant.grantVersion || guest.role !== grant.role || accessEndsAt(guest, room) !== grant.expiresAt) return textResponse(403, 'You no longer have access to this preview.');
+    if (!guest || guest.status !== 'admitted' || guest.grantVersion !== grant.grantVersion || guest.role !== grant.role || accessEndsAt(guest, room) !== grant.expiresAt) return textResponse(403, 'You no longer have access to this preview.', refused);
     if (!room.hostConnectionId || !this.socket(room.hostConnectionId)) return textResponse(503, 'The host is not connected right now.', { 'retry-after': '5' });
     if (this.tunnel.inFlight(guest.guestId) >= MAX_PREVIEW_REQUESTS_IN_FLIGHT) return textResponse(429, 'Too many preview requests at once.', { 'retry-after': '1' });
     const headers: Array<[string, string]> = [];

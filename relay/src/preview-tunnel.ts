@@ -1,7 +1,7 @@
 import { fromBase64Url } from '../../src/shared/live/crypto';
 import type { Frame } from '../../src/shared/live/messages';
 import { PREVIEW_CACHE_CONTROL, PreviewStream, isPreviewLocation, type PreviewAbortCode, type PreviewMethod } from '../../src/shared/live/preview';
-import { textResponse } from './http';
+import { INTERNAL_HEADERS, textResponse } from './http';
 import { randomToken } from './tokens';
 
 /**
@@ -81,6 +81,8 @@ interface Failure {
   message: string;
   /** What to tell the host, when it is still sending. */
   abort: PreviewAbortCode | null;
+  /** The guest's access ended: a refusal of the room's own, which the Worker shows the viewer's frame as one. */
+  refused?: boolean;
 }
 
 const BODYLESS_STATUSES = new Set([204, 205, 304]);
@@ -198,7 +200,7 @@ export class PreviewTunnel {
 
   /** Stop every open request of a guest that is no longer allowed to see the preview. */
   abortGuest(guestId: string): void {
-    for (const pending of [...this.pending.values()]) if (pending.guestId === guestId) this.fail(pending, { status: 403, message: 'Your access to this live session has ended.', abort: 'CANCELLED' });
+    for (const pending of [...this.pending.values()]) if (pending.guestId === guestId) this.fail(pending, { status: 403, message: 'Your access to this live session has ended.', abort: 'CANCELLED', refused: true });
   }
 
   /** Fail every request the host on this connection was answering: it has gone or been replaced. */
@@ -286,7 +288,7 @@ export class PreviewTunnel {
     this.forget(pending);
     const respond = pending.respond;
     pending.respond = null;
-    if (respond) return respond(textResponse(failure.status, failure.message));
+    if (respond) return respond(textResponse(failure.status, failure.message, failure.refused ? { [INTERNAL_HEADERS.refused]: '1' } : {}));
     pending.failure = new Error(failure.message);
     // A read waiting for bytes fails as it wakes; otherwise the body fails now, so a reader waiting on it is told.
     if (pending.wake) return pending.wake();

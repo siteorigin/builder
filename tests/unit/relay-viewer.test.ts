@@ -37,6 +37,7 @@ describe('the invite link’s page', () => {
       "default-src 'none'",
       "script-src 'self'",
       "style-src 'self'",
+      "img-src 'self' data:",
       `connect-src ws://relay.test/s/${ROOM}/ws ${preview}`,
       `frame-src ${preview}`,
       "base-uri 'none'",
@@ -66,7 +67,8 @@ describe('the viewer’s files', () => {
     for (const [path, type] of [
       ['/_viewer/viewer.js', 'javascript'],
       ['/_viewer/shared.js', 'javascript'],
-      ['/_viewer/viewer.css', 'text/css']
+      ['/_viewer/viewer.css', 'text/css'],
+      ['/_viewer/mark.svg', 'image/svg+xml']
     ] as const) {
       const response = await relay.fetch(path);
       expect(response.status, path).toBe(200);
