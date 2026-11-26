@@ -480,6 +480,43 @@ describe('what the review found (#766)', () => {
     await until(() => g.changed.length, 'the project');
   });
 
+  it('hands the editor the host’s project only once the host has answered for it, and reloads when the revision moves on', async () => {
+    const g = guest();
+    const joined = g.manager.join({ inviteLink: INVITE, displayName: 'Sarah' });
+    await until(() => g.sockets.length, 'the socket');
+    g.socket().open();
+    g.socket().receive(pending);
+    await joined;
+    g.socket().receive(admitted({ previewTicket: 'ticket-0123456789abcdef' }));
+    const ask = g.socket().last('rpc:request')!;
+    // A change the host pushed before it answered: kept, not yet shown.
+    g.socket().receive({ type: 'rpc:event', event: 'project:changed', payload: { kind: 'snapshot', snapshot: snapshotAt(5) } });
+    await flush();
+    expect(g.changed).toEqual([]);
+    const joinId = (g.manager.state as { joinId: string }).joinId;
+    const reading = g.manager.snapshot(joinId);
+    g.socket().receive({ type: 'rpc:response', requestId: ask.requestId, method: 'project.snapshot', ok: true, result: { ...snapshotAt(4), previewRevision: 4 } });
+    expect(await reading).toMatchObject({ revision: 5 });
+    expect(g.changed.map((c) => c.snapshot.revision)).toEqual([5]);
+    expect(g.manager.state).toMatchObject({ previewRevision: 4 });
+    // Asked again after a drop, the host says its preview has moved on: the page shown is loaded again.
+    const reloads = g.reloads.length;
+    g.manager.snapshot(joinId, true);
+    const again = g.socket().last('rpc:request')!;
+    g.socket().receive({ type: 'rpc:response', requestId: again.requestId, method: 'project.snapshot', ok: true, result: { ...snapshotAt(6), previewRevision: 6 } });
+    await until(() => g.reloads.length > reloads, 'the reload');
+    expect(g.reloads.at(-1)).toEqual({ joinId, revision: 6 });
+  });
+
+  it('says a fresh read of the host’s project failed, rather than handing back the copy it had', async () => {
+    const g = guest();
+    const joinId = await inRoom(g);
+    const fresh = g.manager.snapshot(joinId, true);
+    const ask = g.socket().last('rpc:request')!;
+    g.socket().receive({ type: 'rpc:response', requestId: ask.requestId, method: 'project.snapshot', ok: false, error: { code: 'TOO_LARGE', message: 'Too large', recoverable: false } });
+    expect(await fresh).toBeNull();
+  });
+
   it('gives its place up when the app quits', async () => {
     const g = guest();
     await inRoom(g);

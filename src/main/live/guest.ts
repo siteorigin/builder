@@ -145,6 +145,13 @@ interface Join {
   presenceTimer: ReturnType<typeof setTimeout> | null;
   /** The host's project as last received, and the snapshot being asked for. */
   latest: LiveProjectSnapshot | null;
+  /**
+   * The host has answered a request for its project since this guest was let in, saying which revision its preview
+   * serves: only then is the project handed to the editor, so its first page is never taken for a later revision.
+   */
+  opened: boolean;
+  /** The last request for the host's project failed. */
+  fetchFailed: boolean;
   fetching: Promise<LiveProjectSnapshot | null> | null;
   refetch: boolean;
   busyTimer: ReturnType<typeof setTimeout> | null;
@@ -188,7 +195,7 @@ function isSnapshot(value: unknown): value is LiveProjectSnapshot {
   if (typeof value.readOnly !== 'boolean' || typeof value.aiBusy !== 'boolean' || !isRecord(value.runtime) || typeof value.runtime.state !== 'string') return false;
   const state = value.state;
   if (!isRecord(state) || !isRecord(state.site) || typeof state.site.homePageId !== 'string' || !Array.isArray(state.site.pageOrder)) return false;
-  if (!isRecord(state.pages) || !isRecord(state.pages[state.site.homePageId])) return false;
+  if (!isRecord(state.pages) || !Object.hasOwn(state.pages, state.site.homePageId) || !isRecord(state.pages[state.site.homePageId])) return false;
   return ['components', 'tokens', 'assets', 'collections', 'manifest'].every((key) => isRecord(state[key]));
 }
 
@@ -303,6 +310,8 @@ export class LiveGuestManager {
       presenceSent: null,
       presenceTimer: null,
       latest: null,
+      opened: false,
+      fetchFailed: false,
       fetching: null,
       refetch: false,
       busyTimer: null,
@@ -581,7 +590,7 @@ export class LiveGuestManager {
     join.latest = snapshot;
     join.tooLarge = false;
     join.hostRuntime = snapshot.runtime.state;
-    this.ctx.emit('remote:changed', { joinId: join.joinId, snapshot });
+    if (join.opened) this.ctx.emit('remote:changed', { joinId: join.joinId, snapshot });
     if (runtimeChanged || sizeChanged) this.publish();
   }
 
@@ -599,11 +608,17 @@ export class LiveGuestManager {
         join.refetch = false;
         const answer = await this.call(join, 'project.snapshot', []);
         if (join.ended || this.current !== join) return null;
+        join.fetchFailed = !(answer.ok && isSnapshot(answer.result));
         if (answer.ok && isSnapshot(answer.result)) {
           const at = previewRevisionOf(answer.result);
-          if (at !== null) this.notePreviewRevision(join, at);
+          // A raised revision while a page is shown reloads it, so the canvas counts it as what it now shows.
+          if (at !== null && this.notePreviewRevision(join, at) && join.opened) this.reload(join);
           const { previewRevision: _at, ...snapshot } = answer.result as LiveProjectSnapshot & { previewRevision?: unknown };
+          const first = !join.opened;
+          join.opened = true;
           this.accept(join, snapshot);
+          // A newer copy that came while this was asked for is handed over now too.
+          if (first && join.latest && join.latest !== snapshot) this.ctx.emit('remote:changed', { joinId: join.joinId, snapshot: join.latest });
         } else if (!answer.ok && answer.error.code === 'TOO_LARGE') {
           join.tooLarge = true;
           this.publish();
@@ -662,8 +677,13 @@ export class LiveGuestManager {
   async snapshot(joinId: unknown, fresh: unknown = false): Promise<LiveProjectSnapshot | null> {
     const join = this.current;
     if (!join || join.joinId !== joinId || join.phase !== 'admitted') return null;
-    // Asked fresh (an edit refused as out of date checks what the host has now), the host is asked again.
-    if (fresh === true || !join.latest) await this.fetchSnapshot(join);
+    // Asked fresh (an edit refused as out of date checks what the host has now), the host is asked again; and the
+    // project is handed over only once the host has answered for it (`opened`).
+    if (fresh === true || !join.opened) {
+      // Not yet handed over, the request already under way (the one made on admission) is the one waited for.
+      await (fresh !== true && join.fetching ? join.fetching : this.fetchSnapshot(join));
+      if (this.current !== join || join.fetchFailed || !join.opened) return null;
+    }
     return join.latest;
   }
 
@@ -869,11 +889,16 @@ export class LiveGuestManager {
 
   // -------------------------------------------------------------------------
 
-  /** The host said its preview serves `revision` (a reload, or a snapshot asked for): the latest is kept and shown. */
-  private notePreviewRevision(join: Join, revision: number): void {
-    if (join.previewRevision !== null && revision <= join.previewRevision) return;
+  /**
+   * The host said its preview serves `revision` (a reload, or a snapshot asked for): the latest is kept and shown.
+   * True when it raised one already known.
+   */
+  private notePreviewRevision(join: Join, revision: number): boolean {
+    if (join.previewRevision !== null && revision <= join.previewRevision) return false;
+    const raised = join.previewRevision !== null;
     join.previewRevision = revision;
     this.publish();
+    return raised;
   }
 
   private readClock(join: Join, now: number): void {

@@ -80,7 +80,8 @@ function JoinLiveForm() {
 
   const close = () => {
     attempt.current++;
-    if (inRoom) void leaveLive();
+    // A request already on its way is given up too, so the host never sees one the guest cancelled.
+    if (inRoom || submitting) void leaveLive();
     setState({ joinOpen: false });
   };
 

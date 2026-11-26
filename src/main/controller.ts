@@ -366,6 +366,12 @@ export class Controller {
   private publishedRevision: number | null = null;
   /** The snapshot guests were last given, and what it was made from (guestSnapshot). */
   private shared: (LiveSnapshotSource & { snapshot: LiveProjectSnapshot }) | null = null;
+  /**
+   * The open project's documents as of its last change that finished, with that change's revision. A save installs
+   * its documents before its files have all landed and its revision moves on, so guests are given these instead:
+   * never the documents of one revision under the number of the one before (#766).
+   */
+  private settled: { session: ProjectSession; state: ProjectState; revision: number } | null = null;
   /** Cancels a dependency install into the project when another app takes it over. */
   private prepareAbort: AbortController | null = null;
   private closing: Promise<void> | null = null;
@@ -433,7 +439,8 @@ export class Controller {
   guestSnapshot(opening: string): LiveProjectSnapshot | null {
     const s = this.session;
     if (!s || !this.workspaceKey || opening !== this.workspaceKey) return null;
-    const source: LiveSnapshotSource = { state: s.state, revision: s.revision, readOnly: !!s.readOnly, aiBusy: this.aiBusy(), runtime: this.runtimeStatus().state };
+    const settled = this.settled?.session === s ? this.settled : { state: s.state, revision: s.revision };
+    const source: LiveSnapshotSource = { state: settled.state, revision: settled.revision, readOnly: !!s.readOnly, aiBusy: this.aiBusy(), runtime: this.runtimeStatus().state };
     const last = this.shared;
     if (last && last.state === source.state && last.revision === source.revision && last.readOnly === source.readOnly && last.aiBusy === source.aiBusy && last.runtime === source.runtime) return last.snapshot;
     const snapshot = liveSnapshot(source, [s.dir, homedir()]);
@@ -1040,7 +1047,9 @@ export class Controller {
     // The Recent projects entry follows a rename as soon as it is made, and an undo of one, or one made outside. A
     // working copy keeps its own name through them (#176).
     let listedName = projectDisplayName(session.state);
+    this.settled = { session, state: session.state, revision: session.revision };
     session.on('changed', (ev) => {
+      this.settled = { session, state: session.state, revision: session.revision };
       if (!session.readOnly && projectDisplayName(session.state) !== listedName) {
         listedName = projectDisplayName(session.state);
         void renameRecent(session.dir, listedName).catch(() => undefined);

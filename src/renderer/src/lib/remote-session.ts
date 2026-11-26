@@ -8,7 +8,7 @@ import { api, getState, setState, toast, transport, useStore, type State } from 
 import { IDLE_LIVE, sharedSelection } from './live-session';
 import { presenceOf } from './live-host';
 import { remoteApplyResult, remoteOpening, remoteSnapshot, type AdmittedRemote } from './remote-snapshot';
-import { prepareToLeave } from './leave';
+import { endEditingHold, prepareToLeave } from './leave';
 import type { RemoteApi } from './transport';
 
 /**
@@ -190,6 +190,8 @@ function end(ended: { reason: string; message: string } | null): void {
   shown = null;
   for (const w of entry.waiters.splice(0)) w.resolve();
   if (entry.snapshot) transport.emit(entry.remote, 'project:closed', undefined);
+  // Never shown, so never closed as a project: nothing it held may keep the next editor from taking input.
+  else endEditingHold();
   transport.use(null);
   // A dialog about the host's project (Delete page, say) never stays open for whatever opens next.
   setState({ remotePresence: null, remoteReload: { seq: 0, revision: null }, modal: null });
@@ -228,7 +230,8 @@ export async function joinLive(inviteLink: string, displayName: string, wanted: 
  * as closing a project does: it is sent to the host, or the author is asked; Keep editing stays in the session.
  */
 export async function leaveLive(): Promise<boolean> {
-  if (showsRemote() && !(await prepareToLeave(() => undefined).catch(() => false))) return false;
+  // Only an editor showing the host's project has typing to settle; one still opening it has none.
+  if (isRemoteShell(getState()) && !(await prepareToLeave(() => undefined).catch(() => false))) return false;
   await api.remote.leave().catch(() => undefined);
   return true;
 }
@@ -267,7 +270,8 @@ export function remoteApi(joinId: string): RemoteApi {
         if (mine() !== entry) return { ok: false, revision: 0, error: { code: 'CANCELLED', message: 'The live session ended before the host answered. Your change may have been made there.', recoverable: false } };
         // As a local edit's answer comes with the project that has it, so the caller can select what it made. A
         // project that does not come in time, or an edit refused as out of date, is read from the host as it is now.
-        if (result.ok && !(await arrival(entry, result.revision)) && mine() === entry) await refreshFrom(entry);
+        // Tried a few times over: a change event lost and a read that failed should not leave the caller without it.
+        if (result.ok) for (let tries = 0; tries < 3 && mine() === entry && !(await arrival(entry, result.revision)); tries++) if (await refreshFrom(entry)) break;
         if (!result.ok && result.error.code === 'STALE_REVISION') await refreshFrom(entry);
         if (mine() !== entry) return { ok: false, revision: 0, error: { code: 'CANCELLED', message: 'The live session ended before the host answered. Your change may have been made there.', recoverable: false } };
         return remoteApplyResult(result, revision());

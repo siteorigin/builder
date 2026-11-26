@@ -392,6 +392,15 @@ describe('following the session', () => {
     expect(calls.leaves).toBe(1);
   });
 
+  it('lets nothing of a join that never showed the host’s project hold the next editor', async () => {
+    remoteSnapshot = null;
+    session.applyRemoteState(admitted());
+    await flush();
+    store.setState({ leaving: true });
+    session.applyRemoteState({ phase: 'idle', ended: { reason: 'left', message: 'You left the live session.' } });
+    expect(store.getState().leaving).toBe(false);
+  });
+
   it('leaves no dialog of the host’s project open for whatever opens next', async () => {
     await shown();
     store.setState({ modal: { kind: 'delete-page', pageId: home } });
