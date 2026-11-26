@@ -25,3 +25,10 @@ export const canvasCovered = (w: Workspace): boolean => w === 'seo' || w === 'wr
  * (or the one chosen has gone), so it would reach the page out of sight under the view. A question changes nothing.
  */
 export const changeWithoutDocument = (w: Workspace, chosen: boolean, ask: boolean): boolean => w === 'seo' && !chosen && !ask;
+
+/** The sidebar panel showing before the SEO view opened, which leaving it brings back. */
+let panelBeforeSeo: string = 'pages';
+export const rememberPanelBeforeSeo = (from: string | null | undefined) => {
+  if (from && from !== 'seo') panelBeforeSeo = from;
+};
+export const panelAfterSeo = () => panelBeforeSeo;

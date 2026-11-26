@@ -5,6 +5,7 @@ import { refKey, type ElementRef, type OwnerRef, type ResponsiveScope, type Styl
 import type { SampleContactKind } from '@shared/sample-contact';
 import type { SeoSubject } from '@shared/seo';
 import { seoSubjectKey } from './lib/seo-view';
+import { panelAfterSeo, rememberPanelBeforeSeo } from './lib/workspace';
 import { isAssetSort, type AssetSort } from '@shared/asset-order';
 import { parseSerpView, SERP_VIEW_KEY, type SerpView } from './lib/serp-page';
 import { attachImage, chatStatePatch, draftFor, imagesFor, withDraft, type ChatDrafts, type ChatImages } from './lib/chatDrafts';
@@ -446,7 +447,18 @@ export const inspectorFocusRequest = (f: Omit<InspectorFocus, 'seq' | 'at'>): In
 export const editRunStatus = (s: Pick<State, 'runStatus' | 'runMode'>) => (s.runMode === 'ask' ? null : s.runStatus);
 
 export const getState = () => useStore.getState();
-export const setState = (p: Partial<State>) => useStore.setState(slotFollows(oneSelection(scopeFollows(oneView(p)))));
+export const setState = (p: Partial<State>) => {
+  // The last panel shown besides the SEO view is where leaving the view goes back to.
+  // A hidden sidebar, or a project just opened with the view showing, goes back to Pages.
+  if ('leftTab' in p) rememberPanelBeforeSeo(p.leftTab === 'seo' ? ('screen' in p ? 'pages' : (useStore.getState().leftTab ?? 'pages')) : p.leftTab);
+  useStore.setState(slotFollows(oneSelection(scopeFollows(oneView(p)))));
+};
+
+/** Leave the SEO view for the canvas as it was, with the sidebar back on the panel it replaced. */
+export function leaveSeoView() {
+  if (getState().leftTab !== 'seo') return;
+  setState({ leftTab: panelAfterSeo() as State['leftTab'] });
+}
 
 /**
  * What the next AI message may change starts again from the selected element (or, with none, the page) whenever what

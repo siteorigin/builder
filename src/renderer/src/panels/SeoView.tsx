@@ -1,9 +1,9 @@
 import './SeoView.css';
 import { useEffect, useId, useLayoutEffect, useMemo, useRef, useState, type KeyboardEvent } from 'react';
-import { ArrowLeft, FileText, House, Newspaper, Search } from 'lucide-react';
+import { ArrowLeft, FileText, X, House, Newspaper, Search } from 'lucide-react';
 import type { ProjectState } from '@shared/types';
 import type { SeoSubject } from '@shared/seo';
-import { setState, useStore } from '../store';
+import { leaveSeoView, setState, useStore } from '../store';
 import { seoDocument, seoDocuments, seoSubjectKey, type SeoDocument } from '../lib/seo-view';
 import { seoOverviewOnce, seoOverviewProblems, type SeoImageStatus, type SeoOverviewRow, type SeoOverviewText } from '../lib/seo-overview';
 import { isDraftPage } from '@generator/index';
@@ -392,6 +392,15 @@ export function SeoView({ shown }: { shown: boolean }) {
             <h2 className="seo-title">SEO</h2>
           </>
         )}
+        <button className="btn btn-sm seo-leave" title="Leave the SEO view and return to the page (Esc)" onClick={() => {
+            leaveSeoView();
+            // Focus lands on the rail's SEO button, where the view opens from, not on the page.
+            requestAnimationFrame(() => document.querySelector<HTMLElement>('.rail [data-rail="seo"]')?.focus());
+          }}
+        >
+          <X aria-hidden="true" />
+          Close SEO view
+        </button>
       </div>
       <div className="seo-scroll" ref={scrollRef}>
         {doc && state && snap ? (
