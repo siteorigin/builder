@@ -1,5 +1,5 @@
 // First: while timing marks are on it installs the hook React DOM finds as it loads, to count commits (lib/perf.ts).
-import './lib/perf';
+import { perfMark } from './lib/perf';
 import { createRoot } from 'react-dom/client';
 import './styles/index.css';
 import { App, abandonLeaves } from './App';
@@ -8,6 +8,9 @@ import { api, setState } from './store';
 import { followAppearance } from './lib/appearance';
 import { RenderFailure } from './components/RenderFailure';
 import { CatalogueFailed, NoThemes } from './components/StartupFailure';
+
+// Every module the editor's script imports up front has been evaluated (src/shared/perf.ts).
+perfMark('launch.scriptEvaluated');
 
 // For the app's lifetime: the editor follows its Appearance from before anything renders.
 followAppearance();
@@ -23,6 +26,7 @@ api.app
     }
     registerPacks(catalogue.packs);
     setState({ packs: { refused: catalogue.refused, userDir: catalogue.userDir } });
+    perfMark('launch.catalogueReceived');
     // Anything else that fails while rendering (a notice, a dialog host) still leaves a way back.
     root.render(
       <RenderFailure onFailure={abandonLeaves}>
