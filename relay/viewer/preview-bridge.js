@@ -7,11 +7,17 @@
  */
 (() => {
   if (window.parent === window) return;
+  // On the relay's own refusal page (relay/src/index.ts, refusedInFrame) the bridge says only that, and nothing else.
+  const refused = document.currentScript?.hasAttribute('data-refused') ?? false;
   // The viewer is the preview origin less its first label: `p-<label>.<relay host>` is framed by `<relay host>`.
   const host = location.host;
   const viewer = `${location.protocol}//${host.slice(host.indexOf('.') + 1)}`;
   const KEY = 'siteorigin-live:scroll';
   const path = () => `${location.pathname}${location.search}`;
+  if (refused) {
+    window.parent.postMessage({ type: 'siteorigin-live:refused' }, viewer);
+    return;
+  }
 
   let saved = null;
   try {

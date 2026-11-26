@@ -16,7 +16,7 @@ export const LIVE_CLOSE_CODES = {
   HOST_GONE: 4002,
   /** Another socket took this one's place: the host proved itself again, or the guest resumed on a new socket. */
   REPLACED: 4003,
-  /** The host removed or declined this guest, or the guest's own access ended. */
+  /** The host removed or declined this guest, the guest's own access ended, or the guest left (guest:leave, with no status frame first). */
   REMOVED: 4004,
   /** The room turned the socket away: it is full or locked. */
   REFUSED: 4005,

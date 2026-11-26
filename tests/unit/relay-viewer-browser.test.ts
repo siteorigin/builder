@@ -210,10 +210,11 @@ describe.skipIf(!browserInstalled)('the guest’s viewer', { timeout: 30_000 }, 
       expect(await frame.textContent('h1')).toBe('Home');
       expect(await frame.evaluate<number>(`window.innerWidth`)).toBe(1280);
 
-      // A preset is browsing on one's own: the host's next move is not followed.
+      // A preset changes only the width: the guest still follows the host's page, until they stop following.
       await s.tab.click('[data-viewport="mobile"]');
-      expect(await s.tab.isChecked('#follow')).toBe(false);
+      expect(await s.tab.isChecked('#follow')).toBe(true);
       await frame.waitForFunction(`window.innerWidth === 390`);
+      await s.tab.uncheck('#follow');
       s.host.send('host-to-relay', { type: 'presence:update', presence: { pageId: 'pg_about', viewportWidth: 1024, selection: null, previewPath: '/about/' } });
       await wait(400);
       expect(await (await preview(s)).textContent('h1')).toBe('Home');
@@ -223,8 +224,9 @@ describe.skipIf(!browserInstalled)('the guest’s viewer', { timeout: 30_000 }, 
       await s.tab.click('[data-viewport="desktop"]');
       await (await preview(s)).waitForFunction(`window.innerWidth === 1280`);
 
-      // Following again goes straight to where the host is.
+      // Following again goes straight to where the host is, and Host takes the host's width again.
       await s.tab.check('#follow');
+      await s.tab.click('[data-viewport="host"]');
       for (let i = 0; i < 100 && (await heading(s).catch(() => null)) !== 'About'; i++) await wait(50);
       frame = await preview(s);
       expect(await frame.textContent('h1')).toBe('About');
@@ -302,7 +304,8 @@ describe.skipIf(!browserInstalled)('the guest’s viewer', { timeout: 30_000 }, 
       s.host.send('host-to-relay', { type: 'room:end' });
       await s.tab.waitForSelector('[data-phase="ended"]');
       expect(await frameCount(s)).toBe(0);
-      expect(await s.tab.textContent('#screen-title')).toBe('The host ended the session');
+      // The status ends the visit at once; the close that follows names the reason on the same screen.
+      await expect.poll(() => s.tab.textContent('#screen-title')).toBe('The host ended the session');
       // The bar stays, saying so, with the live controls gone.
       expect(await s.tab.textContent('#connection')).toBe('Ended');
       expect(await s.tab.isVisible('#follow')).toBe(false);
@@ -336,8 +339,9 @@ describe.skipIf(!browserInstalled)('the guest’s viewer', { timeout: 30_000 }, 
       await bobTab.waitForSelector('[data-phase="pending"]');
 
       s.host.close();
-      await s.tab.waitForSelector('#connection[data-state="reconnecting"]');
-      expect(await s.tab.isVisible('#veil')).toBe(true);
+      // Only the host is away: the site stays, and a band above it says so.
+      await s.tab.waitForSelector('#connection[data-state="host-away"]');
+      expect(await s.tab.isVisible('#host-note')).toBe(true);
       expect(await frameCount(s)).toBe(1);
       await expect.poll(() => bobTab.textContent('#screen-title')).toBe('The host is reconnecting');
 
@@ -403,6 +407,7 @@ describe.skipIf(!browserInstalled)('the guest’s viewer', { timeout: 30_000 }, 
       const guestId = await ask(s);
       await admit(s, guestId, 'collaborator');
       expect(await s.tab.textContent('#role')).toBe('Collaborator');
+      await s.tab.click('#copy-invite');
       expect(await s.tab.isVisible('#handoff')).toBe(true);
       expect(await s.tab.inputValue('#handoff-link')).toBe(`${origin}/s/${s.room.roomId}`);
       await s.tab.click('#handoff-copy');
