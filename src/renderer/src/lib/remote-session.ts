@@ -137,17 +137,28 @@ function takeLive(entry: Shown, live: LiveProjectSnapshot): void {
 /** How long an edit the host made waits for its revision to reach the editor before it is answered anyway. */
 export const REMOTE_EDIT_ARRIVAL_MS = 5000;
 
-/** Resolves once the editor holds the host's project at `revision` or later, the join ends, or after a while. */
-function arrival(entry: Shown, revision: number): Promise<void> {
-  if (shown !== entry || (entry.live && entry.live.revision >= revision)) return Promise.resolve();
+/**
+ * Resolves once the editor holds the host's project at `revision` or later (true), or the join ends or a while
+ * passes first (false).
+ */
+function arrival(entry: Shown, revision: number): Promise<boolean> {
+  if (shown !== entry) return Promise.resolve(false);
+  if (entry.live && entry.live.revision >= revision) return Promise.resolve(true);
   return new Promise((resolve) => {
-    const waiter = { revision, resolve: () => (clearTimeout(timer), resolve()) };
+    const waiter = { revision, resolve: () => (clearTimeout(timer), resolve(shown === entry)) };
     const timer = setTimeout(() => {
       entry.waiters = entry.waiters.filter((w) => w !== waiter);
-      resolve();
+      resolve(false);
     }, REMOTE_EDIT_ARRIVAL_MS);
     entry.waiters.push(waiter);
   });
+}
+
+/** Ask the host for its project as it is now, for the join shown; false when it could not be read. */
+async function refreshFrom(entry: Shown): Promise<boolean> {
+  const live = await api.remote.snapshot(entry.joinId, true).catch(() => null);
+  if (live && shown === entry) takeLive(entry, live);
+  return !!live && shown === entry;
 }
 
 /** Something that decides what the editor may do changed (a role, the host's connection): the snapshot says so again. */
@@ -201,6 +212,11 @@ export async function joinLive(inviteLink: string, displayName: string, wanted: 
   if (!wanted()) return { ok: false, message: 'Joining was called off.' };
   try {
     const result = await api.remote.join({ inviteLink, displayName });
+    // Called off while the request went out: the place is given up again rather than kept for a dialog now gone.
+    if (result.ok && !wanted()) {
+      await api.remote.leave().catch(() => undefined);
+      return { ok: false, message: 'Joining was called off.' };
+    }
     return result.ok ? { ok: true } : { ok: false, message: result.message };
   } catch (e) {
     return { ok: false, message: `The live session could not be joined: ${e instanceof Error ? e.message : String(e)}` };
@@ -249,8 +265,11 @@ export function remoteApi(joinId: string): RemoteApi {
         const result = await api.remote.apply(joinId, { operations: batch.operations, ...(batch.expectedRevision !== undefined ? { expectedRevision: batch.expectedRevision } : {}), ...(label ? { label } : {}) });
         // An answer for a join that has ended meanwhile is never acted on as this computer's project's.
         if (mine() !== entry) return { ok: false, revision: 0, error: { code: 'CANCELLED', message: 'The live session ended before the host answered. Your change may have been made there.', recoverable: false } };
-        // As a local edit's answer comes with the project that has it, so the caller can select what it made.
-        if (result.ok) await arrival(entry, result.revision);
+        // As a local edit's answer comes with the project that has it, so the caller can select what it made. A
+        // project that does not come in time, or an edit refused as out of date, is read from the host as it is now.
+        if (result.ok && !(await arrival(entry, result.revision)) && mine() === entry) await refreshFrom(entry);
+        if (!result.ok && result.error.code === 'STALE_REVISION') await refreshFrom(entry);
+        if (mine() !== entry) return { ok: false, revision: 0, error: { code: 'CANCELLED', message: 'The live session ended before the host answered. Your change may have been made there.', recoverable: false } };
         return remoteApplyResult(result, revision());
       },
       undo: historyRefused,
@@ -262,10 +281,8 @@ export function remoteApi(joinId: string): RemoteApi {
       saveLocalState: async () => undefined,
       // An edit refused as out of date reads the host's project again, as the host has it now.
       reloadFromDisk: async () => {
-        const live = await api.remote.snapshot(joinId, true).catch(() => null);
         const entry = mine();
-        if (entry && live) takeLive(entry, live);
-        return live ? { ok: true } : { ok: false, message: 'The host’s project could not be read.' };
+        return entry && (await refreshFrom(entry)) ? { ok: true } : { ok: false, message: 'The host’s project could not be read.' };
       },
       retryPreview: async () => {
         const at = getState().remoteReload;
@@ -282,11 +299,8 @@ export function remoteApi(joinId: string): RemoteApi {
       sourceSecretNames: async () => []
     },
     projects: {
-      // Closing the host's project is leaving the session.
-      close: async () => {
-        await leaveLive();
-        return { ok: true };
-      },
+      // Closing the host's project is leaving the session; Keep editing stays in it.
+      close: async () => ({ ok: await leaveLive() }),
       recents: () => local().projects.recents()
     },
     ai: {

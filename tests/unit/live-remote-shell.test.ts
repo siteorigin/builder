@@ -189,6 +189,9 @@ describe('the remote shell', () => {
     const guestId = await joined(h, g, 'collaborator');
     const home = h.c.session!.state.site.homePageId;
     expect(g.admitted()).toMatchObject({ role: 'collaborator', projectName: 'acme', hostConnected: true, hostRuntime: 'ready' });
+    // Before the host has changed anything, the guest already knows the revision its preview serves: the one on disk
+    // when the preview came up.
+    expect(g.admitted().previewRevision).toBe(h.c.session!.revision);
 
     // The host's project, as guests are given it: nothing of the host's computer in it.
     const first = g.snapshots.at(-1)!;

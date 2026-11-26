@@ -188,7 +188,7 @@ function isSnapshot(value: unknown): value is LiveProjectSnapshot {
   if (typeof value.readOnly !== 'boolean' || typeof value.aiBusy !== 'boolean' || !isRecord(value.runtime) || typeof value.runtime.state !== 'string') return false;
   const state = value.state;
   if (!isRecord(state) || !isRecord(state.site) || typeof state.site.homePageId !== 'string' || !Array.isArray(state.site.pageOrder)) return false;
-  if (!isRecord(state.pages) || !Object.hasOwn(state.pages, state.site.homePageId)) return false;
+  if (!isRecord(state.pages) || !isRecord(state.pages[state.site.homePageId])) return false;
   return ['components', 'tokens', 'assets', 'collections', 'manifest'].every((key) => isRecord(state[key]));
 }
 
@@ -822,20 +822,24 @@ export class LiveGuestManager {
       this.failCalls(join, 'The connection to the live session dropped.');
     }
     if (now - (join.lostSince ?? now) > this.timings.reconnectForMs) return this.end(join, 'lost');
-    // Access that ended while the connection was down has ended here too: the relay would say so on return.
-    if (join.phase === 'admitted') {
-      const at = this.relayNow(join);
-      if (join.guestExpiresAt !== null && at >= join.guestExpiresAt) return this.end(join, 'expired-guest');
-      if (join.sessionExpiresAt > 0 && at >= join.sessionExpiresAt) return this.end(join, 'expired-session');
-    }
+    if (this.endIfExpired(join)) return;
     const delay = Math.min(this.timings.backoffMaxMs, this.timings.backoffBaseMs * 2 ** join.retries) * (0.75 + Math.random() * 0.5);
     join.retries++;
     if (join.retryTimer) clearTimeout(join.retryTimer);
     join.retryTimer = setTimeout(() => {
       join.retryTimer = null;
-      if (!join.ended) this.connect(join);
+      if (!join.ended && !this.endIfExpired(join)) this.connect(join);
     }, delay);
     this.publish();
+  }
+
+  /** Access that ended while the connection was down has ended here too (the relay would say so on return): true if so. */
+  private endIfExpired(join: Join): boolean {
+    if (join.phase !== 'admitted') return false;
+    const at = this.relayNow(join);
+    if (join.guestExpiresAt !== null && at >= join.guestExpiresAt) this.end(join, 'expired-guest');
+    else if (join.sessionExpiresAt > 0 && at >= join.sessionExpiresAt) this.end(join, 'expired-session');
+    return join.ended;
   }
 
   /**
@@ -891,4 +895,3 @@ export class LiveGuestManager {
     this.ctx.emit('remote:state', this.state);
   }
 }
-

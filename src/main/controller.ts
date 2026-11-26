@@ -1145,6 +1145,13 @@ export class Controller {
     dev.onStatus((s) => {
       // A preview that was stopped or replaced no longer speaks for the project.
       if (this.dev !== dev) return;
+      // A server that has just come up serves the files as they are now: the project's own folder at the session's
+      // revision, or the private copy at the revision it was brought to. Changes saved while none ran were published
+      // to nothing, so this is the revision a page loaded from it shows (#766).
+      if (s.state === 'ready' && this.session) {
+        const serves = this.stage ? this.stagedRevision : this.session.revision;
+        if (serves >= 0) this.publishedRevision = Math.max(this.publishedRevision ?? 0, serves);
+      }
       this.send('runtime:status', s);
       this.live.previewChanged();
       this.broadcast();

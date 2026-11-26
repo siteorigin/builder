@@ -17,6 +17,9 @@ const calls = { localApply: 0, remoteApply: [] as unknown[], closes: 0, joins: [
 let closeAnswer = { ok: true };
 /** What the main process says the join is, when the editor asks. */
 let remoteStateAnswer: RemoteState = { phase: 'idle', ended: null };
+const APPLIED = { ok: true, revision: 8, results: [{ nodeId: 'n-new' }] };
+/** The host's answer to the next edit. */
+let remoteApplyAnswer: unknown = APPLIED;
 let remoteSnapshot: LiveProjectSnapshot | null = null;
 
 const state = createStarterState('business', 'Acme', false);
@@ -113,7 +116,7 @@ beforeAll(async () => {
         },
         apply: async (joinId: string, batch: unknown) => {
           calls.remoteApply.push({ joinId, batch });
-          return { ok: true, revision: 8, results: [{ nodeId: 'n-new' }] };
+          return remoteApplyAnswer;
         },
         presence: async (joinId: string, presence: unknown) => {
           calls.presence.push({ joinId, presence });
@@ -141,6 +144,7 @@ afterEach(() => {
   closeAnswer = { ok: true };
   remoteSnapshot = null;
   remoteStateAnswer = { phase: 'idle', ended: null };
+  remoteApplyAnswer = APPLIED;
   store.setState({ toasts: [], snapshot: null, remote: { phase: 'idle', ended: null }, remotePresence: null, selection: null, pageId: null });
 });
 
@@ -318,6 +322,24 @@ describe('following the session', () => {
     expect(session.loadedRevision({ snapshot: { revision: 4, workspaceKey: '/sites/acme#1' } as ProjectSnapshot, remote: admitted({ previewRevision: 9 }) })).toBe(4);
   });
 
+  it('never answers an edit as made once its join has ended while it waited for the project', async () => {
+    await shown();
+    const applying = store.api.project.apply({ operations: [{ type: 'page.update', pageId: home, title: 'Hi' }] }, { opening: 'remote:join-1' });
+    await flush();
+    session.applyRemoteState({ phase: 'idle', ended: { reason: 'kicked', message: 'The host removed you from the live session.' } });
+    expect(await applying).toMatchObject({ ok: false, error: { code: 'CANCELLED' } });
+  });
+
+  it('reads the host’s project as it is now when an edit is refused as out of date, so the retry sees it', async () => {
+    await shown();
+    remoteApplyAnswer = { ok: false, error: { code: 'STALE_REVISION', message: 'Moved on', recoverable: true } };
+    remoteSnapshot = live(9);
+    const asked = calls.snapshots.length;
+    expect(await store.api.project.apply({ operations: [] }, { opening: 'remote:join-1' })).toMatchObject({ ok: false, error: { code: 'STALE_REVISION' } });
+    expect(calls.snapshots.length).toBe(asked + 1);
+    expect((await store.api.project.snapshot())?.revision).toBe(9);
+  });
+
   it('refuses an edit while editing is paused, whatever asked for it, without asking the host', async () => {
     await shown({ role: 'viewer' });
     const result = await store.api.project.apply({ operations: [{ type: 'page.update', pageId: home, title: 'Hi' }] }, { opening: 'remote:join-1' });
@@ -362,6 +384,12 @@ describe('following the session', () => {
     // Called off while the project closed: no request reaches the host.
     expect(await session.joinLive('http://relay.localhost:8787/s/abcdefghijkmnpqrstuvwxyz', 'Sarah', () => false)).toMatchObject({ ok: false });
     expect(calls.joins).toHaveLength(1);
+    // Called off while the request went out: the place is given up again.
+    store.setState({ snapshot: null });
+    let asks = 0;
+    expect(await session.joinLive('http://relay.localhost:8787/s/abcdefghijkmnpqrstuvwxyz', 'Sarah', () => ++asks < 2)).toMatchObject({ ok: false });
+    expect(calls.joins).toHaveLength(2);
+    expect(calls.leaves).toBe(1);
   });
 
   it('leaves no dialog of the host’s project open for whatever opens next', async () => {

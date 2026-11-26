@@ -620,11 +620,12 @@ export function Canvas() {
   const remoteReloadSeq = useStore((s) => (isRemoteShell(s) ? s.remoteReload.seq : 0));
   const remoteReloadOwed = useRef(false);
   const mounted = useRef(true);
-  /** The revision each frame's page shows, as it was when the frame started loading. */
+  /**
+   * The revision each frame's page shows, read as the frame is made: in the render that gives it its address, before
+   * the page can start loading, so nothing published after that is taken for what it shows.
+   */
   const frameRevision = useRef<{ session: string; revision: number } | null>(null);
-  useEffect(() => {
-    frameRevision.current = { session, revision: loadedRevision(getState()) };
-  }, [session]);
+  if (frameRevision.current?.session !== session) frameRevision.current = { session, revision: loadedRevision(getState()) };
   const reloadRemoteFrame = () => {
     if (!mounted.current) return;
     if (inlineEdit.active) return void (remoteReloadOwed.current = true);

@@ -66,6 +66,8 @@ function JoinLiveForm() {
   const [submitting, setSubmitting] = useState(false);
   // Whether this dialog asked to join, so an ending it sees is its own join's.
   const asked = useRef(false);
+  // Each Ask to join is an attempt of its own; Cancel calls off the one under way, whatever dialog opens next.
+  const attempt = useRef(0);
   const linkRef = useRef<HTMLInputElement>(null);
   const statusId = useId();
   const inRoom = remote.phase === 'joining' || remote.phase === 'waiting' || remote.phase === 'admitted';
@@ -77,6 +79,7 @@ function JoinLiveForm() {
   }, [remote]);
 
   const close = () => {
+    attempt.current++;
     if (inRoom) void leaveLive();
     setState({ joinOpen: false });
   };
@@ -92,8 +95,9 @@ function JoinLiveForm() {
     asked.current = true;
     const name = normalizeDisplayName(displayName)!;
     rememberName(name);
-    // Cancel while a project of this computer's closes calls the join off.
-    const result = await joinLive(inviteLink.trim(), name, () => getState().joinOpen);
+    // Cancel while a project of this computer's closes, or while the request goes out, calls the join off.
+    const mine = ++attempt.current;
+    const result = await joinLive(inviteLink.trim(), name, () => attempt.current === mine);
     setSubmitting(false);
     // The dialog was closed meanwhile: whatever came of it is the session's to show.
     if (!getState().joinOpen) return;

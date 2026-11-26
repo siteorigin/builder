@@ -427,6 +427,8 @@ describe('what the review found (#766)', () => {
     g.socket().receive({ type: 'rpc:response', requestId: ask.requestId, method: 'project.snapshot', ok: true, result: { revision: 4 } });
     expect(await edit).toMatchObject({ ok: false, error: { code: 'INTERNAL' } });
     g.socket().receive({ type: 'rpc:event', event: 'project:changed', payload: { kind: 'snapshot', snapshot: { ...snapshotAt(8), state: {} } } });
+    const noHome = { ...state, pages: { ...state.pages, [state.site.homePageId]: null } };
+    g.socket().receive({ type: 'rpc:event', event: 'project:changed', payload: { kind: 'snapshot', snapshot: { ...snapshotAt(9), state: noHome } } });
     expect(g.changed.map((c) => c.snapshot.revision)).toEqual([3]);
   });
 
