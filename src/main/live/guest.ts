@@ -176,7 +176,8 @@ function isSnapshot(value: unknown): value is LiveProjectSnapshot {
 }
 
 export class LiveGuestManager {
-  private join: Join | null = null;
+  /** The join under way, from asking to join until it ends. */
+  private current: Join | null = null;
   private lastEnded: { reason: RemoteEnding; message: string } | null = null;
   private readonly createSocket: LiveSocketFactory;
   private readonly createPreview: NonNullable<LiveGuestOptions['createPreview']>;
@@ -203,11 +204,11 @@ export class LiveGuestManager {
 
   /** Whether this app holds, or is asking for, a place in a live session. */
   get active(): boolean {
-    return this.join !== null;
+    return this.current !== null;
   }
 
   get state(): RemoteState {
-    const join = this.join;
+    const join = this.current;
     if (!join) return { phase: 'idle', ended: this.lastEnded };
     const base = { joinId: join.joinId, relayUrl: join.relayUrl, roomId: join.roomId, displayName: join.displayName, hostConnected: join.hostConnected, reconnecting: join.reconnecting };
     if (join.phase !== 'admitted' || !join.guestId) return { ...base, phase: join.phase === 'joining' ? 'joining' : 'waiting' };
@@ -241,14 +242,14 @@ export class LiveGuestManager {
     if (!invite) return { ok: false, message: 'Paste the whole invite link the host shared, such as https://live.siteorigin.com/s/….' };
     const displayName = normalizeDisplayName(rawName);
     if (!displayName) return { ok: false, message: 'Enter the name the host will see, up to 40 characters.' };
-    if (this.join) return { ok: false, message: 'Leave the live session you are in before joining another.' };
+    if (this.current) return { ok: false, message: 'Leave the live session you are in before joining another.' };
     let previewOrigin: string;
     try {
       previewOrigin = await roomPreviewOrigin(invite.relayUrl, invite.roomId);
     } catch (error) {
       return { ok: false, message: error instanceof Error ? error.message : String(error) };
     }
-    if (this.join) return { ok: false, message: 'Leave the live session you are in before joining another.' };
+    if (this.current) return { ok: false, message: 'Leave the live session you are in before joining another.' };
     const join: Join = {
       joinId: randomUUID(),
       relayUrl: invite.relayUrl,
@@ -294,7 +295,7 @@ export class LiveGuestManager {
       joined: null,
       ended: false
     };
-    this.join = join;
+    this.current = join;
     this.lastEnded = null;
     const result = new Promise<RemoteJoinResult>((resolve) => (join.joined = resolve));
     this.connect(join);
@@ -304,7 +305,7 @@ export class LiveGuestManager {
 
   /** Leave the live session: the relay is told, so the host sees the place given up at once, and everything here goes. */
   leave(): void {
-    const join = this.join;
+    const join = this.current;
     if (!join) return;
     this.sendFrame(join, { type: 'guest:leave' });
     this.end(join, 'left');
@@ -312,7 +313,7 @@ export class LiveGuestManager {
 
   /** Let go of everything, as the app quits. */
   dispose(): void {
-    const join = this.join;
+    const join = this.current;
     if (join) this.end(join, 'left', false);
   }
 
@@ -530,7 +531,7 @@ export class LiveGuestManager {
 
   /** Take a snapshot of the host's project, unless it is older than the one already shown. */
   private accept(join: Join, snapshot: LiveProjectSnapshot): void {
-    if (join.ended || this.join !== join) return;
+    if (join.ended || this.current !== join) return;
     if (join.latest && snapshot.revision < join.latest.revision) return;
     const runtimeChanged = join.hostRuntime !== snapshot.runtime.state;
     const sizeChanged = join.tooLarge;
@@ -554,7 +555,7 @@ export class LiveGuestManager {
       for (;;) {
         join.refetch = false;
         const answer = await this.call(join, 'project.snapshot', []);
-        if (join.ended || this.join !== join) return null;
+        if (join.ended || this.current !== join) return null;
         if (answer.ok && isSnapshot(answer.result)) this.accept(join, answer.result);
         else if (!answer.ok && answer.error.code === 'TOO_LARGE') {
           join.tooLarge = true;
@@ -611,14 +612,14 @@ export class LiveGuestManager {
 
   /** The host's project as guests are given it: the copy last received, else asked for now. Null when not in a session. */
   async snapshot(joinId: unknown): Promise<LiveProjectSnapshot | null> {
-    const join = this.join;
+    const join = this.current;
     if (!join || join.joinId !== joinId || join.phase !== 'admitted') return null;
     return join.latest ?? (await this.fetchSnapshot(join));
   }
 
   /** Make a collaborator's edit in the host's project. The host checks it again, and it lands through the host's own pipeline. */
   async apply(joinId: unknown, batch: unknown): Promise<LiveApplyResult> {
-    const join = this.join;
+    const join = this.current;
     if (!join || join.joinId !== joinId || join.phase !== 'admitted') return { ok: false, error: unavailable('You are no longer in that live session.') };
     if (join.role !== 'collaborator') return { ok: false, error: { code: 'PERMISSION_DENIED', message: 'The host has made you a viewer: you can watch, but not edit.', recoverable: false } };
     if (!join.hostConnected) return { ok: false, error: unavailable('The host is reconnecting. Try again in a moment.') };
@@ -634,7 +635,7 @@ export class LiveGuestManager {
 
   /** Where this app is in the editor, for the others: shared while it is a collaborator. The latest is kept and resent. */
   presence(joinId: unknown, presence: unknown): boolean {
-    const join = this.join;
+    const join = this.current;
     if (!join || join.joinId !== joinId) return false;
     // Checked as the relay will read it, so nothing is sent it would refuse.
     if (!encodeFrame('guest-to-relay', { type: 'presence:update', presence: presence as Presence }).ok) return false;
@@ -662,7 +663,7 @@ export class LiveGuestManager {
   }
 
   private publishPresence(join: Join): void {
-    if (this.join !== join) return;
+    if (this.current !== join) return;
     this.ctx.emit('remote:presence', { joinId: join.joinId, host: join.hostPresence, guests: Object.fromEntries(join.guestPresence) });
   }
 
@@ -690,7 +691,7 @@ export class LiveGuestManager {
         preview.abort = abort;
         const result = await this.redeem(join.previewOrigin, ticket, abort.signal);
         if (preview.abort === abort) preview.abort = null;
-        if (join.ended || this.join !== join) return;
+        if (join.ended || this.current !== join) return;
         // A newer grant is on its way, and this cookie is already out of date: only the newest one is used.
         if (preview.queued) continue;
         if (result.ok) {
@@ -723,7 +724,7 @@ export class LiveGuestManager {
   }
 
   private reload(join: Join): void {
-    if (join.ended || this.join !== join || join.phase !== 'admitted' || !join.preview.url) return;
+    if (join.ended || this.current !== join || join.phase !== 'admitted' || !join.preview.url) return;
     this.ctx.emit('remote:reload', { joinId: join.joinId, revision: join.previewRevision });
   }
 
@@ -792,10 +793,10 @@ export class LiveGuestManager {
     const server = join.preview.server;
     join.preview.server = null;
     void server?.close();
-    if (this.join === join) this.setAccess(null);
+    if (this.current === join) this.setAccess(null);
     const joined = join.joined;
     join.joined = null;
-    if (this.join === join) this.join = null;
+    if (this.current === join) this.current = null;
     this.lastEnded = { reason, message: ENDING_MESSAGES[reason] };
     joined?.({ ok: false, message: ENDING_MESSAGES[reason] });
     if (publish) this.publish();
