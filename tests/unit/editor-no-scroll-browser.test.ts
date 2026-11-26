@@ -10,7 +10,10 @@ import { chromium, type Browser, type Page } from 'playwright';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 
 const browserInstalled = existsSync(chromium.executablePath());
-const css = ['tokens.css', 'reset.css', 'layout.css'].map((f) => readFileSync(resolve('src/renderer/src/styles', f), 'utf8')).join('\n');
+// The global layers, and the failure screen's own styles (FailureScreen.css), which the startup error views wear.
+const css = [...['tokens.css', 'reset.css', 'layout.css'].map((f) => resolve('src/renderer/src/styles', f)), resolve('src/renderer/src/components/FailureScreen.css')]
+  .map((f) => readFileSync(f, 'utf8'))
+  .join('\n');
 
 /**
  * The editor's shell: a toolbar, a canvas with a frame whose page is far taller than it, and a dock whose scrolling
@@ -79,10 +82,13 @@ describe.skipIf(!browserInstalled)('the editor document in a browser', () => {
   });
 
   it('lets a startup error longer than the window scroll to its last reason, inside the window', async () => {
-    const reasons = Array.from({ length: 80 }, (_, i) => `<li>Theme ${i} could not be read.</li>`).join('');
-    await page.setContent(`<!doctype html><html><head><style>${css}</style></head><body><div id="root"><div class="fatal"><p>No themes.</p><ul>${reasons}</ul></div></div></body></html>`);
+    // The no-themes screen as StartupFailure.tsx renders it: one card naming each theme that failed, with why.
+    const reasons = Array.from({ length: 80 }, (_, i) => `<li><span class="failure-theme-name">Theme ${i}</span><span class="failure-theme-reason">It could not be read.</span></li>`).join('');
+    await page.setContent(
+      `<!doctype html><html><head><style>${css}</style></head><body><div id="root"><main class="fatal failure"><div class="failure-card"><div class="failure-body"><h1>No themes</h1><ul class="failure-themes">${reasons}</ul></div></div></main></div></body></html>`
+    );
     const r = (await page.evaluate(`(() => {
-      const last = document.querySelector('.fatal li:last-child');
+      const last = document.querySelector('.failure-themes li:last-child');
       last.scrollIntoView({ block: 'end' });
       return { scrollHeight: document.documentElement.scrollHeight, innerHeight, docTop: document.scrollingElement.scrollTop, bottom: last.getBoundingClientRect().bottom };
     })()`)) as { scrollHeight: number; innerHeight: number; docTop: number; bottom: number };

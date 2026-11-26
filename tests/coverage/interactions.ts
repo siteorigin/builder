@@ -1612,7 +1612,7 @@ export const INTERACTIONS: Interaction[] = [
     scenario: 'Blank starter · none',
     proof: [
       { test: 'tests/e2e/fonts.mjs', kind: 'e2e', step: 'import Latin upright and italic Lora' },
-      { test: 'tests/e2e/fonts.mjs', kind: 'e2e', step: 'Assets names each file by style, weight, alphabet and file, and shows it in its own face' },
+      { test: 'tests/e2e/fonts.mjs', kind: 'e2e', step: 'Assets lists each family once, says where it is used, and names each file by style, alphabet and weights in its own face' },
       { test: 'tests/e2e/fonts.mjs', kind: 'e2e', step: 'removing the upright body file says body text would turn italic, and Cancel keeps it' },
       { test: 'tests/unit/fonts.test.ts', kind: 'unit' }
     ]
