@@ -128,6 +128,7 @@ const api: BuilderApi = {
     kick: invoke('live:kick'),
     setLocked: invoke('live:setLocked'),
     extend: invoke('live:extend'),
+    presence: invoke('live:presence'),
     state: invoke('live:state')
   } as BuilderApi['live'],
   on: ((channel: string, cb: (payload: unknown) => void) => {

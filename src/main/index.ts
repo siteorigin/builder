@@ -397,6 +397,7 @@ function registerIpc() {
   handle('live:kick', (run: unknown, guestId: unknown) => controller.live.kick(run, guestId));
   handle('live:setLocked', (run: unknown, locked: unknown) => controller.live.setLocked(run, locked));
   handle('live:extend', (run: unknown, expiresAt: unknown) => controller.live.extend(run, expiresAt));
+  handle('live:presence', (run: unknown, presence: unknown) => controller.live.setPresence(run, presence));
   handle('live:state', () => controller.live.state);
   handle('project:snapshot', () => controller.snapshot());
   handle('project:reloadFromDisk', () => controller.reloadFromDisk());

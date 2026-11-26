@@ -11,7 +11,7 @@ import type { Recipient, TurnModel } from './turn-model';
 import type { EarlierSummary } from './earlier-summary';
 import type { SessionDuration } from './live/expiry';
 import type { GuestRole } from './live/limits';
-import type { Participant } from './live/messages';
+import type { Participant, Presence } from './live/messages';
 
 export type Appearance = 'system' | 'light' | 'dark';
 export type ProviderId = 'openai' | 'anthropic' | 'local';
@@ -1250,6 +1250,8 @@ export interface BuilderApi {
     setLocked(run: LiveRun, locked: boolean): Promise<LiveCommandResult>;
     /** Move the session's end later, to `expiresAt` on the relay's clock, at most 24 hours after it started. */
     extend(run: LiveRun, expiresAt: number): Promise<LiveCommandResult>;
+    /** Where the host is in the editor (its page and preview width), for guests following it. The latest is kept and resent. */
+    presence(run: LiveRun, presence: Presence): Promise<LiveCommandResult>;
     state(): Promise<LiveHostState>;
   };
   on(channel: 'project:changed', cb: (snap: ProjectSnapshot) => void): () => void;

@@ -5,7 +5,7 @@ import { LIVE_CLOSE_CODES } from '@shared/live/close-codes';
 import { generateHostKeyPair, signHostChallenge, type HostKeyPair } from '@shared/live/crypto';
 import { checkGuestExpiry, checkSessionExpiry, isSessionDuration, type SessionDuration } from '@shared/live/expiry';
 import { GUEST_ID_RE, GUEST_ROLES, LIVE_PROTOCOL_VERSION, PROJECT_NAME_MAX, type GuestRole } from '@shared/live/limits';
-import { encodeFrame, normalizeDisplayName, parseFrame, type Frame, type HostToRelay, type Participant } from '@shared/live/messages';
+import { encodeFrame, normalizeDisplayName, parseFrame, type Frame, type HostToRelay, type Participant, type Presence } from '@shared/live/messages';
 import { formatInviteLink, HOST_SOCKET_PATH, RELAY_URL_ENV, relaySocketUrl, roomSocketPath, type ResolvedRelayUrl } from '@shared/live/relay-url';
 import { PreviewProxy, type LoopbackPreview } from './preview-proxy';
 
@@ -152,6 +152,8 @@ interface Run {
   asked: { expiresAt: number; at: number } | null;
   /** The guests already announced as waiting, so a roster resent after a reconnect announces nobody twice. */
   announced: Set<string>;
+  /** Where the host is in the editor, as last told: sent once the room is held, and again on every room taken back. */
+  presence: Presence | null;
   /** Answers start(), until the room is open or the start has failed. */
   started: ((result: LiveStartResult) => void) | null;
   stopping: Promise<void> | null;
@@ -266,6 +268,7 @@ export class LiveHostManager {
       reloadDue: false,
       asked: null,
       announced: new Set(),
+      presence: null,
       started: null,
       stopping: null,
       ended: false
@@ -580,6 +583,8 @@ export class LiveHostManager {
     if (conn.kind === 'reclaim') run.reloadDue = true;
     this.publish();
     this.announce(run);
+    // Guests following the host see where it is now, whatever was sent before a drop.
+    if (run.presence) this.sendOn(conn, { type: 'presence:update', presence: run.presence });
     if (run.reloadDue) this.scheduleReload(run, 0);
     const started = run.started;
     run.started = null;
@@ -836,5 +841,25 @@ export class LiveHostManager {
       },
       (current, frame) => (current.asked = { expiresAt: (frame as { expiresAt: number }).expiresAt, at: performance.now() })
     );
+  }
+
+  /**
+   * Where the host is in the editor: the page it shows and the preview's width, for guests following it. The latest is
+   * kept for the session and sent while the room is held, and again whenever the room is taken back; one sent while
+   * reconnecting goes out once it has been. Not a command: it never waits on the relay, and nothing is refused but a
+   * presence the relay would not read.
+   */
+  setPresence(value: unknown, presence: unknown): LiveCommandResult {
+    const run = this.matching(value);
+    if (!run || run.phase === 'stopping') return { ok: false, message: 'That live session has ended.' };
+    const encoded = encodeFrame('host-to-relay', { type: 'presence:update', presence } as HostToRelay);
+    if (!encoded.ok) return { ok: false, message: 'That is not a place in the editor guests can follow.' };
+    // What was checked, as it was checked: never the caller's own object.
+    const next = (JSON.parse(encoded.frame) as { presence: Presence }).presence;
+    if (run.presence && encoded.frame === JSON.stringify({ type: 'presence:update', presence: run.presence })) return { ok: true };
+    run.presence = next;
+    const conn = run.conn;
+    if (run.phase === 'active' && conn?.stage === 'host') this.sendOn(conn, { type: 'presence:update', presence: next });
+    return { ok: true };
   }
 }
