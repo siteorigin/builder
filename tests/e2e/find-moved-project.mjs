@@ -98,12 +98,15 @@ renameSync(away, old);
 await focusWindow();
 await eventually(async () => assert.deepEqual(await listed(), [[old, false]]));
 await eventually(async () => assert.equal(await missingCard().count(), 0, 'the card is back to normal'));
+assert.equal(await normalCard().count(), 1, 'its card is shown, ready to open');
+assert.equal(await normalCard().first().isEnabled(), true);
 renameSync(old, away);
 await focusWindow();
 await eventually(async () => assert.match(await missingCard().innerText(), /Folder not found/));
 renameSync(away, old);
 await focusWindow();
 await eventually(async () => assert.equal(await missingCard().count(), 0));
+assert.equal(await normalCard().first().getAttribute('title'), `Mill Road\n${old}`, 'the same card, at its own folder');
 
 step('Mill Road is moved to delivered work while the app is closed');
 allErrors.push(...errors);
@@ -143,7 +146,7 @@ await findFolder({ paths: [moved] });
 await trustPrompt().waitFor();
 assert.match(await trustPrompt().innerText(), /Mill Road/);
 // Made on this computer and only moved: the reason covers a new folder, not only another computer (#809).
-assert.match(await trustPrompt().innerText(), /in a folder you haven’t opened it from before/);
+assert.match(await trustPrompt().innerText(), /no record of trusting it in this folder with these setup files\. It may have been made on another computer, moved or copied here,/);
 await trustPrompt().getByRole('button', { name: 'Cancel' }).click();
 await trustPrompt().waitFor({ state: 'detached' });
 assert.equal(await win.locator('.welcome').count(), 1, 'Welcome is still shown');

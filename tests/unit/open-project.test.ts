@@ -17,7 +17,7 @@ vi.mock('electron', () => ({
 }));
 
 import { dialog } from 'electron';
-import { Controller, projectNotFound, readManifestSummary } from '../../src/main/controller';
+import { Controller, readManifestSummary } from '../../src/main/controller';
 import { loadSettings, trust, untrust } from '../../src/main/settings';
 import { NOT_A_PROJECT_ZIP, WEBSITE_ZIP } from '../../src/main/unzip';
 import { zipDirectory } from '../../src/main/zip';
@@ -65,9 +65,9 @@ describe('opening a received project', () => {
   it('answers a missing project folder with a normal message, not a rejection', async () => {
     const dir = tmp('so-empty-');
     const r = await new Controller(() => null).open(dir);
-    expect(r).toEqual({ ok: false, message: projectNotFound(dir) });
+    expect(r).toEqual({ ok: false, message: expect.stringContaining(`The project in ${dir} was not found`) });
     const gone = join(dir, 'deleted');
-    expect(await new Controller(() => null).open(gone)).toEqual({ ok: false, message: projectNotFound(gone) });
+    expect(await new Controller(() => null).open(gone)).toEqual({ ok: false, message: expect.stringContaining(`The project folder ${gone} was not found`) });
   });
 
   // #809: a Recent projects card whose folder was moved. The author chose no folder, so nothing may say they chose wrong.
@@ -79,6 +79,10 @@ describe('opening a received project', () => {
     const emptied = tmp('so-emptied-');
     const e = await new Controller(() => null).open(emptied);
     expect(e).toEqual({ ok: false, message: `The project in ${emptied} was not found: its siteorigin.project.json is no longer there. It may have been moved, renamed or deleted.` });
+    // A file now where the folder was: the folder was not found.
+    const file = join(emptied, 'mill-road');
+    writeFileSync(file, '');
+    expect((await new Controller(() => null).open(file)).message).toBe(`The project folder ${file} was not found. It may have been moved, renamed or deleted.`);
     for (const m of [r.message, e.message]) expect(m).not.toMatch(/not a SiteOrigin Builder project|Choose a folder/);
   });
 

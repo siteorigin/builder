@@ -1,7 +1,7 @@
 import { app, BrowserWindow, dialog, shell, type OpenDialogOptions } from 'electron';
 import { markdownMirrorRoute } from '@shared/llms';
 import { watch, type FSWatcher } from 'node:fs';
-import { constants as fsConstants, existsSync, mkdtempSync, promises as fs } from 'node:fs';
+import { constants as fsConstants, existsSync, mkdtempSync, promises as fs, statSync } from 'node:fs';
 import { homedir, tmpdir } from 'node:os';
 import { basename, dirname, extname, isAbsolute, join, relative, sep } from 'node:path';
 import { randomUUID } from 'node:crypto';
@@ -168,7 +168,9 @@ const inFolder = (message: string, dir: string) => `${message} Project folder: "
  * deleted. Welcome's list then reads the entry again, and its card offers Find folder….
  */
 export function projectNotFound(dir: string): string {
-  return existsSync(dir)
+  // A file where the folder was is no folder at all: the folder was not found.
+  const isDirectory = (p: string) => statSync(p, { throwIfNoEntry: false })?.isDirectory() === true;
+  return isDirectory(dir)
     ? `The project in ${dir} was not found: its ${MANIFEST_FILE} is no longer there. It may have been moved, renamed or deleted.`
     : `The project folder ${dir} was not found. It may have been moved, renamed or deleted.`;
 }
