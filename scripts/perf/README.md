@@ -26,8 +26,11 @@ run itself could not go on.
    IDs, constant dates, images drawn uncompressed), so a fixture's hash only changes when the fixture or the document
    format does. Each is written once per fixture hash, starter template and platform under `.tmp/perf/fixtures/`, then
    opened once in the app, which installs its website tools as for a new project (the first time needs the network).
-2. **Warm-up.** For each fixture the project is copied into the run's folder and opened once in a fresh profile, untimed.
-   That trusts it and lists it in Recent projects. What the warm-up leaves (the project, the preview tools' caches in its
+2. **Warm-up.** For each fixture the project is copied into the run's folder and opened in a fresh profile, untimed,
+   then opened again. That trusts it, lists it in Recent projects, and has run the editor's scripts twice: Chromium
+   notes a script the first time it runs and keeps its compiled code the second, so every launch and open after that
+   reuses it, as a person's do (the preview's server takes a new port each launch, so its scripts are not cached by
+   address). What the warm-up leaves (the project, the preview tools' caches in its
    `node_modules`, and the profile) is put back before every iteration, so each iteration starts from the same files.
    A fixture whose preparation or warm-up fails has its cases reported as failed, and the other fixtures are still
    measured. Each launch ends with a sweep of every process it started, checked against the identity read at launch.
@@ -47,7 +50,7 @@ run itself could not go on.
    with its trace file, and, when every iteration passed, the median, min, max and MAD of each metric. The run prints the
    same as a table per case and warns when the build is not of the checkout's HEAD.
 
-`launch` here is a fresh process on a profile that has been launched before, so Chromium's code cache is warm: the
+`launch` here is a fresh process on a profile that has opened the project twice before, so Chromium's code cache is warm: the
 everyday launch. `--cold` removes Chromium's caches from the profile before every iteration, so the editor's script is
 compiled afresh, as on the first launch after an update (the OS file cache stays warm either way). Cold and warm are
 different metrics: never compare one with the other; the result records which it is.
@@ -62,8 +65,13 @@ reported as **FAILED**, with no timings at all. A run cannot get faster by doing
 New project is enabled, no project is open, no window was shown. Times from `launch.processStart` (when the OS created
 the process): `mainLoaded` (every static import of the main entry evaluated), `appReady`, `loadPacks` (span),
 `windowCreated`, `readyToShow`, `firstRender` (the editor's first React commit), `firstInteractive` (Welcome listening
-for commands), `recentsShown`. Counts: files read and hashed before the window was created, React commits until recents
-show; the longest main-process stall.
+for commands), `recentsShown`. The editor's page and script: `pageStart` (its navigation), `pageParsed` (its HTML
+parsed), `scriptStart` (the first line of its script running), `scriptEvaluated` (every module the script imports up
+front evaluated), `catalogueReceived` (the theme catalogue registered); `scriptCompile` (`pageParsed` to `scriptStart`: the
+script's load and compile) and `scriptEvaluate` (`scriptStart` to `scriptEvaluated`). From the window being created:
+`windowToFirstRender` and `windowToWelcome` (to an interactive Welcome that lists its recent projects, the later of
+`firstInteractive` and `recentsShown`). Run it warm and `--cold` for a second and a first launch's compile. Counts:
+files read and hashed before the window was created, React commits until recents show; the longest main-process stall.
 
 **`open`**: open the fixture from its card on Welcome, to the canvas bridge reporting the home page ready to edit.
 Checks: the project opened writable, from the fixture's folder, with its pages, posts, images, project components and

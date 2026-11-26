@@ -1,17 +1,12 @@
 import { useEffect, useLayoutEffect, useState } from 'react';
-import { api, applyAiEvent, getState, persistChatState, persistPlaces, projectHistory, restoreRightTab, saveLocal, setState, toast, useStore } from './store';
+import { api, applyAiEvent, getState, persistChatState, persistPlaces, projectHistory, restoreRightTab, saveLocal, setState, toast, useStore, whenThemesReady } from './store';
 import { cleanDrafts, cleanImages, moveDraft, moveImages, restorePlan } from './lib/chatDrafts';
 import { Welcome } from './Welcome';
-import { Editor } from './Editor';
 import { UnpackingModal } from './components/ProjectDialogs';
 import { Toasts, openDialogs, openMenus } from './components/ui';
 import { ConfirmHost } from './components/ConfirmDialog';
 import { forgetComponentThumbs } from './components/ComponentThumb';
-import { cancelComponentPreviews, runComponentPreviews, runInspection } from './lib/inspect';
 import { restorePanelWidth, restoreViewport, restoreZoom } from './lib/layout';
-import { handleShortcut } from './Editor';
-import { forgetCopy } from './lib/clipboard';
-import { frameTextFocus, inlineEdit, stepVisitor } from './panels/Canvas';
 import { focusedSurface, forwardedKeyRuns, forwardedVisitorStep, menuHistoryOwner, type HistoryContext } from './lib/history';
 import { runWriterHistory } from './lib/post-draft';
 import { closeProject, endEditingHold, forgetKeptDrafts, prepareToLeave, projectClosed } from './lib/leave';
@@ -27,11 +22,14 @@ import { JoinLiveDialog } from './components/JoinLive';
 import { isRemoteOpening } from './lib/remote-snapshot';
 import { projectDisplayName, windowTitle } from '@shared/project-name';
 import { perfMark, perfMarkAtCommit, perfOn, perfWork } from './lib/perf';
+import { editorModule, loadEditor } from './lib/editor-module';
 
 /** What Undo and Redo, and keys forwarded from the preview frame, act on right now. */
 function historyContext(): HistoryContext {
   const s = getState();
-  return { editor: s.screen === 'editor', mode: s.mode, inlineEdit: inlineEdit.active, frameText: frameTextFocus.active, overlay: openDialogs.length > 0 || openMenus.count > 0, focus: focusedSurface(document.activeElement as HTMLElement | null) };
+  // Text being edited on the canvas or in the preview: neither, before the editor's code has loaded.
+  const editor = editorModule();
+  return { editor: s.screen === 'editor', mode: s.mode, inlineEdit: editor?.inlineEdit.active ?? false, frameText: editor?.frameTextFocus.active ?? false, overlay: openDialogs.length > 0 || openMenus.count > 0, focus: focusedSurface(document.activeElement as HTMLElement | null) };
 }
 
 export function App() {
@@ -39,6 +37,37 @@ export function App() {
   // No screen is shown until the project that is open (if any) is known, so a File menu command waiting for this
   // window reaches the screen that will stay: Welcome, or the editor of a project left open with no window (macOS).
   const [booted, setBooted] = useState(false);
+  // The editor shows once its code has loaded and the theme catalogue it reads has arrived. Opening a project asks for
+  // both well before the project is ready (an open on Welcome loads the code; the catalogue was asked for at launch),
+  // so Welcome, showing the project as opening, is what stays on screen in the meantime, never a blank window.
+  const packsReady = useStore((s) => s.packs.ready);
+  const [loadedEditor, setLoadedEditor] = useState(editorModule);
+  const [editorFailed, setEditorFailed] = useState<Error | null>(null);
+  const editor = loadedEditor ?? editorModule();
+  useEffect(() => {
+    // A load that failed is tried again by the next opening.
+    if (screen !== 'editor') return setEditorFailed(null);
+    // Already here (an open on Welcome loaded it): shown as it is, with no render more.
+    if (loadedEditor || editorModule()) return;
+    let live = true;
+    loadEditor().then(
+      (m) => live && setLoadedEditor(m),
+      (e: unknown) => live && setEditorFailed(e instanceof Error ? e : new Error(String(e)))
+    );
+    return () => {
+      live = false;
+    };
+  }, [screen, loadedEditor]);
+  const shown = screen === 'editor' && ((editor && packsReady) || editorFailed) ? 'editor' : 'welcome';
+  useLayoutEffect(() => {
+    presented = shown;
+    // A command held back while Welcome stood in for the editor is offered again now that the screen on show is the
+    // store's: Welcome when the project closed before the editor could show (the editor asks for it itself).
+    if (screen === shown && commandsHeld) {
+      commandsHeld = false;
+      api.menuReady();
+    }
+  }, [shown, screen]);
 
   // The window's title follows the page's (Electron carries it over), so a window opened again over an open project,
   // or a reloaded page, names it too.
@@ -51,8 +80,9 @@ export function App() {
   useEffect(() => startEditorFonts(), []);
 
   useEffect(() => {
-    void api.app.getSettings().then((settings) => setState({ settings }));
-    void api.ai.providers().then((providers) => setState({ providers }));
+    // Both wait for the theme packs: when verifying them fails, the page shows why instead, and these go unanswered.
+    void api.app.getSettings().then((settings) => setState({ settings }), () => undefined);
+    void api.ai.providers().then((providers) => setState({ providers }), () => undefined);
     // A project opened or closed before the first snapshot arrives is newer than that snapshot.
     let superseded = false;
     let unmounted = false;
@@ -74,7 +104,8 @@ export function App() {
       }),
       api.on('project:closed', () => {
         superseded = true;
-        forgetCopy();
+        // A copy is made in the editor: none before its code has loaded.
+        editorModule()?.forgetCopy();
         forgetComponentThumbs();
         opened++;
         projectClosed();
@@ -99,12 +130,31 @@ export function App() {
       api.on('runtime:status', (runtime) => setState({ runtime })),
       // Each assistant event timed with the render it sets off, while marks are on (scripts/perf: the chat scenario).
       api.on('ai:event', perfOn ? (e) => perfWork('chat.aiEvent', () => applyAiEvent(e), { kind: e.kind }) : applyAiEvent),
-      api.on('inspect:request', (req) => void runInspection(req)),
-      api.on('component-preview:request', (req) => void runComponentPreviews(req)),
-      api.on('component-preview:cancel', (req) => cancelComponentPreviews(req.requestId)),
+      // Asked for only while a project is open, so the editor's code is loaded or on its way (in order: a cancel follows
+      // the request it cancels). Answered whatever happens: an editor whose code could not be loaded says so, rather
+      // than leave the assistant waiting for an answer.
+      api.on('inspect:request', (req) =>
+        void loadEditor().then(
+          (m) => m.runInspection(req),
+          () => api.inspectResult(req.requestId, { error: 'The editor could not be loaded, so the preview could not be checked.' })
+        )
+      ),
+      api.on('component-preview:request', (req) =>
+        void loadEditor().then(
+          (m) => m.runComponentPreviews(req),
+          () => api.componentPreviewResult(req.requestId, [])
+        )
+      ),
+      api.on('component-preview:cancel', (req) => void loadEditor().then((m) => m.cancelComponentPreviews(req.requestId), () => undefined)),
       api.on('menu:command', ({ cmd, id }) => {
         // A screen that failed cannot act on it: it waits, unconfirmed, for the screen that comes back (RenderFailure).
         if (renderFailed()) return;
+        // Nor can Welcome while it stays on screen for a project whose editor is still loading: the editor takes it up
+        // when it shows (its menuReady has the main process offer it again).
+        if (getState().screen !== presented) {
+          commandsHeld = true;
+          return;
+        }
         // Confirmed at once, so the main process stops offering it. It may have offered it twice (a screen said it was
         // ready again before this confirmation arrived): it is acted on once.
         api.menuReceived(id);
@@ -115,8 +165,8 @@ export function App() {
       // Edit → Undo and Redo, and their keys when nothing on the page took them: a text field (a dialog's too,
       // so this runs before the editor's dialog guard) keeps its own history, the editor undoes the project.
       api.on('menu:history', ({ action, fromKey }) => {
-        // While the project is being left, the editor takes no input (see lib/leave.ts).
-        if (getState().leaving) return;
+        // While the project is being left, the editor takes no input (see lib/leave.ts); nor before it shows.
+        if (getState().leaving || getState().screen !== presented) return;
         const owner = menuHistoryOwner(historyContext(), fromKey);
         // The Posts writer's text is the project's: its Undo saves what was typed, then undoes the project.
         if (owner === 'text' && document.activeElement?.closest('.post-body') && runWriterHistory(action)) return;
@@ -128,12 +178,14 @@ export function App() {
       api.on('input:key', (k) => {
         // Back and Forward step through the visitor's journey, never the project's history.
         const dir = forwardedVisitorStep(historyContext(), k, api.platform === 'darwin');
+        // Keys come from the preview frame, which only the editor shows: its code is loaded by then.
+        const editor = editorModule();
         if (dir) {
-          if (!getState().leaving) stepVisitor(dir);
+          if (!getState().leaving) editor?.stepVisitor(dir);
           return;
         }
         const askAi = isAskAiKey(k);
-        if (forwardedKeyRuns(historyContext(), k.key, k.meta || k.ctrl, askAi)) handleShortcut(k.key, k.meta || k.ctrl, k.shift, askAi);
+        if (forwardedKeyRuns(historyContext(), k.key, k.meta || k.ctrl, askAi)) editor?.handleShortcut(k.key, k.meta || k.ctrl, k.shift, askAi);
       }),
       useStore.subscribe(persistChatState),
       useStore.subscribe(persistPlaces),
@@ -144,9 +196,21 @@ export function App() {
       ...followRemote(),
       syncRemotePresence()
     ];
+    // A project already open (the editor reloaded, or a window opened again over it) shows the editor at once, once
+    // its code and the catalogue are here: Welcome never shows in between.
     void api.project
       .snapshot()
-      .then((snap) => !unmounted && !superseded && snap && openSnapshot(snap))
+      .then(async (snap) => {
+        if (unmounted || superseded || !snap) return;
+        const runtime = getState().runtime;
+        // An editor whose code could not be loaded still opens the project: its screen says so, and offers to close it.
+        await Promise.all([loadEditor(), whenThemesReady()]).catch(() => undefined);
+        if (unmounted || superseded) return;
+        // The preview's state may have moved on meanwhile: the latest word on it stays.
+        const moved = getState().runtime !== runtime ? getState().runtime : null;
+        openSnapshot(snap);
+        if (moved) setState({ runtime: moved });
+      })
       .catch(() => undefined)
       .finally(() => !unmounted && setBooted(true));
     return () => {
@@ -161,15 +225,15 @@ export function App() {
           the listeners above stay, so the main process can still ask before leaving, and a closed project brings back
           a fresh Welcome. */}
       {booted && (
-        <RenderFailure key={screen} onCloseProject={screen === 'editor' ? () => void closeProject() : undefined}>
-          {screen === 'welcome' ? <Welcome /> : <Editor />}
+        <RenderFailure key={shown} onCloseProject={shown === 'editor' ? () => void closeProject() : undefined}>
+          {shown === 'welcome' ? <Welcome /> : editor ? <editor.Editor /> : <Failed error={editorFailed!} />}
         </RenderFailure>
       )}
       {booted && <JoinLiveDialog />}
       <UnpackingModal />
       <Toasts />
       <ConfirmHost />
-      {perfOn && <PerfProbe />}
+      {perfOn && <PerfProbe screen={shown} />}
     </>
   );
 }
@@ -179,14 +243,18 @@ export function App() {
  * layout effect runs in the same commit as everything else the snapshot or selection changed. Rendered only while
  * timing marks are on.
  */
-function PerfProbe() {
+function PerfProbe({ screen }: { screen: 'welcome' | 'editor' }) {
   const revision = useStore((s) => s.snapshot?.revision ?? null);
   const opening = useStore((s) => s.snapshot?.workspaceKey ?? null);
-  const screen = useStore((s) => s.screen);
   const selection = useStore((s) => s.selection);
   useLayoutEffect(() => perfMarkAtCommit('renderer.commit', { revision, screen, opening: opening !== null }), [revision, opening, screen]);
   useLayoutEffect(() => perfMarkAtCommit('renderer.selectionCommit', { selected: selection !== null }), [selection]);
   return null;
+}
+
+/** The editor's code could not be loaded: the screen's failure, with its way back (RenderFailure). */
+function Failed({ error }: { error: Error }): never {
+  throw error;
 }
 
 export function openSnapshot(snap: NonNullable<ReturnType<typeof getState>['snapshot']>) {
@@ -269,6 +337,11 @@ export function abandonLeaves() {
   for (const requestId of leaving) api.leaveResult(requestId, 'stay');
   leaving.clear();
 }
+
+/** The screen on show, which follows the store's once the editor's code and the catalogue are here (App). */
+let presented: 'welcome' | 'editor' = 'welcome';
+/** Whether a menu command was left unconfirmed while the screen on show was not yet the store's. */
+let commandsHeld = false;
 
 /** Counts project openings and closings, so a reply that arrives after the project changed is ignored. */
 let opened = 0;

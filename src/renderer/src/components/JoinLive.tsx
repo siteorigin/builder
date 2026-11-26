@@ -5,7 +5,7 @@ import { DISPLAY_NAME_MAX } from '@shared/live/limits';
 import { normalizeDisplayName } from '@shared/live/messages';
 import { parseInviteLink } from '@shared/live/relay-url';
 import { projectDisplayName } from '@shared/project-name';
-import { getState, setState, useStore } from '../store';
+import { getState, setState, useStore, whenThemesReady } from '../store';
 import { isRemoteShell, joinLive, leaveLive } from '../lib/remote-session';
 import { Field, Modal, Spinner } from './ui';
 
@@ -98,6 +98,8 @@ function JoinLiveForm() {
     rememberName(name);
     // Cancel while a project of this computer's closes, or while the request goes out, calls the join off.
     const mine = ++attempt.current;
+    // A guest's editor shows the host's project with this computer's themes: none is joined before they are in.
+    await whenThemesReady();
     const result = await joinLive(inviteLink.trim(), name, () => attempt.current === mine);
     setSubmitting(false);
     // The dialog was closed meanwhile: whatever came of it is the session's to show.

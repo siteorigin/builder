@@ -151,8 +151,9 @@ export interface UndoTarget {
 
 export interface State {
   screen: 'welcome' | 'editor';
-  /** Theme packs found at startup but refused, and where a person installs packs. */
-  packs: { refused: PackRefusal[]; userDir: string };
+  /** Whether the theme catalogue has arrived and is registered; theme packs found at startup but refused, and where a
+   *  person installs packs. */
+  packs: { ready: boolean; refused: PackRefusal[]; userDir: string };
   snapshot: ProjectSnapshot | null;
   runtime: RuntimeState;
   settings: AppSettings | null;
@@ -375,7 +376,7 @@ const oneView = (p: Partial<State>): Partial<State> => {
 
 const live = create<State>((set) => ({
   screen: 'welcome',
-  packs: { refused: [], userDir: '' },
+  packs: { ready: false, refused: [], userDir: '' },
   snapshot: null,
   runtime: { state: 'idle' },
   settings: null,
@@ -541,6 +542,21 @@ function leaveInspectorField(p: Partial<State>) {
 }
 
 export const getState = () => useStore.getState();
+
+/**
+ * Once the theme catalogue has arrived and is registered: what opening a project, or showing one, needs. Never, when it
+ * failed or held no theme: the page shows why instead (main.tsx), and nothing is opened.
+ */
+export function whenThemesReady(): Promise<void> {
+  if (getState().packs.ready) return Promise.resolve();
+  return new Promise((resolve) => {
+    const off = useStore.subscribe((s) => {
+      if (!s.packs.ready) return;
+      off();
+      resolve();
+    });
+  });
+}
 
 /** Send an edit to the main process; while timing marks are on, the moment it leaves is marked (src/shared/perf.ts). */
 function sendEdit(batch: Parameters<BuilderApi['project']['apply']>[0], opts: Parameters<BuilderApi['project']['apply']>[1]): ReturnType<BuilderApi['project']['apply']> {

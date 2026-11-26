@@ -158,17 +158,32 @@ export const launch: Scenario = {
     expect((await win.evaluate(() => (globalThis as unknown as EditorPage).builder.project.snapshot())) === null, 'a project is open at launch');
     const shown = await app.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows().some((w) => w.isVisible()));
     expect(!shown, 'a window was shown: the run must stay headless');
-    await ctx.waitTrace((t) => !!t.first('launch.recentsShown') && !!t.first('launch.firstInteractive'), 15_000);
+    // Welcome can be ready before the theme packs are verified and their catalogue has arrived: what is measured waits
+    // for those too.
+    await ctx.waitTrace((t) => ['launch.recentsShown', 'launch.firstInteractive', 'launch.loadPacks', 'launch.catalogueReceived'].every((name) => !!t.first(name)), 15_000);
+    // Welcome is still the screen once the themes are in: a catalogue that failed or held none replaces it.
+    expect(await win.locator('.welcome').isVisible(), 'Welcome did not stay once the theme catalogue arrived');
   },
   measure(trace) {
     const m = new Collector();
     const start = m.need('launch.processStart', trace.first('launch.processStart'));
     for (const name of ['launch.mainLoaded', 'launch.appReady', 'launch.windowCreated', 'launch.readyToShow', 'launch.firstRender', 'launch.firstInteractive', 'launch.recentsShown']) m.since(name, start, m.need(name, trace.first(name)));
+    // The editor's page and script, from the window being made: its page starting, parsed, the script's first line
+    // running (load and compile done), every module it imports up front evaluated, and the theme catalogue arriving.
+    const editor = (name: string) => m.need(name, trace.first(name, inProc('renderer')));
+    for (const name of ['launch.pageStart', 'launch.pageParsed', 'launch.scriptStart', 'launch.scriptEvaluated', 'launch.catalogueReceived']) m.since(name, start, editor(name));
+    m.since('launch.scriptCompile', trace.first('launch.pageParsed', inProc('renderer')), trace.first('launch.scriptStart', inProc('renderer')));
+    m.since('launch.scriptEvaluate', trace.first('launch.scriptStart', inProc('renderer')), trace.first('launch.scriptEvaluated', inProc('renderer')));
+    const made = trace.first('launch.windowCreated');
+    m.since('launch.windowToFirstRender', made, trace.first('launch.firstRender'));
+    // An interactive Welcome that lists its recent projects: the later of the two.
+    const interactive = trace.first('launch.firstInteractive');
+    const listed = trace.first('launch.recentsShown');
+    m.since('launch.windowToWelcome', made, interactive && listed ? (interactive.t >= listed.t ? interactive : listed) : undefined);
     m.span('launch.loadPacks', m.need('launch.loadPacks', trace.first('launch.loadPacks')));
     const shown = trace.first('launch.recentsShown');
     commits(m, trace, 'launch.rendererCommits', undefined, shown);
     // What the main process read and hashed before it made the window (theme packs are verified file by file).
-    const made = trace.first('launch.windowCreated');
     m.count('launch.filesReadBeforeWindow', counter(made, 'files.read'));
     m.count('launch.filesHashedBeforeWindow', counter(made, 'files.hashed'));
     m.ms('launch.mainStallMax', stallMax(trace, start, shown));

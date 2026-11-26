@@ -2,23 +2,23 @@
   "schemaVersion": 1,
   "rows": {
     "renderer.script": {
-      "raw": 9316832,
-      "gzip": 2231287,
+      "raw": 2960838,
+      "gzip": 771333,
       "files": []
     },
     "renderer.style": {
-      "raw": 595405,
-      "gzip": 122335,
+      "raw": 130456,
+      "gzip": 29590,
       "files": []
     },
     "renderer.later": {
-      "raw": 0,
-      "gzip": 0,
+      "raw": 6881718,
+      "gzip": 1580324,
       "files": []
     },
     "main": {
-      "raw": 4537360,
-      "gzip": 1303194,
+      "raw": 4550837,
+      "gzip": 1307392,
       "files": []
     },
     "preload": {
@@ -27,8 +27,8 @@
       "files": []
     },
     "worker.media-worker": {
-      "raw": 130876,
-      "gzip": 43203,
+      "raw": 131087,
+      "gzip": 43274,
       "files": []
     },
     "worker.posts-import-worker": {
