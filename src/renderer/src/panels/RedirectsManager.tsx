@@ -1,11 +1,12 @@
-import { useId, useMemo, useRef, useState } from 'react';
+import { useEffect, useId, useMemo, useRef, useState } from 'react';
 import type { ProjectState, RedirectHost, SiteRedirect } from '@shared/types';
 import type { EditOperation } from '@shared/ops';
 import { isDraftEntry, siteEntries } from '@shared/collections';
 import { redirectRecords, resolveRedirects, type LiveRedirect } from '@shared/redirects';
 import { isDraftPage } from '@generator/index';
 import { redirectHost } from '@generator/host-redirects';
-import { Field } from '../components/ui';
+import { TriangleAlert } from 'lucide-react';
+import { Field, Segmented } from '../components/ui';
 import { applyOps } from '../store';
 
 /** What each host choice writes beside the website, as the select's hint says it. */
@@ -59,7 +60,13 @@ export function RedirectsFields({ state, problems, revision }: { state: ProjectS
   const uid = useId();
   const root = useRef<HTMLDivElement>(null);
   const [draft, setDraft] = useState<Draft | null>(null);
-  const [error, setError] = useState<{ field: 'from' | 'to'; message: string } | null>(null);
+  const [error, setError] = useState<{ field: 'from' | 'to' | 'target'; message: string } | null>(null);
+  const kindsRef = useRef<HTMLDivElement>(null);
+  // A form opened on an existing redirect starts on where it sends visitors (a new one starts on its old address).
+  const editing = draft && draft.from !== null ? draft.from : null;
+  useEffect(() => {
+    if (editing !== null) kindsRef.current?.querySelector<HTMLElement>('[tabindex="0"]')?.focus();
+  }, [editing]);
   const list = redirectRecords(state);
   // Worked out once per project state, never per keystroke in the form.
   const live = useMemo(() => new Map(resolveRedirects(state).live.map((r) => [r.from, r])), [state]);
@@ -95,6 +102,9 @@ export function RedirectsFields({ state, problems, revision }: { state: ProjectS
     if (draft.from === null && !typed) return setError({ field: 'from', message: 'Type the old address, such as /old-services/.' });
     // An empty address is never taken for Home.
     if (draft.kind === 'path' && !to) return setError({ field: 'to', message: 'Type the address it sends visitors to, such as /blog/, or / for Home.' });
+    // A page or post that has gone is never saved again as the destination: the form asks for its replacement.
+    if (draft.kind === 'page' && !pages.some((p) => p.id === draft.pageId)) return setError({ field: 'target', message: 'Choose the page it sends visitors to now.' });
+    if (draft.kind === 'post' && !posts.some((p) => p.entry.id === draft.entryId)) return setError({ field: 'target', message: 'Choose the post it sends visitors to now.' });
     const target = draft.kind === 'page' ? { pageId: draft.pageId } : draft.kind === 'post' ? { entryId: draft.entryId } : { to: to.startsWith('/') ? to : `/${to}` };
     const op: EditOperation = draft.from === null ? { type: 'redirect.add', from: typed.startsWith('/') ? typed : `/${typed}`, ...target } : { type: 'redirect.update', from: draft.from, ...target };
     // Against the project as it was when the form opened: a redirect removed and made again meanwhile is not changed.
@@ -126,16 +136,34 @@ export function RedirectsFields({ state, problems, revision }: { state: ProjectS
           <input id={`${uid}-from`} className="input" value={draft.typed} placeholder="/old-services/" autoFocus onChange={(e) => (setError(null), setDraft({ ...draft, typed: e.target.value }))} />
         </Field>
       )}
-      <div className="so-redirect-kinds" role="radiogroup" aria-label="Sends visitors to">
-        {(['page', 'post', 'path'] as const).map((k) => (
-          <label key={k} className="so-redirect-kind">
-            <input type="radio" name={`${uid}-to`} checked={draft.kind === k} disabled={k === 'post' && !posts.length} autoFocus={draft.from !== null && draft.kind === k} onChange={() => (setError(null), setDraft({ ...draft, kind: k }))} /> {k === 'page' ? 'A page' : k === 'post' ? 'A post' : 'An address'}
-          </label>
-        ))}
+      <div className="so-redirect-kinds">
+        <span className="field-label" id={`${uid}-to`}>
+          Sends visitors to
+        </span>
+        {/* Focus starts here when the form opens on a redirect that already has an old address. */}
+        <div ref={kindsRef}>
+          <Segmented<Kind>
+            radio
+            full
+            labelledBy={`${uid}-to`}
+            value={draft.kind}
+            onChange={(k) => (setError(null), setDraft({ ...draft, kind: k }))}
+            options={[
+              { value: 'page', label: 'A page' },
+              { value: 'post', label: 'A post', disabled: !posts.length },
+              { value: 'path', label: 'An address' }
+            ]}
+          />
+        </div>
       </div>
       {draft.kind === 'page' && (
-        <Field label="Page" hint="It follows the page wherever it moves.">
-          <select id={`${uid}-page`} className="select" value={draft.pageId} onChange={(e) => setDraft({ ...draft, pageId: e.target.value })}>
+        <Field label="Page" hint="It follows the page wherever it moves." error={error?.field === 'target' ? error.message : undefined}>
+          <select id={`${uid}-page`} className="select" value={draft.pageId} onChange={(e) => (setError(null), setDraft({ ...draft, pageId: e.target.value }))}>
+            {!pages.some((p) => p.id === draft.pageId) && (
+              <option value={draft.pageId} disabled>
+                {draft.pageId ? 'The page it sent visitors to is gone: choose another' : 'Choose a page'}
+              </option>
+            )}
             {pages.map((p) => (
               <option key={p.id} value={p.id}>
                 {p.title} ({p.route})
@@ -145,8 +173,13 @@ export function RedirectsFields({ state, problems, revision }: { state: ProjectS
         </Field>
       )}
       {draft.kind === 'post' && (
-        <Field label="Post" hint="It follows the post wherever it moves.">
-          <select id={`${uid}-post`} className="select" value={draft.entryId} onChange={(e) => setDraft({ ...draft, entryId: e.target.value })}>
+        <Field label="Post" hint="It follows the post wherever it moves." error={error?.field === 'target' ? error.message : undefined}>
+          <select id={`${uid}-post`} className="select" value={draft.entryId} onChange={(e) => (setError(null), setDraft({ ...draft, entryId: e.target.value }))}>
+            {!posts.some((p) => p.entry.id === draft.entryId) && (
+              <option value={draft.entryId} disabled>
+                {draft.entryId ? 'The post it sent visitors to is gone: choose another' : 'Choose a post'}
+              </option>
+            )}
             {posts.map((p) => (
               <option key={p.entry.id} value={p.entry.id}>
                 {p.entry.title} ({p.route})
@@ -188,8 +221,9 @@ export function RedirectsFields({ state, problems, revision }: { state: ProjectS
           {list.map((r) => {
             const where = destination(state, r, live.get(r.from));
             const found = findings(r.from);
+            const tone = found.some((d) => d.severity === 'error') ? ' has-error' : found.length ? ' has-warning' : '';
             return (
-              <li key={r.from} data-from={r.from} className={`so-redirect${found.length ? ' has-problem' : ''}`}>
+              <li key={r.from} data-from={r.from} className={`so-redirect${tone}`}>
                 <div className="so-redirect-main">
                   <div className="so-redirect-route">
                     <code>{r.from}</code> <span aria-hidden="true">→</span>
@@ -199,11 +233,19 @@ export function RedirectsFields({ state, problems, revision }: { state: ProjectS
                     {r.custom ? 'Added by you' : 'Recorded when it moved'}
                     {where.draft ? ' · Draft: left out of the website until it is published' : ''}
                   </div>
-                  {found.map((d, i) => (
-                    <div key={i} className={d.severity === 'error' ? 'field-error' : 'field-hint'}>
-                      {d.message}
-                    </div>
-                  ))}
+                  {/* A problem leads with its glyph, in its tone: never the card's colour alone. */}
+                  {found.map((d, i) =>
+                    d.severity === 'error' ? (
+                      <div key={i} className="field-error">
+                        {d.message}
+                      </div>
+                    ) : (
+                      <div key={i} className="so-redirect-warning">
+                        <TriangleAlert aria-hidden="true" />
+                        <span>{d.message}</span>
+                      </div>
+                    )
+                  )}
                 </div>
                 {draft?.from !== r.from && (
                   <div className="so-redirect-buttons">

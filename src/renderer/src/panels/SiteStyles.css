@@ -67,7 +67,9 @@
   .ss-group + .ss-group { padding-top: 10px; border-top: 1px solid var(--border); }
   .ss-group-label { min-height: 24px; display: flex; align-items: center; padding: 0 0 4px; font-size: 12px; font-weight: 600; color: var(--text-2); }
   /* Crawlers: one row per listed crawler, its name and who runs it beside what the policy does with it. */
-  .crawler-row { display: grid; grid-template-columns: minmax(0, 1fr) 132px; align-items: center; column-gap: 8px; padding: 3px 0; }
+  .crawler-row { display: grid; grid-template-columns: minmax(0, 1fr) 96px; align-items: center; column-gap: 8px; padding: 3px 0; }
+  .crawler-outcome { font-size: 12px; font-weight: 500; color: var(--text-2); }
+  .crawler-outcome.blocked { color: var(--text); }
   .crawler-row .ss-name { display: block; font-weight: 500; }
   .code-view.crawler-preview { height: auto; max-height: 320px; }
   .ss-name { min-width: 0; min-height: 20px; font-size: 13px; line-height: 1.4; color: var(--text); overflow-wrap: anywhere; }
@@ -290,16 +292,21 @@
 
   /* ---------- Redirects (RedirectsManager.tsx) ---------- */
   .so-redirects { list-style: none; margin: 4px 0 10px; padding: 0; display: flex; flex-direction: column; gap: 6px; }
+  /* A redirect with a problem takes a full ring in its tone (never an edge bar, which bends on the rounded card) and
+     says the problem with its glyph; its buttons sit under the words, so the explanation keeps the card's width. */
   .so-redirect { display: flex; flex-wrap: wrap; align-items: flex-start; gap: 8px; padding: 8px 10px; border-radius: var(--r-md); background: var(--panel-2); }
-  .so-redirect.has-problem { box-shadow: inset 2px 0 0 var(--red); }
-  .so-redirect-main { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 3px; }
+  .so-redirect.has-warning { box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--amber) 55%, transparent); }
+  .so-redirect.has-error { box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--red) 55%, transparent); }
+  .so-redirect-main { flex: 1 1 100%; min-width: 0; display: flex; flex-direction: column; gap: 3px; }
+  .so-redirect-warning { display: flex; align-items: flex-start; gap: 5px; font-size: 12px; line-height: 1.4; color: var(--amber); overflow-wrap: anywhere; }
+  .so-redirect-warning svg { width: 13px; height: 13px; flex: none; margin-top: 2px; }
+  .so-redirect-warning span { color: var(--text-2); }
   .so-redirect-route { font-size: 13px; color: var(--text); overflow-wrap: anywhere; }
   .so-redirect-route code { font-size: 12px; }
   .so-redirect-meta { font-size: 12px; }
-  .so-redirect-buttons { display: flex; gap: 6px; }
+  .so-redirect-buttons { display: flex; gap: 6px; margin-left: auto; }
   .so-redirect-form { flex-basis: 100%; display: flex; flex-direction: column; gap: 8px; padding: 10px; border-radius: var(--r-md); background: var(--panel-2); }
   .so-redirect .so-redirect-form { padding: 6px 0 0; }
-  .so-redirect-kinds { display: flex; flex-wrap: wrap; gap: 14px; font-size: 13px; }
-  .so-redirect-kind { display: inline-flex; align-items: center; gap: 6px; }
+  .so-redirect-kinds { display: flex; flex-direction: column; gap: 4px; }
   .so-redirect-actions { display: flex; justify-content: flex-end; gap: 6px; }
 }

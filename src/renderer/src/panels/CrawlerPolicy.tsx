@@ -148,7 +148,7 @@ export function CrawlerPolicyFields({ state, onChange }: { state: ProjectState; 
       </Field>
       {custom && (
         <>
-          <Field label="Starts from" hint="The preset Custom changes. Crawlers left on Default do what it does.">
+          <Field label="Starts from" hint={`Custom starts from this preset. Crawlers left on Default follow it. ${PRESET_HINTS[rules.base]}`}>
             <select id="site-crawler-base" className="select" value={rules.base} onChange={(e) => isFixed(e.target.value) && save({ base: e.target.value })}>
               {FIXED_CRAWLER_PRESETS.map((p) => (
                 <option key={p} value={p}>
@@ -166,6 +166,7 @@ export function CrawlerPolicyFields({ state, onChange }: { state: ProjectState; 
                 const own = rules.overrides.get(foldToken(c.token));
                 const fallback = presetAction(rules.base, c.token);
                 const id = `site-crawler-${c.token}`;
+                const action = own?.action ?? fallback;
                 return (
                   <div key={c.token} className="crawler-row">
                     <div>
@@ -175,9 +176,14 @@ export function CrawlerPolicyFields({ state, onChange }: { state: ProjectState; 
                       <div className="field-hint" id={`${id}-h`}>
                         {c.operator}: {c.purpose}
                       </div>
+                      {/* What it is told, in words: the short choice beside it never has to carry the preset's answer. */}
+                      <div className={`crawler-outcome${action === 'disallow' ? ' blocked' : ''}`} id={`${id}-o`}>
+                        {ACTION_LABELS[action]}
+                        {own ? ' here' : ' by the preset'}
+                      </div>
                     </div>
-                    <select id={id} className="select" aria-describedby={`${id}-h`} value={own?.action ?? ''} onChange={(e) => save({ overrides: { [c.token]: e.target.value === 'allow' || e.target.value === 'disallow' ? e.target.value : null } })}>
-                      <option value="">Default ({ACTION_LABELS[fallback]})</option>
+                    <select id={id} className="select" aria-describedby={`${id}-h ${id}-o`} value={own?.action ?? ''} onChange={(e) => save({ overrides: { [c.token]: e.target.value === 'allow' || e.target.value === 'disallow' ? e.target.value : null } })}>
+                      <option value="">Default</option>
                       <option value="allow">Allow</option>
                       <option value="disallow">Block</option>
                     </select>

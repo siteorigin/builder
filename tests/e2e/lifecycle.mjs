@@ -61,8 +61,8 @@ assert.ok(created.ok, `project created: ${created.message ?? ''}`);
 await win.waitForSelector('.editor');
 await openInspector(win);
 
-step('Cmd+S in a focused Browser title saves it (the explicit save the lifecycle actions now share)');
-const browserTitle = inspector().getByRole('textbox', { name: 'Browser title', exact: true });
+step('Cmd+S in a focused Search title saves it (the explicit save the lifecycle actions now share)');
+const browserTitle = inspector().getByRole('textbox', { name: 'Search title', exact: true });
 await browserTitle.fill('Quayside Studio | Home');
 await win.keyboard.press(`${MOD}+s`);
 await eventually(() => assert.equal(homeDoc(dirA).seo.title, 'Quayside Studio | Home', 'the browser title is on disk'));
