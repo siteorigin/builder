@@ -1,4 +1,4 @@
-import { useEffect, useId, useRef, useState } from 'react';
+import { useId, useState } from 'react';
 import { normalizeColorText } from '@shared/color-names';
 import { DraftInput } from './ui';
 import { colorFieldProblem } from '@shared/color';
@@ -6,9 +6,8 @@ import { colorFieldProblem } from '@shared/color';
 /**
  * A colour typed as text. It is checked before it is sent: text it refuses stays in the field, with the reason beside
  * it, until it is corrected or discarded (Escape), so nothing is left over the canvas. A hex typed without its # is
- * saved with one. The reason belongs to the field: one opened again starts with none, and so does one whose colour
- * changes while it is not being typed in (picked with the swatch, set elsewhere): the refused text goes, and the
- * field shows the colour now saved.
+ * saved with one. The reason belongs to the field: one opened again starts with none. Refused text stays while the
+ * saved colour changes under it (a pick with the swatch, an undo, the AI), so the reason says what is saved instead.
  */
 export function ColorTextInput({
   propId = 'color',
@@ -43,22 +42,9 @@ export function ColorTextInput({
   const refuse = (t: string) => (!t.trim() ? null : problemOf ? problemOf(t) : colorFieldProblem(t, propId));
   const [problem, setProblem] = useState<string | null>(null);
   const problemId = useId();
-  const input = useRef<HTMLInputElement | HTMLTextAreaElement | null>(null);
-  // A new field each round, so refused text a newer colour replaced is gone with it.
-  const [round, setRound] = useState(0);
-  const seen = useRef(value);
-  useEffect(() => {
-    if (seen.current === value) return;
-    seen.current = value;
-    if (!problem || document.activeElement === input.current) return;
-    setProblem(null);
-    setRound((r) => r + 1);
-  }, [value, problem]);
   return (
     <>
       <DraftInput
-        key={round}
-        inputRef={input}
         id={id}
         className={className}
         value={value}
@@ -75,7 +61,10 @@ export function ColorTextInput({
       />
       {problem && (
         <div className={`field-error${errorClassName ? ` ${errorClassName}` : ''}`} id={problemId} role="alert">
-          {problem} <span className="field-saved">Not saved.</span>
+          {problem}{' '}
+          <span className="field-saved">
+            Not saved.{value && <> The saved {propId === 'background' ? 'value' : 'color'} is still <bdi>{value}</bdi>.</>}
+          </span>
         </div>
       )}
     </>

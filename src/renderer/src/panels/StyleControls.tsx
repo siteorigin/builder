@@ -471,7 +471,8 @@ export function StyleControls({
         </div>
         <div className="style-control">
           {p.kind === 'media' ? (
-            <BackgroundImageControl label={label} value={value} underText={underText} describedBy={lines.length ? sourceId : undefined} onSet={(v) => onSet(p.id, v, undefined, state ?? undefined)} />
+            // Each size and state has its own fields: a scrim refused in one never shows, or saves, in another.
+            <BackgroundImageControl key={`${scope}:${state ?? ''}`} label={label} value={value} underText={underText} describedBy={lines.length ? sourceId : undefined} onSet={(v) => onSet(p.id, v, undefined, state ?? undefined)} />
           ) : (
             <Control def={p} label={label} value={value} under={under} underText={underText} underFrom={underFrom} tokens={tokens} state={state} describedBy={lines.length ? sourceId : undefined} onSet={(v) => onSet(p.id, v, undefined, state ?? undefined)} />
           )}
@@ -746,7 +747,9 @@ function Control({
   // Choosing "Custom value…" opens an editor first; nothing is written until a value is entered, and the
   // stored value (a site style, a preset) stays in place until then.
   const scope = useStore((s) => s.styleScope);
-  const [drafting, setDrafting] = useState(false);
+  // Where "Custom value…" was chosen: another size or state, or a value saved meanwhile, ends the draft at once, so
+  // the custom field never opens (or takes focus) somewhere it was not chosen.
+  const [draftingAt, setDraftingAt] = useState<string | null>(null);
   const picker = useRef<HTMLSelectElement>(null);
   const linkId = useId();
   const draftId = useId();
@@ -754,7 +757,9 @@ function Control({
   const under = linkOf(def, below);
   // A commit, a reset, an undo, another size or another state all end the draft.
   const valueKey = JSON.stringify(value ?? null);
-  useEffect(() => setDrafting(false), [scope, styleState, valueKey]);
+  const here = `${scope}:${styleState ?? ''}:${valueKey}`;
+  const drafting = draftingAt === here;
+  const setDrafting = (on: boolean) => setDraftingAt(on ? here : null);
   const tokOpts = tokenOptions(tokens, def.tokenGroup);
   const set = value !== undefined;
   const state = set ? ' is-set' : ' is-inherited';

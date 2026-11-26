@@ -853,7 +853,7 @@ export function SiteStyles() {
             {value || '—'}
           </span>
         ) : (
-          <ColorTextInput key={`field-${palette}`} className="input sm mono ss-hex" errorClassName="ss-color-extra ss-color-error" value={value} onSave={(v) => setShown(t.id, v)} ariaLabel={`${t.label}${darkShown ? ' dark' : ''} color value`} />
+          <ColorTextInput key={`field-${palette}`} className="input sm mono ss-hex" errorClassName="ss-color-extra" value={value} onSave={(v) => setShown(t.id, v)} ariaLabel={`${t.label}${darkShown ? ' dark' : ''} color value`} />
         )}
         {/* Below the row, under the name: what it follows, and what is unreadable. Never squeezed beside the value. */}
         {follows && (
