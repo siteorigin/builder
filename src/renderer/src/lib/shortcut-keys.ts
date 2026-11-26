@@ -33,6 +33,9 @@ export function shortcutLabel(keys: string, platform: string): string {
   return `${names.join('+')}+${key}`;
 }
 
+/** The hint under "Press Enter to send messages": what sends instead when it is off. */
+export const sendOnEnterHint = (platform: string) => `When off, ${shortcutLabel('⌘↩', platform)} sends and Enter starts a new line.`;
+
 /**
  * What a key press while recording does: nothing yet (a modifier on its own), cancel (Escape, or Tab, which moves
  * on), refuse with the reason, or the binding to save.

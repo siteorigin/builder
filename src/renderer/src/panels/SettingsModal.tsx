@@ -7,6 +7,7 @@ import { Modal, Segmented, Spinner, SwitchRow, Tabs } from '../components/ui';
 import { InlineRow, LocalModelSettings, StackedRow, type LocalServerStatus } from './LocalModelSettings';
 import { checkLocalBaseURL, localKeyProblem } from '@shared/local';
 import { AskAiShortcut } from './ShortcutSettings';
+import { sendOnEnterHint } from '../lib/shortcut-keys';
 
 /** A connection test's outcome, shown only while what it tested is still what is on screen. */
 type TestResult = { signature: string; provider: ProviderId; edits: number; ok: boolean; message: string; draft: boolean; stage?: 'server' | 'chat' };
@@ -674,7 +675,7 @@ export function SettingsModal() {
                   <div className="settings-group-title">Chat</div>
                   <div className="settings-group">
                     <div className="settings-row">
-                      <SwitchRow checked={settings.ai.sendOnEnter} onChange={(v) => void update({ ai: { sendOnEnter: v } })} label="Press Enter to send messages" hint="When off, ⌘ Enter sends and Enter starts a new line." />
+                      <SwitchRow checked={settings.ai.sendOnEnter} onChange={(v) => void update({ ai: { sendOnEnter: v } })} label="Press Enter to send messages" hint={sendOnEnterHint(api.platform)} />
                     </div>
                   </div>
                 </>
