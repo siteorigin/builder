@@ -44,8 +44,9 @@ describe('channelOf', () => {
     expect(channelOf('v1.2.0')).toBe('latest');
   });
 
-  it('ignores build metadata', () => {
+  it('ignores build metadata, hyphens in it included', () => {
     expect(channelOf('1.2.0+build.5')).toBe('latest');
+    expect(channelOf('1.2.0+build-rc.5')).toBe('latest');
     expect(channelOf('1.2.0-rc.1+build.5')).toBe('rc');
   });
 
@@ -73,7 +74,7 @@ describe('the resolve-update-metadata-prefix action', () => {
     }
   }
 
-  it.each(['v1.2.0', 'v1.2.0-rc.1', 'v1.2.0-beta.3', 'v1.2.0-rc.1+build.5'])('resolves the tag %s to the channel channelOf names', (tag) => {
+  it.each(['v1.2.0', 'v1.2.0-rc.1', 'v1.2.0-beta.3', 'v1.2.0-rc.1+build.5', 'v1.2.0+build-rc.5', 'v1.2.0+build-5'])('resolves the tag %s to the channel channelOf names', (tag) => {
     expect(resolve('tag', tag)).toEqual({ status: 0, prefix: channelOf(tag) });
   });
 

@@ -43,10 +43,15 @@ const repo = args.repo ?? "siteorigin/builder";
 const deadline = Date.now() + minutes * 60_000;
 // The feeds a version publishes to: a stable version's are latest-*, an rc's
 // rc-* and a beta's beta-* (the release workflows' channel rule).
+const version = args.version?.replace(/^v/, "");
 const channel = (() => {
-  const v = (args.version ?? "").replace(/^v/, "").replace(/\+.*$/, "");
+  const v = (version ?? "").replace(/\+.*$/, "");
   const pre = v.includes("-") ? v.slice(v.indexOf("-") + 1).split(".")[0] : "";
-  return pre === "rc" || pre === "beta" ? pre : "latest";
+  if (pre && pre !== "rc" && pre !== "beta") {
+    console.error(`${args.version} is on the '${pre}' channel, which the release workflows don't publish: only rc and beta prereleases`);
+    process.exit(2);
+  }
+  return pre || "latest";
 })();
 const FEEDS = [`${channel}-mac.yml`, `${channel}-linux.yml`, `${channel}.yml`];
 const BAD = new Set(["failure", "timed_out", "cancelled", "startup_failure"]);
@@ -82,8 +87,8 @@ async function feeds() {
           const res = await fetch(`https://downloads.siteorigin.com/releases/${feed}?t=${Date.now()}`, { signal: AbortSignal.timeout(10_000) });
           if (res.status === 404) return `${feed} (not published)`;
           if (!res.ok) return `${feed} (HTTP ${res.status})`;
-          const version = (await res.text()).match(/^version:\s*(\S+)/m)?.[1] ?? "?";
-          return `${feed} ${version}${args.version && version === args.version ? " ✓" : ""}`;
+          const live = (await res.text()).match(/^version:\s*(\S+)/m)?.[1] ?? "?";
+          return `${feed} ${live}${version && live === version ? " ✓" : ""}`;
         } catch {
           return `${feed} (unreachable)`;
         }

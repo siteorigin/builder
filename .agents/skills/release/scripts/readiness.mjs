@@ -52,7 +52,9 @@ const workflowRuns = (os, ...filters) => {
   try {
     return JSON.parse(execFileSync("gh", ["run", "list", `--workflow=release-${os}.yml`, ...filters], { encoding: "utf8", maxBuffer: 64 << 20, stdio: ["ignore", "pipe", "pipe"] }));
   } catch (err) {
-    if (/could not find any workflows/i.test(String(err.stderr ?? ""))) {
+    // gh's wording for a workflow file GitHub doesn't know (by file name), or
+    // for a workflow name it can't find.
+    if (/not found on the default branch|could not find any workflows/i.test(String(err.stderr ?? ""))) {
       missingWorkflows.add(os);
       return [];
     }
@@ -124,8 +126,10 @@ for (const os of OSES) {
   });
 }
 const provenBy = (sha, file) => sha && blob(sha, file) === blob(head, file);
-const dryRunProves = (os, file) =>
-  dryRuns[os].some((r) => provenBy(r.headSha, file) && DEPENDENCY_FILES.every((f) => provenBy(r.headSha, f)));
+// One run must have built every file together, with these dependencies: two
+// runs that each built half of the change never built the release.
+const dryRunProvesAll = (os, files) =>
+  dryRuns[os].some((r) => [...files, ...DEPENDENCY_FILES].every((f) => provenBy(r.headSha, f)));
 
 const publishOnly = [];
 const unproven = [];
@@ -143,24 +147,17 @@ if (!lastTag) {
   }
 } else {
   changedFiles = git("-c", "diff.renames=false", "diff", "--name-only", `${lastTag}..${head}`).split("\n").filter(Boolean);
-  for (const file of changedFiles.filter((f) => ruleFor(f))) {
-    const rule = ruleFor(file);
-    if (rule.publishOnly) {
-      publishOnly.push(file);
-      continue;
-    }
-    const missing = rule.oses.filter((os) => !dryRunProves(os, file));
-    if (missing.length) unproven.push({ file, oses: missing });
-  }
-  for (const os of OSES) {
-    const files = unproven.filter((u) => u.oses.includes(os)).map((u) => u.file);
-    if (files.length) need(`${os}: release-pipeline files changed since ${lastTag} that no green dry run has built: ${files.slice(0, 6).join(", ")}`, [os]);
-  }
+  const pipeline = changedFiles.filter((f) => ruleFor(f));
+  publishOnly.push(...pipeline.filter((f) => ruleFor(f).publishOnly));
   // Packaging pulls native modules and npm's own tree into the app: new
   // dependencies are a packaging change on every OS.
-  if (DEPENDENCY_FILES.some((f) => blob(lastTag, f) !== blob(head, f))) {
-    const missing = OSES.filter((os) => !DEPENDENCY_FILES.every((f) => dryRunProves(os, f)));
-    if (missing.length) need(`dependencies changed since ${lastTag} with no green dry run on ${missing.join(", ")} that built them`, missing);
+  const dependenciesChanged = DEPENDENCY_FILES.some((f) => blob(lastTag, f) !== blob(head, f));
+  for (const os of OSES) {
+    const files = pipeline.filter((f) => !ruleFor(f).publishOnly && ruleFor(f).oses.includes(os));
+    if ((!files.length && !dependenciesChanged) || dryRunProvesAll(os, files)) continue;
+    unproven.push(...files.map((file) => ({ file, oses: [os] })));
+    const what = [files.length ? `release-pipeline files (${files.slice(0, 6).join(", ")})` : "", dependenciesChanged ? "dependencies" : ""].filter(Boolean).join(" and ");
+    need(`${os}: ${what} changed since ${lastTag}, and no one green dry run has built them together`, [os]);
   }
 }
 
@@ -177,8 +174,10 @@ for (const os of OSES) {
   let found = null;
   for (const r of runs.slice(0, 5)) {
     const unit = gh("run", "view", String(r.databaseId), "--json", "jobs").jobs.filter((j) => /^Unit tests/i.test(j.name) && j.startedAt && j.completedAt);
-    // A unit job that hit its timeout ends "cancelled" after running the whole time: the clearest sign of all.
-    const timedOut = unit.find((j) => j.conclusion === "cancelled" && timeout && (Date.parse(j.completedAt) - Date.parse(j.startedAt)) / 60_000 >= timeout - 1);
+    // A unit job that hit its timeout: "timed_out", or "cancelled" after running the whole time.
+    const timedOut = unit.find(
+      (j) => j.conclusion === "timed_out" || (j.conclusion === "cancelled" && timeout && (Date.parse(j.completedAt) - Date.parse(j.startedAt)) / 60_000 >= timeout - 1)
+    );
     if (timedOut) {
       found = { minutes: timeout, run: r.url };
       break;

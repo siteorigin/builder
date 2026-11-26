@@ -162,10 +162,11 @@ jobs:
             exit 1
           fi
           auth=(--key "$RUNNER_TEMP/apple/AuthKey.p8" --key-id "$APPLE_API_KEY_ID" --issuer "$APPLE_API_ISSUER")
-          result="$(xcrun notarytool submit "${dmgs[0]}" --wait --timeout 30m --output-format json "${auth[@]}")" || true
+          submit_rc=0
+          result="$(xcrun notarytool submit "${dmgs[0]}" --wait --timeout 30m --output-format json "${auth[@]}")" || submit_rc=$?
           echo "$result"
           status="$(node -e 'try { process.stdout.write(JSON.parse(process.argv[1]).status ?? "") } catch {}' "$result")"
-          if [[ "$status" != "Accepted" ]]; then
+          if [[ $submit_rc -ne 0 || "$status" != "Accepted" ]]; then
             # Apple's report names every file it rejected and why.
             id="$(node -e 'try { process.stdout.write(JSON.parse(process.argv[1]).id ?? "") } catch {}' "$result")"
             if [[ -n "$id" ]]; then xcrun notarytool log "$id" "${auth[@]}" || true; fi

@@ -19,10 +19,11 @@ runs:
       run: |
         PREFIX="latest"
         if [[ "$GITHUB_REF_TYPE" == "tag" ]]; then
+          # Build metadata first: a hyphen in it (v1.2.0+build-5) isn't a prerelease.
           TAG_VERSION="${GITHUB_REF_NAME#v}"
+          TAG_VERSION="${TAG_VERSION%%+*}"
           if [[ "$TAG_VERSION" == *-* ]]; then
             PRERELEASE="${TAG_VERSION#*-}"
-            PRERELEASE="${PRERELEASE%%+*}"
             PREFIX="${PRERELEASE%%.*}"
             if [[ "$PREFIX" != "rc" && "$PREFIX" != "beta" ]]; then
               echo "::error::$GITHUB_REF_NAME is a prerelease on the '$PREFIX' channel; only rc and beta prereleases (vX.Y.Z-rc.N, vX.Y.Z-beta.N) can be published"

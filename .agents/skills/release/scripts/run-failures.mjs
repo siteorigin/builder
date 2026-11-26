@@ -54,7 +54,14 @@ function paged(endpoint, key) {
     if (items.length < 100) return all;
   }
 }
-const strip = (s) => s.replace(/\x1b\[[0-9;]*m/g, "");
+// Every terminal control sequence, not just colours, so nothing in a job log
+// can drive the terminal this report is printed to. Tabs and newlines stay.
+const strip = (s) =>
+  s
+    .replace(/\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)/g, "")
+    .replace(/\x1b\[[0-?]*[ -\/]*[@-~]/g, "")
+    .replace(/\x1b[@-_]/g, "")
+    .replace(/[\x00-\x08\x0b-\x1f\x7f]/g, "");
 // Log lines are "<timestamp> <text>"; the timestamp is noise here.
 const text = (line) => strip(line).replace(/^﻿?\d{4}-\d\d-\d\dT[\d:.]+Z ?/, "");
 
@@ -95,8 +102,10 @@ const out = [`# ${run.workflowName} ${args.run} (attempt ${run.attempt}, ${run.s
 if (!picked.length) {
   out.push(args.job ? `No job ${args.job} in this run.` : "No failed, timed-out or cancelled jobs.");
   // A workflow that can't start (a YAML or permissions error) fails with no jobs at all.
-  if (!args.job && run.conclusion && run.conclusion !== "success" && !allJobs.length) {
-    out.push(`The run ended ${run.conclusion} with no jobs: the workflow itself is broken (check it with actionlint, and its permissions).`);
+  if (!args.job && !allJobs.length && run.conclusion === "startup_failure") {
+    out.push("The run failed to start, with no jobs: the workflow itself is broken (check it with actionlint, and its permissions).");
+  } else if (!args.job && !allJobs.length && run.conclusion && run.conclusion !== "success") {
+    out.push(`The run ended ${run.conclusion} before any job started.`);
   }
 }
 
@@ -148,7 +157,7 @@ for (const job of picked) {
   let explained = false;
   // A unit job that failed before vitest ran (npm ci, say) has no vitest
   // output: the log before the error says what happened instead.
-  if (/unit/i.test(job.name) && log && log.some((l) => /^\s*(Test Files|FAIL) /.test(l))) {
+  if (/unit/i.test(job.name) && log && log.some((l) => /^\s*(Test Files|FAIL) |^\s*RUN\s+v\d|[✓❯×] \S+\.(?:test|spec)\./.test(l))) {
     out.push(...unitReport(log));
     explained = true;
   }
