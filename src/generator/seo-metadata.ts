@@ -191,7 +191,7 @@ export function archiveMetadata(state: ProjectState, archive: ArchivePage): Arch
     image,
     imageSource: siteImage ? 'site' : 'none',
     imageUrl: base && image ? fileUrl(base, image) : null,
-    imageAlt: imageAlt(image),
+    imageAlt: libraryAlt(image),
     published: null,
     modified: null,
     author: '',
