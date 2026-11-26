@@ -177,10 +177,11 @@ export function Welcome() {
     const onCmd = (e: Event) => {
       if (openDialogs.length) return;
       const cmd = (e as CustomEvent).detail;
-      // A project on its way may still ask for trust: a New project form must not be underneath that.
+      // A project on its way may still ask for trust: a New project form or Settings must not be underneath that.
       if (cmd === 'new-project' && !openingRef.current) setCreating(true);
       if (cmd === 'open-project') void open();
       if (cmd === 'open-project-folder') void open(undefined, { folder: true });
+      if (cmd === 'settings' && !openingRef.current) setState({ modal: { kind: 'settings' } });
     };
     window.addEventListener('builder-command', onCmd);
     // A File menu command chosen while there was no window (macOS) is sent now that Welcome can act on it.

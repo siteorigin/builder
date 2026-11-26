@@ -17,6 +17,7 @@ const e2e = readdirSync(join(ROOT, 'tests/e2e'))
   .filter((f) => f.endsWith('.mjs') && !NOT_PROOFS.has(f))
   .map((f) => `tests/e2e/${f}`);
 const areas = Object.keys(AREAS) as Area[];
+const MENU_ACTIONS = { command: () => undefined, history: () => () => undefined, openLink: () => undefined, about: () => undefined, openNotices: () => undefined };
 
 describe('the interaction inventory (issue #498)', () => {
   it('covers every discoverable action, links every e2e script, and names only tests and steps that exist', () => {
@@ -37,16 +38,21 @@ describe('what the readers find in the app', () => {
     expect(menu.get('menu:File > New Project…')).toEqual(['darwin', 'win32', 'linux']);
     expect(menu.get('menu:File > Open Project Folder…')).toEqual(['win32', 'linux']);
     expect(menu.get('menu:Edit > Undo')).toEqual(['darwin', 'win32', 'linux']);
-    expect(menu.get('role:appMenu')).toEqual(['darwin']);
-    expect(menu.get('role:quit')).toEqual(['win32', 'linux']);
+    expect(menu.get('menu:SiteOrigin Builder > Settings…')).toEqual(['darwin']);
+    expect(menu.get('menu:File > Settings…')).toEqual(['win32', 'linux']);
+    expect(menu.get('menu:Help > SiteOrigin Website')).toEqual(['darwin', 'win32', 'linux']);
+    expect(menu.get('role:reload')).toEqual(['darwin', 'win32', 'linux']);
+    expect(menu.get('role:help')).toEqual(['darwin', 'win32', 'linux']);
+    // In the app menu on macOS, in File elsewhere.
+    expect(menu.get('role:quit')).toEqual(['darwin', 'win32', 'linux']);
     expect(menu.get('role:startSpeaking')).toEqual(['darwin']);
   });
 
   it('keeps each platform’s accelerators: Redo on Ctrl+Y on Windows, Shift+Cmd/Ctrl+Z elsewhere', () => {
-    const redo = (p: NodeJS.Platform) => (appMenuTemplate(p, true, { command: () => undefined, history: () => () => undefined, openNotices: () => undefined }).find((m) => m.label === 'Edit')!.submenu as MenuItemConstructorOptions[]).find((i) => i.id === 'edit-redo')!.accelerator;
+    const redo = (p: NodeJS.Platform) => (appMenuTemplate(p, { projectOpen: true, developer: false }, MENU_ACTIONS).find((m) => m.label === 'Edit')!.submenu as MenuItemConstructorOptions[]).find((i) => i.id === 'edit-redo')!.accelerator;
     expect([redo('win32'), redo('darwin'), redo('linux')]).toEqual(['Control+Y', 'Shift+CommandOrControl+Z', 'Shift+CommandOrControl+Z']);
     // Export and Close Project are offered only with a project open.
-    const file = (p: NodeJS.Platform, open: boolean) => (appMenuTemplate(p, open, { command: () => undefined, history: () => () => undefined, openNotices: () => undefined }).find((m) => m.label === 'File')!.submenu as MenuItemConstructorOptions[]).filter((i) => i.id).map((i) => [i.id, i.enabled]);
+    const file = (p: NodeJS.Platform, open: boolean) => (appMenuTemplate(p, { projectOpen: open, developer: false }, MENU_ACTIONS).find((m) => m.label === 'File')!.submenu as MenuItemConstructorOptions[]).filter((i) => i.id === 'export' || i.id === 'close-project').map((i) => [i.id, i.enabled]);
     for (const p of ['darwin', 'win32', 'linux'] as const)
       expect([file(p, true), file(p, false)], p).toEqual([
         [['export', true], ['close-project', true]],

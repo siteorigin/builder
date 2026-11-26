@@ -478,8 +478,9 @@ export function Editor() {
     const onCmd = (e: Event) => {
       if (openDialogs.length || openMenus.count || getState().leaving) return;
       const cmd = (e as CustomEvent).detail;
-      if (openingProject.current && (cmd === 'open-project' || cmd === 'open-project-folder' || cmd === 'new-project' || cmd === 'duplicate-project')) return;
+      if (openingProject.current && (cmd === 'open-project' || cmd === 'open-project-folder' || cmd === 'new-project' || cmd === 'duplicate-project' || cmd === 'settings')) return;
       if (cmd === 'export') setState({ modal: { kind: 'export' } });
+      if (cmd === 'settings') setState({ modal: { kind: 'settings' } });
       // Leaving the project saves what is being typed first (the main process asks; see lib/leave.ts).
       if (cmd === 'close-project') void closeProject();
       // Switching projects from the editor uses the same New project and Trust dialogs as Welcome, shown over

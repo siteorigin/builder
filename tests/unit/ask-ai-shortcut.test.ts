@@ -87,6 +87,8 @@ describe('Ask AI shortcut binding (#750)', () => {
     expect(recordShortcut(press('ArrowUp', { ctrl: true }), false)).toEqual({ problem: expect.not.stringContaining('Move up') });
     expect(recordShortcut(press('|', { meta: true, shift: true }), true)).toEqual({ problem: expect.stringContaining('right panel') });
     expect(recordShortcut(press('-', { meta: true }), true)).toEqual({ problem: expect.stringContaining('Zoom Out') });
+    expect(recordShortcut(press(',', { ctrl: true }), false)).toEqual({ problem: expect.stringContaining('Settings') });
+    expect(recordShortcut(press(',', { meta: true }), true)).toEqual({ problem: expect.stringContaining('Settings') });
     expect(recordShortcut(press('Enter', { ctrl: true, shift: true }), false)).toEqual({ problem: expect.stringContaining('Done') });
   });
 
