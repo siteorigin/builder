@@ -24,8 +24,7 @@ async function writer(html = '<p><br></p>') {
   document.execCommand('defaultParagraphSeparator', false, 'p');
   // As PostWriter's listener: a space that ends a marker runs the shortcut in place of being typed.
   el.addEventListener('beforeinput', (e) => {
-    if (e.inputType !== 'insertText' || e.data !== ' ' || e.isComposing) return;
-    const shortcut = postDom.markdownShortcut(el);
+    const shortcut = postDom.spaceShortcut(el, e);
     if (shortcut) (e.preventDefault(), shortcut());
   });
   el.focus();
@@ -38,7 +37,7 @@ async function writer(html = '<p><br></p>') {
 }
 </script>`);
 }
-const html = () => page.evaluate(() => document.getElementById('body')!.innerHTML);
+const html = () => page.evaluate<string>(`document.getElementById('body').innerHTML`);
 
 describe.skipIf(!browserInstalled)('Markdown shortcuts in the post writer', () => {
   beforeAll(async () => {
@@ -86,13 +85,20 @@ describe.skipIf(!browserInstalled)('Markdown shortcuts in the post writer', () =
     await writer('<ul><li>Bread</li></ul><p><br></p>');
     await page.keyboard.type('- Cake');
     expect(await html()).toBe('<ul><li>Bread</li><li>Cake</li></ul>');
+    // A list of another kind above is not joined.
+    await writer('<ol><li>Bread</li></ol><p><br></p>');
+    await page.keyboard.type('- Cake');
+    expect(await html()).toBe('<ol><li>Bread</li></ol><ul><li>Cake</li></ul>');
   });
 
   it('keeps the words after the caret when the marker is typed in front of them', async () => {
     await writer('<p>Opening hours</p>');
-    await page.evaluate(() => getSelection()!.collapse(document.querySelector('#body p')!.firstChild, 0));
+    await page.evaluate(`getSelection().collapse(document.querySelector('#body p').firstChild, 0)`);
     await page.keyboard.type('## ');
     expect(await html()).toBe('<h2>Opening hours</h2>');
+    // The caret stays in front of the words.
+    await page.keyboard.type('Our ');
+    expect((await html()).replace(/&nbsp;/g, ' ')).toBe('<h2>Our Opening hours</h2>');
   });
 
   it('leaves the space a space anywhere else', async () => {
@@ -111,6 +117,12 @@ describe.skipIf(!browserInstalled)('Markdown shortcuts in the post writer', () =
       await page.keyboard.type(typed);
       expect((await html()).replace(/&nbsp;/g, ' '), typed).toBe(want);
     }
+    // A word an object has of its own (Object.prototype's), never a marker.
+    for (const word of ['constructor', 'toString', '__proto__']) {
+      await writer();
+      await page.keyboard.type(`${word} x`);
+      expect((await html()).replace(/&nbsp;/g, ' '), word).toBe(`<p>${word} x</p>`);
+    }
     // On a paragraph's second line, after a line break.
     await writer('<p>First line<br><br></p>');
     await page.keyboard.type('- Second');
@@ -119,10 +131,8 @@ describe.skipIf(!browserInstalled)('Markdown shortcuts in the post writer', () =
 
   it('types the space when words are selected', async () => {
     await writer('<p>##Words</p>');
-    await page.evaluate(() => {
-      const t = document.querySelector('#body p')!.firstChild!;
-      getSelection()!.setBaseAndExtent(t, 2, t, 7);
-    });
+    // Backwards as well as forwards.
+    await page.evaluate(`(() => { const t = document.querySelector('#body p').firstChild; getSelection().setBaseAndExtent(t, 7, t, 2); })()`);
     await page.keyboard.type(' ');
     expect((await html()).replace(/&nbsp;/g, ' ')).toBe('<p>## </p>');
   });

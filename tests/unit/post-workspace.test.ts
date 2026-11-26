@@ -79,6 +79,10 @@ describe('what the editor names while the Posts workspace is in front', () => {
     const team = run(bare, { type: 'collection.create', collectionId: 'team', name: 'Team' });
     expect(postShown(team, 'write', null, null)).toEqual({ kind: 'post', ref: null, title: 'Team', draft: false });
     expect(postShown(team, 'write', { collectionId: 'team', entryId: 'en_gone' }, null)).toMatchObject({ ref: null, title: 'Team' });
+    // Beside the blog, the collection of the entry that was open, not the blog.
+    const both = run(team, { type: 'collection.create', collectionId: 'posts' });
+    expect(postShown(both, 'write', null, null)).toMatchObject({ ref: null, title: 'Posts' });
+    expect(postShown(both, 'write', { collectionId: 'team', entryId: 'en_gone' }, null)).toMatchObject({ ref: null, title: 'Team' });
     // A post with no title yet is named as the Posts list names it.
     const blank = structuredClone(s);
     blank.collections.posts.entries.en_spring.title = '';

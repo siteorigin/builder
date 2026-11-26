@@ -234,7 +234,7 @@ export function CollectionSchemaDialog({ collectionId, onClose }: { collectionId
                 <li key={t.key ?? t.id} className="collection-field">
                   <input
                     className="input"
-                    aria-label="Grouping name"
+                    aria-label={`Name of grouping ${i + 1}`}
                     maxLength={60}
                     value={t.label}
                     onChange={(e) =>

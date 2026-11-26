@@ -21,10 +21,10 @@ export interface ComposerScope {
   /** The post open in the Posts workspace (written or previewed), while it is: the next message is about it alone. */
   post?: { collectionId: string; entryId: string; title: string } | null;
   /**
-   * The Posts writer is in front with no post open: no page shows, so the next message is about the whole site (it may
-   * write a post), never the page out of sight under the writer.
+   * The Posts writer is in front with no post open: no page shows, so nothing on the page out of sight under it is
+   * offered. A change waits for a post (lib/workspace changeWithoutDocument); a question reads the site.
    */
-  site?: true;
+  empty?: true;
 }
 
 /** How a post is named in the composer and the transcript: its title, or what an untitled one is called. */
@@ -70,7 +70,7 @@ export function composerScope(state: ProjectState, view: { pageId: string | null
   // The writer covers the canvas: a selection or design behind it is never what the message is about.
   const entry = postAt(state, view.post);
   if (entry && view.post) return { page, component: null, selection: null, selectionLabel: null, post: { collectionId: view.post.collectionId, entryId: view.post.entryId, title: postTitle(entry.title) } };
-  if (view.writer) return { page: null, component: null, selection: null, selectionLabel: null, site: true };
+  if (view.writer) return { page: null, component: null, selection: null, selectionLabel: null, empty: true };
   const def = editableDesign(state, view.definitionMode?.definitionId);
   if (def) {
     // Only the design's own nodes: anything else (a pick the canvas has yet to convert) is not offered.
@@ -108,7 +108,7 @@ export function chatContextFor(state: ProjectState, scope: ComposerScope, opts: 
       ...(opts.assetIds?.length ? { assetIds: [...opts.assetIds] } : {}),
       ...(opts.ask ? { mode: 'ask' as const } : {})
     };
-  const chosen = scope.site ? 'site' : editScope(scope, opts.enabled.scope);
+  const chosen = editScope(scope, opts.enabled.scope);
   const selection = chosen === 'selection' ? scope.selection : null;
   return {
     pageId: page ? page.id : home,

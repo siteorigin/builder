@@ -440,7 +440,8 @@ export function markdownShortcut(root: HTMLElement): (() => boolean) | null {
   const before = doc.createRange();
   before.selectNodeContents(block);
   before.setEnd(sel.anchorNode!, sel.anchorOffset);
-  const to = SHORTCUTS[before.toString()];
+  const marker = before.toString();
+  const to = Object.hasOwn(SHORTCUTS, marker) ? SHORTCUTS[marker] : null;
   if (!to || before.cloneContents().querySelector('br, img')) return null;
   return () => {
     before.deleteContents();
@@ -449,4 +450,12 @@ export function markdownShortcut(root: HTMLElement): (() => boolean) | null {
     sel.collapse(block, 0);
     return 'block' in to ? setBlock(root, to.block) : toggleList(root, to.list);
   };
+}
+
+/**
+ * The shortcut a `beforeinput` event runs: a space typed (never composed) where `markdownShortcut` finds a marker. The
+ * writer cancels the event and runs it as a formatting command; null for any other input.
+ */
+export function spaceShortcut(root: HTMLElement, e: Pick<InputEvent, 'inputType' | 'data' | 'isComposing'>): (() => boolean) | null {
+  return e.inputType === 'insertText' && e.data === ' ' && !e.isComposing ? markdownShortcut(root) : null;
 }

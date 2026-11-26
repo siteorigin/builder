@@ -82,9 +82,13 @@ function unreadDate(data: Record<string, FrontValue>, unreadable: string[]): str
   return undefined;
 }
 
-/** A file's text, and whether it was not UTF-8: its bytes that are not are read as replacement characters. */
+/**
+ * A file's text, and whether it was not UTF-8: its bytes that are not are read as replacement characters. A NUL byte,
+ * which no text file holds, is UTF-16 saved without its mark.
+ */
 function decodeText(bytes: Uint8Array): { text: string; notUtf8: boolean } {
   try {
+    if (bytes.includes(0)) throw new Error('UTF-16');
     return { text: new TextDecoder('utf-8', { fatal: true }).decode(bytes), notUtf8: false };
   } catch {
     return { text: new TextDecoder('utf-8').decode(bytes), notUtf8: true };
@@ -232,7 +236,8 @@ function draftOf(data: Record<string, FrontValue>, unreadable: string[]): { draf
   const p = data.published;
   if (unreadable.includes('draft') || unreadable.includes('published')) return { draft: true, reason: 'its draft setting could not be read' };
   if (d !== undefined && typeof d !== 'boolean') return { draft: true, reason: 'its draft setting is not true or false' };
-  if (p !== undefined && typeof p !== 'boolean' && !day(p)) return { draft: true, reason: 'its published setting is not true or false' };
+  // A published date that is no day of the calendar is said as a date (unreadDate), not as a true-or-false setting.
+  if (p !== undefined && typeof p !== 'boolean' && !day(p) && !(typeof p === 'string' && /^\d{4}-\d{2}-\d{2}/.test(p.trim()))) return { draft: true, reason: 'its published setting is not true or false' };
   if (d === true) return { draft: true };
   if (p === false) return { draft: true };
   return { draft: false };

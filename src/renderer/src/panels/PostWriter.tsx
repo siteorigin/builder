@@ -23,7 +23,7 @@ import { TEXT_LIMITS } from '@shared/text-limits';
 import { isImeComposing } from '../lib/ime';
 import { appliesLanded, registerFlush, trackApply } from '../lib/pending';
 import { PostDraft, setOpenWriter, setWriterHistory, type DraftProblem, type DraftSaveOutcome } from '../lib/post-draft';
-import { articleProblem, blockAtCaret, caretIn, figureElement, fillFigure, insertFigure, markdownShortcut, placeCaret, readArticle, renderArticle, setBlock, toggleList, type ArticleBlockTag, type ArticleCaret, type ArticleListKind } from '../lib/post-dom';
+import { articleProblem, blockAtCaret, caretIn, figureElement, fillFigure, insertFigure, placeCaret, readArticle, renderArticle, setBlock, spaceShortcut, toggleList, type ArticleBlockTag, type ArticleCaret, type ArticleListKind } from '../lib/post-dom';
 import { MAX_POST_TITLE, postAt } from '../lib/posts';
 import { PostTermFields } from './PostTerms';
 import { entryTermLabels } from '@shared/entry-fields';
@@ -205,12 +205,10 @@ function PostEditor({ post, hidden }: { post: PostRef; hidden: boolean }) {
     rootEl.current = el;
     const onBeforeInput = (e: InputEvent) => {
       // A space typed after `##`, `-` and the like at the start of a paragraph makes it a heading or a list.
-      if (e.inputType === 'insertText' && e.data === ' ' && !e.isComposing && !draft.isComposing) {
-        const shortcut = markdownShortcut(el);
-        if (shortcut) {
-          e.preventDefault();
-          commandRef.current(() => void shortcut());
-        }
+      const shortcut = draft.isComposing ? null : spaceShortcut(el, e);
+      if (shortcut) {
+        e.preventDefault();
+        commandRef.current(() => void shortcut());
         return;
       }
       if (e.inputType !== 'historyUndo' && e.inputType !== 'historyRedo') return;

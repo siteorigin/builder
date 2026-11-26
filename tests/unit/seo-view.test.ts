@@ -97,8 +97,11 @@ describe('what the editor puts in front of its page', () => {
     expect(changeWithoutDocument('seo', false, false)).toBe(true);
     expect(changeWithoutDocument('seo', true, false)).toBe(false);
     expect(changeWithoutDocument('seo', false, true), 'a question changes nothing').toBe(false);
-    // The writer with no post open targets the page under it, as before.
-    expect(changeWithoutDocument('write', false, false)).toBe(false);
+    // The writer with no post open holds a change back too: the page under it is out of sight (#895).
+    expect(changeWithoutDocument('write', false, false)).toBe(true);
+    expect(changeWithoutDocument('write', true, false)).toBe(false);
+    expect(changeWithoutDocument('write', false, true), 'a question changes nothing').toBe(false);
+    expect(changeWithoutDocument('preview', false, false)).toBe(false);
     expect(changeWithoutDocument(null, false, false)).toBe(false);
   });
 });
