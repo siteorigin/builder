@@ -375,7 +375,7 @@ const drawn = () =>
       column: result.offsetWidth,
       scale: Number(el.querySelector('.serp-scaled').dataset.scale),
       /* The scale the room there is now asks for. */
-      roomScale: Math.min(1, fit.width / page.offsetWidth),
+      roomScale: Math.min(1, (fit.width - 28) / page.offsetWidth),
       fits: box.left >= fit.left - 0.5 && box.right <= fit.right + 0.5 && box.top >= fit.top - 0.5 && box.bottom <= fit.bottom + 0.5,
       bezel: getComputedStyle(page).borderTopWidth,
       search: page.querySelector('.serp-search')?.innerText.trim(),
@@ -386,6 +386,13 @@ const drawn = () =>
       lines: [...result.querySelectorAll('.serp-title-line')].map((l) => ({ text: l.textContent, height: l.offsetHeight, fits: l.querySelector('.serp-title-text').getBoundingClientRect().right <= l.getBoundingClientRect().right + 0.5 })),
       order: [...page.querySelectorAll('.serp-result')].map((r) => (r.classList.contains('serp-filler') ? 'filler' : 'document')),
       fillers: [...page.querySelectorAll('.serp-filler .serp-url')].map((u) => u.textContent),
+      /* The marker beside the site's own result: in the margin, left of the page, level with the result. */
+      marks: el.querySelectorAll('.serp-mark-tag').length,
+      markInPage: !!page.querySelector('.serp-mark'),
+      markLeftOfPage: (() => { const m = el.querySelector('.serp-mark-tag')?.getBoundingClientRect(); return !!m && m.right <= box.left + 0.5 && box.left - m.right <= 8; })(),
+      markLevel: (() => { const m = el.querySelector('.serp-mark-tag')?.getBoundingClientRect(); const r = result.getBoundingClientRect(); return !!m && m.top >= r.top - 0.5 && m.bottom <= r.bottom + 0.5; })(),
+      ownLabel: result.querySelector('.sr-only')?.textContent,
+      fillerMarked: page.querySelectorAll('.serp-filler [data-serp-own], .serp-filler .sr-only').length,
       hiddenExtras: [...page.querySelectorAll('.serp-filler, .serp-search')].every((n) => n.getAttribute('aria-hidden') === 'true')
     };
   });
@@ -397,6 +404,7 @@ const noSidewaysScroll = async (where) => {
   assert.ok(w.scroll <= w.client, `${where}: nothing scrolls sideways (${JSON.stringify(w)})`);
   const d = await drawn();
   assert.ok(d.fits && d.slotHolds, `${where}: the results page shows whole, in room of its own size (${JSON.stringify(d)})`);
+  assert.ok(d.marks === 1 && !d.markInPage && d.markLeftOfPage && d.markLevel && d.fillerMarked === 0 && d.ownLabel, `${where}: one marker sits left of the page, level with the site's own result (${JSON.stringify(d)})`);
   assert.ok(Math.abs(d.scale - d.roomScale) < 0.002, `${where}: scaled by what the room asks for (${JSON.stringify(d)})`);
 };
 /** Both screens in both of the results page's themes, in the dark editor. */

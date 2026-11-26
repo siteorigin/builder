@@ -1,7 +1,7 @@
 import './SeoPreview.css';
 import { useEffect, useId, useLayoutEffect, useMemo, useRef, useState, type CSSProperties, type ReactNode } from 'react';
 import { flushSync } from 'react-dom';
-import { Globe, Search } from 'lucide-react';
+import { ArrowRight, Globe, Search } from 'lucide-react';
 import type { ProjectState } from '@shared/types';
 import type { SeoSubject } from '@shared/seo';
 import { createSeoResolver } from '@generator/seo-metadata';
@@ -99,14 +99,18 @@ function SiteIcon({ state }: { state: ProjectState }) {
  * place it shows in is narrower: never scrolled sideways, and never re-wrapped. A transform takes no room of its own,
  * so the slot around the page is given the size the page shows at.
  */
+/** The width of the margin left of the results page, where the marker for the site's own result sits. */
+const SERP_GUTTER = 28;
+
 function ScaledPage({ device, children }: { device: SerpDevice; children: ReactNode }) {
   const fit = useRef<HTMLDivElement>(null);
   const page = useRef<HTMLDivElement>(null);
-  const [size, setSize] = useState({ room: 0, height: 0 });
+  const [size, setSize] = useState({ room: 0, height: 0, mark: null as { top: number; height: number } | null });
   const measure = useRef(() => {
     // To the fraction of a pixel (a rounded room or height would clip the page's edge), and the height as laid out,
     // before any scaling.
-    const room = fit.current?.getBoundingClientRect().width ?? 0;
+    // The margin to the left of the page holds the marker, so it is not room the page can use.
+    const room = Math.max(0, (fit.current?.getBoundingClientRect().width ?? 0) - SERP_GUTTER);
     const height = (page.current && parseFloat(getComputedStyle(page.current).height)) || 0;
     // Hidden, there is nothing to measure: what was measured last stands until it shows again.
     if (!room || !height) return;
@@ -116,7 +120,11 @@ function ScaledPage({ device, children }: { device: SerpDevice; children: ReactN
       const column = line.parentElement!.clientWidth;
       line.style.transform = line.offsetWidth > column ? `scaleX(${column / line.offsetWidth})` : '';
     }
-    setSize((s) => (s.room === room && s.height === height ? s : { room, height }));
+    // The site's own result, as drawn (scaled) from the top of the page: the marker sits level with it.
+    const own = page.current!.querySelector('[data-serp-own]')?.getBoundingClientRect();
+    const box = page.current!.getBoundingClientRect();
+    const mark = own ? { top: Math.round((own.top - box.top) * 100) / 100, height: Math.round(own.height * 100) / 100 } : null;
+    setSize((s) => (s.room === room && s.height === height && s.mark?.top === mark?.top && s.mark?.height === mark?.height ? s : { room, height, mark }));
   }).current;
   // After every change to what shows, before it is painted.
   useLayoutEffect(measure);
@@ -131,9 +139,18 @@ function ScaledPage({ device, children }: { device: SerpDevice; children: ReactN
   const scale = serpScale(size.room, device);
   return (
     <div className="serp-fit" ref={fit}>
-      <div className="serp-slot" style={{ width: width * scale, height: size.height ? size.height * scale : undefined }}>
-        <div className="serp-scaled" ref={page} style={{ width, transform: scale < 1 ? `scale(${scale})` : undefined }} data-scale={scale}>
-          {children}
+      <div className="serp-row">
+        <span className="serp-mark" aria-hidden="true">
+          {size.mark && (
+            <span className="serp-mark-tag" style={{ top: size.mark.top, height: Math.min(22, size.mark.height) }}>
+              <ArrowRight />
+            </span>
+          )}
+        </span>
+        <div className="serp-slot" style={{ width: width * scale, height: size.height ? size.height * scale : undefined }}>
+          <div className="serp-scaled" ref={page} style={{ width, transform: scale < 1 ? `scale(${scale})` : undefined }} data-scale={scale}>
+            {children}
+          </div>
         </div>
       </div>
     </div>
@@ -222,7 +239,8 @@ function SearchResults({ state, doc }: { state: ProjectState; doc: DocumentPrevi
               <span>{SAMPLE_QUERY}</span>
             </div>
             <Filler result={first} />
-            <div className={`serp-result serp serp-${device}`} data-device={device}>
+            <div className={`serp-result serp serp-${device}`} data-device={device} data-serp-own="">
+              <span className="sr-only">Your page’s result</span>
               <ResultSite icon={<SiteIcon state={state} />} name={doc.siteName || address.host || 'Your site'} url={[address.host ?? 'No public URL', ...address.trail].join(' › ')} />
               {/* The document's own words read in its language and direction, so a right-to-left "…" falls at their end. */}
               <div className={`serp-title${r.title.text ? '' : ' none'}`} {...(r.title.text ? own : {})}>
