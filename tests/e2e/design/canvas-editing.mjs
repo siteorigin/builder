@@ -82,6 +82,7 @@ await pause(1800);
 const clearSelection = async () => {
   const box = await win.locator('.canvas-scroll').boundingBox();
   await win.mouse.click(box.x + 16, box.y + 120);
+  await win.locator('.ov-chip').waitFor({ state: 'detached', timeout: 8000 });
   await pause(250);
 };
 const selectHeading = async () => {
@@ -225,8 +226,9 @@ const endDrag = async (from) => {
   await pause(500);
 };
 let from = await startDrag();
-await shot('drag-reorder', '.ov-moving', { pointer: 'keep' });
-if (!(await win.locator('.ov-drop').isVisible())) throw new Error('no drop line mid-drag');
+// Only with the drop line drawn: a drag that has nowhere new to go shows the moving hero alone.
+await win.locator('.ov-drop').waitFor({ timeout: 8000 });
+await shot('drag-reorder', '.ov-drop', { pointer: 'keep' });
 await endDrag(from);
 
 // 12. The stress case: a page that uses the selection's own blue, under the outline, the chip and the drop line.

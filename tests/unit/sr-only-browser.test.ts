@@ -40,19 +40,19 @@ describe.skipIf(!browserInstalled)('a visually hidden status in a scrolling pane
 
   it('does not stretch the document past the window', async () => {
     await page.setContent(shell(40));
-    const { scrollHeight, innerHeight } = await page.evaluate(() => ({ scrollHeight: document.documentElement.scrollHeight, innerHeight }));
+    const { scrollHeight, innerHeight } = (await page.evaluate(`({ scrollHeight: document.documentElement.scrollHeight, innerHeight })`)) as { scrollHeight: number; innerHeight: number };
     expect(scrollHeight).toBeLessThanOrEqual(innerHeight);
   });
 
   it('leaves the editor in place when the last row is scrolled into view', async () => {
     await page.setContent(shell(40));
-    const top = await page.evaluate(() => {
+    const top = await page.evaluate(`(() => {
       const rows = document.querySelectorAll('.row');
       rows[rows.length - 1].scrollIntoView({ block: 'center' });
-      return document.scrollingElement?.scrollTop ?? 0;
-    });
+      return document.scrollingElement.scrollTop;
+    })()`);
     expect(top).toBe(0);
     // The panel's own body did the scrolling.
-    expect(await page.locator('.panel-body').evaluate((b) => b.scrollTop)).toBeGreaterThan(0);
+    expect(await page.evaluate(`document.querySelector('.panel-body').scrollTop`)).toBeGreaterThan(0);
   });
 });

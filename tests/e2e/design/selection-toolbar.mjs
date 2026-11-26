@@ -142,10 +142,14 @@ await frame.locator('h1').first().click();
 await esc();
 await frame.locator('h1').first().click();
 await pause(600);
-await win.locator('.toolbar [aria-label="Right panel"]').click();
+const dockButton = win.locator('.toolbar [aria-label="Right panel"]');
+if ((await dockButton.getAttribute('aria-pressed')) !== 'true') throw new Error('the right panel should be open before it is closed');
+await dockButton.click();
 await pause(800);
-await shot('chip-dock-closed', '.ov-chip', { themes: LIGHT });
-await win.locator('.toolbar [aria-label="Right panel"]').click();
+// Only with the dock really closed: the chip's Edit is what brings the inspector back.
+await shot('chip-dock-closed', '.toolbar [aria-label="Right panel"][aria-pressed="false"]', { themes: LIGHT });
+await dockButton.click();
+await win.locator('.toolbar [aria-label="Right panel"][aria-pressed="true"]').waitFor();
 await pause(600);
 
 // ---- Other menus that share the primitive ----

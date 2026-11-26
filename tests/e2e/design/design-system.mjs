@@ -195,7 +195,7 @@ await pageRow('Contact').click({ button: 'right' });
 await win.getByRole('menuitem', { name: /Delete page/ }).click();
 await win.getByRole('dialog', { name: /Delete/ }).waitFor();
 // A page delete can be undone, so its button is the outlined danger, not the filled one kept for what can't.
-await shot('confirm-danger', '.modal .btn-danger');
+await shot('confirm-danger', '.modal .btn.btn-danger:has-text("Delete page")');
 await win.keyboard.press('Escape');
 await win.locator('.modal').waitFor({ state: 'detached' });
 
