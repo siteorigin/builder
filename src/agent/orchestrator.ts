@@ -1373,6 +1373,8 @@ export class Orchestrator {
      * first: bounded by the model's window. A question, a selection and a component's design start from what they are about.
      */
     const glanceChars = pageGlanceChars(capabilities.contextWindowTokens);
+    /** The room a layout run's first look at its layout has: shrunk, like a page's, when the request does not fit. */
+    let layoutChars = glanceChars;
     let glance = !ask && ctx && (authority.kind === 'page' || authority.kind === 'site') ? pageGlance(readState(), authority.kind === 'page' ? authority.pageId : ctx.pageId, glanceChars, indent) : null;
     /** Whether the context says what slots placements have: the first thing to go when the request does not fit. */
     let slotDetails = true;
@@ -1403,7 +1405,7 @@ export class Orchestrator {
             ? { currentPost: { collectionId: ctx.post.collectionId, entryId: ctx.post.entryId, title: liveEntry(readState(), ctx.post.collectionId, ctx.post.entryId)?.title ?? ctx.post.title } }
             : authority.kind === 'template'
               ? // A collection layout open on the canvas: what the request changes, with the collection whose entries it shows.
-                { currentLayout: layoutGlance(readState(), authority.owner, authority.label, glanceChars, indent) }
+                { currentLayout: layoutGlance(readState(), authority.owner, authority.label, layoutChars, indent) }
               : { currentPage: glance ?? (ctx ? { id: ctx.pageId, title: ctx.pageTitle } : null) }),
           // Edit everywhere: the request is about this component's design, shown through a placement on currentPage.
           ...(ctx?.component ? { editingComponent: editingComponent(readState(), ctx.component) } : {}),
@@ -1951,6 +1953,13 @@ export class Orchestrator {
         for (const share of [2, 4, 0]) {
           if (!budget.overflow || turns !== 1 || !caps.contextWindowKnown || !glance || ask || !ctx) break;
           glance = share ? pageGlance(readState(), authority.kind === 'page' ? authority.pageId : ctx.pageId, Math.floor(glanceChars / share), indent, false) : null;
+          requestItem.text = requestMessage();
+          budget = fit();
+        }
+        // So is a layout's: fewer of its sections, then only its owner, read_layout away.
+        for (const share of [2, 4, 0]) {
+          if (!budget.overflow || turns !== 1 || !caps.contextWindowKnown || authority.kind !== 'template') break;
+          layoutChars = share ? Math.floor(glanceChars / share) : 0;
           requestItem.text = requestMessage();
           budget = fit();
         }

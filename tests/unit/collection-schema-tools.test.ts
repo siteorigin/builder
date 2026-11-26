@@ -243,6 +243,17 @@ describe('upsert_collection_entry with custom fields and groupings', () => {
     const { h: h2 } = host(tab);
     const again = (await tool(h2, 'read_collection_entry', { collectionId: 'team', entryId: 'en_ana' })).content as unknown as { values: Array<{ field: string; value: unknown; editorOnly?: true }> };
     expect(again.values.find((v) => v.field === 'site')).toEqual({ field: 'site', value: null, editorOnly: true });
+    // A picture with the author's own alt text, sent back as read, keeps it; "" empties the field.
+    const alt = structuredClone(now());
+    alt.collections.team.entries.en_ana.values.photo = { assetId: ANA.id, alt: 'Ana at the wheel', decorative: false };
+    const { h: h4, now: now4 } = host(alt);
+    expect((await tool(h4, 'upsert_collection_entry', { collectionId: 'team', entryId: 'en_ana', values: [{ field: 'photo', value: ANA.id }, { field: 'role', value: 'Thrower' }] })).ok).toBe(true);
+    expect(now4().collections.team.entries.en_ana.values.photo).toMatchObject({ assetId: ANA.id, alt: 'Ana at the wheel' });
+    expect((await tool(h4, 'upsert_collection_entry', { collectionId: 'team', entryId: 'en_ana', values: [{ field: 'photo', value: '' }] })).ok).toBe(true);
+    expect(now4().collections.team.entries.en_ana.values.photo).toMatchObject({ assetId: null });
+    expect(((await tool(h4, 'read_collection_entry', { collectionId: 'team', entryId: 'en_ana' })).content as unknown as { values: Array<{ field: string; value: unknown }> }).values.find((v) => v.field === 'photo')?.value).toBe('');
+    // Any other field is read whole with field too.
+    expect((await tool(h4, 'read_collection_entry', { collectionId: 'team', entryId: 'en_ana', field: 'active' })).content).toMatchObject({ ok: true, field: 'active', type: 'boolean', value: false });
     // Rich text sent as one Markdown string reads as its blocks, as the field writes them back.
     expect((await tool(h, 'upsert_collection_entry', { collectionId: 'team', entryId: 'en_ana', values: [{ field: 'story', value: 'Early days.\n\nFirst **kiln**.\n\n- Clay\n- Glaze' }] })).ok).toBe(true);
     expect((now().collections.team.entries.en_ana.values.story as Array<{ type: string }>).map((b) => b.type)).toEqual(['p', 'p', 'ul']);
@@ -487,6 +498,8 @@ describe('a request sent while a collection layout is open', () => {
     const fitted = layoutGlance(many, owner, 'the Team layout', 900);
     expect(JSON.stringify(fitted).length).toBeLessThanOrEqual(900);
     expect(fitted.omittedSections).toBeGreaterThan(0);
+    // With no room at all, the owner alone, and how many sections it has.
+    expect(layoutGlance(many, owner, 'the Team layout', 0)).toEqual({ owner, collectionId: 'team', label: 'the Team layout', sectionCount: tpl.rootIds.length, shortened: expect.stringMatching(/read_layout/) });
   });
 });
 

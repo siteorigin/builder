@@ -35,13 +35,13 @@ const MAX_VALUES = 40;
 /** A custom field's value as a call sends it, read as the field's type takes it (see entryValue). */
 const FIELD_VALUE = z.union([z.string().max(MAX_ENTRY_CHARS), z.number(), z.boolean(), z.array(z.string().max(MAX_ENTRY_CHARS)).max(50), z.null()]);
 const VALUE_FORMAT =
-  'Each value as its field\'s type takes it: text, number or true/false; an enum field one of its options; a date "YYYY-MM-DD" ("" for none); an image field a library image\'s assetId; a link "https://…", a page route, "mailto:…", "tel:…" or "entry:en_…"; richtext Markdown, one block per line in a list; a reference an entry ID of its collection ("" for none), a list of them when it takes several. null goes back to the field\'s default.';
+  'Each value as its field\'s type takes it: text, number or true/false; an enum field one of its options; a date "YYYY-MM-DD" ("" for none); an image field a library image\'s assetId ("" for none; the one it shows, sent back, keeps its alt text); a link "https://…", a page route, "mailto:…", "tel:…" or "entry:en_…"; richtext Markdown; a reference an entry ID of its collection ("" for none), a list of them when it takes several. null goes back to the field\'s default.';
 const entryId = z.string().min(1).max(40).describe('en_… from list_collection_entries.');
 const offset = z.number().int().min(0).optional().describe('Go on from the next a previous call returned.');
 
 export const LIST_ENTRIES_ARGS = z.object({ collectionId, offset }).strict();
 export const READ_ENTRY_ARGS = z
-  .object({ collectionId, entryId, offset, field: z.string().min(1).max(60).optional().describe('A custom field to read whole, a part at a time, in place of the text: one that values shows cut short (clipped).') })
+  .object({ collectionId, entryId, offset, field: z.string().min(1).max(60).optional().describe('A custom field to read whole in place of the text (long text a part at a time): one that values shows cut short (clipped), or any other.') })
   .strict();
 export const UPSERT_ENTRY_ARGS = z
   .object({
@@ -118,8 +118,9 @@ function otherTerms(collection: Collection, entry: EntryDoc): Array<{ taxonomyId
     .filter((t) => t.names.length);
 }
 
-/** Most characters a custom text or rich text value shows in a read; a longer one is read whole with `field`. */
+/** Most characters a custom text or rich text value shows in a read, and most entries a list of them; more are read whole with `field`. */
 const VALUE_CHARS = 400;
+const REFERENCES_SHOWN = 10;
 
 /** A custom text or rich text value as text: rich text as its Markdown. */
 function valueText(schema: CollectionFieldSchema, v: CollectionFieldValue, pages: ProjectState['pages']): string | null {
@@ -155,7 +156,10 @@ function linkShown(v: CollectionFieldValue, pages: ProjectState['pages']): strin
 
 /** A custom field's value as values writes it back, and whether it was cut short or is the editor's to change. */
 function valueShown(schema: CollectionFieldSchema, v: CollectionFieldValue, pages: ProjectState['pages']): { value: unknown; clipped?: true; editorOnly?: true } {
-  if (schema.type === 'image') return { value: v && typeof v === 'object' && 'assetId' in v ? v.assetId : null };
+  // An image by its asset ID ("" for one emptied on purpose); written back as read, it keeps its alt text as it is.
+  if (schema.type === 'image') return { value: v && typeof v === 'object' && 'assetId' in v ? (v.assetId ?? '') : null };
+  // A long list of entries is shown in part, and read whole with field.
+  if (schema.type === 'reference' && Array.isArray(v) && v.length > REFERENCES_SHOWN) return { value: v.slice(0, REFERENCES_SHOWN), clipped: true };
   if (schema.type === 'link') {
     const shown = linkShown(v, pages);
     return shown === null ? { value: null, editorOnly: true } : { value: shown };
@@ -165,12 +169,19 @@ function valueShown(schema: CollectionFieldSchema, v: CollectionFieldValue, page
   return { value: text ?? v };
 }
 
+/** One custom value whole (read with field): a list of entries in full. */
+function valueShownWhole(schema: CollectionFieldSchema, v: CollectionFieldValue, pages: ProjectState['pages']): { value: unknown; editorOnly?: true } {
+  if (schema.type === 'reference') return { value: v };
+  const { clipped: _c, ...shown } = valueShown(schema, v, pages);
+  return shown;
+}
+
 /** The custom values an entry has of its own, by field: those it leaves to the field's default are not listed. */
 function entryValues(collection: Collection, entry: EntryDoc, pages: ProjectState['pages']): Array<{ field: string; value: unknown; clipped?: true; editorOnly?: true }> {
   const fields = collection.settings.fields ?? {};
   const values = entry.values && typeof entry.values === 'object' ? entry.values : {};
   return Object.keys(fields)
-    .filter((f) => Object.hasOwn(values, f))
+    .filter((f) => Object.hasOwn(values, f) && !!fields[f] && typeof fields[f] === 'object')
     .map((field) => ({ field, ...valueShown(fields[field], values[field], pages) }));
 }
 
@@ -222,8 +233,10 @@ export function runReadEntry(args: ReadEntryArgs, host: ToolHost): ToolOutcome {
     const fields = collection.settings.fields ?? {};
     const schema = Object.hasOwn(fields, args.field) ? fields[args.field] : undefined;
     const stored = entry.values && Object.hasOwn(entry.values, args.field) ? entry.values[args.field] : schema?.default;
-    const whole = schema ? valueText(schema, stored as CollectionFieldValue, state.pages) : null;
-    if (whole === null) return fieldError([{ field: 'field', message: schema ? `“${args.field}” is a ${schema.type} field, which values shows whole` : `the ${collection.settings.name} collection has no text field "${args.field}"` }], 'Nothing was read.');
+    if (!schema || typeof schema !== 'object') return fieldError([{ field: 'field', message: `the ${collection.settings.name} collection has no field "${args.field}"` }], 'Nothing was read.');
+    const whole = valueText(schema, stored as CollectionFieldValue, state.pages);
+    // Anything but text is read whole at once, as values writes it.
+    if (whole === null) return { ok: true, content: { revision: host.revision(), collectionId: collection.settings.id, entryId: entry.id, field: args.field, type: schema.type, ...valueShownWhole(schema, stored as CollectionFieldValue, state.pages) } };
     const at = textPart(whole, args.offset ?? 0, ENTRY_PART_CHARS);
     return { ok: true, content: { revision: host.revision(), collectionId: collection.settings.id, entryId: entry.id, field: args.field, format: schema!.type === 'richtext' ? 'markdown' : 'text', length: whole.length, offset: at.start, next: at.next, text: whole.slice(at.start, at.end) } };
   }
@@ -245,9 +258,10 @@ export function runReadEntry(args: ReadEntryArgs, host: ToolHost): ToolOutcome {
             ...(entry.featuredImage ? { featuredImage: entry.featuredImage } : {}),
             categories: termNames(collection, entry, 'categories'),
             ...(otherTerms(collection, entry).length ? { terms: otherTerms(collection, entry) } : {}),
-            ...(entryValues(collection, entry, state.pages).length ? { values: entryValues(collection, entry, state.pages) } : {}),
-            // Every custom field it can fill in, those it leaves to their default included, so a run limited to it can name them.
+            // Every custom field it can fill in, those it leaves to their default included, so a run limited to it can name
+            // them: ahead of the values, which a long result may lose first.
             ...(Object.keys(collection.settings.fields ?? {}).length ? { fields: Object.entries(collection.settings.fields ?? {}).flatMap(([name, f]) => (f && typeof f === 'object' ? [{ name, type: f.type }] : [])) } : {}),
+            ...(entryValues(collection, entry, state.pages).length ? { values: entryValues(collection, entry, state.pages) } : {}),
             ...(entryRoute(collection, entry) !== undefined ? { route: entryRoute(collection, entry) } : {}),
             ...(isSyncedCollection(collection.settings) ? { readOnly: true } : {})
           }
@@ -352,7 +366,7 @@ function termsValue(collection: Collection, categories: string[] | undefined, te
  * One custom field's value as the operation takes it, read as the field's type takes it: the engine checks the rest
  * (an enum's options, a reference's entries, an image in the library). Null goes back to the field's default.
  */
-function entryValue(field: string, schema: CollectionFieldSchema, v: string | number | boolean | string[] | null, issues: FieldIssue[], at: string): unknown {
+function entryValue(field: string, schema: CollectionFieldSchema, v: string | number | boolean | string[] | null, issues: FieldIssue[], at: string, stored?: CollectionFieldValue): unknown {
   if (v === null) return null;
   const wrong = (wants: string) => (issues.push({ field: at, message: `“${field}” is a ${schema.type} field: ${wants}` }), undefined);
   switch (schema.type) {
@@ -370,15 +384,20 @@ function entryValue(field: string, schema: CollectionFieldSchema, v: string | nu
     case 'link':
       if (typeof v !== 'string') return wrong('send an address: "https://…", a page route, "mailto:…", "tel:…" or "entry:en_…"');
       return v.trim().startsWith(ENTRY_LINK_PREFIX) ? { type: 'entry', target: v.trim().slice(ENTRY_LINK_PREFIX.length) } : v.trim();
-    case 'image':
-      return typeof v === 'string' ? v.trim() : wrong("send a library image's assetId");
+    case 'image': {
+      if (typeof v !== 'string') return wrong("send a library image's assetId (\"\" for none)");
+      const id = v.trim();
+      if (!id) return { assetId: null, alt: '' };
+      // The picture it already shows keeps its alt text and whether it is decorative, as the author set them.
+      return stored && typeof stored === 'object' && 'assetId' in stored && stored.assetId === id ? structuredClone(stored) : id;
+    }
     default:
       return typeof v === 'string' ? v : wrong(schema.type === 'enum' ? `send one of its options (${schema.options.map((o) => o.value).join(', ')})` : schema.type === 'date' ? 'send a date written YYYY-MM-DD ("" for none)' : 'send text');
   }
 }
 
 /** The custom field values a call sends, by field name, as entry.create and entry.update take them. */
-function valuesOf(collection: Collection, values: NonNullable<UpsertEntryArgs['values']>, issues: FieldIssue[]): Record<string, unknown> {
+function valuesOf(collection: Collection, values: NonNullable<UpsertEntryArgs['values']>, issues: FieldIssue[], entry?: EntryDoc): Record<string, unknown> {
   const fields = collection.settings.fields ?? {};
   const out: Record<string, unknown> = {};
   for (const [i, { field, value }] of values.entries()) {
@@ -392,7 +411,8 @@ function valuesOf(collection: Collection, values: NonNullable<UpsertEntryArgs['v
       issues.push({ field: `${at}.field`, message: names.length ? `the ${collection.settings.name} collection has no field "${field}". Its fields: ${names.join(', ')}` : `the ${collection.settings.name} collection has no custom fields: define_collection adds them` });
       continue;
     }
-    const v = entryValue(field, fields[field], value, issues, `${at}.value`);
+    const stored = entry?.values && Object.hasOwn(entry.values, field) ? entry.values[field] : undefined;
+    const v = entryValue(field, fields[field], value, issues, `${at}.value`, stored);
     if (v !== undefined) out[field] = v;
   }
   return out;
@@ -426,7 +446,7 @@ export async function runUpsertEntry(args: UpsertEntryArgs, host: ToolHost, call
   if (fields.excerpt !== undefined && !String(fields.excerpt).trim()) fields.excerpt = null;
   const terms = termsValue(collection, categories, groupings, issues);
   if (terms) fields.terms = terms.terms;
-  if (values?.length) fields.values = valuesOf(collection, values, issues);
+  if (values?.length) fields.values = valuesOf(collection, values, issues, entry);
   if (body) fields.body = bodyValue(body, Array.isArray(entry?.body) ? entry.body : [], state.pages, issues);
   if (entry && !Object.keys(fields).length) issues.push({ field: 'arguments', message: 'send at least one field to change' });
   if (issues.length) return fieldError(issues, 'Nothing was applied.');

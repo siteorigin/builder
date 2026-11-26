@@ -450,6 +450,9 @@ export function pageDetail(state: ProjectState, pageId: string) {
   };
 }
 
+/** A document's words, when they are words: a hand-edited file can hold anything. */
+const text = (v: unknown) => (typeof v === 'string' ? v.trim() : '');
+
 /** A collection's layout as a run reads it: its entry pages' layout (template) or its index layout (archive). */
 export function layoutTree(state: ProjectState, owner: { kind: 'template' | 'archive'; id: string }): NodeTree | null {
   const c = Object.hasOwn(state.collections ?? {}, owner.id) ? state.collections[owner.id] : undefined;
@@ -470,7 +473,7 @@ export function layoutDetail(state: ProjectState, owner: { kind: 'template' | 'a
     owner,
     collectionId: owner.id,
     // The entry layout shows one entry, which its elements read with { $entry: field }; the index lists entries.
-    layout: owner.kind === 'archive' ? `the index of ${c.settings.name}: a collection loop over { "$archive": true } repeats once for each entry the page lists` : `every ${c.settings.singularName || c.settings.name} entry's page`,
+    layout: owner.kind === 'archive' ? `the index of ${text(c.settings.name) || owner.id}: a collection loop over { "$archive": true } repeats once for each entry the page lists` : `every ${text(c.settings.singularName) || text(c.settings.name) || owner.id} entry's page`,
     sections: tree.rootIds.map((id) => compactNode(state, tree, id))
   };
 }
@@ -496,7 +499,10 @@ export function layoutGlance(state: ProjectState, owner: { kind: 'template' | 'a
   const glance = (shown: number) => ({ owner, collectionId: owner.id, label, ...(brief ? { collection: brief } : {}), sections: sections.slice(0, shown), ...(sections.length > shown ? { omittedSections: sections.length - shown } : {}), shortened });
   let shown = sections.length;
   while (shown > 0 && JSON.stringify(glance(shown), null, indent).length > maxChars) shown = Math.floor(shown / 2);
-  return glance(shown);
+  const fitted = glance(shown);
+  // A collection with too many fields for even that: the owner alone, and how many sections there are.
+  if (JSON.stringify(fitted, null, indent).length <= maxChars) return fitted;
+  return { owner, collectionId: owner.id, label, sectionCount: sections.length, shortened };
 }
 
 /** Most sections a request's first look at its page lists; the rest are counted. */
