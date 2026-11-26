@@ -109,6 +109,11 @@ const hostProof = msg('host:proof', { roomId, nonce, signature });
 const resumeToken = z.string().regex(/^[A-Za-z0-9_-]{22,128}$/);
 /** A guest asks to join, or with its resume token rejoins as the guest it was. */
 const guestJoin = msg('guest:join', { version, displayName, resumeToken: resumeToken.optional() });
+/**
+ * A guest gives its place up for good: waiting or admitted, it leaves the room at once, rather than having its place
+ * kept for it through the relay's reconnect grace as when a connection drops.
+ */
+const guestLeave = msg('guest:leave', {});
 const guestAdmit = msg('guest:admit', { guestId, role, guestExpiresAt: time.nullable() });
 const guestDecline = msg('guest:decline', { guestId });
 const guestKick = msg('guest:kick', { guestId });
@@ -329,7 +334,7 @@ const RELAY_TO_HOST = z.discriminatedUnion('type', [
   protocolError
 ]);
 
-const GUEST_TO_RELAY = z.discriminatedUnion('type', [guestJoin, msg('rpc:request', { requestId, method, args }), presenceUpdate]);
+const GUEST_TO_RELAY = z.discriminatedUnion('type', [guestJoin, guestLeave, msg('rpc:request', { requestId, method, args }), presenceUpdate]);
 
 const RELAY_TO_GUEST = z.discriminatedUnion('type', [guestStatus, roomState, hostAvailability, guestRoster, previewReload, rpcResponse({}, method), rpcEvent({}), presenceChanged, protocolError]);
 

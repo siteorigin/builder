@@ -59,6 +59,7 @@ import { normalizeDisplayName, RPC_ERROR_CODES, type RpcError } from '@shared/li
 import { liveSnapshot, scrubHostPaths, type LiveApplyResult, type LiveProjectSnapshot, type LiveSnapshotSource } from '@shared/live/snapshot';
 import { guestEditProblem } from '@engine/guest-edits';
 import { LiveHostManager, type LiveGuestEdit } from './live/host';
+import { LiveGuestManager } from './live/guest';
 import { loopbackPreview } from './live/preview-proxy';
 import { newId } from '@shared/ids';
 import { packageFileName, type ComponentPackage } from '@shared/component-package';
@@ -348,6 +349,18 @@ export class Controller {
     applyGuest: (opening, guest, batch) => this.applyGuest(opening, guest, batch),
     emit: (channel, payload) => this.send(channel, payload)
   });
+  /**
+   * This app as a guest in another computer's live session (#766): the remote shell's connection. It holds no project
+   * of this computer's, so it runs only while none is open here: opening one leaves it (attach).
+   */
+  readonly remote = new LiveGuestManager({
+    emit: (channel: string, payload: unknown) => {
+      this.send(channel, payload);
+      if (channel === 'remote:state') this.onRemoteState?.();
+    }
+  });
+  /** This app's place in another computer's live session changed (the menu offers Join only while it has none). */
+  onRemoteState: (() => void) | null = null;
   /** The snapshot guests were last given, and what it was made from (guestSnapshot). */
   private shared: (LiveSnapshotSource & { snapshot: LiveProjectSnapshot }) | null = null;
   /** Cancels a dependency install into the project when another app takes it over. */
@@ -1002,6 +1015,8 @@ export class Controller {
     this.localDirty = false;
     // A live session belongs to the opening it was started in, never the next one (closing has already ended it).
     if (this.live.running) void this.live.end();
+    // A project of this computer's is open now: the editor shows it, not another computer's (#766).
+    this.remote.leave();
     this.workspaceKey = `${session.dir}#${++this.openings}`;
     this.onOpeningChange?.();
     // Another app took the project over and edits its folder now: stop the preview running there at once (and any

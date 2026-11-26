@@ -488,6 +488,13 @@ export class SessionRoom extends DurableObject<Env> {
     switch (frame.type) {
       case 'guest:join':
         return this.refuse(ws, 'relay-to-guest', 'WRONG_STATE', 'You have already joined.', false);
+      case 'guest:leave':
+        // Its socket closes with the place: the guest has already let go of the session on its side.
+        this.removeGuest(guest, null, 'You left the session.');
+        this.changed();
+        this.sendRosters();
+        this.scheduleAlarm();
+        return;
       case 'presence:update': {
         if (guest.status !== 'admitted') return this.refuse(ws, 'relay-to-guest', 'FORBIDDEN', 'The host has not let you in yet.', false);
         // Viewers follow the session; collaborators show the others where they are and what they have selected (#765).
