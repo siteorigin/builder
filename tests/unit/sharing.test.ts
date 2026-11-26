@@ -270,6 +270,7 @@ describe('the generated sharing tags', () => {
     const src = head(s, s.pages[byTitle('Kitchens').id]);
     expect(src).toContain('<meta property="og:image:width" content="2000" />');
     expect(src).toContain('<meta property="og:image:height" content="900" />');
+    expect(src).toContain('<meta property="og:image" content=');
     expect(src).not.toContain('image:alt');
     expect(src).not.toContain('A wide kitchen');
   });
