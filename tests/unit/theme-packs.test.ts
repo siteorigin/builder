@@ -186,7 +186,7 @@ describe('the Editorial pack (#390)', () => {
     for (const gone of ['background', 'border', 'radius', 'color']) expect(card, gone).not.toHaveProperty(gone);
     expect(EDITORIAL_PACK.baseCss).toMatch(/\.so--d-editorial-features-grid__card\)::before \{\s*content: counter\(so-index, decimal-leading-zero\);/);
     // Hover states use the style scopes a page can set too.
-    expect(def('blog.grid').tree!.nodes.card.styles?.['base:hover']).toEqual({ borderBlockStart: '1px solid var(--so-color-brand)' });
+    expect(def('blog.grid').tree!.nodes.card.styles?.['base:hover']).toEqual({ border: '1px solid var(--so-color-brand)' });
   });
 
   it('has square corners, hairline rules, no shadows, and its own type over Foundation’s tokens and fonts', () => {

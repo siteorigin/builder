@@ -5,7 +5,7 @@
  */
 import type { PackFontSource } from './pack';
 
-const fontsource = (slug: string) => ({ css: `@fontsource-variable/${slug}/index.css`, noticeFile: `@fontsource-variable/${slug}/LICENSE`, license: 'OFL-1.1' });
+const fontsource = (slug: string, subsets?: string[]) => ({ css: `@fontsource-variable/${slug}/index.css`, noticeFile: `@fontsource-variable/${slug}/LICENSE`, license: 'OFL-1.1', ...(subsets ? { subsets } : {}) });
 
 export const BUILTIN_FONTS: PackFontSource[] = [
   { family: 'Inter Variable', name: 'Inter', category: 'sans-serif', stack: "'Inter Variable', 'Inter', system-ui, -apple-system, 'Segoe UI', sans-serif", ...fontsource('inter') },
@@ -16,7 +16,7 @@ export const BUILTIN_FONTS: PackFontSource[] = [
   { family: 'Playfair Display Variable', name: 'Playfair Display', category: 'serif', stack: "'Playfair Display Variable', 'Playfair Display', Georgia, 'Times New Roman', serif", ...fontsource('playfair-display') },
   { family: 'Lora Variable', name: 'Lora', category: 'serif', stack: "'Lora Variable', 'Lora', Georgia, 'Times New Roman', serif", ...fontsource('lora') },
   { family: 'Sora Variable', name: 'Sora', category: 'sans-serif', stack: "'Sora Variable', 'Sora', system-ui, -apple-system, 'Segoe UI', sans-serif", ...fontsource('sora') },
-  { family: 'JetBrains Mono Variable', name: 'JetBrains Mono', category: 'monospace', stack: "'JetBrains Mono Variable', 'JetBrains Mono', ui-monospace, 'SF Mono', Menlo, Consolas, monospace", ...fontsource('jetbrains-mono') }
+  { family: 'JetBrains Mono Variable', name: 'JetBrains Mono', category: 'monospace', stack: "'JetBrains Mono Variable', 'JetBrains Mono', ui-monospace, 'SF Mono', Menlo, Consolas, monospace", ...fontsource('jetbrains-mono', ['latin', 'latin-ext']) }
 ];
 
 /** One of these fonts, by its name. */

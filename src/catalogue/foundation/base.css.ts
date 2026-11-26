@@ -90,7 +90,7 @@ ${SURFACES}
 ::selection { background: color-mix(in srgb, var(--so-color-brand) 22%, transparent); }
 
 /* Moved up by its own height, so it stays out of sight at any text size until it is focused. */
-.so-skip-link { position: absolute; inset-inline-start: 12px; top: 12px; transform: translateY(calc(-100% - 12px)); z-index: 100; padding: 10px 16px; border-radius: var(--so-radius-sm); background: var(--so-color-text); color: var(--so-color-background); text-decoration: none; }
+.so-skip-link { position: absolute; inset-inline-start: 12px; top: 12px; transform: translateY(calc(-100% - 24px)); z-index: 100; padding: 10px 16px; border-radius: var(--so-radius-sm); background: var(--so-color-text); color: var(--so-color-background); text-decoration: none; }
 .so-skip-link:focus { transform: none; }
 
 .so-rich > * + * { margin-top: 1em; }

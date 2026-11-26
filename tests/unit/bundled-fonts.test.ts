@@ -7,6 +7,9 @@ import { fontFamilies, installedFontFamilies, installedFonts } from '@catalogue/
 import { applyOperations } from '@engine/apply';
 import { FONTS_DIR, generateProject, packFileCopies } from '@generator/index';
 import { parseFontFaces } from '../../src/main/packs/build';
+import { buildFont } from '../../src/main/packs/build';
+import { builtinFont } from '@catalogue/builtin-fonts';
+import { SHARED_BASE_CSS } from '@catalogue/foundation/base.css';
 
 const fresh = () => createStarterState('business', 'Test', false);
 const setFont = (s: ProjectState, value: string, tokenId = 'font.body') => applyOperations(s, [{ type: 'token.set', tokenId, value }]).state;
@@ -22,6 +25,23 @@ const legacy = () => {
 const BUNDLED_FONTS = () => getTheme('foundation').fonts;
 const font = (name: string) => BUNDLED_FONTS().find((f) => f.name === name)!;
 const PACKAGES = ['inter', 'fraunces', 'plus-jakarta-sans', 'dm-sans', 'space-grotesk', 'playfair-display', 'lora', 'sora', 'jetbrains-mono'].map((n) => `@fontsource-variable/${n}`);
+
+describe('Signal fonts', () => {
+  it('ship the same scripts: JetBrains Mono is held to the Latin subsets of its Sora and DM Sans', () => {
+    const files = [...buildFont(builtinFont('JetBrains Mono'), process.cwd()).files.keys()];
+    expect(files.length).toBeGreaterThan(0);
+    for (const f of files) expect(f).toMatch(/-latin(-ext)?-wght/);
+  });
+});
+
+describe('skip link', () => {
+  it('hides itself clear of the top edge of the page, so no sliver of it shows', () => {
+    const rule = SHARED_BASE_CSS.match(/\.so-skip-link \{[^}]*\}/)![0];
+    expect(rule).toMatch(/top: 12px/);
+    expect(rule).toMatch(/translateY\(calc\(-100% - (\d+)px\)\)/);
+    expect(Number(rule.match(/translateY\(calc\(-100% - (\d+)px\)\)/)![1])).toBeGreaterThan(12);
+  });
+});
 
 describe('bundled fonts', () => {
   it('ship with the theme, so the website template installs none', () => {
