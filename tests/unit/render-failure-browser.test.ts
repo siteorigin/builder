@@ -16,7 +16,8 @@ const ENTRY = [
   "import { createElement as h, useState } from 'react';",
   "import { createRoot } from 'react-dom/client';",
   "import { flushSync } from 'react-dom';",
-  `import { RenderFailure } from ${JSON.stringify(resolve('src/renderer/src/components/RenderFailure'))};`,
+  `import { RenderFailure, renderFailed } from ${JSON.stringify(resolve('src/renderer/src/components/RenderFailure'))};`,
+  'window.renderFailed = renderFailed;',
   'function Screen() {',
   '  const [broken, setBroken] = useState(false);',
   '  window.breakScreen = () => flushSync(() => setBroken(true));',
@@ -25,8 +26,10 @@ const ENTRY = [
   '}',
   'function Page() {',
   '  const [closable, setClosable] = useState(true);',
+  '  const [screen, setScreen] = useState(0);',
   '  window.setClosable = (on) => flushSync(() => setClosable(on));',
-  "  return h(RenderFailure, { onCloseProject: closable ? () => window.closings.push('close') : undefined }, h(Screen));",
+  '  window.nextScreen = () => flushSync(() => setScreen((n) => n + 1));',
+  "  return h(RenderFailure, { key: screen, onCloseProject: closable ? () => window.closings.push('close') : undefined }, h(Screen));",
   '}',
   "flushSync(() => createRoot(document.getElementById('root')).render(h(Page)));"
 ].join('\n');
@@ -85,6 +88,7 @@ describe.skipIf(!browserInstalled)('a screen that fails while rendering (#886)',
     await page.evaluate('window.beforeFailure = true; window.breakScreen()');
     await failure().getByRole('heading', { name: 'The editor stopped working' }).waitFor();
     expect(await failure().innerText()).toContain("Cannot read properties of undefined (reading 'nodes')");
+    expect(await failure().innerText()).toContain('Reload the editor to return to your project.');
     expect(await page.locator('#screen').count()).toBe(0);
 
     await failure().getByRole('button', { name: 'Reload editor' }).click();
@@ -101,5 +105,17 @@ describe.skipIf(!browserInstalled)('a screen that fails while rendering (#886)',
     await page.evaluate('window.setClosable(false)');
     expect(await failure().getByRole('button', { name: 'Close project' }).count()).toBe(0);
     expect(await failure().getByRole('button', { name: 'Reload editor' }).count()).toBe(1);
+    expect(await failure().innerText()).toContain('Reload the editor to carry on.');
+  });
+
+  it('holds File menu commands while a screen has failed, until another screen takes its place', async () => {
+    expect(await page.evaluate('window.renderFailed()')).toBe(false);
+    await page.evaluate('window.breakScreen()');
+    expect(await page.evaluate('window.renderFailed()')).toBe(true);
+    // The project closed: Welcome takes the failed screen's place.
+    await page.evaluate('window.nextScreen()');
+    await page.locator('#screen').waitFor();
+    expect(await failure().count()).toBe(0);
+    expect(await page.evaluate('window.renderFailed()')).toBe(false);
   });
 });

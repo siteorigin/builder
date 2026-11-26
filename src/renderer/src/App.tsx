@@ -15,7 +15,7 @@ import { frameTextFocus, inlineEdit, stepVisitor } from './panels/Canvas';
 import { focusedSurface, forwardedKeyRuns, forwardedVisitorStep, menuHistoryOwner, type HistoryContext } from './lib/history';
 import { runWriterHistory } from './lib/post-draft';
 import { closeProject, endEditingHold, forgetKeptDrafts, prepareToLeave, projectClosed } from './lib/leave';
-import { RenderFailure } from './components/RenderFailure';
+import { RenderFailure, renderFailed } from './components/RenderFailure';
 import { keepViewValid } from './lib/model';
 import { keepSeoSubject } from './lib/seo-view';
 import { placeOn, readPlaces } from './lib/page-place';
@@ -95,6 +95,8 @@ export function App() {
       api.on('component-preview:request', (req) => void runComponentPreviews(req)),
       api.on('component-preview:cancel', (req) => cancelComponentPreviews(req.requestId)),
       api.on('menu:command', ({ cmd, id }) => {
+        // A screen that failed cannot act on it: it waits, unconfirmed, for the screen that comes back (RenderFailure).
+        if (renderFailed()) return;
         // Confirmed at once, so the main process stops offering it. It may have offered it twice (a screen said it was
         // ready again before this confirmation arrived): it is acted on once.
         api.menuReceived(id);

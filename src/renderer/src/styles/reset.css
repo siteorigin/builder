@@ -60,7 +60,7 @@
   /* Shown instead of the editor when no theme pack could be loaded. */
   .fatal { max-width: 560px; margin: 15vh auto; padding: 0 16px; font-size: 14px; line-height: 1.5; color: var(--text); }
   .fatal ul { margin: 12px 0 0; padding-left: 18px; color: var(--text-2); font-size: 13px; overflow-wrap: anywhere; }
-  /* Shown instead of a screen that failed while rendering, or by the editor reloaded after a crash (#886). */
+  /* Shown instead of a screen that failed while rendering (#886). */
   .render-failure h1 { margin: 0 0 8px; font-size: 18px; font-weight: 600; }
   .render-failure-detail { margin: 12px 0 0; max-height: 30vh; overflow: auto; white-space: pre-wrap; overflow-wrap: anywhere; color: var(--text-2); font: 12px/1.5 var(--mono); }
   .render-failure-actions { display: flex; gap: 8px; margin-top: 20px; }
