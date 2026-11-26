@@ -10,8 +10,9 @@
  * Bounded by count and by size: the oldest events go first, and a reader asking from before them is told how many it
  * missed rather than given a gap it cannot see.
  *
- * A run's streamed text is sent whole each time it grows, so only the latest of a run's text events in a row is kept:
- * it holds everything the earlier ones did.
+ * A run's streamed text is sent as the pieces it gains (AiEvent `at`); the journal keeps it whole, each text record
+ * holding the turn's text so far, so only the latest of a run's text events in a row is kept: it holds everything the
+ * earlier ones did.
  *
  * A test that lets the assistant reach a real provider also caps how many requests it may start and until when
  * (`limitTurns`): the main process asks `admit()` before anything reaches a provider, so one past the cap or the
@@ -64,6 +65,8 @@ export class AiJournal {
   private deadlineTimer: ReturnType<typeof setTimeout> | null = null;
   private spent = false;
   private stopAll: (() => void) | null = null;
+  /** The streamed text of the latest run's turn, whole, which the next piece of it is added to. */
+  private streamed: { key: string; text: string } | null = null;
 
   constructor(opts: AiJournalOptions = {}) {
     this.maxRecords = opts.maxRecords ?? 5000;
@@ -73,6 +76,7 @@ export class AiJournal {
 
   /** Keep one event, as sent. Never throws: an event that cannot be kept is recorded as such, keeping the order. */
   record(event: unknown) {
+    event = this.whole(event);
     let json: string;
     try {
       json = JSON.stringify(event) ?? 'null';
@@ -93,6 +97,24 @@ export class AiJournal {
     this.records.push({ seq: ++this.seq, at: this.now(), json, bytes, ...(text ? { text } : {}) });
     this.bytes += bytes;
     while (this.records.length > 1 && (this.records.length > this.maxRecords || this.bytes > this.maxBytes)) this.bytes -= this.records.shift()!.bytes;
+  }
+
+  /**
+   * The event with its turn's text whole: a streamed piece is added to the text before it (the last text event of its
+   * run, or the run's message as last sent), as the editor adds it.
+   */
+  private whole(event: unknown): unknown {
+    const e = event as { kind?: unknown; runId?: unknown; conversationId?: unknown; text?: unknown; at?: unknown; message?: { role?: unknown; text?: unknown } } | null;
+    if (!e || typeof e !== 'object' || typeof e.runId !== 'string') return event;
+    const key = `${e.runId}|${String(e.conversationId)}`;
+    if (e.kind === 'message' && e.message?.role === 'assistant' && typeof e.message.text === 'string') this.streamed = { key, text: e.message.text };
+    if (e.kind !== 'text' || typeof e.text !== 'string') return event;
+    const before = this.streamed?.key === key ? this.streamed.text : '';
+    const text = typeof e.at === 'number' ? before.slice(0, e.at) + e.text : e.text;
+    this.streamed = { key, text };
+    if (typeof e.at !== 'number') return event;
+    const { at: _at, ...rest } = e;
+    return { ...rest, text };
   }
 
   /** What stops the assistant (its running request and any code fix) when a deadline passes. */
