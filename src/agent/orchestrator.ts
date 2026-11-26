@@ -312,7 +312,7 @@ ${rules} Mention anything a tool found that the user needs to act on.`;
 - This request may change only the page in <editor_context> currentPage, which lists its sections. Build or rewrite it with upsert_page_with_sections and its route: from a short request, an opening section, the content the page is for, and usually a closing call to action. removeOtherSections: true replaces the sections already there. Internal links use routes such as /contact/.
 - apply_operations removes (node.remove) or moves (node.move) one section by its ID, removes one but keeps what it holds (node.removeKeepContent), and changes the page's own settings (page.update). update_page_seo sets its search settings.
 - ${SEO_GUIDANCE_SHORT}
-- Ask first with request_clarification (widenScope: true) when the request needs other pages, the site's brand or search settings, or the shared header and footer.
+- Ask first with request_clarification (widenScope: true) when the request needs other pages, the site's brand or search settings, or the shared header and footer beyond this page's own menu links.
 - When the user wants advice or ideas in chat only, give them and change nothing.
 - When the user asks for checks at screen sizes, run inspect_layout on this page at each of those sizes, after its last change.
 ${rules} The result card lists each layout and image check with its latest result, so do not restate those; do mention anything else a tool found that the user needs to act on.
@@ -368,7 +368,7 @@ ${shared}`;
 ${shared}
 ${themeGuidance(theme)}`;
   return `You build and edit small business websites made of ready-made section components.
-- upsert_page_with_sections creates or updates a whole page in one call, with all its sections; addToHeaderNav / addToFooterNav add its menu links. Build one page per call; from a short request, give it several sections: an opening section, the content the page is for, and usually a closing call to action. ${PAGE_FROM_COPY} ${REPLACE_PLACEHOLDERS}
+- upsert_page_with_sections creates or updates a whole page in one call, with all its sections; addToHeaderNav / addToFooterNav ask for its menu links. Build one page per call; from a short request, give it several sections: an opening section, the content the page is for, and usually a closing call to action. ${PAGE_FROM_COPY} ${REPLACE_PLACEHOLDERS}
 - update_site_brand sets the site name, tagline, contact details, colors, fonts and type scale everywhere at once.
 - update_page_seo sets a page's search settings; update_site_seo the site's address, language, publisher identity, crawler policy and llms.txt.
 - ${SEO_GUIDANCE_SHORT}

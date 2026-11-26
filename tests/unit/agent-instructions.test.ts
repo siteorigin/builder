@@ -133,9 +133,10 @@ describe('agent instructions match the tool definitions (#815)', () => {
     const caps = { toolCalling: 'native' as const, contextWindowTokens: 100000 };
     const site = toolsForRun({ state: blog, selection: null, capabilities: caps, codeEnabled: false, definitionOps: false }).tools.find((t) => t.name === 'upsert_collection_entry');
     const entry = toolsForRun({ state: blog, selection: null, capabilities: caps, codeEnabled: false, definitionOps: false, entry: { collectionId: 'posts', entryId: 'en_x' } }).tools.find((t) => t.name === 'upsert_collection_entry')!;
-    if (site) expect(site.description).toMatch(/adding any the collection lacks/);
+    expect(site?.description).toMatch(/adding any the collection lacks/);
     for (const text of [entry.description, entry.brief ?? '', JSON.stringify((entry.parameters as { properties: { categories: unknown } }).properties.categories)]) {
       expect(text).not.toMatch(/adding any|lacks is added|Create a draft/);
+      expect(text).toMatch(/collection (already )?has/);
     }
     expect(entry.description).toContain('categories its collection already has');
   });
@@ -146,12 +147,17 @@ describe('agent instructions match the tool definitions (#815)', () => {
       firstRequest('Rewrite this page', (s) => ({ pageId: s.site.homePageId, scope: 'page' })),
       firstRequest('Make this darker', (s) => ({ selection: { owner: { kind: 'page', id: s.site.homePageId }, instancePath: [], nodeId: s.pages[s.site.homePageId].rootIds[0] }, selectionLabel: 'Hero' }))
     ]);
-    // The page run is offered neither: its prompt must not send it to them.
-    expect(runs[1].tools.map((t) => t.name)).not.toContain('upsert_managed_component');
-    for (const req of runs) {
-      const offered = req.tools.map((t) => t.name);
-      for (const name of ['upsert_managed_component', 'inspect_component']) if (!offered.includes(name)) expect(req.system, name).not.toContain(name);
-    }
-    expect(runs[0].system).toContain('upsert_managed_component');
+    const offered = runs.map((req) => req.tools.map((t) => t.name));
+    // Each context reaches the run it stands for: the site run is offered both, the page run neither, a selection
+    // only the check.
+    expect(offered[0]).toEqual(expect.arrayContaining(['upsert_managed_component', 'inspect_component']));
+    for (const name of ['upsert_managed_component', 'inspect_component']) expect(offered[1]).not.toContain(name);
+    expect(offered[2]).toContain('inspect_component');
+    expect(offered[2]).not.toContain('upsert_managed_component');
+    runs.forEach((req, i) => {
+      for (const name of ['upsert_managed_component', 'inspect_component']) expect(req.system.includes(name), `${i} ${name}`).toBe(offered[i].includes(name));
+    });
+    expect(runs[0].system).toContain('Making a new reusable component');
+    expect(runs[2].system).toContain('Checking a component');
   });
 });
