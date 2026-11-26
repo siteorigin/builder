@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import type { PerfRecord } from '../../src/shared/perf';
 import { Collector, Trace } from '../../scripts/perf/results';
-import { chainFor, edit, expect as check, findHeading, launch, open, PANELS, panels, runChain, SHOWN_PANELS, type FixtureFacts, type Scenario, type ScenarioContext } from '../../scripts/perf/scenarios';
+import { CHAT_CASES, CHAT_REPLY_CHECKPOINTS, CHAT_TYPED, chainFor, chat, chatReply, chatReplyFirst, chatReplyLast, chatSeed, edit, expect as check, findHeading, launch, open, PANELS, panels, runChain, SHOWN_PANELS, type FixtureFacts, type Scenario, type ScenarioContext } from '../../scripts/perf/scenarios';
 import { FIXTURES } from '../../scripts/perf/fixtures';
 
 let seq = 0;
@@ -14,6 +14,7 @@ const facts: FixtureFacts = { spec: FIXTURES.small, pages: 3, entries: 0, assets
 describe('the scenario chain', () => {
   it('runs each scenario after the ones it follows', () => {
     expect(chainFor(['edit']).map((s) => s.name)).toEqual(['launch', 'open', 'edit']);
+    expect(chainFor(['chat']).map((s) => s.name)).toEqual(['launch', 'open', 'chat']);
     expect(chainFor(['open']).map((s) => s.name)).toEqual(['launch', 'open']);
     expect(chainFor(['launch']).map((s) => s.name)).toEqual(['launch']);
     expect(chainFor(['edit', 'launch', 'open']).map((s) => s.name)).toEqual(['launch', 'open', 'edit']);
@@ -347,6 +348,95 @@ describe('panels metrics', () => {
     expect(gone.metrics['panels.click.renders.insert']).toBeUndefined();
     const uncounted = new Trace(trace().records.map((x) => (x.name === 'scenario.start' && x.proc === 'renderer' ? { ...x, c: { 'react.commits': 100 } } : x)));
     expect(panels.measure(uncounted, facts).missing).toEqual(['panels.click (the editor did not count component renders)']);
+  });
+});
+
+describe('chat metrics', () => {
+  /**
+   * One case's window: typing (a span per key, each `keyMs` long in turn), then a reply streamed (an event span each),
+   * with the counters each process carries on its marks, and a decoy of each span just outside the window.
+   */
+  function chatCase(key: string, at: number, o: { keyMs?: number[]; keys?: number; events?: number[]; sent?: number; renders?: [number, number, number, number]; bytes?: [number, number] } = {}): PerfRecord[] {
+    const [k0, k1, s0, s1] = o.renders ?? [0, 98, 98, 200];
+    const c = (commits: number, renders: number) => ({ c: { 'react.commits': commits, 'chat.messageRenders': renders, 'chat.textParses': Math.floor(renders / 2) } });
+    const [b0, b1] = o.bytes ?? [1000, 9000];
+    const keyMs = o.keyMs ?? [0.5, 0.7, 0.6];
+    const keys = o.keys ?? CHAT_TYPED.length;
+    const events = o.events ?? [1.5, 2.5, 2];
+    const sent = o.sent ?? events.length;
+    return [
+      r('chat.keystroke', at - 1, { kind: 'span', ms: 50, attrs: { commits: 1 } }),
+      r('chat.typeStart', at, { attrs: { at: key }, ...c(10, k0) }),
+      ...Array.from({ length: keys }, (_, i) => r('chat.keystroke', at + 1 + i * 0.1, { kind: 'span', ms: keyMs[i % keyMs.length], attrs: { commits: 1 } })),
+      r('chat.typeEnd', at + 10, { attrs: { at: key }, ...c(13, k1) }),
+      m('chat.streamStart', at + 11, { attrs: { at: key }, c: { 'ipc.aiEvent.sends': 5, 'ipc.aiEvent.bytes': b0 } }),
+      r('chat.streamStart', at + 11.5, { attrs: { at: key }, ...c(13, s0) }),
+      ...events.map((ms, i) => r('chat.aiEvent', at + 20 + i * 10, { kind: 'span', ms, attrs: { kind: 'text', commits: 1 } })),
+      m('chat.streamEnd', at + 90, { attrs: { at: key }, c: { 'ipc.aiEvent.sends': 5 + sent, 'ipc.aiEvent.bytes': b1 } }),
+      r('chat.streamEnd', at + 90.5, { attrs: { at: key }, ...c(13 + events.length, s1) }),
+      r('chat.aiEvent', at + 91, { kind: 'span', ms: 50, attrs: { kind: 'status', commits: 1 } })
+    ];
+  }
+  const both = () => [...chatCase('at6', 1000, { renders: [0, 4, 4, 20], events: [1, 3] }), ...chatCase('at100', 2000, { keyMs: [1, 2, 3, 4], bytes: [9000, 40_000] })];
+
+  it('report each conversation’s keystrokes and streamed events, by its own marks', () => {
+    const got = chat.measure(new Trace(both()), facts);
+    expect(got.missing).toEqual([]);
+    const v = (name: string) => got.metrics[name]?.value;
+    expect([v('chat.at6.keystrokes'), v('chat.at6.keyMs'), v('chat.at6.keyCommits'), v('chat.at6.keyMessageRenders')]).toEqual([66, 0.6, 3, 4]);
+    expect([v('chat.at100.keystrokes'), v('chat.at100.keyMs'), v('chat.at100.keyMessageRenders'), v('chat.at100.keyTextParses')]).toEqual([66, 2, 98, 49]);
+    expect([v('chat.at6.events'), v('chat.at6.eventsHandled'), v('chat.at6.eventMs'), v('chat.at6.eventMsTotal'), v('chat.at6.replyMs')]).toEqual([2, 2, 2, 4, 1030 - 1011.5]);
+    expect([v('chat.at100.events'), v('chat.at100.eventsHandled'), v('chat.at100.eventMs'), v('chat.at100.eventMsTotal'), v('chat.at100.replyMs')]).toEqual([3, 3, 2, 6, 2040 - 2011.5]);
+    expect([v('chat.at100.streamCommits'), v('chat.at100.streamMessageRenders'), v('chat.at100.streamTextParses')]).toEqual([3, 102, 100 - 49]);
+    expect(got.metrics['chat.at100.eventBytes']).toEqual({ unit: 'bytes', value: 31_000 });
+    expect(got.metrics['chat.at6.eventBytes']).toEqual({ unit: 'bytes', value: 8000 });
+  });
+
+  it('take the longest main-process stall inside each reply only', () => {
+    const stall = (t: number, ms: number) => m('main.stall', t, { kind: 'span', ms });
+    const got = chat.measure(new Trace([...both(), stall(1050, 70), stall(2050, 90), stall(1500, 400)]), facts);
+    expect([got.metrics['chat.at6.mainStallMax'].value, got.metrics['chat.at100.mainStallMax'].value]).toEqual([70, 90]);
+  });
+
+  it('name a conversation whose marks or spans are missing or short instead of reporting less work', () => {
+    const got = chat.measure(new Trace([...chatCase('at6', 1000, { keys: 0 }), ...chatCase('at100', 2000, { events: [] })]), facts);
+    expect(got.missing).toEqual(['chat.keystroke spans (at6: 0 of 66)', 'chat.aiEvent spans (at100: 0 of 0 sent)']);
+    expect(got.metrics['chat.at6.keyMs']).toBeUndefined();
+    // A trace that lost one key's span, or one event's, is not a faster run.
+    const short = chat.measure(new Trace([...chatCase('at6', 1000, { keys: 65 }), ...chatCase('at100', 2000, { sent: 4 })]), facts);
+    expect(short.missing).toEqual(['chat.keystroke spans (at6: 65 of 66)', 'chat.aiEvent spans (at100: 3 of 4 sent)']);
+    const half = chat.measure(new Trace(chatCase('at6', 1000)), facts);
+    expect(half.missing).toContain('chat.typeStart (at100, renderer)');
+    expect(half.missing).toContain('chat.streamEnd (at100, main)');
+  });
+
+  it('leave the bytes sent missing when an event’s size could not be told, never short', () => {
+    const records = both().map((x) => (x.name === 'chat.streamEnd' && x.proc === 'main' && x.attrs?.at === 'at6' ? { ...x, c: { ...x.c, 'ipc.aiEvent.unsized': 1 } } : x));
+    const got = chat.measure(new Trace(records), facts);
+    expect(got.missing).toEqual(['chat.at6.eventBytes (an event whose size could not be told)']);
+  });
+
+  it('seed each conversation with the earlier turns its log holds, and stream a reply that starts and ends as checked', () => {
+    for (const c of CHAT_CASES) {
+      const seeded = chatSeed(c, facts);
+      expect(seeded.id).toBe(c.id);
+      expect(seeded.messages).toHaveLength(c.earlier);
+      expect(seeded.messages.map((x) => x.role)).toEqual(Array.from({ length: c.earlier }, (_, i) => (i % 2 ? 'assistant' : 'user')));
+      expect(new Set(seeded.messages.map((x) => x.id)).size).toBe(c.earlier);
+      const reply = chatReply(c.key);
+      expect(reply.startsWith(chatReplyFirst(c.key))).toBe(true);
+      expect(reply.endsWith(chatReplyLast(c.key))).toBe(true);
+      expect(reply.length).toBeGreaterThan(2000);
+      // Each checkpoint in order, after the first sentence and well before the last.
+      const at = CHAT_REPLY_CHECKPOINTS.map((p) => reply.indexOf(p));
+      expect(at.every((x, i) => x > (i ? at[i - 1] : chatReplyFirst(c.key).length) && x < reply.length - 200)).toBe(true);
+      // Asked and answered, then edited: both kinds of turn, as stored ones are.
+      expect(new Set(seeded.messages.filter((x) => x.role === 'assistant').map((x) => x.result?.status))).toEqual(new Set(c.earlier > 2 ? ['no-changes', 'completed'] : ['no-changes']));
+      // Real Markdown: a list, a table and emphasis.
+      expect(reply).toMatch(/^1\. \*\*/m);
+      expect(reply).toMatch(/^\| --- \|/m);
+    }
+    expect(CHAT_CASES.map((c) => c.earlier + 2)).toEqual([6, 100]);
   });
 });
 

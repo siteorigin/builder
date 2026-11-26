@@ -886,6 +886,8 @@ export class Orchestrator {
 
   reset() {
     this.conversation = null;
+    // A run detached from its conversation sends its text whole again.
+    this.sentText = null;
     this.deleted = new Set();
     this.removing = new Set();
     this.names = new Map();
@@ -905,7 +907,24 @@ export class Orchestrator {
   }
 
   private emitMessage(m: ChatMessage, runId = '') {
+    // The editor's copy of the message is this one now, its text included.
+    if (m.role === 'assistant') this.sentText = { id: m.id, text: m.text };
     this.deps.emit({ runId, conversationId: this.eventConversation(runId), kind: 'message', message: structuredClone(m) });
+  }
+
+  /**
+   * A turn's text as the editor was last sent it, so text that only grew is sent as the piece it gained: a reply sent
+   * whole on every token would cost the square of its length to send (#974). Any other change is sent whole.
+   */
+  private sentText: { id: string; text: string } | null = null;
+
+  /** `added`: what the turn's text just gained, when what it had before was the text last sent (the stream knows). */
+  private emitText(m: ChatMessage, runId: string, added?: string) {
+    const was = this.sentText?.id === m.id ? this.sentText.text : '';
+    this.sentText = { id: m.id, text: m.text };
+    const piece = added ?? (was.length > 0 && m.text.length > was.length && m.text.startsWith(was) ? m.text.slice(was.length) : null);
+    const at = m.text.length - (piece?.length ?? 0);
+    this.deps.emit({ runId, conversationId: this.eventConversation(runId), kind: 'text', ...(piece !== null && at > 0 ? { text: piece, at } : { text: m.text }) });
   }
 
   private setStatus(status: RunStatus) {
@@ -2037,9 +2056,12 @@ export class Orchestrator {
               if (signal.aborted) throw new Error('Canceled');
               if (expired) break;
               if (ev.type === 'text') {
+                // Within an attempt, the text before this piece is the one last sent (the same string), so the piece
+                // goes as it is; the attempt's first piece is checked against what was sent.
+                const follows = turnText !== '' && this.sentText?.id === msg.id && this.sentText.text === msg.text;
                 turnText += ev.delta;
                 msg.text = finalText + turnText;
-                this.deps.emit({ runId, conversationId: this.eventConversation(runId), kind: 'text', text: msg.text });
+                this.emitText(msg, runId, follows ? ev.delta : undefined);
               } else if (ev.type === 'done') done = ev;
               else if (ev.type === 'error') err = ev;
             }
@@ -2084,14 +2106,14 @@ export class Orchestrator {
             requestItem.text = requestMessage();
             turns--;
             msg.text = finalText;
-            this.deps.emit({ runId, conversationId: this.eventConversation(runId), kind: 'text', text: msg.text });
+            this.emitText(msg, runId);
             continue outer;
           }
           if (tooLong && briefShown && hasBrief(readState())) {
             briefShown = false;
             turns--;
             msg.text = finalText;
-            this.deps.emit({ runId, conversationId: this.eventConversation(runId), kind: 'text', text: msg.text });
+            this.emitText(msg, runId);
             continue outer;
           }
           if (tooLong && session.runChanged()) {
@@ -2103,7 +2125,7 @@ export class Orchestrator {
           if (tooLong && foldForRefusal(system, tools, failed.context)) {
             turns--;
             msg.text = finalText;
-            this.deps.emit({ runId, conversationId: this.eventConversation(runId), kind: 'text', text: msg.text });
+            this.emitText(msg, runId);
             continue outer;
           }
           // The first request of a run, refused by the server's own count: the small tools may still fit. The same
@@ -2116,7 +2138,7 @@ export class Orchestrator {
             current = runTools();
             requestItem.text = requestMessage();
             msg.text = finalText;
-            this.deps.emit({ runId, conversationId: this.eventConversation(runId), kind: 'text', text: msg.text });
+            this.emitText(msg, runId);
             continue outer;
           }
           if (tooLong && failed.context) {

@@ -1428,11 +1428,73 @@ export function applyAiEvent(e: AiEvent) {
     const i = msgs.findIndex((m) => m.id === e.message!.id);
     if (i >= 0) msgs[i] = e.message;
     else msgs.push(e.message);
+    shownWhole?.add(e.message.id);
     setState({ conversation: { ...conv, messages: msgs }, activeRunId: e.runId || s.activeRunId });
   } else if (e.kind === 'text') {
-    const msgs = conv.messages.map((m): ChatMessage => (m.runId === e.runId && m.role === 'assistant' ? { ...m, text: e.text ?? '' } : m));
+    // The turn's text whole, or the piece it gained after exactly the text this window was sent before (`at`). A piece
+    // that does not follow the text shown here means something was missed on the way (the window was reloaded
+    // mid-reply): main holds the turn, so the conversation is read from there, and the pieces after that follow it.
+    const piece = e.text ?? '';
+    let found = false;
+    let lost = false;
+    const msgs = conv.messages.map((m): ChatMessage => {
+      if (m.runId !== e.runId || m.role !== 'assistant') return m;
+      found = true;
+      if (e.at === undefined) {
+        shownWhole?.add(m.id);
+        return { ...m, text: piece };
+      }
+      if (typeof m.text !== 'string' || m.text.length !== e.at) {
+        lost = true;
+        return m;
+      }
+      return { ...m, text: m.text + piece };
+    });
+    // Text for a turn this window does not show at all is as lost as a piece that does not fit.
+    if (lost || !found) return catchUpConversation(conv.id, s.snapshot?.workspaceKey);
     setState({ conversation: { ...conv, messages: msgs } });
   }
+}
+
+/** The opening and conversation being read again from main, after text arrived that did not follow what is shown. */
+let catchingUp: { key: string; again: boolean } | null = null;
+/**
+ * While a read is under way, the messages main has sent whole since it began (a message, a turn's whole text): this
+ * window's copy of those is as new as the answer, or newer (a turn's final message), so it is kept over main's.
+ */
+let shownWhole: Set<string> | null = null;
+
+/**
+ * Show the open conversation as main has it now, read without opening anything (main keeps its open conversation as it
+ * is), only while the same conversation of the same opening is on screen. Text that did not fit while the read was
+ * under way is read for again once it is done, so the last gap is always read after it opened.
+ */
+function catchUpConversation(id: string, opening: string | undefined) {
+  const key = `${opening ?? ''}|${id}`;
+  if (catchingUp?.key === key) return void (catchingUp.again = true);
+  const reading = { key, again: false };
+  catchingUp = reading;
+  const kept = (shownWhole = new Set());
+  void Promise.resolve()
+    .then(() => api.ai.conversations())
+    .then(
+      ({ active }) => {
+        const s = getState();
+        if (active.id !== id || s.conversation?.id !== id || s.snapshot?.workspaceKey !== opening) return;
+        const mine = new Map(s.conversation.messages.map((m) => [m.id, m]));
+        const messages = active.messages.map((m) => (kept.has(m.id) ? (mine.get(m.id) ?? m) : m));
+        for (const k of kept) if (!active.messages.some((m) => m.id === k) && mine.has(k)) messages.push(mine.get(k)!);
+        setState({ conversation: { ...active, messages } });
+      },
+      () => undefined
+    )
+    .finally(() => {
+      if (catchingUp !== reading) return;
+      catchingUp = null;
+      shownWhole = null;
+      const s = getState();
+      if (reading.again && s.conversation?.id === id && s.snapshot?.workspaceKey === opening) catchUpConversation(id, opening);
+    });
 }
 
 /** Mark or clear an uncommitted edit (a field, an inline rename, canvas text) so the toolbar says "Editing…". */

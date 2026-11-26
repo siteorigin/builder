@@ -20,6 +20,8 @@ export interface MockReply {
   keepOpen?: boolean;
   /** Wait this long before answering, as a model that takes a while to start would. */
   delayMs?: number;
+  /** Wait this long between frames, as a model producing tokens at a steady rate would (otherwise as fast as it can). */
+  frameMs?: number;
   /** Wait for this before answering: a reply held until the test lets it go. */
   hold?: Promise<unknown>;
   /** After the last frame, keep sending this frame every `everyMs` until the client goes away: a reply that never ends. */
@@ -41,8 +43,9 @@ export function pieces(text: string, size = 5): string[] {
 }
 
 /** A plain streamed reply, without a usage chunk unless one is given. */
-export function textReply(text: string, opts: { finish?: string; usage?: { prompt_tokens: number; completion_tokens: number }; size?: number } = {}): MockReply {
+export function textReply(text: string, opts: { finish?: string; usage?: { prompt_tokens: number; completion_tokens: number }; size?: number; frameMs?: number } = {}): MockReply {
   return {
+    ...(opts.frameMs ? { frameMs: opts.frameMs } : {}),
     frames: [
       chunk({ role: 'assistant' }),
       ...pieces(text, opts.size).map((content) => chunk({ content })),
@@ -217,7 +220,7 @@ export class MockOpenAIServer {
       }
       const f = reply.frames[i];
       res.write(typeof f === 'string' ? f : `data: ${JSON.stringify(f)}\n\n`);
-      await new Promise((r) => setImmediate(r));
+      await new Promise((r) => (reply.frameMs ? setTimeout(r, reply.frameMs) : setImmediate(r)));
       if (res.destroyed) return;
     }
     if (reply.endless) {

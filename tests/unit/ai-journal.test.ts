@@ -98,6 +98,22 @@ describe('the journal', () => {
     expect(j.read(2).missed).toBe(0);
   });
 
+  it('keeps a turn streamed as pieces whole, from its run’s text so far or its message as last sent', () => {
+    const j = new AiJournal();
+    const piece = (t: string, at?: number, runId = 'run_a') => ({ runId, conversationId: 'c_a', kind: 'text', text: t, ...(at === undefined ? {} : { at }) });
+    j.record(piece('Hel'));
+    j.record(piece('lo', 3));
+    j.record(piece(', world', 5));
+    expect(j.read(0).records.map((r) => r.event)).toEqual([{ runId: 'run_a', conversationId: 'c_a', kind: 'text', text: 'Hello, world' }]);
+    // The run's message as sent (its text cleared for the next step) is what the next piece follows.
+    j.record({ runId: 'run_a', conversationId: 'c_a', kind: 'message', message: { id: 'm_a', role: 'assistant', text: 'Next' } });
+    j.record(piece(' step', 4));
+    // Another run's pieces never join this one's text.
+    j.record(piece('Other', undefined, 'run_b'));
+    j.record(piece('!', 5, 'run_b'));
+    expect(j.read(0).records.map((r) => (r.event as { text?: string }).text ?? null)).toEqual(['Hello, world', null, 'Next step', 'Other!']);
+  });
+
   it('never counts text a later record replaced as missed, even once the reader has fallen behind', () => {
     const j = new AiJournal({ maxRecords: 2 });
     j.record(ev('run_a', 1));

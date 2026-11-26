@@ -1,4 +1,4 @@
-import { useEffect, useId, useLayoutEffect, useMemo, useRef, useState, type MouseEvent, type ReactNode } from 'react';
+import { memo, useCallback, useEffect, useId, useLayoutEffect, useMemo, useRef, useState, type MouseEvent, type ReactNode } from 'react';
 import { createPortal } from 'react-dom';
 import { ArrowDown, ArrowUp, BookOpen, Check, ChevronDown, CircleAlert, CircleCheck, CircleDashed, CircleHelp, CircleStop, Component, Cpu, FileText, Globe, History, ImagePlus, Info, KeyRound, LayoutTemplate, MessageCircleQuestionMark, MousePointerClick, Pencil, Play, Plus, RefreshCw, RotateCcw, Search, Settings2, SlidersHorizontal, Sparkles, Square, Trash2, TriangleAlert } from 'lucide-react';
 import { turnQuestions, type ChatActivity, type ChatChange, type ChatContext, type ChatEditScope, type ChatImageRef, type ChatMessage, type ConversationSummary, type FieldLocation } from '@shared/api';
@@ -25,6 +25,7 @@ import { summaryNow, turnState } from '@shared/turns';
 import { chatBusy, composerAction, imageLabels, isPaused, offeredImages, questionHint, shownQuestions, waitingQuestion, type WaitingQuestion } from '../lib/chatQuestions';
 import { isImeComposing } from '../lib/ime';
 import { textBlocks, textSpans, type TextBlock, type TextSpan } from '../lib/model-text';
+import { perfCount, perfOn, perfWork } from '../lib/perf';
 import { externalLink } from '@shared/links';
 import { confirmOpenExternal } from '../lib/open-external';
 import { Spinner, useMenu } from '../components/ui';
@@ -152,6 +153,7 @@ function Block({ block: b }: { block: TextBlock }) {
 
 /** Model text as the reader expects it (textBlocks). One paragraph stays inline, so a short reply is a plain line of text. */
 function Md({ text }: { text: string }) {
+  perfCount('chat.textParses');
   const shown = textBlocks(text);
   const [first] = shown;
   if (shown.length <= 1 && (!first || first.kind === 'p'))
@@ -278,6 +280,21 @@ function currentStep(activities: ChatActivity[] | undefined): string | undefined
 /** How close to the end of the log counts as being at the end. */
 const FOLLOW_PX = 48;
 
+/** What a turn's buttons do, as Chat last rendered them (see `turnActions`). */
+interface TurnActions {
+  undoTurn: (runId: string) => unknown;
+  reviewTurn: (entryId: string) => void;
+  continueRequest: (user: ChatMessage | undefined) => void;
+  retryRequest: (user: ChatMessage | undefined) => void;
+  msgs: ChatMessage[];
+}
+
+/** The message before the one with ID `id`: the request a turn answered. */
+function requestBefore(msgs: ChatMessage[], id: string): ChatMessage | undefined {
+  const i = msgs.findIndex((m) => m.id === id);
+  return i > 0 ? msgs[i - 1] : undefined;
+}
+
 const reducedMotion = () => window.matchMedia('(prefers-reduced-motion: reduce)').matches;
 
 function sizeToFit(ta: HTMLTextAreaElement | null) {
@@ -344,6 +361,14 @@ export function Chat() {
     };
   }, []);
   const nearBottom = useRef(true);
+  // Each message renders again only when its own props change (they are memoized), so the handlers it is given keep
+  // their identity across renders and call Chat's latest ones (kept here after every commit, before anything can be
+  // pressed). Continue and Try again carry on from the request before the turn, as it is when they are pressed.
+  const turnActions = useRef<TurnActions | null>(null);
+  const onUndoTurn = useCallback((runId: string) => void turnActions.current?.undoTurn(runId), []);
+  const onReviewTurn = useCallback((entryId: string) => turnActions.current?.reviewTurn(entryId), []);
+  const onContinueTurn = useCallback((id: string) => turnActions.current?.continueRequest(requestBefore(turnActions.current.msgs, id)), []);
+  const onRetryTurn = useCallback((id: string) => turnActions.current?.retryRequest(requestBefore(turnActions.current.msgs, id)), []);
   // Scrolled back far enough that the latest turn is out of sight: offer the way back.
   const [away, setAway] = useState(false);
   const jumping = useRef(false);
@@ -376,7 +401,9 @@ export function Chat() {
   const running = !!runStatus;
   const waiting = runStatus === 'awaiting-input';
   // While the AI waits on a question, the composer answers it from its own box; the unsent message stays put.
-  const asking = waitingQuestion(conversation, activeRunId, runStatus);
+  // The same object until the question, the run or its status changes: every message is given it, and an answer typed
+  // in the composer must not render them all again.
+  const asking = useMemo(() => waitingQuestion(conversation, activeRunId, runStatus), [conversation, activeRunId, runStatus]);
   const askingKey = asking ? `${asking.runId}:${asking.question.id}` : null;
   const [answerBox, setAnswerBox] = useState({ key: '', text: '' });
   const answerText = askingKey && answerBox.key === askingKey ? answerBox.text : '';
@@ -883,6 +910,17 @@ export function Chat() {
 
   /** `context` replaces the editor's own (and its images), for a message that continues an earlier request. True once
    *  the request has started. */
+  /** What the composer does with each change to its text: the answer to a waiting question, or the draft. */
+  const typed = (box: HTMLTextAreaElement) => {
+    if (asking && askingKey) setAnswerBox({ key: askingKey, text: box.value });
+    else {
+      // Editing the message that came back makes its next Enter a deliberate send.
+      answeredAt.current = 0;
+      setChatDraft(conversation?.id, box.value);
+    }
+    sizeToFit(box);
+  };
+
   const send = async (text = draft, context?: ChatContext): Promise<boolean> => {
     if (!text.trim() || running || sending || !conversation) return false;
     if (!configured) return (openSettings(), false);
@@ -1068,6 +1106,9 @@ export function Chat() {
   // turn: the model under the first turn it handled and any turn that went elsewhere (every turn keeps it in its
   // details), and a request's target on the first request that names it.
   const modelShown = modelLines(msgs, next);
+  useLayoutEffect(() => {
+    turnActions.current = { undoTurn, reviewTurn, continueRequest, retryRequest, msgs };
+  });
   const previousRequest: (ChatMessage | undefined)[] = [];
   let lastRequest: ChatMessage | undefined;
   msgs.forEach((m, i) => {
@@ -1223,11 +1264,11 @@ export function Chat() {
               // Edit and try again puts a request back in the box, which waits until the current run is over.
               canCompose={configured && !pending && !sending}
               asking={asking}
-              onUndo={undoTurn}
-              onReview={reviewTurn}
+              onUndo={onUndoTurn}
+              onReview={onReviewTurn}
               continueNote={configured && notice ? noticeId : undefined}
-              onContinue={m.id === resumable && !sending && configured ? () => continueRequest(msgs[i - 1]) : undefined}
-              onRetry={m.id === retryable && !sending && configured ? () => retryRequest(msgs[i - 1]) : undefined}
+              onContinue={m.id === resumable && !sending && configured ? onContinueTurn : undefined}
+              onRetry={m.id === retryable && !sending && configured ? onRetryTurn : undefined}
             />
           )
         )}
@@ -1476,15 +1517,8 @@ export function Chat() {
             rows={1}
             // Until the project's conversation has loaded, there is no thread to write in.
             readOnly={!conversation}
-            onChange={(e) => {
-              if (asking && askingKey) setAnswerBox({ key: askingKey, text: e.target.value });
-              else {
-                // Editing the message that came back makes its next Enter a deliberate send.
-                answeredAt.current = 0;
-                setChatDraft(conversation?.id, e.target.value);
-              }
-              sizeToFit(e.target);
-            }}
+            // Each keystroke timed with the render it sets off, while marks are on (scripts/perf: the chat scenario).
+            onChange={perfOn ? (e) => perfWork('chat.keystroke', () => typed(e.target)) : (e) => typed(e.target)}
             onKeyDown={(e) => {
               const sendOnEnter = getState().settings?.ai.sendOnEnter ?? true;
               if (e.key === 'Enter' && !isImeComposing(e) && (sendOnEnter ? !e.shiftKey : e.metaKey || e.ctrlKey)) {
@@ -1664,7 +1698,8 @@ function captionOf(m: ChatMessage | undefined, state: ProjectState | undefined):
  * A request, with what it was about under it. Follow-ups about the same thing do not repeat it: the caption shows on
  * the first request of a run about one target and wherever the target changes, and is always read out.
  */
-function UserMessage({ m, previous }: { m: ChatMessage; previous?: ChatMessage }) {
+const UserMessage = memo(function UserMessage({ m, previous }: { m: ChatMessage; previous?: ChatMessage }) {
+  perfCount('chat.messageRenders');
   const state = useStore((s) => s.snapshot?.state);
   const caption = captionOf(m, state);
   // The same words can name two different elements ("Home → Heading"), so the target itself must match too.
@@ -1679,7 +1714,7 @@ function UserMessage({ m, previous }: { m: ChatMessage; previous?: ChatMessage }
       {caption && <span className={repeated ? 'sr-only' : 'ctx'}>{repeated ? ` (${caption})` : caption}</span>}
     </div>
   );
-}
+});
 
 function Steps({ items, waiting, stopped, recent }: { items: ChatActivity[]; waiting?: boolean; stopped?: boolean; recent?: number }) {
   const [all, setAll] = useState(false);
@@ -1816,7 +1851,7 @@ function Locations({ list }: { list: FieldLocation[] }) {
   );
 }
 
-function AssistantMessage({
+const AssistantMessage = memo(function AssistantMessage({
   m,
   modelChanged,
   live,
@@ -1845,10 +1880,13 @@ function AssistantMessage({
   asking: WaitingQuestion | null;
   onUndo: (runId: string) => void;
   onReview: (entryId: string) => void;
-  onContinue?: () => void;
-  onRetry?: () => void;
+  /** Carry on from the request before this turn (given this turn's ID), when it can be. */
+  onContinue?: (id: string) => void;
+  /** Send the request before this turn again (given this turn's ID), when it can be. */
+  onRetry?: (id: string) => void;
   continueNote?: string;
 }) {
+  perfCount('chat.messageRenders');
   const r = m.result;
   const activities = m.activities ?? [];
   // A live turn of a run that waits for the author is paused: nothing in it spins, whichever message holds the
@@ -1904,7 +1942,7 @@ function AssistantMessage({
         </Reply>
       )}
       {r && !reply && (
-        <ResultCard m={m} recipient={modelLine ? null : recipient} undoable={undoable} reviewEntry={reviewEntry} latest={latest} canCompose={canCompose} onUndo={onUndo} onReview={onReview} onContinue={onContinue} onRetry={onRetry} continueNote={continueNote}>
+        <ResultCard m={m} recipient={modelLine ? null : recipient} undoable={undoable} reviewEntry={reviewEntry} latest={latest} canCompose={canCompose} onUndo={onUndo} onReview={onReview} onContinue={onContinue && (() => onContinue(m.id))} onRetry={onRetry && (() => onRetry(m.id))} continueNote={continueNote}>
           {answers.length > 0 ? answers : null}
         </ResultCard>
       )}
@@ -1919,7 +1957,7 @@ function AssistantMessage({
       )}
     </div>
   );
-}
+});
 
 /** The located fields of a result read back from disk: anything malformed is left out, never shown broken. */
 function storedLocations(list: unknown): FieldLocation[] {

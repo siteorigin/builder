@@ -4,7 +4,8 @@
  *
  * React commits are counted through the hook React DOM looks for as it loads (the one React DevTools installs), so this
  * module is imported before React DOM (main.tsx). A hook already there (DevTools in a development window) is kept and
- * still told of every commit. The count travels on every mark, as `c['react.commits']`.
+ * still told of every commit. The count travels on every mark, as `c['react.commits']`, beside the editor's own counters
+ * (`perfCount`).
  *
  * Each commit's components that rendered are counted too (`react.renders`), and those inside each panel marked with
  * `timedPanel` (lib/perf-panels.tsx) per panel (`panel.<id>.renders`), with the time React spent rendering the panel
@@ -21,6 +22,8 @@ let commits = 0;
 let renders = 0;
 /** Per panel: components rendered inside it, and the time React spent rendering it (ms). */
 const panels = new Map<string, { renders: number; renderMs: number }>();
+/** The editor's counters besides React's (perfCount), cumulative. */
+const counters: Record<string, number> = {};
 const once = new Set<string>();
 const now = () => performance.timeOrigin + performance.now();
 /** Marks made during a commit's layout effects, sent once React has counted that commit. */
@@ -29,7 +32,7 @@ let atCommit: Array<{ name: string; attrs?: PerfAttrs; t: number }> = [];
 /** A point in time (now, or `at`), with the editor's counters as they stand. */
 export function perfMark(name: string, attrs?: PerfAttrs, at?: number): void {
   if (!bridge) return;
-  const c: Record<string, number> = { 'react.commits': commits, 'react.renders': renders };
+  const c: Record<string, number> = { ...counters, 'react.commits': commits, 'react.renders': renders };
   for (const [id, p] of panels) {
     c[`panel.${id}.renders`] = p.renders;
     c[`panel.${id}.renderMs`] = p.renderMs;
@@ -39,6 +42,36 @@ export function perfMark(name: string, attrs?: PerfAttrs, at?: number): void {
     bridge.send(record);
   } catch {
     // A trace never breaks the editor.
+  }
+}
+
+/** Add to one of the editor's counters, which every later mark carries. */
+export function perfCount(name: string, by = 1): void {
+  if (!bridge) return;
+  counters[name] = (counters[name] ?? 0) + by;
+}
+
+/**
+ * Run `work`, an update the editor makes (handling an event, a keystroke), and time it with the React render and commit
+ * it sets off: a store change schedules React's render for the end of the task, in a microtask queued during `work`,
+ * so the span ends in a microtask queued after it, once that render, its commit and the effects flushed with it are
+ * done. `commits` says how many commits that took. With marks off, `work` just runs.
+ */
+export function perfWork(name: string, work: () => void, attrs?: PerfAttrs): void {
+  if (!bridge) return work();
+  const t0 = now();
+  const c0 = commits;
+  try {
+    work();
+  } finally {
+    queueMicrotask(() => {
+      const t = now();
+      try {
+        bridge.send({ kind: 'span', t, ms: t - t0, name, attrs: { ...attrs, commits: commits - c0 } });
+      } catch {
+        // A trace never breaks the editor.
+      }
+    });
   }
 }
 

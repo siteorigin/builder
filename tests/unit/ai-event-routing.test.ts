@@ -184,6 +184,8 @@ describe('AI events reach only their own conversation', () => {
     adapter.release();
     await finished();
     expect(tags(events.slice(mark), two.runId!)).toEqual(['message ', 'status ', 'text ']);
+    // Detached, its text goes whole again: nothing names the copy it would follow.
+    expect(events.slice(mark).filter((e) => e.kind === 'text').map((e) => [e.text, e.at])).toEqual([['Working on it. Still working.', undefined]]);
     expect(store.getState().conversation).toBe(before);
     expect(store.getState().activeRunId).toBeNull();
   });
@@ -250,5 +252,110 @@ describe('AI events reach only their own conversation', () => {
     store.applyAiEvent({ runId: 'r_mine', conversationId: 'c_shown', kind: 'message', message: { ...foreign, id: 'm_next' } });
     expect(said(store.getState().conversation?.messages)).toEqual(['assistant: Mine, streamed', 'assistant: Elsewhere']);
     expect(store.getState().activeRunId).toBe('r_mine');
+  });});
+
+describe('a streamed reply is sent as the pieces it gains (#974)', () => {
+  const texts = (events: AiEvent[], runId: string) => events.filter((e) => e.runId === runId && e.kind === 'text').map((e) => (e.at === undefined ? { text: e.text } : { text: e.text, at: e.at }));
+
+  it('sends each piece once after the text before it, and the whole text again after it was cleared', async () => {
+    const { orch, adapter, events, ctx, show, finished } = await setup();
+    show((await orch.loadConversations()).active);
+    const done = (text: string): ModelEvent => ({ type: 'done', stopReason: 'end', text, toolCalls: [] });
+    // An answer that points through labels it never located is sent back once, its text cleared, and asked again.
+    adapter.script = [
+      [{ type: 'text', delta: 'Open A ' }, { type: 'text', delta: '→ B' }, done('Open A → B')],
+      [{ type: 'text', delta: 'Use the ' }, { type: 'text', delta: 'Inspector' }, { type: 'text', delta: '.' }, done('Use the Inspector.')]
+    ];
+    const r = await orch.send('Where do I change the hours?', { ...ctx, mode: 'ask' });
+    expect(r.ok).toBe(true);
+    await finished();
+    expect(texts(events, r.runId!)).toEqual([{ text: 'Open A ' }, { text: '→ B', at: 7 }, { text: 'Use the ' }, { text: 'Inspector', at: 8 }, { text: '.', at: 17 }]);
+    // What was sent grows with the answer: every character once.
+    const sent = texts(events, r.runId!).reduce((n, e) => n + (e.text ?? '').length, 0);
+    expect(sent).toBe('Open A → B'.length + 'Use the Inspector.'.length);
+    const reply = store.getState().conversation?.messages.at(-1);
+    expect(reply?.result?.summary).toBe('Use the Inspector.');
+  });
+
+  it('puts the pieces together in the panel, and reads the turn from main when one does not follow what is shown', async () => {
+    const base = { runId: 'r_live', conversationId: 'c_live' };
+    const time = '2026-11-24T00:00:00.000Z';
+    const reply: ChatMessage = { id: 'm_reply', role: 'assistant', text: '', time, runId: 'r_live' };
+    const shown: Conversation = { id: 'c_live', title: 'Live', createdAt: time, messages: [{ id: 'm_q', role: 'user', text: 'Hi', time }, reply] };
+    store.setState({ conversation: structuredClone(shown), snapshot: { workspaceKey: 'w1' } } as Partial<ChatState>);
+    const before = store.getState().conversation!.messages[0];
+    store.applyAiEvent({ ...base, kind: 'text', text: 'Hel' });
+    store.applyAiEvent({ ...base, kind: 'text', text: 'lo', at: 3 });
+    expect(said(store.getState().conversation?.messages)).toEqual(['user: Hi', 'assistant: Hello']);
+    // A message that did not change keeps its identity, so it is not rendered again.
+    expect(store.getState().conversation!.messages[0]).toBe(before);
+
+    // Main's answers, each held until the test lets it go.
+    const answers: Array<(c: Conversation) => void> = [];
+    const conversations = vi.fn(() => new Promise<{ active: Conversation; list: [] }>((resolve) => answers.push((active) => resolve({ active, list: [] }))));
+    const openConversation = vi.fn();
+    const w = (globalThis as unknown as { window: { builder: Record<string, unknown> } }).window;
+    w.builder.ai = { conversations, openConversation };
+    const asked = (n: number) => until(() => conversations.mock.calls.length === n, `read ${n} of the conversation`);
+    const settle = () => new Promise((r) => setTimeout(r, 10));
+    const withText = (text: string, more: Partial<ChatMessage> = {}): Conversation => ({ ...shown, messages: [shown.messages[0], { ...reply, text, ...more }] });
+    try {
+      // A piece after text this window never got (it was reloaded meanwhile) is not placed: main's copy is read instead,
+      // without opening anything there, and once at a time.
+      store.applyAiEvent({ ...base, kind: 'text', text: 'wor', at: 7 });
+      store.applyAiEvent({ ...base, kind: 'text', text: 'ld', at: 10 });
+      await asked(1);
+      await settle();
+      expect(conversations).toHaveBeenCalledTimes(1);
+      expect(said(store.getState().conversation?.messages)).toEqual(['user: Hi', 'assistant: Hello']);
+      answers[0](withText('Hello, world'));
+      await until(() => said(store.getState().conversation?.messages).at(-1) === 'assistant: Hello, world', 'main’s copy to be shown');
+      expect(openConversation).not.toHaveBeenCalled();
+      // The piece that did not fit while it was read is read for again, after it.
+      await asked(2);
+      answers[1](withText('Hello, world'));
+      await settle();
+      expect(conversations).toHaveBeenCalledTimes(2);
+      // The pieces after it follow main's copy.
+      store.applyAiEvent({ ...base, kind: 'text', text: '.', at: 12 });
+      expect(said(store.getState().conversation?.messages)).toEqual(['user: Hi', 'assistant: Hello, world.']);
+
+      // An answer that arrives after the turn's final message is older than it: the final message stays.
+      store.applyAiEvent({ ...base, kind: 'text', text: 'xx', at: 5 });
+      await asked(3);
+      const final = { ...reply, text: 'Hello, world.', result: { status: 'no-changes' as const, summary: 'Hello, world.', changes: [], validation: [], canUndo: false } };
+      store.applyAiEvent({ ...base, kind: 'message', message: final });
+      answers[2](withText('Hello, wo'));
+      await settle();
+      expect(store.getState().conversation?.messages).toEqual([shown.messages[0], final]);
+
+      // Nor is an answer about another conversation, or one for another opening of the project, shown.
+      const current = store.getState().conversation;
+      store.applyAiEvent({ ...base, kind: 'text', text: 'yy', at: 3 });
+      await asked(4);
+      answers[3]({ ...withText('Elsewhere'), id: 'c_other' });
+      await settle();
+      expect(store.getState().conversation).toBe(current);
+      store.applyAiEvent({ ...base, kind: 'text', text: 'zz', at: 3 });
+      await asked(5);
+      store.setState({ snapshot: { workspaceKey: 'w2' } } as Partial<ChatState>);
+      answers[4](withText('Reopened'));
+      await settle();
+      expect(store.getState().conversation).toBe(current);
+
+      // Text, whole or a piece, for a turn this window does not show is read from main too. A final message that arrives
+      // meanwhile is kept, and main's copy fills in the rest (the request this window never got).
+      store.setState({ snapshot: { workspaceKey: 'w1' } } as Partial<ChatState>);
+      store.setState({ conversation: { ...shown, messages: [] } });
+      store.applyAiEvent({ ...base, kind: 'text', text: 'Hello' });
+      await asked(6);
+      store.applyAiEvent({ ...base, kind: 'message', message: final });
+      answers[5](withText('Hello'));
+      await until(() => store.getState().conversation?.messages.length === 2, 'the turn to be shown');
+      expect(store.getState().conversation?.messages).toEqual([shown.messages[0], final]);
+    } finally {
+      delete w.builder.ai;
+      store.setState({ snapshot: null } as Partial<ChatState>);
+    }
   });
 });

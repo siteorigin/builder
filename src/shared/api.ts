@@ -753,7 +753,12 @@ export interface AiEvent {
   status?: RunStatus;
   /** With a status: what kind of request is running. A question never holds the project, so editing goes on. */
   mode?: ChatMode;
+  /**
+   * With `text`: the turn's text, whole; or, with `at`, the piece it gained, which follows its first `at` characters
+   * (the text sent before). A turn streams as pieces, so what is sent grows with the reply, not with its square.
+   */
   text?: string;
+  at?: number;
   activity?: ChatActivity;
   message?: ChatMessage;
 }
