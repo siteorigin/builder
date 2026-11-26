@@ -31,6 +31,7 @@ import { addressSlug, normalizeRoute, numberedSlug, validateRoute, validateSegme
 import { isImageBlock, isRichBlock } from '@shared/richtext';
 import { newId } from '@shared/ids';
 import { EngineError, fail } from './tree';
+import { starterArchiveLayout } from './collection-sources';
 import { normalizeLink, normalizeRichText, normalizeScalar } from './values';
 import { bindingSlots, checkPropName, normalizePropSchema } from './schema';
 import { entryLinkUses, type LinkHolder } from './page-links';
@@ -521,6 +522,11 @@ export function collectionUpdate(state: ProjectState, op: Op<'collection.update'
     // show their words alone meanwhile, as links to drafts do.
     if (route !== undefined) c.settings.route = route;
     if (op.pages !== undefined) c.settings.pages = pages;
+  }
+  if (op.archiveTemplate !== undefined) {
+    // The archive pages' own layout, a fresh one to design, or back to the ready-made cards.
+    if (op.archiveTemplate === null) delete c.settings.archiveTemplate;
+    else c.settings.archiveTemplate = op.archiveTemplate === 'start' ? starterArchiveLayout(c) : archiveLayoutOf(op.archiveTemplate);
   }
   if (op.pageSize !== undefined) c.settings.pageSize = pageSizeOf(op.pageSize);
   if (op.categoryArchives !== undefined) c.settings.categoryArchives = op.categoryArchives;
@@ -1215,4 +1221,16 @@ function entrySourceProblem(source: unknown): string | null {
   const text = (k: string) => typeof src[k] === 'string' && (src[k] as string).trim() !== '';
   if (!text('sourceId') || !text('externalId') || !text('contentHash') || !text('syncedAt') || Number.isNaN(Date.parse(src.syncedAt as string))) return 'where it was synced from is damaged.';
   return null;
+}
+
+/** An archive layout given whole: a tree whose roots and nodes are its own, each node named by its ID. */
+function archiveLayoutOf(raw: { rootIds: string[]; nodes: Record<string, unknown> }): NodeTree {
+  const tree = structuredClone(raw) as NodeTree;
+  for (const [id, n] of Object.entries(tree.nodes)) {
+    const node = n as { id?: unknown; kind?: unknown } | null;
+    if (!node || typeof node !== 'object' || node.id !== id || typeof node.kind !== 'string') fail(`The archive layout's node "${id.slice(0, 60)}" is not a node of its own ID.`);
+  }
+  const missing = tree.rootIds.find((id) => !Object.hasOwn(tree.nodes, id));
+  if (missing !== undefined) fail(`The archive layout starts with "${missing.slice(0, 60)}", which it does not hold.`);
+  return tree;
 }

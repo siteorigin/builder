@@ -3,7 +3,7 @@
 // never changes the project, so visitors and exports see the site as saved. Plain functions, tested without a
 // renderer.
 import type { ElementRef, ProjectState } from '@shared/types';
-import { isBinding } from '@shared/types';
+import { repeatProp, isBinding } from '@shared/types';
 import { enclosingRepeatProp, findParent, subtreeIds } from '@engine/tree';
 import { encodeItemId, nodeAt } from './model';
 
@@ -58,7 +58,7 @@ export function revealTarget(state: ProjectState, item: RevealedItem, ctx: strin
   const tree = def.tree;
   // Every repeat of the list: a menu can be listed twice (once for each width), and a list repeated inside another
   // list's rows shows each item once per row. The page finds all of them by the item's own id.
-  const repeats = Object.values(tree.nodes).filter((n) => n.kind === 'repeat' && n.list.$prop === item.list);
+  const repeats = Object.values(tree.nodes).filter((n) => n.kind === 'repeat' && repeatProp(n) === item.list);
   const nodes = repeats.flatMap((n) => (n.kind === 'repeat' ? n.children : []));
   if (!nodes.length) return null;
   const depthOf = (id: string) => {

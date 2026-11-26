@@ -7,6 +7,7 @@
 import { LATEST_SCHEMA_VERSION } from './migrations';
 import type { RichListType, RichText } from './richtext';
 import type { CrawlerPolicy } from './crawler-policy';
+import type { CollectionQuery } from './collection-query';
 
 export type { RichBlock, RichImageBlock, RichListBlock, RichListType, RichSpan, RichText, RichTextBlock } from './richtext';
 
@@ -545,9 +546,29 @@ export interface DividerNode extends NodeBase {
   /** Shape `icon` only: the icon between the hairlines, by name. Absent: `DIVIDER_ICON`. */
   icon?: string;
 }
+/**
+ * What a repeat shows its children once for: an item of a component's list property (`$prop`, inside its design), an
+ * entry a collection query finds (`$query`: a collection loop, anywhere), or an entry the archive page it is on lists
+ * (`$archive`, in a collection's archive layout only). Inside a collection loop, `{ $item: field }` reads a field of
+ * the entry (see shared/collection-rows.ts): `title`, `field.<name>`, `featuredImage`, `entryLink`, `terms.<taxonomy>`...
+ */
+export type RepeatSource = { $prop: string } | { $query: CollectionQuery } | { $archive: true };
+
+/** The list property a repeat shows, or undefined for a collection loop. */
+export function repeatProp(node: { list?: unknown }): string | undefined {
+  const l = node.list as { $prop?: unknown } | undefined;
+  return l && typeof l === 'object' && typeof l.$prop === 'string' ? l.$prop : undefined;
+}
+
+/** Whether a repeat shows a collection's entries (a query's, or the archive page's) rather than a list property. */
+export function isCollectionLoop(node: { kind?: unknown; list?: unknown }): boolean {
+  const l = node.list as Record<string, unknown> | undefined;
+  return node.kind === 'repeat' && !!l && typeof l === 'object' && (Object.hasOwn(l, '$query') || Object.hasOwn(l, '$archive'));
+}
+
 export interface RepeatNode extends NodeBase {
   kind: 'repeat';
-  list: { $prop: string };
+  list: RepeatSource;
   children: string[];
   /**
    * Items that enter together (a row of cards scrolling into view) start their entrances one after another. Only
@@ -615,6 +636,22 @@ export interface InstanceNode extends NodeBase {
    * (src/shared/webmcp.ts), as the author typed them. Either left out takes the default.
    */
   webmcp?: { toolName?: string; toolDescription?: string };
+  /**
+   * List properties connected to a collection, by property name: while connected, the list shows the entries the
+   * query finds, each as an item whose fields are read from the entry as `fields` maps them (see
+   * shared/collection-rows.ts), and the manual items kept in `props` wait unused until the list is disconnected.
+   */
+  listSources?: Record<string, ListConnection>;
+}
+
+/**
+ * A list property connected to a collection: the entries `query` finds, newest first unless it sorts them, each an
+ * item whose `fields` (item field → entry field, such as `name` ← `title`, `role` ← `field.role`, `portrait` ←
+ * `featuredImage`, `link` ← `entryLink`) are read from it. An item field left out of the map shows its default.
+ */
+export interface ListConnection {
+  query: CollectionQuery;
+  fields: Record<string, string>;
 }
 
 /** A slot outlet's fallback: what its design shows while a placement gives the slot nothing (none for a list damaged by hand). */
@@ -1319,6 +1356,12 @@ export interface CollectionDoc {
    * every entry's page; each entry keeps its own words and details.
    */
   template: NodeTree;
+  /**
+   * The layout of the collection's index and category archive pages, edited like a page's, in place of the ready-made
+   * list of cards: a collection loop over `{ $archive: true }` in it repeats once for every entry the page shown lists
+   * (its share of the index or of one category, page by page). Absent: the ready-made cards. Archives only.
+   */
+  archiveTemplate?: NodeTree;
 }
 
 /** One entry of a collection: `siteorigin/collections/<collectionId>/entries/<id>.json`. */
@@ -1378,10 +1421,10 @@ export interface ProjectState {
 // Selection identity
 // ---------------------------------------------------------------------------
 
-export type OwnerKind = 'page' | 'shell' | 'component' | 'template';
+export type OwnerKind = 'page' | 'shell' | 'component' | 'template' | 'archive';
 export interface OwnerRef {
   kind: OwnerKind;
-  /** Page ID, shell part ('header' | 'footer'), definition ID, or (for a layout template) collection ID. */
+  /** Page ID, shell part ('header' | 'footer'), definition ID, or (for a layout template or archive layout) collection ID. */
   id: string;
 }
 

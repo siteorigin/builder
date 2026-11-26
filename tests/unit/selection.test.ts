@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import type { ElementRef, InstanceNode, ProjectState } from '@shared/types';
+import { repeatProp } from '@shared/types';
 import { createStarterState } from '@catalogue/starters';
 import { applyOperations } from '@engine/apply';
 import { clickTargetIn, definitionPick, descOf, listPropFor, placementsOn, resolveRef, selectionFromChain, throughPlacement, toDefinitionRef } from '../../src/renderer/src/lib/model';
@@ -213,7 +214,7 @@ describe('editing a component everywhere', () => {
     for (const r of repeats) {
       if (r.kind !== 'repeat') continue;
       const leaf = r.children[0];
-      expect(listPropFor(footer, leaf)).toBe(r.list.$prop);
+      expect(listPropFor(footer, leaf)).toBe(repeatProp(r));
     }
   });
 });

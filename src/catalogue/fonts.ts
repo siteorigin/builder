@@ -136,7 +136,7 @@ export function declaresFonts(source: string, families: string[]): boolean {
 export function usedPackFonts(state: ProjectState, tokenValues: unknown[]): BundledFont[] {
   // Whitespace inside a name may be any run of spaces or tabs, which JSON writes as escapes.
   // Collections' layouts style every entry's page.
-  const layouts = Object.values(state.collections ?? {}).map((c) => c?.settings?.template);
+  const layouts = Object.values(state.collections ?? {}).flatMap((c) => [c?.settings?.template, c?.settings?.archiveTemplate]);
   const haystack = JSON.stringify([tokenValues, state.site.shell, state.pages, state.components, layouts]).replace(/(\\[nrt]|\s)+/g, ' ').toLowerCase();
   return installedFonts(state).filter((f) => haystack.includes(f.family.toLowerCase()));
 }

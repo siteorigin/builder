@@ -6,7 +6,8 @@
  * that the generator writes as it writes a page.
  */
 import type { Collection, EntryDoc, GraphNode, ImageValue, InstanceNode, LinkValue, NodeTree, ProjectState, PropSchema } from '@shared/types';
-import { conditionHolds, conditionRef, isBindingRef, isEntryBinding } from '@shared/types';
+import { conditionHolds, conditionRef, isBinding, isBindingRef, isEntryBinding } from '@shared/types';
+import { asType } from '@shared/collection-rows';
 import { ENTRY_CONTENT_FIELDS, entryFieldSchema, entryFieldValue, entryValuePresent, isEntryDateField, type EntryNeighbours, type EntryReadContext } from '@shared/entry-fields';
 import { isDraftEntry, siteEntries } from './index';
 import { collectionHasBody } from '@shared/collections';
@@ -60,30 +61,11 @@ function collectionPairs(state: ProjectState, collectionId: string): Map<string,
 const EMPTY_IMAGE: ImageValue = { assetId: null, alt: '' };
 const NO_LINK: LinkValue = { type: 'none', target: '' };
 
-/** A value as a property of type `type` takes it. */
-function asType(type: PropSchema['type'], v: unknown): unknown {
-  switch (type) {
-    case 'string':
-    case 'enum':
-    case 'icon':
-      return typeof v === 'string' ? v : typeof v === 'number' || typeof v === 'boolean' ? String(v) : '';
-    case 'number':
-      return typeof v === 'number' && Number.isFinite(v) ? v : 0;
-    case 'boolean':
-      return v === true;
-    case 'image':
-      return v && typeof v === 'object' && 'assetId' in v ? v : EMPTY_IMAGE;
-    case 'link':
-      return v && typeof v === 'object' && 'type' in v ? v : NO_LINK;
-    case 'richtext':
-      return Array.isArray(v) ? v : typeof v === 'string' && v.trim() ? [{ type: 'p', spans: [{ text: v }] }] : [];
-    default:
-      return v;
-  }
-}
+/** A read of a collection loop's row (see ./collection-loops), which the loop's rows decide, not the entry whose page it is. */
+const readsRow = (v: unknown) => isBinding(v) && '$item' in v;
 
 /** What a field shows where nothing (a field the collection no longer has) is bound: an empty value of its kind. */
-function emptyFor(node: GraphNode, field: string, nested?: PropSchema): unknown {
+export function emptyFor(node: GraphNode, field: string, nested?: PropSchema): unknown {
   switch (field) {
     case 'text':
       return node.kind === 'text' && node.rich ? [] : '';
@@ -140,7 +122,7 @@ function boundValue(read: EntryReadContext, node: GraphNode, field: string, entr
 function boundProps(state: ProjectState, read: EntryReadContext, node: InstanceNode, withoutBody = false): Array<[string, unknown]> {
   const def = own(state.components, node.definitionId);
   return Object.entries(node.props ?? {}).flatMap(([prop, v]): Array<[string, unknown]> => {
-    if (!isBindingRef(v)) return [];
+    if (!isBindingRef(v) || readsRow(v)) return [];
     const nested = own(def?.properties, prop);
     return [[prop, isEntryBinding(v) ? boundValue(read, node, 'prop', v.$entry, nested, withoutBody) : nested?.default]];
   });
@@ -176,6 +158,7 @@ export function materializeTemplate(state: ProjectState, collection: Collection,
       const c = r[key];
       if (c === undefined) continue;
       const ref = conditionRef(c);
+      if (readsRow(ref)) continue;
       if (ref && isEntryBinding(ref)) {
         const holds = conditionHolds(c as Parameters<typeof conditionHolds>[0], entryFieldValue(read, ref.$entry, 'raw'), entryValuePresent);
         if (key === 'when' ? !holds : holds) hidden.add(node.id);
@@ -193,7 +176,7 @@ export function materializeTemplate(state: ProjectState, collection: Collection,
     }
     for (const field of ['text', 'datetime', 'image', 'fallbackAlt', 'link', 'label', 'ariaLabel', 'tag', 'action', 'appearance', 'icon', 'iconPosition']) {
       const v = r[field];
-      if (!isBindingRef(v)) continue;
+      if (!isBindingRef(v) || readsRow(v)) continue;
       // A layout's structure and look (a tag, a button's style) are the same on every entry: only content reads one.
       const value = isEntryBinding(v) && ENTRY_CONTENT_FIELDS.has(field) ? boundValue(read, node, field, v.$entry, undefined, withoutBody) : emptyFor(node, field);
       if (value === undefined) delete r[field];

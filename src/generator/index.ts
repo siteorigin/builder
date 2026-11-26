@@ -28,6 +28,8 @@ import type {
   ProjectState,
   PropSchema,
   RepeatNode,
+  RepeatSource,
+  ListConnection,
   ResponsiveScope,
   StyleProps,
   StyleState,
@@ -42,7 +44,7 @@ import type {
   UiStateSchema
 } from '@shared/types';
 import { COPYRIGHT_PROP, copyrightYearParts } from '@shared/site-name';
-import { CONTAINER_SCOPES, DIVIDER_ICON, ELEMENT_TAGS, GENERATOR_VERSION, LIST_FEEDS, STYLE_SCOPES, STYLE_STATES, TEXT_TAGS, conditionRef, isAppearPreset, isBinding, isBindingRef, isComparison, isContainerScope, isGroupStyleState, isStateRef, parseStyleScopeKey, slotChildren, slotFallback, stateInitial, styleScopeKey, type Condition, type ContainerScope, type GroupStyleState, type StyleScope } from '@shared/types';
+import { isCollectionLoop, repeatProp, CONTAINER_SCOPES, DIVIDER_ICON, ELEMENT_TAGS, GENERATOR_VERSION, LIST_FEEDS, STYLE_SCOPES, STYLE_STATES, TEXT_TAGS, conditionRef, isAppearPreset, isBinding, isBindingRef, isComparison, isContainerScope, isGroupStyleState, isStateRef, parseStyleScopeKey, slotChildren, slotFallback, stateInitial, styleScopeKey, type Condition, type ContainerScope, type GroupStyleState, type StyleScope } from '@shared/types';
 import { INTERACTION_GROUP_CLASS, groupLookup, isInteractionGroup, partInInteractionGroup } from '@shared/interaction-groups';
 import {
   CONTAINER_QUERIES,
@@ -100,6 +102,7 @@ import { feedLimit, isArticleDate, pageArticle } from '@shared/articles';
 import { NO_QUERY, codeEntryQueries, entryQuery, entryQueryKey, feedRowFields, feedRows, type EntryQuery } from '@shared/entry-feed';
 import { entryRoute, findEntry, isDraftEntry, isEntryPath, orderedEntries, siteEntries, type SiteEntry } from '@shared/collections';
 import { entryNeighbours, materializeTemplate } from './entry-template';
+import { connectedListItems, prepareLoops, type LoopRows } from './collection-loops';
 import { archiveFile, generateArchive, siteArchives } from './archive';
 import { archivePages } from '@shared/archives';
 import { actionWraps, brokenCardKeys, cardKey, isCardLink, isCarouselTrack } from './card-links';
@@ -285,6 +288,8 @@ export interface ResolveContext {
   pageId?: string;
   /** The collection entry whose page is being written: an entry feed there defaults to its collection and leaves it out. */
   entry?: { collectionId: string; entryId: string };
+  /** The archive page being written: the collection whose page it is, and the entries it lists, in order. */
+  archive?: { collectionId: string; entryIds: readonly string[] };
 }
 
 /**
@@ -523,7 +528,9 @@ export function resolveInstanceProps(def: ComponentDefinition, node: InstanceNod
   const rctx = def.kind === 'code' ? { ...ctx, forCode: true } : ctx;
   const query = entryQuery(def.properties, node.props);
   for (const [name, schema] of Object.entries(def.properties)) {
-    const raw = Object.hasOwn(node.props, name) ? node.props[name] : schema.default;
+    // A list connected to a collection shows the entries it finds (see ./collection-loops), not its own items.
+    const connected = connectedListItems(ctx.state, def, node, name, ctx);
+    const raw = connected ?? (Object.hasOwn(node.props, name) ? node.props[name] : schema.default);
     out[name] = resolveValue(schema, raw, rctx, query);
   }
   return out;
@@ -1498,6 +1505,9 @@ function treeOwners(state: ProjectState): Array<{ owner: OwnerRef; tree: NodeTre
   for (const id of Object.keys(state.collections ?? {}).sort()) {
     const t = state.collections[id]?.settings?.template;
     if (t?.nodes && typeof t.nodes === 'object') out.push({ owner: { kind: 'template', id }, tree: t });
+    // And its archive pages' layout, whose node IDs are its own too.
+    const a = state.collections[id]?.settings?.archiveTemplate;
+    if (a?.nodes && typeof a.nodes === 'object') out.push({ owner: { kind: 'archive', id }, tree: a });
   }
   return out;
 }
@@ -1621,6 +1631,9 @@ interface EmitCtx {
    * shell tree places directly, by node ID (see generator/webmcp.ts). A form not in it names itself as it renders.
    */
   toolNames?: ReadonlyMap<string, string>;
+  /** The collection loops' rows, by repeat ID, and how many loops are open around the node emitted (see ./collection-loops). */
+  loops?: Map<string, LoopRows>;
+  inLoop?: number;
 }
 
 /** One UI state variable of the definition being emitted: the local holding it and its well-formed declaration. */
@@ -1923,7 +1936,7 @@ function stateWidgets(ctx: EmitCtx): StateWidgets {
         if (n.kind !== 'element' || n.when || n.unless || rendersAsCard(ctx, n) || isCarouselTrack(n)) return;
         for (const c of n.children) reachItem(c);
       };
-      for (const r of nodes) if (r.kind === 'repeat' && r.list?.$prop === list && once.has(r.id) && !r.when && !r.unless && r.filter === undefined) r.children.forEach(reachItem);
+      for (const r of nodes) if (r.kind === 'repeat' && repeatProp(r) === list && once.has(r.id) && !r.when && !r.unless && r.filter === undefined) r.children.forEach(reachItem);
       // The content shown only while its item is the active one (its one condition), which stays in the page, hidden on
       // screen while another item is active, so printing shows every item's.
       const panels = nodes
@@ -2187,7 +2200,7 @@ function repeatFilters(def: ComponentDefinition): FilterGen[] {
   for (const id of Object.keys(tree.nodes).sort()) {
     const n = tree.nodes[id];
     if (n?.kind !== 'repeat' || n.filter === undefined || repeatFilterProblem(def, n)) continue;
-    const list = def.properties[n.list.$prop] as ListProp;
+    const list = def.properties[repeatProp(n)!] as ListProp;
     const field = list.fields[n.filter.field];
     out.push({ repeat: n, host: parents.get(n.id)!, local: `so_filter_${out.length}`, field: n.filter.field, options: field.type === 'enum' ? field.options.map((o) => ({ value: o.value, label: o.label })) : undefined });
   }
@@ -2481,8 +2494,9 @@ function emitNode(ctx: EmitCtx, id: string): string {
   // A panel kept in the page shows and hides by its condition through a class instead, and a dialog or drawer opens
   // and closes by it (see stateWidgets).
   if (ctx.widgets?.panels.has(node.id) || ctx.widgets?.overlays.has(node.id)) return out;
-  if (node.when && ctx.def) out = `${p}{#if ${conditionExpr(ctx, node.when, false)}}\n${indentBlock(out)}\n${p}{/if}`;
-  if (node.unless && ctx.def) out = `${p}{#if ${conditionExpr(ctx, node.unless, true)}}\n${indentBlock(out)}\n${p}{/if}`;
+  // A page's elements show what they hold; inside a collection loop each row decides its own conditions.
+  if (node.when && (ctx.def || ctx.inLoop)) out = `${p}{#if ${conditionExpr(ctx, node.when, false)}}\n${indentBlock(out)}\n${p}{/if}`;
+  if (node.unless && (ctx.def || ctx.inLoop)) out = `${p}{#if ${conditionExpr(ctx, node.unless, true)}}\n${indentBlock(out)}\n${p}{/if}`;
   return out;
 }
 
@@ -2517,7 +2531,8 @@ function renderCondition(ctx: EmitCtx, node: GraphNode, seen: Set<string>, prese
   const kept = present && (!!ctx.widgets?.panels.has(node.id) || !!ctx.widgets?.overlays.has(node.id));
   if (node.when && !kept) parts.push(conditionExpr(ctx, node.when, false));
   if (node.unless && !kept) parts.push(conditionExpr(ctx, node.unless, true));
-  if (node.kind === 'repeat') {
+  if (node.kind === 'repeat' && isCollectionLoop(node)) parts.push(js(!!ctx.loops?.get(node.id)?.rows.length));
+  else if (node.kind === 'repeat') {
     useImport(ctx, '{ has }', `${RUNTIME_DIR}/util.js`);
     parts.push(`has(${bindExpr(ctx, node.list)})`);
   }
@@ -2606,9 +2621,9 @@ function nameAttr(ctx: EmitCtx, attr: string, v: unknown): string {
 }
 
 /** The schema a binding reads in this scope: a property of the definition, or a field of the innermost list. */
-function bindingSchema(ctx: EmitCtx, b: Binding): PropSchema | undefined {
-  if (!ctx.def) return undefined;
-  if ('$prop' in b) return propBindingSchema(ctx.def.properties, b);
+function bindingSchema(ctx: EmitCtx, b: RepeatSource | Binding): PropSchema | undefined {
+  // An item field of a collection loop is one of its rows' (see emitLoop), on a page as in a design.
+  if ('$prop' in b) return ctx.def ? propBindingSchema(ctx.def.properties, b) : undefined;
   if (!('$item' in b)) return undefined;
   const list = ctx.lists?.at(-1);
   return list?.type === 'list' && Object.hasOwn(list.fields, b.$item) ? list.fields[b.$item] : undefined;
@@ -3135,8 +3150,11 @@ function emitNodeInner(ctx: EmitCtx, node: GraphNode): string {
     }
     case 'repeat': {
       const v = `item${ctx.items.length ? ctx.items.length + 1 : ''}`;
-      const list = bindExpr(ctx, node.list);
-      const listSchema = bindingSchema(ctx, node.list);
+      // A collection loop's rows are written in (see ./collection-loops); one with none prepared shows nothing.
+      const loop = isCollectionLoop(node) ? ctx.loops?.get(node.id) : undefined;
+      const list = isCollectionLoop(node) ? js(loop?.rows ?? []) : bindExpr(ctx, node.list);
+      const listSchema = loop ? loop.schema : isCollectionLoop(node) ? undefined : bindingSchema(ctx, node.list);
+      if (isCollectionLoop(node)) ctx.inLoop = (ctx.inLoop ?? 0) + 1;
       ctx.items.push(v);
       ctx.repeats = [...(ctx.repeats ?? []), node.id];
       ctx.lists = [...(ctx.lists ?? []), ...(listSchema ? [listSchema] : [])];
@@ -3149,6 +3167,7 @@ function emitNodeInner(ctx: EmitCtx, node: GraphNode): string {
       ctx.items.pop();
       ctx.repeats = ctx.repeats.slice(0, -1);
       if (listSchema) ctx.lists = ctx.lists.slice(0, -1);
+      if (isCollectionLoop(node)) ctx.inLoop! -= 1;
       return `${p}{#each ${list} ?? [] as ${v} (${v}.id)}\n${children}\n${p}{/each}`;
     }
     case 'slot': {
@@ -3366,7 +3385,11 @@ function emitInstance(ctx: EmitCtx, node: InstanceNode): string {
     // A computed list is never bound or stored: on a page it is worked out for that page, and inside a design (which
     // every page shares) it takes the rows the page handed down (`so_pages`).
     const feed = schema.type === 'list' && schema.feed;
-    let expr = feed
+    // A list connected to a collection holds the entries its query finds where it is written (see ./collection-loops).
+    const connected = connectedListItems(ctx.state, def, node, propName, ctx.rctx);
+    let expr = connected
+      ? js(resolveValue(schema, connected, rctx))
+      : feed
       ? ctx.def
         ? designRowsExpr(schema, rctx, entryQuery(def.properties, node.props))
         : js(resolveValue(schema, [], rctx, entryQuery(def.properties, node.props)))
@@ -3593,10 +3616,11 @@ function emptyImageListMarker(ctx: EmitCtx, node: GraphNode & { kind: 'element' 
   if (child?.kind !== 'repeat' || child.when || child.unless) return '';
   const schema = propSchemaFor(ctx, child.list);
   // A list a feed fills has no images to choose: the Inspector shows its entries instead.
-  if (schema?.type !== 'list' || schema.feed || !pickImagesField(ctx.def, child.list.$prop, schema)) return '';
+  const listProp = repeatProp(child);
+  if (schema?.type !== 'list' || schema.feed || listProp === undefined || !pickImagesField(ctx.def, listProp, schema)) return '';
   // A definition saved by hand may have lost its label.
   const label = ((typeof schema.label === 'string' && schema.label.trim()) || 'Images').toLowerCase();
-  return `<div class="so-list-empty" data-so-editor-only="" data-so-list-empty={${js(child.list.$prop)}}><strong>{${js(`No ${label} yet`)}}</strong><span>{${js('Choose images from Assets in the inspector. Visitors won’t see this box.')}}</span></div>`;
+  return `<div class="so-list-empty" data-so-editor-only="" data-so-list-empty={${js(listProp)}}><strong>{${js(`No ${label} yet`)}}</strong><span>{${js('Choose images from Assets in the inspector. Visitors won’t see this box.')}}</span></div>`;
 }
 
 /**
@@ -3853,7 +3877,8 @@ function designRowsExpr(schema: ListProp, rctx: ResolveContext, query: EntryQuer
 
 export function generateManagedComponent(state: ProjectState, def: ComponentDefinition, opts: GenerateOptions, standalone?: EmitCtx['standalone']): string {
   const file = defFile(def);
-  const tree = def.tree!;
+  // A collection loop in a design shows the same entries wherever the design is placed: its rows are written in.
+  const { tree, loops } = prepareLoops(state, def.tree!, { state });
   const locals = propLocals(def);
   const ctx: EmitCtx = {
     state,
@@ -3862,6 +3887,7 @@ export function generateManagedComponent(state: ProjectState, def: ComponentDefi
     instrument: !!opts.instrument,
     def,
     tree,
+    loops,
     ctxExpr: '',
     items: [],
     rctx: { state },
@@ -4095,13 +4121,15 @@ function heroPreload(ctx: EmitCtx): string | null {
 
 export function generatePage(state: ProjectState, page: PageDoc, opts: GenerateOptions): string {
   const file = pageFile(page);
+  const { tree, loops } = prepareLoops(state, page, { state, pageId: page.id });
   const ctx: EmitCtx = {
     state,
     file,
     imports: new Map(),
     instrument: !!opts.instrument,
     def: null,
-    tree: page,
+    tree,
+    loops,
     ctxExpr: `page:${page.id}`,
     items: [],
     rctx: { state, pageId: page.id },
@@ -4176,13 +4204,13 @@ export function generateIsolatedInstance(state: ProjectState, file: string, node
 
 export function generateLayout(state: ProjectState, opts: GenerateOptions): string {
   const file = 'src/routes/+layout.svelte';
-  const mk = (tree: NodeTree, part: 'header' | 'footer'): EmitCtx => ({
+  const mk = (shell: NodeTree, part: 'header' | 'footer'): EmitCtx => ({
     state,
     file,
     imports: new Map(),
     instrument: !!opts.instrument,
     def: null,
-    tree,
+    ...(({ tree, loops }) => ({ tree, loops }))(prepareLoops(state, shell, { state })),
     ctxExpr: `shell:${part}`,
     items: [],
     rctx: { state },
@@ -4492,7 +4520,8 @@ export function generateEntry(state: ProjectState, collectionId: string, entryId
   // Only an entry the site has a page for is written (see siteEntries), so it has an address.
   const route = entryRoute(collection, entry)!;
   const file = entryFile(route);
-  const tree = materializeTemplate(state, collection, entry, entryNeighbours(state, collectionId, entryId));
+  const here = { collectionId, entryId };
+  const { tree, loops } = prepareLoops(state, materializeTemplate(state, collection, entry, entryNeighbours(state, collectionId, entryId)), { state, entry: here });
   const ctx: EmitCtx = {
     state,
     file,
@@ -4500,6 +4529,7 @@ export function generateEntry(state: ProjectState, collectionId: string, entryId
     instrument: !!opts.instrument,
     def: null,
     tree,
+    loops,
     ctxExpr: `template:${collectionId}`,
     items: [],
     rctx: { state, entry: { collectionId, entryId } },
@@ -4535,6 +4565,41 @@ export function generateEntry(state: ProjectState, collectionId: string, entryId
     `<svelte:head>\n${head.join('\n')}\n</svelte:head>\n\n${opts.instrument ? hotBoundary(markup, tree.rootIds.length) : markup}\n` +
     (article ? `\n${ARTICLE_STYLE}` : '')
   );
+}
+
+/**
+ * A collection's archive layout (`archiveTemplate`) as one archive page shows it: its sections written as a page's are,
+ * the loops over the page's entries (`{ $archive: true }`) repeating once for each entry it lists, in order. Its
+ * imports and script go in the page's script; its markup in place of the ready-made cards.
+ */
+export function emitArchiveLayout(state: ProjectState, collectionId: string, entryIds: readonly string[], file: string, opts: GenerateOptions = {}): { imports: string[]; script: string; markup: string } {
+  const layout = state.collections[collectionId]?.settings.archiveTemplate;
+  const rctx: ResolveContext = { state, archive: { collectionId, entryIds } };
+  const { tree, loops } = prepareLoops(state, layout && typeof layout === 'object' ? layout : { rootIds: [], nodes: {} }, rctx);
+  const ctx: EmitCtx = {
+    state,
+    file,
+    imports: new Map(),
+    instrument: !!opts.instrument,
+    def: null,
+    tree,
+    loops,
+    ctxExpr: `archive:${collectionId}`,
+    items: [],
+    rctx,
+    indent: 0,
+    locals: new Map()
+  };
+  const roots = Array.isArray(tree.rootIds) ? tree.rootIds : [];
+  const markup = roots
+    .map((id, i) => {
+      ctx.firstSection = i === 0;
+      return emitNode(ctx, id);
+    })
+    .filter(Boolean)
+    .join('\n');
+  const imports = renderImports(ctx.imports);
+  return { imports: imports ? imports.split('\n') : [], script: editingState(ctx).trimEnd(), markup: opts.instrument ? hotBoundary(markup, roots.length) : markup };
 }
 
 /**
@@ -4627,6 +4692,7 @@ export function draftOnlyComponents(state: ProjectState): ComponentDefinition[] 
     walk(s.site.shell.footer);
     // A collection's layout is part of the site while it has an entry the site shows.
     for (const c of Object.values(s.collections ?? {})) if (c?.settings?.template?.nodes && Object.keys(c.entries ?? {}).length) walk(c.settings.template);
+    for (const c of Object.values(s.collections ?? {})) if (c?.settings?.archiveTemplate?.nodes) walk(c.settings.archiveTemplate);
     return seen;
   };
   const published = placed(live);
@@ -5076,7 +5142,7 @@ function generateFiles(state: ProjectState, opts: GenerateOptions, cache?: Gener
   // pages before and after it) and those entries, so a post published, backdated or turned back into a draft makes
   // again only the pages it moves across. Written after everything else: where a draft made before archive pages sits
   // at one's address, the archive page is what the website has there, in the preview too.
-  for (const { collectionId, route } of archivePages(state)) files.set(archiveFile(route), file(`archive:${collectionId}:${route}`, (s) => generateArchive(s, collectionId, route)));
+  for (const { collectionId, route } of archivePages(state)) files.set(archiveFile(route), file(`archive:${collectionId}:${route}${mode}`, (s) => generateArchive(s, collectionId, route, opts)));
   // The not-found page and the hook that makes it work at any address both read the whole site's sections; the hook
   // also gives each page in another language than the site's its own <html lang>.
   files.set(`${NOT_FOUND_DIR}/+page.svelte`, file('not-found', generateNotFound));

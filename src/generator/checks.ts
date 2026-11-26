@@ -3,7 +3,7 @@
  */
 import type { Binding, Collection, ComponentDefinition, EntryDoc, GraphNode, ImageValue, InstanceNode, LinkValue, NodeTree, OwnerRef, PageDoc, ProjectState, PropSchema, ResponsiveStyles } from '@shared/types';
 import { propBindingSchema, propBindingValue } from '@shared/bindings';
-import { CONTAINER_SCOPES, TEXT_TAGS, conditionHolds, conditionRef, isBinding, isComparison, isStateRef, slotChildren, slotFallback, stateInitial, type Condition } from '@shared/types';
+import { repeatProp, CONTAINER_SCOPES, TEXT_TAGS, conditionHolds, conditionRef, isBinding, isComparison, isStateRef, slotChildren, slotFallback, stateInitial, type Condition } from '@shared/types';
 import { isImageBlock, isListBlock, isRichBlock, richTextToPlain, spanRuns, toRichText, type RichSpan } from '@shared/richtext';
 import type { EditOperation } from '@shared/ops';
 import { slugify } from '@shared/routes';
@@ -329,7 +329,8 @@ export function filterShowsAt(state: ProjectState, def: ComponentDefinition, rep
     if ((typeof on === 'boolean' ? on : prop?.type === 'boolean' ? prop.default : on) !== true) return false;
   }
   if (!rendersIn(state, tree, scope, repeat)) return false;
-  const list = repeat.list && typeof repeat.list === 'object' && Object.hasOwn(def.properties, repeat.list.$prop) ? def.properties[repeat.list.$prop] : undefined;
+  const listProp = repeatProp(repeat);
+  const list = listProp !== undefined && Object.hasOwn(def.properties, listProp) ? def.properties[listProp] : undefined;
   if (list?.type !== 'list') return false;
   const schema = Object.hasOwn(list.fields, field) ? list.fields[field] : undefined;
   const options = schema?.type === 'enum' && Array.isArray(schema.options) ? schema.options.map((o) => o?.value) : undefined;

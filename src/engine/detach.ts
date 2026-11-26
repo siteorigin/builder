@@ -6,7 +6,7 @@
  * design stay placements, given the values and styles they were shown with.
  */
 import type { ComponentDefinition, DetachedFrom, GraphNode, InstanceNode, NodeTree, OwnerRef, ProjectState, PropSchema, ResponsiveStyles } from '@shared/types';
-import { ELEMENT_ACTIONS, ELEMENT_TAGS, ICON_POSITIONS, TEXT_TAGS, isAppearPreset, isBinding, isBindingRef, slotChildren, slotFallback, stateInitial } from '@shared/types';
+import { repeatProp, ELEMENT_ACTIONS, ELEMENT_TAGS, ICON_POSITIONS, TEXT_TAGS, isAppearPreset, isBinding, isBindingRef, slotChildren, slotFallback, stateInitial } from '@shared/types';
 import { propBindingSchema } from '@shared/bindings';
 import type { Op } from '@shared/ops';
 import { newId } from '@shared/ids';
@@ -561,7 +561,7 @@ export function placementRenderer(state: ProjectState, place: RenderedPlacement,
     if (!src || !rendersIn(state, design, at.scope, src)) return [];
     switch (src.kind) {
       case 'repeat': {
-        const list = src.list.$prop;
+        const list = repeatProp(src) ?? '';
         const schema = own(def.properties, list);
         const rows = evaluate(src.list, at.scope);
         const fields = schema?.type === 'list' ? schema.fields : undefined;

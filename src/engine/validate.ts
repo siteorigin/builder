@@ -9,7 +9,7 @@ import type { BackgroundImageValue, GraphNode, ImageValue, NodeTree, OwnerRef, P
 import { STYLE_PROP_MAP, containerStyleError, isStateStyleProp, linkShapeError, stateStyleError, validateStyleValue } from '@shared/styles';
 import { groupLookup, hasGroupStyles, partInInteractionGroup } from '@shared/interaction-groups';
 import { effectiveItem, followsPage } from '@shared/page-teasers';
-import { ELEMENT_TAGS, LIST_FEEDS, TEXT_TAGS, conditionRef, isBinding, isBindingRef, isComparison, isContainerScope, isEntryBinding, isStateRef, parseStyleScopeKey, type Collection } from '@shared/types';
+import { ELEMENT_TAGS, LIST_FEEDS, TEXT_TAGS, isCollectionLoop, conditionRef, isBinding, isBindingRef, isComparison, isContainerScope, isEntryBinding, isStateRef, parseStyleScopeKey, type Collection } from '@shared/types';
 import { ENTRY_CONTENT_FIELDS, entryChoiceProblem, entryComparisonProblem, entryFieldSchema, isEntryDateField } from '@shared/entry-fields';
 import { validateRoute } from '@shared/routes';
 import { loopText, redirectRecord, redirectTargetProblem, resolveRedirects, type RedirectProblem } from '@shared/redirects';
@@ -29,6 +29,7 @@ import { missingSectionLinks, netlifyFormClashes, pageHeadings, unlinkedButtons,
 import { entryInstanceProps } from '@generator/entry-template';
 import { choosesFontAtRunTime, declaresFonts, installedFonts, usedPackFonts } from '@catalogue/fonts';
 import { codeNeeds } from './definitions';
+import { collectionSourceProblems, loopMembers } from './collection-sources';
 import { SHELL_PARTS, showsPart } from '@shared/page-shell';
 import { effectiveTokens, isDraftEntry, isDraftPage, publishedState, siteEntries } from '@generator/index';
 import { componentReusabilityDiagnostics } from './reusability';
@@ -242,6 +243,8 @@ export function validateState(state: ProjectState, opts: { sectionLinks?: boolea
       if (!tree.nodes[part.nodeId]) out.push({ severity: 'error', code: 'PART_MISSING', message: `${def.name}: part "${pid}" refers to an element that no longer exists.`, owner });
     }
     const visited = new Set<string>();
+    // What the elements of a collection loop read of its entries is checked with the loop (see ./collection-sources).
+    const inLoop = loopMembers(tree);
     const check = (id: string, inRepeat: boolean) => {
       const n = tree.nodes[id];
       if (!n || visited.has(id)) return;
@@ -249,6 +252,7 @@ export function validateState(state: ProjectState, opts: { sectionLinks?: boolea
       for (const slot of bindingSlots(n)) {
         // The property turning a category filter on is checked with the rest of the filter, below.
         if (slot.field === 'filter') continue;
+        if (inLoop.has(id) && readsRowField(slot)) continue;
         const condition = slot.field === 'when' || slot.field === 'unless';
         if (condition && slot.value !== undefined && !conditionShapeValid(slot.value)) {
           out.push({ severity: 'error', code: 'BINDING_INVALID', message: `${def.name}: ${nodeLabel(n)} has a ${slot.field} condition that is neither a property, a list item field, UI state, nor a comparison of one with a value.`, owner, nodeId: id });
@@ -768,6 +772,12 @@ const plainBinding = (v: unknown) => {
   return keys.length === 1 && typeof r[keys[0]] === 'string';
 };
 
+/** Whether a binding place reads a field of a collection loop's row (`{ $item }`), as an element inside one may. */
+const readsRowField = (slot: { field: string; value: unknown }) => {
+  const b = slot.field === 'when' || slot.field === 'unless' ? conditionRef(slot.value) : slot.value;
+  return isBinding(b) && '$item' in b;
+};
+
 /** Whether a binding place of a node in a tree owned by `kind` reads a collection entry, as only a layout's may. */
 const readsEntry = (kind: string, slot: { field: string; value: unknown }) => kind === 'template' && isEntryBinding(conditionRef(slot.value) ?? slot.value);
 
@@ -992,6 +1002,7 @@ function structureDiagnostics(state: ProjectState): Diagnostic[] {
     if (def?.owner === 'theme') continue;
     const group = groupLookup(tree);
     const parentOf = new Map(Object.values(tree.nodes).flatMap((p) => childLists(p).flatMap((l) => l.ids.map((c) => [c, p] as const))));
+    const inLoop = loopMembers(tree);
     for (const n of Object.values(tree.nodes)) {
       const collapse = n.kind === 'element' ? queryContainerCollapse(n, parentOf) : null;
       if (collapse) out.push({ severity: 'warning', code: 'CONTAINER_COLLAPSE', message: `${label}: ${nodeLabel(n)} is a query container ${collapse}, so it can shrink to nothing: a query container's width never comes from what is inside it. Give it a width (or Grow in a horizontal stack), or set Query container to None.`, owner, nodeId: n.id, site: `${n.id}|containerType` });
@@ -1009,9 +1020,10 @@ function structureDiagnostics(state: ProjectState): Diagnostic[] {
       if (!def && (n as { overlay?: unknown }).overlay !== undefined)
         out.push({ severity: 'error', code: 'OVERLAY_INVALID', message: `${label}: ${nodeLabel(n)} shows over the page as a dialog or drawer, which only a container in a component’s design can.`, owner, nodeId: n.id, site: `${n.id}|overlay` });
       if (n.kind === 'slot' && !def) out.push({ severity: 'error', code: 'SLOT_INVALID', message: `${label}: slots can only be placed inside a component definition.`, owner, nodeId: n.id });
-      // Properties and list items belong to a component: a page or the shared header and footer has none to show.
-      else if (n.kind === 'repeat' && !def) out.push({ severity: 'error', code: 'BINDING_SCOPE', message: `${label}: a repeat shows a component's list, so it can only be placed inside a component definition.`, owner, nodeId: n.id, site: n.id });
-      else if (!def && bindingSlots(n).some((sl) => !readsEntry(owner.kind, sl) && (sl.field === 'when' || sl.field === 'unless' ? conditionRef(sl.value) : isBindingRef(sl.value))))
+      // Properties and list items belong to a component: a page or the shared header and footer has none to show. A
+      // collection loop shows entries anywhere, and what its elements read of them is checked with it (below).
+      else if (n.kind === 'repeat' && !def && !isCollectionLoop(n)) out.push({ severity: 'error', code: 'BINDING_SCOPE', message: `${label}: a repeat shows a component's list, so it can only be placed inside a component definition.`, owner, nodeId: n.id, site: n.id });
+      else if (!def && bindingSlots(n).some((sl) => !readsEntry(owner.kind, sl) && !(inLoop.has(n.id) && readsRowField(sl)) && (sl.field === 'when' || sl.field === 'unless' ? conditionRef(sl.value) : isBindingRef(sl.value))))
         out.push({
           severity: 'error',
           code: 'BINDING_SCOPE',
@@ -1090,6 +1102,8 @@ function structureDiagnostics(state: ProjectState): Diagnostic[] {
             out.push({ severity: 'warning', code: 'SLOT_UNPLACED', message: `${label}: the "${def.slots![s].label}" slot is declared but not placed, so content put there will not show.`, owner });
     }
   }
+  // Lists connected to a collection, collection loops and what their elements read of each entry.
+  for (const p of collectionSourceProblems(state)) out.push({ severity: 'error', code: 'COLLECTION_SOURCE', message: `${p.label}: ${nodeLabel(p.node)} ${p.message}`, owner: p.owner, nodeId: p.nodeId, site: p.key });
   // Slot declarations of the project's own components, code components included (theme ones are checked by the loader).
   for (const def of Object.values(state.components)) {
     if (def.owner === 'theme') continue;

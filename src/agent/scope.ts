@@ -328,6 +328,9 @@ export const OP_REACH: Record<OperationType, OpReach> = {
   'node.setBinding': 'node',
   'node.setStateAction': 'node',
   'instance.setProp': 'node',
+  // A list shown from a collection is the whole list: nothing a selected item can hold.
+  'instance.setListSource': 'wider',
+  'node.setRepeatSource': 'wider',
   'instance.listInsert': 'node',
   'instance.listRemove': 'node',
   'instance.listMove': 'node',

@@ -32,7 +32,7 @@ export function propertiesHash(properties: Record<string, unknown> | undefined):
 
 const owner = z
   .object({
-    kind: z.enum(['page', 'shell', 'component', 'template']).describe("Document that owns the node: a page, the shared shell (header/footer), a component definition, or a collection's layout template."),
+    kind: z.enum(['page', 'shell', 'component', 'template', 'archive']).describe("Document that owns the node: a page, the shared shell (header/footer), a component definition, a collection's layout template, or a collection's archive layout."),
     id: z.string().describe('Page ID, "header" or "footer" for the shell, a component definition ID, or (for a template) the collection ID.')
   })
   .describe('Owner document of the node.');
@@ -231,6 +231,10 @@ const ARTICLE_FIELDS = {
 };
 
 /** A collection's settings, as collection.create and collection.update take them (see shared/collections.ts). */
+/** How a collection query is described to callers (see shared/collection-query.ts). */
+const COLLECTION_QUERY_TEXT =
+  '{ collectionId, where?, sort?, limit?, offset?, excludeCurrent? }: collectionId names the collection ("$current" in a collection\'s layout or archive layout is its own); where is a list of { field, op, value } clauses all entries must pass (op eq, ne, in, contains, gt, gte, lt, lte or exists; fields as bindings name them: title, publishedAt, terms.<grouping>, field.<name>...); sort a list of { field, direction? } ("entryOrder" is the editorial order); drafts are always left out.';
+
 const COLLECTION_SETTINGS = {
   name: z.string().min(1).max(80).optional(),
   kind: z.enum(['editorial', 'structured']).optional().describe('What it holds: "editorial", dated articles such as blog posts (the default), or "structured", records such as team members, projects or events.'),
@@ -251,7 +255,11 @@ const COLLECTION_SETTINGS = {
     .optional()
     .describe('Every custom field, by camelCase name: { type, label, default?, ... } with type string, number, boolean, enum (options), image, link, richtext, date (YYYY-MM-DD) or reference (collection: the ID of the collection whose entries it names; multiple: true for a list of them). Replaces the whole set: a field left out is removed from every entry.'),
   pageSize: z.number().int().min(1).max(100).optional().describe('How many entries each page of the collection\'s index and category archives lists, newest first (later pages at page/2/, page/3/...). Default 10.'),
-  categoryArchives: z.boolean().optional().describe('Whether each category with a published entry gets an archive page at category/<term ID>/ under the collection\'s address. Default true.')
+  categoryArchives: z.boolean().optional().describe('Whether each category with a published entry gets an archive page at category/<term ID>/ under the collection\'s address. Default true.'),
+  archiveTemplate: z
+    .union([z.object({ rootIds: z.array(z.string()), nodes: z.record(z.string(), z.unknown()) }), z.literal('start'), z.null()])
+    .optional()
+    .describe('The layout of its archive pages, in place of the ready-made cards: a tree of sections and elements whose collection loop over { "$archive": true } shows the page\'s entries. "start" begins one (a list of linked titles and excerpts); null goes back to the ready-made cards.')
 };
 
 /**
@@ -387,6 +395,8 @@ export const OPERATION_SCHEMAS = {
       .optional()
       .describe('"badge" is a compact pill label (an eyebrow) with an optional leading icon; "figure" is an image with a caption beneath it.'),
     bind: z.string().optional().describe('Component definitions only: the list property a "repeat" repeats, or the declared slot a "slot" renders.'),
+    query: z.record(z.string(), z.unknown()).optional().describe(`A "repeat" anywhere: the collection loop's query, which it repeats once for each entry it finds. ${COLLECTION_QUERY_TEXT}`),
+    archive: z.literal(true).optional().describe("A \"repeat\" in a collection's archive layout: repeat once for each entry the archive page shown lists."),
     props: z.record(z.string(), z.unknown()).optional().describe('Initial property values for a component.'),
     variant: z.string().optional().describe('One variant option, found on whichever axis has it.'),
     variants: z.record(z.string(), z.string()).optional().describe('Options by axis, e.g. { "tone": "inverse", "layout": "two-columns" }.'),
@@ -505,6 +515,16 @@ export const OPERATION_SCHEMAS = {
     eq: conditionValue.optional().describe('For "when"/"unless": render when the bound value equals this (or, for unless, when it does not).'),
     ne: conditionValue.optional().describe('For "when"/"unless": render when the bound value differs from this (or, for unless, when it does not).')
   }),
+  'node.setRepeatSource': z
+    .object({
+      type: z.literal('node.setRepeatSource'),
+      owner,
+      nodeId: z.string().describe('A collection loop: a repeat over a query or over an archive page\'s entries.'),
+      source: z
+        .union([z.object({ $query: z.record(z.string(), z.unknown()).describe(COLLECTION_QUERY_TEXT) }).strict(), z.object({ $archive: z.literal(true) }).strict()])
+        .describe("What it repeats: a query's entries, or (in a collection's archive layout) the entries of the archive page shown.")
+    })
+    .describe('Change which entries a collection loop repeats, keeping what each row shows.'),
   'node.setStateAction': z
     .object({
       type: z.literal('node.setStateAction'),
@@ -522,6 +542,22 @@ export const OPERATION_SCHEMAS = {
     field: z.string().optional().describe('For list properties: the item field to set. For object properties: the one field to set, keeping the others.'),
     value: z.unknown().describe(`${RICH_TEXT_VALUE} For choices: the whole set in order, { label } for a new choice and the saved { id, label, value } for one kept or renamed. ${TABLE_VALUE}`)
   }),
+  'instance.setListSource': z
+    .object({
+      type: z.literal('instance.setListSource'),
+      owner,
+      nodeId: z.string().describe('Instance node ID.'),
+      prop: z.string().describe('The list property to connect.'),
+      source: z
+        .object({
+          query: z.record(z.string(), z.unknown()).describe(COLLECTION_QUERY_TEXT),
+          fields: z.record(z.string(), z.string()).describe('Which entry field fills each item field, by item field name: "title", "excerpt", "publishedAt", "featuredImage", "categories", "terms.<grouping>", "field.<name>", "id", "slug" or "entryLink" (a link to the entry\'s page). Every field an item needs must be filled; others left out show their default.')
+        })
+        .strict()
+        .nullable()
+        .describe('null disconnects it: the placement shows its own items again, as it kept them.')
+    })
+    .describe("Show a collection's entries in a placed section's list (a Team grid's people from a Team collection), each entry one item, instead of the items it holds itself."),
   'instance.listInsert': z.object({
     type: z.literal('instance.listInsert'),
     owner,

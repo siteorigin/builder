@@ -5,7 +5,7 @@
  */
 import type { ComponentDefinition, GraphNode, InstanceNode, ItemStyles, ListItem, ResponsiveStyles } from './types';
 import { sha256Hex } from './sha256';
-import { slotChildren, slotFallback } from './types';
+import { repeatProp, slotChildren, slotFallback } from './types';
 
 const own = <T>(rec: Record<string, T> | undefined, key: string): T | undefined => (rec && Object.hasOwn(rec, key) ? rec[key] : undefined);
 
@@ -46,7 +46,7 @@ export function repeatedPartList(def: ComponentDefinition, partId: string): stri
     const n = def.tree.nodes[id];
     if (n?.kind !== 'repeat') continue;
     repeats++;
-    list = n.list.$prop;
+    list = repeatProp(n);
   }
   if (repeats !== 1 || !list) return undefined;
   const schema = own(def.properties, list);
