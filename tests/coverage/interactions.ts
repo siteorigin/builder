@@ -1757,6 +1757,7 @@ export const INTERACTIONS: Interaction[] = [
       { test: 'tests/e2e/resume-place.mjs', kind: 'e2e', step: 'Preview and Edit from the toolbar do the same' },
       { test: 'tests/e2e/empty-layout.mjs', kind: 'e2e', step: 'Preview shows the Grid as visitors get it' },
       { test: 'tests/e2e/snapshot.mjs', kind: 'driver', step: 'visitor mode is told apart from a preview still loading' },
+      { test: 'tests/e2e/view-index.mjs', kind: 'e2e', step: 'Back to editing shows Home again, not the index under its name' },
       { test: 'tests/unit/preview-stage.test.ts', kind: 'unit' }
     ],
     gaps: [{ missing: 'Switch to preview from the command menu is never chosen by a test', owner: 'preview' }]
