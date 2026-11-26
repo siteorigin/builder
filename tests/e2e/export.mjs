@@ -1100,7 +1100,7 @@ await studioHome.click();
 await eventually(async () => assert.equal(await lostStudio.title(), 'Client proof 2', 'following it reaches the Home page under /studio'));
 await lostStudio.close();
 
-step('#817: a clean site with a public URL exports with nothing to fix, and its hosting guidance as information');
+step('#817, #884: a site exports with nothing to fix only once the dialog lists nothing to fix, and its hosting guidance as information');
 {
   await win.evaluate(() => window.builder.projects.close());
   await win.waitForSelector('.welcome');
@@ -1109,9 +1109,50 @@ step('#817: a clean site with a public URL exports with nothing to fix, and its 
   assert.equal(publicUrl.ok, true, `the public URL is set: ${publicUrl.error?.message}`);
   await win.getByRole('button', { name: 'Export', exact: true }).click();
   const dialog = win.locator('.modal');
+  const outcome = dialog.locator('.export-result');
+  // #884: what the dialog lists to fix before the export is said with its result, never contradicted by "Nothing to fix."
+  const listed = (await dialog.getByTestId('export-seo-preflight').locator('strong').first().innerText()).trim();
+  assert.match(listed, /^3 things keep the website from being found or shared well\.$/, `the blank site has no publisher, description or sharing image: ${listed}`);
   await intoFolder();
   await dialog.getByRole('button', { name: /Website files, ready to upload/ }).click();
-  const outcome = dialog.locator('.export-result');
+  await outcome.waitFor({ timeout: 300000 });
+  const first = await outcome.innerText();
+  assert.ok(first.includes(listed), `the result repeats what the dialog listed: ${first}`);
+  assert.doesNotMatch(first, /Nothing to fix\./, `#884: the result does not contradict the dialog: ${first}`);
+  await dialog.getByRole('button', { name: 'Back to export options' }).click();
+  // Fixed, the site is clean in the dialog too.
+  const cardPath = join(WORK, 'quiet-shelf-card.png');
+  const card = await win.evaluate(() => {
+    const c = document.createElement('canvas');
+    c.width = 1200;
+    c.height = 630;
+    const g = c.getContext('2d');
+    g.fillStyle = '#2a6f4f';
+    g.fillRect(0, 0, 1200, 630);
+    return c.toDataURL('image/png').split(',')[1];
+  });
+  writeFileSync(cardPath, Buffer.from(card, 'base64'));
+  const cardImport = await win.evaluate((p) => window.builder.project.importAssets([p]), cardPath);
+  assert.equal(cardImport.ok, true, `the sharing image imports: ${cardImport.message}`);
+  const quiet = (await win.evaluate(() => window.builder.project.snapshot())).state;
+  const quietHome = Object.values(quiet.pages).find((p) => p.route === '/').id;
+  const fixed = await win.evaluate(
+    ({ image, home }) =>
+      window.builder.project.apply(
+        {
+          operations: [
+            { type: 'site.update', socialImage: image, identity: { kind: 'Organization', name: 'Quiet Shelf' } },
+            { type: 'page.update', pageId: home, description: 'Quiet Shelf keeps a small, carefully chosen stock of second-hand books, open every day but Monday.' }
+          ]
+        },
+        { label: 'Fix what keeps the site from being found' }
+      ),
+    { image: cardImport.assetIds[0], home: quietHome }
+  );
+  assert.equal(fixed.ok, true, `the findings are fixed: ${fixed.error?.message}`);
+  await dialog.getByText('Ready for search and AI.').waitFor({ timeout: 30000 });
+  await intoFolder();
+  await dialog.getByRole('button', { name: /Website files, ready to upload/ }).click();
   await outcome.waitFor({ timeout: 300000 });
   const said = await outcome.innerText();
   assert.match(said, /^Exported \d+ pages?\./, `the clean export succeeds: ${await dialog.innerText()}`);
