@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import type { PerfRecord } from '../../src/shared/perf';
 import { Collector, Trace } from '../../scripts/perf/results';
-import { canvas, CHAT_CASES, CHAT_REPLY_CHECKPOINTS, CHAT_TYPED, chainFor, chat, chatReply, chatReplyFirst, chatReplyLast, chatSeed, copiesProblem, edit, expectedCopies, exportAgain, exportSite, expect as check, findHeading, importPhotos, launch, memory, MEMORY_EDITS, open, PANELS, panels, runChain, SHOWN_PANELS, type FixtureFacts, type Scenario, type ScenarioContext, switchProject } from '../../scripts/perf/scenarios';
+import { canvas, CHAT_CASES, CHAT_REPLY_CHECKPOINTS, CHAT_TYPED, chainFor, chat, chatReply, chatReplyFirst, chatReplyLast, chatSeed, copiesProblem, edit, edits, EDITS, expectedCopies, exportAgain, exportSite, expect as check, findHeading, importPhotos, launch, memory, MEMORY_EDITS, open, PANELS, panels, runChain, SHOWN_PANELS, type FixtureFacts, type Scenario, type ScenarioContext, switchProject } from '../../scripts/perf/scenarios';
 import type { MemoryProbe, MemoryReading } from '../../scripts/perf/memory';
 import { PHOTO_COUNT, photoSpec } from '../../scripts/perf/photos';
 import { FIXTURES } from '../../scripts/perf/fixtures';
@@ -17,6 +17,7 @@ const facts: FixtureFacts = { spec: FIXTURES.small, pages: 3, entries: 0, assets
 describe('the scenario chain', () => {
   it('runs each scenario after the ones it follows', () => {
     expect(chainFor(['edit']).map((s) => s.name)).toEqual(['launch', 'open', 'edit']);
+    expect(chainFor(['edits']).map((s) => s.name)).toEqual(['launch', 'open', 'edits']);
     expect(chainFor(['chat']).map((s) => s.name)).toEqual(['launch', 'open', 'chat']);
     expect(chainFor(['open']).map((s) => s.name)).toEqual(['launch', 'open']);
     expect(chainFor(['launch']).map((s) => s.name)).toEqual(['launch']);
@@ -417,6 +418,98 @@ describe('edit metrics', () => {
     expect(got.missing).toEqual(['edit.snapshotBytes (a snapshot whose size could not be told)']);
     expect(got.metrics['edit.snapshotBytes']).toBeUndefined();
     expect(got.metrics['edit.snapshotsSent'].value).toBe(3);
+  });
+});
+
+describe('edits metrics', () => {
+  /** The revision before the first edit, and the one the last leaves; the edits are sent GAP ms apart. */
+  const GAP = 500;
+  const base = 40;
+  const target = base + EDITS;
+  function trace(drop: (x: PerfRecord) => boolean = () => false) {
+    const records: PerfRecord[] = [
+      r('scenario.start', 1000, { attrs: { scenario: 'edits' }, c: { 'react.commits': 10 } }),
+      m('scenario.start', 1000, { attrs: { scenario: 'edits' }, c: { 'files.read': 100, 'docs.read': 50, 'files.hashed': 5, 'fs.durableWrites': 3, 'fs.fsyncs': 4 } }),
+      // An edit that failed: never taken for the revision the project was at.
+      span('controller.apply', 1050, 9999, { attrs: { revision: base + 5, ok: false } }),
+      span('session.apply', 1049, 9999, { attrs: { revision: base + 5, ok: false } })
+    ];
+    for (let k = 0; k < EDITS; k++) {
+      const sent = 1100 + GAP * k;
+      const rev = base + 1 + k;
+      records.push(
+        r('edit.requested', sent, { attrs: { revision: rev - 1, operations: 1 } }),
+        // The kth edit waited k × 10 ms for its turn, after 200 to 219 ms of its own work.
+        span('session.apply', sent + 299, 200 + (k % 20), { attrs: { revision: rev, ok: true } }),
+        span('controller.apply', sent + 300, 200 + (k % 20) + 10 * k, { attrs: { revision: rev, ok: true } }),
+        m('controller.snapshotSent', sent + 301, { attrs: { revision: rev, bytes: 100 } })
+      );
+      // The watch went off for every save but the last before the outside change; each look but two read the project,
+      // and two of those found something changed.
+      if (k < EDITS - 1) records.push(m('controller.watchFired', sent + 690));
+      if (k < EDITS - 3) records.push(m('session.reloadFromDisk', sent + 700));
+      if (k < EDITS - 5) records.push(m('session.reloadUnchanged', sent + 900));
+    }
+    records.push(
+      span('main.stall', 5000, 80),
+      m('edits.outside', 12_000, { attrs: { scenario: 'edits', revision: target }, c: { 'files.read': 300, 'docs.read': 150, 'files.hashed': 25, 'fs.durableWrites': 63, 'fs.fsyncs': 124 } }),
+      r('edits.outside', 12_001, { attrs: { scenario: 'edits', revision: target }, c: { 'react.commits': 210 } }),
+      // The watch went off twice for the change made outside: the second look took it.
+      m('controller.watchFired', 12_100),
+      m('controller.watchFired', 12_440),
+      m('session.reloadFromDisk', 12_450),
+      m('controller.snapshotSent', 12_600, { attrs: { revision: target + 1, bytes: 100 } }),
+      r('canvas.revisionApplied', 12_900, { attrs: { revision: target + 1 } }),
+      span('main.stall', 12_950, 500),
+      m('scenario.end', 13_000, { attrs: { scenario: 'edits' } }),
+      r('scenario.end', 13_001, { attrs: { scenario: 'edits' } }),
+      // After the scenario: none of its counts.
+      m('session.reloadFromDisk', 14_000)
+    );
+    return new Trace(records.filter((x) => !drop(x)));
+  }
+
+  it('time each edit’s wait for its turn by the revision it made, and count the reloads among the edits', () => {
+    const got = edits.measure(trace(), facts);
+    expect(got.missing).toEqual([]);
+    expect(Object.fromEntries(Object.entries(got.metrics).map(([k, v]) => [k, `${v.value} ${v.unit}`]))).toEqual({
+      // The edits after the first waited 10 to 190 ms; all of them, 0 to 190.
+      'edits.queueWait': '100 ms',
+      'edits.queueWaitTotal': '1900 ms',
+      'edits.apply': '304.5 ms',
+      'edits.sessionApply': '209.5 ms',
+      'edits.sendGap': `${GAP} ms`,
+      'edits.reloadFromDisk': `${EDITS - 3} count`,
+      'edits.reloadUnchanged': `${EDITS - 5} count`,
+      'edits.filesRead': '200 count',
+      'edits.docsRead': '100 count',
+      'edits.filesHashed': '20 count',
+      'edits.durableWrites': '60 count',
+      'edits.fsyncs': '120 count',
+      'edits.snapshotsSent': `${EDITS} count`,
+      'edits.snapshotBytes': `${EDITS * 100} bytes`,
+      'edits.rendererCommits': '200 count',
+      'edits.mainStallMax': '80 ms',
+      'edits.watchFired': `${EDITS - 1} count`,
+      // From the look that took it.
+      'edits.outsideSent': '160 ms',
+      'edits.outsideApplied': '460 ms',
+      'edits.outsideReloads': '1 count'
+    });
+  });
+
+  it('name an edit or a mark that is missing instead of reporting less work', () => {
+    const without = (drop: (x: PerfRecord) => boolean) => edits.measure(trace(drop), facts);
+    const oneShort = without((x) => x.name === 'session.apply' && x.attrs?.revision === base + 10);
+    expect(oneShort.missing).toEqual([`session.apply (revision ${base + 10})`]);
+    expect(oneShort.metrics['edits.queueWait']).toBeUndefined();
+    expect(without((x) => x.name === 'edit.requested' && x.t === 1100).missing).toEqual([`${EDITS} edit.requested (there were ${EDITS - 1})`]);
+    expect(without((x) => x.name === 'edits.outside' && x.proc === 'main').missing).toContain('edits.outside (main)');
+    const untaken = without((x) => x.name === 'canvas.revisionApplied');
+    expect(untaken.missing).toEqual(['canvas.revisionApplied (the change made outside)']);
+    expect(untaken.metrics['edits.outsideApplied']).toBeUndefined();
+    // A change the app took without its watch going off for it is not timed from an earlier look.
+    expect(without((x) => x.name === 'controller.watchFired' && x.t > 12_000).missing).toEqual(['controller.watchFired (for the change made outside)']);
   });
 });
 

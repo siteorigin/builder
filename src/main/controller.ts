@@ -312,6 +312,8 @@ export class Controller {
   private exportPaths = new Set<string>();
   private watchers: FolderWatch[] = [];
   private watchTimer: NodeJS.Timeout | null = null;
+  /** Which installation of the document watches is current: a look one that has gone set off never runs. */
+  private watchGeneration = 0;
   private assetTimer: NodeJS.Timeout | null = null;
   private folderTimer: NodeJS.Timeout | null = null;
   private folderPoll: NodeJS.Timeout | null = null;
@@ -1557,7 +1559,7 @@ export class Controller {
    * Accept valid external edits to canonical documents and authored code components, and notice image files being
    * moved out of (or back into) static/assets/.
    */
-  private watchExternalChanges(session: ProjectSession) {
+  private watchExternalChanges(session: ProjectSession, opts: { owed?: boolean } = {}) {
     for (const w of this.watchers) w.close();
     this.watchers = [];
     // A folder moved with a parent of it may tell no watch, and a read-only project has no lock heartbeat to notice.
@@ -1583,13 +1585,41 @@ export class Controller {
     } catch {
       /* watching is best-effort: the check still runs when the library changes and before every export */
     }
-    const onChange = () => {
+    // The files the watch has named since the last look. The look is owed in full (as every look was before the app
+    // could tell its own saves) when the one before it was refused or failed, when a watch told of a change without
+    // naming it, and for good once a watch has ended: the app's own saves name only files that hold what it wrote, and a
+    // change named nowhere could be anywhere. Watches put back after a close that failed owe one too: what they had
+    // been told went with the old ones, and so does a watch that could not be made. Looks run one after another, each
+    // deciding once the one before has finished, and only while these watches are the ones in place.
+    const generation = ++this.watchGeneration;
+    const current = () => this.watchGeneration === generation && this.session === session;
+    let named = new Set<string>();
+    let owed = !!opts.owed;
+    let blind = false;
+    let looking: Promise<void> = Promise.resolve();
+    const look = async () => {
+      if (!current() || this.aiBusy()) return;
+      const paths = named;
+      const whole = owed || blind;
+      named = new Set();
+      owed = false;
+      if (!paths.size && !whole) return;
+      const r = await (whole ? session.reloadFromDisk() : session.reloadChanged(paths)).catch((e: Error) => ({ ok: false, message: e.message }));
+      if (!r.ok) owed = true;
+      if (!r.ok && r.message && r.message !== 'Busy') this.send('runtime:status', this.runtimeStatus());
+    };
+    const onChange = (path: string | null) => {
+      if (path === null) owed = true;
+      else named.add(path);
       if (this.watchTimer) clearTimeout(this.watchTimer);
       this.watchTimer = setTimeout(async () => {
-        if (this.session !== session || this.aiBusy()) return;
+        // The watch has seen the documents change and gone quiet: what follows is the look at them.
+        perf.mark('controller.watchFired');
+        // Not now: what was named waits for the next look.
+        if (!current() || this.aiBusy()) return;
         if (await session.checkFolder()) return;
-        const r = await session.reloadFromDisk().catch((e: Error) => ({ ok: false, message: e.message }));
-        if (!r.ok && r.message && r.message !== 'Busy') this.send('runtime:status', this.runtimeStatus());
+        looking = looking.then(look).catch(() => undefined);
+        await looking;
       }, 400);
     };
     // Watch src/lib/siteorigin (not just custom/) so a custom folder created later is still seen.
@@ -1598,11 +1628,30 @@ export class Controller {
       ['siteorigin', (f: string) => f !== 'generated-manifest.json'],
       ['src/lib/siteorigin', (f: string) => f.startsWith('custom')]
     ] as const) {
+      const dir = join(session.dir, rel);
       try {
-        const dir = join(session.dir, rel);
-        if (existsSync(dir)) this.watchers.push(this.watchFolder(session, dir, (_e, f) => f && accept(f) && !f.endsWith('.tmp') && onChange()));
+        if (!existsSync(dir)) {
+          blind = true;
+          continue;
+        }
+        const w = this.watchFolder(session, dir, (_e, f) => {
+          // Told of a change without its name: the folder itself (which ends the watch, or comes under its own name),
+          // or anything in it.
+          if (!f || f === basename(dir)) {
+            if (f === '') blind = true;
+            return onChange(null);
+          }
+          if (accept(f) && !f.endsWith('.tmp')) onChange(`${rel}/${f.split(sep).join('/')}`);
+        });
+        // What it would have told of from now on is not known: looked at in full soon, and at every look after.
+        w.on('error', () => {
+          blind = true;
+          onChange(null);
+        });
+        this.watchers.push(w);
       } catch {
-        /* watching is best-effort */
+        /* watching is best-effort, and a folder not watched could hold anything */
+        blind = true;
       }
     }
   }
@@ -1678,7 +1727,7 @@ export class Controller {
   close(): Promise<void> {
     const [key, session] = [this.workspaceKey, this.session];
     // A close that fails leaves the project open and editable under the same opening, and tells the editor.
-    this.closing ??= timed('controller.close', () => this.closeNow())().catch((e) => { if (session && this.session === session && !this.workspaceKey) (this.workspaceKey = key), this.watchExternalChanges(session), this.onOpeningChange?.(), this.broadcast(); throw e; }).finally(() => (this.closing = null));
+    this.closing ??= timed('controller.close', () => this.closeNow())().catch((e) => { if (session && this.session === session && !this.workspaceKey) (this.workspaceKey = key), this.watchExternalChanges(session, { owed: true }), this.onOpeningChange?.(), this.broadcast(); throw e; }).finally(() => (this.closing = null));
     return this.closing;
   }
 
@@ -1689,6 +1738,7 @@ export class Controller {
   private async closeNow() {
     for (const w of this.watchers) w.close();
     this.watchers = [];
+    this.watchGeneration++;
     if (this.watchTimer) clearTimeout(this.watchTimer);
     this.watchTimer = null;
     if (this.assetTimer) clearTimeout(this.assetTimer);

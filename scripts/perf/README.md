@@ -99,6 +99,24 @@ and `previewApplied` (the headline). Counts: durable writes, fsyncs and file wri
 read, hashed and written, `project:changed` sends and bytes, `reloadFromDisk` calls and React commits until the scenario
 ends; the longest main-process stall.
 
+**`edits`** (after `open`): change the home hero's Heading in the Inspector 20 times, each edit sent once the one
+before it is saved and the file watch has gone off for that save (`controller.watchFired`, when the reload a save sets
+off starts), or 5 s after the save when the system never tells of it (on a busy Mac it tells of a save a moment to
+seconds late, or not at all, so a fixed delay would miss it); then change the home page's file outside the app as an
+editor saves it (written beside it and renamed over it), saving it again every 15 s, up to 6 times, until the app takes
+it. Checks: the edits moved the project exactly
+20 revisions, the project and the page's document on disk hold the last heading, the preview shows it; then the outside
+change moved it one more, the project holds the outside heading, the preview shows it, and it is the step Undo takes
+back (`External change`). Over the edits, up to the outside change, which comes `--settle` ms after the last edit is
+shown: `queueWait` (the median of the 19 edits sent after another, each its `controller.apply` less its
+`session.apply`, matched by the revision it made: its wait for its turn), `queueWaitTotal` (all 20), `apply` and
+`sessionApply` (medians), `sendGap` (the median time between two edits being sent), `watchFired` (times the watch went
+off), `reloadFromDisk` (the calls) and `reloadUnchanged` (the reloads that read the project and found nothing changed,
+`session.reloadUnchanged`), files read, documents read, files hashed, durable writes and fsyncs, `project:changed`
+sends and bytes, React commits and the longest main-process stall. Then, from the watch going off for the outside
+change (when the system tells of it is not the app's doing): `outsideSent` (its snapshot sent to the editor) and
+`outsideApplied` (the canvas showing it), and `outsideReloads` (reloads until the scenario ends).
+
 **`switch`** (after `open`, and after every other scenario that follows it): with the fixture open, choose File > Open
 Project… and answer its folder chooser (through the app's chooser fixtures) with a second copy of the fixture, trusted and
 in Recent projects behind the first; to the canvas bridge reporting the second copy's home page ready to edit. The
@@ -356,7 +374,8 @@ Counters: `fs.writes`, `fs.durableWrites`, `fs.fsyncs` (`src/main/project/fsutil
 counted in `files.read`; `src/main/project/documents.ts`), `export.filesRead`, `export.bytesRead` (what an export reads
 in the main process, `src/main/export.ts`), `ipc.projectChanged.sends`, `ipc.projectChanged.bytes` (as
 IPC serializes the snapshot), `ipc.aiEvent.sends`, `ipc.aiEvent.bytes` and `ipc.aiEvent.unsized` (the assistant's
-events, sized the same way), `session.reloadFromDisk`, `main.stalls` (main), and `react.commits`, `react.renders`
+events, sized the same way), `session.reloadFromDisk`, `session.reloadUnchanged` (a reload that read the project and
+found nothing changed), `main.stalls` (main), and `react.commits`, `react.renders`
 (components rendered, counted from each commit's fibers), per panel marked with `timedPanel`
 (`src/renderer/src/lib/perf-panels.tsx`) `panel.<id>.renders` and `panel.<id>.renderMs` (the time between two probes
 React renders before and after the panel), `chat.messageRenders` (a Chat message rendered) and `chat.textParses` (model
