@@ -355,6 +355,12 @@ describe("the site's error page", () => {
     expect(body).toMatch(/<h1[^>]*>Error 500<\/h1>/);
     expect(body).toContain('>Internal Error</p>');
     expect(body).not.toContain('so-not-found');
+    // Only a missing address is the not-found page: another client error says what it is.
+    const gone = await renderRoute(fresh(), ERROR_PAGE_FILE, 410, 'Gone');
+    expect(gone.body).toMatch(/<h1[^>]*>Error 410<\/h1>/);
+    expect(gone.body).not.toContain('so-not-found');
+    // An error with no message still says something.
+    expect((await renderRoute(fresh(), ERROR_PAGE_FILE, 500, '')).body).toContain('>Something went wrong.</p>');
   });
 });
 
