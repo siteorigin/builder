@@ -139,16 +139,18 @@ function ScaledPage({ device, children }: { device: SerpDevice; children: ReactN
   const scale = serpScale(size.room, device);
   return (
     <div className="serp-fit" ref={fit}>
-      {size.mark && (
-        <span className="serp-mark" aria-hidden="true" style={{ top: size.mark.top, height: size.mark.height }}>
-          <span className="serp-mark-tag">
-            <ArrowRight />
-          </span>
+      <div className="serp-row">
+        <span className="serp-mark" aria-hidden="true">
+          {size.mark && (
+            <span className="serp-mark-tag" style={{ top: size.mark.top, height: Math.min(22, size.mark.height) }}>
+              <ArrowRight />
+            </span>
+          )}
         </span>
-      )}
-      <div className="serp-slot" style={{ width: width * scale, height: size.height ? size.height * scale : undefined }}>
-        <div className="serp-scaled" ref={page} style={{ width, transform: scale < 1 ? `scale(${scale})` : undefined }} data-scale={scale}>
-          {children}
+        <div className="serp-slot" style={{ width: width * scale, height: size.height ? size.height * scale : undefined }}>
+          <div className="serp-scaled" ref={page} style={{ width, transform: scale < 1 ? `scale(${scale})` : undefined }} data-scale={scale}>
+            {children}
+          </div>
         </div>
       </div>
     </div>

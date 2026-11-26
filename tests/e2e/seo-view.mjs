@@ -387,10 +387,10 @@ const drawn = () =>
       order: [...page.querySelectorAll('.serp-result')].map((r) => (r.classList.contains('serp-filler') ? 'filler' : 'document')),
       fillers: [...page.querySelectorAll('.serp-filler .serp-url')].map((u) => u.textContent),
       /* The marker beside the site's own result: in the margin, left of the page, level with the result. */
-      marks: el.querySelectorAll('.serp-mark').length,
+      marks: el.querySelectorAll('.serp-mark-tag').length,
       markInPage: !!page.querySelector('.serp-mark'),
-      markLeftOfPage: (() => { const m = el.querySelector('.serp-mark')?.getBoundingClientRect(); return !!m && m.right <= box.left + 0.5; })(),
-      markLevel: (() => { const m = el.querySelector('.serp-mark')?.getBoundingClientRect(); const r = result.getBoundingClientRect(); return !!m && Math.abs(m.top - r.top) <= 1 && Math.abs(m.height - r.height) <= 1; })(),
+      markLeftOfPage: (() => { const m = el.querySelector('.serp-mark-tag')?.getBoundingClientRect(); return !!m && m.right <= box.left + 0.5 && box.left - m.right <= 8; })(),
+      markLevel: (() => { const m = el.querySelector('.serp-mark-tag')?.getBoundingClientRect(); const r = result.getBoundingClientRect(); return !!m && m.top >= r.top - 0.5 && m.bottom <= r.bottom + 0.5; })(),
       ownLabel: result.querySelector('.sr-only')?.textContent,
       fillerMarked: page.querySelectorAll('.serp-filler [data-serp-own], .serp-filler .sr-only').length,
       hiddenExtras: [...page.querySelectorAll('.serp-filler, .serp-search')].every((n) => n.getAttribute('aria-hidden') === 'true')

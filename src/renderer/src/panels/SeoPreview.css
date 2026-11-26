@@ -12,12 +12,13 @@
   .serp-theme { display: inline-flex; align-items: center; gap: 6px; font-size: 12px; color: var(--text-2); }
   /* The results page (#704) is laid out at its real size and scaled to fit (see ScaledPage). Its width is the container's
      alone, so the page inside never widens the panel around it. */
-  .serp-fit { position: relative; min-width: 0; contain: inline-size; overflow: hidden; padding-left: 28px; }
-  .serp-slot { margin: 0 auto; overflow: hidden; }
+  .serp-fit { min-width: 0; contain: inline-size; overflow: hidden; }
+  .serp-row { position: relative; display: flex; width: fit-content; margin: 0 auto; }
+  .serp-slot { flex: none; overflow: hidden; }
   /* The marker for the site's own result: in the margin left of the page, level with the result, never inside the page. */
-  .serp-mark { position: absolute; left: 0; width: 28px; display: flex; align-items: flex-start; justify-content: center; padding-top: 8px; box-sizing: border-box; pointer-events: none; }
-  .serp-mark-tag { display: inline-flex; align-items: center; justify-content: center; width: 22px; height: 22px; border-radius: 11px; background: var(--accent); color: var(--on-accent); }
-  .serp-mark-tag svg { width: 14px; height: 14px; flex: none; }
+  .serp-mark { position: relative; flex: none; width: 28px; }
+  .serp-mark-tag { position: absolute; left: 3px; display: inline-flex; align-items: center; justify-content: center; aspect-ratio: 1; border-radius: 50%; background: var(--accent); color: var(--on-accent); pointer-events: none; }
+  .serp-mark-tag svg { width: 64%; height: 64%; }
   .serp-scaled { transform-origin: top left; }
   /* A results page's own colours, light and dark: nothing here follows the editor's appearance. */
   .serp-page {
