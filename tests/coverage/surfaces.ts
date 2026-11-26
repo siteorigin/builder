@@ -65,7 +65,7 @@ export function nativeMenu(): Surface[] {
     }
   };
   // With a project open and without: an item offered only at Welcome is found too.
-  for (const p of PLATFORMS) for (const open of [true, false]) walk(appMenuTemplate(p, open, { command: () => undefined, history: () => () => undefined }), [], p);
+  for (const p of PLATFORMS) for (const open of [true, false]) walk(appMenuTemplate(p, open, { command: () => undefined, history: () => () => undefined, openNotices: () => undefined }), [], p);
   return [...found].map(([key, ps]) => ({ key, file: 'src/main/app-menu.ts', platforms: PLATFORMS.filter((p) => ps.has(p)) }));
 }
 

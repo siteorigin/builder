@@ -9,7 +9,7 @@
   "main": "./out/main/index.js",
   "scripts": {
     "dev": "npm run build:packs && electron-vite dev",
-    "build": "npm run build:packs && electron-vite build",
+    "build": "npm run build:packs && electron-vite build && node build/notices.cjs",
     "build:packs": "tsx --tsconfig tsconfig.node.json scripts/build-packs.ts",
     "start": "electron-vite preview",
     "typecheck": "tsc --noEmit -p tsconfig.node.json && tsc --noEmit -p tsconfig.web.json && tsc --noEmit -p relay/tsconfig.json",

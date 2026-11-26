@@ -13,7 +13,10 @@ asarUnpack:
   - "**/node_modules/@img/**/*"
 # A complete, unmodified npm is copied into Resources/npm by build/after-pack.cjs.
 afterPack: build/after-pack.cjs
+# The app's own licence; build/after-pack.cjs writes THIRD_PARTY_NOTICES.txt beside it.
 extraResources:
+  - from: LICENSE
+    to: LICENSE.txt
   - from: templates
     to: templates
   - from: resources/starter-assets
