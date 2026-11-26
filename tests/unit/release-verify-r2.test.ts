@@ -1,8 +1,8 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { basename, join } from 'node:path';
-import { FETCH_TIMEOUT_MS, findMetadataFiles, verifyAllFiles, verifyFileUrl, verifyWithRetries } from '../../scripts/release/verify-r2-uploads';
+import { FETCH_TIMEOUT_MS, findMetadataFiles, releaseFolderEntries, verifyAllFiles, verifyFileUrl, verifyRelease, verifyWithRetries } from '../../scripts/release/verify-r2-uploads';
 import {
   compareMetadata,
   fetchRemoteMetadata,
@@ -291,6 +291,75 @@ describe('verifyAllFiles', () => {
   });
 });
 
+describe('the HEAD request', () => {
+  it('asks for the file uncompressed, so Content-Length is its size', async () => {
+    const fetch = vi.fn().mockResolvedValue(headResponse({}));
+    await verifyFileUrl({ url: 'siteorigin-builder-1.0.0-mac-x64.zip', size: 100 }, { fetch, publishUrl: 'https://x.example/r/' });
+    expect(fetch.mock.calls[0][1]).toEqual(expect.objectContaining({ method: 'HEAD', headers: { 'accept-encoding': 'identity' } }));
+  });
+});
+
+describe('releaseFolderEntries', () => {
+  it('lists every uploaded file with its size: not the metadata, not folders', async () => {
+    const dir = await tempDir();
+    await writeFile(join(dir, 'siteorigin-builder-1.0.0-mac-x64.dmg'), Buffer.alloc(300));
+    await writeFile(join(dir, 'siteorigin-builder-1.0.0-mac-x64.zip'), Buffer.alloc(100));
+    await writeFile(join(dir, 'siteorigin-builder-1.0.0-mac-x64.zip.blockmap'), Buffer.alloc(7));
+    await writeFile(join(dir, 'latest-mac.yml'), MAC_METADATA);
+    await mkdir(join(dir, 'mac-arm64'));
+    expect(await releaseFolderEntries(dir)).toEqual([
+      { url: 'siteorigin-builder-1.0.0-mac-x64.dmg', size: 300 },
+      { url: 'siteorigin-builder-1.0.0-mac-x64.zip', size: 100 },
+      { url: 'siteorigin-builder-1.0.0-mac-x64.zip.blockmap', size: 7 }
+    ]);
+  });
+});
+
+describe('verifyRelease', () => {
+  const publishUrl = 'https://x.example/r/';
+
+  async function macRelease(): Promise<string> {
+    const dir = await tempDir();
+    await writeFile(join(dir, 'latest-mac.yml'), MAC_METADATA);
+    await writeFile(join(dir, 'siteorigin-builder-1.0.0-mac-x64.zip'), Buffer.alloc(100));
+    await writeFile(join(dir, 'siteorigin-builder-1.0.0-mac-x64.dmg'), Buffer.alloc(300));
+    return dir;
+  }
+
+  /** Serves each URL's size, or a status. */
+  function served(sizes: Record<string, number | { status: number }>) {
+    return vi.fn().mockImplementation(async (url: string) => {
+      const name = basename(url);
+      const s = sizes[name];
+      if (s === undefined) return headResponse({ status: 404, contentLength: null });
+      return typeof s === 'number' ? headResponse({ contentLength: s }) : headResponse({ status: s.status, contentLength: null });
+    });
+  }
+
+  it('passes when the listed zip and the unlisted DMG are both served at full size, checking each once', async () => {
+    const fetch = served({ 'siteorigin-builder-1.0.0-mac-x64.zip': 100, 'siteorigin-builder-1.0.0-mac-x64.dmg': 300 });
+    expect(await verifyRelease({ releaseDir: await macRelease(), prefix: 'latest', publishUrl, fetch, sleep: async () => {}, log: () => {} })).toEqual([]);
+    expect(fetch.mock.calls.map((c) => basename(String(c[0]))).sort()).toEqual(['siteorigin-builder-1.0.0-mac-x64.dmg', 'siteorigin-builder-1.0.0-mac-x64.zip']);
+  });
+
+  it('fails when a DMG the feed does not list is missing from the download domain', async () => {
+    const fetch = served({ 'siteorigin-builder-1.0.0-mac-x64.zip': 100 });
+    const failures = await verifyRelease({ releaseDir: await macRelease(), prefix: 'latest', publishUrl, fetch, sleep: async () => {}, log: () => {} });
+    expect(failures.map((f) => f.message)).toEqual([`expected HTTP 200 for ${publishUrl}siteorigin-builder-1.0.0-mac-x64.dmg, got 404`]);
+  });
+
+  it('fails when the DMG is served truncated', async () => {
+    const fetch = served({ 'siteorigin-builder-1.0.0-mac-x64.zip': 100, 'siteorigin-builder-1.0.0-mac-x64.dmg': 299 });
+    const failures = await verifyRelease({ releaseDir: await macRelease(), prefix: 'latest', publishUrl, fetch, sleep: async () => {}, log: () => {} });
+    expect(failures.map((f) => f.message)).toEqual([expect.stringContaining('Content-Length mismatch')]);
+  });
+
+  it('fails a folder with no metadata for the channel', async () => {
+    const failures = await verifyRelease({ releaseDir: await macRelease(), prefix: 'rc', publishUrl, fetch: served({}), log: () => {} });
+    expect(failures.map((f) => f.message)).toEqual([expect.stringContaining('No update metadata')]);
+  });
+});
+
 describe('validateMetadataSuffix', () => {
   it('accepts the macOS, Linux and Windows (empty) suffixes', () => {
     for (const suffix of ['-mac', '-linux', '']) expect(validateMetadataSuffix(suffix)).toEqual({ ok: true });
@@ -355,7 +424,11 @@ describe('fetchRemoteMetadata', () => {
     const result = await fetchRemoteMetadata(url, fetch);
     expect(result.version).toBe('1.0.0');
     expect(result.files).toHaveLength(1);
-    expect(fetch).toHaveBeenCalledWith(url, expect.objectContaining({ signal: expect.any(AbortSignal) }));
+    // With a cache-busting query, so the CDN can't answer with a copy it cached before the upload.
+    const [requested, init] = fetch.mock.calls[0] as [string, RequestInit];
+    expect(requested.startsWith(`${url}?t=`)).toBe(true);
+    expect(requested).toMatch(/\?t=\d+$/);
+    expect(init).toEqual(expect.objectContaining({ signal: expect.any(AbortSignal) }));
   });
 
   it('throws on a 404', async () => {
@@ -424,6 +497,16 @@ describe('compareMetadata', () => {
     expect(compareMetadata(local, wrongHash)).toBe('files[0].sha512 mismatch for mac-x64.zip');
   });
 
+  it('finds a file whose size or blockmap size differs', () => {
+    const wrongSize = structuredClone(local);
+    wrongSize.files[1].size = 201;
+    expect(compareMetadata(local, wrongSize)).toBe('files[1].size mismatch for mac-arm64.zip: local=200, remote=201');
+    const withBlockMap = { ...structuredClone(local), files: local.files.map((f) => ({ ...f, blockMapSize: 9 })) };
+    const wrongBlockMap = structuredClone(withBlockMap);
+    wrongBlockMap.files[0].blockMapSize = 10;
+    expect(compareMetadata(withBlockMap, wrongBlockMap)).toBe('files[0].blockMapSize mismatch for mac-x64.zip: local=9, remote=10');
+  });
+
   it('finds a file entry that is null or not an object', () => {
     expect(compareMetadata(local, { ...structuredClone(local), files: [local.files[0], null] })).toBe('files[1]: remote entry is not an object');
     expect(compareMetadata(local, { ...structuredClone(local), files: ['not-an-object', local.files[1]] })).toBe('files[0]: remote entry is not an object');
@@ -438,7 +521,7 @@ describe('verifyMetadataOnce', () => {
     await writeFile(join(dir, 'latest-mac.yml'), MAC_METADATA);
     const fetch = vi.fn().mockResolvedValue(bodyResponse({ body: MAC_METADATA }));
     expect(await verifyMetadataOnce('latest-mac.yml', publishUrl, dir, fetch)).toEqual({ ok: true });
-    expect(fetch).toHaveBeenCalledWith('https://downloads.siteorigin.com/releases/latest-mac.yml', expect.anything());
+    expect(fetch).toHaveBeenCalledWith(expect.stringMatching(/^https:\/\/downloads\.siteorigin\.com\/releases\/latest-mac\.yml\?t=\d+$/), expect.anything());
   });
 
   it('fails permanently when the local file is missing', async () => {

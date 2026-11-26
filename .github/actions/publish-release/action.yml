@@ -88,6 +88,7 @@ runs:
       shell: bash
       env:
         RELEASE_PLATFORMS: ${{ inputs.release_platforms }}
+        PUBLISH_URL: ${{ inputs.publish_url }}
       run: node scripts/release/check-version-monotonic.ts
 
     # Installers first, cached for good (a version's files never change), then

@@ -10,16 +10,22 @@ export const PUBLISH_URL = 'https://downloads.siteorigin.com/releases/';
 export const PLATFORMS = ['mac', 'linux', 'win'] as const;
 export type Platform = (typeof PLATFORMS)[number];
 
-/** Release channels, from the tag: `v1.2.0-rc.1` is `rc`, `v1.2.0-beta.1` is `beta`, anything else `latest`. */
+/** Release channels: a stable version is `latest`; `v1.2.0-rc.1` is `rc` and `v1.2.0-beta.1` is `beta`. */
 export const CHANNELS = ['latest', 'rc', 'beta'] as const;
 export type Channel = (typeof CHANNELS)[number];
 
-/** The channel a version (or a `v`-prefixed tag) publishes to. */
+/**
+ * The channel a version (or a `v`-prefixed tag) publishes to. A prerelease's channel is its first identifier, as
+ * electron-updater reads it on the client, so `1.2.0-alpha.1` or `1.2.0-rc1` would poll a feed that isn't published:
+ * those throw. The same rule as the resolve-update-metadata-prefix action.
+ */
 export function channelOf(version: string): Channel {
-  const v = version.replace(/^v/, '');
-  if (v.includes('-rc')) return 'rc';
-  if (v.includes('-beta')) return 'beta';
-  return 'latest';
+  const v = version.replace(/^v/, '').replace(/\+.*$/, '');
+  const dash = v.indexOf('-');
+  if (dash === -1) return 'latest';
+  const channel = v.slice(dash + 1).split('.')[0];
+  if (channel === 'rc' || channel === 'beta') return channel;
+  throw new Error(`${version} is a prerelease on the '${channel}' channel; only rc and beta prereleases can be published`);
 }
 
 /**
@@ -39,6 +45,14 @@ export function publishedUrl(base: string, url: string): string {
   if (!url) throw new Error('url is required');
   if (/^https?:\/\//i.test(url)) return url;
   return `${base.endsWith('/') ? base : `${base}/`}${url}`;
+}
+
+/**
+ * `url` with a query string that makes the CDN fetch it from the bucket rather than serve a copy it cached: a feed
+ * file checked before a publish (a 404) or the previous version's would otherwise be what a check sees.
+ */
+export function uncached(url: string, now = Date.now()): string {
+  return `${url}${url.includes('?') ? '&' : '?'}t=${now}`;
 }
 
 /** Whether the module at `metaUrl` is the script node was started with, rather than one a test imported. */

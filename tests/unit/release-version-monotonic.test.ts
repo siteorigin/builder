@@ -32,7 +32,8 @@ type Served = { version: string } | { status: number } | { body: string } | Erro
 /** A fetch that serves `feed` by URL and fails the test on any other URL. */
 function fakeFetch(feed: Record<string, Served>) {
   return vi.fn(async (input: string | URL | Request, _init?: RequestInit): Promise<Response> => {
-    const url = String(input);
+    // The checks add a cache-busting query (feed.ts `uncached`); the feed is looked up without it.
+    const url = String(input).replace(/\?t=\d+$/, '');
     const served = feed[url];
     if (served instanceof Error) throw served;
     if (!served) throw new Error(`unexpected url ${url}`);
@@ -238,7 +239,7 @@ describe('fetchLiveVersion', () => {
     const fetch = fakeFetch({ 'https://x.example/r/rc.yml': { version: '1.2.0-rc.1' } });
     expect(await fetchLiveVersion('rc', 'win', { baseUrl: base, fetch })).toEqual({ url: 'https://x.example/r/rc.yml', version: '1.2.0-rc.1' });
     expect(fetch).toHaveBeenCalledWith(
-      'https://x.example/r/rc.yml',
+      expect.stringMatching(/^https:\/\/x\.example\/r\/rc\.yml\?t=\d+$/),
       expect.objectContaining({ signal: expect.any(AbortSignal), headers: { 'cache-control': 'no-cache' } })
     );
   });
@@ -388,6 +389,6 @@ describe('runGate', () => {
     writeFileSync(join(dir, 'rc-mac.yml'), 'version: 1.2.0-rc.2\n');
     const { result } = gate({ dir, fetch, platforms: 'mac', prefix: 'rc' });
     expect(await result).toEqual({ failures: [], skipUpload: false });
-    expect(fetch).toHaveBeenCalledWith('https://x.example/r/rc-mac.yml', expect.anything());
+    expect(fetch).toHaveBeenCalledWith(expect.stringMatching(/^https:\/\/x\.example\/r\/rc-mac\.yml\?t=\d+$/), expect.anything());
   });
 });

@@ -17,7 +17,7 @@ import { readFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { load } from 'js-yaml';
 import semver from 'semver';
-import { CHANNELS, PLATFORMS, PUBLISH_URL, isMain, metadataFilename, publishedUrl, type Platform } from './feed.ts';
+import { CHANNELS, PLATFORMS, PUBLISH_URL, isMain, metadataFilename, publishedUrl, uncached, type Platform } from './feed.ts';
 
 const FETCH_TIMEOUT_MS = 15_000;
 
@@ -94,7 +94,7 @@ export async function fetchLiveVersion(
   try {
     let response: Response;
     try {
-      response = await fetchImpl(url, { signal: controller.signal, headers: { 'cache-control': 'no-cache' } });
+      response = await fetchImpl(uncached(url), { signal: controller.signal, headers: { 'cache-control': 'no-cache' } });
     } catch (error) {
       throw new Error(`failed to fetch ${url}: ${error instanceof Error ? error.message : String(error)}`);
     }
@@ -192,7 +192,9 @@ if (isMain(import.meta.url)) {
   const { failures, skipUpload } = await runGate({
     prefix: process.env.UPDATE_METADATA_PREFIX,
     platforms: process.env.RELEASE_PLATFORMS,
-    releaseDir: process.env.RELEASE_DIR
+    releaseDir: process.env.RELEASE_DIR,
+    // The feed the verifiers check after the upload, so all three agree on where the release goes.
+    baseUrl: process.env.PUBLISH_URL || undefined
   });
   if (failures.length) {
     console.error(`::error::version-monotonic gate failed:\n  - ${failures.join('\n  - ')}`);

@@ -8,7 +8,7 @@ import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { setTimeout as defaultSleep } from 'node:timers/promises';
 import { load } from 'js-yaml';
-import { METADATA_SUFFIXES, isMain, publishedUrl } from './feed.ts';
+import { METADATA_SUFFIXES, isMain, publishedUrl, uncached } from './feed.ts';
 
 const FETCH_TIMEOUT_MS = 15_000;
 
@@ -16,7 +16,7 @@ interface Metadata {
   version: string;
   path: string;
   sha512: string;
-  files: { url?: string; sha512?: string }[];
+  files: { url?: string; sha512?: string; size?: number; blockMapSize?: number }[];
   releaseDate?: unknown;
 }
 
@@ -65,7 +65,7 @@ export async function fetchRemoteMetadata(url: string, fetchImpl: Fetch = fetch,
   try {
     let response: Response;
     try {
-      response = await fetchImpl(url, { signal: controller.signal });
+      response = await fetchImpl(uncached(url), { signal: controller.signal });
     } catch (error) {
       throw new TransientError(`network error fetching ${url}: ${error instanceof Error ? error.message : String(error)}`);
     }
@@ -98,10 +98,12 @@ export function compareMetadata(local: Metadata, remote: Record<string, unknown>
   if (local.files.length !== remote.files.length) return `files[] length mismatch: local=${local.files.length}, remote=${remote.files.length}`;
   for (let i = 0; i < local.files.length; i++) {
     const l = local.files[i];
-    const r = remote.files[i] as { url?: unknown; sha512?: unknown } | null;
+    const r = remote.files[i] as { url?: unknown; sha512?: unknown; size?: unknown; blockMapSize?: unknown } | null;
     if (r === null || typeof r !== 'object') return `files[${i}]: remote entry is not an object`;
     if (l.url !== r.url) return `files[${i}].url mismatch: local=${l.url}, remote=${String(r.url)}`;
     if (l.sha512 !== r.sha512) return `files[${i}].sha512 mismatch for ${l.url}`;
+    if (l.size !== r.size) return `files[${i}].size mismatch for ${l.url}: local=${l.size}, remote=${String(r.size)}`;
+    if (l.blockMapSize !== r.blockMapSize) return `files[${i}].blockMapSize mismatch for ${l.url}: local=${l.blockMapSize}, remote=${String(r.blockMapSize)}`;
   }
   return null;
 }

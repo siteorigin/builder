@@ -5,7 +5,7 @@
 //   PUBLISH_URL=https://downloads.siteorigin.com/releases/ UPDATE_METADATA_PREFIX=latest [RELEASE_DIR=release] \
 //     node scripts/release/verify-r2-uploads.ts
 import { readFileSync } from 'node:fs';
-import { readdir } from 'node:fs/promises';
+import { readdir, stat } from 'node:fs/promises';
 import { join } from 'node:path';
 import { setTimeout as defaultSleep } from 'node:timers/promises';
 import { load } from 'js-yaml';
@@ -35,7 +35,8 @@ export async function verifyFileUrl(
         reject(new Error(`timed out after ${timeoutMs}ms`));
       }, timeoutMs);
     });
-    response = await Promise.race([fetchImpl(url, { method: 'HEAD', redirect: 'follow', signal: controller.signal }), timedOut]);
+    // identity: a compressed response would carry the compressed length, or none, instead of the file's size.
+    response = await Promise.race([fetchImpl(url, { method: 'HEAD', redirect: 'follow', signal: controller.signal, headers: { 'accept-encoding': 'identity' } }), timedOut]);
   } catch (error) {
     if (controller.signal.aborted) return `request timed out after ${timeoutMs}ms fetching ${url}`;
     return `network error fetching ${url}: ${error instanceof Error ? error.message : String(error)}`;
@@ -64,6 +65,20 @@ export async function verifyWithRetries(
     if (attempt < maxAttempts) await sleep(baseDelayMs * 2 ** (attempt - 1));
   }
   return lastError;
+}
+
+/**
+ * Every file the release folder uploads, with its size: everything but the metadata, which goes up after this check.
+ * That covers what the feed doesn't list too, such as the DMGs people download from the website.
+ */
+export async function releaseFolderEntries(releaseDir: string): Promise<{ url: string; size: number }[]> {
+  const entries: { url: string; size: number }[] = [];
+  for (const name of (await readdir(releaseDir)).sort()) {
+    if (name.endsWith('.yml')) continue;
+    const info = await stat(join(releaseDir, name));
+    if (info.isFile()) entries.push({ url: name, size: info.size });
+  }
+  return entries;
 }
 
 /** The metadata files in the release folder for a channel, whichever platforms it holds. */
@@ -113,24 +128,55 @@ export async function verifyAllFiles(options: {
   return failures;
 }
 
+/**
+ * The whole check for a release folder: every installer its metadata lists, then every other file it uploads (the
+ * DMGs, blockmaps), each served at its full size. The failures, none when the release is fully reachable.
+ */
+export async function verifyRelease(options: {
+  releaseDir: string;
+  prefix: string;
+  publishUrl: string;
+  fetch?: Fetch;
+  sleep?: Sleep;
+  maxAttempts?: number;
+  baseDelayMs?: number;
+  log?: (line: string) => void;
+}): Promise<{ filePath: string; message: string }[]> {
+  const { releaseDir, prefix, publishUrl, fetch: fetchImpl = fetch, log = console.log, ...retry } = options;
+  const metadataFiles = await findMetadataFiles(releaseDir, prefix);
+  if (!metadataFiles.length) return [{ filePath: releaseDir, message: `No update metadata in ${releaseDir} for the ${prefix} channel` }];
+  log(`[verify] ${publishUrl}: checking ${metadataFiles.join(', ')}`);
+  const failures = await verifyAllFiles({ metadataFiles, publishUrl, fetch: fetchImpl, log, ...retry });
+  const listed = new Set<string | undefined>();
+  for (const f of metadataFiles) {
+    try {
+      for (const e of (load(readFileSync(f, 'utf8')) as { files?: { url?: string }[] } | null)?.files ?? []) listed.add(e.url);
+    } catch {
+      // verifyAllFiles has reported it.
+    }
+  }
+  for (const entry of (await releaseFolderEntries(releaseDir)).filter((e) => !listed.has(e.url))) {
+    const error = await verifyWithRetries(entry, { fetch: fetchImpl, publishUrl, ...retry });
+    if (error) failures.push({ filePath: releaseDir, message: error });
+    else log(`[verify] ok ${publishedUrl(publishUrl, entry.url)} (${entry.size} bytes)`);
+  }
+  return failures;
+}
+
 if (isMain(import.meta.url)) {
   const publishUrl = process.env.PUBLISH_URL;
-  const releaseDir = process.env.RELEASE_DIR ?? 'release';
-  const prefix = process.env.UPDATE_METADATA_PREFIX ?? 'latest';
   if (!publishUrl) {
     console.error('::error::PUBLISH_URL is required');
     process.exit(1);
   }
-  const metadataFiles = await findMetadataFiles(releaseDir, prefix);
-  if (!metadataFiles.length) {
-    console.error(`::error::No update metadata in ${releaseDir} for the ${prefix} channel`);
-    process.exit(1);
-  }
-  console.log(`[verify] ${publishUrl}: checking ${metadataFiles.join(', ')}`);
-  const failures = await verifyAllFiles({ metadataFiles, publishUrl });
+  const failures = await verifyRelease({
+    publishUrl,
+    releaseDir: process.env.RELEASE_DIR ?? 'release',
+    prefix: process.env.UPDATE_METADATA_PREFIX ?? 'latest'
+  });
   if (failures.length) {
     for (const { filePath, message } of failures) console.error(`::error file=${filePath}::${message}`);
     process.exit(1);
   }
-  console.log('[verify] every installer is reachable at its full size');
+  console.log('[verify] every uploaded file is reachable at its full size');
 }

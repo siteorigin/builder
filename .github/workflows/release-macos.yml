@@ -161,8 +161,17 @@ jobs:
             echo "::error::Expected one DMG in dist/, found ${#dmgs[@]}"
             exit 1
           fi
-          xcrun notarytool submit "${dmgs[0]}" --wait --timeout 30m \
-            --key "$RUNNER_TEMP/apple/AuthKey.p8" --key-id "$APPLE_API_KEY_ID" --issuer "$APPLE_API_ISSUER"
+          auth=(--key "$RUNNER_TEMP/apple/AuthKey.p8" --key-id "$APPLE_API_KEY_ID" --issuer "$APPLE_API_ISSUER")
+          result="$(xcrun notarytool submit "${dmgs[0]}" --wait --timeout 30m --output-format json "${auth[@]}")" || true
+          echo "$result"
+          status="$(node -e 'try { process.stdout.write(JSON.parse(process.argv[1]).status ?? "") } catch {}' "$result")"
+          if [[ "$status" != "Accepted" ]]; then
+            # Apple's report names every file it rejected and why.
+            id="$(node -e 'try { process.stdout.write(JSON.parse(process.argv[1]).id ?? "") } catch {}' "$result")"
+            if [[ -n "$id" ]]; then xcrun notarytool log "$id" "${auth[@]}" || true; fi
+            echo "::error::Apple did not accept the DMG (status: ${status:-unknown})"
+            exit 1
+          fi
           for attempt in 1 2 3; do
             if xcrun stapler staple "${dmgs[0]}"; then exit 0; fi
             echo "::warning::stapler staple attempt $attempt failed; retrying in 15s"

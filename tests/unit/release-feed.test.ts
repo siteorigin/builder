@@ -1,6 +1,11 @@
-import { describe, expect, it } from 'vitest';
+import { spawnSync } from 'node:child_process';
+import { mkdtempSync, readFileSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { pathToFileURL } from 'node:url';
-import { CHANNELS, METADATA_SUFFIXES, PLATFORMS, PUBLISH_URL, channelOf, isMain, metadataFilename, publishedUrl } from '../../scripts/release/feed';
+import { load } from 'js-yaml';
+import { describe, expect, it } from 'vitest';
+import { CHANNELS, METADATA_SUFFIXES, PLATFORMS, PUBLISH_URL, channelOf, isMain, metadataFilename, publishedUrl, uncached } from '../../scripts/release/feed';
 
 describe('the release feed', () => {
   it('is served from the downloads domain under releases/', () => {
@@ -13,6 +18,13 @@ describe('the release feed', () => {
 
   it('knows the latest, rc and beta channels', () => {
     expect([...CHANNELS]).toEqual(['latest', 'rc', 'beta']);
+  });
+});
+
+describe('uncached', () => {
+  it('adds a query the CDN caches under a key of its own', () => {
+    expect(uncached('https://x.example/r/latest.yml', 42)).toBe('https://x.example/r/latest.yml?t=42');
+    expect(uncached('https://x.example/r/latest.yml?a=1', 42)).toBe('https://x.example/r/latest.yml?a=1&t=42');
   });
 });
 
@@ -30,6 +42,49 @@ describe('channelOf', () => {
   it('reads a plain release as the latest channel, with or without the v', () => {
     expect(channelOf('1.2.0')).toBe('latest');
     expect(channelOf('v1.2.0')).toBe('latest');
+  });
+
+  it('ignores build metadata', () => {
+    expect(channelOf('1.2.0+build.5')).toBe('latest');
+    expect(channelOf('1.2.0-rc.1+build.5')).toBe('rc');
+  });
+
+  // A client polls the feed its prerelease's first identifier names, so these would publish where nobody looks.
+  it.each(['1.2.0-alpha.1', 'v1.2.0-rc1', '1.2.0-next.1'])('refuses %s, a prerelease on a channel that is not published', (version) => {
+    expect(() => channelOf(version)).toThrow(/only rc and beta prereleases/);
+  });
+});
+
+// The release workflows resolve the channel in bash (.github/actions/resolve-update-metadata-prefix); it must agree
+// with channelOf, which the scripts and tests use.
+describe('the resolve-update-metadata-prefix action', () => {
+  const action = load(readFileSync('.github/actions/resolve-update-metadata-prefix/action.yml', 'utf8')) as { runs: { steps: { run: string }[] } };
+  const script = action.runs.steps[0].run;
+
+  function resolve(refType: string, refName: string): { status: number; prefix: string | null } {
+    const dir = mkdtempSync(join(tmpdir(), 'so-prefix-'));
+    try {
+      const env = { ...process.env, GITHUB_REF_TYPE: refType, GITHUB_REF_NAME: refName, GITHUB_ENV: join(dir, 'env'), GITHUB_OUTPUT: join(dir, 'out') };
+      const result = spawnSync('bash', ['-e', '-c', script], { env, encoding: 'utf8' });
+      const out = result.status === 0 ? readFileSync(join(dir, 'out'), 'utf8') : '';
+      return { status: result.status ?? -1, prefix: /^prefix=(.*)$/m.exec(out)?.[1] ?? null };
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  }
+
+  it.each(['v1.2.0', 'v1.2.0-rc.1', 'v1.2.0-beta.3', 'v1.2.0-rc.1+build.5'])('resolves the tag %s to the channel channelOf names', (tag) => {
+    expect(resolve('tag', tag)).toEqual({ status: 0, prefix: channelOf(tag) });
+  });
+
+  it.each(['v1.2.0-alpha.1', 'v1.2.0-rc1'])('fails the run for the tag %s, which channelOf refuses too', (tag) => {
+    expect(resolve('tag', tag).status).not.toBe(0);
+    expect(() => channelOf(tag)).toThrow();
+  });
+
+  it('resolves a branch to latest, whatever its name looks like', () => {
+    expect(resolve('branch', 'feature/release-pipeline')).toEqual({ status: 0, prefix: 'latest' });
+    expect(resolve('branch', 'release/v0.2.0-rc.1')).toEqual({ status: 0, prefix: 'latest' });
   });
 });
 

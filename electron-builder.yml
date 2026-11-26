@@ -60,6 +60,9 @@ mac:
 # The DMG is signed with the same identity when there is one, so it can carry its own notarization ticket.
 dmg:
   sign: true
+  # No blockmap for the DMG: the release workflow staples a notarization ticket into it after electron-builder
+  # writes one, which would leave the map describing other bytes. Updates come from the zip's blockmap.
+  writeUpdateInfo: false
 win:
   target: [nsis]
   icon: build/icon.png

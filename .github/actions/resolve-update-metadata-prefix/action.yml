@@ -9,19 +9,26 @@ outputs:
 runs:
   using: composite
   steps:
-    # The same rule as channelOf in scripts/release/feed.ts. A run that isn't
-    # on a tag (a dry run from a branch) resolves to latest.
+    # The same rule as channelOf in scripts/release/feed.ts: a stable version
+    # is latest, a prerelease is the channel its first identifier names
+    # (electron-updater's rule for the client), and only rc and beta exist. A
+    # run that isn't on a tag (a dry run from a branch) resolves to latest.
     - name: Resolve the channel from the tag
       id: resolve
       shell: bash
       run: |
-        TAG_VERSION="${GITHUB_REF_NAME#v}"
-        if [[ "$TAG_VERSION" == *-rc* ]]; then
-          PREFIX="rc"
-        elif [[ "$TAG_VERSION" == *-beta* ]]; then
-          PREFIX="beta"
-        else
-          PREFIX="latest"
+        PREFIX="latest"
+        if [[ "$GITHUB_REF_TYPE" == "tag" ]]; then
+          TAG_VERSION="${GITHUB_REF_NAME#v}"
+          if [[ "$TAG_VERSION" == *-* ]]; then
+            PRERELEASE="${TAG_VERSION#*-}"
+            PRERELEASE="${PRERELEASE%%+*}"
+            PREFIX="${PRERELEASE%%.*}"
+            if [[ "$PREFIX" != "rc" && "$PREFIX" != "beta" ]]; then
+              echo "::error::$GITHUB_REF_NAME is a prerelease on the '$PREFIX' channel; only rc and beta prereleases (vX.Y.Z-rc.N, vX.Y.Z-beta.N) can be published"
+              exit 1
+            fi
+          fi
         fi
         echo "UPDATE_METADATA_PREFIX=${PREFIX}" >> "$GITHUB_ENV"
         echo "prefix=${PREFIX}" >> "$GITHUB_OUTPUT"
