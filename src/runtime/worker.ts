@@ -12,7 +12,7 @@ import { canonicalDir, frameAncestorsCsp, framePolicyPlugin, liveGuestPlugin, pr
 import { createPublicationGate, type GateServer, type PublicationGate } from './publication-gate';
 
 type Msg =
-  | { type: 'start'; dir: string; port?: number; packaged?: boolean }
+  | { type: 'start'; dir: string; port?: number; packaged?: boolean; perf?: boolean }
   | { type: 'revision'; revision: number }
   | { type: 'hold'; id: string }
   | { type: 'release'; id: string; files: string[] }
@@ -32,6 +32,45 @@ let gate: PublicationGate | null = null;
  */
 const CATCH_UP_MS = 600;
 
+/**
+ * The benchmark's timing marks (scripts/perf/README.md): sent to the main process, which writes them to its trace, only
+ * when the main process says its marks are on. Times are epoch ms on the clock the main process's trace uses.
+ */
+let marks = false;
+const mark = (name: string) => {
+  if (marks) post({ type: 'perf', name, at: performance.timeOrigin + performance.now() });
+};
+
+/**
+ * Marks the first page the preview answers a browser (a frame or a window loading it, never a request the app makes
+ * itself): when that request came, and when its answer had gone. A page whose request is dropped before its answer goes
+ * (its frame replaced meanwhile) is not that page. Only while marks are on.
+ */
+function firstPagePlugin() {
+  let answered = false;
+  type Req = { method?: string; headers: Record<string, string | string[] | undefined> };
+  type Res = { once(e: 'finish', fn: () => void): unknown };
+  return {
+    name: 'siteorigin-perf-first-page',
+    configureServer(server: { middlewares: { use(fn: (req: Req, res: Res, next: () => void) => void): unknown } }) {
+      server.middlewares.use((req, res, next) => {
+        const dest = req.headers['sec-fetch-dest'];
+        if (!answered && req.method === 'GET' && (dest === 'iframe' || dest === 'document') && String(req.headers.accept ?? '').includes('text/html')) {
+          const asked = performance.timeOrigin + performance.now();
+          res.once('finish', () => {
+            if (answered) return;
+            answered = true;
+            if (!marks) return;
+            post({ type: 'perf', name: 'runtime.firstRequest', at: asked });
+            post({ type: 'perf', name: 'runtime.firstResponse', at: performance.timeOrigin + performance.now() });
+          });
+        }
+        next();
+      });
+    }
+  };
+}
+
 async function loadVite(dir: string) {
   const req = createRequire(join(dir, 'package.json'));
   const entry = req.resolve('vite');
@@ -50,6 +89,7 @@ function useRealProjectDir(dir: string): string {
 
 async function start(dir: string, wantedPort = 0, packaged = true) {
   const vite = await loadVite(dir);
+  mark('runtime.viteLoaded');
   const ignored = unwatched(dir);
   const held = createPublicationGate({ root: dir, ignored });
   const s = await vite.createServer({
@@ -57,7 +97,7 @@ async function start(dir: string, wantedPort = 0, packaged = true) {
     configFile: join(dir, 'vite.config.js'),
     logLevel: 'warn',
     clearScreen: false,
-    plugins: [devPlugin(dir), framePolicyPlugin(frameAncestorsCsp(packaged)), liveGuestPlugin()],
+    plugins: [devPlugin(dir), framePolicyPlugin(frameAncestorsCsp(packaged)), liveGuestPlugin(), ...(marks ? [firstPagePlugin()] : [])],
     server: {
       host: '127.0.0.1',
       // Port 0: the operating system picks a free port when the server binds, so nothing can take it in between.
@@ -80,6 +120,7 @@ async function start(dir: string, wantedPort = 0, packaged = true) {
       hasWarned: false
     }
   } as never);
+  mark('runtime.serverCreated');
   held.attach(s as unknown as GateServer);
   gate = held;
   const ws = (s as unknown as { ws: Ws }).ws;
@@ -157,7 +198,11 @@ async function build(dir: string) {
 port.on('message', async (ev) => {
   const m = ev.data;
   try {
-    if (m.type === 'start') await start(useRealProjectDir(m.dir), m.port, m.packaged !== false);
+    if (m.type === 'start') {
+      marks = m.perf === true;
+      mark('runtime.started');
+      await start(useRealProjectDir(m.dir), m.port, m.packaged !== false);
+    }
     // The editor waits for this, so it never runs ahead of the batch's own update.
     else if (m.type === 'revision') {
       const send = (batch = 0) => {

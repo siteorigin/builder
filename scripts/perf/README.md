@@ -79,7 +79,12 @@ home page, and the home hero's heading in the preview. Times from `open.requeste
 call), `session` and its phases `session.formatCheck` (the scan for a newer format), `.lock`, `.recover`, `.read`,
 `.localState`, `.validate`, `.sweep`, `publish` (generated files checked and written), `generate` (its two generator
 runs), `attach`, `assetCheck`, `startRuntime` (spans); `firstSnapshotSent`, `editorShown`, `runtimeForked`,
-`runtimeReady` and `canvasReady` (the headline). Counts: files read and hashed, document files read, durable
+`runtimeReady` and `canvasReady` (the headline). The preview's start, from the marks of the preview process that served
+the page the canvas reported ready: `runtimeStarted` (the worker given its start), `runtimeViteLoaded`,
+`runtimeServerCreated`, `runtimeReady` (listening), `runtimeFirstRequest` and `runtimeFirstResponse` (the first page a
+browser asked for that was answered, when it was asked for and when the answer had gone), with the stretches
+`forkToListen`, `listenToFirstResponse`, `firstResponseToCanvasReady`, and `editorToCanvasReady` (what the author
+watches as "Starting preview"). Counts: files read and hashed, document files read, durable
 writes and fsyncs (session open, attach and preview start), the publication's files read, hashed and written,
 `project:changed` sends and their bytes until the canvas is ready, `reloadFromDisk` calls, React commits; the longest
 main-process stall.
@@ -92,6 +97,19 @@ editor sending the edit): `apply` (the whole edit in the main process, queue inc
 and `previewApplied` (the headline). Counts: durable writes, fsyncs and file writes in the edit, the publication's files
 read, hashed and written, `project:changed` sends and bytes, `reloadFromDisk` calls and React commits until the scenario
 ends; the longest main-process stall.
+
+**`switch`** (after `open`, and after every other scenario that follows it): with the fixture open, choose File > Open
+Project… and answer its folder chooser (through the app's chooser fixtures) with a second copy of the fixture, trusted and
+in Recent projects behind the first; to the canvas bridge reporting the second copy's home page ready to edit. The
+runner prepares that copy only when `switch` is asked for: the warm-up opens it before the fixture's own copy, and both
+are put back for every iteration. Checks: the first copy was locked before, the second copy opened writable with its
+pages, posts, images, project components and home page, the home hero's heading is in the preview, the first copy's
+preview process exited and its lock went (within 15 s), and the second copy is locked. Times from `open.requested`
+(the editor asking to open): `controller`, `session` (the second copy's), `close` (the first copy's), `attach`,
+`startRuntime` (spans); the preview's start as in `open` (`runtimeForked` … `runtimeFirstResponse` and the three
+stretches), by the second copy's own preview process; `canvasReady` (the headline); `oldServerExited` (the first copy's
+preview process gone, which the second's start need not wait for but which must always happen); the longest
+main-process stall.
 
 **`panels`** (after `open`): with the sidebar closed and the dock on its Project view, so every other panel is hidden,
 click the home hero on the canvas; then show the Inspector and change the hero's Heading there. Checks: every sidebar

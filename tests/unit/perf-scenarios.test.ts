@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import type { PerfRecord } from '../../src/shared/perf';
 import { Collector, Trace } from '../../scripts/perf/results';
-import { CHAT_CASES, CHAT_REPLY_CHECKPOINTS, CHAT_TYPED, chainFor, chat, chatReply, chatReplyFirst, chatReplyLast, chatSeed, edit, exportAgain, exportSite, expect as check, findHeading, launch, open, PANELS, panels, runChain, SHOWN_PANELS, type FixtureFacts, type Scenario, type ScenarioContext } from '../../scripts/perf/scenarios';
+import { CHAT_CASES, CHAT_REPLY_CHECKPOINTS, CHAT_TYPED, chainFor, chat, chatReply, chatReplyFirst, chatReplyLast, chatSeed, edit, exportAgain, exportSite, expect as check, findHeading, launch, open, PANELS, panels, runChain, SHOWN_PANELS, type FixtureFacts, type Scenario, type ScenarioContext, switchProject } from '../../scripts/perf/scenarios';
 import { FIXTURES } from '../../scripts/perf/fixtures';
 
 let seq = 0;
@@ -23,6 +23,9 @@ describe('the scenario chain', () => {
     expect(chainFor(['export']).map((s) => s.name)).toEqual(['launch', 'open', 'export']);
     expect(chainFor(['exportAgain']).map((s) => s.name)).toEqual(['launch', 'open', 'export', 'exportAgain']);
     expect(chainFor(['export', 'exportAgain']).map((s) => s.name)).toEqual(['launch', 'open', 'export', 'exportAgain']);
+    expect(chainFor(['switch']).map((s) => s.name)).toEqual(['launch', 'open', 'switch']);
+    // Last of those that follow open: the others measure the fixture's own copy, which switch leaves.
+    expect(chainFor(['switch', 'edit']).map((s) => s.name)).toEqual(['launch', 'open', 'edit', 'switch']);
     expect(chainFor([])).toEqual([]);
     expect(() => chainFor(['nope'])).toThrow('Unknown scenario');
   });
@@ -150,12 +153,17 @@ describe('open metrics', () => {
         span('controller.attach', 1705, 15, { dc: { 'files.read': 3, 'fs.durableWrites': 1, 'fs.fsyncs': 2 } }),
         r('renderer.commit', 1720, { attrs: { revision: null, screen: 'welcome' } }),
         r('renderer.commit', 1730, { attrs: { revision: 0, screen: 'editor' } }),
-        m('runtime.forked', 1740),
-        m('runtime.ready', 2000),
+        m('runtime.forked', 1740, { attrs: { worker: 1 } }),
+        m('runtime.started', 1790, { attrs: { worker: 1 } }),
+        m('runtime.viteLoaded', 1850, { attrs: { worker: 1 } }),
+        m('runtime.serverCreated', 1950, { attrs: { worker: 1 } }),
+        m('runtime.ready', 2000, { attrs: { worker: 1 } }),
         span('controller.startRuntime', 2001, 290, { dc: { 'files.read': 4, 'files.hashed': 1 } }),
         // A later publication's generation (the site's icons, say): not the open's.
         span('session.generate', 2050, 40, { attrs: { variant: 'clean' } }),
         m('controller.snapshotSent', 2002, { attrs: { revision: 0, bytes: 200 } }),
+        m('runtime.firstRequest', 2030, { attrs: { worker: 1 } }),
+        m('runtime.firstResponse', 2250, { attrs: { worker: 1 } }),
         // Not the home page ready to edit: Preview mode, a component preview, another page.
         r('canvas.ready', 2100, { attrs: { revision: 0, path: '/', mode: 'preview', studio: false } }),
         r('canvas.ready', 2200, { attrs: { revision: 0, path: '/', mode: 'edit', studio: true } }),
@@ -178,6 +186,9 @@ describe('open metrics', () => {
     expect([v('open.session.formatCheck'), v('open.session.lock'), v('open.session.read'), v('open.session.validate'), v('open.session.sweep')]).toEqual([3, 5, 15, 16, 1]);
     expect([v('open.generate'), v('open.docsRead')]).toEqual([55, 12]);
     expect([v('open.firstSnapshotSent'), v('open.editorShown'), v('open.runtimeForked'), v('open.runtimeReady')]).toEqual([700, 730, 740, 1000]);
+    expect([v('open.runtimeStarted'), v('open.runtimeViteLoaded'), v('open.runtimeServerCreated'), v('open.runtimeFirstRequest'), v('open.runtimeFirstResponse')]).toEqual([790, 850, 950, 1030, 1250]);
+    // Fork to listening, listening to the first page answered, that answer to the canvas ready; the editor shown to it.
+    expect([v('open.forkToListen'), v('open.listenToFirstResponse'), v('open.firstResponseToCanvasReady'), v('open.editorToCanvasReady')]).toEqual([260, 250, 250, 770]);
     expect([v('open.filesRead'), v('open.filesHashed'), v('open.durableWrites'), v('open.fsyncs')]).toEqual([177, 211, 2, 6]);
     expect([v('open.publishFilesRead'), v('open.publishFilesHashed'), v('open.publishFilesWritten')]).toEqual([100, 200, 2]);
     expect([v('open.snapshotsSent'), v('open.snapshotBytes'), v('open.reloadFromDisk'), v('open.rendererCommits')]).toEqual([2, 500, 1, 14]);
@@ -193,6 +204,102 @@ describe('open metrics', () => {
     const noDev = open.measure(trace((x) => x.name === 'session.generate' && x.attrs?.variant === 'dev'), facts);
     expect(noDev.missing).toEqual(['session.generate (dev)']);
     expect(noDev.metrics['open.generate']).toBeUndefined();
+    expect(open.measure(trace((x) => x.name === 'runtime.firstResponse'), facts).missing).toEqual(['runtime.firstResponse']);
+    // Another preview process's marks are never taken for this one's.
+    const other = trace((x) => x.name === 'runtime.viteLoaded');
+    const moved = new Trace([...other.records, m('runtime.viteLoaded', 1860, { attrs: { worker: 2 } })]);
+    expect(open.measure(moved, facts).missing).toEqual(['runtime.viteLoaded']);
+  });
+});
+
+describe('switch metrics', () => {
+  const trace = (drop: (x: PerfRecord) => boolean = () => false) =>
+    new Trace(
+      [
+        // The first project, opened before the switch: its preview process is worker 1.
+        r('scenario.start', 50, { attrs: { scenario: 'open' } }),
+        r('open.requested', 100),
+        m('runtime.forked', 700, { attrs: { worker: 1 } }),
+        m('runtime.ready', 1200, { attrs: { worker: 1 } }),
+        r('canvas.ready', 1500, { attrs: { revision: 0, path: '/', mode: 'edit', studio: false } }),
+        r('scenario.start', 5000, { attrs: { scenario: 'switch' } }),
+        m('scenario.start', 5000, { attrs: { scenario: 'switch' } }),
+        r('open.requested', 5010),
+        span('session.open', 5600, 580),
+        span('controller.close', 5900, 290),
+        // The first project's canvas, reporting again while it goes: never the second project's.
+        r('canvas.ready', 5905, { attrs: { revision: 0, path: '/', mode: 'edit', studio: false } }),
+        m('runtime.exited', 5880, { attrs: { worker: 1 } }),
+        span('controller.attach', 5920, 15),
+        m('runtime.forked', 5930, { attrs: { worker: 2 } }),
+        span('controller.open', 5935, 925),
+        m('runtime.started', 5980, { attrs: { worker: 2 } }),
+        m('runtime.viteLoaded', 6100, { attrs: { worker: 2 } }),
+        m('runtime.serverCreated', 6400, { attrs: { worker: 2 } }),
+        m('runtime.ready', 6500, { attrs: { worker: 2 } }),
+        span('controller.startRuntime', 6501, 580),
+        m('runtime.firstRequest', 6530, { attrs: { worker: 2 } }),
+        m('runtime.firstResponse', 6800, { attrs: { worker: 2 } }),
+        r('canvas.ready', 7210, { attrs: { revision: 0, path: '/', mode: 'edit', studio: false } }),
+        m('scenario.end', 9000, { attrs: { scenario: 'switch' } })
+      ].filter((x) => !drop(x))
+    );
+
+  it('time the switch from the request to the second project’s home page ready to edit, by its own preview process', () => {
+    const got = switchProject.measure(trace(), facts);
+    expect(got.missing).toEqual([]);
+    const v = (k: string) => got.metrics[k]?.value;
+    expect(v('switch.canvasReady')).toBe(2200);
+    expect([v('switch.controller'), v('switch.session'), v('switch.close'), v('switch.attach'), v('switch.startRuntime')]).toEqual([925, 580, 290, 15, 580]);
+    expect([v('switch.runtimeForked'), v('switch.runtimeViteLoaded'), v('switch.runtimeReady'), v('switch.runtimeFirstResponse')]).toEqual([920, 1090, 1490, 1790]);
+    expect([v('switch.forkToListen'), v('switch.listenToFirstResponse'), v('switch.firstResponseToCanvasReady')]).toEqual([570, 300, 410]);
+    expect(v('switch.oldServerExited')).toBe(870);
+  });
+
+  it('name what is missing: the second canvas, its server’s marks, or the first server never stopping', () => {
+    expect(switchProject.measure(trace((x) => x.name === 'canvas.ready' && x.t === 7210), facts).missing).toEqual(['canvas.ready']);
+    expect(switchProject.measure(trace((x) => x.name === 'runtime.ready' && x.attrs?.worker === 2), facts).missing).toEqual(['canvas.ready']);
+    expect(switchProject.measure(trace((x) => x.name === 'runtime.exited'), facts).missing).toEqual(['runtime.exited (the first project’s)']);
+    expect(switchProject.measure(trace((x) => x.name === 'controller.close'), facts).missing).toEqual(['controller.close']);
+  });
+
+  it('take the second project’s canvas only once it is attached, and the marks of the preview process that served it', () => {
+    // The second project's preview started while it opened, listening before the first project's canvas let go; a
+    // process started for it and stopped unused (its opening's publication changed files) is never the one timed.
+    const t = new Trace([
+      r('scenario.start', 50, { attrs: { scenario: 'open' } }),
+      r('open.requested', 100),
+      m('runtime.forked', 200, { attrs: { worker: 1 } }),
+      m('runtime.ready', 700, { attrs: { worker: 1 } }),
+      r('canvas.ready', 1000, { attrs: { revision: 0, path: '/', mode: 'edit', studio: false } }),
+      r('scenario.start', 5000, { attrs: { scenario: 'switch' } }),
+      r('open.requested', 5010),
+      m('runtime.forked', 5100, { attrs: { worker: 2 } }),
+      m('runtime.ready', 5500, { attrs: { worker: 2 } }),
+      // The first project's canvas, still shown and reporting again: before the second project is attached.
+      r('canvas.ready', 5600, { attrs: { revision: 0, path: '/', mode: 'edit', studio: false } }),
+      span('session.open', 5650, 640),
+      m('runtime.exited', 5700, { attrs: { worker: 2 } }),
+      m('runtime.forked', 5710, { attrs: { worker: 3 } }),
+      m('runtime.started', 5750, { attrs: { worker: 3 } }),
+      m('runtime.viteLoaded', 5800, { attrs: { worker: 3 } }),
+      span('controller.close', 5900, 240),
+      m('runtime.exited', 5950, { attrs: { worker: 1 } }),
+      span('controller.attach', 5960, 50),
+      span('controller.open', 5965, 955),
+      m('runtime.serverCreated', 6000, { attrs: { worker: 3 } }),
+      m('runtime.ready', 6100, { attrs: { worker: 3 } }),
+      span('controller.startRuntime', 6110, 100),
+      m('runtime.firstRequest', 6120, { attrs: { worker: 3 } }),
+      m('runtime.firstResponse', 6400, { attrs: { worker: 3 } }),
+      r('canvas.ready', 6700, { attrs: { revision: 0, path: '/', mode: 'edit', studio: false } })
+    ]);
+    const got = switchProject.measure(t, facts);
+    expect(got.missing).toEqual([]);
+    const v = (k: string) => got.metrics[k]?.value;
+    expect(v('switch.canvasReady')).toBe(1690);
+    expect([v('switch.runtimeForked'), v('switch.runtimeReady'), v('switch.forkToListen'), v('switch.firstResponseToCanvasReady')]).toEqual([700, 1090, 390, 300]);
+    expect(v('switch.oldServerExited')).toBe(940);
   });
 });
 

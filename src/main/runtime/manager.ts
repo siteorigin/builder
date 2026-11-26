@@ -255,6 +255,9 @@ function runNpm(args: string[], dir: string, onLine: (line: string) => void, sig
   });
 }
 
+/** Numbers each preview process forked, so the benchmark's marks can tell one from the next. */
+let forks = 0;
+
 /** How long a stopping preview process gets: asked to stop, then terminated, then killed, then no longer waited for. */
 export const STOP_LIMITS = { termMs: 1500, killMs: 3000, giveUpMs: 5000 };
 
@@ -339,7 +342,8 @@ export class DevServer {
       serviceName: 'SiteOrigin project runtime',
       stdio: 'pipe'
     });
-    perf.mark('runtime.forked');
+    const worker = ++forks;
+    perf.mark('runtime.forked', { worker });
     this.proc = proc;
     proc.stdout?.on('data', (d) => this.log('info', String(d)));
     proc.stderr?.on('data', (d) => this.log('error', String(d)));
@@ -352,7 +356,12 @@ export class DevServer {
         clearTimeout(timer);
         resolve();
       };
-      proc.on('message', (m: { type: string; url?: string; message?: string; level?: string; id?: string; revision?: number }) => {
+      proc.on('message', (m: { type: string; url?: string; message?: string; level?: string; id?: string; revision?: number; name?: unknown; at?: unknown }) => {
+        // The worker's own timing marks, taken at the time it gives (src/runtime/worker.ts; sent only while marks are on).
+        if (m.type === 'perf') {
+          if (typeof m.name === 'string' && m.name.startsWith('runtime.') && typeof m.at === 'number' && Number.isFinite(m.at)) perf.mark(m.name, { worker }, m.at);
+          return;
+        }
         // A process that has been stopped or replaced no longer speaks for this server.
         if (this.proc !== proc) return;
         if (m.type === 'held') this.holdAcks.get(String(m.id))?.();
@@ -360,7 +369,7 @@ export class DevServer {
           perf.mark('runtime.published', { revision: Number(m.revision) });
           for (const fn of this.publishedListeners) fn(Number(m.revision));
         } else if (m.type === 'ready') {
-          perf.mark('runtime.ready');
+          perf.mark('runtime.ready', { worker });
           clearTimeout(timer);
           this.restarts = 0;
           this.set({ state: 'ready', url: m.url! });
@@ -376,6 +385,7 @@ export class DevServer {
         }
       });
       proc.on('exit', (code) => {
+        perf.mark('runtime.exited', { worker });
         clearTimeout(timer);
         if (this.proc !== proc) return resolve();
         this.proc = null;
@@ -397,7 +407,7 @@ export class DevServer {
         resolve();
       });
       // No port: the worker binds port 0 and reports the one it got.
-      proc.postMessage({ type: 'start', dir: this.dir, packaged: app.isPackaged });
+      proc.postMessage({ type: 'start', dir: this.dir, packaged: app.isPackaged, ...(perf.on ? { perf: true } : {}) });
     });
   }
 

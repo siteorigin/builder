@@ -51,6 +51,7 @@ import { shortcutLabel } from './lib/shortcut-keys';
 import { isAskAiKey } from './lib/ask-ai-key';
 import { isRemoteShell, leaveLive, LOCAL_PROJECT_COMMANDS, REMOTE_LEFT_TABS, REMOTE_MODALS, REMOTE_RIGHT_TABS, showsRemote } from './lib/remote-session';
 import { timedPanel } from './lib/perf-panels';
+import { perfMark } from './lib/perf';
 import { Hideable } from './lib/hideable';
 
 /** Leave "editing everywhere" for the page it was entered from. However it is left (Done editing, Esc), focus
@@ -465,6 +466,7 @@ export function Editor() {
   const openProject = (dir?: string, opts?: { folder?: boolean }) => {
     if (openingProject.current) return;
     openingProject.current = true;
+    perfMark('open.requested', { chosen: dir === undefined ? 'dialog' : 'path' });
     void api.projects
       .open(dir, opts)
       .then(
