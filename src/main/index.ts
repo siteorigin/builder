@@ -386,6 +386,18 @@ function registerIpc() {
     return controller.duplicate({ name: o.name, parentDir: o.parentDir, opening: o.opening });
   });
   handle('projects:reveal', (p?: string) => controller.revealInFinder(p));
+  // Hosting a live session of the open project (#762). Every argument is checked by the manager; each command names
+  // the session it is for, so one meant for a session that has ended reaches no other.
+  handle('live:start', (opts: unknown) => controller.live.start(opts));
+  handle('live:stop', (run: unknown) => controller.live.stop(run));
+  handle('live:admit', (run: unknown, guestId: unknown, role: unknown, guestExpiresAt?: unknown) => controller.live.admit(run, guestId, role, guestExpiresAt ?? null));
+  handle('live:decline', (run: unknown, guestId: unknown) => controller.live.decline(run, guestId));
+  handle('live:setRole', (run: unknown, guestId: unknown, role: unknown) => controller.live.setRole(run, guestId, role));
+  handle('live:setGuestExpiry', (run: unknown, guestId: unknown, guestExpiresAt: unknown) => controller.live.setGuestExpiry(run, guestId, guestExpiresAt));
+  handle('live:kick', (run: unknown, guestId: unknown) => controller.live.kick(run, guestId));
+  handle('live:setLocked', (run: unknown, locked: unknown) => controller.live.setLocked(run, locked));
+  handle('live:extend', (run: unknown, expiresAt: unknown) => controller.live.extend(run, expiresAt));
+  handle('live:state', () => controller.live.state);
   handle('project:snapshot', () => controller.snapshot());
   handle('project:reloadFromDisk', () => controller.reloadFromDisk());
   handle('project:apply', (batch, opts) => controller.apply(batch, opts));

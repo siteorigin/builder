@@ -43,6 +43,8 @@ vi.mock('../../src/main/runtime/manager', () => ({
     status = { state: 'idle' };
     constructor(private dir: string) {}
     onStatus() {}
+    onPublished() {}
+    onGone() {}
     notifyRevision() {}
     async start() {
       deps.starts++;

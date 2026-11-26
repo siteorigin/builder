@@ -49,6 +49,9 @@ import { generateComponentPreview } from '@generator/preview';
 import { canonicalDir } from '../runtime/policy';
 import { addRecent, isTrusted, loadSettings, renameRecent, trust, untrust } from './settings';
 import { MAX_COPY_NAME, projectDisplayName, projectFolder, projectFolderName } from '@shared/project-name';
+import { RELAY_URL_ENV, resolveRelayUrl } from '@shared/live/relay-url';
+import { LiveHostManager } from './live/host';
+import { loopbackPreview } from './live/preview-proxy';
 import { newId } from '@shared/ids';
 import { packageFileName, type ComponentPackage } from '@shared/component-package';
 import { codeBrought, importedCode, migratePackage, packagedDefinitions, planComponentPackage, type ImportPlacement } from '@engine/component-package';
@@ -301,6 +304,17 @@ export class Controller {
       if (!s || s.readOnly || s.dir !== root) return;
       await s.whileOwner(() => writeThumb(root, key, png));
     }
+  });
+  /**
+   * The live session the open project is hosting, if any (#762). It belongs to the opening it was started in and ends
+   * with it; its guests see the preview this project's own server shows.
+   */
+  readonly live = new LiveHostManager({
+    opening: () => (this.session && this.workspaceKey ? { workspaceKey: this.workspaceKey, projectName: projectDisplayName(this.session.state) } : null),
+    preview: () => (this.session && this.workspaceKey ? loopbackPreview(this.dev?.url) : null),
+    publishing: () => !!this.dev?.holding,
+    relay: async () => resolveRelayUrl({ env: process.env[RELAY_URL_ENV], setting: (await loadSettings()).settings.liveRelayUrl }),
+    emit: (channel, payload) => this.send(channel, payload)
   });
   /** Cancels a dependency install into the project when another app takes it over. */
   private prepareAbort: AbortController | null = null;
@@ -887,6 +901,8 @@ export class Controller {
     if (runtimeError) this.pendingStatus = runtimeError;
     this.localState = workspace;
     this.localDirty = false;
+    // A live session belongs to the opening it was started in, never the next one (closing has already ended it).
+    if (this.live.running) void this.live.end();
     this.workspaceKey = `${session.dir}#${++this.openings}`;
     this.onOpeningChange?.();
     // Another app took the project over and edits its folder now: stop the preview running there at once (and any
@@ -1011,7 +1027,17 @@ export class Controller {
       // A preview that was stopped or replaced no longer speaks for the project.
       if (this.dev !== dev) return;
       this.send('runtime:status', s);
+      this.live.previewChanged();
       this.broadcast();
+    });
+    // A live session's guests reload once a change has reached the preview: its files are in Vite's hands, so what
+    // they load is the new revision (the project's own folder, or the private copy once it has the change).
+    dev.onPublished(() => {
+      if (this.dev === dev) this.live.projectChanged();
+    });
+    // Guests' requests to a server stopping or gone are stopped at once, and the relay told why.
+    dev.onGone(() => {
+      if (this.dev === dev) this.live.previewChanged();
     });
     await dev.start();
     // Anything the other app wrote between the copy and the watches.
@@ -1173,6 +1199,7 @@ export class Controller {
     await dev?.stop();
     if (this.dev === dev) this.dev = null;
     if (this.stage === stage) this.stage = null;
+    this.live.previewChanged();
     // One prepared while the server stopped is gone with it too.
     await this.dropComponentPreviews();
     if (!stage) return;
@@ -1395,6 +1422,8 @@ export class Controller {
     // Workspace state belongs to the project it was saved in: accept no more of it, and write it before the lock goes.
     this.workspaceKey = null;
     this.onOpeningChange?.();
+    // A live session ends with its project: guests lose the preview now, and the relay is told (waited for below).
+    const liveEnded = this.live.end();
     await this.onSessionClosing?.();
     // Written while this is still the open project, and only while it is still this app's: the lock is read again
     // first, so a takeover the heartbeat has not seen yet makes it read-only, which writes nothing.
@@ -1423,6 +1452,7 @@ export class Controller {
       await this.stopPreview();
       await this.runtimeQueue;
       await this.stopPreview();
+      await liveEnded;
       await s.close();
       // Its entry in Recent projects leaves with the name it has now, whichever way it was left: back to Welcome or
       // for another project. A list that cannot be saved never stops the close.

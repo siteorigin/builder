@@ -255,6 +255,10 @@ export class DevServer {
   status: RuntimeStatus = { state: 'idle' };
   private restarts = 0;
   private listeners = new Set<(s: RuntimeStatus) => void>();
+  private publishedListeners = new Set<(revision: number) => void>();
+  private goneListeners = new Set<() => void>();
+  /** Holds asked for and not yet released: a save's files are landing. */
+  private activeHolds = 0;
   logs: Array<{ level: string; message: string; time: number }> = [];
   private stopped = false;
   /** Ends a start still waiting for its process: a stopped server has nothing left to wait for. */
@@ -272,6 +276,39 @@ export class DevServer {
   onStatus(fn: (s: RuntimeStatus) => void) {
     this.listeners.add(fn);
     return () => this.listeners.delete(fn);
+  }
+
+  /**
+   * Called each time a revision told to the preview (notifyRevision) has reached Vite: its files' updates have gone, so
+   * a page loaded from here on is that revision.
+   */
+  onPublished(fn: (revision: number) => void) {
+    this.publishedListeners.add(fn);
+    return () => this.publishedListeners.delete(fn);
+  }
+
+  /** Called the moment the server's process is stopped or exits, before anything is waited for (see `url`). */
+  onGone(fn: () => void) {
+    this.goneListeners.add(fn);
+    return () => this.goneListeners.delete(fn);
+  }
+
+  private gone() {
+    for (const fn of this.goneListeners) fn();
+  }
+
+  /** Whether a save's files are landing now (a hold asked for and not yet released): pages loaded meanwhile may mix the two. */
+  get holding(): boolean {
+    return this.activeHolds > 0;
+  }
+
+  /**
+   * The preview's address while its process is running and has said it is ready; null from the moment that process
+   * is stopped or exits, even while `status` still reads ready (a restart being considered), so nothing is sent to a
+   * port the process no longer holds.
+   */
+  get url(): string | null {
+    return this.proc && this.status.state === 'ready' ? this.status.url : null;
   }
 
   private set(s: RuntimeStatus) {
@@ -305,10 +342,11 @@ export class DevServer {
         clearTimeout(timer);
         resolve();
       };
-      proc.on('message', (m: { type: string; url?: string; message?: string; level?: string; id?: string }) => {
+      proc.on('message', (m: { type: string; url?: string; message?: string; level?: string; id?: string; revision?: number }) => {
         // A process that has been stopped or replaced no longer speaks for this server.
         if (this.proc !== proc) return;
         if (m.type === 'held') this.holdAcks.get(String(m.id))?.();
+        else if (m.type === 'published') for (const fn of this.publishedListeners) fn(Number(m.revision));
         else if (m.type === 'ready') {
           clearTimeout(timer);
           this.restarts = 0;
@@ -328,6 +366,7 @@ export class DevServer {
         clearTimeout(timer);
         if (this.proc !== proc) return resolve();
         this.proc = null;
+        this.gone();
         if (this.stopped) return;
         if (this.restarts < 1) {
           this.restarts++;
@@ -361,6 +400,7 @@ export class DevServer {
   async hold(): Promise<(files: string[]) => void> {
     const proc = this.proc;
     if (!proc || this.status.state !== 'ready') return () => {};
+    this.activeHolds++;
     const id = String(++this.holdCount);
     await new Promise<void>((resolve) => {
       const timer = setTimeout(done, HOLD_ACK_MS);
@@ -381,6 +421,7 @@ export class DevServer {
     return (files) => {
       if (released) return;
       released = true;
+      this.activeHolds--;
       // A worker stopped or replaced meanwhile held nothing of this server's; one that ends its holds on its own.
       if (this.proc !== proc) return;
       try {
@@ -403,6 +444,7 @@ export class DevServer {
     this.stopped = true;
     const p = this.proc;
     this.proc = null;
+    if (p) this.gone();
     this.settleStart?.();
     this.settleStart = null;
     if (p) {

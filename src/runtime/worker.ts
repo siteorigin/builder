@@ -8,7 +8,7 @@ import { join, sep } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { maskSecrets, serializeBuildError } from './build-diagnostics';
 import { devPlugin } from './dev-plugin';
-import { canonicalDir, frameAncestorsCsp, framePolicyPlugin, previewFsPolicy } from './policy';
+import { canonicalDir, frameAncestorsCsp, framePolicyPlugin, liveGuestPlugin, previewFsPolicy } from './policy';
 import { createPublicationGate, type GateServer, type PublicationGate } from './publication-gate';
 
 type Msg =
@@ -67,7 +67,7 @@ async function start(dir: string, wantedPort = 0, packaged = true) {
     configFile: join(dir, 'vite.config.js'),
     logLevel: 'warn',
     clearScreen: false,
-    plugins: [devPlugin(dir), framePolicyPlugin(frameAncestorsCsp(packaged))],
+    plugins: [devPlugin(dir), framePolicyPlugin(frameAncestorsCsp(packaged)), liveGuestPlugin()],
     server: {
       host: '127.0.0.1',
       // Port 0: the operating system picks a free port when the server binds, so nothing can take it in between.
@@ -170,7 +170,11 @@ port.on('message', async (ev) => {
     if (m.type === 'start') await start(useRealProjectDir(m.dir), m.port, m.packaged !== false);
     // The editor waits for this, so it never runs ahead of the batch's own update.
     else if (m.type === 'revision') {
-      const send = (batch = 0) => server?.ws.send({ type: 'custom', event: 'siteorigin:revision', data: { revision: m.revision, batch } });
+      const send = (batch = 0) => {
+        server?.ws.send({ type: 'custom', event: 'siteorigin:revision', data: { revision: m.revision, batch } });
+        // Vite has the revision's files now: what a page loads from here is that revision (a live session's guests reload).
+        if (server) post({ type: 'published', revision: m.revision });
+      };
       if (gate) gate.revision(send);
       else send();
     }
