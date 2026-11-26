@@ -313,9 +313,6 @@ try {
   // The composer still names OpenAI (Settings changed underneath it), so Local is chosen where the author would.
   await openAi();
   await dialog.getByRole('radio', { name: 'Local model' }).click();
-  // Looking at a provider's settings does not switch the one in use; the button does.
-  assert.notEqual((await settings()).ai.provider, 'local');
-  await dialog.getByRole('button', { name: 'Use Local model', exact: true }).click();
   await eventually(async () => assert.equal((await settings()).ai.provider, 'local'));
   await eventually(async () => assert.deepEqual(await modelOptions(), ["Use the server's model", 'first-model', 'second-model']), 15000);
   await modelSelect.selectOption('second-model');
