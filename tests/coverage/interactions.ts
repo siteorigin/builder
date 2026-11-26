@@ -2656,18 +2656,31 @@ export const INTERACTIONS: Interaction[] = [
   {
     id: 'desktop.help',
     area: 'desktop',
-    intent: 'Find the SiteOrigin website, or the version to quote in a bug report',
+    intent: 'Find the SiteOrigin website, report a problem, or say which build is running in a bug report',
     start: 'Welcome or a project open',
-    routes: ['role:help', 'menu:Help > SiteOrigin Website', 'menu:Help > About SiteOrigin Builder'],
-    outcome: 'The website opens in the browser through the checked external-link path; About shows the app’s name and version (in the app menu on macOS, in Help elsewhere)',
+    routes: [
+      'role:help',
+      'menu:Help > SiteOrigin Website',
+      'menu:Help > Report a Problem…',
+      'menu:Help > Copy Build Details',
+      'menu:Help > Show Log File',
+      'menu:Help > About SiteOrigin Builder'
+    ],
+    outcome:
+      'The website and the repository’s new-issue form open in the browser through the checked external-link path, with nothing sent for the person; About shows the app’s name, version, commit and build time (in the app menu on macOS, in Help elsewhere, with Copy), and Copy Build Details puts them on the clipboard; Show Log File reveals the log the main process keeps of its errors and warnings, which names the build at each launch',
     scenario: 'welcome · none',
     proof: [
       { test: 'tests/e2e/menu.mjs', kind: 'e2e', step: 'Help: the website link is handed to the desktop' },
+      { test: 'tests/e2e/menu.mjs', kind: 'e2e', step: 'Help: Report a Problem opens a new issue on the repository' },
+      { test: 'tests/e2e/menu.mjs', kind: 'e2e', step: 'Help: Show Log File reveals the main process log, which names the build' },
       { test: 'tests/e2e/menu.mjs', kind: 'e2e', step: 'Help: About shows the version (Windows and Linux)' },
-      { test: 'tests/unit/app-menu.test.ts', kind: 'unit' }
+      { test: 'tests/unit/app-menu.test.ts', kind: 'unit' },
+      { test: 'tests/unit/build-info.test.ts', kind: 'unit' },
+      { test: 'tests/unit/main-log.test.ts', kind: 'unit' }
     ],
     gaps: [
       { missing: 'Help > About SiteOrigin Builder exists only on Windows and Linux, which local runs do not cover; the macOS About panel is Electron’s own and no test opens it', owner: 'desktop' },
+      { missing: 'Copy Build Details and About’s Copy write the system clipboard, which no test chooses so a run never replaces the person’s clipboard; the text they copy is unit-tested', owner: 'desktop' },
       { missing: 'The website link is chosen only from Welcome', owner: 'desktop' }
     ]
   },

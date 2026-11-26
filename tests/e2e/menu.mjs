@@ -1,13 +1,15 @@
 // The native File menu works from Welcome, from a project and, on macOS, from the running app with no window
 // left: New Project and Open Project bring a window back and do what was asked once it is ready, and Export
 // and Close Project are offered only while a project is open (#255). Settings… opens Settings from Welcome and the
-// editor, Help links to the website, and Reload and the developer tools are offered only in Developer mode, since an
+// editor, Help links to the website and to reporting a problem and reveals the main process's log, which names the
+// build (#887), and Reload and the developer tools are offered only in Developer mode, since an
 // automated run gets the menu a packaged build has (#810). Needs no preview.
 //
 // Menu items are chosen through their own click handlers (harness chooseMenu), as the menu bar and the item's shortcut
 // do. Headless runs cannot press native key equivalents, so the shortcuts are checked as the accelerators the items
 // carry. The folder picker is answered by the app's chooser fixtures, which record the window it was shown over.
 import assert from 'node:assert/strict';
+import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { answerChoosers, chooseMenu, choosersShown, desktopCursor, desktopEvents, desktopIntents, eventually, launch, menuItem, scratch, step, withTimeout } from './harness.mjs';
 
@@ -124,6 +126,29 @@ const linkMark = await desktopCursor(app);
 await chooseMenu(app, ['Help', 'SiteOrigin Website']);
 await eventually(async () => assert.deepEqual((await desktopIntents(app, linkMark)).filter((x) => x.kind === 'open-external').map((x) => x.target), ['https://siteorigin.com/'], 'the website opens in the browser'));
 
+/** The build beside the version: the commit (or none, for a build made without git) and when it was built. */
+const BUILD_LABEL = /\((?:[0-9a-f]{7,}|commit unknown), built \d{4}-\d{2}-\d{2} \d{2}:\d{2} UTC\)/;
+
+step('Help: Report a Problem opens a new issue on the repository');
+const reportMark = await desktopCursor(app);
+await chooseMenu(app, ['Help', 'Report a Problem…']);
+await eventually(async () =>
+  assert.deepEqual((await desktopIntents(app, reportMark)).filter((x) => x.kind === 'open-external').map((x) => x.target), ['https://github.com/siteorigin/builder/issues/new'], 'the issue form opens in the browser')
+);
+
+step('Help: Show Log File reveals the main process log, which names the build');
+const logMark = await desktopCursor(app);
+const logFile = join(WORK, 'userdata', 'logs', 'main.log');
+await chooseMenu(app, ['Help', 'Show Log File']);
+await eventually(async () => assert.deepEqual((await desktopIntents(app, logMark)).filter((x) => x.kind === 'reveal').map((x) => x.target), [logFile], 'the log is revealed'));
+{
+  const version = await app.evaluate(({ app: a }) => a.getVersion());
+  const launched = readFileSync(logFile, 'utf8').split('\n').filter((l) => l.includes('[start]'));
+  assert.ok(launched.length >= 1, 'each launch writes a line to the log');
+  assert.ok(launched.at(-1).includes(`[start] SiteOrigin Builder ${version} (`), 'the launch line names the app and its version');
+  assert.match(launched.at(-1), BUILD_LABEL, 'the launch line names the commit and build time');
+}
+
 if (process.platform !== 'darwin') {
   step('Help: About shows the version (Windows and Linux)');
   const aboutMark = await desktopCursor(app);
@@ -132,9 +157,9 @@ if (process.platform !== 'darwin') {
   await chooseMenu(app, ['Help', 'About SiteOrigin Builder']);
   await eventually(async () =>
     assert.deepEqual(
-      (await choosersShown(app, aboutMark)).map((c) => [c.dialog, c.message, c.detail, c.window, c.outcome]),
-      [['message', 'SiteOrigin Builder', `Version ${version}`, await windowId(), 'chosen']],
-      'About names the app and its version, over the editor window'
+      (await choosersShown(app, aboutMark)).map((c) => [c.dialog, c.message, c.detail.startsWith(`Version ${version} (`) && BUILD_LABEL.test(c.detail), c.window, c.outcome]),
+      [['message', 'SiteOrigin Builder', true, await windowId(), 'chosen']],
+      'About names the app, its version and its build, over the editor window'
     )
   );
 }

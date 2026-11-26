@@ -1,7 +1,8 @@
-import { app, BrowserWindow, dialog, ipcMain, nativeTheme, protocol, net, session as electronSession, shell, Menu } from 'electron';
+import { app, BrowserWindow, clipboard, dialog, ipcMain, nativeTheme, protocol, net, session as electronSession, shell, Menu } from 'electron';
 import type { BaseWindow, KeyboardEvent, MenuItem } from 'electron';
 import { join, dirname, normalize, relative, isAbsolute } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
+import { release } from 'node:os';
 import type { Appearance, ConflictChoice, ImportChoices, InspectLayoutOptions, LocalWorkspaceState, ProviderId, SettingsPatch, SourceSettingsDraft } from '@shared/api';
 import type { ComponentPreviewMeasure, ComponentPreviewResult, ComponentPreviewStep } from '@shared/component-preview';
 import { editorBackground, editorScheme } from '@shared/appearance';
@@ -12,6 +13,8 @@ import { createLeaveGate, type LeaveAnswer } from './leave-gate';
 import { forwardsKey, menuKeyCopy } from './history-keys';
 import { createMenuCommands, type MenuCommand } from './menu-commands';
 import { appMenuTemplate, noticesFile, offersDeveloperItems } from './app-menu';
+import { buildDetailsText, buildLabel, buildVersion, type BuildStamp } from './build-info';
+import { captureMainErrors, createMainLog } from './main-log';
 import { writingMenuTemplate } from './writing-menu';
 import { currentShortcuts, loadSettings, localCheckEpoch, localCheckRecorder, localEndpoint, pinRecent, providerStatuses, recents, removeRecent, setKey, updateSettings, getKey } from './settings';
 import { Orchestrator } from '@agent/orchestrator';
@@ -965,10 +968,36 @@ function updateProjectMenu() {
 /** Developer mode as last read, for the menu, which is built synchronously. */
 let developerModeOn = false;
 
-/** Help > About on Windows and Linux, which have no About panel: the app's name and version, to quote in a report. */
+/** The commit and time this build was made from, as electron.vite.config.ts stamped them (none when run unbundled). */
+const BUILD: BuildStamp = {
+  commit: typeof __BUILD_COMMIT__ === 'string' ? __BUILD_COMMIT__ : null,
+  builtAt: typeof __BUILD_DATE__ === 'string' ? __BUILD_DATE__ : null
+};
+
+/** What a bug report quotes to say which build it was. */
+const buildDetails = () =>
+  buildDetailsText({ name: app.name, version: app.getVersion(), ...BUILD, electron: process.versions.electron, platform: process.platform, arch: process.arch, osRelease: release() });
+
+/** Help > Copy Build Details, and About's Copy: the build details on the clipboard. */
+function copyBuildDetails() {
+  clipboard.writeText(buildDetails());
+}
+
+/** Help > About on Windows and Linux, which have no About panel: the app's name and build, to quote in a report. */
 function showAbout() {
-  const options = { type: 'info' as const, title: `About ${app.name}`, message: app.name, detail: `Version ${app.getVersion()}`, buttons: ['OK'] };
-  void (win && !win.isDestroyed() ? dialog.showMessageBox(win, options) : dialog.showMessageBox(options));
+  const options = { type: 'info' as const, title: `About ${app.name}`, message: app.name, detail: `Version ${buildVersion(app.getVersion(), BUILD)}`, buttons: ['OK', 'Copy'], defaultId: 0, cancelId: 0 };
+  void (win && !win.isDestroyed() ? dialog.showMessageBox(win, options) : dialog.showMessageBox(options)).then(({ response }) => {
+    if (response === 1) copyBuildDetails();
+  });
+}
+
+/** Help > Show Log File: the main process's log, revealed in the file manager (recorded instead in an automated run). */
+function showLog() {
+  if (logging && !mainLog.ensure()) {
+    void dialog.showMessageBox({ type: 'warning', message: 'The log file could not be made.', detail: mainLog.file });
+    return;
+  }
+  shell.showItemInFolder(mainLog.file);
 }
 
 /** Help menu links open in the browser, checked like every other link the app hands to the desktop. */
@@ -989,7 +1018,7 @@ function buildMenu() {
     controller.send('menu:history', { action, fromKey: menuKeyCopy(event, process.platform === 'darwin') });
   };
   const options = { projectOpen: controller.openingKey !== null, developer: offersDeveloperItems({ packaged: app.isPackaged, automated, developerMode: developerModeOn }) };
-  Menu.setApplicationMenu(Menu.buildFromTemplate(appMenuTemplate(process.platform, options, { command: chooseCommand, history, openLink: openMenuLink, about: showAbout, openNotices })));
+  Menu.setApplicationMenu(Menu.buildFromTemplate(appMenuTemplate(process.platform, options, { command: chooseCommand, history, openLink: openMenuLink, about: showAbout, copyBuildDetails, showLog, openNotices })));
 }
 
 /** Help > Third-Party Notices: the notices file, in the desktop's own viewer (recorded instead in an automated run). */
@@ -1005,6 +1034,15 @@ function openNotices() {
 // One app instance at a time: a second one would race this one's settings, recents and project locks.
 // Launching the app again focuses the existing window instead.
 if (!app.requestSingleInstanceLock()) app.exit(0);
+// The errors and warnings the main process meets are kept in a log on this computer, for a person to attach to a
+// report (main-log.ts). An automated run logs only into the profile it was given, never a person's own.
+const launchLine = () => `${app.name} ${buildVersion(app.getVersion(), BUILD)} on ${process.platform} ${process.arch}`;
+const mainLog = createMainLog({ file: join(app.getPath('userData'), 'logs', 'main.log'), header: launchLine });
+const logging = !automated || !!process.env.SITEORIGIN_USER_DATA;
+if (logging) {
+  captureMainErrors(mainLog, { console, process });
+  mainLog.write('start', launchLine());
+}
 /** Settles once startup (theme packs, IPC, the menu) is done: no window may open before then. */
 let markStarted!: () => void;
 const started = new Promise<void>((resolve) => (markStarted = resolve));
@@ -1046,8 +1084,9 @@ app.whenReady().then(async () => {
   await loadInstalledPacks(packRoots(resourcesDir(), app.getPath('userData')));
   registerIpc();
   developerModeOn = (await loadSettings()).settings.developerMode;
-  // The About panel names this app and its version, not the Electron bundle a development build runs in.
-  app.setAboutPanelOptions({ applicationName: app.name, applicationVersion: app.getVersion() });
+  // The About panel names this app and its version, not the Electron bundle a development build runs in, with the
+  // build beside it (macOS shows `version` in brackets after the version).
+  app.setAboutPanelOptions({ applicationName: app.name, applicationVersion: app.getVersion(), version: buildLabel(BUILD) });
   buildMenu();
   markStarted();
   startedUp = true;

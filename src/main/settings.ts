@@ -122,6 +122,8 @@ export async function loadSettings(): Promise<SettingsFile> {
     if (typeof cache.settings.liveRelayUrl !== 'string' || !cache.settings.liveRelayUrl.trim()) cache.settings.liveRelayUrl = null;
   } catch (e) {
     unread = (e as NodeJS.ErrnoException).code !== 'ENOENT';
+    // Kept in the main process's log (main-log.ts): settings that could not be read start from the defaults.
+    if (unread) console.warn('The settings could not be read, so the defaults are in use:', e);
     cache = structuredClone(DEFAULTS);
   }
   if (developerModeLocked()) cache.settings.developerMode = false;
