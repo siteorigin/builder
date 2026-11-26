@@ -361,6 +361,25 @@ describe('the Posts list', () => {
     expect(postRows(c, '', 'newest').find((r) => r.id === 'en_winter')?.draft).toBe(true);
   });
 
+  it('says which field each post was found by, finding its whole address and its words without their accents', () => {
+    const s = run(
+      blog(),
+      { type: 'entry.create', collectionId: 'posts', entryId: 'en_autumn', title: 'Autumn kiln firing', publishedAt: '2027-03-02', excerpt: 'Glaze tests' },
+      { type: 'entry.create', collectionId: 'posts', entryId: 'en_kowhai', title: 'Kōwhai Street', publishedAt: '2027-01-02' },
+      { type: 'entry.create', collectionId: 'posts', entryId: 'en_greek', title: 'ΦΩΣ', publishedAt: '2027-01-03' }
+    );
+    const c = s.collections.posts;
+    const found = (q: string) => postRows(c, q, 'newest').map((r) => [r.id, r.matched, r.matchedText]);
+    expect(found('autumn')).toEqual([['en_autumn', 'title', 'Autumn kiln firing']]);
+    expect(found('/blog/spring')).toEqual([['en_spring', 'route', '/blog/spring-open-studio/']]);
+    expect(found('ana')).toEqual([['en_winter', 'author', 'Ana']]);
+    expect(found('glaze')).toEqual([['en_autumn', 'excerpt', 'Glaze tests']]);
+    expect(found('kowhai')).toEqual([['en_kowhai', 'title', 'Kōwhai Street']]);
+    // Compared a character at a time, as the list marks it: a final sigma is a sigma.
+    expect(found('φως').map(([id]) => id)).toEqual(['en_greek']);
+    expect(postRows(c, '', 'newest').every((r) => r.matched === undefined)).toBe(true);
+  });
+
   it('narrows to published posts or drafts and to one category, together with its words (#396)', () => {
     let s = run(
       blog(),

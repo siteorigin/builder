@@ -780,7 +780,7 @@ assert.equal(await rail('pages').getAttribute('aria-pressed'), 'true', 'with the
 
 step('Preview chosen while a post is written, then the SEO view opened before it saves: the mode goes back to Edit');
 await rail('posts').click();
-await win.locator('.post-row .post-open', { hasText: 'Spring open studio' }).click();
+await win.locator('.post-row', { hasText: 'Spring open studio' }).click({ position: { x: 48, y: 12 } });
 await eventually(async () => assert.equal(await win.locator('.post-writer-holder').isVisible(), true, 'the writer shows the post'));
 const modeButton = (name) => win.locator('.toolbar [aria-label="Mode"]').getByRole('button', { name, exact: true });
 // Left alone, Preview from the toolbar previews the post once the writer has saved it.
@@ -816,7 +816,7 @@ await eventually(async () => assert.equal((await entryNow('en_winter')).seo?.tit
 assert.equal((await entryNow('en_spring')).seo.title, 'Glaze weekend at Riverside', 'never to the post the writer holds');
 await lastStep('Change post browser title');
 await rail('posts').click();
-await win.locator('.post-row .post-open', { hasText: 'Winter hours' }).click();
+await win.locator('.post-row', { hasText: 'Winter hours' }).click({ position: { x: 48, y: 12 } });
 await eventually(async () => assert.equal(await writerHolder.locator('.post-title-input').inputValue(), 'Winter hours', 'the writer holds Winter'));
 const writerSeo = writerHolder.locator('.post-seo');
 await writerSeo.locator('.section-head').first().click();

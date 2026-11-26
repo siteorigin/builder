@@ -23,6 +23,11 @@ const collectionFile = () => JSON.parse(readFileSync(join(dir, 'siteorigin/colle
 const entryFile = (id) => JSON.parse(readFileSync(join(dir, 'siteorigin/collections/posts/entries', `${id}.json`), 'utf8'));
 const categories = () => collectionFile().taxonomies.categories.terms;
 const titles = () => win.locator('.posts-list .post-title').allInnerTexts();
+/** Categories and tags, from the Posts options menu. */
+const openTerms = async () => {
+  await win.getByRole('button', { name: 'Posts options' }).click();
+  await win.getByRole('menuitem', { name: /^Categories and tags/ }).click();
+};
 
 step('three posts: two published, one a draft');
 await apply(
@@ -38,7 +43,7 @@ await win.locator('.rail [aria-label="Content"]').click();
 await eventually(async () => assert.deepEqual(await titles(), ['Studio plans', 'New kiln', 'Glaze night'], 'the list shows every post, newest first'));
 
 step('categories and tags added in the manager');
-await win.getByRole('button', { name: 'Categories and tags' }).click();
+await openTerms();
 const manager = win.getByRole('dialog', { name: 'Categories and tags' });
 await manager.waitFor();
 for (const name of ['Studio news', 'Craft']) {
@@ -56,7 +61,7 @@ assert.match(await manager.locator('.term-row[data-term="studio-news"] .term-met
 await manager.getByRole('button', { name: 'Done' }).click();
 
 step('a post filed under a category and two tags in the writer, one tag added as it is typed');
-await win.locator('.post-row[data-post="en_kiln"] .post-open').click();
+await win.locator('.post-row[data-post="en_kiln"] ').click({ position: { x: 48, y: 12 } });
 await win.locator('.post-body').waitFor();
 await win.locator('.post-details:not(.post-seo) .section-head').click();
 const writerCategories = win.locator('.post-terms[data-taxonomy="categories"]');
@@ -76,9 +81,9 @@ await eventually(() => assert.deepEqual(entryFile('en_kiln').terms, { categories
 await writerTags.getByLabel('Glaze').check();
 await eventually(() => assert.deepEqual(entryFile('en_kiln').terms.tags, ['firing', 'glaze']));
 // Opened again, the post shows what it is filed under.
-await win.locator('.post-row[data-post="en_glaze"] .post-open').click();
+await win.locator('.post-row[data-post="en_glaze"] ').click({ position: { x: 48, y: 12 } });
 await eventually(async () => assert.equal(await win.locator('.post-terms[data-taxonomy="categories"]').getByLabel('Studio news').isChecked(), false, 'another post is not filed under it'));
-await win.locator('.post-row[data-post="en_kiln"] .post-open').click();
+await win.locator('.post-row[data-post="en_kiln"] ').click({ position: { x: 48, y: 12 } });
 await eventually(async () => assert.equal(await win.locator('.post-terms[data-taxonomy="categories"]').getByLabel('Studio news').isChecked(), true, 'the post shows its category when opened again'));
 
 step('the draft filed under the same category, the other post under another, and a list on Home that chooses the category by name');
@@ -106,7 +111,7 @@ await win.getByRole('radio', { name: 'All 3' }).click();
 await win.getByLabel('Find a post by title, address, author or excerpt').fill('kiln');
 await eventually(async () => assert.deepEqual(await titles(), ['New kiln'], 'its words narrow it further'));
 await win.getByLabel('Find a post by title, address, author or excerpt').fill('glaze');
-await eventually(async () => assert.match(await win.locator('.posts-panel .posts-note').innerText(), /No post matches these filters\./, 'a post outside the category is not found'));
+await eventually(async () => assert.match(await win.locator('.posts-panel .posts-none').innerText(), /No post matches these filters\./, 'a post outside the category is not found'));
 await win.getByLabel('Find a post by title, address, author or excerpt').fill('');
 await eventually(async () => assert.deepEqual(await titles(), ['Studio plans', 'New kiln']));
 await byCategory.selectOption({ label: 'Craft' });
@@ -118,7 +123,7 @@ await eventually(async () => assert.deepEqual(await titles(), ['Studio plans', '
 await win.screenshot({ path: join(SHOTS, 'post-taxonomy-filtered.png') });
 
 step('the category renamed: its address, its posts and the list on Home follow it in one step');
-await win.getByRole('button', { name: 'Categories and tags' }).click();
+await openTerms();
 await manager.waitFor();
 await manager.getByRole('button', { name: 'Rename “Studio news”' }).click();
 await manager.getByLabel('New name for “Studio news”').fill('Workshop news');
@@ -157,7 +162,7 @@ await eventually(() => {
 assert.equal((await snapshot()).state.pages[home].nodes[gridId].props.category, 'workshop-news');
 
 step('deleting a category says how many posts it is on; one a list of posts chooses is refused');
-await win.getByRole('button', { name: 'Categories and tags' }).click();
+await openTerms();
 await manager.waitFor();
 await manager.getByRole('button', { name: 'Delete “Workshop news”' }).click();
 await eventually(async () => assert.match(await win.locator('.toast').last().innerText(), /“Post grid” in Home lists posts by “Workshop news”\. Choose something else there before deleting it\./, 'the list choosing it is named'));
