@@ -22,6 +22,8 @@ const config = {
 const $ = (/** @type {string} */ id) => /** @type {HTMLElement} */ (document.getElementById(id));
 const ui = {
   bar: $('bar'),
+  barMeta: /** @type {HTMLElement} */ (root.querySelector('.bar-meta')),
+  barControls: /** @type {HTMLElement} */ (root.querySelector('.bar-controls')),
   title: $('site-title'),
   connection: $('connection'),
   role: $('role'),
@@ -52,6 +54,10 @@ const ui = {
 const RECONNECT_FOR_MS = 150_000;
 /** How long a reload waits for the bridge to answer before the frame is pointed at its page again instead. */
 const RELOAD_FALLBACK_MS = 1500;
+/** How long a ticket's redemption may take before it is given up; a ticket is good for a minute. */
+const REDEEM_TIMEOUT_MS = 15_000;
+/** What the preview frame may do: run the site as its own origin, but never navigate the viewer away. */
+const FRAME_SANDBOX = 'allow-scripts allow-same-origin allow-forms allow-popups allow-popups-to-escape-sandbox';
 
 // ---------------------------------------------------------------------------
 // State
@@ -95,6 +101,13 @@ let framePath = '/';
 /** @type {string | null} */
 let queuedTicket = null;
 let redeeming = false;
+/** @type {AbortController | null} */
+let redemption = null;
+/** Whether the frame may be behind the host: it was kept while the socket was down, when reloads could be missed. */
+let stale = false;
+/** Whether the guest was let in on this page, and the site's name then, so a final screen keeps the bar saying Ended. */
+let wasAdmitted = false;
+let siteTitle = '';
 
 /** @type {{ previewPath: string | null; viewportWidth: number } | null} */
 let hostPage = null;
@@ -204,10 +217,13 @@ function onFrame(frame) {
   switch (frame.type) {
     case 'guest:status':
       return onStatus(frame);
-    case 'host:availability':
+    case 'host:availability': {
+      const back = !hostConnected && frame.connected === true;
       hostConnected = frame.connected === true;
-      if (hostConnected) applyFollow();
+      // Whatever the frame loaded while the host was away failed; show the host's work again now it is back.
+      if (back) refreshFrame();
       return render();
+    }
     case 'room:state':
       if (typeof frame.expiresAt === 'number') sessionExpiresAt = frame.expiresAt;
       anchorClock(frame.now);
@@ -237,13 +253,17 @@ function onStatus(frame) {
       return setPhase('pending');
     case 'admitted': {
       settle();
+      const before = guest?.role;
       guest = { role: frame.role === 'collaborator' ? 'collaborator' : 'viewer', projectName: String(frame.projectName ?? ''), guestExpiresAt: typeof frame.guestExpiresAt === 'number' ? frame.guestExpiresAt : null };
       sessionExpiresAt = Number(frame.sessionExpiresAt) || 0;
       anchorClock(frame.now);
-      const first = phase !== 'admitted';
+      wasAdmitted = true;
+      siteTitle = guest.projectName;
       if (typeof frame.previewTicket === 'string') redeem(frame.previewTicket);
       setPhase('admitted');
-      if (first && guest.role === 'collaborator') showHandoff();
+      // A guest who becomes a collaborator is told how to edit; an open handoff always says what the role is now.
+      if (guest.role === 'collaborator' && before !== 'collaborator') showHandoff();
+      else if (!ui.handoff.hidden) showHandoff();
       return;
     }
     case 'declined':
@@ -298,7 +318,8 @@ function onClose(code) {
   // A relay that answered with no room at all (or a network that dropped us before we were given a place): the
   // guest can try again, but is never put back in line twice without saying so.
   if (!place?.resumeToken) return finish('unavailable', true);
-  if (code === CLOSE_CODES.ENDED && phase !== 'pending' && phase !== 'admitted') return finish('unavailable', true);
+  // The relay closes with ENDED only when the room it held this place in is gone, status or not.
+  if (code === CLOSE_CODES.ENDED) return finish('ended');
   scheduleReconnect();
 }
 
@@ -311,6 +332,8 @@ function markLost() {
   grant++;
   previewReady = false;
   queuedTicket = null;
+  redemption?.abort();
+  stale = true;
   clearTimeout(reloadFallback);
 }
 
@@ -331,6 +354,8 @@ function scheduleReconnect() {
 function endAccess() {
   grant++;
   queuedTicket = null;
+  redemption?.abort();
+  stale = false;
   previewReady = false;
   previewFailed = false;
   reconnecting = false;
@@ -376,6 +401,9 @@ async function drainTickets() {
     const ticket = queuedTicket;
     queuedTicket = null;
     const at = grant;
+    const controller = new AbortController();
+    redemption = controller;
+    const timeout = setTimeout(() => controller.abort(), REDEEM_TIMEOUT_MS);
     let ok = false;
     try {
       const response = await fetch(`${config.previewOrigin}${PREVIEW_ADMISSION_PATH}`, {
@@ -384,19 +412,28 @@ async function drainTickets() {
         credentials: 'include',
         cache: 'no-store',
         headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({ ticket })
+        body: JSON.stringify({ ticket }),
+        signal: controller.signal
       });
       ok = response.status === 204;
     } catch {
       ok = false;
+    } finally {
+      clearTimeout(timeout);
+      if (redemption === controller) redemption = null;
     }
     // The guest may have been removed, or its socket dropped, while the cookie was on its way: then it shows nothing.
     if (at !== grant || phase !== 'admitted') continue;
+    // A newer grant is on its way, and this cookie is already out of date: only the newest one opens the frame.
+    if (queuedTicket) continue;
     if (ok) {
       previewReady = true;
       previewFailed = false;
-      mountFrame();
-    } else if (!queuedTicket) {
+      if (!iframe) mountFrame();
+      else if (stale) refreshFrame();
+      else applyFollow();
+      stale = false;
+    } else {
       previewFailed = true;
     }
     render();
@@ -411,6 +448,7 @@ function mountFrame() {
   iframe.id = 'preview';
   iframe.title = guest?.projectName ? `Live preview of ${guest.projectName}` : 'Live preview';
   iframe.referrerPolicy = 'no-referrer';
+  iframe.setAttribute('sandbox', FRAME_SANDBOX);
   framePath = start;
   iframe.src = `${config.previewOrigin}${start}`;
   ui.frame.replaceChildren(iframe);
@@ -429,6 +467,13 @@ function navigate(path) {
   if (!iframe || !isFramePath(path)) return;
   framePath = path;
   iframe.src = `${config.previewOrigin}${path}`;
+}
+
+/** Load the frame's page again, or the host's when following it: after anything that may have left it behind. */
+function refreshFrame() {
+  if (!iframe || !previewReady) return;
+  layout();
+  navigate(follow && hostPage?.previewPath ? hostPage.previewPath : framePath);
 }
 
 /** Show the host's latest work: the bridge reloads the page the guest is on, where it is scrolled to. */
@@ -496,15 +541,27 @@ function formatLeft(ms) {
   return `${Math.floor(minutes / 60)}h ${String(minutes % 60).padStart(2, '0')}m`;
 }
 
-function renderTime() {
-  if (!guest || !sessionExpiresAt) {
-    ui.time.hidden = true;
-    return;
-  }
+/** When the guest's access ends, and whether by its own grant: the sooner of its own deadline and the session's. */
+function accessEnd() {
+  if (!guest || !sessionExpiresAt) return null;
   const own = guest.guestExpiresAt !== null && guest.guestExpiresAt < sessionExpiresAt;
-  const left = (own ? /** @type {number} */ (guest.guestExpiresAt) : sessionExpiresAt) - relayNow();
-  ui.time.textContent = own ? `Your access ends in ${formatLeft(left)}` : `Ends in ${formatLeft(left)}`;
-  ui.time.hidden = false;
+  return { own, at: own ? /** @type {number} */ (guest.guestExpiresAt) : sessionExpiresAt };
+}
+
+/**
+ * Each second while admitted: the countdown, and the end itself. The relay says when access ends, but a guest whose
+ * socket is down cannot hear it, so the frame goes at the deadline on the relay's clock whether or not it is told.
+ */
+function tick() {
+  const end = accessEnd();
+  if (end && clock.at > 0 && relayNow() >= end.at) return finish(end.own ? 'expired-guest' : 'expired-session');
+  renderTime();
+}
+
+function renderTime() {
+  const end = accessEnd();
+  ui.time.hidden = !end;
+  if (end) ui.time.textContent = `${end.own ? 'Your access ends in' : 'Ends in'} ${formatLeft(end.at - relayNow())}`;
 }
 
 // ---------------------------------------------------------------------------
@@ -534,17 +591,26 @@ const SCREENS = {
 function setPhase(next) {
   phase = next;
   root.dataset.phase = next;
-  if (next === 'admitted' && !ticker) ticker = setInterval(renderTime, 1000);
+  if (next === 'admitted' && !ticker) ticker = setInterval(tick, 1000);
   render();
 }
 
 function render() {
   const inRoom = phase === 'admitted';
-  ui.bar.hidden = !inRoom;
+  // A guest who was watching keeps the bar, saying the session is over, above the screen that says why.
+  const over = !inRoom && wasAdmitted && isFinal(phase);
+  ui.bar.hidden = !inRoom && !over;
+  ui.barMeta.hidden = over;
+  ui.barControls.hidden = over;
   ui.stage.hidden = !inRoom;
   ui.screen.hidden = inRoom;
   if (inRoom) renderRoom();
   else renderScreen();
+  if (over) {
+    ui.title.textContent = siteTitle;
+    ui.connection.dataset.state = 'ended';
+    ui.connection.textContent = 'Ended';
+  }
 }
 
 function renderScreen() {
@@ -615,6 +681,7 @@ ui.form.addEventListener('submit', (event) => {
     return;
   }
   ui.nameError.hidden = true;
+  wasAdmitted = false;
   place = { displayName: name };
   savePlace();
   connect();
@@ -670,6 +737,9 @@ window.addEventListener('pagehide', (event) => {
   closeSocket();
   clearTimeout(reconnectTimer);
   markLost();
+  // A page brought back from the cache shows nothing of the site until the relay has let the guest back in.
+  unmountFrame();
+  render();
 });
 window.addEventListener('pageshow', (event) => {
   if (event.persisted && !isFinal(phase) && place?.resumeToken) connect();

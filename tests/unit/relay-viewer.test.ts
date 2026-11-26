@@ -28,6 +28,7 @@ describe('the invite link’s page', () => {
     expect(html).toContain(`data-preview-origin="${preview}"`);
     expect(html).toContain(`data-invite-link="${ORIGIN}/s/${ROOM}"`);
     expect(html).toContain(`data-name-max="${DISPLAY_NAME_MAX}"`);
+    expect(html).toContain('data-protocol-version="1"');
     expect(html).toContain('<form id="join"');
     // Nothing of the site is in the page until the guest is let in: the frame is made by the script only then.
     expect(html).not.toContain('<iframe');
@@ -51,17 +52,12 @@ describe('the invite link’s page', () => {
     expect((await relay.fetch(`/s/${ROOM}`, { method: 'POST' })).status).toBe(405);
   });
 
-  it('uses wss:// and https:// on an https relay', async () => {
-    // Cloudflare says so in X-Forwarded-Proto; locally the simulator is reached over plain HTTP.
-    const html = await (await relay.fetch(`/s/${ROOM}`, { headers: { 'x-forwarded-proto': 'https' } })).text();
-    expect(html).toContain(`data-socket-url="wss://relay.test/s/${ROOM}/ws"`);
-    expect(html).toContain(`data-preview-origin="${(await roomPreviewOrigin(ORIGIN, ROOM)).replace(/^http:/, 'https:')}"`);
-  });
-
   it('says how to run the relay when its host cannot give rooms their own preview origins', async () => {
     const page = await relay.fetch(`http://127.0.0.1/s/${ROOM}`);
     expect(page.status).toBe(503);
     expect(await page.text()).toContain('relay.localhost');
+    // A host of one label has no subdomains of the same site either.
+    expect((await relay.fetch(`http://relay/s/${ROOM}`)).status).toBe(503);
   });
 });
 
@@ -104,12 +100,16 @@ describe('the viewer’s files', () => {
       '😀'.repeat(40),
       '😀'.repeat(41),
       '---',
+      ...[...'\u115f\u1160\u200b\u2060\u2800\u3164\ufeff\uffa0\u061c\u200e\u200f\u202a\u202b\u202c\u202d\u2066\u2067\u2068\u2069\u0000\u001f\u007f\u0085'].map((c) => `Ann${c}Lee`),
       'Zoë',
       'محمد',
       42,
       null
     ];
-    for (const name of names) expect(viewerShared.normalizeDisplayName(name, DISPLAY_NAME_MAX), JSON.stringify(name)).toBe(normalizeDisplayName(name));
+    for (const name of names) {
+      expect(viewerShared.normalizeDisplayName(name, DISPLAY_NAME_MAX), JSON.stringify(name)).toBe(normalizeDisplayName(name));
+      expect(viewerShared.normalizeDisplayName(name, 5), JSON.stringify(name)).toBe(normalizeDisplayName(name, 5));
+    }
   });
 });
 
@@ -118,32 +118,44 @@ describe('the reload bridge in the preview', () => {
     const room = await openRoom(relay);
     const ann = await admittedGuest(relay, room);
     // Over a raw connection, as a browser sends it: Node's fetch overwrites Sec-Fetch-Mode with its own.
-    const ask = async (path: string, dest: string | null, response: Parameters<typeof answerPreview>[2]) => {
+    const ask = async (path: string, dest: string | null, response: Parameters<typeof answerPreview>[2], extra: Record<string, string> = {}) => {
       const metadata = dest === 'iframe' ? { 'sec-fetch-dest': 'iframe', 'sec-fetch-site': 'same-site', 'sec-fetch-mode': 'navigate' } : dest ? { 'sec-fetch-dest': dest, 'sec-fetch-site': 'none', 'sec-fetch-mode': 'navigate' } : {};
-      const pending = relay.http(`${room.previewOrigin}${path}`, { headers: { cookie: ann.cookie, ...metadata } });
+      const pending = relay.http(`${room.previewOrigin}${path}`, { headers: { cookie: ann.cookie, ...metadata, ...extra } });
       const request = await room.host.next('preview:request');
       answerPreview(room.host, request.requestId, response);
       const answer = await pending;
-      return { answer, body: await answer.text() };
+      return { answer, body: await answer.text(), request };
     };
+    const tag = `<script src="${room.previewOrigin}/__siteorigin/live.js"></script>`;
     const page = new TextEncoder().encode('<!doctype html><html><head><title>Home</title></head><body><h1>Hello</h1></body></html>');
-    const framed = await ask('/', 'iframe', { headers: [['content-type', 'text/html; charset=utf-8'], ['content-length', String(page.length)], ['etag', '"v1"']], body: page });
+    const framed = await ask('/', 'iframe', { headers: [['content-type', 'text/html; charset=utf-8'], ['content-length', String(page.length)], ['etag', '"v1"'], ['last-modified', 'Wed, 25 Nov 2026 09:00:00 GMT'], ['accept-ranges', 'bytes']], body: page }, { 'if-none-match': '"v0"', 'if-modified-since': 'Wed, 25 Nov 2026 08:00:00 GMT', range: 'bytes=0-10', accept: 'text/html' });
     expect(framed.answer.status).toBe(200);
-    expect(framed.body).toBe('<!doctype html><html><head><script src="/__siteorigin/live.js"></script><title>Home</title></head><body><h1>Hello</h1></body></html>');
+    expect(framed.body).toBe(`<!doctype html><html><head>${tag}<title>Home</title></head><body><h1>Hello</h1></body></html>`);
+    // A framed page is always asked for whole, so it always comes back with the bridge in it.
+    expect(Object.fromEntries(framed.request.headers)).toEqual({ accept: 'text/html' });
     // The host's validators and length describe its own bytes, not these.
-    expect(framed.answer.headers.get('etag')).toBeNull();
-    expect(framed.answer.headers.get('content-length')).toBeNull();
+    for (const name of ['etag', 'content-length', 'last-modified', 'accept-ranges']) expect(framed.answer.headers.get(name), name).toBeNull();
+    // The same page asked for otherwise keeps its validators, and its conditional request reaches the host.
+    const plain = await ask('/', null, { headers: [['content-type', 'text/html'], ['etag', '"v1"']], body: page }, { 'if-none-match': '"v0"' });
+    expect(plain.answer.headers.get('etag')).toBe('"v1"');
+    expect(Object.fromEntries(plain.request.headers)).toMatchObject({ 'if-none-match': '"v0"' });
 
     const bodyOnly = await ask('/body/', 'iframe', { body: new TextEncoder().encode('<body><p>No head</p></body>') });
-    expect(bodyOnly.body).toBe('<body><script src="/__siteorigin/live.js"></script><p>No head</p></body>');
+    expect(bodyOnly.body).toBe(`<body>${tag}<p>No head</p></body>`);
     const bare = await ask('/bare/', 'iframe', { body: new TextEncoder().encode('<p>Neither</p>') });
-    expect(bare.body).toBe('<p>Neither</p><script src="/__siteorigin/live.js"></script>');
+    expect(bare.body).toBe(`<p>Neither</p>${tag}`);
+    // An error page is a page the guest can be on when the host fixes it.
+    expect((await ask('/missing/', 'iframe', { status: 404, body: page })).body).toContain(tag);
 
     // Not in the frame, not HTML, or not a whole page: passed on as the host sent it.
     expect((await ask('/', 'document', { body: page })).body).not.toContain('live.js');
     expect((await ask('/', null, { body: page })).body).not.toContain('live.js');
     expect((await ask('/style.css', 'iframe', { headers: [['content-type', 'text/css']], body: new TextEncoder().encode('<head>') })).body).toBe('<head>');
-    expect((await ask('/missing/', 'iframe', { status: 404, body: page })).body).not.toContain('live.js');
+    const utf16 = new Uint8Array([0x3c, 0, 0x70, 0, 0x3e, 0]);
+    // A page in an encoding the rewriter cannot read passes as the host sent it.
+    const wide = await ask('/wide/', 'iframe', { headers: [['content-type', 'text/html; charset=utf-16le']], body: utf16 });
+    expect(wide.answer.status).toBe(200);
+    expect(wide.body).toBe(new TextDecoder().decode(utf16));
 
     const bridge = await relay.fetch(`${room.previewOrigin}/__siteorigin/live.js`);
     expect(bridge.status).toBe(200);
@@ -200,17 +212,20 @@ describe('what guests are told about the host', () => {
     const back = await relay.socket(`/s/${room.roomId}/ws`);
     back.send('guest-to-relay', { type: 'guest:join', version: 1, displayName: 'Ann', resumeToken: ann.resumeToken });
     expect((await back.next('guest:status')).status).toBe('admitted');
+    expect(await back.next('host:availability')).toEqual({ type: 'host:availability', connected: true });
     expect(await back.next('presence:changed')).toEqual({ type: 'presence:changed', participant: { kind: 'host' }, presence: { pageId: 'pg_home', viewportWidth: 390, selection: null, previewPath: '/' } });
 
-    // A host that has come back has said nothing yet about where it is.
+    // A host that reconnects is still where it was until it says otherwise.
     room.host.close();
-    await back.next('host:availability');
+    expect(await back.next('host:availability')).toEqual({ type: 'host:availability', connected: false });
     const { host } = await reconnectHost(relay, room.roomId, room.keys);
     const bob = await joinGuest(relay, room.roomId, 'Bob');
     await host.next('room:roster');
     await admitGuest(host, bob);
-    await wait(100);
-    expect(bob.guest.has('presence:changed')).toBe(false);
+    expect(await bob.guest.next('presence:changed')).toMatchObject({ presence: { pageId: 'pg_home', previewPath: '/' } });
+    // A selection alone does not change the page every copy of the room keeps.
+    host.send('host-to-relay', { type: 'presence:update', presence: { pageId: 'pg_home', viewportWidth: 390, selection, previewPath: '/' } });
+    expect((await bob.guest.next('presence:changed')).presence.selection).toEqual(selection);
     host.close();
   });
 });

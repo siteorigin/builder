@@ -161,6 +161,8 @@ describe.skipIf(!browserInstalled)('the guest’s viewer', { timeout: 30_000 }, 
       const guestId = await ask(s);
       let frame = await admit(s, guestId);
       expect(await frame.textContent('h1')).toBe('Home');
+      // The site may not navigate the viewer away from its own page.
+      expect(await s.tab.getAttribute('iframe', 'sandbox')).not.toContain('allow-top-navigation');
       expect(await s.tab.textContent('#site-title')).toBe('Acme Bakery');
       expect(await s.tab.textContent('#role')).toBe('Viewer');
       expect(await s.tab.textContent('#time')).toMatch(/^Ends in (1h 59m|2h 00m)$/);
@@ -216,6 +218,8 @@ describe.skipIf(!browserInstalled)('the guest’s viewer', { timeout: 30_000 }, 
       await s.tab.click('[data-viewport="tablet"]');
       await (await preview(s)).waitForFunction(() => window.innerWidth === 834);
       expect(await s.tab.getAttribute('[data-viewport="tablet"]', 'aria-pressed')).toBe('true');
+      await s.tab.click('[data-viewport="desktop"]');
+      await (await preview(s)).waitForFunction(() => window.innerWidth === 1280);
 
       // Following again goes straight to where the host is.
       await s.tab.check('#follow');
@@ -251,25 +255,38 @@ describe.skipIf(!browserInstalled)('the guest’s viewer', { timeout: 30_000 }, 
   it('never shows the site when the guest is removed while its cookie is on the way', async () => {
     const s = await scene();
     try {
+      // Count every frame the page ever makes, not only the ones left at the end.
+      await s.tab.evaluate(() => {
+        const w = window as unknown as { framesMade: number };
+        w.framesMade = 0;
+        new MutationObserver((records) => {
+          for (const record of records) for (const node of record.addedNodes) if (node.nodeName === 'IFRAME') w.framesMade++;
+        }).observe(document.body, { childList: true, subtree: true });
+      });
+      // The relay redeems the ticket and sets the cookie; its answer is held back from the page until after the kick.
       let release!: () => void;
       const gate = new Promise<void>((resolve) => (release = resolve));
-      let held = false;
+      let redeemed: number | null = null;
+      let delivered = false;
       await s.tab.route(`${s.previewOrigin}/__siteorigin/admission`, async (route) => {
-        if (route.request().method() === 'POST') {
-          held = true;
-          await gate;
-        }
-        await route.continue();
+        if (route.request().method() !== 'POST') return route.continue();
+        const response = await route.fetch();
+        redeemed = response.status();
+        await gate;
+        await route.fulfill({ response });
+        delivered = true;
       });
       const guestId = await ask(s);
       s.host.send('host-to-relay', { type: 'guest:admit', guestId, role: 'viewer', guestExpiresAt: null });
-      for (let i = 0; i < 200 && !held; i++) await wait(25);
-      expect(held).toBe(true);
+      for (let i = 0; i < 200 && redeemed === null; i++) await wait(25);
+      expect(redeemed).toBe(204);
       s.host.send('host-to-relay', { type: 'guest:kick', guestId });
       await s.tab.waitForSelector('[data-phase="kicked"]');
       release();
-      await wait(500);
-      expect(await frameCount(s)).toBe(0);
+      for (let i = 0; i < 200 && !delivered; i++) await wait(25);
+      expect(delivered).toBe(true);
+      await wait(300);
+      expect(await s.tab.evaluate(() => (window as unknown as { framesMade: number }).framesMade)).toBe(0);
       expect(await s.tab.getAttribute('#live-session', 'data-phase')).toBe('kicked');
     } finally {
       await s.done();
@@ -285,6 +302,9 @@ describe.skipIf(!browserInstalled)('the guest’s viewer', { timeout: 30_000 }, 
       await s.tab.waitForSelector('[data-phase="ended"]');
       expect(await frameCount(s)).toBe(0);
       expect(await s.tab.textContent('#screen-title')).toBe('The host ended the session');
+      // The bar stays, saying so, with the live controls gone.
+      expect(await s.tab.textContent('#connection')).toBe('Ended');
+      expect(await s.tab.isVisible('#follow')).toBe(false);
     } finally {
       await s.done();
     }
@@ -320,8 +340,13 @@ describe.skipIf(!browserInstalled)('the guest’s viewer', { timeout: 30_000 }, 
       expect(await frameCount(s)).toBe(1);
       await bobTab.waitForFunction(() => document.querySelector('#screen-title')?.textContent === 'The host is reconnecting');
 
+      const asked = s.server.asked.length;
       s.host = (await reconnectHost(relay, s.room.roomId, s.room.keys)).host;
       await s.tab.waitForSelector('#connection[data-state="live"]');
+      // Whatever the frame loaded while the host was away is loaded again.
+      for (let i = 0; i < 100 && s.server.asked.length === asked; i++) await wait(25);
+      expect(s.server.asked.slice(asked)).toContain('/');
+      expect(await heading(s)).toBe('Home');
       await bobTab.waitForFunction(() => document.querySelector('#screen-title')?.textContent === 'Waiting for the host');
       await bob.close();
     } finally {

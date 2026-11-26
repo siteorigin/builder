@@ -22,6 +22,13 @@ export interface RoomSnapshot {
   hostConnectionId: string | null;
   /** While the host is away: when the room closes unless it proves itself again. */
   hostGraceUntil: number | null;
+  /**
+   * The page the host's latest presence was on, without its selection, so a guest let in or back later can follow the
+   * host before it next moves; null until the host has said. It changes only when the host goes to another page or
+   * width, never with each selection, and it is bounded (an ID, a width and one preview path of at most 2 KiB of
+   * ASCII), so every socket's copy of the room stays inside its attachment limit. A host that reconnects keeps it.
+   */
+  hostPage: HostPage | null;
   /** In the order they asked to join. */
   guests: GuestRecord[];
 }
@@ -80,12 +87,6 @@ export interface SocketAttachment {
   nonce?: string;
   /** Whose socket a `guest` socket is. */
   guestId?: string;
-  /**
-   * On the host's socket: the page its latest presence was on, without the selection, so a guest let in or back
-   * later can follow the host before it moves. Kept on this socket alone, and bounded (an ID, a width and one preview
-   * path), so the attachment stays inside its limit; a new host connection starts without one.
-   */
-  hostPage?: HostPage;
   /** The room's latest copy (see RoomSnapshot); null once retired or before the room exists. */
   room: RoomSnapshot | null;
 }

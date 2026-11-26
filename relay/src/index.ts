@@ -42,7 +42,7 @@ export default {
     if (!match || !ROOM_ID_RE.test(match[1])) return textResponse(404, 'Not found.');
     const roomId = match[1];
     const rest = match[2] ?? '';
-    if (rest === '' || rest === '/') return guestPage(request, origin ?? (isHttps(request, url) ? url.origin.replace(/^http:/, 'https:') : url.origin), roomId);
+    if (rest === '' || rest === '/') return guestPage(request, origin ?? url.origin, roomId);
     if (rest === '/ws') return connect(request, env, roomId);
     return textResponse(404, 'Not found.');
   }
@@ -185,17 +185,24 @@ async function preview(request: Request, env: Env, url: URL, host: PreviewHost):
   const values = previewCookieValues(request.headers.get('cookie'), secure);
   if (values.length === 0) return textResponse(401, 'Join this live session to see its preview.');
   const name = previewCookieName(secure);
+  // A page for the viewer's frame is always asked for whole, so what comes back is a page the bridge can be added to:
+  // never a 304 that would bring back a copy the browser kept without it, nor part of one.
+  const framed = request.headers.get('sec-fetch-dest') === 'iframe';
   const headers: Record<string, string> = { cookie: values.map((value) => `${name}=${value}`).join('; '), [INTERNAL_HEADERS.method]: request.method, [INTERNAL_HEADERS.target]: target, [INTERNAL_HEADERS.secure]: secure ? '1' : '0' };
   let passed = 0;
   for (const [headerName, value] of request.headers) {
+    if (framed && FRAMED_DROPPED_HEADERS.has(headerName)) continue;
     if (passed < MAX_PREVIEW_HEADERS && isPreviewHeaderName(headerName, 'request') && isPreviewHeaderValue(value)) {
       headers[headerName] = value;
       passed++;
     }
   }
   const response = await env.ROOMS.get(env.ROOMS.idFromName(host.label)).fetch(roomRequest('/preview', null, { headers, signal: request.signal }));
-  return request.headers.get('sec-fetch-dest') === 'iframe' ? withReloadBridge(request, response) : response;
+  return framed ? withReloadBridge(request, url, response) : response;
 }
+
+/** The request headers a page for the viewer's frame goes without (see preview()). */
+const FRAMED_DROPPED_HEADERS = new Set(['if-none-match', 'if-modified-since', 'if-range', 'range']);
 
 /**
  * Where, on a room's preview origin, the relay serves the reload bridge. A first segment starting with `__` is never
@@ -206,15 +213,19 @@ const PREVIEW_BRIDGE_PATH = '/__siteorigin/live.js';
 /**
  * A page of the preview loaded in the viewer's frame, with the relay's reload bridge (viewer/preview-bridge.js) added
  * to it: when the host's project changes, the viewer asks the bridge to reload the page the guest is on, where it is
- * scrolled to, which the viewer cannot do itself across origins. Only whole, successful HTML pages are changed;
- * anything else passes as it is. The page's own validators and length describe the host's bytes, not these, so they
- * go: the browser then fetches the page whole each time, which a page in a live session wants anyway.
+ * scrolled to, which the viewer cannot do itself across origins. Every HTML page with a body is changed, an error page
+ * too (the guest may be on one when the host fixes it); anything else passes as it is, and so does a page in an
+ * encoding other than UTF-8, which the rewriter cannot read. The page's own validators and length describe the host's
+ * bytes, not these, so they go. The bridge's address is absolute, so a `<base>` the page sets cannot send it elsewhere.
  */
-function withReloadBridge(request: Request, response: Response): Response {
-  if (request.method !== 'GET' || response.status !== 200 || !/^text\/html\s*(;|$)/i.test(response.headers.get('content-type') ?? '')) return response;
+function withReloadBridge(request: Request, url: URL, response: Response): Response {
+  const type = response.headers.get('content-type') ?? '';
+  const charset = /;\s*charset\s*=\s*"?([^";\s]+)/i.exec(type)?.[1].toLowerCase();
+  const bodyless = response.status < 200 || response.status === 204 || response.status === 206 || (response.status >= 300 && response.status < 400);
+  if (request.method !== 'GET' || bodyless || !/^text\/html\s*(;|$)/i.test(type) || (charset !== undefined && charset !== 'utf-8' && charset !== 'utf8')) return response;
   const headers = new Headers(response.headers);
   for (const name of ['content-length', 'etag', 'last-modified', 'accept-ranges']) headers.delete(name);
-  const tag = `<script src="${PREVIEW_BRIDGE_PATH}"></script>`;
+  const tag = `<script src="${url.origin}${PREVIEW_BRIDGE_PATH}"></script>`;
   // In the head when the page has one, else at the start of its body, else at its end.
   let added = false;
   const add = {

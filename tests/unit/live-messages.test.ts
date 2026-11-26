@@ -79,6 +79,7 @@ const VALID: { [D in Direction]: FrameOf<D>[] } = {
     { type: 'guest:status', status: 'ended' },
     { type: 'room:state', startedAt: T, expiresAt: T + 2 * HOUR, locked: false, now: T },
     { type: 'host:availability', connected: false },
+    { type: 'host:availability', connected: true },
     { type: 'room:roster', participants: [{ guestId, displayName: 'Sam Lee', status: 'admitted', role: 'viewer', guestExpiresAt: null }] },
     { type: 'preview:reload' },
     { type: 'rpc:response', requestId, method: 'project.snapshot', ok: true, result: null },
@@ -149,6 +150,12 @@ describe('refused frames', () => {
     expect(parseFrame('guest-to-relay', undefined)).toMatchObject({ ok: false, error: { code: 'NOT_TEXT' } });
     expect(refused('guest-to-relay', '{"type":')).toMatchObject({ code: 'INVALID_JSON' });
     for (const v of ['[]', 'null', '42', '"guest:join"']) expect(refused('guest-to-relay', v)).toMatchObject({ code: 'INVALID' });
+  });
+
+  it('give a presence path only as a path within the preview, in its URL-encoded form', () => {
+    for (const previewPath of ['', 'about/', '//other.test/', '/caf\u00e9/', '/a b/', '/a#b', '/__open-in-editor', 42])
+      expect(refused('host-to-relay', { type: 'presence:update', presence: { pageId: null, viewportWidth: 390, selection: null, previewPath } }), String(previewPath)).toMatchObject({ code: 'INVALID', path: 'presence.previewPath' });
+    expect(parseFrame('host-to-relay', json({ type: 'presence:update', presence: { pageId: null, viewportWidth: 390, selection: null, previewPath: '/caf%C3%A9/?tab=1' } })).ok).toBe(true);
   });
 
   it('name a type this direction carries', () => {

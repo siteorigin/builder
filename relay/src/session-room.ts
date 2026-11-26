@@ -213,6 +213,7 @@ export class SessionRoom extends DurableObject<Env> {
       locked: false,
       hostConnectionId: attachment.connectionId,
       hostGraceUntil: null,
+      hostPage: null,
       guests: []
     };
     this.setPhase(ws, attachment, { phase: 'host', deadline: null });
@@ -402,7 +403,11 @@ export class SessionRoom extends DurableObject<Env> {
       }
       case 'presence:update': {
         const { pageId, viewportWidth, previewPath } = frame.presence;
-        this.setPhase(ws, attachment, { hostPage: { pageId, viewportWidth, previewPath } });
+        const page = room.hostPage;
+        if (!page || page.pageId !== pageId || page.viewportWidth !== viewportWidth || page.previewPath !== previewPath) {
+          room.hostPage = { pageId, viewportWidth, previewPath };
+          this.changed();
+        }
         for (const guestWs of this.admittedSockets()) this.send(guestWs, 'relay-to-guest', { type: 'presence:changed', participant: { kind: 'host' }, presence: frame.presence });
         return;
       }
@@ -864,8 +869,7 @@ export class SessionRoom extends DurableObject<Env> {
    * selection is not kept, so it is sent as none; the host's next presence brings it.
    */
   private sendHostPage(guest: AdmittedGuest): void {
-    const host = this.hostSocket();
-    const page = host ? readAttachment(host)?.hostPage : undefined;
+    const page = this.room?.hostPage;
     const ws = guest.connectionId ? this.socket(guest.connectionId) : null;
     if (!page || !ws) return;
     this.send(ws, 'relay-to-guest', { type: 'presence:changed', participant: { kind: 'host' }, presence: { ...page, selection: null } });

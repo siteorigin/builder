@@ -268,16 +268,20 @@ const elementRef = z
   .strict();
 /**
  * What a participant is looking at, replacing whatever it showed before. Null clears a page or a selection.
- * `previewPath` is where that page is in the preview (the path and query on the room's preview origin), so a guest
- * following the host can show the same page; null when the participant is on nothing the preview serves. A guest in
- * the browser cannot read its own preview's address, and sends null.
+ * `previewPath` is where that page is in the preview (the path and query on the room's preview origin, as a URL
+ * serializes them: ASCII, with anything else percent-encoded), so a guest following the host can show the same page
+ * and tell when it already is; null when the participant is on nothing the preview serves. A guest in the browser
+ * cannot read its own preview's address, and sends null.
  */
 const presence = z
   .object({
     pageId: shortId.nullable(),
     viewportWidth: z.number().int().min(MIN_VIEWPORT_WIDTH).max(MAX_VIEWPORT_WIDTH),
     selection: elementRef.nullable(),
-    previewPath: z.string().refine(isPreviewTarget, { message: 'Not a path within the preview.' }).nullable()
+    previewPath: z
+      .string()
+      .refine((path) => /^[\x21-\x7e]+$/.test(path) && isPreviewTarget(path), { message: 'Not a path within the preview, in its URL-encoded form.' })
+      .nullable()
   })
   .strict();
 const presenceUpdate = msg('presence:update', { presence });

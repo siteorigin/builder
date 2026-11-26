@@ -244,6 +244,10 @@ label {
   vertical-align: 1px;
 }
 
+.pill[data-state='ended'] {
+  color: var(--muted);
+}
+
 .pill[data-state='reconnecting'],
 .pill[data-state='connecting'] {
   color: var(--warn);
