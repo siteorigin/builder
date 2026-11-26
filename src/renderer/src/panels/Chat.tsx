@@ -23,52 +23,121 @@ import { answerOnly, canOpen, changeTarget, changeText, checksOf, continueContex
 import { summaryNow, turnState } from '@shared/turns';
 import { chatBusy, composerAction, imageLabels, isPaused, offeredImages, questionHint, shownQuestions, waitingQuestion, type WaitingQuestion } from '../lib/chatQuestions';
 import { isImeComposing } from '../lib/ime';
-import { textBlocks } from '../lib/model-text';
+import { textBlocks, textSpans, type TextBlock, type TextSpan } from '../lib/model-text';
 import { Spinner, useMenu } from '../components/ui';
 import { ImageChips, ImageChoices } from '../components/ChatImages';
 import { ConversationsModal } from './Conversations';
 import { activityHint } from '../lib/conversations';
 import './Chat.css';
 
-/** Minimal, safe inline formatting for model text: **bold**, `code` and [links](…) shown as text. */
-function Inline({ text }: { text: string }) {
-  const parts = text.replace(/\[([^\]]+)\]\([^)]*\)/g, '$1').split(/(\*\*[^*]+\*\*|`[^`]+`)/g);
-  return <>{parts.map((p, i) => (p.startsWith('**') && p.length > 4 ? <strong key={i}>{p.slice(2, -2)}</strong> : p.startsWith('`') && p.length > 2 ? <code key={i}>{p.slice(1, -1)}</code> : p))}</>;
+/** The spans of a line of model text: bold, italic, struck through and code, all as plain React text. */
+function Spans({ spans }: { spans: TextSpan[] }) {
+  return (
+    <>
+      {spans.map((s, i) => {
+        if (typeof s === 'string') return s;
+        if (s.kind === 'code') return <code key={i}>{s.text}</code>;
+        const Tag = s.kind;
+        return (
+          <Tag key={i}>
+            <Spans spans={s.spans} />
+          </Tag>
+        );
+      })}
+    </>
+  );
 }
 
-/**
- * Model text as the reader expects it (textBlocks): paragraphs, lists and a bold lead line. One paragraph stays inline,
- * so a short reply is a plain line of text.
- */
+/** Minimal, safe inline formatting for model text (textSpans): never HTML, and links shown as their words. */
+function Inline({ text }: { text: string }) {
+  return <Spans spans={textSpans(text)} />;
+}
+
+function Block({ block: b }: { block: TextBlock }) {
+  switch (b.kind) {
+    case 'code':
+      return (
+        <pre className="md-code">
+          <code>{b.lines.join('\n')}</code>
+        </pre>
+      );
+    case 'ul':
+    case 'ol': {
+      const List = b.kind;
+      return (
+        <List start={b.kind === 'ol' ? b.start : undefined}>
+          {b.items.map((item, i) => (
+            <li key={i}>
+              <Inline text={item.lines.join('\n')} />
+              {item.blocks.map((inner, j) => (
+                <Block key={j} block={inner} />
+              ))}
+            </li>
+          ))}
+        </List>
+      );
+    }
+    case 'quote':
+      return (
+        <blockquote>
+          {b.blocks.map((inner, i) => (
+            <Block key={i} block={inner} />
+          ))}
+        </blockquote>
+      );
+    case 'table':
+      return (
+        <div className="md-table">
+          <table>
+            <thead>
+              <tr>
+                {b.head.map((cell, i) => (
+                  <th key={i}>
+                    <Inline text={cell} />
+                  </th>
+                ))}
+              </tr>
+            </thead>
+            <tbody>
+              {b.rows.map((row, i) => (
+                <tr key={i}>
+                  {row.map((cell, j) => (
+                    <td key={j}>
+                      <Inline text={cell} />
+                    </td>
+                  ))}
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      );
+    case 'hr':
+      return <hr />;
+    default:
+      return (
+        <p className={b.kind === 'lead' ? 'md-lead' : undefined}>
+          <Inline text={b.lines.join('\n')} />
+        </p>
+      );
+  }
+}
+
+/** Model text as the reader expects it (textBlocks). One paragraph stays inline, so a short reply is a plain line of text. */
 function Md({ text }: { text: string }) {
   const shown = textBlocks(text);
-  if (shown.length <= 1 && (!shown[0] || shown[0].kind === 'p'))
+  const [first] = shown;
+  if (shown.length <= 1 && (!first || first.kind === 'p'))
     return (
       <span className="md">
-        <Inline text={shown[0]?.lines.join('\n') ?? ''} />
+        <Inline text={first?.lines.join('\n') ?? ''} />
       </span>
     );
   return (
     <div className="md">
-      {shown.map((b, i) => {
-        if (b.kind === 'ul' || b.kind === 'ol') {
-          const List = b.kind;
-          return (
-            <List key={i}>
-              {b.lines.map((l, j) => (
-                <li key={j}>
-                  <Inline text={l} />
-                </li>
-              ))}
-            </List>
-          );
-        }
-        return (
-          <p key={i} className={b.kind === 'lead' ? 'md-lead' : undefined}>
-            <Inline text={b.lines.join('\n')} />
-          </p>
-        );
-      })}
+      {shown.map((b, i) => (
+        <Block key={i} block={b} />
+      ))}
     </div>
   );
 }
@@ -119,7 +188,13 @@ function summaryOf(r: NonNullable<ChatMessage['result']>) {
   if (r.ask && r.status === 'cancelled' && /^stopped\.?$/i.test(r.summary.trim())) return 'You stopped this question. It could not change anything.';
   if (r.status === 'cancelled' && /^stopped\.?$/i.test(r.summary.trim())) return r.changes.length ? 'You stopped this request. Its changes were undone.' : 'You stopped this request before it changed anything.';
   // A failed edit that changed nothing says so, unless its own words already do.
-  if (r.status === 'failed' && !r.ask && !r.changes.length && !/restored|unchanged|not changed|no changes|nothing (was|has been) changed/i.test(r.summary)) return `${r.summary.trim()} Nothing on your site was changed.`;
+  if (r.status === 'failed' && !r.ask && !r.changes.length && !/restored|unchanged|not changed|no changes|nothing (was|has been) changed/i.test(r.summary)) {
+    const words = r.summary.trim();
+    const unchanged = 'Nothing on your site was changed.';
+    // Before words that hold a code fence, closed or not, so the code cannot take it in.
+    if (/```|~~~/.test(words)) return `${unchanged}\n\n${words}`;
+    return `${words} ${unchanged}`;
+  }
   return r.summary;
 }
 

@@ -28,6 +28,14 @@ try {
   const apply = (operations) => win.evaluate((ops) => window.builder.project.apply({ operations: ops }, { label: 'Author edit' }), operations);
   const HOURS = 'Tuesday to Saturday, 10am – 4pm';
   const PATH = 'Contact → Contact details → Content → Contact methods → Hours → Value';
+  // Ordinary Markdown a model may answer with (#813), none of which may be read as typed.
+  const CODE = '<script>\n\tlet { hours } = $props();\n</script>\n\n<p class="a-line-long-enough-to-run-past-the-edge-of-the-panel">{hours}</p>';
+  const MARKDOWN = [
+    '```svelte', CODE, '```', '',
+    '| Page | Sections |', '| --- | --- |', '| Contact | *two* |', '',
+    '> quoted _words_ and ~~struck~~ ones', '', '---', '',
+    '7. **`Header`**', '   - logo', '8. Footer'
+  ].join('\n');
 
   step('a business site with its own studio hours, viewed on Home');
   await createProject(win, { name: 'Kloof Light Studio', parentDir: WORK, starter: 'business', sampleImages: false });
@@ -53,7 +61,7 @@ try {
   server.script(
     { ...envelopeReply('read_page', { pageId: contact.id }, 'Reading the Contact page'), delayMs: 3000 },
     envelopeReply('locate_field', { owner, nodeId, prop: 'items', itemId: hours.id, field: 'value' }, 'Finding the field'),
-    envelopeReply('finish', { message: `The hours read “${HOURS}”. Change them at ${PATH}.` })
+    envelopeReply('finish', { message: `The hours read “${HOURS}”. Change them at ${PATH}.\n\n${MARKDOWN}` })
   );
   await message().fill('Read the actual Contact page and tell me the current studio hours exactly as written. Tell me where in the editor I can change those hours myself. Please leave the site unchanged.');
   await message().press('Enter');
@@ -71,6 +79,35 @@ try {
   assert.match(await log().innerText(), new RegExp(HOURS));
   assert.match(await log().locator('.msg-user').last().innerText(), /Question · read only/);
   assert.equal(await log().locator('.locations .location-path').innerText(), PATH);
+
+  step('the Markdown in the answer reads as what it stands for, never as typed');
+  const answer = log().locator('.reply-text').last();
+  assert.equal(await answer.locator('pre > code').textContent(), CODE, 'the code is kept exactly, without its fence or language');
+  const selected = await answer.locator('pre > code').evaluate((el) => {
+    const range = document.createRange();
+    range.selectNodeContents(el);
+    getSelection().removeAllRanges();
+    getSelection().addRange(range);
+    return { text: getSelection().toString(), select: getComputedStyle(el).userSelect, font: getComputedStyle(el).fontFamily };
+  });
+  assert.equal(selected.text, CODE, 'and can be selected whole');
+  assert.equal(selected.select, 'text');
+  assert.match(selected.font, /mono/i);
+  assert.deepEqual(await answer.locator('thead > tr > th').allInnerTexts(), ['Page', 'Sections']);
+  assert.deepEqual(await answer.locator('tbody > tr > td').allInnerTexts(), ['Contact', 'two']);
+  assert.equal(await answer.locator('td em').innerText(), 'two');
+  assert.equal(await answer.locator('blockquote em').innerText(), 'words');
+  assert.equal(await answer.locator('blockquote del').innerText(), 'struck');
+  assert.equal(await answer.locator('blockquote').innerText(), 'quoted words and struck ones');
+  assert.equal(await answer.locator('hr').count(), 1);
+  assert.equal(await answer.locator('ol > li').count(), 2);
+  assert.equal(await answer.locator('ol').getAttribute('start'), '7');
+  assert.equal(await answer.locator('ol > li:first-child > strong > code').innerText(), 'Header');
+  assert.equal(await answer.locator('ol > li:first-child > ul > li').innerText(), 'logo');
+  assert.ok(await answer.locator('pre').evaluate((el) => el.scrollWidth > el.clientWidth), 'the long line runs past its own block');
+  assert.doesNotMatch(await answer.innerText(), /```|svelte|\| ---|~~|> quoted|_words_|\*two\*/);
+  const fits = await log().evaluate((el) => el.scrollWidth <= el.clientWidth);
+  assert.ok(fits, 'long code scrolls in its own block, not the whole panel');
   // The model heard the exact path and value from the app, and was never offered a way to change the site.
   assert.ok(JSON.stringify(posts()[2].body.messages).includes(PATH.replaceAll('→', '\\u2192')) || JSON.stringify(posts()[2].body.messages).includes(PATH), 'locate_field gave the model the path');
   for (const p of posts()) assert.doesNotMatch(JSON.stringify(p.body), /apply_operations|apply_source_patch|upsert_page_with_sections|update_site_brand|update_selected_props|edit_selected_list|style_selected_element|request_wider_scope|inspect_layout|validate_project/);
