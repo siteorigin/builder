@@ -257,7 +257,8 @@ class TreeWatch extends EventEmitter implements FolderWatch {
         if (!isGone(e)) throw e;
       }
     }
-    return entries;
+    // Each was looked at by its path: had the folder been swapped meanwhile, they may be of another one.
+    return this.stillSame(dir) ? entries : null;
   }
 
   /** A watched folder is gone: everything below it is forgotten, and the root going ends the watch. */
