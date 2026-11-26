@@ -308,7 +308,7 @@ await minimum.press('Enter');
 await pause(200);
 await toggleFor('columns').click();
 
-// Two names the engine refuses, reported on Save.
+// Two names the engine refuses: each row says why as soon as it is left, and Save waits until they are fixed.
 const first = modal.getByLabel('heading name');
 await first.fill('Hero Title');
 await first.press('Enter');
@@ -316,8 +316,8 @@ const second = modal.getByLabel('intro name');
 await second.fill('body');
 await second.press('Enter');
 await pause(200);
-await modal.getByRole('button', { name: 'Save' }).click();
-await modal.locator('.code-problems').first().waitFor();
+await modal.getByText(/camelCase/).first().waitFor();
+if (await modal.getByRole('button', { name: 'Save' }).isEnabled()) throw new Error('Save is offered with refused names; refusing to write');
 await shot('properties-error', ['camelCase']);
 await closeModal();
 

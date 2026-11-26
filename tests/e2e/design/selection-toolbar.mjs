@@ -124,12 +124,12 @@ await pause(500);
 await shot('canvas-context-menu', menuSel);
 await esc();
 
-// 6. One card's title picked on the page: "one of 3". The first click selects the section, the second the title.
-await frame.getByText('Materials & colour', { exact: true }).first().dispatchEvent('click');
-await pause(600);
-await frame.getByText('Materials & colour', { exact: true }).first().dispatchEvent('click');
+// 6. One card's title picked on the page: "2 of 3". Alt-click picks the title itself, not the card or the
+// section around it.
+// Dispatched, because the scaled frame's images sit over the cards for Playwright's hit test.
+await frame.getByText('Materials & colour', { exact: true }).first().dispatchEvent('click', { altKey: true });
 await pause(800);
-await shot('card-picked', '.ov-chip', { themes: LIGHT });
+await shot('card-picked', '.ov-chip:has(.label:text-matches("title", "i")):has([data-testid="chip-item-pos"]:text("2 of 3"))', { themes: LIGHT });
 
 // 7. The shared header selected (green scope).
 await frame.locator('h1').first().scrollIntoViewIfNeeded();
@@ -142,10 +142,14 @@ await frame.locator('h1').first().click();
 await esc();
 await frame.locator('h1').first().click();
 await pause(600);
-await win.locator('[aria-label="Right panel"]').click();
+const dockButton = win.locator('.toolbar [aria-label="Right panel"]');
+if ((await dockButton.getAttribute('aria-pressed')) !== 'true') throw new Error('the right panel should be open before it is closed');
+await dockButton.click();
 await pause(800);
-await shot('chip-dock-closed', '.ov-chip', { themes: LIGHT });
-await win.locator('[aria-label="Right panel"]').click();
+// Only with the dock really closed: the chip's Edit is what brings the inspector back.
+await shot('chip-dock-closed', '.toolbar [aria-label="Right panel"][aria-pressed="false"]', { themes: LIGHT });
+await dockButton.click();
+await win.locator('.toolbar [aria-label="Right panel"][aria-pressed="true"]').waitFor();
 await pause(600);
 
 // ---- Other menus that share the primitive ----

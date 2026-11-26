@@ -330,7 +330,7 @@ await win.mouse.move(900, 6);
 
 // ---- The narrowest sidebar the divider allows (last: the width is not put back) ----
 await clearSelection();
-const divider = win.locator('.side-panel .resizer');
+const divider = win.locator('.seam.left .resizer');
 const sideWidth = async () => (await win.locator('.side-panel').boundingBox())?.width ?? 0;
 await divider.focus();
 for (let presses = 0; presses < 24; presses++) {

@@ -220,6 +220,34 @@ function Seam({ side, width, max, at, restore }: { side: PanelSide; width: numbe
   const [dragging, setDragging] = useState(false);
   const collapsed = width === 0;
   const outward = side === 'left' ? 1 : -1;
+  // A press on the seam can't start dragging something else. Chromium decides what an HTML drag carries by what is
+  // under the press point when the pointer has moved far enough, and by then the resize has moved the panel's edge:
+  // widening the sidebar puts a draggable page or layer row under it, which would take the drag and every pointer
+  // event after it. The refused dragstart is stopped here too, so the row never marks itself as being dragged.
+  useEffect(() => {
+    const block = (e: DragEvent) => {
+      if (!drag.current) return;
+      e.preventDefault();
+      e.stopPropagation();
+    };
+    // The release always ends the press, even when the element that held the pointer has gone (the panel was
+    // hidden mid-drag, taking the grip with it) and its own handlers never hear it.
+    const release = (e: PointerEvent) => {
+      const d = drag.current;
+      if (d?.pointer !== e.pointerId) return;
+      drag.current = null;
+      setDragging(false);
+      if (d.changed) saveWidth(side);
+    };
+    window.addEventListener('dragstart', block, true);
+    window.addEventListener('pointerup', release);
+    window.addEventListener('pointercancel', release);
+    return () => {
+      window.removeEventListener('dragstart', block, true);
+      window.removeEventListener('pointerup', release);
+      window.removeEventListener('pointercancel', release);
+    };
+  }, [side]);
   /** Make `requested` the panel's preferred width, within its room. Returns the width now drawn, or null when
    *  the limit turns the request into no change. */
   const resize = (requested: number) => {

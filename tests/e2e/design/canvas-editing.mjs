@@ -77,16 +77,20 @@ await frame.locator('h1').first().waitFor({ timeout: 120000 });
 await frame.locator('html[data-so-editing]').waitFor({ state: 'attached', timeout: 30000 });
 await pause(1800);
 
-/** Click the empty pasteboard beside the page, which clears the selection. */
+/** Click the empty pasteboard beside the page, which clears the selection. Clear of the left seam's splitter,
+ * which reaches 8px into the canvas, and inside the pasteboard's 28px gutter. */
 const clearSelection = async () => {
   const box = await win.locator('.canvas-scroll').boundingBox();
-  await win.mouse.click(box.x + 5, box.y + 120);
+  await win.mouse.click(box.x + 16, box.y + 120);
+  await win.locator('.ov-chip').waitFor({ state: 'detached', timeout: 8000 });
   await pause(250);
 };
 const selectHeading = async () => {
   await clearSelection();
   // Dispatched, because at some widths the hero's image sits over the heading for Playwright's hit test.
   await frame.locator('h1').first().dispatchEvent('click');
+  // The first click on a cleared canvas selects the section; anything else means the clear missed.
+  await win.getByRole('toolbar', { name: 'Split hero actions', exact: true }).waitFor({ timeout: 8000 });
   await pause(600);
 };
 const hoverText = (text) => async () => {
@@ -143,7 +147,8 @@ const deepPick = async (locator) => {
 };
 /** The chip must name what the state is about, or the capture is of something else. */
 const chipSays = async (text) => {
-  const label = await win.locator('.ov-chip .name').first().textContent();
+  // The whole chip: its name, the parent it sits in, and which item of a repeat ("2 of 3").
+  const label = await win.locator('.ov-chip').first().textContent();
   if (!label?.includes(text)) throw new Error(`the chip reads "${label}", expected "${text}"; refusing to write`);
 };
 
@@ -206,8 +211,11 @@ const startDrag = async () => {
   await win.mouse.move(from.x, from.y, { steps: 3 });
   await win.mouse.down();
   await win.waitForSelector('.ov-moving', { timeout: 8000 });
+  // Over the lower part of the next section, so the drop line goes after it: anywhere between the hero and that
+  // section is where the hero already is, which draws no line.
   const wrap = await win.locator('.frame-wrap').boundingBox();
-  await win.mouse.move(wrap.x + wrap.width * 0.5, wrap.y + Math.min(wrap.height - 30, 620), { steps: 8 });
+  const next = await frame.locator('section[data-so-node="root"]').nth(1).boundingBox();
+  await win.mouse.move(wrap.x + wrap.width * 0.5, Math.min(next.y + next.height * 0.8, wrap.y + wrap.height - 30), { steps: 8 });
   await pause(250);
   return from;
 };
@@ -218,8 +226,9 @@ const endDrag = async (from) => {
   await pause(500);
 };
 let from = await startDrag();
-await shot('drag-reorder', '.ov-moving', { pointer: 'keep' });
-if (!(await win.locator('.ov-drop').isVisible())) throw new Error('no drop line mid-drag');
+// Only with the drop line drawn: a drag that has nowhere new to go shows the moving hero alone.
+await win.locator('.ov-drop').waitFor({ timeout: 8000 });
+await shot('drag-reorder', '.ov-drop', { pointer: 'keep' });
 await endDrag(from);
 
 // 12. The stress case: a page that uses the selection's own blue, under the outline, the chip and the drop line.

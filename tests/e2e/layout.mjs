@@ -249,6 +249,46 @@ assert.equal(l.canvas.width, CANVAS_MIN, 'the canvas keeps its minimum after bot
 assert.equal(l.frame.width, CANVAS_MIN - 56, 'the desktop preview at Fit is 384px wide');
 assert.ok(l.doc <= l.inner, 'the editor is still no wider than the window');
 
+step('a press on a seam never starts dragging a row the resize brings under it');
+// Chromium picks what an HTML drag carries from what is under the press point once the pointer has moved far
+// enough, by which time widening the sidebar has put a draggable page row there (issue #829). The drag is offered
+// to a real page row; refused, it must not reach the row's own handler either, or the row stays marked as dragged.
+const startRowDrag = () =>
+  win.evaluate(() => {
+    const row = document.querySelector('.side-panel [data-page][draggable="true"]');
+    if (!row) throw new Error('no draggable page row in the sidebar');
+    return row.dispatchEvent(new DragEvent('dragstart', { bubbles: true, cancelable: true, dataTransfer: new DataTransfer() }));
+  });
+const rowsDragging = () => win.locator('.side-panel .page-row.dragging').count();
+const endRowDrag = () => win.evaluate(() => document.querySelector('.side-panel [data-page][draggable="true"]')?.dispatchEvent(new DragEvent('dragend', { bubbles: true, dataTransfer: new DataTransfer() })));
+{
+  const pages = win.locator('.rail [aria-label="Pages"]');
+  if ((await pages.getAttribute('aria-pressed')) !== 'true') await pages.click();
+  const b = await LEFT.boundingBox();
+  await win.mouse.move(b.x + b.width / 2, b.y + b.height / 2);
+  await win.mouse.down();
+  assert.equal(await startRowDrag(), false, 'a drag of whatever is under the seam is refused while the seam is pressed');
+  assert.equal(await rowsDragging(), 0, 'and the row under it never marks itself as dragged');
+  await win.mouse.up();
+  assert.equal(await startRowDrag(), true, 'rows drag again once the seam is released');
+  await endRowDrag();
+  assert.deepEqual(await panels(), { side: 200, dock: 412 }, 'a press without a move changes no width');
+
+  // Hidden mid-press, the sidebar takes the grip with it, so the grip never hears the release: the press still ends.
+  const grip = await win.locator('.seam.left .split-grip').boundingBox();
+  await win.mouse.move(grip.x + grip.width / 2, grip.y + grip.height / 2);
+  await win.mouse.down();
+  await win.keyboard.press(`${MOD}+Backslash`);
+  await win.locator('.seam.left.collapsed').waitFor({ state: 'attached' });
+  await win.mouse.up();
+  await win.keyboard.press(`${MOD}+Backslash`);
+  await win.locator('.seam.left:not(.collapsed)').waitFor({ state: 'attached' });
+  assert.equal(await startRowDrag(), true, 'rows still drag after the sidebar was hidden during a press on its grip');
+  await endRowDrag();
+  assert.equal(await win.locator('.resizer.dragging').count(), 0, 'and the seam is no longer lit');
+  assert.deepEqual(await panels(), { side: 200, dock: 412 }, 'the sidebar comes back at its width');
+}
+
 step('arrow keys stop at the same limits, and a step one way can be taken back');
 await press(LEFT, 'ArrowRight', 5);
 await press(RIGHT, 'ArrowLeft', 5);

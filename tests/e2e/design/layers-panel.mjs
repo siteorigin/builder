@@ -141,7 +141,7 @@ const previewAt = async (size) => {
 };
 /** Drag the sidebar's edge by `dx` pixels (-60 takes the default width to its 200px minimum). */
 const resizeSidebar = async (dx) => {
-  const handle = win.locator('.side-panel .resizer');
+  const handle = win.locator('.seam.left .resizer');
   const b = await handle.boundingBox();
   if (!b) throw new Error('the sidebar resizer is not on screen');
   await win.mouse.move(b.x + b.width / 2, b.y + b.height / 2);

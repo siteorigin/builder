@@ -232,7 +232,7 @@ await pause(1000);
 
 // ---- The narrowest dock ----
 await win.evaluate(() => document.activeElement?.blur());
-const resizer = win.locator('.dock .resizer');
+const resizer = win.locator('.seam.right .resizer');
 const box = await resizer.boundingBox();
 if (box) {
   await win.mouse.move(box.x + box.width / 2, box.y + 200);

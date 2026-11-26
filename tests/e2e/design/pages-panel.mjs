@@ -270,7 +270,7 @@ await pause(300);
   await pause(300);
 
   // The same site at the narrowest sidebar (200px): the resizer dragged 60px to the left, then back.
-  const handle = win.locator('.side-panel .resizer');
+  const handle = win.locator('.seam.left .resizer');
   const resize = async (dx) => {
     const b = await handle.boundingBox();
     await win.mouse.move(b.x + b.width / 2, b.y + b.height / 2);
