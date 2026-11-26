@@ -2014,6 +2014,14 @@ export class ProjectSession extends EventEmitter {
     return generateProject(state, { instrument }, this.generation);
   }
 
+  /**
+   * The website's files for the project as it is now (the clean variant, which the build checks compile), made through
+   * the generation cache every save and publication shares: only what changed since the last generation is made again.
+   */
+  websiteFiles(): Map<string, string> {
+    return this.generate(this.state, false);
+  }
+
   /** `generate`, timed as a save's generations are (writeState), for a publication that generates its own. */
   private generateTimed(state: ProjectState, instrument: boolean): Map<string, string> {
     const generating = perf.span('session.generate', { variant: instrument ? 'dev' : 'clean' });

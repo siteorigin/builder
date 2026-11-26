@@ -1,8 +1,8 @@
-import { app, BrowserWindow, clipboard, dialog, ipcMain, nativeTheme, protocol, net, session as electronSession, shell, Menu } from 'electron';
+import { app, BrowserWindow, clipboard, dialog, ipcMain, nativeTheme, protocol, net, session as electronSession, shell, Menu, utilityProcess } from 'electron';
 import type { BaseWindow, KeyboardEvent, MenuItem } from 'electron';
 import { join, dirname, normalize, relative, isAbsolute } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
-import { release } from 'node:os';
+import { availableParallelism, release } from 'node:os';
 import { mkdir } from 'node:fs/promises';
 // First, so the trace (src/main/perf.ts) starts before anything else this module imports is evaluated.
 import { perf } from './perf';
@@ -26,7 +26,8 @@ import { currentShortcuts, loadSettings, localCheckEpoch, localCheckRecorder, lo
 import { Orchestrator } from '@agent/orchestrator';
 import { INSPECT_COMPONENT_BUDGET_MS } from '@agent/component-inspection';
 import { discoverLocalContext, listedProblem, listLocalModels, openLocalAdapter, testLocal } from '@agent/local';
-import { compileProject } from './compile';
+import { CompileCache, compileProject } from './compile';
+import { createCompilePool } from './compile-client';
 import { checkSvelteSource, codeContractNames, componentSources } from './codecheck';
 import { renderSiteIconsInWorker, stopMediaWorker } from './project/assets';
 import { setSiteIconRenderer } from './project/site-icons';
@@ -339,6 +340,29 @@ const markedAdapter = (open: (typeof orchestratorDeps)['adapter']): (typeof orch
       }
     : open;
 
+/**
+ * Build checks compile in utility processes, a few at once and never on the main process, which keeps answering the
+ * editor meanwhile. The workers are only the editor's own code compiling generated files: they get no secrets (the map
+ * is never empty, because Electron passes the whole environment on when it is).
+ */
+const compileWorkers = createCompilePool(
+  () => {
+    const env: Record<string, string> = { SITEORIGIN_COMPILE_WORKER: '1' };
+    for (const k of ['PATH', 'SystemRoot', 'TEMP', 'TMP', 'TMPDIR']) if (process.env[k]) env[k] = process.env[k]!;
+    return utilityProcess.fork(join(here, 'compile-worker.js'), [], { serviceName: 'SiteOrigin build check', env });
+  },
+  // One core is the main process's.
+  { size: Math.max(1, Math.min(4, availableParallelism() - 1)) }
+);
+
+/** Each open project's build-check outcomes, kept while its session lives, so unchanged files are not compiled again. */
+const compileCaches = new WeakMap<object, CompileCache>();
+const compileCacheFor = (session: object): CompileCache => {
+  let cache = compileCaches.get(session);
+  if (!cache) compileCaches.set(session, (cache = new CompileCache()));
+  return cache;
+};
+
 const orchestrator = new Orchestrator({
   session: () => controller.session,
   adapter: markedAdapter(orchestratorDeps.adapter),
@@ -347,10 +371,11 @@ const orchestrator = new Orchestrator({
     controller.send('ai:event', e);
   },
   compileAll: async (): Promise<Diagnostic[]> => {
-    if (!controller.session) return [];
+    const session = controller.session;
+    if (!session) return [];
     const end = perf.span('ai.compile');
     try {
-      return await compileProject(controller.session.state);
+      return await compileProject(session.state, session.websiteFiles(), { cache: compileCacheFor(session), offload: (files) => compileWorkers.compile(files) });
     } finally {
       end();
     }
@@ -1264,6 +1289,7 @@ app.on('will-quit', () => {
   perf.stop();
   controller.remote.dispose();
   stopMediaWorker();
+  compileWorkers.stop();
   stopPhotoDecoders();
   stopPostReads();
   stopSourceSyncs();

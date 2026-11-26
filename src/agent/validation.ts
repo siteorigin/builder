@@ -246,7 +246,7 @@ function refInNarrowing(state: ProjectState, n: Narrowing, ref: Ref): boolean {
 const findingInNarrowing = (state: ProjectState, n: Narrowing, i: Record<string, unknown>) => refInNarrowing(state, n, i.ref as Ref) || refInNarrowing(state, n, (i.with as { ref?: Ref } | undefined)?.ref);
 
 /** `work`, or a rejection as soon as the run is stopped: Stop never waits for a slow check. */
-async function untilStopped<T>(work: Promise<T>, signal: AbortSignal | undefined): Promise<T> {
+export async function untilStopped<T>(work: Promise<T>, signal: AbortSignal | undefined): Promise<T> {
   if (!signal) return work;
   let onAbort: (() => void) | undefined;
   const stopped = new Promise<never>((_, reject) => {
