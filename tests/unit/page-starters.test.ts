@@ -247,3 +247,26 @@ describe('a starter in a saved project', () => {
     });
   }
 });
+
+describe('page starters and project health (#873)', () => {
+  const STARTERS: PageStarter[] = ['intro', 'services', 'about', 'contact', 'pricing', 'faq', 'article'];
+  // The Contact starter's form is left unconnected on purpose until the author adds a form service (see its section).
+  const counted = (s: ProjectState) => validateState(s).filter((d) => d.severity !== 'info' && d.code !== 'FORM_UNCONNECTED');
+  const codes = (s: ProjectState) => counted(s).map((d) => d.code).sort();
+
+  for (const project of ['business', 'blank'] as const) {
+    it(`adds no warnings of its own to a ${project} project, in any theme`, () => {
+      registerBuiltinPacks();
+      for (const themeId of BUILTIN_PACKS.map((a) => buildPack(a).pack.id)) {
+        const base = applyOperations(createStarterState(project, 'Starter Studio', false), [{ type: 'theme.apply', themeId }]).state;
+        const before = codes(base);
+        for (const starter of STARTERS) {
+          const { state, page } = created(base, starter);
+          const added = counted(state).filter((d) => d.owner?.kind === 'page' && d.owner.id === page.id);
+          expect(added.map((d) => d.message), `${themeId} / ${starter}`).toEqual([]);
+          expect(codes(state), `${themeId} / ${starter}`).toEqual(before);
+        }
+      }
+    });
+  }
+});

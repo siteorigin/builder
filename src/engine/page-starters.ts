@@ -1,4 +1,4 @@
-import type { ComponentDefinition, PageDoc, ProjectState } from '@shared/types';
+import type { ComponentDefinition, InstanceNode, PageDoc, ProjectState } from '@shared/types';
 import type { EditOperation } from '@shared/ops';
 import { catalogueComponent } from '@catalogue/index';
 import { installComponent, makeInstance } from './install';
@@ -18,6 +18,25 @@ interface StarterSection {
   props?: (title: string) => Record<string, unknown>;
   /** Of those texts, the ones the section must take: a theme whose version cannot take one makes the page without it. */
   required?: string[];
+  /** Runs on the placed section, to finish what the theme's sample content leaves unset. */
+  settle?: (state: ProjectState, page: PageDoc, node: InstanceNode) => void;
+}
+
+/**
+ * The theme's sample plans carry buttons with no destination, and a new page must add no health warnings: each
+ * button goes to the Contact page when the project has one, and is left off the plan when it does not.
+ */
+function linkPlanActions(state: ProjectState, page: PageDoc, node: InstanceNode): void {
+  const contact = Object.values(state.pages).find((p) => p.id !== page.id && p.route === '/contact/' && !p.draft);
+  const plans = node.props.plans;
+  if (!Array.isArray(plans)) return;
+  for (const plan of plans as Array<Record<string, unknown>>) {
+    if (!plan || typeof plan !== 'object' || !String(plan.actionLabel ?? '').trim()) continue;
+    const link = plan.actionLink as { type?: string; target?: string } | undefined;
+    if (link && link.type && link.type !== 'none') continue;
+    if (contact) plan.actionLink = { type: 'page', target: contact.id };
+    else plan.actionLabel = '';
+  }
 }
 
 const intro: StarterSection = { componentId: 'intro.page', props: (title) => ({ eyebrow: '', heading: title, lead: '' }) };
@@ -30,7 +49,7 @@ export const PAGE_STARTER_SECTIONS: Record<PageStarter, StarterSection[]> = {
   about: [intro, { componentId: 'content.media', variant: 'media-end', props: () => ({ eyebrow: 'Our story', actionLabel: '' }) }, { componentId: 'team.grid', variant: 'muted' }],
   // The form is not connected to any form service until the author connects it, whatever a theme's own default is.
   contact: [intro, { componentId: 'contact.details', props: () => ({ eyebrow: '' }) }, { componentId: 'contact.form', variant: 'muted', props: () => ({ eyebrow: '', endpoint: '', accessKey: '' }), required: ['endpoint', 'accessKey'] }],
-  pricing: [intro, { componentId: 'pricing.plans', props: () => ({ eyebrow: '' }) }, { componentId: 'faq.list', variant: 'muted', props: () => ({ eyebrow: '', heading: 'Questions about pricing' }) }],
+  pricing: [intro, { componentId: 'pricing.plans', props: () => ({ eyebrow: '' }), settle: linkPlanActions }, { componentId: 'faq.list', variant: 'muted', props: () => ({ eyebrow: '', heading: 'Questions about pricing' }) }],
   faq: [intro, { componentId: 'faq.list', props: () => ({ eyebrow: '' }) }],
   // The header shows the page's own title, date, byline and excerpt; the text section below is the body.
   article: [{ componentId: 'content.article', props: () => ({ eyebrow: '' }) }, { componentId: 'content.text', props: () => ({ heading: '', body: 'Write the article here.' }) }]
@@ -59,6 +78,7 @@ export function addPageStarter(state: ProjectState, page: PageDoc, starter: Page
     const def = state.components[installComponent(state, section.componentId)];
     const node = makeInstance(def, {}, section.variant);
     Object.assign(node.props, props);
+    section.settle?.(state, page, node);
     page.nodes[node.id] = node;
     page.rootIds.push(node.id);
   }
