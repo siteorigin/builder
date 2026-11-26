@@ -9,7 +9,7 @@ import { ICONS } from '@catalogue/foundation/icons';
 import { normalizeTable } from './table';
 import { declaredTokens } from './tokens';
 import { TEXT_LIMITS, tooLongMessage } from '@shared/text-limits';
-import { REQUIRED_REFUSAL, isEmptyPropValue, optionalSchema, requiredMessage } from '@shared/required';
+import { REQUIRED_REFUSAL, isEmptyPropValue, requiredMessage } from '@shared/required';
 
 const own = <T>(rec: Record<string, T>, key: string): T | undefined => (Object.hasOwn(rec, key) ? rec[key] : undefined);
 
@@ -308,8 +308,19 @@ export function normalizeScalar(schema: ScalarPropSchema, v: unknown, state: Pro
   return requireValue(schema, scalarValue(schema, v, state, label, stored), label, stored);
 }
 
-/** Whether `stored`, the value saved before an edit, was already empty: one the project reports, not one the edit empties. */
-const wasEmpty = (schema: PropSchema, stored: unknown) => stored !== undefined && isEmptyPropValue(schema, stored);
+/**
+ * Whether `stored`, the value saved before an edit, was already empty: one the project reports, not one the edit
+ * empties. An object's left-out fields show its defaults, so they count as what it held.
+ */
+function wasEmpty(schema: PropSchema, stored: unknown): boolean {
+  if (stored === undefined) return false;
+  if (schema.type === 'object' && stored && typeof stored === 'object' && !Array.isArray(stored)) {
+    const o = stored as Record<string, unknown>;
+    const defaults = schema.default && typeof schema.default === 'object' ? (schema.default as Record<string, unknown>) : {};
+    return isEmptyPropValue(schema, Object.fromEntries(Object.entries(schema.fields).map(([k, f]) => [k, Object.hasOwn(o, k) ? o[k] : Object.hasOwn(defaults, k) ? defaults[k] : f.default])));
+  }
+  return isEmptyPropValue(schema, stored);
+}
 
 /**
  * `v` itself when `schema` is not required or `v` is not empty; otherwise the edit fails with the property's path. A
@@ -393,10 +404,8 @@ export function normalizeObject(schema: Extract<PropSchema, { type: 'object' }>,
   const given = v as Record<string, unknown>;
   const out: Record<string, unknown> = {};
   for (const [k, f] of Object.entries(schema.fields)) {
-    const own = Object.hasOwn(given, k) || (!!before && Object.hasOwn(before, k));
     const raw = Object.hasOwn(given, k) ? given[k] : before && Object.hasOwn(before, k) ? before[k] : Object.hasOwn(schema.default ?? {}, k) ? structuredClone(schema.default[k]) : structuredClone(f.default);
-    // A field left to its default takes it as it is: a default may be empty, and is reported rather than refused.
-    out[k] = normalizeScalar(own ? f : optionalSchema(f), raw, state, `${label} → ${f.label}`, before && Object.hasOwn(before, k) ? before[k] : undefined);
+    out[k] = normalizeScalar(f, raw, state, `${label} → ${f.label}`, before && Object.hasOwn(before, k) ? before[k] : undefined);
   }
   return out;
 }
@@ -408,10 +417,8 @@ export function normalizeItem(schema: Extract<PropSchema, { type: 'list' }>, ite
   const out: ListItem = { id: base?.id ?? newId('i') };
   for (const [k, f] of Object.entries(schema.fields)) {
     // Choices left out of an edited item stay as saved: their values cannot be made again from their labels.
-    const own = (!!item && k in item) || (!!base && k in base) || (f.type === 'choices' && !!stored && Object.hasOwn(stored, k));
     const raw = item && k in item ? item[k] : base && k in base ? base[k] : f.type === 'choices' && stored && Object.hasOwn(stored, k) ? stored[k] : structuredClone(f.default);
-    // A field a new item leaves out starts from its default as it is: a default may be empty, and is reported rather than refused.
-    out[k] = normalizeScalar(own ? f : optionalSchema(f), raw, state, `${label} → ${f.label}`, stored?.[k]);
+    out[k] = normalizeScalar(f, raw, state, `${label} → ${f.label}`, stored?.[k]);
   }
   return out;
 }

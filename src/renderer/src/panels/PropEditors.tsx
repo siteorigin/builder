@@ -1597,8 +1597,9 @@ export function PropField({ name, schema, value, onChange, onField, onList, onTa
 /** An object property: its fields under its name, each edited on its own. */
 function ObjectEditor({ name, schema, value, onField, state, label, everywhere, error, action, refused }: { name: string; schema: ObjectProp; value: unknown; onField: (field: string, v: unknown, edit?: PendingEdit) => unknown; state: ProjectState; label?: string; everywhere?: boolean; error?: string; action?: FieldAction; refused?: (field: string) => string | undefined }) {
   const v = value && typeof value === 'object' && !Array.isArray(value) ? (value as Record<string, unknown>) : schema.default;
+  const errorId = useId();
   return (
-    <fieldset className="insp-group" data-object={name}>
+    <fieldset className="insp-group" data-object={name} aria-describedby={error ? `${errorId}` : undefined}>
       <legend className="insp-group-title">
         {label ?? schema.label}
         {schema.required && <RequiredMark />}
@@ -1613,7 +1614,11 @@ function ObjectEditor({ name, schema, value, onField, state, label, everywhere, 
         </div>
       ))}
       {/* A problem with the object as a whole, such as a button whose link is missing, and its fix. */}
-      {error && <div className="field-error">{error}</div>}
+      {error && (
+        <div className="field-error" id={errorId}>
+          {error}
+        </div>
+      )}
       {action && (
         <button className="btn btn-sm insp-inline-btn" onClick={action.run}>
           {action.label}
@@ -2127,8 +2132,10 @@ function ListEditor({ name, schema, items, onList, read, itemAlive, state, focus
           // Fields the component requires that this item leaves empty: the closed row says it is incomplete.
           const empty = Object.entries(schema.fields).filter(([k, f]) => !hiddenFields?.(it).includes(k) && missingNote(f, Object.hasOwn(it, k) ? it[k] : f.default));
           const incomplete = empty.length ? `Incomplete: ${listWords(empty.map(([, f]) => f.label))} ${empty.length === 1 ? 'is' : 'are'} required.` : undefined;
+          // An edit of one of its fields that was refused is said on the closed row too, until the row is opened.
+          const refusedHere = refused ? Object.keys(schema.fields).map((k) => refused({ itemId: it.id, field: k })).find(Boolean) : undefined;
           // A contact link that opens something other than its text is flagged on the closed row too.
-          const flag = note?.error ?? (linkPairs?.some((p) => contactMismatch(it[p.text], it[p.link])) ? 'The link doesn’t open what visitors see.' : undefined) ?? incomplete;
+          const flag = refusedHere ?? note?.error ?? (linkPairs?.some((p) => contactMismatch(it[p.text], it[p.link])) ? 'The link doesn’t open what visitors see.' : undefined) ?? incomplete;
           return (
           <div key={it.id} className={`list-editor-item${focusItem === it.id ? ' focused' : ''}${underOf[i] ? ' nested' : ''}`}>
             <div className="list-editor-head">

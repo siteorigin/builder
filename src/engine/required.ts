@@ -61,14 +61,14 @@ export function bindingSource(state: ProjectState, owner: OwnerRef, node: GraphN
 }
 
 /**
- * Every required value a placement leaves empty, or could leave empty through a binding: its own value, or the default
- * it shows without one. A default may be empty (filled in once placed), so it is reported at each placement that still
- * shows it, not at the component. `bindings: false` leaves bindings out, for a caller that checks them with the other
- * binding problems (`bindingProblem`).
+ * Every required value the project leaves empty, or could leave empty through a binding: a definition's default, and
+ * each placement's own value or the default it shows without one. `bindings: false` leaves bindings out, for a caller
+ * that checks them with the other binding problems (`bindingProblem`).
  */
 export function requiredProblems(state: ProjectState, { bindings = true } = {}): RequiredProblem[] {
   const out: RequiredProblem[] = [];
   const defs = Object.values(state.components).filter((d): d is ComponentDefinition => !!d && typeof d === 'object' && hasRequiredProps(d));
+  for (const def of defs) out.push(...defaultProblems(def));
   if (!defs.length) return out;
   const required = new Set(defs.map((d) => d.id));
   for (const { owner, tree, label } of allTrees(state))
@@ -105,7 +105,27 @@ export function requiredSite(key: string, owner: OwnerRef, nodeId: string): { pr
   if (parts.length < 2 || !parts[0]) return null;
   const [prop, ...rest] = parts;
   if (rest.length === 1) return rest[0] ? { prop, field: rest[0] } : { prop };
-  return rest.length === 2 && rest[0] && rest[1] ? { prop, itemId: rest[0], field: rest[1] } : null;
+  // A field's name has no "|"; an item's ID, sent whole by hand or the AI, might.
+  const field = rest[rest.length - 1];
+  const itemId = rest.slice(0, -1).join('|');
+  return itemId && field ? { prop, itemId, field } : null;
+}
+
+/**
+ * Whether a problem a change brings in is a placement that was already missing a value its component now requires:
+ * the change made one of that component's properties (or fields) required. Such a placement is reported, never a
+ * reason to refuse the change; any other change that empties a required value is refused.
+ */
+export function madeRequiredBy(state: ProjectState, operations: ReadonlyArray<{ type: string; definitionId?: unknown }>, d: { code: string; owner?: { kind: string; id: string }; nodeId?: string }): boolean {
+  if (d.code !== 'PROP_REQUIRED_EMPTY' || !d.owner || !d.nodeId) return false;
+  const changed = new Set(operations.flatMap((o) => (o.type === 'component.setPropSchema' && typeof o.definitionId === 'string' ? [o.definitionId] : [])));
+  if (!changed.size) return false;
+  for (const { owner, tree } of allTrees(state)) {
+    if (owner.kind !== d.owner.kind || owner.id !== d.owner.id) continue;
+    const n = tree.nodes && Object.hasOwn(tree.nodes, d.nodeId) ? tree.nodes[d.nodeId] : undefined;
+    return n?.kind === 'instance' && changed.has(n.definitionId);
+  }
+  return false;
 }
 
 /** What one placement of a component with required properties leaves empty, in its own values or (with `bindings`) through a binding. */

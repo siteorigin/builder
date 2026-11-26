@@ -12,7 +12,8 @@ import { validateOperation } from '@shared/ops';
 import { createStarterState } from '@catalogue/starters';
 import { applyOperations } from '@engine/apply';
 import { blocksSaving, validateState } from '@engine/validate';
-import { requiredProblems } from '@engine/required';
+import { madeRequiredBy, requiredProblems } from '@engine/required';
+import { introducedDiagnostics } from '@engine/validate';
 import { generateProject } from '@generator/index';
 import { axesOf } from '@shared/variants';
 import { ProjectSession } from '../../src/main/project/session';
@@ -425,6 +426,11 @@ describe('the Required switch of a property or one of its fields', () => {
       badge: { type: 'icon', label: 'Badge' },
       size: { type: 'enum', label: 'Size', options: ['small', 'large'], default: 'small' },
       mark: { type: 'enum', label: 'Mark', options: [{ value: '', label: 'None' }, 'star'], default: '' },
+      body: { type: 'richtext', label: 'Body', default: 'Words' },
+      cta: { type: 'link', label: 'Link', default: 'https://example.com/' },
+      photo: { type: 'image', label: 'Photo' },
+      perks: { type: 'choices', label: 'Perks' },
+      prices: { type: 'table', label: 'Prices' },
       plans: { type: 'list', label: 'Plans', itemLabel: 'Plan', fields: { name: { type: 'string', label: 'Name', default: 'Plan' }, featured: { type: 'boolean', label: 'Featured' } }, default: [{ name: 'Basic' }, { name: 'Pro' }] },
       news: { type: 'list', label: 'News', itemLabel: 'Article', feed: 'articles', fields: { title: { type: 'string', label: 'Title' } } },
       pages: { type: 'list', label: 'Pages', itemLabel: 'Card', pageTeaser: { link: 'link', title: 'title' }, fields: { link: { type: 'link', label: 'Link' }, title: { type: 'string', label: 'Title' }, note: { type: 'string', label: 'Note' } } },
@@ -434,23 +440,24 @@ describe('the Required switch of a property or one of its fields', () => {
     let s = made.state;
     for (const [prop, schema] of Object.entries(properties)) s = applyOperations(s, [{ type: 'component.setPropSchema', definitionId: defId, prop, schema }]).state;
     const owner = pageOwner(s);
-    s = applyOperations(s, [{ type: 'node.insert', owner, parentId: null, definitionId: defId }]).state;
-    s = applyOperations(s, [{ type: 'node.insert', owner, parentId: null, definitionId: defId }]).state;
-    const [, second] = placed(s, defId);
+    for (let i = 0; i < 3; i++) s = applyOperations(s, [{ type: 'node.insert', owner, parentId: null, definitionId: defId }]).state;
+    const [other, second] = placed(s, defId);
     const plans = second.props.plans as Array<{ id: string }>;
     s = apply(s, [
       { type: 'instance.setProp', owner, nodeId: second.id, prop: 'monthly', value: ' ' },
       { type: 'instance.setProp', owner, nodeId: second.id, prop: 'plans', itemId: plans[0].id, field: 'name', value: '' },
       { type: 'instance.setProp', owner, nodeId: second.id, prop: 'plans', itemId: plans[1].id, field: 'name', value: '' }
     ]);
-    return { s, defId, def: (st: ProjectState) => st.components[defId], second: second.id };
+    // Another placement leaves one plan's name empty: each counts once.
+    s = apply(s, [{ type: 'instance.setProp', owner, nodeId: other.id, prop: 'plans', itemId: (other.props.plans as Array<{ id: string }>)[1].id, field: 'name', value: ' ' }]);
+    return { s, defId, def: (st: ProjectState) => st.components[defId], second: second.id, other: other.id };
   }
 
   it('is offered only where a value can be empty, and on every field of a list or an object the author fills in', () => {
     const { s, def } = pricing();
     const d = def(s);
     const offered = Object.keys(d.properties).filter((p) => canRequire(d.properties[p]));
-    expect(offered).toEqual(['monthly', 'annual', 'mark', 'plans', 'action']);
+    expect(offered).toEqual(['monthly', 'annual', 'mark', 'body', 'cta', 'photo', 'perks', 'prices', 'plans', 'action']);
     // A yes/no field, a computed list's fields and a page list's fields that follow the linked page never are.
     expect(requirableFields(d.properties.plans).map(([k]) => [k, canRequire(d.properties.plans, k)])).toEqual([['name', true], ['featured', false]]);
     expect(requirableFields(d.properties.news)).toEqual([]);
@@ -462,14 +469,19 @@ describe('the Required switch of a property or one of its fields', () => {
 
   it('plans one schema change touching only the flag, counts the placements left missing it, and never refuses them', () => {
     const { s, def, second } = pricing();
+    const was = structuredClone(def(s).properties.monthly);
     const op = setRequiredOp(def(s), 'monthly', undefined, true)!;
-    expect(op).toEqual({ type: 'component.setPropSchema', definitionId: def(s).id, prop: 'monthly', schema: { ...def(s).properties.monthly, required: true } });
+    expect(op).toEqual({ type: 'component.setPropSchema', definitionId: def(s).id, prop: 'monthly', schema: { ...was, required: true } });
+    expect(def(s).properties.monthly).toEqual(was);
     expect(placementsMissing(s, def(s), 'monthly')).toBe(1);
     const on = apply(s, [op]);
     expect(isRequired(def(on).properties.monthly)).toBe(true);
     // The emptied value stays, reported, never in the way of saving.
     expect((home(on).nodes[second] as InstanceNode).props.monthly).toBe(' ');
-    expect(errors(on)).toEqual([]);
+    // What it brings in is only the placement it made required, which the session lets through.
+    const brought = introducedDiagnostics(errors(s), errors(on));
+    expect(brought.map((d) => [d.code, d.nodeId])).toEqual([['PROP_REQUIRED_EMPTY', second]]);
+    expect(brought.every((d) => madeRequiredBy(on, [op], d))).toBe(true);
     expect(requiredProblems(on).map((p) => p.nodeId)).toEqual([second]);
     expect(setRequiredOp(def(on), 'monthly', undefined, true)).toBeNull();
     const off = apply(on, [setRequiredOp(def(on), 'monthly', undefined, false)!]);
@@ -478,8 +490,8 @@ describe('the Required switch of a property or one of its fields', () => {
   });
 
   it('marks one field of a list, counting a placement missing it in several items once', () => {
-    const { s, def, second } = pricing();
-    expect(placementsMissing(s, def(s), 'plans', 'name')).toBe(1);
+    const { s, def, second, other } = pricing();
+    expect(placementsMissing(s, def(s), 'plans', 'name')).toBe(2);
     // The list itself has items everywhere.
     expect(placementsMissing(s, def(s), 'plans')).toBe(0);
     const op = setRequiredOp(def(s), 'plans', 'name', true)!;
@@ -490,11 +502,16 @@ describe('the Required switch of a property or one of its fields', () => {
     expect(isRequired(def(on).properties.plans, 'name')).toBe(true);
     expect(isRequired(def(on).properties.plans)).toBe(false);
     expect(requiredProblems(on).map((p) => [p.nodeId, p.message])).toEqual([
+      [other, 'Home: Pricing switch → Plans → Plan 2 → Name is required: it needs some text.'],
       [second, 'Home: Pricing switch → Plans → Plan 1 → Name is required: it needs some text.'],
       [second, 'Home: Pricing switch → Plans → Plan 2 → Name is required: it needs some text.']
     ]);
+    // A field already required is not counted again for another.
+    expect(placementsMissing(on, def(on), 'action', 'label')).toBe(0);
     expect(setRequiredOp(def(on), 'plans', 'featured', true)).toBeNull();
-    expect(setRequiredOp(def(on), 'plans', 'name', false)).toMatchObject({ schema: { fields: { name: plans.fields.name } } });
+    const off = apply(on, [setRequiredOp(def(on), 'plans', 'name', false)!]);
+    expect(def(off).properties.plans).toEqual(def(s).properties.plans);
+    expect(requiredProblems(off)).toEqual([]);
   });
 
   it('lets a switch already on be turned off where it could not be turned on (a hand edit)', () => {

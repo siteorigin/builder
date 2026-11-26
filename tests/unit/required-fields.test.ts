@@ -32,6 +32,10 @@ interface EditorsModule {
   PropField(props: PropFieldProps): unknown;
 }
 
+/** Renderer code, outside the Node type-check project: loaded by path at run time. */
+const STORE_PATH = '../../src/renderer/src/store';
+const EDITORS_PATH = '../../src/renderer/src/panels/PropEditors';
+type RefusedAt = { field?: string; itemId?: string };
 let store: StoreModule;
 let editors: EditorsModule;
 let session: ProjectSession | null = null;
@@ -56,8 +60,8 @@ beforeAll(async () => {
       }
     }
   };
-  store = (await import(/* @vite-ignore */ '../../src/renderer/src/store')) as StoreModule;
-  editors = (await import(/* @vite-ignore */ '../../src/renderer/src/panels/PropEditors')) as unknown as EditorsModule;
+  store = (await import(/* @vite-ignore */ STORE_PATH)) as StoreModule;
+  editors = (await import(/* @vite-ignore */ EDITORS_PATH)) as unknown as EditorsModule;
 });
 
 afterEach(async () => {
@@ -69,20 +73,32 @@ afterEach(async () => {
 
 const home = (s: ProjectState) => ({ kind: 'page' as const, id: s.site.homePageId });
 
-/** A "Pricing switch" with a required Monthly label and Plans whose Name is required, placed on Home. */
+/**
+ * A "Pricing switch" placed on Home, with a required Monthly label, Plans whose Name is required and an Action whose
+ * Label is: the second plan's name and the action's label were left empty before they became required.
+ */
 function pricing() {
   const s0 = createStarterState('blank', 'Required', false);
   const made = applyOperations(s0, [{ type: 'component.create', name: 'Pricing switch' }]);
   const definitionId = made.results[0].definitionId as string;
+  const plans = { type: 'list', label: 'Plans', itemLabel: 'Plan', fields: { name: { type: 'string', label: 'Name', default: 'Plan' }, price: { type: 'string', label: 'Price', default: '' } }, default: [{ name: 'Basic' }, { name: 'Pro' }] };
+  const action = { type: 'object', label: 'Action', fields: { label: { type: 'string', label: 'Label', default: 'Go' }, link: { type: 'link', label: 'Link' } } };
   let s = applyOperations(made.state, [
     { type: 'component.setPropSchema', definitionId, prop: 'monthly', schema: { type: 'string', label: 'Monthly label', default: 'Monthly', required: true } },
     { type: 'component.setPropSchema', definitionId, prop: 'note', schema: { type: 'string', label: 'Note', default: '' } },
-    { type: 'component.setPropSchema', definitionId, prop: 'plans', schema: { type: 'list', label: 'Plans', itemLabel: 'Plan', fields: { name: { type: 'string', label: 'Name', default: '', required: true }, price: { type: 'string', label: 'Price', default: '' } }, default: [{ name: 'Basic' }, { name: '' }] } },
-    { type: 'component.setPropSchema', definitionId, prop: 'action', schema: { type: 'object', label: 'Action', fields: { label: { type: 'string', label: 'Label', default: '', required: true }, link: { type: 'link', label: 'Link' } } } }
+    { type: 'component.setPropSchema', definitionId, prop: 'plans', schema: plans },
+    { type: 'component.setPropSchema', definitionId, prop: 'action', schema: action }
   ]).state;
   const put = applyOperations(s, [{ type: 'node.insert', owner: home(s), parentId: null, definitionId }]);
-  s = put.state;
   const nodeId = put.results[0].nodeId as string;
+  s = put.state;
+  const pro = ((s.pages[s.site.homePageId].nodes[nodeId] as InstanceNode).props.plans as Array<{ id: string }>)[1].id;
+  s = applyOperations(s, [
+    { type: 'instance.setProp', owner: home(s), nodeId, prop: 'plans', itemId: pro, field: 'name', value: '' },
+    { type: 'instance.setProp', owner: home(s), nodeId, prop: 'action', field: 'label', value: '' },
+    { type: 'component.setPropSchema', definitionId, prop: 'plans', schema: { ...plans, fields: { ...plans.fields, name: { ...plans.fields.name, required: true } } } },
+    { type: 'component.setPropSchema', definitionId, prop: 'action', schema: { ...action, fields: { ...action.fields, label: { ...action.fields.label, required: true } } } }
+  ]).state;
   return { state: s, definitionId, nodeId, node: (st: ProjectState) => st.pages[st.site.homePageId].nodes[nodeId] as InstanceNode };
 }
 
@@ -109,20 +125,31 @@ describe('a required field in the Inspector', () => {
     const { state, definitionId } = pricing();
     const schema = state.components[definitionId].properties.monthly;
     const message = 'Pricing switch → Monthly label is required: it needs some text.';
-    const html = render({ name: 'monthly', schema, value: 'Monthly', state, refused: (at) => (at.field === undefined && at.itemId === undefined ? message : undefined) });
+    const refused = (at: RefusedAt) => (at.field === undefined && at.itemId === undefined ? message : undefined);
+    const html = render({ name: 'monthly', schema, value: 'Monthly', state, refused });
     expect(html).toContain(`<div class="field-error" `);
     expect(html).toContain(message);
     expect(html).toContain('aria-invalid="true"');
+    // Over an empty value too, the refusal is what the field says.
+    const empty = render({ name: 'monthly', schema, value: '', state, refused });
+    expect(empty).toContain(message);
+    expect(empty).not.toContain('Required, but empty');
   });
 
   it('marks a list’s required item field, flags an incomplete item on its closed row, and names an object’s required field', () => {
     const { state, definitionId, node } = pricing();
     const def = state.components[definitionId];
-    const plans = render({ name: 'plans', schema: def.properties.plans, value: node(state).props.plans, state });
-    // Only the second plan, whose name is empty, is incomplete.
+    const items = node(state).props.plans as Array<{ id: string }>;
+    const plans = render({ name: 'plans', schema: def.properties.plans, value: items, state });
+    // Only the second plan, whose name is empty, is incomplete: its own row says so.
     expect(plans.match(/list-editor-incomplete/g)).toHaveLength(1);
-    expect(plans).toContain('Incomplete: Name is required.');
-    const action = render({ name: 'action', schema: def.properties.action, value: node(state).props.action, state, refused: (at) => (at.field === 'label' ? 'Refused here.' : undefined) });
+    const row = (id: string) => plans.slice(plans.indexOf(`id="list-head-${id}"`), plans.indexOf(`id="list-item-${id}"`));
+    expect(row(items[0].id)).not.toContain('Incomplete');
+    expect(row(items[1].id)).toContain('Incomplete: Name is required.');
+    // A refused edit of a closed row's field is said on the row.
+    const refusedRow = render({ name: 'plans', schema: def.properties.plans, value: items, state, refused: (at: RefusedAt) => (at.itemId === items[0].id && at.field === 'name' ? 'Name can’t be emptied.' : undefined) });
+    expect(refusedRow.slice(refusedRow.indexOf(`id="list-head-${items[0].id}"`), refusedRow.indexOf(`id="list-item-${items[0].id}"`))).toContain('Name can’t be emptied.');
+    const action = render({ name: 'action', schema: def.properties.action, value: node(state).props.action, state, refused: (at: RefusedAt) => (at.field === 'label' ? 'Refused here.' : undefined) });
     expect(action).toMatch(/Label.*required/);
     expect(action).toContain('Refused here.');
   });
@@ -158,6 +185,18 @@ describe('an edit that would empty a required value', () => {
     // A refusal the field does not take (here, one that is not about a required value) is a toast as before.
     await store.claimRefusals((e) => isRequiredRefusal(e.details), () => store.applyOps([{ type: 'instance.setProp', owner: home(session!.state), nodeId, prop: 'nope', value: 'x' }], 'Edit'));
     expect(store.getState().toasts.map((t) => t.kind)).toEqual(['error']);
+  });
+
+  it('saves a change that makes a property required while a placement leaves it empty, and still refuses one that empties a value', async () => {
+    const { definitionId, nodeId, node } = await open();
+    // The placement's action shows no label and no link: requiring the action as a whole reports it, and saves.
+    const action = session!.state.components[definitionId].properties.action;
+    const tightened = await session!.apply({ operations: [{ type: 'component.setPropSchema', definitionId, prop: 'action', schema: { ...(action as unknown as Record<string, unknown>), required: true } }] }, { label: 'Require Action', source: 'user' });
+    expect(tightened.ok).toBe(true);
+    expect(validateState(session!.state).filter((d) => d.code === 'PROP_REQUIRED_EMPTY' && d.site === `page|${home(session!.state).id}|${nodeId}|action|`)).toHaveLength(1);
+    const emptied = await session!.apply({ operations: [{ type: 'instance.setProp', owner: home(session!.state), nodeId, prop: 'monthly', value: '' }] }, { label: 'Clear', source: 'user' });
+    expect(emptied.ok).toBe(false);
+    expect(node(session!.state).props.monthly).toBe('Monthly');
   });
 
   it('refuses emptying one plan’s filled name, while a plan already missing its name can have its price set', async () => {

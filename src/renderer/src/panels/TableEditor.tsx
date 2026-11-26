@@ -167,7 +167,7 @@ export function TableEditor({ name, schema, value, onTable, refused }: { name: s
   const hasOpen = rows.some((r) => r.id === open);
   const frame = `table-grid-frame${edges.wide ? ' is-wide' : ''}${edges.left ? ' more-left' : ''}${edges.right ? ' more-right' : ''}${hasOpen ? ' has-open' : ''}`;
   return (
-    <div className="field table-editor" role="group" aria-labelledby={key('label')} data-table={name}>
+    <div className="field table-editor" role="group" aria-labelledby={key('label')} aria-describedby={refused ?? missingNote(schema, table) ? key('error') : undefined} data-table={name}>
       <div className="field-label" id={key('label')}>
         <span className="grow">
           {schema.label}
@@ -175,7 +175,11 @@ export function TableEditor({ name, schema, value, onTable, refused }: { name: s
         </span>
         <span className="insp-count">{tableCount(table)}</span>
       </div>
-      {(refused ?? missingNote(schema, table)) && <div className="field-error">{refused ?? missingNote(schema, table)}</div>}
+      {(refused ?? missingNote(schema, table)) && (
+        <div className="field-error" id={key('error')}>
+          {refused ?? missingNote(schema, table)}
+        </div>
+      )}
 
       <div className="table-editor-part" role="group" aria-labelledby={key('rows')}>
         <div className="table-editor-heading">

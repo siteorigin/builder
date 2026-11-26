@@ -7,7 +7,7 @@ import { feedRowFields } from '@shared/entry-feed';
 import { PAGE_TEASER_TYPES, PAGE_TEASER_VALUES, type PageTeaserValue } from '@shared/page-teasers';
 import { axesOf } from '@shared/variants';
 import { propBindingSchema } from '@shared/bindings';
-import { optionalSchema, requiredGap } from '@shared/required';
+import { requiredGap } from '@shared/required';
 import { fail, findParent } from './tree';
 import { normalizeProp } from './values';
 import { declaredTokens } from './tokens';
@@ -228,9 +228,7 @@ export function normalizePropSchema(raw: unknown, state: ProjectState, name: str
   const schema = out as unknown as PropSchema;
   if (schema.type === 'list' && schema.feed) return schema;
   const value = r.default === undefined ? (schema.type === 'list' && schema.min ? Array.from({ length: schema.min }, () => ({})) : schema.default) : r.default;
-  // A default may leave a required value empty (a video's address, filled in once placed): each placement that still
-  // shows it is reported until it is filled, and only an edit that empties a value is refused.
-  (schema as { default: unknown }).default = normalizeProp(optionalSchema(schema), value, state, `${label} default`);
+  (schema as { default: unknown }).default = normalizeProp(schema, value, state, `${label} default`);
   return schema;
 }
 

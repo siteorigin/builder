@@ -14,7 +14,8 @@ import { propBindingSchema } from '@shared/bindings';
 import { axesOf, selectedVariants } from '@shared/variants';
 import { instancesOf } from '@engine/tree';
 import { slotAccepts, slotDeclProblem } from '@engine/slots';
-import { applyOps, confirmDialog, getState, setState, toast, useStore } from '../store';
+import { applyOps, claimRefusals, confirmDialog, getState, setState, toast, useStore } from '../store';
+import { isRequiredRefusal } from '@shared/required';
 import { DraftInput, Field, Section, Segmented, Switch } from '../components/ui';
 import { isImeComposing } from '../lib/ime';
 import { designContent, type DesignContent } from '../lib/design-content';
@@ -285,29 +286,48 @@ function RequiredSwitch({ schema, at, name, readOnly, onChange }: { schema: Prop
 export function PropertiesSection({ def, level }: { def: ComponentDefinition; level: number }) {
   const entries = placementOrder(def).map((k) => [k, def.properties[k]] as [string, PropSchema]);
   const readOnly = useStore((s) => !!s.snapshot?.readOnly);
-  // What the last Required switch turned on left missing, said beside that switch until another is used.
-  const [missing, setMissing] = useState<{ key: string; text: string } | null>(null);
+  // What the last Required switch did, said beside it until another is used: the placements it left missing a value
+  // (while the rule is still there: an Undo takes the note away with it), or why it was refused.
+  const [said, setSaid] = useState<{ key: string; text: string; refused?: true } | null>(null);
   const require = async (at: RequiredAt, on: boolean) => {
     const now = current(def.id);
     const op = now && setRequiredOp(now.def, at.prop, at.field, on);
     if (!now || !op) return;
-    setMissing(null);
+    setSaid(null);
+    const key = requiredKey(at);
     const schema = now.def.properties[at.prop];
     const label = at.field !== undefined && (schema.type === 'list' || schema.type === 'object') ? schema.fields[at.field].label : schema.label;
     // Counted on the project the change is planned on, which it applies to or is refused for.
     const count = on ? placementsMissing(now.snap.state, now.def, at.prop, at.field) : 0;
-    const done = await apply([op], `${on ? 'Require' : 'Stop requiring'} ${label}`, now.snap);
-    if (done && count) setMissing({ key: requiredKey(at), text: `${count === 1 ? 'One placement is' : `${count} placements are`} missing ${label} now. Project health lists ${count === 1 ? 'it' : 'them'}.` });
+    // Refused because the default itself is empty, say: said here, by the switch, rather than in a toast.
+    const done = await claimRefusals(
+      (e) => {
+        if (!isRequiredRefusal(e.details)) return false;
+        setSaid({ key, text: e.message, refused: true });
+        return true;
+      },
+      () => apply([op], `${on ? 'Require' : 'Stop requiring'} ${label}`, now.snap)
+    );
+    if (done && count) setSaid({ key, text: `${count === 1 ? 'One placement is' : `${count} placements are`} missing ${label} now. Project health lists ${count === 1 ? 'it' : 'them'}.` });
   };
-  const missingNote = (at: RequiredAt) =>
-    missing?.key === requiredKey(at) ? (
+  const missingNote = (at: RequiredAt, schema: PropSchema) => {
+    if (said?.key !== requiredKey(at)) return null;
+    if (said.refused)
+      return (
+        <p className="contract-meta field-error contract-missing" role="alert">
+          {said.text}
+        </p>
+      );
+    if (!isRequired(schema, at.field)) return null;
+    return (
       <p className="faint contract-meta contract-missing" role="status">
-        {missing.text}{' '}
+        {said.text}{' '}
         <button className="link-btn" onClick={() => setState({ modal: { kind: 'health' } })}>
           Open Project health
         </button>
       </p>
-    ) : null;
+    );
+  };
   const move = (prop: string, delta: -1 | 1) => {
     const now = current(def.id);
     const op = now && movePropOp(now.def, prop, delta);
@@ -359,7 +379,7 @@ export function PropertiesSection({ def, level }: { def: ComponentDefinition; le
                     {TYPE_WORDS[schema.type] ?? schema.type} · {uses.length ? `shown by ${uses.join(', ')}` : 'not shown in the design'}
                   </span>
                   <RequiredSwitch schema={schema} at={{ prop }} name={schema.label} readOnly={readOnly} onChange={(on) => void require({ prop }, on)} />
-                  {missingNote({ prop })}
+                  {missingNote({ prop }, schema)}
                   {requirableFields(schema).length > 0 && (
                     <details className="contract-fields">
                       <summary className="faint contract-meta">
@@ -372,7 +392,7 @@ export function PropertiesSection({ def, level }: { def: ComponentDefinition; le
                               {fs.label} <span className="faint">· {TYPE_WORDS[fs.type] ?? fs.type}</span>
                             </span>
                             <RequiredSwitch schema={schema} at={{ prop, field }} name={`${schema.label} → ${fs.label}`} readOnly={readOnly} onChange={(on) => void require({ prop, field }, on)} />
-                            {missingNote({ prop, field })}
+                            {missingNote({ prop, field }, schema)}
                           </li>
                         ))}
                       </ul>
