@@ -4,12 +4,15 @@ Thanks for helping. This guide covers setting up the app, the checks every chang
 
 ## Setup
 
-You need Node and npm: Node 24.15 or newer in the 24 line is recommended, and the pinned tooling also supports 22.22.2+ and 26+. Nothing else: the app bundles its own runtime for the websites it creates.
+You need Node and npm: Node 24.15 or newer in the 24 line is recommended, and the pinned tooling also supports 22.22.2+ and 26+. The websites the app creates need nothing more: it bundles its own runtime for them.
 
 ```sh
-npm install
+npm ci
+npx playwright install chromium   # on Linux add --with-deps, as CI does
 npm run dev        # the app with hot reload, in a visible window
 ```
+
+Playwright's Chromium is for the browser tests in `npm test`, which skip themselves without it, and for the theme previews that `npm run pack` and `npm run dist` require. The WebKit cases skip themselves too unless you also install WebKit (`npx playwright install webkit`, with `--with-deps` on Linux); CI does not run them.
 
 `SITEORIGIN_USER_DATA=/some/folder` gives the app a separate settings and cache folder, which is useful for keeping test runs apart from your own projects. In development builds, `OPENAI_API_KEY` and `ANTHROPIC_API_KEY` from the environment are used when no key is saved in Settings.
 
@@ -24,11 +27,11 @@ npm run build             # the end-to-end scripts drive the built app in out/
 node tests/e2e/<script>.mjs   # the end-to-end script that covers your change, when there is one
 ```
 
-Add unit tests that cover the change, and give every bug fix a regression test that fails without the fix. Never weaken an assertion to make a change pass. `npm run test:e2e` runs the whole end-to-end chain (smoke, editing flows, code components, visual tour, export integrity); pull-request CI runs only the unit tests, on Linux, and the full suites are driven to green by a separate local stabilization pass rather than by every change.
+Add unit tests that cover the change, and give every bug fix a regression test that fails without the fix. Never weaken an assertion to make a change pass. `npm run test:e2e` runs the chain of end-to-end scripts listed in `package.json` (not every script in `tests/e2e/` is in it); pull-request CI runs only the unit tests the change can affect, on Linux, and the full suites are driven to green by a separate local stabilization pass rather than by every change.
 
-The end-to-end scripts in `tests/e2e/` drive the real Electron app with Playwright and fail on the first broken step. A few checks for tracked app bugs are wrapped in `knownFailure()`: they print `!! KNOWN FAILURE` without failing the run, and print a reminder to remove the wrapper once they pass. Each run creates a fresh scratch folder inside `WORK` (default: the OS temp folder) and deletes it when the script passes; a failed run keeps it and prints its path. Screenshots go to `SHOTS` (default: `so-e2e-shots` in the OS temp folder). Run one Electron script at a time.
+The end-to-end scripts in `tests/e2e/` drive the real Electron app with Playwright and fail on the first broken step. A check for a tracked app bug can be wrapped in `knownFailure()`: it prints `!! KNOWN FAILURE` without failing the run, and prints a reminder to remove the wrapper once it passes. Each run of a script that uses the harness's `scratch()` creates a fresh scratch folder inside `WORK` (default: the OS temp folder) and deletes it when the script passes; a failed run keeps it and prints its path. Screenshots go to `SHOTS` (default: `so-e2e-shots` in the OS temp folder). Run one Electron script at a time.
 
-Playwright launches are headless: the app never shows a window, takes focus or appears in the Dock, so tests never interrupt whoever is at the computer. `SITEORIGIN_HEADLESS=1` does the same for other drivers. When you are debugging a script yourself and want to watch it, set `SITEORIGIN_HEADED=1`, which takes precedence; never set it in a script. Test paths must not call `show()` or `focus()`, open external links or Finder, or use native dialogs (use the `window.builderTest` hooks or stub the dialog in the main process, as `export.mjs` does). On Linux, run the scripts under `xvfb-run -a`.
+Playwright launches are headless: the app never shows a window, takes focus or appears in the Dock, so tests never interrupt whoever is at the computer. `SITEORIGIN_HEADLESS=1` does the same for other drivers. When you are debugging a script yourself and want to watch it, set `SITEORIGIN_HEADED=1`, which takes precedence; never set it in a script. Test paths must not call `show()` or `focus()`. An automated launch answers every native chooser from the test, and records the links and reveals it would hand to the desktop instead of acting on them (`src/main/headless-desktop.ts`). Set chooser answers with the harness's `answerChoosers` (as `export.mjs` does) or the test driver's `desktop.setAnswers`; never patch Electron's `dialog` or `shell`. On Linux, run the scripts under `xvfb-run -a`.
 
 Other scripts:
 
@@ -36,9 +39,9 @@ Other scripts:
 | --- | --- |
 | `npm run test:export-build` | The export integrity test, plus a standalone `npm ci && npm run build` of the exported source (spec I07). Slower, and needs the npm registry. |
 | `npm run test:ai` | The real-provider agent test (OpenAI). It needs `OPENAI_API_KEY` and costs money: run it only when asked. |
-| `npm run pack && npm run test:packaged` | Launches the packaged app with a minimal `PATH` (no system Node) and creates and previews a project. Unlike the scripts above, it uses `WORK` itself (default `so-packaged` in the OS temp folder), clears it at the start and leaves its screenshot there, so point `WORK` only at a disposable folder. |
+| `npm run pack && npm run test:packaged` | Launches the packaged app with a minimal `PATH` (so it relies on its bundled Node) and creates and previews a project. On a Mac it expects the arm64 build; set `APP_BIN` to the executable for any other layout. Unlike the scripts above, it uses `WORK` itself (default `so-packaged` in the OS temp folder), clears it at the start and leaves its screenshot there, so point `WORK` only at a disposable folder. |
 | `npm run test:model-smoke` | An external model (Codex) takes the principal journey with only the test driver's MCP tools. It costs Codex usage: run it on purpose, after `npm run build` (see "Interaction coverage"). |
-| `DESIGN_CAPTURE=1 node tests/e2e/design-capture.mjs` | Screenshots of selected editor states, most in light and dark; `tests/e2e/design/` has one capture script per surface. |
+| `DESIGN_CAPTURE=1 node tests/e2e/design-capture.mjs` | After `npm run build`: screenshots of selected editor states, most in light and dark, written under the OS temp folder or to `DESIGN_CAPTURE_DIR`; `tests/e2e/design/` has more capture scripts, each for one surface. |
 
 Write end-to-end steps with `node:assert/strict` and the helpers in `tests/e2e/harness.mjs` (`eventually` instead of fixed sleeps, `MOD` for Cmd/Ctrl shortcuts), so a broken flow exits non-zero.
 
@@ -77,7 +80,7 @@ tool_timeout_sec = 300
 # default_tools_approval_mode = "approve"
 ```
 
-Keep `tool_timeout_sec` at 300 or more: starting a session can take up to three minutes on a cold machine. As printed, Codex asks before each tool that isn't read-only, which is the safe default for an interactive session. `codex exec` can't ask, so it refuses those tools; uncomment `default_tools_approval_mode = "approve"` to let them run unasked. Only do that knowingly. The session is a disposable copy of the app in a temporary profile of its own, and its choosers only reach the session's own folders. But the tools can do anything a person can do in the app, and that includes turning on Developer mode and writing code that the project's preview runs with your user's permissions. Then start Codex anywhere and ask it to use the tools, for example:
+Keep `tool_timeout_sec` at 300 or more: starting a session can take up to three minutes on a cold machine. As printed, and unless your own Codex settings already approve them, Codex asks before each tool that isn't read-only, which is the safe default for an interactive session. `codex exec` can't ask, so it refuses those tools; uncomment `default_tools_approval_mode = "approve"` to let them run unasked. Only do that knowingly. The session is a disposable copy of the app in a temporary profile of its own, and its choosers only reach the session's own folders. But the tools can do anything a person can do in the app, and that includes turning on Developer mode and writing code that the project's preview runs with your user's permissions. Then start Codex anywhere and ask it to use the tools, for example:
 
 > Use the SiteOrigin Builder MCP tools. Start a session at Welcome and tell me what the screen shows. Open New project, fill Project name with "MCP smoke", read the value back, and show me a screenshot of the dialog. Cancel with Escape. Use the old Project name ref again and report the error, then open the dialog again and fill the new field. Try a snapshot with maxNodes 0 and report the error. Then close the session.
 
@@ -87,9 +90,9 @@ Keep `tool_timeout_sec` at 300 or more: starting a session can take up to three 
 { "mcpServers": { "siteorigin_builder": { "command": "node", "args": ["/path/to/builder/tests/driver/mcp.ts"] } } }
 ```
 
-**What the tools do.** There is one tool per driver operation, named with `_` for `.` (`ui.click` is `ui_click`), and each tool's description says its kind: `observe` only reads, `act` does what a person could with real input, `fixture` prepares state no person made through the UI (chooser answers, sample files), and `session` manages the run. A call answers with the driver's own reply, both as structured content and as the same JSON in text. A failure is that reply marked as an error: `{ code, message, retryable, details }`, the same codes the Node tests see (`details.hint` often says what to do next, such as observing again after `STALE_REF`). `ui_snapshot` with `screenshot: true` saves screenshots, and `evidence_read` returns one by its id as an image. `ui_waitFor` waits for an element to appear or go. `wait_for` waits for a named condition (a save settled, the preview ready, an export finished), `project_summary` and `exports_inspect` check outcomes without the UI, and `evidence_log` and `evidence_save` return the run's record and write a replayable `replay.json`. `assistant_script` and `assistant_release` set what the scripted model answers (fixtures), and `assistant_observe` and `assistant_wait` read the assistant's runs by their IDs.
+**What the tools do.** There is one tool per driver operation, named with `_` for `.` (`ui.click` is `ui_click`), and each tool's description says its kind: `observe` looks at the app or session (a screenshot or `evidence_save` also writes a file), `act` does what a person could with real input, `fixture` prepares state no person made through the UI (chooser answers, sample files), and `session` manages the run. A call answers with the driver's own reply, both as structured content and as the same JSON in text. A failure is that reply marked as an error: `{ code, message, retryable, details }`, the same codes the Node tests see (`details.hint` often says what to do next, such as observing again after `STALE_REF`). `ui_snapshot` with `screenshot: true` saves screenshots, and `evidence_read` returns one by its id as an image. `ui_waitFor` waits for an element to appear or go. `wait_for` waits for a named condition (a save settled, the preview ready, an export finished), `project_summary` and `exports_inspect` check outcomes without the UI, and `evidence_log` and `evidence_save` return the run's record and write a replayable `replay.json`. `assistant_script` and `assistant_release` set what the scripted model answers (fixtures), and `assistant_observe` and `assistant_wait` read the assistant's runs by their IDs.
 
-Each session runs headless in its own profile and workspace, with a scripted AI provider that costs nothing. Over MCP the window can't be shown and the artifacts stay inside the session's run folder (`keepArtifacts: "always"` keeps them after it closes; `session_close` says where). After `session_close`, the next `session_start` starts a fresh session. If the client disconnects, the app and every process it started are ended, and the run's folder is removed, except for the artifacts the session was asked to keep. Lifecycle messages go to the server's stderr. `HOST_LOST` means the session's host process ended: whatever that call did may or may not have happened, and `session_start` starts again.
+Each session runs headless in its own profile and workspace, by default with a scripted AI provider that costs nothing. Over MCP the window can't be shown and the artifacts stay inside the session's run folder (`keepArtifacts: "always"` keeps them after it closes; `session_close` says where). After `session_close`, the next `session_start` starts a fresh session. If the client disconnects, the app and every process it started are ended, and the run's folder is removed, except for the artifacts the session was asked to keep. Lifecycle messages go to the server's stderr. `HOST_LOST` means the session's host process ended: whatever that call did may or may not have happened, and `session_start` starts again.
 
 `node tests/e2e/mcp.mjs` drives the same journey with the official MCP SDK client, as a regression test.
 
@@ -107,7 +110,7 @@ Each session runs headless in its own profile and workspace, with a scripted AI 
 
 ## Worktrees
 
-Parallel work uses git worktrees, each with its own install. A new worktree starts without `node_modules`: run `npm ci` in it before building or testing. The repository has no Daintree setup command, so new worktrees are ready as soon as they are created.
+Parallel work uses git worktrees, each with its own install. A new worktree starts without `node_modules`, and nothing installs it for you (the repository has no Daintree setup command): run `npm ci` in it before building or testing.
 
 The Daintree assistant's `/work-batch` skill (`.daintree/assistant/.claude/skills/work-batch/`) works the issue backlog this way: `/next-batch` picks, one `/work` agent per issue opens a PR and sees its CI through, and `/merge-prs` lands them.
 
@@ -125,7 +128,7 @@ The Daintree assistant's `/work-batch` skill (`.daintree/assistant/.claude/skill
 
 Keep each commit to one coherent change, with the checks above passing. Commit messages follow the existing style: a type, an optional scope and a plain summary, such as `feat(renderer): make the media gallery findable` or `fix(agent): retry a rate-limited stream once`, with a few bullets on what changed and why.
 
-Branch from `develop` and open pull requests against it, describing what changed for users and how you tested it, with screenshots for visible changes. CI runs the unit tests on Linux for every pull request (`.github/workflows/ci.yml`); it runs no type check or e2e, so run `npm run typecheck` and the e2e script that covers your change yourself.
+Branch from `develop` and open pull requests against it, describing what changed for users and how you tested it, with screenshots for visible changes. For every pull request, CI runs the unit tests the change can affect, on Linux (`.github/workflows/ci.yml` says when that is the whole suite); it runs no type check or e2e, so run `npm run typecheck` and the e2e script that covers your change yourself.
 
 ## Licence
 

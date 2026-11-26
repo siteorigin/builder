@@ -44,7 +44,7 @@ Downloadable installers are planned. For now, run Builder from source with Node 
 ```sh
 git clone https://github.com/siteorigin/builder.git
 cd builder
-npm install
+npm ci
 npm run dev
 ```
 
@@ -95,7 +95,7 @@ The assistant uses the same validated edit operations as the visual editor, so i
 
 It works within strict limits:
 
-- **Scope is explicit.** With an element selected, a request can only change that element. Anything wider needs your approval, and the assistant asks for it.
+- **Scope is explicit.** A request scoped to the selected element (the usual scope while something is selected) can only change that element. Anything wider needs your approval, and the assistant asks for it.
 - **Typed tools only.** It has no shell, filesystem or network access, so it can only act through the editor's own tools.
 - **No image pixels go to the model.** It refers to images by name and ID instead of uploading them.
 - **No custom code unless Developer mode is on.** By default it works with theme components and site styles.
@@ -177,8 +177,8 @@ kestrel-ridge/
 └── .siteorigin/              # private editor state, never exported
 ```
 
-- **Website files, ready to upload.** Every page is prerendered and checked for editor-only markup, and photo location and camera data are stripped.
-- **The editable source project.** It builds with plain `npm ci && npm run build`, and the output in `build/` works on any static host.
+- **Website files, ready to upload.** Every published page is prerendered (drafts are left out) and checked for editor-only markup, and photo location and camera data are stripped.
+- **The editable source project.** It builds with plain `npm ci && npm run build` on Node 22.17 or newer, and the output in `build/` works on any static host.
 
 Both exports work as a folder or a ZIP file, and an exported source ZIP opens straight back up as a working project.
 
@@ -220,7 +220,7 @@ Other providers will keep working through the same adapter, as optional extras r
 
 ## Development
 
-The [contributor guide](CONTRIBUTING.md) has the full test setup and house rules, and the [v0.1 specification](docs/specification-v0.1.md) has the full design. Development uses the same Node as above; the packaged app bundles its own.
+The [contributor guide](CONTRIBUTING.md) has the full test setup and house rules, and the [v0.1 specification](docs/specification-v0.1.md) records the original design decisions; where they differ (it plans one theme, for example), this README describes what ships. Development uses the same Node as above; the packaged app bundles its own. Some unit tests and the packaging commands also need Playwright's Chromium: `npx playwright install chromium` (on Linux add `--with-deps`; see [CONTRIBUTING.md](CONTRIBUTING.md#setup)).
 
 ```sh
 npm run dev                  # the app with hot reload
@@ -232,7 +232,7 @@ npm run eval:agent           # agent benchmark (--live costs money)
 npm run dist                 # installers: DMG, NSIS, AppImage
 ```
 
-End-to-end scripts run the real app headless, so nothing pops up while they run. In development builds, `OPENAI_API_KEY` and `ANTHROPIC_API_KEY` are read from the environment when no key is saved. Saved keys live in `api-keys.json` in the app's data folder, readable only by your user account on macOS and Linux. The app doesn't use the OS keychain, so it never triggers a system password prompt.
+End-to-end scripts run the real app headless, so nothing pops up while they run. `npm run test:packaged` clears the folder `WORK` points at before it starts, so point `WORK` only at a disposable folder, or leave it unset. In development builds, `OPENAI_API_KEY` and `ANTHROPIC_API_KEY` are read from the environment when no key is saved. Saved keys live in `api-keys.json` in the app's data folder, readable only by your user account on macOS and Linux (on Windows the data folder's permissions apply). The app doesn't use the OS keychain, so it never triggers a system password prompt.
 
 ### How it works
 
@@ -248,8 +248,8 @@ flowchart LR
 
 - **One edit pipeline.** Every change is an `EditOperation`, checked against the same schemas and scope rules before anything is written.
 - **Real preview.** The project's own Vite and SvelteKit dev server runs in an isolated utility process on loopback, so the canvas shows the actual site.
-- **Bundled runtime.** The app ships its own Node, npm and an offline copy of the starter's locked packages, so creating a project takes a second or two and needs no network.
+- **Bundled runtime.** The packaged app ships its own Node, npm and an offline copy of the starter's locked packages for its platform, so creating a project can set up its website tools with no network. Setup downloads anything the copies on this computer lack, and says so first.
 
 ## Licence
 
-SiteOrigin Builder is released under the [Apache License 2.0](LICENSE). The three built-in themes are MIT-0, so the code they generate in your site is yours to do whatever you like with.
+SiteOrigin Builder is released under the [Apache License 2.0](LICENSE). The three built-in themes are MIT-0, so the code they generate in your site is yours to do whatever you like with. Icons are from Lucide (ISC). The bundled fonts (DM Sans, Fraunces, Inter, JetBrains Mono, Lora, Playfair Display, Plus Jakarta Sans, Sora and Space Grotesk) are under the SIL Open Font License 1.1. The starter sample images are original, and free to use, modify and redistribute in websites built with SiteOrigin Builder (see `resources/starter-assets/NOTICE.md`).
