@@ -2137,6 +2137,10 @@ export class Controller {
    * which HEIC photos are converted, which large photos could be added as web-sized copies, which can't be added.
    */
   async reviewImport(paths?: string[], only?: 'image' | 'font' | 'document'): Promise<ImportReview | null> {
+    return timed('controller.reviewImport', () => this.reviewImportNow(paths, only), (r) => ({ rows: r?.rows.length ?? 0 }))();
+  }
+
+  private async reviewImportNow(paths?: string[], only?: 'image' | 'font' | 'document'): Promise<ImportReview | null> {
     const s = this.session;
     if (!s) return null;
     // A read-only project imports nothing: the import that follows says why.
@@ -2171,7 +2175,7 @@ export class Controller {
     const refused = files.length - picked.length;
     const reviewed = new Map((choices?.files ?? []).map((f) => [f.path, f]));
     // Files are written before their asset records exist, so the session holds off sweeping assets meanwhile.
-    return this.serialImport(() => s.withImport(async () => {
+    return this.serialImport(timed('controller.importAssets', () => s.withImport(async () => {
       const ids: string[] = [];
       const errors: string[] = refused ? [`${refused} file${refused === 1 ? ' was' : 's were'} skipped because ${refused === 1 ? 'it is' : 'they are'} not ${only === 'font' ? 'a font' : only === 'document' ? 'a document' : 'an image'}.`] : [];
       const notes: string[] = [];
@@ -2187,6 +2191,7 @@ export class Controller {
           errors.push(`${picked.length - i === 1 ? `${basename(f)} was` : `${picked.length - i} files were`} not added because the project was closed.`);
           break;
         }
+        const end = perf.span('import.file', { i });
         try {
           const r = reviewed.get(f);
           // Written only while the project is still open and this app's; the decoding and converting are done before.
@@ -2204,6 +2209,8 @@ export class Controller {
           }
         } catch (e) {
           errors.push((e as Error).message);
+        } finally {
+          end();
         }
       }
       if (backfills.length) {
@@ -2218,7 +2225,7 @@ export class Controller {
         if (!r.ok) return { ok: false, assetIds: [], message: r.error?.message };
       }
       return { ok: errors.length === 0, assetIds: ids, message: errors.join(' ') || undefined, ...(notes.length ? { note: notes.join(' ') } : {}) };
-    }));
+    }), (r) => ({ files: picked.length, added: r?.assetIds.length ?? 0 })));
   }
 
   /**

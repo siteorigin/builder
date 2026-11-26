@@ -1,8 +1,9 @@
 import { describe, expect, it } from 'vitest';
 import type { PerfRecord } from '../../src/shared/perf';
 import { Collector, Trace } from '../../scripts/perf/results';
-import { canvas, CHAT_CASES, CHAT_REPLY_CHECKPOINTS, CHAT_TYPED, chainFor, chat, chatReply, chatReplyFirst, chatReplyLast, chatSeed, edit, exportAgain, exportSite, expect as check, findHeading, launch, memory, MEMORY_EDITS, open, PANELS, panels, runChain, SHOWN_PANELS, type FixtureFacts, type Scenario, type ScenarioContext, switchProject } from '../../scripts/perf/scenarios';
+import { canvas, CHAT_CASES, CHAT_REPLY_CHECKPOINTS, CHAT_TYPED, chainFor, chat, chatReply, chatReplyFirst, chatReplyLast, chatSeed, copiesProblem, edit, expectedCopies, exportAgain, exportSite, expect as check, findHeading, importPhotos, launch, memory, MEMORY_EDITS, open, PANELS, panels, runChain, SHOWN_PANELS, type FixtureFacts, type Scenario, type ScenarioContext, switchProject } from '../../scripts/perf/scenarios';
 import type { MemoryProbe, MemoryReading } from '../../scripts/perf/memory';
+import { PHOTO_COUNT, photoSpec } from '../../scripts/perf/photos';
 import { FIXTURES } from '../../scripts/perf/fixtures';
 import { framesOf } from '../../scripts/perf/scenarios';
 
@@ -29,6 +30,8 @@ describe('the scenario chain', () => {
     // Last of those that follow open: the others measure the fixture's own copy, which switch leaves.
     expect(chainFor(['switch', 'edit']).map((s) => s.name)).toEqual(['launch', 'open', 'edit', 'switch']);
     expect(chainFor(['canvas']).map((s) => s.name)).toEqual(['launch', 'open', 'canvas']);
+    expect(chainFor(['import']).map((s) => s.name)).toEqual(['launch', 'open', 'import']);
+    expect(chainFor(['switch', 'import']).map((s) => s.name)).toEqual(['launch', 'open', 'import', 'switch']);
     expect(chainFor([])).toEqual([]);
     expect(() => chainFor(['nope'])).toThrow('Unknown scenario');
   });
@@ -731,6 +734,117 @@ describe('canvas metrics', () => {
     expect(framesOf([0, 16.7, 33.4, 66.8, 83.5, 150.3], [60, 75], 16.7)).toEqual({ frames: 6, droppedFrames: 4, longestFrameMs: 150.3 - 83.5, longTasks: 2, longTaskMs: 135 });
     expect(framesOf([0, 16, 34, 50], [], 16.7).droppedFrames).toBe(0);
     expect(framesOf([], [], 16.7)).toEqual({ frames: 0, droppedFrames: 0, longestFrameMs: 0, longTasks: 0, longTaskMs: 0 });
+  });
+});
+
+describe('import metrics', () => {
+  /** A web-sized copy of photo `i` and then its copies, from `at`: 100 ms and 300 ms of the worker's time. */
+  const photo = (i: number, at: number) => [
+    span('import.file', at + 450, 440, { attrs: { i } }),
+    m('media.request', at + 110, { attrs: { kind: 'web', ms: 100, workMs: 95, cpuMs: 150, cpuStart: (i - 1) * 850, cpuEnd: (i - 1) * 850 + 150, peakRss: 200_000_000 + i, worker: 7, decodes: 2, encodes: 1, decodeMs: 30 + i, webCopyMs: 60, jpegMs: 0, pngMs: 0, webpMs: 0, avifMs: 0 } }),
+    m('media.request', at + 420, { attrs: { kind: 'variants', ms: 300, workMs: 290, cpuMs: 700, cpuStart: (i - 1) * 850 + 150, cpuEnd: i * 850, peakRss: 300_000_000 + i, worker: 7, decodes: 15, encodes: 14, decodeMs: 5, webCopyMs: 0, jpegMs: 40, pngMs: 0, webpMs: 200 + i, avifMs: 50, extra: 'x' } })
+  ];
+  const at0 = 10_000;
+  const records = () => [
+    r('scenario.start', at0, { attrs: { scenario: 'import' } }),
+    m('scenario.start', at0, { attrs: { scenario: 'import' } }),
+    span('controller.reviewImport', at0 + 90, 80),
+    r('import.requested', at0 + 500, { attrs: { files: PHOTO_COUNT, revision: 4 } }),
+    ...Array.from({ length: PHOTO_COUNT }, (_, n) => photo(n + 1, at0 + 600 + n * 500)).flat(),
+    span('session.apply', at0 + 10_900, 200),
+    span('main.stall', at0 + 10_700, 80),
+    span('controller.importAssets', at0 + 11_000, 10_400, { dc: { 'fs.writes': 220, 'fs.durableWrites': 220, 'fs.fsyncs': 440 } }),
+    r('renderer.commit', at0 + 11_050, { attrs: { revision: 5 } }),
+    r('import.done', at0 + 11_200, { attrs: { scenario: 'import', revision: 5, images: 20, variants: 280 } }),
+    m('import.done', at0 + 11_200, { attrs: { scenario: 'import', revision: 5, images: 20, variants: 280 } }),
+    // After the window: another media request, a stall and a commit are none of the import's.
+    m('media.request', at0 + 12_000, { attrs: { kind: 'icons', ms: 50, workMs: 50, cpuMs: 50, cpuStart: 0, cpuEnd: 99_999, peakRss: 900_000_000, worker: 9, decodes: 1, encodes: 1, decodeMs: 1, webCopyMs: 0, jpegMs: 0, pngMs: 0, webpMs: 0, avifMs: 0 } }),
+    span('main.stall', at0 + 12_100, 500),
+    m('scenario.end', at0 + 13_000, { attrs: { scenario: 'import' } })
+  ];
+  const trace = (drop: (x: PerfRecord) => boolean = () => false) => new Trace(records().filter((x) => !drop(x)));
+  const show = (got: ReturnType<Scenario['measure']>) => Object.fromEntries(Object.entries(got.metrics).map(([k, v]) => [k, `${v.value} ${v.unit}`]));
+
+  it('time the import from the editor asking for it to the commit that shows every photo, and add up what the worker did', () => {
+    const got = importPhotos.measure(trace(), facts);
+    expect(got.missing).toEqual([]);
+    expect(show(got)).toEqual({
+      'import.review': '80 ms',
+      'import.total': '10550 ms',
+      'import.firstShown': '10550 ms',
+      'import.main': '10400 ms',
+      'import.apply': '200 ms',
+      'import.image.ms': '440 ms',
+      'import.image.webMs': '100 ms',
+      'import.image.webDecodeMs': '40.5 ms',
+      'import.image.webCopyMs': '60 ms',
+      'import.image.copiesMs': '300 ms',
+      'import.image.copiesDecodeMs': '5 ms',
+      'import.image.jpegMs': '40 ms',
+      'import.image.webpMs': '210.5 ms',
+      'import.image.avifMs': '50 ms',
+      'import.workerRequests': '40 count',
+      'import.decodes': '340 count',
+      'import.encodes': '300 count',
+      'import.workerCpuMs': '17000 ms',
+      'import.workers': '1 count',
+      'import.workerPeakRss': '300000020 bytes',
+      'import.fileWrites': '220 count',
+      'import.durableWrites': '220 count',
+      'import.fsyncs': '440 count',
+      'import.images': '20 count',
+      'import.variants': '280 count',
+      'import.mainStallMax': '80 ms'
+    });
+  });
+
+  it('time the first photos shown apart from the last, and add each worker’s peak memory', () => {
+    const t = trace();
+    // Photos arriving in two steps (revisions 5 and 6), from two workers.
+    const two = new Trace(
+      t.records.map((x) => (x.name === 'import.done' ? { ...x, attrs: { ...x.attrs, revision: 6 } } : x.name === 'media.request' && x.attrs?.kind === 'variants' && Number(x.attrs.peakRss) % 2 ? { ...x, attrs: { ...x.attrs, worker: 8 } } : x)).concat([r('renderer.commit', at0 + 11_100, { attrs: { revision: 6 } }), r('renderer.commit', at0 + 4_000, { attrs: { revision: 5 } })])
+    );
+    const got = importPhotos.measure(new Trace([...two.records].sort((a, b) => a.t - b.t)), facts);
+    expect(got.missing).toEqual([]);
+    expect(got.metrics['import.firstShown'].value).toBe(3500);
+    expect(got.metrics['import.total'].value).toBe(10_600);
+    expect(got.metrics['import.workers'].value).toBe(2);
+    // Each worker's CPU from its first request's start to its last answer: 0 to 17,000 and 150 to 16,150.
+    expect(got.metrics['import.workerCpuMs'].value).toBe(17_000 + 16_000);
+    expect(got.metrics['import.workerPeakRss'].value).toBe(300_000_020 + 300_000_019);
+  });
+
+  it('name what is missing instead of reporting an import with less in it', () => {
+    for (const name of ['import.requested', 'import.done', 'controller.importAssets', 'controller.reviewImport', 'session.apply']) expect(importPhotos.measure(trace((x) => x.name === name), facts).missing).toContain(name);
+    expect(importPhotos.measure(trace((x) => x.name === 'renderer.commit'), facts).missing).toEqual(expect.arrayContaining(['renderer.commit (the import)']));
+    // A photo whose span or worker requests are missing is not a faster import.
+    expect(importPhotos.measure(trace((x) => x.name === 'import.file' && x.attrs?.i === 3), facts).missing).toEqual([`import.file spans (${PHOTO_COUNT - 1} of ${PHOTO_COUNT})`]);
+    expect(importPhotos.measure(trace((x) => x.name === 'media.request' && x.attrs?.kind === 'web' && x.t < at0 + 2000), facts).missing).toEqual([`media.request marks (${PHOTO_COUNT - 3} web-sized and ${PHOTO_COUNT} copies of ${PHOTO_COUNT} photos)`]);
+    expect(importPhotos.measure(trace((x) => x.name === 'import.file' && x.attrs?.i === 3), facts).metrics['import.image.ms']).toBeUndefined();
+  });
+
+  it('check each photo’s copies by format and width', () => {
+    expect(expectedCopies(2560)).toEqual({ jpg: [160, 480, 960, 1440], webp: [160, 480, 960, 1440, 2560], avif: [160, 480, 960, 1440, 2560] });
+    // 1440 is not meaningfully smaller than 1500.
+    expect(expectedCopies(1500).jpg).toEqual([160, 480, 960]);
+    const rec = (files: string[]) => ({ id: 'a', name: 'photo 01', file: 'static/assets/photo-01-abc.jpg', mime: 'image/jpeg', kind: 'image', width: 2560, height: 1920, variants: files.map((f) => ({ width: Number(f.split('.')[0]), file: `static/assets/photo-01-abc-${f.split('.')[0]}w.${f.split('.')[1]}` })) });
+    const jpg = ['160.jpg', '480.jpg', '960.jpg', '1440.jpg'];
+    const webp = ['160.webp', '480.webp', '960.webp', '1440.webp', '2560.webp'];
+    const avif = webp.map((f) => f.replace('webp', 'avif'));
+    expect(copiesProblem(rec([...jpg, ...webp]))).toBeNull();
+    expect(copiesProblem(rec([...jpg, ...webp, ...avif]))).toBeNull();
+    expect(copiesProblem(rec([...jpg, ...webp.slice(0, 4)]))).toBe('webp copies at 160, 480, 960, 1440, not 160, 480, 960, 1440, 2560');
+    expect(copiesProblem(rec([...jpg, ...webp, ...avif.slice(1)]))).toBe('AVIF copies at 480, 960, 1440, 2560, not 160, 480, 960, 1440, 2560 or none');
+    expect(copiesProblem(rec([...jpg.slice(1), ...webp]))).toBe('jpg copies at 480, 960, 1440, not 160, 480, 960, 1440');
+    expect(copiesProblem(rec([...jpg, ...webp, '480.png']))).toMatch(/^a copy in another format/);
+    expect(copiesProblem({ ...rec([]), variants: undefined })).toBe('jpg copies at no widths, not 160, 480, 960, 1440');
+  });
+
+  it('turn some of the photos and credit others, by number', () => {
+    const specs = Array.from({ length: PHOTO_COUNT }, (_, n) => photoSpec(n + 1));
+    expect(specs.filter((x) => x.turned).length).toBe(5);
+    expect(specs.filter((x) => x.credited).length).toBe(4);
+    expect(new Set(specs.map((x) => x.name)).size).toBe(PHOTO_COUNT);
   });
 });
 

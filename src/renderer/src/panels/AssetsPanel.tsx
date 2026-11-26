@@ -18,6 +18,7 @@ import { formatBytes, plural } from '../lib/storage';
 import { sameNameLabels } from '../lib/same-name';
 import { FreeSpaceDialog, StorageSummary, useProjectStorage } from './AssetStorage';
 import { assetArrived, reviewImport } from '../lib/import-review';
+import { perfMark } from '../lib/perf';
 import { documentDetails, documentLabels, documentName, libraryDocuments } from '../lib/documents';
 import { altChecks } from '../lib/alt-review';
 import { imageUseRows, type ImageUseRow, type PlaceLabel, type UseField } from '../lib/asset-uses';
@@ -648,6 +649,7 @@ export function AssetsPanel({ narrow }: { narrow: boolean }) {
       const plan = await reviewImport(paths, only).catch((e: Error) => (toast(`The files couldn’t be added: ${e.message}`, 'error'), null));
       if (!plan) return { ids: [], added: [], failed: false, reviewed: false, chosen: 0 };
       setAdding(true);
+      perfMark('import.requested', { files: plan.paths.length, revision: getState().snapshot?.revision ?? null });
       const r: { ok: boolean; assetIds: string[]; message?: string; note?: string } = await api.project.importAssets(plan.paths, only, plan.choices).catch((e: Error) => ({ ok: false, assetIds: [] as string[], message: `The files couldn’t be added: ${e.message}` }));
       // What arrived is told by kind once the new records reach this window (they come in one snapshot).
       if (r.assetIds.length) await assetArrived(r.assetIds[r.assetIds.length - 1], plan.choices.opening);

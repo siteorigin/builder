@@ -378,6 +378,28 @@ describe('media worker client', () => {
     client.stop();
   });
 
+  it('asks the worker what a request cost only when someone wants to know, and passes its account on', async () => {
+    const { workers, spawn } = spawner();
+    const plain = createVariantClient(spawn);
+    const p = plain.variants(Buffer.from('a'), 'image/jpeg', 2000);
+    await tick();
+    expect(workers[0].sent[0].stats).toBeUndefined();
+    workers[0].reply({ id: workers[0].sent[0].id, ok: true, variants: [] });
+    await p;
+    plain.stop();
+    const seen: unknown[] = [];
+    const counted = createVariantClient(spawn, { onStats: (kind, stats, ms) => seen.push([kind, stats.decodes, ms >= 0]) });
+    const web = counted.webCopy({ data: Buffer.from('b'), mime: 'image/jpeg' }, 2560);
+    await tick();
+    const req = workers[1].sent[0];
+    expect(req.stats).toBe(true);
+    const stats = { pid: 1, ms: 5, cpuMs: 9, cpuStartMs: 100, cpuEndMs: 109, peakRss: 1000, decodes: 2, encodes: 1, decodeMs: 1, webCopyMs: 3, formatMs: {} };
+    workers[1].reply({ id: req.id, ok: false, error: 'no', unreadable: true, stats });
+    expect(await web).toEqual({ ok: false, unreadable: true });
+    expect(seen).toEqual([['web', 2, true]]);
+    counted.stop();
+  });
+
   it('handles one picture at a time, so a batch never holds every photo decoded at once', async () => {
     const { workers, spawn } = spawner();
     const client = createVariantClient(spawn);
@@ -704,6 +726,23 @@ describe('web-sized copies', () => {
     expect([await isOpaque(clear), await isOpaque(solid), await isOpaque(await halves(100, 50, 'jpeg'))]).toEqual([false, true, true]);
   });
 
+  it('says what a request cost when asked: its decodes and encodes, and the time each format took', async () => {
+    const photo = await halves(3000, 2000, 'jpeg');
+    const web = await handleVariantRequest({ id: 1, kind: 'web', data: new Uint8Array(photo), mime: 'image/jpeg', width: 0, maxEdge: 2560, stats: true });
+    // Checked readable, then made: two decodes and one encode.
+    expect(web.stats).toMatchObject({ pid: process.pid, decodes: 2, encodes: 1, formatMs: {} });
+    expect(web.stats!.webCopyMs).toBeGreaterThan(0);
+    expect(web.stats!.peakRss).toBeGreaterThan(1_000_000);
+    expect(web.stats!.cpuEndMs - web.stats!.cpuStartMs).toBeCloseTo(web.stats!.cpuMs, 6);
+    const copies = await handleVariantRequest({ id: 2, data: new Uint8Array(photo), mime: 'image/jpeg', width: 3000, check: true, stats: true });
+    expect(copies.ok && copies.variants.length).toBeGreaterThan(0);
+    const made = copies.ok ? copies.variants.length : 0;
+    // Each copy its own pipeline from the photo; every set is made, the AVIF one kept or not.
+    expect(copies.stats).toMatchObject({ decodes: 1 + 4 + 5 + 5, encodes: 4 + 5 + 5 });
+    expect(made === 9 || made === 14).toBe(true);
+    expect(Object.keys(copies.stats!.formatMs).sort()).toEqual(['image/avif', 'image/jpeg', 'image/webp']);
+  });
+
   it('is deterministic', async () => {
     const photo = await halves(3000, 2000, 'jpeg');
     expect((await renderWebCopy(photo)).data.equals((await renderWebCopy(photo)).data)).toBe(true);
@@ -722,6 +761,7 @@ describe('web-sized copies', () => {
       expect(opaque).toMatchObject({ id: 3, ok: true, opaque: true });
       const seeThrough = await sharp({ create: { width: 20, height: 20, channels: 4, background: { r: 0, g: 0, b: 0, alpha: 0 } } }).png().toBuffer();
       expect(await handleVariantRequest({ id: 4, kind: 'opaque', data: new Uint8Array(seeThrough), mime: 'image/png', width: 0 })).toMatchObject({ id: 4, ok: true, opaque: false });
+      expect(opaque.stats).toBeUndefined();
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }

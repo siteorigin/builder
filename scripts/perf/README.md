@@ -157,6 +157,27 @@ and `cleanup` (the staging folder removed). Counts: files and bytes the export r
 library's files and bytes beside them, and the files and bytes of the exported folder; the longest main-process stall.
 The fixture has no drafts, and only the folder format is measured.
 
+**`import`** (after `open`): in Assets, Add images, with the chooser answered (through the driver) by 20 photographs of
+12 megapixels drawn by `photos.ts` (4032 × 3024 JPEGs of about 3.2 MB with a Display P3 profile, every fourth turned by
+its EXIF orientation, every fifth carrying an author and copyright; made once per machine under `.tmp/perf/photos/`), and
+the import review confirmed as it opens, which adds each as a web-sized copy; until every photo is in the library with
+all its copies. Checks: the review offers all 20 a web-sized copy, 20 images arrive, each a 2560-pixel JPEG turned
+upright, with JPEG copies at each smaller width, WebP at those and its full width and AVIF the same or none, every file
+on disk the size and format its record says, the credited photos' WebP and AVIF copies carrying their credits, each
+original and its smallest copy loading from the preview, and Assets saying it added 20 images. Times from
+`import.requested` (the editor sending the confirmed import): `total` (to the commit showing every photo), `firstShown`
+(to the first commit showing any), `main` (`controller.importAssets`), `apply` (the one change that adds them), `review`
+(`controller.reviewImport`, before the request); per photo (medians): `image.ms` (its time in the main process),
+`image.webMs`, `image.webDecodeMs`, `image.webCopyMs` (its web-sized copy in the media worker: the whole request, its
+decodes, its resize and encode) and `image.copiesMs`, `image.copiesDecodeMs`, `image.jpegMs`, `image.webpMs`,
+`image.avifMs` (its responsive copies: the whole request, its decodes, and each format's pipelines added up). The worker
+reports each request it answers (`media.request`, with `stats` asked for only when marks are on): `workerRequests`,
+`decodes` (pixel decodes of an encoded picture), `encodes`, `workerCpuMs` (CPU each worker used, every thread, from the first
+request it was given to the last it answered, added up over the workers: divided by
+`total`, the cores the import kept busy), `workers` and `workerPeakRss` (each worker's peak resident memory, added up).
+Counts: file writes, durable writes and fsyncs in the import, `images` and `variants` added; the longest main-process
+stall.
+
 **`memory`** (after `launch`, and only on its own: see Memory below): the memory of every process of the app at rest on
 a fresh Welcome (`welcome`); the fixture opened from its card as `open` opens it, untimed, sampled throughout for its
 peak (`open.peak`); at rest on the canvas (`canvas`); after one change of the home hero's Heading in the Inspector

@@ -4,7 +4,7 @@
  */
 import { readFile } from 'node:fs/promises';
 import sharp, { type Sharp } from 'sharp';
-import { MAX_VARIANT_PIXELS, WEB_EDGE, webCopySize, type IconSpec, type VariantReply, type VariantRequest } from './media-client';
+import { MAX_VARIANT_PIXELS, WEB_EDGE, webCopySize, type IconSpec, type MediaStats, type VariantReply, type VariantRequest } from './media-client';
 import { isAnimatedPng } from './media';
 import { cleanPhoto, creditText, type CreditText } from './photo-metadata';
 import { sanitizeSvg } from './svg';
@@ -28,6 +28,23 @@ export interface Variant extends VariantTarget {
 
 // One picture at a time goes through the worker, so libvips' operation cache would only hold memory.
 sharp.cache(false);
+
+/** What a request's pictures cost, counted as they are made (for MediaStats). */
+export type Tally = Pick<MediaStats, 'decodes' | 'encodes' | 'decodeMs' | 'webCopyMs' | 'formatMs'>;
+export const newTally = (): Tally => ({ decodes: 0, encodes: 0, decodeMs: 0, webCopyMs: 0, formatMs: {} });
+
+/** `work`, timed into `tally` (when there is one) by `into`, as one decode of an encoded picture. */
+async function tallied<T>(tally: Tally | undefined, into: (t: Tally, ms: number) => void, work: () => Promise<T>): Promise<T> {
+  if (!tally) return work();
+  const start = performance.now();
+  try {
+    return await work();
+  } finally {
+    tally.decodes++;
+    into(tally, performance.now() - start);
+  }
+}
+const asDecode = (t: Tally, ms: number) => void (t.decodeMs += ms);
 
 /**
  * How each format is written: JPEG and PNG as they always were, WebP and AVIF at qualities that look like the JPEG
@@ -66,7 +83,7 @@ const EXIF_TEXT_NOTE = '(ASCII, 1 components, 1 bytes)';
  * original with stills. `targets` asks for exactly those copies (making again the ones a library image already
  * lists), each never wider than the picture, with no choosing between sets; one that fails is left out alone.
  */
-export async function renderVariants(buf: Buffer, mime: string, width: number, targets?: VariantTarget[]): Promise<Variant[]> {
+export async function renderVariants(buf: Buffer, mime: string, width: number, targets?: VariantTarget[], tally?: Tally): Promise<Variant[]> {
   if (!isCopyMime(mime)) return [];
   if (mime === 'image/png' && isAnimatedPng(buf)) return [];
   if (mime === 'image/avif' && avifBrands(buf).includes('avis')) return [];
@@ -87,7 +104,8 @@ export async function renderVariants(buf: Buffer, mime: string, width: number, t
       if (credits.artist || credits.copyright) img = img.withExif({ IFD0: { ...(credits.artist ? { Artist: exif(credits.artist) } : {}), ...(credits.copyright ? { Copyright: exif(credits.copyright) } : {}) } });
       if (credits.xmp) img = img.withXmp(credits.xmp);
     }
-    return { ...t, data: await ENCODE[t.mime](img).toBuffer() };
+    const data = await tallied(tally, (n, ms) => ((n.encodes++), (n.formatMs[t.mime] = (n.formatMs[t.mime] ?? 0) + ms)), () => ENCODE[t.mime](img).toBuffer());
+    return { ...t, data };
   };
   const out: Variant[] = [];
   if (targets) {
@@ -133,17 +151,17 @@ export interface WebCopy {
  * WEB_EDGE on its longest side (never enlarged), in sRGB and without metadata. A picture with see-through pixels
  * stays a PNG; any other becomes a JPEG at the quality of the responsive copies. Deterministic.
  */
-export async function renderWebCopy(buf: Buffer, maxEdge = WEB_EDGE): Promise<WebCopy> {
+export async function renderWebCopy(buf: Buffer, maxEdge = WEB_EDGE, tally?: Tally): Promise<WebCopy> {
   const open = () => sharp(buf, { limitInputPixels: MAX_VARIANT_PIXELS, failOn: 'error' });
   // An alpha channel that is fully opaque everywhere (screenshots, many exported photos) is no reason to stay a PNG.
-  const clear = !(await isOpaque(buf));
+  const clear = !(await isOpaque(buf, tally));
   const meta = await open().metadata();
   const shown = { width: meta.autoOrient?.width ?? meta.width ?? 0, height: meta.autoOrient?.height ?? meta.height ?? 0 };
   // Exactly the size webCopySize gives (as an import review shows it), never enlarged.
   const size = webCopySize(shown.width, shown.height, maxEdge);
   const img = open().autoOrient();
   if (size.width !== shown.width || size.height !== shown.height) img.resize({ width: size.width, height: size.height, fit: 'fill' });
-  const { data, info } = await (clear ? img.png() : img.flatten({ background: '#ffffff' }).jpeg({ quality: 82 })).toBuffer({ resolveWithObject: true });
+  const { data, info } = await tallied(tally, (t, ms) => ((t.encodes++), (t.webCopyMs += ms)), () => (clear ? img.png() : img.flatten({ background: '#ffffff' }).jpeg({ quality: 82 })).toBuffer({ resolveWithObject: true }));
   return { data, mime: clear ? 'image/png' : 'image/jpeg', width: info.width, height: info.height };
 }
 
@@ -151,8 +169,8 @@ export async function renderWebCopy(buf: Buffer, maxEdge = WEB_EDGE): Promise<We
  * Whether the decoder can read the picture's image data, not just its header: a file whose structure is whole can
  * still hold pixel data no browser can decode. Decoded small, so a large photo costs little.
  */
-export async function isReadable(buf: Buffer, mime?: string): Promise<boolean> {
-  const decode = (pages?: number) => sharp(buf, { limitInputPixels: MAX_VARIANT_PIXELS, failOn: 'error', ...(pages ? { pages } : {}) }).resize(16, 16, { fit: 'inside' }).raw().toBuffer();
+export async function isReadable(buf: Buffer, mime?: string, tally?: Tally): Promise<boolean> {
+  const decode = (pages?: number) => tallied(tally, asDecode, () => sharp(buf, { limitInputPixels: MAX_VARIANT_PIXELS, failOn: 'error', ...(pages ? { pages } : {}) }).resize(16, 16, { fit: 'inside' }).raw().toBuffer());
   // Too many pixels to decode here says nothing about the file. Nor does an AVIF the decoder does not recognise (an
   // image sequence, an unusual major brand); a file declaring no AVIF brand is not the picture it claimed to be.
   const unknown = (e: unknown) => /pixel limit/i.test((e as Error).message) || (/unsupported image format/i.test((e as Error).message) && mime === 'image/avif' && avifBrands(buf).some((b) => b === 'avif' || b === 'avis'));
@@ -184,10 +202,10 @@ function avifBrands(buf: Buffer): string[] {
 }
 
 /** Whether every pixel is opaque: a picture without an alpha channel always is. */
-export async function isOpaque(buf: Buffer): Promise<boolean> {
+export async function isOpaque(buf: Buffer, tally?: Tally): Promise<boolean> {
   const img = sharp(buf, { limitInputPixels: MAX_VARIANT_PIXELS, failOn: 'error' });
   if (!(await img.metadata()).hasAlpha) return true;
-  return (await img.stats()).isOpaque;
+  return (await tallied(tally, asDecode, () => img.stats())).isOpaque;
 }
 
 /**
@@ -255,11 +273,26 @@ function packIco(images: ReadonlyArray<{ size: number; png: Buffer }>): Buffer {
   return Buffer.concat([directory, ...images.map((i) => i.png)]);
 }
 
-/** What the media worker does with one request; the worker process only carries messages to and from it. */
+/**
+ * What the media worker does with one request; the worker process only carries messages to and from it. With `stats`
+ * asked for, the reply says what the request cost (MediaStats).
+ */
 export async function handleVariantRequest(m: VariantRequest): Promise<VariantReply> {
+  if (!m.stats) return handle(m);
+  const tally = newTally();
+  const start = performance.now();
+  const cpu = process.cpuUsage();
+  const reply = await handle(m, tally);
+  const used = process.cpuUsage();
+  const ms = (u: NodeJS.CpuUsage) => (u.user + u.system) / 1000;
+  const stats = { pid: process.pid, ms: performance.now() - start, cpuMs: ms(used) - ms(cpu), cpuStartMs: ms(cpu), cpuEndMs: ms(used), peakRss: process.resourceUsage().maxRSS * 1024, ...tally };
+  return { ...reply, stats };
+}
+
+async function handle(m: VariantRequest, tally?: Tally): Promise<VariantReply> {
   try {
     const buf = m.path ? await readFile(m.path) : Buffer.from(m.data.buffer, m.data.byteOffset, m.data.byteLength);
-    if (m.kind === 'opaque') return { id: m.id, ok: true, variants: [], opaque: await isOpaque(buf) };
+    if (m.kind === 'opaque') return { id: m.id, ok: true, variants: [], opaque: await isOpaque(buf, tally) };
     if (m.kind === 'icons') {
       // Whatever stops the drawing here (a picture the decoder refuses, or too many pixels to decode) is the picture's
       // doing, and would be the same every time: the icons are then made from the monogram instead.
@@ -272,12 +305,12 @@ export async function handleVariantRequest(m: VariantRequest): Promise<VariantRe
     }
     if (m.kind === 'web') {
       // A picture the decoder refuses is said to be unreadable; anything failing after that is the copy failing.
-      if (!(await isReadable(buf, m.path ? 'image/tiff' : m.mime))) return { id: m.id, ok: false, error: 'The picture could not be decoded.', unreadable: true };
-      const web = await renderWebCopy(buf, m.maxEdge);
+      if (!(await isReadable(buf, m.path ? 'image/tiff' : m.mime, tally))) return { id: m.id, ok: false, error: 'The picture could not be decoded.', unreadable: true };
+      const web = await renderWebCopy(buf, m.maxEdge, tally);
       return { id: m.id, ok: true, variants: [], web: { ...web, data: new Uint8Array(web.data.buffer, web.data.byteOffset, web.data.byteLength) } };
     }
-    if (m.check && !(await isReadable(buf, m.mime))) return { id: m.id, ok: false, error: 'The picture could not be decoded.', unreadable: true };
-    const variants = await renderVariants(buf, m.mime, m.width, m.targets);
+    if (m.check && !(await isReadable(buf, m.mime, tally))) return { id: m.id, ok: false, error: 'The picture could not be decoded.', unreadable: true };
+    const variants = await renderVariants(buf, m.mime, m.width, m.targets, tally);
     return { id: m.id, ok: true, variants: variants.map((v) => ({ width: v.width, mime: v.mime, data: new Uint8Array(v.data.buffer, v.data.byteOffset, v.data.byteLength) })) };
   } catch (e) {
     return { id: m.id, ok: false, error: (e as Error).message };

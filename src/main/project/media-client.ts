@@ -49,6 +49,36 @@ export interface VariantRequest {
   icons?: IconSpec[];
   /** For icons: the picture is a file of the project's, cleaned here first when it is SVG (see renderSiteIcons). */
   untrusted?: boolean;
+  /** Report what the request cost in the worker (MediaStats), for the benchmark's marks. */
+  stats?: boolean;
+}
+
+/**
+ * What one request cost in the worker, reported when it was asked for (`stats`). Times are the request's own, from its
+ * message arriving to its reply; the decode and format times are what its pipelines took, added up.
+ */
+export interface MediaStats {
+  pid: number;
+  ms: number;
+  /** CPU time the worker process used meanwhile, every thread of it, user and system. */
+  cpuMs: number;
+  /**
+   * The CPU time the worker process had used when the request arrived and when it was answered: what requests that
+   * overlap used together is the last answer's less the first arrival's, never their own times added up.
+   */
+  cpuStartMs: number;
+  cpuEndMs: number;
+  /** The worker process's peak resident memory so far, in bytes. */
+  peakRss: number;
+  /** Pixel decodes of an encoded picture (a header read is not one), and copies encoded. */
+  decodes: number;
+  encodes: number;
+  /** Decoding a picture to check it or to read it for its copies. */
+  decodeMs: number;
+  /** Making a web-sized copy: its decode, resize and encode. */
+  webCopyMs: number;
+  /** Making each format's responsive copies (each one's decode and resize included when it has its own). */
+  formatMs: Partial<Record<CopyMime, number>>;
 }
 
 /** One square PNG icon made from a picture: its size, and the colour see-through parts are filled with, if any. */
@@ -62,9 +92,10 @@ export interface IconSpec {
 /** The website's icons the worker made, in the order asked for, or why there are none: `unreadable` only when the decoder refused the picture. */
 export type IconsResult = { ok: true; icons: Buffer[] } | { ok: false; unreadable: boolean };
 
-export type VariantReply =
+export type VariantReply = (
   | { id: number; ok: true; variants: Array<{ width: number; mime: CopyMime; data: Uint8Array }>; web?: { data: Uint8Array; mime: 'image/jpeg' | 'image/png'; width: number; height: number }; opaque?: boolean; icons?: Uint8Array[] }
-  | { id: number; ok: false; error: string; unreadable?: boolean };
+  | { id: number; ok: false; error: string; unreadable?: boolean }
+) & { stats?: MediaStats };
 
 /** A picture checked by the worker: unreadable only when the decoder refused it, never because the worker failed. */
 export interface Inspected {
@@ -113,7 +144,13 @@ export interface VariantClient {
   stop(): void;
 }
 
-export function createVariantClient(spawn: () => WorkerHandle, opts: { timeoutMs?: number; copiesTimeoutMs?: number; webTimeoutMs?: number; idleMs?: number } = {}): VariantClient {
+/** What a client was asked for, as the benchmark's marks name it. */
+export type MediaKind = NonNullable<VariantRequest['kind']>;
+
+export function createVariantClient(
+  spawn: () => WorkerHandle,
+  opts: { timeoutMs?: number; copiesTimeoutMs?: number; webTimeoutMs?: number; idleMs?: number; onStats?: (kind: MediaKind, stats: MediaStats, ms: number) => void } = {}
+): VariantClient {
   const timeoutMs = opts.timeoutMs ?? 30_000;
   // A picture's copies come in three formats, each to its full width: a 100-megapixel original (the most copies are
   // made of) takes about 17 seconds on a fast machine, which a slower one must still finish.
@@ -180,9 +217,12 @@ export function createVariantClient(spawn: () => WorkerHandle, opts: { timeoutMs
       idle = null;
       if (stopped) return resolve(null);
       const id = ++nextId;
-      current = { id, resolve, timer: setTimeout(() => (kill(), settle(id, null)), ask.kind === 'web' ? webTimeoutMs : !ask.kind || ask.kind === 'variants' ? copiesTimeoutMs : timeoutMs) };
+      const posted = performance.now();
+      // The worker's account of the request, with the time it took from here (its wait for the worker to start included).
+      const answer = opts.onStats ? (r: VariantReply | null) => (r?.stats && opts.onStats!(ask.kind ?? 'variants', r.stats, performance.now() - posted), resolve(r)) : resolve;
+      current = { id, resolve: answer, timer: setTimeout(() => (kill(), settle(id, null)), ask.kind === 'web' ? webTimeoutMs : !ask.kind || ask.kind === 'variants' ? copiesTimeoutMs : timeoutMs) };
       try {
-        ensure().postMessage({ id, ...ask });
+        ensure().postMessage({ id, ...ask, ...(opts.onStats ? { stats: true } : {}) });
       } catch {
         kill();
         settle(id, null);

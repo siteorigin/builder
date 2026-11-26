@@ -9,6 +9,7 @@ import { slugify } from '@shared/routes';
 import { DOCUMENT_EXTENSIONS, DOCUMENT_FORMATS, documentFormat } from '@shared/document-files';
 import { COPY_EXTENSIONS, copyMime, type CopyMime } from '@shared/picture-formats';
 import { atomicWrite, safeJoin, sha } from './fsutil';
+import { perf } from '../perf';
 import { readRegularFile } from '../packs/files';
 import { sanitizeSvg } from './svg';
 import { fontInfo, heifBrands, heifHasAlpha, imageInfo, imageProblem, isAnimatedPng, type ImageProblem } from './media';
@@ -793,7 +794,36 @@ function workerEnv(): Record<string, string> {
 
 /** Decoding and resizing happen in a utility process: on the main process a large photo freezes the window. */
 const spawnMediaWorker = () => utilityProcess.fork(join(dirname(fileURLToPath(import.meta.url)), 'media-worker.js'), [], { serviceName: 'SiteOrigin media', env: workerEnv() });
-const mediaWorker = createVariantClient(spawnMediaWorker);
+/**
+ * With marks on, each request the worker answers is marked with what it cost there (scripts/perf/README.md, the `import`
+ * scenario): its time, CPU, the worker's peak memory, and its decodes and encodes.
+ */
+const mediaWorker = createVariantClient(
+  spawnMediaWorker,
+  perf.on
+    ? {
+        onStats: (kind, s, ms) =>
+          perf.mark('media.request', {
+            kind,
+            ms,
+            workMs: s.ms,
+            cpuMs: s.cpuMs,
+            cpuStart: s.cpuStartMs,
+            cpuEnd: s.cpuEndMs,
+            peakRss: s.peakRss,
+            worker: s.pid,
+            decodes: s.decodes,
+            encodes: s.encodes,
+            decodeMs: s.decodeMs,
+            webCopyMs: s.webCopyMs,
+            jpegMs: s.formatMs['image/jpeg'] ?? 0,
+            pngMs: s.formatMs['image/png'] ?? 0,
+            webpMs: s.formatMs['image/webp'] ?? 0,
+            avifMs: s.formatMs['image/avif'] ?? 0
+          })
+      }
+    : {}
+);
 /**
  * The website's icons (see site-icons.ts) are drawn by a worker of their own: a save that needs new ones never waits
  * behind the photos of an import in progress. It starts when icons are first needed and stops once idle.
