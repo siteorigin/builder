@@ -16,6 +16,7 @@ import { BASICS, basicHay, basicSpec, projectInsertDefinitions, searchItems } fr
 import { SLOT_NO_PLACE, unplacedSlots } from '../lib/slot-contract';
 import { exportComponentFile, insertSaved, removeFromLibrary, saveToLibrary } from '../lib/saved-components';
 import { beginInsertDrag } from '../lib/insert-drag';
+import { forgetInsert } from '../lib/clip-keys';
 import { placementMap } from '../lib/placement-map';
 import { documentOrder, whereIn } from '../lib/removal-review';
 import { ownerLabel, treeFor } from '../lib/model';
@@ -1027,11 +1028,24 @@ export function InsertPanel() {
   // The component deleted from its menu, until it has gone. Its row goes with it, and focus stays in the library
   // (else search) rather than falling to the page, where the next Delete would remove the canvas selection.
   const refocus = useRef<{ id: string; index: number } | null>(null);
+  // The tile that inserted the selection has Delete and Copy only until the author moves on: any other selection or
+  // view ends it for good, even one that later brings the same selection back.
+  useEffect(() => {
+    const unsub = useStore.subscribe((s, prev) => {
+      if ((['selection', 'layerSet', 'mode', 'leftTab', 'pageId', 'definitionMode', 'templateMode'] as const).some((k) => s[k] !== prev[k]) || s.snapshot?.workspaceKey !== prev.snapshot?.workspaceKey) forgetInsert();
+    });
+    return () => {
+      unsub();
+      forgetInsert();
+    };
+  }, []);
   useEffect(() => {
     if (menuFor.current && snap && !Object.hasOwn(snap.state.components, menuFor.current)) menu.close();
     if (!refocus.current || !snap || Object.hasOwn(snap.state.components, refocus.current.id)) return;
     const { index } = refocus.current;
     refocus.current = null;
+    // Focus ends up in the library after a removal, maybe on the tile that last inserted: Delete there must do nothing.
+    forgetInsert();
     const a = document.activeElement;
     if (a && a !== document.body && a.isConnected) return;
     // The row that took the deleted one's place, else the one before it.
@@ -1155,6 +1169,7 @@ export function InsertPanel() {
     if (!savedRefocus.current || library?.list.some((c) => c.id === savedRefocus.current!.id)) return;
     const { index } = savedRefocus.current;
     savedRefocus.current = null;
+    forgetInsert();
     const a = document.activeElement;
     if (a && a !== document.body && a.isConnected) return;
     const rows = [...(bodyRef.current?.querySelectorAll<HTMLElement>('.insert-group[data-kind="saved"] .insert-tile.saved') ?? [])];
@@ -1357,7 +1372,7 @@ export function InsertPanel() {
 
   // One insert at a time: a second click or Enter before the first has landed would read the same insertion point
   // and put both in one place.
-  const add = async (it: Item) => {
+  const add = async (it: Item, tile?: HTMLElement) => {
     if (adding.current) return;
     // Said here rather than tried: the slot it would go into does not take it.
     const refused = refusalOf(it);
@@ -1372,7 +1387,7 @@ export function InsertPanel() {
       const project = prior?.workspaceKey;
       const name = fullName(it);
       // A saved one's place is worked out again as it is inserted, with the revision it is for.
-      const entryId = it.saved ? await insertSaved(it.saved) : await insert(it.spec, name);
+      const entryId = it.saved ? await insertSaved(it.saved, tile) : await insert(it.spec, name, tile);
       if (it.saved && !entryId) return;
       const s = getState();
       const after = s.selection;
@@ -1580,6 +1595,7 @@ export function InsertPanel() {
       dragged.current = false;
       if (e.button !== 0 || !e.isPrimary || e.pointerType === 'touch') return;
       const from = { x: e.clientX, y: e.clientY, pointer: e.pointerId };
+      const tile = e.currentTarget;
       const stop = () => {
         window.removeEventListener('pointermove', move, true);
         window.removeEventListener('pointerup', stop, true);
@@ -1590,7 +1606,7 @@ export function InsertPanel() {
         if (ev.pointerId !== from.pointer || Math.hypot(ev.clientX - from.x, ev.clientY - from.y) < DRAG_START) return;
         stop();
         // One insert at a time, as for a click.
-        if (adding.current || !beginInsertDrag({ spec: it.spec, name: fullName(it) }, { x: ev.clientX, y: ev.clientY, pointerId: ev.pointerId })) return;
+        if (adding.current || !beginInsertDrag({ spec: it.spec, name: fullName(it), tile }, { x: ev.clientX, y: ev.clientY, pointerId: ev.pointerId })) return;
         dragged.current = true;
         window.getSelection()?.removeAllRanges();
         clearTimeout(peekTimer.current);
@@ -1621,7 +1637,7 @@ export function InsertPanel() {
     'data-key': it.key,
     ...(refusalOf(it) ? { 'data-refused': '', title: refusalOf(it)! } : {}),
     'aria-describedby': describedBy(it),
-    onClick: (e: React.MouseEvent<HTMLElement>) => clickAdds(it, e) && void add(it),
+    onClick: (e: React.MouseEvent<HTMLElement>) => clickAdds(it, e) && void add(it, e.currentTarget),
     // A saved component isn't in this project until it is inserted, so it is clicked in rather than dragged.
     ...(it.saved ? {} : dragFrom(it)),
     ...hover(it.key, peekable(it.kind))

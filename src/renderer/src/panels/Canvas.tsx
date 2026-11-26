@@ -1953,7 +1953,7 @@ export function Canvas() {
           return t && { at: t.at, refused: t.refused, line: t.line, outline: t.outline, label: t.refused ? `Can’t place ${drag.name} here` : t.where ? `${drag.name} ${whereText(t.where)}` : null };
         },
         // Planned on the project as the drag found it (see insertHere).
-        drop: (at) => void insertHere(drag.spec, drag.name, role, at, snap),
+        drop: (at) => void insertHere(drag.spec, drag.name, role, at, snap, drag.tile),
         refuse: (why) => toast(`${drag.name} wasn’t added: ${why}`, 'info'),
         unanswered: () => toast(`The page didn’t answer, so ${drag.name} can’t be dragged onto it now. Click its tile to add it instead.`, 'info')
       },

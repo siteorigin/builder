@@ -51,7 +51,10 @@ interface Item {
 }
 const load = (path: string) => import(/* @vite-ignore */ path);
 // Each test loads the editor's modules afresh, so nothing copied in one reaches the next.
-let actions: { selectPage: (pageId: string) => void };
+let actions: { selectPage: (pageId: string) => void; insert: (spec: { primitive: string }, label: string, tile?: unknown) => Promise<unknown>;
+  insertionPoint: (role: 'element') => unknown;
+  insertHere: (spec: { primitive: string }, name: string, role: 'element', at: unknown, snap: ProjectSnapshot, tile?: unknown) => Promise<boolean>;
+};
 let store: { getState: () => EditorState; setState: (p: Partial<EditorState>) => void };
 let clipboard: {
   copySelection: (plan?: unknown) => boolean;
@@ -60,7 +63,12 @@ let clipboard: {
   forgetCopy: () => void;
   copiedHere: () => { label: string; count: number } | null;
 };
-let clipKeys: { clipKeyIsEditors: (chord: 'copy' | 'paste', target: Control | null, body: unknown) => boolean };
+let clipKeys: {
+  clipKeyIsEditors: (chord: 'copy' | 'paste', target: Control | null, body: unknown, selection?: unknown) => boolean;
+  deleteKeyIsEditors: (target: Control | null, body: unknown, selection: unknown) => boolean;
+  claimForInsert: (control: unknown, selection: unknown) => void;
+  forgetInsert: () => void;
+};
 let menus: { copyPasteItems: (a: { copy: (() => void) | null; paste: (() => void) | null }) => Item[] };
 const getState = () => store.getState();
 const setState = (p: Partial<EditorState>) => store.setState(p);
@@ -438,5 +446,46 @@ describe('which controls let ⌘C and ⌘V through to the editor', () => {
   it('keeps ⌘C to the page, Layers, the Pages list, the chip and the selection’s own heading', () => {
     for (const control of [body, layers, inside('.canvas'), inside('.ov-chip'), inside('.pages-list'), inside('.insp-head')]) expect(clipKeys.clipKeyIsEditors('copy', control, body)).toBe(true);
     for (const control of [switcher, pageSettings, inside('.assets'), null]) expect(clipKeys.clipKeyIsEditors('copy', control, body)).toBe(false);
+  });
+
+  it('keeps Delete to the page, Layers and the chip', () => {
+    for (const control of [body, layers, inside('.canvas'), inside('.ov-chip')]) expect(clipKeys.deleteKeyIsEditors(control, body, {})).toBe(true);
+    for (const control of [switcher, pageSettings, inside('.assets'), inside('.pages-list'), inside('.insp-head'), null]) expect(clipKeys.deleteKeyIsEditors(control, body, {})).toBe(false);
+  });
+
+  // Focus stays on the Insert tile, with what it inserted selected (#898).
+  it('gives ⌘C and Delete to the tile that inserted the selection, while that stays selected', () => {
+    const [tile, otherTile] = [inside('.insert-body'), inside('.insert-body')];
+    const [inserted, other] = [{ nodeId: 'n_new' }, { nodeId: 'n_new' }];
+    const takes = (control: Control, selection: unknown) => [clipKeys.clipKeyIsEditors('copy', control, body, selection), clipKeys.deleteKeyIsEditors(control, body, selection)];
+    expect(takes(tile, inserted)).toEqual([false, false]);
+    clipKeys.claimForInsert(tile, inserted);
+    expect(takes(tile, inserted)).toEqual([true, true]);
+    expect(takes(otherTile, inserted)).toEqual([false, false]);
+    expect(takes(tile, other)).toEqual([false, false]);
+    expect(takes(tile, null)).toEqual([false, false]);
+    clipKeys.forgetInsert();
+    expect(takes(tile, inserted)).toEqual([false, false]);
+    // An insert made from no tile (the command menu) takes the claim away.
+    clipKeys.claimForInsert(tile, inserted);
+    clipKeys.claimForInsert(undefined, other);
+    expect(takes(tile, inserted)).toEqual([false, false]);
+  });
+
+  it('claims the tile for what insert() selects, and only for a tile it was given', async () => {
+    const tile = inside('.insert-body');
+    await actions.insert({ primitive: 'heading' }, 'Heading', tile);
+    const selection = getState().selection;
+    expect(selection).not.toBeNull();
+    expect(clipKeys.deleteKeyIsEditors(tile, body, selection)).toBe(true);
+    await actions.insert({ primitive: 'paragraph' }, 'Paragraph');
+    expect(clipKeys.deleteKeyIsEditors(tile, body, getState().selection)).toBe(false);
+  });
+
+  it('claims the tile a drag came from for what the drop selects', async () => {
+    const tile = inside('.insert-body');
+    const at = actions.insertionPoint('element');
+    expect(await actions.insertHere({ primitive: 'heading' }, 'Heading', 'element', at, getState().snapshot!, tile)).toBe(true);
+    expect(clipKeys.clipKeyIsEditors('copy', tile, body, getState().selection)).toBe(true);
   });
 });

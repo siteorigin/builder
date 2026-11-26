@@ -8,6 +8,8 @@ import type { InsertSpec } from './insert-search';
 export interface InsertDrag {
   spec: InsertSpec;
   name: string;
+  /** The tile pressed, which keeps focus through the drag (see claimForInsert). */
+  tile?: unknown;
 }
 
 /** Where the drag is in the window, and the pointer that is dragging it. */

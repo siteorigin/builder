@@ -21,6 +21,7 @@ import { storedEdit } from './richtext';
 import { COPYRIGHT_PROP, keptCopyrightYear, shownCopyright } from '@shared/site-name';
 import { showAsset } from './place';
 import { endArrival, markArrival } from './arrival';
+import { claimForInsert } from './clip-keys';
 import type { InsertSpec } from './insert-search';
 import { elementWhere, insertAt, insertOps, insertRole, insertSelection, nodeBefore, nodeLabel, slotInsertAt, whereFor, whereText, type InsertAt, type InsertRole, type Where } from './insert-at';
 import { SLOT_NO_PLACE } from './slot-contract';
@@ -640,9 +641,10 @@ export function insertPlan(spec: InsertSpec, snapshot: ProjectSnapshot | null = 
 
 /**
  * Insert `spec` where its tile says (see insertPlan), as one change, and select it. Resolves to the history entry the
- * change made, for an Undo beside it, once it has landed.
+ * change made, for an Undo beside it, once it has landed. `tile`: the Insert tile it was added from, which then takes
+ * Delete and Copy for it (see claimForInsert).
  */
-export async function insert(spec: InsertSpec, label: string): Promise<string | undefined> {
+export async function insert(spec: InsertSpec, label: string, tile?: unknown): Promise<string | undefined> {
   const { role, at } = insertPlan(spec);
   const st = getState().snapshot?.state;
   // A slot's placeholder has a place only in some of the design: said, rather than nothing happening.
@@ -660,6 +662,7 @@ export async function insert(spec: InsertSpec, label: string): Promise<string | 
   const ref: ElementRef = { owner: at.owner, instancePath: [], nodeId: insertSelection(ops, id) };
   if (getState().mode === 'edit') markArrival(ref);
   setState({ selection: ref, rightTab: 'inspect' });
+  claimForInsert(tile, ref);
   return done?.entryId;
 }
 
@@ -667,9 +670,10 @@ export async function insert(spec: InsertSpec, label: string): Promise<string | 
  * Insert `spec` (called `name`) at `at`, a place the author pointed at (a drop from Insert onto the canvas, one of its
  * Add buttons, or a slot's Add in the Inspector), as one change planned on the project as `snap` had it: refused if the
  * project has moved on since. Selected while the author is still on the page (or layout) it went on, with the arrival
- * cue once the page shows it, and said where it went, with an Undo. Returns whether it was inserted.
+ * cue once the page shows it, and said where it went, with an Undo. Returns whether it was inserted. `tile`: the Insert
+ * tile dragged from, if any (see claimForInsert).
  */
-export async function insertHere(spec: InsertSpec, name: string, role: InsertRole, at: InsertAt, snap: ProjectSnapshot): Promise<boolean> {
+export async function insertHere(spec: InsertSpec, name: string, role: InsertRole, at: InsertAt, snap: ProjectSnapshot, tile?: unknown): Promise<boolean> {
   if (getState().snapshot?.workspaceKey !== snap.workspaceKey) return false;
   const w = whereFor(snap.state, at, role);
   const from = getState();
@@ -693,6 +697,7 @@ export async function insertHere(spec: InsertSpec, name: string, role: InsertRol
     const ref: ElementRef = { owner, instancePath: [], nodeId: id };
     markArrival(ref);
     setState({ selection: ref, rightTab: 'inspect' });
+    claimForInsert(tile, ref);
   }
   toast(`Added ${name}${w ? ` ${whereText(w)}` : ''}.`, 'info', undoAction(r));
   return true;
