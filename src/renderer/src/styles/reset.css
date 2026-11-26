@@ -42,7 +42,10 @@
   .ellipsis { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .drag { -webkit-app-region: drag; }
   .no-drag { -webkit-app-region: no-drag; }
-  .sr-only { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); }
+  /* Pinned to its containing block's corner: at its static position, an sr-only element inside an unpositioned
+     scroller (a panel body) escapes the scroller's clip and stretches the document, which then scrolls the whole
+     editor when a row is scrolled into view. */
+  .sr-only { position: absolute; top: 0; left: 0; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); }
   .grid-2 { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
   /* Shown instead of the editor when no theme pack could be loaded. */
   .fatal { max-width: 560px; margin: 15vh auto; padding: 0 16px; font-size: 14px; line-height: 1.5; color: var(--text); }

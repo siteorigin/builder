@@ -225,7 +225,7 @@ await win.getByRole('button', { name: /^Unused/ }).click();
 await pause(300);
 await waitThumbs();
 await shot('unused', '.asset-cleanup', { themes: ['light'] });
-await win.getByRole('button', { name: /^All/ }).click();
+await win.getByRole('button', { name: /^All \d/ }).click();
 await pause(200);
 
 // An unused, oversized image with a long name.
@@ -371,7 +371,7 @@ await shot('missing', '.asset-gone');
 await win.getByRole('button', { name: /^Missing/ }).click();
 await pause(300);
 await shot('missing-filter', '.asset-gone', { themes: ['light'] });
-await win.getByRole('button', { name: /^All/ }).click();
+await win.getByRole('button', { name: /^All \d/ }).click();
 await pause(300);
 await win.locator(`[data-asset="${lost.id}"]`).click();
 await pause(400);
