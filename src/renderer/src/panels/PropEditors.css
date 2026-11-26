@@ -2,11 +2,46 @@
   .list-editor { display: flex; flex-direction: column; gap: 4px; }
   .choices-list { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 6px; }
   .choices-row { display: flex; flex-direction: column; gap: 2px; }
-  .choices-row > .field-hint { margin-bottom: 4px; }
+  /* "Sent as" sits under its label's text, close enough to read as part of that row. */
+  .choices-row > .field-hint { margin: 0 0 2px; padding-left: 10px; line-height: 1.35; }
   .choices-row-controls, .choices-add { display: flex; align-items: center; gap: 4px; }
+  /* A long answer wraps rather than clipping; its buttons stay on its first line. */
+  .choices-row-controls { align-items: flex-start; }
+  .choices-row-controls > .icon-btn { margin-top: 1px; }
   .choices-row-controls > .input, .choices-add > .input { flex: 1; min-width: 0; }
+  .input.choices-label { display: block; height: auto; min-height: 26px; padding: 4px 9px; font: inherit; font-size: 12px; line-height: 16px; resize: none; overflow: hidden; field-sizing: content; overflow-wrap: anywhere; }
   .choices-list + .choices-add { margin-top: 4px; }
   .choices-add .input[aria-invalid='true'] { border-color: var(--red); }
+  /* Full: the box is drawn unavailable but keeps focus, so the note beside it is still read. */
+  .choices-add .input:read-only { background: var(--disabled-fill); border-color: var(--border-strong); color: var(--disabled-ink); }
+  .choices-add .input:read-only::placeholder { color: var(--disabled-ink); }
+  /* Why the box is unavailable: a step louder than the standing description under it. */
+  .choices-full-note { color: var(--text-2); }
+
+  /* A computed list: what a feed shows here, each row a button that opens where that item is changed. */
+  .computed-list-body { gap: 6px; }
+  .computed-source { margin: -2px 0 0; font-size: 12px; line-height: 1.45; color: var(--text-2); text-wrap: pretty; }
+  .computed-rows { list-style: none; margin: 0; padding: 0; border: 1px solid var(--border-control); border-radius: var(--r-sm); background: var(--raised); overflow: hidden; }
+  .computed-rows > li + li { border-top: 1px solid var(--border); }
+  .computed-row { display: grid; grid-template-columns: 14px minmax(0, 1fr) 14px; align-items: start; gap: 8px; width: 100%; min-height: 32px; padding: 7px 8px 7px 9px; border: 0; background: none; color: var(--text); text-align: left; }
+  .computed-rows.single .computed-row { grid-template-columns: minmax(0, 1fr) 14px; }
+  .computed-row:hover { background: var(--hover); }
+  .computed-row:focus-visible { outline-offset: -2px; }
+  .computed-row-num { font-size: 11px; line-height: 17px; color: var(--text-3); font-variant-numeric: tabular-nums; text-align: right; }
+  .computed-row-text { display: flex; flex-direction: column; gap: 1px; min-width: 0; }
+  .computed-row-title { font-size: 12px; font-weight: 500; line-height: 17px; overflow-wrap: anywhere; display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 2; overflow: hidden; }
+  .computed-row-meta { font-size: 11px; line-height: 15px; color: var(--text-3); }
+  .computed-row-go { width: 14px; height: 14px; margin-top: 2px; color: var(--text-3); }
+  .computed-row:hover .computed-row-go { color: var(--text-2); }
+  .computed-opens { margin: 0; line-height: 1.45; text-wrap: pretty; }
+  /* Why the list shows nothing here, and the one thing that changes that. */
+  .computed-empty, .computed-page { display: flex; flex-direction: column; align-items: flex-start; gap: 8px; padding: 10px 12px; border: 1px solid var(--border); border-radius: var(--r-md); background: var(--panel-2); }
+  .computed-empty > p { margin: 0; font-size: 12px; line-height: 1.45; color: var(--text-2); text-wrap: pretty; }
+  .computed-page { gap: 2px; }
+  .computed-page-title { font-size: 13px; font-weight: 600; line-height: 1.35; overflow-wrap: anywhere; }
+  .computed-page-meta { font-size: 12px; line-height: 1.45; color: var(--text-3); }
+  .computed-page-excerpt { margin-top: 4px; font-size: 12px; line-height: 1.45; color: var(--text-2); overflow-wrap: anywhere; display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 2; overflow: hidden; }
+  .computed-page > .btn { margin-top: 8px; }
   .list-editor-item { border: 1px solid var(--border-control); border-radius: var(--r-sm); background: var(--raised); overflow: hidden; }
   .list-editor-item.focused { border-color: var(--accent); box-shadow: var(--ring); }
   /* A menu link shown under the link above it, in that link’s submenu. */

@@ -25,11 +25,11 @@ const entryFields = () => ({
 
 /** What a placement shows, read by name by the entry feed: the collection, a category, a tag and, for lists, how many. */
 function query(count?: { def: number; max: number }): Record<string, ScalarPropSchema> {
-  return P.group('Entries shown', {
+  return P.group('Which entries', {
     collection: P.str('Collection', '', { description: 'The collection’s ID, such as "posts". Empty: the blog, or on an entry’s page, that entry’s collection.' }),
     category: P.str('Category', '', { description: 'Only entries in this category, by its name or ID. Empty: every category.' }),
     tag: P.str('Tag', '', { description: 'Only entries with this tag, by its name or ID. Empty: every tag.' }),
-    ...(count ? { count: { ...P.num('Number of entries', count.def, 1, count.max), description: 'The most entries shown, newest first.' } as ScalarPropSchema } : {})
+    ...(count ? { count: { ...P.num('Number of entries', count.def, 1, count.max), description: 'Shows up to this many.' } as ScalarPropSchema } : {})
   });
 }
 
@@ -57,8 +57,8 @@ export const blogFeatured = managed({
     heading: P.str('Heading', ''),
     headingLevel: headingLevel('h2'),
     lead: P.text('Supporting text', ''),
-    ...query(),
-    items: P.list('Featured entry', 'Entry', entryFields(), [], { titleField: 'title', min: 0, max: 1, feed: 'entries' })
+    items: P.list('Featured entry', 'Entry', entryFields(), [], { titleField: 'title', min: 0, max: 1, feed: 'entries' }),
+    ...query()
   },
   parts: {
     root: { nodeId: 'root', label: 'Section', styleControls: ['paddingBlock', 'background'] },
@@ -108,8 +108,8 @@ export const blogGrid = managed({
     heading: P.str('Heading', 'Latest articles'),
     headingLevel: headingLevel('h2'),
     lead: P.text('Supporting text', ''),
-    ...query({ def: 3, max: 24 }),
-    items: P.list('Entries', 'Entry', entryFields(), [], { titleField: 'title', min: 0, max: 24, feed: 'entries' })
+    items: P.list('Entries', 'Entry', entryFields(), [], { titleField: 'title', min: 0, max: 24, feed: 'entries' }),
+    ...query({ def: 3, max: 24 })
   },
   parts: {
     root: { nodeId: 'root', label: 'Section', styleControls: ['paddingBlock', 'background'] },
@@ -164,8 +164,8 @@ export const blogList = managed({
     heading: P.str('Heading', 'Recent posts'),
     headingLevel: headingLevel('h2'),
     lead: P.text('Supporting text', ''),
-    ...query({ def: 5, max: 24 }),
-    items: P.list('Entries', 'Entry', entryFields(), [], { titleField: 'title', min: 0, max: 24, feed: 'entries' })
+    items: P.list('Entries', 'Entry', entryFields(), [], { titleField: 'title', min: 0, max: 24, feed: 'entries' }),
+    ...query({ def: 5, max: 24 })
   },
   parts: {
     root: { nodeId: 'root', label: 'Section', styleControls: ['paddingBlock', 'background'] },

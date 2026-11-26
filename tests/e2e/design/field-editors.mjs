@@ -355,7 +355,7 @@ await shot('choices-empty', choices, async () => (await choices.innerText()).inc
 
 await setProp('contact.form', 'fields', choiceField(Array.from({ length: 24 }, (_, i) => ({ id: `x${i}`, label: `Answer ${i + 1}`, value: `Answer ${i + 1}` }))));
 await until(async () => (await choices.locator('.choices-row').count()) === 24, 'a full set of choices');
-await shot('choices-full', choices.locator('.choices-add').locator('..'), async () => (await addChoice.evaluate((el) => el.readOnly)) && (await choices.innerText()).includes('most choices it can hold'));
+await shot('choices-full', choices.locator('.choices-add').locator('..'), async () => (await addChoice.evaluate((el) => el.readOnly)) && (await choices.innerText()).includes('are in use'));
 
 await app.close();
 rmSync(WORK, { recursive: true, force: true });
