@@ -152,7 +152,7 @@ describe('syncing a source into a project', () => {
     const assets = Object.keys(s.state.assets.assets).length;
     expect(s.state.assets.assets[ana.featuredImage!]).toMatchObject({ kind: 'image', mime: 'image/png' });
     // A sync is no step of History.
-    const history = s.history.entries.length;
+    const history = s.historyInfo().entries.length;
     // The unchanged file, dated in the past, so a rewrite would show.
     const benFile = entryFile(dir, '2');
     const old = new Date('2020-01-01T00:00:00Z');
@@ -174,7 +174,7 @@ describe('syncing a source into a project', () => {
     expect(readFileSync(benFile, 'utf8')).toBe(benText);
     expect(statSync(benFile).mtime.getTime()).toBe(old.getTime());
     expect(on[syncedEntryId('people', '3', () => false)]).toMatchObject({ title: 'Cy', draft: true });
-    expect(s.history.entries.length).toBe(history);
+    expect(s.historyInfo().entries.length).toBe(history);
     // Nothing changed at the source: nothing is written, and the project's revision stays where it was.
     const revision = s.revision;
     await expect(syncSource(deps, 'people')).resolves.toMatchObject({ ok: true, unchanged: 2, revision });
@@ -332,10 +332,10 @@ describe('a source’s settings in the project', () => {
     world.records = [person('1', 'Ana')];
     await expect(syncSource(deps, 'people')).resolves.toMatchObject({ ok: true });
     expect((await rename('Team B')).ok).toBe(true);
-    const steps = s.history.entries.length;
+    const steps = s.historyInfo().entries.length;
     // Its own step: undoing it takes back the second rename, and leaves the sync's attachment.
     await s.undo();
-    expect(s.history.cursor).toBe(steps - 1);
+    expect(s.historyInfo().entries.filter((e) => e.applied)).toHaveLength(steps - 1);
     expect(s.state.collections.team.settings).toMatchObject({ name: 'Team A', sourceId: 'people' });
   });
 
