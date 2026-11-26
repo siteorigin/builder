@@ -1785,9 +1785,13 @@ export function missingSectionLinks(state: ProjectState): SectionLinkIssue[] {
   const hasSectionLinks = (collectionId: string) => {
     if (!layoutLinks.has(collectionId)) {
       const template = storedLayout(state, collectionId);
-      // A placed section's links can depend on the words each entry gives it: a layout with one is always read.
+      // A placed section's links can depend on the words each entry gives it, and a link or rich text field's are each
+      // entry's own: a layout with either is always read.
       const placed = !!template?.nodes && Object.values(template.nodes).some((n) => n?.kind === 'instance');
-      layoutLinks.set(collectionId, placed || (!!template?.nodes && renderedLinks(state, template, false, true).some(({ link }) => (link.type === 'page' && !!link.anchor) || link.type === 'anchor')));
+      layoutLinks.set(
+        collectionId,
+        placed || showsLinkingField(state, collectionId) || (!!template?.nodes && renderedLinks(state, template, false, true).some(({ link }) => (link.type === 'page' && !!link.anchor) || link.type === 'anchor'))
+      );
     }
     return layoutLinks.get(collectionId)!;
   };
@@ -1818,8 +1822,9 @@ export function missingSectionLinks(state: ProjectState): SectionLinkIssue[] {
           issue = { owner: src.owner, nodeId: reportId, key, label, inText, fragment, pages: missing, ...(lacking.length ? { entries: lacking } : {}), ...(listing.length ? { archives: listing } : {}) };
       }
       // A link the walk reaches twice (a repeated slot, say) is reported once; one in a layout, once for all the
-      // entries that lack its section.
-      const id = JSON.stringify([src.owner, reportId, key]);
+      // entries that lack its section. A layout's link that goes somewhere else on another entry's page (a link field
+      // it shows) is another.
+      const id = JSON.stringify([src.owner, reportId, key, link.type, link.target, link.anchor ?? '']);
       if (!issue) continue;
       const had = seen.get(id);
       if (had) {
@@ -1887,6 +1892,8 @@ export interface DraftLink {
   pageId?: string;
   entryId?: string;
   anchor?: string;
+  /** For a link in a collection's layout: the published entry whose page shows it (one of its link fields, say). */
+  shownOn?: string;
 }
 
 /** A draft a link can lead to: a page, or a collection entry. */
@@ -1984,11 +1991,14 @@ export function publicationPlan(state: ProjectState): PublicationPlan {
     if (!mayLink.has(collectionId)) {
       const t = state.collections[collectionId]?.settings?.template;
       const placed = !!t?.nodes && Object.values(t.nodes).some((n) => n?.kind === 'instance');
-      mayLink.set(collectionId, !!t?.nodes && (draftIds.size > 0 || draftEntryIds.size > 0 || withheld.size > 0) && (placed || /"type":"(page|entry|url)"/.test(JSON.stringify(t.nodes))));
+      mayLink.set(
+        collectionId,
+        !!t?.nodes && (draftIds.size > 0 || draftEntryIds.size > 0 || withheld.size > 0) && (placed || showsLinkingField(state, collectionId) || /"type":"(page|entry|url)"/.test(JSON.stringify(t.nodes)))
+      );
     }
     return mayLink.get(collectionId)!;
   };
-  const sources: Array<{ owner: DraftLink['owner']; tree: NodeTree }> = [
+  const sources: Array<{ owner: DraftLink['owner']; tree: NodeTree; shownOn?: string }> = [
     ...published.map((p) => ({ owner: { kind: 'page' as const, id: p.id }, tree: p as NodeTree })),
     // Each shared part, when a published page shows it: the header and footer can be on different pages.
     ...SHELL_PARTS.filter((part) => entryShown || published.some((p) => showsPart(p, part))).map((part) => ({ owner: { kind: 'shell' as const, id: part }, tree: state.site.shell[part] })),
@@ -1996,7 +2006,7 @@ export function publicationPlan(state: ProjectState): PublicationPlan {
     // elements that entry shows. Read only for a layout that links where a draft could be at all.
     ...entries
       .filter((e) => !draftEntryIds.has(e.entry.id) && layoutMayLinkToDraft(e.collection.settings.id))
-      .map((e) => ({ owner: { kind: 'template' as const, id: e.collection.settings.id }, tree: entryArticle(state, e.collection, e.entry) }))
+      .map((e) => ({ owner: { kind: 'template' as const, id: e.collection.settings.id }, tree: entryArticle(state, e.collection, e.entry), shownOn: e.entry.id }))
   ];
   const seen = new Set<string>();
   // A link a visitor reaches by choosing a tab or opening a disclosure goes to the draft as surely as one shown at first.
@@ -2011,11 +2021,12 @@ export function publicationPlan(state: ProjectState): PublicationPlan {
               ? targetAtAddress(state, link.target, withheld)
               : null;
       if (!to) continue;
-      // A link the walk reaches twice (a repeated slot, say) is reported once.
-      const id = JSON.stringify([src.owner, reportId, key]);
+      // A link the walk reaches twice (a repeated slot, say) is reported once; one going to another draft on another
+      // entry's page (a link field the layout shows) is another.
+      const id = JSON.stringify([src.owner, reportId, key, to]);
       if (seen.has(id)) continue;
       seen.add(id);
-      draftLinks.push({ owner: src.owner, nodeId: reportId, label, inText, ...to });
+      draftLinks.push({ owner: src.owner, nodeId: reportId, label, inText, ...to, ...(src.shownOn ? { shownOn: src.shownOn } : {}) });
     }
   // A published entry's text: a link to a draft entry, a page link to a draft page, or a typed address of one.
   for (const { entry, collection } of entries) {
@@ -2134,11 +2145,22 @@ export function describeDraftLink(state: ProjectState, l: DraftLink): string {
   return `${where}: ${l.label ? `“${l.label}”` : l.inText ? 'a link in the text' : 'a link'} goes to ${to}`;
 }
 
+/** Whether a collection's stored layout shows one of its link or rich text fields, whose links are each entry's own. */
+function showsLinkingField(state: ProjectState, collectionId: string): boolean {
+  const c = Object.hasOwn(state.collections ?? {}, collectionId) ? state.collections[collectionId] : undefined;
+  const nodes = c?.settings?.template?.nodes;
+  const linking = Object.entries(c?.settings?.fields ?? {}).filter(([, f]) => f?.type === 'link' || f?.type === 'richtext');
+  if (!nodes || !linking.length) return false;
+  const json = JSON.stringify(nodes);
+  return linking.some(([name]) => json.includes(JSON.stringify({ $entry: `field.${name}` })));
+}
+
 /** The draft page or collection entry a draft link goes to, by its title and address, while it is there. */
 export function draftTarget(state: ProjectState, l: Pick<DraftLink, 'pageId' | 'entryId'>): { title: string; route: string } | undefined {
   if (l.pageId !== undefined) return Object.hasOwn(state.pages, l.pageId) ? state.pages[l.pageId] : undefined;
   const found = l.entryId !== undefined ? findEntry(state, l.entryId) : undefined;
-  return found ? { title: found.entry.title, route: entryRoute(found.collection, found.entry) } : undefined;
+  const route = found ? entryRoute(found.collection, found.entry) : undefined;
+  return found && route !== undefined ? { title: found.entry.title, route } : undefined;
 }
 
 export interface PageSection {

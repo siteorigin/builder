@@ -246,6 +246,87 @@ describe('collections on disk', () => {
     expect(Object.values(s.state.pages).some((p) => p.route === '/blog/launch/')).toBe(false);
   });
 
+  it('waits for a source attached to the collection outside the app before editing one of its entries (#673)', async () => {
+    const { dir, s } = await make();
+    await ok(s.apply({ operations: blog }, { label: 'Start' }));
+    // A sync attached it on disk; the app has not loaded that yet.
+    writeFileSync(join(dir, `${POSTS}/collection.json`), JSON.stringify({ ...read(dir, `${POSTS}/collection.json`), sourceId: 'wordpress' }, null, 2));
+    const r = await s.apply({ operations: [{ type: 'entry.update', collectionId: 'posts', entryId: 'en_winter', title: 'Changed' }] }, { label: 'Retitle' });
+    expect(r.error?.code).toBe('CONFLICT');
+    expect(read(dir, `${POSTS}/entries/en_winter.json`).title).toBe('Winter hours');
+    expect(s.state.collections.posts.entries.en_winter.title).toBe('Winter hours');
+    // Any change that would rewrite one of its entries waits for it, whatever else it is: a page removed, say, whose
+    // links an entry holds.
+    const { dir: other, s: second } = await make();
+    await ok(second.apply({ operations: blog }, { label: 'Start' }));
+    const contact = Object.values(second.state.pages).find((p) => p.route === '/contact/')!;
+    const about = Object.values(second.state.pages).find((p) => p.route === '/about/')!;
+    await ok(second.apply({ operations: [{ type: 'entry.update', collectionId: 'posts', entryId: 'en_winter', body: ['[Contact us](/contact/).'] }] }, { label: 'Link' }));
+    writeFileSync(join(other, `${POSTS}/collection.json`), JSON.stringify({ ...read(other, `${POSTS}/collection.json`), sourceId: 'wordpress' }, null, 2));
+    const removed = await second.apply({ operations: [{ type: 'page.remove', pageId: contact.id, replacementPageId: about.id }] }, { label: 'Remove Contact' });
+    expect(removed.error?.code).toBe('CONFLICT');
+    expect(second.state.pages[contact.id]).toBeDefined();
+  });
+
+  it('never undoes an edit of an entry whose collection has been synced since (#673)', async () => {
+    const { dir, s } = await make();
+    await ok(s.apply({ operations: blog }, { label: 'Start' }));
+    await ok(s.apply({ operations: [{ type: 'entry.update', collectionId: 'posts', entryId: 'en_winter', title: 'Changed' }] }, { label: 'Retitle' }));
+    await s.close();
+    // A sync attached it while the project was closed, leaving the entry as it was.
+    writeFileSync(join(dir, `${POSTS}/collection.json`), JSON.stringify({ ...read(dir, `${POSTS}/collection.json`), sourceId: 'wordpress' }, null, 2));
+    const again = await ProjectSession.open(dir, 'reopen');
+    open.push(again);
+    expect(again.state.collections.posts.settings.sourceId).toBe('wordpress');
+    const r = await again.undo();
+    expect(r.ok).toBe(false);
+    expect(r.error?.message).toMatch(/synced from an external source/);
+    expect(read(dir, `${POSTS}/entries/en_winter.json`).title).toBe('Changed');
+  });
+
+  it('holds an entry a cancelled AI run wrote when its collection was synced outside the app meanwhile (#673)', async () => {
+    const { dir, s } = await make();
+    await ok(s.apply({ operations: blog }, { label: 'Start' }));
+    expect(await s.beginRun('run_sync')).toBeNull();
+    // Through its post tool, whose call grants this one entry.
+    await ok(s.apply({ operations: [{ type: 'entry.update', collectionId: 'posts', entryId: 'en_winter', title: 'By the AI' }] }, { label: 'AI', source: 'ai', runId: 'run_sync', history: false, collectionWrite: { collectionId: 'posts', entryId: 'en_winter' } }));
+    writeFileSync(join(dir, `${POSTS}/collection.json`), JSON.stringify({ ...read(dir, `${POSTS}/collection.json`), sourceId: 'wordpress' }, null, 2));
+    const r = await s.abortRun();
+    expect(r.restored).toBe(false);
+    // Never taken back under the source: the run's version stays on disk, the earlier one held for the author.
+    expect(read(dir, `${POSTS}/entries/en_winter.json`).title).toBe('By the AI');
+  });
+
+  it('writes a structured collection’s settings and fields and reads them back exactly (#673)', async () => {
+    const { dir, s } = await make();
+    await ok(
+      s.apply(
+        {
+          operations: [
+            { type: 'collection.create', collectionId: 'team', kind: 'structured', singularName: 'Team member', hasBody: false, pages: { detail: false, archive: false } },
+            { type: 'entry.create', collectionId: 'team', entryId: 'en_ruiz', title: 'Ana Ruiz' },
+            { type: 'collection.create', collectionId: 'events', kind: 'structured', fields: { on: { type: 'date', label: 'On' }, host: { type: 'reference', label: 'Host', collection: 'team' }, notes: { type: 'richtext', label: 'Notes' }, tickets: { type: 'link', label: 'Tickets' } } },
+            { type: 'entry.create', collectionId: 'events', entryId: 'en_open', title: 'Open day', values: { on: '2027-05-01', host: 'en_ruiz', notes: 'Bring **friends**.', tickets: 'https://tickets.example.com' } }
+          ]
+        },
+        { label: 'Add team and events' }
+      )
+    );
+    expect(read(dir, 'siteorigin/collections/team/collection.json')).toMatchObject({ kind: 'structured', singularName: 'Team member', hasBody: false, pages: { detail: false, archive: false } });
+    expect(read(dir, 'siteorigin/collections/team/collection.json')).not.toHaveProperty('route');
+    expect(read(dir, 'siteorigin/collections/events/entries/en_open.json').values).toEqual({
+      on: '2027-05-01',
+      host: 'en_ruiz',
+      notes: [{ type: 'p', spans: [{ text: 'Bring ' }, { text: 'friends', strong: true }, { text: '.' }] }],
+      tickets: { type: 'url', target: 'https://tickets.example.com' }
+    });
+    const state = s.state;
+    await s.close();
+    const again = await ProjectSession.open(dir, 'reopen');
+    open.push(again);
+    expect(again.state.collections).toEqual(state.collections);
+  });
+
   it('refuses an undo that would leave an entry without its collection or beside another with its ID', async () => {
     const { dir, s } = await make();
     await ok(s.apply({ operations: [{ type: 'collection.create', collectionId: 'posts' }, { type: 'entry.create', collectionId: 'posts', entryId: 'en_spring', title: 'Spring' }] }, { label: 'Blog' }));

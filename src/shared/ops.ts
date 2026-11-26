@@ -233,7 +233,15 @@ const ARTICLE_FIELDS = {
 /** A collection's settings, as collection.create and collection.update take them (see shared/collections.ts). */
 const COLLECTION_SETTINGS = {
   name: z.string().min(1).max(80).optional(),
-  route: z.string().max(1100).optional().describe('Address prefix every entry\'s address starts with, such as "/blog/" or "/お知らせ/". At most three levels deep. The collection owns this address too.'),
+  kind: z.enum(['editorial', 'structured']).optional().describe('What it holds: "editorial", dated articles such as blog posts (the default), or "structured", records such as team members, projects or events.'),
+  singularName: z.string().max(80).nullable().optional().describe('What one entry is called ("Team member" of "Team"). "" or null removes it.'),
+  hasBody: z.boolean().optional().describe('Whether entries have text of their own. Default true. Turning it off needs every entry\'s text, and the layout\'s showing it, cleared first.'),
+  pages: z
+    .object({ detail: z.boolean(), archive: z.boolean() })
+    .strict()
+    .optional()
+    .describe('The pages the website has for it: one per entry (detail) and an index with category archives at its address (archive, which needs detail). Default both. Neither makes it data only: records other pages show, with no address of their own.'),
+  route: z.string().max(1100).optional().describe('Address prefix every entry\'s address starts with, such as "/blog/" or "/お知らせ/". At most three levels deep. With an archive, the collection owns this address too. A data-only collection needs none.'),
   taxonomies: z
     .record(z.string(), z.object({ label: z.string().min(1).max(60), terms: z.record(z.string(), z.object({ label: z.string().min(1).max(80) })).optional() }))
     .optional()
@@ -241,7 +249,7 @@ const COLLECTION_SETTINGS = {
   fields: z
     .record(z.string(), z.record(z.string(), z.unknown()))
     .optional()
-    .describe('Every custom field, by camelCase name: { type, label, default?, ... } with type string, number, boolean, enum (options) or image. Replaces the whole set: a field left out is removed from every entry.'),
+    .describe('Every custom field, by camelCase name: { type, label, default?, ... } with type string, number, boolean, enum (options), image, link, richtext, date (YYYY-MM-DD) or reference (collection: the ID of the collection whose entries it names; multiple: true for a list of them). Replaces the whole set: a field left out is removed from every entry.'),
   pageSize: z.number().int().min(1).max(100).optional().describe('How many entries each page of the collection\'s index and category archives lists, newest first (later pages at page/2/, page/3/...). Default 10.'),
   categoryArchives: z.boolean().optional().describe('Whether each category with a published entry gets an archive page at category/<term ID>/ under the collection\'s address. Default true.')
 };
@@ -281,7 +289,7 @@ const ENTRY_FIELDS = {
   excerpt: z.string().max(320).nullable().optional(),
   featuredImage: z.string().nullable().optional().describe('A library image\'s asset ID; null removes it.'),
   terms: z.record(z.string(), z.array(z.string()).max(50)).optional().describe('Term IDs by taxonomy ID. Each taxonomy given replaces that taxonomy\'s terms; others stay.'),
-  values: z.record(z.string(), z.unknown()).optional().describe('Custom field values by field name. Each field given is set; null goes back to the field\'s default; others stay.'),
+  values: z.record(z.string(), z.unknown()).optional().describe('Custom field values by field name. Each field given is set; null goes back to the field\'s default; others stay. A date is "YYYY-MM-DD" or ""; a reference is an entry ID ("" for none), or a list of them.'),
   body: z.unknown().optional().describe(`The entry's text. ${RICH_TEXT_VALUE} Links may also go to another entry: [label](entry:en_…) or its address.`),
   seoTitle: limited(TEXT_LIMITS.seoTitle).optional().describe('The browser title and link-preview title, used as written. "" goes back to the entry\'s title and the site name.'),
   description: limited(TEXT_LIMITS.pageDescription).optional().describe('What search engines and link previews show. "" goes back to the excerpt, else the site description.'),
@@ -911,7 +919,12 @@ export const OPERATION_SCHEMAS = {
       ...COLLECTION_SETTINGS
     })
     .describe('Add a collection of entries kept apart from the pages, such as blog posts or projects.'),
-  'collection.update': z.object({ type: z.literal('collection.update'), collectionId: z.string(), ...COLLECTION_SETTINGS }),
+  'collection.update': z.object({
+    type: z.literal('collection.update'),
+    collectionId: z.string(),
+    ...COLLECTION_SETTINGS,
+    sourceId: z.null().optional().describe('null detaches it from the external source its entries are synced from, so they can be edited here. Attaching is done by a sync.')
+  }),
   'collection.remove': z.object({ type: z.literal('collection.remove'), collectionId: z.string() }).describe('Delete a collection and every entry in it. Refused while anything outside it links to one of its entries.'),
   'collection.createTerm': z
     .object({

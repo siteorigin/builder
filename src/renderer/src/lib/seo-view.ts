@@ -45,9 +45,12 @@ function pageDocument(state: ProjectState, pageId: string): SeoDocument | undefi
   return { subject: { kind: 'page', pageId }, key: `page:${pageId}`, title: titled(page.title, 'Untitled page'), address: home ? '/' : page.route, draft: page.draft === true && !home, home };
 }
 
-function entryDocument(collection: Collection, entry: EntryDoc): SeoDocument {
+/** Undefined for an entry with no page of its own (see pagesPrefix): nothing of it reaches search results. */
+function entryDocument(collection: Collection, entry: EntryDoc): SeoDocument | undefined {
+  const address = entryRoute(collection, entry);
+  if (address === undefined) return undefined;
   const subject: SeoSubject = { kind: 'entry', collectionId: collection.settings.id, entryId: entry.id };
-  return { subject, key: seoSubjectKey(subject), title: titled(entry.title, 'Untitled'), address: entryRoute(collection, entry), draft: entry.draft !== false, home: false };
+  return { subject, key: seoSubjectKey(subject), title: titled(entry.title, 'Untitled'), address, draft: entry.draft !== false, home: false };
 }
 
 /** The collections whose entries the view lists, by ID: each one's settings name its own ID. */
@@ -63,7 +66,8 @@ function listedCollections(state: ProjectState): Collection[] {
 
 /**
  * Every document of the site the view lists: the pages first, in the site's page order, then each collection's
- * entries in the collection's own order, drafts included. A collection with no entries is left out.
+ * entries in the collection's own order, drafts included. A collection with no entries, or whose entries have no
+ * pages, is left out.
  */
 export function seoDocuments(state: ProjectState): SeoDocumentGroup[] {
   const pages = state.site.pageOrder.flatMap((id) => pageDocument(state, id) ?? []);
@@ -71,7 +75,7 @@ export function seoDocuments(state: ProjectState): SeoDocumentGroup[] {
   for (const c of listedCollections(state)) {
     const documents = orderedEntries(c)
       .filter((e) => !!e && typeof e === 'object')
-      .map((e) => entryDocument(c, e));
+      .flatMap((e) => entryDocument(c, e) ?? []);
     if (documents.length) groups.push({ id: `collection-${c.settings.id}`, label: titled(c.settings.name, c.settings.id), documents });
   }
   return groups;

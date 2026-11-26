@@ -112,7 +112,7 @@ export function entryMetadata(state: ProjectState, collectionId: string, entryId
   const collection: Collection | undefined = own(state.collections, collectionId);
   const entry: EntryDoc | undefined = own(collection?.entries, entryId);
   if (!collection?.settings || !entry || typeof entry !== 'object' || entry.id !== entryId) return null;
-  const at = route ?? (typeof collection.settings.route === 'string' && typeof entry.slug === 'string' ? entryRoute(collection, entry) : null);
+  const at = route ?? (typeof entry.slug === 'string' ? (entryRoute(collection, entry) ?? null) : null);
   if (at === null) return null;
   const seo: EntrySeo = entry.seo && typeof entry.seo === 'object' ? entry.seo : {};
   const base = publicUrl(site) ?? null;

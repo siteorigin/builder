@@ -143,7 +143,7 @@ export function postRows(collection: Collection, query: string, sort: PostSort, 
   if (sort === 'newest') sorted.sort((a, b) => (date(a) !== date(b) ? (date(a) < date(b) ? 1 : -1) : byRank(a, b)));
   else if (sort === 'oldest') sorted.sort((a, b) => (date(a) !== date(b) ? (date(a) < date(b) ? -1 : 1) : byRank(a, b)));
   else if (sort === 'title') sorted.sort((a, b) => words(a.title).localeCompare(words(b.title)) || byRank(a, b));
-  return sorted.map((e) => ({ id: e.id, title: typeof e.title === 'string' && e.title ? e.title : 'Untitled', date: date(e), draft: e.draft !== false, route: entryRoute(collection, e) }));
+  return sorted.map((e) => ({ id: e.id, title: typeof e.title === 'string' && e.title ? e.title : 'Untitled', date: date(e), draft: e.draft !== false, route: entryRoute(collection, e) ?? '' }));
 }
 
 /**

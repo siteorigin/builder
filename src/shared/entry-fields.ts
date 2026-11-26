@@ -14,9 +14,14 @@
  *   shown, for an entry with no text. A condition compares the minutes, whatever the wording.
  * - `prevEntry`, `nextEntry`: links to the published entries listed just before and just after it, in the
  *   collection's order (`prevEntry.title`, `nextEntry.title`: their titles). Empty for the first and the last.
- * - `field.<name>`: the value of one of the collection's custom fields, or its default.
+ * - `field.<name>`: the value of one of the collection's custom fields, or its default. A date field is a date as
+ *   `publishedAt` is; a reference field shows the titles of the entries it names, separated by commas, and a condition
+ *   reads their IDs.
+ *
+ * A collection whose entries have no text of their own (`hasBody: false`) has no `body` or `readingTime`.
  */
-import type { Collection, CollectionFieldSchema, EntryDoc, ImageValue, LinkValue, PropSchema, ProjectState, RichText } from './types';
+import type { Collection, CollectionFieldSchema, EntryDoc, ImageValue, LinkValue, PropSchema, ProjectState, ReferenceFieldSchema, RichText } from './types';
+import { collectionHasBody } from './collections';
 import { formatArticleDate, isArticleDate } from './articles';
 import { siteLanguage } from './languages';
 import { richTextToPlain, isRichBlock } from './richtext';
@@ -46,8 +51,11 @@ export const ENTRY_FIELD_NAMES = [
  */
 export const ENTRY_CONTENT_FIELDS: ReadonlySet<string> = new Set(['text', 'datetime', 'image', 'fallbackAlt', 'link', 'label', 'ariaLabel', 'prop', 'when', 'unless']);
 
-/** The fields whose value is a date (YYYY-MM-DD): the only ones a text's `datetime` can read. */
+/** The built-in fields whose value is a date (YYYY-MM-DD). A collection's date fields are too (see isEntryDateField). */
 export const ENTRY_DATE_FIELDS: ReadonlySet<string> = new Set(['publishedAt', 'updatedAt']);
+
+/** The fields an entry without text of its own does not have. */
+const BODY_FIELDS: ReadonlySet<string> = new Set(['body', 'readingTime']);
 
 /** The taxonomy `categories` reads. */
 const CATEGORIES = 'categories';
@@ -74,26 +82,62 @@ const BUILT_IN: Record<(typeof ENTRY_FIELD_NAMES)[number], PropSchema> = {
 const own = <T>(rec: Record<string, T> | undefined, key: string): T | undefined => (rec && Object.hasOwn(rec, key) ? rec[key] : undefined);
 
 /**
+ * The property a custom field behaves as: a date or a reference as text (a date written out, the titles of the entries
+ * named), every other kind as the property of its kind.
+ */
+function fieldAsProp(f: CollectionFieldSchema): PropSchema {
+  if (f.type === 'date' || f.type === 'reference') return text(typeof f.label === 'string' ? f.label : '', f.description);
+  return f;
+}
+
+/** Whether a built-in field is one the collection's entries have: all of them, but the text's for entries without text. */
+const hasBuiltIn = (collection: Pick<Collection, 'settings'>, field: string) => Object.hasOwn(BUILT_IN, field) && (!BODY_FIELDS.has(field) || collectionHasBody(collection.settings));
+
+/**
  * Every field a collection's template can read, by the name a binding gives it, with the property schema it
  * behaves as: the built-in fields, one per grouping (`terms.<id>`) and one per custom field (`field.<name>`).
  */
 export function entryFieldSchemas(collection: Pick<Collection, 'settings'>): Record<string, PropSchema> {
-  const out: Record<string, PropSchema> = { ...BUILT_IN };
+  const out: Record<string, PropSchema> = {};
+  for (const name of ENTRY_FIELD_NAMES) if (hasBuiltIn(collection, name)) out[name] = BUILT_IN[name];
   for (const [id, t] of Object.entries(collection.settings.taxonomies ?? {})) out[`terms.${id}`] = text(typeof t?.label === 'string' ? t.label : id);
-  for (const [name, f] of Object.entries(collection.settings.fields ?? {})) if (f && typeof f === 'object') out[`field.${name}`] = f as PropSchema;
+  for (const [name, f] of Object.entries(collection.settings.fields ?? {})) if (f && typeof f === 'object') out[`field.${name}`] = fieldAsProp(f);
   return out;
 }
 
 /** The schema of one field a collection's template can read, or undefined when it has no such field. */
 export function entryFieldSchema(collection: Pick<Collection, 'settings'>, field: string): PropSchema | undefined {
   if (typeof field !== 'string') return undefined;
-  if (Object.hasOwn(BUILT_IN, field)) return BUILT_IN[field as keyof typeof BUILT_IN];
+  if (Object.hasOwn(BUILT_IN, field)) return hasBuiltIn(collection, field) ? BUILT_IN[field as keyof typeof BUILT_IN] : undefined;
   if (field.startsWith('terms.')) {
     const t = own(collection.settings.taxonomies, field.slice(6));
     return t ? text(typeof t.label === 'string' ? t.label : field.slice(6)) : undefined;
   }
-  if (field.startsWith('field.')) return own(collection.settings.fields, field.slice(6)) as CollectionFieldSchema | undefined;
+  if (field.startsWith('field.')) {
+    const f = customField(collection, field);
+    return f ? fieldAsProp(f) : undefined;
+  }
   return undefined;
+}
+
+/** The custom field a `field.<name>` binding reads, as the collection declares it. */
+function customField(collection: Pick<Collection, 'settings'>, field: string): CollectionFieldSchema | undefined {
+  const f = field.startsWith('field.') ? own(collection.settings.fields, field.slice(6)) : undefined;
+  return f && typeof f === 'object' ? f : undefined;
+}
+
+/** Whether a field's value is a date (YYYY-MM-DD): the only ones a text's `datetime` can read. */
+export function isEntryDateField(collection: Pick<Collection, 'settings'>, field: string): boolean {
+  return ENTRY_DATE_FIELDS.has(field) || customField(collection, field)?.type === 'date';
+}
+
+/**
+ * Why a condition cannot compare a field with one value: a reference naming several entries is a list of them, which
+ * equals no single value. Null when it can.
+ */
+export function entryComparisonProblem(collection: Pick<Collection, 'settings'>, field: string): string | null {
+  const f = customField(collection, field);
+  return f?.type === 'reference' && f.multiple ? `"${f.label}" names several entries, so it equals no single value: test whether it names any instead.` : null;
 }
 
 /** How a binding is named to authors: the field's label ("Title", "Price"). */
@@ -109,7 +153,7 @@ export interface EntryNeighbours {
 
 /** Everything a template's binding reads beyond the entry itself. */
 export interface EntryReadContext {
-  state: Pick<ProjectState, 'site' | 'assets'>;
+  state: Pick<ProjectState, 'site' | 'assets' | 'collections'>;
   collection: Collection;
   entry: EntryDoc;
   neighbours: EntryNeighbours;
@@ -154,6 +198,21 @@ const entryLink = (e: EntryDoc | undefined): LinkValue => (e ? { type: 'entry', 
 const str = (v: unknown) => (typeof v === 'string' ? v.trim() : '');
 
 /**
+ * What a reference field holds: the IDs it names (`raw`, one or a list as the field takes them), or the titles of the
+ * entries of its collection it names, in its order, separated by commas. An ID the collection has no entry for shows
+ * nothing.
+ */
+function referenceValue(state: Pick<ProjectState, 'collections'>, schema: ReferenceFieldSchema, value: unknown, form: EntryValueForm): unknown {
+  const ids = (Array.isArray(value) ? value : [value]).filter((id): id is string => typeof id === 'string' && id !== '');
+  if (form === 'raw') return schema.multiple ? ids : (ids[0] ?? '');
+  const target = own(state.collections, schema.collection);
+  return ids
+    .map((id) => str(own(target?.entries, id)?.title))
+    .filter(Boolean)
+    .join(', ');
+}
+
+/**
  * The value one field has for the entry: the type its schema says (text, a picture, a link, rich text, a custom
  * field's number or yes/no), or undefined for a field the collection does not have. A date is written as readers of
  * the site's language write it, unless the `raw` form is asked for.
@@ -178,8 +237,10 @@ export function entryFieldValue(ctx: EntryReadContext, field: string, form: Entr
     case 'categories':
       return termLabels(collection, entry, CATEGORIES);
     case 'body':
+      if (!collectionHasBody(collection.settings)) return undefined;
       return Array.isArray(entry.body) ? entry.body : [];
     case 'readingTime': {
+      if (!collectionHasBody(collection.settings)) return undefined;
       const minutes = readingMinutes(entry.body);
       if (form === 'raw') return minutes;
       if (!minutes) return '';
@@ -203,6 +264,11 @@ export function entryFieldValue(ctx: EntryReadContext, field: string, form: Entr
     const v = own(entry.values, name);
     const value = v === undefined ? schema.default : v;
     if (schema.type === 'image') return storedPicture(state, value);
+    if (schema.type === 'date') return date(value);
+    // A reference names no entry unless the entry chooses one, whatever a damaged default says.
+    if (schema.type === 'reference') return referenceValue(state, schema, v, form);
+    // A rich text field's text is no article: a section heading or a picture a hand edit put there is left out.
+    if (schema.type === 'richtext') return Array.isArray(value) ? value.filter((b) => b && typeof b === 'object' && b.type !== 'h2' && b.type !== 'image') : [];
     return value;
   }
   return undefined;

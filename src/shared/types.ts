@@ -1181,10 +1181,52 @@ export interface ThemeLock {
 // Collections
 // ---------------------------------------------------------------------------
 
-/** The kinds of custom field a collection's entries can fill in: one plain value, or a picture. */
-export type CollectionFieldSchema = StringProp | NumberProp | BooleanProp | EnumProp | ImageProp;
-export const COLLECTION_FIELD_TYPES = ['string', 'number', 'boolean', 'enum', 'image'] as const;
-export type CollectionFieldValue = string | number | boolean | ImageValue;
+/** A calendar day an entry states (an event's date, a project's completion), written YYYY-MM-DD; '' for none. */
+export interface DateFieldSchema extends PropBase {
+  type: 'date';
+  default: string;
+}
+/**
+ * Entries of another collection (or of its own) that an entry names by ID: a project's lead from the team, a
+ * testimonial's case study. One ID ('' for none), or with `multiple` an ordered list of them. Removing a named entry
+ * is refused until every entry naming it names another or none.
+ */
+export interface ReferenceFieldSchema extends PropBase {
+  type: 'reference';
+  /** The collection whose entries it names, by ID. */
+  collection: string;
+  multiple?: boolean;
+  default: string | string[];
+}
+/** The kinds of custom field a collection's entries can fill in: one plain value, a picture, a link, rich text, a date or other entries. */
+export type CollectionFieldSchema = StringProp | NumberProp | BooleanProp | EnumProp | ImageProp | LinkProp | RichTextProp | DateFieldSchema | ReferenceFieldSchema;
+export const COLLECTION_FIELD_TYPES = ['string', 'number', 'boolean', 'enum', 'image', 'link', 'richtext', 'date', 'reference'] as const;
+export type CollectionFieldValue = string | number | boolean | ImageValue | LinkValue | RichText | string[];
+
+/** What a collection holds: dated articles (a blog, news) or structured records (team members, projects, events). */
+export type CollectionKind = 'editorial' | 'structured';
+export const COLLECTION_KINDS: readonly CollectionKind[] = ['editorial', 'structured'];
+
+/**
+ * The pages the website has for a collection: one per entry (`detail`) and the collection's index with its category
+ * archives (`archive`). With neither, the collection is data only: its entries are records other pages show, at no
+ * address of their own. An archive lists links to its entries' pages, so it needs them.
+ */
+export interface CollectionPages {
+  detail: boolean;
+  archive: boolean;
+}
+
+/** Where a synced entry came from: the external source, its own ID there, and the last sync that wrote it. */
+export interface EntrySource {
+  sourceId: string;
+  /** The record's ID in the source. */
+  externalId: string;
+  /** When it was last written from the source (ISO 8601). */
+  syncedAt: string;
+  /** A hash of the source record as last synced, so a sync can tell whether it changed. */
+  contentHash: string;
+}
 
 /** One way of grouping a collection's entries, such as categories or tags. */
 export interface CollectionTaxonomy {
@@ -1202,11 +1244,25 @@ export interface CollectionDoc {
   /** Stable lowercase slug such as "posts" or "case-studies"; also the collection's folder name. */
   id: string;
   name: string;
+  /** Absent: editorial, as every collection made before kinds is. */
+  kind?: CollectionKind;
+  /** What one entry is called ("Team member" of "Team"), where the collection's name would read wrong. */
+  singularName?: string;
+  /** Whether entries have text of their own (`body`). Absent: they do. A record without it keeps an empty body. */
+  hasBody?: boolean;
+  /** The pages the website has for it. Absent: an entry page each and an archive, as a blog has. */
+  pages?: CollectionPages;
   /**
-   * The address prefix every entry's address starts with, such as "/blog/". The collection owns this exact address
-   * and each entry owns its prefix plus slug; no page or old page address may use either.
+   * The address prefix every entry's address starts with, such as "/blog/". With entry pages, each entry owns its prefix
+   * plus slug; with an archive, the collection owns this exact address too. No page or old page address may use them.
+   * A data-only collection needs none, and one it keeps claims nothing until it has pages again.
    */
-  route: string;
+  route?: string;
+  /**
+   * The external source its entries are synced from. While set, its entries are read-only to manual edits: detaching
+   * (removing it) makes them local entries, edited as any other.
+   */
+  sourceId?: string;
   /** Groupings by stable ID ("categories", "tags"). */
   taxonomies: Record<string, CollectionTaxonomy>;
   /** Custom fields every entry can fill in, by stable name. An entry without a value of its own shows the default. */
@@ -1257,6 +1313,8 @@ export interface EntryDoc {
   /** Custom field values by field name. A field left out shows its default. */
   values: Record<string, CollectionFieldValue>;
   body: RichText;
+  /** Where it was synced from, for an entry written by a sync. Kept as its history once its collection is detached. */
+  source?: EntrySource;
 }
 
 /** A collection in memory: its settings and its entries, each stored in a file of its own. */

@@ -49,7 +49,7 @@ import { isWebMcpForm, toolOverrides, WEBMCP_DESCRIPTION_MAX, WEBMCP_TYPED_NAME_
 import { feedRowFields } from '@shared/entry-feed';
 import { archiveRouteOwner, collectionRouteOwner, findEntry, siteEntries } from '@shared/collections';
 import { loopText, redirectTargetProblem, resolveRedirects } from '@shared/redirects';
-import { collectionCreate, collectionRemove, collectionUpdate, entryAddressesInUse, entryCreate, entryRemove, entryReorder, entryUpdate, type EntryAddress } from './collections';
+import { collectionCreate, collectionRemove, collectionUpdate, entryAddressesInUse, entryCreate, entryRemove, entryReorder, entryUpdate, refuseSyncedHolders, syncedEntryChange, type EntryAddress } from './collections';
 import { termCreate, termRemove, termRename } from './terms';
 import { isListBlock } from '@shared/richtext';
 import { axesOf, findVariant, variantOptions } from '@shared/variants';
@@ -663,11 +663,12 @@ function walkValues(state: ProjectState, fn: (v: unknown) => void) {
   for (const v of variantBackgrounds(state)) fn(v.value);
   for (const p of Object.values(state.pages)) walk(p.seo);
   for (const c of Object.values(state.collections ?? {})) {
-    // A custom field's default, and each entry's value of a picture field: only those hold a picture.
-    const pictures = Object.entries(c.settings.fields ?? {}).filter(([, f]) => f?.type === 'image');
-    for (const [, f] of pictures) walk(f.default);
+    // A custom field's default, and each entry's value of a picture, link or rich text field: only those hold a
+    // picture or a link to a document.
+    const holding = Object.entries(c.settings.fields ?? {}).filter(([, f]) => f?.type === 'image' || f?.type === 'link' || f?.type === 'richtext');
+    for (const [, f] of holding) walk(f.default);
     for (const e of Object.values(c.entries)) {
-      for (const [name] of pictures) if (Object.hasOwn(e.values ?? {}, name)) walk(e.values[name]);
+      for (const [name] of holding) if (Object.hasOwn(e.values ?? {}, name)) walk(e.values[name]);
       walk(e.body);
     }
   }
@@ -1269,6 +1270,8 @@ function pageRemove(state: ProjectState, op: Op<'page.remove'>): OpResult {
   if (op.replacementPageId === page.id) fail('The replacement must be a different page.');
   if (refs && !op.replacementPageId && !op.newHome)
     throw new EngineError('VALIDATION_FAILED', `${refs} link${refs === 1 ? '' : 's'} point to "${page.title}". Choose a replacement page for them.`, { references: refs });
+  // A synced entry's links are its source's: pointed elsewhere here, the next sync would bring back one going nowhere.
+  refuseSyncedHolders(state, uses, `"${page.title}"`);
   if (op.sectionReplacements?.length && !op.replacementPageId) fail('Sections for links can only be chosen on a replacement page.');
   // The cards go first: a section on the replacement page that only they kept showing is gone for the links too.
   for (const { card } of cards) {
@@ -4123,6 +4126,9 @@ export function applyOperations(state: ProjectState, ops: EditOperation[], ctx: 
       throw e;
     }
   }
+  // Synced collections' entries are what the batch began with, unless it detached them (see syncedEntryChange).
+  const synced = syncedEntryChange(state, draft);
+  if (synced) throw new EngineError('VALIDATION_FAILED', `This ${synced}`);
   // Retagged nodes must fit where they render once the batch is done (a list item in a list, say), and so must every
   // node of a design built whole, what a wrap, an ungroup or a removal that keeps content put in a new place (list items
   // wrapped out of their list), and a placement shown as another design.

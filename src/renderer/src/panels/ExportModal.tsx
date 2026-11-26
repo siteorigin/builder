@@ -62,7 +62,7 @@ function openDraftLink(l: DraftLink) {
   if (!tree?.nodes[l.nodeId]) return toast('That link is no longer on the site.', 'info');
   // A link in a collection's layout is shown on one of its entries.
   if (owner.kind === 'template') {
-    openLayout(owner.id);
+    openLayout(owner.id, l.shownOn);
     setState({ modal: null, selection: { owner, instancePath: [], nodeId: l.nodeId }, rightTab: 'inspect', dockOpen: true });
     setTimeout(() => openSection('content'), 50);
     return;

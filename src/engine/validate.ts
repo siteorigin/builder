@@ -9,7 +9,7 @@ import { STYLE_PROP_MAP, containerStyleError, isStateStyleProp, linkShapeError, 
 import { groupLookup, hasGroupStyles, partInInteractionGroup } from '@shared/interaction-groups';
 import { effectiveItem, followsPage } from '@shared/page-teasers';
 import { ELEMENT_TAGS, LIST_FEEDS, TEXT_TAGS, conditionRef, isBinding, isBindingRef, isComparison, isContainerScope, isEntryBinding, isStateRef, parseStyleScopeKey, type Collection } from '@shared/types';
-import { ENTRY_CONTENT_FIELDS, ENTRY_DATE_FIELDS, entryChoiceProblem, entryFieldSchema } from '@shared/entry-fields';
+import { ENTRY_CONTENT_FIELDS, entryChoiceProblem, entryComparisonProblem, entryFieldSchema, isEntryDateField } from '@shared/entry-fields';
 import { validateRoute } from '@shared/routes';
 import { loopText, redirectRecord, redirectTargetProblem, resolveRedirects, type RedirectProblem } from '@shared/redirects';
 import { isLanguageCode, pageLanguage, shownValue, translationClashMessage, translationClashes, translationMembers } from '@shared/languages';
@@ -795,7 +795,7 @@ function entryBindingProblems(state: ProjectState, collection: Collection, n: Gr
       out.push(`takes its ${slot.field === 'variant' ? 'variant' : slot.field} from "${schema.label}"; that is the layout's own, the same for every entry. Only content can show an entry's field.`);
       continue;
     }
-    if (slot.field === 'datetime' && !ENTRY_DATE_FIELDS.has(b.$entry)) {
+    if (slot.field === 'datetime' && !isEntryDateField(collection, b.$entry)) {
       out.push(`states "${schema.label}" as its date, which is not a date.`);
       continue;
     }
@@ -815,6 +815,11 @@ function entryBindingProblems(state: ProjectState, collection: Collection, n: Gr
       continue;
     }
     const comparison = condition && isComparison(slot.value) ? slot.value : undefined;
+    const compared = comparison ? entryComparisonProblem(collection, b.$entry) : null;
+    if (compared) {
+      out.push(`compares ${compared}`);
+      continue;
+    }
     const problem = bindingProblem(state, { node: n, field: slot.field, prop: slot.prop, comparison }, schema);
     if (problem) out.push(problem);
   }

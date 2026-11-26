@@ -554,7 +554,8 @@ function PostEditor({ post, hidden }: { post: PostRef; hidden: boolean }) {
       if (getState().postView !== 'preview' || getState().post?.entryId !== post.entryId) return;
       const c = getState().snapshot?.state.collections[post.collectionId];
       const e = c && Object.hasOwn(c.entries, post.entryId) ? c.entries[post.entryId] : undefined;
-      if (c && e && !visitAddress(entryRoute(c, e))) toast('The preview is starting: the post opens in it once it is ready.', 'info');
+      const route = c && e ? entryRoute(c, e) : undefined;
+      if (route !== undefined && !visitAddress(route)) toast('The preview is starting: the post opens in it once it is ready.', 'info');
     });
   };
 
@@ -580,7 +581,7 @@ function PostEditor({ post, hidden }: { post: PostRef; hidden: boolean }) {
   /** The post is gone and the author lets its unsaved text go too. */
   const discard = () => draft.reset();
 
-  const route = entryRoute(collection, entry);
+  const route = entryRoute(collection, entry) ?? '';
   const filedUnder = collection ? entryTermLabels(collection, entry, 'categories') : [];
   const published = entry.draft === false;
   const blockLabel = { p: 'Paragraph', h2: 'Heading 2', h3: 'Heading 3', h4: 'Heading 4', blockquote: 'Quote' } as Record<string, string>;

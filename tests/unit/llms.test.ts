@@ -31,7 +31,7 @@ const insert = (s: ProjectState, pageId: string, componentId: string, props: Rec
   const r = applyOperations(s, [{ type: 'node.insert', owner: { kind: 'page', id: pageId }, componentId, props } as never]);
   return { state: r.state, nodeId: r.results[0].nodeId as string };
 };
-const postRoute = (s: ProjectState) => entryRoute(s.collections.posts, s.collections.posts.entries.en_spring);
+const postRoute = (s: ProjectState) => entryRoute(s.collections.posts, s.collections.posts.entries.en_spring)!;
 
 describe('llms.txt', () => {
   it('lists the published, indexable pages and entries with their own descriptions, under the site’s name and summary', () => {

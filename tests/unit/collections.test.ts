@@ -93,7 +93,7 @@ describe('collections', () => {
     expect(() => apply(site(), [{ type: 'collection.create', collectionId: 'news', route: '/' }])).toThrow(/Home page/);
     expect(() => apply(site(), [{ type: 'collection.create', collectionId: 'news', route: '/a/b/c/d/' }])).toThrow(/at most 3 levels/);
     expect(() => apply(site(), [{ type: 'collection.create', collectionId: 'news', route: '/api/' }])).toThrow(/reserved/);
-    expect(() => apply(site(), [{ type: 'collection.create', collectionId: 'news', fields: { link: { type: 'link', label: 'Link' } } }])).toThrow(/type of string, number, boolean, enum, image/);
+    expect(() => apply(site(), [{ type: 'collection.create', collectionId: 'news', fields: { mood: { type: 'icon', label: 'Mood' } } }])).toThrow(/type of string, number, boolean, enum, image, link, richtext, date, reference\.$/);
   });
 
   it('creates entries as drafts dated today with a slug of the title, and returns the new ID and address', () => {

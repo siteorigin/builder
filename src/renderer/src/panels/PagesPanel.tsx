@@ -1314,7 +1314,7 @@ function CollectionLayouts({ state }: { state: ProjectState }) {
               <button className="btn btn-sm" aria-pressed={open === id} aria-label={`Edit the ${c.settings.name} layout`} data-testid={`edit-layout-${id}`} onClick={() => openLayout(id)}>
                 Edit layout
               </button>
-              <CollectionArchive collectionId={id} name={c.settings.name} route={c.settings.route} pageSize={archivePageSize(c.settings)} categories={hasCategoryArchives(c.settings)} />
+              <CollectionArchive collectionId={id} name={c.settings.name} route={c.settings.route ?? ''} pageSize={archivePageSize(c.settings)} categories={hasCategoryArchives(c.settings)} />
             </li>
           );
         })}

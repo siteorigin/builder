@@ -20,6 +20,7 @@ import { anchorsInUse, displayName, EngineError } from '@engine/tree';
 import { madeRequiredBy } from '@engine/required';
 import { findRemoval, restoreRemoval } from '@engine/restore';
 import { pageLinkUses } from '@engine/page-links';
+import { syncedEntryChange } from '@engine/collections';
 import { codeNeeds, declareCodeNames, filledSlots } from '@engine/definitions';
 import { publicationPlan } from '@generator/checks';
 import { blocksSaving, diagnosticKey, introducedDiagnostics, validateState, type Diagnostic } from '@engine/validate';
@@ -43,7 +44,7 @@ import { RSS_PATH } from '@generator/rss';
 import { HOST_REDIRECTS_FILE, VERCEL_CONFIG_FILE } from '@generator/host-redirects';
 import { atomicWrite, ensureDir, readBytesIfExists, readIfExists, readJson, removeDurable, removeEmptyDirs, safeJoin, sha, syncDir, toJson } from './fsutil';
 import { designAt, relocateSource, textOfBytes } from './edited-design';
-import { collectionPathOf, collectionsFromDocs, componentDocPath, CUSTOM_SOURCE_RE, DOC_DIR, isCanonicalPath, newestStoredVersion, ProjectFormatError, readProject, readState, stateToAuthoredSources, stateToDocs } from './documents';
+import { collectionDocPath, collectionPathOf, collectionsFromDocs, componentDocPath, CUSTOM_SOURCE_RE, DOC_DIR, isCanonicalPath, newestStoredVersion, ProjectFormatError, readProject, readState, stateToAuthoredSources, stateToDocs } from './documents';
 import { heldAsMedia, isVersionMedia, newVersionId, sameContents, VERSION_DAMAGED, VERSION_NAME_MAX, VersionStore, type SavedVersion } from './versions';
 
 export const LOCAL_DIR = '.siteorigin';
@@ -403,8 +404,10 @@ function readsWholeProject(o: EditOperation, state: ProjectState): boolean {
     case 'collection.renameTerm':
     case 'collection.removeTerm':
       return true;
+    // So is turning pages on (their addresses), entry text off (every entry's text), or a field that names entries of
+    // another collection.
     case 'collection.update':
-      return o.route !== undefined;
+      return o.route !== undefined || o.pages !== undefined || o.hasBody !== undefined || o.fields !== undefined;
     // A rebuild is checked against every placement of the component, in files it may leave as they are.
     case 'component.upsert':
       return o.definitionId !== undefined;
@@ -425,12 +428,14 @@ function readsWholeProject(o: EditOperation, state: ProjectState): boolean {
     // So is a container turned into a slot: what it held moves into placements in other files, and must nest there.
     case 'component.containerToSlot':
       return true;
+    // A reference names entries of another collection, in their own files.
     case 'entry.update':
-      return o.slug !== undefined;
+      return o.slug !== undefined || (o.values !== undefined && Object.keys(o.values).some((k) => state.collections[o.collectionId]?.settings.fields?.[k]?.type === 'reference'));
     default:
       return false;
   }
 }
+
 
 /** A page's document path, capturing the page ID. */
 const PAGE_DOC = new RegExp(`^${DOC_DIR}/pages/([^/]+)\\.json$`);
@@ -1805,6 +1810,10 @@ export class ProjectSession extends EventEmitter {
       const unloaded = await this.unloadedEdit(new Set([...Object.keys(changed), MANIFEST]));
       if (unloaded) throw new DiskConflictError(unloaded);
     }
+    // A change to an entry is allowed by its collection's settings, which it may not write (a synced collection's
+    // entries are read-only): one changed outside the app since it was read makes the change wait for it.
+    const settings = new Set(Object.keys(changed).flatMap((p) => (collectionPathOf(p)?.entryId !== undefined ? [collectionDocPath(collectionPathOf(p)!.collectionId)] : [])));
+    for (const path of settings) if (!Object.hasOwn(changed, path) && !sameContent(path, await this.diskContent(path), this.docs.get(path) ?? null)) throw new DiskConflictError(path);
     // Never overwrite a newer version on disk (for example an edit the file watcher has not delivered yet). A file
     // that already holds exactly what this change leaves there (a source kept when its definition was deleted
     // outside the app, say) is not overwritten by it.
@@ -3578,6 +3587,9 @@ export class ProjectSession extends EventEmitter {
     const already = new Set(fatal(this.state).map((d) => d.message));
     const broken = fatal(next).find((d) => !already.has(d.message));
     if (broken) return { ok: false, revision: this.revision, error: { code: 'CONFLICT', message: `Cannot ${direction} ${what}: ${broken.message}`, recoverable: false } };
+    // Nor one that rewrites a synced collection's entries (an edit made before it was synced, say), as no change may.
+    const synced = syncedEntryChange(this.state, next);
+    if (synced) return { ok: false, revision: this.revision, error: { code: 'CONFLICT', message: `Cannot ${direction} ${what}: it ${synced}`, recoverable: false } };
     const pin = themePinProblem(next);
     if (pin) return { ok: false, revision: this.revision, error: { code: 'CONFLICT', message: `Cannot ${direction} ${what}: ${pin}`, recoverable: false } };
     // That check sees the project as loaded. An edit made outside the app that has not been loaded yet would slip
@@ -3961,6 +3973,8 @@ export class ProjectSession extends EventEmitter {
     const pin = themePinProblem(next);
     if (pin) return refuse(pin);
     const problem = (why: string) => refuse(`Undoing it on its own would leave a problem: ${why}`);
+    const synced = syncedEntryChange(this.state, next);
+    if (synced) return refuse(`Undoing it on its own ${synced}`);
     // Anything the project would newly fail, warnings aside: a broken link is as much a reason as a page left out of
     // the page order.
     const broken = introducedDiagnostics(validateState(this.state), validateState(next), { byNode: true }).filter((d) => d.severity === 'error');
@@ -4143,6 +4157,11 @@ export class ProjectSession extends EventEmitter {
           } catch (e) {
             if (!(e instanceof DiskConflictError)) throw e;
             changedOutside.push(e.path);
+            // A collection's settings changed outside (a source attached): its entries the run wrote are held too,
+            // never taken back under it.
+            const settings = collectionPathOf(e.path);
+            if (settings && settings.entryId === undefined)
+              for (const p of touched) if (collectionPathOf(p)?.collectionId === settings.collectionId && collectionPathOf(p)?.entryId !== undefined) changedOutside.push(p);
           }
         }
         if (changedOutside.length) await this.revertAroundConflicts(run, touched, changedOutside);

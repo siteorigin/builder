@@ -4,7 +4,7 @@
  * route prefix plus its slug, and those addresses share one namespace with the pages and the old page addresses kept
  * working, so nothing here lets two of them claim the same address.
  */
-import type { Collection, EntryDoc, ProjectState } from './types';
+import type { Collection, CollectionKind, EntryDoc, ProjectState } from './types';
 import { numberedSlug, slugify, validateRoute, validateSegment } from './routes';
 
 /** A collection's ID and folder name: a lowercase slug ("posts", "case-studies"). */
@@ -28,6 +28,50 @@ export function archivePageSize(settings: { pageSize?: unknown } | undefined): n
 /** Whether a collection's categories get archive pages of their own: yes unless it says no. */
 export function hasCategoryArchives(settings: { categoryArchives?: unknown } | undefined): boolean {
   return settings?.categoryArchives !== false;
+}
+
+/** What a collection holds: structured records when it says so, otherwise dated articles, as every blog is. */
+export function collectionKind(settings: { kind?: unknown } | undefined): CollectionKind {
+  return settings?.kind === 'structured' ? 'structured' : 'editorial';
+}
+
+const pagesOf = (settings: { pages?: unknown } | undefined) => (settings?.pages && typeof settings.pages === 'object' ? (settings.pages as { detail?: unknown; archive?: unknown }) : {});
+
+/** Whether each of a collection's entries has a page of its own: yes unless it says no. */
+export function hasDetailPages(settings: { pages?: unknown } | undefined): boolean {
+  return pagesOf(settings).detail !== false;
+}
+
+/**
+ * Whether a collection has an index (and category archives) at its own address: yes unless it says no, and never
+ * without entry pages for it to link to (a hand edit that asks for one anyway is reported, and has none).
+ */
+export function hasArchivePages(settings: { pages?: unknown } | undefined): boolean {
+  return hasDetailPages(settings) && pagesOf(settings).archive !== false;
+}
+
+/** Whether a collection is data only: records other pages show, with no page of its own anywhere. */
+export function isDataOnly(settings: { pages?: unknown } | undefined): boolean {
+  return !hasDetailPages(settings) && !hasArchivePages(settings);
+}
+
+/** Whether a collection's entries have text of their own: yes unless it says no. */
+export function collectionHasBody(settings: { hasBody?: unknown } | undefined): boolean {
+  return settings?.hasBody !== false;
+}
+
+/**
+ * The address prefix a collection's pages use: its route, while it has pages and a route that is text. Undefined for
+ * a data-only collection, whatever route it keeps.
+ */
+export function pagesPrefix(collection: Collection): string | undefined {
+  const s = collection?.settings;
+  return hasDetailPages(s) && typeof s?.route === 'string' ? s.route : undefined;
+}
+
+/** Whether a collection is synced from an external source, which makes its entries read-only to manual edits. */
+export function isSyncedCollection(settings: { sourceId?: unknown } | undefined): boolean {
+  return typeof settings?.sourceId === 'string';
 }
 
 /** Names a folder may not have on every system that may open the project. */
@@ -82,9 +126,10 @@ export function entriesWithTerm(collection: Collection, taxonomyId: string, term
   });
 }
 
-/** An entry's address: its collection's prefix and its slug. */
-export function entryRoute(collection: Collection, entry: EntryDoc): string {
-  return `${collection.settings.route}${entry.slug}/`;
+/** An entry's address: its collection's prefix and its slug. Undefined for an entry with no page (see pagesPrefix). */
+export function entryRoute(collection: Collection, entry: EntryDoc): string | undefined {
+  const prefix = pagesPrefix(collection);
+  return prefix === undefined ? undefined : `${prefix}${entry.slug}/`;
 }
 
 /** The entry with this ID, wherever it is, with the collection that holds it. */
@@ -118,9 +163,9 @@ export interface SiteEntry {
 
 /** Whether an entry's address is one the site can have: its collection's prefix and one valid segment. */
 export function isEntryPath(collection: Collection, entry: EntryDoc): boolean {
-  const prefix: unknown = collection?.settings?.route;
-  if (typeof prefix !== 'string' || prefix === '/' || validateRoute(prefix)) return false;
-  return typeof entry?.slug === 'string' && !validateSegment(entry.slug) && !validateRoute(entryRoute(collection, entry));
+  const prefix = pagesPrefix(collection);
+  if (prefix === undefined || prefix === '/' || validateRoute(prefix)) return false;
+  return typeof entry?.slug === 'string' && !validateSegment(entry.slug) && !validateRoute(`${prefix}${entry.slug}/`);
 }
 
 /**
@@ -136,7 +181,7 @@ export function siteEntries(state: ProjectState): SiteEntry[] {
     if (!collection?.entries || typeof collection.entries !== 'object' || collection.settings?.id !== id) continue;
     for (const entry of orderedEntries(collection)) {
       if (!entry || typeof entry !== 'object' || !isEntryPath(collection, entry)) continue;
-      const route = entryRoute(collection, entry);
+      const route = entryRoute(collection, entry)!;
       if (used.has(route.toLowerCase())) continue;
       used.add(route.toLowerCase());
       out.push({ collection, entry, route });
@@ -159,16 +204,19 @@ export type RouteOwner =
   | { kind: 'collection'; route: string; collectionId: string; label: string }
   | { kind: 'entry'; route: string; collectionId: string; entryId: string; label: string };
 
-/** The addresses the site's collections and their entries hold, drafts included: a draft keeps its address. */
+/**
+ * The addresses the site's collections and their entries hold, drafts included: a draft keeps its address. A
+ * collection holds its own address only with an archive there, and its entries theirs only with pages of their own.
+ */
 export function collectionRoutes(state: ProjectState): RouteOwner[] {
   const out: RouteOwner[] = [];
   for (const c of Object.values(state.collections ?? {})) {
-    const route = c.settings?.route;
-    if (typeof route !== 'string') continue;
-    out.push({ kind: 'collection', route, collectionId: c.settings.id, label: `the ${c.settings.name} collection` });
+    const route = pagesPrefix(c);
+    if (route === undefined) continue;
+    if (hasArchivePages(c.settings)) out.push({ kind: 'collection', route, collectionId: c.settings.id, label: `the ${c.settings.name} collection` });
     for (const e of Object.values(c.entries)) {
       if (typeof e?.slug !== 'string') continue;
-      out.push({ kind: 'entry', route: entryRoute(c, e), collectionId: c.settings.id, entryId: e.id, label: `the entry “${e.title}”` });
+      out.push({ kind: 'entry', route: `${route}${e.slug}/`, collectionId: c.settings.id, entryId: e.id, label: `the entry “${e.title}”` });
     }
   }
   return out;
@@ -206,7 +254,7 @@ export function underArchiveFolder(prefix: string, route: string): boolean {
 export function archiveRouteOwner(state: ProjectState, route: string, exceptCollectionId?: string): RouteOwner | undefined {
   for (const c of Object.values(state.collections ?? {})) {
     const prefix: unknown = c?.settings?.route;
-    if (typeof prefix !== 'string' || c.settings.id === exceptCollectionId) continue;
+    if (typeof prefix !== 'string' || c.settings.id === exceptCollectionId || !hasArchivePages(c.settings)) continue;
     if (underArchiveFolder(prefix, route)) return { kind: 'collection', route, collectionId: c.settings.id, label: `the ${c.settings.name} collection's archive pages` };
   }
   return undefined;

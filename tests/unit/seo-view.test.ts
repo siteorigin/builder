@@ -180,6 +180,22 @@ describe('the documents the SEO view lists', () => {
     expect(seoDocuments(s).find((g) => g.label === 'Journal')?.id).toBe('collection-pages');
   });
 
+  it('leaves out a collection whose entries have no pages, and lets a chosen entry go once its pages are turned off', () => {
+    const s = run(
+      site(),
+      { type: 'collection.create', collectionId: 'team', kind: 'structured', singularName: 'Team member', hasBody: false, pages: { detail: false, archive: false } },
+      { type: 'entry.create', collectionId: 'team', entryId: 'en_ruiz', title: 'Ana Ruiz', draft: false }
+    );
+    // Nothing of a data-only entry reaches search results, so it has no address to show and is not listed.
+    expect(seoDocuments(s).map((g) => g.id)).not.toContain('collection-team');
+    expect(seoDocument(s, entry('team', 'en_ruiz'))).toBeUndefined();
+    const mill = entry('case-studies', 'en_mill');
+    expect(keepSeoSubject(s, mill)).toEqual({});
+    const unpaged = run(s, { type: 'collection.update', collectionId: 'case-studies', pages: { detail: false, archive: false } });
+    expect(seoDocuments(unpaged).map((g) => g.id)).not.toContain('collection-case-studies');
+    expect(keepSeoSubject(unpaged, mill)).toEqual({ seoSubject: null });
+  });
+
   it('tells documents with the same title apart by their key and address', () => {
     const s = run(site(), { type: 'entry.create', collectionId: 'posts', entryId: 'en_spring2', title: 'Spring open studio', publishedAt: '2027-03-01' });
     const twins = seoDocuments(s)
