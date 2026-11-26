@@ -1284,7 +1284,7 @@ describe('optional tabs, unnamed tabs and groups of a choice’s buttons', () =>
     const def = addDef(s, {
       componentId: 'test.choice-shapes',
       name: 'Choice shapes',
-      properties: {},
+      properties: { items: P.list('Items', 'Item', { tag: P.choice('Tag', 'summary', [['summary', 'Summary'], ['p', 'Paragraph']]) }, [{ tag: 'summary' }]) },
       parts: {},
       state: structuredClone({ billing: BILLING }),
       build: (b) =>
@@ -1300,13 +1300,26 @@ describe('optional tabs, unnamed tabs and groups of a choice’s buttons', () =>
             b.text('terms-text', 'p', 'Cancel any time.')
           ]),
           // A padded wrapper that collapses with what it holds hides with the option it holds, printed too.
-          b.el('wrap', 'div', { collapseEmpty: true, styles: { paddingBlock: '24px' } }, [b.text('monthly-note', 'p', 'Billed monthly', { when: eq(uiState('billing'), 'monthly') })])
+          b.el('wrap', 'div', { collapseEmpty: true, styles: { paddingBlock: '24px' } }, [b.text('monthly-note', 'p', 'Billed monthly', { when: eq(uiState('billing'), 'monthly') })]),
+          // A summary whose tag each item of a list chooses could be any item's disclosure control: kept out too.
+          b.el('list', 'ul', {}, [
+            b.repeat('items', 'items', [
+              b.el('item', 'li', {}, [
+                b.el('item-terms', 'details', {}, [
+                  b.text('item-monthly', { $item: 'tag' } as never, 'Item monthly', { when: eq(uiState('billing'), 'monthly') }),
+                  b.text('item-annual', 'summary', 'Item annual', { when: eq(uiState('billing'), 'annual') })
+                ])
+              ])
+            ])
+          ])
         ])
     });
     place(s, def);
     const html = await renderHome(s);
     expect(html).toContain('Annual terms');
     expect(html).not.toContain('Monthly terms');
+    expect(html).toContain('Item annual');
+    expect(html).not.toContain('Item monthly');
     expect(tagsWith(html, 'class', `${nodeClass(def, 'monthly-note')} ${CHOICE_OFF_CLASS}`)).toHaveLength(1);
     const wrap = openTag(html, nodeClass(def, 'wrap'));
     expect(wrap).not.toBe('');

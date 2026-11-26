@@ -1934,6 +1934,8 @@ function stateWidgets(ctx: EmitCtx): StateWidgets {
     if (!plain.has(n.id) || roots.has(n.id) || (n as { overlay?: unknown }).overlay !== undefined) return false;
     if (n.kind !== 'text' && n.kind !== 'element') return false;
     if (n.kind === 'text' ? n.rich : rendersAsCard(ctx, n) || isCarouselTrack(n)) return false;
+    // A tag a list item chooses is only known item by item, so it could be any of them.
+    if (isBinding(n.tag) && !('$prop' in n.tag)) return false;
     return !tagChoices(ctx, n).tags.some((t) => PRESENCE_TAGS.has(t));
   };
   /** A button that changes state and goes nowhere: always a real button. */
@@ -2103,7 +2105,7 @@ export function optionalTabGates(state: ProjectState, def: ComponentDefinition, 
 }
 
 /** Tags the browser acts on by their place in the page, whatever their styles: never kept in it hidden. */
-const PRESENCE_TAGS = new Set(['summary', 'legend', 'caption', 'option', 'optgroup', 'source', 'track', 'title', 'base', 'meta', 'link', 'style', 'script']);
+const PRESENCE_TAGS = new Set(['summary', 'legend', 'caption', 'figcaption', 'option', 'optgroup', 'source', 'track', 'title', 'base', 'meta', 'link', 'style', 'script']);
 
 /** Whether an element always renders as \`tag\` (no property chooses its tag). */
 function isBareTag(ctx: EmitCtx, node: GraphNode & { kind: 'element' }, tag: string): boolean {
