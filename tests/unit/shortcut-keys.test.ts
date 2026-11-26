@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { shortcutLabel } from '../../src/renderer/src/lib/shortcut-keys';
+import { sendOnEnterHint, shortcutLabel } from '../../src/renderer/src/lib/shortcut-keys';
 
 describe('shortcut hints for each platform', () => {
   it('keeps the Mac glyphs on a Mac', () => {
@@ -42,5 +42,10 @@ describe('shortcut hints for each platform', () => {
   it('never leaves a Mac glyph in a hint for Windows or Linux', () => {
     const hints = ['⌘J', '⇧⌘F', '⌘C', '⌘V', '⌘Z', '⇧⌘Z', '⇧⌘N', '⌘O', '⌘E', '⇧⌘\\', '⇧⌘W', '⇧⌘↑', '⇧⌘↓', '⌘D', '⌫'];
     for (const k of hints) expect(shortcutLabel(k, 'win32')).not.toMatch(/[⌘⇧⌥⌃⌫]/);
+  });
+
+  it('names this platform’s send key in the chat setting hint', () => {
+    expect(sendOnEnterHint('darwin')).toBe('When off, ⌘↩ sends and Enter starts a new line.');
+    for (const platform of ['win32', 'linux']) expect(sendOnEnterHint(platform)).toBe('When off, Ctrl+Enter sends and Enter starts a new line.');
   });
 });
