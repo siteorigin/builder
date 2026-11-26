@@ -160,6 +160,21 @@ same for one event) and `eventMsTotal`, `replyMs` (until the editor handled the 
 message renders and text parses while it streamed (`streamCommits`, `streamMessageRenders`, `streamTextParses`), and
 the longest main-process stall.
 
+**`aiEdit`**: in the AI panel, with the home hero selected in Layers and the composer in Edit mode, ask twice for its
+Heading to change (`first`, after the project opened, and `second`, with nothing changed since the first ended), the
+scripted model (constrained JSON, no live provider) changing it with one tool call and finishing each time. Checks: each
+request took the scripted model's two turns and named the hero to it, ended completed with the build's check passed and
+none failed, and left the new heading in the project, on disk and in the preview; every build check in the request
+looked at every Svelte file the website has (`compile.files`), whether it compiled it again or not, and the checks after
+the change compiled every Svelte file it changed both ways at least (`compile.svelte`), so none passed on an outcome
+from before it. Per request
+(`aiEdit.first.*`, `aiEdit.second.*`), from main receiving it (`ai.send`): `toModel` (to the first model turn,
+`ai.modelRequest`), in its phases `toAdapter` (the model's adapter prepared), `toCompile` (the run set up: the project
+taken), `startCompile` (the starting build, an `ai.compile` span) and `compileToModel` (the request put together); the
+starting build's Svelte files and compiles (`startFiles`, `startCompiled`), the build checks after the first model turn
+(`checkCompile`, `checkCompiled`), the build checks in all (`compiles`), the model turns, `runMs` (to the run ending,
+`ai.runEnd`) and the longest main-process stall in the run.
+
 **`export`**: export the website as a folder from the Export dialog: open it, choose Website files, pick a folder (the
 chooser answered through the driver), until the dialog says what it exported. **`exportAgain`** follows it and does the
 same once more with nothing changed, into a second folder. Checks: the dialog says it exported the fixture's pages and
@@ -374,7 +389,8 @@ Counters: `fs.writes`, `fs.durableWrites`, `fs.fsyncs` (`src/main/project/fsutil
 counted in `files.read`; `src/main/project/documents.ts`), `export.filesRead`, `export.bytesRead` (what an export reads
 in the main process, `src/main/export.ts`), `ipc.projectChanged.sends`, `ipc.projectChanged.bytes` (as
 IPC serializes the snapshot), `ipc.aiEvent.sends`, `ipc.aiEvent.bytes` and `ipc.aiEvent.unsized` (the assistant's
-events, sized the same way), `session.reloadFromDisk`, `session.reloadUnchanged` (a reload that read the project and
+events, sized the same way), `compile.files` and `compile.svelte` (Svelte files a build check looked at, and the
+compiler runs it made for them: `src/main/compile.ts`), `session.reloadFromDisk`, `session.reloadUnchanged` (a reload that read the project and
 found nothing changed), `main.stalls` (main), and `react.commits`, `react.renders`
 (components rendered, counted from each commit's fibers), per panel marked with `timedPanel`
 (`src/renderer/src/lib/perf-panels.tsx`) `panel.<id>.renders` and `panel.<id>.renderMs` (the time between two probes

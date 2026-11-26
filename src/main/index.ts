@@ -319,18 +319,49 @@ const orchestratorDeps = {
   }
 } as { adapter: (signal?: AbortSignal) => Promise<{ adapter: import('@agent/types').AgentModelAdapter; model: string; provider: ProviderId; auto?: boolean } | { error: string; repair?: 'settings' | 'key' }> };
 
+/**
+ * The adapter a request uses, with `ai.adapterReady` once it is prepared and `ai.modelRequest` as each model turn is
+ * asked for, while marks are on (scripts/perf/README.md, the `aiEdit` scenario); the adapter itself when they are off.
+ */
+const markedAdapter = (open: (typeof orchestratorDeps)['adapter']): (typeof orchestratorDeps)['adapter'] =>
+  perf.on
+    ? async (signal) => {
+        const made = await open(signal);
+        perf.mark('ai.adapterReady');
+        if ('error' in made) return made;
+        const { adapter } = made;
+        const stream = adapter.streamTurn.bind(adapter);
+        adapter.streamTurn = (req, sig) => {
+          perf.mark('ai.modelRequest');
+          return stream(req, sig);
+        };
+        return made;
+      }
+    : open;
+
 const orchestrator = new Orchestrator({
   session: () => controller.session,
-  adapter: orchestratorDeps.adapter,
+  adapter: markedAdapter(orchestratorDeps.adapter),
   emit: (e) => {
     aiJournal?.record(e);
     controller.send('ai:event', e);
   },
-  compileAll: async (): Promise<Diagnostic[]> => (controller.session ? compileProject(controller.session.state) : []),
+  compileAll: async (): Promise<Diagnostic[]> => {
+    if (!controller.session) return [];
+    const end = perf.span('ai.compile');
+    try {
+      return await compileProject(controller.session.state);
+    } finally {
+      end();
+    }
+  },
   inspectLayout,
   fileDiagnostics: () => controller.fileDiagnostics(),
   inspectComponent: (steps, signal) => previewComponents(steps, { readability: true, gaps: true, budgetMs: INSPECT_COMPONENT_BUDGET_MS }, signal),
-  onBusyChange: () => controller.broadcast(),
+  onBusyChange: (busy) => {
+    perf.mark(busy ? 'ai.runStart' : 'ai.runEnd');
+    controller.broadcast();
+  },
   codeEnabled: async () => (await loadSettings()).settings.developerMode
 });
 // Only a request that may change the site holds it: a read-only question leaves the author editing, exporting
@@ -755,6 +786,7 @@ function registerIpc() {
   });
   // A question may be asked of a project another app is editing; the orchestrator decides (it writes nothing).
   handle('ai:send', async (text: string, ctx, conversationId?: string, recipient?: unknown) => {
+    perf.mark('ai.send', { mode: (ctx as { mode?: unknown } | null)?.mode === 'ask' ? 'ask' : 'edit' });
     if (readOnlyReason() && !((ctx as { mode?: unknown } | null)?.mode === 'ask' && controller.session?.readOnly?.canUnlock)) return { ok: false, message: readOnlyReason() };
     // A test may cap the requests the assistant starts (ai-journal.ts): one past the cap never reaches a model.
     if (aiJournal && !aiJournal.admit()) return { ok: false, message: AI_TURNS_SPENT };

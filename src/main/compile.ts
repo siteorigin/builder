@@ -1,6 +1,7 @@
 import type { ProjectState } from '@shared/types';
 import type { Diagnostic } from '@engine/validate';
 import { defFile, generateProject, pageFile, webMcpFormFile } from '@generator/index';
+import { perf } from './perf';
 
 /** Component validation profile: every Svelte file must parse and compile with the pinned compiler. */
 export async function compileProject(state: ProjectState): Promise<Diagnostic[]> {
@@ -16,9 +17,11 @@ export async function compileProject(state: ProjectState): Promise<Diagnostic[]>
   }
   for (const [path, source] of files) {
     if (!path.endsWith('.svelte')) continue;
+    perf.count('compile.files');
     // Pages are prerendered (server) and hydrated (client); a file must compile both ways.
     for (const generate of ['client', 'server'] as const) {
       try {
+        perf.count('compile.svelte');
         compile(source, { filename: path, generate, runes: true });
       } catch (e) {
         const err = e as { message: string; code?: string; start?: { line: number }; end?: { line?: number } };
