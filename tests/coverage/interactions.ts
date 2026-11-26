@@ -1909,6 +1909,25 @@ export const INTERACTIONS: Interaction[] = [
     ],
     gaps: [{ missing: 'A dropped relay connection (Reconnecting, then Live again or ended) is proven only below the editor, in tests/unit/live-host-relay.test.ts', owner: 'preview' }]
   },
+  {
+    id: 'preview.remote-shell',
+    area: 'preview',
+    intent: 'Join someone else’s live session from my own copy of Builder, and edit their site with them, or watch it, until I leave or the session ends',
+    start: 'Welcome or a project of my own open, a host’s invite link, the relay in its local simulator',
+    routes: ['welcome:Join live session', 'menu:File > Join Live Session…', 'dialog:Join live session › Ask to join', 'dialog:Join live session › Stop asking', 'toolbar:Live session', 'item:RemoteSession:Leave session', 'item:Toolbar:Leave live session', 'toolbar:Leave session'],
+    outcome:
+      'The host is asked under the name given, and once it admits the guest the editor shows the host’s project and its preview; a collaborator’s edits land on the host’s disk as the guest’s own History steps and come back to the guest; a viewer, or a guest made one, cannot edit; leaving, being removed, an expiry or the host ending the session puts the editor back on Welcome, saying why, with this computer’s projects as they were',
+    scenario: 'blank · none · relay simulator',
+    proof: [
+      { test: 'tests/unit/live-remote-shell.test.ts', kind: 'unit', step: 'joins as a collaborator, shows the host’s project and preview, and edits it through the host' },
+      { test: 'tests/unit/live-remote-shell.test.ts', kind: 'unit', step: 'ends at once when the host removes the guest, and its preview goes with it' },
+      { test: 'tests/unit/live-guest.test.ts', kind: 'unit' },
+      { test: 'tests/unit/live-guest-preview.test.ts', kind: 'unit' },
+      { test: 'tests/unit/remote-shell-editor.test.ts', kind: 'unit' },
+      { test: 'tests/unit/canvas-navigation.test.ts', kind: 'unit' }
+    ],
+    gaps: [{ missing: 'Two apps driven together (a host’s Share and a guest’s Join, the host’s page rendered in the guest’s canvas) are proven only below the editor; no e2e script launches two apps yet', owner: 'preview' }]
+  },
   // ---- export ----
   {
     id: 'export.website',

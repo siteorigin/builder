@@ -29,7 +29,7 @@ import { setSiteIconRenderer } from './project/site-icons';
 import { readInsertPlace } from './saved-components';
 import { stopPostReads } from './posts-import/process';
 import { stopSourceSyncs } from './sources/process';
-import { playerFrameAllowed, sameOrigin } from './player-frames';
+import { canvasPreviewUrl, playerFrameAllowed, previewNavigationAllowed as navigationAllowed, sameOrigin } from './player-frames';
 import { stopPhotoDecoders } from './project/photo-convert';
 import { createThumbCapturer } from './thumb-capture';
 import { desktopForLaunch, launchMode } from './headless-desktop';
@@ -824,12 +824,8 @@ async function createWindow() {
   const editorContents = win.webContents;
   // The open project's preview server, or, in a live session this app is a guest in, the host's preview as this
   // computer's loopback server shows it (#766).
-  const previewUrl = () => (controller.dev?.status.state === 'ready' ? (controller.dev.status as { url: string }).url : (controller.remote.previewAccess?.url ?? null));
-  const previewNavigationAllowed = (target: string) => {
-    const devUrl = previewUrl();
-    // Compare origins, not string prefixes: http://127.0.0.1:5173 must not admit http://127.0.0.1:51730.
-    return (!!devUrl && sameOrigin(target, devUrl)) || target.startsWith('about:');
-  };
+  const previewUrl = () => canvasPreviewUrl(controller.dev as { status: { state: string; url?: string } } | null, controller.remote);
+  const previewNavigationAllowed = (target: string) => navigationAllowed(target, previewUrl());
   win.webContents.on('will-frame-navigate', (e) => {
     if (e.isMainFrame) return;
     // A video section's player, which a press of Play in Preview adds to the previewed page. Its redirects are not.

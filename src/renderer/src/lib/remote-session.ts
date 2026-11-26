@@ -44,7 +44,7 @@ export const REMOTE_RIGHT_TABS: ReadonlySet<string> = new Set(['inspect', 'style
  * collaborator may make. Every other dialog (export, code, history and versions, components, imports, health) is
  * the host's, and is never shown in the remote shell.
  */
-export const REMOTE_MODALS: ReadonlySet<string> = new Set(['settings', 'cmdk', 'find', 'delete-page', 'set-home', 'swap-component', 'paste-style']);
+export const REMOTE_MODALS: ReadonlySet<string> = new Set(['settings', 'find', 'delete-page', 'set-home', 'swap-component', 'paste-style']);
 /** The File menu's commands that open or act on a project of this computer's: a guest leaves the session first. */
 export const LOCAL_PROJECT_COMMANDS: ReadonlySet<string> = new Set(['new-project', 'open-project', 'open-project-folder', 'duplicate-project', 'export', 'join-live']);
 
