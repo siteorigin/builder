@@ -1,21 +1,18 @@
 /** A rich text field's status line is a live region, but it only looks like an error while it holds a message (#900). */
-import { beforeAll, describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import { createElement } from 'react';
 import { renderToStaticMarkup } from 'react-dom/server';
 
-type Field = (props: Record<string, unknown>) => ReturnType<typeof createElement>;
-let RichTextField: Field;
-
-beforeAll(async () => {
+// The renderer store reads `window` when it loads, so the stub is in place before the static import below.
+vi.hoisted(() => {
   (globalThis as unknown as { window: unknown }).window = {
     addEventListener: () => undefined,
     removeEventListener: () => undefined,
     matchMedia: () => ({ matches: false, addEventListener: () => undefined, removeEventListener: () => undefined }),
     builder: { platform: 'test' }
   };
-  const path = ['..', '..', 'src', 'renderer', 'src', 'components', 'RichTextField.tsx'].join('/');
-  RichTextField = ((await import(/* @vite-ignore */ path)) as { RichTextField: Field }).RichTextField;
 });
+import { RichTextField } from '../../src/renderer/src/components/RichTextField';
 
 describe('RichTextField status line', () => {
   it('keeps the live region mounted without the error styling while there is no note', () => {
