@@ -12,7 +12,6 @@
  * only reaches after minutes (a lost connection, a session's end) are as quick to reach as the rest. The preview's
  * admission answers as the relay does, and its frame loads a stand-in site from the room's real preview origin.
  */
-/// <reference lib="dom" />
 import { existsSync, mkdirSync, readdirSync } from 'node:fs';
 import { join } from 'node:path';
 import { chromium, type Browser, type Page } from 'playwright';
@@ -123,7 +122,10 @@ const THEMES = ['light', 'dark'] as const;
  * in the preview's frame. `__NOW` in a frame is the page's clock, so deadlines are measured from when it is sent.
  */
 function installStandIns(scene: { open: boolean; onJoin: Step[]; onRejoin: Step[] | null; admission: string; warpOnClose: number; storageKey: string; resume: boolean }) {
-  if (location.hostname.startsWith('p-')) return;
+  // The page's own globals, typed here rather than through the DOM lib, which would retype fetch and Response for
+  // every file in the Node test project.
+  const win = globalThis as unknown as { location: { hostname: string }; WebSocket: unknown; fetch: typeof fetch };
+  if (win.location.hostname.startsWith('p-')) return;
   let warp = 0;
   const realNow = performance.now.bind(performance);
   performance.now = () => realNow() + warp;
@@ -170,9 +172,9 @@ function installStandIns(scene: { open: boolean; onJoin: Step[]; onRejoin: Step[
       this.readyState = 3;
     }
   }
-  (window as unknown as { WebSocket: unknown }).WebSocket = StandInSocket;
-  const realFetch = window.fetch.bind(window);
-  window.fetch = (input: RequestInfo | URL, init?: RequestInit) => {
+  win.WebSocket = StandInSocket;
+  const realFetch = win.fetch.bind(win);
+  win.fetch = (input: string | URL | Request, init?: RequestInit) => {
     const url = typeof input === 'string' ? input : input instanceof URL ? input.href : input.url;
     if (!url.endsWith('/__siteorigin/admission')) return realFetch(input, init);
     if (scene.admission === 'hang') return new Promise(() => {});
