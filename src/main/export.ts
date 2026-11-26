@@ -6,7 +6,7 @@ import { markdownMirrorRoute } from '@shared/llms';
 import { randomUUID } from 'node:crypto';
 import { constants as fsConstants, existsSync, lstatSync, promises as fs, readdirSync, statSync } from 'node:fs';
 import { basename, dirname, join, relative, sep } from 'node:path';
-import type { AssetRecord, NodeTree, PageDoc, ProjectState, SourceDoc } from '@shared/types';
+import type { AssetRecord, NodeTree, PageDoc, ProjectState, RedirectHost, SourceDoc } from '@shared/types';
 import { documentFormat } from '@shared/document-files';
 import { declaredDirection, declaredLanguage, pageDirection, pageLanguage, sameLanguage } from '@shared/languages';
 import { checkPublicUrl } from '@shared/public-url';
@@ -822,7 +822,7 @@ export const NODE_ENGINES = '>=22.17.0';
 export async function finishExportedSource(dest: string, state: ProjectState, noticePath: string) {
   const readmePath = join(dest, 'README.md');
   const readme = await readIfExists(readmePath);
-  if (readme === null || isGeneratedReadme(readme)) await fs.writeFile(readmePath, projectReadme(state.site.name, publicationPlan(state).drafts.length > 0, themeNotice(getTheme(state.site.themeId)), siteEntries(state).some((e) => isDraftEntry(e.entry))));
+  if (readme === null || isGeneratedReadme(readme)) await fs.writeFile(readmePath, projectReadme(state.site.name, publicationPlan(state).drafts.length > 0, themeNotice(getTheme(state.site.themeId)), siteEntries(state).some((e) => isDraftEntry(e.entry)), redirectHost(state.site)));
   const usesSamples = STARTER_ASSETS.some((a) => state.assets.assets[a.id]);
   if (usesSamples && !existsSync(join(dest, 'NOTICE.md')) && existsSync(noticePath)) await fs.copyFile(noticePath, join(dest, 'NOTICE.md'));
   for (const [file, at] of [['package.json', (j: Record<string, any>) => j], ['package-lock.json', (j: Record<string, any>) => j.packages?.['']]] as const) {
@@ -859,7 +859,9 @@ export function isGeneratedReadme(text: string): boolean {
   // owner's change to them (another licence, say) makes the README theirs.
   const notices = [...new Set([NOTICE, NPM_FONTS_NOTICE, ...listThemes().map(themeNotice)])];
   return [
-    ...notices.flatMap((n) => [projectReadme(title, false, n), projectReadme(title, true, n), projectReadme(title, false, n, true), projectReadme(title, true, n, true)]),
+    ...notices.flatMap((n) =>
+      (Object.keys(README_HOSTS) as RedirectHost[]).flatMap((h) => [false, true].flatMap((drafts) => [false, true].map((entries) => projectReadme(title, drafts, n, entries, h))))
+    ),
     legacyReadme(title)
   ].includes(normalized);
 }
@@ -888,8 +890,30 @@ const NOTICE = themeNotice({ name: 'Foundation', license: 'MIT-0' });
 const NPM_FONTS_NOTICE =
   'The Foundation theme is licensed under GPL-3.0-or-later. Icons come from Lucide (ISC licence). Fonts are licensed under the SIL Open Font License 1.1 and are installed from npm (@fontsource-variable). Sample images from the Business starter, where still used, are described in NOTICE.md.';
 
-/** The README an exported project gets. One exported with drafts says how its build treats them. */
-export function projectReadme(name: string, drafts = false, notice = NOTICE, draftEntries = false): string {
+/** What the README says about each host a site's redirect rules can be written for (see redirectHost). */
+const README_HOSTS: Record<RedirectHost, { notFound: string; redirects: string }> = {
+  cloudflare: {
+    notFound: 'Cloudflare Pages, Netlify and GitHub Pages use it automatically',
+    redirects:
+      'The rules are in `static/_redirects`, written for Cloudflare Pages. The build copies the file to `build/_redirects`. Cloudflare Pages reads it only at the root of the folder you publish: if the contents of `build/` go into a sub-folder of that, move the file up to the root (its addresses already include the sub-folder). On another host, set up the redirects in its own settings. For rules written for Netlify or Vercel, choose that host in SiteOrigin Builder (Site settings, under Redirects) and export again.'
+  },
+  netlify: {
+    notFound: 'Netlify uses it automatically',
+    redirects:
+      'The rules are in `static/_redirects`, written for Netlify, each forced (`301!`) so that it applies ahead of the old address’s own page. The build copies the file to `build/_redirects`. Netlify reads it only at the root of the folder you publish: if the contents of `build/` go into a sub-folder of that, move the file up to the root (its addresses already include the sub-folder). On another host, set up the redirects in its own settings. For rules written for Cloudflare Pages or Vercel, choose that host in SiteOrigin Builder (Site settings, under Redirects) and export again.'
+  },
+  vercel: {
+    notFound: 'Vercel uses it automatically',
+    redirects:
+      'The rules for Vercel are in `vercel.json`, beside `package.json`. Vercel reads that file from the root of what you deploy. When Vercel builds this project, it is already there; set the Vercel project’s Output Directory to `build`. When you deploy `build/` by itself, copy `vercel.json` into `build/` after each build: `npm run build` does not. If the contents of `build/` go into a sub-folder of what you deploy, put `vercel.json` at the root instead (its addresses already include the sub-folder). `static/_redirects` holds the same redirects for Cloudflare Pages.'
+  }
+};
+
+/**
+ * The README an exported project gets, for the host its redirect rules are written for. One exported with drafts
+ * says how its build treats them.
+ */
+export function projectReadme(name: string, drafts = false, notice = NOTICE, draftEntries = false, host: RedirectHost = 'cloudflare'): string {
   return `# ${name}
 
 ${README_INTRO} It is a normal [SvelteKit](https://svelte.dev/docs/kit) project and does not need SiteOrigin Builder to run or build.
@@ -907,12 +931,25 @@ npm run build   # build the static website into build/
 npm run preview # preview the production build
 \`\`\`
 
-The static website is written to \`build/\`. Upload the contents of that folder to any static host. If the site lives in a sub-folder (for example on GitHub Pages), that path comes from \`src/lib/siteorigin/paths.json\`.
+## Deploying
+
+The static website is written to \`build/\`. Upload the contents of that folder to any static host. If the site lives in a sub-folder (for example on GitHub Pages), publish them there: the build takes that path from \`src/lib/siteorigin/paths.json\`.
+
+### Not-found page
+
+Addresses the site does not have should show its not-found page, \`build/404.html\`. ${README_HOSTS[host].notFound} when the contents of \`build/\` are the root of what you publish. Otherwise, if the host has a 404 error document setting, set it to \`/404.html\`, with the sub-folder in front when the site is in one (\`/my-site/404.html\`). On Apache, that is \`ErrorDocument 404 /404.html\`.
+
+### Redirects
+
+When the site keeps old addresses (of pages that have moved, say), each gets a page of its own that sends visitors on. Those pages work on any static host, but answer as pages that are there (HTTP 200). Rules for the host give a permanent redirect (HTTP 301) instead. A site with no old addresses has no rules file, so there is nothing more to set up.
+
+${README_HOSTS[host].redirects}
 
 ## Project layout
 
-- \`src/routes/\` and \`src/lib/siteorigin/\`: generated SvelteKit pages, components and styles.
+- \`src/\`: the website's source. \`src/routes/\` and \`src/lib/siteorigin/\` hold the generated SvelteKit pages, components and styles.
 - \`src/lib/siteorigin/custom/\`: code components you wrote. These are yours to edit.
+- \`static/\`: files the build copies into the website as they are, such as images (in \`static/assets/\`), icons, the web app manifest and \`robots.txt\`. Depending on the site and its settings, it also holds \`sitemap.xml\`, \`rss.xml\`, \`llms.txt\`, \`llms-full.txt\`, Markdown copies of pages and \`_redirects\`.
 - \`siteorigin/\` and \`siteorigin.project.json\`: SiteOrigin Builder's editable documents. Keep them if you want to keep editing visually.
 
 Files generated by SiteOrigin Builder start with a comment. If you edit them by hand, SiteOrigin Builder keeps your version and asks before regenerating them.
