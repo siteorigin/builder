@@ -6,7 +6,7 @@
  * - `title`, `author`, `excerpt`: the entry's own text.
  * - `publishedAt`, `updatedAt`: the dates, written as readers of the site's language write them; a text's `datetime`
  *   reads the date itself (YYYY-MM-DD).
- * - `featuredImage`: the entry's library picture, described as the library describes it.
+ * - `featuredImage`: the entry's library picture, with the library's suggested alt text.
  * - `body`: the entry's text, as rich text.
  * - `categories`: the labels of the entry's categories, in the order they were assigned; `terms.<taxonomy>` reads
  *   any other grouping the same way.
@@ -22,6 +22,7 @@
  */
 import type { Collection, CollectionFieldSchema, EntryDoc, ImageValue, LinkValue, PropSchema, ProjectState, ReferenceFieldSchema, RichText } from './types';
 import { collectionHasBody } from './collections';
+import { libraryAlt } from './asset-alt';
 import { formatArticleDate, isArticleDate } from './articles';
 import { siteLanguage } from './languages';
 import { richTextToPlain, isRichBlock } from './richtext';
@@ -175,16 +176,16 @@ export function readingMinutes(body: unknown): number {
   return words ? Math.max(1, Math.ceil(words / 200)) : 0;
 }
 
-/** A library picture as an image value, described as the library describes it; an empty image without one. */
+/** A library picture as an image value, with the library's suggested alt text; an empty image without one. */
 function pictureValue(state: Pick<ProjectState, 'assets'>, assetId: unknown): ImageValue {
   const a = typeof assetId === 'string' && Object.hasOwn(state.assets.assets, assetId) ? state.assets.assets[assetId] : undefined;
   if (!a || a.kind !== 'image') return { assetId: null, alt: '' };
-  return { assetId: a.id, alt: a.description || a.altSuggestion || '' };
+  return { assetId: a.id, alt: libraryAlt(a) };
 }
 
 /**
  * A custom picture field's value as the entry stores it: its own description, or that it is decorative, kept; the
- * library's description only for one left without words. A picture the library no longer has shows nothing.
+ * library's suggested alt text only for one left without words. A picture the library no longer has shows nothing.
  */
 function storedPicture(state: Pick<ProjectState, 'assets'>, value: unknown): ImageValue {
   const v = (value && typeof value === 'object' ? value : {}) as Partial<ImageValue>;
