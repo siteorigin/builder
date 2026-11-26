@@ -7,6 +7,115 @@ import { SAMPLE_CONTACT } from '@shared/sample-contact';
 
 const { managed } = FOUNDATION;
 
+/**
+ * The compact header: the brand row with the menu button, and the links in a panel hanging below it. Phones always
+ * have it (by the phone query, so it needs no script); a wider header has it while its row cannot hold the brand,
+ * the links and the action on one line (the --compact class, which the header sets). The same rules apply either
+ * way and weigh the same: the class adds nothing to a selector's weight.
+ */
+function compactRules(scope: 'phone' | 'class'): string {
+  const within = scope === 'phone' ? '' : ':where(.so-header--compact) ';
+  const on = scope === 'phone' ? '' : ':where(.so-header--compact)';
+  return `
+		${within}.so-header__menu {
+			display: block;
+		}
+		${within}.so-header__nav {
+			position: absolute;
+			top: 100%;
+			inset-inline: 0;
+			display: none;
+			flex-direction: column;
+			flex-wrap: nowrap;
+			justify-content: flex-start;
+			align-items: stretch;
+			gap: var(--so-space-md);
+			padding: var(--so-space-md) var(--so-container-gutter) var(--so-space-xl);
+			border-bottom: 1px solid var(--so-color-border);
+			box-shadow: var(--so-shadow-md);
+			/* The menu hangs from a sticky header, so the page cannot scroll to it. When enlarged text or a short
+			   screen makes it taller than the space below the header's brand row (a notice above that row scrolls
+			   away with the page), it scrolls on its own. */
+			max-height: calc(100vh - 100% + var(--so-header-notice, 0px));
+			max-height: calc(100dvh - 100% + var(--so-header-notice, 0px));
+			overflow-y: auto;
+		}
+		/* The menu hangs below the brand row in the header's own background, which the row passes on, and its links
+		   inherit the header's text colour: whatever colours the header has, the menu reads the same. */
+		${within}.so-header__inner,
+		${within}.so-header__nav {
+			background: inherit;
+		}
+		${within}.so-header__menu[open] ~ .so-header__nav {
+			display: flex;
+		}
+		${within}.so-header__list {
+			flex-direction: column;
+			align-items: stretch;
+			gap: 0;
+		}
+		${within}.so-header__list > li > a {
+			display: block;
+			padding: 14px 0;
+			font-size: 1.05rem;
+			border-bottom: 1px solid var(--so-color-border);
+		}
+		${within}.so-header__list > li > a[aria-current='page']::after,
+		${within}.so-header__group--current > a::after {
+			display: none;
+		}
+		/* In the phone menu a submenu opens in place, indented under its link; its button is finger-sized. */
+		${within}.so-header__group {
+			flex-wrap: wrap;
+			gap: 0;
+			border-bottom: 1px solid var(--so-color-border);
+		}
+		${within}.so-header__list > .so-header__group > a {
+			flex: 1;
+			min-width: 0;
+			border-bottom: 0;
+		}
+		${within}.so-header__sub-toggle {
+			width: 44px;
+			height: 44px;
+			margin-inline-end: -10px;
+		}
+		${within}.so-header__sub,
+		${within}.so-header__list > .so-header__group:last-child .so-header__sub {
+			position: static;
+			flex-basis: 100%;
+			min-width: 0;
+			max-width: none;
+			max-height: none;
+			overflow: visible;
+			margin: 0 0 10px;
+			padding: 0;
+			padding-inline-start: var(--so-space-md);
+			background: transparent;
+			border: 0;
+			border-inline-start: 2px solid var(--so-color-border);
+			border-radius: 0;
+			box-shadow: none;
+		}
+		/* There it takes the menu's own background and text colour, like the links above it. */
+		${within}.so-header__sub,
+		.so-header--surface${on} .so-header__sub,
+		.so-header--subtle${on} .so-header__sub,
+		.so-header--inverse${on} .so-header__sub {
+			background: transparent;
+			color: inherit;
+		}
+		${within}.so-header__nav .so-header__sub a {
+			padding: 11px 0;
+			padding-inline-start: 4px;
+			font-size: 1rem;
+		}
+		${within}.so-header__nav .so-header__sub a[href]:hover {
+			background: none;
+		}
+`;
+}
+
 const HEADER_SOURCE = `<script>
 	/**
 	 * Site header with a working, accessible mobile menu.
@@ -73,6 +182,24 @@ const HEADER_SOURCE = `<script>
 	// (link and all); its link follows them once it has both a label and somewhere to go.
 	const noticeText = $derived(typeof notice === 'string' ? notice.trim() : '');
 	const noticeLinkText = $derived(noticeText && typeof noticeLabel === 'string' && noticeLink?.href ? noticeLabel.trim() : '');
+
+	/**
+	 * Wider than a phone, the brand, the links and the action share one row while it holds them on one line, and fold
+	 * into the menu (the compact header) when it cannot. Until the script has measured the row, and wherever it never
+	 * runs, an estimate from their words decides, against the content width the row has at most; a full menu beside a
+	 * long name starts compact, so it never shows wrapped. The script measures the row once it starts and again
+	 * whenever its width or contents change (see measureFit).
+	 */
+	const crowded = $derived.by(() => {
+		const words = (value) => (typeof value === 'string' ? value.trim().length : 0);
+		let width = (nameShown ? words(name) * 12.5 : 0) + (logo?.src ? LOGO_BOXES[logoBox][1] + 10 : 0);
+		if (groups.length) width += 24 + groups.reduce((sum, { item, children }) => sum + words(item?.label) * 8.5 + (children.length ? 30 : 0), 0) + (groups.length - 1) * 24;
+		if (ctaLabel && ctaLink?.href) width += 24 + 32 + words(ctaLabel) * 8.8 + 37;
+		return width > 1200;
+	});
+	// What the row measured as, once the script has measured it: null until then.
+	let fits = $state(null);
+	const compact = $derived(fits === null ? crowded : !fits);
 
 	/** Site-relative links go through resolve() so the site works under a sub-path. */
 	const href = (link) => (link?.href?.startsWith('/') && !link.href.startsWith('//') ? resolve(link.href) : link?.href);
@@ -161,6 +288,65 @@ const HEADER_SOURCE = `<script>
 			win.cancelAnimationFrame(frame);
 			el.ownerDocument.documentElement.style.removeProperty('--so-header-offset');
 			el.style.removeProperty('--so-header-notice');
+		};
+	});
+
+	/**
+	 * Measures whether the row holds the brand, the links and the action on one line at the width it has. For a
+	 * moment within one task (nothing is painted, and nothing that has focus is hidden) the header lays the row out
+	 * as wide as its contents on one line, outside the compact header; the row's own width does not depend on its
+	 * contents, so the answer does not depend on which arrangement shows, and the two never take turns. A phone
+	 * always has the compact header, by the phone query.
+	 */
+	function measureFit(el) {
+		const row = el.querySelector(':scope > .so-header__inner');
+		const win = el.ownerDocument.defaultView;
+		if (!row || win.matchMedia('(max-width: 767.98px)').matches) return;
+		// The open menu, or its button with focus, stays as it is: checked again once it closes or focus moves on.
+		if (compact && (menu?.open || el.ownerDocument.activeElement === toggle)) return;
+		const available = row.getBoundingClientRect().width;
+		const wasCompact = el.classList.contains('so-header--compact');
+		el.classList.remove('so-header--compact');
+		el.classList.add('so-header--measure');
+		const needed = row.getBoundingClientRect().width;
+		el.classList.remove('so-header--measure');
+		if (wasCompact) el.classList.add('so-header--compact');
+		const next = needed <= available - 1;
+		if (next !== fits) fits = next;
+	}
+
+	// Measured as the script starts, then (a frame later, once) whenever the row changes width, the brand changes
+	// size (a logo loading), the row's contents change (an edited label, the colour scheme switch joining it) or the
+	// fonts load.
+	$effect(() => {
+		const el = header;
+		if (!el) return;
+		const row = el.querySelector(':scope > .so-header__inner');
+		if (!row) return;
+		const doc = el.ownerDocument;
+		const win = doc.defaultView;
+		let frame = 0;
+		const later = () => {
+			win.cancelAnimationFrame(frame);
+			frame = win.requestAnimationFrame(() => measureFit(el));
+		};
+		measureFit(el);
+		const resized = new ResizeObserver(later);
+		resized.observe(row);
+		const brand = row.querySelector('.so-header__brand');
+		if (brand) resized.observe(brand);
+		const changed = new MutationObserver(later);
+		changed.observe(row, { childList: true, subtree: true, characterData: true, attributes: true, attributeFilter: ['src', 'hidden'] });
+		doc.fonts?.addEventListener?.('loadingdone', later);
+		menu?.addEventListener('toggle', later);
+		toggle?.addEventListener('focusout', later);
+		return () => {
+			menu?.removeEventListener('toggle', later);
+			toggle?.removeEventListener('focusout', later);
+			resized.disconnect();
+			changed.disconnect();
+			doc.fonts?.removeEventListener?.('loadingdone', later);
+			win.cancelAnimationFrame(frame);
 		};
 	});
 
@@ -282,7 +468,7 @@ const HEADER_SOURCE = `<script>
 
 <svelte:window onkeydown={onKeydown} onpointerdown={onPointerdown} onfocusin={onFocusin} />
 
-<header class={['so-header', \`so-header--\${surface}\`, sticky && 'so-header--sticky', className]} bind:this={header}>
+<header class={['so-header', \`so-header--\${surface}\`, sticky && 'so-header--sticky', compact && 'so-header--compact', className]} bind:this={header}>
 	{#if noticeText}
 		<div class="so-header__notice">
 			<p class="so-header__notice-inner">
@@ -650,105 +836,29 @@ const HEADER_SOURCE = `<script>
 		font-size: 0.92rem;
 	}
 
-	/* Matches the phone breakpoint used by every other component (MEDIA_QUERIES.phone). */
-	@media (max-width: 767.98px) {
-		.so-header__menu {
-			display: block;
-		}
-		.so-header__nav {
-			position: absolute;
-			top: 100%;
-			inset-inline: 0;
-			display: none;
-			flex-direction: column;
-			flex-wrap: nowrap;
-			justify-content: flex-start;
-			align-items: stretch;
-			gap: var(--so-space-md);
-			padding: var(--so-space-md) var(--so-container-gutter) var(--so-space-xl);
-			border-bottom: 1px solid var(--so-color-border);
-			box-shadow: var(--so-shadow-md);
-			/* The menu hangs from a sticky header, so the page cannot scroll to it. When enlarged text or a short
-			   screen makes it taller than the space below the header's brand row (a notice above that row scrolls
-			   away with the page), it scrolls on its own. */
-			max-height: calc(100vh - 100% + var(--so-header-notice, 0px));
-			max-height: calc(100dvh - 100% + var(--so-header-notice, 0px));
-			overflow-y: auto;
-		}
-		/* The menu hangs below the brand row in the header's own background, which the row passes on, and its links
-		   inherit the header's text colour: whatever colours the header has, the menu reads the same. */
-		.so-header__inner,
-		.so-header__nav {
-			background: inherit;
-		}
-		.so-header__menu[open] ~ .so-header__nav {
-			display: flex;
-		}
-		.so-header__list {
-			flex-direction: column;
-			align-items: stretch;
-			gap: 0;
-		}
-		.so-header__list > li > a {
-			display: block;
-			padding: 14px 0;
-			font-size: 1.05rem;
-			border-bottom: 1px solid var(--so-color-border);
-		}
-		.so-header__list > li > a[aria-current='page']::after,
-		.so-header__group--current > a::after {
-			display: none;
-		}
-		/* In the phone menu a submenu opens in place, indented under its link; its button is finger-sized. */
-		.so-header__group {
-			flex-wrap: wrap;
-			gap: 0;
-			border-bottom: 1px solid var(--so-color-border);
-		}
-		.so-header__list > .so-header__group > a {
-			flex: 1;
-			min-width: 0;
-			border-bottom: 0;
-		}
-		.so-header__sub-toggle {
-			width: 44px;
-			height: 44px;
-			margin-inline-end: -10px;
-		}
-		.so-header__sub,
-		.so-header__list > .so-header__group:last-child .so-header__sub {
-			position: static;
-			flex-basis: 100%;
-			min-width: 0;
-			max-width: none;
-			max-height: none;
-			overflow: visible;
-			margin: 0 0 10px;
-			padding: 0;
-			padding-inline-start: var(--so-space-md);
-			background: transparent;
-			border: 0;
-			border-inline-start: 2px solid var(--so-color-border);
-			border-radius: 0;
-			box-shadow: none;
-		}
-		/* There it takes the menu's own background and text colour, like the links above it. */
-		.so-header__sub,
-		.so-header--surface .so-header__sub,
-		.so-header--subtle .so-header__sub,
-		.so-header--inverse .so-header__sub {
-			background: transparent;
-			color: inherit;
-		}
-		.so-header__nav .so-header__sub a {
-			padding: 11px 0;
-			padding-inline-start: 4px;
-			font-size: 1rem;
-		}
-		.so-header__nav .so-header__sub a[href]:hover {
-			background: none;
-		}
+	/* For a moment, while the script measures it (measureFit): the row as wide as everything in it needs, on one line. */
+	.so-header--measure .so-header__inner {
+		width: max-content;
+		max-width: none;
 	}
+	.so-header--measure .so-header__brand,
+	.so-header--measure .so-header__brand > :global(span) {
+		flex-shrink: 0;
+	}
+	.so-header--measure .so-header__brand > :global(span),
+	.so-header--measure .so-header__nav ul a,
+	.so-header--measure .so-header__cta {
+		white-space: nowrap;
+	}
+	.so-header--measure .so-header__nav,
+	.so-header--measure .so-header__list {
+		flex-wrap: nowrap;
+	}
+
+	/* Matches the phone breakpoint used by every other component (MEDIA_QUERIES.phone). */
+	@media (max-width: 767.98px) {${compactRules('phone')}	}
+	/* Wider, while the row cannot hold everything on one line (see measureFit). */
+${compactRules('class')}
 </style>
 `;
 
