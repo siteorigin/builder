@@ -20,16 +20,17 @@ const ENTRY = [
   'window.renderFailed = renderFailed;',
   'function Screen() {',
   '  const [broken, setBroken] = useState(false);',
-  '  window.breakScreen = () => flushSync(() => setBroken(true));',
+  '  window.breakScreen = (how = true) => flushSync(() => setBroken(how));',
+  "  if (broken === 'bare') throw Object.create(null);",
   "  if (broken) throw new Error('Cannot read properties of undefined (reading \\'nodes\\')');",
-  "  return h('main', { id: 'screen' }, 'The editor');",
+  "  return h('main', { id: 'screen' }, h('input', { id: 'field', 'aria-label': 'Field' }));",
   '}',
   'function Page() {',
   '  const [closable, setClosable] = useState(true);',
   '  const [screen, setScreen] = useState(0);',
   '  window.setClosable = (on) => flushSync(() => setClosable(on));',
   '  window.nextScreen = () => flushSync(() => setScreen((n) => n + 1));',
-  "  return h(RenderFailure, { key: screen, onCloseProject: closable ? () => window.closings.push('close') : undefined }, h(Screen));",
+  "  return h(RenderFailure, { key: screen, onFailure: () => window.failures.push(screen), onCloseProject: closable ? () => window.closings.push('close') : undefined }, h(Screen));",
   '}',
   "flushSync(() => createRoot(document.getElementById('root')).render(h(Page)));"
 ].join('\n');
@@ -72,7 +73,7 @@ describe.skipIf(!browserInstalled)('a screen that fails while rendering (#886)',
     await page.route(`${SITE}/**`, (route) =>
       new URL(route.request().url()).pathname === '/app.js'
         ? route.fulfill({ contentType: 'text/javascript; charset=utf-8', body: script })
-        : route.fulfill({ contentType: 'text/html; charset=utf-8', body: `<!doctype html><meta charset="utf-8"><style>${css}</style><body><div id="root"></div><script>window.closings = [];</script><script src="/app.js"></script>` })
+        : route.fulfill({ contentType: 'text/html; charset=utf-8', body: `<!doctype html><meta charset="utf-8"><style>${css}</style><body><div id="root"></div><script>window.closings = []; window.failures = [];</script><script src="/app.js"></script>` })
     );
     await page.goto(`${SITE}/`);
     await page.locator('#screen').waitFor();
@@ -85,16 +86,28 @@ describe.skipIf(!browserInstalled)('a screen that fails while rendering (#886)',
   const failure = () => page.getByRole('alert');
 
   it('shows what happened in place of the screen, and reloads the editor', async () => {
+    await page.locator('#field').focus();
     await page.evaluate('window.beforeFailure = true; window.breakScreen()');
     await failure().getByRole('heading', { name: 'The editor stopped working' }).waitFor();
     expect(await failure().innerText()).toContain("Cannot read properties of undefined (reading 'nodes')");
-    expect(await failure().innerText()).toContain('Reload the editor to return to your project.');
+    expect(await failure().innerText()).toContain('Reload the editor to go back to your project, or close the project if this keeps happening.');
+    // Focus went with the screen: the way back has it, once, and the keyboard reaches its buttons.
+    expect(await page.evaluate('document.activeElement.textContent')).toBe('The editor stopped working');
+    expect(await page.evaluate('window.failures')).toEqual([0]);
+    await page.keyboard.press('Tab');
+    expect(await page.evaluate('document.activeElement.textContent')).toBe('Reload editor');
     expect(await page.locator('#screen').count()).toBe(0);
 
     await failure().getByRole('button', { name: 'Reload editor' }).click();
     await page.locator('#screen').waitFor();
     expect(await page.evaluate('window.beforeFailure')).toBeUndefined();
     expect(await failure().count()).toBe(0);
+  });
+
+  it('still offers a way back when what was thrown cannot be put into words', async () => {
+    await page.evaluate("window.breakScreen('bare')");
+    await failure().getByRole('button', { name: 'Reload editor' }).waitFor();
+    expect(await page.locator('.render-failure-detail').count()).toBe(0);
   });
 
   it('offers to close the project only when one is open', async () => {

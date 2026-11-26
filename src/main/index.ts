@@ -39,6 +39,24 @@ import { declareCodeNames } from '@engine/definitions';
 import type { ComponentDefinition } from '@shared/types';
 
 const here = dirname(fileURLToPath(import.meta.url));
+// An error nothing in the main process caught is reported in the app's own words, not Electron's raw stack dialog
+// (main-errors.ts), from as early as it can be: before startup is done it says the app could not start, and exits.
+// In an automated run the question is answered by the test, or closed as Keep Working.
+let startedUp = false;
+process.on(
+  'uncaughtException',
+  createMainErrorReporter({
+    ready: () => startedUp,
+    log: (...args) => console.error(...args),
+    ask: ({ message, detail, buttons, defaultId, cancelId }) => {
+      const options = { type: 'error' as const, message, detail, buttons, defaultId, cancelId };
+      return (win && !win.isDestroyed() ? dialog.showMessageBox(win, options) : dialog.showMessageBox(options)).then((r) => r.response);
+    },
+    errorBox: (title, content) => dialog.showErrorBox(title, content),
+    quit: () => app.quit(),
+    exit: (code) => app.exit(code)
+  })
+);
 // Tests and side-by-side development can isolate settings, credentials and caches.
 if (process.env.SITEORIGIN_USER_DATA) app.setPath('userData', process.env.SITEORIGIN_USER_DATA);
 // A test session's own Documents folder: new projects default to Documents/SiteOrigin and exports start in Documents,
@@ -69,22 +87,6 @@ const { headless, automated } = launchMode(process.env, globalThis);
 // Nor do they show a native dialog, open a link or open Finder: the test answers every chooser and sees every hand-off
 // to the desktop (headless-desktop.ts), headed or not. A normal launch keeps Electron's own.
 const desktop = desktopForLaunch(process.env, globalThis, { dialog, shell });
-// An error nothing in the main process caught is reported in the app's own words, not Electron's raw stack dialog
-// (main-errors.ts). In an automated run the question is answered by the test, or closed as Keep Working.
-process.on(
-  'uncaughtException',
-  createMainErrorReporter({
-    ready: () => app.isReady(),
-    log: (...args) => console.error(...args),
-    ask: ({ message, detail, buttons, defaultId, cancelId }) => {
-      const options = { type: 'error' as const, message, detail, buttons, defaultId, cancelId };
-      return (win && !win.isDestroyed() ? dialog.showMessageBox(win, options) : dialog.showMessageBox(options)).then((r) => r.response);
-    },
-    errorBox: (title, content) => dialog.showErrorBox(title, content),
-    quit: () => app.quit(),
-    exit: (code) => app.exit(code)
-  })
-);
 // And they keep every assistant event in order, for a test to follow each run by its own IDs (ai-journal.ts).
 const aiJournal = automated ? installAiJournal(globalThis) : null;
 const AI_TURNS_SPENT = 'This test session allows no more AI requests (its limit or its time is used up), so nothing was sent.';
@@ -825,9 +827,9 @@ async function createWindow() {
   /** From the first close of the window until the editor lets it go or keeps it: a crash meanwhile is not asked about. */
   let closing = false;
   self.on('close', (e) => {
+    closing = true;
     if (closeApproved || quitState === 'closing' || quitState === 'done' || !controller.session || self.webContents.isCrashed()) return;
     e.preventDefault();
-    closing = true;
     void controller.mayLeave().then((ok) => {
       if (!ok || self.isDestroyed()) {
         closing = false;
@@ -840,10 +842,19 @@ async function createWindow() {
   // A crashed editor asks, over its window, to be loaded again (or the window closed): the project is still open here,
   // and the reloaded editor returns to it. Not while the window is closing or the app quitting.
   const recovery = createEditorRecovery({
-    mayOffer: () => !self.isDestroyed() && !closing && !closeApproved && quitState === 'idle',
-    ask: (signal) => dialog.showMessageBox(self, { ...crashQuestion(!!controller.session), signal }).then((r) => (r.response === 1 ? 'close' : 'reload')),
-    // Loaded at the editor's own address: a page that crashed before its first load finished has nothing to reload.
-    reload: () => void self.webContents.loadURL(editorUrl()).catch((e: unknown) => console.error('The editor could not be loaded again:', e)),
+    mayOffer: () => !self.isDestroyed() && !closing && !closeApproved && quitState === 'idle' && !quitAccepted,
+    ask: (signal) => {
+      // A page that crashed before its first paint left the window hidden: the question is shown over it, so it shows.
+      if (!headless && !self.isVisible()) self.show();
+      return dialog.showMessageBox(self, { ...crashQuestion(!!controller.session), signal }).then((r) => (r.response === 1 ? 'close' : 'reload'));
+    },
+    // Loaded at the editor's own address: a page that crashed before its first load finished has nothing to reload. A
+    // load that fails (not one a newer navigation or a new crash took over) asks again, rather than leave a dead window.
+    reload: () =>
+      void self.webContents.loadURL(editorUrl()).catch((e: unknown) => {
+        console.error('The editor could not be loaded again:', e);
+        if ((e as { code?: unknown }).code !== 'ERR_ABORTED' && !self.isDestroyed() && !self.webContents.isCrashed()) recovery.gone();
+      }),
     close: () => self.close()
   });
   recoveries.set(self, recovery);
@@ -916,7 +927,8 @@ async function createWindow() {
     leaveGate.editorGone();
     controller.cancelOpen();
   });
-  await win.loadURL(editorUrl());
+  // A first load the page crashed during is taken up by the crash's own question, not reported as an error here.
+  await win.loadURL(editorUrl()).catch((e: unknown) => console.error('The editor did not finish loading:', e));
 }
 
 /** A File menu command (chosen in the menu bar or by its shortcut), for the editor window. */
@@ -924,7 +936,7 @@ function chooseCommand(cmd: MenuCommand) {
   const w = win && !win.isDestroyed() ? win : null;
   // A crashed editor cannot act on it: it is loaded again (its crash question withdrawn), and the command waits until
   // the new page is ready.
-  if (w?.webContents.isCrashed() && !recoveries.get(w)?.recover()) w.webContents.reload();
+  if (w?.webContents.isCrashed()) recoveries.get(w)?.recover();
   if (w && !headless) {
     if (w.isMinimized()) w.restore();
     if (w.isVisible()) w.focus();
@@ -1029,6 +1041,7 @@ app.whenReady().then(async () => {
   app.setAboutPanelOptions({ applicationName: app.name, applicationVersion: app.getVersion() });
   buildMenu();
   markStarted();
+  startedUp = true;
   // Registered once, not per window: macOS brings up a new window after the last one closes.
   // With Appearance on System, the window's backing color follows this computer's setting (the editor follows it itself).
   nativeTheme.on('updated', () => {
@@ -1056,8 +1069,14 @@ app.on('will-quit', () => {
 // quits. A quit asked again while that is under way waits for it; one the author turns down ("Keep editing")
 // leaves the app running. A close already under way still has a preview to stop and its private copy to remove.
 let quitState: 'idle' | 'asking' | 'closing' | 'done' = 'idle';
+/** Set once a quit goes ahead without asking the editor. */
+let quitAccepted = false;
 app.on('before-quit', (e) => {
-  if (quitState === 'done' || (quitState === 'idle' && !controller.session && !controller.isClosing && !controller.isCreating && !controller.isDuplicating)) return;
+  if (quitState === 'done' || (quitState === 'idle' && !controller.session && !controller.isClosing && !controller.isCreating && !controller.isDuplicating)) {
+    // Nothing to ask: the app quits now, and a crash meanwhile is not asked about.
+    quitAccepted = true;
+    return;
+  }
   e.preventDefault();
   // Quit again while the editor's question is open: re-ask, which brings back Wait or Leave Anyway if it hung.
   if (quitState === 'asking') void controller.mayLeave();

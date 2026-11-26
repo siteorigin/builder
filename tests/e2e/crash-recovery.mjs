@@ -12,13 +12,14 @@ import { choosersShown, desktopCursor, eventually, launch, scratch, step, withTi
 const { WORK, cleanup } = scratch('crash-recovery');
 const { app, win, errors } = await launch(WORK);
 
+/** The editor window, as the app knows it (the thumbnails' hidden window is another). */
+const windowId = () => app.evaluate(() => globalThis[Symbol.for('siteorigin.desktopFixtures')].editor);
 const inPage = (code) =>
   withTimeout(
-    app.evaluate(({ BrowserWindow }, c) => BrowserWindow.getAllWindows()[0].webContents.executeJavaScript(c), code),
+    app.evaluate(({ BrowserWindow }, c) => BrowserWindow.fromId(globalThis[Symbol.for('siteorigin.desktopFixtures')].editor).webContents.executeJavaScript(c), code),
     5000,
     'Reading the page'
   );
-const windowId = () => app.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows()[0]?.id ?? null);
 /** The open project's folder and opening, as the page sees them. */
 const opening = () => inPage('window.builder.project.snapshot().then((s) => s && [s.dir, s.workspaceKey])');
 
@@ -38,13 +39,16 @@ await inPage('window.beforeCrash = true');
 // The crash's question is answered once the crash has been tidied up (which expires answers set before it): this
 // listener runs after the app's own, in the same turn, before the question is due.
 const reason = await app.evaluate(({ BrowserWindow }) => {
-  const contents = BrowserWindow.getAllWindows()[0].webContents;
-  const gone = new Promise((resolve) =>
+  const fixtures = globalThis[Symbol.for('siteorigin.desktopFixtures')];
+  const contents = BrowserWindow.fromId(fixtures.editor).webContents;
+  const gone = new Promise((resolve, reject) => {
+    const late = setTimeout(() => reject(new Error('The renderer did not crash within 30s')), 30000);
     contents.once('render-process-gone', (_e, details) => {
-      globalThis[Symbol.for('siteorigin.desktopFixtures')].setAnswers([{ dialog: 'message', message: 'The editor stopped unexpectedly', button: 'Reload Editor' }]);
+      clearTimeout(late);
+      fixtures.setAnswers([{ dialog: 'message', message: 'The editor stopped unexpectedly', button: 'Reload Editor' }]);
       resolve(details.reason);
-    })
-  );
+    });
+  });
   contents.forcefullyCrashRenderer();
   return gone;
 });

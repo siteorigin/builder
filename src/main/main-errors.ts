@@ -21,6 +21,14 @@ export interface MainErrorOptions {
 
 /** What went wrong, in one line. */
 export function errorText(error: unknown): string {
+  try {
+    return describe(error);
+  } catch {
+    return 'An unknown error.';
+  }
+}
+
+function describe(error: unknown): string {
   if (error instanceof Error) return error.message || error.name;
   const text = typeof error === 'string' ? error : (() => {
     try {
@@ -49,7 +57,7 @@ export function startupErrorReport(error: unknown) {
   return { title: 'SiteOrigin Builder could not start', content: `${errorText(error)}\n\nTry opening SiteOrigin Builder again.` };
 }
 
-/** The handler for process 'uncaughtException'. It never throws. */
+/** The handler for process 'uncaughtException'. It never throws, and nothing it calls can make it throw. */
 export function createMainErrorReporter(opts: MainErrorOptions) {
   let asking = false;
   const log = (...args: unknown[]) => {
@@ -59,24 +67,35 @@ export function createMainErrorReporter(opts: MainErrorOptions) {
       // Nowhere left to say it.
     }
   };
+  const attempt = (what: () => void) => {
+    try {
+      what();
+    } catch (e) {
+      log('The error could not be reported:', e);
+    }
+  };
+  const ready = () => {
+    try {
+      return opts.ready();
+    } catch {
+      return false;
+    }
+  };
   return (error: unknown) => {
     log('An error in the main process was not handled:', error);
-    if (!opts.ready()) {
-      try {
+    if (!ready()) {
+      attempt(() => {
         const { title, content } = startupErrorReport(error);
         opts.errorBox(title, content);
-      } catch (e) {
-        log('The error could not be reported:', e);
-      } finally {
-        opts.exit(1);
-      }
+      });
+      attempt(() => opts.exit(1));
       return;
     }
     if (asking) return;
     asking = true;
     let asked: Promise<number>;
     try {
-      asked = opts.ask(mainErrorReport(error));
+      asked = Promise.resolve(opts.ask(mainErrorReport(error)));
     } catch (e) {
       asking = false;
       log('The error could not be reported:', e);
@@ -85,7 +104,7 @@ export function createMainErrorReporter(opts: MainErrorOptions) {
     asked.then(
       (button) => {
         asking = false;
-        if (button === 0) opts.quit();
+        if (button === 0) attempt(() => opts.quit());
       },
       (e: unknown) => {
         asking = false;

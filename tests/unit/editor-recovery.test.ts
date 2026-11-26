@@ -123,10 +123,28 @@ describe('editor recovery (#886)', () => {
     expect(done).toEqual(['reload', 'reload']);
   });
 
+  it('asks once for two crashes that come before the question is due', () => {
+    const { recovery, asked, nextTurn } = rig();
+    recovery.gone();
+    recovery.gone();
+    nextTurn();
+    expect(asked).toHaveLength(1);
+  });
+
+  it('ignores a late Close Window once the window has started closing', async () => {
+    const { recovery, asked, done, state, nextTurn, settle } = rig();
+    recovery.gone();
+    nextTurn();
+    state.stays = false;
+    asked[0].answer('close');
+    await settle();
+    expect(done).toEqual([]);
+  });
+
   it('words the question for an open project or for Welcome, with Reload Editor as default and Esc', () => {
     const open = crashQuestion(true);
     expect(open.message).toBe('The editor stopped unexpectedly');
-    expect(open.detail).toContain('return to your project');
+    expect(open.detail).toBe('Reload the editor to return to your project. Text you were still typing may need to be entered again.');
     expect(open.buttons).toEqual(['Reload Editor', 'Close Window']);
     expect(open.buttons[open.defaultId]).toBe('Reload Editor');
     expect(open.buttons[open.cancelId]).toBe('Reload Editor');

@@ -79,13 +79,15 @@ export function App() {
       }),
       // Before the project is closed, switched or the app quits: save what is being typed, or ask the author.
       api.on('lifecycle:request', ({ requestId }) => {
-        void prepareToLeave(() => api.leaveResult(requestId, 'asking')).then(
-          (leave) => api.leaveResult(requestId, leave ? 'leave' : 'stay'),
+        leaving.add(requestId);
+        const answer = (a: 'leave' | 'stay') => leaving.delete(requestId) && api.leaveResult(requestId, a);
+        void prepareToLeave(() => leaving.has(requestId) && api.leaveResult(requestId, 'asking')).then(
+          (leave) => answer(leave ? 'leave' : 'stay'),
           // Something went wrong while saving: never treat that as permission to drop what was typed.
           (e: unknown) => {
             endEditingHold();
             toast(`Your changes could not be checked before leaving${e instanceof Error ? `: ${e.message}` : '.'} Try again.`, 'error');
-            api.leaveResult(requestId, 'stay');
+            answer('stay');
           }
         );
       }),
@@ -224,6 +226,19 @@ export function openSnapshot(snap: NonNullable<ReturnType<typeof getState>['snap
 function openingModalsClosed(): { modal?: null } {
   const kind = getState().modal?.kind;
   return kind === 'paste-style' || kind === 'removal-review' ? { modal: null } : {};
+}
+
+/** The main process's requests to leave the project that this page has not answered yet. */
+const leaving = new Set<string>();
+
+/**
+ * The whole page failed while rendering (#886): its questions, and the listeners that answer the main process, are gone.
+ * A leave still being decided is answered Stay, so closing the window or quitting is not left waiting on a question no
+ * one can see; asked again, the main process finds no one answering and offers to leave anyway.
+ */
+export function abandonLeaves() {
+  for (const requestId of leaving) api.leaveResult(requestId, 'stay');
+  leaving.clear();
 }
 
 /** Counts project openings and closings, so a reply that arrives after the project changed is ignored. */

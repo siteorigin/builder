@@ -1,6 +1,6 @@
 import { createRoot } from 'react-dom/client';
 import './styles/index.css';
-import { App } from './App';
+import { App, abandonLeaves } from './App';
 import { registerPacks } from '@catalogue/index';
 import { api, setState } from './store';
 import { followAppearance } from './lib/appearance';
@@ -31,7 +31,7 @@ api.app
     setState({ packs: { refused: catalogue.refused, userDir: catalogue.userDir } });
     // Anything else that fails while rendering (a notice, a dialog host) still leaves a way back.
     root.render(
-      <RenderFailure>
+      <RenderFailure onFailure={abandonLeaves}>
         <App />
       </RenderFailure>
     );

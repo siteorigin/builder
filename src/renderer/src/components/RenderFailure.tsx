@@ -1,4 +1,4 @@
-import { Component, type ErrorInfo, type ReactNode } from 'react';
+import { Component, createRef, type ErrorInfo, type ReactNode } from 'react';
 
 interface Props {
   children: ReactNode;
@@ -6,6 +6,8 @@ interface Props {
   onCloseProject?: () => void;
   /** Loads the editor again. The page reloads by default; the main process still has the project open, so it returns. */
   reload?: () => void;
+  /** Called once when this boundary catches a failure. */
+  onFailure?: () => void;
 }
 
 interface State {
@@ -31,16 +33,30 @@ export class RenderFailure extends Component<Props, State> {
   state: State = { error: null };
 
   static getDerivedStateFromError(error: unknown): State {
-    return { error: error instanceof Error ? error : new Error(String(error)) };
+    if (error instanceof Error) return { error };
+    let text = '';
+    try {
+      text = String(error);
+    } catch {
+      // Something that cannot even be put into words (an object with no prototype): the way back still shows.
+    }
+    return { error: new Error(text) };
   }
+
+  private heading = createRef<HTMLHeadingElement>();
 
   /** Whether this boundary is counted in `failures`. */
   private counted = false;
 
   componentDidCatch(error: unknown, info: ErrorInfo) {
     console.error('The editor failed while showing its screen.', error, info.componentStack);
-    if (!this.counted) failures++;
-    this.counted = true;
+    if (!this.counted) {
+      failures++;
+      this.counted = true;
+      this.props.onFailure?.();
+    }
+    // Whatever had focus went with the screen: the way back takes it, for the keyboard and screen readers.
+    this.heading.current?.focus();
   }
 
   componentWillUnmount() {
@@ -54,10 +70,12 @@ export class RenderFailure extends Component<Props, State> {
     const { onCloseProject, reload = () => window.location.reload() } = this.props;
     return (
       <div className="fatal render-failure" role="alert">
-        <h1>The editor stopped working</h1>
+        <h1 ref={this.heading} tabIndex={-1}>
+          The editor stopped working
+        </h1>
         <p>
           {onCloseProject
-            ? 'Something went wrong while showing the editor. Reload the editor to return to your project. Text you were still typing may need to be entered again.'
+            ? 'Something went wrong while showing the editor. Reload the editor to go back to your project, or close the project if this keeps happening. Text you were still typing may be lost.'
             : 'Something went wrong while showing the editor. Reload the editor to carry on.'}
         </p>
         {error.message && <pre className="render-failure-detail">{error.message}</pre>}

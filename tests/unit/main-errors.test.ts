@@ -77,12 +77,55 @@ describe('main-process errors (#886)', () => {
     expect(box.calls).toEqual(['log', 'log', 'exit:1']);
   });
 
+  it('asks again after a question that could not be shown, and survives a Quit that throws', async () => {
+    let shown = 0;
+    const flaky = rig({
+      ask: () => {
+        shown++;
+        if (shown === 1) throw new Error('no dialog');
+        return Promise.resolve(0);
+      },
+      quit: () => {
+        throw new Error('cannot quit');
+      }
+    });
+    flaky.report(new Error('first'));
+    flaky.report(new Error('second'));
+    expect(shown).toBe(2);
+    await flaky.settle();
+    // A reporter whose ready check itself throws treats the app as not started.
+    const broken = rig({
+      ready: () => {
+        throw new Error('no app');
+      },
+      exit: () => {
+        throw new Error('cannot exit');
+      }
+    });
+    expect(() => broken.report(new Error('x'))).not.toThrow();
+    expect(broken.calls).toEqual(['log', 'box:SiteOrigin Builder could not start', 'log']);
+  });
+
+  it('puts the error and a way forward in the startup box', () => {
+    let content = '';
+    const { report } = rig({ ready: () => false, errorBox: (_t, c) => void (content = c) });
+    report(new Error('Cannot find module'));
+    expect(content).toBe('Cannot find module\n\nTry opening SiteOrigin Builder again.');
+  });
+
   it('describes whatever was thrown in one line', () => {
     expect(errorText(new TypeError('x is not a function'))).toBe('x is not a function');
     expect(errorText(Object.assign(new Error(''), { name: 'AbortError' }))).toBe('AbortError');
     expect(errorText({ code: 'E1' })).toBe('{"code":"E1"}');
     expect(errorText(undefined)).toBe('undefined');
     expect(errorText('')).toBe('An unknown error.');
+    expect(errorText(Object.create(null))).toBe('{}');
+    const unspeakable = Object.assign(Object.create(null), {
+      toJSON() {
+        throw new Error('no');
+      }
+    });
+    expect(errorText(unspeakable)).toBe('An unknown error.');
     expect(mainErrorReport(new Error('boom')).detail.startsWith('boom\n\n')).toBe(true);
   });
 });
