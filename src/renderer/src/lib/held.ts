@@ -241,6 +241,24 @@ export function readField(state: ProjectState, op: EditOperation): FieldRead | n
       if (op.crawlerPolicy !== undefined) fields.crawlerPolicy = crawlerPolicyRead(state, op.crawlerPolicy);
       return found(fields);
     }
+    case 'collection.update': {
+      // What a collection's index, or one category's archive, tells search engines: each its own field. Any other
+      // setting of a collection is a gesture, never held.
+      const keys = Object.keys(op).filter((k) => k !== 'type' && k !== 'collectionId' && (op as Record<string, unknown>)[k] !== undefined);
+      if (!keys.length || keys.some((k) => k !== 'description' && k !== 'categoryDescription')) return null;
+      const c = has(state.collections ?? {}, op.collectionId);
+      if (!c) return gone('collection');
+      const read: Record<string, unknown> = {};
+      if (op.description !== undefined) read.description = c.settings.description ?? '';
+      if (op.categoryDescription) {
+        const term = has(c.settings.taxonomies?.categories?.terms ?? {}, op.categoryDescription.termId);
+        if (!term) return gone('category');
+        // Read with the category's name: another category given the ID meanwhile is not the one it was typed for.
+        read.categoryDescription = term.description ?? '';
+        read.category = term.label;
+      }
+      return found(read);
+    }
     case 'brief.update':
       // Each field of the brief is its own, read as the panel shows it: "" for one the project has not written.
       return found(Object.fromEntries(BRIEF_FIELDS.filter((k) => op[k] !== undefined).map((k) => [k, briefText(state.brief, k)])));
@@ -460,6 +478,8 @@ export function fieldKey(operations: EditOperation[]): string {
           if (op.type === 'site.update' && k === 'crawlerPolicy') return [k, op.crawlerPolicy ? identityKeys(op.crawlerPolicy) : null];
           // And what a page is, fact by fact; choosing its type is a field of its own.
           if (op.type === 'page.update' && k === 'structuredData' && op.structuredData) return [k, identityKeys(op.structuredData)];
+          // And each category's description.
+          if (op.type === 'collection.update' && k === 'categoryDescription' && op.categoryDescription) return [k, op.categoryDescription.termId];
           // And an entry's custom fields and groupings, each its own.
           if (op.type === 'entry.update' && (k === 'values' || k === 'terms') && v && typeof v === 'object') return [k, Object.keys(v).sort()];
           return [k];
@@ -544,6 +564,7 @@ export function shownField(op: EditOperation, read: unknown): string | null {
     const part = (o.crawlerPolicy && typeof o.crawlerPolicy === 'object' ? o.crawlerPolicy : {}) as Record<string, unknown>;
     return crawlerPolicyText(op.crawlerPolicy, (k) => part[k]);
   } else if (op.type === 'page.update' || op.type === 'site.update' || op.type === 'component.rename' || op.type === 'brief.update') v = listText(Object.values(o)[0]);
+  else if (op.type === 'collection.update') v = op.categoryDescription ? o.categoryDescription : o.description;
   else if (op.type === 'asset.update') {
     const asset = (o.asset ?? {}) as Record<string, unknown>;
     const key = Object.keys(op).find((k) => k !== 'type' && k !== 'assetId');
@@ -586,6 +607,12 @@ export function placeOf(state: ProjectState, op: EditOperation): string {
   if (typeof o.assetId === 'string') return has(state.assets.assets, o.assetId)?.name ?? 'File';
   if (typeof o.definitionId === 'string') return has(state.components, o.definitionId)?.name ?? 'Component';
   if (op.type === 'brief.update') return 'Project brief';
+  if (op.type === 'collection.update') {
+    const c = has(state.collections ?? {}, op.collectionId);
+    const name = c?.settings.name ?? 'Collection';
+    const term = op.categoryDescription ? has(c?.settings.taxonomies?.categories?.terms ?? {}, op.categoryDescription.termId) : undefined;
+    return op.categoryDescription ? `${term?.label ?? 'Category'} archive of ${name}` : `${name} index`;
+  }
   return 'Site settings';
 }
 

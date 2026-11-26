@@ -10,6 +10,8 @@ import type { Collection, EntryDoc, ProjectState } from './types';
 import { archivePageSize, findEntry, hasArchivePages, hasCategoryArchives, isDraftEntry, isTermId, siteEntries } from './collections';
 import { hasTerm, publishedEntries } from './entry-feed';
 import { validateRoute } from './routes';
+import { siteLanguage } from './languages';
+import { visitorTextFor } from './visitor-text';
 
 /** One page of a collection's index or of one of its category archives. */
 export interface ArchivePage {
@@ -118,4 +120,45 @@ export function archivePages(state: ProjectState): ArchivePage[] {
 /** The address of a category's archive, while it has one. */
 export function categoryArchiveRoute(state: ProjectState, collectionId: string, term: string): string | undefined {
   return archivePages(state).find((p) => p.collectionId === collectionId && p.category === term && p.page === 1)?.route;
+}
+
+/** Wording with each `{name}` it has a value for filled in, in one pass, so a value is written as it is ("{site}", "$&"). */
+export const fillWords = (text: string, values: Record<string, string | number>): string =>
+  text.replace(/\{(\w+)\}/g, (m, k: string) => (Object.hasOwn(values, k) ? String(values[k]) : m));
+
+/** Text the author set, when there is any beyond spaces. */
+const ownText = (v: unknown) => (typeof v === 'string' && v.trim() ? v.trim() : '');
+
+/**
+ * What an index (no `category`) or a category's archive says of itself when the author has not said: an index the
+ * site's description, else a sentence naming the collection and the site; a category a sentence naming the category,
+ * the collection and the site, in the site's language.
+ */
+export function defaultArchiveDescription(state: Pick<ProjectState, 'site' | 'collections'>, collectionId: string, category?: string): string {
+  const site = state.site;
+  const words = visitorTextFor(site, siteLanguage(site));
+  const collection = Object.hasOwn(state.collections ?? {}, collectionId) ? state.collections[collectionId] : undefined;
+  const fills = { collection: ownText(collection?.settings?.name) || collectionId, site: typeof site.name === 'string' ? site.name : '' };
+  if (!category) return ownText(site.description) || fillWords(words.archiveDescription, fills);
+  const term = collection ? categoryTerms(collection).find((t) => t.id === category) : undefined;
+  return fillWords(words.archiveCategoryDescription, { ...fills, category: term?.label ?? category });
+}
+
+/**
+ * What one archive page is called and says of itself, in the site's language: its heading (the collection's name, or
+ * the category's), its name in a trail (the heading, then its page number after the first), its browser title (that
+ * name and the site's), and its description for search engines and link previews: the collection's or the
+ * category's own, else the default (defaultArchiveDescription). Every page of a series says the same.
+ */
+export function archiveWords(state: Pick<ProjectState, 'site' | 'collections'>, archive: Pick<ArchivePage, 'collectionId' | 'category' | 'page' | 'pages'>): { heading: string; name: string; title: string; description: string } {
+  const site = state.site;
+  const words = visitorTextFor(site, siteLanguage(site));
+  const collection = Object.hasOwn(state.collections ?? {}, archive.collectionId) ? state.collections[archive.collectionId] : undefined;
+  const settings = collection?.settings;
+  const category = archive.category;
+  const term = category && collection ? categoryTerms(collection).find((t) => t.id === category) : undefined;
+  const heading = category ? (term?.label ?? category) : ownText(settings?.name) || archive.collectionId;
+  const name = `${heading}${archive.page > 1 ? ` – ${fillWords(words.archivePageOf, { page: archive.page, count: archive.pages })}` : ''}`;
+  const own = category ? (term ? ownText(settings!.taxonomies.categories.terms[term.id]?.description) : '') : ownText(settings?.description);
+  return { heading, name, title: `${name} · ${typeof site.name === 'string' ? site.name : ''}`, description: own || defaultArchiveDescription(state, archive.collectionId, category) };
 }

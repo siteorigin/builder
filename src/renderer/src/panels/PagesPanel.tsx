@@ -2,13 +2,14 @@ import './PagesPanel.css';
 import { useEffect, useLayoutEffect, useRef, useState } from 'react';
 import { Copy, CornerDownRight, FilePen, FilePlus, FileText, Globe, House, LayoutTemplate, Menu, MoreHorizontal, Newspaper, Pencil, Plus, Search, Settings2, Trash2, ArrowUp, ArrowDown, Code, X } from 'lucide-react';
 import { suggestRoute } from '@shared/routes';
-import { MAX_PAGE_SIZE, archivePageSize, collectionRoutes, hasCategoryArchives } from '@shared/collections';
+import { MAX_PAGE_SIZE, archivePageSize, collectionRoutes, hasArchivePages, hasCategoryArchives } from '@shared/collections';
+import { defaultArchiveDescription } from '@shared/archives';
 import type { ElementRef, ProjectState } from '@shared/types';
 import { aiActivity, api, applyOps, commitDraft, commitOps, getState, markDraft, renamePage, setState, toast, undoAction, useStore } from '../store';
 import { PAGE_ADD_DRAFT } from '../lib/pending';
 import { limitNote } from '../lib/kept-drafts';
 import { TEXT_LIMITS } from '@shared/text-limits';
-import { keepRefusedText, openSection, rovingKeys, useMenu } from '../components/ui';
+import { DraftInput, keepRefusedText, openSection, rovingKeys, useMenu } from '../components/ui';
 import { isImeComposing } from '../lib/ime';
 import { goToShellPart, openArchiveLayout, openLayout, selectPage, setMode } from '../lib/actions';
 import { visitAddress } from './Canvas';
@@ -1235,15 +1236,17 @@ export function PagesPanel() {
   );
 }
 
-/**
- * How a collection's index and category archives list its published entries: how many to a page, whether each
- * category has an archive of its own, and a way to see the index in the preview, as visitors get it.
- */
 /** The page sizes offered for a collection's index, besides its own (a size set in its settings file is kept). */
 const PAGE_SIZES = [1, 2, 3, 4, 5, 6, 8, 9, 10, 12, 15, 18, 20, 24, 30, 50, MAX_PAGE_SIZE];
 
-function CollectionArchive({ collectionId, name, route, pageSize, categories, designed }: { collectionId: string; name: string; route: string; pageSize: number; categories: boolean; designed: boolean }) {
-  const update = (patch: { pageSize?: number; categoryArchives?: boolean; archiveTemplate?: null }, label: string) => commitOps([{ type: 'collection.update', collectionId, ...patch }], label);
+/**
+ * How a collection's index and category archives list its published entries: how many to a page, whether each
+ * category has an archive of its own, its own layout, what the index tells search engines and link previews
+ * (`fallback` while the collection says nothing of its own), and a way to see the index in the preview, as visitors get it.
+ */
+function CollectionArchive(props: { collectionId: string; name: string; route: string; pageSize: number; categories: boolean; designed: boolean; description: string | null; fallback: string }) {
+  const { collectionId, name, route, pageSize, categories, designed, description, fallback } = props;
+  const update = (patch: { pageSize?: number; categoryArchives?: boolean; archiveTemplate?: null; description?: string }, label: string) => commitOps([{ type: 'collection.update', collectionId, ...patch }], label);
   const viewIndex = () => {
     // The index is a page of the website: a layout being edited closes first, as opening a page closes it.
     if (getState().templateMode) setState({ templateMode: null, ...(getState().selection?.owner.kind === 'template' ? { selection: null } : {}) });
@@ -1294,6 +1297,26 @@ function CollectionArchive({ collectionId, name, route, pageSize, categories, de
           Use ready-made cards
         </button>
       )}
+      {description !== null && (
+        <label className="pages-collection-description">
+          Index description
+          <DraftInput
+            multiline
+            rows={2}
+            limit={TEXT_LIMITS.pageDescription}
+            keep={`collection:${collectionId}:description`}
+            keepWhile={() => {
+              // Only while the collection has its index, so a draft hidden by turning it off is offered to copy.
+              const c = getState().snapshot?.state.collections[collectionId];
+              return !!c && hasArchivePages(c.settings);
+            }}
+            ariaLabel={`Index description of ${name}, for search engines and link previews`}
+            value={description}
+            placeholder={fallback}
+            onCommit={(v) => update({ description: v }, `Change the ${name} index description`)}
+          />
+        </label>
+      )}
     </div>
   );
 }
@@ -1325,7 +1348,16 @@ function CollectionLayouts({ state }: { state: ProjectState }) {
               <button className="btn btn-sm" aria-pressed={open === id} aria-label={`Edit the ${c.settings.name} layout`} data-testid={`edit-layout-${id}`} onClick={() => openLayout(id)}>
                 Edit layout
               </button>
-              <CollectionArchive collectionId={id} name={c.settings.name} route={c.settings.route ?? ''} pageSize={archivePageSize(c.settings)} categories={hasCategoryArchives(c.settings)} designed={!!c.settings.archiveTemplate} />
+              <CollectionArchive
+                collectionId={id}
+                name={c.settings.name}
+                route={c.settings.route ?? ''}
+                pageSize={archivePageSize(c.settings)}
+                categories={hasCategoryArchives(c.settings)}
+                designed={!!c.settings.archiveTemplate}
+                description={hasArchivePages(c.settings) ? (c.settings.description ?? '') : null}
+                fallback={defaultArchiveDescription(state, id)}
+              />
             </li>
           );
         })}

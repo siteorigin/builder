@@ -6,15 +6,16 @@
  * written into the page when the site is generated: visitors' browsers look nothing up.
  */
 import type { ArchivePage } from '@shared/archives';
-import { archivePages, categoryTerms } from '@shared/archives';
+import { archivePages, archiveWords, categoryTerms, fillWords as fill } from '@shared/archives';
 import { entryRow } from '@shared/entry-feed';
 import { siteLanguage } from '@shared/languages';
-import { publicUrl } from '@shared/public-url';
-import { routeDir, routeUrl } from '@shared/routes';
+import { routeDir } from '@shared/routes';
 import { visitorTextFor } from '@shared/visitor-text';
 import type { ProjectState } from '@shared/types';
 import { derived } from './cache';
-import { HEADER_NOTE, RUNTIME_DIR, emitArchiveLayout, js, relImport, resolveImage, type GenerateOptions } from './index';
+import { HEADER_NOTE, RUNTIME_DIR, emitArchiveLayout, js, relImport, resolveImage, seoHead, type GenerateOptions } from './index';
+import { archiveMetadata } from './seo-metadata';
+import { archiveGraphScript } from './structured-data';
 
 /** The route file of an archive page. */
 export function archiveFile(route: string): string {
@@ -44,7 +45,6 @@ export function pageLinks(page: number, pages: number): Array<number | null> {
   return out;
 }
 
-const fill = (text: string, values: Record<string, string | number>) => Object.entries(values).reduce((t, [k, v]) => t.replaceAll(`{${k}}`, String(v)), text);
 const href = (route: string) => `{resolve(${js(route)})}`;
 
 /** Whether a collection's archive pages show its own layout (`archiveTemplate`) in place of the ready-made cards. */
@@ -68,9 +68,7 @@ export function generateArchive(state: ProjectState, collectionId: string, route
   // Category labels link to their archive while the category has one.
   const archives = new Map(series.filter((p) => p.category && p.page === 1).map((p) => [p.category!, p.route]));
   const terms = new Map(categoryTerms(collection).map((t) => [t.id, t.label]));
-  const name = collection.settings.name;
-  const heading = here.category ? (terms.get(here.category) ?? here.category) : name;
-  const title = `${heading}${here.page > 1 ? ` – ${fill(words.archivePageOf, { page: here.page, count: here.pages })}` : ''} · ${site.name}`;
+  const { heading } = archiveWords(state, here);
   const rctx = { state };
   // What the markup below turns out to hold, so that the page is styled for that and nothing more: Svelte warns of
   // every selector that matches nothing, in the build of the exported project.
@@ -154,9 +152,11 @@ export function generateArchive(state: ProjectState, collectionId: string, route
     );
   }
 
-  const head: string[] = [`\t<title>{${js(title)}}</title>`, `\t<meta property="og:type" content="website" />`, `\t<meta property="og:title" content={${js(title)}} />`];
-  const base = publicUrl(site);
-  if (base) head.push(`\t<link rel="canonical" href={${js(base + routeUrl(route))}} />`, `\t<meta property="og:url" content={${js(base + routeUrl(route))}} />`);
+  // What it says when it is found or shared, as a page does: its title and description, its sharing tags, its own
+  // address and, once the site has a public URL, the site's structured data with its trail from Home.
+  const head = seoHead(state, archiveMetadata(state, here), { article: false, alternates: [] });
+  const graph = archiveGraphScript(state, collectionId, route);
+  if (graph) head.push(`\t{@html ${js(graph)}}`);
   if (here.prev) head.push(`\t<link rel="prev" href=${href(here.prev)} />`);
   if (here.next) head.push(`\t<link rel="next" href=${href(here.next)} />`);
 

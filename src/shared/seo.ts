@@ -87,6 +87,16 @@ export interface EffectiveSeo {
   visibility: SeoVisibility;
 }
 
+/**
+ * One page of a collection's index or category archive (shared/archives.ts), at its address. It is no document of its
+ * own: what it says comes from its collection, its category and the site, and nothing in the editor resolves or audits
+ * it as a page or an entry. The generator writes its `<head>` and structured data from it (generator/seo-metadata.ts).
+ */
+export type ArchiveSubject = { kind: 'archive'; collectionId: string; category?: string; page: number; pages: number; route: string };
+
+/** What an archive page says about itself, as EffectiveSeo says it of a page or an entry. */
+export type ArchiveSeo = Omit<EffectiveSeo, 'subject'> & { subject: ArchiveSubject };
+
 /** The groups SEO findings are told apart by, in the order they are shown. */
 export const SEO_PILLARS = ['technical', 'entity', 'agentic', 'content', 'social'] as const;
 export type SeoPillar = (typeof SEO_PILLARS)[number];

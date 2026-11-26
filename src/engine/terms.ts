@@ -8,7 +8,7 @@
  * words is rewritten to keep doing so, by the terms' IDs; one that cannot be (read from an entry, or in code that is
  * not the project's) refuses the change, saying where it is.
  */
-import type { Collection, CollectionTaxonomy, ComponentDefinition, GraphNode, InstanceNode, ProjectState, PropSchema, ScalarPropSchema } from '@shared/types';
+import type { Collection, CollectionTaxonomy, CollectionTerm, ComponentDefinition, GraphNode, InstanceNode, ProjectState, PropSchema, ScalarPropSchema } from '@shared/types';
 import { isBindingRef, isEntryBinding } from '@shared/types';
 import type { Op } from '@shared/ops';
 import { assignedTermIds, entriesWithTerm, isTermId, termIdFor } from '@shared/collections';
@@ -36,7 +36,7 @@ function taxonomyOf(c: Collection, taxonomyId: string): CollectionTaxonomy {
   return own(c.settings.taxonomies, taxonomyId) ?? fail(`The ${c.settings.name} collection has no grouping "${taxonomyId.slice(0, 60)}".`);
 }
 
-function termOf(t: CollectionTaxonomy, termId: string): { label: string } {
+function termOf(t: CollectionTaxonomy, termId: string): CollectionTerm {
   return own(t.terms, termId) ?? fail(`${t.label} has no term "${termId.slice(0, 60)}".`);
 }
 
@@ -398,7 +398,7 @@ export function termRename(state: ProjectState, op: Op<'collection.renameTerm'>)
   const target = { collectionId: c.settings.id, taxonomyId: op.taxonomyId };
   const planned = plan(state, feedUses(state), target.collectionId, target.taxonomyId, (id) => (id === op.termId ? termId : id));
   // The term keeps its place among the others, which is the order they are offered in.
-  t.terms = Object.fromEntries(Object.entries(t.terms).map(([id, x]) => (id === op.termId ? [termId, { label }] : [id, x])));
+  t.terms = Object.fromEntries(Object.entries(t.terms).map(([id, x]) => (id === op.termId ? [termId, { ...x, label }] : [id, x])));
   if (termId !== op.termId) {
     for (const e of Object.values(c.entries)) {
       const ids = own(e.terms, op.taxonomyId);

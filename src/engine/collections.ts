@@ -30,6 +30,7 @@ import { checkCanonicalUrl, storedCanonical } from '@shared/seo';
 import { addressSlug, normalizeRoute, numberedSlug, validateRoute, validateSegment } from '@shared/routes';
 import { isImageBlock, isRichBlock } from '@shared/richtext';
 import { newId } from '@shared/ids';
+import { TEXT_LIMITS } from '@shared/text-limits';
 import { EngineError, allTrees, fail } from './tree';
 import { starterArchiveLayout } from './collection-sources';
 import { normalizeLink, normalizeRichText, normalizeScalar } from './values';
@@ -238,7 +239,17 @@ const POSTS_PRESET = {
   taxonomies: { categories: { label: 'Categories', terms: {} }, tags: { label: 'Tags', terms: {} } }
 };
 
-function normalizeTaxonomies(raw: Record<string, { label: string; terms?: Record<string, { label: string }> }>): Record<string, CollectionTaxonomy> {
+/** A description as stored: trimmed, and none when it says nothing. */
+const descriptionOf = (text: string | undefined) => text?.trim() || undefined;
+
+/**
+ * The groupings as given, each term keeping the description it has in `previous` when it is given without one: an
+ * editor that sends the terms' names alone never erases what a category's archive says of itself.
+ */
+function normalizeTaxonomies(
+  raw: Record<string, { label: string; terms?: Record<string, { label: string; description?: string }> }>,
+  previous: Record<string, CollectionTaxonomy> = {}
+): Record<string, CollectionTaxonomy> {
   const entries = Object.entries(raw);
   if (entries.length > MAX_TAXONOMIES) fail(`A collection can have at most ${MAX_TAXONOMIES} groupings.`);
   const out: Record<string, CollectionTaxonomy> = {};
@@ -255,7 +266,9 @@ function normalizeTaxonomies(raw: Record<string, { label: string; terms?: Record
       // Two terms readers cannot tell apart would split the same entries between them.
       if (seen.has(label.toLowerCase())) fail(`${t.label}: there are two terms called “${label}”.`);
       seen.add(label.toLowerCase());
-      out[id].terms[termId] = { label };
+      const kept = Object.hasOwn(previous, id) && Object.hasOwn(previous[id]?.terms ?? {}, termId) ? previous[id].terms[termId]?.description : undefined;
+      const description = term.description !== undefined ? descriptionOf(term.description) : typeof kept === 'string' ? descriptionOf(kept) : undefined;
+      out[id].terms[termId] = description ? { label, description } : { label };
     }
   }
   return out;
@@ -383,8 +396,13 @@ function pagesOf(input: CollectionPages): CollectionPages {
   return { detail: input.detail, archive: input.archive };
 }
 
-/** The settings that say what a collection is, as given: its kind and what one entry is called. */
-function applyIdentity(settings: CollectionDoc, op: Pick<Op<'collection.update'>, 'kind' | 'singularName'>) {
+/** The settings that say what a collection is, as given: its kind, what one entry is called, and what its index says of itself. */
+function applyIdentity(settings: CollectionDoc, op: Pick<Op<'collection.update'>, 'kind' | 'singularName' | 'description'>) {
+  if (op.description !== undefined) {
+    const description = descriptionOf(op.description);
+    if (description) settings.description = description;
+    else delete settings.description;
+  }
   if (op.kind !== undefined) {
     if (!COLLECTION_KINDS.includes(op.kind)) fail(`A collection's kind is ${COLLECTION_KINDS.join(' or ')}.`);
     settings.kind = op.kind;
@@ -546,7 +564,7 @@ export function collectionUpdate(state: ProjectState, op: Op<'collection.update'
     c.settings.hasBody = op.hasBody;
   }
   if (op.taxonomies !== undefined || op.fields !== undefined) {
-    const taxonomies = op.taxonomies !== undefined ? normalizeTaxonomies(op.taxonomies) : c.settings.taxonomies;
+    const taxonomies = op.taxonomies !== undefined ? normalizeTaxonomies(op.taxonomies, c.settings.taxonomies) : c.settings.taxonomies;
     const fields = op.fields !== undefined ? normalizeFields(op.fields, state, c.settings.id) : c.settings.fields;
     // A custom field the layout shows can't go, or become another kind, while it does: every entry's value would be
     // dropped below, even if a later change in the same batch brought the field back.
@@ -560,6 +578,13 @@ export function collectionUpdate(state: ProjectState, op: Op<'collection.update'
     settleEntries(state, c, taxonomies, fields);
     c.settings.taxonomies = taxonomies;
     c.settings.fields = fields;
+  }
+  if (op.categoryDescription !== undefined) {
+    const { termId } = op.categoryDescription;
+    const terms = c.settings.taxonomies?.categories?.terms;
+    if (!terms || !Object.hasOwn(terms, termId)) fail(`${name} has no category "${termId.slice(0, 60)}".`);
+    const description = descriptionOf(op.categoryDescription.description);
+    terms[termId] = description ? { ...terms[termId], description } : { label: terms[termId].label };
   }
   return { collectionId: c.settings.id, ...(c.settings.route !== undefined ? { route: c.settings.route } : {}) };
 }
@@ -1199,6 +1224,11 @@ function collectionSettingProblem(s: CollectionDoc): string | null {
   if (p !== undefined && (!p || typeof p !== 'object' || typeof p.detail !== 'boolean' || typeof p.archive !== 'boolean')) return 'its pages are damaged.';
   if (p?.archive && !p.detail) return "it has an archive without entry pages to list, so it has neither. Turn on entry pages, or turn off the archive.";
   if (s.sourceId !== undefined && (typeof s.sourceId !== 'string' || !s.sourceId.trim() || s.sourceId.length > 200)) return 'the external source it is synced from is damaged.';
+  const longDescription = (d: unknown) => d !== undefined && (typeof d !== 'string' || d.length > TEXT_LIMITS.pageDescription);
+  if (longDescription(s.description)) return `what its index tells search engines is not text of at most ${TEXT_LIMITS.pageDescription} characters.`;
+  const terms = s.taxonomies?.categories?.terms;
+  const term = terms && typeof terms === 'object' ? Object.entries(terms).find(([, t]) => t && typeof t === 'object' && longDescription(t.description)) : undefined;
+  if (term) return `what the category “${typeof term[1].label === 'string' ? term[1].label : term[0]}” tells search engines is not text of at most ${TEXT_LIMITS.pageDescription} characters.`;
   return null;
 }
 

@@ -3995,7 +3995,7 @@ function escapeHtmlAttr(s: string): string {
  * page's other versions (its own among them). User text is emitted as Svelte string literals, never as template
  * text, so "{" cannot become code.
  */
-function seoHead(state: ProjectState, meta: SeoMetadata, opts: { article: boolean; alternates: readonly string[] }): string[] {
+export function seoHead(state: ProjectState, meta: Omit<SeoMetadata, 'subject'>, opts: { article: boolean; alternates: readonly string[] }): string[] {
   const head: string[] = [`\t<title>{${js(meta.title)}}</title>`];
   if (meta.description) head.push(`\t<meta name="description" content={${js(meta.description)}} />`);
   head.push(`\t<meta property="og:type" content="${opts.article ? 'article' : 'website'}" />`);

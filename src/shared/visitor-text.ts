@@ -77,7 +77,9 @@ export const VISITOR_TEXT_KEYS = [
   'archivePage',
   'archivePageOf',
   'archiveCategory',
-  'archiveEmpty'
+  'archiveEmpty',
+  'archiveDescription',
+  'archiveCategoryDescription'
 ] as const;
 
 export type VisitorTextKey = (typeof VISITOR_TEXT_KEYS)[number];
@@ -182,7 +184,9 @@ export const VISITOR_TEXT_GROUPS: Array<{ label: string; fields: VisitorTextFiel
       { key: 'archivePage', label: 'Page link', hint: 'Read out on the link to one numbered page.', fills: ['page'] },
       { key: 'archivePageOf', label: 'Page number', hint: 'Under the heading of every page after the first.', fills: ['page', 'count'] },
       { key: 'archiveCategory', label: 'Category', hint: 'Above the category’s name on its archive page.' },
-      { key: 'archiveEmpty', label: 'Nothing published', hint: 'On a blog’s index before anything is published.' }
+      { key: 'archiveEmpty', label: 'Nothing published', hint: 'On a blog’s index before anything is published.' },
+      { key: 'archiveDescription', label: 'Index description', hint: 'What a blog’s index says of itself to search engines and link previews, when neither it nor the site has a description.', fills: ['collection', 'site'] },
+      { key: 'archiveCategoryDescription', label: 'Category description', hint: 'What a category’s archive says of itself to search engines and link previews, when the category has no description.', fills: ['collection', 'category', 'site'] }
     ]
   }
 ];
@@ -244,7 +248,9 @@ const EN: VisitorText = {
   archivePage: 'Page {page}',
   archivePageOf: 'Page {page} of {count}',
   archiveCategory: 'Category',
-  archiveEmpty: 'Nothing has been published here yet.'
+  archiveEmpty: 'Nothing has been published here yet.',
+  archiveDescription: '{collection} from {site}.',
+  archiveCategoryDescription: '{collection} filed under {category}, from {site}.'
 };
 
 const AR: VisitorText = {
@@ -304,7 +310,9 @@ const AR: VisitorText = {
   archivePage: 'الصفحة {page}',
   archivePageOf: 'الصفحة {page} من {count}',
   archiveCategory: 'التصنيف',
-  archiveEmpty: 'لم يُنشر شيء هنا بعد.'
+  archiveEmpty: 'لم يُنشر شيء هنا بعد.',
+  archiveDescription: '{collection} من {site}.',
+  archiveCategoryDescription: '{collection} في تصنيف {category}، من {site}.'
 };
 
 const HE: VisitorText = {
@@ -364,7 +372,9 @@ const HE: VisitorText = {
   archivePage: 'עמוד {page}',
   archivePageOf: 'עמוד {page} מתוך {count}',
   archiveCategory: 'קטגוריה',
-  archiveEmpty: 'עדיין לא פורסם כאן דבר.'
+  archiveEmpty: 'עדיין לא פורסם כאן דבר.',
+  archiveDescription: '{collection} מאת {site}.',
+  archiveCategoryDescription: '{collection} בקטגוריה {category}, מאת {site}.'
 };
 
 /** Built-in wording by primary language subtag. Hebrew is also known by its old code. */

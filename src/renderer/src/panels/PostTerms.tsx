@@ -3,11 +3,12 @@ import { useEffect, useId, useRef, useState } from 'react';
 import { Check, Pencil, Plus, Trash2, X } from 'lucide-react';
 import type { Collection, EntryDoc } from '@shared/types';
 import type { EditOperation } from '@shared/ops';
-import { assignedTermIds, entriesWithTerm, termIdFor } from '@shared/collections';
-import { archiveRoute } from '@shared/archives';
+import { assignedTermIds, entriesWithTerm, hasArchivePages, termIdFor } from '@shared/collections';
+import { archiveRoute, defaultArchiveDescription } from '@shared/archives';
+import { TEXT_LIMITS } from '@shared/text-limits';
 import { termFeedUses } from '@engine/terms';
 import { commitOps, confirmDialog, getState, toast, undoAction, useStore } from '../store';
-import { Modal, Tabs } from '../components/ui';
+import { DraftInput, Modal, Tabs } from '../components/ui';
 import { isImeComposing } from '../lib/ime';
 import { trackApply } from '../lib/pending';
 import { postAt, type PostRef } from '../lib/posts';
@@ -298,7 +299,8 @@ function TermList({ collection, taxonomy, onRenamed }: { collection: Collection;
   const collectionId = collection.settings.id;
   const noun = termNoun(taxonomy.id);
   const terms = termsOf(collection, taxonomy.id);
-  const archived = taxonomy.id === 'categories' && collection.settings.categoryArchives !== false;
+  const site = useStore((s) => s.snapshot?.state.site);
+  const archived = taxonomy.id === 'categories' && hasArchivePages(collection.settings) && collection.settings.categoryArchives !== false;
 
   const create = async () => {
     const label = name.trim();
@@ -413,6 +415,27 @@ function TermList({ collection, taxonomy, onRenamed }: { collection: Collection;
                       {posts(n)}
                       {archived ? ` · ${archiveRoute(collection.settings.route ?? '', t.id, 1)}` : ''}
                     </span>
+                    {archived && site && (
+                      <label className="term-description">
+                        Archive description
+                        <DraftInput
+                          multiline
+                          rows={2}
+                          className="textarea"
+                          limit={TEXT_LIMITS.pageDescription}
+                          keep={`collection:${collectionId}:category:${t.id}:description`}
+                          keepWhile={() => {
+                            // Only while the category has its archive, so a draft hidden by turning archives off is offered to copy.
+                            const c = getState().snapshot?.state.collections[collectionId];
+                            return !!c && hasArchivePages(c.settings) && c.settings.categoryArchives !== false && Object.hasOwn(c.settings.taxonomies?.categories?.terms ?? {}, t.id);
+                          }}
+                          ariaLabel={`Archive description of “${t.label}”, for search engines and link previews`}
+                          value={collection.settings.taxonomies.categories?.terms[t.id]?.description ?? ''}
+                          placeholder={defaultArchiveDescription({ site, collections: { [collectionId]: collection } }, collectionId, t.id)}
+                          onCommit={(v) => commitOps([{ type: 'collection.update', collectionId, categoryDescription: { termId: t.id, description: v } }], `Change the “${t.label}” archive description`)}
+                        />
+                      </label>
+                    )}
                   </span>
                   <span className="term-actions">
                     <button className="icon-btn sm term-rename-btn" aria-label={`Rename “${t.label}”`} title="Rename" onClick={() => setEditing({ termId: t.id, text: t.label })}>

@@ -1386,7 +1386,17 @@ export interface SourceDoc {
 export interface CollectionTaxonomy {
   label: string;
   /** Terms by stable ID, in the order they are offered. Renaming a term keeps every entry's assignment. */
-  terms: Record<string, { label: string }>;
+  terms: Record<string, CollectionTerm>;
+}
+
+/** One term of a grouping. */
+export interface CollectionTerm {
+  label: string;
+  /**
+   * What a category's archive page says of itself to search engines and link previews. Absent: a sentence naming the
+   * category, the collection and the site (see shared/archives.ts).
+   */
+  description?: string;
 }
 
 /**
@@ -1400,6 +1410,11 @@ export interface CollectionDoc {
   name: string;
   /** Absent: editorial, as every collection made before kinds is. */
   kind?: CollectionKind;
+  /**
+   * What the collection's index says of itself to search engines and link previews. Absent: the site's description,
+   * else a sentence naming the collection and the site (see shared/archives.ts).
+   */
+  description?: string;
   /** What one entry is called ("Team member" of "Team"), where the collection's name would read wrong. */
   singularName?: string;
   /** Whether entries have text of their own (`body`). Absent: they do. A record without it keeps an empty body. */
