@@ -251,44 +251,127 @@
   /* The safe default in a dialog is visibly focused from the start, even when it was focused by the app. */
   .modal [data-autofocus]:focus { outline: 2px solid var(--focus); outline-offset: 2px; }
 
-  .toasts { position: fixed; bottom: 40px; left: 50%; transform: translateX(-50%); z-index: 1100; display: flex; flex-direction: column; gap: 8px; align-items: center; pointer-events: none; }
-  .toast { pointer-events: auto; display: flex; align-items: center; gap: 10px; max-width: 520px; padding: 9px 12px 9px 14px; border-radius: var(--r-md); background: var(--ink); color: #fff; box-shadow: var(--shadow-lg); animation: pop-in 160ms ease-out; font-size: 13px; }
+  /* ---------- Notices: status toasts, held edits and offers, in one stack at the bottom of the window ---------- */
+  /* The notices' own colours, defined once here and read by every notice rule (join requests and the rename offer
+     too): a dark layer, ink in light and lifted slate in dark, so a notice reads as a layer over the canvas and never as
+     part of the website. Status notices carry no meaning hue; only an error takes red. Derived inks are worked out on
+     each notice, so an error's fill and ink feed them too. Every pair holds its floor on every fill: ink 7:1 or
+     better, --notice-ink-2 (quieter text) 4.9:1, --notice-line (control edges) 3:1, --notice-focus 3.3:1. */
+  /* Native controls (checkboxes, scrollbars) are drawn for the notice's own dark surface, whatever the app's theme. */
+  .toasts {
+    color-scheme: dark;
+    --notice-fill: var(--ink);
+    --notice-ink: var(--toast-action-fill);
+    --notice-error-fill: color-mix(in srgb, var(--red) 84%, black);
+    --notice-error-ink: var(--toast-action-fill);
+    /* The light theme's blue is too dark on ink; the sky of the mark holds 3:1 on every notice fill, in both themes. */
+    --notice-focus: var(--sky-2);
+    --notice-shadow: var(--shadow-lg);
+    /* One column: wide enough for a two-line message, narrow enough to stay inside the canvas of the smallest window. */
+    --notice-width: min(460px, calc(100vw - 48px));
+    /* Clear of the window's bottom edge, or of the Preview pill when it shows (below). */
+    --notices-bottom: 40px;
+  }
+  /* Dark: a lifted slate notice, a step above --raised, so it keeps its edge over the dark chrome (the hairline below)
+     and reads as dark-on-light over a light website on the canvas. Never a pale slab, which glares on dark chrome. */
+  :where(:root[data-appearance='dark']) {
+    .toasts {
+      --notice-fill: #343d4f;
+      --notice-ink: var(--text);
+      --notice-error-fill: #6b2522;
+      --notice-error-ink: #ffe4e1;
+    }
+  }
+  /* Above dialogs (their backdrop is 900), so a notice stays readable, and dismissable, while one is open. */
+  .toasts { position: fixed; bottom: var(--notices-bottom); left: 50%; transform: translateX(-50%); z-index: 1100; display: flex; flex-direction: column; gap: 8px; align-items: center; pointer-events: none; }
+  /* The Previewing bar sits 18px above the canvas floor (about 42px above the window) and is 36px tall: keep the stack above it. */
+  body:has(.preview-pill:not([inert] *)) .toasts { --notices-bottom: 90px; }
+  /* Crowded (Toasts marks it when the notices are taller than the window below the toolbar allows): the stack stops
+     short of the toolbar and scrolls, so every notice stays reachable; Tab brings each into view. The side room keeps
+     the notices' edges and focus rings inside it. */
+  .toasts[data-crowded] {
+    /* --notices-room is measured by Toasts (below the toolbar, and clear of an open dialog's controls). The 16px of
+       foot room (taken back from the offset) and the side room keep the notices' edges and focus rings inside it; the
+       thumb's 9px comes off the right, so the column stays put. It takes the pointer, so its thumb can be dragged. */
+    max-height: calc(var(--notices-room, 60vh) + 16px); bottom: calc(var(--notices-bottom) - 16px); padding: 0 15px 16px 24px;
+    overscroll-behavior: contain; pointer-events: auto; --notice-shadow: var(--shadow-md);
+  }
+  /* Crowded and scrolled to its foot: what is out of sight above says so, and takes the stack back to its top. */
+  /* A slim bar in the notices' column, so the cards scroll under it whole rather than under a floating chip; a notice
+     Tab brings into view stops below it. */
+  .toasts[data-crowded] { scroll-padding-top: 40px; }
+  /* It lies over the top of the stack and takes no room (margin back), so showing it moves nothing. Its edge is the
+     notices' control line, so it stays apart from the card of the same fill scrolling under it; its focus ring is
+     drawn inside, clear of the scroller's edge. */
+  .toasts .notices-above { position: sticky; top: 0; z-index: 1; flex: none; margin-bottom: -40px; display: flex; align-items: center; gap: 10px; width: var(--notice-width); height: 32px; padding: 0 14px; border: 0; border-radius: var(--r-md); background: var(--notice-fill); color: var(--notice-ink); box-shadow: 0 0 0 1px color-mix(in srgb, var(--notice-ink) 65%, var(--notice-fill)), var(--shadow-md); font-size: 13px; font-weight: 600; text-align: left; pointer-events: auto; --focus: var(--notice-focus); outline-offset: -4px; }
+  .toasts .notices-above:hover { background: color-mix(in srgb, var(--notice-ink) 8%, var(--notice-fill)); }
+  .toasts .notices-above svg { width: 16px; height: 16px; flex: none; }
+  /* A status notice above a decision takes the decisions' column, so icons and edges line up down the stack; alone it
+     keeps to its words. */
+  .toasts:has(.toast:is(.held, .rename-offer, .live-request)) .toast { width: var(--notice-width); }
+  .toasts .toast-group { display: contents; }
+  .toast {
+    --notice-ink-2: color-mix(in srgb, var(--notice-ink) 78%, var(--notice-fill));
+    --notice-line: color-mix(in srgb, var(--notice-ink) 65%, var(--notice-fill));
+    --focus: var(--notice-focus);
+    pointer-events: auto; display: flex; align-items: flex-start; gap: 10px; max-width: var(--notice-width); padding: 6px 10px 6px 14px; border-radius: var(--r-md);
+    background: var(--notice-fill); color: var(--notice-ink); font-size: 13px; line-height: 20px;
+    /* A complete hairline in both themes, so the notice keeps its edge over a website of any colour. */
+    box-shadow: 0 0 0 1px color-mix(in srgb, var(--notice-ink) 22%, transparent), var(--notice-shadow); animation: pop-in 160ms ease-out;
+  }
+  .toast.error { --notice-fill: var(--notice-error-fill); --notice-ink: var(--notice-error-ink); }
+  /* The icon and Dismiss keep to the first line of a message that wraps; a one-line message is as tall as its action. */
   .toast svg { width: 16px; height: 16px; flex: none; }
-  /* A long message wraps, then scrolls, so a notice that waits to be dismissed never fills the window. */
-  .toast .toast-text { min-width: 0; max-height: 7.5em; overflow-y: auto; overflow-wrap: anywhere; user-select: text; }
-  .toast-dismiss { display: grid; place-items: center; width: 24px; height: 24px; margin: -3px -4px -3px 0; padding: 0; flex: none; border: 0; border-radius: var(--r-xs); background: transparent; }
+  .toast > svg { margin-top: 5px; }
+  .toast .toast-body { display: flex; flex-direction: column; min-width: 0; padding-block: 3px; }
+  .toast .toast-text { overflow-wrap: anywhere; user-select: text; }
+  .toast-dismiss { display: grid; place-items: center; width: 24px; height: 24px; margin: 1px -4px 0 0; padding: 0; flex: none; border: 0; border-radius: var(--r-xs); background: transparent; }
   .toast-dismiss:hover { background: color-mix(in srgb, currentColor 12%, transparent); }
-  .toast.error { background: var(--red); color: #fff; }
-  /* Dark: a lifted slate notice, a step above --raised, with a pale hairline so it keeps its edge over the dark chrome;
-     over a light website on the canvas it reads as dark-on-light. Never a pale slab, which glares on dark chrome. */
-  :where(:root[data-appearance='dark']) { .toast { background: #343d4f; color: var(--text); box-shadow: 0 0 0 1px rgb(231 236 244 / 0.16), var(--shadow-lg); } .toast.error { background: #6b2522; color: #ffe4e1; } }
-  /* Icons and actions take the toast's own ink (no meaning hue on a status notice), so one rule serves the info,
-     success and error fills. Focus stays the blue house outline, in a blue that holds 3:1 on each fill. */
-  .toast { --focus: var(--sky-2); }
+  /* Long text wraps, then scrolls in whole lines, so a message that waits to be dismissed never fills the window. Its
+     scrollbar is drawn (an overlay one shows only while scrolling), as the command menu's and History's are, in the
+     notice's ink: text that fits has none, and text that does not shows how much more there is. Every word keeps its
+     full ink. */
+  .toast :is(.toast-text, .held-text), .toasts[data-crowded] { overflow-y: auto; }
+  .toast :is(.toast-text, .held-text)::-webkit-scrollbar, .toasts[data-crowded]::-webkit-scrollbar { width: 9px; }
+  .toast :is(.toast-text, .held-text)::-webkit-scrollbar-thumb, .toasts[data-crowded]::-webkit-scrollbar-thumb { border: 2px solid transparent; border-radius: 99px; background: var(--notice-line) content-box; }
+  .toasts[data-crowded]::-webkit-scrollbar-thumb { background-color: var(--border-control); }
+  .toast .toast-text { max-height: calc(5 * 20px); }
+  /* Icons and actions take the notice's own ink (no meaning hue on a status notice), so one rule serves every fill. */
   .toast button { color: inherit; }
-  .toast .btn { border: 1px solid color-mix(in srgb, currentColor 65%, transparent); background: transparent; color: inherit; box-shadow: none; }
+  .toast .btn { border: 1px solid var(--notice-line); background: transparent; color: inherit; box-shadow: none; }
   .toast .btn:hover:not(:disabled) { background: color-mix(in srgb, currentColor 12%, transparent); }
-  /* A notice's one expected answer (Admit) is filled in the notice's own ink, inverted, so it leads without bringing
-     the app's blue onto a status surface. */
-  .toast .btn-primary { background: var(--toast-action-fill); border-color: transparent; color: var(--toast-action-ink); font-weight: 600; }
-  .toast .btn-primary:hover:not(:disabled) { background: color-mix(in srgb, var(--toast-action-fill) 86%, var(--toast-action-ink)); }
-  /* While a dialog is open, toasts still announce but their actions wait (they act on the page behind), taking
-     no room, and the notice lets clicks through, all but its dismiss button and its text (which may scroll). ui.tsx offers an Undo again, for a
-     full window, once the last dialog closes. */
-  body.dialog-open .toast :is(.btn, .held-actions) { display: none; }
+  /* A notice's one expected answer (Update the labels, Apply my edit, Admit) is filled in the notice's own ink,
+     inverted, so it leads without bringing the app's blue onto a status surface. A lone Undo stays outlined: it is
+     on offer, not expected. */
+  .toast .btn-primary { background: var(--notice-ink); border-color: transparent; color: var(--notice-fill); font-weight: 600; }
+  .toast .btn-primary:hover:not(:disabled) { background: color-mix(in srgb, var(--notice-ink) 86%, var(--notice-fill)); }
+  /* Unavailable (Update with nothing ticked): drawn off, not faded, and quieter than every live answer. */
+  .toast .btn:disabled { background: color-mix(in srgb, var(--notice-ink) 8%, transparent); border-color: color-mix(in srgb, var(--notice-ink) 30%, transparent); color: color-mix(in srgb, var(--notice-ink) 62%, var(--notice-fill)); font-weight: 500; }
+  /* A decision (an edit kept while the AI works, an offer after a rename, a join request) stays until it is answered:
+     a card in the one column width, its title first, then why it waits, then its answers lined up with the text. */
+  .toast:is(.held, .rename-offer, .live-request) { width: var(--notice-width); padding: 12px 14px; }
+  .toast:is(.held, .rename-offer, .live-request) > svg { margin-top: 2px; }
+  .toast:is(.held, .rename-offer) :is(.held-body, .rename-offer-body) { display: flex; flex-direction: column; gap: 4px; min-width: 0; }
+  .toast:is(.held, .rename-offer) :is(.held-where, .rename-offer-title) { font-weight: 600; overflow-wrap: anywhere; }
+  .toast:is(.held, .rename-offer) :is(.held-actions, .rename-offer-actions) { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 6px; }
+  /* What the author typed, quoted: quieter than the sentence that says why it waits, and at most three lines before it
+     scrolls (two in a short window), so the row's answers and the notices above stay in view. */
+  .toast.held .held-text { color: var(--notice-ink-2); user-select: text; overflow-wrap: anywhere; white-space: pre-line; max-height: calc(3 * 20px); }
+  /* A short window keeps the canvas: decision cards sit closer, and a quote shows two lines before it scrolls; one,
+     once the stack is crowded. */
+  @media (max-height: 780px) {
+    .toast:is(.held, .rename-offer, .live-request) { padding-block: 9px; }
+    .toast.held .held-text { max-height: calc(2 * 20px); }
+  }
+  .toasts[data-crowded] .toast.held .held-text { max-height: 20px; }
+  /* While a dialog is open the page behind it is inert, so every answer waits: buttons give way to one line that says
+     so, as the join request's does, and the notice lets clicks through, all but its Dismiss and its text (which may
+     scroll). ui.tsx offers an Undo again, for a full window, once the last dialog closes. */
+  .toast .notice-later { display: none; color: var(--notice-ink-2); font-size: 12px; }
+  body.dialog-open .toast .notice-later { display: block; }
+  body.dialog-open .toast :is(.btn, .held-actions, .rename-offer-actions) { display: none; }
   body.dialog-open .toast { pointer-events: none; }
   body.dialog-open .toast :is(.toast-dismiss, .toast-text) { pointer-events: auto; }
-  /* A typed edit kept while the AI works: stays until the author applies or discards it. */
-  .toasts .toast-group { display: contents; }
-  /* The Previewing bar sits 18px above the canvas floor (about 42px above the window) and is 36px tall: keep the stack above it. */
-  body:has(.preview-pill:not([inert] *)) .toasts { bottom: 90px; }
-  .toast.held { align-items: flex-start; max-width: 460px; }
-  .toast.held .held-body { display: flex; flex-direction: column; gap: 4px; min-width: 0; }
-  .toast.held .held-where { font-weight: 600; }
-  /* Long text (working notes) scrolls within a few lines, so the row's actions and the rows above stay in view. */
-  .toast.held .held-text { user-select: text; overflow-wrap: anywhere; opacity: 0.9; max-height: 6.5em; overflow-y: auto; white-space: pre-line; }
-  .toast.held .held-actions { display: flex; flex-wrap: wrap; gap: 4px; margin-left: -8px; }
-  .toast.held button { opacity: 1; }
   /* ---------- Shared link button, reset dot, backdrop & history list ---------- */
   /* A changed value is marked by a small reset button beside its label (the mark is the action), so unset
      rows keep their controls at full width. */
