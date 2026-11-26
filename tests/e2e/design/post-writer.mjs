@@ -254,7 +254,10 @@ await win.evaluate(() => document.activeElement?.blur());
 await win.locator('.post-scroll').evaluate((el) => (el.scrollTop = 0));
 await pause(400);
 await shot('problem-gone', async () => /no longer in the project/.test(await win.locator('.post-problem').innerText()), LIGHT);
-await win.getByRole('button', { name: /Discard/ }).click();
+await win.getByRole('button', { name: 'Discard my text' }).click();
+// Discarding the only copy is asked first.
+await win.locator('.modal').getByRole('button', { name: 'Discard text' }).click();
+await until(async () => !(await win.locator('.modal').isVisible()), 'the question to close');
 await pause(600);
 
 // ---- Narrow: a small window, a published entry and a draft ----
