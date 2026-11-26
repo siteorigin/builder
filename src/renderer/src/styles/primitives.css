@@ -99,6 +99,12 @@
      glyph) saying why it is not saved. */
   .field-count { margin-top: -2px; font-size: 12px; color: var(--text-3); text-align: right; font-variant-numeric: tabular-nums; }
   .field-count.field-error { text-align: left; color: var(--red); }
+  /* A short name's count (DraftInput quietCount) shows only while its field is being edited, inside the field's
+     trailing edge so nothing around it moves; near or over the limit it is an ordinary count under the field. */
+  .field-quiet { position: relative; display: flex; flex-direction: column; gap: 5px; min-width: 0; }
+  .field-quiet > .field-count.quiet { position: absolute; top: 0; right: 9px; height: 100%; display: flex; align-items: center; margin: 0; pointer-events: none; }
+  .field-quiet > .input:focus:has(+ .field-count.quiet) { padding-right: 60px; }
+  :is(.input, .textarea):not(:focus) + .field-count.quiet { display: none; }
 
   /* ---------- Segmented, Switch, Badge, Kbd, Spinner ---------- */
   /* Segmented: a --r-sm tray with --r-xs options (concentric across its 2px padding). The selected option takes
