@@ -26,7 +26,7 @@ import { StaticPreviews } from './static-preview';
 import { isPlainFile, builtPhotosMessage, deliverVercelConfig, pageLanguageWarning, publicUrlNote, rivalHookStop, cleanBuiltSite, cleanWebsitePhotos, copyProjectSource, draftLinksStop, draftSourceNotes, publishedChanged, withheldRoutes, withheldStaticFiles, editedGeneratedFile, explainBuildFailure, exportedAssetFilter, finishExportedSource, leaveOutDrafts, listFiles, locatedPhotos, locationKeptNote, locationRemovedNote, missingAssetsStop, missingSourceWarnings, missingUnusedWarnings, missingWebsiteAssets, notFoundAddressWarning, notFoundHostNote, notFoundPageProblem, omittedAssetsWarning, ownNotFoundFileNote, ownNotFoundFileStop, readNotFoundPage, settleServerHook, stripPartMarkers, carriesPartMarker, projectInventory, inventoryChanged, readExportFile, type ExportHashes, projectReadme, publishFolder, pruneWebsiteAssets, replaceEmptyFolder, readLibraryImage, sectionLinkWarnings, uncleanablePhotosMessage, uniqueChild, unlinkedButtonWarnings, unlinkedMenuLinkWarnings, emptySectionWarnings, formNameWarnings, runtimeFontWarnings, variantCredits, writeExportedSources, exportedSourcesProblem } from './export';
 import { LOCAL_DIR, LOCK_HEARTBEAT_MS, NO_LOCK, ProjectLockedError, ProjectSession, ThemeUnavailableError } from './project/session';
 import { DOC_DIR, MANIFEST_FILE, ProjectFormatError } from './project/documents';
-import { DOCUMENT_EXTENSIONS, FONT_EXTENSIONS, IMAGE_EXTENSIONS, IMPORT_IMAGE_EXTENSIONS, importAsset, importPackageImage, isAssetOfKind, isOpaquePicture, libraryWebCopyPlan, locateAssetFile, originalNameOf, pictureMime, releaseMediaWorkers, restoreAssetFiles, reviewImportFile, storeLibraryWebCopy } from './project/assets';
+import { DOCUMENT_EXTENSIONS, FONT_EXTENSIONS, IMAGE_EXTENSIONS, IMPORT_IMAGE_EXTENSIONS, importAsset, importAssetBatch, importPackageImage, MEDIA_PARALLEL, isAssetOfKind, isOpaquePicture, libraryWebCopyPlan, locateAssetFile, originalNameOf, pictureMime, releaseMediaWorkers, restoreAssetFiles, reviewImportFile, storeLibraryWebCopy } from './project/assets';
 import { postReader, stopPostReads } from './posts-import/process';
 import { sourceApprovals, sourceSecrets, sourceSyncRunner, stopSourceSyncs } from './sources/process';
 import { sampleSource, syncSource, type SourceSampleResult, type SourceSyncResult } from './sources/sync';
@@ -2137,6 +2137,10 @@ export class Controller {
    * which HEIC photos are converted, which large photos could be added as web-sized copies, which can't be added.
    */
   async reviewImport(paths?: string[], only?: 'image' | 'font' | 'document'): Promise<ImportReview | null> {
+    return timed('controller.reviewImport', () => this.reviewImportNow(paths, only), (r) => ({ rows: r?.rows.length ?? 0 }))();
+  }
+
+  private async reviewImportNow(paths?: string[], only?: 'image' | 'font' | 'document'): Promise<ImportReview | null> {
     const s = this.session;
     if (!s) return null;
     // A read-only project imports nothing: the import that follows says why.
@@ -2171,7 +2175,7 @@ export class Controller {
     const refused = files.length - picked.length;
     const reviewed = new Map((choices?.files ?? []).map((f) => [f.path, f]));
     // Files are written before their asset records exist, so the session holds off sweeping assets meanwhile.
-    return this.serialImport(() => s.withImport(async () => {
+    return this.serialImport(timed('controller.importAssets', () => s.withImport(async () => {
       const ids: string[] = [];
       const errors: string[] = refused ? [`${refused} file${refused === 1 ? ' was' : 's were'} skipped because ${refused === 1 ? 'it is' : 'they are'} not ${only === 'font' ? 'a font' : only === 'document' ? 'a document' : 'an image'}.`] : [];
       const notes: string[] = [];
@@ -2181,31 +2185,33 @@ export class Controller {
       const known = Object.values(s.state.assets.assets);
       // One time for the whole import, so the images it adds are listed together and by name.
       const createdAt = new Date().toISOString();
-      for (const [i, f] of picked.entries()) {
-        // A project closed or taken over meanwhile gets nothing more: the rest of the batch is not converted for nothing.
-        if (this.session !== s || this.closing) {
-          errors.push(`${picked.length - i === 1 ? `${basename(f)} was` : `${picked.length - i} files were`} not added because the project was closed.`);
-          break;
-        }
-        try {
+      // A few at a time, as many as the media worker makes at once; what each did is told in the files' order.
+      // Written only while the project is still open and this app's; the decoding and converting are done before.
+      const outcomes = await importAssetBatch(
+        s.dir,
+        picked.map((f) => {
           const r = reviewed.get(f);
-          // Written only while the project is still open and this app's; the decoding and converting are done before.
-          const { record, existing, font, note } = await importAsset(s.dir, f, known, this.writeFence(s), {
-            decoder: this.photoDecoder,
-            createdAt,
-            ...(r ? { webCopy: r.webCopy, fingerprint: r.fingerprint } : {})
-          });
-          if (note) notes.push(note);
-          if (!ids.includes(record.id)) ids.push(record.id);
-          if (font) backfills.push({ type: 'asset.update' as const, assetId: record.id, font });
-          if (!existing) {
-            ops.push({ type: 'asset.add' as const, asset: record });
-            known.push(record);
-          }
-        } catch (e) {
-          errors.push((e as Error).message);
+          return { path: f, opts: { decoder: this.photoDecoder, createdAt, ...(r ? { webCopy: r.webCopy, fingerprint: r.fingerprint } : {}) } };
+        }),
+        known,
+        this.writeFence(s),
+        // A project closed or taken over meanwhile gets nothing more: the rest of the batch is not converted for nothing.
+        { parallel: MEDIA_PARALLEL, go: () => this.session === s && !this.closing }
+      );
+      const started = outcomes.findIndex((o) => !o);
+      for (const o of started < 0 ? outcomes : outcomes.slice(0, started)) {
+        if (!o) continue;
+        if ('error' in o) {
+          errors.push(o.error.message);
+          continue;
         }
+        const { record, existing, font, note } = o;
+        if (note) notes.push(note);
+        if (!ids.includes(record.id)) ids.push(record.id);
+        if (font) backfills.push({ type: 'asset.update' as const, assetId: record.id, font });
+        if (!existing) ops.push({ type: 'asset.add' as const, asset: record });
       }
+      if (started >= 0) errors.push(`${picked.length - started === 1 ? `${basename(picked[started])} was` : `${picked.length - started} files were`} not added because the project was closed.`);
       if (backfills.length) {
         const r = await s.apply({ operations: backfills }, { label: 'Update font details', source: 'user' });
         if (!r.ok) errors.push(r.error?.message ?? 'The font details could not be updated.');
@@ -2218,7 +2224,7 @@ export class Controller {
         if (!r.ok) return { ok: false, assetIds: [], message: r.error?.message };
       }
       return { ok: errors.length === 0, assetIds: ids, message: errors.join(' ') || undefined, ...(notes.length ? { note: notes.join(' ') } : {}) };
-    }));
+    }), (r) => ({ files: picked.length, added: r?.assetIds.length ?? 0 })));
   }
 
   /**

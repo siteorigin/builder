@@ -20,6 +20,7 @@ import type { ChatMessage, Conversation } from '../../src/shared/api';
 import { MockOpenAIServer, textReply } from '../../tests/unit/mock-openai-server';
 import type { FixtureSpec } from './fixtures';
 import { growthMetrics, readingMetrics, type MemoryProbe, type MemoryReading } from './memory';
+import { PHOTO_COUNT, photoSpec, scenarioPhotos } from './photos';
 import { atRevision, Collector, counter, delta, forScenario, inProc, median, type Measured, type Trace } from './results';
 
 /** The feature did not do its job: the iteration fails, whatever its timings. */
@@ -1542,7 +1543,207 @@ export const canvas: Scenario = {
   }
 };
 
-export const SCENARIOS: Scenario[] = [launch, open, edit, panels, chat, canvas, exportSite, exportAgain, switchProject, memory];
+// ---------------------------------------------------------------------------
+// import
+// ---------------------------------------------------------------------------
+
+/** The widths of the smaller copies a picture is given (src/main/project/image-variants.ts VARIANT_WIDTHS). */
+const COPY_WIDTHS = [160, 480, 960, 1440];
+/** The longest side of a web-sized copy (src/main/project/media-client.ts WEB_EDGE). */
+const WEB_EDGE = 2560;
+/** How long the import of the scenario's photos may take before the scenario stops waiting for it. */
+const SCENARIO_IMPORT_MS = 240_000;
+
+/** A library record as the scenario reads it from the snapshot. */
+type ImportedRecord = { id: string; name: string; file: string; mime: string; kind: string; width?: number; height?: number; variants?: Array<{ width: number; file: string }> };
+
+/**
+ * The copies a web-sized copy of `w` × `h` is given: JPEG at each smaller width, WebP at those and its full width, and
+ * AVIF the same as WebP or none (when its set is not the smaller), by file extension.
+ */
+export function expectedCopies(w: number): { jpg: number[]; webp: number[]; avif: number[] } {
+  const smaller = COPY_WIDTHS.filter((x) => x < w * 0.9);
+  return { jpg: smaller, webp: [...smaller, w], avif: [...smaller, w] };
+}
+
+/** What is wrong with an imported record's copies, or null: each format's widths, as expectedCopies says. */
+export function copiesProblem(rec: ImportedRecord): string | null {
+  const want = expectedCopies(rec.width ?? 0);
+  const got: Record<string, number[]> = { jpg: [], webp: [], avif: [] };
+  for (const v of rec.variants ?? []) {
+    const ext = v.file.split('.').pop() ?? '';
+    if (!(ext in got)) return `a copy in another format (${v.file})`;
+    got[ext].push(v.width);
+  }
+  for (const ext of ['jpg', 'webp'] as const) if (got[ext].join(',') !== want[ext].join(',')) return `${ext} copies at ${got[ext].join(', ') || 'no widths'}, not ${want[ext].join(', ')}`;
+  if (got.avif.length && got.avif.join(',') !== want.avif.join(',')) return `AVIF copies at ${got.avif.join(', ')}, not ${want.avif.join(', ')} or none`;
+  return null;
+}
+
+/**
+ * Add the scenario's 20 photos of 12 megapixels (scripts/perf/photos.ts) in Assets, as a person does: Add images, the
+ * chooser answered through the driver, and the import review confirmed as it opens, with a web-sized copy of each;
+ * until every photo is in the library with all its copies.
+ */
+export const importPhotos: Scenario = {
+  name: 'import',
+  after: 'open',
+  description: 'Add 20 photos of 12 megapixels in Assets, confirming the import review as it opens, until each is in the library with every copy.',
+  async run(ctx) {
+    const { win, app } = ctx;
+    // Drawn once per machine, before anything is timed.
+    const photos = await scenarioPhotos();
+    const before = await win.evaluate(() => (globalThis as unknown as EditorPage).builder.project.snapshot());
+    expect(before, 'no project is open');
+    const had = new Set(Object.keys(before.state.assets.assets));
+    // Not timed: the Assets view shown, on its images.
+    const rail = win.locator('.rail [data-rail="assets"]');
+    if ((await rail.getAttribute('aria-pressed')) !== 'true') await rail.click();
+    // The panel's own button, or the empty library's when it has no images yet.
+    const add = win.locator('#editor-sidebar').getByRole('button', { name: /Add images/ }).first();
+    await add.waitFor({ timeout: 15_000 });
+    expect(await add.isEnabled(), 'Add images is not enabled');
+    const answer: DesktopCall = { op: 'setAnswers', answers: [{ dialog: 'open', selection: 'files', paths: photos.files }], request: null };
+    const set = (await app.evaluate(desktopInMain, answer)) as { error?: string };
+    if (set.error) throw new Error(`The file chooser could not be answered: ${set.error}`);
+    // Showing the view saves the workspace 300 ms later: that lands before the import starts, not in it.
+    await sleep(Math.max(ctx.settleMs, WORKSPACE_SAVE_WAIT_MS));
+    await ctx.mark('scenario.start', { scenario: 'import', photos: photos.hash });
+    await add.click();
+    // The review opens for photos this large, each offered a web-sized copy and checked for one.
+    const confirm = win.getByTestId('import-review-add');
+    await confirm.waitFor({ timeout: 60_000 });
+    expect((await confirm.innerText()).trim() === `Add ${PHOTO_COUNT} files to Assets`, `the import review offers “${(await confirm.innerText()).trim()}”, not all ${PHOTO_COUNT} photos`);
+    const copies = win.locator('.modal input[type="checkbox"]');
+    expect((await copies.count()) === PHOTO_COUNT, `the import review offers ${await copies.count()} web-sized copies, not ${PHOTO_COUNT}`);
+    for (let i = 0; i < PHOTO_COUNT; i++) expect(await copies.nth(i).isChecked(), `the import review does not offer photo ${i + 1} as a web-sized copy`);
+    await confirm.click();
+    // Until every photo is in the library with its copies.
+    const deadline = Date.now() + SCENARIO_IMPORT_MS;
+    let added: ImportedRecord[] = [];
+    let revision = before.revision;
+    while (Date.now() < deadline) {
+      const snap = await win.evaluate(() => (globalThis as unknown as EditorPage).builder.project.snapshot());
+      added = Object.values((snap?.state.assets.assets ?? {}) as Record<string, ImportedRecord>).filter((a) => !had.has(a.id));
+      revision = snap?.revision ?? revision;
+      if (added.length >= PHOTO_COUNT && added.every((a) => !copiesProblem(a))) break;
+      await sleep(50);
+    }
+    expect(added.length === PHOTO_COUNT, `${added.length} of the ${PHOTO_COUNT} photos reached the library`);
+    for (const a of added) {
+      const problem = copiesProblem(a);
+      expect(!problem, `${a.name} has ${problem}`);
+    }
+    const variants = added.reduce((n, a) => n + (a.variants?.length ?? 0), 0);
+    await ctx.mark('import.done', { scenario: 'import', revision, images: added.length, variants });
+    await win.getByText(`Added ${PHOTO_COUNT} images.`, { exact: false }).first().waitFor({ timeout: 15_000 });
+    // Each photo as its web-sized copy: named for its file, turned upright, at the size the review promised.
+    const sharp = (await import('sharp')).default;
+    const byName = new Map(added.map((a) => [a.name, a]));
+    for (let i = 1; i <= PHOTO_COUNT; i++) {
+      const spec = photoSpec(i);
+      const name = spec.name.replace(/\.jpg$/, '').replace(/[-_]+/g, ' ');
+      const rec = byName.get(name);
+      expect(rec, `no image named “${name}” was added`);
+      const [w, h] = spec.turned ? [1920, WEB_EDGE] : [WEB_EDGE, 1920];
+      expect(rec.kind === 'image' && rec.mime === 'image/jpeg' && rec.width === w && rec.height === h, `${name} was added as a ${rec.width} × ${rec.height} ${rec.mime}, not a ${w} × ${h} web-sized JPEG`);
+      // Every file on disk, each the size and format its record says.
+      for (const f of [{ file: rec.file, width: w }, ...(rec.variants ?? [])]) {
+        const at = join(ctx.projectDir, f.file);
+        expect(existsSync(at), `${f.file} is not in the project`);
+        const meta = await sharp(at).metadata();
+        const ext = f.file.split('.').pop();
+        expect(meta.width === f.width && (meta.autoOrient?.width ?? meta.width) === f.width, `${f.file} is ${meta.width} wide, not ${f.width}`);
+        expect({ jpg: 'jpeg', webp: 'webp', avif: 'heif' }[ext ?? ''] === meta.format, `${f.file} is ${meta.format}`);
+        // Upright: a portrait photo's copies are portrait too.
+        if (meta.height) expect(spec.turned ? meta.height > meta.width! : meta.height < meta.width!, `${f.file} is not turned the way the photo is shown`);
+        // The modern copies carry the photo's credits, which an export cannot add to them.
+        if (spec.credited && (ext === 'webp' || ext === 'avif')) expect(meta.exif?.includes('Ana Field'), `${f.file} does not carry the photo’s credits`);
+      }
+    }
+    // Shown from the preview, as the canvas and Assets show them: each original and its smallest copy load.
+    const snap = await win.evaluate(() => (globalThis as unknown as EditorPage).builder.project.snapshot());
+    const devUrl = snap?.runtime.state === 'ready' ? snap.runtime.url : null;
+    expect(devUrl, 'the preview is not running');
+    const urls = added.flatMap((a) => [a.file, a.variants![0].file].map((f) => `${devUrl}/${f.replace(/^static\//, '')}`));
+    type Img = { naturalWidth: number; onload: (() => void) | null; onerror: (() => void) | null; src: string };
+    const widths = await win.evaluate(
+      (list) => Promise.all(list.map((src) => new Promise<number>((resolve) => { const img = new (globalThis as unknown as { Image: new () => Img }).Image(); img.onload = () => resolve(img.naturalWidth); img.onerror = () => resolve(0); img.src = src; }))),
+      urls
+    );
+    const unshown = widths.filter((w) => !w).length;
+    expect(!unshown, `${unshown} of the ${urls.length} files the preview should serve did not load`);
+    await sleep(ctx.settleMs);
+    await ctx.mark('scenario.end', { scenario: 'import' });
+    await ctx.waitTrace((t) => !!t.first('scenario.end', forScenario('import', 'renderer')) && !!t.first('scenario.end', forScenario('import', 'main')));
+  },
+  measure(trace) {
+    const m = new Collector();
+    const begin = m.need('scenario.start (renderer)', trace.first('scenario.start', forScenario('import', 'renderer')));
+    const from = begin?.t ?? Infinity;
+    const req = m.need('import.requested', trace.first('import.requested', inProc('renderer'), from));
+    const at = req?.t ?? Infinity;
+    const done = m.need('import.done', trace.first('import.done', forScenario('import', 'renderer'), at));
+    const revision = typeof done?.attrs?.revision === 'number' ? done.attrs.revision : NaN;
+    const shown = m.need('renderer.commit (the import)', trace.first('renderer.commit', (r) => r.proc === 'renderer' && r.attrs?.revision === revision, at));
+    // The first commit to show any of the photos: with them all arriving together, the same one.
+    const from0 = typeof req?.attrs?.revision === 'number' ? req.attrs.revision : NaN;
+    const first = trace.first('renderer.commit', (r) => r.proc === 'renderer' && typeof r.attrs?.revision === 'number' && r.attrs.revision > from0, at);
+    m.span('import.review', m.need('controller.reviewImport', trace.first('controller.reviewImport', inProc('main'), from, at)));
+    m.since('import.total', req, shown);
+    m.since('import.firstShown', req, m.need('renderer.commit (the first photos)', first));
+    const whole = m.need('controller.importAssets', trace.first('controller.importAssets', inProc('main'), at));
+    m.span('import.main', whole);
+    const until = whole?.t ?? -Infinity;
+    const start = startOf(whole) ?? Infinity;
+    m.span('import.apply', m.need('session.apply', trace.all('session.apply', inProc('main'), start, until).at(-1)));
+    // Every photo's own time in the main process, from reading it to its files written.
+    const files = trace.all('import.file', inProc('main'), start, until);
+    if (files.length !== PHOTO_COUNT) m.need(`import.file spans (${files.length} of ${PHOTO_COUNT})`, undefined);
+    else m.ms('import.image.ms', median(files.map((f) => f.ms ?? NaN)));
+    // What the media worker did: a web-sized copy and the copies of it, for each photo.
+    const asked = trace.all('media.request', inProc('main'), start, until);
+    const kind = (k: string) => asked.filter((r) => r.attrs?.kind === k);
+    const web = kind('web');
+    const copies = kind('variants');
+    const num = (r: PerfRecord, k: string) => (typeof r.attrs?.[k] === 'number' ? (r.attrs[k] as number) : NaN);
+    if (web.length !== PHOTO_COUNT || copies.length !== PHOTO_COUNT) m.need(`media.request marks (${web.length} web-sized and ${copies.length} copies of ${PHOTO_COUNT} photos)`, undefined);
+    else {
+      const med = (list: PerfRecord[], k: string) => median(list.map((r) => num(r, k)));
+      m.ms('import.image.webMs', med(web, 'ms'));
+      m.ms('import.image.webDecodeMs', med(web, 'decodeMs'));
+      m.ms('import.image.webCopyMs', med(web, 'webCopyMs'));
+      m.ms('import.image.copiesMs', med(copies, 'ms'));
+      m.ms('import.image.copiesDecodeMs', med(copies, 'decodeMs'));
+      for (const f of ['jpeg', 'webp', 'avif']) m.ms(`import.image.${f}Ms`, med(copies, `${f}Ms`));
+    }
+    m.count('import.workerRequests', asked.length);
+    m.count('import.decodes', asked.reduce((n, r) => n + num(r, 'decodes'), 0));
+    m.count('import.encodes', asked.reduce((n, r) => n + num(r, 'encodes'), 0));
+    // Each worker's CPU from the first request it was given to the last it answered (requests that overlap share it),
+    // and its peak memory; added up over the workers.
+    const workers = new Map<unknown, { from: number; to: number; peak: number }>();
+    for (const r of asked) {
+      const w = workers.get(r.attrs?.worker) ?? { from: Infinity, to: -Infinity, peak: 0 };
+      workers.set(r.attrs?.worker, { from: Math.min(w.from, num(r, 'cpuStart')), to: Math.max(w.to, num(r, 'cpuEnd')), peak: Math.max(w.peak, num(r, 'peakRss')) });
+    }
+    m.ms('import.workerCpuMs', [...workers.values()].reduce((n, w) => n + (w.to - w.from), 0));
+    const peaks = new Map([...workers].map(([k, w]) => [k, w.peak]));
+    m.count('import.workers', peaks.size);
+    m.count('import.workerPeakRss', [...peaks.values()].reduce((n, v) => n + v, 0), 'bytes');
+    m.count('import.fileWrites', delta(whole, 'fs.writes'));
+    m.count('import.durableWrites', delta(whole, 'fs.durableWrites'));
+    m.count('import.fsyncs', delta(whole, 'fs.fsyncs'));
+    if (done) {
+      m.count('import.images', Number(done.attrs?.images));
+      m.count('import.variants', Number(done.attrs?.variants));
+    }
+    m.ms('import.mainStallMax', stallMax(trace, req, shown));
+    return m;
+  }
+};
+
+export const SCENARIOS: Scenario[] = [launch, open, edit, panels, chat, canvas, exportSite, exportAgain, importPhotos, switchProject, memory];
 
 /**
  * The scenarios to run in one launch for those asked for: each with every one it follows, in the order of SCENARIOS
