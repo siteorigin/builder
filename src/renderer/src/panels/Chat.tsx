@@ -270,6 +270,8 @@ export function Chat() {
   // (another conversation, a finished run, coming back to the app), so a server that now runs another model is a switch.
   const autoLocal = configured && provider?.id === 'local' && !settings?.ai.models.local?.trim() ? (settings?.ai.local.baseURL ?? '') : null;
   const [serverModel, setServerModel] = useState<{ baseURL: string; id: string | null } | null>(null);
+  /** Both questions about the server are asked again when Settings closes: a saved key can change what it answers. */
+  const settingsOpen = useStore((s) => s.modal?.kind === 'settings');
   const probeSeq = useRef(0);
   /** The model the local server offers first now; only the newest answer is kept, whatever order they arrive in. */
   const probeServer = (baseURL: string): Promise<string | null> => {
@@ -296,12 +298,11 @@ export function Chat() {
       window.removeEventListener('focus', ask);
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [autoLocal, conversation?.id, running]);
+  }, [autoLocal, conversation?.id, running, settingsOpen]);
   const next = nextRecipient(provider, settings?.ai.models, autoLocal !== null && serverModel?.baseURL === autoLocal ? serverModel.id : null);
   // The context that model's server reports, for the length warning. Asked apart from the model, so a server slow to
-  // say never holds up the recipient, and again after Settings closes, where a saved key can change what it answers.
-  const contextModel = configured && provider?.id === 'local' && next ? next.id : '';
-  const settingsOpen = useStore((s) => s.modal?.kind === 'settings');
+  // say never holds up the recipient.
+  const contextModel = (configured && provider?.id === 'local' && next?.id) || '';
   const contextKey = contextModel && settings ? JSON.stringify([settings.ai.local.baseURL, contextModel, settings.ai.local.allowRemote]) : null;
   const [serverContext, setServerContext] = useState<{ key: string; window: number | null } | null>(null);
   const localBaseURL = settings?.ai.local.baseURL;

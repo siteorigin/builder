@@ -318,12 +318,10 @@ function registerIpc() {
     const before = (await loadSettings()).settings.ai;
     // Withdrawing permission ends work in progress at once, which would otherwise keep sending to that server. The
     // work may have started on a remote server before the address in use changed, so the address is not checked.
+    // Nor is the provider: another may have been chosen while that work runs.
     if (before.local.allowRemote === true && patch.ai?.local && 'allowRemote' in patch.ai.local && patch.ai.local.allowRemote !== true) {
-      if (before.provider === 'local') {
-        orchestrator.stop();
-        fixAbort?.abort();
-      }
-      // Tests and the composer's context reads only ever reach the local server, whichever provider is chosen now.
+      orchestrator.stop();
+      fixAbort?.abort();
       for (const test of testAborts) test.abort();
     }
     const s = await updateSettings(patch);
