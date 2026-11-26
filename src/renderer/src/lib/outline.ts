@@ -20,6 +20,8 @@ export interface OutlineRow {
   skip?: { after: number; suggest: number };
   /** The level that settles what this row is flagged for, when its level can be changed from here. */
   fix?: number;
+  /** Its level is chosen once for several headings, or the field choosing it decides more: changing it changes more than this row. */
+  sharedLevel?: boolean;
 }
 
 export interface PageOutline {
@@ -59,6 +61,10 @@ export function pageOutline(state: ProjectState, pageId: string): PageOutline {
     if (k) sharing.set(k, (sharing.get(k) ?? 0) + (h.repeated ? 2 : 1));
   }
   const fixable = (h: OutlineHeading, level: number) => canSetLevel(h, level) && !h.levelConditions && sharing.get(sourceKey(h)!) === 1;
+  rows.forEach((r) => {
+    const k = sourceKey(r.heading);
+    if (k && (r.heading.levelConditions || sharing.get(k)! > 1)) r.sharedLevel = true;
+  });
   // The first Heading 1 is taken as the page's title, and each later one as a second title. A title shown more than
   // once is its own second title, which no other level settles while it stays the page's only one.
   review.titles.forEach((i, k) => {
