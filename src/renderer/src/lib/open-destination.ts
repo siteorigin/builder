@@ -167,10 +167,13 @@ function revealInWriter(control: string) {
   const step = () => {
     const el = document.querySelector<HTMLElement>(`.post-writer-holder:not([hidden]) ${control}`);
     if (!el) return void (++frames < REVEAL_FRAMES && requestAnimationFrame(step));
-    const details = el.closest('details');
-    if (details && !details.open) details.open = true;
-    el.scrollIntoView({ block: 'center', behavior: matchMedia('(prefers-reduced-motion: reduce)').matches ? 'auto' : 'smooth' });
-    el.focus({ preventScroll: true });
+    // The writer's settings are closed Sections (kept mounted): the one holding the field opens, then it is shown.
+    const body = el.closest<HTMLElement>('.section-body[hidden]');
+    if (body?.id) document.querySelector<HTMLButtonElement>(`.section-head[aria-controls="${CSS.escape(body.id)}"]`)?.click();
+    requestAnimationFrame(() => {
+      el.scrollIntoView({ block: 'center', behavior: matchMedia('(prefers-reduced-motion: reduce)').matches ? 'auto' : 'smooth' });
+      el.focus({ preventScroll: true });
+    });
   };
   requestAnimationFrame(step);
 }

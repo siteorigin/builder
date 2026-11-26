@@ -819,7 +819,7 @@ await rail('posts').click();
 await win.locator('.post-row .post-open', { hasText: 'Winter hours' }).click();
 await eventually(async () => assert.equal(await writerHolder.locator('.post-title-input').inputValue(), 'Winter hours', 'the writer holds Winter'));
 const writerSeo = writerHolder.locator('.post-seo');
-await writerSeo.locator('summary').first().click();
+await writerSeo.locator('.section-head').first().click();
 const writerField = (name) => writerSeo.getByLabel(name, { exact: true });
 assert.equal(await writerField('Browser title').inputValue(), 'Winter hours by the river', 'the writer shows the title saved in the view');
 // Saved in the writer, it shows in the view.

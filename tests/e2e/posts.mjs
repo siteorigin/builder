@@ -275,7 +275,7 @@ await eventually(async () => assert.equal(await frame.locator('body').evaluate((
 step('back to writing, backdated and published');
 await win.locator('.posts-panel').getByRole('button', { name: 'Back to writing' }).click();
 await eventually(async () => assert.equal(await win.locator('.post-writer-holder').isVisible(), true));
-await win.locator('.post-details:not(.post-seo) > summary').click();
+await win.locator('.post-details:not(.post-seo) .section-head').click();
 const date = win.getByLabel('Publication date');
 await date.fill('2025-06-01');
 await date.press('Enter');
@@ -447,7 +447,7 @@ assert.equal(savedTitle(), `${left} ${right}`, 'an empty title is not saved');
 
 step('Search & sharing keeps its fields and meters, and opens the post in the SEO view with what is typed saved first (#708)');
 const seoBox = win.locator('.post-seo');
-await seoBox.locator('summary').first().click();
+await seoBox.locator('.section-head').first().click();
 const postMeter = (kind) => seoBox.locator(`.seo-meter[data-meter="${kind}"]`);
 const postTitleBox = seoBox.getByLabel('Browser title');
 const postCanonical = seoBox.getByLabel('Canonical URL');

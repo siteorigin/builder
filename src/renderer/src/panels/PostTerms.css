@@ -1,11 +1,21 @@
 @layer components {
   /* Categories and tags: a post's checkboxes in the writer, and the manager's list of a grouping's terms. */
-  .post-terms { grid-column: 1 / -1; display: flex; flex-direction: column; gap: 6px; margin: 4px 0 8px; }
-  .post-terms-label { font-size: 12px; font-weight: 500; color: var(--text-2); }
-  .post-terms-list { display: flex; flex-wrap: wrap; gap: 4px 14px; }
-  .post-term { display: inline-flex; align-items: center; gap: 6px; font-size: 13px; color: var(--text); }
-  .post-term input { margin: 0; }
-  .post-terms-add { max-width: 240px; }
+  .post-terms { grid-column: 1 / -1; display: flex; flex-direction: column; gap: 8px; }
+  .post-terms-label { display: flex; align-items: baseline; gap: 8px; font-size: 12px; font-weight: 500; color: var(--text-2); }
+  .post-terms-count { margin-left: auto; font-weight: 400; color: var(--text-3); font-variant-numeric: tabular-nums; }
+  /* Rows of at least 28px, in columns, so a list of terms reads as a list and each box is an easy target. */
+  .post-terms-list { display: grid; grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); gap: 0 12px; }
+  .post-terms-list.many { max-height: 200px; overflow-y: auto; padding: 4px 10px; border: 1px solid var(--border-strong); border-radius: var(--r-sm); background: var(--raised); }
+  .post-term { display: flex; align-items: center; gap: 8px; min-height: 28px; font-size: 13px; color: var(--text); }
+  .post-term input { margin: 0; flex: none; }
+  .post-term-chips { list-style: none; margin: 0; padding: 0; display: flex; flex-wrap: wrap; gap: 6px; }
+  .post-term-chip { display: inline-flex; align-items: center; gap: 2px; height: 26px; padding: 0 2px 0 9px; border-radius: var(--r-sm); background: var(--accent-soft); color: var(--accent-text); font-size: 12px; font-weight: 500; }
+  .post-term-chip .icon-btn { color: inherit; }
+  .post-terms-add { position: relative; display: flex; gap: 6px; max-width: 380px; }
+  .post-terms-add .input { flex: 1; min-width: 0; }
+  .post-terms-add .input.with-icon { padding-left: 26px; }
+  .post-terms-find { position: absolute; left: 8px; top: 50%; width: 13px; height: 13px; transform: translateY(-50%); color: var(--text-3); pointer-events: none; }
+  .post-terms-none { margin: 0; font-size: 12px; color: var(--text-3); }
   .terms-panel { display: flex; flex-direction: column; gap: 10px; padding-top: 10px; min-height: 220px; }
   .terms-add { display: flex; gap: 6px; }
   .terms-add .input { flex: 1; }

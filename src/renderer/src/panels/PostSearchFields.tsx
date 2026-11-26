@@ -8,6 +8,7 @@ import { TEXT_LIMITS } from '@shared/text-limits';
 import { DraftInput, Field, SwitchRow } from '../components/ui';
 import { CanonicalUrlField } from '../components/SeoFields';
 import type { DocumentPreview } from '../lib/seo-preview';
+import { entryNounLower } from '../lib/content';
 import { postSeoEdit, type PostSeoChange, type PostSeoEdit } from '../lib/post-seo';
 import { LengthMeter, type TypedSeoOn } from './SeoPreview';
 
@@ -76,7 +77,7 @@ export function PostSearchFields({
             </>
           }
         >
-          <DraftInput multiline rows={3} value={seo.description ?? ''} limit={TEXT_LIMITS.pageDescription} placeholder={entry.excerpt || state.site.description || 'Describe this post'} onDirty={on.description} onCommit={(v) => change({ kind: 'description', text: v })} />
+          <DraftInput multiline rows={3} value={seo.description ?? ''} limit={TEXT_LIMITS.pageDescription} placeholder={entry.excerpt || state.site.description || `Describe this ${entryNounLower(collection)}`} onDirty={on.description} onCommit={(v) => change({ kind: 'description', text: v })} />
         </Field>
       </div>
       <Field label="Sharing image" controlId={`${uid}-sharing`} hint="The picture link previews show.">
@@ -90,14 +91,14 @@ export function PostSearchFields({
           ))}
         </select>
       </Field>
-      <CanonicalUrlField value={seo.canonical} ownUrl={ownUrl} what="post" onTyped={on.canonical} onCommit={(url) => change({ kind: 'canonical', url })} />
+      <CanonicalUrlField value={seo.canonical} ownUrl={ownUrl} what={entryNounLower(collection)} onTyped={on.canonical} onCommit={(url) => change({ kind: 'canonical', url })} />
       <SwitchRow
         checked={!!seo.noindex}
         onChange={(v) => void change({ kind: 'noindex', on: v })}
         label="Hide from search engines"
         hint={published ? 'Search engines are asked not to list it, and the sitemap leaves it out. Anyone with the address can still open it.' : 'Once published, search engines are asked not to list it, and the sitemap leaves it out.'}
       />
-      <SwitchRow checked={!!seo.searchHidden} onChange={(v) => void change({ kind: 'searchHidden', on: v })} label="Hide from site search" hint="Keeps this post out of the site’s own search results, whatever search engines are told." />
+      <SwitchRow checked={!!seo.searchHidden} onChange={(v) => void change({ kind: 'searchHidden', on: v })} label="Hide from site search" hint={`Keeps this ${entryNounLower(collection)} out of the site’s own search results, whatever search engines are told.`} />
     </>
   );
 }
