@@ -216,7 +216,7 @@ Other providers will keep working through the same adapter, as optional extras r
 
 - **SiteOrigin Hosting** for one-click publishing. Export stays the default, and you can always host anywhere.
 - **More themes**, installable as packs, and the component library in its own repository.
-- **Installers** for macOS, Windows and Linux, signed on macOS and Windows. See the [release checklist](docs/releasing.md).
+- **Installers** for macOS, Windows and Linux, signed and notarized on macOS. See the [release checklist](docs/releasing.md).
 
 ## Development
 

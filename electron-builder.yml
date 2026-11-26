@@ -1,5 +1,7 @@
 appId: com.siteorigin.builder
 productName: SiteOrigin Builder
+# One naming scheme for every installer: siteorigin-builder-0.1.0-mac-arm64.dmg, -win-x64.exe, -linux-x86_64.AppImage.
+artifactName: ${name}-${version}-${os}-${arch}.${ext}
 directories:
   output: dist
   buildResources: build
@@ -40,14 +42,17 @@ mac:
     NSMicrophoneUsageDescription: null
   target: [dmg]
   icon: build/icon.png
-  # Releases are built by hand (README.md, Releasing). build/after-pack.cjs signs every macOS build ad-hoc.
-  # electron-builder then signs it again when it finds a "Developer ID Application" identity (in the keychain,
-  # or from CSC_LINK / CSC_KEY_PASSWORD), and then notarizes it when it has notarization credentials, such as
-  # APPLE_ID, APPLE_APP_SPECIFIC_PASSWORD and APPLE_TEAM_ID.
+  # Releases are built by .github/workflows/release.yml (docs/releasing.md). build/after-pack.cjs signs every
+  # macOS build ad-hoc. electron-builder then signs it again when it finds a "Developer ID Application" identity
+  # (in the keychain, or from CSC_LINK / CSC_KEY_PASSWORD), and then notarizes and staples it when APPLE_API_KEY
+  # (the .p8 file's path), APPLE_API_KEY_ID and APPLE_API_ISSUER are all set.
   hardenedRuntime: true
   gatekeeperAssess: false
   entitlements: build/entitlements.mac.plist
   entitlementsInherit: build/entitlements.mac.plist
+# The DMG is signed with the same identity when there is one, so it can carry its own notarization ticket.
+dmg:
+  sign: true
 win:
   target: [nsis]
   icon: build/icon.png
