@@ -1,8 +1,7 @@
 ---
 name: optimize
-disable-model-invocation: true
 argument-hint: "<issue number or URL | a surface in words, e.g. 'application boot time'> [--budget Nh] [--no-pr] [--dry-run]"
-description: "USE ONLY WHEN A HUMAN INVOKES IT with /optimize. Takes one performance-optimization issue (or a surface named in words) to a pull request whose body carries a table of before, after and percent improvement, unattended: find or write the benchmark for the surface, write the target down before measuring, measure the baseline on the built app, plan hypotheses with Codex, try them one per round and keep or revert each on the numbers, re-measure the final tree against the branch point, have Codex review the change, prove it with the tests, then open the PR against develop. When nothing moves the number it ends with an honest report on the issue and no pull request. Never run it proactively because some code looks slow."
+description: "Takes one performance-optimization issue (or a surface named in words) to a pull request whose body carries a table of before, after and percent improvement, unattended: find or write the benchmark for the surface, write the target down before measuring, measure the baseline on the built app, plan hypotheses with Codex, try them one per round and keep or revert each on the numbers, re-measure the final tree against the branch point, have Codex review the change, prove it with the tests, then open the PR against develop. When nothing moves the number it ends with an honest report on the issue and no pull request. Use when the user wants a performance issue or a slow surface optimized with measured proof."
 allowed-tools:
   - Bash
   - Read
