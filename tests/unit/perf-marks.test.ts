@@ -78,11 +78,11 @@ describe('timing marks', () => {
     expect(readSent({ kind: 'span', name: 'a', t: 1, ms: 0 })).toEqual({ kind: 'span', name: 'a', t: 1, ms: 0 });
     expect(readSent({ kind: 'mark', name: 'a', t: 1, ms: 3 })).toBeNull();
     expect(readSent({ kind: 'span', name: 'a', t: 1, ms: Infinity })).toBeNull();
-    // Plain objects only, of at most 16 attributes and 32 counters.
+    // Plain objects only, of at most 16 attributes and 64 counters.
     const many = (n: number) => Object.fromEntries(Array.from({ length: n }, (_, i) => [`k${i}`, i]));
-    expect(readSent({ kind: 'mark', name: 'a', t: 1, attrs: many(16), c: many(32) })).not.toBeNull();
+    expect(readSent({ kind: 'mark', name: 'a', t: 1, attrs: many(16), c: many(64) })).not.toBeNull();
     expect(readSent({ kind: 'mark', name: 'a', t: 1, attrs: many(17) })).toBeNull();
-    expect(readSent({ kind: 'mark', name: 'a', t: 1, c: many(33) })).toBeNull();
+    expect(readSent({ kind: 'mark', name: 'a', t: 1, c: many(65) })).toBeNull();
     expect(readSent({ kind: 'mark', name: 'a', t: 1, attrs: new Date() })).toBeNull();
     expect(readSent({ kind: 'mark', name: 'a', t: 1, attrs: new Map([['a', 1]]) })).toBeNull();
     expect(readSent({ kind: 'mark', name: 'a', t: 1, attrs: [1] })).toBeNull();

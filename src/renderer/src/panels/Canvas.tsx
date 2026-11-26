@@ -2188,6 +2188,7 @@ export function Canvas() {
     // Where a release would put it now: the place, or why it can't go there, and whether the pointer is on the page.
     let aim: { at: A | null; refused: string | null; over: boolean } = { at: null, refused: null, over: false };
     const show = () => {
+      perfCount('canvas.dropShows');
       const wrap = wrapRef.current?.getBoundingClientRect();
       const view = canvasRef.current?.querySelector('.canvas-scroll')?.getBoundingClientRect();
       const inBox = (b: DOMRect | undefined) => !!b && point.x >= b.left && point.x <= b.right && point.y >= b.top && point.y <= b.bottom;
@@ -2285,8 +2286,12 @@ export function Canvas() {
       const ids = measureIds(specs);
       // Measured on a page a save has not reached yet: where a drop would go is read from the page before the save.
       const behind = pageBehind();
+      const asked = perfOn ? performance.now() : 0;
+      perfCount('canvas.dropMeasures');
+      perfCount('canvas.dropMeasured', ids.length);
       void measureDescs(listDescs(owner, ids), requests).then((rects) => {
         measuring = false;
+        if (perfOn) perfMark('canvas.dropMeasure', { ms: performance.now() - asked, lists: ids.length });
         if (done) return;
         const take = () => {
           listsBehind = behind;
@@ -2322,6 +2327,7 @@ export function Canvas() {
         post('scrollBy', { y: rest / (shown.wrap.width / getState().viewport) });
         measure(true);
       }
+      perfCount('canvas.dropScrolls');
       show();
     };
     const tick = (now: number) => {
