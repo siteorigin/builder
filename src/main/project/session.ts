@@ -686,9 +686,11 @@ export class ProjectSession extends EventEmitter {
 
   private static async openTimed(dir: string, instanceId: string, opts: { force?: boolean | string }): Promise<ProjectSession> {
     const s = new ProjectSession(dir);
-    const locking = perf.span('session.open.lock');
+    const checking = perf.span('session.open.formatCheck');
     // A project from a newer version is never written to, not even its local folders.
     await assertKnownFormat(dir);
+    checking();
+    const locking = perf.span('session.open.lock');
     // The lock comes first: recovery must never touch a project another window is editing, and a project
     // that turns out to be locked is opened read-only with nothing written.
     await ensureDir(s.local());
@@ -1999,6 +2001,14 @@ export class ProjectSession extends EventEmitter {
     return generateProject(state, { instrument }, this.generation);
   }
 
+  /** `generate`, timed as a save's generations are (writeState), for a publication that generates its own. */
+  private generateTimed(state: ProjectState, instrument: boolean): Map<string, string> {
+    const generating = perf.span('session.generate', { variant: instrument ? 'dev' : 'clean' });
+    const files = this.generate(state, instrument);
+    generating();
+    return files;
+  }
+
   /**
    * The hash a generated file's bytes had when last read, while its stat is still what it was then: looking costs a
    * stat, never a read. Undefined when the file has to be read to be known.
@@ -2068,8 +2078,8 @@ export class ProjectSession extends EventEmitter {
   }
 
   private async publishGeneratedNow(initial: boolean, pre?: { clean: Map<string, string>; dev: Map<string, string> }): Promise<string[]> {
-    const clean = new Map(pre?.clean ?? this.generate(this.state, false));
-    const dev = new Map(pre?.dev ?? this.generate(this.state, true));
+    const clean = new Map(pre?.clean ?? this.generateTimed(this.state, false));
+    const dev = new Map(pre?.dev ?? this.generateTimed(this.state, true));
     const devRoot = this.local('cache', 'dev');
     const changedFiles: string[] = [];
     const prev = this.generated.files;

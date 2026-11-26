@@ -8,6 +8,7 @@ import { CONVERTER_FILE, isSourceId, MAX_CONVERTER, sourceDocProblem } from '@sh
 import { SCHEMA_VERSION } from '@shared/types';
 import { migrateProject, newestDocumentVersion, type MigrationResult } from '@shared/migrations';
 import { readIfExists, safeJoin, toJson } from './fsutil';
+import { perf } from '../perf';
 
 export const MANIFEST_FILE = 'siteorigin.project.json';
 export const DOC_DIR = 'siteorigin';
@@ -193,13 +194,20 @@ export async function newestStoredVersion(dir: string): Promise<number> {
   let newest = 0;
   for (const rel of paths) {
     try {
-      const v = (JSON.parse((await readIfExists(safeJoin(dir, rel))) ?? 'null') as { schemaVersion?: unknown } | null)?.schemaVersion;
+      const v = (JSON.parse((await readDoc(safeJoin(dir, rel))) ?? 'null') as { schemaVersion?: unknown } | null)?.schemaVersion;
       if (Number.isInteger(v) && (v as number) > newest) newest = v as number;
     } catch {
       // Unreadable or not a document: the normal read reports it.
     }
   }
   return newest;
+}
+
+/** A canonical document's text from the project folder, counted (src/shared/perf.ts) when it was there to read. */
+async function readDoc(abs: string): Promise<string | null> {
+  const text = await readIfExists(abs);
+  if (text !== null) perf.count('docs.read');
+  return text;
 }
 
 export async function isBuilderProject(dir: string): Promise<boolean> {
@@ -255,7 +263,7 @@ async function readStoredState(dir: string, opts: ReadOptions, raw: Map<string, 
   // Reading only given documents, every other document counts as absent, whatever the folder holds.
   const overlay: Map<string, string | null> = only ?? opts.overlay ?? new Map<string, string | null>();
   const text = async (rel: string): Promise<string | null> => {
-    const t = overlay.has(rel) ? overlay.get(rel)! : only ? null : await readIfExists(safeJoin(dir, rel));
+    const t = overlay.has(rel) ? overlay.get(rel)! : only ? null : await readDoc(safeJoin(dir, rel));
     if (t !== null) raw.set(rel, t);
     return t;
   };
