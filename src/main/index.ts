@@ -43,20 +43,19 @@ const here = dirname(fileURLToPath(import.meta.url));
 // (main-errors.ts), from as early as it can be: before startup is done it says the app could not start, and exits.
 // In an automated run the question is answered by the test, or closed as Keep Working.
 let startedUp = false;
-process.on(
-  'uncaughtException',
-  createMainErrorReporter({
-    ready: () => startedUp,
-    log: (...args) => console.error(...args),
-    ask: ({ message, detail, buttons, defaultId, cancelId }) => {
-      const options = { type: 'error' as const, message, detail, buttons, defaultId, cancelId };
-      return (win && !win.isDestroyed() ? dialog.showMessageBox(win, options) : dialog.showMessageBox(options)).then((r) => r.response);
-    },
-    errorBox: (title, content) => dialog.showErrorBox(title, content),
-    quit: () => app.quit(),
-    exit: (code) => app.exit(code)
-  })
-);
+const reportMainError = createMainErrorReporter({
+  ready: () => startedUp,
+  log: (...args) => console.error(...args),
+  ask: ({ message, detail, buttons, defaultId, cancelId }) => {
+    const options = { type: 'error' as const, message, detail, buttons, defaultId, cancelId };
+    // Over the editor when it shows, else on its own: a sheet on a hidden window (one whose page never loaded) is unseen.
+    return (win && !win.isDestroyed() && win.isVisible() ? dialog.showMessageBox(win, options) : dialog.showMessageBox(options)).then((r) => r.response);
+  },
+  errorBox: (title, content) => dialog.showErrorBox(title, content),
+  quit: () => app.quit(),
+  exit: (code) => app.exit(code)
+});
+process.on('uncaughtException', reportMainError);
 // Tests and side-by-side development can isolate settings, credentials and caches.
 if (process.env.SITEORIGIN_USER_DATA) app.setPath('userData', process.env.SITEORIGIN_USER_DATA);
 // A test session's own Documents folder: new projects default to Documents/SiteOrigin and exports start in Documents,
@@ -929,14 +928,12 @@ async function createWindow() {
     controller.cancelOpen();
   });
   // A first load the page crashed during (or that the crash's reload took over) is taken up by the crash's own question,
-  // not reported as an error here. Any other failure to load the editor is.
+  // not reported as an error here. Any other failure to load the editor is reported in the app's own words: as a
+  // rejection it would only be logged, and leave a blank window.
   const first = win;
   await first.loadURL(editorUrl()).catch((e: unknown) => {
-    if ((e as { code?: unknown }).code === 'ERR_ABORTED' || first.isDestroyed() || first.webContents.isCrashed()) {
-      console.error('The editor did not finish its first load:', e);
-      return;
-    }
-    throw e;
+    if ((e as { code?: unknown }).code === 'ERR_ABORTED' || first.isDestroyed() || first.webContents.isCrashed()) console.error('The editor did not finish its first load:', e);
+    else reportMainError(e);
   });
 }
 
