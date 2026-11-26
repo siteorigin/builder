@@ -215,8 +215,10 @@ export const isReadOnlyCollection = (collection: Pick<Collection, 'settings'> | 
 export interface FieldRow {
   name: string;
   schema: CollectionFieldSchema;
-  /** Added in the dialog, not saved yet: its name follows its label. */
+  /** Added in the dialog, not saved yet: its name is taken from its label when it is saved (see settleDraft). */
   added?: boolean;
+  /** Which row it is in the dialog while its name may still change. */
+  key?: string;
 }
 
 /** One grouping as the schema dialog edits it. Its terms are kept as they are: the terms manager edits those. */
@@ -224,6 +226,7 @@ export interface TaxonomyRow {
   id: string;
   label: string;
   added?: boolean;
+  key?: string;
 }
 
 /** A collection's settings as the schema dialog edits them. */
@@ -320,6 +323,34 @@ export function retypeField(schema: CollectionFieldSchema, type: CollectionField
   if (schema.type === type) return schema;
   const next = newFieldSchema(type, schema.label, collectionId);
   return schema.description ? { ...next, description: schema.description } : next;
+}
+
+/**
+ * The draft as it is saved: labels trimmed, and each field and grouping added in the dialog named after its label,
+ * free of every other name. Its problem instead, when a label is empty.
+ */
+export function settleDraft(collection: Collection, draft: SchemaDraft): SchemaDraft | string {
+  if (draft.fields.some((f) => !f.schema.label.trim())) return 'Every field needs a label.';
+  if (draft.taxonomies.some((t) => !t.label.trim())) return 'Every grouping needs a name.';
+  const names = new Set(draft.fields.filter((f) => !f.added).map((f) => f.name));
+  // A name removed in the dialog is free again only once saved: its values go with it.
+  for (const n of Object.keys(collection.settings.fields ?? {})) names.add(n);
+  const fields = draft.fields.map((f) => {
+    const schema = { ...f.schema, label: f.schema.label.trim() } as CollectionFieldSchema;
+    if (!f.added) return { name: f.name, schema };
+    const name = fieldNameFor(schema.label, names);
+    names.add(name);
+    return { name, schema };
+  });
+  const ids = new Set([...draft.taxonomies.filter((t) => !t.added).map((t) => t.id), ...Object.keys(collection.settings.taxonomies ?? {})]);
+  const taxonomies = draft.taxonomies.map((t) => {
+    const label = t.label.trim();
+    if (!t.added) return { id: t.id, label };
+    const id = taxonomyIdFor(label, ids);
+    ids.add(id);
+    return { id, label };
+  });
+  return { ...draft, fields, taxonomies };
 }
 
 const same = (a: unknown, b: unknown) => JSON.stringify(a) === JSON.stringify(b);

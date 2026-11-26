@@ -23,6 +23,7 @@ import {
   schemaDraftOf,
   schemaLosses,
   schemaUpdateOp,
+  settleDraft,
   starterCollectionOps
 } from '../../src/renderer/src/lib/content';
 import { newPostOps } from '../../src/renderer/src/lib/posts';
@@ -149,6 +150,24 @@ describe('the schema dialog', () => {
     const off = schemaDraftOf(s.collections.team);
     off.detail = false;
     expect(schemaUpdateOp(s.collections.team, off)).toMatchObject({ pages: { detail: false, archive: false } });
+  });
+
+  it('names fields and groupings added in the dialog after their labels when saved', () => {
+    const s = team();
+    const c = s.collections.team;
+    const draft = schemaDraftOf(c);
+    draft.fields.push({ name: '', schema: newFieldSchema('string', ' Role ', 'team'), added: true, key: 'new-1' }, { name: '', schema: newFieldSchema('date', 'Start date', 'team'), added: true, key: 'new-2' });
+    draft.taxonomies.push({ id: '', label: 'Offices', added: true, key: 'new-3' });
+    const settled = settleDraft(c, draft);
+    if (typeof settled === 'string') throw new Error(settled);
+    expect(settled.fields.slice(-2).map((f) => [f.name, f.schema.label])).toEqual([
+      ['role2', 'Role'],
+      ['startDate', 'Start date']
+    ]);
+    expect(settled.taxonomies.at(-1)).toEqual({ id: 'offices', label: 'Offices' });
+    expect(Object.keys(run(s, [schemaUpdateOp(c, settled)!]).collections.team.settings.fields)).toContain('startDate');
+    draft.fields[0] = { ...draft.fields[0], schema: { ...draft.fields[0].schema, label: '  ' } };
+    expect(settleDraft(c, draft)).toBe('Every field needs a label.');
   });
 
   it('starts a field changed to another kind afresh, keeping its label', () => {
