@@ -1,5 +1,6 @@
-// A moved project found from its missing Recent projects card (#217). Mill Road is closed, its folder moved to
-// delivered work, and the app started again: its card says the folder is not found, shows the old path, and offers
+// A moved project found from its missing Recent projects card (#217). Moved while Welcome shows, its first click says
+// the folder was not found, and its card follows the folder each time the window comes back (#809). Mill Road is then
+// closed, its folder moved to delivered work, and the app started again: its card says the folder is not found, shows the old path, and offers
 // Find folder… beside its own Remove. Cancelling the picker, choosing another project called Mill Road in a folder of
 // the same name, or cancelling the trust prompt keeps the card. Opened through Open project, the moved folder is
 // listed beside the missing card (the report); Find folder… on that card, choosing it, leaves Mill Road listed once.
@@ -73,6 +74,40 @@ assert.equal(await win.locator('.recent-card').first().getAttribute('title'), `M
 await win.locator('.recent-item').first().locator('.icon-btn.remove').click();
 await eventually(async () => assert.deepEqual(await listed(), [[old, false]]));
 
+// #809: moved while Welcome is showing, its card looks as it did until it is clicked or the window comes back.
+const away = join(WORK, 'away');
+const normalCard = () => win.locator('.recent-item:not(.missing) .recent-card');
+const focusWindow = () => win.evaluate(() => window.dispatchEvent(new Event('focus')));
+
+step('moved while Welcome shows, the first click says its folder was not found and the card offers Find folder…');
+// The other Mill Road's card has gone from the screen, so the one left is clicked.
+await eventually(async () => assert.equal(await win.locator('.recent-card').count(), 1));
+assert.equal(await missingCard().count(), 0);
+renameSync(old, away);
+await normalCard().first().click();
+await eventually(async () => {
+  const said = (await win.locator('.toast').allInnerTexts()).join('\n');
+  assert.ok(said.includes(`The project folder ${old} was not found. It may have been moved, renamed or deleted.`), said);
+  assert.doesNotMatch(said, /not a SiteOrigin Builder project|Choose a folder/, 'the author chose no folder');
+});
+await eventually(async () => assert.match(await missingCard().innerText(), /Find folder…/));
+assert.equal(await win.locator('.welcome').count(), 1, 'Welcome is still shown');
+
+step('put back, and moved again, the card follows the folder each time the window comes back, with no click');
+renameSync(away, old);
+await focusWindow();
+await eventually(async () => assert.deepEqual(await listed(), [[old, false]]));
+await eventually(async () => assert.equal(await missingCard().count(), 0, 'the card is back to normal'));
+assert.equal(await normalCard().count(), 1, 'its card is shown, ready to open');
+assert.equal(await normalCard().first().isEnabled(), true);
+renameSync(old, away);
+await focusWindow();
+await eventually(async () => assert.match(await missingCard().innerText(), /Folder not found/));
+renameSync(away, old);
+await focusWindow();
+await eventually(async () => assert.equal(await missingCard().count(), 0));
+assert.equal(await normalCard().first().getAttribute('title'), `Mill Road\n${old}`, 'the same card, at its own folder');
+
 step('Mill Road is moved to delivered work while the app is closed');
 allErrors.push(...errors);
 await app.close();
@@ -110,6 +145,8 @@ step('the moved folder asks for trust; Cancel keeps the card');
 await findFolder({ paths: [moved] });
 await trustPrompt().waitFor();
 assert.match(await trustPrompt().innerText(), /Mill Road/);
+// Made on this computer and only moved: the reason covers a new folder, not only another computer (#809).
+assert.match(await trustPrompt().innerText(), /no record of trusting it in this folder with these setup files\. It may have been made on another computer, moved or copied here,/);
 await trustPrompt().getByRole('button', { name: 'Cancel' }).click();
 await trustPrompt().waitFor({ state: 'detached' });
 assert.equal(await win.locator('.welcome').count(), 1, 'Welcome is still shown');

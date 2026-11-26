@@ -127,14 +127,20 @@ export function Welcome() {
   // While the filter has focus, the result Enter would open is marked.
   const [filterFocused, setFilterFocused] = useState(false);
   // Times such as "just now" are drawn again each minute, and when the window comes back, so they never go stale.
+  // Coming back also reads the list again (#809): a folder moved or renamed meanwhile shows as not found, with Find folder…
   const [, setClock] = useState(0);
   useEffect(() => {
     const tick = () => setClock(Date.now());
+    const back = () => {
+      tick();
+      // An open on its way reads the list once it is done.
+      if (!openingRef.current) refresh();
+    };
     const timer = window.setInterval(tick, 60000);
-    window.addEventListener('focus', tick);
+    window.addEventListener('focus', back);
     return () => {
       window.clearInterval(timer);
-      window.removeEventListener('focus', tick);
+      window.removeEventListener('focus', back);
     };
   }, []);
   const results = useRef<HTMLDivElement>(null);
@@ -150,16 +156,21 @@ export function Welcome() {
   // Readings of the list are numbered: one that comes back after a newer one was shown is dropped.
   const reads = useRef(0);
   const shownRead = useRef(0);
+  // The reading a Remove or Pin's focus waits for: one started before it (when the window came back, say) shows the old
+  // list, and must leave the focus target for the list the change makes. Infinity while the change is being saved.
+  const focusRead = useRef(0);
   const modal = useStore((s) => s.modal);
   const openingRecent = recents?.find((r) => r.dir === opening);
   const openingNote = openingRecent ? `${openingRecent.missing ? 'Finding' : 'Opening'} ${openingRecent.name}…` : opening ? 'Opening a project…' : '';
   const refresh = () => {
     const read = ++reads.current;
+    // Returned, so a change can say which reading shows it.
     void api.projects.recents().then((list) => {
       if (read < shownRead.current) return;
       shownRead.current = read;
       setRecents(list);
     });
+    return read;
   };
   useEffect(() => {
     refresh();
@@ -185,7 +196,7 @@ export function Welcome() {
   }, [opening, trust]);
   useEffect(() => {
     const next = focusAfterRemove.current;
-    if (next === null || recents === null) return;
+    if (next === null || recents === null || shownRead.current < focusRead.current) return;
     focusAfterRemove.current = null;
     // Only once the removed card has taken focus with it: never from wherever the author went meanwhile.
     if (document.activeElement && document.activeElement !== document.body) return;
@@ -194,7 +205,7 @@ export function Welcome() {
   }, [recents]);
   useEffect(() => {
     const moved = focusAfterPin.current;
-    if (moved === null || recents === null) return;
+    if (moved === null || recents === null || shownRead.current < focusRead.current) return;
     focusAfterPin.current = null;
     // Its card is drawn anew in the other group: focus follows it there, unless the author has moved on meanwhile.
     if (!document.activeElement || document.activeElement === document.body) cardOf(moved)?.parentElement?.querySelector<HTMLElement>('.pin')?.focus();
@@ -272,22 +283,27 @@ export function Welcome() {
     const at = shown.indexOf(r);
     focusAfterPin.current = null;
     focusAfterRemove.current = (rest[at] ?? rest[at - 1])?.dir ?? '';
-    await api.projects.removeRecent(r.dir);
+    focusRead.current = Infinity;
+    try {
+      await api.projects.removeRecent(r.dir);
+    } finally {
+      focusRead.current = refresh();
+    }
     setCleared(false);
-    refresh();
     toast(r.missing ? `${r.name} was removed from this list.` : `${r.name} was removed from this list. Its folder is untouched.`);
   };
   const pinProject = async (r: RecentProject) => {
     const pinned = r.pinned !== true;
     focusAfterRemove.current = null;
     focusAfterPin.current = r.dir;
+    focusRead.current = Infinity;
     try {
       // A project removed meanwhile is not on the list to pin.
       if (await api.projects.pinRecent(r.dir, pinned)) toast(pinned ? `${r.name} is pinned. It stays on this list however many other projects you open.` : `${r.name} is no longer pinned.`);
     } catch (e) {
       toast(`Could not ${pinned ? 'pin' : 'unpin'} ${r.name}: ${errorText(e)}`, 'error');
     } finally {
-      refresh();
+      focusRead.current = refresh();
     }
   };
 

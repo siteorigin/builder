@@ -1,7 +1,7 @@
 import { app, BrowserWindow, dialog, shell, type OpenDialogOptions } from 'electron';
 import { markdownMirrorRoute } from '@shared/llms';
 import { watch, type FSWatcher } from 'node:fs';
-import { constants as fsConstants, existsSync, mkdtempSync, promises as fs } from 'node:fs';
+import { constants as fsConstants, existsSync, mkdtempSync, promises as fs, statSync } from 'node:fs';
 import { homedir, tmpdir } from 'node:os';
 import { basename, dirname, extname, isAbsolute, join, relative, sep } from 'node:path';
 import { randomUUID } from 'node:crypto';
@@ -164,6 +164,19 @@ async function isZipFile(path: string): Promise<boolean> {
 
 /** A failure message that says which project folder it is about. */
 const inFolder = (message: string, dir: string) => `${message} Project folder: "${dir}".`;
+
+/**
+ * A project asked for by its folder (a Recent projects card, Duplicate's Open copy) that is no longer there (#809). The
+ * author chose no folder, so nothing says it is the wrong kind: the folder, or the project in it, was moved, renamed or
+ * deleted. Welcome's list then reads the entry again, and its card offers Find folder….
+ */
+export function projectNotFound(dir: string): string {
+  // A file where the folder was is no folder at all: the folder was not found.
+  const isDirectory = (p: string) => statSync(p, { throwIfNoEntry: false })?.isDirectory() === true;
+  return isDirectory(dir)
+    ? `The project in ${dir} was not found: its ${MANIFEST_FILE} is no longer there. It may have been moved, renamed or deleted.`
+    : `The project folder ${dir} was not found. It may have been moved, renamed or deleted.`;
+}
 
 /**
  * Read just enough of a project's manifest to name it. A missing, empty, truncated or otherwise unreadable
@@ -632,7 +645,7 @@ export class Controller {
       if (replaces !== undefined) return { ok: false, message: 'Choose the folder the project is in now. A ZIP file would make a new copy of it.' };
       return this.openZip(dir, abort);
     }
-    if (!existsSync(join(dir, MANIFEST_FILE))) return { ok: false, message: 'That folder is not a SiteOrigin Builder project. Choose a folder that contains siteorigin.project.json.' };
+    if (!existsSync(join(dir, MANIFEST_FILE))) return { ok: false, message: dirArg === undefined ? 'That folder is not a SiteOrigin Builder project. Choose a folder that contains siteorigin.project.json.' : projectNotFound(dir) };
     // A project reached through a link (macOS: /var is /private/var) is opened by its real path. Trust is never
     // carried over from the linked name: that link could since have been pointed at a different folder.
     dir = canonicalDir(dir);

@@ -274,7 +274,7 @@ export function TrustProjectModal({ project, onClose }: { project: { dir: string
           <span className="sr-only">Project folder:</span>
           <PathReadout path={project.dir} className="trust-path" />
         </div>
-        <p className="trust-why">It was made on another computer, or its setup files changed since you last opened it. If you’re unsure, choose Cancel: the project stays closed and nothing is changed.</p>
+        <p className="trust-why">Builder has no record of trusting it in this folder with these setup files. It may have been made on another computer, moved or copied here, or its setup files changed since you last opened it. If you’re unsure, choose Cancel: the project stays closed and nothing is changed.</p>
       </div>
     </Modal>
   );
