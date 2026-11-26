@@ -282,7 +282,7 @@ const presence = z
       .string()
       // Printable ASCII, less what a URL serializer would percent-encode in a path or query, so it compares equal to
       // the address the guest's browser reports for the same page.
-      .refine((path) => /^[\x21-\x7e]+$/.test(path) && !/["'<>`{}]/.test(path) && isPreviewTarget(path), { message: 'Not a path within the preview, in its URL-encoded form.' })
+      .refine((path) => /^[\x21-\x7e]+$/.test(path) && !/["<>`{}]/.test(path) && isPreviewTarget(path), { message: 'Not a path within the preview, in its URL-encoded form.' })
       .nullable()
   })
   .strict();

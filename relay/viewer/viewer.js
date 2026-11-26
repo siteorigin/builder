@@ -444,8 +444,10 @@ async function drainTickets() {
       else if (stale && hostConnected) catchUp();
       else applyFollow();
     } else {
-      // The ticket is spent or lost either way; the guest can take the place back for a fresh one (Try again).
+      // The ticket is spent or lost either way, and any cookie before it is out of date; the guest can take the place
+      // back for a fresh one (Try again).
       previewFailed = true;
+      previewReady = false;
     }
     render();
   }
@@ -689,7 +691,10 @@ function renderRoom() {
   else if (!previewReady) veil = 'Opening the preview…';
   else if (!hostConnected) veil = 'The host’s connection dropped. The page will update when they’re back.';
   ui.veil.hidden = !veil;
-  ui.veil.dataset.soft = String(previewReady && !reconnecting && !pastDeadline);
+  const soft = previewReady && !reconnecting && !pastDeadline && !previewFailed;
+  ui.veil.dataset.soft = String(soft);
+  // A covered frame cannot be reached by keyboard or assistive technology either.
+  if (iframe) iframe.inert = Boolean(veil) && !soft;
   ui.veilText.textContent = veil;
   ui.veilAction.hidden = !previewFailed || reconnecting;
   layout();
