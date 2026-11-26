@@ -12,6 +12,7 @@ import { ColorPick } from '../components/ColorPick';
 import { FocusEditor, type FocusImage } from './FocusEditor';
 import { BackgroundImageControl, describeBackgroundImage } from './BackgroundImageControl';
 import { DraftInput } from '../components/ui';
+import { ColorTextInput } from '../components/ColorTextInput';
 import { setState, setViewport, useStore } from '../store';
 import { allSizesReach, readStyleNumber, refinementShown, stateChangeCount, stateUnder, statesWithChanges, styleReached, styleUnder } from '../lib/style-source';
 import { STATE_LABEL, StatePicker } from './StatePicker';
@@ -470,7 +471,8 @@ export function StyleControls({
         </div>
         <div className="style-control">
           {p.kind === 'media' ? (
-            <BackgroundImageControl label={label} value={value} underText={underText} describedBy={lines.length ? sourceId : undefined} onSet={(v) => onSet(p.id, v, undefined, state ?? undefined)} />
+            // Each size and state has its own fields: a scrim refused in one never shows, or saves, in another.
+            <BackgroundImageControl key={`${scope}:${state ?? ''}`} label={label} value={value} underText={underText} describedBy={lines.length ? sourceId : undefined} onSet={(v) => onSet(p.id, v, undefined, state ?? undefined)} />
           ) : (
             <Control def={p} label={label} value={value} under={under} underText={underText} underFrom={underFrom} tokens={tokens} state={state} describedBy={lines.length ? sourceId : undefined} onSet={(v) => onSet(p.id, v, undefined, state ?? undefined)} />
           )}
@@ -745,7 +747,9 @@ function Control({
   // Choosing "Custom value…" opens an editor first; nothing is written until a value is entered, and the
   // stored value (a site style, a preset) stays in place until then.
   const scope = useStore((s) => s.styleScope);
-  const [drafting, setDrafting] = useState(false);
+  // Where "Custom value…" was chosen: another size or state, or a value saved meanwhile, ends the draft at once, so
+  // the custom field never opens (or takes focus) somewhere it was not chosen.
+  const [draftingAt, setDraftingAt] = useState<string | null>(null);
   const picker = useRef<HTMLSelectElement>(null);
   const linkId = useId();
   const draftId = useId();
@@ -753,7 +757,11 @@ function Control({
   const under = linkOf(def, below);
   // A commit, a reset, an undo, another size or another state all end the draft.
   const valueKey = JSON.stringify(value ?? null);
-  useEffect(() => setDrafting(false), [scope, styleState, valueKey]);
+  const here = `${scope}:${styleState ?? ''}:${valueKey}`;
+  const drafting = draftingAt === here;
+  // Gone for good once left: coming back to the same size, state and value never opens it again.
+  useEffect(() => setDraftingAt((at) => (at === here ? at : null)), [here]);
+  const setDrafting = (on: boolean) => setDraftingAt(on ? here : null);
   const tokOpts = tokenOptions(tokens, def.tokenGroup);
   const set = value !== undefined;
   const state = set ? ' is-set' : ' is-inherited';
@@ -949,14 +957,17 @@ function Control({
           }}
         >
           {def.kind === 'color' && <ColorPick key={`${scope}:${styleState ?? ''}`} className="md" value={literal ? String(value) : colorText} onPick={onSet} label={`${label}: pick a color`} />}
-          <DraftInput
+          <CustomValueInput
+            // Each size and state has its own field: text refused in one never shows, or saves, in another.
+            key={`${scope}:${styleState ?? ''}`}
+            def={def}
             className={`input sm grow style-input${def.kind === 'color' ? ' mono' : ''}${literal ? ' is-set' : ''}`}
             value={literal ? String(value) : ''}
             placeholder={currentText ?? (def.kind === 'color' ? '#1c2742' : def.placeholder ? `For example ${def.placeholder}` : undefined)}
             autoFocus={!literal}
-            onCommit={(t) => (t.trim() ? onSet(t.trim()) : false)}
+            onSet={onSet}
             ariaLabel={`${label} value`}
-            aria-describedby={[describedBy, literal ? undefined : draftId].filter(Boolean).join(' ') || undefined}
+            describedBy={[describedBy, literal ? undefined : draftId].filter(Boolean).join(' ') || undefined}
           />
           {!literal && (
             <p className="style-custom-hint">
@@ -980,4 +991,10 @@ function Control({
       )}
     </>
   );
+}
+
+/** A custom value's field: a colour is checked before it is sent (ColorTextInput), anything else is sent as typed. */
+function CustomValueInput({ def, className, value, placeholder, autoFocus, onSet, ariaLabel, describedBy }: { def: StylePropDef; className: string; value: string; placeholder?: string; autoFocus: boolean; onSet: (v: StyleValue | null) => void; ariaLabel: string; describedBy?: string }) {
+  if (def.kind === 'color') return <ColorTextInput propId={def.id} className={className} errorClassName="style-custom-error" value={value} placeholder={placeholder} autoFocus={autoFocus} onSave={onSet} ariaLabel={ariaLabel} describedBy={describedBy} />;
+  return <DraftInput className={className} value={value} placeholder={placeholder} autoFocus={autoFocus} onCommit={(t) => (t.trim() ? onSet(t.trim()) : false)} ariaLabel={ariaLabel} aria-describedby={describedBy} />;
 }

@@ -7,7 +7,8 @@
  * Values the parser cannot resolve on its own (`currentcolor`, `var()`, `color-mix()`, relative colours)
  * give null: callers must never mistake that for black.
  */
-import { isSafeCssValue } from './styles';
+import { namedColorHex, normalizeColorText } from './color-names';
+import { isSafeCssValue, validateStyleValue } from './styles';
 
 /** A colour in sRGB: channels 0-255 (not rounded), alpha 0-1. */
 export interface Rgba {
@@ -136,10 +137,9 @@ const done = (rgb: [number, number, number], a: number | null): Rgba | null => (
 export function parseColor(value: string): Rgba | null {
   const s = value.trim().toLowerCase();
   if (s === 'transparent') return { r: 0, g: 0, b: 0, a: 0 };
-  if (s === 'white') return { r: 255, g: 255, b: 255, a: 1 };
-  if (s === 'black') return { r: 0, g: 0, b: 0, a: 1 };
-  if (s.startsWith('#')) {
-    const h = s.slice(1);
+  const named = namedColorHex(value);
+  if (named || s.startsWith('#')) {
+    const h = (named ?? s).slice(1);
     if (!/^[0-9a-f]+$/.test(h) || ![3, 4, 6, 8].includes(h.length)) return null;
     const wide = h.length <= 4;
     const byte = (i: number) => parseInt(wide ? h[i] + h[i] : h.slice(i * 2, i * 2 + 2), 16);
@@ -260,4 +260,15 @@ export interface SentPick {
 export function retirePicks(inflight: SentPick[], saved: string): SentPick[] {
   const at = inflight.findIndex((p) => p.text === saved);
   return at >= 0 ? inflight.slice(at + 1) : inflight;
+}
+
+/**
+ * Why text typed in a colour field can't be saved as `propId` (a site colour is checked as 'color'), or null when it
+ * can, written as `normalizeColorText` saves it. Empty text is the field's own to handle (it puts the value back).
+ * Refused text is never sent, so it stays in the field with this reason beside it, and nothing is left over the canvas.
+ */
+export function colorFieldProblem(text: string, propId = 'color'): { message: string } | null {
+  if (!text.trim()) return null;
+  const err = validateStyleValue(propId, normalizeColorText(text));
+  return err ? { message: err } : null;
 }

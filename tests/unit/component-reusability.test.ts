@@ -269,6 +269,15 @@ describe('literal colors and spacing', () => {
     expect(reusability(s).find((d) => d.nodeId === 'root' && field(d)[4] === 'color')!.message).toContain('Link it to the site style “Ink” (color.ink)');
   });
 
+  it('flags a color written by name, matched to the site style it resolves to', () => {
+    const s = fresh();
+    build(s);
+    s.tokens.custom.push({ id: 'color.signal', label: 'Signal', group: 'color', value: '#ff0000' });
+    const def = Object.values(s.components).find((d) => d.name === 'Banner')!;
+    def.tree!.nodes.root.styles!.base!.color = 'Red';
+    expect(reusability(s).find((d) => d.nodeId === 'root' && field(d)[4] === 'color')!.message).toContain('uses Red for its text color. Link it to the site style “Signal” (color.signal)');
+  });
+
   it('leaves keywords, mixes, resets, unmatched sizes, hairlines, pulls and a chip’s own padding alone', () => {
     const s = fresh();
     build(s);

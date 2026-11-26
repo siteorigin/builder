@@ -2,6 +2,7 @@ import type { ComponentDefinition, GraphNode, ResponsiveStyles, StyleScope, Styl
 import { isBinding, parseStyleScopeKey } from '@shared/types';
 import { STATE_WORDS, STYLE_PROP_MAP, followToken } from '@shared/styles';
 import { parseColor } from '@shared/color';
+import { isNamedColor } from '@shared/color-names';
 import { richTextToPlain, toRichText } from '@shared/richtext';
 import { variantOptions } from '@shared/variants';
 import { childLists } from './tree';
@@ -40,7 +41,7 @@ const CROP_CONTROLS = ['aspectRatio', 'radius', 'width', 'height', 'maxWidth', '
 const CARD_NAME = /\b(card|panel|tile)s?\s*$/i;
 /** Below this a spacing length is a hairline adjustment that no spacing style stands for, unless one matches it exactly. */
 const MIN_SPACE_PX = 4;
-/** A literal color: hex, rgb() or hsl(). Keywords, variables, mixes and gradients are left alone. */
+/** A literal color: hex, rgb() or hsl(), or a color name (red). Keywords, variables, mixes and gradients are left alone. */
 const LITERAL_COLOR_RE = /^(#[0-9a-f]{3,8}|(rgba?|hsla?)\(.*\))$/i;
 const SCOPE_WORDS: Record<StyleScope, string> = { base: '', phone: ' on phones', tablet: ' on tablets', desktop: ' on desktops', 'cq-narrow': ' in a narrow container', 'cq-medium': ' in a medium container', 'cq-wide': ' in a wide container' };
 const KIND_WORDS: Partial<Record<GraphNode['kind'], string>> = { element: 'a container', text: 'a text layer', link: 'a button', image: 'an image', icon: 'an icon', divider: 'a divider', repeat: 'a list', instance: 'a nested component' };
@@ -200,7 +201,7 @@ export function componentReusabilityDiagnostics(def: ComponentDefinition, tokens
         const value = v.trim();
         let kind: 'color' | 'spacing' | null = null;
         let matches: typeof resolved = [];
-        if (style.kind === 'color' && groups.includes('color') && LITERAL_COLOR_RE.test(value)) {
+        if (style.kind === 'color' && groups.includes('color') && (LITERAL_COLOR_RE.test(value) || isNamedColor(value))) {
           const rgba = parseColor(value);
           if (!rgba || !ofGroups(['color']).length) continue;
           kind = 'color';

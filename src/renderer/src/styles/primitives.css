@@ -90,7 +90,7 @@
   .field-hint .field-warning { display: block; color: var(--amber); font-weight: 600; }
   /* An error is never colour alone: it starts with the alert glyph (hung in the gutter, so wrapped lines and
      inline children such as links flow as normal text) and its control takes a red edge. */
-  .field-error { position: relative; padding-left: 18px; font-size: 12px; line-height: 1.4; color: var(--red); }
+  .field-error { position: relative; padding-left: 18px; font-size: 12px; line-height: 1.4; color: var(--red); overflow-wrap: anywhere; }
   .field-error::before { content: ''; position: absolute; left: 0; top: 2px; width: 13px; height: 13px; background: currentColor; -webkit-mask: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%23000' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Ccircle cx='12' cy='12' r='10'/%3E%3Cpath d='M12 8v4M12 16h.01'/%3E%3C/svg%3E") center / contain no-repeat; mask: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%23000' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Ccircle cx='12' cy='12' r='10'/%3E%3Cpath d='M12 8v4M12 16h.01'/%3E%3C/svg%3E") center / contain no-repeat; }
   /* A checked field's refusal: what is still saved reads as plain text, and the correction sits under it. */
   .field-error .field-saved { color: var(--text-2); }

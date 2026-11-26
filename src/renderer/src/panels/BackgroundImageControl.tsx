@@ -4,8 +4,13 @@ import { canonicalBackgroundImage, isBackgroundImageValue } from '@shared/backgr
 import { parseFocus, formatFocus } from '@shared/focus';
 import { isScrim } from '@shared/styles';
 import { DraftInput } from '../components/ui';
+import { ColorTextInput } from '../components/ColorTextInput';
+import { normalizeColorText } from '@shared/color-names';
 import { useStore } from '../store';
 import { SiteImageField } from './PropEditors';
+
+/** Why a scrim typed can't be used: it is drawn over the picture, so only colours and gradients spelled out in full. */
+const SCRIM_REFUSED = 'A scrim is a color, such as #00000080, black or rgba(0, 0, 0, 0.5), or a linear-gradient() or radial-gradient() of such colors.';
 
 /** Scrims to start from: a colour or gradient over the picture, so text on top stays readable. */
 export const SCRIM_PRESETS: Array<{ value: string; label: string }> = [
@@ -70,17 +75,16 @@ export function BackgroundImageControl({ label, value: raw, underText, described
             ))}
             {preset === 'custom' && <option value="custom">Custom</option>}
           </select>
-          <DraftInput
+          <ColorTextInput
             id={ids.scrimText}
             className={`input sm grow style-input mono${scrim ? ' is-set' : ''}`}
+            errorClassName="style-media-error"
             value={scrim}
             placeholder="rgba(0, 0, 0, 0.5) or a gradient"
             ariaLabel={`${label}: scrim color or gradient`}
-            onCommit={(text) => {
-              const s = text.trim();
-              if (s && !isScrim(s)) return false;
-              write({ ...value, scrim: s || undefined });
-            }}
+            problemOf={(text) => (isScrim(normalizeColorText(text)) ? null : { message: SCRIM_REFUSED })}
+            onSave={(s) => write({ ...value, scrim: s })}
+            onClear={() => write({ ...value, scrim: undefined })}
           />
         </div>
       )}

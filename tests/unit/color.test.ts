@@ -146,7 +146,7 @@ describe('parseColor', () => {
   });
 
   it('gives null, never black, for what it cannot resolve', () => {
-    for (const v of ['', 'currentcolor', 'var(--so-color-brand)', 'color-mix(in srgb, #fff 50%, #000)', 'rgb(from #fff r g b)', '#12345', '#1234567', '#12', '#xyz', 'rgb(1 2)', 'rgb(1 2 3', 'rgb(1 2 3 4 5)', 'rgb(a b c)', 'hsl(red 1% 1%)', 'calc(1)', 'red']) {
+    for (const v of ['', 'currentcolor', 'var(--so-color-brand)', 'color-mix(in srgb, #fff 50%, #000)', 'rgb(from #fff r g b)', '#12345', '#1234567', '#12', '#xyz', 'rgb(1 2)', 'rgb(1 2 3', 'rgb(1 2 3 4 5)', 'rgb(a b c)', 'hsl(red 1% 1%)', 'calc(1)', 'reddish', 'red()']) {
       expect(parseColor(v), v).toBeNull();
       expect(pickerHex(v), v).toBeNull();
     }
@@ -154,13 +154,13 @@ describe('parseColor', () => {
   });
 
   it('resolves everything the site accepts that does not depend on another value', () => {
-    const accepted = ['#abc', '#abcd', '#d14131', '#d1413180', 'rgb(209, 65, 49)', 'rgba(209, 65, 49, 0.5)', 'rgb(209 65 49 / 50%)', 'hsl(10 63% 50%)', 'oklch(0.6 0.2 30)', 'lab(50 40 30)', 'white', 'black', 'transparent'];
+    const accepted = ['#abc', '#abcd', '#d14131', '#d1413180', 'rgb(209, 65, 49)', 'rgba(209, 65, 49, 0.5)', 'rgb(209 65 49 / 50%)', 'hsl(10 63% 50%)', 'oklch(0.6 0.2 30)', 'lab(50 40 30)', 'white', 'black', 'transparent', 'red', 'RebeccaPurple'];
     for (const v of accepted) {
       expect(validateStyleValue('color', v), v).toBeNull();
       expect(parseColor(v), v).not.toBeNull();
     }
     // The editor's check is looser than CSS: these pass it, and the parser must not invent a color for them.
-    for (const v of ['rgb(209, 65 49)', '#abcde', 'rgb(209,65,49,)']) {
+    for (const v of ['rgb(209, 65 49)', 'rgb(209,65,49,)']) {
       expect(validateStyleValue('color', v), v).toBeNull();
       expect(parseColor(v), v).toBeNull();
     }

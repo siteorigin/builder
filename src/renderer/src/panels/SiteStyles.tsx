@@ -16,6 +16,7 @@ import { forEachTokenPropRef } from '@engine/tokens';
 import { api, applyOps, setState, useStore } from '../store';
 import { openSiteStyles } from '../lib/actions';
 import { ColorPick } from '../components/ColorPick';
+import { ColorTextInput } from '../components/ColorTextInput';
 import { DraftInput, Field, Section, openSection, type DraftHandle, type DraftProblem } from '../components/ui';
 import { TEXT_LIMITS } from '@shared/text-limits';
 import { CustomTokens } from './CustomTokens';
@@ -852,7 +853,7 @@ export function SiteStyles() {
             {value || '—'}
           </span>
         ) : (
-          <DraftInput key={`field-${palette}`} className="input sm mono ss-hex" value={value} onCommit={(v) => (v.trim() ? setShown(t.id, v.trim()) : false)} ariaLabel={`${t.label}${darkShown ? ' dark' : ''} color value`} />
+          <ColorTextInput key={`field-${palette}`} className="input sm mono ss-hex" errorClassName="ss-color-extra" value={value} onSave={(v) => setShown(t.id, v)} ariaLabel={`${t.label}${darkShown ? ' dark' : ''} color value`} />
         )}
         {/* Below the row, under the name: what it follows, and what is unreadable. Never squeezed beside the value. */}
         {follows && (

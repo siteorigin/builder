@@ -8,6 +8,7 @@ import type { EditOperation } from '@shared/ops';
 import { importedFontStack, projectFontFamilies } from '@shared/fonts';
 import { contrastBetween, evaluatePairs, isFailing, pairsOf, relativeLuminance } from '@shared/contrast';
 import { hasDarkPalette } from '@shared/color-scheme';
+import { parseColor } from '@shared/color';
 import { PALETTE_MOODS, PALETTE_MOOD_INFO, darkPins, darkSection, harmonizePalette, onBrandFor, paletteChanges, paletteSeed, strongShade } from '@shared/palette';
 import { installedFonts, resolveFontStack } from '@catalogue/fonts';
 import { effectiveTokens } from '@generator/index';
@@ -240,7 +241,9 @@ export async function runBrand(args: BrandArgs, host: ToolHost, callId: string):
   } else {
     if (base) {
       for (const [id, v] of Object.entries(derivedBrandTokens(args.brandColor!, resolvedColor(tokens, 'color.on-inverse') || '#ffffff'))) setToken(id, v);
-      const bg = parseHex(resolvedColor(tokens, 'color.background'));
+      // The page background may be saved in any form a colour takes (a name, rgb()): only an opaque one is measured.
+      const page = parseColor(resolvedColor(tokens, 'color.background'));
+      const bg: RGB | null = page && page.a === 1 ? [page.r, page.g, page.b] : null;
       if (bg && contrastRatio(base, bg) < 3) warnings.push(`${args.brandColor} has low contrast on the page background (${contrastRatio(base, bg).toFixed(1)}:1), so brand-colored text and icons may be hard to read.`);
     }
     if (accent) setToken('color.accent', toHex(accent));

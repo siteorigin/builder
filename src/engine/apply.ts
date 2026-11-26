@@ -32,6 +32,7 @@ import { withAuthoredRel } from '@shared/link-rel';
 import { groupLookup, hasGroupStyles, partInInteractionGroup } from '@shared/interaction-groups';
 import { repeatProp, APPEAR_PRESETS, DIVIDER_SHAPES, ELEMENT_ACTIONS, ICON_POSITIONS, OVERLAY_MODES, SCHEMA_VERSION, conditionRef, isContainerScope, isGroupStyleState, parseStyleScopeKey, styleScopeKey, isAppearPreset, isBinding, isBindingRef, isComparison, isEntryBinding, slotChildren, type AppearPreset, type ElementAction, type ElementTag, type IconPosition, type OverlayMode, type TextTag } from '@shared/types';
 import { propertiesHash, type EditOperation, type Op } from '@shared/ops';
+import { normalizeColorText } from '@shared/color-names';
 import { STYLE_PROP_MAP, canonicalStyleValue, containerStyleError, isSafeCssValue, stateStyleError, isTokenLength, linkOf, partStyleControls, styleSetFor, textStyleValue, textWeight, tokenVar, validateStyleValue } from '@shared/styles';
 import { normalizeRoute, slugify, suggestRoute, validateRoute } from '@shared/routes';
 import { planRouteMove, routeFolder, type RouteMove } from '@shared/page-tree';
@@ -2294,6 +2295,8 @@ function nodeSetStyle(state: ProjectState, op: Op<'node.setStyle'>): OpResult {
     // A list or a slot renders what it holds, and no element of its own a group state could restyle.
     if (isGroupStyleState(op.state) && (node.kind === 'repeat' || node.kind === 'slot')) fail('A list or a slot shows no element of its own for its group to restyle. Style an element inside it instead.');
   }
+  // A hex colour typed without its # is saved with one.
+  if (STYLE_PROP_MAP[op.property].kind === 'color' && typeof op.value === 'string') op = { ...op, value: normalizeColorText(op.value) };
   if (op.value !== null) {
     // Clearing one is always allowed, as for a state, so a hand-edited document can be cleaned up.
     const inContainer = isContainerScope(op.scope) ? containerStyleError(op.property) : null;
@@ -2858,9 +2861,10 @@ function tokenSetDark(state: ProjectState, op: Op<'token.set'>): OpResult {
     const v = op.value as Record<string, unknown>;
     if (v && typeof v === 'object' && !Array.isArray(v) && 'token' in v) dark[op.tokenId] = { token: tokenLinkTarget(effectiveTokens(state, 'dark'), tdef, v) };
     else {
-      const err = typeof op.value === 'string' ? validateStyleValue('color', op.value) : `"${String(op.value)}" is not a color.`;
+      const color = typeof op.value === 'string' ? normalizeColorText(op.value) : undefined;
+      const err = color !== undefined ? validateStyleValue('color', color) : `"${String(op.value)}" is not a color.`;
       if (err) fail(err);
-      dark[op.tokenId] = op.value as string;
+      dark[op.tokenId] = color!;
     }
   }
   assertNoTokenCycles(state);
@@ -2893,9 +2897,11 @@ const TEXT_KEYS = ['family', 'size', 'lineHeight', 'weight', 'tracking', 'transf
 function tokenSetLiteral(state: ProjectState, tdef: TokenDef, v: unknown) {
   const id = tdef.id;
   if (tdef.group === 'color') {
-    const err = validateStyleValue('color', String(v));
+    if (typeof v !== 'string') fail(`"${String(v)}" is not a color.`);
+    const color = normalizeColorText(v);
+    const err = validateStyleValue('color', color);
     if (err) fail(err);
-    state.tokens.overrides[id] = v as TokenValue;
+    state.tokens.overrides[id] = color;
   } else if (tdef.group === 'text') {
     if (!v || typeof v !== 'object' || Array.isArray(v)) fail('Text styles need { family, size, lineHeight, weight, tracking }.');
     // A text style saved as a link to another (hand-edited, or from an older version) starts from what it is

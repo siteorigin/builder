@@ -6,6 +6,9 @@ import { tokenPropUsageCounts, tokenUsageCounts } from '@engine/tokens';
 import { followedText, linkOf, textMetrics } from '@shared/styles';
 import { applyOps } from '../store';
 import { ColorPick } from '../components/ColorPick';
+import { ColorTextInput } from '../components/ColorTextInput';
+import { colorFieldProblem } from '@shared/color';
+import { normalizeColorText } from '@shared/color-names';
 import { DraftInput, Field } from '../components/ui';
 import { FontSelect, familyName } from './FontSelect';
 import { usePreviewStack } from '../lib/editor-fonts';
@@ -46,18 +49,26 @@ function NewStyle({ tokens, say }: { tokens: TokenDef[]; say: (text: string) => 
   const [group, setGroup] = useState<TokenGroup>('color');
   const [label, setLabel] = useState('');
   const [value, setValue] = useState('');
+  // Why the colour typed can't be added: said beside the field, which keeps it, and checked again as it is corrected.
+  const [refused, setRefused] = useState<string | null>(null);
   // Only text styles whose metrics can be read can be started from; their metrics are what is copied.
   const textStyles = tokens.filter((t) => t.group === 'text' && textMetrics(tokens, t.id));
   const [basedOn, setBasedOn] = useState('');
   const spec = GROUPS.find((g) => g.group === group)!;
   const create = async () => {
     const base = textStyles.find((t) => t.id === (basedOn || textStyles[0]?.id));
-    const v = group === 'text' ? (base ? textMetrics(tokens, base.id) : null) : value.trim();
+    if (group === 'color' && value.trim()) {
+      const problem = colorFieldProblem(value);
+      setRefused(problem?.message ?? null);
+      if (problem) return;
+    }
+    const v = group === 'text' ? (base ? textMetrics(tokens, base.id) : null) : group === 'color' ? normalizeColorText(value) : value.trim();
     if (!label.trim() || !v) return;
     if (await applyOps([{ type: 'token.create', group, label: label.trim(), value: v }], `Add ${label.trim()}`)) {
       say(`${label.trim()} added to your styles.`);
       setLabel('');
       setValue('');
+      setRefused(null);
     }
   };
   return (
@@ -74,7 +85,15 @@ function NewStyle({ tokens, say }: { tokens: TokenDef[]; say: (text: string) => 
       </div>
       <div className="grid-2">
         <Field label="Kind" controlId={`${uid}-group`}>
-          <select id={`${uid}-group`} className="select sm" value={group} onChange={(e) => setGroup(e.target.value as TokenGroup)}>
+          <select
+            id={`${uid}-group`}
+            className="select sm"
+            value={group}
+            onChange={(e) => {
+              setGroup(e.target.value as TokenGroup);
+              setRefused(null);
+            }}
+          >
             {GROUPS.map((g) => (
               <option key={g.group} value={g.group}>
                 {g.label}
@@ -97,10 +116,31 @@ function NewStyle({ tokens, say }: { tokens: TokenDef[]; say: (text: string) => 
           </select>
         </Field>
       ) : (
-        <Field label="Value" controlId={`${uid}-value`}>
+        <Field label="Value" controlId={`${uid}-value`} error={refused && <span role="alert">{refused}</span>}>
           <span className="ss-new-value">
-            {group === 'color' && <ColorPick className="md" value={value} onPick={setValue} label="Pick a color" />}
-            <input id={`${uid}-value`} className="input sm mono" value={value} placeholder={spec.placeholder} onChange={(e) => setValue(e.target.value)} />
+            {group === 'color' && (
+              <ColorPick
+                className="md"
+                value={value}
+                onPick={(next) => {
+                  setValue(next);
+                  setRefused(null);
+                }}
+                label="Pick a color"
+              />
+            )}
+            <input
+              id={`${uid}-value`}
+              className="input sm mono"
+              value={value}
+              placeholder={spec.placeholder}
+              aria-invalid={refused ? true : undefined}
+              aria-describedby={refused ? `${uid}-value-note` : undefined}
+              onChange={(e) => {
+                setValue(e.target.value);
+                if (refused) setRefused(e.target.value.trim() ? (colorFieldProblem(e.target.value)?.message ?? null) : null);
+              }}
+            />
           </span>
         </Field>
       )}
@@ -218,7 +258,11 @@ function StyleRow({ t, uses, propUses, where, tokens, state, say, onEditText }: 
       t.group === 'font' ? (
         <FontSelect id={`${uid}-value`} state={state} stack={literal} onChoose={(next) => set(next)} />
       ) : (
-        <DraftInput id={`${uid}-value`} className="input sm mono" value={literal} placeholder={spec?.placeholder} onCommit={(v) => (v.trim() ? set(v.trim()) : false)} />
+        t.group === 'color' ? (
+          <ColorTextInput id={`${uid}-value`} className="input sm mono" value={literal} placeholder={spec?.placeholder} onSave={(v) => set(v)} />
+        ) : (
+          <DraftInput id={`${uid}-value`} className="input sm mono" value={literal} placeholder={spec?.placeholder} onCommit={(v) => (v.trim() ? set(v.trim()) : false)} />
+        )
       );
     // A link to a style that is gone shows nothing to keep, so a value can be typed over it instead.
     const broken = !!ref && !literal;
