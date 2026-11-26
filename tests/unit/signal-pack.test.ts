@@ -196,7 +196,7 @@ describe("Signal's contrast pairs", () => {
   it("declare Foundation's pairs and the eyebrow pill's own ground, on every tone, all readable as delivered", () => {
     const signal = findTheme('signal')!;
     const ids = signal.contrastPairs!.map((p) => p.id);
-    expect(ids).toEqual([...findTheme('foundation')!.contrastPairs!.map((p) => p.id), 'eyebrow-background', 'eyebrow-surface-alt', 'eyebrow-dark', 'eyebrow-brand', 'icon-badge', 'chosen-option', 'dark-faq', 'chosen-option-surface-alt', 'outline-edge', 'dark-icon-badge', 'outline-edge-surface-alt', 'footer-labels', 'outline-edge-brand', 'field-edge', 'field-edge-surface-alt', 'footer-labels-light']);
+    expect(ids).toEqual([...findTheme('foundation')!.contrastPairs!.map((p) => p.id), 'eyebrow-background', 'eyebrow-surface-alt', 'eyebrow-dark', 'icon-badge', 'dark-faq', 'outline-edge', 'dark-icon-badge', 'outline-edge-surface-alt', 'footer-labels', 'field-edge', 'field-edge-surface-alt', 'footer-labels-light']);
     // Each pill's ground is its own ink at 8% over the section it sits on.
     const pill = (id: string) => signal.contrastPairs!.find((p) => p.id === id)!;
     expect(['eyebrow-background', 'eyebrow-surface-alt', 'eyebrow-dark'].map(pill).map((p) => [p.fg, p.bg, p.group])).toEqual([

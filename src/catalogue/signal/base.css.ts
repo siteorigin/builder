@@ -36,15 +36,16 @@ const SIGNAL_RULES = `
   transition: background-color 180ms ease, color 180ms ease, border-color 180ms ease, transform 160ms ease, translate 220ms cubic-bezier(0.2, 0.7, 0.2, 1), box-shadow 220ms ease;
 }
 /* An outlined button's edge is the only outline of what it does: half its own ink, firm enough to find on every light
-   ground, and 60% on a brand section, where white over the brand needs more to reach 3:1. (Two classes heavy there, as a
-   site's own border for the button is, which comes later and so still wins.) */
+   ground, and its whole ink on a brand section, where the button text's own pair on the brand keeps it readable for any
+   brand. (Two classes heavy there, as a site's own border for the button is, which comes later and so still wins.) */
 .so-btn--secondary { border-color: color-mix(in srgb, currentColor 50%, transparent); }
-.so-btn--secondary:is([class*='--tone-brand'], [class*='--tone-brand'] *) { border-color: color-mix(in srgb, currentColor 60%, transparent); }
+.so-btn--secondary:is([class*='--tone-brand'], [class*='--tone-brand'] *) { border-color: currentColor; }
 /* The tab chosen, or the billing period that is on, in the brand colour (its section's ink on a dark or brand ground),
-   and ringed twice as heavily as its neighbours, so it is told apart without its colour. */
+   on the eyebrow pill's 8% tint (so the pill's contrast pairs answer for it too), and ringed twice as heavily as its
+   neighbours, so it is told apart without its colour. */
 .so-btn--secondary:where([aria-selected='true'], [aria-pressed='true']) {
   --so-btn-fg: var(--so-surface-ink, var(--so-color-brand)); color: var(--so-btn-fg);
-  border-color: currentColor; background: color-mix(in srgb, currentColor 10%, transparent); box-shadow: inset 0 0 0 1px currentColor;
+  border-color: currentColor; background: color-mix(in srgb, currentColor 8%, transparent); box-shadow: inset 0 0 0 1px currentColor;
 }
 /* Only a button that acts rises: a link with somewhere to go, or a button that is not disabled. */
 @media (hover: hover) and (prefers-reduced-motion: no-preference) {

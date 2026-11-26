@@ -206,7 +206,7 @@ describe('the Editorial pack (#390)', () => {
     expect(EDITORIAL_PACK.fonts.map((f) => f.family).sort()).toEqual(FOUNDATION_PACK.fonts.map((f) => f.family).sort());
     expect(EDITORIAL_PACK.aiProfile.guidance.join(' ')).toMatch(/asymmetric/);
     // Its stylesheet sets the same colours against each other as Foundation's, and its index on a dark section adds one.
-    expect(EDITORIAL_PACK.contrastPairs!.map((p) => p.id)).toEqual([...FOUNDATION_PACK.contrastPairs!.map((p) => p.id), 'dark-index-text', 'eyebrow-brand', 'footer-labels', 'field-edge', 'field-edge-surface-alt', 'footer-labels-light']);
+    expect(EDITORIAL_PACK.contrastPairs!.map((p) => p.id)).toEqual([...FOUNDATION_PACK.contrastPairs!.map((p) => p.id), 'dark-index-text', 'footer-labels', 'field-edge', 'field-edge-surface-alt', 'footer-labels-light']);
   });
 
   it('starts a new project of either starter, recording Editorial and placing only its sections', () => {
