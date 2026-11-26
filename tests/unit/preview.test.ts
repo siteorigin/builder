@@ -5,7 +5,7 @@ import { afterEach, describe, expect, it } from 'vitest';
 import { externalLink } from '@shared/links';
 import { devPlugin } from '@runtime/dev-plugin';
 import { projectSrcPath } from '@runtime/paths';
-import { chainOf, measuredRects, rectList } from '../../src/renderer/src/lib/payload';
+import { chainOf, measuredRects, rectList, sameRects } from '../../src/renderer/src/lib/payload';
 
 describe('external links from the preview', () => {
   it('allows web pages, email addresses and phone numbers', () => {
@@ -86,6 +86,14 @@ describe('dev instrumentation plugin', () => {
 });
 
 describe('bridge payload shapes', () => {
+  it('keeps the boxes drawn when a report has them unmoved, and takes any that moved', () => {
+    const was = [{ x: 1, y: 2, width: 3, height: 4 }, { x: 5, y: 6, width: 7, height: 8 }];
+    const same = was.map((r) => ({ ...r }));
+    expect(sameRects(same, was)).toBe(was);
+    expect(sameRects([], [])).toEqual([]);
+    for (const moved of [[{ ...was[0], y: 2.5 }, was[1]], [was[0], { ...was[1], width: 0 }], [was[1], was[0]], [was[0]], [...was, was[0]]]) expect(sameRects(moved, was)).toBe(moved);
+  });
+
   it('keeps only well-formed boxes', () => {
     expect(rectList('nope')).toEqual([]);
     const ok = { x: 1, y: 2, width: 3, height: 4 };

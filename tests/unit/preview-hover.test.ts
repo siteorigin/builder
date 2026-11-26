@@ -360,6 +360,38 @@ describe.skipIf(!browserInstalled)('pointer movement and page changes in the pre
     expect((await counts()).layout).toBe(0);
   });
 
+  it('measures a new hover the editor asks to outline at once, and a new selection in the next frame', async () => {
+    await flushed();
+    await reset();
+    // The frame's animation frames held: what waits for the next one is not measured until they run again.
+    await frame.evaluate(`(() => { window.heldFrames = []; window.realFrame = window.requestAnimationFrame; window.requestAnimationFrame = (cb) => window.heldFrames.push(cb); })()`);
+    await post('track', { selected: null, hovered: desc(item('b')) });
+    await expect.poll(async () => rects(await seen()).at(-1)?.payload.hoveredDesc).toEqual(desc(item('b')));
+    expect(rects(await seen()).at(-1)!.payload.hovered).toHaveLength(1);
+    // Another hover, the same way, before the frame after the first has run.
+    await post('track', { selected: null, hovered: desc(TITLE) });
+    await expect.poll(async () => rects(await seen()).at(-1)?.payload.hoveredDesc).toEqual(desc(TITLE));
+    // The next frame measures again, after what the page does in it: a component moving the element the pointer reached
+    // (which changes no size and no content the page watches) is reported then.
+    const reported = rects(await seen()).length;
+    const titleY = rects(await seen()).at(-1)!.payload.hovered![0].y;
+    await frame.evaluate(`document.querySelector('h1').style.transform = 'translateY(7px)'`);
+    await frame.evaluate(`(() => { const held = window.heldFrames.splice(0); for (const cb of held) cb(performance.now()); })()`);
+    await expect.poll(async () => rects(await seen()).length).toBe(reported + 1);
+    expect(rects(await seen()).at(-1)!.payload.hovered!.map((b) => b.y)).toEqual([titleY + 7]);
+    await frame.evaluate(`document.querySelector('h1').style.transform = ''`);
+    await frame.evaluate(`(() => { const held = window.heldFrames.splice(0); for (const cb of held) cb(performance.now()); })()`);
+    // A new selection is measured by the next frame (a scroll to it the editor asks for comes first), and so is a hover
+    // that comes with it.
+    await reset();
+    await post('track', { selected: desc(item('a')), hovered: desc(item('b')) });
+    await new Promise((r) => setTimeout(r, 300));
+    expect(rects(await seen())).toEqual([]);
+    await frame.evaluate(`(() => { window.requestAnimationFrame = window.realFrame; for (const cb of window.heldFrames.splice(0)) requestAnimationFrame(cb); })()`);
+    await expect.poll(async () => rects(await seen()).at(-1)?.payload.selected).toHaveLength(1);
+    expect(rects(await seen()).at(-1)!.payload.hoveredDesc).toEqual(desc(item('b')));
+  });
+
   it('still brings a revealed item up to date when an update re-renders it, with nothing selected or hovered', async () => {
     const open = () => frame.evaluate<boolean>(`document.querySelector('details').open`);
     await post('reveal', { target: { ctx: 'page:p|faq', list: 'questions', items: 'x', nodes: ['question'], within: { question: 0, answer: 0 } } });
@@ -369,10 +401,38 @@ describe.skipIf(!browserInstalled)('pointer movement and page changes in the pre
     // The question comes back closed, as a hot update re-mounting it does. The page keeps its size, so only the
     // change itself can bring the item up to date.
     await frame.evaluate(`(() => { const old = document.querySelector('details'); const fresh = old.cloneNode(true); fresh.open = false; old.replaceWith(fresh); })()`);
-    const r = rects(await flushed());
+    expect(rects(await flushed())).toEqual([]);
+    // Opened again where it was: the editor already outlines it there, so no report is sent. Once it moves, it is.
     expect(await open()).toBe(true);
+    const revealedAt = (await frame.evaluate<number>(`document.querySelector('details').getBoundingClientRect().y`)) as number;
+    await shift();
+    const r = rects(await flushed());
     expect(r).toHaveLength(1);
-    expect(r[0].payload.revealed).toHaveLength(1);
+    expect(r[0].payload.revealed!.map((b) => b.y)).toEqual([revealedAt + 30]);
+  });
+
+  it('sends no report the same as the last one, and always answers what the editor asks to outline', async () => {
+    await post('track', { selected: desc(item('a')), hovered: null });
+    const first = rects(await flushed()).at(-1)!.payload;
+    await reset();
+    // The page changes without anything outlined moving: measured, and not reported again.
+    await changeText();
+    await replaceNode();
+    expect(rects(await flushed())).toEqual([]);
+    // Asked again for the same, the editor is answered.
+    await post('track', { selected: desc(item('a')), hovered: null });
+    let r = rects(await flushed());
+    expect(r).toHaveLength(1);
+    expect(r[0].payload).toEqual(first);
+    // What is outlined moving is reported, once.
+    await reset();
+    await shift();
+    r = rects(await flushed());
+    expect(r).toHaveLength(1);
+    expect(r[0].payload.selected!.map((b) => b.y)).toEqual(first.selected!.map((b) => b.y + 30));
+    await reset();
+    await changeText();
+    expect(rects(await flushed())).toEqual([]);
   });
 
   it('hands back typed text when an update removes the edited element, even with nothing outlined', async () => {

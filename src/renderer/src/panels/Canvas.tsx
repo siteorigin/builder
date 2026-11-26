@@ -16,7 +16,7 @@ import { refKey, sameRef } from '@shared/types';
 import { aiActivity, api, commitDraft, errorText, getState, markDraft, saveLocal, setState, setViewport, stepHistory, toast, useStore, type Rect } from '../store';
 import { appliedSteps, errorComponent, revertStep, stillNewest } from '../lib/preview-error';
 import { acceptMessage, newSessionId, postToFrame, staleFor, viewAfter, type BridgeMessage, type FrameView } from '../lib/bridge';
-import { chainOf, descOrNull, emptyAreaOf, measuredRects, pointedAt, rectList, slotBoxes, spaceSizes, spacingOf, type FrameEmptyArea, type FrameSpacing, type SlotBox } from '../lib/payload';
+import { chainOf, descOrNull, emptyAreaOf, measuredRects, pointedAt, rectList, sameRects, slotBoxes, spaceSizes, spacingOf, type FrameEmptyArea, type FrameSpacing, type SlotBox } from '../lib/payload';
 import { blocksFromDom, richDom } from '../lib/richtext';
 import { collectionIndexRoutes } from '@shared/archives';
 import { dropAt, dropReaches, moveIndex, shownOrder } from '../lib/reorder';
@@ -64,6 +64,9 @@ import { shortcutLabel } from '../lib/shortcut-keys';
 import { settlePageClick } from '../lib/page-clicks';
 import { askAiHint, useAskAiKeys } from '../lib/ask-ai-key';
 import { perfCount, perfMark, perfOn, perfWork } from '../lib/perf';
+
+/** Whether two reports measured the same element (or both nothing). */
+const sameMeasured = (a: BridgeDesc | null, b: BridgeDesc | null) => a === b || (!!a && !!b && a.ctx === b.ctx && a.node === b.node && (a.items || '') === (b.items || '') && (a.part || '') === (b.part || '') && a.slot === b.slot);
 
 /** True while an inline text edit is open in the preview; shortcuts must not act on the selection then. */
 export const inlineEdit = { active: false };
@@ -1016,8 +1019,16 @@ export function Canvas() {
           // The pointer is on the name of what it was over (or its Add button): that element keeps its outline while it
           // rests there.
           const kept = !hovered.length && overTag.current;
+          const measuredBefore = rectsFor.current;
           rectsFor.current = { selected: descOrNull(p.selectedDesc), hovered: kept ? rectsFor.current.hovered : descOrNull(p.hoveredDesc) };
-          setState({ rects: { selected, hovered: kept ? getState().rects.hovered : hovered, revealed: rectList(p.revealed) } });
+          // A list that did not move keeps the one drawn, and a report where nothing moved changes nothing: the canvas is
+          // not drawn again for it (the page reports every frame while anything moves). One measured for something else
+          // is drawn, even with the same boxes: two elements can share a box, and what is drawn on it (an Add button)
+          // belongs to the one it was measured for.
+          const was = getState().rects;
+          const next = { selected: sameRects(selected, was.selected), hovered: kept ? was.hovered : sameRects(hovered, was.hovered), revealed: sameRects(rectList(p.revealed), was.revealed) };
+          const remeasured = !sameMeasured(measuredBefore.selected, rectsFor.current.selected) || !sameMeasured(measuredBefore.hovered, rectsFor.current.hovered);
+          if (remeasured || next.selected !== was.selected || next.hovered !== was.hovered || next.revealed !== was.revealed) setState({ rects: next });
           const slots = slotBoxes(p.slots);
           const slotsSeen = JSON.stringify(slots);
           if (slotsSeen !== slotRectsSeen.current) {
@@ -1428,10 +1439,12 @@ export function Canvas() {
     requestAnimationFrame(() => perfMark('canvas.hoverOutlined', { movedAt: timed.at }));
   });
 
-  // Keep the bridge in sync with selection, hover and document revisions.
+  // Keep the bridge in sync with selection, hover and document revisions. Asked again when Site styles opens or closes,
+  // or Edit and Preview change places, so the page reports afresh what the canvas can draw again (an insertion's
+  // arrival cue waits for that, and the page sends no report that would only repeat the last).
   useEffect(() => {
     if (ready) syncTrack();
-  }, [ready, selection, hover, snapshot?.revision]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [ready, selection, hover, snapshot?.revision, stylesOpen, mode]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // A new selection is scrolled to once the frame shows its page, and so is one a Layers row asks to show again
   // (showLayer). Asked from Layers, one taller than the page shows from its top. One made with a page change (a page

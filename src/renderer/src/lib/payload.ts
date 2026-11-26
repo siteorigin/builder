@@ -24,6 +24,14 @@ export function isRect(v: unknown): v is FrameRect {
   return finite(r.x) && finite(r.y) && finite(r.width) && finite(r.height) && r.width >= 0 && r.height >= 0;
 }
 
+/**
+ * `next`, or `was` when it holds the same boxes in the same order: what is drawn from the boxes is left alone while the
+ * page reports them unmoved (it reports every frame while anything on it moves).
+ */
+export function sameRects<T extends FrameRect>(next: T[], was: T[]): T[] {
+  return next.length === was.length && next.every((r, i) => r.x === was[i].x && r.y === was[i].y && r.width === was[i].width && r.height === was[i].height) ? was : next;
+}
+
 /** A list of element boxes; anything that is not one is left out. */
 export function rectList(v: unknown): FrameRect[] {
   if (!Array.isArray(v)) return [];
