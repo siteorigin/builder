@@ -1049,7 +1049,7 @@ export function emptySections(state: ProjectState, tree: NodeTree, entry?: { col
     return hiddenEverySize(sizes(false)) && hiddenEverySize(sizes(true));
   };
   // The placements being walked that may have nothing to show, innermost last, until something they render says otherwise.
-  const open: Array<{ found: EmptySection; filled: boolean; instance: GraphNode; read: boolean; connected: string | undefined }> = [];
+  const open: Array<{ found: EmptySection; filled: boolean; instance: GraphNode; read: boolean; connected: string | undefined; connectedNeeds: string | undefined; slots: number }> = [];
   const filled = () => open.forEach((o) => (o.filled = true));
   const report = (found: EmptySection) => {
     const key = `${found.nodeId}|${found.placementId}`;
@@ -1069,20 +1069,26 @@ export function emptySections(state: ProjectState, tree: NodeTree, entry?: { col
         last.read = true;
         last.found.heading = plainText(scope.props.heading);
         // A list connected to a collection shows a card per entry: the check reads its rows before the site fills in
-        // what a card takes from the page it links to, so rows are content.
+        // what a card takes from the page it links to, so a row is content once it has what its card needs to show at
+        // all (a page list's card, its page).
         const rows = last.connected === undefined ? undefined : scope.props[last.connected];
-        if (Array.isArray(rows) && rows.length) last.filled = true;
+        const needs = last.connectedNeeds;
+        if (Array.isArray(rows) && rows.some((r) => !needs || (r && typeof r === 'object' && shown((r as Record<string, unknown>)[needs], state)))) last.filled = true;
       }
-      // What the page puts in a slot, a list's row whatever it holds, and pictures and links wherever they are, are
-      // content. Text outside a list is the section's heading and introduction.
-      if ((open.length && !def && n.kind !== 'element') || n.kind === 'image' || n.kind === 'link' || (scope.item && n.kind !== 'element' && n.kind !== 'repeat' && n.kind !== 'slot')) filled();
+      // Code is judged by what its own markup shows (see `code`).
+      const code = n.kind === 'instance' && state.components[n.definitionId]?.kind !== 'managed';
+      // What is shown through a slot of the placement (from the page, or the design around it), a list's row whatever it
+      // holds, and pictures and links wherever they are, are content. Text outside a list is the heading and introduction.
+      const slotted = !!last && (scope.slots?.length ?? 0) > last.slots;
+      if (!code && (((slotted || scope.item) && n.kind !== 'element' && n.kind !== 'repeat' && n.kind !== 'slot') || n.kind === 'image' || n.kind === 'link')) filled();
       if (n.kind !== 'instance') return;
       const placed = state.components[n.definitionId];
       const list = placed ? listOf(placed) : null;
       if (!placed || !list || hidden()) return;
       const { what, fix } = listFix(n, list.prop, list.schema);
       const connected = n.listSources && Object.hasOwn(n.listSources, list.prop) ? list.prop : undefined;
-      open.push({ found: { nodeId: reportId, placementId: n.id, name: displayName(state, n), heading: '', what, fix }, filled: false, instance: n, read: false, connected });
+      const connectedNeeds = connected === undefined ? undefined : list.schema.pageTeaser?.link;
+      open.push({ found: { nodeId: reportId, placementId: n.id, name: displayName(state, n), heading: '', what, fix }, filled: false, instance: n, read: false, connected, connectedNeeds, slots: scope.slots?.length ?? 0 });
     },
     code: (def, props, reportId, _placement, n) => {
       // The theme's Video section shows its heading and no player while it has no address its player can play.
