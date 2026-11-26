@@ -13,6 +13,10 @@ import { entryFile, generateLayout, generateProject, generateSitemap, liveRedire
 import { GenerationCache } from '@generator/cache';
 import { publicationIds, publicationPlan } from '@generator/checks';
 import { draftLinksStop, draftSourceNotes, isGeneratedReadme, projectReadme, publishedChanged, withheldRoutes } from '../../src/main/export';
+import { withPublished } from '@shared/published';
+
+/** The project once the website has been exported as it is now: its pages' addresses are kept working when they move (#890). */
+const exported = (s: ProjectState): ProjectState => ({ ...s, published: withPublished(s.published, s) ?? s.published });
 
 const run = (s: ProjectState, ...ops: EditOperation[]) => applyOperations(s, ops).state;
 
@@ -174,7 +178,7 @@ describe('old addresses of entries', () => {
     expect(kept(run(s, { type: 'entry.remove', collectionId: 'posts', entryId: 'en_winter', replacementPageId: about }))).toContainEqual({ from: '/blog/winter-workshop/', pageId: about });
     const unlinked = run(s, { type: 'entry.update', collectionId: 'posts', entryId: 'en_spring', body: ['No link.'] });
     expect(kept(run(unlinked, { type: 'entry.remove', collectionId: 'posts', entryId: 'en_winter' }))).toEqual([{ from: '/blog/spring-open-studio/', entryId: 'en_spring' }]);
-    s = run(s, { type: 'page.update', pageId: about, route: '/about-us/' });
+    s = run(exported(s), { type: 'page.update', pageId: about, route: '/about-us/' });
     expect(kept(run(s, { type: 'entry.remove', collectionId: 'posts', entryId: 'en_spring', replacementEntryId: 'en_winter' }, { type: 'collection.remove', collectionId: 'posts' }))).toEqual([{ from: '/about/', pageId: about }]);
   });
 

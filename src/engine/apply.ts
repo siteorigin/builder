@@ -51,6 +51,8 @@ import { feedRowFields } from '@shared/entry-feed';
 import { POSTS_COLLECTION_ID, archiveRouteOwner, collectionRouteOwner, findEntry, hasArchivePages, siteEntries } from '@shared/collections';
 import { collectionIndexRoutes } from '@shared/archives';
 import { loopText, redirectTargetProblem, resolveRedirects } from '@shared/redirects';
+import { wasPublishedFor } from '@shared/published';
+import { planPageAddress } from '@shared/page-address';
 import { finishSourceSync, sourceRemove, sourceUpsert, type SourceSyncGrant } from './sources';
 import { collectionCreate, collectionRemove, collectionUpdate, entryAddressesInUse, entryCreate, entryRemove, entryReorder, entryUpdate, refuseSyncedHolders, syncedEntryChange, type EntryAddress } from './collections';
 import { termCreate, termRemove, termRename } from './terms';
@@ -71,7 +73,7 @@ import { pageLinkUses, type PageLinkUse } from './page-links';
 import { batchTagProblem, insertsInline, tagKindProblem } from './semantic-tags';
 import { dropHeaderLinks, followingSlot, followsPageOrder, keepHeaderOrder, menuBefore } from './header-order';
 import { collectionSourceProblems, instanceSetListSource, loopNode, nodeSetRepeatSource, showsCollection } from './collection-sources';
-import { EngineError, RESERVED_ANCHORS, anchorCapable, anchorsInUse, childLists, codePlacesClass, displayName, enclosingRepeatProp, fail, findParent, getNode, getTree, headerMenu, headerMenuSlot, instancesOf, itemLinkPairs, settledRoot, subtreeIds, allTrees, type ParentInfo } from './tree';
+import { EngineError, RESERVED_ANCHORS, anchorCapable, anchorsInUse, childLists, codePlacesClass, displayName, enclosingRepeatProp, fail, findParent, getNode, getTree, headerMenu, headerMenuRoom, headerMenuSlot, instancesOf, itemLinkPairs, settledRoot, subtreeIds, allTrees, type ParentInfo } from './tree';
 import { definitionRole } from './insert-role';
 import { itemStyleRecords, liveItemStyles, placementItems, repeatedPartList } from '@shared/item-styles';
 import { followText, joinedLines } from '@shared/contact-links';
@@ -983,8 +985,8 @@ function addToHeaderNavigation(state: ProjectState, page: PageDoc): boolean {
   const menu = headerMenu(state);
   if (!menu) return false;
   const { node, schema } = menu;
+  if (headerMenuRoom(state)?.full) return false;
   const list = (node.props.links ?? structuredClone(schema.default)) as Array<Record<string, unknown>>;
-  if (schema.max !== undefined && list.length >= schema.max) return false;
   // A page inside another goes under the link to that page, when the menu has one and groups links.
   const slot = headerMenuSlot(state, list, page.id);
   // A menu that follows the pages takes it at its place in their order, at that level.
@@ -1020,21 +1022,9 @@ function pageUpdate(state: ProjectState, op: Op<'page.update'>, ctx: ApplyContex
   let moved: RouteMove[] | undefined;
   if (op.title !== undefined) page.title = op.title.trim();
   if (op.route !== undefined) {
-    const route = normalizeRoute(op.route);
-    const err = validateRoute(route);
-    if (err) fail(err);
-    if (page.id === state.site.homePageId && route !== '/') fail('The Home page always uses "/". Make another page Home first.');
-    if (page.id !== state.site.homePageId && route === '/') fail('Only the Home page can use "/".');
-    // The pages inside it move with it, and every address left behind keeps working for its page.
-    const plan = planRouteMove(state, page.id, route, validateRoute);
+    const plan = planPageAddress(state, page.id, op.route);
     if ('error' in plan) fail(plan.error);
-    refuseCollectionRoute(state, route);
-    // No page moved along with it may land on an address a collection or one of its entries holds either.
-    for (const m of plan.moves) {
-      if (m.pageId === page.id) continue;
-      const owner = collectionRouteOwner(state, m.to);
-      if (owner) fail(`Moving “${page.title}” would move “${state.pages[m.pageId].title}” to ${m.to}, which is the address of ${owner.label}. Choose another address for the page.`);
-    }
+    // The pages inside it move with it, and every exported address left behind keeps working for its page.
     movePages(state, plan.moves, ctx.addressesAtStart);
     if (plan.moves.length > 1) moved = plan.moves;
   }
@@ -1096,9 +1086,10 @@ function pageUpdate(state: ProjectState, op: Op<'page.update'>, ctx: ApplyContex
 }
 
 /**
- * Give pages the addresses `moves` plans. Each takes over any old address kept at its new one, and each address
- * a page left that no page now uses is kept working for it, so old links and bookmarks still arrive (a page moved
- * again keeps every earlier address leading to where it is now, because kept addresses name the page).
+ * Give pages the addresses `moves` plans. Each takes over any old address kept at its new one, and each exported
+ * address a page left that no page now uses is kept working for it, so old links and bookmarks still arrive (a page
+ * moved again keeps every earlier address leading to where it is now, because kept addresses name the page). An
+ * address no export delivered for the page was never given to anyone: correcting it leaves nothing behind.
  */
 function movePages(state: ProjectState, moves: RouteMove[], atStart?: ReadonlySet<string>) {
   for (const m of moves) state.pages[m.pageId].route = m.to;
@@ -1106,7 +1097,7 @@ function movePages(state: ProjectState, moves: RouteMove[], atStart?: ReadonlySe
   const used = new Set(Object.values(state.pages).map((p) => p.route.toLowerCase()));
   // Not an address the page only passed through in this batch, nor one that is not a valid route (a hand-written
   // one), which could not be kept working.
-  const keep = (m: RouteMove) => !used.has(m.from.toLowerCase()) && redirectIndex(state, m.from) < 0 && (!atStart || atStart.has(m.from.toLowerCase())) && !validateRoute(m.from);
+  const keep = (m: RouteMove) => !used.has(m.from.toLowerCase()) && redirectIndex(state, m.from) < 0 && (!atStart || atStart.has(m.from.toLowerCase())) && !validateRoute(m.from) && wasPublishedFor(state, m.from, m.pageId);
   const kept = moves.filter(keep).map((m) => ({ from: m.from, pageId: m.pageId }));
   if (kept.length) state.site.redirects = [...(Array.isArray(state.site.redirects) ? state.site.redirects : []), ...kept];
 }
@@ -1394,8 +1385,8 @@ function pageSetHome(state: ProjectState, pageId: string, keepOldAddress: boolea
   const moved: RouteMove[] = [{ pageId, from: vacated, to: '/' }];
   page.route = '/';
   state.site.homePageId = pageId;
-  // Only an address the page was served at when the batch began, as a move keeps (see movePages).
-  const keep = keepOldAddress && (!atStart || atStart.has(vacated.toLowerCase())) && !validateRoute(vacated);
+  // Only an exported address the page was served at when the batch began, as a move keeps (see movePages).
+  const keep = keepOldAddress && (!atStart || atStart.has(vacated.toLowerCase())) && !validateRoute(vacated) && wasPublishedFor(state, vacated, pageId);
   if (keep) state.site.redirects = [...(Array.isArray(state.site.redirects) ? state.site.redirects : []), { from: vacated, pageId }];
   if (old) {
     // Home was published whatever its document said: it stays published at its new address.

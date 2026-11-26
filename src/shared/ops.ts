@@ -357,7 +357,7 @@ export const OPERATION_SCHEMAS = {
     type: z.literal('page.update'),
     pageId: z.string(),
     title: limited(TEXT_LIMITS.pageTitle).min(1).optional(),
-    route: z.string().optional().describe('Child pages move with it. Old routes keep working.'),
+    route: z.string().optional().describe('Child pages move with it. Old addresses the website was exported with keep working; others are not kept.'),
     navLabel: limited(TEXT_LIMITS.navLabel).optional(),
     seoTitle: limited(TEXT_LIMITS.seoTitle).optional(),
     description: limited(TEXT_LIMITS.pageDescription).optional(),
@@ -397,7 +397,7 @@ export const OPERATION_SCHEMAS = {
     keepOldAddress: z
       .boolean()
       .optional()
-      .describe("The page moves to \"/\". Unless false, its old address keeps working and sends visitors there, so old links and bookmarks still reach it. The previous Home page moves to a new address of its own.")
+      .describe("The page moves to \"/\". Unless false, its old address keeps working (once the website was exported with it) and sends visitors there, so old links and bookmarks still reach it. The previous Home page moves to a new address of its own.")
   }),
 
   'node.insert': z.object({

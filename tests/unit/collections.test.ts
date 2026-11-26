@@ -92,7 +92,7 @@ describe('collections', () => {
     expect(() => apply(site(), [{ type: 'collection.create', collectionId: 'prototype' }])).toThrow(/not a collection ID/);
     expect(() => apply(site(), [{ type: 'collection.create', collectionId: 'news', route: '/' }])).toThrow(/Home page/);
     expect(() => apply(site(), [{ type: 'collection.create', collectionId: 'news', route: '/a/b/c/d/' }])).toThrow(/at most 3 levels/);
-    expect(() => apply(site(), [{ type: 'collection.create', collectionId: 'news', route: '/api/' }])).toThrow(/reserved/);
+    expect(() => apply(site(), [{ type: 'collection.create', collectionId: 'news', route: '/api/' }])).toThrow(/kept for the website’s own files/);
     expect(() => apply(site(), [{ type: 'collection.create', collectionId: 'news', fields: { mood: { type: 'icon', label: 'Mood' } } }])).toThrow(/type of string, number, boolean, enum, image, link, richtext, date, reference\.$/);
   });
 
@@ -598,7 +598,7 @@ describe('an imported post keeps its old address (#399)', () => {
 
   it('refuses an old address the site cannot have, Home, its own, or one something holds', () => {
     expect(() => create(blog(), '/?p=12')).toThrow(EngineError);
-    expect(() => create(blog(), '/?p=12/')).toThrow(/lowercase letters, numbers and hyphens/);
+    expect(() => create(blog(), '/?p=12/')).toThrow(/can’t be part of an address: start it with a letter or number, and use only letters, numbers and hyphens/);
     expect(() => create(blog(), '/')).toThrow(/the Home page keeps its own address/);
     expect(() => create(blog(), '/2019/03/01/a/b/')).toThrow(/four levels/);
     expect(() => create(blog(), '/blog/winter-workshop/')).toThrow(/its own address/);

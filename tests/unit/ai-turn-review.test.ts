@@ -378,7 +378,8 @@ describe('reviewing an earlier AI turn (issue 164)', () => {
     const { s } = await make();
     await ok(s.apply({ operations: [{ type: 'site.update', baseUrl: 'https://books.example' }] }, { label: 'Set website address' }));
     await ok(s.apply({ operations: [{ type: 'page.create', pageId: PICKS, title: 'Staff picks', route: '/picks/' }] }, { label: 'Add page' }));
-    // Moved away, its old address kept for it.
+    expect(await s.recordPublished(s.state)).toBeNull();
+    // Moved away once exported, its old address kept for it.
     await ok(s.apply({ operations: [{ type: 'page.update', pageId: PICKS, route: '/staff-picks/' }] }, { label: 'Move page' }));
     expect(await s.beginRun('run_move')).toBeNull();
     await ok(s.apply({ operations: [{ type: 'page.update', pageId: PICKS, route: '/picks/' }] }, { label: 'AI', source: 'ai', runId: 'run_move', history: false }));

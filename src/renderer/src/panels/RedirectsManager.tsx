@@ -48,7 +48,8 @@ function destination(state: ProjectState, r: SiteRedirect, live: LiveRedirect | 
 }
 
 /**
- * Site settings, under Redirects: the old addresses the site keeps working, recorded when pages and posts move or added
+ * Site settings, under Redirects: the old addresses the site keeps working, recorded when pages and posts move from an
+ * address the website was exported with (or a published post's), or added
  * by the author, each with where it sends visitors and what Project health finds wrong with it, and the host the
  * website's 301 rules are written for. Each change is one step of the history, so Undo takes it back.
  */

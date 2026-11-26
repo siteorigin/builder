@@ -21,6 +21,10 @@ import { validateRoute } from '@shared/routes';
 import { heldAsMedia } from '../../src/main/project/versions';
 import { deliverVercelConfig } from '../../src/main/export';
 import { ProjectSession } from '../../src/main/project/session';
+import { withPublished } from '@shared/published';
+
+/** The project once the website has been exported as it is now: its pages' addresses are kept working when they move (#890). */
+const exported = (s: ProjectState): ProjectState => ({ ...s, published: withPublished(s.published, s) ?? s.published });
 
 const run = (s: ProjectState, ...ops: EditOperation[]) => applyOperations(s, ops).state;
 const refusal = (s: ProjectState, ...ops: EditOperation[]) => {
@@ -297,7 +301,7 @@ describe('host redirect rules', () => {
 
 describe('managing redirects', () => {
   it('adds, changes and removes the author’s own redirects, keeping a move’s as it was recorded', () => {
-    let s = site();
+    let s = exported(site());
     const about = pageAt(s, '/about/');
     s = run(s, { type: 'page.update', pageId: about.id, route: '/our-story/' });
     expect(s.site.redirects).toEqual([{ from: '/about/', pageId: about.id }]);

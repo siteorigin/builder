@@ -49,6 +49,8 @@ import { headerHiddenProps } from '@shared/header-logo';
 import { showsPart } from '@shared/page-shell';
 import { pageParents, pageRows, pagesWithin, planRouteMove, routeLeaf } from '@shared/page-tree';
 import { validateRoute } from '@shared/routes';
+import { planPageAddress } from '@shared/page-address';
+import { wasPublishedFor } from '@shared/published';
 import { isVideoContract, videoFieldNotes, type VideoFieldNotes } from '@shared/video';
 import { isArticleDate, pageArticle, todayArticleDate } from '@shared/articles';
 import { findEntry } from '@shared/collections';
@@ -3131,6 +3133,11 @@ function PageSettings({ page, state }: { page: PageDoc; state: ProjectState }) {
   const previewing = useStore((s) => s.mode === 'preview');
   const dev = useStore((s) => !!s.settings?.developerMode);
   const [titleError, setTitleError] = useState<string | null>(null);
+  // Why the address typed in the field can't be saved, shown beside it while the typed text stays.
+  const [addressError, setAddressError] = useState<string | null>(null);
+  // Made Home (or back), the field is another one: a reason given for the last one's text goes with it.
+  const homeNow = !!page && page.id === state.site.homePageId;
+  useEffect(() => setAddressError(null), [homeNow]);
   if (!page) return null;
   // History says which page each setting was changed on: "Change browser title (About)".
   const upd = pageUpdater(page);
@@ -3188,8 +3195,31 @@ function PageSettings({ page, state }: { page: PageDoc; state: ProjectState }) {
             />
           </Field>
         </div>
-        <Field label="Address" hint={isHome ? 'The home page is always at /.' : `Links to this page update automatically when you change it, and its old address keeps working.${inside.length ? ` The ${inside.length === 1 ? 'page' : `${inside.length} pages`} inside it move${inside.length === 1 ? 's' : ''} with it.` : ''}`}>
-          {isHome ? <input className="input" value="/" readOnly aria-label="Page address" /> : <DraftInput value={page.route} onCommit={(v) => upd({ route: v }, 'Change page address')} ariaLabel="Page address" />}
+        <Field
+          label="Address"
+          error={isHome ? null : addressError}
+          hint={
+            isHome
+              ? 'The home page is always at /.'
+              : `Links to this page update automatically when you change it${wasPublishedFor(state, page.route, page.id) ? ', and its old address keeps working' : `. The website hasn’t been exported with it at ${page.route}, so no old address is kept`}.${inside.length ? ` The ${inside.length === 1 ? 'page' : `${inside.length} pages`} inside it move${inside.length === 1 ? 's' : ''} with it.` : ''}`}
+        >
+          {isHome ? (
+            <input className="input" value="/" readOnly aria-label="Page address" />
+          ) : (
+            <DraftInput
+              value={page.route}
+              keep={`page:${page.id}:route`}
+              // Kept while the page can still take an address: not once it is Home, which is always at "/".
+              keepWhile={() => pageAlive(page.id)() && useStore.getState().snapshot?.state.site.homePageId !== page.id}
+              check={(v) => {
+                const plan = planPageAddress(state, page.id, v);
+                return 'error' in plan ? { message: plan.error } : null;
+              }}
+              onProblem={(p) => setAddressError(p?.message ?? null)}
+              onCommit={(v) => upd({ route: v }, 'Change page address')}
+              ariaLabel="Page address"
+            />
+          )}
         </Field>
         {!isHome && <PageLocation page={page} state={state} />}
         {/* The Home page is the website's front door: it is always published. */}

@@ -12,20 +12,24 @@ import { validateState } from '@engine/validate';
 import { generateProject, pageFile, redirectFile } from '@generator/index';
 import { pageParents, pageRows, pagesWithin, planRouteMove, routeFolder, routeLeaf, routeWithin } from '@shared/page-tree';
 import { suggestRoute, validateRoute } from '@shared/routes';
+import { withPublished } from '@shared/published';
 
 const fresh = () => createStarterState('business', 'Test Studio', false);
 const byTitle = (s: ProjectState, title: string) => Object.values(s.pages).find((p) => p.title === title)!;
 const menu = (s: ProjectState) => (headerMenu(s)!.node.props.links ?? []) as ListItem[];
 const menuRows = (s: ProjectState) => menu(s).map((i) => `${i.sub ? '  ' : ''}${i.label}`);
 const routes = (s: ProjectState) => Object.fromEntries(Object.values(s.pages).map((p) => [p.title, p.route]));
+/** The project once an export has delivered it as it is now: its pages' addresses are kept working when they move (#890). */
+const exported = (s: ProjectState): ProjectState => ({ ...s, published: withPublished(s.published, s) ?? s.published });
+const exportedAfter = (s: ProjectState, ops: Parameters<typeof applyOperations>[1]) => exported(applyOperations(s, ops).state);
 
 /** The business starter (Home, About, Contact; all three in the header menu) with a Lookbook page and two inside it. */
 function lookbook(): ProjectState {
-  return applyOperations(fresh(), [
+  return exportedAfter(fresh(), [
     { type: 'page.create', pageId: 'pg_lookbook', title: 'Lookbook', addToNavigation: true },
     { type: 'page.create', pageId: 'pg_kitchens', title: 'Kitchens', route: '/lookbook/kitchens/', addToNavigation: true },
     { type: 'page.create', pageId: 'pg_spring01', title: 'Spring', route: '/lookbook/kitchens/spring/' }
-  ]).state;
+  ]);
 }
 
 describe('page places from addresses', () => {
@@ -101,8 +105,8 @@ describe('moving a page', () => {
 
   it('sends earlier addresses straight to the latest one, and lets a page take its own old address back', () => {
     let s = lookbook();
-    s = applyOperations(s, [{ type: 'page.update', pageId: 'pg_kitchens', route: '/kitchens/' }]).state;
-    s = applyOperations(s, [{ type: 'page.update', pageId: 'pg_kitchens', route: '/rooms/kitchens/' }]).state;
+    s = exportedAfter(s, [{ type: 'page.update', pageId: 'pg_kitchens', route: '/kitchens/' }]);
+    s = exportedAfter(s, [{ type: 'page.update', pageId: 'pg_kitchens', route: '/rooms/kitchens/' }]);
     expect(routes(s)).toMatchObject({ Kitchens: '/rooms/kitchens/', Spring: '/rooms/kitchens/spring/' });
     const files = generateProject(s);
     for (const old of ['/lookbook/kitchens/', '/kitchens/']) expect(files.get(redirectFile(old))).toContain('resolve("/rooms/kitchens/")');
@@ -141,7 +145,7 @@ describe('moving a page', () => {
     };
     expect(refused('/lookbook/kitchens/lookbook/')).toMatch(/“Lookbook” cannot move inside itself/);
     // Spring would end up five levels deep.
-    expect(refused('/a/b/lookbook/')).toMatch(/would move “Spring” to \/a\/b\/lookbook\/kitchens\/spring\/, which is not possible: Routes can be at most four levels deep/);
+    expect(refused('/a/b/lookbook/')).toMatch(/would move “Spring” to \/a\/b\/lookbook\/kitchens\/spring\/, which is not possible: An address can be at most four levels deep/);
     const blocked = applyOperations(s, [{ type: 'page.create', pageId: 'pg_workkit', title: 'Work kitchens', route: '/work/kitchens/' }]).state;
     // A page written with capitals by hand is in the way all the same.
     const capitals = structuredClone(blocked);
@@ -169,6 +173,8 @@ describe('moving a page', () => {
     let s = lookbook();
     const about = byTitle(s, 'About').id;
     const contact = byTitle(s, 'Contact').id;
+    // The spare address was exported for About once: only the batch's start decides it was never served now.
+    s = { ...s, published: { pages: { ...s.published!.pages, '/swap/': about } } };
     // Swapping two addresses through a spare one: both old addresses are in use again, and the spare was never served.
     const swap = applyOperations(s, [
       { type: 'page.update', pageId: about, route: '/swap/' },
@@ -187,8 +193,10 @@ describe('moving a page', () => {
     const made = applyOperations(fresh(), [{ type: 'page.create', pageId: 'pg_team0001', title: 'Team' }, { type: 'page.update', pageId: 'pg_team0001', route: '/about/team/' }]).state;
     expect(made.pages.pg_team0001.route).toBe('/about/team/');
     expect(made.site.redirects).toBeUndefined();
-    // A page that passed through an address keeps nothing there to stop a later move in the same edit.
-    const s = lookbook();
+    // A page that passed through an address keeps nothing there to stop a later move in the same edit, even one an
+    // export once had it at.
+    const exportedOnce = lookbook();
+    const s = { ...exportedOnce, published: { pages: { ...exportedOnce.published!.pages, '/work/kitchens/': byTitle(exportedOnce, 'About').id } } };
     const through = applyOperations(s, [
       { type: 'page.update', pageId: byTitle(s, 'About').id, route: '/work/kitchens/' },
       { type: 'page.update', pageId: byTitle(s, 'About').id, route: '/about-us/' },
@@ -213,7 +221,7 @@ describe('moving a page', () => {
 
   it('never lets a page moved along take another page’s old address, though the page moved on purpose may', () => {
     let s = lookbook();
-    s = applyOperations(s, [{ type: 'page.create', pageId: 'pg_studio01', title: 'Studio', route: '/work/kitchens/' }]).state;
+    s = exportedAfter(s, [{ type: 'page.create', pageId: 'pg_studio01', title: 'Studio', route: '/work/kitchens/' }]);
     s = applyOperations(s, [{ type: 'page.update', pageId: 'pg_studio01', route: '/studio/' }]).state;
     expect(s.site.redirects).toEqual([{ from: '/work/kitchens/', pageId: 'pg_studio01' }]);
     expect(() => applyOperations(s, [{ type: 'page.update', pageId: 'pg_lookbook', route: '/work/' }])).toThrow(/would move “Kitchens” to \/work\/kitchens\/, an old address kept working for “Studio”/);
@@ -230,7 +238,7 @@ describe('moving a page', () => {
     expect(r.results[0].route).toBe('/lookbook/kitchens-2/');
     expect(r.state.pages[r.results[0].pageId as string].route).toBe('/lookbook/kitchens-2/');
     // An old address kept in that folder is not given to the copy.
-    const kept = applyOperations(s, [{ type: 'page.create', pageId: 'pg_kitch002', title: 'Kitchens 2', route: '/lookbook/kitchens-2/' }]).state;
+    const kept = exportedAfter(s, [{ type: 'page.create', pageId: 'pg_kitch002', title: 'Kitchens 2', route: '/lookbook/kitchens-2/' }]);
     const vacated = applyOperations(kept, [{ type: 'page.update', pageId: 'pg_kitch002', route: '/elsewhere/' }]).state;
     expect(applyOperations(vacated, [{ type: 'page.duplicate', pageId: 'pg_kitchens', title: 'Kitchens' }]).results[0].route).toBe('/lookbook/kitchens-3/');
   });
@@ -341,7 +349,7 @@ describe('what else reads a page’s place', () => {
     const elsewhere = applyOperations(s, [{ type: 'page.create', title: 'Baths', route: '/baths/' }]).state;
     expect(checkHeld(elsewhere, ops, base).kind).toBe('apply');
     // An old address kept at the destination meanwhile would be taken over: that is asked again too.
-    const made = applyOperations(s, [{ type: 'page.create', pageId: 'pg_workold', title: 'Work', route: '/work/lookbook/' }]).state;
+    const made = exportedAfter(s, [{ type: 'page.create', pageId: 'pg_workold', title: 'Work', route: '/work/lookbook/' }]);
     const taken = applyOperations(made, [{ type: 'page.update', pageId: 'pg_workold', route: '/work-old/' }]).state;
     expect(taken.site.redirects).toEqual([{ from: '/work/lookbook/', pageId: 'pg_workold' }]);
     expect(checkHeld(taken, ops, base).kind).toBe('changed');

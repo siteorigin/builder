@@ -10,6 +10,10 @@ import { describeDraftLink, publicationPlan } from '@generator/checks';
 import { defFile, defKey, generateProject, isDraftPage, pageFile, publishedState, redirectFile } from '@generator/index';
 import { draftLinksStop, draftSourceNotes, editedGeneratedFile, isGeneratedReadme, leaveOutDrafts, projectReadme, publishedChanged, pruneWebsiteAssets } from '../../src/main/export';
 import { sha } from '../../src/main/project/fsutil';
+import { withPublished } from '@shared/published';
+
+/** The project once the website has been exported as it is now: its pages' addresses are kept working when they move (#890). */
+const exported = (s: ProjectState): ProjectState => ({ ...s, published: withPublished(s.published, s) ?? s.published });
 
 const fresh = () => createStarterState('business', 'Test Studio', false);
 const byTitle = (s: ProjectState, title: string) => Object.values(s.pages).find((p) => p.title === title)!;
@@ -117,8 +121,8 @@ describe('what the website publishes', () => {
 
   it('leaves out drafts and the old addresses that lead to them, and nothing else', () => {
     let { s, draft } = withDraft('Shop', '/shop/');
-    s = applyOperations(s, [{ type: 'page.create', pageId: 'pg_books001', title: 'Books', route: '/shop/books/' }]).state;
-    s = applyOperations(s, [{ type: 'page.update', pageId: draft, route: '/winter-shop/' }]).state;
+    s = exported(applyOperations(s, [{ type: 'page.create', pageId: 'pg_books001', title: 'Books', route: '/shop/books/' }]).state);
+    s = exported(applyOperations(s, [{ type: 'page.update', pageId: draft, route: '/winter-shop/' }]).state);
     s.site.redirects = [
       { from: '/winter-preview/', pageId: draft },
       { from: '/old-books/', pageId: 'pg_books001' }

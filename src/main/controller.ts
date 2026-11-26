@@ -6,7 +6,7 @@ import { basename, dirname, extname, isAbsolute, join, relative, sep } from 'nod
 import { randomUUID } from 'node:crypto';
 import type { AiTurnReview, ComponentExportResult, ConflictChoice, ComponentImportResult, SavedComponent, SavedInsertPlace, SavedInsertResult, SaveToLibraryResult, PostImportKind, PostImportResult, PostImportReviewResult, CreateProjectOptions, DuplicateProjectOptions, DuplicateProjectResult, ExportFormat, ExportNote, ExportResult, FileText, FontFileData, ImportChoices, ImportReview, ImportReviewRow, LocalWorkspaceState, ProjectSnapshot, ProgressEvent, RecentExport, RestoreVersionResult, RuntimeState, StorageInfo, VersionReview, WebCopyPlan, WebsiteTools } from '@shared/api';
 import { validateOperation, type ApplyResult, type EditBatch, type EditOperation } from '@shared/ops';
-import type { AssetRecord, ProjectState, SourceDoc } from '@shared/types';
+import type { AssetRecord, ProjectState, PublishedDoc, SourceDoc } from '@shared/types';
 import type { SourceSettingsDraft } from '@shared/api';
 import { createStarterState, STARTER_ASSETS, starterProblem } from '@catalogue/starters';
 import { findTheme } from '@catalogue/index';
@@ -37,7 +37,9 @@ import { readContained } from './posts-import/files';
 import { MAX_PICTURE_BYTES, type ParsedSource } from './posts-import/source';
 import { heicDecoder, type PhotoDecoder } from './project/photo-convert';
 import { findMissingAssetFiles, missingFileDiagnostics, missingParts } from './project/asset-files';
-import { atomicWrite, readIfExists, sha } from './project/fsutil';
+import { atomicWrite, readIfExists, sha, toJson } from './project/fsutil';
+import { PUBLISHED_FILE, publishedDocProblem, withPublished } from '@shared/published';
+import { collectionRouteOwner } from '@shared/collections';
 import { fontCoverage } from './project/media';
 import { isValidFontAsset } from '@shared/fonts';
 import { photoMetadata } from './project/photo-metadata';
@@ -2851,6 +2853,10 @@ export class Controller {
       await settleServerHook(folder, publishedState(snap.state));
       // The exported source is the published site; its drafts are kept to edit but not built.
       const live = publishedState(snap.state);
+      // The project handed over knows the addresses this export publishes, as this one does once it records them: added
+      // to the record the copied folder holds, which is the project's as it is on disk.
+      const record = withPublished(await copiedRecord(folder, snap.state.published), live);
+      if (record) await fs.writeFile(join(folder, PUBLISHED_FILE), toJson(record));
       // The forms the published site shows that visitors cannot send, each leading to its settings.
       notes.push(...websiteFormNotes(snap.state));
       warn(...draftSourceNotes(snap.state), ...sectionLinkWarnings(live), ...unlinkedButtonWarnings(live), ...unlinkedMenuLinkWarnings(live), ...emptySectionWarnings(live), ...formNameWarnings(live), ...runtimeFontWarnings(live));
@@ -2868,6 +2874,7 @@ export class Controller {
       const problem = await this.publish(s, folder, dest, format, `${slugify(snap.state.site.name) || 'website'}-source`);
       if (problem) return { ok: false, message: problem, warnings: [] };
       this.exportPaths.add(dest);
+      await this.notePublished(s, live, warn);
       this.recordExport(s, { kind: 'source', format, path: dest, revision: snap.revision, exportedAt: new Date().toISOString(), notes });
       return { ok: true, path: dest, message: `${format === 'zip' ? 'Source project exported as a ZIP file.' : 'Source project exported.'} ${PRIVATE_FILES_LEFT_OUT}`, warnings: notes.map((n) => n.message), notes, revision: snap.revision };
     });
@@ -3100,6 +3107,7 @@ export class Controller {
     const hosting = notFoundHostNote(basePath(state), redirectHost(live.site));
     const exportedAt = new Date().toISOString();
     this.exportPaths.add(dest);
+    await this.notePublished(s, live, warn);
     if (format === 'zip') {
       this.recordExport(s, { kind: 'site', format, path: dest, revision, exportedAt, notes });
       return { ok: true, path: dest, message: `Exported ${exported} as a ZIP file.`, warnings: warnings(), notes, revision, hosting };
@@ -3117,6 +3125,22 @@ export class Controller {
   private async previewAndRecord(s: ProjectSession, record: RecentExport, base: string): Promise<string | undefined> {
     const previewUrl = this.session === s ? await this.previews.serve(record.path, base).catch(() => undefined) : undefined;
     return this.recordExport(s, { ...record, previewUrl }) ? previewUrl : undefined;
+  }
+
+  /**
+   * Record the page addresses an export delivered, so pages that move from them keep them working. The export is done
+   * either way: a record that cannot be written is a note, since a page moved later then leaves no old address.
+   */
+  private async notePublished(s: ProjectSession, live: ProjectState, warn: (...messages: string[]) => void) {
+    const problem = this.session !== s ? 'the project was closed before the export finished' : await s.recordPublished(live).catch((e: unknown) => (e instanceof Error ? e.message : String(e)));
+    if (problem) return warn(`The exported page addresses couldn’t be recorded in the project (${problem.replace(/\.$/, '')}), so a page moved before the next export won’t keep its old address working. Export again once the project can be saved.`);
+    // A page moved while the export ran left an address the export has just published, with nothing kept there.
+    for (const p of Object.values(live.pages)) {
+      const now = Object.hasOwn(s.state.pages, p.id) ? s.state.pages[p.id] : undefined;
+      const at = (route: string) => route.toLowerCase() === p.route.toLowerCase();
+      if (now && now.route !== p.route && !Object.values(s.state.pages).some((q) => at(q.route)) && !liveRedirects(s.state).some((r) => at(r.from)) && !collectionRouteOwner(s.state, p.route))
+        warn(`“${now.title}” moved from ${p.route} to ${now.route} while the website was being exported, so ${p.route} isn’t kept working. Add it in Site settings, under Redirects, to send visitors on.`);
+    }
   }
 
   /**
@@ -3203,3 +3227,14 @@ export function friendlyError(msg: string): string {
   return msg.length > 200 ? 'Setting up the website tools failed. Open Diagnostics for details, then choose Reinstall website tools.' : msg;
 }
 
+/** The record of exported addresses a copied project folder holds, or `fallback` when it holds none it can read. */
+async function copiedRecord(folder: string, fallback: PublishedDoc | undefined): Promise<PublishedDoc | undefined> {
+  const text = await readIfExists(join(folder, PUBLISHED_FILE)).catch(() => null);
+  if (text === null) return fallback;
+  try {
+    const doc: unknown = JSON.parse(text);
+    return publishedDocProblem(doc) ? fallback : (doc as PublishedDoc);
+  } catch {
+    return fallback;
+  }
+}

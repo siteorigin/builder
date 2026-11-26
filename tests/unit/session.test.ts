@@ -113,6 +113,8 @@ describe('project session', () => {
 
   it('writes, undoes and reopens an old address kept working, and gives its route back to a page (#37)', async () => {
     const { dir, s } = await make();
+    // The website was exported as it is: its pages' addresses are kept working when they move (#890).
+    expect(await s.recordPublished(s.state)).toBeNull();
     const [homeId, aboutId] = s.state.site.pageOrder;
     const aboutFile = join(dir, 'src/routes/about/+page.svelte');
     const redirects = (f: string) => readFileSync(f, 'utf8').includes('http-equiv="refresh"');
@@ -130,6 +132,8 @@ describe('project session', () => {
     await s.close();
     const again = await ProjectSession.open(dir, 'test');
     expect(again.state.site.redirects).toEqual([{ from: '/about/', pageId: aboutId }]);
+    // Exported again, with Home at /home/.
+    expect(await again.recordPublished(again.state)).toBeNull();
     // Home again: About takes /about/ back, and the page replaces the redirect in the same file.
     await again.apply({ operations: [{ type: 'page.setHome', pageId: homeId }] }, { label: 'Change home page' });
     expect(redirects(aboutFile)).toBe(false);
@@ -145,6 +149,8 @@ describe('project session', () => {
 
   it('refuses an undo that would put a page on an address changed outside the app (#37)', async () => {
     const { dir, s } = await make();
+    // The website was exported as it is: its pages' addresses are kept working when they move (#890).
+    expect(await s.recordPublished(s.state)).toBeNull();
     const [, aboutId, contactId] = s.state.site.pageOrder;
     await s.apply({ operations: [{ type: 'page.update', pageId: contactId, route: '/sales/' }] }, { label: 'Move Contact' });
     await s.close();
@@ -184,6 +190,8 @@ describe('project session', () => {
 
   it('waits for an outside edit the project has not loaded yet before undoing (#37)', async () => {
     const { dir, s } = await make();
+    // The website was exported as it is: its pages' addresses are kept working when they move (#890).
+    expect(await s.recordPublished(s.state)).toBeNull();
     const [, aboutId, contactId] = s.state.site.pageOrder;
     await s.apply({ operations: [{ type: 'page.update', pageId: contactId, route: '/sales/' }] }, { label: 'Move Contact' });
     // Written while the project is open, before anything reloads it.

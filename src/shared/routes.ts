@@ -194,29 +194,32 @@ export function normalizeRoute(input: string): string {
  * levels deep in another script well within the longest path a file system takes; ASCII never reaches them.
  */
 export function validateSegment(seg: string): string | null {
-  if (!seg) return 'Routes cannot contain empty segments.';
-  if (seg === '.' || seg === '..') return 'Routes cannot contain "." or "..".';
+  if (!seg) return 'An address cannot have an empty part between two slashes.';
+  if (seg === '.' || seg === '..') return 'An address cannot have "." or ".." as a part.';
   // Plain ASCII addresses, which every Latin title gets, need nothing more.
-  if (/^[a-z0-9][a-z0-9-]*$/.test(seg)) return seg.length > 60 ? 'Route segments must be 60 characters or fewer.' : null;
-  if (!/^[\p{L}\p{Nd}]/u.test(seg) || !addressChars(seg).every(Boolean)) return `"${seg}" may only contain lowercase letters, numbers and hyphens.`;
-  if (pointCount(seg) > SEGMENT_CHARS) return 'Route segments must be 60 characters or fewer.';
-  if (utf8Bytes(seg) > SEGMENT_BYTES) return 'Route segments must be 60 characters or fewer, and fewer in scripts whose letters take more room (about 40 in Japanese, Chinese or Korean).';
+  if (/^[a-z0-9][a-z0-9-]*$/.test(seg)) return seg.length > 60 ? SEGMENT_TOO_LONG : null;
+  if (!/^[\p{L}\p{Nd}]/u.test(seg) || !addressChars(seg).every(Boolean)) return `"${seg}" can’t be part of an address: start it with a letter or number, and use only letters, numbers and hyphens.`;
+  if (pointCount(seg) > SEGMENT_CHARS) return SEGMENT_TOO_LONG;
+  if (utf8Bytes(seg) > SEGMENT_BYTES) return 'Each part of an address can be at most 60 characters, and fewer in scripts whose letters take more room (about 40 in Japanese, Chinese or Korean).';
   // One spelling per address, so two that look the same, or share a folder on disk, are the same route.
   const folded = foldAddress(seg);
   return folded === seg ? null : `"${seg}" must be written "${folded}".`;
 }
 
-/** Returns an error message, or null when the route is valid. */
+/** What a part of an address too long is told. */
+const SEGMENT_TOO_LONG = 'Each part of an address can be at most 60 characters.';
+
+/** Returns an error message, in the words the editor uses for an address, or null when the route is valid. */
 export function validateRoute(route: string): string | null {
   if (route === '/') return null;
-  if (!route.startsWith('/') || !route.endsWith('/')) return 'Routes must start and end with "/".';
+  if (!route.startsWith('/') || !route.endsWith('/')) return 'An address must start and end with "/".';
   const segments = route.slice(1, -1).split('/');
-  if (segments.length > 4) return 'Routes can be at most four levels deep.';
+  if (segments.length > 4) return 'An address can be at most four levels deep.';
   for (const seg of segments) {
     const err = validateSegment(seg);
     if (err) return err;
   }
-  if (RESERVED.has(segments[0]) || segments[0].startsWith('_')) return `"/${segments[0]}/" is reserved.`;
+  if (RESERVED.has(segments[0]) || segments[0].startsWith('_')) return `The address "/${segments[0]}/" is kept for the website’s own files. Choose another.`;
   return null;
 }
 

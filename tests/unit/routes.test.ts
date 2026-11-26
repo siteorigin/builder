@@ -46,13 +46,13 @@ describe('normalizeRoute', () => {
     expect(normalizeRoute('/_app/')).toBe('/_app/');
     expect(validateRoute(normalizeRoute('/_app/'))).not.toBeNull();
     expect(validateRoute(normalizeRoute('/a/../b/'))).toMatch(/"\."/);
-    expect(validateRoute(normalizeRoute('/a&b/'))).toMatch(/may only contain/);
+    expect(validateRoute(normalizeRoute('/a&b/'))).toMatch(/can’t be part of an address/);
     // A full-width slash is not a folder, and a segment of accents alone is not the Home page.
     expect(normalizeRoute('/a／b/')).toBe('/a／b/');
-    expect(validateRoute(normalizeRoute('/a／b/'))).toMatch(/may only contain/);
+    expect(validateRoute(normalizeRoute('/a／b/'))).toMatch(/can’t be part of an address/);
     expect(normalizeRoute('/\u0301/')).not.toBe('/');
     expect(normalizeRoute('/a/\u0301/b/')).toBe('/a/\u0301/b/');
-    expect(validateRoute(normalizeRoute('/\u0301/'))).toMatch(/may only contain/);
+    expect(validateRoute(normalizeRoute('/\u0301/'))).toMatch(/can’t be part of an address/);
   });
 });
 
@@ -86,7 +86,7 @@ describe('addresses in any script (#36)', () => {
     for (const t of ['аʹʼб', 'аʹ\u0301ʼб', 'а-ʹʼб', 'ʹʼб']) expect(validateRoute(`/${addressSlug(t)}/`), t).toBeNull();
     expect(addressSlug('аʹʼб')).toBe('а-б');
     expect(validateRoute('/обʼєкт/')).toBeNull();
-    expect(validateRoute('/oʼneil/')).toMatch(/may only contain/);
+    expect(validateRoute('/oʼneil/')).toMatch(/can’t be part of an address/);
     for (const t of ['お問い合わせ', 'Привет Мир', 'Мой дом', 'Επικοινωνία', 'ΟΔΟΣ ΕΡΜΟΥ', '한국어 페이지', 'हिन्दी पृष्ठ', 'ภาษาไทย', 'צור קשר', '联系我们', '𠮷野家', 'ｶﾌｪ', 'Ἀθῆναι ᾳ']) {
       expect(validateRoute(`/${addressSlug(t)}/`), t).toBeNull();
     }
@@ -161,8 +161,8 @@ describe('addresses in any script (#36)', () => {
     expect(normalizeRoute('/οσ/')).toBe('/ος/');
     for (const typed of ['/お問い合わせ/', encodeURI('/会社/概要/'), '/Привет Мир/', '/ｶﾌｪ/', '/οσ/']) expect(validateRoute(normalizeRoute(typed)), typed).toBeNull();
     // An escaped slash is not a folder, and a malformed escape is refused rather than guessed at.
-    expect(validateRoute(normalizeRoute('/a%2Fb/'))).toMatch(/may only contain/);
-    expect(validateRoute(normalizeRoute('/%E3%81/'))).toMatch(/may only contain/);
+    expect(validateRoute(normalizeRoute('/a%2Fb/'))).toMatch(/can’t be part of an address/);
+    expect(validateRoute(normalizeRoute('/%E3%81/'))).toMatch(/can’t be part of an address/);
   });
 
   it('refuses any other spelling of an address, naming the one to use', () => {
@@ -174,12 +174,12 @@ describe('addresses in any script (#36)', () => {
     expect(validateRoute('/οσ/')).toMatch(/must be written "ος"/);
     expect(validateRoute('/ᾳ/')).toMatch(/must be written "αι"/);
     // Latin letters are plain a–z, as they always were; punctuation and a word that starts with a mark are refused.
-    expect(validateRoute('/café/')).toMatch(/may only contain/);
-    expect(validateRoute('/About/')).toMatch(/may only contain/);
-    expect(validateRoute('/お・問/')).toMatch(/may only contain/);
-    expect(validateRoute('/-お/')).toMatch(/may only contain/);
-    expect(validateRoute('/\u3099お/')).toMatch(/may only contain/);
-    expect(validateRoute('/_お問い合わせ/')).toMatch(/may only contain/);
+    expect(validateRoute('/café/')).toMatch(/can’t be part of an address/);
+    expect(validateRoute('/About/')).toMatch(/can’t be part of an address/);
+    expect(validateRoute('/お・問/')).toMatch(/can’t be part of an address/);
+    expect(validateRoute('/-お/')).toMatch(/can’t be part of an address/);
+    expect(validateRoute('/\u3099お/')).toMatch(/can’t be part of an address/);
+    expect(validateRoute('/_お問い合わせ/')).toMatch(/can’t be part of an address/);
   });
 
   it('escapes an address for a URL and reads an escaped one back', () => {

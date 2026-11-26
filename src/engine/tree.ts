@@ -183,6 +183,18 @@ export function headerMenu(state: ProjectState): { node: InstanceNode; schema: E
   return shellMenu(state, 'header');
 }
 
+/**
+ * The links of the shared header's menu (its own, or its design's defaults) and the most it holds, with whether it is
+ * full: a new page's link then has no room. Null for a site whose header has no menu.
+ */
+export function headerMenuRoom(state: ProjectState): { links: Array<Record<string, unknown>>; max?: number; full: boolean } | null {
+  const menu = headerMenu(state);
+  if (!menu) return null;
+  const links = (menu.node.props.links ?? menu.schema.default ?? []) as Array<Record<string, unknown>>;
+  const max = menu.schema.max;
+  return { links, max, full: max !== undefined && links.length >= max };
+}
+
 /** The shared header's or footer's instance whose `links` list (label + link items) is that part's menu, if there is one. */
 export function shellMenu(state: ProjectState, part: 'header' | 'footer'): { node: InstanceNode; schema: Extract<ComponentDefinition['properties'][string], { type: 'list' }> } | null {
   const shell = state.site.shell[part];
