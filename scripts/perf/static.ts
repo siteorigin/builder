@@ -185,13 +185,17 @@ function packageOf(file: string): { name: string; root: string } | null {
   return { name, root: parts.slice(0, at + 1).join(sep) + sep + name };
 }
 
-/** Every local file `entries` load statically (relative specifiers only), entries included. */
-export function localClosure(entries: string[]): string[] {
+/** Every local file `entries` load statically (relative specifiers only), entries included; ones not there go to `missing`. */
+export function localClosure(entries: string[], missing?: Set<string>): string[] {
   const seen = new Set<string>();
   const todo = [...entries];
   while (todo.length) {
     const file = todo.pop()!;
-    if (seen.has(file) || !existsSync(file)) continue;
+    if (seen.has(file)) continue;
+    if (!existsSync(file)) {
+      missing?.add(`${basename(file)} (a built file that is not there)`);
+      continue;
+    }
     seen.add(file);
     if (!/\.(m|c)?js$/.test(file)) continue;
     const { imports, requires } = specifiers(readFileSync(file, 'utf8'));
@@ -260,7 +264,8 @@ export function analyzeBuild(outDir: string): StaticReport {
   const eager = new Set([...scripts, ...styles]);
   const later = listFiles(join(rendererDir, 'assets')).filter((f) => /\.(js|css)$/.test(f) && !eager.has(f));
   const mainDir = join(outDir, 'main');
-  const mainEntry = localClosure([join(mainDir, 'index.js')]);
+  const unresolved = new Set<string>();
+  const mainEntry = localClosure([join(mainDir, 'index.js')], unresolved);
   const rows: Record<string, StaticRow> = {
     'renderer.script': row(outDir, scripts),
     'renderer.style': row(outDir, styles),
@@ -269,7 +274,6 @@ export function analyzeBuild(outDir: string): StaticReport {
     preload: row(outDir, localClosure(readdirSync(join(outDir, 'preload')).filter((f) => /\.(m|c)?js$/.test(f)).map((f) => join(outDir, 'preload', f))))
   };
   for (const f of readdirSync(mainDir).sort()) if (f !== 'index.js' && f.endsWith('.js')) rows[`worker.${basename(f, extname(f))}`] = row(outDir, localClosure([join(mainDir, f)]));
-  const unresolved = new Set<string>();
   const packages = packageClosure(mainEntry, unresolved);
   return { schemaVersion: 1, rows, packages, unresolved: [...unresolved].sort() };
 }

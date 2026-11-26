@@ -156,6 +156,7 @@ describe('open metrics', () => {
     expect(open.measure(trace((x) => x.name === 'canvas.ready' && x.t === 2500), facts).missing).toEqual(['canvas.ready']);
     expect(open.measure(trace((x) => x.name === 'canvas.ready' && x.t === 2500), facts).metrics['open.canvasReady']).toBeUndefined();
     expect(open.measure(trace((x) => x.name === 'scenario.end'), facts).missing).toEqual(['scenario.end (main)']);
+    expect(open.measure(trace((x) => x.name === 'session.publish'), facts).missing).toEqual(['session.publish']);
   });
 });
 
@@ -244,6 +245,22 @@ describe('edit metrics', () => {
     // A sum of one variant would look faster than it is.
     expect(edit.measure(trace((x) => x.name === 'session.generate' && x.attrs?.variant === 'clean'), facts).missing).toEqual(['session.generate (clean)']);
     expect(edit.measure(trace((x) => x.name === 'session.generate' && x.attrs?.variant === 'clean'), facts).metrics['edit.generate']).toBeUndefined();
+    expect(edit.measure(trace((x) => x.name === 'session.generate' && x.attrs?.variant === 'dev'), facts).missing).toEqual(['session.generate (dev)']);
+  });
+
+  it('count every generation of each variant, and refuse one without a length', () => {
+    const twice = new Trace([...trace().records, span('session.generate', 10_036, 2, { attrs: { variant: 'dev' } })]);
+    expect(edit.measure(twice, facts).metrics['edit.generate'].value).toBe(9);
+    const lengthless = new Trace(trace().records.map((x) => (x.name === 'session.generate' && x.attrs?.variant === 'dev' ? { ...x, kind: 'mark' as const, ms: undefined } : x)));
+    expect(edit.measure(lengthless, facts).missing).toEqual(['edit.generate (a finite time)']);
+  });
+
+  it('leave the bytes sent missing when a snapshot’s size could not be told, never short', () => {
+    const unsized = new Trace(trace().records.map((x) => (x.name === 'controller.snapshotSent' && x.t === 10_600 ? { ...x, attrs: { revision: target, bytes: null } } : x)));
+    const got = edit.measure(unsized, facts);
+    expect(got.missing).toEqual(['edit.snapshotBytes (a snapshot whose size could not be told)']);
+    expect(got.metrics['edit.snapshotBytes']).toBeUndefined();
+    expect(got.metrics['edit.snapshotsSent'].value).toBe(3);
   });
 });
 

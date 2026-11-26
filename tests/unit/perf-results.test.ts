@@ -161,5 +161,14 @@ describe('benchmark results, at their edges', () => {
     const t = Trace.parse([JSON.stringify(rec('second', 5, { seq: 2 })), 'broken', JSON.stringify(rec('first', 5, { seq: 1 })), JSON.stringify(rec('later', 9))].join('\n'));
     expect(t.records.map((x) => x.name)).toEqual(['first', 'second', 'later']);
     expect(t.incomplete).toBe(true);
+    // JSON that is not a record is as unreadable as a line cut short.
+    const odd = Trace.parse(['null', '{"name":"x"}', JSON.stringify(rec('kept', 1))].join('\n'));
+    expect([odd.records.map((x) => x.name), odd.incomplete]).toEqual([['kept'], true]);
+  });
+
+  it('never print an improvement for a metric whose unit changed', () => {
+    const a = result([passed({ x: { unit: 'ms', values: [100] } })]);
+    const b = result([passed({ x: { unit: 'count', values: [2] } })]);
+    expect(changeMarkdown(compareResults(a, b), a, b)).toContain('| x | 100 ms | 2 | incompatible (units differ) |');
   });
 });

@@ -24,4 +24,4 @@ if (tools.length) console.error(`Note: the fixtures' website tools were installe
 const tree = (r: RunResult) => `${r.build.commit ?? r.build.head ?? '?'}${r.build.dirty ? ' (dirty checkout)' : ''}, ${r.config.iterations} iterations`;
 if (values.markdown) console.log(changeMarkdown(changes, before, after));
 else console.log(`before: ${tree(before)}\nafter:  ${tree(after)}\n\n${changeTables(changes)}`);
-process.exitCode = changes.some((c) => c.status !== 'compared') ? 1 : 0;
+process.exitCode = changes.some((c) => c.status !== 'compared' || c.metrics.some((m) => m.verdict === 'incompatible')) ? 1 : 0;

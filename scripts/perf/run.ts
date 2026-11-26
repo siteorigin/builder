@@ -8,13 +8,12 @@
  * iterations and, when all of them passed, the median and spread of every metric; and it exits 1 when any case failed.
  */
 import { constants, cpSync, existsSync, mkdirSync, readdirSync, readFileSync, renameSync, rmSync, writeFileSync } from 'node:fs';
-import { createRequire } from 'node:module';
 import { arch, cpus, platform, release, totalmem } from 'node:os';
 import { dirname, join, relative, resolve } from 'node:path';
 import { parseArgs } from 'node:util';
 import type { ElectronApplication, Page } from 'playwright';
 import { buildIdentity, launchApp, sessionEnv } from '../../tests/driver/session';
-import { killTree, ownedEntries, processTable } from '../../tests/driver/processes';
+import { killTree, ownedEntries, processTable, type ProcessEntry } from '../../tests/driver/processes';
 import { PERF_ENV, PERF_GLOBAL, type PerfAttrs } from '../../src/shared/perf';
 import type { BuilderApi } from '../../src/shared/api';
 import { registerBuiltinPacks } from '../../src/main/packs/build';
@@ -82,27 +81,45 @@ function paths(dir: string, profile: string) {
   return p;
 }
 
+/** Ending a launch failed: something of it may still run, so the run stops rather than measure beside it. */
+class TeardownError extends Error {}
+
+/** A launch, with the identity of its main process read while it is surely running, for its teardown to check against. */
 async function start(appDir: string, dir: string, profile: string, trace: string | null) {
   const env = { ...sessionEnv(paths(dir, profile)), ...(trace ? { [PERF_ENV]: trace } : {}) };
-  return launchApp({ env, cwd: appDir, timeoutMs: 120_000, viewport: { width: 1440, height: 900 } });
+  const launched = await launchApp({ env, cwd: appDir, timeoutMs: 120_000, viewport: { width: 1440, height: 900 } });
+  const root = (await processTable().catch(() => [])).filter((p) => p.pid === launched.pid);
+  return { ...launched, root };
 }
 
 /**
- * Quit the app, then end anything it started that outlived it (a preview server, an install). Files are only put back
- * once nothing of the app is left: a process that would not end stops the run rather than share the next iteration.
+ * Quit the app, then end anything it started that outlived it (a preview server, an install). Ownership is judged
+ * against the identity read at launch, so a pid the system has since given to another process is never signalled.
+ * Files are only put back once nothing of the app is left: a process that would not end, or a process table that
+ * cannot be read, stops the run rather than share the next iteration with it.
  */
-async function stop(app: ElectronApplication, pid: number) {
-  const known = ownedEntries(await processTable(), pid);
+async function stop(app: ElectronApplication, pid: number, root: ProcessEntry[]) {
+  let known = root;
+  try {
+    known = [...root, ...ownedEntries(await processTable(), pid, root)];
+  } catch {
+    // Quit anyway; the sweep below reads the table again and stops the run if it still cannot.
+  }
   let timer: NodeJS.Timeout | undefined;
   await Promise.race([app.close().catch(() => undefined), new Promise<void>((r) => (timer = setTimeout(r, 30_000)))]);
   clearTimeout(timer);
-  const { survivors } = await killTree(pid, { known });
-  if (survivors.length) throw new Error(`Processes the app started would not end (${survivors.map((s) => s.pid).join(', ')}): stopping before the next iteration shares the machine with them.`);
+  let survivors: ProcessEntry[];
+  try {
+    ({ survivors } = await killTree(pid, { known }));
+  } catch (e) {
+    throw new TeardownError(`Could not check that the app's processes ended: ${(e as Error).message}`);
+  }
+  if (survivors.length) throw new TeardownError(`Processes the app started would not end (${survivors.map((s) => s.pid).join(', ')}): stopping before the next iteration shares the machine with them.`);
 }
 
 /** Open `dir` in a launch with no marks, trusting it as the trust prompt would, and wait for its canvas. */
 async function openUntimed(appDir: string, scratch: string, profile: string, dir: string) {
-  const { app, win, pid } = await start(appDir, scratch, profile, null);
+  const { app, win, pid, root } = await start(appDir, scratch, profile, null);
   try {
     await withDeadline(
       (async () => {
@@ -114,7 +131,7 @@ async function openUntimed(appDir: string, scratch: string, profile: string, dir
       'the warm-up open'
     );
   } finally {
-    await stop(app, pid);
+    await stop(app, pid, root);
   }
 }
 
@@ -167,7 +184,7 @@ async function iterate(opts: Options, c: { dir: string; profile: string; project
     const error = { stage: 'launch', message: (e as Error).message.split('\n')[0] };
     return opts.chain.map((s) => ({ scenario: s.name, ok: false, error }));
   }
-  const { app, win, pid } = launched;
+  const { app, win, pid, root } = launched;
   try {
     const ctx: ScenarioContext = {
       app,
@@ -178,22 +195,18 @@ async function iterate(opts: Options, c: { dir: string; profile: string; project
       settleMs: opts.settleMs,
       restoredAt: c.restoredAt,
       mark: (name, attrs) => mark(app, win, name, attrs),
-      waitTrace: async (done, what, timeoutMs = 10_000) => {
-        const t = await poll(trace, done, timeoutMs);
-        if (!done(t)) throw new Error(`timed out after ${timeoutMs / 1000}s waiting for ${what} in the trace`);
-        return t;
-      }
+      waitTrace: (done, timeoutMs = 10_000) => poll(trace, done, timeoutMs)
     };
     return await runChain(opts.chain, ctx, () => poll(trace, () => false, 0), SCENARIO_MS);
   } finally {
-    await stop(app, pid);
+    await stop(app, pid, root);
   }
 }
 
-/** Electron's version as installed in `dir`, or null. */
+/** Electron's version as installed in `dir`'s own node_modules (never a folder above it), or null. */
 function electronVersion(dir: string): string | null {
   try {
-    return (createRequire(join(dir, 'package.json'))('electron/package.json') as { version: string }).version;
+    return (JSON.parse(readFileSync(join(dir, 'node_modules', 'electron', 'package.json'), 'utf8')) as { version: string }).version;
   } catch {
     return null;
   }
@@ -234,6 +247,8 @@ async function main() {
       toolCaches(project, join(dir, 'tools-start'), false);
       restore(profile, join(dir, 'profile-start'));
     } catch (e) {
+      // A launch that could not be ended may still be running: nothing more is measured beside it.
+      if (e instanceof TeardownError) throw e;
       // A fixture that cannot be set up fails its own cases; the other fixtures are still measured.
       const error = { stage: 'warm-up', message: (e as Error).message.split('\n')[0] };
       console.log(`perf: ${name}: FAILED to set up (${error.message})`);

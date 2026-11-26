@@ -50,6 +50,7 @@ describe('the static report', () => {
   it('reads static imports only, minified or not, and never one written inside a string or a comment', () => {
     expect(specifiers('import{a}from"x";import \'y\';export*from"z";const q=import("lazy");import.meta.url;')).toEqual({ imports: ['x', 'y', 'z'], requires: [] });
     expect(specifiers('const a = require("a"); x.require("not"); require(name); require("b", 2);').requires).toEqual(['a']);
+    expect(specifiers('export { x as y } from "re"; export const z = 1;').imports).toEqual(['re']);
     // The generator's templates of website code, and a comment: text, not imports.
     expect(specifiers('const page = `import { onMount } from "svelte";`; // import x from "y"\n/* require("z") */ export const s = \'import "w"\';')).toEqual({ imports: [], requires: [] });
   });
@@ -109,6 +110,9 @@ describe('the static report', () => {
     // never loads are not part of startup.
     expect(Object.keys(r.packages)).toEqual(['bigpkg', 'depdep']);
     expect(r.unresolved).toEqual([]);
+    // A built chunk the entry imports that is not there is said, not left out quietly.
+    appendFileSync(join(root, 'out/main/index.js'), 'import "./chunks/gone-x9.js";\n');
+    expect(analyzeBuild(join(root, 'out')).unresolved).toEqual(['gone-x9.js (a built file that is not there)']);
     expect(r.packages.bigpkg).toMatchObject({ version: '2.0.0', files: 2 });
     expect(r.packages.depdep).toMatchObject({ version: '1.0.0', files: 2 });
   });

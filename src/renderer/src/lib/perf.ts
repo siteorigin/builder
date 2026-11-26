@@ -78,12 +78,17 @@ const host = (typeof window === 'undefined' ? {} : window) as unknown as { __REA
 if (bridge) {
   const existing = host.__REACT_DEVTOOLS_GLOBAL_HOOK__;
   if (existing) {
-    // Someone else's hook (React DevTools): it keeps every call and answer, and the count rides along.
+    // Someone else's hook (React DevTools): it keeps every call and answer, and the count rides along. One that cannot
+    // be wrapped is left alone, and the trace says so: its commits go uncounted rather than the editor not loading.
     const theirs = existing.onCommitFiberRoot;
-    existing.onCommitFiberRoot = function (this: DevtoolsHook, ...args: unknown[]) {
-      committed();
-      return typeof theirs === 'function' ? theirs.apply(this, args) : undefined;
-    };
+    try {
+      existing.onCommitFiberRoot = function (this: DevtoolsHook, ...args: unknown[]) {
+        committed();
+        return typeof theirs === 'function' ? theirs.apply(this, args) : undefined;
+      };
+    } catch {
+      perfMark('perf.reactCommitsUncounted');
+    }
   } else {
     let renderers = 0;
     host.__REACT_DEVTOOLS_GLOBAL_HOOK__ = {

@@ -2,8 +2,8 @@
   "schemaVersion": 1,
   "rows": {
     "renderer.script": {
-      "raw": 9037664,
-      "gzip": 2158784,
+      "raw": 9038784,
+      "gzip": 2159174,
       "files": []
     },
     "renderer.style": {
@@ -17,8 +17,8 @@
       "files": []
     },
     "main": {
-      "raw": 4486913,
-      "gzip": 1288050,
+      "raw": 4488432,
+      "gzip": 1288599,
       "files": []
     },
     "preload": {
@@ -50,8 +50,8 @@
   "packages": {
     "@anthropic-ai/sdk": {
       "version": "1.12.0",
-      "files": 256,
-      "bytes": 1604404
+      "files": 248,
+      "bytes": 1441500
     },
     "@opentelemetry/api": {
       "version": "1.10.0",
@@ -68,21 +68,6 @@
       "files": 1,
       "bytes": 234658
     },
-    "clsx": {
-      "version": "2.1.1",
-      "files": 1,
-      "bytes": 388
-    },
-    "devalue": {
-      "version": "5.9.4",
-      "files": 8,
-      "bytes": 55064
-    },
-    "esm-env": {
-      "version": "1.2.2",
-      "files": 4,
-      "bytes": 346
-    },
     "fast-sha256": {
       "version": "1.3.0",
       "files": 1,
@@ -97,16 +82,7 @@
       "version": "1.3.0",
       "files": 2,
       "bytes": 6422
-    },
-    "svelte": {
-      "version": "5.59.1",
-      "files": 57,
-      "bytes": 437626
-    },
-    "undici": {
-      "version": "7.30.2",
-      "files": 112,
-      "bytes": 1276425
     }
-  }
+  },
+  "unresolved": []
 }

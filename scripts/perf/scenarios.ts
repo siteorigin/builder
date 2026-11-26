@@ -84,8 +84,11 @@ export interface ScenarioContext {
   restoredAt: number;
   /** Mark a point in both processes, with each one's counters. */
   mark(name: string, attrs?: PerfAttrs): Promise<void>;
-  /** The trace once `done` says it has what is needed; throws, naming `what`, when `timeoutMs` passes first. */
-  waitTrace(done: (t: Trace) => boolean, what: string, timeoutMs?: number): Promise<Trace>;
+  /**
+   * The trace once `done` says it has what is needed, or as it is when `timeoutMs` passes. It never throws: a mark that
+   * did not arrive is the measurement's to report (a missing mark), not a sign that the app is not where it should be.
+   */
+  waitTrace(done: (t: Trace) => boolean, timeoutMs?: number): Promise<Trace>;
 }
 
 export interface Scenario {
@@ -109,6 +112,15 @@ const preview = (win: Page): FrameLocator => win.frameLocator('.frame-box iframe
 const FILES_SETTLE_MS = 3500;
 
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
+
+/** Long enough after a panel or tab is chosen for the workspace save it sets off (300 ms later) to have landed. */
+const WORKSPACE_SAVE_WAIT_MS = 1000;
+
+/** The bytes `sent` snapshots carried; a snapshot whose size could not be told leaves the total missing, never short. */
+function bytesSent(m: Collector, name: string, sent: PerfRecord[]) {
+  if (sent.some((r) => typeof r.attrs?.bytes !== 'number')) m.need(`${name} (a snapshot whose size could not be told)`, undefined);
+  else m.count(name, sent.reduce((n, r) => n + (r.attrs!.bytes as number), 0), 'bytes');
+}
 
 /** The longest main-process stall in [from, to], 0 when there was none. */
 function stallMax(trace: Trace, from: PerfRecord | undefined, to: PerfRecord | undefined): number {
@@ -134,7 +146,7 @@ export const launch: Scenario = {
     expect((await win.evaluate(() => (globalThis as unknown as EditorPage).builder.project.snapshot())) === null, 'a project is open at launch');
     const shown = await app.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows().some((w) => w.isVisible()));
     expect(!shown, 'a window was shown: the run must stay headless');
-    await ctx.waitTrace((t) => !!t.first('launch.recentsShown') && !!t.first('launch.firstInteractive'), 'launch.recentsShown and launch.firstInteractive', 15_000);
+    await ctx.waitTrace((t) => !!t.first('launch.recentsShown') && !!t.first('launch.firstInteractive'), 15_000);
   },
   measure(trace) {
     const m = new Collector();
@@ -179,10 +191,10 @@ export const open: Scenario = {
     for (const k of ['pages', 'entries', 'assets', 'projectComponents'] as const) expect(facts[k] === fixture[k], `the project opened with ${facts[k]} ${k}, not ${fixture[k]}`);
     expect(snap.state.site.homePageId === fixture.homePageId, 'the project opened with another home page');
     expect(findHeading(snap.state.pages[fixture.homePageId], fixture.heroId)?.heading === fixture.heading, 'the home hero opened with another heading');
-    await ctx.waitTrace((t) => !!t.first('canvas.ready', homeReady(fixture), forScenarioStart(t, 'open')), 'canvas.ready for the home page', 15_000);
+    await ctx.waitTrace((t) => !!t.first('canvas.ready', homeReady(fixture), forScenarioStart(t, 'open')), 15_000);
     await sleep(ctx.settleMs);
     await ctx.mark('scenario.end', { scenario: 'open' });
-    await ctx.waitTrace((t) => !!t.first('scenario.end', forScenario('open', 'renderer')) && !!t.first('scenario.end', forScenario('open', 'main')), 'the open scenario’s end marks');
+    await ctx.waitTrace((t) => !!t.first('scenario.end', forScenario('open', 'renderer')) && !!t.first('scenario.end', forScenario('open', 'main')));
   },
   measure(trace, fixture) {
     const m = new Collector();
@@ -221,7 +233,7 @@ export const open: Scenario = {
     m.count('open.publishFilesWritten', delta(publish, 'fs.writes'));
     const sent = trace.all('controller.snapshotSent', inProc('main'), at, ready?.t);
     m.count('open.snapshotsSent', sent.length);
-    m.count('open.snapshotBytes', sent.reduce((n, r) => n + Number(r.attrs?.bytes ?? 0), 0), 'bytes');
+    bytesSent(m, 'open.snapshotBytes', sent);
     m.count('open.reloadFromDisk', trace.all('session.reloadFromDisk', inProc('main'), at, m.need('scenario.end (main)', end)?.t).length);
     m.count('open.rendererCommits', counter(ready, 'react.commits') - counter(req, 'react.commits'));
     m.ms('open.mainStallMax', stallMax(trace, req, ready));
@@ -261,14 +273,15 @@ export const edit: Scenario = {
     await win.getByRole('tab', { name: 'Inspector', exact: true }).first().click();
     const field = win.getByRole('textbox', { name: 'Heading', exact: true }).first();
     await field.waitFor({ timeout: 15_000 });
-    // Choosing the panel and tab saves the workspace a moment later: that save lands before the edit starts, not in it.
-    await sleep(ctx.settleMs);
+    // Choosing the panel and tab saves the workspace 300 ms later: that save lands before the edit starts, not in it,
+    // whatever --settle is.
+    await sleep(Math.max(ctx.settleMs, WORKSPACE_SAVE_WAIT_MS));
     await ctx.mark('scenario.start', { scenario: 'edit' });
     await field.fill(heading);
     await win.keyboard.press('Tab');
     await preview(win).getByRole('heading', { name: heading, exact: true }).first().waitFor({ timeout: 60_000 });
     const target = before.revision + 1;
-    await ctx.waitTrace((t) => !!t.first('canvas.revisionApplied', atRevision(target)), `canvas.revisionApplied for revision ${target}`, 30_000);
+    await ctx.waitTrace((t) => !!t.first('canvas.revisionApplied', atRevision(target)), 30_000);
     const after = await win.evaluate(() => (globalThis as unknown as EditorPage).builder.project.snapshot());
     expect(after && after.revision === target, `the edit left the project at revision ${after?.revision}, not ${target}`);
     expect(findHeading(after.state.pages[fixture.homePageId], fixture.heroId)?.heading === heading, 'the project does not hold the new heading on the home hero');
@@ -277,7 +290,7 @@ export const edit: Scenario = {
     expect(findHeading(saved, fixture.heroId)?.heading === heading, 'the home page’s document on disk does not hold the new heading on the home hero');
     await sleep(ctx.settleMs);
     await ctx.mark('scenario.end', { scenario: 'edit' });
-    await ctx.waitTrace((t) => !!t.first('scenario.end', forScenario('edit', 'renderer')) && !!t.first('scenario.end', forScenario('edit', 'main')), 'the edit scenario’s end marks');
+    await ctx.waitTrace((t) => !!t.first('scenario.end', forScenario('edit', 'renderer')) && !!t.first('scenario.end', forScenario('edit', 'main')));
   },
   measure(trace) {
     const m = new Collector();
@@ -293,10 +306,13 @@ export const edit: Scenario = {
     m.span('edit.validateOperations', inApply('session.validateOperations'));
     m.span('edit.applyOperations', inApply('session.applyOperations'));
     m.span('edit.validate', inApply('session.validateState'));
-    // Both variants, the website's and the preview's: a sum missing one would look faster than it is.
-    const clean = m.need('session.generate (clean)', trace.first('session.generate', (r) => r.proc === 'main' && r.attrs?.variant === 'clean', at, until));
-    const dev = m.need('session.generate (dev)', trace.first('session.generate', (r) => r.proc === 'main' && r.attrs?.variant === 'dev', at, until));
-    if (clean && dev) m.ms('edit.generate', (clean.ms ?? NaN) + (dev.ms ?? NaN));
+    // Every generation of both variants, the website's and the preview's: a sum missing one would look faster than it is.
+    const variant = (v: string) => trace.all('session.generate', (r) => r.proc === 'main' && r.attrs?.variant === v, at, until);
+    const clean = variant('clean');
+    const dev = variant('dev');
+    if (!clean.length) m.need('session.generate (clean)', undefined);
+    if (!dev.length) m.need('session.generate (dev)', undefined);
+    if (clean.length && dev.length) m.ms('edit.generate', [...clean, ...dev].reduce((n, r) => n + (r.ms ?? NaN), 0));
     m.span('edit.persist', inApply('session.persist'));
     const publish = inApply('session.publish');
     m.span('edit.publish', publish);
@@ -318,7 +334,7 @@ export const edit: Scenario = {
     const endRenderer = m.need('scenario.end (renderer)', trace.first('scenario.end', forScenario('edit', 'renderer')));
     const sent = trace.all('controller.snapshotSent', inProc('main'), at, endMain?.t);
     m.count('edit.snapshotsSent', sent.length);
-    m.count('edit.snapshotBytes', sent.reduce((n, r) => n + Number(r.attrs?.bytes ?? 0), 0), 'bytes');
+    bytesSent(m, 'edit.snapshotBytes', sent);
     m.count('edit.reloadFromDisk', trace.all('session.reloadFromDisk', inProc('main'), at, endMain?.t).length);
     m.count('edit.rendererCommits', counter(endRenderer, 'react.commits') - counter(req, 'react.commits'));
     m.ms('edit.mainStallMax', stallMax(trace, req, shown));

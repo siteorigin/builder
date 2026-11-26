@@ -70,7 +70,10 @@ export class Trace {
     for (const line of text.split('\n')) {
       if (!line.trim()) continue;
       try {
-        records.push(JSON.parse(line) as PerfRecord);
+        const r = JSON.parse(line) as PerfRecord | null;
+        // A line that is JSON but not a record is as unreadable as one cut short.
+        if (r && typeof r === 'object' && typeof r.name === 'string' && typeof r.t === 'number' && Number.isFinite(r.t)) records.push(r);
+        else incomplete = true;
       } catch {
         incomplete = true;
       }
@@ -132,7 +135,9 @@ export class Collector {
   }
 
   ms(name: string, value: number | undefined) {
-    if (value !== undefined && Number.isFinite(value)) this.metrics[name] = { unit: 'ms', value };
+    if (value === undefined) return;
+    if (Number.isFinite(value)) this.metrics[name] = { unit: 'ms', value };
+    else this.need(`${name} (a finite time)`, undefined);
   }
 
   /** The time from `from` to `to`, when both are there. */
@@ -207,6 +212,8 @@ export interface MetricChange {
   /** (after − before) / before × 100; null where before is 0 or either side is missing. */
   changePct: number | null;
   noise: number;
+  /** The after side's unit, when it differs (an `incompatible` change). */
+  afterUnit?: Unit;
   /** `noise` for a duration that moved less than the band; `new` / `gone` for a metric on one side only. */
   verdict: 'same' | 'changed' | 'noise' | 'new' | 'gone' | 'incompatible';
 }
@@ -221,7 +228,7 @@ export interface CaseChange {
 export function compareMetric(metric: string, a: Summary | undefined, b: Summary | undefined): MetricChange {
   const unit = (a ?? b)!.unit;
   if (!a || !b) return { metric, unit, before: a?.median ?? null, after: b?.median ?? null, delta: null, changePct: null, noise: 0, verdict: a ? 'gone' : 'new' };
-  if (a.unit !== b.unit) return { metric, unit, before: a.median, after: b.median, delta: null, changePct: null, noise: 0, verdict: 'incompatible' };
+  if (a.unit !== b.unit) return { metric, unit, afterUnit: b.unit, before: a.median, after: b.median, delta: null, changePct: null, noise: 0, verdict: 'incompatible' };
   const d = b.median - a.median;
   const noise = noiseBand(a, b);
   const changePct = a.median === 0 ? (b.median === 0 ? 0 : null) : (d / a.median) * 100;
@@ -297,7 +304,7 @@ export function changeTables(changes: CaseChange[]): string {
     .map((c) => {
       const title = `${c.scenario} · ${c.fixture}`;
       if (c.status !== 'compared') return `${title}: not compared (${c.status})`;
-      const rows = c.metrics.map((m) => [m.metric, formatValue(m.before, m.unit), formatValue(m.after, m.unit), m.delta === null ? '–' : formatValue(m.delta, m.unit), pct(m.changePct), m.unit === 'ms' ? `±${formatValue(m.noise, 'ms')}` : 'exact', m.verdict]);
+      const rows = c.metrics.map((m) => [m.metric, formatValue(m.before, m.unit), formatValue(m.after, m.afterUnit ?? m.unit), m.delta === null ? '–' : formatValue(m.delta, m.unit), pct(m.changePct), m.unit === 'ms' ? `±${formatValue(m.noise, 'ms')}` : 'exact', m.verdict]);
       return `${title}\n${table(['metric', 'before', 'after', 'delta', 'change', 'noise', 'verdict'], rows)}`;
     })
     .join('\n\n');
@@ -311,6 +318,7 @@ export function changeMarkdown(changes: CaseChange[], before: RunResult, after: 
   const signed = (v: number) => `${v < 0 ? '−' : ''}${Math.abs(v).toFixed(1)}%`;
   const improvement = (m: MetricChange) => {
     if (m.before === null || m.after === null) return m.verdict;
+    if (m.verdict === 'incompatible') return 'incompatible (units differ)';
     // A duration that did not move past the noise band has no percentage to defend.
     if (m.unit === 'ms' && (m.verdict === 'noise' || m.verdict === 'same')) return '(noise)';
     if (m.before === 0) return m.after === 0 ? '0.0%' : 'new';
@@ -329,7 +337,7 @@ export function changeMarkdown(changes: CaseChange[], before: RunResult, after: 
     .map((c) => {
       const head = `### ${c.scenario} · ${c.fixture}`;
       if (c.status !== 'compared') return `${head}\n\nNot compared: ${c.status}.`;
-      const rows = c.metrics.map((m) => `| ${m.metric} | ${formatValue(m.before, m.unit)} | ${formatValue(m.after, m.unit)} | ${improvement(m)} |`);
+      const rows = c.metrics.map((m) => `| ${m.metric} | ${formatValue(m.before, m.unit)} | ${formatValue(m.after, m.afterUnit ?? m.unit)} | ${improvement(m)} |`);
       return `${head}\n\n| Metric | Before | After | Improvement |\n| --- | ---: | ---: | ---: |\n${rows.join('\n')}\n| Predicate | pass | pass | ok |\n\n${footer}`;
     })
     .join('\n\n');
