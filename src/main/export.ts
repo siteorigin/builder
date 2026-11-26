@@ -15,7 +15,7 @@ import { getTheme, listThemes } from '@catalogue/index';
 import { formNameClashMessage, runtimeFontDiagnostics, validateState } from '@engine/validate';
 import { brotliCompressSync, gzipSync } from 'node:zlib';
 import { displayName } from '@engine/tree';
-import { describeDraftLink, draftTarget, netlifyFormClashes, publicationIds, publicationPlan, unlinkedButtons, unlinkedMenuLinks } from '@generator/checks';
+import { describeDraftLink, draftTarget, emptySections, netlifyFormClashes, publicationIds, publicationPlan, unlinkedButtons, unlinkedMenuLinks } from '@generator/checks';
 import { archivePages } from '@shared/archives';
 import { declaresFormTool } from '@generator/webmcp';
 import { webMcpOn } from '@shared/webmcp';
@@ -1079,6 +1079,21 @@ export function unlinkedMenuLinkWarnings(state: ProjectState): string[] {
     found.length === 1
       ? 'A menu link has no destination, so it goes nowhere. Choose where it goes in the editor, or remove it from the menu:'
       : `${found.length} menu links have no destination, so they go nowhere. Choose where each one goes in the editor, or remove it from the menu:`;
+  const more = found.length - UNLINKED_LISTED;
+  return [lead, ...(more > 1 ? [...found.slice(0, UNLINKED_LISTED), `…and ${more} more.`] : found)];
+}
+
+/**
+ * Warnings for sections the site shows with nothing under their heading (see emptySections): where each is, its heading
+ * and what it has none of. Project health lists each one and leads to it.
+ */
+export function emptySectionWarnings(state: ProjectState): string[] {
+  const found = siteTrees(state).flatMap(({ tree, label }) => emptySections(state, tree).map((e) => `${label} · ${e.name}: ${e.heading ? `“${e.heading}” has` : 'has'} no ${e.what}`));
+  if (!found.length) return [];
+  const lead =
+    found.length === 1
+      ? 'A section has nothing to show visitors. Give it content, or remove it (Project health leads to it):'
+      : `${found.length} sections have nothing to show visitors. Give each one content, or remove it (Project health leads to each):`;
   const more = found.length - UNLINKED_LISTED;
   return [lead, ...(more > 1 ? [...found.slice(0, UNLINKED_LISTED), `…and ${more} more.`] : found)];
 }
