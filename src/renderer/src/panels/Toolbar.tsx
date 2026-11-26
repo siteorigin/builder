@@ -17,9 +17,13 @@ import { postShown } from '../lib/posts';
 import { activeWorkspace, canvasCovered } from '../lib/workspace';
 import { shortcutLabel } from '../lib/shortcut-keys';
 import { ShareControl } from './SharePopover';
+import { RemoteSessionControl } from './RemoteSession';
+import { isRemoteShell, leaveLive } from '../lib/remote-session';
 
 export function Toolbar() {
   const snap = useStore((s) => s.snapshot);
+  // Another computer's project, as a guest in its live session (#766): its host alone exports, shares and versions it.
+  const remoteShell = useStore(isRemoteShell);
   const pageId = useStore((s) => s.pageId);
   const viewport = useStore((s) => s.viewport);
   const zoom = useStore((s) => s.zoom);
@@ -166,8 +170,8 @@ export function Toolbar() {
                   : drafting
                     ? { kind: 'pending', icon: <Pencil />, text: 'Unsaved change', title: 'Press Enter or click away to save this change' }
                     : pending
-                      ? { kind: 'pending', icon: spin, text: 'Saving…', title: 'Saving to this computer' }
-                      : { kind: 'saved', icon: <Check />, text: 'Saved', title: 'All changes are saved on this computer' };
+                      ? { kind: 'pending', icon: spin, text: 'Saving…', title: remoteShell ? 'Sending your change to the host' : 'Saving to this computer' }
+                      : { kind: 'saved', icon: <Check />, text: 'Saved', title: remoteShell ? 'Your changes are saved on the host’s computer' : 'All changes are saved on this computer' };
   // The AI's question goes straight to the answer field; the other AI states land on the AI panel's tab, so a click
   // shows where it went even when the panel was already open.
   const openAi = () => {
@@ -244,10 +248,10 @@ export function Toolbar() {
             typed in is settled by leaving (and Keep editing returns to it) rather than blurred on the way. */}
         <button
           className="toolbar-mark"
-          aria-label="All projects"
-          title={`All projects (${keys('⇧⌘W')})`}
+          aria-label={remoteShell ? 'Leave the live session' : 'All projects'}
+          title={remoteShell ? 'Leave the live session' : `All projects (${keys('⇧⌘W')})`}
           onMouseDown={(e) => e.button === 0 && e.preventDefault()}
-          onClick={() => void closeProject()}
+          onClick={() => void (remoteShell ? leaveLive() : closeProject())}
         >
           <AppMark size={22} />
         </button>
@@ -272,15 +276,20 @@ export function Toolbar() {
                     onSelect: () => selectPage(p.id)
                   })),
                   { separator: true },
-                  { label: 'New project…', icon: <Plus />, onSelect: () => sendCommand('new-project') },
-                  { label: 'Open project…', icon: <FolderOpen />, onSelect: () => sendCommand('open-project') },
-                  { separator: true },
-                  { label: 'Show project folder', icon: <FolderSearch />, onSelect: () => void api.projects.reveal() },
-                  { label: 'Duplicate project…', icon: <Copy />, onSelect: () => sendCommand('duplicate-project') },
-                  { label: 'History…', icon: <History />, onSelect: () => setState({ modal: { kind: 'history' } }) },
-                  { label: 'Save version…', icon: <BookmarkPlus />, onSelect: () => setState({ modal: { kind: 'history', tab: 'versions' } }) },
-                  { separator: true },
-                  { label: 'Close project', icon: <LogOut />, shortcut: keys('⇧⌘W'), onSelect: () => void closeProject() }
+                  // The host's project is the host's: it alone opens, reveals, copies, versions and closes it.
+                  ...(remoteShell
+                    ? [{ label: 'Leave live session', icon: <LogOut />, onSelect: () => void leaveLive() }]
+                    : [
+                        { label: 'New project…', icon: <Plus />, onSelect: () => sendCommand('new-project') },
+                        { label: 'Open project…', icon: <FolderOpen />, onSelect: () => sendCommand('open-project') },
+                        { separator: true },
+                        { label: 'Show project folder', icon: <FolderSearch />, onSelect: () => void api.projects.reveal() },
+                        { label: 'Duplicate project…', icon: <Copy />, onSelect: () => sendCommand('duplicate-project') },
+                        { label: 'History…', icon: <History />, onSelect: () => setState({ modal: { kind: 'history' } }) },
+                        { label: 'Save version…', icon: <BookmarkPlus />, onSelect: () => setState({ modal: { kind: 'history', tab: 'versions' } }) },
+                        { separator: true },
+                        { label: 'Close project', icon: <LogOut />, shortcut: keys('⇧⌘W'), onSelect: () => void closeProject() }
+                      ])
                 ],
                 projectName
               )
@@ -469,11 +478,18 @@ export function Toolbar() {
             <Settings />
           </button>
         )}
-        {/* A live session of this project (#764): who is in it, who waits, and its link. */}
-        <ShareControl compact={tier !== 'full'} />
-        <button className="btn btn-primary btn-sm export-btn" title={`Export your website (${keys('⌘E')})`} onClick={() => setState({ modal: { kind: 'export' } })}>
-          <Upload /> Export
-        </button>
+        {remoteShell ? (
+          // Another computer's live session this app is a guest in (#766): how it is connected, and Leave.
+          <RemoteSessionControl compact={tier !== 'full'} />
+        ) : (
+          <>
+            {/* A live session of this project (#764): who is in it, who waits, and its link. */}
+            <ShareControl compact={tier !== 'full'} />
+            <button className="btn btn-primary btn-sm export-btn" title={`Export your website (${keys('⌘E')})`} onClick={() => setState({ modal: { kind: 'export' } })}>
+              <Upload /> Export
+            </button>
+          </>
+        )}
       </div>
       {menu.node}
     </header>

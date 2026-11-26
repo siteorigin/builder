@@ -50,6 +50,7 @@ import { focusInspector } from '../lib/inspector-focus';
 import { clampViewport, frameKeyResize, VIEWPORT_LIMITS, type PanelSide } from '../lib/layout';
 import { formSendOf, formsOf, sendSettled, type FormSend, type PracticeResult, type PreviewForm } from '../lib/form-practice';
 import { FormPractice } from './FormPractice';
+import { isRemoteShell, loadedRevision, REMOTE_RELOAD_FALLBACK_MS } from '../lib/remote-session';
 import { SpacingHandles } from './SpacingHandles';
 import { QuickInsert } from './QuickInsert';
 import { addPoints, offeredAt, pointLabel, resolvePoint, type AddPoint, type QuickItem } from '../lib/inline-insert';
@@ -603,6 +604,37 @@ export function Canvas() {
     setSession(newSessionId());
   }, [url]);
 
+  /**
+   * The host's preview changed, in a live session this app is a guest in (#766): no hot update reaches the page
+   * through the relay, so it is loaded again where it is, keeping the frame and its scroll. A page that cannot be asked
+   * (still loading, or one the bridge does not run on) is given a fresh frame instead, and so is one that has not
+   * answered in a while. An inline edit open on the page is left to finish first: the reload follows it.
+   */
+  const remoteReloadSeq = useStore((s) => (isRemoteShell(s) ? s.remoteReload.seq : 0));
+  const remoteReloadFallback = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const remoteReloadOwed = useRef(false);
+  const reloadRemoteFrame = () => {
+    if (inlineEdit.active) return void (remoteReloadOwed.current = true);
+    remoteReloadOwed.current = false;
+    if (remoteReloadFallback.current) clearTimeout(remoteReloadFallback.current);
+    remoteReloadFallback.current = null;
+    if (!getState().frameReady) return setSession(newSessionId());
+    post('reload');
+    remoteReloadFallback.current = setTimeout(() => {
+      remoteReloadFallback.current = null;
+      setSession(newSessionId());
+    }, REMOTE_RELOAD_FALLBACK_MS);
+  };
+  useEffect(() => {
+    if (remoteReloadSeq) reloadRemoteFrame();
+  }, [remoteReloadSeq]); // eslint-disable-line react-hooks/exhaustive-deps
+  useEffect(
+    () => () => {
+      if (remoteReloadFallback.current) clearTimeout(remoteReloadFallback.current);
+    },
+    []
+  );
+
   /** The inline edit is over (committed, cancelled, or its page went away): shortcuts work again. */
   function endInlineEdit(editId?: string) {
     if (editId === undefined) pendingEdits.current.clear();
@@ -610,6 +642,8 @@ export function Canvas() {
     inlineEdit.active = pendingEdits.current.size > 0;
     setEditing(inlineEdit.active);
     markDraft(CANVAS_DRAFT, inlineEdit.active);
+    // A reload of the host's preview waited for the edit (#766): its text is on its way to the host now.
+    if (!inlineEdit.active && remoteReloadOwed.current) setTimeout(reloadRemoteFrame);
   }
   /** Start editing an element's text on the page (a double-click, or Edit text in its menu). A double-click passes
    *  its gesture id (`hit`) so the edit starts at the word clicked. */
@@ -792,8 +826,12 @@ export function Canvas() {
           // followed, so the editor and the frame agree on the page.
           // A page loaded again while an image from Assets is dragged over it will answer nothing the drag asked: it ends.
           assetDrag.current?.end(false);
-          shownRevision.current = getState().snapshot?.revision ?? 0;
+          // The page shows the project as the preview served it: the editor's revision locally, and for the host's
+          // project in a live session, the revision its host last said its preview serves (#766).
+          shownRevision.current = loadedRevision(s);
           gate.current!.shown(shownRevision.current);
+          if (remoteReloadFallback.current) clearTimeout(remoteReloadFallback.current);
+          remoteReloadFallback.current = null;
           const sameFrame = readySession.current === session;
           const reloaded = sameFrame && s.mode === 'preview';
           readySession.current = session;

@@ -1,6 +1,7 @@
 import type { LiveHostState, LiveRun } from '@shared/api';
 import { sessionDeadline, type SessionDuration } from '@shared/live/expiry';
-import { MAX_ID_LENGTH, MAX_VIEWPORT_WIDTH, MIN_VIEWPORT_WIDTH, type GuestRole } from '@shared/live/limits';
+import { MAX_ID_LENGTH, MAX_SELECTION_DEPTH, MAX_VIEWPORT_WIDTH, MIN_VIEWPORT_WIDTH, type GuestRole } from '@shared/live/limits';
+import type { ElementRef } from '@shared/types';
 import type { Participant, Presence } from '@shared/live/messages';
 import { isPreviewTarget } from '@shared/live/preview';
 
@@ -183,6 +184,26 @@ export function hostPresence(view: { pageId: string | null; route: string | null
   const width = Math.min(MAX_VIEWPORT_WIDTH, Math.max(MIN_VIEWPORT_WIDTH, Math.round(Number.isFinite(viewport) ? viewport : MIN_VIEWPORT_WIDTH)));
   const pageId = view.pageId && view.pageId.length <= MAX_ID_LENGTH ? view.pageId : null;
   return { pageId, viewportWidth: width, selection: null, previewPath: view.route === null ? null : previewPathOf(view.route) };
+}
+
+/**
+ * A selection the others in a live session can be shown (#766): on the page shown (or its header or footer), within the
+ * protocol's bounds, as a plain copy. Null for anything else: a component edited everywhere, a layout, nothing.
+ */
+export function sharedSelection(selection: ElementRef | null, pageId: string | null): ElementRef | null {
+  if (!selection || !pageId) return null;
+  const { owner } = selection;
+  if (!(owner.kind === 'page' && owner.id === pageId) && owner.kind !== 'shell') return null;
+  const ids = [owner.id, selection.nodeId, ...selection.instancePath, ...(selection.itemPath ?? []), selection.partId ?? '', selection.slot ?? ''];
+  if (ids.some((id) => id.length > MAX_ID_LENGTH) || selection.instancePath.length > MAX_SELECTION_DEPTH || (selection.itemPath?.length ?? 0) > MAX_SELECTION_DEPTH) return null;
+  return {
+    owner: { kind: owner.kind, id: owner.id },
+    instancePath: [...selection.instancePath],
+    nodeId: selection.nodeId,
+    ...(selection.partId ? { partId: selection.partId } : {}),
+    ...(selection.itemPath ? { itemPath: [...selection.itemPath] } : {}),
+    ...(selection.slot ? { slot: selection.slot } : {})
+  };
 }
 
 /** An address as a URL serializes its path and query (so it compares equal to what a guest's browser reports), or null. */

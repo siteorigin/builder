@@ -49,6 +49,7 @@ import { PANEL_DEFAULTS, PANEL_LIMITS, RAIL_WIDTH, fitPanels, panelMax, resizePa
 import { closeProject, endEditingHold, saveNow } from './lib/leave';
 import { shortcutLabel } from './lib/shortcut-keys';
 import { isAskAiKey } from './lib/ask-ai-key';
+import { isRemoteShell, leaveLive, LOCAL_PROJECT_COMMANDS, REMOTE_LEFT_TABS, REMOTE_MODALS, REMOTE_RIGHT_TABS, showsRemote } from './lib/remote-session';
 
 /** Leave "editing everywhere" for the page it was entered from. However it is left (Done editing, Esc), focus
  *  lands on the page switcher, where the page now being edited is named. */
@@ -406,11 +407,25 @@ function Seam({ side, width, max, at, restore }: { side: PanelSide; width: numbe
 }
 
 export function Editor() {
+  // Another computer's project, as a guest in its live session (#766): only what a guest may do there is offered,
+  // and the views and dialogs that are the host's alone are never mounted.
+  const remoteShell = useStore(isRemoteShell);
   const leftTab = useStore((s) => s.leftTab);
   const rightTab = useStore((s) => s.rightTab);
   const leftWidth = useStore((s) => s.leftWidth);
   const rightWidth = useStore((s) => s.rightWidth);
-  const modal = useStore((s) => s.modal);
+  const storedModal = useStore((s) => s.modal);
+  const modal = remoteShell && storedModal && !REMOTE_MODALS.has(storedModal.kind) ? null : storedModal;
+  const leftTabs = remoteShell ? LEFT_TABS.filter((t) => REMOTE_LEFT_TABS.has(t.id)) : LEFT_TABS;
+  const rightTabs = remoteShell ? RIGHT_TABS.filter((t) => REMOTE_RIGHT_TABS.has(t)) : RIGHT_TABS;
+  // A view or dialog of the host's alone, asked for some other way (a command, a shortcut), gives way at once.
+  useEffect(() => {
+    if (!remoteShell) return;
+    const s = getState();
+    if (s.leftTab && !REMOTE_LEFT_TABS.has(s.leftTab)) setState({ leftTab: 'pages' });
+    if (!REMOTE_RIGHT_TABS.has(s.rightTab)) setState({ rightTab: 'inspect' });
+    if (s.modal && !REMOTE_MODALS.has(s.modal.kind)) setState({ modal: null });
+  }, [remoteShell, leftTab, rightTab, storedModal]);
   const dockOpen = useStore((s) => s.dockOpen);
   const windowWidth = useWindowWidth();
   // The panels are drawn at their preferred widths while the canvas keeps its minimum; in a smaller window
@@ -504,6 +519,16 @@ export function Editor() {
       if (openDialogs.length || openMenus.count || getState().leaving) return;
       const cmd = (e as CustomEvent).detail;
       if (openingProject.current && (cmd === 'open-project' || cmd === 'open-project-folder' || cmd === 'new-project' || cmd === 'duplicate-project' || cmd === 'settings')) return;
+      // The host's project, as a guest in its live session (#766): nothing of this computer's opens over it, and
+      // closing it is leaving the session.
+      if (showsRemote()) {
+        if (cmd === 'close-project') void leaveLive();
+        else if (LOCAL_PROJECT_COMMANDS.has(cmd)) toast('Leave the live session first: a project of your own opens once you have left.', 'info');
+        else if (cmd === 'settings') setState({ modal: { kind: 'settings' } });
+        return;
+      }
+      // Joining another computer's session closes this project first; the dialog says so.
+      if (cmd === 'join-live') setState({ joinOpen: true });
       if (cmd === 'export') setState({ modal: { kind: 'export' } });
       if (cmd === 'settings') setState({ modal: { kind: 'settings' } });
       // Leaving the project saves what is being typed first (the main process asks; see lib/leave.ts).
@@ -633,7 +658,7 @@ export function Editor() {
 
   // The rail is one stop in the Tab order (WAI-ARIA APG toolbar): the button last focused, else the open view.
   const [railStop, setRailStop] = useState<string | null>(null);
-  const railIds = [...LEFT_TABS.map((t) => t.id as string), 'styles'];
+  const railIds = [...leftTabs.map((t) => t.id as string), 'styles'];
   const railTab = railStop ?? leftTab ?? 'pages';
   const onRailKey = (e: ReactKeyboardEvent<HTMLDivElement>) => {
     const i = railIds.indexOf(railTab);
@@ -709,7 +734,7 @@ export function Editor() {
       </span>
       <div className="workspace">
         <div className="rail" role="toolbar" aria-orientation="vertical" aria-label="Panels" onKeyDown={onRailKey}>
-          {LEFT_TABS.map((t) => (
+          {leftTabs.map((t) => (
             <button
               key={t.id}
               data-rail={t.id}
@@ -748,7 +773,7 @@ export function Editor() {
         </div>
         {/* Panels stay mounted while hidden, so a search, expanded layers or scroll position survive switching. */}
         <aside id="editor-sidebar" className={`side-panel${shown.left < 250 ? ' narrow' : ''}`} style={{ width: shown.left, display: leftTab ? undefined : 'none' }} aria-label="Sidebar">
-          {LEFT_TABS.map(({ id: t }) => (
+          {leftTabs.map(({ id: t }) => (
             <div key={t} className="side-panel-view" hidden={leftTab !== t}>
               {t === 'pages' && <PagesPanel />}
               {t === 'posts' && <PostsPanel />}
@@ -783,7 +808,7 @@ export function Editor() {
             panelClassName="dock-panel"
             panelsStyle={{ flex: 1, minHeight: 0, display: 'flex', flexDirection: 'column' }}
             // The views run in RIGHT_TABS' order, the AI first, so the tabs and their arrow keys follow it (#696).
-            options={RIGHT_TABS.map((value) => ({ value, ...dockViews[value] }))}
+            options={rightTabs.map((value) => ({ value, ...dockViews[value] }))}
           />
         </aside>
       </div>
