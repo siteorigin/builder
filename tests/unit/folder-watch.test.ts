@@ -19,10 +19,12 @@ afterEach(() => {
   for (const w of watches.splice(0)) w.close();
   for (const d of dirs.splice(0)) {
     // A test may leave a folder that cannot be read: it is made removable again first.
-    try {
-      fs.chmodSync(join(d, 'locked'), 0o700);
-    } catch {
-      /* not made by this test */
+    for (const locked of [d, join(d, 'locked')]) {
+      try {
+        fs.chmodSync(locked, 0o700);
+      } catch {
+        /* not made by this test */
+      }
     }
     rmSync(d, { recursive: true, force: true });
   }
@@ -97,6 +99,17 @@ describe('watching a folder and everything in it', { timeout: 30_000 }, () => {
     mkdirSync(join(dir, 'a', 'b'), { recursive: true });
     const { events, errors } = start(dir);
     await untilWatching(dir, events);
+    // What was there when it started is not reported as new (macOS also tells of changes made just before a watch began).
+    if (process.platform === 'linux') expect(events.filter((e) => e !== 'probe.txt')).toEqual([]);
+    await reported(events, dir, join('a', 'b', 'page.json'));
+    expect(errors).toEqual([]);
+  });
+
+  it.runIf(process.platform === 'darwin' || process.platform === 'win32')('reports changes in nested folders through the native watch', async () => {
+    const dir = temp();
+    mkdirSync(join(dir, 'a', 'b'), { recursive: true });
+    const { events, errors } = start(dir, {});
+    await untilWatching(dir, events);
     await reported(events, dir, join('a', 'b', 'page.json'));
     expect(errors).toEqual([]);
   });
@@ -131,7 +144,8 @@ describe('watching a folder and everything in it', { timeout: 30_000 }, () => {
   it('watches a filled folder moved in place of a watched one, not the one moved away', async () => {
     const dir = temp();
     const outside = temp();
-    mkdirSync(join(dir, 'sub'));
+    // Both hold a deep/, so a watch of the old one's left behind would pass for the new one's.
+    mkdirSync(join(dir, 'sub', 'deep'), { recursive: true });
     mkdirSync(join(outside, 'other', 'deep'), { recursive: true });
     writeFileSync(join(outside, 'other', 'held.txt'), '');
     const { events, errors } = start(dir);
@@ -145,14 +159,17 @@ describe('watching a folder and everything in it', { timeout: 30_000 }, () => {
     // The folder moved away is no longer watched as sub/.
     const seen = events.length;
     writeFileSync(join(outside, 'aside', 'gone.txt'), '');
+    writeFileSync(join(outside, 'aside', 'deep', 'gone.txt'), '');
     await settle();
     expect(events.slice(seen)).not.toContain(join('sub', 'gone.txt'));
+    expect(events.slice(seen)).not.toContain(join('sub', 'deep', 'gone.txt'));
     expect(errors).toEqual([]);
   });
 
   it.each([
     ['removed', (dir: string) => rmSync(dir, { recursive: true })],
-    ['replaced by another folder', (dir: string) => (rmSync(dir, { recursive: true }), mkdirSync(dir))]
+    // The old one is kept, under another name, so the new one cannot be given its number.
+    ['replaced by another folder', (dir: string) => (renameSync(dir, `${dir}-old`), mkdirSync(dir))]
   ])('reports the folder itself %s under an empty name, and ends without an error', async (_name, change) => {
     const dir = join(temp(), 'watched');
     mkdirSync(join(dir, 'a'), { recursive: true });
@@ -187,18 +204,17 @@ describe('watching a folder and everything in it', { timeout: 30_000 }, () => {
     const dir = temp();
     mkdirSync(join(dir, 'old'));
     const watch = fs.watch;
-    const made: fs.FSWatcher[] = [];
+    const closes: Array<ReturnType<typeof vi.spyOn>> = [];
     vi.spyOn(fs, 'watch').mockImplementation(((path: fs.PathLike, ...rest: unknown[]) => {
       if (String(path) === join(dir, 'full')) throw Object.assign(new Error(`ENOSPC: System limit for number of file watchers reached, watch '${String(path)}'`), { code: 'ENOSPC', syscall: 'watch' });
       const w = (watch as (...args: unknown[]) => fs.FSWatcher)(path, ...rest);
-      made.push(w);
+      closes.push(vi.spyOn(w, 'close'));
       return w;
     }) as typeof fs.watch);
     const { w, events, errors } = start(dir);
     const closed = vi.fn();
     w.on('close', closed);
     await untilWatching(dir, events);
-    const closes = made.map((m) => vi.spyOn(m, 'close'));
     mkdirSync(join(dir, 'full'));
     await vi.waitFor(() => expect(errors).toHaveLength(1), { timeout: 15_000 });
     expect(errors[0].code).toBe('ENOSPC');
@@ -246,13 +262,48 @@ describe('watching a folder and everything in it', { timeout: 30_000 }, () => {
     expect(errors[0].code).toBe('EACCES');
   });
 
+  it.skipIf(process.platform === 'win32' || process.getuid?.() === 0)('ends with an error when the watched folder itself becomes unreadable (EACCES)', async () => {
+    const dir = temp();
+    mkdirSync(join(dir, 'a'));
+    const { events, errors } = start(dir);
+    await untilWatching(dir, events);
+    // Still searchable and writable, but its list of files cannot be read.
+    fs.chmodSync(dir, 0o300);
+    await vi.waitFor(() => expect(errors.map((e) => e.code)).toEqual(['EACCES']), { timeout: 15_000 });
+  });
+
+  it('opens no watch once a listener closed it while being told of a new folder', async () => {
+    const dir = temp();
+    const watch = fs.watch;
+    const made: Array<ReturnType<typeof vi.spyOn>> = [];
+    vi.spyOn(fs, 'watch').mockImplementation(((...args: unknown[]) => {
+      const w = (watch as (...a: unknown[]) => fs.FSWatcher)(...args);
+      made.push(vi.spyOn(w, 'close'));
+      return w;
+    }) as typeof fs.watch);
+    const events: Array<string | null> = [];
+    const w = watchTree(dir, (_e, file) => {
+      events.push(file);
+      if (file === 'new') w.close();
+    }, TREE);
+    watches.push(w);
+    await untilWatching(dir, events);
+    mkdirSync(join(dir, 'new', 'deep'), { recursive: true });
+    await vi.waitFor(() => expect(events).toContain('new'), { timeout: 15_000 });
+    await settle();
+    for (const close of made) expect(close).toHaveBeenCalled();
+  });
+
   it('reports nothing once closed, and can be closed again', async () => {
     const dir = temp();
     mkdirSync(join(dir, 'a'));
     const { w, events, errors } = start(dir);
+    const closed = vi.fn();
+    w.on('close', closed);
     await untilWatching(dir, events);
     w.close();
     w.close();
+    expect(closed).toHaveBeenCalledTimes(1);
     const seen = events.length;
     writeFileSync(join(dir, 'a', 'x.txt'), '');
     mkdirSync(join(dir, 'b'));
