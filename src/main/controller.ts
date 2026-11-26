@@ -1586,6 +1586,8 @@ export class Controller {
     const onChange = () => {
       if (this.watchTimer) clearTimeout(this.watchTimer);
       this.watchTimer = setTimeout(async () => {
+        // The watch has seen the documents change and gone quiet: what follows is the look at them.
+        perf.mark('controller.watchFired');
         if (this.session !== session || this.aiBusy()) return;
         if (await session.checkFolder()) return;
         const r = await session.reloadFromDisk().catch((e: Error) => ({ ok: false, message: e.message }));

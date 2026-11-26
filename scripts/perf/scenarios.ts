@@ -9,7 +9,7 @@
  * gets faster by doing less. `memory` (after `launch`) reads the memory of every process of the app at named points
  * (memory.ts), and is never reported beside a timing scenario.
  */
-import { existsSync, mkdirSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, readdirSync, readFileSync, renameSync, rmSync, writeFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import type { ElectronApplication, FrameLocator, Page } from 'playwright';
 import { desktopInMain, type DesktopCall } from '../../tests/driver/desktop';
@@ -541,6 +541,148 @@ export const edit: Scenario = {
     m.count('edit.reloadFromDisk', trace.all('session.reloadFromDisk', inProc('main'), at, endMain?.t).length);
     commits(m, trace, 'edit.rendererCommits', req, endRenderer);
     m.ms('edit.mainStallMax', stallMax(trace, req, shown));
+    return m;
+  }
+};
+
+// ---------------------------------------------------------------------------
+// edits
+// ---------------------------------------------------------------------------
+
+/** How many edits the `edits` scenario makes. */
+export const EDITS = 20;
+/** How long it waits after a save for the file watch to go off before it sends the next edit anyway. */
+export const WATCH_WAIT_MS = 5000;
+/** How long it gives the app to take the change made outside it before saving the file again. */
+const OUTSIDE_WAIT_MS = 15_000;
+const OUTSIDE_SAVES = 6;
+/** The heading the `edits` scenario writes into the home page's file outside the app. */
+export const OUTSIDE_HEADING = 'Benchmark heading changed outside';
+
+/** The `k`th of an iteration's edits to the hero's heading. */
+export const editsHeading = (iteration: number, k: number) => `${EDITED_HEADING} ${iteration}.${k}`;
+
+export const edits: Scenario = {
+  name: 'edits',
+  after: 'open',
+  description: `Change the home hero’s Heading in the Inspector ${EDITS} times, each as the file watch goes off for the save before it, then change the home page’s file outside the app and wait for the editor to take it.`,
+  async run(ctx) {
+    const { win, fixture } = ctx;
+    const snapshot = () => win.evaluate(() => (globalThis as unknown as EditorPage).builder.project.snapshot());
+    const before = await snapshot();
+    expect(before, 'no project is open');
+    // Choosing what to edit is not timed, and the workspace save it sets off lands before the first edit.
+    await win.getByRole('button', { name: 'Layers', exact: true }).first().click();
+    await win.getByRole('treeitem', { name: 'Split hero' }).first().click();
+    await win.getByRole('tab', { name: 'Inspector', exact: true }).first().click();
+    const field = win.getByRole('textbox', { name: 'Heading', exact: true }).first();
+    await field.waitFor({ timeout: 15_000 });
+    await sleep(Math.max(ctx.settleMs, WORKSPACE_SAVE_WAIT_MS));
+    await ctx.mark('scenario.start', { scenario: 'edits' });
+    const madeIn = (rev: number) => (r: PerfRecord) => r.proc === 'main' && r.attrs?.revision === rev && r.attrs?.ok === true;
+    /** Once edit `k` is saved, until the file watch goes off (for it, or a save before it the system told of late). */
+    const watchAfter = async (k: number) => {
+      const saved = (await ctx.waitTrace((t) => !!t.first('controller.apply', madeIn(before.revision + k)), 60_000)).first('controller.apply', madeIn(before.revision + k));
+      expect(saved, `edit ${k} of ${EDITS} was not saved`);
+      await ctx.waitTrace((t) => !!t.first('controller.watchFired', inProc('main'), saved.t), WATCH_WAIT_MS);
+    };
+    for (let k = 1; k <= EDITS; k++) {
+      await field.fill(editsHeading(ctx.iteration, k));
+      await win.keyboard.press('Tab');
+      // The next edit goes as the watch goes off for this save: when the reload of the project a save sets off starts.
+      // The system tells of a save a moment or seconds after it (a fixed delay would miss it), or, on a busy machine,
+      // not at all: then the next edit goes WATCH_WAIT_MS after the save.
+      await watchAfter(k);
+    }
+    const last = editsHeading(ctx.iteration, EDITS);
+    const target = before.revision + EDITS;
+    await preview(win).getByRole('heading', { name: last, exact: true, level: 1 }).first().waitFor({ timeout: 60_000 });
+    await ctx.waitTrace((t) => !!t.first('canvas.revisionApplied', atRevision(target)), 30_000);
+    const after = await snapshot();
+    expect(after && after.revision === target, `the ${EDITS} edits left the project at revision ${after?.revision}, not ${target}`);
+    expect(findHeading(after.state.pages[fixture.homePageId], fixture.heroId)?.heading === last, 'the project does not hold the last heading on the home hero');
+    const doc = join(ctx.projectDir, 'siteorigin', 'pages', `${fixture.homePageId}.json`);
+    const text = existsSync(doc) ? readFileSync(doc, 'utf8') : '';
+    expect(findHeading(text ? (JSON.parse(text) as unknown) : null, fixture.heroId)?.heading === last, 'the home page’s document on disk does not hold the last heading on the home hero');
+    // A reload the last save sets off is counted with the edits.
+    await sleep(ctx.settleMs);
+    await ctx.mark('edits.outside', { scenario: 'edits', revision: target });
+    // Changed outside the app as an editor saves a file: written beside it under a name of its own, then renamed over it
+    // (a file renamed in from outside the watched folder is never told of on macOS). A busy machine can lose the
+    // system's word of it: then it is saved again, as a person would, until the app takes it.
+    const parts = text.split(JSON.stringify(last));
+    expect(parts.length === 2, 'the home page’s document holds the last heading other than once');
+    const outside = `${OUTSIDE_HEADING} ${ctx.iteration}`;
+    const taken = (t: Trace) => !!t.first('controller.snapshotSent', atRevision(target + 1));
+    for (let saves = 1; ; saves++) {
+      const saving = `${doc}.${ctx.iteration}-${saves}.saving`;
+      writeFileSync(saving, parts.join(JSON.stringify(outside)));
+      renameSync(saving, doc);
+      if (taken(await ctx.waitTrace(taken, OUTSIDE_WAIT_MS))) break;
+      expect(saves < OUTSIDE_SAVES, `the change made outside the app was not taken, saved ${saves} times ${OUTSIDE_WAIT_MS / 1000} s apart`);
+    }
+    await preview(win).getByRole('heading', { name: outside, exact: true, level: 1 }).first().waitFor({ timeout: 60_000 });
+    await ctx.waitTrace((t) => !!t.first('canvas.revisionApplied', atRevision(target + 1)), 30_000);
+    const now = await snapshot();
+    expect(now && now.revision === target + 1, `the change made outside the app left the project at revision ${now?.revision}, not ${target + 1}`);
+    expect(findHeading(now.state.pages[fixture.homePageId], fixture.heroId)?.heading === outside, 'the project does not hold the heading changed outside the app');
+    expect(now.history.canUndo && now.history.undoLabel === 'External change', `the change made outside the app is not the step Undo takes back (${now.history.undoLabel ?? 'nothing to undo'})`);
+    await ctx.mark('scenario.end', { scenario: 'edits' });
+    await ctx.waitTrace((t) => !!t.first('scenario.end', forScenario('edits', 'renderer')) && !!t.first('scenario.end', forScenario('edits', 'main')));
+  },
+  measure(trace) {
+    const m = new Collector();
+    const startMain = m.need('scenario.start (main)', trace.first('scenario.start', forScenario('edits', 'main')));
+    const startRenderer = m.need('scenario.start (renderer)', trace.first('scenario.start', forScenario('edits', 'renderer')));
+    const outMain = m.need('edits.outside (main)', trace.first('edits.outside', forScenario('edits', 'main')));
+    const outRenderer = m.need('edits.outside (renderer)', trace.first('edits.outside', forScenario('edits', 'renderer')));
+    const endMain = m.need('scenario.end (main)', trace.first('scenario.end', forScenario('edits', 'main')));
+    const from = startMain?.t ?? Infinity;
+    const to = outMain?.t ?? -Infinity;
+    const target = outMain?.attrs?.revision;
+    if (outMain && typeof target !== 'number') m.need('edits.outside (with the revision the edits left)', undefined);
+    // Each edit by the revision it made: the edits made the EDITS revisions up to the one the outside mark names.
+    const applies: Array<{ whole: number; own: number }> = [];
+    if (typeof target === 'number')
+      for (let rev = target - EDITS + 1; rev <= target; rev++) {
+        const made = (r: PerfRecord) => r.proc === 'main' && r.attrs?.revision === rev && r.attrs?.ok === true;
+        const whole = m.need(`controller.apply (revision ${rev})`, trace.first('controller.apply', made, from, to));
+        const own = m.need(`session.apply (revision ${rev})`, trace.first('session.apply', made, from, to));
+        if (whole && own) applies.push({ whole: whole.ms ?? NaN, own: own.ms ?? NaN });
+      }
+    if (applies.length === EDITS) {
+      // An edit's wait for its turn: its time in the main process less its own work once its turn came.
+      const waits = applies.map((a) => a.whole - a.own);
+      m.ms('edits.queueWait', median(waits.slice(1)));
+      m.ms('edits.queueWaitTotal', waits.reduce((n, w) => n + w, 0));
+      m.ms('edits.apply', median(applies.map((a) => a.whole)));
+      m.ms('edits.sessionApply', median(applies.map((a) => a.own)));
+    }
+    const sentAt = trace.all('edit.requested', inProc('renderer'), startRenderer?.t ?? Infinity, outRenderer?.t ?? -Infinity).map((r) => r.t);
+    if (startRenderer && outRenderer && sentAt.length !== EDITS) m.need(`${EDITS} edit.requested (there were ${sentAt.length})`, undefined);
+    else if (sentAt.length) m.ms('edits.sendGap', median(sentAt.slice(1).map((t, i) => t - sentAt[i])));
+    m.count('edits.reloadFromDisk', trace.all('session.reloadFromDisk', inProc('main'), from, to).length);
+    m.count('edits.reloadUnchanged', trace.all('session.reloadUnchanged', inProc('main'), from, to).length);
+    const gained = (name: string) => counter(outMain, name) - counter(startMain, name);
+    m.count('edits.filesRead', gained('files.read'));
+    m.count('edits.docsRead', gained('docs.read'));
+    m.count('edits.filesHashed', gained('files.hashed'));
+    m.count('edits.durableWrites', gained('fs.durableWrites'));
+    m.count('edits.fsyncs', gained('fs.fsyncs'));
+    const sent = trace.all('controller.snapshotSent', inProc('main'), from, to);
+    m.count('edits.snapshotsSent', sent.length);
+    bytesSent(m, 'edits.snapshotBytes', sent);
+    commits(m, trace, 'edits.rendererCommits', startRenderer, outRenderer);
+    m.ms('edits.mainStallMax', stallMax(trace, startMain, outMain));
+    m.count('edits.watchFired', trace.all('controller.watchFired', inProc('main'), from, to).length);
+    // The change made outside the app, from the watch going off for it (when the system tells of a change is its own
+    // affair) to the editor and the canvas being sent and showing it.
+    const outRev = typeof target === 'number' ? target + 1 : NaN;
+    const sentOut = m.need('controller.snapshotSent (the change made outside)', trace.first('controller.snapshotSent', atRevision(outRev), to));
+    const fired = m.need('controller.watchFired (for the change made outside)', trace.all('controller.watchFired', inProc('main'), to, sentOut?.t ?? -Infinity).at(-1));
+    m.since('edits.outsideSent', fired, sentOut);
+    m.since('edits.outsideApplied', fired, m.need('canvas.revisionApplied (the change made outside)', trace.first('canvas.revisionApplied', atRevision(outRev), to)));
+    m.count('edits.outsideReloads', trace.all('session.reloadFromDisk', inProc('main'), to, endMain?.t ?? -Infinity).length);
     return m;
   }
 };
@@ -1743,7 +1885,7 @@ export const importPhotos: Scenario = {
   }
 };
 
-export const SCENARIOS: Scenario[] = [launch, open, edit, panels, chat, canvas, exportSite, exportAgain, importPhotos, switchProject, memory];
+export const SCENARIOS: Scenario[] = [launch, open, edit, edits, panels, chat, canvas, exportSite, exportAgain, importPhotos, switchProject, memory];
 
 /**
  * The scenarios to run in one launch for those asked for: each with every one it follows, in the order of SCENARIOS

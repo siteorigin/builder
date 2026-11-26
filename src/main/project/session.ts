@@ -4633,6 +4633,11 @@ export class ProjectSession extends EventEmitter {
       if (same) for (const [p, c] of nextDocs) if (this.docs.get(p) !== c) same = false;
       const srcSame = JSON.stringify([...stateToAuthoredSources(next)]) === JSON.stringify([...stateToAuthoredSources(this.state)]);
       if (same && srcSame) {
+        // Every document read to find nothing changed: what a reload set off by the app's own save costs.
+        if (!this.migrationDue && !settled) {
+          perf.count('session.reloadUnchanged');
+          perf.mark('session.reloadUnchanged');
+        }
         // Only the stored format differs (a file put back from an older copy): store it in the current one.
         if (this.migrationDue && !this.pending.size) await this.publishMigration(3, this.state);
         if (settled) this.emit('changed', { revision: this.revision, changedDocs: [], changedFiles: [], label: 'Conflict resolved', source: 'system' } satisfies SessionEvent);
@@ -4671,7 +4676,11 @@ export class ProjectSession extends EventEmitter {
       return { ok: false, message: (e as Error).message };
     }
     const nextDocs = stateToDocs(next);
-    if (nextDocs.size === this.docs.size && [...nextDocs].every(([p, c]) => this.docs.get(p) === c)) return { ok: true };
+    if (nextDocs.size === this.docs.size && [...nextDocs].every(([p, c]) => this.docs.get(p) === c)) {
+      perf.count('session.reloadUnchanged');
+      perf.mark('session.reloadUnchanged');
+      return { ok: true };
+    }
     const changedDocs = [...new Set([...nextDocs.keys(), ...this.docs.keys()])].filter((p) => nextDocs.get(p) !== this.docs.get(p));
     this.state = next;
     this.docs = nextDocs;
