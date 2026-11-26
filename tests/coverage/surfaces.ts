@@ -68,7 +68,7 @@ export function nativeMenu(): Surface[] {
   };
   // With a project open and without, for an author and a developer: an item offered only at Welcome, or only to
   // developers, is found too.
-  const actions = { command: () => undefined, history: () => () => undefined, openLink: () => undefined, about: () => undefined, openNotices: () => undefined };
+  const actions = { command: () => undefined, history: () => () => undefined, openLink: () => undefined, about: () => undefined, copyBuildDetails: () => undefined, showLog: () => undefined, openNotices: () => undefined };
   for (const p of PLATFORMS) for (const projectOpen of [true, false]) for (const developer of [true, false]) walk(appMenuTemplate(p, { projectOpen, developer }, actions), [], p);
   return [...found].map(([key, ps]) => ({ key, file: 'src/main/app-menu.ts', platforms: PLATFORMS.filter((p) => ps.has(p)) }));
 }

@@ -17,7 +17,7 @@ const e2e = readdirSync(join(ROOT, 'tests/e2e'))
   .filter((f) => f.endsWith('.mjs') && !NOT_PROOFS.has(f))
   .map((f) => `tests/e2e/${f}`);
 const areas = Object.keys(AREAS) as Area[];
-const MENU_ACTIONS = { command: () => undefined, history: () => () => undefined, openLink: () => undefined, about: () => undefined, openNotices: () => undefined };
+const MENU_ACTIONS = { command: () => undefined, history: () => () => undefined, openLink: () => undefined, about: () => undefined, copyBuildDetails: () => undefined, showLog: () => undefined, openNotices: () => undefined };
 
 describe('the interaction inventory (issue #498)', () => {
   it('covers every discoverable action, links every e2e script, and names only tests and steps that exist', () => {

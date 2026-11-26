@@ -262,7 +262,7 @@ describe('Help > Third-Party Notices', () => {
     for (const platform of ['darwin', 'win32', 'linux'] as const)
       for (const open of [true, false]) {
         let opened = 0;
-        const menu = appMenuTemplate(platform, { projectOpen: open, developer: false }, { command: () => undefined, history: () => () => undefined, openLink: () => undefined, about: () => undefined, openNotices: () => opened++ });
+        const menu = appMenuTemplate(platform, { projectOpen: open, developer: false }, { command: () => undefined, history: () => () => undefined, openLink: () => undefined, about: () => undefined, copyBuildDetails: () => undefined, showLog: () => undefined, openNotices: () => opened++ });
         const help = menu.find((m) => m.label === 'Help');
         expect(help, `${platform} ${open}`).toBeTruthy();
         const item = (help!.submenu as MenuItemConstructorOptions[]).find((i) => i.label === 'Third-Party Notices')!;

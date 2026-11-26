@@ -3,8 +3,9 @@ import type { MenuItemConstructorOptions } from 'electron';
 import { appMenuTemplate, offersDeveloperItems, type AppMenuActions } from '../../src/main/app-menu';
 
 const PLATFORMS = ['darwin', 'win32', 'linux'] as const;
-const actions = (): AppMenuActions & { command: ReturnType<typeof vi.fn>; openLink: ReturnType<typeof vi.fn>; about: ReturnType<typeof vi.fn> } =>
-  ({ command: vi.fn(), history: () => () => undefined, openLink: vi.fn(), about: vi.fn(), openNotices: vi.fn() }) as never;
+type Mock = ReturnType<typeof vi.fn>;
+const actions = (): AppMenuActions & { command: Mock; openLink: Mock; about: Mock; copyBuildDetails: Mock; showLog: Mock } =>
+  ({ command: vi.fn(), history: () => () => undefined, openLink: vi.fn(), about: vi.fn(), copyBuildDetails: vi.fn(), showLog: vi.fn(), openNotices: vi.fn() }) as never;
 const menu = (p: NodeJS.Platform, label: string, developer = false, a = actions()) =>
   appMenuTemplate(p, { projectOpen: true, developer }, a).find((m) => m.label === label)?.submenu as MenuItemConstructorOptions[] | undefined;
 const click = (item: MenuItemConstructorOptions | undefined) => (item!.click as () => void)();
@@ -40,6 +41,23 @@ describe('the application menu (#810)', () => {
         click(about);
         expect(a.about).toHaveBeenCalledOnce();
       }
+    }
+  });
+
+  it('lets a person report a problem, copy the build details and find the log file from Help on every platform (#887)', () => {
+    for (const p of PLATFORMS) {
+      const a = actions();
+      const help = menu(p, 'Help', false, a)!;
+      const labels = help.map((i) => i.label ?? i.type);
+      const after = p === 'darwin' ? [] : ['separator', 'About SiteOrigin Builder'];
+      expect(labels, p).toEqual(['SiteOrigin Website', 'separator', 'Report a Problem…', 'Copy Build Details', 'Show Log File', 'separator', 'Third-Party Notices', ...after]);
+      // The report opens the repository's new-issue form in the browser, with nothing filled in or sent for the person.
+      click(help.find((i) => i.label === 'Report a Problem…'));
+      expect(a.openLink).toHaveBeenCalledWith('https://github.com/siteorigin/builder/issues/new');
+      click(help.find((i) => i.label === 'Copy Build Details'));
+      expect(a.copyBuildDetails).toHaveBeenCalledOnce();
+      click(help.find((i) => i.label === 'Show Log File'));
+      expect(a.showLog).toHaveBeenCalledOnce();
     }
   });
 
