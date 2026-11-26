@@ -1242,7 +1242,9 @@ function archiveLayoutOf(state: ProjectState, collectionId: string, raw: { rootI
   const take = (id: string, depth: number): string => {
     const n = Object.hasOwn(src.nodes, id) ? (src.nodes[id] as GraphNode | null) : undefined;
     if (!n || typeof n !== 'object' || n.id !== id || !LAYOUT_NODE_KINDS.has(n.kind)) fail(`The archive layout's node "${id.slice(0, 60)}" is not one it can hold: give each node its own ID and a kind a page can show.`);
-    if (ids.has(id) || depth > 100) fail(`The archive layout shows the node "${id.slice(0, 60)}" twice.`);
+    if (ids.has(id)) fail(`The archive layout shows the node "${id.slice(0, 60)}" twice.`);
+    if (depth > 100) fail('The archive layout nests its elements more than 100 deep.');
+    if (n.kind === 'repeat' && (!n.list || typeof n.list !== 'object' || Array.isArray(n.list))) fail(`The archive layout's list "${id.slice(0, 60)}" repeats nothing: give it a query, or the archive page's entries.`);
     const fresh = idFor(id);
     taken.add(fresh);
     ids.set(id, fresh);

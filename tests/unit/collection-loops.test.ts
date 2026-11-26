@@ -458,3 +458,32 @@ describe('review regressions', () => {
     expect(own.collections.projects.settings.archiveTemplate!.nodes.n_arch1.name).toBe('Entries');
   });
 });
+
+describe('last review regressions', () => {
+  it("never lets a form inside a loop send to an entry's field", () => {
+    const { s, loop } = withLoop(studio(), { collectionId: 'projects' });
+    const r = applyOperations(s, [{ type: 'node.insert', owner: home(s), parentId: loop, componentId: 'contact.form' }]);
+    const form = r.results[0].nodeId as string;
+    expect(refusal(r.state, { type: 'node.setBinding', owner: home(s), nodeId: form, field: 'prop', prop: 'endpoint', binding: { $item: 'field.client' } })).toMatch(/destination/);
+  });
+
+  it('refuses filling a required text field from a number, which can show as nothing', () => {
+    const { s, id } = withTeam(studio());
+    const r = applyOperations(s, [{ type: 'collection.update', collectionId: 'team', fields: { role: { type: 'string', label: 'Role' }, location: { type: 'string', label: 'Location' }, senior: { type: 'boolean', label: 'Senior' }, years: { type: 'number', label: 'Years' } } }]);
+    expect(refusal(r.state, { type: 'instance.setListSource', owner: home(s), nodeId: id, prop: 'people', source: { query: { collectionId: 'team' }, fields: { name: 'field.years' } } })).toMatch(/can show as nothing/);
+  });
+
+  it('refuses an archive layout given whole whose list repeats nothing', () => {
+    const s = studio();
+    expect(refusal(s, { type: 'collection.update', collectionId: 'projects', archiveTemplate: { rootIds: ['r1'], nodes: { r1: { id: 'r1', kind: 'repeat', children: [] } } } })).toMatch(/repeats nothing/);
+  });
+
+  it('counts a connected list as rows Find cannot replace in place', async () => {
+    let { s, id } = withTeam(studio());
+    s = run(s, { type: 'instance.setListSource', owner: home(s), nodeId: id, prop: 'people', source: { query: ARCHITECTS, fields: PEOPLE } });
+    const { renderedContent } = await import('@generator/checks');
+    const rows = renderedContent(s, s.pages[s.site.homePageId]).filter((t) => t.value === 'Ana Ruiz');
+    expect(rows.length).toBeGreaterThan(0);
+    expect(rows.every((t) => t.computed)).toBe(true);
+  });
+});

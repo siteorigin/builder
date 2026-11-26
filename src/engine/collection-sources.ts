@@ -12,6 +12,7 @@ import { fieldFitProblem, normalizeConnection, rowFieldSchema } from '@shared/co
 import { ENTRY_CONTENT_FIELDS, entryChoiceProblem, entryComparisonProblem, isEntryDateField } from '@shared/entry-fields';
 import { acceptedTypes, bindingProblem, bindingSlots } from './schema';
 import { requiredGap } from '@shared/required';
+import { HOST_ONLY_PROPS } from '@shared/live/capabilities';
 import { termNamed } from '@shared/entry-feed';
 import { allTrees, childLists, displayName, fail, getNode } from './tree';
 import { newId } from '@shared/ids';
@@ -94,7 +95,9 @@ export function connectionProblem(state: ProjectState, owner: OwnerRef, node: In
   if (unfilled) return `leaves “${unfilled[1].label}” of “${schema.label}” unfilled, which every item needs: choose the entry field that fills it.`;
   for (const [field, source] of Object.entries(connection.fields)) {
     const target = schema.fields[field];
-    const gap = target.required ? requiredGap(rowFieldSchema(collection, source)!, target) : null;
+    const from = rowFieldSchema(collection, source)!;
+    // Of its own kind too: a number shown as text (a reading time of none) can be blank.
+    const gap = target.required ? (from.type !== target.type ? `“${target.label}” is required, but “${from.label}” is a ${from.type}, which can show as nothing` : requiredGap(from, target)) : null;
     if (gap) return `fills “${target.label}” of “${schema.label}”, but ${gap}: fill it from a field every entry has, such as the title.`;
   }
   return null;
@@ -183,6 +186,11 @@ export function loopBindingProblems(state: ProjectState, collection: Collection,
     const nested = slot.field === 'prop' && n.kind === 'instance' ? state.components[n.definitionId]?.properties : undefined;
     if (slot.field === 'prop' && !(nested && slot.prop !== undefined && Object.hasOwn(nested, slot.prop))) {
       out.push(`shows “${schema.label}” in "${slot.prop}", which the placed component does not have.`);
+      continue;
+    }
+    // Where a form sends what visitors write is the site's own, never an entry's.
+    if (slot.field === 'prop' && (HOST_ONLY_PROPS as readonly string[]).includes(slot.prop!)) {
+      out.push(`takes where it sends what visitors write from “${schema.label}”; a form's destination is set on the form, never read from an entry.`);
       continue;
     }
     const ok = acceptedTypes(n, slot.field, nested?.[slot.prop!]);

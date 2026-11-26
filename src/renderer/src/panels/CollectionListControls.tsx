@@ -162,7 +162,9 @@ function connectionFor(first: ProjectState['collections'][string], schema: ListP
     // A field named like the item field first ("role" from field.role), then a title or picture for a name or a portrait.
     return (
       fits.find(([f]) => f === `field.${name}` || f === name)?.[0] ??
-      (target.type === 'image' ? fits.find(([f]) => f === 'featuredImage')?.[0] : target.type === 'link' ? fits.find(([f]) => f === 'entryLink')?.[0] : target.required || name === schema.titleField ? fits.find(([f]) => f === 'title')?.[0] : undefined)
+      (target.type === 'image' ? fits.find(([f]) => f === 'featuredImage')?.[0] : target.type === 'link' ? fits.find(([f]) => f === 'entryLink')?.[0] : target.required || name === schema.titleField ? fits.find(([f]) => f === 'title')?.[0] : undefined) ??
+      // A field an item needs takes any that fits, of its own kind first.
+      (target.required ? (fits.find(([, s]) => s.type === target.type) ?? fits[0])?.[0] : undefined)
     );
   };
   const map: Record<string, string> = {};

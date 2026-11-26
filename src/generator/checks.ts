@@ -474,6 +474,8 @@ export function walkRendered(state: ProjectState, tree: NodeTree, visit: Visit) 
           // A component inside a design reads the placement's own fields only through the bindings it is given.
           const forwarded: Record<string, PlacementField> = {};
           const fedLists = new Set<string>();
+          // A list connected to a collection holds its entries' rows: nothing in it is a field of the placement.
+          for (const k of Object.keys(n.listSources ?? {})) fedLists.add(k);
           if (frame.def) for (const [k, v] of Object.entries(n.props)) {
             // A computed list handed on is still the pages' rows: nothing in it is a field of the placement.
             if (isBinding(v) && '$prop' in v && isFeed(frame.def.properties[v.$prop])) {
