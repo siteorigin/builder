@@ -1,6 +1,6 @@
 import { EventEmitter } from 'node:events';
 import fs, { type FSWatcher } from 'node:fs';
-import { basename, join, relative, sep } from 'node:path';
+import { basename, dirname, join, relative, sep } from 'node:path';
 
 /** A watch of a folder and everything in it. It reports a failure it cannot carry on from as one `error` event. */
 export interface FolderWatch extends EventEmitter {
@@ -25,9 +25,11 @@ export function watchTree(dir: string, listener: FolderListener, options: { tree
 
 /** The path, or something on the way to it, is not there (any more): forgotten, not a failure. */
 const isGone = (e: unknown) => {
-  const code = (e as NodeJS.ErrnoException | null)?.code;
+  const code = errorCode(e);
   return code === 'ENOENT' || code === 'ENOTDIR';
 };
+
+const errorCode = (e: unknown) => (e as NodeJS.ErrnoException | null)?.code ?? '';
 
 /** Failures about a path rather than the system: below a folder that has since been replaced, they are about it. */
 const PATH_CODES = new Set(['EACCES', 'EPERM', 'ELOOP']);
@@ -128,7 +130,7 @@ class TreeWatch extends EventEmitter implements FolderWatch {
       } else if (dir === this.root && !this.stillSame(dir)) this.gone(dir);
     } catch (e) {
       // A failure below a folder that is no longer the one watched (moved, replaced) is its going, not the watch's end.
-      if (this.closed || !PATH_CODES.has((e as NodeJS.ErrnoException | null)?.code ?? '') || this.stillSame(dir)) throw e;
+      if (this.closed || !PATH_CODES.has(errorCode(e)) || this.stillSame(dir)) throw e;
       this.gone(dir);
     }
   }
@@ -138,9 +140,24 @@ class TreeWatch extends EventEmitter implements FolderWatch {
     if (this.rearm.size === 0) {
       setImmediate(() =>
         this.guard(() => {
+          if (this.closed) return;
           const dirs = [...this.rearm].sort((a, b) => a.length - b.length);
           this.rearm.clear();
-          for (const d of dirs) if (this.folders.has(d)) this.recheck(d, true);
+          // The tree may have been moved from under the watch meanwhile, with no event about the folder itself.
+          if (!this.stillSame(this.root)) return this.gone(this.root);
+          const done: string[] = [];
+          for (const d of dirs) {
+            // A folder made again is watched afresh with all it holds: what is below it needs nothing more.
+            if (!this.folders.has(d) || done.some((p) => d.startsWith(p + sep))) continue;
+            done.push(d);
+            try {
+              this.recheck(d, true);
+            } catch (e) {
+              // As for an event: a failure below a folder that has since been replaced is that folder's going.
+              if (!PATH_CODES.has(errorCode(e)) || this.stillSame(dirname(d))) throw e;
+              this.forget(d);
+            }
+          }
         })
       );
     }
@@ -215,22 +232,32 @@ class TreeWatch extends EventEmitter implements FolderWatch {
   }
 
   /** What a watched folder holds, or null once it is no longer the folder watched. */
-  private list(dir: string): fs.Dirent[] | null {
+  private list(dir: string): Array<{ name: string; isDirectory(): boolean }> | null {
     try {
       return fs.readdirSync(dir, { withFileTypes: true });
     } catch (e) {
       if (!isGone(e)) throw e;
     }
     // Where the file system does not say what each entry is, Node looks, and fails when one just went: so the folder
-    // itself is looked at, and read again if it is still there.
+    // itself is looked at, and if it is still there its names are read and each looked at here, one gone just skipped.
     if (!this.stillSame(dir)) return null;
+    let names: string[];
     try {
-      return fs.readdirSync(dir, { withFileTypes: true });
+      names = fs.readdirSync(dir);
     } catch (e) {
-      // Still there, yet it cannot be read through: what it holds would go unwatched.
       if (!isGone(e) || this.stillSame(dir)) throw e;
       return null;
     }
+    const entries: Array<{ name: string; isDirectory(): boolean }> = [];
+    for (const name of names) {
+      try {
+        const folder = fs.lstatSync(join(dir, name)).isDirectory();
+        entries.push({ name, isDirectory: () => folder });
+      } catch (e) {
+        if (!isGone(e)) throw e;
+      }
+    }
+    return entries;
   }
 
   /** A watched folder is gone: everything below it is forgotten, and the root going ends the watch. */

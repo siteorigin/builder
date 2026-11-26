@@ -203,6 +203,13 @@ describe('watching a folder and everything in it', { timeout: 30_000 }, () => {
   it('keeps running when a folder is replaced by a file while its events are still queued (ENOTDIR)', async () => {
     const dir = temp();
     mkdirSync(join(dir, 'sub'));
+    const watch = fs.watch;
+    const closes = new Map<string, ReturnType<typeof vi.spyOn>>();
+    vi.spyOn(fs, 'watch').mockImplementation(((path: fs.PathLike, ...rest: unknown[]) => {
+      const w = (watch as (...args: unknown[]) => fs.FSWatcher)(path, ...rest);
+      closes.set(String(path), vi.spyOn(w, 'close'));
+      return w;
+    }) as typeof fs.watch);
     const { events, errors } = start(dir);
     await untilWatching(dir, events);
     await reported(events, dir, join('sub', 'seen.txt'));
@@ -212,8 +219,27 @@ describe('watching a folder and everything in it', { timeout: 30_000 }, () => {
     rmSync(join(dir, 'sub'), { recursive: true });
     writeFileSync(join(dir, 'sub'), 'now a file');
     await settle();
-    // Still watching, nothing thrown, and no error: a folder that went is not a failure.
+    // Still watching, nothing thrown, and no error: a folder that went is not a failure. Its watch is let go.
     await reported(events, dir, 'after.txt');
+    await vi.waitFor(() => expect(closes.get(join(dir, 'sub'))).toHaveBeenCalled(), { timeout: 15_000 });
+    expect(errors).toEqual([]);
+  });
+
+  it('reads a folder by name when its typed listing fails on an entry that just went', async () => {
+    const dir = temp();
+    mkdirSync(join(dir, 'a'));
+    writeFileSync(join(dir, 'file.txt'), '');
+    const readdir = fs.readdirSync;
+    let failed = 0;
+    vi.spyOn(fs, 'readdirSync').mockImplementation(((path: fs.PathLike, options?: unknown) => {
+      // As Node fails a typed listing where the file system does not say what an entry is and one just went.
+      if (String(path) === dir && (options as { withFileTypes?: boolean } | undefined)?.withFileTypes && !failed++) throw Object.assign(new Error('ENOENT: no such file or directory, lstat'), { code: 'ENOENT' });
+      return (readdir as (...args: unknown[]) => unknown)(path, options);
+    }) as typeof fs.readdirSync);
+    const { events, errors } = start(dir);
+    expect(failed).toBe(1);
+    await untilWatching(dir, events);
+    await reported(events, dir, join('a', 'x.txt'));
     expect(errors).toEqual([]);
   });
 
