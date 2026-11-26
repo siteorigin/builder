@@ -1,6 +1,8 @@
 /**
  * The main process's side of the media worker: hands each picture to a utility process for its responsive
- * copies, one at a time, so a batch of large photos never blocks the editor window.
+ * copies, so a batch of large photos never blocks the editor window. A client takes one request at a time, or as many
+ * as it is told to (`parallel`), within a budget of pixels being decoded at once, so a batch keeps several cores busy
+ * without holding more than a few pictures in memory.
  *
  * Copies are an extra: a worker that fails, crashes or takes too long leaves the picture imported without
  * them, as a very large picture already is. The worker starts on the first request and is stopped once it
@@ -118,20 +120,23 @@ export interface WorkerHandle {
 }
 
 export interface VariantClient {
-  /** The picture's responsive copies (or exactly `targets`), or none when the worker could not make them. Never rejects. */
-  variants(buf: Buffer, mime: string, width: number, targets?: VariantTarget[]): Promise<Variant[]>;
+  /**
+   * The picture's responsive copies (or exactly `targets`), or none when the worker could not make them. Never rejects.
+   * `pixels` (the picture's, when known) is what the request counts against the client's budget.
+   */
+  variants(buf: Buffer, mime: string, width: number, targets?: VariantTarget[], pixels?: number): Promise<Variant[]>;
   /**
    * Decode the picture to prove it can be shown, and make its copies. A worker that fails, crashes or takes too
    * long proves nothing either way, so the picture counts as readable. Never rejects.
    */
-  inspect(buf: Buffer, mime: string, width: number): Promise<Inspected>;
+  inspect(buf: Buffer, mime: string, width: number, pixels?: number): Promise<Inspected>;
   /**
    * A web-sized copy of a photo, from its bytes or from a file (a decoded HEIC). Unlike the responsive copies it is
    * the picture the author asked for, so a worker that fails says so rather than giving nothing. Never rejects.
    */
-  webCopy(source: { data: Buffer; mime: string } | { path: string }, maxEdge: number): Promise<WebCopyResult>;
+  webCopy(source: { data: Buffer; mime: string } | { path: string }, maxEdge: number, pixels?: number): Promise<WebCopyResult>;
   /** Whether every pixel of a picture with an alpha channel is opaque; null when the worker could not tell. Never rejects. */
-  opaque(buf: Buffer, mime: string): Promise<boolean | null>;
+  opaque(buf: Buffer, mime: string, pixels?: number): Promise<boolean | null>;
   /** Square PNG icons of a picture, one for each of `icons`, or why there are none. Never rejects. */
   icons(buf: Buffer, mime: string, icons: IconSpec[], opts?: { untrusted?: boolean }): Promise<IconsResult>;
   /**
@@ -144,12 +149,20 @@ export interface VariantClient {
   stop(): void;
 }
 
+/** A request's answer when the worker went down while it was one of several in it: it is asked again. */
+const LOST = Symbol('lost');
+
 /** What a client was asked for, as the benchmark's marks name it. */
 export type MediaKind = NonNullable<VariantRequest['kind']>;
 
+/**
+ * `parallel` requests at most go to the worker at once (one by default), and while more than one is in flight, the
+ * pictures they decode add up to no more than `pixelBudget`: a request over it alone waits for the others and then has
+ * the worker to itself. A request whose picture's size is not known counts as an equal share of the budget.
+ */
 export function createVariantClient(
   spawn: () => WorkerHandle,
-  opts: { timeoutMs?: number; copiesTimeoutMs?: number; webTimeoutMs?: number; idleMs?: number; onStats?: (kind: MediaKind, stats: MediaStats, ms: number) => void } = {}
+  opts: { timeoutMs?: number; copiesTimeoutMs?: number; webTimeoutMs?: number; idleMs?: number; parallel?: number; pixelBudget?: number; onStats?: (kind: MediaKind, stats: MediaStats, ms: number) => void } = {}
 ): VariantClient {
   const timeoutMs = opts.timeoutMs ?? 30_000;
   // A picture's copies come in three formats, each to its full width: a 100-megapixel original (the most copies are
@@ -158,11 +171,19 @@ export function createVariantClient(
   // A web-sized copy decodes the whole photo, which for a 48-megapixel camera original takes a while.
   const webTimeoutMs = opts.webTimeoutMs ?? 60_000;
   const idleMs = opts.idleMs ?? 30_000;
+  const parallel = Math.max(1, Math.floor(opts.parallel ?? 1));
+  const pixelBudget = opts.pixelBudget ?? Infinity;
   let worker: WorkerHandle | null = null;
-  // A request in flight settles with the worker's reply, or null when the worker failed, crashed or took too long.
-  let current: { id: number; resolve: (v: VariantReply | null) => void; timer: ReturnType<typeof setTimeout> } | null = null;
+  // The requests in flight, by id: each settles with the worker's reply, or null when the worker failed, crashed or
+  // took too long, or LOST when it went down while this request shared it with others, which may not be this one's doing.
+  const inFlight = new Map<number, { resolve: (v: VariantReply | null | typeof LOST) => void; timer: ReturnType<typeof setTimeout> }>();
   let idle: ReturnType<typeof setTimeout> | null = null;
-  let queue: Promise<unknown> = Promise.resolve();
+  // Requests waiting their turn, first come first served (one asked again first of all), and those let through: how
+  // many, their pixels, and whether one has the worker to itself.
+  const waiting: Array<{ pixels: number; alone: boolean; go: () => void }> = [];
+  let admitted = 0;
+  let admittedPixels = 0;
+  let aloneIn = false;
   let nextId = 0;
   let stopped = false;
   /** Requests made and not yet settled, in flight or waiting their turn. */
@@ -170,12 +191,30 @@ export function createVariantClient(
   /** Set by release(): end the worker once the requests made before it have settled. */
   let releasing = false;
 
-  const settle = (id: number, result: VariantReply | null) => {
-    if (current?.id !== id) return;
-    clearTimeout(current.timer);
-    const { resolve } = current;
-    current = null;
-    resolve(result);
+  const settle = (id: number, result: VariantReply | null | typeof LOST) => {
+    const r = inFlight.get(id);
+    if (!r) return;
+    clearTimeout(r.timer);
+    inFlight.delete(id);
+    r.resolve(result);
+  };
+  /**
+   * The worker is gone (it crashed, failed or was stopped, or `culprit` took too long): the request it had alone, or the
+   * one that took too long, gets nothing, as before; any other it had is LOST, to be asked again.
+   */
+  const lose = (culprit?: number) => {
+    const shared = inFlight.size > 1;
+    for (const id of [...inFlight.keys()]) settle(id, shared && id !== culprit && !stopped ? LOST : null);
+  };
+  /** Let waiting requests through, in order, while the worker has room for the next. */
+  const admit = () => {
+    while (waiting.length && !aloneIn && (admitted === 0 || (!waiting[0].alone && admitted < parallel && admittedPixels + waiting[0].pixels <= pixelBudget))) {
+      const next = waiting.shift()!;
+      admitted++;
+      admittedPixels += next.pixels;
+      aloneIn = next.alone;
+      next.go();
+    }
   };
   const kill = () => {
     const w = worker;
@@ -194,67 +233,97 @@ export function createVariantClient(
     worker = w;
     // Messages and exits from a worker that has been replaced belong to no request.
     w.on('message', (m) => {
-      if (worker !== w || !current || m.id !== current.id) return;
+      if (worker !== w) return;
       settle(m.id, m);
     });
     w.on('exit', () => {
       if (worker !== w) return;
       worker = null;
-      if (current) settle(current.id, null);
+      lose();
     });
     // Unhandled, an 'error' event would be thrown in the main process.
     w.on('error', () => {
       if (worker !== w) return;
       kill();
-      if (current) settle(current.id, null);
+      lose();
     });
     return w;
   };
   type Ask = Omit<VariantRequest, 'id'>;
   const run = (ask: Ask) =>
-    new Promise<VariantReply | null>((resolve) => {
+    new Promise<VariantReply | null | typeof LOST>((resolve) => {
       if (idle) clearTimeout(idle);
       idle = null;
       if (stopped) return resolve(null);
       const id = ++nextId;
       const posted = performance.now();
       // The worker's account of the request, with the time it took from here (its wait for the worker to start included).
-      const answer = opts.onStats ? (r: VariantReply | null) => (r?.stats && opts.onStats!(ask.kind ?? 'variants', r.stats, performance.now() - posted), resolve(r)) : resolve;
-      current = { id, resolve: answer, timer: setTimeout(() => (kill(), settle(id, null)), ask.kind === 'web' ? webTimeoutMs : !ask.kind || ask.kind === 'variants' ? copiesTimeoutMs : timeoutMs) };
+      const answer = opts.onStats ? (r: VariantReply | null | typeof LOST) => (r !== LOST && r?.stats && opts.onStats!(ask.kind ?? 'variants', r.stats, performance.now() - posted), resolve(r)) : resolve;
+      // One that takes too long has the worker stopped: it may be stuck, and the others in flight go with it.
+      inFlight.set(id, { resolve: answer, timer: setTimeout(() => (kill(), lose(id)), ask.kind === 'web' ? webTimeoutMs : !ask.kind || ask.kind === 'variants' ? copiesTimeoutMs : timeoutMs) });
       try {
         ensure().postMessage({ id, ...ask, ...(opts.onStats ? { stats: true } : {}) });
       } catch {
         kill();
-        settle(id, null);
+        lose();
       }
-    }).finally(() => {
-      pending--;
-      if (current || idle || stopped || pending) return;
-      if (releasing) return void ((releasing = false), kill());
-      idle = setTimeout(() => ((idle = null), kill()), idleMs);
-      idle.unref?.();
     });
 
-  const request = (ask: Ask) => {
+  /** One go at a request once it is let through: `alone` with the worker to itself, first in line. */
+  const attempt = async (ask: Ask, weight: number, alone: boolean) => {
+    await new Promise<void>((go) => {
+      const turn = { pixels: weight, alone, go };
+      if (alone) waiting.unshift(turn);
+      else waiting.push(turn);
+      admit();
+    });
+    try {
+      return await run(ask);
+    } finally {
+      admitted--;
+      admittedPixels -= weight;
+      if (alone) aloneIn = false;
+      admit();
+    }
+  };
+  const request = async (ask: Ask, pixels?: number): Promise<VariantReply | null> => {
     pending++;
     // Someone wants the worker again: it keeps its usual idle time.
     releasing = false;
-    const p = queue.then(() => run(ask));
-    queue = p;
-    return p;
+    const weight = !Number.isFinite(pixelBudget) ? 0 : pixels !== undefined && Number.isFinite(pixels) && pixels >= 0 ? Math.min(pixels, pixelBudget) : pixelBudget / parallel;
+    try {
+      const r = await attempt(ask, weight, false);
+      // Lost with a worker that went down for another request, or for one of those it had: asked once more with the
+      // worker to itself, so it is never left without its copies by another picture, and a picture that brings the
+      // worker down again does so alone.
+      if (r !== LOST) return r;
+      const again = await attempt(ask, weight, true);
+      return again === LOST ? null : again;
+    } finally {
+      pending--;
+      if (!(inFlight.size || idle || stopped || pending)) {
+        if (releasing) {
+          releasing = false;
+          kill();
+        } else {
+          idle = setTimeout(() => ((idle = null), kill()), idleMs);
+          idle.unref?.();
+        }
+      }
+    }
   };
   const bytes = (buf: Buffer) => new Uint8Array(buf.buffer, buf.byteOffset, buf.byteLength);
   const toBuffer = (d: Uint8Array) => Buffer.from(d.buffer, d.byteOffset, d.byteLength);
   const inspected = (r: VariantReply | null): Inspected =>
     r?.ok ? { unreadable: false, variants: (r.variants ?? []).map((v) => ({ width: v.width, mime: v.mime, data: toBuffer(v.data) })) } : { unreadable: !!r?.unreadable, variants: [] };
   return {
-    variants: (buf, mime, width, targets) => request({ data: bytes(buf), mime, width, ...(targets ? { targets } : {}) }).then((r) => inspected(r).variants),
-    inspect: (buf, mime, width) => request({ data: bytes(buf), mime, width, check: true }).then(inspected),
-    webCopy: (source, maxEdge) =>
-      request({ kind: 'web', maxEdge, width: 0, ...('path' in source ? { path: source.path, data: new Uint8Array(0), mime: '' } : { data: bytes(source.data), mime: source.mime }) }).then((r): WebCopyResult =>
+    variants: (buf, mime, width, targets, pixels) => request({ data: bytes(buf), mime, width, ...(targets ? { targets } : {}) }, pixels).then((r) => inspected(r).variants),
+    inspect: (buf, mime, width, pixels) => request({ data: bytes(buf), mime, width, check: true }, pixels).then(inspected),
+    webCopy: (source, maxEdge, pixels) =>
+      request({ kind: 'web', maxEdge, width: 0, ...('path' in source ? { path: source.path, data: new Uint8Array(0), mime: '' } : { data: bytes(source.data), mime: source.mime }) }, pixels).then((r): WebCopyResult =>
         r?.ok && r.web ? { ok: true, copy: { ...r.web, data: toBuffer(r.web.data) } } : { ok: false, unreadable: !!(r && !r.ok && r.unreadable) }
       ),
-    opaque: (buf, mime) => request({ kind: 'opaque', data: bytes(buf), mime, width: 0 }).then((r) => (r?.ok && typeof r.opaque === 'boolean' ? r.opaque : null)),
+    opaque: (buf, mime, pixels) => request({ kind: 'opaque', data: bytes(buf), mime, width: 0 }, pixels).then((r) => (r?.ok && typeof r.opaque === 'boolean' ? r.opaque : null)),
     icons: (buf, mime, icons, opts) =>
       request({ kind: 'icons', data: bytes(buf), mime, width: 0, icons, ...(opts?.untrusted ? { untrusted: true } : {}) }).then((r): IconsResult =>
         // A reply without exactly one icon for each asked for is the worker failing, not the picture.
@@ -272,7 +341,7 @@ export function createVariantClient(
       if (idle) clearTimeout(idle);
       idle = null;
       kill();
-      if (current) settle(current.id, null);
+      lose();
     }
   };
 }

@@ -1,4 +1,5 @@
 import { promises as fs } from 'node:fs';
+import { availableParallelism } from 'node:os';
 import { utilityProcess } from 'electron';
 import { basename, dirname, extname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -320,7 +321,7 @@ async function prepareImport(sourcePath: string, refuse: Refusal, opts: ImportOp
   let result: WebCopyResult;
   if (c.kind === 'heic') {
     try {
-      result = await opts.decoder!.decode(buf, (tiff) => mediaWorker.webCopy({ path: tiff }, WEB_EDGE));
+      result = await opts.decoder!.decode(buf, (tiff) => mediaWorker.webCopy({ path: tiff }, WEB_EDGE, c.info ? c.info.width * c.info.height : undefined));
     } catch {
       throw refuse(CONVERT_FAILED);
     }
@@ -333,7 +334,7 @@ async function prepareImport(sourcePath: string, refuse: Refusal, opts: ImportOp
         : prepareBytes(sourcePath, buf, c.mime, c.ext, refuse).then((p) => ({ ...p, ...(note ? { note: `${basename(sourcePath)} was added as it is: ${note}` } : {}) }));
     if (heic) return keep();
     if (!c.offer) return keep('a web-sized copy of it can’t be made.');
-    result = await mediaWorker.webCopy({ data: buf, mime: c.mime }, WEB_EDGE);
+    result = await mediaWorker.webCopy({ data: buf, mime: c.mime }, WEB_EDGE, c.info ? c.info.width * c.info.height : undefined);
     if (!result.ok) {
       if (result.unreadable) throw refuse(unusableReason('damaged', c.mime));
       return keep('a web-sized copy could not be made.');
@@ -402,7 +403,19 @@ export async function reviewImportFile(sourcePath: string, opts: { converter: bo
 }
 
 /** Ask the media worker whether a picture is opaque throughout (for an import review). */
-export const isOpaquePicture = (buf: Buffer, mime: string) => mediaWorker.opaque(buf, mime);
+export const isOpaquePicture = (buf: Buffer, mime: string) => {
+  const info = imageInfo(buf, mime);
+  return mediaWorker.opaque(buf, mime, info ? info.width * info.height : undefined);
+};
+
+/**
+ * The pixels the worker decodes to check a picture: every frame of a GIF or an animated WebP (whose frames are not
+ * counted here, so it is given the worker to itself), the one frame of anything else.
+ */
+export function checkPixels(buf: Buffer, mime: string, info: { width: number; height: number }): number {
+  const animatedWebp = mime === 'image/webp' && buf.toString('latin1', 12, 16) === 'VP8X' && (buf[20] & 0x02) !== 0;
+  return mime === 'image/gif' || animatedWebp ? MEDIA_PIXEL_BUDGET : info.width * info.height;
+}
 
 /** Where a library file lives and what it is: the part of an asset record a new file replaces. */
 export type StoredFile = Pick<AssetRecord, 'file' | 'mime' | 'bytes' | 'hash' | 'width' | 'height' | 'variants' | 'originalName'>;
@@ -486,7 +499,7 @@ async function planStore(p: PreparedFile, refuse: Refusal): Promise<{ stored: St
   // Decoding allocates by pixel count, which a small file can inflate: very large pictures are not decoded at all
   // and keep only the original.
   const decodable = !!info && p.mime !== 'image/svg+xml' && info.width * info.height <= MAX_VARIANT_PIXELS;
-  const { unreadable, variants } = decodable ? await mediaWorker.inspect(p.buf, p.mime, info.width) : { unreadable: false, variants: [] };
+  const { unreadable, variants } = decodable ? await mediaWorker.inspect(p.buf, p.mime, info.width, checkPixels(p.buf, p.mime, info)) : { unreadable: false, variants: [] };
   if (unreadable) throw refuse(unusableReason('damaged', p.mime));
   const base = slugify(p.stem) || (isFont ? 'font' : 'image');
   const stem = `static/assets/${base}-${p.hash.slice(0, 8)}`;
@@ -519,10 +532,17 @@ export async function importAsset(
   const refuse = refusal(sourcePath, 'was not imported');
   const { note, ...p } = await prepareImport(sourcePath, refuse, opts);
   const noted = note ? { note } : {};
-  // The same bytes under another format's name (a .txt and a .csv) are a file of their own.
-  const dup = existing.find((a) => a.hash === p.hash && a.mime === p.mime);
+  const dup = sameFile(existing, p);
   // A font imported before metadata was recorded gets it now.
   if (dup) return { record: dup, existing: true, ...(p.font && !dup.font ? { font: p.font } : {}), ...noted };
+  return { ...(await storePrepared(projectDir, sourcePath, p, existing, fence, opts, refuse)), ...noted };
+}
+
+/** The library record already holding a prepared file's bytes. The same bytes under another format's name (a .txt and a .csv) are a file of their own. */
+const sameFile = (library: AssetRecord[], p: PreparedFile) => library.find((a) => a.hash === p.hash && a.mime === p.mime);
+
+/** Store a prepared file the library does not have yet: its copies made, its files written while `fence` allows. */
+async function storePrepared(projectDir: string, sourcePath: string, p: PreparedFile, existing: AssetRecord[], fence: WriteFence, opts: ImportOptions, refuse: Refusal): Promise<{ record: AssetRecord; existing: false }> {
   const kind = kindOfMime(p.mime);
   const { stored, files } = await planStore(p, refuse);
   if (!(await fence(() => writePlanned(projectDir, stored, files, existing)))) throw refuse(`${NOT_WRITTEN}.`);
@@ -540,7 +560,78 @@ export async function importAsset(
     ...(stored.variants ? { variants: stored.variants } : {}),
     ...(p.font ? { font: p.font } : {})
   };
-  return { record, existing: false, ...noted };
+  return { record, existing: false };
+}
+
+/** One file of a batch, as importAsset returns it, or why it was not imported. */
+export type BatchOutcome = Awaited<ReturnType<typeof importAsset>> | { error: Error };
+
+/**
+ * Import `files` as importAsset imports each, up to `parallel` at a time (as many pictures as the media worker makes at
+ * once), with each file's outcome in its place. Which file stores a picture is settled in the files' order: before
+ * storing, a file waits until every file before it has been read and prepared, so the same picture given twice is one
+ * asset, stored by the first file that could store it, exactly as when the files are imported one after another.
+ * `known` is the library before the batch and gains each record stored. `go` is asked before each file starts; once it
+ * says no, no more start, and the files not started have no outcome.
+ */
+export async function importAssetBatch(
+  projectDir: string,
+  files: ReadonlyArray<{ path: string; opts: ImportOptions }>,
+  known: AssetRecord[],
+  fence: WriteFence,
+  batch: { parallel: number; go: () => boolean }
+): Promise<Array<BatchOutcome | undefined>> {
+  const out: Array<BatchOutcome | undefined> = new Array(files.length);
+  // Each picture's store so far, by content: the record a later file with the same bytes takes (null when it failed).
+  const stores = new Map<string, Promise<AssetRecord | null>>();
+  // Settled once the file started last has claimed its picture (or failed before it could), so claims go in order.
+  let turn: Promise<void> = Promise.resolve();
+  let next = 0;
+  let stopped = false;
+  const one = async (i: number, after: Promise<void>, claimed: () => void): Promise<BatchOutcome> => {
+    const { path, opts } = files[i];
+    const refuse = refusal(path, 'was not imported');
+    let prepared: Awaited<ReturnType<typeof prepareImport>>;
+    try {
+      prepared = await prepareImport(path, refuse, opts);
+    } catch (e) {
+      await after;
+      claimed();
+      return { error: e as Error };
+    }
+    await after;
+    const { note, ...p } = prepared;
+    const noted = note ? { note } : {};
+    const dup = sameFile(known, p);
+    if (dup) {
+      claimed();
+      return { record: dup, existing: true, ...(p.font && !dup.font ? { font: p.font } : {}), ...noted };
+    }
+    // A file before this one with the same bytes is storing them: its record is this one's too, unless it failed.
+    const key = `${p.hash}\0${p.mime}`;
+    const earlier = stores.get(key) ?? Promise.resolve(null);
+    const mine = earlier.then((record): Promise<BatchOutcome> | BatchOutcome => (record ? { record, existing: true, ...noted } : storePrepared(projectDir, path, p, known, fence, opts, refuse).then((r) => ((known.push(r.record), { ...r, ...noted })))));
+    stores.set(key, mine.then((r) => ('record' in r ? r.record : null), () => null));
+    claimed();
+    return mine.catch((e: unknown) => ({ error: e as Error }));
+  };
+  const lane = async () => {
+    while (!stopped && next < files.length) {
+      if (!batch.go()) {
+        stopped = true;
+        break;
+      }
+      const i = next++;
+      const after = turn;
+      let claimed!: () => void;
+      turn = new Promise<void>((resolve) => (claimed = resolve));
+      const end = perf.span('import.file', { i });
+      out[i] = await one(i, after, claimed);
+      end();
+    }
+  };
+  await Promise.all(Array.from({ length: Math.max(1, Math.min(batch.parallel, files.length)) }, lane));
+  return out;
 }
 
 /**
@@ -638,7 +729,7 @@ export async function restoreAssetFiles(projectDir: string, record: AssetRecord,
   }
   if (missing.length) {
     const info = imageInfo(buf, record.mime);
-    const made = info && info.width * info.height <= MAX_VARIANT_PIXELS ? await mediaWorker.variants(buf, record.mime, info.width, missing.map((v) => ({ width: v.width, mime: v.mime }))) : [];
+    const made = info && info.width * info.height <= MAX_VARIANT_PIXELS ? await mediaWorker.variants(buf, record.mime, info.width, missing.map((v) => ({ width: v.width, mime: v.mime })), info.width * info.height) : [];
     for (const v of missing) {
       // By width and format: copies of one width in two formats are two different files.
       const copy = made.find((c) => c.width === v.width && c.mime === v.mime);
@@ -717,7 +808,7 @@ function trimMeasured() {
 }
 
 async function measureWebCopy(record: AssetRecord, buf: Buffer): Promise<WebCopyPlan> {
-  const result = await mediaWorker.webCopy({ data: buf, mime: record.mime }, WEB_EDGE);
+  const result = await mediaWorker.webCopy({ data: buf, mime: record.mime }, WEB_EDGE, record.width && record.height ? record.width * record.height : undefined);
   if (!result.ok) return null;
   const p = preparedCopy(record.file, buf, result.copy);
   // Checked in the order making the copy checks them, so the two always agree.
@@ -742,7 +833,7 @@ export async function storeLibraryWebCopy(
   const name = record.name.trim() || 'Image';
   const refuse = refusal(`${name}.${record.file.split('.').pop()}`, "couldn't be copied");
   if (sha(buf) !== record.hash) throw refuse('its file is not the picture the library recorded. Locate the original first.');
-  const result = await mediaWorker.webCopy({ data: buf, mime: record.mime }, WEB_EDGE);
+  const result = await mediaWorker.webCopy({ data: buf, mime: record.mime }, WEB_EDGE, record.width && record.height ? record.width * record.height : undefined);
   if (!result.ok) throw refuse(result.unreadable ? unusableReason('damaged', record.mime) : 'the web-sized copy could not be made. Try again.');
   const p = { ...preparedCopy(`${name} web`, buf, result.copy), stem: `${name} web` };
   if (!worthwhile(p.buf, buf)) return { lighter: false };
@@ -795,12 +886,24 @@ function workerEnv(): Record<string, string> {
 /** Decoding and resizing happen in a utility process: on the main process a large photo freezes the window. */
 const spawnMediaWorker = () => utilityProcess.fork(join(dirname(fileURLToPath(import.meta.url)), 'media-worker.js'), [], { serviceName: 'SiteOrigin media', env: workerEnv() });
 /**
+ * How many pictures the media worker makes at once: about one for every four cores (each keeps two or three of them
+ * busy, AVIF encoding being threaded), at most four. An import goes through its files as many at a time.
+ */
+export const MEDIA_PARALLEL = Math.min(4, Math.max(1, Math.round(availableParallelism() / 4)));
+/**
+ * The pixels the pictures in flight may add up to: 16 megapixels for each. A larger picture waits for the others and is
+ * made with the worker to itself, so a batch of very large ones holds no more in memory than one does.
+ */
+const MEDIA_PIXEL_BUDGET = MEDIA_PARALLEL * 16_000_000;
+
+/**
  * With marks on, each request the worker answers is marked with what it cost there (scripts/perf/README.md, the `import`
  * scenario): its time, CPU, the worker's peak memory, and its decodes and encodes.
  */
-const mediaWorker = createVariantClient(
-  spawnMediaWorker,
-  perf.on
+const mediaWorker = createVariantClient(spawnMediaWorker, {
+  parallel: MEDIA_PARALLEL,
+  pixelBudget: MEDIA_PIXEL_BUDGET,
+  ...(perf.on
     ? {
         onStats: (kind, s, ms) =>
           perf.mark('media.request', {
@@ -822,8 +925,8 @@ const mediaWorker = createVariantClient(
             avifMs: s.formatMs['image/avif'] ?? 0
           })
       }
-    : {}
-);
+    : {})
+});
 /**
  * The website's icons (see site-icons.ts) are drawn by a worker of their own: a save that needs new ones never waits
  * behind the photos of an import in progress. It starts when icons are first needed and stops once idle.

@@ -47,6 +47,17 @@ async function tallied<T>(tally: Tally | undefined, into: (t: Tally, ms: number)
 const asDecode = (t: Tally, ms: number) => void (t.decodeMs += ms);
 
 /**
+ * AVIF copies are made one at a time, whichever requests they belong to: the encoder is threaded already, so several
+ * at once are hardly faster, and each holds about 150 MB for a 2560-pixel copy. The worker's other encodes go on beside it.
+ */
+let avifTurn: Promise<unknown> = Promise.resolve();
+function inAvifTurn<T>(work: () => Promise<T>): Promise<T> {
+  const mine = avifTurn.then(work, work);
+  avifTurn = mine.catch(() => undefined);
+  return mine;
+}
+
+/**
  * How each format is written: JPEG and PNG as they always were, WebP and AVIF at qualities that look like the JPEG
  * copies. AVIF's effort trades import time for size: on the starter photos, effort 2 makes copies about half the size
  * of the WebP ones in a fifth of the time effort 4 takes, which saves only 5% more.
@@ -104,7 +115,8 @@ export async function renderVariants(buf: Buffer, mime: string, width: number, t
       if (credits.artist || credits.copyright) img = img.withExif({ IFD0: { ...(credits.artist ? { Artist: exif(credits.artist) } : {}), ...(credits.copyright ? { Copyright: exif(credits.copyright) } : {}) } });
       if (credits.xmp) img = img.withXmp(credits.xmp);
     }
-    const data = await tallied(tally, (n, ms) => ((n.encodes++), (n.formatMs[t.mime] = (n.formatMs[t.mime] ?? 0) + ms)), () => ENCODE[t.mime](img).toBuffer());
+    const made = () => tallied(tally, (n, ms) => ((n.encodes++), (n.formatMs[t.mime] = (n.formatMs[t.mime] ?? 0) + ms)), () => ENCODE[t.mime](img).toBuffer());
+    const data = await (t.mime === 'image/avif' ? inAvifTurn(made) : made());
     return { ...t, data };
   };
   const out: Variant[] = [];

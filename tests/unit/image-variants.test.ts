@@ -417,6 +417,114 @@ describe('media worker client', () => {
     client.stop();
   });
 
+  it('takes as many pictures at once as it is told to, in the order asked, answered in any order', async () => {
+    const { workers, spawn } = spawner();
+    const client = createVariantClient(spawn, { parallel: 2 });
+    const asked = ['a', 'b', 'c'].map((x) => client.variants(Buffer.from(x), 'image/jpeg', 2000));
+    await tick();
+    // One worker, two pictures in it, the third waiting its turn.
+    expect(workers).toHaveLength(1);
+    expect(workers[0].sent.map((r) => Buffer.from(r.data).toString())).toEqual(['a', 'b']);
+    const [a, b] = workers[0].sent;
+    workers[0].reply({ id: b.id, ok: true, variants: [{ width: 480, mime: 'image/jpeg', data: new Uint8Array([2]) }] });
+    expect((await asked[1]).map((v) => [...v.data])).toEqual([[2]]);
+    await tick();
+    expect(workers[0].sent.map((r) => Buffer.from(r.data).toString())).toEqual(['a', 'b', 'c']);
+    workers[0].reply({ id: workers[0].sent[2].id, ok: true, variants: [] });
+    workers[0].reply({ id: a.id, ok: true, variants: [{ width: 160, mime: 'image/jpeg', data: new Uint8Array([1]) }] });
+    expect((await asked[0]).map((v) => [...v.data])).toEqual([[1]]);
+    expect(await asked[2]).toEqual([]);
+    client.stop();
+  });
+
+  it('holds a large picture back until the others are done, and gives it the worker to itself', async () => {
+    const { workers, spawn } = spawner();
+    const client = createVariantClient(spawn, { parallel: 3, pixelBudget: 30_000_000 });
+    const small = client.inspect(Buffer.from('a'), 'image/jpeg', 4000, 12_000_000);
+    const large = client.inspect(Buffer.from('b'), 'image/jpeg', 8000, 48_000_000);
+    const after = client.inspect(Buffer.from('c'), 'image/jpeg', 4000, 12_000_000);
+    await tick();
+    // The large one would take the pixels in flight over the budget: it waits, and those after it wait behind it.
+    expect(workers[0].sent.map((r) => Buffer.from(r.data).toString())).toEqual(['a']);
+    workers[0].reply({ id: workers[0].sent[0].id, ok: true, variants: [] });
+    await small;
+    await tick();
+    expect(workers[0].sent.map((r) => Buffer.from(r.data).toString())).toEqual(['a', 'b']);
+    workers[0].reply({ id: workers[0].sent[1].id, ok: true, variants: [] });
+    await large;
+    await tick();
+    expect(workers[0].sent.map((r) => Buffer.from(r.data).toString())).toEqual(['a', 'b', 'c']);
+    workers[0].reply({ id: workers[0].sent[2].id, ok: true, variants: [] });
+    expect(await after).toEqual({ unreadable: false, variants: [] });
+    // A request whose picture's size is not known counts as an equal share of the budget.
+    const shares = [client.opaque(Buffer.from('d'), 'image/png'), client.opaque(Buffer.from('e'), 'image/png'), client.opaque(Buffer.from('f'), 'image/png'), client.opaque(Buffer.from('g'), 'image/png')];
+    await tick();
+    expect(workers[0].sent.length).toBe(6);
+    for (const r of workers[0].sent.slice(3)) workers[0].reply({ id: r.id, ok: true, variants: [], opaque: true });
+    await tick();
+    workers[0].reply({ id: workers[0].sent[6].id, ok: true, variants: [], opaque: true });
+    expect(await Promise.all(shares)).toEqual([true, true, true, true]);
+    client.stop();
+  });
+
+  it('asks again, with the worker to itself, a picture lost with a worker that went down for another', async () => {
+    vi.useFakeTimers();
+    const { workers, spawn } = spawner();
+    const client = createVariantClient(spawn, { parallel: 2, timeoutMs: 1000 });
+    const data = (w: FakeWorker) => w.sent.map((r) => Buffer.from(r.data).toString());
+    const stuck = client.variants(Buffer.from('a'), 'image/jpeg', 2000);
+    await vi.advanceTimersByTimeAsync(500);
+    const sibling = client.variants(Buffer.from('b'), 'image/jpeg', 2000);
+    const queued = client.variants(Buffer.from('c'), 'image/jpeg', 2000);
+    await vi.advanceTimersByTimeAsync(500);
+    // The worker was stopped for the one that took too long, which gets nothing, as before.
+    expect(workers[0].killed).toBe(true);
+    expect(await stuck).toEqual([]);
+    // A late answer from the stopped worker belongs to no request. The one waiting goes to a new worker, and the other
+    // that was in the stopped one is asked again once it can have the worker to itself.
+    workers[0].reply({ id: workers[0].sent[1].id, ok: true, variants: [{ width: 480, mime: 'image/jpeg', data: new Uint8Array([9]) }] });
+    await vi.advanceTimersByTimeAsync(0);
+    expect(workers).toHaveLength(2);
+    expect(data(workers[1])).toEqual(['c']);
+    workers[1].reply({ id: workers[1].sent[0].id, ok: true, variants: [{ width: 480, mime: 'image/jpeg', data: new Uint8Array([7]) }] });
+    expect((await queued).map((v) => [...v.data])).toEqual([[7]]);
+    await vi.advanceTimersByTimeAsync(0);
+    expect(data(workers[1])).toEqual(['c', 'b']);
+    workers[1].reply({ id: workers[1].sent[1].id, ok: true, variants: [{ width: 480, mime: 'image/jpeg', data: new Uint8Array([2]) }] });
+    expect((await sibling).map((v) => [...v.data])).toEqual([[2]]);
+    // A crash with two in the worker: neither is known to be its cause, so each is asked again alone, one after the
+    // other; the one that brings the worker down again gets nothing.
+    const bad = client.variants(Buffer.from('d'), 'image/jpeg', 2000);
+    const good = client.variants(Buffer.from('e'), 'image/jpeg', 2000);
+    await vi.advanceTimersByTimeAsync(0);
+    expect(data(workers[1]).slice(2)).toEqual(['d', 'e']);
+    workers[1].exit(1);
+    await vi.advanceTimersByTimeAsync(0);
+    expect(workers).toHaveLength(3);
+    expect(workers[2].sent).toHaveLength(1);
+    const first = Buffer.from(workers[2].sent[0].data).toString();
+    if (first === 'd') {
+      workers[2].exit(1);
+      await vi.advanceTimersByTimeAsync(0);
+      expect(data(workers[3])).toEqual(['e']);
+      workers[3].reply({ id: workers[3].sent[0].id, ok: true, variants: [] });
+    } else {
+      workers[2].reply({ id: workers[2].sent[0].id, ok: true, variants: [] });
+      await vi.advanceTimersByTimeAsync(0);
+      expect(data(workers[2])).toEqual(['e', 'd']);
+      workers[2].exit(1);
+    }
+    expect([await bad, await good]).toEqual([[], []]);
+    // Stopped, nothing is asked again.
+    const last = [client.variants(Buffer.from('f'), 'image/jpeg', 2000), client.variants(Buffer.from('g'), 'image/jpeg', 2000)];
+    await vi.advanceTimersByTimeAsync(0);
+    const sent = workers.reduce((n, w) => n + w.sent.length, 0);
+    client.stop();
+    expect(await Promise.all(last)).toEqual([[], []]);
+    await vi.advanceTimersByTimeAsync(0);
+    expect(workers.reduce((n, w) => n + w.sent.length, 0)).toBe(sent);
+  });
+
   it('gives up on a worker that takes too long, and starts a fresh one for the next picture', async () => {
     vi.useFakeTimers();
     const { workers, spawn } = spawner();
@@ -741,6 +849,37 @@ describe('web-sized copies', () => {
     expect(copies.stats).toMatchObject({ decodes: 1 + 4 + 5 + 5, encodes: 4 + 5 + 5 });
     expect(made === 9 || made === 14).toBe(true);
     expect(Object.keys(copies.stats!.formatMs).sort()).toEqual(['image/avif', 'image/jpeg', 'image/webp']);
+  });
+
+  it('makes one AVIF copy at a time, however many pictures are in hand, and the same copies as one by one', async () => {
+    const photos = await Promise.all([halves(1600, 1200, 'jpeg'), halves(1500, 1000, 'png'), halves(1800, 1200, 'jpeg')]);
+    const mimes = ['image/jpeg', 'image/png', 'image/jpeg'];
+    const proto = Object.getPrototypeOf(sharp()) as { toBuffer: (...a: unknown[]) => Promise<Buffer> };
+    const toBuffer = proto.toBuffer;
+    const seen = { avif: 0, most: 0, other: 0, mostOther: 0 };
+    const spy = vi.spyOn(proto, 'toBuffer').mockImplementation(async function (this: { options: { formatOut?: string } }, ...a: unknown[]) {
+      const avif = this.options.formatOut === 'heif';
+      if (avif) seen.most = Math.max(seen.most, ++seen.avif);
+      else seen.mostOther = Math.max(seen.mostOther, ++seen.other);
+      try {
+        return await toBuffer.apply(this, a);
+      } finally {
+        if (avif) seen.avif--;
+        else seen.other--;
+      }
+    });
+    let together: Awaited<ReturnType<typeof renderVariants>>[];
+    try {
+      together = await Promise.all(photos.map((p, i) => renderVariants(p, mimes[i], 1800)));
+    } finally {
+      spy.mockRestore();
+    }
+    expect(seen.most).toBe(1);
+    expect(seen.mostOther).toBeGreaterThan(1);
+    const alone: Awaited<ReturnType<typeof renderVariants>>[] = [];
+    for (const [i, p] of photos.entries()) alone.push(await renderVariants(p, mimes[i], 1800));
+    expect(together.map((list) => list.map((v) => [v.width, v.mime, v.data.length]))).toEqual(alone.map((list) => list.map((v) => [v.width, v.mime, v.data.length])));
+    expect(together.every((list, i) => list.every((v, j) => v.data.equals(alone[i][j].data)))).toBe(true);
   });
 
   it('is deterministic', async () => {

@@ -5,7 +5,7 @@
  * author's own files are only ever read.
  */
 import { EventEmitter } from 'node:events';
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, statSync, unlinkSync, utimesSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, rmSync, statSync, unlinkSync, utimesSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { crc32 } from 'node:zlib';
@@ -50,7 +50,7 @@ vi.mock('electron', () => ({
   utilityProcess: { fork: (path: string) => (path.endsWith('media-worker.js') ? new InlineMediaWorker() : new FakeRuntime()) }
 }));
 
-const { importAsset, noConverterReason, reviewImportFile, isOpaquePicture, stopMediaWorker, webCopySize, WEB_EDGE, LIGHTER_SHARE } = await import('../../src/main/project/assets');
+const { checkPixels, importAsset, importAssetBatch, MEDIA_PARALLEL, noConverterReason, reviewImportFile, isOpaquePicture, stopMediaWorker, webCopySize, WEB_EDGE, LIGHTER_SHARE } = await import('../../src/main/project/assets');
 const { heicDecoder } = await import('../../src/main/project/photo-convert');
 const { WEB_EDGE: WORKER_WEB_EDGE } = await import('../../src/main/project/image-variants');
 const { cleanPhoto, photoMetadata } = await import('../../src/main/project/photo-metadata');
@@ -422,6 +422,88 @@ describe('importing a reviewed batch', () => {
     const [a, b] = await Promise.all([c.importAssets([sourceFile('one.jpg', photo)]), c.importAssets([sourceFile('two.jpg', photo)])]);
     expect(a.assetIds).toHaveLength(1);
     expect(b.assetIds).toEqual(a.assetIds);
+  }, 60_000);
+});
+
+describe('importing a batch a few files at a time', () => {
+  const fence = async (write: () => Promise<void>) => (await write(), true);
+  const swatch = (background: string) => sharp({ create: { width: 40, height: 30, channels: 3, background } }).png().toBuffer();
+  /** Reads of the files named, held back by `delays` ms each, counting how many are under way at once. */
+  async function slowReads(delays: Record<string, number>) {
+    const fsp = (await import('node:fs')).promises;
+    const read = fsp.readFile.bind(fsp);
+    const seen = { now: 0, most: 0 };
+    const spy = vi.spyOn(fsp, 'readFile').mockImplementation((async (path: string, ...rest: unknown[]) => {
+      const wait = delays[String(path)];
+      if (wait === undefined) return (read as (...a: unknown[]) => Promise<Buffer>)(path, ...rest);
+      seen.most = Math.max(seen.most, ++seen.now);
+      try {
+        await new Promise((r) => setTimeout(r, wait));
+        return await (read as (...a: unknown[]) => Promise<Buffer>)(path, ...rest);
+      } finally {
+        seen.now--;
+      }
+    }) as typeof fsp.readFile);
+    return { seen, restore: () => spy.mockRestore() };
+  }
+
+  it('stores the same picture given under two names once, named for the first file, even when the second is read first', async () => {
+    const project = temp('project');
+    const same = await swatch('#335577');
+    const first = sourceFile('First.png', same);
+    const second = sourceFile('Second.png', same);
+    const other = sourceFile('Other.png', await swatch('#aa5500'));
+    const reads = await slowReads({ [first]: 300, [second]: 10, [other]: 10 });
+    let out;
+    try {
+      out = await importAssetBatch(project, [first, second, other].map((path) => ({ path, opts: {} })), [], fence, { parallel: 3, go: () => true });
+    } finally {
+      reads.restore();
+    }
+    // All three were read at once.
+    expect(reads.seen.most).toBe(3);
+    const [a, b, c] = out.map((o) => (o && 'record' in o ? o : null));
+    expect([a?.existing, a?.record.name, a?.record.originalName]).toEqual([false, 'First', 'First.png']);
+    expect([b?.existing, b?.record.id]).toEqual([true, a?.record.id]);
+    expect([c?.existing, c?.record.name]).toEqual([false, 'Other']);
+    expect(readdirSync(join(project, 'static', 'assets')).filter((f) => f.startsWith('second'))).toEqual([]);
+  }, 60_000);
+
+  it('counts an animation’s check, which decodes every frame, as the whole budget, and a still picture by its size', () => {
+    const budget = MEDIA_PARALLEL * 16_000_000;
+    // A WebP's extended header, with its flags: 0x02 says it moves, 0x10 that it has alpha.
+    const vp8x = (flags: number) => {
+      const b = Buffer.alloc(30);
+      b.write('RIFF', 0, 'latin1');
+      b.write('WEBP', 8, 'latin1');
+      b.write('VP8X', 12, 'latin1');
+      b[20] = flags;
+      return b;
+    };
+    const size = { width: 300, height: 200 };
+    expect(checkPixels(vp8x(0x02), 'image/webp', size)).toBe(budget);
+    expect(checkPixels(vp8x(0x12), 'image/webp', size)).toBe(budget);
+    expect(checkPixels(vp8x(0x10), 'image/webp', size)).toBe(60_000);
+    expect(checkPixels(Buffer.from('GIF89a'), 'image/gif', size)).toBe(budget);
+    expect(checkPixels(Buffer.alloc(30), 'image/png', size)).toBe(60_000);
+    expect(checkPixels(Buffer.alloc(30), 'image/jpeg', { width: 4032, height: 3024 })).toBe(4032 * 3024);
+  });
+
+  it('lets the next file with the same bytes store them when the first could not, and starts no file once told to stop', async () => {
+    const project = temp('project');
+    const same = await swatch('#123456');
+    const files = ['One.png', 'Two.png', 'Three.png'].map((n) => sourceFile(n, same));
+    let writes = 0;
+    // The first write is refused, as for a project closed meanwhile.
+    const refusing = async (write: () => Promise<void>) => (++writes === 1 ? false : (await write(), true));
+    const out = await importAssetBatch(project, files.map((path) => ({ path, opts: {} })), [], refusing, { parallel: 3, go: () => true });
+    expect(out[0] && 'error' in out[0] && out[0].error.message).toMatch(/^One\.png was not imported because the project was closed/);
+    const [two, three] = [out[1], out[2]].map((o) => (o && 'record' in o ? o : null));
+    expect([two?.existing, two?.record.name]).toEqual([false, 'Two']);
+    expect([three?.existing, three?.record.id]).toEqual([true, two?.record.id]);
+    let asked = 0;
+    const stopped = await importAssetBatch(temp('project'), files.map((path) => ({ path, opts: {} })), [], fence, { parallel: 2, go: () => ++asked <= 1 });
+    expect(Array.from(stopped, (o) => (o ? ('record' in o ? 'stored' : 'error') : 'not started'))).toEqual(['stored', 'not started', 'not started']);
   }, 60_000);
 });
 
