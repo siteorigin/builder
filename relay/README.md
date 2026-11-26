@@ -22,7 +22,8 @@ On the relay's own host, where the guest's viewer lives:
 | --- | --- |
 | `GET /ws/host` (WebSocket) | Opens a new room. The first frame is `room:create` with the host's public key; the relay answers `room:ready` with the room ID. Limited per client IP. |
 | `GET /s/:roomId/ws` (WebSocket) | A host taking its room back (`host:reconnect`, then signing the relay's single-use nonce), or a guest asking to join (`guest:join`). |
-| `GET /s/:roomId` | The invite link. A placeholder until the guest viewer lands. |
+| `GET /s/:roomId` | The invite link: the guest's viewer (see below). The same page for every well-formed room ID, open or not. |
+| `GET /_viewer/*` | The viewer's script and styles, from the Worker's static assets (`relay/viewer/`). |
 
 On each room's own preview origin, `p-<label>.<relay host>` (`roomPreviewOrigin` in `src/shared/live/relay-url.ts`), where
 the host's site sits at the root:
@@ -30,7 +31,26 @@ the host's site sits at the root:
 | Route | What it does |
 | --- | --- |
 | `POST /__siteorigin/admission` | An admitted guest's viewer redeems its single-use preview ticket (`{"ticket": "…"}`) for the preview cookie. CORS, credentialed, for the viewer's origin only. |
+| `GET /__siteorigin/live.js` | The reload bridge the relay adds to the preview's HTML pages in the viewer's frame. |
 | `GET`/`HEAD /*` | The host's preview, for admitted guests holding the cookie, tunnelled over the host's socket and streamed back. |
+
+### The guest's viewer
+
+Opening an invite link needs no account and no install: the Worker serves a small static page (`relay/viewer/`,
+plain JavaScript and CSS, no build) that asks for a name, sends `guest:join` on the room's socket and shows each
+state the relay reports: waiting, the host reconnecting (`host:availability`), locked, declined, removed, expired and
+ended. Its Content Security Policy allows exactly its room's socket and preview origin. Once the host admits the
+guest, the page redeems the preview ticket on the preview origin and only then makes the preview frame; when the
+guest's access ends for any reason the frame is removed at once. The page keeps no cookies; the guest's place (its
+name and resume token) is in the tab's `sessionStorage`, so a reload or a dropped connection takes it back.
+
+The viewer follows the host's page and width from the host's presence (`previewPath`, `viewportWidth`), or lets the
+guest browse on their own at Desktop, Tablet or Mobile width. The relay keeps the host's latest page, without its
+selection, on the host's socket and sends it to each guest it lets in or back. On `preview:reload` the viewer asks the
+reload bridge in its frame to reload the page the guest is on and put its scroll back: the viewer cannot read or
+reload a frame on another origin itself. The relay adds the bridge (a same-origin `<script src>`) only to whole,
+successful HTML pages requested as the viewer's frame (`Sec-Fetch-Dest: iframe`), and drops their validators and
+length, which describe the host's bytes. A collaborator is shown the invite link to open in SiteOrigin Builder.
 
 ### Why every room has its own preview origin
 
