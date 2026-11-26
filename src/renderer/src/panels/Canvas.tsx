@@ -19,6 +19,7 @@ import { chainOf, descOrNull, emptyAreaOf, measuredRects, pointedAt, rectList, s
 import { blocksFromDom, richDom } from '../lib/richtext';
 import { collectionIndexRoutes } from '@shared/archives';
 import { dropAt, dropReaches, moveIndex, shownOrder } from '../lib/reorder';
+import { dropLineBox, edgeSpeed, type EdgeView } from '../lib/edge-scroll';
 import { createPageGate, failedWithRevision, gatedPick, type PageGate, type SeenFailure } from '../lib/page-gate';
 import { insertOps, insertRole, whereText, type InsertAt, type Where } from '../lib/insert-at';
 import { dropRefusal, incomingOrder, insertDestination, measureIds, moveDestination, savingProblems, slotOfKey, type DropList, type ListSpec, type Measured, type MoveAim, type SlotSurface } from '../lib/insert-drop';
@@ -341,11 +342,11 @@ export function Canvas() {
   }, []);
   /** While dragging to reorder: the insertion line in page pixels (null where the drop would change nothing) and
    *  the name of what is moving. */
-  const [reorder, setReorder] = useState<{ line: Rect | null; name: string } | null>(null);
+  const [reorder, setReorder] = useState<{ line: Rect | null; name: string; clip?: EdgeView | null } | null>(null);
   /** While a tile from Insert, or the selection by its grip (`moving`), is dragged onto the page: where the pointer is,
    *  and what dropping there does (in page pixels, the gap's line and the outline of the container it goes into;
    *  `refused` says why it can't go there). */
-  const [insertDrop, setInsertDrop] = useState<{ name: string; moving?: boolean; x: number; y: number; over: boolean; line: Rect | null; outline: Rect | null; label: string; refused: string | null; surfaces: SlotSurface[] } | null>(null);
+  const [insertDrop, setInsertDrop] = useState<{ name: string; moving?: boolean; x: number; y: number; over: boolean; line: Rect | null; outline: Rect | null; label: string; refused: string | null; surfaces: SlotSurface[]; clip?: EdgeView | null } | null>(null);
   /** The drag onto the page that is running (see startCanvasDrop); `source`: the selection a move drags. */
   const insertDrag = useRef<{ end: (commit: boolean) => void; remeasure: () => void; source?: string } | null>(null);
   /** What the page measured the selected and hovered boxes for, so an Add button is drawn only on the box of what it
@@ -1723,6 +1724,20 @@ export function Canvas() {
     requestAnimationFrame(() => !canvasCovered(activeWorkspace(getState())) && menu.open(x, y, items, `${name} actions`, wrapRef.current?.querySelector<HTMLElement>('.ov-chip [aria-haspopup="menu"]') ?? canvasRef.current));
   }
 
+  /**
+   * The part of the page the canvas shows now, in screen pixels (`view`) and from the frame's top left corner (`clip`),
+   * and the canvas's own scrolling area (`scroller`), less its scrollbars. Null without a frame.
+   */
+  const shownFrame = () => {
+    const wrap = wrapRef.current?.getBoundingClientRect();
+    const el = scrollRef.current;
+    if (!wrap || !el) return null;
+    const r = el.getBoundingClientRect();
+    const scroller = { left: r.left + el.clientLeft, top: r.top + el.clientTop, right: r.left + el.clientLeft + el.clientWidth, bottom: r.top + el.clientTop + el.clientHeight };
+    const view = { left: Math.max(wrap.left, scroller.left), top: Math.max(wrap.top, scroller.top), right: Math.min(wrap.right, scroller.right), bottom: Math.min(wrap.bottom, scroller.bottom) };
+    return { wrap, scroller, view, clip: { left: view.left - wrap.left, top: view.top - wrap.top, right: view.right - wrap.left, bottom: view.bottom - wrap.top } };
+  };
+
   /** Drag a selected element to reorder it among its siblings, with a live insertion indicator. */
   async function startReorder(e: React.PointerEvent) {
     e.preventDefault();
@@ -1768,15 +1783,18 @@ export function Canvas() {
     // The line shows only where a drop would change the order; over the element's own place there is none.
     setReorder({ line: null, name });
     const move = (ev: PointerEvent) => {
-      const box = wrapRef.current?.getBoundingClientRect();
-      if (!box) return;
+      const seen = shownFrame();
+      if (!seen) return;
+      const box = seen.wrap;
       const z = currentZoom();
-      const inside = ev.clientX >= box.left && ev.clientX <= box.right && ev.clientY >= box.top && ev.clientY <= box.bottom;
+      // On the part of the page the canvas shows: a frame larger than the canvas runs on under the panels beside it.
+      const v = seen.view;
+      const inside = ev.clientX >= v.left && ev.clientX <= v.right && ev.clientY >= v.top && ev.clientY <= v.bottom;
       const drop = dropAt(boxes, (ev.clientX - box.left) / z, (ev.clientY - box.top) / z);
       // Outside the page, or over the element's own place, a release moves nothing. A gap among siblings of
       // another order is one no move reaches: no line shows there either.
       to = inside ? drop.to : null;
-      setReorder({ line: to !== null && moveIndex(shown, from, to, order) !== null ? drop.line : null, name });
+      setReorder({ line: to !== null && moveIndex(shown, from, to, order) !== null ? drop.line : null, name, clip: seen.clip });
     };
     const end = (commit: boolean) => {
       window.removeEventListener('pointermove', move);
@@ -2081,7 +2099,7 @@ export function Canvas() {
           label = t.label ?? label;
         }
       }
-      setInsertDrop({ name: d.name, ...(d.moving ? { moving: true } : {}), x: point.x, y: point.y, over, line, outline, label, refused: aim.refused, surfaces: lists ? surfaces : [] });
+      setInsertDrop({ name: d.name, ...(d.moving ? { moving: true } : {}), x: point.x, y: point.y, over, line, outline, label, refused: aim.refused, surfaces: lists ? surfaces : [], clip: shownFrame()?.clip ?? null });
     };
     const requests: string[] = [];
     let timer: ReturnType<typeof setTimeout> | undefined;
@@ -2090,6 +2108,19 @@ export function Canvas() {
     /** The lists were measured while the page still showed an older version of the project. */
     let listsBehind = false;
     let again = false;
+    /** The lists were measured after the page's last scroll: only then does a release drop by them, at the place on the
+     *  page now under the pointer. Until then the ones measured before it still show the line (a measure behind), so a
+     *  scroll never takes it away. */
+    let fresh = false;
+    /** A measure asked for since the one on its way was asked for, of a page that has changed (not only scrolled): what
+     *  that one finds is of the page before the change, and shows nothing. */
+    let invalid = false;
+    // Held near the canvas's top or bottom edge, the page scrolls (#904): one animation frame at a time while the pointer
+    // stays in the band, by the distance its speed covers in the time since the last (`owed`, carried while a measure
+    // is on its way, so the page scrolls only once what it shows has been measured).
+    let scrollFrame = 0;
+    let lastFrame = 0;
+    let owed = 0;
     const listen = (on: boolean) => {
       if (on) {
         window.addEventListener('pointermove', move, true);
@@ -2110,6 +2141,7 @@ export function Canvas() {
       window.removeEventListener('blur', cancel);
       window.removeEventListener('keydown', key, true);
       window.removeEventListener('wheel', wheel, true);
+      cancelAnimationFrame(scrollFrame);
       document.documentElement.classList.remove('insert-dragging');
       insertDrag.current = null;
       setDragging(false);
@@ -2121,18 +2153,24 @@ export function Canvas() {
       if (aim.at) d.drop(aim.at);
     };
     /** Measure the page's lists, in batches the page answers (it reads at most 200 at a time); a node it can't show
-     *  measures as nothing. What was measured before no longer counts until it lands. */
-    const measure = () => {
-      lists = null;
+     *  measures as nothing. A release drops by them only once they land. What was measured before no longer shows
+     *  either, unless the page has only scrolled (`scrolled`): then it shows until the new measure replaces it. */
+    const measure = (scrolled = false) => {
+      fresh = false;
+      if (!scrolled) {
+        lists = null;
+        invalid = true;
+      }
       if (measuring) {
         again = true;
         return;
       }
       measuring = true;
       again = false;
+      invalid = false;
       clearTimeout(timer);
       timer = setTimeout(() => {
-        if (lists || done) return;
+        if (fresh || done) return;
         end(false);
         d.unanswered();
       }, 3000);
@@ -2142,29 +2180,88 @@ export function Canvas() {
       void measureDescs(listDescs(owner, ids), requests).then((rects) => {
         measuring = false;
         if (done) return;
-        if (again) return measure();
+        const take = () => {
+          listsBehind = behind;
+          lists = d.lists(new Map(ids.map((id, i) => [id, rects[i]])));
+          surfaces = d.surfaces(lists);
+          show();
+        };
+        // Scrolled again meanwhile: what this found shows until the next one lands, but drops nothing.
+        if (again) {
+          if (!invalid) take();
+          return measure(true);
+        }
         clearTimeout(timer);
-        listsBehind = behind;
-        lists = d.lists(new Map(ids.map((id, i) => [id, rects[i]])));
-        surfaces = d.surfaces(lists);
-        show();
+        fresh = true;
+        take();
         if (released) end(true);
       });
+    };
+    /** Scroll by `px` screen pixels: the canvas first, where it cuts off the frame's edge that way, and the page in its
+     *  frame by the rest, measured again where it then shows. */
+    const scrollStep = (px: number) => {
+      const shown = shownFrame();
+      const el = scrollRef.current;
+      if (!shown || !el) return;
+      let rest = px;
+      const cut = px > 0 ? shown.wrap.bottom - shown.scroller.bottom : shown.wrap.top - shown.scroller.top;
+      if ((px > 0 && cut > 0) || (px < 0 && cut < 0)) {
+        const before = el.scrollTop;
+        el.scrollTop += px > 0 ? Math.min(px, cut) : Math.max(px, cut);
+        rest -= el.scrollTop - before;
+      }
+      if (Math.abs(rest) >= 1) {
+        post('scrollBy', { y: rest / (shown.wrap.width / getState().viewport) });
+        measure(true);
+      }
+      show();
+    };
+    const tick = (now: number) => {
+      scrollFrame = 0;
+      if (done || released) return;
+      const shown = shownFrame();
+      // Only on the page: off it (the room above it, say) a release cancels, and nothing scrolls under the pointer.
+      const speed = shown && !d.still?.(point) ? edgeSpeed(point.x, point.y, shown.view) : 0;
+      if (!speed) {
+        // Out of the band it stops, until the pointer comes back to it.
+        lastFrame = 0;
+        owed = 0;
+        return;
+      }
+      // A frame that came late (a busy renderer) scrolls no further than a tenth of a second does.
+      const dt = lastFrame ? Math.min(now - lastFrame, 100) : 16;
+      lastFrame = now;
+      // Gone over to the other edge while a measure was on its way: what was owed the old way is dropped.
+      if (owed * speed < 0) owed = 0;
+      owed = Math.max(-200, Math.min(200, owed + (speed * dt) / 1000));
+      if (!measuring && Math.abs(owed) >= 1) {
+        const px = owed;
+        owed = 0;
+        scrollStep(px);
+      }
+      scrollFrame = requestAnimationFrame(tick);
+    };
+    const edge = () => {
+      if (!scrollFrame && !done && !released) scrollFrame = requestAnimationFrame(tick);
     };
     const mine = (ev: PointerEvent) => ev.pointerId === start.pointerId;
     const move = (ev: PointerEvent) => {
       if (!mine(ev)) return;
       point = { x: ev.clientX, y: ev.clientY };
       show();
+      edge();
     };
     const up = (ev: PointerEvent) => {
       if (!mine(ev)) return;
       point = { x: ev.clientX, y: ev.clientY };
       if (d.still?.(point)) return end(false);
       show();
-      if (lists || !aim.over) return end(true);
-      // Released on the page before it was measured: dropped where it was let go, once it is.
+      if ((lists && fresh) || !aim.over) return end(true);
+      // Released on the page before it was measured where it now shows (scrolled since, say): dropped where it was let
+      // go, once it is.
       released = true;
+      cancelAnimationFrame(scrollFrame);
+      scrollFrame = 0;
       listen(false);
     };
     const cancel = (ev?: Event) => {
@@ -2183,7 +2280,7 @@ export function Canvas() {
       if (released || !aim.over || !ev.deltaY) return;
       ev.preventDefault();
       post('scrollBy', { y: ev.deltaMode === 1 ? ev.deltaY * 16 : ev.deltaY });
-      measure();
+      measure(true);
       show();
     };
     // Release and cancel are heard from the start, before the page is measured.
@@ -2204,6 +2301,8 @@ export function Canvas() {
     setDragging(true);
     show();
     measure();
+    // Picked up already in the band along an edge (a tile dragged straight there): it scrolls without another move.
+    edge();
   }
   useEffect(() => {
     setInsertDropTarget(startInsertDrag);
@@ -2770,17 +2869,9 @@ export function Canvas() {
     const top = snap(r.y * z);
     return { left, top, width: snap((r.x + r.width) * z) - left, height: snap((r.y + r.height) * z) - top };
   };
-  // The drop line keeps the same weight at any zoom: centred on the gap the geometry gives, 2px of colour between
-  // its keylines, in screen pixels. It starts at the centre of its ring, 7px in, and stays at least 6px inside the
-  // page, so its keylines and ring are never clipped.
-  const dropBox = (r: Rect) => {
-    const vertical = r.height > r.width;
-    const b = toBox(r);
-    const within = (v: number, max: number) => Math.max(6, Math.min(v, max - 8));
-    return vertical
-      ? { left: snap(within(b.left + b.width / 2 - 1, frameW)), top: b.top + 7, width: 2, height: Math.max(4, b.height - 9), vertical }
-      : { left: b.left + 7, top: snap(within(b.top + b.height / 2 - 1, frameH * z)), width: Math.max(4, b.width - 9), height: 2, vertical };
-  };
+  // The drop line keeps the same weight at any zoom (see dropLineBox), inside the part of the page the canvas shows
+  // (`clip`, from the drag; the whole frame without one), so the place a drop takes is always seen (#904).
+  const dropBox = (r: Rect, clip?: EdgeView | null) => dropLineBox(toBox(r), clip ?? { left: 0, top: 0, right: frameW, bottom: frameH * z }, snap);
   // Text and other small parts get a few pixels of breathing room, so the outline (drawn inside its box) never
   // touches the glyphs. While editing everywhere, the component's own nodes are its parts; its root stands for
   // the whole design.
@@ -3250,7 +3341,7 @@ export function Canvas() {
                 )}
                 {reorder?.line &&
                   (() => {
-                    const d = dropBox(reorder.line);
+                    const d = dropBox(reorder.line, reorder.clip);
                     return <div className={`ov-drop${d.vertical ? ' vertical' : ''}`} style={{ left: d.left, top: d.top, width: d.width, height: d.height }} role="presentation" />;
                   })()}
                 {insertDrop?.surfaces.map((sf) => (
@@ -3267,7 +3358,7 @@ export function Canvas() {
                 {imageDrop?.outline && <div className="ov-box ov-image-drop" style={toBox(imageDrop.outline)} data-testid="image-drop-target" />}
                 {between?.line &&
                   (() => {
-                    const d = dropBox(between.line);
+                    const d = dropBox(between.line, insertDrop?.clip);
                     return <div className={`ov-drop${d.vertical ? ' vertical' : ''}`} style={{ left: d.left, top: d.top, width: d.width, height: d.height }} role="presentation" data-testid="insert-drop-line" />;
                   })()}
               </div>
