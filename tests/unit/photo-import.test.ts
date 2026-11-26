@@ -159,12 +159,18 @@ describe('reviewing an import before anything is written', () => {
     const camera = await noisy(3000, 4000, 'jpeg');
     expect(camera.length).toBeGreaterThan(1_500_000);
     expect(await reviewOf(sourceFile('camera.jpg', camera))).toMatchObject({ action: 'offer', format: 'JPEG', copy: { format: 'JPEG', width: 1920, height: 2560 } });
-    // An ordinary photo is never read for the review: just its name and size.
     const small = await sharp({ create: { width: 800, height: 600, channels: 3, background: '#808080' } }).jpeg().toBuffer();
     expect(await reviewOf(sourceFile('ordinary.jpg', small))).toMatchObject({ action: 'import', bytes: small.length });
     expect((await reviewOf(sourceFile('ordinary.jpg', small))).format).toBeUndefined();
     // A large picture of a kind that gets no web copy (WebP, GIF, SVG) imports as it is.
-    expect((await reviewOf(sourceFile('big.webp', Buffer.alloc(2_000_000)))).action).toBe('import');
+    const webp = await sharp({ create: { width: 800, height: 600, channels: 3, background: '#808080' } }).webp().toBuffer();
+    expect((await reviewOf(sourceFile('big.webp', webp))).action).toBe('import');
+  });
+
+  it('counts out an ordinary-looking file that cannot be added, so the review never overcounts', async () => {
+    expect(await reviewOf(sourceFile('notes.png', Buffer.from('just some text, not a picture')))).toMatchObject({ action: 'refuse', format: 'PNG', reason: expect.any(String) });
+    expect(await reviewOf(sourceFile('empty.jpg', Buffer.alloc(0)))).toMatchObject({ action: 'refuse', format: 'JPG', reason: expect.any(String) });
+    expect(await reviewOf(sourceFile('huge.webp', Buffer.alloc(26 * 1024 * 1024)))).toMatchObject({ action: 'refuse', format: 'WEBP', reason: 'it is larger than 25 MB.' });
   });
 
   it('names the copy of a PNG by whether it really has see-through pixels, as the copy itself is made', async () => {

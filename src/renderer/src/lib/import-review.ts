@@ -73,7 +73,7 @@ export async function reviewImport(paths: string[] | undefined, only?: 'image' |
   // Another dialog opened while the files were being read (Find, say) keeps what the author typed in it.
   const other = getState().modal;
   if (reviewed && other && other.kind !== 'import-review') {
-    toast('The files were not added because another dialog is open. Add them again once it is closed.', 'info');
+    toast('The files were not added because another dialog is open. Add them again once it is closed.', 'error');
     return null;
   }
   const webCopies = reviewed ? await ask(rows, opening, request) : new Set<string>();

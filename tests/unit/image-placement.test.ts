@@ -282,6 +282,14 @@ describe('placing an imported image (issue #262)', () => {
     expect(session!.historyInfo().entries.at(-1)?.label).toBe('Edit Image');
   });
 
+  it('keeps a notice that names skipped files until it is dismissed, even when another file arrived', async () => {
+    const { a, field } = await setup();
+    const { run } = await startImport(field(a), { shown: () => true });
+    await importing!.release(undefined, 'notes.png was not imported because it is not a picture.');
+    expect(await run).toEqual({ kind: 'placed', assetId: photo.id });
+    expect(store.getState().toasts.find((t) => t.text.startsWith('notes.png'))).toMatchObject({ kind: 'error' });
+  });
+
   it('places it without a note while the hero is still shown', async () => {
     const { a, image, field } = await setup();
     const { run } = await startImport(field(a), { shown: () => true });

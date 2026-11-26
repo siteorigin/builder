@@ -675,7 +675,7 @@ export function AssetsPanel({ narrow }: { narrow: boolean }) {
         r.message ?? ''
       ].filter(Boolean);
       // Nothing is said about a project that has been closed or opened again since.
-      if (parts.length && getState().snapshot?.workspaceKey === plan.choices.opening) toast(parts.join(' '), r.message && !added.length ? 'error' : 'info');
+      if (parts.length && getState().snapshot?.workspaceKey === plan.choices.opening) toast(parts.join(' '), r.message ? 'error' : 'info');
       return { ids: r.assetIds, added, failed: !!r.message, reviewed: plan.reviewed, chosen: plan.chosen };
     } finally {
       setImporting(false);
