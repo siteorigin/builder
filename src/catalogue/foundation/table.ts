@@ -52,6 +52,7 @@ const TABLE_SOURCE = `<script>
 				{#if lead}<p class="so-table__lead">{lead}</p>{/if}
 			</div>
 		{/if}
+		<!-- svelte-ignore a11y_no_noninteractive_tabindex -->
 		<div class="so-table__scroll" role="region" tabindex="0" aria-labelledby={captionText ? uid + '-caption' : undefined} aria-label={regionLabel}>
 			<table class="so-table__table">
 				{#if captionText}<caption id={uid + '-caption'}>{captionText}</caption>{/if}
