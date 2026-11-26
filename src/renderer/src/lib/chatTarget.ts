@@ -2,13 +2,15 @@
  * What the AI composer's next message is about. On a page: the selected element, that page, or the whole site from
  * it, as the author chose. While a component is edited everywhere: that component's whole design, or one of its own
  * nodes, never the page the canvas happens to show it on. While a post is open in the Posts workspace: that post, never
- * the page under the writer. The chips show it and the message is sent with it, from one place.
+ * the page under the writer. While a collection's layout is open on the canvas: that layout, never the page behind it.
+ * The chips show it and the message is sent with it, from one place.
  */
 import { CHAT_EDIT_SCOPES, type ChatContext, type ChatEditScope, type ChatMessage } from '@shared/api';
 import type { ElementRef, ProjectState } from '@shared/types';
 import { inDefinition, placementsOn, refExists, refLabel, studioRef, withoutSlot } from './model';
 import { NEW_STUDIO, type DefinitionMode } from './studio';
 import { postAt, type PostRef } from './posts';
+import { keepTemplateValid, type TemplateMode } from './template-view';
 
 export interface ComposerScope {
   /** The page the editor shows; while a component is edited everywhere, the page it is shown on. */
@@ -25,7 +27,12 @@ export interface ComposerScope {
    * offered. A change waits for a post (lib/workspace changeWithoutDocument); a question reads the site.
    */
   empty?: true;
+  /** The collection layout open on the canvas, while it is: the next message is about it alone (#679). */
+  template?: { collectionId: string; archive?: true; entryId?: string; name: string } | null;
 }
+
+/** How a collection layout is named in the composer and the transcript: “Team layout”, “Team index layout”. */
+export const layoutName = (t: { name?: unknown; archive?: unknown }) => `${(typeof t.name === 'string' && t.name.trim()) || 'Collection'} ${t.archive ? 'index layout' : 'layout'}`;
 
 /** How a post is named in the composer and the transcript: its title, or what an untitled one is called. */
 export const postTitle = (title: unknown) => (typeof title === 'string' && title.trim()) || 'Untitled';
@@ -64,7 +71,7 @@ export function requestComponentId(ctx: ChatContext | undefined): string | null 
 }
 
 /** `post`: the post the Posts workspace shows (lib/posts postShown), which the next message is about while it is there. */
-export function composerScope(state: ProjectState, view: { pageId: string | null; selection: ElementRef | null; definitionMode: DefinitionMode; post?: PostRef | null; writer?: boolean }): ComposerScope {
+export function composerScope(state: ProjectState, view: { pageId: string | null; selection: ElementRef | null; definitionMode: DefinitionMode; post?: PostRef | null; writer?: boolean; template?: TemplateMode | null }): ComposerScope {
   const p = view.pageId && Object.hasOwn(state.pages, view.pageId) ? state.pages[view.pageId] : null;
   const page = p ? { id: p.id, title: p.title } : null;
   // The writer covers the canvas: a selection or design behind it is never what the message is about.
@@ -76,6 +83,12 @@ export function composerScope(state: ProjectState, view: { pageId: string | null
     // Only the design's own nodes: anything else (a pick the canvas has yet to convert) is not offered.
     const selection = view.selection && inDefinition(view.selection, def.id) && resolves(state, view.selection) ? view.selection : null;
     return { page, component: { id: def.id, name: def.name }, selection, selectionLabel: selection ? refLabel(state, selection) : null };
+  }
+  // A collection's layout open on the canvas covers the page behind it: the layout is what the message is about.
+  const layout = keepTemplateValid(state, view.template ?? null);
+  if (layout) {
+    const c = state.collections[layout.collectionId];
+    return { page, component: null, selection: null, selectionLabel: null, template: { collectionId: layout.collectionId, ...(layout.archive ? { archive: true as const } : {}), ...(layout.entryId ? { entryId: layout.entryId } : {}), name: c.settings.name } };
   }
   // A selection that names something gone (until the editor lets it go) is never offered, nor sent. A slot picked on the
   // canvas is about its placement, which the AI may change as a whole: it is offered and named as that placement.
@@ -108,6 +121,18 @@ export function chatContextFor(state: ProjectState, scope: ComposerScope, opts: 
       ...(opts.assetIds?.length ? { assetIds: [...opts.assetIds] } : {}),
       ...(opts.ask ? { mode: 'ask' as const } : {})
     };
+  // A layout names itself too: no selection, component or scope, so the page behind it is never its target.
+  if (scope.template)
+    return {
+      pageId: page ? page.id : home,
+      pageTitle: page ? page.title : (state.pages[home]?.title ?? ''),
+      selection: null,
+      selectionLabel: null,
+      template: { ...scope.template },
+      viewport: opts.viewport,
+      ...(opts.assetIds?.length ? { assetIds: [...opts.assetIds] } : {}),
+      ...(opts.ask ? { mode: 'ask' as const } : {})
+    };
   const chosen = editScope(scope, opts.enabled.scope);
   const selection = chosen === 'selection' ? scope.selection : null;
   return {
@@ -135,13 +160,22 @@ export function requestTarget(m: Pick<ChatMessage, 'context'> | undefined): stri
   const c = m?.context;
   if (!c) return '';
   const sel = c.selection;
-  return JSON.stringify([c.mode ?? 'edit', c.scope ?? null, c.pageId ?? null, sel ? [sel.owner, sel.instancePath ?? [], sel.nodeId] : null, typeof c.component?.id === 'string' ? c.component.id : null, c.post && typeof c.post === 'object' ? [c.post.collectionId, c.post.entryId] : null]);
+  return JSON.stringify([
+    c.mode ?? 'edit',
+    c.scope ?? null,
+    c.pageId ?? null,
+    sel ? [sel.owner, sel.instancePath ?? [], sel.nodeId] : null,
+    typeof c.component?.id === 'string' ? c.component.id : null,
+    c.post && typeof c.post === 'object' ? [c.post.collectionId, c.post.entryId] : null,
+    ...(c.template && typeof c.template === 'object' ? [[c.template.collectionId, !!c.template.archive]] : [])
+  ]);
 }
 
 export function targetOf(ctx?: ChatContext | null): string {
   if (!ctx) return '';
   // A transcript is read back from disk: a malformed post is left out.
   if (ctx.post && typeof ctx.post === 'object' && typeof ctx.post.title === 'string') return `Post · ${postTitle(ctx.post.title)}`;
+  if (ctx.template && typeof ctx.template === 'object' && typeof ctx.template.collectionId === 'string') return layoutName(ctx.template);
   // A transcript is read back from disk: a malformed component is left out.
   const where = typeof ctx.component?.name === 'string' ? `${ctx.component.name} everywhere` : ctx.pageTitle;
   return ctx.selectionLabel ? `${where} → ${ctx.selectionLabel}` : where;
@@ -156,7 +190,7 @@ export function retryView(
   state: ProjectState,
   ctx: ChatContext | undefined,
   now: { pageId: string | null; definitionMode: DefinitionMode }
-): { pageId?: string; definitionMode: DefinitionMode; selection: ElementRef | null; scope: ChatEditScope; missing: string | null; post?: PostRef | null } {
+): { pageId?: string; definitionMode: DefinitionMode; selection: ElementRef | null; scope: ChatEditScope; missing: string | null; post?: PostRef | null; template?: TemplateMode | null } {
   const pageOk = !!ctx?.pageId && Object.hasOwn(state.pages, ctx.pageId);
   // The scope it was sent with. One sent before the scope could be chosen kept to its selection, or reached the whole
   // site; one read back damaged keeps to its selection, or its page.
@@ -171,6 +205,15 @@ export function retryView(
     const post = p && typeof p === 'object' && typeof p.collectionId === 'string' && typeof p.entryId === 'string' ? { collectionId: p.collectionId, entryId: p.entryId } : null;
     const there = !!post && !!postAt(state, post);
     return { ...leave, definitionMode: null, selection: null, scope, missing: there ? null : post ? `The post “${postTitle(p!.title)}”` : 'The post', post: there ? post : null };
+  }
+  // A request about a collection's layout goes back to that layout, shown on the entry it was, while the collection has
+  // it. One read back damaged is still a layout's request: the author opens a layout or page, never the one behind it.
+  if (ctx?.template !== undefined) {
+    const t = ctx.template as unknown as Record<string, unknown> | null;
+    const asked: TemplateMode | null = t && typeof t === 'object' && typeof t.collectionId === 'string' ? { collectionId: t.collectionId, entryId: typeof t.entryId === 'string' ? t.entryId : null, ...(t.archive === true ? { archive: true as const } : {}) } : null;
+    const there = keepTemplateValid(state, asked);
+    // Sent with no scope of its own: one put back without its layout keeps to the page, never the whole site.
+    return { ...(pageOk ? { pageId: ctx.pageId } : leave), definitionMode: null, selection: null, scope: 'page', missing: there ? null : t ? `The ${layoutName(t)}` : 'The layout', template: there };
   }
   const componentId = requestComponentId(ctx);
   if (ctx && componentId) {

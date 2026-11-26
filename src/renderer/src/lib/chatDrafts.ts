@@ -1,4 +1,5 @@
 import type { LocalWorkspaceState } from '@shared/api';
+import { plural } from './storage';
 
 /**
  * Unsent AI messages, one per conversation, so each thread keeps its own composer text. They are saved in the
@@ -122,6 +123,38 @@ export function attachImage(images: ChatImages, conversationId: string, assetId:
   if (ids.includes(assetId)) return { images, outcome: 'already' };
   if (ids.length >= MAX_CHAT_IMAGES) return { images, outcome: 'full' };
   return { images: withImages(images, conversationId, [...ids, assetId]), outcome: 'added' };
+}
+
+/**
+ * Attach several images at once (files dropped on the composer, once imported), in the order given: each once, while
+ * there is room. Says how many were added, were already attached, and did not fit.
+ */
+export function attachImages(images: ChatImages, conversationId: string, assetIds: string[]): { images: ChatImages; added: string[]; already: number; full: number } {
+  let next = images;
+  const added: string[] = [];
+  let already = 0;
+  let full = 0;
+  for (const id of new Set(assetIds)) {
+    const r = attachImage(next, conversationId, id);
+    next = r.images;
+    if (r.outcome === 'added') added.push(id);
+    else if (r.outcome === 'already') already++;
+    else full++;
+  }
+  return { images: next, added, already, full };
+}
+
+/** Whether a drag carries files from the desktop (not text, or an image dragged out of Assets). */
+export const isFileDrag = (types: readonly string[]): boolean => types.includes('Files');
+
+/** What to say once the dropped images are in Assets: how many were attached, and why any were not. */
+export function droppedImagesNote(r: { added: number; already: number; full: number }): string {
+  const parts = [
+    r.added ? `Attached ${plural(r.added, 'image', 'images')} to your message. ${r.added === 1 ? 'It is' : 'They are'} in Assets too.` : '',
+    r.already ? `${plural(r.already, 'image is', 'images are')} already in your message.` : '',
+    r.full ? `${plural(r.full, 'image is', 'images are')} in Assets but not in your message: a message carries at most ${MAX_CHAT_IMAGES} images.` : ''
+  ];
+  return parts.filter(Boolean).join(' ');
 }
 
 /** Clear a sent message's images, unless they have changed since it was sent. */

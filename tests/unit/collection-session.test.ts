@@ -289,7 +289,7 @@ describe('collections on disk', () => {
     await ok(s.apply({ operations: blog }, { label: 'Start' }));
     expect(await s.beginRun('run_sync')).toBeNull();
     // Through its post tool, whose call grants this one entry.
-    await ok(s.apply({ operations: [{ type: 'entry.update', collectionId: 'posts', entryId: 'en_winter', title: 'By the AI' }] }, { label: 'AI', source: 'ai', runId: 'run_sync', history: false, collectionWrite: { collectionId: 'posts', entryId: 'en_winter' } }));
+    await ok(s.apply({ operations: [{ type: 'entry.update', collectionId: 'posts', entryId: 'en_winter', title: 'By the AI' }] }, { label: 'AI', source: 'ai', runId: 'run_sync', history: false, collectionWrite: { kind: 'entry', collectionId: 'posts', entryId: 'en_winter' } }));
     writeFileSync(join(dir, `${POSTS}/collection.json`), JSON.stringify({ ...read(dir, `${POSTS}/collection.json`), sourceId: 'wordpress' }, null, 2));
     const r = await s.abortRun();
     expect(r.restored).toBe(false);

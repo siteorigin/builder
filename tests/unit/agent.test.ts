@@ -1522,10 +1522,10 @@ describe('library images in the chat (#12)', () => {
     expect((await env.orch.send('Use these photos in the hero', { ...base(env), assetIds: [second.id, first.id] })).ok).toBe(true);
     await settle(env);
     const sent = textOf(env.adapter.requests[0].items.at(-1)!);
-    // In the order attached, with the text the author gave each one.
+    // In the order attached, by name and asset ID alone (#679): what the library says about them is search_assets' to read.
     expect(editorContext(env.adapter.requests[0]).attachedImages).toEqual([
-      { assetId: second.id, name: 'hero', width: 1536, height: 1024 },
-      { assetId: first.id, name: 'hero', width: 1536, height: 1024, description: first.description, altSuggestion: first.altSuggestion }
+      { assetId: second.id, name: 'hero' },
+      { assetId: first.id, name: 'hero' }
     ]);
     expect(sent).not.toMatch(/static\/assets|\.jpg|data:image/);
     const user = env.orch.conversation!.messages.find((m) => m.role === 'user')!;

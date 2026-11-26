@@ -250,6 +250,7 @@
   .composer textarea { display: block; width: 100%; min-height: 56px; max-height: 240px; overflow-y: auto; overscroll-behavior-y: contain; padding: 10px 12px 4px; border: 0; background: transparent; resize: none; outline: none; font-size: 14px; line-height: 1.45; user-select: text; }
   .composer-foot { display: flex; align-items: center; gap: 2px; padding: 2px 6px 6px; cursor: default; }
   /* Answering a question: the reply and its Send on one row, with no empty footer under it. */
+  .composer.file-over { border-color: var(--accent); background: var(--accent-soft); }
   .composer.answering { display: flex; align-items: flex-end; }
   .composer.answering textarea { flex: 1; min-width: 0; min-height: 40px; padding: 9px 4px 9px 12px; }
   .composer.answering .composer-foot { flex: none; padding: 6px; }

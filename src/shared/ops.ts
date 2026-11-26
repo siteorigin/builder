@@ -73,6 +73,14 @@ export const MODEL_BINDING = z
   .union([...contentBinding, z.object({ $state: z.string() }).strict()])
   .nullable()
   .describe('{"$prop": name}, {"$prop": name, "field": objectField} for one field of an object property, or {"$item": field}; {"$state": name} (when, unless and variant only) reads the component\'s UI state. null unbinds, keeping the current default.');
+/**
+ * node.setBinding's binding as a run limited to a collection's entry layout is offered it (#679): an element there may
+ * also show the entry its page is for, by field.
+ */
+export const LAYOUT_BINDING = z
+  .union([...contentBinding, z.object({ $state: z.string() }).strict(), z.object({ $entry: z.string().max(80) }).strict()])
+  .nullable()
+  .describe('{"$entry": field} shows the entry the page is for: "title", "excerpt", "publishedAt", "featuredImage", "categories", "terms.<grouping>" or "field.<name>" (a custom field, from read_project collections fields). {"$item": field} inside a collection loop shows its row\'s entry; {"$prop": name} a placement\'s property; {"$state": name} (when, unless and variant only) UI state. null unbinds, keeping the current default.');
 /** What a button does to its component's UI state (see `StateAction` in shared/types). */
 const stateAction = z.discriminatedUnion('op', [
   z.object({ state: z.string(), op: z.literal('set'), value: z.union([z.boolean(), z.string()]).describe('true or false for a yes/no state; one of the options of a choice.') }).strict(),

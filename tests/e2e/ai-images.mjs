@@ -108,7 +108,7 @@ try {
   await message().fill('Use this photo for the About hero, and ask me to confirm between the two hero photos');
   await message().press('Enter');
   await card().waitFor({ timeout: 30000 });
-  assert.deepEqual(editorContext(posts()[before]).attachedImages, [{ assetId: second, name, width: 900, height: 600 }], 'the attached image reaches the model by ID and name');
+  assert.deepEqual(editorContext(posts()[before]).attachedImages, [{ assetId: second, name }], 'the attached image reaches the model by ID and name alone');
   const body = JSON.stringify(posts()[before].body);
   assert.doesNotMatch(body, /static\/assets|\.jpg|data:image|base64|image_url/, 'no file path or picture data is sent');
   await log().locator('.msg-user .image-chip').first().waitFor();

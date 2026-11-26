@@ -16,7 +16,7 @@ import { normalizeRoute } from '@shared/routes';
 import { repeatedPartList } from '@shared/item-styles';
 import { bindingSites } from '@engine/schema';
 import { walkOperations } from '@engine/apply';
-import type { CollectionWriteGrant } from '@shared/collection-grant';
+import type { CollectionWriteGrant, LayoutOwner } from '@shared/collection-grant';
 
 /** A part selected inside a placement: the run may change only what that part shows. */
 export interface PartAuthority {
@@ -41,19 +41,37 @@ export interface PartAuthority {
  * - entry: one post of a collection, open in the Posts workspace: its own words and details, filed under categories
  *   its collection already has. A new post, a new category (which can change what a feed on a page chooses) and
  *   anything on a page need the user's approval.
+ * - template: one collection layout, open on the canvas (#679): its entry pages' layout or its index layout, every node
+ *   of it, never a page, the shared header and footer, a component's design or the collection's entries.
  */
 export type Authority =
   | { kind: 'site' }
   | { kind: 'page'; pageId: string; label: string }
   | { kind: 'selection'; owner: OwnerRef; nodeId: string; label: string; part?: PartAuthority }
   | { kind: 'component'; definitionId: string; label: string }
-  | { kind: 'entry'; collectionId: string; entryId: string; label: string };
+  | { kind: 'entry'; collectionId: string; entryId: string; label: string }
+  | { kind: 'template'; owner: LayoutOwner; label: string };
 
 /** How a page is named where a run's limit is said: "the About page". */
 export const pageLabel = (title: unknown) => `the ${(typeof title === 'string' && title.trim()) || 'current'} page`;
 
 /** How a post is named where a run's limit is said: the post “Spring open studio”. */
 export const postLabel = (title: unknown) => `the post “${(typeof title === 'string' && title.trim()) || 'Untitled'}”`;
+
+/** How a collection layout is named where a run's limit is said: “the Team layout”, “the Team index layout”. */
+export function layoutLabel(state: ProjectState, owner: LayoutOwner): string {
+  const c = Object.hasOwn(state.collections ?? {}, owner.id) ? state.collections[owner.id] : undefined;
+  // A document edited by hand may hold anything as its name: only text is one.
+  const name = typeof c?.settings?.name === 'string' ? c.settings.name.trim() : '';
+  return `the ${name || owner.id} ${owner.kind === 'archive' ? 'index layout' : 'layout'}`;
+}
+
+/** The layout a request was sent from, while its collection still has it (an index layout only while it is designed). */
+export function liveLayout(state: ProjectState, owner: LayoutOwner): boolean {
+  const c = Object.hasOwn(state.collections ?? {}, owner.id) ? state.collections[owner.id] : undefined;
+  const tree = owner.kind === 'archive' ? c?.settings?.archiveTemplate : c?.settings?.template;
+  return !!tree && Array.isArray(tree.rootIds) && !!tree.nodes && typeof tree.nodes === 'object';
+}
 
 /** The post a request names, while its collection still has it. */
 export function liveEntry(state: ProjectState, collectionId: string, entryId: string) {
@@ -65,7 +83,12 @@ export function liveEntry(state: ProjectState, collectionId: string, entryId: st
  * What a request may change as it starts, from what it was sent with. A request that chose its scope says so; one
  * saved before scopes could be chosen means what it meant then: its selection, its component, or the whole site.
  */
-export function requestAuthority(ctx: Pick<ChatContext, 'pageId' | 'pageTitle' | 'selection' | 'selectionLabel' | 'component' | 'scope' | 'post'> | undefined, state: ProjectState): Authority {
+export function requestAuthority(ctx: Pick<ChatContext, 'pageId' | 'pageTitle' | 'selection' | 'selectionLabel' | 'component' | 'scope' | 'post' | 'template'> | undefined, state: ProjectState): Authority {
+  // A collection layout open on the canvas: the request is about it, never the page behind it.
+  if (ctx?.template && !ctx.component && !ctx.post) {
+    const owner: LayoutOwner = { kind: ctx.template.archive ? 'archive' : 'template', id: ctx.template.collectionId };
+    return { kind: 'template', owner, label: layoutLabel(state, owner) };
+  }
   // A post open in the Posts workspace: the request is about it, whatever page lies under the writer. Named as it is now.
   if (ctx?.post && !ctx.component) {
     const { collectionId, entryId, title } = ctx.post;
@@ -285,7 +308,7 @@ function writesDefault(state: ProjectState, op: EditOperation): string | null {
  *  are visual edits to a managed component, never code, so they do not depend on Developer mode. A page's run never
  *  may: a component's contract shows on every page it is placed on. */
 export function canEditContracts(authority: Authority): boolean {
-  if (authority.kind === 'page' || authority.kind === 'entry') return false;
+  if (authority.kind === 'page' || authority.kind === 'entry' || authority.kind === 'template') return false;
   return authority.kind !== 'selection' || authority.owner.kind === 'component';
 }
 
@@ -557,6 +580,26 @@ function themeRefreshWithin(state: ProjectState, op: Extract<EditOperation, { ty
 
 const sameOp = (a: EditOperation, b: EditOperation) => a === b || JSON.stringify(a) === JSON.stringify(b);
 
+/**
+ * One operation of a run limited to a collection layout: it changes a node of that layout, or adds one to it. A
+ * component placed there is installed as on a page; nothing else reaches beyond the layout.
+ */
+function checkLayoutOne(state: ProjectState, op: EditOperation, authority: Extract<Authority, { kind: 'template' }>): string | null {
+  const { label, owner } = authority;
+  if (!liveLayout(state, owner)) return `${label[0].toUpperCase()}${label.slice(1)} is no longer in the site.`;
+  const mine = (o: OwnerRef | undefined) => o?.kind === owner.kind && o.id === owner.id;
+  // A new component made from a placement, or its code, is one every page could place.
+  if (op.type === 'component.makeUnique' || op.type === 'component.convertToCode') return `${op.type} adds a new component to the site, which changes more than ${label}.`;
+  switch (OP_REACH[op.type] ?? 'wider') {
+    case 'node':
+      return mine((op as { owner?: OwnerRef }).owner) ? null : `${op.type} changes something outside ${label}.`;
+    case 'insert':
+      return mine((op as Extract<EditOperation, { type: 'node.insert' }>).owner) ? null : `node.insert adds content outside ${label}.`;
+    default:
+      return `${op.type} changes more than ${label}.`;
+  }
+}
+
 function checkPageOne(state: ProjectState, op: EditOperation, authority: Extract<Authority, { kind: 'page' }>, grants: AuthorityGrants): string | null {
   const { label } = authority;
   if (!Object.hasOwn(state.pages, authority.pageId)) return `${label[0].toUpperCase()}${label.slice(1)} is no longer in the site.`;
@@ -604,6 +647,7 @@ export function checkAuthority(state: ProjectState, ops: EditOperation[], author
   if (authority.kind === 'site') return null;
   if (authority.kind === 'component') return checkComponentAuthority(state, ops, authority);
   if (authority.kind === 'entry') return checkEntryAuthority(state, ops, authority);
+  if (authority.kind === 'template') return walkOperations(state, ops, (draft, op) => checkLayoutOne(draft, op, authority));
   if (authority.kind === 'page') return walkOperations(state, ops, (draft, op) => checkPageOne(draft, op, authority, grants));
   return walkOperations(state, ops, (draft, op) => checkOne(draft, op, authority, grants));
 }
@@ -753,7 +797,9 @@ export function requestedAuthority(state: ProjectState, requested: RequestedScop
           ? [{ kind: 'page', id: run.pageId }]
           : run.kind === 'component'
             ? [{ kind: 'component', id: run.definitionId }]
-            : [];
+            : run.kind === 'template'
+              ? [run.owner]
+              : [];
   const found = owners.filter((o) => {
     try {
       return Object.hasOwn(getTree(state, o).nodes, id);
@@ -788,7 +834,7 @@ function checkEntryAuthority(state: ProjectState, ops: EditOperation[], authorit
   const label = authority.label;
   if (!liveEntry(state, authority.collectionId, authority.entryId)) return `${label[0].toUpperCase()}${label.slice(1)} is no longer in the site.`;
   for (const op of ops) {
-    if (op.type === 'collection.createTerm') return `Adding the category “${op.label}” changes the categories every post of the collection can be filed under: more than ${label}.`;
+    if (op.type === 'collection.createTerm') return `Adding the ${op.taxonomyId === 'categories' ? 'category' : op.taxonomyId === 'tags' ? 'tag' : 'term'} “${op.label}” changes the ${op.taxonomyId === 'categories' ? 'categories' : 'terms'} every entry of the collection can be filed under: more than ${label}.`;
     if (op.type === 'entry.create') return `Creating a new post changes more than ${label}.`;
     if (op.type !== 'entry.update' || op.collectionId !== authority.collectionId || op.entryId !== authority.entryId) return `${op.type} changes something outside ${label}.`;
     // A new address keeps the old one working site-wide; the post tool never sends one, but the check stays honest.
@@ -805,6 +851,6 @@ export const WIDEN_NO = 'No, only change the selection';
 export function widenChoices(authority: Authority): [string, string] {
   if (authority.kind === 'component') return [`Yes, allow changes beyond ${authority.label}`, `No, only change ${authority.label}`];
   // Allowing more lets the run change anything on the site, so the answer says that.
-  if (authority.kind === 'page' || authority.kind === 'entry') return ['Yes, allow changes across the whole site', `No, only change ${authority.label}`];
+  if (authority.kind === 'page' || authority.kind === 'entry' || authority.kind === 'template') return ['Yes, allow changes across the whole site', `No, only change ${authority.label}`];
   return [WIDEN_YES, WIDEN_NO];
 }

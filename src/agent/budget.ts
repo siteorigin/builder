@@ -91,6 +91,12 @@ function describeRead(item: Extract<CanonicalItem, { kind: 'tool_result' }>, ind
     const nodeId = args.nodeId ? String(args.nodeId) : '';
     return { ...base, target: `page:${pageId}:${nodeId}`, pageId };
   }
+  if (item.name === 'read_layout') {
+    // A collection's entry layout and its index layout share the collection's ID: the owner's kind tells them apart.
+    const owner = body?.owner;
+    if (!owner?.id || !owner?.kind) return null;
+    return { ...base, target: `layout-tree:${owner.kind}:${owner.id}:${args.nodeId ? String(args.nodeId) : ''}` };
+  }
   if (item.name === 'read_component') {
     const id = args.definitionId ?? args.componentId ?? body?.definitionId;
     // A design read part by part: each part is its own read, and a contract alone never stands in for the design.
@@ -142,7 +148,9 @@ function describeRead(item: Extract<CanonicalItem, { kind: 'tool_result' }>, ind
     if (!collectionId) return null;
     if (item.name === 'list_collection_entries') return { ...base, target: `entries:${JSON.stringify([collectionId, offset])}`, collectionId };
     const entryId = String(body?.entryId ?? args.entryId ?? '');
-    return entryId ? { ...base, target: `entry:${JSON.stringify([collectionId, entryId, offset])}`, collectionId, entryId } : null;
+    // One custom field read a part at a time is its own read too, never one of the text.
+    const field = body?.field ?? args.field;
+    return entryId ? { ...base, target: `entry:${JSON.stringify([collectionId, entryId, offset, ...(typeof field === 'string' ? [field] : [])])}`, collectionId, entryId } : null;
   }
   if (item.name === 'audit_seo') {
     // The page it was narrowed to as the result names it (a route and its page's ID are one page), the pillar, and
@@ -195,6 +203,11 @@ export function tombstoneFor(read: Pick<ReadInfo, 'name'>, content: string, args
   if (read.name === 'inspect_element') {
     const owner = args.owner ?? body?.owner;
     return `inspect_element ${args.nodeId} on ${owner?.kind} ${owner?.id}${rev}. Inspect it again before relying on it.`;
+  }
+  if (read.name === 'read_layout') {
+    const list = Array.isArray(body?.sections) ? body!.sections : body?.node ? [body.node] : [];
+    const ids = list.slice(0, 12).map((n: Record<string, unknown>) => `${n.id} ${n.componentId ?? n.kind ?? ''}`.trim()).join(', ');
+    return `read_layout ${body?.owner?.kind ?? ''} ${body?.owner?.id ?? ''}${args.nodeId ? ` node ${args.nodeId}` : ''}${rev}${ids ? `: ${ids}${list.length > 12 ? `, and ${list.length - 12} more` : ''}` : ''}. Read it again before relying on it.`;
   }
   if (read.name === 'inspect_layout') {
     const n = Array.isArray(args.refs) ? args.refs.length : 0;
@@ -316,7 +329,7 @@ export function applyContextBudget(
       if (r.name === 'read_source') return changedAfter(r.definitionId!) || (!!r.hash && reads.some((n) => n.index > r.index && n.target === r.target && !!n.hash && n.hash !== r.hash));
       // A measurement, an element's props, an audit and the project summary all describe the revision they were read at:
       // only a change that moved it (whether or not a tool made it) makes them stale.
-      if (r.name !== 'inspect_element' && r.name !== 'inspect_layout' && r.name !== 'inspect_component' && r.name !== 'read_project' && r.name !== 'audit_seo') return false;
+      if (r.name !== 'inspect_element' && r.name !== 'inspect_layout' && r.name !== 'inspect_component' && r.name !== 'read_project' && r.name !== 'audit_seo' && r.name !== 'read_layout') return false;
       return r.revision !== undefined && opts.revision !== undefined ? r.revision < opts.revision : r.index < lastMutation;
     };
     if (estimate > available * HARD_LIMIT) {

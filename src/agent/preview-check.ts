@@ -209,7 +209,8 @@ export function visibleReach(ops: EditOperation[], before: ProjectState, after?:
       case 'owner': {
         const owner = op.type === 'node.copy' || op.type === 'node.paste' ? op.toOwner : 'owner' in op ? op.owner : undefined;
         if (owner?.kind === 'page') reach.pages.add(owner.id);
-        else if (owner?.kind === 'template') reach.unreachable.add('posts');
+        // A collection's entry or index layout shows on no page the preview check measures: it says so, unmeasured.
+        else if (owner?.kind === 'template' || owner?.kind === 'archive') reach.unreachable.add('posts');
         else if (owner?.kind !== 'component' || placed(owner.id)) {
           if (owner?.kind === 'component') reach.components.add(owner.id);
           reach.shared = true;

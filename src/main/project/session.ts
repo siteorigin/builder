@@ -2540,13 +2540,14 @@ export class ProjectSession extends EventEmitter {
       // So are external sources' settings (#676), which name the secrets the user signs in with.
       if ((opts.source === 'ai' || opts.runId) && ops.some((o) => o.type === 'source.upsert' || o.type === 'source.remove'))
         return { ok: false, revision: this.revision, error: { code: 'SCOPE_MISMATCH', message: 'External sources can only be changed in the editor.', recoverable: true } };
-      // The assistant writes a post only through its post tool, whose call grants exactly that batch: one entry, and the
-      // categories it is filed under. Any other collection change, a layout's included, is the editor's.
+      // The assistant reaches a collection only through its collection and entry tools, and a layout only from a request
+      // sent while it is open: each grants exactly that batch (see shared/collection-grant). Any other collection change
+      // is the editor's.
       const ai = opts.source === 'ai' || !!opts.runId;
-      const granted = ai && opts.collectionWrite ? collectionGrantRefusal(ops, opts.collectionWrite) : null;
+      const granted = ai && opts.collectionWrite ? collectionGrantRefusal(ops, opts.collectionWrite, this.state.collections) : null;
       if (granted) return { ok: false, revision: this.revision, error: { code: 'SCOPE_MISMATCH', message: granted, recoverable: true } };
       if (ai && !opts.collectionWrite && ops.some(isCollectionOperation))
-        return { ok: false, revision: this.revision, error: { code: 'SCOPE_MISMATCH', message: 'Collections and their entries can only be changed in the editor, apart from a post written with upsert_collection_entry.', recoverable: true } };
+        return { ok: false, revision: this.revision, error: { code: 'SCOPE_MISMATCH', message: 'Collections, their entries and their layouts can only be changed in the editor, apart from what define_collection and upsert_collection_entry write and a layout edited from a request sent while it is open.', recoverable: true } };
       // A library image's file is only ever one the importer checked and wrote.
       if ((opts.source === 'ai' || opts.runId) && ops.some((o) => o.type === 'asset.relink'))
         return { ok: false, revision: this.revision, error: { code: 'SCOPE_MISMATCH', message: 'Only the editor can give an image a new file. Ask the user to locate it in Assets.', recoverable: true } };

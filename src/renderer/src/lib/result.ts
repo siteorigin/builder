@@ -4,7 +4,8 @@ import type { ElementRef, ProjectState } from '@shared/types';
 import { locateField } from '@engine/locate';
 import { refExists, resolveRef } from './model';
 import { pageShowing, partName } from '@shared/page-shell';
-import { editableDesign, postTitle, requestComponentId } from './chatTarget';
+import { editableDesign, layoutName, postTitle, requestComponentId } from './chatTarget';
+import { keepTemplateValid } from './template-view';
 import { postAt } from './posts';
 import { canCarryOn, resultAsSaid, turnState, type TurnHistory } from '@shared/turns';
 
@@ -167,12 +168,20 @@ export function continueContext(user: ChatMessage | undefined, state: ProjectSta
     const ok = !!post && typeof post === 'object' && typeof post.collectionId === 'string' && typeof post.entryId === 'string' && typeof post.title === 'string';
     if (!ok || !postAt(state, { collectionId: post.collectionId as string, entryId: post.entryId as string })) return { error: `${ok ? `The post “${postTitle(post.title)}”` : 'That post'} is no longer in the site. Open a post, then ${next}.` };
   }
+  // So does a request about a collection's layout, while the collection still has it (#679).
+  if (ctx.template !== undefined) {
+    const t = ctx.template as unknown as Record<string, unknown> | null;
+    const ok = !!t && typeof t === 'object' && typeof t.collectionId === 'string' && typeof t.name === 'string';
+    // The same check as trying it again: an index layout counts while the collection has an index to show it on.
+    const there = ok && !!keepTemplateValid(state, { collectionId: t.collectionId as string, entryId: typeof t.entryId === 'string' ? t.entryId : null, ...(t.archive === true ? { archive: true as const } : {}) });
+    if (!there) return { error: `${ok ? `The ${layoutName(t)}` : 'That layout'} is no longer in the site. Open a layout or page, then ${next}.` };
+  }
   const pageOk = !!ctx.pageId && Object.hasOwn(state.pages, ctx.pageId);
   // A request about a component edited everywhere carries on with that component, wherever it was shown.
   let page: Pick<ChatContext, 'pageId' | 'pageTitle'> | null = null;
   const componentId = requestComponentId(ctx);
-  // The page under the writer was never what a post's request was about, so another one does as well.
-  if (ctx.post !== undefined) {
+  // The page under the writer, or behind a layout, was never what a post's or layout's request was about, so another one does as well.
+  if (ctx.post !== undefined || ctx.template !== undefined) {
     if (!pageOk) page = { pageId: state.site.homePageId, pageTitle: state.pages[state.site.homePageId]?.title ?? '' };
   } else if (componentId) {
     if (!editableDesign(state, componentId)) return { error: `${ctx.component?.name || ctx.selectionLabel || 'That component'} is no longer in the site. ${choose}` };

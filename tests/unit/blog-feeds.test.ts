@@ -605,8 +605,18 @@ describe('after the review', () => {
     expect(retrieveExamples(blog(), 'latest blog posts').some((e) => e.componentId.startsWith('blog.'))).toBe(true);
     const projects = run(fresh, { type: 'collection.create', collectionId: 'projects' } as EditOperation);
     for (const id of ['blog.featured', 'blog.grid', 'blog.list']) expect(JSON.stringify(upsertToolSchema(projects))).toContain(`"${id}"`);
+    // What it holds, its pages and address, and every grouping with its terms (#679).
     expect(projectSummary(blog(), 1).collections).toEqual([
-      { id: 'posts', name: 'Posts', route: '/blog/', published: 5, categories: { news: 'News', craft: 'Craft', events: 'Events' }, tags: { glaze: 'Glaze' } }
+      {
+        id: 'posts',
+        name: 'Posts',
+        kind: 'editorial',
+        pages: { detail: true, archive: true },
+        route: '/blog/',
+        entries: 6,
+        published: 5,
+        taxonomies: { categories: { label: 'Categories', terms: { news: 'News', craft: 'Craft', events: 'Events' } }, tags: { label: 'Tags', terms: { glaze: 'Glaze' } } }
+      }
     ]);
     expect(projectSummary(fresh, 1)).not.toHaveProperty('collections');
   });
