@@ -1145,9 +1145,10 @@ await win.screenshot({ path: join(SHOTS, 'seo-view-kitchens-search-result.png') 
 
 step('the structured data follows the title and canonical URL as they are typed (#597)');
 await surface('Structured data').click();
-const graphOf = async () => JSON.parse(await graphShown.innerText());
+const graphOf = async () => JSON.parse(await graphShown.textContent());
 const webPage = async () => (await graphOf())['@graph'].find((n) => n['@type'] === 'WebPage');
 await eventually(async () => assert.deepEqual(await webPage().then((n) => ({ url: n.url, name: n.name })), { url: 'https://riverside.example/kitchens/', name: 'Kitchens · Riverside Studio' }), 20000);
+assert.equal(await view.getByRole('region', { name: 'This page', exact: true }).isVisible(), true, 'the view says it in words');
 const status = (id) => view.locator(`[data-status="${id}"] dd`);
 assert.equal(await status('canonical').innerText(), 'https://riverside.example/kitchens/');
 assert.equal(await status('search').innerText(), 'May list it');
@@ -1270,6 +1271,7 @@ await eventually(async () => {
   const node = (await webPage()) ?? {};
   assert.deepEqual({ url: node.url, name: node.name }, { url: 'https://riverside.example/blog/raku/', name: 'Raku firing notes from the weekend' }, 'the post’s structured data names it by its address and its title');
 }, 20000);
+assert.equal(await view.getByRole('region', { name: 'Blog post', exact: true }).isVisible(), true, 'the view says it in words');
 await postTitle.fill('Raku notes from the kiln');
 await eventually(async () => assert.equal((await webPage()).name, 'Raku notes from the kiln', 'the graph follows the title as it is typed'));
 assert.equal((await rakuSeo()).title, 'Raku firing notes from the weekend', 'nothing new is saved while it is typed');
