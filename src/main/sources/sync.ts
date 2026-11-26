@@ -16,6 +16,7 @@ import { holdsSecretValue, MIN_SECRET_LENGTH, sourceSecretNames } from '@shared/
 import type { SourceSyncGrant } from '@engine/sources';
 import { SyncError, syncFailureMessage, type SyncRunner } from './client';
 import type { SecretStore } from './secrets';
+import type { ApprovalStore } from './approvals';
 import { SAMPLE_SIZE, type FieldKinds, type NormalizedRecord, type SyncImage } from './protocol';
 import { knownHashes, planIsEmpty, planSourceSync, SyncPlanError, syncOperations, type SyncPlan } from './reconcile';
 import { redactSecrets } from './redact';
@@ -33,6 +34,8 @@ export interface SyncDeps {
   session: SyncSession;
   runner: SyncRunner;
   secrets: SecretStore;
+  /** The settings the user approved (by saving them here) to sign in with their secrets. */
+  approvals: Pick<ApprovalStore, 'approved'>;
   /** Bring a fetched picture into the library: its record, and whether the library had it already (the same bytes). */
   importImage(image: SyncImage & { name: string }, known: AssetRecord[], createdAt: string): Promise<{ record: AssetRecord; existing: boolean }>;
   /** Whether the project the sync began in is still the one open, and wanted. */
@@ -225,6 +228,17 @@ export async function syncSource(deps: SyncDeps, sourceId: string): Promise<Sour
   const missing = converterMissing(source);
   if (missing) return { ok: false, code: 'converter', message: missing };
   const projectId = state.manifest.projectId;
+  // Settings changed outside the app (its address, say) never take the user's secrets anywhere until saved here.
+  if (sourceSecretNames(source).length) {
+    let approved: boolean;
+    try {
+      approved = await deps.approvals.approved(projectId, source);
+    } catch {
+      approved = false;
+    }
+    if (!approved)
+      return { ok: false, code: 'unapproved', message: `“${source.name}” was changed outside SiteOrigin Builder since it was last saved here, so it does not sign in with your secrets. Open its settings, test them and save them again.` };
+  }
   let secrets: Record<string, string>;
   let values: string[];
   try {

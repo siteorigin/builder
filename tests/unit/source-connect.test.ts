@@ -39,6 +39,7 @@ const { createSyncRunner } = await import('../../src/main/sources/client');
 const { runSync } = await import('../../src/main/sources/run');
 const { ADAPTERS } = await import('../../src/main/sources/adapters');
 const { createSecretStore } = await import('../../src/main/sources/secrets');
+const { createApprovalStore } = await import('../../src/main/sources/approvals');
 const { sampleSource, syncSource } = await import('../../src/main/sources/sync');
 const { applyOperations } = await import('@engine/apply');
 const { generateEntry } = await import('@generator/index');
@@ -122,10 +123,12 @@ async function setup(endpoints: { contentful?: string } = {}) {
       kill: () => true
     } as unknown as SyncHandle;
   };
+  const approvals = createApprovalStore(() => join(env.userData, 'source-approvals.json'));
   const deps = {
     session: s,
     runner: createSyncRunner(spawn),
     secrets,
+    approvals,
     current: () => true,
     importImage: async (img: { name: string; mime: string; ext: string; bytes: Uint8Array }, known: Parameters<typeof importPackageImage>[2], createdAt: string) =>
       importPackageImage(dir, { name: img.name, mime: img.mime, ext: img.ext, bytes: Buffer.from(img.bytes) }, known, undefined, createdAt)
@@ -135,7 +138,12 @@ async function setup(endpoints: { contentful?: string } = {}) {
     const state: ProjectState = applyOperations(s.state, [{ ...draft, type: 'source.upsert' } as EditOperation]).state;
     return sampleSource(deps, state, state.sources![draft.sourceId]);
   };
-  const save = (draft: SourceSettingsDraft) => s.apply({ operations: [{ ...draft, type: 'source.upsert' } as EditOperation] }, { label: 'Save the source' });
+  /** Save a source's settings as the Connect dialog does: tested, then approved to sign in with the user's secrets. */
+  const save = async (draft: SourceSettingsDraft) => {
+    const r = await s.apply({ operations: [{ ...draft, type: 'source.upsert' } as EditOperation] }, { label: 'Save the source' });
+    if (r.ok) await approvals.approve(s.state.manifest.projectId, s.state.sources![draft.sourceId]);
+    return r;
+  };
   return { dir, s, deps, fetched, test, save };
 }
 
@@ -253,6 +261,32 @@ describe('connecting a collection to an external source', () => {
     await s.undo();
     expect(readFileSync(join(dir, 'siteorigin/sources/crew/converter.mjs'), 'utf8')).toBe(converter);
     expect(s.state.sources?.crew.converter?.code).toBe(converter);
+  });
+
+  it('never takes the user’s secret where settings changed outside the app say, until they are saved here again', async () => {
+    const api = await server((_url, auth) => (auth === `Bearer ${SECRET}` ? { json: cda } : { status: 401, json: {} }));
+    const elsewhere = await server(() => ({ json: { total: 0, skip: 0, items: [] } }));
+    const { dir, s, deps, save } = await setup({ contentful: api.origin });
+    const draft: SourceSettingsDraft = { sourceId: 'team-api', name: 'Team API', adapter: 'rest', collectionId: 'team', config: { url: `${api.origin}/team`, headers: { Authorization: 'Bearer ${secret:cda}' }, itemsPath: 'items' }, mapping: { externalId: 'sys.id', title: 'fields.title' } };
+    // The REST reader reads this list of entries at its own address.
+    expect((await save(draft)).error?.message).toBeUndefined();
+    // A collaborator's commit points it somewhere else, keeping the secret it names.
+    const file = join(dir, 'siteorigin/sources/team-api/source.json');
+    const doc = JSON.parse(readFileSync(file, 'utf8'));
+    writeFileSync(file, JSON.stringify({ ...doc, config: { ...doc.config, url: `${elsewhere.origin}/collect` } }, null, 2));
+    await s.close();
+    const again = await ProjectSession.open(dir, 'reopen');
+    open.push(again);
+    expect(again.state.sources?.['team-api'].config.url).toBe(`${elsewhere.origin}/collect`);
+    expect(await syncSource({ ...deps, session: again }, 'team-api')).toMatchObject({ ok: false, code: 'unapproved' });
+    expect(elsewhere.seen).toEqual([]);
+    // Its name changed outside the app asks nothing again; only where and how it signs in does.
+    writeFileSync(file, JSON.stringify({ ...doc, name: 'Renamed outside' }, null, 2));
+    await again.close();
+    const third = await ProjectSession.open(dir, 'third');
+    open.push(third);
+    expect(third.state.sources?.['team-api'].name).toBe('Renamed outside');
+    expect(await syncSource({ ...deps, session: third }, 'team-api')).toMatchObject({ ok: true, created: 2 });
   });
 
   it('never syncs a source without the converter its settings name: its entries stay as they are', async () => {

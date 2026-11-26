@@ -65,6 +65,8 @@ function converterRequest(init: Record<string, unknown>, secrets: Readonly<Recor
   if (method === 'POST') {
     const sent = typeof init.body === 'string' ? (() => { try { return JSON.parse(init.body as string) as unknown; } catch { return undefined; } })() : init.body;
     const query = (sent as { query?: unknown } | undefined)?.query;
+    // Checked as it is sent: a secret filled into a query could change what it asks.
+    if (typeof query === 'string' && query.includes('${')) throw new ConverterError('its request names a secret in its GraphQL query: send it in a header or a variable instead');
     const problem = graphqlReadProblem(query);
     if (problem) throw new ConverterError(`its request ${problem.replace(/^its /, 'has a ')}`);
     body = fill(JSON.stringify(sent), true);

@@ -83,6 +83,8 @@ describe('taking secrets out of what a source says', () => {
   it('finds a secret written into a document, escaped or not', () => {
     expect(holdsSecretValue(JSON.stringify({ name: 'Team tok"en-1' }), ['tok"en-1'])).toBe(true);
     expect(holdsSecretValue('Team tok"en-1', ['tok"en-1'])).toBe(true);
+    // As a query or form writes it too (#678): a server echoing the address it was asked at.
+    expect(holdsSecretValue(`https://a.example/?k=${new URLSearchParams({ v: 'abc!~ xyz' }).toString().slice(2)}`, ['abc!~ xyz'])).toBe(true);
     expect(holdsSecretValue('https://cdn.example/a%20b%2Fc.png', ['a b/c'])).toBe(true);
     expect(holdsSecretValue('{"name":"Team"}', ['tok"en-1'])).toBe(false);
   });

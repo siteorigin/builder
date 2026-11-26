@@ -36,7 +36,7 @@ export function templatedValues(config: SourceDoc['config'] | undefined): string
   const out: string[] = [];
   const walk = (v: unknown, depth: number) => {
     if (typeof v === 'string') out.push(v);
-    else if (depth < 8 && v && typeof v === 'object') for (const x of Array.isArray(v) ? v : Object.values(v)) walk(x, depth + 1);
+    else if (depth <= 12 && v && typeof v === 'object') for (const x of Array.isArray(v) ? v : Object.values(v)) walk(x, depth + 1);
   };
   for (const k of ['headers', 'query', 'variables'] as const) walk(config?.[k], 0);
   if (typeof config?.body === 'string') out.push(config.body);
@@ -179,8 +179,9 @@ function sentJsonProblem(v: unknown, depth = 0, under: string | null = null): st
     return null;
   }
   if (v && typeof v === 'object') {
+    // Under a name that carries a credential, everything does: `{ "credentials": { "value": "…" } }`.
     for (const [k, x] of Object.entries(v)) {
-      const p = sentJsonProblem(x, depth + 1, isSensitiveName(k) ? k : null);
+      const p = sentJsonProblem(x, depth + 1, under ?? (isSensitiveName(k) ? k : null));
       if (p) return p;
     }
     return null;
@@ -412,6 +413,8 @@ export function secretForms(v: string): string[] {
     const encoded = encodeURIComponent(v);
     forms.add(encoded);
     forms.add(encoded.replace(/%20/g, '+'));
+    // As a query or form writes it, which escapes more than an address does (! ~ * ' ( )).
+    forms.add(new URLSearchParams({ v }).toString().slice(2));
   } catch {
     // Text no address can carry (a lone surrogate) is only ever written as it is.
   }

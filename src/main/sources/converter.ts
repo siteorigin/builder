@@ -314,7 +314,7 @@ function thrown(e: unknown, what: string, timeout: number, nativeStack: unknown)
   const text = e instanceof Error ? e.message : typeof e === 'string' ? e : (ownText(e, 'message', nativeStack) ?? '');
   if (/^Script execution timed out/.test(text)) return new ConverterError(`${what} took longer than ${Math.round(timeout / 100) / 10} seconds`);
   // Cut past the longest secret kept, so the secrets are taken out (see run.ts) before the cut that is shown.
-  const message = text.slice(0, 20_000) || 'it stopped with an error';
+  const message = text.slice(0, 200_000) || 'it stopped with an error';
   const at = /converter\.mjs:(\d+):(\d+)/.exec(ownText(e, 'stack', nativeStack) ?? '');
   return new ConverterError(`${what} failed${at ? ` (line ${at[1]})` : ''}: ${message}`);
 }

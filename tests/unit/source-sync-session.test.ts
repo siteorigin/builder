@@ -114,6 +114,8 @@ async function setup() {
     session: s,
     runner: createSyncRunner(spawn),
     secrets,
+    // Its settings saved here (see source-connect.test.ts for settings changed outside the app).
+    approvals: { approved: async () => true },
     current: () => true,
     importImage: async (img: { name: string; mime: string; ext: string; bytes: Uint8Array }, known: Parameters<typeof importPackageImage>[2], createdAt: string) => {
       world.imports++;

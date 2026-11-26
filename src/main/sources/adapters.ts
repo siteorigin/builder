@@ -82,8 +82,11 @@ function linkNext(header: string | null): string | null {
       if (h[j] === '"' && h[j - 1] !== '\\') quoted = !quoted;
       else if (h[j] === ',' && !quoted) break;
     }
-    const rel = /;\s*rel\s*=\s*(?:"([^"]*)"|([^;\s]+))/i.exec(h.slice(close + 1, j));
-    if (rel && (rel[1] ?? rel[2]).toLowerCase().split(/\s+/).includes('next')) return target;
+    // Each parameter by itself, quotes and all, so a quoted one that mentions rel is never read as the link's.
+    const params = h.slice(close + 1, j);
+    let rel: string | null = null;
+    for (const m of params.matchAll(/;\s*([A-Za-z*-]+)\s*(?:=\s*(?:"((?:[^"\\]|\\.)*)"|([^;"\s]*)))?/g)) if (m[1].toLowerCase() === 'rel') rel ??= m[2] ?? m[3] ?? '';
+    if (rel !== null && rel.toLowerCase().split(/\s+/).includes('next')) return target;
     const next = h.indexOf('<', j);
     if (next < 0) return null;
     i = next;
@@ -91,7 +94,13 @@ function linkNext(header: string | null): string | null {
   return null;
 }
 
-/** Whether a page brought exactly the records the last did: a server asked past its last page that sends it again. */
+/**
+ * A page that brought exactly the records the last did: a server that sends its last page again for any page past it,
+ * or one that ignores the page asked for. Either way what comes after cannot be told from what came before.
+ */
+const REPEATS = 'its pages repeat: the server sends the same page again, so its last page cannot be told. Page it another way, such as by the next page’s address';
+
+/** Whether a page brought exactly the records the last did. */
 const samePage = (a: unknown[] | null, b: unknown[]) => !!a && a.length === b.length && JSON.stringify(a) === JSON.stringify(b);
 
 // ---------------------------------------------------------------------------
@@ -133,7 +142,8 @@ const rest: SourceAdapter = {
           });
           if (!r) return out;
           const page = listAt(r.body, config.itemsPath);
-          if (!page.length || samePage(last, page)) return out;
+          if (!page.length) return out;
+          if (samePage(last, page)) throw new AdapterError('invalid', REPEATS);
           gather(out, page);
           last = page;
         }
@@ -143,7 +153,8 @@ const rest: SourceAdapter = {
         for (let at = 0; ; ) {
           const r = await ask(address({ [pagination.param]: String(at), ...(pagination.limitParam ? { [pagination.limitParam]: String(pagination.limit) } : {}) }));
           const page = listAt(r.body, config.itemsPath);
-          if (!page.length || samePage(last, page)) return out;
+          if (!page.length) return out;
+          if (samePage(last, page)) throw new AdapterError('invalid', REPEATS);
           gather(out, page);
           last = page;
           at += page.length;
@@ -208,19 +219,18 @@ const graphql: SourceAdapter = {
       const first = readPath(errors[0], 'message');
       // Cut only well past what is shown and the longest secret kept, so the secrets are taken out (see run.ts) before
       // the cut that is.
-      throw new AdapterError('failed', `the GraphQL server answered with an error${typeof first === 'string' ? `: ${first.slice(0, 20_000)}` : ''}`);
+      throw new AdapterError('failed', `the GraphQL server answered with an error${typeof first === 'string' ? `: ${first.slice(0, 200_000)}` : ''}`);
     }
     const out: unknown[] = [];
     gather(out, config.itemsPath ? listAt(r.body, config.itemsPath) : firstList(r.body));
     // A connection that says it has more than one request read is not the whole of the source: at any level above its
     // list, the reply's data itself included.
     const steps = (config.itemsPath ?? 'data').split('.');
-    for (let n = steps.length; n >= 1; n--)
-      if (readPath(r.body, `${steps.slice(0, n).join('.')}.pageInfo.hasNextPage`) === true) throw new AdapterError('too-large', 'the GraphQL reply has more pages than one query reads: ask for every record at once');
+    const more = (v: unknown) => !!v && typeof v === 'object' && readPath(readPath(v, 'pageInfo'), 'hasNextPage') === true;
+    for (let n = steps.length; n >= 1; n--) if (more(readPath(r.body, steps.slice(0, n).join('.')))) throw new AdapterError('too-large', 'the GraphQL reply has more pages than one query reads: ask for every record at once');
     if (!config.itemsPath) {
       const data = readPath(r.body, 'data');
-      for (const v of data && typeof data === 'object' ? Object.values(data) : [])
-        if (readPath(v, 'pageInfo.hasNextPage') === true) throw new AdapterError('too-large', 'the GraphQL reply has more pages than one query reads: ask for every record at once');
+      for (const v of data && typeof data === 'object' ? Object.values(data) : []) if (more(v)) throw new AdapterError('too-large', 'the GraphQL reply has more pages than one query reads: ask for every record at once');
     }
     return out;
   }
@@ -267,6 +277,7 @@ const contentful: SourceAdapter = {
     const items: unknown[] = [];
     const index = new Map<string, unknown>();
     const limit = 100;
+    let expected: number | null = null;
     for (let skip = 0; ; ) {
       const u = under(env.endpoints?.contentful ?? CONTENTFUL, `spaces/${encodeURIComponent(config.spaceId!)}/environments/${encodeURIComponent(config.environment ?? 'master')}/entries`);
       for (const [k, v] of Object.entries({ content_type: config.contentType!, limit: String(limit), skip: String(skip), include: '2', order: 'sys.createdAt' })) u.searchParams.set(k, v);
@@ -277,6 +288,9 @@ const contentful: SourceAdapter = {
       // Only a reply that says how many there are, and where it starts, can say the read is whole.
       if (!Number.isInteger(total) || (total as number) < 0 || at !== skip) throw new AdapterError('invalid', 'Contentful did not say how many entries there are, or where its reply starts');
       if (page.length > (total as number) - skip) throw new AdapterError('invalid', 'Contentful sent more entries than it says it has');
+      // The count each reply gives is the one the first gave: entries that come or go during a read make it no whole one.
+      if (expected !== null && total !== expected) throw new AdapterError('failed', 'Contentful’s entries changed while they were read. Sync again');
+      expected = total as number;
       if (!page.length && skip < (total as number)) throw new AdapterError('failed', 'Contentful stopped before its last entry');
       gather(items, page);
       const included = (kind: string) => readPath(r.body, `includes.${kind}`);
@@ -342,6 +356,7 @@ const strapi: SourceAdapter = {
     const headers = bearer(slotSecret(config, 'token', secrets));
     const out: unknown[] = [];
     const origin = originOf(config.url);
+    let expected: number | null = null;
     for (let page = 1; ; page++) {
       const u = under(config.url!, `api/${encodeURIComponent(config.resource!)}`);
       for (const [k, v] of Object.entries({ 'pagination[page]': String(page), 'pagination[pageSize]': '100', populate: '*' })) u.searchParams.set(k, v);
@@ -352,12 +367,15 @@ const strapi: SourceAdapter = {
         // Strapi names no field with a $, so none of a record's own can stand in for who it is.
         return { ...flat, $key: typeof key === 'number' ? String(key) : key };
       });
-      const pages = readPath(r.body, 'meta.pagination.pageCount');
-      // Only a count of pages says the read is whole: records with none, or with a count they do not fit, may not be all.
-      if (items.length && (!Number.isInteger(pages) || (pages as number) < page)) throw new AdapterError('invalid', 'Strapi did not say how many pages there are');
-      if (!items.length && Number.isInteger(pages) && page < (pages as number)) throw new AdapterError('failed', 'Strapi stopped before its last page');
+      const given = readPath(r.body, 'meta.pagination.pageCount');
+      // Only a count of pages says the read is whole: records with none, or with a count they do not fit, may not be all;
+      // and each page's count is the first's.
+      if (items.length && (!Number.isInteger(given) || (given as number) < page)) throw new AdapterError('invalid', 'Strapi did not say how many pages there are');
+      if (expected !== null && given !== expected) throw new AdapterError('failed', 'Strapi’s records changed while they were read. Sync again');
+      const pages = (expected ??= Number.isInteger(given) ? (given as number) : null) ?? 0;
+      if (!items.length && page < pages) throw new AdapterError('failed', 'Strapi stopped before its last page');
       gather(out, items);
-      if (!items.length || page >= (pages as number)) return out;
+      if (!items.length || page >= pages) return out;
     }
   }
 };
@@ -401,16 +419,20 @@ const wordpress: SourceAdapter = {
   origin: (config) => originOf(config.url),
   async items({ config, transport }) {
     const out: unknown[] = [];
+    let expected: number | null = null;
     for (let page = 1; ; page++) {
       const u = under(config.url!, `wp-json/wp/v2/${encodeURIComponent(config.resource ?? 'posts')}`);
       for (const [k, v] of Object.entries({ per_page: '100', page: String(page), _embed: '1' })) u.searchParams.set(k, v);
       const r = await transport.json(u.href);
       const items = listAt(r.body, undefined, 'the reply').map(wordpressView);
       const header = r.headers.get('x-wp-totalpages');
-      const pages = header === null || !/^\d+$/.test(header.trim()) ? NaN : Number(header);
-      // Only a count of pages says the read is whole: posts with none, or with a count they do not fit, may not be all.
-      if (items.length && (!Number.isFinite(pages) || pages < page)) throw new AdapterError('invalid', 'the site did not say how many pages of posts it has');
-      if (!items.length && Number.isFinite(pages) && page < pages) throw new AdapterError('failed', 'the site stopped before its last page of posts');
+      const given = header === null || !/^\d+$/.test(header.trim()) ? NaN : Number(header);
+      // Only a count of pages says the read is whole: posts with none, or with a count they do not fit, may not be all;
+      // and each page's count is the first's.
+      if (items.length && (!Number.isFinite(given) || given < page)) throw new AdapterError('invalid', 'the site did not say how many pages of posts it has');
+      if (expected !== null && given !== expected) throw new AdapterError('failed', 'the site’s posts changed while they were read. Sync again');
+      const pages = (expected ??= Number.isFinite(given) ? given : null) ?? 0;
+      if (!items.length && page < pages) throw new AdapterError('failed', 'the site stopped before its last page of posts');
       gather(out, items);
       if (!items.length || page >= pages) return out;
     }

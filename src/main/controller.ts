@@ -26,7 +26,7 @@ import { LOCAL_DIR, LOCK_HEARTBEAT_MS, NO_LOCK, ProjectLockedError, ProjectSessi
 import { DOC_DIR, MANIFEST_FILE, ProjectFormatError } from './project/documents';
 import { DOCUMENT_EXTENSIONS, FONT_EXTENSIONS, IMAGE_EXTENSIONS, IMPORT_IMAGE_EXTENSIONS, importAsset, importPackageImage, isAssetOfKind, isOpaquePicture, libraryWebCopyPlan, locateAssetFile, originalNameOf, pictureMime, releaseMediaWorkers, restoreAssetFiles, reviewImportFile, storeLibraryWebCopy } from './project/assets';
 import { postReader, stopPostReads } from './posts-import/process';
-import { sourceSecrets, sourceSyncRunner, stopSourceSyncs } from './sources/process';
+import { sourceApprovals, sourceSecrets, sourceSyncRunner, stopSourceSyncs } from './sources/process';
 import { sampleSource, syncSource, type SourceSampleResult, type SourceSyncResult } from './sources/sync';
 import { converterProblems, converterProblemText } from './sources/converter';
 import { holdsSecretValue, sourceFingerprint } from '@shared/sources';
@@ -2299,6 +2299,7 @@ export class Controller {
             session: s,
             runner: sourceSyncRunner,
             secrets: sourceSecrets,
+            approvals: sourceApprovals,
             current,
             signal: abort.signal,
             importImage: (img, known, createdAt) => importPackageImage(s.dir, { name: img.name, mime: img.mime, ext: img.ext, bytes: Buffer.from(img.bytes) }, known, this.writeFence(s), createdAt)
@@ -2400,6 +2401,9 @@ export class Controller {
     if (this.aiBusy()) return { ok: false, message: 'The AI is making changes. Stop it before changing a source.' };
     const r = await s.apply({ operations: [{ ...draft, type: 'source.upsert' } as EditOperation], expectedRevision: revision }, { label: `Save “${draft.name.trim()}”`, source: 'user' });
     if (!r.ok) return { ok: false, message: r.error?.code === 'STALE_REVISION' ? 'The project changed while the source was being tested. Save it again.' : (r.error?.message ?? 'The source could not be saved.') };
+    // Tested and saved here: these settings may sign in with the user's secrets.
+    const saved = s.state.sources?.[draft.sourceId];
+    if (saved) await sourceApprovals.approve(s.state.manifest.projectId, saved).catch(() => undefined);
     return { ok: true, revision: r.revision };
   }
 

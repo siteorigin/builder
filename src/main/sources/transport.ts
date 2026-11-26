@@ -93,14 +93,12 @@ export function createTransport(origin: string, signal: AbortSignal, doFetch: Fe
   const ask = async (url: string, init: RequestInit): Promise<JsonReply> => {
     let address = url;
     let res: Response | null = null;
-    let method = init.method ?? 'GET';
+    const method = init.method ?? 'GET';
     for (let hops = 0; hops <= MAX_REDIRECTS; hops++) {
       const problem = addressProblem(address, origin);
       if (problem) throw new AdapterError('failed', problem);
       if (++requests > MAX_REQUESTS) throw new AdapterError('too-large', `it needs more than ${MAX_REQUESTS} requests to read`);
       if (signal.aborted) throw new AdapterError('failed', 'the sync was stopped');
-      // As browsers do: a redirect "see other", or an old-style one of a POST, asks the next address with GET.
-      if (res && (res.status === 303 || ((res.status === 301 || res.status === 302) && method === 'POST'))) method = 'GET';
       const headers: Record<string, string> = { accept: 'application/json', ...(init.headers ?? {}) };
       if (method === 'POST' && init.body !== undefined) headers['content-type'] ??= 'application/json';
       res = await doFetch(address, { method, headers, ...(method === 'POST' && init.body !== undefined ? { body: init.body } : {}), redirect: 'manual', signal, credentials: 'omit' }).catch(() => {
@@ -108,6 +106,11 @@ export function createTransport(origin: string, signal: AbortSignal, doFetch: Fe
       });
       const next = REDIRECTS.has(res.status) ? res.headers.get('location') : null;
       if (!next) break;
+      // What is posted is never sent on, to another address of the server or as anything else.
+      if (method === 'POST') {
+        await res.body?.cancel().catch(() => undefined);
+        throw new AdapterError('failed', 'the server redirected what was posted to it, which a sync never follows');
+      }
       await res.body?.cancel().catch(() => undefined);
       try {
         address = new URL(next, address).href;

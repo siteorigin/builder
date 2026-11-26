@@ -170,10 +170,10 @@ describe('a REST source', () => {
     // A page that is not there on the first request is a failure, not an empty source.
     const gone = await server((_req, res) => send(res, {}, {}, 404));
     expect(await run({ adapter: 'rest', config: { url: gone.origin, pagination: { type: 'page', param: 'page', size: 10 } }, mapping, fields: { role: 'string' } })).toMatchObject({ ok: false, code: 'failed' });
-    // A server that sends its last page again for any page past it has nothing more.
+    // A server that sends a page again (its last, for any page past it, or one that ignores the page asked) cannot say
+    // where its records end: the read fails rather than guess.
     const clamped = await server((req, res) => send(res, people(2, Math.min(Number(req.url.searchParams.get('page')), 2) * 2 - 1)));
-    const again = await run({ adapter: 'rest', config: { url: clamped.origin, pagination: { type: 'page', param: 'page', size: 2 } }, mapping, fields: { role: 'string' } });
-    expect(again.ok && again.records.map((r) => r.externalId)).toEqual(['1', '2', '3', '4']);
+    expect(await run({ adapter: 'rest', config: { url: clamped.origin, pagination: { type: 'page', param: 'page', size: 2 } }, mapping, fields: { role: 'string' } })).toMatchObject({ ok: false, code: 'invalid', detail: expect.stringContaining('its pages repeat') });
     // Part of a reply is never the whole of one.
     const partial = await server((_req, res) => send(res, people(1), {}, 206));
     expect(await run({ adapter: 'rest', config: { url: partial.origin }, mapping, fields: { role: 'string' } })).toMatchObject({ ok: false, code: 'failed', detail: 'the server sent only part of a reply' });
@@ -451,6 +451,33 @@ describe('what a source sends, checked as hard as what it is sent', () => {
     expect(words.ok && words.records[0].values).toEqual({ bio: [{ type: 'p', spans: [{ text: 'Hi' }] }] });
   });
 
+  it('remembers the count a read began with, follows only the link a Link header calls next, and never sends a post on', async () => {
+    const one = (id: string) => ({ sys: { id }, fields: { title: id } });
+    const api = await server((req, res, origin) => {
+      const p = req.url.pathname;
+      const skip = Number(req.url.searchParams.get('skip') ?? 0);
+      if (p.includes('/shrinking/')) return send(res, { items: skip ? [] : [one('a')], total: skip ? 1 : 3, skip });
+      if (p === '/api/articles') {
+        const page = Number(req.url.searchParams.get('pagination[page]'));
+        return send(res, page === 1 ? { data: [{ id: 1, title: 'One' }], meta: { pagination: { pageCount: 3 } } } : { data: [] });
+      }
+      if (p === '/moved') {
+        res.writeHead(307, { location: '/other' });
+        return res.end();
+      }
+      if (p === '/next') return send(res, people(1, 9));
+      // A previous page whose quoted title mentions rel=next.
+      send(res, people(1), { link: `<${origin}/prev>; title="see; rel=next page"; rel=prev, <${origin}/next>; rel="next"` });
+    });
+    expect(await run({ adapter: 'contentful', config: { spaceId: 'shrinking', contentType: 't', credentials: { token: { $secret: 'c' } } }, secrets: { c: SECRET } }, { contentful: api.origin })).toMatchObject({ ok: false, code: 'failed' });
+    expect(await run({ adapter: 'strapi', config: { url: api.origin, resource: 'articles' } })).toMatchObject({ ok: false, code: 'failed' });
+    const linked = await run({ adapter: 'rest', config: { url: `${api.origin}/start`, pagination: { type: 'nextLink' } }, mapping: { title: 'fields.fullName' } });
+    expect(linked.ok && linked.records.map((r) => r.externalId)).toEqual(['1', '9']);
+    expect(api.seen.some((r) => r.url.pathname === '/prev')).toBe(false);
+    expect(await run({ adapter: 'rest', config: { url: `${api.origin}/moved`, method: 'POST', body: '{"q":1}' }, mapping: { title: 'fields.fullName' } })).toMatchObject({ ok: false, code: 'failed', detail: 'the server redirected what was posted to it, which a sync never follows' });
+    expect(api.seen.some((r) => r.url.pathname === '/other')).toBe(false);
+  });
+
   it('checks a sample’s pictures by where their hosts lead, as a sync does', async () => {
     const api = await server((_req, res) => send(res, [{ id: 1, title: 'A', img: 'https://looks-public.example/a.png' }]));
     const reply = await runSync(
@@ -483,6 +510,11 @@ describe('a source’s settings', () => {
     expect(sourceDocProblem(doc('graphql', { url: 'https://a.example', graphql: '{ a }', variables: { password: ['hunter22'] } }))).toMatch(/must name a secret/);
     expect(sourceDocProblem(doc('rest', { url: 'https://a.example', method: 'POST', body: '{"token":123456}' }))).toMatch(/must name a secret/);
     expect(sourceDocProblem(doc('rest', { url: 'https://a.example', headers: { 'X-Api-Key': 'abc123' } }))).toMatch(/must name a secret/);
+    // Everything under a name that carries one does, however deep.
+    expect(sourceDocProblem(doc('rest', { url: 'https://a.example', method: 'POST', body: '{"credentials":{"value":"unsaved-example-token"}}' }))).toMatch(/must name a secret/);
+    // And a secret named deep in what it sends is one it sends.
+    const deep = { a: { b: { c: { d: { e: { f: { g: { h: { i: '${secret:deep}' } } } } } } } } };
+    expect(sourceSecretNames(doc('graphql', { url: 'https://a.example', graphql: '{ a }', variables: deep }) as never)).toEqual(['deep']);
     expect(sourceDocProblem(doc('contentful', { spaceId: 's', contentType: 't' }))).toMatch(/needs a secret/);
     expect(sourceDocProblem(doc('wordpress', { url: 'https://blog.example', spaceId: 'x' }))).toMatch(/does not take/);
     expect(sourceSecretNames(doc('rest', { url: 'https://a.example', headers: { Authorization: 'Bearer ${secret:b}' }, query: { key: '${secret:a}' } }) as never)).toEqual(['a', 'b']);

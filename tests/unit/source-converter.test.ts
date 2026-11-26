@@ -183,6 +183,9 @@ describe('a source read by its converter', () => {
     // Nor a GraphQL mutation, however it is sent.
     const gql = await runSync({ ...base, adapter: 'graphql', config: { url: `${origin}/gql`, graphql: '{ people { id } }' }, converter: 'export async function fetchAll(h) { return h.fetchJson("/gql", { method: "POST", body: { query: "mutation { wipe }" } }); }\nexport function convert(i) { return i; }' }, deps);
     expect(gql.ok === false && gql.detail).toMatch(/changes or watches data/);
+    // A secret is never filled into a query, where it could change what the query asks.
+    const filled = await runSync({ ...base, adapter: 'graphql', config: { url: `${origin}/gql`, graphql: '{ people { id } }' }, converter: 'export async function fetchAll(h) { return h.fetchJson("/gql", { method: "POST", body: { query: "# ${secret:api}\\n{ a }" } }); }\nexport function convert(i) { return i; }' }, deps);
+    expect(filled.ok === false && filled.detail).toMatch(/names a secret in its GraphQL query/);
     // A query is posted only to the source's own address for queries.
     const elsewhere = await runSync({ ...base, adapter: 'graphql', config: { url: `${origin}/gql`, graphql: '{ people { id } }' }, converter: 'export async function fetchAll(h) { return h.fetchJson("/admin/run", { method: "POST", body: { query: "{ a }" } }); }\nexport function convert(i) { return i; }' }, deps);
     expect(elsewhere.ok === false && elsewhere.detail).toMatch(/only to the source’s own address/);
