@@ -16,6 +16,7 @@ import { runPhase, saveFailureNotice, settledState } from '../lib/savestate';
 import { postShown } from '../lib/posts';
 import { activeWorkspace, canvasCovered } from '../lib/workspace';
 import { shortcutLabel } from '../lib/shortcut-keys';
+import { ShareControl } from './SharePopover';
 
 export function Toolbar() {
   const snap = useStore((s) => s.snapshot);
@@ -468,6 +469,8 @@ export function Toolbar() {
             <Settings />
           </button>
         )}
+        {/* A live session of this project (#764): who is in it, who waits, and its link. */}
+        <ShareControl compact={tier !== 'full'} />
         <button className="btn btn-primary btn-sm export-btn" title={`Export your website (${keys('⌘E')})`} onClick={() => setState({ modal: { kind: 'export' } })}>
           <Upload /> Export
         </button>

@@ -1,5 +1,5 @@
 import { create } from 'zustand';
-import type { AiEvent, AppSettings, ChatContext, ChatEditScope, ChatMessage, ChatMode, Conversation, ImportReviewRow, LocalWorkspaceState, PostImportPreview, PackRefusal, ProjectSnapshot, ProviderStatus, RunStatus, RuntimeState } from '@shared/api';
+import type { AiEvent, AppSettings, ChatContext, ChatEditScope, ChatMessage, ChatMode, Conversation, ImportReviewRow, LiveHostState, LocalWorkspaceState, PostImportPreview, PackRefusal, ProjectSnapshot, ProviderStatus, RunStatus, RuntimeState } from '@shared/api';
 import type { ApplyResult, EditOperation } from '@shared/ops';
 import { refKey, type ElementRef, type OwnerRef, type ResponsiveScope, type StyleState } from '@shared/types';
 import type { SampleContactKind } from '@shared/sample-contact';
@@ -21,6 +21,7 @@ import { notePlace, type PagePlaces } from './lib/page-place';
 import type { TemplateMode } from './lib/template-view';
 import type { DefinitionMode } from './lib/studio';
 import type { ChatFocusRequest } from './lib/page-start';
+import type { RelayClock } from './lib/live-session';
 
 export const api = window.builder;
 
@@ -227,6 +228,14 @@ export interface State {
   pendingSave: number;
   modal: Modal;
   toasts: Toast[];
+  /** The live session the open project is hosting, as the main process last said (lib/live-session.ts). */
+  live: LiveHostState;
+  /** The relay's clock as the latest state with a room read it (lib/live-session.ts), or null while there is no room. */
+  liveClock: RelayClock | null;
+  /** What screen readers were last told about guests asking to join; `id` changes with each telling. */
+  liveNotice: { id: number; text: string };
+  /** The Share popover is open. */
+  shareOpen: boolean;
   /** The newest notice there was when a draft last began: no "saved" notice up to it is kept on screen. */
   savedRetired: number;
   /** Definition editing mode: the project-owned definition being edited, and in Component Studio how it is shown. */
@@ -380,6 +389,10 @@ export const useStore = create<State>((set) => ({
   pendingSave: 0,
   modal: null,
   toasts: [],
+  live: { phase: 'idle', lastError: null },
+  liveClock: null,
+  liveNotice: { id: 0, text: '' },
+  shareOpen: false,
   savedRetired: 0,
   definitionMode: null,
   templateMode: null,

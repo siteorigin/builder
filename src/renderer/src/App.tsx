@@ -20,6 +20,7 @@ import { keepSeoSubject } from './lib/seo-view';
 import { placeOn, readPlaces } from './lib/page-place';
 import { startEditorFonts } from './lib/editor-fonts';
 import { isAskAiKey } from './lib/ask-ai-key';
+import { followLive, syncPresence } from './lib/live-host';
 import { projectDisplayName, windowTitle } from '@shared/project-name';
 
 /** What Undo and Redo, and keys forwarded from the preview frame, act on right now. */
@@ -72,7 +73,7 @@ export function App() {
         opened++;
         projectClosed();
         // Held edits and the last AI outcome belong to the project that closed.
-        setState({ screen: 'welcome', snapshot: null, selection: null, pagePlaces: {}, previewReturn: null, seoSubject: null, conversation: null, chatDrafts: {}, chatImages: {}, chatRequest: null, definitionMode: null, templateMode: null, heldEdits: [], aiOutcome: null, inspectorFocus: null, styleCopy: null, renameOffer: null, ...openingModalsClosed() });
+        setState({ screen: 'welcome', snapshot: null, selection: null, pagePlaces: {}, previewReturn: null, seoSubject: null, conversation: null, chatDrafts: {}, chatImages: {}, chatRequest: null, definitionMode: null, templateMode: null, heldEdits: [], aiOutcome: null, inspectorFocus: null, styleCopy: null, renameOffer: null, shareOpen: false, ...openingModalsClosed() });
       }),
       // Before the project is closed, switched or the app quits: save what is being typed, or ask the author.
       api.on('lifecycle:request', ({ requestId }) => {
@@ -123,7 +124,10 @@ export function App() {
         if (forwardedKeyRuns(historyContext(), k.key, k.meta || k.ctrl, askAi)) handleShortcut(k.key, k.meta || k.ctrl, k.shift, askAi);
       }),
       useStore.subscribe(persistChatState),
-      useStore.subscribe(persistPlaces)
+      useStore.subscribe(persistPlaces),
+      // The live session this opening hosts, and where the host is for guests following it (#764).
+      ...followLive(),
+      syncPresence()
     ];
     void api.project
       .snapshot()
@@ -177,6 +181,8 @@ function openSnapshot(snap: NonNullable<ReturnType<typeof getState>['snapshot']>
     pagePlaces,
     selection: placeOn(snap.state, pagePlaces, pageId),
     previewReturn: null,
+    // The Share popover belongs to the opening it was opened in.
+    shareOpen: false,
     mode: 'edit',
     // The Posts workspace opens on its list: a post of the last project is never this one's.
     post: null,

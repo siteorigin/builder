@@ -14,6 +14,7 @@ import type { ProjectSnapshot } from '@shared/api';
 import type { PropSchema } from '@shared/types';
 import { isEmptyPropValue, requiredHint } from '@shared/required';
 import { RenameOffer } from './RenameOffer';
+import { JoinRequests } from './JoinRequests';
 
 // Editable content counts (the code editor's text area is one), so Tab order and wrapping inside a dialog see it.
 const FOCUSABLE = 'button:not(:disabled), [href], input:not(:disabled), select:not(:disabled), textarea:not(:disabled), [contenteditable="true"], [tabindex]:not([tabindex="-1"])';
@@ -1530,6 +1531,7 @@ export function Toasts() {
       }}
     >
       <RenameOffer />
+      <JoinRequests />
       {held.length > 0 && (
         <div className="toast-group" role="region" aria-label="Edits not saved yet">
           {held.map((h) => (

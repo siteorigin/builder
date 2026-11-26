@@ -1,0 +1,61 @@
+@layer components {
+  /* The Share button: a quiet button while idle, a pill naming the session while one runs. Its state reads in words
+     and a glyph, never by hue alone. */
+  .toolbar .share-btn { position: relative; height: 28px; padding: 0 10px 0 8px; gap: 5px; }
+  .toolbar .share-btn.idle { background: transparent; border-color: transparent; box-shadow: none; color: var(--text-2); }
+  .toolbar .share-btn.idle:hover { background: var(--hover); color: var(--text); }
+  .toolbar .share-btn.live { background: var(--green-soft); border-color: color-mix(in srgb, var(--green) 55%, transparent); color: var(--text); box-shadow: none; }
+  .toolbar .share-btn.live .live-dot { color: var(--green); }
+  .toolbar .share-btn.reconnecting { background: var(--amber-soft); border-color: color-mix(in srgb, var(--amber) 60%, transparent); color: var(--text); box-shadow: none; }
+  .toolbar .share-btn.reconnecting .live-dot { color: var(--amber); animation: share-pulse 1.4s ease-in-out infinite; }
+  .toolbar .share-btn.busy { color: var(--text-2); }
+  .toolbar .share-btn[aria-expanded='true'] { box-shadow: inset 0 0 0 1px var(--border-control); }
+  .share-btn .share-text { font-variant-numeric: tabular-nums; }
+  .share-btn .share-count { display: inline-flex; align-items: center; gap: 2px; color: var(--text-2); font-variant-numeric: tabular-nums; }
+  .share-btn .share-count svg { width: 12px; height: 12px; }
+  .share-btn .share-badge { position: absolute; top: -5px; right: -5px; min-width: 16px; height: 16px; padding: 0 4px; border-radius: 8px; background: var(--accent-fill); color: var(--on-accent); font-size: 10px; font-weight: 700; line-height: 16px; text-align: center; box-shadow: 0 0 0 2px var(--panel); }
+  @keyframes share-pulse { 50% { opacity: 0.35; } }
+  @media (prefers-reduced-motion: reduce) { .toolbar .share-btn.reconnecting .live-dot { animation: none; } }
+
+  /* The popover: beside the toolbar, never over the whole window, and never modal. */
+  .share-popover {
+    position: fixed; z-index: 1000; width: 380px; max-width: calc(100vw - 16px); max-height: calc(100vh - 72px); overflow-y: auto;
+    display: flex; flex-direction: column; padding: 12px 14px 14px; border-radius: var(--r-md);
+    background: var(--raised); border: 1px solid var(--border-strong); box-shadow: var(--shadow-md); color: var(--text); animation: pop-in 120ms ease-out;
+  }
+  .share-popover:focus { outline: none; }
+  .share-popover .share-head { display: flex; align-items: center; justify-content: space-between; gap: 8px; margin-bottom: 6px; }
+  .share-popover h2 { margin: 0; font-size: 14px; font-weight: 600; }
+  .share-popover h3 { margin: 0 0 4px; font-size: 11px; font-weight: 600; letter-spacing: 0.02em; text-transform: uppercase; color: var(--text-2); }
+  .share-popover .share-body { display: flex; flex-direction: column; gap: 12px; }
+  .share-popover .share-lead { margin: 0; color: var(--text-2); line-height: 1.45; }
+  .share-popover .share-busy { display: flex; align-items: center; gap: 8px; }
+  .share-popover .share-note { margin: 0; color: var(--text-2); font-size: 12px; overflow-wrap: anywhere; }
+  .share-popover .share-error { margin: 0; padding: 6px 8px; border-radius: var(--r-sm); background: var(--red-soft); color: var(--red-ink); font-size: 12px; overflow-wrap: anywhere; }
+  .share-popover .share-field { display: flex; flex-direction: column; gap: 5px; }
+  .share-popover .share-label { font-size: 12px; font-weight: 600; color: var(--text-2); }
+  .share-popover .segmented.full button { flex: 1 1 0; padding: 0 4px; font-size: 12px; white-space: normal; line-height: 1.15; }
+  .share-popover .share-start { align-self: stretch; }
+  .share-popover .share-status { display: flex; align-items: center; gap: 6px; margin: 0; font-weight: 600; }
+  .share-popover .share-status .live-dot { width: 15px; height: 15px; color: var(--green); }
+  .share-popover .share-status.reconnecting .live-dot { color: var(--amber); }
+  .share-popover .share-locked { display: inline-flex; align-items: center; gap: 3px; margin-left: auto; font-weight: 500; font-size: 12px; color: var(--text-2); }
+  .share-popover .share-locked svg { width: 12px; height: 12px; }
+  .share-popover .share-link { display: flex; gap: 6px; }
+  .share-popover .share-link .input { flex: 1 1 auto; min-width: 0; font-family: var(--font-mono, ui-monospace, monospace); font-size: 12px; }
+  .share-popover .share-time { display: flex; align-items: center; justify-content: space-between; gap: 8px; font-variant-numeric: tabular-nums; }
+  .share-popover .share-quiet { color: var(--text-2); font-weight: 400; }
+  .share-popover .share-group ul { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 6px; }
+  .share-popover .live-row { display: flex; flex-direction: column; gap: 5px; padding: 7px 8px; border-radius: var(--r-sm); background: var(--panel-2); }
+  .share-popover .live-name { overflow-wrap: anywhere; }
+  .share-popover .live-controls { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
+  .share-popover .live-controls .select { height: 26px; font-size: 12px; min-width: 0; flex: 1 1 110px; }
+  .share-popover .live-answers { display: flex; flex-wrap: wrap; gap: 6px; }
+  .share-popover .share-foot { display: flex; justify-content: flex-end; border-top: 1px solid var(--border); padding-top: 10px; }
+
+  /* A guest waiting to join, with the notices: stays until answered, and never takes focus. */
+  .toast.live-request { align-items: flex-start; max-width: 460px; }
+  .toast.live-request .live-request-body { display: flex; flex-direction: column; gap: 6px; min-width: 0; }
+  .toast.live-request .live-request-title { overflow-wrap: anywhere; }
+  .toast.live-request .live-answers { display: flex; flex-wrap: wrap; gap: 6px; }
+}
