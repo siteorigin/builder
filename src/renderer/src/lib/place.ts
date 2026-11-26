@@ -47,7 +47,8 @@ export async function importAndPlace(opts: { paths?: string[]; base: ProjectSnap
   try {
     const r: { ok: boolean; assetIds: string[]; message?: string; note?: string } = await api.project.importAssets(plan.paths, 'image', plan.choices).catch((e: Error) => ({ ok: false, assetIds: [] as string[], message: `The image couldn’t be added: ${e.message}` }));
     if (r.note) toast(r.note, 'info');
-    if (r.message) toast(r.message, r.assetIds.length ? 'info' : 'error');
+    // A notice naming files that were not added stays until it is dismissed, whether or not others arrived.
+    if (r.message) toast(r.message, 'error');
     // Nothing arrived and the import said why (closing the picker says nothing): the image the author asked for is not here.
     if (!r.assetIds.length && r.message) outcome = { ok: false, message: r.message };
     const base = opts.base;

@@ -369,7 +369,12 @@ export async function reviewImportFile(sourcePath: string, opts: { converter: bo
   const heic = isPhotoToConvert(sourcePath);
   const mime = MIME[extname(sourcePath).toLowerCase()];
   const large = (mime === 'image/jpeg' || mime === 'image/png') && stat.size > LARGE_PHOTO_BYTES;
-  if (!stat.isFile() || (!heic && !large)) return row;
+  if (!stat.isFile()) return row;
+  // A plain image is read too, so a file that can't be added (a text file named .png, an empty .jpg, one over 25 MB)
+  // is counted out here instead of in a count of files added.
+  if (!heic && !large && !mime) return row;
+  const label = heic ? 'HEIC' : (extname(sourcePath).slice(1) || 'Image').toUpperCase();
+  if (!heic && !large && stat.size > MAX_BYTES && stat.size <= CONVERT_MAX_BYTES) return { ...row, action: 'refuse', format: label, reason: 'it is larger than 25 MB.' };
   if (stat.size > CONVERT_MAX_BYTES) return { ...row, action: 'refuse', format: heic ? 'HEIC' : mime === 'image/png' ? 'PNG' : 'JPEG', reason: 'it is larger than 64 MB.' };
   const buf = await fs.readFile(sourcePath).catch(() => null);
   if (!buf) return row;
@@ -378,7 +383,7 @@ export async function reviewImportFile(sourcePath: string, opts: { converter: bo
   const c = classify(sourcePath, buf, opts.converter);
   const fingerprint = sha(buf);
   // What the import would refuse, the review says now, with the same reason.
-  const refused = (reason: string) => ({ ...row, action: 'refuse' as const, format: heic ? 'HEIC' : mime === 'image/png' ? 'PNG' : 'JPEG', fingerprint, reason });
+  const refused = (reason: string) => ({ ...row, action: 'refuse' as const, format: label, fingerprint, reason });
   if (c.kind === 'refuse') return refused(c.whole ? c.reason.replace(`${name} is`, 'it is') : c.reason);
   if (c.kind === 'heic') {
     const size = c.info ? webCopySize(c.info.width, c.info.height) : { width: 0, height: 0 };
@@ -386,7 +391,8 @@ export async function reviewImportFile(sourcePath: string, opts: { converter: bo
     const format = heifHasAlpha(buf) ? copyFormat(null) : copyFormat(false);
     return { ...row, action: 'convert', format: 'HEIC', fingerprint, ...(c.info ? { width: c.info.width, height: c.info.height } : {}), copy: { format, ...size } };
   }
-  if (heic) return row;
+  // An ordinary file that can be read is added as it is: only a large photo is offered a copy.
+  if (heic || !large) return row;
   if (!c.offer || !c.info) return buf.length > MAX_BYTES ? refused('it is larger than 25 MB.') : row;
   Object.assign(row, { format: mime === 'image/png' ? 'PNG' : 'JPEG', width: c.info.width, height: c.info.height });
   // Only a PNG that may be see-through is decoded here, so its copy's format is the one the review shows.
