@@ -7,6 +7,7 @@ import type { Collection, EntryDoc, ProjectState } from '@shared/types';
 import type { EditOperation } from '@shared/ops';
 import { POSTS_COLLECTION_ID, entryRoute, orderedEntries, siteEntries } from '@shared/collections';
 import { newId } from '@shared/ids';
+import { fold } from './fold';
 
 /** A collection entry the Posts workspace has open. */
 export interface PostRef {
@@ -44,7 +45,14 @@ export interface PostRow {
   date: string;
   draft: boolean;
   route: string;
+  /** While finding: the first of title, address, author and excerpt that has the words (the list shows that field). */
+  matched?: PostField;
+  /** While finding, the text of the field that matched, as written (the byline, the address or slug, the excerpt). */
+  matchedText?: string;
 }
+
+/** The fields the find looks in, in the order a match is reported. */
+export type PostField = 'title' | 'route' | 'author' | 'excerpt';
 
 /** The longest title an entry takes (entry.create and entry.update). */
 export const MAX_POST_TITLE = 200;
@@ -114,7 +122,8 @@ export function postShown(state: ProjectState, workspace: 'write' | 'preview', p
   return { kind: 'post', ref: null, title: collection ? (collection.settings.id === POSTS_COLLECTION_ID ? 'Posts' : collection.settings.name) : 'Content', draft: false };
 }
 
-const words = (s: unknown) => (typeof s === 'string' ? s.toLowerCase() : '');
+/** Text as the find compares it, character by character as the list's marks do (lib/fold). */
+const words = (s: unknown) => (typeof s === 'string' ? fold(s) : '');
 
 /** Whether a post is one the filter keeps: of the chosen status, and filed under the chosen category. */
 function kept(e: EntryDoc, filter: PostFilter): boolean {
@@ -133,21 +142,41 @@ export function postCounts(collection: Collection): Record<PostStatus, number> {
 }
 
 /**
- * The collection's posts that match `query` (in the title, slug, author or excerpt, ignoring case) and `filter`, in
+ * The collection's posts that match `query` (in the title, address, author or excerpt, ignoring case) and `filter`, in
  * `sort`'s order. Ties keep the collection's own order, so rows never trade places on their own.
  */
 export function postRows(collection: Collection, query: string, sort: PostSort, filter: PostFilter = {}): PostRow[] {
-  const q = query.trim().toLowerCase();
+  const q = words(query.trim());
   const ordered = orderedEntries(collection).filter((e) => !!e && typeof e === 'object' && kept(e, filter));
   const rank = new Map(ordered.map((e, i) => [e.id, i]));
-  const found = q ? ordered.filter((e) => [e.title, e.slug, e.author, e.excerpt].some((f) => words(f).includes(q))) : ordered;
+  // The address as the writer shows it ("/blog/winter-hours/"), so a pasted address finds its post.
+  const fields = (e: EntryDoc): Record<PostField, unknown> => ({ title: e.title, route: entryRoute(collection, e) ?? e.slug, author: e.author, excerpt: e.excerpt });
+  const matchOf = (e: EntryDoc): PostField | undefined => {
+    const f = fields(e);
+    return (['title', 'route', 'author', 'excerpt'] as const).find((k) => words(f[k]).includes(q));
+  };
+  const matched = new Map<string, { field: PostField; text: string }>();
+  if (q)
+    for (const e of ordered) {
+      const m = matchOf(e);
+      const v = m && fields(e)[m];
+      if (m) matched.set(e.id, { field: m, text: typeof v === 'string' ? v : '' });
+    }
+  const found = q ? ordered.filter((e) => matched.has(e.id)) : ordered;
   const byRank = (a: EntryDoc, b: EntryDoc) => rank.get(a.id)! - rank.get(b.id)!;
   const date = (e: EntryDoc) => (typeof e.publishedAt === 'string' ? e.publishedAt : '');
   const sorted = [...found];
   if (sort === 'newest') sorted.sort((a, b) => (date(a) !== date(b) ? (date(a) < date(b) ? 1 : -1) : byRank(a, b)));
   else if (sort === 'oldest') sorted.sort((a, b) => (date(a) !== date(b) ? (date(a) < date(b) ? -1 : 1) : byRank(a, b)));
   else if (sort === 'title') sorted.sort((a, b) => words(a.title).localeCompare(words(b.title)) || byRank(a, b));
-  return sorted.map((e) => ({ id: e.id, title: typeof e.title === 'string' && e.title ? e.title : 'Untitled', date: date(e), draft: e.draft !== false, route: entryRoute(collection, e) ?? '' }));
+  return sorted.map((e) => ({
+    id: e.id,
+    title: typeof e.title === 'string' && e.title ? e.title : 'Untitled',
+    date: date(e),
+    draft: e.draft !== false,
+    route: entryRoute(collection, e) ?? '',
+    ...(matched.has(e.id) ? { matched: matched.get(e.id)!.field, matchedText: matched.get(e.id)!.text } : {})
+  }));
 }
 
 /**

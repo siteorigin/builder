@@ -335,7 +335,8 @@ assert.equal(featuredNow(), glazeId, 'the same photo stays the featured image');
 assert.equal((await snapshot()).history.entries.filter((e) => e.applied).length, stepsBefore, 'and no undo step is added');
 await win.getByRole('button', { name: 'Publish' }).click();
 await eventually(() => assert.equal(entryFile(entryId).draft, false, 'the post is published'), 20000);
-await eventually(async () => assert.equal(await win.locator('.post-row .post-status').innerText(), 'Published'));
+// Published is the unmarked state: the row's Draft badge goes.
+await eventually(async () => assert.equal(await win.locator('.post-row .post-status').count(), 0, 'a published post carries no status badge'));
 await win.screenshot({ path: join(SHOTS, 'posts-writer.png') });
 
 step('the published post in the site');

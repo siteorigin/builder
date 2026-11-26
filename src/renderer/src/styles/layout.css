@@ -158,7 +158,12 @@
   .inline-edit { height: 24px; padding: 0 6px; font-size: 13px; }
 
   .search { position: relative; margin: 0 10px 6px; }
-  .search svg { position: absolute; left: 9px; top: 8px; width: 14px; height: 14px; color: var(--text-3); }
+  /* The field's own magnifier only: a clear button's X inside the field keeps its place (.search-clear). */
+  .search > svg { position: absolute; left: 9px; top: 8px; width: 14px; height: 14px; color: var(--text-3); }
+  .search.has-query .input { padding-right: 30px; }
+  .search .search-clear { position: absolute; right: 3px; top: 3px; color: var(--text-3); }
+  .search .search-clear:hover { color: var(--text); }
+  .search .search-clear svg { width: 14px; height: 14px; color: inherit; }
   .search .input { height: 30px; }
   .search .input { padding-left: 28px; }
   /* Insert panel: its own rules are in the "Insert panel" block further down. */

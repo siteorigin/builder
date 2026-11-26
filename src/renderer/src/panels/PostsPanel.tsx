@@ -1,15 +1,15 @@
 import './PostsPanel.css';
-import { useEffect, useId, useMemo, useRef, useState } from 'react';
-import { ArrowLeft, Copy, FileDown, LayoutTemplate, Library, Newspaper, Plug, Plus, Search, Settings2, Tags, Trash2, X } from 'lucide-react';
-import { formatArticleDate } from '@shared/articles';
+import { useEffect, useId, useLayoutEffect, useMemo, useRef, useState } from 'react';
+import { ArrowLeft, ChevronDown, Copy, FileDown, FilePen, FileText, LayoutTemplate, Library, MoreHorizontal, Newspaper, Plug, Plus, Search, Settings2, Tags, Trash2, X } from 'lucide-react';
 import { entryLinkUses } from '@engine/page-links';
 import { api, commitOps, confirmDialog, getState, markDraft, setState, toast, undoAction, useStore } from '../store';
 import { headerMenu as findHeaderMenu } from '@engine/tree';
-import { Field, Modal, Segmented, useMenu, type MenuItem } from '../components/ui';
+import { Field, Modal, Segmented, Spinner, rovingKeys, useMenu, type MenuItem } from '../components/ui';
+import { Marked, fold, found, shortDate } from '../components/ListText';
 import { reviewPostImport } from './PostImportReview';
 import type { PostImportKind } from '@shared/api';
 import { isImeComposing } from '../lib/ime';
-import { POST_SORTS, POST_STATUSES, duplicatePostOps, newPostOps, postAt, postCounts, postRows, postsCollection, MAX_POST_TITLE, type PostRef, type PostSort, type PostStatus } from '../lib/posts';
+import { POST_SORTS, POST_STATUSES, duplicatePostOps, newPostOps, postAt, postCounts, postRows, postsCollection, MAX_POST_TITLE, type PostRef, type PostRow, type PostSort, type PostStatus } from '../lib/posts';
 import { TermsManager, postTaxonomies, termsManagerTitle, termsOf } from './PostTerms';
 import { CollectionSchemaDialog } from './CollectionSchemaDialog';
 import { SourceDialog } from './SourceDialog';
@@ -279,14 +279,31 @@ export function PostsPanel() {
   const [addingCollection, setAddingCollection] = useState(false);
   /** The collection whose external source is being connected or changed. */
   const [connecting, setConnecting] = useState<string | null>(null);
-  const [syncing, setSyncing] = useState(false);
-  const sourceMenu = useMenu();
+  /** The collection whose source is syncing now, said under the head until it is done. */
+  const [syncing, setSyncing] = useState<string | null>(null);
+  /** The head's menus: the collection switcher and the collection's options. */
+  const menu = useMenu();
+  /** A post's options, from its … button, a right-click or Shift+F10; `rowMenuFor` is the post it is open for. */
+  const rowMenu = useMenu();
+  const [rowMenuFor, setRowMenuFor] = useState<string | null>(null);
+  /** The row keyboard focus last sat on, which keeps the list's one tab stop. */
+  const [focusedRow, setFocusedRow] = useState<string | null>(null);
+  const listRef = useRef<HTMLDivElement>(null);
+  const wrapRef = useRef<HTMLDivElement>(null);
+  const bodyRef = useRef<HTMLDivElement>(null);
+  const formRef = useRef<HTMLDivElement>(null);
+  const collectionFormRef = useRef<HTMLDivElement>(null);
+  const headOptions = useRef<HTMLButtonElement>(null);
+  /** The card that shows a keyboard-focused row's whole title and address when the row cuts them short (as in Pages). */
+  const [peek, setPeek] = useState<{ id: string; top: number; left: number; width: number } | null>(null);
+  const peekRef = useRef<HTMLDivElement>(null);
+  const headAdd = useRef<HTMLButtonElement>(null);
+  const typeahead = useRef({ text: '', at: 0 });
   /** The collection the new-entry form was opened for: what it creates in, whatever the list shows by then. */
   const addTarget = useRef<{ collectionId: string; workspaceKey: string | undefined } | null>(null);
   /** Counts each choice of what the panel shows, so one still saving the open entry never undoes a later one. */
   const navigation = useRef(0);
   const creating = useRef(false);
-  const importMenu = useMenu();
   const findInput = useRef<HTMLInputElement>(null);
   const addInput = useRef<HTMLInputElement>(null);
   const uid = useId();
@@ -312,9 +329,88 @@ export function PostsPanel() {
     known.current = ids;
   });
   const rows = useMemo(() => (collection ? postRows(collection, query, sort, { status, category: categoryId }) : []), [collection, query, sort, status, categoryId]);
+  // When the open entry changes (from here, the SEO view, an import), its row is brought into view without taking
+  // focus from the writer; scrolling the list by hand in between is left alone.
+  // An entry opened while a filter hides its row lets go of just the filters that hide it, so the open entry is always
+  // in the list; choosing a filter while it is open is left alone.
+  const shownId = collection?.settings.id;
+  const reveal = useRef<string | null>(null);
+  useEffect(() => {
+    if (!post?.entryId) return;
+    reveal.current = post.entryId;
+    if (!collection || post.collectionId !== collection.settings.id || rows.some((r) => r.id === post.entryId)) return;
+    const e = Object.hasOwn(collection.entries, post.entryId) ? collection.entries[post.entryId] : undefined;
+    if (!e) return;
+    const draft = e.draft !== false;
+    if ((status === 'published' && draft) || (status === 'drafts' && !draft)) setStatus('all');
+    const filed: unknown = e.terms?.categories;
+    if (categoryId && !(Array.isArray(filed) && filed.includes(categoryId))) setCategory('');
+    if (query.trim() && !postRows(collection, query, sort).some((r) => r.id === post.entryId)) setQuery('');
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [post?.entryId, shownId]);
+  // Its row is then brought into view without taking focus from the writer, once it is drawn; scrolling the list by
+  // hand in between is left alone.
+  useEffect(() => {
+    const id = reveal.current;
+    const row = id && listRef.current?.offsetParent ? listRef.current.querySelector<HTMLElement>(`[data-post="${id}"]`) : null;
+    if (!row) return;
+    reveal.current = null;
+    row.scrollIntoView({ block: 'nearest' });
+  });
+  // A form opened from the head or its menu comes into view at the top of the list, wherever the list was scrolled;
+  // Add a collection takes focus to its first choice.
+  useEffect(() => {
+    if (adding) formRef.current?.scrollIntoView({ block: 'nearest' });
+  }, [adding]);
+  useEffect(() => {
+    if (!addingCollection) return;
+    collectionFormRef.current?.scrollIntoView({ block: 'nearest' });
+    collectionFormRef.current?.querySelector<HTMLElement>('button:not(:disabled), input')?.focus();
+  }, [addingCollection]);
+  /** Said once when the last filter goes, whichever control cleared it; the polite region is otherwise quiet then. */
+  const [restored, setRestored] = useState(false);
+  const isFiltered = !!query.trim() || status !== 'all' || !!categoryId;
+  const wasFiltered = useRef(false);
+  useEffect(() => {
+    setRestored(wasFiltered.current && !isFiltered);
+    wasFiltered.current = isFiltered;
+  }, [isFiltered, query, status, categoryId]);
+  // Said for that moment only: another collection, or a post added or deleted, is not the filter coming off.
+  const total = collection ? Object.keys(collection.entries).length : 0;
+  const shownKey = collection?.settings.id;
+  useEffect(() => setRestored(false), [shownKey, total]);
+  // The peek card goes under its row when the visible part of the list has room for it, else over the row.
+  useLayoutEffect(() => {
+    const card = peekRef.current;
+    const row = peek && listRef.current?.querySelector<HTMLElement>(`[data-post="${peek.id}"]`);
+    const wrap = wrapRef.current?.getBoundingClientRect();
+    const body = bodyRef.current?.getBoundingClientRect();
+    if (!peek || !card || !row || !wrap || !body) return;
+    const r = row.getBoundingClientRect();
+    const h = card.offsetHeight;
+    const below = body.bottom - r.bottom - 3;
+    const over = r.top - body.top - 3;
+    const top = below < h && over > below ? r.top - wrap.top - 3 - h : r.bottom - wrap.top + 3;
+    if (top !== peek.top || r.width !== peek.width) setPeek({ ...peek, top, width: r.width, left: r.left - wrap.left });
+  });
+  useEffect(() => {
+    const hide = () => setPeek(null);
+    window.addEventListener('resize', hide);
+    return () => window.removeEventListener('resize', hide);
+  }, []);
   if (!snap || !state) return null;
   const all = collection ? Object.keys(collection.entries).length : 0;
-  const counts = collection ? postCounts(collection) : { all: 0, published: 0, drafts: 0 };
+  // The status filter counts what the other filters leave (the words found, the category chosen), so a pill never
+  // promises more rows than choosing it shows.
+  const counts = !collection
+    ? { all: 0, published: 0, drafts: 0 }
+    : query.trim() || categoryId
+      ? (() => {
+          const kept = postRows(collection, query, sort, { category: categoryId });
+          const drafts = kept.filter((r) => r.draft).length;
+          return { all: kept.length, published: kept.length - drafts, drafts };
+        })()
+      : postCounts(collection);
   const filtered = !!query.trim() || status !== 'all' || !!categoryId;
   const collections = contentRows(state);
   const language = state.site.language;
@@ -349,8 +445,8 @@ export function PostsPanel() {
     setCategory('');
     setStatus('all');
     setQuery('');
-    setAdding(false);
-    setTitle('');
+    // A form with a title typed keeps it, still for the collection it was opened for (its heading says which).
+    if (!title.trim()) setAdding(false);
   };
   const made = (id: string) => {
     setAddingCollection(false);
@@ -372,12 +468,15 @@ export function PostsPanel() {
     const t = title.trim();
     const to = addTarget.current;
     if (!t || busy || creating.current || !to) return;
-    // One at a time: a second press while the open entry saves makes no second draft.
+    // One at a time: a second press while the open entry saves makes no second draft. Busy from the first wait, so the
+    // title, Cancel and Escape hold still while what was typed is on its way.
     creating.current = true;
+    setBusy(true);
     try {
       await createIn(to, t);
     } finally {
       creating.current = false;
+      setBusy(false);
     }
   };
   const createIn = async (to: { collectionId: string; workspaceKey: string | undefined }, t: string) => {
@@ -396,7 +495,7 @@ export function PostsPanel() {
     if (!r) return;
     setAdding(false);
     setTitle('');
-    setQuery('');
+    // Filters that would hide the new draft let go of it once it opens (the reveal above); a find it matches stays.
     // Typed into the open post while the new one was made: saved first, or the new one waits in the list.
     if (!(await openSaved()) || seq !== navigation.current) return;
     setState({ post: ref, postView: 'write', postReveal: null });
@@ -406,6 +505,8 @@ export function PostsPanel() {
 
   const duplicate = async (entryId: string) => {
     if (!collection) return;
+    // Opening the copy is a choice made now: another made while it saves (an entry, a collection) wins over it.
+    const seq = ++navigation.current;
     const ref = { collectionId: collection.settings.id, entryId };
     // The copy opens in the writer: whatever it holds is saved first (and the copy has the latest words of its own).
     if (!(await openSaved())) return;
@@ -413,7 +514,9 @@ export function PostsPanel() {
     const plan = s && duplicatePostOps(s.state, ref);
     if (!plan) return;
     const r = await commitOps(plan.ops, `Duplicate ${noun}`);
-    if (!r || !(await openSaved())) return;
+    if (!r) return;
+    // Filters that would hide the copy (a draft at a new address) let go of it once it opens; a find it matches stays.
+    if (!(await openSaved()) || seq !== navigation.current) return;
     setState({ post: plan.ref, postView: 'write', postReveal: null });
     toast(`Duplicated as a draft: “${postAt(getState().snapshot!.state, plan.ref)?.title ?? 'copy'}”`, 'info', r.entryId ? undoAction({ entryId: r.entryId, revision: r.revision, workspaceKey: r.workspaceKey }) : undefined);
   };
@@ -428,19 +531,13 @@ export function PostsPanel() {
       setReading(false);
     }
   };
-  const importItems: MenuItem[] = [
-    { heading: 'Import posts from' },
-    { label: 'WordPress export (.xml)…', description: 'In WordPress: Tools → Export. Put the site’s uploads folder beside it for its pictures.', onSelect: () => void importFrom('wordpress') },
-    { label: 'Folder of Markdown posts…', description: 'Jekyll, Hugo, Eleventy or Astro posts, with their pictures.', onSelect: () => void importFrom('markdown') }
-  ];
-  const openImport = (el: HTMLElement) => importMenu.openAt(el, importItems, 'Import posts');
 
-  /** Sync a collection's source now, and say what changed. */
-  const syncNow = async (sourceId: string, name: string) => {
+  /** Sync a collection's source now, and say what changed; the panel says it is syncing until it is done. */
+  const syncNow = async (collectionId: string, sourceId: string, name: string) => {
     if (syncing) return;
-    setSyncing(true);
+    setSyncing(collectionId);
     const r = await api.project.syncSource(sourceId, snap.workspaceKey).catch((e: Error) => ({ ok: false as const, message: e.message }));
-    setSyncing(false);
+    setSyncing(null);
     toast(r.ok ? syncSummary(name, r) : r.message, r.ok ? 'info' : 'error');
   };
 
@@ -473,30 +570,29 @@ export function PostsPanel() {
     if (r?.ok) toast(`${c.settings.name} is a local collection now: its entries are edited here.`, 'info', r.entryId ? undoAction({ entryId: r.entryId, revision: r.revision, workspaceKey: r.workspaceKey }) : undefined);
   };
 
-  /** What can be done with a collection's external source. */
-  const openSourceMenu = (el: HTMLElement, collectionId: string) => {
+  /** What can be done with a collection's external source, as items of its options menu. */
+  const sourceItems = (collectionId: string): MenuItem[] => {
     const c = state.collections[collectionId];
     const source = sourceOfCollection(state, collectionId);
     // Synced from a source the project has no settings for: it can only be detached.
     const orphan = !source && c.settings.sourceId !== undefined;
-    const items: MenuItem[] = orphan
-      ? [{ label: 'Detach to local collection', description: 'Its source is no longer in the project. Keep its entries here, to edit them in the app.', onSelect: () => void detach(collectionId) }]
-      : source
-      ? [
-          { heading: source.name },
-          { label: syncing ? 'Syncing…' : 'Sync now', description: 'Bring in what changed in the source.', disabled: syncing, onSelect: () => void syncNow(source.id, source.name) },
-          { label: 'Source settings…', onSelect: () => setConnecting(collectionId) },
-          { label: 'Detach to local collection', description: 'Keep its entries here, to edit them in the app.', onSelect: () => void detach(collectionId) }
-        ]
-      : [
-          {
-            label: 'Connect external source…',
-            description: Object.keys(c.entries).length ? 'Only an empty collection can be connected: its first sync brings in every entry.' : 'Sync its entries from a CMS or an API.',
-            disabled: Object.keys(c.entries).length > 0,
-            onSelect: () => setConnecting(collectionId)
-          }
-        ];
-    sourceMenu.openAt(el, items, 'External source');
+    if (orphan) return [{ label: 'Detach to local collection', icon: <Plug />, description: 'Its source is no longer in the project. Keep its entries here, to edit them in the app.', onSelect: () => void detach(collectionId) }];
+    if (source)
+      return [
+        { heading: `Synced from ${source.name}` },
+        { label: syncing === collectionId ? 'Syncing…' : 'Sync now', icon: <Plug />, description: syncing && syncing !== collectionId ? 'Another collection is syncing: this one can sync once it is done.' : 'Bring in what changed in the source.', disabled: !!syncing, onSelect: () => void syncNow(collectionId, source.id, source.name) },
+        { label: 'Source settings…', onSelect: () => setConnecting(collectionId) },
+        { label: 'Detach to local collection', description: 'Keep its entries here, to edit them in the app.', onSelect: () => void detach(collectionId) }
+      ];
+    return [
+      {
+        label: 'Connect external source…',
+        icon: <Plug />,
+        description: Object.keys(c.entries).length ? 'Only an empty collection can be connected: its first sync brings in every entry.' : 'Sync its entries from a CMS or an API.',
+        disabled: Object.keys(c.entries).length > 0,
+        onSelect: () => setConnecting(collectionId)
+      }
+    ];
   };
 
   /** The layout every entry's page is shown with, on the canvas, once the entry being written is saved. */
@@ -531,9 +627,188 @@ export function PostsPanel() {
     void deletePost({ collectionId: collection.settings.id, entryId }, e.title, {}, now.revision);
   };
 
+  const heading = isBlog ? 'Posts' : (collection?.settings.name ?? 'Content');
+  // Folded as the list finds; a query of accents alone folds to nothing and finds nothing to mark.
+  const needle = fold(query.trim());
+  const words = needle ? [needle] : [];
+  const finding = words.length > 0;
+  const tabStop = focusedRow && rows.some((r) => r.id === focusedRow) ? focusedRow : post && rows.some((r) => r.id === post.entryId) ? post.entryId : rows[0]?.id;
+  const rowEl = (id: string) => listRef.current?.querySelector<HTMLElement>(`[data-post="${id}"]`);
+  /** Keyboard focus on a row whose title is cut short shows it whole, with its address, in a card under it. */
+  const showPeek = (row: HTMLElement | null) => {
+    const wrap = wrapRef.current?.getBoundingClientRect();
+    const t = row?.querySelector<HTMLElement>('.post-title');
+    if (!row || !wrap || !t || t.scrollWidth <= t.clientWidth + 1 || !row.matches(':focus-visible')) return setPeek(null);
+    const r = row.getBoundingClientRect();
+    setPeek({ id: row.dataset.post!, top: r.bottom - wrap.top + 3, left: r.left - wrap.left, width: r.width });
+  };
+  const syncingHere = !!collection && syncing === collection.settings.id;
+  /** The head's New button resumes a titled form typed for another collection, and says so. */
+  const resumes = adding && !!title.trim() && !!formTarget && formTarget !== collection;
+  const source = collection ? sourceOfCollection(state, collection.settings.id) : undefined;
+
+  /** Open the new-entry form for the collection shown, under the head that opened it. */
+  const openForm = () => {
+    if (!collection) return;
+    // A form with a title typed is resumed as it is, for the collection it was opened for, never turned into another's.
+    if (adding && title.trim()) {
+      formRef.current?.scrollIntoView({ block: 'nearest' });
+      return void requestAnimationFrame(() => addInput.current?.focus());
+    }
+    addTarget.current = { collectionId: collection.settings.id, workspaceKey: snap.workspaceKey };
+    setAdding(true);
+    requestAnimationFrame(() => addInput.current?.focus());
+  };
+  const cancelAdd = () => {
+    setAdding(false);
+    setTitle('');
+    // To the New button, or the options button where the shown collection has none (a synced one).
+    requestAnimationFrame(() => (headAdd.current ?? headOptions.current)?.focus());
+  };
+
+  const importItems: MenuItem[] = [
+    { heading: 'Import posts from' },
+    { label: 'WordPress export (.xml)…', icon: <FileDown />, description: 'In WordPress: Tools → Export. Put the site’s uploads folder beside it for its pictures.', onSelect: () => void importFrom('wordpress') },
+    { label: 'Folder of Markdown posts…', icon: <FileDown />, description: 'Jekyll, Hugo, Eleventy or Astro posts, with their pictures.', onSelect: () => void importFrom('markdown') }
+  ];
+  const openImport = (el: HTMLElement) => menu.openAt(el, importItems, 'Import posts');
+
+  /** Show another collection, or add one: the head's title is this menu while the project has more than one. */
+  const openSwitcher = (el: HTMLElement) =>
+    menu.openAt(
+      el,
+      [
+        { heading: 'Collections' },
+        ...collections.map((c) => ({ label: c.name, hint: String(c.count), ariaLabel: `${c.name}, ${c.count} ${c.count === 1 ? 'entry' : 'entries'}`, checked: c.id === collection?.settings.id, onSelect: () => void choose(c.id) })),
+        { separator: true },
+        { label: 'Add a collection…', icon: <Plus />, onSelect: () => setAddingCollection(true) }
+      ],
+      'Collections'
+    );
+
+  /** The collection's options: its order, its groupings, imports, settings, layout and source. */
+  const openOptions = (el: HTMLElement) => {
+    if (!collection) return;
+    const id = collection.settings.id;
+    const items: MenuItem[] = [
+      { heading: 'Sort' },
+      ...POST_SORTS.map((s) => ({ label: s.label, checked: sort === s.id, onSelect: () => setSort(s.id) })),
+      { separator: true },
+      ...(groupings.length > 0 && !readOnly ? [{ label: `${termsManagerTitle(collection)}…`, icon: <Tags />, description: `Add, rename or delete ${termsManagerTitle(collection).toLowerCase()}.`, onSelect: () => setManaging(true) }] : []),
+      ...(canImport && !readOnly
+        ? [
+            { ...importItems[1], label: 'Import a WordPress export…' },
+            { ...importItems[2], label: 'Import a folder of Markdown posts…' }
+          ]
+        : []),
+      { label: 'Collection settings…', icon: <Settings2 />, description: 'Fields, groupings and pages.', onSelect: () => void openSaved().then((ok) => ok && setSchema(id)) },
+      {
+        label: 'Edit layout',
+        icon: <LayoutTemplate />,
+        description: hasDetailPages(collection.settings) ? 'The layout every entry’s page is shown with.' : 'Its entries have no pages: turn them on in its settings.',
+        disabled: !hasDetailPages(collection.settings),
+        onSelect: () => void editLayout(id)
+      },
+      { separator: true },
+      ...sourceItems(id),
+      ...(collections.length === 1 ? [{ separator: true }, { label: 'Add a collection…', icon: <Plus />, onSelect: () => setAddingCollection(true) }] : [])
+    ];
+    menu.openAt(el, items, `${heading} options`);
+  };
+
+  /** A post's options, at its … button or where the pointer or keyboard asked for them. */
+  const postMenu = (at: HTMLElement | { x: number; y: number; row: HTMLElement }, r: PostRow) => {
+    const current = post?.entryId === r.id && post.collectionId === collection?.settings.id;
+    const items: MenuItem[] = [
+      { label: current ? 'Open (already open)' : `Open ${noun}`, disabled: current, onSelect: () => void open(r.id) },
+      ...(readOnly
+        ? []
+        : [
+            { label: 'Duplicate as draft', icon: <Copy />, onSelect: () => void duplicate(r.id) },
+            { separator: true },
+            { label: `Delete ${noun}…`, icon: <Trash2 />, danger: true, onSelect: () => void remove(r.id) }
+          ])
+    ];
+    setRowMenuFor(r.id);
+    if (at instanceof HTMLElement) rowMenu.openAt(at, items, `${r.title} options`);
+    else rowMenu.open(at.x, at.y, items, `${r.title} options`, at.row);
+  };
+
+  // Type-ahead: printable keys jump to the next entry whose title starts with what was typed (as in Pages).
+  const typeAhead = (e: React.KeyboardEvent<HTMLElement>) => {
+    if (e.key.length !== 1 || e.metaKey || e.ctrlKey || e.altKey || e.key === ' ') return false;
+    const t = e.target as HTMLElement;
+    if (t.tagName === 'INPUT' || t.isContentEditable) return false;
+    const ta = typeahead.current;
+    const now = Date.now();
+    ta.text = now - ta.at > 700 ? e.key.toLowerCase() : ta.text + e.key.toLowerCase();
+    ta.at = now;
+    const els = [...(listRef.current?.querySelectorAll<HTMLElement>('[role="option"]') ?? [])];
+    const cur = els.indexOf((document.activeElement as HTMLElement)?.closest('[role="option"]') as HTMLElement);
+    const repeat = ta.text.length > 1 && [...ta.text].every((c) => c === ta.text[0]);
+    const needle = fold(repeat ? ta.text[0] : ta.text);
+    const start = needle.length > 1 ? Math.max(0, cur) : cur + 1;
+    for (let k = 0; k < els.length; k++) {
+      const el = els[(start + k) % els.length];
+      if (fold(rows.find((r) => r.id === el.dataset.post)?.title ?? '').startsWith(needle)) {
+        e.preventDefault();
+        // Focus only: opening is Enter or Space, so typing never saves and swaps the post being written.
+        if (el !== els[cur]) el.focus();
+        return true;
+      }
+    }
+    return true;
+  };
+
+  const onFindKey = (e: React.KeyboardEvent<HTMLInputElement>) => {
+    if (isImeComposing(e)) return;
+    if (e.key === 'ArrowDown' && rows.length) {
+      e.preventDefault();
+      rowEl(finding || !tabStop ? rows[0].id : tabStop)?.focus();
+    } else if (e.key === 'Enter' && finding && rows.length) {
+      e.preventDefault();
+      void open(rows[0].id);
+    } else if (e.key === 'Escape' && query) {
+      e.stopPropagation();
+      setQuery('');
+    }
+  };
+
+  /**
+   * What matched, when it is not in the title: the byline, the address or the excerpt, from a little before the first
+   * match so the words are in view on a narrow row. `text` is the same words, for the row's description.
+   */
+  const reason = (r: PostRow): { node: React.ReactNode; text: string } | null => {
+    if (!finding || !r.matched || r.matched === 'title' || !r.matchedText) return null;
+    const full = r.matchedText;
+    // In characters (as found() counts them): from a word or folder boundary at most 16 before the first hit, never past
+    // it, so the hit stays inside the two lines a 200px row shows.
+    const chars = [...full];
+    const hit = Math.max(0, found(full, words).indexOf(true));
+    let from = 0;
+    const LEAD = 16;
+    if (hit > LEAD) {
+      const stop = r.matched === 'route' ? '/' : ' ';
+      const b = chars.slice(hit - LEAD, hit).indexOf(stop);
+      from = b >= 0 ? hit - LEAD + b + (r.matched === 'route' ? 0 : 1) : hit - LEAD;
+    }
+    const shown = chars.slice(from).join('');
+    const lead = r.matched === 'author' ? 'By ' : '';
+    return {
+      node: (
+        <>
+          {lead}
+          {from > 0 && '…'}
+          <Marked text={shown} words={words} />
+        </>
+      ),
+      text: `${r.matched === 'author' ? 'By' : r.matched === 'route' ? 'Address' : 'Excerpt'}: ${full}`
+    };
+  };
+
   const importButton = canImport && (
-    <button className="btn btn-sm btn-ghost" aria-haspopup="menu" aria-expanded="false" data-testid="posts-import" disabled={reading} onClick={(e) => openImport(e.currentTarget)}>
-      <FileDown aria-hidden="true" /> {reading ? 'Reading…' : 'Import…'}
+    <button className="btn btn-sm btn-ghost posts-head-menu" aria-haspopup="menu" aria-expanded="false" data-testid="posts-import" aria-label="Import posts" title="Import posts" disabled={reading} onClick={(e) => openImport(e.currentTarget)}>
+      <FileDown aria-hidden="true" /> <span className="posts-head-label">{reading ? 'Reading…' : 'Import…'}</span>
     </button>
   );
 
@@ -544,7 +819,7 @@ export function PostsPanel() {
         <div className="panel-head">
           <h3>Content</h3>
           {importButton}
-          {importMenu.node}
+          {menu.node}
         </div>
         <div className="panel-body">
           <div className="posts-empty content-empty">
@@ -556,111 +831,46 @@ export function PostsPanel() {
       </div>
     );
 
+  const RowGlyph = (r: PostRow) => (r.draft ? <FilePen /> : dated ? <Newspaper /> : <FileText />);
+
   return (
     <div className="posts-panel">
       <div className="panel-head">
-        <h3 className="ellipsis">{isBlog ? 'Posts' : collection.settings.name}</h3>
+        <div className="posts-head-title">
+          {collections.length > 1 ? (
+            <button className="posts-switch" aria-haspopup="menu" aria-expanded="false" title="Show another collection" onClick={(e) => openSwitcher(e.currentTarget)}>
+              <span className="ellipsis">{heading}</span>
+              <ChevronDown aria-hidden="true" />
+            </button>
+          ) : (
+            <h3 className="ellipsis">{heading}</h3>
+          )}
+        </div>
         {readOnly ? (
-          <span className="badge" title="Its entries are synced from an external source, so they are changed there, not here.">
-            Read-only
-          </span>
+          <span className="badge posts-readonly">Read-only</span>
         ) : (
           <button
+            ref={headAdd}
             className="btn btn-sm btn-ghost posts-head-add"
             aria-expanded={adding}
             aria-controls={adding ? `${uid}-add` : undefined}
-            onClick={() => {
-              addTarget.current = { collectionId: collection.settings.id, workspaceKey: snap.workspaceKey };
-              setAdding((a) => !a);
-              requestAnimationFrame(() => addInput.current?.focus());
-            }}
+            aria-label={resumes ? `Continue new ${entryNounLower(formTarget)} in ${formTarget!.settings.name}` : `New ${noun}`}
+            title={resumes ? `Continue new ${entryNounLower(formTarget)} in ${formTarget!.settings.name}` : `New ${noun}`}
+            onClick={() => (adding && !title.trim() ? cancelAdd() : openForm())}
           >
-            <Plus aria-hidden="true" /> New {noun}
+            <Plus aria-hidden="true" /> <span className="posts-head-label">{resumes ? 'Continue draft' : `New ${noun}`}</span>
           </button>
         )}
-        {!readOnly && importButton}
-        {importMenu.node}
+        <button ref={headOptions} className="icon-btn sm posts-head-options" aria-label={`${heading} options`} title="Sort, import and collection settings" aria-haspopup="menu" aria-expanded="false" data-testid={`collection-options-${collection.settings.id}`} onClick={(e) => openOptions(e.currentTarget)}>
+          <MoreHorizontal />
+        </button>
+        {menu.node}
       </div>
-      <ul className="content-collections" aria-label="Collections">
-        {collections.map((c) => {
-          const current = c.id === collection.settings.id;
-          return (
-            <li key={c.id} className={`content-collection${current ? ' current' : ''}`}>
-              <button className="content-collection-open" aria-current={current || undefined} data-collection={c.id} onClick={() => void choose(c.id)}>
-                <span className="ellipsis">{c.name}</span>
-                <span className="content-count" aria-label={`${c.count} ${c.count === 1 ? 'entry' : 'entries'}`}>
-                  {c.count}
-                </span>
-              </button>
-              {current && (
-                <span className="content-collection-actions">
-                  <button className="icon-btn sm" aria-label={`${c.name} settings`} title="Fields, groupings and pages" data-testid={`collection-settings-${c.id}`} onClick={() => void openSaved().then((ok) => ok && setSchema(c.id))}>
-                    <Settings2 />
-                  </button>
-                  <button className="icon-btn sm" aria-label={`${c.name} external source`} aria-haspopup="menu" aria-expanded="false" title="Sync from a CMS or an API" data-testid={`collection-source-${c.id}`} onClick={(e) => openSourceMenu(e.currentTarget, c.id)}>
-                    <Plug />
-                  </button>
-                  <button
-                    className="icon-btn sm"
-                    aria-label={`Edit the ${c.name} layout`}
-                    title={hasDetailPages(collection.settings) ? 'The layout every entry’s page is shown with' : 'Its entries have no pages: turn them on in its settings'}
-                    disabled={!hasDetailPages(collection.settings)}
-                    onClick={() => void editLayout(c.id)}
-                  >
-                    <LayoutTemplate />
-                  </button>
-                </span>
-              )}
-            </li>
-          );
-        })}
-        <li>
-          <button className="btn btn-sm btn-ghost content-collection-add" aria-expanded={addingCollection} onClick={() => setAddingCollection((a) => !a)}>
-            <Plus aria-hidden="true" /> Add a collection
-          </button>
-        </li>
-      </ul>
-      {addingCollection && <AddCollection state={state} onMade={made} onCancel={() => setAddingCollection(false)} />}
-      {schema && <CollectionSchemaDialog collectionId={schema} onClose={() => setSchema(null)} />}
-      {connecting && <SourceDialog collectionId={connecting} onClose={() => setConnecting(null)} />}
-      {sourceMenu.node}
-      {managing && <TermsManager collectionId={collection.settings.id} onClose={() => setManaging(false)} onRenamed={(tax, from, to) => tax === 'categories' && category === from && setCategory(to)} />}
-      {previewing && post && (
-        <div className="posts-previewing" role="status">
-          <span>Showing the {entryNounLower(state.collections[post.collectionId])} as visitors see it.</span>
-          <button className="btn btn-sm btn-primary" onClick={() => setState({ postView: 'write' })}>
-            <ArrowLeft aria-hidden="true" /> Back to writing
-          </button>
+      {(readOnly || syncingHere) && (
+        <div className="posts-source-note">
+          {syncingHere ? <Spinner decorative /> : <Plug aria-hidden="true" />}
+          <span>{syncingHere ? `Syncing from ${source?.name ?? 'its source'}…` : `Synced from ${source?.name ?? 'an external source'}: its entries are changed there.`}</span>
         </div>
-      )}
-      {deleting && <DeletePostDialog target={deleting} onClose={() => setDeleting(null)} />}
-      {adding && !readOnly && (
-        <form
-          id={`${uid}-add`}
-          className="posts-add"
-          onSubmit={(e) => {
-            e.preventDefault();
-            void create();
-          }}
-          onKeyDown={(e) => {
-            if (e.key === 'Escape' && !isImeComposing(e)) {
-              e.stopPropagation();
-              setAdding(false);
-              setTitle('');
-            }
-          }}
-        >
-          {formTarget && formTarget !== collection && <p className="posts-note">New {entryNounLower(formTarget)} in {formTarget.settings.name}</p>}
-          <input ref={addInput} className="input" placeholder={collectionKind(formTarget?.settings) === 'editorial' ? `${entryNoun(formTarget)} title` : 'Name or title'} aria-label={`New ${entryNounLower(formTarget)} title`} maxLength={MAX_POST_TITLE} value={title} readOnly={busy} onChange={(e) => setTitle(e.target.value)} />
-          <div className="posts-add-actions">
-            <button type="submit" className="btn btn-sm btn-primary" disabled={!title.trim() || busy}>
-              Create draft
-            </button>
-            <button type="button" className="btn btn-sm" onClick={() => (setAdding(false), setTitle(''))}>
-              Cancel
-            </button>
-          </div>
-        </form>
       )}
       {all > 0 && (
         <div className="posts-tools">
@@ -671,58 +881,104 @@ export function PostsPanel() {
               className="input"
               placeholder={`Find among ${all} ${plural(all)}`}
               aria-label={`Find ${/^[aeiou]/i.test(noun) ? 'an' : 'a'} ${noun} by title, address, author or excerpt`}
+              aria-controls={`${uid}-list`}
               value={query}
               spellCheck={false}
               onChange={(e) => setQuery(e.target.value)}
-              onKeyDown={(e) => {
-                if (e.key === 'Escape' && query && !isImeComposing(e)) (e.stopPropagation(), setQuery(''));
-              }}
+              onKeyDown={onFindKey}
             />
             {query && (
-              <button className="icon-btn sm" aria-label="Clear find" title="Clear (Esc)" onClick={() => (setQuery(''), findInput.current?.focus())}>
+              <button className="icon-btn sm search-clear" aria-label="Clear find" title="Clear (Esc)" onClick={() => (setQuery(''), findInput.current?.focus())}>
                 <X />
               </button>
             )}
           </div>
-          <select className="select sm posts-sort" aria-label={`Sort ${plural(2)}`} value={sort} onChange={(e) => setSort(e.target.value as PostSort)}>
-            {POST_SORTS.map((s) => (
-              <option key={s.id} value={s.id}>
-                {s.label}
-              </option>
-            ))}
-          </select>
-        </div>
-      )}
-      {all > 0 && (
-        <div className="posts-filters">
-          <Segmented radio label={`Show ${plural(2)}`} value={status} onChange={setStatus} options={POST_STATUSES.map((s) => ({ value: s.id, label: `${s.label} ${counts[s.id]}` }))} />
-          {categories.length > 0 && (
-            <select className="select sm posts-category" aria-label="Filter by category" value={categoryId} onChange={(e) => setCategory(e.target.value)}>
-              <option value="">All categories</option>
-              {categories.map((c) => (
-                <option key={c.id} value={c.id}>
-                  {c.label}
-                </option>
-              ))}
-            </select>
-          )}
-          {groupings.length > 0 && !readOnly && (
-            <button className="btn btn-sm btn-ghost posts-terms" aria-haspopup="dialog" title={`Add, rename or delete ${termsManagerTitle(collection).toLowerCase()}`} onClick={() => setManaging(true)}>
-              <Tags aria-hidden="true" /> {termsManagerTitle(collection)}
-            </button>
-          )}
+          <div className="posts-filters">
+            <Segmented radio label={`Show ${plural(2)}`} value={status} onChange={setStatus} options={POST_STATUSES.map((s) => ({
+                value: s.id,
+                label: (
+                  // A narrow sidebar keeps the Drafts count (the one that answers "what is not on the website yet") and lets
+                  // the others go: All's is the find field's too.
+                  <>
+                    {s.label} <span className={s.id === 'drafts' ? undefined : 'posts-count-quiet'}>{counts[s.id]}</span>
+                  </>
+                )
+              }))}
+            />
+            {categories.length > 0 && (
+              <select className="select sm posts-category" aria-label="Filter by category" value={categoryId} onChange={(e) => setCategory(e.target.value)}>
+                <option value="">All categories</option>
+                {categories.map((c) => (
+                  <option key={c.id} value={c.id}>
+                    {c.label}
+                  </option>
+                ))}
+              </select>
+            )}
+          </div>
         </div>
       )}
       <span className="sr-only" aria-live="polite">
-        {filtered ? (rows.length ? `${rows.length} of ${all} ${plural(all)}` : `No ${noun} matches`) : ''}
+        {filtered ? (rows.length ? `${rows.length} of ${all} ${plural(all)}` : `No ${noun} matches`) : restored ? `All ${all} ${plural(all)} shown` : ''}
       </span>
-      <div className="panel-body">
+      {/* Mounted before a sync starts, so its start is said; the note under the head is for the eye. */}
+      <span className="sr-only" role="status">
+        {syncingHere ? `Syncing ${heading} from ${source?.name ?? 'its source'}…` : ''}
+      </span>
+      {schema && <CollectionSchemaDialog collectionId={schema} onClose={() => setSchema(null)} />}
+      {connecting && <SourceDialog collectionId={connecting} onClose={() => setConnecting(null)} />}
+      {managing && <TermsManager collectionId={collection.settings.id} onClose={() => setManaging(false)} onRenamed={(tax, from, to) => tax === 'categories' && category === from && setCategory(to)} />}
+      {deleting && <DeletePostDialog target={deleting} onClose={() => setDeleting(null)} />}
+      <div className="panel-body" ref={bodyRef}>
+        {adding && !isReadOnlyCollection(formTarget) && (
+          <div ref={formRef}>
+          <form
+            id={`${uid}-add`}
+            className="posts-add-form"
+            aria-labelledby={`${uid}-add-heading`}
+            onSubmit={(e) => {
+              e.preventDefault();
+              void create();
+            }}
+            onKeyDown={(e) => {
+              if (e.key === 'Escape' && !isImeComposing(e)) (e.stopPropagation(), !busy && cancelAdd());
+            }}
+          >
+            <div className="posts-add-heading" id={`${uid}-add-heading`}>
+              {formTarget && formTarget !== collection ? `New ${entryNounLower(formTarget)} in ${formTarget.settings.name}` : `New ${entryNounLower(formTarget)}`}
+            </div>
+            <input ref={addInput} className="input inline-edit" placeholder={collectionKind(formTarget?.settings) === 'editorial' ? 'Title' : 'Name or title'} aria-label={`New ${entryNounLower(formTarget)} title`} maxLength={MAX_POST_TITLE} value={title} readOnly={busy} onChange={(e) => setTitle(e.target.value)} />
+            <div className="posts-add-actions">
+              <button type="submit" className="btn btn-sm btn-primary" disabled={!title.trim() || busy}>
+                {busy ? 'Creating draft…' : 'Create draft'}
+              </button>
+              <button type="button" className="btn btn-sm btn-ghost" disabled={busy} onClick={cancelAdd}>
+                Cancel
+              </button>
+            </div>
+          </form>
+          </div>
+        )}
+        {addingCollection && (
+          <div className="posts-add-form posts-add-collection" ref={collectionFormRef}>
+            <div className="posts-add-heading">Add a collection</div>
+            <AddCollection state={state} onMade={made} onCancel={() => (setAddingCollection(false), requestAnimationFrame(() => headOptions.current?.focus()))} />
+          </div>
+        )}
+        {previewing && post && (
+          <div className="posts-previewing" role="status">
+            <span>Showing the {entryNounLower(state.collections[post.collectionId])} as visitors see it.</span>
+            <button className="btn btn-sm btn-primary" onClick={() => setState({ postView: 'write' })}>
+              <ArrowLeft aria-hidden="true" /> Back to writing
+            </button>
+          </div>
+        )}
         {!all && !adding && (
           <div className="posts-empty">
-            <Newspaper aria-hidden="true" />
+            {isBlog || dated ? <Newspaper aria-hidden="true" /> : <FileText aria-hidden="true" />}
             <p>{isBlog ? 'Write articles, news and updates. Each post gets its own page on the site, in the site’s header and footer.' : `${collection.settings.name} has no entries yet.`}</p>
             {!readOnly && (
-              <button className="btn btn-sm btn-primary" onClick={() => ((addTarget.current = { collectionId: collection.settings.id, workspaceKey: snap.workspaceKey }), setAdding(true), requestAnimationFrame(() => addInput.current?.focus()))}>
+              <button className="btn btn-sm btn-primary" onClick={openForm}>
                 <Plus aria-hidden="true" /> {isBlog ? 'Write the first post' : `Add the first ${noun}`}
               </button>
             )}
@@ -739,42 +995,128 @@ export function PostsPanel() {
           </div>
         )}
         {all > 0 && filtered && !rows.length && (
-          <p className="posts-note">
-            {query.trim() && status === 'all' && !categoryId ? `No ${noun} has “${query.trim()}” in its title, address, author or excerpt.` : `No ${noun} matches these filters.`}{' '}
-            {(status !== 'all' || categoryId) && (
-              <button className="link-btn" onClick={() => (setStatus('all'), setCategory(''), setQuery(''))}>
+          <div className="posts-none">
+            <p>{query.trim() && status === 'all' && !categoryId ? `No ${noun} has “${query.trim()}” in its title, address, author or excerpt.` : `No ${noun} matches these filters.`}</p>
+            {(status !== 'all' || categoryId || query.trim()) && (
+              <button className="btn btn-sm" onClick={() => (setStatus('all'), setCategory(''), setQuery(''), findInput.current?.focus())}>
                 Show all {plural(2)}
               </button>
             )}
+          </div>
+        )}
+        {rows.length > 0 && (finding || !!categoryId || sort !== 'newest') && (
+          // What narrows or orders the list beyond what the filter row shows: the count found, and a sort other than
+          // newest first (chosen in the options menu).
+          <p className="posts-count" aria-hidden="true">
+            {[(finding || categoryId) && `${rows.length} of ${all} ${plural(all)}`, sort !== 'newest' && `Sorted by ${POST_SORTS.find((s) => s.id === sort)!.label.toLowerCase()}`].filter(Boolean).join(' · ')}
           </p>
         )}
-        <ul className="posts-list" aria-label={isBlog ? 'Posts' : collection.settings.name}>
+        <div className="posts-list-wrap" ref={wrapRef}>
+        <div
+          id={`${uid}-list`}
+          className={`list posts-list${finding ? ' finding' : ''}`}
+          role="listbox"
+          aria-label={finding ? `${heading} matching “${query.trim()}”` : heading}
+          aria-description="Type a title to jump to it. Enter opens it; Shift+F10 opens its options."
+          ref={listRef}
+          hidden={!rows.length}
+          onFocus={(e) => {
+            const row = e.target.closest<HTMLElement>('[role="option"]');
+            setFocusedRow(row?.dataset.post ?? null);
+            showPeek(row);
+          }}
+          onBlur={(e) => {
+            if (!e.currentTarget.contains(e.relatedTarget as Node | null)) setPeek(null);
+          }}
+          onKeyDown={(e) => {
+            if (!typeAhead(e)) rovingKeys(e, 'option', { follow: false });
+          }}
+        >
           {rows.map((r) => {
-            const current = post?.entryId === r.id;
+            const current = post?.entryId === r.id && post.collectionId === collection.settings.id;
+            const date = dated && r.date ? shortDate(r.date, language) : null;
+            const status = [r.draft && 'draft, left out of the website', date].filter(Boolean).join(', ');
+            const cls = ['list-item', 'post-row', r.draft && 'draft', current && 'selected', rowMenu.isOpen && rowMenuFor === r.id && 'menu-open'].filter(Boolean).join(' ');
+            const why = reason(r);
             return (
-              <li key={r.id} className={`post-row${current ? ' current' : ''}`} data-post={r.id}>
-                <button className="post-open" aria-current={current || undefined} onClick={() => void open(r.id)} title={r.route || r.title}>
-                  <span className="post-title ellipsis">{r.title}</span>
-                  <span className="post-meta">
-                    <span className={`badge ${r.draft ? 'amber' : 'green'} post-status`}>{r.draft ? 'Draft' : 'Published'}</span>
-                    {dated && <time dateTime={r.date}>{formatArticleDate(r.date, language)}</time>}
+              <div
+                key={r.id}
+                className={cls}
+                role="option"
+                data-post={r.id}
+                aria-selected={current}
+                aria-label={status ? `${r.title}, ${status}` : r.title}
+                aria-description={[why?.text, r.route].filter(Boolean).join('. ') || undefined}
+                aria-keyshortcuts="Shift+F10"
+                tabIndex={r.id === tabStop ? 0 : -1}
+                title={[r.title, r.route].filter(Boolean).join('\n')}
+                onClick={() => void open(r.id)}
+                onKeyDown={(e) => {
+                  if (e.target !== e.currentTarget) return;
+                  if (e.key === 'Enter' || e.key === ' ') (e.preventDefault(), void open(r.id));
+                  else if (e.key === 'Escape' && peek) (e.stopPropagation(), setPeek(null));
+                  else if (e.key === 'Escape' && finding) {
+                    // Escape leaves the find and keeps this row, now in its place in the whole list.
+                    e.stopPropagation();
+                    setQuery('');
+                    requestAnimationFrame(() => (rowEl(r.id)?.scrollIntoView({ block: 'nearest' }), rowEl(r.id)?.focus({ preventScroll: true })));
+                  } else if ((e.shiftKey && e.key === 'F10') || e.key === 'ContextMenu') {
+                    e.preventDefault();
+                    const b = e.currentTarget.getBoundingClientRect();
+                    setPeek(null);
+                    postMenu({ x: b.left + 24, y: b.bottom, row: e.currentTarget }, r);
+                  }
+                }}
+                onContextMenu={(e) => {
+                  e.preventDefault();
+                  postMenu({ x: e.clientX, y: e.clientY, row: e.currentTarget }, r);
+                }}
+              >
+                <span className="post-glyph" aria-hidden="true">
+                  {RowGlyph(r)}
+                </span>
+                <span className="post-text">
+                  <span className="post-title ellipsis">
+                    <Marked text={r.title} words={words} />
                   </span>
-                </button>
-                {!readOnly && (
-                  <span className="post-actions">
-                    <button className="icon-btn sm" aria-label={`Duplicate “${r.title}”`} title="Duplicate as a new draft" onClick={() => void duplicate(r.id)}>
-                      <Copy />
-                    </button>
-                    <button className="icon-btn sm" aria-label={`Delete “${r.title}”`} title={`Delete ${noun}`} onClick={() => void remove(r.id)}>
-                      <Trash2 />
-                    </button>
-                  </span>
-                )}
-              </li>
+                  {(r.draft || date) && (
+                    <span className="post-meta">
+                      {r.draft && <span className="badge amber post-status">Draft</span>}
+                      {date && <time dateTime={r.date}>{date}</time>}
+                    </span>
+                  )}
+                  {why && <span className="post-found">{why.node}</span>}
+                </span>
+                <span className="actions">
+                  <button
+                    className="icon-btn sm hover-only"
+                    tabIndex={-1}
+                    aria-haspopup="menu"
+                    aria-expanded={rowMenu.isOpen && rowMenuFor === r.id}
+                    aria-label={`${r.title} options`}
+                    title={`${entryNoun(collection)} options (Shift+F10)`}
+                    // The button is for the pointer; anything that hands it focus (a menu or dialog closing) hands it
+                    // on to the row, where the row's keys work.
+                    onFocus={(e) => e.currentTarget.closest<HTMLElement>('[role="option"]')?.focus()}
+                    onClick={(e) => (e.stopPropagation(), postMenu(e.currentTarget, r))}
+                  >
+                    <MoreHorizontal />
+                  </button>
+                </span>
+              </div>
             );
           })}
-        </ul>
+        </div>
+        {peek && !rowMenu.isOpen && rows.some((r) => r.id === peek.id) && (
+          // The row's accessible name and description already carry all of this; the card is for the eye.
+          <div ref={peekRef} className="posts-peek" aria-hidden="true" style={{ top: peek.top, left: peek.left, width: peek.width }}>
+            <span className="posts-peek-title">{rows.find((r) => r.id === peek.id)!.title}</span>
+            {rows.find((r) => r.id === peek.id)!.route && <span className="posts-peek-route">{rows.find((r) => r.id === peek.id)!.route}</span>}
+          </div>
+        )}
+        </div>
       </div>
+      {rowMenu.node}
     </div>
   );
 }
