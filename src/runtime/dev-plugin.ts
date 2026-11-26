@@ -47,8 +47,9 @@ const PREVIEW_ENTRY = 'virtual:siteorigin-component-preview/';
 
 /** The page a component preview is shown on: nothing but the module that mounts it. */
 export function previewDocument(key: string, lang: string, dir: 'ltr' | 'rtl' = 'ltr'): string {
+  // Marked as running scripts, as a page's app.html marks itself, so a state's hidden content stays hidden.
   return `<!doctype html>
-<html lang="${lang}" dir="${dir}">
+<html lang="${lang}" dir="${dir}" class="so-js">
 	<head>
 		<meta charset="utf-8" />
 		<meta name="viewport" content="width=device-width, initial-scale=1" />

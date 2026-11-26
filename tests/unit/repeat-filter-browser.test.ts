@@ -192,7 +192,7 @@ describe.skipIf(!browserInstalled)('generated category filters in a browser', ()
       if ((m.type() === 'warning' || m.type() === 'error') && !m.text().startsWith('Failed to load resource')) problems.push(m.text());
     });
     page.on('pageerror', (e) => problems.push(e.message));
-    const site = `<!doctype html><html lang="en"><head><style>${css}</style></head><body><div id="app">${variant === 'clean' ? ssr : ''}</div></body></html>`;
+    const site = `<!doctype html><html lang="en" class="so-js"><head><style>${css}</style></head><body><div id="app">${variant === 'clean' ? ssr : ''}</div></body></html>`;
     await page.route('**/*', (route) => {
       const url = new URL(route.request().url());
       if (url.origin !== ORIGIN) return route.abort();

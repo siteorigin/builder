@@ -47,6 +47,21 @@ const SPLIT_COLUMNS = ':is(' + ends('__split-primary') + ', ' + ends('__split-se
 const PINNED_SECONDARY = `${ends('--sticky-pin-secondary')}${ends('__split-secondary')}`;
 
 /**
+ * Every tab's panel shown at once, each under its tab's label, without the row of tabs, and Pricing's billing switch
+ * left out (each price says which period it is for): in print, and on screen inside `root` where no script runs.
+ */
+const ALL_PANELS = (root = '') => {
+  const r = root ? `${root} ` : '';
+  return `  ${r}.so-tablist:not(#so-print) { display: none !important; }
+  ${r}section:has(:is([class*='__monthly-price-row'], [class*='__annual-price-row'])) .so-choice-group:is([class$='__switch'], [class*='__switch ']):not(#so-print) { display: none !important; }
+  ${r}[role='tabpanel'][data-tab-label]:not([data-tab-label=''])::before {
+    content: attr(data-tab-label); display: block; grid-column: 1 / -1; flex-basis: 100%;
+    margin-block-end: 0.5em; font-weight: 600;
+  }
+  ${r}[role='tabpanel'] + [role='tabpanel'] { margin-block-start: 1.5em; }`;
+};
+
+/**
  * The reset, document defaults and primitive styles every built-in theme shares: the buttons, links and check lists,
  * the colours drawn on dark and brand grounds, the image viewer, the carousel controls, reduced motion and print.
  * A theme's stylesheet starts with its own title line, then this, then any rules of its own.
@@ -265,6 +280,13 @@ details[open] > summary .so-icon { transform: rotate(45deg); }
 /* A Services grid with its heading pinned beside the cards, whose heading was cleared, gives the cards the whole row. */
 ${PINNED_SPLIT}:has(> ${ends('__grid')}):not(:has(> ${ends('__intro')})) { grid-template-columns: minmax(0, 1fr); }
 
+/* Where scripts never run, a component's tabs and Pricing's billing switch would do nothing. The generator then shows
+   every tab's panel and every period's price (its rules hide them only under <html class="so-js">, which a script of
+   the page's own sets), laid out as printed, and the controls are left out. */
+@media not print {
+${ALL_PANELS(':root:not(.so-js)')}
+}
+
 /* Printed, a page is a handout. */
 @media print {
   /* Colours print as designed. Without their backgrounds, light text on a dark band (the footer, a dark section,
@@ -285,16 +307,10 @@ ${PINNED_SPLIT}:has(> ${ends('__grid')}):not(:has(> ${ends('__intro')})) { grid-
   .so-action--image::after { display: none; }
   .so-header:not(#so-print) { position: static !important; }
   /* A component's tabs print every panel (the generated rule hiding the others applies on screen only), each under
-     its tab's label, so the row of tabs is left out. */
-  .so-tablist:not(#so-print) { display: none !important; }
-  /* Pricing's billing switch (in any copy of it, a section with billing prices) is left out too: each price prints
-     with its own billing note. Any other group of buttons prints, since its labels may say what the page does not. */
-  section:has(:is([class*='__monthly-price-row'], [class*='__annual-price-row'])) .so-choice-group:is([class$='__switch'], [class*='__switch ']):not(#so-print) { display: none !important; }
-  [role='tabpanel'][data-tab-label]:not([data-tab-label=''])::before {
-    content: attr(data-tab-label); display: block; grid-column: 1 / -1; flex-basis: 100%;
-    margin-block-end: 0.5em; font-weight: 600;
-  }
-  [role='tabpanel'] + [role='tabpanel'] { margin-block-start: 1.5em; }
+     its tab's label, so the row of tabs is left out. Pricing's billing switch (in any copy of it, a section with
+     billing prices) is left out too: each price prints with its own billing note. Any other group of buttons prints,
+     since its labels may say what the page does not. */
+${ALL_PANELS()}
   /* What stays in view on screen while content beside it scrolls (a section's heading beside its cards, steps beside
      their picture) prints in its place, the columns one after the other, however wide the sheet: in any copy of the
      section, by the option's and the elements' class endings. */
