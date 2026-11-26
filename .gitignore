@@ -71,6 +71,9 @@ AGENTS.local.md
 
 # Build output
 node_modules
+# Wrangler's local state and the relay's local secrets (relay/.dev.vars.example documents them)
+.wrangler
+.dev.vars
 out/
 dist/
 test-results/

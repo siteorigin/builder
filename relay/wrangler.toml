@@ -1,0 +1,39 @@
+# The SiteOrigin Builder live session relay: one Worker and one SessionRoom Durable Object per live session.
+# See README.md. `npm run relay:dev` from the repository root runs it locally on http://127.0.0.1:8787.
+name = "siteorigin-live-relay"
+main = "src/index.ts"
+compatibility_date = "2026-11-23"
+
+[[durable_objects.bindings]]
+name = "ROOMS"
+class_name = "SessionRoom"
+
+[[migrations]]
+tag = "v1"
+new_sqlite_classes = ["SessionRoom"]
+
+# New rooms per client IP address. Counted per Cloudflare location and approximate: an abuse guardrail, not a quota.
+[[ratelimits]]
+name = "ROOM_CREATION_LIMITER"
+namespace_id = "7610"
+simple = { limit = 6, period = 60 }
+
+# Connections to one room per client IP address: hosts reconnecting and guests joining or resuming.
+[[ratelimits]]
+name = "ROOM_CONNECT_LIMITER"
+namespace_id = "7611"
+simple = { limit = 30, period = 60 }
+
+# Tunables, in milliseconds. SESSION_SIGNING_KEY is a secret: `wrangler secret put SESSION_SIGNING_KEY` in production,
+# relay/.dev.vars locally (see .dev.vars.example).
+[vars]
+HOST_RECONNECT_GRACE_MS = "120000"
+GUEST_RECONNECT_GRACE_MS = "120000"
+HANDSHAKE_TIMEOUT_MS = "30000"
+PREVIEW_HEAD_TIMEOUT_MS = "30000"
+PREVIEW_IDLE_TIMEOUT_MS = "30000"
+
+[dev]
+ip = "127.0.0.1"
+port = 8787
+local_protocol = "http"
