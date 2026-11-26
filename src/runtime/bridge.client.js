@@ -4979,11 +4979,12 @@ new MutationObserver(() => {
  * A page error, with where it came from so the editor can name the component that threw (#738): the stack, the
  * file it was thrown in, and the change the page had been told of when it happened.
  */
-function reportError(message, stack, file) {
+function reportError(message, stack, file, build = false) {
   send('runtimeError', {
     message,
     ...(typeof stack === 'string' && stack ? { stack: stack.slice(0, 4000) } : {}),
     ...(typeof file === 'string' && file ? { file: file.slice(0, 500) } : {}),
+    ...(build ? { build: true } : {}),
     revision
   });
 }
@@ -5040,6 +5041,9 @@ if (import.meta.hot) {
     const applied = data.revision;
     const batch = data.batch;
     revision = applied;
+    // The selection's boxes and spacing are reported again before the revision is acknowledged: an update of styles
+    // alone changes no element the page watches, and the editor's handles go on what was reported last.
+    scheduleRects();
     requestAnimationFrame(() =>
       requestAnimationFrame(() => {
         settleDrafts();
@@ -5049,9 +5053,10 @@ if (import.meta.hot) {
       })
     );
   });
+  // A build error: an update the editor waits on is not coming (the editor's picks stop waiting for it).
   import.meta.hot.on('vite:error', (data) => {
     const err = data?.err;
-    reportError(err?.message || 'Build error', err?.stack, err?.loc?.file || err?.id);
+    reportError(err?.message || 'Build error', err?.stack, err?.loc?.file || err?.id, true);
   });
 }
 

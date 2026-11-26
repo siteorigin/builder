@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest';
 import type { ElementRef, InstanceNode, ProjectState } from '@shared/types';
 import { createStarterState } from '@catalogue/starters';
 import { applyOperations } from '@engine/apply';
-import { definitionPick, descOf, listPropFor, placementsOn, resolveRef, selectionFromChain, throughPlacement, toDefinitionRef } from '../../src/renderer/src/lib/model';
+import { clickTargetIn, definitionPick, descOf, listPropFor, placementsOn, resolveRef, selectionFromChain, throughPlacement, toDefinitionRef } from '../../src/renderer/src/lib/model';
 
 /** A home page with a Section at the top holding two "Feature card" components, each with a heading. */
 function cards() {
@@ -33,6 +33,47 @@ function cards() {
 }
 
 const strip = (r: ElementRef | null) => r && { owner: r.owner, instancePath: r.instancePath, nodeId: r.nodeId };
+
+describe('a click held while a save reaches the page (#755)', () => {
+  it('is taken again only while the element clicked is still in the project', () => {
+    const { s, owner, card1, card2, chainTo } = cards();
+    expect(clickTargetIn(s, chainTo(card1))).toBe(true);
+    // The save removed the card clicked: its section survives, but the click selects nothing rather than the section.
+    const gone = applyOperations(s, [{ type: 'node.remove', owner, nodeId: card1 }]).state;
+    expect(clickTargetIn(gone, chainTo(card1))).toBe(false);
+    expect(clickTargetIn(gone, chainTo(card2))).toBe(true);
+    expect(clickTargetIn(s, [])).toBe(false);
+  });
+
+  it('is dropped when the save moved the element out of what the page showed around it', () => {
+    const { s, owner, card1, card2, chainTo } = cards();
+    const chain = chainTo(card1);
+    // Out of its section to the top of the page: the section is still there, but no longer around the card.
+    const moved = applyOperations(s, [{ type: 'node.move', owner, nodeId: card1, parentId: null, index: 0 }]).state;
+    expect(clickTargetIn(moved, chain)).toBe(false);
+    expect(clickTargetIn(moved, chainTo(card2))).toBe(true);
+  });
+
+  it('is taken through a design’s own containers, and dropped when its repeated item is removed', () => {
+    let s: ProjectState = createStarterState('business', 'Test Studio', false);
+    const pageId = s.site.homePageId;
+    const owner = { kind: 'page' as const, id: pageId };
+    const hero = s.pages[pageId].nodes[s.pages[pageId].rootIds[0]] as InstanceNode;
+    const heroChain = ['heading', 'content', 'grid', 'inner', 'root'].map((id) => descOf(s, { owner, instancePath: [hero.id], nodeId: id }));
+    expect(clickTargetIn(s, heroChain)).toBe(true);
+    const gridPage = Object.keys(s.pages).find((id) => Object.values(s.pages[id].nodes).some((n) => n.kind === 'instance' && s.components[n.definitionId]?.componentId === 'features.grid'))!;
+    const gridOwner = { kind: 'page' as const, id: gridPage };
+    const grid = Object.values(s.pages[gridPage].nodes).find((n) => n.kind === 'instance' && s.components[n.definitionId]?.componentId === 'features.grid') as InstanceNode;
+    const def = s.components[grid.definitionId];
+    const prop = listPropFor(def, 'card-title')!;
+    const item = (grid.props[prop] as Array<{ id: string }>)[0].id;
+    const part = (nodeId: string): ElementRef => ({ owner: gridOwner, instancePath: [grid.id], nodeId, itemPath: [item] });
+    const chain = [descOf(s, part('card-title')), descOf(s, part('card')), descOf(s, { owner: gridOwner, instancePath: [], nodeId: grid.id })];
+    expect(clickTargetIn(s, chain)).toBe(true);
+    s = applyOperations(s, [{ type: 'instance.listRemove', owner: gridOwner, nodeId: grid.id, prop, itemId: item }]).state;
+    expect(clickTargetIn(s, chain)).toBe(false);
+  });
+});
 
 describe('canvas selection steps in one level per click', () => {
   it('goes section, then card, then the card’s heading', () => {

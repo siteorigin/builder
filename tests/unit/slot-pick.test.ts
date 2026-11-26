@@ -3,7 +3,7 @@ import type { ElementRef, OwnerRef, ProjectState } from '@shared/types';
 import { refKey, sameRef } from '@shared/types';
 import { createStarterState } from '@catalogue/starters';
 import { applyOperations } from '@engine/apply';
-import { breadcrumb, createComponentTarget, definitionPick, descOf, placedSlot, refExists, refLabel, selectionFromChain, type BridgeDesc } from '../../src/renderer/src/lib/model';
+import { breadcrumb, clickTargetIn, createComponentTarget, definitionPick, descOf, placedSlot, refExists, refLabel, selectionFromChain, type BridgeDesc } from '../../src/renderer/src/lib/model';
 import { insertAt } from '../../src/renderer/src/lib/insert-at';
 import { addPoints } from '../../src/renderer/src/lib/inline-insert';
 import { placeToKeep, readPlaces } from '../../src/renderer/src/lib/page-place';
@@ -73,6 +73,11 @@ describe('a slot picked by its empty box (#652)', () => {
     expect(descOf(p.state(), p.slot('sidebar'))).toEqual({ ctx: `page:${p.owner.id}`, node: p.id, items: '', slot: 'sidebar' });
     expect(refLabel(p.state(), p.slot('sidebar'))).toBe('Sidebar');
     expect(breadcrumb(p.state(), p.slot('sidebar')).slice(-2).map((c) => c.label)).toEqual(['Split', 'Sidebar']);
+  });
+
+  it('is taken again after a save reached the page while its click waited (#755)', () => {
+    const p = split();
+    expect(clickTargetIn(p.state(), p.chainTo('sidebar'))).toBe(true);
   });
 
   it('is selected by the first click on its box, whatever was selected before', () => {

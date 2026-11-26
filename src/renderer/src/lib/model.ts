@@ -192,6 +192,34 @@ function refFromDesc(state: ProjectState, d: BridgeDesc): ElementRef | null {
 }
 
 /**
+ * Whether the element a click landed on (the innermost of its chain) is still in `state`, inside what the page showed
+ * around it. A click held while a save reached the page is taken again only then: one on an element the save removed
+ * (or one repeated item of several it removed) selects nothing, rather than whatever around it survived, and nor does
+ * one on an element the save moved elsewhere, whose old surroundings would be selected.
+ */
+export function clickTargetIn(state: ProjectState, chain: BridgeDesc[]): boolean {
+  const refs = chain.map((d) => refFromDesc(state, d));
+  const target = refs[0];
+  if (!target || !refExists(state, target)) return false;
+  // One repeated item of a list further in than a placement's own, whose items refExists does not read: it may be one
+  // the save removed.
+  if (target.itemPath?.length && (target.owner.kind === 'component' ? target.instancePath.length > 0 : target.instancePath.length !== 1)) return false;
+  const around = ancestry(state, target);
+  const bare = (owner: OwnerRef, instancePath: string[], nodeId: string) => refKey({ owner, instancePath, nodeId });
+  // An empty slot's box is inside its own placement, whose parts the chain goes on through.
+  around.add(bare(target.owner, target.instancePath, target.nodeId));
+  return refs.slice(1).every((r) => {
+    // What names nothing now (a wrapper the save removed) or belongs to another owner (the shell around the page) is
+    // passed over, as a click passes over it.
+    if (!r || r.owner.kind !== target.owner.kind || r.owner.id !== target.owner.id || !refExists(state, r)) return true;
+    if (around.has(bare(r.owner, r.instancePath, r.nodeId))) return true;
+    // A part of a component around the element (the Section's own container around its slot) is around it while that
+    // component's placement is.
+    return r.instancePath.length > 0 && around.has(bare(r.owner, r.instancePath.slice(0, -1), r.instancePath[r.instancePath.length - 1]));
+  });
+}
+
+/**
  * The slot a reference names (see ElementRef.slot): one its placement's component declares, on a placement in the
  * owner's own tree, with the label the slot is shown by. Null for any other reference.
  */

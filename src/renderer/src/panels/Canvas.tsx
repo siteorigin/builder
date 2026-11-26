@@ -7,16 +7,17 @@ import { newId } from '@shared/ids';
 import { applyOps, commitOps } from '../store';
 import { activeWorkspace, canvasCovered } from '../lib/workspace';
 import { CANVAS_DRAFT, reportRefused, setCanvasCommit } from '../lib/pending';
-import { treeFor } from '../lib/model';
+import { clickTargetIn, treeFor } from '../lib/model';
 import { editLabel } from '../lib/edit-label';
 import type { ElementRef, OwnerRef, ProjectState } from '@shared/types';
 import { refKey, sameRef } from '@shared/types';
 import { aiActivity, api, commitDraft, confirmDialog, errorText, getState, markDraft, saveLocal, setState, setViewport, stepHistory, toast, useStore, type Rect } from '../store';
 import { appliedSteps, errorComponent, revertStep, stillNewest } from '../lib/preview-error';
-import { acceptMessage, newSessionId, postToFrame, staleFor, viewAfter, type FrameView } from '../lib/bridge';
+import { acceptMessage, newSessionId, postToFrame, staleFor, viewAfter, type BridgeMessage, type FrameView } from '../lib/bridge';
 import { chainOf, descOrNull, measuredRects, pointedAt, rectList, slotBoxes, spaceSizes, spacingOf, type FrameSpacing, type SlotBox } from '../lib/payload';
 import { blocksFromDom, richDom } from '../lib/richtext';
 import { dropAt, dropReaches, moveIndex, shownOrder } from '../lib/reorder';
+import { createPageGate, failedWithRevision, gatedPick, type PageGate, type SeenFailure } from '../lib/page-gate';
 import { insertOps, insertRole, whereText, type InsertAt, type Where } from '../lib/insert-at';
 import { dropRefusal, incomingOrder, insertDestination, measureIds, moveDestination, savingProblems, slotOfKey, type DropList, type ListSpec, type Measured, type MoveAim, type SlotSurface } from '../lib/insert-drop';
 import { setInsertDropTarget, type InsertDrag } from '../lib/insert-drag';
@@ -373,19 +374,18 @@ export function Canvas() {
   const assetDrag = useRef<{ end: (commit: boolean) => void; remeasure: () => void } | null>(null);
   /** The project revision the page shows: as it loads, the one the editor has; then each one it says it has applied. */
   const shownRevision = useRef(0);
-  /** The editor's revision, and when it took it. */
-  const revisionAt = useRef({ revision: 0, at: 0 });
   /**
-   * The page still shows an older version of the project than the editor has: a save's update has not reached it
-   * yet (spec §18.2). What is picked or measured on it would be the old page, so picks and canvas edits wait, and work
-   * again once the page says it shows the new version. A page that never says so is waited for PAGE_CATCH_UP_MS.
+   * Whether the page still shows an older version of the project than the editor has: a save's update has not reached
+   * it yet (spec §18.2, lib/page-gate). What is picked or measured on it would be the old page, so picks and canvas
+   * edits wait, and work again once the page says it shows the new version, reports that the update failed, or has
+   * been waited for long enough. A click made meanwhile is taken again then.
    */
-  function pageBehind(): boolean {
-    const revision = getState().snapshot?.revision ?? 0;
-    if (shownRevision.current >= revision) return false;
-    if (revisionAt.current.revision !== revision) revisionAt.current = { revision, at: Date.now() };
-    return Date.now() - revisionAt.current.at < PAGE_CATCH_UP_MS;
-  }
+  const gate = useRef<PageGate | null>(null);
+  gate.current ??= createPageGate(() => getState().snapshot?.revision ?? 0);
+  const pageBehind = () => gate.current!.behind();
+  /** The latest render's handling of a message from the page, for a click the gate held to be taken with. */
+  const pageMessage = useRef<((m: BridgeMessage, unmeasured: boolean, held?: HeldPick) => void) | null>(null);
+  useEffect(() => () => gate.current?.drop(), []);
   /** The navigation and revision the frame of `session` last reported showing; reports about any other are stale. */
   const frameView = useRef<{ session: string; view: FrameView | null }>({ session: '', view: null });
   const url = runtime.state === 'ready' ? runtime.url : null;
@@ -599,6 +599,8 @@ export function Canvas() {
       toast('The preview is catching up with the latest change. Try again in a moment.', 'info');
       return;
     }
+    // Nor is text on a page a save has not reached yet (#755): it is about to be replaced.
+    if (pageBehind()) return;
     const editId = Math.random().toString(36).slice(2);
     pendingEdits.current.set(editId, { ref, desc: JSON.stringify([desc.ctx, desc.node, desc.items]), base: getState().snapshot, ai: aiActivity() });
     inlineEdit.active = true;
@@ -719,18 +721,26 @@ export function Canvas() {
 
   // Bridge messages
   useEffect(() => {
-    const onMsg = (e: MessageEvent) => {
-      const known = viewNow();
-      const m = acceptMessage(e, frameRef.current, origin, session, known);
-      if (!m) return;
-      // A page loaded, moved on in place or caught up with a change: what it reports from here on is about that.
-      frameView.current = { session, view: viewAfter(m, known) };
-      // A measurement the editor waits on, taken from a page or revision since left (or asked of one the frame had
-      // left when it got the request), answers as nothing measured.
-      const unmeasured = staleFor(m, frameView.current.view) || m.payload.unmeasured === true;
+    const handle = (m: BridgeMessage, unmeasured: boolean, held?: HeldPick) => {
       const s = getState();
       const st = s.snapshot?.state;
       const p = m.payload as Record<string, unknown>;
+      // A click held for the page to catch up is taken only on the frame, the navigation, the page and the way of
+      // editing it was made in, while nothing else has been selected since (in Layers, say), and only when the element clicked is still in
+      // the project, inside what the page showed around it.
+      if (held && (held.session !== session || m.navigationId !== viewNow()?.navigationId || held.scene !== sceneKey(s) || held.selection !== selectionKey(s) || !st || !clickTargetIn(st, chainOf(p.chain)))) return;
+      // While a save is publishing, a pick waits for the page to show it (spec §18.2, #755): a click is taken again
+      // once the page catches up, resolved against the project as it is then; a double-click or menu is dropped, and so
+      // is any pick the canvas would not take anyway (one from a page that is leaving).
+      const gated = gatedPick(m.type, s.mode);
+      if (gated && pageBehind()) {
+        if (gated === 'hold' && st && s.frameReady && !leavingForPage() && !canvasCovered(activeWorkspace(s))) {
+          const at: HeldPick = { session, scene: sceneKey(s), selection: selectionKey(s) };
+          // Taken after whatever opened the gate (a page's `ready`) has finished with the frame.
+          gate.current!.hold(() => setTimeout(() => pageMessage.current?.(m, false, at)));
+        }
+        return;
+      }
       switch (m.type) {
         case 'ready': {
           const path = String(p.path);
@@ -762,6 +772,7 @@ export function Canvas() {
           // A page loaded again while an image from Assets is dragged over it will answer nothing the drag asked: it ends.
           assetDrag.current?.end(false);
           shownRevision.current = getState().snapshot?.revision ?? 0;
+          gate.current!.shown(shownRevision.current);
           const sameFrame = readySession.current === session;
           const reloaded = sameFrame && s.mode === 'preview';
           readySession.current = session;
@@ -934,8 +945,9 @@ export function Canvas() {
         case 'select': {
           // A pick on a page the editor has not yet confirmed (one leaving) selects nothing: also one made while another
           // page chosen in Pages a moment ago waits to open, which then opens. Nor does one that arrives once a workspace
-          // covers the canvas (#700): the page is out of sight. Nor one on a page a save has not reached yet (#735).
-          if (!st || !s.frameReady || leavingForPage() || canvasCovered(activeWorkspace(s)) || pageBehind()) return;
+          // covers the canvas (#700): the page is out of sight. One on a page a save has not reached yet waits for it
+          // (#735, #755: see the gate above the switch).
+          if (!st || !s.frameReady || leavingForPage() || canvasCovered(activeWorkspace(s))) return;
           pagePick();
           const chain = chainOf(p.chain);
           const next = pick(chain, !!p.alt || !!p.meta);
@@ -944,7 +956,7 @@ export function Canvas() {
           break;
         }
         case 'dblclick': {
-          if (!st || !s.frameReady || leavingForPage() || canvasCovered(activeWorkspace(s)) || pageBehind()) return;
+          if (!st || !s.frameReady || leavingForPage() || canvasCovered(activeWorkspace(s))) return;
           const chain = chainOf(p.chain);
           const ref = pick(chain, true);
           // In Component Studio the element double-clicked is the one edited, as the preview names it: a list's item
@@ -1053,7 +1065,7 @@ export function Canvas() {
           frameTextFocus.active = p.on === true;
           break;
         case 'contextmenu': {
-          if (!st || !s.frameReady || leavingForPage() || canvasCovered(activeWorkspace(s)) || pageBehind()) return;
+          if (!st || !s.frameReady || leavingForPage() || canvasCovered(activeWorkspace(s))) return;
           pagePick();
           const chain = chainOf(p.chain);
           const ref = pick(chain, false);
@@ -1105,11 +1117,17 @@ export function Canvas() {
           markTimedOut(false);
           setFrameError(message);
           setRetrying(false);
+          // A page waiting for a save's update that failed to build will not show it: picks work again, on the page as
+          // it is. Any other error on the page (a script of the site's own) says nothing about the update.
+          if (p.build === true) gate.current!.failed();
           break;
         }
         case 'revisionApplied': {
           const at = typeof p.revision === 'number' && Number.isSafeInteger(p.revision) ? p.revision : undefined;
-          if (at !== undefined) shownRevision.current = at;
+          if (at !== undefined) {
+            shownRevision.current = at;
+            gate.current!.shown(at);
+          }
           // A change shown by the page clears its own error, not the canvas's report that a page never arrived, and not
           // an error the page had while showing this same change (the change that broke it, shown a moment later).
           const sameChange = at !== undefined && errorAt.current !== null && at <= errorAt.current;
@@ -1158,6 +1176,17 @@ export function Canvas() {
           break;
         }
       }
+    };
+    pageMessage.current = handle;
+    const onMsg = (e: MessageEvent) => {
+      const known = viewNow();
+      const m = acceptMessage(e, frameRef.current, origin, session, known);
+      if (!m) return;
+      // A page loaded, moved on in place or caught up with a change: what it reports from here on is about that.
+      frameView.current = { session, view: viewAfter(m, known) };
+      // A measurement the editor waits on, taken from a page or revision since left (or asked of one the frame had
+      // left when it got the request), answers as nothing measured.
+      handle(m, staleFor(m, frameView.current.view) || m.payload.unmeasured === true);
     };
     window.addEventListener('message', onMsg);
     return () => window.removeEventListener('message', onMsg);
@@ -1276,11 +1305,18 @@ export function Canvas() {
     if (hoverChain.current) resolveHover();
   }, [selection && refKey(selection), mode]); // eslint-disable-line react-hooks/exhaustive-deps
 
-  // How long the page has been behind is counted from when the editor took the revision.
+  // How long the page has been behind is counted from when the editor took the revision. A save that failed after its
+  // revision was taken (its files had reached the preview) arrives as that revision with the failure, and sends the
+  // page no revision: picks stop waiting for one, and the save indicator shows the failure. A save that failed before
+  // its revision moved leaves the one still publishing to be waited for.
+  const saveFailed = snapshot?.saveFailure ? JSON.stringify(snapshot.saveFailure) : null;
+  const seenFailure = useRef<SeenFailure>({ revision: 0, failure: null });
   useEffect(() => {
-    const revision = snapshot?.revision ?? 0;
-    if (revisionAt.current.revision !== revision) revisionAt.current = { revision, at: Date.now() };
-  }, [snapshot?.revision]);
+    const now = { revision: snapshot?.revision ?? 0, failure: saveFailed };
+    gate.current!.took(now.revision);
+    if (failedWithRevision(seenFailure.current, now)) gate.current!.failed();
+    seenFailure.current = now;
+  }, [snapshot?.revision, saveFailed]);
 
   // Keep the bridge in sync with selection, hover and document revisions.
   useEffect(() => {
@@ -1632,6 +1668,7 @@ export function Canvas() {
     const t = structuralTarget(s.selection);
     const st = s.snapshot?.state;
     if (!t || !st || pageBehind()) return;
+    const revision = s.snapshot!.revision;
     const tree = treeFor(st, t.owner);
     const info = tree && findParent(tree, t.nodeId);
     if (!info || info.list.length < 2) return;
@@ -1692,7 +1729,11 @@ export function Canvas() {
         return;
       }
       const index = commit && to !== null ? moveIndex(shown, from, to, order) : null;
-      if (index !== null) void announcedMove(() => applyOps([{ type: 'node.move', owner: t.owner, nodeId: t.nodeId, parentId: info.parentId, slot: info.slot, index }], editLabel(st, 'Move', t)));
+      if (index === null) return;
+      // The siblings were measured on the page before a save that has since reached the editor (#755): where it would
+      // go was read from the page before the save.
+      if (getState().snapshot?.revision !== revision || pageBehind()) return void toast(`${name} wasn’t moved: the page was still updating. Drag it again.`, 'info');
+      void announcedMove(() => applyOps([{ type: 'node.move', owner: t.owner, nodeId: t.nodeId, parentId: info.parentId, slot: info.slot, index }], editLabel(st, 'Move', t), undefined, revision));
     };
     const up = () => end(true);
     const cancel = () => end(false);
@@ -3143,6 +3184,7 @@ export function Canvas() {
                     measureSpace={measureSpace}
                     onDragging={setDragging}
                     focusCanvas={() => canvasRef.current?.focus({ preventScroll: true })}
+                    pageBehind={pageBehind}
                   />
                 )}
                 {reorder?.line &&
@@ -3299,12 +3341,15 @@ function kindIcon(state: ProjectState, ref: ElementRef) {
 }
 
 /** What a step of the selection chip is taken from: the selection, the project, and what the page shows. */
+/** Where a click the page gate held was made: the frame, the view and way of editing it, and what was selected then. */
+type HeldPick = { session: string; scene: string; selection: string | null };
+const selectionKey = (s: ReturnType<typeof getState>): string | null => (s.selection ? refKey(s.selection) : null);
+const sceneKey = (s: ReturnType<typeof getState>): string => JSON.stringify([viewKey(s), s.mode, s.definitionMode?.definitionId ?? null, !!s.definitionMode?.studio]);
+
 function stepKey(s: ReturnType<typeof getState>): string {
   return JSON.stringify([s.selection ? refKey(s.selection) : null, s.snapshot?.revision ?? null, s.pageId, s.templateMode ?? null, s.definitionMode?.definitionId ?? null, s.viewport]);
 }
 
-/** How long picks and canvas edits wait for the page to show a save before going ahead on the page as it is. */
-const PAGE_CATCH_UP_MS = 4000;
 const CHIP_H = 28;
 /** Near a container's top or bottom edge, in screen pixels, a dragged element goes beside it rather than into it. */
 const CHIP_GAP = 4;
