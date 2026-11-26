@@ -216,7 +216,7 @@ Other providers will keep working through the same adapter, as optional extras r
 
 - **SiteOrigin Hosting** for one-click publishing. Export stays the default, and you can always host anywhere.
 - **More themes**, installable as packs, and the component library in its own repository.
-- **Installers** for macOS, Windows and Linux, signed on macOS and Windows. See the [release checklist](docs/releasing.md).
+- **Installers** for macOS, Windows and Linux, signed and notarized on macOS. See the [release checklist](docs/releasing.md).
 
 ## Development
 
@@ -248,7 +248,7 @@ flowchart LR
 
 - **One edit pipeline.** Every change is an `EditOperation`, checked against the same schemas and scope rules before anything is written.
 - **Real preview.** The project's own Vite and SvelteKit dev server runs in an isolated utility process on loopback, so the canvas shows the actual site.
-- **Bundled runtime.** The packaged app ships its own Node, npm and an offline copy of the starter's locked packages for its platform, so creating a project can set up its website tools with no network. Setup downloads anything the copies on this computer lack, and says so first.
+- **Bundled runtime.** The packaged app ships its own Node, npm and an offline copy of the starter's locked packages for its platform, so creating a project can set up its website tools with no network. The exception is macOS, where the first project downloads the build tools' native parts (Rolldown, Lightning CSS and fsevents): Apple's notarization rejects them inside the app because they aren't signed with its Developer ID. Setup downloads anything the copies on this computer lack, and says so first.
 
 ## Licence
 
