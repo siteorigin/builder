@@ -46,25 +46,39 @@ describe('the package that owns a bundled module', () => {
   it('records the packages of every chunk and asset of a build, sorted, for the notices to read', () => {
     files({ 'node_modules/react/package.json': pkg('react', '19.3.1'), 'node_modules/@fontsource-variable/inter/package.json': pkg('@fontsource-variable/inter', '5.3.0', { license: 'OFL-1.1' }) });
     const out = join(root, '.tmp/notices/renderer.json');
+    files({ 'node_modules/vite/package.json': pkg('vite', '8.3.8'), 'node_modules/rolldown/package.json': pkg('rolldown', '1.2.19') });
     const plugin = notices.bundledPackagesPlugin('renderer', out);
+    plugin.configResolved({ root: join(root, 'src/renderer') });
     plugin.buildStart();
     plugin.generateBundle(
       {},
       {
         'index.js': { type: 'chunk', moduleIds: [join(root, 'src/App.tsx'), join(root, 'node_modules/react/index.js'), join(root, 'node_modules/react/cjs/react.js'), '\0vite/preload-helper.js'] },
-        'inter.woff2': { type: 'asset', originalFileNames: [join(root, 'node_modules/@fontsource-variable/inter/files/inter.woff2')] },
+        // Vite names an asset relative to the build's root.
+        'inter.woff2': { type: 'asset', originalFileNames: ['../../node_modules/@fontsource-variable/inter/files/inter.woff2'] },
+        // The bundler's own helpers come from virtual modules.
+        'vendor.js': { type: 'chunk', moduleIds: ['\0rolldown/runtime.js', '\0vite/preload-helper.js', '\0@oxc-project+runtime@0.156.0/helpers/esm/taggedTemplateLiteral.js', '\0@oxc-project+runtime@0.156.0/helpers/esm/defineProperty.js', '\0commonjsHelpers.js'] },
         // A module whose package is not installed where the id says is not listed.
         'gone.js': { type: 'chunk', modules: { [join(root, 'node_modules/gone/index.js')]: {} } }
       }
     );
     plugin.writeBundle();
-    expect(JSON.parse(readFileSync(out, 'utf8'))).toEqual({
-      target: 'renderer',
-      packages: [
-        { name: '@fontsource-variable/inter', version: '5.3.0', dir: join(root, 'node_modules/@fontsource-variable/inter') },
-        { name: 'react', version: '19.3.1', dir: join(root, 'node_modules/react') }
-      ]
-    });
+    const written = JSON.parse(readFileSync(out, 'utf8'));
+    expect(written.packages.map((p: { name: string; version: string; dir?: string }) => [p.name, p.version, p.dir])).toEqual([
+      ['@fontsource-variable/inter', '5.3.0', join(root, 'node_modules/@fontsource-variable/inter')],
+      ['@oxc-project/runtime', '0.156.0', undefined],
+      ['react', '19.3.1', join(root, 'node_modules/react')],
+      ['rolldown', '1.2.19', join(root, 'node_modules/rolldown')],
+      ['vite', '8.3.8', join(root, 'node_modules/vite')]
+    ]);
+    // The oxc helpers are Babel's, under its MIT licence, carried with the build.
+    const oxc = written.packages[1].notice;
+    expect([oxc.licence, oxc.missing, oxc.texts[0].text]).toEqual(['MIT', false, expect.stringMatching(/^MIT License\n\nCopyright \(c\) 2014-present Sebastian McKenzie and other contributors\n\nPermission is hereby granted/)]);
+    // The notices read the bundle's packages back: a folder for an installed package, the notice itself for a helper.
+    files({ '.tmp/notices/main.json': { target: 'main', packages: [] }, '.tmp/notices/preload.json': { target: 'preload', packages: [] } });
+    mkdirSync(join(root, '.tmp/notices'), { recursive: true });
+    writeFileSync(join(root, '.tmp/notices/renderer.json'), readFileSync(out));
+    expect(notices.bundledPackages(join(root, '.tmp/notices')).renderer[1]).toEqual(oxc);
   });
 
   it('refuses to package when a bundle has not been built', () => {
@@ -99,24 +113,44 @@ describe('the licence text a package carries', () => {
       ],
       missing: false
     });
-    for (const name of ['LICENCE', 'license.txt', 'LICENSE-MIT', 'COPYING', 'COPYRIGHT', 'ThirdPartyNotices.txt', 'third-party-notices.md']) expect(notices.LICENCE_FILE.test(name), name).toBe(true);
+    for (const name of ['LICENCE', 'license.txt', 'LICENSE-MIT', 'COPYING', 'COPYRIGHT', 'ThirdPartyNotices.txt', 'third-party-notices.md', 'THIRD-PARTY-LICENSE', 'third_party_licenses.txt']) expect(notices.LICENCE_FILE.test(name), name).toBe(true);
     for (const name of ['licensed.js', 'README.md', 'notices.cjs', 'package.json']) expect(notices.LICENCE_FILE.test(name), name).toBe(false);
+  });
+
+  it('keeps a third-party licence file beside the package’s own, and leaves out code merely named like a licence', () => {
+    files({
+      'r/package.json': pkg('rolldown', '1.2.19'),
+      'r/LICENSE': 'MIT, VoidZero; see THIRD-PARTY-LICENSE',
+      'r/THIRD-PARTY-LICENSE': 'Rollup contributors; Evan Wallace',
+      'r/bin/license.js': 'module.exports = 1',
+      'r/icons/copyright.mjs': 'export default 1',
+      'r/types/license.d.ts': 'export {}',
+      'r/a/b/c/d/LICENSE': 'four folders down',
+      'r/a/b/c/d/e/LICENSE': 'too deep'
+    });
+    expect(notices.readPackage(join(root, 'r')).texts.map((t) => t.file)).toEqual(['LICENSE', 'THIRD-PARTY-LICENSE', 'a/b/c/d/LICENSE']);
   });
 
   it('with no licence file, follows SEE LICENSE IN, then the README’s Licence section, and otherwise says it is missing', () => {
     files({
       'a/package.json': pkg('a', '1.0.0', { license: 'SEE LICENSE IN terms.txt' }),
       'a/terms.txt': 'Terms of a',
+      'a/README.md': '# a\n\n## License\n\nCopyright a, licensed under its README',
       'b/package.json': pkg('@img/sharp-libvips-darwin-arm64', '1.3.4', { license: 'LGPL-3.0-or-later' }),
-      'b/README.md': '# libvips\n\nPrebuilt binaries.\n\n## Licensing\n\nLGPL-3.0-or-later; see THIRD-PARTY-NOTICES.\n\n### Bundled\n\nlibpng, mozjpeg\n\n## Building\n\nnot this',
+      'b/README.md': '# libvips\n\nPrebuilt binaries.\n\n## Licensing\n\nCopyright the libvips authors, licensed under LGPL-3.0-or-later.\n\n### Bundled\n\nlibpng, mozjpeg\n\n## Building\n\nnot this',
       'c/package.json': pkg('is-reference', '3.0.3'),
       'c/README.md': '# is-reference\n\nNo licence heading here.',
+      'e/package.json': pkg('locate-character', '3.0.0'),
+      'e/README.md': '# locate-character\n\n## License\n\nMIT',
       'd/package.json': { name: 'old', version: '0.1.0', licenses: [{ type: 'MIT' }, { type: 'Apache-2.0' }] }
     });
     const a = notices.readPackage(join(root, 'a'));
     expect([a.texts, a.missing]).toEqual([[{ file: 'terms.txt', text: 'Terms of a' }], false]);
     const b = notices.readPackage(join(root, 'b'));
-    expect([b.texts, b.missing]).toEqual([[{ file: 'README.md', text: '## Licensing\n\nLGPL-3.0-or-later; see THIRD-PARTY-NOTICES.\n\n### Bundled\n\nlibpng, mozjpeg' }], false]);
+    expect([b.texts, b.missing]).toEqual([[{ file: 'README.md', text: '## Licensing\n\nCopyright the libvips authors, licensed under LGPL-3.0-or-later.\n\n### Bundled\n\nlibpng, mozjpeg' }], false]);
+    // A section that only names the licence is kept, but the package still counts as carrying no licence text.
+    const e = notices.readPackage(join(root, 'e'));
+    expect([e.texts, e.missing]).toEqual([[{ file: 'README.md', text: '## License\n\nMIT' }], true]);
     const c = notices.readPackage(join(root, 'c'));
     expect([c.licence, c.texts, c.missing]).toEqual(['MIT', [], true]);
     expect(notices.readPackage(join(root, 'd')).licence).toBe('(MIT OR Apache-2.0)');
@@ -149,7 +183,9 @@ describe('the licence text a package carries', () => {
   it('carries Lucide’s ISC licence with the Feather attribution it keeps', () => {
     const lucide = notices.readPackage(join(process.cwd(), 'node_modules', 'lucide-react'));
     expect(lucide.licence).toBe('ISC');
-    expect(lucide.texts.map((t) => t.text).join('\n')).toMatch(/Cole Bemis/);
+    const text = lucide.texts.map((t) => t.text).join('\n');
+    expect(text).toMatch(/ISC License[\s\S]*Permission to use, copy, modify/);
+    expect(text).toMatch(/Copyright \(c\) 2013-present Cole Bemis/);
   });
 });
 
@@ -192,6 +228,13 @@ describe('the notices file', () => {
     expect(missing).toEqual(['locate-character@3.0.0 (MIT)']);
   });
 
+  it('keeps every distinct notice of two copies of one package version', () => {
+    const copy = (texts: { file: string; text: string }[]) => ({ name: 'semver', version: '7.8.6', licence: 'ISC', repository: null, texts, missing: !texts.length });
+    const { text, missing } = notices.buildNotices({ parts: { shipped: [copy([{ file: 'LICENSE', text: 'ISC, Isaac Z. Schlueter' }])], npm: [copy([{ file: 'LICENSE', text: 'ISC, Isaac Z. Schlueter' }, { file: 'NOTICE', text: 'an extra notice' }]), copy([])] } });
+    expect(text.split('='.repeat(78) + '\n')[1]).toBe('semver 7.8.6\nLicence: ISC\nIncluded in: npm, which sets projects up; shipped with the app\n\n--- LICENSE ---\n\nISC, Isaac Z. Schlueter\n\n--- NOTICE ---\n\nan extra notice\n');
+    expect(missing).toEqual(['semver@7.8.6 (ISC)']);
+  });
+
   it('is the same file whatever order the packages and packs are read in', () => {
     const input = fixture();
     const shuffled = { parts: Object.fromEntries(Object.entries(input.parts).reverse().map(([k, v]) => [k, [...v].reverse()])), packsDirs: [...input.packsDirs].reverse() };
@@ -201,8 +244,8 @@ describe('the notices file', () => {
   it('warns about the packages with no licence text, and says nothing when there are none', () => {
     const said: string[] = [];
     notices.warnMissing([], (m) => said.push(m));
-    notices.warnMissing(['a@1.0.0 (MIT)'], (m) => said.push(m));
-    expect(said).toEqual(['Third-party notices: 1 package(s) carry no licence text, so only their declared licence is listed:\n  a@1.0.0 (MIT)']);
+    notices.warnMissing(['a@1.0.0 (MIT)', 'b@2.0.0 (ISC)'], (m) => said.push(m));
+    expect(said).toEqual(['Third-party notices: 2 package(s) carry no licence text, so only their declared licence is listed:\n  a@1.0.0 (MIT)\n  b@2.0.0 (ISC)']);
   });
 });
 
@@ -226,6 +269,6 @@ describe('Help > Third-Party Notices', () => {
   it('opens the file beside LICENSE.txt in a packaged app, and the development build’s in the repository', () => {
     expect(NOTICES_FILE).toBe(notices.NOTICES_FILE);
     expect(noticesFile(true, join('/Applications/SiteOrigin Builder.app/Contents/Resources'), '/ignored')).toBe(join('/Applications/SiteOrigin Builder.app/Contents/Resources', 'THIRD_PARTY_NOTICES.txt'));
-    expect(noticesFile(false, '/ignored', join('/repo'))).toBe(join('/repo', '.tmp', 'notices', 'THIRD_PARTY_NOTICES.txt'));
+    for (const repo of [join('/repo'), join('/elsewhere/builder')]) expect(noticesFile(false, '/ignored', repo)).toBe(join(repo, '.tmp', 'notices', 'THIRD_PARTY_NOTICES.txt'));
   });
 });

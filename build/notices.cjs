@@ -8,10 +8,14 @@
 // - `node build/notices.cjs` writes .tmp/notices/THIRD_PARTY_NOTICES.txt for a development build (`npm run build`), which
 //   Help > Third-Party Notices opens when the app is not packaged.
 const { existsSync, mkdirSync, readdirSync, readFileSync, statSync, writeFileSync } = require('node:fs');
-const { dirname, join, relative, resolve, sep } = require('node:path');
+const { dirname, isAbsolute, join, relative, resolve, sep } = require('node:path');
 
-/** File names that carry a licence, a copyright or a notice: LICENSE, LICENCE.md, COPYING, NOTICE, LICENSE-MIT... */
-const LICENCE_FILE = /^(licen[cs]e|copying|notice|copyright|third[-_]?party[-_]?notices?)([-_.][\w.-]*)?$/i;
+/**
+ * File names that carry a licence, a copyright or a notice: LICENSE, LICENCE.md, COPYING, NOTICE, LICENSE-MIT,
+ * THIRD-PARTY-LICENSE, ThirdPartyNotices.txt... Source files that only share the name (`bin/license.js`) are code, not text.
+ */
+const LICENCE_FILE = /^(licen[cs]e|copying|notice|copyright|third[-_]?party[-_]?(notices?|licen[cs]es?))([-_.][\w.-]*)?$/i;
+const CODE_FILE = /\.(c|m)?(js|ts)x?$|\.d\.(c|m)?ts$|\.json$|\.map$/i;
 const README_FILE = /^readme(\.(md|markdown|txt))?$/i;
 /** How deep inside a package to look for vendored licences (`openai/src/internal/qs/LICENSE.md`). */
 const MAX_DEPTH = 4;
@@ -77,7 +81,7 @@ function licenceFiles(dir) {
     } catch {
       return;
     }
-    for (const e of entries) if (e.isFile() && LICENCE_FILE.test(e.name)) out.push(join(at, e.name));
+    for (const e of entries) if (e.isFile() && LICENCE_FILE.test(e.name) && !CODE_FILE.test(e.name)) out.push(join(at, e.name));
     if (depth >= MAX_DEPTH) return;
     for (const e of entries) {
       if (!e.isDirectory() || e.name === 'node_modules' || e.name.startsWith('.')) continue;
@@ -97,7 +101,10 @@ function licenceFiles(dir) {
   return out;
 }
 
-/** The Licence section of a package's README, for a package that ships no licence file. */
+/**
+ * The Licence section of a package's README, for a package that ships no licence file. `complete` says whether it names
+ * a copyright holder or grants the licence itself, rather than only naming one (`## License\n\nMIT`).
+ */
 function readmeLicence(dir) {
   let names;
   try {
@@ -115,7 +122,7 @@ function readmeLicence(dir) {
     let end = lines.findIndex((l, i) => i > start && /^#{1,6}\s/.test(l) && l.match(/^#+/)[0].length <= level);
     if (end < 0) end = lines.length;
     const section = lines.slice(start, end).join('\n').trim();
-    if (section.split('\n').length > 1) return { file: n, text: section };
+    if (section.split('\n').length > 1) return { file: n, text: section, complete: /copyright|permission is hereby granted|licensed under/i.test(section) };
   }
   return null;
 }
@@ -139,8 +146,8 @@ function readPackage(dir) {
     if (text) texts.push({ file: named, text });
     else {
       const readme = readmeLicence(dir);
-      if (readme) texts.push(readme);
-      else missing = true;
+      if (readme) texts.push({ file: readme.file, text: readme.text });
+      missing = !readme?.complete;
     }
   }
   return { name: pkg.name ?? dir.split(sep).pop(), version: pkg.version ?? '0.0.0', licence, repository: repositoryOf(pkg), texts, missing };
@@ -170,33 +177,83 @@ function packagesUnder(nodeModules) {
   return out;
 }
 
+/** The folder of package `name` as Node would find it from `from`: the nearest node_modules/<name> up the tree. */
+function findInstalled(name, from) {
+  for (let at = resolve(from); ; at = dirname(at)) {
+    const dir = join(at, 'node_modules', ...name.split('/'));
+    if (existsSync(join(dir, 'package.json'))) return dir;
+    if (dirname(at) === at) return null;
+  }
+}
+
+/** The licence of the helpers Rolldown inlines from `@oxc-project/runtime`, which it resolves without installing the package. */
+const OXC_RUNTIME_LICENCE = join(__dirname, 'licences', 'oxc-project-runtime.LICENSE');
+
 /**
- * A Vite plugin that records the packages whose modules are in one build's final chunks and assets, as
- * `{ target, packages: [{ name, version, dir }] }` in `file`. A production build only; the dev server writes nothing.
+ * Code a bundler writes into the output from a virtual module, with no node_modules path to name it: Rolldown's
+ * runtime (`\0rolldown/runtime.js`), Vite's helpers (`\0vite/preload-helper.js`) and the Babel-derived helpers of
+ * `@oxc-project/runtime` (`\0@oxc-project+runtime@0.156.0/helpers/...`). Each gives the package it comes from.
+ */
+function virtualProvider(id, root) {
+  const clean = String(id).replace(/^\0+/, '');
+  const oxc = /^@oxc-project\+runtime@([^/]+)\//.exec(clean);
+  if (oxc) {
+    const text = readFileSync(OXC_RUNTIME_LICENCE, 'utf8').replace(/\r\n?/g, '\n').trim();
+    return { notice: { name: '@oxc-project/runtime', version: oxc[1], licence: 'MIT', repository: 'https://github.com/oxc-project/oxc', texts: [{ file: 'LICENSE', text }], missing: false } };
+  }
+  const vite = findInstalled('vite', root);
+  if (/^vite\//.test(clean)) return vite ? { dir: vite } : null;
+  if (/^rolldown\//.test(clean)) {
+    const rolldown = findInstalled('rolldown', vite ?? root);
+    return rolldown ? { dir: rolldown } : null;
+  }
+  return null;
+}
+
+/**
+ * A Vite plugin that records the packages whose code is in one build's final chunks and assets, as
+ * `{ target, packages: [{ name, version, dir } | { name, version, notice }] }` in `file`: modules under node_modules,
+ * and the bundler's own helpers (virtualProvider). A production build only; the dev server writes nothing.
  */
 function bundledPackagesPlugin(target, file) {
   let roots = new Set();
+  let virtual = new Map();
+  let base = process.cwd();
   return {
     name: 'siteorigin-bundled-packages',
     apply: 'build',
+    configResolved(config) {
+      // Asset names are relative to the build's root (src/renderer for the editor).
+      base = config.root ?? base;
+    },
     buildStart() {
       roots = new Set();
+      virtual = new Map();
     },
     generateBundle(_options, bundle) {
       for (const out of Object.values(bundle)) {
-        const ids = out.type === 'chunk' ? (out.moduleIds ?? Object.keys(out.modules ?? {})) : [...(out.originalFileNames ?? [])];
+        const ids = out.type === 'chunk' ? (out.moduleIds ?? Object.keys(out.modules ?? {})) : [...(out.originalFileNames ?? [])].map((n) => (isAbsolute(n) ? n : resolve(base, n)));
         for (const id of ids) {
           const root = packageRootOf(id);
-          if (root && existsSync(join(root, 'package.json'))) roots.add(root);
+          if (root) {
+            if (existsSync(join(root, 'package.json'))) roots.add(root);
+            continue;
+          }
+          const provider = virtualProvider(id, base);
+          if (provider?.dir) roots.add(provider.dir);
+          else if (provider?.notice) virtual.set(`${provider.notice.name}@${provider.notice.version}`, provider.notice);
         }
       }
     },
     writeBundle() {
-      const packages = [...roots]
-        .map((dir) => {
+      const packages = [
+        ...[...roots].map((dir) => {
           const pkg = readJson(join(dir, 'package.json'));
           return { name: pkg.name, version: pkg.version, dir: resolve(dir) };
-        })
+        }),
+        ...[...virtual.values()].map((notice) => ({ name: notice.name, version: notice.version, notice }))
+      ]
+        .filter((p, i, all) => all.findIndex((q) => q.name === p.name && q.version === p.version) === i)
         .sort((a, b) => compare(a.name, b.name) || compare(a.version, b.version));
       mkdirSync(dirname(file), { recursive: true });
       writeFileSync(file, `${JSON.stringify({ target, packages }, null, 2)}\n`);
@@ -240,7 +297,7 @@ function bundledPackages(manifestDir, targets = ['main', 'preload', 'renderer'])
   for (const t of targets) {
     const file = join(manifestDir, `${t}.json`);
     if (!existsSync(file)) throw new Error(`${file} is missing: run electron-vite build before packaging, so the notices can list what the ${t} bundle contains.`);
-    out[t] = readJson(file).packages.map((p) => p.dir);
+    out[t] = readJson(file).packages.map((p) => p.notice ?? p.dir);
   }
   return out;
 }
@@ -255,8 +312,11 @@ function renderNotices({ packages, fonts }) {
   const merged = new Map();
   for (const { pkg, parts } of packages) {
     const key = `${pkg.name}@${pkg.version}`;
-    const entry = merged.get(key) ?? { pkg, parts: new Set() };
+    const entry = merged.get(key) ?? { pkg: { ...pkg, texts: [] }, parts: new Set() };
     for (const p of parts) entry.parts.add(PARTS[p] ?? p);
+    // Two copies of one version can carry different notices: every distinct text is kept.
+    for (const t of pkg.texts) if (!entry.pkg.texts.some((u) => u.file === t.file && u.text === t.text)) entry.pkg.texts.push(t);
+    entry.pkg.missing = entry.pkg.texts.length ? entry.pkg.missing && pkg.missing : true;
     merged.set(key, entry);
   }
   const list = [...merged.values()].sort((a, b) => compare(a.pkg.name, b.pkg.name) || compare(a.pkg.version, b.pkg.version));
@@ -274,7 +334,7 @@ function renderNotices({ packages, fonts }) {
     lines.push(RULE, `${pkg.name} ${pkg.version}`, `Licence: ${pkg.licence}`);
     if (pkg.repository) lines.push(`Source: ${pkg.repository}`);
     lines.push(`Included in: ${[...parts].sort().join('; ')}`, '');
-    if (pkg.missing) lines.push('The package carries no licence text; its declared licence is above.', '');
+    if (pkg.missing) lines.push(pkg.texts.length ? 'The package carries no licence file; its README’s licence section follows, with the declared licence above.' : 'The package carries no licence text; its declared licence is above.', '');
     for (const t of pkg.texts) lines.push(`--- ${t.file} ---`, '', t.text, '');
   }
   for (const f of fonts) {
@@ -321,7 +381,7 @@ function warnMissing(missing, log = console.warn) {
   if (missing.length) log(`Third-party notices: ${missing.length} package(s) carry no licence text, so only their declared licence is listed:\n  ${missing.join('\n  ')}`);
 }
 
-module.exports = { LICENCE_FILE, NOTICES_FILE, PARTS, packageRootOf, declaredLicence, readPackage, licenceFiles, readmeLicence, packagesUnder, bundledPackagesPlugin, bundledPackages, packFonts, renderNotices, buildNotices, productionPackages, warnMissing };
+module.exports = { LICENCE_FILE, CODE_FILE, NOTICES_FILE, findInstalled, virtualProvider, PARTS, packageRootOf, declaredLicence, readPackage, licenceFiles, readmeLicence, packagesUnder, bundledPackagesPlugin, bundledPackages, packFonts, renderNotices, buildNotices, productionPackages, warnMissing };
 
 // `node build/notices.cjs`: the development build's notices, from the bundles just built and the installed packages.
 if (require.main === module) {

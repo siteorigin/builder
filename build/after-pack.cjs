@@ -6,7 +6,7 @@
 //    archive, npm, the starter's cached packages and the theme packs' fonts (build/notices.cjs).
 const { cpSync, mkdtempSync, rmSync, existsSync, writeFileSync } = require('node:fs');
 const { execFileSync } = require('node:child_process');
-const { join } = require('node:path');
+const { dirname, join } = require('node:path');
 const { tmpdir } = require('node:os');
 const { listPackage, extractFile } = require('@electron/asar');
 const notices = require('./notices.cjs');
@@ -72,11 +72,16 @@ function writeNotices(root, resources, starterPackages) {
   const archive = join(resources, 'app.asar');
   const shipped = [];
   for (const entry of listPackage(archive, { isPack: false })) {
-    const rel = entry.split('\\').join('/').replace(/^\//, '');
+    // Entries use the host's separator, and asar looks them up by it: match on `/`, extract by the entry itself.
+    const native = entry.replace(/^[\\/]+/, '');
+    const rel = native.split('\\').join('/');
     // A package's own manifest (node_modules/<name>/package.json, scoped or nested), not one of its subfolders'.
     if (!/(^|\/)node_modules\/(@[^/]+\/)?[^/@][^/]*\/package\.json$/.test(rel)) continue;
-    const { name, version } = JSON.parse(extractFile(archive, rel).toString('utf8'));
-    const dir = installed.get(`${name}@${version}`);
+    const { name, version } = JSON.parse(extractFile(archive, native).toString('utf8'));
+    // The installed copy at the archive's own path, or else any installed copy of that version.
+    const same = join(root, dirname(native));
+    const sameManifest = existsSync(join(same, 'package.json')) ? require(join(same, 'package.json')) : null;
+    const dir = sameManifest?.name === name && sameManifest?.version === version ? same : installed.get(`${name}@${version}`);
     if (!dir) throw new Error(`Third-party notices: ${name}@${version} ships in app.asar but is not installed under node_modules.`);
     shipped.push(dir);
   }

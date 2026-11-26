@@ -58,18 +58,36 @@ try {
   assert.equal(readFileSync(join(resources, 'LICENSE.txt'), 'utf8'), readFileSync('LICENSE', 'utf8'), 'the app ships its own licence');
   const notices = readFileSync(join(resources, 'THIRD_PARTY_NOTICES.txt'), 'utf8');
   console.log('notices', `${(notices.length / 1024).toFixed(0)} KB`, notices.match(/^Packages: .*$/m)?.[0]);
+  // Each package and font is checked inside its own entry, so a label or a licence text from a neighbour cannot stand in.
+  const entries = new Map(
+    notices
+      .split(`${'='.repeat(78)}\n`)
+      .slice(1)
+      .map((e) => [e.split('\n')[0], e])
+  );
+  const entry = (heading) => {
+    const found = [...entries.entries()].find(([h]) => heading.test(h));
+    assert.ok(found, `the notices have an entry for ${heading}`);
+    return found[1];
+  };
   const listed = [
-    ['React, compiled into the editor', /^react \d[^\n]*\nLicence: MIT\n(Source: [^\n]*\n)?Included in: [^\n]*compiled into the editor/m],
-    ['CodeMirror', /^@codemirror\/view \d/m],
-    ['Radix', /^@radix-ui\/react-dropdown-menu \d/m],
-    ['Lucide with its Feather attribution', /^lucide-react \d[\s\S]*?Cole Bemis/m],
-    ['the shipped Svelte compiler', /^svelte \d[^\n]*\n[\s\S]*?Included in: [^\n]*shipped with the app/m],
-    ['sharp, unpacked from the archive', /^sharp \d/m],
-    ['npm', /^npm \d[^\n]*\n[\s\S]*?Included in: npm, which sets projects up/m],
-    ['the starter’s cached SvelteKit', /^@sveltejs\/kit \d[^\n]*\n[\s\S]*?Included in: the website starter/m],
-    ['the Inter font with the OFL', /^Font: Inter \(Inter Variable\)\nLicence: OFL-1\.1\n[\s\S]*?SIL OPEN FONT LICENSE/m]
+    [/^react \d/, 'compiled into the editor', /Permission is hereby granted/],
+    [/^@codemirror\/view \d/, 'compiled into the editor', /Copyright \(C\) .*Marijn Haverbeke/],
+    [/^@radix-ui\/react-dropdown-menu \d/, 'compiled into the editor', /Copyright \(c\) .*WorkOS/],
+    [/^lucide-react \d/, 'compiled into the editor', /Copyright \(c\) 2013-present Cole Bemis/],
+    [/^rolldown \d/, 'compiled into the editor', /--- THIRD-PARTY-LICENSE ---/],
+    [/^@oxc-project\/runtime \d/, 'compiled into the app', /Sebastian McKenzie/],
+    [/^svelte \d/, 'shipped with the app', /Copyright \(c\) .*Svelte Contributors/],
+    [/^sharp \d/, 'shipped with the app', /Apache License/],
+    [/^npm \d/, 'npm, which sets projects up', /The Artistic License 2\.0/],
+    [/^@sveltejs\/kit \d/, 'the website starter', /Copyright \(c\) 2020 \[these people\]/],
+    [/^Font: Inter \(Inter Variable\)$/, 'Licence: OFL-1.1', /The Inter Project Authors[\s\S]*SIL OPEN FONT LICENSE Version 1\.1[\s\S]*PERMISSION & CONDITIONS/]
   ];
-  for (const [what, re] of listed) assert.match(notices, re, `the notices list ${what}`);
+  for (const [heading, label, text] of listed) {
+    const e = entry(heading);
+    assert.ok(e.includes(label), `${heading} is listed as ${label}`);
+    assert.match(e, text, `${heading} carries its licence text`);
+  }
   // Help > Third-Party Notices hands that file to the desktop (recorded, as a test drives the app).
   const before = await desktopCursor(app);
   await chooseMenu(app, ['Help', 'Third-Party Notices']);
