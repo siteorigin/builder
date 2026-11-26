@@ -183,6 +183,8 @@ describe('a sync as the worker runs it', () => {
     expect(await one(`https://cdn.example/a.png?token=%74${SECRET.slice(1)}`)).toMatchObject({ ok: false, code: 'image', detail: 'a picture’s address holds a secret' });
     expect(await one(`https://cdn.example/${encodeURIComponent(SECRET).replace(/-/g, '%2D')}.png`)).toMatchObject({ ok: false, code: 'image', detail: 'a picture’s address holds a secret' });
     expect(await one('http://localhost./a.png')).toMatchObject({ ok: false, code: 'image' });
+    // A byte that is no text in one part of the path never hides an escaped letter in another.
+    expect(await one(`https://cdn.example/%FF/%74${SECRET.slice(1)}.png`)).toMatchObject({ ok: false, code: 'image', detail: 'a picture’s address holds a secret' });
     expect(await one('http://192.168.1.1/a.png')).toMatchObject({ ok: false, code: 'image' });
     expect(await one('http://localhost:8080/a.png')).toMatchObject({ ok: false, code: 'image' });
     expect(await one('https://user:pw@cdn.example/a.png')).toMatchObject({ ok: false, code: 'image' });
@@ -190,7 +192,8 @@ describe('a sync as the worker runs it', () => {
     // An image field's own picture is fetched.
     expect(await one('https://cdn.example/field.png')).toMatchObject({ ok: true, images: [{ key: 'url:https://cdn.example/field.png' }] });
     // The real fetcher checks where a redirect leads before following it.
-    const { fetchImage: real } = await import('../../src/main/sources/fetch-image');
+    const { createFetchImage } = await import('../../src/main/sources/fetch-image');
+    const real = createFetchImage(async () => [{ address: '93.184.216.34' }]);
     const seen: string[] = [];
     const fetchStub = async (u: string | URL, init?: RequestInit) => {
       seen.push(`${String(u)} ${init?.redirect}`);
@@ -204,6 +207,16 @@ describe('a sync as the worker runs it', () => {
       globalThis.fetch = original;
     }
     // Asked once, following no redirect itself.
+    expect(seen).toEqual(['https://cdn.example/a.png manual']);
+    // A name that leads to this computer, or that cannot be found, is never asked.
+    globalThis.fetch = fetchStub as typeof fetch;
+    try {
+      const signal = new AbortController().signal;
+      await expect(createFetchImage(async () => [{ address: '10.0.0.5' }])('https://cdn.example/b.png', 1000, signal, () => null)).rejects.toMatchObject({ code: 'image' });
+      await expect(createFetchImage(async () => { throw new Error('ENOTFOUND'); })('https://cdn.example/c.png', 1000, signal, () => null)).rejects.toMatchObject({ code: 'network' });
+    } finally {
+      globalThis.fetch = original;
+    }
     expect(seen).toEqual(['https://cdn.example/a.png manual']);
   });
 

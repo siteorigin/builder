@@ -48,10 +48,12 @@ function addressViews(url: string): string {
       return s;
     }
   };
-  out.push(decode(url));
+  // Each escape on its own too, so one that is no text (%FF) never keeps the others from being read.
+  const bytewise = (s: string) => s.replace(/%([0-9a-f]{2})/gi, (_, h: string) => String.fromCharCode(parseInt(h, 16)));
+  out.push(decode(url), bytewise(url));
   try {
     const u = new URL(url);
-    out.push(u.href, decode(u.pathname), decode(u.hash));
+    out.push(u.href, decode(u.pathname), decode(u.hash), bytewise(u.pathname), bytewise(u.hash));
     for (const [k, v] of u.searchParams) out.push(k, v);
   } catch {
     // Not an address: checked as written.

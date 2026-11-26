@@ -4,7 +4,7 @@
  */
 import { markdownMirrorRoute } from '@shared/llms';
 import { randomUUID } from 'node:crypto';
-import { existsSync, lstatSync, promises as fs, readdirSync, statSync } from 'node:fs';
+import { constants as fsConstants, existsSync, lstatSync, promises as fs, readdirSync, statSync } from 'node:fs';
 import { basename, dirname, join, relative, sep } from 'node:path';
 import type { AssetRecord, NodeTree, PageDoc, ProjectState, SourceDoc } from '@shared/types';
 import { documentFormat } from '@shared/document-files';
@@ -27,6 +27,31 @@ import { atomicWrite, readIfExists, removeEmptyDirs, safeJoin, sha, toJson } fro
 import { isPrivateFileName } from './project/private-files';
 import { sourceDocPath } from './project/documents';
 import { holdsSecretValue, isSourceId } from '@shared/sources';
+
+const UNREADABLE = Symbol('unreadable');
+
+/**
+ * A settings file's text, null when there is none, or UNREADABLE for anything but a plain file (a pipe, which would
+ * hold the read up forever, a folder, a device) or one that cannot be read. Opened without waiting, so nothing at the
+ * path can hold it up.
+ */
+async function readSettingsFile(path: string): Promise<string | null | typeof UNREADABLE> {
+  let fh: Awaited<ReturnType<typeof fs.open>>;
+  try {
+    fh = await fs.open(path, fsConstants.O_RDONLY | (fsConstants.O_NONBLOCK ?? 0));
+  } catch (e) {
+    const code = (e as NodeJS.ErrnoException).code;
+    return code === 'ENOENT' || code === 'ENOTDIR' ? null : UNREADABLE;
+  }
+  try {
+    const st = await fh.stat();
+    return st.isFile() && st.size <= 1024 * 1024 ? await fh.readFile('utf8') : UNREADABLE;
+  } catch {
+    return UNREADABLE;
+  } finally {
+    await fh.close().catch(() => undefined);
+  }
+}
 
 /** JSON with every object's keys sorted, so two documents that say the same compare equal. */
 function canonicalJson(v: unknown): string {
@@ -112,7 +137,7 @@ export async function exportedSourcesProblem(dir: string, state: ProjectState, v
   const held = state.sources ?? {};
   const folders = await fs.readdir(join(dir, 'siteorigin', 'sources')).catch(() => [] as string[]);
   // The same document however it is laid out: an edit that only spaces it differently is the same settings.
-  const same = (disk: string | null, mine: SourceDoc | undefined) => {
+  const same = (disk: string | null, mine: SourceDoc | undefined): boolean => {
     if (disk === null || mine === undefined) return disk === null && mine === undefined;
     try {
       return canonicalJson(JSON.parse(disk)) === canonicalJson(mine);
@@ -121,8 +146,8 @@ export async function exportedSourcesProblem(dir: string, state: ProjectState, v
     }
   };
   for (const d of new Set([...folders, ...Object.keys(held)])) {
-    const disk = await readIfExists(join(dir, 'siteorigin', 'sources', d, 'source.json')).catch(() => null);
-    if (same(disk, Object.hasOwn(held, d) ? held[d] : undefined)) continue;
+    const disk = await readSettingsFile(join(dir, 'siteorigin', 'sources', d, 'source.json'));
+    if (disk !== UNREADABLE && same(disk, Object.hasOwn(held, d) ? held[d] : undefined)) continue;
     // Named only when it is a source's own name: a folder may be called anything, a credential included.
     return `${isSourceId(d) ? sourceDocPath(d) : 'An external source’s settings'} ${isSourceId(d) ? 'was' : 'were'} changed outside SiteOrigin Builder. Open the project again to load ${isSourceId(d) ? 'it' : 'them'}, or put ${isSourceId(d) ? 'it' : 'them'} back, then export again.`;
   }

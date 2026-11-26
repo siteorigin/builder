@@ -4,6 +4,7 @@
  * often they are synced, and the secrets the source signs in with appear nowhere in the project or its exports. A
  * sync that finds the project changed under it, or a source echoing a secret back, writes nothing.
  */
+import { execFileSync } from 'node:child_process';
 import { EventEmitter } from 'node:events';
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, statSync, utimesSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -39,6 +40,7 @@ const { createSecretStore } = await import('../../src/main/sources/secrets');
 const { syncSource } = await import('../../src/main/sources/sync');
 const { syncedEntryId } = await import('../../src/main/sources/reconcile');
 const { copyProjectSource, exportedSourcesProblem, inProjectSource, writeExportedSources } = await import('../../src/main/export');
+const { isPrivateFileName } = await import('../../src/main/project/private-files');
 import type { SyncHandle } from '../../src/main/sources/client';
 import type { NormalizedRecord, SyncReply, SyncRequest } from '../../src/main/sources/protocol';
 import type { EditOperation } from '@shared/ops';
@@ -215,6 +217,11 @@ describe('syncing a source into a project', () => {
     pictures[`https://cdn.example/${encodeURIComponent(other)}.png`] = pictures['https://cdn.example/ana.png'];
     await expect(syncSource(deps, 'people')).resolves.toMatchObject({ ok: false, code: 'secret' });
     expect(Object.keys(s.state.assets.assets).some((id) => s.state.assets.assets[id].name.includes(other))).toBe(false);
+    // Or one a title would become as an address: accents off, words hyphenated.
+    await deps.secrets.set(s.state.manifest.projectId, 'slugged', 'example-token');
+    world.records = [person('1', 'Ana', { title: 'Éxample Token' })];
+    await expect(syncSource(deps, 'people')).resolves.toMatchObject({ ok: false, code: 'secret' });
+    await deps.secrets.set(s.state.manifest.projectId, 'slugged', null);
     // Or one only a picture's bytes carry (a text chunk), which the library would keep as they are.
     pictures['https://cdn.example/inked.png'] = Buffer.concat([pictures['https://cdn.example/ana.png'], Buffer.from(SECRET)]);
     world.records = [person('1', 'Ana', { featuredImage: { $image: { url: 'https://cdn.example/inked.png' } } })];
@@ -389,14 +396,24 @@ describe('a source’s settings in the project', () => {
     expect(JSON.parse(readFileSync(join(dest, 'siteorigin/sources/people/source.json'), 'utf8'))).toEqual(s.state.sources!.people);
     expect(inProjectSource(dir, join(dir, 'static/deep/source-secrets.json~'))).toBe(false);
     expect(inProjectSource(dir, join(dir, 'static/deep/.API-KEYS.json.swp'))).toBe(false);
-    // A library image named after them is no credential file.
+    // A library image named after them is no credential file; every copy's spelling of one is, at once whatever its name.
     writeFileSync(join(dir, 'static/deep/api-keys-guide-1a2b3c4d.png'), 'png');
     expect(inProjectSource(dir, join(dir, 'static/deep/api-keys-guide-1a2b3c4d.png'))).toBe(true);
+    for (const name of ['source-secrets (copy).json', 'Copy of api-keys.json', 'api-keys copy 2.json', '#source-secrets.json#']) expect(isPrivateFileName(name), name).toBe(true);
+    const started = Date.now();
+    expect(isPrivateFileName(`api-keys${'1'.repeat(20000)}.png`)).toBe(false);
+    expect(Date.now() - started).toBeLessThan(500);
     // Put back as the project holds them, however laid out, the settings go out; holding a saved secret in their name,
     // they do not.
     writeFileSync(file, JSON.stringify(JSON.parse(readFileSync(join(dest, 'siteorigin/sources/people/source.json'), 'utf8'))));
     expect(await exportedSourcesProblem(dir, s.state, [SECRET])).toBeNull();
     expect(await exportedSourcesProblem(dir, s.state, ['People API'])).toMatch(/hold one of your secrets/);
+    // Nor does a pipe where the settings should be hold the check up.
+    if (process.platform !== 'win32') {
+      rmSync(file);
+      execFileSync('mkfifo', [file]);
+      expect(await exportedSourcesProblem(dir, s.state, [])).toMatch(/changed outside SiteOrigin Builder/);
+    }
     // A website build carries no source at all.
     await writeExportedSources(dest, s.state, { keep: false });
     expect(existsSync(join(dest, 'siteorigin/sources'))).toBe(false);

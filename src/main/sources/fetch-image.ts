@@ -7,22 +7,23 @@ import type { ImageFetcher } from './run';
 const MAX_REDIRECTS = 5;
 const REDIRECTS = new Set([301, 302, 303, 307, 308]);
 
-/**
- * Why the host of `address` is not one a picture is fetched from, by what its name resolves to: a name that leads to
- * this computer or the local network is refused as its address would be. (A name that resolves differently by the
- * time it is asked is not caught.)
- */
-async function resolvesLocally(address: string): Promise<boolean> {
-  const host = new URL(address).hostname.replace(/^\[|\]$/g, '');
-  const found = await lookup(host, { all: true }).catch(() => [] as Array<{ address: string }>);
-  return found.some((a) => isLocalAddress(a.address));
-}
+/** What a host name resolves to, as the system says: every address. */
+export type Lookup = (host: string) => Promise<Array<{ address: string }>>;
+const systemLookup: Lookup = (host) => lookup(host, { all: true });
 
 /**
  * A picture from the web, read no further than `maxBytes`. It is fetched without the source's credentials, so none
- * goes to another server; each address on the way, redirects included, is checked by `check` before it is asked.
+ * goes to another server; each address on the way, redirects included, is checked by `check` before it is asked, and
+ * by what its name resolves to: a name that leads to this computer or the local network, or that cannot be found, is
+ * refused. (A name that resolves differently by the time it is asked is not caught.)
  */
-export const fetchImage: ImageFetcher = async (url, maxBytes, signal, check) => {
+export const createFetchImage = (resolve: Lookup = systemLookup): ImageFetcher => async (url, maxBytes, signal, check) => {
+  const resolvesLocally = async (address: string) => {
+    const host = new URL(address).hostname.replace(/^\[|\]$/g, '').replace(/\.+$/, '');
+    const found = await resolve(host).catch(() => null);
+    if (!found?.length) throw new AdapterError('network', 'a picture’s address could not be found');
+    return found.some((a) => isLocalAddress(a.address));
+  };
   let address = url;
   let res: Response | null = null;
   for (let hops = 0; hops <= MAX_REDIRECTS; hops++) {
@@ -67,3 +68,5 @@ export const fetchImage: ImageFetcher = async (url, maxBytes, signal, check) => 
   }
   return { bytes, mime: res.headers.get('content-type') ?? '' };
 };
+
+export const fetchImage = createFetchImage();

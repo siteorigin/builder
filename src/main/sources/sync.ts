@@ -52,6 +52,27 @@ const counts = (p: SyncPlan, revision: number, images: number): SourceSyncResult
   images
 });
 
+/** Every piece of text records hold, one to a line: what a sync writes, never the names of their own details. */
+function textOf(v: unknown, out: string[] = []): string {
+  if (typeof v === 'string') out.push(v);
+  else if (Array.isArray(v)) v.forEach((x) => textOf(x, out));
+  else if (v && typeof v === 'object') Object.values(v).forEach((x) => textOf(x, out));
+  return out.join('\n');
+}
+
+/** Text as an address or a file name made from it reads: accents taken off, lowercased, and words joined by hyphens. */
+const folded = (t: string) => t.normalize('NFKD').replace(/\p{M}+/gu, '').toLowerCase();
+const slugged = (t: string) => folded(t).replace(/[^\p{L}\p{N}]+/gu, '-');
+
+/**
+ * Whether `text` holds a secret, as written or as the slug or file name the engine or the library would make of it:
+ * a title "Éxample Token" becomes the address example-token.
+ */
+function holdsSecret(text: string, values: readonly string[]): boolean {
+  const long = values.filter((v) => v.length >= MIN_SECRET_LENGTH);
+  return holdsSecretValue(text, long) || holdsSecretValue(folded(text), long.map(folded)) || holdsSecretValue(slugged(text), long.map(slugged).filter((v) => v.replace(/-/g, '').length >= MIN_SECRET_LENGTH));
+}
+
 /** What to call a picture in the library: the name the source gives it, or its file's name. */
 function pictureName(given: string | undefined, url: string): string {
   let file = '';
@@ -101,7 +122,7 @@ export async function syncSource(deps: SyncDeps, sourceId: string): Promise<Sour
   // A source that sends back one of the user's secrets (a server echoing its token into a record) never has it written
   // into the project.
   const leaked: SourceSyncResult = { ok: false, code: 'secret', message: `“${source.name}” was not synced: what it sent holds one of your secrets, which is never written into the project.` };
-  if (holdsSecretValue(JSON.stringify(result.records), values)) return leaked;
+  if (holdsSecret(textOf(result.records), values)) return leaked;
   const now = (deps.now ?? (() => new Date()))();
   let plan: SyncPlan;
   try {
@@ -128,7 +149,7 @@ export async function syncSource(deps: SyncDeps, sourceId: string): Promise<Sour
       // Nor in what a picture brings: its name, as an address may carry it, or its bytes (a text chunk), which the
       // library keeps as they are.
       const bytes = Buffer.from(img.bytes);
-      if (holdsSecretValue(name, values) || values.some((v) => v.length >= MIN_SECRET_LENGTH && bytes.includes(v))) return leaked;
+      if (holdsSecret(name, values) || values.some((v) => v.length >= MIN_SECRET_LENGTH && bytes.includes(v))) return leaked;
       try {
         const { record, existing } = await deps.importImage({ ...img, name }, known, createdAt);
         if (!existing) {
@@ -148,10 +169,6 @@ export async function syncSource(deps: SyncDeps, sourceId: string): Promise<Sour
       if (e instanceof SyncPlanError) return { ok: false, message: e.message };
       throw e;
     }
-    // What it would write, library file names included, as a last look: a secret may also come out of a name made
-    // into a file's, lowercased and hyphenated.
-    const written = JSON.stringify(operations);
-    if (holdsSecretValue(written, values) || holdsSecretValue(written.toLowerCase(), values.map((v) => v.toLowerCase()))) return leaked;
     const r = await session.apply({ operations, expectedRevision: revision }, { label, source: 'system', history: false, sourceSync: grant, stillWanted: deps.current });
     if (!r.ok) {
       if (r.error?.code === 'STALE_REVISION') return stale;
