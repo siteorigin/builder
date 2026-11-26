@@ -92,6 +92,8 @@ describe('contact text and links', () => {
     // A link that dialled the other reading of the zero keeps doing so.
     expect(followText('+225 (0) 7 00 26 96 25', '+225 (0) 7 11 22 33 44', tel('+2250700269625'))).toEqual(tel('+2250711223344'));
     expect(followText('+33 (0)1 42 68 53 00', '+33 (0)1 42 68 53 99', tel('+330142685300'))).toEqual(tel('+330142685399'));
+    // A trunk zero pasted after a non-breaking hyphen is left out as well (#905).
+    expect(followText('+44 20 7946 0018', '+44\u2011(0)20 7946 0019', tel('+442079460018'))).toEqual(tel('+442079460019'));
     // A second number added beside the first is not one number to dial.
     expect(followText('021 555 0142', '021 555 0142 / 082 555 0199', tel('+27215550142'))).toBeNull();
     expect(followText('555-0142', '555-0142 555-0199', tel('5550142'))).toBeNull();
@@ -143,6 +145,7 @@ describe('contact text and links', () => {
     // A link target is read exactly as the export dials it: a stored trunk zero is left out from abroad, and kept
     // where numbers keep it, so only the second is a different number.
     expect(contactMismatch('+44 20 7946 0018', tel('+44 (0)20 7946 0018'))).toBeNull();
+    expect(contactMismatch('+27 21 555 0100', tel('+27 (0)21 555-0100'))).toBeNull();
     expect(contactMismatch('+39 6 3691 2666', tel('+39 (0)6 3691 2666'))).toMatchObject({ opens: 'tel:+390636912666', repair: tel('+39636912666') });
     expect(contactMismatch('+39 (0)6 3691 2666', tel('+390699990000'))?.repair).toEqual(tel('+390636912666'));
     expect(contactMismatch('+44 (0)20 7946 0018', tel('+442079460999'))?.repair).toEqual(tel('+442079460018'));

@@ -248,9 +248,11 @@ export async function renderPreviews(pack: ThemePack, files: Map<string, string>
   const fontBytes = new Map([...files].filter(([rel]) => rel.startsWith('fonts/')).map(([rel, abs]) => [rel.slice('fonts/'.length), readFileSync(abs)]));
   const fontKey = createHash('sha256').update([...fontBytes].map(([k, v]) => `${k}:${createHash('sha256').update(v).digest('hex')}`).join('\n')).digest('hex');
   mkdirSync(cacheDir, { recursive: true });
-  // How a thumbnail is framed, from the code that does it, so a change to the shared measure or crop draws them again.
+  // How a thumbnail is framed, from the code that does it (the crop's whole module, its constants too), so a change to
+  // the shared measure or crop draws them again.
   const ink = inkBoundsSource();
-  const framing = createHash('sha256').update(JSON.stringify([VIEW, BLOCK_VIEW, THUMB_SIZE, ink, UNPAINT_BANDS, String(thumbCrop), String(frameOf)])).digest('hex');
+  const crop = readFileSync(fileURLToPath(new URL('../../src/main/runtime/component-thumbs.ts', import.meta.url)), 'utf8');
+  const framing = createHash('sha256').update(JSON.stringify([VIEW, BLOCK_VIEW, THUMB_SIZE, ink, UNPAINT_BANDS, crop, String(frameOf)])).digest('hex');
 
   const docs = cases.map((c, i) => {
     const { body, head } = module.render(module.pages[i], { props: {} });

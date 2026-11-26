@@ -73,7 +73,7 @@ describe('telephone links', () => {
     expect(resolveLink({ type: 'tel', target: '---' }, { state: s })).toBeNull();
     expect(resolveLink({ type: 'tel', target: '(1)-2' }, { state: s })).toBeNull();
     // A country code and its trunk zero alone dial nothing either (#905).
-    expect(resolveLink({ type: 'tel', target: '+27 (0)' }, { state: s })).toBeNull();
+    for (const target of ['+27 (0)', '+358 (0)', '+358 (0) ']) expect(resolveLink({ type: 'tel', target }, { state: s }), target).toBeNull();
     const at = { owner: { kind: 'shell' as const, id: 'header' }, nodeId: header.id, prop: 'links', itemId: 'i_call' };
     const r = applyOperations(s, [{ type: 'instance.setProp', ...at, field: 'label', value: 'Call us' }]);
     expect(headerOf(r.state).props.links).toMatchObject([{ id: 'i_call', label: 'Call us', link: { type: 'tel', target: '---' } }]);

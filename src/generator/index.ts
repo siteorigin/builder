@@ -352,7 +352,7 @@ export function resolveLink(link: LinkValue | null | undefined, ctx: ResolveCont
       break;
     case 'tel':
       // A number saved before numbers needed three digits dials nothing: it shows its words alone.
-      // Nor does one that is only a country code and its trunk zero ("+27 (0)").
+      // Nor does one that is only a country code and its trunk zero ("+358 (0)").
       if (!isTelephone(link.target) || !isTelephone(dialString(link.target))) return null;
       href = `tel:${dialString(link.target)}`;
       break;

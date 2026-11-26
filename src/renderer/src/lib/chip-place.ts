@@ -15,5 +15,13 @@ export const CHIP_H = 28;
  */
 export function chipLeft(selectionLeft: number, chipWidth: number, frameWidth: number, taken = 0): number {
   const within = Math.max(0, Math.min(selectionLeft, frameWidth - chipWidth));
-  return taken > 0 && taken + chipWidth <= frameWidth ? Math.max(taken, within) : within;
+  // With too little room beside what is there, the chip still starts after it, and narrows (see chipRoom) rather
+  // than covering the entry picker or Done; only a strip with no room left at all is shared.
+  return taken > 0 && taken + CHIP_MIN <= frameWidth ? Math.max(taken, within) : within;
 }
+
+/** The narrowest a parked chip is drawn beside something else in the strip: its grip, name and More actions. */
+export const CHIP_MIN = 96;
+
+/** How wide a chip starting at `left` may be, so it ends at the frame's right edge. */
+export const chipRoom = (left: number, frameWidth: number) => Math.max(CHIP_MIN, frameWidth - left);

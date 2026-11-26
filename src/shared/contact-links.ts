@@ -27,7 +27,7 @@ const KEEPS_ZERO = /^\+(39|378|225)/;
 const dial = (t: string) => t.replace(/[^+0-9]/g, '');
 const digitCount = (t: string) => (t.match(/[0-9]/g) ?? []).length;
 /** A bracketed trunk zero, written straight after an international number's country code ("+44 (0)20 …"). */
-const TRUNK_ZERO = /^(\s*\+\s*\d{1,3})[\s.\-\u00a0]*\(\s*0\s*\)/;
+const TRUNK_ZERO = /^(\s*\+\s*\d{1,3})[\s\u00a0\u2007\u2009\u202f.\-/\u2010\u2011]*\(\s*0\s*\)/;
 /** A number as written, without the bracketed trunk zero after its country code. */
 const withoutTrunk = (t: string) => t.replace(TRUNK_ZERO, '$1 ');
 
@@ -38,7 +38,10 @@ const withoutTrunk = (t: string) => t.replace(TRUNK_ZERO, '$1 ');
  */
 export function dialString(target: string): string {
   const kept = dial(target);
-  return KEEPS_ZERO.test(kept) ? kept : dial(withoutTrunk(target));
+  if (KEEPS_ZERO.test(kept)) return kept;
+  const m = TRUNK_ZERO.exec(target);
+  // A country code and its trunk zero with no number after them ("+358 (0)") dial nothing.
+  return m && !/\d/.test(target.slice(m[0].length)) ? '' : dial(withoutTrunk(target));
 }
 
 /** A number in visible text, or as a link's target dials it (`asDialled`: exactly as the generator writes it). */

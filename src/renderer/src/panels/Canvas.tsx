@@ -38,7 +38,7 @@ import { repeatAsListTarget } from '../lib/repeat-as-list';
 import { boundaryOf, computedAt, createComponentTarget, definitionPick, descOf, designCtx, inDefinition, itemStep, needsStudio, placementsOn, refExists, refLabel, resolveRef, selectionFromChain, stepItem, studioDescOf, studioDesignCtx, studioPick, throughPlacement, toDefinitionRef, withoutSlot, type BridgeDesc } from '../lib/model';
 import { NEW_STUDIO, StudioLoads, studioSpec } from '../lib/studio';
 import { titleOnlyPage } from '../lib/page-start';
-import { CHIP_H, chipLeft } from '../lib/chip-place';
+import { CHIP_H, chipLeft, chipRoom } from '../lib/chip-place';
 import { askAiAbout, writePageWithAi, canInlineEdit, commitText, dropAsset, dropAssetAt, deleteSelection, detachable, detachPlacement, duplicateLayers, duplicateSelection, insertHere, liveGroup, moveLayers, moveSelection, planOne, setMode, showsInlineText, structuralTarget, takeUnscrolled, ungroupLayers, wrapLayers } from '../lib/actions';
 import { exportComponentFile, placedDefinition, saveToLibrary } from '../lib/saved-components';
 import { wrapItems } from './WrapItems';
@@ -3614,7 +3614,7 @@ function SelectionChip({ box, frameWidth, taken, name, icon, parent, repeats, re
   if (editing) {
     const what = /^[A-Z][a-z]/.test(name) ? name[0].toLowerCase() + name.slice(1) : name;
     return (
-      <div ref={ref} className="ov-chip strip editing" style={{ left, top, maxWidth: frameWidth }} role="toolbar" aria-label={`Editing ${what}`} onKeyDown={onKeyDown} onFocus={trackFocus} onBlur={trackBlur}>
+      <div ref={ref} className="ov-chip strip editing" style={{ left, top, maxWidth: chipRoom(left, frameWidth) }} role="toolbar" aria-label={`Editing ${what}`} onKeyDown={onKeyDown} onFocus={trackFocus} onBlur={trackBlur}>
         <span className="name">
           <Pencil />
           <span className="label">Editing {what}</span>
@@ -3633,7 +3633,7 @@ function SelectionChip({ box, frameWidth, taken, name, icon, parent, repeats, re
     <div
       ref={ref}
       className="ov-chip strip"
-      style={{ left, top, maxWidth: frameWidth }}
+      style={{ left, top, maxWidth: chipRoom(left, frameWidth) }}
       role="toolbar"
       // Which of a repeated part it acts on (one card, or every card) is part of what the toolbar is for.
       aria-label={`${name}${item ? `, ${item.n} of ${item.count}` : repeats > 1 ? `, all ${repeats} ${repeatsLabel}` : ''} actions`}
