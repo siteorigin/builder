@@ -577,6 +577,9 @@ export class Controller {
         refused = way;
         throw new Error(way.message ?? 'The open project was kept.');
       }
+      // Before the switch and its ownership check, so a New project opened at once already proposes this folder and the
+      // write cannot outlast the lock check.
+      await Promise.resolve().then(() => rememberProjectParent(opts.parentDir)).catch(() => undefined);
       committed = true;
       staged.off('lock-lost', stop);
       // Opened without its preview, nothing reads its lock again before the editor has it: read it now, since another
@@ -588,8 +591,6 @@ export class Controller {
       // The preview writes its own output into the folder.
       if (!toolsMissing) own('.svelte-kit');
       attached = true;
-      // Before the editor shows, so a New project opened at once already proposes this folder.
-      await Promise.resolve().then(() => rememberProjectParent(opts.parentDir)).catch(() => undefined);
       await this.attach(staged, {}, toolsMissing);
       // The project is open and working: a recent-projects list that cannot be saved must not undo it.
       // Under the name it has by now: the editor shows it from the moment it is attached, and may have renamed it.
