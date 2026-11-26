@@ -42,6 +42,7 @@ describe('what the readers find in the app', () => {
     expect(menu.get('menu:File > Settings…')).toEqual(['win32', 'linux']);
     expect(menu.get('menu:Help > SiteOrigin Website')).toEqual(['darwin', 'win32', 'linux']);
     expect(menu.get('role:reload')).toEqual(['darwin', 'win32', 'linux']);
+    expect(menu.get('role:help')).toEqual(['darwin', 'win32', 'linux']);
     // In the app menu on macOS, in File elsewhere.
     expect(menu.get('role:quit')).toEqual(['darwin', 'win32', 'linux']);
     expect(menu.get('role:startSpeaking')).toEqual(['darwin']);

@@ -2594,14 +2594,18 @@ export const INTERACTIONS: Interaction[] = [
     area: 'desktop',
     intent: 'Find the SiteOrigin website, or the version to quote in a bug report',
     start: 'Welcome or a project open',
-    routes: ['menu:Help > SiteOrigin Website', 'menu:Help > About SiteOrigin Builder'],
+    routes: ['role:help', 'menu:Help > SiteOrigin Website', 'menu:Help > About SiteOrigin Builder'],
     outcome: 'The website opens in the browser through the checked external-link path; About shows the app’s name and version (in the app menu on macOS, in Help elsewhere)',
     scenario: 'welcome · none',
     proof: [
       { test: 'tests/e2e/menu.mjs', kind: 'e2e', step: 'Help: the website link is handed to the desktop' },
+      { test: 'tests/e2e/menu.mjs', kind: 'e2e', step: 'Help: About shows the version (Windows and Linux)' },
       { test: 'tests/unit/app-menu.test.ts', kind: 'unit' }
     ],
-    gaps: [{ missing: 'Help > About SiteOrigin Builder exists only on Windows and Linux, which local runs do not cover', owner: 'desktop' }]
+    gaps: [
+      { missing: 'Help > About SiteOrigin Builder exists only on Windows and Linux, which local runs do not cover; the macOS About panel is Electron’s own and no test opens it', owner: 'desktop' },
+      { missing: 'The website link is chosen only from Welcome', owner: 'desktop' }
+    ]
   },
   {
     id: 'desktop.mac-text',

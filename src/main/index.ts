@@ -12,7 +12,7 @@ import { installedCatalogue, loadInstalledPacks, packPreview, packRoots } from '
 import { createLeaveGate, type LeaveAnswer } from './leave-gate';
 import { forwardsKey, menuKeyCopy } from './history-keys';
 import { createMenuCommands, type MenuCommand } from './menu-commands';
-import { appMenuTemplate, noticesFile } from './app-menu';
+import { appMenuTemplate, noticesFile, offersDeveloperItems } from './app-menu';
 import { writingMenuTemplate } from './writing-menu';
 import { currentShortcuts, loadSettings, localCheckEpoch, localCheckRecorder, localEndpoint, pinRecent, providerStatuses, recents, removeRecent, setKey, updateSettings, getKey } from './settings';
 import { Orchestrator } from '@agent/orchestrator';
@@ -851,9 +851,6 @@ function updateProjectMenu() {
 
 /** Developer mode as last read, for the menu, which is built synchronously. */
 let developerModeOn = false;
-/** An unpackaged build run by a person is a development build. An automated run counts as packaged, so a test sees
- *  the menu an author gets. */
-const developmentBuild = !app.isPackaged && !automated;
 
 /** Help > About on Windows and Linux, which have no About panel: the app's name and version, to quote in a report. */
 function showAbout() {
@@ -878,7 +875,7 @@ function buildMenu() {
     if (!headless && (!win || focused !== win)) return;
     controller.send('menu:history', { action, fromKey: menuKeyCopy(event, process.platform === 'darwin') });
   };
-  const options = { projectOpen: controller.openingKey !== null, developer: developmentBuild || developerModeOn };
+  const options = { projectOpen: controller.openingKey !== null, developer: offersDeveloperItems({ packaged: app.isPackaged, automated, developerMode: developerModeOn }) };
   Menu.setApplicationMenu(Menu.buildFromTemplate(appMenuTemplate(process.platform, options, { command: chooseCommand, history, openLink: openMenuLink, about: showAbout, openNotices })));
 }
 
@@ -936,6 +933,8 @@ app.whenReady().then(async () => {
   await loadInstalledPacks(packRoots(resourcesDir(), app.getPath('userData')));
   registerIpc();
   developerModeOn = (await loadSettings()).settings.developerMode;
+  // The About panel names this app and its version, not the Electron bundle a development build runs in.
+  app.setAboutPanelOptions({ applicationName: app.name, applicationVersion: app.getVersion() });
   buildMenu();
   markStarted();
   // Registered once, not per window: macOS brings up a new window after the last one closes.

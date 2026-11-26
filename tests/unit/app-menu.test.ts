@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from 'vitest';
 import type { MenuItemConstructorOptions } from 'electron';
-import { appMenuTemplate, WEBSITE_URL, type AppMenuActions } from '../../src/main/app-menu';
+import { appMenuTemplate, offersDeveloperItems, type AppMenuActions } from '../../src/main/app-menu';
 
 const PLATFORMS = ['darwin', 'win32', 'linux'] as const;
 const actions = (): AppMenuActions & { command: ReturnType<typeof vi.fn>; openLink: ReturnType<typeof vi.fn>; about: ReturnType<typeof vi.fn> } =>
@@ -33,7 +33,7 @@ describe('the application menu (#810)', () => {
       const help = menu(p, 'Help', false, a)!;
       expect(help, p).toBeDefined();
       click(help.find((i) => i.label === 'SiteOrigin Website'));
-      expect(a.openLink).toHaveBeenCalledWith(WEBSITE_URL);
+      expect(a.openLink).toHaveBeenCalledWith('https://siteorigin.com');
       const about = help.find((i) => i.label === 'About SiteOrigin Builder');
       if (p === 'darwin') expect(about).toBeUndefined();
       else {
@@ -53,5 +53,16 @@ describe('the application menu (#810)', () => {
       const everywhere = JSON.stringify(appMenuTemplate(p, { projectOpen: true, developer: false }, actions()));
       for (const r of [...dev, 'viewMenu']) expect(everywhere, `${p} ${r}`).not.toContain(`"${r}"`);
     }
+  });
+
+  it('counts a development build run by a person, or Developer mode, as a developer; an automated run as an author', () => {
+    const cases = [
+      [{ packaged: false, automated: false, developerMode: false }, true],
+      [{ packaged: false, automated: true, developerMode: false }, false],
+      [{ packaged: true, automated: false, developerMode: false }, false],
+      [{ packaged: true, automated: false, developerMode: true }, true],
+      [{ packaged: false, automated: true, developerMode: true }, true]
+    ] as const;
+    for (const [launch, developer] of cases) expect(offersDeveloperItems(launch), JSON.stringify(launch)).toBe(developer);
   });
 });

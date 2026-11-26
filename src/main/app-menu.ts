@@ -29,6 +29,12 @@ export interface AppMenuOptions {
   developer: boolean;
 }
 
+/** Whether the menu offers Reload and the developer tools: in a development build run by a person (an automated run
+ *  gets the menu an author has, so a test sees it), or with Developer mode on. */
+export function offersDeveloperItems({ packaged, automated, developerMode }: { packaged: boolean; automated: boolean; developerMode: boolean }): boolean {
+  return (!packaged && !automated) || developerMode;
+}
+
 /** The Help menu's link. */
 export const WEBSITE_URL = 'https://siteorigin.com';
 

@@ -58,9 +58,10 @@ export function nativeMenu(): Surface[] {
   const walk = (items: MenuItemConstructorOptions[], path: string[], p: Platform) => {
     for (const item of items) {
       if (item.type === 'separator') continue;
-      // A menu with a role of its own (Help) is read through its items.
+      // A menu with a role of its own (Help) has both: the role, and its items.
+      if (item.role) add(`role:${item.role}`, p);
       if (Array.isArray(item.submenu)) walk(item.submenu, [...path, item.label ?? '?'], p);
-      else if (item.role) add(`role:${item.role}`, p);
+      else if (item.role) continue;
       else if (item.label) add(`menu:${[...path, item.label].join(' > ')}`, p);
       else throw new Error(`An application menu item with no label or role under ${path.join(' > ') || 'the menu bar'}: read it in tests/coverage/surfaces.ts.`);
     }

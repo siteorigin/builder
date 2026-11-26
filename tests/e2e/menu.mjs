@@ -128,9 +128,15 @@ if (process.platform !== 'darwin') {
   step('Help: About shows the version (Windows and Linux)');
   const aboutMark = await desktopCursor(app);
   const version = await app.evaluate(({ app: a }) => a.getVersion());
-  await answerChoosers(app, [{ dialog: 'message', button: 0 }]);
+  await answerChoosers(app, [{ dialog: 'message', button: 'OK' }]);
   await chooseMenu(app, ['Help', 'About SiteOrigin Builder']);
-  await eventually(async () => assert.ok((await choosersShown(app, aboutMark)).some((c) => JSON.stringify(c).includes(`Version ${version}`)), 'About names the version'));
+  await eventually(async () =>
+    assert.deepEqual(
+      (await choosersShown(app, aboutMark)).map((c) => [c.dialog, c.message, c.detail, c.window, c.outcome]),
+      [['message', 'SiteOrigin Builder', `Version ${version}`, await windowId(), 'chosen']],
+      'About names the app and its version, over the editor window'
+    )
+  );
 }
 
 step('Welcome: Settings… opens the Settings dialog');
