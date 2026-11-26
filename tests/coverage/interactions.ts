@@ -359,7 +359,7 @@ export const INTERACTIONS: Interaction[] = [
     area: 'projects',
     intent: 'Get back to the editor after it crashed or failed',
     start: 'A project open when the editor page crashes, a screen fails while rendering, or the main process meets an error nothing caught',
-    routes: ['dialog:The editor stopped unexpectedly › Reload Editor', 'dialog:The editor stopped working › Reload editor', 'dialog:The editor stopped working › Close project'],
+    routes: ['dialog:The editor stopped working › Reload Editor', 'dialog:The editor stopped working › Reload editor', 'dialog:The editor stopped working › Close project'],
     outcome:
       'A crashed editor asks over its window to be loaded again, and Reload Editor brings back the same opening of the project; a screen that fails while rendering says so and reloads, or closes the project; an uncaught main-process error is reported in the app’s own words and the app keeps running',
     scenario: 'Business starter · none; browser and unit fixtures',

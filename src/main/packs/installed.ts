@@ -27,9 +27,11 @@ export function packRoots(resources: string, userData: string): PackRoot[] {
 export async function loadInstalledPacks(roots: PackRoot[]): Promise<PackCatalogue> {
   const { packs, refused } = await loadPacks(roots);
   const userDir = roots.find((r) => r.source === 'user')?.dir ?? '';
-  if (!packs.some((p) => p.pack.source === 'bundled' && !p.pack.devOnly))
-    refused.unshift({ dir: roots[0]?.dir ?? '', reason: 'The built-in theme is missing, so no project can be created or edited. Run "npm run build:packs" (or reinstall SiteOrigin Builder).' });
+  const builtInMissing = !packs.some((p) => p.pack.source === 'bundled' && !p.pack.devOnly);
+  if (builtInMissing) refused.unshift({ dir: roots[0]?.dir ?? '', reason: 'Missing from this installation of SiteOrigin Builder.' });
   for (const r of refused) console.warn(`Theme pack refused (${r.dir}): ${r.reason}`);
+  // A development build makes its built-in theme with a script; a person reinstalls instead (StartupFailure.tsx says so).
+  if (builtInMissing) console.warn('Run "npm run build:packs" to build the built-in theme.');
   clearPackFiles();
   registerPacks(packs.map((p) => p.pack));
   for (const p of packs) registerPackFiles(p.pack.id, p.files);

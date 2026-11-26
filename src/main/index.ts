@@ -3,6 +3,7 @@ import type { BaseWindow, KeyboardEvent, MenuItem } from 'electron';
 import { join, dirname, normalize, relative, isAbsolute } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { release } from 'node:os';
+import { mkdir } from 'node:fs/promises';
 // First, so the trace (src/main/perf.ts) starts before anything else this module imports is evaluated.
 import { perf } from './perf';
 import { PERF_ARG, PERF_GLOBAL } from '@shared/perf';
@@ -39,7 +40,7 @@ import { desktopForLaunch, headlessSwitches, launchMode } from './headless-deskt
 import { installAiJournal } from './ai-journal';
 import { windowIcon } from './window-icon';
 import { createEditorRecovery, crashQuestion, type EditorRecovery } from './editor-recovery';
-import { createMainErrorReporter } from './main-errors';
+import { createMainErrorReporter, errorText } from './main-errors';
 import { fixComponentSource } from '@agent/fixer';
 import type { Diagnostic } from '@engine/validate';
 import { declareCodeNames } from '@engine/definitions';
@@ -373,6 +374,20 @@ function handle(channel: string, fn: (...args: never[]) => unknown) {
 function registerIpc() {
   handle('app:info', () => ({ version: app.getVersion(), platform: process.platform, dev: !app.isPackaged }));
   handle('app:catalogue', () => installedCatalogue());
+  // For the failure screens (FailureScreen.tsx): the build to quote in a report, the themes folder, and Quit.
+  handle('app:buildDetails', () => buildDetails());
+  handle('app:showThemesFolder', async () => {
+    // Electron's own words when the folder could not be opened, or '' when it was.
+    const dir = installedCatalogue().userDir;
+    if (!dir) return 'No themes folder';
+    try {
+      await mkdir(dir, { recursive: true });
+    } catch (e) {
+      return errorText(e);
+    }
+    return shell.openPath(dir);
+  });
+  handle('app:quit', () => app.quit());
   handle('packs:preview', (packId: unknown, file: unknown) => packPreview(packId, file));
   handle('app:getSettings', async () => (await loadSettings()).settings);
   handle('app:setSettings', async (patch: SettingsPatch) => {
@@ -913,7 +928,7 @@ async function createWindow() {
   // A page that is replaced or crashes mid-recording leaves no one to hand the menus' keys back.
   self.webContents.on('did-navigate', () => self.webContents.setIgnoreMenuShortcuts(false));
   self.webContents.on('render-process-gone', (_e, details) => {
-    if (details.reason !== 'clean-exit') console.error(`The editor stopped unexpectedly (${details.reason}, exit code ${details.exitCode}).`);
+    if (details.reason !== 'clean-exit') console.error(`The editor stopped working (${details.reason}, exit code ${details.exitCode}).`);
     if (!self.webContents.isDestroyed()) self.webContents.setIgnoreMenuShortcuts(false);
     desktop?.windows.gone(selfId, { closed: false });
     committed = false;

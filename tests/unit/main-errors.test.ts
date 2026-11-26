@@ -32,7 +32,10 @@ describe('main-process errors (#886)', () => {
     report(new Error('EPIPE: broken pipe, write'));
     expect(asked).toHaveLength(1);
     expect(asked[0].message).toBe('SiteOrigin Builder ran into a problem');
-    expect(asked[0].detail).toMatch(/^EPIPE: broken pipe, write\n\n/);
+    // Plain words first, the technical message last, and no promise that quitting saves.
+    expect(asked[0].detail).toMatch(/^Your saved work is safe\. Quit and open SiteOrigin Builder again/);
+    expect(asked[0].detail).toMatch(/\n\nDetails: EPIPE: broken pipe, write$/);
+    expect(asked[0].detail).not.toMatch(/saves/);
     expect(asked[0].detail).not.toMatch(/\n\s+at /);
     expect(asked[0].buttons[asked[0].defaultId]).toBe('Quit');
     expect(asked[0].buttons[asked[0].cancelId]).toBe('Keep Working');
@@ -52,7 +55,7 @@ describe('main-process errors (#886)', () => {
     expect(calls).toEqual(['log', 'log']);
     report('third');
     expect(asked).toHaveLength(2);
-    expect(asked[1].detail).toMatch(/^third\n\n/);
+    expect(asked[1].detail).toMatch(/\n\nDetails: third$/);
   });
 
   it('says the app could not start, and exits, before it is ready', () => {
@@ -110,7 +113,9 @@ describe('main-process errors (#886)', () => {
     let content = '';
     const { report } = rig({ ready: () => false, errorBox: (_t, c) => void (content = c) });
     report(new Error('Cannot find module'));
-    expect(content).toBe('Cannot find module\n\nTry opening SiteOrigin Builder again.');
+    expect(content).toBe(
+      'Your projects are safe. Try opening SiteOrigin Builder again. If it still does not start, reinstall it, and report the problem at github.com/siteorigin/builder/issues.\n\nDetails: Cannot find module'
+    );
   });
 
   it('describes whatever was thrown in one line', () => {
@@ -126,6 +131,12 @@ describe('main-process errors (#886)', () => {
       }
     });
     expect(errorText(unspeakable)).toBe('An unknown error.');
-    expect(mainErrorReport(new Error('boom')).detail.startsWith('boom\n\n')).toBe(true);
+    expect(mainErrorReport(new Error('boom')).detail.endsWith('\n\nDetails: boom')).toBe(true);
+  });
+
+  it('says what fixes a full disk, which a restart alone does not', () => {
+    const full = Object.assign(new Error("ENOSPC: no space left on device, write '/sites/home.json'"), { code: 'ENOSPC' });
+    expect(mainErrorReport(full).detail).toMatch(/^Your saved work is safe, but the disk is full, so new changes cannot be saved\..*free up disk space/);
+    expect(mainErrorReport(new Error('boom')).detail).not.toMatch(/disk is full/);
   });
 });

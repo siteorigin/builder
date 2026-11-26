@@ -83,19 +83,31 @@ describe.skipIf(!browserInstalled)('a screen that fails while rendering (#886)',
     expect(errors).toEqual([]);
   });
 
-  const failure = () => page.getByRole('alert');
+  // The failure takes the whole window: a main landmark named by its heading, which takes focus (not an alert).
+  const failure = () => page.getByRole('main', { name: 'The editor stopped working' });
 
   it('shows what happened in place of the screen, and reloads the editor', async () => {
     await page.locator('#field').focus();
     await page.evaluate('window.beforeFailure = true; window.breakScreen()');
     await failure().getByRole('heading', { name: 'The editor stopped working' }).waitFor();
-    expect(await failure().innerText()).toContain("Cannot read properties of undefined (reading 'nodes')");
-    expect(await failure().innerText()).toContain('Reload the editor to go back to your project, or close the project if this keeps happening.');
-    // Focus went with the screen: the way back has it, once, and the keyboard reaches its buttons.
+    expect(await page.getByRole('alert').count()).toBe(0);
+    expect(await failure().innerText()).toContain('Your work is safe. Only text you were still typing may need to be entered again.');
+    expect(await failure().innerText()).toContain('Reload the editor to go back to your project.');
+    // What went wrong, with where in the editor, folded away under Technical details.
+    const detail = await failure().locator('.failure-detail').textContent();
+    expect(detail).toContain("Cannot read properties of undefined (reading 'nodes')");
+    expect(detail).toContain('In the editor:');
+    expect(detail).toContain('at Screen');
+    // Focus went with the screen: the way back has it, once, and the keyboard reaches the help, then the way back
+    // with the filled Reload editor last, as it reads.
     expect(await page.evaluate('document.activeElement.textContent')).toBe('The editor stopped working');
     expect(await page.evaluate('window.failures')).toEqual([0]);
-    await page.keyboard.press('Tab');
-    expect(await page.evaluate('document.activeElement.textContent')).toBe('Reload editor');
+    const order: string[] = [];
+    for (let i = 0; i < 5; i++) {
+      await page.keyboard.press('Tab');
+      order.push((await page.evaluate('document.activeElement.textContent')) as string);
+    }
+    expect(order).toEqual(['Technical details', 'Copy details', 'Report a problem', 'Close project', 'Reload editor']);
     expect(await page.locator('#screen').count()).toBe(0);
 
     await failure().getByRole('button', { name: 'Reload editor' }).click();
@@ -107,7 +119,13 @@ describe.skipIf(!browserInstalled)('a screen that fails while rendering (#886)',
   it('still offers a way back when what was thrown cannot be put into words', async () => {
     await page.evaluate("window.breakScreen('bare')");
     await failure().getByRole('button', { name: 'Reload editor' }).waitFor();
-    expect(await page.locator('.render-failure-detail').count()).toBe(0);
+    expect(await page.locator('.failure-detail').count()).toBe(0);
+  });
+
+  it('says where to report the problem when the report page cannot be opened', async () => {
+    await page.evaluate("window.builder = { app: { openExternal: () => Promise.reject(new Error('no browser')) } }; window.breakScreen()");
+    await failure().getByRole('button', { name: 'Report a problem' }).click();
+    await expect.poll(() => failure().getByRole('status').first().innerText()).toContain('github.com/siteorigin/builder/issues/new');
   });
 
   it('offers to close the project only when one is open', async () => {

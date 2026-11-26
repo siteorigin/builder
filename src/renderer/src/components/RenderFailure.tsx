@@ -1,4 +1,5 @@
-import { Component, createRef, type ErrorInfo, type ReactNode } from 'react';
+import { Component, type ErrorInfo, type ReactNode } from 'react';
+import { FailureScreen } from './FailureScreen';
 
 interface Props {
   children: ReactNode;
@@ -12,7 +13,22 @@ interface Props {
 
 interface State {
   error: Error | null;
+  /** Where in the editor it failed (React's component stack), for the report. */
+  where?: string;
 }
+
+/**
+ * What the Technical details show and Copy details copies: the error with its stack, then where in the editor it
+ * failed. Nothing when what was thrown had no words at all: a stack made up here would only point at this boundary.
+ */
+export function failureDetail(error: Error, where?: string): string | undefined {
+  if (!error.message) return undefined;
+  const stack = error.stack && error.stack.includes(error.message) ? error.stack : `${error.name}: ${error.message}${error.stack ? `\n${error.stack}` : ''}`;
+  return where?.trim() ? `${stack}\n\nIn the editor:${where.replace(/\n\s*$/, '')}` : stack;
+}
+
+/** The one name for the editor failing, here and in the native crash question (src/main/editor-recovery.ts). */
+export const EDITOR_STOPPED = 'The editor stopped working';
 
 /** How many boundaries show a failure right now. */
 let failures = 0;
@@ -43,20 +59,17 @@ export class RenderFailure extends Component<Props, State> {
     return { error: new Error(text) };
   }
 
-  private heading = createRef<HTMLHeadingElement>();
-
   /** Whether this boundary is counted in `failures`. */
   private counted = false;
 
   componentDidCatch(error: unknown, info: ErrorInfo) {
     console.error('The editor failed while showing its screen.', error, info.componentStack);
+    if (info.componentStack) this.setState({ where: info.componentStack });
     if (!this.counted) {
       failures++;
       this.counted = true;
       this.props.onFailure?.();
     }
-    // Whatever had focus went with the screen: the way back takes it, for the keyboard and screen readers.
-    this.heading.current?.focus();
   }
 
   componentWillUnmount() {
@@ -65,31 +78,39 @@ export class RenderFailure extends Component<Props, State> {
   }
 
   render() {
-    const { error } = this.state;
+    const { error, where } = this.state;
     if (!error) return this.props.children;
     const { onCloseProject, reload = () => window.location.reload() } = this.props;
+    // Whatever had focus went with the screen: the way back takes it (FailureScreen focuses its heading).
     return (
-      <div className="fatal render-failure" role="alert">
-        <h1 ref={this.heading} tabIndex={-1}>
-          The editor stopped working
-        </h1>
-        <p>
-          {onCloseProject
-            ? 'Something went wrong while showing the editor. Reload the editor to go back to your project, or close the project if this keeps happening. Text you were still typing may be lost.'
-            : 'Something went wrong while showing the editor. Reload the editor to carry on.'}
-        </p>
-        {error.message && <pre className="render-failure-detail">{error.message}</pre>}
-        <div className="render-failure-actions">
-          <button className="btn btn-primary" onClick={reload}>
-            Reload editor
-          </button>
-          {onCloseProject && (
-            <button className="btn" onClick={onCloseProject}>
-              Close project
+      <FailureScreen
+        title={EDITOR_STOPPED}
+        detail={failureDetail(error, where)}
+        actions={
+          <>
+            {onCloseProject && (
+              <button className="btn" onClick={onCloseProject}>
+                Close project
+              </button>
+            )}
+            <button className="btn btn-primary" onClick={reload}>
+              Reload editor
             </button>
-          )}
-        </div>
-      </div>
+          </>
+        }
+      >
+        {onCloseProject ? (
+          <>
+            <p className="failure-safe">Your work is safe. Only text you were still typing may need to be entered again.</p>
+            <p>Reload the editor to go back to your project. If it stops again, copy the details and report the problem before you close the project.</p>
+          </>
+        ) : (
+          <>
+            <p className="failure-safe">Your projects are safe.</p>
+            <p>Reload the editor to carry on.</p>
+          </>
+        )}
+      </FailureScreen>
     );
   }
 }
