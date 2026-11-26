@@ -7,7 +7,7 @@ import { isCollectionId, isEntryId } from '@shared/collections';
 import { CONVERTER_FILE, isSourceId, MAX_CONVERTER, sourceDocProblem } from '@shared/sources';
 import { SCHEMA_VERSION } from '@shared/types';
 import { migrateProject, newestDocumentVersion, type MigrationResult } from '@shared/migrations';
-import { readIfExists, safeJoin, toJson } from './fsutil';
+import { inBatches, readIfExists, safeJoin, toJson } from './fsutil';
 import { perf } from '../perf';
 
 export const MANIFEST_FILE = 'siteorigin.project.json';
@@ -176,11 +176,15 @@ export class ProjectFormatError extends Error {
   }
 }
 
+/** Reads one canonical document's file (`abs`, at project-relative `rel`): its text, or null when it cannot be read. */
+export type DocReader = (abs: string, rel: string) => Promise<string | null>;
+
 /**
  * The newest format any canonical document on disk declares, skipping documents that cannot be read. Reading the
- * project stops at its first broken document, so a newer one later in the folder needs this to be seen at all.
+ * project stops at its first broken document, so a newer one later in the folder needs this to be seen at all. `read`
+ * reads each document (the session keeps what it reads for the open that follows).
  */
-export async function newestStoredVersion(dir: string): Promise<number> {
+export async function newestStoredVersion(dir: string, read: DocReader = readDoc): Promise<number> {
   const paths = [MANIFEST_FILE, ...['site', 'tokens', 'assets', 'theme-lock', 'brief'].map((d) => `${DOC_DIR}/${d}.json`)];
   const names = async (rel: string) => (existsSync(join(dir, rel)) ? (await fs.readdir(join(dir, rel)).catch(() => [])).sort() : []);
   for (const f of await names(`${DOC_DIR}/pages`)) if (f.endsWith('.json')) paths.push(`${DOC_DIR}/pages/${f}`);
@@ -191,16 +195,20 @@ export async function newestStoredVersion(dir: string): Promise<number> {
     for (const f of await names(`${DOC_DIR}/collections/${c}/entries`)) if (f.endsWith('.json') && isEntryId(f.slice(0, -5))) paths.push(entryDocPath(c, f.slice(0, -5)));
   }
   for (const d of await names(`${DOC_DIR}/sources`)) if (isSourceId(d)) paths.push(sourceDocPath(d));
-  let newest = 0;
-  for (const rel of paths) {
+  // Each document is judged on its own, so they are read a few at a time, in any order.
+  const versions = await inBatches(paths, async (rel) => {
     try {
-      const v = (JSON.parse((await readDoc(safeJoin(dir, rel))) ?? 'null') as { schemaVersion?: unknown } | null)?.schemaVersion;
-      if (Number.isInteger(v) && (v as number) > newest) newest = v as number;
+      const v = (JSON.parse((await read(safeJoin(dir, rel), rel)) ?? 'null') as { schemaVersion?: unknown } | null)?.schemaVersion;
+      // As the read judges them: the manifest by any number it gives (a fraction too), every other document by a
+      // whole one (anything else counts as the first format, see migrations' versionOf).
+      const counts = rel === MANIFEST_FILE ? typeof v === 'number' : Number.isInteger(v);
+      return counts ? (v as number) : 0;
     } catch {
       // Unreadable or not a document: the normal read reports it.
+      return 0;
     }
-  }
-  return newest;
+  });
+  return versions.reduce((a, b) => (b > a ? b : a), 0);
 }
 
 /** A canonical document's text from the project folder, counted (src/shared/perf.ts) when it was there to read. */
@@ -224,6 +232,12 @@ export interface ReadOptions {
   allowNewer?: boolean;
   /** Read these documents and nothing from the folder (a saved version): a document not here is absent. */
   only?: Map<string, string>;
+  /**
+   * Texts of documents in the folder, by project-relative path, known to be what their files hold now (the format
+   * scan's, still standing for their files): used instead of reading those files again. Which documents there are is
+   * still read from the folder, and any other document from its file.
+   */
+  known?: Map<string, string>;
 }
 
 /** The project in the current format. Reading never writes: a session publishes a migration itself. */
@@ -263,7 +277,9 @@ async function readStoredState(dir: string, opts: ReadOptions, raw: Map<string, 
   // Reading only given documents, every other document counts as absent, whatever the folder holds.
   const overlay: Map<string, string | null> = only ?? opts.overlay ?? new Map<string, string | null>();
   const text = async (rel: string): Promise<string | null> => {
-    const t = overlay.has(rel) ? overlay.get(rel)! : only ? null : await readDoc(safeJoin(dir, rel));
+    // A known text is used only where its file could be read: inside the project, no link leading out of it.
+    const known = opts.known?.get(rel);
+    const t = overlay.has(rel) ? overlay.get(rel)! : only ? null : known !== undefined && safeJoin(dir, rel) ? known : await readDoc(safeJoin(dir, rel));
     if (t !== null) raw.set(rel, t);
     return t;
   };

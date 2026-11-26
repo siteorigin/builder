@@ -10,7 +10,8 @@
  * long for them while it holds the project's lock: a set that takes longer is published once it is ready.
  */
 import { createHash } from 'node:crypto';
-import { constants, promises as fs } from 'node:fs';
+import { constants, promises as fs, statSync } from 'node:fs';
+import { homedir } from 'node:os';
 import { basename, join } from 'node:path';
 import type { AssetRecord, ProjectState } from '@shared/types';
 import { DRAWN_ICON_FILES } from '@shared/site-icons';
@@ -24,10 +25,50 @@ import type { IconSpec, IconsResult } from './media-client';
 export type SiteIconRenderer = (data: Buffer, mime: string, icons: IconSpec[], opts?: { untrusted?: boolean }) => Promise<IconsResult>;
 
 let renderer: SiteIconRenderer | null = null;
+let remembering: { id: string; records: string } | null = null;
 
-/** Who draws the icons from now on; null leaves them undrawn. */
-export function setSiteIconRenderer(next: SiteIconRenderer | null): void {
+/**
+ * Who draws the icons from now on; null leaves them undrawn. With `remember`, the icons it drew for a project are
+ * noted in a folder of the app's own (`records`, never inside a project, which anyone could have written), under
+ * `id`, which names this build of it on this system: the same input draws the same bytes under one id, so the icons a
+ * project holds can stand for a drawing when it is opened again (see ProjectSession's recallSiteIcons). Without it,
+ * every set is drawn.
+ */
+export function setSiteIconRenderer(next: SiteIconRenderer | null, remember: { id: string; records: string } | null = null): void {
   renderer = next;
+  remembering = next ? remember : null;
+}
+
+/**
+ * Where the record of a project's icons is kept, and the renderer id it must name; null when nothing is remembered.
+ * The id also names the system's fonts as this process found them: text in an SVG (the monogram's letter) is drawn in
+ * whichever installed font it resolves to.
+ */
+export function siteIconRecord(projectDir: string): { file: string; renderer: string } | null {
+  if (!remembering) return null;
+  return { file: join(remembering.records, `${createHash('sha256').update(projectDir).digest('hex')}.json`), renderer: `${remembering.id} fonts ${fontsStamp()}` };
+}
+
+/** The folders the system's fonts are installed in. */
+function fontFolders(): string[] {
+  const home = homedir();
+  if (process.platform === 'darwin') return ['/System/Library/Fonts', '/Library/Fonts', join(home, 'Library', 'Fonts')];
+  if (process.platform === 'win32') return [join(process.env.WINDIR ?? 'C:\\Windows', 'Fonts'), join(process.env.LOCALAPPDATA ?? join(home, 'AppData', 'Local'), 'Microsoft', 'Windows', 'Fonts')];
+  return ['/usr/share/fonts', '/usr/local/share/fonts', join(home, '.local', 'share', 'fonts'), join(home, '.fonts')];
+}
+
+let fonts: string | null = null;
+/** When each font folder last had a font added or removed, as this process first looked. */
+function fontsStamp(): string {
+  return (fonts ??= fontFolders()
+    .map((d) => {
+      try {
+        return String(statSync(d).mtimeMs);
+      } catch {
+        return '-';
+      }
+    })
+    .join(','));
 }
 
 /** Project paths of the icons, as the session claims them. */
@@ -99,7 +140,7 @@ async function readFavicon(dir: string, a: AssetRecord): Promise<{ data: Buffer;
 }
 
 /** What a set of icons is made from now, and the key that names it. */
-interface IconInput {
+export interface IconInput {
   key: string;
   data: Buffer;
   mime: string;
@@ -117,6 +158,8 @@ export interface MadeIcons {
   key: string;
   files: Map<string, Buffer> | null;
   id: number | null;
+  /** The monogram's icons, standing in for a picture that could not be decoded (tried again after a while). */
+  standIn: boolean;
 }
 
 /** One set asked of the renderer, and everyone waiting for it. */
@@ -190,13 +233,10 @@ export class SiteIconMaker {
     const input = await this.input(dir, state);
     const kept = (): MadeIcons => {
       const m = this.made.get(input.key);
-      return { key: input.key, files: m?.files ?? null, id: m?.id ?? null };
+      return { key: input.key, files: m?.files ?? null, id: m?.id ?? null, standIn: !!m?.retryAt };
     };
-    const hit = this.made.get(input.key);
-    if (hit && !(hit.retryAt && Date.now() >= hit.retryAt)) return kept();
-    const failedAt = this.failed.get(input.key);
-    if (!renderer || (!hit && failedAt !== undefined && Date.now() - failedAt < RETRY_MS)) return kept();
-    const draw = this.ask(input);
+    const draw = this.start(input);
+    if (!draw) return kept();
     let timer: ReturnType<typeof setTimeout> | undefined;
     // An endless budget waits for the drawing itself (a timer cannot wait that long: it would fire at once).
     const done = draw.done.then(() => true);
@@ -204,6 +244,39 @@ export class SiteIconMaker {
     clearTimeout(timer);
     if (!ready) draw.late = true;
     return kept();
+  }
+
+  /**
+   * Start drawing the icons for `state` when `make` would, without waiting for them: a publication asks first, so the
+   * media worker draws them while the publication generates and checks the website's files, and `make` then finds
+   * the drawing under way (or done). `input` is what they are made from, when the caller has just read it. Resolves
+   * once the drawing has been asked of the worker.
+   */
+  async prepare(dir: string, state: ProjectState, input?: IconInput): Promise<void> {
+    if (!this.start(input ?? (await this.input(dir, state)))) return;
+    // The request reaches the worker in a later turn of the event loop than this one: let it go before the caller's
+    // synchronous generation holds the loop.
+    await new Promise<void>((r) => setImmediate(r));
+  }
+
+  /**
+   * Keep `files` as the set made from `key` unless one is kept already: icons the project holds that are known to be
+   * that very drawing (see ProjectSession's recallSiteIcons), so nothing is drawn for them.
+   */
+  adopt(key: string, files: Map<string, Buffer>): void {
+    if (this.made.has(key)) return;
+    this.made.set(key, { files, id: ++this.drawn });
+    for (const k of this.made.keys()) if (this.made.size > KEEP_SETS) this.made.delete(k);
+    this.last = key;
+  }
+
+  /** The drawing `make` waits for: none when a set made from `input` is kept, or none can be made now. */
+  private start(input: IconInput): Draw | null {
+    const hit = this.made.get(input.key);
+    if (hit && !(hit.retryAt && Date.now() >= hit.retryAt)) return null;
+    const failedAt = this.failed.get(input.key);
+    if (!renderer || (!hit && failedAt !== undefined && Date.now() - failedAt < RETRY_MS)) return null;
+    return this.ask(input);
   }
 
   /** The drawing for `input`: the one under way or waiting for it, or a new one, which takes the waiting one's place. */

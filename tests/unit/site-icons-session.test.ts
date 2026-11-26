@@ -4,7 +4,7 @@
  * they are when they cannot be made, and drawn again only when what they are made from changes.
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
+import { cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import sharp from 'sharp';
@@ -323,5 +323,95 @@ describe('the website’s icons in a project', () => {
     expect(restored.equals((await renderSiteIcons(Buffer.from(set.monogram), 'image/svg+xml', [{ size: 512 }]))[0])).toBe(true);
     expect(await editedGeneratedFile(d)).toBeNull();
     expect(s.conflicts).toEqual([]);
+  });
+});
+
+describe('reopening a project whose icons are current (#959)', () => {
+  const iconBytes = (d: string) => SITE_ICON_PATHS.map((p) => readFileSync(join(d, p)).toString('base64'));
+  // The app's own folder of records, outside every project.
+  let records = '';
+  beforeEach(() => void (records = tmp()));
+  /** Draws in this process under a build id, so icons it drew can stand for a drawing when the project is reopened. */
+  const register = (id: string) => {
+    const r = { calls: 0 };
+    setSiteIconRenderer(
+      async (data, mime, icons, opts) => {
+        r.calls++;
+        return { ok: true, icons: await renderSiteIcons(data, mime, icons, opts) };
+      },
+      { id, records }
+    );
+    return r;
+  };
+
+  it('takes the icons in the project as they are, drawing nothing', async () => {
+    const d = tmp();
+    register('build 1');
+    await (await create(d)).close();
+    const before = iconBytes(d);
+    const inodes = SITE_ICON_PATHS.map((p) => statSync(join(d, p)).ino);
+    const r = register('build 1');
+    const s = await open(d);
+    expect(r.calls).toBe(0);
+    // Not written again: the very same files, holding the very same bytes.
+    expect(iconBytes(d)).toEqual(before);
+    expect(SITE_ICON_PATHS.map((p) => statSync(join(d, p)).ino)).toEqual(inodes);
+    expect(s.conflicts).toEqual([]);
+    // They count as published: nothing is drawn or written when the editor asks for them again.
+    expect(await s.refreshSiteIcons()).toMatchObject({ published: true });
+    expect(r.calls).toBe(0);
+    // A rename draws the new monogram's, and the next opening takes those.
+    expect((await rename(s, 'Quay Street')).ok).toBe(true);
+    expect(r.calls).toBe(1);
+    const renamed = iconBytes(d);
+    expect(renamed).not.toEqual(before);
+    await s.close();
+    const next = register('build 1');
+    await open(d);
+    expect(next.calls).toBe(0);
+    expect(iconBytes(d)).toEqual(renamed);
+  });
+
+  it('draws them again for another build of the renderer, an input changed while closed, or an icon changed outside the app', async () => {
+    const d = tmp();
+    register('build 1');
+    await (await create(d)).close();
+    const other = register('build 2');
+    await (await open(d)).close();
+    expect(other.calls).toBe(1);
+    // The site renamed outside the app: the monogram is another, so its icons are drawn and replace the old ones.
+    const site = join(d, 'siteorigin/site.json');
+    const before = iconBytes(d);
+    writeFileSync(site, JSON.stringify({ ...JSON.parse(readFileSync(site, 'utf8')), name: 'Quay Street' }, null, 2));
+    const renamed = register('build 2');
+    await (await open(d)).close();
+    expect(renamed.calls).toBe(1);
+    expect(iconBytes(d)).not.toEqual(before);
+    // An icon edited outside the app, its record and its claim left as they were: drawn again, the edit kept and named.
+    const edited = join(d, SITE_ICON_PATHS[0]);
+    writeFileSync(edited, 'not the drawing');
+    const third = register('build 2');
+    const reopened = await open(d);
+    expect(third.calls).toBe(1);
+    expect(readFileSync(edited, 'utf8')).toBe('not the drawing');
+    expect(reopened.conflicts).toContainEqual(expect.objectContaining({ path: SITE_ICON_PATHS[0], kind: 'generated' }));
+  });
+
+  it('keeps its records out of the project: a copy of the project draws its icons', async () => {
+    const d = tmp();
+    register('build 1');
+    await (await create(d)).close();
+    // The record is the app's own, one for the project; nothing the project holds says which drawing its icons are.
+    expect(readdirSync(records)).toHaveLength(1);
+    expect(readdirSync(join(d, '.siteorigin', 'cache'))).not.toContain('site-icons.json');
+    const copy = join(tmp(), 'copy');
+    cpSync(d, copy, { recursive: true });
+    const r = register('build 1');
+    await (await open(copy)).close();
+    expect(r.calls).toBe(1);
+    // The original is still taken as it is.
+    const again = register('build 1');
+    await open(d);
+    expect(again.calls).toBe(0);
   });
 });

@@ -167,6 +167,20 @@ describe('a newer format is found even behind a broken document', () => {
 });
 
 describe('a newer document anywhere is found', () => {
+  it('in a manifest whose format is a fraction above this one, before anything is written', async () => {
+    const dir = await makeProject(false);
+    rmSync(join(dir, '.siteorigin'), { recursive: true, force: true });
+    const path = join(dir, 'siteorigin.project.json');
+    writeFileSync(path, JSON.stringify({ ...JSON.parse(readFileSync(path, 'utf8')), schemaVersion: SCHEMA_VERSION + 0.5 }, null, 2));
+    expect(await newestStoredVersion(dir)).toBe(SCHEMA_VERSION + 0.5);
+    const before = snapshotTree(dir);
+    const err = await ProjectSession.open(dir, 'me').catch((e) => e);
+    expect(err).toBeInstanceOf(ProjectFormatError);
+    expect(err.readOnly).toBe(true);
+    expect(snapshotTree(dir)).toEqual(before);
+    expect(existsSync(join(dir, '.siteorigin'))).toBe(false);
+  });
+
   it('in a component', async () => {
     const dir = await makeProject(false);
     const doc = join(dir, 'siteorigin/components/c_newer/component.json');
