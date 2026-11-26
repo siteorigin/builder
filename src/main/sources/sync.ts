@@ -90,11 +90,14 @@ export function holdsSecret(text: string, values: readonly string[]): boolean {
 }
 
 /**
- * Whether a picture's bytes hold one of `values`: as they are, read as text either way, and in its PNG text chunks,
- * compressed ones included. The library keeps a picture's bytes as they are, so none may carry a secret.
+ * Whether a picture's bytes hold one of `values`: as they are, and in its PNG text chunks, compressed ones included
+ * (a PNG whose text cannot all be read counts as one that does). The library keeps a picture's bytes as they are, so
+ * none may carry a secret.
  */
 export function pictureHoldsSecret(bytes: Buffer, values: readonly string[]): boolean {
-  return values.some((v) => v.length >= MIN_SECRET_LENGTH && bytes.includes(v)) || holdsSecret(bytes.toString('latin1'), values) || holdsSecret(pngTextValues(bytes).join('\n'), values);
+  if (values.some((v) => v.length >= MIN_SECRET_LENGTH && bytes.includes(v))) return true;
+  const text = pngTextValues(bytes);
+  return text === null || holdsSecret(text.join('\n'), values);
 }
 
 /** What to call a picture in the library: the name the source gives it, or its file's name. */

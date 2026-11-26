@@ -1811,14 +1811,19 @@ function heifLocations(buf: Buffer, iloc: { body: number; end: number }, idat: {
   return out;
 }
 
+/** The most text, decompressed, a PNG's chunks are read for together (see pngTextValues). */
+const PNG_TEXT_MAX = 4 * 1024 * 1024;
+
 /**
  * Every text chunk of a PNG as text, compressed or not (tEXt, zTXt, iTXt): what a picture says of itself in words, to
  * be checked for what may never be published. Empty for anything that is not a PNG; a chunk that cannot be read is
  * left out.
  */
-export function pngTextValues(buf: Buffer): string[] {
+export function pngTextValues(buf: Buffer): string[] | null {
   const out: string[] = [];
   if (buf.length < 8 || buf.readUInt32BE(0) !== 0x89504e47) return out;
+  // All its text together, decompressed, at most this much: a picture that says more cannot be checked, so null.
+  let room = PNG_TEXT_MAX;
   for (let at = 8; at + 12 <= buf.length; ) {
     const len = buf.readUInt32BE(at);
     const type = buf.toString('latin1', at + 4, at + 8);
@@ -1826,11 +1831,14 @@ export function pngTextValues(buf: Buffer): string[] {
     const data = buf.subarray(at + 8, at + 8 + len);
     if (type === 'tEXt' || type === 'zTXt' || type === 'iTXt') {
       const nul = data.indexOf(0);
+      if (room <= 0) return null;
       try {
-        const value = type === 'tEXt' ? data.toString('latin1', nul + 1) : type === 'zTXt' ? inflateSync(data.subarray(nul + 2), { maxOutputLength: MAX_INFLATE }).toString('latin1') : pngItxtText(data, nul).toString('utf8');
+        const value = type === 'tEXt' ? data.toString('latin1', nul + 1) : type === 'zTXt' ? inflateSync(data.subarray(nul + 2), { maxOutputLength: room }).toString('latin1') : pngItxtText(data, nul).toString('utf8');
+        room -= value.length;
         out.push(`${data.toString('latin1', 0, Math.max(nul, 0))}\n${value}`);
       } catch {
-        // Unreadable: nothing it holds is shown anywhere.
+        // Too long to read within what is left, or damaged: it cannot be checked.
+        return null;
       }
     }
     at += 12 + len;
