@@ -45,8 +45,12 @@ const reason = await app.evaluate(({ BrowserWindow }) => {
     const late = setTimeout(() => reject(new Error('The renderer did not crash within 30s')), 30000);
     contents.once('render-process-gone', (_e, details) => {
       clearTimeout(late);
-      fixtures.setAnswers([{ dialog: 'message', message: 'The editor stopped unexpectedly', button: 'Reload Editor' }]);
-      resolve(details.reason);
+      try {
+        fixtures.setAnswers([{ dialog: 'message', message: 'The editor stopped unexpectedly', button: 'Reload Editor' }]);
+        resolve(details.reason);
+      } catch (e) {
+        reject(e);
+      }
     });
   });
   contents.forcefullyCrashRenderer();

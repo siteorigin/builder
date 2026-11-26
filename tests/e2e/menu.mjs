@@ -302,10 +302,14 @@ const crashed = await app.evaluate(({ BrowserWindow, Menu }) => {
     const late = setTimeout(() => reject(new Error('The renderer did not crash within 30s')), 30000);
     contents.once('render-process-gone', (_e, details) => {
       clearTimeout(late);
-      const file = Menu.getApplicationMenu().items.find((i) => i.label === 'File');
-      const item = file.submenu.items.find((i) => i.label === 'New Project…');
-      item.click({ triggeredByAccelerator: false, shiftKey: false, ctrlKey: false, altKey: false, metaKey: false }, editor, contents);
-      resolve(details.reason);
+      try {
+        const file = Menu.getApplicationMenu().items.find((i) => i.label === 'File');
+        const item = file.submenu.items.find((i) => i.label === 'New Project…');
+        item.click({ triggeredByAccelerator: false, shiftKey: false, ctrlKey: false, altKey: false, metaKey: false }, editor, contents);
+        resolve(details.reason);
+      } catch (e) {
+        reject(e);
+      }
     });
   });
   contents.forcefullyCrashRenderer();

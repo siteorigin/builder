@@ -196,7 +196,13 @@ function previewComponents(steps: ComponentPreviewStep[], measure?: ComponentPre
 const leaveGate = createLeaveGate({
   request: (requestId) => {
     if (!win || win.isDestroyed() || win.webContents.isCrashed()) return false;
-    controller.send('lifecycle:request', { requestId });
+    // A request that could not be sent is treated as an editor that does not answer: it times out to Wait or Leave
+    // Anyway, rather than leave a close or quit waiting for good (or leave without saving what is typed).
+    try {
+      controller.send('lifecycle:request', { requestId });
+    } catch (e) {
+      console.error('The editor could not be asked before leaving:', e);
+    }
     return true;
   },
   // Tests never see a native dialog: a page that stops answering there is left.
@@ -848,13 +854,8 @@ async function createWindow() {
       if (!headless && !self.isVisible()) self.show();
       return dialog.showMessageBox(self, { ...crashQuestion(!!controller.session), signal }).then((r) => (r.response === 1 ? 'close' : 'reload'));
     },
-    // Loaded at the editor's own address: a page that crashed before its first load finished has nothing to reload. A
-    // load that fails (not one a newer navigation or a new crash took over) asks again, rather than leave a dead window.
-    reload: () =>
-      void self.webContents.loadURL(editorUrl()).catch((e: unknown) => {
-        console.error('The editor could not be loaded again:', e);
-        if ((e as { code?: unknown }).code !== 'ERR_ABORTED' && !self.isDestroyed() && !self.webContents.isCrashed()) recovery.gone();
-      }),
+    // Loaded at the editor's own address: a page that crashed before its first load finished has nothing to reload.
+    reload: () => void self.webContents.loadURL(editorUrl()).catch((e: unknown) => console.error('The editor could not be loaded again:', e)),
     close: () => self.close()
   });
   recoveries.set(self, recovery);
@@ -927,8 +928,16 @@ async function createWindow() {
     leaveGate.editorGone();
     controller.cancelOpen();
   });
-  // A first load the page crashed during is taken up by the crash's own question, not reported as an error here.
-  await win.loadURL(editorUrl()).catch((e: unknown) => console.error('The editor did not finish loading:', e));
+  // A first load the page crashed during (or that the crash's reload took over) is taken up by the crash's own question,
+  // not reported as an error here. Any other failure to load the editor is.
+  const first = win;
+  await first.loadURL(editorUrl()).catch((e: unknown) => {
+    if ((e as { code?: unknown }).code === 'ERR_ABORTED' || first.isDestroyed() || first.webContents.isCrashed()) {
+      console.error('The editor did not finish its first load:', e);
+      return;
+    }
+    throw e;
+  });
 }
 
 /** A File menu command (chosen in the menu bar or by its shortcut), for the editor window. */
@@ -1047,10 +1056,11 @@ app.whenReady().then(async () => {
   nativeTheme.on('updated', () => {
     if (win && !win.isDestroyed()) win.setBackgroundColor(windowBackground());
   });
-  await createWindow();
+  // Registered before the first window loads: a first load that fails must not leave macOS without a way to open one.
   app.on('activate', () => {
     if (!BrowserWindow.getAllWindows().length) void createWindow();
   });
+  await createWindow();
 });
 
 app.on('window-all-closed', () => {
