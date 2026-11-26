@@ -8,6 +8,7 @@ import { seoDocument, seoDocuments, seoSubjectKey, type SeoDocument } from '../l
 import { seoOverviewOnce, seoOverviewProblems, type SeoImageStatus, type SeoOverviewRow, type SeoOverviewText } from '../lib/seo-overview';
 import { isDraftPage } from '@generator/index';
 import { activeWorkspace } from '../lib/workspace';
+import { leaveField } from '../lib/leave-field';
 import { SeoPreview, useDocumentPreview, useTypedSeo, type TypedSeoOn } from './SeoPreview';
 import type { DocumentPreview } from '../lib/seo-preview';
 import { StructuredDataFields } from '../components/StructuredDataFields';
@@ -92,12 +93,6 @@ export function SeoPanel() {
       </div>
     </div>
   );
-}
-
-/** Leaves the text field with focus inside `root`, if there is one: its control saves or keeps what it holds. */
-function leaveField(root: HTMLElement | null) {
-  const el = document.activeElement;
-  if (root && el instanceof HTMLElement && root.contains(el) && el.matches('input, textarea')) el.blur();
 }
 
 /** What a document is, in words: the home page, a page, or an entry of its collection. */

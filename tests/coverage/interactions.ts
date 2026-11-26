@@ -808,6 +808,8 @@ export const INTERACTIONS: Interaction[] = [
       { test: 'tests/e2e/actions.mjs', kind: 'driver', step: 'edited after a double click, typed over and committed' },
       { test: 'tests/e2e/actions.mjs', kind: 'driver', step: 'the Inspector shows the committed text' },
       { test: 'tests/e2e/flows.mjs', kind: 'e2e', step: 'inline text edit' },
+      { test: 'tests/e2e/inspector-canvas-pick.mjs', kind: 'e2e', step: 'click another section on the canvas: the hero keeps what was typed, the section clicked keeps its own' },
+      { test: 'tests/unit/inspector-leave.test.ts', kind: 'unit' },
       { test: 'tests/e2e/flows.mjs', kind: 'e2e', step: 'rich text the project refuses goes back to what was saved' },
       { test: 'tests/unit/canvas-writing.test.ts', kind: 'unit' },
       { test: 'tests/e2e/flows.mjs', kind: 'e2e', step: 'inline rich text: bold, italic and a page link' },
