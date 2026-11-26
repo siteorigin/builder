@@ -31,9 +31,9 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
-  # The whole unit suite, the same way PR CI runs it (ci.yml) but never narrowed
-  # to a diff: no installer is built from a tree whose unit tests fail. E2E stays
-  # in the local stabilize pass and the release checklist (docs/releasing.md).
+  # The whole unit suite, never narrowed to a diff: no installer is built from a
+  # tree whose unit tests fail. No e2e: that stays in the local stabilize pass and
+  # the release checklist (docs/releasing.md).
   unit:
     name: Unit tests
     runs-on: ubuntu-latest
@@ -48,12 +48,12 @@ jobs:
           node-version: 24
           cache: npm
       - run: npm ci
-      # The browser tests skip themselves when Chromium is missing.
-      - run: npx playwright install --with-deps chromium
-      # The whole suite has timing-sensitive tests that fail now and then on a
-      # busy runner (a different one each run), so a failing test gets two more
-      # tries; one that fails all three still stops the release.
-      - run: npx vitest run --retry=2
+      # No browser here: the unit tests that need Chromium skip themselves, and
+      # PR CI and the local stabilize pass run them. The whole suite has
+      # timing-sensitive tests that fail now and then on a busy runner (a
+      # different one each run), so a failing test gets three more tries; one
+      # that fails all four still stops the release.
+      - run: npx vitest run --retry=3
 
   mac:
     name: macOS (${{ matrix.arch }})
