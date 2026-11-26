@@ -119,7 +119,7 @@ describe('the reload bridge in the preview', () => {
     const ann = await admittedGuest(relay, room);
     // Over a raw connection, as a browser sends it: Node's fetch overwrites Sec-Fetch-Mode with its own.
     const ask = async (path: string, dest: string | null, response: Parameters<typeof answerPreview>[2], extra: Record<string, string> = {}) => {
-      const metadata = dest === 'iframe' ? { 'sec-fetch-dest': 'iframe', 'sec-fetch-site': 'same-site', 'sec-fetch-mode': 'navigate' } : dest ? { 'sec-fetch-dest': dest, 'sec-fetch-site': 'none', 'sec-fetch-mode': 'navigate' } : {};
+      const metadata: Record<string, string> = dest === 'iframe' ? { 'sec-fetch-dest': 'iframe', 'sec-fetch-site': 'same-site', 'sec-fetch-mode': 'navigate' } : dest ? { 'sec-fetch-dest': dest, 'sec-fetch-site': 'none', 'sec-fetch-mode': 'navigate' } : {};
       const pending = relay.http(`${room.previewOrigin}${path}`, { headers: { cookie: ann.cookie, ...metadata, ...extra } });
       const request = await room.host.next('preview:request');
       answerPreview(room.host, request.requestId, response);

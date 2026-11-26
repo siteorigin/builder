@@ -174,10 +174,10 @@ describe.skipIf(!browserInstalled)('the guest’s viewer', { timeout: 30_000 }, 
 
       // The guest browses on their own, scrolls, and the host changes the page.
       await frame.click('a[href="/about/"]');
-      await s.tab.waitForFunction(() => document.querySelector('iframe')?.contentWindow !== null);
+      await s.tab.waitForFunction(`document.querySelector('iframe')?.contentWindow !== null`);
       frame = await preview(s);
-      await frame.waitForFunction(() => document.querySelector('h1')?.textContent === 'About');
-      await frame.evaluate(() => window.scrollTo(0, 1500));
+      await frame.waitForFunction(`document.querySelector('h1')?.textContent === 'About'`);
+      await frame.evaluate(`window.scrollTo(0, 1500)`);
       s.site.set('/about/', page('About, updated', '<div style="height:4000px"></div>'));
       s.host.send('host-to-relay', { type: 'preview:reload' });
       await s.tab.waitForFunction(() => true);
@@ -185,7 +185,7 @@ describe.skipIf(!browserInstalled)('the guest’s viewer', { timeout: 30_000 }, 
       frame = await preview(s);
       expect(await frame.textContent('h1')).toBe('About, updated');
       expect(new URL(frame.url()).pathname).toBe('/about/');
-      await frame.waitForFunction(() => window.scrollY === 1500);
+      await frame.waitForFunction(`window.scrollY === 1500`);
     } finally {
       await s.done();
     }
@@ -199,34 +199,34 @@ describe.skipIf(!browserInstalled)('the guest’s viewer', { timeout: 30_000 }, 
       const guestId = await ask(s);
       let frame = await admit(s, guestId);
       expect(await frame.textContent('h1')).toBe('About');
-      expect(await frame.evaluate(() => window.innerWidth)).toBe(834);
+      expect(await frame.evaluate<number>(`window.innerWidth`)).toBe(834);
 
       s.host.send('host-to-relay', { type: 'presence:update', presence: { pageId: 'pg_home', viewportWidth: 1280, selection: null, previewPath: '/' } });
-      await s.tab.waitForFunction(() => document.querySelector('#live-session')?.getAttribute('data-frame-width') === '1280');
+      await s.tab.waitForFunction(`document.querySelector('#live-session')?.getAttribute('data-frame-width') === '1280'`);
       for (let i = 0; i < 100 && (await heading(s).catch(() => null)) !== 'Home'; i++) await wait(50);
       frame = await preview(s);
       expect(await frame.textContent('h1')).toBe('Home');
-      expect(await frame.evaluate(() => window.innerWidth)).toBe(1280);
+      expect(await frame.evaluate<number>(`window.innerWidth`)).toBe(1280);
 
       // A preset is browsing on one's own: the host's next move is not followed.
       await s.tab.click('[data-viewport="mobile"]');
       expect(await s.tab.isChecked('#follow')).toBe(false);
-      await frame.waitForFunction(() => window.innerWidth === 390);
+      await frame.waitForFunction(`window.innerWidth === 390`);
       s.host.send('host-to-relay', { type: 'presence:update', presence: { pageId: 'pg_about', viewportWidth: 1024, selection: null, previewPath: '/about/' } });
       await wait(400);
       expect(await (await preview(s)).textContent('h1')).toBe('Home');
       await s.tab.click('[data-viewport="tablet"]');
-      await (await preview(s)).waitForFunction(() => window.innerWidth === 834);
+      await (await preview(s)).waitForFunction(`window.innerWidth === 834`);
       expect(await s.tab.getAttribute('[data-viewport="tablet"]', 'aria-pressed')).toBe('true');
       await s.tab.click('[data-viewport="desktop"]');
-      await (await preview(s)).waitForFunction(() => window.innerWidth === 1280);
+      await (await preview(s)).waitForFunction(`window.innerWidth === 1280`);
 
       // Following again goes straight to where the host is.
       await s.tab.check('#follow');
       for (let i = 0; i < 100 && (await heading(s).catch(() => null)) !== 'About'; i++) await wait(50);
       frame = await preview(s);
       expect(await frame.textContent('h1')).toBe('About');
-      expect(await frame.evaluate(() => window.innerWidth)).toBe(1024);
+      expect(await frame.evaluate<number>(`window.innerWidth`)).toBe(1024);
     } finally {
       await s.done();
     }
@@ -256,13 +256,12 @@ describe.skipIf(!browserInstalled)('the guest’s viewer', { timeout: 30_000 }, 
     const s = await scene();
     try {
       // Count every frame the page ever makes, not only the ones left at the end.
-      await s.tab.evaluate(() => {
-        const w = window as unknown as { framesMade: number };
-        w.framesMade = 0;
+      await s.tab.evaluate(`(() => {
+        window.framesMade = 0;
         new MutationObserver((records) => {
-          for (const record of records) for (const node of record.addedNodes) if (node.nodeName === 'IFRAME') w.framesMade++;
+          for (const record of records) for (const node of record.addedNodes) if (node.nodeName === 'IFRAME') window.framesMade++;
         }).observe(document.body, { childList: true, subtree: true });
-      });
+      })()`);
       // The relay redeems the ticket and sets the cookie; its answer is held back from the page until after the kick.
       let release!: () => void;
       const gate = new Promise<void>((resolve) => (release = resolve));
@@ -286,7 +285,7 @@ describe.skipIf(!browserInstalled)('the guest’s viewer', { timeout: 30_000 }, 
       for (let i = 0; i < 200 && !delivered; i++) await wait(25);
       expect(delivered).toBe(true);
       await wait(300);
-      expect(await s.tab.evaluate(() => (window as unknown as { framesMade: number }).framesMade)).toBe(0);
+      expect(await s.tab.evaluate<number>(`window.framesMade`)).toBe(0);
       expect(await s.tab.getAttribute('#live-session', 'data-phase')).toBe('kicked');
     } finally {
       await s.done();
@@ -338,7 +337,7 @@ describe.skipIf(!browserInstalled)('the guest’s viewer', { timeout: 30_000 }, 
       await s.tab.waitForSelector('#connection[data-state="reconnecting"]');
       expect(await s.tab.isVisible('#veil')).toBe(true);
       expect(await frameCount(s)).toBe(1);
-      await bobTab.waitForFunction(() => document.querySelector('#screen-title')?.textContent === 'The host is reconnecting');
+      await bobTab.waitForFunction(`document.querySelector('#screen-title')?.textContent === 'The host is reconnecting'`);
 
       const asked = s.server.asked.length;
       s.host = (await reconnectHost(relay, s.room.roomId, s.room.keys)).host;
@@ -347,7 +346,7 @@ describe.skipIf(!browserInstalled)('the guest’s viewer', { timeout: 30_000 }, 
       for (let i = 0; i < 100 && s.server.asked.length === asked; i++) await wait(25);
       expect(s.server.asked.slice(asked)).toContain('/');
       expect(await heading(s)).toBe('Home');
-      await bobTab.waitForFunction(() => document.querySelector('#screen-title')?.textContent === 'Waiting for the host');
+      await bobTab.waitForFunction(`document.querySelector('#screen-title')?.textContent === 'Waiting for the host'`);
       await bob.close();
     } finally {
       await s.done();
@@ -405,7 +404,7 @@ describe.skipIf(!browserInstalled)('the guest’s viewer', { timeout: 30_000 }, 
       expect(await s.tab.isVisible('#handoff')).toBe(true);
       expect(await s.tab.inputValue('#handoff-link')).toBe(`${origin}/s/${s.room.roomId}`);
       await s.tab.click('#handoff-copy');
-      expect(await s.tab.evaluate(() => navigator.clipboard.readText())).toBe(`${origin}/s/${s.room.roomId}`);
+      expect(await s.tab.evaluate<string>(`navigator.clipboard.readText()`)).toBe(`${origin}/s/${s.room.roomId}`);
     } finally {
       await s.done();
     }
