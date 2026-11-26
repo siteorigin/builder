@@ -403,3 +403,78 @@ describe('collections on disk', () => {
     await expect(newestStoredVersion(dir)).resolves.toBe(SCHEMA_VERSION + 1);
   });
 });
+
+describe('custom field values on disk (#675)', () => {
+  it('writes every kind of field into the entry’s own file, each change one step to undo and redo', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'so-collections-'));
+    dirs.push(dir);
+    mkdirSync(join(dir, 'static/assets'), { recursive: true });
+    writeFileSync(join(dir, 'static/assets/ana-1a2b3c4d.png'), 'png');
+    const state = createStarterState('business', 'Collections', false);
+    state.assets.assets.img_ana = { id: 'img_ana', name: 'Ana', file: 'static/assets/ana-1a2b3c4d.png', mime: 'image/png', bytes: 3, width: 10, height: 10, hash: 'h', kind: 'image', createdAt: '2026-01-01T00:00:00.000Z' };
+    const s = await ProjectSession.create(dir, state);
+    open.push(s);
+    const text = (label: string) => ({ type: 'string', label, default: '' });
+    await ok(
+      s.apply(
+        {
+          operations: [
+            {
+              type: 'collection.create',
+              collectionId: 'team',
+              kind: 'structured',
+              singularName: 'Team member',
+              hasBody: false,
+              pages: { detail: false, archive: false },
+              taxonomies: { departments: { label: 'Departments', terms: { studio: { label: 'Studio' } } } },
+              fields: {
+                role: text('Role'),
+                years: { type: 'number', label: 'Years', default: 0 },
+                featured: { type: 'boolean', label: 'Featured', default: false },
+                level: { type: 'enum', label: 'Level', default: 'junior', options: [ { value: 'junior', label: 'Junior' }, { value: 'senior', label: 'Senior' } ] },
+                photo: { type: 'image', label: 'Photo', default: { assetId: null, alt: '' } },
+                site: { type: 'link', label: 'Website', default: { type: 'none', target: '' } },
+                bio: { type: 'richtext', label: 'Bio', default: [] },
+                joined: { type: 'date', label: 'Joined', default: '' },
+                mentor: { type: 'reference', label: 'Mentor', collection: 'team', default: '' }
+              }
+            },
+            { type: 'entry.create', collectionId: 'team', entryId: 'en_ana1', title: 'Ana' },
+            { type: 'entry.create', collectionId: 'team', entryId: 'en_ben1', title: 'Ben' }
+          ]
+        },
+        { label: 'Add the Team collection' }
+      )
+    );
+    const file = 'siteorigin/collections/team/entries/en_ben1.json';
+    const values: Record<string, unknown> = {
+      role: 'Glazer',
+      years: 4,
+      featured: true,
+      level: 'senior',
+      photo: { assetId: 'img_ana', alt: 'Ben at the wheel' },
+      site: { type: 'url', target: 'https://example.com/' },
+      bio: 'Makes **big** pots.',
+      joined: '2024-05-01',
+      mentor: 'en_ana1'
+    };
+    // One change per field, as the entry form sends them.
+    for (const [name, value] of Object.entries(values)) await ok(s.apply({ operations: [{ type: 'entry.update', collectionId: 'team', entryId: 'en_ben1', values: { [name]: value } }] }, { label: `Change ${name}` }));
+    await ok(s.apply({ operations: [{ type: 'entry.update', collectionId: 'team', entryId: 'en_ben1', terms: { departments: ['studio'] } }] }, { label: 'File under Studio' }));
+    const saved = read(dir, file);
+    expect(Object.keys(saved.values).sort()).toEqual(Object.keys(values).sort());
+    expect(saved.values).toMatchObject({ role: 'Glazer', years: 4, featured: true, level: 'senior', joined: '2024-05-01', mentor: 'en_ana1', site: { type: 'url', target: 'https://example.com/' } });
+    expect(saved.values.photo).toMatchObject({ assetId: 'img_ana', alt: 'Ben at the wheel' });
+    expect(Array.isArray(saved.values.bio)).toBe(true);
+    expect(saved.terms).toEqual({ departments: ['studio'] });
+    await ok(s.undo());
+    expect(read(dir, file).terms).toEqual({});
+    await ok(s.undo());
+    expect(Object.hasOwn(read(dir, file).values, 'mentor')).toBe(false);
+    expect(read(dir, file).values.joined).toBe('2024-05-01');
+    await ok(s.redo());
+    await ok(s.redo());
+    expect(read(dir, file)).toEqual(saved);
+    // A dozen journalled writes: given the time a loaded machine needs for them.
+  }, 30000);
+});
