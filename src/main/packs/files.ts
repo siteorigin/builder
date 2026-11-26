@@ -4,6 +4,7 @@
  */
 import { sha } from '../project/fsutil';
 import { openRegularFile, readAtMost } from '../regular-file';
+import { perf } from '../perf';
 
 export interface PackFileSource {
   /** Where the bytes are on this computer. */
@@ -24,6 +25,7 @@ export async function readRegularFile(abs: string, maxBytes: number): Promise<Bu
     if (stat.size > maxBytes) throw new Error(`${abs} is larger than expected.`);
     const bytes = await readAtMost(handle, stat.size, maxBytes);
     if (!bytes) throw new Error(`${abs} is larger than expected.`);
+    perf.count('files.read');
     return bytes;
   } finally {
     await handle.close();
@@ -49,6 +51,7 @@ export async function readPackFile(packId: string, file: string): Promise<Buffer
   const src = packFileInfo(packId, file);
   if (!src) throw new Error(`The ${packId} theme has no file ${file}.`);
   const bytes = await readRegularFile(src.abs, src.size).catch(() => null);
+  if (bytes) perf.count('files.hashed');
   if (!bytes || bytes.length !== src.size || sha(bytes) !== src.sha256) throw new Error(`The ${packId} theme's file ${file} changed after it was loaded. Restart SiteOrigin Builder to load the theme again.`);
   return bytes;
 }

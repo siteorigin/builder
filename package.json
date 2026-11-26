@@ -23,7 +23,10 @@
     "pack": "npm run build:packs -- --require-previews && electron-vite build && electron-builder --dir",
     "dist": "npm run build:packs -- --require-previews && electron-vite build && electron-builder",
     "test:packaged": "node tests/e2e/packaged.mjs",
-    "test:model-smoke": "node scripts/model-smoke.mjs"
+    "test:model-smoke": "node scripts/model-smoke.mjs",
+    "perf:run": "tsx --tsconfig tsconfig.node.json scripts/perf/run.ts",
+    "perf:compare": "tsx --tsconfig tsconfig.node.json scripts/perf/compare.ts",
+    "perf:static": "tsx --tsconfig tsconfig.node.json scripts/perf/static.ts"
   },
   "devDependencies": {
     "@cloudflare/workers-types": "5.20261125.1",

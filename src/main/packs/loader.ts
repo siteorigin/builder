@@ -21,6 +21,7 @@ import { MAX_UI_STATES, dividerProblem, overlayProblem, repeatFilterProblem, sta
 import { sha } from '../project/fsutil';
 import { readRegularFile, type PackFileSource } from './files';
 import type { PackRefusal } from '@shared/api';
+import { perf } from '../perf';
 
 export interface PackRoot {
   dir: string;
@@ -436,6 +437,7 @@ export async function loadPackDir(dir: string, root: PackRoot, reviewed: Readonl
     if (fst.size !== want.size) refuse(`${rel} is ${fst.size} bytes, but the pack lists ${want.size}. The pack is damaged or was changed after it was built.`);
     const bytes = await readRegularFile(abs, want.size).catch((e: Error) => refuse(`${rel} could not be read: ${e.message}`));
     if (bytes.length !== want.size) refuse(`${rel} is ${bytes.length} bytes, but the pack lists ${want.size}. The pack is damaged or was changed after it was built.`);
+    perf.count('files.hashed');
     if (sha(bytes) !== want.sha256) refuse(`${rel} does not match the hash the pack lists. The pack is damaged or was changed after it was built.`);
     if (rel.endsWith('.woff2') && !isWoff2(bytes)) refuse(`${rel} is not a WOFF2 font.`);
     if (rel.endsWith('.webp') && !isWebp(bytes)) refuse(`${rel} is not a WebP image.`);
