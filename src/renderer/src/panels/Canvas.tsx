@@ -62,6 +62,7 @@ import { addressPath, frameEntry, NO_HISTORY, observe, siteAddresses, startJourn
 import { shortcutLabel } from '../lib/shortcut-keys';
 import { settlePageClick } from '../lib/page-clicks';
 import { askAiHint, useAskAiKeys } from '../lib/ask-ai-key';
+import { perfMark } from '../lib/perf';
 
 /** True while an inline text edit is open in the preview; shortcuts must not act on the selection then. */
 export const inlineEdit = { active: false };
@@ -840,6 +841,8 @@ export function Canvas() {
           const sameFrame = readySession.current === session;
           const reloaded = sameFrame && s.mode === 'preview';
           readySession.current = session;
+          // The page's bridge is ready for the author to work on it (src/shared/perf.ts).
+          perfMark('canvas.ready', { revision: shownRevision.current, path, mode: s.mode, studio });
           // The visitor left the page they were on.
           if (reloaded && s.previewReturn) setState({ previewReturn: null });
           setReady(true);
@@ -1187,6 +1190,8 @@ export function Canvas() {
         }
         case 'revisionApplied': {
           const at = typeof p.revision === 'number' && Number.isSafeInteger(p.revision) ? p.revision : undefined;
+          // The page shows that revision now (src/shared/perf.ts).
+          perfMark('canvas.revisionApplied', { revision: at ?? null });
           if (at !== undefined) {
             shownRevision.current = at;
             gate.current!.shown(at);

@@ -2,6 +2,7 @@ import { createHash, randomBytes } from 'node:crypto';
 import { promises as fs, existsSync, realpathSync } from 'node:fs';
 import type { FileHandle } from 'node:fs/promises';
 import { dirname, isAbsolute, join, relative, resolve, sep } from 'node:path';
+import { perf } from '../perf';
 
 export const sha = (data: string | Buffer) => createHash('sha256').update(data).digest('hex');
 
@@ -29,6 +30,7 @@ export async function syncDir(dir: string): Promise<void> {
   try {
     handle = await fs.open(dir, 'r');
     await handle.sync();
+    perf.count('fs.fsyncs');
   } catch (e) {
     if (!DIR_SYNC_UNSUPPORTED.has((e as NodeJS.ErrnoException).code ?? '')) throw e;
   } finally {
@@ -110,6 +112,7 @@ export async function atomicWrite(path: string, data: string | Buffer, opts: { m
         // The umask can only remove bits from the requested mode, never add them; chmod makes it exact.
         if (opts.mode !== undefined) await handle.chmod(opts.mode);
         await handle.sync();
+        perf.count('fs.fsyncs');
       } finally {
         await handle.close();
       }
@@ -127,6 +130,9 @@ export async function atomicWrite(path: string, data: string | Buffer, opts: { m
     throw e;
   }
   if (durable) await syncDir(dir);
+  // Counted once it is in place (src/shared/perf.ts): a durable one has reached the disk, its folder entry too.
+  perf.count('fs.writes');
+  if (durable) perf.count('fs.durableWrites');
   return true;
 }
 
@@ -137,12 +143,16 @@ export async function removeDurable(path: string): Promise<void> {
 }
 
 export async function readJson<T>(path: string): Promise<T> {
-  return JSON.parse(await fs.readFile(path, 'utf8')) as T;
+  const text = await fs.readFile(path, 'utf8');
+  perf.count('files.read');
+  return JSON.parse(text) as T;
 }
 
 export async function readIfExists(path: string): Promise<string | null> {
   try {
-    return await fs.readFile(path, 'utf8');
+    const text = await fs.readFile(path, 'utf8');
+    perf.count('files.read');
+    return text;
   } catch {
     return null;
   }
@@ -151,7 +161,9 @@ export async function readIfExists(path: string): Promise<string | null> {
 /** A file's bytes, for comparing files that may not be text. */
 export async function readBytesIfExists(path: string): Promise<Buffer | null> {
   try {
-    return await fs.readFile(path);
+    const bytes = await fs.readFile(path);
+    perf.count('files.read');
+    return bytes;
   } catch {
     return null;
   }
