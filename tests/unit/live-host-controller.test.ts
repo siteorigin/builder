@@ -6,12 +6,14 @@
 import { EventEmitter } from 'node:events';
 import { createServer, type Server } from 'node:http';
 import type { AddressInfo } from 'node:net';
-import { mkdirSync, mkdtempSync, realpathSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
-import { tmpdir } from 'node:os';
+import { mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
+import { homedir, tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { LiveHostState, LiveJoinRequest, LiveRun } from '../../src/shared/api';
-import { joinGuest, previewOrigin, randomAddress, redeemTicket, startRelay, wait, type Relay } from './relay-harness';
+import type { GuestRole } from '../../src/shared/live/limits';
+import type { LiveProjectChanged, LiveProjectSnapshot } from '../../src/shared/live/snapshot';
+import { joinGuest, previewOrigin, randomAddress, redeemTicket, startRelay, wait, type JoinedGuest, type Relay } from './relay-harness';
 
 /**
  * A stand-in for Electron's utility process that reports the test's preview server as ready, holds a save's updates
@@ -127,7 +129,7 @@ async function until<T>(check: () => T | undefined | null | false, what: string,
 }
 
 /** Open `dir` with its preview running, start a live session in it, and let one guest in with a preview cookie. */
-async function hosting(c: InstanceType<typeof Controller>, sent: Array<[string, unknown]>, dir: string) {
+async function hosting(c: InstanceType<typeof Controller>, sent: Array<[string, unknown]>, dir: string, role: GuestRole = 'viewer') {
   expect((await c.trustAndOpen(dir)).ok).toBe(true);
   await until(() => c.snapshot()?.runtime.state === 'ready', 'the preview');
   const opening = c.snapshot()!.workspaceKey;
@@ -141,11 +143,34 @@ async function hosting(c: InstanceType<typeof Controller>, sent: Array<[string, 
   const guest = await joinGuest(relay, state.roomId, 'Ann');
   // The editor hears the guest ask, then lets it in.
   await until(() => sent.find(([ch, p]) => ch === 'live:request' && (p as LiveJoinRequest).guestId === guest.guestId), 'the join request');
-  expect(c.live.admit(run, guest.guestId, 'viewer')).toEqual({ ok: true });
+  expect(c.live.admit(run, guest.guestId, role)).toEqual({ ok: true });
   const status = await guest.guest.next('guest:status');
   if (status.status !== 'admitted') throw new Error(`Expected to be admitted, got ${status.status}`);
   const cookie = (await redeemTicket(relay, state.roomId, status.previewTicket)).cookie!;
+  // Until the host's roster shows the guest let in, the host answers none of its calls.
+  await until(() => (c.live.state as { participants?: Array<{ guestId: string; status: string }> }).participants?.some((p) => p.guestId === guest.guestId && p.status === 'admitted'), 'the guest admitted');
   return { state, run, guest, cookie };
+}
+
+let calls = 0;
+/** A guest's editor call over the relay, and the host's answer. */
+async function rpc(guest: JoinedGuest, method: string, args: unknown[] = []) {
+  const requestId = `q${++calls}`;
+  guest.guest.send('guest-to-relay', { type: 'rpc:request', requestId, method, args });
+  for (;;) {
+    const answer = await guest.guest.next('rpc:response');
+    if (answer.requestId === requestId) return answer;
+  }
+}
+
+/** The next project:changed a guest is sent at `revision` or later. */
+async function changedTo(guest: JoinedGuest, revision: number): Promise<LiveProjectChanged> {
+  for (;;) {
+    const event = await guest.guest.next('rpc:event');
+    if (event.event !== 'project:changed') continue;
+    const payload = event.payload as LiveProjectChanged;
+    if ((payload.kind === 'snapshot' ? payload.snapshot.revision : payload.revision) >= revision) return payload;
+  }
 }
 
 describe('a live session hosted by the open project', () => {
@@ -205,5 +230,75 @@ describe('a live session hosted by the open project', () => {
     expect(guest.guest.has('guest:status')).toBe(false);
     expect(c.live.setLocked(run, true)).toEqual({ ok: true });
     await until(() => (c.live.state as { locked?: boolean }).locked, 'the room locked');
+  });
+
+  it('lets a collaborator read the project and edit it through the host’s own pipeline, as a step of its own', async () => {
+    const dir = await makeProject('acme');
+    const { c, sent } = controller();
+    const { state, run, guest } = await hosting(c, sent, dir, 'collaborator');
+    // A second guest, a viewer, follows along.
+    const bob = await joinGuest(relay, state.roomId, 'Bob');
+    await until(() => sent.find(([ch, p]) => ch === 'live:request' && (p as LiveJoinRequest).guestId === bob.guestId), "Bob's join request");
+    expect(c.live.admit(run, bob.guestId, 'viewer')).toEqual({ ok: true });
+    await bob.guest.next('guest:status');
+
+    const read = await rpc(guest, 'project.snapshot');
+    if (!read.ok) throw new Error(read.error.message);
+    const shared = read.result as LiveProjectSnapshot;
+    const home = c.session!.state.site.homePageId;
+    expect(shared).toMatchObject({ revision: c.session!.revision, readOnly: false, aiBusy: false, runtime: { state: 'ready' } });
+    expect(shared.state.pages[home].title).toBe(c.session!.state.pages[home].title);
+    // Nothing of the host's computer or editor goes over the relay.
+    const text = JSON.stringify(shared);
+    for (const leak of [dir, homedir(), 'workspaceKey', 'localState', 'recentExports', '127.0.0.1']) expect(text, leak).not.toContain(leak);
+
+    const before = c.session!.revision;
+    const worker = workers.at(-1)!;
+    const edit = await rpc(guest, 'project.apply', [{ operations: [{ type: 'page.update', pageId: home, title: 'Fresh bread daily' }], expectedRevision: before, label: 'Rename page' }]);
+    expect(edit).toMatchObject({ ok: true, result: { revision: before + 1 } });
+    // Saved on the host, generated for its preview, and in its History as Ann's.
+    expect(c.session!.state.pages[home].title).toBe('Fresh bread daily');
+    expect(readFileSync(join(dir, `siteorigin/pages/${home}.json`), 'utf8')).toContain('Fresh bread daily');
+    await until(() => worker.published.includes(before + 1), 'the preview to have the change');
+    const step = c.snapshot()!.history.entries.at(-1)!;
+    expect(step).toMatchObject({ label: 'Rename page (Ann)', source: 'user', guestName: 'Ann', applied: true });
+    // The host's editor and every guest hear of it.
+    expect(sent.some(([ch, p]) => ch === 'project:changed' && (p as { revision: number }).revision === before + 1)).toBe(true);
+    for (const g of [guest, bob]) expect(await changedTo(g, before + 1)).toMatchObject({ kind: 'snapshot', snapshot: { revision: before + 1 } });
+    // Each edit is a step of its own, which the host can undo.
+    expect((await rpc(guest, 'project.apply', [{ operations: [{ type: 'page.update', pageId: home, title: 'Fresh bread' }] }])).ok).toBe(true);
+    expect(c.snapshot()!.history.entries.slice(-2).map((e) => e.label)).toEqual(['Rename page (Ann)', 'Edit (Ann)']);
+    const last = c.snapshot()!.history.entries.at(-1)!;
+    expect((await c.undoEntry(last.id, c.snapshot()!.workspaceKey)).ok).toBe(true);
+    expect(c.session!.state.pages[home].title).toBe('Fresh bread daily');
+    // A viewer edits nothing.
+    const viewer = await rpc(bob, 'project.apply', [{ operations: [{ type: 'page.update', pageId: home, title: 'Bob was here' }] }]);
+    expect(viewer).toMatchObject({ ok: false, error: { code: 'PERMISSION_DENIED' } });
+    expect(c.session!.state.pages[home].title).toBe('Fresh bread daily');
+  });
+
+  it('refuses code, a viewer’s edits, and edits while the AI works, changing nothing', async () => {
+    const dir = await makeProject('acme');
+    const { c, sent } = controller();
+    const { run, guest } = await hosting(c, sent, dir, 'collaborator');
+    const home = c.session!.state.site.homePageId;
+    const revision = c.session!.revision;
+    const code = await rpc(guest, 'project.apply', [{ operations: [{ type: 'component.createCode', name: 'Widget', source: '<p>hi</p>' }] }]);
+    expect(code).toMatchObject({ ok: false, error: { code: 'PERMISSION_DENIED', operationIndex: 0 } });
+    // The host's AI owns the project while it runs.
+    c.aiBusy = () => true;
+    expect(await rpc(guest, 'project.apply', [{ operations: [{ type: 'page.update', pageId: home, title: 'Busy' }] }])).toMatchObject({ ok: false, error: { code: 'BUSY', recoverable: true } });
+    c.aiBusy = () => false;
+    // Made a viewer: refused at once, and nothing changed.
+    expect(c.live.setRole(run, guest.guestId, 'viewer')).toEqual({ ok: true });
+    expect(await rpc(guest, 'project.apply', [{ operations: [{ type: 'page.update', pageId: home, title: 'Demoted' }] }])).toMatchObject({ ok: false, error: { code: 'PERMISSION_DENIED' } });
+    expect(c.session!.revision).toBe(revision);
+    expect(c.snapshot()!.saveFailure ?? null).toBeNull();
+    // Removed: the guest is told, and nothing of it is answered again.
+    expect(c.live.kick(run, guest.guestId)).toEqual({ ok: true });
+    for (;;) {
+      const status = await guest.guest.next('guest:status');
+      if (status.status === 'kicked') break;
+    }
   });
 });

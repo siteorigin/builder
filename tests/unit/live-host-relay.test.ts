@@ -172,7 +172,7 @@ describe('the waiting room and guests', () => {
     // Not past the session's end, checked before anything is sent.
     expect(h.manager.setGuestExpiry(run, ann.guestId, state.expiresAt + 1)).toMatchObject({ ok: false });
 
-    // Editor calls are answered, and nothing runs, until the RPC bridge.
+    // With no editor to answer from, a guest's call is still answered, and nothing runs.
     ann.guest.send('guest-to-relay', { type: 'rpc:request', requestId: 'q1', method: 'project.snapshot', args: [] });
     expect(await ann.guest.next('rpc:response')).toMatchObject({ requestId: 'q1', ok: false, error: { code: 'UNAVAILABLE' } });
 
