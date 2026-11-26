@@ -157,7 +157,7 @@ export function guestExpiryChoices(state: LiveRoomState, at: number): Array<Time
     ['1h', HOUR, 'For 1 hour'],
     ['2h', 2 * HOUR, 'For 2 hours']
   ];
-  return [{ id: 'session', label: 'Until the session ends', expiresAt: null }, ...steps.filter(([, ms]) => at + ms < state.expiresAt).map(([id, ms, label]) => ({ id, label, expiresAt: at + ms }))];
+  return [{ id: 'session', label: 'Whole session', expiresAt: null }, ...steps.filter(([, ms]) => at + ms < state.expiresAt).map(([id, ms, label]) => ({ id, label, expiresAt: at + ms }))];
 }
 
 /** How long a guest has left, in words, or null when its access lasts as long as the session. */
