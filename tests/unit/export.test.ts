@@ -10,6 +10,7 @@ import { assetUsages } from '@engine/apply';
 import { generateProject } from '@generator/index';
 import type { AssetRecord, ProjectState } from '@shared/types';
 import { zipDirectory } from '../../src/main/zip';
+import { isPrivateFileName } from '../../src/main/project/private-files';
 import {
   builtPhotosMessage,
   cleanBuiltSite,
@@ -620,6 +621,9 @@ describe('source export helpers', () => {
     expect(inProjectSource(src, join(src, 'static/my.wrangler'))).toBe(true);
     expect(inProjectSource(src, join(src, 'worker/.wrangler/state/kv.bin'))).toBe(false);
     expect(inProjectSource(src, join(src, 'worker/.dev.vars'))).toBe(false);
+    // A line break in the name hides nothing.
+    for (const name of ['.dev.vars.\nx', '.env.\nlocal', 'id_rsa\n.pub']) expect(isPrivateFileName(name), JSON.stringify(name)).toBe(true);
+    for (const name of ['.dev.varsbackup', 'dev.vars', 'my.dev.vars.txt']) expect(isPrivateFileName(name), name).toBe(false);
   });
 
   it('checks generated files against the hashes the fingerprint took, and reads only those it did not take', async () => {
