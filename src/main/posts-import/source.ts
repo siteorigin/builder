@@ -71,6 +71,8 @@ export interface ParsedSource {
 
 /** The most posts one import brings. */
 export const MAX_IMPORT_POSTS = 1000;
+/** How many posts the reader sends at a time (worker.ts): it never holds them all, nor one copy of them all to send. */
+export const POSTS_PER_BATCH = 50;
 /** The largest export file or Markdown file read, and the most all of a folder's Markdown files may hold. */
 export const MAX_EXPORT_BYTES = 64 * 1024 * 1024;
 export const MAX_MARKDOWN_FILE_BYTES = 2 * 1024 * 1024;

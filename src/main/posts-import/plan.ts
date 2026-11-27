@@ -82,8 +82,13 @@ function clip(text: string, max: number): { text: string; cut: boolean } {
   return { text: `${t.slice(0, at > max / 2 ? at : max - 1).trimEnd()}…`, cut: true };
 }
 
-/** Plans `source` into `state`'s Posts collection (made when the project has none). Never changes `state`. */
-export function planPostImport(state: ProjectState, source: ParsedSource, today = todayArticleDate()): PostImportPlan {
+/**
+ * Plans `source` into `state`'s Posts collection (made when the project has none). Never changes `state`. With
+ * `consume`, each post's text as read is let go of once its own is planned (`source` is then the plan's to spend): a
+ * read's posts and their plan are never both held whole. With `check: false`, what the engine would refuse is left
+ * for checkPlan to find, against the same state.
+ */
+export function planPostImport(state: ProjectState, source: ParsedSource, today = todayArticleDate(), opts: { consume?: boolean; check?: boolean } = {}): PostImportPlan {
   const problems: string[] = [];
   const existing = Object.hasOwn(state.collections, POSTS_COLLECTION_ID) ? state.collections[POSTS_COLLECTION_ID] : undefined;
   const route = existing?.settings.route ?? PRESET_ROUTE;
@@ -173,18 +178,20 @@ export function planPostImport(state: ProjectState, source: ParsedSource, today 
   for (const p of source.posts) if (p.oldPath && !p.draft) oldClaims.set(lower(p.oldPath), (oldClaims.get(lower(p.oldPath)) ?? 0) + 1);
 
   const byKey = new Map(source.posts.map((p) => [p.key, p]));
-  // Every post's text first: one cut to fit arrives as a draft, which the posts linking to it are told.
+  // Every post's text first: one cut to fit arrives as a draft, which the posts linking to it are told. The imported
+  // posts each one links to, as its text was read, are kept for that.
   const texts = source.posts.map((p) => {
     const notes: string[] = [];
-    return { ...planBody(p, media, missing, entryIds, notes), notes };
+    const planned = { ...planBody(p, media, missing, entryIds, notes), notes, linked: new Set(p.body.flatMap((b) => spanRuns(b).flat()).flatMap((s) => (s.link?.type === 'entry' && s.link.target.startsWith(POST_LINK_PREFIX) ? [s.link.target.slice(POST_LINK_PREFIX.length)] : []))) };
+    if (opts.consume) (p as { body: RichText }).body = [];
+    return planned;
   });
   const arrivesDraft = new Map(source.posts.map((p, i) => [p.key, p.draft || texts[i].cut]));
   const posts: PlannedPost[] = source.posts.map((p, i) => {
     const notes = [...p.notes];
     // A published post linking to one that arrives as a draft: the website can't be exported until one of them changes.
     if (!arrivesDraft.get(p.key)) {
-      const linked = new Set(p.body.flatMap((b) => spanRuns(b).flat()).flatMap((s) => (s.link?.type === 'entry' && s.link.target.startsWith(POST_LINK_PREFIX) ? [s.link.target.slice(POST_LINK_PREFIX.length)] : [])));
-      for (const key of linked) {
+      for (const key of texts[i].linked) {
         const target = byKey.get(key);
         if (target && arrivesDraft.get(key)) notes.push(`It links to “${clip(target.title, 200).text}”, which arrives as a draft: publish that post, or change the link, before the website is exported.`);
       }
@@ -294,24 +301,32 @@ export function planPostImport(state: ProjectState, source: ParsedSource, today 
     skipped,
     problems
   };
-  if (!problems.length) {
-    // What the engine would refuse, found now: every picture stands in for a library image.
-    const stand = new Map(plan.media.map((m) => [m.key, m.key]));
-    const s = { ...state, assets: { ...state.assets, assets: { ...state.assets.assets } } };
-    for (const m of plan.media) s.assets.assets[m.key] = { id: m.key, name: m.key, file: `static/assets/${m.key}.png`, mime: 'image/png', bytes: 1, hash: m.key, kind: 'image', createdAt: '' } as AssetRecord;
-    try {
-      const ops = planOperations(plan, stand);
-      // Each operation as the session checks it, then the batch as the engine applies it.
-      for (const op of ops) {
-        const v = validateOperation(op);
-        if (!v.ok) throw new Error(v.message);
-      }
-      applyOperations(s, ops);
-    } catch (e) {
-      problems.push(`The posts can’t be imported: ${(e as Error).message.replace(/^Operation \d+ \([\w.]+\): /, '')}`);
-    }
-  }
+  if (opts.check !== false) checkPlan(state, plan);
   return plan;
+}
+
+/**
+ * What the engine would refuse of `plan`, made against `state`, found before anything changes and added to its
+ * problems: every picture stands in for a library image. A plan that already has a problem is not checked. With
+ * `spend`, the plan is checked by handing its posts to the engine as they are, without a copy: nothing of it may be
+ * read afterwards but its problems.
+ */
+export function checkPlan(state: ProjectState, plan: PostImportPlan, opts: { spend?: boolean } = {}): void {
+  if (plan.problems.length) return;
+  const stand = new Map(plan.media.map((m) => [m.key, m.key]));
+  const s = { ...state, assets: { ...state.assets, assets: { ...state.assets.assets } } };
+  for (const m of plan.media) s.assets.assets[m.key] = { id: m.key, name: m.key, file: `static/assets/${m.key}.png`, mime: 'image/png', bytes: 1, hash: m.key, kind: 'image', createdAt: '' } as AssetRecord;
+  try {
+    const ops = planOperations(plan, stand);
+    // Each operation as the session checks it, then the batch as the engine applies it.
+    for (const op of ops) {
+      const v = validateOperation(op);
+      if (!v.ok) throw new Error(v.message);
+    }
+    applyOperations(s, ops, { ownOperations: !!opts.spend });
+  } catch (e) {
+    plan.problems.push(`The posts can’t be imported: ${(e as Error).message.replace(/^Operation \d+ \([\w.]+\): /, '')}`);
+  }
 }
 
 /**

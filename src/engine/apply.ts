@@ -147,6 +147,13 @@ export interface Clipboard {
 /** State an operation can read that is not part of the project: what the editor has recently copied. */
 export interface ApplyContext {
   clipboards?: readonly Clipboard[];
+  /**
+   * The operations are the batch's own to keep and change: the caller made them for this batch alone, holds nothing
+   * in them it will read again, and none of them holds anything of the state (a check of an import's plan that is
+   * thrown away after). applyOperations then takes them as they are rather than copying them first. The state it is
+   * given is never changed either way.
+   */
+  ownOperations?: boolean;
   /** List item fields the batch sets itself (see explicitItemFields). applyOperations fills it. */
   explicitItemFields?: ReadonlySet<string>;
   /**
@@ -4317,7 +4324,7 @@ function addressesInUse(state: ProjectState): Set<string> {
 export function applyOperations(state: ProjectState, given: EditOperation[], ctx: ApplyContext = {}): { state: ProjectState; results: OpResult[] } {
   // The batch's own copy: what an operation brings is put in the project as it is, and a later one may change it
   // there, so it must not be an object the caller (or the state, which the new one shares) still holds.
-  const ops = structuredClone(given);
+  const ops = ctx.ownOperations ? given : structuredClone(given);
   // Documents are copied as the batch reaches them: the rest of the state it leaves is the very objects `state` holds.
   const working = draftOf(state);
   const results: OpResult[] = [];

@@ -5,7 +5,7 @@
  */
 import { basename } from 'node:path';
 import type { RichPages } from '@shared/richtext';
-import type { ParsedSource, SourceKind } from './source';
+import type { ParsedSource, SourceKind, SourcePost } from './source';
 
 export interface ReadRequest {
   id: number;
@@ -23,7 +23,11 @@ export interface ReadStats {
   /** The reader process's peak resident memory once its answer was sent (the copy sending it made included), in bytes. */
   peakRss: number;
 }
-export type ReadReply = { id: number; ok: true; source: ParsedSource } | { id: number; ok: false; error: string } | { id: number; stats: ReadStats };
+/**
+ * The reader's messages for a read: its posts in batches as they are read, then its answer (holding the posts read
+ * after the last batch), and, when asked for, what the read cost.
+ */
+export type ReadReply = { id: number; posts: SourcePost[] } | { id: number; ok: true; source: ParsedSource } | { id: number; ok: false; error: string } | { id: number; stats: ReadStats };
 /** How long a reader that answered is left for the report of what its read cost, when one was asked for. */
 const STATS_WAIT_MS = 1000;
 
@@ -69,15 +73,21 @@ export function createSourceReader(spawn: () => ReaderHandle, opts: { timeoutMs?
           return;
         }
         let done = false;
+        // The posts sent so far, in order: the answer is whole only with them.
+        const received: SourcePost[] = [];
         // A reader that answered, left until it says what the read cost (asked only while marks are on).
         let lingering: ReturnType<typeof setTimeout> | undefined;
         const finish = (settle: () => void, linger = false) => {
           if (done) return;
           done = true;
           clearTimeout(timer);
+          received.length = 0;
           if (linger) {
             live.delete(w);
-            lingering = setTimeout(() => end(w), STATS_WAIT_MS);
+            lingering = setTimeout(() => {
+              lingering = undefined;
+              end(w);
+            }, STATS_WAIT_MS);
           } else end(w);
           settle();
         };
@@ -92,7 +102,14 @@ export function createSourceReader(spawn: () => ReaderHandle, opts: { timeoutMs?
             lingering = undefined;
             end(w);
             opts.onStats?.(m.stats);
-          } else if (m.ok && m.source && Array.isArray(m.source.posts) && Array.isArray(m.source.media)) finish(() => resolve(m.source), !!opts.onStats);
+          } else if ('posts' in m) {
+            if (done) return;
+            if (!Array.isArray(m.posts)) return fail(`${name} could not be read.`);
+            for (const p of m.posts) received.push(p);
+          } else if (m.ok && m.source && Array.isArray(m.source.posts) && Array.isArray(m.source.media)) {
+            const source = received.length ? { ...m.source, posts: [...received, ...m.source.posts] } : m.source;
+            finish(() => resolve(source), !!opts.onStats);
+          }
           else fail(m.ok ? `${name} could not be read.` : m.error);
         });
         w.on('exit', () => fail(`${name} could not be read: the reader stopped. It may be damaged, or larger than an import can read.`));

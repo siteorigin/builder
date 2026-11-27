@@ -4,7 +4,7 @@
  * applied as one batch the engine accepts.
  */
 import { afterAll, describe, expect, it } from 'vitest';
-import { cpSync, mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
+import { cpSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync, symlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { basename, join } from 'node:path';
 import type { ProjectState, RichText } from '@shared/types';
@@ -16,13 +16,14 @@ import { vi } from 'vitest';
 import { validateState } from '@engine/validate';
 import { readWordPress, wordpressDay } from '../../src/main/posts-import/wxr';
 import { readMarkdownFolder } from '../../src/main/posts-import/folder';
-import { planOperations, planPostImport } from '../../src/main/posts-import/plan';
+import { checkPlan, planOperations, planPostImport } from '../../src/main/posts-import/plan';
 import { postImportPreview } from '../../src/main/posts-import/preview';
 import { createSourceReader, type ReadReply, type ReadRequest, type ReaderHandle } from '../../src/main/posts-import/client';
 import { readFrontmatter, markdownToHtml } from '../../src/main/posts-import/markdown';
 import { readContained } from '../../src/main/posts-import/files';
 import { segmentsWithin } from '../../src/main/posts-import/media';
-import type { ParsedSource, SourcePost } from '../../src/main/posts-import/source';
+import { POSTS_PER_BATCH, type ParsedSource, type SourcePost } from '../../src/main/posts-import/source';
+import { dropPlan, loadPlan, storePlan, sweepPlans } from '../../src/main/posts-import/review-store';
 
 const FIXTURES = join(__dirname, 'fixtures', 'posts-import');
 const scratch = mkdtempSync(join(tmpdir(), 'posts-import-'));
@@ -335,6 +336,104 @@ describe('planning an import', () => {
   });
 });
 
+describe('planning an import from a read it may spend', () => {
+  const post = (key: string, over: Partial<SourcePost> = {}): SourcePost => ({ key, from: key, title: key, slug: '', date: '2020-01-01', draft: false, categories: [], tags: [], body: [{ type: 'p', spans: [{ text: 'Words' }] }], notes: [], ...over });
+  const src = (posts: SourcePost[]): ParsedSource => ({ kind: 'markdown', label: 'posts', root: '/x', realRoot: '/x', posts, media: [], skipped: [] });
+  /** A plan's JSON with each entry ID it made named by its post's key, so two plans of one source compare whole. */
+  const byKey = (plan: ReturnType<typeof planPostImport>) => {
+    let text = JSON.stringify(plan);
+    for (const p of plan.posts) text = text.replaceAll(p.entryId, `entry:${p.key}`);
+    return text;
+  };
+
+  it('makes the same plan whether or not it may let go of the posts’ text as read, and lets go of it only when told', async () => {
+    for (const read of [() => readWordPress(join(wordpressFolder(), 'export.xml'), {}), () => readMarkdownFolder(markdownFolder(), pages(site()))]) {
+      const kept = await read();
+      const spent = structuredClone(kept);
+      const before = structuredClone(kept);
+      const plain = planPostImport(site(), kept, '2026-11-24');
+      const consumed = planPostImport(site(), spent, '2026-11-24', { consume: true });
+      expect(byKey(consumed)).toBe(byKey(plain));
+      expect(postImportPreview('r', consumed)).toEqual(postImportPreview('r', plain));
+      // Without `consume` the read is the caller's still; with it, only its text is gone.
+      expect(kept).toEqual(before);
+      expect(spent.posts.map((p) => p.body)).toEqual(spent.posts.map(() => []));
+      expect(spent.posts.map(({ body: _b, ...p }) => p)).toEqual(before.posts.map(({ body: _b, ...p }) => p));
+    }
+  });
+
+  it('still tells a published post that it links to one arriving as a draft, from the text as read', () => {
+    const big = 'w'.repeat(100_001);
+    const link = (target: string) => ({ type: 'p' as const, spans: [{ text: 'see', link: { type: 'entry' as const, target: `post:${target}` } }] });
+    const posts = [post('a', { body: [link('b'), link('b'), link('c'), link('d')] }), post('b', { body: [{ type: 'p', spans: [{ text: big }] }] }), post('c', { draft: true }), post('d')];
+    const plain = planPostImport(site(), src(structuredClone(posts)), '2026-11-24');
+    const consumed = planPostImport(site(), src(structuredClone(posts)), '2026-11-24', { consume: true });
+    expect(consumed.posts[0].notes).toEqual(plain.posts[0].notes);
+    // Each draft it links to named once, in the order linked; the published one not at all.
+    expect(consumed.posts[0].notes.filter((n) => n.startsWith('It links to'))).toEqual(['b', 'c'].map((t) => `It links to “${t}”, which arrives as a draft: publish that post, or change the link, before the website is exported.`));
+  });
+});
+
+describe('the review kept on disk', () => {
+  it('reads back exactly the plan the review was made from, and the import it makes is the same', async () => {
+    const source = await readWordPress(join(wordpressFolder(), 'export.xml'), {});
+    const plan = planPostImport(site(), source, '2026-11-24');
+    const root = mkdtempSync(join(scratch, 'reviews-'));
+    const stored = await storePlan(plan, root);
+    expect(readdirSync(root)).toEqual([basename(stored.dir)]);
+    // Only this app's user can read it.
+    expect(statSync(stored.dir).mode & 0o777).toBe(0o700);
+    expect(statSync(stored.file).mode & 0o777).toBe(0o600);
+    const back = await loadPlan<typeof plan>(stored);
+    expect(back).toStrictEqual(plan);
+    const ids = new Map(plan.media.map((m) => [m.key, `a_${m.key}`]));
+    expect(planOperations(back, ids)).toStrictEqual(planOperations(plan, ids));
+    await dropPlan(stored);
+    expect(readdirSync(root)).toEqual([]);
+    // Gone already: fine.
+    await dropPlan(stored);
+  });
+
+  it('refuses a plan whose file changed, grew, shrank or went, and leaves nothing when it cannot be written', async () => {
+    const root = mkdtempSync(join(scratch, 'reviews-'));
+    const plan = { posts: [{ title: 'A post’s “title”', body: [{ type: 'p', spans: [{ text: 'x'.repeat(5000) }] }] }] };
+    const changed = await storePlan(plan, root);
+    const bytes = readFileSync(changed.file);
+    bytes[bytes.length - 1] ^= 1;
+    writeFileSync(changed.file, bytes);
+    await expect(loadPlan(changed)).rejects.toThrow('changed on disk');
+    const grown = await storePlan(plan, root);
+    writeFileSync(grown.file, Buffer.concat([readFileSync(grown.file), Buffer.from('more')]));
+    await expect(loadPlan(grown)).rejects.toThrow('changed on disk');
+    const shrunk = await storePlan(plan, root);
+    writeFileSync(shrunk.file, readFileSync(shrunk.file).subarray(0, 10));
+    await expect(loadPlan(shrunk)).rejects.toThrow('changed on disk');
+    const gone = await storePlan(plan, root);
+    rmSync(gone.dir, { recursive: true });
+    await expect(loadPlan(gone)).rejects.toThrow();
+    for (const s of [changed, grown, shrunk]) await dropPlan(s);
+    expect(readdirSync(root)).toEqual([]);
+    // A plan that can't be written (a function is no plan) leaves no folder behind, nor one whose file can't be.
+    await expect(storePlan({ f: () => 1 }, root)).rejects.toThrow();
+    expect(readdirSync(root)).toEqual([]);
+    const full = vi.spyOn(fsp, 'writeFile').mockRejectedValueOnce(Object.assign(new Error('no space'), { code: 'ENOSPC' }));
+    await expect(storePlan(plan, root)).rejects.toThrow('no space');
+    full.mockRestore();
+    expect(readdirSync(root)).toEqual([]);
+  });
+
+  it('sweeps what an earlier run left, and makes the folder it keeps plans in when there is none', async () => {
+    const root = join(mkdtempSync(join(scratch, 'reviews-')), 'post-reviews');
+    const a = await storePlan({ a: 1 }, root);
+    const b = await storePlan({ b: 2 }, root);
+    expect(readdirSync(root).sort()).toEqual([basename(a.dir), basename(b.dir)].sort());
+    await sweepPlans(root);
+    expect(readdirSync(root)).toEqual([]);
+    // Nothing to sweep: fine.
+    await sweepPlans(join(root, 'none'));
+  });
+});
+
 describe('the import reader process', () => {
   function fakeWorker(answer: (m: ReadRequest, w: { reply: (r: ReadReply) => void; exit: () => void }) => void) {
     const spawned: Array<{ killed: boolean }> = [];
@@ -377,6 +476,28 @@ describe('the import reader process', () => {
     await expect(read).rejects.toThrow('The import was stopped.');
   });
 
+  it('puts the posts sent in batches before those in its answer, in order, and gives up on a read whose reader stops half way', async () => {
+    const posts = Array.from({ length: 5 }, (_, i) => ({ key: `k${i}` }) as SourcePost);
+    const batched = fakeWorker((m, w) => {
+      w.reply({ id: m.id, posts: posts.slice(0, 2) });
+      // Another read's batch is not this one's.
+      w.reply({ id: m.id + 1, posts: [posts[4]] });
+      w.reply({ id: m.id, posts: posts.slice(2, 4) });
+      w.reply({ id: m.id, ok: true, source: { ...source, posts: [posts[4]] } });
+    });
+    const got = await createSourceReader(batched.spawn).read('wordpress', '/x/export.xml', {});
+    expect(got.posts.map((p) => p.key)).toEqual(['k0', 'k1', 'k2', 'k3', 'k4']);
+    expect({ ...got, posts: [] }).toEqual(source);
+    const dying = fakeWorker((m, w) => {
+      w.reply({ id: m.id, posts: posts.slice(0, 2) });
+      w.exit();
+    });
+    await expect(createSourceReader(dying.spawn).read('wordpress', '/x/export.xml', {})).rejects.toThrow(/the reader stopped/);
+    const garbled = fakeWorker((m, w) => w.reply({ id: m.id, posts: 'x' } as unknown as ReadReply));
+    await expect(createSourceReader(garbled.spawn).read('wordpress', '/x/export.xml', {})).rejects.toThrow('export.xml could not be read.');
+    expect([...dying.spawned, ...garbled.spawned].every((s) => s.killed)).toBe(true);
+  });
+
   it('asks the reader what a read cost only when told to report it, answers first, and ends the reader once it has said', async () => {
     const asked: Array<boolean | undefined> = [];
     const stats = { ms: 12, peakRss: 64 * 2 ** 20 };
@@ -416,6 +537,31 @@ const item = (id: number, fields: Record<string, string>, body = '') =>
   `<wp:post_id>${id}</wp:post_id><wp:post_type>post</wp:post_type>${Object.entries(fields)
     .map(([k, v]) => `<${k}><![CDATA[${v}]]></${k}>`)
     .join('')}<content:encoded><![CDATA[${body}]]></content:encoded>`;
+
+describe('reading posts in batches', () => {
+  it('hands a WordPress export’s posts over as it reads them: the same posts, in the same order, and the rest of the source the same', async () => {
+    const file = wxr(Array.from({ length: 2 * POSTS_PER_BATCH + 20 }, (_, i) => item(i + 1, { title: `Post ${i}`, 'wp:status': 'publish', 'wp:post_date': '2020-01-02 00:00:00' }, `<p>Text ${i}</p>`)), '<item><wp:post_type>page</wp:post_type><title>About</title></item>');
+    const whole = await readWordPress(file, {});
+    const batches: SourcePost[][] = [];
+    const rest = await readWordPress(file, {}, (b) => batches.push(b));
+    expect(batches.map((b) => b.length)).toEqual([POSTS_PER_BATCH, POSTS_PER_BATCH]);
+    expect([...batches.flat(), ...rest.posts]).toEqual(whole.posts);
+    expect({ ...rest, posts: [] }).toEqual({ ...whole, posts: [] });
+    expect(whole.skipped).toEqual(['1 page (“About”): only posts are imported.']);
+  });
+
+  it('hands a Markdown folder’s posts over as it reads them, the same way', async () => {
+    const dir = mkdtempSync(join(scratch, 'md-batches-'));
+    for (let i = 0; i < POSTS_PER_BATCH + 7; i++) writeFileSync(join(dir, `post-${String(i).padStart(3, '0')}.md`), `---\ntitle: Post ${i}\ndate: 2020-01-02\n---\nText ${i} links to [the next](post-${String(i + 1).padStart(3, '0')}.md).\n`);
+    const whole = await readMarkdownFolder(dir, {});
+    const batches: SourcePost[][] = [];
+    const rest = await readMarkdownFolder(dir, {}, (b) => batches.push(b));
+    expect(batches.map((b) => b.length)).toEqual([POSTS_PER_BATCH]);
+    expect([...batches.flat(), ...rest.posts]).toEqual(whole.posts);
+    expect({ ...rest, posts: [] }).toEqual({ ...whole, posts: [] });
+    expect(whole.posts).toHaveLength(POSTS_PER_BATCH + 7);
+  });
+});
 
 describe('reading a WordPress export: statuses, dates and links', () => {
   it('keeps a post a draft when it was private, password-protected or has no date', async () => {
@@ -674,6 +820,51 @@ describe('planning an import: limits, drafts and the review', () => {
     made.collections.posts.settings.taxonomies.categories.label = 'C'.repeat(61);
     const plan = planPostImport(made, src([post('p', { tags: [{ label: 'Bread' }] })]), '2026-11-24');
     expect(plan.problems[0]).toMatch(/^The posts can’t be imported: taxonomies\.categories\.label/);
+    // Planned first and checked after, the same is found, once.
+    const later = planPostImport(made, src([post('p', { tags: [{ label: 'Bread' }] })]), '2026-11-24', { check: false });
+    expect(later.problems).toEqual([]);
+    checkPlan(made, later);
+    expect(later.problems).toEqual(plan.problems);
+    checkPlan(made, later);
+    expect(later.problems).toEqual(plan.problems);
+    // Spending the plan's posts on the check finds the same.
+    const spent = planPostImport(made, src([post('p', { tags: [{ label: 'Bread' }] })]), '2026-11-24', { check: false });
+    checkPlan(made, spent, { spend: true });
+    expect(spent.problems).toEqual(plan.problems);
+    // And what only the engine refuses (a link to a page the project does not have), the same with or without a copy.
+    const linking = () => src([post('p', { body: [{ type: 'p', spans: [{ text: 'see', link: { type: 'page', target: 'pg_gone' } }] }] })]);
+    const byEngine = planPostImport(site(), linking(), '2026-11-24');
+    expect(byEngine.problems).toEqual([expect.stringMatching(/^The posts can’t be imported: .*pg_gone/)]);
+    const byEngineSpent = planPostImport(site(), linking(), '2026-11-24', { check: false });
+    checkPlan(site(), byEngineSpent, { spend: true });
+    expect(byEngineSpent.problems).toEqual(byEngine.problems);
+  });
+
+  it('applies operations it may keep exactly as copies of them, leaving the project it was given as it was', async () => {
+    const source = await readWordPress(join(wordpressFolder(), 'export.xml'), {});
+    // A project with its blog already made: a new collection's layout takes random IDs in each batch.
+    const before = applyOperations(site(), [{ type: 'collection.create', collectionId: 'posts' } as never]).state;
+    const frozen = structuredClone(before);
+    const plan = planPostImport(before, source, '2026-11-24');
+    const ids = new Map(plan.media.map((m) => [m.key, `a_${m.key}`]));
+    const assets = plan.media.map((m) => ({ id: `a_${m.key}`, name: m.key, file: `static/assets/${m.key}-1a2b3c4d.jpg`, mime: 'image/jpeg', bytes: 10, hash: m.key, kind: 'image' as const, createdAt: '2026-01-01T00:00:00.000Z' }));
+    // The operations given are copied first, unless they are the batch's own.
+    const clone = vi.spyOn(globalThis, 'structuredClone');
+    const given = planOperations(plan, ids, assets);
+    const copied = applyOperations(before, given);
+    expect(clone.mock.calls.some(([v]) => v === given)).toBe(true);
+    clone.mockClear();
+    const mine = planOperations(plan, ids, assets);
+    const owned = applyOperations(before, mine, { ownOperations: true });
+    expect(clone.mock.calls.some(([v]) => v === mine)).toBe(false);
+    clone.mockRestore();
+    expect(owned.state).toEqual(copied.state);
+    expect(owned.results).toEqual(copied.results);
+    expect(before).toEqual(frozen);
+    // A refused batch is refused the same.
+    const bad = planOperations(plan, ids, assets).map((op) => (op.type === 'entry.create' ? { ...op, title: '' } : op));
+    expect(() => applyOperations(before, bad, { ownOperations: true })).toThrow(/needs a title/);
+    expect(before).toEqual(frozen);
   });
 
   it('counts one picture for one file, however it is referred to', () => {

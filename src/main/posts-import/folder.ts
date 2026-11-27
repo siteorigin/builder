@@ -13,7 +13,7 @@ import { emptyReport, htmlToPlain, htmlToRichText } from './html';
 import { markdownToHtml, readFrontmatter, type FrontValue } from './markdown';
 import { MediaTable, segmentsWithin } from './media';
 import { readContained } from './files';
-import { MAX_EXPORT_BYTES, MAX_IMPORT_POSTS, MAX_MARKDOWN_FILE_BYTES, POST_LINK_PREFIX, type ParsedSource, type SourcePost, type SourceTerm } from './source';
+import { MAX_EXPORT_BYTES, MAX_IMPORT_POSTS, MAX_MARKDOWN_FILE_BYTES, POST_LINK_PREFIX, POSTS_PER_BATCH, type ParsedSource, type SourcePost, type SourceTerm } from './source';
 import { reportNotes } from './notes';
 
 const MARKDOWN = /\.(md|markdown)$/i;
@@ -106,7 +106,11 @@ function termList(v: FrontValue | undefined, spaces: boolean): SourceTerm[] {
   return out;
 }
 
-export async function readMarkdownFolder(root: string, pages: RichPages): Promise<ParsedSource> {
+/**
+ * The posts of the Markdown folder `root`. With `emit`, posts are handed to it in batches as they are read
+ * (POSTS_PER_BATCH at a time, in order), and the source returned holds only those read after the last batch.
+ */
+export async function readMarkdownFolder(root: string, pages: RichPages, emit?: (posts: SourcePost[]) => void): Promise<ParsedSource> {
   const realRoot = await fs.realpath(root);
   const label = basename(root);
   const { found, over } = await findPosts(root);
@@ -144,8 +148,15 @@ export async function readMarkdownFolder(root: string, pages: RichPages): Promis
     return { ...r, fm, slug, dated: dated?.[1] ?? null };
   });
 
+  // From here each file's text is let go of once its post is read.
+  read.length = 0;
   const posts: SourcePost[] = [];
-  for (const { f, key, fm, slug, dated, notUtf8 } of fronts) {
+  const add = (post: SourcePost) => {
+    posts.push(post);
+    if (emit && posts.length >= POSTS_PER_BATCH) emit(posts.splice(0, posts.length));
+  };
+  while (fronts.length) {
+    const { f, key, fm, slug, dated, notUtf8 } = fronts.shift()!;
     const report = emptyReport();
     const notes: string[] = notUtf8 ? ['It is not saved as UTF-8 text, so some of its letters may have come out wrong. Check its text, or save the file as UTF-8 and import it again.'] : [];
     if (fm.problems.length) notes.push(`Some of its settings could not be read (${fm.problems.slice(0, 3).join('; ')}).`);
@@ -209,7 +220,7 @@ export async function readMarkdownFolder(root: string, pages: RichPages): Promis
     }
     const picture = text(fm.data.image) ?? text(fm.data.featured_image) ?? text(fm.data.featuredimage) ?? text(fm.data.cover) ?? text(fm.data.thumbnail) ?? text(fm.data.hero) ?? text(fm.data.banner);
     const author = text(fm.data.author);
-    posts.push({
+    add({
       key,
       from: f.rel,
       title: title.slice(0, 400),
