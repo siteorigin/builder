@@ -443,6 +443,8 @@ function applyOne(state: ProjectState, op: EditOperation, ctx: ApplyContext): Op
     case 'asset.add': {
       if (state.assets.assets[op.asset.id]) fail(`Asset "${op.asset.id}" already exists.`);
       if (op.asset.kind === 'document' ? !isDocumentFile(op.asset.file, op.asset.mime) : isDocumentMime(op.asset.mime) || !!documentFormat(op.asset.file)) fail(`"${op.asset.name}" is not ${op.asset.kind === 'document' ? 'a document the library takes' : `an ${op.asset.kind}`}.`);
+      // Only a picture's copies are made after it lands, and never beside copies it already has.
+      if (op.asset.copiesPending && (op.asset.kind !== 'image' || op.asset.variants?.length)) fail(`"${op.asset.name}" has no copies to wait for.`);
       state.assets.assets[op.asset.id] = clone(op.asset);
       return { assetId: op.asset.id };
     }
@@ -591,8 +593,9 @@ function applyOne(state: ProjectState, op: EditOperation, ctx: ApplyContext): Op
       a.mime = op.mime;
       a.bytes = op.bytes;
       a.hash = op.hash;
-      // Details the new file does not have are dropped, never left over from the old one.
-      for (const k of ['width', 'height', 'variants', 'originalName'] as const) delete a[k];
+      // Details the new file does not have are dropped, never left over from the old one: copies still being made of the
+      // old file are no longer this image's.
+      for (const k of ['width', 'height', 'variants', 'copiesPending', 'originalName'] as const) delete a[k];
       if (op.width !== undefined) a.width = op.width;
       if (op.height !== undefined) a.height = op.height;
       if (op.variants?.length) a.variants = clone(op.variants);

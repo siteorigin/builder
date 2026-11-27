@@ -8,7 +8,7 @@ import assert from 'node:assert/strict';
 import { mkdirSync } from 'node:fs';
 import { join } from 'node:path';
 import sharp from 'sharp';
-import { createProject, eventually, launch, scratch, step } from './harness.mjs';
+import { copiesMade, createProject, eventually, launch, scratch, step } from './harness.mjs';
 import { MockOpenAIServer, envelopeReply } from '../unit/mock-openai-server.ts';
 
 const { WORK, SHOTS, cleanup } = scratch('ai-images');
@@ -58,7 +58,7 @@ try {
   assert.equal(imported.ok, true, imported.message);
   const [first, second] = imported.assetIds;
   assert.ok(first && second && first !== second, 'two assets');
-  const snap = await win.evaluate(() => window.builder.project.snapshot());
+  const snap = await copiesMade(win, [first, second]);
   assert.equal(snap.state.assets.assets[first].name, snap.state.assets.assets[second].name, 'both are named the same');
   const name = snap.state.assets.assets[first].name;
   /** Where the preview serves an asset's file. */

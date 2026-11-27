@@ -29,7 +29,7 @@ import { StaticPreviews } from './static-preview';
 import { isPlainFile, builtPhotosMessage, deliverVercelConfig, pageLanguageWarning, publicUrlNote, rivalHookStop, cleanBuiltSite, cleanWebsitePhotos, copyProjectSource, draftLinksStop, draftSourceNotes, publishedChanged, withheldRoutes, withheldStaticFiles, editedGeneratedFile, explainBuildFailure, exportedAssetFilter, finishExportedSource, leaveOutDrafts, listFiles, locatedPhotos, locationKeptNote, locationRemovedNote, missingAssetsStop, missingSourceWarnings, missingUnusedWarnings, missingWebsiteAssets, notFoundAddressWarning, notFoundHostNote, notFoundPageProblem, omittedAssetsWarning, ownNotFoundFileNote, ownNotFoundFileStop, readNotFoundPage, settleServerHook, stripCodeMarkers, carriesCodeMarker, projectInventory, inventoryChanged, readExportFile, type ExportHashes, projectReadme, publishFolder, pruneWebsiteAssets, replaceEmptyFolder, readLibraryImage, sectionLinkWarnings, uncleanablePhotosMessage, uniqueChild, unlinkedButtonWarnings, unlinkedMenuLinkWarnings, emptySectionWarnings, formNameWarnings, runtimeFontWarnings, variantCredits, writeExportedSources, exportedSourcesProblem } from './export';
 import { LOCAL_DIR, LOCK_HEARTBEAT_MS, NO_LOCK, ProjectLockedError, ProjectSession, ThemeUnavailableError } from './project/session';
 import { DOC_DIR, MANIFEST_FILE, ProjectFormatError } from './project/documents';
-import { DOCUMENT_EXTENSIONS, FONT_EXTENSIONS, IMAGE_EXTENSIONS, IMPORT_IMAGE_EXTENSIONS, importAsset, importAssetBatch, importPackageImage, MEDIA_PARALLEL, isAssetOfKind, isOpaquePicture, libraryWebCopyPlan, locateAssetFile, originalNameOf, pictureMime, releaseMediaWorkers, restoreAssetFiles, reviewImportFile, storeLibraryWebCopy } from './project/assets';
+import { DOCUMENT_EXTENSIONS, FONT_EXTENSIONS, IMAGE_EXTENSIONS, IMPORT_IMAGE_EXTENSIONS, importAsset, importAssetBatch, importPackageImage, makePendingCopies, MEDIA_PARALLEL, isAssetOfKind, isOpaquePicture, libraryWebCopyPlan, locateAssetFile, originalNameOf, pictureMime, releaseMediaWorkers, restoreAssetFiles, reviewImportFile, storeLibraryWebCopy } from './project/assets';
 import { postReader, stopPostReads } from './posts-import/process';
 import { sourceApprovals, sourceSecrets, sourceSyncRunner, stopSourceSyncs } from './sources/process';
 import { sampleSource, sourceDraftState, syncSource, type SourceSampleResult, type SourceSyncResult } from './sources/sync';
@@ -322,6 +322,12 @@ const EDITOR_MARKUP = /<[a-zA-Z][^<>]*\sdata-so-(?:ctx|node)="|siteorigin-bridge
 const editorMarkup = (html: string) => EDITOR_MARKUP.test(html) || carriesCodeMarker(html);
 /** The same in a built script: the bridge, the editor's attributes, or a template that writes a code marker. */
 const editorScript = (js: string) => /siteorigin-bridge|data-so-ctx/.test(js) || carriesCodeMarker(js);
+/**
+ * How often an import gives the pictures it added the copies made of them so far (#979), besides once at its end: each
+ * time is one change, so the library is written and the editor sent the project once rather than once a picture.
+ */
+const COPIES_FILL_MS = 5000;
+
 export class Controller {
   session: ProjectSession | null = null;
   dev: DevServer | null = null;
@@ -1271,6 +1277,7 @@ export class Controller {
     this.handingOver = false;
     // A new opening lists only its own exports, even if an earlier one was never closed.
     this.endExports();
+    this.copiesFailed.clear();
     this.session = session;
     // In place before the first snapshot, so the editor opens with it.
     if (runtimeError) this.pendingStatus = runtimeError;
@@ -1318,8 +1325,14 @@ export class Controller {
       this.broadcast();
       // An import, a relink, an undo or an outside edit of the library may name files that are, or are not, there.
       if (ev.changedDocs.includes('siteorigin/assets.json')) void this.checkAssetFiles(session);
+      // Images still waiting for their copies are made once the project can take them (after a conflict is settled, say).
+      this.copyPending(session);
     });
-    session.on('history', () => this.broadcast());
+    session.on('history', () => {
+      this.broadcast();
+      // An AI request that ended lets the copies it held off be given (ProjectSession.fillCopies waits for it).
+      this.copyPending(session);
+    });
     // A save that failed shows in the editor's save indicator at once, though the project's revision did not move.
     session.on('save-failed', () => {
       if (this.session === session) this.broadcast();
@@ -1329,6 +1342,8 @@ export class Controller {
     this.watchExternalChanges(session);
     // Icons a save stopped waiting for before this app held the project's lock (a new project's) are published now.
     void session.refreshSiteIcons().catch(() => null);
+    // Copies a quit or a crash left unmade (#979).
+    this.copyPending(session);
     this.broadcast();
     // Project health lists missing image files a moment after the project shows: the look at every original and copy
     // in the library is not waited for.
@@ -2514,6 +2529,126 @@ export class Controller {
   }
 
   /**
+   * As serialImport, but `fn` answers before all its work is done: the caller has `answer` at once, and the next import
+   * waits for `rest` too (the copies of the pictures an import added, #979).
+   */
+  private serialImportAnswering<T>(fn: () => Promise<{ answer: T; rest?: Promise<unknown> }>): Promise<T> {
+    const p = this.importQueue.then(fn, fn);
+    this.importQueue = p.then((r) => r.rest, () => undefined).catch(() => undefined);
+    return p.then((r) => r.answer);
+  }
+
+  /**
+   * Library images whose copies an opening of a project is making now (#979), by ID: by the import that added them, or
+   * by copyPending. An opening's own: one that closed while its copies were made never holds up the next one's.
+   */
+  private copying = new WeakMap<ProjectSession, Set<string>>();
+  private copyingIn(s: ProjectSession) {
+    let ids = this.copying.get(s);
+    if (!ids) this.copying.set(s, (ids = new Set()));
+    return ids;
+  }
+  /** The copy runs under way or waiting their turn, which an export waits for, so the site it builds has every copy. */
+  private copyRuns = new Set<Promise<unknown>>();
+  /**
+   * Images whose copies could not be made because their file is missing or is not the picture recorded (`id:hash`), in
+   * this opening: not tried again until the file is located.
+   */
+  private copiesFailed = new Set<string>();
+
+  /**
+   * Make the copies of library images added before them (copiesPending, #979), a few at a time, and give the records the
+   * copies written: once every COPIES_FILL_MS while they are made, so a long batch keeps what it has made if the app
+   * stops, and once at the end. Each is one change (ProjectSession.fillCopies), no step of History. Runs in an import's
+   * turn, holding off the asset sweep. Resolves once every copy is made or the project closed. An image still waiting at
+   * the end (undone and redone meanwhile, or its copies refused while an AI request ran) is made again, unless the
+   * project could not be written; one whose file is missing or another picture waits until it is located.
+   */
+  private makeCopies(s: ProjectSession, records: readonly AssetRecord[]): Promise<void> {
+    const todo = [...records];
+    const fence = this.writeFence(s);
+    const fills: Array<{ assetId: string; file: string; hash: string; variants: Array<{ width: number; file: string }> }> = [];
+    let lastFill = Date.now();
+    // Whether the project refused a fill or a write for a reason that holds (it cannot be written now): nothing is made again.
+    let stuck = false;
+    let filling: Promise<void> | null = null;
+    const fill = () => {
+      if (filling || !fills.length) return;
+      // One batch at a time: copies made while it is saved wait for the next (or the last).
+      filling = (async () => {
+        const batch = fills.splice(0);
+        const r = await s.fillCopies(batch).catch(() => null);
+        // Copies refused while an AI request runs are given at the end, when it may have finished.
+        if (r?.busy) fills.unshift(...batch);
+        else if (!r?.ok) stuck = true;
+        filling = null;
+      })();
+    };
+    const lane = async () => {
+      for (let r = todo.shift(); r; r = todo.shift()) {
+        if (this.session !== s || this.closing) return;
+        let variants: Array<{ width: number; file: string }> | null;
+        try {
+          variants = await makePendingCopies(s.dir, r, fence);
+        } catch {
+          // A write that failed (a full disk): tried again when the library next changes or the project opens.
+          stuck = true;
+          continue;
+        }
+        if (!variants) {
+          // Copies the project closed before (or a quit) are made when it opens again.
+          if (this.session === s && !this.closing) this.copiesFailed.add(`${r.id}:${r.hash}`);
+          continue;
+        }
+        fills.push({ assetId: r.id, file: r.file, hash: r.hash, variants });
+        // Each change sends the editor the project and writes the library again: copies wait to be given together.
+        if (Date.now() - lastFill >= COPIES_FILL_MS) {
+          lastFill = Date.now();
+          fill();
+        }
+      }
+    };
+    const claimed = this.copyingIn(s);
+    const run = s
+      .withImport(async () => {
+        await Promise.all(Array.from({ length: Math.max(1, Math.min(MEDIA_PARALLEL, todo.length)) }, lane));
+        while (filling) await filling;
+        fill();
+        while (filling) await filling;
+      })
+      .finally(() => {
+        for (const r of records) claimed.delete(r.id);
+        this.copyRuns.delete(run);
+        if (!stuck && this.session === s && !this.closing && records.some((r) => s.state.assets.assets[r.id]?.copiesPending === true)) this.copyPending(s);
+      });
+    this.copyRuns.add(run);
+    return run;
+  }
+
+  /**
+   * Make the copies of every library image still waiting for them that no import is making (#979): ones a quit or a
+   * crash left unmade, and ones Undo, Redo, a restored version or an outside edit brought back still waiting. In an
+   * import's turn, after any import before it; an export waits for it from now.
+   */
+  private copyPending(s: ProjectSession) {
+    // Never while the project closes: its runs stop at once, and the next opening makes what is left.
+    if (s.readOnly || this.session !== s || this.closing || s.activeRun) return;
+    const claimed = this.copyingIn(s);
+    const waiting = Object.values(s.state.assets.assets).filter((a) => a.copiesPending === true && !claimed.has(a.id) && !this.copiesFailed.has(`${a.id}:${a.hash}`));
+    if (!waiting.length) return;
+    for (const a of waiting) claimed.add(a.id);
+    const queued: Promise<unknown> = this.serialImport(() => (this.session === s ? this.makeCopies(s, waiting) : Promise.resolve(waiting.forEach((a) => claimed.delete(a.id)))))
+      .catch(() => undefined)
+      .finally(() => this.copyRuns.delete(queued));
+    this.copyRuns.add(queued);
+  }
+
+  /** Until the copies being made now, or waiting their turn, are made: a site exported after it has every copy. */
+  async copiesMade(): Promise<void> {
+    while (this.copyRuns.size) await Promise.all([...this.copyRuns]).catch(() => undefined);
+  }
+
+  /**
    * Choose files to import (the chooser, unless `paths` are given) and say what each would become, writing nothing:
    * which HEIC photos are converted, which large photos could be added as web-sized copies, which can't be added.
    */
@@ -2555,57 +2690,79 @@ export class Controller {
     const picked = only ? files.filter((f) => isAssetOfKind(f, only)) : files;
     const refused = files.length - picked.length;
     const reviewed = new Map((choices?.files ?? []).map((f) => [f.path, f]));
-    // Files are written before their asset records exist, so the session holds off sweeping assets meanwhile.
-    return this.serialImport(timed('controller.importAssets', () => s.withImport(async () => {
-      const ids: string[] = [];
-      const errors: string[] = refused ? [`${refused} file${refused === 1 ? ' was' : 's were'} skipped because ${refused === 1 ? 'it is' : 'they are'} not ${only === 'font' ? 'a font' : only === 'document' ? 'a document' : 'an image'}.`] : [];
-      const notes: string[] = [];
-      const ops: Array<{ type: 'asset.add'; asset: AssetRecord }> = [];
-      const backfills = [];
-      // Files imported earlier in this batch count as existing too: the same picture dropped twice is one asset.
-      const known = Object.values(s.state.assets.assets);
-      // One time for the whole import, so the images it adds are listed together and by name.
-      const createdAt = new Date().toISOString();
-      // A few at a time, as many as the media worker makes at once; what each did is told in the files' order.
-      // Written only while the project is still open and this app's; the decoding and converting are done before.
-      const outcomes = await importAssetBatch(
-        s.dir,
-        picked.map((f) => {
-          const r = reviewed.get(f);
-          return { path: f, opts: { decoder: this.photoDecoder, createdAt, ...(r ? { webCopy: r.webCopy, fingerprint: r.fingerprint } : {}) } };
-        }),
-        known,
-        this.writeFence(s),
-        // A project closed or taken over meanwhile gets nothing more: the rest of the batch is not converted for nothing.
-        { parallel: MEDIA_PARALLEL, go: () => this.session === s && !this.closing }
-      );
-      const started = outcomes.findIndex((o) => !o);
-      for (const o of started < 0 ? outcomes : outcomes.slice(0, started)) {
-        if (!o) continue;
-        if ('error' in o) {
-          errors.push(o.error.message);
-          continue;
-        }
-        const { record, existing, font, note } = o;
-        if (note) notes.push(note);
-        if (!ids.includes(record.id)) ids.push(record.id);
-        if (font) backfills.push({ type: 'asset.update' as const, assetId: record.id, font });
-        if (!existing) ops.push({ type: 'asset.add' as const, asset: record });
+    // Files are written before their asset records exist, so the session holds off sweeping assets meanwhile. The editor
+    // has its answer once the pictures have landed; their copies follow in the same turn (#979), which the span covers.
+    return this.serialImportAnswering(async () => {
+      const span = perf.span('controller.importAssets');
+      let added = 0;
+      try {
+        const { answer, rest } = await s.withImport(async (): Promise<{ answer: { ok: boolean; assetIds: string[]; message?: string; note?: string }; rest?: Promise<void> }> => {
+          const ids: string[] = [];
+          const errors: string[] = refused ? [`${refused} file${refused === 1 ? ' was' : 's were'} skipped because ${refused === 1 ? 'it is' : 'they are'} not ${only === 'font' ? 'a font' : only === 'document' ? 'a document' : 'an image'}.`] : [];
+          const notes: string[] = [];
+          const ops: Array<{ type: 'asset.add'; asset: AssetRecord }> = [];
+          const backfills = [];
+          // Files imported earlier in this batch count as existing too: the same picture dropped twice is one asset.
+          const known = Object.values(s.state.assets.assets);
+          // One time for the whole import, so the images it adds are listed together and by name.
+          const createdAt = new Date().toISOString();
+          // A few at a time, as many as the media worker makes at once; what each did is told in the files' order.
+          // Written only while the project is still open and this app's; the decoding and converting are done before.
+          // A picture lands as soon as its own file is stored, its copies made after (#979).
+          const outcomes = await importAssetBatch(
+            s.dir,
+            picked.map((f) => {
+              const r = reviewed.get(f);
+              return { path: f, opts: { decoder: this.photoDecoder, createdAt, copiesLater: true, ...(r ? { webCopy: r.webCopy, fingerprint: r.fingerprint } : {}) } };
+            }),
+            known,
+            this.writeFence(s),
+            // A project closed or taken over meanwhile gets nothing more: the rest of the batch is not converted for nothing.
+            { parallel: MEDIA_PARALLEL, go: () => this.session === s && !this.closing }
+          );
+          const started = outcomes.findIndex((o) => !o);
+          for (const o of started < 0 ? outcomes : outcomes.slice(0, started)) {
+            if (!o) continue;
+            if ('error' in o) {
+              errors.push(o.error.message);
+              continue;
+            }
+            const { record, existing, font, note } = o;
+            if (note) notes.push(note);
+            if (!ids.includes(record.id)) ids.push(record.id);
+            if (font) backfills.push({ type: 'asset.update' as const, assetId: record.id, font });
+            if (!existing) ops.push({ type: 'asset.add' as const, asset: record });
+          }
+          if (started >= 0) errors.push(`${picked.length - started === 1 ? `${basename(picked[started])} was` : `${picked.length - started} files were`} not added because the project was closed.`);
+          if (backfills.length) {
+            const r = await s.apply({ operations: backfills }, { label: 'Update font details', source: 'user' });
+            if (!r.ok) errors.push(r.error?.message ?? 'The font details could not be updated.');
+          }
+          // The pictures still to be given their copies, claimed before they land so nothing else starts on them.
+          const waiting = ops.map((o) => o.asset).filter((a) => a.copiesPending);
+          const claimed = this.copyingIn(s);
+          for (const a of waiting) claimed.add(a.id);
+          if (ops.length) {
+            const kinds = ['font', 'image', 'document'] as const;
+            const one = kinds.find((k) => ops.every((o) => o.asset.kind === k));
+            const noun = one ? [one, `${one}s`] : ['file', 'files'];
+            const r = await s.apply({ operations: ops }, { label: ops.length === 1 ? `Import ${noun[0]}` : `Import ${ops.length} ${noun[1]}`, source: 'user' });
+            if (!r.ok) {
+              for (const a of waiting) claimed.delete(a.id);
+              return { answer: { ok: false, assetIds: [], message: r.error?.message } };
+            }
+          }
+          const answer = { ok: errors.length === 0, assetIds: ids, message: errors.join(' ') || undefined, ...(notes.length ? { note: notes.join(' ') } : {}) };
+          // Started inside this import's hold on the asset sweep, so there is no moment between them for a sweep.
+          return { answer, rest: waiting.length ? this.makeCopies(s, waiting) : undefined };
+        });
+        added = answer.assetIds.length;
+        return { answer, rest: (rest ?? Promise.resolve()).finally(() => span({ files: picked.length, added })) };
+      } catch (e) {
+        span({ files: picked.length, added });
+        throw e;
       }
-      if (started >= 0) errors.push(`${picked.length - started === 1 ? `${basename(picked[started])} was` : `${picked.length - started} files were`} not added because the project was closed.`);
-      if (backfills.length) {
-        const r = await s.apply({ operations: backfills }, { label: 'Update font details', source: 'user' });
-        if (!r.ok) errors.push(r.error?.message ?? 'The font details could not be updated.');
-      }
-      if (ops.length) {
-        const kinds = ['font', 'image', 'document'] as const;
-        const one = kinds.find((k) => ops.every((o) => o.asset.kind === k));
-        const noun = one ? [one, `${one}s`] : ['file', 'files'];
-        const r = await s.apply({ operations: ops }, { label: ops.length === 1 ? `Import ${noun[0]}` : `Import ${ops.length} ${noun[1]}`, source: 'user' });
-        if (!r.ok) return { ok: false, assetIds: [], message: r.error?.message };
-      }
-      return { ok: errors.length === 0, assetIds: ids, message: errors.join(' ') || undefined, ...(notes.length ? { note: notes.join(' ') } : {}) };
-    }), (r) => ({ files: picked.length, added: r?.assetIds.length ?? 0 })));
+    });
   }
 
   /**
@@ -3249,6 +3406,8 @@ export class Controller {
         const found = await locateAssetFile(s.dir, record, file, this.assetFence(s, record, at), Object.values(s.state.assets.assets));
         if (found.same) {
           await this.checkAssetFiles(s);
+          // An image waiting for copies its missing file kept from being made has them made now.
+          if (this.copiesFailed.delete(`${record.id}:${record.hash}`)) this.copyPending(s);
           if (document) return { ok: true, message: found.written.length ? `${name} is back in the project folder.` : `${name} already has that file.` };
           if (found.failed.length) return { ok: false, message: `${name} is back, but ${missingParts({ original: false, variants: found.failed })} could not be made again. Make the copies again in Assets.` };
           return { ok: true, message: `${name} is back in the project folder.` };
@@ -3447,6 +3606,9 @@ export class Controller {
     const s = this.session!;
     const bad = this.badExportTarget(s, dest, format);
     if (bad) return { ok: false, message: bad, warnings: [] };
+    // Images just added carry the copies being made of them (#979).
+    await this.copiesMade();
+    if (this.session !== s) return { ok: false, message: 'The project was closed before the export started.', warnings: [] };
     // What the export says about what it delivered, in order, with where to fix what the editor can fix.
     const notes: ExportNote[] = [];
     const warn = (...messages: string[]) => void notes.push(...messages.map((message) => ({ message })));
@@ -3494,6 +3656,9 @@ export class Controller {
     const s = this.session!;
     const bad = this.badExportTarget(s, dest, format);
     if (bad) return { ok: false, message: bad, warnings: [] };
+    // The site offers every copy of the images just added (#979): it waits for the ones being made.
+    await this.copiesMade();
+    if (this.session !== s) return { ok: false, message: 'The project was closed before the export started.', warnings: [] };
     // Build an isolated snapshot so the running preview and later edits cannot mix into the output.
     return this.withStaging((staging) => this.buildFromStaging(s, staging, dest, format, published));
   }
@@ -3510,6 +3675,9 @@ export class Controller {
     const s = this.session!;
     const bad = this.badExportTarget(s, dest, 'folder');
     if (bad) return { ok: false, message: bad, warnings: [] };
+    // The review shows every copy of the images just added, as the website export does (#979).
+    await this.copiesMade();
+    if (this.session !== s) return { ok: false, message: 'The project was closed before the review was built.', warnings: [] };
     return this.withStaging((staging) => this.buildFromStaging(s, staging, dest, 'folder', undefined, { review: true }));
   }
 

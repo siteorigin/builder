@@ -8,7 +8,7 @@ import { existsSync, mkdirSync, readFileSync, readdirSync, realpathSync, writeFi
 import { createHash } from 'node:crypto';
 import { basename, delimiter, join, sep } from 'node:path';
 import sharp from 'sharp';
-import { answerChoosers, choosersShown, createProject, desktopCursor, desktopIntents, eventually, launch, scratch, step, withTimeout } from './harness.mjs';
+import { answerChoosers, choosersShown, copiesMade, createProject, desktopCursor, desktopIntents, eventually, launch, scratch, step, withTimeout } from './harness.mjs';
 
 // ---------------------------------------------------------------------------
 // A phone photo's metadata, written and read back by hand (little-endian EXIF and an XMP packet)
@@ -213,7 +213,7 @@ const photoHash = createHash('sha256').update(readFileSync(photoPath)).digest('h
 const photoImport = await win.evaluate((p) => window.builder.project.importAssets([p]), photoPath);
 assert.equal(photoImport.ok, true, `the photo imports: ${photoImport.message}`);
 const photoId = photoImport.assetIds[0];
-const photo = (await win.evaluate(() => window.builder.project.snapshot())).state.assets.assets[photoId];
+const photo = (await copiesMade(win, [photoId])).state.assets.assets[photoId];
 assert.deepEqual([photo.width, photo.height], [2000, 1200], 'the photo is recorded as it is displayed');
 assert.deepEqual(widthsIn(photo, 'jpg'), [160, 480, 960, 1440], 'the photo has four smaller JPEG copies');
 assert.deepEqual(widthsIn(photo, 'webp'), [160, 480, 960, 1440, 2000], 'the photo has a WebP set to its full width');
