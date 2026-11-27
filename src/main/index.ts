@@ -1320,19 +1320,16 @@ function copyBuildDetails() {
 
 /** Help > About on Windows and Linux, which have no About panel: the app's name and build, to quote in a report. */
 function showAbout() {
-  void aboutPicture().then((icon) => {
-    const options = { type: 'info' as const, icon, title: `About ${app.name}`, message: app.name, detail: `Version ${buildVersion(app.getVersion(), BUILD)}`, buttons: ['OK', 'Copy'], defaultId: 0, cancelId: 0 };
-    return win && !win.isDestroyed() ? dialog.showMessageBox(win, options) : dialog.showMessageBox(options);
-  }).then(({ response }) => {
+  const options = { type: 'info' as const, icon: aboutPicture(), title: `About ${app.name}`, message: app.name, detail: `Version ${buildVersion(app.getVersion(), BUILD)}`, buttons: ['OK', 'Copy'], defaultId: 0, cancelId: 0 };
+  void (win && !win.isDestroyed() ? dialog.showMessageBox(win, options) : dialog.showMessageBox(options)).then(({ response }) => {
     if (response === 1) copyBuildDetails();
   });
 }
 
 /** The app's icon for About (aboutIcon), or none, leaving the platform's information sign, when it cannot be read. */
-async function aboutPicture(): Promise<Electron.NativeImage | undefined> {
-  const from = aboutIcon({ platform: process.platform, packaged: app.isPackaged, here, resourcesPath: process.resourcesPath, execPath: process.execPath });
-  if (!from) return undefined;
-  const image = 'file' in from ? nativeImage.createFromPath(from.file) : await app.getFileIcon(from.executable, { size: 'large' }).catch(() => undefined);
+function aboutPicture(): Electron.NativeImage | undefined {
+  const file = aboutIcon({ platform: process.platform, packaged: app.isPackaged, here, resourcesPath: process.resourcesPath });
+  const image = file ? nativeImage.createFromPath(file) : undefined;
   return image && !image.isEmpty() ? image : undefined;
 }
 

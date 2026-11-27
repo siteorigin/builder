@@ -18,13 +18,14 @@ export function windowIcon(opts: { platform: NodeJS.Platform; packaged: boolean;
 }
 
 /**
- * Where Help › About on Windows and Linux takes its picture from, which a message box otherwise draws as the platform's
- * generic "information" sign: the executable itself for a packaged Windows app (its icon is the app's, and nothing
- * else of it ships), the window's icon file everywhere else. macOS shows its own About panel, with the bundle's icon.
+ * The picture Help › About shows on Windows and Linux, where a message box otherwise draws the platform's generic
+ * "information" sign: the same edge-to-edge icon as the window's, shipped beside the resources of a packaged app on
+ * both (electron-builder.yml; a packaged Windows window takes its own from the executable, which a message box cannot).
+ * macOS shows its own About panel, with the bundle's icon.
  */
-export function aboutIcon(opts: { platform: NodeJS.Platform; packaged: boolean; here: string; resourcesPath: string; execPath: string; exists?: (path: string) => boolean }): { executable: string } | { file: string } | undefined {
-  if (opts.platform === 'darwin') return undefined;
-  if (opts.packaged && opts.platform === 'win32') return { executable: opts.execPath };
-  const file = windowIcon(opts);
-  return file ? { file } : undefined;
+export function aboutIcon(opts: { platform: NodeJS.Platform; packaged: boolean; here: string; resourcesPath: string; exists?: (path: string) => boolean }): string | undefined {
+  const { platform, packaged, here, resourcesPath, exists = existsSync } = opts;
+  if (platform === 'darwin') return undefined;
+  const icon = packaged ? join(resourcesPath, 'icon.png') : join(here, '..', '..', 'build', 'icon-flat.png');
+  return exists(icon) ? icon : undefined;
 }

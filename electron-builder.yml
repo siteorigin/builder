@@ -72,6 +72,10 @@ dmg:
 win:
   target: [nsis]
   icon: build/icon.ico
+  # The picture Help › About shows (src/main/window-icon.ts): a message box cannot take the executable's icon.
+  extraResources:
+    - from: build/icon-flat.png
+      to: icon.png
 linux:
   target: [AppImage]
   # One PNG per size, each drawn for it (scripts/app-icon/build.mjs).

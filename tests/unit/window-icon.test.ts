@@ -33,20 +33,18 @@ describe('the window icon', () => {
 });
 
 describe('the icon Help › About shows', () => {
-  const execPath = join('C:', 'Program Files', 'SiteOrigin Builder', 'SiteOrigin Builder.exe');
-
-  it('takes a packaged Windows app’s own icon from its executable, rather than the generic information sign', () => {
-    expect(aboutIcon({ platform: 'win32', packaged: true, here, resourcesPath, execPath, exists: () => false })).toEqual({ executable: execPath });
+  it('is the icon shipped beside a packaged Windows or Linux app’s resources, not the generic information sign', () => {
+    expect(aboutIcon({ platform: 'win32', packaged: true, here, resourcesPath, exists: all })).toBe(shippedIcon);
+    expect(aboutIcon({ platform: 'linux', packaged: true, here, resourcesPath, exists: all })).toBe(shippedIcon);
   });
 
-  it('shows the window’s icon in a Windows or Linux development run, and in a packaged Linux app', () => {
-    expect(aboutIcon({ platform: 'win32', packaged: false, here, resourcesPath, execPath, exists: all })).toEqual({ file: devIcon });
-    expect(aboutIcon({ platform: 'linux', packaged: false, here, resourcesPath, execPath, exists: all })).toEqual({ file: devIcon });
-    expect(aboutIcon({ platform: 'linux', packaged: true, here, resourcesPath, execPath, exists: all })).toEqual({ file: shippedIcon });
+  it('is the app icon in a Windows or Linux development run', () => {
+    expect(aboutIcon({ platform: 'win32', packaged: false, here, resourcesPath, exists: all })).toBe(devIcon);
+    expect(aboutIcon({ platform: 'linux', packaged: false, here, resourcesPath, exists: all })).toBe(devIcon);
   });
 
   it('names nothing on macOS, whose About panel shows the bundle’s icon, or when the icon file is missing', () => {
-    for (const packaged of [true, false]) expect(aboutIcon({ platform: 'darwin', packaged, here, resourcesPath, execPath, exists: all })).toBeUndefined();
-    expect(aboutIcon({ platform: 'linux', packaged: true, here, resourcesPath, execPath, exists: () => false })).toBeUndefined();
+    for (const packaged of [true, false]) expect(aboutIcon({ platform: 'darwin', packaged, here, resourcesPath, exists: all })).toBeUndefined();
+    expect(aboutIcon({ platform: 'win32', packaged: true, here, resourcesPath, exists: () => false })).toBeUndefined();
   });
 });
