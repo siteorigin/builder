@@ -1,6 +1,6 @@
 import { createContext, useContext } from 'react';
 import { create, useStore as useStoreOf, type StoreApi } from 'zustand';
-import type { AiEvent, AppSettings, BuilderApi, ChatContext, ChatEditScope, ChatMessage, ChatMode, Conversation, ImportReviewRow, LiveHostState, LivePresence, LocalWorkspaceState, PostImportPreview, PackRefusal, ProjectSnapshot, ProviderId, ProviderStatus, SettingsPatch, RemoteAi, RemotePresence, RemoteState, RunStatus, RuntimeState } from '@shared/api';
+import type { AiEvent, AppSettings, BuilderApi, ChatContext, ChatEditScope, ChatMessage, ChatMode, Conversation, FormRoutingPrompt, ImportReviewRow, LiveHostState, LivePresence, LocalWorkspaceState, PostImportPreview, PackRefusal, ProjectSnapshot, ProviderId, ProviderStatus, SettingsPatch, RemoteAi, RemotePresence, RemoteState, RunStatus, RuntimeState } from '@shared/api';
 import type { LiveNotes } from '@shared/live/notes';
 import type { ApplyResult, EditOperation } from '@shared/ops';
 import type { FirstStepsRecord } from '@shared/first-steps';
@@ -1759,6 +1759,10 @@ export interface ConfirmRequest {
   /** One short line each: what is lost, what is at risk, what stays safe, how to take it back or that it can't
    *  be, and anything else to know. Shown in the order given, each with its own icon. */
   details?: ConfirmDetail[];
+  /** The app's review of an AI change to where contact forms send: each form, before and after (#1130). */
+  formRouting?: FormRoutingPrompt;
+  /** Names a question its asker may take back unanswered (withdrawConfirm), once it no longer needs an answer. */
+  key?: string;
   /** true = confirm, false = the cancel button, null = dismissed (Escape, ×, backdrop): stay where you were. */
   resolve: (ok: boolean | null) => void;
 }
@@ -1800,4 +1804,11 @@ export function confirmDialog(req: Omit<ConfirmRequest, 'resolve' | 'id'>): Prom
     // Only a question that takes the screen changes what the host shows.
     if (confirmQueue.length === 1) notifyConfirm();
   });
+}
+/**
+ * Take back the questions asked with `key` that no one answered: off the screen, or out of the queue. Each resolves
+ * as dismissed (null), so its asker, which withdrew it, should not read that as an answer.
+ */
+export function withdrawConfirm(key: string) {
+  for (const entry of confirmQueue.filter((q) => q.key === key)) entry.resolve(null);
 }

@@ -1,5 +1,6 @@
 import { useEffect, useLayoutEffect, useRef, useState, type ReactNode } from 'react';
 import { Ban, Bookmark, CircleMinus, Code, Globe, Info, KeyRound, LockOpen, LogOut, Mail, Phone, RotateCcw, ShieldCheck, SquarePen, TextCursorInput, Trash2, TriangleAlert, Undo2 } from 'lucide-react';
+import type { FormRoutingPrompt } from '@shared/api';
 import { getConfirm, onConfirmChange, type ConfirmDetail, type ConfirmIcon, type ConfirmRequest } from '../store';
 import { Modal, openDialogs, openMenus } from './ui';
 import './ConfirmDialog.css';
@@ -60,6 +61,53 @@ function Address({ href }: { href: string }) {
   );
 }
 
+/** A review of where forms send, as words to announce: each form, then each setting, before and after. */
+const routingText = (req: ConfirmRequest): string[] =>
+  (req.formRouting?.forms ?? []).flatMap((f) => [`${f.title}.`, ...f.rows.map((r) => (r.before === r.after ? `${r.label}: stays ${r.after}.` : `${r.label}: before ${r.before}, after ${r.after}.`)), ...(f.note ? [f.note] : [])]);
+
+/**
+ * Each form an AI change reaches (#1130), with the settings that decide where it sends, before and after. An address
+ * is shown whole, never cut short, so what the user allows is what they read.
+ */
+function FormRoutingList({ prompt }: { prompt: FormRoutingPrompt }) {
+  return (
+    <div className="confirm-routing">
+      {prompt.forms.map((f, i) => (
+        <section key={i} className="confirm-routing-form" aria-label={f.title}>
+          <h3 className="confirm-routing-title">{f.title}</h3>
+          {f.rows.length > 0 && (
+            <dl className="confirm-routing-rows">
+              {f.rows.map((r, j) => (
+                <div key={j} className="confirm-routing-row">
+                  <dt>{r.label}</dt>
+                  {r.before === r.after ? (
+                    <dd data-side="same">
+                      <span className="confirm-routing-side">Stays</span>
+                      <span className="confirm-routing-value">{r.after}</span>
+                    </dd>
+                  ) : (
+                    <>
+                      <dd data-side="before">
+                        <span className="confirm-routing-side">Before</span>
+                        <span className="confirm-routing-value">{r.before}</span>
+                      </dd>
+                      <dd data-side="after">
+                        <span className="confirm-routing-side">After</span>
+                        <span className="confirm-routing-value">{r.after}</span>
+                      </dd>
+                    </>
+                  )}
+                </div>
+              ))}
+            </dl>
+          )}
+          {f.note && <p className="confirm-routing-note">{f.note}</p>}
+        </section>
+      ))}
+    </div>
+  );
+}
+
 /**
  * The one question in front of the app (confirmDialog in store.ts), in the shared Modal. It answers four things
  * in order: what happens (the title and the lead), the item it happens to (set apart), what is lost and what stays
@@ -83,7 +131,7 @@ function ConfirmDialog({ req }: { req: ConfirmRequest }) {
     let said = 0;
     if (req.id !== first.current) {
       setAnnounce('');
-      said = requestAnimationFrame(() => setAnnounce([req.title, req.body, req.subject, req.subjectNote, ...(req.details ?? []).map((d) => d.text)].filter(Boolean).join(' ')));
+      said = requestAnimationFrame(() => setAnnounce([req.title, req.body, req.subject, req.subjectNote, ...routingText(req), ...(req.details ?? []).map((d) => d.text)].filter(Boolean).join(' ')));
     }
     const outside = () => !!safe.current && !safe.current.closest('.modal')?.contains(document.activeElement);
     // Held while any menu is still closing, and for a few frames after the last one has gone.
@@ -116,6 +164,7 @@ function ConfirmDialog({ req }: { req: ConfirmRequest }) {
   return (
     <Modal
       title={req.title}
+      wide={!!req.formRouting}
       icon={
         <span className="confirm-icon" data-tone={tone} aria-hidden="true">
           {req.icon ? ICONS[req.icon] : tone === 'neutral' ? <Info /> : <TriangleAlert />}
@@ -154,6 +203,7 @@ function ConfirmDialog({ req }: { req: ConfirmRequest }) {
             </span>
           </div>
         )}
+        {req.formRouting && <FormRoutingList prompt={req.formRouting} />}
         {req.details && req.details.length > 0 && (
           <ul className="confirm-details">
             {req.details.map((d, i) => (

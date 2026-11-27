@@ -16,7 +16,7 @@ vi.mock('electron', () => ({ app: { getPath: () => env.userData, isPackaged: fal
 const { createStarterState } = await import('@catalogue/starters');
 const { applyOperations } = await import('@engine/apply');
 const { makeInstance } = await import('@engine/install');
-const { formRoutingChanges, formRoutingQuestion, formRoutingReview } = await import('@engine/form-routing');
+const { formRoutingChanges, formRoutingPrompt, formRoutingQuestion, formRoutingReview } = await import('@engine/form-routing');
 const { ProjectSession } = await import('../../src/main/project/session');
 const { registerSecondTheme, SECOND_THEME_ID } = await import('./second-theme');
 registerSecondTheme();
@@ -414,6 +414,210 @@ describe('where a form sends, as an AI batch would leave it', () => {
     for (let i = 0; i < 5; i++) expect(five.text).toContain(`${EVIL}${i}`);
     expect(five.text).toContain(long);
     expect(five.allow).toBe('Allow these changes');
+  });
+});
+
+describe('the app’s dialog for an AI change to where forms send (#1130)', () => {
+  const ENDPOINT = 'Form endpoint (Formspree, Basin, Getform…)';
+  /** The dialog's review of what an AI batch, applied to `state`, changes about where its forms send. */
+  const review = (state: ProjectState, ops: EditOperation[]) => formRoutingPrompt(formRoutingChanges(state, applyOperations(state, ops).state)).forms;
+
+  it('shows a form’s service and where it sends, before and after, when only the address changes', () => {
+    const { state, owner, form } = project();
+    expect(review(state, [{ type: 'instance.setProp', owner, nodeId: form, prop: 'endpoint', value: EVIL }])).toEqual([
+      {
+        title: '“Contact form” on “Home”',
+        rows: [
+          { label: 'Form service', before: ENDPOINT, after: ENDPOINT },
+          { label: 'Sends to', before: `${SALES} (Form endpoint URL)`, after: `${EVIL} (Form endpoint URL)` }
+        ]
+      }
+    ]);
+  });
+
+  it('shows the address a new service reads when only the service changes', () => {
+    const { state, owner, form } = project();
+    const [f] = review(state, [{ type: 'instance.setProp', owner, nodeId: form, prop: 'provider', value: 'netlify' }]);
+    const netlify = (state.pages[owner.id].nodes[form] as InstanceNode).props.formName ?? state.components[FORM].properties.formName.default;
+    expect(f.rows).toEqual([
+      { label: 'Form service', before: ENDPOINT, after: 'Netlify Forms' },
+      { label: 'Sends to', before: `${SALES} (Form endpoint URL)`, after: `${netlify} (Netlify form name)` }
+    ]);
+  });
+
+  it('names a setting the form’s service does not read, and a cleared address', () => {
+    const { state, owner, form } = project();
+    const [unused] = review(state, [{ type: 'instance.setProp', owner, nodeId: form, prop: 'accessKey', value: 'key-1' }]);
+    expect(unused.rows).toEqual([
+      { label: 'Form service', before: ENDPOINT, after: ENDPOINT },
+      { label: 'Sends to', before: `${SALES} (Form endpoint URL)`, after: `${SALES} (Form endpoint URL)` },
+      { label: 'Web3Forms access key, a setting this service doesn’t use', before: 'Not set', after: 'key-1' }
+    ]);
+    const [cleared] = review(state, [{ type: 'instance.setProp', owner, nodeId: form, prop: 'endpoint', value: '' }]);
+    expect(cleared.rows[1]).toEqual({ label: 'Sends to', before: `${SALES} (Form endpoint URL)`, after: 'Not set (Form endpoint URL)' });
+  });
+
+  it('shows a new form as new, and tells two forms of the same name in the same place apart', () => {
+    const { state, owner, form } = project();
+    const [added] = review(state, [{ type: 'node.insert', owner, parentId: null, componentId: 'contact.form', props: { provider: 'endpoint', endpoint: EVIL } }]);
+    expect(added.rows).toEqual([
+      { label: 'Form service', before: 'New form', after: ENDPOINT },
+      { label: 'Sends to', before: 'New form', after: `${EVIL} (Form endpoint URL)` }
+    ]);
+    const second = applyOperations(state, [{ type: 'node.insert', owner, parentId: null, componentId: 'contact.form', props: { provider: 'endpoint', endpoint: SALES } }]);
+    const other = second.results[0].nodeId as string;
+    const both = review(second.state, [
+      { type: 'instance.setProp', owner, nodeId: form, prop: 'endpoint', value: `${EVIL}1` },
+      { type: 'instance.setProp', owner, nodeId: other, prop: 'endpoint', value: `${EVIL}2` }
+    ]);
+    expect(both.map((f) => f.title)).toEqual(['“Contact form” on “Home” (1 of 2)', '“Contact form” on “Home” (2 of 2)']);
+    expect(both.map((f) => f.rows[1].after).sort()).toEqual([`${EVIL}1 (Form endpoint URL)`, `${EVIL}2 (Form endpoint URL)`]);
+  });
+
+  it('shows a design’s setting that passes an address on, and its default, before and after', () => {
+    const { state, owner, band, support } = banded();
+    const [placed] = review(state, [{ type: 'instance.setProp', owner, nodeId: support, prop: 'recipient', value: EVIL }]);
+    // The form inside it sends where the placement's setting passes on.
+    expect(placed).toEqual({
+      title: '“Contact band” on “Home”',
+      rows: [
+        { label: 'Form service', before: ENDPOINT, after: ENDPOINT },
+        { label: 'Sends to', before: `${SUPPORT} (Form endpoint URL)`, after: `${EVIL} (Form endpoint URL)` },
+        { label: 'Recipient', before: SUPPORT, after: EVIL }
+      ]
+    });
+    const defaults = review(state, [{ type: 'component.setPropSchema', definitionId: band, prop: 'recipient', schema: { type: 'string', label: 'Recipient', default: EVIL } }]);
+    expect(defaults).toContainEqual({
+      title: 'The “Contact band” design: what new placements start with',
+      rows: [
+        { label: 'Form service', before: ENDPOINT, after: ENDPOINT },
+        { label: 'Sends to', before: 'Not set (Form endpoint URL)', after: `${EVIL} (Form endpoint URL)` },
+        { label: 'Recipient', before: 'Not set', after: EVIL }
+      ]
+    });
+  });
+
+  it('never hides a setting changed alongside the service, even one the old service read', () => {
+    const { state, owner, form } = project();
+    const [f] = review(state, [
+      { type: 'instance.setProp', owner, nodeId: form, prop: 'provider', value: 'netlify' },
+      { type: 'instance.setProp', owner, nodeId: form, prop: 'formName', value: 'enquiries' },
+      { type: 'instance.setProp', owner, nodeId: form, prop: 'endpoint', value: EVIL }
+    ]);
+    expect(f.rows).toEqual([
+      { label: 'Form service', before: ENDPOINT, after: 'Netlify Forms' },
+      { label: 'Sends to', before: `${SALES} (Form endpoint URL)`, after: 'enquiries (Netlify form name)' },
+      { label: 'Form endpoint URL, a setting this service doesn’t use', before: SALES, after: EVIL }
+    ]);
+  });
+
+  it('names the list a repeated form reads its address from, so a move to another list never reads as staying', () => {
+    const state = offices();
+    const form = Object.values(state.components['project.offices'].tree!.nodes).find((n) => n.kind === 'instance')!;
+    const moved = structuredClone(state);
+    const nodes = moved.components['project.offices'].tree!.nodes as Record<string, { children?: string[] }>;
+    nodes.n_offsal1.children = [];
+    nodes.n_offsup1.children = [form.id];
+    const [f] = formRoutingPrompt(formRoutingChanges(state, moved)).forms;
+    const sends = f.rows.find((r) => r.label === 'Sends to')!;
+    expect(sends).toEqual({ label: 'Sends to', before: 'Each item’s “inbox” in the “sales” list (Form endpoint URL)', after: 'Each item’s “inbox” in the “support” list (Form endpoint URL)' });
+  });
+
+  it('shows what each design sends to when a placement is swapped for another', () => {
+    const { state: start, owner } = project();
+    let state = start;
+    const band = (name: string, endpoint: string) => {
+      const section = applyOperations(state, [{ type: 'node.insert', owner, parentId: null, componentId: 'layout.section' }]);
+      state = section.state;
+      const id = section.results[0].nodeId as string;
+      state = applyOperations(state, [{ type: 'node.insert', owner, parentId: id, slot: 'content', componentId: 'contact.form', props: { provider: 'endpoint', endpoint } }]).state;
+      const made = applyOperations(state, [{ type: 'component.createFromNode', owner, nodeId: id, name }]);
+      state = made.state;
+      return made.results[0].definitionId as string;
+    };
+    const sales = band('Sales band', SALES);
+    const support = band('Support band', SUPPORT);
+    const placed = Object.keys(state.pages[owner.id].nodes).find((id) => (state.pages[owner.id].nodes[id] as InstanceNode).definitionId === sales)!;
+    const [f] = review(state, [{ type: 'instance.swapComponent', owner, nodeId: placed, definitionId: support, allowDrops: true } as EditOperation]);
+    expect(f).toEqual({
+      title: '“Support band” on “Home”',
+      rows: [
+        { label: 'Design', before: 'Sales band', after: 'Support band' },
+        { label: 'Form service', before: ENDPOINT, after: ENDPOINT },
+        { label: 'Sends to', before: `${SALES} (Form endpoint URL)`, after: `${SUPPORT} (Form endpoint URL)` }
+      ],
+      note: '“Support band” takes the place of “Sales band”, and its own code decides how the form sends. The addresses above are what its settings say.'
+    });
+  });
+
+  it('shows where a fresh placement of a form design sends when the design’s default service changes', () => {
+    const { state, owner, form } = project();
+    // A form design of the project's own (a copy made unique), with an endpoint and a Netlify name by default.
+    const made = applyOperations(state, [{ type: 'component.makeUnique', owner, nodeId: form, name: 'Enquiry form' } as EditOperation]);
+    const id = (made.state.pages[owner.id].nodes[form] as InstanceNode).definitionId;
+    expect(id).not.toBe(FORM);
+    const base = applyOperations(made.state, [
+      { type: 'component.setPropSchema', definitionId: id, prop: 'endpoint', schema: { ...made.state.components[id].properties.endpoint, default: SUPPORT } },
+      { type: 'component.setPropSchema', definitionId: id, prop: 'formName', schema: { ...made.state.components[id].properties.formName, default: 'enquiries' } }
+    ] as EditOperation[]).state;
+    const defaults = review(base, [{ type: 'component.setPropSchema', definitionId: id, prop: 'provider', schema: { ...base.components[id].properties.provider, default: 'netlify' } } as EditOperation]);
+    expect(defaults).toContainEqual({
+      title: 'The “Enquiry form” design: what new placements start with',
+      rows: [
+        { label: 'Form service', before: ENDPOINT, after: 'Netlify Forms' },
+        { label: 'Sends to', before: `${SUPPORT} (Form endpoint URL)`, after: 'enquiries (Netlify form name)' }
+      ]
+    });
+  });
+
+  it('shows a service the form cannot send with as sending nowhere', () => {
+    // An option the form's code has no way to send with (a project copy may offer one), set as a batch would leave it.
+    const { state, owner, form } = project();
+    const next = structuredClone(state);
+    (next.pages[owner.id].nodes[form] as InstanceNode).props.provider = 'carrier-pigeon';
+    const [f] = formRoutingPrompt(formRoutingChanges(state, next)).forms;
+    expect(f.rows[1]).toEqual({ label: 'Sends to', before: `${SALES} (Form endpoint URL)`, after: 'Nowhere' });
+  });
+
+  it('names a field a binding reads, and says why no address can be shown when none can', () => {
+    const recipients = { $prop: 'recipients', field: 'sales' };
+    const [f] = formRoutingPrompt([
+      {
+        kind: 'setting',
+        definitionId: 'project.band',
+        name: 'Band',
+        where: 'on “Home”',
+        prop: 'recipients',
+        label: 'Recipients',
+        value: { sales: EVIL },
+        was: { sales: SALES },
+        placement: 'page:p:n_1',
+        sends: { was: [{ service: ENDPOINT, setting: 'Form endpoint URL', value: recipients }], is: [{ service: 'Decided by its code', unknown: 'Decided by its code' }] },
+        key: 'k'
+      }
+    ]).forms;
+    expect(f.rows.slice(0, 2)).toEqual([
+      { label: 'Form service', before: ENDPOINT, after: 'Decided by its code' },
+      { label: 'Sends to', before: 'Its design’s “recipients” setting, its “sales” field (Form endpoint URL)', after: 'Decided by its code' }
+    ]);
+  });
+
+  it('says that code decides where it sends, as no address can be shown', () => {
+    const { state } = banded();
+    const form = structuredClone(state.components[FORM]);
+    const next = structuredClone(state);
+    next.components[FORM] = { ...form, source: `${form.source}\n<!-- sends elsewhere -->` };
+    const [code] = formRoutingPrompt(formRoutingChanges(state, next)).forms.filter((f) => f.title.startsWith('The code'));
+    expect(code).toMatchObject({ title: `The code of “${form.name}”`, rows: [] });
+    expect(code.note).toMatch(/its code decides where the form sends/);
+  });
+
+  it('keeps every change’s key as before, so the grant matches what the review lists', () => {
+    const { state, owner, form } = project();
+    const found = formRoutingChanges(state, applyOperations(state, [{ type: 'instance.setProp', owner, nodeId: form, prop: 'endpoint', value: EVIL }]).state);
+    expect(found).toHaveLength(1);
+    expect(JSON.parse(found[0].key)).toEqual(['setting', FORM, `page:${owner.id}:${form}`, 'endpoint', JSON.stringify(EVIL)]);
+    expect(found[0]).toMatchObject({ was: SALES, value: EVIL, placement: `page:${owner.id}:${form}` });
   });
 });
 

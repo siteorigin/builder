@@ -6,6 +6,7 @@ import { Welcome } from './Welcome';
 import { UnpackingModal } from './components/ProjectDialogs';
 import { Toasts, openDialogs, openMenus } from './components/ui';
 import { ConfirmHost } from './components/ConfirmDialog';
+import { FormRoutingHost } from './components/FormRoutingHost';
 import { forgetComponentThumbs } from './components/ComponentThumb';
 import { restorePanelWidth, restoreViewport, restoreZoom } from './lib/layout';
 import { focusedSurface, forwardedKeyRuns, forwardedVisitorStep, menuHistoryOwner, type HistoryContext } from './lib/history';
@@ -243,6 +244,8 @@ export function App() {
       <UnpackingModal />
       <Toasts />
       <ConfirmHost />
+      {/* The app's question before an AI change to where a form sends, in its own dialog wherever the chat is (#1130). */}
+      <FormRoutingHost />
       {perfOn && <PerfProbe screen={shown} />}
     </>
   );
@@ -376,13 +379,16 @@ async function restoreConversation(seq: number, remembered: string | undefined) 
     const plan = restorePlan(remembered, active.id, saved, getState().chatDrafts, getState().chatImages);
     let conversation = active;
     if (plan.kind === 'open') conversation = await api.ai.openConversation(plan.id).catch(() => active);
-    // A new conversation left with a draft was never saved: a new one takes its place, and its draft.
-    else if (plan.kind === 'fresh' && active.messages.length) conversation = await api.ai.newConversation();
+    // A new conversation left with a draft was never saved: a new one takes its place, and its draft. While a request
+    // runs in the active one (a window reloaded mid-request), none can be started: that request's thread is shown, so a
+    // question it waits on is seen, and the draft stays with the unsent conversations, to be picked up later.
+    else if (plan.kind === 'fresh' && active.messages.length) conversation = await api.ai.newConversation().catch(() => active);
     if (!current()) return;
     const id = conversation.id;
+    const kept = plan.kind === 'fresh' && conversation === active && active.messages.length > 0;
     const moved = () => {
       const s = getState();
-      return plan.kind === 'fresh' ? { chatDrafts: moveDraft(s.chatDrafts, plan.from, id), chatImages: moveImages(s.chatImages, plan.from, id) } : {};
+      return plan.kind === 'fresh' && !kept ? { chatDrafts: moveDraft(s.chatDrafts, plan.from, id), chatImages: moveImages(s.chatImages, plan.from, id) } : {};
     };
     const opening = getState().snapshot?.workspaceKey;
     // Shown as main has it by its ID, with the request running in it: a window reloaded mid-run has missed both.
