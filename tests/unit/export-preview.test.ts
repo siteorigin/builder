@@ -8,6 +8,7 @@ import { Server, get as httpGet } from 'node:http';
 import { tmpdir } from 'node:os';
 import { basename, join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { editorView } from './editor-feed';
 
 const env = vi.hoisted(() => ({ userData: '' }));
 vi.mock('electron', () => ({
@@ -177,7 +178,8 @@ describe('recent exports', () => {
     await created.close();
     const c = new Controller(() => null);
     const sent: Array<[string, unknown]> = [];
-    c.send = (channel: string, payload?: unknown) => void sent.push([channel, payload]);
+    const view = editorView();
+    c.send = (channel: string, payload?: unknown) => void sent.push([channel, view(channel, payload)]);
     // The preview runtime is not under test here.
     c.startRuntime = async () => undefined;
     cleanups.push(() => c.close());

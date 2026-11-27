@@ -101,7 +101,8 @@ const send = (channel, payload) =>
 async function push(change) {
   held = change;
   const s = await snapshot();
-  await send('project:changed', change(s));
+  const next = change(s);
+  await send('project:changed', { seq: 0, base: null, revision: next.revision, snapshot: next });
   await pause(500);
 }
 const readOnly = () => push((s) => ({ ...s, readOnly: READ_ONLY }));

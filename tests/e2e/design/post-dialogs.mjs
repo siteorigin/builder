@@ -117,7 +117,7 @@ const snapshot = () => win.evaluate(() => window.builder.project.snapshot());
 const broadcast = (snap) =>
   app.evaluate(({ BrowserWindow }, s) => {
     const w = BrowserWindow.getAllWindows().find((x) => !x.isDestroyed());
-    w.webContents.send('project:changed', s);
+    w.webContents.send('project:changed', { seq: 0, base: null, revision: s.revision, snapshot: s });
   }, snap);
 
 // ---- Project, pictures and entries in three collections ----

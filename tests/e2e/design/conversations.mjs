@@ -128,7 +128,7 @@ const row = (id) => manager.locator(`li[data-conversation-id="${id}"]`);
 /** Push an agent event through the main process, exactly as a real run does. */
 const emit = (e) => app.evaluate(({ BrowserWindow }, ev) => BrowserWindow.getAllWindows()[0].webContents.send('ai:event', ev), e);
 const snapshot = () => win.evaluate(() => window.builder.project.snapshot());
-const showSnapshot = (s) => app.evaluate(({ BrowserWindow }, next) => BrowserWindow.getAllWindows()[0].webContents.send('project:changed', next), s);
+const showSnapshot = (s) => app.evaluate(({ BrowserWindow }, next) => BrowserWindow.getAllWindows()[0].webContents.send('project:changed', { seq: 0, base: null, revision: next.revision, snapshot: next }), s);
 
 // ---- Populated, the newest conversation open ----
 await openManager();

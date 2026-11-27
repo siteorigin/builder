@@ -181,7 +181,7 @@ await closePaste();
 // ---- Blocked: read-only and the AI working (the snapshot the main process would send) ----
 const push = async (change) => {
   const s = await snapshot();
-  await app.evaluate(({ BrowserWindow }, next) => BrowserWindow.getAllWindows()[0].webContents.send('project:changed', next), change(s));
+  await app.evaluate(({ BrowserWindow }, next) => BrowserWindow.getAllWindows()[0].webContents.send('project:changed', { seq: 0, base: null, revision: next.revision, snapshot: next }), change(s));
   await pause(500);
 };
 await openPaste('Content with image');

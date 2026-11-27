@@ -7,6 +7,7 @@ import { existsSync, mkdtempSync, promises as fs, realpathSync, renameSync, rmSy
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { editorView } from './editor-feed';
 
 const env = vi.hoisted(() => ({ userData: '' }));
 vi.mock('electron', () => ({
@@ -69,7 +70,8 @@ async function openProject() {
   const session = await ProjectSession.open(dir, 'this-window');
   const c = new Controller(() => null);
   const sent: Array<[string, unknown]> = [];
-  c.send = (channel: string, payload?: unknown) => void sent.push([channel, payload]);
+  const view = editorView();
+  c.send = (channel: string, payload?: unknown) => void sent.push([channel, view(channel, payload)]);
   controllers.push(c);
   const inside = c as unknown as Watching;
   await inside.attach(session, {}, { state: 'error', message: 'No preview in this test.' });

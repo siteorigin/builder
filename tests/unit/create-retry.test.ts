@@ -7,6 +7,7 @@ import { existsSync, mkdirSync, mkdtempSync, promises as fs, readdirSync, readFi
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
+import { editorView } from './editor-feed';
 
 vi.mock('electron', () => ({
   app: { isPackaged: false, getAppPath: () => process.cwd(), getPath: () => tmpdir(), getVersion: () => '0.0.0' },
@@ -87,12 +88,13 @@ function setup() {
   const parent = realpathSync(mkdtempSync(join(tmpdir(), 'so-create-retry-')));
   dirs.push(parent);
   const hooks = { cancelAt: null as Step | null, sent: [] as Array<{ channel: string; payload: unknown }> };
+  const view = editorView();
   let c!: InstanceType<typeof Controller>;
   const win = {
     isDestroyed: () => false,
     webContents: {
       send: (channel: string, p: { step: string }) => {
-        hooks.sent.push({ channel, payload: p });
+        hooks.sent.push({ channel, payload: view(channel, p) });
         if (channel !== 'create:progress') return;
         if (p.step === hooks.cancelAt) {
           hooks.cancelAt = null;

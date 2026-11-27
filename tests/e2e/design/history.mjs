@@ -60,7 +60,7 @@ const snapshot = () => win.evaluate(() => window.builder.project.snapshot());
 /** Show the project as `change` makes it, through the channel the project reports its snapshot on. */
 async function show(change) {
   const s = await snapshot();
-  await app.evaluate(({ BrowserWindow }, next) => BrowserWindow.getAllWindows()[0].webContents.send('project:changed', next), change(s));
+  await app.evaluate(({ BrowserWindow }, next) => BrowserWindow.getAllWindows()[0].webContents.send('project:changed', { seq: 0, base: null, revision: next.revision, snapshot: next }), change(s));
   await pause(300);
   // Every state starts at the top of its list, as it does when the dialog opens.
   await win.evaluate(() => document.querySelectorAll('.modal *').forEach((el) => el.scrollTop && (el.scrollTop = 0)));

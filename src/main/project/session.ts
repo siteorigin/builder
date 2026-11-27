@@ -49,7 +49,7 @@ import { RSS_PATH } from '@generator/rss';
 import { HOST_REDIRECTS_FILE, VERCEL_CONFIG_FILE } from '@generator/host-redirects';
 import { atomicWrite, eachAtMost, ensureDir, ensureParents, inBatches, readBytesIfExists, readIfExists, readJson, removeDurable, removeEmptyDirs, safeJoin, safeJoinLooking, sha, stageWrites, syncDir, syncStaged, toJson, FolderPass, WRITES_AT_ONCE, type Looked, type StagedWrite } from './fsutil';
 import { designAt, relocateSource, textOfBytes } from './edited-design';
-import { collectionDocPath, collectionPathOf, collectionsFromDocs, componentDocPath, converterPathOf, CUSTOM_SOURCE_RE, DOC_DIR, isCanonicalPath, MANIFEST_FILE, newestStoredVersion, ProjectFormatError, readProject, readState, sourcePathOf, sourcesFromDocs, stateToAuthoredSources, stateToDocs, type DocReader } from './documents';
+import { collectionDocPath, collectionPathOf, collectionsFromDocs, componentDocPath, converterPathOf, CUSTOM_SOURCE_RE, DOC_DIR, isCanonicalPath, MANIFEST_FILE, newestStoredVersion, ProjectFormatError, readProject, readState, shareUnchanged, sourcePathOf, sourcesFromDocs, stateToAuthoredSources, stateToDocs, type DocReader } from './documents';
 import { perf, timed } from '../perf';
 import { absent, handleStamp, isMissing, lookAt, OPEN_READ, readFileAt, stampOf, statTrusted } from './stable-read';
 
@@ -1325,7 +1325,7 @@ export class ProjectSession extends EventEmitter {
         // Frozen as it will be once it is the project, so its documents' texts are kept from here.
         const nextDocs = stateToDocs(frozen(next));
         changed = await this.diffDocs(this.docs, nextDocs);
-        this.state = next;
+        this.state = shareUnchanged(this.state, this.docs, next, nextDocs);
         this.docs = nextDocs;
         this.migrationDue ||= migrated;
         this.releaseConflict(path);
@@ -4291,7 +4291,8 @@ export class ProjectSession extends EventEmitter {
     const restored = collectionsFromDocs([...docs].filter(([p]) => collectionPathOf(p)).map(([p, c]) => [p, JSON.parse(c)]));
     const unsaveable = restored.orphans.length ? `${restored.orphans[0]} would have no collection` : restored.duplicates.length ? `${restored.duplicates[0]} would share its entry ID with another entry` : null;
     if (unsaveable) return { ok: false, revision: this.revision, error: { code: 'CONFLICT', message: `Cannot ${direction} ${what}: ${unsaveable}.`, recoverable: false } };
-    const next = docsToState(docs, this.state);
+    // The documents it does not change are the very objects the project holds (shareUnchanged).
+    const next = shareUnchanged(this.state, this.docs, docsToState(docs, this.state), docs);
     // History restores only its own documents, and another may have changed outside the app since (a page now on
     // a route this restores, an old address kept there): never save a project that could not be opened again.
     const fatal = (s: ProjectState) => this.coreOf(s).core.filter((d) => d.severity === 'error' && FATAL_CODES.has(d.code));
@@ -4685,7 +4686,8 @@ export class ProjectSession extends EventEmitter {
     const restored = collectionsFromDocs([...docs].filter(([p]) => collectionPathOf(p)).map(([p, c]) => [p, JSON.parse(c)]));
     if (restored.orphans.length) return refuse(`${restored.orphans[0]} would have no collection.`);
     if (restored.duplicates.length) return refuse(`${restored.duplicates[0]} would share its entry ID with another entry.`);
-    const next = docsToState(docs, this.state);
+    // The documents it does not change are the very objects the project holds (shareUnchanged).
+    const next = shareUnchanged(this.state, this.docs, docsToState(docs, this.state), docs);
     const pin = themePinProblem(next);
     if (pin) return refuse(pin);
     const problem = (why: string) => refuse(`Undoing it on its own would leave a problem: ${why}`);
@@ -5103,7 +5105,8 @@ export class ProjectSession extends EventEmitter {
       if (b === a || p === PUBLISHED_FILE) continue;
       changed[p] = { before: b === undefined ? null : await this.putBlob(b), after: a === undefined ? null : await this.putBlob(a) };
     }
-    this.state = next;
+    // Read again from the files, every document is a new object: those that read the same are the project's own.
+    this.state = shareUnchanged(this.state, prevDocs, next, nextDocs);
     this.docs = nextDocs;
     const changedFiles = await this.publishInstalled();
     this.revision++;
@@ -5129,7 +5132,7 @@ export class ProjectSession extends EventEmitter {
       return { ok: true };
     }
     const changedDocs = [...new Set([...nextDocs.keys(), ...this.docs.keys()])].filter((p) => nextDocs.get(p) !== this.docs.get(p));
-    this.state = next;
+    this.state = shareUnchanged(this.state, this.docs, next, nextDocs);
     this.docs = nextDocs;
     this.revision++;
     this.emit('changed', { revision: this.revision, changedDocs, changedFiles: [], label: 'External change', source: 'system' } satisfies SessionEvent);

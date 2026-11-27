@@ -630,8 +630,9 @@ describe('batch metrics', () => {
   function trace(drop: (x: PerfRecord) => boolean = () => false) {
     return new Trace(
       [
-        // Before the scenario: another run's marker and apply, never this one's.
+        // Before the scenario: another run's marker, apply and send, never this one's.
         span('session.runMarker', 900, 50),
+        m('controller.snapshotSent', 960, { attrs: { revision: 3, bytes: 40_000 } }),
         span('session.apply', 950, 40, { attrs: { ok: true, revision: 3 } }),
         m('scenario.start', 1000, { attrs: { scenario: 'batch' }, c: { 'run.docsHashed': 100 } }),
         r('scenario.start', 1000, { attrs: { scenario: 'batch' } }),
