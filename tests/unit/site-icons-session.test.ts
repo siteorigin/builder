@@ -180,9 +180,10 @@ describe('the website’s icons in a project', () => {
     const changed = vi.fn();
     s.on('changed', changed);
     release();
-    await vi.waitFor(() => expect(readFileSync(join(d, SITE_ICON_PATHS[2])).equals(before)).toBe(false), { timeout: 20_000 });
-    await vi.waitFor(() => expect(manifest(d)[SITE_ICON_PATHS[2]]).toBe(sha(readFileSync(join(d, SITE_ICON_PATHS[2])))));
-    expect(changed).toHaveBeenCalledWith(expect.objectContaining({ changedDocs: [], label: 'Update site icons' }));
+    // Published once the session says so: the icon files and the manifest are written part way through, before it does.
+    await vi.waitFor(() => expect(changed).toHaveBeenCalledWith(expect.objectContaining({ changedDocs: [], label: 'Update site icons' })), { timeout: 20_000 });
+    expect(readFileSync(join(d, SITE_ICON_PATHS[2])).equals(before)).toBe(false);
+    expect(manifest(d)[SITE_ICON_PATHS[2]]).toBe(sha(readFileSync(join(d, SITE_ICON_PATHS[2]))));
     expect(s.siteIconsPublished).toBe(await s.siteIconSource());
   });
 
