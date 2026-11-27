@@ -231,6 +231,23 @@ describe('process roles', () => {
     expect(calls).toEqual(['main gc', 'cdp', 'frame name', 'main heap', 'cdp']);
   });
 
+  it('read the editor’s elements from its document and its nodes and listeners from Chromium’s DOM counters', async () => {
+    const sent: string[] = [];
+    const win = {
+      isClosed: () => false,
+      evaluate: async () => 1398,
+      context: () => ({ newCDPSession: async () => ({ send: async (m: string) => (sent.push(m), { documents: 3, nodes: 1733, jsEventListeners: 495 }), detach: async () => undefined }) })
+    };
+    const source = electronSource({} as never, () => win as never);
+    expect(await source.dom!()).toEqual({ elements: 1398, nodes: 1733, listeners: 495 });
+    expect(sent).toEqual(['Memory.getDOMCounters']);
+  });
+
+  it('read no DOM while the editor has no window', async () => {
+    const source = electronSource({} as never, () => ({ isClosed: () => true }) as never);
+    expect(await source.dom!()).toBeUndefined();
+  });
+
   it('never give a process the role of an earlier one that had its pid', () => {
     // pid 7 was a media worker; later the OS gave it to a helper (another start time) the app has not described yet.
     const before = [row(1, 0, 190, APP), row(7, 1, 70)];
@@ -289,6 +306,25 @@ describe('memory metrics', () => {
     readingMetrics(none, 'noWindow', noWindow);
     growthMetrics(none, 'hidden', reading('canvas', { main: [1, 190] }, [30, 20]), noWindow);
     expect(Object.keys(values(none)).filter((k) => k.includes('.heap.'))).toEqual(['memory.noWindow.heap.main', 'memory.hidden.growth.heap.main']);
+  });
+
+  it('report the editor’s DOM at rest, and its growth between two readings', () => {
+    const m = new Collector();
+    const dom = (r: MemoryReading, elements: number, nodes: number, listeners: number): MemoryReading => ({ ...r, dom: { elements, nodes, listeners } });
+    readingMetrics(m, 'canvas', dom(reading('canvas', { editor: [1, 100] }), 1800, 2100, 500));
+    growthMetrics(m, 'edits', dom(reading('edit1', { editor: [1, 100] }), 1800, 2100, 500), dom(reading('edit50', { editor: [1, 110] }), 1790, 2400, 520));
+    expect(values(m)).toMatchObject({
+      'memory.canvas.dom.editor.elements': '1800 count',
+      'memory.canvas.dom.editor.nodes': '2100 count',
+      'memory.canvas.dom.editor.listeners': '500 count',
+      'memory.edits.growth.dom.editor.elements': '-10 count',
+      'memory.edits.growth.dom.editor.nodes': '300 count',
+      'memory.edits.growth.dom.editor.listeners': '20 count'
+    });
+    // A reading without them (a source that cannot read the DOM, a peak) reports none.
+    const none = new Collector();
+    readingMetrics(none, 'canvas', reading('canvas', { editor: [1, 100] }, [30, 20]));
+    expect(Object.keys(none.metrics).some((k) => k.includes('.dom.'))).toBe(false);
   });
 
   it('report growth as the signed difference of two readings, a role in one only counting as none in the other', () => {
@@ -373,6 +409,30 @@ describe('a reading at rest', () => {
     expect(Object.keys(r.roles)).toEqual(['editor', 'gpu', 'main', 'network']);
     expect(probe.readings).toEqual([r]);
     expect(probe.seen().map((k) => k.pid)).toEqual([1, 2, 4, 5]);
+  });
+
+  it('read the editor’s DOM after the sample, so reading it moves none of the sample’s figures', async () => {
+    const clock = fakeClock();
+    const { src, calls } = fakeSource(() => welcomeRows, clock);
+    src.dom = async () => {
+      calls.log.push(`dom@${clock.t}`);
+      // The read takes a while: the reading is still of the sample's moment.
+      clock.t += 250;
+      return { elements: 127, nodes: 168, listeners: 331 };
+    };
+    const r = await new MemoryProbe(src, clock, REST).rest('welcome');
+    expect(calls.log).toEqual(['table@3000', 'table@3500', 'collect×2@3500', 'heap@4500', 'table@4500', 'dom@4500']);
+    expect(r.dom).toEqual({ elements: 127, nodes: 168, listeners: 331 });
+    expect([r.at, (r.how as RestHow).waitedMs]).toEqual([4500, 4500]);
+  });
+
+  it('fail a reading whose DOM cannot be read, saying so', async () => {
+    const clock = fakeClock();
+    const { src } = fakeSource(() => welcomeRows, clock);
+    src.dom = async () => {
+      throw new Error('Target closed');
+    };
+    await expect(new MemoryProbe(src, clock, REST).rest('closed')).rejects.toThrow("memory reading closed: the editor's DOM could not be read: Target closed");
   });
 
   it('keep the preview’s renderer as the preview while Chromium keeps it after the project closes', async () => {

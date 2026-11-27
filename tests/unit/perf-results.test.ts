@@ -196,7 +196,7 @@ describe('benchmark results, at their edges', () => {
 
 describe('memory in results', () => {
   const MiB = 2 ** 20;
-  const unitOf = (name: string): Unit => (/\.processes(\.|$)/.test(name) ? 'count' : 'memory');
+  const unitOf = (name: string): Unit => (/\.processes(\.|$)|\.dom\./.test(name) ? 'count' : 'memory');
   const iteration = (metrics: Record<string, number>, index = 1): Iteration => ({ index, ok: true, trace: '', metrics: Object.fromEntries(Object.entries(metrics).map(([k, v]) => [k, { unit: unitOf(k), value: v }])) });
   /** A memory case of `values` per metric (MiB for memory, plain numbers for counts), and the readings its iterations took. */
   const memoryCase = (metrics: Record<string, number[]>, labels: Array<[string, 'rest' | 'peak']> = []): CaseResult => {
@@ -216,6 +216,8 @@ describe('memory in results', () => {
     // A role whose name holds a field's word keeps all of it.
     expect(memoryMetric('memory.canvas.mem.devServer.bytes.agent')).toEqual({ reading: 'memory.canvas', field: 'mem', role: 'devServer.bytes.agent' });
     expect(memoryMetric('memory.edits.growth.heap.main')).toEqual({ reading: 'memory.edits.growth', field: 'heap', role: 'main' });
+    expect(memoryMetric('memory.canvas.dom.editor.elements')).toEqual({ reading: 'memory.canvas', field: 'dom', role: 'editor.elements' });
+    expect(memoryMetric('memory.edits.growth.dom.editor.nodes')).toEqual({ reading: 'memory.edits.growth', field: 'dom', role: 'editor.nodes' });
     expect(memoryMetric('edit.previewApplied')).toBeNull();
     expect(memoryMetric('memory.canvas')).toBeNull();
   });
@@ -303,6 +305,17 @@ describe('memory in results', () => {
     const x = result([passed({ 'edit.delta': { unit: 'count', values: [-5, -5, -5] } })]);
     const y = result([passed({ 'edit.delta': { unit: 'count', values: [-3, -3, -3] } })]);
     expect(changeMarkdown(compareResults(x, y), x, y)).toContain('| edit.delta | -5 | -3 | 40.0% |');
+  });
+
+  it('print the editor’s DOM as counts in its reading’s table, and its growth as a signed count, never a percentage', () => {
+    const run = (elements: number, grew: number) =>
+      result([memoryCase({ 'memory.canvas.total': [600, 600, 600], 'memory.canvas.processes': [3, 3, 3], 'memory.canvas.dom.editor.elements': [elements, elements, elements], 'memory.edits.growth.total': [1, 1, 1], 'memory.edits.growth.processes': [0, 0, 0], 'memory.edits.growth.dom.editor.elements': [grew, grew, grew] }, [['canvas', 'rest']])]);
+    const [a, b] = [run(18_000, -10), run(1_400, -20)];
+    const md = changeMarkdown(compareResults(a, b), a, b);
+    expect(md).toContain('| DOM elements, editor | | 18,000 | 1,400 | -16,600 | 92.2% |');
+    expect(md).toContain('| DOM elements, editor | | -10 | -20 | -10 | changed |');
+    expect(md).not.toContain('| memory.canvas.dom.editor.elements |');
+    expect(compareResults(a, b)[0].metrics.find((m) => m.metric === 'memory.edits.growth.dom.editor.elements')!.changePct).toBeNull();
   });
 
   it('print a table per reading, a row per process, in the order the readings were taken, then each growth', () => {
