@@ -4339,6 +4339,12 @@ export function generateIsolatedInstance(state: ProjectState, file: string, node
   return `<!-- SiteOrigin Builder's isolated preview of one component. Editor-only: never part of the website. -->\n<script>\n${imports}\n${editingState(ectx)}</script>\n\n<main id="main">\n${markup}\n</main>\n`;
 }
 
+/**
+ * The routes of the old addresses that only send visitors on. A function of its own, as every derived value's working
+ * out should be: one made inside a generator shares that call's scope, and the cache keeps it (cache.ts derived).
+ */
+const redirectRouteIds = (state: ProjectState): string[] => liveRedirects(state).map((r) => routeId(r.from));
+
 export function generateLayout(state: ProjectState, opts: GenerateOptions): string {
   const file = 'src/routes/+layout.svelte';
   const mk = (shell: NodeTree, part: 'header' | 'footer'): EmitCtx => ({
@@ -4371,7 +4377,7 @@ export function generateLayout(state: ProjectState, opts: GenerateOptions): stri
   const editing = editingState(hctx);
   // An old address only sends visitors on: it shows no header or footer while it does. Worked out once per state in a
   // cached run, so the layout follows the list of old addresses, not every entry's details that decide it.
-  const redirects = derived(state, 'redirectRouteIds', (s) => liveRedirects(s).map((r) => routeId(r.from)));
+  const redirects = derived(state, 'redirectRouteIds', redirectRouteIds);
   // Every page asks AI services not to train on it while the crawler policy says so (shared/crawler-policy.ts).
   const noAi = crawlerRules(state.site).noAiMeta ? `\n\t${NOAI_META}` : '';
   // Every page names the site's RSS feed, while it has one, so a feed reader finds it from any address on the site.
