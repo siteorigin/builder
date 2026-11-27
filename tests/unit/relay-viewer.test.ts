@@ -1,7 +1,7 @@
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { LIVE_CLOSE_CODES } from '../../src/shared/live/close-codes';
-import { DISPLAY_NAME_MAX } from '../../src/shared/live/limits';
-import { normalizeDisplayName } from '../../src/shared/live/messages';
+import { DISPLAY_NAME_MAX, MAX_ID_LENGTH, MAX_SELECTION_DEPTH } from '../../src/shared/live/limits';
+import { normalizeDisplayName, parseFrame } from '../../src/shared/live/messages';
 import { PREVIEW_ADMISSION_PATH, roomPreviewOrigin } from '../../src/shared/live/relay-url';
 import { VIEWPORT_PRESETS } from '../../src/shared/styles';
 import * as viewerShared from '../../relay/viewer/shared.js';
@@ -79,6 +79,15 @@ describe('the viewer’s files', () => {
     // The asset directory's own layout is never a route, and the bridge is only on preview origins.
     for (const path of ['/viewer.js', '/preview-bridge.js', '/_viewer/preview-bridge.js', '/_viewer/', '/__siteorigin/live.js']) expect((await relay.fetch(path)).status, path).toBe(404);
     expect((await relay.fetch('/_viewer/viewer.js', { method: 'POST' })).status).toBe(405);
+  });
+
+  it('send a spotlight only with an address and an element the contract takes (#768)', () => {
+    expect(viewerShared.MAX_ID_LENGTH).toBe(MAX_ID_LENGTH);
+    expect(viewerShared.MAX_SELECTION_DEPTH).toBe(MAX_SELECTION_DEPTH);
+    for (const previewPath of ['/', '/about/', '/caf%C3%A9/?tab=1', "/search/o'neil/?filters[tag]=news|all", '', 'about/', '//other.test/', '/a b/', '/a{b', '/a`b', '/a"b', '/a#b', '/caf\u00e9/']) {
+      const contract = parseFrame('guest-to-relay', JSON.stringify({ type: 'spotlight:point', spotlight: { previewPath, target: null, x: 0, y: 0 } })).ok;
+      expect(viewerShared.isSpotlightPath(previewPath), previewPath).toBe(contract);
+    }
   });
 
   it('keep to the contract they copy from src/shared', () => {

@@ -1,13 +1,16 @@
 import './SharePopover.css';
-import { useEffect, useId, useLayoutEffect, useRef, useState, type ReactNode } from 'react';
+import { useEffect, useId, useLayoutEffect, useRef, useState, type CSSProperties, type ReactNode } from 'react';
 import { createPortal } from 'react-dom';
-import { Check, ChevronDown, Copy, Lock, Radio, RefreshCw, Users, X } from 'lucide-react';
+import { Check, ChevronDown, Copy, FileText, Lock, Radio, RefreshCw, Users, X } from 'lucide-react';
 import type { LiveHostState, LiveRun } from '@shared/api';
 import { GUEST_ROLES, type GuestRole } from '@shared/live/limits';
 import { SESSION_DURATIONS, type SessionDuration } from '@shared/live/expiry';
 import { api, confirmDialog, getState, setState, useStore } from '../store';
 import { openMenus, Segmented, Spinner, SwitchRow, useDialogOpen, useMenu } from '../components/ui';
 import { cancelStart, copiedAtStart, copyInvite, liveCommand, onStartCopied, shownLive, startLive } from '../lib/live-host';
+import { selectPage } from '../lib/actions';
+import { livePeers, peerColor } from '../lib/live-marks';
+import { presenceWhere } from '../lib/remote-view';
 import { JoinAnswers, OUTCOME_WORDS, outcomeOf, sendAnswer, useAnswers, useBusy, type Answer, type Outcome } from '../components/JoinRequests';
 import {
   admittedGuests,
@@ -589,6 +592,7 @@ function GuestRow({ run, live, guest, at, disabled }: { run: LiveRun; live: Live
     <li className="live-row">
       <span className="live-name-line">
         <span className="live-name">
+          <span className="peer-dot" style={{ '--peer': peerColor(guest.colorSlot) } as CSSProperties} aria-hidden="true" />
           <strong>{guest.displayName}</strong>
           {asked && asked !== guest.role ? <span className="share-quiet"> · Updating…</span> : timeLeft && <span className="share-quiet"> · {timeLeft}</span>}
         </span>
@@ -596,6 +600,7 @@ function GuestRow({ run, live, guest, at, disabled }: { run: LiveRun; live: Live
           Remove
         </button>
       </span>
+      <GuestWhere guest={guest} />
       <span className="live-controls">
         <select
           className="select sm"
@@ -637,5 +642,44 @@ function GuestRow({ run, live, guest, at, disabled }: { run: LiveRun; live: Live
         </select>
       </span>
     </li>
+  );
+}
+
+/**
+ * Where a guest is now (#768): a connection that dropped, a viewer watching, or the page and element a collaborator is
+ * on (and that it is editing), with a way to that page when it is another one. What is said follows the guest as it
+ * moves; Go to page reads where they are when it is pressed.
+ */
+function GuestWhere({ guest }: { guest: AdmittedGuest }) {
+  // Read whole, so the row follows the session without a new object on every look.
+  const live = useStore((s) => s.live);
+  const livePresence = useStore((s) => s.livePresence);
+  const snapshot = useStore((s) => s.snapshot);
+  const pageId = useStore((s) => s.pageId);
+  const state = snapshot?.state ?? null;
+  const peer = livePeers({ live, livePresence, snapshot, remote: getState().remote, remotePresence: null }).find((p) => p.key === guest.guestId) ?? null;
+  if (!guest.connected) return <span className="live-where share-quiet">Connection dropped. Waiting for them to reconnect…</span>;
+  if (guest.role !== 'collaborator') return <span className="live-where share-quiet">Watching</span>;
+  const presence = peer?.presence ?? null;
+  if (!state || !presence) return <span className="live-where share-quiet">Location not known yet</span>;
+  const there = presence.pageId && Object.hasOwn(state.pages, presence.pageId) ? presence.pageId : null;
+  const goTo = () => {
+    const now = livePeers(getState()).find((p) => p.key === guest.guestId)?.presence?.pageId;
+    if (now && Object.hasOwn(getState().snapshot?.state.pages ?? {}, now)) selectPage(now);
+  };
+  return (
+    <span className="live-where">
+      <span className="share-quiet">
+        {presenceWhere(state, presence)}
+        {peer?.activity ? ' · editing' : ''}
+      </span>
+      {there && there !== pageId ? (
+        <button type="button" className="link-btn" onClick={goTo} aria-label={`Go to ${guest.displayName}’s page`}>
+          <FileText aria-hidden="true" /> Go to page
+        </button>
+      ) : (
+        there && <span className="share-quiet"> · Same page as you</span>
+      )}
+    </span>
   );
 }

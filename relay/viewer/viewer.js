@@ -8,7 +8,7 @@
  * the relay gave it) lives in this tab's sessionStorage, so a reload or a dropped connection takes the same place
  * back. When the guest's access ends for any reason, the frame is removed at once.
  */
-import { BRIDGE_MESSAGES, CLOSE_CODES, isFramePath, normalizeDisplayName, PREVIEW_ADMISSION_PATH, VIEWPORTS } from './shared.js';
+import { BRIDGE_MESSAGES, CLOSE_CODES, isFramePath, isSpotlightPath, MAX_ID_LENGTH, MAX_SELECTION_DEPTH, normalizeDisplayName, PREVIEW_ADMISSION_PATH, VIEWPORTS } from './shared.js';
 
 const root = /** @type {HTMLElement} */ (document.getElementById('live-session'));
 const config = {
@@ -32,6 +32,8 @@ const ui = {
   role: $('role'),
   time: $('time'),
   follow: /** @type {HTMLInputElement} */ ($('follow')),
+  point: /** @type {HTMLButtonElement} */ ($('point')),
+  pointHint: $('point-hint'),
   viewports: /** @type {HTMLButtonElement[]} */ ([...root.querySelectorAll('[data-viewport]')]),
   openInBuilder: $('copy-invite'),
   handoff: $('handoff'),
@@ -70,6 +72,11 @@ const RECONNECT_FOR_MS = 150_000;
 const RELOAD_FALLBACK_MS = 1500;
 /** How long a ticket's redemption may take before it is given up; a ticket is good for a minute. */
 const REDEEM_TIMEOUT_MS = 15_000;
+/**
+ * The least time between two spotlights this page sends (#768): a click at a time, never a stream. The relay drops
+ * any that come faster still.
+ */
+const POINT_GAP_MS = 500;
 /** What the preview frame may do: run the site as its own origin, but never navigate the viewer away. */
 const FRAME_SANDBOX = 'allow-scripts allow-same-origin allow-forms allow-popups allow-popups-to-escape-sandbox';
 
@@ -118,6 +125,10 @@ let frameSlow = false;
 let frameShownFallback;
 /** The page the frame is on, as its bridge last said or as the viewer last pointed it. */
 let framePath = '/';
+/** Whether the guest's next click on the site points at what it lands on, for the host (#768). */
+let pointing = false;
+/** When this page last sent a spotlight (performance.now()), so the next waits POINT_GAP_MS. */
+let pointedAt = -Infinity;
 /** @type {string | null} */
 let queuedTicket = null;
 let redeeming = false;
@@ -554,6 +565,7 @@ function frameReady() {
 
 function unmountFrame() {
   if (!iframe) return;
+  setPointing(false);
   iframe.remove();
   iframe = null;
   clearTimeout(reloadFallback);
@@ -619,8 +631,77 @@ window.addEventListener('message', (event) => {
   else if (data.type === BRIDGE_MESSAGES.ready && isFramePath(data.path)) {
     framePath = data.path;
     frameReady();
+    // A new page in the frame has a bridge of its own: still pointing, it is told so.
+    if (pointing) iframe.contentWindow?.postMessage({ type: BRIDGE_MESSAGES.point, on: true }, config.previewOrigin);
+  }
+  else if (data.type === BRIDGE_MESSAGES.pointed && pointing) {
+    setPointing(false);
+    const spotlight = spotlightOf(data);
+    if (!spotlight) return announce('That spot couldn’t be pointed out. Try somewhere else on the page.');
+    const now = performance.now();
+    if (now - pointedAt < POINT_GAP_MS) return announce('Wait a moment before pointing again.');
+    pointedAt = now;
+    send({ type: 'spotlight:point', spotlight });
+    flashPointed();
+  }
+  else if (data.type === BRIDGE_MESSAGES.pointCancelled && pointing) {
+    setPointing(false);
+    ui.point.focus({ preventScroll: true });
   }
 });
+
+/**
+ * A spotlight as the relay reads it, from what the bridge reported: the page's address, the element when the page
+ * named one within the contract's bounds (null otherwise), and the point. Null when the address cannot be sent.
+ * @param {any} data
+ */
+function spotlightOf(data) {
+  if (!isSpotlightPath(data.path)) return null;
+  const share = (/** @type {unknown} */ n) => (typeof n === 'number' && Number.isFinite(n) ? Math.min(1, Math.max(0, n)) : null);
+  const x = share(data.x);
+  const y = share(data.y);
+  if (x === null || y === null) return null;
+  return { previewPath: data.path, target: targetOf(data.target), x, y };
+}
+
+/** @param {any} t */
+function targetOf(t) {
+  const id = (/** @type {unknown} */ v) => typeof v === 'string' && v.length > 0 && v.length <= MAX_ID_LENGTH;
+  const ids = (/** @type {unknown} */ v) => Array.isArray(v) && v.length <= MAX_SELECTION_DEPTH && v.every(id);
+  if (!t || typeof t !== 'object' || !t.owner || !['page', 'shell', 'component', 'template', 'archive'].includes(t.owner.kind) || !id(t.owner.id) || !ids(t.instancePath) || !id(t.nodeId)) return null;
+  if (t.itemPath !== undefined && !ids(t.itemPath)) return null;
+  return { owner: { kind: t.owner.kind, id: t.owner.id }, instancePath: [...t.instancePath], nodeId: t.nodeId, ...(t.itemPath?.length ? { itemPath: [...t.itemPath] } : {}) };
+}
+
+/** Whether the guest can point now: let in, the site on screen, and the host there to see it. */
+function canPoint() {
+  return phase === 'admitted' && !!iframe && roomState() === 'live';
+}
+
+/** Start or stop pointing, and tell the frame's bridge. Only pointing the guest can do now is started. */
+function setPointing(/** @type {boolean} */ on) {
+  const next = on && canPoint();
+  if (next === pointing) return;
+  pointing = next;
+  ui.point.setAttribute('aria-pressed', String(pointing));
+  ui.stage.dataset.pointing = String(pointing);
+  ui.pointHint.hidden = !pointing;
+  iframe?.contentWindow?.postMessage({ type: BRIDGE_MESSAGES.point, on: pointing }, config.previewOrigin);
+  if (pointing) {
+    announce('Click anything on the site to point it out to the host. Press Escape to cancel.');
+    // The click is the site's to take: focus goes to the frame, so Escape reaches its bridge as well.
+    iframe?.focus({ preventScroll: true });
+  }
+}
+
+let pointedTimer = /** @type {ReturnType<typeof setTimeout> | undefined} */ (undefined);
+/** Say a spotlight went: on the button for a moment, and to a screen reader. */
+function flashPointed() {
+  announce('Pointed out to the host.');
+  ui.point.dataset.sent = 'true';
+  clearTimeout(pointedTimer);
+  pointedTimer = setTimeout(() => delete ui.point.dataset.sent, 1500);
+}
 
 /** Following the host: show the host's page (at the host's width too, when that is the width chosen). */
 function applyFollow() {
@@ -991,6 +1072,9 @@ function renderRoom() {
   ui.connection.textContent = word;
   ui.bar.dataset.state = state;
   ui.follow.checked = follow;
+  // Pointing waits for the site to be on screen with the host there; anything else stops it.
+  ui.point.disabled = !canPoint();
+  if (pointing && !canPoint()) setPointing(false);
   renderTime();
   ui.hostNote.hidden = state !== 'host-away';
   ui.hostNote.textContent = 'The host’s connection dropped. The site will update when they’re back.';
@@ -1119,6 +1203,8 @@ ui.cancel.addEventListener('click', () => {
   setPhase('name');
 });
 
+ui.point.addEventListener('click', () => setPointing(!pointing));
+
 ui.follow.addEventListener('change', () => {
   follow = ui.follow.checked;
   if (follow) applyFollow();
@@ -1182,7 +1268,10 @@ window.addEventListener('blur', () => {
 
 document.addEventListener('keydown', (event) => {
   if (event.key !== 'Escape') return;
-  if (!ui.handoff.hidden) closeHandoff();
+  if (pointing) {
+    setPointing(false);
+    ui.point.focus({ preventScroll: true });
+  } else if (!ui.handoff.hidden) closeHandoff();
   else if (ui.bar.dataset.open === 'true') {
     closeOptions();
     ui.barMore.focus();

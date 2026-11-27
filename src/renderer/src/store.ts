@@ -1,6 +1,6 @@
 import { createContext, useContext } from 'react';
 import { create, useStore as useStoreOf, type StoreApi } from 'zustand';
-import type { AiEvent, AppSettings, BuilderApi, ChatContext, ChatEditScope, ChatMessage, ChatMode, Conversation, ImportReviewRow, LiveHostState, LocalWorkspaceState, PostImportPreview, PackRefusal, ProjectSnapshot, ProviderId, ProviderStatus, SettingsPatch, RemotePresence, RemoteState, RunStatus, RuntimeState } from '@shared/api';
+import type { AiEvent, AppSettings, BuilderApi, ChatContext, ChatEditScope, ChatMessage, ChatMode, Conversation, ImportReviewRow, LiveHostState, LivePresence, LocalWorkspaceState, PostImportPreview, PackRefusal, ProjectSnapshot, ProviderId, ProviderStatus, SettingsPatch, RemotePresence, RemoteState, RunStatus, RuntimeState } from '@shared/api';
 import type { ApplyResult, EditOperation } from '@shared/ops';
 import type { FirstStepsRecord } from '@shared/first-steps';
 import { refKey, type ElementRef, type OwnerRef, type ResponsiveScope, type StyleState } from '@shared/types';
@@ -251,6 +251,11 @@ export interface State {
   liveClock: RelayClock | null;
   /** What screen readers were last told about guests asking to join; `id` changes with each telling. */
   liveNotice: { id: number; text: string };
+  /**
+   * Where the collaborators of the session this app hosts are, with each guest's latest spotlight and each
+   * collaborator's latest edit while they are shown (#768), as the main process last said; null with no session.
+   */
+  livePresence: LivePresence | null;
   /** The Share popover is open. */
   shareOpen: boolean;
   /**
@@ -425,6 +430,7 @@ const live = create<State>((set) => ({
   live: { phase: 'idle', lastError: null },
   liveClock: null,
   liveNotice: { id: 0, text: '' },
+  livePresence: null,
   shareOpen: false,
   remote: { phase: 'idle', ended: null },
   remotePresence: null,

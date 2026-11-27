@@ -43,7 +43,29 @@ export const CLOSE_CODES = Object.freeze({
 export const PREVIEW_ADMISSION_PATH = '/__siteorigin/admission';
 
 /** The messages between the viewer and the reload bridge in its preview frame (preview-bridge.js). */
-export const BRIDGE_MESSAGES = Object.freeze({ ready: 'siteorigin-live:ready', reload: 'siteorigin-live:reload', reloading: 'siteorigin-live:reloading', refused: 'siteorigin-live:refused' });
+export const BRIDGE_MESSAGES = Object.freeze({
+  ready: 'siteorigin-live:ready',
+  reload: 'siteorigin-live:reload',
+  reloading: 'siteorigin-live:reloading',
+  refused: 'siteorigin-live:refused',
+  point: 'siteorigin-live:point',
+  pointed: 'siteorigin-live:pointed',
+  pointCancelled: 'siteorigin-live:point-cancelled'
+});
+
+/** As in src/shared/live/limits.ts: the longest ID a spotlight's element names, and how deep its path may reach. */
+export const MAX_ID_LENGTH = 128;
+export const MAX_SELECTION_DEPTH = 16;
+
+/**
+ * Whether `path` may be sent as a spotlight's address (the presence path rule in src/shared/live/messages.ts):
+ * printable ASCII with nothing a URL serializer would percent-encode, within the preview.
+ * @param {unknown} path
+ * @returns {path is string}
+ */
+export function isSpotlightPath(path) {
+  return isFramePath(path) && /^[\x21-\x7e]+$/.test(path) && !/["<>`{}]/.test(path);
+}
 
 /**
  * Whether `path` is a path (and query) on the preview origin the viewer may point its frame at: one leading slash,

@@ -16,6 +16,8 @@ const presence: Presence = { pageId: 'pg_home', viewportWidth: 1280, selection: 
 const rpcError = { code: 'PERMISSION_DENIED', message: 'A viewer cannot edit.', recoverable: false } as const;
 
 /** One valid frame of every type, in every direction it travels. */
+const target = { owner: { kind: 'page' as const, id: 'pg_home' }, instancePath: ['n_card'], nodeId: 'n_title', itemPath: ['it_1'] };
+const spotlight = { previewPath: '/about/?ref=nav', target, x: 0.25, y: 1 };
 const VALID: { [D in Direction]: FrameOf<D>[] } = {
   'host-to-relay': [
     { type: 'room:create', version: 1, publicKey, duration: '2h', projectName: 'Acme Bakery' },
@@ -42,7 +44,9 @@ const VALID: { [D in Direction]: FrameOf<D>[] } = {
     { type: 'rpc:event', event: 'project:changed', payload: { revision: 4 } },
     { type: 'rpc:event', guestId, event: 'runtime:status', payload: { state: 'ready' } },
     { type: 'presence:update', presence },
-    { type: 'presence:update', presence: { pageId: null, viewportWidth: 390, selection: null, previewPath: null } }
+    { type: 'presence:update', presence: { pageId: null, viewportWidth: 390, selection: null, previewPath: null } },
+    { type: 'activity:edit', guestId, target },
+    { type: 'activity:edit', guestId, target: null }
   ],
   'relay-to-host': [
     { type: 'room:ready', version: 1, roomId, startedAt: T, expiresAt: T + 2 * HOUR, locked: false, now: T },
@@ -52,13 +56,15 @@ const VALID: { [D in Direction]: FrameOf<D>[] } = {
       type: 'room:roster',
       participants: [
         { guestId: 'g_1', displayName: 'Sam Lee', status: 'pending' },
-        { guestId: 'g_2', displayName: 'Ana 👩\u200d💻', status: 'admitted', role: 'collaborator', guestExpiresAt: T + HOUR }
+        { guestId: 'g_2', displayName: 'Ana 👩\u200d💻', status: 'admitted', role: 'collaborator', guestExpiresAt: T + HOUR, colorSlot: 3, connected: false }
       ]
     },
     { type: 'preview:request', requestId, guestId, method: 'GET', target: '/about/?ref=nav', headers: [['accept', 'text/html'], ['if-none-match', 'W/"abc"']] },
     { type: 'preview:abort', requestId, code: 'CANCELLED' },
     { type: 'rpc:request', guestId, requestId, method: 'project.apply', args: [{ operations: [] }] },
     { type: 'presence:changed', participant: { kind: 'guest', guestId }, presence },
+    { type: 'spotlight:pointed', guestId, spotlight },
+    { type: 'spotlight:pointed', guestId, spotlight: { previewPath: '/', target: null, x: 0, y: 0 } },
     { type: 'protocol:error', code: 'ROOM_FULL', message: 'The room is full.' },
     { type: 'protocol:error', code: 'INVALID_FRAME', message: 'Bad frame.', requestId }
   ],
@@ -67,7 +73,8 @@ const VALID: { [D in Direction]: FrameOf<D>[] } = {
     { type: 'guest:join', version: 1, displayName: 'Sam Lee', resumeToken: 'rsm_0123456789abcdefghijk' },
     { type: 'guest:leave' },
     { type: 'rpc:request', requestId, method: 'project.snapshot', args: [] },
-    { type: 'presence:update', presence }
+    { type: 'presence:update', presence },
+    { type: 'spotlight:point', spotlight }
   ],
   'relay-to-guest': [
     { type: 'guest:status', status: 'pending', guestId, resumeToken: 'rsm_0123456789abcdefghijk' },
@@ -82,13 +89,14 @@ const VALID: { [D in Direction]: FrameOf<D>[] } = {
     { type: 'room:state', startedAt: T, expiresAt: T + 2 * HOUR, locked: false, now: T },
     { type: 'host:availability', connected: false },
     { type: 'host:availability', connected: true },
-    { type: 'room:roster', participants: [{ guestId, displayName: 'Sam Lee', status: 'admitted', role: 'viewer', guestExpiresAt: null }] },
+    { type: 'room:roster', participants: [{ guestId, displayName: 'Sam Lee', status: 'admitted', role: 'viewer', guestExpiresAt: null, colorSlot: 0, connected: true }] },
     { type: 'preview:reload' },
     { type: 'rpc:response', requestId, method: 'project.snapshot', ok: true, result: null },
     { type: 'rpc:response', requestId, method: 'project.apply', ok: true, result: { ok: true, revision: 6 } },
     { type: 'rpc:response', requestId, method: 'project.apply', ok: false, error: rpcError },
     { type: 'rpc:event', event: 'project:changed', payload: { revision: 5 } },
     { type: 'presence:changed', participant: { kind: 'host' }, presence },
+    { type: 'activity:edited', guestId, target },
     { type: 'protocol:error', code: 'TOO_LARGE', message: 'Frames are at most 786432 bytes.' }
   ]
 };
@@ -188,10 +196,37 @@ describe('refused frames', () => {
   it('hold a roster of at most eight and a resume token of real length', () => {
     const many = Array.from({ length: 9 }, (_, i) => ({ guestId: `g_${i}`, displayName: `Guest ${i}`, status: 'pending' }));
     expect(refused('relay-to-host', { type: 'room:roster', participants: many })).toMatchObject({ code: 'INVALID', path: 'participants' });
-    const admitted = many.map((p) => ({ ...p, status: 'admitted', role: 'viewer', guestExpiresAt: null }));
+    const admitted = many.map((p, i) => ({ ...p, status: 'admitted', role: 'viewer', guestExpiresAt: null, colorSlot: i % 8, connected: true }));
     expect(refused('relay-to-guest', { type: 'room:roster', participants: admitted })).toMatchObject({ code: 'INVALID', path: 'participants' });
     expect(parseFrame('relay-to-guest', json({ type: 'room:roster', participants: admitted.slice(0, 8) }))).toMatchObject({ ok: true });
     expect(refused('guest-to-relay', { type: 'guest:join', version: 1, displayName: 'Sam', resumeToken: 'short' })).toMatchObject({ code: 'INVALID', path: 'resumeToken' });
+  });
+
+  it('give each admitted guest one palette place of eight, and say whether it is connected (#768)', () => {
+    const guest = (over: Record<string, unknown>) => ({ type: 'room:roster', participants: [{ guestId, displayName: 'Sam', status: 'admitted', role: 'viewer', guestExpiresAt: null, colorSlot: 0, connected: true, ...over }] });
+    for (const colorSlot of [-1, 8, 1.5, '0', null]) expect(refused('relay-to-host', guest({ colorSlot })), String(colorSlot)).toMatchObject({ code: 'INVALID', path: 'participants.0.colorSlot' });
+    expect(refused('relay-to-guest', guest({ connected: 'yes' }))).toMatchObject({ code: 'INVALID', path: 'participants.0.connected' });
+    const { participants } = guest({});
+    const { colorSlot: _slot, ...noSlot } = participants[0];
+    expect(refused('relay-to-guest', { type: 'room:roster', participants: [noSlot] })).toMatchObject({ code: 'INVALID', path: 'participants.0.colorSlot' });
+    expect(parseFrame('relay-to-guest', json(guest({ colorSlot: 7, connected: false })))).toMatchObject({ ok: true });
+  });
+
+  it('point only within the page and the preview, at an element named within bounds, and only toward the host (#768)', () => {
+    const point = (over: Record<string, unknown>) => ({ type: 'spotlight:point', spotlight: { ...spotlight, ...over } });
+    for (const x of [-0.01, 1.01, '0.5', null]) expect(refused('guest-to-relay', point({ x })), String(x)).toMatchObject({ code: 'INVALID', path: 'spotlight.x' });
+    expect(refused('guest-to-relay', point({ y: 2 }))).toMatchObject({ code: 'INVALID', path: 'spotlight.y' });
+    for (const previewPath of ['', 'about/', '//other.test/', '/a b/', '/a{b', '/__open-in-editor', null]) expect(refused('guest-to-relay', point({ previewPath })), String(previewPath)).toMatchObject({ code: 'INVALID', path: 'spotlight.previewPath' });
+    expect(refused('guest-to-relay', point({ target: { ...target, nodeId: 'n'.repeat(129) } }))).toMatchObject({ code: 'INVALID', path: 'spotlight.target.nodeId' });
+    expect(refused('guest-to-relay', point({ target: { ...target, instancePath: Array(17).fill('n') } }))).toMatchObject({ code: 'INVALID', path: 'spotlight.target.instancePath' });
+    expect(refused('guest-to-relay', point({ target: { ...target, owner: { kind: 'site', id: 'x' } } }))).toMatchObject({ code: 'INVALID', path: 'spotlight.target.owner.kind' });
+    expect(refused('guest-to-relay', point({ cursor: [1, 2] }))).toMatchObject({ code: 'INVALID' });
+    // A guest never names who pointed, nor whose edit it was; the relay does, and only toward the host or collaborators.
+    expect(refused('guest-to-relay', { type: 'spotlight:point', guestId: 'g_other', spotlight })).toMatchObject({ code: 'INVALID' });
+    expect(refused('guest-to-relay', { type: 'spotlight:pointed', guestId, spotlight })).toMatchObject({ code: 'UNKNOWN_TYPE' });
+    expect(refused('relay-to-guest', { type: 'spotlight:pointed', guestId, spotlight })).toMatchObject({ code: 'UNKNOWN_TYPE' });
+    expect(refused('guest-to-relay', { type: 'activity:edit', guestId, target })).toMatchObject({ code: 'UNKNOWN_TYPE' });
+    expect(refused('relay-to-host', { type: 'activity:edited', guestId, target })).toMatchObject({ code: 'UNKNOWN_TYPE' });
   });
 
   it('never show a guest anyone still waiting', () => {

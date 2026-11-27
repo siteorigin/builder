@@ -42,7 +42,7 @@ describe('the waiting room', () => {
     const status = await admitGuest(room.host, joined, 'viewer');
     expect(status).toMatchObject({ guestId: joined.guestId, role: 'viewer', guestExpiresAt: null, sessionExpiresAt: room.ready.expiresAt, projectName: 'Bakery' });
     expect(status.previewTicket).toMatch(/^[A-Za-z0-9_-]{16,256}$/);
-    expect((await joined.guest.next('room:roster')).participants).toEqual([{ guestId: joined.guestId, displayName: 'Ann', status: 'admitted', role: 'viewer', guestExpiresAt: null }]);
+    expect((await joined.guest.next('room:roster')).participants).toEqual([{ guestId: joined.guestId, displayName: 'Ann', status: 'admitted', role: 'viewer', guestExpiresAt: null, colorSlot: 0, connected: true }]);
 
     // Two redemptions of one ticket at once: exactly one gets the cookie.
     const [first, second] = await Promise.all([redeemTicket(relay, room.roomId, status.previewTicket), redeemTicket(relay, room.roomId, status.previewTicket)]);
@@ -178,7 +178,7 @@ describe('admitted guests', () => {
     room.host.send('host-to-relay', { type: 'guest:set-role', guestId: ann.guestId, role: 'collaborator' });
     const promoted = await ann.guest.next('guest:status');
     expect(promoted).toMatchObject({ status: 'admitted', role: 'collaborator' });
-    expect((await room.host.next('room:roster')).participants).toEqual([{ guestId: ann.guestId, displayName: 'Ann', status: 'admitted', role: 'collaborator', guestExpiresAt: null }]);
+    expect((await room.host.next('room:roster')).participants).toEqual([{ guestId: ann.guestId, displayName: 'Ann', status: 'admitted', role: 'collaborator', guestExpiresAt: null, colorSlot: 0, connected: true }]);
 
     ann.guest.send('guest-to-relay', { type: 'rpc:request', requestId: 'edit', method: 'project.apply', args: [{ operations: [] }] });
     expect(await room.host.next('rpc:request')).toMatchObject({ guestId: ann.guestId, method: 'project.apply' });
@@ -193,7 +193,7 @@ describe('admitted guests', () => {
     room.host.send('host-to-relay', { type: 'guest:set-role', guestId: ann.guestId, role: 'viewer' });
     const demoted = await ann.guest.next('guest:status');
     expect(demoted).toMatchObject({ status: 'admitted', role: 'viewer' });
-    expect((await room.host.next('room:roster')).participants).toEqual([{ guestId: ann.guestId, displayName: 'Ann', status: 'admitted', role: 'viewer', guestExpiresAt: null }]);
+    expect((await room.host.next('room:roster')).participants).toEqual([{ guestId: ann.guestId, displayName: 'Ann', status: 'admitted', role: 'viewer', guestExpiresAt: null, colorSlot: 0, connected: true }]);
     for (const cookie of [ann.cookie, redeemed.cookie!]) expect(await previewStatus(relay, room, cookie)).toBe(403);
     ann.guest.send('guest-to-relay', { type: 'rpc:request', requestId: 'edit-again', method: 'project.apply', args: [] });
     expect(await ann.guest.next('rpc:response')).toMatchObject({ requestId: 'edit-again', ok: false, error: { code: 'PERMISSION_DENIED' } });
@@ -376,6 +376,101 @@ describe('a guest whose socket drops', () => {
     expect((await ann.guest.closed()).code).toBe(LIVE_CLOSE_CODES.REPLACED);
     second.send('guest-to-relay', { type: 'rpc:request', requestId: 'second', method: 'project.snapshot', args: [] });
     expect(await room.host.next('rpc:request')).toMatchObject({ requestId: 'second', guestId: ann.guestId });
+    room.host.close();
+  });
+});
+
+describe('who is where, in color (#768)', () => {
+  const target = { owner: { kind: 'page' as const, id: 'pg_home' }, instancePath: [], nodeId: 'n_title' };
+  const spotlight = { previewPath: '/about/', target, x: 0.5, y: 0.25 };
+
+  it('gives each guest let in the lowest palette place nobody holds, kept while it holds its place', async () => {
+    const room = await openRoom(relay);
+    const ann = await admittedGuest(relay, room, 'Ann');
+    const bea = await admittedGuest(relay, room, 'Bea', 'collaborator');
+    expect((await bea.guest.next('room:roster')).participants.map((p) => [p.displayName, p.colorSlot])).toEqual([
+      ['Ann', 0],
+      ['Bea', 1]
+    ]);
+    // A role change keeps the place; a place given up is the next guest's.
+    room.host.send('host-to-relay', { type: 'guest:set-role', guestId: ann.guestId, role: 'collaborator' });
+    expect((await room.host.next('room:roster')).participants.map((p) => p.status === 'admitted' && p.colorSlot)).toEqual([0, 1]);
+    room.host.send('host-to-relay', { type: 'guest:kick', guestId: ann.guestId });
+    await room.host.next('room:roster');
+    const cid = await admittedGuest(relay, room, 'Cid');
+    expect((await cid.guest.next('room:roster')).participants.map((p) => [p.displayName, p.colorSlot])).toEqual([
+      ['Bea', 1],
+      ['Cid', 0]
+    ]);
+    room.host.close();
+  });
+
+  it('tells the host and the other guests at once when a guest’s connection drops, and again when it is back', async () => {
+    const room = await openRoom(relay);
+    const ann = await admittedGuest(relay, room, 'Ann', 'collaborator');
+    const bea = await admittedGuest(relay, room, 'Bea', 'collaborator');
+    room.host.discard('room:roster');
+    bea.guest.discard('room:roster');
+    ann.guest.close();
+    const away = (await room.host.next('room:roster')).participants;
+    expect(away).toEqual([expect.objectContaining({ guestId: ann.guestId, connected: false, colorSlot: 0 }), expect.objectContaining({ guestId: bea.guestId, connected: true })]);
+    expect((await bea.guest.next('room:roster')).participants[0]).toMatchObject({ guestId: ann.guestId, connected: false });
+    const back = await relay.socket(`/s/${room.roomId}/ws`);
+    back.send('guest-to-relay', { type: 'guest:join', version: 1, displayName: 'Ann', resumeToken: ann.resumeToken });
+    expect((await room.host.next('room:roster')).participants[0]).toMatchObject({ guestId: ann.guestId, connected: true, colorSlot: 0 });
+    expect((await bea.guest.next('room:roster')).participants[0]).toMatchObject({ guestId: ann.guestId, connected: true });
+    expect((await back.next('room:roster')).participants[0]).toMatchObject({ guestId: ann.guestId, connected: true });
+    room.host.close();
+  });
+
+  it('passes a spotlight from any guest let in, a viewer too, to the host alone, naming who pointed', async () => {
+    const room = await openRoom(relay);
+    const ann = await admittedGuest(relay, room, 'Ann');
+    const bea = await admittedGuest(relay, room, 'Bea', 'collaborator');
+    const waiting = await joinGuest(relay, room.roomId, 'Cid');
+    ann.guest.send('guest-to-relay', { type: 'spotlight:point', spotlight });
+    expect(await room.host.next('spotlight:pointed')).toEqual({ type: 'spotlight:pointed', guestId: ann.guestId, spotlight });
+    bea.guest.send('guest-to-relay', { type: 'spotlight:point', spotlight: { ...spotlight, target: null } });
+    expect(await room.host.next('spotlight:pointed')).toEqual({ type: 'spotlight:pointed', guestId: bea.guestId, spotlight: { ...spotlight, target: null } });
+    // Someone still waiting cannot point.
+    waiting.guest.send('guest-to-relay', { type: 'spotlight:point', spotlight });
+    expect(await waiting.guest.next('protocol:error')).toMatchObject({ code: 'FORBIDDEN' });
+    await wait(100);
+    expect(room.host.has('spotlight:pointed')).toBe(false);
+    // No other guest is shown anyone's spotlight: the relay sends a guest nothing for it at all.
+    expect(ann.guest.has('presence:changed') || bea.guest.has('protocol:error')).toBe(false);
+    room.host.close();
+  });
+
+  it('drops spotlights that come faster than a few a second, each guest on its own budget, refusing none', async () => {
+    const room = await openRoom(relay);
+    const ann = await admittedGuest(relay, room, 'Ann');
+    const bea = await admittedGuest(relay, room, 'Bea');
+    for (let i = 0; i < 20; i++) ann.guest.send('guest-to-relay', { type: 'spotlight:point', spotlight: { ...spotlight, x: i / 20 } });
+    bea.guest.send('guest-to-relay', { type: 'spotlight:point', spotlight });
+    await wait(300);
+    const passed = { ann: 0, bea: 0 };
+    for (let f = room.host.take('spotlight:pointed', () => true); f; f = room.host.take('spotlight:pointed', () => true)) passed[f.guestId === ann.guestId ? 'ann' : 'bea']++;
+    expect(passed.ann).toBeGreaterThanOrEqual(3);
+    expect(passed.ann).toBeLessThan(6);
+    expect(passed.bea).toBe(1);
+    expect(ann.guest.has('protocol:error')).toBe(false);
+    room.host.close();
+  });
+
+  it('tells the other collaborators of a collaborator’s edit, and nobody else', async () => {
+    const room = await openRoom(relay);
+    const ann = await admittedGuest(relay, room, 'Ann', 'collaborator');
+    const bea = await admittedGuest(relay, room, 'Bea', 'collaborator');
+    const cid = await admittedGuest(relay, room, 'Cid');
+    room.host.send('host-to-relay', { type: 'activity:edit', guestId: ann.guestId, target });
+    expect(await bea.guest.next('activity:edited')).toEqual({ type: 'activity:edited', guestId: ann.guestId, target });
+    // Nor for a guest the room does not hold.
+    room.host.send('host-to-relay', { type: 'activity:edit', guestId: 'g_nobody', target: null });
+    await wait(150);
+    expect(ann.guest.has('activity:edited')).toBe(false);
+    expect(cid.guest.has('activity:edited')).toBe(false);
+    expect(bea.guest.has('activity:edited')).toBe(false);
     room.host.close();
   });
 });

@@ -37,6 +37,7 @@ import { confirmOpenExternal } from '../lib/open-external';
 import { richTextToMarkdown } from '@shared/richtext';
 import { hasDarkPalette } from '@shared/color-scheme';
 import { repeatAsListTarget } from '../lib/repeat-as-list';
+import { marksAnnouncement, marksNow, PeerMarks, SpotlightPrompts, trackedMarks, useCanvasMarks } from './CanvasMarks';
 import { boundaryOf, codeTextTarget, computedAt, createComponentTarget, definitionPick, descOf, designCtx, inDefinition, itemStep, needsStudio, placementsOn, refExists, refLabel, resolveRef, selectionFromChain, stepItem, studioDescOf, studioDesignCtx, studioPick, throughPlacement, toDefinitionRef, withoutSlot, type BridgeDesc, type CodeTextTarget } from '../lib/model';
 import { NEW_STUDIO, StudioLoads, studioSpec } from '../lib/studio';
 import { titleOnlyPage } from '../lib/page-start';
@@ -381,6 +382,11 @@ export function Canvas() {
    *  Add buttons (#657); kept only when they change, since the page reports every frame while it scrolls. */
   const [slotRects, setSlotRects] = useState<SlotBox[]>([]);
   const slotRectsSeen = useRef('[]');
+  /** The others in a live session on this page (#768), and each one's box as the page last measured it, by key. */
+  const peerMarks = useCanvasMarks();
+  const peerMarksKey = peerMarks.marks.map((m) => m.key).join('\n');
+  const [markBoxes, setMarkBoxes] = useState<Record<string, Rect>>({});
+  const markBoxesSeen = useRef('{}');
   /**
    * The Add button whose list is open (#387): its place, its button, where the button was drawn (in the overlay) and
    * its box on screen as it opened, what it offers, and the project, page and revision it was opened on (any change
@@ -1074,6 +1080,14 @@ export function Canvas() {
           const next = { selected: sameRects(selected, was.selected), hovered: kept ? was.hovered : sameRects(hovered, was.hovered), revealed: sameRects(rectList(p.revealed), was.revealed), headers: sameRects(rectList(p.headers), was.headers) };
           const remeasured = !sameMeasured(measuredBefore.selected, rectsFor.current.selected) || !sameMeasured(measuredBefore.hovered, rectsFor.current.hovered);
           if (remeasured || next.selected !== was.selected || next.hovered !== was.hovered || next.revealed !== was.revealed || next.headers !== was.headers) setOverlay({ rects: next });
+          // The others' marks: kept only when they move, as the slots' are.
+          const peerBoxes: Record<string, Rect> = {};
+          if (Array.isArray(p.marks)) for (const m of p.marks.slice(0, 32)) if (m && typeof m.key === 'string') for (const r of rectList([m.box])) peerBoxes[m.key] = r;
+          const peerSeen = JSON.stringify(peerBoxes);
+          if (peerSeen !== markBoxesSeen.current) {
+            markBoxesSeen.current = peerSeen;
+            setMarkBoxes(peerBoxes);
+          }
           const slots = slotBoxes(p.slots);
           const slotsSeen = JSON.stringify(slots);
           if (slotsSeen !== slotRectsSeen.current) {
@@ -1449,7 +1463,7 @@ export function Canvas() {
     const st = s.snapshot?.state;
     if (!st) return;
     // With timing marks on, the page times its measuring too (the `canvas` scenario).
-    post('track', { selected: descFor(s.selection), hovered: descFor(getOverlay().hover, hoverPlacement.current), slots: trackedSlots(), ...(perfOn ? { timed: true } : {}) });
+    post('track', { selected: descFor(s.selection), hovered: descFor(getOverlay().hover, hoverPlacement.current), slots: trackedSlots(), marks: trackedMarks(st, marksNow(s).marks), ...(perfOn ? { timed: true } : {}) });
   }
 
   /** The empty slots of the selected placement whose Add buttons are drawn on their own boxes (#657), for the page to
@@ -1503,7 +1517,7 @@ export function Canvas() {
   // arrival cue waits for that, and the page sends no report that would only repeat the last).
   useEffect(() => {
     if (ready) syncTrack();
-  }, [ready, selection, hover, snapshot?.revision, stylesOpen, mode]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [ready, selection, hover, snapshot?.revision, stylesOpen, mode, peerMarksKey]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // A new selection is scrolled to once the frame shows its page (not one picked on the page: selectOnPage), and so
   // is one a Layers row asks to show again (showLayer). Asked from Layers, one taller than the page shows from its top. One made with a page change (a page
@@ -3480,6 +3494,8 @@ export function Canvas() {
             </div>
             <div className="overlay-layer">
               <div className="overlay-clip">
+                {/* The others in a live session, under everything of the editor's own. */}
+                {!staleFrame && peerMarks.marks.length > 0 && <PeerMarks marks={peerMarks.marks} boxes={markBoxes} toBox={toBox} height={frameH * z} />}
                 {hovering &&
                   hovBoxes.map((b, i) => {
                     // A tall container carries its name inside its top-left corner (kept in view when its top has
@@ -3676,6 +3692,11 @@ export function Canvas() {
                 />
               )}
             </div>
+            {/* A guest pointed at another page: who, where, and a way there (#768). */}
+            <SpotlightPrompts away={peerMarks.away} />
+            <span className="sr-only" role="status">
+              {marksAnnouncement(peerMarks.marks, peerMarks.away)}
+            </span>
             {frameHandle('left')}
             {frameHandle('right')}
           </div>

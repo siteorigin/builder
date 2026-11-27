@@ -23,7 +23,9 @@ export const shownLive = (s: Pick<State, 'live' | 'snapshot'>): LiveHostState =>
 export function applyLiveState(next: LiveHostState): void {
   const s = getState();
   const prev = s.live;
-  setState({ live: next, liveClock: hasRoom(next) ? readRelayClock(next) : null });
+  // Who was where in a session that has ended (or been replaced) is shown no longer.
+  const presence = s.livePresence && sameRun(liveRun(next), s.livePresence) ? s.livePresence : null;
+  setState({ live: next, liveClock: hasRoom(next) ? readRelayClock(next) : null, ...(presence !== s.livePresence ? { livePresence: presence } : {}) });
   if (next.phase === 'idle' && next.lastError && hasRoom(prev) && prev.workspaceKey === s.snapshot?.workspaceKey) toast(next.lastError, 'info');
 }
 
@@ -63,7 +65,11 @@ export function followLive(): Array<() => void> {
       events++;
       applyLiveState(state);
     }),
-    api.on('live:request', applyLiveRequest)
+    api.on('live:request', applyLiveRequest),
+    // Where the collaborators are, and the latest spotlights and edits (#768): kept only for the session it is about.
+    api.on('live:presence', (presence) => {
+      if (sameRun(liveRun(getState().live), presence)) setState({ livePresence: presence });
+    })
   ];
   let gone = false;
   void api.live

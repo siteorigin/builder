@@ -6,6 +6,7 @@ import type { Presence } from '@shared/live/messages';
 import { createStarterState } from '@catalogue/starters';
 import { applyOperations } from '@engine/apply';
 import { entryRoute } from '@shared/collections';
+import { refKey as refKeyOf } from '@shared/types';
 
 /**
  * The editor's side of hosting a live session (#764): following the main process's session for the opening it belongs
@@ -319,7 +320,7 @@ describe('where the host is', () => {
 
 describe('the waiting room', () => {
   it('offers one waiting guest Admit, as a viewer, and Decline, by name', () => {
-    const html = renderToStaticMarkup(createElement(join.JoinRequestList as never, { live: active('/sites/acme#1', 'run-1', [pending('Ann', 'g1'), { guestId: 'g2', displayName: 'Quill', status: 'admitted', role: 'viewer', guestExpiresAt: null }]) }));
+    const html = renderToStaticMarkup(createElement(join.JoinRequestList as never, { live: active('/sites/acme#1', 'run-1', [pending('Ann', 'g1'), { guestId: 'g2', displayName: 'Quill', status: 'admitted', role: 'viewer', guestExpiresAt: null, colorSlot: 0, connected: true }]) }));
     expect(html).toContain('aria-label="Join requests"');
     expect(html).toContain('<strong>Ann</strong> wants to join');
     expect(html).not.toContain('Quill');
@@ -364,6 +365,121 @@ describe('the waiting room', () => {
   });
 
   it('shows nothing when nobody waits', () => {
-    expect(renderToStaticMarkup(createElement(join.JoinRequestList as never, { live: active('/sites/acme#1', 'run-1', [{ guestId: 'g2', displayName: 'Quill', status: 'admitted', role: 'viewer', guestExpiresAt: null }]) }))).toBe('');
+    expect(renderToStaticMarkup(createElement(join.JoinRequestList as never, { live: active('/sites/acme#1', 'run-1', [{ guestId: 'g2', displayName: 'Quill', status: 'admitted', role: 'viewer', guestExpiresAt: null, colorSlot: 0, connected: true }]) }))).toBe('');
+  });
+});
+
+describe('the others on the canvas (#768)', () => {
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  let marks: any;
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  let canvas: any;
+  beforeAll(async () => {
+    marks = await import(/* @vite-ignore */ '../../src/renderer/src/lib/live-marks');
+    canvas = await import(/* @vite-ignore */ '../../src/renderer/src/panels/CanvasMarks');
+  });
+  const WS = '/sites/acme#1';
+  const admittedGuest = (guestId: string, displayName: string, role: 'viewer' | 'collaborator', colorSlot: number, connected = true) => ({ guestId, displayName, status: 'admitted', role, guestExpiresAt: null, colorSlot, connected });
+  const ann = admittedGuest('g1', 'Ann', 'collaborator', 0);
+  const bea = admittedGuest('g2', 'Bea', 'viewer', 1);
+  const cid = admittedGuest('g3', 'Cid', 'collaborator', 2, false);
+  const heading = (pageId: string) => ({ owner: { kind: 'page' as const, id: pageId }, instancePath: [], nodeId: state.pages[pageId].rootIds[0] });
+  const second = (pageId: string) => ({ owner: { kind: 'page' as const, id: pageId }, instancePath: [], nodeId: state.pages[pageId].rootIds[1] });
+  const header = { owner: { kind: 'shell' as const, id: 'header' }, instancePath: [], nodeId: state.site.shell.header.rootIds[0] };
+  const aboutPath = state.pages[aboutId].route;
+  const on = (pageId: string, selection: unknown = null): Presence => ({ pageId, viewportWidth: 1280, selection: selection as Presence['selection'], previewPath: state.pages[pageId].route });
+  const presence = (over: Record<string, unknown> = {}) => ({ workspaceKey: WS, runId: 'run-1', guests: {}, spotlights: {}, activity: {}, ...over });
+  const pointAt = (previewPath: string, target: unknown = null, seq = 1) => ({ seq, spotlight: { previewPath, target, x: 0.5, y: 0.25 } });
+  const hosting = (livePresence: unknown, participants: Array<Record<string, unknown>> = [ann, bea, cid], liveState: LiveHostState = active(WS, 'run-1', participants)) => ({ live: liveState, livePresence, snapshot: snap(WS), remote: { phase: 'idle', ended: null }, remotePresence: null });
+  const here = (pageId: string) => ({ pageId, previewPath: state.pages[pageId].route });
+
+  it('keeps where the collaborators are for the session shown, and forgets it with that session', () => {
+    store.setState({ snapshot: snap(WS) });
+    offs.push(...live.followLive());
+    emit('live:state', active());
+    emit('live:presence', presence({ guests: { g1: on(homeId) } }));
+    expect((store.getState() as unknown as { livePresence: unknown }).livePresence).toEqual(presence({ guests: { g1: on(homeId) } }));
+    // Another session's says nothing here.
+    emit('live:presence', presence({ runId: 'run-0', guests: {} }));
+    expect((store.getState() as unknown as { livePresence: { runId: string } }).livePresence.runId).toBe('run-1');
+    emit('live:state', active(WS, 'run-2'));
+    expect((store.getState() as unknown as { livePresence: unknown }).livePresence).toBeNull();
+  });
+
+  it('shows connected collaborators where they are, viewers only by their spotlights, and nobody while reconnecting', () => {
+    const at = presence({ guests: { g1: on(homeId, heading(homeId)), g2: on(homeId), g3: on(homeId) }, spotlights: { g2: pointAt('/') }, activity: { g3: { seq: 1, target: null } } });
+    expect(marks.livePeers(hosting(at)).map((p: { key: string; color: number; presence: unknown; spotlight: unknown }) => [p.key, p.color, !!p.presence, !!p.spotlight])).toEqual([
+      ['g1', 0, true, false],
+      ['g2', 1, false, true]
+    ]);
+    expect(marks.livePeers(hosting(at, [ann], { ...active(WS, 'run-1', [ann]), phase: 'reconnecting' } as LiveHostState))).toEqual([]);
+    expect(marks.livePeers(hosting({ ...at, runId: 'run-0' }))).toEqual([]);
+    expect(marks.livePeers({ ...hosting(at), snapshot: snap('/sites/other#1') })).toEqual([]);
+  });
+
+  it('outlines a collaborator’s selection on the page shown, or its header, and nothing gone or elsewhere', () => {
+    const peers = (sel: unknown, pageId = homeId) => marks.livePeers(hosting(presence({ guests: { g1: on(pageId, sel) } })));
+    const one = marks.canvasMarks(state, here(homeId), peers(heading(homeId)));
+    expect(one.marks).toEqual([expect.objectContaining({ kind: 'selection', peer: 'g1', who: 'Ann', color: 0, ref: heading(homeId), editing: false })]);
+    expect(one.away).toEqual([]);
+    // The canvas on another page shows nothing of hers.
+    expect(marks.canvasMarks(state, here(aboutId), peers(heading(homeId))).marks).toEqual([]);
+    // The shared header shows while she is on the page shown, not while she is on another.
+    expect(marks.canvasMarks(state, here(homeId), peers(header)).marks.map((m: { ref: unknown }) => m.ref)).toEqual([header]);
+    expect(marks.canvasMarks(state, here(homeId), peers(header, aboutId)).marks).toEqual([]);
+    // Something no longer in the project, or named by an inherited key, is outlined nowhere.
+    expect(marks.canvasMarks(state, here(homeId), peers({ ...heading(homeId), nodeId: 'n_gone' })).marks).toEqual([]);
+    expect(marks.canvasMarks(state, { pageId: 'toString', previewPath: '/' }, marks.livePeers(hosting(presence({ guests: { g1: { ...on(homeId), pageId: 'toString', selection: { owner: { kind: 'page', id: 'toString' }, instancePath: [], nodeId: 'constructor' } } } })))).marks).toEqual([]);
+  });
+
+  it('says a collaborator is editing what it selected, and outlines an edit of something else on its own', () => {
+    const peersWith = (target: unknown) => marks.livePeers(hosting(presence({ guests: { g1: on(homeId, heading(homeId)) }, activity: { g1: { seq: 7, target } } })));
+    expect(marks.canvasMarks(state, here(homeId), peersWith(heading(homeId))).marks).toEqual([expect.objectContaining({ kind: 'selection', editing: true })]);
+    const apart = marks.canvasMarks(state, here(homeId), peersWith(second(homeId))).marks;
+    expect(apart.map((m: { kind: string; editing: boolean }) => [m.kind, m.editing])).toEqual([
+      ['selection', false],
+      ['edit', true]
+    ]);
+    expect(apart[1].key).toBe('edit:g1:7');
+    // An edit of several elements, or of another page, shows on no element.
+    expect(marks.canvasMarks(state, here(homeId), peersWith(null)).marks).toHaveLength(1);
+    expect(marks.canvasMarks(state, here(homeId), peersWith(heading(aboutId))).marks).toHaveLength(1);
+  });
+
+  it('rings a spotlight on the place shown, and offers the page of one pointed at elsewhere', () => {
+    const peersWith = (spot: unknown) => marks.livePeers(hosting(presence({ spotlights: { g2: spot } })));
+    const at = marks.canvasMarks(state, here(homeId), peersWith(pointAt('/', heading(homeId), 4)));
+    expect(at.marks).toEqual([expect.objectContaining({ key: 'spot:g2:4', kind: 'spotlight', who: 'Bea', color: 1, ref: heading(homeId), point: { x: 0.5, y: 0.25 } })]);
+    // An element the host's project does not have rings the point instead.
+    expect(marks.canvasMarks(state, here(homeId), peersWith(pointAt('/', { ...heading(homeId), nodeId: 'n_gone' }))).marks[0]).toMatchObject({ ref: null, point: { x: 0.5, y: 0.25 } });
+    const elsewhere = marks.canvasMarks(state, here(homeId), peersWith(pointAt(aboutPath)));
+    expect(elsewhere.marks).toEqual([]);
+    expect(elsewhere.away).toEqual([expect.objectContaining({ who: 'Bea', pageId: aboutId, place: 'About' })]);
+    expect(marks.canvasMarks(state, here(homeId), peersWith(pointAt('/no-such-page/'))).away).toEqual([expect.objectContaining({ pageId: null, place: '/no-such-page/' })]);
+  });
+
+  it('draws each mark in its color with its name, and names a spotlight past the edge at that edge', () => {
+    const peers = marks.livePeers(hosting(presence({ guests: { g1: on(homeId, heading(homeId)) }, spotlights: { g2: pointAt('/', null, 9) } })));
+    const { marks: shown } = marks.canvasMarks(state, here(homeId), peers);
+    const toBox = (r: { x: number; y: number; width: number; height: number }) => ({ left: r.x, top: r.y, width: r.width, height: r.height });
+    const html = renderToStaticMarkup(createElement(canvas.PeerMarks, { marks: shown, boxes: { [shown[0].key]: { x: 10, y: 100, width: 200, height: 40 }, [shown[1].key]: { x: 50, y: 900, width: 0, height: 0 } }, toBox, height: 600 }));
+    expect(html).toContain('class="ov-peer selection"');
+    expect(html).toContain('--peer:var(--peer-0)');
+    expect(html).toContain('>Ann</span>');
+    expect(html).toContain('class="ov-spot-dot"');
+    expect(html).toMatch(/ov-peer-tags edge bottom[^>]*>.*↓ .*Bea/);
+    // A mark the page has not measured is not drawn.
+    expect(renderToStaticMarkup(createElement(canvas.PeerMarks, { marks: shown, boxes: {}, toBox, height: 600 }))).not.toContain('ov-peer ');
+    const prompt = renderToStaticMarkup(createElement(canvas.SpotlightPrompts, { away: [{ key: 'away:g2:1', peer: 'g2', who: 'Bea', color: 1, pageId: aboutId, place: 'About' }, { key: 'away:g3:1', peer: 'g3', who: 'Cid', color: 2, pageId: null, place: '/x/' }] }));
+    expect(prompt).toContain('<strong>Bea</strong> pointed at About');
+    expect(prompt.match(/Go to page/g)).toHaveLength(1);
+  });
+
+  it('tracks what the canvas shows from the editor’s own state', () => {
+    store.setState({ snapshot: snap(WS), live: active(WS, 'run-1', [ann]), livePresence: presence({ guests: { g1: on(homeId, heading(homeId)) } }), pageId: homeId });
+    const now = canvas.marksNow(store.getState());
+    expect(now.marks.map((m: { key: string }) => m.key)).toEqual([`sel:g1:${refKeyOf(heading(homeId))}`]);
+    expect(canvas.trackedMarks(state, now.marks)).toEqual([{ key: now.marks[0].key, desc: expect.objectContaining({ ctx: expect.stringMatching(new RegExp(`^page:${homeId}(\\||$)`)) }), point: null }]);
+    store.setState({ livePresence: null });
   });
 });
