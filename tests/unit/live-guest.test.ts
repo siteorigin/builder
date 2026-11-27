@@ -245,6 +245,7 @@ describe('editing the host’s project', () => {
   it('sends a copy editor’s edit for the host to check, and none once the host makes it a viewer', async () => {
     const g = guest();
     const joinId = await inRoom(g, 'copy-editor');
+    expect(g.manager.state).toMatchObject({ phase: 'admitted', role: 'copy-editor' });
     const batch = { operations: [{ type: 'node.setContent', owner: { kind: 'page', id: state.site.homePageId }, nodeId: 'n_title', field: 'text', value: 'Welcome' }] };
     const result = g.manager.apply(joinId, batch);
     const ask = g.socket().last('rpc:request')!;

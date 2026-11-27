@@ -694,10 +694,17 @@ export class LiveHostManager {
   private onRoster(conn: Connection, participants: Participant[]): void {
     const run = conn.run;
     if (!run.room || (conn.stage !== 'roster' && conn.stage !== 'host')) return;
+    const held = this.heldRoles(run);
     run.room.participants = participants;
     const first = conn.stage === 'roster';
     conn.stage = 'host';
     this.confirmGrants(run, first && conn.kind === 'reclaim' ? conn : null);
+    // A roster that leaves a guest less than it held, with no decision of the host's behind it, ends what it asked for
+    // before as surely as the host's own narrowing does: a later roster giving the role back lands none of it.
+    for (const [guestId, role] of this.heldRoles(run)) {
+      const was = held.get(guestId);
+      if (was && narrower(role, was)) run.grants.get(guestId)!.generation++;
+    }
     // Ending: nobody is let in or told about any more.
     if (run.phase === 'stopping') return;
     if (!first) {
@@ -1020,6 +1027,16 @@ export class LiveHostManager {
     const ends = Math.min(guestAccessEndsAt(p.guestExpiresAt, room.expiresAt), guestAccessEndsAt(grant.guestExpiresAt, room.expiresAt));
     if (isExpired(ends - GRANT_CLOCK_MARGIN_MS, relayNow(room))) return { code: 'EXPIRED', message: 'Your access to this live session has ended.', recoverable: false };
     return { role: leastRole(p.role, grant.role, ...grant.unconfirmed), displayName: p.displayName, generation: grant.generation };
+  }
+
+  /** The role each guest let in holds now, as grantOf works it out, whether or not its access has ended. */
+  private heldRoles(run: Run): Map<string, GuestRole> {
+    const held = new Map<string, GuestRole>();
+    for (const p of run.room?.participants ?? []) {
+      const grant = run.grants.get(p.guestId);
+      if (p.status === 'admitted' && grant) held.set(p.guestId, leastRole(p.role, grant.role, ...grant.unconfirmed));
+    }
+    return held;
   }
 
   /** A guest's grant when it is a collaborator now, or null. */

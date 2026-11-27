@@ -84,7 +84,7 @@ function hostPathPattern(paths: readonly string[]): RegExp | null {
   if (!forms.size) return null;
   // The longest first, so the project folder inside the home folder is matched whole.
   const alternatives = [...forms].sort((a, b) => b.length - a.length).map(escape);
-  return new RegExp(`(?<![\\w.~%-])(?:${alternatives.join('|')})(?=$|[\\\\/\\s"'<>()\`,;:?#!]|\\.(?:$|\\s|[\\\\/"'<>)]))`, 'gi');
+  return new RegExp(`(?<![\\w.~%-])(?:${alternatives.join('|')})(?=$|[\\\\/\\s"'”’<>()\`,;:?#!]|\\.(?:$|\\s|[\\\\/"'”’<>)]))`, 'gi');
 }
 
 /** `text` with every host path in it (see liveSnapshot) replaced: for anything else a guest is sent, such as an error. */

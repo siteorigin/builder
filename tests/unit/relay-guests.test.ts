@@ -215,8 +215,9 @@ describe('admitted guests', () => {
     // Its preview cookie is for its own role, and works.
     expect(await previewStatus(relay, room, ann.cookie)).toBe(204);
     // Which edits it may make is the host's to say, with the arguments and against the project.
-    ann.guest.send('guest-to-relay', { type: 'rpc:request', requestId: 'edit', method: 'project.apply', args: [{ operations: [] }] });
-    expect(await room.host.next('rpc:request')).toMatchObject({ guestId: ann.guestId, requestId: 'edit', method: 'project.apply' });
+    const batch = { operations: [{ type: 'node.setContent', owner: { kind: 'page', id: 'pg_home' }, nodeId: 'n_title', field: 'text', value: 'Hello' }] };
+    ann.guest.send('guest-to-relay', { type: 'rpc:request', requestId: 'edit', method: 'project.apply', args: [batch] });
+    expect(await room.host.next('rpc:request')).toEqual({ type: 'rpc:request', guestId: ann.guestId, requestId: 'edit', method: 'project.apply', args: [batch] });
     ann.guest.send('guest-to-relay', { type: 'rpc:request', requestId: 'secret', method: 'settings.get', args: [] });
     expect(await ann.guest.next('rpc:response')).toMatchObject({ requestId: 'secret', ok: false, error: { code: 'PERMISSION_DENIED' } });
     // Only a collaborator shows the others where it is.

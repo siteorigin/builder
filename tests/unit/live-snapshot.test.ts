@@ -83,6 +83,8 @@ describe('the project as guests are given it', () => {
 
   it('never takes a folder too short to tell from ordinary text', () => {
     expect(scrubHostPaths('Visit /ab/c and / here', ['/', '', '/ab'])).toBe('Visit /ab/c and / here');
+    // Quoted the way the editor's own messages quote a name.
+    expect(scrubHostPaths('Only the host can change “/Volumes/Work/Acme”. Not ‘/Volumes/Work/Acme’ either.', ['/Volumes/Work/Acme'])).toBe(`Only the host can change “${P}”. Not ‘${P}’ either.`);
   });
 
   it('leaves the host’s project as it was', () => {

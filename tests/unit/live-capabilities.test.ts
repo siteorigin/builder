@@ -140,6 +140,8 @@ describe('role methods', () => {
     expect(leastRole('collaborator')).toBe('collaborator');
     expect(leastRole('collaborator', 'copy-editor', 'collaborator')).toBe('copy-editor');
     expect(leastRole('copy-editor', 'collaborator', 'viewer', 'collaborator')).toBe('viewer');
+    expect(leastRole('collaborator', 'collaborator', 'copy-editor')).toBe('copy-editor');
+    expect(leastRole('copy-editor', 'viewer')).toBe('viewer');
   });
 
   it('refuses every host-only method to both roles', () => {
@@ -263,7 +265,8 @@ describe('checking a batch', () => {
     // where a contact form sends, an element's link.
     for (const op of [
       { ...setText, owner: { kind: 'shell', id: 'header' } },
-      { ...setProp, itemId: 'i_1', field: 'title' },
+      { ...setProp, itemId: 'i_1' },
+      { ...setProp, field: 'title' },
       { ...setProp, value: { $entry: 'title' } },
       { ...setText, value: [{ type: 'p', children: [{ text: { $prop: 'heading' } }] }] },
       { ...setProp, prop: 'endpoint', value: 'https://evil.example/f' },

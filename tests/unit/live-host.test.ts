@@ -888,14 +888,17 @@ describe('guests’ editor calls', () => {
   });
 
   it('refuses a waiting edit when the relay says the guest holds less than it was asked as, whatever the host decided', async () => {
-    const h = editor();
-    const { socket } = await letIn(h);
-    call(socket, 'q1', 'project.apply', [LAYOUT]);
-    const edit = await until(() => h.edits[0], 'the edit');
-    // A roster that lists Ann as a copy editor, which the host never asked for.
-    socket.receive(roster('copy-editor'));
-    edit.release();
-    expect(await answerTo(socket, 'q1')).toMatchObject({ ok: false, error: { code: 'PERMISSION_DENIED' } });
+    for (const restored of [false, true]) {
+      const h = editor();
+      const { socket } = await letIn(h);
+      call(socket, 'q1', 'project.apply', [LAYOUT]);
+      const edit = await until(() => h.edits[0], 'the edit');
+      // A roster that lists Ann as a copy editor, which the host never asked for, and perhaps one giving it back.
+      socket.receive(roster('copy-editor'));
+      if (restored) socket.receive(roster('collaborator'));
+      edit.release();
+      expect(await answerTo(socket, 'q1'), `restored: ${restored}`).toMatchObject({ ok: false, error: { code: 'PERMISSION_DENIED' } });
+    }
   });
 
   it('stops showing where a collaborator is once made a copy editor', async () => {
@@ -906,6 +909,8 @@ describe('guests’ editor calls', () => {
     h.manager.setRole(run, 'g1', 'copy-editor');
     expect(h.presence.at(-1)).toEqual({ workspaceKey: run.workspaceKey, runId: run.runId, guests: {} });
     const shown = h.presence.length;
+    // Neither before the relay confirms it nor after.
+    socket.receive({ type: 'presence:changed', participant: { kind: 'guest', guestId: 'g1' }, presence: HERE });
     socket.receive(roster('copy-editor'));
     socket.receive({ type: 'presence:changed', participant: { kind: 'guest', guestId: 'g1' }, presence: HERE });
     expect(h.presence.length).toBe(shown);
