@@ -17,7 +17,7 @@ import { refKey, sameRef } from '@shared/types';
 import { aiActivity, api, commitDraft, errorText, getOverlay, getState, markDraft, saveLocal, setOverlay, setState, setViewport, stepHistory, toast, useOverlay, useStore, type Rect } from '../store';
 import { appliedSteps, errorComponent, revertStep, stillNewest } from '../lib/preview-error';
 import { acceptMessage, newSessionId, postToFrame, staleFor, viewAfter, type BridgeMessage, type FrameView } from '../lib/bridge';
-import { chainOf, descOrNull, emptyAreaOf, measuredRects, pointedAt, rectList, sameRects, slotBoxes, spaceSizes, spacingOf, type FrameEmptyArea, type FrameSpacing, type SlotBox } from '../lib/payload';
+import { bindDescOf, chainOf, descOrNull, emptyAreaOf, measuredRects, pointedAt, rectList, sameRects, slotBoxes, spaceSizes, spacingOf, type FrameEmptyArea, type FrameSpacing, type SlotBox } from '../lib/payload';
 import { blocksFromDom, richDom } from '../lib/richtext';
 import { collectionIndexRoutes } from '@shared/archives';
 import { dropAt, dropReaches, moveIndex, shownOrder } from '../lib/reorder';
@@ -37,11 +37,11 @@ import { confirmOpenExternal } from '../lib/open-external';
 import { richTextToMarkdown } from '@shared/richtext';
 import { hasDarkPalette } from '@shared/color-scheme';
 import { repeatAsListTarget } from '../lib/repeat-as-list';
-import { boundaryOf, computedAt, createComponentTarget, definitionPick, descOf, designCtx, inDefinition, itemStep, needsStudio, placementsOn, refExists, refLabel, resolveRef, selectionFromChain, stepItem, studioDescOf, studioDesignCtx, studioPick, throughPlacement, toDefinitionRef, withoutSlot, type BridgeDesc } from '../lib/model';
+import { boundaryOf, codeTextTarget, computedAt, createComponentTarget, definitionPick, descOf, designCtx, inDefinition, itemStep, needsStudio, placementsOn, refExists, refLabel, resolveRef, selectionFromChain, stepItem, studioDescOf, studioDesignCtx, studioPick, throughPlacement, toDefinitionRef, withoutSlot, type BridgeDesc, type CodeTextTarget } from '../lib/model';
 import { NEW_STUDIO, StudioLoads, studioSpec } from '../lib/studio';
 import { titleOnlyPage } from '../lib/page-start';
 import { CHIP_H, chipLeft } from '../lib/chip-place';
-import { askAiAbout, leaveLayout, writePageWithAi, canInlineEdit, commitText, dropAsset, dropAssetAt, deleteSelection, detachable, detachPlacement, duplicateLayers, duplicateSelection, insertHere, liveGroup, moveLayers, moveSelection, planOne, setMode, showsInlineText, selectOnPage, structuralTarget, takeUnscrolled, ungroupLayers, wrapLayers } from '../lib/actions';
+import { askAiAbout, leaveLayout, writePageWithAi, canInlineEdit, canInlineEditCode, commitCodeText, commitText, dropAsset, dropAssetAt, deleteSelection, detachable, detachPlacement, duplicateLayers, duplicateSelection, insertHere, liveGroup, moveLayers, moveSelection, planOne, setMode, showsCodeText, showsInlineText, selectOnPage, structuralTarget, takeUnscrolled, ungroupLayers, wrapLayers } from '../lib/actions';
 import { exportComponentFile, placedDefinition, saveToLibrary } from '../lib/saved-components';
 import { wrapItems } from './WrapItems';
 import { handleShortcut } from '../Editor';
@@ -80,6 +80,8 @@ export const inlineEdit = { active: false };
 export const frameTextFocus = { active: false };
 
 /** Shortcuts as this platform writes them: ⌘ and Meta on macOS, Ctrl and Control elsewhere. */
+/** What an inline edit's element is named by, as its commit must name it again: a code placement's marked text by its marker too. */
+const editDescKey = (d: BridgeDesc) => JSON.stringify(d.bind === undefined ? [d.ctx, d.node, d.items] : [d.ctx, d.node, d.items, d.bind]);
 const isMac = api.platform === 'darwin';
 const keys = (k: string) => shortcutLabel(k, api.platform);
 const ariaKeys = (k: string) => (isMac ? k : k.replace('Meta', 'Control'));
@@ -299,7 +301,7 @@ export function Canvas() {
   const menu = useMenu();
   /** The inline edit the editor started; the preview cannot commit text on its own. */
   /** Inline text edits in progress, with the project and the AI's activity when each began. */
-  const pendingEdits = useRef(new Map<string, { ref: ElementRef; desc: string; base: ReturnType<typeof getState>['snapshot']; ai: number }>());
+  const pendingEdits = useRef(new Map<string, { ref: ElementRef; desc: string; base: ReturnType<typeof getState>['snapshot']; ai: number; code?: CodeTextTarget }>());
   /** The pages the editor asked the frame for, and which of its reports it follows (see lib/frame-nav). */
   const nav = useRef(newFrameNav());
   /** The list item the page was last asked to reveal (see syncReveal). */
@@ -704,8 +706,9 @@ export function Canvas() {
     if (!inlineEdit.active && remoteReloadOwed.current) setTimeout(reloadRemoteFrame);
   }
   /** Start editing an element's text on the page (a double-click, or Edit text in its menu). A double-click passes
-   *  its gesture id (`hit`) so the edit starts at the word clicked. */
-  function beginTextEdit(ref: ElementRef, desc: BridgeDesc, hit?: string) {
+   *  its gesture id (`hit`) so the edit starts at the word clicked. Text a code placement's author marked (`code`) is
+   *  edited where `desc` finds it, while `ref` (the placement, or its part) stays selected. */
+  function beginTextEdit(ref: ElementRef, desc: BridgeDesc, hit?: string, code?: CodeTextTarget) {
     // A Component Studio preview made before the project's latest change shows text that may be gone: typing over it
     // would put it back. The next preview is on its way.
     if (showsStudio() && studioAt.current!.revision !== getState().snapshot?.revision) {
@@ -715,11 +718,12 @@ export function Canvas() {
     // Nor is text on a page a save has not reached yet (#755): it is about to be replaced.
     if (pageBehind()) return;
     const editId = Math.random().toString(36).slice(2);
-    pendingEdits.current.set(editId, { ref, desc: JSON.stringify([desc.ctx, desc.node, desc.items]), base: getState().snapshot, ai: aiActivity() });
+    pendingEdits.current.set(editId, { ref, desc: editDescKey(desc), base: getState().snapshot, ai: aiActivity(), ...(code ? { code } : {}) });
     inlineEdit.active = true;
     setEditing(true);
     markDraft(CANVAS_DRAFT, true);
-    post('beginTextEdit', { desc, editId, hit });
+    // Marked text is edited as the text its property is: the page refuses an element that shows it otherwise.
+    post('beginTextEdit', { desc, editId, hit, ...(code ? { rich: code.rich } : {}) });
   }
   /** Edit text from the editor's own controls (the chip's Edit text, or the menu's): the page takes focus for it,
    *  after a menu has closed and handed focus back, so the edit keeps the focus it is given. */
@@ -1112,6 +1116,16 @@ export function Canvas() {
           if (!st || !s.frameReady || leavingForPage() || canvasCovered(activeWorkspace(s))) return;
           const chain = chainOf(p.chain);
           const ref = pick(chain, true);
+          // Text a code placement's author marked as showing one of its properties, or a list item's field: typed
+          // over where it shows, with what the double-click selects (the placement, or its part) selected.
+          const bound = bindDescOf(p.bind);
+          const code = bound && ref && !s.definitionMode ? codeTextTarget(st, bound) : null;
+          if (ref && bound && canInlineEditCode(code)) {
+            setState({ selection: ref });
+            const hit = typeof p.hit === 'string' && p.hit.length <= 20 ? p.hit : undefined;
+            beginTextEdit(ref, bound, hit, code);
+            break;
+          }
           // In Component Studio the element double-clicked is the one edited, as the preview names it: a list's item
           // the selection leaves out (one only a sample has, or one inside another list's item) is still that item.
           const clicked = ref && s.definitionMode?.studio ? studioClicked(chain, ref) : null;
@@ -1147,10 +1161,10 @@ export function Canvas() {
           // Accept only the commit for an edit the editor started, on that exact element. Text whose element changed
           // or went away while it was typed (the page was updated from somewhere else) is still committed, against
           // the element as it was: it is checked before it is applied and kept for the author if it cannot be.
-          if (!d || JSON.stringify([d.ctx, d.node, d.items]) !== edit.desc) break;
+          if (!d || editDescKey(d) !== edit.desc) break;
           // Text the editor keeps nothing of goes back to what the page showed, so it never looks saved.
           const putBack = () => post('restoreText', { editId });
-          if (!edit.base && !canInlineEdit(edit.ref)) {
+          if (!edit.base && !(edit.code ? canInlineEditCode(edit.code) : canInlineEdit(edit.ref))) {
             putBack();
             break;
           }
@@ -1175,15 +1189,17 @@ export function Canvas() {
           const typedText = typeof value === 'string' ? value : richTextToMarkdown(value, snap?.state.pages ?? {});
           // An edit that leaves the field as it was rebuilds nothing: the page puts back the text it showed.
           const restore = (r: 'restore' | void) => void (r === 'restore' && putBack());
-          if (snap?.aiBusy || aiActivity() !== edit.ai) commitDraft(edit.base, () => void commitText(edit.ref, value, edit.base).then(restore), typedText, { check: true });
+          const commit = (base: typeof edit.base | undefined) => (edit.code ? commitCodeText(edit.code, value, base) : commitText(edit.ref, value, base));
+          if (snap?.aiBusy || aiActivity() !== edit.ai) commitDraft(edit.base, () => void commit(edit.base).then(restore), typedText, { check: true });
           else {
             // Built from the field editing began on, and written only while it still holds what it held then (see
             // commitOps). Text handed back because an update re-rendered its element may have been typed over text
             // the page showed before it caught up with the project: then it waits for the author to look.
             // Rich text has no plain baseline to compare, so a re-rendered one always waits for the author to look.
             const shown = p.detached === true && typeof p.before === 'string' ? p.before : null;
-            const review = !!edit.base && p.detached === true && (shown === null ? Array.isArray(value) : !showsInlineText(edit.base, edit.ref, shown));
-            commitDraft(edit.base, () => void commitText(edit.ref, value, edit.base ?? undefined).then(restore), typedText, review ? { review, ...(shown !== null ? { shown } : {}) } : {});
+            const shows = (base: NonNullable<typeof edit.base>, words: string) => (edit.code ? showsCodeText(base, edit.code, words) : showsInlineText(base, edit.ref, words));
+            const review = !!edit.base && p.detached === true && (shown === null ? Array.isArray(value) : !shows(edit.base, shown));
+            commitDraft(edit.base, () => void commit(edit.base ?? undefined).then(restore), typedText, review ? { review, ...(shown !== null ? { shown } : {}) } : {});
           }
           break;
         }

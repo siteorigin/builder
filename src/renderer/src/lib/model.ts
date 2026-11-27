@@ -16,6 +16,7 @@ import { PREVIEW_NODE_ID, previewCtx } from '@shared/component-preview';
 import { layerLabel } from './layers';
 import { keepTemplateValid, type TemplateMode } from './template-view';
 import type { DefinitionMode } from './studio';
+import { codeTextField, codeTextValue, parseCodeText } from '@shared/code-text';
 
 export interface BridgeDesc {
   ctx: string;
@@ -34,6 +35,27 @@ export interface BridgeDesc {
    * placement, in the context it is placed in (never through its definition's root, as the placement itself is).
    */
   slot?: string;
+  /**
+   * Text a code component's author marked as showing one of its properties, or one list item's field (`data-so-text`,
+   * see shared/code-text.ts): the marker's value. The rest of the descriptor names the code placement it belongs to.
+   */
+  bind?: string;
+}
+
+/**
+ * Text of a code placement the canvas types over: the placement's property, or one field of one item of its list
+ * property, as its code marked it (see shared/code-text.ts). `rich` when the property is rich text.
+ */
+export interface CodeTextTarget {
+  owner: OwnerRef;
+  /** The code placement, in the owner's own tree. */
+  nodeId: string;
+  prop: string;
+  field?: string;
+  itemId?: string;
+  rich: boolean;
+  /** What History calls the property or field. */
+  label: string;
 }
 
 /** Where a placement in `owner`'s tree runs its collection queries: a layout's own collection is the current one. */
@@ -256,6 +278,72 @@ function codePartRef(state: ProjectState, owner: OwnerRef, path: string[], place
   const def = placement?.kind === 'instance' ? own(state.components, placement.definitionId) : undefined;
   const part = def?.kind === 'code' ? own(def.parts, partId) : undefined;
   return part && typeof part.nodeId === 'string' ? { owner, instancePath: [placementId], nodeId: part.nodeId, partId } : null;
+}
+
+/**
+ * The text a code placement's marked element shows, as the canvas types over it (see shared/code-text.ts): a text
+ * property of a code placement in the owner's own tree, or one field of an item its list property stores. Null for
+ * anything the page cannot be typed into there: a marker naming nothing the component declares (or no longer
+ * declares), a value the placement reads from a collection entry, a list worked out from the site's pages or filled
+ * from a collection, an item the placement does not have, or a placement inside another component's design.
+ */
+export function codeTextTarget(state: ProjectState, d: Pick<BridgeDesc, 'ctx' | 'node' | 'bind'>): CodeTextTarget | null {
+  const p = typeof d.bind === 'string' ? parseCtx(d.ctx) : null;
+  const marked = p && !p.path.length ? parseCodeText(d.bind!) : null;
+  if (!p || !marked) return null;
+  const placement = own(treeFor(state, p.owner)?.nodes ?? {}, d.node);
+  const def = placement?.kind === 'instance' ? own(state.components, placement.definitionId) : undefined;
+  if (placement?.kind !== 'instance' || def?.kind !== 'code') return null;
+  const field = codeTextField(def.properties, marked);
+  if ('problem' in field) return null;
+  const props = (placement.props ?? {}) as Record<string, unknown>;
+  const placed = Object.hasOwn(props, marked.prop) ? props[marked.prop] : undefined;
+  // A value read from somewhere else (an entry's field) is changed there.
+  if (isBinding(placed) || isEntryBinding(placed)) return null;
+  const target: CodeTextTarget = { owner: p.owner, nodeId: placement.id, prop: marked.prop, rich: field.rich, label: field.label };
+  if (marked.field === undefined) return target;
+  if (Object.hasOwn(placement.listSources ?? {}, marked.prop)) return null;
+  const items = placed === undefined ? field.list!.default : placed;
+  if (!Array.isArray(items) || !items.some((it) => (it as { id?: unknown } | null)?.id === marked.itemId)) return null;
+  return { ...target, field: marked.field, itemId: marked.itemId };
+}
+
+/**
+ * The value a code placement's marked text shows in `state`: the placement's own, or the property's default; for a
+ * list item's field, the item's (or the linked page's, for a page card left empty), or the field's default when the
+ * item has none. Undefined when the target names nothing there now.
+ */
+export function codeTextShown(state: ProjectState, t: CodeTextTarget): unknown {
+  const placement = own(treeFor(state, t.owner)?.nodes ?? {}, t.nodeId);
+  const def = placement?.kind === 'instance' ? own(state.components, placement.definitionId) : undefined;
+  const schema = def?.kind === 'code' ? own(def.properties, t.prop) : undefined;
+  if (placement?.kind !== 'instance' || !schema) return undefined;
+  const props = (placement.props ?? {}) as Record<string, unknown>;
+  const value = Object.hasOwn(props, t.prop) ? props[t.prop] : schema.default;
+  if (t.field === undefined) return value;
+  if (schema.type !== 'list' || !Array.isArray(value)) return undefined;
+  const item = value.find((it) => (it as { id?: unknown } | null)?.id === t.itemId) as Record<string, unknown> | undefined;
+  if (!item || typeof item !== 'object') return undefined;
+  const shown = effectiveItem(state, schema, item);
+  return Object.hasOwn(shown, t.field) ? shown[t.field] : (own(schema.fields, t.field) as { default?: unknown } | undefined)?.default;
+}
+
+/** Whether a code placement's marked list field is a page card's empty field, showing its page's value instead. */
+export function codeTextFollowsPage(state: ProjectState, t: CodeTextTarget): boolean {
+  if (t.field === undefined) return false;
+  const placement = own(treeFor(state, t.owner)?.nodes ?? {}, t.nodeId);
+  const def = placement?.kind === 'instance' ? own(state.components, placement.definitionId) : undefined;
+  const schema = def?.kind === 'code' ? own(def.properties, t.prop) : undefined;
+  if (placement?.kind !== 'instance' || schema?.type !== 'list' || !schema.pageTeaser) return false;
+  const props = (placement.props ?? {}) as Record<string, unknown>;
+  const items = Object.hasOwn(props, t.prop) ? props[t.prop] : schema.default;
+  const item = Array.isArray(items) ? (items.find((it) => (it as { id?: unknown } | null)?.id === t.itemId) as Record<string, unknown> | undefined) : undefined;
+  return !!item && followsPage(item[t.field]) && inheritedValue(state, schema, item, t.field) !== undefined;
+}
+
+/** The descriptor the page finds a code placement's marked text by again. */
+export function codeTextDesc(t: CodeTextTarget): BridgeDesc {
+  return { ctx: `${t.owner.kind}:${t.owner.id}`, node: t.nodeId, items: '', bind: codeTextValue(t.field === undefined ? t.prop : `${t.prop}.${t.field}`, t.itemId) };
 }
 
 /**

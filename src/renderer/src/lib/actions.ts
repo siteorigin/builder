@@ -26,12 +26,12 @@ import type { InsertSpec } from './insert-search';
 import { elementWhere, insertAt, insertOps, insertRole, insertSelection, nodeBefore, nodeLabel, slotInsertAt, whereFor, whereText, type InsertAt, type InsertRole, type Where } from './insert-at';
 import { SLOT_NO_PLACE } from './slot-contract';
 import { clearSlotOps, moveOutOps, slotTitle } from './slot-overview';
-import { boundaryOf, computedAt, followsPageAt, inDefinition, keepPagesValid, listPropFor, refExists, refLabel, resolveRef, shownOrDefault, treeFor } from './model';
+import { boundaryOf, codeTextFollowsPage, codeTextShown, codeTextTarget, codeTextDesc, computedAt, followsPageAt, inDefinition, keepPagesValid, listPropFor, refExists, refLabel, resolveRef, shownOrDefault, treeFor, type CodeTextTarget } from './model';
 import { NEW_STUDIO, type StudioView } from './studio';
 import { forgetPlace, placeOn, selectionBack } from './page-place';
 import { sampleEntries, templateOwner } from './template-view';
 import { duplicateOps, groupOf, layerRef, liveSet, moveIntoOps, moveStepOps, moveToPageOps, removeOps, type Group, type LayerSet } from './layer-set';
-import { editLabel, placeWords, subjectWords } from './edit-label';
+import { editLabel, fieldLabel, placeWords, subjectWords } from './edit-label';
 import { heldContent, removalKey, type HeldContent } from './delete-content';
 import { dropRefusal, savingProblems } from './insert-drop';
 import { draftFor, imagesFor, withDraft } from './chatDrafts';
@@ -1029,6 +1029,48 @@ export async function commitText(ref: ElementRef, text: string | RichText, snaps
     if (!listProp || !itemId) return 'restore';
     if (!(await applyOps([{ type: 'instance.setProp', owner: ref.owner, nodeId: instId, prop: listProp, itemId, field: binding.$item, value: text }], label))) return 'restore';
   }
+}
+
+/**
+ * A code placement's marked text as `snapshot` holds it (see codeTextTarget): the same property, list and item, still
+ * text the page can be typed into. Null once it is not.
+ */
+function codeTextIn(snapshot: ProjectSnapshot, t: CodeTextTarget): CodeTextTarget | null {
+  const now = codeTextTarget(snapshot.state, codeTextDesc(t));
+  return now && now.rich === t.rich ? now : null;
+}
+
+/** Whether the plain text a code placement's marked element showed (`shown`) is what its property holds in `snapshot`. */
+export function showsCodeText(snapshot: ProjectSnapshot, t: CodeTextTarget, shown: string): boolean {
+  if (!codeTextIn(snapshot, t)) return false;
+  const v = codeTextShown(snapshot.state, t);
+  const words = (x: string) => x.replace(/\s+/g, ' ').trim();
+  return typeof v === 'string' ? words(v) === words(shown) : !v && !words(shown);
+}
+
+/**
+ * Commit text typed over a code placement's marked element to the property or list item field it shows, as that is
+ * in `snapshot` (see commitText): the inspector's own operation, one change. 'restore' asks the page to put back the
+ * text it showed.
+ */
+export async function commitCodeText(t: CodeTextTarget, text: string | RichText, snapshot = getState().snapshot): Promise<'restore' | void> {
+  if (!snapshot) return;
+  if (!codeTextIn(snapshot, t)) return 'restore';
+  const current = codeTextShown(snapshot.state, t);
+  if (sameValue(current, text)) return 'restore';
+  if (typeof text === 'string' && !text.trim() && codeTextFollowsPage(snapshot.state, t)) {
+    toast('This card shows its page’s text while it has none of its own. Type different text to show it here instead.', 'info');
+    return 'restore';
+  }
+  const label = fieldLabel(snapshot.state, t.label, { owner: t.owner, instancePath: [], nodeId: t.nodeId });
+  const op: EditOperation = t.field === undefined ? { type: 'instance.setProp', owner: t.owner, nodeId: t.nodeId, prop: t.prop, value: text } : { type: 'instance.setProp', owner: t.owner, nodeId: t.nodeId, prop: t.prop, itemId: t.itemId, field: t.field, value: text };
+  if (!(await applyOps([op], label))) return 'restore';
+}
+
+/** Whether a code placement's marked text can be typed over on the canvas now. */
+export function canInlineEditCode(t: CodeTextTarget | null | undefined): t is CodeTextTarget {
+  const s = getState();
+  return !!t && !!s.snapshot && !!codeTextIn(s.snapshot, t);
 }
 
 /** Text and button labels can be edited on the canvas when they are the page's own, or a placement's content. */

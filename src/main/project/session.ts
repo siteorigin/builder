@@ -1471,7 +1471,7 @@ export class ProjectSession extends EventEmitter {
     const problems = (
       await checkSvelteSource(def.source, {
         filename: def.sourcePath,
-        contract: { slots: def.slots, parts: def.parts, filled: filledSlots(next, def), variantAxes: def.variantAxes },
+        contract: { slots: def.slots, parts: def.parts, filled: filledSlots(next, def), variantAxes: def.variantAxes, properties: def.properties },
         resolve,
         modules: exists
       })
@@ -3177,7 +3177,7 @@ export class ProjectSession extends EventEmitter {
             strict: opts.source === 'ai' || installed || importing,
             filename: def.sourcePath,
             // A project's own code is held to its contract: the slots it declares must render safely when left empty.
-            ...(def.owner === 'project' ? { contract: { slots: def.slots, parts: def.parts, filled: filledSlots(next, def), variantAxes: def.variantAxes } } : {}),
+            ...(def.owner === 'project' ? { contract: { slots: def.slots, parts: def.parts, filled: filledSlots(next, def), variantAxes: def.variantAxes, properties: def.properties } } : {}),
             resolve: files ? (p: string) => (files.has(p) ? resolve(p) : undefined) : resolve,
             ...(files && built
               ? { author: 'Code in a component package', generated: (p: string) => files.has(p), modules: (p: string) => files.has(p) || (p.startsWith('src/lib/siteorigin/runtime/') && built!.has(p)) }

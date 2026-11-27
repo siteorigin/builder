@@ -120,7 +120,7 @@ function descOf(el) {
   return { ctx: el.getAttribute('data-so-ctx') || '', node: el.getAttribute('data-so-node') || '', items: el.getAttribute('data-so-items') || '' };
 }
 function sameDesc(a, b) {
-  return a === b || (!!a && !!b && a.ctx === b.ctx && a.node === b.node && a.items === b.items && (a.part || '') === (b.part || '') && a.slot === b.slot);
+  return a === b || (!!a && !!b && a.ctx === b.ctx && a.node === b.node && a.items === b.items && (a.part || '') === (b.part || '') && a.slot === b.slot && (a.bind || '') === (b.bind || ''));
 }
 /**
  * The slot an empty slot's placeholder stands for, as the editor names it: its placement's descriptor and the slot's
@@ -160,6 +160,29 @@ function partIdOf(el) {
   let part = '';
   for (const c of el.classList || []) if (c.startsWith(PART_CLASS) && c.length > PART_CLASS.length) part = c.slice(PART_CLASS.length);
   return part;
+}
+/** The attribute a code component's author marks text with, through the hook only the preview gives it (#1074). */
+const TEXT_ATTR = 'data-so-text';
+/**
+ * The text a code component's author marked at `target`, as the editor names it: its placement's descriptor and the
+ * marker (the property, or a list's field and the item, it shows). Null when the nearest marker is not inside that
+ * placement's own markup (it is in content placed in a slot, or there is none before the editor's own element).
+ */
+function textBindAt(target) {
+  for (let el = target instanceof Element ? target : target?.parentElement; el && el !== document.documentElement; el = el.parentElement) {
+    if (el.hasAttribute('data-so-node') || el.hasAttribute('data-so-slot-empty')) return null;
+    const bind = el.getAttribute(TEXT_ATTR);
+    if (!bind) continue;
+    const owner = partOwner(el);
+    return owner ? { ...descOf(owner), bind } : null;
+  }
+  return null;
+}
+/** Whether `el` is the text `desc` names: its marker, inside the markup of the code placement `desc` names. */
+function marksText(el, desc) {
+  if (el.getAttribute(TEXT_ATTR) !== desc.bind) return false;
+  const owner = partOwner(el);
+  return !!owner && sameDesc(descOf(owner), { ctx: desc.ctx, node: desc.node, items: desc.items });
 }
 /** A marked part of a code placement: its placement's descriptor and the part's ID, or null for anything else. */
 function partDesc(el) {
@@ -215,6 +238,8 @@ function findAll(desc) {
   }
   const sel = `[data-so-ctx="${cssEscape(desc.ctx)}"][data-so-node="${cssEscape(desc.node)}"]`;
   const els = [...document.querySelectorAll(sel)].filter((el) => !desc.items || (el.getAttribute('data-so-items') || '') === desc.items);
+  // Text a code placement's author marked: every element of its own markup carrying that marker.
+  if (typeof desc.bind === 'string' && desc.bind) return els.filter((el) => el.hasAttribute('data-so-code')).flatMap((el) => [...el.querySelectorAll(`[${TEXT_ATTR}="${cssEscape(desc.bind)}"]`)].filter((t) => partOwner(t) === el));
   if (typeof desc.part !== 'string' || !desc.part) return els;
   // A marked part of a code placement: every element of that placement's own markup carrying the marker (the
   // author's code can show one more than once), never one in another placement or in content placed in a slot.
@@ -1434,7 +1459,8 @@ document.addEventListener(
     e.preventDefault();
     e.stopPropagation();
     pendingHit = { id: String(++hitCount), target: new WeakRef(e.target), at: textAt(e.clientX, e.clientY) };
-    send('dblclick', { chain: chainFrom(e.target, true), hit: pendingHit.id });
+    const bind = textBindAt(e.target);
+    send('dblclick', { chain: chainFrom(e.target, true), hit: pendingHit.id, ...(bind ? { bind } : {}) });
   },
   true
 );
@@ -1956,7 +1982,7 @@ function wordRange(el, node, at) {
  * selected (or a caret, off a word), as a double-click does in any text. Whole text is for Select All. An answer to
  * an earlier double-click than the last one starts nothing: the author has double-clicked something else since.
  */
-function beginTextEdit(desc, editId, hitId) {
+function beginTextEdit(desc, editId, hitId, wantRich) {
   // An answer to an older double-click leaves the newer one waiting for its own answer.
   const hit = hitId && pendingHit && pendingHit.id === hitId ? pendingHit : null;
   if (hit) pendingHit = null;
@@ -1965,7 +1991,9 @@ function beginTextEdit(desc, editId, hitId) {
   if (hit) {
     const target = hit.target.deref();
     clicked = target && target.isConnected ? (target instanceof Element ? target : target.parentElement) : null;
-    while (clicked && !(clicked.hasAttribute('data-so-node') && sameDesc(descOf(clicked), desc))) clicked = clicked.parentElement;
+    // Text a code placement's author marked is the marked element; anything else, the editor's own element.
+    const named = desc && desc.bind ? (el) => marksText(el, desc) : (el) => el.hasAttribute('data-so-node') && sameDesc(descOf(el), desc);
+    while (clicked && !named(clicked)) clicked = clicked.parentElement;
     // The text double-clicked has been replaced since (the page updated): what the author meant to edit is gone.
     if (!clicked) return send('textCancel', { desc, editId });
   }
@@ -1982,6 +2010,9 @@ function beginTextEdit(desc, editId, hitId) {
   if (node && el.contains(node) && node.nodeValue !== hit.at.text) return send('textCancel', { desc, editId });
   if (node && !el.contains(node)) node = [...el.childNodes].find((n) => n.nodeType === Node.TEXT_NODE && n.nodeValue === hit.at.text);
   const rich = el.classList.contains('so-rich');
+  // Marked text shows its property as the property is: rich text through RichText, a line of text otherwise. Shown
+  // any other way, typing over it would store something else.
+  if (desc.bind && typeof wantRich === 'boolean' && rich !== wantRich) return send('textCancel', { desc, editId });
   // before: the plain text shown as the edit began, so the editor can tell what the author typed over.
   editing = { el, desc, editId, original: el.innerHTML, rich, before: rich ? null : el.innerText.replace(/\s+/g, ' ').trim() };
   // Rich text keeps its bold, italic (⌘B, ⌘I) and links (⌘K); everything else is plain text.
@@ -2945,6 +2976,9 @@ const committed = new Map();
 function commitEdit(detached = false) {
   if (!editing) return;
   const { el, desc, editId, rich, original, before } = editing;
+  // Marked text whose element now shows another item (a list shown without keys reuses its rows) is handed over as
+  // text the update took away: the editor checks it against the item it was typed over.
+  if (desc.bind && el.getAttribute(TEXT_ATTR) !== desc.bind) detached = true;
   // A destination still being checked in the link field is not applied: the editor is told, as saving does.
   if (linkEditor && linkEditor.check) send('linkDropped', { desc, editId });
   // Nothing changed: end the edit without a commit, so no history entry or rebuild follows.
@@ -5142,7 +5176,7 @@ window.addEventListener('message', async (e) => {
       setReveal(m.payload.target);
       break;
     case 'beginTextEdit':
-      beginTextEdit(m.payload.desc, m.payload.editId, m.payload.hit);
+      beginTextEdit(m.payload.desc, m.payload.editId, m.payload.hit, m.payload.rich);
       break;
     case 'linkChecked':
       linkChecked(m.payload);
@@ -5356,7 +5390,7 @@ new MutationObserver(() => {
   // The page re-rendered the element being edited away (an update arrived): the edit is over. Text typed into it
   // is handed to the editor as it would be on leaving it, never dropped: the editor checks it against what the
   // update changed before it is saved, and keeps it for the author when it cannot be.
-  if (editing && !editing.el.isConnected) {
+  if (editing && (!editing.el.isConnected || (editing.desc.bind && editing.el.getAttribute(TEXT_ATTR) !== editing.desc.bind))) {
     // A link still being typed has nowhere to go: say so, as saving does.
     if (linkEditor) {
       closeLinkEditor(false);

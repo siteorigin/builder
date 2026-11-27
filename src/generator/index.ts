@@ -44,6 +44,7 @@ import type {
   UiStateSchema
 } from '@shared/types';
 import { COPYRIGHT_PROP, copyrightYearParts } from '@shared/site-name';
+import { CODE_TEXT_HOOK, CODE_TEXT_HOOK_JS } from '@shared/code-text';
 import { isCollectionLoop, repeatProp, CONTAINER_SCOPES, DIVIDER_ICON, ELEMENT_TAGS, GENERATOR_VERSION, LIST_FEEDS, STYLE_SCOPES, STYLE_STATES, TEXT_TAGS, conditionRef, isAppearPreset, isBinding, isBindingRef, isComparison, isContainerScope, isGroupStyleState, isStateRef, parseStyleScopeKey, slotChildren, slotFallback, stateInitial, styleScopeKey, type Condition, type ContainerScope, type GroupStyleState, type StyleScope } from '@shared/types';
 import { INTERACTION_GROUP_CLASS, groupLookup, isInteractionGroup, partInInteractionGroup } from '@shared/interaction-groups';
 import {
@@ -3556,6 +3557,9 @@ function emitInstance(ctx: EmitCtx, node: InstanceNode): string {
     if (code && map.root && !Object.hasOwn(def.properties, 'class')) pageClasses.unshift(map.root);
   }
   if (pageClasses.length) attrs.push(`class=${attrJs(pageClasses.join(' '))}`);
+  // The editor's preview gives a code placement the hook its code marks typed-over text with (see shared/code-text),
+  // where the placement's own properties are what the page edits. The website is given none, so it carries no marker.
+  if (ctx.instrument && !ctx.def && def.kind === 'code' && !Object.hasOwn(def.properties, CODE_TEXT_HOOK) && new RegExp(`\\b${CODE_TEXT_HOOK}\\b`).test(def.source ?? '')) attrs.push(`${CODE_TEXT_HOOK}={${CODE_TEXT_HOOK_JS}}`);
   // Styles of single list items: each item's parts get a class of their own, looked up by the item's ID.
   if (!ctx.def && node.itemOverrides) {
     const byItem: Record<string, Record<string, string>> = {};
