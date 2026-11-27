@@ -3,9 +3,9 @@
  * fallback unnoticed, so the code check names it (with the nearest token) and a bundled theme may have none.
  */
 import { describe, expect, it } from 'vitest';
-import { BUILTIN_PACKS } from '@catalogue/builtin';
 import { createStarterState } from '@catalogue/starters';
-import { registerBuiltinPacks, packTokenProblems } from '../../src/main/packs/build';
+import { listThemes } from '@catalogue/index';
+import { packTokenProblems } from '../../src/main/packs/build';
 import { checkSvelteSource, projectTokenVars } from '../../src/main/codecheck';
 import { tokenVarNames } from '@shared/styles';
 
@@ -74,12 +74,13 @@ describe('theme token names in component code', () => {
 
 describe('bundled themes', () => {
   it('name no CSS variable their own theme does not define', () => {
-    registerBuiltinPacks();
-    for (const pack of BUILTIN_PACKS) expect(packTokenProblems(pack), pack.id).toEqual([]);
+    // The committed releases, as the app loads them (tests/unit/setup.ts).
+    expect(listThemes().map((p) => p.id)).toEqual(['foundation', 'foundation-alt']);
+    for (const pack of listThemes()) expect(packTokenProblems(pack), pack.id).toEqual([]);
   });
 
   it('the pack check reports one that is misspelled', async () => {
-    const pack = BUILTIN_PACKS[0];
+    const pack = listThemes()[0];
     const code = pack.components.find((c) => c.kind === 'code' && c.source)!;
     const broken = { ...pack, components: [{ ...code, source: component('p { color: var(--so-color-brnd); }') }] };
     expect(packTokenProblems(broken)[0]).toContain('--so-color-brnd is not a token of this theme.');
