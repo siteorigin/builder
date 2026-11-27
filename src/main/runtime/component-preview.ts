@@ -7,7 +7,7 @@
 import { randomBytes } from 'node:crypto';
 import { promises as fs } from 'node:fs';
 import { dirname, join } from 'node:path';
-import { COMPONENT_PREVIEW_ROUTE, ISOLATED_DIR, PREVIEW_KEY, type ComponentPreviewSpec } from '@shared/component-preview';
+import { COMPONENT_PREVIEW_ROUTE, ISOLATED_DIR, PREVIEW_KEY, PREVIEW_OWNER_KINDS, type ComponentPreviewSpec, type PreviewPlacement } from '@shared/component-preview';
 import type { FileMap } from '@generator/index';
 import { renameReplacing, safeJoin } from '../project/fsutil';
 
@@ -17,11 +17,13 @@ const MAX_SPEC_CHARS = 200_000;
 /** A preview request as the editor sent it, kept only when it is well formed. */
 export function previewSpec(v: unknown): ComponentPreviewSpec | null {
   if (!v || typeof v !== 'object' || Array.isArray(v)) return null;
-  const { definitionId, componentId, variants, props, states } = v as Record<string, unknown>;
+  const { definitionId, componentId, variants, props, states, placement } = v as Record<string, unknown>;
   const id = (x: unknown) => x === undefined || (typeof x === 'string' && x.length > 0 && x.length <= 200);
   const record = (x: unknown) => x === undefined || (!!x && typeof x === 'object' && !Array.isArray(x));
   if (!id(definitionId) || !id(componentId) || !record(variants) || !record(props) || !record(states)) return null;
   if (variants && !Object.values(variants).every((o) => typeof o === 'string')) return null;
+  // A placement's content is shown as it is saved, in place of sample values, for one of the project's own definitions.
+  if (placement !== undefined && (!wellFormedPlacement(placement, id) || props !== undefined || definitionId === undefined || componentId !== undefined)) return null;
   // An item state is previewed at the position of an item.
   if (states && !Object.values(states).every((o) => typeof o === 'string' || typeof o === 'boolean' || (Number.isSafeInteger(o) && (o as number) >= 0))) return null;
   try {
@@ -35,7 +37,22 @@ export function previewSpec(v: unknown): ComponentPreviewSpec | null {
   if (variants) spec.variants = { ...(variants as Record<string, string>) };
   if (props) spec.props = { ...(props as Record<string, unknown>) };
   if (states) spec.states = { ...(states as Record<string, boolean | string | number>) };
+  if (placement) {
+    const p = placement as PreviewPlacement;
+    spec.placement = { owner: { kind: p.owner.kind, id: p.owner.id }, nodeId: p.nodeId };
+  }
   return spec;
+}
+
+/** Whether `v` names a placement: a kind of tree, its ID and a node's. */
+function wellFormedPlacement(v: unknown, id: (x: unknown) => boolean): v is PreviewPlacement {
+  if (!v || typeof v !== 'object' || Array.isArray(v)) return false;
+  const { owner, nodeId } = v as Record<string, unknown>;
+  if (!owner || typeof owner !== 'object' || Array.isArray(owner)) return false;
+  const { kind, id: ownerId } = owner as Record<string, unknown>;
+  if (!PREVIEW_OWNER_KINDS.includes(kind as never) || ownerId === undefined || !id(ownerId) || nodeId === undefined || !id(nodeId)) return false;
+  // The shared header and footer are the only trees of their kind.
+  return kind !== 'shell' || ownerId === 'header' || ownerId === 'footer';
 }
 
 /**

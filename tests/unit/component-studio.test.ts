@@ -5,7 +5,7 @@ import { installComponent, makeInstance } from '@engine/install';
 import { generateComponentPreview } from '@generator/preview';
 import { PREVIEW_MODULE } from '@shared/component-preview';
 import { descOf, listPropFor, needsStudio, refExists, studioRef, studioCtx, studioDescOf, studioDesignCtx, studioPick, designCtx, type BridgeDesc } from '../../src/renderer/src/lib/model';
-import { NEW_STUDIO, StudioLoads, studioSpec, studioStates, studioVariants } from '../../src/renderer/src/lib/studio';
+import { NEW_STUDIO, StudioLoads, placementOption, studioContent, studioContentChoice, studioContentValue, studioPlacements, studioSpec, studioStates, studioVariants } from '../../src/renderer/src/lib/studio';
 import { applyOperations } from '@engine/apply';
 import { defFile, generateProject } from '@generator/index';
 
@@ -165,6 +165,196 @@ describe('Component Studio: what it shows', () => {
     const before = JSON.stringify(def);
     expect(studioSpec(def, { ...NEW_STUDIO, sample: 'long' }).props).toBeDefined();
     expect(JSON.stringify(def)).toBe(before);
+  });
+});
+
+describe('Component Studio: the content of a real placement (#1147)', () => {
+  /** features.grid placed twice on Home (the second named) and once in the shared footer. */
+  function placed() {
+    const { state, id, def } = design('features.grid');
+    const home = state.site.homePageId;
+    const page = state.pages[home];
+    const a = makeInstance(def);
+    a.props = { ...a.props, heading: 'A very long product name that wraps across several lines', gone: 'not declared any more' };
+    const b = { ...makeInstance(def), name: 'Pricing grid' };
+    b.props = { ...b.props, heading: { $prop: 'title' } };
+    for (const n of [a, b]) {
+      page.nodes[n.id] = n;
+      page.rootIds.push(n.id);
+    }
+    const footer = state.site.shell.footer;
+    const c = makeInstance(def);
+    footer.nodes[c.id] = c;
+    footer.rootIds.push(c.id);
+    return { state, id, def, home, a, b, c };
+  }
+
+  it('lists every placement by where it is, telling apart several in one place', () => {
+    const { state, def, home, a, b, c } = placed();
+    const list = studioPlacements(state, def);
+    const of = (id: string) => list.find((p) => p.nodeId === id)!;
+    expect(list).toHaveLength(3);
+    expect(of(a.id).owner).toEqual({ kind: 'page', id: home });
+    expect(of(b.id).owner).toEqual({ kind: 'page', id: home });
+    expect(of(c.id).owner).toEqual({ kind: 'shell', id: 'footer' });
+    const homeLabel = of(a.id).label.split(', ')[0];
+    expect(of(a.id).label).toBe(`${homeLabel}, 1 of 2`);
+    expect(of(b.id).label).toBe(`${homeLabel}, Pricing grid (2 of 2)`);
+    expect(of(c.id).label).not.toContain(',');
+    expect(new Set(list.map((p) => p.key)).size).toBe(3);
+  });
+
+  it('previews a placement’s own content as it is saved, leaving out what is bound or no longer declared', () => {
+    const { state, def, home, a, b } = placed();
+    const at = { owner: { kind: 'page' as const, id: home }, nodeId: a.id };
+    const before = JSON.stringify(state);
+    // The request only names the placement (its content never travels with it, so it never outgrows a request), on
+    // top of the author's other choices; the content is read from the project.
+    const spec = studioSpec(def, { ...NEW_STUDIO, sample: 'long', placement: at }, null, state);
+    expect(spec).toEqual({ definitionId: def.id, placement: at });
+    expect(studioContent(state, def, { ...NEW_STUDIO, placement: at })).toEqual({ heading: a.props.heading, items: a.props.items, ...Object.fromEntries(Object.entries(a.props).filter(([k]) => k !== 'gone' && k !== 'heading' && k !== 'items')) });
+    // A bound heading is only known where its design is shown: the starting heading shows instead.
+    const bound = studioContent(state, def, { ...NEW_STUDIO, placement: { owner: { kind: 'page', id: home }, nodeId: b.id } });
+    expect(bound).not.toHaveProperty('heading');
+    expect(bound?.items).toEqual(b.props.items);
+    const out = generateComponentPreview(state, spec);
+    if ('error' in out) throw new Error(out.error);
+    const module = out.files.get(PREVIEW_MODULE)!;
+    expect(module).toContain('A very long product name');
+    expect(module).not.toContain('not declared any more');
+    // Sample values and a placement are never shown together.
+    expect(generateComponentPreview(state, { ...spec, props: { heading: 'x' } })).toHaveProperty('error');
+    expect(JSON.stringify(state)).toBe(before);
+  });
+
+  it('keeps a placement’s picture as it is saved, its file gone included, rather than the starting one', () => {
+    const state = starter();
+    const id = installComponent(state, 'content.media');
+    const def = state.components[id];
+    const home = state.site.homePageId;
+    const n = makeInstance(def);
+    n.props = { ...n.props, image: { assetId: 'as_deleted', alt: 'Gone' } };
+    state.pages[home].nodes[n.id] = n;
+    state.pages[home].rootIds.push(n.id);
+    const view = { ...NEW_STUDIO, placement: { owner: { kind: 'page' as const, id: home }, nodeId: n.id } };
+    expect(studioContent(state, def, view)?.image).toEqual({ assetId: 'as_deleted', alt: 'Gone' });
+    const out = generateComponentPreview(state, studioSpec(def, view, null, state));
+    if ('error' in out) throw new Error(out.error);
+    expect(out.files.get(PREVIEW_MODULE)).toContain('Gone');
+  });
+
+  it('shows a placement inside a design with its bound content at the starting value, a binding at any depth included', () => {
+    const { state, id, nested } = nestingDesign();
+    const node = state.components[id].tree!.nodes[nested];
+    if (node.kind !== 'instance') throw new Error('Unexpected fixture');
+    const inner = state.components[node.definitionId];
+    node.props = { ...node.props, heading: { $prop: 'heading' } };
+    const [place] = studioPlacements(state, inner);
+    expect(place.owner).toEqual({ kind: 'component', id });
+    const view = { ...NEW_STUDIO, placement: { owner: place.owner, nodeId: place.nodeId } };
+    expect(studioContent(state, inner, view)).not.toHaveProperty('heading');
+    const out = generateComponentPreview(state, studioSpec(inner, view, null, state));
+    if ('error' in out) throw new Error(out.error);
+    expect(out.files.get(PREVIEW_MODULE)).toContain(JSON.stringify((inner.properties.heading as { default: string }).default));
+    // A binding inside a list's row leaves the whole list at its starting rows.
+    const { state: s2, def, home, a } = placed();
+    const rows = a.props.items as Array<Record<string, unknown>>;
+    a.props.items = [{ ...rows[0], title: { $item: 'title' } }];
+    expect(studioContent(s2, def, { ...NEW_STUDIO, placement: { owner: { kind: 'page', id: home }, nodeId: a.id } })).not.toHaveProperty('items');
+  });
+
+  it('settles a hand-edited list of a placement so each row is its own', () => {
+    const { state, def, home, a } = placed();
+    const rows = a.props.items as Array<Record<string, unknown>>;
+    a.props.items = [null, { ...rows[0], id: undefined }, { ...rows[0], id: undefined }];
+    const out = generateComponentPreview(state, { definitionId: def.id, placement: { owner: { kind: 'page', id: home }, nodeId: a.id } });
+    if ('error' in out) throw new Error(out.error);
+    const module = out.files.get(PREVIEW_MODULE)!;
+    for (const n of [0, 1, 2]) expect(module).toContain(`"id":"preview-item-${n}"`);
+  });
+
+  it('works a computed list out for the page the placement is on', () => {
+    const state = starter();
+    const id = installComponent(state, 'content.article');
+    const def = state.components[id];
+    const home = state.site.homePageId;
+    state.pages[home].title = 'A page title only this page has';
+    const n = makeInstance(def);
+    state.pages[home].nodes[n.id] = n;
+    state.pages[home].rootIds.push(n.id);
+    const view = { ...NEW_STUDIO, placement: { owner: { kind: 'page' as const, id: home }, nodeId: n.id } };
+    // The item positions offered are the rows the preview shows, not the none the feed saves.
+    expect(studioContent(state, def, view)?.article).toHaveLength(1);
+    expect((studioContent(state, def, view)?.article as Array<{ title?: unknown }>)[0].title).toBe('A page title only this page has');
+    const out = generateComponentPreview(state, studioSpec(def, view, null, state));
+    if ('error' in out) throw new Error(out.error);
+    expect(out.files.get(PREVIEW_MODULE)).toContain('A page title only this page has');
+    // A hand-damaged row in another list never reaches the rows worked out for the item positions.
+    def.properties.extra = structuredClone(state.components[installComponent(state, 'features.grid')].properties.items);
+    n.props = { ...n.props, extra: [null] };
+    expect(() => studioContent(state, def, view)).not.toThrow();
+    expect(studioContent(state, def, view)?.extra).toEqual([null]);
+    const plain = generateComponentPreview(state, { definitionId: id });
+    if ('error' in plain) throw new Error(plain.error);
+    expect(plain.files.get(PREVIEW_MODULE)).not.toContain('A page title only this page has');
+  });
+
+  it('tells apart pages of one title by their addresses', () => {
+    const { state, def, home, a } = placed();
+    for (const [pid, route] of [['team1', '/team-1/'], ['team2', '/team-2/']]) state.pages[pid] = { ...state.pages[home], id: pid, route, title: 'Team', nodes: { [a.id]: { ...a } }, rootIds: [a.id] };
+    state.site.pageOrder.push('team1', 'team2');
+    const labels = studioPlacements(state, def).map((p) => p.label);
+    expect(new Set(labels).size).toBe(labels.length);
+    expect(labels.filter((l) => l.startsWith('Team'))).toEqual(expect.arrayContaining(['Team (/team-1/)', 'Team (/team-2/)']));
+  });
+
+  it('lets go of the placement when a sample is chosen, and reads Starting content once it is gone', () => {
+    const { state, def, home, a, c } = placed();
+    const list = studioPlacements(state, def);
+    const pick = list.find((p) => p.nodeId === a.id)!;
+    const chose = studioContentChoice(placementOption(pick), list)!;
+    expect(chose).toEqual({ sample: 'defaults', placement: { owner: { kind: 'page', id: home }, nodeId: a.id } });
+    const view = { ...NEW_STUDIO, ...chose };
+    expect(studioContentValue(view, list)).toBe(placementOption(pick));
+    // A sample replaces the placement shown, which would otherwise win over it.
+    const long = studioContentChoice('long', list)!;
+    expect(long).toEqual({ sample: 'long', placement: undefined });
+    expect(studioSpec(def, { ...view, ...long }, null, state).placement).toBeUndefined();
+    expect(studioSpec(def, { ...view, ...long }, null, state).props).toBeDefined();
+    expect(studioContentChoice('placement:gone', list)).toBeNull();
+    // Gone from the list (deleted), the select reads Starting content.
+    expect(studioContentValue(view, list.filter((p) => p.nodeId !== a.id))).toBe('defaults');
+    expect(studioContentValue({ ...NEW_STUDIO, sample: 'empty' }, list)).toBe('empty');
+    expect(list.some((p) => p.nodeId === c.id)).toBe(true);
+  });
+
+  it('falls back to the starting content once the chosen placement is deleted or retargeted', () => {
+    const { state, id, def, home, a, c } = placed();
+    const view = { ...NEW_STUDIO, placement: { owner: { kind: 'page' as const, id: home }, nodeId: a.id } };
+    expect(studioSpec(def, view, null, state).placement).toBeDefined();
+    // The same node ID in another tree is not the placement chosen.
+    expect(studioSpec(def, { ...view, placement: { owner: { kind: 'shell', id: 'header' }, nodeId: c.id } }, null, state)).toEqual({ definitionId: id });
+    const page = state.pages[home];
+    delete page.nodes[a.id];
+    page.rootIds = page.rootIds.filter((n) => n !== a.id);
+    expect(studioSpec(def, view, null, state)).toEqual({ definitionId: id });
+    expect(studioContent(state, def, view)).toBeUndefined();
+    // Asked for anyway (a request made before the deletion), the preview shows the starting content.
+    const out = generateComponentPreview(state, { definitionId: id, placement: view.placement });
+    if ('error' in out) throw new Error(out.error);
+    const starting = generateComponentPreview(state, { definitionId: id });
+    if ('error' in starting) throw new Error(starting.error);
+    expect(out.files.get(PREVIEW_MODULE)).toBe(starting.files.get(PREVIEW_MODULE));
+    // The page itself gone: the same.
+    const deleted = structuredClone(state);
+    delete deleted.pages[home];
+    const without = generateComponentPreview(deleted, { definitionId: id, placement: { owner: { kind: 'page', id: home }, nodeId: c.id } });
+    if ('error' in without) throw new Error(without.error);
+    expect(studioContent(deleted, def, { ...view, placement: { owner: { kind: 'page', id: home }, nodeId: c.id } })).toBeUndefined();
+    // Now a placement of another component: no longer this one's.
+    const other = state.components[installComponent(state, 'content.media')];
+    page.nodes[a.id] = { ...makeInstance(other), id: a.id };
+    expect(studioSpec(def, view, null, state)).toEqual({ definitionId: id });
   });
 });
 
