@@ -182,7 +182,7 @@ describe('agent instructions match the tool definitions (#815)', () => {
     // The small model's run really is the short one.
     expect(runs[3].system).toContain('You make reusable components');
     runs.forEach((req, i) => {
-      for (const words of ['Svelte 5 runes mode', '$props()', '$state()', '$derived()', '$effect()', 'onclick', 'export let']) expect(req.system.includes(words), `${i} ${words}`).toBe(offered[i]);
+      for (const words of ['Svelte 5 runes mode', '$props()', '$state()', '$derived()', '$effect()', 'onclick', 'export let', '$$props', '$$restProps', '$: statements are rejected']) expect(req.system.includes(words), `${i} ${words}`).toBe(offered[i]);
       expect(req.system.split('Svelte 5 runes mode').length - 1, `${i} said once`).toBe(offered[i] ? 1 : 0);
     });
   });
