@@ -80,7 +80,9 @@
      colour alone; amber is kept for what counts in search results today. */
   .seo-ov-row { position: relative; }
   .seo-ov-row > * { padding: 9px 8px; vertical-align: top; border-bottom: 1px solid var(--border); text-align: left; font-weight: 400; min-width: 0; overflow-wrap: break-word; }
-  .seo-ov-row:hover > *, .seo-ov-row:has(.seo-ov-open:focus-visible) > * { background: var(--hover); }
+  /* The cells by name, never `> *`: a `:has()` styling `*` makes Chromium restyle everything under any `:has()` on
+     every change near one (css-has-anchors.test.ts). */
+  .seo-ov-row:hover > *, .seo-ov-row:has(.seo-ov-open:focus-visible) > :where(th, td) { background: var(--hover); }
   .seo-ov-open { width: 100%; min-width: 0; display: flex; flex-direction: column; align-items: flex-start; gap: 2px; padding: 0; border: 0; background: transparent; text-align: left; color: var(--text); cursor: pointer; border-radius: var(--r-sm); }
   /* The name's button covers the whole row, so wherever the highlight shows, a click opens the document. */
   .seo-ov-open::after { content: ''; position: absolute; inset: 0; border-radius: var(--r-sm); }

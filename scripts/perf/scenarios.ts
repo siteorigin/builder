@@ -12,7 +12,7 @@
 import { createHash } from 'node:crypto';
 import { existsSync, mkdirSync, readdirSync, readFileSync, realpathSync, renameSync, rmSync, writeFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
-import type { ElectronApplication, FrameLocator, Page } from 'playwright';
+import type { CDPSession, ElectronApplication, FrameLocator, Page } from 'playwright';
 import { desktopInMain, type DesktopCall } from '../../tests/driver/desktop';
 import { HISTORY_LIMIT, type BuilderApi, type ProjectSnapshot } from '../../src/shared/api';
 import type { PerfAttrs, PerfRecord } from '../../src/shared/perf';
@@ -1628,6 +1628,42 @@ export function chatSeed(c: (typeof CHAT_CASES)[number], fixture: FixtureFacts):
   return { id: c.id, title: c.title, named: true, createdAt: at(0), messages: messages.slice(0, c.earlier) };
 }
 
+/**
+ * The editor page's own work so far, as Chromium counts it for the page (CDP `Performance.getMetrics`): layouts and
+ * style recalculations with their time, script time and the time of every task on its main thread, in ms. Carried on a
+ * window's marks, so work moved out of the editor's spans (a layout left to the next frame) is still counted.
+ */
+const CHAT_WORK = [
+  ['layouts', 'LayoutCount', 'Layouts', 'count'],
+  ['layoutMs', 'LayoutDuration', 'LayoutMs', 'ms'],
+  ['styles', 'RecalcStyleCount', 'Styles', 'count'],
+  ['styleMs', 'RecalcStyleDuration', 'StyleMs', 'ms'],
+  ['scriptMs', 'ScriptDuration', 'ScriptMs', 'ms'],
+  ['taskMs', 'TaskDuration', 'TaskMs', 'ms']
+] as const;
+
+async function pageWork(send: (method: 'Performance.getMetrics') => Promise<{ metrics: Array<{ name: string; value: number }> }>): Promise<PerfAttrs> {
+  const { metrics } = await send('Performance.getMetrics');
+  const of = new Map(metrics.map((x) => [x.name, x.value]));
+  const attrs: PerfAttrs = {};
+  for (const [attr, name, , unit] of CHAT_WORK) {
+    const v = of.get(name);
+    if (typeof v === 'number') attrs[attr] = unit === 'ms' ? v * 1000 : v;
+  }
+  return attrs;
+}
+
+/** The page's work between two marks that carry it; missing when either lacks a figure, never a false zero. */
+function pageWorkMetrics(m: Collector, prefix: string, from: PerfRecord, to: PerfRecord) {
+  for (const [attr, , suffix, unit] of CHAT_WORK) {
+    const a = from.attrs?.[attr];
+    const b = to.attrs?.[attr];
+    if (typeof a !== 'number' || typeof b !== 'number') m.need(`${prefix}${suffix} (the page's ${attr} on both marks)`, undefined);
+    else if (unit === 'ms') m.ms(`${prefix}${suffix}`, b - a);
+    else m.count(`${prefix}${suffix}`, b - a);
+  }
+}
+
 /** The chat panel's log, its composer and the button that lists earlier conversations. */
 const chatLog = (win: Page) => win.locator('.chat-log');
 const composer = (win: Page) => win.getByRole('textbox', { name: 'Message', exact: true });
@@ -1639,6 +1675,8 @@ export const chat: Scenario = {
   async run(ctx) {
     const { win, fixture } = ctx;
     const server = await new MockOpenAIServer().start();
+    // The editor page's own work, read over each window (CHAT_WORK).
+    let cdp: CDPSession | undefined;
     try {
       // The scripted model, in native tool mode so its text streams as it comes; untimed, as are the seeded
       // conversations (stored where the app keeps them, a folder it does not watch) and the reload that takes the setting.
@@ -1651,6 +1689,10 @@ export const chat: Scenario = {
       await preview(win).locator('html[data-so-editing]').waitFor({ state: 'attached', timeout: 60_000 });
       await win.locator('.dock-tab', { hasText: 'AI' }).first().click();
       await composer(win).waitFor({ timeout: 15_000 });
+      cdp = await win.context().newCDPSession(win);
+      await cdp.send('Performance.enable', { timeDomain: 'threadTicks' });
+      const session = cdp;
+      const work = () => pageWork((method) => session.send(method));
       await ctx.mark('scenario.start', { scenario: 'chat' });
       for (const c of CHAT_CASES) {
         // Open the conversation from Earlier conversations, as a person does, and ask rather than edit.
@@ -1666,13 +1708,14 @@ export const chat: Scenario = {
         await composer(win).click();
         // Opening a conversation and choosing the mode save the workspace 300 ms later: that lands before typing starts.
         await sleep(WORKSPACE_SAVE_WAIT_MS);
-        await ctx.mark('chat.typeStart', { at: c.key });
+        await ctx.mark('chat.typeStart', { at: c.key, ...(await work()) });
         await win.keyboard.type(CHAT_TYPED);
+        const typedWork = await work();
         expect((await composer(win).inputValue()) === CHAT_TYPED, 'the composer does not hold what was typed');
-        await ctx.mark('chat.typeEnd', { at: c.key });
+        await ctx.mark('chat.typeEnd', { at: c.key, ...typedWork });
         const reply = chatReply(c.key);
         server.script(textReply(reply, { size: CHAT_PIECE, frameMs: CHAT_FRAME_MS }));
-        await ctx.mark('chat.streamStart', { at: c.key });
+        await ctx.mark('chat.streamStart', { at: c.key, ...(await work()) });
         await win.keyboard.press('Enter');
         // The reply shows as it streams: its first sentence, then one from the middle and one near the end, each on
         // screen while the run is still going and before its last sentence has arrived.
@@ -1724,11 +1767,12 @@ export const chat: Scenario = {
         const ids = await chatLog(win).locator('[data-message-id]').evaluateAll((els) => els.slice(-2).map((el) => (el as unknown as { dataset: Record<string, string | undefined> }).dataset.messageId));
         expect(ids[0] === asked.id && ids[1] === answered.id, 'the log does not show the request and answer that were saved');
         await sleep(ctx.settleMs);
-        await ctx.mark('chat.streamEnd', { at: c.key });
+        await ctx.mark('chat.streamEnd', { at: c.key, ...(await work()) });
       }
       await ctx.mark('scenario.end', { scenario: 'chat' });
       await ctx.waitTrace((t) => !!t.first('scenario.end', forScenario('chat', 'renderer')) && !!t.first('scenario.end', forScenario('chat', 'main')));
     } finally {
+      await cdp?.detach().catch(() => undefined);
       await server.stop();
     }
   },
@@ -1751,6 +1795,8 @@ export const chat: Scenario = {
         commits(m, trace, `${p}.keyCommits`, typeStart, typeEnd);
         m.count(`${p}.keyMessageRenders`, counter(typeEnd, 'chat.messageRenders') - counter(typeStart, 'chat.messageRenders'));
         m.count(`${p}.keyTextParses`, counter(typeEnd, 'chat.textParses') - counter(typeStart, 'chat.textParses'));
+        m.count(`${p}.keyRenders`, counter(typeEnd, 'react.renders') - counter(typeStart, 'react.renders'));
+        pageWorkMetrics(m, `${p}.key`, typeStart, typeEnd);
       }
       // Streaming: what main sent for the reply, and what the editor did with each event.
       const mainStart = mark('chat.streamStart', 'main');
@@ -1778,6 +1824,8 @@ export const chat: Scenario = {
         commits(m, trace, `${p}.streamCommits`, streamStart, streamEnd);
         m.count(`${p}.streamMessageRenders`, counter(streamEnd, 'chat.messageRenders') - counter(streamStart, 'chat.messageRenders'));
         m.count(`${p}.streamTextParses`, counter(streamEnd, 'chat.textParses') - counter(streamStart, 'chat.textParses'));
+        m.count(`${p}.streamRenders`, counter(streamEnd, 'react.renders') - counter(streamStart, 'react.renders'));
+        pageWorkMetrics(m, `${p}.stream`, streamStart, streamEnd);
       }
     }
     return m;

@@ -159,6 +159,45 @@ describe.skipIf(!browserInstalled)('chat messages render only when they change (
     expect((await renders()) - before).toBe(0);
   });
 
+  it('grows the composer as text is added and shrinks it as text goes, measuring it afresh only once it has grown', async () => {
+    await page.evaluate('so.done()');
+    // The composer's own sizing rules (the bundle leaves the stylesheets out).
+    await page.addStyleTag({ content: '.composer textarea { display: block; box-sizing: border-box; width: 320px; min-height: 56px; max-height: 240px; overflow-y: auto; padding: 10px 12px 4px; border: 0; font: 14px/1.45 sans-serif; resize: none; }' });
+    const box = page.getByRole('textbox', { name: 'Message', exact: true });
+    await box.click();
+    await box.pressSequentially('A');
+    type Box = { getBoundingClientRect(): { height: number }; scrollHeight: number; clientHeight: number };
+    const size = () =>
+      box.evaluate((el) => {
+        const ta = el as unknown as Box;
+        return { height: ta.getBoundingClientRect().height, fits: ta.scrollHeight <= ta.clientHeight };
+      });
+    const one = await size();
+    expect(one.fits).toBe(true);
+    // Each time the box's size is set (a reset to measure it is one more), while it is at its least height: text added
+    // or taken away there leaves it as it is.
+    await page.evaluate("window.styleSets = 0; new MutationObserver((r) => (window.styleSets += r.length)).observe(document.querySelector('.composer textarea'), { attributes: true, attributeFilter: ['style'] })");
+    await box.pressSequentially(' short line');
+    for (let i = 0; i < 5; i++) await box.press('Backspace');
+    expect(await page.evaluate<number>('styleSets')).toBe(0);
+    expect(await size()).toEqual(one);
+    // Lines added grow it to fit, up to its cap, and then it scrolls.
+    await box.pressSequentially(' and then a good deal more, which wraps onto the lines below it in a box this narrow.');
+    const grownText = await box.inputValue();
+    const grown = await size();
+    expect(grown.height).toBeGreaterThan(one.height);
+    expect(grown.fits).toBe(true);
+    await box.fill(`${grownText}${' And more again, line after line.'.repeat(40)}`);
+    expect(await size()).toEqual({ height: 240, fits: false });
+    // Text taken away gives the room back, and text replaced by less (typed over a selection) does too.
+    await box.fill(grownText);
+    expect(await size()).toEqual(grown);
+    await box.selectText();
+    await box.pressSequentially('A');
+    expect(await size()).toEqual(one);
+    expect(await page.evaluate<string>('so.draft()')).toBe('A');
+  });
+
   it('renders no message while an answer to the AI’s question is typed', async () => {
     await page.evaluate('so.ask()');
     const box = page.getByRole('textbox', { name: 'Your answer', exact: true });

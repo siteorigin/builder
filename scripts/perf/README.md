@@ -224,7 +224,11 @@ renders and text parses while typing (`keyCommits`, `keyMessageRenders`, `keyTex
 `ai:event` sends and their bytes (`events`, `eventBytes`), `eventsHandled`, `eventMs` (median `chat.aiEvent` span, the
 same for one event) and `eventMsTotal`, `replyMs` (until the editor handled the reply's last event), the commits,
 message renders and text parses while it streamed (`streamCommits`, `streamMessageRenders`, `streamTextParses`), and
-the longest main-process stall.
+the longest main-process stall. For both windows, typing (`key…`) and the reply's (`stream…`, to the scenario's settle
+after it), every component React rendered (`keyRenders`, `streamRenders`) and the editor page's own work as Chromium
+counts it (CDP `Performance.getMetrics`, in thread time): `…Layouts` and `…LayoutMs`, `…Styles` and `…StyleMs` (style
+recalculations), `…ScriptMs` and `…TaskMs` (every task on its main thread), so work moved out of the spans, a layout
+left to the next frame, is still counted. They include the scenario's own checks of the page while it streams.
 
 **`aiEdit`**: in the AI panel, with the home hero selected in Layers and the composer in Edit mode, ask twice for its
 Heading to change (`first`, after the project opened, and `second`, with nothing changed since the first ended), the
