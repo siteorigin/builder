@@ -5,7 +5,7 @@ import { ai, AI_EDIT_CASES, aiEdit, aiMeasurements, batch, BATCH_OPERATIONS, bat
 import type { MemoryProbe, MemoryReading } from '../../scripts/perf/memory';
 import { PHOTO_COUNT, photoSpec } from '../../scripts/perf/photos';
 import { FIXTURES } from '../../scripts/perf/fixtures';
-import { framesOf } from '../../scripts/perf/scenarios';
+import { framesOf, cmdk, CMDK_QUERY, assets, ASSET_LIBRARIES, grownImages } from '../../scripts/perf/scenarios';
 
 let seq = 0;
 const m = (name: string, t: number, extra: Partial<PerfRecord> = {}): PerfRecord => ({ kind: 'mark', name, t, proc: 'main', pid: 1, seq: ++seq, ...extra });
@@ -40,6 +40,11 @@ describe('the scenario chain', () => {
     expect(chainFor(['createAgain']).map((s) => s.name)).toEqual(['launch', 'create', 'createAgain']);
     expect(chainFor(['drag']).map((s) => s.name)).toEqual(['launch', 'open', 'drag']);
     expect(chainFor(['colour', 'drag']).map((s) => s.name)).toEqual(['launch', 'open', 'drag', 'colour']);
+    // The command menu before the library is grown, and both before switch.
+    expect(chainFor(['assets', 'cmdk']).map((s) => s.name)).toEqual(['launch', 'open', 'cmdk', 'assets']);
+    expect(chainFor(['switch', 'assets']).map((s) => s.name)).toEqual(['launch', 'open', 'assets', 'switch']);
+    // Before import, which adds to the library assets measures at the fixture's own size.
+    expect(chainFor(['import', 'assets']).map((s) => s.name)).toEqual(['launch', 'open', 'assets', 'import']);
     expect(chainFor([])).toEqual([]);
     expect(() => chainFor(['nope'])).toThrow('Unknown scenario');
   });
@@ -1834,5 +1839,93 @@ describe('thumbs metrics', () => {
     // Insert filled from cold with no request or photograph marked: a build without the marks, never a free fill.
     const unmarked = thumbs.measure(new Trace([...point('fill', 1000, c(0, 0, 0, 0, 0)), ...point('filled', 1600, {}, { inView: 1 }), ...point('fillQuiet', 5400, c(0, 0, 0, 0, 0))]), facts);
     expect(unmarked.missing[0]).toBe('thumbs.asked and thumbs.captures (none while Insert filled from cold)');
+  });
+});
+
+describe('cmdk metrics', () => {
+  const frames = { frames: 60, droppedFrames: 2, longTasks: 1, longTaskMs: 70, longestFrameMs: 50 };
+  /** The menu opened at 1000, then one key every 100 ms from 2000, each listed `lag` ms after it started. */
+  function typed(lag: (k: number) => number, o: { keys?: number; counts?: [number, number] } = {}): PerfRecord[] {
+    const [c0, c1] = o.counts ?? [10, 40];
+    const keys = o.keys ?? CMDK_QUERY.length;
+    const out: PerfRecord[] = [
+      r('scenario.start', 900, { attrs: { scenario: 'cmdk' } }),
+      r('cmdk.results', 950, { attrs: { chars: CMDK_QUERY.length, rows: 99, content: 9 } }),
+      r('cmdk.requested', 1000),
+      r('cmdk.shown', 1030),
+      r('cmdk.painted', 1045),
+      r('cmdk.typeStart', 1990, { c: { 'react.commits': c0, 'react.renders': c0 * 10 } })
+    ];
+    for (let k = 1; k <= keys; k++) {
+      const at = 2000 + (k - 1) * 100;
+      out.push(r('cmdk.results', at + lag(k), { attrs: { chars: k, rows: 20 + k, content: k === CMDK_QUERY.length ? 5 : 3 } }));
+      out.push(r('cmdk.keystroke', at + 4 + k, { kind: 'span', ms: 4 + k, attrs: { chars: k, commits: 1 } }));
+    }
+    out.push(r('cmdk.typeEnd', 3500, { attrs: { scenario: 'cmdk', ...frames }, c: { 'react.commits': c1, 'react.renders': c1 * 10 } }));
+    out.push(r('scenario.end', 3600, { attrs: { scenario: 'cmdk' } }));
+    return out;
+  }
+  it('time the open, each key, and each key to the commit that lists its results', () => {
+    const got = cmdk.measure(new Trace(typed((k) => 2 + k)), facts);
+    expect(got.missing).toEqual([]);
+    const v = (name: string) => got.metrics[name]?.value;
+    expect([v('cmdk.openMs'), v('cmdk.openPaintMs')]).toEqual([30, 45]);
+    // Keys of 5 to 11 ms, each listed 2 + k ms after it started (the result mark comes before the span ends).
+    expect([v('cmdk.keystrokes'), v('cmdk.keyMs'), v('cmdk.keyMsTotal'), v('cmdk.resultsMs'), v('cmdk.lastResultsMs')]).toEqual([7, 8, 56, 6, 9]);
+    expect([v('cmdk.rows'), v('cmdk.contentRows'), v('cmdk.typeCommits'), v('cmdk.typeRenders')]).toEqual([27, 5, 30, 300]);
+    expect([v('cmdk.type.frames'), v('cmdk.type.droppedFrames'), v('cmdk.type.longTasks'), v('cmdk.type.longTaskMs'), v('cmdk.type.longestFrameMs')]).toEqual([60, 2, 1, 70, 50]);
+  });
+  it('count results that come after their key, and never take an earlier search’s results for a later one', () => {
+    const late = cmdk.measure(new Trace(typed((k) => 30 + k)), facts);
+    expect([late.metrics['cmdk.resultsMs'].value, late.metrics['cmdk.lastResultsMs'].value]).toEqual([34, 37]);
+    // The whole search never listed: its key has no results (the mark from before the menu opened is not its).
+    const records = typed((k) => 2 + k).filter((x) => !(x.name === 'cmdk.results' && x.attrs?.chars === CMDK_QUERY.length && x.t > 1000));
+    const got = cmdk.measure(new Trace(records), facts);
+    expect(got.missing).toEqual(['cmdk.results (a key whose search was never listed)', 'cmdk.results (the whole search)']);
+    const short = cmdk.measure(new Trace(typed((k) => 2 + k, { keys: 3 })), facts);
+    expect(short.missing).toContain(`cmdk.keystroke (3 of the ${CMDK_QUERY.length} keys typed)`);
+  });
+});
+
+describe('assets metrics', () => {
+  const frames = { frames: 100, droppedFrames: 3, longTasks: 2, longTaskMs: 130, longestFrameMs: 80 };
+  const c = (n: number) => ({ c: { 'react.commits': n, 'react.renders': n * 100, 'panel.assets.renders': n * 50, 'panel.assets.renderMs': n * 2 } });
+  const w = (at: string, window: string, edge: 'start' | 'end', t: number, n: number, attrs: Record<string, number> = {}) => r('assets.window', t, { attrs: { scenario: 'assets', at, window, edge, ...attrs }, ...c(n) });
+  function library(at: string, t: number, revision: number): PerfRecord[] {
+    return [
+      w(at, 'show', 'start', t, 0),
+      w(at, 'show', 'end', t + 1000, 2, { ...frames, showMs: 120, picturesMs: 300, inView: 18, tiles: at === 'at300' ? 300 : 1000 }),
+      w(at, 'edit', 'start', t + 2000, 2),
+      r('renderer.snapshotReceived', t + 2100, { attrs: { revision } }),
+      r('renderer.commit', t + 2140, { attrs: { revision } }),
+      w(at, 'edit', 'end', t + 3000, 3, { revision }),
+      w(at, 'scroll', 'start', t + 4000, 3),
+      w(at, 'scroll', 'end', t + 6000, 7, { ...frames, notches: 30 }),
+      r('assets.held', t + 7000, { attrs: { scenario: 'assets', at, pictures: 300, pictureBytes: 300 * 96 * 72 * 4 } })
+    ];
+  }
+  it('measure each library’s show, edit and scroll windows, and the pictures it holds', () => {
+    const got = assets.measure(new Trace([r('scenario.start', 10, { attrs: { scenario: 'assets' } }), ...library('at300', 100, 5), ...library('at1000', 10_000, 7)]), facts);
+    expect(got.missing).toEqual([]);
+    const v = (name: string) => got.metrics[name]?.value;
+    for (const { key } of ASSET_LIBRARIES) {
+      expect([v(`assets.${key}.showMs`), v(`assets.${key}.picturesMs`), v(`assets.${key}.tilesInView`), v(`assets.${key}.show.renders`), v(`assets.${key}.show.assetsRenders`), v(`assets.${key}.show.assetsRenderMs`), v(`assets.${key}.show.longTaskMs`)]).toEqual([120, 300, 18, 200, 100, 4, 130]);
+      expect([v(`assets.${key}.edit.commitMs`), v(`assets.${key}.edit.renders`), v(`assets.${key}.edit.assetsRenders`), v(`assets.${key}.edit.rendererCommits`)]).toEqual([40, 100, 50, 1]);
+      expect([v(`assets.${key}.scroll.ms`), v(`assets.${key}.scroll.notches`), v(`assets.${key}.scroll.droppedFrames`), v(`assets.${key}.scroll.renders`), v(`assets.${key}.picturesHeld`), v(`assets.${key}.pictureBytes`)]).toEqual([2000, 30, 3, 400, 300, 300 * 96 * 72 * 4]);
+    }
+    expect([v('assets.at300.tiles'), v('assets.at1000.tiles')]).toEqual([300, 1000]);
+  });
+  it('name what is missing instead of reporting a library that was not measured', () => {
+    const got = assets.measure(new Trace([r('scenario.start', 10, { attrs: { scenario: 'assets' } }), ...library('at300', 100, 5)]), facts);
+    expect(got.missing).toEqual(['assets.window at1000 show start', 'assets.window at1000 show end', 'assets.window at1000 edit start', 'assets.window at1000 edit end', 'assets.window at1000 scroll start', 'assets.window at1000 scroll end', 'assets.held at1000']);
+    const blind = assets.measure(new Trace(library('at300', 100, 5).map((x) => (x.attrs?.window === 'show' && x.attrs?.edge === 'end' ? { ...x, attrs: { ...x.attrs, picturesMs: -1 } } : x))), facts);
+    expect(blind.missing).toContain('assets.at300.picturesMs (the show watch)');
+  });
+  it('grow the library with images drawn and named as the fixture’s own', () => {
+    const grown = grownImages(300, 1000);
+    expect(grown.length).toBe(700);
+    expect(grown[0].record).toMatchObject({ id: 'img-301', name: 'Fixture image 301', file: 'static/assets/fixture-301.png', width: 96, height: 72, kind: 'image' });
+    expect(grown.at(-1)!.record.id).toBe('img-1000');
+    expect(new Set(grown.map((g) => g.file)).size).toBe(700);
   });
 });

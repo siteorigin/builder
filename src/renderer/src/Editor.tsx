@@ -99,6 +99,7 @@ export function handleShortcut(key: string, mod: boolean, shift: boolean, askAi 
     return true;
   }
   if (mod && key.toLowerCase() === 'k') {
+    if (s.modal?.kind !== 'cmdk') perfMark('cmdk.requested');
     setState({ modal: s.modal?.kind === 'cmdk' ? null : { kind: 'cmdk' } });
     return true;
   }

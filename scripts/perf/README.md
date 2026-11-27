@@ -291,6 +291,36 @@ request it was given to the last it answered, added up over the workers: divided
 Counts: file writes, durable writes and fsyncs in the import, `images` and `variants` added; the longest main-process
 stall.
 
+**`cmdk`** (after `open`): with nothing else open, press the command menu's shortcut and type "contact" one key every
+100 ms, until the menu lists the results for the whole search. Checks: the search has the focus and holds what was
+typed, the results list a page, a section placed on the site and some of the site's words, and the same search entered
+at once (untimed, afterwards) lists the same rows in the same order. Times from `cmdk.requested` (the shortcut taken):
+`openMs` (to the menu's first commit, `cmdk.shown`) and `openPaintMs` (to the frame after it, `cmdk.painted`); per key,
+`keyMs` (median `cmdk.keystroke` span: the key's update with the React render and commit it sets off) and `keyMsTotal`,
+`resultsMs` (median, from a key to the commit listing its search's results, `cmdk.results`, which may come after the
+key's own) and `lastResultsMs` (the same for the last key). Counts: `keystrokes`, the rows and content rows the whole
+search lists (`rows`, `contentRows`), the React commits and component renders while typing (`typeCommits`,
+`typeRenders`), and from the frame watch over the typing `type.frames`, `type.droppedFrames`, `type.longestFrameMs`,
+`type.longTasks` and `type.longTaskMs`.
+
+**`assets`** (after `open`, on `large` alone): in Assets, with the library at the fixture's 300 images (`at300`) and
+then at 1,000 (`at1000`: 700 more drawn as the fixture's are, written into the project and added as one change through
+the editor's API, untimed, then left until nothing reloads for 3 s): show the grid by its rail button from Pages; make
+an edit elsewhere (the home hero's Heading, through the editor's API) with it shown; scroll it with the wheel from its
+top to its end, 400 px a notch, one every 16 ms. Checks: the library holds that many images with no files missing, the
+grid starts with the first image in its order and its end shows the last, the edit is in the project, and the keyboard
+walks the whole grid as before (End focuses the last image, Home the first, ArrowRight the next, ArrowDown the one a row
+down, Enter opens that image and Back returns the focus to it). Per library (`assets.<at>.*`): `showMs` (the rail
+button's click to the first frame with the grid's tiles in view) and `picturesMs` (to the first with every tile in view
+showing its picture), from a watch the scenario runs in the editor's page that reads only the tiles down to the view's
+bottom; `tiles` (tiles in the page once shown) and `tilesInView`; per window (`show`, `edit`, `scroll`) `renders` (every
+component React rendered), `assetsRenders` and `assetsRenderMs` (the Assets panel's, `panel.assets.*`) and
+`rendererCommits`; for the edit `commitMs` (the snapshot received to the commit showing it); for the show and the scroll
+the frame watch's `frames`, `droppedFrames`, `longestFrameMs`, `longTasks` and `longTaskMs`; for the scroll `ms` and
+`notches` (the grid's height in notches); and at the grid's end `picturesHeld` (pictures in the grid's page loaded) and
+`pictureBytes` (their decoded size, width × height × 4 bytes each). The image pickers in the Inspector are not
+measured.
+
 **`memory`** (after `launch`, and only on its own: see Memory below): the memory of every process of the app at rest on
 a fresh Welcome (`welcome`); the fixture opened from its card as `open` opens it, untimed, sampled throughout for its
 peak (`open.peak`); at rest on the canvas (`canvas`); after one change of the home hero's Heading in the Inspector

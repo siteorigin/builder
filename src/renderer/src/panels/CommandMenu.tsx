@@ -1,5 +1,5 @@
 import './CommandMenu.css';
-import { useEffect, useId, useMemo, useRef, useState } from 'react';
+import { useEffect, useId, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
 import { BookmarkPlus, ListChecks, SquareDashed, ChevronDown, ClipboardCopy, ClipboardPaste, Code, Component, FileText, FolderOpen, History, Link2, Plus, Redo2, Replace, Search, SearchX, TextSearch, Undo2, Settings, Sparkles, Upload, X, Palette, Eye, LogOut, Monitor, NotebookPen, PanelRight, Smartphone, Stethoscope, Tablet, House, ListTree, PanelLeft } from 'lucide-react';
 import { useDialogFocus, sendCommand } from '../components/ui';
@@ -19,6 +19,7 @@ import { contentFields, findContent, placedSections, sectionMatches } from '../l
 import { insertChoices, insertLanding } from '../lib/command-inserts';
 import { useAskAiKeys } from '../lib/ask-ai-key';
 import { LEFT_TABS } from './LeftTabs';
+import { perfMark, perfMarkAtCommit, perfOn, perfWork } from '../lib/perf';
 
 interface Cmd {
   id: string;
@@ -242,6 +243,8 @@ export function CommandMenu() {
     const pages = snap ? pageChoices(snap.state) : [];
     return new Map(pages.filter((p) => pages.some((o) => o.id !== p.id && o.title === p.title)).map((p) => [p.id, p.address]));
   }, [snap]);
+  // The search the content and section results below were worked out for (the benchmark's `cmdk.results`).
+  const foundFor = q;
   const found = useMemo<Cmd[]>(() => {
     const t = q.trim();
     if (!snap || !t) return [];
@@ -481,6 +484,16 @@ export function CommandMenu() {
   }, [status, q]);
   const activeCmd = filtered[cur];
   const actionOf = enterVerb;
+  // The benchmark's marks (scripts/perf): the menu's first commit and the frame after it, and each commit of the results
+  // for a search, with how many rows it lists and how many of them are the site's words.
+  useLayoutEffect(() => {
+    if (!perfOn) return;
+    perfMarkAtCommit('cmdk.shown');
+    requestAnimationFrame(() => perfMark('cmdk.painted'));
+  }, []);
+  useLayoutEffect(() => {
+    if (perfOn) perfMarkAtCommit('cmdk.results', { chars: foundFor.length, rows: filtered.length, content: filtered.filter((c) => c.id.startsWith('find:') && c.id !== 'find:all').length });
+  }, [found]);
   let index = -1;
   return createPortal(
     <div className="overlay-backdrop light" onMouseDown={(e) => e.target === e.currentTarget && setState({ modal: null })}>
@@ -497,7 +510,7 @@ export function CommandMenu() {
             aria-activedescendant={activeCmd ? optionId(activeCmd) : undefined}
             placeholder="Search pages, sections, content and commands"
             value={q}
-            onChange={(e) => search(e.target.value)}
+            onChange={perfOn ? (e) => perfWork('cmdk.keystroke', () => search(e.target.value), { chars: e.target.value.length }) : (e) => search(e.target.value)}
             onKeyDown={(e) => {
               // Keys that belong to an input method's candidate list while it is composing.
               if (e.nativeEvent.isComposing) return;
