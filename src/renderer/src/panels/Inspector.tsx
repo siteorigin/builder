@@ -53,10 +53,10 @@ import { planPageAddress } from '@shared/page-address';
 import { wasPublishedFor } from '@shared/published';
 import { isVideoContract, videoFieldNotes, type VideoFieldNotes } from '@shared/video';
 import { formatArticleDate, isArticleDate, pageArticle, todayArticleDate } from '@shared/articles';
-import { findEntry } from '@shared/collections';
+import { collectionHasBody, collectionKind, findEntry, hasDetailPages } from '@shared/collections';
 import { entryQuery, listsEntries } from '@shared/entry-feed';
 import { postAt, postShown, postsCollection } from '../lib/posts';
-import { entryNounLower } from '../lib/content';
+import { entryNounLower, isReadOnlyCollection } from '../lib/content';
 import { activeWorkspace } from '../lib/workspace';
 import { usePanelHidden } from '../lib/hideable';
 import { seoDocument } from '../lib/seo-view';
@@ -3477,16 +3477,29 @@ function PageSettings({ page, state }: { page: PageDoc; state: ProjectState }) {
 function SeoOverview({ state }: { state: ProjectState }) {
   const subject = useStore((s) => s.seoSubject);
   const doc = seoDocument(state, subject);
-  const kind = !doc ? 'Nothing chosen' : doc.subject.kind === 'page' ? (doc.draft ? 'Draft page' : 'Page') : doc.draft ? 'Draft post' : 'Published post';
+  const noun = !doc ? '' : doc.subject.kind === 'page' ? 'page' : entryNounLower(state.collections[doc.subject.collectionId]);
+  const kind = !doc ? 'Nothing chosen' : doc.subject.kind === 'page' ? (doc.draft ? 'Draft page' : 'Page') : `${doc.draft ? 'Draft' : 'Published'} ${noun}`;
   return (
     <div className="panel-body insp" key={`seo:${doc?.key ?? ''}`}>
       <Header title={doc?.title ?? 'SEO'} kind={kind} icon={<SearchCheck />} />
       <div className="insp-empty">
         <SearchCheck aria-hidden="true" />
-        <p>{doc ? `The SEO view shows ${doc.subject.kind === 'page' ? 'this page' : 'this post'} in the canvas’s place. Nothing here changes the page under it.` : 'Choose a page or post in the SEO list. The SEO view covers the canvas, and nothing here changes the page under it.'}</p>
+        <p>{doc ? `The SEO view shows this ${noun} in the canvas’s place. Nothing here changes the page under it.` : 'Choose a page or post in the SEO list. The SEO view covers the canvas, and nothing here changes the page under it.'}</p>
       </div>
     </div>
   );
+}
+
+/** What the writer holds for an entry of this collection, for the note beside it (see PostWriter). */
+function writerNote(collection: ProjectState['collections'][string]): string {
+  const { settings } = collection;
+  if (isReadOnlyCollection(collection)) return `This ${entryNounLower(collection)} is synced from an external source, so it is read-only here.`;
+  const hasBody = collectionHasBody(settings);
+  const held =
+    collectionKind(settings) === 'structured'
+      ? ['title', ...(Object.keys(settings.fields ?? {}).length ? ['fields'] : []), ...(hasBody ? ['text'] : []), 'publishing details']
+      : [...(hasBody ? ['text'] : []), ...(hasDetailPages(settings) ? ['address'] : []), 'date', 'author', 'excerpt', 'featured image'];
+  return `Its ${held.slice(0, -1).join(', ')} and ${held.at(-1)} are edited in the writer.`;
 }
 
 function PostOverview({ state, workspace }: { state: ProjectState; workspace: 'write' | 'preview' }) {
@@ -3494,7 +3507,9 @@ function PostOverview({ state, workspace }: { state: ProjectState; workspace: 'w
   const at = useStore((s) => s.postPreviewAt);
   const shown = postShown(state, workspace, post, at);
   const opened = postAt(state, post);
-  const openedTitle = opened ? `“${opened.title || 'Untitled'}”` : 'the post';
+  // The entry the writer has open, by its own collection's noun: a visitor's link may go on to another's.
+  const openedCollection = post ? state.collections[post.collectionId] : undefined;
+  const openedTitle = opened ? `“${opened.title || 'Untitled'}”` : `the ${entryNounLower(openedCollection)}`;
   // The writer shows again even when the sidebar was hidden or showed another panel during the preview.
   const back = (
     <button className="btn btn-sm" onClick={() => setState({ postView: 'write', leftTab: 'posts' })}>
@@ -3518,17 +3533,19 @@ function PostOverview({ state, workspace }: { state: ProjectState; workspace: 'w
   }
   if (shown.kind === 'post') {
     const other = workspace === 'preview' && !!post && (shown.ref!.entryId !== post.entryId || shown.ref!.collectionId !== post.collectionId);
+    const collection = state.collections[shown.ref!.collectionId];
+    const noun = entryNounLower(collection);
     return (
       <div className="panel-body insp" key={key}>
-        <Header title={shown.title} kind={`${shown.draft ? 'Draft post' : 'Published post'}${workspace === 'preview' ? ' · preview' : ''}`} icon={<Newspaper />} actions={workspace === 'preview' ? back : undefined} />
+        <Header title={shown.title} kind={`${shown.draft ? 'Draft' : 'Published'} ${noun}${workspace === 'preview' ? ' · preview' : ''}`} icon={<Newspaper />} actions={workspace === 'preview' ? back : undefined} />
         <div className="insp-empty">
           <Newspaper aria-hidden="true" />
           <p>
             {workspace === 'write'
-              ? 'Its text, address, date, author, excerpt and featured image are edited in the writer. Nothing here changes a page.'
+              ? `${writerNote(collection)} Nothing here changes a page.`
               : other
                 ? `A visitor’s link went on from ${openedTitle}. Back to writing returns to it.`
-                : 'Showing the post as visitors see it. Back to writing to change it.'}
+                : `Showing the ${noun} as visitors see it.${isReadOnlyCollection(collection) ? '' : ' Back to writing to change it.'}`}
           </p>
         </div>
       </div>
