@@ -1238,7 +1238,9 @@ export class Orchestrator {
 
   /** Whether `run` waits for an answer to a question the author's held edits can be saved beside (#1281). */
   private saveable(run: ActiveRun): boolean {
-    return run.mode === 'edit' && run.status === 'awaiting-input' && !run.abort.signal.aborted && !!run.pendingQuestion?.saveable;
+    // Never a live-session guest's request: what the host saves would reach a model working for the guest, the
+    // project brief among it, which the guest is never shown.
+    return run.mode === 'edit' && !run.delegation && run.status === 'awaiting-input' && !run.abort.signal.aborted && !!run.pendingQuestion?.saveable;
   }
 
   /**
@@ -2148,13 +2150,9 @@ export class Orchestrator {
       ask: (question, choices, widenScope, images) => askUser(question, choices, widenScope, images),
       authorEdits: () => {
         const edits = run.authorEdits.splice(0);
-        // What the author saved is in nothing the run drafted or checked before: a page it was refused is sent whole
-        // again rather than repaired from a draft that would put back what the author changed, and every check of the
-        // preview is made again.
-        if (edits.length) {
-          macros.drafts.clear();
-          inspections.invalidate('all');
-        }
+        // What the author saved is in no page the run was refused before: such a page is sent whole again rather than
+        // repaired from a draft that would put back what the author changed. It is still owed until then.
+        if (edits.length) for (const route of macros.drafts.keys()) (macros.outdated ??= new Set()).add(route);
         return edits;
       }
     };
@@ -2837,6 +2835,8 @@ export class Orchestrator {
             started.set(c, p);
           }
         };
+        // The project as the model planned this response's calls against.
+        const planned = readState();
         for (const [index, call] of done.toolCalls.entries()) {
           if (signal.aborted) throw new Error('Canceled');
           const mutating = MUTATING_TOOLS.has(call.name as never);
@@ -2852,7 +2852,7 @@ export class Orchestrator {
             );
             items.push(resultItem(call, skipped));
             // A page it would have made is still owed, whichever tool was to make it.
-            for (const p of call.name === 'apply_operations' ? pageCreatesIn(call.arguments) : call.name === 'upsert_page_with_sections' ? upsertCreatesIn(call.arguments, readState()) : []) rememberPage(wanted, { ...p, reason: 'skipped' });
+            for (const p of call.name === 'apply_operations' ? pageCreatesIn(call.arguments) : call.name === 'upsert_page_with_sections' ? upsertCreatesIn(call.arguments, planned) : []) rememberPage(wanted, { ...p, reason: 'skipped' });
             continue;
           }
           if (revisionBound && mutationTried) {

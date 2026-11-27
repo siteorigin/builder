@@ -511,11 +511,16 @@ const plainObject = (v: unknown): v is Record<string, unknown> => !!v && typeof 
 
 /**
  * Every value that differs between two states, by its path through them, with its value in each. Parts the two share
- * are skipped unread (an edit copies only what it changes), and a list is one value. A path is missing on one side
- * when its value is undefined there, so an object made on the way to a field is never told apart from the field itself.
+ * are skipped unread (an edit copies only what it changes). Two lists of the same length are compared item by item, so
+ * edits of different items are told apart; lists of different lengths are one value. A path is missing on one side when
+ * its value is undefined there, so an object made on the way to a field is never told apart from the field itself.
  */
 function stateDelta(a: unknown, b: unknown, at = '', out = new Map<string, [unknown, unknown]>()): Map<string, [unknown, unknown]> {
   if (a === b) return out;
+  if (Array.isArray(a) && Array.isArray(b) && a.length === b.length) {
+    a.forEach((x, i) => stateDelta(x, b[i], `${at}\u0000${i}`, out));
+    return out;
+  }
   if ((plainObject(a) || a === undefined) && (plainObject(b) || b === undefined) && (plainObject(a) || plainObject(b))) {
     const x: Record<string, unknown> = plainObject(a) ? a : {};
     const y: Record<string, unknown> = plainObject(b) ? b : {};

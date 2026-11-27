@@ -103,8 +103,9 @@ async function setup(turns: Turn[]) {
   c.aiRunId = () => (orch.editing ? orch.runId : null);
   c.admitSave = (runId) => orch.admitSave(runId);
   const ctx: ChatContext = { pageId: session.state.site.homePageId, pageTitle: 'Home', selection: null, selectionLabel: null, viewport: 1280 };
-  const send = async (text: string) => {
-    const r = await orch.send(text, ctx);
+  const send = async (text: string, delegation?: Parameters<InstanceType<typeof Orchestrator>['send']>[4]) => {
+    // A guest's request is limited to the page it was sent from, as a live session sends it.
+    const r = await orch.send(text, delegation ? { ...ctx, mode: 'edit', scope: 'page' } : ctx, undefined, undefined, delegation);
     expect(r.ok).toBe(true);
     return r.runId!;
   };
@@ -260,6 +261,18 @@ describe('Save now while the AI waits for an answer (#1281)', () => {
     expect(fresh).toMatchObject({ ok: true });
     expect(env.session.state.site.baseUrl).toBe(URL);
     expect(env.session.state.site.description).toBe('Written after reading');
+  });
+
+  it('stays off a live-session guest’s request, whose model the host’s saves would reach', async () => {
+    const env = await setup([() => calls(['q1', 'request_clarification', { question: 'Which tone?', choices: ['Warm', 'Brisk'] }])]);
+    const typed = seen(env.session.state, urlEdit);
+    const runId = await env.send('Retone the page', { guestName: 'Ann', grantId: 'grant-1', accept: () => null, check: () => null });
+    await env.asked();
+    expect(env.lastStatus()).toMatchObject({ status: 'awaiting-input' });
+    expect(env.lastStatus()).not.toHaveProperty('saveable');
+    expect(await env.c.saveWhileAsking({ operations: urlEdit }, { runId, base: typed, label: 'Update site settings' })).toMatchObject({ ok: false, error: { code: 'BUSY' } });
+    expect(env.session.state.site.baseUrl).not.toBe(URL);
+    await env.orch.stopRun(runId);
   });
 
   it('stays off the app’s own question about where a form sends, whose grant the save would void (#1130)', async () => {
