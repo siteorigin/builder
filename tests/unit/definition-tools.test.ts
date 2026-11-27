@@ -450,7 +450,10 @@ describe('UI state with the definition tools (#377)', () => {
     expect((await run(host, 'manage_component_state', { change: { action: 'add', state: 'open', label: 'Open', type: 'boolean' } })).ok).toBe(true);
     expect((await run(host, 'manage_component_state', { change: { action: 'on_click', nodeId: 'secondary', op: 'toggle', state: 'open' } })).ok).toBe(true);
     // A hand edit took the declaration away, leaving the button's action naming nothing.
-    delete session.state.components[id].state;
+    // The session holds its project frozen: a hand edit is a changed copy put in its place.
+    const changed = structuredClone(session.state);
+    delete changed.components[id].state;
+    session.state = changed;
     const branches = prop(tool(definitionTools(session.state, { definitionId: id })!, 'manage_component_state'), 'change').anyOf!;
     expect(branches.map((b) => [b.properties!.action.enum![0], b.properties!.op?.enum])).toEqual([['add', undefined], ['on_click', ['none']]]);
     expect(branches[1].properties!.nodeId.enum).toEqual(['secondary']);

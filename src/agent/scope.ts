@@ -648,12 +648,21 @@ function checkPageOne(state: ProjectState, op: EditOperation, authority: Extract
  * then write the default it bound, and a section a batch adds can be changed later in it.
  */
 export function checkAuthority(state: ProjectState, ops: EditOperation[], authority: Authority, grants: AuthorityGrants = {}): string | null {
+  const step = authorityCheck(state, ops, authority, grants);
+  return typeof step === 'function' ? walkOperations(state, ops, step) : step;
+}
+
+/**
+ * `checkAuthority` without its walk: the reason (or null) when no walk is needed to know it, otherwise what to ask of
+ * each operation in a walk of the batch (walkChecks).
+ */
+export function authorityCheck(state: ProjectState, ops: EditOperation[], authority: Authority, grants: AuthorityGrants = {}): string | null | ((draft: ProjectState, op: EditOperation) => string | null) {
   if (authority.kind === 'site') return null;
   if (authority.kind === 'component') return checkComponentAuthority(state, ops, authority);
   if (authority.kind === 'entry') return checkEntryAuthority(state, ops, authority);
-  if (authority.kind === 'template') return walkOperations(state, ops, (draft, op) => checkLayoutOne(draft, op, authority));
-  if (authority.kind === 'page') return walkOperations(state, ops, (draft, op) => checkPageOne(draft, op, authority, grants));
-  return walkOperations(state, ops, (draft, op) => checkOne(draft, op, authority, grants));
+  if (authority.kind === 'template') return (draft, op) => checkLayoutOne(draft, op, authority);
+  if (authority.kind === 'page') return (draft, op) => checkPageOne(draft, op, authority, grants);
+  return (draft, op) => checkOne(draft, op, authority, grants);
 }
 
 function checkOne(state: ProjectState, op: EditOperation, authority: Extract<Authority, { kind: 'selection' }>, grants: AuthorityGrants = {}): string | null {

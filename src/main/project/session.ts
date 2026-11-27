@@ -17,6 +17,7 @@ import { validateOperation } from '@shared/ops';
 import { choicesLost } from '@shared/variants';
 import { AXES_FORMAT, formatOf } from '@shared/migrations';
 import { applyOperations, assetUsages, captureClipboard, convertEditedDesign, type Clipboard } from '@engine/apply';
+import { frozen } from '@engine/draft';
 import { clone } from '@engine/install';
 import { listThemes, themePinProblem } from '@catalogue/index';
 import { anchorsInUse, displayName, EngineError } from '@engine/tree';
@@ -515,7 +516,19 @@ async function compileDesigns(defs: ComponentDefinition[], files: Map<string, st
 }
 
 export class ProjectSession extends EventEmitter {
-  state!: ProjectState;
+  private current!: ProjectState;
+  /**
+   * The project as it stands, frozen through and through: a change is a new state, which shares the documents it did
+   * not change with the one before (src/engine/draft.ts), so no one holding a state can change another, and a
+   * document's text is kept while it is the same object (documents.ts). Only `starting` holds one open, until
+   * `writeNew`.
+   */
+  get state(): ProjectState {
+    return this.current;
+  }
+  set state(next: ProjectState) {
+    this.current = frozen(next);
+  }
   revision = 0;
   private docs = new Map<string, string>();
   private history: HistoryFile = emptyHistory();
@@ -594,7 +607,8 @@ export class ProjectSession extends EventEmitter {
   private heartbeat: NodeJS.Timeout | null = null;
   private folderGone = false;
   /** Run currently holding the writer lock. */
-  activeRun: { id: string; before: Map<string, string>; beforeState: ProjectState; startRevision: number; written: Map<string, Set<string | null>> } | null = null;
+  /** `hashes`: the SHA-256 of each document's text as the run's markers last hashed it, by path. */
+  activeRun: { id: string; before: Map<string, string>; beforeState: ProjectState; startRevision: number; written: Map<string, Set<string | null>>; hashes: Map<string, { text: string; hash: string }> } | null = null;
   private writing: Promise<unknown> = Promise.resolve();
   private idempotency = new Map<string, { fingerprint: string; result: ApplyResult }>();
   /** The documents were read in an older format and the update has not been stored yet. */
@@ -644,7 +658,7 @@ export class ProjectSession extends EventEmitter {
    */
   static starting(dir: string, state: ProjectState): ProjectSession {
     const s = new ProjectSession(dir);
-    s.state = state;
+    s.current = state;
     void s.siteIcons.prepare(dir, state).catch(() => undefined);
     return s;
   }
@@ -655,6 +669,9 @@ export class ProjectSession extends EventEmitter {
   }
 
   private async writeNewTimed(): Promise<ProjectSession> {
+    // What the caller added while the project was being made is in it now: from here on it is the session's own,
+    // frozen as any other (a copy, so the caller's object stays its own).
+    this.state = structuredClone(this.current);
     // A drawing started early that failed (the worker stopped meanwhile) is tried once more by the publication, as it
     // would have been had it been the first to ask.
     this.siteIcons.retry((await this.siteIcons.input(this.dir, this.state)).key);
@@ -1302,7 +1319,8 @@ export class ProjectSession extends EventEmitter {
         if (pin) return { ok: false, message: `The external version of ${path} was not kept: ${pin}` };
         await this.saveAttempt(path);
         if (builder !== null) await this.saveCopy(path, 'canonical', 'builder', builder);
-        const nextDocs = stateToDocs(next);
+        // Frozen as it will be once it is the project, so its documents' texts are kept from here.
+        const nextDocs = stateToDocs(frozen(next));
         changed = await this.diffDocs(this.docs, nextDocs);
         this.state = next;
         this.docs = nextDocs;
@@ -1961,6 +1979,8 @@ export class ProjectSession extends EventEmitter {
   }
 
   private async writeState(next: ProjectState, opts: CommitOptions & { runId?: string; cursor?: number; wholeProject?: boolean }): Promise<SessionEvent> {
+    // Frozen now, as it will be once it is the project: generated and serialized as it will stay.
+    frozen(next);
     // A state whose theme is not available here would be generated from the wrong pack.
     const pin = themePinProblem(next);
     if (pin) throw new Error(pin);
@@ -4658,7 +4678,8 @@ export class ProjectSession extends EventEmitter {
       if (this.unsettled) return UNSETTLED;
       if (this.pending.size) return 'A project file was changed outside SiteOrigin Builder. Resolve it in Project health first.';
       const before = new Map(this.docs);
-      this.activeRun = { id: runId, before, beforeState: structuredClone(this.state), startRevision: this.revision, written: new Map() };
+      // A state is never changed in place (src/engine/draft.ts): the one the run starts from is kept as it is.
+      this.activeRun = { id: runId, before, beforeState: this.state, startRevision: this.revision, written: new Map(), hashes: new Map() };
       await this.writeRunMarker();
       return null;
     }));
@@ -4680,17 +4701,28 @@ export class ProjectSession extends EventEmitter {
     for (const path of all) {
       const b = run.before.get(path);
       const a = docs.get(path);
-      if (a !== undefined) perf.count('run.docsHashed');
-      const after = a === undefined ? null : sha(a);
       const written = run.written.get(path) ?? new Set<string | null>();
+      // A document the run has not changed, nor written before, is not in the marker: it needs no hash.
+      if (b === a && !written.size) continue;
+      const after = a === undefined ? null : this.docHash(path, a);
       if (b !== a) written.add(after);
       if (written.size) run.written.set(path, written);
-      if (b === a && !written.size) continue;
       paths[path] = { before: b === undefined ? null : await this.putBlob(b), after, written: [...written] };
     }
     // Building the marker: every document hashed, the run's versions stored. Its write is not in the span.
     marking({ paths: Object.keys(paths).length });
     await atomicWrite(this.local('sessions', 'active-run.json'), toJson({ id: run.id, paths }));
+  }
+
+  /** `text`'s SHA-256, worked out again only when the document at `path` holds other text than the run last hashed. */
+  private docHash(path: string, text: string): string {
+    const hashes = this.activeRun?.hashes;
+    const kept = hashes?.get(path);
+    if (kept?.text === text) return kept.hash;
+    const hash = sha(text);
+    perf.count('run.docsHashed');
+    hashes?.set(path, { text, hash });
+    return hash;
   }
 
   /** Did the active run change anything? */
@@ -4966,7 +4998,8 @@ export class ProjectSession extends EventEmitter {
       if (bad.length) return { ok: false, message: `The edited code for "${def.name}" has problems, so it was not loaded: ${bad[0].message}` };
     }
     this.migrationDue = migrated;
-    const nextDocs = stateToDocs(next);
+    // Frozen as it will be once it is the project, so its documents' texts are kept from here.
+    const nextDocs = stateToDocs(frozen(next));
     let same = nextDocs.size === this.docs.size;
     if (same) for (const [p, c] of nextDocs) if (this.docs.get(p) !== c) same = false;
     const srcSame = JSON.stringify([...stateToAuthoredSources(next)]) === JSON.stringify([...stateToAuthoredSources(this.state)]);
@@ -5012,7 +5045,7 @@ export class ProjectSession extends EventEmitter {
     } catch (e) {
       return { ok: false, message: (e as Error).message };
     }
-    const nextDocs = stateToDocs(next);
+    const nextDocs = stateToDocs(frozen(next));
     if (nextDocs.size === this.docs.size && [...nextDocs].every(([p, c]) => this.docs.get(p) === c)) {
       perf.count('session.reloadUnchanged');
       perf.mark('session.reloadUnchanged');

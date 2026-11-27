@@ -629,7 +629,10 @@ describe('upsert_managed_component: building in one call (#359)', () => {
     expect(made.ok).toBe(true);
     const id = made.content.definitionId;
     // The author opened it in a new tab and marked it paid, in the Inspector.
-    s.state.components[id].tree!.nodes.cta = { ...s.state.components[id].tree!.nodes.cta, link: { type: 'url', target: 'https://shop.example/', newTab: true, rel: ['sponsored'] } } as never;
+    // The session holds its project frozen: a hand edit is a changed copy put in its place.
+    const changed = structuredClone(s.state);
+    changed.components[id].tree!.nodes.cta = { ...changed.components[id].tree!.nodes.cta, link: { type: 'url', target: 'https://shop.example/', newTab: true, rel: ['sponsored'] } } as never;
+    s.state = changed;
     expect((await call(pricing({ definitionId: id, nodes: args.nodes }))).ok).toBe(true);
     expect(s.state.components[id].tree!.nodes.cta).toMatchObject({ link: { type: 'url', target: 'https://shop.example/', newTab: true, rel: ['sponsored'] } });
     // Somewhere else, it is a new link.

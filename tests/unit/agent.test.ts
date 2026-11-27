@@ -17,6 +17,7 @@ import type { InstanceNode, ListItem, ProjectState } from '@shared/types';
 import { subtreeIds } from '@engine/tree';
 import { catalogueIndex, compactNode, diagnosticRank, diagnosticsChars, diagnosticsContext, pageGlance, pageGlanceChars } from '@agent/context';
 import { applyOperations } from '@engine/apply';
+import { drafts } from '@engine/draft';
 import { styleToCss, validateStyleValue } from '@shared/styles';
 import { ICONS } from '@catalogue/foundation/icons';
 import { diagnosticKey, validateState } from '@engine/validate';
@@ -107,6 +108,46 @@ async function setup(turns: Turn[], opts: SetupOptions = {}) {
   return { session, adapter, orch, run, events };
 }
 
+describe('an AI batch applied to copies of the project', () => {
+  /** Three text edits on the home page's hero, in one apply_operations call. */
+  const heroEdits = (s: ProjectState) => {
+    const home = s.pages[s.site.homePageId];
+    const hero = Object.values(home.nodes).find((n): n is InstanceNode => n.kind === 'instance' && typeof n.props.heading === 'string')!;
+    return (['heading', 'eyebrow', 'lead'] as const).map((prop, i) => ({ type: 'instance.setProp' as const, owner: { kind: 'page' as const, id: home.id }, nodeId: hero.id, prop, value: `Batch ${i}` }));
+  };
+
+  it('copies the project no more often than the same batch from the editor does, and once more', async () => {
+    // From the editor: the batch applied once.
+    const manual = await setup([]);
+    const before = drafts.made;
+    expect((await manual.session.apply({ operations: heroEdits(manual.session.state) }, { label: 'Edit' })).ok).toBe(true);
+    const editor = drafts.made - before;
+    expect(editor).toBe(1);
+    // From a run limited to the page, with Developer mode off, the call asking for no more than the hero: the run's
+    // reach, the reach the call asks for and Developer mode's copies are each checked against the batch as it lands.
+    let applied: { ok?: boolean } = {};
+    let made = 0;
+    const env = await setup(
+      [
+        () => {
+          const hero = heroEdits(env.session.state)[0].nodeId;
+          made = drafts.made;
+          return [call('c1', 'apply_operations', { expectedRevision: env.session.revision, scope: { kind: 'selection', targetIds: [hero] }, operations: heroEdits(env.session.state) })];
+        },
+        (req) => {
+          made = drafts.made - made;
+          applied = JSON.parse((req.items.at(-1) as { content: string }).content);
+          return finish('Rewrote the hero.');
+        }
+      ],
+      { codeEnabled: false }
+    );
+    await env.run('Rewrite the hero', { scope: 'page' });
+    expect(applied.ok).toBe(true);
+    expect(made).toBeLessThanOrEqual(editor + 1);
+  });
+});
+
 describe('agent orchestrator', () => {
   it('keeps a rename of a page that already had a problem, which the run did not bring in (#205)', async () => {
     let applied: { error?: unknown } = {};
@@ -121,9 +162,12 @@ describe('agent orchestrator', () => {
       }
     ]);
     // A page node showing a component property, as an older file can hold: its message names the page.
-    const home = session.state.pages[session.state.site.homePageId];
+    // The session holds its project frozen: a hand edit is a changed copy put in its place.
+    const changed = structuredClone(session.state);
+    const home = changed.pages[changed.site.homePageId];
     home.nodes.n_bound = { id: 'n_bound', kind: 'text', tag: 'p', text: { $prop: 'heading' } };
     home.rootIds.push('n_bound');
+    session.state = changed;
     const { result } = await run('Rename the home page to Start here');
     expect(applied.error).toBeUndefined();
     expect(result?.status).toBe('completed');
@@ -3764,11 +3808,14 @@ describe('components that are not reusable yet (#363)', () => {
       () => finish('Done.')
     ]);
     // The theme's hero, as this project holds it, has a fixed heading; theme components are never reported.
-    const home = env.session.state.pages[env.session.state.site.homePageId];
-    const theme = env.session.state.components[(home.nodes[home.rootIds[0]] as InstanceNode).definitionId];
+    // The session holds its project frozen: a hand edit is a changed copy put in its place.
+    const changed = structuredClone(env.session.state);
+    const home = changed.pages[changed.site.homePageId];
+    const theme = changed.components[(home.nodes[home.rootIds[0]] as InstanceNode).definitionId];
     const root = theme.tree!.nodes[theme.tree!.rootIds[0]] as { children: string[] };
     theme.tree!.nodes.fixed = { id: 'fixed', kind: 'text', tag: 'h2', text: 'Spring offers' };
     root.children.push('fixed');
+    env.session.state = changed;
     expect(env.session.diagnostics().filter((d) => d.code === 'COMPONENT_UNBOUND_CONTENT')).toEqual([]);
     const { result } = await env.run('Make this hero unique', { selection: { owner: { kind: 'page', id: home.id }, instancePath: [], nodeId: home.rootIds[0] }, selectionLabel: 'Hero' });
     // Its copy is the run's, but a page selection cannot change a component's design: no second request.
@@ -4370,14 +4417,17 @@ describe('the project diagnostics in the editor context (#757)', () => {
   const pageCtx = (pageId: string, pageTitle: string, extra: Partial<ChatContext> = {}): ChatContext => ({ pageId, pageTitle, selection: null, selectionLabel: null, viewport: 1280, ...extra });
   /** An error and a warning on each listed page, as the validator finds them, without changing the session's revision. */
   const seed = (session: ProjectSession, pageIds: string[], errors = 1) => {
+    // The session holds its project frozen: a hand edit is a changed copy put in its place.
+    const changed = structuredClone(session.state);
     for (const id of pageIds) {
-      const page = session.state.pages[id];
+      const page = changed.pages[id];
       for (let i = 0; i < errors; i++) {
         page.nodes[`n_bound_${id}_${i}`] = { id: `n_bound_${id}_${i}`, kind: 'text', tag: 'p', text: { $prop: `heading${i}` } } as never;
         page.rootIds.push(`n_bound_${id}_${i}`);
       }
       page.language = 'not a language';
     }
+    session.state = changed;
   };
   const pagesOf = (session: ProjectSession) => session.state.site.pageOrder.filter((id) => Object.hasOwn(session.state.pages, id));
 
@@ -4386,7 +4436,7 @@ describe('the project diagnostics in the editor context (#757)', () => {
       const env = await setup([() => finish('Done.')]);
       const [home, other] = pagesOf(env.session);
       // The other page comes first in the validator's own order.
-      env.session.state.site.pageOrder = [other, ...env.session.state.site.pageOrder.filter((id) => id !== other)];
+      env.session.state = { ...env.session.state, site: { ...env.session.state.site, pageOrder: [other, ...env.session.state.site.pageOrder.filter((id) => id !== other)] } };
       seed(env.session, [other, home]);
       const expected = env.session.diagnostics().filter((d) => d.severity !== 'info');
       expect(expected.filter((d) => d.severity === 'error').length).toBeGreaterThanOrEqual(2);
@@ -4409,9 +4459,12 @@ describe('the project diagnostics in the editor context (#757)', () => {
     const env = await setup([() => finish('Done.')]);
     const [home] = pagesOf(env.session);
     seed(env.session, [home]);
-    const page = env.session.state.pages[home];
+    // The session holds its project frozen: a hand edit is a changed copy put in its place.
+    const changed = structuredClone(env.session.state);
+    const page = changed.pages[home];
     page.nodes.n_sel = { id: 'n_sel', kind: 'text', tag: 'p', text: { $prop: 'subtitle' } } as never;
     page.rootIds.push('n_sel');
+    env.session.state = changed;
     const selection = { owner: { kind: 'page' as const, id: home }, instancePath: [], nodeId: 'n_sel' };
     await env.run('Fix this', pageCtx(home, 'Home', { mode: 'ask', selection, selectionLabel: 'Paragraph' }));
     const listed = editorContext(env.adapter.requests[0]).diagnostics;

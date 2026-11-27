@@ -53,11 +53,20 @@ export function developerModeReason(state: ProjectState, op: EditOperation): str
  * installed earlier in the same batch is the one it copies.
  */
 export function developerModeRefusal(state: ProjectState, ops: EditOperation[], ctx: ApplyContext = {}): string | null {
+  const step = developerModeCheck(state, ops, ctx);
+  // `ctx` is the context the batch will apply with (the editor's clipboard), so a paste stages as it will land.
+  return typeof step === 'function' ? walkOperations(state, ops, step, ctx) : step;
+}
+
+/**
+ * `developerModeRefusal` without its walk: the reason (or null) when no walk is needed to know it, otherwise what to ask
+ * of each operation in a walk of the batch (walkChecks), with the same `ctx`.
+ */
+export function developerModeCheck(state: ProjectState, ops: EditOperation[], ctx: ApplyContext = {}): string | null | ((draft: ProjectState, op: EditOperation) => string | null) {
   if (ops.some((o) => CODE_OPERATIONS.has(o.type))) return developerModeReason(state, ops.find((o) => CODE_OPERATIONS.has(o.type))!);
   // A package brings its code components with it: new code in the project, however it arrives.
   const code = ops.some((o) => o.type === 'component.import') && ctx.componentImport ? importedCode(state, ctx.componentImport) : [];
   if (code.length) return `The package includes ${code.length === 1 ? `the code component “${code[0].name}”` : `${code.length} code components`}, which ${code.length === 1 ? 'needs' : 'need'} Developer mode.`;
   if (!ops.some((o) => COPIES.has(o.type))) return null;
-  // `ctx` is the context the batch will apply with (the editor's clipboard), so a paste stages as it will land.
-  return walkOperations(state, ops, (draft, op) => (COPIES.has(op.type) ? developerModeReason(draft, op) : null), ctx);
+  return (draft, op) => (COPIES.has(op.type) ? developerModeReason(draft, op) : null);
 }

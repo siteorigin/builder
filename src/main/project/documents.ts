@@ -9,6 +9,7 @@ import { SCHEMA_VERSION } from '@shared/types';
 import { migrateProject, newestDocumentVersion, type MigrationResult } from '@shared/migrations';
 import { inBatches, readIfExists, safeJoin, toJson } from './fsutil';
 import { perf } from '../perf';
+import { isFrozenThrough } from '@engine/draft';
 
 export const MANIFEST_FILE = 'siteorigin.project.json';
 export const DOC_DIR = 'siteorigin';
@@ -128,37 +129,54 @@ export function componentDocPath(id: string): string {
   return `${DOC_DIR}/components/${id}/component.json`;
 }
 
+/**
+ * Each frozen document's text, kept while it is the very object it was: a document frozen through can never change
+ * (the session freezes every state it holds, src/engine/draft.ts `frozen`), so the text of one that is the same object
+ * is the same text. Any other document is serialized every time. A component is kept apart by whether its
+ * text leaves its source out.
+ */
+const texts = new WeakMap<object, string>();
+const withoutSource = new WeakMap<object, string>();
+const sourceTexts = new WeakMap<object, string>();
+
+function textOf(doc: object, kept: WeakMap<object, string> = texts, stored: () => unknown = () => doc): string {
+  let text = kept.get(doc);
+  if (text === undefined) {
+    text = toJson(stored());
+    if (isFrozenThrough(doc)) kept.set(doc, text);
+    perf.count('docs.serialized');
+  }
+  return text;
+}
+
 /** Serialize the canonical documents. Keys are project-relative paths. */
 export function stateToDocs(state: ProjectState): Map<string, string> {
   const docs = new Map<string, string>();
-  // Every document is serialized again (src/shared/perf.ts counts them).
-  if (perf.on) perf.count('docs.serialized', 5 + (state.brief ? 1 : 0) + (state.published ? 1 : 0) + Object.keys(state.pages).length + Object.keys(state.components).length + Object.values(state.collections ?? {}).reduce((n, c) => n + 1 + Object.keys(c.entries).length, 0) + Object.keys(state.sources ?? {}).length);
-  docs.set(MANIFEST_FILE, toJson(state.manifest));
-  docs.set(`${DOC_DIR}/site.json`, toJson(state.site));
-  docs.set(`${DOC_DIR}/tokens.json`, toJson(state.tokens));
-  docs.set(`${DOC_DIR}/assets.json`, toJson(state.assets));
-  docs.set(`${DOC_DIR}/theme-lock.json`, toJson(state.themeLock));
+  docs.set(MANIFEST_FILE, textOf(state.manifest));
+  docs.set(`${DOC_DIR}/site.json`, textOf(state.site));
+  docs.set(`${DOC_DIR}/tokens.json`, textOf(state.tokens));
+  docs.set(`${DOC_DIR}/assets.json`, textOf(state.assets));
+  docs.set(`${DOC_DIR}/theme-lock.json`, textOf(state.themeLock));
   // Only while it holds something: an empty brief is no file.
-  if (state.brief) docs.set(BRIEF_FILE, toJson(state.brief));
+  if (state.brief) docs.set(BRIEF_FILE, textOf(state.brief));
   // Only once an export has delivered the website.
-  if (state.published) docs.set(PUBLISHED_FILE, toJson(state.published));
-  for (const id of Object.keys(state.pages).sort()) docs.set(`${DOC_DIR}/pages/${id}.json`, toJson(state.pages[id]));
+  if (state.published) docs.set(PUBLISHED_FILE, textOf(state.published));
+  for (const id of Object.keys(state.pages).sort()) docs.set(`${DOC_DIR}/pages/${id}.json`, textOf(state.pages[id]));
   for (const id of Object.keys(state.components).sort()) {
     const def = state.components[id];
     // Authored code components keep their source in the .svelte file; the manifest points to it.
-    const stored = def.sourcePath ? { ...def, source: undefined } : def;
-    docs.set(componentDocPath(id), toJson(stored));
+    docs.set(componentDocPath(id), def.sourcePath ? textOf(def, withoutSource, () => ({ ...def, source: undefined })) : textOf(def));
     // Authored code is canonical too, so it is journaled and part of undo history.
     if (def.sourcePath && def.source !== undefined) docs.set(def.sourcePath, def.source);
   }
   for (const id of Object.keys(state.collections ?? {}).sort()) {
     const c = state.collections[id];
-    docs.set(collectionDocPath(id), toJson(c.settings));
-    for (const eid of Object.keys(c.entries).sort()) docs.set(entryDocPath(id, eid), toJson(c.entries[eid]));
+    docs.set(collectionDocPath(id), textOf(c.settings));
+    for (const eid of Object.keys(c.entries).sort()) docs.set(entryDocPath(id, eid), textOf(c.entries[eid]));
   }
   for (const id of Object.keys(state.sources ?? {}).sort()) {
     const doc = state.sources![id];
-    docs.set(sourceDocPath(id), toJson(storedSourceDoc(doc)));
+    docs.set(sourceDocPath(id), textOf(doc, sourceTexts, () => storedSourceDoc(doc)));
     // A converter is the author's code, canonical as a component's is: journaled, and part of undo history.
     if (typeof doc.converter?.code === 'string') docs.set(converterDocPath(id), doc.converter.code);
   }

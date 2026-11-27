@@ -220,6 +220,13 @@ describe('in an AI turn', () => {
 });
 
 describe('the source tools’ host', () => {
+  /** The session holds its project frozen: a source edited outside the app is a changed copy put in its place. */
+  type Held = { state: import('@shared/types').ProjectState };
+  const editSource = (session: Held, id: string, change: (doc: NonNullable<Held['state']['sources']>[string]) => void) => {
+    const next = structuredClone(session.state);
+    change(next.sources![id]);
+    session.state = next;
+  };
   it('reads records as the API sends them even when its mapping cannot read them, and tests a mapping against them', async () => {
     const { s, host, api } = await setup(undefined, { mapping: { externalId: 'id', title: 'title' } });
     const read = await host.inspect('crew', fp(s));
@@ -274,10 +281,12 @@ describe('the source tools’ host', () => {
     expect(await host.verify('crew', { converter: GOOD })).toMatchObject({ ok: false, code: 'converter' });
     expect(api.seen).toEqual([]);
     // A converter that is missing is not read around either.
-    const missing = structuredClone(s.state.sources!.crew);
-    s.state.sources!.crew.converter = { file: 'converter.mjs' };
+    const missing = s.state;
+    editSource(s, 'crew', (doc) => {
+      doc.converter = { file: 'converter.mjs' };
+    });
     expect(await host.inspect('crew', fp(s))).toMatchObject({ ok: false, code: 'converter', message: expect.stringMatching(/missing/) });
-    s.state.sources!.crew = missing;
+    s.state = missing;
     // Nor does a converter the assistant writes read its own way.
     const back = await s.apply({ operations: [{ type: 'source.upsert', sourceId: 'crew', name: 'Crew API', adapter: 'rest', collectionId: 'team', config: elsewhere.config, mapping: { title: 'headline' } }] as EditOperation[] }, { label: 'Mapped' });
     expect(back.ok).toBe(true);
@@ -302,16 +311,21 @@ describe('the source tools’ host', () => {
     const leaky = await setup();
     const saved = leaky.s.state.sources!.crew;
     expect((await leaky.s.apply({ operations: [{ type: 'source.upsert', sourceId: 'crew', name: saved.name, adapter: 'rest', collectionId: 'team', config: saved.config, converter: GOOD }] as EditOperation[] }, { label: 'Converter' })).ok).toBe(true);
-    const disk = leaky.s.state.sources!.crew;
-    disk.converter!.code = `// ${SECRET}\n${GOOD}`;
+    editSource(leaky.s, 'crew', (disk) => {
+      disk.converter!.code = `// ${SECRET}\n${GOOD}`;
+    });
     expect(await leaky.host.inspect('crew', fp(leaky.s))).toMatchObject({ ok: false, code: 'secret', message: expect.not.stringContaining(SECRET) });
     expect(await leaky.host.verify('crew', { converter: GOOD })).toMatchObject({ ok: false, code: 'secret' });
     // Its name, too, whatever else would be said of it first: changed since it was read, or read by its own fetchAll.
-    disk.converter!.code = GOOD;
-    disk.name = `Crew ${SECRET}`;
+    editSource(leaky.s, 'crew', (disk) => {
+      disk.converter!.code = GOOD;
+      disk.name = `Crew ${SECRET}`;
+    });
     expect(await leaky.host.inspect('crew', fp(leaky.s))).toMatchObject({ ok: false, code: 'secret', message: expect.not.stringContaining(SECRET) });
     expect(await leaky.host.inspect('crew', 'an earlier fingerprint')).toMatchObject({ ok: false, code: 'secret' });
-    disk.converter!.code = 'export async function fetchAll() { return []; }\nexport function convert(i) { return i; }\n';
+    editSource(leaky.s, 'crew', (disk) => {
+      disk.converter!.code = 'export async function fetchAll() { return []; }\nexport function convert(i) { return i; }\n';
+    });
     for (const r of [await leaky.host.inspect('crew', fp(leaky.s)), await leaky.host.verify('crew', { converter: GOOD })]) {
       expect(r).toMatchObject({ ok: false, code: 'secret' });
       expect(JSON.stringify(r)).not.toContain(SECRET);

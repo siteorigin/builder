@@ -9,6 +9,7 @@ import { RUNTIME_DIR, STYLES_DIR, defFile, generateProject, packFileCopies, page
 import { derived } from '@generator/cache';
 import * as fonts from '@catalogue/fonts';
 import { GenerationCache } from '@generator/cache';
+import { frozen } from '@engine/draft';
 import { SEARCH_INDEX_FILE } from '@generator/search';
 import { usedIcons } from '@generator/runtime-files';
 import { sameValue } from '@shared/same';
@@ -215,6 +216,24 @@ describe('incremental generation (#183)', () => {
     const later = apply(s, { type: 'page.create', pageId: 'pg_later', title: 'Later', route: '/later/' });
     expect(check(later, cache).clean).toContain(`page:${home}#clean`);
     expect(generateProject(later).get(pageFile(later.pages[home]))).toContain('/later/');
+  });
+
+  it('follows a frozen state field by field, as an open one, so an edit makes again only what read what it changed', () => {
+    const { s: site, about } = multiPageSite();
+    const n = firstInstance(site, about);
+    const edit = (s: ProjectState) => apply(s, { type: 'instance.setProp', owner: page(about), nodeId: n.id, prop: propOf(site, n), value: 'Changed' });
+    const made = (s: ProjectState, freeze: boolean) => {
+      const cache = new GenerationCache();
+      const first = freeze ? frozen(structuredClone(s)) : structuredClone(s);
+      generateProject(first, {}, cache);
+      const next = edit(first);
+      const files = generateProject(freeze ? frozen(next) : next, {}, cache);
+      expect(files).toEqual(generateProject(structuredClone(next)));
+      return [...cache.made].sort();
+    };
+    const open = made(site, false);
+    expect(open.length).toBeGreaterThan(0);
+    expect(made(site, true)).toEqual(open);
   });
 
   it('reads a frozen state as a full run does', () => {
