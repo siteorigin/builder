@@ -376,6 +376,31 @@ describe('the import reader process', () => {
     setTimeout(() => reader.stop(), 10);
     await expect(read).rejects.toThrow('The import was stopped.');
   });
+
+  it('asks the reader what a read cost only when told to report it, answers first, and ends the reader once it has said', async () => {
+    const asked: Array<boolean | undefined> = [];
+    const stats = { ms: 12, peakRss: 64 * 2 ** 20 };
+    const later: Array<() => void> = [];
+    const { spawn, spawned } = fakeWorker((m, w) => {
+      asked.push(m.stats);
+      w.reply({ id: m.id, ok: true, source });
+      if (m.stats) later.push(() => w.reply({ id: m.id, stats }));
+    });
+    await expect(createSourceReader(spawn).read('wordpress', '/x/export.xml', {})).resolves.toEqual(source);
+    expect(spawned[0].killed).toBe(true);
+    const reported: unknown[] = [];
+    await expect(createSourceReader(spawn, { onStats: (s) => reported.push(s) }).read('wordpress', '/x/export.xml', {})).resolves.toEqual(source);
+    // Answered, and left to say what the read cost: then ended.
+    expect([reported, spawned[1].killed]).toEqual([[], false]);
+    later[0]();
+    expect([reported, spawned[1].killed]).toEqual([[stats], true]);
+    expect(asked).toEqual([undefined, true]);
+    // One that never says is ended all the same.
+    const silent = fakeWorker((m, w) => w.reply({ id: m.id, ok: true, source }));
+    await createSourceReader(silent.spawn, { onStats: () => undefined }).read('wordpress', '/x/export.xml', {});
+    await new Promise((r) => setTimeout(r, 1100));
+    expect(silent.spawned[0].killed).toBe(true);
+  });
 });
 
 /** A WordPress export of `items` (each an <item>'s inner XML), in a folder of its own. */

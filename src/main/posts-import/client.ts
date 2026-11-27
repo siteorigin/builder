@@ -13,8 +13,19 @@ export interface ReadRequest {
   path: string;
   /** The project's pages, so a link to one of them stays one. */
   pages: RichPages;
+  /** Report what the read cost (asked only while performance marks are on). */
+  stats?: boolean;
 }
-export type ReadReply = { id: number; ok: true; source: ParsedSource } | { id: number; ok: false; error: string };
+/** What one read cost in the reader, reported after its answer when it was asked for (`stats`). */
+export interface ReadStats {
+  /** From the request arriving to the answer sent. */
+  ms: number;
+  /** The reader process's peak resident memory once its answer was sent (the copy sending it made included), in bytes. */
+  peakRss: number;
+}
+export type ReadReply = { id: number; ok: true; source: ParsedSource } | { id: number; ok: false; error: string } | { id: number; stats: ReadStats };
+/** How long a reader that answered is left for the report of what its read cost, when one was asked for. */
+const STATS_WAIT_MS = 1000;
 
 /** The reader process as the client uses it: Electron's UtilityProcess, or a stand-in in tests. */
 export interface ReaderHandle {
@@ -32,7 +43,7 @@ export interface SourceReader {
   stop(): void;
 }
 
-export function createSourceReader(spawn: () => ReaderHandle, opts: { timeoutMs?: number } = {}): SourceReader {
+export function createSourceReader(spawn: () => ReaderHandle, opts: { timeoutMs?: number; onStats?: (stats: ReadStats) => void } = {}): SourceReader {
   const timeoutMs = opts.timeoutMs ?? 60_000;
   const live = new Map<ReaderHandle, (why: string) => void>();
   let ids = 0;
@@ -58,11 +69,16 @@ export function createSourceReader(spawn: () => ReaderHandle, opts: { timeoutMs?
           return;
         }
         let done = false;
-        const finish = (settle: () => void) => {
+        // A reader that answered, left until it says what the read cost (asked only while marks are on).
+        let lingering: ReturnType<typeof setTimeout> | undefined;
+        const finish = (settle: () => void, linger = false) => {
           if (done) return;
           done = true;
           clearTimeout(timer);
-          end(w);
+          if (linger) {
+            live.delete(w);
+            lingering = setTimeout(() => end(w), STATS_WAIT_MS);
+          } else end(w);
           settle();
         };
         const fail = (why: string) => finish(() => reject(new Error(why)));
@@ -70,13 +86,19 @@ export function createSourceReader(spawn: () => ReaderHandle, opts: { timeoutMs?
         live.set(w, fail);
         w.on('message', (m) => {
           if (!m || m.id !== id) return;
-          if (m.ok && m.source && Array.isArray(m.source.posts) && Array.isArray(m.source.media)) finish(() => resolve(m.source));
+          if ('stats' in m) {
+            if (lingering === undefined) return;
+            clearTimeout(lingering);
+            lingering = undefined;
+            end(w);
+            opts.onStats?.(m.stats);
+          } else if (m.ok && m.source && Array.isArray(m.source.posts) && Array.isArray(m.source.media)) finish(() => resolve(m.source), !!opts.onStats);
           else fail(m.ok ? `${name} could not be read.` : m.error);
         });
         w.on('exit', () => fail(`${name} could not be read: the reader stopped. It may be damaged, or larger than an import can read.`));
         w.on('error', () => fail(`${name} could not be read: the reader stopped.`));
         try {
-          w.postMessage({ id, kind, path, pages });
+          w.postMessage({ id, kind, path, pages, ...(opts.onStats ? { stats: true } : {}) });
         } catch {
           fail(`${name} could not be read: the reader did not start.`);
         }

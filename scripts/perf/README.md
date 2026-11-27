@@ -620,6 +620,36 @@ while memory is sampled) and `sourceSync.images` (the images it said it added); 
 figure is a sampled peak: it lives only while it reads and fetches, and a spike shorter than the gap between two samples
 (the base build's reply, sent at once, reached 415 MiB in one launch) can be missed, so read it with its spread.
 
+**`postsImport`** (after `launch`, a memory scenario like `memory`, on its own): a WordPress export of 1,000 posts read,
+reviewed and imported from the Posts panel (#1047). The export (`wordpress.ts`, drawn from a seed once per machine under
+`.tmp/perf/wordpress/`) is a site's Tools → Export → All content as WordPress 6 writes it, about 16 MB: 1,000 posts of
+block-editor prose of about 11,000 characters each (paragraphs with bold, italic and links, two headings, a list, a
+picture with its caption and a quote), with the curly quotes and dashes WordPress stores, each filed under a category or
+two and a few tags, with its old address, two comments and its post meta; every fourth with a featured picture, every
+20th a draft, and every third after the tenth linking to one written before it; beside them the attachments of 10
+pictures, found in an `uploads/` folder beside the export (small JPEGs), 5 pages and 12 menu items. The fixture opened
+from its card, untimed, with the Posts panel shown: at rest (`canvas`); the peak from choosing Import… → WordPress
+export (the chooser answered through the driver) to the review saying what it would bring (`read`); at rest with the
+review open (`review`); at rest once it is cancelled (`cancelled`); then read again, unsampled, and imported: the peak
+from Import to the dialog gone and the toast saying it is done (`commit`), and at rest after (`imported`). Checks:
+everything `open` checks; each review says 950 published and 50 drafts, 10 pictures found and none missing, the
+collection they go into (a new one at /blog/ on `small`, the fixture's own on `large`), the export and its site, 950
+old addresses kept working, the pages and menu items left out, and no problem, and the second shows exactly what the
+first did; cancelling changed nothing; the import moved the project one revision, as one step in History, and added
+1,000 posts, 50 of them drafts, 10 pictures and 950 old addresses, and a sample post's text came in whole, in the
+project and on disk. Metrics: each reading's, as `memory`'s, and growth: `memory.review.growth.*` (`review` − `canvas`:
+what holding the review open costs), `memory.cancel.growth.*` (`cancelled` − `canvas`: what a cancelled review leaves)
+and `memory.import.growth.*` (`imported` − `canvas`). The reader process's own peak resident memory once its answer
+was sent, the copy sending it made included (`postsImport.readerPeakRss`, `process.resourceUsage().maxRSS`, which the
+reader reports in a message after its answer when marks are on, and is ended once it has: the sampled peak, at 200 ms,
+can miss a process that lives half a second, and on this Mac usually does), and its time to the answer (`readerMs`); for the first review, the read
+(`readMs`, `posts.read`: the reader started, its read, and its answer back), the whole review (`reviewMs`,
+`posts.review`), what the review did after the read (`afterReadMs`: the plan and its check, the summary) and the
+longest main-process stall in it (`reviewStallMax`); the import (`commitMs`, `controller.commitPostImport`) and its
+longest stall (`commitStallMax`); and two digests, `reviewDigest` (the review's text as it is shown) and
+`importedDigest` (the posts added, their links and pictures by address and file, their old addresses and the
+collection's categories and tags), so a build that shows or imports anything else is `changed`.
+
 **`canvas`** (after `open`): with the home hero selected by a click on it, scroll the home page with the wheel, 30 notches
 of 60 px down and as many back up, each 16 ms after the one before was taken (about 30 a second on an M4 Max, so the
 outlines move every other frame); then sweep the pointer across the page, corner to corner along both diagonals in 60

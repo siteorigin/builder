@@ -3505,22 +3505,30 @@ export class Controller {
       file = r.filePaths[0];
     }
     if (this.session !== s || opening !== this.workspaceKey || this.closing) return closed;
-    // The pages the reader links to and the project the plan is made against are the same revision of it.
-    const revision = s.revision;
-    const pages = Object.fromEntries(Object.values(s.state.pages).map((p) => [p.id, { id: p.id, route: p.route }]));
-    let source: ParsedSource;
+    const review = perf.span('posts.review', { kind });
     try {
-      source = await postReader.read(kind, file, pages);
-    } catch (e) {
-      return { ok: false, message: (e as Error).message };
+      // The pages the reader links to and the project the plan is made against are the same revision of it.
+      const revision = s.revision;
+      const pages = Object.fromEntries(Object.values(s.state.pages).map((p) => [p.id, { id: p.id, route: p.route }]));
+      let source: ParsedSource;
+      const read = perf.span('posts.read', { kind });
+      try {
+        source = await postReader.read(kind, file, pages);
+      } catch (e) {
+        return { ok: false, message: (e as Error).message };
+      } finally {
+        read();
+      }
+      if (this.session !== s || opening !== this.workspaceKey || this.closing) return closed;
+      if (s.revision !== revision) return { ok: false, message: 'The project changed while the posts were being read. Choose Import posts again.' };
+      const plan = planPostImport(s.state, source);
+      const id = randomUUID();
+      // Pictures are read later from the very folder the reader checked them in, never one moved into its place.
+      this.postImport = { id, session: s, opening, revision, plan, realRoot: source.realRoot };
+      return { ok: true, preview: postImportPreview(id, plan) };
+    } finally {
+      review();
     }
-    if (this.session !== s || opening !== this.workspaceKey || this.closing) return closed;
-    if (s.revision !== revision) return { ok: false, message: 'The project changed while the posts were being read. Choose Import posts again.' };
-    const plan = planPostImport(s.state, source);
-    const id = randomUUID();
-    // Pictures are read later from the very folder the reader checked them in, never one moved into its place.
-    this.postImport = { id, session: s, opening, revision, plan, realRoot: source.realRoot };
-    return { ok: true, preview: postImportPreview(id, plan) };
   }
 
   /** Forget review `id`. */
@@ -3533,7 +3541,11 @@ export class Controller {
    * then the collection, its categories and tags, the entries and their old addresses land as one change, or nothing
    * does. Refused once the project has changed since the review.
    */
-  async commitPostImport(id: string, opening: string): Promise<PostImportResult> {
+  commitPostImport(id: string, opening: string): Promise<PostImportResult> {
+    return timed('controller.commitPostImport', () => this.commitPostImportNow(id, opening), (r) => ({ ok: !!r?.ok, imported: r?.imported ?? 0 }))();
+  }
+
+  private async commitPostImportNow(id: string, opening: string): Promise<PostImportResult> {
     const pending = this.postImport;
     if (!pending || pending.id !== id) return { ok: false, message: 'This import was already finished or canceled. Choose Import posts again.' };
     this.postImport = null;
