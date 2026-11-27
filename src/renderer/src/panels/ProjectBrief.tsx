@@ -1,20 +1,29 @@
+import './ProjectBrief.css';
 /**
  * The Project tab (#518): the project's private brief, a description and working notes that say what the site is
  * for. They belong to the project, are kept in its folder and edited like everything else (undo, History), and
- * never reach visitors: the website and every export leave them out. Site details' description is the visitor-facing
- * one, and stays where it is.
+ * never reach visitors: the website and every export leave them out. The AI reads them as background on every request
+ * (agent/brief.ts), the description whole and only the start of long notes. Site details' description is the
+ * visitor-facing one, and stays where it is.
  */
 import { useRef } from 'react';
-import { EyeOff, Lock } from 'lucide-react';
+import { EyeOff, NotebookPen } from 'lucide-react';
 import { briefText } from '@shared/brief';
 import { TEXT_LIMITS } from '@shared/text-limits';
 import { applyOps, useStore } from '../store';
+import { BlockedNote, BlockedStatus, readOnlyBlock } from '../components/BlockedNote';
 import { DraftInput, Field } from '../components/ui';
 
 const HINTS = {
-  description: 'What this site is and who it is for, in a line or two. Recent projects shows it under the project’s name.',
-  notes: 'The client, the audience, what the site should achieve: anything worth keeping while you build it.'
+  description: 'What the site is and who it’s for, in a line or two. For example: “A pottery studio in Leeds, with evening classes for beginners.” It shows under the project’s name in Recent projects.',
+  notes: 'The client, the audience, what the site should achieve. The AI reads only the start of long notes, so put what matters most first.'
 };
+/** A locked brief is read, not written: only what each field is for. */
+const LOCKED_HINTS = {
+  description: 'It shows under the project’s name in Recent projects.',
+  notes: 'The AI reads only the start of long notes.'
+};
+const HELD_NOTE = 'brief-held';
 
 export function ProjectBrief() {
   const opening = useStore((s) => s.snapshot?.workspaceKey);
@@ -32,42 +41,51 @@ function BriefFields() {
   const editable = useRef(false);
   if (!readOnly) editable.current = true;
   const locked = !!readOnly && !editable.current;
+  const block = readOnlyBlock({ readOnly });
   const description = briefText(brief, 'description');
   const notes = briefText(brief, 'notes');
+  // While the project is read-only each field is described by the note that says why, as a held button is, and its
+  // hint says only what the field is for: a field still being typed after a takeover is not coached on writing more.
+  const held = block ? HELD_NOTE : undefined;
+  const hints = block ? LOCKED_HINTS : HINTS;
   return (
     <div className="panel-body brief">
       <div className="brief-head">
-        <h2>Project brief</h2>
+        <div className="insp-id">
+          <span className="insp-kind" aria-hidden="true">
+            <NotebookPen />
+          </span>
+          <div className="insp-name">
+            <h3>Project brief</h3>
+            <span className="insp-kind-label">Private to this project</span>
+          </div>
+        </div>
         <p className="brief-private">
           <EyeOff aria-hidden="true" />
-          <span>Private to this project. Visitors never see it: the website and every export leave it out.</span>
+          <span>The AI reads it on every request, to guide the tone, sections and copy it writes. Visitors never see it: the website and every export leave it out.</span>
         </p>
+        <BlockedStatus block={block} lifted="You can edit the brief again." />
         {/* Said before anything is typed, so nothing typed here is lost to a save that cannot happen. */}
-        {readOnly && (
-          <p className="brief-private">
-            <Lock aria-hidden="true" />
-            <span>{readOnly.reason}</span>
-          </p>
-        )}
+        {block && <BlockedNote block={block} id={HELD_NOTE} live={false} />}
       </div>
       <div className="brief-fields">
         {locked ? (
           // Read-only fields stay focusable, so the brief can still be read, selected and copied.
           <>
-            <Field label="Description" hint={HINTS.description}>
-              <textarea className="textarea" readOnly rows={3} value={description} />
+            <Field label="Description" hint={LOCKED_HINTS.description}>
+              <textarea className="textarea" readOnly rows={3} value={description} aria-describedby={held} />
             </Field>
-            <Field label="Working notes" hint={HINTS.notes}>
-              <textarea className="textarea brief-notes" readOnly value={notes} />
+            <Field label="Working notes" hint={LOCKED_HINTS.notes}>
+              <textarea className="textarea brief-notes" readOnly value={notes} aria-describedby={held} />
             </Field>
           </>
         ) : (
           <>
-            <Field label="Description" hint={HINTS.description}>
-              <DraftInput multiline rows={3} limit={TEXT_LIMITS.projectDescription} keep="brief:description" value={description} placeholder="A brochure site for a family-run pottery studio in Leeds." onCommit={(v) => void applyOps([{ type: 'brief.update', description: v }], 'Edit project description')} />
+            <Field label="Description" hint={hints.description}>
+              <DraftInput multiline rows={3} quietCount limit={TEXT_LIMITS.projectDescription} keep="brief:description" value={description} aria-describedby={held} onCommit={(v) => void applyOps([{ type: 'brief.update', description: v }], 'Edit project description')} />
             </Field>
-            <Field label="Working notes" hint={HINTS.notes}>
-              <DraftInput multiline className="textarea brief-notes" limit={TEXT_LIMITS.projectNotes} keep="brief:notes" value={notes} onCommit={(v) => void applyOps([{ type: 'brief.update', notes: v }], 'Edit project notes')} />
+            <Field label="Working notes" hint={hints.notes}>
+              <DraftInput multiline quietCount className="textarea brief-notes" limit={TEXT_LIMITS.projectNotes} keep="brief:notes" value={notes} aria-describedby={held} onCommit={(v) => void applyOps([{ type: 'brief.update', notes: v }], 'Edit project notes')} />
             </Field>
           </>
         )}
