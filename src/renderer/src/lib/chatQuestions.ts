@@ -95,6 +95,7 @@ export function offeredImages(q: Pick<ChatQuestion, 'images'>): ChatImageRef[] {
 export function questionHint(q: Pick<ChatQuestion, 'choices' | 'widen' | 'images'>): string {
   if (q.widen) return 'Choose an option, or type a reply below. A typed “yes” or “OK” allows it too.';
   const images = offeredImages(q).length;
-  if (images) return `Choose a picture${q.choices.length ? ' or an option' : ''}, or type your own answer below. Select a picture to see it larger first.`;
+  // Looking is said in its own verb, so it never sounds like answering: a picture opens larger, Choose answers.
+  if (images) return `Open a picture to see it larger. The Choose button under a picture answers with it. You can also ${q.choices.length ? 'pick an option or ' : ''}type your own answer below.`;
   return q.choices.length ? 'Choose an option, or type your own answer below.' : 'Type your answer below.';
 }

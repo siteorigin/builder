@@ -1414,7 +1414,7 @@ export function Chat() {
           <div className="question-text" id="ai-question-text">
             {asking.question.text}
           </div>
-          {/* What yes allows is said before it is given, not only once the run has widened. */}
+          {/* What yes allows is said right under the question, before how to answer it and before it is given. */}
           {asking.question.widen && (
             <p className="question-scope" id="ai-question-scope">
               <Globe aria-hidden="true" /> Allowing it lets this request change the whole site.
@@ -1442,18 +1442,26 @@ export function Chat() {
               )}
               {asking.question.choices.length > 0 && (
                 <div className="choices">
-                  {asking.question.choices.map((c, i) => (
-                    <button
-                      key={`${i}:${c}`}
-                      className="btn btn-sm choice"
-                      onClick={() => {
-                        void answer(asking, c, false);
-                        focusComposer();
-                      }}
-                    >
-                      {c}
-                    </button>
-                  ))}
+                  {/* A widening question's first choice allows it. It is listed after the answer that keeps the
+                      request where it was, so the quickest click never widens it, and it carries the site-wide
+                      globe of the note above it. The answers sent are the choices as asked. */}
+                  {(asking.question.widen ? asking.question.choices.map((c, i) => ({ c, i })).reverse() : asking.question.choices.map((c, i) => ({ c, i }))).map(({ c, i }) => {
+                    const widens = !!asking.question.widen && i === 0;
+                    return (
+                      <button
+                        key={`${i}:${c}`}
+                        className={`choice${widens ? ' widens' : ''}`}
+                        aria-describedby={widens ? 'ai-question-scope' : undefined}
+                        onClick={() => {
+                          void answer(asking, c, false);
+                          focusComposer();
+                        }}
+                      >
+                        {widens && <Globe aria-hidden="true" />}
+                        <span>{c}</span>
+                      </button>
+                    );
+                  })}
                 </div>
               )}
             </div>

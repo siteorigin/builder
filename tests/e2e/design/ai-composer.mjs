@@ -200,8 +200,8 @@ await pause(300);
 await blur();
 await shot('images', '.composer .image-chip');
 await ta.fill('');
-while (await win.locator('.composer .image-chip button').count()) {
-  await win.locator('.composer .image-chip button').first().click();
+while (await win.locator('.composer .image-chip-remove').count()) {
+  await win.locator('.composer .image-chip-remove').first().click();
   await pause(120);
 }
 await blur();
