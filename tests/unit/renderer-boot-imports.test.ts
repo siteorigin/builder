@@ -4,7 +4,7 @@
  * opens (lib/editor-module.ts), so a launch to Welcome compiles and runs a fraction of the editor's code.
  */
 import { existsSync, readFileSync } from 'node:fs';
-import { dirname, join, relative, resolve } from 'node:path';
+import { dirname, join, relative, resolve, sep } from 'node:path';
 import ts from 'typescript';
 import { describe, expect, it } from 'vitest';
 
@@ -74,7 +74,7 @@ function atLaunch(entry: string) {
       }
     }
   }
-  return { files: [...files].map((f) => relative(process.cwd(), f)), packages };
+  return { files: [...files].map((f) => relative(process.cwd(), f).split(sep).join('/')), packages };
 }
 
 describe('what the editor’s page evaluates to show Welcome', () => {

@@ -1,4 +1,4 @@
-import { app, BrowserWindow, clipboard, dialog, ipcMain, nativeTheme, protocol, net, session as electronSession, shell, Menu, utilityProcess } from 'electron';
+import { app, BrowserWindow, clipboard, dialog, ipcMain, nativeImage, nativeTheme, protocol, net, session as electronSession, shell, Menu, utilityProcess } from 'electron';
 import type { BaseWindow, KeyboardEvent, MenuItem } from 'electron';
 import { join, dirname, normalize, relative, isAbsolute } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
@@ -47,7 +47,7 @@ import { createThumbCapturer } from './thumb-capture';
 import { createReviewShooter } from './review-capture';
 import { desktopForLaunch, headlessSwitches, launchMode } from './headless-desktop';
 import { installAiJournal } from './ai-journal';
-import { windowIcon } from './window-icon';
+import { aboutIcon, windowIcon } from './window-icon';
 import { createEditorCodeCache, type V8CachePolicy } from './code-cache';
 import { createEditorRecovery, crashQuestion, type EditorRecovery } from './editor-recovery';
 import { createMainErrorReporter, errorText } from './main-errors';
@@ -1320,10 +1320,20 @@ function copyBuildDetails() {
 
 /** Help > About on Windows and Linux, which have no About panel: the app's name and build, to quote in a report. */
 function showAbout() {
-  const options = { type: 'info' as const, title: `About ${app.name}`, message: app.name, detail: `Version ${buildVersion(app.getVersion(), BUILD)}`, buttons: ['OK', 'Copy'], defaultId: 0, cancelId: 0 };
-  void (win && !win.isDestroyed() ? dialog.showMessageBox(win, options) : dialog.showMessageBox(options)).then(({ response }) => {
+  void aboutPicture().then((icon) => {
+    const options = { type: 'info' as const, icon, title: `About ${app.name}`, message: app.name, detail: `Version ${buildVersion(app.getVersion(), BUILD)}`, buttons: ['OK', 'Copy'], defaultId: 0, cancelId: 0 };
+    return win && !win.isDestroyed() ? dialog.showMessageBox(win, options) : dialog.showMessageBox(options);
+  }).then(({ response }) => {
     if (response === 1) copyBuildDetails();
   });
+}
+
+/** The app's icon for About (aboutIcon), or none, leaving the platform's information sign, when it cannot be read. */
+async function aboutPicture(): Promise<Electron.NativeImage | undefined> {
+  const from = aboutIcon({ platform: process.platform, packaged: app.isPackaged, here, resourcesPath: process.resourcesPath, execPath: process.execPath });
+  if (!from) return undefined;
+  const image = 'file' in from ? nativeImage.createFromPath(from.file) : await app.getFileIcon(from.executable, { size: 'large' }).catch(() => undefined);
+  return image && !image.isEmpty() ? image : undefined;
 }
 
 /** Help > Show Log File: the main process's log, revealed in the file manager (recorded instead in an automated run). */
