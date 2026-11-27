@@ -48,7 +48,7 @@ describe('production build worker', () => {
   it('returns the build result and stops the worker', async () => {
     const p = buildProject('/project');
     workers[0].emit('message', { type: 'built', ok: true, logs: ['done'] });
-    expect(await p).toEqual({ ok: true, error: undefined, logs: ['done'] });
+    expect(await p).toEqual({ ok: true, error: undefined, logs: ['done'], exited: true });
     expect(workers[0].killed).toBe(true);
   });
 
@@ -56,7 +56,7 @@ describe('production build worker', () => {
     const p = buildProject('/project');
     workers[0].stderr.emit('data', 'no element with id="gone" exists on /contact/\n');
     workers[0].emit('message', { type: 'built', ok: false, error: 'Prerendering failed', logs: ['vite warning'] });
-    expect(await p).toEqual({ ok: false, error: 'Prerendering failed', logs: ['vite warning', 'no element with id="gone" exists on /contact/'] });
+    expect(await p).toEqual({ ok: false, error: 'Prerendering failed', logs: ['vite warning', 'no element with id="gone" exists on /contact/'], exited: true });
   });
 
   it('keeps stderr that arrives after the worker reports a failure', async () => {
@@ -213,14 +213,14 @@ describe('production build worker', () => {
     const failure = { message: 'Prerendering failed', cause: { message: 'title is undefined', plugin: 'sveltekit' } };
     const p = buildProject('/project');
     workers[0].emit('message', { type: 'built', ok: false, error: 'Prerendering failed', failure, logs: [] });
-    expect(await p).toEqual({ ok: false, error: 'Prerendering failed', failure, logs: [] });
+    expect(await p).toEqual({ ok: false, error: 'Prerendering failed', failure, logs: [], exited: true });
   });
 
   it('keeps a successful build free of what it printed', async () => {
     const p = buildProject('/project');
     workers[0].stdout.emit('data', 'vite v7 building for production...\n');
     workers[0].emit('message', { type: 'built', ok: true, logs: ['a warning'] });
-    expect(await p).toEqual({ ok: true, error: undefined, logs: ['a warning'] });
+    expect(await p).toEqual({ ok: true, error: undefined, logs: ['a warning'], exited: true });
   });
 
   it('keeps what the build printed when the worker exits without a result', async () => {
@@ -282,6 +282,8 @@ describe('production build worker', () => {
     expect(settled).toBe(false);
     await vi.advanceTimersByTimeAsync(200);
     expect(settled).toBe(true);
+    // It says so: the worker may still be writing where it ran (the export keeps no copy of its tools then).
+    expect((await p).exited).toBe(false);
   });
 
   it('reports a worker that exits without a result', async () => {

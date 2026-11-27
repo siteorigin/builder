@@ -2279,6 +2279,9 @@ function exportScenario(name: 'export' | 'exportAgain', after: 'open' | 'export'
       m.count(`${name}.lockFilesRead`, delta(lock, 'export.filesRead'));
       m.count(`${name}.lockBytesRead`, delta(lock, 'export.bytesRead'), 'bytes');
       m.count(`${name}.fileWrites`, delta(total, 'fs.writes'));
+      // Files and links the export copied (cloned where the disk can): the snapshot of the source, and the website tools.
+      m.count(`${name}.filesCopied`, delta(total, 'export.filesCopied'));
+      m.count(`${name}.toolsCopied`, delta(tools, 'export.filesCopied'));
       const library = m.need('export.library', trace.first('export.library', inProc('main'), from, to));
       if (library) {
         m.count(`${name}.libraryFiles`, Number(library.attrs?.files));

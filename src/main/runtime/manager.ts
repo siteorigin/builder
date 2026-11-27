@@ -539,6 +539,8 @@ export interface BuildOutcome {
   failure?: BuildErrorInfo;
   /** On failure: the worker's own warnings, then the build's stdout and stderr. */
   logs: string[];
+  /** Whether the worker had exited when the build settled: one that had not may still be writing where it ran. */
+  exited?: boolean;
 }
 
 /**
@@ -601,7 +603,7 @@ export function buildProject(dir: string): Promise<BuildOutcome> {
         if (settled) return;
         settled = true;
         void (wait ? drained() : Promise.resolve()).then(() => {
-          resolve(result());
+          resolve({ ...result(), exited: wait });
           // Nothing reads what the pipes still carry once the result is out.
           proc.stdout?.off('data', onOut);
           proc.stderr?.off('data', onErr);

@@ -53,7 +53,7 @@ import { watchTree, type FolderWatch } from './folder-watch';
 import { importSamples, type SampleCache } from './project/starter-samples';
 import { DevServer, buildProject, dependenciesReady, prepareDependencies, starterTools, type RuntimeStatus } from './runtime/manager';
 import { NETWORK_CODES, ToolsDownloadError } from './runtime/availability';
-import { copyProjectTools, createPreviewStage, removePreviewStage, sweepPreviewStages, syncPreviewStage } from './runtime/stage';
+import { type BuildTools, createPreviewStage, KeptTools, removePreviewStage, sweepPreviewStages, syncPreviewStage } from './runtime/stage';
 import { clearComponentPreviews, previewSpec, removeComponentPreview, writeComponentPreview } from './runtime/component-preview';
 import { ComponentThumbs, writeThumb, type CaptureResult } from './runtime/component-thumbs';
 import type { ComponentThumb } from '@shared/component-thumbs';
@@ -3495,6 +3495,9 @@ export class Controller {
   /** Each open project's file hashes from its last export's fingerprints, by the stamps they stand for (projectInventory). */
   private exportHashes = new WeakMap<ProjectSession, ExportHashes>();
 
+  /** The build's copy of the website tools, kept between exports (made on the first). */
+  private keptTools: KeptTools | null = null;
+
   /** Staging folders of exports still running: the sweep before another export leaves them alone. */
   private stagingInUse = new Set<string>();
 
@@ -3503,8 +3506,13 @@ export class Controller {
    * says: on Windows a file the build had open (a native module it loaded) can refuse removal for a while after the
    * build has gone. Removal is tried again a few times, and what is still left is swept before the next export.
    */
+  /** Where exports stage their builds, and where the build's copy of the website tools waits between exports. */
+  private stagingRoot(): string {
+    return join(app.getPath('userData'), 'build-staging');
+  }
+
   private async withStaging(fn: (staging: string) => Promise<ExportResult>): Promise<ExportResult> {
-    const stagingRoot = join(app.getPath('userData'), 'build-staging');
+    const stagingRoot = this.stagingRoot();
     const sweeping = perf.span('export.sweep');
     await fs.mkdir(stagingRoot, { recursive: true });
     await Promise.all(
@@ -3650,13 +3658,16 @@ export class Controller {
     const photos = await timed('export.assets.photos', () => cleanWebsitePhotos(project, state, credits))();
     if (photos.failed.length) return { ok: false, message: uncleanablePhotosMessage(photos.failed), warnings: [] };
     // The build gets its own copy of the tools: what they write must not land in the project, which may have been
-    // taken over by the time the build starts.
+    // taken over by the time the build starts. The copy is kept between exports, checked against the project's tools.
+    let tools: BuildTools;
     try {
-      await timed('export.copyTools', () => copyProjectTools(s.dir, project))();
+      tools = await timed('export.copyTools', () => (this.keptTools ??= new KeptTools(join(this.stagingRoot(), 'tools'))).take(s.dir, project, s.settleMs))();
     } catch (e) {
       return { ok: false, message: 'The website tools are not set up. Open Project health and reinstall them, then export again.', warnings: [(e as Error).message] };
     }
     const build = await timed('export.build', () => buildProject(project), (b) => ({ ok: b?.ok ?? false }))();
+    // Kept for the next export only once the build's worker is gone, so nothing it ran is still writing in the copy.
+    if (build.exited) await timed('export.keepTools', () => tools.keep())();
     if (!build.ok) return { ok: false, ...explainBuildFailure(live, build, this.buildFailureContext(staging, project, s.dir)) };
     const out = join(project, 'build');
     // Vercel's redirect rules go beside the website's files, where it reads them.

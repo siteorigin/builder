@@ -47,7 +47,7 @@ vi.mock('../../src/main/runtime/manager', async (original) => ({
     return { ok: true, logs: [] };
   }
 }));
-vi.mock('../../src/main/runtime/stage', async (original) => ({ ...(await original<typeof import('../../src/main/runtime/stage')>()), copyProjectTools: async () => undefined }));
+vi.mock('../../src/main/runtime/stage', async (original) => ({ ...(await original<typeof import('../../src/main/runtime/stage')>()), KeptTools: class { take = async () => ({ keep: async () => undefined }); } }));
 
 const { Controller } = await import('../../src/main/controller');
 const { ProjectSession } = await import('../../src/main/project/session');

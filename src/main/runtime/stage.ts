@@ -4,9 +4,11 @@
  * previewed from a copy this app owns: its source, the editor's dev variants and its own copy of the installed tools.
  * Nothing here depends on Electron, so it is unit tested directly.
  */
-import { existsSync, lstatSync, mkdtempSync, readlinkSync, realpathSync, promises as fs } from 'node:fs';
+import { type BigIntStats, existsSync, lstatSync, mkdtempSync, readlinkSync, realpathSync, promises as fs } from 'node:fs';
 import { dirname, isAbsolute, join, relative, sep } from 'node:path';
-import { copyProjectSource, copyTree, inProjectSource, isProjectBrief, isSourcesFolder } from '../export';
+import { copyFresh, copyProjectSource, copyTree, type EntryType, inBatches, inProjectSource, isProjectBrief, isSourcesFolder } from '../export';
+import { perf } from '../perf';
+import { stampOf, statTrusted } from '../project/stable-read';
 import { realFileInside } from '../../runtime/policy';
 import { ISOLATED_DIR } from '@shared/component-preview';
 
@@ -47,8 +49,192 @@ export async function createPreviewStage(project: string, root: string): Promise
  */
 export async function copyProjectTools(project: string, dest: string): Promise<void> {
   const from = await fs.realpath(join(project, 'node_modules'));
+  await copyTree(from, join(dest, 'node_modules'), toolsKept(from));
+}
+
+/** The entries of the tools in `from` (a real path) that a copy of them carries. */
+function toolsKept(from: string): (p: string, e: EntryType) => boolean {
   // An entry's own type says whether it is a link: only those are looked at again.
-  await copyTree(from, join(dest, 'node_modules'), (p, e) => !OWN_CACHES.has(relative(from, p).split(sep)[0]) && (!e.isSymbolicLink() || linkStaysWithin(from, p)));
+  return (p, e) => !OWN_CACHES.has(relative(from, p).split(sep)[0]) && (!e.isSymbolicLink() || linkStaysWithin(from, p));
+}
+
+/** The build's copy of the website tools, in its staging folder. */
+export interface BuildTools {
+  /** Put the copy where the next export takes it from (only once nothing the build ran can still be writing in it). */
+  keep(): Promise<void>;
+}
+
+/** A real folder's identity (never a link's, nor what it leads to), or null when there is none at `p`. */
+async function folderId(p: string): Promise<string | null> {
+  const st = await fs.lstat(p, { bigint: true }).catch(() => null);
+  return st?.isDirectory() ? `${st.dev}:${st.ino}` : null;
+}
+
+/**
+ * The website tools a production build runs from, kept between exports in `slot` (#978). A fresh copy of the project's
+ * tools is slow to build with: macOS checks the signature of a native module the first time any copy of it is loaded
+ * (Rolldown's, 18 MB, about 350 ms), and every file is read cold. So the build's copy waits in the slot: the next export
+ * takes it (a rename, so its files stay the ones the system has already checked), brings it up to date with the
+ * project's tools, and puts it back after its build.
+ *
+ * A file of the kept copy is used again only while the project's file still has the stamp it had when it was copied (one
+ * that had settled by then, statTrusted) and the copy still has the stamp, mode and single link it had when it was made;
+ * every other file is copied again, and whatever the copy holds that the project's tools do not (what a build wrote) is
+ * removed. What the copy was made from is known only to this process, and only for the folders it put in the slot
+ * itself: a copy left by an earlier run of the app, or put there by anything else, is never used. One export holds the
+ * copy at a time; another finds the slot empty and copies the tools afresh.
+ */
+export class KeptTools {
+  /** The copy in the slot, by its folders' identities, and the stamps of its files that can be kept. */
+  private kept: { slot: string; tools: string; stamps: Map<string, string> } | null = null;
+
+  constructor(private readonly slot: string) {}
+
+  /** The project's installed tools in `dest` (a staging copy of the project), as copyProjectTools copies them. */
+  async take(project: string, dest: string, settleMs: number): Promise<BuildTools> {
+    const from = await fs.realpath(join(project, 'node_modules'));
+    const to = join(dest, 'node_modules');
+    const kept = this.kept;
+    this.kept = null;
+    let reused: Map<string, string> | null = null;
+    // Whatever is in the slot goes with this export's staging folder unless it is the copy this process kept.
+    const held = join(dirname(dest), 'tools');
+    if (await fs.rename(this.slot, held).then(() => true, () => false))
+      if (kept && (await folderId(held)) === kept.slot && (await folderId(join(held, 'node_modules'))) === kept.tools)
+        // On Windows a file of it may still be in use: the tools are then copied afresh.
+        if (await fs.rename(join(held, 'node_modules'), to).then(() => true, () => false)) reused = kept.stamps;
+    let made: Map<string, string>;
+    try {
+      made = await syncTools(from, to, reused ?? new Map(), Date.now(), settleMs);
+    } catch (e) {
+      if (!reused) throw e;
+      // A kept copy that cannot be brought up to date is set aside, to go with the staging folder, and copied afresh.
+      await fs.rename(to, join(dirname(dest), 'tools-aside')).catch(() => fs.rm(to, { recursive: true, force: true }));
+      made = await syncTools(from, to, new Map(), Date.now(), settleMs);
+    }
+    const ids = { dest: await folderId(dest), tools: await folderId(to) };
+    return { keep: () => this.keep(dest, to, ids, made) };
+  }
+
+  /** Put the copy in `to` in the slot in one rename. One that cannot go back stays, to be removed with its staging. */
+  private async keep(dest: string, to: string, ids: { dest: string | null; tools: string | null }, stamps: Map<string, string>): Promise<void> {
+    try {
+      if (!ids.dest || !ids.tools) return;
+      const box = await fs.mkdtemp(join(dirname(dest), 'tools-'));
+      // Only the very folders the build was given: never one a build put in their place, which could lead anywhere.
+      if ((await folderId(dest)) !== ids.dest || (await folderId(to)) !== ids.tools) return;
+      await fs.rename(to, join(box, 'node_modules'));
+      // What was moved must be that same folder: anything else (the staging copy swapped for a link in the meantime) is
+      // put back where it came from, and nothing is kept.
+      if ((await folderId(join(box, 'node_modules'))) !== ids.tools) return void (await fs.rename(join(box, 'node_modules'), to));
+      const slot = await folderId(box);
+      // Fails when another export has put its copy back meanwhile (or, on Windows, while a file is still in use).
+      await fs.rename(box, this.slot);
+      if (slot) this.kept = { slot, tools: ids.tools, stamps };
+    } catch {
+      /* left in the staging folder and removed with it: the next export copies the tools afresh */
+    }
+  }
+}
+
+/** A change time finer than a whole second: a later change within the same tick shows. */
+const fineChangeTime = (st: BigIntStats) => st.ctimeNs % 1_000_000_000n !== 0n;
+
+/**
+ * Make `to` hold what copyTree would copy of the tools in `from`, keeping the files `was` vouches for (KeptTools). Each
+ * folder is cleared of what the tools there do not have, by exact name and kind, before anything is copied into it.
+ * Returns the stamps of the files that can be kept next time.
+ */
+async function syncTools(from: string, to: string, was: Map<string, string>, now: number, settleMs: number): Promise<Map<string, string>> {
+  const kept = toolsKept(from);
+  const listing = new Map<string, Map<string, boolean>>();
+  const dirs: string[] = [];
+  const files: string[] = [];
+  // Each folder's stamp before anything is copied, and the stamp of the folder that holds the tools: one changed
+  // meanwhile (a package, or the project, swapped in and back) means no file's stamp can stand for what was copied.
+  const folders = new Map<string, string>();
+  const holder = async () => stampOf(await fs.lstat(dirname(from), { bigint: true }));
+  const held = await holder();
+  const walk = async (rel: string) => {
+    const here = new Map<string, boolean>();
+    listing.set(rel, here);
+    folders.set(rel, stampOf(await fs.lstat(join(from, rel), { bigint: true })));
+    for (const e of await fs.readdir(join(from, rel), { withFileTypes: true })) {
+      const r = rel ? join(rel, e.name) : e.name;
+      if (!kept(join(from, r), e)) continue;
+      here.set(e.name, e.isDirectory());
+      if (e.isDirectory()) {
+        dirs.push(r);
+        await walk(r);
+      } else files.push(r);
+    }
+  };
+  await walk('');
+  // A folder is walked only as a folder (never through a link), and made writable so its entries can be replaced (its
+  // mode is put back below).
+  const clear = async (rel: string) => {
+    const at = join(to, rel);
+    const st = await fs.lstat(at);
+    if ((st.mode & 0o700) !== 0o700) await fs.chmod(at, st.mode | 0o700);
+    const wanted = listing.get(rel)!;
+    for (const e of await fs.readdir(at, { withFileTypes: true })) {
+      const r = rel ? join(rel, e.name) : e.name;
+      const dir = wanted.get(e.name);
+      if (dir === true && e.isDirectory()) await clear(r);
+      else if (dir === undefined || dir || e.isDirectory()) await fs.rm(join(to, r), { recursive: true, force: true });
+    }
+  };
+  const made = new Set<string>();
+  // A folder already there must be a real one (a name that differs only in case can be anything on some disks).
+  const mkdir = async (r: string) => {
+    if (await fs.mkdir(join(to, r)).then(() => true, (e: NodeJS.ErrnoException) => (e.code === 'EEXIST' ? false : Promise.reject(e)))) made.add(r);
+    else if (!(await fs.lstat(join(to, r))).isDirectory()) throw Object.assign(new Error(`${join(to, r)} is not a folder.`), { code: 'EEXIST' });
+  };
+  if ((await fs.lstat(to).catch(() => null))?.isDirectory()) await clear('');
+  else await mkdir('');
+  for (const r of dirs) await mkdir(r);
+  const stamps = new Map<string, string>();
+  await inBatches(files, async (r) => {
+    const [src, dst] = [join(from, r), join(to, r)];
+    const st = await fs.lstat(src, { bigint: true }).catch((e: NodeJS.ErrnoException) => (e.code === 'ENOENT' ? null : Promise.reject(e)));
+    const there = await fs.lstat(dst, { bigint: true }).catch(() => null);
+    // Every folder in the way is a real one by now, and none where a file goes: one there is another spelling of a
+    // folder's name (on a disk that ignores case), which a copy cannot hold beside it. A file gone meanwhile is left out.
+    if (there?.isDirectory()) {
+      if (!st) return;
+      throw Object.assign(new Error(`${dst} is a folder.`), { code: 'EISDIR' });
+    }
+    if (st?.isFile()) {
+      const stamp = stampOf(st);
+      if (there?.isFile() && there.nlink === 1n && there.mode === st.mode && was.get(r) === `${stamp} ${stampOf(there)}`) return void stamps.set(r, was.get(r)!);
+      if (there) await fs.rm(dst, { recursive: true, force: true });
+      await copyFresh(src, dst);
+      perf.count('export.filesCopied');
+      // A file changed just now may change again within its timestamps' tick: it is copied again next time. So is one
+      // that changed while it was copied, and a copy whose own times could not show a later change.
+      if (!statTrusted(st, now, settleMs)) return;
+      const [copy, again] = await Promise.all([fs.lstat(dst, { bigint: true }), fs.lstat(src, { bigint: true }).catch(() => null)]);
+      if (again && stampOf(again) === stamp && copy.size === st.size && copy.nlink === 1n && copy.mode === st.mode && fineChangeTime(copy)) stamps.set(r, `${stamp} ${stampOf(copy)}`);
+      return;
+    }
+    // A link the copy already has as the project has it stays; anything else is copied as copyTree copies it.
+    if (st?.isSymbolicLink() && there?.isSymbolicLink() && kept(src, st) && (await fs.readlink(dst)) === (await fs.readlink(src))) return;
+    if (there) await fs.rm(dst, { recursive: true, force: true });
+    // Gone since it was listed, or no longer an entry a copy carries: left out, as copyTree leaves it out.
+    if (!st || !kept(src, st)) return;
+    if (st.isDirectory()) return copyTree(src, dst, kept);
+    await fs.cp(src, dst, { recursive: true, verbatimSymlinks: true });
+    perf.count('export.filesCopied');
+  });
+  // Folders take their originals' modes once their files are in, as copyTree's do.
+  let unchanged = (await holder()) === held;
+  for (const r of [...dirs.reverse(), '']) {
+    const st = await fs.lstat(join(from, r), { bigint: true });
+    if (stampOf(st) !== folders.get(r)) unchanged = false;
+    const mode = Number(st.mode);
+    if (made.has(r) || (await fs.lstat(join(to, r))).mode !== mode) await fs.chmod(join(to, r), mode);
+  }
+  return unchanged ? stamps : new Map();
 }
 
 /**

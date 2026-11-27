@@ -147,18 +147,20 @@ export async function copyTree(src: string, dest: string, kept: (p: string, e: E
     const st = await fs.lstat(from).catch((e: NodeJS.ErrnoException) => (e.code === 'ENOENT' ? null : Promise.reject(e)));
     // Gone since it was listed: as fs.cp's filter, which looks again, leaves it out.
     if (!st) return;
-    if (st.isFile()) return copyFresh(from, to);
+    // Each file or link copied is counted for the benchmark (export.filesCopied, scripts/perf/README.md).
+    if (st.isFile()) return copyFresh(from, to).then(() => perf.count('export.filesCopied'));
     // Not the file it was listed as (or never one): judged again as it is now, and a folder copied entry by entry.
     if (!kept(from, st)) return;
     if (st.isDirectory()) return copyTree(from, to, kept);
     await fs.cp(from, to, { recursive: true, verbatimSymlinks: true });
+    perf.count('export.filesCopied');
   });
   for (const r of [...dirs].reverse()) if (made.has(r)) await fs.chmod(join(dest, r), (await fs.stat(join(src, r))).mode);
   if (made.has('')) await fs.chmod(dest, (await fs.stat(src)).mode);
 }
 
 /** What copyTree's `kept` is told of an entry: its type, as listed or as it is when it is copied. */
-type EntryType = Pick<Dirent, 'isFile' | 'isDirectory' | 'isSymbolicLink'>;
+export type EntryType = Pick<Dirent, 'isFile' | 'isDirectory' | 'isSymbolicLink'>;
 
 /** A folder already at `path` that a copy merges into: a real folder, never a link that would lead the copy elsewhere. */
 async function existingFolder(path: string) {
@@ -166,7 +168,7 @@ async function existingFolder(path: string) {
 }
 
 /** A copy of a file as a new file at `to` (cloned where the disk can), replacing one there rather than writing through it, as fs.cp does. */
-async function copyFresh(from: string, to: string) {
+export async function copyFresh(from: string, to: string) {
   await fs.copyFile(from, to, fsConstants.COPYFILE_FICLONE | fsConstants.COPYFILE_EXCL).catch(async (e: NodeJS.ErrnoException) => {
     if (e.code !== 'EEXIST') throw e;
     await fs.unlink(to);
@@ -971,7 +973,7 @@ export async function projectFingerprint(dir: string): Promise<string> {
  * `fn` over every item, a few at a time: enough to overlap the disk's waits, never so many open files that one fails
  * to open. Results in the items' order.
  */
-async function inBatches<T, R>(items: T[], fn: (item: T) => Promise<R>, size = 16): Promise<R[]> {
+export async function inBatches<T, R>(items: T[], fn: (item: T) => Promise<R>, size = 16): Promise<R[]> {
   const out: R[] = [];
   for (let i = 0; i < items.length; i += size) {
     // Every one of a batch is done before a failure among them is thrown: nothing is still running once it is.

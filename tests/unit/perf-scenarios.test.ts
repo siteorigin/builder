@@ -1272,12 +1272,12 @@ describe('export metrics', () => {
     m('export.library', at + 101, { attrs: { files: 300, bytes: 6_000_000 } }),
     span('export.assets.prune', at + 150, 30),
     span('main.stall', at + 160, 60),
-    span('export.copyTools', at + 300, 100),
+    span('export.copyTools', at + 300, 100, { dc: { 'export.filesCopied': 1800 * scale } }),
     span('export.build', at + 800, 450),
     span('export.verify.cleanBuilt', at + 880, 40),
     span('export.publish', at + 940, 30),
     span('export.cleanup', at + 1005, 4),
-    span('controller.exportStatic', at + 1010, 1000, { dc: { 'export.filesRead': 900 * scale, 'export.bytesRead': 7_000_000 * scale, 'fs.writes': 40 } }),
+    span('controller.exportStatic', at + 1010, 1000, { dc: { 'export.filesRead': 900 * scale, 'export.bytesRead': 7_000_000 * scale, 'fs.writes': 40, 'export.filesCopied': 3000 * scale } }),
     m('export.output', at + 1500, { attrs: { scenario: name, files: 700, bytes: 3_000_000 } }),
     r('export.output', at + 1500, { attrs: { scenario: name, files: 700, bytes: 3_000_000 } }),
     m('scenario.end', at + 3000, { attrs: { scenario: name } })
@@ -1307,6 +1307,8 @@ describe('export metrics', () => {
       'export.lockFilesRead': '25 count',
       'export.lockBytesRead': '12000 bytes',
       'export.fileWrites': '40 count',
+      'export.filesCopied': '3000 count',
+      'export.toolsCopied': '1800 count',
       'export.libraryFiles': '300 count',
       'export.libraryBytes': '6000000 bytes',
       'export.outputFiles': '700 count',
@@ -1321,6 +1323,7 @@ describe('export metrics', () => {
     expect(got.metrics['exportAgain.lockHeld'].value).toBe(40);
     expect(got.metrics['exportAgain.bytesRead'].value).toBe(3_500_000);
     expect(got.metrics['exportAgain.lockFilesRead'].value).toBe(12.5);
+    expect(got.metrics['exportAgain.toolsCopied'].value).toBe(900);
   });
 
   it('name a phase that is missing instead of reporting the export without it', () => {
