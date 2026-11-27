@@ -240,6 +240,8 @@ export interface ImportOptions {
    * decides their order: images added together are listed by name (see compareAssets).
    */
   createdAt?: string;
+  /** Hand back the files the import wrote, the picture's copies included (a new project's sample photos keep them). */
+  keepFiles?: boolean;
 }
 
 /** A web-sized copy as a file for the library, carrying the source's credits (author, copyright) and nothing else. */
@@ -528,7 +530,7 @@ export async function importAsset(
   existing: AssetRecord[],
   fence: WriteFence = unfenced,
   opts: ImportOptions = {}
-): Promise<{ record: AssetRecord; existing: boolean; font?: AssetRecord['font']; note?: string }> {
+): Promise<{ record: AssetRecord; existing: boolean; font?: AssetRecord['font']; note?: string; files?: ReadonlyArray<{ rel: string; data: Buffer }> }> {
   const refuse = refusal(sourcePath, 'was not imported');
   const { note, ...p } = await prepareImport(sourcePath, refuse, opts);
   const noted = note ? { note } : {};
@@ -542,7 +544,7 @@ export async function importAsset(
 const sameFile = (library: AssetRecord[], p: PreparedFile) => library.find((a) => a.hash === p.hash && a.mime === p.mime);
 
 /** Store a prepared file the library does not have yet: its copies made, its files written while `fence` allows. */
-async function storePrepared(projectDir: string, sourcePath: string, p: PreparedFile, existing: AssetRecord[], fence: WriteFence, opts: ImportOptions, refuse: Refusal): Promise<{ record: AssetRecord; existing: false }> {
+async function storePrepared(projectDir: string, sourcePath: string, p: PreparedFile, existing: AssetRecord[], fence: WriteFence, opts: ImportOptions, refuse: Refusal): Promise<{ record: AssetRecord; existing: false; files?: ReadonlyArray<{ rel: string; data: Buffer }> }> {
   const kind = kindOfMime(p.mime);
   const { stored, files } = await planStore(p, refuse);
   if (!(await fence(() => writePlanned(projectDir, stored, files, existing)))) throw refuse(`${NOT_WRITTEN}.`);
@@ -560,7 +562,8 @@ async function storePrepared(projectDir: string, sourcePath: string, p: Prepared
     ...(stored.variants ? { variants: stored.variants } : {}),
     ...(p.font ? { font: p.font } : {})
   };
-  return { record, existing: false };
+  // The files as written, the picture's copies included, for a caller that keeps them (starter-samples.ts).
+  return { record, existing: false, ...(opts.keepFiles ? { files } : {}) };
 }
 
 /** One file of a batch, as importAsset returns it, or why it was not imported. */

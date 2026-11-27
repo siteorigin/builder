@@ -543,10 +543,11 @@ describe('protecting what was already there', () => {
       const { c, parent } = setup();
       const dir = join(parent, 'meadow-studio');
       mkdirSync(dir);
-      const create = ProjectSession.create.bind(ProjectSession);
+      const writeNew = ProjectSession.prototype.writeNew;
       let before: string[] = [];
-      vi.spyOn(ProjectSession, 'create').mockImplementation(async (d, state) => {
-        await create(d, state);
+      vi.spyOn(ProjectSession.prototype, 'writeNew').mockImplementation(async function (this: InstanceType<typeof ProjectSession>) {
+        await writeNew.call(this);
+        const d = this.dir;
         if (foreignLock) writeFileSync(join(d, '.siteorigin', 'lock.json'), theirLock);
         before = tree(d);
         throw Object.assign(new Error('ENOSPC: no space left on device, write'), { code: 'ENOSPC' });
@@ -590,9 +591,9 @@ describe('protecting what was already there', () => {
     const { c, parent } = setup();
     const dir = join(parent, 'meadow-studio');
     mkdirSync(dir);
-    const create = ProjectSession.create.bind(ProjectSession);
-    vi.spyOn(ProjectSession, 'create').mockImplementation(async (d, state) => {
-      await create(d, state);
+    const writeNew = ProjectSession.prototype.writeNew;
+    vi.spyOn(ProjectSession.prototype, 'writeNew').mockImplementation(async function (this: InstanceType<typeof ProjectSession>) {
+      await writeNew.call(this);
       throw Object.assign(new Error('ENOSPC: no space left on device, write'), { code: 'ENOSPC' });
     });
     const removed: string[] = [];

@@ -112,6 +112,32 @@ describe('the website’s icons in a project', () => {
     SITE_ICON_PATHS.forEach((p, i) => expect(readFileSync(join(d, p)).equals(before[i])).toBe(false));
   });
 
+  it('of a new project, are drawn while the rest of it is made, and drawn again when that drawing failed (#961)', async () => {
+    const r = renderer();
+    const d = tmp();
+    // Started as the project's state is ready, before anything of it is written.
+    r.fail = true;
+    const draft = ProjectSession.starting(d, fresh());
+    await new Promise((done) => setTimeout(done, 50));
+    expect(r.calls).toBe(1);
+    expect(readdirSync(d)).toEqual([]);
+    // The worker came back meanwhile: the first publication asks again rather than going without its icons.
+    r.fail = false;
+    const s = await draft.writeNew();
+    sessions.push(s);
+    expect(r.calls).toBe(2);
+    const claimed = manifest(d);
+    for (const path of SITE_ICON_PATHS) expect(claimed[path]).toBe(sha(readFileSync(join(d, path))));
+    // A drawing that went well is the one the publication takes.
+    const d2 = tmp();
+    const calls = r.calls;
+    const early = ProjectSession.starting(d2, fresh());
+    await new Promise((done) => setTimeout(done, 50));
+    sessions.push(await early.writeNew());
+    expect(r.calls).toBe(calls + 1);
+    for (const path of SITE_ICON_PATHS) expect(existsSync(join(d2, path))).toBe(true);
+  });
+
   it('are drawn again only when what they are made from changes', async () => {
     const r = renderer();
     const d = tmp();

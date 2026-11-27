@@ -95,19 +95,36 @@ function npmDir(): string {
 const userCache = () => join(app.getPath('userData'), 'npm-cache');
 const bundledCache = () => (app.isPackaged ? join(process.resourcesPath, 'npm-cache') : null);
 
+type ToolsCheck = (req: { npmDir: string; dir: string; cache: string; caches: string[] }, signal?: AbortSignal) => Promise<ToolsAvailability & { packages: LockedPackage[] }>;
+
+/** The check here, in this process: what tests and tools use, and the app until it sets its own. */
+const checkHere: ToolsCheck = async ({ npmDir, dir, cache, caches }) => {
+  const packages = await lockedPackages(npmDir, dir, {}, cache);
+  return { ...cacheCoverage(packages, caches), packages };
+};
+let toolsCheck: ToolsCheck = checkHere;
+
+/**
+ * Who works out what the website tools need from now on: the app hands the check to a process of its own
+ * (tools-client.ts), so its main process never loads npm's resolver. Null puts it back here.
+ */
+export function setToolsCheck(check: ToolsCheck | null): void {
+  toolsCheck = check ?? checkHere;
+}
+
 /**
  * Whether installing the website tools into `dir` (a project, or the starter it is made from) downloads anything, and
  * which packages it installs: `null` when that cannot be told, such as without a lock. The caches are the ones npm
  * will read.
  */
-async function checkTools(dir: string, caches: string[]): Promise<(ToolsAvailability & { packages: LockedPackage[] }) | null> {
+async function checkTools(dir: string, caches: string[], signal?: AbortSignal): Promise<(ToolsAvailability & { packages: LockedPackage[] }) | null> {
   if (!existsSync(join(dir, 'package-lock.json'))) return null;
   const checking = perf.span('tools.check');
   let tools: (ToolsAvailability & { packages: LockedPackage[] }) | null = null;
   try {
-    const packages = await lockedPackages(npmDir(), dir, {}, userCache());
+    tools = await toolsCheck({ npmDir: npmDir(), dir, cache: userCache(), caches }, signal);
     perf.count('tools.idealTrees');
-    return (tools = { ...cacheCoverage(packages, caches), packages });
+    return tools;
   } catch {
     return null;
   } finally {
@@ -147,12 +164,12 @@ export async function prepareDependencies(dir: string, onLine: (line: string) =>
   const seeding = perf.span('tools.seedCache');
   let cache = await seedCache();
   seeding();
-  let tools = await checkTools(dir, [cache]);
+  let tools = await checkTools(dir, [cache], signal);
   // The shipped cache may have what the user cache lost since it was seeded (a cleared or damaged file): seed it again.
   const bundled = bundledCache();
   if (tools && !tools.offline && bundled && existsSync(bundled)) {
     cache = await seedCache(true);
-    tools = await checkTools(dir, [cache]);
+    tools = await checkTools(dir, [cache], signal);
   }
   const libc = npmLibc(npmDir());
   const base = [

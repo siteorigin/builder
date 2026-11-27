@@ -30,6 +30,8 @@ import { compileProject } from './compile';
 import { checkSvelteSource, codeContractNames, componentSources } from './codecheck';
 import { renderSiteIconsInWorker, stopMediaWorker } from './project/assets';
 import { setSiteIconRenderer } from './project/site-icons';
+import { setToolsCheck } from './runtime/manager';
+import { stopToolsChecks, toolsChecker } from './runtime/tools-process';
 import { readInsertPlace } from './saved-components';
 import { stopPostReads } from './posts-import/process';
 import { stopSourceSyncs } from './sources/process';
@@ -1202,6 +1204,8 @@ app.whenReady().then(async () => {
     id: `${app.getVersion()} ${BUILD.commit ?? 'unbundled'} ${BUILD.builtAt ?? ''} ${process.platform} ${release()}`,
     records: join(app.getPath('userData'), 'site-icons')
   });
+  // What a new project's website tools need is worked out in a process of its own, never on this one (#961).
+  setToolsCheck((req, signal) => toolsChecker.check(req, signal));
   // Theme packs are verified once the first window is loading (createWindow): every request waits for them (handle()).
   registerIpc();
   developerModeOn = (await loadSettings()).settings.developerMode;
@@ -1235,6 +1239,7 @@ app.on('will-quit', () => {
   stopPhotoDecoders();
   stopPostReads();
   stopSourceSyncs();
+  stopToolsChecks();
 });
 
 // Quitting saves what is being typed, then closes the project (writing its unsaved workspace state), then

@@ -218,6 +218,11 @@ export class SiteIconMaker {
     return !renderer || this.failed.has(key);
   }
 
+  /** Draw the set named `key` when next asked, even if a drawing of it failed lately. */
+  retry(key: string): void {
+    this.failed.delete(key);
+  }
+
   /** Whether the set named `key` is being drawn, or waiting to be. */
   drawing(key: string): boolean {
     return this.active?.input.key === key || this.queued?.input.key === key;

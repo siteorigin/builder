@@ -8,7 +8,7 @@ import type { AiTurnReview, ComponentExportResult, ConflictChoice, ComponentImpo
 import { validateOperation, type ApplyResult, type EditBatch, type EditOperation } from '@shared/ops';
 import type { AssetRecord, ProjectState, PublishedDoc, SourceDoc } from '@shared/types';
 import type { SourceSettingsDraft } from '@shared/api';
-import { createStarterState, STARTER_ASSETS, starterProblem } from '@catalogue/starters';
+import { createStarterState, starterProblem } from '@catalogue/starters';
 import { findTheme } from '@catalogue/index';
 import { slugify } from '@shared/routes';
 import { applyOperations, sourceHash } from '@engine/apply';
@@ -45,6 +45,7 @@ import { fontCoverage } from './project/media';
 import { isValidFontAsset } from '@shared/fonts';
 import { photoMetadata } from './project/photo-metadata';
 import { watchTree, type FolderWatch } from './folder-watch';
+import { importSamples, type SampleCache } from './project/starter-samples';
 import { DevServer, buildProject, dependenciesReady, prepareDependencies, starterTools, type RuntimeStatus } from './runtime/manager';
 import { NETWORK_CODES, ToolsDownloadError } from './runtime/availability';
 import { copyProjectTools, createPreviewStage, removePreviewStage, sweepPreviewStages, syncPreviewStage } from './runtime/stage';
@@ -117,6 +118,17 @@ function safeMissingDiagnostics(s: ProjectSession) {
 
 export function resourcesDir(): string {
   return app.isPackaged ? process.resourcesPath : app.getAppPath();
+}
+
+/**
+ * Where this build keeps the sample photos its first project imported, for the projects after it
+ * (project/starter-samples.ts); none for a build that cannot be told from the next (run unbundled, or from the dev
+ * server, whose code changes under one build stamp).
+ */
+function sampleCache(): SampleCache | null {
+  if (typeof __BUILD_DATE__ !== 'string' || (!app.isPackaged && process.env.ELECTRON_RENDERER_URL)) return null;
+  const commit = typeof __BUILD_COMMIT__ === 'string' ? __BUILD_COMMIT__ : '';
+  return { dir: join(app.getPath('userData'), 'starter-samples'), build: `${app.getVersion()} ${commit} ${__BUILD_DATE__}` };
 }
 
 /** Licence notice for the Business starter's sample images. */
@@ -675,13 +687,12 @@ export class Controller {
       const assetsDir = join(resourcesDir(), 'resources', 'starter-assets');
       const withImages = opts.starter === 'business' && opts.sampleImages && existsSync(assetsDir);
       const state = createStarterState(opts.starter, name, withImages, opts.themeId);
+      // Its website's icons are drawn while the rest of it is made.
+      const draft = ProjectSession.starting(dir, state);
       if (withImages) {
         const importing = perf.span('create.images');
         own('static');
-        for (const a of STARTER_ASSETS) {
-          const src = join(assetsDir, a.source);
-          if (!existsSync(src)) continue;
-          const { record } = await importAsset(dir, src, []);
+        for (const { asset: a, record } of await importSamples(dir, assetsDir, sampleCache())) {
           record.id = a.id;
           record.name = a.name;
           // A bundled sample is no file of the author's.
@@ -699,7 +710,7 @@ export class Controller {
       if (signal.aborted) throw new Error('Canceled');
       own(...SESSION_ENTRIES);
       sessionStarted = true;
-      session = await ProjectSession.create(dir, state);
+      session = await draft.writeNew();
       const locking = perf.span('create.lock');
       const lockErr = await session.acquireLock(INSTANCE_ID);
       locking();
