@@ -1,6 +1,7 @@
 // Code components with slots and marked parts (#379): content inserted into a code component's slot on the canvas,
 // a part its code marks with data-so-part picked on the canvas and styled in the Inspector, content in the slot still
-// picked on its own, and a website export that carries no marker while the editable project keeps them.
+// picked on its own, and exports (the website and the source alike) that carry no marker while the editable project
+// keeps them.
 import assert from 'node:assert/strict';
 import { readFileSync, readdirSync, statSync } from 'node:fs';
 import { join } from 'node:path';
@@ -148,7 +149,7 @@ try {
   await clickOn(slotted);
   await eventually(async () => assert.match((await selected()) ?? '', /^Button/, 'the next click selects the Button in it'), 15000);
 
-  step('the website’s build carries no marker; the editable project and its export keep them');
+  step('neither export carries a marker; the editable project keeps them');
   const out = join(WORK, 'export-static');
   const built = await withTimeout(win.evaluate((dest) => window.builderTest.exportStatic(dest), out), 300000, 'Static export');
   assert.equal(built.ok, true, `static export succeeds: ${built.message}`);
@@ -162,7 +163,10 @@ try {
   const sourceOut = join(WORK, 'export-source');
   const src = await withTimeout(win.evaluate((dest) => window.builderTest.exportSource(dest), sourceOut), 120000, 'Source export');
   assert.equal(src.ok, true, `source export succeeds: ${src.message}`);
-  assert.match(readFileSync(join(sourceOut, sourcePath), 'utf8'), /data-so-part="total"/, 'the editable export keeps the marker, so its parts are found where it is opened again');
+  const exported = readFileSync(join(sourceOut, sourcePath), 'utf8');
+  assert.ok(exported.includes("<output class={['amount', so_o?.total]}>"), 'the source export keeps the code itself');
+  assert.doesNotMatch(exported, /data-so-part/, 'the source export, a published site too, carries no marker (#1076)');
+  assert.match(readFileSync(join(projectDir, sourcePath), 'utf8'), /data-so-part="total"/, 'the project’s own code still keeps its marker');
 
   assert.deepEqual(errors, [], 'no uncaught errors in the editor');
 } finally {
