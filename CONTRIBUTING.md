@@ -16,6 +16,12 @@ Playwright's Chromium is for the browser tests in `npm test`, which skip themsel
 
 `SITEORIGIN_USER_DATA=/some/folder` gives the app a separate settings and cache folder, which is useful for keeping test runs apart from your own projects. In development builds, `OPENAI_API_KEY` and `ANTHROPIC_API_KEY` from the environment are used when no key is saved in Settings.
 
+## Theme releases
+
+Foundation, the built-in theme, and its development fixture `foundation-alt` are authored in the private [`siteorigin/builder-components`](https://github.com/siteorigin/builder-components) repository and committed here as built releases: `resources/packs/foundation/` and `resources/packs-dev/foundation-alt/`, pinned by version and digest in `resources/packs.lock.json`, which also names the builder-components commit they were built from. You don't need that repository: `npm run dev`, `build`, `pack` and `dist` check the committed releases against the lock and use them as they are, and a release that has changed without its lock fails that check. The copy of the themes in `src/catalogue/` is what the unit tests register; the app loads the committed releases.
+
+Refreshing them is for people with access to builder-components. With a checkout beside this one (a `builder-components` folder next to this checkout, or next to the main checkout when you work in a worktree), or named by `SITEORIGIN_BUILDER_COMPONENTS=/path/to/builder-components`, and its dependencies installed (`npm ci` there), `npm run build:packs` builds both from that checkout against this checkout's code, draws their thumbnails (Playwright's Chromium), loads them back through the app's loader, and replaces the committed releases and the lock in one step. The checkout must have no uncommitted changes, since the lock records its commit. Commit both releases and the lock together. A change here that stops the committed releases loading fails `tests/unit/committed-packs.test.ts`, and a change to them or to the lock reruns the whole unit suite on PR CI.
+
 ## Checks
 
 Every change needs:
