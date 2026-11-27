@@ -33,16 +33,22 @@ const ENTRY = [
   "import { flushSync } from 'react-dom';",
   `import { AssetsPanel } from ${src('renderer/src/panels/AssetsPanel')};`,
   `import { useStore } from ${src('renderer/src/store')};`,
+  `import { showAsset } from ${src('renderer/src/lib/place')};`,
   'let revision = 1;',
+  'let root;',
   "const snapshot = (state) => ({ workspaceKey: 'w', dir: '/project', state, revision, history: { canUndo: false, canRedo: false, entries: [] }, diagnostics: [], recoveryNotes: [], aiBusy: false, assetUsage: {}, missingAssets: [], conflicts: [], localState: {}, recentExports: [], runtime: { state: 'ready', url: " + JSON.stringify(DEV) + ' } });',
   'window.mount = (state) => {',
   "  flushSync(() => useStore.setState({ screen: 'editor', snapshot: snapshot(state), pageId: state.site.homePageId, leftTab: 'assets', runtime: { state: 'ready', url: " + JSON.stringify(DEV) + ' } }));',
-  "  flushSync(() => createRoot(document.getElementById('root')).render(h(AssetsPanel, { narrow: false })));",
+  "  root = createRoot(document.getElementById('root'));",
+  '  flushSync(() => root.render(h(AssetsPanel, { narrow: false })));',
   '};',
   'window.so = {',
   "  renders: () => { window.__siteoriginPerf.mark('probe'); return window.perfRecords.at(-1).c['react.renders'] ?? 0; },",
   // A new snapshot, as one arrives over IPC: every object in it new.
   '  receive: (state) => { revision++; flushSync(() => useStore.setState({ snapshot: snapshot(state) })); },',
+  // "Show image" asked for while no Assets panel is built (the editor builds a panel the first time it shows): the
+  // request comes first, then the panel it shows is built.
+  "  showUnbuilt: (id) => { flushSync(() => root.unmount()); showAsset('w', id); root = createRoot(document.getElementById('root')); flushSync(() => root.render(h(AssetsPanel, { narrow: false }))); },",
   '};'
 ].join('\n');
 
@@ -241,6 +247,16 @@ describe.skipIf(!browserInstalled)('Assets grid tiles render only when they chan
     expect(await focused()).toBe(ids[1 + cols]);
     await page.waitForTimeout(300);
     expect(await focused()).toBe(ids[1 + cols]);
+  });
+
+  it('opens on the image “Show image” asked for when that showing is what builds the panel', async () => {
+    const id = order()[40];
+    await page.evaluate((x) => (globalThis as unknown as { so: { showUnbuilt(id: string): void } }).so.showUnbuilt(x), id);
+    await page.locator('.asset-detail .asset-back').waitFor();
+    expect(await page.locator('.asset-detail').textContent()).toContain(state.assets.assets[id].name);
+    // Taken once: the next panel built opens on the grid.
+    await page.evaluate("so.showUnbuilt('')");
+    expect(await page.locator('.asset-detail').count()).toBe(0);
   });
 
   it('returns to the grid as it was when Back comes before the details have drawn', async () => {

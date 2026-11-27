@@ -55,6 +55,7 @@ type PlaceResult = { kind: 'none' } | { kind: 'placed' | 'kept'; assetId: string
 interface PlaceModule {
   importAndPlace(opts: { paths?: string[]; base: ProjectSnapshot | null; place: (asset: AssetRecord) => string | void; holds?: (asset: AssetRecord) => boolean; shown: () => boolean }): Promise<PlaceResult>;
   SHOW_ASSET_EVENT: string;
+  takeShowAsset(): { opening: string; assetId: string } | null;
 }
 
 type Placement = { at: { owner: OwnerRef; parentId: string | null; slot?: string; index?: number } | null; where?: { lead: string; target: string; node?: boolean }; page?: string; key?: string; reason?: string };
@@ -318,6 +319,13 @@ describe('placing an imported image (issue #262)', () => {
     note.action!.run();
     expect(store.getState().leftTab).toBe('assets');
     expect(events).toEqual([{ type: place.SHOW_ASSET_EVENT, detail: { opening: key(), assetId: photo.id } }]);
+    // Kept for an Assets panel that this showing builds, which takes it once.
+    expect(place.takeShowAsset()).toEqual({ opening: key(), assetId: photo.id });
+    expect(place.takeShowAsset()).toBeNull();
+    // A showing put back before any panel took it (the sidebar on another view) is dropped, not opened later.
+    note.action!.run();
+    store.setState({ leftTab: 'pages' });
+    expect(place.takeShowAsset()).toBeNull();
     expect(store.getState().pendingSave).toBe(0);
   });
 

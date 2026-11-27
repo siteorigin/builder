@@ -525,12 +525,27 @@ function docFindings(r: SeoOverviewRow): Array<{ tone: 'warn' | 'note'; label: s
  * loaded underneath, as it was. `shown` says whether the view is in front: its structured data and its overview are
  * worked out only then.
  */
+/**
+ * A page's fields are in one place at a time: the SEO view while it is in front, else the Inspector. A field with focus
+ * in the Inspector as the view comes in front (the sidebar's shortcut works from a field) is left first, as a click away
+ * would leave it, so what it holds is saved, or kept as refused, by its own control before the view takes its place.
+ * The editor runs this, always mounted: the view is built the first time it comes in front, after that change.
+ */
+export function useLeaveInspectorForSeo(): void {
+  useEffect(
+    () =>
+      useStore.subscribe((s, prev) => {
+        if (activeWorkspace(prev) !== 'seo' && activeWorkspace(s) === 'seo') leaveField(document.getElementById('dock-panel-inspect'));
+      }),
+    []
+  );
+}
+
 export function SeoView({ shown }: { shown: boolean }) {
   const hidden = !shown;
   const root = useRef<HTMLElement>(null);
-  // A page's fields are in one place at a time: the view while it is in front, else the Inspector. A field with focus
-  // in the place about to go (the sidebar's shortcut works from a field, another document chosen) is left first, as a
-  // click away would leave it, so what it holds is saved, or kept as refused, by its own control before that goes.
+  // A field with focus in the view as it goes (another document chosen, the canvas back) is left first, as a click away
+  // would leave it; the Inspector's, as the view comes in front, is left by useLeaveInspectorForSeo.
   useEffect(
     () =>
       useStore.subscribe((s, prev) => {
@@ -538,7 +553,6 @@ export function SeoView({ shown }: { shown: boolean }) {
         const is = activeWorkspace(s) === 'seo';
         const subject = (x: SeoSubject | null) => (x ? seoSubjectKey(x) : null);
         if (was && (!is || subject(s.seoSubject) !== subject(prev.seoSubject))) leaveField(root.current);
-        else if (!was && is) leaveField(document.getElementById('dock-panel-inspect'));
       }),
     []
   );
