@@ -138,6 +138,8 @@ describe('entry fields', () => {
     expect(entryFieldValue(read('en_winter'), 'publishedAt', 'raw')).toBe('2026-01-12');
     expect(entryFieldValue(read('en_winter'), 'categories')).toBe('Craft, News');
     expect(entryFieldValue(read('en_winter'), 'slug')).toBe(c.entries.en_winter.slug);
+    // Never empty, so it can fill a property that requires text, as the title can.
+    expect(fields.slug.required).toBe(true);
     expect(Object.keys(fields).indexOf('slug')).toBe(Object.keys(fields).indexOf('title') + 1);
     expect(entryFieldValue({ ...read('en_winter'), entry: { ...c.entries.en_winter, slug: 'renamed' } }, 'slug')).toBe('renamed');
     expect(entryFieldValue(read('en_winter'), 'field.price')).toBe('Free');

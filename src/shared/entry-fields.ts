@@ -72,7 +72,8 @@ const text = (label: string, description?: string): PropSchema => ({ type: 'stri
 const BUILT_IN: Record<(typeof ENTRY_FIELD_NAMES)[number], PropSchema> = {
   // Every entry has a title: a layout can pass it on to a property that requires one.
   title: { ...text('Title'), required: true },
-  slug: text('Slug', 'The last segment of the entry\'s address.'),
+  // Every entry has a slug: a layout can pass it on to a property that requires one.
+  slug: { ...text('Slug', 'The last segment of the entry\'s address.'), required: true },
   publishedAt: text('Publication date'),
   updatedAt: text('Last updated'),
   author: text('Author'),
