@@ -4272,9 +4272,10 @@ export function generatePage(state: ProjectState, page: PageDoc, opts: GenerateO
  * One instance on its own, as the editor's isolated preview shows it: a Svelte module at `file` that renders the
  * instance inside a <main> of its own, as a page renders its first section, with no header or footer. Its props,
  * variants and identity attributes are emitted as a page placement's are, under the identity context `ctx`.
- * Editor-only: generateProject never makes one.
+ * Editor-only: generateProject never makes one. Its computed lists (news, an article's header) are worked out for
+ * `pageId` when it shows a placement of that page.
  */
-export function generateIsolatedInstance(state: ProjectState, file: string, node: InstanceNode, ctx: string): string {
+export function generateIsolatedInstance(state: ProjectState, file: string, node: InstanceNode, ctx: string, pageId?: string): string {
   const ectx: EmitCtx = {
     state,
     file,
@@ -4284,7 +4285,7 @@ export function generateIsolatedInstance(state: ProjectState, file: string, node
     tree: { rootIds: [node.id], nodes: { [node.id]: node } },
     ctxExpr: ctx,
     items: [],
-    rctx: { state },
+    rctx: pageId ? { state, pageId } : { state },
     indent: 1,
     locals: new Map(),
     firstSection: true,

@@ -23,7 +23,7 @@ export function previewSpec(v: unknown): ComponentPreviewSpec | null {
   if (!id(definitionId) || !id(componentId) || !record(variants) || !record(props) || !record(states)) return null;
   if (variants && !Object.values(variants).every((o) => typeof o === 'string')) return null;
   // A placement's content is shown as it is saved, in place of sample values, for one of the project's own definitions.
-  if (placement !== undefined && (!wellFormedPlacement(placement, id) || props !== undefined || definitionId === undefined)) return null;
+  if (placement !== undefined && (!wellFormedPlacement(placement, id) || props !== undefined || definitionId === undefined || componentId !== undefined)) return null;
   // An item state is previewed at the position of an item.
   if (states && !Object.values(states).every((o) => typeof o === 'string' || typeof o === 'boolean' || (Number.isSafeInteger(o) && (o as number) >= 0))) return null;
   try {
@@ -50,7 +50,9 @@ function wellFormedPlacement(v: unknown, id: (x: unknown) => boolean): v is Prev
   const { owner, nodeId } = v as Record<string, unknown>;
   if (!owner || typeof owner !== 'object' || Array.isArray(owner)) return false;
   const { kind, id: ownerId } = owner as Record<string, unknown>;
-  return PREVIEW_OWNER_KINDS.includes(kind as never) && ownerId !== undefined && id(ownerId) && nodeId !== undefined && id(nodeId);
+  if (!PREVIEW_OWNER_KINDS.includes(kind as never) || ownerId === undefined || !id(ownerId) || nodeId === undefined || !id(nodeId)) return false;
+  // The shared header and footer are the only trees of their kind.
+  return kind !== 'shell' || ownerId === 'header' || ownerId === 'footer';
 }
 
 /**

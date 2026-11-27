@@ -489,6 +489,11 @@ describe('serving an isolated preview', () => {
       expect(previewSpec({ definitionId: 'c1', placement: p })).toBeNull();
     expect(previewSpec({ definitionId: 'c1', placement, props: { heading: 'Hi' } })).toBeNull();
     expect(previewSpec({ componentId: 'content.media', placement })).toBeNull();
+    expect(previewSpec({ definitionId: 'c1', componentId: 'content.media', placement })).toBeNull();
+    // Every kind of tree a placement can be in; of the shared trees only the header and footer.
+    for (const owner of [{ kind: 'shell', id: 'header' }, { kind: 'shell', id: 'footer' }, { kind: 'component', id: 'c2' }, { kind: 'template', id: 'col' }, { kind: 'archive', id: 'col' }])
+      expect(previewSpec({ definitionId: 'c1', placement: { owner, nodeId: 'n1' } })).toEqual({ definitionId: 'c1', placement: { owner, nodeId: 'n1' } });
+    expect(previewSpec({ definitionId: 'c1', placement: { owner: { kind: 'shell', id: 'sidebar' }, nodeId: 'n1' } })).toBeNull();
     for (const bad of [null, 'c1', [], { definitionId: 3 }, { definitionId: '' }, { definitionId: 'd'.repeat(201) }, { componentId: 'c'.repeat(201) }, { variants: { tone: 2 } }, { props: [] }, { states: [] }, { states: { open: -1 } }, { states: { open: 1.5 } }, { states: { open: Number.MAX_SAFE_INTEGER + 1 } }, { states: { plan: { value: 'annual' } } }, { props: { big: 'x'.repeat(300_000) } }]) expect(previewSpec(bad)).toBeNull();
   });
 });

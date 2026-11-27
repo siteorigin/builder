@@ -15,10 +15,10 @@ import type { ComponentDefinition } from '@shared/types';
 import { axesOf } from '@shared/variants';
 import { getState, setState, useStore } from '../store';
 import { setStudioView } from '../lib/actions';
-import { studioContent, studioPlacements, studioStates, studioVariants } from '../lib/studio';
+import { placementOption, studioContent, studioContentChoice, studioContentValue, studioPlacements, studioStates, studioVariants } from '../lib/studio';
 import { itemStatePositions } from '../lib/ui-state';
 import { declaredState } from '@engine/schema';
-import { isStudioSample, STUDIO_SAMPLES, studioSampleProps, type StudioSample } from '../lib/studio-samples';
+import { STUDIO_SAMPLES, studioSampleProps, type StudioSample } from '../lib/studio-samples';
 
 /** Whether a sample fills at least one of the component's fields with something other than its starting value. */
 function sampleChanges(def: ComponentDefinition, sample: StudioSample): boolean {
@@ -36,7 +36,7 @@ export function StudioControls({ def }: { def: ComponentDefinition }) {
   const placements = useMemo(() => (project ? studioPlacements(project, def) : []), [project, def]);
   const chosen = view?.placement ? placements.find((p) => p.owner.kind === view.placement!.owner.kind && p.owner.id === view.placement!.owner.id && p.nodeId === view.placement!.nodeId) : undefined;
   // The placement shown was deleted (or is now another component's): the starting content shows, and the select says so.
-  const gone = !!view?.placement && !chosen;
+  const gone = !!project && !!view?.placement && !chosen;
   useEffect(() => {
     if (gone) setStudioView({ placement: undefined, sample: 'defaults' });
   }, [gone]);
@@ -50,11 +50,10 @@ export function StudioControls({ def }: { def: ComponentDefinition }) {
   // A sample is offered only when it fills some field differently from the starting content; with none, no Sample select.
   const samples = STUDIO_SAMPLES.filter((o) => o.value === 'defaults' || o.value === view.sample || sampleChanges(def, o.value));
   const contentChoices = samples.length + placements.length;
-  const contentValue = chosen ? `placement:${chosen.key}` : view.placement ? 'defaults' : view.sample;
+  const contentValue = studioContentValue(view, placements);
   const chooseContent = (value: string) => {
-    if (isStudioSample(value)) return setStudioView({ sample: value, placement: undefined });
-    const p = placements.find((o) => `placement:${o.key}` === value);
-    if (p) setStudioView({ sample: 'defaults', placement: { owner: p.owner, nodeId: p.nodeId } });
+    const patch = studioContentChoice(value, placements);
+    if (patch) setStudioView(patch);
   };
   const axes = axesOf(def);
   const stateRows = Object.entries(states).map(([name, value]) => {
@@ -140,7 +139,7 @@ export function StudioControls({ def }: { def: ComponentDefinition }) {
                 {placements.length > 0 && (
                   <optgroup label="Content of a placement">
                     {placements.map((p) => (
-                      <option key={p.key} value={`placement:${p.key}`} data-studio-placement={p.key}>
+                      <option key={p.key} value={placementOption(p)} data-studio-placement={p.key}>
                         {p.label}
                       </option>
                     ))}

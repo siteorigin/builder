@@ -7,10 +7,11 @@
  */
 import type { ComponentDefinition, OwnerRef, ProjectState } from '@shared/types';
 import { declaredState, stateValueFits } from '@engine/schema';
-import { instancesOf, placementContent, type PlacementRef } from '@engine/tree';
+import { instancesOf, placementContent, type PlacementContent, type PlacementRef } from '@engine/tree';
+import { resolveInstanceProps } from '@generator/index';
 import type { ComponentPreviewSpec } from '@shared/component-preview';
 import { axesOf } from '@shared/variants';
-import { studioSampleProps, type StudioSample } from './studio-samples';
+import { isStudioSample, studioSampleProps, type StudioSample } from './studio-samples';
 
 /** What the studio shows the component with. Kept in the view only: never in the project, its history or the chat. */
 export interface StudioView {
@@ -98,7 +99,7 @@ export function studioPlacements(state: ProjectState, def: ComponentDefinition):
   const perOwner = new Map<string, number>();
   for (const u of all) perOwner.set(where(u.owner), (perOwner.get(where(u.owner)) ?? 0) + 1);
   const seen = new Map<string, number>();
-  return all.map((u) => {
+  const out = all.map((u): StudioPlacement => {
     const at = where(u.owner);
     const n = (seen.get(at) ?? 0) + 1;
     seen.set(at, n);
@@ -107,10 +108,40 @@ export function studioPlacements(state: ProjectState, def: ComponentDefinition):
     const label = count > 1 ? `${u.label}, ${name ? `${name} (${n} of ${count})` : `${n} of ${count}`}` : u.label;
     return { key: JSON.stringify([u.owner.kind, u.owner.id, u.node.id]), owner: u.owner, nodeId: u.node.id, label };
   });
+  // Two pages of one title are told apart by their addresses.
+  const named = new Map<string, number>();
+  for (const p of out) named.set(p.label, (named.get(p.label) ?? 0) + 1);
+  for (const p of out) {
+    const page = p.owner.kind === 'page' && Object.hasOwn(state.pages, p.owner.id) ? state.pages[p.owner.id] : undefined;
+    if (named.get(p.label)! > 1 && page) p.label = `${p.label} (${page.route})`;
+  }
+  return out;
+}
+
+/** The Sample select's value for a placement. */
+export const placementOption = (p: Pick<StudioPlacement, 'key'>) => `placement:${p.key}`;
+
+/** What the Sample select shows chosen: the placement shown, else the sample (Starting content once a chosen placement is gone). */
+export function studioContentValue(view: StudioView, placements: readonly StudioPlacement[]): string {
+  const p = view.placement;
+  if (!p) return view.sample;
+  const chosen = placements.find((o) => o.owner.kind === p.owner.kind && o.owner.id === p.owner.id && o.nodeId === p.nodeId);
+  return chosen ? placementOption(chosen) : 'defaults';
+}
+
+/**
+ * The view change a choice in the Sample select makes: a sample lets go of any placement chosen (which would
+ * otherwise still be shown), and a placement is shown over the starting content. Null for a value the select no
+ * longer offers.
+ */
+export function studioContentChoice(value: string, placements: readonly StudioPlacement[]): Pick<StudioView, 'sample' | 'placement'> | null {
+  if (isStudioSample(value)) return { sample: value, placement: undefined };
+  const p = placements.find((o) => placementOption(o) === value);
+  return p ? { sample: 'defaults', placement: { owner: { kind: p.owner.kind, id: p.owner.id }, nodeId: p.nodeId } } : null;
 }
 
 /** The chosen placement's own content, while it is still a placement of `def`; null once it is not (or with none chosen). */
-function chosenContent(state: ProjectState | undefined, def: ComponentDefinition, view: StudioView): Record<string, unknown> | null {
+function chosenContent(state: ProjectState | undefined, def: ComponentDefinition, view: StudioView): PlacementContent | null {
   return view.placement && state ? placementContent(state, def.id, view.placement) : null;
 }
 
@@ -119,8 +150,16 @@ function chosenContent(state: ProjectState | undefined, def: ComponentDefinition
  * placement's own while it exists (a placement gone since shows the starting content), else the sample's.
  */
 export function studioContent(state: ProjectState | undefined, def: ComponentDefinition, view: StudioView): Record<string, unknown> | undefined {
-  if (view.placement) return chosenContent(state, def, view) ?? undefined;
-  return studioSampleProps(def, view.sample);
+  if (!view.placement) return studioSampleProps(def, view.sample);
+  const own = chosenContent(state, def, view);
+  if (!own || !state) return undefined;
+  // A list connected to a collection, or one that fills itself (news, an article's header), holds the rows the
+  // preview shows where it is placed, not the ones saved: those are worked out as the page works them out.
+  const computed = Object.entries(def.properties).filter(([name, schema]) => schema.type === 'list' && (schema.feed || (own.listSources && Object.hasOwn(own.listSources, name))));
+  if (!computed.length) return own.props;
+  const node = { id: '', kind: 'instance' as const, definitionId: def.id, props: own.props, ...(own.listSources ? { listSources: own.listSources } : {}) };
+  const resolved = resolveInstanceProps(def, node, own.pageId ? { state, pageId: own.pageId } : { state });
+  return { ...own.props, ...Object.fromEntries(computed.map(([name]) => [name, resolved[name]])) };
 }
 
 /** The isolated preview request for what the studio shows: the design, its variant options, its sample content and its UI state. */
