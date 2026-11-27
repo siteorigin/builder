@@ -11,6 +11,8 @@ import type { FormRoutingChange, FormRoutingGrant, FormRoutingReview } from '@en
 
 interface Filed {
   revision: number;
+  /** The AI run the batch was sent under, or null for one sent outside a run. */
+  run: string | null;
   /** The batch, as session.apply fingerprints it. */
   operations: string;
   /** Its changes' keys, sorted. */
@@ -27,24 +29,25 @@ export class FormRoutingGrants {
   private reviews = new Map<string, Filed>();
   private grants = new Map<string, Filed>();
 
-  /** Files a refused batch's changes, at `revision`, as a review the app may ask the user about. */
-  review(revision: number, operations: string, changes: FormRoutingChange[]): FormRoutingReview {
+  /** Files a refused batch's changes, at `revision` and under `run`, as a review the app may ask the user about. */
+  review(revision: number, run: string | null, operations: string, changes: FormRoutingChange[]): FormRoutingReview {
     this.forget(revision);
     const id = token();
-    this.reviews.set(id, { revision, operations, keys: keysOf(changes) });
+    this.reviews.set(id, { revision, run, operations, keys: keysOf(changes) });
     trim(this.reviews);
     return { id, operations, changes };
   }
 
   /**
    * The grant for a review the user allowed, or null when there is none to give: a review this session never filed,
-   * one already granted, or one filed at a revision the project has moved on from. The review is used up either way.
+   * one already granted, or one filed at a revision the project has moved on from or under a run that is not `run`.
+   * The review is used up either way.
    */
-  grant(reviewId: string, revision: number): FormRoutingGrant | null {
+  grant(reviewId: string, revision: number, run: string | null): FormRoutingGrant | null {
     const filed = typeof reviewId === 'string' ? this.reviews.get(reviewId) : undefined;
     if (!filed) return null;
     this.reviews.delete(reviewId);
-    if (filed.revision !== revision) return null;
+    if (filed.revision !== revision || filed.run !== run) return null;
     const t = token();
     this.grants.set(t, filed);
     trim(this.grants);
@@ -69,10 +72,13 @@ export class FormRoutingGrants {
   }
 }
 
-/** Whether a grant taken from the ledger allows a batch: the same batch, at the same revision, making exactly the changes it was given for. */
-export function admits(filed: Filed | null, revision: number, operations: string, changes: readonly FormRoutingChange[]): boolean {
+/**
+ * Whether a grant taken from the ledger allows a batch: the same batch, at the same revision, under the same run,
+ * making exactly the changes it was given for. A batch that changes no form's routing needs none.
+ */
+export function admits(filed: Filed | null, revision: number, run: string | null, operations: string, changes: readonly FormRoutingChange[]): boolean {
   if (!changes.length) return true;
-  if (!filed || filed.revision !== revision || filed.operations !== operations) return false;
+  if (!filed || filed.revision !== revision || filed.run !== run || filed.operations !== operations) return false;
   const keys = keysOf(changes);
   return keys.length === filed.keys.length && keys.every((k, i) => k === filed.keys[i]);
 }

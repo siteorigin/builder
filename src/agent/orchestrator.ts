@@ -1978,6 +1978,8 @@ export class Orchestrator {
           // a guest: where a form sends is the host's alone, and a guest's batch that changes it is refused as it is.
           const review = res.ok || delegation ? null : formRoutingReview(res.error);
           if (review) res = await approveRouting(review, send);
+          // Refused again: the model hears why, never the session's review of it.
+          if (review && formRoutingReview(res.error)) res = { ...res, error: { code: res.error!.code, message: res.error!.message, recoverable: res.error!.recoverable } };
         } catch (e) {
           // A save that failed part way may have published the source before it threw: the run is undone, so it is kept.
           await keepDrafts(operations, { ok: true });

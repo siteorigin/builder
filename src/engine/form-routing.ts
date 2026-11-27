@@ -180,7 +180,7 @@ export function formRoutingChanges(before: ProjectState, after: ProjectState): F
   // it is called instead, so the same batch sent again once allowed makes the same changes.
   const known = (id: string) => (Object.hasOwn(before.components, id) ? id : `\u0001new\u0000${after.components[id]?.name ?? ''}`);
   const add = (c: Omit<FormRoutingChange, 'key'>, value: string, placement = '') => {
-    const key = [c.kind, known(c.definitionId), placement, c.prop ?? '', value].join('\u0000');
+    const key = JSON.stringify([c.kind, known(c.definitionId), placement, c.prop ?? '', value]);
     if (seen.has(`${key}\u0000${c.where ?? ''}`)) return;
     seen.add(`${key}\u0000${c.where ?? ''}`);
     out.push({ ...c, key });
@@ -260,6 +260,8 @@ export function formRoutingChanges(before: ProjectState, after: ProjectState): F
     const made = !owners.has(`${owner.kind}:${owner.id}`);
     const scope = made ? `${owner.kind}:\u0001new\u0000${label}` : `${owner.kind}:${owner.id}`;
     const where = owner.kind === 'page' ? `on “${label}”` : owner.kind === 'shell' ? `in the ${label.toLowerCase()}` : owner.kind === 'component' ? `in the “${label}” design` : `in “${label}”`;
+    // New placements are counted in the order the tree holds them, which the same batch made again keeps.
+    let added = 0;
     for (const n of Object.values(tree.nodes)) {
       if (n.kind !== 'instance') continue;
       const had = placed.get(`${scope}:${n.id}`);
@@ -272,7 +274,7 @@ export function formRoutingChanges(before: ProjectState, after: ProjectState): F
       const ps = props(n.definitionId);
       // A placement that was there before is named by its node; a new one, whose ID is new each time the batch is made,
       // by where it is.
-      const placement = prior ? `${scope}:${n.id}` : `${scope}:\u0001new`;
+      const placement = prior ? `${scope}:${n.id}` : `${scope}:\u0001new:${added++}`;
       // Named, for a grant, without its list items' IDs: the batch sent again gives new items new IDs.
       const report = (p: string) => add({ kind: 'setting', definitionId: n.definitionId, name, where, prop: p, label: labelOf(n.definitionId, p), value: resolved(after, n, p) }, valueOf(after, tree, scope, n, p, true), placement);
       if (prior && prior.definitionId !== n.definitionId) {

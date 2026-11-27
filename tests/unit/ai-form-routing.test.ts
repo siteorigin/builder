@@ -613,5 +613,26 @@ describe('the host grant for an allowed AI form change (#1129)', () => {
     expect(keyOf(setEndpoint(owner, second, EVIL))).not.toEqual(first);
     expect(keyOf(setEndpoint(owner, form, `${EVIL}x`))).not.toEqual(first);
     expect(keyOf([{ type: 'instance.setProp', owner, nodeId: form, prop: 'provider', value: 'web3forms' }])).not.toEqual(first);
+    // Two new forms on one page, each sending somewhere new, are two changes.
+    const insert = { type: 'node.insert', owner, parentId: null, componentId: 'contact.form', props: { provider: 'endpoint', endpoint: EVIL } } as EditOperation;
+    expect(new Set(keyOf([insert, insert])).size).toBe(2);
+  });
+
+  it('is good only under the run it was given in', async () => {
+    const { state, owner, form } = project();
+    const s = await ProjectSession.create(temp('session'), state);
+    const batch = setEndpoint(owner, form, EVIL);
+    expect(await s.beginRun('run_1')).toBeNull();
+    const review = formRoutingReview((await s.apply({ operations: batch }, { label: 'AI', source: 'ai', runId: 'run_1' })).error)!;
+    const grant = s.grantFormRouting(review.id)!;
+    expect(grant).not.toBeNull();
+    await s.completeRun('AI');
+    // The run ended with nothing changed: the next run, at the same revision, cannot use what the last one was given.
+    expect(await s.beginRun('run_2')).toBeNull();
+    const r = await s.apply({ operations: batch }, { label: 'AI', source: 'ai', runId: 'run_2', formRouting: grant });
+    expect(r.error?.code).toBe('SCOPE_MISMATCH');
+    expect(endpointOf(s.state, owner, form)).toBe(SALES);
+    await s.abortRun();
+    await s.close();
   });
 });

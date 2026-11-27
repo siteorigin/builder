@@ -6106,6 +6106,19 @@ describe('a change to where a contact form sends (#1128)', () => {
     }
   });
 
+  it('tells the model why a batch was refused again, never the session’s review of it (#1129)', async () => {
+    // A token the session never gave: the batch sent with it is refused at commit, as any forged grant is.
+    const granting = vi.spyOn(ProjectSession.prototype, 'grantFormRouting').mockReturnValue({ token: 'not-the-session’s' });
+    try {
+      const { told, node } = await editForm('endpoint', EVIL, (orch, runId, q) => void orch.answer(runId, q.id!, q.choices[1]));
+      expect(told.error?.code).toBe('SCOPE_MISMATCH');
+      expect(told.error).not.toHaveProperty('details');
+      expect(node.props.endpoint).toBe(SALES);
+    } finally {
+      granting.mockRestore();
+    }
+  });
+
   it('asks nothing for an ordinary edit to the form', async () => {
     const { asked, told, node } = await editForm('heading', 'Write to us', () => {
       throw new Error('Nothing should be asked.');

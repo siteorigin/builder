@@ -3320,8 +3320,9 @@ export class ProjectSession extends EventEmitter {
       // batch that could not land anyway.
       if (ai) {
         const routing = formRoutingChanges(this.state, next);
-        if (!admits(routingGrant, this.revision, fingerprint, routing)) {
-          const review: FormRoutingReview = this.routingGrants.review(this.revision, fingerprint, routing);
+        const run = this.activeRun?.id ?? null;
+        if (!admits(routingGrant, this.revision, run, fingerprint, routing)) {
+          const review: FormRoutingReview = this.routingGrants.review(this.revision, run, fingerprint, routing);
           return { ok: false, revision: this.revision, error: { code: 'SCOPE_MISMATCH', message: formRoutingRefusal(routing), recoverable: true, details: { formRouting: review } } };
         }
       }
@@ -3346,10 +3347,11 @@ export class ProjectSession extends EventEmitter {
   /**
    * The grant for a form routing review this session filed (`apply`'s refusal), once the user allowed it when the app
    * asked them: the app's own call, never the model's (agent/orchestrator.ts). Null when the review is not one this
-   * session filed, was already granted, or the project changed since: what the user saw is no longer what would land.
+   * session filed, was already granted, was filed under another run, or the project changed since: what the user saw
+   * is no longer what would land.
    */
   grantFormRouting(reviewId: string): FormRoutingGrant | null {
-    return this.routingGrants.grant(reviewId, this.revision);
+    return this.routingGrants.grant(reviewId, this.revision, this.activeRun?.id ?? null);
   }
 
   /** The definitions a batch's `component.import` brought or kept from the theme, as they are in `next`. */
