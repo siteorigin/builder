@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest';
 import type { PerfRecord } from '../../src/shared/perf';
 import type { ProjectState } from '../../src/shared/types';
 import { Collector, Trace } from '../../scripts/perf/results';
-import { ai, AI_EDIT_CASES, aiEdit, aiMeasurements, batch, BATCH_OPERATIONS, batchOperations, canvas, chainFor, chat, CHAT_CASES, CHAT_REPLY_CHECKPOINTS, CHAT_TYPED, chatReply, chatReplyFirst, chatReplyLast, chatSeed, colour, COLOUR_STEPS, colourPath, copiesProblem, coveredMs, create, createAgain, deepest, drag, edit, editBranded, editFullHistory, edits, namedFaces, EDITS, expect as check, expectedCopies, exportAgain, exportSite, findHeading, type FixtureFacts, importHeic, importOriginals, importPhotos, installedPackages, installsHere, launch, memory, MEMORY_EDITS, noWindow, memoryPanels, PANEL_DOCK_VIEWS, PANEL_EDITS, PANEL_SIDE_TURNS, PANEL_SIDE_VIEWS, open, reopen, REOPEN_CYCLES, PANELS, panels, panelsInUse, runChain, SITE_WORK, type Scenario, type ScenarioContext, SHOWN_PANELS, storedPhotoSize, switchProject, THUMB_WINDOWS, thumbs, toolCallsReply, layers, LAYERS_KINDS, LAYERS_SAMPLES, LAYERS_SIZES, layersAncestors, layersPage, type LayersKind, history, HISTORY_WINDOWS } from '../../scripts/perf/scenarios';
+import { ai, AI_EDIT_CASES, aiEdit, aiMeasurements, batch, BATCH_OPERATIONS, batchOperations, canvas, chainFor, chat, CHAT_CASES, CHAT_REPLY_CHECKPOINTS, CHAT_TYPED, chatReply, chatReplyFirst, chatReplyLast, chatSeed, colour, COLOUR_STEPS, colourPath, copiesProblem, coveredMs, create, createAgain, deepest, drag, edit, editBranded, editFullHistory, edits, namedFaces, EDITS, expect as check, expectedCopies, exportAgain, exportSite, findHeading, type FixtureFacts, importHeic, importOriginals, importPhotos, installedPackages, installsHere, launch, memory, MEMORY_EDITS, noWindow, memoryPanels, PANEL_DOCK_VIEWS, PANEL_EDITS, PANEL_SIDE_TURNS, PANEL_SIDE_VIEWS, open, reopen, REOPEN_CYCLES, FIRST_SHOW, firstShow, PANELS, panels, panelsInUse, runChain, SITE_WORK, type Scenario, type ScenarioContext, SHOWN_PANELS, storedPhotoSize, switchProject, THUMB_WINDOWS, thumbs, toolCallsReply, layers, LAYERS_KINDS, LAYERS_SAMPLES, LAYERS_SIZES, layersAncestors, layersPage, type LayersKind, history, HISTORY_WINDOWS } from '../../scripts/perf/scenarios';
 import type { MemoryProbe, MemoryReading } from '../../scripts/perf/memory';
 import { PHOTO_COUNT, photoSpec } from '../../scripts/perf/photos';
 import { FIXTURES } from '../../scripts/perf/fixtures';
@@ -31,6 +31,11 @@ describe('the scenario chain', () => {
     expect(chainFor(['edit', 'launch', 'open']).map((s) => s.name)).toEqual(['launch', 'open', 'edit']);
     expect(chainFor(['panels']).map((s) => s.name)).toEqual(['launch', 'open', 'panels']);
     expect(chainFor(['panels', 'edit']).map((s) => s.name)).toEqual(['launch', 'open', 'edit', 'panels']);
+    // First after open, whatever else is asked for: it shows the panels the project did not open on, for the first time.
+    expect(chainFor(['panels', 'firstShow', 'edit']).map((s) => s.name)).toEqual(['launch', 'open', 'firstShow', 'edit', 'panels']);
+    // Those that show Insert ask for thumbnails, which thumbs needs a launch without.
+    for (const tour of ['firstShow', 'panels', 'panelsInUse']) expect(() => chainFor([tour, 'thumbs'])).toThrow(`Run thumbs in a separate perf:run`);
+    expect(chainFor(['thumbs']).map((s) => s.name)).toEqual(['launch', 'open', 'thumbs']);
     expect(chainFor(['export']).map((s) => s.name)).toEqual(['launch', 'open', 'export']);
     expect(chainFor(['exportAgain']).map((s) => s.name)).toEqual(['launch', 'open', 'export', 'exportAgain']);
     expect(chainFor(['export', 'exportAgain']).map((s) => s.name)).toEqual(['launch', 'open', 'export', 'exportAgain']);
@@ -980,6 +985,49 @@ describe('panels metrics', () => {
     expect(gone.metrics['panels.click.renders.insert']).toBeUndefined();
     const uncounted = new Trace(trace().records.map((x) => (x.name === 'scenario.start' && x.proc === 'renderer' ? { ...x, c: { 'react.commits': 100 } } : x)));
     expect(panels.measure(uncounted, facts).missing).toEqual(['panels.click (the editor did not count component renders)']);
+  });
+});
+
+describe('firstShow metrics', () => {
+  /** A panel's two marks: its first show's window, with the editor's counters, and the watch's time on the end. */
+  const shown = (id: string, at: number, ms: number | undefined, k: number) => [
+    r('firstShow.panel', at, { attrs: { scenario: 'firstShow', panel: id, edge: 'start' }, c: { 'react.commits': 10 * k, 'react.renders': 100 * k } }),
+    r('firstShow.panel', at + 500, { attrs: { scenario: 'firstShow', panel: id, edge: 'end', ...(ms === undefined ? {} : { ms }) }, c: { 'react.commits': 11 * k, 'react.renders': 100 * k + 40 + k } })
+  ];
+  const trace = (ms: (id: string, i: number) => number | undefined = (_, i) => 20 + i, drop: (x: PerfRecord) => boolean = () => false) =>
+    new Trace(
+      [
+        // Another scenario's mark of the same name: never this one's.
+        r('firstShow.panel', 100, { attrs: { scenario: 'other', panel: 'posts', edge: 'end', ms: 9999 } }),
+        ...FIRST_SHOW.flatMap((p, i) => shown(p.id, 1000 * (i + 1), ms(p.id, i), i + 1))
+      ].filter((x) => !drop(x))
+    );
+
+  it('show every panel the project does not open on, the SEO view last', () => {
+    expect(FIRST_SHOW.map((p) => p.id)).toEqual(['posts', 'layers', 'insert', 'assets', 'inspect', 'styles', 'project', 'seo']);
+  });
+
+  it('time each panel’s first show from its watch, with the renders and commits of its window, and their sum', () => {
+    const got = firstShow.measure(trace(), facts);
+    expect(got.missing).toEqual([]);
+    const v = (k: string) => got.metrics[k]?.value;
+    FIRST_SHOW.forEach((p, i) => {
+      expect(v(`firstShow.${p.id}.ms`)).toBe(20 + i);
+      expect(got.metrics[`firstShow.${p.id}.ms`].unit).toBe('ms');
+      expect(v(`firstShow.${p.id}.renders`)).toBe(40 + i + 1);
+      expect(v(`firstShow.${p.id}.rendererCommits`)).toBe(i + 1);
+    });
+    expect(v('firstShow.totalMs')).toBe(FIRST_SHOW.reduce((n, _, i) => n + 20 + i, 0));
+  });
+
+  it('name a panel whose watch never saw it, or whose window is missing, rather than count it as instant', () => {
+    const unseen = firstShow.measure(trace((id, i) => (id === 'insert' ? -1 : 20 + i)), facts);
+    expect(unseen.missing).toEqual(['firstShow.insert.ms (the first-show watch)']);
+    expect(unseen.metrics['firstShow.insert.ms']).toBeUndefined();
+    const gone = firstShow.measure(trace(undefined, (x) => x.attrs?.panel === 'seo' && x.attrs?.edge === 'end'), facts);
+    expect(gone.missing).toEqual(['firstShow.panel seo end']);
+    const uncounted = new Trace(trace().records.map((x) => (x.attrs?.panel === 'layers' ? { ...x, c: { 'react.commits': 1 } } : x)));
+    expect(firstShow.measure(uncounted, facts).missing).toEqual(['firstShow.layers.renders (the editor did not count component renders)']);
   });
 });
 

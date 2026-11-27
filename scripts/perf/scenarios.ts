@@ -1113,6 +1113,28 @@ function measureClickThenEdit(trace: Trace, scenario: string) {
   return { m, windows: { click: [begin, clicked], edit: [editing, end] } as Record<'click' | 'edit', [PerfRecord | undefined, PerfRecord | undefined]> };
 }
 
+/** The sidebar's views and the dock's, each as its rail button or tab chooses it, in the order `showEveryPanel` shows them. */
+const EVERY_PANEL = [
+  ...(['posts', 'layers', 'insert', 'assets', 'seo', 'pages'] as const).map((id) => ({ id, trigger: `.rail [data-rail="${id}"]`, shown: id === 'seo' ? '.seo-view-holder:not([hidden]) .seo-view' : '#editor-sidebar .side-panel-view:not([hidden]) > *' })),
+  ...(['chat', 'inspect', 'styles', 'project'] as const).map((id) => ({ id, trigger: `#dock-tab-${id}`, shown: `#dock-panel-${id}:not([hidden]) > *` }))
+];
+
+/**
+ * Every panel of the sidebar and the dock shown once, untimed, ending on Pages and the dock's Project view: the editor
+ * builds a panel the first time it shows (#1042), and these scenarios measure what panels that have been built do while
+ * they are hidden. Insert asks for its components' thumbnails as it shows; they are left to finish first.
+ */
+async function showEveryPanel(ctx: ScenarioContext): Promise<void> {
+  const { win } = ctx;
+  if (!(await win.locator('#editor-dock').isVisible())) await win.getByRole('button', { name: 'Right panel', exact: true }).click();
+  for (const p of EVERY_PANEL) {
+    // A rail button pressed again hides its view: one already shown is left as it is.
+    if ((await win.locator(p.trigger).getAttribute('aria-pressed')) !== 'true') await win.locator(p.trigger).click();
+    await win.locator(p.shown).first().waitFor({ state: 'visible', timeout: 15_000 });
+  }
+  await thumbsQuiet(ctx, 'every panel shown once');
+}
+
 export const panels: Scenario = {
   name: 'panels',
   after: 'open',
@@ -1123,7 +1145,9 @@ export const panels: Scenario = {
     const heading = `Panels heading ${ctx.iteration}`;
     const before = await win.evaluate(() => (globalThis as unknown as EditorPage).builder.project.snapshot());
     expect(before, 'no project is open');
-    // Not timed: every sidebar view hidden (the open one's rail button pressed again), the dock open on Project.
+    // Not timed: every panel shown once, so each is built; then every sidebar view hidden (the open one's rail button
+    // pressed again), the dock open on Project.
+    await showEveryPanel(ctx);
     const pressed = win.locator('.rail button[aria-pressed="true"]:not([data-rail="styles"])');
     if (await pressed.count()) await pressed.first().click();
     await win.locator('#editor-sidebar').waitFor({ state: 'hidden', timeout: 15_000 });
@@ -1182,6 +1206,8 @@ export const panelsInUse: Scenario = {
       await win.reload();
       await win.locator('.editor').waitFor({ timeout: 60_000 });
       await preview(win).locator('html[data-so-editing]').waitFor({ state: 'attached', timeout: 60_000 });
+      // Every panel shown once, so each is built (the reload built only the ones it shows).
+      await showEveryPanel(ctx);
       // A post to write: the fixture's first, or one made for it when the fixture has none.
       let snap = await snapshotOf(win);
       expect(snap, 'no project is open');
@@ -1277,6 +1303,163 @@ export const panelsInUse: Scenario = {
         else m.count(`panelsInUse.${phase}.${metric}`, counter(to, name) - counter(from, name));
       }
     }
+    return m;
+  }
+};
+
+// ---------------------------------------------------------------------------
+// firstShow
+// ---------------------------------------------------------------------------
+
+/** The sidebar's view shown now. */
+const SHOWN_VIEW = '#editor-sidebar .side-panel-view:not([hidden])';
+/**
+ * The panels `firstShow` shows for the first time, in this order, after the project opens on its default panels
+ * (Pages in the sidebar, the AI in the dock): the rail button or dock tab a person clicks (`trigger`), and what shows
+ * the panel usable (`ready`: content of that panel's own, in the view now shown, laid out: its rows or tiles, or the
+ * empty state a fixture without them shows). The SEO view comes last: while it is in front the Inspector shows its
+ * guidance rather than the page, and leaving it is work of its own.
+ */
+export const FIRST_SHOW = [
+  { id: 'posts', trigger: '.rail [data-rail="posts"]', ready: `${SHOWN_VIEW} .posts-panel [role="option"][data-post], ${SHOWN_VIEW} .posts-panel .posts-empty` },
+  { id: 'layers', trigger: '.rail [data-rail="layers"]', ready: `${SHOWN_VIEW} .layers-tree [role="treeitem"]` },
+  { id: 'insert', trigger: '.rail [data-rail="insert"]', ready: `${SHOWN_VIEW} .insert-body .insert-tile` },
+  { id: 'assets', trigger: '.rail [data-rail="assets"]', ready: `${SHOWN_VIEW} .asset-host .asset-grid [data-asset], ${SHOWN_VIEW} .asset-host .asset-body-empty` },
+  { id: 'inspect', trigger: '#dock-tab-inspect', ready: '#dock-panel-inspect:not([hidden]) .panel-body.insp' },
+  { id: 'styles', trigger: '#dock-tab-styles', ready: '#dock-panel-styles:not([hidden]) .panel-body.ss' },
+  { id: 'project', trigger: '#dock-tab-project', ready: '#dock-panel-project:not([hidden]) .brief' },
+  { id: 'seo', trigger: '.rail [data-rail="seo"]', ready: '.seo-view-holder:not([hidden]) .seo-view [data-seo-row]' }
+] as const;
+/** How long a shown panel is left before its window ends, so the work its showing set off (focus, effects) is counted. */
+const FIRST_SHOW_SETTLE_MS = 300;
+/** What `firstShow` types into Insert's search, and how far it scrolls the Posts list, to see both kept. */
+const FIRST_SHOW_SEARCH = 'hero';
+const FIRST_SHOW_SCROLL = 600;
+const FIRST_SHOW_SEARCH_FIELD = `${SHOWN_VIEW} .insert-search input`;
+/** The Posts list's scrolling body. */
+const POSTS_BODY = `${SHOWN_VIEW} .posts-panel > .panel-body`;
+
+/**
+ * The first-show watch, run in the editor's page: the time of the click on `trigger` (the event's), and the time it
+ * first saw `ready` in the page and laid out (a box of some size), checked at every animation frame after the click and
+ * read from the clock as it is seen, so the layout the check itself forces is in it. Both on the page's clock. Source
+ * text, as the frame watch is.
+ */
+const watchFirstShow = (trigger: string, ready: string) => `(() => {
+  const w = { clickAt: null, readyAt: null, on: true };
+  const onClick = (e) => { if (w.clickAt === null && e.target && e.target.closest && e.target.closest(${JSON.stringify(trigger)})) w.clickAt = e.timeStamp; };
+  document.addEventListener('click', onClick, true);
+  const tick = () => {
+    if (!w.on) return;
+    if (w.clickAt !== null) {
+      const el = document.querySelector(${JSON.stringify(ready)});
+      const r = el ? el.getBoundingClientRect() : null;
+      if (r && r.width > 0 && r.height > 0) w.readyAt = performance.now();
+    }
+    if (w.readyAt === null) requestAnimationFrame(tick);
+  };
+  requestAnimationFrame(tick);
+  w.stop = () => { w.on = false; document.removeEventListener('click', onClick, true); return { clickAt: w.clickAt, readyAt: w.readyAt }; };
+  globalThis.__perfFirstShow = w;
+})()`;
+
+/**
+ * The element each `firstShow` panel's content is held in once shown: tagged after its first show, looked for after.
+ * The Inspector's is its status line, which it renders whatever it shows: its body is drawn anew by design when what it
+ * shows changes (the SEO view's guidance while that is in front), but a new status line is a new Inspector.
+ */
+const firstShowHolder = (id: (typeof FIRST_SHOW)[number]['id']) =>
+  id === 'seo' ? '.seo-view-holder .seo-view' : id === 'inspect' ? '#dock-panel-inspect #insp-announce' : id === 'styles' || id === 'project' ? `#dock-panel-${id} > *` : `${SHOWN_VIEW} > *`;
+
+export const firstShow: Scenario = {
+  name: 'firstShow',
+  after: 'open',
+  description: 'With the project just opened on its default panels (Pages and the AI), show each other panel of the sidebar and the dock for the first time, from the click to its content laid out; then each again, kept as it was.',
+  async run(ctx) {
+    const { win, fixture } = ctx;
+    const snap = await snapshotOf(win);
+    expect(snap, 'no project is open');
+    // The opening's own panels, as a project opens on them by default: every other one is shown here for the first time.
+    expect((await win.locator('.rail [data-rail="pages"]').getAttribute('aria-pressed')) === 'true', 'the project did not open on Pages in the sidebar');
+    expect((await win.locator('#editor-dock').isVisible()) && (await win.locator('#dock-tab-chat').getAttribute('aria-selected')) === 'true', 'the project did not open on the AI in the dock');
+    await sleep(Math.max(ctx.settleMs, WORKSPACE_SAVE_WAIT_MS));
+    await ctx.mark('scenario.start', { scenario: 'firstShow' });
+    let postsScroll = 0;
+    for (const p of FIRST_SHOW) {
+      await win.evaluate(watchFirstShow(p.trigger, p.ready));
+      await ctx.mark('firstShow.panel', { scenario: 'firstShow', panel: p.id, edge: 'start' });
+      await win.locator(p.trigger).first().click();
+      await win.waitForFunction(() => (globalThis as unknown as { __perfFirstShow: { readyAt: number | null } }).__perfFirstShow.readyAt !== null, undefined, { timeout: 30_000, polling: 50 });
+      const seen = (await win.evaluate('globalThis.__perfFirstShow.stop()')) as { clickAt: number | null; readyAt: number | null };
+      await sleep(FIRST_SHOW_SETTLE_MS);
+      await ctx.mark('firstShow.panel', { scenario: 'firstShow', panel: p.id, edge: 'end', ms: seen.clickAt !== null && seen.readyAt !== null ? seen.readyAt - seen.clickAt : -1 });
+      // Shown with what it is for: the project's posts, the home page's layers, the catalogue, the library, the site's
+      // pages in the SEO overview, the page in the Inspector, Site styles, the brief.
+      const view = win.locator(p.ready).first();
+      if (p.id === 'posts' && fixture.entries) expect(await win.locator(`${SHOWN_VIEW} [role="option"][data-post]`).count(), 'Posts, shown, lists none of the project’s posts');
+      if (p.id === 'layers') expect(await win.locator('#editor-sidebar').getByRole('treeitem', { name: HERO_NAME }).count(), `Layers, shown, does not list the home page’s ${HERO_NAME}`);
+      if (p.id === 'assets' && fixture.assets) expect(await win.locator(ASSET_TILES).count(), 'Assets, shown, shows none of the library’s images');
+      if (p.id === 'seo') {
+        const rows = await win.locator('.seo-view [data-seo-row^="page:"]').count();
+        expect(rows === fixture.pages, `the SEO view, shown, lists ${rows} pages, not the project’s ${fixture.pages}`);
+        expect(await win.locator(`.seo-view [data-seo-row="page:${fixture.homePageId}"]`).count(), 'the SEO view, shown, does not list the home page');
+      }
+      expect(await view.isVisible(), `the ${p.id} panel, shown, is not on screen`);
+      // Tagged, so the same content is looked for when it is shown again.
+      await win.locator(firstShowHolder(p.id)).first().evaluate((el, id) => void ((el as unknown as { __perfKept?: string }).__perfKept = id), p.id);
+      if (p.id === 'insert') await win.locator(FIRST_SHOW_SEARCH_FIELD).first().fill(FIRST_SHOW_SEARCH);
+      if (p.id === 'posts') {
+        postsScroll = await win.locator(POSTS_BODY).first().evaluate((el, y) => {
+          const e = el as unknown as { scrollTop: number };
+          e.scrollTop = y;
+          return e.scrollTop;
+        }, FIRST_SHOW_SCROLL);
+        // A list long enough to scroll (every fixture with posts) is left part of the way down.
+        if (fixture.entries >= 50) expect(postsScroll > 0, 'the Posts list did not scroll');
+      }
+      // The workspace save the choice set off (300 ms later) lands before the next panel's window, and so does the
+      // drawing of the components' thumbnails Insert asked for.
+      if (p.id === 'insert') await thumbsQuiet(ctx, 'Insert shown');
+      await sleep(WORKSPACE_SAVE_WAIT_MS);
+    }
+    await ctx.mark('scenario.end', { scenario: 'firstShow' });
+    await ctx.waitTrace((t) => !!t.first('scenario.end', forScenario('firstShow', 'renderer')) && !!t.first('scenario.end', forScenario('firstShow', 'main')));
+    // Untimed: each panel shown again is the content it had, with Insert's search and the Posts list's scroll kept.
+    for (const p of FIRST_SHOW) {
+      await win.locator(p.trigger).first().click();
+      // Chosen (its rail button pressed, its tab selected), and its content in the page.
+      await win.locator(`${p.trigger}${p.trigger.startsWith('#dock-tab-') ? '[aria-selected="true"]' : '[aria-pressed="true"]'}`).first().waitFor({ timeout: 15_000 });
+      await win.locator(firstShowHolder(p.id)).first().waitFor({ state: 'attached', timeout: 15_000 });
+      const kept = await win.locator(firstShowHolder(p.id)).first().evaluate((el) => (el as unknown as { __perfKept?: string }).__perfKept ?? null);
+      expect(kept === p.id, `the ${p.id} panel, shown again, is ${kept ? `the ${kept} panel’s content` : 'new content'}, not what it showed before`);
+      if (p.id === 'insert') {
+        const q = await win.locator(FIRST_SHOW_SEARCH_FIELD).first().inputValue();
+        expect(q === FIRST_SHOW_SEARCH, `Insert, shown again, searches for “${q}”, not “${FIRST_SHOW_SEARCH}”`);
+      }
+      if (p.id === 'posts') {
+        const top = await win.locator(POSTS_BODY).first().evaluate((el) => (el as unknown as { scrollTop: number }).scrollTop);
+        expect(Math.abs(top - postsScroll) <= 1, `the Posts list, shown again, is scrolled to ${top} px, not the ${postsScroll} px it was left at`);
+      }
+    }
+  },
+  measure(trace) {
+    const m = new Collector();
+    const at = (id: string, edge: 'start' | 'end') => m.need(`firstShow.panel ${id} ${edge}`, trace.first('firstShow.panel', (r) => r.proc === 'renderer' && r.attrs?.scenario === 'firstShow' && r.attrs?.panel === id && r.attrs?.edge === edge));
+    let total = 0;
+    for (const p of FIRST_SHOW) {
+      const start = at(p.id, 'start');
+      const end = at(p.id, 'end');
+      if (!start || !end) continue;
+      const ms = end.attrs?.ms;
+      if (typeof ms === 'number' && ms >= 0) {
+        m.ms(`firstShow.${p.id}.ms`, ms);
+        total += ms;
+      } else m.need(`firstShow.${p.id}.ms (the first-show watch)`, undefined);
+      if (trackless(start) || trackless(end)) m.need(`firstShow.${p.id}.renders (the editor did not count component renders)`, undefined);
+      else m.count(`firstShow.${p.id}.renders`, counter(end, 'react.renders') - counter(start, 'react.renders'));
+      commits(m, trace, `firstShow.${p.id}.rendererCommits`, start, end);
+    }
+    m.ms('firstShow.totalMs', total);
     return m;
   }
 };
@@ -6242,7 +6425,10 @@ async function expectChip(win: Page) {
   expect(await chip.count(), 'the composer does not say the request may change the whole site');
 }
 
-export const SCENARIOS: Scenario[] = [launch, open, edit, editFullHistory, edits, batch, panels, panelsInUse, layers, chat, aiEdit, ai, canvas, drag, colour, thumbs, exportSite, exportAgain, cmdk, assets, importPhotos, importOriginals, importHeic, history, editBranded, switchProject, create, createAgain, memory, previewImages, memoryPanels, noWindow, reopen, memoryBrowse];
+/** The scenarios that show every panel, Insert among them, before `thumbs` could run in the same launch. */
+const PANEL_TOURS = ['firstShow', 'panels', 'panelsInUse'] as const;
+
+export const SCENARIOS: Scenario[] = [launch, open, firstShow, edit, editFullHistory, edits, batch, panels, panelsInUse, layers, chat, aiEdit, ai, canvas, drag, colour, thumbs, exportSite, exportAgain, cmdk, assets, importPhotos, importOriginals, importHeic, history, editBranded, switchProject, create, createAgain, memory, previewImages, memoryPanels, noWindow, reopen, memoryBrowse];
 
 /**
  * The scenarios to run in one launch for those asked for: each with every one it follows, in the order of SCENARIOS
@@ -6256,6 +6442,9 @@ export function chainFor(names: string[]): Scenario[] {
   if (memoryAsked.length && memoryAsked.length !== names.length && names.every((n) => byName.has(n)))
     throw new Error(`Memory scenarios (${memoryAsked.join(', ')}) are run on their own: their waits and garbage collections would change the numbers of ${names.filter((n) => !memoryAsked.includes(n)).join(', ')}. Run them in a separate perf:run.`);
   if (new Set(memoryAsked).size > 1) throw new Error(`Memory scenarios (${[...new Set(memoryAsked)].join(', ')}) are run one at a time: each opens the fixture as the warm-up left it, which the one before would have changed. Run each in a perf:run of its own.`);
+  const tours = names.filter((n) => (PANEL_TOURS as readonly string[]).includes(n));
+  if (names.includes('thumbs') && tours.length)
+    throw new Error(`thumbs needs a launch in which no thumbnail was asked for, and ${tours.join(', ')} show${tours.length === 1 ? 's' : ''} Insert, which asks for them. Run thumbs in a separate perf:run.`);
   for (const name of names) {
     let s = byName.get(name);
     if (!s) throw new Error(`Unknown scenario "${name}". Scenarios: ${SCENARIOS.map((x) => x.name).join(', ')}.`);

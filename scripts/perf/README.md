@@ -209,7 +209,24 @@ stretches), by the second copy's own preview process; `canvasReady` (the headlin
 preview process gone, which the second's start need not wait for but which must always happen); the longest
 main-process stall.
 
-**`panels`** (after `open`): with the sidebar closed and the dock on its Project view, so every other panel is hidden,
+**`firstShow`** (after `open`, and first of every scenario that follows it): with the project just opened on its default
+panels (Pages in the sidebar, the AI in the dock), show each other panel for the first time, one after the other, by its
+rail button or dock tab: Posts, Layers, Insert, Assets, the Inspector, Site styles, Project and last the SEO view over the
+canvas (while it is in front the Inspector shows its guidance, not the page). Each from the click (the event's time) to
+the moment a watch the scenario puts in the editor's page, looking at every animation frame, first sees content of that
+panel's own laid out in the view shown (its rows or tiles, or the empty state of a fixture without them; the time read as
+it is seen, so the layout the look forces is in it); then 300 ms more, so the work its showing set off is counted, and
+after Insert until its components' thumbnails are drawn. Checks: the project opened on Pages and the AI; each panel
+shown is on screen with what it is for (the project's posts listed, the home hero in Layers, the library's images in
+Assets, every page of the site and the home page among them in the SEO overview); and afterwards (untimed) each, shown
+again, is the content it showed before, with Insert's search and the Posts list's scroll position as they were left (the
+list scrolled part of the way down on a fixture with posts). It shows Insert, which asks for thumbnails, so it is never
+run in a launch with `thumbs`, and nor are `panels` and `panelsInUse` (`perf:run` refuses). Per panel: `firstShow.<panel>.ms`, `.renders` (every component React
+rendered) and `.rendererCommits`; `firstShow.totalMs`, the eight added up. The time a panel takes to be usable the first
+time it is chosen, which the editor's memory at open is traded against (#1042).
+
+**`panels`** (after `open`): every panel of the sidebar and the dock shown once (untimed, Insert's thumbnails left to
+finish), so each is built; then with the sidebar closed and the dock on its Project view, so every other panel is hidden,
 click the home hero on the canvas; then show the Inspector and change the hero's Heading there. Checks: every sidebar
 view and dock panel is in the page before, and the same elements after (hidden, not unmounted or replaced), the canvas's selection toolbar names
 the hero after the click, the Inspector names it the moment it is shown again, the edit moved exactly one revision with
@@ -225,7 +242,7 @@ the dock's four. Showing the Inspector between the two windows is in neither.
 
 **`panelsInUse`** (after `open`): as `panels`, with the panels it leaves out of use each holding work. Before the timed
 part: the scripted model connected as a local provider (no live provider; nothing is sent to it) and the window reloaded
-to take it, the AI panel in Edit mode offering its starters, a post (the fixture's first, or one made for it when the
+to take it, every panel shown once as in `panels`, the AI panel in Edit mode offering its starters, a post (the fixture's first, or one made for it when the
 fixture has none) opened in the writer from Posts and chosen in the SEO view, then every sidebar view hidden (the SEO
 view's rail button pressed again), so the writer and the SEO view are put away holding the post, and the dock on its
 Project view, so the AI panel is hidden too. Then the same click and edit as `panels`. Checks: as `panels` (Layers
@@ -411,7 +428,9 @@ its save; and back on Welcome, starting 20 s after the project closed (`closed`)
 `open` checks, the canvas reporting the home page ready before the peak ends, each edit shown in the preview and
 reported applied by the canvas, the project 50 revisions on with the last heading in the project and on disk, the
 project closed and Welcome shown. For each reading: `memory.<reading>.total` (the memory all the app's processes hold), `.processes` (how many), `.mem.<role>` and `.processes.<role>` (each role's), and, at rest,
-`.heap.main` and `.heap.editor` (the JavaScript heap in use); the peak's are `memory.open.peak.*`. Growth, the
+`.heap.main` and `.heap.editor` (the JavaScript heap in use) and the editor's DOM: `.dom.editor.elements` (the elements in
+its document), `.dom.editor.nodes` and `.dom.editor.listeners` (every node and event listener its renderer keeps after
+the reading's collection, detached ones included); the peak's are `memory.open.peak.*`. Growth, the
 difference of two readings in the same launch: `memory.edits.growth.*` (`edit50` − `edit1`: what 49 edits left behind)
 and `memory.close.growth.*` (`closed` − `welcome`: what a project left behind once closed).
 
@@ -698,6 +717,12 @@ garbage twice in the main process (an inspector session inside it), the editor a
 each; with no editor window, the main process alone), waits 1 s, reads the two heaps (the main process's alone with no
 editor window: a reading says whether it expects one, `ctx.memory.rest(label, { window: false })`, and the other
 fails it), and takes one sample: the process table and what the app says each process is.
+After the sample (the reading's time is the sample's), so it moves none of the sample's figures, it reads the editor's
+DOM while it has a window; a DOM that cannot be read fails the reading, saying so. It reads the elements in its document
+(`getElementsByTagName('*')`, the preview frame's own document not among them) and Chromium's DOM counters for its
+renderer (`Memory.getDOMCounters`: nodes and JavaScript event listeners, detached ones included, of the whole process,
+so a preview frame sharing the editor's process is in them). They are counts: two launches of one build give the same
+elements, and nodes and listeners within a few.
 If the processes changed meanwhile (or a collection failed because one went, or on macOS `top` had not listed one yet)
 it starts again, up to three times; a set that does not hold still for one gap within 15 s fails the reading. A reading is taken at a fixed point, never "once
 things look done": `closed` starts 20 s after the close (its sample comes some 4.5 s later, after the settle and the
@@ -720,7 +745,7 @@ the two runs, and never under 10% of the before median or 8 MiB**. Process count
 launch and not another) counts as none in the launch
 without it, within a run and between two runs; a reading that was not taken fails its case. `--markdown` prints a table
 per reading in the order they were taken, then each growth: a row per role with its process count, before, after, the
-change in MiB and Improvement, then all processes and the two heaps. Growth can be below zero; its change is read in
+change in MiB and Improvement, then all processes, the two heaps and the editor's DOM (as counts). Growth can be below zero; its change is read in
 MiB, never as a percentage of it, in both formats.
 
 How the band was arrived at: on an M4 Max (36 GB, macOS, shared with other work), two runs of one build, 5 iterations

@@ -2,7 +2,8 @@
  * Memory readings for the benchmark (scripts/perf/README.md, "Memory"). The harness takes them, never the app: a
  * reading lists every process the app owns, by role (main, editor, preview, gpu, devServer, media, …), with the memory
  * the OS says it holds (its physical footprint on macOS, `ps` RSS on Linux, the working set on Windows), the JavaScript
- * heap in use of the main process and the editor, the number of processes and their total.
+ * heap in use of the main process and the editor, the number of processes and their total, and at rest what the editor's
+ * page holds of the DOM (its elements, and the nodes and event listeners its renderer keeps).
  *
  * A reading at rest is taken once the app's processes have stopped changing and garbage has been collected in the main
  * process, the editor and the preview's frame. A peak samples the process table through a stretch of work and keeps the
@@ -332,7 +333,21 @@ export interface MemoryReading {
   count: number;
   /** The JavaScript heap in use, bytes (at rest only); the editor's only while its window is open. */
   heap?: { main: number; editor?: number };
+  /** The editor's DOM (at rest only, read after the sample, while its window is open): see `EditorDom`. */
+  dom?: EditorDom;
   how: RestHow | PeakHow;
+}
+
+/**
+ * What the editor's page holds of the DOM: `elements`, the elements in its document (connected, the preview frame's
+ * own document not among them); `nodes` and `listeners`, every DOM node and JavaScript event listener its renderer
+ * keeps alive after the reading's garbage collection, detached ones included (Chromium's `Memory.getDOMCounters`, which
+ * counts the whole renderer process: a preview frame sharing the editor's process is in them).
+ */
+export interface EditorDom {
+  elements: number;
+  nodes: number;
+  listeners: number;
 }
 
 /** The name a reading's metrics start with: `memory.canvas`, and `memory.open.peak` for a peak. */
@@ -351,6 +366,11 @@ export function readingMetrics(m: Collector, label: string, r: MemoryReading | u
   if (r.heap) {
     m.count(`${p}.heap.main`, r.heap.main, 'memory');
     if (r.heap.editor !== undefined) m.count(`${p}.heap.editor`, r.heap.editor, 'memory');
+  }
+  if (r.dom) {
+    m.count(`${p}.dom.editor.elements`, r.dom.elements);
+    m.count(`${p}.dom.editor.nodes`, r.dom.nodes);
+    m.count(`${p}.dom.editor.listeners`, r.dom.listeners);
   }
 }
 
@@ -371,6 +391,11 @@ export function growthMetrics(m: Collector, label: string, from: MemoryReading |
     m.count(`${p}.heap.main`, to.heap.main - from.heap.main, 'memory');
     if (from.heap.editor !== undefined && to.heap.editor !== undefined) m.count(`${p}.heap.editor`, to.heap.editor - from.heap.editor, 'memory');
   }
+  if (from.dom && to.dom) {
+    m.count(`${p}.dom.editor.elements`, to.dom.elements - from.dom.elements);
+    m.count(`${p}.dom.editor.nodes`, to.dom.nodes - from.dom.nodes);
+    m.count(`${p}.dom.editor.listeners`, to.dom.listeners - from.dom.listeners);
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -386,6 +411,8 @@ export interface MemorySource {
   collect(passes: number, signal?: AbortSignal): Promise<string[]>;
   /** The heaps in use: the main process's, and the editor's while it has a window. */
   heap(signal?: AbortSignal): Promise<{ main: number; editor?: number }>;
+  /** The editor's DOM, read once a reading at rest has its sample, while it has a window; a source without it takes none. */
+  dom?(signal?: AbortSignal): Promise<EditorDom | undefined>;
   source: string;
 }
 
@@ -523,9 +550,17 @@ export class MemoryProbe {
         again();
         continue;
       }
+      // The sample's time; the DOM is read after it, so reading it moves none of the sample's figures.
+      const at = this.clock.now();
+      let dom: EditorDom | undefined;
+      try {
+        dom = this.src.dom ? await this.call(() => this.src.dom!(this.abort.signal)) : undefined;
+      } catch (e) {
+        this.live();
+        throw new Error(`memory reading ${label}: the editor's DOM could not be read: ${e instanceof Error ? e.message : String(e)}`);
+      }
       // Closed meanwhile: no reading is published for a scenario that has already been given up on.
       this.live();
-      const at = this.clock.now();
       const reading: MemoryReading = {
         label,
         kind: 'rest',
@@ -535,6 +570,7 @@ export class MemoryProbe {
         total: s.processes.reduce((n, p) => n + p.bytes, 0),
         count: s.processes.length,
         heap,
+        ...(dom ? { dom } : {}),
         how: { source: this.src.source, protocol: MEMORY_PROTOCOL, waitedMs: at - asked, settledMs, collected, gcPasses: R.gcPasses, postGcMs: R.postGcMs, retries: attempt }
       };
       this.readings.push(reading);
@@ -787,6 +823,14 @@ export function electronSource(app: ElectronApplication, editor: () => Page): Me
       if (!win) return { main };
       const editor = await cdp(win, win, async (send) => ((await send('Runtime.getHeapUsage')) as { usedSize: number }).usedSize, signal);
       return { main, editor };
+    },
+    async dom(signal) {
+      const win = open();
+      if (!win) return undefined;
+      const elements = await win.evaluate(() => (globalThis as unknown as { document: { getElementsByTagName(t: string): { length: number } } }).document.getElementsByTagName('*').length);
+      closed(signal);
+      const counters = await cdp(win, win, async (send) => (await send('Memory.getDOMCounters')) as { nodes: number; jsEventListeners: number }, signal);
+      return { elements, nodes: counters.nodes, listeners: counters.jsEventListeners };
     }
   };
 }

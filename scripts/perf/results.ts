@@ -210,16 +210,17 @@ export function summarizeCase(iterations: Iteration[]): Record<string, Summary> 
 /**
  * What a memory metric is (scripts/perf/memory.ts names them): its reading (`memory.canvas`, `memory.open.peak`,
  * `memory.edits.growth`), and whether it is the reading's total, its process count, one role's resident bytes or
- * process count, or a heap. Null for any other metric.
+ * process count, a heap, or a count of the editor's DOM (`role` its name: `editor.elements`). Null for any other metric.
  */
-export function memoryMetric(name: string): { reading: string; field: 'total' | 'processes' | 'mem' | 'roleProcesses' | 'heap'; role?: string } | null {
-  const m = /^(memory\..+?)\.(?:(total)|(processes)|mem\.(.+)|processes\.(.+)|heap\.(.+))$/.exec(name);
+export function memoryMetric(name: string): { reading: string; field: 'total' | 'processes' | 'mem' | 'roleProcesses' | 'heap' | 'dom'; role?: string } | null {
+  const m = /^(memory\..+?)\.(?:(total)|(processes)|mem\.(.+)|processes\.(.+)|heap\.(.+)|dom\.(.+))$/.exec(name);
   if (!m) return null;
   if (m[2]) return { reading: m[1], field: 'total' };
   if (m[3]) return { reading: m[1], field: 'processes' };
   if (m[4]) return { reading: m[1], field: 'mem', role: m[4] };
   if (m[5]) return { reading: m[1], field: 'roleProcesses', role: m[5] };
-  return { reading: m[1], field: 'heap', role: m[6] };
+  if (m[6]) return { reading: m[1], field: 'heap', role: m[6] };
+  return { reading: m[1], field: 'dom', role: m[7] };
 }
 
 /** A difference of two readings: signed, so never read as a percentage of itself. */
@@ -448,10 +449,15 @@ export function changeMarkdown(changes: CaseChange[], before: RunResult, after: 
         const get = (field: string, role?: string) => ms.find((x) => memoryMetric(x.metric)!.field === field && memoryMetric(x.metric)!.role === role);
         const roles = [...new Set(ms.flatMap((x) => (memoryMetric(x.metric)!.field === 'mem' ? [memoryMetric(x.metric)!.role!] : [])))].sort();
         const row = (label: string, mem: MetricChange | undefined, n?: MetricChange) => `| ${label} | ${counts(n)} | ${formatValue(mem?.before ?? null, 'memory')} | ${formatValue(mem?.after ?? null, 'memory')} | ${mib(mem?.delta ?? null)} | ${mem ? improvement(mem) : '–'} |`;
+        // The editor's DOM, as counts: their change is a count, and growth's is never a percentage.
+        const domRow = (label: string, d: MetricChange | undefined) => (d ? [`| ${label} | | ${formatValue(d.before, 'count')} | ${formatValue(d.after, 'count')} | ${d.delta === null ? '–' : `${d.delta > 0 ? '+' : ''}${formatValue(d.delta, 'count')}`} | ${improvement(d)} |`] : []);
         const rows = [
           ...roles.map((r) => row(r, get('mem', r), get('roleProcesses', r))),
           row('**All processes**', get('total'), get('processes')),
-          ...['main', 'editor'].flatMap((h) => (get('heap', h) ? [row(`JS heap, ${h}`, get('heap', h))] : []))
+          ...['main', 'editor'].flatMap((h) => (get('heap', h) ? [row(`JS heap, ${h}`, get('heap', h))] : [])),
+          ...domRow('DOM elements, editor', get('dom', 'editor.elements')),
+          ...domRow('DOM nodes, editor', get('dom', 'editor.nodes')),
+          ...domRow('Event listeners, editor', get('dom', 'editor.listeners'))
         ];
         return `#### ${reading.replace(/^memory\./, '')}\n\n| Process | Processes | Before | After | Change | Improvement |\n| --- | ---: | ---: | ---: | ---: | ---: |\n${rows.join('\n')}`;
       })
