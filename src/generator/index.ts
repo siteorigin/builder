@@ -64,6 +64,7 @@ import {
   linkOf,
   resolveVisibility,
   styleDeclOrder,
+  COLUMN_START_DECL,
   styleFallbackCss,
   styleReducedMotionCss,
   styleToCss,
@@ -891,6 +892,8 @@ function addBackgroundImage(rules: RuleSet, selector: string, value: StyleValue,
 const lastCopies = (decls: string[]) => decls.filter((d, i) => decls.lastIndexOf(d) === i);
 /** Both shift axes write the same translate: once is enough. Nothing else is touched, so no value can shift onto another. */
 const oneTranslate = (decls: string[]) => decls.filter((d, i) => d !== TRANSLATE_DECL || decls.lastIndexOf(d) === i);
+/** A rule that sets both a column start and a span composes the start line once. */
+const oneStartLine = (decls: string[]) => decls.filter((d, i) => d !== COLUMN_START_DECL || decls.lastIndexOf(d) === i);
 
 function addRules(rules: RuleSet, raw: string, input: ResponsiveStyles | undefined, opts: RuleOpts = {}) {
   if (!input) return;
@@ -940,7 +943,7 @@ function addRules(rules: RuleSet, raw: string, input: ResponsiveStyles | undefin
       reduced.push(...styleReducedMotionCss(k, props[k]).filter(safeDecl));
     }
     if (fallback.length) rules[scope].push(`${quiet} {\n${lastCopies(fallback).map((d) => `\t${d};`).join('\n')}\n}`);
-    if (decls.length) rules[scope].push(rule(oneTranslate(decls)));
+    if (decls.length) rules[scope].push(rule(oneStartLine(oneTranslate(decls))));
     // The hide right after the rule it came from, per size, so it keeps its place in the cascade.
     if (gated && scope === 'base') for (const size of ['phone', 'tablet', 'desktop'] as const) rules.base.push(`@media ${MEDIA_QUERIES[size]} {\n\t${wrap(shownGate(raw, size, opts.gateHides!))} {\n\t\tdisplay: none;\n\t}\n}`);
     else if (gated && scope !== 'base') rules[scope].push(`${wrap(shownGate(raw, scope, opts.gateHides!))} {\n\tdisplay: none;\n}`);
@@ -955,7 +958,7 @@ function addRules(rules: RuleSet, raw: string, input: ResponsiveStyles | undefin
       }
     // Custom CSS has the last word in the wide range too, where these values land after the base rule.
     if (wide.length && props.customCss !== undefined) wide.push(...styleToCss('customCss', props.customCss).filter(safeDecl));
-    if (wide.length) rules.wide.push(rule(wide));
+    if (wide.length) rules.wide.push(rule(oneStartLine(wide)));
   }
   addContainerRules(rules, raw, styles, input, opts);
   addStateRules(rules, raw, input, opts);
@@ -1001,7 +1004,7 @@ function addContainerRules(rules: RuleSet, raw: string, styles: ResponsiveStyles
     }
     const list = rules.container[scope];
     if (fallback.length) list.push(`${quiet} {\n${lastCopies(fallback).map((d) => `\t${d};`).join('\n')}\n}`);
-    if (decls.length) list.push(`${selector} {\n${oneTranslate(decls).map((d) => `\t${mark(d)};`).join('\n')}\n}`);
+    if (decls.length) list.push(`${selector} {\n${oneStartLine(oneTranslate(decls)).map((d) => `\t${mark(d)};`).join('\n')}\n}`);
     if (reduced.length) rules.reduced.push(`${opts.important ? selector : quiet} {\n${lastCopies(reduced).map((d) => `\t${d};`).join('\n')}\n}`);
     if (decls.some((d) => /^display\s*:/i.test(d))) {
       // Hidden at a screen size by this layer's own rules there: hidden in every container too. A stronger layer's
@@ -2955,6 +2958,7 @@ function sizingBoxes(walk: SizingWalk, tree: NodeTree, nodeId: string, placement
 function trackShare(grid: SizingBox, item: SizingBox | undefined, range: SizeRange): number {
   const raw = item ? boxStyle(item, 'columnSpan', range) : undefined;
   const spanValue = typeof raw === 'string' ? raw.trim() : raw;
+  const start = Number(item ? boxStyle(item, 'columnStart', range) : undefined) || 1;
   const span = (tracks: number[]): number => {
     // Shares are read against their own total, even below one: gaps and implicit columns other items add can
     // widen a share past its part of the whole, so this stays the upper estimate.
@@ -2962,8 +2966,8 @@ function trackShare(grid: SizingBox, item: SizingBox | undefined, range: SizeRan
     if (!(total > 0) || spanValue === 'full') return 1;
     const count = typeof spanValue === 'number' || typeof spanValue === 'string' ? Number(spanValue) : NaN;
     const k = Math.max(1, Math.floor(count) || 1);
-    // Spanning past the last column adds implicit ones, which can stretch into whatever the shares leave.
-    if (k >= tracks.length) return 1;
+    // Spanning (or starting) past the last column adds implicit ones, which can stretch into whatever the shares leave.
+    if (k >= tracks.length || start - 1 + k > tracks.length) return 1;
     let widest = 0;
     for (let i = 0; i + k <= tracks.length; i++) widest = Math.max(widest, tracks.slice(i, i + k).reduce((a, b) => a + b, 0));
     return widest / total;
@@ -2986,7 +2990,7 @@ const PAINT_ONLY_CSS = /^(filter|backdrop-filter|opacity|color|background(-[a-z]
 /** The styles of an image that decide how much of its picture a crop needs. */
 const CROP_PROPS = ['height', 'minHeight', 'maxHeight', 'aspectRatio', 'objectFit'];
 /** The styles that decide how wide an element, or the elements inside it, can be. */
-const SIZING_PROPS = ['layout', 'columns', 'gridTemplate', 'columnSpan', 'width', 'minWidth', 'maxWidth', 'flexGrow', 'position', 'inset', 'marginInlineStart', 'marginInlineEnd', 'customCss'];
+const SIZING_PROPS = ['layout', 'columns', 'gridTemplate', 'columnStart', 'columnSpan', 'width', 'minWidth', 'maxWidth', 'flexGrow', 'position', 'inset', 'marginInlineStart', 'marginInlineEnd', 'customCss'];
 
 /**
  * A realistic `sizes` hint for an image: in each range, its share of the grids around it (through the
