@@ -494,7 +494,8 @@ describe('a reloaded window shows the conversation by its ID, with the request r
     await store.showConversation({ id, title: 'New conversation', createdAt: '', messages: [] }, 'w1', () => true);
     expect(asked).toEqual([[id, 'w1']]);
     expect(said(store.getState().conversation?.messages)).toEqual(['user: Write an About page', 'assistant: Working on it.']);
-    expect(store.getState()).toMatchObject({ runStatus: 'running', activeRunId: r.runId, runMode: 'edit' });
+    expect(store.getState()).toMatchObject({ runStatus: 'running', activeRunId: r.runId, runMode: 'edit', runConversationId: id });
+    expect(store.shownRun(store.getState())?.runId).toBe(r.runId);
 
     // The rest of the reply lands in it, and the run ends there.
     env.adapter.late = ' Done.';
@@ -557,7 +558,7 @@ describe('a reloaded window shows the conversation by its ID, with the request r
   it('shows a question waiting for an answer as waiting, and nothing from another opening or a read that failed', async () => {
     const time = '2026-11-24T00:00:00.000Z';
     const asking: Conversation = { id: 'c_live', title: 'Live', createdAt: time, messages: [{ id: 'm_reply', role: 'assistant', text: '', time, runId: 'r_ask', questions: [{ id: 'q_1', text: 'Which page?', choices: ['Home', 'About'] }] }] };
-    store.setState({ conversation: null, runStatus: null, activeRunId: null, runMode: null, snapshot: { workspaceKey: 'w1' } } as Partial<ChatState>);
+    store.setState({ conversation: null, runStatus: null, activeRunId: null, runMode: null, runConversationId: null, snapshot: { workspaceKey: 'w1' } } as Partial<ChatState>);
     w().builder.ai = { readConversation: async () => ({ conversation: asking, run: { runId: 'r_ask', status: 'awaiting-input', mode: 'ask' } }) };
     await store.showConversation({ ...asking, messages: [] }, 'w1', () => true);
     expect(store.getState()).toMatchObject({ conversation: asking, runStatus: 'awaiting-input', activeRunId: 'r_ask', runMode: 'ask', runConversationId: 'c_live' });

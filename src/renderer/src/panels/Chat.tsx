@@ -26,6 +26,7 @@ import { answerOnly, canOpen, changeTarget, changeText, checksOf, continueContex
 import { summaryNow, turnState } from '@shared/turns';
 import { chatBusy, composerAction, imageLabels, isPaused, offeredImages, questionHint, shownQuestions, waitingQuestion, type WaitingQuestion } from '../lib/chatQuestions';
 import { isImeComposing } from '../lib/ime';
+import { requestRoutingReview } from '../lib/formRoutingReview';
 import { textBlocks, textSpans, type TextBlock, type TextSpan } from '../lib/model-text';
 import { perfCount, perfOn, perfWork } from '../lib/perf';
 import { externalLink } from '@shared/links';
@@ -1573,8 +1574,18 @@ export function Chat() {
             {answerElsewhere && inFlight ? ` Your answer goes to ${turnModelText(inFlight)}, which asked.` : ''}
             {draft.trim() || images.length ? ' Your unsent message is kept for afterwards.' : ''}
           </p>
-          {/* Only the options scroll, so a long list never scrolls the question and its instructions out of sight. */}
-          {(offeredImages(asking.question).length > 0 || asking.question.choices.length > 0) && (
+          {/* The app's question about where forms send is answered in its own dialog, which shows each address before
+              and after (#1130); the card opens it again. Only the options scroll, so a long list never scrolls the
+              question and its instructions out of sight. */}
+          {asking.question.formRouting ? (
+            <div className="question-options">
+              <div className="choices">
+                <button className="choice" onClick={() => requestRoutingReview()}>
+                  <span>Review changes</span>
+                </button>
+              </div>
+            </div>
+          ) : (offeredImages(asking.question).length > 0 || asking.question.choices.length > 0) && (
             <div className="question-options">
               {offeredImages(asking.question).length > 0 && (
                 <ImageChoices

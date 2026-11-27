@@ -92,7 +92,8 @@ export function offeredImages(q: Pick<ChatQuestion, 'images'>): ChatImageRef[] {
 }
 
 /** What the hint under a waiting question says the author can do. */
-export function questionHint(q: Pick<ChatQuestion, 'choices' | 'widen' | 'images'>): string {
+export function questionHint(q: Pick<ChatQuestion, 'choices' | 'widen' | 'images' | 'formRouting'>): string {
+  if (q.formRouting) return 'Review the change to allow it or keep your forms as they are. A typed “yes” allows it too.';
   if (q.widen) return 'Choose an option, or type a reply below. A typed “yes” or “OK” allows it too.';
   const images = offeredImages(q).length;
   // Looking is said in its own verb, so it never sounds like answering: a picture opens larger, Choose answers.
