@@ -139,7 +139,7 @@ const used = images.filter((a) => a.id !== shared && snap.assetUsage[a.id] && a.
 const [lost, stripped] = used;
 if (!lost || !stripped) throw new Error('not enough placed pictures to take the files of');
 for (const f of [lost.file, ...lost.variants.map((v) => v.file), stripped.file]) rmSync(join(snap.dir, f), { force: true });
-await win.locator(`${view} [aria-label="Sort images"]`).selectOption('oldest');
+await win.locator(`${view} select.asset-order-sort`).selectOption('oldest');
 await win.locator('.asset-gone').nth(1).waitFor({ timeout: 30000 });
 await pause(400);
 

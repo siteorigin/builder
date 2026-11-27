@@ -27,18 +27,26 @@
   .asset-search-row { display: flex; align-items: center; gap: 4px; }
   .asset-search-row .search { flex: 1; min-width: 0; }
   .asset-density { flex: none; width: 30px; height: 30px; }
-  .asset-result { margin: 0; font-size: 12px; color: var(--text-2); font-variant-numeric: tabular-nums; }
-  /* Sort and numbered series side by side, one under the other when the panel is narrow. */
-  .asset-order { display: flex; flex-wrap: wrap; gap: 6px; min-width: 0; }
-  .asset-order .select { flex: 1 1 108px; min-width: 0; }
-  .asset-series { flex: 1 1 108px; min-width: 0; display: flex; align-items: center; gap: 2px; }
-  .asset-series .select { flex: 1 1 auto; }
-  /* A chosen series is a filter in force: the selection's accent edge and fill, and a clear button beside it. */
-  .asset-series.active { flex-basis: 100%; }
-  .asset-series.active .select { border-color: var(--accent); background-color: var(--accent-soft); color: var(--accent-text); font-weight: 500; }
+  /* One line, so a long series name never pushes the grid down by two or three; the whole name is in the Series menu
+     and is spoken in full. */
+  .asset-result { margin: 0; overflow: hidden; font-size: 12px; color: var(--text-2); font-variant-numeric: tabular-nums; white-space: nowrap; text-overflow: ellipsis; }
+  /* Sort and numbered series, a labelled row each on one grid: the labels' column, the menus, and a column for Clear
+     that matches the density button and its gap above, so the menus end where the search field does and nothing moves
+     when a series is chosen or cleared. */
+  .asset-order { container-type: inline-size; display: grid; grid-template-columns: auto minmax(0, 1fr) 28px; align-items: center; gap: 6px; min-width: 0; }
+  .asset-order-label { grid-column: 1; font-size: 12px; font-weight: 500; line-height: 16px; color: var(--text-2); }
+  .asset-order .select { grid-column: 2; min-width: 0; }
+  /* Too narrow to spare the column: Sort, which never has a Clear, takes it, so "Newest first" stays whole. */
+  @container (max-width: 210px) { .asset-order .asset-order-sort { grid-column: 2 / -1; } }
+  /* A series in force is drawn neutrally, never in the accent (blue stays keyboard focus): the value in full ink,
+     semibold, with the raised lift, and Clear beside it. None chosen reads quieter, like an unset field. */
+  .asset-series:not(.active) { color: var(--text-2); }
+  .asset-series.active { font-weight: 600; box-shadow: var(--shadow-sm); }
+  .asset-order-label:has(+ .asset-series.active) { color: var(--text); }
+  .asset-series option, .asset-series optgroup { color: var(--text); font-weight: 400; }
   /* Two or three filters share the row: All, Unused and, when files are missing, Missing. */
   .asset-tools .segmented.full button { flex: 1 1 0; min-width: 0; padding: 0 6px; gap: 4px; white-space: nowrap; }
-  .asset-series-clear { flex: none; width: 24px; height: 24px; }
+  .asset-series-clear { grid-column: 3; justify-self: center; }
   .asset-count { color: var(--text-2); font-weight: 500; font-variant-numeric: tabular-nums; }
   /* 6px above the first row leaves room for a tile's whole focus ring inside the scrolling body. */
   .asset-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(80px, 1fr)); gap: 12px 8px; padding: 10px 10px 16px; }
