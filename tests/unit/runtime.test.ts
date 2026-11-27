@@ -25,10 +25,13 @@ class FakeWorker extends EventEmitter {
   }
 }
 const workers: FakeWorker[] = [];
+/** The options each worker was forked with, in order. */
+const forked: Array<{ execArgv?: string[]; serviceName?: string }> = [];
 vi.mock('electron', () => ({
   app: { isPackaged: false, getPath: () => '/tmp', getVersion: () => '0.0.0' },
   utilityProcess: {
-    fork: () => {
+    fork: (_path: string, _args: string[], opts: { execArgv?: string[]; serviceName?: string }) => {
+      forked.push(opts);
       const w = new FakeWorker();
       workers.push(w);
       return w;
@@ -36,11 +39,12 @@ vi.mock('electron', () => ({
   }
 }));
 
-const { BUILD_LIMITS, HOLD_ACK_MS, STOP_LIMITS, DevServer, buildProject, prepareDependencies } = await import('../../src/main/runtime/manager');
+const { BUILD_LIMITS, DEV_SERVER_V8_FLAGS, HOLD_ACK_MS, STOP_LIMITS, DevServer, buildProject, prepareDependencies } = await import('../../src/main/runtime/manager');
 
 afterEach(() => {
   FakeWorker.pipesOpen = false;
   workers.splice(0);
+  forked.splice(0);
   vi.useRealTimers();
 });
 
@@ -297,6 +301,22 @@ describe('production build worker', () => {
 });
 
 describe('preview worker', () => {
+  it('keeps the preview server’s compiled code through its idle collections, through the switch its V8 is made from, and leaves a build’s alone', async () => {
+    const dev = new DevServer('/project');
+    const started = dev.start();
+    workers[0].emit('message', { type: 'ready', url: 'http://127.0.0.1:1' });
+    await started;
+    expect(DEV_SERVER_V8_FLAGS).toEqual(['--no-flush-bytecode']);
+    expect(forked[0]).toMatchObject({ serviceName: 'SiteOrigin project runtime', execArgv: ['--js-flags=--no-flush-bytecode'] });
+    const built = buildProject('/project');
+    workers[1].emit('message', { type: 'built', ok: true, logs: [] });
+    await built;
+    expect(forked[1].serviceName).toBe('SiteOrigin project build');
+    expect(forked[1].execArgv).toBeUndefined();
+    void dev.stop();
+    workers[0].emit('exit', null);
+  });
+
   it('kills a worker that ignores both stop and terminate, and waits for it to exit', async () => {
     vi.useFakeTimers();
     const kill = vi.spyOn(process, 'kill').mockImplementation(() => true);

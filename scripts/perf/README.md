@@ -441,6 +441,18 @@ only on its return (0). The runner's marks and readings follow the window the sc
 (`ctx.win`); while there is none, marks go to the main process alone. Memory scenarios run one per `perf:run`: each
 starts from a fresh Welcome on the fixture as it was put back.
 
+**`memoryBrowse`** (after `launch`, a memory scenario like `memory`, on the large fixture only): what a session of looking
+around leaves the processes holding, the preview's dev server above all. The fixture opened from its card as `open`
+opens it, untimed, and read at rest on the canvas (`canvas`); then its first 20 pages of its own (`/fixture-001/` on),
+each chosen in the Pages panel until the canvas shows it, ready to edit, with the card the fixture placed on it,
+and read again (`pages20`); then Insert opened with all of Your components shown until the tiles in view are photographed and
+quiet, and the pointer rested on 6 of the tiles in turn until the live preview beside the panel has the component
+mounted and showing its heading (the editor's sizing of it afterwards is not waited for), the pointer moved away until
+the last preview closes, Insert closed once its thumbnails are quiet, and read again (`previews`). Checks: everything
+`open` checks, each page and each preview shown, the project unchanged. Each
+reading's metrics as `memory`'s, and growth: `memory.visits.growth.*` (`pages20` − `canvas`), `memory.peeks.growth.*`
+(`previews` − `pages20`) and `memory.browse.growth.*` (`previews` − `canvas`).
+
 **`previewImages`** (after `open`, a memory scenario, on its own; `--fixture small` is enough: the page it measures is
 its own): the memory of the app's processes while frames other than the canvas show a page of photographs (#1037).
 Before the readings (untimed): 20 photographs written into `static/assets/` as an import stores them, each a web-sized

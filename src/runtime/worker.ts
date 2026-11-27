@@ -10,6 +10,7 @@ import { maskSecrets, serializeBuildError } from './build-diagnostics';
 import { devPlugin } from './dev-plugin';
 import { firstPagePlugin } from './first-page';
 import { canonicalDir, frameAncestorsCsp, framePolicyPlugin, liveGuestPlugin, previewFsPolicy, unwatched } from './policy';
+import { collectGarbage, createIdleCollector, heapGrowth, IDLE_COLLECT, idleCollectPlugin, type IdleCollector } from './idle-collect';
 import { createPublicationGate, type GateServer, type PublicationGate } from './publication-gate';
 
 type Msg =
@@ -28,6 +29,8 @@ type Ws = { send: (p: unknown) => void; on: (event: string, fn: (data: unknown) 
 let server: { close: () => Promise<void>; ws: Ws; httpServer: unknown } | null = null;
 /** Holds the preview's hot updates while the editor publishes a batch of files (see publication-gate). */
 let gate: PublicationGate | null = null;
+/** Gives the server's memory back once it has gone quiet after some work (see idle-collect). */
+let idle: IdleCollector | null = null;
 /**
  * How long a new batch waits for the pages to show the one before (fetch its modules, apply them, say so), so it
  * replaces nothing they are still reading. Under the editor's own wait for the answer (HOLD_ACK_MS).
@@ -64,54 +67,71 @@ async function start(dir: string, wantedPort = 0, packaged = true) {
   mark('runtime.viteLoaded');
   const ignored = unwatched(dir);
   const held = createPublicationGate({ root: dir, ignored });
-  const s = await vite.createServer({
-    root: dir,
-    configFile: join(dir, 'vite.config.js'),
-    logLevel: 'warn',
-    clearScreen: false,
-    plugins: [
-      devPlugin(dir),
-      framePolicyPlugin(frameAncestorsCsp(packaged)),
-      liveGuestPlugin(),
-      // There whether marks are on or not: the plugins' names key Vite's dependency cache (first-page.ts).
-      firstPagePlugin(marks, (asked, answered) => {
-        post({ type: 'perf', name: 'runtime.firstRequest', at: asked });
-        post({ type: 'perf', name: 'runtime.firstResponse', at: answered });
-      })
-    ],
-    server: {
-      host: '127.0.0.1',
-      // Port 0: the operating system picks a free port when the server binds, so nothing can take it in between.
-      port: wantedPort,
-      strictPort: true,
-      cors: false,
-      open: false,
-      watch: { ignored },
-      // A batch of files the editor publishes reaches the page as one update.
-      hotUpdateEnvironments: held.hotUpdateEnvironments,
-      fs: previewFsPolicy(dir)
-    },
-    customLogger: {
-      info: (m: string) => post({ type: 'log', level: 'info', message: m }),
-      warn: (m: string) => post({ type: 'log', level: 'warn', message: m }),
-      warnOnce: (m: string) => post({ type: 'log', level: 'warn', message: m }),
-      error: (m: string) => post({ type: 'log', level: 'error', message: m }),
-      clearScreen: () => {},
-      hasErrorLogged: () => false,
-      hasWarned: false
-    }
-  } as never);
-  mark('runtime.serverCreated');
-  held.attach(s as unknown as GateServer);
-  gate = held;
-  const ws = (s as unknown as { ws: Ws }).ws;
-  // The bridge says which batch its page shows once it has applied it.
-  ws.on('siteorigin:applied', (data) => held.applied(Number((data as { batch?: unknown } | null)?.batch)));
-  await s.listen();
-  server = s as never;
-  const addr = (s.httpServer as { address(): { port: number } | string | null } | null)?.address();
-  const bound = addr && typeof addr === 'object' ? addr.port : wantedPort;
-  post({ type: 'ready', url: `http://127.0.0.1:${bound}` });
+  // Never while a request is being answered or a save is on its way to the pages, and only once the heap has grown.
+  const growth = heapGrowth(IDLE_COLLECT.growthBytes);
+  const quiet = createIdleCollector({ quietMs: IDLE_COLLECT.quietMs, collect: () => collectGarbage().then(growth.reset), blocked: () => !held.idle(), worth: growth.grown });
+  idle = quiet;
+  // Starting is work too: nothing is collected before the server listens, and nothing at all if it never does.
+  const starting = quiet.begin();
+  try {
+    const s = await vite.createServer({
+      root: dir,
+      configFile: join(dir, 'vite.config.js'),
+      logLevel: 'warn',
+      clearScreen: false,
+      plugins: [
+        devPlugin(dir),
+        framePolicyPlugin(frameAncestorsCsp(packaged)),
+        liveGuestPlugin(),
+        // There whether marks are on or not: the plugins' names key Vite's dependency cache (first-page.ts).
+        firstPagePlugin(marks, (asked, answered) => {
+          post({ type: 'perf', name: 'runtime.firstRequest', at: asked });
+          post({ type: 'perf', name: 'runtime.firstResponse', at: answered });
+        }),
+        idleCollectPlugin(quiet)
+      ],
+      server: {
+        host: '127.0.0.1',
+        // Port 0: the operating system picks a free port when the server binds, so nothing can take it in between.
+        port: wantedPort,
+        strictPort: true,
+        cors: false,
+        open: false,
+        watch: { ignored },
+        // A batch of files the editor publishes reaches the page as one update.
+        hotUpdateEnvironments: held.hotUpdateEnvironments,
+        fs: previewFsPolicy(dir)
+      },
+      customLogger: {
+        info: (m: string) => post({ type: 'log', level: 'info', message: m }),
+        warn: (m: string) => post({ type: 'log', level: 'warn', message: m }),
+        warnOnce: (m: string) => post({ type: 'log', level: 'warn', message: m }),
+        error: (m: string) => post({ type: 'log', level: 'error', message: m }),
+        clearScreen: () => {},
+        hasErrorLogged: () => false,
+        hasWarned: false
+      }
+    } as never);
+    mark('runtime.serverCreated');
+    held.attach(s as unknown as GateServer);
+    gate = held;
+    const ws = (s as unknown as { ws: Ws }).ws;
+    // The bridge says which batch its page shows once it has applied it.
+    ws.on('siteorigin:applied', (data) => {
+      quiet.activity();
+      held.applied(Number((data as { batch?: unknown } | null)?.batch));
+    });
+    await s.listen();
+    server = s as never;
+    const addr = (s.httpServer as { address(): { port: number } | string | null } | null)?.address();
+    const bound = addr && typeof addr === 'object' ? addr.port : wantedPort;
+    post({ type: 'ready', url: `http://127.0.0.1:${bound}` });
+  } catch (e) {
+    quiet.dispose();
+    throw e;
+  } finally {
+    starting();
+  }
 }
 
 /** How many of Vite's own progress lines a failed build keeps, so the lines just before the failure explain it. */
@@ -178,6 +198,8 @@ async function build(dir: string) {
 
 port.on('message', async (ev) => {
   const m = ev.data;
+  // A save on its way (its hold, its release, its revision) is work the server collects after.
+  idle?.activity();
   try {
     if (m.type === 'start') {
       marks = m.perf === true;
@@ -187,6 +209,8 @@ port.on('message', async (ev) => {
     // The editor waits for this, so it never runs ahead of the batch's own update.
     else if (m.type === 'revision') {
       const send = (batch = 0) => {
+        // The pages fetch what the batch changed from here: quiet is counted from now, not from the hold.
+        idle?.activity();
         server?.ws.send({ type: 'custom', event: 'siteorigin:revision', data: { revision: m.revision, batch } });
         // Vite has the revision's files now: what a page loads from here is that revision (a live session's guests reload).
         if (server) post({ type: 'published', revision: m.revision, ticket: m.ticket });
@@ -206,6 +230,7 @@ port.on('message', async (ev) => {
       await build(m.dir);
       process.exit(0);
     } else if (m.type === 'stop') {
+      idle?.dispose();
       gate?.close();
       await server?.close();
       process.exit(0);

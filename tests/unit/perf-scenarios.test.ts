@@ -1,12 +1,13 @@
 import { describe, expect, it } from 'vitest';
 import type { PerfRecord } from '../../src/shared/perf';
+import type { ProjectState } from '../../src/shared/types';
 import { Collector, Trace } from '../../scripts/perf/results';
 import { ai, AI_EDIT_CASES, aiEdit, aiMeasurements, batch, BATCH_OPERATIONS, batchOperations, canvas, chainFor, chat, CHAT_CASES, CHAT_REPLY_CHECKPOINTS, CHAT_TYPED, chatReply, chatReplyFirst, chatReplyLast, chatSeed, colour, COLOUR_STEPS, colourPath, copiesProblem, coveredMs, create, createAgain, deepest, drag, edit, editBranded, editFullHistory, edits, namedFaces, EDITS, expect as check, expectedCopies, exportAgain, exportSite, findHeading, type FixtureFacts, importHeic, importOriginals, importPhotos, installedPackages, installsHere, launch, memory, MEMORY_EDITS, noWindow, memoryPanels, PANEL_DOCK_VIEWS, PANEL_EDITS, PANEL_SIDE_TURNS, PANEL_SIDE_VIEWS, open, reopen, REOPEN_CYCLES, PANELS, panels, panelsInUse, runChain, SITE_WORK, type Scenario, type ScenarioContext, SHOWN_PANELS, storedPhotoSize, switchProject, THUMB_WINDOWS, thumbs, toolCallsReply, layers, LAYERS_KINDS, LAYERS_SAMPLES, LAYERS_SIZES, layersAncestors, layersPage, type LayersKind, history, HISTORY_WINDOWS } from '../../scripts/perf/scenarios';
 import type { MemoryProbe, MemoryReading } from '../../scripts/perf/memory';
 import { PHOTO_COUNT, photoSpec } from '../../scripts/perf/photos';
 import { FIXTURES } from '../../scripts/perf/fixtures';
 import { PROJECT_DEFINITION_ID } from '../../src/shared/component-ids';
-import { framesOf, cmdk, CMDK_QUERY, assets, ASSET_LIBRARIES, ASSET_PICKERS, grownImages, GALLERY_PAGE, galleryComponent, galleryDefinitionId, galleryPlacements, galleryRecord, PREVIEW_IMAGE_READINGS, previewImages, windowPictures } from '../../scripts/perf/scenarios';
+import { framesOf, cmdk, CMDK_QUERY, assets, ASSET_LIBRARIES, ASSET_PICKERS, grownImages, GALLERY_PAGE, galleryComponent, galleryDefinitionId, galleryPlacements, galleryRecord, PREVIEW_IMAGE_READINGS, previewImages, windowPictures, memoryBrowse, BROWSE_PAGES, BROWSE_PREVIEWS, fixturePages } from '../../scripts/perf/scenarios';
 
 let seq = 0;
 const m = (name: string, t: number, extra: Partial<PerfRecord> = {}): PerfRecord => ({ kind: 'mark', name, t, proc: 'main', pid: 1, seq: ++seq, ...extra });
@@ -1967,6 +1968,35 @@ describe('memory', () => {
     expect(Object.keys(lacking.metrics).some((k) => k.startsWith('memory.cycles') || k.startsWith('memory.reopen'))).toBe(false);
     // A peak is not a reading at rest.
     expect(reopen.measure(new Trace([]), facts, all.map((r) => (r.label === 'closed1' ? { ...r, kind: 'peak' as const } : r))).missing).toEqual(['memory reading closed1']);
+  });
+
+  it('memoryBrowse: report the canvas, the pages and the previews, what each stretch left behind, and a reading not taken as missing', () => {
+    expect([memoryBrowse.memory, memoryBrowse.after, BROWSE_PAGES, BROWSE_PREVIEWS]).toEqual([true, 'launch', 20, 6]);
+    expect(chainFor(['memoryBrowse']).map((s) => s.name)).toEqual(['launch', 'memoryBrowse']);
+    const all = [reading('canvas', 200, 'rest', { editor: 140, devServer: 300 }), reading('pages20', 205, 'rest', { editor: 150, devServer: 420 }), reading('previews', 210, 'rest', { editor: 145, devServer: 470, thumbnails: 60 })];
+    const got = memoryBrowse.measure(new Trace([]), facts, all);
+    expect(got.missing).toEqual([]);
+    const v = (k: string) => got.metrics[k].value / (got.metrics[k].unit === 'memory' ? MiB : 1);
+    expect([v('memory.canvas.mem.devServer'), v('memory.pages20.mem.devServer'), v('memory.previews.mem.devServer'), v('memory.previews.processes')]).toEqual([300, 420, 470, 4]);
+    expect([v('memory.visits.growth.mem.devServer'), v('memory.peeks.growth.mem.devServer'), v('memory.browse.growth.mem.devServer'), v('memory.browse.growth.mem.thumbnails'), v('memory.browse.growth.total')]).toEqual([120, 50, 170, 60, 245]);
+    const lacking = memoryBrowse.measure(new Trace([]), facts, all.slice(0, 2));
+    expect(lacking.missing).toEqual(['memory reading previews']);
+    expect(Object.keys(lacking.metrics).some((k) => k.startsWith('memory.peeks') || k.startsWith('memory.browse'))).toBe(false);
+  });
+
+  it('memoryBrowse: visit the fixture’s own pages in their number’s order, each with the card it places', () => {
+    const page = (id: string, route: string, title = id) => ({ id, route, title });
+    const state = {
+      site: { pageOrder: ['pg_home', 'pg_fx010', 'pg_fx002', 'pg_about', 'pg_fx001', 'pg_fx031'] },
+      pages: { pg_home: page('pg_home', '/'), pg_about: page('pg_about', '/about/'), pg_fx001: page('pg_fx001', '/fixture-001/'), pg_fx002: page('pg_fx002', '/fixture-002/'), pg_fx010: page('pg_fx010', '/fixture-010/'), pg_fx031: page('pg_fx031', '/fixture-031/') },
+      components: { a: { owner: 'project', name: 'Fixture card 01' }, b: { owner: 'project', name: 'Fixture card 02' }, c: { owner: 'project', name: 'Fixture card 10' }, d: { owner: 'theme', name: 'Fixture card 31' } }
+    } as unknown as ProjectState;
+    expect(fixturePages(state).map((p) => [p.id, p.route, p.card])).toEqual([
+      ['pg_fx001', '/fixture-001/', 'Card 01'],
+      ['pg_fx002', '/fixture-002/', 'Card 02'],
+      ['pg_fx010', '/fixture-010/', 'Card 10'],
+      ['pg_fx031', '/fixture-031/', null]
+    ]);
   });
 
   it('make 50 edits and give itself longer than a timing scenario, as a memory scenario', () => {

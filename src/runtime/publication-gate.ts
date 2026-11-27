@@ -349,6 +349,9 @@ export function createPublicationGate(opts: { root: string; ignored: (path: stri
       });
     },
 
+    /** Nothing held, gathered or waiting to be sent: no save is on its way to the pages. */
+    idle,
+
     /** Let everything through: the server is stopping. */
     close() {
       for (const timer of holds.values()) clearTimeout(timer);
