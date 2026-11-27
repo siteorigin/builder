@@ -560,18 +560,16 @@ export function nearestVar(name: string, known: Iterable<string>): string | null
  * defines. A fallback does not excuse one: `var(--so-color-primry, red)` renders red without a word. A variable the
  * component sets itself (`--so-gap: 1rem`, `style:--so-gap`, `setProperty('--so-gap', …)`) is its own to read.
  */
-function unknownTokenProblems(source: string, tokens: ReadonlySet<string>, severity: CodeProblem['severity']): Array<{ severity: CodeProblem['severity']; message: string; offset: number }> {
+export function unknownTokenProblems(source: string, tokens: ReadonlySet<string>, severity: CodeProblem['severity']): Array<{ severity: CodeProblem['severity']; message: string; offset: number; line: number }> {
   const text = withoutComments(source);
   const own = new Set<string>();
   for (const m of text.matchAll(/(?:^|[^\w-])(--so-[\w-]+)\s*:|style:(--so-[\w-]+)|setProperty\(\s*['"`](--so-[\w-]+)/g)) own.add(m[1] ?? m[2] ?? m[3]);
-  const out: Array<{ severity: CodeProblem['severity']; message: string; offset: number }> = [];
-  const reported = new Set<string>();
-  for (const m of text.matchAll(/var\(\s*(--so-[\w-]+)/g)) {
+  const out: Array<{ severity: CodeProblem['severity']; message: string; offset: number; line: number }> = [];
+  for (const m of text.matchAll(/var\(\s*(--so-[\w-]+)/gi)) {
     const name = m[1];
-    if (tokens.has(name) || own.has(name) || RUNTIME_VARS.test(name) || reported.has(name)) continue;
-    reported.add(name);
+    if (tokens.has(name) || own.has(name) || RUNTIME_VARS.test(name)) continue;
     const near = nearestVar(name, [...tokens, ...own]);
-    out.push({ severity, offset: m.index ?? 0, message: `${name} is not a token of this theme.${near ? ` Did you mean ${near}?` : ''}` });
+    out.push({ severity, offset: m.index ?? 0, line: text.slice(0, m.index ?? 0).split('\n').length, message: `${name} is not a token of this theme.${near ? ` Did you mean ${near}?` : ''}` });
   }
   return out;
 }

@@ -37,7 +37,7 @@ async function stage(authored: AuthoredPack, fontRoot: string): Promise<{ pack: 
   // Each code component takes exactly the properties its manifest declares, with the defaults it declares.
   const disagree = await packManifestProblems(pack.components);
   if (disagree.length) throw new Error(`The ${pack.id} pack's code does not match its manifest. ${disagree.join(' ')}`);
-  const unknown = await packTokenProblems(pack);
+  const unknown = packTokenProblems(pack);
   if (unknown.length) throw new Error(`The ${pack.id} pack's code names CSS variables its theme does not define:\n${unknown.join('\n')}`);
   // A committed release ships in every package, so it always carries its thumbnails.
   const { previews, bytes, drawn } = await renderPreviews(pack, files, join(root, '.tmp', 'pack-previews'), { require: true });

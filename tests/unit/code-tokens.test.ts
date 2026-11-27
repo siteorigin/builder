@@ -52,6 +52,11 @@ describe('theme token names in component code', () => {
     expect(await tokenProblems(component('/* var(--so-oops) */ p { color: red; }', '<!-- var(--so-oops) --><p>Hi</p>'))).toEqual([]);
   });
 
+  it('reads var( in any case, and reports each line a typo is on', async () => {
+    expect(await tokenProblems(component('p { color: VAR(--so-color-brnd, red); }'))).toHaveLength(1);
+    expect(await tokenProblems(component('p { color: var(--so-nope); }\na { color: var(--so-nope); }'))).toHaveLength(2);
+  });
+
   it('checks nothing without a token list', async () => {
     expect((await checkSvelteSource(component('p { color: var(--so-nope); }'))).filter((p) => p.message.includes('not a token'))).toEqual([]);
   });
@@ -62,19 +67,21 @@ describe('theme token names in component code', () => {
     expect(vars.has('--so-color-brand')).toBe(true);
     expect(vars.has('--so-text-h1-size')).toBe(true);
     expect(vars.has('--so-color-primary')).toBe(false);
+    state.tokens.custom.push({ id: 'color.sunset', label: 'Sunset', group: 'color', value: '#f80' });
+    expect(projectTokenVars(state).has('--so-color-sunset')).toBe(true);
   });
 });
 
 describe('bundled themes', () => {
-  it('name no CSS variable their own theme does not define', async () => {
+  it('name no CSS variable their own theme does not define', () => {
     registerBuiltinPacks();
-    for (const pack of BUILTIN_PACKS) expect(await packTokenProblems(pack), pack.id).toEqual([]);
+    for (const pack of BUILTIN_PACKS) expect(packTokenProblems(pack), pack.id).toEqual([]);
   });
 
   it('the pack check reports one that is misspelled', async () => {
     const pack = BUILTIN_PACKS[0];
     const code = pack.components.find((c) => c.kind === 'code' && c.source)!;
     const broken = { ...pack, components: [{ ...code, source: component('p { color: var(--so-color-brnd); }') }] };
-    expect((await packTokenProblems(broken))[0]).toContain('--so-color-brnd is not a token of this theme.');
+    expect(packTokenProblems(broken)[0]).toContain('--so-color-brnd is not a token of this theme.');
   });
 });
