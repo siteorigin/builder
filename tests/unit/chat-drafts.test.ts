@@ -344,6 +344,37 @@ describe('conversations in the assistant', () => {
     expect((await orch.loadConversations()).list.find((c) => c.id === kept.id)?.title).toBe('About page');
   });
 
+  it('a rename that waited its turn while a request started in another thread still writes the unsaved thread whole', async () => {
+    const { orch, ctx, adapter, chatDir } = await setup();
+    const o = orch as unknown as { writeConversation: (...a: unknown[]) => Promise<void>; queueFileChange: (c: () => Promise<unknown>) => Promise<unknown> };
+    const real = o.writeConversation.bind(orch);
+    let fail = true;
+    o.writeConversation = async (...a: unknown[]) => {
+      if (fail) throw new Error('The disk is full.');
+      return real(...a);
+    };
+    const kept = (await orch.loadConversations()).active;
+    adapter.release();
+    expect((await orch.send('Write an About page', ctx, kept.id)).ok).toBe(true);
+    for (let i = 0; i < 200 && orch.busy; i++) await new Promise((r) => setTimeout(r, 10));
+    await orch.loadConversations();
+    fail = false;
+    const other = await orch.newConversation();
+    // Something already queued holds the rename back until a request has started in the other thread.
+    let go!: () => void;
+    void o.queueFileChange(() => new Promise<void>((r) => (go = r)));
+    const renaming = orch.renameConversation(kept.id, 'About page');
+    const fresh = new GatedAdapter();
+    (orch as unknown as { deps: { adapter: unknown } }).deps.adapter = async () => ({ adapter: fresh, model: 'fake', provider: 'openai' });
+    expect((await orch.send('Meanwhile, the footer', ctx, other.id)).ok).toBe(true);
+    go();
+    await renaming;
+    const saved = JSON.parse(readFileSync(join(chatDir, `${kept.id}.json`), 'utf8')) as Conversation;
+    expect([saved.title, saved.messages.map((m) => m.role)]).toEqual(['About page', ['user', 'assistant']]);
+    fresh.release();
+    for (let i = 0; i < 200 && orch.busy; i++) await new Promise((r) => setTimeout(r, 10));
+  });
+
   it('an earlier save that lands never lets go of a later turn whose save failed', async () => {
     const { orch, ctx, adapter } = await setup();
     const o = orch as unknown as { writeConversation: (...a: unknown[]) => Promise<void> };

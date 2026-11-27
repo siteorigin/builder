@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
+import type { Conversation } from '@shared/api';
 import { api, confirmDialog, getState, toast, useStore, withdrawConfirm } from '../store';
 import { waitingQuestion } from '../lib/chatQuestions';
 import { askRoutingDialog, onRoutingReview, routingAnswered, routingKey, routingQuestion } from '../lib/formRoutingReview';
@@ -9,9 +10,31 @@ import { askRoutingDialog, onRoutingReview, routingAnswered, routingKey, routing
  * taken back unanswered once the question stops waiting.
  */
 export function FormRoutingHost() {
-  const conversation = useStore((s) => s.conversation);
+  const shown = useStore((s) => s.conversation);
   const runStatus = useStore((s) => s.runStatus);
   const activeRunId = useStore((s) => s.activeRunId);
+  // A request waiting in another thread than the one on screen (#1125): its question is read from main, as it is
+  // there, so the dialog opens wherever the chat is, and stays while the author switches threads.
+  const away = useStore((s) => (s.runStatus === 'awaiting-input' && s.runConversationId && s.conversation?.id !== s.runConversationId ? s.runConversationId : null));
+  const [elsewhere, setElsewhere] = useState<Conversation | null>(null);
+  useEffect(() => {
+    setElsewhere(null);
+    if (!away) return;
+    const opening = getState().snapshot?.workspaceKey ?? '';
+    let live = true;
+    void Promise.resolve()
+      .then(() => api.ai.readConversation(away, opening))
+      .then(
+        (r) => live && r?.conversation?.id === away && (getState().snapshot?.workspaceKey ?? '') === opening && setElsewhere(r.conversation),
+        () => undefined
+      );
+    return () => {
+      live = false;
+    };
+  }, [away, activeRunId]);
+  const conversation = away ? elsewhere : shown;
+  const waitsIn = useRef(conversation);
+  waitsIn.current = conversation;
   const asking = useMemo(() => routingQuestion(waitingQuestion(conversation, activeRunId, runStatus)), [conversation, activeRunId, runStatus]);
   const key = asking ? routingKey(asking) : null;
   // Asked again when the chat card's Review button asks for it, unless its answer was given and is on its way.
@@ -29,7 +52,8 @@ export function FormRoutingHost() {
       answer: (runId, questionId, answer) => api.ai.answer(runId, questionId, answer),
       failed: () => {
         const s = getState();
-        const still = routingQuestion(waitingQuestion(s.conversation, s.activeRunId, s.runStatus));
+        // Read from the thread it waits in, whichever is on screen.
+        const still = routingQuestion(waitingQuestion(waitsIn.current, s.activeRunId, s.runStatus));
         if (still && routingKey(still) === routingKey(asking)) toast('Your answer could not be sent. Choose Review changes to answer again.', 'error');
       },
       // The same words twice in a row are still heard: they alternate a trailing no-break space.

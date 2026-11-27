@@ -735,8 +735,8 @@ export class Orchestrator {
    * once switched away from (#1125), until its write lands.
    */
   private unsaved = new Map<string, { conv: Conversation; save: object }>();
-  /** The opening a Clear history in progress was asked in: only that opening waits for it to open anything. */
-  private clearingIn: object | null = null;
+  /** Clear history calls in progress per opening they were asked in: only that opening waits for them to open anything. */
+  private clearingIn = new Map<object, number>();
   /** This opening of the project, replaced when another begins: a request admitted in an earlier one saves nothing. */
   private opening: object = {};
   /** The project is closing (see close): no request may start, or it would run on past the close unstopped. */
@@ -849,7 +849,7 @@ export class Orchestrator {
 
   /** Clear history replaces the open conversation when it is done: nothing else is opened meanwhile. */
   private notClearing() {
-    if (this.clearingAll && this.clearingIn === this.opening) throw new Error('The conversation history is being cleared. Try again in a moment.');
+    if (this.clearingIn.get(this.opening)) throw new Error('The conversation history is being cleared. Try again in a moment.');
   }
 
   /** A read that finished after its project closed must not set the next project's conversation. */
@@ -965,7 +965,11 @@ export class Orchestrator {
       this.sameSession(session);
       // The open conversation, or one a request left unsaved (see unsaved), is newer than its file, if it has one.
       const open = this.conversation?.id === id ? this.conversation : (this.unsaved.get(id)?.conv ?? null);
-      if (open && !this.run) {
+      // Its entry as it is now: a request that ends in it before this write lands registers a newer save of its own.
+      const held = this.unsaved.get(id);
+      // Never with a running request's messages (that request saves them, and the name, when it ends); a request in
+      // another thread changes nothing here.
+      if (open && this.run?.transcript.conv !== open) {
         // Written from memory, whose messages are all settled. One with nothing in it yet is saved, name and all, with
         // its first message.
         const before = { title: open.title, named: open.named, name: names.get(id) };
@@ -976,7 +980,7 @@ export class Orchestrator {
         try {
           // Written whole: it holds whatever a request's save left unsaved.
           if (await this.transcriptWrite({ opening: this.opening, session, dir, conv: open, deleted: this.deleted, names: this.names })?.()) {
-            if (this.unsaved.get(id)?.conv === open) this.unsaved.delete(id);
+            if (held && this.unsaved.get(id) === held) this.unsaved.delete(id);
           }
         } catch (e) {
           // Not saved, so not named: the list and the file go on agreeing.
@@ -1051,7 +1055,8 @@ export class Orchestrator {
     // No request may start while the files are going: it would add to a conversation that is being removed.
     this.clearing++;
     this.clearingAll++;
-    this.clearingIn = this.opening;
+    const { opening } = this;
+    this.clearingIn.set(opening, (this.clearingIn.get(opening) ?? 0) + 1);
     try {
       // After a finished request's transcript write (which would bring a cleared conversation back), and any
       // rename or delete already asked for.
@@ -1060,6 +1065,9 @@ export class Orchestrator {
     } finally {
       this.clearing--;
       this.clearingAll--;
+      const left = (this.clearingIn.get(opening) ?? 1) - 1;
+      if (left) this.clearingIn.set(opening, left);
+      else this.clearingIn.delete(opening);
     }
     this.sameSession(session);
     this.unsaved.clear();

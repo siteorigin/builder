@@ -30,7 +30,12 @@ const BRIDGE = `
   window.answers = [];
   const any = (path) => new Proxy(function () {}, {
     get: (_, key) => (key === 'then' || typeof key === 'symbol' ? undefined : any(path ? path + '.' + key : key)),
-    apply: (_, __, args) => { if (path === 'ai.answer') { window.answers.push(args.join(' | ')); return Promise.resolve(true); } return any(''); }
+    apply: (_, __, args) => {
+      if (path === 'ai.answer') { window.answers.push(args.join(' | ')); return Promise.resolve(true); }
+      // Main's copy of a thread, by ID, as reading it answers.
+      if (path === 'ai.readConversation') return Promise.resolve({ conversation: (window.threads ?? {})[args[0]], run: null });
+      return any('');
+    }
   });
   window.builder = any('');
 `;
@@ -151,6 +156,20 @@ describe.skipIf(!browserInstalled)('the app’s dialog for where forms send (#11
     await setState({ runStatus: null, activeRunId: null });
     await expect.poll(() => dialog().count()).toBe(0);
     expect(await answers()).toEqual([]);
+  });
+
+  it('opens for a question waiting in another thread than the one on screen, and stays while threads switch (#1125)', async () => {
+    const state = waiting({ formRouting: REVIEW });
+    await page.evaluate(`window.threads = { c_1: ${JSON.stringify(state.conversation)} }`);
+    const other = { id: 'c_2', title: 'Other', createdAt: '2026-11-27T09:00:00.000Z', messages: [] };
+    await setState({ ...state, conversation: other, runConversationId: 'c_1' });
+    await expect.poll(() => dialog().isVisible()).toBe(true);
+    // Back in the thread that asked, it is the same question: nothing is withdrawn or asked again.
+    await setState({ conversation: state.conversation });
+    await page.waitForTimeout(100);
+    expect(await dialog().count()).toBe(1);
+    await dialog().getByRole('button', { name: 'Allow this change' }).click();
+    await expect.poll(answers).toEqual(['run_1 | q_1 | Allow this change']);
   });
 
   it('opens nothing for a question the model asks', async () => {
