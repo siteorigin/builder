@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { useEffect, useId, useMemo, useRef, useState } from 'react';
 import { X } from 'lucide-react';
 import { ASSET_SORTS, isAssetSort, numberedSeries, type AssetSeries } from '@shared/asset-order';
 import type { AssetRecord } from '@shared/types';
@@ -53,15 +53,25 @@ export function useAssetSeries(images: readonly AssetRecord[], opening: unknown)
 
 /**
  * How images are ordered, and which numbered series to show when the library has any. Assets and the Inspector's
- * picker show the same controls, and changing the order in one changes it in both.
+ * pickers show the same controls, and changing the order in one changes it in both.
+ *
+ * Each control is a labelled row on one grid (label, menu, a fixed column for Clear), so choosing or clearing a series
+ * never moves the menus or the grid under the pointer. A series in force is drawn neutrally, never in the accent (blue
+ * stays keyboard focus): the menu's value in full ink and semibold with the raised lift, and Clear beside it; with none
+ * chosen, "All images" reads quieter, like an unset field. Options carry each series' whole name and its count in words,
+ * under a group heading that says what a series is, so the explanation is in the open menu where the choice is made.
  */
 export function AssetOrderControls({ series, value, onSeries }: { series: AssetSeries[]; value: string; onSeries: (key: string) => void }) {
   const sort = useStore((s) => s.assetSort);
   const chosen = series.find((s) => s.key === value);
   const seriesRef = useRef<HTMLSelectElement>(null);
+  const id = useId();
   return (
     <div className="asset-order">
-      <select className="select sm" aria-label="Sort images" title="Sort images" value={sort} onChange={(e) => isAssetSort(e.target.value) && setAssetSort(e.target.value)}>
+      <label className="asset-order-label" htmlFor={`${id}-sort`}>
+        Sort
+      </label>
+      <select id={`${id}-sort`} className="select sm asset-order-sort" value={sort} onChange={(e) => isAssetSort(e.target.value) && setAssetSort(e.target.value)}>
         {ASSET_SORTS.map((o) => (
           <option key={o.value} value={o.value}>
             {o.label}
@@ -69,27 +79,36 @@ export function AssetOrderControls({ series, value, onSeries }: { series: AssetS
         ))}
       </select>
       {series.length > 0 && (
-        // A chosen series is marked as a filter in force, with its full name in the tooltip and a way to clear it.
-        <span className={`asset-series${chosen ? ' active' : ''}`}>
-          <select ref={seriesRef} className="select sm" aria-label="Numbered series" title={chosen ? `Showing only ${chosen.label} (${chosen.count})` : 'Show only images named alike apart from a number at the end, such as Swatch 1 to Swatch 120'} value={value} onChange={(e) => onSeries(e.target.value)}>
+        <>
+          <label className="asset-order-label" htmlFor={`${id}-series`}>
+            Series
+          </label>
+          <select
+            id={`${id}-series`}
+            ref={seriesRef}
+            className={`select sm asset-series${chosen ? ' active' : ''}`}
+            // The whole name when the closed menu has to cut it.
+            title={chosen ? `${chosen.label} · ${countWords(chosen.count)}` : undefined}
+            value={value}
+            onChange={(e) => onSeries(e.target.value)}
+          >
             {/* No series chosen shows every image, series or not. */}
             <option value="">All images</option>
-            {series.map((s) => {
-              // Shortened in the middle, count included, so "selects 01" and "selects 03" still differ and fit.
-              const count = ` (${s.count})`;
-              return (
-                <option key={s.key} value={s.key} title={s.label}>
-                  {shortName(s.label, Math.max(12, 24 - count.length))}
-                  {count}
+            <optgroup label="Named alike apart from a number">
+              {series.map((s) => (
+                // Whole names: the open menu sizes itself, and only the closed menu cuts (once, at its end).
+                <option key={s.key} value={s.key}>
+                  {s.label} · {countWords(s.count)}
                 </option>
-              );
-            })}
+              ))}
+            </optgroup>
           </select>
           {chosen && (
             <button
+              type="button"
               className="icon-btn sm asset-series-clear"
-              aria-label={`Show all images, not only ${chosen.label}`}
-              title="Show all images"
+              aria-label="Clear series"
+              title="Clear series"
               onClick={() => {
                 onSeries('');
                 seriesRef.current?.focus();
@@ -98,8 +117,10 @@ export function AssetOrderControls({ series, value, onSeries }: { series: AssetS
               <X />
             </button>
           )}
-        </span>
+        </>
       )}
     </div>
   );
 }
+
+const countWords = (n: number) => `${n} ${n === 1 ? 'image' : 'images'}`;

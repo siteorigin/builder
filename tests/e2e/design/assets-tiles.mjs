@@ -121,7 +121,7 @@ const [lost, stripped, thinned] = placed.slice(1);
 if (!lost || !stripped || !thinned) throw new Error('not enough placed pictures to take the files of');
 for (const f of [lost.file, ...lost.variants.map((v) => v.file), stripped.file, thinned.variants[0].file]) rmSync(join(snap.dir, f), { force: true });
 // Oldest first keeps the starter's pictures, the damaged ones among them, at the top of the grid.
-await win.locator(`${view} [aria-label="Sort images"]`).selectOption('oldest');
+await win.locator(`${view} select.asset-order-sort`).selectOption('oldest');
 await win.locator('.asset-gone').nth(2).waitFor({ timeout: 30000 });
 await waitThumbs();
 await shot('grid', '.asset-gone');

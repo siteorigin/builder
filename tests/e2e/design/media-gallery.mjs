@@ -248,7 +248,7 @@ const searchBox = win.locator('.side-panel-view:not([hidden]) input[type="search
 const snapshot = () => win.evaluate(() => window.builder.project.snapshot());
 
 // One numbered series chosen, then a search that finds nothing.
-const seriesSelect = win.locator('.side-panel-view:not([hidden]) [aria-label="Numbered series"]');
+const seriesSelect = win.locator('.side-panel-view:not([hidden]) select.asset-series');
 await seriesSelect.selectOption({ index: 1 });
 await pause(300);
 await waitThumbs();
@@ -362,7 +362,7 @@ const lost = placedImages.find((a) => a.name === 'Hero interior') ?? placedImage
 const [thinned, stripped] = placedImages.filter((a) => a.id !== lost?.id);
 if (!lost || !thinned || !stripped) throw new Error('not enough placed images to take the files of');
 for (const f of [lost.file, ...lost.variants.map((v) => v.file), thinned.variants[0].file, stripped.file]) rmSync(join(snapB.dir, f), { force: true });
-await win.locator('.side-panel-view:not([hidden]) [aria-label="Sort images"]').selectOption('oldest');
+await win.locator('.side-panel-view:not([hidden]) select.asset-order-sort').selectOption('oldest');
 await win.locator('.asset-gone').nth(2).waitFor({ timeout: 30000 });
 await scrollBody(0);
 await pause(800);
