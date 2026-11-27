@@ -218,12 +218,14 @@ export function SavedVersionsPanel({ active, foot, onBusy }: { active: boolean; 
   const remove = async (version: SavedVersionInfo) => {
     const key = getState().snapshot?.workspaceKey;
     if (!key || busy) return;
+    // A version saved with Git snapshots on leaves its snapshot in the project's version history: nothing is freed (#1153).
+    const inHistory = version.bytes === null;
     const yes = await confirmDialog({
       title: 'Delete saved version?',
-      body: 'This saved version is deleted from the project.',
+      body: inHistory ? 'This saved version is removed from Saved versions.' : 'This saved version is deleted from the project.',
       subject: version.name,
       subjectKind: 'version',
-      subjectNote: version.bytes ? `Frees up to ${formatBytes(version.bytes)}` : undefined,
+      subjectNote: inHistory ? 'Frees no space: its snapshot stays in the project’s version history' : version.bytes ? `Frees up to ${formatBytes(version.bytes)}` : undefined,
       details: [
         { kind: 'keep', text: 'Your site and its undo history stay as they are.' },
         { kind: 'final', text: 'A deleted version can’t be brought back.' }
@@ -284,10 +286,19 @@ export function SavedVersionsPanel({ active, foot, onBusy }: { active: boolean; 
     </>
   ) : (
     <>
-      {list.length > 0 && (
-        <span className="history-foot-note" title="Saved versions share the images and fonts they have in common, so each is stored once.">
+      {list.length > 0 ? (
+        <span
+          className="history-foot-note"
+          title={`Saved versions share the images and fonts they have in common, so each is stored once.${info?.historyBytes ? ' Snapshots stay in the project’s version history when a version is deleted.' : ''}`}
+        >
           {plural(list.length, 'saved version uses', 'saved versions use')} {formatBytes(info?.bytes ?? 0)}
         </span>
+      ) : (
+        !!info?.historyBytes && (
+          <span className="history-foot-note" title="Snapshots stay in the project’s version history when a version is deleted.">
+            Version history uses {formatBytes(info.historyBytes)}
+          </span>
+        )
       )}
       <span className="spacer" />
       <button className="btn" onClick={close} disabled={busy}>

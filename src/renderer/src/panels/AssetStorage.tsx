@@ -67,7 +67,7 @@ const focusStorageFooter = () => (document.querySelector<HTMLElement>('[data-tes
 export function StorageSummary({ info, onFree }: { info: StorageInfo; onFree: () => void }) {
   const short = useShortWindow();
   const [open, setOpen] = useState<boolean | null>(null);
-  if (!info.media.files && !info.kept.files && !info.versions.count) return null;
+  if (!info.media.files && !info.kept.files && !info.versions.count && !info.versions.historyBytes) return null;
   const shown = open ?? !short;
   const total = info.media.bytes + info.kept.bytes + info.versions.bytes;
   return (
@@ -101,11 +101,11 @@ export function StorageSummary({ info, onFree }: { info: StorageInfo; onFree: ()
               </dd>
             </div>
           )}
-          {info.versions.count > 0 && (
+          {(info.versions.count > 0 || !!info.versions.historyBytes) && (
             <div>
               <dt>Saved versions</dt>
               <dd>
-                {plural(info.versions.count, 'version', 'versions')} · {formatBytes(info.versions.bytes)}
+                {info.versions.count > 0 ? plural(info.versions.count, 'version', 'versions') : 'Version history'} · {formatBytes(info.versions.bytes)}
               </dd>
             </div>
           )}
@@ -345,10 +345,10 @@ export function FreeSpaceDialog({ info, onClose, refresh }: { info: StorageInfo;
                   <td>{files(shown.media.files)}</td>
                   <td>{formatBytes(shown.media.bytes)}</td>
                 </tr>
-                {shown.versions.count > 0 && (
+                {(shown.versions.count > 0 || !!shown.versions.historyBytes) && (
                   <tr>
                     <th scope="row">Saved versions</th>
-                    <td>{plural(shown.versions.count, 'version', 'versions')}</td>
+                    <td>{shown.versions.count > 0 ? plural(shown.versions.count, 'version', 'versions') : 'Version history'}</td>
                     <td>{formatBytes(shown.versions.bytes)}</td>
                   </tr>
                 )}
@@ -396,7 +396,10 @@ export function FreeSpaceDialog({ info, onClose, refresh }: { info: StorageInfo;
             <p className="confirm-lead">There are no removed files to delete right now.</p>
             <p className="muted">
               When you remove an image, font or document from Assets, its files are kept so Undo can bring it back. Once there are some, you can delete them here to free space.
-              {shown.versions.count > 0 && ` Saved versions take ${formatBytes(shown.versions.bytes)}; delete the ones you no longer need in History.`}
+              {shown.versions.count > 0 &&
+                (shown.versions.bytes - (shown.versions.historyBytes ?? 0) > 0
+                  ? ` Saved versions take ${formatBytes(shown.versions.bytes)}; delete the ones you no longer need in History.`
+                  : ` Saved versions take ${formatBytes(shown.versions.bytes)}, kept in the project’s version history.`)}
             </p>
           </div>
         )}

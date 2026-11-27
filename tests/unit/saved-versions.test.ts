@@ -3,10 +3,10 @@
  * the rolling undo history until the author deletes it. Restoring one is a single Undo step, and the work it replaces
  * is saved first as a version of its own, so the way back outlasts history too.
  */
-import { afterEach, describe, expect, it, vi } from 'vitest';
-import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, symlinkSync, utimesSync, writeFileSync } from 'node:fs';
-import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
+import { chmodSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, symlinkSync, utimesSync, writeFileSync } from 'node:fs';
+import { hostname, tmpdir, userInfo } from 'node:os';
+import { join, relative } from 'node:path';
 import { createStarterState } from '@catalogue/starters';
 import type { AssetRecord } from '@shared/types';
 import { SCHEMA_VERSION } from '@shared/types';
@@ -14,6 +14,32 @@ import { ProjectSession } from '../../src/main/project/session';
 import { sha } from '../../src/main/project/fsutil';
 import { describeReview, restoredNotice } from '../../src/renderer/src/lib/versions';
 import type { VersionReview } from '@shared/api';
+import { inProcessGit, useTestGit } from './fixtures/git-in-process';
+import { openRepo } from '../../src/main/git/repo';
+import { VERSIONS_BRANCH } from '../../src/main/git/protocol';
+import { advanceVersions, writeVersionCommit } from '../../src/main/project/versions-git';
+import type { SavedVersion } from '../../src/main/project/versions';
+import type { EditOperation } from '@shared/ops';
+import { deflateSync } from 'node:zlib';
+
+// Saved versions reach Git as the app's do, through the worker's service run here; versions go to it only in a test
+// run in Git mode (`both`), or one that turns it on (#1153).
+const git = inProcessGit();
+let stopGit: () => void = () => undefined;
+beforeAll(() => {
+  stopGit = useTestGit(git);
+});
+afterAll(() => stopGit());
+beforeEach(() => {
+  git.enabled = false;
+});
+type Mode = 'objects' | 'git';
+/** A test run twice: with versions saved to the plain store (Git snapshots off, the default) and to Git (on). */
+const both = (name: string, fn: (mode: Mode) => Promise<void>, timeout?: number) =>
+  it.each<Mode>(['objects', 'git'])(`${name} [%s]`, async (mode) => {
+    git.enabled = mode === 'git';
+    await fn(mode);
+  }, timeout);
 
 const dirs: string[] = [];
 const open: ProjectSession[] = [];
@@ -44,6 +70,7 @@ async function ok<T extends { ok: boolean; message?: string; error?: { message: 
 }
 
 const ASSETS = 'static/assets';
+const BRIEF_PATH = 'siteorigin/brief.json';
 const read = (dir: string, rel: string) => readFileSync(join(dir, rel));
 const objects = (dir: string) => (existsSync(join(dir, '.siteorigin/versions/objects')) ? readdirSync(join(dir, '.siteorigin/versions/objects')).filter((f) => /^[a-f0-9]{64}$/.test(f)) : []);
 
@@ -78,7 +105,7 @@ function picture(dir: string, slug: string, seed: number): { asset: Omit<AssetRe
 const describe1 = (s: ProjectSession, text: string, label: string) => ok(s.apply({ operations: [{ type: 'site.update', description: text }] }, { label }));
 
 describe('saved versions', () => {
-  it('keeps a version after 100 more edits and a reopen, and restores it as one Undo step with the way back saved', async () => {
+  both('keeps a version after 100 more edits and a reopen, and restores it as one Undo step with the way back saved', async (mode) => {
     const { dir, s } = await make();
     await ok(s.apply({ operations: [{ type: 'site.update', name: 'Approved design' }] }, { label: 'Rename site' }));
     await describe1(s, 'The approved portfolio.', 'Describe site');
@@ -105,7 +132,9 @@ describe('saved versions', () => {
     expect(listed[0]).toMatchObject({ id: saved.id, name: 'Approved portfolio', auto: false, pages: approvedPages.length, missing: [] });
     expect(Date.parse(listed[0].time)).toBeGreaterThanOrEqual(started - 1000);
     expect(Date.parse(listed[0].time)).toBeLessThanOrEqual(started + 5000);
-    expect(listed[0].bytes).toBeGreaterThan(0);
+    // A version in Git frees nothing when deleted: its snapshot stays in the history.
+    if (mode === 'git') expect(listed[0].bytes).toBeNull();
+    else expect(listed[0].bytes).toBeGreaterThan(0);
 
     const { review } = await ok(again.reviewVersion(saved.id!));
     expect(review).toMatchObject({ site: true, unchanged: false, files: [], missing: [] });
@@ -142,7 +171,7 @@ describe('saved versions', () => {
     expect(Object.values(again.state.pages).some((p) => p.title === 'Experiments')).toBe(true);
   }, 120_000);
 
-  it('brings back an image after it was replaced and its old files were deleted, with every size', async () => {
+  both('brings back an image after it was replaced and its old files were deleted, with every size', async (mode) => {
     const { dir, s } = await make();
     const a = picture(dir, 'photo', 1);
     await ok(s.apply({ operations: [{ type: 'asset.add', asset: { id: 'a_photo', ...a.asset } }] }, { label: 'Import photo' }));
@@ -173,7 +202,7 @@ describe('saved versions', () => {
     expect(again.state.assets.assets.a_photo.file).toBe(b.files[0]);
   });
 
-  it('puts back a file changed in place outside the app, and the version saved before restoring holds the changed one', async () => {
+  both('puts back a file changed in place outside the app, and the version saved before restoring holds the changed one', async (mode) => {
     const { dir, s } = await make();
     mkdirSync(join(dir, ASSETS), { recursive: true });
     writeFileSync(join(dir, ASSETS, 'logo.svg'), '<svg>blue</svg>');
@@ -206,7 +235,7 @@ describe('saved versions', () => {
     expect(await s.restoreVersion(r.backup!.id, same.review!.revision)).toMatchObject({ ok: true, unchanged: true });
   });
 
-  it('reuses a saved version that already holds the work a restore replaces', async () => {
+  both('reuses a saved version that already holds the work a restore replaces', async (mode) => {
     const { s } = await make();
     await describe1(s, 'One', 'One');
     const one = await ok(s.saveVersion('One'));
@@ -217,7 +246,8 @@ describe('saved versions', () => {
     expect(s.versionsInfo().list).toHaveLength(2);
     // Both hold the same starter documents: neither alone frees those.
     const [b, a] = s.versionsInfo().list;
-    expect(a.bytes + b.bytes).toBeLessThan(s.versionsInfo().bytes);
+    if (mode === 'git') expect([a.bytes, b.bytes]).toEqual([null, null]);
+    else expect(a.bytes! + b.bytes!).toBeLessThan(s.versionsInfo().bytes);
   });
 
   it('works out what the versions take again only once the list or a stored object changed (#966)', async () => {
@@ -285,7 +315,7 @@ describe('saved versions', () => {
     for (const f of a.files) expect(existsSync(join(dir, f))).toBe(true);
   });
 
-  it('renames a version, keeping what it holds and when it was saved', async () => {
+  both('renames a version, keeping what it holds and when it was saved', async (mode) => {
     const { dir, s } = await make();
     const saved = await ok(s.saveVersion('First draft'));
     const [before] = s.versionsInfo().list;
@@ -307,7 +337,7 @@ describe('saved versions', () => {
     expect(again.versionsInfo().list[0]).toEqual(after);
   });
 
-  it('saves though an image is missing, says which, and restores the rest', async () => {
+  both('saves though an image is missing, says which, and restores the rest', async (mode) => {
     const { dir, s } = await make();
     const a = picture(dir, 'photo', 1);
     await ok(s.apply({ operations: [{ type: 'asset.add', asset: { id: 'a_photo', ...a.asset } }] }, { label: 'Import photo' }));
@@ -327,7 +357,7 @@ describe('saved versions', () => {
     expect(existsSync(join(dir, a.files[1]))).toBe(false);
   });
 
-  it('refuses to restore over a change made since the review, while the AI works, or in a read-only project', async () => {
+  both('refuses to restore over a change made since the review, while the AI works, or in a read-only project', async (mode) => {
     const { dir, s } = await make();
     const saved = await ok(s.saveVersion('Start'));
     await describe1(s, 'Later', 'Later');
@@ -371,7 +401,7 @@ describe('saved versions', () => {
     expect(s.versionsInfo().list).toHaveLength(1);
   });
 
-  it('refuses a version saved by a newer app', async () => {
+  both('refuses a version saved by a newer app', async (mode) => {
     const { dir, s } = await make();
     await ok(s.saveVersion('Start'));
     const path = join(dir, '.siteorigin/versions/versions.json');
@@ -421,7 +451,7 @@ describe('saved versions', () => {
     expect(again.versionsInfo().list).toHaveLength(1);
   });
 
-  it('refuses an empty or overlong name', async () => {
+  both('refuses an empty or overlong name', async (mode) => {
     const { s } = await make();
     expect((await s.saveVersion('   ')).ok).toBe(false);
     expect((await s.saveVersion('x'.repeat(81))).ok).toBe(false);
@@ -431,7 +461,7 @@ describe('saved versions', () => {
 });
 
 describe('saved versions, guarded', () => {
-  it('holds a file anywhere under static/ that a document names by its address, but not generated files', async () => {
+  both('holds a file anywhere under static/ that a document names by its address, but not generated files', async (mode) => {
     const { dir, s } = await make();
     mkdirSync(join(dir, 'static/brand'), { recursive: true });
     writeFileSync(join(dir, 'static/brand/logo.svg'), '<svg>blue</svg>');
@@ -450,7 +480,7 @@ describe('saved versions, guarded', () => {
     expect(read(dir, 'static/brand/logo.svg').toString()).toBe('<svg>blue</svg>');
   });
 
-  it('does not hold a file in the project only because an image came from a file of that name', async () => {
+  both('does not hold a file in the project only because an image came from a file of that name', async (mode) => {
     const { dir, s } = await make();
     const photo = picture(dir, 'mark', 1);
     writeFileSync(join(dir, ASSETS, 'logo.svg'), '<svg>unrelated</svg>');
@@ -461,7 +491,7 @@ describe('saved versions, guarded', () => {
     expect(media).not.toContain(`${ASSETS}/logo.svg`);
   });
 
-  it('refuses a restore when a file changed outside the app after the review', async () => {
+  both('refuses a restore when a file changed outside the app after the review', async (mode) => {
     const { dir, s } = await make();
     mkdirSync(join(dir, ASSETS), { recursive: true });
     writeFileSync(join(dir, ASSETS, 'logo.svg'), '<svg>blue</svg>');
@@ -477,7 +507,7 @@ describe('saved versions, guarded', () => {
     expect(s.versionsInfo().list).toHaveLength(1);
   });
 
-  it('keeps the names of versions saved before restores short, however often restores nest', async () => {
+  both('keeps the names of versions saved before restores short, however often restores nest', async (mode) => {
     const { dir, s } = await make();
     let v = await ok(s.saveVersion('n'.repeat(80)));
     for (let i = 0; i < 4; i++) {
@@ -493,7 +523,7 @@ describe('saved versions, guarded', () => {
     expect(again.versionsInfo().list).toHaveLength(5);
   });
 
-  it('refuses to save while a change made outside the app is not loaded yet', async () => {
+  both('refuses to save while a change made outside the app is not loaded yet', async (mode) => {
     const { dir, s } = await make();
     const site = JSON.parse(readFileSync(join(dir, 'siteorigin/site.json'), 'utf8'));
     writeFileSync(join(dir, 'siteorigin/site.json'), JSON.stringify({ ...site, description: 'Edited outside' }));
@@ -501,7 +531,7 @@ describe('saved versions, guarded', () => {
     expect(s.versionsInfo().list).toEqual([]);
   });
 
-  it('puts the files back as they were when saving the documents fails, and reopening says nothing of it', async () => {
+  both('puts the files back as they were when saving the documents fails, and reopening says nothing of it', async (mode) => {
     const { dir, s } = await make();
     mkdirSync(join(dir, ASSETS), { recursive: true });
     writeFileSync(join(dir, ASSETS, 'logo.svg'), '<svg>blue</svg>');
@@ -527,7 +557,7 @@ describe('saved versions, guarded', () => {
     expect((await reopen(dir)).recoveryNotes.join(' ')).not.toMatch(/interrupted/);
   });
 
-  it('says on reopening that a restore stopped part way, and where the work from before is', async () => {
+  both('says on reopening that a restore stopped part way, and where the work from before is', async (mode) => {
     const { dir, s } = await make();
     await s.close();
     mkdirSync(join(dir, '.siteorigin/versions'), { recursive: true });
@@ -563,7 +593,7 @@ describe('saved versions, guarded further', () => {
     return { dir, s, saved };
   }
 
-  it('leaves a file changed by someone else while restoring, rather than putting back over it', async () => {
+  both('leaves a file changed by someone else while restoring, rather than putting back over it', async (mode) => {
     const { dir, s, saved } = await withLogo();
     writeFileSync(join(dir, ASSETS, 'logo.svg'), '<svg>green</svg>');
     await describe1(s, 'Later', 'Later');
@@ -575,7 +605,7 @@ describe('saved versions, guarded further', () => {
     expect(read(dir, `${ASSETS}/logo.svg`).toString()).toBe('<svg>red</svg>');
   });
 
-  it('holds what a restore replaces in the work saved first, even a file the work did not name', async () => {
+  both('holds what a restore replaces in the work saved first, even a file the work did not name', async (mode) => {
     const { dir, s, saved } = await withLogo();
     const logo = Object.values(s.state.components).find((d) => d.name === 'Logo')!;
     await ok(s.apply({ operations: [{ type: 'component.updateSource', definitionId: logo.id, source: '<p>No logo</p>\n' }] }, { label: 'Drop logo' }));
@@ -589,7 +619,7 @@ describe('saved versions, guarded further', () => {
     expect(read(dir, `${ASSETS}/logo.svg`).toString()).toBe('<svg>green, kept by hand</svg>');
   });
 
-  it('says which files an earlier restore put back are left when going back to the work from before', async () => {
+  both('says which files an earlier restore put back are left when going back to the work from before', async (mode) => {
     const { dir, s, saved } = await withLogo();
     const logo = Object.values(s.state.components).find((d) => d.name === 'Logo')!;
     await ok(s.apply({ operations: [{ type: 'component.updateSource', definitionId: logo.id, source: '<p>No logo</p>\n' }] }, { label: 'Drop logo' }));
@@ -606,7 +636,7 @@ describe('saved versions, guarded further', () => {
     expect(Object.values(s.state.components).find((d) => d.name === 'Logo')!.source).toContain('/assets/logo.svg');
   });
 
-  it('treats a missing file that appeared after the review as a change', async () => {
+  both('treats a missing file that appeared after the review as a change', async (mode) => {
     const { dir, s, saved } = await withLogo();
     rmSync(join(dir, ASSETS, 'logo.svg'));
     await describe1(s, 'Later', 'Later');
@@ -617,7 +647,7 @@ describe('saved versions, guarded further', () => {
     expect(read(dir, `${ASSETS}/logo.svg`).toString()).toBe('<svg>new</svg>');
   });
 
-  it('holds a file named by its encoded address, and never a private one', async () => {
+  both('holds a file named by its encoded address, and never a private one', async (mode) => {
     const { dir, s } = await make();
     mkdirSync(join(dir, 'static/brand'), { recursive: true });
     writeFileSync(join(dir, 'static/brand/My Logo.svg'), '<svg>mine</svg>');
@@ -628,7 +658,7 @@ describe('saved versions, guarded further', () => {
     expect(media).toEqual(['static/brand/My Logo.svg']);
   });
 
-  it('refuses to save while a component added outside the app is not loaded yet', async () => {
+  both('refuses to save while a component added outside the app is not loaded yet', async (mode) => {
     const { dir, s } = await make();
     mkdirSync(join(dir, 'siteorigin/components/proj.outside-abcde'), { recursive: true });
     writeFileSync(join(dir, 'siteorigin/components/proj.outside-abcde/component.json'), '{}');
@@ -673,7 +703,7 @@ describe('saved versions, at the edges', () => {
     expect(existsSync(join(other, 'a'.repeat(64)))).toBe(true);
   });
 
-  it('keeps the files once the documents are saved, even when a later step of that save fails', async () => {
+  both('keeps the files once the documents are saved, even when a later step of that save fails', async (mode) => {
     const { dir, s, saved } = await withLogo();
     writeFileSync(join(dir, ASSETS, 'logo.svg'), '<svg>green</svg>');
     await describe1(s, 'Later', 'Later');
@@ -688,7 +718,7 @@ describe('saved versions, at the edges', () => {
     expect(existsSync(join(dir, '.siteorigin/versions/restoring.json'))).toBe(false);
   });
 
-  it('keeps the note of a restore it could not fully undo through a later restore', async () => {
+  both('keeps the note of a restore it could not fully undo through a later restore', async (mode) => {
     const { dir, s, saved } = await withLogo();
     writeFileSync(join(dir, ASSETS, 'logo.svg'), '<svg>green</svg>');
     await describe1(s, 'Later', 'Later');
@@ -705,7 +735,7 @@ describe('saved versions, at the edges', () => {
     expect((await reopen(dir)).recoveryNotes.join(' ')).toMatch(/Restoring “Blue logo” was interrupted/);
   });
 
-  it('holds a named link, or a library file reached through a link out of the project, as missing', async () => {
+  both('holds a named link, or a library file reached through a link out of the project, as missing', async (mode) => {
     const outside = mkdtempSync(join(tmpdir(), 'so-versions-outside-'));
     dirs.push(outside);
     writeFileSync(join(outside, 'logo.svg'), '<svg>elsewhere</svg>');
@@ -723,6 +753,246 @@ describe('saved versions, at the edges', () => {
     const saved = await ok(s.saveVersion('Linked'));
     expect(saved.missing).toEqual(expect.arrayContaining(['static/brand/logo.svg', pic.files[1]]));
     expect(saved.missing).not.toContain(`${ASSETS}/linked`);
+  });
+});
+
+describe('saved versions in Git (#1153)', () => {
+  const gitdir = (dir: string) => join(dir, '.siteorigin/versions.git');
+  const catalogue = (dir: string) => JSON.parse(readFileSync(join(dir, '.siteorigin/versions/versions.json'), 'utf8')).versions as Array<SavedVersion>;
+  /** Every file of a tree, by its path, read straight from the repository (not through the code under test). */
+  const treeFiles = async (dir: string, tree: string, prefix = ''): Promise<string[]> => {
+    const repo = openRepo(dir);
+    const out: string[] = [];
+    for (const e of await repo.readTree(tree)) {
+      if (e.type === 'tree') out.push(...(await treeFiles(dir, e.oid, `${prefix}${e.path}/`)));
+      else out.push(`${prefix}${e.path}`);
+    }
+    return out.sort();
+  };
+  /** Every file of the project outside .siteorigin/, with its bytes and times: what a watch on the project would see. */
+  const outsideState = (dir: string) => {
+    const out: Record<string, string> = {};
+    const walk = (d: string) => {
+      for (const name of readdirSync(d).sort()) {
+        const p = join(d, name);
+        const rel = relative(dir, p);
+        if (rel === '.siteorigin') continue;
+        const st = lstatSync(p);
+        if (st.isDirectory()) {
+          out[rel] = `dir ${st.mtimeMs}`;
+          walk(p);
+        } else out[rel] = `${st.size} ${st.mtimeMs} ${sha(readFileSync(p))}`;
+      }
+    };
+    walk(dir);
+    return out;
+  };
+
+  it('with Git snapshots off, saves, restores and deletes in the plain store and never makes the repository', async () => {
+    const { dir, s } = await make();
+    const calls = git.calls.length;
+    const saved = await ok(s.saveVersion('Plain'));
+    await describe1(s, 'Later', 'Later');
+    const r = await ok(s.restoreVersion(saved.id!, s.revision));
+    await ok(s.deleteVersion(r.backup!.id));
+    expect(existsSync(gitdir(dir))).toBe(false);
+    expect(catalogue(dir).every((v) => !v.git)).toBe(true);
+    expect(s.versionsInfo().historyBytes).toBeUndefined();
+    expect(git.calls.length).toBe(calls);
+  });
+
+  it('saves the whole site as a commit by the app on the versions branch, with nothing of the person in it', async () => {
+    git.enabled = true;
+    const { dir, s } = await make();
+    const pic = picture(dir, 'photo', 1);
+    await ok(s.apply({ operations: [{ type: 'asset.add', asset: { id: 'a_photo', ...pic.asset } }] }, { label: 'Import photo' }));
+    // A public file nothing names is part of the site's snapshot too, though a restore never puts it back.
+    writeFileSync(join(dir, 'static', 'unused.txt'), 'kept in the snapshot');
+    const first = await ok(s.saveVersion('Approved by Jane Citizen'));
+    const firstSite = read(dir, 'siteorigin/site.json').toString();
+    await describe1(s, 'Later', 'Later');
+    const second = await ok(s.saveVersion('Second'));
+    const [one, two] = catalogue(dir);
+    expect(one).toMatchObject({ id: first.id, name: 'Approved by Jane Citizen', git: { commit: expect.stringMatching(/^[0-9a-f]{40}$/), tree: expect.stringMatching(/^[0-9a-f]{40}$/) } });
+    expect(two.id).toBe(second.id);
+    const repo = openRepo(dir);
+    expect(await repo.resolveRef(VERSIONS_BRANCH)).toBe(two.git!.commit);
+    const commit = await repo.readCommit(two.git!.commit);
+    expect(commit.parents).toEqual([one.git!.commit]);
+    expect(commit.tree).toBe(two.git!.tree);
+    for (const c of [commit, await repo.readCommit(one.git!.commit)]) {
+      expect(c.author).toEqual({ name: 'SiteOrigin Builder', email: 'versions@siteorigin.invalid', timestamp: expect.any(Number), timezoneOffset: 0 });
+      expect(c.committer).toEqual(c.author);
+      // The author's own name for the version, or the computer's, is never written into history.
+      for (const personal of ['Jane', 'Citizen', 'Second', userInfo().username, hostname()]) expect(`${c.message}${c.author.name}${c.author.email}`).not.toContain(personal);
+    }
+    expect(commit.message).toBe(`Saved version\n\nSiteOrigin-Version: ${second.id}\n`);
+    const files = await treeFiles(dir, one.git!.tree);
+    expect(files).toEqual(expect.arrayContaining(['siteorigin.project.json', 'siteorigin/site.json', 'static/unused.txt', ...pic.files]));
+    expect(files.some((f) => f.startsWith('src/routes/'))).toBe(true);
+    expect(files.filter((f) => f.startsWith('.siteorigin') || f.startsWith('node_modules') || f === BRIEF_PATH)).toEqual([]);
+    // The documents are the loaded ones, byte for byte, and the media the ones the row records.
+    expect(Buffer.from(await repo.readBlob(one.git!.commit, 'siteorigin/site.json')).toString()).toBe(firstSite);
+    expect(sha(Buffer.from(await repo.readBlob(one.git!.commit, pic.files[0])))).toBe(one.media[pic.files[0]]);
+    expect(one.media['static/unused.txt']).toBeUndefined();
+    // Nothing of a version in Git is an object of the plain store.
+    expect(objects(dir)).toEqual([]);
+    expect(s.versionsInfo().historyBytes).toBeGreaterThan(0);
+    expect(s.versionsInfo().bytes).toBe(s.versionsInfo().historyBytes);
+  });
+
+  it('keeps an external source’s settings out of Git, beside the list, and restores them with the site', async () => {
+    git.enabled = true;
+    const { dir, s } = await make();
+    await ok(
+      s.apply(
+        {
+          operations: [
+            { type: 'collection.create', collectionId: 'team', name: 'Team', kind: 'structured', pages: { detail: true, archive: false }, route: '/team/', fields: { role: { type: 'string', label: 'Role', default: '' } } },
+            { type: 'source.upsert', sourceId: 'people', name: 'People API', adapter: 'fixture', collectionId: 'team', config: { credentials: { token: { $secret: 'people-token' } } } }
+          ] as EditOperation[]
+        },
+        { label: 'Add the team source' }
+      )
+    );
+    const SOURCE = 'siteorigin/sources/people/source.json';
+    const saved = await ok(s.saveVersion('With the source'));
+    const [row] = catalogue(dir);
+    expect(await treeFiles(dir, row.git!.tree)).not.toContain(SOURCE);
+    expect(objects(dir)).toEqual([row.docs[SOURCE]]);
+    expect(readFileSync(join(dir, '.siteorigin/versions/objects', row.docs[SOURCE]), 'utf8')).toContain('$secret');
+    await ok(s.apply({ operations: [{ type: 'source.upsert', sourceId: 'people', name: 'Renamed API', adapter: 'fixture', collectionId: 'team', config: {} }] as EditOperation[] }, { label: 'Rename source' }));
+    const { review } = await ok(s.reviewVersion(saved.id!));
+    expect(review!.problem).toBeUndefined();
+    await ok(s.restoreVersion(saved.id!, review!.revision));
+    expect(s.state.sources?.people?.name).toBe('People API');
+    // The source's settings are what the backup of the work replaced holds too, and deleting both versions frees them.
+    for (const v of s.versionsInfo().list) await ok(s.deleteVersion(v.id));
+    expect(objects(dir)).toEqual([]);
+  });
+
+  it('lists and restores versions in Git after the setting is turned off, beside versions saved before it was on', async () => {
+    const { dir, s } = await make();
+    await describe1(s, 'Plain', 'Plain');
+    const plain = await ok(s.saveVersion('Plain'));
+    git.enabled = true;
+    await describe1(s, 'In Git', 'In Git');
+    const inGit = await ok(s.saveVersion('In Git'));
+    git.enabled = false;
+    await describe1(s, 'Off again', 'Off again');
+    await s.close();
+    const again = await reopen(dir);
+    expect(again.versionsInfo().list.map((v) => [v.name, v.bytes === null])).toEqual([
+      ['In Git', true],
+      ['Plain', false]
+    ]);
+    const tip = await openRepo(dir).resolveRef(VERSIONS_BRANCH);
+    const { review } = await ok(again.reviewVersion(inGit.id!));
+    expect(review!.problem).toBeUndefined();
+    const r = await ok(again.restoreVersion(inGit.id!, review!.revision));
+    expect(again.state.site.description).toBe('In Git');
+    // With the setting off, the work the restore replaced is saved in the plain store, and history is not added to.
+    expect(catalogue(dir).find((v) => v.id === r.backup!.id)!.git).toBeUndefined();
+    expect(await openRepo(dir).resolveRef(VERSIONS_BRANCH)).toBe(tip);
+    const back = await ok(again.reviewVersion(plain.id!));
+    await ok(again.restoreVersion(plain.id!, back.review!.revision));
+    expect(again.state.site.description).toBe('Plain');
+  });
+
+  it('renames and deletes a version in Git from the list only, freeing nothing and leaving its history', async () => {
+    git.enabled = true;
+    const { dir, s } = await make();
+    const first = await ok(s.saveVersion('First'));
+    await describe1(s, 'Changed', 'Change');
+    const second = await ok(s.saveVersion('Second'));
+    const repo = openRepo(dir);
+    const tip = await repo.resolveRef(VERSIONS_BRANCH);
+    const history = await repo.listCommits(VERSIONS_BRANCH, 10);
+    await ok(s.renameVersion(first.id!, 'Renamed'));
+    const r = await ok(s.deleteVersion(first.id!));
+    expect(r.freed).toBe(0);
+    expect(s.versionsInfo().list.map((v) => [v.id, v.name, v.bytes])).toEqual([[second.id, 'Second', null]]);
+    expect(await repo.resolveRef(VERSIONS_BRANCH)).toBe(tip);
+    expect(await repo.listCommits(VERSIONS_BRANCH, 10)).toEqual(history);
+    const storage = (await s.storageInfo()).versions;
+    expect(storage).toEqual({ count: 1, bytes: s.versionsInfo().bytes, historyBytes: s.versionsInfo().historyBytes });
+    // The history is still measured once every version is deleted from the list: it takes that space until removed.
+    await ok(s.deleteVersion(second.id!));
+    await s.close();
+    const again = await reopen(dir);
+    expect(again.versionsInfo()).toMatchObject({ list: [], historyBytes: expect.any(Number) });
+    expect(again.versionsInfo().bytes).toBe(again.versionsInfo().historyBytes);
+  });
+
+  it('refuses a version whose snapshot is damaged or gone without changing anything', async () => {
+    git.enabled = true;
+    const { dir, s } = await make();
+    const saved = await ok(s.saveVersion('Start'));
+    await describe1(s, 'Later', 'Later');
+    const [row] = catalogue(dir);
+    // The site document's object, rewritten with other bytes under its name.
+    const blob = (await openRepo(dir).readTree(row.git!.tree)).find((e) => e.path === 'siteorigin')!;
+    const site = (await openRepo(dir).readTree(blob.oid)).find((e) => e.path === 'site.json')!.oid;
+    const object = join(gitdir(dir), 'objects', site.slice(0, 2), site.slice(2));
+    const original = readFileSync(object);
+    chmodSync(object, 0o644);
+    writeFileSync(object, deflateSync(Buffer.from('blob 2\0{}')));
+    expect((await s.reviewVersion(saved.id!)).review!.problem).toMatch(/damaged/);
+    writeFileSync(object, original);
+    expect((await s.reviewVersion(saved.id!)).review!.problem).toBeUndefined();
+    // The whole repository gone: the version can't be restored, and nothing is made to look for it.
+    rmSync(gitdir(dir), { recursive: true });
+    const { review } = await ok(s.reviewVersion(saved.id!));
+    expect(review!.problem).toMatch(/damaged/);
+    expect(existsSync(gitdir(dir))).toBe(false);
+    const r = await s.restoreVersion(saved.id!, review!.revision);
+    expect(r).toMatchObject({ ok: false, message: expect.stringMatching(/damaged/) });
+    expect(s.state.site.description).toBe('Later');
+    expect(s.versionsInfo().list).toHaveLength(1);
+  });
+
+  it('leaves the developer’s own Git repository, and every watched folder, untouched by saving and by Git', async () => {
+    git.enabled = true;
+    const { dir, s } = await make();
+    // A repository of the developer's, with a change staged and its index locked by a Git that is running.
+    mkdirSync(join(dir, '.git', 'refs', 'heads'), { recursive: true });
+    writeFileSync(join(dir, '.git', 'HEAD'), 'ref: refs/heads/main\n');
+    writeFileSync(join(dir, '.git', 'config'), '[core]\n\tbare = false\n');
+    writeFileSync(join(dir, '.git', 'index'), 'DIRC staged edits');
+    writeFileSync(join(dir, '.git', 'index.lock'), 'held by the developer');
+    const before = outsideState(dir);
+    const saved = await ok(s.saveVersion('Start'));
+    await ok(s.saveVersion('Again'));
+    expect(outsideState(dir)).toEqual(before);
+    const changed: string[][] = [];
+    s.on('changed', (e) => changed.push([...e.changedDocs, ...e.changedFiles]));
+    await describe1(s, 'Later', 'Later');
+    const afterEdit = outsideState(dir);
+    changed.length = 0;
+    const { review } = await ok(s.reviewVersion(saved.id!));
+    expect(outsideState(dir)).toEqual(afterEdit);
+    await ok(s.restoreVersion(saved.id!, review!.revision));
+    // The restore writes the site's own documents, as ever; nothing of Git's lands where the project is watched.
+    const moved = Object.keys(outsideState(dir)).filter((p) => outsideState(dir)[p] !== afterEdit[p]);
+    expect(moved.filter((p) => p === '.git' || p.startsWith('.git/'))).toEqual([]);
+    expect(changed.flat().every((p) => !p.startsWith('.git'))).toBe(true);
+    expect(readFileSync(join(dir, '.git', 'index.lock'), 'utf8')).toBe('held by the developer');
+  });
+
+  it('commits again on top of a branch another save moved meanwhile, holding the same site', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'so-versions-git-'));
+    dirs.push(root);
+    const repo = git.client.repository(root);
+    // Stale: written on an empty branch, which another save then moves.
+    const files = [{ path: 'siteorigin/site.json', bytes: new TextEncoder().encode('{"name":"Mine"}') }];
+    const mine = await writeVersionCommit(repo, files, 'vmine000000', new Date().toISOString(), false);
+    const theirs = await writeVersionCommit(repo, [{ path: 'siteorigin/site.json', bytes: new TextEncoder().encode('{"name":"Theirs"}') }], 'vtheirs00000', new Date().toISOString(), false);
+    await repo.advanceRef(VERSIONS_BRANCH, theirs.commit, null);
+    const tip = await advanceVersions(repo, mine.commit);
+    expect(tip).not.toBe(mine.commit);
+    expect(await repo.resolveRef(VERSIONS_BRANCH)).toBe(tip);
+    const c = await repo.readCommit(tip);
+    expect(c).toMatchObject({ tree: mine.tree, parents: [theirs.commit] });
   });
 });
 
