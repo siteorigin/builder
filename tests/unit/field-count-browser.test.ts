@@ -112,31 +112,36 @@ describe.skipIf(!browserInstalled)('a field counts inside itself', { timeout: 30
   });
 
   const field = (name: string) => page.getByRole('textbox', { name });
-  const countOf = async (control: Locator) => page.locator(`[id="${await control.evaluate((el) => el.getAttribute('aria-describedby')!.split(' ').find((id) => document.getElementById(id)?.classList.contains('field-count')))}"]`);
+  // Page code is passed as text, as in the other browser tests: the unit tests' tsconfig has no DOM types.
+  /** Run `fn`, the source of a function of the element, on the element. */
+  const on = <R>(l: Locator, fn: string): Promise<R> => l.evaluate(new Function('el', `return (${fn})(el);`) as (el: unknown) => R);
+  const countOf = async (control: Locator) =>
+    page.locator(`[id="${await on<string>(control, "(el) => el.getAttribute('aria-describedby').split(' ').find((id) => document.getElementById(id)?.classList.contains('field-count'))")}"]`);
   const hintOf = (control: Locator) => control.locator('xpath=ancestor::div[contains(@class, "field")][1]').locator('.field-hint');
-  const rect = (l: Locator): Promise<Box> => l.evaluate((el) => {
-    const r = el.getBoundingClientRect();
-    return { top: r.top, bottom: r.bottom, left: r.left, right: r.right };
-  });
+  const rect = (l: Locator) => on<Box>(l, '(el) => { const r = el.getBoundingClientRect(); return { top: r.top, bottom: r.bottom, left: r.left, right: r.right }; }');
+  const focused = (l: Locator) => on<boolean>(l, '(el) => el === document.activeElement');
   // A box's border is its frame's; its text may be drawn anywhere in the textarea's scroll viewport (scrolled lines
   // pass through its padding). A single line's text stays inside its padding.
-  const geometry = (control: Locator): Promise<Geometry> =>
-    control.evaluate((el: HTMLElement) => {
-      const px = (v: string) => parseFloat(v) || 0;
-      const of = (e: Element) => {
-        const r = e.getBoundingClientRect();
-        return { top: r.top, bottom: r.bottom, left: r.left, right: r.right };
-      };
-      const s = getComputedStyle(el);
-      const r = el.getBoundingClientRect();
-      const frame = el.closest('.field-frame');
-      const top = r.top + px(s.borderTopWidth);
-      const left = r.left + px(s.borderLeftWidth);
-      const text = frame
-        ? { top, left, bottom: top + el.clientHeight, right: left + el.clientWidth }
-        : { top: top + px(s.paddingTop), left: left + px(s.paddingLeft), bottom: top + el.clientHeight - px(s.paddingBottom), right: left + el.clientWidth - px(s.paddingRight) };
-      return { box: of(frame ?? el), text, lines: (el.clientHeight - px(s.paddingTop) - px(s.paddingBottom)) / px(s.lineHeight) };
-    });
+  const geometry = (control: Locator) =>
+    on<Geometry>(
+      control,
+      `(el) => {
+        const px = (v) => parseFloat(v) || 0;
+        const of = (e) => {
+          const r = e.getBoundingClientRect();
+          return { top: r.top, bottom: r.bottom, left: r.left, right: r.right };
+        };
+        const s = getComputedStyle(el);
+        const r = el.getBoundingClientRect();
+        const frame = el.closest('.field-frame');
+        const top = r.top + px(s.borderTopWidth);
+        const left = r.left + px(s.borderLeftWidth);
+        const text = frame
+          ? { top, left, bottom: top + el.clientHeight, right: left + el.clientWidth }
+          : { top: top + px(s.paddingTop), left: left + px(s.paddingLeft), bottom: top + el.clientHeight - px(s.paddingBottom), right: left + el.clientWidth - px(s.paddingRight) };
+        return { box: of(frame ?? el), text, lines: (el.clientHeight - px(s.paddingTop) - px(s.paddingBottom)) / px(s.lineHeight) };
+      }`
+    );
   const overlaps = (a: Box, b: Box) => a.left < b.right && b.left < a.right && a.top < b.bottom && b.top < a.bottom;
   const inside = (inner: Box, outer: Box) => inner.left >= outer.left && inner.right <= outer.right && inner.top >= outer.top && inner.bottom <= outer.bottom;
 
@@ -156,7 +161,7 @@ describe.skipIf(!browserInstalled)('a field counts inside itself', { timeout: 30
     const hint = await rect(hintOf(box));
     expect(hint.top - g.box.bottom).toBeGreaterThanOrEqual(0);
     expect(hint.top - g.box.bottom).toBeLessThanOrEqual(6);
-    expect(await count.evaluate((el) => getComputedStyle(el).pointerEvents)).toBe('none');
+    expect(await on(count, '(el) => getComputedStyle(el).pointerEvents')).toBe('none');
   });
 
   it('opens a description four lines tall and a shorter limit’s box three, before any typing', async () => {
@@ -175,8 +180,8 @@ describe.skipIf(!browserInstalled)('a field counts inside itself', { timeout: 30
     expect(overlaps(await rect(count), g.text)).toBe(false);
     // Grown to its tallest, the text scrolls, and halfway down no line can pass under the count.
     await box.fill(Array.from({ length: 40 }, (_, i) => `Line ${i + 1}`).join('\n'));
-    await expect.poll(() => box.evaluate((el) => el.scrollHeight > el.clientHeight)).toBe(true);
-    await box.evaluate((el) => (el.scrollTop = (el.scrollHeight - el.clientHeight) / 2));
+    await expect.poll(() => on(box, '(el) => el.scrollHeight > el.clientHeight')).toBe(true);
+    await on(box, '(el) => { el.scrollTop = (el.scrollHeight - el.clientHeight) / 2; }');
     expect(overlaps(await rect(count), (await geometry(box)).text)).toBe(false);
     expect(inside(await rect(count), (await geometry(box)).box)).toBe(true);
 
@@ -228,7 +233,7 @@ describe.skipIf(!browserInstalled)('a field counts inside itself', { timeout: 30
     const count = await countOf(box);
     await expect.poll(() => count.getAttribute('class')).toContain('field-error');
     expect(await count.textContent()).toContain('Shorten it by 10 characters');
-    expect(await box.evaluate((el) => el === document.activeElement)).toBe(true);
+    expect(await focused(box)).toBe(true);
     const g = await geometry(box);
     const c = await rect(count);
     expect(c.top).toBeGreaterThanOrEqual(g.box.bottom);
@@ -236,19 +241,19 @@ describe.skipIf(!browserInstalled)('a field counts inside itself', { timeout: 30
     const hint = await rect(hintOf(box));
     expect(hint.top).toBeGreaterThanOrEqual(c.bottom);
     // The box, not the borderless text inside it, takes the red edge.
-    const edge = (sel: string) => page.locator(sel).first().evaluate((el) => getComputedStyle(el).borderTopColor);
-    const red = await page.evaluate(() => {
+    const edge = (sel: string) => on<string>(page.locator(sel).first(), '(el) => getComputedStyle(el).borderTopColor');
+    const red = await page.evaluate<string>(`(() => {
       const probe = document.body.appendChild(document.createElement('i'));
       probe.style.color = 'var(--red)';
       const c = getComputedStyle(probe).color;
       probe.remove();
       return c;
-    });
+    })()`);
     await expect.poll(() => edge('.field-frame:has(textarea[aria-invalid="true"])')).toBe(red);
     // Back under the limit, the count goes back inside, with focus still in the field.
     await box.fill('x'.repeat(150));
     await expect.poll(() => count.getAttribute('class')).not.toContain('field-error');
     expect(inside(await rect(count), (await geometry(box)).box)).toBe(true);
-    expect(await box.evaluate((el) => el === document.activeElement)).toBe(true);
+    expect(await focused(box)).toBe(true);
   });
 });
