@@ -6,8 +6,9 @@
 //
 // A read-only question with an attached image; an edit of a selected element whose target stays frozen when the
 // selection changes mid-run, landing as one Undo step that Undo turn reverts; a wider-scope request declined and
-// then approved; a two-question interview answered with a choice and a typed answer; an attempted thread switch
-// mid-run, refused, with the dock switched away and back; Stop and undo; a provider failure and Edit and try again;
+// then approved; a two-question interview answered with a choice and a typed answer; a thread switch
+// mid-run, a new thread opened and the way back taken, with the dock switched away and back; Stop and undo; a provider
+// failure and Edit and try again;
 // the earlier thread reopened and the project closed and opened again, its transcript and preview as they were left.
 // A wait for a held run times out while other runs are finished: one run's events never end another's wait.
 import assert from 'node:assert/strict';
@@ -298,7 +299,7 @@ try {
     'both answers are on the turn'
   );
 
-  step('mid-run: switching threads is refused, the dock switches away and back, and the held run’s wait is its own');
+  step('mid-run: another thread opens while the run goes on in its own, the dock switches away and back, and the held run’s wait is its own');
   await click('button', 'What the AI may change', { exact: false });
   await click('menuitemradio', 'Call to action', { exact: false });
   await eventually(async () => assert.match((await shown()).composer.scopeLabel, /Call to action/));
@@ -314,10 +315,16 @@ try {
   // preview first, at each width it checks (#742): about 9 s on macOS, longer on a slower machine.
   await eventually(async () => assert.equal(await gateState('stop-held'), 'reached'), 60000);
   await previewHas('heading', 'Talk to the studio');
-  for (const name of ['Earlier conversations', 'New conversation']) {
-    const e = await refused('ui.click', { target: { ref: (await find('button', name)).ref }, waitMs: 300 }, 'NOT_ACTIONABLE');
-    assert.deepEqual([e.details.reason, e.details.dispatched], ['disabled', 'none'], `${name} cannot be used while the AI works`);
-  }
+  // A new conversation opens while the AI works (#1125): the run goes on in its own thread, and the way back returns to
+  // it, its draft and its run as they were.
+  await click('button', 'New conversation');
+  await eventually(async () => assert.notEqual((await shown()).conversationId, threadB, 'a new conversation is on screen'));
+  const elsewhere = (await shown()).run;
+  assert.deepEqual([elsewhere?.runId, elsewhere?.phase], [null, 'Working in another conversation'], 'with no run of its own, only a note of the one elsewhere');
+  const meanwhile = await observe({ runId: held.runId });
+  assert.deepEqual([meanwhile.runs[0].state, meanwhile.runs[0].conversationId], ['working', threadB], 'the run goes on in its own thread');
+  await click('button', 'Go to conversation');
+  await eventually(async () => assert.equal((await shown()).conversationId, threadB, 'back in the run’s thread'));
   await click('tab', 'Inspector');
   const away = await observe({ runId: held.runId });
   assert.equal(away.shown.visible, false, 'the chat is out of sight');

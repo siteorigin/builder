@@ -834,11 +834,13 @@ export interface Conversation {
 /** A stored conversation as Earlier conversations lists it (see shared/conversations). */
 /**
  * A conversation as main has it now, read by its ID without opening it: the live thread while a request is filed in it
- * (its newest turn included, saved or not), otherwise its stored file. `run`: that request while it is still going.
+ * (its newest turn included, saved or not), otherwise its stored file. `run`: the request still going in this opening
+ * of the project, in whichever conversation it was filed (`conversationId`), so a window reloaded on another thread
+ * still knows it holds the app, and where to answer or stop it (#1125).
  */
 export interface ConversationState {
   conversation: Conversation;
-  run: { runId: string; status: RunStatus; mode: ChatMode } | null;
+  run: { runId: string; status: RunStatus; mode: ChatMode; conversationId: string } | null;
 }
 
 export interface ConversationSummary {

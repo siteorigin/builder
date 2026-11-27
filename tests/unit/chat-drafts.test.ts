@@ -206,34 +206,214 @@ describe('conversations in the assistant', () => {
     expect(orch.conversation!.messages).toEqual([]);
   });
 
-  it('never switches conversations while a request is running', async () => {
-    const { orch, ctx, settle } = await setup();
+  it('switches conversations while a request goes on in its own, which it saves alone (#1125)', async () => {
+    const { orch, ctx, adapter, chatDir } = await setup();
     await orch.send('Earlier request', ctx);
-    await settle();
+    adapter.release();
+    for (let i = 0; i < 200 && orch.busy; i++) await new Promise((r) => setTimeout(r, 10));
     const earlier = orch.conversation!.id;
+    const fresh = new GatedAdapter();
+    (orch as unknown as { deps: { adapter: unknown } }).deps.adapter = async () => ({ adapter: fresh, model: 'fake', provider: 'openai' });
     const running = await orch.newConversation();
     expect((await orch.send('Running request', ctx, running.id)).ok).toBe(true);
-    await expect(orch.openConversation(earlier)).rejects.toThrow(/Wait for the AI to finish/);
-    await expect(orch.newConversation()).rejects.toThrow(/Wait for the AI to finish/);
-    await expect(orch.clearHistory()).rejects.toThrow(/Wait for the AI to finish/);
-    expect(orch.conversation!.id).toBe(running.id);
-    await settle();
-    // The run's messages were saved to its own conversation.
-    expect((await orch.openConversation(running.id)).messages.filter((m) => m.role === 'user').map((m) => m.text)).toEqual(['Running request']);
+    // Earlier conversations and New conversation both answer while it runs.
+    const opened = await orch.openConversation(earlier);
+    expect(opened.messages.filter((m) => m.role === 'user').map((m) => m.text)).toEqual(['Earlier request']);
+    const blank = await orch.newConversation();
+    expect(blank.messages).toEqual([]);
+    expect(orch.busy).toBe(true);
+    // A new conversation's first turn is listed before it has a file, as it is in memory.
+    const { list } = await orch.loadConversations();
+    expect(existsSync(join(chatDir, `${running.id}.json`))).toBe(false);
+    expect(list.map((c) => c.id)).toContain(running.id);
+    // Nothing else is sent meanwhile, and the history is not cleared under it.
+    expect((await orch.send('Second request', ctx, blank.id)).message).toMatch(/already working/);
+    await expect(orch.clearHistory()).rejects.toThrow(/Wait for the AI to finish before clearing the history/);
+    // Back in its thread, the very conversation the request adds to is open again, its turn still going.
+    const back = await orch.openConversation(running.id);
+    expect(back).toBe(running);
+    expect(back.messages.at(-1)).toMatchObject({ role: 'assistant' });
+    expect(back.messages.at(-1)!.result).toBeUndefined();
+    fresh.release();
+    for (let i = 0; i < 200 && orch.busy; i++) await new Promise((r) => setTimeout(r, 10));
+    const file = join(chatDir, `${running.id}.json`);
+    for (let i = 0; i < 200 && !existsSync(file); i++) await new Promise((r) => setTimeout(r, 10));
+    // The run's messages were saved to its own conversation, and the earlier one kept its own.
+    expect((JSON.parse(readFileSync(file, 'utf8')) as Conversation).messages.map((m) => m.role)).toEqual(['user', 'assistant']);
+    expect((JSON.parse(readFileSync(join(chatDir, `${earlier}.json`), 'utf8')) as Conversation).messages.filter((m) => m.role === 'user').map((m) => m.text)).toEqual(['Earlier request']);
+    // The next message goes on in the thread it was returned to.
+    expect(orch.conversation).toBe(running);
   });
 
-  it('a request that starts while another conversation is loading keeps its own', async () => {
-    const { orch, ctx, settle } = await setup();
+  it('a conversation opened while a request is starting opens, and the request keeps its own', async () => {
+    const { orch, ctx, adapter, chatDir } = await setup();
     await orch.send('Earlier request', ctx);
-    await settle();
+    adapter.release();
+    for (let i = 0; i < 200 && orch.busy; i++) await new Promise((r) => setTimeout(r, 10));
     const earlier = orch.conversation!.id;
     const running = await orch.newConversation();
     // History's pick is still reading its file when Send starts a request in the open conversation.
     const switching = orch.openConversation(earlier);
     expect((await orch.send('Running request', ctx, running.id)).ok).toBe(true);
-    await expect(switching).rejects.toThrow(/Wait for the AI to finish/);
-    expect(orch.conversation!.id).toBe(running.id);
+    expect((await switching).id).toBe(earlier);
+    expect(orch.conversation!.id).toBe(earlier);
+    // The request's thread is still the one it was filed in, and is read as it is in memory.
+    const read = await orch.readConversation(running.id);
+    expect(read.conversation.messages.filter((m) => m.role === 'user').map((m) => m.text)).toEqual(['Running request']);
+    expect(read.run).toMatchObject({ conversationId: running.id, mode: 'edit' });
+    // Read from any other thread, the request still says where it runs.
+    expect((await orch.readConversation(earlier)).run).toMatchObject({ conversationId: running.id });
+    adapter.release();
+    for (let i = 0; i < 200 && orch.busy; i++) await new Promise((r) => setTimeout(r, 10));
+    const file = join(chatDir, `${running.id}.json`);
+    for (let i = 0; i < 200 && !existsSync(file); i++) await new Promise((r) => setTimeout(r, 10));
+    expect((JSON.parse(readFileSync(file, 'utf8')) as Conversation).messages.filter((m) => m.role === 'user').map((m) => m.text)).toEqual(['Running request']);
+    expect((await orch.readConversation(earlier)).run).toBeNull();
+  });
+
+  it('an open still reading its file gives way to a conversation asked for after it', async () => {
+    const { orch, ctx, settle } = await setup();
+    await orch.send('Earlier request', ctx);
     await settle();
+    const earlier = orch.conversation!.id;
+    await orch.newConversation();
+    const slow = orch.openConversation(earlier);
+    const fresh = await orch.newConversation();
+    await expect(slow).rejects.toThrow(/Another conversation was opened meanwhile/);
+    // The thread a message goes to is the one asked for last.
+    expect(orch.conversation).toBe(fresh);
+    // Asking for the conversation already open is a pick too: an earlier one still reading gives way to it.
+    const again = orch.openConversation(earlier);
+    expect(await orch.openConversation(fresh.id)).toBe(fresh);
+    await expect(again).rejects.toThrow(/Another conversation was opened meanwhile/);
+    expect(orch.conversation).toBe(fresh);
+  });
+
+  it('a thread left while its request runs in a project read-only here keeps its answer, though it is never saved', async () => {
+    const { orch, ctx, adapter, chatDir } = await setup();
+    await orch.send('Earlier request', ctx);
+    adapter.release();
+    for (let i = 0; i < 200 && orch.busy; i++) await new Promise((r) => setTimeout(r, 10));
+    const earlier = orch.conversation!.id;
+    const fresh = new GatedAdapter();
+    (orch as unknown as { deps: { adapter: unknown } }).deps.adapter = async () => ({ adapter: fresh, model: 'fake', provider: 'openai' });
+    const asking = await orch.newConversation();
+    const session = (orch as unknown as { deps: { session: () => ProjectSession } }).deps.session();
+    (session as unknown as { readOnly: unknown }).readOnly = { reason: 'Another app is editing this project.', canUnlock: true };
+    try {
+      expect((await orch.send('What does the footer say?', { ...ctx, mode: 'ask' }, asking.id)).ok).toBe(true);
+      // Switched away while it answers, and the answer lands with nothing written.
+      expect((await orch.openConversation(earlier)).id).toBe(earlier);
+      fresh.release();
+      for (let i = 0; i < 200 && orch.busy; i++) await new Promise((r) => setTimeout(r, 10));
+      await orch.loadConversations();
+      expect(existsSync(join(chatDir, `${asking.id}.json`))).toBe(false);
+      // Still listed, read and opened as it is in memory, its answer in it.
+      expect((await orch.loadConversations()).list.map((c) => c.id)).toContain(asking.id);
+      expect((await orch.readConversation(asking.id)).conversation.messages.at(-1)).toMatchObject({ role: 'assistant', text: 'Done.', result: { status: 'no-changes' } });
+      const back = await orch.openConversation(asking.id);
+      expect(back).toBe(asking);
+      expect(back.messages.map((m) => m.role)).toEqual(['user', 'assistant']);
+    } finally {
+      (session as unknown as { readOnly: unknown }).readOnly = null;
+    }
+  });
+
+  it('a thread whose save failed is renamed from memory, whole, and is then read from its file', async () => {
+    const { orch, ctx, adapter, chatDir } = await setup();
+    const o = orch as unknown as { writeConversation: (...a: unknown[]) => Promise<void> };
+    const real = o.writeConversation.bind(orch);
+    let fail = true;
+    o.writeConversation = async (...a: unknown[]) => {
+      if (fail) throw new Error('The disk is full.');
+      return real(...a);
+    };
+    const kept = (await orch.loadConversations()).active;
+    adapter.release();
+    expect((await orch.send('Write an About page', ctx, kept.id)).ok).toBe(true);
+    for (let i = 0; i < 200 && orch.busy; i++) await new Promise((r) => setTimeout(r, 10));
+    await orch.loadConversations();
+    const file = join(chatDir, `${kept.id}.json`);
+    expect(existsSync(file)).toBe(false);
+    fail = false;
+    // Renamed while another thread is open: its turn is written with its name, not refused for having no file.
+    await orch.newConversation();
+    expect(await orch.renameConversation(kept.id, 'About page')).toEqual({ id: kept.id, title: 'About page' });
+    const saved = JSON.parse(readFileSync(file, 'utf8')) as Conversation;
+    expect([saved.title, saved.messages.map((m) => m.role)]).toEqual(['About page', ['user', 'assistant']]);
+    expect((await orch.loadConversations()).list.find((c) => c.id === kept.id)?.title).toBe('About page');
+  });
+
+  it('a rename that waited its turn while a request started in another thread still writes the unsaved thread whole', async () => {
+    const { orch, ctx, adapter, chatDir } = await setup();
+    const o = orch as unknown as { writeConversation: (...a: unknown[]) => Promise<void>; queueFileChange: (c: () => Promise<unknown>) => Promise<unknown> };
+    const real = o.writeConversation.bind(orch);
+    let fail = true;
+    o.writeConversation = async (...a: unknown[]) => {
+      if (fail) throw new Error('The disk is full.');
+      return real(...a);
+    };
+    const kept = (await orch.loadConversations()).active;
+    adapter.release();
+    expect((await orch.send('Write an About page', ctx, kept.id)).ok).toBe(true);
+    for (let i = 0; i < 200 && orch.busy; i++) await new Promise((r) => setTimeout(r, 10));
+    await orch.loadConversations();
+    fail = false;
+    const other = await orch.newConversation();
+    // Something already queued holds the rename back until a request has started in the other thread.
+    let go!: () => void;
+    void o.queueFileChange(() => new Promise<void>((r) => (go = r)));
+    const renaming = orch.renameConversation(kept.id, 'About page');
+    const fresh = new GatedAdapter();
+    (orch as unknown as { deps: { adapter: unknown } }).deps.adapter = async () => ({ adapter: fresh, model: 'fake', provider: 'openai' });
+    expect((await orch.send('Meanwhile, the footer', ctx, other.id)).ok).toBe(true);
+    go();
+    await renaming;
+    const saved = JSON.parse(readFileSync(join(chatDir, `${kept.id}.json`), 'utf8')) as Conversation;
+    expect([saved.title, saved.messages.map((m) => m.role)]).toEqual(['About page', ['user', 'assistant']]);
+    fresh.release();
+    for (let i = 0; i < 200 && orch.busy; i++) await new Promise((r) => setTimeout(r, 10));
+  });
+
+  it('an earlier save that lands never lets go of a later turn whose save failed', async () => {
+    const { orch, ctx, adapter } = await setup();
+    const o = orch as unknown as { writeConversation: (...a: unknown[]) => Promise<void> };
+    const real = o.writeConversation.bind(orch);
+    let calls = 0;
+    let land!: () => void;
+    const landing = new Promise<void>((r) => (land = r));
+    o.writeConversation = async (...a: unknown[]) => {
+      const n = ++calls;
+      if (n === 1) await landing;
+      if (n === 2) throw new Error('The disk is full.');
+      return real(...a);
+    };
+    const thread = (await orch.loadConversations()).active;
+    adapter.release();
+    expect((await orch.send('First request', ctx, thread.id)).ok).toBe(true);
+    for (let i = 0; i < 200 && orch.busy; i++) await new Promise((r) => setTimeout(r, 10));
+    // The second turn ends while the first one's save is still being written.
+    expect((await orch.send('Second request', ctx, thread.id)).ok).toBe(true);
+    for (let i = 0; i < 200 && orch.busy; i++) await new Promise((r) => setTimeout(r, 10));
+    land();
+    await orch.loadConversations();
+    expect(calls).toBe(2);
+    // Left and opened again: both turns, from memory (the file holds only the first).
+    await orch.newConversation();
+    const back = await orch.openConversation(thread.id);
+    expect(back.messages.filter((m) => m.role === 'user').map((m) => m.text)).toEqual(['First request', 'Second request']);
+  });
+
+  it('opens nothing while the history is being cleared, so the fresh conversation it leaves is the one open', async () => {
+    const { orch, ctx, settle } = await setup();
+    await orch.send('Earlier request', ctx);
+    await settle();
+    const earlier = orch.conversation!.id;
+    const clearing = orch.clearHistory();
+    await expect(orch.newConversation()).rejects.toThrow(/being cleared/);
+    await expect(orch.openConversation(earlier)).rejects.toThrow(/being cleared/);
+    const left = await clearing;
+    expect(orch.conversation).toBe(left);
   });
 
   it('clearing history right after a request finishes does not bring its transcript back', async () => {

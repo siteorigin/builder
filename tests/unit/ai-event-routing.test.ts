@@ -35,6 +35,8 @@ const store = (await load('../../src/renderer/src/store')) as {
   shownRun: (s: ChatState) => { runId: string; status: RunStatus; mode: 'edit' | 'ask' } | null;
   detachedRun: () => Partial<ChatState>;
   showConversation: (fallback: Conversation, opening: string, current: () => boolean) => Promise<void>;
+  openThread: (pick: Promise<Conversation>, opening: string) => Promise<boolean>;
+  openRunThread: (id?: string | null) => Promise<boolean>;
 };
 
 /**
@@ -520,7 +522,7 @@ describe('a reloaded window shows the conversation by its ID, with the request r
     // Main read the turn mid-reply; before its answer arrives, the run ends and its final turn is sent, with nothing shown.
     store.applyAiEvent({ runId: 'r_live', conversationId: 'c_live', kind: 'status', status: 'no-changes', mode: 'edit' });
     store.applyAiEvent({ runId: 'r_live', conversationId: 'c_live', kind: 'message', message: final });
-    answers[0]({ conversation: conv([user, streaming]), run: { runId: 'r_live', status: 'running', mode: 'edit' } });
+    answers[0]({ conversation: conv([user, streaming]), run: { runId: 'r_live', status: 'running', mode: 'edit', conversationId: 'c_live' } });
     await showing;
     expect(store.getState()).toMatchObject({ runStatus: null, activeRunId: null });
     // The final turn it missed is read again, as main has it now.
@@ -544,13 +546,13 @@ describe('a reloaded window shows the conversation by its ID, with the request r
     await until(() => answers.length === 1, 'the read');
     // Text arrives while it is read, with nothing to land in; main's answer already has it.
     store.applyAiEvent({ runId: 'r_stream', conversationId: 'c_live', kind: 'text', text: 'Hel' });
-    answers[0]({ conversation: conv([user, reply('Hel')]), run: { runId: 'r_stream', status: 'running', mode: 'edit' } });
+    answers[0]({ conversation: conv([user, reply('Hel')]), run: { runId: 'r_stream', status: 'running', mode: 'edit', conversationId: 'c_live' } });
     await showing;
     expect(store.getState()).toMatchObject({ runStatus: 'running', activeRunId: 'r_stream' });
     await until(() => answers.length === 2, 'the read again');
     // The next piece follows what is shown; the read again, taken before it, is older and leaves it.
     store.applyAiEvent({ runId: 'r_stream', conversationId: 'c_live', kind: 'text', text: 'lo', at: 3 });
-    answers[1]({ conversation: conv([user, reply('Hel')]), run: { runId: 'r_stream', status: 'running', mode: 'edit' } });
+    answers[1]({ conversation: conv([user, reply('Hel')]), run: { runId: 'r_stream', status: 'running', mode: 'edit', conversationId: 'c_live' } });
     await new Promise((r) => setTimeout(r, 10));
     expect(said(store.getState().conversation?.messages)).toEqual(['user: Hi', 'assistant: Hello']);
   });
@@ -559,7 +561,7 @@ describe('a reloaded window shows the conversation by its ID, with the request r
     const time = '2026-11-24T00:00:00.000Z';
     const asking: Conversation = { id: 'c_live', title: 'Live', createdAt: time, messages: [{ id: 'm_reply', role: 'assistant', text: '', time, runId: 'r_ask', questions: [{ id: 'q_1', text: 'Which page?', choices: ['Home', 'About'] }] }] };
     store.setState({ conversation: null, runStatus: null, activeRunId: null, runMode: null, runConversationId: null, snapshot: { workspaceKey: 'w1' } } as Partial<ChatState>);
-    w().builder.ai = { readConversation: async () => ({ conversation: asking, run: { runId: 'r_ask', status: 'awaiting-input', mode: 'ask' } }) };
+    w().builder.ai = { readConversation: async () => ({ conversation: asking, run: { runId: 'r_ask', status: 'awaiting-input', mode: 'ask', conversationId: 'c_live' } }) };
     await store.showConversation({ ...asking, messages: [] }, 'w1', () => true);
     expect(store.getState()).toMatchObject({ conversation: asking, runStatus: 'awaiting-input', activeRunId: 'r_ask', runMode: 'ask', runConversationId: 'c_live' });
     // Restored in its own thread, so the run shows there with its answer box (#1124).
@@ -578,5 +580,137 @@ describe('a reloaded window shows the conversation by its ID, with the request r
     w().builder.ai = { readConversation: async () => Promise.reject(new Error('The project changed, so the conversation was not read.')) };
     await store.showConversation({ ...asking, messages: [] }, 'w1', () => true);
     expect(store.getState()).toMatchObject({ conversation: { id: 'c_live', messages: [] }, runStatus: null });
+  });
+});
+
+describe('conversations switch while a request goes on in its own (#1125)', () => {
+  const w = () => (globalThis as unknown as { window: { builder: Record<string, unknown> } }).window;
+  afterEach(() => {
+    delete w().builder.ai;
+    store.setState({ snapshot: null } as Partial<ChatState>);
+  });
+  /** The bridge to a real assistant, every answer copied across it as the renderer receives it. */
+  const bridge = (orch: Orchestrator) => ({
+    openConversation: async (id: string) => structuredClone(await orch.openConversation(id)),
+    newConversation: async () => structuredClone(await orch.newConversation()),
+    readConversation: async (id: string) => structuredClone(await orch.readConversation(id))
+  });
+
+  it('back in a thread whose request ended while it opened, shows its final turn once, from main', async () => {
+    const env = await setup();
+    const ai = bridge(env.orch);
+    w().builder.ai = ai;
+    const id = (await env.orch.loadConversations()).active.id;
+    store.setState({ conversation: structuredClone(env.orch.conversation!), snapshot: { workspaceKey: 'w1' } } as Partial<ChatState>);
+    await env.orch.send('Write an About page', env.ctx, id);
+    await env.streaming();
+    // A new conversation while it runs: the request goes on, shown in neither its text nor its status here.
+    expect(await store.openThread(ai.newConversation(), 'w1')).toBe(true);
+    const blank = store.getState().conversation!;
+    expect(blank.id).not.toBe(id);
+    expect(store.getState()).toMatchObject({ runStatus: 'running', runConversationId: id });
+    expect(store.shownRun(store.getState())).toBeNull();
+    // Earlier conversations picks the running thread: main answers mid-reply, and before that answer shows, the request
+    // ends and sends its end and final turn, which land nowhere (another thread is on screen).
+    const reply = await ai.openConversation(id);
+    expect(reply.messages.at(-1)?.result).toBeUndefined();
+    env.adapter.late = ' Done.';
+    env.adapter.release();
+    await env.finished();
+    expect(store.getState().conversation).toBe(blank);
+    expect(await store.openThread(Promise.resolve(reply), 'w1')).toBe(true);
+    // Read again as main has it (its save queued ahead of the read): the final turn, once, and nothing running.
+    const shown = store.getState().conversation!;
+    expect(shown.id).toBe(id);
+    expect(said(shown.messages)).toEqual(['user: Write an About page', 'assistant: Working on it. Done.']);
+    expect(shown.messages[1].result).toMatchObject({ status: 'no-changes' });
+    expect(store.getState()).toMatchObject({ runStatus: null, activeRunId: null });
+    // Main has that thread open again: the next message goes on in it.
+    expect(env.orch.conversation?.id).toBe(id);
+  });
+
+  it('a window reloaded on another thread knows the request holds the app, and goes back to its question', async () => {
+    const env = await setup();
+    const ai = bridge(env.orch);
+    w().builder.ai = ai;
+    const id = (await env.orch.loadConversations()).active.id;
+    const r = await env.orch.send('Write an About page', env.ctx, id);
+    await env.streaming();
+    const other = await env.orch.newConversation();
+    // Reloaded on the new thread: nothing on screen, no status (none is sent until it changes).
+    store.setState({ conversation: null, runStatus: null, activeRunId: null, runMode: null, runConversationId: null, snapshot: { workspaceKey: 'w1' } } as Partial<ChatState>);
+    await store.showConversation(structuredClone(other), 'w1', () => true);
+    expect(store.getState()).toMatchObject({ conversation: { id: other.id }, runStatus: 'running', activeRunId: r.runId, runMode: 'edit', runConversationId: id });
+    expect(store.shownRun(store.getState())).toBeNull();
+    // Its way back opens its thread in main and shows it with its run.
+    expect(await store.openRunThread()).toBe(true);
+    expect(store.getState().conversation?.id).toBe(id);
+    expect(said(store.getState().conversation?.messages)).toEqual(['user: Write an About page', 'assistant: Working on it.']);
+    expect(store.shownRun(store.getState())).toEqual({ runId: r.runId, status: 'running', mode: 'edit' });
+    expect(env.orch.conversation?.id).toBe(id);
+    await env.finish();
+  });
+
+  it('a read for the thread on screen that a switch overtook never replaces what the switch showed', async () => {
+    const time = '2026-11-27T00:00:00.000Z';
+    const user: ChatMessage = { id: 'm_cq', role: 'user', text: 'Hi', time };
+    const reply = (text: string, more: Partial<ChatMessage> = {}): ChatMessage => ({ id: 'm_cr', role: 'assistant', text, time, runId: 'r_cu', ...more });
+    const a = (m: ChatMessage): Conversation => ({ id: 'c_a', title: 'A', createdAt: time, messages: [user, m] });
+    const b: Conversation = { id: 'c_b', title: 'B', createdAt: time, messages: [] };
+    const answers: Array<(s: ConversationState) => void> = [];
+    w().builder.ai = { readConversation: vi.fn(() => new Promise<ConversationState>((resolve) => answers.push(resolve))) };
+    store.setState({ conversation: a(reply('Hel')), snapshot: { workspaceKey: 'w1' } } as Partial<ChatState>);
+    // A piece that does not follow what is shown: main's copy is read for.
+    store.applyAiEvent({ runId: 'r_cu', conversationId: 'c_a', kind: 'text', text: 'xx', at: 9 });
+    await until(() => answers.length === 1, 'the read');
+    // Left for B and back, the request having ended meanwhile: its final turn shows.
+    const final = a(reply('Hello.', { result: { status: 'no-changes', summary: 'Hello.', changes: [], validation: [], canUndo: false } }));
+    expect(await store.openThread(Promise.resolve(b), 'w1')).toBe(true);
+    expect(await store.openThread(Promise.resolve(final), 'w1')).toBe(true);
+    // The read from before the switch answers with the turn mid-reply: it is older, and is dropped.
+    answers[0]({ conversation: a(reply('Hel lo')), run: null });
+    await new Promise((r) => setTimeout(r, 10));
+    expect(said(store.getState().conversation?.messages)).toEqual(['user: Hi', 'assistant: Hello.']);
+  });
+
+  it('the way back to the run’s thread is a switch of its own, even while that thread is on screen', async () => {
+    const time = '2026-11-27T00:00:00.000Z';
+    const a: Conversation = { id: 'c_a', title: 'A', createdAt: time, messages: [] };
+    const b: Conversation = { id: 'c_b', title: 'B', createdAt: time, messages: [] };
+    let answerB!: (c: Conversation) => void;
+    const openConversation = vi.fn((id: string) => (id === 'c_b' ? new Promise<Conversation>((r) => (answerB = r)) : Promise.resolve(a)));
+    w().builder.ai = { openConversation };
+    store.setState({ conversation: a, runStatus: 'awaiting-input', activeRunId: 'r_way', runMode: 'edit', runConversationId: 'c_a', snapshot: { workspaceKey: 'w1' } } as Partial<ChatState>);
+    // B is still loading when Answer asks for the run's thread, which is the one on screen.
+    const toB = store.openThread(openConversation('c_b'), 'w1');
+    expect(await store.openRunThread()).toBe(true);
+    expect(openConversation.mock.calls.map((c) => c[0])).toEqual(['c_b', 'c_a']);
+    answerB(b);
+    expect(await toB).toBe(false);
+    expect(store.getState().conversation?.id).toBe('c_a');
+    store.setState({ runStatus: null, activeRunId: null, runMode: null, runConversationId: null });
+  });
+
+  it('shows only the latest switch: one answered after it, or after the project changed, shows nothing', async () => {
+    const time = '2026-11-27T00:00:00.000Z';
+    const a: Conversation = { id: 'c_a', title: 'A', createdAt: time, messages: [] };
+    const b: Conversation = { id: 'c_b', title: 'B', createdAt: time, messages: [] };
+    store.setState({ conversation: null, snapshot: { workspaceKey: 'w1' } } as Partial<ChatState>);
+    let answerA!: (c: Conversation) => void;
+    const slow = store.openThread(new Promise<Conversation>((r) => (answerA = r)), 'w1');
+    expect(await store.openThread(Promise.resolve(b), 'w1')).toBe(true);
+    answerA(a);
+    expect(await slow).toBe(false);
+    expect(store.getState().conversation?.id).toBe('c_b');
+    // An overtaken switch that fails says nothing; the latest one's failure is the caller's to say.
+    let failA!: (e: Error) => void;
+    const failing = store.openThread(new Promise<Conversation>((_, f) => (failA = f)), 'w1');
+    expect(await store.openThread(Promise.resolve(a), 'w1')).toBe(true);
+    failA(new Error('Unknown conversation.'));
+    expect(await failing).toBe(false);
+    await expect(store.openThread(Promise.reject(new Error('Unknown conversation.')), 'w1')).rejects.toThrow('Unknown conversation.');
+    // Another opening by the time it answers.
+    expect(await store.openThread(Promise.resolve(b), 'w0')).toBe(false);
+    expect(store.getState().conversation?.id).toBe('c_a');
   });
 });

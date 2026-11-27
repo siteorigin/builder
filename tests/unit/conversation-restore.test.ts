@@ -24,7 +24,7 @@ const user: ChatMessage = { id: 'm_q', role: 'user', text: 'Add a gallery page',
 const asking: ChatMessage = { id: 'm_reply', role: 'assistant', text: 'Before I start:', time, runId: 'r_live', questions: [{ id: 'q_1', text: 'Which photos?', choices: ['Studio', 'Products'] }] };
 /** What the list read gives as the open thread, and what the read by ID gives: the same thread, the run in it. */
 const listed: Conversation = { id: 'c_live', title: 'Add a gallery page', createdAt: time, messages: [user, { ...asking, text: '', questions: undefined }] };
-const live: ConversationState = { conversation: { ...listed, messages: [user, asking] }, run: { runId: 'r_live', status: 'awaiting-input', mode: 'edit' } };
+const live: ConversationState = { conversation: { ...listed, messages: [user, asking] }, run: { runId: 'r_live', status: 'awaiting-input', mode: 'edit', conversationId: 'c_live' } };
 
 const conversations = vi.fn(async () => ({ active: listed, list: [] }));
 const readConversation = vi.fn(async (_id: string, _key: string) => structuredClone(live));
