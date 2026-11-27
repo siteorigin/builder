@@ -1,5 +1,8 @@
 @layer components {
   /* ---------- Inspector ---------- */
+  /* A field brought into view and focused (Open in inspector, Get started): its own focus outline already says where
+     typing goes, so the located ring around it and its label stands down rather than drawing a second ring. */
+  .field-located:has(:focus-visible) { animation: none; box-shadow: none; }
   .insp-head { position: sticky; top: 0; z-index: 2; padding: 12px 14px 10px; border-bottom: 1px solid var(--border); background: var(--panel); display: flex; flex-direction: column; gap: 6px; }
   .insp-jump { display: flex; gap: 4px; margin-top: 2px; }
   .insp-jump button { height: 24px; padding: 0 8px; border: 0; border-radius: 99px; background: var(--active); color: var(--text-2); font-size: 12px; font-weight: 500; }

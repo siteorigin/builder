@@ -1,5 +1,6 @@
 import { app, BrowserWindow, dialog, shell, type OpenDialogOptions } from 'electron';
 import { markdownMirrorRoute } from '@shared/llms';
+import { firstStepsStart } from '@shared/first-steps';
 import { constants as fsConstants, existsSync, mkdtempSync, promises as fs, statSync } from 'node:fs';
 import { homedir, tmpdir } from 'node:os';
 import { basename, dirname, extname, isAbsolute, join, relative, sep } from 'node:path';
@@ -57,7 +58,7 @@ import { ComponentThumbs, writeThumb, type CaptureResult } from './runtime/compo
 import type { ComponentThumb } from '@shared/component-thumbs';
 import { generateComponentPreview } from '@generator/preview';
 import { canonicalDir } from '../runtime/policy';
-import { addRecent, isTrusted, loadSettings, rememberProjectParent, usableProjectParent, renameRecent, trust, untrust } from './settings';
+import { addRecent, isTrusted, loadSettings, rememberGetStartedHidden, rememberProjectParent, usableProjectParent, renameRecent, trust, untrust } from './settings';
 import { MAX_COPY_NAME, projectDisplayName, projectFolder, projectFolderName } from '@shared/project-name';
 import { RELAY_URL_ENV, resolveRelayUrl } from '@shared/live/relay-url';
 import { LIVE_BATCH_LABEL_MAX, type LiveEditBatch } from '@shared/live/capabilities';
@@ -787,7 +788,17 @@ export class Controller {
       // The preview writes its own output into the folder.
       if (!toolsMissing) own('.svelte-kit');
       attached = true;
-      await this.attach(staged, {}, toolsMissing);
+      // A new Business site opens with its Get started list, measured against the site as the starter made it. Once the
+      // author has hidden the list it starts hidden, and Show Get started (the command menu) brings it back.
+      const seed = opts.starter === 'business';
+      const hidden = seed && !!(await loadSettings().catch(() => null))?.getStartedHidden;
+      const colorIds = (findTheme(staged.state.site.themeId)?.tokens ?? []).filter((t) => t.group === 'color').map((t) => t.id);
+      const firstSteps = seed ? { firstSteps: { start: firstStepsStart(staged.state, colorIds), ...(hidden ? { hidden: true } : {}) } } : {};
+      await this.attach(staged, firstSteps, toolsMissing);
+      if (seed) {
+        this.localDirty = true;
+        void this.flushLocalState();
+      }
       // The project is open and working: a recent-projects list that cannot be saved must not undo it.
       // Under the name it has by now: the editor shows it from the moment it is attached, and may have renamed it.
       await addRecent(dir, projectDisplayName(staged.state), staged.state.manifest.projectId).catch(() => undefined);
@@ -2004,6 +2015,9 @@ export class Controller {
    */
   saveLocalState(state: LocalWorkspaceState, key: string) {
     if (!this.session || !key || this.workspaceKey !== key) return;
+    // Hiding Get started (or undoing that) is also the author's choice for the projects made after this one.
+    const hidden = state.firstSteps?.hidden;
+    if (hidden !== undefined && hidden !== !!this.localState.firstSteps?.hidden) void rememberGetStartedHidden(hidden).catch(() => undefined);
     this.localState = { ...this.localState, ...state };
     this.localDirty = true;
     if (this.localTimer) clearTimeout(this.localTimer);

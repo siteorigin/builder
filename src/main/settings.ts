@@ -19,6 +19,8 @@ interface SettingsFile {
   trusted: Record<string, string>;
   /** The folder the last new project was created in, so the next New project proposes it. */
   lastProjectParent?: string;
+  /** The author hid Get started (shared/first-steps) in a project: new Business sites open without it. */
+  getStartedHidden?: boolean;
 }
 
 const DEFAULTS: SettingsFile = {
@@ -112,7 +114,8 @@ export async function loadSettings(): Promise<SettingsFile> {
       settings: { ...DEFAULTS.settings, ...raw.settings, shortcuts: storedShortcuts(raw.settings?.shortcuts), ai: withLocalModel({ ...DEFAULTS.settings.ai, ...raw.settings?.ai, models: { ...DEFAULTS.settings.ai.models, ...raw.settings?.ai?.models }, local }) },
       recents: raw.recents ?? [],
       trusted: raw.trusted ?? {},
-      ...(typeof raw.lastProjectParent === 'string' && raw.lastProjectParent ? { lastProjectParent: raw.lastProjectParent } : {})
+      ...(typeof raw.lastProjectParent === 'string' && raw.lastProjectParent ? { lastProjectParent: raw.lastProjectParent } : {}),
+      ...(raw.getStartedHidden === true ? { getStartedHidden: true } : {})
     };
     savedShortcuts = cache.settings.shortcuts;
     // A hand-edited file can hold any value; one that is not a usable size means automatic.
@@ -277,6 +280,15 @@ export async function addRecent(dir: string, name: string, projectId: string, re
 export async function rememberProjectParent(parent: string) {
   const s = await loadSettings();
   s.lastProjectParent = parent;
+  await saveSettings();
+}
+
+/** Hiding Get started in a project hides it for the projects made after it too; Undo brings both back. */
+export async function rememberGetStartedHidden(hidden: boolean) {
+  const s = await loadSettings();
+  if (!!s.getStartedHidden === hidden) return;
+  if (hidden) s.getStartedHidden = true;
+  else delete s.getStartedHidden;
   await saveSettings();
 }
 
