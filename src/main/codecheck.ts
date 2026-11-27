@@ -657,13 +657,21 @@ function idOf(expr: Node | undefined): string | null {
   return named ? String((expr.object as Node).name) : null;
 }
 
+/** The names a binding pattern binds: `a`, `{ key: a, b = 1 }`, `[a, ...rest]` (never a key, or a default's value). */
+function boundNames(pattern: Node | undefined, out = new Set<string>()): Set<string> {
+  if (!pattern) return out;
+  if (pattern.type === 'Identifier') out.add(String(pattern.name));
+  else if (pattern.type === 'AssignmentPattern') boundNames(pattern.left as Node, out);
+  else if (pattern.type === 'RestElement') boundNames(pattern.argument as Node, out);
+  else if (pattern.type === 'ArrayPattern') for (const e of (pattern.elements as Node[]) ?? []) boundNames(e ?? undefined, out);
+  else if (pattern.type === 'ObjectPattern') for (const p of (pattern.properties as Node[]) ?? []) boundNames(p.type === 'Property' ? (p.value as Node) : p, out);
+  return out;
+}
+
 /** The names a markup fragment's own {@const} tags declare. */
 function constNames(fragment: Node): Set<string> {
   const out = new Set<string>();
-  for (const c of ((fragment.nodes as Node[]) ?? []).filter((x) => x.type === 'ConstTag'))
-    for (const d of (((c.declaration as Node)?.declarations as Node[]) ?? []))
-      // The names it binds, not the ones its value reads (a default inside a pattern is read too: no harm in declining).
-      walkAst(d.id, (n) => void (n.type === 'Identifier' && out.add(String(n.name))));
+  for (const c of ((fragment.nodes as Node[]) ?? []).filter((x) => x.type === 'ConstTag')) for (const d of (((c.declaration as Node)?.declarations as Node[]) ?? [])) boundNames(d.id as Node, out);
   return out;
 }
 
@@ -714,19 +722,32 @@ function itemHooks(ast: Node): ItemHook[] {
 }
 
 /**
- * Reads of the placement's item classes (so_oi, taken from $props()) that fail when a class is missing: the website is
- * given item classes only for the items styled on their own, and none at all while none is, so every step of the read
- * must be optional (so_oi?.[plan.id]?.card), wherever in the markup it is.
+ * Reads of the placement's item classes (so_oi, taken from $props(), under any name) that fail when a class is
+ * missing: the website is given item classes only for the items styled on their own, and none at all while none is,
+ * so every step of a read must be optional (so_oi?.[plan.id]?.card, and anything read from that), wherever in the
+ * markup it is. A read under a guard of the map's own (`so_oi?.[plan.id] && so_oi[plan.id].card`) and one of a map
+ * of the markup's own ({@const so_oi = …}) are safe.
  */
 function unguardedItemReads(ast: Node): Node[] {
-  if (propsLocals(ast).get('so_oi')?.local !== 'so_oi') return [];
+  const map = propsLocals(ast).get('so_oi')?.local;
+  if (!map) return [];
   const unwrap = (n: Node | undefined) => (n?.type === 'ChainExpression' ? (n.expression as Node) : n);
-  const isMap = (n: Node | undefined) => n?.type === 'Identifier' && n.name === 'so_oi';
+  /** The variable a chain of reads starts from. */
+  const rootOf = (n: Node | undefined): Node | undefined => {
+    for (let at = unwrap(n); at; at = unwrap(at.object as Node)) if (at.type !== 'MemberExpression') return at;
+    return undefined;
+  };
+  const fromMap = (n: Node | undefined) => {
+    const r = rootOf(n);
+    return r?.type === 'Identifier' && r.name === map;
+  };
   const out: Node[] = [];
-  walkAst(ast.fragment, (n) => {
-    if (n.type !== 'MemberExpression' || n.optional) return;
-    const obj = unwrap(n.object as Node);
-    if (isMap(obj) || (obj?.type === 'MemberExpression' && isMap(unwrap(obj.object as Node)))) out.push(n);
+  walkAst(ast.fragment, (n, around) => {
+    if (n.type !== 'MemberExpression' || n.optional || !fromMap(n.object as Node)) return;
+    const path = [...around, n];
+    if (around.some((a) => a.type === 'Fragment' && constNames(a).has(map))) return;
+    const guarded = around.some((a, i) => a.type === 'LogicalExpression' && a.operator === '&&' && path[i + 1] === a.right && fromMap(a.left as Node));
+    if (!guarded) out.push(n);
   });
   return out;
 }

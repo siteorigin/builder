@@ -100,6 +100,8 @@ describe('a code component declares the list a part repeats over', () => {
     expect(await lists(SOURCE.replace(', so_oi?.[plan.id]?.card', '').replace("<h3 class={so_o?.name}>{plan.name}</h3>", "{#each [1, 2] as n}<i class={[so_o?.card, so_oi?.[plan.id]?.card]}>{n}</i>{/each}"))).toEqual({});
     expect(await lists(SOURCE.replace("<li class=", "{@const plan = plans[0]}<li class="))).toEqual({});
     expect(await lists(SOURCE.replace("<li class=", "{@const so_oi = {}}<li class="))).toEqual({});
+    // A key of a destructured value binds nothing under its own name.
+    expect(await lists(SOURCE.replace("<li class=", "{@const { so_oi: label, plan: other } = { so_oi: 1, plan: 2 }}<li data-l={label} data-o={other} class="))).toEqual({ card: 'plans' });
     // The list's name declared again inside the loop reads nothing the loop repeats over.
     expect(await lists(SOURCE.replace("<li class=", "{@const plans = plan.name}<li class="))).toEqual({ card: 'plans' });
     // Content given to a component renders wherever, and as often as, that component renders it.
@@ -121,6 +123,12 @@ describe('a code component declares the list a part repeats over', () => {
     // A read that fails for a card styled with the rest, wherever it is and however it is written, is refused.
     for (const bad of ['so_oi[plan.id].card', '(so_oi?.[plan.id]).card', 'so_oi?.[plan.id].card']) expect(await readErrors(SOURCE.replace('so_oi?.[plan.id]?.card', bad))).toEqual([expect.stringMatching(/optional at every step/)]);
     expect(await readErrors(SOURCE.replace('<h3 class={so_o?.name}>', '<h3 class={so_o?.name} title={so_oi[plan.id].card}>'))).toHaveLength(1);
+    // Anything read from a missing class fails too, and so does a read through another name for the placement's map.
+    expect(await readErrors(SOURCE.replace("<h3 class={so_o?.name}>", "<h3 class={so_o?.name} data-n={(so_oi?.[plan.id]?.card).length}>"))).toHaveLength(1);
+    expect(await readErrors(SOURCE.replace('so_oi = undefined', 'so_oi: map = undefined').replace('so_oi?.[plan.id]?.card', 'map[plan.id]?.card'))).toHaveLength(1);
+    // A read the map guards, or one of a map the markup declares itself, is safe.
+    expect(await readErrors(SOURCE.replace('so_oi?.[plan.id]?.card', 'so_oi?.[plan.id] && so_oi[plan.id].card'))).toEqual([]);
+    expect(await readErrors(SOURCE.replace('so_oi?.[plan.id]?.card', 'so_oi[plan.id]?.card').replace('<li class=', "{@const so_oi = { [plan.id]: { card: 'x' } }}<li class="))).toEqual([]);
     // The code's own so_oi is its own to read.
     expect(await readErrors(SOURCE.replace(', so_oi = undefined', '').replace('so_oi?.[plan.id]?.card', 'so_oi[plan.id].card').replace('</script>', "\tconst so_oi = { p_basic: { card: 'x' } };\n</script>"))).toEqual([]);
     const itemOnly = await checkSvelteSource(SOURCE.replace("so_o?.card, ", ''), { contract: { parts: { root: { nodeId: 'root', label: 'Root' }, card: { nodeId: 'card', label: 'Card' }, name: { nodeId: 'name', label: 'Name' } } } });
