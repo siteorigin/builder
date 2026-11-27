@@ -824,6 +824,23 @@ describe('guests’ editor calls', () => {
     expect(await answerTo(socket, 'q2')).toMatchObject({ ok: true });
   });
 
+  it('holds a guest to the least of every role change still unconfirmed, not only the first', async () => {
+    const h = editor();
+    const { socket, run } = await letIn(h);
+    // The change waiting first is to a copy editor, which may make this edit; the one behind it, to a viewer, may not.
+    for (const role of ['copy-editor', 'viewer', 'collaborator'] as const) h.manager.setRole(run, 'g1', role);
+    call(socket, 'q1', 'project.apply', [EDIT]);
+    expect(await answerTo(socket, 'q1')).toMatchObject({ ok: false, error: { code: 'PERMISSION_DENIED' } });
+    socket.receive(roster('copy-editor'));
+    call(socket, 'q2', 'project.apply', [EDIT]);
+    expect(await answerTo(socket, 'q2')).toMatchObject({ ok: false, error: { code: 'PERMISSION_DENIED' } });
+    socket.receive(roster('viewer'));
+    socket.receive(roster('collaborator'));
+    call(socket, 'q3', 'project.apply', [EDIT]);
+    (await until(() => h.edits[0], 'the edit')).release();
+    expect(await answerTo(socket, 'q3')).toMatchObject({ ok: true });
+  });
+
   it('holds a copy editor to its own edits, and hands the editor each with the role it was checked as', async () => {
     const h = editor();
     const { socket } = await letIn(h, 'copy-editor');

@@ -392,6 +392,22 @@ describe('a live session hosted by the open project', () => {
     expect(c.session!.state.pages[home].title).toBe('Fresh bread daily');
   });
 
+  it('lands nothing of a guest whose access the host has changed by the time its edit would be saved', async () => {
+    const dir = await makeProject('acme');
+    const { c, sent } = controller();
+    await hosting(c, sent, dir, 'collaborator');
+    const opening = c.snapshot()!.workspaceKey;
+    const owner = { kind: 'page' as const, id: c.session!.state.site.homePageId };
+    const revision = c.session!.revision;
+    // The live host's check, asked as the edit's turn comes and again as it is saved: still allowed at first, then not.
+    let asked = 0;
+    const check = () => (++asked > 1 ? { code: 'PERMISSION_DENIED' as const, message: 'The host changed your access before your edit was made.', recoverable: false } : null);
+    const result = await c.applyGuest(opening, { guestId: 'g_test', displayName: 'Ann', role: 'collaborator', check }, { operations: [{ type: 'node.insert', owner, parentId: null, componentId: 'hero.split' }] as never });
+    expect(result).toMatchObject({ ok: false, error: { code: 'PERMISSION_DENIED', message: expect.stringContaining('changed your access') } });
+    expect(asked).toBeGreaterThan(1);
+    expect(c.session!.revision).toBe(revision);
+  });
+
   it('never lets a collaborator change where a contact form sends, however a design passes it on', async () => {
     const dir = await makeProject('acme');
     const { c, sent } = controller();
