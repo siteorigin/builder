@@ -41,7 +41,7 @@ const ENTRY = [
   'flushSync(() => useStore.setState({',
   "  screen: 'editor', snapshot: { workspaceKey: 'w', dir: '/project', state, revision: 1, history: { canUndo: false, canRedo: false, entries: [] } }, pageId: state.site.homePageId,",
   "  settings, providers, conversation: { id: 'c_r', title: 'Renders', createdAt: time, messages },",
-  "  runStatus: 'running', activeRunId: 'run_live', runMode: 'ask', chatMode: 'ask', dockOpen: true, rightTab: 'chat'",
+  "  runStatus: 'running', activeRunId: 'run_live', runMode: 'ask', runConversationId: 'c_r', chatMode: 'ask', dockOpen: true, rightTab: 'chat'",
   '}));',
   "flushSync(() => createRoot(document.getElementById('root')).render(h(Chat)));",
   '};',
@@ -56,6 +56,8 @@ const ENTRY = [
   "    applyAiEvent({ runId: 'run_live', conversationId: 'c_r', kind: 'message', message: { ...useStore.getState().conversation.messages.at(-1), questions: [{ id: 'q1', text: 'Which page should it go on?', choices: [] }] } });",
   "    applyAiEvent({ runId: 'run_live', conversationId: 'c_r', kind: 'status', status: 'awaiting-input', mode: 'ask' });",
   '  }),',
+  // The running request was filed in another thread, which asks its question there.
+  "  elsewhere: () => flushSync(() => applyAiEvent({ runId: 'run_live', conversationId: 'c_elsewhere', kind: 'status', status: 'awaiting-input', mode: 'ask' })),",
   '};'
 ].join('\n');
 
@@ -196,6 +198,22 @@ describe.skipIf(!browserInstalled)('chat messages render only when they change (
     await box.pressSequentially('A');
     expect(await size()).toEqual(one);
     expect(await page.evaluate<string>('so.draft()')).toBe('A');
+  });
+
+  it('shows another thread’s request as running elsewhere, with nothing here to stop or answer (#1124)', async () => {
+    expect(await page.locator('.run-strip').getAttribute('data-run-id')).toBe('run_live');
+    expect(await page.getByRole('button', { name: /Stop/ }).count()).toBe(1);
+    await page.evaluate('so.elsewhere()');
+    // The note says where the request is, and nothing here stops it or answers its question.
+    expect(await page.locator('.run-strip.elsewhere').innerText()).toContain('Working in another conversation');
+    expect(await page.locator('.run-strip[data-run-id]').count()).toBe(0);
+    expect(await page.getByRole('button', { name: /Stop/ }).count()).toBe(0);
+    expect(await page.getByRole('textbox', { name: 'Your answer', exact: true }).count()).toBe(0);
+    expect(await page.locator('.chat-log').getAttribute('aria-busy')).not.toBe('true');
+    // It still holds the app: nothing is sent until it ends.
+    expect(await page.getByRole('button', { name: /^Send/ }).isDisabled()).toBe(true);
+    expect(await page.getByRole('button', { name: 'Earlier conversations' }).isDisabled()).toBe(true);
+    expect(await page.getByRole('button', { name: 'New conversation' }).isDisabled()).toBe(true);
   });
 
   it('renders no message while an answer to the AI’s question is typed', async () => {

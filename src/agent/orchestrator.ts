@@ -1167,6 +1167,9 @@ export class Orchestrator {
     this.deps.onBusyChange(true);
     this.emitMessage(userMsg, runId);
     this.emitMessage(assistant, runId);
+    // The editor learns the request is running, and in which thread, from its status: sent at once, before the model
+    // is set up (a local server can take a while), so it can be shown and stopped from the start.
+    this.setStatus('preparing');
     this.runEnded = this.execute(runId, userMsg, assistant, earlier, replay.summary, request, requestTask)
       .catch((e: Error) => console.error('AI request failed', e))
       .finally(async () => {

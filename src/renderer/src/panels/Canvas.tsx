@@ -14,7 +14,7 @@ import { openInsertSearch } from '../lib/insert-focus';
 import { editLabel } from '../lib/edit-label';
 import type { ElementRef, OwnerRef, ProjectState } from '@shared/types';
 import { refKey, sameRef } from '@shared/types';
-import { aiActivity, api, commitDraft, errorText, getOverlay, getState, markDraft, saveLocal, setOverlay, setState, setViewport, stepHistory, toast, useOverlay, useStore, type Rect } from '../store';
+import { aiActivity, api, commitDraft, errorText, getOverlay, getState, markDraft, saveLocal, setOverlay, setState, setViewport, shownRun, stepHistory, toast, useOverlay, useStore, type Rect } from '../store';
 import { appliedSteps, errorComponent, revertStep, stillNewest } from '../lib/preview-error';
 import { acceptMessage, newSessionId, postToFrame, staleFor, viewAfter, type BridgeMessage, type FrameView } from '../lib/bridge';
 import { chainOf, descOrNull, emptyAreaOf, measuredRects, pointedAt, rectList, sameRects, slotBoxes, spaceSizes, spacingOf, type FrameEmptyArea, type FrameSpacing, type SlotBox } from '../lib/payload';
@@ -151,6 +151,9 @@ export function Canvas() {
   // A request the AI has started on, before its first status arrives (as Chat counts it).
   const turnOpen = useStore((s) => !!s.activeRunId && !!s.conversation?.messages.some((m) => m.role === 'assistant' && m.runId === s.activeRunId && !m.result));
   const reading = useStore((s) => s.runMode === 'ask');
+  const activeRunId = useStore((s) => s.activeRunId);
+  // The question waits in the thread that asked it: Answer in chat is offered while the chat shows that thread.
+  const askedHere = useStore((s) => shownRun(s)?.status === 'awaiting-input');
   const devMode = useStore((s) => !!s.settings?.developerMode);
   const definitionMode = useStore((s) => s.definitionMode);
   // While Site styles is open, edits are site-wide; the element selection steps back.
@@ -3332,10 +3335,10 @@ export function Canvas() {
             </span>
             {runStatus !== 'stopping' && (
               <span className="canvas-notice-actions">
-                <button className="btn btn-sm btn-ghost" title={reading ? 'Stop this question' : 'Stop this request and undo its changes'} onClick={() => void api.ai.stop()}>
+                <button className="btn btn-sm btn-ghost" title={reading ? 'Stop this question' : 'Stop this request and undo its changes'} onClick={() => activeRunId && void api.ai.stop(activeRunId)}>
                   <Square fill="currentColor" aria-hidden="true" /> {reading ? 'Stop' : 'Stop and undo'}
                 </button>
-                {runStatus === 'awaiting-input' && (
+                {askedHere && (
                   <button
                     className="btn btn-sm btn-primary"
                     onClick={() => {

@@ -23,12 +23,15 @@ interface ChatState {
   conversation: Conversation | null;
   runStatus: RunStatus | null;
   activeRunId: string | null;
+  runConversationId: string | null;
 }
 const load = (path: string) => import(/* @vite-ignore */ path);
 const store = (await load('../../src/renderer/src/store')) as {
   applyAiEvent: (e: AiEvent) => void;
   getState: () => ChatState;
   setState: (p: Partial<ChatState>) => void;
+  shownRun: (s: ChatState) => { runId: string; status: RunStatus; mode: 'edit' | 'ask' } | null;
+  detachedRun: () => Partial<ChatState>;
 };
 
 /**
@@ -67,7 +70,7 @@ afterEach(async () => {
   for (const o of orchestrators.splice(0)) await o.clearHistory().catch(() => undefined);
   for (const s of sessions.splice(0)) await s.close().catch(() => undefined);
   dirs.splice(0).forEach((d) => rmSync(d, { recursive: true, force: true }));
-  store.setState({ conversation: null, runStatus: null, activeRunId: null });
+  store.setState({ conversation: null, runStatus: null, activeRunId: null, runConversationId: null });
 });
 
 async function until(cond: () => boolean, what: string) {
@@ -134,6 +137,9 @@ describe('AI events reach only their own conversation', () => {
     expect(said(store.getState().conversation?.messages)).toEqual(['user: First request', 'assistant: Working on it.']);
     await finish();
     expect(tags(events, one.runId!)).toEqual([`message ${first.id}`, `status ${first.id}`, `text ${first.id}`]);
+    // Its status said which request ran, and in which thread, from the start: before the model streamed anything.
+    expect(events.filter((e) => e.runId === one.runId).map((e) => e.kind).slice(0, 3)).toEqual(['message', 'message', 'status']);
+    expect(events.find((e) => e.runId === one.runId && e.kind === 'status')?.status).toBe('preparing');
 
     // New conversation: the panel shows the empty thread, while the assistant is bound to the earlier one (as when
     // listing Earlier conversations used to rebind it), so the next request is filed in that earlier thread.
@@ -170,12 +176,16 @@ describe('AI events reach only their own conversation', () => {
     // Closing gives up waiting for the request and lets the project go; the same project opens again, on the same
     // conversation as its file has it.
     orch.reset();
-    store.setState({ conversation: null });
+    // The window forgets the project as App does when it closes: the request still holds the app, in no thread.
+    store.setState({ conversation: null, aiOutcome: null, ...store.detachedRun() } as Partial<ChatState>);
     const reopened = (await orch.loadConversations()).active;
     expect(reopened.id).toBe(first.id);
     show(reopened);
     const before = store.getState().conversation;
     expect(said(before?.messages)).toEqual(['user: First request', 'assistant: Working on it.']);
+    // The same thread is on screen again, but the request is not its: it is neither shown nor stopped from there.
+    expect(store.getState()).toMatchObject({ runStatus: 'running', activeRunId: two.runId });
+    expect(store.shownRun(store.getState())).toBeNull();
 
     // The old request streams more, then ends: its status still frees the composer, but nothing else it sends is
     // this opening's, so every event it sends from here on names no conversation.
@@ -187,7 +197,9 @@ describe('AI events reach only their own conversation', () => {
     // Detached, its text goes whole again: nothing names the copy it would follow.
     expect(events.slice(mark).filter((e) => e.kind === 'text').map((e) => [e.text, e.at])).toEqual([['Working on it. Still working.', undefined]]);
     expect(store.getState().conversation).toBe(before);
-    expect(store.getState().activeRunId).toBeNull();
+    expect(store.getState()).toMatchObject({ activeRunId: null, runConversationId: null });
+    // Its end is no outcome of this opening's.
+    expect((store.getState() as unknown as { aiOutcome: unknown }).aiOutcome).toBeNull();
   });
 
   it('an Undo beside a finished request updates it in the conversation on screen', async () => {
@@ -247,11 +259,14 @@ describe('AI events reach only their own conversation', () => {
     store.applyAiEvent({ runId: 'r_other', conversationId: '', kind: 'status', status: 'completed', mode: 'edit' });
     expect(store.getState().runStatus).toBeNull();
 
-    // Its own conversation's events still apply.
+    // Its own conversation's events still apply. Which request runs is its status's to say, never a message's.
     store.applyAiEvent({ runId: 'r_mine', conversationId: 'c_shown', kind: 'text', text: 'Mine, streamed' });
     store.applyAiEvent({ runId: 'r_mine', conversationId: 'c_shown', kind: 'message', message: { ...foreign, id: 'm_next' } });
     expect(said(store.getState().conversation?.messages)).toEqual(['assistant: Mine, streamed', 'assistant: Elsewhere']);
-    expect(store.getState().activeRunId).toBe('r_mine');
+    expect(store.getState().activeRunId).toBeNull();
+    store.applyAiEvent({ runId: 'r_mine', conversationId: 'c_shown', kind: 'status', status: 'running', mode: 'edit' });
+    expect(store.getState()).toMatchObject({ activeRunId: 'r_mine', runConversationId: 'c_shown' });
+    store.setState({ runStatus: null, activeRunId: null, runConversationId: null });
   });});
 
 describe('a streamed reply is sent as the pieces it gains (#974)', () => {
@@ -357,5 +372,87 @@ describe('a streamed reply is sent as the pieces it gains (#974)', () => {
       delete w.builder.ai;
       store.setState({ snapshot: null } as Partial<ChatState>);
     }
+  });
+});
+
+describe('a background run reaches only its own thread (#1124)', () => {
+  const time = '2026-11-27T00:00:00.000Z';
+  const mine: Conversation = { id: 'c_shown', title: 'Shown', createdAt: time, messages: [{ id: 'm_old', role: 'assistant', text: 'Earlier reply', time, runId: 'r_old' }] };
+  const bg = { runId: 'r_bg', conversationId: 'c_bg' };
+  const request: ChatMessage = { id: 'm_bg_q', role: 'user', text: 'Elsewhere', time };
+  const turn: ChatMessage = { id: 'm_bg_a', role: 'assistant', text: '', time, runId: 'r_bg' };
+  const final: ChatMessage = { ...turn, text: 'Done there.', result: { status: 'no-changes', summary: 'Done there.', changes: [], validation: [], canUndo: false } };
+  const run = () => store.shownRun(store.getState());
+  const ended = (runId: string) => ({ runId, conversationId: 'c_bg', kind: 'status', status: 'completed', mode: 'edit' }) as AiEvent;
+
+  it('keeps status, pieces, its question and its end off the conversation on screen, and the run state its own', () => {
+    store.setState({ conversation: structuredClone(mine), runStatus: null, activeRunId: null, runConversationId: null, snapshot: { workspaceKey: 'w1' } } as Partial<ChatState>);
+    const shown = store.getState().conversation;
+    const conversations = vi.fn(() => Promise.resolve({ active: { ...mine, id: 'c_bg' }, list: [] }));
+    const w = (globalThis as unknown as { window: { builder: Record<string, unknown> } }).window;
+    w.builder.ai = { conversations };
+    try {
+      // The request starts in the other thread: its messages, then its status at once, before the model is set up.
+      store.applyAiEvent({ ...bg, kind: 'message', message: request });
+      store.applyAiEvent({ ...bg, kind: 'message', message: turn });
+      store.applyAiEvent({ ...bg, kind: 'status', status: 'preparing', mode: 'edit' });
+      // Its status holds the app, but belongs to its own thread: the one on screen has no run to show or stop.
+      expect(store.getState()).toMatchObject({ runStatus: 'preparing', activeRunId: 'r_bg', runConversationId: 'c_bg' });
+      expect(run()).toBeNull();
+      store.applyAiEvent({ ...bg, kind: 'status', status: 'running', mode: 'edit' });
+      expect(store.getState()).toMatchObject({ runStatus: 'running', activeRunId: 'r_bg', runMode: 'edit', runConversationId: 'c_bg' });
+      expect(run()).toBeNull();
+      // Its text, whole or a piece, never lands here, and is never read for from main as if this thread missed it.
+      store.applyAiEvent({ ...bg, kind: 'text', text: 'Working' });
+      store.applyAiEvent({ ...bg, kind: 'text', text: ' on it', at: 7 });
+      // Its question waits there, not here.
+      store.applyAiEvent({ ...bg, kind: 'message', message: { ...turn, questions: [{ id: 'q1', text: 'Which page?', choices: [] }] } });
+      store.applyAiEvent({ ...bg, kind: 'status', status: 'awaiting-input', mode: 'edit' });
+      expect(store.getState().runStatus).toBe('awaiting-input');
+      expect(run()).toBeNull();
+      expect(store.getState().conversation).toBe(shown);
+      expect(conversations).not.toHaveBeenCalled();
+
+      // The end of a run that is not the one running never ends it.
+      store.applyAiEvent(ended('r_stale'));
+      expect(store.getState()).toMatchObject({ runStatus: 'awaiting-input', activeRunId: 'r_bg', runConversationId: 'c_bg' });
+
+      // Its own end does, and its final message, which follows the end, never starts it again.
+      store.applyAiEvent(ended('r_bg'));
+      store.applyAiEvent({ ...bg, kind: 'message', message: final });
+      expect(store.getState()).toMatchObject({ runStatus: null, activeRunId: null, runMode: null, runConversationId: null });
+      // Nor does a status it sends after it ended.
+      store.applyAiEvent({ ...bg, kind: 'status', status: 'running', mode: 'edit' });
+      expect(store.getState()).toMatchObject({ runStatus: null, activeRunId: null, runConversationId: null });
+      expect(store.getState().conversation).toBe(shown);
+    } finally {
+      delete w.builder.ai;
+      store.setState({ snapshot: null, runConversationId: null } as Partial<ChatState>);
+    }
+  });
+
+  it('shows the run in its own thread only, whichever thread is on screen as it goes', () => {
+    const next = { runId: 'r_next', conversationId: 'c_bg' };
+    const other: Conversation = { id: 'c_bg', title: 'Other', createdAt: time, messages: [request, { ...turn, runId: 'r_next' }] };
+    store.setState({ conversation: structuredClone(other), runStatus: null, activeRunId: null, runConversationId: null } as Partial<ChatState>);
+    store.applyAiEvent({ ...next, kind: 'status', status: 'running', mode: 'ask' });
+    expect(run()).toEqual({ runId: 'r_next', status: 'running', mode: 'ask' });
+    store.applyAiEvent({ ...next, kind: 'text', text: 'Read' });
+    expect(said(store.getState().conversation?.messages)).toEqual(['user: Elsewhere', 'assistant: Read']);
+
+    // Another thread on screen: the run goes on, but not there.
+    store.setState({ conversation: structuredClone(mine) });
+    expect(run()).toBeNull();
+    expect(store.getState().runStatus).toBe('running');
+    // Back on its own thread, it shows again.
+    store.setState({ conversation: structuredClone(other) });
+    expect(run()?.runId).toBe('r_next');
+
+    // A run its project's closing cut off from its thread (its events tagged with none) shows in no thread.
+    store.applyAiEvent({ runId: 'r_next', conversationId: '', kind: 'status', status: 'stopping', mode: 'ask' });
+    expect(run()).toBeNull();
+    expect(store.getState().runStatus).toBe('stopping');
+    store.applyAiEvent({ runId: 'r_next', conversationId: '', kind: 'status', status: 'cancelled', mode: 'ask' });
+    expect(store.getState()).toMatchObject({ runStatus: null, activeRunId: null, runConversationId: null });
   });
 });

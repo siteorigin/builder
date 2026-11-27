@@ -5,7 +5,7 @@ import { turnQuestions, type ChatActivity, type ChatChange, type ChatContext, ty
 import { NEW_CONVERSATION, storedTitle } from '@shared/conversations';
 import type { ElementRef, ProjectState } from '@shared/types';
 import { refLabel } from '../lib/model';
-import { api, getState, saveLocal, sendPicksAhead, setState, toast, useStore, confirmDialog, selectChatDraft, selectChatImages, setChatDraft, inspectorFocusRequest } from '../store';
+import { api, getState, saveLocal, sendPicksAhead, setState, shownRun, toast, useStore, confirmDialog, selectChatDraft, selectChatImages, setChatDraft, inspectorFocusRequest } from '../store';
 import { afterSendMessage, draftFor, imagesFor, moveDraft, moveImages, unsentDrafts, withDraft, withImages } from '../lib/chatDrafts';
 import { importIntoChat, isFileDrag, retargetDrops } from '../lib/chat-drop';
 import { modelLines, nextRecipient, recipientText, sameRecipient, switchNotice, switchNoticeText, turnRecipient } from '../lib/chatRecipient';
@@ -332,8 +332,11 @@ function sizeToFit(ta: HTMLTextAreaElement | null) {
 
 export function Chat() {
   const conversation = useStore((s) => s.conversation);
-  const runStatus = useStore((s) => s.runStatus);
-  const activeRunId = useStore((s) => s.activeRunId);
+  // The request running in this thread: what the panel shows, stops and answers. A request in another thread holds
+  // the app all the same (nothing is sent meanwhile), and is shown there.
+  const runStatus = useStore((s) => shownRun(s)?.status ?? null);
+  const activeRunId = useStore((s) => shownRun(s)?.runId ?? null);
+  const busy = useStore((s) => !!s.runStatus);
   // Each conversation keeps its own unsent message.
   const draft = useStore(selectChatDraft);
   // ...and the library images attached to it, by asset ID.
@@ -354,7 +357,7 @@ export function Chat() {
   const viewport = useStore((s) => s.viewport);
   const ctxOn = useStore((s) => s.chatContextEnabled);
   const chatMode = useStore((s) => s.chatMode);
-  const runMode = useStore((s) => s.runMode);
+  const runMode = useStore((s) => shownRun(s)?.mode ?? null);
   const askMode = chatMode === 'ask';
   const providers = useStore((s) => s.providers);
   const settings = useStore((s) => s.settings);
@@ -420,7 +423,10 @@ export function Chat() {
   // The local server or model failed the last time anything asked it: Chat says so instead of offering starters.
   const notReady = configured && provider?.id === 'local' && provider.check && !provider.check.ok ? provider.check : null;
   const msgs = conversation?.messages ?? [];
-  const running = !!runStatus;
+  /** A request is running, in this thread or another: the next message waits for it to end. */
+  const running = busy;
+  /** ...and it is this thread's. */
+  const runHere = !!runStatus;
   const waiting = runStatus === 'awaiting-input';
   // While the AI waits on a question, the composer answers it from its own box; the unsent message stays put.
   // The same object until the question, the run or its status changes: every message is given it, and an answer typed
@@ -442,7 +448,7 @@ export function Chat() {
   const workingUser = working ? msgs[msgs.indexOf(working) - 1] : null;
   // Two destinations, never confused: the model the running turn went to (fixed on the turn when it started), and
   // the one Settings choose for the next message.
-  const inFlight = running ? turnRecipient(working) : null;
+  const inFlight = runHere ? turnRecipient(working) : null;
   /** A turn has started and not ended, even before its status arrives (a local server can take a while to answer). */
   const pending = running || !!(working && !working.result);
   // With no local model chosen, the server's first model takes the next message: asked whenever it may have changed
@@ -1204,7 +1210,7 @@ export function Chat() {
         onPointerDown={() => (jumping.current = false)}
         // Busy while the AI works, so its updates are read once they settle rather than piece by piece. A pause for a
         // question is not busy: the author is the one to act, and the question and its answer box sit outside the log.
-        aria-busy={chatBusy(running, waiting)}
+        aria-busy={chatBusy(runHere, waiting)}
         onScroll={(e) => {
           const el = e.currentTarget;
           const below = el.scrollHeight - el.scrollTop - el.clientHeight;
@@ -1293,7 +1299,7 @@ export function Chat() {
               key={m.id}
               m={m}
               modelChanged={modelShown.has(m.id)}
-              live={m.runId === activeRunId && running}
+              live={m.runId === activeRunId && runHere}
               awaiting={waiting}
               undoable={m.id === undoableId}
               reviewEntry={reviewEntryId(m, history, m.id === undoableId)}
@@ -1319,7 +1325,18 @@ export function Chat() {
         </div>
       )}
       </div>
-      {running && (
+      {running && !runHere && (
+        // Another thread's request: it is shown, stopped and answered there.
+        <div className="run-strip elsewhere" role="status">
+          <span className="run-icon" aria-hidden="true">
+            <Spinner decorative />
+          </span>
+          <span className="run-text">
+            <span className="run-phase">Working in another conversation</span>
+          </span>
+        </div>
+      )}
+      {runHere && (
         <div className={`run-strip${waiting ? ' waiting' : ''}`} data-run-id={activeRunId ?? undefined}>
           {/* The one live indicator: it turns while the AI works and stops when it waits on you. */}
           <span className="run-icon" aria-hidden="true">
@@ -1349,7 +1366,8 @@ export function Chat() {
                 className="btn btn-sm run-stop"
                 title={runMode === 'ask' ? 'Stop this question' : 'Stop this request and undo its changes'}
                 onClick={() => {
-                  void api.ai.stop();
+                  // This request only: one that ended meanwhile is not followed by another being stopped.
+                  if (activeRunId) void api.ai.stop(activeRunId);
                   focusComposer();
                 }}
               >
