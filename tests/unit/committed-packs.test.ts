@@ -2,7 +2,7 @@
 // them at startup and are the releases the lock pins, so a change to the pack format or the schema that stops them
 // loading fails here, on PR CI too (vitest.config.ts reruns the suite when a release or the lock changes).
 import { afterEach, describe, expect, it } from 'vitest';
-import { cpSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from 'node:fs';
+import { cpSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, realpathSync, rmSync, writeFileSync } from 'node:fs';
 import { execFileSync } from 'node:child_process';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
@@ -10,7 +10,7 @@ import { PACK_MANIFEST, type PackManifest } from '@catalogue/pack';
 import type { ThemePack } from '@catalogue/pack';
 import { defaultTheme, findTheme } from '@catalogue/index';
 import { loadPackDir } from '../../src/main/packs/loader';
-import { loadInstalledPacks, packPreview, packRoots } from '../../src/main/packs/installed';
+import { loadBundledPacks, loadInstalledPacks, packPreview, packRoots } from '../../src/main/packs/installed';
 import { sha } from '../../src/main/project/fsutil';
 import { CHECKOUT_ENV, LOCKED_RELEASES, LOCK_FILE, committedReleaseProblems, findCheckout, lockJson, missingPreviews, readLock } from '../../scripts/packs/locked-releases';
 
@@ -55,7 +55,7 @@ describe('the committed theme releases', () => {
       expect(pack.source).toBe('bundled');
       expect({ version: pack.version, digest: pack.digest }).toEqual(lock.packs[pack.id]);
     }
-    // They replace the registry the test setup made from src/catalogue, as the app's startup registers them.
+    // They are the registry the test setup made, as the app's startup registers them.
     const foundation = catalogue.packs.find((p) => p.id === 'foundation')!;
     expect(defaultTheme()).toBe(foundation);
     expect(findTheme('foundation-alt')).toBe(catalogue.packs.find((p) => p.id === 'foundation-alt'));
@@ -66,6 +66,23 @@ describe('the committed theme releases', () => {
     const [componentId, previews] = Object.entries(foundation.previews ?? {})[0];
     expect(componentId).toBeTruthy();
     expect(await packPreview('foundation', previews.default)).toMatch(/^data:image\/webp;base64,./);
+  });
+
+  it('are the themes tests and scripts load, which refuse a release that does not load rather than go without it', async () => {
+    const root = committedCopy();
+    const lock = readLock(ROOT);
+    expect((await loadBundledPacks(root)).map((p) => [p.id, p.digest])).toEqual([
+      ['foundation', lock.packs.foundation.digest],
+      ['foundation-alt', lock.packs['foundation-alt'].digest]
+    ]);
+    expect(defaultTheme().id).toBe('foundation');
+    // A damaged font file: the app would start without the theme and say so; a test or a script stops.
+    const fonts = join(root, 'resources', 'packs', 'foundation', 'fonts');
+    const [font] = readdirSync(fonts);
+    writeFileSync(join(fonts, font), 'not a font');
+    await expect(loadBundledPacks(root)).rejects.toThrow(/^The bundled theme packs do not load: .*foundation: .*fonts\//);
+    rmSync(join(root, 'resources', 'packs'), { recursive: true });
+    await expect(loadBundledPacks(root)).rejects.toThrow(/No bundled theme pack is under/);
   });
 
   it('match the lock in this checkout, thumbnails and all', async () => {
