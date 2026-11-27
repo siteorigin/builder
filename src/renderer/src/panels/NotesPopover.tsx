@@ -67,7 +67,9 @@ function NotesPopover({ id, trigger }: { id: string; trigger: React.RefObject<HT
   // on the first thing there is to do (Close at the least), so Escape always reaches it.
   useEffect(() => {
     openMenus.count++;
-    (box.current?.querySelector<HTMLElement>('textarea:not(:disabled), .notes-jump, button:not(:disabled)') ?? box.current)?.focus({ preventScroll: true });
+    const el = box.current;
+    const first = ['textarea:not(:disabled)', '.notes-jump', 'button:not(:disabled)'].map((q) => el?.querySelector<HTMLElement>(q)).find(Boolean) ?? el;
+    first?.focus({ preventScroll: true });
     return () => {
       openMenus.count--;
     };

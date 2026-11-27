@@ -28,6 +28,9 @@ import type { LiveSocketFactory } from './host';
  * presence never reach the next.
  */
 
+/** How many times notes the host would not give are asked for again, before the next change it tells of. */
+const NOTES_RETRIES = 5;
+
 export type RemoteChannel = 'remote:state' | 'remote:changed' | 'remote:reload' | 'remote:presence' | 'remote:ai' | 'remote:notes';
 
 export interface LiveGuestContext {
@@ -185,8 +188,9 @@ interface Join {
   notesWanted: boolean;
   notesFetch: Promise<LiveNotes | null> | null;
   notesRefetch: boolean;
-  /** Asks again for notes that could not be read (BUSY, the relay's backlog, a host away). */
+  /** Asks again for notes that could not be read (BUSY, the relay's backlog), a few times, each later than the last. */
   notesTimer: ReturnType<typeof setTimeout> | null;
+  notesRetries: number;
   tooLarge: boolean;
   hostRuntime: RuntimeState['state'] | null;
   /** The latest project revision the host said its preview serves (preview:reload), or null before it said one. */
@@ -356,6 +360,7 @@ export class LiveGuestManager {
       notesFetch: null,
       notesRefetch: false,
       notesTimer: null,
+      notesRetries: 0,
       tooLarge: false,
       hostRuntime: null,
       previewRevision: null,
@@ -648,6 +653,7 @@ export class LiveGuestManager {
     if (frame.event === 'ai:turn') return this.onAiTurn(join, frame.payload);
     // The notes changed: asked for again, once the editor has wanted them.
     if (frame.event === 'notes:changed') {
+      join.notesRetries = 0;
       if (join.notesWanted) void this.fetchNotes(join);
       return;
     }
@@ -894,14 +900,18 @@ export class LiveGuestManager {
         const answer = await this.call(join, 'notes.list', []);
         if (join.ended || this.current !== join) return null;
         const read = answer.ok && isLiveNotes(answer.result);
-        if (read) this.takeNotes(join, answer.result as LiveNotes);
+        if (read) {
+          join.notesRetries = 0;
+          this.takeNotes(join, answer.result as LiveNotes);
+        }
         // Not read: asked again shortly, so a change the host told of is never missed for good. While the host or this
         // connection is away, its return asks instead.
-        else if (!join.notesTimer && join.phase === 'admitted' && join.hostConnected && !join.reconnecting)
+        // A host that keeps refusing is asked no more until the next change it tells of.
+        else if (!join.notesTimer && join.phase === 'admitted' && join.hostConnected && !join.reconnecting && join.notesRetries < NOTES_RETRIES)
           join.notesTimer = setTimeout(() => {
             join.notesTimer = null;
             if (!join.ended && this.current === join && join.phase === 'admitted') void this.fetchNotes(join);
-          }, this.timings.busyRetryMs);
+          }, this.timings.busyRetryMs * 2 ** join.notesRetries++);
         if (!join.notesRefetch) return read ? join.notes : null;
       }
     })();

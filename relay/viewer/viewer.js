@@ -204,8 +204,13 @@ let guestNotes = true;
 let notesWanted = false;
 /** @type {ReturnType<typeof setTimeout> | undefined} */
 let notesRetry;
-/** How long a read of the notes the host refused (busy, or the relay's backlog) waits before it is asked again. */
+/**
+ * How long a read of the notes the host refused (busy, or the relay's backlog) waits before it is asked again, doubling
+ * each time, and how many times it is: a host that keeps refusing is asked no more until the next change it tells of.
+ */
 const NOTES_RETRY_MS = 1500;
+const NOTES_RETRIES = 5;
+let notesRetries = 0;
 /** @type {Promise<void> | null} */
 let notesLoading = null;
 let notesAgain = false;
@@ -358,7 +363,10 @@ function onFrame(frame) {
     }
     case 'rpc:event':
       // The notes changed, or whether guests may leave them: read again, once they have been read at all.
-      if (frame.event === 'notes:changed' && phase === 'admitted' && notesWanted) void loadNotes();
+      if (frame.event === 'notes:changed' && phase === 'admitted' && notesWanted) {
+        notesRetries = 0;
+        void loadNotes();
+      }
       return;
   }
 }
@@ -524,6 +532,7 @@ function endAccess() {
   failCalls('You are no longer in the live session.');
   clearTimeout(notesRetry);
   notesWanted = false;
+  notesRetries = 0;
   notesList = null;
   notesAgain = false;
   guestNotes = true;
@@ -1304,13 +1313,14 @@ function loadNotes() {
       if (answer.ok && Array.isArray(answer.result?.notes)) {
         notesList = answer.result.notes.filter(isNote);
         guestNotes = answer.result.guestNotes !== false;
+        notesRetries = 0;
         renderNotes();
-      } else if (!notesAgain && hostConnected && !reconnecting) {
+      } else if (!notesAgain && hostConnected && !reconnecting && notesRetries < NOTES_RETRIES) {
         // Not read (the host was busy, or the relay held it back): asked again shortly, so a change is never missed for
         // good. While the host or this connection is away, its return asks instead.
         notesRetry = setTimeout(() => {
           if (at === grant && phase === 'admitted') void loadNotes();
-        }, NOTES_RETRY_MS);
+        }, NOTES_RETRY_MS * 2 ** notesRetries++);
       }
     } while (notesAgain);
   })().finally(() => {
@@ -1382,6 +1392,7 @@ function showNotes() {
   closeOptions();
   if (!ui.handoff.hidden) closeHandoff(false);
   // Read again on opening: whatever the last read missed is shown now.
+  notesRetries = 0;
   void loadNotes();
   renderNotes();
   ui.notesTitle.focus();

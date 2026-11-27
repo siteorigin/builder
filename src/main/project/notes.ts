@@ -1,5 +1,6 @@
 import { randomUUID } from 'node:crypto';
 import { promises as fs } from 'node:fs';
+import { dirname } from 'node:path';
 import { z } from 'zod';
 import type { ElementRef, ProjectState } from '@shared/types';
 import { normalizeRoute } from '@shared/routes';
@@ -68,6 +69,7 @@ export class NotesStore {
       const refused = authorize();
       if (refused) return { ok: false, message: refused };
       const notes = await this.load();
+      await this.ownFolder();
       const changed = next(notes);
       if (typeof changed === 'string') return { ok: false, message: changed };
       // Nothing to write: resolving a note already resolved.
@@ -77,13 +79,13 @@ export class NotesStore {
       try {
         const ran = await this.whileOwner(async () => {
           // Asked again with the project's lock held, the new file written and about to take the old one's place:
-          // access taken away at any moment before then lands nothing.
-          replaced = await atomicWrite(this.path, toJson({ notes: changed }), {
-            beforeReplace: async () => {
-              late = authorize();
-              return !late;
-            }
-          });
+          // access taken away at any moment before then lands nothing, nor while a rename Windows refused waits to be
+          // tried again.
+          const stillAllowed = async () => {
+            late = authorize();
+            return !late;
+          };
+          replaced = await atomicWrite(this.path, toJson({ notes: changed }), { beforeReplace: stillAllowed, retryCheck: stillAllowed });
         });
         if (late) return { ok: false, message: late };
         if (!ran || !replaced) return { ok: false, message: 'The project’s notes can’t be saved right now.', unavailable: true };
@@ -96,6 +98,15 @@ export class NotesStore {
       this.notes = changed;
       return { ok: true, notes: changed };
     }).catch((e: unknown): NotesChange => ({ ok: false, message: `The project’s notes could not be saved: ${e instanceof Error ? e.message : String(e)}`, unavailable: true }));
+  }
+
+  /**
+   * The notes' folder is the project's own: a `.siteorigin` that is a link (to another project's, say) is never read
+   * or written through, so nothing of another project's notes reaches this one's guests.
+   */
+  private async ownFolder(): Promise<void> {
+    const dir = await fs.lstat(dirname(this.path)).catch(() => null);
+    if (dir && !dir.isDirectory()) throw new Error('The project’s local folder is not a plain folder, so its notes are not read.');
   }
 
   private turn<T>(fn: () => Promise<T>): Promise<T> {
@@ -111,19 +122,25 @@ export class NotesStore {
    */
   private async load(): Promise<readonly LiveNote[]> {
     if (this.notes) return this.notes;
+    await this.ownFolder();
     let text: string | null = null;
     let parsed: readonly LiveNote[] | null = null;
     try {
       // A plain file only, never followed through a link to someone else's: what is read is shown to guests.
       text = (await readRegularFile(this.path, MAX_FILE_BYTES)).toString('utf8');
     } catch (e) {
-      if ((e as NodeJS.ErrnoException).code === 'ENOENT') return (this.notes = []);
+      const code = (e as NodeJS.ErrnoException).code;
+      if (code === 'ENOENT') return (this.notes = []);
+      // A file that cannot be read now (its permissions, the disk) is left where it is; only one that is not the notes
+      // (a link, too large, not a plain file: refused with no system code) is set aside below.
+      if (code) throw e;
     }
     if (text !== null) {
       try {
         const read = FILE_SCHEMA.safeParse(JSON.parse(text));
         // Held to what a change may leave, so the list always fits in a guest's answer.
-        parsed = read.success && utf8Length(JSON.stringify(read.data.notes)) <= MAX_NOTES_BYTES ? read.data.notes : null;
+        // Reopening a resolved note adds a byte to it, so a list that reached the cap can grow past it by one a note.
+        parsed = read.success && utf8Length(JSON.stringify(read.data.notes)) <= MAX_NOTES_BYTES + MAX_NOTES ? read.data.notes : null;
       } catch {
         parsed = null;
       }

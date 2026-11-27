@@ -1,11 +1,11 @@
-import { existsSync, mkdtempSync, readdirSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
+import { chmodSync, existsSync, mkdtempSync, readdirSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
 import { createStarterState } from '@catalogue/starters';
 import { checkRpcRequest } from '@shared/live/capabilities';
 import { encodeFrame } from '@shared/live/messages';
-import { isLiveNotes, MAX_NOTES, NOTE_TEXT_MAX, normalizeNoteText, NOTES_CHANGED, type LiveNote } from '@shared/live/notes';
+import { isLiveNotes, MAX_NOTES, MAX_NOTES_BYTES, NOTE_TEXT_MAX, normalizeNoteText, NOTES_CHANGED, type LiveNote } from '@shared/live/notes';
 import type { ProjectState } from '@shared/types';
 import { makeNote, notePlace, NotesStore } from '../../src/main/project/notes';
 
@@ -161,6 +161,54 @@ describe('keeping notes', () => {
     await expect(notOwner.list()).rejects.toThrow();
     expect(await notOwner.add(note('a'))).toMatchObject({ ok: false, unavailable: true });
     expect(readFileSync(broken, 'utf8')).toBe('{"notes": [ broken');
+  });
+
+  it('reads nothing through a local folder that is a link, and leaves a file it cannot read now where it is', async () => {
+    const project = tempDir();
+    const elsewhere = tempDir();
+    writeFileSync(join(elsewhere, 'notes.json'), JSON.stringify({ notes: [note('theirs')] }));
+    symlinkSync(elsewhere, join(project, '.siteorigin'));
+    const linked = new NotesStore(join(project, '.siteorigin', 'notes.json'), owner);
+    await expect(linked.list()).rejects.toThrow(/not a plain folder/);
+    expect(await linked.add(note('mine'))).toMatchObject({ ok: false, unavailable: true });
+    expect(JSON.parse(readFileSync(join(elsewhere, 'notes.json'), 'utf8')).notes.map((n: LiveNote) => n.id)).toEqual(['theirs']);
+    // Not readable now (its permissions): an error, not a list to start again.
+    if (process.platform !== 'win32' && process.getuid?.() !== 0) {
+      const dir = tempDir();
+      const file = join(dir, 'notes.json');
+      writeFileSync(file, JSON.stringify({ notes: [note('kept')] }));
+      chmodSync(file, 0o000);
+      try {
+        await expect(new NotesStore(file, owner).list()).rejects.toThrow();
+        expect(readdirSync(dir)).toEqual(['notes.json']);
+      } finally {
+        chmodSync(file, 0o600);
+      }
+    }
+  });
+
+  it('keeps a list at the cap readable after a resolved note is opened again', async () => {
+    const file = join(tempDir(), 'notes.json');
+    const deep = Array.from({ length: 16 }, (_, i) => `${i}`.padEnd(128, 'x'));
+    const target = { owner: { kind: 'page' as const, id: 'p1' }, instancePath: deep, nodeId: 'n', itemPath: deep };
+    const bytes = (list: LiveNote[]) => Buffer.byteLength(JSON.stringify(list));
+    // Resolved notes up to the cap, the last filled to it exactly.
+    const notes: LiveNote[] = [];
+    while (notes.length < MAX_NOTES - 1 && bytes([...notes, note(`n${notes.length}`, { target, resolved: true })]) <= MAX_NOTES_BYTES - 400) notes.push(note(`n${notes.length}`, { target, resolved: true }));
+    // Then short notes, the last of them as long as it must be to reach the cap exactly.
+    for (let i = 0; ; i++) {
+      const fill = note(`f${i}`, { text: 'x', resolved: true });
+      const room = MAX_NOTES_BYTES - bytes([...notes, fill]) + 1;
+      fill.text = 'x'.repeat(Math.min(NOTE_TEXT_MAX, room));
+      notes.push(fill);
+      if (room <= NOTE_TEXT_MAX) break;
+    }
+    expect(bytes(notes)).toBe(MAX_NOTES_BYTES);
+    writeFileSync(file, JSON.stringify({ notes }));
+    const store = new NotesStore(file, owner);
+    for (const n of notes) expect(await store.resolve(n.id, false)).toMatchObject({ ok: true });
+    expect(bytes(JSON.parse(readFileSync(file, 'utf8')).notes)).toBeGreaterThan(MAX_NOTES_BYTES);
+    expect(await new NotesStore(file, owner).list()).toHaveLength(notes.length);
   });
 
   it('sets aside a file holding more than a guest could be sent at once', async () => {
