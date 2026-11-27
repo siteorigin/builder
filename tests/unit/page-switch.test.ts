@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest';
 import type { ProjectState } from '@shared/types';
 import { createStarterState } from '@catalogue/starters';
 import { validateState } from '@engine/validate';
-import { commandText, exactDetailFirst, matchesWords, pageChoices } from '../../src/renderer/src/lib/page-switch';
+import { commandText, exactDetailFirst, matchesWords, pageChoices, pageMenuItems } from '../../src/renderer/src/lib/page-switch';
 
 /** The issue's studio site: two pages titled Portfolio, at /lookbook/ and /portfolio-archive/. */
 function twoPortfolios() {
@@ -16,6 +16,22 @@ function twoPortfolios() {
 }
 
 describe('page switchers', () => {
+  it('gives the switchers one page list: a radio row per page with its address, the shown page chosen or none (#953)', () => {
+    const { s, a, b } = twoPortfolios();
+    const opened: string[] = [];
+    const rows = pageMenuItems(s, a, (id) => opened.push(id));
+    expect(rows.map((r) => r.id)).toEqual(s.site.pageOrder);
+    expect(rows.find((r) => r.id === s.site.homePageId)).toMatchObject({ hint: 'Home page · /', checked: false });
+    expect(rows.find((r) => r.id === a)).toMatchObject({ label: 'Portfolio', hint: '/lookbook/', checked: true });
+    expect(rows.find((r) => r.id === b)).toMatchObject({ label: 'Portfolio', hint: '/portfolio-archive/', checked: false });
+    rows.find((r) => r.id === b)!.onSelect!();
+    // The chosen page can be chosen again (it then selects the page itself).
+    rows.find((r) => r.id === a)!.onSelect!();
+    expect(opened).toEqual([b, a]);
+    // A component or layout open: every row is still a choice, none of them chosen.
+    expect(pageMenuItems(s, null, () => {}).every((r) => r.checked === false)).toBe(true);
+  });
+
   it('lists every page in site order with its published address, and `/` for the home page', () => {
     const { s, a, b } = twoPortfolios();
     const choices = pageChoices(s);

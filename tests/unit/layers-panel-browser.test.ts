@@ -8,7 +8,9 @@ import { dirname, resolve } from 'node:path';
 import { chromium, type Browser, type Page } from 'playwright';
 import { build, type Rolldown } from 'vite';
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from 'vitest';
+import type { EditOperation } from '@shared/ops';
 import { createStarterState } from '@catalogue/starters';
+import { applyOperations } from '@engine/apply';
 
 const browserInstalled = existsSync(chromium.executablePath());
 const SITE = 'http://layers-panel.test';
@@ -25,7 +27,8 @@ const ENTRY = [
   'window.log = { commits: 0 };',
   "flushSync(() => useStore.setState({ screen: 'editor', mode: 'edit', leftTab: 'layers', layersView: 'layers', pageId: state.site.homePageId, snapshot: { state, revision: 1, workspaceKey: 'w1' }, selection: null }));",
   "flushSync(() => createRoot(document.getElementById('root')).render(h(Profiler, { id: 'layers', onRender: () => window.log.commits++ }, h('div', { className: 'side-panel-view' }, h(LayersPanel)))));",
-  'window.home = state.site.homePageId;'
+  'window.home = state.site.homePageId;',
+  'window.store = useStore;'
 ].join('\n');
 
 /** The preload bridge: every call answers nothing. */
@@ -63,7 +66,9 @@ describe.skipIf(!browserInstalled)('Layers rows (#971)', { timeout: 60_000 }, ()
   let script: string;
   let page: Page;
   let errors: string[];
-  const project = JSON.stringify(createStarterState('business', 'Test Studio', false)).replace(/</g, '\\u003c');
+  // A blog too, so a collection's layouts can be opened (#953).
+  const state = applyOperations(createStarterState('business', 'Test Studio', false), [{ type: 'collection.create', collectionId: 'posts', archiveTemplate: 'start' } as EditOperation]).state;
+  const project = JSON.stringify(state).replace(/</g, '\\u003c');
 
   beforeAll(async () => {
     [script, browser] = await Promise.all([bundle(), chromium.launch({ headless: true })]);
@@ -114,5 +119,51 @@ describe.skipIf(!browserInstalled)('Layers rows (#971)', { timeout: 60_000 }, ()
     // A plain ↑ back onto the selected row picks it again: it is the one tab stop once more.
     await page.keyboard.press('ArrowUp');
     expect(await stops()).toEqual({ stops: [a], focused: a, selected: [a] });
+  });
+
+  /** The head's switcher, by what it names; the page rows of its menu, with whether each is chosen. */
+  const subject = () => page.locator('.panel-head .layers-subject');
+  const switcherRows = () =>
+    page.evaluate<Array<{ name: string; checked: string | null }>>(`[...document.querySelectorAll('[role="menu"] [role^="menuitem"]')].map((r) => ({ name: r.textContent.replace(/\\s+/g, ' ').trim(), checked: r.getAttribute('aria-checked') }))`);
+  const store = (patch: string) => page.evaluate(`window.store.setState(${patch})`);
+  const storeRead = <T>(expr: string) => page.evaluate<T>(`(() => { const s = window.store.getState(); return ${expr}; })()`);
+
+  it('names the page Layers shows in its head, and switches page from there (#953)', async () => {
+    const about = state.site.pageOrder.find((id) => state.pages[id].route === '/about/')!;
+    await expect.poll(() => subject().getAttribute('aria-label')).toBe('Home, switch page');
+    expect(await page.locator('.panel-head h3').innerText()).toBe('Home');
+    await subject().click();
+    const rows = await switcherRows();
+    expect(rows.find((r) => r.name.startsWith('Home'))).toEqual({ name: 'HomeHome page · /', checked: 'true' });
+    expect(rows.find((r) => r.name.startsWith('About'))).toEqual({ name: 'About/about/', checked: 'false' });
+    await page.locator('[role="menu"] [role^="menuitem"]', { hasText: 'About' }).click();
+    await expect.poll(() => storeRead<string>('s.pageId')).toBe(about);
+    await expect.poll(() => subject().innerText()).toBe('About');
+    // The Headings view keeps the same head.
+    await page.locator('.layers-views [role="tab"]', { hasText: 'Headings' }).click();
+    await expect.poll(() => subject().getAttribute('title')).toBe('Headings of About: switch page');
+  });
+
+  it('labels a component or layout with its kind, and opens a page from it even when it is the page underneath (#953)', async () => {
+    await store(`{ definitionMode: { definitionId: 'foundation.hero.split', returnPageId: window.home } }`);
+    await expect.poll(() => subject().innerText()).toBe('Component: Split hero');
+    await subject().click();
+    // Nothing is chosen: Layers shows the component, not the page under it.
+    expect((await switcherRows()).filter((r) => r.checked === 'true')).toEqual([]);
+    await page.locator('[role="menu"] [role^="menuitem"]', { hasText: 'Home' }).click();
+    await expect.poll(() => storeRead<boolean>('s.definitionMode === null && s.pageId === window.home')).toBe(true);
+    await expect.poll(() => subject().innerText()).toBe('Home');
+
+    const name = state.collections.posts.settings.name;
+    await store(`{ templateMode: { collectionId: 'posts', entryId: null } }`);
+    await expect.poll(() => subject().innerText()).toBe(`Layout: ${name}`);
+    await store(`{ templateMode: { collectionId: 'posts', entryId: null, archive: true } }`);
+    await expect.poll(() => subject().innerText()).toBe(`Layout: ${name} index`);
+    await subject().click();
+    expect((await switcherRows()).filter((r) => r.checked === 'true')).toEqual([]);
+    // Choosing the page under the layout leaves the layout for the page.
+    await page.locator('[role="menu"] [role^="menuitem"]', { hasText: 'Home' }).click();
+    await expect.poll(() => storeRead<boolean>('s.templateMode === null && s.pageId === window.home')).toBe(true);
+    await expect.poll(() => subject().innerText()).toBe('Home');
   });
 });

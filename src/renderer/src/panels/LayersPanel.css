@@ -227,3 +227,15 @@
   .outline-note { margin: 10px 6px 0; font-size: 12px; }
   @media (forced-colors: active) { .outline-item:has(> .outline-row[aria-current='true']) { border: 1px solid Highlight; } }
 }
+
+@layer components {
+  /* The head names what Layers shows and opens the page switcher: the name takes the head's width and truncates, the
+     chevron never does. It keeps its words in a narrow sidebar, unlike the head's text buttons. */
+  .panel-head .layers-subject-head { display: flex; min-width: 0; margin-left: -6px; }
+  .layers-subject { display: inline-flex; align-items: center; gap: 4px; min-width: 0; max-width: 100%; height: 28px; padding: 0 4px 0 6px; border: 0; border-radius: var(--r-sm); background: transparent; color: var(--text); font: inherit; transition: background 120ms; }
+  .layers-subject:hover { background: var(--hover); }
+  .layers-subject[aria-expanded='true'] { background: var(--active); box-shadow: inset 0 0 0 1px var(--border-control); }
+  .layers-subject svg { flex: none; width: 14px; height: 14px; color: var(--text-3); }
+  /* Forced colours drop the fill and inset shadow: the open switcher keeps a system-colour ring. */
+  @media (forced-colors: active) { .layers-subject[aria-expanded='true'] { outline: 1px solid Highlight; outline-offset: -1px; } }
+}

@@ -8,10 +8,10 @@ import { showsPart } from '@shared/page-shell';
 import { scopeForWidth } from '@shared/styles';
 import { childLists, codeTakesOverrides, displayName, findParent, subtreeIds } from '@engine/tree';
 import { aiActivity, api, applyOps, commitDraft, getState, markDraft, selectSlot, setOverlay, setState, showLayer, toast, useStore } from '../store';
-import { MenuTriggers, rovingKeys, Segmented, useMenu, useRovingTabStop } from '../components/ui';
+import { MenuTriggers, rovingKeys, Segmented, useMenu, useRovingTabStop, type MenuItem } from '../components/ui';
 import { isImeComposing } from '../lib/ime';
 import { openInsertSearch } from '../lib/insert-focus';
-import { askAiAbout, asPlanned, deleteLayers, deleteSelection, detachable, detachPlacement, duplicateLayers, duplicateSelection, focusSelectedRow, groupCount, liveGroup, moveLayers, moveLayersInto, moveSelection, moveToPage, otherPages, planLayers, ungroupLayers, wrapLayers, WRAP_NAMES, type LayersPlan } from '../lib/actions';
+import { askAiAbout, asPlanned, deleteLayers, deleteSelection, detachable, detachPlacement, duplicateLayers, duplicateSelection, focusSelectedRow, groupCount, liveGroup, moveLayers, moveLayersInto, moveSelection, moveToPage, otherPages, planLayers, selectPage, ungroupLayers, wrapLayers, WRAP_NAMES, type LayersPlan } from '../lib/actions';
 import { exportComponentFile, placedDefinition, saveToLibrary } from '../lib/saved-components';
 import { withSeparator, wrapItems } from './WrapItems';
 import { copySelection, pasteFromMenu } from '../lib/clipboard';
@@ -30,6 +30,7 @@ import { layerSlots, placeOps } from '../lib/layer-drop';
 import { sameSlotTarget, type SlotTarget } from '../lib/slot-target';
 import { askAiHint } from '../lib/ask-ai-key';
 import { perfCount } from '../lib/perf';
+import { pageMenuItems } from '../lib/page-switch';
 
 /*
  * The Layers panel: the current page's outline (shared header, page content, shared footer), or a
@@ -250,6 +251,12 @@ export function LayersPanel() {
   const visible = useStore((s) => s.leftTab === 'layers');
   const view = useStore((s) => s.layersView);
   const menu = useMenu();
+  const shownPage = useRef<string | null>(null);
+  /** The switcher's pages, read again while it is open so a page added, renamed or removed meanwhile shows as it is. */
+  const subjectRows = (): MenuItem[] => {
+    const now = getState().snapshot?.state;
+    return now ? [{ heading: 'Pages' }, ...pageMenuItems(now, shownPage.current, (id) => selectPage(id))] : [];
+  };
   const treeRef = useRef<HTMLDivElement>(null);
   const typed = useRef({ text: '', at: 0 });
   // Where focus goes once a delete from the selection bar lands: the row then in the first removed layer's place.
@@ -445,6 +452,10 @@ export function LayersPanel() {
   const layout = !defOwner && templateMode && layoutTree && layoutOwner ? { owner: layoutOwner, tree: layoutTree, name: `${st.collections[templateMode.collectionId].settings.name} ${templateMode.archive ? 'index layout' : 'layout'}` } : null;
   // The layers selected together, while the selection is one of them and they still sit side by side here.
   const picked = groupNow;
+  const subject = defOwner ? `Component: ${st.components[defOwner.id]?.name ?? 'Component'}` : layout && templateMode ? `Layout: ${st.collections[templateMode.collectionId].settings.name}${templateMode.archive ? ' index' : ''}` : page.title;
+  // A page is chosen in the switcher only while it is what Layers shows: one picked while a component or layout is
+  // open opens it (and leaves that), though it is the page underneath.
+  shownPage.current = defOwner || layout ? null : pageId;
 
   /** The page a section (or the sections selected together) can be moved to, at its end; the moved ones are selected there. */
   const pageMenu = (anchor: { x: number; y: number }, plan: LayersPlan | null, pages: Array<{ id: string; title: string }>, what: string, returnTo: HTMLElement | null) =>
@@ -791,11 +802,21 @@ export function LayersPanel() {
   const outline = view === 'outline' && !defOwner && !layout;
   return (
     <>
+      {/* What the panel shows, which changes with what the canvas opens: a page, or a layout or component named with
+          its kind so it is never taken for a page. It is also a page switcher, a closer way in than the toolbar's. */}
       <div className="panel-head">
-        <h3>{outline ? 'Headings' : 'Layers'}</h3>
-        <span className="context ellipsis" title={defOwner ? `Layers of the ${st.components[defOwner.id]?.name} component` : layout ? `Layers of the ${layout.name}` : `${outline ? 'Headings' : 'Layers'} on ${page.title}`}>
-          {defOwner ? st.components[defOwner.id]?.name : layout ? layout.name : page.title}
-        </span>
+        <h3 className="layers-subject-head">
+          <button
+            className="layers-subject"
+            {...menu.triggerProps('subject')}
+            aria-label={`${subject}, switch page`}
+            title={`${outline ? 'Headings' : 'Layers'} of ${subject}: switch page`}
+            onClick={(e) => menu.openAt(e.currentTarget, subjectRows, 'Pages')}
+          >
+            <span className="ellipsis">{subject}</span>
+            <ChevronDown aria-hidden="true" />
+          </button>
+        </h3>
       </div>
       {!defOwner && !layout && (
         <div className="layers-views">
