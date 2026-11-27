@@ -13,7 +13,7 @@ import { activeWorkspace } from '../lib/workspace';
 import { platformKeys } from './CopyPaste';
 import { pageChoices, matchesWords, commandText, exactDetailFirst } from '../lib/page-switch';
 import { VIEWPORT_PRESETS } from '@shared/styles';
-import { LucideIcon } from './InsertPanel';
+import { LucideIcon } from '../components/InsertIcon';
 import { openContentMatch } from './FindReplace';
 import { contentFields, findContent, placedSections, sectionMatches } from '../lib/find-content';
 import { insertChoices, insertLanding } from '../lib/command-inserts';

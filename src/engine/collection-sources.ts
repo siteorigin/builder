@@ -12,7 +12,7 @@ import { fieldFitProblem, normalizeConnection, rowFieldSchema } from '@shared/co
 import { ENTRY_CONTENT_FIELDS, entryChoiceProblem, entryComparisonProblem, isEntryDateField } from '@shared/entry-fields';
 import { acceptedTypes, bindingProblem, bindingSlots } from './schema';
 import { requiredGap } from '@shared/required';
-import { HOST_ONLY_PROPS } from '@shared/live/capabilities';
+import { HOST_ONLY_PROPS } from '@shared/live/limits';
 import { termNamed } from '@shared/entry-feed';
 import { allTrees, childLists, displayName, fail, getNode } from './tree';
 import { newId } from '@shared/ids';

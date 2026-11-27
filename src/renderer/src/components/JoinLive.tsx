@@ -2,7 +2,7 @@ import '../panels/RemoteSession.css';
 import { useEffect, useId, useRef, useState, type FormEvent } from 'react';
 import { CircleAlert, Hourglass, Info, Users } from 'lucide-react';
 import { DISPLAY_NAME_MAX } from '@shared/live/limits';
-import { normalizeDisplayName } from '@shared/live/messages';
+import { normalizeDisplayName } from '@shared/live/names';
 import { formatInviteLink, parseInviteLink } from '@shared/live/relay-url';
 import { projectDisplayName } from '@shared/project-name';
 import { getState, setState, useStore, whenThemesReady } from '../store';

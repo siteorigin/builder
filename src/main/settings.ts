@@ -1,5 +1,5 @@
 import { app } from 'electron';
-import { existsSync, promises as fs, statSync } from 'node:fs';
+import { promises as fs, statSync } from 'node:fs';
 import { join } from 'node:path';
 import type { AppSettings, LocalCheck, SettingsPatch, ProviderId, ProviderStatus, RecentProject } from '@shared/api';
 import { PROVIDER_LABELS } from '@shared/turn-model';
@@ -350,7 +350,8 @@ export async function recents(): Promise<RecentProject[]> {
   // Only a pin given as one counts: a hand-edited file can hold anything.
   return Promise.all(
     s.recents.map(async (r) => {
-      const missing = !existsSync(join(r.dir, MANIFEST));
+      // Checked without blocking: a folder on a share that has stopped answering holds up this card, never every request.
+      const missing = !(await fs.access(join(r.dir, MANIFEST)).then(() => true, () => false));
       // Read from the folder each time, so a card says what the project's brief says now, however it was changed.
       const [description, icon] = missing ? ['', ''] : await Promise.all([briefDescription(r.dir), siteIcon(r.dir)]);
       return { ...withPin(r, r.pinned === true), missing, ...(description ? { description } : {}), ...(icon ? { icon } : {}) };

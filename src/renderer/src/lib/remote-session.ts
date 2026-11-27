@@ -2,7 +2,7 @@ import type { BuilderApi, ProjectSnapshot, RemoteState } from '@shared/api';
 import type { ApplyResult, EditBatch } from '@shared/ops';
 import type { Presence } from '@shared/live/messages';
 import type { LiveProjectSnapshot } from '@shared/live/snapshot';
-import { LIVE_BATCH_LABEL_MAX } from '@shared/live/capabilities';
+import { LIVE_BATCH_LABEL_MAX } from '@shared/live/limits';
 import { refKey } from '@shared/types';
 import { api, confirmDialog, getState, setState, toast, transport, useStore, type State } from '../store';
 import { IDLE_LIVE, sharedSelection } from './live-session';

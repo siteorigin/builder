@@ -432,7 +432,7 @@ export const INTERACTIONS: Interaction[] = [
     area: 'pages',
     intent: 'Put a page inside another page',
     start: 'Business site open, Pages showing',
-    routes: ['item:Pages:Add page inside', 'item:Pages:Move under *', 'inspector:Page settings › Parent page'],
+    routes: ['item:Pages:Add page inside', 'item:Pages:Move under *', 'inspector:Page settings › Parent page', 'item:Inspector:*, as it is', 'item:Inspector:Top level'],
     outcome: 'Pages lists the child under its parent, its address nests under the parent’s, the header menu groups its link, and Move under puts a page moved in its settings where Pages shows it',
     scenario: 'Business starter · none',
     proof: [

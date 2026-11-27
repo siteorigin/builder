@@ -1,6 +1,7 @@
 import { useEffect, useId, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from 'react';
 import { createPortal } from 'react-dom';
-import { icons, Search, Code, CornerDownRight, Check, Plus, SearchX, X, ArrowDown, Ellipsis, Pencil, Trash2, FileText, PanelTop, PanelBottom, Component, SwatchBook, Undo2, ChevronDown, FileCode2, Download, Upload, LayoutTemplate, SquareDashed, Library, BookmarkPlus, Copy } from 'lucide-react';
+import { Search, Code, CornerDownRight, Check, Plus, SearchX, X, ArrowDown, Ellipsis, Pencil, Trash2, FileText, PanelTop, PanelBottom, Component, SwatchBook, Undo2, ChevronDown, FileCode2, Download, Upload, LayoutTemplate, SquareDashed, Library, BookmarkPlus, Copy } from 'lucide-react';
+import { LucideIcon } from '../components/InsertIcon';
 import type { ComponentDefinition, GraphNode, OwnerRef, ProjectState } from '@shared/types';
 import type { ComponentPreviewSpec } from '@shared/component-preview';
 import type { ComponentImportResult, SavedComponent } from '@shared/api';
@@ -28,14 +29,6 @@ import { ComponentThumb } from '../components/ComponentThumb';
 import { axesOf } from '@shared/variants';
 import './InsertPanel.css';
 
-export function LucideIcon({ name, size = 15 }: { name?: string; size?: number }) {
-  const key = (name ?? 'box')
-    .split('-')
-    .map((w) => (w ? w[0].toUpperCase() + w.slice(1) : ''))
-    .join('') as keyof typeof icons;
-  const I = icons[key] ?? icons.Box;
-  return <I size={size} />;
-}
 
 
 /**

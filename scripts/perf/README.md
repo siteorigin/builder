@@ -18,7 +18,7 @@ npm run perf:prompt                             # what each turn of an AI run se
 `perf:run` takes `--scenario` (comma-separated; default `launch,open,edit`), `--fixture` (`small`, `large` or both;
 default both), `--iterations` (default 5), `--out` (default `.tmp/perf/results/<time>.json`), `--app <checkout>` (the
 checkout whose `out/` is measured, default this one: build a second worktree to measure another tree with this
-harness), `--settle <ms>` (default 1500, below) and `--cold` (below). It exits 0 when every case passed, 1 when any failed and 2 when the
+harness), `--settle <ms>` (default 1500, below), `--cold` and `--second` (below). It exits 0 when every case passed, 1 when any failed and 2 when the
 run itself could not go on.
 
 ## What a run does
@@ -54,8 +54,11 @@ run itself could not go on.
 
 `launch` here is a fresh process on a profile that has opened the project twice before, so Chromium's code cache is warm: the
 everyday launch. `--cold` removes Chromium's caches from the profile before every iteration, so the editor's script is
-compiled afresh, as on the first launch after an update (the OS file cache stays warm either way). Cold and warm are
-different metrics: never compare one with the other; the result records which it is.
+compiled afresh, as on the first launch after an update (the OS file cache stays warm either way). `--second` removes
+them too, then launches the app once and opens the fixture, untimed, and puts the project back: the iteration is the
+second launch after an update that changed the editor's scripts, the first having opened a project (one that only showed
+Welcome would leave the editor's own chunk never run), and finds only what Chromium kept of the code that launch ran. Cold, second and warm
+are different metrics: never compare one with another; the result records which it is.
 
 ## Scenarios and their metrics
 
@@ -72,7 +75,8 @@ parsed), `scriptStart` (the first line of its script running), `scriptEvaluated`
 front evaluated), `catalogueReceived` (the theme catalogue registered); `scriptCompile` (`pageParsed` to `scriptStart`: the
 script's load and compile) and `scriptEvaluate` (`scriptStart` to `scriptEvaluated`). From the window being created:
 `windowToFirstRender` and `windowToWelcome` (to an interactive Welcome that lists its recent projects, the later of
-`firstInteractive` and `recentsShown`). Run it warm and `--cold` for a second and a first launch's compile. Counts:
+`firstInteractive` and `recentsShown`). Run it warm, `--second` and `--cold` for an everyday, a second and a first
+launch's compile. Counts:
 files read and hashed before the window was created, React commits until recents show; the longest main-process stall.
 
 **`open`**: open the fixture from its card on Welcome, to the canvas bridge reporting the home page ready to edit.

@@ -69,3 +69,14 @@ export const MIN_VIEWPORT_WIDTH = 200;
 export const MAX_VIEWPORT_WIDTH = 8192;
 /** A human-readable message carried by an error or a status, shown to a person. */
 export const MAX_MESSAGE_LENGTH = 500;
+
+/** The longest label a guest's batch of edits may carry, in characters: it names the step in the host's History. */
+export const LIVE_BATCH_LABEL_MAX = 120;
+
+/**
+ * Component properties only the host sets, wherever they are placed: the contact form settings that send the site's
+ * messages to someone's own account (the form's FORM_DESTINATIONS). This goes by the property's name only. A project
+ * component that passes one of its own properties into a nested form's settings is caught by the host's check against
+ * the project as the batch would leave it (engine/guest-edits.ts), which this contract cannot see.
+ */
+export const HOST_ONLY_PROPS = ['endpoint', 'accessKey'] as const;
