@@ -49,7 +49,9 @@ export const UPSERT_ENTRY_ARGS = z
     entryId: z.string().min(1).max(40).optional().describe('The entry to edit; leave it out to create a new draft.'),
     title: z.string().min(1).max(200).optional().describe('Required for a new entry.'),
     publishedAt: z.string().max(10).optional().describe('YYYY-MM-DD.'),
+    updatedAt: z.string().max(10).optional().describe('When it was last revised, YYYY-MM-DD. "" removes it.'),
     draft: z.boolean().optional().describe('false publishes it.'),
+    author: z.string().max(80).optional().describe('The byline. "" removes it.'),
     excerpt: z.string().max(320).optional().describe('"" removes it.'),
     categories: z.array(z.string().min(1).max(80)).max(20).optional().describe('Category names; replaces its categories, [] removes them. A name the collection lacks is added.'),
     terms: z
@@ -80,7 +82,7 @@ const BODY_FORMAT =
 export const LIST_ENTRIES_DESCRIPTION = `List a collection's entries (blog posts, projects), ${ENTRY_LIST_PAGE} at a time in the collection's order, drafts included: each entry's ID, title, date and whether it is a draft. Call again with offset set to next for more.`;
 export const LIST_ENTRIES_BRIEF = `${ENTRY_LIST_PAGE} entries at a time: ID, title, date, draft. More: offset=next.`;
 export const READ_ENTRY_DESCRIPTION =
-  "Read one entry of a collection: its title, date, draft status, excerpt, featured image, categories, other terms and custom field values, and its text as Markdown a part at a time. Call again with offset set to next until next is null before rewriting the text: body replaces it whole. A value shown cut short (clipped) is read whole with field, the same way, before it is rewritten; one marked editorOnly is the author's to change in the editor: leave it out of values to keep it.";
+  "Read one entry of a collection: its title, date, last-revised date and author when it has them, draft status, excerpt, featured image, categories, other terms and custom field values, and its text as Markdown a part at a time. Call again with offset set to next until next is null before rewriting the text: body replaces it whole. A value shown cut short (clipped) is read whole with field, the same way, before it is rewritten; one marked editorOnly is the author's to change in the editor: leave it out of values to keep it.";
 export const READ_ENTRY_BRIEF = 'Its details, and its text as Markdown a part at a time: offset=next until next is null, before rewriting it whole. A clipped value: field, the same way. editorOnly: leave it out.';
 export const UPSERT_ENTRY_DESCRIPTION = `Create a draft entry of a collection (a blog post, a team member), or change one by its entryId: only the fields given change, the rest stays as it is. categories files it under categories by name, adding any the collection lacks, and terms under the terms of its other groupings, by name too. values sets its custom fields (read_project collections lists them); featuredImage is its picture. ${BODY_FORMAT} Send body only to change the text, after reading all of it. A collection synced from an external source (readOnly) cannot be written.`;
 export const UPSERT_ENTRY_BRIEF = `Only the fields given change. categories and terms by name; values for custom fields. ${BODY_FORMAT} Send body only after reading all the text. Never for a readOnly collection.`;
@@ -253,6 +255,8 @@ export function runReadEntry(args: ReadEntryArgs, host: ToolHost): ToolOutcome {
         ? {
             title: entry.title,
             publishedAt: entry.publishedAt,
+            ...(entry.updatedAt ? { updatedAt: entry.updatedAt } : {}),
+            ...(entry.author ? { author: entry.author } : {}),
             draft: entry.draft !== false,
             ...(entry.excerpt ? { excerpt: entry.excerpt } : {}),
             ...(entry.featuredImage ? { featuredImage: entry.featuredImage } : {}),
@@ -457,8 +461,14 @@ export async function runUpsertEntry(args: UpsertEntryArgs, host: ToolHost, call
   const fields: Record<string, unknown> = given(rest);
   if (title !== undefined) fields.title = title.trim();
   if (fields.publishedAt !== undefined && !/^\d{4}-\d{2}-\d{2}$/.test(String(fields.publishedAt))) issues.push({ field: 'publishedAt', message: `"${String(fields.publishedAt)}" is not a date written YYYY-MM-DD` });
-  // An emptied excerpt is the operation's null: the entry keeps none.
+  if (fields.updatedAt !== undefined) {
+    // "" removes the revision date: the operation's null.
+    if (!String(fields.updatedAt).trim()) fields.updatedAt = null;
+    else if (!/^\d{4}-\d{2}-\d{2}$/.test(String(fields.updatedAt))) issues.push({ field: 'updatedAt', message: `"${String(fields.updatedAt)}" is not a date written YYYY-MM-DD` });
+  }
+  // An emptied author or excerpt is the operation's null: the entry keeps none.
   if (fields.excerpt !== undefined && !String(fields.excerpt).trim()) fields.excerpt = null;
+  if (fields.author !== undefined) fields.author = String(fields.author).trim() || null;
   const terms = termsValue(collection, categories, groupings, issues);
   if (terms) fields.terms = terms.terms;
   if (values?.length) fields.values = valuesOf(collection, values, issues, entry, state.assets.assets);
