@@ -16,7 +16,7 @@ import type { AiTurnReview, ConflictChoice, FileText, RestoreVersionResult, Save
 import { validateOperation } from '@shared/ops';
 import { axesOf, choicesLost } from '@shared/variants';
 import { AXES_FORMAT, formatOf } from '@shared/migrations';
-import { applyOperations, assetUsages, captureClipboard, convertEditedDesign, type Clipboard } from '@engine/apply';
+import { applyOperations, assetUsages, captureClipboard, convertEditedDesign, walkOperations, type Clipboard } from '@engine/apply';
 import { frozen } from '@engine/draft';
 import { clone } from '@engine/install';
 import { listThemes, themePinProblem } from '@catalogue/index';
@@ -3187,10 +3187,16 @@ export class ProjectSession extends EventEmitter {
       if (ai && !opts.collectionWrite && ops.some(isCollectionOperation))
         return { ok: false, revision: this.revision, error: { code: 'SCOPE_MISMATCH', message: 'Collections, their entries and their layouts can only be changed in the editor, apart from what define_collection and upsert_collection_entry write and a layout edited from a request sent while it is open.', recoverable: true } };
       // A fork of every placement moves a collection layout's too, which is the editor's in the same way: the placements
-      // the request covers are listed instead.
-      const inLayouts = ai && !opts.collectionWrite ? ops.find((o) => o.type === 'component.fork' && !o.placements && instancesOf(this.state, o.definitionId).some((u) => u.owner.kind === 'template' || u.owner.kind === 'archive')) : undefined;
-      if (inLayouts?.type === 'component.fork')
-        return { ok: false, revision: this.revision, error: { code: 'SCOPE_MISMATCH', message: `“${this.state.components[inLayouts.definitionId]?.name ?? inLayouts.definitionId}” is also placed in a collection layout, which only the editor changes. List the placements the copy is for in placements.`, recoverable: true } };
+      // the request covers are listed instead. Each fork is checked against the project as the batch leaves it then (a
+      // theme switch before it rebinds a layout's placements to the new theme's component).
+      const inLayouts =
+        ai && !opts.collectionWrite && ops.some((o) => o.type === 'component.fork' && !o.placements)
+          ? walkOperations(this.state, ops, (draft, o) => {
+              if (o.type !== 'component.fork' || o.placements || !instancesOf(draft, o.definitionId).some((u) => u.owner.kind === 'template' || u.owner.kind === 'archive')) return null;
+              return `“${draft.components[o.definitionId]?.name ?? o.definitionId}” is also placed in a collection layout, which only the editor changes. List the placements the copy is for in placements.`;
+            }, context)
+          : null;
+      if (inLayouts) return { ok: false, revision: this.revision, error: { code: 'SCOPE_MISMATCH', message: inLayouts, recoverable: true } };
       // A library image's file is only ever one the importer checked and wrote.
       if ((opts.source === 'ai' || opts.runId) && ops.some((o) => o.type === 'asset.relink'))
         return { ok: false, revision: this.revision, error: { code: 'SCOPE_MISMATCH', message: 'Only the editor can give an image a new file. Ask the user to locate it in Assets.', recoverable: true } };
@@ -3240,6 +3246,20 @@ export class ProjectSession extends EventEmitter {
           return errors.length ? ({ ok: false, revision: this.revision, error: { code: 'VALIDATION_FAILED', message: `The code for "${def.name}" has problems: ${errors.map((e) => (e.line ? `line ${e.line}: ` : '') + e.message).join(' ')}`, recoverable: true, details: errors } } as const) : null;
         };
         if (was?.source === def.source) {
+          // The assistant's change to the properties of a project's own code is held to the contract of the unchanged
+          // code too: renaming or removing one can leave text the code marks for typing over naming a property or field it
+          // no longer has. Only what the new properties bring counts (the code passed its checks when it was saved): it is
+          // checked against the contract as it lands with the old properties and with the new, so an error that is there
+          // either way refuses nothing. What the code takes from $props() is held to the new ones by the manifest check.
+          if (ai && def.owner === 'project' && JSON.stringify(was.properties) !== JSON.stringify(def.properties)) {
+            const source = def.source;
+            const contracted = async (properties: ComponentDefinition['properties']) =>
+              (await checkSvelteSource(source, { filename: def.sourcePath, resolve, contract: { slots: def.slots, parts: def.parts, filled: filledSlots(next, def), variantAxes: def.variantAxes, properties } })).filter((p) => p.severity === 'error');
+            const had = new Set((await contracted(was.properties)).map((p) => p.message));
+            const fresh = (await contracted(def.properties)).filter((p) => !had.has(p.message));
+            if (fresh.length)
+              return { ok: false, revision: this.revision, error: { code: 'VALIDATION_FAILED', message: `The code for "${def.name}" does not fit its new properties: ${fresh.map((e) => (e.line ? `line ${e.line}: ` : '') + e.message).join(' ')}`, recoverable: true, details: fresh } };
+          }
           // Unchanged code passed its checks when it was saved: only a change of what it is held to of its manifest is.
           if (manifestKey(was) === manifestKey(def)) continue;
           const refused = await axesOnly();

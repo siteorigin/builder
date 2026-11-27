@@ -817,6 +817,10 @@ export interface ToolHost {
   definitionTarget?(): DefinitionTarget | null;
   /** Whether the run is still limited to its selection: the user has not let it change more. */
   selectionLimited?(): boolean;
+  /** Whether that selection is a part of a placement, or inside a component's design: neither may add a component. */
+  selectionNarrow?(): boolean;
+  /** Whether the run is still limited to one component's design. */
+  componentLimited?(): boolean;
   /** The page the run is still limited to, and how it is named, or null once it may change more. */
   pageLimit?(): { pageId: string; label: string } | null;
   /** The post the run is limited to (sent from the Posts workspace), and how it is named, or null once it may change
@@ -976,9 +980,9 @@ function themeCodeCopy(state: ProjectState, def: ComponentDefinition, host: Tool
   const widen = (label: string) => ({ note: `${shared} Changing it needs a project copy, which adds a component to the site: more than ${label}. Ask the user to allow a wider change first.` });
   const page = host.pageLimit?.();
   if (page) return widen(page.label);
-  if (host.definitionTarget?.()) return widen('this component’s design');
+  if (host.componentLimited?.()) return widen('this component’s design');
   const selected = host.selectionLimited?.() ? host.selection?.() : null;
-  if (selected && (selected.partId || selected.nested || selected.owner.kind === 'component')) return widen('the selection');
+  if (selected && host.selectionNarrow?.()) return widen('the selection');
   let inside: Set<string> | null = null;
   if (selected) {
     try {
@@ -987,8 +991,10 @@ function themeCodeCopy(state: ProjectState, def: ComponentDefinition, host: Tool
       inside = new Set();
     }
   }
+  // Only placements a fork can move: never a collection layout's (the editor's) or one inside a theme's own design.
+  const movable = (o: OwnerRef) => o.kind !== 'template' && o.kind !== 'archive' && (o.kind !== 'component' || state.components[o.id]?.owner === 'project');
   const all = instancesOf(state, def.id)
-    .filter((p) => !selected || (p.owner.kind === selected.owner.kind && p.owner.id === selected.owner.id && inside!.has(p.node.id)))
+    .filter((p) => movable(p.owner) && (!selected || (p.owner.kind === selected.owner.kind && p.owner.id === selected.owner.id && inside!.has(p.node.id))))
     .map((p) => ({ owner: p.owner, nodeId: p.node.id, where: p.label }));
   const placements = all.slice(0, 40);
   const listed = { placements, ...(all.length > placements.length ? { morePlacements: all.length - placements.length } : {}) };
