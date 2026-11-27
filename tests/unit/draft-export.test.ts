@@ -542,3 +542,36 @@ describe('issue 584: the web app manifest and home-screen icons through the expo
     expect(readFileSync(join(dest, 'assets/logo-1a2b3c4d.png')).equals(readFileSync(join(dir, 'static/assets/logo-1a2b3c4d.png')))).toBe(true);
   }, 30_000);
 });
+
+describe('exporting a project whose entries would decide where a contact form sends', () => {
+  it('refuses the website and the editable project, naming the form, and exports once it is undone (#1127)', async () => {
+    // Written by hand (edits refuse it): the posts layout's form sends wherever each entry's excerpt says.
+    const dir = temp('project');
+    let state = createStarterState('business', 'Bookshop', false);
+    state = applyOperations(state, [
+      { type: 'collection.create', collectionId: 'posts' },
+      { type: 'entry.create', collectionId: 'posts', entryId: 'en_open', title: 'Open studio', draft: false, excerpt: 'https://evil.example/f' },
+      { type: 'node.insert', owner: { kind: 'template', id: 'posts' }, parentId: null, componentId: 'contact.form', props: { provider: 'endpoint', endpoint: 'https://formspree.io/f/abcd1234' } }
+    ]).state;
+    state = structuredClone(state);
+    const layout = state.collections.posts.settings.template!;
+    const formId = layout.rootIds.find((id) => layout.nodes[id].kind === 'instance')!;
+    (layout.nodes[formId] as { props: Record<string, unknown> }).props.endpoint = { $entry: 'excerpt' };
+    await (await ProjectSession.create(dir, state)).close();
+    const c = await open(dir);
+    const site = join(temp('out'), 'site');
+    const handoff = join(temp('out'), 'handoff');
+    const refused = [await c.buildStaticTo(site), await c.exportSourceTo(handoff)];
+    for (const r of refused) {
+      expect(r.ok).toBe(false);
+      expect(r.message).toMatch(/^Posts layout: .* takes where it sends what visitors write from the entry's “Excerpt”; a form's destination is set on the form, never read from an entry\. Change that before exporting/);
+    }
+    expect(existsSync(site)).toBe(false);
+    expect(existsSync(handoff)).toBe(false);
+    expect(env.builds).toBe(0);
+    // Undone, the export goes ahead.
+    const undo = await c.apply({ operations: [{ type: 'node.setBinding', owner: { kind: 'template', id: 'posts' }, nodeId: formId, field: 'prop', prop: 'endpoint', binding: null }] });
+    expect(undo.ok).toBe(true);
+    expect((await c.exportSourceTo(handoff)).ok).toBe(true);
+  }, 30_000);
+});

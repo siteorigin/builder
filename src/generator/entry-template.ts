@@ -128,19 +128,6 @@ function boundProps(state: ProjectState, read: EntryReadContext, node: InstanceN
   });
 }
 
-/**
- * A layout's placed component with its properties as one entry's page has them (see materializeTemplate), without
- * reading the rest of the layout. The values read from the entry are not copies: for reading only.
- */
-export function entryInstanceProps(state: ProjectState, collection: Collection, entry: EntryDoc, node: InstanceNode): Record<string, unknown> {
-  const props: Record<string, unknown> = { ...node.props };
-  for (const [prop, value] of boundProps(state, { state, collection, entry, neighbours: entryNeighbours(state, collection.settings.id, entry.id) }, node)) {
-    if (value === undefined) delete props[prop];
-    else props[prop] = value;
-  }
-  return props;
-}
-
 /** The entry's page as a tree of literal values: the template read for `entry`. `template` is never changed. */
 export function materializeTemplate(state: ProjectState, collection: Collection, entry: EntryDoc, neighbours: EntryNeighbours, opts: { body?: boolean } = {}): NodeTree {
   const template = collection.settings.template;

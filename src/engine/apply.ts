@@ -89,9 +89,9 @@ import { slotAccepts, slotDecl, slotFill, slotLandingProblem, takesComponent } f
 import { formDefaults, settleFormKeys } from './form-keys';
 import { namesFormFields, type FormField } from '@catalogue/foundation/form';
 import { addPageStarter } from './page-starters';
+import { codeImports } from './code-imports';
 import {
   componentRemove,
-  codeImports,
   declareCodeNames,
   dependentsOf,
   directDependencies,
