@@ -12,8 +12,9 @@
   .ss-head .insp-jump button { padding: 0 4px; color: var(--text-2); }
   .ss-head .insp-jump button:focus-visible { outline-offset: 1px; }
   /* The section under the header is marked by more than colour: a fill, weight and the accent, as a current location. */
-  .ss-head .insp-jump button:hover, .ss-head .insp-jump button[aria-current='location'] { color: var(--accent-text); }
-  .ss-head .insp-jump button[aria-current='location'] { background: var(--accent-soft); font-weight: 600; }
+  .ss-head .insp-jump button[aria-current='location'] { color: var(--accent-text); background: var(--accent-soft); font-weight: 600; }
+  /* A pointer over another link is only a quiet fill, never the accent, so one link at a time reads as the current one. */
+  .ss-head .insp-jump button:not([aria-current='location']):hover { background: var(--hover); color: var(--text); }
   .ss-intro { display: flex; flex-direction: column; gap: 10px; padding: 14px; border-bottom: 1px solid var(--border); }
   .ss-intro .scope-note { font-size: 12px; line-height: 1.4; padding: 7px 10px; }
   /* The theme card: what the site is built on, a deliberate way to move to another theme, and how far it has moved. */
