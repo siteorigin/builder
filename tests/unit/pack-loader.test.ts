@@ -432,6 +432,21 @@ describe('loading every installed pack', () => {
     expect(alone.refused).toEqual([{ dir: reuses, reason: expect.stringMatching(/has code of its own/) }]);
   });
 
+  it("refuses an installed pack that reuses the app's code under properties the code does not take", async () => {
+    const bundled = tmp();
+    const { pack, files } = buildPack(FOUNDATION_PACK);
+    writeRelease(join(bundled, 'foundation'), pack, files);
+    const mine = tmp();
+    const reuses = await release(mine, studio('atelier', true));
+    edit(reuses, (m) => {
+      const code = m.components.find((c) => c.kind === 'code')!;
+      code.properties = { ...code.properties, extra: { type: 'string', label: 'Extra', default: '' } };
+    });
+    const { packs, refused } = await loadPacks([{ dir: bundled, source: 'bundled' }, user(mine)]);
+    expect(packs.map((p) => p.pack.id)).toEqual(['foundation']);
+    expect(refused).toEqual([{ dir: reuses, reason: expect.stringMatching(/The “Extra” property arrives in extra, which the code never takes from \$props\(\)/) }]);
+  });
+
   it('loads neither of two installed packs that claim one ID', async () => {
     const a = tmp();
     const b = tmp();

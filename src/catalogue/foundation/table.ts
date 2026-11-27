@@ -22,10 +22,10 @@ const TABLE_SOURCE = `<script>
 
 	let {
 		eyebrow = '',
-		heading = '',
+		heading,
 		lead = '',
-		caption = '',
-		table = { columns: [], rows: [] },
+		caption,
+		table,
 		rowHeaders = false,
 		variant = 'default',
 		class: className = ''

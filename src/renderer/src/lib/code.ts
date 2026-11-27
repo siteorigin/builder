@@ -1,3 +1,4 @@
+import type { SourceManifest } from '@shared/api';
 import { api, getState } from '../store';
 
 export type SaveOutcome = { ok: true; source: string; fixed?: string; warnings?: string[] } | { ok: false; problems: string[] };
@@ -7,9 +8,9 @@ export type SaveOutcome = { ok: true; source: string; fixed?: string; warnings?:
  * the code-fixing agent repairs the code first; the repaired version is checked again before saving.
  * Broken code is never saved, and nothing is saved once `alive()` says the editor was closed.
  */
-export async function prepareCodeForSave(source: string, onStatus: (s: string | null) => void, alive: () => boolean = () => true): Promise<SaveOutcome> {
+export async function prepareCodeForSave(source: string, onStatus: (s: string | null) => void, alive: () => boolean = () => true, manifest?: SourceManifest): Promise<SaveOutcome> {
   onStatus('Checking your code…');
-  const check = await api.project.validateSource(source);
+  const check = await api.project.validateSource(source, manifest);
   // The editor was closed while checking: start nothing more.
   if (!alive()) return { ok: false, problems: [] };
   const problems = check.diagnostics;

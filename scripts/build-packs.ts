@@ -12,12 +12,16 @@ import { BUILTIN_PACKS } from '@catalogue/builtin';
 import { buildPack, writeRelease } from '../src/main/packs/build';
 import { loadPackDir } from '../src/main/packs/loader';
 import { renderPreviews } from './packs/previews';
+import { packManifestProblems } from '../src/main/codecheck';
 
 const root = process.cwd();
 const requirePreviews = process.argv.includes('--require-previews');
 const started = Date.now();
 for (const authored of BUILTIN_PACKS) {
   const { pack, files } = buildPack(authored, root);
+  // Each code component takes exactly the properties its manifest declares, with the defaults it declares.
+  const disagree = await packManifestProblems(pack.components);
+  if (disagree.length) throw new Error(`The ${pack.id} pack's code does not match its manifest. ${disagree.join(' ')}`);
   const { previews, bytes, drawn } = await renderPreviews(pack, files, join(root, '.tmp', 'pack-previews'), { require: requirePreviews });
   const dir = join(root, 'resources', authored.devOnly ? 'packs-dev' : 'packs');
   // Named after the pack, as the loader requires, inside a folder the app skips.

@@ -7,7 +7,7 @@ import { mkdir } from 'node:fs/promises';
 // First, so the trace (src/main/perf.ts) starts before anything else this module imports is evaluated.
 import { perf } from './perf';
 import { PERF_ARG, PERF_GLOBAL } from '@shared/perf';
-import type { Appearance, ConflictChoice, ImportChoices, InspectLayoutOptions, LocalWorkspaceState, ProviderId, SettingsPatch, SourceSettingsDraft } from '@shared/api';
+import type { Appearance, ConflictChoice, ImportChoices, InspectLayoutOptions, LocalWorkspaceState, ProviderId, SettingsPatch, SourceManifest, SourceSettingsDraft } from '@shared/api';
 import type { ComponentPreviewMeasure, ComponentPreviewResult, ComponentPreviewStep } from '@shared/component-preview';
 import { editorBackground, editorScheme } from '@shared/appearance';
 import { externalLink } from '@shared/links';
@@ -29,6 +29,8 @@ import { discoverLocalContext, listedProblem, listLocalModels, openLocalAdapter,
 import { CompileCache, compileProject } from './compile';
 import { createCompilePool } from './compile-client';
 import { checkSvelteSource, codeContractNames, componentSources } from './codecheck';
+import { designCalled } from '@generator/index';
+import { normalizeProperties } from '@engine/schema';
 import { renderSiteIconsInWorker, stopMediaWorker } from './project/assets';
 import { setSiteIconRenderer } from './project/site-icons';
 import { setToolsCheck } from './runtime/manager';
@@ -757,12 +759,26 @@ function registerIpc() {
   handle('project:restoreSavedCopy', (id: unknown) => (typeof id === 'string' ? controller.restoreSavedCopy(id) : { ok: false, message: 'That saved copy can’t be put back on the list.' }));
   handle('project:unlock', () => controller.unlock());
   handle('project:saveLocalState', (s: LocalWorkspaceState, key: string) => controller.saveLocalState(s, String(key ?? '')));
-  handle('project:validateSource', async (source: string) => {
+  handle('project:validateSource', async (source: string, manifest?: unknown) => {
     // The slots and parts the code declares by itself, as saving it declares them, so a slot it shows is checked.
     const contract: Pick<ComponentDefinition, 'kind' | 'parts' | 'slots'> = { kind: 'code', parts: { root: { nodeId: 'root', label: 'Root' } } };
     const names = await codeContractNames(String(source));
     if (names) declareCodeNames(contract, names);
-    const problems = await checkSvelteSource(String(source), { contract });
+    // The properties being edited (or the component's own) and its axes, which a user's code is warned against.
+    const given = manifest && typeof manifest === 'object' ? (manifest as SourceManifest) : {};
+    const state = controller.session?.state;
+    const def = typeof given.definitionId === 'string' && state && Object.hasOwn(state.components, given.definitionId) ? state.components[given.definitionId] : undefined;
+    const draft = given.properties && typeof given.properties === 'object' && !Array.isArray(given.properties) ? (given.properties as Record<string, unknown>) : undefined;
+    // The draft as saving would store it, its defaults filled in; one saving would refuse is checked as it stands.
+    let properties = draft ? (draft as ComponentDefinition['properties']) : def?.properties;
+    if (draft && state)
+      try {
+        properties = normalizeProperties(draft, state);
+      } catch {
+        // Saving refuses the draft and says why; the code is still held to what the draft names.
+      }
+    const held = properties ? { manifest: { properties, variantAxes: def?.variantAxes, designFile: !!(state && def && designCalled(state, def)) } } : {};
+    const problems = await checkSvelteSource(String(source), { contract, ...held });
     const errors = problems.filter((p) => p.severity === 'error');
     return { ok: errors.length === 0, errors: errors.map((e) => (e.line ? `Line ${e.line}: ` : '') + e.message), diagnostics: problems };
   });

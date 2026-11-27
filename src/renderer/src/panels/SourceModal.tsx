@@ -11,6 +11,7 @@ import { PropSchemaEditor, hiddenEdits, propertiesFromRows, renamesFromRows, row
 import { propertiesHash } from '@shared/ops';
 import { CODE_STARTER, CODE_STARTER_PROPERTIES } from '@shared/code-starter';
 import { pageFile } from '@generator/index';
+import type { SourceManifest } from '@shared/api';
 
 /** False once the modal has closed; closing also cancels an automatic code fix still running. */
 function useAlive(): () => boolean {
@@ -52,10 +53,10 @@ const firstLine = (problems: string[]) => {
 };
 
 /** Runs the real check and shows what it finds. It never writes, whatever the live check last said. */
-async function reviewCode(code: string, alive: () => boolean, ui: { setBusy: (b: boolean) => void; setStatus: (s: string | null) => void; setErrors: (p: string[]) => void; clearLive: () => void }) {
+async function reviewCode(code: string, alive: () => boolean, manifest: SourceManifest, ui: { setBusy: (b: boolean) => void; setStatus: (s: string | null) => void; setErrors: (p: string[]) => void; clearLive: () => void }) {
   ui.setBusy(true);
   try {
-    const r = await prepareCodeForSave(code, ui.setStatus, alive);
+    const r = await prepareCodeForSave(code, ui.setStatus, alive, manifest);
     if (!alive()) return;
     if (r.ok) return ui.clearLive();
     // The caret stays where the person left it: each listed problem goes to its line when they choose it.
@@ -311,6 +312,8 @@ export function SourceModal({ definitionId }: { definitionId: string }) {
   const propsKey = JSON.stringify(def?.properties ?? {});
   // A rename is an edit even when the schemas read the same, and so are two rows with one name.
   const propsDirty = JSON.stringify(propertiesFromRows(rows)) !== savedProps || renamesFromRows(rows).length > 0 || hiddenEdits(rows);
+  // The code is checked against the properties as edited, with the component's own axes.
+  const manifest: SourceManifest = { definitionId, properties: propertiesFromRows(rows) };
   // Text still being typed in a field is an edit made from that baseline too.
   const propsStale = (propsDirty || typing) && propsKey !== savedProps;
   // The stored properties last taken into account: only a change since then refreshes the rows, so a snapshot that
@@ -442,7 +445,7 @@ export function SourceModal({ definitionId }: { definitionId: string }) {
     let wrote = false;
     setSaving(true);
     try {
-      const r = await prepareCodeForSave(code, setStatus, alive);
+      const r = await prepareCodeForSave(code, setStatus, alive, manifest);
       if (!r.ok) return setErrors(r.problems);
       while (discarding.current) if ((await discarding.current) === true) return;
       if (!alive()) return;
@@ -506,7 +509,7 @@ export function SourceModal({ definitionId }: { definitionId: string }) {
     if (saving) return;
     const line = firstLine(errors);
     if (line) return goToLine(line);
-    void reviewCode(code, alive, { setBusy: setSaving, setStatus, setErrors, clearLive: () => (setLiveErrors(0), setCheckedOk(true)) });
+    void reviewCode(code, alive, manifest, { setBusy: setSaving, setStatus, setErrors, clearLive: () => (setLiveErrors(0), setCheckedOk(true)) });
   };
   // Cmd/Ctrl+S from a Properties field saves what is typed in it. An edit the live check has not reported on yet
   // goes to the real check, which decides on the code as it is now. While Save is disabled, so is the shortcut.
@@ -615,6 +618,7 @@ export function SourceModal({ definitionId }: { definitionId: string }) {
                     onErrorCount={(n, line) => (setLiveErrors(n), setLiveLine(line))}
                     onChecking={setLiveChecking}
                     problemsShown={errors.some((p) => /^Line \d+:/.test(p))}
+                    manifest={manifest}
                     handle={editor}
                   />
                 ) : src ? (
@@ -785,6 +789,8 @@ export function NewCodeComponentModal() {
   // Text still being typed in a property field is a change too, before the field commits.
   const [typing, setTyping] = useState(false);
   const propsChanged = typing || hiddenEdits(rows) || JSON.stringify(propertiesFromRows(rows)) !== initialProps;
+  // The code is checked against the properties it will be created with.
+  const manifest: SourceManifest = { properties: propertiesFromRows(rows) };
   const unsaved = sourceChanged || !!name.trim() || propsChanged;
   // Leaving the project (closing the window, quitting) asks about it too.
   useEffect(() => {
@@ -826,7 +832,7 @@ export function NewCodeComponentModal() {
     let wrote = false;
     setSaving(true);
     try {
-      const checked = await prepareCodeForSave(source, setStatus, alive);
+      const checked = await prepareCodeForSave(source, setStatus, alive, manifest);
       if (!checked.ok) return setErrors(checked.problems);
       while (discarding.current) if ((await discarding.current) === true) return;
       if (!alive()) return;
@@ -836,6 +842,7 @@ export function NewCodeComponentModal() {
       const id = r?.[0]?.definitionId as string | undefined;
       if (!id) return setErrors([CREATE_FAILED]);
       if (checked.fixed) toast(`Fixed and created: ${checked.fixed}`);
+      else if (checked.warnings?.length) toast(`Created with ${checked.warnings.length} warning${checked.warnings.length === 1 ? '' : 's'}. ${checked.warnings[0]}`);
       setState({ modal: null });
       await insert({ definitionId: id }, title);
     } catch {
@@ -856,7 +863,7 @@ export function NewCodeComponentModal() {
     if (saving) return;
     const line = firstLine(errors);
     if (line) return goToLine(line);
-    void reviewCode(source, alive, { setBusy: setSaving, setStatus, setErrors, clearLive: () => (setLiveErrors(0), setCheckedOk(true)) });
+    void reviewCode(source, alive, manifest, { setBusy: setSaving, setStatus, setErrors, clearLive: () => (setLiveErrors(0), setCheckedOk(true)) });
   };
   const requestCreate = () => {
     if (blocked) return;
@@ -941,6 +948,7 @@ export function NewCodeComponentModal() {
                   onErrorCount={(n, line) => (setLiveErrors(n), setLiveLine(line))}
                   onChecking={setLiveChecking}
                   problemsShown={errors.some((p) => /^Line \d+:/.test(p))}
+                  manifest={manifest}
                   handle={editor}
                 />
               )

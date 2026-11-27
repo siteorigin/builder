@@ -4,10 +4,11 @@ import { Annotation, Compartment, EditorState, RangeSetBuilder } from '@codemirr
 import { Decoration, EditorView, ViewPlugin, closeHoverTooltips, hasHoverTooltips, keymap, lineNumbers, highlightActiveLine, highlightActiveLineGutter, drawSelection, type DecorationSet, type ViewUpdate } from '@codemirror/view';
 import { defaultKeymap, history, historyKeymap, indentWithTab, simplifySelection } from '@codemirror/commands';
 import { HighlightStyle, bracketMatching, indentOnInput, indentUnit, syntaxHighlighting } from '@codemirror/language';
-import { linter, lintGutter, type Diagnostic } from '@codemirror/lint';
+import { forceLinting, linter, lintGutter, type Diagnostic } from '@codemirror/lint';
 import { svelte } from '@replit/codemirror-lang-svelte';
 import { tags as t } from '@lezer/highlight';
 import { CircleAlert, CircleCheck, Lock, TriangleAlert, WrapText } from 'lucide-react';
+import type { SourceManifest } from '@shared/api';
 import { api } from '../store';
 import { Spinner } from './ui';
 
@@ -185,6 +186,9 @@ function savedWrap(readOnly: boolean): boolean {
   }
 }
 
+/** Marks the transaction that tells the live check the manifest it holds the code to has changed. */
+const manifestChanged = Annotation.define<boolean>();
+
 /**
  * Svelte source editor with syntax highlighting, live compiler diagnostics and a status strip. Tab indents, so
  * Escape then Tab leaves the editor (WCAG 2.1.2); a second Escape reaches the dialog. `locked` holds the text
@@ -203,6 +207,7 @@ export function CodeEditor({
   onErrorCount,
   onChecking,
   problemsShown,
+  manifest,
   handle
 }: {
   value: string;
@@ -220,8 +225,13 @@ export function CodeEditor({
   onChecking?: (pending: boolean) => void;
   /** A list of the problems is on screen below the editor, so the strip keeps to the count. */
   problemsShown?: boolean;
+  /** The manifest the code is checked against, as edited: a change checks the code again. */
+  manifest?: SourceManifest;
   handle?: MutableRefObject<CodeEditorHandle | null>;
 }) {
+  const held = useRef(manifest);
+  held.current = manifest;
+  const manifestKey = manifest ? JSON.stringify(manifest) : '';
   const host = useRef<HTMLDivElement>(null);
   const view = useRef<EditorView | null>(null);
   const lockSlot = useRef(new Compartment());
@@ -289,8 +299,9 @@ export function CodeEditor({
       async (v) => {
         const doc = v.state.doc;
         let found: Awaited<ReturnType<typeof api.project.validateSource>>['diagnostics'] = [];
+        const asked = JSON.stringify(held.current ?? null);
         try {
-          found = (await api.project.validateSource(doc.toString())).diagnostics;
+          found = (await api.project.validateSource(doc.toString(), held.current)).diagnostics;
         } catch {
           // The check itself failed: say nothing about the code rather than leave "Checking" on screen.
           if (doc.eq(v.state.doc)) {
@@ -300,8 +311,8 @@ export function CodeEditor({
           }
           return [];
         }
-        // The text moved on while this ran; the next run reports on it.
-        if (!doc.eq(v.state.doc)) return [];
+        // The text or the manifest moved on while this ran; the next run reports on it.
+        if (!doc.eq(v.state.doc) || asked !== JSON.stringify(held.current ?? null)) return [];
         const diagnostics = found.map((d): Diagnostic => {
           const line = doc.line(Math.min(Math.max(1, d.line ?? 1), doc.lines));
           const from = Math.min(line.from + (d.column ?? 0), line.to);
@@ -319,7 +330,8 @@ export function CodeEditor({
         setChecking(false);
         return diagnostics;
       },
-      { delay: 600 }
+      // A change of the manifest checks the code again (see below), though the text stayed the same.
+      { delay: 600, needsRefresh: (u) => u.transactions.some((tr) => tr.annotation(manifestChanged)) }
     );
     const editKeys = readOnly
       ? []
@@ -446,6 +458,17 @@ export function CodeEditor({
   useEffect(() => {
     view.current?.dispatch({ effects: lockSlot.current.reconfigure(EditorState.readOnly.of(!!readOnly || !!locked)) });
   }, [readOnly, locked]);
+
+  // A property added, renamed or removed changes what the code is held to: check it again.
+  const linted = useRef(manifestKey);
+  useEffect(() => {
+    if (linted.current === manifestKey) return;
+    linted.current = manifestKey;
+    if (!view.current || readOnly) return;
+    setChecking(true);
+    view.current.dispatch({ annotations: manifestChanged.of(true) });
+    forceLinting(view.current);
+  }, [manifestKey, readOnly]);
 
   const toggleWrap = () => {
     const next = !wrap;
