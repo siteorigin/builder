@@ -154,6 +154,16 @@ function commits(m: Collector, trace: Trace, name: string, from: PerfRecord | un
   else m.count(name, counter(to, 'react.commits') - counter(from, 'react.commits'));
 }
 
+/**
+ * The editor's walks of every collection entry for the site's addresses (shared/collections.ts `siteEntries`) between
+ * two of its marks: work that follows the project's size. Missing when the editor never counted them, never a zero.
+ */
+function entryWalks(m: Collector, name: string, from: PerfRecord | undefined, to: PerfRecord | undefined) {
+  if (!from || !to) return;
+  if (from.c?.['collections.siteEntries'] === undefined || to.c?.['collections.siteEntries'] === undefined) m.need(`${name} (the editor never counted its walks of every entry)`, undefined);
+  else m.count(name, counter(to, 'collections.siteEntries') - counter(from, 'collections.siteEntries'));
+}
+
 /** The longest main-process stall in [from, to], 0 when there was none. */
 function stallMax(trace: Trace, from: PerfRecord | undefined, to: PerfRecord | undefined): number {
   if (!from || !to) return 0;
@@ -667,6 +677,7 @@ function measureEdit(trace: Trace, scenario: string): Collector {
   bytesSent(m, name('snapshotBytes'), sent);
   m.count(name('reloadFromDisk'), trace.all('session.reloadFromDisk', inProc('main'), at, endMain?.t).length);
   commits(m, trace, name('rendererCommits'), req, endRenderer);
+  entryWalks(m, name('siteEntryWalks'), req, endRenderer);
   m.ms(name('mainStallMax'), stallMax(trace, req, shown));
   return m;
 }
@@ -4432,6 +4443,150 @@ export const editBranded: Scenario = {
 };
 
 // ---------------------------------------------------------------------------
+// history
+// ---------------------------------------------------------------------------
+
+/** The windows `history` times, in the order it makes them. */
+export const HISTORY_WINDOWS = ['undo', 'redo', 'restore'] as const;
+export type HistoryWindow = (typeof HISTORY_WINDOWS)[number];
+/** The version `history` saves before its edit and restores last, and the label of that edit's step. */
+export const HISTORY_VERSION = 'Benchmark version';
+export const HISTORY_EDIT_LABEL = 'Benchmark history edit';
+export const HISTORY_HEADING = 'History heading';
+
+/** The phase mark that ends each window (the next one starts at it, or at `scenario.end` for the last). */
+const HISTORY_PHASES: Record<HistoryWindow, [start: string, end: string]> = { undo: ['undo', 'undone'], redo: ['redo', 'redone'], restore: ['restore', 'restored'] };
+
+/**
+ * Take a step back and forward, and put a saved version back (#967): what each change sends the editor and costs it to
+ * take in, against what the same edit costs (`edit`). Not timed: a version saved of the project as it is, the hero's
+ * Heading changed through the editor's API (one step of History, the preview showing it), and the hero selected in
+ * Layers with the Inspector showing it, as `edit` leaves it. Timed, each to the preview showing it: Undo in the
+ * toolbar, then Redo, then, from History's Saved versions (opened and the version reviewed untimed), Restore.
+ */
+export const history: Scenario = {
+  name: 'history',
+  after: 'open',
+  description: 'Save a version and change the home hero’s Heading (untimed); then Undo, Redo, and restore the version from History, each to the preview showing it.',
+  async run(ctx) {
+    const { win, fixture } = ctx;
+    const scenario = 'history';
+    const heading = `${HISTORY_HEADING} ${ctx.iteration}`;
+    const snapshot = () => win.evaluate(() => (globalThis as unknown as EditorPage).builder.project.snapshot());
+    const first = await snapshot();
+    expect(first, 'no project is open');
+    const original = findHeading(first.state.pages[fixture.homePageId], fixture.heroId)?.heading;
+    expect(typeof original === 'string' && original !== heading, 'the home hero has no heading to change');
+    const saved = await win.evaluate(([name, key]) => (globalThis as unknown as EditorPage).builder.project.saveVersion(name, key), [HISTORY_VERSION, first.workspaceKey ?? ''] as const);
+    expect(saved.ok, `the version could not be saved: ${saved.message ?? 'no reason given'}`);
+    const edited = await win.evaluate(
+      ([pageId, nodeId, value, label]) => (globalThis as unknown as EditorPage).builder.project.apply({ operations: [{ type: 'instance.setProp', owner: { kind: 'page', id: pageId }, nodeId, prop: 'heading', value }] }, { label }),
+      [fixture.homePageId, fixture.heroId, heading, HISTORY_EDIT_LABEL] as const
+    );
+    expect(edited.ok, `the edit was refused: ${edited.error?.message ?? 'no reason given'}`);
+    const base = (await snapshot())!.revision;
+    await ctx.waitTrace((t) => !!t.first('canvas.revisionApplied', atRevision(base)), 30_000);
+    await preview(win).getByRole('heading', { name: heading, exact: true, level: 1 }).first().waitFor({ timeout: 60_000 });
+    const hero = win.getByRole('treeitem', { name: HERO_NAME }).first();
+    if (!(await hero.isVisible())) await win.getByRole('button', { name: 'Layers', exact: true }).first().click();
+    await hero.click();
+    await win.getByRole('tab', { name: 'Inspector', exact: true }).first().click();
+    await win.getByRole('textbox', { name: 'Heading', exact: true }).first().waitFor({ timeout: 15_000 });
+    await sleep(Math.max(ctx.settleMs, WORKSPACE_SAVE_WAIT_MS));
+
+    /** The change made `target` and shows `want`: in the project, on disk and in the preview. */
+    const landed = async (what: string, target: number, want: string) => {
+      // The canvas reporting the revision applied, or 30 s: a change that never came is told by the checks below.
+      await ctx.waitTrace((t) => !!t.first('canvas.revisionApplied', atRevision(target)), 30_000);
+      const now = await snapshot();
+      expect(now && now.revision === target, `${what} left the project at revision ${now?.revision}, not ${target}`);
+      expect(findHeading(now.state.pages[fixture.homePageId], fixture.heroId)?.heading === want, `after ${what} the project does not hold “${want}” on the home hero`);
+      const doc = join(ctx.projectDir, 'siteorigin', 'pages', `${fixture.homePageId}.json`);
+      const disk = existsSync(doc) ? (JSON.parse(readFileSync(doc, 'utf8')) as unknown) : null;
+      expect(findHeading(disk, fixture.heroId)?.heading === want, `after ${what} the home page’s document on disk does not hold “${want}”`);
+      await preview(win).getByRole('heading', { name: want, exact: true, level: 1 }).first().waitFor({ timeout: 60_000 });
+      // And the editor's own copy: the Inspector, showing the hero, holds it too (a copy that missed the change would not).
+      const field = win.getByRole('textbox', { name: 'Heading', exact: true }).first();
+      let shown = await field.inputValue();
+      for (let i = 0; shown !== want && i < 50; i++) shown = (await sleep(100), await field.inputValue());
+      expect(shown === want, `after ${what} the Inspector shows “${shown}”, not “${want}”`);
+      return now;
+    };
+
+    await ctx.mark('scenario.start', { scenario });
+    await ctx.mark('scenario.phase', { scenario, phase: 'undo', target: base + 1 });
+    await win.getByRole('button', { name: `Undo ${HISTORY_EDIT_LABEL}`, exact: true }).click();
+    await landed('Undo', base + 1, original!);
+    await sleep(ctx.settleMs);
+    await ctx.mark('scenario.phase', { scenario, phase: 'undone' });
+
+    await ctx.mark('scenario.phase', { scenario, phase: 'redo', target: base + 2 });
+    await win.getByRole('button', { name: `Redo ${HISTORY_EDIT_LABEL}`, exact: true }).click();
+    await landed('Redo', base + 2, heading);
+    await sleep(ctx.settleMs);
+    await ctx.mark('scenario.phase', { scenario, phase: 'redone' });
+
+    // Not timed: History opened on its saved versions, and what restoring the version changes reviewed.
+    const dialog = win.getByRole('dialog', { name: 'History' });
+    await win.locator('.project-title').click();
+    await win.locator('[role="menu"] [role^="menuitem"]', { hasText: 'History…' }).click();
+    await dialog.getByRole('tab', { name: 'Saved versions' }).click();
+    await dialog.getByRole('button', { name: `Restore “${HISTORY_VERSION}”…`, exact: true }).click();
+    await dialog.getByTestId('version-review').waitFor({ timeout: 30_000 });
+    const ready = await dialog
+      .locator('[data-testid="restore-version"]:enabled')
+      .waitFor({ timeout: 30_000 })
+      .then(() => true, () => false);
+    expect(ready, `the version could not be restored: ${(await dialog.getByTestId('version-review').innerText().catch(() => '')).replace(/\s+/g, ' ').slice(0, 300)}`);
+    await sleep(ctx.settleMs);
+    await ctx.mark('scenario.phase', { scenario, phase: 'restore', target: base + 3 });
+    await dialog.getByTestId('restore-version').click();
+    await dialog.waitFor({ state: 'detached', timeout: 60_000 });
+    const after = await landed('restoring the version', base + 3, original!);
+    const versions = after.versions?.list ?? [];
+    expect(versions.some((v) => v.name === HISTORY_VERSION) && versions.some((v) => v.auto), 'restoring did not keep the work it replaced as a version of its own');
+    await sleep(ctx.settleMs);
+    await ctx.mark('scenario.phase', { scenario, phase: 'restored' });
+    await ctx.mark('scenario.end', { scenario });
+    await ctx.waitTrace((t) => !!t.first('scenario.end', forScenario(scenario, 'renderer')) && !!t.first('scenario.end', forScenario(scenario, 'main')));
+  },
+  measure(trace) {
+    const m = new Collector();
+    const scenario = 'history';
+    const phase = (name: string, proc: 'main' | 'renderer') => m.need(`scenario.phase ${name} (${proc})`, trace.first('scenario.phase', (r) => r.proc === proc && r.attrs?.scenario === scenario && r.attrs?.phase === name));
+    for (const w of HISTORY_WINDOWS) {
+      const name = (metric: string) => `${scenario}.${w}.${metric}`;
+      const [open, close] = HISTORY_PHASES[w];
+      const from = phase(open, 'renderer');
+      const to = phase(close, 'renderer');
+      const fromMain = phase(open, 'main');
+      const toMain = phase(close, 'main');
+      const target = typeof from?.attrs?.target === 'number' ? from.attrs.target : NaN;
+      const at = fromMain?.t ?? Infinity;
+      const changed = m.need(`session.changed (${w})`, trace.first('session.changed', atRevision(target), at, toMain?.t));
+      const sentAt = m.need(`controller.snapshotSent (${w})`, trace.first('controller.snapshotSent', atRevision(target), at, toMain?.t));
+      const received = m.need(`renderer.snapshotReceived (${w})`, trace.first('renderer.snapshotReceived', atRevision(target), from?.t ?? Infinity, to?.t));
+      const committed = m.need(`renderer.commit (${w})`, trace.first('renderer.commit', atRevision(target), from?.t ?? Infinity, to?.t));
+      const shown = m.need(`canvas.revisionApplied (${w})`, trace.first('canvas.revisionApplied', atRevision(target), from?.t ?? Infinity, to?.t));
+      m.since(name('changed'), from, changed);
+      m.since(name('changedToSent'), changed, sentAt);
+      m.since(name('sentToReceived'), sentAt, received);
+      m.since(name('receivedToCommit'), received, committed);
+      m.since(name('rendererCommit'), from, committed);
+      m.since(name('previewApplied'), from, shown);
+      // Everything the editor was sent from the window's start to its end, the version list's own updates included.
+      const sent = trace.all('controller.snapshotSent', inProc('main'), at, toMain?.t ?? -Infinity);
+      m.count(name('snapshotsSent'), sent.length);
+      bytesSent(m, name('snapshotBytes'), sent);
+      commits(m, trace, name('rendererCommits'), from, to);
+      entryWalks(m, name('siteEntryWalks'), from, to);
+      m.ms(name('mainStallMax'), stallMax(trace, fromMain, toMain));
+    }
+    return m;
+  }
+};
+
+// ---------------------------------------------------------------------------
 // ai
 // ---------------------------------------------------------------------------
 
@@ -5051,7 +5206,7 @@ async function expectChip(win: Page) {
   expect(await chip.count(), 'the composer does not say the request may change the whole site');
 }
 
-export const SCENARIOS: Scenario[] = [launch, open, edit, editFullHistory, edits, batch, panels, panelsInUse, layers, chat, aiEdit, ai, canvas, drag, colour, thumbs, exportSite, exportAgain, cmdk, assets, importPhotos, importOriginals, importHeic, editBranded, switchProject, create, createAgain, memory];
+export const SCENARIOS: Scenario[] = [launch, open, edit, editFullHistory, edits, batch, panels, panelsInUse, layers, chat, aiEdit, ai, canvas, drag, colour, thumbs, exportSite, exportAgain, cmdk, assets, importPhotos, importOriginals, importHeic, history, editBranded, switchProject, create, createAgain, memory];
 
 /**
  * The scenarios to run in one launch for those asked for: each with every one it follows, in the order of SCENARIOS
