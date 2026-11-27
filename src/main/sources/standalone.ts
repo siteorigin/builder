@@ -395,7 +395,7 @@ function serveWorker() {
  * file would add reads the same on both sides). A project on another theme is checked against the default one.
  */
 export function registerSyncPacks() {
-  registerPacks(BUILTIN_PACKS.map(({ fonts, ...pack }) => ({ ...pack, fonts: fonts.map(({ css: _css, noticeFile: _notice, subsets: _subsets, ...f }) => ({ ...f, notice: '', faces: [] })), source: 'bundled' }) as ThemePack));
+  registerPacks(BUILTIN_PACKS.map(({ fonts, ...pack }) => ({ ...pack, fonts: fonts.map(({ css: _css, italicCss: _italicCss, noticeFile: _notice, subsets: _subsets, ...f }) => ({ ...f, notice: '', faces: [] })), source: 'bundled' }) as ThemePack));
 }
 
 /** `node scripts/sync-sources.mjs [project folder]`. */

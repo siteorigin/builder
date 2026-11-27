@@ -1,5 +1,7 @@
 import { describe, expect, it } from 'vitest';
-import { readFileSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import type { ProjectState, TextStyleValue } from '@shared/types';
 import { createStarterState } from '@catalogue/starters';
 import { getTheme, listThemes, registerPacks } from '@catalogue/index';
@@ -7,8 +9,9 @@ import { fontFamilies, installedFontFamilies, installedFonts } from '@catalogue/
 import { applyOperations } from '@engine/apply';
 import { FONTS_DIR, generateProject, packFileCopies } from '@generator/index';
 import { parseFontFaces } from '../../src/main/packs/build';
-import { buildFont } from '../../src/main/packs/build';
-import { builtinFont } from '@catalogue/builtin-fonts';
+import { buildFont, buildPack } from '../../src/main/packs/build';
+import type { AuthoredPack, PackFontSource } from '@catalogue/pack';
+import { BUILTIN_FONTS, builtinFont } from '@catalogue/builtin-fonts';
 import { SHARED_BASE_CSS } from '@catalogue/foundation/base.css';
 
 const fresh = () => createStarterState('business', 'Test', false);
@@ -31,6 +34,113 @@ describe('Signal fonts', () => {
     const files = [...buildFont(builtinFont('JetBrains Mono'), process.cwd()).files.keys()];
     expect(files.length).toBeGreaterThan(0);
     for (const f of files) expect(f).toMatch(/-latin(-ext)?-wght/);
+  });
+});
+
+describe('italic faces', () => {
+  const WITH_ITALIC = ['Inter', 'Fraunces', 'Plus Jakarta Sans', 'DM Sans', 'Playfair Display', 'Lora', 'JetBrains Mono'];
+
+  it('ship beside the upright faces of every built-in font whose family has an italic, subset the same way', () => {
+    for (const source of BUILTIN_FONTS) {
+      const { font: built } = buildFont(source, process.cwd());
+      const upright = built.faces.filter((f) => f.style === 'normal');
+      const italic = built.faces.filter((f) => f.style === 'italic');
+      expect(upright.length, source.name).toBeGreaterThan(0);
+      if (!WITH_ITALIC.includes(source.name)) {
+        expect(italic, source.name).toEqual([]);
+        continue;
+      }
+      // One italic face for each upright one: the same weights and the same scripts, from the italic file.
+      expect(italic.map((f) => [f.file.replace('-italic.', '-normal.'), f.weight, f.unicodeRange, f.format]), source.name).toEqual(upright.map((f) => [f.file, f.weight, f.unicodeRange, f.format]));
+    }
+    expect(BUILTIN_FONTS.filter((f) => f.italicCss).map((f) => f.name)).toEqual(WITH_ITALIC);
+    // JetBrains Mono's italic keeps to its Latin subsets, as its upright faces do.
+    const mono = buildFont(builtinFont('JetBrains Mono'), process.cwd()).font.faces;
+    for (const style of ['normal', 'italic']) expect(mono.filter((f) => f.style === style).map((f) => f.file.match(/jetbrains-mono-(.+)-wght-/)![1])).toEqual(['latin-ext', 'latin']);
+  });
+
+  it('are declared with font-style: italic in the site stylesheet, from files copied into the project', () => {
+    const s = setFont(fresh(), font('Lora').stack, 'font.display');
+    const css = tokensCss(s);
+    expect(css).toContain("@font-face {\n\tfont-family: 'Lora Variable';\n\tfont-style: italic;\n\tfont-display: swap;\n\tfont-weight: 400 700;\n\tsrc: url('../fonts/lora-latin-wght-italic.woff2') format('woff2-variations');\n\tunicode-range: U+0000-00FF,");
+    // Every italic face the stylesheet names is a file the editor copies in.
+    const urls = [...css.matchAll(/url\('\.\.\/fonts\/([^']+)'\)/g)].map((m) => `${FONTS_DIR}/${m[1]}`);
+    const loraItalics = buildFont(builtinFont('Lora'), process.cwd()).font.faces.filter((f) => f.style === 'italic');
+    expect(urls.filter((u) => u.includes('/lora-') && u.endsWith('-italic.woff2'))).toEqual(loraItalics.map((f) => f.file.replace('fonts/', `${FONTS_DIR}/`)));
+    expect(packFileCopies(s).map((c) => c.path)).toEqual(urls);
+    // A family with no italic gets none, and the browser slants its upright face as before.
+    const grotesk = tokensCss(setFont(fresh(), font('Space Grotesk').stack, 'font.display'));
+    expect(grotesk).toContain("font-family: 'Space Grotesk Variable';\n\tfont-style: normal;");
+    expect(grotesk).not.toContain("font-family: 'Space Grotesk Variable';\n\tfont-style: italic;");
+  });
+
+  it('come only from the stylesheet named for them', () => {
+    const lora = builtinFont('Lora');
+    expect(() => buildFont({ ...lora, italicCss: lora.css }, process.cwd())).toThrow(/index\.css declares a font-style: normal face, but it is the font's italic stylesheet/);
+    expect(() => buildFont({ ...lora, italicCss: '@fontsource-variable/lora/missing.css' }, process.cwd())).toThrow(/is not installed/);
+    expect(() => buildFont({ ...lora, italicCss: '@fontsource-variable/inter/wght-italic.css' }, process.cwd())).toThrow(/declares "Inter Variable", not "Lora Variable"/);
+  });
+});
+
+describe('font stylesheets of a pack author', () => {
+  /** A package of stylesheets under a throwaway root; each rule is [style, subset, file name, unicode-range?]. */
+  const withFixture = (sheets: Record<string, [string, string, string?, string?][]>, run: (root: string) => void) => {
+    const root = mkdtempSync(join(tmpdir(), 'italic-fonts-'));
+    const dir = join(root, 'node_modules', 'fixture');
+    mkdirSync(dir, { recursive: true });
+    for (const [name, rules] of Object.entries(sheets)) {
+      const css = rules.map(([style, subset, file, range]) => `@font-face {\n  font-family: 'Fixture Variable';\n  font-style: ${style};\n  font-weight: 100 900;\n  src: url(./files/${file ?? `fixture-${subset}-wght-${style}.woff2`}) format('woff2-variations');${range ? `\n  unicode-range: ${range};` : ''}\n}\n`);
+      writeFileSync(join(dir, name), css.join(''));
+    }
+    writeFileSync(join(dir, 'LICENSE'), 'SIL Open Font License');
+    try {
+      run(root);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  };
+  const fixture = { family: 'Fixture Variable', name: 'Fixture', category: 'serif' as const, stack: "'Fixture Variable', serif", license: 'OFL-1.1', css: 'fixture/index.css', noticeFile: 'fixture/LICENSE' };
+  const files = (root: string, f: PackFontSource) => buildFont(f, root).font.faces.map((x) => `${x.style} ${x.file}`);
+
+  it('must bring an italic face in the chosen subsets when an italic sheet is named, so the font never ships upright only without a word', () => {
+    withFixture({ 'index.css': [['normal', 'latin'], ['normal', 'greek']], 'italic.css': [['italic', 'greek']] }, (root) => {
+      const f = { ...fixture, italicCss: 'fixture/italic.css' };
+      expect(files(root, f)).toEqual(['normal fonts/fixture-latin-wght-normal.woff2', 'normal fonts/fixture-greek-wght-normal.woff2', 'italic fonts/fixture-greek-wght-italic.woff2']);
+      expect(() => buildFont({ ...f, subsets: ['latin'] }, root)).toThrow(/fixture\/italic\.css declares no italic fonts in the subsets latin/);
+      expect(() => buildFont({ ...f, subsets: ['cyrillic'] }, root)).toThrow(/fixture\/index\.css declares no fonts in the subsets cyrillic/);
+      expect(() => buildFont({ ...fixture, subsets: ['cyrillic'] }, root)).toThrow(/fixture\/index\.css declares no fonts in the subsets cyrillic/);
+    });
+  });
+
+  it('keeps both styles of a main sheet that declares them, and an italic sheet may add to its subsets', () => {
+    withFixture({ 'index.css': [['normal', 'latin'], ['italic', 'latin']], 'italic.css': [['italic', 'greek']] }, (root) => {
+      expect(files(root, fixture)).toEqual(['normal fonts/fixture-latin-wght-normal.woff2', 'italic fonts/fixture-latin-wght-italic.woff2']);
+      // The main sheet's italic already counts, so an italic sheet with nothing in the subsets is no error.
+      expect(files(root, { ...fixture, italicCss: 'fixture/italic.css', subsets: ['latin'] })).toEqual(['normal fonts/fixture-latin-wght-normal.woff2', 'italic fonts/fixture-latin-wght-italic.woff2']);
+    });
+  });
+
+  it('copies a file once when two rules of a font share it, and refuses two different files under one name', () => {
+    const shared = 'fixture-latin-wght-normal.woff2';
+    withFixture({ 'index.css': [['normal', 'latin', shared, 'U+0041-005A'], ['normal', 'latin', shared, 'U+0061-007A']] }, (root) => {
+      const built = buildFont(fixture, root);
+      expect(built.font.faces.map((f) => f.unicodeRange)).toEqual(['U+0041-005A', 'U+0061-007A']);
+      expect([...built.files.keys()]).toEqual([`fonts/${shared}`]);
+      mkdirSync(join(root, 'node_modules', 'fixture', 'italic', 'files'), { recursive: true });
+      writeFileSync(join(root, 'node_modules', 'fixture', 'italic', 'it.css'), `@font-face {\n  font-family: 'Fixture Variable';\n  font-style: italic;\n  font-weight: 100 900;\n  src: url(./files/${shared}) format('woff2-variations');\n}\n`);
+      expect(() => buildFont({ ...fixture, italicCss: 'fixture/italic/it.css' }, root)).toThrow(`fixture/italic/it.css: Fixture has two different files named ${shared}.`);
+    });
+  });
+
+  it('refuses a pack whose fonts ship different files under one name, so one family never takes over another', () => {
+    withFixture({ 'index.css': [['normal', 'latin', 'latin-normal.woff2']] }, (root) => {
+      mkdirSync(join(root, 'node_modules', 'other'), { recursive: true });
+      writeFileSync(join(root, 'node_modules', 'other', 'index.css'), `@font-face {\n  font-family: 'Other Variable';\n  font-style: normal;\n  font-weight: 400;\n  src: url(./files/latin-normal.woff2) format('woff2');\n}\n`);
+      const other = { ...fixture, family: 'Other Variable', name: 'Other', stack: "'Other Variable', serif", css: 'other/index.css' };
+      const pack = { ...getTheme('foundation'), fonts: [fixture, other], components: [] } as unknown as AuthoredPack;
+      expect(() => buildPack(pack, root)).toThrow('Other and Fixture both ship a different fonts/latin-normal.woff2.');
+      expect([...buildPack({ ...pack, fonts: [fixture, fixture] }, root).files.keys()]).toEqual(['fonts/latin-normal.woff2']);
+    });
   });
 });
 
@@ -59,10 +169,11 @@ describe('bundled fonts', () => {
     }
   });
 
-  it('carry every face of the stylesheets they come from, with an open licence', () => {
+  it('carry every face of the stylesheets they come from, upright then italic, with an open licence', () => {
     expect(BUNDLED_FONTS().length).toBeGreaterThanOrEqual(6);
     for (const [i, f] of BUNDLED_FONTS().entries()) {
-      const css = parseFontFaces(readFileSync(`node_modules/${PACKAGES[i]}/index.css`, 'utf8'));
+      const sheets = ['index.css', 'wght-italic.css'].map((n) => `node_modules/${PACKAGES[i]}/${n}`).filter((p) => existsSync(p));
+      const css = sheets.flatMap((p) => parseFontFaces(readFileSync(p, 'utf8')));
       expect(f.faces.map((x) => [x.file.replace('fonts/', './files/'), x.weight, x.style, x.unicodeRange, x.format]), f.name).toEqual(css.map((c) => [c.url, c.weight, c.style, c.unicodeRange, c.format]));
       expect(f.license).toBe('OFL-1.1');
       expect(f.notice).toMatch(/SIL Open Font License/);
