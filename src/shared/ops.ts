@@ -227,7 +227,7 @@ const DESIGN_NODE = z.discriminatedUnion('kind', [
         .record(z.string(), z.unknown())
         .optional()
         .describe('Its property values by name, each a literal or the property ({"$prop"}) or list item field ({"$item"}) of this design it shows. Left out, a property starts at its default (or, on a rebuild, keeps what the placement holds).'),
-      variants: z.record(z.string(), z.string()).optional().describe('The option it shows on each of its variant axes, by axis. An axis left out uses its default.')
+      variants: z.record(z.string(), z.string()).optional().describe('The option it shows on each of its variant axes, by axis. An axis left out uses its default (or, on a rebuild, keeps the option the placement shows).')
     })
     .strict()
 ]);

@@ -796,7 +796,12 @@ describe('component.upsert: components placed in a design (#1146)', () => {
     // A code component places the design's classes and anchor only where its source says: never the root.
     const code = applyOperations(a.state, [{ type: 'component.createCode', name: 'Code', source: '<p>Hi</p>' }]);
     const codeId = code.results[0].definitionId as string;
-    expect(() => applyOperations(code.state, [{ type: 'component.upsert', name: 'D', properties: {}, nodes: [{ kind: 'instance', id: 'root', definitionId: codeId }] }])).toThrow(/is a code component, which cannot carry/);
+    expect(() => applyOperations(code.state, [{ type: 'component.upsert', name: 'D', properties: {}, nodes: [{ kind: 'instance', id: 'root', definitionId: codeId }] }])).toThrow(/never places the classes it is given/);
+    // Code that places the classes it is handed carries a design's root, on a rebuild too.
+    const classed = applyOperations(code.state, [{ type: 'component.createCode', name: 'Classed', source: "<script>let { class: cls = '' } = $props();</script>\n<p class={cls}>Hi</p>" }]);
+    const classedId = classed.results[0].definitionId as string;
+    const wrap = made(classed.state, { type: 'component.upsert', name: 'E', properties: {}, nodes: [{ kind: 'instance', id: 'root', definitionId: classedId }] });
+    expect(applyOperations(wrap.state, [{ type: 'component.upsert', definitionId: wrap.id, name: 'E2', properties: {}, nodes: [{ kind: 'instance', id: 'root', definitionId: classedId }] }]).state.components[wrap.id].name).toBe('E2');
     expect(made(code.state, holder('D', { c: codeId })).state.components).toBeDefined();
   });
 

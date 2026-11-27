@@ -60,6 +60,8 @@ type DesignNode = UpsertOp['nodes'][number];
 export interface UpsertHelpers {
   setStyle: (state: ProjectState, op: Op<'node.setStyle'>) => void;
   dependsOn: (state: ProjectState, defId: string, targetId: string) => boolean;
+  /** Whether a code component may place the classes it is handed, so it can carry a design's root. */
+  placesClass: (def: ComponentDefinition) => boolean;
 }
 
 const own = <T>(rec: Record<string, T> | undefined, key: string): T | undefined => (rec && Object.hasOwn(rec, key) ? rec[key] : undefined);
@@ -78,7 +80,7 @@ export function componentUpsert(state: ProjectState, given: UpsertOp, helpers: U
   const name = op.name.trim();
   if (!name) fail('A component needs a name.');
   // Everything is checked as the finished component first, so nothing changes until all of it holds.
-  const tree = designTree(state, op.nodes, { ownerId: op.definitionId ?? op.newDefinitionId, was, dependsOn: helpers.dependsOn });
+  const tree = designTree(state, op.nodes, { ownerId: op.definitionId ?? op.newDefinitionId, was, dependsOn: helpers.dependsOn, placesClass: helpers.placesClass });
   const rootId = tree.rootIds[0];
   const properties = normalizeProperties(op.properties, state);
   const parts = designParts(state, op, tree, was);
@@ -126,6 +128,8 @@ export function componentUpsert(state: ProjectState, given: UpsertOp, helpers: U
   Object.assign(def, metadata(op, name));
   if (op.insertAs === null) delete def.insertAs;
   def.tree = tree;
+  // Checked again with the design in place: code that imports this component's own file closes a loop only now.
+  for (const n of Object.values(tree.nodes)) if (n.kind === 'instance' && helpers.dependsOn(state, n.definitionId, id)) fail(`${describeNode(n)}: a component cannot contain itself, and "${state.components[n.definitionId]?.name ?? n.definitionId}" renders this component inside it.`);
   def.parts = parts;
   if (variantAxes) def.variantAxes = variantAxes;
   else delete def.variantAxes;
@@ -292,6 +296,7 @@ interface DesignContext {
   ownerId: string | undefined;
   was: ComponentDefinition | undefined;
   dependsOn: UpsertHelpers['dependsOn'];
+  placesClass: UpsertHelpers['placesClass'];
 }
 
 /** The described nodes as one tree: each in one place, all inside one root that shows an element of its own. */
@@ -314,8 +319,9 @@ function designTree(state: ProjectState, specs: DesignNode[], ctx: DesignContext
   if (roots.length > 1) fail(`The design has ${roots.length} top-level nodes (${roots.map((r) => quoted(r.id)).join(', ')}). Put them inside one root element, which carries the component.`);
   const root = roots[0] ?? fail('Every node of the design is inside another, so it has no root. Leave the root out of every node\'s children.');
   if (root.kind === 'repeat' || root.kind === 'slot') fail(`The root "${root.id}" is a ${root.kind}, which shows no element of its own to carry the component. Put it inside a container.`);
-  // Code places the component's classes and anchor only where its source says, so it never carries a design.
-  if (root.kind === 'instance' && own(state.components, root.definitionId)?.kind === 'code') fail(`The root "${root.id}" is a code component, which cannot carry the component. Put it inside a container.`);
+  // Code that plainly never places the classes it is handed would drop the design's root styles and anchor.
+  const rootDef = root.kind === 'instance' ? own(state.components, root.definitionId) : undefined;
+  if (rootDef?.kind === 'code' && !ctx.placesClass(rootDef)) fail(`The root "${root.id}" is a code component that never places the classes it is given, so it cannot carry the component. Put it inside a container.`);
   // Each node has one parent and the root none, so a node the root never reaches sits inside itself.
   const reached = new Set<string>();
   const stack = [root.id];
@@ -502,7 +508,9 @@ function placedComponent(state: ProjectState, s: Extract<DesignNode, { kind: 'in
     for (const k of ['name', 'when', 'unless'] as const) delete kept[k];
   }
   // A form's fields as it sends them now, so a field it keeps keeps the key its answers arrive under.
-  const formBefore = namesFormFields(def) ? (kept && Array.isArray(kept.props.fields) ? (kept.props.fields as ListItem[]) : defaultFields(def)) : undefined;
+  // A list bound to the design's own property sends nothing of its own yet, as the field editor treats it.
+  const keptFields = kept?.props.fields;
+  const formBefore = namesFormFields(def) ? (keptFields === undefined ? defaultFields(def) : Array.isArray(keptFields) ? (keptFields as ListItem[]) : []) : undefined;
   const node: InstanceNode = { ...(kept ?? makeInstance(def)), ...base, kind: 'instance', definitionId: childId } as InstanceNode;
   for (const [prop, v] of Object.entries(s.props ?? {})) {
     if (isProtoKey(prop)) refuse(`"${prop}" cannot be a property name.`);
