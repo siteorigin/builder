@@ -41,15 +41,6 @@
   .insp-actions { display: flex; align-items: center; gap: 2px; flex: none; }
   /* Icon buttons carry their own padding; pull them in so the glyphs line up with the panel's right edge. */
   .insp-actions:has(> .icon-btn:last-child) { margin-right: -4px; }
-  /* The Project tab (#518): the project's private brief. */
-  .brief { display: flex; flex-direction: column; }
-  .brief-head { padding: 14px 14px 12px; border-bottom: 1px solid var(--border); display: flex; flex-direction: column; gap: 6px; }
-  .brief-head h2 { margin: 0; font-size: 13px; font-weight: 600; color: var(--text); }
-  .brief-private { margin: 0; display: flex; align-items: flex-start; gap: 7px; font-size: 12px; line-height: 1.45; color: var(--text-2); text-wrap: pretty; }
-  .brief-private > svg { width: 13px; height: 13px; flex: none; margin-top: 2px; color: var(--text-3); }
-  .brief-fields { padding: 14px; display: flex; flex-direction: column; gap: 16px; }
-  /* Notes grow with what is written in them; the panel scrolls. */
-  .brief-fields .brief-notes { min-height: 220px; max-height: none; }
   .insp-scope { display: flex; align-items: flex-start; gap: 7px; font-size: 12px; line-height: 1.45; color: var(--text-2); }
   .insp-scope > svg { width: 13px; height: 13px; flex: none; margin-top: 2px; color: var(--text-3); }
   /* Wrap without leaving one word on a line of its own at narrow widths. */
