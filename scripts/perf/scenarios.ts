@@ -32,6 +32,7 @@ import { isAssetSort, sortAssets } from '../../src/shared/asset-order';
 import { electronSource, growthMetrics, readingMetrics, type MemoryProbe, type MemoryReading } from './memory';
 import { GALLERY_COUNT, galleryPhotos, type GalleryPhoto, PHOTO_COUNT, PHOTO_HEIGHT, PHOTO_WIDTH, photoSpec, scenarioHeicPhotos, scenarioPhotos, SYNC_PHOTO_COUNT, syncPhotoName, syncPhotos } from './photos';
 import { atRevision, Collector, counter, delta, forScenario, inProc, median, type Measured, type Trace } from './results';
+import { WP_DRAFTS, WP_MENU_ITEMS, WP_PAGES, WP_PICTURES, WP_POSTS, wordpressExport, wpPost } from './wordpress';
 import { ATTACHED_PX, readFrame, summarizeOffsets, type FrameReading, type Pixels, type ReadingGeometry } from './outline';
 import { displayName } from '../../src/engine/tree';
 
@@ -7119,6 +7120,189 @@ export const previewImages: Scenario = {
   }
 };
 
+// ---------------------------------------------------------------------------
+// postsImport
+// ---------------------------------------------------------------------------
+
+/** The readings `postsImport` takes, in order, and their kinds. */
+export const POSTS_IMPORT_READINGS = [
+  ['canvas', 'rest'],
+  ['read', 'peak'],
+  ['review', 'rest'],
+  ['cancelled', 'rest'],
+  ['commit', 'peak'],
+  ['imported', 'rest']
+] as const;
+/** How long the review of the export may take to open, and its import to finish. */
+const POSTS_REVIEW_MS = 120_000;
+const POSTS_COMMIT_MS = 300_000;
+
+/** Choose Import… → WordPress export in the Posts panel, with the chooser answered by `file`. */
+async function choosePostsImport(ctx: ScenarioContext, file: string): Promise<void> {
+  const { win, app } = ctx;
+  const answer: DesktopCall = { op: 'setAnswers', answers: [{ dialog: 'open', paths: [file] }], request: null };
+  const set = (await app.evaluate(desktopInMain, answer)) as { error?: string };
+  if (set.error) throw new Error(`The file chooser could not be answered: ${set.error}`);
+  const panel = win.locator('.posts-panel');
+  // The head's Import… while there is no collection yet; the collection's options menu once there is.
+  const head = panel.getByTestId('posts-import');
+  if (await head.isVisible()) await head.click();
+  else await panel.getByRole('button', { name: / options$/ }).first().click();
+  await win.getByRole('menuitem', { name: /WordPress export/ }).click();
+}
+
+/** The review of the export, open and saying what it would bring; the digest of what it shows. */
+async function checkPostsReview(ctx: ScenarioContext, created: boolean): Promise<number> {
+  const modal = ctx.win.locator('.modal');
+  await modal.getByRole('heading', { name: `Import ${WP_POSTS.toLocaleString('en-US')} posts`, exact: true }).waitFor({ timeout: POSTS_REVIEW_MS });
+  const summary = await modal.locator('.import-summary').innerText();
+  const facts = [
+    new RegExp(`Posts\\s+${(WP_POSTS - WP_DRAFTS).toLocaleString('en-US')} published · ${WP_DRAFTS} drafts`),
+    new RegExp(`Pictures\\s+${WP_PICTURES} found`),
+    created ? /Into\s+Posts, a new collection at \/blog\// : /Into\s+Posts at \/blog\//,
+    /From\s+export\.xml \(https:\/\/harbour-notes\.example\)/,
+    new RegExp(`Old addresses\\s+${(WP_POSTS - WP_DRAFTS).toLocaleString('en-US')} keep working`),
+    new RegExp(`${WP_PAGES} pages \\(“About us”[^)]*\\): only posts are imported\\.`),
+    new RegExp(`${WP_MENU_ITEMS} menu items: only posts are imported\\.`)
+  ];
+  for (const fact of facts) expect(fact.test(summary), `the review does not say ${fact.source}: ${summary.replace(/\s+/g, ' ').slice(0, 400)}`);
+  expect(!summary.includes('missing'), 'the review says pictures are missing');
+  expect(!(await modal.getByTestId('post-import-problems').count()), 'the review says the posts can’t be imported');
+  return digestOf(await modal.innerText());
+}
+
+/**
+ * The posts an import added, as a number: every new entry of the Posts collection with what it holds, its links to
+ * other entries by their addresses and its pictures by their files' hashes (both IDs are made afresh by each import),
+ * the old addresses that lead to them and the collection's categories and tags.
+ */
+export function importedPostsDigest(before: ProjectState, after: ProjectState): number {
+  const had = new Set(Object.keys(before.collections.posts?.entries ?? {}));
+  const entries = Object.values(after.collections.posts?.entries ?? {}).filter((e) => !had.has(e.id));
+  const slugs = new Map(entries.map((e) => [e.id, e.slug]));
+  const hashes = new Map(Object.values(after.assets.assets).map((a) => [a.id, a.hash]));
+  const canon = (v: unknown): unknown => (typeof v === 'string' ? (slugs.has(v) ? `entry:${slugs.get(v)}` : hashes.has(v) ? `asset:${hashes.get(v)}` : v) : v);
+  const posts = entries.map(({ id: _id, ...e }) => e).sort((a, b) => a.slug.localeCompare(b.slug));
+  const redirects = (after.site.redirects ?? []).filter((r) => !!r.entryId && slugs.has(r.entryId));
+  return digestOf(JSON.stringify({ posts, redirects, taxonomies: after.collections.posts?.settings.taxonomies ?? null }, (_k, v: unknown) => canon(v)));
+}
+
+export const postsImport: Scenario = {
+  name: 'postsImport',
+  after: 'launch',
+  memory: true,
+  deadlineMs: 20 * 60_000,
+  description: `The memory of every process of the app while a WordPress export of ${WP_POSTS.toLocaleString('en-US')} posts (about 16 MB, with its uploads folder) is read and reviewed in the Posts panel, with the review open, once it is cancelled, while the posts are imported and after; with the reader's own peak and the times of the read, the review and the import.`,
+  async run(ctx) {
+    const { win, fixture } = ctx;
+    const probe = ctx.memory;
+    if (!probe) throw new Error('the postsImport scenario was run without a memory probe');
+    // Made once per machine, before anything is read.
+    const exp = await wordpressExport();
+    const wait = ctx.restoredAt + FILES_SETTLE_MS - Date.now();
+    if (wait > 0) await sleep(wait);
+    await openFromWelcome(ctx);
+    const ready = (t: Trace) => {
+      const asked = t.first('open.requested', inProc('renderer'));
+      return asked ? t.first('canvas.ready', homeReady(fixture), asked.t) : undefined;
+    };
+    expect(ready(await ctx.waitTrace((t) => !!ready(t), 15_000)), 'the canvas never reported the home page ready to edit');
+    await checkOpened(ctx);
+    const before = await snapshotOf(win);
+    expect(before, 'no project is open');
+    const created = !before.state.collections.posts;
+    // The Posts panel shown, as a person goes to import into it; its workspace save lands before the reading.
+    await win.locator('.rail [aria-label="Content"]').click();
+    await win.locator('.posts-panel').waitFor({ timeout: 15_000 });
+    await sleep(WORKSPACE_SAVE_WAIT_MS);
+    await probe.rest('canvas');
+    await ctx.mark('scenario.start', { scenario: 'postsImport', export: exp.hash, bytes: exp.bytes });
+    // From choosing the export to the review saying what it would bring.
+    const digest = await probe.peak('read', async () => {
+      await ctx.mark('postsImport.read', { scenario: 'postsImport' });
+      await choosePostsImport(ctx, exp.file);
+      return checkPostsReview(ctx, created);
+    });
+    await ctx.mark('postsImport.reviewed', { scenario: 'postsImport', digest });
+    await probe.rest('review');
+    const modal = win.locator('.modal');
+    await modal.getByRole('button', { name: 'Cancel', exact: true }).click();
+    await modal.waitFor({ state: 'detached', timeout: 15_000 });
+    const cancelled = await snapshotOf(win);
+    expect(cancelled?.revision === before.revision, 'cancelling the review changed the project');
+    expect(!!cancelled.state.collections.posts === !created, 'cancelling the review made a Posts collection');
+    await probe.rest('cancelled');
+    // Read again, unsampled, and imported.
+    await choosePostsImport(ctx, exp.file);
+    const again = await checkPostsReview(ctx, created);
+    expect(again === digest, 'the second review of the same export does not show what the first did');
+    const toast = win.locator('.toast').filter({ hasText: `Imported ${WP_POSTS.toLocaleString('en-US')} posts` });
+    await probe.peak('commit', async () => {
+      await ctx.mark('postsImport.commit', { scenario: 'postsImport' });
+      await modal.getByTestId('post-import-confirm').click();
+      await modal.waitFor({ state: 'detached', timeout: POSTS_COMMIT_MS });
+      await toast.first().waitFor({ timeout: 30_000 });
+    });
+    const after = await snapshotOf(win);
+    expect(after, 'no project is open after the import');
+    const had = Object.keys(before.state.collections.posts?.entries ?? {}).length;
+    const added = Object.values(after.state.collections.posts?.entries ?? {}).filter((e) => !before.state.collections.posts?.entries[e.id]);
+    expect(added.length === WP_POSTS, `the import added ${added.length} posts, not ${WP_POSTS} (the collection had ${had})`);
+    expect(after.revision === before.revision + 1, `the import moved the project ${after.revision - before.revision} revisions, not one`);
+    expect(after.history.entries.filter((e) => e.applied).at(-1)?.label === `Import ${WP_POSTS} posts`, 'the import is not the last step in History');
+    expect(added.filter((e) => e.draft).length === WP_DRAFTS, `the import added ${added.filter((e) => e.draft).length} drafts, not ${WP_DRAFTS}`);
+    const pictures = Object.keys(after.state.assets.assets).length - Object.keys(before.state.assets.assets).length;
+    expect(pictures === WP_PICTURES, `the import added ${pictures} pictures, not ${WP_PICTURES}`);
+    expect((after.state.site.redirects ?? []).length - (before.state.site.redirects ?? []).length === WP_POSTS - WP_DRAFTS, 'the import did not keep every published post’s old address');
+    // Each post's text whole, its picture in it, on disk as in the project.
+    const sample = wpPost(4);
+    const entry = added.find((e) => e.slug === sample.slug);
+    expect(entry && entry.title === sample.title, `the import has no post “${sample.title}”`);
+    const types = entry.body.map((b) => b.type).join(',');
+    expect(types === 'p,p,p,p,p,p,h2,p,p,p,p,p,ul,image,p,p,p,p,p,blockquote,h2,p,p,p,p', `the post's text came in as ${types}`);
+    const file = join(ctx.projectDir, 'siteorigin', 'collections', 'posts', 'entries', `${entry.id}.json`);
+    const stored = existsSync(file) ? (JSON.parse(readFileSync(file, 'utf8')) as { title?: unknown; body?: unknown[] }) : null;
+    expect(stored?.title === sample.title && stored.body?.length === entry.body.length, 'the post on disk is not the one imported');
+    const imported = importedPostsDigest(before.state, after.state);
+    await ctx.mark('postsImport.imported', { scenario: 'postsImport', digest: imported });
+    await probe.rest('imported');
+    await ctx.mark('scenario.end', { scenario: 'postsImport' });
+  },
+  measure(trace, _fixture, readings = []) {
+    const m = new Collector();
+    const reading = (label: string, kind: 'rest' | 'peak' = 'rest') => readings.find((r) => r.label === label && r.kind === kind);
+    for (const [label, kind] of POSTS_IMPORT_READINGS) readingMetrics(m, label, reading(label, kind));
+    // What holding the review open costs, what a cancelled one leaves, and what the imported posts hold.
+    growthMetrics(m, 'review', reading('canvas'), reading('review'));
+    growthMetrics(m, 'cancel', reading('canvas'), reading('cancelled'));
+    growthMetrics(m, 'import', reading('canvas'), reading('imported'));
+    const start = m.need('scenario.start', trace.first('scenario.start', forScenario('postsImport', 'main')));
+    const read = m.need('postsImport.read', trace.first('postsImport.read', forScenario('postsImport', 'main')));
+    const reviewed = m.need('postsImport.reviewed', trace.first('postsImport.reviewed', forScenario('postsImport', 'main')));
+    const commit = m.need('postsImport.commit', trace.first('postsImport.commit', forScenario('postsImport', 'main')));
+    const imported = m.need('postsImport.imported', trace.first('postsImport.imported', forScenario('postsImport', 'main')));
+    if (!start || !read || !reviewed || !commit || !imported) return m;
+    // The first review: its read in the reader (with the reader's own peak), the reply's way back, and the plan.
+    const reader = m.need('posts.reader', trace.first('posts.reader', inProc('main'), read.t, reviewed.t));
+    const readSpan = m.need('posts.read', trace.first('posts.read', inProc('main'), read.t, reviewed.t));
+    const review = m.need('posts.review', trace.first('posts.review', inProc('main'), read.t, reviewed.t));
+    if (reader) {
+      m.count('postsImport.readerPeakRss', Number(reader.attrs?.peakRss), 'memory');
+      m.ms('postsImport.readerMs', Number(reader.attrs?.ms));
+    }
+    m.span('postsImport.readMs', readSpan);
+    m.span('postsImport.reviewMs', review);
+    if (readSpan && review) m.ms('postsImport.afterReadMs', (review.ms ?? 0) - (readSpan.ms ?? 0));
+    m.ms('postsImport.reviewStallMax', stallMax(trace, read, reviewed));
+    m.count('postsImport.reviewDigest', Number(reviewed.attrs?.digest));
+    const committed = m.need('controller.commitPostImport', trace.first('controller.commitPostImport', inProc('main'), commit.t, imported.t));
+    m.span('postsImport.commitMs', committed);
+    m.ms('postsImport.commitStallMax', stallMax(trace, commit, imported));
+    m.count('postsImport.importedDigest', Number(imported.attrs?.digest));
+    return m;
+  }
+};
+
 /** The composer's chip says the next edit may change the whole site. */
 async function expectChip(win: Page) {
   const chip = win.getByRole('button', { name: /^What the AI may change: Whole site/ });
@@ -7368,7 +7552,7 @@ export const sourceSync: Scenario = {
 /** The scenarios that show every panel, Insert among them, before `thumbs` could run in the same launch. */
 const PANEL_TOURS = ['firstShow', 'panels', 'panelsInUse'] as const;
 
-export const SCENARIOS: Scenario[] = [launch, open, firstShow, edit, editFullHistory, edits, batch, panels, panelsInUse, layers, chat, aiEdit, ai, canvas, outlineScroll, drag, colour, thumbs, exportSite, exportAgain, cmdk, assets, importPhotos, importOriginals, importHeic, history, editBranded, switchProject, create, createAgain, memory, welcome, previewImages, memoryPanels, noWindow, reopen, memoryBrowse, aiMemory, sourceSync, exportMemory];
+export const SCENARIOS: Scenario[] = [launch, open, firstShow, edit, editFullHistory, edits, batch, panels, panelsInUse, layers, chat, aiEdit, ai, canvas, outlineScroll, drag, colour, thumbs, exportSite, exportAgain, cmdk, assets, importPhotos, importOriginals, importHeic, history, editBranded, switchProject, create, createAgain, memory, welcome, previewImages, memoryPanels, noWindow, reopen, memoryBrowse, aiMemory, sourceSync, exportMemory, postsImport];
 
 /**
  * The scenarios to run in one launch for those asked for: each with every one it follows, in the order of SCENARIOS

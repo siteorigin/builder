@@ -12,7 +12,7 @@ import { XmlError, childElement, childElements, childText, parseXml, textOf, typ
 import { emptyReport, htmlToPlain, htmlToRichText } from './html';
 import { MediaTable } from './media';
 import { readContained } from './files';
-import { MAX_EXPORT_BYTES, MAX_IMPORT_POSTS, POST_LINK_PREFIX, type ParsedSource, type SourcePost, type SourceTerm } from './source';
+import { MAX_EXPORT_BYTES, MAX_IMPORT_POSTS, POST_LINK_PREFIX, POSTS_PER_BATCH, type ParsedSource, type SourcePost, type SourceTerm } from './source';
 import { reportNotes } from './notes';
 
 /** The calendar day a WordPress date (`2019-03-01 10:00:00`) or an RSS date (`Fri, 01 Mar 2019 10:00:00 +0000`) names. */
@@ -76,16 +76,26 @@ function namesOf(titles: string[]): string {
 /** The plural, for counts in the report. */
 const KINDS: Record<string, [string, string]> = { page: ['page', 'pages'], nav_menu_item: ['menu item', 'menu items'], revision: ['revision', 'revisions'], wp_block: ['reusable block', 'reusable blocks'] };
 
-export async function readWordPress(file: string, pages: RichPages): Promise<ParsedSource> {
-  const root = dirname(file);
-  const realRoot = await fs.realpath(root);
-  const label = basename(file);
+/** The export's text: its bytes, read as the import reads a file, are let go of once it is decoded. */
+async function exportText(realRoot: string, file: string, label: string): Promise<string> {
   const bytes = await readContained(realRoot, file, MAX_EXPORT_BYTES).catch((e: Error) => {
     throw new Error(`${label} can’t be read: ${e.message}`);
   });
+  return bytes.toString('utf8');
+}
+
+/**
+ * The posts of WordPress export `file`. With `emit`, posts are handed to it in batches as they are read
+ * (POSTS_PER_BATCH at a time, in order), and the source returned holds only those read after the last batch.
+ */
+export async function readWordPress(file: string, pages: RichPages, emit?: (posts: SourcePost[]) => void): Promise<ParsedSource> {
+  const root = dirname(file);
+  const realRoot = await fs.realpath(root);
+  const label = basename(file);
+  const text = await exportText(realRoot, file, label);
   let doc: XmlElement;
   try {
-    doc = parseXml(bytes.toString('utf8'));
+    doc = parseXml(text);
   } catch (e) {
     throw new Error(`${label} is not a WordPress export that can be read: ${e instanceof XmlError ? e.message : 'it is damaged.'}`);
   }
@@ -149,8 +159,16 @@ export async function readWordPress(file: string, pages: RichPages): Promise<Par
     }
   }
 
+  // From here each post's part of the export is let go of once the post is read: the tree keeps none of them.
+  channel.children = [];
+  items.length = 0;
   const posts: SourcePost[] = [];
-  for (const { item, key, status } of accepted) {
+  const add = (post: SourcePost) => {
+    posts.push(post);
+    if (emit && posts.length >= POSTS_PER_BATCH) emit(posts.splice(0, posts.length));
+  };
+  while (accepted.length) {
+    const { item, key, status } = accepted.shift()!;
     const report = emptyReport();
     let oldSite = 0;
     // A relative address is read from the post's own address, as a browser on the old site read it.
@@ -197,7 +215,7 @@ export async function readWordPress(file: string, pages: RichPages): Promise<Par
     try {
       body = htmlToRichText(prose, { image: (img) => media.key(img.src), link, autop: !blocks, shortcodes: true }, report);
     } catch (e) {
-      posts.push(failedPost(item, key, (e as Error).message));
+      add(failedPost(item, key, (e as Error).message));
       continue;
     }
     const title = htmlToPlain(childText(item, 'title').slice(0, FIELD_CHARS)) || 'Untitled post';
@@ -218,7 +236,7 @@ export async function readWordPress(file: string, pages: RichPages): Promise<Par
     } catch {
       oldPath = undefined;
     }
-    posts.push({
+    add({
       key,
       from: title,
       title,
