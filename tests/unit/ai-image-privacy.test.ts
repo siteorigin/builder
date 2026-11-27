@@ -4,7 +4,7 @@ import { renderToStaticMarkup } from 'react-dom/server';
 import { describe, expect, it, vi } from 'vitest';
 import { createStarterState } from '@catalogue/starters';
 
-const WORDING = 'Image pixels and screenshots are never sent. Library images are referred to by name, alt text, description and ID.';
+const WORDING = 'Image files and screenshots are not uploaded. Library images are referred to by ID, with text such as name, alt text and description.';
 
 const store = vi.hoisted(() => ({ state: {} as Record<string, unknown> }));
 vi.mock('../../src/renderer/src/store', async (original) => ({
@@ -21,7 +21,9 @@ vi.mock('../../src/renderer/src/components/ui', async (original) => ({
 vi.stubGlobal('document', { body: {}, addEventListener: () => {}, removeEventListener: () => {} });
 vi.stubGlobal('window', { builder: { platform: 'darwin' }, addEventListener: () => {}, removeEventListener: () => {} });
 
+// @ts-expect-error TS6142: the Node type-check project sets no --jsx; Vitest compiles the component itself.
 const { Chat } = await import('../../src/renderer/src/panels/Chat');
+// @ts-expect-error TS6142: the Node type-check project sets no --jsx; Vitest compiles the component itself.
 const { SettingsModal } = await import('../../src/renderer/src/panels/SettingsModal');
 
 const settings = (provider: string, baseURL: string, allowRemote: boolean) => ({
