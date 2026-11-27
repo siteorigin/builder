@@ -460,7 +460,12 @@ export function Canvas() {
   const studioView = useStore((s) => (s.definitionMode?.studio ? s.definitionMode : null));
   const variantStyle = useStore((s) => s.variantStyle);
   const studioDef = studioView && state && Object.hasOwn(state.components, studioView.definitionId) ? state.components[studioView.definitionId] : null;
-  const studioRequest = useMemo(() => (studioView?.studio && studioDef ? JSON.stringify(studioSpec(studioDef, studioView.studio, variantStyle)) : null), [studioView, studioDef, variantStyle]);
+  // A placement's content is read from the project as it is now: an edit to that placement (or its removal) is a new request.
+  const studioPlacementState = studioView?.studio?.placement ? state : undefined;
+  const studioRequest = useMemo(
+    () => (studioView?.studio && studioDef ? JSON.stringify(studioSpec(studioDef, studioView.studio, variantStyle, studioPlacementState ?? undefined)) : null),
+    [studioView, studioDef, variantStyle, studioPlacementState]
+  );
   /** The frame shows (or is being given) a component preview, on the server running now. */
   const showsStudio = () => !!studioAt.current && studioAt.current.url === url;
   /** The name of the component edited everywhere, for what the canvas says about its preview. */

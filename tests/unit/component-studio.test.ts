@@ -5,7 +5,7 @@ import { installComponent, makeInstance } from '@engine/install';
 import { generateComponentPreview } from '@generator/preview';
 import { PREVIEW_MODULE } from '@shared/component-preview';
 import { descOf, listPropFor, needsStudio, refExists, studioRef, studioCtx, studioDescOf, studioDesignCtx, studioPick, designCtx, type BridgeDesc } from '../../src/renderer/src/lib/model';
-import { NEW_STUDIO, StudioLoads, studioSpec, studioStates, studioVariants } from '../../src/renderer/src/lib/studio';
+import { NEW_STUDIO, StudioLoads, studioContent, studioPlacements, studioSpec, studioStates, studioVariants } from '../../src/renderer/src/lib/studio';
 import { applyOperations } from '@engine/apply';
 import { defFile, generateProject } from '@generator/index';
 
@@ -165,6 +165,71 @@ describe('Component Studio: what it shows', () => {
     const before = JSON.stringify(def);
     expect(studioSpec(def, { ...NEW_STUDIO, sample: 'long' }).props).toBeDefined();
     expect(JSON.stringify(def)).toBe(before);
+  });
+});
+
+describe('Component Studio: the content of a real placement (#1147)', () => {
+  /** features.grid placed twice on Home (the second named) and once in the shared footer. */
+  function placed() {
+    const { state, id, def } = design('features.grid');
+    const home = state.site.homePageId;
+    const page = state.pages[home];
+    const a = makeInstance(def);
+    a.props = { ...a.props, heading: 'A very long product name that wraps across several lines', gone: 'not declared any more' };
+    const b = { ...makeInstance(def), name: 'Pricing grid' };
+    b.props = { ...b.props, heading: { $prop: 'title' } };
+    for (const n of [a, b]) {
+      page.nodes[n.id] = n;
+      page.rootIds.push(n.id);
+    }
+    const footer = state.site.shell.footer;
+    const c = makeInstance(def);
+    footer.nodes[c.id] = c;
+    footer.rootIds.push(c.id);
+    return { state, id, def, home, a, b, c };
+  }
+
+  it('lists every placement by where it is, telling apart several in one place', () => {
+    const { state, def, home, a, b, c } = placed();
+    const list = studioPlacements(state, def);
+    const of = (id: string) => list.find((p) => p.nodeId === id)!;
+    expect(list).toHaveLength(3);
+    expect(of(a.id).owner).toEqual({ kind: 'page', id: home });
+    expect(of(b.id).owner).toEqual({ kind: 'page', id: home });
+    expect(of(c.id).owner).toEqual({ kind: 'shell', id: 'footer' });
+    const homeLabel = of(a.id).label.split(', ')[0];
+    expect(of(a.id).label).toBe(`${homeLabel}, 1 of 2`);
+    expect(of(b.id).label).toBe(`${homeLabel}, Pricing grid`);
+    expect(of(c.id).label).not.toContain(',');
+    expect(new Set(list.map((p) => p.key)).size).toBe(3);
+  });
+
+  it('previews a placement’s own content, leaving out what is bound or no longer declared', () => {
+    const { state, def, home, a, b } = placed();
+    const before = JSON.stringify(state);
+    const spec = studioSpec(def, { ...NEW_STUDIO, placement: { owner: { kind: 'page', id: home }, nodeId: a.id } }, null, state);
+    expect(spec.props?.heading).toBe(a.props.heading);
+    expect(spec.props).not.toHaveProperty('gone');
+    // A bound heading is only known where its design is shown: the starting heading shows instead.
+    const bound = studioContent(state, def, { ...NEW_STUDIO, placement: { owner: { kind: 'page', id: home }, nodeId: b.id } });
+    expect(bound?.heading).toBeUndefined();
+    expect(bound?.items).toEqual(b.props.items);
+    // The preview takes the request as it is, and nothing in the project changes.
+    const out = generateComponentPreview(state, spec);
+    if ('error' in out) throw new Error(out.error);
+    expect(out.files.get(PREVIEW_MODULE)).toContain('A very long product name');
+    expect(JSON.stringify(state)).toBe(before);
+  });
+
+  it('falls back to the starting content once the chosen placement is deleted', () => {
+    const { state, def, home, a } = placed();
+    const view = { ...NEW_STUDIO, placement: { owner: { kind: 'page' as const, id: home }, nodeId: a.id } };
+    expect(studioSpec(def, view, null, state).props).toBeDefined();
+    delete state.pages[home].nodes[a.id];
+    state.pages[home].rootIds = state.pages[home].rootIds.filter((n) => n !== a.id);
+    expect(studioSpec(def, view, null, state)).toEqual({ definitionId: def.id });
+    // A placement of another page with the same node ID is not the one chosen.
+    expect(studioSpec(def, { ...view, placement: { owner: { kind: 'page', id: 'elsewhere' }, nodeId: a.id } }, null, state)).toEqual({ definitionId: def.id });
   });
 });
 

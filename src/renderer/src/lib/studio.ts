@@ -5,8 +5,10 @@
  * the value of each UI state variable) is the author's view, never saved: only edits to the design itself change the
  * project.
  */
-import type { ComponentDefinition } from '@shared/types';
+import { isBinding, type ComponentDefinition, type OwnerRef, type ProjectState, type PropSchema } from '@shared/types';
 import { declaredState, stateValueFits } from '@engine/schema';
+import { instancesOf } from '@engine/tree';
+import { normalizeProp } from '@engine/values';
 import type { ComponentPreviewSpec } from '@shared/component-preview';
 import { axesOf } from '@shared/variants';
 import { studioSampleProps, type StudioSample } from './studio-samples';
@@ -17,6 +19,11 @@ export interface StudioView {
   variants: Record<string, string>;
   sample: StudioSample;
   /**
+   * A placement of the component whose own content the studio shows in place of the sample, to tune the design for a
+   * real page's edge case. One no longer there (deleted, or now another component) shows the starting content.
+   */
+  placement?: StudioPlacementRef;
+  /**
    * The value each UI state variable is previewed at, by name (a hidden tab chosen, a drawer open); one left out, or
    * naming a value the state no longer has, shows where the design starts it.
    */
@@ -25,6 +32,12 @@ export interface StudioView {
 
 /** The component edited everywhere, the page that editing returns to, and (in Component Studio) how it is shown. */
 export type DefinitionMode = { definitionId: string; returnPageId: string; studio?: StudioView } | null;
+
+/** A placement of the component, by the tree it is in and its node there. */
+export interface StudioPlacementRef {
+  owner: OwnerRef;
+  nodeId: string;
+}
 
 export const NEW_STUDIO: StudioView = { variants: {}, sample: 'defaults' };
 
@@ -72,14 +85,82 @@ export function previewedState(def: ComponentDefinition, view: StudioView | unde
   return { state };
 }
 
+/** One placement Component Studio can show the content of: where it is, its name in the Sample select, and that content. */
+export interface StudioPlacement extends StudioPlacementRef {
+  /** The select's value for it, unique among the component's placements. */
+  key: string;
+  label: string;
+  /** Its content as the preview takes it, or undefined when it is all the starting content. */
+  props: Record<string, unknown> | undefined;
+}
+
+/** Whether a value reads from somewhere else (an enclosing design's property, a list item, a collection entry), at any depth. */
+function bound(v: unknown): boolean {
+  if (isBinding(v)) return true;
+  if (Array.isArray(v)) return v.some(bound);
+  return !!v && typeof v === 'object' && Object.values(v).some(bound);
+}
+
+/**
+ * A placement's own content as a sample: each property the design still declares, as the placement holds it. A value
+ * that is bound (it is only known where its design or entry is shown) or that the preview would refuse as a new value
+ * (one a saved document was let keep) is left out, so that property shows its starting value instead.
+ */
+function placementProps(state: ProjectState, def: ComponentDefinition, props: Record<string, unknown>): Record<string, unknown> | undefined {
+  const out: Record<string, unknown> = {};
+  for (const [name, value] of Object.entries(props ?? {})) {
+    const schema = Object.hasOwn(def.properties, name) ? (def.properties[name] as PropSchema) : undefined;
+    if (!schema || value === undefined || bound(value)) continue;
+    try {
+      normalizeProp(schema, structuredClone(value), state, name);
+    } catch {
+      continue;
+    }
+    out[name] = value;
+  }
+  return Object.keys(out).length ? out : undefined;
+}
+
+/**
+ * Every placement of `def` in the project, in site order, each named by where it is (a page, the shared header, a
+ * layout); several in one place are told apart by their own names or their order there.
+ */
+export function studioPlacements(state: ProjectState, def: ComponentDefinition): StudioPlacement[] {
+  const all = instancesOf(state, def.id);
+  const perOwner = new Map<string, number>();
+  for (const u of all) perOwner.set(`${u.owner.kind}:${u.owner.id}`, (perOwner.get(`${u.owner.kind}:${u.owner.id}`) ?? 0) + 1);
+  const seen = new Map<string, number>();
+  return all.map((u) => {
+    const where = `${u.owner.kind}:${u.owner.id}`;
+    const n = (seen.get(where) ?? 0) + 1;
+    seen.set(where, n);
+    const many = perOwner.get(where)! > 1;
+    const label = many ? `${u.label}, ${u.node.name?.trim() || `${n} of ${perOwner.get(where)}`}` : u.label;
+    return { key: `${where}:${u.node.id}`, owner: u.owner, nodeId: u.node.id, label, props: placementProps(state, def, u.node.props) };
+  });
+}
+
+/** The placement the studio is showing the content of, while it is still one of the component's. */
+export function studioPlacement(state: ProjectState | undefined, def: ComponentDefinition, view: StudioView): StudioPlacement | undefined {
+  const p = view.placement;
+  if (!p || !state) return undefined;
+  return studioPlacements(state, def).find((o) => o.owner.kind === p.owner.kind && o.owner.id === p.owner.id && o.nodeId === p.nodeId);
+}
+
+/** The content the studio fills the component with: the chosen placement's while it exists, else the sample's. */
+export function studioContent(state: ProjectState | undefined, def: ComponentDefinition, view: StudioView): Record<string, unknown> | undefined {
+  if (view.placement) return studioPlacement(state, def, view)?.props;
+  return studioSampleProps(def, view.sample);
+}
+
 /** The isolated preview request for what the studio shows: the design, its variant options, its sample content and its UI state. */
-export function studioSpec(def: ComponentDefinition, view: StudioView, styled?: Styled): ComponentPreviewSpec {
+export function studioSpec(def: ComponentDefinition, view: StudioView, styled?: Styled, state?: ProjectState): ComponentPreviewSpec {
   const all = studioVariants(def, view, styled);
   // Defaults are left out, so the same look is always the same request; so are states at their starting value.
   const defaults = new Map(axesOf(def).map(([axis, a]) => [axis, a.default]));
   const variants = Object.fromEntries(Object.entries(all).filter(([axis, v]) => defaults.get(axis) !== v));
   const states = Object.fromEntries(Object.entries(studioStates(def, view)).filter(([name, v]) => declaredState(def, name)?.initial !== v));
-  const props = studioSampleProps(def, view.sample);
+  const props = studioContent(state, def, view);
   return { definitionId: def.id, ...(Object.keys(variants).length ? { variants } : {}), ...(props ? { props } : {}), ...(Object.keys(states).length ? { states } : {}) };
 }
 
