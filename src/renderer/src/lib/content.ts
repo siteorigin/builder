@@ -302,8 +302,14 @@ export interface SchemaDraft {
 /** Whether the draft's entries would be in the site's RSS feed: its own choice, or its kind's as the draft has it. */
 export const draftInFeed = (draft: SchemaDraft): boolean => inSiteFeed({ kind: draft.kind, rss: draft.rss });
 
-/** The draft's choice once the feed switch is set: a choice that is only what the kind says leaves it to the kind. */
-export const draftFeedChoice = (draft: SchemaDraft, on: boolean): Pick<SchemaDraft, 'rss'> => ({ rss: on === feedsByDefault(draft.kind) ? undefined : on });
+/**
+ * The draft's choice once the feed switch is set: the collection's own, kept whatever its kind becomes, until the
+ * author leaves it to the kind again (`rss: undefined`).
+ */
+export const draftFeedChoice = (on: boolean): Pick<SchemaDraft, 'rss'> => ({ rss: on });
+
+/** Whether the collection's kind would put it in the feed, as the draft has the kind: what leaving it to the kind gives. */
+export const draftKindFeeds = (draft: SchemaDraft): boolean => feedsByDefault(draft.kind);
 
 export function schemaDraftOf(collection: Collection): SchemaDraft {
   const s = collection.settings;

@@ -122,7 +122,7 @@ describe('define_collection', () => {
 
   it('puts a collection in or out of the RSS feed, records out by default, and says which it is', async () => {
     const { h, now } = host(team());
-    const inRss = () => projectSummary(now(), 1).collections.find((c: { id: string }) => c.id === 'team')?.inRss;
+    const inRss = () => projectSummary(now(), 1).collections?.find((c: { id: string }) => c.id === 'team')?.inRss;
     expect(inRss()).toBe(false);
     const opted = await tool(h, 'define_collection', { action: 'update', collectionId: 'team', rss: true });
     expect(opted.content).toMatchObject({ ok: true, inRss: true });
@@ -131,6 +131,12 @@ describe('define_collection', () => {
     // null leaves it to its kind again.
     expect((await tool(h, 'define_collection', { action: 'update', collectionId: 'team', rss: null })).content).toMatchObject({ ok: true, inRss: false });
     expect(Object.hasOwn(now().collections.team.settings, 'rss')).toBe(false);
+    // A blog taken out of the feed, and records opted in without pages of their own: neither is in it.
+    expect((await tool(h, 'define_collection', { action: 'create', collectionId: 'posts', name: 'Posts', rss: false })).content).toMatchObject({ ok: true, inRss: false });
+    expect(now().collections.posts.settings.rss).toBe(false);
+    expect((await tool(h, 'define_collection', { action: 'update', collectionId: 'team', rss: true, pages: { detail: false, archive: false } })).content).toMatchObject({ ok: true, inRss: false });
+    expect(now().collections.team.settings.rss).toBe(true);
+    expect(inRss()).toBe(false);
   });
 
   it('only adds and relabels on update: every field, option, grouping, term and entry value stays', async () => {

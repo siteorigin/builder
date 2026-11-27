@@ -1234,6 +1234,7 @@ function collectionSettingProblem(s: CollectionDoc): string | null {
   if (s.kind !== undefined && !COLLECTION_KINDS.includes(s.kind)) return `its kind is not ${COLLECTION_KINDS.join(' or ')}.`;
   if (s.singularName !== undefined && (typeof s.singularName !== 'string' || !s.singularName.trim())) return 'what one entry is called is not a name.';
   if (s.hasBody !== undefined && typeof s.hasBody !== 'boolean') return 'whether entries have text is not true or false.';
+  if (s.rss !== undefined && typeof s.rss !== 'boolean') return 'whether its entries are in the RSS feed is not true or false.';
   const p = s.pages as Partial<CollectionPages> | undefined;
   if (p !== undefined && (!p || typeof p !== 'object' || typeof p.detail !== 'boolean' || typeof p.archive !== 'boolean')) return 'its pages are damaged.';
   if (p?.archive && !p.detail) return "it has an archive without entry pages to list, so it has neither. Turn on entry pages, or turn off the archive.";
