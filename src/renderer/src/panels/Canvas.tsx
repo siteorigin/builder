@@ -1,7 +1,7 @@
 import './Canvas.css';
 import { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
-import { ArrowDown, Repeat, ArrowLeft, ArrowRight, ArrowUp, BookmarkPlus, Box, Check, ChevronLeft, ChevronRight, Download, LocateFixed, Component, Copy, Ellipsis, Eye, GripVertical, Image, Layers, LayoutTemplate, Link2, PanelRight, Pencil, Plus, Rows3, Sparkles, Trash2, TriangleAlert, Type, Unlink, Users } from 'lucide-react';
+import { ArrowDown, Repeat, ArrowLeft, ArrowRight, ArrowUp, Ban, BookmarkPlus, Box, Check, ChevronLeft, ChevronRight, Download, LocateFixed, Component, Copy, Ellipsis, Eye, GripVertical, Image, Layers, LayoutTemplate, Link2, PanelRight, Pencil, Plus, Rows3, Sparkles, Trash2, TriangleAlert, Type, Unlink, Users } from 'lucide-react';
 import { findParent } from '@engine/tree';
 import { newId } from '@shared/ids';
 import { applyOps, commitOps } from '../store';
@@ -356,7 +356,7 @@ export function Canvas() {
   }, []);
   /** While dragging to reorder: the insertion line in page pixels (null where the drop would change nothing) and
    *  the name of what is moving. */
-  const [reorder, setReorder] = useState<{ line: Rect | null; name: string; clip?: EdgeView | null } | null>(null);
+  const [reorder, setReorder] = useState<{ line: Rect | null; name: string; clip?: EdgeView | null; refused?: Rect | null } | null>(null);
   /** While a tile from Insert, or the selection by its grip (`moving`), is dragged onto the page: what dropping where
    *  the pointer is does (in page pixels, the gap's line and the outline of the container it goes into; `refused` says
    *  why it can't go there). It changes only when what it draws does: the pointer itself is `insertPoint`. */
@@ -397,7 +397,7 @@ export function Canvas() {
   });
   /** While an image from Assets is dragged: where the pointer is, the image a drop there changes (outlined, in page
    *  pixels; none where no image takes it), and what the strip says. */
-  const [imageDrop, setImageDrop] = useState<{ name: string; x: number; y: number; over: boolean; idle: boolean; outline: Rect | null; line: Rect | null; list: Rect | null; label: string; refused: string | null } | null>(null);
+  const [imageDrop, setImageDrop] = useState<{ name: string; x: number; y: number; over: boolean; idle: boolean; outline: Rect | null; line: Rect | null; list: Rect | null; label: string; refused: string | null; surfaces: SlotSurface[]; clip: EdgeView | null } | null>(null);
   const assetDrag = useRef<{ end: (commit: boolean) => void; remeasure: () => void } | null>(null);
   /** The project revision the page shows: as it loads, the one the editor has; then each one it says it has applied. */
   const shownRevision = useRef(0);
@@ -1872,6 +1872,13 @@ export function Canvas() {
     window.addEventListener('pointerup', early, { once: true });
     window.addEventListener('pointercancel', early, { once: true });
     window.addEventListener('blur', early, { once: true });
+    // Where the pointer is while they are measured, so what it carries first shows beside it.
+    const pointer = { x: e.clientX, y: e.clientY };
+    const follow = (ev: PointerEvent) => {
+      pointer.x = ev.clientX;
+      pointer.y = ev.clientY;
+    };
+    window.addEventListener('pointermove', follow);
     const requestId = Math.random().toString(36).slice(2);
     const rects = await new Promise<Array<(Rect & { order: number }) | null> | null>((resolve) => {
       measureWaiters.current.set(requestId, (raw) => resolve(measuredRects(raw, info.list.length)));
@@ -1884,6 +1891,7 @@ export function Canvas() {
     window.removeEventListener('pointerup', early);
     window.removeEventListener('pointercancel', early);
     window.removeEventListener('blur', early);
+    window.removeEventListener('pointermove', follow);
     const from = info.index;
     // Siblings hidden at this width take no space on the page: the drag moves among the visible ones, in the
     // order the page shows them (an Order style can show one before siblings the document puts first).
@@ -1897,6 +1905,10 @@ export function Canvas() {
     setDragging(true);
     // Keys reach this window, not the page, while dragging: Escape cancels.
     canvasRef.current?.focus({ preventScroll: true });
+    // The gesture's cursor holds over the whole window, as for the other drags.
+    document.documentElement.classList.add('insert-dragging');
+    insertPoint.current.x = pointer.x;
+    insertPoint.current.y = pointer.y;
     // The line shows only where a drop would change the order; over the element's own place there is none.
     setReorder({ line: null, name });
     const move = (ev: PointerEvent) => {
@@ -1911,7 +1923,16 @@ export function Canvas() {
       // Outside the page, or over the element's own place, a release moves nothing. A gap among siblings of
       // another order is one no move reaches: no line shows there either.
       to = inside ? drop.to : null;
-      setReorder({ line: to !== null && moveIndex(shown, from, to, order) !== null ? drop.line : null, name, clip: seen.clip });
+      // A gap its Order style keeps it out of says so while it is held there, as a refused place does: no line, the
+      // strip and what it carries in the refusal's red, the no-drop pointer, and why, hung from the gap. Its own place
+      // stays quiet.
+      const refused = to !== null && !dropReaches(shown, from, to, order) ? drop.line : null;
+      document.documentElement.classList.toggle('drop-refused', !!refused);
+      const p = insertPoint.current;
+      p.x = ev.clientX;
+      p.y = ev.clientY;
+      p.moved?.();
+      setReorder({ line: to !== null && moveIndex(shown, from, to, order) !== null ? drop.line : null, name, clip: seen.clip, refused });
     };
     const end = (commit: boolean) => {
       window.removeEventListener('pointermove', move);
@@ -1921,6 +1942,7 @@ export function Canvas() {
       window.removeEventListener('keydown', key, true);
       setDragging(false);
       setReorder(null);
+      document.documentElement.classList.remove('insert-dragging', 'drop-refused');
       if (commit && to !== null && !dropReaches(shown, from, to, order)) {
         toast('Its Order style keeps it out of that spot at this size, so it stays where it was. Change Order in its styles to move it there.', 'info');
         return;
@@ -2219,6 +2241,8 @@ export function Canvas() {
           label = t.label ?? label;
         }
       }
+      // Over a place that refuses it, the pointer says so too (see html.drop-refused).
+      document.documentElement.classList.toggle('drop-refused', !!aim.refused);
       const clip = shownFrame()?.clip ?? null;
       // What it carries moves only once the page's boxes have been read: moved first, it would make the reads lay the window out again.
       const p = insertPoint.current;
@@ -2272,7 +2296,7 @@ export function Canvas() {
       window.removeEventListener('keydown', key, true);
       window.removeEventListener('wheel', wheel, true);
       cancelAnimationFrame(scrollFrame);
-      document.documentElement.classList.remove('insert-dragging');
+      document.documentElement.classList.remove('insert-dragging', 'drop-refused');
       insertDrag.current = null;
       setDragging(false);
       setInsertDrop(null);
@@ -2630,7 +2654,12 @@ export function Canvas() {
                 ? `Place ${word} on the page`
                 : `Point at an image or between content to put ${word} there`;
       const idle = over && aim.kind !== 'image' && !ins?.at && !ins?.refused;
-      setImageDrop({ name: word, x: point.x, y: point.y, over, idle, outline: aim.kind === 'image' ? aim.outline : null, line: ins?.line ?? null, list: ins?.outline ?? null, label, refused: ins?.refused ?? null });
+      // Where it isn't filling an image, the empty slots a new Image could go into light up, as for an Insert tile.
+      const surfaces = over && aim.kind !== 'image' && lists ? dest.surfaces(lists) : [];
+      document.documentElement.classList.toggle('drop-refused', !!ins?.refused);
+      // The part of the page the canvas shows, so the line and the reason stay where they are seen (#904).
+      const clip = shownFrame()?.clip ?? null;
+      setImageDrop({ name: word, x: point.x, y: point.y, over, idle, outline: aim.kind === 'image' ? aim.outline : null, line: ins?.line ?? null, list: ins?.outline ?? null, label, refused: ins?.refused ?? null, surfaces, clip });
     };
     // An image the page says is at the release point needs nothing measured; anywhere else, what was measured after the
     // page's answer about it (see `ask`).
@@ -2727,7 +2756,7 @@ export function Canvas() {
       window.removeEventListener('blur', cancel);
       window.removeEventListener('keydown', key, true);
       window.removeEventListener('wheel', wheel, true);
-      document.documentElement.classList.remove('insert-dragging');
+      document.documentElement.classList.remove('insert-dragging', 'drop-refused');
       assetDrag.current = null;
       setDragging(false);
       setImageDrop(null);
@@ -2985,7 +3014,7 @@ export function Canvas() {
   // The selection's chip is parked in the strip above the page (see chipLeft), after a collection layout's own strip.
   const chipShown = !!firstSel && !!selection;
   const chipTaken = templateStripW ? templateStripW + 12 : 0;
-  const spaceShown = selBoxes.length > 0 && spaceFor && !!state && !editing && !reorder && !resizing && !definitionMode && !snapshot?.aiBusy && !snapshot?.readOnly;
+  const spaceShown = selBoxes.length > 0 && spaceFor && !!state && !editing && !reorder && !insertDrop && !imageDrop && !resizing && !definitionMode && !snapshot?.aiBusy && !snapshot?.readOnly;
   // The canvas's Add buttons (#387), on the box of the selection and of what is hovered, each only on a box the page
   // measured for it (one copy: a repeated item's place would be every item's). Below one section and above the next
   // are one place, drawn once, the selection's first. While a list is open, only its own button is drawn, where it was.
@@ -3067,7 +3096,7 @@ export function Canvas() {
   // then not at all, whichever fits beside the chip. While the frame is being resized it always shows in full.
   // The same goes for what the strip says on its left (a page opening, a section moving), which never takes more
   // room than leaves the width itself.
-  const chipEnd = chipShown && !reorder && !resizing && !imageDrop && firstSel ? chipLeft(firstSel.left, chipW, frameW, chipTaken) + chipW + 12 : 0;
+  const chipEnd = chipShown && !reorder && !resizing && !insertDrop && !imageDrop && firstSel ? chipLeft(firstSel.left, chipW, frameW, chipTaken) + chipW + 12 : 0;
   // A collection layout's own strip (its entry picker and Done) is on the left too, and comes first.
   const leftEnd = chipEnd || Math.max(stripLeftW ? stripLeftW + 12 : 0, templateStripW ? templateStripW + 12 : 0);
   const labelMode = resizing || leftEnd + labelW.full <= frameW ? 'full' : scalePct !== 100 && leftEnd + labelW.mid <= frameW ? 'mid' : leftEnd + labelW.short <= frameW ? 'short' : 'gone';
@@ -3095,14 +3124,37 @@ export function Canvas() {
     );
   // The strip offers the first steps when there is no room for the card, or on a page that has only its title.
   // Where a drag of something new would go between content, the same for a tile from Insert and an image from Assets.
-  const between = insertDrop ?? (imageDrop && { outline: imageDrop.list, line: imageDrop.line, refused: imageDrop.refused });
+  const between = insertDrop ?? (imageDrop && { outline: imageDrop.list, line: imageDrop.line, refused: imageDrop.refused, surfaces: imageDrop.surfaces, clip: imageDrop.clip });
+  /** Where a refusal's reason hangs (#652): from the top edge of the place it is about, outside it, so what the pointer
+   *  carries (below and right of the pointer, inside the place) never covers it; below the place where the shown page
+   *  has no room above it, and just inside the top of the part of the place that shows where it has room for neither.
+   *  It starts at the place's start, or ends at its end where the shown page's edge is nearer, so it stays on screen
+   *  however narrow the place; it is measured in its own type, and past about 400px, or the page's width, it wraps. */
+  const reasonAt = (b: { left: number; top: number; width: number; height: number }, text: string, clip?: EdgeView | null): { style: React.CSSProperties; edge: 'above' | 'below' | 'inside' } => {
+    const view = clip ?? { left: 0, top: 0, right: frameW, bottom: frameH * z };
+    // The tag's glyph, gap and padding take 32px, each line 16px and its padding 6px; it stands 5px off the place.
+    const most = Math.min(Math.max(b.width - 12, 400), view.right - view.left - 8);
+    const wrapped = wrapLabel(text, most - 32);
+    const width = Math.ceil(wrapped.widest) + 34;
+    const need = wrapped.lines * 16 + 6 + 5 + 4;
+    const edge = b.top - view.top >= need ? 'above' : view.bottom - (b.top + b.height) >= need ? 'below' : 'inside';
+    const inset = edge === 'inside' ? 6 : 0;
+    const top = edge === 'above' ? b.top : edge === 'below' ? b.top + b.height + 5 : Math.max(b.top, view.top) + inset;
+    const left = b.left + inset + width <= view.right - 4 ? Math.max(view.left + 4, b.left + inset) : Math.max(view.left + 4, Math.min(b.left + b.width - inset, view.right - 4) - width);
+    return { edge, style: { top, left, width } };
+  };
+  // The empty slot under the pointer, among those lit, takes the place's filled name tag.
+  const sameBox = (a: Rect | null | undefined, b: Rect) => !!a && Math.abs(a.x - b.x) < 1 && Math.abs(a.y - b.y) < 1 && Math.abs(a.width - b.width) < 1 && Math.abs(a.height - b.height) < 1;
+  // The shared header or footer selected turns the canvas's marks green; placing something new on the page, which the
+  // selection steps aside for, keeps the page's blue.
+  const selShared = selection?.owner.kind === 'shell' && !definitionMode && !(insertDrop && !insertDrop.moving) && !imageDrop;
   const stripStart = !staleFrame && !resizing && !reorder && !insertDrop && !imageDrop && !chipShown && ((emptyPage && emptyAt !== null && !emptyFits) || titleOnly);
 
   return (
     <main
       ref={canvasRef}
       tabIndex={-1}
-      className={`canvas${mode === 'edit' ? ' edit-mode' : ''}${selection?.owner.kind === 'shell' && !definitionMode ? ' sel-shared' : ''}${reorder ? ' reordering' : ''}${insertDrop || imageDrop ? ' placing' : ''}${resizing ? ' resizing' : ''}`}
+      className={`canvas${mode === 'edit' ? ' edit-mode' : ''}${selShared ? ' sel-shared' : ''}${reorder ? ' reordering' : ''}${insertDrop || imageDrop ? ' placing' : ''}${resizing ? ' resizing' : ''}`}
       aria-label="Website preview"
       // Read by the test driver's UI snapshots (tests/driver): which opening of a project this is, whether the frame's
       // page is ready, the selection as the editor holds it, and where it shows on the page as the page's own element
@@ -3319,25 +3371,25 @@ export function Canvas() {
               </div>
             )}
             {insertDrop && (
-              <div className={`ov-moving ov-placing${insertDrop.refused ? ' refused' : ''}`} ref={stripLeft} style={{ maxWidth: stripRoom }} title={insertDrop.refused ?? undefined} data-testid="insert-drop-label">
-                {insertDrop.moving ? <GripVertical /> : <Plus />}
+              <div className={`ov-moving ov-placing${insertDrop.refused ? ' refused' : ''}`} ref={stripLeft} style={{ maxWidth: stripRoom }} data-testid="insert-drop-label">
+                {insertDrop.refused ? <Ban /> : insertDrop.moving ? <GripVertical /> : <Plus />}
                 <span className="what">{insertDrop.label}</span>
                 <span className="sep">·</span>
                 <span className="hint">Esc to cancel</span>
               </div>
             )}
             {imageDrop && (
-              <div className={`ov-moving ov-placing${imageDrop.refused ? ' refused' : imageDrop.idle ? ' idle' : ''}`} ref={stripLeft} style={{ maxWidth: stripRoom }} title={imageDrop.refused ?? undefined} data-testid="image-drop-label">
-                <Image />
+              <div className={`ov-moving ov-placing${imageDrop.refused ? ' refused' : imageDrop.idle ? ' idle' : ''}`} ref={stripLeft} style={{ maxWidth: stripRoom }} data-testid="image-drop-label">
+                {imageDrop.refused ? <Ban /> : <Image />}
                 <span className="what">{imageDrop.label}</span>
                 <span className="sep">·</span>
                 <span className="hint">Esc to cancel</span>
               </div>
             )}
             {reorder && firstSel && (
-              <div className="ov-moving" ref={stripLeft} style={{ maxWidth: stripRoom }} aria-hidden="true">
-                <GripVertical />
-                <span className="what">Moving {reorder.name}</span>
+              <div className={`ov-moving${reorder.refused ? ' refused' : ''}`} ref={stripLeft} style={{ maxWidth: stripRoom }} aria-hidden="true">
+                {reorder.refused ? <Ban /> : <GripVertical />}
+                <span className="what">{reorder.refused ? `Can’t move ${reorder.name} here` : `Moving ${reorder.name}`}</span>
                 <span className="sep">·</span>
                 <span className="hint">Esc to cancel</span>
               </div>
@@ -3394,7 +3446,8 @@ export function Canvas() {
                 {revBoxes.map((b, i) => (
                   <div key={`r${i}`} className="ov-box ov-revealed" style={b} />
                 ))}
-                {selBoxes.map((b, i) => (
+                {/* Placing something new, the selection steps aside: the marks are where it goes, not what is picked. */}
+                {!(insertDrop && !insertDrop.moving) && !imageDrop && selBoxes.map((b, i) => (
                   // The arrival cue's box is a new one, so the next insertion's cue starts from its beginning.
                   <div
                     key={i === 0 && arriving ? `s0-${arrival.n}` : `s${i}`}
@@ -3472,26 +3525,45 @@ export function Canvas() {
                     pageBehind={pageBehind}
                   />
                 )}
+                {reorder?.refused &&
+                  (() => {
+                    // Why a gap among its siblings can't take it, at the gap (the place a line would be).
+                    const why = 'Its Order style keeps it out of here at this size.';
+                    const r = reasonAt(dropBox(reorder.refused, reorder.clip), why, reorder.clip);
+                    return (
+                      <div className={`ov-drop-reason ${r.edge}`} style={r.style}>
+                        <Ban aria-hidden="true" />
+                        <span>{why}</span>
+                      </div>
+                    );
+                  })()}
                 {reorder?.line &&
                   (() => {
                     const d = dropBox(reorder.line, reorder.clip);
                     return <div className={`ov-drop${d.vertical ? ' vertical' : ''}`} style={{ left: d.left, top: d.top, width: d.width, height: d.height }} role="presentation" />;
                   })()}
-                {insertDrop?.surfaces.map((sf) => (
-                  <div key={sf.key} className="ov-box ov-slot-surface" style={toBox(sf.box)} data-testid="insert-slot-surface" data-slot={sf.label}>
+                {between?.surfaces.map((sf) => (
+                  <div key={sf.key} className={`ov-box ov-slot-surface${!between.refused && sameBox(between.outline, sf.box) ? ' aimed' : ''}`} style={toBox(sf.box)} data-testid="insert-slot-surface" data-slot={sf.label}>
                     <span>{sf.label}</span>
                   </div>
                 ))}
-                {between?.outline && (
-                  <div className={`ov-box ov-drop-target${between.refused ? ' refused' : ''}`} style={toBox(between.outline)} data-testid="insert-drop-target">
-                    {/* Why it can't go here, said on the place itself while the drag holds it (#652). */}
-                    {between.refused && insertDrop && <span className="ov-drop-reason" data-testid="insert-drop-reason">{between.refused}</span>}
-                  </div>
-                )}
+                {between?.outline && <div className={`ov-box ov-drop-target${between.refused ? ' refused' : ''}`} style={toBox(between.outline)} data-testid="insert-drop-target" />}
+                {between?.outline &&
+                  between.refused &&
+                  (() => {
+                    // Why it can't go here, said at the place itself while the drag holds it (#652).
+                    const r = reasonAt(toBox(between.outline), between.refused, between.clip);
+                    return (
+                      <div className={`ov-drop-reason ${r.edge}`} style={r.style} data-testid="insert-drop-reason">
+                        <Ban aria-hidden="true" />
+                        <span>{between.refused}</span>
+                      </div>
+                    );
+                  })()}
                 {imageDrop?.outline && <div className="ov-box ov-image-drop" style={toBox(imageDrop.outline)} data-testid="image-drop-target" />}
                 {between?.line &&
                   (() => {
-                    const d = dropBox(between.line, insertDrop?.clip);
+                    const d = dropBox(between.line, between.clip);
                     return <div className={`ov-drop${d.vertical ? ' vertical' : ''}`} style={{ left: d.left, top: d.top, width: d.width, height: d.height }} role="presentation" data-testid="insert-drop-line" />;
                   })()}
               </div>
@@ -3510,7 +3582,7 @@ export function Canvas() {
                   </div>
                 </div>
               )}
-              {firstSel && selection && state && chipShown && !reorder && !insertDrop?.moving && !resizing && !imageDrop && (
+              {firstSel && selection && state && chipShown && !reorder && !insertDrop && !resizing && !imageDrop && (
                 <SelectionChip
                   box={firstSel}
                   frameWidth={viewport * z}
@@ -3556,22 +3628,64 @@ export function Canvas() {
       {imageDrop &&
         createPortal(
           <div className={`insert-ghost${imageDrop.refused ? ' refused' : ''}`} style={{ left: imageDrop.x + 14, top: imageDrop.y + 12 }} aria-hidden="true">
-            <Image />
+            {imageDrop.refused ? <Ban /> : <Image />}
             <span>{imageDrop.name}</span>
           </div>,
+          document.body
+        )}
+      {/* What a move among its siblings carries, beside the pointer, as a move anywhere on the page does. */}
+      {reorder &&
+        createPortal(
+          <DragGhost point={insertPoint} className={`insert-ghost${reorder.refused ? ' refused' : ''}${selShared ? ' sel-shared' : ''}`}>
+            {reorder.refused ? <Ban /> : <GripVertical />}
+            <span>{reorder.name}</span>
+          </DragGhost>,
           document.body
         )}
       {/* What a drag from Insert carries, beside the pointer wherever it is in the window. */}
       {insertDrop &&
         createPortal(
-          <DragGhost point={insertPoint} className={`insert-ghost${insertDrop.refused ? ' refused' : ''}`}>
-            {insertDrop.moving ? <GripVertical /> : <Plus />}
+          <DragGhost point={insertPoint} className={`insert-ghost${insertDrop.refused ? ' refused' : ''}${selShared ? ' sel-shared' : ''}`}>
+            {insertDrop.refused ? <Ban /> : insertDrop.moving ? <GripVertical /> : <Plus />}
             <span>{insertDrop.name}</span>
           </DragGhost>,
           document.body
         )}
     </main>
   );
+}
+
+/** The width of `text` in the type of the canvas's labels (12px semibold, the app's font), measured once per string. */
+const labelWidths = new Map<string, number>();
+let labelContext: CanvasRenderingContext2D | null | undefined;
+function labelWidth(text: string): number {
+  const known = labelWidths.get(text);
+  if (known !== undefined) return known;
+  if (labelContext === undefined) {
+    labelContext = document.createElement('canvas').getContext('2d');
+    if (labelContext) labelContext.font = `600 12px ${getComputedStyle(document.body).fontFamily}`;
+  }
+  // Where nothing can measure it, about 6.6px a character.
+  const width = labelContext ? labelContext.measureText(text).width : text.length * 6.6;
+  if (labelWidths.size > 400) labelWidths.clear();
+  labelWidths.set(text, width);
+  return width;
+}
+
+/** The lines `text` breaks into between words at `width`, in the canvas's label type, and how wide the widest is. */
+function wrapLabel(text: string, width: number): { lines: number; widest: number } {
+  let lines = 1;
+  let widest = 0;
+  let line = '';
+  for (const word of text.split(' ')) {
+    const next = line ? `${line} ${word}` : word;
+    if (line && labelWidth(next) > width) {
+      widest = Math.max(widest, labelWidth(line));
+      lines++;
+      line = word;
+    } else line = next;
+  }
+  return { lines, widest: Math.min(width, Math.max(widest, labelWidth(line))) };
 }
 
 /** Where a drag's pointer is, and what moves with it (DragGhost's own placing, while it is shown). */

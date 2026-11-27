@@ -355,7 +355,9 @@ function tryDrop(state: ProjectState, ops: EditOperation[], before: () => Diagno
   try {
     next = applyOperations(state, ops).state;
   } catch (e) {
-    return { refused: e instanceof Error ? e.message : String(e) };
+    // A drop of several operations (an Image and its picture) has the engine name the one that failed, for the agent;
+    // the person dragging is told only why.
+    return { refused: (e instanceof Error ? e.message : String(e)).replace(/^Operation \d+ \([\w.]+\): /, '') };
   }
   const introduced = introducedDiagnostics(before(), savingProblems(next));
   return introduced.length ? { refused: introduced.map((d) => d.message).join(' ') } : { refused: null, next };
