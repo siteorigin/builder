@@ -7,6 +7,7 @@
  */
 import type { ComponentDefinition, GraphNode, NodeTree, ProjectState } from '@shared/types';
 import { listThemes } from '@catalogue/index';
+import { FORM_DESTINATIONS, sendsFormMessages } from '@shared/form-contract';
 import { codeImports } from './code-imports';
 import { EMPTY_ROUTING, formDestinationProps, propDefault, routingText } from './form-destinations';
 import { allTrees, childLists } from './tree';
@@ -107,6 +108,9 @@ function repeatAround(tree: NodeTree, nodeId: string): string {
   return '';
 }
 
+/** A placement's variant choices, compared as one more setting of code that places a form: its code may route by them. */
+const VARIANTS = '\u0001variants';
+
 /** Whether a value reads a property or an item's field (`key`), anywhere in it: a whole binding, a list item's, a field's. */
 function reads(value: unknown, key: '$prop' | '$item'): boolean {
   if (!value || typeof value !== 'object') return false;
@@ -125,6 +129,7 @@ const unlisted = (value: unknown): unknown =>
  * list items' IDs, which copying makes anew; a placement that stays keeps them, as code may read them.
  */
 function valueOf(state: ProjectState, tree: NodeTree, scope: string, n: Instance, prop: string, copy = false): string {
+  if (prop === VARIANTS) return routingText(n.variants ?? null);
   const own = n.props && Object.hasOwn(n.props, prop) ? n.props[prop] : undefined;
   const value = own ?? propDefault(Object.hasOwn(state.components, n.definitionId) ? state.components[n.definitionId] : undefined, prop);
   const text = routingText(copy ? unlisted(value) : value);
@@ -135,7 +140,7 @@ function valueOf(state: ProjectState, tree: NodeTree, scope: string, n: Instance
   return source === undefined ? read : `${read}\u0000${JSON.stringify(source)}`;
 }
 
-const resolved = (state: ProjectState, n: Instance, prop: string): unknown => (n.props && Object.hasOwn(n.props, prop) ? n.props[prop] : undefined) ?? propDefault(state.components[n.definitionId], prop);
+const resolved = (state: ProjectState, n: Instance, prop: string): unknown => (prop === VARIANTS ? n.variants : undefined) ?? (n.props && Object.hasOwn(n.props, prop) ? n.props[prop] : undefined) ?? propDefault(state.components[n.definitionId], prop);
 
 /** The designs that place a contact form, however deep: a form, a design with one in it, and code that imports one. */
 function formBearing(state: ProjectState, protectedProps: Map<string, Set<string>>): Set<string> {
@@ -182,18 +187,35 @@ export function formRoutingChanges(before: ProjectState, after: ProjectState): F
   };
   const nameOf = (state: ProjectState, id: string) => (Object.hasOwn(state.components, id) ? state.components[id].name : 'a contact form');
   const labelOf = (id: string, prop: string) => {
+    if (prop === VARIANTS) return 'style variant';
     const schema = Object.hasOwn(after.components, id) ? after.components[id].properties[prop] : undefined;
     return typeof schema?.label === 'string' && schema.label ? schema.label : prop;
   };
-  // A setting that decided where a form sent before is compared even once nothing reads it as one: a design that lost
-  // its form's settings may still send, with whatever its code falls back on.
-  const props = (id: string) => [...new Set([...(is.get(id) ?? []), ...(was.get(id) ?? [])])].sort();
   const trusted = new WeakMap<ComponentDefinition, boolean>();
   const isShipped = (d: ComponentDefinition | undefined) => !!d && (trusted.get(d) ?? (trusted.set(d, shipped(d)), trusted.get(d)!));
   const def = (state: ProjectState, id: string) => (Object.hasOwn(state.components, id) ? state.components[id] : undefined);
   // The designs that place a form at all, a setting of their own or not, worked out only if something needs them.
   let bearing: { before: Set<string>; after: Set<string> } | undefined;
   const bears = () => (bearing ??= { before: formBearing(before, was), after: formBearing(after, is) });
+  // Code that places a form, however deep (through code of its own with no settings, say), and is not a form: what
+  // it passes on, and how, is in its source, so every setting of it and its variant choices decide where it sends.
+  const wraps = (id: string) => {
+    const d = def(after, id) ?? def(before, id);
+    if (d?.kind !== 'code' || sendsFormMessages(d) || FORM_DESTINATIONS.some((k) => Object.hasOwn(d.properties, k))) return false;
+    return bears().after.has(id) || bears().before.has(id);
+  };
+  // A setting that decided where a form sent before is compared even once nothing reads it as one: a design that lost
+  // its form's settings may still send, with whatever its code falls back on.
+  const listed = new Map<string, string[]>();
+  const props = (id: string) => {
+    const known = listed.get(id);
+    if (known) return known;
+    const all = new Set([...(is.get(id) ?? []), ...(was.get(id) ?? [])]);
+    if (wraps(id)) for (const d of [def(before, id), def(after, id)]) for (const p of [...Object.keys(d?.properties ?? {}), VARIANTS]) all.add(p);
+    const out = [...all].sort();
+    listed.set(id, out);
+    return out;
+  };
 
   // Code decides in its source what it sends where: code that places a form, or is one, before or after, is never
   // written, apart from the code the app ships.
@@ -215,12 +237,13 @@ export function formRoutingChanges(before: ProjectState, after: ProjectState): F
       const ps = props(n.definitionId);
       if (!ps.length) continue;
       const tuples = copies.get(n.definitionId) ?? new Map<string, Set<string>>();
-      const tuple = ps.map((p) => valueOf(before, tree, scope, n, p, true)).join('\u0001');
+      const tuple = ps.map((p) => valueOf(before, tree, scope, n, p, !wraps(n.definitionId))).join('\u0001');
       tuples.set(tuple, (tuples.get(tuple) ?? new Set<string>()).add(scope));
       copies.set(n.definitionId, tuples);
     }
   }
-  for (const [id] of is) {
+  const wrappers = Object.keys(after.components).filter((id) => after.components[id].kind === 'code' && wraps(id));
+  for (const id of new Set([...is.keys(), ...wrappers])) {
     const by = new Map<string, Set<string>>();
     for (const p of props(id)) {
       const ok = new Set<string>();
@@ -247,7 +270,8 @@ export function formRoutingChanges(before: ProjectState, after: ProjectState): F
       // taking another's place, as switching themes swaps the theme's form for the new theme's, keeps where it sends,
       // as long as every setting reads as it did.
       const ps = props(n.definitionId);
-      const report = (p: string) => add({ kind: 'setting', definitionId: n.definitionId, name, where, prop: p, label: labelOf(n.definitionId, p), value: resolved(after, n, p) }, valueOf(after, tree, scope, n, p));
+      // Named, for a grant, without its list items' IDs: the batch sent again gives new items new IDs.
+      const report = (p: string) => add({ kind: 'setting', definitionId: n.definitionId, name, where, prop: p, label: labelOf(n.definitionId, p), value: resolved(after, n, p) }, valueOf(after, tree, scope, n, p, true));
       if (prior && prior.definitionId !== n.definitionId) {
         if (!bears().before.has(prior.definitionId) && !bears().after.has(n.definitionId)) continue;
         const had_ = (p: string) => valueOf(before, had!.tree, scope, prior, p);
@@ -264,7 +288,9 @@ export function formRoutingChanges(before: ProjectState, after: ProjectState): F
         for (const p of ps) if (valueOf(after, tree, scope, n, p) !== valueOf(before, had!.tree, scope, prior, p)) report(p);
         continue;
       }
-      const now = ps.map((p) => valueOf(after, tree, scope, n, p, true));
+      // Code may pick an item by its ID, so a copy of a placement of it is the same only with the same IDs.
+      const loose = !wraps(n.definitionId);
+      const now = ps.map((p) => valueOf(after, tree, scope, n, p, loose));
       const copied = copies.get(n.definitionId)?.get(now.join('\u0001'));
       if (copied && (made || copied.has(scope))) continue;
       const fresh = defaults.get(n.definitionId);
@@ -274,7 +300,7 @@ export function formRoutingChanges(before: ProjectState, after: ProjectState): F
   }
 
   // A design's defaults, which every placement without its own value sends with, and every new one starts with.
-  for (const id of new Set([...is.keys(), ...was.keys()])) {
+  for (const id of new Set([...is.keys(), ...was.keys(), ...wrappers])) {
     const now = def(after, id);
     if (!now || isShipped(now)) continue;
     const prev = def(before, id);

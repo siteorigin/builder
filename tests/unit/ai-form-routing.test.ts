@@ -69,6 +69,35 @@ function banded() {
   return { state, owner, form, band, inner, support };
 }
 
+/**
+ * The blank site with "Office forms" too: a design with two lists of inboxes, Sales and Support, and a form repeated
+ * per Sales office that sends to each office's inbox.
+ */
+function offices(): ProjectState {
+  const state = structuredClone(project().state);
+  const form = makeInstance(state.components[FORM], { provider: 'endpoint', endpoint: { $item: 'inbox' } });
+  const sales = { id: 'n_offsal1', kind: 'repeat', list: { $prop: 'sales' }, children: [form.id] };
+  const support = { id: 'n_offsup1', kind: 'repeat', list: { $prop: 'support' }, children: [] as string[] };
+  const root = { id: 'n_offroot', kind: 'element', tag: 'div', children: [sales.id, support.id] };
+  const list = { type: 'list', label: 'Offices', itemLabel: 'Office', fields: { inbox: { type: 'string', label: 'Inbox', default: '' } }, default: [] };
+  state.components['project.offices'] = {
+    schemaVersion: 1,
+    id: 'project.offices',
+    componentId: 'project.offices',
+    contractVersion: 1,
+    kind: 'managed',
+    owner: 'project',
+    name: 'Office forms',
+    description: '',
+    category: 'custom',
+    tags: [],
+    properties: { sales: list, support: list },
+    parts: { root: { nodeId: root.id, label: 'Root' } },
+    tree: { rootIds: [root.id], nodes: { [root.id]: root, [sales.id]: sales, [support.id]: support, [form.id]: form } }
+  } as unknown as ComponentDefinition;
+  return state;
+}
+
 /** What an AI batch, applied to `state`, changes about where a form sends: each change's kind, setting and value. */
 function changes(state: ProjectState, ops: EditOperation[]) {
   return formRoutingChanges(state, applyOperations(state, ops).state).map((c) => [c.kind, c.prop ?? null, c.value ?? null]);
@@ -183,28 +212,10 @@ describe('where a form sends, as an AI batch would leave it', () => {
 
   it('reads an item’s field from the list the form repeats in', () => {
     // "Office forms": one design, two lists of inboxes, a form repeated per Sales office reading each office's inbox.
-    const { state: start } = project();
-    const state = structuredClone(start);
-    const form = makeInstance(state.components[FORM], { provider: 'endpoint', endpoint: { $item: 'inbox' } });
-    const sales = { id: 'n_offsal1', kind: 'repeat', list: { $prop: 'sales' }, children: [form.id] };
-    const support = { id: 'n_offsup1', kind: 'repeat', list: { $prop: 'support' }, children: [] as string[] };
-    const root = { id: 'n_offroot', kind: 'element', tag: 'div', children: [sales.id, support.id] };
-    const list = { type: 'list', label: 'Offices', itemLabel: 'Office', fields: { inbox: { type: 'string', label: 'Inbox', default: '' } }, default: [] };
-    state.components['project.offices'] = {
-      schemaVersion: 1,
-      id: 'project.offices',
-      componentId: 'project.offices',
-      contractVersion: 1,
-      kind: 'managed',
-      owner: 'project',
-      name: 'Office forms',
-      description: '',
-      category: 'custom',
-      tags: [],
-      properties: { sales: list, support: list },
-      parts: { root: { nodeId: root.id, label: 'Root' } },
-      tree: { rootIds: [root.id], nodes: { [root.id]: root, [sales.id]: sales, [support.id]: support, [form.id]: form } }
-    } as unknown as ComponentDefinition;
+    const state = offices();
+    const form = Object.values(state.components['project.offices'].tree!.nodes).find((n) => n.kind === 'instance')!;
+    const sales = { id: 'n_offsal1' };
+    const support = { id: 'n_offsup1' };
     // Moved to the other repeat, the same form with the same binding reads Support's inboxes.
     const moved = structuredClone(state);
     const nodes = moved.components['project.offices'].tree!.nodes as Record<string, { children?: string[] }>;
@@ -215,13 +226,13 @@ describe('where a form sends, as an AI batch would leave it', () => {
     // A copy of a placement has new IDs for its offices, and sends to the same inboxes; another inbox is a change.
     const home: OwnerRef = { kind: 'page', id: state.site.homePageId };
     const r = applyOperations(state, [{ type: 'node.insert', owner: home, parentId: null, definitionId: 'project.offices', props: { sales: [{ inbox: SALES }], support: [{ inbox: SUPPORT }] } } as EditOperation]);
-    const offices = r.results[0].nodeId as string;
-    expect(changes(r.state, [{ type: 'node.duplicate', owner: home, nodeId: offices }])).toEqual([]);
-    expect(changes(r.state, [{ type: 'instance.setProp', owner: home, nodeId: offices, prop: 'sales', value: [{ inbox: EVIL }] }]).map((c) => c.slice(0, 2))).toEqual([['setting', 'sales']]);
+    const desk = r.results[0].nodeId as string;
+    expect(changes(r.state, [{ type: 'node.duplicate', owner: home, nodeId: desk }])).toEqual([]);
+    expect(changes(r.state, [{ type: 'instance.setProp', owner: home, nodeId: desk, prop: 'sales', value: [{ inbox: EVIL }] }]).map((c) => c.slice(0, 2))).toEqual([['setting', 'sales']]);
     // A placement that stays keeps its offices' IDs too: code may pick an office by its ID.
-    const two = applyOperations(r.state, [{ type: 'instance.setProp', owner: home, nodeId: offices, prop: 'sales', value: [{ id: 'i_a', inbox: SALES }, { id: 'i_b', inbox: SUPPORT }] }]).state;
+    const two = applyOperations(r.state, [{ type: 'instance.setProp', owner: home, nodeId: desk, prop: 'sales', value: [{ id: 'i_a', inbox: SALES }, { id: 'i_b', inbox: SUPPORT }] }]).state;
     const swappedIds = [{ id: 'i_b', inbox: SALES }, { id: 'i_a', inbox: SUPPORT }];
-    expect(changes(two, [{ type: 'instance.setProp', owner: home, nodeId: offices, prop: 'sales', value: swappedIds }]).map((c) => c.slice(0, 2))).toEqual([['setting', 'sales']]);
+    expect(changes(two, [{ type: 'instance.setProp', owner: home, nodeId: desk, prop: 'sales', value: swappedIds }]).map((c) => c.slice(0, 2))).toEqual([['setting', 'sales']]);
   });
 
   it('never swaps a placement for another design that places a form, settings of its own or not', () => {
@@ -321,6 +332,31 @@ describe('where a form sends, as an AI batch would leave it', () => {
     const { state, owner, form } = project();
     const odd = applyOperations(state, [{ type: 'instance.setProp', owner, nodeId: form, prop: 'formName', value: '{"$prop":"recipient"}' }]).state;
     expect(changes(odd, [{ type: 'page.duplicate', pageId: owner.id }])).toEqual([]);
+  });
+
+  it('holds code that places a form to every setting it has and the variant it is given, through code of its own too', () => {
+    // "Office code": code with a Recipient setting and two variants, placing the form through "Inner code", code of its
+    // own with no settings at all.
+    const { state: start, owner } = project();
+    const state = structuredClone(start);
+    const code = (id: string, name: string, dependencies: string[], properties: Record<string, unknown>, variantAxes?: unknown) =>
+      ({ id, name, kind: 'code', owner: 'project', source: `<script>/* ${name} */</script>`, dependencies, properties, ...(variantAxes ? { variantAxes } : {}) }) as unknown as ComponentDefinition;
+    state.components.cmp_inner = code('cmp_inner', 'Inner code', [FORM], {});
+    state.components.cmp_office = code('cmp_office', 'Office code', ['cmp_inner'], { recipient: { type: 'string', label: 'Recipient', default: '' } }, [
+      { id: 'office', label: 'Office', options: [{ id: 'sales', label: 'Sales' }, { id: 'support', label: 'Support' }], default: 'sales' }
+    ]);
+    const placed = makeInstance(state.components.cmp_office, { recipient: SALES });
+    placed.variants = { office: 'sales' };
+    state.pages[owner.id].nodes[placed.id] = placed;
+    state.pages[owner.id].rootIds.push(placed.id);
+    const edit = (change: (n: InstanceNode) => void) => {
+      const next = structuredClone(state);
+      change(next.pages[owner.id].nodes[placed.id] as InstanceNode);
+      return formRoutingChanges(state, next).map((c) => [c.kind, c.prop]);
+    };
+    expect(edit((n) => (n.props.recipient = EVIL))).toEqual([['setting', 'recipient']]);
+    expect(edit((n) => (n.variants = { office: 'support' }))).toEqual([['setting', '\u0001variants']]);
+    expect(formRoutingChanges(state, structuredClone(state))).toEqual([]);
   });
 
   it('never lets code that places a form be written, nor a form’s own code', () => {
@@ -441,6 +477,19 @@ describe('an AI batch at commit', () => {
     const copy = (s.state.pages[owner.id].nodes[support] as InstanceNode).definitionId;
     expect(copy).not.toBe(state.pages[owner.id].nodes[support] && (state.pages[owner.id].nodes[support] as InstanceNode).definitionId);
     expect(s.state.components[copy]?.name).toBe('Support band');
+    await s.close();
+  });
+
+  it('lands an allowed batch that adds offices, each given a new ID when it is made again', async () => {
+    const state = offices();
+    const home: OwnerRef = { kind: 'page', id: state.site.homePageId };
+    const r = applyOperations(state, [{ type: 'node.insert', owner: home, parentId: null, definitionId: 'project.offices', props: { sales: [{ inbox: SALES }] } } as EditOperation]);
+    const s = await ProjectSession.create(temp('session'), r.state);
+    const ops: EditOperation[] = [{ type: 'instance.setProp', owner: home, nodeId: r.results[0].nodeId as string, prop: 'sales', value: [{ inbox: SALES }, { inbox: SUPPORT }] }];
+    const review = formRoutingReview((await s.apply({ operations: ops }, { label: 'AI', source: 'ai' })).error);
+    expect(review?.changes.map((c) => c.prop)).toEqual(['sales']);
+    const allowed = await s.apply({ operations: ops }, { label: 'AI', source: 'ai', formRouting: formRoutingGrant(review!) });
+    expect(allowed.error).toBeUndefined();
     await s.close();
   });
 
