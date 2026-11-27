@@ -4431,6 +4431,11 @@ export class ProjectSession extends EventEmitter {
     if (!(await this.stillOwner())) throw new Error(this.readOnly?.reason ?? LOCK_UNCHECKED);
     stopIf(stop);
     if (kept) return kept;
+    // The version of a restore still being recorded (#1155) goes first, as before any version saved: this one builds on it.
+    if (v.git) {
+      const pending = await this.pendingVersionBlocks();
+      if (pending) throw new Error(pending);
+    }
     const row = await this.versions.add(v);
     this.emit('history');
     return row;

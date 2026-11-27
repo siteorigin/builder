@@ -1450,6 +1450,31 @@ describe('restoring with Git snapshots on (#1155)', () => {
     expect(existsSync(join(dir, RECORDING))).toBe(false);
   });
 
+  it('finishes the restore’s version before a theme switch saves the site first (#1156), so that one builds on it', async () => {
+    const { dir, s, first } = await changed();
+    let stop = true;
+    const spy = intercept((repo) => ({
+      advanceRef: async (ref, next, expected) => {
+        if (stop && existsSync(join(dir, RECORDING))) throw new GitError('crashed', 'The worker stopped.');
+        return repo.advanceRef(ref, next, expected);
+      }
+    }));
+    await ok(s.restoreVersion(first.id!, s.revision));
+    const pending = JSON.parse(readFileSync(join(dir, RECORDING), 'utf8'));
+    await describe1(s, 'Next', 'Next');
+    const theme = s.state.site.themeId;
+    // Still stopped: the switch's safety version may not move the branch from under the restore's.
+    const refused = await s.apply({ operations: [{ type: 'theme.apply', themeId: 'foundation-alt' }] }, { label: 'Switch theme', source: 'user' });
+    expect(refused.error?.message).toMatch(/not in Saved versions yet/);
+    expect(s.state.site.themeId).toBe(theme);
+    stop = false;
+    await ok(s.apply({ operations: [{ type: 'theme.apply', themeId: 'foundation-alt' }] }, { label: 'Switch theme', source: 'user' }));
+    spy.mockRestore();
+    expect(catalogue(dir).map((v) => v.name)).toEqual(['First', 'Before restoring “First”', 'Restored “First”', 'Before changing theme']);
+    const row = catalogue(dir).find((v) => v.name === 'Before changing theme')!;
+    expect((await openRepo(dir).readCommit(row.git!.commit)).parents).toEqual([pending.row.git.commit]);
+  });
+
   it('finishes a version noted whole when only flushing its folder failed', async () => {
     const { dir, s, first } = await changed();
     const write = VersionStore.prototype.writePending;
