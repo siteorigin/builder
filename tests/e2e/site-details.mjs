@@ -51,7 +51,8 @@ assert.equal(site().baseUrl, undefined, 'a new site has no public URL');
 
 step('the favicon and social image are chosen from the visual picker, with a thumbnail at their own shape');
 const picker = (name) => details().locator('.insp-image').filter({ has: win.locator('.insp-group-title', { hasText: new RegExp(`^${name}$`) }) });
-assert.equal(await details().locator('select.select:not(#site-identity-kind)').count(), 1, 'besides who publishes the site, the only select left in Site details is the text direction');
+assert.equal(await details().locator('select.select:not(#site-identity-kind)').count(), 0, 'besides who publishes the site, Site details has no select: the text direction is a choice of three');
+assert.equal(await details().getByRole('radiogroup', { name: 'Text direction' }).getByRole('radio').count(), 3, 'the text direction offers Automatic, Left to right and Right to left');
 /** A small solid-colour PNG, so each import is a different picture. */
 const makePng = (file, [r, g, b], w = 8, h = 8) => {
   const chunk = (type, data) => {
@@ -218,12 +219,12 @@ await eventually(() => assert.equal(site().baseUrl, 'https://studio.example/stud
 await eventually(async () => assert.equal(await input('Public URL').inputValue(), 'https://studio.example/studio', 'the field shows what was saved'));
 await eventually(async () => assert.equal(await status().innerText(), 'Saved'));
 
-step('a language name stays as typed with the reason, and Escape discards it for the saved code');
-await input('Language').fill('English');
+step('text that is neither a code nor a language name stays as typed with the reason, and Escape discards it for the saved code');
+await input('Language').fill('Englisch');
 await input('Language').press('Tab');
 await afterRevert();
-assert.equal(await input('Language').inputValue(), 'English');
-assert.match(await error('Language').innerText(), /Language must be a code such as "en" or "en-AU"\./);
+assert.equal(await input('Language').inputValue(), 'Englisch');
+assert.match(await error('Language').innerText(), /Type a language, such as Spanish, or a code, such as en-AU\./);
 assert.match(await error('Language').innerText(), new RegExp(`The saved value is still ${language}\\.`));
 assert.equal(site().language, language);
 await input('Language').focus();
@@ -232,6 +233,13 @@ await input('Language').press('Escape');
 await eventually(async () => assert.equal(await input('Language').inputValue(), language, 'Escape puts the saved code back'));
 assert.equal(await error('Language').count(), 0);
 await eventually(async () => assert.equal(await status().innerText(), 'Saved'));
+
+step('a language typed by its name saves as its code, and the field names it');
+await input('Language').fill('German');
+await input('Language').press('Tab');
+await eventually(() => assert.equal(site().language, 'de'));
+await eventually(async () => assert.equal(await input('Language').inputValue(), 'de'));
+assert.match(await field('Language').locator('.field-hint').innerText(), /^German\./);
 
 step('a language code saves');
 await input('Language').fill('en-AU');
@@ -314,7 +322,7 @@ step('Redirects lists, adds, changes and removes old addresses, with the host ru
 }
 
 step('leaving the project with a refused draft asks first, and Keep editing shows Site details and returns to it');
-await input('Language').fill('English');
+await input('Language').fill('Englisch');
 await input('Language').press('Tab');
 await afterRevert();
 assert.match(await error('Language').innerText(), /The saved value is still en-AU\./);
@@ -332,8 +340,8 @@ await dialog.getByRole('button', { name: 'Keep editing' }).click();
 await eventually(async () => assert.equal(await focused('Language'), true, 'focus is back in the Language field'));
 assert.equal(await head().getAttribute('aria-expanded'), 'true', 'the section opened to show it');
 assert.equal(await input('Language').isVisible(), true, 'Site styles is shown again');
-assert.equal(await input('Language').inputValue(), 'English', 'what was typed is still there');
-assert.match(await error('Language').innerText(), /Language must be a code/);
+assert.equal(await input('Language').inputValue(), 'Englisch', 'what was typed is still there');
+assert.match(await error('Language').innerText(), /Type a language, such as Spanish, or a code/);
 assert.equal(await win.locator('.editor').count(), 1, 'the project stayed open');
 
 step('Leave without it closes the project with the saved settings untouched');

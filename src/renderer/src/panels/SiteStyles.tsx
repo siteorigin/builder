@@ -17,7 +17,7 @@ import { api, applyOps, claimRefusals, commitOps, dismissToast, getState, setSta
 import { openSiteStyles } from '../lib/actions';
 import { ColorPick, opacityWords } from '../components/ColorPick';
 import { ColorTextInput } from '../components/ColorTextInput';
-import { DraftInput, Field, Section, Segmented, openSection, type DraftHandle, type DraftProblem } from '../components/ui';
+import { ChoiceField, DraftInput, Field, Section, Segmented, openSection, type DraftHandle, type DraftProblem } from '../components/ui';
 import { TEXT_LIMITS } from '@shared/text-limits';
 import { CustomTokens } from './CustomTokens';
 import { SiteImageField } from './PropEditors';
@@ -25,16 +25,17 @@ import { FontSelect, familyName } from './FontSelect';
 import { usePreviewStack } from '../lib/editor-fonts';
 import { BrandContrast, ContrastDetail, ContrastFlags, buildContrastModel, useContrastStatus } from './ContrastNotes';
 import type { ContrastPair, ForegroundSuggestion } from '@shared/contrast';
-import { NOT_FOUND_LIMITS, clipText, notFoundDefaults } from '@shared/not-found';
-import { VisitorTextFields, visitorTextScope } from './VisitorText';
+import { NOT_FOUND_DEFAULTS, NOT_FOUND_LIMITS, clipText, notFoundCopy, notFoundDefaults } from '@shared/not-found';
+import { VisitorTextFields, WordingField, visitorTextScope, type Wording } from './VisitorText';
+import { languageCodeFor, namedLanguage, notFoundScope, ownWording, siteDetailsScope } from './site-details';
 import { AgentDiscoveryFields, agentsScope } from './AgentDiscovery';
 import { CrawlerPolicyFields } from './CrawlerPolicy';
 import { RedirectsFields } from './RedirectsManager';
 import { redirectRecords } from '@shared/redirects';
 import { itemStyleRecords } from '@shared/item-styles';
 import { checkPublicUrl, publicUrl } from '@shared/public-url';
-import { LANGUAGE_CODE_ERROR, languageDirection, siteLanguage, siteLanguageProblem } from '@shared/languages';
-import { siteNameNote } from '@shared/site-name';
+import { isLanguageCode, languageDirection, siteDirection, siteLanguage, siteLanguageProblem } from '@shared/languages';
+import { carrySiteName, siteNameNote, siteNameText } from '@shared/site-name';
 import { ENTITY_KIND_LABELS, ENTITY_KINDS, IDENTITY_LIMITS, checkCoordinates, checkEmail, checkHoursList, checkProfileUrl, checkProfiles, checkTelephone, checkTwitterHandle, coordinatesText, isEntityKind, type Checked, type IdentityPatch } from '@shared/site-identity';
 import './SiteStyles.css';
 
@@ -456,7 +457,7 @@ function publicUrlProblem(text: string): DraftProblem | null {
  * reason, the value still saved, and a correction when there is one, until it is corrected or discarded (Escape).
  * A saved value that can't be used (saved by hand or by an earlier version) is pointed out the same way.
  */
-function CheckedField({ label, hint, value: saved, check, onCommit, unusable, className, placeholder, id, multiline, rows }: { id?: string; label: string; hint: string; value: unknown; check: (v: string) => DraftProblem | null; onCommit: (v: string) => unknown; unusable: string; className?: string; placeholder?: string; multiline?: boolean; rows?: number }) {
+function CheckedField({ label, hint, value: saved, check, onCommit, unusable, className, placeholder, id, multiline, rows }: { id?: string; label: string; hint: ReactNode; value: unknown; check: (v: string) => DraftProblem | null; onCommit: (v: string) => unknown; unusable: string; className?: string; placeholder?: string; multiline?: boolean; rows?: number }) {
   // A value of another kind (written by hand into the project's files) is shown as text, to be corrected.
   const value = typeof saved === 'string' ? saved : saved == null ? '' : JSON.stringify(saved);
   const [problem, setProblem] = useState<DraftProblem | null>(null);
@@ -491,6 +492,108 @@ function CheckedField({ label, hint, value: saved, check, onCommit, unusable, cl
   );
 }
 
+/**
+ * A site picture with its guidance: the card names it (the title sits inside, as every image field has it) and the
+ * guidance under it is read with that name.
+ */
+function SiteImage({ id, hint, ...field }: { id: string; hint: string } & Parameters<typeof SiteImageField>[0]) {
+  const hintId = `${id}-hint`;
+  return (
+    <div className="field" id={id}>
+      <SiteImageField {...field} describedBy={hintId} />
+      <div className="field-hint" id={hintId}>
+        {hint}
+      </div>
+    </div>
+  );
+}
+
+/** The longest language code a site can save (the site.update operation's limit). */
+const LANGUAGE_CODE_MAX = 20;
+/** The code the Language field saves for what was typed: a language's name ("French") as its code ("fr"), else the text. */
+const languageTyped = (v: string) => languageCodeFor(v) ?? v.trim();
+/** What the Language field says about text that is neither a code nor a language it knows by name. */
+const LANGUAGE_TYPED_ERROR = 'Type a language, such as Spanish, or a code, such as en-AU.';
+/** The site's language, typed as a code or as a language's name; either is checked as the code it saves. */
+function siteLanguageCheck(state: ProjectState) {
+  return (v: string): DraftProblem | null => {
+    const code = languageTyped(v);
+    if (!isLanguageCode(code)) return { message: LANGUAGE_TYPED_ERROR };
+    if (code.length > LANGUAGE_CODE_MAX) return { message: `A language code can be at most ${LANGUAGE_CODE_MAX} characters.` };
+    const problem = siteLanguageProblem(state, code);
+    return problem ? { message: problem } : null;
+  };
+}
+/**
+ * The site name can't be empty, nor longer than a header or footer text that follows it can hold: the rename is tried
+ * on a copy of the shared header and footer, so checking it changes nothing.
+ */
+function siteNameCheck(state: ProjectState) {
+  return (v: string): DraftProblem | null => {
+    const name = siteNameText(v);
+    if (!name) return { message: 'Enter a site name.' };
+    if (name === state.site.name) return null;
+    const problem = carrySiteName({ ...state, site: { ...state.site, shell: structuredClone(state.site.shell) } }, state.site.name, name);
+    return problem ? { message: problem } : null;
+  };
+}
+
+/** The not-found page's three wordings, in page order: each falls back to the built-in wording when left empty. */
+const NOT_FOUND_FIELDS: Array<Wording & { key: 'notFoundHeading' | 'notFoundMessage' | 'notFoundLinkLabel'; limit: number; copy: 'heading' | 'message' | 'linkLabel' }> = [
+  { key: 'notFoundHeading', copy: 'heading', label: 'Heading', hint: 'The page’s main heading.', limit: NOT_FOUND_LIMITS.heading },
+  { key: 'notFoundMessage', copy: 'message', label: 'Message', hint: 'Under the heading: what happened, and where to go.', limit: NOT_FOUND_LIMITS.message },
+  { key: 'notFoundLinkLabel', copy: 'linkLabel', label: 'Home link', hint: 'The link at the end of the page, to your home page.', limit: NOT_FOUND_LIMITS.linkLabel }
+];
+
+/**
+ * The page visitors see at an address the site does not have: its wording, each the author's own or the built-in
+ * wording (shown while the field is empty, and under it once it holds text), and the page as it reads with them.
+ */
+function NotFoundFields({ site, onCommit }: { site: ProjectState['site']; onCommit: (patch: Record<string, string>) => unknown }) {
+  const say = useContext(SayContext);
+  const defaults = notFoundDefaults(siteLanguage(site));
+  const shown = notFoundCopy(site);
+  const language = siteLanguage(site);
+  // Built-in wording a language has none of its own for is English, and is marked so for screen readers.
+  const builtIn = defaults === NOT_FOUND_DEFAULTS ? 'en' : undefined;
+  const langOf = (key: (typeof NOT_FOUND_FIELDS)[number]['key']) => (ownWording(site[key]) ? undefined : builtIn);
+  return (
+    <>
+      <p className="agents-intro">Visitors see this page, with your header and footer, at any address your site doesn’t have. Leave a field empty to use the wording shown.</p>
+      {NOT_FOUND_FIELDS.map((f) => (
+        <WordingField
+          key={f.key}
+          f={f}
+          limit={f.limit}
+          own={ownWording(site[f.key])}
+          fallback={defaults[f.copy]}
+          onCommit={(v) => {
+            const text = clipText(v.trim(), f.limit);
+            const saved = onCommit({ [f.key]: text });
+            // Putting a wording back is said once it has saved: a refused save says nothing.
+            if (!text && ownWording(site[f.key])) void Promise.resolve(saved).then((ok) => ok !== null && ok !== false && say(`${f.label} is back to “${defaults[f.copy]}”.`));
+            return saved;
+          }}
+        />
+      ))}
+      <figure className="nf-preview" aria-label="How the page reads">
+        <figcaption className="ss-group-label">How the page reads</figcaption>
+        <div className="nf-page" lang={language} dir={siteDirection(site)}>
+          <div className="nf-heading" lang={langOf('notFoundHeading')}>
+            {shown.heading}
+          </div>
+          <p className="nf-message" lang={langOf('notFoundMessage')}>
+            {shown.message}
+          </p>
+          <span className="nf-link" lang={langOf('notFoundLinkLabel')}>
+            {shown.linkLabel}
+          </span>
+        </div>
+      </figure>
+    </>
+  );
+}
+
 /** A check's refusal as a field shows it. */
 const refusalOf = <T,>(c: Checked<T>): DraftProblem | null => (c.ok ? null : { message: c.message });
 /**
@@ -515,11 +618,11 @@ function IdentityFields({ state, workspaceKey, onPatch }: { state: ProjectState;
   // Keyed by the project's opening: text one project refused never shows in the next.
   const key = (field: string) => `identity-${field}-${workspaceKey}`;
   return (
-    <div className="ss-group" role="group" aria-labelledby={`${uid}-identity`}>
+    <div className="ss-group sd-group" role="group" aria-labelledby={`${uid}-identity`}>
       <div className="ss-group-label" id={`${uid}-identity`}>
-        Entity &amp; identity
+        Publisher
       </div>
-      <Field label="Published by" hint={kind === 'LocalBusiness' && (identity.openingHours || identity.priceRange || identity.geo) ? 'Who search engines and AI answer engines are told the site belongs to. Another kind clears the opening hours, price range and map position; Undo brings them back.' : 'Who search engines and AI answer engines are told the site belongs to.'}>
+      <Field label="Published by" hint={kind === 'LocalBusiness' && (identity.openingHours || identity.priceRange || identity.geo) ? 'Who search engines and AI answer engines are told the site belongs to. Another kind clears the opening hours, price range and map position; Undo brings them back.' : kind ? 'Who search engines and AI answer engines are told the site belongs to.' : 'Who search engines and AI answer engines are told the site belongs to. Not set describes it as an organization.'}>
         <select id="site-identity-kind" className="select" value={kind} onChange={(e) => onPatch({ kind: isEntityKind(e.target.value) ? e.target.value : null })}>
           <option value="">Not set</option>
           {ENTITY_KINDS.map((k) => (
@@ -529,25 +632,21 @@ function IdentityFields({ state, workspaceKey, onPatch }: { state: ProjectState;
           ))}
         </select>
       </Field>
-      <Field label="Name" hint={kind === 'Person' ? 'Your name, when it is not the site’s.' : 'The legal or brand name, when it is not the site’s.'}>
-        <DraftInput id="site-identity-name" value={textOf(identity.name)} placeholder={state.site.name} limit={IDENTITY_LIMITS.name} onCommit={(v) => onPatch({ name: v.trim() || null })} />
+      <Field label="Name" hint={kind === 'Person' ? 'Your name, when it is not the site’s. Leave it empty to use the site name.' : 'The legal or brand name, when it is not the site’s. Leave it empty to use the site name.'}>
+        <DraftInput id="site-identity-name" value={textOf(identity.name)} placeholder={state.site.name} limit={IDENTITY_LIMITS.name} quietCount onCommit={(v) => onPatch({ name: v.trim() || null })} />
       </Field>
       <CheckedField
         key={key('url')}
         id="site-identity-url"
         label="Home page"
-        hint="Its own website, when it is not this one."
+        hint="The publisher’s own website, when it is not this one."
         value={identity.url}
         placeholder="https://"
         check={(v) => refusalOf(checkProfileUrl(v, 'The home page address'))}
         unusable={unusable}
         onCommit={(v) => commitChecked(checkProfileUrl(v), (url) => onPatch({ url: url || null }))}
       />
-      <Field hint={kind === 'Person' ? 'A photo search engines can show beside your name.' : 'The logo search engines can show beside the name. A square image works best.'}>
-        <div id="site-identity-logo" style={{ display: 'contents' }}>
-          <SiteImageField title={kind === 'Person' ? 'Photo' : 'Logo'} plain="logo" state={state} value={textOf(identity.logo) || null} onChange={(id) => onPatch({ logo: id })} />
-        </div>
-      </Field>
+      <SiteImage id="site-identity-logo" title={kind === 'Person' ? 'Photo' : 'Logo'} plain="logo" state={state} value={textOf(identity.logo) || null} onChange={(id) => onPatch({ logo: id })} hint={kind === 'Person' ? 'A photo search engines can show beside your name.' : 'Shown beside the name in search results. Use a square image.'} />
       <CheckedField
         key={key('profiles')}
         id="site-identity-profiles"
@@ -563,7 +662,7 @@ function IdentityFields({ state, workspaceKey, onPatch }: { state: ProjectState;
       />
       <CheckedField key={key('x')} id="site-identity-x" label="X handle" hint="Named on link previews shared on X." value={identity.twitterSite} placeholder="@" check={(v) => refusalOf(checkTwitterHandle(v))} unusable={unusable} onCommit={(v) => commitChecked(checkTwitterHandle(v), (handle) => onPatch({ twitterSite: handle || null }))} />
       <Field label="Address" hint="On one line, as people would write it on a letter.">
-        <DraftInput id="site-identity-address" value={textOf(identity.address)} limit={IDENTITY_LIMITS.address} onCommit={(v) => onPatch({ address: v.trim() || null })} />
+        <DraftInput id="site-identity-address" value={textOf(identity.address)} limit={IDENTITY_LIMITS.address} quietCount onCommit={(v) => onPatch({ address: v.trim() || null })} />
       </Field>
       <CheckedField key={key('telephone')} id="site-identity-telephone" label="Telephone" hint="With the country code, such as +27 21 555 0134." value={identity.telephone} check={(v) => refusalOf(checkTelephone(v))} unusable={unusable} onCommit={(v) => commitChecked(checkTelephone(v), (telephone) => onPatch({ telephone: telephone || null }))} />
       <CheckedField key={key('email')} id="site-identity-email" label="Email" hint="An address people can write to." value={identity.email} check={(v) => refusalOf(checkEmail(v))} unusable={unusable} onCommit={(v) => commitChecked(checkEmail(v), (email) => onPatch({ email: email || null }))} />
@@ -582,7 +681,7 @@ function IdentityFields({ state, workspaceKey, onPatch }: { state: ProjectState;
             onCommit={(v) => commitChecked(checkHoursList(v), (openingHours) => onPatch({ openingHours }))}
           />
           <Field label="Price range" hint="How much things cost, such as $$ or R100–R400.">
-            <DraftInput id="site-identity-price" value={textOf(identity.priceRange)} limit={IDENTITY_LIMITS.priceRange} onCommit={(v) => onPatch({ priceRange: v.trim() || null })} />
+            <DraftInput id="site-identity-price" value={textOf(identity.priceRange)} limit={IDENTITY_LIMITS.priceRange} quietCount onCommit={(v) => onPatch({ priceRange: v.trim() || null })} />
           </Field>
           <CheckedField
             key={key('geo')}
@@ -2031,56 +2130,74 @@ export function SiteStyles() {
         <CustomTokens state={st} say={say} whereUsed={(id) => usesOf(id).lines.flatMap(([, names]) => names)} onEditText={(id) => (setOpenText(id), openSection('tok-text', { focus: `[data-token-id="${CSS.escape(id)}"] .ss-text-toggle` }))} />
       </Section>
 
-      <Section title="Site details" id="site-settings" defaultOpen={false} keepMounted>
-        <Field label="Site name" hint={siteNameNote(st)}>
-          <DraftInput value={site.name} onCommit={(v) => (v.trim() ? updSite({ name: v.trim() }) : false)} />
-        </Field>
-        <Field label="Default description" hint="Used by pages without their own description.">
-          <DraftInput multiline limit={TEXT_LIMITS.siteDescription} keep="site:description" value={site.description} onCommit={(v) => updSite({ description: v })} />
-        </Field>
-        {/* Keyed by the project's opening: text one project refused never shows in the next. */}
-        <CheckedField
-          key={`url-${snap?.workspaceKey}`}
-          id="site-public-url"
-          label="Public URL"
-          hint={urlSinceExport ? 'For canonical links and the sitemap. The website you last exported was built without it: export it again to include them.' : 'For canonical links and the sitemap.'}
-          value={site.baseUrl}
-          placeholder="https://example.com"
-          check={publicUrlProblem}
-          unusable="The website is built without it until it is corrected."
-          onCommit={(v) => updSite({ baseUrl: v.trim() })}
-        />
-        <CheckedField
-          key={`lang-${snap?.workspaceKey}`}
-          label="Language"
-          hint="A language code, such as en or en-GB."
-          className="input ss-lang"
-          value={site.language}
-          check={(v) => {
-            const code = v.trim();
-            const problem = code.length > 20 ? LANGUAGE_CODE_ERROR : siteLanguageProblem(st, code);
-            return problem ? { message: problem } : null;
-          }}
-          unusable="The website is built in English (en) until it is corrected."
-          onCommit={(v) => updSite({ language: v.trim() })}
-        />
-        <Field label="Text direction" hint="Automatic follows the language: right to left for Arabic, Hebrew, Persian or Urdu. Pages in another language run that language’s way.">
-          <select className="select" value={site.direction === 'ltr' || site.direction === 'rtl' ? site.direction : 'auto'} onChange={(e) => updSite({ direction: e.target.value })}>
-            <option value="auto">Automatic ({languageDirection(siteLanguage(site)) === 'rtl' ? 'right to left' : 'left to right'})</option>
-            <option value="ltr">Left to right</option>
-            <option value="rtl">Right to left</option>
-          </select>
-        </Field>
-        <Field hint="The small icon in browser tabs. A square image works best.">
-          <div id="site-favicon" style={{ display: 'contents' }}>
-            <SiteImageField title="Favicon" plain="favicon" state={st} value={site.favicon} onChange={(id) => updSite({ favicon: id })} />
+      <Section title="Site details" id="site-settings" defaultOpen={false} keepMounted scope={siteDetailsScope(site)}>
+        <div className="ss-group sd-group" role="group" aria-labelledby="site-details-website">
+          <div className="ss-group-label" id="site-details-website">
+            Website
           </div>
-        </Field>
-        <Field hint="The picture shown when the site is shared. Link previews crop it to about 1.91 to 1, so 1200 by 630 pixels is ideal.">
-          <div id="site-social-image" style={{ display: 'contents' }}>
-            <SiteImageField title="Social sharing image" plain="social" state={st} value={site.socialImage} onChange={(id) => updSite({ socialImage: id })} />
+          <CheckedField key={`name-${snap?.workspaceKey}`} id="site-name" label="Site name" hint={siteNameNote(st)} value={site.name} check={siteNameCheck(st)} unusable="" onCommit={(v) => (v.trim() ? updSite({ name: v.trim() }) : false)} />
+          <Field label="Default description" hint="Used by pages without a description of their own.">
+            <DraftInput multiline limit={TEXT_LIMITS.siteDescription} keep="site:description" value={site.description} onCommit={(v) => updSite({ description: v })} />
+          </Field>
+          {/* Keyed by the project's opening: text one project refused never shows in the next. */}
+          <CheckedField
+            key={`url-${snap?.workspaceKey}`}
+            id="site-public-url"
+            label="Public URL"
+            hint={urlSinceExport ? 'Where the site is published, for links search engines follow and the sitemap. The website you last exported was built without it: export it again to include them.' : 'Where the site is published, for links search engines follow and the sitemap.'}
+            value={site.baseUrl}
+            placeholder="https://example.com"
+            check={publicUrlProblem}
+            unusable="The website is built without it until it is corrected."
+            onCommit={(v) => updSite({ baseUrl: v.trim() })}
+          />
+        </div>
+        <div className="ss-group sd-group" role="group" aria-labelledby="site-details-language">
+          <div className="ss-group-label" id="site-details-language">
+            Language and direction
           </div>
-        </Field>
+          <CheckedField
+            key={`lang-${snap?.workspaceKey}`}
+            label="Language"
+            hint={
+              namedLanguage(siteLanguage(site)) ? (
+                <>
+                  <strong className="sd-lang-name">{namedLanguage(siteLanguage(site))}</strong>. Type a language or a code, such as Spanish or en-AU.
+                </>
+              ) : (
+                'Type a language or a code, such as Spanish or en-AU.'
+              )
+            }
+            className="input ss-lang"
+            value={site.language}
+            check={siteLanguageCheck(st)}
+            unusable="The website is built in English (en) until it is corrected."
+            onCommit={(v) => updSite({ language: languageTyped(v) })}
+          />
+          <ChoiceField
+            label="Text direction"
+            full
+            value={site.direction === 'ltr' || site.direction === 'rtl' ? site.direction : 'auto'}
+            options={[
+              { value: 'auto', label: 'Automatic' },
+              { value: 'ltr', label: 'Left to right' },
+              { value: 'rtl', label: 'Right to left' }
+            ]}
+            hint={
+              site.direction === 'ltr' || site.direction === 'rtl'
+                ? 'Pages in another language keep that language’s direction.'
+                : `${namedLanguage(siteLanguage(site)) ?? siteLanguage(site)} reads ${languageDirection(siteLanguage(site)) === 'rtl' ? 'right to left' : 'left to right'}.`
+            }
+            onChange={(direction) => updSite({ direction })}
+          />
+        </div>
+        <div className="ss-group sd-group" role="group" aria-labelledby="site-details-images">
+          <div className="ss-group-label" id="site-details-images">
+            Images
+          </div>
+          <SiteImage id="site-favicon" title="Favicon" plain="favicon" state={st} value={site.favicon} onChange={(id) => updSite({ favicon: id })} hint="The small icon in browser tabs. Use a square image larger than 48 by 48 pixels." />
+          <SiteImage id="site-social-image" title="Social sharing image" plain="social" state={st} value={site.socialImage} onChange={(id) => updSite({ socialImage: id })} hint="Shown when a link to the site is shared. 1200 by 630 pixels fits link previews." />
+        </div>
         <IdentityFields state={st} workspaceKey={snap?.workspaceKey} onPatch={(identity) => updSite({ identity })} />
       </Section>
 
@@ -2104,16 +2221,8 @@ export function SiteStyles() {
         <VisitorTextFields state={st} onCommit={(language, key, value) => applyOps([{ type: 'site.update', visitorText: { language, text: { [key]: value } } }], 'Update site settings')} />
       </Section>
 
-      <Section title="Not-found page" id="site-not-found" defaultOpen={false}>
-        <Field label="Heading" hint="Visitors see this page, with your header and footer, at any address your site does not have. Leave a field empty to use the wording shown.">
-          <DraftInput value={site.notFoundHeading ?? ''} placeholder={notFoundDefaults(siteLanguage(site)).heading} onCommit={(v) => updSite({ notFoundHeading: clipText(v.trim(), NOT_FOUND_LIMITS.heading) })} />
-        </Field>
-        <Field label="Message">
-          <DraftInput multiline value={site.notFoundMessage ?? ''} placeholder={notFoundDefaults(siteLanguage(site)).message} onCommit={(v) => updSite({ notFoundMessage: clipText(v.trim(), NOT_FOUND_LIMITS.message) })} />
-        </Field>
-        <Field label="Home link" hint="The page always ends with this link to your Home page.">
-          <DraftInput value={site.notFoundLinkLabel ?? ''} placeholder={notFoundDefaults(siteLanguage(site)).linkLabel} onCommit={(v) => updSite({ notFoundLinkLabel: clipText(v.trim(), NOT_FOUND_LIMITS.linkLabel) })} />
-        </Field>
+      <Section title="Not-found page" id="site-not-found" defaultOpen={false} keepMounted scope={notFoundScope(site)}>
+        <NotFoundFields site={site} onCommit={(patch) => applyOps([{ type: 'site.update', ...patch }], 'Update site settings')} />
       </Section>
     </div>
     </SayContext.Provider>

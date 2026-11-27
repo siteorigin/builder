@@ -50,12 +50,18 @@ export function languageName(code: string): string {
 }
 
 /** The fill-ins a wording leaves out that visitors would then miss. */
-export const missingFills = (f: VisitorTextField, text: string) => (text.trim() ? (f.fills ?? []).filter((n) => !f.optionalFills?.includes(n) && !text.includes(`{${n}}`)) : []);
+export const missingFills = (f: Pick<VisitorTextField, 'fills' | 'optionalFills'>, text: string) => (text.trim() ? (f.fills ?? []).filter((n) => !f.optionalFills?.includes(n) && !text.includes(`{${n}}`)) : []);
 
 const fillList = (names: string[]) => names.map((n) => `{${n}}`).join(names.length > 2 ? ', ' : ' and ').replace(/, ([^,]*)$/, ' and $1');
 
-/** One wording: its label (with a reset while it is the author's own), the field, and what it is and holds. */
-function WordingField({ f, own, fallback, onCommit }: { f: VisitorTextField; own: string; fallback: string; onCommit: (v: string) => unknown }) {
+/** A wording the site says on its own: what Site styles calls it, where visitors meet it, and the fill-ins it takes. */
+export type Wording = Pick<VisitorTextField, 'label' | 'hint' | 'fills' | 'optionalFills'> & { key: string };
+
+/**
+ * One wording: its label (with a reset while it is the author's own), the field, and what it is and holds. Visitor
+ * text and the not-found page share it, so a wording of the author's own looks and resets the same in both.
+ */
+export function WordingField({ f, own, fallback, onCommit, limit = VISITOR_TEXT_LIMIT }: { f: Wording; own: string; fallback: string; onCommit: (v: string) => unknown; limit?: number }) {
   const id = useId();
   const input = useRef<HTMLInputElement | HTMLTextAreaElement | null>(null);
   const handle = useRef<DraftHandle | null>(null);
@@ -87,7 +93,7 @@ function WordingField({ f, own, fallback, onCommit }: { f: VisitorTextField; own
           </button>
         )}
       </div>
-      <DraftInput id={id} inputRef={input} handle={handle} wrap className="textarea vt-input" quietCount aria-describedby={`${id}-note`} value={own} placeholder={fallback} limit={VISITOR_TEXT_LIMIT} onDirty={onDirty} onCommit={onCommit} />
+      <DraftInput id={id} inputRef={input} handle={handle} wrap className="textarea vt-input" quietCount aria-describedby={`${id}-note`} value={own} placeholder={fallback} limit={limit} onDirty={onDirty} onCommit={onCommit} />
       <div className="field-hint" id={`${id}-note`}>
         {f.hint}
         {f.fills && (
