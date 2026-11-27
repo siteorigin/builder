@@ -10,6 +10,7 @@ import { dependentsOf } from '@engine/definitions';
 import { catalogueComponent, catalogueEntries, CATEGORY_LABELS, getTheme } from '@catalogue/index';
 import { api, commitOps, getState, setState, toast, undoAction, useStore } from '../store';
 import { acceptMessage, newSessionId, postToFrame, viewAfter, type FrameView } from '../lib/bridge';
+import { perfMark, perfOn, picturesOf } from '../lib/perf';
 import { insert, insertionPoint, insertPlan, openComponentStudio, openLayout, selectPage, type InsertSpec, type Where } from '../lib/actions';
 import { canDuplicate } from '../lib/duplicate-component';
 import { catalogueRole, elementWhere, nodeLabel, sectionWhere, slotRefusal, slotWhere, whereFor, type InsertAt, type InsertRole } from '../lib/insert-at';
@@ -523,13 +524,15 @@ export function LivePreview({ spec, fallback, label, maxH = LIVE_MAX_H }: { spec
         const ask = () => {
           if (gone) return;
           measure = newSessionId();
-          postToFrame(frame.current, origin, session, 'inspect', { requestId: measure }, view);
+          postToFrame(frame.current, origin, session, 'inspect', { requestId: measure, ...(perfOn ? { timing: true } : {}) }, view);
         };
         ask();
         remeasure.push(setTimeout(ask, 700), setTimeout(ask, 1800));
         // Nothing to show yet: keep asking until it has a size, or the deadline passes.
         poll = setInterval(() => !sized && ask(), 600);
       } else if (m.type === 'inspectResult' && (m.payload as { requestId?: unknown }).requestId === measure) {
+        // The pictures the preview held at each measurement (scripts/perf).
+        if (perfOn) perfMark('livePreview.measured', { session, ...picturesOf((m.payload as { report?: unknown }).report) });
         const b = (m.payload as { report?: { preview?: { bounds?: { y: number; height: number } | null } } }).report?.preview?.bounds;
         // A measurement with nothing to show yet keeps the frame (and any earlier size) for the next one; only the
         // deadline gives up.

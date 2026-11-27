@@ -234,3 +234,13 @@ if (bridge) {
   if (page && page.domInteractive > 0) perfMark('launch.pageParsed', undefined, performance.timeOrigin + page.domInteractive);
   perfMark('launch.scriptStart');
 }
+
+/**
+ * The pictures a measured page held and the pixels of the files it chose for them, as its report says when timing
+ * was asked for (scripts/perf); nulls when it did not say.
+ */
+export function picturesOf(report: unknown): { pictures: number | null; pixels: number | null } {
+  const held = (report as { pictures?: { pictures?: unknown; pixels?: unknown } } | null)?.pictures;
+  const n = (v: unknown) => (typeof v === 'number' && Number.isFinite(v) ? v : null);
+  return { pictures: n(held?.pictures), pixels: n(held?.pixels) };
+}
