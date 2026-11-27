@@ -137,11 +137,12 @@ let markSeq = 0;
 export function editTarget(batch: unknown): ElementTarget | null | undefined {
   const operations = (batch as { operations?: unknown } | null)?.operations;
   if (!Array.isArray(operations) || !operations.length) return null;
+  type Op = { type?: unknown; owner?: { kind?: unknown; id?: unknown }; nodeId?: unknown; toOwner?: unknown };
+  // A copy or a duplicate names the element it was made from, which it leaves as it was: anywhere in the batch.
+  if ((operations as Op[]).some((op) => !!op && typeof op === 'object' && (op.toOwner !== undefined || (typeof op.type === 'string' && /\.(copy|duplicate)$/.test(op.type))))) return undefined;
   let target: ElementTarget | null = null;
-  for (const op of operations as Array<{ type?: unknown; owner?: { kind?: unknown; id?: unknown }; nodeId?: unknown; toOwner?: unknown }>) {
+  for (const op of operations as Op[]) {
     if (!op || typeof op !== 'object') return null;
-    // A copy or a duplicate names the element it was made from, which it leaves as it was.
-    if (op.toOwner !== undefined || (typeof op.type === 'string' && /\.(copy|duplicate)$/.test(op.type))) return undefined;
     const kind = op?.owner?.kind;
     const id = op?.owner?.id;
     const nodeId = op?.nodeId;

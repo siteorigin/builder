@@ -542,6 +542,8 @@
   .ov-peer-tags { position: absolute; display: flex; flex-wrap: nowrap; gap: 3px; pointer-events: none; }
   .ov-peer-tags.edge.top, .ov-peer-tags.edge.bottom { left: 50%; transform: translateX(-50%); }
   .ov-peer-tags.edge { flex-wrap: wrap; max-width: calc(100% - 8px); }
+  .ov-peer-tags.edge.left, .ov-peer-tags.edge.right { flex-direction: column; flex-wrap: nowrap; }
+  .ov-peer-tags.edge.right { align-items: flex-end; }
   .ov-peer-tag { display: inline-flex; align-items: center; height: 20px; padding: 0 7px; border-radius: var(--r-xs); background: var(--peer); color: #fff; font-size: 12px; font-weight: 600; white-space: nowrap; box-shadow: 0 0 0 1px #fff, 0 1px 3px rgb(16 24 40 / 0.25); }
   @media (prefers-reduced-motion: reduce) {
     .ov-peer.edit, .ov-peer.editing, .ov-peer.spotlight, .ov-spot-dot { animation: none; }

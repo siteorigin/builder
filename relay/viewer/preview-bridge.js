@@ -81,7 +81,9 @@
   };
   for (const type of ['pointerdown', 'mousedown', 'pointerup', 'mouseup', 'auxclick', 'dblclick', 'submit']) window.addEventListener(type, swallow, { capture: true, passive: false });
   // A touch starting is kept from the page's own handlers, but not from scrolling: a swipe moves the page, a tap points.
+  // How far the touch has gone from where it started, at the furthest: a drag that comes back is still a swipe.
   let touchFrom = null;
+  let touchMoved = 0;
   window.addEventListener(
     'touchstart',
     (event) => {
@@ -89,6 +91,17 @@
       event.stopImmediatePropagation();
       const touch = event.changedTouches[0];
       touchFrom = touch ? { x: touch.clientX, y: touch.clientY } : null;
+      touchMoved = 0;
+    },
+    { capture: true, passive: true }
+  );
+  window.addEventListener(
+    'touchmove',
+    (event) => {
+      if (!pointing) return;
+      event.stopImmediatePropagation();
+      const touch = event.changedTouches[0];
+      if (touch && touchFrom) touchMoved = Math.max(touchMoved, Math.hypot(touch.clientX - touchFrom.x, touch.clientY - touchFrom.y));
     },
     { capture: true, passive: true }
   );
@@ -118,9 +131,11 @@
       swallow(event);
       const touch = event.changedTouches[0];
       const from = touchFrom;
+      const moved = from && touch ? Math.max(touchMoved, Math.hypot(touch.clientX - from.x, touch.clientY - from.y)) : 0;
       touchFrom = null;
+      touchMoved = 0;
       // A swipe scrolled the page: still pointing, for the tap that follows.
-      if (!touch || (from && Math.hypot(touch.clientX - from.x, touch.clientY - from.y) > 10)) return;
+      if (!touch || moved > 10) return;
       pointAt(document.elementFromPoint(touch.clientX, touch.clientY) ?? event.target, touch.clientX, touch.clientY);
     },
     { capture: true, passive: false }

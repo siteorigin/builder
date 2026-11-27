@@ -1036,6 +1036,7 @@ describe('spotlights, edits and connections in the editor (#768)', () => {
     expect(editTarget({ operations: [{ ...op(home, 'n1'), type: 'node.copy', toOwner: { kind: 'page', id: 'pg_about' } }] })).toBeUndefined();
     expect(editTarget({ operations: [{ ...op(home, 'n1'), type: 'node.duplicate' }] })).toBeUndefined();
     expect(editTarget({ operations: [op(home, 'n1'), { ...op(home, 'n1'), type: 'node.duplicate' }] })).toBeUndefined();
+    expect(editTarget({ operations: [{ type: 'page.update', pageId: 'pg_home', title: 'Home' }, { ...op(home, 'n1'), type: 'node.duplicate' }] })).toBeUndefined();
     expect(editTarget({ operations: [op({ kind: 'page', id: 'p'.repeat(129) }, 'n1')] })).toBeNull();
     expect(editTarget({ operations: [op(home, 'n'.repeat(129))] })).toBeNull();
     expect(editTarget({ operations: [] })).toBeNull();
