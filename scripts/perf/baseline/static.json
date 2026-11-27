@@ -2,23 +2,23 @@
   "schemaVersion": 1,
   "rows": {
     "renderer.script": {
-      "raw": 1452183,
-      "gzip": 448328,
+      "raw": 1452197,
+      "gzip": 448330,
       "files": []
     },
     "renderer.style": {
-      "raw": 155277,
-      "gzip": 36471,
+      "raw": 160742,
+      "gzip": 37577,
       "files": []
     },
     "renderer.later": {
-      "raw": 3701073,
-      "gzip": 1066050,
+      "raw": 3697723,
+      "gzip": 1065400,
       "files": []
     },
     "main": {
       "raw": 4750571,
-      "gzip": 1369313,
+      "gzip": 1369312,
       "files": []
     },
     "preload": {
