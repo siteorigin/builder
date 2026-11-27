@@ -191,6 +191,22 @@ const PHASE: Record<string, string> = {
 };
 
 /** How a finished turn is headed: one icon and one word per outcome, never color alone. */
+/**
+ * A run's tokens in Developer mode: in all, how many of them the provider read from its cache when it said, and each
+ * model turn's in the tooltip.
+ */
+function TokenCount({ usage }: { usage: NonNullable<NonNullable<ChatMessage['result']>['usage']> }) {
+  const turns = usage.turns?.length
+    ? usage.turns.map((t, i) => (t ? `Step ${i + 1}: ${t.inputTokens.toLocaleString()} in${t.cachedInputTokens !== undefined ? ` (${t.cachedInputTokens.toLocaleString()} from cache)` : ''}, ${t.outputTokens.toLocaleString()} out` : `Step ${i + 1}: not reported`)).join('\n')
+    : undefined;
+  return (
+    <span className="result-usage" title={turns}>
+      {(usage.inputTokens + usage.outputTokens).toLocaleString()} tokens
+      {usage.cachedInputTokens !== undefined && `, ${usage.cachedInputTokens.toLocaleString()} from cache`}
+    </span>
+  );
+}
+
 function outcome(r: NonNullable<ChatMessage['result']>) {
   // A question read the site and could not change it, which is what its heading says.
   if (r.ask && r.status === 'no-changes') return { icon: <BookOpen />, label: 'Answered · site unchanged' };
@@ -1775,6 +1791,7 @@ function HandledBy({ recipient }: { recipient: TurnModel }) {
  */
 function Reply({ m, recipient, children }: { m: ChatMessage; recipient: TurnModel | null; children?: ReactNode }) {
   const history = useStore((s) => s.snapshot?.history);
+  const devMode = useStore((s) => !!s.settings?.developerMode);
   const turn = turnState(m, history)!;
   const r = turn.result;
   const [open, setOpen] = useState(false);
@@ -1816,6 +1833,7 @@ function Reply({ m, recipient, children }: { m: ChatMessage; recipient: TurnMode
         ) : (
           <span className="reply-outcome">{label}</span>
         )}
+        {r.usage && devMode && <TokenCount usage={r.usage} />}
       </div>
       {open && (
         <div id={detailsId} className="reply-details">
@@ -2182,7 +2200,7 @@ function ResultCard({
             </span>
           )}
         </span>
-        {r.usage && devMode && <span className="result-usage">{(r.usage.inputTokens + r.usage.outputTokens).toLocaleString()} tokens</span>}
+        {r.usage && devMode && <TokenCount usage={r.usage} />}
         {steps.length > 0 && (
           <button className="steps-toggle" aria-expanded={open} aria-controls={stepsId} onClick={() => setOpen(!open)}>
             {steps.length} {steps.length === 1 ? 'step' : 'steps'}

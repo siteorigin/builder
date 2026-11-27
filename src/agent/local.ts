@@ -1,6 +1,6 @@
 import { lookup as dnsLookup } from 'node:dns/promises';
 import { newId } from '@shared/ids';
-import type { LocalCheck } from '@shared/api';
+import type { LocalCheck, TokenUsage } from '@shared/api';
 import { checkLocalBaseURL, localContextWindow, localKeyProblem, type LocalToolMode, type LocalURLCheck } from '@shared/local';
 import type { AgentModelAdapter, CanonicalItem, CanonicalModelRequest, ContextOverflow, ModelCapabilities, ModelErrorCode, ModelEvent, StopReason, ToolCall, ToolDefinition } from './types';
 import type { JsonSchema } from './strict-schema';
@@ -766,7 +766,7 @@ export class LocalAdapter implements AgentModelAdapter {
     let raw = '';
     let finish: string | null = null;
     let corrupt = false;
-    let usage: { inputTokens: number; outputTokens: number } | undefined;
+    let usage: TokenUsage | undefined;
     let shown = '';
     let statusOpen = constrained && showStatus;
     let reader: ReadableStreamDefaultReader<Uint8Array> | undefined;
@@ -799,7 +799,7 @@ export class LocalAdapter implements AgentModelAdapter {
           if (data.trim() === '[DONE]') break read;
           const chunk = safeJson(data) as {
             error?: unknown;
-            usage?: { prompt_tokens?: number; completion_tokens?: number } | null;
+            usage?: { prompt_tokens?: number; completion_tokens?: number; prompt_tokens_details?: { cached_tokens?: number } | null } | null;
             choices?: Array<{ finish_reason?: string | null; delta?: { content?: unknown; reasoning_content?: unknown; reasoning?: unknown; tool_calls?: CallFragment[] } }>;
           } | undefined;
           // A lost frame may have held part of a call, so the turn is asked for again rather than trusted.
@@ -808,7 +808,11 @@ export class LocalAdapter implements AgentModelAdapter {
             continue;
           }
           if (chunk.error) return { kind: 'error', error: this.streamError(chunk.error, model), streamed: !!raw, errorBody: JSON.stringify({ error: chunk.error }) };
-          if (typeof chunk.usage?.prompt_tokens === 'number' && typeof chunk.usage?.completion_tokens === 'number') usage = { inputTokens: chunk.usage.prompt_tokens, outputTokens: chunk.usage.completion_tokens };
+          if (typeof chunk.usage?.prompt_tokens === 'number' && typeof chunk.usage?.completion_tokens === 'number') {
+            // A server that reuses the prompt it kept from the last request (llama.cpp, vLLM) may say how much.
+            const cached = chunk.usage.prompt_tokens_details?.cached_tokens;
+            usage = { inputTokens: chunk.usage.prompt_tokens, outputTokens: chunk.usage.completion_tokens, ...(typeof cached === 'number' ? { cachedInputTokens: cached } : {}) };
+          }
           const choice = chunk.choices?.[0];
           if (!choice) continue;
           const delta = choice.delta ?? {};

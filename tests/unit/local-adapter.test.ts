@@ -81,6 +81,11 @@ describe('streaming', () => {
     expect(doneOf(await run(native(), { tools: [] })).usage).toEqual({ inputTokens: 12, outputTokens: 3 });
   });
 
+  it('reports the prompt tokens a server reused from the request before, when it says (#977)', async () => {
+    server.script(textReply('some', { usage: { prompt_tokens: 4000, completion_tokens: 3, prompt_tokens_details: { cached_tokens: 3800 } } }));
+    expect(doneOf(await run(native(), { tools: [] })).usage).toEqual({ inputTokens: 4000, outputTokens: 3, cachedInputTokens: 3800 });
+  });
+
   it('asks again after a garbled frame, which may have held part of a call', async () => {
     server.script({ frames: [sseChunk({ content: 'Good' }), 'data: {not json\n\n', sseChunk({ content: ' reply' }), sseChunk({}, 'stop'), DONE] }, textReply('Whole reply'));
     expect(doneOf(await run(native(), { tools: [] })).text).toBe('Whole reply');

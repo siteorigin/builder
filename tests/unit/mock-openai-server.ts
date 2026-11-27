@@ -43,7 +43,7 @@ export function pieces(text: string, size = 5): string[] {
 }
 
 /** A plain streamed reply, without a usage chunk unless one is given. */
-export function textReply(text: string, opts: { finish?: string; usage?: { prompt_tokens: number; completion_tokens: number }; size?: number; frameMs?: number } = {}): MockReply {
+export function textReply(text: string, opts: { finish?: string; usage?: { prompt_tokens: number; completion_tokens: number; prompt_tokens_details?: { cached_tokens: number } }; size?: number; frameMs?: number } = {}): MockReply {
   return {
     ...(opts.frameMs ? { frameMs: opts.frameMs } : {}),
     frames: [

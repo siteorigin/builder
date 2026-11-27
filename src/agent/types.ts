@@ -1,4 +1,5 @@
 /** Provider-independent model contract. Adapters translate to and from provider protocols. */
+import type { TokenUsage } from '@shared/api';
 
 export interface ModelCapabilities {
   toolCalling: 'native' | 'constrained-json';
@@ -40,6 +41,11 @@ export interface CanonicalModelRequest {
   items: CanonicalItem[];
   tools: ToolDefinition[];
   maxOutputTokens: number;
+  /**
+   * No later request sends this one's conversation again (the code fixer's, each with its own copy of the source): a
+   * provider's cache keeps only the instructions, not the rest at a price no request reads back.
+   */
+  once?: boolean;
 }
 
 export type StopReason = 'end' | 'tool_use' | 'max_tokens' | 'refusal' | 'other';
@@ -58,7 +64,7 @@ export type ModelErrorCode = 'auth' | 'rate_limit' | 'overloaded' | 'network' | 
 export type ModelEvent =
   | { type: 'text'; delta: string }
   | { type: 'tool_call'; call: ToolCall }
-  | { type: 'done'; stopReason: StopReason; text: string; toolCalls: ToolCall[]; providerData?: unknown; usage?: { inputTokens: number; outputTokens: number } }
+  | { type: 'done'; stopReason: StopReason; text: string; toolCalls: ToolCall[]; providerData?: unknown; usage?: TokenUsage }
   /** `setup`: the server or model is not usable as set up (not this request's fault), so the fix is in AI settings. */
   | { type: 'error'; code: ModelErrorCode; message: string; retryAfterMs?: number; context?: ContextOverflow; setup?: 'server' | 'chat' };
 

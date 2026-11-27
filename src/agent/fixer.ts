@@ -61,7 +61,7 @@ export async function fixComponentSource(
       if (estimateTokens(current) > maxOutputTokens) return { ok: false, message: `This component is too long for the model to write back in one reply: the corrected copy needs about ${copy.toLocaleString('en-US')} tokens, and a reply is limited to ${maxOutputTokens.toLocaleString('en-US')}. Split it into smaller components, or fix it by hand.`, attempts: attempt - 1 };
       maxOutputTokens = Math.min(maxOutputTokens, caps.contextWindowTokens - prompt);
     }
-    for await (const ev of adapter.streamTurn({ model, system: SYSTEM, tools: [], maxOutputTokens, items }, signal)) {
+    for await (const ev of adapter.streamTurn({ model, system: SYSTEM, tools: [], maxOutputTokens, items, once: true }, signal)) {
       if (ev.type === 'done') {
         text = ev.text;
         // A cut-off reply can still contain a closed code block, but it is not a finished fix.

@@ -12,6 +12,7 @@ npm run perf:run -- --scenario memory           # memory of every process at nam
 npm run perf:compare -- before.json after.json  # before, after, change and verdict per metric
 npm run perf:compare -- before.json after.json --markdown   # the tables a pull request carries
 npm run perf:static                             # built output sizes and the main entry's packages, beside the baseline
+npm run perf:prompt                             # what each turn of an AI run sends, and what a provider's cache serves
 ```
 
 `perf:run` takes `--scenario` (comma-separated; default `launch,open,edit`), `--fixture` (`small`, `large` or both;
@@ -433,6 +434,46 @@ in it, and a `require()` in a function that never runs is counted. A load that c
 Each row and package is shown beside `baseline/static.json`, with what changed. After a change that moves them on
 purpose, rebuild and refresh it with `npm run perf:static -- --update-baseline`, in the same pull request.
 `--json <file>` writes the full report.
+
+## Prompts
+
+`perf:prompt` measures what each model turn of an AI run sends to the provider, and how much of it the provider can
+serve from its prompt cache (#977). That is visible only in what the provider receives, and the built app sends a
+cloud provider's requests to that provider's own address and nowhere else, so this one is not a scenario of the built
+app: it runs the orchestrator, the project session and the Anthropic and OpenAI adapters (with their SDKs, which put
+each request together exactly as in the app) in-process, from source, on the fixture's project, against scripted
+servers answered through the adapters' `fetch`. No network and no live provider (`prompt.ts`). It takes `--fixture`
+(default both), `--iterations` (default 3, after one untimed run per case), `--out` and `--app <checkout>`, which runs
+that checkout's own copy of the script in that checkout, so its source is what is measured. The result is a benchmark
+result like `perf:run`'s, with the checkout's commit as its build, and `perf:compare` reads it.
+
+The run is a site request of ten model turns, scripted the same for both providers: read the project, read the home
+page, change the hero's heading, read the home page again, change the brand color, add a page of three sections, build
+a new component (the one step that changes a tool on offer: the page tool can place the component from then on), read
+the project's components, validate, and finish. Checks, every iteration: every scripted turn was asked for, the run
+ended completed with the scripted summary, every tool call succeeded, and the project holds each change, four revisions
+on. Cases: `prompt.anthropic` and `prompt.openai`, per fixture.
+
+A request is read as the provider reads it, as blocks (`prompt-cache.ts`): the Messages API's tools, system blocks and
+each message's content blocks, or the Responses API's tools, instructions and input items, each sized by its JSON as
+sent without its `cache_control` marker. The Messages server applies Anthropic's documented caching rule over the run:
+a prefix is kept only at a breakpoint (a marked block, or the last block when the request has a top-level
+`cache_control`) of at least 2,048 bytes (the 512 tokens the bench's models need, at about four bytes a token: bytes
+stand in for tokens, which only the provider counts); each breakpoint reads the longest kept prefix among the 20
+positions that end at it, its own included (a run of tool_use, or of tool_result, blocks in one message being one
+position); what follows the read up to the last breakpoint is written; the rest is processed afresh; entries do not expire within a run. Each server
+reports usage at about four bytes a token, which is what the app records; the metrics are the bytes themselves.
+
+Metrics, per run: `turns`; `promptBytes` (every request's prompt, added up), `firstPrompt`, `lastPrompt`;
+`reusableBytes` (each request's leading blocks identical to the request before it: what any prefix cache could reuse);
+`toolsChanged`, `systemChanged` and `historyRewritten` (requests whose tools, system or instructions, or a message the
+request before already had, differ from the one before); `markers` (the most `cache_control` markers in one request);
+`recordedCachedTokens` (the cached input tokens the run's record says it was given); `prepMs`, `prepMsMax` and
+`prepMsTotal` (from the end of a turn's last tool call to the next request reaching the server: the run putting it
+together). Anthropic's also: `cacheRead`, `cacheWrite`, `uncached` and `freshBytes` (written or uncached: what the
+provider processed rather than read), and per turn `turnNN.cacheRead` and `turnNN.fresh`. A live provider's time to
+first token, and whether its cache does what the rule says, are not measured here: a handful of live runs outside the
+harness settle that.
 
 ## The trace format
 
