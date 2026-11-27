@@ -271,6 +271,19 @@ describe('conversations in the assistant', () => {
     expect((await orch.readConversation(earlier)).run).toBeNull();
   });
 
+  it('an open still reading its file gives way to a conversation asked for after it', async () => {
+    const { orch, ctx, settle } = await setup();
+    await orch.send('Earlier request', ctx);
+    await settle();
+    const earlier = orch.conversation!.id;
+    await orch.newConversation();
+    const slow = orch.openConversation(earlier);
+    const fresh = await orch.newConversation();
+    await expect(slow).rejects.toThrow(/Another conversation was opened meanwhile/);
+    // The thread a message goes to is the one asked for last.
+    expect(orch.conversation).toBe(fresh);
+  });
+
   it('keeps a question’s thread open while it runs in a project read-only here, whose answer is never saved', async () => {
     const { orch, ctx, adapter } = await setup();
     await orch.send('Earlier request', ctx);

@@ -736,6 +736,11 @@ export class Orchestrator {
   /** Settles once the current run has ended: rolled back or committed, and the app told it is idle. */
   private runEnded: Promise<void> = Promise.resolve();
   conversation: Conversation | null = null;
+  /**
+   * Changes of the open conversation asked for, counted: an open that read its file while a later one was asked for
+   * gives way to it, so the thread main sends to is the one the editor shows last.
+   */
+  private picks = 0;
 
   constructor(private deps: OrchestratorDeps) {}
 
@@ -867,6 +872,7 @@ export class Orchestrator {
   /** A request running in the open conversation goes on in the background: it adds to, and saves, its own thread. */
   async newConversation(): Promise<Conversation> {
     this.notUnsaved();
+    this.picks++;
     this.conversation = this.freshConversation();
     return this.conversation;
   }
@@ -878,6 +884,7 @@ export class Orchestrator {
     if (typeof id !== 'string' || !/^c_[a-z0-9]+$/.test(id) || this.gone(id)) throw new Error('Unknown conversation.');
     // The open conversation is newer than its file, which a finished request may still be writing; a running
     // request's is newer still (see runThread). A request elsewhere goes on in the background: it saves only its own.
+    const pick = ++this.picks;
     if (this.conversation?.id === id) return this.conversation;
     const running = this.runThread(id);
     if (running) return (this.conversation = running);
@@ -888,6 +895,7 @@ export class Orchestrator {
     this.sameSession(session);
     // Checked after the read too: a delete may have been asked for, or the request in it started, while it was loading.
     if (this.gone(id)) throw new Error('That conversation was deleted.');
+    if (pick !== this.picks) throw new Error('Another conversation was opened meanwhile.');
     const now = this.runThread(id);
     if (!now) this.notUnsaved(id);
     this.conversation = now ?? c;
@@ -1022,7 +1030,10 @@ export class Orchestrator {
       if (open) this.clearing--;
     }
     this.sameSession(session);
-    if (this.conversation?.id === id) this.conversation = this.freshConversation();
+    if (this.conversation?.id === id) {
+      this.picks++;
+      this.conversation = this.freshConversation();
+    }
     return this.conversation ?? (await this.loadConversations()).active;
   }
 
@@ -1044,6 +1055,7 @@ export class Orchestrator {
       this.clearingAll--;
     }
     this.sameSession(session);
+    this.picks++;
     this.conversation = this.freshConversation();
     return this.conversation;
   }
