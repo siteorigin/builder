@@ -4,7 +4,7 @@
  * them; each session keeps the last set so a save that changes nothing they are made from draws nothing.
  */
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, promises as fsp, renameSync, rmSync, statSync, symlinkSync, utimesSync, writeFileSync } from 'node:fs';
 import { execFileSync } from 'node:child_process';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -473,6 +473,75 @@ describe('a project’s icons', () => {
       execFileSync('mkfifo', [join(dir, 'static/assets/logo-1a2b3c4d.png')]);
       expect((await new SiteIconMaker().input(dir, jpeg)).key).toBe(await monogram(jpeg));
     }
+  });
+
+  it('read the favicon’s file once its stat can stand for its bytes, and again after any change to it', async () => {
+    const dir = tmp();
+    const s = withFavicon(dir, await wideLogo());
+    const file = join(dir, 'static/assets/logo-1a2b3c4d.png');
+    /** How many times `fn` opens the favicon's file (each read opens it). */
+    const opens = async (fn: () => Promise<unknown>) => {
+      const open = fsp.open.bind(fsp) as (...a: unknown[]) => Promise<unknown>;
+      let n = 0;
+      vi.spyOn(fsp, 'open').mockImplementation(((p: unknown, ...rest: unknown[]) => {
+        if (String(p).endsWith('logo-1a2b3c4d.png')) n++;
+        return open(p, ...rest);
+      }) as typeof fsp.open);
+      await fn();
+      vi.restoreAllMocks();
+      return n;
+    };
+    const settled = () => new Promise((r) => setTimeout(r, 20));
+    // Trusted as soon as it has been left alone at all, so the test need not wait seconds.
+    const maker = new SiteIconMaker(null, () => 0);
+    await settled();
+    const first = await maker.input(dir, s);
+    expect(first.mime).toBe('image/png');
+    expect(await opens(async () => expect((await maker.input(dir, s)).key).toBe(first.key))).toBe(0);
+    // Replaced in place by bytes of the same length, its old times put back: read again, as the picture it is now.
+    const changed = Buffer.from(first.data);
+    changed[changed.length - 1] ^= 0xff;
+    const { atime, mtime } = statSync(file);
+    writeFileSync(file, changed);
+    utimesSync(file, atime, mtime);
+    await settled();
+    let replaced!: Awaited<ReturnType<SiteIconMaker['input']>>;
+    expect(await opens(async () => (replaced = await maker.input(dir, s)))).toBe(1);
+    expect(replaced.key).not.toBe(first.key);
+    expect(replaced.data.equals(changed)).toBe(true);
+    // Another file renamed into its place is read; a link put there, or a link in place of its folder, is not used.
+    writeFileSync(`${file}.new`, first.data);
+    renameSync(`${file}.new`, file);
+    await settled();
+    expect((await maker.input(dir, s)).key).toBe(first.key);
+    const monogram = (await maker.input(dir, { ...s, site: { ...s.site, favicon: null } })).key;
+    renameSync(file, join(dir, 'static/assets/real.png'));
+    symlinkSync(join(dir, 'static/assets/real.png'), file);
+    expect((await maker.input(dir, s)).key).toBe(monogram);
+    rmSync(file);
+    renameSync(join(dir, 'static/assets/real.png'), file);
+    await settled();
+    expect((await maker.input(dir, s)).key).toBe(first.key);
+    const elsewhere = tmp();
+    mkdirSync(join(elsewhere, 'static'), { recursive: true });
+    renameSync(join(dir, 'static/assets'), join(elsewhere, 'static/assets'));
+    symlinkSync(join(elsewhere, 'static/assets'), join(dir, 'static/assets'), 'dir');
+    expect((await maker.input(dir, s)).key).toBe(monogram);
+    // What the bytes are taken as follows the record as it is now, read again or not: bytes that are no picture count
+    // as SVG only under a record that says SVG.
+    const other = tmp();
+    const svg = withFavicon(other, Buffer.from('not markup'), 'image/svg+xml');
+    await settled();
+    expect((await maker.input(other, svg)).mime).toBe('image/svg+xml');
+    const png = { ...svg, assets: { ...svg.assets, assets: { ...svg.assets.assets, as_logo: { ...svg.assets.assets.as_logo, mime: 'image/png' } } } };
+    let refused!: Awaited<ReturnType<SiteIconMaker['input']>>;
+    expect(await opens(async () => (refused = await maker.input(other, png)))).toBe(0);
+    expect(refused.key).toBe((await maker.input(other, { ...png, site: { ...png.site, favicon: null } })).key);
+    // A file changed moments ago is read every time, however often it is asked for.
+    rmSync(join(dir, 'static/assets'));
+    const fresh = withFavicon(dir, await wideLogo());
+    const strict = new SiteIconMaker();
+    expect(await opens(async () => (await strict.input(dir, fresh), await strict.input(dir, fresh)))).toBe(2);
   });
 
   it('draw one set at a time, with only the newest asked for meanwhile waiting its turn', async () => {

@@ -17,12 +17,12 @@ import { desktopInMain, type DesktopCall } from '../../tests/driver/desktop';
 import { HISTORY_LIMIT, type BuilderApi, type ProjectSnapshot } from '../../src/shared/api';
 import type { PerfAttrs, PerfRecord } from '../../src/shared/perf';
 import type { ProjectState } from '../../src/shared/types';
-import { generateProject } from '../../src/generator/index';
+import { FONTS_DIR, generateProject, STYLES_DIR } from '../../src/generator/index';
 import type { ChatMessage, Conversation } from '../../src/shared/api';
 import { DONE, envelopeReply, MockOpenAIServer, sseChunk, textReply, toolCallReply, type MockReply } from '../../tests/unit/mock-openai-server';
 import { createStarterState, STARTER_ASSETS } from '../../src/catalogue/starters';
 import { projectFolderName } from '../../src/shared/project-name';
-import { fixturePng, type FixtureSpec } from './fixtures';
+import { fixturePng, ROOT, type FixtureSpec } from './fixtures';
 import { isAssetSort, sortAssets } from '../../src/shared/asset-order';
 import { growthMetrics, readingMetrics, type MemoryProbe, type MemoryReading } from './memory';
 import { PHOTO_COUNT, PHOTO_HEIGHT, PHOTO_WIDTH, photoSpec, scenarioHeicPhotos, scenarioPhotos } from './photos';
@@ -4132,6 +4132,106 @@ export const editFullHistory: Scenario = {
 };
 
 // ---------------------------------------------------------------------------
+// editBranded
+// ---------------------------------------------------------------------------
+
+/** The favicon `editBranded` gives the site: a picture of the size a person picks for one, its file where an import puts it. */
+export const BRANDED_FAVICON = { id: 'img-perf-favicon', file: 'static/assets/perf-favicon.png', size: 256 } as const;
+/** The heading font it chooses: a theme font the Business starter does not use, so choosing it copies its files into the project. */
+export const BRANDED_FONT = { tokenId: 'font.display', value: "'Lora Variable', 'Lora', Georgia, 'Times New Roman', serif", face: /^lora-/ } as const;
+/** How old the favicon's file is before the font is chosen: older than a save trusts a file's timestamps for (ProjectSession.settleMs). */
+const FAVICON_AGE_MS = 3500;
+const BRANDED_HEADING = 'Branded heading';
+/** The website's icons drawn from the favicon (SITE_ICON_PATHS). */
+const DRAWN_ICONS = ['static/apple-touch-icon.png', 'static/icon-192.png', 'static/icon-512.png', 'static/favicon.ico'];
+
+/** The font faces the website's styles name (`url('../fonts/<file>')`) whose file names match `face`. */
+export function namedFaces(css: string, face: RegExp): string[] {
+  return [...css.matchAll(/url\('\.\.\/fonts\/([^'/]+)'\)/g)].map((m) => m[1]).filter((f) => face.test(f));
+}
+
+export const editBranded: Scenario = {
+  name: 'editBranded',
+  after: 'open',
+  description: 'Give the site a favicon and, once its file has settled, a theme font for headings it did not use (untimed); then change the home hero’s Heading in the Inspector and wait for the preview to show it: the save right after one that copied a font in, on a site with its own icons.',
+  async run(ctx) {
+    const { win, projectDir } = ctx;
+    const snap = () => win.evaluate(() => (globalThis as unknown as EditorPage).builder.project.snapshot());
+    const at = (rel: string) => join(projectDir, ...rel.split('/'));
+    const bytesAt = (rel: string) => (existsSync(at(rel)) ? readFileSync(at(rel)) : null);
+    const apply = async (operations: unknown[], label: string) => {
+      const refused = await win.evaluate(
+        async ([ops, l]) => {
+          const r = await (globalThis as unknown as EditorPage).builder.project.apply({ operations: ops as never }, { label: l });
+          return r.ok ? null : (r.error?.message ?? 'no reason given');
+        },
+        [operations, label] as const
+      );
+      expect(refused === null, `${label} was refused: ${refused}`);
+    };
+    const first = await snap();
+    expect(first, 'no project is open');
+    // Not timed. The favicon: its file written where an import puts it, its record added and chosen as one change, then
+    // left until every icon drawn from it is on disk.
+    const monogram = DRAWN_ICONS.map(bytesAt);
+    const picture = fixturePng(1, BRANDED_FAVICON.size, BRANDED_FAVICON.size);
+    mkdirSync(dirname(at(BRANDED_FAVICON.file)), { recursive: true });
+    writeFileSync(at(BRANDED_FAVICON.file), picture);
+    const writtenAt = Date.now();
+    const record = { id: BRANDED_FAVICON.id, name: 'Benchmark favicon', file: BRANDED_FAVICON.file, mime: 'image/png', bytes: picture.length, width: BRANDED_FAVICON.size, height: BRANDED_FAVICON.size, hash: createHash('sha256').update(picture).digest('hex'), kind: 'image', createdAt: ASSET_GROWN_AT };
+    await apply([{ type: 'asset.add', asset: record }, { type: 'site.update', favicon: BRANDED_FAVICON.id }], 'Benchmark favicon');
+    let drawn: Array<Buffer | null> = [];
+    for (let i = 0; i < 120; i++) {
+      drawn = DRAWN_ICONS.map(bytesAt);
+      if (drawn.every((b, k) => b && !(monogram[k] && b.equals(monogram[k])))) break;
+      await sleep(250);
+    }
+    const undrawn = DRAWN_ICONS.filter((_, k) => !drawn[k] || (monogram[k] && drawn[k]!.equals(monogram[k]!)));
+    expect(!undrawn.length, `the site’s icons were not drawn from its new favicon within 30 s: ${undrawn.join(', ')}`);
+    await settledAgain(ctx);
+    // The font, once the favicon's file is as old as a person's: its save copies the font's files in.
+    await sleep(Math.max(0, writtenAt + FAVICON_AGE_MS - Date.now()));
+    const before = (await snap())!;
+    await apply([{ type: 'token.set', tokenId: BRANDED_FONT.tokenId, value: BRANDED_FONT.value }], 'Benchmark font');
+    const shown = await ctx.waitTrace((t) => !!t.first('canvas.revisionApplied', atRevision(before.revision + 1)), 30_000);
+    expect(shown.first('canvas.revisionApplied', atRevision(before.revision + 1)), 'the canvas did not show the font change within 30 s');
+    // Every face of the font the website's styles name, copied in as its theme's own file.
+    const faces = namedFaces(bytesAt(`${STYLES_DIR}/tokens.css`)?.toString('utf8') ?? '', BRANDED_FONT.face);
+    expect(faces.length, 'the website’s styles name no face of the heading font');
+    const pack = join(ROOT, 'resources', 'packs', before.state.site.themeId, 'fonts');
+    const copied = new Map<string, Buffer>();
+    for (const f of faces) {
+      const got = bytesAt(`${FONTS_DIR}/${f}`);
+      const want = existsSync(join(pack, f)) ? readFileSync(join(pack, f)) : null;
+      expect(got && want && got.equals(want), `the heading font’s face ${f} was not copied into the project as its theme’s file`);
+      copied.set(f, got);
+    }
+    await editHeroHeading(ctx, 'editBranded', BRANDED_HEADING, (after) => {
+      expect(after.state.site.favicon === BRANDED_FAVICON.id, 'the site lost its favicon');
+      for (const [f, bytes] of copied) expect(bytesAt(`${FONTS_DIR}/${f}`)?.equals(bytes), `the heading font’s face ${f} in the project changed with the edit`);
+      for (const [k, rel] of DRAWN_ICONS.entries()) expect(bytesAt(rel)?.equals(drawn[k]!), `the site’s icon ${rel} changed with the edit`);
+    });
+  },
+  measure(trace) {
+    const m = measureEdit(trace, 'editBranded');
+    // The favicon's file read and its bytes hashed by the edit's publication, which changed neither it nor any font.
+    // Only from a build that counts them: the publications before the edit read the favicon's new file at least once.
+    const startMain = m.need('scenario.start (main)', trace.first('scenario.start', forScenario('editBranded', 'main')));
+    if (!(counter(startMain, 'favicon.read') > 0)) m.need('favicon.read (counted before the edit)', undefined);
+    const begin = trace.first('scenario.start', forScenario('editBranded', 'renderer'));
+    const req = trace.first('edit.requested', inProc('renderer'), begin?.t ?? Infinity);
+    const target = typeof req?.attrs?.revision === 'number' ? req.attrs.revision + 1 : NaN;
+    const applied = trace.first('controller.apply', atRevision(target), req?.t ?? Infinity);
+    const publish = trace.first('session.publish', inProc('main'), req?.t ?? Infinity, applied?.t ?? -Infinity);
+    if (publish) {
+      m.count('editBranded.publishFaviconReads', delta(publish, 'favicon.read'));
+      m.count('editBranded.publishFaviconBytesHashed', delta(publish, 'favicon.hashedBytes'), 'bytes');
+    }
+    return m;
+  }
+};
+
+// ---------------------------------------------------------------------------
 // ai
 // ---------------------------------------------------------------------------
 
@@ -4742,7 +4842,7 @@ async function expectChip(win: Page) {
   expect(await chip.count(), 'the composer does not say the request may change the whole site');
 }
 
-export const SCENARIOS: Scenario[] = [launch, open, edit, editFullHistory, edits, batch, panels, panelsInUse, layers, chat, aiEdit, ai, canvas, drag, colour, thumbs, exportSite, exportAgain, cmdk, assets, importPhotos, importOriginals, importHeic, switchProject, create, createAgain, memory];
+export const SCENARIOS: Scenario[] = [launch, open, edit, editFullHistory, edits, batch, panels, panelsInUse, layers, chat, aiEdit, ai, canvas, drag, colour, thumbs, exportSite, exportAgain, cmdk, assets, importPhotos, importOriginals, importHeic, editBranded, switchProject, create, createAgain, memory];
 
 /**
  * The scenarios to run in one launch for those asked for: each with every one it follows, in the order of SCENARIOS
