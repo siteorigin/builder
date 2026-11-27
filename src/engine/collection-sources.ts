@@ -6,13 +6,13 @@
  * removed, a field retyped, a list property renamed), whichever operation did it.
  */
 import type { Collection, ComponentDefinition, GraphNode, InstanceNode, NodeTree, OwnerRef, ProjectState, RepeatNode } from '@shared/types';
-import { conditionRef, isBinding, isBindingRef, isCollectionLoop, isComparison } from '@shared/types';
+import { conditionRef, isBinding, isBindingRef, isCollectionLoop, isComparison, isEntryBinding } from '@shared/types';
 import { CURRENT_COLLECTION, ENTRY_ORDER_FIELD, normalizeCollectionQuery, type CollectionQuery } from '@shared/collection-query';
 import { fieldFitProblem, normalizeConnection, rowFieldSchema } from '@shared/collection-rows';
-import { ENTRY_CONTENT_FIELDS, entryChoiceProblem, entryComparisonProblem, isEntryDateField } from '@shared/entry-fields';
+import { ENTRY_CONTENT_FIELDS, entryChoiceProblem, entryComparisonProblem, entryFieldLabel, isEntryDateField } from '@shared/entry-fields';
 import { acceptedTypes, bindingProblem, bindingSlots } from './schema';
 import { requiredGap } from '@shared/required';
-import { HOST_ONLY_PROPS } from '@shared/live/limits';
+import { formDestinationLookup, type FormDestinationLookup } from './form-destinations';
 import { termNamed } from '@shared/entry-feed';
 import { allTrees, childLists, displayName, fail, getNode } from './tree';
 import { newId } from '@shared/ids';
@@ -28,7 +28,15 @@ export interface SourceProblem {
   nodeId: string;
   key: string;
   message: string;
+  /** It lets an entry's text decide where a contact form sends what visitors write (formDestinationProblems). */
+  destination?: true;
 }
+
+/** What follows a problem's own words when an entry would decide where a form sends: why it cannot. */
+const NEVER_FROM_ENTRY = "a form's destination is set on the form, never read from an entry.";
+
+/** A placed component's property by its label, quoted, for a message. */
+const propLabel = (state: ProjectState, n: InstanceNode, prop: string) => `“${own(own(state.components, n.definitionId)?.properties, prop)?.label ?? prop}”`;
 
 /** The fields a query filters and sorts by that are not an entry's (see shared/collection-query.ts). */
 const QUERY_ONLY = new Set(['id', 'slug']);
@@ -161,19 +169,28 @@ function parentNodes(tree: NodeTree): Map<string, GraphNode> {
  * What is wrong with what one element inside a loop reads of its entries: each a message that follows its name, with
  * the place it is about (a field, or a section's property), which names it apart from its wording.
  */
-export function loopBindingProblems(state: ProjectState, collection: Collection, n: GraphNode): Array<{ place: string; message: string }> {
-  const found: Array<{ place: string; message: string }> = [];
+export function loopBindingProblems(state: ProjectState, collection: Collection, n: GraphNode, destination: FormDestinationLookup = formDestinationLookup(state), routesOnly = false): Array<{ place: string; message: string; destination?: true }> {
+  const found: Array<{ place: string; message: string; destination?: true }> = [];
   for (const slot of bindingSlots(n)) {
-    const out = { push: (message: string) => found.push({ place: `${slot.field}:${slot.prop ?? ''}`, message }) };
+    const out = { push: (message: string, routes?: true) => found.push({ place: `${slot.field}:${slot.prop ?? ''}`, message, ...(routes ? { destination: routes } : {}) }) };
     const condition = slot.field === 'when' || slot.field === 'unless';
     const b = condition ? conditionRef(slot.value) : isBindingRef(slot.value) ? slot.value : undefined;
     if (!b || !isBinding(b) || !('$item' in b)) continue;
     const field = b.$item;
     const schema = typeof field === 'string' ? rowFieldSchema(collection, field) : undefined;
     if (!schema) {
-      out.push(`shows "${String(field).slice(0, 60)}", which entries of ${collection.settings.name} do not have.`);
+      if (!routesOnly) out.push(`shows "${String(field).slice(0, 60)}", which entries of ${collection.settings.name} do not have.`);
       continue;
     }
+    // Where a form sends what visitors write is the site's own, never an entry's: its service, its setting, or a
+    // design's property that passes one of them on. Said before anything else about the field (a choice field damaged
+    // by hand still hands the entry's value on), so the export always sees it.
+    if (slot.field === 'prop' && n.kind === 'instance' && slot.prop !== undefined && destination(n.definitionId, slot.prop)) {
+      out.push(`takes where it sends what visitors write (${propLabel(state, n, slot.prop)}) from “${schema.label}”; ${NEVER_FROM_ENTRY}`, true);
+      continue;
+    }
+    // A theme's design is checked for nothing else (collectionSourceProblems).
+    if (routesOnly) continue;
     if (schema.type === 'enum' && !Array.isArray((schema as { options?: unknown }).options)) continue;
     if (!ENTRY_CONTENT_FIELDS.has(slot.field)) {
       out.push(`takes its ${slot.field} from “${schema.label}”; that is the list's own, the same for every entry. Only content can show an entry's field.`);
@@ -186,11 +203,6 @@ export function loopBindingProblems(state: ProjectState, collection: Collection,
     const nested = slot.field === 'prop' && n.kind === 'instance' ? state.components[n.definitionId]?.properties : undefined;
     if (slot.field === 'prop' && !(nested && slot.prop !== undefined && Object.hasOwn(nested, slot.prop))) {
       out.push(`shows “${schema.label}” in "${slot.prop}", which the placed component does not have.`);
-      continue;
-    }
-    // Where a form sends what visitors write is the site's own, never an entry's.
-    if (slot.field === 'prop' && (HOST_ONLY_PROPS as readonly string[]).includes(slot.prop!)) {
-      out.push(`takes where it sends what visitors write from “${schema.label}”; a form's destination is set on the form, never read from an entry.`);
       continue;
     }
     const ok = acceptedTypes(n, slot.field, nested?.[slot.prop!]);
@@ -215,6 +227,45 @@ export function loopBindingProblems(state: ProjectState, collection: Collection,
   return found;
 }
 
+/**
+ * Why a list of a placement would fill where a contact form sends what visitors write from entries or pages, or null:
+ * connected to a collection, a list that fills itself (a feed), or a page list whose items take what they leave empty
+ * from the pages they link to, when its items pass a field on to a form's service or setting.
+ */
+export function listDestinationProblem(state: ProjectState, node: InstanceNode, prop: string, destination: FormDestinationLookup): string | null {
+  const def = own(state.components, node.definitionId);
+  const schema = def ? own(def.properties, prop) : undefined;
+  if (!def || schema?.type !== 'list') return null;
+  const connected = !!node.listSources && Object.hasOwn(node.listSources, prop);
+  // Asked last: a list filled by hand never needs the walk over the project's designs.
+  if ((!connected && !schema.feed && !schema.pageTeaser) || !destination(def.id, prop)) return null;
+  const pages = !connected && schema.feed !== 'entries';
+  // A page list's items take what they leave empty from the pages they link to (shared/page-teasers.ts).
+  const from = connected ? "a collection's entries" : schema.feed ? `the site's ${pages ? 'pages' : 'entries'}` : 'the pages its items link to';
+  return `fills where it sends what visitors write (“${schema.label}”) from ${from}; ${pages ? "a form's destination is set on the form, never read from a page." : NEVER_FROM_ENTRY}`;
+}
+
+/**
+ * What lets an entry decide where a placement's contact form sends what visitors write, outside a collection loop
+ * (loopBindingProblems says it there): in a collection's layout, a form's service or setting (or a design's property
+ * that passes one on) read from the entry; and anywhere, a list that passes its items on to them filled from a
+ * collection or a feed. Each with the place it is about.
+ */
+function destinationProblems(state: ProjectState, owner: OwnerRef, n: GraphNode, destination: FormDestinationLookup): Array<{ place: string; message: string }> {
+  if (n.kind !== 'instance') return [];
+  const out: Array<{ place: string; message: string }> = [];
+  const collection = owner.kind === 'template' ? own(state.collections, owner.id) : undefined;
+  if (collection && n.props && typeof n.props === 'object')
+    for (const [prop, v] of Object.entries(n.props))
+      if (isEntryBinding(v) && destination(n.definitionId, prop)) out.push({ place: `entry:${prop}`, message: `takes where it sends what visitors write (${propLabel(state, n, prop)}) from the entry's “${entryFieldLabel(collection, String(v.$entry))}”; ${NEVER_FROM_ENTRY}` });
+  const def = own(state.components, n.definitionId);
+  for (const prop of Object.keys(def?.properties ?? {})) {
+    const problem = listDestinationProblem(state, n, prop, destination);
+    if (problem) out.push({ place: `list:${prop}`, message: problem });
+  }
+  return out;
+}
+
 /** Whether a node reads an item field (`{ $item }`) in any of its binding places. */
 export const readsItem = (n: GraphNode): boolean => bindingSlots(n).some((sl) => {
   const b = sl.field === 'when' || sl.field === 'unless' ? conditionRef(sl.value) : sl.value;
@@ -227,33 +278,50 @@ export function loopMembers(tree: NodeTree): ReadonlyMap<string, RepeatNode> {
 }
 
 /**
- * Every problem with the project's connected lists, collection loops and what their elements read, in every tree but
- * a theme's designs (fixed theme data, checked when the theme is built).
+ * Every problem with the project's connected lists, collection loops and what their elements read, and every place an
+ * entry would decide where a contact form sends (destinationProblems), in every tree but a theme's designs (fixed
+ * theme data, checked when the theme is built).
  */
 export function collectionSourceProblems(state: ProjectState): SourceProblem[] {
   const out: SourceProblem[] = [];
+  const destination = formDestinationLookup(state);
   for (const { owner, tree, label } of allTrees(state)) {
     const def: ComponentDefinition | undefined = owner.kind === 'component' ? state.components[owner.id] : undefined;
-    if (def?.owner === 'theme' || !tree?.nodes || typeof tree.nodes !== 'object') continue;
+    if (!tree?.nodes || typeof tree.nodes !== 'object') continue;
+    // A theme's design is fixed theme data, checked when the theme is built, but read from the project's files like any
+    // other: whether an entry decides where its form sends is still checked, since the website shows what it says.
+    const themed = def?.owner === 'theme';
     const loops = enclosingLoops(tree);
     let parents: Map<string, GraphNode> | undefined;
     for (const n of Object.values(tree.nodes)) {
       if (!n || typeof n !== 'object') continue;
-      if (n.kind === 'instance' && n.listSources && typeof n.listSources === 'object')
+      if (!themed && n.kind === 'instance' && n.listSources && typeof n.listSources === 'object')
         for (const [prop, raw] of Object.entries(n.listSources)) {
           const problem = connectionProblem(state, owner, n, prop, raw);
           if (problem) out.push({ owner, label, node: n, nodeId: n.id, key: `${owner.kind}:${owner.id}:${n.id}:list:${prop}`, message: problem });
         }
-      if (isCollectionLoop(n) && n.kind === 'repeat') {
+      if (!themed && isCollectionLoop(n) && n.kind === 'repeat') {
         const problem = loopProblem(state, owner, tree, n, (parents ??= parentNodes(tree)));
         if (problem) out.push({ owner, label, node: n, nodeId: n.id, key: `${owner.kind}:${owner.id}:${n.id}:loop`, message: problem });
       }
       const loop = loops.get(n.id);
       const collection = loop ? loopCollection(state, owner, loop) : undefined;
-      if (collection) for (const problem of loopBindingProblems(state, collection, n)) out.push({ owner, label, node: n, nodeId: n.id, key: `${owner.kind}:${owner.id}:${n.id}:item:${problem.place}`, message: problem.message });
+      if (collection)
+        for (const problem of loopBindingProblems(state, collection, n, destination, themed))
+          out.push({ owner, label, node: n, nodeId: n.id, key: `${owner.kind}:${owner.id}:${n.id}:item:${problem.place}${problem.destination ? ':destination' : ''}`, message: problem.message, ...(problem.destination ? { destination: true as const } : {}) });
+      for (const problem of destinationProblems(state, owner, n, destination)) out.push({ owner, label, node: n, nodeId: n.id, key: `${owner.kind}:${owner.id}:${n.id}:destination:${problem.place}`, message: problem.message, destination: true });
     }
   }
   return out;
+}
+
+/**
+ * The places an entry's text (or a page's) would decide where a contact form sends what visitors write: a layout's
+ * form reading its service or setting from the entry, a loop's from each row, or a list filled from entries or pages
+ * that passes them on. Export refuses a project that has one, as edits refuse making one.
+ */
+export function formDestinationProblems(state: ProjectState): SourceProblem[] {
+  return collectionSourceProblems(state).filter((p) => p.destination);
 }
 
 // ---------------------------------------------------------------------------
@@ -274,6 +342,12 @@ export function instanceSetListSource(state: ProjectState, tree: NodeTree, op: {
   const problem = connectionProblem(state, op.owner, node, op.prop, connection ?? op.source);
   if (problem) fail(`${displayName(state, node)} ${problem}`);
   node.listSources = { ...(node.listSources ?? {}), [op.prop]: connection! };
+  const routes = listDestinationProblem(state, node, op.prop, formDestinationLookup(state));
+  if (routes) {
+    delete node.listSources[op.prop];
+    if (!Object.keys(node.listSources).length) delete node.listSources;
+    fail(`${displayName(state, node)} ${routes}`);
+  }
   return {};
 }
 

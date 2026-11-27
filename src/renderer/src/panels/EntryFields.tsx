@@ -11,6 +11,7 @@ import { entryChoiceProblem, entryFieldLabel, entryFieldSchemas, isEntryDateFiel
 import { rowFieldSchemas } from '@shared/collection-rows';
 import { acceptedTypes, type BindField } from '@engine/schema';
 import { loopCollection, loopMembers } from '@engine/collection-sources';
+import { formDestinationLookup } from '@engine/form-destinations';
 import { getTree } from '@engine/tree';
 import { applyOps } from '../store';
 import { Field, Section } from '../components/ui';
@@ -44,8 +45,12 @@ function placesOf(state: ProjectState, node: GraphNode): Place[] {
       const def = state.components[node.definitionId];
       if (!def) return [];
       const kinds = new Set(['string', 'richtext', 'number', 'boolean', 'enum', 'image', 'link']);
+      // Where a contact form sends is never an entry's (#1127): its settings are not offered, unless one already reads
+      // an entry (written by hand), so it can be set back to its own value.
+      const destination = formDestinationLookup(state);
+      const bound = (prop: string) => Object.hasOwn(node.props, prop) && isBinding(node.props[prop]);
       return Object.entries(def.properties)
-        .filter(([, s]) => kinds.has(s.type))
+        .filter(([prop, s]) => kinds.has(s.type) && (bound(prop) || !destination(def.id, prop)))
         .map(([prop, s]) => ({ field: 'prop' as const, prop, label: s.label, nested: s, value: Object.hasOwn(node.props, prop) ? node.props[prop] : undefined }));
     }
     default:

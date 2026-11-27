@@ -79,7 +79,7 @@ export function openEditorDestination(dest: EditorDestination) {
   const ref: ElementRef = { owner, instancePath: [], nodeId };
   if (s.mode !== 'edit') setMode('edit');
   if (owner.kind === 'page') selectPage(owner.id, ref);
-  else if (owner.kind === 'template') openLayout(owner.id, field.entryId);
+  else if (owner.kind === 'template') openLayout(owner.id);
   else if (owner.kind === 'component') {
     if (!openComponentStudio(owner.id)) return toast('That form is in a component that can no longer be edited here.', 'info');
   } else {
@@ -90,14 +90,6 @@ export function openEditorDestination(dest: EditorDestination) {
     if (pageId) selectPage(pageId, ref);
     else if (entry) openLayout(entry.collection.settings.id, entry.entry.id);
     else return toast(`No page shows the shared ${owner.id} right now.`, 'info');
-  }
-  if (field.entryBound) {
-    // A setting read from each entry is fixed on the entry that cannot send: its own field, in the post writer, when
-    // the writer edits that field. Otherwise the layout shows that entry, with the choice of what it reads focused.
-    const writer = field.entryId && field.entryField && Object.hasOwn(POST_FIELDS, field.entryField) ? POST_FIELDS[field.entryField] : undefined;
-    if (owner.kind === 'template' && writer) return void openPost(owner.id, field.entryId!).then(() => revealInWriter(writer));
-    setState({ modal: null, selection: ref, rightTab: 'inspect', dockOpen: true });
-    return revealWhenShown('entry-fields', `#${CSS.escape(`entry-field-${nodeId}-${field.prop}`)}`);
   }
   // The Inspector of the form takes the request: it opens Content (and a field's row) and focuses the setting once it shows.
   const at = field.itemId ? { itemId: field.itemId, field: field.field } : {};

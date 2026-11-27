@@ -1,11 +1,9 @@
 import type { Diagnostic, EditorDestination, ExportNote } from '@shared/api';
 import type { ComponentDefinition, ListItem, OwnerRef, ProjectState } from '@shared/types';
-import { isEntryBinding } from '@shared/types';
 import { publicUrl } from '@shared/public-url';
-import { formConnectionProblem, formFieldsAsSent, formKeyClashes, formServiceSetup, formUnchoosable, isFormContract } from '@catalogue/foundation/form';
+import { formFieldsAsSent, formKeyClashes, formServiceSetup, formUnchoosable, isFormContract } from '@catalogue/foundation/form';
 import { websiteTrees } from '@engine/validate';
-import { isDraftEntry, publishedState, siteEntries } from '@generator/index';
-import { entryInstanceProps } from '@generator/entry-template';
+import { publishedState } from '@generator/index';
 import { treeFor } from './model';
 import { requiredSite } from '@engine/required';
 
@@ -53,19 +51,12 @@ export interface FormLanding {
   /** A list row to open, and its field to focus. */
   itemId?: string;
   field?: string;
-  /** A collection layout's form: the entry to show it on, the first whose page cannot send. */
-  entryId?: string;
-  /** The property reads each entry's field: chosen in Entry content, not typed in Content. */
-  entryBound?: boolean;
-  /** The entry field it reads, whose value on `entryId` is what to change. */
-  entryField?: string;
 }
 
 /**
  * The Content field a form destination opens, found in the project as it is now: the setting the form's service needs
  * (or the service itself, when none is chosen), its Netlify form name, or the field row with the problem (its name,
- * or its choices), opened. A layout's form whose settings come from each entry is shown on the first entry that
- * cannot send, at the setting that entry's service needs. Null when the form, or that setting, is no longer there.
+ * or its choices), opened. Null when the form, or that setting, is no longer there.
  */
 export function formDestinationField(state: ProjectState, dest: FormDestination): FormLanding | null {
   const tree = treeFor(state, dest.owner);
@@ -73,17 +64,9 @@ export function formDestinationField(state: ProjectState, dest: FormDestination)
   const def = node?.kind === 'instance' && Object.hasOwn(state.components, node.definitionId) ? state.components[node.definitionId] : undefined;
   if (!node || node.kind !== 'instance' || !def || !isContactForm(def)) return null;
   if (dest.setting === 'connection') {
-    // A layout's form reading its service or setting from each entry: judged, and shown, as the entry that cannot send.
-    const collection = dest.owner.kind === 'template' && Object.hasOwn(state.collections ?? {}, dest.owner.id) ? state.collections[dest.owner.id] : undefined;
-    // A published entry first: it is the one the website export named. A draft only Project health names.
-    const entries = collection && Object.values(node.props).some(isEntryBinding) ? siteEntries(state).filter((e) => e.collection === collection) : [];
-    const failing = [...entries.filter((e) => !isDraftEntry(e.entry)), ...entries.filter((e) => isDraftEntry(e.entry))].find((e) => sendsNot(def, () => entryInstanceProps(state, collection!, e.entry, node)));
-    const props = failing ? entryInstanceProps(state, collection!, failing.entry, node) : node.props;
-    const prop = formServiceSetup(def, props)?.prop ?? 'provider';
+    const prop = formServiceSetup(def, node.props)?.prop ?? 'provider';
     const schema = Object.hasOwn(def.properties, prop) ? def.properties[prop] : undefined;
-    if (!schema) return null;
-    const bound = node.props[prop];
-    return { prop, label: schema.label, ...(failing ? { entryId: failing.entry.id } : {}), ...(isEntryBinding(bound) ? { entryBound: true, entryField: bound.$entry } : {}) };
+    return schema ? { prop, label: schema.label } : null;
   }
   const prop = dest.setting === 'formName' ? 'formName' : 'fields';
   const schema = Object.hasOwn(def.properties, prop) ? def.properties[prop] : undefined;
@@ -96,15 +79,6 @@ export function formDestinationField(state: ProjectState, dest: FormDestination)
   const at = dest.setting === 'fieldKeys' ? formKeyClashes(sent)[0]?.indexes[1] : formUnchoosable(sent)[0];
   const itemId = dest.itemId && items?.some((it) => it?.id === dest.itemId) ? dest.itemId : at === undefined ? undefined : items?.[at]?.id;
   return itemId ? { prop, label: schema.label, itemId, field: dest.setting === 'fieldKeys' ? 'name' : 'options' } : { prop, label: schema.label };
-}
-
-/** Whether a form with these settings cannot send; one whose settings cannot be read is not counted. */
-function sendsNot(def: ComponentDefinition, props: () => Record<string, unknown>): boolean {
-  try {
-    return !!formConnectionProblem(def, props());
-  } catch {
-    return false;
-  }
 }
 
 /** What a destination's button says. */

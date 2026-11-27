@@ -7,7 +7,8 @@ import type { EditOperation } from '@shared/ops';
 import type { InstanceNode, OwnerRef, ProjectState } from '@shared/types';
 import { createStarterState } from '@catalogue/starters';
 import { applyOperations } from '@engine/apply';
-import { formDestinationProps, GUEST_BATCH_MAX_NEW_ELEMENTS, guestDestinationChange, guestEditProblem } from '@engine/guest-edits';
+import { GUEST_BATCH_MAX_NEW_ELEMENTS, guestDestinationChange, guestEditProblem } from '@engine/guest-edits';
+import { formDestinationProps } from '@engine/form-destinations';
 
 const FORM = 'foundation.contact.form';
 const SALES = 'https://forms.example.com/sales';
