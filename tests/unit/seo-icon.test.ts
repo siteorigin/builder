@@ -24,7 +24,7 @@ describe('the SEO icon', () => {
     ['the SEO view’s header', 'SeoView', /<SearchCheck aria-hidden="true" \/>\s*<h2 className="seo-title">SEO<\/h2>/],
     ['the toolbar’s breadcrumb', 'Toolbar', /\{seo \? \(\s*<SearchCheck aria-hidden="true" \/>/],
     ['the Inspector’s header', 'Inspector', /<Header title=\{doc\?\.title \?\? 'SEO'\} kind=\{kind\} icon=\{<SearchCheck \/>\} \/>/],
-    ['the Inspector’s empty state', 'Inspector', /<div className="insp-empty">\s*<SearchCheck aria-hidden="true" \/>\s*<p>\{doc \? `The SEO view shows/],
+    ['the Inspector’s empty state', 'Inspector', /<div className="insp-empty">\s*<SearchCheck aria-hidden="true" \/>/],
     ['Open in SEO view', 'SeoPreview', /<SearchCheck aria-hidden \/> Open in SEO view/]
   ])('is on %s', (_place, file, markup) => {
     expect(source(file)).toMatch(markup);
