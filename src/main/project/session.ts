@@ -2343,7 +2343,7 @@ export class ProjectSession extends EventEmitter {
   private generate(state: ProjectState, instrument: boolean): Map<string, string> {
     const files = generateProject(state, { instrument }, this.generation);
     // How long the generation cache spent finding which files' inputs are unchanged (src/generator/cache.ts).
-    if (perf.on) perf.mark('session.generateCheck', { variant: instrument ? 'dev' : 'clean', ms: this.generation.checkMs, files: this.generation.checked });
+    if (perf.on) perf.mark('session.generateCheck', { variant: instrument ? 'dev' : 'clean', ms: this.generation.checkMs, files: this.generation.checked, looked: this.generation.looked, derived: this.generation.derived });
     return files;
   }
 

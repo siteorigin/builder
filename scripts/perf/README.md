@@ -105,7 +105,8 @@ one revision, the page's document on disk holds the new heading, the preview sho
 editor sending the edit): `apply` (the whole edit in the main process, queue included), `sessionApply`,
 `validateOperations`, `applyOperations`, `validate` (the saving checks), `generate` (both variants), `generateCheck`
 (the part of both generations the generation cache spent finding which files' inputs are unchanged,
-`session.generateCheck`), `changedDocs` (every document serialized and compared with its last text to find what the
+`session.generateCheck`, with two counts: `generateLooked`, the things files read that it looked up in the new state,
+each once a state, and `generateDerived`, the derived values among them it worked out), `changedDocs` (every document serialized and compared with its last text to find what the
 edit changed, `session.changedDocs`), `persist`, `publish` (spans); `hmrRelease`, `changed`, `snapshotSent`, `snapshotReceived`, `rendererCommit`, `previewPublished`
 and `previewApplied` (the headline); the change reaching the editor in its stretches, `changedToSent` (`session.changed` to
 `controller.snapshotSent`: the main process putting the editor's copy together and sending it), `sentToReceived` (IPC
@@ -152,7 +153,8 @@ wrote, so does the home page's document on disk, the answer is in the log, and t
 applied. Times from the request being sent: `beginRun` (the run's start, `session.beginRun`), `checks` (what the run
 checks before handing the batch to the project: Developer mode's copies and the request's reach,
 `agent.devModeCheck` and `agent.authorityCheck`), and in the batch's own `session.apply` (`sessionApply`):
-`applyOperations`, `validate`, `generate`, `generateCheck`, `changedDocs`, `persist`, `publish`; `runMarker` (the run's
+`applyOperations`, `validate`, `generate`, `generateCheck` (with `generateLooked` and `generateDerived`, as in `edit`),
+`changedDocs`, `persist`, `publish`; `runMarker` (the run's
 recovery marker built at its start and with the batch, `session.runMarker`, its write left out) and `previewApplied`.
 Counts: `runMarkers`, `runDocsHashed` (documents the markers hashed, `run.docsHashed`), `docsCopied`,
 `docsSerialized`, durable writes and fsyncs in the apply; `project:changed` sends and their bytes over the whole run

@@ -486,7 +486,9 @@ function switchReady(t: Trace, fixture: FixtureFacts): PerfRecord | undefined {
 /**
  * `<prefix>.generate`, every generation of both variants in [from, to] (the website's and the preview's), and
  * `<prefix>.generateCheck`, the part of them the generation cache spent finding which files' inputs are unchanged: a
- * sum missing a variant would look faster than it is.
+ * sum missing a variant would look faster than it is. With them, `<prefix>.generateLooked`, the things read that the
+ * cache looked up in the new state (each once a state), and `<prefix>.generateDerived`, the derived values among them
+ * it worked out (src/generator/cache.ts).
  */
 function generation(m: Collector, trace: Trace, prefix: string, from: number, to: number) {
   const variant = (name: string, v: string) => trace.all(name, (r) => r.proc === 'main' && r.attrs?.variant === v, from, to);
@@ -497,7 +499,15 @@ function generation(m: Collector, trace: Trace, prefix: string, from: number, to
   if (clean.length && dev.length) m.ms(`${prefix}.generate`, [...clean, ...dev].reduce((n, r) => n + (r.ms ?? NaN), 0));
   const checks = [...variant('session.generateCheck', 'clean'), ...variant('session.generateCheck', 'dev')];
   if (!checks.some((r) => r.attrs?.variant === 'clean') || !checks.some((r) => r.attrs?.variant === 'dev')) m.need('session.generateCheck (both variants)', undefined);
-  else m.ms(`${prefix}.generateCheck`, checks.reduce((n, r) => n + (typeof r.attrs?.ms === 'number' ? r.attrs.ms : NaN), 0));
+  else {
+    m.ms(`${prefix}.generateCheck`, checks.reduce((n, r) => n + (typeof r.attrs?.ms === 'number' ? r.attrs.ms : NaN), 0));
+    const sum = (attr: string) => checks.reduce((n, r) => n + (typeof r.attrs?.[attr] === 'number' ? (r.attrs[attr] as number) : NaN), 0);
+    for (const [metric, attr] of [['generateLooked', 'looked'], ['generateDerived', 'derived']] as const) {
+      const n = sum(attr);
+      if (Number.isFinite(n)) m.count(`${prefix}.${metric}`, n);
+      else m.need(`session.generateCheck (${attr})`, undefined);
+    }
+  }
 }
 
 export const EDITED_HEADING = 'Benchmark heading';

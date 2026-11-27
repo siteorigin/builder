@@ -189,11 +189,15 @@ export class GenerationCache {
   made: string[] = [];
   /**
    * With `timing` on (only while timing marks are, src/main/perf.ts), how long the last run spent checking whether each
-   * file's dependencies are unchanged, in ms, and how many files it checked. Off, nothing is timed.
+   * file's dependencies are unchanged, in ms, how many files it checked, how many things read it looked up in its
+   * state (`looked`, each once a state) and how many of those were derived values it worked out (`derived`). Off,
+   * nothing is timed or counted.
    */
   timing = false;
   checkMs = 0;
   checked = 0;
+  looked = 0;
+  derived = 0;
 
   private dep(name: string): Dep {
     let d = this.deps.get(name);
@@ -203,6 +207,10 @@ export class GenerationCache {
 
   private version(state: ProjectState, dep: Dep): number {
     if (dep.state === state) return dep.stateV!;
+    if (this.timing) {
+      this.looked++;
+      if (dep.kind === '@') this.derived++;
+    }
     const value = current(state, dep);
     // A version number only ever stands for one value, so equal numbers mean the same value.
     if (dep.v === undefined || !sameValue(dep.value, value)) {
@@ -226,6 +234,8 @@ export class GenerationCache {
     this.made = [];
     this.checkMs = 0;
     this.checked = 0;
+    this.looked = 0;
+    this.derived = 0;
     deriving.set(tracked, <T>(name: string, compute: (state: ProjectState) => T): T => {
       const n = '@' + JSON.stringify([name]);
       rec.deps?.add(n);
