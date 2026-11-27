@@ -16,13 +16,24 @@ import { pageShowing, pagesShowing } from '@shared/page-shell';
 import { SAMPLE_CONTACT, SAMPLE_CONTACT_VALUES, type SampleContactKind } from '@shared/sample-contact';
 import { dialString } from '@shared/contact-links';
 import { publishedState } from '@generator/index';
+import { isSyncedCollection, orderedEntries } from '@shared/collections';
+
+/** A collection entry, as the owner of its title and excerpt: `id` is the entry's. */
+export interface EntryOwner {
+  kind: 'entry';
+  id: string;
+  collectionId: string;
+}
+
+/** Where a field of the site is kept: a page, the shared header or footer, a layout, a component, or an entry. */
+export type ContentOwner = OwnerRef | EntryOwner;
 
 /** One field of the site that shows content: a text, a button's label, a list item's field, or a destination. */
 export interface ContentField {
   /** Names this field in any revision of the project: its document, node and where in that node it is stored. */
   key: string;
-  owner: OwnerRef;
-  /** The page or shell node: the content's own node, or the placement that shows it. */
+  owner: ContentOwner;
+  /** The page or shell node: the content's own node, or the placement that shows it. For an entry, the entry's ID. */
   nodeId: string;
   kind: 'text' | 'link';
   value: unknown;
@@ -47,6 +58,8 @@ export interface ContentField {
   section: string;
   /** The field, as the inspector names it: "Heading", "Contact links › Email › Destination". */
   label: string;
+  /** A collection entry's title or excerpt, changed with an entry edit (or, synced from a source, not here). */
+  entry?: { collectionId: string; entryId: string; field: 'title' | 'excerpt'; draft: boolean; synced: boolean };
 }
 
 /** A searchable run of one field: its text, a block or list item of rich text, a destination. */
@@ -159,8 +172,8 @@ function fieldLabel(state: ProjectState, tree: NodeTree, c: RenderedContent): { 
 }
 
 /**
- * Every field of the site that shows content, in reading order: the shared header, each page, the shared footer.
- * The header or footer is left out when no page shows it.
+ * Every field of the site that shows content, in reading order: the shared header, each page, the shared footer,
+ * then each collection's entries, by their title and excerpt. The header or footer is left out when no page shows it.
  */
 export function contentFields(state: ProjectState): ContentField[] {
   const pages = state.site.pageOrder.filter((id) => own(state.pages, id));
@@ -196,6 +209,44 @@ export function contentFields(state: ProjectState): ContentField[] {
         section: root ? displayName(state, root) : where,
         label
       });
+    }
+  }
+  out.push(...entryFields(state));
+  return out;
+}
+
+/**
+ * The title and excerpt of every collection entry, collection by collection in the order their entries are listed.
+ * Drafts are included, as draft pages are; a synced collection's entries are found but changed only at their source.
+ */
+function entryFields(state: ProjectState): ContentField[] {
+  const out: ContentField[] = [];
+  const collections = state.collections ?? {};
+  for (const id of Object.keys(collections).sort()) {
+    const c = collections[id];
+    const synced = isSyncedCollection(c.settings);
+    for (const e of orderedEntries(c)) {
+      const fields: Array<['title' | 'excerpt', string | undefined]> = [
+        ['title', e.title],
+        ['excerpt', e.excerpt]
+      ];
+      for (const [field, value] of fields) {
+        if (typeof value !== 'string' || !value.trim()) continue;
+        out.push({
+          key: JSON.stringify(['entry', c.settings.id, e.id, 'text', field]),
+          owner: { kind: 'entry', id: e.id, collectionId: c.settings.id },
+          nodeId: e.id,
+          kind: 'text',
+          value,
+          rich: false,
+          richLinks: false,
+          direct: false,
+          where: e.title.trim() || 'Untitled entry',
+          section: c.settings.name,
+          label: field === 'title' ? 'Title' : 'Excerpt',
+          entry: { collectionId: c.settings.id, entryId: e.id, field, draft: e.draft !== false, synced }
+        });
+      }
     }
   }
   return out;
@@ -319,6 +370,7 @@ function crossesLink(spans: RichSpan[], start: number, end: number): boolean {
 }
 
 function blockedReason(f: ContentField, part: Part, start: number, end: number): string | undefined {
+  if (f.entry) return f.entry.synced ? `The ${f.section} collection is synced from an external source, so its entries are read-only here. Change this in the source, or detach the collection from it.` : undefined;
   if (f.computed) return 'This comes from an article’s page settings. Open that page to change its title, date, byline or excerpt.';
   if (!f.source) return 'This is part of a component’s design. Open it to change it everywhere, or to make this placement its own.';
   if (f.custom) return 'This belongs to a custom code component, which may use it as a setting. Change it in the inspector.';
@@ -665,21 +717,31 @@ export function planReplace(state: ProjectState, chosen: ContentMatch[], replace
   const planned = new Set<string>();
   // One patch per list item, so its fields (and a kept link) are set together.
   const patches = new Map<string, { owner: OwnerRef; nodeId: string; prop: string; itemId: string; value: Record<string, unknown> }>();
+  const entryEdits = new Map<string, { collectionId: string; entryId: string; value: { title?: string; excerpt?: string } }>();
   for (const ms of groups.values()) {
     const f = ms[0].field;
     const s = f.source;
-    if (!s) continue;
+    if (!s && !f.entry) continue;
     const next = replaceIn(state, f, ms, replacement);
     if (!next) continue;
     if (next.error) return { operations: [], changes: [], error: next.error, skipped };
     planned.add(f.key);
     changes.push(...next.changes);
-    if (s.kind === 'node') operations.push({ type: 'node.setContent', owner: f.owner, nodeId: f.nodeId, field: s.field, value: next.value });
+    const owner = f.owner;
+    if (owner.kind === 'entry') {
+      // One edit per entry, so its title and excerpt change together.
+      const { collectionId, entryId, field } = f.entry!;
+      const k = JSON.stringify([collectionId, entryId]);
+      const edit = entryEdits.get(k) ?? { collectionId, entryId, value: {} };
+      edit.value[field] = next.value as string;
+      entryEdits.set(k, edit);
+    } else if (!s) continue;
+    else if (s.kind === 'node') operations.push({ type: 'node.setContent', owner, nodeId: f.nodeId, field: s.field, value: next.value });
     // One field of an object property is replaced alone; the object's other fields stay as they are.
-    else if (!s.itemId || !s.field) operations.push({ type: 'instance.setProp', owner: f.owner, nodeId: f.nodeId, prop: s.prop, ...(!s.itemId && s.field !== undefined ? { field: s.field } : {}), value: next.value });
+    else if (!s.itemId || !s.field) operations.push({ type: 'instance.setProp', owner, nodeId: f.nodeId, prop: s.prop, ...(!s.itemId && s.field !== undefined ? { field: s.field } : {}), value: next.value });
     else {
-      const k = JSON.stringify([f.owner.kind, f.owner.id, f.nodeId, s.prop, s.itemId]);
-      const patch = patches.get(k) ?? { owner: f.owner, nodeId: f.nodeId, prop: s.prop, itemId: s.itemId, value: {} };
+      const k = JSON.stringify([owner.kind, owner.id, f.nodeId, s.prop, s.itemId]);
+      const patch = patches.get(k) ?? { owner, nodeId: f.nodeId, prop: s.prop, itemId: s.itemId, value: {} };
       patch.value[s.field] = next.value;
       patches.set(k, patch);
     }
@@ -696,6 +758,7 @@ export function planReplace(state: ProjectState, chosen: ContentMatch[], replace
     }
     operations.push({ type: 'instance.setProp', owner: p.owner, nodeId: p.nodeId, prop: p.prop, itemId: p.itemId, value: p.value });
   }
+  for (const e of entryEdits.values()) operations.push({ type: 'entry.update', collectionId: e.collectionId, entryId: e.entryId, ...e.value });
   if (!operations.length) return { operations, changes, skipped };
   let after: ProjectState;
   try {
@@ -748,6 +811,8 @@ export interface ContentTarget {
  * or the section with that field opened. Null when the field is no longer in the project.
  */
 export function contentTarget(state: ProjectState, field: ContentField, currentPageId: string | null): ContentTarget | null {
+  // An entry's title and excerpt open in the post writer instead (see entryTarget).
+  if (field.owner.kind === 'entry') return null;
   const pageId = field.owner.kind === 'page' ? (own(state.pages, field.owner.id) ? field.owner.id : undefined) : pageShowing(state, field.owner.id, currentPageId);
   const tree = treeOf(state, field.owner);
   const node: GraphNode | undefined = tree && own(tree.nodes, field.nodeId);
@@ -769,6 +834,14 @@ export function contentTarget(state: ProjectState, field: ContentField, currentP
   if (!s) return { pageId, selection, section: 'content' };
   if (!s.itemId) return { pageId, selection, section: 'content', focus: s.prop };
   return { pageId, selection, section: 'content', reveal: { prop: s.prop, itemId: s.itemId, ...(s.field ? { field: s.field } : {}) } };
+}
+
+/** Where an entry's title or excerpt opens: the entry in the writer, at that field. Null when the entry has gone. */
+export function entryTarget(state: ProjectState, field: ContentField): { collectionId: string; entryId: string; field: 'title' | 'excerpt' } | null {
+  const e = field.entry;
+  if (!e) return null;
+  const c = own(state.collections ?? {}, e.collectionId);
+  return c && own(c.entries, e.entryId) ? { collectionId: e.collectionId, entryId: e.entryId, field: e.field } : null;
 }
 
 // ---------------------------------------------------------------------------
