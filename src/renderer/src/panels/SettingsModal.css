@@ -23,17 +23,19 @@
   .settings-group-title { margin: 8px 2px -4px; font-size: 12px; font-weight: 600; color: var(--text-2); }
   .settings-row { display: flex; flex-direction: column; gap: 6px; padding: 12px 14px; min-width: 0; }
   .settings-row-inline { flex-direction: row; align-items: center; justify-content: space-between; gap: 16px; }
-  /* A recorded shortcut (Settings → General → Keyboard shortcuts): its keys, then Change; Reset beside it. */
+  /* A recorded shortcut (Settings → General → Keyboard shortcuts): the key as a value in its well, then Change, with
+     a quieter Reset once it differs from the default. Recording is drawn in the well, not around the button: a dashed
+     edge with the prompt in it, so the focus outline stays the only ring. The note keeps two lines, so the row does
+     not jump when the instructions or a refusal take its place. */
   .settings-shortcut { display: flex; flex: none; align-items: center; gap: 8px; }
-  .settings-shortcut-key { gap: 8px; }
-  .settings-shortcut-key .kbd { min-width: 44px; text-align: center; color: var(--text); }
-  .settings-shortcut-key.recording { border-color: var(--accent); box-shadow: 0 0 0 1px var(--accent); }
-  .settings-shortcut-key.recording .kbd { color: var(--text-3); font-style: italic; }
+  .settings-shortcut-value { display: inline-flex; align-items: center; justify-content: center; min-width: 52px; height: 26px; padding: 0 8px; border-radius: var(--r-sm); background: var(--panel-2); box-shadow: inset 0 0 0 1px var(--border); font-family: var(--font); font-size: 12px; font-weight: 600; letter-spacing: 0.04em; font-variant-numeric: tabular-nums; color: var(--text); white-space: nowrap; }
+  .settings-shortcut-value.recording { min-width: 92px; background: transparent; box-shadow: none; border: 1px dashed var(--border-control); font-weight: 500; letter-spacing: 0; color: var(--text-2); }
+  .settings-row:has(.settings-shortcut) .settings-row-text > :is(.field-hint, .field-error) { min-height: 2lh; }
   .settings-row-text { display: flex; flex-direction: column; gap: 3px; flex: 1; min-width: 0; }
   .settings-row-head { display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 4px 12px; }
   .settings-row-head:has(> :nth-child(2)) { min-height: 26px; }
   .settings-row-label, .settings-row .switch-row label { font-size: 13px; font-weight: 500; color: var(--text); }
-  .settings-row .field-hint { line-height: 1.45; text-wrap: pretty; }
+  .settings-row :is(.field-hint, .field-error) { line-height: 1.45; text-wrap: pretty; }
   .settings-row-link { display: inline-flex; align-items: center; gap: 4px; min-height: 24px; font-size: 12px; }
   .settings-row-link > svg { width: 12px; height: 12px; flex: none; }
   .settings-note-strong { color: var(--text); }
@@ -56,7 +58,12 @@
   .settings-status-text { display: flex; flex-direction: column; gap: 2px; flex: 1; min-width: 0; }
   .settings-status-title { font-size: 14px; font-weight: 600; color: var(--text); overflow-wrap: anywhere; }
   .settings-status-detail { font-size: 12px; line-height: 1.45; color: var(--text-2); overflow-wrap: anywhere; text-wrap: pretty; user-select: text; }
-  .settings-status > .btn { flex: none; }
+  .settings-status-actions { display: flex; flex: none; gap: 8px; }
+  /* A question with two answers (switch to another machine, or keep the current one): the answers sit under the text,
+     lined up with it, so neither squeezes the question into a narrow column. */
+  .settings-status.choice { flex-wrap: wrap; row-gap: 10px; }
+  .settings-status.choice .settings-status-text { flex: 1 1 calc(100% - 44px); }
+  .settings-status.choice .settings-status-actions { flex-wrap: wrap; margin-left: 44px; }
   .settings-status.ready .settings-status-icon { background: var(--text); color: var(--raised); box-shadow: none; }
   .settings-status.ready .settings-status-icon > svg { stroke-width: 3; width: 15px; height: 15px; }
   .settings-status.problem { background: var(--red-soft); }
@@ -65,9 +72,15 @@
 
   .settings-key-saved { display: flex; align-items: center; gap: 8px; min-height: 40px; padding: 6px 6px 6px 12px; border-radius: var(--r-sm); background: var(--panel-2); }
   .settings-key-saved > svg { flex: none; width: 15px; height: 15px; color: var(--text-2); }
-  .settings-presets { display: flex; flex-wrap: wrap; gap: 4px; }
-  .settings-presets .btn { height: 24px; padding: 0 8px; box-shadow: none; }
-  .settings-presets .btn[aria-current='true'] { border-color: var(--accent); background: var(--accent-soft); color: var(--accent-text); font-weight: 600; }
+  /* The model apps' usual addresses: a lead-in that says what the buttons do, then the apps in a segmented tray. The one
+     whose address is in the field takes the raised face, as any selected option does; a typed address presses none. */
+  .settings-presets { display: flex; flex-wrap: wrap; align-items: center; justify-content: flex-end; gap: 4px 8px; }
+  .settings-presets-lead { font-size: 12px; color: var(--text-2); }
+  .settings-presets-track { display: inline-flex; flex-wrap: wrap; gap: 2px; padding: 2px; border-radius: var(--r-sm); background: var(--track); }
+  .settings-presets-track button { height: 22px; padding: 0 8px; border: 0; border-radius: var(--r-xs); background: transparent; color: var(--text-2); font-size: 12px; font-weight: 500; }
+  .settings-presets-track button:hover { color: var(--text); }
+  .settings-presets-track button[aria-pressed='true'] { background: var(--raised); color: var(--text); font-weight: 600; box-shadow: inset 0 0 0 1px var(--border-control), var(--shadow-sm); }
+  .settings-key-reveal { width: 30px; padding: 0; }
   .settings-host { display: inline-block; max-width: 100%; overflow-wrap: anywhere; }
   /* A caution about where content goes, not a failure: a red ring and icon, without the problem fill. */
   .settings-remote-warning.scope-note.danger { margin-top: 6px; font-size: 12px; background: transparent; box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--red) 55%, transparent); }
@@ -80,7 +93,7 @@
   .settings-advanced > summary:focus-visible { outline: 2px solid var(--focus); outline-offset: -2px; }
   .settings-advanced > summary svg { width: 14px; height: 14px; transition: transform 120ms; }
   .settings-advanced[open] > summary svg { transform: rotate(90deg); }
-  .settings-advanced-flag { margin-left: auto; font-size: 12px; font-weight: 500; color: var(--text-3); }
+  .settings-advanced-flag { margin-left: auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 12px; font-weight: 500; color: var(--text-2); }
   .settings-advanced-body { display: flex; flex-direction: column; border-top: 1px solid var(--border); }
   @media (prefers-reduced-motion: reduce) { .settings-advanced > summary svg { transition: none; } }
 

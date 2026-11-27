@@ -20,7 +20,7 @@ export async function resolveLocalRun(flags: LocalRunFlags, fetchImpl?: typeof g
   if (!TOOL_MODES.includes(toolMode)) throw new Error(`Unknown --tool-mode "${flags.toolMode}". Use ${TOOL_MODES.join(', ')}.`);
   const allowRemote = flags.allowRemote === true;
   const url = checkLocalBaseURL(flags.baseURL ?? DEFAULT_LOCAL_SETTINGS.baseURL, allowRemote);
-  if (!url.ok) throw new Error(url.message.replace('Turn on "Allow a server on another machine"', 'Pass --allow-remote'));
+  if (!url.ok) throw new Error(url.message.replace('Turn on “Allow a server on another machine”', 'Pass --allow-remote'));
   let model = flags.model;
   if (!model) {
     // Nothing is sent to another machine before the run is confirmed, not even a model lookup.
