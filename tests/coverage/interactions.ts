@@ -2010,7 +2010,8 @@ export const INTERACTIONS: Interaction[] = [
       { test: 'tests/unit/export-modal-actions-browser.test.ts', kind: 'unit', step: 'captures chosen pages and saves an earlier edition as one file from a folded Client review section (#1134)' },
       { test: 'tests/unit/review-edition.test.ts', kind: 'unit', step: 'writes one HTML file with every picture, title, width and the edition ID, where the chooser says, and can show it' },
       { test: 'tests/unit/review-sheet-browser.test.ts', kind: 'unit' },
-      { test: 'tests/unit/review-sheet.test.ts', kind: 'unit' }
+      { test: 'tests/unit/review-sheet.test.ts', kind: 'unit' },
+      { test: 'tests/unit/review-ipc.test.ts', kind: 'unit' }
     ],
     gaps: [{ missing: 'No e2e script captures pages in the built app and saves the sheet through the real chooser; the dialog is proven with a stand-in bridge and the controller with a stand-in for the hidden capture window', owner: 'export' }]
   },

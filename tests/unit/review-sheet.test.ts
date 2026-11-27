@@ -6,11 +6,18 @@
  */
 import { createHash } from 'node:crypto';
 import { describe, expect, it } from 'vitest';
-import { REVIEW_SHEET_NOTE, reviewSheetHtml } from '../../src/main/review-sheet';
+import { REVIEW_SHEET_NOTE, reviewSheet } from '../../src/main/review-sheet';
 import type { ReviewEditionManifest } from '../../src/shared/review-edition';
 
 const sha = (b: Buffer) => createHash('sha256').update(b).digest('hex');
 const png = (what: string) => Buffer.concat([Buffer.from([0x89, 0x50, 0x4e, 0x47]), Buffer.from(what)]);
+
+/** The whole sheet of an edition whose pictures are `images`, by file. */
+async function reviewSheetHtml({ manifest, images }: { manifest: ReviewEditionManifest; images: Map<string, Buffer> }): Promise<string> {
+  let html = '';
+  for await (const chunk of reviewSheet(manifest, async (c) => images.get(c.file)!)) html += chunk;
+  return html;
+}
 
 function edition(): { manifest: ReviewEditionManifest; images: Map<string, Buffer> } {
   const a = png('home desktop');
@@ -48,8 +55,8 @@ function edition(): { manifest: ReviewEditionManifest; images: Map<string, Buffe
 }
 
 describe('the offline review sheet', () => {
-  it('names the site, the edition, its date, revision and digest, and says what pictures cannot do', () => {
-    const html = reviewSheetHtml(edition());
+  it('names the site, the edition, its date, revision and digest, and says what pictures cannot do', async () => {
+    const html = await reviewSheetHtml(edition());
     expect(html.startsWith('<!doctype html>\n<html lang="en">')).toBe(true);
     expect(html).toContain('<h1>Tom &#38; Jerry’s &#60;Books&#62;</h1>');
     expect(html).toContain('<title>Tom &#38; Jerry’s &#60;Books&#62; – review 2026-11-27T10-00-00Z-0badc0de</title>');
@@ -59,14 +66,19 @@ describe('the offline review sheet', () => {
     expect(REVIEW_SHEET_NOTE).toMatch(/links, menus, forms .* live preview/i);
   });
 
-  it('shows every page in order with its title and address, each width by its name, and the pictures it holds', () => {
+  it('shows every page in order with its title and address, each width by its name, and the pictures it holds', async () => {
     const { manifest, images } = edition();
-    const html = reviewSheetHtml({ manifest, images });
+    const html = await reviewSheetHtml({ manifest, images });
     // In the edition's order, linked from the list of pages at the top.
     expect(html.indexOf('id="page-1"')).toBeLessThan(html.indexOf('id="page-2"'));
     expect(html).toContain('<li><a href="#page-1">Home &#34;first&#34;</a></li>');
     expect(html).toContain('Wide &#60;desk&#62; <span>· 1440 px</span>');
     expect(html).toContain('Tablet <span>· 768 px</span>');
+    // Each page's address under its title, as text.
+    expect(html).toContain('<h2>Home &#34;first&#34;</h2><span class="route">/</span>');
+    expect(html).toContain('<span class="route">/a/&#60;script&#62;alert(1)&#60;/script&#62;/</span>');
+    // A picture's description carries its page's title, escaped.
+    expect(html).toContain('alt="Home &#34;first&#34;, Wide &#60;desk&#62;, 1440 pixels wide"');
     // Each picture's own bytes, at the size it was taken.
     expect(html).toContain(`<img src="data:image/png;base64,${images.get('images/001-1440.png')!.toString('base64')}" width="1440" height="900"`);
     expect(html).toContain(`<img src="data:image/png;base64,${images.get('images/001-768.png')!.toString('base64')}" width="768" height="1400"`);
@@ -76,8 +88,8 @@ describe('the offline review sheet', () => {
     expect(html).not.toContain('cdn.example');
   });
 
-  it('shows what the edition says as text, runs no script, and loads nothing but the pictures it holds', () => {
-    const html = reviewSheetHtml(edition());
+  it('shows what the edition says as text, runs no script, and loads nothing but the pictures it holds', async () => {
+    const html = await reviewSheetHtml(edition());
     expect(html).not.toMatch(/<script|<img src=x|<desk>|<Books>/i);
     expect(html).toContain("<h2>&#60;img src=x onerror=alert(1)&#62;</h2>");
     expect(html).toContain(`<meta http-equiv="Content-Security-Policy" content="default-src 'none'; img-src data:; style-src 'unsafe-inline'">`);
@@ -88,11 +100,26 @@ describe('the offline review sheet', () => {
     expect(html).not.toMatch(/url\(|@import|https?:\/\//);
   });
 
-  it('lists no pages for a single page, and refuses a picture it does not have', () => {
+  it('lists no pages for a single page, and names a site without a name as a website', async () => {
     const { manifest, images } = edition();
-    const one = { ...manifest, routes: manifest.routes.slice(0, 1), captures: manifest.captures.slice(0, 2) };
-    expect(reviewSheetHtml({ manifest: one, images })).not.toContain('<nav');
-    images.delete('images/001-768.png');
-    expect(() => reviewSheetHtml({ manifest: one, images })).toThrow('The picture images/001-768.png is missing from the edition.');
+    const one = { ...manifest, siteName: '  ', routes: manifest.routes.slice(0, 1), captures: manifest.captures.slice(0, 2) };
+    const html = await reviewSheetHtml({ manifest: one, images });
+    expect(html).not.toContain('<nav');
+    expect(html).toContain('<h1>Website</h1>');
+    expect(await reviewSheetHtml({ manifest, images })).toContain('<nav aria-label="Pages">');
+  });
+
+  it('reads each picture only when its place comes, and stops at one that fails its check', async () => {
+    const { manifest, images } = edition();
+    const read: string[] = [];
+    const chunks = reviewSheet(manifest, async (c) => {
+      read.push(c.file);
+      if (c.file === 'images/001-768.png') throw new Error('changed');
+      return images.get(c.file)!;
+    });
+    expect((await chunks.next()).value).toContain('<h1>');
+    expect(read).toEqual([]);
+    await expect((async () => { for await (const _ of chunks) void _; })()).rejects.toThrow('changed');
+    expect(read).toEqual(['images/001-1440.png', 'images/001-768.png']);
   });
 });

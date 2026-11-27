@@ -553,7 +553,9 @@ export function ExportModal() {
   // A long list, or a window too short to spare the room, folds behind a disclosure; otherwise there is none to focus.
   const shortWindow = useShortWindow();
   const longLinks = draftLinks.length > LONG_LINK_LIST || shortWindow;
-  const close = () => !busy && !reviewBusy && setState({ modal: null });
+  // Anything that would close or replace the dialog, or change what an export makes, waits for either kind of work.
+  const locked = !!busy || !!reviewBusy;
+  const close = () => !locked && setState({ modal: null });
   const blocked = readOnly || aiBusy || conflicts > 0;
   // The last report stays until a new one replaces it, so cancelling the save picker on a retry keeps it to copy.
   const shown = !busy && result?.message ? result : null;
@@ -573,11 +575,11 @@ export function ExportModal() {
     return named.length === 1 ? named[0] : null;
   }, [shown, state]);
   const fix = failedPage ? (
-    <button className="btn btn-sm btn-primary export-fix" onClick={() => openFailedPage(failedPage.id)}>
+    <button className="btn btn-sm btn-primary export-fix" disabled={!!reviewBusy} onClick={() => openFailedPage(failedPage.id)}>
       Open the {failedPage.title} page
     </button>
   ) : shown && !shown.ok && shown.assetId ? (
-    <button className="btn btn-sm btn-primary export-fix" onClick={() => openAsset(shown.assetId!)}>
+    <button className="btn btn-sm btn-primary export-fix" disabled={!!reviewBusy} onClick={() => openAsset(shown.assetId!)}>
       Open in Assets
     </button>
   ) : null;
@@ -738,7 +740,7 @@ export function ExportModal() {
                   {/* Not a list: the history's list items are its exports, one each. */}
                   <div className="export-row-notes" id={notesId} hidden={foldNotes && !notesOpen}>
                     {rowNotes.map((note, n) => (
-                      <NoteLine key={n} note={note} project={state} forms={formNotes} trees={liveTrees} disabled={!!busy} />
+                      <NoteLine key={n} note={note} project={state} forms={formNotes} trees={liveTrees} disabled={locked} />
                     ))}
                   </div>
                 </div>
@@ -760,12 +762,12 @@ export function ExportModal() {
         <div className="export-format">
           <span>Save as</span>
           {/* A fieldset locks both format buttons during a build, and while a conflict stops both exports. */}
-          <fieldset className="export-format-control" role="presentation" disabled={!!busy || conflicts > 0}>
+          <fieldset className="export-format-control" role="presentation" disabled={locked || conflicts > 0}>
             <Segmented
               radio
               label="Save as"
               value={format}
-              onChange={(v) => !busy && setFormat(v)}
+              onChange={(v) => !locked && setFormat(v)}
               options={[
                 { value: 'folder', label: 'Folder' },
                 { value: 'zip', label: 'ZIP file' }
@@ -913,7 +915,7 @@ export function ExportModal() {
                   <strong>Both exports are unavailable.</strong>
                   <span>A project file changed outside SiteOrigin Builder. Resolve it in Project health first.{aiBusy && ' You can open Project health once the AI finishes.'}</span>
                 </span>
-                {!aiBusy && !busy && (
+                {!aiBusy && !locked && (
                   <button className="btn btn-sm btn-primary" aria-describedby="export-blocked-conflict" onClick={() => setState({ modal: { kind: 'health' } })}>
                     Open project health
                   </button>
@@ -946,7 +948,7 @@ export function ExportModal() {
                           <span className="grow">{said}</span>
                           {/* A collection entry's text has no place in the inspector yet: the line names the entry. */}
                           {l.owner.kind !== 'entry' && (
-                            <button className="btn btn-sm" disabled={!!busy} aria-label={`Open ${said} in the inspector`} aria-describedby="export-draft-links-summary" onClick={() => openDraftLink(l)}>
+                            <button className="btn btn-sm" disabled={locked} aria-label={`Open ${said} in the inspector`} aria-describedby="export-draft-links-summary" onClick={() => openDraftLink(l)}>
                               Open
                             </button>
                           )}
@@ -957,12 +959,12 @@ export function ExportModal() {
                 </div>
               </div>
             )}
-            {state && <FormReview notes={formNotes} disabled={!!busy} folded={shortWindow || !!busy || blocked || draftLinks.length > 0 || (!!shown && !shown.ok)} />}
-            {state && <SampleContactReview groups={samplesToReview} kept={samplesKept} disabled={!!busy} readOnly={readOnly} folded={shortWindow || !!busy || blocked || draftLinks.length > 0 || (!!shown && !shown.ok)} onSettle={() => firstControl()?.focus()} />}
-            {seoAudit && state && <SeoPreflight audit={seoAudit} state={state} disabled={!!busy} folded={shortWindow || !!busy || blocked || draftLinks.length > 0 || (!!shown && !shown.ok)} />}
+            {state && <FormReview notes={formNotes} disabled={locked} folded={shortWindow || !!busy || blocked || draftLinks.length > 0 || (!!shown && !shown.ok)} />}
+            {state && <SampleContactReview groups={samplesToReview} kept={samplesKept} disabled={locked} readOnly={readOnly} folded={shortWindow || !!busy || blocked || draftLinks.length > 0 || (!!shown && !shown.ok)} onSettle={() => firstControl()?.focus()} />}
+            {seoAudit && state && <SeoPreflight audit={seoAudit} state={state} disabled={locked} folded={shortWindow || !!busy || blocked || draftLinks.length > 0 || (!!shown && !shown.ok)} />}
             {plan && <PagesSummary published={plan.published} drafts={plan.drafts} publishedEntries={plan.publishedEntries} draftEntries={plan.draftEntries} />}
             {history}
-            {state && <ClientReview key={workspaceKey} state={state} workspaceKey={workspaceKey} blocked={blocked} otherBusy={!!busy} busy={reviewBusy} onBusy={setReviewBusy} />}
+            {state && <ClientReview key={workspaceKey} state={state} workspaceKey={workspaceKey} blocked={blocked || draftLinks.length > 0} otherBusy={!!busy} busy={reviewBusy} onBusy={setReviewBusy} />}
           </>
         )}
       </div>

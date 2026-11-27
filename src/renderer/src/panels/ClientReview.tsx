@@ -47,17 +47,23 @@ export function ClientReview({ state, workspaceKey, blocked, otherBusy, busy, on
   // An answer for a project no longer open is never shown.
   const key = useRef(workspaceKey);
   key.current = workspaceKey;
+  // Only the latest listing asked for is shown: a slow first one never replaces the one after a capture.
+  const asked = useRef(0);
   const load = async (opening = workspaceKey) => {
+    const n = ++asked.current;
     const list = await api.project.reviewEditions().catch(() => [] as ReviewEditionManifest[]);
-    if (key.current === opening) setEditions(Array.isArray(list) ? list : []);
+    if (key.current === opening && n === asked.current) setEditions(Array.isArray(list) ? list : []);
   };
   useEffect(() => {
     setEditions(null);
     setOutcome(null);
     if (open) void load();
   }, [open, workspaceKey]);
-  // Pages that went away (unpublished, renamed) are no longer chosen.
+  // Pages that went away (unpublished, renamed) are no longer chosen, even if another page takes the address later.
   const picked = chosen.filter((r) => pages.some((p) => p.route === r));
+  useEffect(() => {
+    if (picked.length !== chosen.length) setChosen(picked);
+  }, [pages]);
   const anyBusy = otherBusy || !!busy;
   // Where focus goes once the work ends (the dialog unlocks then): the outcome to read, or the button that was used.
   const settle = useRef<'outcome' | HTMLButtonElement | null>(null);
@@ -80,7 +86,15 @@ export function ClientReview({ state, workspaceKey, blocked, otherBusy, busy, on
     try {
       const started = await afterEditsSettle(
         () => settleEdits(),
-        async () => (getState().snapshot?.workspaceKey !== opening ? null : await api.project.captureReviewEdition({ routes: picked }))
+        async () => {
+          const now = getState().snapshot;
+          if (!now || now.workspaceKey !== opening) return null;
+          // The saved edits may have taken a chosen page away: nothing is captured that the list no longer shows.
+          const live = reviewPages(publishedState(now.state));
+          const lost = picked.find((r) => !live.some((p) => p.route === r));
+          if (lost) return { ok: false as const, message: `The website no longer has a page at ${lost}. Check the pages to capture, then capture again.` };
+          return await api.project.captureReviewEdition({ routes: picked });
+        }
       );
       if (key.current !== opening) return;
       if (!started.ok) return say({ ok: false, message: `The pages were not captured, because a change isn’t saved yet. ${started.problems.join(' ')}` });
@@ -117,7 +131,8 @@ export function ClientReview({ state, workspaceKey, blocked, otherBusy, busy, on
   return (
     <section className="client-review" aria-labelledby={`${bodyId}-title`}>
       <h3 className="client-review-title" id={`${bodyId}-title`}>
-        <button type="button" className="btn btn-sm btn-ghost client-review-toggle" aria-expanded={open} aria-controls={bodyId} onClick={() => setOpen(!open)}>
+        {/* Kept open while it works, so its progress and outcome stay where the author is reading. */}
+        <button type="button" className="btn btn-sm btn-ghost client-review-toggle" aria-expanded={open} aria-controls={bodyId} aria-disabled={(open && !!busy) || undefined} onClick={() => !(open && busy) && setOpen(!open)}>
           <ChevronRight size={14} aria-hidden /> Client review pages
         </button>
       </h3>
@@ -198,7 +213,7 @@ export function ClientReview({ state, workspaceKey, blocked, otherBusy, busy, on
                         <span>{editionSummary(m)}</span>
                         <code>{m.editionId}</code>
                       </span>
-                      <button type="button" className="btn btn-sm" aria-disabled={anyBusy || undefined} aria-label={`Save the edition of ${madeAt(m.createdAt)} as one file`} onClick={(e) => void save(m.editionId, e.currentTarget)}>
+                      <button type="button" className="btn btn-sm" aria-disabled={anyBusy || undefined} aria-label={`Save as one file: the edition of ${madeAt(m.createdAt)}, ${m.editionId}`} onClick={(e) => void save(m.editionId, e.currentTarget)}>
                         Save as one file
                       </button>
                     </li>

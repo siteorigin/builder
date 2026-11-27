@@ -229,7 +229,7 @@ describe.skipIf(!browserInstalled)('Export dialog actions (#1112)', { timeout: 6
     expect(await page.getByRole('checkbox').count()).toBeGreaterThan(0);
 
     // Saving the earlier edition: everything else waits while the chooser is open.
-    await rows.first().getByRole('button', { name: /Save the edition of/ }).click();
+    await rows.first().getByRole('button', { name: /^Save as one file/ }).click();
     await expect.poll(() => page.evaluate(`window.__calls`)).toEqual([['save', '2026-11-20T09-00-00Z-0badc0de']]);
     for (const card of await page.locator('.export-card').all()) expect(await card.getAttribute('aria-disabled')).toBe('true');
     expect(await page.locator('.modal-foot > button', { hasText: 'Close' }).isDisabled()).toBe(true);
@@ -242,10 +242,12 @@ describe.skipIf(!browserInstalled)('Export dialog actions (#1112)', { timeout: 6
     expect(await page.locator('.export-card').first().getAttribute('aria-disabled')).toBeNull();
 
     // A cancelled chooser goes back to its button, saying nothing.
-    const save = rows.first().getByRole('button', { name: /Save the edition of/ });
+    const save = rows.first().getByRole('button', { name: /^Save as one file/ });
     await save.click();
+    // The chooser takes focus while it is open.
+    await toggle.focus();
     await page.evaluate(`window.__settle({ ok: false })`);
-    await expect.poll(() => page.evaluate<boolean>(`document.activeElement?.getAttribute('aria-label')?.startsWith('Save the edition of') ?? false`)).toBe(true);
+    await expect.poll(() => page.evaluate<boolean>(`document.activeElement?.getAttribute('aria-label')?.startsWith('Save as one file') ?? false`)).toBe(true);
 
     // Capturing: with no page chosen it says so and asks for nothing.
     await home.uncheck();
@@ -264,5 +266,19 @@ describe.skipIf(!browserInstalled)('Export dialog actions (#1112)', { timeout: 6
     expect(await rows.first().innerText()).toContain('1 page · 2 pictures');
     expect(await rows.first().getAttribute('class')).toBe('is-latest');
     expect(await outcome.innerText()).toContain('Captured 2 pictures.');
+  });
+
+  it('captures the pages chosen, not only the home page, and drops a page that is no longer published (#1134)', async () => {
+    await open(1100, 900, { bridge: REVIEW_BRIDGE });
+    await page.getByRole('button', { name: 'Client review pages' }).click();
+    const about = page.locator('.client-review-pages label', { hasText: '/about/' }).getByRole('checkbox');
+    await about.check();
+    await page.getByRole('button', { name: 'Capture 2 pages' }).click();
+    await expect.poll(() => page.evaluate(`window.__calls.at(-1)`)).toEqual(['capture', { routes: ['/', '/about/'] }]);
+    // The section stays open while it works.
+    await page.getByRole('button', { name: 'Client review pages' }).click({ force: true });
+    expect(await page.getByRole('button', { name: 'Client review pages' }).getAttribute('aria-expanded')).toBe('true');
+    await page.evaluate(`window.__settle({ ok: false, message: 'The website no longer has a page at /about/ to capture.' })`);
+    await expect.poll(() => page.locator('.client-review-outcome[role="alert"]').innerText()).toContain('no longer has a page at /about/');
   });
 });

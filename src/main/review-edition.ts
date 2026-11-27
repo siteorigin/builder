@@ -8,7 +8,7 @@ import { createHash, randomBytes } from 'node:crypto';
 import { promises as fs } from 'node:fs';
 import { join } from 'node:path';
 import { routeUrl } from '@shared/routes';
-import { REVIEW_MANIFEST, REVIEWS_DIR, isReviewEditionId, reviewDigestInput, reviewEditionId, type ReviewCapture, type ReviewCaptureReason, type ReviewEditionManifest, type ReviewPage, type ReviewWidth } from '@shared/review-edition';
+import { MAX_REVIEW_WIDTH, MIN_REVIEW_WIDTH, REVIEW_MANIFEST, REVIEWS_DIR, isReviewEditionId, reviewDigestInput, reviewEditionId, type ReviewCapture, type ReviewCaptureReason, type ReviewEditionManifest, type ReviewPage, type ReviewWidth } from '@shared/review-edition';
 import { openRegularFile, readAtMost } from './regular-file';
 import { replaceEmptyFolder } from './export';
 import type { ReviewShot } from './review-shot';
@@ -88,8 +88,8 @@ export async function writeReviewEdition(input: ReviewEditionInput): Promise<{ m
       captures.push({ route: page.route, width, status: 'captured', file, height: shot.height, sha256: sha256(shot.png) });
     }
   }
-  const body = { siteDigest, basePath: input.basePath, routes: input.pages.map((p) => ({ ...p })), widths: input.widths.map((w) => ({ ...w })), captures };
-  const manifest: ReviewEditionManifest = { editionId, createdAt: createdAt.toISOString(), siteName: input.siteName, revision: input.revision, ...body, contentDigest: sha256(reviewDigestInput(body)) };
+  const body = { siteName: input.siteName, siteDigest, basePath: input.basePath, routes: input.pages.map((p) => ({ ...p })), widths: input.widths.map((w) => ({ ...w })), captures };
+  const manifest: ReviewEditionManifest = { editionId, createdAt: createdAt.toISOString(), revision: input.revision, ...body, contentDigest: sha256(reviewDigestInput(body)) };
   await fs.writeFile(join(assembled, REVIEW_MANIFEST), `${JSON.stringify(manifest, null, 2)}\n`, { flag: 'wx' });
   const reviews = await reviewsFolder(input.projectDir, true);
   const dir = join(reviews, editionId);
@@ -193,21 +193,35 @@ function isManifest(m: unknown, id: string): m is ReviewEditionManifest {
     hex(o.siteDigest) &&
     hex(o.contentDigest) &&
     Array.isArray(o.routes) &&
+    o.routes.length > 0 &&
     o.routes.every((p) => text(p?.route) && text(p?.title)) &&
     Array.isArray(o.widths) &&
-    o.widths.every((w) => text(w?.label) && typeof w?.width === 'number') &&
+    o.widths.length > 0 &&
+    o.widths.every((w) => text(w?.label) && Number.isInteger(w?.width) && w.width >= MIN_REVIEW_WIDTH && w.width <= MAX_REVIEW_WIDTH) &&
     Array.isArray(o.captures) &&
     o.captures.length === o.routes.length * o.widths.length &&
     o.captures.every((c, i) => c?.route === o.routes![Math.floor(i / o.widths!.length)].route && c?.width === o.widths![i % o.widths!.length].width) &&
-    o.captures.every((c) => text(c?.route) && typeof c?.width === 'number' && (c.status === 'captured' ? text(c.file) && /^images\/\d{3,}-\d+\.png$/.test(c.file) && hex(c.sha256) && typeof c.height === 'number' : c?.status === 'unavailable' && REASONS.includes(c.reason) && text(c.detail)))
+    // Each picture its own file, as the writer names them: one file shown as two pictures would be checked once.
+    new Set(o.captures.flatMap((c) => (c?.status === 'captured' ? [c.file] : []))).size === o.captures.filter((c) => c?.status === 'captured').length &&
+    o.captures.every((c) => text(c?.route) && typeof c?.width === 'number' && (c.status === 'captured' ? text(c.file) && /^images\/\d{3,}-\d+\.png$/.test(c.file) && hex(c.sha256) && Number.isInteger(c.height) && c.height > 0 : c?.status === 'unavailable' && REASONS.includes(c.reason) && text(c.detail)))
   );
 }
 
-/** The most picture bytes one offline sheet holds (#1134): the sheet is written whole, and its text is a third larger. */
-export const MAX_SHEET_IMAGES = 64 * 1024 * 1024;
+/** The largest single picture read for a sheet: far past the tallest, widest page a capture keeps. */
+const MAX_PICTURE = 256 * 1024 * 1024;
 
-/** Reading an edition for its sheet came to: the edition and its pictures, or why it cannot be put in one. */
-export type ReadEdition = { ok: true; manifest: ReviewEditionManifest; images: Map<string, Buffer> } | { ok: false; message: string };
+/** Said when an edition no longer holds what it was captured with: a picture changed, gone or a link, or its manifest edited. */
+export const EDITION_CHANGED = 'That review edition has changed or lost pictures since it was captured. Capture the pages again.';
+
+/** Thrown while a sheet is written, when a picture of its edition is not the one captured. */
+export class ReviewEditionChanged extends Error {
+  constructor() {
+    super(EDITION_CHANGED);
+  }
+}
+
+/** An edition opened for its sheet: its manifest, and each captured picture read when it is needed. */
+export type OpenEdition = { ok: true; manifest: ReviewEditionManifest; picture: (c: Extract<ReviewCapture, { status: 'captured' }>) => Promise<Buffer> } | { ok: false; message: string };
 
 /** Whether the project has edition `id`, whole: read without its pictures, as the chooser is about to open. */
 export async function hasReviewEdition(projectDir: string, id: string): Promise<boolean> {
@@ -219,13 +233,14 @@ export async function hasReviewEdition(projectDir: string, id: string): Promise<
 }
 
 /**
- * Edition `id` of the project with its pictures (#1134), read for its offline sheet: its manifest and the bytes of each
- * picture it captured, each read from a regular file in the edition's own images folder, never through a link. Every
- * picture must still match the digest the manifest records for it, and the manifest its own content digest: an
+ * Edition `id` of the project opened for its offline sheet (#1134): its manifest, which must still match its own
+ * content digest, and a reader for each picture it captured, one at a time so an edition of any size is written
+ * without holding it all. Each picture is read from a regular file in the edition's own images folder, never through
+ * a link, and must match the digest the manifest records for it, or the reader throws ReviewEditionChanged: an
  * edition changed since it was made is never put in front of a client as the one they were shown.
  */
-export async function readReviewEdition(projectDir: string, id: string, maxBytes = MAX_SHEET_IMAGES): Promise<ReadEdition> {
-  const gone: ReadEdition = { ok: false, message: 'That review edition is no longer in this project.' };
+export async function openReviewEdition(projectDir: string, id: string): Promise<OpenEdition> {
+  const gone: OpenEdition = { ok: false, message: 'That review edition is no longer in this project.' };
   let reviews: string;
   try {
     reviews = await reviewsFolder(projectDir, false);
@@ -234,28 +249,25 @@ export async function readReviewEdition(projectDir: string, id: string, maxBytes
   }
   const manifest = await readManifest(reviews, id);
   if (!manifest) return gone;
-  const changed: ReadEdition = { ok: false, message: 'That review edition has changed or lost pictures since it was captured. Capture the pages again.' };
+  const changed: OpenEdition = { ok: false, message: EDITION_CHANGED };
   if (sha256(reviewDigestInput(manifest)) !== manifest.contentDigest) return changed;
-  const images = new Map<string, Buffer>();
-  let total = 0;
-  try {
-    if (!(await fs.lstat(join(reviews, id, 'images'))).isDirectory()) return changed;
-    for (const c of manifest.captures) {
-      if (c.status !== 'captured' || images.has(c.file)) continue;
+  const images = join(reviews, id, 'images');
+  const st = await fs.lstat(images).catch(() => null);
+  if (manifest.captures.some((c) => c.status === 'captured') && !st?.isDirectory()) return changed;
+  const picture = async (c: Extract<ReviewCapture, { status: 'captured' }>): Promise<Buffer> => {
+    let png: Buffer | null;
+    try {
       const { handle, stat } = await openRegularFile(join(reviews, id, ...c.file.split('/')));
-      let png: Buffer | null;
       try {
-        if (total + stat.size > maxBytes) return { ok: false, message: 'That review edition is too large to save as one file. Capture fewer pages, then save that edition.' };
-        png = await readAtMost(handle, stat.size, maxBytes - total);
+        png = await readAtMost(handle, stat.size, MAX_PICTURE);
       } finally {
         await handle.close();
       }
-      if (!png || sha256(png) !== c.sha256) return changed;
-      total += png.length;
-      images.set(c.file, png);
+    } catch {
+      throw new ReviewEditionChanged();
     }
-  } catch {
-    return changed;
-  }
-  return { ok: true, manifest, images };
+    if (!png || sha256(png) !== c.sha256) throw new ReviewEditionChanged();
+    return png;
+  };
+  return { ok: true, manifest, picture };
 }

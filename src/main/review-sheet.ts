@@ -8,14 +8,15 @@
  *
  * The file runs no script and loads nothing: its content policy allows only its own styles and the pictures it embeds.
  */
+import { randomBytes } from 'node:crypto';
+import { promises as fs } from 'node:fs';
+import { dirname, join } from 'node:path';
 import { escapeHtml } from '@shared/status-page';
+import { renameReplacing, syncDir } from './project/fsutil';
 import type { ReviewCapture, ReviewCaptureReason, ReviewEditionManifest } from '@shared/review-edition';
 
-export interface ReviewSheetInput {
-  manifest: ReviewEditionManifest;
-  /** Each captured picture's PNG bytes, by its file in the edition (ReviewCapture.file), as read and checked (readReviewEdition). */
-  images: ReadonlyMap<string, Buffer>;
-}
+/** A captured picture of the edition. */
+type Captured = Extract<ReviewCapture, { status: 'captured' }>;
 
 /** What the sheet says about pictures and live pages, at its top. */
 export const REVIEW_SHEET_NOTE = 'These are pictures of each page. Links, menus, forms and anything else that moves or responds only work in a live preview of the website.';
@@ -66,30 +67,25 @@ figure img{display:block;max-width:100%;height:auto;border:1px solid var(--line)
 `;
 
 /** One page at one width: its picture, scaled to fit, or what kept it from being taken. */
-function figure(c: ReviewCapture, label: string, title: string, images: ReadonlyMap<string, Buffer>): string {
+async function figure(c: ReviewCapture, label: string, title: string, picture: (c: Captured) => Promise<Buffer>): Promise<string> {
   const caption = `<figcaption>${escapeHtml(label)} <span>· ${c.width} px</span></figcaption>`;
   if (c.status === 'captured') {
-    const png = images.get(c.file);
-    if (!png) throw new Error(`The picture ${c.file} is missing from the edition.`);
+    const png = await picture(c);
     // Shown no wider than it was taken, so a phone picture reads as a phone.
     return `<figure style="width:${c.width}px">${caption}<img src="data:image/png;base64,${png.toString('base64')}" width="${c.width}" height="${c.height}" alt="${escapeHtml(`${title}, ${label}, ${c.width} pixels wide`)}"></figure>`;
   }
   return `<figure style="width:${Math.min(c.width, 480)}px">${caption}<div class="missing">Not pictured. ${escapeHtml(REASON_WORDS[c.reason] ?? REASON_WORDS.failed)}</div></figure>`;
 }
 
-/** The sheet's HTML, titled with the site's name when the edition was made. Every captured picture must be in `images`. */
-export function reviewSheetHtml({ manifest: m, images }: ReviewSheetInput): string {
+/**
+ * The sheet's HTML, in pieces to write one after another, titled with the site's name when the edition was made:
+ * each captured picture is read (`picture`) only when its place comes, so no more than one is held at a time.
+ */
+export async function* reviewSheet(m: ReviewEditionManifest, picture: (c: Captured) => Promise<Buffer>): AsyncGenerator<string> {
   const name = m.siteName.trim() || 'Website';
   const shots = m.captures.filter((c) => c.status === 'captured').length;
-  // The captures run page by page, each page at every width in order (the manifest is checked to say so).
-  const n = m.widths.length;
-  const pages = m.routes.map((p, i) => {
-    const title = p.title || p.route;
-    const figures = m.widths.map((w, j) => figure(m.captures[i * n + j], w.label, title, images)).join('');
-    return `<section class="page" id="page-${i + 1}"><div class="page-head"><h2>${escapeHtml(title)}</h2><span class="route">${escapeHtml(p.route)}</span></div><div class="shots">${figures}</div></section>`;
-  });
   const toc = m.routes.length > 1 ? `<nav aria-label="Pages"><ol>${m.routes.map((p, i) => `<li><a href="#page-${i + 1}">${escapeHtml(p.title || p.route)}</a></li>`).join('')}</ol></nav>` : '';
-  return [
+  yield [
     '<!doctype html>',
     '<html lang="en">',
     '<head>',
@@ -105,12 +101,65 @@ export function reviewSheetHtml({ manifest: m, images }: ReviewSheetInput): stri
     `<h1>${escapeHtml(name)}</h1>`,
     `<p class="meta">Review edition <code>${escapeHtml(m.editionId)}</code> · made ${escapeHtml(madeAt(m.createdAt))} · ${m.routes.length} ${m.routes.length === 1 ? 'page' : 'pages'}, ${shots} ${shots === 1 ? 'picture' : 'pictures'}</p>`,
     `<div class="note" role="note"><strong>Pictures, not the live website</strong>${escapeHtml(REVIEW_SHEET_NOTE)}</div>`,
-    toc,
-    ...pages,
+    toc
+  ].join('\n');
+  // The captures run page by page, each page at every width in order (the manifest is checked to say so).
+  const n = m.widths.length;
+  for (const [i, p] of m.routes.entries()) {
+    const title = p.title || p.route;
+    yield `\n<section class="page" id="page-${i + 1}"><div class="page-head"><h2>${escapeHtml(title)}</h2><span class="route">${escapeHtml(p.route)}</span></div><div class="shots">`;
+    for (const [j, w] of m.widths.entries()) yield await figure(m.captures[i * n + j], w.label, title, picture);
+    yield '</div></section>\n';
+  }
+  yield [
     `<p class="ident">Edition <code>${escapeHtml(m.editionId)}</code> · revision ${m.revision} · content digest <code>${escapeHtml(m.contentDigest)}</code>. Quote the edition ID when you reply, so your notes are matched to exactly these pictures.</p>`,
     '</main>',
     '</body>',
     '</html>',
     ''
   ].join('\n');
+}
+
+/**
+ * Write the sheet to `file` through a temporary file beside it, so a reader never sees half of one. `fresh` means the
+ * name was chosen here, not confirmed in the chooser: the file is then put in place only if nothing has that name by
+ * then ('taken' otherwise, with nothing replaced). Nothing is put in place once `stillOpen` says no ('closed'); a
+ * picture that fails its check stops the write with nothing put in place.
+ */
+export async function writeReviewSheet(file: string, chunks: AsyncIterable<string>, opts: { fresh: boolean; stillOpen: () => boolean }): Promise<'written' | 'taken' | 'closed'> {
+  const dir = dirname(file);
+  const tmp = join(dir, `.${randomBytes(6).toString('hex')}.tmp`);
+  try {
+    const handle = await fs.open(tmp, 'wx');
+    try {
+      // writeFile writes the whole chunk, from where the last one ended.
+      for await (const chunk of chunks) await handle.writeFile(chunk);
+      await handle.sync();
+    } finally {
+      await handle.close();
+    }
+    if (!opts.stillOpen()) return 'closed';
+    if (opts.fresh) {
+      // A second name for the finished file, which fails rather than replace one that appeared since.
+      try {
+        await fs.link(tmp, file);
+      } catch (e) {
+        if ((e as NodeJS.ErrnoException).code === 'EEXIST') return 'taken';
+        throw e;
+      }
+    } else {
+      const closed = new Error('closed');
+      try {
+        // Looked at again before each try (Windows can hold the old file a moment).
+        await renameReplacing(tmp, file, { rename: (a, b) => (opts.stillOpen() ? fs.rename(a, b) : Promise.reject(closed)) });
+      } catch (e) {
+        if (e === closed) return 'closed';
+        throw e;
+      }
+    }
+    await syncDir(dir).catch(() => undefined);
+    return 'written';
+  } finally {
+    await fs.rm(tmp, { force: true }).catch(() => undefined);
+  }
 }

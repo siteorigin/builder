@@ -27,8 +27,8 @@ import type { BuildFailureContext } from './build-failure';
 import { zipDirectory } from './zip';
 import { expectedFolder, filesToWrite, NOT_A_PROJECT_ZIP, readProjectZip, unpackProject, WEBSITE_ZIP, ZipError } from './unzip';
 import { StaticPreviews } from './static-preview';
-import { hasReviewEdition, listReviewEditions, readReviewEdition, writeReviewEdition } from './review-edition';
-import { reviewSheetHtml } from './review-sheet';
+import { hasReviewEdition, listReviewEditions, openReviewEdition, ReviewEditionChanged, writeReviewEdition } from './review-edition';
+import { reviewSheet, writeReviewSheet } from './review-sheet';
 import type { ReviewShot } from './review-shot';
 import { pickReviewPages, reviewPages, reviewRoutes, reviewWidths, type ReviewEditionManifest, type ReviewEditionResult, type ReviewSheetResult } from '@shared/review-edition';
 import { isPlainFile, builtPhotosMessage, deliverVercelConfig, pageLanguageWarning, publicUrlNote, rivalHookStop, cleanBuiltSite, cleanWebsitePhotos, copyProjectSource, draftLinksStop, draftSourceNotes, publishedChanged, withheldRoutes, withheldStaticFiles, editedGeneratedFile, explainBuildFailure, exportedAssetFilter, finishExportedSource, leaveOutDrafts, listFiles, locatedPhotos, locationKeptNote, locationRemovedNote, missingAssetsStop, missingSourceWarnings, missingUnusedWarnings, missingWebsiteAssets, notFoundAddressWarning, notFoundHostNote, notFoundPageProblem, omittedAssetsWarning, ownNotFoundFileNote, ownNotFoundFileStop, readNotFoundPage, settleServerHook, stripCodeMarkers, carriesCodeMarker, projectInventory, inventoryChanged, readExportFile, type ExportHashes, projectReadme, publishFolder, pruneWebsiteAssets, replaceEmptyFolder, readLibraryImage, sectionLinkWarnings, uncleanablePhotosMessage, uniqueChild, unlinkedButtonWarnings, unlinkedMenuLinkWarnings, emptySectionWarnings, formNameWarnings, runtimeFontWarnings, variantCredits, writeExportedSources, exportedSourcesProblem } from './export';
@@ -3983,6 +3983,8 @@ export class Controller {
     const gone = 'That review edition is no longer in this project.';
     if (typeof editionId !== 'string' || !(await hasReviewEdition(s.dir, editionId))) return { ok: false, message: gone };
     let file = dest;
+    // A name typed without ".html": the file is named here, never landing on one the chooser did not ask about.
+    let typed: string | null = null;
     if (!file) {
       const r = await dialog.showSaveDialog(this.getWindow()!, {
         title: 'Save the review pages as one file',
@@ -3993,27 +3995,32 @@ export class Controller {
       });
       if (r.canceled || !r.filePath) return { ok: false };
       file = r.filePath;
-      // A name typed without ".html" never lands on an existing file the chooser did not ask about.
-      if (!/\.html?$/i.test(file)) {
-        let named = `${file}.html`;
-        for (let i = 2; existsSync(named); i++) named = `${file}-${i}.html`;
-        file = named;
-      }
+      if (!/\.html?$/i.test(file)) typed = file;
     }
     const closed = 'The project was closed before the review pages were saved.';
-    if (this.session !== s) return { ok: false, message: closed };
+    const open = () => this.session === s && !this.closing;
+    if (!open()) return { ok: false, message: closed };
     // A file written into the project would be one of its own, outside its history.
-    if (isInside(s.dir, file)) return { ok: false, message: 'Choose a location outside the project folder.' };
+    if (isInside(s.dir, typed ? `${typed}.html` : file)) return { ok: false, message: 'Choose a location outside the project folder.' };
+    const named = (i: number) => `${typed}${i > 1 ? `-${i}` : ''}.html`;
+    const exists = (p: string) => fs.lstat(p).then(() => true, () => false);
     try {
-      // Read after the chooser closed, once: what is saved is the edition as it is on disk now.
-      const edition = await readReviewEdition(s.dir, editionId);
+      // Read after the chooser closed, a picture at a time: what is saved is the edition as it is on disk now.
+      const edition = await openReviewEdition(s.dir, editionId);
       if (!edition.ok) return { ok: false, message: edition.message };
-      if (this.session !== s) return { ok: false, message: closed };
-      const written = await atomicWrite(file, reviewSheetHtml(edition), { beforeReplace: async () => this.session === s });
-      if (!written) return { ok: false, message: closed };
+      for (let i = 1; ; i++) {
+        if (typed) {
+          while (await exists(named(i))) i++;
+          file = named(i);
+        }
+        const r = await writeReviewSheet(file, reviewSheet(edition.manifest, edition.picture), { fresh: !!typed, stillOpen: open });
+        if (r === 'closed') return { ok: false, message: closed };
+        if (r === 'written') break;
+      }
       this.exportPaths.add(file);
       return { ok: true, path: file, message: 'Saved the review pages as one file.' };
     } catch (e) {
+      if (e instanceof ReviewEditionChanged) return { ok: false, message: e.message };
       return { ok: false, message: `The review pages were not saved: ${e instanceof Error ? e.message : String(e)}` };
     }
   }

@@ -27,6 +27,9 @@ export interface ReviewWidth {
   width: number;
 }
 
+/** A title as text: a damaged document's title that is not text names nothing (the page is shown by its address). */
+const titleText = (t: unknown): string => (typeof t === 'string' ? t : '');
+
 /**
  * Every page the published site `live` has, with the title the edition names it by: its pages in the site's order,
  * then each collection's entries, then the archive pages listing them. Drafts, old addresses kept working and the
@@ -34,8 +37,8 @@ export interface ReviewWidth {
  */
 export function reviewPages(live: ProjectState): ReviewPage[] {
   return [
-    ...live.site.pageOrder.filter((id) => Object.hasOwn(live.pages, id)).map((id) => ({ route: live.pages[id].route, title: live.pages[id].title })),
-    ...siteEntries(live).map((e) => ({ route: e.route, title: e.entry.title })),
+    ...live.site.pageOrder.filter((id) => Object.hasOwn(live.pages, id)).map((id) => ({ route: live.pages[id].route, title: titleText(live.pages[id].title) })),
+    ...siteEntries(live).map((e) => ({ route: e.route, title: titleText(e.entry.title) })),
     ...archivePages(live).map((a) => ({ route: a.route, title: archiveWords(live, a).name }))
   ];
 }
@@ -67,7 +70,7 @@ export interface ReviewEditionManifest {
   captures: ReviewCapture[];
   /** SHA-256 of the built website the pictures were taken of (reviewSiteDigest). */
   siteDigest: string;
-  /** SHA-256 of what the edition holds: the site's digest, the pages, the widths and every capture (reviewContentDigest). */
+  /** SHA-256 of what the edition holds: the site's name and digest, the pages, the widths and every capture (reviewDigestInput). */
   contentDigest: string;
 }
 
@@ -131,9 +134,10 @@ export function pickReviewPages(available: readonly ReviewPage[], routes: readon
 }
 
 /** What the content digest is taken of, in a fixed order with nothing that differs between two runs of the same capture. */
-export function reviewDigestInput(m: Pick<ReviewEditionManifest, 'siteDigest' | 'basePath' | 'routes' | 'widths' | 'captures'>): string {
+export function reviewDigestInput(m: Pick<ReviewEditionManifest, 'siteName' | 'siteDigest' | 'basePath' | 'routes' | 'widths' | 'captures'>): string {
   return JSON.stringify([
     'siteorigin-review-edition',
+    m.siteName,
     m.siteDigest,
     m.basePath,
     m.routes.map((p) => [p.route, p.title]),
