@@ -1,5 +1,6 @@
 import './Canvas.css';
 import { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
+import { previewPill } from '../lib/previewing';
 import { createPortal } from 'react-dom';
 import { ArrowDown, Repeat, ArrowLeft, ArrowRight, ArrowUp, BookmarkPlus, Box, Check, ChevronLeft, ChevronRight, Download, LocateFixed, Component, Copy, Ellipsis, Eye, GripVertical, Image, Layers, LayoutTemplate, Link2, PanelRight, Pencil, Plus, Rows3, Sparkles, Trash2, TriangleAlert, Type, Unlink, Users } from 'lucide-react';
 import { findParent } from '@engine/tree';
@@ -3125,7 +3126,7 @@ export function Canvas() {
         {announcement}
       </p>
       {mode === 'preview' && (
-        <div className="preview-pill" role="group" aria-label="Preview">
+        <div ref={previewPill} className="preview-pill" role="group" aria-label="Preview">
           <span className="pill-note" title="Links and menus work as they will for visitors">
             <Eye aria-hidden="true" /> Previewing
           </span>

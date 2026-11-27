@@ -2,12 +2,128 @@
  * How Layers and the breadcrumb name a layer and describe its visibility. Pure functions over the project
  * state, so what a row says (to the eye and to a screen reader) can be tested without rendering it.
  */
-import type { ComponentDefinition, GraphNode, InstanceNode, NodeTree, ProjectState, ResponsiveStyles } from '@shared/types';
+import type { ComponentDefinition, ElementRef, GraphNode, InstanceNode, NodeTree, OwnerRef, ProjectState, ResponsiveStyles } from '@shared/types';
 import { propBindingSchema } from '@shared/bindings';
-import { isBinding } from '@shared/types';
+import { isBinding, refKey } from '@shared/types';
 import { richTextToPlain, toRichText } from '@shared/richtext';
 import { selectedVariantStyles } from '@shared/variants';
-import { displayName, findParent } from '@engine/tree';
+import { childLists, displayName, type ParentInfo } from '@engine/tree';
+
+// ---------------------------------------------------------------------------
+// What holds a layer
+// ---------------------------------------------------------------------------
+
+/**
+ * Per tree, the nodes whose child lists name each node (by their key in `nodes`, as a walk down the tree reaches them):
+ * by the name exactly as listed, and by the key a walk looks that name up under (a hand-edited list can hold the
+ * number 7 for the node kept under "7"). Kept by the tree object, which the editor never changes in place (an edit
+ * brings new trees), so what is found here is always that tree's own.
+ */
+const holderLists = new WeakMap<NodeTree, { exact: Map<unknown, string[]>; byKey: Map<string, string[]> }>();
+/** Per tree, where findParent finds each node (parentOf), kept the same way. */
+const parentLists = new WeakMap<NodeTree, Map<unknown, ParentInfo>>();
+/** Per tree, the nodes holding a node (nodesHolding), for the few nodes last asked about. */
+const holding = new WeakMap<NodeTree, Map<string, ReadonlySet<string>>>();
+
+/** A node's child lists that are lists: one a hand edit left as something else holds nothing a walk can follow. */
+const listsOf = (n: GraphNode) => childLists(n).filter((cl) => Array.isArray(cl.ids));
+
+function holdersIn(tree: NodeTree) {
+  let out = holderLists.get(tree);
+  if (!out) {
+    out = { exact: new Map(), byKey: new Map() };
+    const add = <K,>(map: Map<K, string[]>, id: K, key: string) => {
+      const list = map.get(id);
+      if (!list) map.set(id, [key]);
+      else if (!list.includes(key)) list.push(key);
+    };
+    for (const [key, n] of Object.entries(tree.nodes))
+      for (const cl of listsOf(n))
+        for (const id of cl.ids as unknown[]) {
+          add(out.exact, id, key);
+          add(out.byKey, String(id), key);
+        }
+    holderLists.set(tree, out);
+  }
+  return out;
+}
+
+/**
+ * What `findParent(tree, nodeId)` finds (the top level first, then the first child list naming the node, in the order
+ * of the tree's nodes and their lists, at the node's first place in it), from one pass over the tree rather than a scan
+ * of it for each call. A list a hand edit left as something else is passed over (findParent stopped there with an
+ * error, as everything walking the tree did).
+ */
+export function parentOf(tree: NodeTree, nodeId: string): ParentInfo | null {
+  let places = parentLists.get(tree);
+  if (!places) {
+    places = new Map();
+    if (Array.isArray(tree.rootIds)) for (const [index, id] of tree.rootIds.entries()) if (!places.has(id)) places.set(id, { parentId: null, list: tree.rootIds, index });
+    for (const n of Object.values(tree.nodes))
+      for (const cl of listsOf(n))
+        for (const [index, id] of cl.ids.entries()) if (!places.has(id)) places.set(id, { parentId: n.id, slot: cl.slot, list: cl.ids, index });
+    parentLists.set(tree, places);
+  }
+  return places.get(nodeId) ?? null;
+}
+
+/**
+ * Every node of the tree whose layers hold `nodeId`, however deep: each node `x` other than `nodeId` for which
+ * `subtreeIds(tree, x)` includes it (that list always starts with `x`; here `nodeId` itself is in the set only when a
+ * tree damaged by hand loops back to it), found once for the tree and node rather than by a walk from each `x`. As the
+ * walk does, it looks a listed name up as a key on the way down, and compares it as listed with `nodeId` at the end.
+ */
+export function nodesHolding(tree: NodeTree, nodeId: string): ReadonlySet<string> {
+  let seen = holding.get(tree);
+  const known = seen?.get(nodeId);
+  if (known) return known;
+  const out = new Set<string>();
+  // The node must be there, as subtreeIds asks it.
+  if (tree.nodes[nodeId]) {
+    const { exact, byKey } = holdersIn(tree);
+    const queue: string[] = [];
+    const reach = (h: string) => !out.has(h) && (out.add(h), queue.push(h));
+    for (const h of exact.get(nodeId) ?? []) reach(h);
+    for (let i = 0; i < queue.length; i++) for (const h of byKey.get(queue[i]) ?? []) reach(h);
+  }
+  if (!seen || seen.size >= 8) holding.set(tree, (seen = new Map()));
+  seen.set(nodeId, out);
+  return out;
+}
+
+// ---------------------------------------------------------------------------
+// A row and the selection
+// ---------------------------------------------------------------------------
+
+/** The selection's key, and its key without a repeated item's path, for the selection last asked about: every row
+ *  compares its own with them whenever the store changes. */
+let lastKeys: { sel: ElementRef; key: string; bare: string } | null = null;
+export function selectionKeysOf(sel: ElementRef): { key: string; bare: string } {
+  if (lastKeys?.sel !== sel) lastKeys = { sel, key: refKey(sel), bare: refKey({ ...sel, itemPath: undefined }) };
+  return lastKeys;
+}
+
+/** Whether a Layers row (`key` its reference's refKey) is the selection itself. */
+export function isSelectedRow(sel: ElementRef | null, definitionMode: unknown, key: string, owner: OwnerRef, id: string, isDefRoot: boolean): boolean {
+  if (!sel) return false;
+  const keys = selectionKeysOf(sel);
+  // In component editing the canvas selects the definition's root through the placement; match it here. A part
+  // of a component placed in the design is never that root, whatever its node is called inside that component.
+  const defRoot = isDefRoot && !!definitionMode && sel.owner.kind !== 'component' && sel.instancePath.length === 1 && sel.nodeId === id;
+  // A node of a component being edited, picked on the canvas in one repeated item, is still this row.
+  return keys.key === key || defRoot || (owner.kind === 'component' && !!sel.itemPath?.length && keys.bare === key);
+}
+
+/**
+ * Whether a Layers row holds the selection: a part of this component (at any depth), or anything nested inside this
+ * container, judged by where the selection's outermost component sits in this tree; or a slot picked for Insert, of
+ * this component or of one nested inside it.
+ */
+export function holdsSelection(tree: NodeTree, owner: OwnerRef, id: string, sel: ElementRef | null, slotTarget: { owner: OwnerRef; parentId: string } | null): boolean {
+  const anchor = sel && sel.owner.id === owner.id ? (sel.instancePath[0] ?? sel.nodeId) : null;
+  const slotAt = slotTarget && slotTarget.owner.kind === owner.kind && slotTarget.owner.id === owner.id ? slotTarget.parentId : null;
+  return (!!anchor && (anchor === id ? !!sel!.instancePath.length : nodesHolding(tree, anchor).has(id))) || (!!slotAt && (slotAt === id || nodesHolding(tree, slotAt).has(id)));
+}
 
 // ---------------------------------------------------------------------------
 // Names
@@ -336,7 +452,7 @@ function hiddenInPlacement(state: ProjectState, n: InstanceNode, nodeId: string,
   const design = def?.tree;
   if (!def || !design) return null;
   const seen = new Set<string>([nodeId]);
-  for (let q = findParent(design, nodeId); q?.parentId && !seen.has(q.parentId); q = findParent(design, q.parentId)) {
+  for (let q = parentOf(design, nodeId); q?.parentId && !seen.has(q.parentId); q = parentOf(design, q.parentId)) {
     seen.add(q.parentId);
     if (q.parentId === design.rootIds[0]) break;
     const node = design.nodes[q.parentId];
@@ -359,7 +475,7 @@ function hiddenInPlacement(state: ProjectState, n: InstanceNode, nodeId: string,
  */
 export function hiddenAncestor(state: ProjectState, tree: NodeTree, nodeId: string, size: Size): HiddenBy | null {
   const seen = new Set<string>([nodeId]);
-  for (let p = findParent(tree, nodeId); p?.parentId && !seen.has(p.parentId); p = findParent(tree, p.parentId)) {
+  for (let p = parentOf(tree, nodeId); p?.parentId && !seen.has(p.parentId); p = parentOf(tree, p.parentId)) {
     seen.add(p.parentId);
     const up = tree.nodes[p.parentId];
     if (!up) break;
@@ -430,9 +546,16 @@ export interface EyeAction {
  */
 export function eyeAction(state: ProjectState, n: GraphNode, size: Size): EyeAction {
   const own = ownVisibility(state, n);
-  if (own.hiddenAt.includes(size)) {
-    if (own.by[size] === 'size') return { pressed: true, action: `Show on ${size}`, edits: showHereEdits(state, n, size) };
-    return { pressed: true, action: 'Show at every size', edits: everySizeEdits(state, n, false) };
-  }
-  return { pressed: false, action: 'Hide at every size', edits: everySizeEdits(state, n, true) };
+  const face = eyeFace(own, size);
+  const edits = !face.pressed ? everySizeEdits(state, n, true) : own.by[size] === 'size' ? showHereEdits(state, n, size) : everySizeEdits(state, n, false);
+  return { ...face, edits };
+}
+
+/**
+ * What the eye shows and says it does, from the layer's own visibility alone (eyeAction's, without planning the edits
+ * a click makes): a row shows its eye on every render, and plans what it does only when it is clicked.
+ */
+export function eyeFace(own: OwnVisibility, size: Size): Omit<EyeAction, 'edits'> {
+  if (own.hiddenAt.includes(size)) return { pressed: true, action: own.by[size] === 'size' ? `Show on ${size}` : 'Show at every size' };
+  return { pressed: false, action: 'Hide at every size' };
 }

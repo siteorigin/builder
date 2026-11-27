@@ -1,5 +1,5 @@
 import './Editor.css';
-import { useEffect, useRef, useState, type KeyboardEvent as ReactKeyboardEvent, type PointerEvent as ReactPointerEvent, type ReactNode } from 'react';
+import { useEffect, useLayoutEffect, useRef, useState, type KeyboardEvent as ReactKeyboardEvent, type PointerEvent as ReactPointerEvent, type ReactNode } from 'react';
 import { Check, Component, NotebookPen, Sparkles, SlidersHorizontal, Palette, SquareDashed } from 'lucide-react';
 import { instancesOf } from '@engine/tree';
 import { openDialogs, openMenus, Tabs, useMenu, useWindowWidth, type MenuItem } from './components/ui';
@@ -338,6 +338,13 @@ function Seam({ side, width, max, at, restore }: { side: PanelSide; width: numbe
     onLostPointerCapture: (e: ReactPointerEvent<HTMLElement>) => end(e.currentTarget, e.pointerId)
   };
   const lit = dragging || menu.isOpen;
+  // While lit, the preview page takes no pointer events (styles/layout.css), from the commit that lights it.
+  useLayoutEffect(() => {
+    if (!lit) return;
+    const name = `splitting-${side}`;
+    document.body.classList.add(name);
+    return () => document.body.classList.remove(name);
+  }, [lit, side]);
   return (
     <div className={`seam ${side}${collapsed ? ' collapsed' : ''}`} style={side === 'left' ? { left: at } : { right: at }}>
       <div
