@@ -45,7 +45,8 @@ export class FormRoutingGrants {
     const id = token();
     this.reviews.set(id, { revision, run, operations, keys: keysOf(changes), candidate });
     trim(this.reviews);
-    return { id, operations, changes };
+    // A copy: what the review shows shares nothing with what the batch lands as.
+    return { id, operations, changes: structuredClone(changes) };
   }
 
   /**

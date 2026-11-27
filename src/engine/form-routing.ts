@@ -263,7 +263,7 @@ export function formRoutingChanges(before: ProjectState, after: ProjectState): F
     const made = !owners.has(`${owner.kind}:${owner.id}`);
     const nth = made ? (named.get(`${owner.kind}:${label}`) ?? 0) : 0;
     if (made) named.set(`${owner.kind}:${label}`, nth + 1);
-    const scope = made ? `${owner.kind}:\u0001new\u0000${label}${nth ? `\u0000${nth}` : ''}` : `${owner.kind}:${owner.id}`;
+    const scope = made ? `${owner.kind}:\u0001new\u0000${nth ? JSON.stringify([label, nth]) : label}` : `${owner.kind}:${owner.id}`;
     const where = owner.kind === 'page' ? `on “${label}”` : owner.kind === 'shell' ? `in the ${label.toLowerCase()}` : owner.kind === 'component' ? `in the “${label}” design` : `in “${label}”`;
     // New placements are counted in the order the tree holds them, which the same batch made again keeps.
     let added = 0;

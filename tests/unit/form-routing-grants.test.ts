@@ -72,6 +72,13 @@ describe('form routing grants', () => {
     expect(reviewed(null, base, 1, 'run', 'ops')).toBeNull();
   });
 
+  it('shows a review that shares nothing with what the batch lands as', () => {
+    const value = [{ id: 'item_1', inbox: 'a@example.com' }];
+    const shown = new FormRoutingGrants().review(1, null, 'ops', [{ ...change('a'), value }], candidate());
+    (shown.changes[0].value as typeof value)[0].id = 'item_2';
+    expect(value[0].id).toBe('item_1');
+  });
+
   it('forgets what was filed at another revision, and keeps what waits at this one', () => {
     const ledger = new FormRoutingGrants();
     const grant = ledger.grant(ledger.review(1, null, 'ops', [change('a')], candidate()).id, 1, null)!;
