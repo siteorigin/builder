@@ -92,15 +92,18 @@ function view<T extends object>(target: T, path: string[], shape: Shape, rec: Re
   const known = rec.views.get(head);
   if (known) return known as T;
   const note = (kind: Kind, key: string) => rec.deps?.add(kind + head + JSON.stringify(key) + ']');
+  // A frozen object (as the session holds every state, src/engine/draft.ts) is read through a stand-in of its own: a
+  // proxy of the object itself would have to give each of its fixed fields back as it is, read whole.
+  const standIn = Object.isFrozen(target);
   /** The shape of an own object field handed out as a view; none for a field that must be handed out as it is. */
   const nested = (t: object, key: string): Shape | undefined => {
     const sub = childShape(shape, key);
     if (!sub) return undefined;
     const d = Reflect.getOwnPropertyDescriptor(t, key);
     // A proxy must give a fixed field's own value back, so one that can never change is read whole.
-    return d && 'value' in d && isObject(d.value) && (d.configurable || d.writable) ? sub : undefined;
+    return d && 'value' in d && isObject(d.value) && (standIn || d.configurable || d.writable) ? sub : undefined;
   };
-  const proxy = new Proxy(target, {
+  const handler: ProxyHandler<T> = {
     get(t, key) {
       const v = Reflect.get(t, key);
       if (typeof key !== 'string') return v;
@@ -118,16 +121,16 @@ function view<T extends object>(target: T, path: string[], shape: Shape, rec: Re
     },
     getOwnPropertyDescriptor(t, key) {
       const d = Reflect.getOwnPropertyDescriptor(t, key);
-      if (typeof key !== 'string') return d;
+      if (typeof key !== 'string') return standIn ? held(d, key) : d;
       note('#', key);
       // A descriptor carries the value, so an entry read this way is handed out as a view as well.
-      const sub = d?.configurable ? nested(t, key) : undefined;
+      const sub = standIn || d?.configurable ? nested(t, key) : undefined;
       if (!sub) {
         note('=', key);
-        return d;
+        return standIn ? held(d, key) : d;
       }
       note('?', key);
-      return { ...d, value: view(d!.value as object, [...path, key], sub, rec) };
+      return held({ ...d, value: view(d!.value as object, [...path, key], sub, rec) }, key);
     },
     ownKeys(t) {
       rec.deps?.add('*' + JSON.stringify(path));
@@ -138,7 +141,15 @@ function view<T extends object>(target: T, path: string[], shape: Shape, rec: Re
     deleteProperty: refuse,
     setPrototypeOf: refuse,
     preventExtensions: refuse
-  });
+  };
+  /** A frozen object's field as its stand-in can say it is: configurable (its stand-in has no such field), but an array's length as the stand-in's own. */
+  const held = (d: PropertyDescriptor | undefined, key: string | symbol): PropertyDescriptor | undefined => {
+    if (!d || !standIn) return d;
+    return Array.isArray(target) && key === 'length' ? { value: d.value, writable: true, enumerable: false, configurable: false } : { ...d, configurable: true };
+  };
+  // Each trap reads the object itself, whatever the proxy stands on.
+  const traps = Object.fromEntries(Object.entries(handler).map(([name, trap]) => [name, typeof trap === 'function' ? (_: T, ...args: unknown[]) => (trap as (...a: unknown[]) => unknown)(target, ...args) : trap]));
+  const proxy = standIn ? new Proxy((Array.isArray(target) ? [] : Object.create(Object.getPrototypeOf(target))) as T, traps) : new Proxy(target, handler);
   rec.views.set(head, proxy);
   return proxy;
 }
@@ -176,6 +187,13 @@ export class GenerationCache {
   private counter = 0;
   /** Keys of the files the last run had to make, for tests and timing. */
   made: string[] = [];
+  /**
+   * With `timing` on (only while timing marks are, src/main/perf.ts), how long the last run spent checking whether each
+   * file's dependencies are unchanged, in ms, and how many files it checked. Off, nothing is timed.
+   */
+  timing = false;
+  checkMs = 0;
+  checked = 0;
 
   private dep(name: string): Dep {
     let d = this.deps.get(name);
@@ -206,6 +224,8 @@ export class GenerationCache {
     const tracked = view(state, [], SHAPE, rec);
     const used = new Set<string>();
     this.made = [];
+    this.checkMs = 0;
+    this.checked = 0;
     deriving.set(tracked, <T>(name: string, compute: (state: ProjectState) => T): T => {
       const n = '@' + JSON.stringify([name]);
       rec.deps?.add(n);
@@ -218,7 +238,15 @@ export class GenerationCache {
       used.add(key);
       try {
         const hit = this.entries.get(key);
-        if (hit && hit.deps.every(([dep, v]) => this.version(state, dep) === v)) return hit.content;
+        if (hit) {
+          const started = this.timing ? performance.now() : 0;
+          const same = hit.deps.every(([dep, v]) => this.version(state, dep) === v);
+          if (this.timing) {
+            this.checkMs += performance.now() - started;
+            this.checked++;
+          }
+          if (same) return hit.content;
+        }
         this.entries.delete(key);
         rec.deps = new Set();
         const content = make(tracked);

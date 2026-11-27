@@ -150,26 +150,27 @@ describe('sharingView', () => {
     expect(v.picker.back).toBe('Remove image');
     expect(v.imageNote).toContain('Pages without their own image are shared without one.');
     // A page's choice that has gone from the library stays its own, with no picture, and returning to the site's image is offered.
-    const dangling = apply(state, { type: 'site.update', socialImage: 'a_table' });
+    // Changed by hand below: a copy, since the state applyOperations gives shares what it did not change.
+    const dangling = structuredClone(apply(state, { type: 'site.update', socialImage: 'a_table' }));
     dangling.pages[byTitle('Kitchens').id].seo.socialImage = 'a_gone';
     const d = sharingView(dangling, dangling.pages[byTitle('Kitchens').id]);
     expect(d).toMatchObject({ imageSource: 'page', imageName: undefined });
     expect(d.imageNote).toBe('The image chosen for this page is no longer in Assets, so a shared link to it shows no picture. Choose another image, or return to the site’s image.');
     expect(d.picker).toMatchObject({ inherited: 'a_table', back: 'Use the site’s image' });
     // One that is a file but no picture says so, rather than that it has gone.
-    const pdf = apply(state, { type: 'site.update', socialImage: 'a_table' });
+    const pdf = structuredClone(apply(state, { type: 'site.update', socialImage: 'a_table' }));
     pdf.assets.assets['a_menu'] = image('a_menu', 'Menu', { kind: 'document', mime: 'application/pdf', file: 'static/assets/menu.pdf' });
     pdf.pages[byTitle('Kitchens').id].seo.socialImage = 'a_menu';
     expect(sharingView(pdf, pdf.pages[byTitle('Kitchens').id]).imageNote).toMatch(/^The file chosen for this page is not an image, so/);
-    const noSite = apply(state, { type: 'site.update', socialImage: null });
+    const noSite = structuredClone(apply(state, { type: 'site.update', socialImage: null }));
     noSite.assets.assets['a_menu'] = pdf.assets.assets['a_menu'];
     noSite.pages[byTitle('Kitchens').id].seo.socialImage = 'a_menu';
     expect(sharingView(noSite, noSite.pages[byTitle('Kitchens').id]).imageNote).toMatch(/Choose another image, or remove it\.$/);
     // A site image that is a document is no image to return to.
-    const doc = apply(state, { type: 'site.update', socialImage: 'a_table' });
+    const doc = structuredClone(apply(state, { type: 'site.update', socialImage: 'a_table' }));
     doc.assets.assets['a_table'] = image('a_table', 'Menu', { kind: 'document', mime: 'application/pdf', file: 'static/assets/menu.pdf' });
     expect(sharingView(doc, doc.pages[byTitle('Kitchens').id]).picker).toMatchObject({ inherited: null, back: 'Remove image' });
-    const gone = apply(state, { type: 'site.update', socialImage: 'a_table' });
+    const gone = structuredClone(apply(state, { type: 'site.update', socialImage: 'a_table' }));
     delete gone.assets.assets['a_table'];
     const g = sharingView(gone, gone.pages[byTitle('Kitchens').id]);
     expect(g.imageSource).toBe('site');

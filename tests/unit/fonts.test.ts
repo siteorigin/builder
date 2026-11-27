@@ -281,7 +281,7 @@ describe('imported fonts', () => {
     expect(assetUsages(s.state).f3).toBeUndefined();
     // A theme's own code is not the project's choice; a second component of the project's is a second use.
     const themeCode = Object.values(s.state.components).find((d) => d.owner === 'theme' && d.kind === 'code')!;
-    s.state.components[themeCode.id] = { ...themeCode, source: `${themeCode.source}\n<style>p { font-family: 'Brand Sans'; }</style>` };
+    s.state = { ...s.state, components: { ...s.state.components, [themeCode.id]: { ...themeCode, source: `${themeCode.source}\n<style>p { font-family: 'Brand Sans'; }</style>` } } };
     expect(assetUsages(s.state)).toMatchObject({ f1: 1, f2: 1 });
     expect((await s.apply({ operations: [code('Footer', "<p>Hi</p>\n<style>p { font-family: Brand Sans, serif; }</style>")] }, { label: 'Add more code' })).ok).toBe(true);
     expect(assetUsages(s.state)).toMatchObject({ f1: 2, f2: 2 });
@@ -304,16 +304,18 @@ describe('imported fonts', () => {
   it('reads a style the way CSS does: a run of spaces is one, and a bare keyword is no font', async () => {
     const { s } = await make();
     await s.apply({ operations: [add(face('f1', '400')), add(face('f2', '400', 'normal', 'Serif'))] }, { label: 'Import' });
-    s.state.tokens.overrides['font.body'] = 'Georgia, Brand   Sans, serif';
-    expect(assetUsages(s.state)).toMatchObject({ f1: 1 });
+    // The session holds its project frozen: these hand edits are made to a copy.
+    const st = structuredClone(s.state);
+    st.tokens.overrides['font.body'] = 'Georgia, Brand   Sans, serif';
+    expect(assetUsages(st)).toMatchObject({ f1: 1 });
     // A keyword is not a use of the font that shares its name, and renaming that font leaves the keyword alone.
-    expect(assetUsages(s.state).f2).toBeUndefined();
-    s.state.tokens.overrides['font.display'] = "Georgia, 'Serif', serif";
-    expect(assetUsages(s.state).f2).toBe(1);
-    renameFontFamily(s.state, 'Serif', 'Roman');
-    expect(s.state.tokens.overrides['font.display']).toBe("Georgia, 'Roman', serif");
-    renameFontFamily(s.state, 'Brand Sans', 'Brand Serif');
-    expect(s.state.tokens.overrides['font.body']).toBe("Georgia, 'Brand Serif', serif");
+    expect(assetUsages(st).f2).toBeUndefined();
+    st.tokens.overrides['font.display'] = "Georgia, 'Serif', serif";
+    expect(assetUsages(st).f2).toBe(1);
+    renameFontFamily(st, 'Serif', 'Roman');
+    expect(st.tokens.overrides['font.display']).toBe("Georgia, 'Roman', serif");
+    renameFontFamily(st, 'Brand Sans', 'Brand Serif');
+    expect(st.tokens.overrides['font.body']).toBe("Georgia, 'Brand Serif', serif");
   });
 
   it('quotes a family CSS would drop, and gives a bare imported name its stack', async () => {

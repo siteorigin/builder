@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import type { PerfRecord } from '../../src/shared/perf';
 import { Collector, Trace } from '../../scripts/perf/results';
-import { ai, AI_EDIT_CASES, aiEdit, aiMeasurements, canvas, chainFor, chat, CHAT_CASES, CHAT_REPLY_CHECKPOINTS, CHAT_TYPED, chatReply, chatReplyFirst, chatReplyLast, chatSeed, colour, COLOUR_STEPS, colourPath, copiesProblem, coveredMs, create, createAgain, deepest, drag, edit, editFullHistory, edits, EDITS, expect as check, expectedCopies, exportAgain, exportSite, findHeading, type FixtureFacts, importPhotos, installedPackages, installsHere, launch, memory, MEMORY_EDITS, open, PANELS, panels, runChain, type Scenario, type ScenarioContext, SHOWN_PANELS, switchProject, toolCallsReply } from '../../scripts/perf/scenarios';
+import { ai, AI_EDIT_CASES, aiEdit, aiMeasurements, batch, BATCH_OPERATIONS, batchOperations, canvas, chainFor, chat, CHAT_CASES, CHAT_REPLY_CHECKPOINTS, CHAT_TYPED, chatReply, chatReplyFirst, chatReplyLast, chatSeed, colour, COLOUR_STEPS, colourPath, copiesProblem, coveredMs, create, createAgain, deepest, drag, edit, editFullHistory, edits, EDITS, expect as check, expectedCopies, exportAgain, exportSite, findHeading, type FixtureFacts, importPhotos, installedPackages, installsHere, launch, memory, MEMORY_EDITS, open, PANELS, panels, runChain, type Scenario, type ScenarioContext, SHOWN_PANELS, switchProject, toolCallsReply } from '../../scripts/perf/scenarios';
 import type { MemoryProbe, MemoryReading } from '../../scripts/perf/memory';
 import { PHOTO_COUNT, photoSpec } from '../../scripts/perf/photos';
 import { FIXTURES } from '../../scripts/perf/fixtures';
@@ -337,7 +337,10 @@ describe('edit metrics', () => {
         span('session.applyOperations', 10_012, 2),
         span('session.validateState', 10_020, 5),
         span('session.generate', 10_030, 4, { attrs: { variant: 'clean' } }),
+        m('session.generateCheck', 10_030, { attrs: { variant: 'clean', ms: 1.5, files: 40 } }),
         span('session.generate', 10_034, 3, { attrs: { variant: 'dev' } }),
+        m('session.generateCheck', 10_034, { attrs: { variant: 'dev', ms: 1, files: 40 } }),
+        span('session.changedDocs', 10_036, 2, { attrs: { docs: 20, changed: 1 } }),
         span('session.publish', 10_080, 30, { dc: { 'files.read': 1, 'files.hashed': 13, 'files.hashedBytes': 52_000, 'fs.writes': 5, 'fs.durableWrites': 3, 'fs.fsyncs': 6, 'fs.syncCalls': 410, 'files.stats': 120 } }),
         m('runtime.release', 10_082),
         // A sweep the save waited on, before the edit was acknowledged.
@@ -346,7 +349,7 @@ describe('edit metrics', () => {
         m('session.changed', 10_101, { attrs: { revision: target } }),
         m('controller.snapshotSent', 10_105, { attrs: { revision: target, bytes: 120_000 } }),
         span('session.apply', 10_106, 95, { attrs: { revision: target } }),
-        span('controller.apply', 10_107, 105, { attrs: { revision: target }, dc: { 'fs.durableWrites': 9, 'fs.fsyncs': 19, 'fs.writes': 11, 'fs.syncCalls': 450, 'files.stats': 130, 'files.hashedBytes': 60_000 } }),
+        span('controller.apply', 10_107, 105, { attrs: { revision: target }, dc: { 'fs.durableWrites': 9, 'fs.fsyncs': 19, 'fs.writes': 11, 'fs.syncCalls': 450, 'files.stats': 130, 'files.hashedBytes': 60_000, 'apply.docsCopied': 20, 'docs.serialized': 20 } }),
         r('renderer.snapshotReceived', 10_108, { attrs: { revision: target } }),
         m('runtime.published', 10_110, { attrs: { revision: target } }),
         r('renderer.commit', 10_115, { attrs: { revision: target } }),
@@ -377,6 +380,10 @@ describe('edit metrics', () => {
       'edit.applyOperations': '2 ms',
       'edit.validate': '5 ms',
       'edit.generate': '7 ms',
+      'edit.generateCheck': '2.5 ms',
+      'edit.changedDocs': '2 ms',
+      'edit.docsCopied': '20 count',
+      'edit.docsSerialized': '20 count',
       'edit.persist': '70 ms',
       'edit.publish': '30 ms',
       'edit.hmrRelease': '82 ms',
@@ -421,6 +428,10 @@ describe('edit metrics', () => {
     expect(edit.measure(trace((x) => x.name === 'session.generate' && x.attrs?.variant === 'clean'), facts).missing).toEqual(['session.generate (clean)']);
     expect(edit.measure(trace((x) => x.name === 'session.generate' && x.attrs?.variant === 'clean'), facts).metrics['edit.generate']).toBeUndefined();
     expect(edit.measure(trace((x) => x.name === 'session.generate' && x.attrs?.variant === 'dev'), facts).missing).toEqual(['session.generate (dev)']);
+    // So would a dependency check of one variant, or a document search that is not there.
+    expect(edit.measure(trace((x) => x.name === 'session.generateCheck' && x.attrs?.variant === 'dev'), facts).missing).toEqual(['session.generateCheck (both variants)']);
+    expect(edit.measure(trace((x) => x.name === 'session.generateCheck' && x.attrs?.variant === 'dev'), facts).metrics['edit.generateCheck']).toBeUndefined();
+    expect(without('session.changedDocs').missing).toEqual(['session.changedDocs']);
   });
 
   it('count every generation of each variant, and refuse one without a length', () => {
@@ -553,6 +564,97 @@ describe('edits metrics', () => {
     expect(untaken.metrics['edits.outsideApplied']).toBeUndefined();
     // A change the app took without its watch going off for it is not timed from an earlier look.
     expect(without((x) => x.name === 'controller.watchFired' && x.t > 12_000).missing).toEqual(['controller.watchFired (for the change made outside)']);
+  });
+});
+
+describe('batch metrics', () => {
+  function trace(drop: (x: PerfRecord) => boolean = () => false) {
+    return new Trace(
+      [
+        // Before the scenario: another run's marker and apply, never this one's.
+        span('session.runMarker', 900, 50),
+        span('session.apply', 950, 40, { attrs: { ok: true, revision: 3 } }),
+        m('scenario.start', 1000, { attrs: { scenario: 'batch' }, c: { 'run.docsHashed': 100 } }),
+        r('scenario.start', 1000, { attrs: { scenario: 'batch' } }),
+        span('session.runMarker', 1010, 3, { attrs: { paths: 0 } }),
+        span('session.beginRun', 1012, 12),
+        span('agent.devModeCheck', 1100, 0.5),
+        span('agent.authorityCheck', 1101, 4),
+        // A refused try is not the batch.
+        span('session.apply', 1102, 1, { attrs: { ok: false, revision: 4 } }),
+        span('session.applyOperations', 1110, 6),
+        span('session.validateState', 1120, 9),
+        span('session.generate', 1130, 8, { attrs: { variant: 'clean' } }),
+        m('session.generateCheck', 1130, { attrs: { variant: 'clean', ms: 3, files: 40 } }),
+        span('session.generate', 1140, 7, { attrs: { variant: 'dev' } }),
+        m('session.generateCheck', 1140, { attrs: { variant: 'dev', ms: 2, files: 40 } }),
+        span('session.changedDocs', 1142, 2),
+        span('session.runMarker', 1150, 4, { attrs: { paths: 1 } }),
+        span('session.publish', 1170, 15),
+        span('session.persist', 1180, 38),
+        span('session.apply', 1181, 75, { attrs: { ok: true, revision: 4 }, dc: { 'apply.docsCopied': 600, 'docs.serialized': 650, 'fs.durableWrites': 9, 'fs.fsyncs': 18 } }),
+        span('main.stall', 1182, 60),
+        // Another revision's report is not the batch's.
+        r('canvas.revisionApplied', 1150, { attrs: { revision: 3 } }),
+        r('canvas.revisionApplied', 1250, { attrs: { revision: 4 } }),
+        m('scenario.end', 3000, { attrs: { scenario: 'batch' }, c: { 'run.docsHashed': 1400 } }),
+        r('scenario.end', 3001, { attrs: { scenario: 'batch' } }),
+        span('session.runMarker', 3100, 50)
+      ].filter((x) => !drop(x))
+    );
+  }
+
+  it('time the batch’s own apply and the run’s checks and markers around it, by the revision it made', () => {
+    const got = batch.measure(trace(), facts);
+    expect(got.missing).toEqual([]);
+    expect(Object.fromEntries(Object.entries(got.metrics).map(([k, v]) => [k, `${v.value} ${v.unit}`]))).toEqual({
+      'batch.beginRun': '12 ms',
+      'batch.checks': '4.5 ms',
+      'batch.sessionApply': '75 ms',
+      'batch.applyOperations': '6 ms',
+      'batch.validate': '9 ms',
+      'batch.generate': '15 ms',
+      'batch.generateCheck': '5 ms',
+      'batch.changedDocs': '2 ms',
+      'batch.persist': '38 ms',
+      'batch.publish': '15 ms',
+      'batch.runMarker': '7 ms',
+      'batch.runMarkers': '2 count',
+      'batch.runDocsHashed': '1300 count',
+      'batch.docsCopied': '600 count',
+      'batch.docsSerialized': '650 count',
+      'batch.durableWrites': '9 count',
+      'batch.fsyncs': '18 count',
+      'batch.previewApplied': '250 ms',
+      'batch.mainStallMax': '60 ms'
+    });
+  });
+
+  it('name what is missing instead of reporting a batch that did less', () => {
+    const without = (name: string) => batch.measure(trace((x) => x.name === name), facts);
+    expect(without('session.beginRun').missing).toEqual(['session.beginRun']);
+    expect(without('agent.authorityCheck').missing).toEqual(['agent.authorityCheck']);
+    expect(without('session.runMarker').missing).toEqual(['session.runMarker']);
+    expect(without('session.changedDocs').missing).toEqual(['session.changedDocs']);
+    expect(without('session.generateCheck').missing).toEqual(['session.generateCheck (both variants)']);
+    expect(without('canvas.revisionApplied').missing).toEqual(['canvas.revisionApplied']);
+    // No apply that moved the project: nothing inside it is taken from another.
+    expect(batch.measure(trace((x) => x.name === 'session.apply' && x.t === 1181), facts).missing).toContain('session.apply (the batch)');
+  });
+
+  it('rewrite the page’s text properties in turn, the later text of one set twice kept', () => {
+    const state = {
+      pages: { pg_home: { nodes: { a: { id: 'a', kind: 'instance', definitionId: 'hero', props: { heading: 'Hi', level: 'h1', lead: 'L' } }, b: { id: 'b', kind: 'element', tag: 'div' } } } },
+      components: { hero: { properties: { heading: { type: 'string' }, level: { type: 'enum' }, lead: { type: 'string' } } } }
+    } as unknown as Parameters<typeof batchOperations>[0];
+    const { operations, final } = batchOperations(state, 'pg_home', 2);
+    expect(operations).toHaveLength(BATCH_OPERATIONS);
+    expect(operations[0]).toEqual({ type: 'instance.setProp', owner: { kind: 'page', id: 'pg_home' }, nodeId: 'a', prop: 'heading', value: 'Batch 2.0' });
+    expect(operations[1]).toMatchObject({ prop: 'lead', value: 'Batch 2.1' });
+    expect([...final]).toEqual([
+      ['a:heading', 'Batch 2.28'],
+      ['a:lead', 'Batch 2.29']
+    ]);
   });
 });
 

@@ -22,10 +22,11 @@ import { serializeResult, stamp, toolError, type ResultOutcome } from './result'
 import { inTurns, MEASURE_AT_ONCE, PreviewCheck, slots } from './preview-check';
 import { compactProjectSummary, describeSelection, layoutGlance, diagnosticRank, diagnosticsChars, diagnosticsContext, pageGlance, pageGlanceChars, pageIdFor, projectSummary, withoutSlotInfo, withThemeUpdates } from './context';
 import { outsideOffer, themeUpdateNote } from './theme-update';
-import { authorityLabel, canEditContracts, checkAuthority, layoutLabel, liveEntry, liveLayout, requestAuthority, requestedAuthority, widenChoices, type Authority } from './scope';
+import { authorityCheck, authorityLabel, canEditContracts, layoutLabel, liveEntry, liveLayout, requestAuthority, requestedAuthority, widenChoices, type Authority } from './scope';
 import { connectPendingLinks, newMacroMemory } from './macros';
 import { untilStopped } from './validation';
-import { developerModeRefusal } from '@engine/developer-mode';
+import { developerModeCheck } from '@engine/developer-mode';
+import { walkChecks } from '@engine/apply';
 import { selectionTarget } from './selection';
 import { definitionTarget } from './definition';
 import { applyContextBudget, contextVerdict, estimateRequestTokens, MIN_OUTPUT_TOKENS } from './budget';
@@ -124,6 +125,8 @@ export interface RunSession {
 }
 
 export interface OrchestratorDeps {
+  /** Starts a timing span (src/main/perf.ts) while timing marks are on; absent otherwise. */
+  perfSpan?: (name: string) => () => void;
   session(): RunSession | null;
   /**
    * `signal` ends anything the factory asks a server while preparing, such as reading a local model's window. `repair`
@@ -594,8 +597,28 @@ Things that are easy to get wrong:
 ${themeGuidance(theme)}${preferred}`;
 }
 
+/**
+ * Each of `steps` as a reason or null: one that is already one, or what a walk of the batch makes of one that is a check
+ * of each operation, all of those in one walk (walkChecks).
+ */
+function batchChecks(state: ProjectState, ops: EditOperation[], steps: Array<string | null | ((draft: ProjectState, op: EditOperation) => string | null)>): Array<string | null> {
+  const walked = steps.flatMap((step, i) => (typeof step === 'function' ? [i] : []));
+  const found = walked.length ? walkChecks(state, ops, walked.map((i) => steps[i] as (draft: ProjectState, op: EditOperation) => string | null)) : [];
+  return steps.map((step, i) => (typeof step === 'function' ? found[walked.indexOf(i)] : step));
+}
+
 export class Orchestrator {
   private run: ActiveRun | null = null;
+
+  /** `check`, timed as the span `name` while timing marks are on. */
+  private timedCheck<T>(name: string, check: () => T): T {
+    const end = this.deps.perfSpan?.(name);
+    try {
+      return check();
+    } finally {
+      end?.();
+    }
+  }
   /** Calls removing conversations in progress (Clear history, or a delete of the open one): no request may start. */
   private clearing = 0;
   /** Clear-history calls in progress: nothing is renamed or deleted meanwhile, or it would come back after the clear. */
@@ -1616,9 +1639,24 @@ export class Orchestrator {
         // Asset records are created only by the verified importer, never by the model.
         if (operations.some((o) => o.type === 'asset.add' || o.type === 'asset.relink')) return refused('SCOPE_MISMATCH', 'The assistant cannot add images. Ask the user to import them, then use search_assets.', false);
         if (operations.some((o) => o.type === 'component.import')) return refused('SCOPE_MISMATCH', 'The assistant cannot import component packages. Ask the user to import the package from the component library.', false);
+        // The scope the call asks for is checked against the run's, never taken as more (spec 13.3): one that reaches
+        // further is refused, and a narrower one limits the call on top of the run's own limits.
+        const asked = requested ? requestedAuthority(session.state, requested, authority) : null;
+        const narrower = asked && !('code' in asked) && asked.authority !== authority ? asked.authority : null;
+        // The shared header and footer are edited in place; removing one would empty it on every page.
+        const shellRoot = operations.find((o) => (o.type === 'node.remove' || o.type === 'node.removeKeepContent') && o.owner.kind === 'shell' && session.state.site.shell[o.owner.id as 'header' | 'footer']?.rootIds?.includes(o.nodeId));
+        // Refused for that, or for the scope it asks for, a batch's reach is never looked at (Developer mode comes first).
+        const reach = !shellRoot && !(asked && 'code' in asked);
+        // Developer mode's copies, the run's reach and the narrower reach the call asks for are each checked against the
+        // project as the batch's operations before them leave it, in one walk of the batch, as each walk of its own would.
+        const [refusal, denied, own] = this.timedCheck('agent.authorityCheck', () => {
+          // A reason Developer mode gives without a walk comes first: the batch's reach is not looked at then.
+          const code = !codeEnabled ? developerModeCheck(session.state, operations) : null;
+          const looked = reach && typeof code !== 'string';
+          return batchChecks(session.state, operations, [code, looked ? authorityCheck(session.state, operations, authority, grants) : null, looked && narrower ? authorityCheck(session.state, operations, narrower, grants) : null]);
+        });
         // Code, and copies that would make new code (duplicating a code component, say), need Developer mode.
         if (!codeEnabled) {
-          const refusal = developerModeRefusal(session.state, operations);
           if (refusal)
             return refused(
               'SCOPE_MISMATCH',
@@ -1626,8 +1664,6 @@ export class Orchestrator {
               false
             );
         }
-        // The shared header and footer are edited in place; removing one would empty it on every page.
-        const shellRoot = operations.find((o) => (o.type === 'node.remove' || o.type === 'node.removeKeepContent') && o.owner.kind === 'shell' && session.state.site.shell[o.owner.id as 'header' | 'footer']?.rootIds?.includes(o.nodeId));
         if (shellRoot) return refused('SCOPE_MISMATCH', 'The shared header and footer cannot be removed. Edit their properties with instance.setProp and instance.listInsert instead.', true);
         const beyond = (denied: string) => {
           // Named as the run is offered it: the small selection tools ask with their own tool.
@@ -1647,18 +1683,13 @@ export class Orchestrator {
           if (authority.kind === 'template') return refused('SCOPE_MISMATCH', `${denied} ${why} Nothing in this batch was applied. Tell the user what else would need changing.`, true);
           return refused('SCOPE_MISMATCH', `${denied} ${why} Nothing in this batch was applied. Ask the user with ${widen} before changing more.`, true);
         };
-        // The scope the call asks for is checked against the run's, never taken as more (spec 13.3): one that reaches
-        // further is refused, and a narrower one limits the call on top of the run's own limits.
-        const asked = requested ? requestedAuthority(session.state, requested, authority) : null;
         if (asked && 'code' in asked) {
           // A scope that names nothing (or something it cannot tell apart) is a wrong ID, not a request for more.
           if (asked.code === 'INVALID_ARGUMENT' || asked.reread)
             return refused(asked.code, `${asked.message} Nothing in this batch was applied.${asked.reread ? ' Read the project again for the right ID.' : ''}`, true);
           return beyond(asked.message);
         }
-        const denied = checkAuthority(session.state, operations, authority, grants);
         if (denied) return beyond(denied);
-        const own = asked && asked.authority !== authority ? checkAuthority(session.state, operations, asked.authority, grants) : null;
         if (own) return refused('SCOPE_MISMATCH', `${own} This call asked to change only ${authorityLabel(asked!.authority)}. Nothing in this batch was applied: send it with a scope that covers what it changes.`, true);
         // The pages the batch will change are measured as they are, before this run reached them, for the preview check.
         const endBaselines = perf ? perf.span('ai.baselines') : NO_SPAN;

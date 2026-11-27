@@ -2083,8 +2083,11 @@ describe('review regressions', () => {
     const t = derivedBrandTokens('#777777', '#f1eee6');
     expect(contrastRatio(hex(t['color.on-brand']), hex('#777777'))).toBeGreaterThanOrEqual(4.5);
     const { session, run } = await setup([() => [call('b', 'update_site_brand', { siteName: 'Acme' })], () => finish()]);
-    const footer = session.state.site.shell.footer;
+    // The session holds its project frozen: a hand edit is a changed copy put in its place.
+    const changed = structuredClone(session.state);
+    const footer = changed.site.shell.footer;
     (footer.nodes[footer.rootIds[0]] as InstanceNode).props.copyright = 'All of Test Studio, always.';
+    session.state = changed;
     await run('Rename the site to Acme');
     expect(shellProps(session.state, 'footer').copyright).toBe('All of Test Studio, always.');
   });

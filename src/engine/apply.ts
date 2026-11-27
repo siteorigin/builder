@@ -118,6 +118,7 @@ import { detachInstance } from './detach';
 import { containerToSlot } from './container-to-slot';
 import { importComponentPackage, type ComponentImport } from './component-package';
 import { componentUpsert } from './upsert';
+import { draftOf, finished, peek } from './draft';
 import { planSwap, swapTarget } from './swap';
 
 export type OpResult = Record<string, unknown>;
@@ -2287,18 +2288,47 @@ function pruneEmptyItemStyles(node: InstanceNode) {
  * items has no list of its own to leave: a theme change can give those defaults other IDs, so their styles are kept.
  */
 function dropDepartedItemStyles(state: ProjectState) {
-  for (const tree of [state.site.shell.header, state.site.shell.footer, ...Object.values(state.pages)]) {
-    for (const n of Object.values(tree.nodes)) {
-      if (n.kind !== 'instance' || !n.itemOverrides) continue;
-      for (const entry of Object.values(n.itemOverrides)) {
-        if (!entry || typeof entry !== 'object' || !entry.items || typeof entry.items !== 'object' || typeof entry.list !== 'string') continue;
+  // Looked at without copying them (see ./draft): only a tree with item styles to drop is changed, so copied.
+  const site = peek(state as unknown as Record<string, ProjectState['site']>, 'site');
+  if (itemStylesToDrop(site.shell.header) || itemStylesToDrop(site.shell.footer)) for (const tree of [state.site.shell.header, state.site.shell.footer]) dropItemStyles(tree);
+  for (const id of Object.keys(state.pages)) if (itemStylesToDrop(peek(state.pages, id))) dropItemStyles(state.pages[id]);
+}
+
+/** Whether dropItemStyles might change `tree`: it has an item style that has no item, or one with nothing in it. */
+function itemStylesToDrop(tree: NodeTree): boolean {
+  const isObject = (v: unknown): v is Record<string, unknown> => !!v && typeof v === 'object' && !Array.isArray(v);
+  for (const n of Object.values(tree.nodes)) {
+    if (n.kind !== 'instance' || !n.itemOverrides) continue;
+    if (!Object.keys(n.itemOverrides).length) return true;
+    for (const entry of Object.values(n.itemOverrides)) {
+      // An item no longer in the list, as dropItemStyles finds one.
+      if (entry && typeof entry === 'object' && entry.items && typeof entry.items === 'object' && typeof entry.list === 'string') {
         const stored = Object.hasOwn(n.props, entry.list) ? n.props[entry.list] : undefined;
-        if (!Array.isArray(stored)) continue;
-        const present = new Set(stored.map((i) => (i && typeof i === 'object' ? (i as ListItem).id : undefined)));
-        for (const itemId of Object.keys(entry.items)) if (!present.has(itemId)) delete entry.items[itemId];
+        if (Array.isArray(stored)) {
+          const present = new Set(stored.map((i) => (i && typeof i === 'object' ? (i as ListItem).id : undefined)));
+          if (Object.keys(entry.items).some((itemId) => !present.has(itemId))) return true;
+        }
       }
-      pruneEmptyItemStyles(n);
+      // Something empty, as pruneEmptyItemStyles finds it.
+      if (!isObject(entry) || !isObject(entry.items)) continue;
+      if (!Object.keys(entry.items).length) return true;
+      for (const rs of Object.values(entry.items)) if (!isObject(rs) || !Object.keys(rs).length || Object.values(rs).some((v) => !isObject(v) || !Object.keys(v).length)) return true;
     }
+  }
+  return false;
+}
+
+function dropItemStyles(tree: NodeTree) {
+  for (const n of Object.values(tree.nodes)) {
+    if (n.kind !== 'instance' || !n.itemOverrides) continue;
+    for (const entry of Object.values(n.itemOverrides)) {
+      if (!entry || typeof entry !== 'object' || !entry.items || typeof entry.items !== 'object' || typeof entry.list !== 'string') continue;
+      const stored = Object.hasOwn(n.props, entry.list) ? n.props[entry.list] : undefined;
+      if (!Array.isArray(stored)) continue;
+      const present = new Set(stored.map((i) => (i && typeof i === 'object' ? (i as ListItem).id : undefined)));
+      for (const itemId of Object.keys(entry.items)) if (!present.has(itemId)) delete entry.items[itemId];
+    }
+    pruneEmptyItemStyles(n);
   }
 }
 
@@ -4136,23 +4166,40 @@ function themeApply(state: ProjectState, themeId: string): OpResult {
  * then applies nothing anyway. The project is copied only when there is a later operation to check.
  */
 export function walkOperations(state: ProjectState, ops: EditOperation[], check: (state: ProjectState, op: EditOperation) => string | null, ctx: ApplyContext = {}): string | null {
+  return walkChecks(state, ops, [check], ctx)[0];
+}
+
+/**
+ * `walkOperations` for several checks at once, in one walk of the batch: each check is given exactly what a walk of
+ * its own would give it, and its first reason (or null) is in its place in what is returned.
+ */
+export function walkChecks(state: ProjectState, given: EditOperation[], checks: ReadonlyArray<(state: ProjectState, op: EditOperation) => string | null>, ctx: ApplyContext = {}): Array<string | null> {
+  // The batch's own copy: what an operation brings is put in the project as it is, and a later one may change it there.
+  const ops = structuredClone(given);
+  const reasons: Array<string | null> = checks.map(() => null);
+  const open = new Set(checks.keys());
   let draft: ProjectState | null = null;
   const assetUses: NonNullable<ApplyContext['assetUses']> = {};
   const batch: ApplyContext = { ...ctx, explicitItemFields: explicitItemFields(ops), assetUses, addressesAtStart: ctx.addressesAtStart ?? addressesInUse(state), entryAddressesAtStart: new Map(ctx.entryAddressesAtStart ?? entryAddressesInUse(state)) };
   for (const [i, op] of ops.entries()) {
-    const reason = check(draft ?? state, op);
-    if (reason) return reason;
-    if (i === ops.length - 1) break;
-    draft ??= clone(state);
+    for (const c of [...open]) {
+      const reason = checks[c](draft ?? state, op);
+      if (reason) {
+        reasons[c] = reason;
+        open.delete(c);
+      }
+    }
+    if (!open.size || i === ops.length - 1) break;
+    draft ??= draftOf(state);
     if (op.type !== 'asset.remove') assetUses.counts = undefined;
     try {
       applyOperation(draft, op, batch);
       dropDepartedItemStyles(draft);
     } catch {
-      return null;
+      break;
     }
   }
-  return null;
+  return reasons;
 }
 
 /** The addresses in use in `state`, lowercased: its pages' routes and the old addresses it keeps working. */
@@ -4162,8 +4209,12 @@ function addressesInUse(state: ProjectState): Set<string> {
   return out;
 }
 
-export function applyOperations(state: ProjectState, ops: EditOperation[], ctx: ApplyContext = {}): { state: ProjectState; results: OpResult[] } {
-  const draft = clone(state);
+export function applyOperations(state: ProjectState, given: EditOperation[], ctx: ApplyContext = {}): { state: ProjectState; results: OpResult[] } {
+  // The batch's own copy: what an operation brings is put in the project as it is, and a later one may change it
+  // there, so it must not be an object the caller (or the state, which the new one shares) still holds.
+  const ops = structuredClone(given);
+  // Documents are copied as the batch reaches them: the rest of the state it leaves is the very objects `state` holds.
+  const working = draftOf(state);
   const results: OpResult[] = [];
   const assetUses: NonNullable<ApplyContext['assetUses']> = {};
   const batch: ApplyContext = { ...ctx, explicitItemFields: explicitItemFields(ops), assetUses, addressesAtStart: ctx.addressesAtStart ?? addressesInUse(state), entryAddressesAtStart: new Map(ctx.entryAddressesAtStart ?? entryAddressesInUse(state)) };
@@ -4171,8 +4222,8 @@ export function applyOperations(state: ProjectState, ops: EditOperation[], ctx: 
     // Any edit but a removal may move an asset's uses: the next removal counts them again.
     if (op.type !== 'asset.remove') assetUses.counts = undefined;
     try {
-      results.push(applyOperation(draft, op, batch));
-      dropDepartedItemStyles(draft);
+      results.push(applyOperation(working, op, batch));
+      dropDepartedItemStyles(working);
     } catch (e) {
       if (e instanceof EngineError) {
         e.message = ops.length > 1 ? `Operation ${i + 1} (${op.type}): ${e.message}` : e.message;
@@ -4181,7 +4232,8 @@ export function applyOperations(state: ProjectState, ops: EditOperation[], ctx: 
     }
   }
   // A sync attaches its collection and says where each entry it wrote came from.
-  if (ctx.sourceSync) finishSourceSync(draft, ctx.sourceSync, state);
+  if (ctx.sourceSync) finishSourceSync(working, ctx.sourceSync, state);
+  const draft = finished(working);
   // Synced collections' entries are what the batch began with, unless it detached them (see syncedEntryChange), or
   // the batch is the sync of the one collection it writes.
   const synced = syncedEntryChange(state, draft, ctx.sourceSync?.collectionId);
@@ -4220,6 +4272,8 @@ export function applyOperations(state: ProjectState, ops: EditOperation[], ctx: 
   // edit that moves them out, repeats another list there, or removes or retypes the list is refused, whichever
   // operation did it. Problems a design already had (a hand edit) are left for validation to report.
   for (const d of Object.values(draft.components)) {
+    // A design the batch did not change is the state's own object, with the problems it had.
+    if (Object.hasOwn(state.components, d.id) && state.components[d.id] === d) continue;
     const after = itemStateProblems(d);
     if (!after.size) continue;
     const was = Object.hasOwn(state.components, d.id) ? itemStateProblems(state.components[d.id]) : new Map<string, unknown>();
@@ -4238,13 +4292,18 @@ export function applyOperations(state: ProjectState, ops: EditOperation[], ctx: 
   }
   // A theme update changes no project component, not even this derived field.
   if (ops.every((op) => op.type === 'theme.refresh')) return { state: draft, results };
-  // A managed project component's dependencies are the components its tree places: keep them current.
-  for (const d of Object.values(draft.components)) {
+  // A managed project component's dependencies are the components its tree places: keep them current. One the batch
+  // did not change may still be the state's own object, so a copy is changed.
+  let components = draft.components;
+  for (const [key, d] of Object.entries(draft.components)) {
     if (d.owner !== 'project' || d.kind !== 'managed' || !d.tree) continue;
     const deps = directDependencies(d);
     if (JSON.stringify(deps) === JSON.stringify(d.dependencies ?? [])) continue;
-    if (deps.length) d.dependencies = deps;
-    else delete d.dependencies;
+    const own = { ...d };
+    if (deps.length) own.dependencies = deps;
+    else delete own.dependencies;
+    if (components === state.components) components = draft.components = { ...components };
+    components[key] = own;
   }
   return { state: draft, results };
 }
