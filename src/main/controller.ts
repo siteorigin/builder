@@ -476,7 +476,8 @@ export class Controller {
   snapshot(): ProjectSnapshot | null {
     const s = this.session;
     if (!s) return null;
-    return {
+    const timing = perf.span('controller.snapshot', { revision: s.revision });
+    const snap: ProjectSnapshot = {
       dir: s.dir,
       state: s.state,
       revision: s.revision,
@@ -499,6 +500,8 @@ export class Controller {
       recentExports: this.recentExports,
       saveFailure: s.saveFailure
     };
+    timing();
+    return snap;
   }
 
   broadcast() {

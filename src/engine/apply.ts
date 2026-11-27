@@ -181,7 +181,14 @@ export interface ApplyContext {
    * never the assistant. The batch's entry operations may write that one synced collection's entries.
    */
   sourceSync?: SourceSyncGrant;
+  /**
+   * Times a step of the batch (the main process's timing marks, scripts/perf): called as the step starts, and what it
+   * returns as it ends. Unset, nothing is timed.
+   */
+  span?: (name: string) => () => void;
 }
+
+const UNTIMED = () => {};
 
 /** Own-property lookup: externally supplied keys must never resolve to inherited prototype members. */
 function own<T>(rec: Record<string, T>, key: string): T | undefined {
@@ -4218,12 +4225,15 @@ export function applyOperations(state: ProjectState, given: EditOperation[], ctx
   const results: OpResult[] = [];
   const assetUses: NonNullable<ApplyContext['assetUses']> = {};
   const batch: ApplyContext = { ...ctx, explicitItemFields: explicitItemFields(ops), assetUses, addressesAtStart: ctx.addressesAtStart ?? addressesInUse(state), entryAddressesAtStart: new Map(ctx.entryAddressesAtStart ?? entryAddressesInUse(state)) };
+  const span = ctx.span ?? (() => UNTIMED);
   for (const [i, op] of ops.entries()) {
     // Any edit but a removal may move an asset's uses: the next removal counts them again.
     if (op.type !== 'asset.remove') assetUses.counts = undefined;
     try {
       results.push(applyOperation(working, op, batch));
+      const itemStyles = span('apply.itemStyles');
       dropDepartedItemStyles(working);
+      itemStyles();
     } catch (e) {
       if (e instanceof EngineError) {
         e.message = ops.length > 1 ? `Operation ${i + 1} (${op.type}): ${e.message}` : e.message;
@@ -4231,13 +4241,17 @@ export function applyOperations(state: ProjectState, given: EditOperation[], ctx
       throw e;
     }
   }
+  // The checks of the whole batch, once it is applied (each timed on its own too; a refused batch ends no span).
+  const checks = span('apply.batchChecks');
   // A sync attaches its collection and says where each entry it wrote came from.
   if (ctx.sourceSync) finishSourceSync(working, ctx.sourceSync, state);
   const draft = finished(working);
   // Synced collections' entries are what the batch began with, unless it detached them (see syncedEntryChange), or
   // the batch is the sync of the one collection it writes.
+  let step = span('apply.syncedEntries');
   const synced = syncedEntryChange(state, draft, ctx.sourceSync?.collectionId);
   if (synced) throw new EngineError('VALIDATION_FAILED', `This ${synced}`);
+  step();
   // Retagged nodes must fit where they render once the batch is done (a list item in a list, say), and so must every
   // node of a design built whole, what a wrap, an ungroup or a removal that keeps content put in a new place (list items
   // wrapped out of their list), and a placement shown as another design.
@@ -4271,6 +4285,7 @@ export function applyOperations(state: ProjectState, given: EditOperation[], ctx
   // An item state's buttons and what they show must stay inside repeats of its list, and the list must stay one: an
   // edit that moves them out, repeats another list there, or removes or retypes the list is refused, whichever
   // operation did it. Problems a design already had (a hand edit) are left for validation to report.
+  step = span('apply.itemStates');
   for (const d of Object.values(draft.components)) {
     // A design the batch did not change is the state's own object, with the problems it had.
     if (Object.hasOwn(state.components, d.id) && state.components[d.id] === d) continue;
@@ -4284,16 +4299,23 @@ export function applyOperations(state: ProjectState, given: EditOperation[], ctx
   // collection removed, a field it reads retyped, the list property renamed) is refused, whichever operation did it.
   // Problems the project already had (a hand edit) are left for validation to report. Adding, describing or removing
   // assets changes no tree, list or collection, so a batch of only those skips the walk.
+  step();
+  step = span('apply.collectionSources');
   const sourcesAfter = ops.every((op) => op.type === 'asset.add' || op.type === 'asset.update' || op.type === 'asset.remove') ? [] : collectionSourceProblems(draft);
   if (sourcesAfter.length) {
     const before = new Set(collectionSourceProblems(state).map((p) => p.key));
     const added = sourcesAfter.find((p) => !before.has(p.key));
     if (added) throw new EngineError('INVALID_ARGUMENT', `${added.label}: ${displayName(draft, added.node)} ${added.message}`, { owner: added.owner, nodeId: added.nodeId });
   }
+  step();
   // A theme update changes no project component, not even this derived field.
-  if (ops.every((op) => op.type === 'theme.refresh')) return { state: draft, results };
+  if (ops.every((op) => op.type === 'theme.refresh')) {
+    checks();
+    return { state: draft, results };
+  }
   // A managed project component's dependencies are the components its tree places: keep them current. One the batch
   // did not change may still be the state's own object, so a copy is changed.
+  step = span('apply.dependencies');
   let components = draft.components;
   for (const [key, d] of Object.entries(draft.components)) {
     if (d.owner !== 'project' || d.kind !== 'managed' || !d.tree) continue;
@@ -4305,5 +4327,7 @@ export function applyOperations(state: ProjectState, given: EditOperation[], ctx
     if (components === state.components) components = draft.components = { ...components };
     components[key] = own;
   }
+  step();
+  checks();
   return { state: draft, results };
 }

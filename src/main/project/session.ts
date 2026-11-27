@@ -2978,7 +2978,8 @@ export class ProjectSession extends EventEmitter {
         clipboards: this.clipboards,
         codeNames: (source: string) => names.get(source),
         ...(opts.componentImport ? { componentImport: opts.componentImport } : {}),
-        ...(opts.sourceSync ? { sourceSync: opts.sourceSync } : {})
+        ...(opts.sourceSync ? { sourceSync: opts.sourceSync } : {}),
+        ...(perf.on ? { span: (name: string) => perf.span(name) } : {})
       };
       const code = opts.codeAllowed === false ? developerModeRefusal(this.state, ops, context) : null;
       if (code) return { ok: false, revision: this.revision, error: { code: 'SCOPE_MISMATCH', message: `${code} Turn on Developer mode in Settings to work with code.`, recoverable: true } };
@@ -3183,7 +3184,12 @@ export class ProjectSession extends EventEmitter {
    */
   private memo<K extends 'diagnostics' | 'saving' | 'usages' | 'updates'>(state: ProjectState, key: K, compute: (state: ProjectState) => NonNullable<ReturnType<ProjectSession['checksOf']>[K]>) {
     const checks = this.checksOf(state);
-    return (checks[key] ??= compute(state));
+    if (checks[key] !== undefined) return checks[key];
+    // Timed only when it is worked out (scripts/perf: the edit scenario's checks).
+    const timing = perf.span('session.check', { check: key });
+    const value = compute(state);
+    timing();
+    return (checks[key] = value);
   }
 
   private checksOf(state: ProjectState) {
@@ -3724,7 +3730,8 @@ export class ProjectSession extends EventEmitter {
   /** The saved versions, newest first, with what each one alone takes on disk. */
   versionsInfo(): VersionsInfo {
     const store = this.versions;
-    return {
+    const timing = perf.span('session.versionsInfo', { versions: store.versions.length });
+    const info: VersionsInfo = {
       list: [...store.versions].reverse().map((v) => ({
         id: v.id,
         name: v.name,
@@ -3737,6 +3744,8 @@ export class ProjectSession extends EventEmitter {
       bytes: store.totalBytes(),
       ...(store.problem ? { problem: store.problem } : {})
     };
+    timing();
+    return info;
   }
 
   /** Why a version can't be saved or restored now, if so. */

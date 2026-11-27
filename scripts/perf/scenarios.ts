@@ -525,6 +525,51 @@ async function editHeroHeading(ctx: ScenarioContext, scenario: string, text: str
   await ctx.waitTrace((t) => !!t.first('scenario.end', forScenario(scenario, 'renderer')) && !!t.first('scenario.end', forScenario(scenario, 'main')));
 }
 
+/** The project-wide checks an edit's main process works out (#966), with the record kinds they are read from. */
+const SESSION_CHECKS = [
+  // The save gate's check of the new state, and the snapshot's: the problems Project Health lists.
+  ['saveCheck', 'saving'],
+  ['diagnostics', 'diagnostics'],
+  ['assetUsages', 'usages'],
+  ['themeUpdates', 'updates']
+] as const;
+const BATCH_CHECKS = [
+  ['batchSyncedEntries', 'apply.syncedEntries'],
+  ['batchItemStates', 'apply.itemStates'],
+  ['batchCollectionSources', 'apply.collectionSources'],
+  ['batchDependencies', 'apply.dependencies']
+] as const;
+
+/**
+ * What an edit spends checking and deriving from the whole project: the batch's own checks once it is applied (in the
+ * apply, `until`), and each check and value of the session's worked out from the edit to the scenario's end, so one
+ * moved later is still counted. Each is a time and how many times it was worked out: a check the edit no longer needs
+ * is 0 of both, never missing.
+ */
+function checkMetrics(m: Collector, trace: Trace, name: (metric: string) => string, at: number, until: number, end: PerfRecord | undefined) {
+  const to = end?.t ?? -Infinity;
+  const sum = (rs: PerfRecord[]) => rs.reduce((n, r) => n + (r.ms ?? NaN), 0);
+  const parts: number[] = [];
+  const add = (metric: string, rs: PerfRecord[]) => {
+    const ms = sum(rs);
+    parts.push(ms);
+    m.ms(name(metric), ms);
+    m.count(name(`${metric}Runs`), rs.length);
+  };
+  const batch = m.need('apply.batchChecks', trace.first('apply.batchChecks', inProc('main'), at, until));
+  m.span(name('batchChecks'), batch);
+  if (batch?.ms !== undefined) parts.push(batch.ms);
+  for (const [metric, span] of BATCH_CHECKS) m.ms(name(metric), sum(trace.all(span, inProc('main'), at, until)));
+  // Every operation's sweep of item styles that departed with their items, a walk of every page's tree.
+  add('itemStyles', trace.all('apply.itemStyles', inProc('main'), at, until));
+  for (const [metric, check] of SESSION_CHECKS) add(metric, trace.all('session.check', (r) => r.proc === 'main' && r.attrs?.check === check, at, to));
+  add('versionsInfo', trace.all('session.versionsInfo', inProc('main'), at, to));
+  m.ms(name('checks'), parts.reduce((n, v) => n + v, 0));
+  const snapshots = trace.all('controller.snapshot', inProc('main'), at, to);
+  m.ms(name('snapshotBuild'), sum(snapshots));
+  m.count(name('snapshotBuilds'), snapshots.length);
+}
+
 /** The metrics of an edit bracketed as `scenario`, each named `<scenario>.<metric>`. */
 function measureEdit(trace: Trace, scenario: string): Collector {
   const m = new Collector();
@@ -575,6 +620,7 @@ function measureEdit(trace: Trace, scenario: string): Collector {
   m.count(name('publishStats'), delta(publish, 'files.stats'));
   const endMain = m.need('scenario.end (main)', trace.first('scenario.end', forScenario(scenario, 'main')));
   const endRenderer = m.need('scenario.end (renderer)', trace.first('scenario.end', forScenario(scenario, 'renderer')));
+  checkMetrics(m, trace, name, at, until, endMain);
   // Garbage collection (history blobs, unused assets): the sweeps the edit waited on before it was acknowledged, and
   // every sweep until the scenario ends, so a sweep moved later is still seen, never taken for one that was dropped.
   const awaited = trace.all('session.sweep', inProc('main'), at, changed?.t ?? -Infinity);
