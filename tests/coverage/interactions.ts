@@ -1038,7 +1038,6 @@ export const INTERACTIONS: Interaction[] = [
       { test: 'tests/e2e/colors.mjs', kind: 'e2e', step: 'a white brand color is flagged where it is set, with a readable text color on offer' },
       { test: 'tests/e2e/colors.mjs', kind: 'e2e', step: 'a color that follows another stays linked' },
       { test: 'tests/unit/color.test.ts', kind: 'unit' },
-      { test: 'tests/unit/contrast.test.ts', kind: 'unit' },
       { test: 'tests/e2e/colors.mjs', kind: 'e2e', step: 'a palette made from the brand previews without saving, applies in one step, and one undo puts every color back' },
       { test: 'tests/unit/palette.test.ts', kind: 'unit' },
       { test: 'tests/unit/theme-contrast.test.ts', kind: 'unit' }

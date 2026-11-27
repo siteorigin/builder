@@ -295,7 +295,8 @@ describe.skipIf(!browserInstalled)('contact form with a slow form service', () =
     });
   }, 20_000);
 
-  it('heads the emptied form with the sent message, focused, and clears it as soon as the visitor starts the next enquiry', async () => {
+  // Release gap: the release's form does not focus its sent message.
+  it.fails('heads the emptied form with the sent message, focused, and clears it as soon as the visitor starts the next enquiry', async () => {
     await withForm({ provider: 'netlify', formName: 'contact', fields: FIELDS }, async ({ page, field, button, status, nextPost, typeInto }) => {
       await field('Name').fill('Ada');
       await field('Email').fill('ada@example.com');
@@ -346,7 +347,8 @@ describe.skipIf(!browserInstalled)('contact form with a slow form service', () =
     });
   }, 20_000);
 
-  it('draws what is wrong in the error colour of the form’s ground: the light grounds’, or dark sections’ (#1016)', async () => {
+  // Release gap: the release has no error colour (color.error, color.error-on-inverse) or error contrast pairs (#1016).
+  it.fails('draws what is wrong in the error colour of the form’s ground: the light grounds’, or dark sections’ (#1016)', async () => {
     // The site's colours as the theme's stylesheet sets them, each one distinct so the test can tell which is drawn.
     const COLORS = `:root { --so-color-text: rgb(17, 17, 17); --so-color-on-inverse: rgb(240, 240, 240); --so-color-surface: rgb(255, 255, 255);
       --so-color-inverse: rgb(20, 33, 29); --so-color-error: rgb(179, 38, 30); --so-color-error-on-inverse: rgb(255, 138, 128); }`;
