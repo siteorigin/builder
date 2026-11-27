@@ -561,9 +561,11 @@ function markerName(attr: Node): string | null {
 /**
  * The parts and slots a code component's code shows, read from its syntax tree: each part its markup marks with a
  * written-out data-so-part or gives its class through so_o, and each slot_<name> its script takes from $props().
- * Comments, strings and a script's own logic declare nothing. Null when the code cannot be parsed.
+ * `shown` is those slots the markup renders or hands on, so content placed there can reach the page: a slot only
+ * taken, or only tested ({#if slot_content}), shows nothing. Comments, strings and a script's own logic declare
+ * nothing. Null when the code cannot be parsed.
  */
-export async function codeContractNames(source: string): Promise<{ parts: string[]; slots: string[] } | null> {
+export async function codeContractNames(source: string): Promise<{ parts: string[]; slots: string[]; shown: string[] } | null> {
   const { parse } = await import('svelte/compiler');
   let ast: Node;
   try {
@@ -580,8 +582,52 @@ export async function codeContractNames(source: string): Promise<{ parts: string
     const id = hookedPart(n);
     if (id !== null) parts.add(id);
   });
-  const slots = [...propsLocals(ast).keys()].flatMap((prop) => /^slot_([A-Za-z][A-Za-z0-9]*)$/.exec(prop)?.[1] ?? []);
-  return { parts: [...parts], slots };
+  const locals = propsLocals(ast);
+  const slots = [...locals.keys()].flatMap((prop) => /^slot_([A-Za-z][A-Za-z0-9]*)$/.exec(prop)?.[1] ?? []);
+  const rendered = new Set(snippetRenders(ast).map((r) => r.name));
+  const handed = handedNames(ast);
+  const shown = slots.filter((slot) => {
+    const local = locals.get(`slot_${slot}`)!.local;
+    return rendered.has(local) || handed.has(local);
+  });
+  return { parts: [...parts], slots, shown };
+}
+
+/**
+ * Each snippet the markup renders, by the name it calls, with whether a call there can find it missing: an optional
+ * call, or a plain one inside a block shown only while it is given ({#if slot_content}, not its {:else}).
+ */
+function snippetRenders(ast: Node): Array<{ name: string; node: Node; optional: boolean; guarded: boolean }> {
+  const renders: Array<{ name: string; node: Node; optional: boolean; guarded: boolean }> = [];
+  walkAst(ast.fragment, (n, around) => {
+    if (n.type !== 'RenderTag') return;
+    let call = n.expression as Node;
+    let optional = !!call?.optional;
+    if (call?.type === 'ChainExpression') {
+      call = call.expression as Node;
+      optional = true;
+    }
+    const callee = call?.type === 'CallExpression' ? (call.callee as Node) : undefined;
+    if (callee?.type !== 'Identifier') return;
+    const name = String(callee.name);
+    const guarded = around.some((a, i) => a.type === 'IfBlock' && around[i + 1] === a.consequent && truthyTest(a.test as Node, name));
+    renders.push({ name, node: n, optional: optional || !!call.optional, guarded });
+  });
+  return renders;
+}
+
+/**
+ * The names the markup hands on, to a snippet it renders or a component it places: a slot handed on is shown by
+ * whatever it is handed to. Only testing it ({#if slot_content}) shows nothing.
+ */
+function handedNames(ast: Node): Set<string> {
+  const handed = new Set<string>();
+  walkAst(ast.fragment, (n, around) => {
+    if (n.type !== 'Identifier') return;
+    const passed = around.some((a, i) => (a.type === 'RenderTag' && i < around.length - 1) || ((a.type === 'Attribute' || a.type === 'SpreadAttribute') && /^(Component|SvelteComponent|SvelteSelf)$/.test(String(around[i - 1]?.type))));
+    if (passed) handed.add(String(n.name));
+  });
+  return handed;
 }
 
 /**
@@ -617,33 +663,10 @@ function truthyTest(test: Node | undefined, name: string): boolean {
 function contractProblems(ast: Node, contract: CodeContract): Array<{ severity: CodeProblem['severity']; message: string; node?: Node }> {
   const out: Array<{ severity: CodeProblem['severity']; message: string; node?: Node }> = [];
   const locals = propsLocals(ast);
-  // Each snippet the markup renders, by the name it calls, with whether a call there can find it missing: an optional
-  // call, or a plain one inside a block shown only while it is given ({#if slot_content}, not its {:else}).
-  const renders: Array<{ name: string; node: Node; optional: boolean; guarded: boolean }> = [];
-  walkAst(ast.fragment, (n, around) => {
-    if (n.type !== 'RenderTag') return;
-    let call = n.expression as Node;
-    let optional = !!call?.optional;
-    if (call?.type === 'ChainExpression') {
-      call = call.expression as Node;
-      optional = true;
-    }
-    const callee = call?.type === 'CallExpression' ? (call.callee as Node) : undefined;
-    if (callee?.type !== 'Identifier') return;
-    const name = String(callee.name);
-    const guarded = around.some((a, i) => a.type === 'IfBlock' && around[i + 1] === a.consequent && truthyTest(a.test as Node, name));
-    renders.push({ name, node: n, optional: optional || !!call.optional, guarded });
-  });
+  const renders = snippetRenders(ast);
   const slots = contract.slots ?? {};
   const filled = new Set(contract.filled ?? []);
-  // The names the markup hands on, to a snippet it renders or a component it places: a slot handed on is shown by
-  // whatever it is handed to. Only testing it ({#if slot_content}) shows nothing.
-  const handed = new Set<string>();
-  walkAst(ast.fragment, (n, around) => {
-    if (n.type !== 'Identifier') return;
-    const passed = around.some((a, i) => (a.type === 'RenderTag' && i < around.length - 1) || ((a.type === 'Attribute' || a.type === 'SpreadAttribute') && /^(Component|SvelteComponent|SvelteSelf)$/.test(String(around[i - 1]?.type))));
-    if (passed) handed.add(String(n.name));
-  });
+  const handed = handedNames(ast);
   // Its declared slots, and every slot_<name> it takes from $props(), declared or not yet: each must render safely.
   const taken = [...locals.keys()].flatMap((prop) => /^slot_([A-Za-z][A-Za-z0-9]*)$/.exec(prop)?.[1] ?? []);
   for (const slot of [...new Set([...Object.keys(slots), ...taken])]) {
