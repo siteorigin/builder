@@ -245,29 +245,44 @@ export const open: Scenario = {
     const session = span('session.open');
     const attach = span('controller.attach');
     const runtime = span('controller.startRuntime');
+    const endMain = m.need('scenario.end (main)', end);
     m.span('open.controller', controllerOpen);
     m.span('open.session', session);
-    for (const phase of ['formatCheck', 'lock', 'recover', 'read', 'localState', 'validate', 'sweep']) m.span(`open.session.${phase}`, span(`session.open.${phase}`));
-    // The open's own publication runs inside session.open.
-    const publish = m.need('session.publish', trace.first('session.publish', inProc('main'), at, session?.t));
+    for (const phase of ['formatCheck', 'lock', 'prepare', 'recover', 'read', 'localState', 'validate']) m.span(`open.session.${phase}`, span(`session.open.${phase}`));
+    // The open's own publication (never a new project's first, `initial`), wherever it runs: inside session.open or
+    // after it, before the canvas is ready.
+    const publish = m.need('session.publish', trace.first('session.publish', (r) => r.proc === 'main' && r.attrs?.initial === false, at, ready?.t));
     m.span('open.publish', publish);
+    // The open's sweep of history blobs and unused assets, wherever it runs, until the scenario ends.
+    const sweep = m.need('session.sweep', trace.first('session.sweep', inProc('main'), at, endMain?.t));
+    m.span('open.sweep', sweep);
     // Both of its generations, the website's and the preview's: a sum missing one would look faster than it is.
-    const variant = (v: string) => trace.all('session.generate', (r) => r.proc === 'main' && r.attrs?.variant === v, at, session?.t);
+    const variant = (v: string) => trace.all('session.generate', (r) => r.proc === 'main' && r.attrs?.variant === v, publish ? publish.t - (publish.ms ?? 0) : Infinity, publish?.t);
     const clean = variant('clean');
     const dev = variant('dev');
-    if (!clean.length) m.need('session.generate (clean)', undefined);
-    if (!dev.length) m.need('session.generate (dev)', undefined);
+    if (publish && !clean.length) m.need('session.generate (clean)', undefined);
+    if (publish && !dev.length) m.need('session.generate (dev)', undefined);
     if (clean.length && dev.length) m.ms('open.generate', [...clean, ...dev].reduce((n, r) => n + (r.ms ?? NaN), 0));
     m.span('open.attach', attach);
-    m.span('open.assetCheck', span('controller.assetCheck'));
+    const assetCheck = span('controller.assetCheck');
+    m.span('open.assetCheck', assetCheck);
     m.span('open.startRuntime', runtime);
-    m.since('open.firstSnapshotSent', req, m.need('controller.snapshotSent', trace.first('controller.snapshotSent', inProc('main'), at)));
+    const firstSent = m.need('controller.snapshotSent', trace.first('controller.snapshotSent', inProc('main'), at));
+    m.since('open.firstSnapshotSent', req, firstSent);
+    // What the editor's first snapshot waited for: each of these that ended before it was sent.
+    const before = (name: string, r?: (x: PerfRecord) => boolean) => trace.all(name, (x) => x.proc === 'main' && (!r || r(x)), at, firstSent?.t ?? -Infinity).length;
+    m.count('open.generationsBeforeSnapshot', before('session.generate'));
+    m.count('open.sweepsBeforeSnapshot', before('session.sweep'));
+    m.count('open.assetChecksBeforeSnapshot', before('controller.assetCheck'));
     m.since('open.editorShown', req, m.need('renderer.commit (editor)', trace.first('renderer.commit', (r) => r.attrs?.screen === 'editor', at)));
     previewStart(m, trace, 'open', req, at, ready);
     m.since('open.canvasReady', req, ready);
     // What the author watches as "Starting preview": the editor shown to the page ready to edit in its canvas.
     m.since('open.editorToCanvasReady', trace.first('renderer.commit', (r) => r.attrs?.screen === 'editor', at), ready);
-    const sum = (name: string) => [session, attach, runtime].reduce((n, r) => n + delta(r, name), 0);
+    // Everything the main process counted from the click to the scenario's end, so work moved after the editor
+    // appears (a publication, a sweep) is still counted.
+    const startMain = m.need('scenario.start (main)', trace.first('scenario.start', forScenario('open', 'main')));
+    const sum = (name: string) => counter(endMain, name) - counter(startMain, name);
     m.count('open.filesRead', sum('files.read'));
     m.count('open.docsRead', sum('docs.read'));
     m.count('open.filesHashed', sum('files.hashed'));
@@ -282,7 +297,7 @@ export const open: Scenario = {
     const sent = trace.all('controller.snapshotSent', inProc('main'), at, ready?.t);
     m.count('open.snapshotsSent', sent.length);
     bytesSent(m, 'open.snapshotBytes', sent);
-    m.count('open.reloadFromDisk', trace.all('session.reloadFromDisk', inProc('main'), at, m.need('scenario.end (main)', end)?.t).length);
+    m.count('open.reloadFromDisk', trace.all('session.reloadFromDisk', inProc('main'), at, endMain?.t).length);
     commits(m, trace, 'open.rendererCommits', req, ready);
     m.ms('open.mainStallMax', stallMax(trace, req, ready));
     return m;

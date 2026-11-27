@@ -153,18 +153,19 @@ describe('open metrics', () => {
         // An earlier open, before this scenario: never its request.
         r('open.requested', 100),
         r('scenario.start', 900, { attrs: { scenario: 'open' } }),
-        m('scenario.start', 900, { attrs: { scenario: 'open' } }),
+        m('scenario.start', 900, { attrs: { scenario: 'open' }, c: { 'files.read': 40, 'docs.read': 0, 'files.hashed': 38, 'fs.durableWrites': 0, 'fs.fsyncs': 1 } }),
         r('open.requested', 1000, { c: { 'react.commits': 6 } }),
         span('session.open.formatCheck', 1004, 3, { dc: { 'files.read': 4, 'docs.read': 4 } }),
         span('session.open.lock', 1010, 5),
+        span('session.open.prepare', 1011, 1),
         span('session.open.recover', 1012, 1),
         span('session.open.read', 1030, 15),
         span('session.open.localState', 1032, 1),
         span('session.open.validate', 1050, 16),
         span('session.generate', 1100, 30, { attrs: { variant: 'clean' } }),
         span('session.generate', 1125, 25, { attrs: { variant: 'dev' } }),
-        span('session.publish', 1600, 540, { dc: { 'files.read': 100, 'files.hashed': 200, 'fs.writes': 2, 'fs.syncCalls': 900, 'files.stats': 300, 'files.hashedBytes': 4_000_000 } }),
-        span('session.open.sweep', 1602, 1),
+        span('session.publish', 1600, 540, { attrs: { initial: false }, dc: { 'files.read': 100, 'files.hashed': 200, 'fs.writes': 2, 'fs.syncCalls': 900, 'files.stats': 300, 'files.hashedBytes': 4_000_000 } }),
+        span('session.sweep', 1602, 1),
         span('session.open', 1603, 600, { dc: { 'files.read': 170, 'docs.read': 12, 'files.hashed': 210, 'fs.durableWrites': 1, 'fs.fsyncs': 4 } }),
         span('controller.open', 1690, 680),
         m('controller.snapshotSent', 1700, { attrs: { revision: 0, bytes: 300 } }),
@@ -191,7 +192,7 @@ describe('open metrics', () => {
         // After the canvas was ready: counted as a reload, not as a snapshot of the open.
         m('controller.snapshotSent', 2600, { attrs: { revision: 0, bytes: 9999 } }),
         m('session.reloadFromDisk', 3000),
-        m('scenario.end', 4000, { attrs: { scenario: 'open' } }),
+        m('scenario.end', 4000, { attrs: { scenario: 'open' }, c: { 'files.read': 217, 'docs.read': 12, 'files.hashed': 249, 'fs.durableWrites': 2, 'fs.fsyncs': 7 } }),
         m('session.reloadFromDisk', 4500)
       ].filter((x) => !drop(x))
     );
@@ -202,7 +203,9 @@ describe('open metrics', () => {
     const v = (k: string) => got.metrics[k]?.value;
     expect(v('open.canvasReady')).toBe(1500);
     expect([v('open.controller'), v('open.session'), v('open.publish'), v('open.attach'), v('open.startRuntime')]).toEqual([680, 600, 540, 15, 290]);
-    expect([v('open.session.formatCheck'), v('open.session.lock'), v('open.session.read'), v('open.session.validate'), v('open.session.sweep')]).toEqual([3, 5, 15, 16, 1]);
+    expect([v('open.session.formatCheck'), v('open.session.lock'), v('open.session.prepare'), v('open.session.read'), v('open.session.validate'), v('open.sweep')]).toEqual([3, 5, 1, 15, 16, 1]);
+    // What the first snapshot waited for: both generations and the sweep, not the asset check that ended after it.
+    expect([v('open.generationsBeforeSnapshot'), v('open.sweepsBeforeSnapshot'), v('open.assetChecksBeforeSnapshot')]).toEqual([2, 1, 0]);
     expect([v('open.generate'), v('open.docsRead')]).toEqual([55, 12]);
     expect([v('open.firstSnapshotSent'), v('open.editorShown'), v('open.runtimeForked'), v('open.runtimeReady')]).toEqual([700, 730, 740, 1000]);
     expect([v('open.runtimeStarted'), v('open.runtimeViteLoaded'), v('open.runtimeServerCreated'), v('open.runtimeFirstRequest'), v('open.runtimeFirstResponse')]).toEqual([790, 850, 950, 1030, 1250]);
@@ -221,7 +224,13 @@ describe('open metrics', () => {
     expect(open.measure(trace((x) => x.name === 'canvas.ready' && x.t === 2500), facts).metrics['open.canvasReady']).toBeUndefined();
     expect(open.measure(trace((x) => x.name === 'scenario.end'), facts).missing).toEqual(['scenario.end (main)']);
     expect(open.measure(trace((x) => x.name === 'session.publish'), facts).missing).toEqual(['session.publish']);
+    expect(open.measure(trace((x) => x.name === 'session.sweep'), facts).missing).toEqual(['session.sweep']);
+    expect(open.measure(trace((x) => x.name === 'scenario.start' && x.proc === 'main'), facts).missing).toEqual(['scenario.start (main)']);
+    // A new project's first publication is never taken for the open's.
+    const created = new Trace(trace().records.map((x) => (x.name === 'session.publish' ? { ...x, attrs: { initial: true } } : x)));
+    expect(open.measure(created, facts).missing).toEqual(['session.publish']);
     expect(open.measure(trace((x) => x.name === 'session.open.formatCheck'), facts).missing).toEqual(['session.open.formatCheck']);
+    expect(open.measure(trace((x) => x.name === 'session.generate' && x.attrs?.variant === 'clean' && x.t < 2000), facts).missing).toEqual(['session.generate (clean)']);
     const noDev = open.measure(trace((x) => x.name === 'session.generate' && x.attrs?.variant === 'dev'), facts);
     expect(noDev.missing).toEqual(['session.generate (dev)']);
     expect(noDev.metrics['open.generate']).toBeUndefined();
@@ -230,6 +239,33 @@ describe('open metrics', () => {
     const other = trace((x) => x.name === 'runtime.viteLoaded');
     const moved = new Trace([...other.records, m('runtime.viteLoaded', 1860, { attrs: { worker: 2 } })]);
     expect(open.measure(moved, facts).missing).toEqual(['runtime.viteLoaded']);
+  });
+
+  it('find the publication and the sweep after the first snapshot, and still count what they did', () => {
+    // The publication (1,760 to 2,300) and its generations after the editor's first snapshot (1,700), the sweep after
+    // the canvas is ready; a later publication's generation after it.
+    const later = new Map<string, number>([
+      ['session.publish', 2300],
+      ['session.sweep', 3500]
+    ]);
+    const moved = new Trace(
+      trace().records.map((x) => {
+        if (x.name === 'session.generate') return { ...x, t: x.t < 2000 ? x.t + 700 : 2900 };
+        return later.has(x.name) ? { ...x, t: later.get(x.name)! } : x;
+      })
+    );
+    const got = moved.records.length ? open.measure(moved, facts) : null;
+    expect(got?.missing).toEqual([]);
+    const v = (k: string) => got?.metrics[k]?.value;
+    expect([v('open.publish'), v('open.generate'), v('open.sweep')]).toEqual([540, 55, 1]);
+    expect([v('open.generationsBeforeSnapshot'), v('open.sweepsBeforeSnapshot'), v('open.assetChecksBeforeSnapshot')]).toEqual([0, 0, 0]);
+    // Counted from the scenario's start to its end, wherever in it the work ran.
+    expect([v('open.filesRead'), v('open.docsRead'), v('open.filesHashed'), v('open.durableWrites'), v('open.fsyncs')]).toEqual([177, 12, 211, 2, 6]);
+  });
+
+  it('count an asset check that ended before the first snapshot as one the snapshot waited for', () => {
+    const awaited = new Trace(trace().records.map((x) => (x.name === 'controller.assetCheck' ? { ...x, t: 1699 } : x)));
+    expect(open.measure(awaited, facts).metrics['open.assetChecksBeforeSnapshot']?.value).toBe(1);
   });
 });
 

@@ -689,6 +689,8 @@ describe('the preview started while a project opens (#960)', () => {
     });
     const { c } = controller();
     await c.trustAndOpen(dir);
+    // Opened from Welcome, the editor has the project before its publication runs.
+    await until(() => stoppedBeforePublishing.length > 0, 'the opening to publish');
     expect(stoppedBeforePublishing).toEqual([true]);
   });
 

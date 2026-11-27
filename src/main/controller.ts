@@ -188,7 +188,8 @@ type OpenResult = { ok: boolean; message?: string; needsTrust?: { dir: string; n
 /**
  * A preview server started while its project was still opening (prepareRuntime), until its start takes it over:
  * `dev` once its checks passed and it was forked, `started` settling as its start did, and whether the opening's
- * publication was seen (`held`) and how many project files it changed (`landed`).
+ * publication was seen (`held`), how many project files it and any save before the takeover changed (`landed`), how
+ * many of those are under way (`holding`), and who waits for none to be (`idle`).
  */
 interface EarlyRuntime {
   session: ProjectSession;
@@ -196,6 +197,8 @@ interface EarlyRuntime {
   started: Promise<void>;
   held: boolean;
   landed: number;
+  holding: number;
+  idle: Array<() => void>;
 }
 
 /**
@@ -338,6 +341,8 @@ export class Controller {
   private localWrites: Promise<void> = Promise.resolve();
   private exportPaths = new Set<string>();
   private watchers: FolderWatch[] = [];
+  /** The folders the last watchExternalChanges could not watch because they were not there, project-relative. */
+  private unwatched = new Set<string>();
   private watchTimer: NodeJS.Timeout | null = null;
   /** Which installation of the document watches is current: a look one that has gone set off never runs. */
   private watchGeneration = 0;
@@ -496,7 +501,7 @@ export class Controller {
       aiRunId: this.aiRunId(),
       assetUsage: safeUsages(s),
       missingAssets: s.missingAssets,
-      conflicts: s.conflicts,
+      conflicts: s.shownConflicts,
       savedCopies: s.savedCopies,
       readOnly: s.readOnly,
       themeUpdates: s.readOnly ? undefined : s.themeUpdates(),
@@ -1055,9 +1060,25 @@ export class Controller {
     // Any other project opens beside the one open now, which stays open, locked and previewing until the replacement
     // has opened: one that cannot be read leaves the author where they were.
     const since = this.closings;
+    // Opened from Welcome, the editor is given the project as soon as its documents are read and sound (attach, `shown`),
+    // and its publication waits for that: generating and checking the website's files holds the main process for a
+    // while. A project replacing another one (or another computer's shown as a guest) opens whole first, as before: its
+    // handover (what is being typed saved, Keep editing, the close) comes after, and the new preview's start before it.
+    let shown: () => void = () => {};
+    const gate = new Promise<void>((r) => (shown = r));
+    let ready!: (s: ProjectSession) => void;
+    const readied = new Promise<{ session: ProjectSession; shownEarly: boolean }>((r) => (ready = (session) => r({ session, shownEarly: true })));
+    const early = !this.session && !this.remote.active;
+    const opening = ProjectSession.open(dir, INSTANCE_ID, { force: opts.force, preview: { start: (s) => this.prepareRuntime(s), stop: (s) => this.dropEarly(s) }, sweepLater: true, ...(early ? { shown: (s: ProjectSession) => (ready(s), gate) } : {}) });
     let session: ProjectSession;
     try {
-      session = await ProjectSession.open(dir, INSTANCE_ID, { force: opts.force, preview: { start: (s) => this.prepareRuntime(s), stop: (s) => this.dropEarly(s) } });
+      const first = await Promise.race([readied, opening.then((s) => ({ session: s, shownEarly: false }))]);
+      session = first.session;
+      // Shown before its publication: the preview waits for it (startRuntimeWork), the editor is told what it found.
+      if (first.shownEarly) {
+        this.publications.set(session, opening.then(() => undefined, () => undefined));
+        void this.afterPublication(session, opening).catch(() => undefined);
+      }
     } catch (e) {
       // A newer format, or a project another app is editing, opens for inspection instead (spec 16.6, 18.1).
       const locked = e instanceof ProjectLockedError;
@@ -1077,30 +1098,43 @@ export class Controller {
       } else if (e instanceof ProjectFormatError) return { ok: false, message: inFolder(e.message, dir) };
       else return { ok: false, message: inFolder(`Could not open the project: ${(e as Error).message}`, dir) };
     }
-    // Workspace layout and recents are conveniences: a broken file or a failed save never blocks opening.
-    let workspace: LocalWorkspaceState = {};
+    // Until attach takes it over, anything that ends this opening lets its publication go on (it waits under the lock).
+    let handed = false;
     try {
-      workspace = JSON.parse((await readIfExists(session.local('workspace.json'))) ?? '{}');
-    } catch {
-      workspace = {};
+      // Workspace layout and recents are conveniences: a broken file or a failed save never blocks opening.
+      let workspace: LocalWorkspaceState = {};
+      try {
+        workspace = JSON.parse((await readIfExists(session.local('workspace.json'))) ?? '{}');
+      } catch {
+        workspace = {};
+      }
+      const way = await this.makeWay(since).catch((e: Error) => ({ ok: false, message: `The open project could not be closed: ${e.message}` }));
+      if (!way.ok) {
+        shown();
+        await this.dropEarly(session);
+        await session.close().catch(() => undefined);
+        return way;
+      }
+      handed = true;
+      this.attachOpened(session, workspace, shown);
+    } finally {
+      if (!handed) shown();
     }
-    const way = await this.makeWay(since);
-    if (!way.ok) {
-      await this.dropEarly(session);
-      await session.close().catch(() => undefined);
-      return way;
-    }
+    // Only an opening that is listed takes over a missing entry: one open read-only leaves the list as it was.
+    if (!session.readOnly) await addRecent(dir, projectDisplayName(session.state), session.state.manifest.projectId, opts.replaces).catch(() => undefined);
+    return { ok: true };
+  }
+
+  /** Attach a session opened by openTrusted, closing it again, and saying so, should that fail. */
+  private attachOpened(session: ProjectSession, workspace: LocalWorkspaceState, shown: () => void) {
     // Attached in the same turn as the switch (attach makes it the open project before it waits on anything), so no
     // other switch can come between the two.
-    void this.attach(session, workspace).catch(async (e) => {
+    void this.attach(session, workspace, null, shown).catch(async (e) => {
       await this.dropEarly(session);
       if (this.session === session) await this.close();
       else await session.close();
       this.send('runtime:status', { state: 'error', message: `The project could not be opened: ${(e as Error).message}` });
     });
-    // Only an opening that is listed takes over a missing entry: one open read-only leaves the list as it was.
-    if (!session.readOnly) await addRecent(dir, projectDisplayName(session.state), session.state.manifest.projectId, opts.replaces).catch(() => undefined);
-    return { ok: true };
   }
 
   /** Take over a project another app holds (the user confirmed it is not running) and reopen it for editing. */
@@ -1185,8 +1219,21 @@ export class Controller {
    * Make `session` the open project, with its own workspace state installed in the same step. With `runtimeError` the
    * preview is not started: the project opens showing that error, and Try again starts it.
    */
-  private async attach(session: ProjectSession, workspace: LocalWorkspaceState, runtimeError: RuntimeState | null = null) {
+  private async attach(session: ProjectSession, workspace: LocalWorkspaceState, runtimeError: RuntimeState | null = null, shown?: () => void) {
     const attaching = perf.span('controller.attach');
+    try {
+      await this.attachShown(session, workspace, runtimeError);
+    } finally {
+      // The opening's publication goes on once the editor has the project, or once attaching has failed.
+      shown?.();
+    }
+    attaching({ revision: session.revision });
+    if (runtimeError) this.send('runtime:status', runtimeError);
+    else await this.startRuntime();
+  }
+
+  /** attach, up to the editor's first snapshot of the project. */
+  private async attachShown(session: ProjectSession, workspace: LocalWorkspaceState, runtimeError: RuntimeState | null) {
     // The handover that closed the open project for this one ends here, as this one becomes the open project.
     this.handingOver = false;
     // A new opening lists only its own exports, even if an earlier one was never closed.
@@ -1214,8 +1261,11 @@ export class Controller {
       void this.startRuntime().catch(() => undefined);
     });
     // A save's files reach the preview as one update (#735). A preview of a private copy holds while the copy is
-    // brought up to date instead (syncStage).
+    // brought up to date instead (syncStage). Until the server started while the project opened is taken over or
+    // stopped, what lands counts against it, as the opening's own publication does (usableEarly).
+    const opened = this.early?.session === session ? session.previewHold : null;
     session.previewHold = async () => {
+      if (opened && this.early?.session === session) return opened();
       const dev = this.session === session && !this.stage ? this.dev : null;
       return dev ? dev.hold() : () => {};
     };
@@ -1244,16 +1294,49 @@ export class Controller {
     await this.onSessionOpened?.(session);
     // Watching starts before the first look, so a file removed while it runs is seen too.
     this.watchExternalChanges(session);
-    // Project health lists missing image files from the first moment the project shows.
-    const assetCheck = perf.span('controller.assetCheck');
-    await session.refreshAssetFiles().catch(() => false);
-    assetCheck();
     // Icons a save stopped waiting for before this app held the project's lock (a new project's) are published now.
     void session.refreshSiteIcons().catch(() => null);
     this.broadcast();
-    attaching({ revision: session.revision });
-    if (runtimeError) this.send('runtime:status', runtimeError);
-    else await this.startRuntime();
+    // Project health lists missing image files a moment after the project shows: the look at every original and copy
+    // in the library is not waited for.
+    void this.firstAssetCheck(session);
+  }
+
+  /** The opening's look for missing image files, shown once it finds any. */
+  private async firstAssetCheck(session: ProjectSession): Promise<void> {
+    const assetCheck = perf.span('controller.assetCheck');
+    const changed = await session.refreshAssetFiles().catch(() => false);
+    assetCheck();
+    if (changed && this.session === session) this.broadcast();
+  }
+
+  /** The publications of openings shown before them (openTrusted), each settled once it is done, never rejected. */
+  private publications = new WeakMap<ProjectSession, Promise<void>>();
+
+  /**
+   * Once the publication of an opening shown before it is done: what it found in the generated files (conflicts) shown,
+   * or, should the opening itself fail after all, the project closed.
+   */
+  private async afterPublication(session: ProjectSession, opening: Promise<ProjectSession>): Promise<void> {
+    const before = JSON.stringify(session.shownConflicts);
+    try {
+      await opening;
+    } catch (e) {
+      await this.dropEarly(session);
+      if (this.session === session) await this.close().catch(() => undefined);
+      else await session.close().catch(() => undefined);
+      this.send('runtime:status', { state: 'error', message: `The project could not be opened: ${(e as Error).message}` });
+      return;
+    }
+    if (this.session !== session || this.closing) return;
+    if (JSON.stringify(session.shownConflicts) !== before) this.broadcast();
+    // A folder the watch could not be put on when the project was attached (src/lib/siteorigin, static/), made since by
+    // the publication: watched now, with a full look taken soon (what the watches being replaced were about to look at
+    // goes with them), and the library's files looked at again.
+    if ([...this.unwatched].some((rel) => existsSync(join(session.dir, rel)))) {
+      this.watchExternalChanges(session, { owed: true, look: true });
+      void this.checkAssetFiles(session);
+    }
   }
 
   private runtimeQueue: Promise<unknown> = Promise.resolve();
@@ -1285,12 +1368,16 @@ export class Controller {
   private prepareRuntime(session: ProjectSession) {
     void this.dropEarly();
     const dir = session.dir;
-    const early: EarlyRuntime = { session, dev: null, started: Promise.resolve(), held: false, landed: 0 };
+    const early: EarlyRuntime = { session, dev: null, started: Promise.resolve(), held: false, landed: 0, holding: 0, idle: [] };
     this.early = early;
     // What the opening's publication changes in the project: a server that read the files before then is not taken.
     session.previewHold = async () => {
       early.held = true;
-      return (files) => void (early.landed += files.length);
+      early.holding++;
+      return (files) => {
+        early.landed += files.length;
+        if (--early.holding === 0) for (const wake of early.idle.splice(0)) wake();
+      };
     };
     // Taken over by another app before it is attached (a switch waiting on Keep editing, say): its preview goes at once.
     session.once('lock-lost', () => void this.dropEarly(session));
@@ -1348,6 +1435,9 @@ export class Controller {
   private async startRuntimeWork() {
     const session = this.session;
     if (!session) return;
+    // The server started while it opened is judged only once the opening's publication is done (usableEarly).
+    await this.publications.get(session);
+    if (this.session !== session) return;
     await this.stopPreview();
     if (this.session !== session) return;
     // A server started while the project opened is looked at now, and stopped and waited for when it cannot be taken,
@@ -1406,6 +1496,9 @@ export class Controller {
     // Decided with no wait before the fork: a takeover after this point stops the worker and queues a staged restart.
     const stage = session.readOnly ? await this.stagePreview(session) : null;
     if (session.readOnly && !stage) return;
+    // A save landing files since the server was judged usable (usableEarly) is waited for, so what it changed is known.
+    if (usable && !stage) while (usable.holding > 0) await new Promise<void>((wake) => usable.idle.push(wake));
+    if (this.session !== session) return;
     // The server started while the project opened, when it could be taken over; otherwise a new one. A preview that
     // crashes is started again in the same folder only while that is still this app's to use; a copy is.
     // Stopped during the checks (a lost lock, another opening): a start of its own replaces it, making every check
@@ -1414,7 +1507,15 @@ export class Controller {
       if (!session.readOnly) void this.startRuntime().catch(() => undefined);
       return;
     }
-    const early = stage ? null : usable;
+    let early = stage ? null : usable;
+    // Judged usable before these checks: one a save has landed files under since may have read them part way, so a
+    // server of its own is started instead. Decided with no wait before the takeover.
+    if (early && early.landed > 0) {
+      await this.dropEarly(session);
+      // Read the lock again before running anything in the folder (a takeover found here has queued its own start).
+      if (this.session !== session || !(await session.stillOwner()) || this.session !== session) return;
+      early = null;
+    }
     if (early) this.early = null;
     const dev: DevServer = early?.dev ?? new DevServer(stage ?? session.dir, async (): Promise<boolean> => this.dev === dev && (!!stage || (await session.stillOwner())));
     this.dev = dev;
@@ -1744,9 +1845,10 @@ export class Controller {
    * Accept valid external edits to canonical documents and authored code components, and notice image files being
    * moved out of (or back into) static/assets/.
    */
-  private watchExternalChanges(session: ProjectSession, opts: { owed?: boolean } = {}) {
+  private watchExternalChanges(session: ProjectSession, opts: { owed?: boolean; look?: boolean } = {}) {
     for (const w of this.watchers) w.close();
     this.watchers = [];
+    this.unwatched.clear();
     // A folder moved with a parent of it may tell no watch, and a read-only project has no lock heartbeat to notice.
     if (this.folderPoll) clearInterval(this.folderPoll);
     this.folderPoll = setInterval(() => this.checkFolderSoon(session), LOCK_HEARTBEAT_MS);
@@ -1766,7 +1868,7 @@ export class Controller {
       if (existsSync(dir)) {
         // An event without a file name may be about anything in static/, so it is looked at too.
         this.watchers.push(this.watchFolder(session, dir, (_e, f) => (!f || /^assets([\\/]|$)/.test(f)) && onAssetChange()));
-      }
+      } else this.unwatched.add('static');
     } catch {
       /* watching is best-effort: the check still runs when the library changes and before every export */
     }
@@ -1817,6 +1919,7 @@ export class Controller {
       try {
         if (!existsSync(dir)) {
           blind = true;
+          this.unwatched.add(rel);
           continue;
         }
         const w = this.watchFolder(session, dir, (_e, f) => {
@@ -1839,6 +1942,7 @@ export class Controller {
         blind = true;
       }
     }
+    if (opts.look) onChange(null);
   }
 
   /**
@@ -1923,6 +2027,7 @@ export class Controller {
   private async closeNow() {
     for (const w of this.watchers) w.close();
     this.watchers = [];
+    this.unwatched.clear();
     this.watchGeneration++;
     if (this.watchTimer) clearTimeout(this.watchTimer);
     this.watchTimer = null;
