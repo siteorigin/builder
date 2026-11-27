@@ -93,6 +93,17 @@ describe('the dev server’s idle collection', () => {
     expect(collect).toHaveBeenCalledTimes(2);
   });
 
+  it('keeps going when a collection’s promise rejects', async () => {
+    vi.useFakeTimers();
+    const collect = vi.fn(() => Promise.reject(new Error('the inspector refused')));
+    const idle = createIdleCollector({ quietMs: QUIET, collect });
+    idle.activity();
+    await vi.advanceTimersByTimeAsync(QUIET);
+    idle.activity();
+    await vi.advanceTimersByTimeAsync(QUIET);
+    expect(collect).toHaveBeenCalledTimes(2);
+  });
+
   it('keeps going when a collection fails, and stops for good once disposed', async () => {
     vi.useFakeTimers();
     const collect = vi.fn(() => {
@@ -191,9 +202,11 @@ describe('the dev server’s idle collection', () => {
         child.kill('SIGKILL');
         reject(new Error(`the process did not finish after collecting: ${text}`));
       }, 15_000);
-      child.on('exit', () => {
+      // Once its output has all been read, and only when it ended on its own.
+      child.on('close', (code) => {
         clearTimeout(deadline);
-        resolve(text);
+        if (code === 0) resolve(text);
+        else reject(new Error(`the process ended with ${code}: ${text}`));
       });
     });
     expect(JSON.parse(out.trim())).toEqual({ freed: true, gc: false });
