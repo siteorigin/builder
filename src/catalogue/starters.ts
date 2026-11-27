@@ -169,10 +169,12 @@ export function createStarterState(starter: StarterId, siteName: string, withSam
     s.site.pageOrder = [home, ...site.pages.map((p) => p.id)];
     const header = s.components[installComponent(s, 'shell.header')];
     const footer = s.components[installComponent(s, 'shell.footer')];
+    // Every page is reached from the shared menus: a theme whose menu cannot hold them all cannot make the showcase.
     const links = (def: typeof header) => {
-      const schema = def.properties.links;
-      const max = schema?.type === 'list' ? (schema.max ?? Infinity) : 0;
-      return site.nav.slice(0, max).map((n, i) => ({ id: `i${i + 1}`, label: n.label, link: pageLink(n.pageId) }));
+      const schema = Object.hasOwn(def.properties, 'links') ? def.properties.links : undefined;
+      if (schema?.type !== 'list') throw new Error(`its ${def.name} has no menu of links.`);
+      if (site.nav.length > (schema.max ?? Infinity)) throw new Error(`its ${def.name} menu holds ${schema.max} links, and the showcase has ${site.nav.length} pages.`);
+      return site.nav.map((n, i) => ({ id: `i${i + 1}`, label: n.label, link: pageLink(n.pageId) }));
     };
     s.site.shell.header = tree(inst(s, 'shell.header', { siteName, links: links(header) }));
     s.site.shell.footer = tree(inst(s, 'shell.footer', { siteName, links: links(footer), copyright: `© {year} ${siteName}.` }));

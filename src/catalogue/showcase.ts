@@ -91,6 +91,9 @@ export function showcaseHome(themeId: string): string[] {
     const pick = sections.find((c) => c.componentId === preferred) ?? sections[0];
     if (pick) out.push(pick.componentId);
   }
+  // A theme with none of those kinds still opens on a section of its own.
+  const first = pages.flatMap((p) => p.components).find((c) => c.insertAs !== 'element' && !c.slots);
+  if (!out.length && first) out.push(first.componentId);
   return out;
 }
 
@@ -102,8 +105,7 @@ class Filler {
   private def: ComponentDefinition | null = null;
   constructor(
     private readonly photos: { rooms: StarterAsset[]; people: StarterAsset[] } | null,
-    private readonly pageIds: string[],
-    private readonly titles: Record<string, string>
+    private readonly pageIds: string[]
   ) {}
 
   private photo(field: string): ImageValue | null {
@@ -131,7 +133,14 @@ class Filler {
 
   private fields(schema: Record<string, PropSchema>, values: Record<string, unknown>): Record<string, unknown> {
     const out = { ...values };
-    for (const [k, s] of Object.entries(schema)) if (Object.hasOwn(out, k)) out[k] = this.value(k, s, out[k]);
+    for (const [k, s] of Object.entries(schema)) {
+      if (Object.hasOwn(out, k)) out[k] = this.value(k, s, out[k]);
+      // An image a row leaves to its field's default still gets a photo.
+      else if (s.type === 'image' && this.photos) {
+        const filled = this.value(k, s, structuredClone(s.default));
+        if (filled !== s.default && (filled as ImageValue | undefined)?.assetId) out[k] = filled;
+      }
+    }
     return out;
   }
 
@@ -145,9 +154,9 @@ class Filler {
     let rows = items;
     const room = schema.max ?? Infinity;
     if (!rows.length && schema.pageTeaser) {
-      // A list of the site's pages: a card for each kind page, which it reads its title from.
+      // A list of the site's pages: a card for each of the first kind pages, its title left to follow the page's own.
       const t = schema.pageTeaser;
-      rows = this.pageIds.slice(0, Math.min(3, room)).map((id) => this.row(schema, { [t.link]: { type: 'page', target: id }, ...(t.title ? { [t.title]: this.titles[id] ?? '' } : {}) }));
+      rows = this.pageIds.slice(0, Math.min(3, room)).map((id) => this.row(schema, { [t.link]: { type: 'page', target: id } }));
     } else if (!rows.length && this.photos && this.def && pickImagesField(this.def, field, schema)) {
       rows = Array.from({ length: Math.min(3, room) }, () => this.row(schema, {}));
     }
@@ -183,9 +192,8 @@ export function buildShowcase(state: ProjectState, homeId: string, photos: Start
   const themeId = state.site.themeId;
   const kinds = showcasePages(themeId);
   const ids = new Map(kinds.map((k) => [k.kind, newId('pg')]));
-  const titles: Record<string, string> = Object.fromEntries(kinds.map((k) => [ids.get(k.kind)!, k.title]));
   const people = photos?.filter((a) => /^Portrait/.test(a.name)) ?? [];
-  const filler = new Filler(photos ? { rooms: photos.filter((a) => !people.includes(a)), people } : null, [...ids.values()], titles);
+  const filler = new Filler(photos ? { rooms: photos.filter((a) => !people.includes(a)), people } : null, [...ids.values()]);
   const place = (componentId: string): InstanceNode => {
     const def = state.components[installComponent(state, componentId)];
     return filler.fill(def, makeInstance(def));

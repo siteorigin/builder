@@ -7,7 +7,7 @@
 import assert from 'node:assert/strict';
 import { existsSync, mkdirSync, readFileSync, readdirSync } from 'node:fs';
 import { join } from 'node:path';
-import { answerChoosers, createProject, eventually, launch, scratch, step, withTimeout } from './harness.mjs';
+import { createProject, eventually, launch, scratch, step, withTimeout } from './harness.mjs';
 
 const { WORK, SHOTS, cleanup } = scratch('starter-content');
 const { app, win, errors } = await launch(WORK);
@@ -193,14 +193,12 @@ try {
   step('Component showcase: New project makes a page for each kind of component, with the sample photos');
   await win.evaluate(() => window.builder.projects.close());
   await win.waitForSelector('.welcome');
-  await answerChoosers(app, [{ dialog: 'open', title: 'Choose where to create the project', paths: [join(WORK, 'sites')] }]);
   await win.locator('.welcome-action', { hasText: 'New project' }).click();
   const form = win.getByRole('dialog', { name: 'New project' });
   await form.waitFor();
   await eventually(async () => assert.match((await form.locator('#new-project-path .path-text').textContent()) ?? '', /[/\\]/, 'the form shows its default folder'));
   await form.getByLabel('Project name').fill('Every Part');
   await form.getByRole('radio', { name: 'Component showcase' }).click();
-  await form.getByRole('button', { name: 'Choose…' }).click();
   assert.equal(await form.getByRole('switch', { name: 'Include sample images' }).getAttribute('aria-checked'), 'true', 'the showcase takes the sample photos');
   await win.screenshot({ path: join(SHOTS, 'showcase-new-project.png') });
   await form.getByRole('button', { name: 'Create project' }).click();

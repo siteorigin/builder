@@ -125,6 +125,30 @@ describe('Component showcase starter', () => {
     expect(validateState(s).filter((d) => d.severity === 'error')).toEqual([]);
   });
 
+  it('is refused by a theme whose menu cannot link every page', () => {
+    const { components, ...meta } = FOUNDATION_PACK;
+    const author = createPack({ ...meta, id: 'narrow', name: 'Narrow', version: '1.0.0', license: 'MIT' });
+    const defs = components.map((c) => {
+      const d = author.adopt(c);
+      const links = d.componentId === 'shell.header' ? d.properties.links : undefined;
+      if (links?.type === 'list') links.max = 3;
+      return d;
+    });
+    registerPacks([...builtins, buildPack(author.define(defs)).pack]);
+    expect(starterProblem('showcase', 'narrow')).toMatch(/^The Narrow theme cannot make the Component showcase: its Header menu holds 3 links, and the showcase has 10 pages\./);
+    expect(starterProblem('blank', 'narrow')).toBeNull();
+  });
+
+  it('lists kind pages in a page list, each card taking its title from its page', () => {
+    const s = createStarterState('showcase', 'Showcase', false, 'foundation');
+    const list = Object.values(s.pages)
+      .flatMap((p) => placed(p))
+      .find((n) => s.components[n.definitionId].componentId === 'content.pages')!;
+    const rows = list.props.items as Array<{ pageLink: { type: string; target: string }; title: string }>;
+    expect(rows.map((r) => s.pages[r.pageLink.target]?.title)).toEqual(['Heroes', 'Features', 'Content']);
+    for (const r of rows) expect(r.title).toBe('');
+  });
+
   it('sorts components into kinds by what they are', () => {
     const kind = (id: string) => showcaseKind(FOUNDATION_PACK.components.find((c) => c.componentId === id)!);
     expect(kind('shell.header')).toBeNull();
@@ -138,5 +162,6 @@ describe('Component showcase starter', () => {
     expect(kind('intro.page')).toBe('heroes');
     expect(kind('logos.strip')).toBe('proof');
     expect(kind('contact.form')).toBe('contact');
+    expect(kind('media.gallery')).toBe('media');
   });
 });
