@@ -768,3 +768,112 @@ describe('a run saves the conversation it was sent in (#1122)', () => {
     }
   });
 });
+
+describe('reading a conversation by its ID (#1123)', () => {
+  /** Make another thread the open one, the way a thread switch mid-run would. */
+  const openOther = (env: Awaited<ReturnType<typeof setup>>) => {
+    const other = thread('c_other', [['Plan the gallery page', '2026-11-20T09:00:00.000Z']]);
+    env.write(other);
+    (env.orch as unknown as { conversation: Conversation }).conversation = structuredClone(other);
+    return other.id;
+  };
+  const said = (c: Conversation) => c.messages.map((m) => `${m.role}: ${m.text}`);
+
+  it('reads a new conversation’s first turn while it runs, before it has a file, without opening it', async () => {
+    const env = await setup();
+    const id = (await env.orch.loadConversations()).active.id;
+    env.adapter.hold = true;
+    const r = await env.orch.send('Write an About page', env.ctx, id);
+    await until(() => env.adapter.waiting, 'the request to stream');
+    expect(existsSync(env.file(id))).toBe(false);
+    const other = openOther(env);
+
+    const read = await env.orch.readConversation(id);
+    expect(said(read.conversation)).toEqual(['user: Write an About page', 'assistant: Done.']);
+    expect(read.conversation.title).toBe('Write an About page');
+    expect(read.run).toEqual({ runId: r.runId, status: 'running', mode: 'edit' });
+    // Nothing was opened, and what was read is a copy: changing it changes nothing in main.
+    expect(env.orch.conversation?.id).toBe(other);
+    read.conversation.messages[1].text = 'Changed';
+    expect(said((await env.orch.readConversation(id)).conversation).at(-1)).toBe('assistant: Done.');
+
+    env.adapter.release();
+    await until(() => !env.orch.busy, 'the request to finish');
+    // Once it has ended, the run is gone from the read, and its turn's result is in it.
+    const after = await env.orch.readConversation(id);
+    expect(after.run).toBeNull();
+    expect(after.conversation.messages[1]).toMatchObject({ runId: r.runId, result: { status: 'no-changes' } });
+  });
+
+  it('reads a saved conversation’s newest turn from memory while it runs, not the older file', async () => {
+    const env = await setup();
+    const first = await env.ask('Write an About page');
+    env.adapter.hold = true;
+    const r = await env.orch.send('And a footer', env.ctx, first);
+    await until(() => env.adapter.waiting, 'the request to stream');
+    expect(env.stored(first).messages).toHaveLength(2);
+    const read = await env.orch.readConversation(first);
+    expect(said(read.conversation)).toEqual(['user: Write an About page', 'assistant: Done.', 'user: And a footer', 'assistant: Done.']);
+    expect(read.run).toMatchObject({ runId: r.runId, mode: 'edit' });
+    env.adapter.release();
+    await until(() => !env.orch.busy, 'the request to finish');
+  });
+
+  it('reads any other conversation from its file, in turn with the changes queued before it, and never opens it', async () => {
+    const env = await setup();
+    const stored = thread('c_stored', [['Design a calm homepage', '2026-11-20T09:00:00.000Z']]);
+    env.write(stored);
+    const open = (await env.orch.loadConversations()).active.id;
+    expect(open).toBe(stored.id);
+    await env.orch.newConversation();
+    const fresh = env.orch.conversation!.id;
+    // A rename queued before the read is in what it reads.
+    await env.orch.renameConversation(stored.id, 'Homepage brief');
+    const read = await env.orch.readConversation(stored.id);
+    expect(read).toMatchObject({ conversation: { id: stored.id, title: 'Homepage brief' }, run: null });
+    expect(said(read.conversation)).toEqual(['user: Design a calm homepage', 'assistant: Done.']);
+    expect(env.orch.conversation?.id).toBe(fresh);
+    // The open conversation is read as it is in memory, though it has no file.
+    expect((await env.orch.readConversation(fresh)).conversation.id).toBe(fresh);
+    // A conversation with no file is unknown, without saying where it was looked for.
+    await expect(env.orch.readConversation('c_missing')).rejects.toThrow(/^Unknown conversation\.$/);
+    await expect(env.orch.readConversation('../c_stored')).rejects.toThrow('Unknown conversation.');
+    await env.orch.deleteConversation(stored.id);
+    await expect(env.orch.readConversation(stored.id)).rejects.toThrow('Unknown conversation.');
+  });
+
+  it('refuses a read the project’s close overtook, and never reads a run of an earlier opening as live', async () => {
+    const env = await setup();
+    const first = await env.ask('Write an About page');
+    await env.orch.newConversation();
+    // The read of its file waits behind a queued change; the project closes and opens again before its turn comes.
+    const release = hold(env.orch);
+    const reading = env.orch.readConversation(first);
+    env.orch.reset();
+    release();
+    await expect(reading).rejects.toThrow('The project changed');
+    // A read that fails after the close (its file gone) says the project changed, not why the earlier one failed.
+    await env.orch.openConversation(first);
+    await env.orch.newConversation();
+    const bytes = readFileSync(env.file(first), 'utf8');
+    const release2 = hold(env.orch);
+    const failing = env.orch.readConversation(first);
+    rmSync(env.file(first));
+    env.orch.reset();
+    release2();
+    await expect(failing).rejects.toThrow('The project changed');
+    writeFileSync(env.file(first), bytes);
+
+    // A request still ending from the earlier opening is not this opening's: the same thread reads as its file has it.
+    env.adapter.hold = true;
+    await env.orch.openConversation(first);
+    expect((await env.orch.send('And a footer', env.ctx, first)).ok).toBe(true);
+    await until(() => env.adapter.waiting, 'the request to stream');
+    env.orch.reset();
+    const read = await env.orch.readConversation(first);
+    expect(read.run).toBeNull();
+    expect(read.conversation.messages).toHaveLength(2);
+    env.adapter.release();
+    await until(() => !env.orch.busy, 'the request to finish');
+  });
+});

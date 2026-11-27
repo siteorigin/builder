@@ -771,6 +771,15 @@ export interface Conversation {
 }
 
 /** A stored conversation as Earlier conversations lists it (see shared/conversations). */
+/**
+ * A conversation as main has it now, read by its ID without opening it: the live thread while a request is filed in it
+ * (its newest turn included, saved or not), otherwise its stored file. `run`: that request while it is still going.
+ */
+export interface ConversationState {
+  conversation: Conversation;
+  run: { runId: string; status: RunStatus; mode: ChatMode } | null;
+}
+
 export interface ConversationSummary {
   id: string;
   title: string;
@@ -1383,6 +1392,11 @@ export interface BuilderApi {
     conversations(): Promise<{ active: Conversation; list: ConversationSummary[] }>;
     newConversation(): Promise<Conversation>;
     openConversation(id: string): Promise<Conversation>;
+    /**
+     * Read a conversation of the opening `workspaceKey` without opening it (see ConversationState): main's open thread
+     * stays as it is. Refused once that opening has closed.
+     */
+    readConversation(id: string, workspaceKey: string): Promise<ConversationState>;
     /**
      * Name a stored conversation (or the open one). `workspaceKey` is the opening of the project it was renamed in;
      * main refuses any other. Resolves with its new title.
