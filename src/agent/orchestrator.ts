@@ -1,7 +1,7 @@
 import { installedFonts } from '@catalogue/fonts';
 import { promises as fs } from 'node:fs';
 import { join } from 'node:path';
-import { CHAT_EDIT_SCOPES, turnQuestions, type AiEvent, type ChatActivity, type ChatCheck, type ChatContext, type ChatImageRef, type ChatMessage, type ChatMode, type Conversation, type ConversationSummary, type FieldLocation, type InspectLayoutOptions, type ProviderId, type RunStatus, type SourceDraft, type TokenUsage } from '@shared/api';
+import { CHAT_EDIT_SCOPES, turnQuestions, type AiEvent, type ChatActivity, type ChatCheck, type ChatContext, type ChatImageRef, type ChatMessage, type ChatMode, type Conversation, type ConversationState, type ConversationSummary, type FieldLocation, type InspectLayoutOptions, type ProviderId, type RunStatus, type SourceDraft, type TokenUsage } from '@shared/api';
 import type { EditOperation, ToolError, ToolErrorCode } from '@shared/ops';
 import type { CollectionWriteGrant } from '@shared/collection-grant';
 import type { SourceWriteGrant } from '@shared/sources';
@@ -717,7 +717,7 @@ export class Orchestrator {
   }
 
   /** A stored conversation by its ID, under the title it goes by (see storedTitle). */
-  private async readConversation(dir: string, id: string): Promise<Conversation> {
+  private async readStoredConversation(dir: string, id: string): Promise<Conversation> {
     const c = JSON.parse(await fs.readFile(join(dir, `${id}.json`), 'utf8')) as Conversation;
     // The storage name is the identity; a file claiming another ID is not this conversation.
     if (c?.id !== id || !Array.isArray(c.messages)) throw new Error('Unknown conversation.');
@@ -742,7 +742,7 @@ export class Orchestrator {
         const m = f.match(/^(c_[a-z0-9]+)\.json$/);
         if (!m) continue;
         try {
-          read.push(await this.readConversation(dir, m[1]));
+          read.push(await this.readStoredConversation(dir, m[1]));
         } catch {
           /* skip */
         }
@@ -803,13 +803,45 @@ export class Orchestrator {
     // The open conversation is newer than its file, which a finished request may still be writing.
     if (this.conversation?.id === id) return this.conversation;
     // Read in turn with the writes, renames and deletes queued before it, so it reads what they left.
-    const c = await this.queueFileChange(() => this.readConversation(dir, id));
+    const c = await this.queueFileChange(() => this.readStoredConversation(dir, id));
     this.sameSession(session);
     // Checked after the read too: a request may have started, or a delete been asked for, while it was loading.
     this.notRunning();
     if (this.gone(id)) throw new Error('That conversation was deleted.');
     this.conversation = c;
     return c;
+  }
+
+  /**
+   * Read conversation `id` without opening it: the open thread stays as it is. A request's thread is read as it is in
+   * memory, its newest turn included (a new conversation has no file until its first request ends), with where that
+   * request is; any other conversation is read from its file, in turn with the changes queued before it.
+   */
+  async readConversation(id: unknown): Promise<ConversationState> {
+    const session = this.deps.session();
+    const dir = this.chatDir();
+    if (!session || !dir) throw new Error('No project open');
+    if (typeof id !== 'string' || !/^c_[a-z0-9]+$/.test(id) || this.gone(id)) throw new Error('Unknown conversation.');
+    const live = this.liveConversation(id);
+    if (live) return live;
+    const opening = this.opening;
+    const c = await this.queueFileChange(() => this.readStoredConversation(dir, id));
+    if (this.deps.session() !== session || this.opening !== opening) throw new Error('The project changed while its conversation was loading.');
+    if (this.gone(id)) throw new Error('That conversation was deleted.');
+    // A request may have been filed in it, or it opened, while the file was read: that copy is newer.
+    return this.liveConversation(id) ?? { conversation: c, run: null };
+  }
+
+  /** Conversation `id` as this opening holds it in memory, copied: a request's thread, or the open one. */
+  private liveConversation(id: string): ConversationState | null {
+    const run = this.run;
+    if (run && run.transcript.opening === this.opening && run.transcript.conv.id === id) {
+      // Ended once its turn has a result, whatever the status says until the run is let go.
+      const going = !run.message.result;
+      return { conversation: structuredClone(run.transcript.conv), run: going ? { runId: run.id, status: run.status, mode: run.mode } : null };
+    }
+    if (this.conversation?.id === id) return { conversation: structuredClone(this.conversation), run: null };
+    return null;
   }
 
   /**
@@ -855,7 +887,7 @@ export class Orchestrator {
       } else {
         // Written into its file as it was last saved, never with a running request's messages (that request saves
         // them, and the name, when it ends). An open conversation not saved yet takes the name with its first save.
-        const c = await this.readConversation(dir, id).catch((e: NodeJS.ErrnoException) => {
+        const c = await this.readStoredConversation(dir, id).catch((e: NodeJS.ErrnoException) => {
           if (open && e.code === 'ENOENT') return null;
           throw e;
         });

@@ -831,6 +831,14 @@ function registerIpc() {
   handle('ai:conversations', () => orchestrator.loadConversations());
   handle('ai:newConversation', () => orchestrator.newConversation());
   handle('ai:openConversation', (id: string) => orchestrator.openConversation(id));
+  // Read only for the opening of the project it was asked about, and answered only while that opening lasts.
+  handle('ai:readConversation', async (id: unknown, key?: unknown) => {
+    const changed = 'The project changed, so the conversation was not read.';
+    if (typeof key !== 'string' || key !== controller.openingKey) throw new Error(changed);
+    const read = await orchestrator.readConversation(id);
+    if (key !== controller.openingKey) throw new Error(changed);
+    return read;
+  });
   // Renamed or deleted only in the opening of the project the author did it in; a read-only view changes neither.
   handle('ai:renameConversation', (id: string, title: unknown, key?: string) => {
     if (typeof key !== 'string' || key !== controller.openingKey) throw new Error('The project changed, so the conversation was not renamed.');
