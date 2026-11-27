@@ -265,24 +265,25 @@ await win.keyboard.press('Tab');
 await shot('list-keyboard-focus', cards, () => win.evaluate(() => /^Move Delivery/.test(document.activeElement?.getAttribute('aria-label') ?? '') && document.activeElement.matches(':focus-visible')));
 await win.evaluate(() => document.activeElement?.blur());
 
-// ---- The icon picker, inside the open card ----
+// ---- The icon picker, inside the open card; it opens as a popover over the Inspector ----
 const icon = row('Planning').locator('.insp-icon-picker');
+const iconPop = win.locator('.insp-icon-pop');
 await shot('icon-closed', icon, async () => (await icon.locator('.insp-icon-btn').innerText()).includes('Compass'));
 await icon.locator('.insp-icon-btn').click();
-await icon.locator('.insp-icon-grid').waitFor({ timeout: 8000 });
+await iconPop.locator('.insp-icon-list').waitFor({ timeout: 8000 });
 await pause(300);
-await shot('icon-open', icon, async () => (await icon.locator('.insp-icon-tile').count()) > 12, BOTH);
-await icon.getByRole('searchbox', { name: 'Search icons' }).fill('arrow');
+await shot('icon-open', iconPop, async () => (await iconPop.locator('.insp-icon-tile').count()) > 12, BOTH);
+await iconPop.getByRole('searchbox', { name: 'Search icons' }).fill('arrow');
 await pause(200);
-await shot('icon-search', icon, async () => (await icon.locator('.insp-icon-tile').count()) >= 1);
-await icon.getByRole('searchbox', { name: 'Search icons' }).fill('zzzz');
+await shot('icon-search', iconPop, async () => (await iconPop.locator('.insp-icon-tile').count()) >= 1);
+await iconPop.getByRole('searchbox', { name: 'Search icons' }).fill('zzzz');
 await pause(200);
-await shot('icon-no-match', icon, async () => (await icon.innerText()).includes('No icons match'));
-await icon.getByRole('searchbox', { name: 'Search icons' }).fill('');
-await icon.locator('.insp-icon-grid').waitFor({ timeout: 4000 });
-await icon.locator('.insp-icon-tile[aria-selected="true"]').focus();
+await shot('icon-no-match', iconPop, async () => (await iconPop.innerText()).includes('No icons match'));
+await iconPop.getByRole('searchbox', { name: 'Search icons' }).fill('');
+await iconPop.locator('.insp-icon-list').waitFor({ timeout: 4000 });
+await iconPop.locator('.insp-icon-tile[aria-selected="true"]').focus();
 await win.keyboard.press('ArrowRight');
-await shot('icon-keyboard-focus', icon, () => win.evaluate(() => document.activeElement?.getAttribute('role') === 'option' && document.activeElement.matches(':focus-visible')));
+await shot('icon-keyboard-focus', iconPop, () => win.evaluate(() => document.activeElement?.getAttribute('role') === 'option' && document.activeElement.matches(':focus-visible')));
 await win.keyboard.press('Escape');
 await pause(150);
 
