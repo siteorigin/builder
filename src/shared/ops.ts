@@ -271,6 +271,11 @@ const COLLECTION_SETTINGS = {
     .optional()
     .describe('Every custom field, by camelCase name: { type, label, default?, ... } with type string, number, boolean, enum (options), image, link, richtext, date (YYYY-MM-DD) or reference (collection: the ID of the collection whose entries it names; multiple: true for a list of them). Replaces the whole set: a field left out is removed from every entry.'),
   pageSize: z.number().int().min(1).max(100).optional().describe('How many entries each page of the collection\'s index and category archives lists, newest first (later pages at page/2/, page/3/...). Default 10.'),
+  rss: z
+    .boolean()
+    .nullable()
+    .optional()
+    .describe('Whether its published entries are listed in the website\'s RSS feed (rss.xml). Default: as its kind says, editorial yes and structured no. null goes back to that default.'),
   categoryArchives: z.boolean().optional().describe('Whether each category with a published entry gets an archive page at category/<term ID>/ under the collection\'s address. Default true.'),
   archiveTemplate: z
     .union([z.object({ rootIds: z.array(z.string()), nodes: z.record(z.string(), z.unknown()) }), z.literal('start'), z.null()])

@@ -444,6 +444,7 @@ export function collectionCreate(state: ProjectState, op: Op<'collection.create'
   if (pages) settings.pages = pages;
   if (op.pageSize !== undefined) settings.pageSize = pageSizeOf(op.pageSize);
   if (op.categoryArchives !== undefined) settings.categoryArchives = op.categoryArchives;
+  if (typeof op.rss === 'boolean') settings.rss = op.rss;
   state.collections[op.collectionId] = { settings, entries: {} };
   if (op.archiveTemplate) setArchiveLayout(state, state.collections[op.collectionId], op.archiveTemplate);
   return { collectionId: op.collectionId, ...(route !== undefined ? { route } : {}) };
@@ -560,6 +561,9 @@ export function collectionUpdate(state: ProjectState, op: Op<'collection.update'
   }
   if (op.pageSize !== undefined) c.settings.pageSize = pageSizeOf(op.pageSize);
   if (op.categoryArchives !== undefined) c.settings.categoryArchives = op.categoryArchives;
+  // In or out of the site's RSS feed, or back to what its kind says.
+  if (op.rss === null) delete c.settings.rss;
+  else if (op.rss !== undefined) c.settings.rss = op.rss;
   if (op.hasBody !== undefined) {
     if (!op.hasBody && collectionHasBody(c.settings)) {
       // Nothing is dropped on its own: each entry's text, and the layout's showing it, are cleared first.
