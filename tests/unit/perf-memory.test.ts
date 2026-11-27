@@ -453,6 +453,56 @@ describe('a reading at rest', () => {
   });
 });
 
+describe('a control reading', () => {
+  /** Another Electron app (an empty window): its own main 21, window 22 and GPU 24, none of them the app's. */
+  const emptyFacts: AppFacts = { main: 21, editor: 22, preview: null, windows: [], processes: [{ pid: 21, type: 'Browser', label: null }, { pid: 22, type: 'Tab', label: null }, { pid: 24, type: 'GPU', label: 'GPU' }] };
+  const emptyRows = [row(21, 0, 60, APP), row(22, 21, 30), row(24, 21, 50), ...welcomeRows];
+
+  it('read another app as the app is read, keep it with the app’s readings, and give its processes to the caller alone', async () => {
+    const clock = fakeClock();
+    const app = fakeSource(() => welcomeRows, clock);
+    const other = fakeSource(() => emptyRows, clock, () => emptyFacts);
+    const probe = new MemoryProbe(app.src, clock, REST);
+    const welcome = await probe.rest('welcome');
+    const seen: Parameters<MemoryProbe['control']>[2] = [];
+    const empty = await probe.control('empty', other.src, seen);
+    // The same protocol: settle, a settled set, two collections, the heaps, one sample; of its own processes only.
+    expect(other.calls.log).toEqual(['table@7500', 'table@8000', 'collect×2@8000', 'heap@9000', 'table@9000']);
+    expect(empty).toMatchObject({ label: 'empty', kind: 'rest', total: 140 * MiB, count: 3 });
+    expect(Object.keys(empty.roles)).toEqual(['editor', 'gpu', 'main']);
+    expect(empty.how).toMatchObject({ protocol: MEMORY_PROTOCOL, collected: ['main', 'editor'], retries: 0 });
+    expect(probe.readings).toEqual([welcome, empty]);
+    expect(seen.map((k) => k.pid)).toEqual([21, 22, 24]);
+    expect(probe.seen().map((k) => k.pid)).toEqual([1, 2, 4, 5]);
+  });
+
+  it('pass on a failure with the processes it saw, record nothing, and stop once the app’s probe is closed', async () => {
+    const clock = fakeClock();
+    const app = fakeSource(() => welcomeRows, clock);
+    const broken = fakeSource(() => emptyRows, clock, () => emptyFacts);
+    broken.src.heap = async () => {
+      throw new Error('no heap');
+    };
+    const probe = new MemoryProbe(app.src, clock, REST);
+    const seen: Parameters<MemoryProbe['control']>[2] = [];
+    await expect(probe.control('empty', broken.src, seen)).rejects.toThrow('no heap');
+    expect([probe.readings, seen.map((k) => k.pid)]).toEqual([[], [21, 22, 24]]);
+    // Closed while it waits for the other app's heaps: no reading, and no call to that app after.
+    let heap: ((h: { main: number; editor: number }) => void) | null = null;
+    const slow = fakeSource(() => emptyRows, clock, () => emptyFacts);
+    slow.src.heap = () => new Promise((r) => (heap = r));
+    const reading = probe.control('empty', slow.src, []);
+    while (!heap) await turn();
+    const tables = slow.calls.table;
+    const closing = probe.dispose();
+    (heap as (h: { main: number; editor: number }) => void)({ main: 1, editor: 1 });
+    await closing;
+    await expect(reading).rejects.toThrow('the memory probe was closed');
+    expect([probe.readings, slow.calls.table]).toEqual([[], tables]);
+    await expect(probe.control('empty', slow.src, [])).rejects.toThrow('the memory probe was closed');
+  });
+});
+
 /** A source whose table follows `script` one sample at a time, and work that ends once `samples` have been taken. */
 function peakSetup(script: MemoryRow[][], samples: number, f?: (t: number, call: number) => AppFacts) {
   const clock = fakeClock();
