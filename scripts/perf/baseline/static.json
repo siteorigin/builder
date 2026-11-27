@@ -2,8 +2,8 @@
   "schemaVersion": 1,
   "rows": {
     "renderer.script": {
-      "raw": 2960838,
-      "gzip": 771333,
+      "raw": 2961287,
+      "gzip": 771458,
       "files": []
     },
     "renderer.style": {
@@ -12,13 +12,13 @@
       "files": []
     },
     "renderer.later": {
-      "raw": 6884723,
-      "gzip": 1581203,
+      "raw": 6884790,
+      "gzip": 1581219,
       "files": []
     },
     "main": {
-      "raw": 4591358,
-      "gzip": 1320150,
+      "raw": 4612634,
+      "gzip": 1327268,
       "files": []
     },
     "preload": {
@@ -49,6 +49,11 @@
     "worker.source-sync-worker": {
       "raw": 230406,
       "gzip": 73517,
+      "files": []
+    },
+    "worker.tools-worker": {
+      "raw": 5501,
+      "gzip": 2675,
       "files": []
     }
   },
