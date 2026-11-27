@@ -9,7 +9,8 @@ import { createHash } from 'node:crypto';
 import { existsSync, readFileSync, readdirSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import type { PackManifest, ThemePack } from '@catalogue/pack';
+// By a relative path, not the `@catalogue` alias, which Electron's config load cannot resolve; pack.ts imports types only.
+import { BUNDLED_PACK_IDS, type PackManifest, type ThemePack } from '../src/catalogue/pack';
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 
@@ -30,7 +31,12 @@ export const SYNC_CLI_BANNER = [
  */
 export function syncPacks(): ThemePack[] {
   const dir = resolve(root, 'resources', 'packs');
-  const ids = readdirSync(dir, { withFileTypes: true }).filter((e) => e.isDirectory() && !e.name.startsWith('.')).map((e) => e.name).sort();
+  // In the order the app ranks them (bundledOrder in src/main/packs/loader.ts), so the default theme is the app's.
+  const rank = (id: string) => (BUNDLED_PACK_IDS.includes(id) ? BUNDLED_PACK_IDS.indexOf(id) : BUNDLED_PACK_IDS.length);
+  const ids = readdirSync(dir, { withFileTypes: true })
+    .filter((e) => e.isDirectory() && !e.name.startsWith('.'))
+    .map((e) => e.name)
+    .sort((a, b) => rank(a) - rank(b) || (a < b ? -1 : a > b ? 1 : 0));
   if (!ids.length) throw new Error(`The sync script needs the shipped theme releases, and ${dir} has none.`);
   return ids.map((id) => {
     const raw = readFileSync(join(dir, id, 'pack.json'));

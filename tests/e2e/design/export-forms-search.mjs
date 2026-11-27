@@ -165,9 +165,9 @@ for (const tone of ['default', 'muted', 'inverse']) {
   const page = await open('/signup/');
   const tones = ['default', 'muted', 'inverse'];
   for (const [i, tone] of tones.entries()) {
-    const split = page.locator('main > *').filter({ has: page.locator('.so-form--block') }).nth(i);
+    const split = page.locator('main > *').filter({ has: page.locator('.so-form') }).nth(i);
     await split.scrollIntoViewIfNeeded();
-    const card = split.locator('.so-form--block');
+    const card = split.locator('.so-form');
     await shot(`signup-rest--${tone}`, split, card.getByLabel('Email'));
     if (tone !== 'muted') {
       await card.getByLabel('Email').fill('aroha@');

@@ -72,10 +72,20 @@ describe('labels a page rename leaves behind', () => {
     expect(renameLabels(after, id, 'Lookbook')).toEqual([]);
   });
 
-  // Release gap: Builder reads inside only the header, table, video and form code sections (shippedCode in src/generator/checks.ts), so the rest of the release's text counts as custom code.
+  it('offers the release’s header menu link that still says the old name, and changes only it', () => {
+    const { s, id } = lookbook(undefined, () => createStarterState('business', 'Test Studio', false));
+    expect(labels(s, 'header')).toEqual(['Home', 'About', 'Contact', 'Lookbook']);
+    const found = renameLabels(s, id, 'Lookbook').filter((l) => l.where === 'Header menu link');
+    expect(found.map((l) => [l.where, l.preselect])).toEqual([['Header menu link', true]]);
+    const after = apply(s, found.map((l) => l.op)).state;
+    expect(labels(after, 'header')).toEqual(['Home', 'About', 'Contact', 'Portfolio']);
+    expect(links(after, 'header')[3]).toMatchObject({ id: links(s, 'header')[3].id, link: { type: 'page', target: id } });
+  });
+
+  // Release gap: Builder reads inside only the header, table, video and form code sections (shippedCode in src/generator/checks.ts), so the release's page introduction heading counts as custom code and pageHeadings never reports it.
   it.fails('offers the release’s page introduction heading that still says the old name', () => {
     const { s, id } = lookbook(undefined, () => createStarterState('business', 'Test Studio', false));
-    expect(renameLabels(s, id, 'Lookbook').map((l) => l.where)).toEqual(['Page introduction heading', 'Header menu link']);
+    expect(renameLabels(s, id, 'Lookbook').filter((l) => l.where !== 'Header menu link').map((l) => [l.where, l.preselect])).toEqual([['Page introduction heading', true]]);
   });
 
   it('leaves labels the author changed, even only in case or spacing', () => {

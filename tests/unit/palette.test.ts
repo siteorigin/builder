@@ -136,6 +136,13 @@ describe('every pair readable, for any brand and mood (#357)', () => {
     }
   });
 
+  it('makes both light and dark pages across the brands, moods and themes the error colours are tried on', () => {
+    const pages = new Set<string>();
+    for (const themeId of THEMES) for (const mood of PALETTE_MOODS) for (const brand of BRANDS) pages.add(make(brand, mood, themeId).page);
+    // Dark pages (a yellow brand) are among them, so the error colours below are tried on dark grounds too.
+    expect([...pages].sort()).toEqual(['dark', 'light']);
+  });
+
   // Release gap: the release has no error colour (color.error, color.error-on-inverse) or error contrast pairs (#1016).
   it.fails('sets a red error colour for the light grounds and one for dark sections, readable on each, for any brand, mood and page (#1016)', () => {
     const red = (hex: string) => {
@@ -143,14 +150,12 @@ describe('every pair readable, for any brand and mood (#357)', () => {
       // sRGB takes chroma away, never hue: the red stays within a few degrees of the one asked for.
       return c.C > 0.08 && Math.abs(((c.h - 27 + 540) % 360) - 180) < 3;
     };
-    const pages = new Set<string>();
     for (const themeId of THEMES)
       for (const mood of PALETTE_MOODS)
         for (const brand of BRANDS) {
           const h = make(brand, mood, themeId);
           const v = h.values;
-          const at = `${themeId} ${mood} ${brand}`;
-          pages.add(h.page);
+          const at = `${themeId} ${mood} ${brand} (${h.page} page)`;
           // Both roles are made on every theme that has them, as saved #rrggbb, and stay red whatever the brand.
           expect(v['color.error'], at).toMatch(/^#[0-9a-f]{6}$/);
           expect(v['color.error-on-inverse'], at).toMatch(/^#[0-9a-f]{6}$/);
@@ -160,8 +165,6 @@ describe('every pair readable, for any brand and mood (#357)', () => {
           for (const ground of ['color.background', 'color.surface', 'color.surface-alt'] as const) expect(ratio(v['color.error']!, v[ground]!), `${at} on ${ground}`).toBeGreaterThanOrEqual(4.5);
           expect(ratio(v['color.error-on-inverse']!, v['color.inverse']!), `${at} in dark sections`).toBeGreaterThanOrEqual(4.5);
         }
-    // Dark pages (a yellow brand) are among them: their error colour turns light with their grounds.
-    expect([...pages].sort()).toEqual(['dark', 'light']);
     // Each page and mood at the lightness it asks for, where every pair allows it (Foundation keeps the targets here).
     const L = (brand: string, mood: PaletteMood, id: 'color.error' | 'color.error-on-inverse') => lch(make(brand, mood).values[id]!).L;
     expect(L('#ffff00', 'neutral', 'color.error')).toBeCloseTo(0.72, 2);

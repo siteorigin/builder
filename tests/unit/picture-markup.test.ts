@@ -15,6 +15,7 @@ import { generateEntry, generateProject, pageFile, pictureSets, resolveImage } f
 import { P, item } from '@catalogue/dsl';
 import { makeInstance } from '@engine/install';
 import { projectDesign } from './fixtures/packs';
+import { managedFoundation } from './fixtures/agent-designs';
 import { run, seoSite } from './fixtures/seo-site';
 
 const roots: string[] = [];
@@ -52,14 +53,15 @@ function site(asset: AssetRecord | null): ProjectState {
 const homeOf = (s: ProjectState) => s.pages[s.site.homePageId];
 
 /**
- * The site with the hero's picture also placed straight on the home page, first: a picture whose markup the page
- * writes itself. (Foundation's hero is a code component, which loads its picture eagerly but whose markup the head's
- * preload cannot read: see the first test of the preloads.)
+ * The site with its split hero, the home page's first section, as a design drawn in the editor: its picture is an
+ * image bound to the placement's `image` property, which the head's preload reads. (Foundation's hero is a code
+ * component, which loads its picture eagerly but whose markup the preload cannot read: the Release gap below.)
  */
-function ownPicture(s: ProjectState): ProjectState {
-  const page = homeOf(s);
-  page.nodes.pic = { id: 'pic', kind: 'image', image: { assetId: 'a_hero', alt: 'Ours' } };
-  page.rootIds = ['pic', ...page.rootIds];
+function managedHero(s: ProjectState): ProjectState {
+  managedFoundation(s, ['hero.split']);
+  const hero = homeOf(s).nodes[homeOf(s).rootIds[0]] as InstanceNode;
+  const def = s.components[hero.definitionId];
+  expect([def.componentId, def.kind, def.tree?.nodes.media]).toEqual(['hero.split', 'managed', expect.objectContaining({ kind: 'image', image: { $prop: 'image' } })]);
   return s;
 }
 
@@ -206,8 +208,8 @@ describe('the hero’s preload', () => {
   /** The first source of the page's first <picture>. */
   const firstSource = (body: string) => attrs(body.match(/<picture\b[^>]*>\s*<source\b[^>]*>/)![0].replace(/^<picture\b[^>]*>\s*/, ''));
 
-  it('asks for the set the first section’s <picture> takes first, at the widths and sizes it offers, under the base path', async () => {
-    const { head, body } = await renderHome(ownPicture(site(picture('hero'))));
+  it('asks for the set the hero’s <picture> takes first, at the widths and sizes it offers, under the base path', async () => {
+    const { head, body } = await renderHome(managedHero(site(picture('hero'))));
     const first = firstSource(body);
     expect(first.srcset).toContain('/studio/assets/hero-1a2b3c4d-160w.avif 160w');
     expect(preloads(head)).toEqual([{ rel: 'preload', as: 'image', fetchpriority: 'high', type: 'image/avif', imagesrcset: first.srcset, imagesizes: first.sizes }]);
@@ -224,24 +226,23 @@ describe('the hero’s preload', () => {
 
   it('asks for the <img>’s own set, untyped, for an image with copies in its own format only, and its file for one with none', async () => {
     const old: AssetRecord = { ...picture('old'), variants: [480, 960].map((w) => ({ width: w, file: `static/assets/old-1a2b3c4d-${w}w.jpg` })) };
-    const { head, body } = await renderHome(ownPicture(site(old)));
+    const { head, body } = await renderHome(managedHero(site(old)));
     const img = attrs(body.match(/<img\b[^>]*old-1a2b3c4d[^>]*>/)![0]);
     expect(preloads(head)).toEqual([{ rel: 'preload', as: 'image', fetchpriority: 'high', imagesrcset: img.srcset, imagesizes: img.sizes }]);
     const single: AssetRecord = { ...picture('single'), variants: undefined };
-    expect(preloads((await renderHome(ownPicture(site(single)))).head)).toEqual([{ rel: 'preload', as: 'image', fetchpriority: 'high', href: '/studio/assets/single-1a2b3c4d.jpg' }]);
+    expect(preloads((await renderHome(managedHero(site(single)))).head)).toEqual([{ rel: 'preload', as: 'image', fetchpriority: 'high', href: '/studio/assets/single-1a2b3c4d.jpg' }]);
   });
 
   it('asks for nothing when the first section shows no picture, or shows it only further down the page', async () => {
-    // A picture still waiting for its library image.
-    const empty = ownPicture(site(null));
-    (homeOf(empty).nodes.pic as { image: ImageValue }).image = { assetId: null, alt: '' };
+    // A hero still waiting for its picture.
+    const empty = managedHero(site(null));
     expect(preloads((await renderHome(empty)).head)).toEqual([]);
-    // The picture placed in the second section instead, after the hero, which shows none of the page's own.
-    const lower = ownPicture(site(picture('hero')));
+    // The hero's picture placed in the second section instead.
+    const lower = managedHero(site(picture('hero')));
     const home = homeOf(lower);
     const [first, second] = home.rootIds;
     home.rootIds = [second, first, ...home.rootIds.slice(2)];
-    expect(home.nodes[first].kind).toBe('image');
+    expect((home.nodes[second] as InstanceNode).props.image).toBeUndefined();
     expect(preloads((await renderHome(lower)).head)).toEqual([]);
   });
 
@@ -373,7 +374,7 @@ describe('the hero’s preload', () => {
   });
 
   it('is written into the page’s own file, which imports the address helper only then', () => {
-    const files = generateProject(ownPicture(site(picture('hero'))));
+    const files = generateProject(managedHero(site(picture('hero'))));
     const page = files.get(pageFile(homeOf(site(null))))!;
     expect(page).toContain(`import { asset as so_asset } from '$app/paths';`);
     // Straight after the title.

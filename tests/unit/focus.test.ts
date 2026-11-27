@@ -14,6 +14,9 @@ import { executeTool, type ToolHost } from '@agent/tools';
 import { selectionTarget, selectionTools } from '@agent/selection';
 import { ProjectSession } from '../../src/main/project/session';
 import { managedStarter } from './fixtures/agent-designs';
+import { managedSection } from './fixtures/component-contract-designs';
+import { team } from './fixtures/component-reusability-designs';
+import { contentMedia } from './fixtures/focus-designs';
 
 const fresh = () => createStarterState('business', 'Focus Studio', false);
 const pageOf = (s: ProjectState, title: string) => s.site.pageOrder.map((id) => s.pages[id]).find((p) => p.title === title)!;
@@ -242,13 +245,30 @@ describe('sending focal point changes one after another', () => {
 });
 
 describe('where Image focus is offered', () => {
-  it('adds it after the aspect ratio of an image part that can be cropped, in a managed design a project already has', () => {
+  it('adds it after the aspect ratio of every image part that can be cropped, in managed designs a project already has', () => {
+    // The split hero, and Content with image, Gallery and Team as Foundation designed them in the editor: a picture
+    // beside the copy, and pictures repeated in a list, one per item.
     const s = managedStarter();
-    const hero = Object.values(s.components).find((d) => d.componentId === 'hero.split')!;
-    expect(hero.kind).toBe('managed');
+    for (const managed of [contentMedia(), managedSection('media.gallery'), team()]) s.components[managed.id] = managed;
+    const def = (componentId: string) => {
+      const d = Object.values(s.components).find((d) => d.componentId === componentId)!;
+      expect(d.kind, componentId).toBe('managed');
+      return d;
+    };
     // The stored list is what the issue saw: no focus control.
-    expect(hero.parts.media.styleControls).toEqual(['aspectRatio', 'radius', 'shadow']);
-    expect(partStyleControls(hero, 'media')).toEqual(['aspectRatio', 'objectPosition', 'radius', 'shadow']);
+    expect(def('hero.split').parts.media.styleControls).toEqual(['aspectRatio', 'radius', 'shadow']);
+    expect(partStyleControls(def('hero.split'), 'media')).toEqual(['aspectRatio', 'objectPosition', 'radius', 'shadow']);
+    expect(partStyleControls(def('content.media'), 'media')).toContain('objectPosition');
+    // The repeated pictures are image parts inside a list, and offer focus as a single picture does.
+    for (const [componentId, part] of [['media.gallery', 'image'], ['team.grid', 'portrait']]) {
+      const d = def(componentId);
+      const node = d.tree!.nodes[d.parts[part].nodeId];
+      expect(node.kind, componentId).toBe('image');
+      const repeated = Object.values(d.tree!.nodes).filter((n) => n.kind === 'repeat');
+      const under = (id: string, seen = new Set<string>()): boolean => !seen.has(id) && (seen.add(id), ((d.tree!.nodes[id] as { children?: string[] }).children ?? []).some((c) => c === node.id || under(c, seen)));
+      expect(repeated.some((r) => under(r.id)), `${componentId}: ${part} inside its list`).toBe(true);
+      expect(partStyleControls(d, part), componentId).toEqual(['aspectRatio', 'objectPosition', 'radius']);
+    }
   });
 
   // Release gap: partStyleControls (src/shared/styles.ts) offers objectPosition on managed image nodes only, so no release image can be cropped.

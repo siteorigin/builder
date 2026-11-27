@@ -498,7 +498,7 @@ describe('the loaded context window', () => {
     expect(body.tools.map((t: { function: { name: string } }) => t.function.name)).toContain('apply_source_patch');
   });
 
-  // Release gap: with the release's sections, the small native tools' first request of a code run takes about 13,700 tokens, over the 12,150 measured on the 39-section copy, so it no longer fits a 13,312-token window beside a reply.
+  // Release gap: with the release's sections, the small native tools' first request of a code run takes about 13,700 tokens, over the 12,150 measured on the 39-section copy, so it no longer fits a 13,312-token window beside a reply and the run is refused before anything is sent.
   it.fails('fits a code run and its reply into a 13,312-token window', async () => {
     // Small enough that the reply must shrink to fit beside a code run's small tools, with room for them to grow
     // (inspect_layout's refs, #743, took it past 12,288).
@@ -507,9 +507,12 @@ describe('the loaded context window', () => {
     server.script(textReply('Hello.'));
     const { result } = await run('Hi');
     expect(result?.status).toBe('no-changes');
+    const body = chatPosts()[0].body;
+    expect(body.max_tokens).toBeGreaterThanOrEqual(1024);
+    expect(estimateOf(body) + body.max_tokens).toBeLessThanOrEqual(window);
     // The request itself stays small: 12,113 tokens measured with the source patch's revision and scope (#740),
     // inspect_layout's refs (#743), and a theme's code patched on a project copy with its properties (#1078).
-    expect(estimateOf(chatPosts()[0].body)).toBeLessThanOrEqual(12_150);
+    expect(estimateOf(body)).toBeLessThanOrEqual(12_150);
   });
 
   it('keeps the full reply budget in a normal larger window', async () => {

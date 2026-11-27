@@ -64,9 +64,18 @@ describe('composer headroom for a local model', () => {
     expect(SMALL_OVERHEAD_TOKENS - selection).toBeLessThan(1536);
   }, 60000);
 
-  // Release gap: with the release's sections, the small native tools' page request (upsert_page_with_sections) takes about 12,300 tokens on Home, some 1,100 over LOCAL_OVERHEAD_TOKENS.focused, measured on the 39-section copy.
-  it.fails('reserves at least what the small native tools of a page run take', async () => {
-    await reserves('focused');
+  it('reserves not much more than the small native tools of a page run take', async () => {
+    const caps = MODES.find(([m]) => m === 'focused')![1];
+    for (const route of ROUTES) {
+      const used = await overhead(caps, route);
+      expect(LOCAL_OVERHEAD_TOKENS.focused - used, `focused on ${route}`).toBeLessThan(1536);
+    }
+  }, 60000);
+
+  // Release gap: with the release's sections, the small native tools' page request (upsert_page_with_sections) takes about 12,340 tokens on Home and 12,140 on About, some 1,070 and 870 over LOCAL_OVERHEAD_TOKENS.focused (11,264), measured on the 39-section copy.
+  it.fails.each(ROUTES)('reserves at least what the small native tools of a page run take on %s', async (route) => {
+    const used = await overhead(MODES.find(([m]) => m === 'focused')![1], route);
+    expect(used, `focused on ${route}`).toBeLessThanOrEqual(LOCAL_OVERHEAD_TOKENS.focused);
   }, 60000);
 
   it('gives the messages half the window, or less where the instructions leave less', () => {
