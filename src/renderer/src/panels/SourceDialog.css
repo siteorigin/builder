@@ -8,7 +8,8 @@
   .sd-part + .sd-part { padding-top: 18px; border-top: 1px solid var(--border); }
   .sd-part > h3 { display: flex; align-items: center; gap: 8px; margin: 0; font-size: 13px; font-weight: 600; color: var(--text); }
   .sd-part-hint { margin: -6px 0 0; font-size: 12px; line-height: 1.5; color: var(--text-3); }
-  .sd-part-hint code, .sd-pairs .field-hint code, .sd-sample-warn code { font-size: 11.5px; font-variant-ligatures: none; color: var(--text-2); }
+  /* Code in running text: the app's mono, a step under the 12px text it sits in so the two read at one size. */
+  .sd code { font-family: var(--mono); font-size: 11px; font-variant-ligatures: none; color: var(--text-2); }
   .sd-subhead { margin: 4px 0 0; font-size: 12px; font-weight: 600; color: var(--text-2); }
   .sd-row { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; align-items: start; }
   .sd-row-3 { grid-template-columns: repeat(3, minmax(0, 1fr)); }
@@ -25,30 +26,105 @@
   .sd-secret { display: flex; flex-direction: column; gap: 6px; padding: 10px 12px; border: 1px solid var(--border); border-radius: var(--r-sm); background: var(--panel-2); }
   .sd-secret-name { display: flex; align-items: center; gap: 8px; min-width: 0; font-size: 12px; font-weight: 500; color: var(--text-2); }
   .sd-secret-name svg { width: 14px; height: 14px; flex: none; color: var(--text-3); }
-  .sd-secret-key { font-family: var(--font-mono, ui-monospace, monospace); font-variant-ligatures: none; color: var(--text); }
+  .sd-secret-key { font-family: var(--mono); font-variant-ligatures: none; color: var(--text); }
   .sd-secret-entry { display: flex; gap: 8px; }
   .sd-secret-entry .input { flex: 1; min-width: 0; }
   .sd-secret-entry .btn { flex: none; }
 
   .sd-map { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 10px 12px; }
-  .sd-code { font-family: var(--font-mono, ui-monospace, monospace); font-size: 12px; max-height: 420px; }
+  /* JSON and queries typed into the form: the app's mono, sized by their rows and never past a screenful. */
+  .sd-code { font-family: var(--mono); font-size: 12px; line-height: 1.6; font-variant-ligatures: none; tab-size: 2; max-height: 420px; }
+
+  /* The conversion script: the app's code frame (SourceModal.css), with a red edge and the problem under it after a
+     failed Test, and drawn as unavailable while a Test or Save runs. */
+  .sd-script-field .field-label { cursor: default; }
+  .code-frame.sd-script { height: auto; }
+  .code-frame.sd-script.invalid { border-color: var(--red); }
+  .code-frame.sd-script.invalid.focused { outline-color: var(--focus); }
+  .code-frame.sd-script.locked { --code-bg: var(--panel); }
+  .sd-script .cm-editor { width: 100%; }
+  .sd-script .cm-lint-marker-error { content: none; background-color: var(--red); -webkit-mask: var(--sd-error-glyph) center / contain no-repeat; mask: var(--sd-error-glyph) center / contain no-repeat; }
+  .sd-script { --sd-error-glyph: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'%3E%3Cpath fill-rule='evenodd' d='M8 1a7 7 0 1 1 0 14A7 7 0 0 1 8 1Zm-.95 3.4h1.9l-.32 5.1H7.37l-.32-5.1ZM8 10.55a1.05 1.05 0 1 1 0 2.1 1.05 1.05 0 0 1 0-2.1Z'/%3E%3C/svg%3E"); }
+  .sd-script-error { display: flex; flex-direction: column; gap: 2px; }
+  .sd-script-error .link-btn { color: inherit; font-weight: 600; }
+  .sd-script-error .sd-records-link { color: var(--accent-text); font-weight: 500; }
 
   /* The footer's status line. */
   .sd-status { min-width: 0; font-size: 12px; line-height: 1.4; }
   .sd-status .field-error { display: block; }
   .sd-status-ok { display: inline-flex; align-items: center; gap: 8px; color: var(--text-2); }
 
-  /* The sample a passing Test read. */
-  .sd-sample-summary { margin: 0; }
-  .sd-sample-warn { display: flex; align-items: baseline; gap: 8px; margin: 0; font-size: 12px; line-height: 1.5; color: var(--text-2); }
-  .sd-sample-warn .badge { flex: none; }
-  .sd-sample > h3:focus-visible { outline: 2px solid var(--focus); outline-offset: 3px; border-radius: var(--r-xs); }
-  .sd-sample > h3:focus:not(:focus-visible) { outline: none; }
-  .sd-sample-row { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 12px; }
-  .sd-sample details { min-width: 0; border: 1px solid var(--border); border-radius: var(--r-sm); background: var(--panel-2); }
-  .sd-sample summary { display: flex; align-items: center; gap: 6px; padding: 6px 10px; font-size: 12px; font-weight: 500; color: var(--text-2); cursor: default; list-style: none; }
-  .sd-sample summary::-webkit-details-marker { display: none; }
-  .sd-sample summary::before { content: ''; width: 6px; height: 6px; margin: 0 2px; border-right: 1.5px solid currentColor; border-bottom: 1.5px solid currentColor; transform: rotate(-45deg); flex: none; }
-  .sd-sample details[open] > summary::before { transform: rotate(45deg); margin-top: -3px; }
-  .sd-sample pre { margin: 0; padding: 8px 10px; max-height: 220px; overflow: auto; border-top: 1px solid var(--border); font-size: 11px; white-space: pre-wrap; word-break: break-word; color: var(--text); }
+  /* The sample a passing Test read: what it read and what a sync would do, the fields it would leave empty, then each
+     record beside the entry it became. */
+  .sd-sample-stale { display: flex; align-items: flex-start; gap: 8px; margin: -4px 0 0; padding: 8px 10px; border-radius: var(--r-sm); background: var(--amber-soft); font-size: 12px; line-height: 1.45; color: var(--text); }
+  .sd-sample-stale svg { width: 14px; height: 14px; flex: none; margin-top: 1px; color: var(--amber); }
+  .sd-sample-counts { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 12px; margin: -4px 0 0; font-size: 12px; color: var(--text-2); font-variant-numeric: tabular-nums; }
+  .sd-count-read { font-weight: 600; color: var(--text); }
+  .sd-count-sep { width: 1px; height: 14px; background: var(--border-strong); }
+  .sd-sample-counts ul { display: contents; list-style: none; }
+  .sd-sample-counts li strong { font-weight: 600; color: var(--text); }
+  .sd-sample-counts li.zero, .sd-sample-counts li.zero strong { color: var(--text-3); font-weight: 500; }
+  .sd-sample-first { margin-top: -6px; }
+  .sd-sample.stale .sd-sample-counts, .sd-sample.stale .sd-gaps, .sd-sample.stale .sd-records, .sd-sample.stale .sd-converted { --sd-edge: dashed; }
+
+  .sd-gaps { display: flex; flex-direction: column; gap: 6px; padding: 10px 12px; border: 1px var(--sd-edge, solid) color-mix(in srgb, var(--amber) 45%, transparent); border-radius: var(--r-sm); background: var(--panel-2); }
+  .sd-gaps-head { display: flex; align-items: center; gap: 8px; margin: 0; font-size: 12px; font-weight: 600; color: var(--text); }
+  .sd-gaps-head svg { width: 14px; height: 14px; flex: none; color: var(--amber); }
+  .sd-gaps ul { display: grid; grid-template-columns: minmax(0, max-content) minmax(0, 1fr) minmax(0, max-content); gap: 4px 12px; margin: 0; padding: 0 0 0 22px; list-style: none; font-size: 12px; line-height: 1.5; }
+  .sd-gaps li { display: contents; }
+  .sd-gap-name { font-weight: 500; color: var(--text); overflow-wrap: anywhere; }
+  .sd-gap-why code, .sd-gap-fix code { overflow-wrap: anywhere; }
+  .sd-gap-why { color: var(--text-2); }
+  .sd-gap-fix { justify-self: end; max-width: 100%; text-align: right; font-size: 12px; }
+  .sd-gap-fix code { color: inherit; }
+
+  .sd-sample h3:focus-visible { outline: 2px solid var(--focus); outline-offset: 3px; border-radius: var(--r-xs); }
+  .sd-sample h3:focus:not(:focus-visible) { outline: none; }
+  .sd-sample-head { display: flex; align-items: baseline; justify-content: space-between; gap: 12px; }
+  .sd-sample-head > h3 { margin: 0; font-size: 13px; font-weight: 600; color: var(--text); }
+  .sd-sample-head > .link-btn { font-size: 12px; }
+  .sd-records { display: flex; flex-direction: column; gap: 8px; }
+  .sd-record { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; align-items: start; }
+  .sd-fold > .sd-record { padding: 10px 12px 12px; border-top: 1px solid var(--border); }
+  .sd-record-side { display: flex; flex-direction: column; gap: 6px; min-width: 0; }
+  .sd-converted .sd-record-side { gap: 8px; }
+  .sd-record-head { display: flex; align-items: center; gap: 6px; margin: 0; font-size: 11px; font-weight: 600; color: var(--text-3); }
+  .sd-record-count { padding: 0 6px; border-radius: var(--r-sm); background: var(--active); color: var(--text-2); font-variant-numeric: tabular-nums; }
+
+  /* A fold: the app's local disclosure (a chevron that turns a quarter as it opens), drawn here until a shared one. */
+  .sd-fold { min-width: 0; border: 1px var(--sd-edge, solid) var(--border-strong); border-radius: var(--r-sm); background: var(--panel-2); }
+  .sd-fold > summary { display: flex; align-items: center; gap: 6px; min-height: 32px; padding: 0 10px 0 6px; border-radius: calc(var(--r-sm) - 1px); font-size: 12px; font-weight: 600; color: var(--text); cursor: default; list-style: none; }
+  .sd-fold[open] > summary { border-radius: calc(var(--r-sm) - 1px) calc(var(--r-sm) - 1px) 0 0; }
+  .sd-fold > summary::-webkit-details-marker { display: none; }
+  .sd-fold > summary:hover { background: var(--hover); }
+  .sd-fold > summary:focus-visible { outline: 2px solid var(--focus); outline-offset: -2px; }
+  .sd-fold-mark { width: 14px; height: 14px; flex: none; color: var(--text-2); transition: transform 120ms; }
+  .sd-fold[open] > summary .sd-fold-mark { transform: rotate(90deg); }
+  .sd-fold-name { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-weight: 400; color: var(--text-2); }
+  .sd-fold-name::before { content: '·'; margin: 0 6px 0 2px; color: var(--text-3); }
+  .sd-fold-note { display: inline-flex; align-items: center; gap: 4px; margin-left: auto; padding-left: 12px; font-weight: 500; color: var(--text-2); white-space: nowrap; }
+  .sd-fold-note svg { width: 12px; height: 12px; color: var(--amber); }
+  @media (prefers-reduced-motion: reduce) { .sd-fold-mark { transition: none; } }
+
+  /* A record as JSON: one line per line, scrolled sideways rather than broken mid-value. */
+  .sd-raw { margin: 0; padding: 8px 10px; max-height: 280px; overflow: auto; border: 1px var(--sd-edge, solid) var(--border); border-radius: var(--r-sm); background: var(--code-bg, var(--raised)); font-family: var(--mono); font-size: 12px; line-height: 1.5; font-variant-ligatures: none; white-space: pre; tab-size: 2; user-select: text; color: var(--text); scrollbar-width: thin; }
+  .sd-raw:focus-visible { outline: 2px solid var(--focus); outline-offset: 2px; }
+  .sd-fold > .sd-raw { margin: 0; border: 0; border-top: 1px solid var(--border); border-radius: 0 0 calc(var(--r-sm) - 1px) calc(var(--r-sm) - 1px); background: transparent; }
+
+  /* An entry, detail by detail, in the form's words. */
+  .sd-entry { width: 100%; border-collapse: collapse; table-layout: fixed; font-size: 12px; line-height: 1.45; }
+  .sd-fold > .sd-entry { border-top: 1px solid var(--border); }
+  .sd-entry th, .sd-entry td { padding: 4px 8px; text-align: left; vertical-align: baseline; border-bottom: 1px solid var(--border); }
+  .sd-entry tr:last-child > * { border-bottom: 0; }
+  .sd-entry thead th { padding-top: 0; font-size: 11px; font-weight: 600; color: var(--text-3); }
+  .sd-fold > .sd-entry thead th { padding-top: 6px; }
+  .sd-entry th:first-child, .sd-entry td:first-child { padding-left: 0; }
+  .sd-fold > .sd-entry th:first-child { padding-left: 10px; }
+  .sd-entry tbody th { width: 34%; font-weight: 500; color: var(--text-2); overflow-wrap: anywhere; }
+  .sd-entry-from { width: 28%; overflow-wrap: anywhere; }
+  .sd-entry-from code { color: var(--text-2); }
+  .sd-entry-value { overflow-wrap: anywhere; color: var(--text); }
+  .sd-entry-none { color: var(--text-3); font-style: italic; }
+  .sd-entry-none.only { display: inline-flex; align-items: center; gap: 4px; color: var(--text-2); }
+  .sd-entry-none.only svg { width: 12px; height: 12px; flex: none; color: var(--amber); }
 }
