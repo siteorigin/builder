@@ -873,7 +873,7 @@ function entrySetBinding(state: ProjectState, op: Op<'node.setBinding'>, at: { t
   // Where a form sends what visitors write is the site's own, never an entry's: its service, its setting, or a design's
   // property that passes one of them on. Said before whether the field would fit, since no field ever may.
   if (field === 'prop' && formDestinationLookup(state)((node as InstanceNode).definitionId, op.prop!))
-    fail(`${describeNode(node)} cannot take where it sends what visitors write from “${schema.label}”: a form's destination is set on the form, never read from an entry.`);
+    fail(`${describeNode(node)} cannot take where it sends what visitors write (“${own(state.components[(node as InstanceNode).definitionId]?.properties, op.prop!)?.label ?? op.prop}”) from “${schema.label}”: a form's destination is set on the form, never read from an entry.`);
   if (schema.type === 'enum' && !Array.isArray((schema as { options?: unknown }).options)) fail(`"${schema.label}" is damaged: it has no choices. Set its choices in the collection's settings first.`);
   if (field === 'datetime' && !isEntryDateField(collection, read)) fail(`"${schema.label}" is not a date: a text can state the publication date (publishedAt), the last update (updatedAt) or a date field.`);
   const ok = acceptedTypes(node, field, nested);

@@ -84,7 +84,7 @@ describe("a collection layout's contact form", () => {
   for (const prop of ROUTING)
     it(`never takes its ${prop} from an entry`, () => {
       const { state, form } = posts();
-      expect(refusal(state, [bind(LAYOUT, form, prop, { $entry: FITS[prop] })])).toMatch(/cannot take where it sends what visitors write from .*a form's destination is set on the form, never read from an entry/);
+      expect(refusal(state, [bind(LAYOUT, form, prop, { $entry: FITS[prop] })])).toMatch(/cannot take where it sends what visitors write \(“[^”]+”\) from .*a form's destination is set on the form, never read from an entry/);
     });
 
   it('never takes a setting a design passes on to its form from an entry', () => {
@@ -184,7 +184,7 @@ describe('a list that passes its items on to a contact form', () => {
    * "Office forms": a design whose `offices` list repeats a contact form per office, each sending to the office's
    * inbox under the office's name. With `feed`, the list fills itself from the site's entries.
    */
-  function offices(feed?: 'entries' | 'articles') {
+  function offices(feed?: 'entries' | 'articles' | 'teaser') {
     const { state, home } = posts();
     const s = structuredClone(state);
     const form = makeInstance(s.components[FORM], { provider: 'endpoint', endpoint: { $item: 'excerpt' }, heading: { $item: 'title' } });
@@ -201,7 +201,17 @@ describe('a list that passes its items on to a contact form', () => {
       description: '',
       category: 'custom',
       tags: [],
-      properties: { offices: { type: 'list', label: 'Offices', itemLabel: 'Office', fields: { title: { type: 'string', label: 'Name', default: '' }, excerpt: { type: 'string', label: 'Inbox', default: '' } }, default: [], ...(feed ? { feed } : {}) } },
+      properties: {
+        offices: {
+          type: 'list',
+          label: 'Offices',
+          itemLabel: 'Office',
+          fields: { pageLink: { type: 'link', label: 'Page' }, title: { type: 'string', label: 'Name', default: '' }, excerpt: { type: 'string', label: 'Inbox', default: '' } },
+          default: [],
+          // A page list: an office's blank inbox would be the linked page's description.
+          ...(feed === 'teaser' ? { pageTeaser: { link: 'pageLink', title: 'title', description: 'excerpt' } } : feed ? { feed } : {})
+        }
+      },
       parts: { root: { nodeId: root.id, label: 'Root' } },
       tree: { rootIds: [root.id], nodes: { [root.id]: root, [repeat.id]: repeat, [form.id]: form } }
     } as unknown as ComponentDefinition;
@@ -227,6 +237,11 @@ describe('a list that passes its items on to a contact form', () => {
     expect(refusal(pages, [{ type: 'node.insert', owner: pagesHome, parentId: null, definitionId: 'project.offices' } as EditOperation])).toMatch(/fills where it sends what visitors write \(“Offices”\) from the site's pages; .*never read from a page/);
   });
 
+  it('never takes what its items leave empty from the pages they link to', () => {
+    const { s, home } = offices('teaser');
+    expect(refusal(s, [{ type: 'node.insert', owner: home, parentId: null, definitionId: 'project.offices' } as EditOperation])).toMatch(/fills where it sends what visitors write \(“Offices”\) from the pages its items link to; .*never read from a page/);
+  });
+
   it('is found in a theme’s design too, which the website shows as it is', () => {
     // A design of the theme's, as read from the project's files: a loop over Posts whose form sends to each excerpt.
     const { state, home } = posts();
@@ -250,6 +265,14 @@ describe('a list that passes its items on to a contact form', () => {
     } as unknown as ComponentDefinition;
     expect(formDestinationProblems(s).map((p) => [p.owner.kind, p.owner.id, p.nodeId])).toEqual([['component', 'theme.mailroom', form.id]]);
     expect(home.kind).toBe('page');
+    // Nothing else in it is checked: a choice field damaged by hand that its loop compares stops no check.
+    const damaged = structuredClone(s);
+    const tree = damaged.components['theme.mailroom'].tree!;
+    (tree.nodes[form.id] as InstanceNode).props = {};
+    (tree.nodes[form.id] as unknown as { when: unknown }).when = { ref: { $item: 'field.service' }, eq: 'endpoint' };
+    (damaged.collections.posts.settings.fields!.service as { options?: unknown }).options = [null];
+    expect(() => validateState(damaged)).not.toThrow();
+    expect(formDestinationProblems(damaged)).toEqual([]);
   });
 
   it('is an ordinary list while its items are its own', () => {

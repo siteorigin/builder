@@ -169,7 +169,7 @@ function parentNodes(tree: NodeTree): Map<string, GraphNode> {
  * What is wrong with what one element inside a loop reads of its entries: each a message that follows its name, with
  * the place it is about (a field, or a section's property), which names it apart from its wording.
  */
-export function loopBindingProblems(state: ProjectState, collection: Collection, n: GraphNode, destination: FormDestinationLookup = formDestinationLookup(state)): Array<{ place: string; message: string; destination?: true }> {
+export function loopBindingProblems(state: ProjectState, collection: Collection, n: GraphNode, destination: FormDestinationLookup = formDestinationLookup(state), routesOnly = false): Array<{ place: string; message: string; destination?: true }> {
   const found: Array<{ place: string; message: string; destination?: true }> = [];
   for (const slot of bindingSlots(n)) {
     const out = { push: (message: string, routes?: true) => found.push({ place: `${slot.field}:${slot.prop ?? ''}`, message, ...(routes ? { destination: routes } : {}) }) };
@@ -179,7 +179,7 @@ export function loopBindingProblems(state: ProjectState, collection: Collection,
     const field = b.$item;
     const schema = typeof field === 'string' ? rowFieldSchema(collection, field) : undefined;
     if (!schema) {
-      out.push(`shows "${String(field).slice(0, 60)}", which entries of ${collection.settings.name} do not have.`);
+      if (!routesOnly) out.push(`shows "${String(field).slice(0, 60)}", which entries of ${collection.settings.name} do not have.`);
       continue;
     }
     // Where a form sends what visitors write is the site's own, never an entry's: its service, its setting, or a
@@ -189,6 +189,8 @@ export function loopBindingProblems(state: ProjectState, collection: Collection,
       out.push(`takes where it sends what visitors write (${propLabel(state, n, slot.prop)}) from “${schema.label}”; ${NEVER_FROM_ENTRY}`, true);
       continue;
     }
+    // A theme's design is checked for nothing else (collectionSourceProblems).
+    if (routesOnly) continue;
     if (schema.type === 'enum' && !Array.isArray((schema as { options?: unknown }).options)) continue;
     if (!ENTRY_CONTENT_FIELDS.has(slot.field)) {
       out.push(`takes its ${slot.field} from “${schema.label}”; that is the list's own, the same for every entry. Only content can show an entry's field.`);
@@ -227,8 +229,8 @@ export function loopBindingProblems(state: ProjectState, collection: Collection,
 
 /**
  * Why a list of a placement would fill where a contact form sends what visitors write from entries or pages, or null:
- * connected to a collection, or a list that fills itself (a feed), when its items pass a field on to a form's service
- * or setting.
+ * connected to a collection, a list that fills itself (a feed), or a page list whose items take what they leave empty
+ * from the pages they link to, when its items pass a field on to a form's service or setting.
  */
 export function listDestinationProblem(state: ProjectState, node: InstanceNode, prop: string, destination: FormDestinationLookup): string | null {
   const def = own(state.components, node.definitionId);
@@ -236,9 +238,10 @@ export function listDestinationProblem(state: ProjectState, node: InstanceNode, 
   if (!def || schema?.type !== 'list') return null;
   const connected = !!node.listSources && Object.hasOwn(node.listSources, prop);
   // Asked last: a list filled by hand never needs the walk over the project's designs.
-  if ((!connected && !schema.feed) || !destination(def.id, prop)) return null;
+  if ((!connected && !schema.feed && !schema.pageTeaser) || !destination(def.id, prop)) return null;
   const pages = !connected && schema.feed !== 'entries';
-  const from = connected ? "a collection's entries" : `the site's ${pages ? 'pages' : 'entries'}`;
+  // A page list's items take what they leave empty from the pages they link to (shared/page-teasers.ts).
+  const from = connected ? "a collection's entries" : schema.feed ? `the site's ${pages ? 'pages' : 'entries'}` : 'the pages its items link to';
   return `fills where it sends what visitors write (“${schema.label}”) from ${from}; ${pages ? "a form's destination is set on the form, never read from a page." : NEVER_FROM_ENTRY}`;
 }
 
@@ -304,9 +307,8 @@ export function collectionSourceProblems(state: ProjectState): SourceProblem[] {
       const loop = loops.get(n.id);
       const collection = loop ? loopCollection(state, owner, loop) : undefined;
       if (collection)
-        for (const problem of loopBindingProblems(state, collection, n, destination))
-          if (!themed || problem.destination)
-            out.push({ owner, label, node: n, nodeId: n.id, key: `${owner.kind}:${owner.id}:${n.id}:item:${problem.place}${problem.destination ? ':destination' : ''}`, message: problem.message, ...(problem.destination ? { destination: true as const } : {}) });
+        for (const problem of loopBindingProblems(state, collection, n, destination, themed))
+          out.push({ owner, label, node: n, nodeId: n.id, key: `${owner.kind}:${owner.id}:${n.id}:item:${problem.place}${problem.destination ? ':destination' : ''}`, message: problem.message, ...(problem.destination ? { destination: true as const } : {}) });
       for (const problem of destinationProblems(state, owner, n, destination)) out.push({ owner, label, node: n, nodeId: n.id, key: `${owner.kind}:${owner.id}:${n.id}:destination:${problem.place}`, message: problem.message, destination: true });
     }
   }
