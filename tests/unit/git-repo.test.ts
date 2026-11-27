@@ -319,15 +319,16 @@ describe('moving a branch', () => {
 });
 
 describe('a write stopped part way', () => {
-  it('cancelled between files: no tree, no branch moved, and the repository writes on', async () => {
+  it('cancelled between files: nothing written, no branch moved, and the repository writes on', async () => {
     const repo = openRepo(root);
     await repo.init();
     const token = { cancelled: false };
     const files: FileInput[] = Array.from({ length: 5 }, (_, i) => ({ path: `f${i}.txt`, bytes: text(`file ${i}`) }));
-    const cancelling = openRepo(root, { fault: (p) => void (p === 'object-written' && (token.cancelled = true)) });
+    const cancelling = openRepo(root, { fault: (p) => void (p === 'file-written' && (token.cancelled = true)) });
     await expect(cancelling.writeFiles(files, token)).rejects.toMatchObject({ code: 'cancelled' });
-    // Only whole blobs of the files before the cancel are left, and nothing points at them.
-    expect(objects()).toEqual([blobOid(text('file 0'))]);
+    // The file written before the cancel is not kept either, not even under a temporary name.
+    expect(objects()).toEqual([]);
+    expect(readdirSync(join(gitdir(), 'objects'), { recursive: true }).map(String).filter((f) => f.includes('tmp_obj_'))).toEqual([]);
     await expect(repo.resolveRef(VERSIONS_BRANCH)).resolves.toBeNull();
     const commit = await snapshot(repo, files);
     await repo.advanceRef(VERSIONS_BRANCH, commit, null);

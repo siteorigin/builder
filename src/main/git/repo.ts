@@ -2,8 +2,9 @@
  * The versions repository of one project (#1152), on the bundled pure-JavaScript Git. It runs in the Git worker
  * (worker.ts), never in the editor's main process: hashing and compressing a folder of pictures takes a while.
  *
- * Writing objects moves nothing: a blob, tree or commit is only ever added, under the name of its content, so a write
- * that stops part way (cancelled, refused, or the worker killed) leaves at most some whole objects nothing points at.
+ * Writing objects moves nothing: a blob, tree or commit is only ever added, under the name of its content, and the
+ * objects of one write are named together once all are on the disk (fs.ts), so a write that is refused or cancelled
+ * leaves nothing, and one stopped by the worker being killed at most some whole objects nothing points at.
  * A branch moves only in `advanceRef`, under Git's own lock for it (`<ref>.lock`, made exclusively, written, flushed and
  * renamed into place, as `git update-ref` does), and only from the commit the caller expected, so two writers can never
  * silently overwrite each other and a stock Git honours the same lock.
@@ -12,8 +13,11 @@
  * once it is older than that worker and a moment old: the app runs one Git worker at a time, starts the next only
  * after the last has exited, and runs as a single instance, so such a lock belongs to no writer still running.
  */
+import { createHash } from 'node:crypto';
 import { promises as fs, type Stats } from 'node:fs';
 import { dirname, join } from 'node:path';
+import { Readable } from 'node:stream';
+import { constants as zlibConstants, createDeflate, deflateSync } from 'node:zlib';
 import git from 'isomorphic-git';
 import { ensureDir, renameReplacing, safeJoin, syncDir } from '../project/fsutil';
 import { openRegularFile, readAtMost } from '../regular-file';
@@ -40,6 +44,13 @@ export interface RepoOptions {
 
 const LOCK_MIN_AGE_MS = 2000;
 const LOCK_WAIT_MS = 5000;
+/** How much of a file is compressed to see whether compressing it is worth it. */
+const SAMPLE_BYTES = 64 * 1024;
+/**
+ * Already compressed (a photo, a video, a font): stored as it is, since compressing it again saves nothing and costs
+ * most of the time a version of pictures takes. Git reads an object stored either way.
+ */
+const incompressible = (bytes: Uint8Array) => bytes.byteLength >= SAMPLE_BYTES && deflateSync(bytes.subarray(0, SAMPLE_BYTES), { level: 1 }).byteLength > SAMPLE_BYTES * 0.97;
 
 const isMissing = (e: unknown) => ['ENOENT', 'ENOTDIR'].includes((e as NodeJS.ErrnoException)?.code ?? '');
 const sleep = (ms: number) => new Promise<void>((r) => setTimeout(r, ms));
@@ -148,6 +159,23 @@ export function openRepo(root: string, opts: RepoOptions = {}): Repo {
       throw asGitError(e);
     }
   };
+  /**
+   * A write of objects, one at a time in this worker: what it staged is made durable and named before it answers, and
+   * removed if it fails, so its objects are all there or none is.
+   */
+  const writing = <T>(f: () => Promise<T>): Promise<T> =>
+    io(() =>
+      serial(async () => {
+        try {
+          const result = await f();
+          await gfs.flush();
+          return result;
+        } catch (e) {
+          await gfs.discard();
+          throw e;
+        }
+      })
+    );
 
   /** The object's type, or null when it is not there. Reads the whole object: for trees and commits, which are small. */
   const typeOf = async (oid: Oid): Promise<string | null> => {
@@ -158,7 +186,8 @@ export function openRepo(root: string, opts: RepoOptions = {}): Repo {
       throw e;
     }
   };
-  const looseExists = async (oid: Oid) => !!(await fs.lstat(join(gitdir, 'objects', oid.slice(0, 2), oid.slice(2))).catch(() => null));
+  const objectPath = (oid: Oid) => join(gitdir, 'objects', oid.slice(0, 2), oid.slice(2));
+  const looseExists = async (oid: Oid) => !!(await fs.lstat(objectPath(oid)).catch(() => null));
 
   /** A file's bytes, read only as far as the size it had when it was checked, and refused if it changed meanwhile. */
   const readSource = async (source: string, seen?: Stats): Promise<Uint8Array> => {
@@ -189,11 +218,18 @@ export function openRepo(root: string, opts: RepoOptions = {}): Repo {
     }
   };
 
-  /** A blob of these bytes, written unless it is there already (hashing is cheap; compressing a picture again is not). */
+  /**
+   * A blob of these bytes, staged unless it is there already. Hashed and compressed by Node's own SHA-1 and zlib, which
+   * are several times quicker than the bundled Git's, and compressed as it is written, so it is never held twice over.
+   */
   const blob = async (bytes: Uint8Array): Promise<Oid> => {
-    const { oid } = await git.hashBlob({ object: bytes });
-    if (await looseExists(oid)) return oid;
-    return git.writeBlob({ fs: gfs, gitdir, blob: bytes });
+    const header = Buffer.from(`blob ${bytes.byteLength}\0`);
+    const oid = createHash('sha1').update(header).update(bytes).digest('hex');
+    const path = objectPath(oid);
+    if (gfs.staged(path) || (await looseExists(oid))) return oid;
+    const deflate = createDeflate({ level: incompressible(bytes) ? 0 : zlibConstants.Z_DEFAULT_COMPRESSION });
+    await gfs.stage(path, Readable.from([header, bytes], { objectMode: false }).pipe(deflate));
+    return oid;
   };
 
   /** The commit a branch points at, exactly as written (never a shorthand or a link to another), or null. */
@@ -285,7 +321,7 @@ export function openRepo(root: string, opts: RepoOptions = {}): Repo {
       }).catch((e) => Promise.reject(asGitError(e))),
 
     writeBlob: (input, token = NEVER) =>
-      io(async () => {
+      writing(async () => {
         check(token);
         if ('bytes' in input) {
           if (!(input.bytes instanceof Uint8Array)) throw new GitError('invalid', 'A file in a version has no bytes.');
@@ -296,7 +332,7 @@ export function openRepo(root: string, opts: RepoOptions = {}): Repo {
       }),
 
     writeFiles: (files, token = NEVER) =>
-      io(async () => {
+      writing(async () => {
         if (!Array.isArray(files)) throw new GitError('invalid', 'A version needs a list of files.');
         if (files.length > limits.maxEntries) throw new GitError('too-large', `A version can hold ${limits.maxEntries} files at most.`);
         // Everything is checked before anything is written: a refused version leaves nothing behind.
@@ -346,6 +382,7 @@ export function openRepo(root: string, opts: RepoOptions = {}): Repo {
         for (const [index, f] of files.entries()) {
           check(token);
           oids[index] = await blob('bytes' in f ? f.bytes : await readSource(f.source, seen[index]));
+          if (opts.fault) await opts.fault('file-written', f.path);
         }
         const writeDir = async (dir: Extract<Named, { kind: 'dir' }>): Promise<Oid> => {
           const entries: TreeEntry[] = [];
@@ -360,7 +397,7 @@ export function openRepo(root: string, opts: RepoOptions = {}): Repo {
       }),
 
     writeCommit: (commit, token = NEVER) =>
-      io(async () => {
+      writing(async () => {
         const c = commit ?? ({} as CommitInput);
         checkOid(c.tree);
         if (!Array.isArray(c.parents) || c.parents.length > 8) throw new GitError('invalid', 'A version’s commit has a list of at most 8 parents.');

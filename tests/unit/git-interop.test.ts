@@ -6,6 +6,7 @@
  * Skipped where no Git is installed, except on CI, where it must be there.
  */
 import { spawnSync } from 'node:child_process';
+import { randomBytes } from 'node:crypto';
 import { mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -52,6 +53,9 @@ function git(args: string[], opts: { cwd?: string; allowFail?: boolean } = {}) {
 const gitdir = () => join(root, '.siteorigin', 'versions.git');
 const text = (s: string) => new TextEncoder().encode(s);
 const photo = Buffer.from(Array.from({ length: 50_000 }, (_, i) => (i * 104729) % 256));
+/** Bytes that do not compress, as a camera's or a video's: the bundled Git stores them uncompressed. */
+const video = randomBytes(300_000);
+const MEDIA: Record<string, Buffer> = { 'static/assets/photo.jpg': photo, 'static/assets/video.mp4': video };
 
 const FILES: FileInput[] = [
   { path: 'siteorigin/site.json', bytes: text('{"name":"Site"}\n') },
@@ -59,13 +63,14 @@ const FILES: FileInput[] = [
   { path: 'siteorigin/pages/about-us.json', bytes: text('{"title":"About"}\n') },
   { path: 'siteorigin/pages-list.json', bytes: text('[]\n') },
   { path: 'static/assets/photo.jpg', source: 'static/assets/photo.jpg' },
+  { path: 'static/assets/video.mp4', source: 'static/assets/video.mp4' },
   { path: 'static/empty.txt', bytes: new Uint8Array(0) },
   { path: 'static/café.txt', bytes: text('naïve') }
 ];
 
 async function save(files = FILES) {
   mkdirSync(join(root, 'static', 'assets'), { recursive: true });
-  writeFileSync(join(root, 'static', 'assets', 'photo.jpg'), photo);
+  for (const [path, bytes] of Object.entries(MEDIA)) writeFileSync(join(root, path), bytes);
   const repo = openRepo(root);
   await repo.init();
   const tree = await repo.writeFiles(files);
@@ -104,7 +109,7 @@ describe.skipIf(!hasGit && !process.env.CI)('the versions repository read by sto
     const expected = join(root, 'expected');
     for (const f of [...FILES.filter((f) => f.path !== 'static/empty.txt'), { path: 'static/new.txt', bytes: text('new') }]) {
       mkdirSync(join(expected, f.path, '..'), { recursive: true });
-      writeFileSync(join(expected, f.path), 'bytes' in f ? f.bytes : photo);
+      writeFileSync(join(expected, f.path), 'bytes' in f ? f.bytes : MEDIA[f.source]);
     }
     expect(files(out)).toEqual(files(expected));
     git(['checkout', '--quiet', first], { cwd: out });
@@ -135,6 +140,7 @@ describe.skipIf(!hasGit && !process.env.CI)('the versions repository read by sto
     expect(await fresh.resolveRef(VERSIONS_BRANCH)).toBe(stock);
     expect(await fresh.readCommit(stock)).toMatchObject({ parents: [first], message: 'By stock Git\n', author: { name: 'Stock Git', email: 'stock@example.invalid', timestamp: 1790000500 } });
     expect(Buffer.from(await fresh.readBlob(first, 'static/assets/photo.jpg')).equals(photo)).toBe(true);
+    expect(Buffer.from(await fresh.readBlob(first, 'static/assets/video.mp4')).equals(video)).toBe(true);
     expect((await fresh.listCommits(VERSIONS_BRANCH, 10)).map((c) => c.oid)).toEqual([stock, first]);
     // The bundled Git moves the packed branch; the loose branch it writes is the one stock Git reads.
     const tree2 = await repo.writeFiles([{ path: 'after.txt', bytes: text('after') }]);

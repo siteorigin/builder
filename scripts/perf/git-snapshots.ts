@@ -12,13 +12,10 @@
  */
 import { fork } from 'node:child_process';
 import { randomBytes } from 'node:crypto';
-import { existsSync, mkdirSync, mkdtempSync, readdirSync, rmSync, statSync, writeFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, readdirSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { parseArgs } from 'node:util';
-import { FIXTURES, ROOT, fixtureState } from './fixtures';
-import { registerBuiltinPacks } from '../../src/main/packs/build';
-import { stateToDocs } from '../../src/main/project/documents';
 import { openRepo } from '../../src/main/git/repo';
 import { VERSIONS_BRANCH, type FileInput, type Identity } from '../../src/main/git/protocol';
 
@@ -26,6 +23,8 @@ type Fixture = 'starter' | 'media';
 const APP: Identity = { name: 'SiteOrigin Builder', email: 'versions@siteorigin.invalid', timestamp: 1_790_000_000, timezoneOffset: 0 };
 
 interface Trial {
+  /** The process's memory once it has loaded the repository code, before the first snapshot. */
+  baselineRssBytes: number;
   firstMs: number;
   unchangedMs: number;
   /** Whether the second snapshot's tree was the first's, as it should be for the same files. */
@@ -42,8 +41,16 @@ function bytesUnder(dir: string): number {
   return n;
 }
 
-/** The fixture's project folder (media files on disk), and its snapshot: documents inline, media read from the disk. */
-function prepare(fixture: Fixture, dir: string): { files: FileInput[]; inputBytes: number } {
+/**
+ * The fixture's project folder (media files on disk), and its snapshot: documents inline, media read from the disk.
+ * The fixtures are made from the theme packs, as the benchmark's are (run.ts); loaded only here, so the process that is
+ * measured holds none of them.
+ */
+async function prepare(fixture: Fixture, dir: string): Promise<{ files: FileInput[]; inputBytes: number }> {
+  const { FIXTURES, ROOT, fixtureState } = await import('./fixtures');
+  const { registerBuiltinPacks } = await import('../../src/main/packs/build');
+  const { stateToDocs } = await import('../../src/main/project/documents');
+  registerBuiltinPacks(ROOT);
   const { state, files: media } = fixtureState(fixture === 'starter' ? FIXTURES.small : FIXTURES.large);
   if (fixture === 'media') {
     for (let i = 0; i < 16; i++) media.set(`static/assets/photo-${i}.jpg`, randomBytes(4 * 1024 * 1024));
@@ -67,6 +74,7 @@ function prepare(fixture: Fixture, dir: string): { files: FileInput[]; inputByte
 
 /** One trial, in this (child) process: a first snapshot, then the same files again. */
 async function trial(dir: string, files: FileInput[]): Promise<Trial> {
+  const baselineRssBytes = process.memoryUsage().rss;
   const repo = openRepo(dir);
   await repo.init();
   const gitdir = join(dir, '.siteorigin', 'versions.git');
@@ -83,6 +91,7 @@ async function trial(dir: string, files: FileInput[]): Promise<Trial> {
   await repo.advanceRef(VERSIONS_BRANCH, second, first);
   const unchangedMs = performance.now() - t;
   return {
+    baselineRssBytes,
     firstMs,
     unchangedMs,
     sameTree: tree2 === tree,
@@ -93,11 +102,15 @@ async function trial(dir: string, files: FileInput[]): Promise<Trial> {
   };
 }
 
-/** A trial in a fresh process, as the Git worker would run it. */
-function trialInChild(dir: string, fixture: Fixture): Promise<Trial> {
+/** A trial in a fresh process, as the Git worker would run it, sent the file map as the worker is. */
+function trialInChild(dir: string, files: FileInput[]): Promise<Trial> {
   return new Promise((done, fail) => {
-    const child = fork(import.meta.filename, ['--child', dir, '--fixture', fixture], { stdio: ['ignore', 'inherit', 'inherit', 'ipc'] });
-    child.once('message', (m: { trial?: Trial; error?: string }) => (m.trial ? done(m.trial) : fail(new Error(m.error))));
+    const child = fork(import.meta.filename, ['--child', dir], { stdio: ['ignore', 'inherit', 'inherit', 'ipc'], serialization: 'advanced' });
+    child.once('message', (m: { ready?: true; trial?: Trial; error?: string }) => {
+      if (!m.ready) return fail(new Error('the trial did not start'));
+      child.send({ files });
+      child.once('message', (r: { trial?: Trial; error?: string }) => (r.trial ? done(r.trial) : fail(new Error(r.error))));
+    });
     child.once('exit', (code) => code && fail(new Error(`the trial exited with ${code}`)));
   });
 }
@@ -107,42 +120,35 @@ const fmtMiB = (b: number) => `${(b / 1024 / 1024).toFixed(1)} MiB`;
 const median = (xs: number[]) => [...xs].sort((a, b) => a - b)[Math.floor(xs.length / 2)];
 
 async function main() {
-  // The fixtures are made from the theme packs, as the benchmark's are (run.ts).
-  registerBuiltinPacks(ROOT);
   const { values } = parseArgs({ options: { child: { type: 'string' }, fixture: { type: 'string' }, trials: { type: 'string' }, out: { type: 'string' } } });
   if (values.child) {
-    // The child: the files are listed again here from the folder the parent prepared, rather than sent.
-    const fixture = values.fixture as Fixture;
-    const { state } = fixtureState(fixture === 'starter' ? FIXTURES.small : FIXTURES.large);
-    const files: FileInput[] = [...stateToDocs(state)].map(([path, text]) => ({ path, bytes: new TextEncoder().encode(text) }));
-    for (const e of existsSync(join(values.child, 'static')) ? readdirSync(join(values.child, 'static'), { recursive: true, withFileTypes: true }) : [])
-      if (e.isFile()) {
-        const path = join(e.parentPath, e.name).slice(values.child.length + 1).split('\\').join('/');
-        files.push({ path, source: path });
+    const dir = values.child;
+    process.once('message', async ({ files }: { files: FileInput[] }) => {
+      try {
+        process.send!({ trial: await trial(dir, files) });
+      } catch (e) {
+        process.send!({ error: e instanceof Error ? e.stack : String(e) });
       }
-    try {
-      process.send!({ trial: await trial(values.child, files) });
-    } catch (e) {
-      process.send!({ error: e instanceof Error ? e.stack : String(e) });
-    }
+    });
+    process.send!({ ready: true });
     return;
   }
   const fixtures: Fixture[] = values.fixture ? [values.fixture as Fixture] : ['starter', 'media'];
   const trials = Number(values.trials ?? 3);
   const results: Record<string, unknown> = { platform: `${process.platform}-${process.arch}`, node: process.version, at: new Date().toISOString(), fixtures: {} };
-  const rows: string[] = ['| Fixture | Files | Input | First snapshot | Unchanged snapshot | Peak RSS | Repository after first | Growth, unchanged |', '|---|---|---|---|---|---|---|---|'];
+  const rows: string[] = ['| Fixture | Files | Input | First snapshot | Unchanged snapshot | Peak RSS (at start) | Repository after first | Growth, unchanged |', '|---|---|---|---|---|---|---|---|'];
   for (const fixture of fixtures) {
     const work = mkdtempSync(join(tmpdir(), `so-perf-git-${fixture}-`));
     try {
-      const { files, inputBytes } = prepare(fixture, work);
+      const { files, inputBytes } = await prepare(fixture, work);
       const runs: Trial[] = [];
       for (let i = 0; i < trials; i++) {
         rmSync(join(work, '.siteorigin'), { recursive: true, force: true });
-        runs.push(await trialInChild(work, fixture));
+        runs.push(await trialInChild(work, files));
       }
       (results.fixtures as Record<string, unknown>)[fixture] = { files: files.length, inputBytes, trials: runs };
       const m = (k: keyof Trial) => median(runs.map((r) => r[k] as number));
-      rows.push(`| ${fixture} | ${files.length} | ${fmtMiB(inputBytes)} | ${fmtMs(m('firstMs'))} | ${fmtMs(m('unchangedMs'))} | ${fmtMiB(m('peakRssBytes'))} | ${fmtMiB(m('repoBytesAfterFirst'))} | ${(m('repoGrowthUnchanged') / 1024).toFixed(1)} KiB |`);
+      rows.push(`| ${fixture} | ${files.length} | ${fmtMiB(inputBytes)} | ${fmtMs(m('firstMs'))} | ${fmtMs(m('unchangedMs'))} | ${fmtMiB(m('peakRssBytes'))} (${fmtMiB(m('baselineRssBytes'))}) | ${fmtMiB(m('repoBytesAfterFirst'))} | ${(m('repoGrowthUnchanged') / 1024).toFixed(1)} KiB |`);
       if (!runs.every((r) => r.sameTree)) throw new Error(`${fixture}: the same files made a different tree`);
     } finally {
       rmSync(work, { recursive: true, force: true });
