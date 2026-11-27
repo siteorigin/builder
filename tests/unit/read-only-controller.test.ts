@@ -412,19 +412,25 @@ describe('a takeover at the last moment', () => {
     const { c } = controller();
     await c.trustAndOpen(dir);
     await until(() => c.snapshot()?.runtime.state === 'ready', 'the preview');
-    const s = c.session!;
-    const owner = s.stillOwner.bind(s);
-    let checks = 0;
-    // Owned through the snapshot (two checks); taken over before the third, as the archive is about to be put in place.
-    s.stillOwner = async () => {
-      if (++checks === 3) lockByAnother(dir);
-      return owner();
-    };
+    // Owned through the whole snapshot, then taken over as the archive is about to be put in place. The takeover goes
+    // in when delivery starts rather than at a count of ownership checks: the export's own checks change as it gains
+    // steps, and background work (a history sweep, the opening's icon refresh) checks ownership in the same window.
+    const internals = c as unknown as { publish: (...args: unknown[]) => Promise<string | null> };
+    const deliver = internals.publish.bind(c);
+    const delivered: Array<string | null> = [];
+    vi.spyOn(internals, 'publish').mockImplementation(async (...args: unknown[]) => {
+      lockByAnother(dir);
+      const refused = await deliver(...args);
+      delivered.push(refused);
+      return refused;
+    });
     const out = temp('out');
     const zip = join(out, 'source.zip');
     writeFileSync(zip, 'the previous export');
     const r = await c.exportSourceTo(zip, 'zip');
-    expect(checks).toBe(3);
+    // Delivery itself called it off: the snapshot finished as the owner's.
+    expect(delivered).toHaveLength(1);
+    expect(delivered[0]).toMatch(/took over/);
     expect(r.ok).toBe(false);
     expect(r.message).toMatch(/took over/);
     expect(readFileSync(zip, 'utf8')).toBe('the previous export');
