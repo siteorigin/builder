@@ -309,7 +309,7 @@ const plans = frame.locator('li[class*="__plan"]');
 await eventually(async () => assert.equal(await plans.count(), 3, 'three plan cards are shown'));
 const fills = () => plans.evaluateAll((els) => els.map((el) => getComputedStyle(el).backgroundColor));
 const shared = (await fills())[0];
-const reach = win.locator('#dock-panel-inspect').getByRole('group', { name: 'Style which plan cards' });
+const reach = win.locator('#dock-panel-inspect').getByRole('radiogroup', { name: /style which plan cards/ });
 // The preview can swap its elements while it settles after earlier edits: click again until the card is selected.
 const selectPlan = (i) =>
   eventually(async () => {
@@ -318,7 +318,7 @@ const selectPlan = (i) =>
   });
 await selectPlan(1);
 assert.equal(await reach.getByRole('radio', { name: /^All 3 plan cards$/ }).getAttribute('aria-checked'), 'true', 'all cards is the default');
-await reach.getByRole('button', { name: 'This plan card' }).click();
+await reach.getByRole('radio', { name: 'This plan card' }).click();
 await win.locator('#dock-panel-inspect .style-row', { hasText: 'Background' }).first().locator('select').selectOption('token:color.brand');
 const onlyDesign = async () => {
   const [a, b, c] = await fills();
@@ -354,6 +354,78 @@ await selectPlan(1);
 await win.locator('#dock-panel-inspect').getByRole('button', { name: /Reset to shared style/ }).first().click();
 await eventually(async () => assert.deepEqual(await fills(), [shared, shared, shared], 'reset returns the plan to the shared fill'));
 assert.equal((await pricingNode()).itemOverrides, undefined, 'nothing is left of the plan’s own style');
+
+step('style one card of a code component’s list without restyling the others (#1075)');
+// A code component that repeats its card over a list, giving each card its item's class: saving it declares that.
+const PLAN_SOURCE = `<script>
+	let { plans = [], class: className = '', so_o = undefined, so_oi = undefined } = $props();
+</script>
+
+<section class={['code-plans', className]}>
+	<ul style="display: flex; gap: 12px; list-style: none; padding: 24px; margin: 0">
+		{#each plans as plan (plan.id)}
+			<li class={['code-plan', so_o?.card, so_oi?.[plan.id]?.card]} style="padding: 24px; min-width: 120px">{plan.name}</li>
+		{/each}
+	</ul>
+</section>
+`;
+const applyOps = (operations, label) =>
+  win.evaluate(
+    async ([operations, label]) => {
+      const r = await window.builder.project.apply({ operations, label });
+      if (!r.ok) throw new Error(`${label}: ${r.error?.message}`);
+      return r.results;
+    },
+    [operations, label]
+  );
+await win.evaluate(() => window.builder.app.setSettings({ developerMode: true }));
+const planList = { type: 'list', label: 'Plans', itemLabel: 'Plan', titleField: 'name', fields: { name: { type: 'string', label: 'Name', default: '' } }, default: [] };
+const [{ definitionId: codeDefId }] = await applyOps([{ type: 'component.createCode', name: 'Code plans', source: PLAN_SOURCE, properties: { plans: planList } }], 'Create code plans');
+const codeHome = (await projectSnapshot()).state.site.homePageId;
+const codeOwner = { kind: 'page', id: codeHome };
+const [{ nodeId: codePlans }] = await applyOps([{ type: 'node.insert', owner: codeOwner, parentId: null, index: 0, definitionId: codeDefId }], 'Insert code plans');
+const planIds = ['cp_basic', 'cp_plus', 'cp_pro'];
+await applyOps([{ type: 'instance.setProp', owner: codeOwner, nodeId: codePlans, prop: 'plans', value: planIds.map((id, i) => ({ id, name: ['Basic', 'Plus', 'Pro'][i] })) }], 'Set code plans');
+assert.deepEqual((await projectSnapshot()).state.components[codeDefId].parts.card, { nodeId: 'card', label: 'Card', list: 'plans' }, 'saving the code declares the list the card repeats over');
+const codeCards = frame.locator('li.code-plan');
+await eventually(async () => assert.equal(await codeCards.count(), 3, 'three code cards are shown'), 30000);
+const codeFills = () => codeCards.evaluateAll((els) => els.map((el) => getComputedStyle(el).backgroundColor));
+const codeShared = (await codeFills())[0];
+const codeReach = win.locator('#dock-panel-inspect').getByRole('radiogroup', { name: /style which cards/ });
+// Click the card until the Inspector offers this card alone: the preview can still be settling after the insert.
+await eventually(async () => {
+  await codeCards.nth(1).click({ position: { x: 6, y: 6 }, timeout: 3000 });
+  await codeReach.waitFor({ timeout: 3000 });
+}, 30000);
+assert.equal(await codeReach.getByRole('radio', { name: 'All 3 cards' }).getAttribute('aria-checked'), 'true', 'all cards is the default');
+await codeReach.getByRole('radio', { name: 'This card' }).click();
+await win.locator('#dock-panel-inspect .style-row', { hasText: 'Background' }).first().locator('select').selectOption('token:color.brand');
+const codeNode = async () => (await projectSnapshot()).state.pages[codeHome].nodes[codePlans];
+const onlyPlus = async (order) => {
+  const fills = await codeFills();
+  const names = await codeCards.allInnerTexts();
+  for (let i = 0; i < 3; i++) {
+    if (names[i] === 'Plus') assert.notEqual(fills[i], codeShared, 'the chosen card has its own fill');
+    else assert.equal(fills[i], codeShared, `${names[i]} keeps the shared fill`);
+  }
+  assert.deepEqual(names, order, 'the cards show in the list’s order');
+};
+await eventually(() => onlyPlus(['Basic', 'Plus', 'Pro']));
+assert.deepEqual(Object.keys((await codeNode()).itemOverrides.card.items), ['cp_plus'], 'only the chosen card has its own style');
+// The style follows its card when the list is reordered.
+await applyOps([{ type: 'instance.listMove', owner: codeOwner, nodeId: codePlans, prop: 'plans', itemId: 'cp_plus', index: 2 }], 'Move code plan');
+await eventually(() => onlyPlus(['Basic', 'Pro', 'Plus']));
+await win.locator('[aria-label^="Undo"]').first().click();
+await eventually(() => onlyPlus(['Basic', 'Plus', 'Pro']));
+// Reset from the card's own style returns it to the shared one.
+await eventually(async () => {
+  await codeCards.nth(1).click({ position: { x: 6, y: 6 }, timeout: 3000 });
+  await codeReach.waitFor({ timeout: 3000 });
+}, 30000);
+await win.locator('#dock-panel-inspect').getByRole('button', { name: /Reset to shared style/ }).first().click();
+await eventually(async () => assert.deepEqual(await codeFills(), [codeShared, codeShared, codeShared], 'reset returns the card to the shared fill'));
+assert.equal((await codeNode()).itemOverrides, undefined, 'nothing is left of the card’s own style');
+await applyOps([{ type: 'node.remove', owner: codeOwner, nodeId: codePlans }], 'Remove code plans');
 
 step('copy a section, delete it, then paste it on another page');
 const sectionsOn = (title) =>
