@@ -1,5 +1,5 @@
 import './Canvas.css';
-import { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
+import { useEffect, useId, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { previewPill } from '../lib/previewing';
 import { createPortal } from 'react-dom';
 import { ArrowDown, Repeat, ArrowLeft, ArrowRight, ArrowUp, Ban, BookmarkPlus, Box, Check, ChevronLeft, ChevronRight, Download, LocateFixed, Component, Copy, Ellipsis, Eye, GripVertical, Image, Layers, LayoutTemplate, Link2, PanelRight, Pencil, Plus, Rows3, Sparkles, Trash2, TriangleAlert, Type, Unlink, Users } from 'lucide-react';
@@ -3809,15 +3809,20 @@ function SelectionChip({ box, frameWidth, taken, name, icon, parent, repeats, re
   useLayoutEffect(() => {
     current.current = 0;
   }, [key]);
-  /** Too narrow for everything (a phone frame, many actions): the parent link and Edit text, which More actions
-   *  also offers, step out of the chip rather than being clipped while still focusable. */
-  const [compact, setCompact] = useState(false);
-  useLayoutEffect(() => setCompact(false), [key, frameWidth, editing]);
+  /** Too narrow for everything (a phone frame, many actions), the selection's name is the last thing to give way.
+   *  First Ask AI and Edit text, which More actions also offers, step out and the labelled buttons keep only their
+   *  icon; if the name is still cut, the parent link goes too (Escape still selects the parent). */
+  const [compact, setCompact] = useState(0);
+  useLayoutEffect(() => setCompact(0), [key, frameWidth, taken, editing, !!onReveal, inspectorHidden, !!onEditText, name, parent, layerSet]); // eslint-disable-line react-hooks/exhaustive-deps
   useLayoutEffect(() => {
     const width = ref.current?.offsetWidth ?? 0;
     if (width && width !== w) (setW(width), onWidth(width));
-    const nameEl = ref.current?.querySelector<HTMLElement>('.name');
-    if (!compact && nameEl && nameEl.scrollWidth > nameEl.clientWidth + 1) setCompact(true);
+    // Pressure is the name, or its parent, cut short of its own cap (a long name at its cap is not short of room). The
+    // parent link counts only at the first step: the second takes it away.
+    const cut = (text: HTMLElement | null | undefined, box = text) => !!text && !!box && text.scrollWidth > text.clientWidth + 1 && box.clientWidth < parseFloat(getComputedStyle(box).maxWidth) - 1;
+    const label = ref.current?.querySelector<HTMLElement>('.name .label');
+    const link = ref.current?.querySelector<HTMLElement>('.name .of.link');
+    if (compact < 2 && (cut(label) || (compact < 1 && cut(link?.querySelector<HTMLElement>('.ellipsis'), link)))) setCompact(compact + 1);
     // Roving tab stop: exactly one button is in the Tab order, the last one used. A control that keeps focus while
     // the selection changes under it (Previous or Next item) keeps the Tab stop, wherever the chip's controls now are.
     const list = buttons();
@@ -3849,6 +3854,13 @@ function SelectionChip({ box, frameWidth, taken, name, icon, parent, repeats, re
   const canDown = group ? group.indexes[group.indexes.length - 1] < group.list.length - 1 : !!sib && sib.index < sib.count - 1;
   const canPrev = !!item && !stepBlocked?.prev && !!stepItem(item.parts, item.n, -1);
   const canNext = !!item && !stepBlocked?.next && !!stepItem(item.parts, item.n, 1);
+  // An unavailable control says why, in its tooltip and as its description.
+  const whyId = useId();
+  const why = (ok: boolean, reason: string, which: string) => (ok ? {} : { title: reason, 'aria-describedby': `${whyId}-${which}` });
+  const prevWhy = item?.n === 1 ? 'This is the first item' : 'No earlier item shows this part';
+  const nextWhy = item && item.n === item.count ? 'This is the last item' : 'No later item shows this part';
+  // Layers selected together: the chip names the one picked and counts the rest, which its moves and Duplicate act on too.
+  const others = group ? group.indexes.length - 1 : 0;
   const onKeyDown = (e: React.KeyboardEvent) => {
     if (e.metaKey || e.ctrlKey || e.altKey) return;
     const list = buttons();
@@ -3887,12 +3899,12 @@ function SelectionChip({ box, frameWidth, taken, name, icon, parent, repeats, re
         <span className="name">
           <Pencil />
           <span className="label">Editing {what}</span>
-          <span className="sep" aria-hidden="true">
+          <span className="dot" aria-hidden="true">
             ·
           </span>
           <span className="of">Esc to cancel</span>
         </span>
-        <button className="chip-text" title={`Done (${keys('⌘↩')})`} aria-keyshortcuts={ariaKeys('Meta+Enter')} onClick={onDone}>
+        <button className="chip-text raised" title={`Done (${keys('⌘↩')})`} aria-keyshortcuts={ariaKeys('Meta+Enter')} onClick={onDone}>
           <Check /> Done <kbd>{keys('⌘↩')}</kbd>
         </button>
       </div>
@@ -3905,7 +3917,7 @@ function SelectionChip({ box, frameWidth, taken, name, icon, parent, repeats, re
       style={{ left, top, maxWidth: chipRoom(taken, frameWidth) }}
       role="toolbar"
       // Which of a repeated part it acts on (one card, or every card) is part of what the toolbar is for.
-      aria-label={`${name}${item ? `, ${item.n} of ${item.count}` : repeats > 1 ? `, all ${repeats} ${repeatsLabel}` : ''} actions`}
+      aria-label={`${name}${others > 0 ? ` and ${others} more` : item ? `, ${item.n} of ${item.count}` : repeats > 1 ? `, all ${repeats} ${repeatsLabel}` : ''} actions`}
       onKeyDown={onKeyDown}
       onFocus={trackFocus}
       onBlur={trackBlur}
@@ -3913,43 +3925,48 @@ function SelectionChip({ box, frameWidth, taken, name, icon, parent, repeats, re
       {canGrip && !group && (
         // Pointer-only, so it is hidden from assistive tech: Move up and Move down are its equivalent. A drag moves one
         // element, so it is not offered while layers are selected together (the arrows move them all).
-        <span className="icon-btn grip" aria-hidden="true" title="Drag to move" aria-label="Drag to move" onPointerDown={onGrip}>
+        <span className="icon-btn grip" aria-hidden="true" title="Drag to move" onPointerDown={onGrip}>
           <GripVertical />
         </span>
       )}
       <span className="name">
         {icon}
         <span className="label">{name}</span>
-        {parent && parentRef && !compact && (
+        {parent && parentRef && compact < 2 && (
           <button className="of link" title={`Select ${parent} (Esc)`} aria-label={`in ${parent}: select it`} aria-keyshortcuts="Escape" onClick={() => setState({ selection: parentRef })}>
             <span className="ellipsis">in {parent}</span>
           </button>
         )}
         {/* The part in every card (picked in Layers): say so. One card picked on the page says which, beside it. */}
         {!item && repeats > 1 && <span className="of">· all {repeats} {repeatsLabel}</span>}
+        {others > 0 && <span className="of">and {others} more</span>}
       </span>
       {item && (
         // The same part in the card before or after: the selection moves, the list never changes. Outside the name,
         // which gives way first, so the steps are never clipped while they can be focused.
-        <span className="chip-step">
-          <span className="sep" aria-hidden="true">
-            ·
+        <>
+          <span className="chip-sep" aria-hidden="true" />
+          <span className="chip-step">
+            <button className="icon-btn step" title="Previous item" aria-label="Previous item" aria-disabled={!canPrev || undefined} {...why(canPrev, prevWhy, 'prev')} onClick={guard(canPrev, () => onStep(-1))}>
+              <ChevronLeft />
+            </button>
+            <span className="of" data-testid="chip-item-pos">
+              {item.n} of {item.count}
+            </span>
+            <button className="icon-btn step" title="Next item" aria-label="Next item" aria-disabled={!canNext || undefined} {...why(canNext, nextWhy, 'next')} onClick={guard(canNext, () => onStep(1))}>
+              <ChevronRight />
+            </button>
+            {!canPrev && <span id={`${whyId}-prev`} hidden>{prevWhy}</span>}
+            {!canNext && <span id={`${whyId}-next`} hidden>{nextWhy}</span>}
           </span>
-          <button className="icon-btn step" title="Previous item" aria-label="Previous item" aria-disabled={!canPrev || undefined} onClick={guard(canPrev, () => onStep(-1))}>
-            <ChevronLeft />
-          </button>
-          <span className="of" data-testid="chip-item-pos">
-            {item.n} of {item.count}
-          </span>
-          <button className="icon-btn step" title="Next item" aria-label="Next item" aria-disabled={!canNext || undefined} onClick={guard(canNext, () => onStep(1))}>
-            <ChevronRight />
-          </button>
-        </span>
+        </>
       )}
-      <span className="chip-sep" aria-hidden="true" />
-      <button className="icon-btn" title={`Ask AI about this (${keys(askKeys.hint)})`} aria-label="Ask AI about this" aria-keyshortcuts={askKeys.aria} onClick={() => askAiAbout(selection)}>
-        <Sparkles />
-      </button>
+      {(!compact || onReveal || inspectorHidden) && <span className="chip-sep" aria-hidden="true" />}
+      {!compact && (
+        <button className="icon-btn" title={`Ask AI about this (${keys(askKeys.hint)})`} aria-label="Ask AI about this" aria-keyshortcuts={askKeys.aria} onClick={() => askAiAbout(selection)}>
+          <Sparkles />
+        </button>
+      )}
       {onEditText && !compact && (
         <button className="icon-btn" title="Edit text (double-click)" aria-label="Edit text" onClick={onEditText}>
           <Pencil />
@@ -3957,44 +3974,50 @@ function SelectionChip({ box, frameWidth, taken, name, icon, parent, repeats, re
       )}
       {/* Scrolled right out of view, the selection has no outline on the page: this brings it back. */}
       {onReveal && (
-        <button className="chip-text" title="Scroll the page back to it" aria-label="Show on the page" onClick={onReveal}>
-          <LocateFixed /> Show
+        <button className={`chip-text${compact ? ' icon-only' : ''}`} title="Scroll the page back to it" aria-label="Show on the page" onClick={onReveal}>
+          <LocateFixed />
+          {!compact && 'Show'}
         </button>
       )}
       {inspectorHidden && (
         <button
-          className="chip-text"
+          className={`chip-text${compact ? ' icon-only' : ''}`}
           title="Show this in the inspector"
+          aria-label="Inspect"
           onClick={() => {
             setState({ dockOpen: true, rightTab: 'inspect' });
             // Focus follows into the inspector, landing on the selection's first control.
             focusInspector();
           }}
         >
-          <PanelRight /> Edit
+          <PanelRight />
+          {!compact && 'Inspect'}
         </button>
       )}
       {(canReorder || canEdit) && <span className="chip-sep" aria-hidden="true" />}
       {canReorder && (
         <>
-          <button className="icon-btn" title={`Move up (${keys('⇧⌘↑')})`} aria-label="Move up" aria-keyshortcuts={ariaKeys('Shift+Meta+ArrowUp')} aria-disabled={!canUp || undefined} onClick={guard(canUp, () => onMove(-1))}>
+          <button className="icon-btn" title={`Move up (${keys('⇧⌘↑')})`} aria-label="Move up" aria-keyshortcuts={ariaKeys('Shift+Meta+ArrowUp')} aria-disabled={!canUp || undefined} {...why(canUp, 'Already first', 'up')} onClick={guard(canUp, () => onMove(-1))}>
             <ArrowUp />
           </button>
-          <button className="icon-btn" title={`Move down (${keys('⇧⌘↓')})`} aria-label="Move down" aria-keyshortcuts={ariaKeys('Shift+Meta+ArrowDown')} aria-disabled={!canDown || undefined} onClick={guard(canDown, () => onMove(1))}>
+          <button className="icon-btn" title={`Move down (${keys('⇧⌘↓')})`} aria-label="Move down" aria-keyshortcuts={ariaKeys('Shift+Meta+ArrowDown')} aria-disabled={!canDown || undefined} {...why(canDown, 'Already last', 'down')} onClick={guard(canDown, () => onMove(1))}>
             <ArrowDown />
           </button>
+          {!canUp && <span id={`${whyId}-up`} hidden>Already first</span>}
+          {!canDown && <span id={`${whyId}-down`} hidden>Already last</span>}
         </>
       )}
       {canEdit && (
-        <button className="icon-btn" title={`Duplicate (${keys('⌘D')})`} aria-label="Duplicate" aria-keyshortcuts={ariaKeys('Meta+D')} onClick={() => void duplicateLayers()}>
+        <button className="icon-btn" title={`Duplicate${others > 0 ? ` all ${others + 1}` : ''} (${keys('⌘D')})`} aria-label={others > 0 ? `Duplicate all ${others + 1}` : 'Duplicate'} aria-keyshortcuts={ariaKeys('Meta+D')} onClick={() => void duplicateLayers()}>
           <Copy />
         </button>
       )}
       <span className="chip-sep" aria-hidden="true" />
       <button
         className="icon-btn more"
-        title="More actions"
-        aria-label="More actions"
+        // With layers selected together, its menu acts on the one named, not on the group the moves and Duplicate take.
+        title={others > 0 ? `More actions for ${name}` : 'More actions'}
+        aria-label={others > 0 ? `More actions for ${name}` : 'More actions'}
         {...more}
         onClick={(e) => onMore(e.currentTarget)}
         onKeyDown={(e) => {
