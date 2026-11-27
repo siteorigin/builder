@@ -521,7 +521,7 @@ export const INTERACTIONS: Interaction[] = [
     area: 'pages',
     intent: 'Go to another page to edit it',
     start: 'Business site with two pages of the same title',
-    routes: ['panel:Pages › page row', 'toolbar:Page menu', 'command:page:*', 'command:page:more', 'item:Toolbar:<data>', 'item:page-switch:<data>'],
+    routes: ['panel:Pages › page row', 'toolbar:Page menu', 'command:page:*', 'command:page:more', 'item:Toolbar:<data>', 'panel:Layers › head switcher', 'item:page-switch:<data>'],
     outcome: 'The toolbar’s page menu and the command menu tell same-title pages apart by address, find a page by its address, follow a rename, and open the page shown when chosen by keyboard; the head of Layers names the page, layout or component it shows and opens another page from the same list',
     scenario: 'Business starter · none',
     proof: [

@@ -161,5 +161,9 @@ describe.skipIf(!browserInstalled)('Layers rows (#971)', { timeout: 60_000 }, ()
     await expect.poll(() => subject().innerText()).toBe(`Layout: ${name} index`);
     await subject().click();
     expect((await switcherRows()).filter((r) => r.checked === 'true')).toEqual([]);
+    // Choosing the page under the layout leaves the layout for the page.
+    await page.locator('[role="menu"] [role^="menuitem"]', { hasText: 'Home' }).click();
+    await expect.poll(() => storeRead<boolean>('s.templateMode === null && s.pageId === window.home')).toBe(true);
+    await expect.poll(() => subject().innerText()).toBe('Home');
   });
 });

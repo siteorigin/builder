@@ -1095,7 +1095,8 @@ export function pageOutOfSight(s: Pick<State, 'pageId' | 'definitionMode' | 'tem
 /**
  * Open a page. Another page opens at the element last selected there (lib/page-place), so the author resumes where
  * they were; `target` names what to select instead, and null opens the page itself and forgets its place. Choosing the
- * page already shown selects the page itself too. In Preview nothing is selected.
+ * page already shown selects the page itself too (not the page under a component or layout being edited, which was not
+ * shown). In Preview nothing is selected.
  */
 export function selectPage(pageId: string, target?: ElementRef | null) {
   // A page chosen while a post is previewed ends that preview: the canvas goes to the page (see Editor). One chosen
@@ -1108,7 +1109,7 @@ export function selectPage(pageId: string, target?: ElementRef | null) {
   else if (covered) setState({ leftTab: 'pages' });
   const s = getState();
   const st = s.snapshot?.state;
-  const itself = target === null || (target === undefined && !covered && pageId === s.pageId && !s.definitionMode && s.mode === 'edit');
+  const itself = target === null || (target === undefined && !covered && pageId === s.pageId && !s.definitionMode && !s.templateMode && s.mode === 'edit');
   const selection = target !== undefined ? target : s.mode === 'edit' && !itself && st ? placeOn(st, s.pagePlaces, pageId) : null;
   // A page opened while previewing is where Edit opens: what was selected before Preview is not selected again.
   setState({ pageId, selection, definitionMode: null, templateMode: null, previewReturn: null, ...(itself ? { pagePlaces: forgetPlace(s.pagePlaces, pageId) } : {}) });

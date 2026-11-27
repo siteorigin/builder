@@ -1,5 +1,4 @@
 import type { ProjectState } from '@shared/types';
-import type { MenuItem } from '../components/ui';
 
 /** One page as the toolbar switcher and the command menu list it: the title, and the address that tells same-title pages apart. */
 export interface PageChoice {
@@ -21,11 +20,20 @@ export function pageChoices(state: ProjectState): PageChoice[] {
   });
 }
 
+/** A page switcher's row, in the shape of a menu item (components/ui MenuItem), which this file cannot import. */
+export interface PageMenuRow {
+  id: string;
+  label: string;
+  checked: boolean;
+  hint: string;
+  onSelect: () => void;
+}
+
 /**
  * The page rows of a page switcher (the toolbar's project menu, Layers' switcher): every page in site order, with its
  * address as the hint, as one radio group in which `checked` is chosen (none while a component or layout is open).
  */
-export function pageMenuItems(state: ProjectState, checked: string | null, open: (pageId: string) => void): MenuItem[] {
+export function pageMenuItems(state: ProjectState, checked: string | null, open: (pageId: string) => void): PageMenuRow[] {
   return pageChoices(state).map((p) => ({ id: p.id, label: p.title, checked: p.id === checked, hint: p.home ? 'Home page · /' : p.address, onSelect: () => open(p.id) }));
 }
 

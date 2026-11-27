@@ -222,6 +222,7 @@ interface EditorState {
   pageId: string | null;
   mode: 'edit' | 'preview';
   definitionMode: { definitionId: string; returnPageId: string } | null;
+  templateMode?: { collectionId: string; entryId: string | null } | null;
   pagePlaces: PagePlaces;
   previewReturn: unknown;
   toasts: unknown[];
@@ -253,7 +254,7 @@ describe('the editor resumes where the author was', () => {
     home = homeOf(s);
     about = aboutOf(s);
     revision = 0;
-    store.setState({ snapshot: null, pagePlaces: {}, previewReturn: null, selection: null, layerSet: null, mode: 'edit', definitionMode: null, pageId: home, toasts: [] });
+    store.setState({ snapshot: null, pagePlaces: {}, previewReturn: null, selection: null, layerSet: null, mode: 'edit', definitionMode: null, templateMode: null, pageId: home, toasts: [] });
     open(s);
     saved.length = 0;
   });
@@ -273,6 +274,17 @@ describe('the editor resumes where the author was', () => {
     expect(store.getState().selection).toEqual(intro);
     // Saved with this opening, as local workspace state, with the page being worked on.
     expect(placesSaved()).toEqual({ state: { pagePlaces: { [home]: cta, [about]: intro }, pageId: about }, key: 'opening#1' });
+  });
+
+  it('the page under an open collection layout, chosen, opens at its place: the layout was shown, not the page (#953)', () => {
+    const cta = ref(page(home), lastSection(s, home));
+    store.setState({ selection: cta });
+    // A layout opens over Home (its page stays Home underneath) with nothing of Home selected.
+    store.setState({ templateMode: { collectionId: 'posts', entryId: null }, selection: null });
+    actions.selectPage(home);
+    expect(store.getState().templateMode).toBeNull();
+    expect(store.getState().selection).toEqual(cta);
+    expect(store.getState().pagePlaces[home]).toEqual(cta);
   });
 
   it('selects nothing in place of a section that has been removed meanwhile', () => {

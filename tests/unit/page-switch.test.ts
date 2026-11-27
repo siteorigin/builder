@@ -25,7 +25,9 @@ describe('page switchers', () => {
     expect(rows.find((r) => r.id === a)).toMatchObject({ label: 'Portfolio', hint: '/lookbook/', checked: true });
     expect(rows.find((r) => r.id === b)).toMatchObject({ label: 'Portfolio', hint: '/portfolio-archive/', checked: false });
     rows.find((r) => r.id === b)!.onSelect!();
-    expect(opened).toEqual([b]);
+    // The chosen page can be chosen again (it then selects the page itself).
+    rows.find((r) => r.id === a)!.onSelect!();
+    expect(opened).toEqual([b, a]);
     // A component or layout open: every row is still a choice, none of them chosen.
     expect(pageMenuItems(s, null, () => {}).every((r) => r.checked === false)).toBe(true);
   });

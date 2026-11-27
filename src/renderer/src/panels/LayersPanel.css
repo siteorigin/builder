@@ -236,4 +236,6 @@
   .layers-subject:hover { background: var(--hover); }
   .layers-subject[aria-expanded='true'] { background: var(--active); box-shadow: inset 0 0 0 1px var(--border-control); }
   .layers-subject svg { flex: none; width: 14px; height: 14px; color: var(--text-3); }
+  /* Forced colours drop the fill and inset shadow: the open switcher keeps a system-colour ring. */
+  @media (forced-colors: active) { .layers-subject[aria-expanded='true'] { outline: 1px solid Highlight; outline-offset: -1px; } }
 }
