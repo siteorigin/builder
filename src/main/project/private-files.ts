@@ -20,14 +20,16 @@ export const CREDENTIAL_STEMS: readonly string[] = ['source-secrets', 'api-keys'
  */
 export function isCredentialFile(name: string): boolean {
   let n = name.toLowerCase().replace(/^[.#]+/, '');
+  // What a sync tool puts in brackets (`(Someone's conflicted copy 2026-11-27)`) is a copy's, whatever it says, a
+  // `.json` or another bracket inside it included: taken out innermost first, a bounded number of times.
+  for (let i = 0; i < 8 && /\([^()]*\)/.test(n); i++) n = n.replace(/\([^()]*\)/g, '');
   if (n.startsWith('copy of ')) n = n.slice('copy of '.length);
   const at = n.indexOf('.json');
   const after = at < 0 ? '' : n.slice(at + 5);
   if (at < 0 || !(after === '' || after[0] === '~' || after[0] === '#' || after[0] === '.')) return false;
   const stem = n.slice(0, at);
   const base = CREDENTIAL_STEMS.find((s) => stem.startsWith(s));
-  // What a sync tool puts in brackets (`(Someone's conflicted copy 2026-11-27)`) is a copy's, whatever it says.
-  return !!base && stem.slice(base.length).replace(/\([^()]*\)/g, '').split('copy').join('').replace(/[\s_\-()0-9]/g, '') === '';
+  return !!base && stem.slice(base.length).split('copy').join('').replace(/[\s_\-()0-9]/g, '') === '';
 }
 
 /** Whether a file named `name` is private (see PRIVATE_FILE and isCredentialFile). */

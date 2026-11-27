@@ -62,7 +62,8 @@ function client(ca: string) {
     } as GitWorkerHandle;
   });
   clients.push(c);
-  return c;
+  // A push here looks for no secret but the token it signs in with, unless a test gives some.
+  return { ...c, push: (r: string, t: RemoteTarget, commit: string, secrets: readonly string[] = []) => c.push(r, t, commit, secrets) };
 }
 
 async function host() {
@@ -262,7 +263,7 @@ describe.skipIf(!HOST_AVAILABLE && !process.env.CI)('pushing a publication to an
     for (const url of [h.url.replace('https:', 'http:'), h.url.replace('https://', `https://${USER}:${TOKEN}@`), `${h.url}?x=1`, `${h.url}/`])
       await expect(git.push(root, { url, ref: PUBLISH_BRANCH, auth: null }, commit)).rejects.toMatchObject({ code: 'invalid' });
     await expect(git.push(root, { url: h.url, ref: VERSIONS_BRANCH as typeof PUBLISH_BRANCH, auth: null }, commit)).rejects.toMatchObject({ code: 'invalid' });
-    for (const auth of [{ username: 'a:b', password: TOKEN }, { username: USER, password: '' }, { username: USER, password: `${TOKEN}\nX-Evil: 1` }])
+    for (const auth of [{ username: 'a:b', password: TOKEN }, { username: USER, password: '' }, { username: USER, password: 'short' }, { username: USER, password: `${TOKEN}\nX-Evil: 1` }])
       await expect(git.push(root, target(h, auth), commit)).rejects.toMatchObject({ code: 'invalid' });
     expect(h.requests).toEqual([]);
   });
@@ -350,6 +351,12 @@ describe.skipIf(!HOST_AVAILABLE && !process.env.CI)('pushing a publication to an
     const named = await publish({ [`static/${TOKEN}.txt`]: 'x' }, null);
     await expect(git.push(root, target(h), named)).rejects.toMatchObject({ code: 'invalid' });
     expect(pushes(h)).toEqual([]);
+    // Any of the user's other saved secrets and keys, given to the push, likewise, in this publication or an earlier one.
+    rmSync(join(root, '.siteorigin'), { recursive: true, force: true });
+    const keyed = await publish({ 'static/notes.txt': 'openai sk-test-0123456789abcdef' }, null);
+    const after = await publish({ 'static/notes.txt': 'gone' }, keyed);
+    await expect(git.push(root, target(h), after, ['sk-test-0123456789abcdef'])).rejects.toMatchObject({ code: 'invalid' });
+    expect(pushes(h)).toEqual([]);
     // A binary file is not searched (a photo's bytes can hold anything), and a clean publication goes.
     rmSync(join(root, '.siteorigin'), { recursive: true, force: true });
     const photo = await publish({ 'static/photo.bin': `\0${TOKEN}`, 'index.html': 'ok' }, null);
@@ -407,7 +414,7 @@ describe('settling a push whose reply was lost (#1157)', () => {
     const controller = new AbortController();
     const calls: unknown[] = [];
     const git: RemoteGit = {
-      push: async (_root, _target, _commit, opts) => (calls.push(['push', opts?.signal]), Promise.reject(new GitError('outcome-unknown', 'lost'))),
+      push: async (_root, _target, _commit, _secrets, opts) => (calls.push(['push', opts?.signal]), Promise.reject(new GitError('outcome-unknown', 'lost'))),
       remoteTip: async (_target, opts) => {
         calls.push(['tip', opts?.signal]);
         controller.abort();

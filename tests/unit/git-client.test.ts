@@ -214,13 +214,13 @@ describe('the Git worker client', () => {
     const target = { url: 'https://git.example/site.git', ref: PUBLISH_BRANCH, auth: null } as const;
     const crashing = fakeWorkers((m, w) => m.op === 'push' && w.exit());
     const git = createGitClient(crashing.spawn);
-    await expect(git.push(ROOT, target, 'a'.repeat(40))).rejects.toMatchObject({ code: 'outcome-unknown' });
+    await expect(git.push(ROOT, target, 'a'.repeat(40), [])).rejects.toMatchObject({ code: 'outcome-unknown' });
     // A look at the host's branch lost the same way moved nothing.
     const looking = fakeWorkers((m, w) => m.op === 'remoteTip' && w.exit());
     await expect(createGitClient(looking.spawn).remoteTip(target)).rejects.toMatchObject({ code: 'crashed' });
     const stuck = fakeWorkers(() => undefined);
     const controller = new AbortController();
-    const pushing = createGitClient(stuck.spawn, { cancelGraceMs: 10 }).push(ROOT, target, 'a'.repeat(40), { signal: controller.signal });
+    const pushing = createGitClient(stuck.spawn, { cancelGraceMs: 10 }).push(ROOT, target, 'a'.repeat(40), [], { signal: controller.signal });
     await tick(5);
     controller.abort();
     await expect(pushing).rejects.toMatchObject({ code: 'outcome-unknown' });

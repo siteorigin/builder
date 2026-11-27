@@ -217,7 +217,7 @@ export type GitOp =
   | { op: 'listCommits'; root: string; ref: string; limit: number }
   | { op: 'resolveRef'; root: string; ref: string }
   | { op: 'advanceRef'; root: string; ref: string; next: Oid; expected: Oid | null }
-  | { op: 'push'; root: string; target: RemoteTarget; commit: Oid }
+  | { op: 'push'; root: string; target: RemoteTarget; commit: Oid; secrets: string[] }
   | { op: 'remoteTip'; target: RemoteTarget };
 
 export type GitRequest = ({ id: number } & GitOp) | { id: number; op: 'cancel'; target: number };
@@ -282,14 +282,15 @@ export function approveEndpoint(url: unknown): string {
   return `${u.origin}${path}`;
 }
 
-/** The longest username and token a credential holds. */
+/** The longest username and token a credential holds, and the shortest token: shorter is no access token. */
 export const MAX_REMOTE_USERNAME = 256;
 export const MAX_REMOTE_TOKEN = 16_384;
+export const MIN_REMOTE_TOKEN = 8;
 
-/** Whether `auth` is a credential the worker can send: a username Basic authentication can carry (no colon), and a token. */
+/** Whether `auth` is a credential the worker can send: a username Basic authentication can carry (no colon), and a token of 8 characters or more. */
 export function remoteAuthOk(auth: unknown): auth is RemoteAuth {
   const a = auth as RemoteAuth;
   // eslint-disable-next-line no-control-regex
   const plain = (s: unknown, max: number) => typeof s === 'string' && s.length > 0 && s.length <= max && !/[\u0000-\u001f\u007f]/.test(s);
-  return !!a && typeof a === 'object' && plain(a.username, MAX_REMOTE_USERNAME) && !a.username.includes(':') && plain(a.password, MAX_REMOTE_TOKEN);
+  return !!a && typeof a === 'object' && plain(a.username, MAX_REMOTE_USERNAME) && !a.username.includes(':') && plain(a.password, MAX_REMOTE_TOKEN) && a.password.length >= MIN_REMOTE_TOKEN;
 }

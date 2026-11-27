@@ -38,7 +38,7 @@ import { DOCUMENT_EXTENSIONS, FONT_EXTENSIONS, IMAGE_EXTENSIONS, IMPORT_IMAGE_EX
 import { postReader, stopPostReads } from './posts-import/process';
 import { sourceApprovals, sourceSecrets, sourceSyncRunner, stopSourceSyncs } from './sources/process';
 import { gitClient, remoteGitClient } from './git/process';
-import { approveEndpoint, GitError, PUBLISH_BRANCH, type GitRepository, type Oid } from './git/protocol';
+import { approveEndpoint, GitError, MIN_REMOTE_TOKEN, PUBLISH_BRANCH, type GitRepository, type Oid } from './git/protocol';
 import { opaqueOk, readRemoteState, receiptOk, RemoteStateError, writeRemoteState, type DeploymentStatus, type PushPublicationResult, type RemoteFailure, type RemoteResult, type RemoteState } from './remote/binding';
 import { createRemoteCredentialStore, REMOTE_CREDENTIALS_FILE, RemoteCredentialError, type CredentialOwner, type RemoteCredentialStore } from './remote/credentials';
 import { httpsGitTransport, type RemotePushTransport } from './remote/transport';
@@ -393,9 +393,6 @@ const READ_ONLY_NOTES = 'This project is open read-only, so its notes can’t be
  * What a push or a change to where the project is published says when it stops (#1157): the app's own words, which
  * name no credential (`secrets` are taken out of them all the same), and for a divergence the commit the host has.
  */
-/** The shortest token looked for in the address and site name a binding keeps. */
-const TOKEN_IN_ADDRESS_MIN = 8;
-
 /** `v` with its address escapes undone, or as it is when they are not valid. */
 function decodeURIComponentSafe(v: string): string {
   try {
@@ -4254,8 +4251,7 @@ export class Controller {
       if (site !== null && !opaqueOk(site)) return { ok: false, code: 'invalid', message: 'That is not a site name the app can keep.' };
       // The project keeps the address and the site's name: neither may carry the token, as it is or as an address spells it.
       const token = typeof opts.token === 'string' ? opts.token.trim() : '';
-      // A token short enough to be part of an ordinary address (`site`) is not looked for in it.
-      if (token.length >= TOKEN_IN_ADDRESS_MIN && [url, site ?? ''].some((v) => redactSecrets(v, [token]) !== v || decodeURIComponentSafe(v).includes(token)))
+      if (token.length >= MIN_REMOTE_TOKEN && [url, site ?? ''].some((v) => redactSecrets(v, [token]) !== v || decodeURIComponentSafe(v).includes(token)))
         return { ok: false, code: 'invalid', message: 'The repository address or site name holds the token. Give the token on its own.' };
       const state: RemoteState = { binding: { id: `rb_${randomBytes(12).toString('hex')}`, provider: 'https-git', url, site }, content: null, acknowledged: null, receipt: null };
       const owner = this.credentialOwner(s, url);
@@ -4337,7 +4333,10 @@ export class Controller {
       return remoteFailed(e);
     }
     if (!credential) return { ok: false, code: 'auth-rejected', message: 'No credential is saved for this project here, so nothing was sent to the host. Connect the project to its host again.' };
-    const tokens = [credential.token];
+    // Looked for in everything sent: a publication was searched only for those saved when it was prepared.
+    const secrets = await this.publicationSecrets(s);
+    if ('failed' in secrets) return { ok: false, code: 'failed', message: secrets.failed.replace('so it was not prepared', 'so it was not pushed') };
+    const tokens = [credential.token, ...secrets.values];
     try {
       const outcome = await this.remoteTransport.push(s.dir, {
         endpoint: binding.url,
@@ -4346,6 +4345,7 @@ export class Controller {
         commit,
         // Only for the binding's own address.
         credentials: async (url) => (url === binding.url ? credential : null),
+        secrets: secrets.values,
         ...(opts.signal ? { signal: opts.signal } : {})
       });
       const at = new Date().toISOString();

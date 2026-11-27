@@ -38,6 +38,7 @@ const { REMOTE_STATE_FILE } = await import('../../src/main/remote/binding');
 const { REMOTE_CREDENTIALS_FILE } = await import('../../src/main/remote/credentials');
 const { readProjectZip, unpackProject } = await import('../../src/main/unzip');
 const { isPrivateFileName } = await import('../../src/main/project/private-files');
+const { setKey } = await import('../../src/main/settings');
 const { snapshotPlace } = await import('../../src/main/project/snapshot-inventory');
 type GitWorkerHandle = import('../../src/main/git/client').GitWorkerHandle;
 
@@ -245,18 +246,37 @@ describe.skipIf(!HOST_AVAILABLE && !process.env.CI)('publishing a project to an 
       expect(isPrivateFileName(name), name).toBe(true);
       expect(snapshotPlace(`static/${name}`), name).toMatchObject({ kind: 'excluded', reason: 'private' });
     }
+    for (const name of ['remote-credentials (Bob (laptop) conflicted copy).json', 'remote-credentials (from old.json backup).json']) expect(isPrivateFileName(name), name).toBe(true);
     expect(isPrivateFileName('remote-credentials-guide.json')).toBe(false);
     // A token in the address or the site's name would be kept in the project: refused.
     for (const opts of [{ url: `${h.url}/${TOKEN}` }, { url: h.url, site: TOKEN }])
       expect(await c.bindRemote({ username: USER, token: TOKEN, ...opts })).toMatchObject({ ok: false, code: 'invalid' });
     // Escaped as an address escapes it, too; and a short token is no reason to refuse an ordinary address.
     expect(await c.bindRemote({ username: USER, token: 'tok/with+plus=1234', url: `${h.url}/${encodeURIComponent('tok/with+plus=1234')}` })).toMatchObject({ ok: false, code: 'invalid' });
-    expect(await c.bindRemote({ username: USER, token: 'site', url: h.url })).toMatchObject({ ok: true });
+    expect(await c.bindRemote({ username: USER, token: 'site', url: h.url }), 'too short to be an access token').toMatchObject({ ok: false, code: 'invalid' });
     expect(await c.bindRemote({ username: USER, token: TOKEN, url: h.url })).toMatchObject({ ok: true });
     expect(holds(dir, TOKEN)).toEqual([]);
     // A publication that carries the token is refused.
     writeFileSync(join(dir, 'static/notes.txt'), `deploy with ${TOKEN}\n`);
     expect(await c.preparePublication()).toMatchObject({ ok: false, message: expect.stringContaining('static/notes.txt') });
+  });
+
+  it('never pushes a key saved after the publication that holds it was prepared, in it or an earlier one', async () => {
+    const h = await host();
+    const dir = await project();
+    const KEY = 'sk-test-0123456789abcdef';
+    writeFileSync(join(dir, 'static/notes.txt'), `openai ${KEY}\n`);
+    const { c } = await open(dir, h.ca);
+    // Prepared before the key was saved, so preparing could not look for it.
+    expect((await c.preparePublication()).ok).toBe(true);
+    writeFileSync(join(dir, 'static/notes.txt'), 'nothing here\n');
+    await setKey('openai', KEY);
+    expect((await c.preparePublication()).ok).toBe(true);
+    await c.bindRemote({ url: h.url, username: USER, token: TOKEN });
+    const r = await c.pushPublication();
+    expect(r).toMatchObject({ ok: false, code: 'invalid', message: expect.stringContaining('an earlier one') });
+    expect(JSON.stringify(r)).not.toContain(KEY);
+    expect(h.requests.filter((q) => q.method === 'POST')).toEqual([]);
   });
 
   it('keeps apart whether the site changed, whether the host took the push, and whether the host’s build went live', async () => {

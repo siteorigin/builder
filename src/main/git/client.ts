@@ -41,9 +41,10 @@ export interface GitClient {
   version(opts?: CallOptions): Promise<string>;
   /**
    * Push `commit`, the publication branch's commit in the versions repository of the project at `root`, to the host
-   * (#1157): see remote.ts. Lost with the worker once it was sent to it, the push is `outcome-unknown`.
+   * (#1157): see remote.ts. `secrets` are the user's saved secrets and keys, none of which may be in what is sent.
+   * Lost with the worker once it was sent to it, the push is `outcome-unknown`.
    */
-  push(root: string, target: RemoteTarget, commit: Oid, opts?: CallOptions): Promise<PushReply>;
+  push(root: string, target: RemoteTarget, commit: Oid, secrets: readonly string[], opts?: CallOptions): Promise<PushReply>;
   /** The commit the host's publication branch is at, or null when it has none. */
   remoteTip(target: RemoteTarget, opts?: CallOptions): Promise<Oid | null>;
   /** Stop the worker for good (the app is quitting): every request waiting or in progress is refused. */
@@ -273,7 +274,7 @@ export function createGitClient(spawn: () => GitWorkerHandle, opts: GitClientOpt
       };
     },
     version: (call) => submit({ op: 'version' }, call) as Promise<string>,
-    push: (root, target, commit, call) => submit({ op: 'push', root, target, commit }, call) as Promise<PushReply>,
+    push: (root, target, commit, secrets, call) => submit({ op: 'push', root, target, commit, secrets: [...secrets] }, call) as Promise<PushReply>,
     remoteTip: (target, call) => submit({ op: 'remoteTip', target }, call) as Promise<Oid | null>,
     stop() {
       if (stopped) return;

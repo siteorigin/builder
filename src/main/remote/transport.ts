@@ -24,6 +24,8 @@ export interface PushRequest {
   commit: Oid;
   /** The credential for the approved address, asked for once it is approved; null to push without one. */
   credentials: (endpoint: string) => Promise<RemoteCredential | null>;
+  /** The user's saved secrets and keys: none may be in what is sent, in this publication or an earlier one. */
+  secrets?: readonly string[];
   signal?: AbortSignal;
 }
 
@@ -46,7 +48,7 @@ export interface RemotePushTransport {
 
 /** What the transport needs of the push worker's client. */
 export interface RemoteGit {
-  push(root: string, target: RemoteTarget, commit: Oid, opts?: CallOptions): Promise<PushReply>;
+  push(root: string, target: RemoteTarget, commit: Oid, secrets: readonly string[], opts?: CallOptions): Promise<PushReply>;
   remoteTip(target: RemoteTarget, opts?: CallOptions): Promise<Oid | null>;
 }
 
@@ -70,7 +72,7 @@ export function httpsGitTransport(git: RemoteGit, opts: { lookupMs?: number } = 
       const target = await targetOf(request);
       const call = request.signal ? { signal: request.signal } : {};
       try {
-        const r = await git.push(root, target, request.commit, call);
+        const r = await git.push(root, target, request.commit, request.secrets ?? [], call);
         return { commit: request.commit, uploaded: r.uploaded, reconciled: false, receipt: null };
       } catch (e) {
         // Stopped by the caller, before or while it looks, it stays unknown: the next push settles it.

@@ -26,6 +26,7 @@ import { request as httpsRequest } from 'node:https';
 import { join } from 'node:path';
 import git, { type GitHttpRequest, type GitHttpResponse, type HttpClient, type PromiseFsClient } from 'isomorphic-git';
 import { approveEndpoint, GitError, OID_RE, PUBLISH_BRANCH, PUBLISH_EMAIL, remoteAuthOk, type GitErrorCode, type Oid, type PushReply, type RemoteAuth, type RemoteTarget } from './protocol';
+import { holdsSecretValue } from '@shared/sources';
 import type { Repo } from './repo';
 import type { RepoFs } from './fs';
 
@@ -241,32 +242,46 @@ async function checkLineage(fs: PromiseFsClient, gitdir: string, commit: Oid, un
 /** How far into a file Git looks for a NUL to call it binary. */
 const TEXT_SAMPLE = 8000;
 
+/** A file's text: UTF-8, or UTF-16 when it starts with UTF-16's byte order mark; null for a binary file (a NUL in its first 8 KB, as Git tells them). */
+function textOf(bytes: Uint8Array): string | null {
+  const b = Buffer.from(bytes.buffer, bytes.byteOffset, bytes.byteLength);
+  if (b[0] === 0xff && b[1] === 0xfe) return b.subarray(2).toString('utf16le');
+  if (b[0] === 0xfe && b[1] === 0xff) return Buffer.from(b.subarray(2, 2 + ((b.length - 2) & ~1))).swap16().toString('utf16le');
+  return b.subarray(0, TEXT_SAMPLE).includes(0) ? null : b.toString('utf8');
+}
+
+/** The most secrets a push is given to look for, and the longest. */
+const MAX_SECRETS = 2000;
+const MAX_SECRET_CHARS = 16_384;
+
+/** `secrets` as a push may look for them, or throws `invalid`. */
+function checkSecrets(secrets: unknown): string[] {
+  if (!Array.isArray(secrets) || secrets.length > MAX_SECRETS || !secrets.every((v) => typeof v === 'string' && v.length <= MAX_SECRET_CHARS)) throw new GitError('invalid', 'A push needs the secrets to look for.');
+  return secrets;
+}
+
 /**
  * Whether what is about to be sent (`commits`, less what the host's commit `previous` already holds, when it is here)
- * carries `token`: in a file's text (a file with a NUL in its first 8 KB is binary, as Git tells them), a name in its
- * trees, or a commit's message, as written or as an address escapes it. A publication is searched for the credentials
- * saved when it was prepared (#1154); one saved later (signing in to a host for the first time) is looked for here.
+ * carries one of the user's saved secrets or keys (`values`, the token signed in with among them), as the publication
+ * is searched for them when it is prepared (#1154: holdsSecretValue, in a text file, or in a file's name): a secret
+ * saved after a publication was prepared, signing in to a host for the first time say, is looked for here, in that
+ * publication and every earlier one still to be sent.
  */
-async function carriesToken(fs: PromiseFsClient, gitdir: string, commits: readonly Oid[], previous: Oid | null, token: string, cache: object): Promise<boolean> {
-  const forms = [...new Set([token, encodeURIComponent(token)])].map((f) => Buffer.from(f, 'utf8'));
-  const holds = (b: Uint8Array) => {
-    const buf = Buffer.from(b.buffer, b.byteOffset, b.byteLength);
-    return forms.some((f) => buf.includes(f));
-  };
+async function carriesSecret(fs: PromiseFsClient, gitdir: string, commits: readonly Oid[], previous: Oid | null, values: readonly string[], cache: object): Promise<boolean> {
   const seen = new Set<Oid>();
-  /** Mark everything in a tree of the host's as seen (trees only are read); true when a tree of ours carries the token. */
+  /** Mark everything in a tree of the host's as seen (trees only are read); true when a tree of ours carries a secret. */
   const walk = async (tree: Oid, theirs: boolean): Promise<boolean> => {
     if (seen.has(tree)) return false;
     seen.add(tree);
     for (const e of (await git.readTree({ fs, gitdir, oid: tree, cache })).tree) {
-      if (!theirs && holds(Buffer.from(e.path, 'utf8'))) return true;
+      if (!theirs && holdsSecretValue(e.path, values)) return true;
       if (e.type === 'tree') {
         if (await walk(e.oid, theirs)) return true;
       } else if (e.type === 'blob' && !seen.has(e.oid)) {
         seen.add(e.oid);
         if (theirs) continue;
-        const { blob } = await git.readBlob({ fs, gitdir, oid: e.oid, cache });
-        if (!blob.subarray(0, TEXT_SAMPLE).includes(0) && holds(blob)) return true;
+        const text = textOf((await git.readBlob({ fs, gitdir, oid: e.oid, cache })).blob);
+        if (text !== null && holdsSecretValue(text, values)) return true;
       }
     }
     return false;
@@ -278,10 +293,8 @@ async function carriesToken(fs: PromiseFsClient, gitdir: string, commits: readon
       // Not here (another's commit): everything is looked at.
     }
   }
-  for (const oid of commits) {
-    const { commit } = await git.readCommit({ fs, gitdir, oid, cache });
-    if (holds(Buffer.from(commit.message, 'utf8')) || (await walk(commit.tree, false))) return true;
-  }
+  // A commit's message is the app's own (commitPublication), so only its files are looked at.
+  for (const oid of commits) if (await walk((await git.readCommit({ fs, gitdir, oid, cache })).commit.tree, false)) return true;
   return false;
 }
 
@@ -315,11 +328,12 @@ export async function remoteTip(target: unknown, signal: AbortSignal, opts: Remo
 
 /**
  * Push `commit`, the publication's branch's commit now, to the host's publication branch, only as a fast-forward of
- * where the host has it. A host already there is sent nothing. A refusal the host reports after a branch of its moved
+ * where the host has it, and only when nothing sent holds one of `secrets` or the token signed in with. A host already there is sent nothing. A refusal the host reports after a branch of its moved
  * meanwhile is told apart from one of its own by looking at that branch again.
  */
-export async function pushCommit(repo: Pick<Repo, 'source'>, target: unknown, commit: unknown, signal: AbortSignal, opts: RemoteOptions = {}): Promise<PushReply> {
+export async function pushCommit(repo: Pick<Repo, 'source'>, target: unknown, commit: unknown, secrets: unknown, signal: AbortSignal, opts: RemoteOptions = {}): Promise<PushReply> {
   const t = checkTarget(target);
+  const values = [...new Set([...checkSecrets(secrets), ...(t.auth ? [t.auth.password] : [])])];
   if (typeof commit !== 'string' || !OID_RE.test(commit)) throw new GitError('invalid', 'A push needs the commit to send.');
   const { gitdir, files, tip } = await repo.source(PUBLISH_BRANCH);
   if (tip !== commit) throw new GitError('conflict', 'That is not the publication last prepared, so it was not pushed. Prepare the publication again, then push it.', tip);
@@ -350,8 +364,8 @@ export async function pushCommit(repo: Pick<Repo, 'source'>, target: unknown, co
         held = previous === commit;
         if (held) return false;
         const sent = await checkLineage(view, gitdir, commit, previous, cache);
-        if (t.auth && (await carriesToken(view, gitdir, sent, previous, t.auth.password, cache)))
-          throw new GitError('invalid', 'The publication holds the token this host is signed in to with, so nothing was pushed. Take it out of the website, then prepare the publication again.');
+        if (await carriesSecret(view, gitdir, sent, previous, values, cache))
+          throw new GitError('invalid', 'What would be sent holds one of your saved secrets or keys, in this publication or an earlier one still to be sent, so nothing was pushed. Take it out of the website, then prepare the publication again.');
         return true;
       }
     });

@@ -12,7 +12,7 @@
 import { promises as fs } from 'node:fs';
 import { isAbsolute } from 'node:path';
 import { atomicWrite } from '../project/fsutil';
-import { approveEndpoint, GitError, remoteAuthOk } from '../git/protocol';
+import { approveEndpoint, GitError, MIN_REMOTE_TOKEN, remoteAuthOk } from '../git/protocol';
 
 /** The credential file's name in the app's data folder (private-files.ts keeps it, and copies of it, out of projects). */
 export const REMOTE_CREDENTIALS_FILE = 'remote-credentials.json';
@@ -109,7 +109,7 @@ export function createRemoteCredentialStore(file: () => string): RemoteCredentia
       if (!ownerOk(owner)) return Promise.reject(new GitError('invalid', 'A credential belongs to a project and a repository address.'));
       const token = typeof credential?.token === 'string' ? credential.token.trim() : '';
       const username = typeof credential?.username === 'string' ? credential.username.trim() : '';
-      if (!remoteAuthOk({ username, password: token })) return Promise.reject(new RemoteCredentialError('A credential is a username without a colon and an access token, each on one line.'));
+      if (!remoteAuthOk({ username, password: token })) return Promise.reject(new GitError('invalid', `A credential is a username without a colon and an access token of ${MIN_REMOTE_TOKEN} characters or more, each on one line.`));
       const entry: Entry = { projectId: owner.projectId, dir: owner.dir, url: owner.url, username, token };
       return change((all) => {
         all[binding] = entry;

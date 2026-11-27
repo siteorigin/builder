@@ -56,7 +56,7 @@ export function createGitService(send: (reply: GitReply) => void, opts: RepoOpti
       case 'advanceRef':
         return repo(m.root).advanceRef(m.ref, m.next, m.expected, token);
       case 'push':
-        return pushCommit(repo(m.root), m.target, m.commit, token.abort.signal, opts.remote);
+        return pushCommit(repo(m.root), m.target, m.commit, m.secrets, token.abort.signal, opts.remote);
       case 'remoteTip':
         return remoteTip(m.target, token.abort.signal, opts.remote);
       default:
