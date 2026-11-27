@@ -244,6 +244,8 @@ interface CaptureOptions {
   stop?: () => boolean;
   /** Filled, with Git snapshots on, with every file of the site the commit holds from disk, by its SHA-256. */
   hashes?: Map<string, string>;
+  /** Stops the Git write part way (as `stop` does between files). */
+  signal?: AbortSignal;
 }
 
 /** A capture stopped by its `stop` (the project is closing). */
@@ -3401,8 +3403,9 @@ export class ProjectSession extends EventEmitter {
         }
       }
       // A theme switch restyles the whole site: the site as it is first goes to Saved versions (#1156), or one there
-      // already holding exactly that stands for it. If it can't be saved, the theme stays as it is.
-      if (next.site.themeId !== this.state.site.themeId) {
+      // already holding exactly that stands for it. If it can't be saved, the theme stays as it is. An AI request's own
+      // switch is not saved so: its documents are provisional, and stopping it, or Undo, takes the whole request back.
+      if (next.site.themeId !== this.state.site.themeId && !opts.runId) {
         try {
           const blocked = this.versions.problem;
           if (blocked) throw new Error(blocked);
@@ -4222,7 +4225,11 @@ export class ProjectSession extends EventEmitter {
     const docs: Record<string, string> = {};
     // A version is of the site: the brief says what the project is for, and a restore keeps the one it has.
     // Nor what has been published: a restore never takes back what the website was exported with.
-    for (const [path, content] of this.docs) if (path !== BRIEF_FILE && path !== PUBLISHED_FILE) docs[path] = await this.versions.putText(content);
+    for (const [path, content] of this.docs) {
+      if (path === BRIEF_FILE || path === PUBLISHED_FILE) continue;
+      stopIf(opts.stop);
+      docs[path] = await this.versions.putText(content);
+    }
     const media: Record<string, string | null> = {};
     for (const rel of new Set([...(await this.versionMediaPaths(this.docs)), ...(opts.also ?? [])])) {
       stopIf(opts.stop);
@@ -4272,9 +4279,9 @@ export class ProjectSession extends EventEmitter {
     }
     let inventory: Awaited<ReturnType<typeof captureSnapshotInventory>>;
     try {
-      inventory = await captureSnapshotInventory(this.dir, { settleMs: this.settleMs, ...(opts.stop ? { paused: () => stopIf(opts.stop) } : {}) });
+      inventory = await captureSnapshotInventory(this.dir, { settleMs: this.settleMs, ...(opts.stop ? { paused: () => stopIf(opts.stop), stop: opts.stop } : {}) });
     } catch (e) {
-      if (e instanceof CaptureStopped) throw e;
+      if (e instanceof CaptureStopped || opts.stop?.()) throw new CaptureStopped();
       throw new Error(`${(e as Error).message} Nothing was saved.`);
     }
     // Every other file of the site, as it is on disk (the record of what was published, and code no component claims,
@@ -4331,8 +4338,9 @@ export class ProjectSession extends EventEmitter {
     stopIf(opts.stop);
     let stored: { commit: string; tree: string };
     try {
-      stored = await writeVersionCommit(git.repository(this.dir), files, id, time, !!opts.auto);
+      stored = await writeVersionCommit(git.repository(this.dir), files, id, time, !!opts.auto, opts.signal ? { signal: opts.signal } : {});
     } catch (e) {
+      if (opts.stop?.()) throw new CaptureStopped();
       if (e instanceof GitError && e.code === 'corrupt') throw new HistoryDamaged(gitSaveProblem(e));
       throw new Error(gitSaveProblem(e));
     } finally {
@@ -4387,16 +4395,19 @@ export class ProjectSession extends EventEmitter {
    * one by that name): that one stands for it. Gives back the row that does. Run in turn with every other command.
    */
   private async listAuto(v: SavedVersion, name?: string): Promise<SavedVersion> {
+    // Capturing takes a while: another app may have taken the project over meanwhile, which a version kept as it is
+    // must not hide from what follows (a theme switch's save).
+    if (!(await this.stillOwner())) throw new Error(this.readOnly?.reason ?? LOCK_UNCHECKED);
     const kept = await this.versions.sameAs(v, name);
     if (kept) return kept;
-    if (!(await this.stillOwner())) throw new Error(this.readOnly?.reason ?? LOCK_UNCHECKED);
     const row = await this.versions.add(v);
     this.emit('history');
     return row;
   }
 
-  /** Set by close: a starting version not begun by then is never saved. */
+  /** Set by close: a starting version not begun by then is never saved, and one being saved stops. */
   private leaving = false;
+  private leavingAbort = new AbortController();
 
   /**
    * Save the "Starting version" (#1156) of a project that has never had a version saved: a new project once it is
@@ -4412,10 +4423,10 @@ export class ProjectSession extends EventEmitter {
       // finish on reopening, or a choice between versions of a file.
       if (this.unsettled || this.migrationDue || this.migrationFailed || this.pending.size || this.conflicts.length || this.activeRun) return false;
       if (await this.writeBlocked()) return false;
-      // A change outside the app not loaded yet: the next opening saves it, loaded.
-      if (await this.unloadedEdit(new Set())) return false;
       try {
-        const v = await this.captureAuto(STARTING_VERSION, { stop: () => this.leaving });
+        // A change outside the app not loaded yet: the next opening saves it, loaded.
+        if (await this.unloadedEdit(new Set())) return false;
+        const v = await this.captureAuto(STARTING_VERSION, { stop: () => this.leaving, signal: this.leavingAbort.signal });
         if (this.leaving) return false;
         const late = await this.unloadedEdit(new Set());
         if (late) return false;
@@ -4435,12 +4446,20 @@ export class ProjectSession extends EventEmitter {
    * collection keeps what it holds until `release` is called. Run within the export's hold of the project, so it is
    * the project the export copies.
    */
-  async captureExported(name: string): Promise<ExportedVersion> {
-    const why = await this.versionsBlocked();
-    if (why) throw new Error(why);
-    const files = new Map<string, string>();
-    const version = await this.captureAuto(name, { hashes: files });
-    return { version, release: this.versions.hold(version), files };
+  async captureExported(name: string): Promise<ExportedVersion | { changed: string }> {
+    // Written to the project's own store, so under the lock generation's claim, as any write of a command is; the
+    // export's hold of the project is otherwise only a turn in the queue.
+    return this.fenced(async () => {
+      const why = await this.versionsBlocked();
+      if (why) throw new Error(why);
+      // A document changed outside the app and not loaded yet would be exported as the folder has it, and saved as the
+      // app does: the export waits for it instead.
+      const changed = await this.unloadedEdit(new Set());
+      if (changed) return { changed };
+      const files = new Map<string, string>();
+      const version = await this.captureAuto(name, { hashes: files });
+      return { version, release: this.versions.hold(version), files };
+    });
   }
 
   /**
@@ -4449,8 +4468,10 @@ export class ProjectSession extends EventEmitter {
    */
   listExported(v: SavedVersion): Promise<SavedVersion> {
     return this.serialize(async () => {
-      const why = await this.versionsBlocked();
-      if (why) throw new Error(why);
+      // Captured before any AI request that began since: listing it saves none of that request's work.
+      const blocked = await this.writeBlocked();
+      if (blocked) throw new Error(blocked.error?.message ?? LOCK_UNCHECKED);
+      if (this.versions.problem) throw new Error(this.versions.problem);
       return this.listAuto(v, v.name);
     });
   }
@@ -5673,8 +5694,10 @@ export class ProjectSession extends EventEmitter {
   }
 
   async close() {
-    // A starting version still being saved stops at its next file: closing never waits for a whole library.
+    // A starting version still being saved stops at its next file, and its Git write at once: closing never waits for a
+    // whole library.
     this.leaving = true;
+    this.leavingAbort.abort();
     // A sweep not yet run is left to the next open, which sweeps first.
     if (this.sweepTimer) clearTimeout(this.sweepTimer);
     this.sweepTimer = null;

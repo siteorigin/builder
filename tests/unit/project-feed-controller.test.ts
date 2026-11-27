@@ -58,6 +58,8 @@ async function openProject() {
     if (!editor.reader.read(change)) editor.unread++;
   };
   await (c as unknown as Attaching).attach(session, {}, { state: 'error', message: 'No preview in this test.' });
+  // The opening's own write, the project's starting version (#1156), is in before the test's first change.
+  await c.startingVersion;
   return { dir, c, session, editor };
 }
 

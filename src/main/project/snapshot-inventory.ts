@@ -457,16 +457,17 @@ async function settledBatches<T, R>(items: T[], fn: (item: T) => Promise<R>): Pr
  * Capture the snapshot of the project in `root` (a real path): every file it takes, listed, hashed and checked to be
  * the project as it was throughout (see the top of this file). Throws a SnapshotCaptureError when it was not. `settleMs`
  * is how long a file must have been left alone for its stat to stand for its bytes (statTrusted); `paused` is called
- * once the files are listed and once they are hashed, before the check that nothing changed (for tests).
+ * once the files are listed and once they are hashed, before the check that nothing changed (for tests). `stop` is
+ * asked before each file is hashed: true ends the capture with an error.
  */
-export async function captureSnapshotInventory(root: string, opts: { settleMs?: number; paused?: (at: 'listed' | 'hashed') => Promise<void> | void } = {}): Promise<SnapshotInventory> {
+export async function captureSnapshotInventory(root: string, opts: { settleMs?: number; paused?: (at: 'listed' | 'hashed') => Promise<void> | void; stop?: () => boolean } = {}): Promise<SnapshotInventory> {
   const settleMs = opts.settleMs ?? 3000;
   const before = await listProject(root, settleMs);
   const files = [...before.values()].filter((l) => !l.dir);
   const clash = nameClash(files.map((l) => l.rel));
   if (clash) throw badName(clash[1], `and ${clash[0]} have names some computers cannot tell apart`);
   await opts.paused?.('listed');
-  const hashed = await settledBatches(files, hashListed);
+  const hashed = await settledBatches(files, (l) => (opts.stop?.() ? Promise.reject(new Error('The snapshot was stopped.')) : hashListed(l)));
   await opts.paused?.('hashed');
   // A file whose stamp cannot stand for its bytes could have changed without it: it is hashed again. Before the last
   // listing, so that one also sees what was added, removed or swapped while these were read.

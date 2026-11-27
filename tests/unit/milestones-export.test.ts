@@ -87,7 +87,7 @@ async function project(name = 'Bookshop', saved?: string) {
   await s.close();
   return dir;
 }
-const listed = (c: InstanceType<typeof Controller>) => c.snapshot()!.versions.list.map((v) => v.name);
+const listed = (c: InstanceType<typeof Controller>) => c.snapshot()!.versions!.list.map((v) => v.name);
 /** Export the website to a new folder, and show why if it fails. */
 async function exported(c: InstanceType<typeof Controller>) {
   const r = await c.buildStaticTo(join(temp('out'), 'site'));
@@ -181,6 +181,10 @@ describe('the milestone of an export (#1156)', () => {
     expect((await c.buildStaticTo(temp('taken'))).ok).toBe(false);
     expect((await c.exportSourceTo(join(dir, 'inside'))).ok).toBe(false);
     expect((await c.stageReviewBuild(join(temp('out'), 'review'))).ok).toBe(true);
+    // Captured, then not delivered: the folder could not be put in place.
+    const internals = c as unknown as { publish: () => Promise<string | null> };
+    vi.spyOn(internals, 'publish').mockResolvedValueOnce('Your disk is full.');
+    expect(await c.exportSourceTo(join(temp('out'), 'source'))).toMatchObject({ ok: false, message: 'Your disk is full.' });
     expect(listed(c)).toEqual(['Approved']);
   });
 
@@ -195,12 +199,68 @@ describe('the milestone of an export (#1156)', () => {
     expect(listed(c)).toEqual(['Approved']);
   });
 
-  it('still exports when the milestone can’t be saved, and says so', async () => {
+  it('delivers nothing when the milestone can’t be saved', async () => {
     const c = await open(await project('Bookshop', 'Approved'));
     vi.spyOn(ProjectSession.prototype, 'captureExported').mockRejectedValueOnce(new Error('ENOSPC: no space left on device'));
-    const r = await c.exportSourceTo(join(temp('out'), 'source'));
-    expect(r.ok).toBe(true);
-    expect(r.warnings.join(' ')).toMatch(/couldn’t be saved in Saved versions as “Exported source project”: ENOSPC/);
+    const dest = join(temp('out'), 'source');
+    const r = await c.exportSourceTo(dest);
+    expect(r.ok).toBe(false);
+    expect(r.message).toMatch(/couldn’t be saved in Saved versions as “Exported source project”, so nothing was exported\. ENOSPC/);
+    expect(existsSync(dest)).toBe(false);
     expect(listed(c)).toEqual(['Approved']);
+  });
+
+  it('still exports when the list of versions can’t be used, and says so', async () => {
+    const dir = await project('Bookshop', 'Approved');
+    writeFileSync(join(dir, '.siteorigin/versions/versions.json'), '{ not json');
+    const c = await open(dir);
+    const dest = join(temp('out'), 'source');
+    const r = await c.exportSourceTo(dest);
+    expect(r.ok).toBe(true);
+    expect(existsSync(dest)).toBe(true);
+    expect(r.warnings.join(' ')).toMatch(/couldn’t be saved in Saved versions as “Exported source project”: The list of saved versions could not be read/);
+    expect(readFileSync(join(dir, '.siteorigin/versions/versions.json'), 'utf8')).toBe('{ not json');
+  });
+
+  it('waits for a document changed outside the app and not loaded yet', async () => {
+    const dir = await project('Bookshop', 'Approved');
+    const c = await open(dir);
+    const capture = ProjectSession.prototype.captureExported;
+    vi.spyOn(ProjectSession.prototype, 'captureExported').mockImplementationOnce(async function (this: InstanceType<typeof ProjectSession>, name: string) {
+      const site = JSON.parse(readFileSync(join(dir, 'siteorigin/site.json'), 'utf8'));
+      writeFileSync(join(dir, 'siteorigin/site.json'), JSON.stringify({ ...site, name: 'Changed outside' }, null, 2) + '\n');
+      return capture.call(this, name);
+    });
+    const dest = join(temp('out'), 'source');
+    const r = await c.exportSourceTo(dest);
+    expect(r).toMatchObject({ ok: false, message: 'siteorigin/site.json changed outside the app. Export again in a moment.' });
+    expect(existsSync(dest)).toBe(false);
+    expect(listed(c)).toEqual(['Approved']);
+  });
+
+  /** A setup file changed as the export's milestone was being saved to Git, before the project was copied. */
+  it.each<[string, (dir: string) => void]>([
+    ['replaced', (dir) => writeFileSync(join(dir, 'README.md'), '# Changed meanwhile\n')],
+    ['removed', (dir) => rmSync(join(dir, 'README.md'))],
+    ['added', (dir) => writeFileSync(join(dir, 'NOTICE.md'), 'Added meanwhile\n')]
+  ])('stops a source export whose setup file was %s while its milestone was saved', async (_, change) => {
+    git.enabled = true;
+    const dir = await project('Bookshop', 'Approved');
+    // The README a new project is made with.
+    writeFileSync(join(dir, 'README.md'), '# Bookshop\n');
+    const c = await open(dir);
+    const capture = ProjectSession.prototype.captureExported;
+    vi.spyOn(ProjectSession.prototype, 'captureExported').mockImplementationOnce(async function (this: InstanceType<typeof ProjectSession>, name: string) {
+      const captured = await capture.call(this, name);
+      change(dir);
+      return captured;
+    });
+    const dest = join(temp('out'), 'source');
+    expect(await c.exportSourceTo(dest)).toMatchObject({ ok: false, message: 'The project changed on disk while it was being exported. Export again.' });
+    expect(existsSync(dest)).toBe(false);
+    expect(listed(c)).toEqual(['Approved']);
+    // Left alone, the same export goes through.
+    expect((await c.exportSourceTo(join(temp('out'), 'source'))).ok).toBe(true);
+    expect(listed(c)).toEqual(['Exported source project', 'Approved']);
   });
 });
