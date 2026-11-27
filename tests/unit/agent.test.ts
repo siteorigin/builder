@@ -406,6 +406,7 @@ describe('read-only questions (#203)', () => {
     expect(compiles).toBe(0);
     expect(editingMidRun).toBe(false);
     expect(events.filter((e) => e.kind === 'status').map((e) => [e.status, e.mode])).toEqual([
+      ['preparing', 'ask'],
       ['running', 'ask'],
       ['no-changes', 'ask']
     ]);
