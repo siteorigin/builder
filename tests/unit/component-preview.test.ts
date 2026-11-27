@@ -292,6 +292,7 @@ describe('what a preview is made of', () => {
 describe('a preview and the site’s colours', () => {
   it('is the same whatever the site’s colours, in every theme, which reach it only through the token stylesheet', () => {
     let checked = 0;
+    let made = 0;
     for (const theme of listThemes().filter((t) => !t.devOnly)) {
       const started = applyOperations(createStarterState('business', 'Preview Studio', false, theme.id), [
         { type: 'token.setColorScheme', mode: 'toggle' },
@@ -308,6 +309,7 @@ describe('a preview and the site’s colours', () => {
           recoloured.tokens.darkOverrides = { ...(recoloured.tokens.darkOverrides ?? {}), [t.id]: `#${(0x302010 + i * 0x030201).toString(16).padStart(6, '0')}` };
         });
       const specs = [...Object.values(base.components).filter((d) => d.owner === 'project').map((d) => ({ definitionId: d.id })), ...theme.components.map((c) => ({ componentId: c.componentId }))];
+      made += specs.length;
       for (const spec of specs) {
         const a = generateComponentPreview(base, spec);
         const b = generateComponentPreview(recoloured, spec);
@@ -323,7 +325,10 @@ describe('a preview and the site’s colours', () => {
       expect(pb.tokens).not.toBe(pa.tokens);
       expect(colourProjection(pb.tokens, pb.colours, new Set())).toBe(colourProjection(pa.tokens, pa.colours, new Set()));
     }
-    expect(checked).toBeGreaterThan(40);
+    // Every preview was made and compared, not skipped as one that cannot be shown, and there are enough of them to
+    // be the whole catalogue rather than an empty theme list.
+    expect(checked).toBe(made);
+    expect(made).toBeGreaterThan(30);
   });
 });
 
