@@ -146,6 +146,8 @@ class FakeWorker {
   static spawned = 0;
   batches: Array<Array<[string, string]>> = [];
   killed = false;
+  /** When set, the worker reports its exit this many ms after it is ended, as a real process does, some time later. */
+  exitDelay: number | null = null;
   private listeners: Record<string, Array<(m?: any) => void>> = {};
   constructor(private how: 'answer' | 'crash' | 'hang' | 'refuse' | 'short' = 'answer') {
     FakeWorker.spawned++;
@@ -170,6 +172,7 @@ class FakeWorker {
   }
   kill() {
     this.killed = true;
+    if (this.exitDelay !== null) setTimeout(() => this.emit('exit', 0), this.exitDelay);
     return true;
   }
 }
@@ -226,12 +229,13 @@ describe('build checks compiled in workers (#975)', () => {
     // The one file changed went to the first worker, already running, and nothing else did.
     expect(workers.map((w) => w.batches.length)).toEqual([2, 1, 1]);
     expect(workers[0].batches.at(-1)!.map(([path]) => path)).toEqual([expect.stringContaining('.svelte')]);
-    // A large batch is shared out, as evenly as the files allow.
+    // A large batch is shared out, as evenly as the files allow, between the first worker and two started for it.
     const many = Array.from({ length: 3 * FILES_PER_WORKER + 1 }, (_, i): [string, string] => [`src/f${i}.svelte`, `<p>${i}</p>\n`]);
     const done = await p.compile(many);
     expect(done?.outcomes).toEqual(many.map(() => null));
     expect(done?.runs).toBe(2 * many.length);
-    const shares = workers.map((w) => w.batches.at(-1)!.length);
+    expect(workers).toHaveLength(5);
+    const shares = [workers[0], ...workers.slice(3)].map((w) => w.batches.at(-1)!.length);
     expect(shares.reduce((a, b) => a + b, 0)).toBe(many.length);
     expect(Math.max(...shares) - Math.min(...shares)).toBe(1);
     p.stop();
@@ -273,28 +277,140 @@ describe('build checks compiled in workers (#975)', () => {
     p.stop();
   });
 
-  it('end each worker once it has been idle, while the first goes on taking the small checks', async () => {
+  it('end the workers a large check started once they have answered, and the first once it has been idle', async () => {
     vi.useFakeTimers();
     try {
       const { p, workers } = pool('answer', 3, {});
       const many = Array.from({ length: 3 * FILES_PER_WORKER }, (_, i): [string, string] => [`src/f${i}.svelte`, `<p>${i}</p>\n`]);
       const big = p.compile(many);
       await vi.advanceTimersByTimeAsync(10);
-      await big;
+      const first = await big;
+      expect(first.outcomes).toEqual(many.map(() => null));
       expect(workers).toHaveLength(3);
-      // A one-file check every 40 s keeps the first worker; the other two end 60 s after their last batch.
+      // The two started for the large check end with their answers, which are kept; the first waits for the next check.
+      expect(workers.map((w) => w.killed)).toEqual([false, true, true]);
+      // A one-file check every 40 s keeps the first worker, and starts no other.
       for (let i = 0; i < 3; i++) {
         await vi.advanceTimersByTimeAsync(40_000);
         const small = p.compile([['src/one.svelte', `<p>${i}</p>\n`]]);
         await vi.advanceTimersByTimeAsync(10);
-        await small;
+        expect((await small).outcomes).toEqual([null]);
       }
+      expect(workers).toHaveLength(3);
       expect(workers.map((w) => w.killed)).toEqual([false, true, true]);
       await vi.advanceTimersByTimeAsync(60_001);
       expect(workers.map((w) => w.killed)).toEqual([true, true, true]);
+      // The next large check starts all three afresh, and every file of it is still answered by a worker.
+      const again = p.compile(many);
+      await vi.advanceTimersByTimeAsync(10);
+      expect((await again).outcomes).toEqual(many.map(() => null));
+      expect(workers).toHaveLength(6);
+      expect(workers.slice(3).map((w) => w.killed)).toEqual([false, true, true]);
       p.stop();
     } finally {
       vi.useRealTimers();
+    }
+  });
+});
+
+describe('the build-check workers a large check starts (#1040)', () => {
+  it('let one it ended report its exit late without touching the check its slot has gone on to', async () => {
+    const workers: FakeWorker[] = [];
+    const p = createCompilePool(() => {
+      const w = new FakeWorker('answer');
+      // Exits come in before the next batch's answers (1 ms).
+      w.exitDelay = 0;
+      workers.push(w);
+      return w;
+    }, { size: 3, idleMs: 60_000 });
+    const many = Array.from({ length: 3 * FILES_PER_WORKER }, (_, i): [string, string] => [`src/f${i}.svelte`, `<p>${i}</p>\n`]);
+    expect((await p.compile(many)).outcomes).toEqual(many.map(() => null));
+    expect(workers.map((w) => w.killed)).toEqual([false, true, true]);
+    // The two ended workers' exits arrive while the next large check is under way on their slots, in new workers.
+    const changed = many.map(([path], i): [string, string] => [path, `<p>${i}!</p>\n`]);
+    const [again, here] = await counted(() => p.compile(changed));
+    expect(again.outcomes).toEqual(changed.map(() => null));
+    expect(again.runs).toBe(2 * changed.length);
+    expect(here).toBe(0);
+    expect(workers).toHaveLength(5);
+    p.stop();
+  });
+});
+
+describe('a build-check worker giving back its memory (#1040)', () => {
+  type Port = { on: (e: 'message', cb: (ev: { data: CompileRequest }) => void) => void; postMessage: (m: unknown) => void };
+  /** The worker module loaded against a stand-in parent port, `inspector` answering for node:inspector. */
+  async function worker(inspector: () => unknown) {
+    const replies: unknown[] = [];
+    let handler: ((ev: { data: CompileRequest }) => void) | undefined;
+    const port: Port = { on: (_e, cb) => void (handler = cb), postMessage: (m) => void replies.push(m) };
+    const own = process as unknown as { parentPort?: Port };
+    own.parentPort = port;
+    const builtin = process.getBuiltinModule.bind(process);
+    vi.spyOn(process, 'getBuiltinModule').mockImplementation(((id: string) => (id === 'node:inspector' ? inspector() : builtin(id))) as typeof process.getBuiltinModule);
+    vi.resetModules();
+    await import('../../src/main/compile-worker');
+    const send = async (id: number, files: Array<[string, string]>) => {
+      handler!({ data: { id, files } });
+      await vi.waitFor(() => expect(replies).toHaveLength(id));
+      // The collection is made once the answer has gone.
+      await new Promise((r) => setImmediate(r));
+      return replies[id - 1];
+    };
+    return { send, done: () => delete own.parentPort };
+  }
+  const files: Array<[string, string]> = [
+    ['src/a.svelte', '<div></div>\n'],
+    ['src/b.svelte', BROKEN]
+  ];
+  const expected = (id: number) => ({ id, ok: true, outcomes: files.map(([path, source]) => compileFile(elsewhere, path, source)), runs: 3 });
+
+  afterEach(() => vi.restoreAllMocks());
+
+  it('collect after each batch it answers, through its own inspector, connected once', async () => {
+    const posted: string[] = [];
+    let sessions = 0;
+    class Session {
+      constructor() {
+        sessions++;
+      }
+      connect() {}
+      post(method: string) {
+        posted.push(method);
+      }
+    }
+    const w = await worker(() => ({ Session }));
+    try {
+      expect(await w.send(1, files)).toEqual(expected(1));
+      expect(posted).toEqual(['HeapProfiler.collectGarbage']);
+      expect(await w.send(2, files)).toEqual(expected(2));
+      expect([posted, sessions]).toEqual([['HeapProfiler.collectGarbage', 'HeapProfiler.collectGarbage'], 1]);
+    } finally {
+      w.done();
+    }
+  });
+
+  it('answer every batch the same when it has no inspector, or the collection fails', async () => {
+    for (const inspector of [
+      () => {
+        throw new Error('No such built-in module: node:inspector');
+      },
+      () => ({
+        Session: class {
+          connect() {}
+          post() {
+            throw new Error('Session is not connected');
+          }
+        }
+      })
+    ]) {
+      const w = await worker(inspector);
+      try {
+        expect(await w.send(1, files)).toEqual(expected(1));
+        expect(await w.send(2, files)).toEqual(expected(2));
+      } finally {
+        w.done();
+      }
     }
   });
 });

@@ -860,7 +860,7 @@ export function batchTargets(state: ProjectState, pageId: string): Array<{ nodeI
  * The batch: BATCH_OPERATIONS `instance.setProp` operations over the page's text properties in turn (one set twice
  * keeps its later text), and the text each property holds once it has landed, by `nodeId:prop`.
  */
-export function batchOperations(state: ProjectState, pageId: string, iteration: number): { operations: Array<Record<string, unknown>>; final: Map<string, string> } {
+export function batchOperations(state: ProjectState, pageId: string, iteration: number | string): { operations: Array<Record<string, unknown>>; final: Map<string, string> } {
   const targets = batchTargets(state, pageId);
   const operations: Array<Record<string, unknown>> = [];
   const final = new Map<string, string>();
@@ -3032,6 +3032,140 @@ export const memoryBrowse: Scenario = {
     const reading = (label: string) => readings.find((r) => r.label === label && r.kind === 'rest');
     for (const label of BROWSE_READINGS) readingMetrics(m, label, reading(label));
     for (const [name, from, to] of BROWSE_GROWTHS) growthMetrics(m, name, reading(from), reading(to));
+    return m;
+  }
+};
+
+// ---------------------------------------------------------------------------
+// aiMemory
+// ---------------------------------------------------------------------------
+
+/** How many requests `aiMemory` makes one after another; its last reading follows the last of them. */
+export const AI_MEMORY_RUNS = 10;
+/** The readings `aiMemory` takes, in order, and their kinds. */
+export const AI_MEMORY_READINGS = [
+  ['aiIdle', 'rest'],
+  ['aiRun', 'peak'],
+  ['aiDone', 'rest'],
+  [`aiDone${AI_MEMORY_RUNS}`, 'rest']
+] as const;
+/** The scripted model's answer to request `n`, each its own, so the log is known to hold this request's. */
+export const aiMemoryReply = (n: number) => `${BATCH_REPLY} (request ${n})`;
+
+/**
+ * One request of `aiMemory`, ready to send: in Edit mode, limited to the home page, the scripted model's batch of
+ * BATCH_OPERATIONS operations worked out from the project as it is now and the request typed into the composer.
+ */
+async function prepareBatchRequest(ctx: ScenarioContext, server: MockOpenAIServer, n: number) {
+  const { win, fixture } = ctx;
+  const asking = win.getByRole('button', { name: /^What your next message does: Ask/ });
+  if (await asking.count()) {
+    await asking.first().click();
+    await win.getByRole('menuitemradio', { name: /^Edit/ }).click();
+  }
+  const before = await snapshotOf(win);
+  expect(before, 'no project is open');
+  const title = before.state.pages[fixture.homePageId].title;
+  const limited = win.getByRole('button', { name: `What the AI may change: ${title}`, exact: true });
+  if (!(await limited.count())) {
+    await win.getByRole('button', { name: /^What the AI may change: / }).first().click();
+    await win.getByRole('menuitemradio', { name: /^This page/ }).or(win.getByRole('menuitem', { name: /^This page/ })).first().click();
+  }
+  expect(await limited.count(), `request ${n} is not limited to the home page`);
+  const { operations, final } = batchOperations(before.state, fixture.homePageId, `${ctx.iteration}-${n}`);
+  expect(operations.length === BATCH_OPERATIONS && final.size > BATCH_OPERATIONS / 2, `the home page has ${final.size} text properties to rewrite, too few for a batch of ${BATCH_OPERATIONS}`);
+  const heading = final.get(`${fixture.heroId}:heading`);
+  expect(heading, 'the batch does not rewrite the home hero’s heading');
+  server.script(toolCallReply('apply_operations', { expectedRevision: before.revision, operations }));
+  server.respond = () => textReply(aiMemoryReply(n));
+  await composer(win).fill(BATCH_REQUEST);
+  // Choosing the mode and the scope saves the workspace 300 ms later: that lands before the request is sent.
+  await sleep(Math.max(ctx.settleMs, WORKSPACE_SAVE_WAIT_MS));
+  return { n, before, final, heading };
+}
+
+type BatchRequest = Awaited<ReturnType<typeof prepareBatchRequest>>;
+
+/**
+ * Send a prepared request, until the preview shows its heading and the request has ended: the stretch a peak is read
+ * over, which asks the app for nothing of its own (checkBatchRequest asks for the project afterwards).
+ */
+async function sendBatchRequest(ctx: ScenarioContext, req: BatchRequest) {
+  const { win } = ctx;
+  await win.keyboard.press('Enter');
+  await preview(win).getByRole('heading', { name: req.heading, exact: true, level: 1 }).first().waitFor({ timeout: 120_000 });
+  await win.waitForFunction(
+    (reply) => {
+      const doc = (globalThis as unknown as DomPage).document;
+      return !doc.querySelector('.run-strip') && ([...doc.querySelectorAll('.chat-log .msg-ai')].at(-1)?.textContent ?? '').includes(reply);
+    },
+    aiMemoryReply(req.n),
+    { timeout: 120_000 }
+  );
+}
+
+/** That a sent request did its job: in the project, on disk and on the canvas. */
+async function checkBatchRequest(ctx: ScenarioContext, req: BatchRequest) {
+  const { win, fixture } = ctx;
+  const after = await snapshotOf(win);
+  expect(after && after.revision === req.before.revision + 1, `request ${req.n} left the project at revision ${after?.revision}, not ${req.before.revision + 1}`);
+  expect(holdsBatch(after.state.pages[fixture.homePageId], req.final), `the project does not hold every text request ${req.n} wrote on the home page`);
+  const doc = join(ctx.projectDir, 'siteorigin', 'pages', `${fixture.homePageId}.json`);
+  expect(holdsBatch(existsSync(doc) ? JSON.parse(readFileSync(doc, 'utf8')) : null, req.final), `the home page’s document on disk does not hold every text request ${req.n} wrote`);
+  const applied = await ctx.waitTrace((t) => !!t.first('canvas.revisionApplied', atRevision(after.revision)), 30_000);
+  expect(applied.first('canvas.revisionApplied', atRevision(after.revision)), `the canvas never reported request ${req.n} applied`);
+}
+
+export const aiMemory: Scenario = {
+  name: 'aiMemory',
+  after: 'launch',
+  memory: true,
+  deadlineMs: 15 * 60_000,
+  description: `The memory of every process of the app with the fixture open and the scripted model connected, before an AI request in Edit mode on the home page that makes one apply_operations call of ${BATCH_OPERATIONS} operations, at its peak while it runs, after it, and after ${AI_MEMORY_RUNS} such requests in a row.`,
+  async run(ctx) {
+    const { win, fixture } = ctx;
+    const probe = ctx.memory;
+    if (!probe) throw new Error('the aiMemory scenario was run without a memory probe');
+    // Opened as `open` opens it, after the files have settled; not timed and not read.
+    const wait = ctx.restoredAt + FILES_SETTLE_MS - Date.now();
+    if (wait > 0) await sleep(wait);
+    await openFromWelcome(ctx);
+    await checkOpened(ctx);
+    const server = await new MockOpenAIServer().start();
+    try {
+      // The scripted model, in native tool mode (no live provider), and the reload that takes the setting.
+      await win.evaluate((url) => (globalThis as unknown as EditorPage).builder.app.setSettings({ ai: { provider: 'local', models: { local: 'test-model' }, local: { baseURL: url, allowRemote: false, toolMode: 'native', contextWindow: 131_072 } } } as never), server.baseURL);
+      await win.reload();
+      await win.locator('.editor').waitFor({ timeout: 60_000 });
+      await preview(win).locator('html[data-so-editing]').waitFor({ state: 'attached', timeout: 60_000 });
+      await win.locator('.dock-tab', { hasText: 'AI' }).first().click();
+      await composer(win).waitFor({ timeout: 15_000 });
+      const start = await snapshotOf(win);
+      expect(start, 'no project is open');
+      const first = await prepareBatchRequest(ctx, server, 1);
+      await probe.rest('aiIdle');
+      await probe.peak('aiRun', () => sendBatchRequest(ctx, first));
+      await checkBatchRequest(ctx, first);
+      await probe.rest('aiDone');
+      for (let n = 2; n <= AI_MEMORY_RUNS; n++) {
+        const req = await prepareBatchRequest(ctx, server, n);
+        await sendBatchRequest(ctx, req);
+        await checkBatchRequest(ctx, req);
+      }
+      const after = await snapshotOf(win);
+      expect(after && after.revision === start.revision + AI_MEMORY_RUNS, `the requests left the project at revision ${after?.revision}, not ${start.revision + AI_MEMORY_RUNS}`);
+      expect(server.requests.length >= 2 * AI_MEMORY_RUNS, `the scripted model was asked ${server.requests.length} times for ${AI_MEMORY_RUNS} requests of two turns each`);
+      await probe.rest(`aiDone${AI_MEMORY_RUNS}`);
+    } finally {
+      await server.stop();
+    }
+  },
+  measure(_trace, _fixture, readings = []) {
+    const m = new Collector();
+    const reading = (label: string, kind: 'rest' | 'peak' = 'rest') => readings.find((r) => r.label === label && r.kind === kind);
+    for (const [label, kind] of AI_MEMORY_READINGS) readingMetrics(m, label, reading(label, kind));
+    growthMetrics(m, 'aiRun', reading('aiIdle'), reading('aiDone'));
+    growthMetrics(m, 'aiRuns', reading('aiDone'), reading(`aiDone${AI_MEMORY_RUNS}`));
     return m;
   }
 };
@@ -6242,7 +6376,7 @@ async function expectChip(win: Page) {
   expect(await chip.count(), 'the composer does not say the request may change the whole site');
 }
 
-export const SCENARIOS: Scenario[] = [launch, open, edit, editFullHistory, edits, batch, panels, panelsInUse, layers, chat, aiEdit, ai, canvas, drag, colour, thumbs, exportSite, exportAgain, cmdk, assets, importPhotos, importOriginals, importHeic, history, editBranded, switchProject, create, createAgain, memory, previewImages, memoryPanels, noWindow, reopen, memoryBrowse];
+export const SCENARIOS: Scenario[] = [launch, open, edit, editFullHistory, edits, batch, panels, panelsInUse, layers, chat, aiEdit, ai, canvas, drag, colour, thumbs, exportSite, exportAgain, cmdk, assets, importPhotos, importOriginals, importHeic, history, editBranded, switchProject, create, createAgain, memory, previewImages, memoryPanels, noWindow, reopen, memoryBrowse, aiMemory];
 
 /**
  * The scenarios to run in one launch for those asked for: each with every one it follows, in the order of SCENARIOS

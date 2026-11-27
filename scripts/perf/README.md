@@ -526,6 +526,21 @@ Welcome shown. Metrics: each reading's, as `memory`'s; and growth: `memory.close
 the closed project left behind), `memory.cycles.growth.*` (`closed5` − `closed1`: what four more opens and closes added
 to it) and `memory.reopen.growth.*` (`closed5` − `welcome`).
 
+**`aiMemory`** (after `launch`, and only on its own, as `memory`): the fixture opened from its card as `open` opens it,
+untimed and not read; the scripted model server connected as a local provider in native tool mode (no live provider)
+and the window reloaded to take it; then in the AI panel, in Edit mode limited to the home page (This page), the request
+`batch` makes: one `apply_operations` call of 30 `instance.setProp` operations on the home page's text properties, then
+the model's answer. Readings: at rest with the request typed and not yet sent (`aiIdle`), sampled throughout the first
+request for its peak (`aiRun`), until the preview shows the hero's new heading and the request has ended (its checks,
+which ask the app for the project, come after the peak), at rest after it (`aiDone`), and after 9 more such requests in a row, in the same conversation, each one's batch worked out from the
+project as it is then (`aiDone10`). Checks, for every request: it was limited to the home page, the project moved
+exactly one revision and holds every text its batch wrote, so does the home page's document on disk, the log ends with
+that request's own answer and no run is under way, and the canvas reported the revision applied; after the last, the
+project is 10 revisions on and the scripted model was asked at least twice a request. Metrics as `memory`'s, for each
+reading (`memory.aiIdle.*`, `memory.aiRun.peak.*`, `memory.aiDone.*`, `memory.aiDone10.*`), with two growths:
+`memory.aiRun.growth.*` (`aiDone` − `aiIdle`: what one request left behind) and `memory.aiRuns.growth.*` (`aiDone10` −
+`aiDone`: what the 9 after it left).
+
 **`canvas`** (after `open`): with the home hero selected by a click on it, scroll the home page with the wheel, 30 notches
 of 60 px down and as many back up, each 16 ms after the one before was taken (about 30 a second on an M4 Max, so the
 outlines move every other frame); then sweep the pointer across the page, corner to corner along both diagonals in 60
