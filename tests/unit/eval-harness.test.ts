@@ -169,7 +169,7 @@ describe('agent benchmark', () => {
     // Words the draft does not have: part of a figure, the request around the draft, a paragraph shown twice.
     expect(await failing(edited(clinic, (a) => (a.sections[0].props.eyebrow = '46')))).toEqual(['only-supplied-copy']);
     expect(await failing(edited(clinic, (a) => (a.sections[0].props.eyebrow = 'Please lay it out.')))).toEqual(['only-supplied-copy']);
-    expect(await failing(edited(clinic, (a) => a.sections.splice(1, 0, { componentId: 'content.text', props: { heading: '', body: a.sections[0].props.lead } })))).toEqual(['only-supplied-copy']);
+    expect(await failing(edited(clinic, (a) => a.sections.splice(1, 0, { componentId: 'content.text', props: { eyebrow: '', heading: '', body: a.sections[0].props.lead } })))).toEqual(['only-supplied-copy']);
     // The button sent elsewhere, with a decoy that goes where it should; and a link the draft never had, inside text.
     const decoy = (a: any) => Object.assign(a.sections[0].props, { primaryLink: 'https://bench.example/', secondaryLabel: '146', secondaryLink: 'https://bench.example/book' });
     expect(await failing(edited(clinic, decoy))).toEqual(['opening', 'reading-order', 'only-supplied-copy', 'only-supplied-links']);
@@ -187,14 +187,14 @@ describe('agent benchmark', () => {
     const poured = (a: any) => {
       const [hero, list] = a.sections;
       const rest = ['- The appliance, even if it no longer switches on.', '- Its plug, cable and any loose screws.', '', 'Last winter at the clinic', '', '146 appliances assessed', '', '73% repaired on the day', '', 'Before you visit', '', 'Can I bring a lamp?', '', 'Yes. Bring the shade separately so it travels safely.', '', 'What does it cost?', '', 'Assessment is free. We agree the price of parts with you first.'];
-      a.sections = [hero, { componentId: 'content.text', props: { heading: list.props.heading, body: rest.join('\n') } }];
+      a.sections = [hero, { componentId: 'content.text', props: { eyebrow: '', heading: list.props.heading, body: rest.join('\n') } }];
     };
     expect(await failing(edited(clinic, poured))).toEqual(['reading-order']);
     // A faithful layout of another shape passes: each question with its answer as one point of a text section.
-    const points = (a: any) => (a.sections[3] = { componentId: 'content.text', props: { heading: 'Before you visit', body: '- Can I bring a lamp? Yes. Bring the shade separately so it travels safely.\n- What does it cost? Assessment is free. We agree the price of parts with you first.' } });
+    const points = (a: any) => (a.sections[3] = { componentId: 'content.text', props: { eyebrow: '', heading: 'Before you visit', body: '- Can I bring a lamp? Yes. Bring the shade separately so it travels safely.\n- What does it cost? Assessment is free. We agree the price of parts with you first.' } });
     expect((await runCase(edited(clinic, points), scripted)).result.checks.filter((x) => !x.pass)).toEqual([]);
     // A question and its answer shown again as one paragraph, beside the questions section that already has them.
-    const again = (a: any) => a.sections.push({ componentId: 'content.text', props: { heading: '', body: 'Can I bring a lamp? Yes. Bring the shade separately so it travels safely.' } });
+    const again = (a: any) => a.sections.push({ componentId: 'content.text', props: { eyebrow: '', heading: '', body: 'Can I bring a lamp? Yes. Bring the shade separately so it travels safely.' } });
     expect(await failing(edited(clinic, again))).toEqual(['only-supplied-copy']);
     // A card's link shows another of its fields as its words: a contact row whose value is the button's label.
     const row = (a: any) =>
@@ -202,7 +202,7 @@ describe('agent benchmark', () => {
     expect((await runCase(edited(clinic, row), scripted)).result.checks.filter((x) => !x.pass)).toEqual([]);
     // So does the opening as a text section whose button is a link in its words, one of them in bold.
     const bench = { type: 'url', target: 'https://bench.example/book' };
-    const inText = (a: any) => (a.sections[0] = { componentId: 'content.text', props: { heading: 'Give your kettle another winter', body: [
+    const inText = (a: any) => (a.sections[0] = { componentId: 'content.text', props: { eyebrow: '', heading: 'Give your kettle another winter', body: [
             { type: 'p', spans: [{ text: 'Bring one broken household appliance to the Saturday repair clinic and fix it with a volunteer.' }] },
             { type: 'p', spans: [{ text: 'Reserve a ', link: bench }, { text: 'bench', strong: true, link: bench }] }
           ] } });
