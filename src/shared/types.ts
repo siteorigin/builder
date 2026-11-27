@@ -73,7 +73,7 @@ export type StyleTokenRef = { token: string; alpha?: number };
  * optional scrim, a colour or one gradient painted over it so text on top stays readable. Only the `backgroundImage`
  * style property holds one (see shared/background-image.ts); it never names a token.
  */
-export type BackgroundImageValue = { assetId: string; size?: 'cover' | 'contain'; position?: string; scrim?: string; token?: never };
+export type BackgroundImageValue = { assetId: string; size?: 'cover' | 'contain' | 'tile'; tileSize?: number; position?: string; scrim?: string; token?: never };
 /** A literal style value, a reference to a site token, or a background image (`backgroundImage` only). */
 export type StyleValue = string | number | boolean | StyleTokenRef | BackgroundImageValue;
 export type StyleProps = Record<string, StyleValue>;

@@ -102,11 +102,32 @@ function resolve(raw: StyleValue, assets: Record<string, AssetRecord>): { value:
 /** The scrim as a layer: a colour is a gradient of one colour, since a plain colour cannot be a background image. */
 const scrimLayer = (scrim: string) => (/^[a-z-]*gradient\(/i.test(scrim) ? scrim : `linear-gradient(${scrim}, ${scrim})`);
 
+/** A tile is the original at every screen width: a copy picked by density would change a tile's size, and blur a grain. */
+const spanFor = (value: BackgroundImageValue, span: number | undefined) => (value.size === 'tile' ? undefined : span);
+
+/**
+ * One tile's size: the width set, its height in proportion; else the picture's own size. An SVG drawn to a viewBox
+ * alone has no size of its own, and "auto" would stretch one tile over the box, so an SVG takes the width on record:
+ * the one it declares, or else its viewBox's (see imageInfo).
+ */
+function tileGeometry(value: BackgroundImageValue, asset: AssetRecord): string {
+  const width = value.tileSize ?? (asset.mime === 'image/svg+xml' && typeof asset.width === 'number' && Number.isFinite(asset.width) && asset.width > 0 ? asset.width : undefined);
+  return width === undefined ? 'auto' : `${width}px auto`;
+}
+
+/** How the picture's own layer lies in the box. A tile starts at the top left corner, so the pattern stays put as the box changes size. */
+function placement(value: BackgroundImageValue, asset: AssetRecord): { size: string; position: string; repeat: string } {
+  if (value.size === 'tile') return { size: tileGeometry(value, asset), position: '0% 0%', repeat: 'repeat' };
+  return { size: value.size === 'contain' ? 'contain' : 'cover', position: backgroundPosition(value), repeat: 'no-repeat' };
+}
+
 /**
  * The picture's layers for a screen at most `span` wide: its scrim over its file. With `files` (a design's rules), the
  * file is named by its variable, defined in `files` for the design's own file to write.
  */
-function layers(r: NonNullable<ReturnType<typeof resolve>>, span: number | undefined, files?: Map<string, string>): string {
+function layers(r: NonNullable<ReturnType<typeof resolve>>, screen: number | undefined, files?: Map<string, string>): string {
+  // The file and the variable naming it go by the same span, so a tiled use and a cropped one never share a variable.
+  const span = spanFor(r.value, screen);
   let image = imageFor(r.asset, r.original, span);
   if (files) {
     const name = fileVar(r.value.assetId, span);
@@ -127,10 +148,9 @@ export function backgroundImageDecls(raw: StyleValue, assets: Record<string, Ass
   const r = resolve(raw, assets);
   if (!r) return [];
   const scrim = typeof r.value.scrim === 'string' && r.value.scrim.trim() !== '';
-  const fit = r.value.size === 'contain' ? 'contain' : 'cover';
-  const at = backgroundPosition(r.value);
-  // The scrim covers the whole box, over the picture, whether the picture fills it or not.
-  const geometry = scrim ? { size: `100% 100%, ${fit}`, position: `center, ${at}`, repeat: 'no-repeat, no-repeat' } : { size: fit, position: at, repeat: 'no-repeat' };
+  const own = placement(r.value, r.asset);
+  // The scrim covers the whole box once, over the picture, whether the picture fills it, repeats or neither.
+  const geometry = scrim ? { size: `100% 100%, ${own.size}`, position: `center, ${own.position}`, repeat: `no-repeat, ${own.repeat}` } : own;
   return [`${BG_VARS.image}: ${layers(r, span, files)}`, `${BG_VARS.size}: ${geometry.size}`, `${BG_VARS.position}: ${geometry.position}`, `${BG_VARS.repeat}: ${geometry.repeat}`, ...paintDecls()];
 }
 
