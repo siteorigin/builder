@@ -12,13 +12,14 @@
 import type { EditOperation } from '@shared/ops';
 import type { GraphNode, NodeTree, ProjectState, PropSchema } from '@shared/types';
 import { isBinding } from '@shared/types';
-import { isImageBlock, isRichBlock, spanRuns, type RichBlock, type RichSpan } from '@shared/richtext';
+import { cleanBlocks, isImageBlock, isRichBlock, spanRuns, type RichBlock } from '@shared/richtext';
+import { ENTRY_QUERY_PROPS } from '@shared/entry-feed';
 import { sameValue } from '@shared/same';
 import { copyEditorOperationProblem } from '@shared/live/copy-editor';
 import { formDestinationProps } from './form-destinations';
 import { guestDestinationChange } from './guest-edits';
 import { bindingSites, type BindingSite } from './schema';
-import { findParent } from './tree';
+import { shownOnceIn } from './slots';
 
 /** Why a Copy Editor's batch is refused, and the operation that was, when it is one operation's fault. */
 export interface CopyEditorRefusal {
@@ -28,7 +29,9 @@ export interface CopyEditorRefusal {
 
 /** What a property holds for a Copy Editor: plain text, rich text, or a picture. */
 type Kind = 'text' | 'rich' | 'image';
-const kindOf = (schema: PropSchema | undefined): Kind | null => (schema?.type === 'string' ? 'text' : schema?.type === 'richtext' ? 'rich' : schema?.type === 'image' ? 'image' : null);
+type CopySchema = Extract<PropSchema, { type: 'string' | 'richtext' | 'image' }>;
+const isCopySchema = (schema: PropSchema | undefined): schema is CopySchema => schema?.type === 'string' || schema?.type === 'richtext' || schema?.type === 'image';
+const kindOf = (schema: PropSchema | undefined): Kind | null => (!isCopySchema(schema) ? null : schema.type === 'string' ? 'text' : schema.type === 'richtext' ? 'rich' : 'image');
 
 const own = <T>(record: Record<string, T> | undefined, key: string): T | undefined => (record && Object.hasOwn(record, key) ? record[key] : undefined);
 
@@ -43,7 +46,8 @@ export type CopyEditableLookup = (definitionId: string, prop: string) => boolean
  * Editor's edit never changes: see `present`), or a whole property passed on to a nested component that qualifies
  * in turn, for the same kind. A design that passes it on is followed at every hop; any other use (a tag, a link, a
  * comparison, a variant, a list, one field of it), a code component, which decides in its source what it does with
- * it, or a property the design never uses, does not qualify.
+ * it, or a property the design never uses, does not qualify. Nor does one a design's list filled from a collection
+ * reads by its name to choose the entries it shows (ENTRY_QUERY_PROPS), whatever else the design does with it.
  */
 export function copyEditableLookup(state: ProjectState): CopyEditableLookup {
   const known = new Map<string, boolean>();
@@ -59,7 +63,8 @@ export function copyEditableLookup(state: ProjectState): CopyEditableLookup {
     const schema = def ? own(def.properties, prop) : undefined;
     const kind = kindOf(schema);
     let ok = false;
-    if (def?.kind === 'managed' && def.tree && kind && schema?.copyEditable === true && !(destinations ??= formDestinationProps(state)).get(definitionId)?.has(prop)) {
+    const choosesEntries = () => (ENTRY_QUERY_PROPS as readonly string[]).includes(prop) && Object.values(def!.properties).some((p) => p.type === 'list' && p.feed !== undefined);
+    if (def?.kind === 'managed' && def.tree && kind && isCopySchema(schema) && schema.copyEditable === true && !choosesEntries() && !(destinations ??= formDestinationProps(state)).get(definitionId)?.has(prop)) {
       visiting.add(key);
       const uses = bindingSites(def).filter((s) => isBinding(s.binding) && '$prop' in s.binding && s.binding.$prop === prop);
       ok = uses.length > 0 && uses.every((s) => shows(s, kind));
@@ -91,19 +96,6 @@ export function copyEditableLookup(state: ProjectState): CopyEditableLookup {
   return qualifies;
 }
 
-/** Whether a node of a tree is shown once for each item or entry of a repeat it is inside. */
-function insideRepeat(tree: NodeTree, nodeId: string): boolean {
-  let id = nodeId;
-  // A tree cannot nest deeper than it has nodes; a longer walk is a loop, and counts as inside one.
-  for (let steps = Object.keys(tree.nodes).length; steps > 0; steps--) {
-    const parent = findParent(tree, id);
-    if (!parent || parent.parentId === null) return false;
-    id = parent.parentId;
-    if (own(tree.nodes, id)?.kind === 'repeat') return true;
-  }
-  return true;
-}
-
 /**
  * Whether a value shows, as the generated site's `has()` judges it (generator/checks.ts `shown`): text of more than
  * spaces, a list or rich text with anything in it, a picture that is in the library. A Copy Editor's edit never
@@ -111,7 +103,8 @@ function insideRepeat(tree: NodeTree, nodeId: string): boolean {
  */
 function present(value: unknown, state: ProjectState): boolean {
   if (typeof value === 'string') return value.trim().length > 0;
-  if (Array.isArray(value)) return value.length > 0;
+  // Rich text as the site is generated from it: empty paragraphs and list items are dropped before it is shown.
+  if (Array.isArray(value)) return cleanBlocks(value.filter(isRichBlock)).length > 0;
   if (value && typeof value === 'object' && 'assetId' in value) {
     const id = (value as { assetId?: unknown }).assetId;
     return typeof id === 'string' && !!id && Object.hasOwn(state.assets.assets, id);
@@ -119,21 +112,21 @@ function present(value: unknown, state: ProjectState): boolean {
   return !!value;
 }
 
-/** The links rich text holds, in order, a link running over several spans counted once, and its pictures. */
+/**
+ * What rich text holds besides its words and their emphasis, in order: each linked span (each one a link of its own on
+ * the site), each picture, and every block but a paragraph (a heading, a quote, a list and its items). A Copy Editor
+ * rewords text and adds or drops paragraphs; the rest is the page's structure.
+ */
 function richFixtures(blocks: readonly RichBlock[]): unknown[] {
   const out: unknown[] = [];
-  for (const b of blocks) {
+  for (const b of cleanBlocks(blocks.filter(isRichBlock))) {
     if (isImageBlock(b)) {
       out.push(b);
       continue;
     }
-    for (const run of spanRuns(b)) {
-      let last: RichSpan['link'];
-      for (const span of run) {
-        if (span.link && !(last && sameValue(last, span.link))) out.push(span.link);
-        last = span.link;
-      }
-    }
+    const runs = spanRuns(b);
+    if (b.type !== 'p') out.push(`${b.type}:${runs.length}`);
+    for (const run of runs) for (const span of run) if (span.link) out.push(span.link);
   }
   return out;
 }
@@ -150,7 +143,7 @@ function valueProblem(kind: Kind, was: unknown, now: unknown, before: ProjectSta
   if (kind === 'text') return typeof now === 'string' ? null : COPY_ONLY;
   if (kind === 'rich') {
     if (!Array.isArray(was) || !Array.isArray(now) || !now.every(isRichBlock)) return COPY_ONLY;
-    return sameValue(richFixtures(was as RichBlock[]), richFixtures(now)) ? null : 'A copy editor rewords links but does not add, remove or retarget them, or change pictures in the text.';
+    return sameValue(richFixtures(was as RichBlock[]), richFixtures(now)) ? null : 'A copy editor rewords text but does not add, remove or retarget its links, or change its headings, lists, quotes or pictures.';
   }
   if (!now || typeof now !== 'object' || Array.isArray(now) || !was || typeof was !== 'object') return COPY_ONLY;
   const image = now as Record<string, unknown>;
@@ -158,7 +151,10 @@ function valueProblem(kind: Kind, was: unknown, now: unknown, before: ProjectSta
   const asset = typeof image.assetId === 'string' ? own(before.assets.assets, image.assetId) : undefined;
   if (asset?.kind !== 'image') return 'A copy editor replaces a picture only with one already in the library.';
   if (typeof image.alt !== 'string') return COPY_ONLY;
-  if (!sameValue(image.decorative, (was as { decorative?: unknown }).decorative)) return 'Only the host can change whether a picture is decorative.';
+  const prior = was as { alt?: unknown; decorative?: unknown };
+  if (!sameValue(image.decorative, prior.decorative)) return 'Only the host can change whether a picture is decorative.';
+  // A described picture stays described: a new picture may get a new description, never none.
+  if (!image.decorative && present(prior.alt, before) && !present(image.alt, before)) return 'A copy editor rewords a picture’s description but does not remove it.';
   return null;
 }
 
@@ -215,8 +211,9 @@ export function copyEditorBatchProblem(before: ProjectState, after: ProjectState
     const page = own(before.pages, op.owner.id);
     const node = page ? own(page.nodes, op.nodeId) : undefined;
     if (!page || !node) return refuse('A copy editor changes only what is already on the site’s pages.');
-    // A repeat shows its contents once for every entry: changing them changes the design of every row.
-    if (insideRepeat(page, node.id)) return refuse('A copy editor cannot change what a list of entries shows for each of them.');
+    // A repeat, or a component that shows a slot more than once, shows what it holds once for every row: changing
+    // that changes the design of every row.
+    if (!shownOnceIn(before, page, node.id)) return refuse('A copy editor cannot change what is shown once for each item of a list.');
     let leaf: Leaf;
     if (op.type === 'node.setContent') {
       if (node.kind !== 'text' || isBinding(node.text)) return refuse('A copy editor changes only the written words of a text element.');

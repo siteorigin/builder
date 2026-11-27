@@ -245,9 +245,10 @@ export interface StringProp extends PropBase {
   multiline?: boolean;
   maxLength?: number;
   /**
-   * The host lets a live session's Copy Editor change this property on the site's pages (engine/copy-editor.ts): a
-   * piece of copy or a picture, never anything that shapes the layout. Only a top-level property of a managed design
-   * whose every use shows it as text (or as a picture) counts; a marker anywhere else grants nothing.
+   * The design offers this property to a live session's Copy Editor on the site's pages: a piece of copy or a picture,
+   * never anything that shapes the layout. It is an offer the host's check still holds to (engine/copy-editor.ts
+   * copyEditableLookup): only a top-level property of a managed design that shows it as what it is (or tests whether
+   * it is set) and never decides where a form sends counts. A mark anywhere else grants nothing.
    */
   copyEditable?: true;
 }
@@ -264,9 +265,10 @@ export interface RichTextProp extends PropBase {
    */
   codeForm?: RichCodeForm;
   /**
-   * The host lets a live session's Copy Editor change this property on the site's pages (engine/copy-editor.ts): a
-   * piece of copy or a picture, never anything that shapes the layout. Only a top-level property of a managed design
-   * whose every use shows it as text (or as a picture) counts; a marker anywhere else grants nothing.
+   * The design offers this property to a live session's Copy Editor on the site's pages: a piece of copy or a picture,
+   * never anything that shapes the layout. It is an offer the host's check still holds to (engine/copy-editor.ts
+   * copyEditableLookup): only a top-level property of a managed design that shows it as what it is (or tests whether
+   * it is set) and never decides where a form sends counts. A mark anywhere else grants nothing.
    */
   copyEditable?: true;
 }
@@ -296,9 +298,10 @@ export interface ImageProp extends PropBase {
   type: 'image';
   default: ImageValue;
   /**
-   * The host lets a live session's Copy Editor change this property on the site's pages (engine/copy-editor.ts): a
-   * piece of copy or a picture, never anything that shapes the layout. Only a top-level property of a managed design
-   * whose every use shows it as text (or as a picture) counts; a marker anywhere else grants nothing.
+   * The design offers this property to a live session's Copy Editor on the site's pages: a piece of copy or a picture,
+   * never anything that shapes the layout. It is an offer the host's check still holds to (engine/copy-editor.ts
+   * copyEditableLookup): only a top-level property of a managed design that shows it as what it is (or tests whether
+   * it is set) and never decides where a form sends counts. A mark anywhere else grants nothing.
    */
   copyEditable?: true;
 }
