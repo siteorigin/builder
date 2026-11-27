@@ -668,6 +668,26 @@ describe('exporting with missing image files', () => {
     expect(stop.warnings).toEqual([`Reading nook: ${used.file}, ${used.variants![1].file} not found.`]);
   });
 
+  it('judges a missing copy by the names it asks about alone, whatever a damaged copy beside it says', async () => {
+    const { dir, state, used } = await staged();
+    // Edited by hand, one more copy names no file: the search for missing files passes it by, and so does the answer.
+    const damaged = { ...used, variants: [...used.variants!, { ...used.variants![0], file: 17 } as unknown as NonNullable<typeof used.variants>[number]] };
+    state.assets.assets[used.id] = damaged;
+    writeFileSync(join(dir, 'src/routes/+page.svelte'), `<link rel="icon" href="/assets/${used.file.split('/').pop()}">`);
+    unlinkSync(join(dir, used.variants![0].file));
+    const found = await missingWebsiteAssets(dir, state);
+    expect(found).toEqual([{ asset: damaged, missing: { assetId: used.id, original: false, variants: [used.variants![0].file] }, used: false }]);
+    // The missing copy named by the site is used, the damaged copy beside it still no name.
+    writeFileSync(join(dir, 'src/routes/+page.svelte'), `<img src="/assets/${used.variants![0].file.split('/').pop()}" alt="">`);
+    expect((await missingWebsiteAssets(dir, state))[0].used).toBe(true);
+    // With the original gone too, its JPEG and PNG copies are asked about, and a copy that names a list of files is none.
+    state.assets.assets[used.id] = { ...damaged, variants: [...damaged.variants!, { ...used.variants![0], file: [used.variants![0].file] } as unknown as NonNullable<typeof used.variants>[number]] };
+    unlinkSync(join(dir, used.file));
+    writeFileSync(join(dir, 'src/routes/+page.svelte'), `<img src="/assets/${used.variants![1].file.split('/').pop()}" alt="">`);
+    const gone = await missingWebsiteAssets(dir, state);
+    expect(gone.map((m) => [m.missing.original, m.used])).toEqual([[true, /\.(jpg|png)$/.test(used.variants![1].file)]]);
+  });
+
   it('counts an image as used when the site names any of its files, and only whole file names', async () => {
     const { dir, state, used } = await staged();
     const name = (f: string) => f.split('/').pop();

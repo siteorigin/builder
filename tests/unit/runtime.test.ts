@@ -26,11 +26,11 @@ class FakeWorker extends EventEmitter {
 }
 const workers: FakeWorker[] = [];
 /** The options each worker was forked with, in order. */
-const forked: Array<{ execArgv?: string[]; serviceName?: string }> = [];
+const forked: Array<{ env?: Record<string, string>; execArgv?: string[]; serviceName?: string }> = [];
 vi.mock('electron', () => ({
   app: { isPackaged: false, getPath: () => '/tmp', getVersion: () => '0.0.0' },
   utilityProcess: {
-    fork: (_path: string, _args: string[], opts: { execArgv?: string[]; serviceName?: string }) => {
+    fork: (_path: string, _args: string[], opts: (typeof forked)[number]) => {
       forked.push(opts);
       const w = new FakeWorker();
       workers.push(w);
@@ -39,7 +39,7 @@ vi.mock('electron', () => ({
   }
 }));
 
-const { BUILD_LIMITS, DEV_SERVER_V8_FLAGS, HOLD_ACK_MS, STOP_LIMITS, DevServer, buildProject, prepareDependencies } = await import('../../src/main/runtime/manager');
+const { BUILD_LIMITS, BUILD_V8_FLAGS, DEV_SERVER_V8_FLAGS, HOLD_ACK_MS, STOP_LIMITS, DevServer, buildProject, prepareDependencies } = await import('../../src/main/runtime/manager');
 
 afterEach(() => {
   FakeWorker.pipesOpen = false;
@@ -54,6 +54,21 @@ describe('production build worker', () => {
     workers[0].emit('message', { type: 'built', ok: true, logs: ['done'] });
     expect(await p).toEqual({ ok: true, error: undefined, logs: ['done'], exited: true });
     expect(workers[0].killed).toBe(true);
+  });
+
+  it('forks the build alone with its allocator setting and V8 flags, and the dev server with neither', async () => {
+    const p = buildProject('/project');
+    expect(BUILD_V8_FLAGS).toEqual(['--heap-growing-percent=20', '--max-semi-space-size=4']);
+    expect(forked[0]).toMatchObject({ serviceName: 'SiteOrigin project build', execArgv: ['--js-flags=--heap-growing-percent=20 --max-semi-space-size=4'] });
+    expect([forked[0].env?.NODE_ENV, forked[0].env?.MIMALLOC_PURGE_DELAY]).toEqual(['production', '0']);
+    workers[0].emit('message', { type: 'built', ok: true, logs: [] });
+    await p;
+    // The dev server's native heap is live data, and its JavaScript keeps V8's own pace.
+    const dev = new DevServer('/project');
+    void dev.start().catch(() => undefined);
+    expect(forked[1].env?.MIMALLOC_PURGE_DELAY).toBeUndefined();
+    expect(forked[1].execArgv).toEqual(['--js-flags=--no-flush-bytecode']);
+    workers[1].emit('exit', 1);
   });
 
   it('keeps what a failed build wrote to stderr', async () => {
@@ -312,7 +327,7 @@ describe('preview worker', () => {
     workers[1].emit('message', { type: 'built', ok: true, logs: [] });
     await built;
     expect(forked[1].serviceName).toBe('SiteOrigin project build');
-    expect(forked[1].execArgv).toBeUndefined();
+    expect(forked[1].execArgv).toEqual([`--js-flags=${BUILD_V8_FLAGS.join(' ')}`]);
     void dev.stop();
     workers[0].emit('exit', null);
   });
