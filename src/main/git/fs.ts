@@ -12,6 +12,7 @@
  * that turns out to be a link (to the project's own `.git/`, say) is refused rather than followed.
  */
 import { randomBytes } from 'node:crypto';
+import type { PromiseFsClient } from 'isomorphic-git';
 import { promises as fs } from 'node:fs';
 import { dirname, join, relative, sep } from 'node:path';
 import { eachAtMost, renameReplacing, syncDir } from '../project/fsutil';
@@ -28,7 +29,7 @@ const isMissing = (e: unknown) => ['ENOENT', 'ENOTDIR'].includes((e as NodeJS.Er
 
 export interface RepoFs {
   /** The fs client isomorphic-git takes: an object with an enumerable `promises`. */
-  promises: Record<string, (...args: never[]) => Promise<unknown>>;
+  promises: PromiseFsClient['promises'];
   /** Write an object's bytes to a temporary name beside `path`; it takes the name at the next flush. */
   stage(path: string, chunks: Iterable<Uint8Array> | AsyncIterable<Uint8Array>): Promise<void>;
   /** Whether an object is staged for `path`. */
@@ -207,6 +208,6 @@ export function repoFs(gitdir: string, fault?: Fault): RepoFs {
       readlink: guarded(noLinks('EINVAL')),
       symlink: guarded(noLinks('EPERM')),
       chmod: guarded((p: string, m: number) => fs.chmod(p, m))
-    } as unknown as RepoFs['promises']
+    } satisfies RepoFs['promises']
   };
 }
