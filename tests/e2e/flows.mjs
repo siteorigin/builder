@@ -229,8 +229,24 @@ step('a code component’s marked heading and list item title are typed over on 
   const title = frame.locator(`.code-services [data-so-text="features.title#${second}"]`);
   await eventually(async () => assert.equal(await title.count(), 1, 'the preview marks each item’s title with its item'), 30000);
   const labels = async () => (await projectSnapshot()).history.entries.map((e) => e.label);
+  /**
+   * A double-click near the start of an element in the page, where the author's pointer would be, scrolled into the
+   * frame's view first (at once: the site scrolls smoothly). The preview is scaled to fit, which Playwright's own boxes
+   * for elements in the frame leave out.
+   */
+  const dblclickOn = async (locator) => {
+    await locator.evaluate((el) => el.scrollIntoView({ block: 'center', behavior: 'instant' }));
+    await win.waitForTimeout(300);
+    const at = await locator.evaluate((el) => {
+      const b = el.getBoundingClientRect();
+      return { x: b.x + Math.min(12, b.width / 2), y: b.y + b.height / 2, vw: window.innerWidth };
+    });
+    const f = await win.locator('.frame-box iframe').boundingBox();
+    const k = f.width / at.vw;
+    await win.mouse.dblclick(f.x + at.x * k, f.y + at.y * k);
+  };
 
-  await heading.dblclick();
+  await dblclickOn(heading);
   await eventually(async () => assert.equal(await heading.getAttribute('contenteditable'), 'plaintext-only', 'the code component’s heading is being edited'));
   await win.keyboard.press(`${MOD}+a`);
   await win.keyboard.type('Services we offer');
@@ -238,7 +254,7 @@ step('a code component’s marked heading and list item title are typed over on 
   await eventually(async () => assert.equal((await props()).heading, 'Services we offer', 'the heading property holds the words typed'));
   await eventually(async () => assert.equal(await heading.innerText(), 'Services we offer', 'the preview shows the new heading'));
 
-  await title.dblclick();
+  await dblclickOn(title);
   await eventually(async () => assert.equal(await title.getAttribute('contenteditable'), 'plaintext-only', 'the second item’s title is being edited'));
   await win.keyboard.press(`${MOD}+a`);
   await win.keyboard.type('Building to last');
