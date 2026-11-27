@@ -200,6 +200,7 @@ function isDesc(v: unknown): v is BridgeDesc {
     (d.text === undefined || str(d.text, 400)) &&
     (d.code === undefined || typeof d.code === 'boolean') &&
     (d.part === undefined || str(d.part, 200)) &&
+    (d.partItem === undefined || str(d.partItem)) &&
     (d.slot === undefined || str(d.slot, 200)) &&
     (d.bind === undefined || str(d.bind, 600))
   );
@@ -214,9 +215,9 @@ export function bindDescOf(v: unknown): (BridgeDesc & { bind: string }) | null {
 /** The element chain under the pointer, innermost first. A chain with any malformed entry is empty. */
 export function chainOf(v: unknown): BridgeDesc[] {
   if (!Array.isArray(v) || v.length > MAX_CHAIN || !Array.from(v).every(isDesc)) return [];
-  // A code component's marked part keeps its ID, and a placement's empty slot its name; every other entry is as it
-  // always was.
-  return v.map((d: BridgeDesc) => ({ ctx: d.ctx, node: d.node, items: d.items, tag: d.tag, text: d.text, code: d.code, ...(d.part !== undefined ? { part: d.part } : {}), ...(d.slot !== undefined ? { slot: d.slot } : {}) }));
+  // A code component's marked part keeps its ID (and the item of its list it was picked in), and a placement's empty
+  // slot its name; every other entry is as it always was.
+  return v.map((d: BridgeDesc) => ({ ctx: d.ctx, node: d.node, items: d.items, tag: d.tag, text: d.text, code: d.code, ...(d.part !== undefined ? { part: d.part } : {}), ...(d.part !== undefined && d.partItem !== undefined ? { partItem: d.partItem } : {}), ...(d.slot !== undefined ? { slot: d.slot } : {}) }));
 }
 
 /** What the page says is at a point while something is dragged over it (see the bridge's pointAt), or null. */
