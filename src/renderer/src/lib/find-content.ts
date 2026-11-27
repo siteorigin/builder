@@ -771,19 +771,40 @@ export function planReplace(state: ProjectState, chosen: ContentMatch[], replace
   for (const e of entryEdits.values()) {
     const entry = own(state.collections ?? {}, e.collectionId)?.entries[e.entryId];
     const name = `“${clipped(entry?.title ?? 'the entry')}”`;
-    if ((e.value.title?.trim().length ?? 0) > ENTRY_TITLE_MAX) return { operations: [], changes: [], error: `Replacing would make the title of ${name} longer than ${ENTRY_TITLE_MAX} characters. Use shorter words, or leave that match out.`, skipped };
-    if ((e.value.excerpt?.trim().length ?? 0) > ENTRY_EXCERPT_MAX) return { operations: [], changes: [], error: `Replacing would make the excerpt of ${name} longer than ${ENTRY_EXCERPT_MAX} characters. Use shorter words, or leave that match out.`, skipped };
-    operations.push({ type: 'entry.update', collectionId: e.collectionId, entryId: e.entryId, ...e.value });
+    // As the entry edit stores them: trimmed, and an excerpt left empty removed.
+    const edit: { title?: string; excerpt?: string | null } = {};
+    if (e.value.title !== undefined) {
+      const title = e.value.title.trim();
+      if (!title) return { operations: [], changes: [], error: `Replacing would leave ${name} without a title. Use other words, or leave that match out.`, skipped };
+      if (title.length > ENTRY_TITLE_MAX) return { operations: [], changes: [], error: `Replacing would make the title of ${name} longer than ${ENTRY_TITLE_MAX} characters. Use shorter words, or leave that match out.`, skipped };
+      if (title !== entry?.title) edit.title = title;
+    }
+    if (e.value.excerpt !== undefined) {
+      const excerpt = e.value.excerpt.trim();
+      if (excerpt.length > ENTRY_EXCERPT_MAX) return { operations: [], changes: [], error: `Replacing would make the excerpt of ${name} longer than ${ENTRY_EXCERPT_MAX} characters. Use shorter words, or leave that match out.`, skipped };
+      if (excerpt !== (entry?.excerpt ?? '')) edit.excerpt = excerpt || null;
+    }
+    // A field that reads as it is stored already changes nothing, and is not listed as a change.
+    for (const field of ['title', 'excerpt'] as const) {
+      if (Object.hasOwn(e.value, field) && !Object.hasOwn(edit, field)) {
+        const key = JSON.stringify(['entry', e.collectionId, e.entryId, 'text', field]);
+        planned.delete(key);
+        for (let i = changes.length - 1; i >= 0; i--) if (changes[i].field.key === key) changes.splice(i, 1);
+      }
+    }
+    if (Object.keys(edit).length) operations.push({ type: 'entry.update', collectionId: e.collectionId, entryId: e.entryId, ...edit });
   }
   if (!operations.length) return { operations, changes, skipped };
   // Checked as the project checks an edit it is sent (a title's length, say), which a dry run alone does not.
+  const checked: EditOperation[] = [];
   for (const op of operations) {
     const v = validateOperation(op);
     if (!v.ok) return { operations: [], changes, error: v.message, skipped };
+    checked.push(v.op);
   }
   let after: ProjectState;
   try {
-    after = applyOperations(state, operations).state;
+    after = applyOperations(state, checked).state;
   } catch (e) {
     return { operations: [], changes, error: plainError(e), skipped };
   }

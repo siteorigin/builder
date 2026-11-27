@@ -65,11 +65,7 @@ export function openEditorDestination(dest: EditorDestination) {
   if (dest.kind === 'entry') {
     const collection = Object.hasOwn(snap.state.collections ?? {}, dest.collectionId) ? snap.state.collections[dest.collectionId] : undefined;
     if (!collection || !Object.hasOwn(collection.entries, dest.entryId)) return toast('That post is no longer on the site.', 'info');
-    // The writer shows the post, at the picture when one is named; its title or excerpt is focused once it shows.
-    const writer = dest.field !== 'body' && Object.hasOwn(POST_FIELDS, dest.field) ? POST_FIELDS[dest.field] : undefined;
-    return void openPost(dest.collectionId, dest.entryId, dest.field === 'body' ? dest.picture : undefined).then(() => {
-      if (writer && getState().post?.entryId === dest.entryId) revealInWriter(writer);
-    });
+    return void openEntryField(dest.collectionId, dest.entryId, dest.field, dest.picture);
   }
   if (dest.kind === 'element') return showElement(snap.state, dest);
   if (dest.kind === 'prop') return showField(snap.state, snap.workspaceKey, dest);
@@ -94,6 +90,17 @@ export function openEditorDestination(dest: EditorDestination) {
   // The Inspector of the form takes the request: it opens Content (and a field's row) and focuses the setting once it shows.
   const at = field.itemId ? { itemId: field.itemId, field: field.field } : {};
   setState({ modal: null, selection: ref, rightTab: 'inspect', dockOpen: true, inspectorFocus: inspectorFocusRequest({ opening: snap.workspaceKey, owner, nodeId, prop: field.prop, ...at, label: field.label }) });
+}
+
+/**
+ * Open a post in the writer, at the picture when one is named; its title or excerpt is focused once it shows. False
+ * when the post open now has text that could not be saved, which keeps it open (and the dialog that asked).
+ */
+export async function openEntryField(collectionId: string, entryId: string, field: Extract<EditorDestination, { kind: 'entry' }>['field'], picture?: number): Promise<boolean> {
+  const writer = field !== 'body' && Object.hasOwn(POST_FIELDS, field) ? POST_FIELDS[field] : undefined;
+  const ok = await openPost(collectionId, entryId, field === 'body' ? picture : undefined);
+  if (ok && writer && getState().post?.entryId === entryId) revealInWriter(writer);
+  return ok;
 }
 
 /**

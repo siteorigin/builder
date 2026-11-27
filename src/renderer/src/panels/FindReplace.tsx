@@ -4,7 +4,7 @@ import { Modal, openSection } from '../components/ui';
 import { BlockedNote, BlockedStatus, useProjectBlock } from '../components/BlockedNote';
 import { api, commitOps, getState, setState, toast, trackHistory, undoAction, undoAvailable, useStore } from '../store';
 import { pageOutOfSight, selectPage } from '../lib/actions';
-import { openEditorDestination } from '../lib/open-destination';
+import { openEntryField } from '../lib/open-destination';
 import { contentFields, contentTarget, entryTarget, findContent, planReplace, sampleContactMatches, type ContentChange, type ContentField, type ContentMatch } from '../lib/find-content';
 import type { SampleContactKind } from '@shared/sample-contact';
 import { pagesShowing } from '@shared/page-shell';
@@ -41,18 +41,17 @@ const anchor = (name: string) => `[data-field="${CSS.escape(name)}"]`;
 /**
  * Show where a match is: its page (for the shared header and footer, the page on screen when it shows them), the
  * element in the inspector with its Content open, and the field itself, focused. A list item's field the selection
- * alone does not show (a code component's) is opened in its list. An entry's title or excerpt opens in the writer.
+ * alone does not show (a code component's) is opened in its list. An entry's title or excerpt opens in the writer,
+ * once the post open there is saved: the promise says whether it did (the dialog stays open when it did not).
  */
-export function openContentMatch(field: ContentField) {
+export function openContentMatch(field: ContentField): Promise<boolean> | void {
   const s = getState();
   const state = s.snapshot?.state;
   if (!state) return;
   if (field.entry) {
     const at = entryTarget(state, field);
     if (!at) return toast('That entry is no longer on the site.', 'error');
-    // Closed here, so the dialog knows the match opened (the writer shows once the open post is saved).
-    if (s.modal) setState({ modal: null });
-    return openEditorDestination({ kind: 'entry', ...at });
+    return openEntryField(at.collectionId, at.entryId, at.field);
   }
   const target = contentTarget(state, field, s.pageId);
   if (!target) return toast('That content is no longer on the site.', 'error');
@@ -460,9 +459,14 @@ export function FindReplaceModal({ initial, sample: forSample }: { initial?: str
     setState({ modal: null });
   };
   const openMatch = (m: ContentMatch) => {
-    openContentMatch(m.field);
+    const opening = openContentMatch(m.field);
+    // An entry opens once the post open in the writer is saved; one that cannot be leaves the dialog as it is.
+    if (opening) return void opening.then((ok) => ok && openedMatch(m));
     // A match that has gone says so and leaves the dialog open, with nothing to hand over.
     if (getState().modal) return;
+    openedMatch(m);
+  };
+  const openedMatch = (m: ContentMatch) => {
     handOffUndo();
     // A replacement's Undo has gone to the toast and the site may change in the inspector, so no receipt comes back.
     kept = snap?.workspaceKey ? { workspaceKey: snap.workspaceKey, query, sample, matchCase, replacement, replacing, touched, picked, finished: null, collapsed, opened: m.id } : null;
@@ -950,7 +954,7 @@ export function FindReplaceModal({ initial, sample: forSample }: { initial?: str
               const eligible = g.matches.filter((m) => !m.blocked);
               const on = eligible.filter((m) => ticked.has(keyOf(m))).length;
               const locked = g.matches.length - eligible.length;
-              const lockedText = `${locked} ${locked === 1 ? 'needs' : 'need'} the inspector`;
+              const lockedText = g.entry ? `${locked} read-only` : `${locked} ${locked === 1 ? 'needs' : 'need'} the inspector`;
               const refusedIn = hasRefused ? g.matches.filter((m) => refused.has(m.id)).length : 0;
               const count = !replacing ? matchCount(g.matches.length) : !eligible.length ? lockedText : `${on} of ${eligible.length} chosen${locked ? ` · ${lockedText}` : ''}${refusedIn ? ` · ${refusedIn} ${refusedIn === 1 ? 'needs' : 'need'} an address` : ''}`;
               const GroupIcon = g.entry ? Newspaper : !g.shared ? FileText : g.shell === 'footer' ? PanelBottom : PanelTop;
@@ -1054,7 +1058,7 @@ export function FindReplaceModal({ initial, sample: forSample }: { initial?: str
                               </span>
                             )}
                           </div>
-                          <button className="btn btn-sm btn-ghost" disabled={busy || finished?.phase === 'undoing'} aria-label={`Open ${name} in the inspector`} aria-describedby={rowId} onClick={() => openMatch(m)} title="Show it on the page and in the inspector">
+                          <button className="btn btn-sm btn-ghost" disabled={busy || finished?.phase === 'undoing'} aria-label={m.field.entry ? `Open ${name} in the post writer` : `Open ${name} in the inspector`} aria-describedby={rowId} onClick={() => openMatch(m)} title={m.field.entry ? 'Show it in the post writer' : 'Show it on the page and in the inspector'}>
                             <PanelRightOpen /> Open
                           </button>
                         </li>
