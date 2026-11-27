@@ -166,6 +166,32 @@ describe.skipIf(!HOST_AVAILABLE && !process.env.CI)('pushing a publication to an
     expect(await openRepo(root).resolveRef(PUBLISH_BRANCH)).toBe(second);
   });
 
+  it('tells the host’s own refusal from another push that landed between its list of branches and this push', async () => {
+    const h = await host();
+    const git = client(h.ca);
+    const first = await publish({ 'index.html': 'one' }, null);
+    await git.push(root, target(h), first);
+    const second = await publish({ 'index.html': 'two' }, first);
+    // A hook of the host's refuses it.
+    writeFileSync(join(h.bare, 'hooks', 'pre-receive'), '#!/bin/sh\necho "protected by policy" >&2\nexit 1\n', { mode: 0o755 });
+    const refused = await git.push(root, target(h), second).catch((e: unknown) => e as GitError);
+    expect(refused).toMatchObject({ code: 'rejected' });
+    expect(refused.message, 'nothing the host said is passed on').not.toContain('policy');
+    expect(h.git(['rev-parse', PUBLISH_BRANCH]).trim()).toBe(first);
+    rmSync(join(h.bare, 'hooks', 'pre-receive'));
+    // Someone else's push lands after the host listed its branches and before this push reaches it.
+    let theirs = '';
+    h.beforeNextPush = () => {
+      const blob = h.git(['hash-object', '-w', '--stdin'], 'theirs').trim();
+      const tree = h.git(['mktree'], `100644 blob ${blob}\tindex.html\n`).trim();
+      theirs = h.git(['commit-tree', tree, '-p', first, '-m', 'Theirs']).trim();
+      h.git(['update-ref', PUBLISH_BRANCH, theirs, first]);
+    };
+    const moved = await git.push(root, target(h), second).catch((e: unknown) => e);
+    expect(moved).toMatchObject({ code: 'diverged', actual: theirs });
+    expect(h.git(['rev-parse', PUBLISH_BRANCH]).trim()).toBe(theirs);
+  });
+
   it('says a push whose reply was lost after the host took it is unknown, which the host’s branch then settles', async () => {
     const h = await host();
     const git = client(h.ca);

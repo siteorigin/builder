@@ -43,6 +43,8 @@ export interface GitHost {
   redirectNext: string | null;
   /** Let the next push land, then close the connection without its reply. */
   dropNextPushReply: boolean;
+  /** Run once when the next push arrives, before the host reads it (another push landing meanwhile, say). */
+  beforeNextPush: (() => void) | null;
   /** Stock Git in the bare repository, with none of this computer's settings. */
   git(args: string[], input?: string): string;
   close(): Promise<void>;
@@ -108,6 +110,7 @@ export async function startGitHost(opts: { username: string; password: string; c
     requests: [],
     redirectNext: null,
     dropNextPushReply: false,
+    beforeNextPush: null,
     git: (args, input) => stockGit(args, { cwd: bare, home: dir, input }),
     close: async () => {
       for (const s of sockets) s.destroy();
@@ -136,6 +139,11 @@ export async function startGitHost(opts: { username: string; password: string; c
     const isPush = req.method === 'POST' && url.pathname.endsWith('/git-receive-pack');
     const drop = isPush && host.dropNextPushReply;
     if (drop) host.dropNextPushReply = false;
+    if (isPush && host.beforeNextPush) {
+      const before = host.beforeNextPush;
+      host.beforeNextPush = null;
+      before();
+    }
     const cgi = spawn(STOCK_GIT!, ['http-backend'], {
       env: {
         ...cleanEnv(home),
