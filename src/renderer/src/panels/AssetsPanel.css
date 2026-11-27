@@ -293,8 +293,10 @@
   .uses-toggle:hover { color: var(--text); }
   .uses-toggle[aria-expanded='true'] svg { transform: rotate(180deg); }
 
-  /* Assets: one image's details replace the grid. Flat on the panel (no card inside a panel), in three
-     bands split by straight dividers: what it is and where it is used, what it says, what you can do. */
+  /* Assets: one image's details replace the grid. Flat on the panel (no card inside a panel), in three bands split by
+     straight dividers: what it is, what needs doing about it (the notes, most serious first: a missing file, alt text to
+     check, a large file, then a fact) and how to use it; its details, to edit; and where it is used, with Replace or
+     Remove last. */
   .asset-detail { display: flex; flex-direction: column; padding: 0 14px 20px; }
   .asset-detail-top { margin: 0 0 8px -9px; }
   /* The back button is the first thing focused; its ring is drawn inside so the scrolling body never clips it. */
@@ -303,13 +305,14 @@
   .asset-preview { position: relative; display: flex; align-items: center; justify-content: center; border-radius: var(--r-sm); background: var(--panel-2); overflow: hidden; }
   .asset-preview::after { content: ''; position: absolute; inset: 0; border-radius: inherit; box-shadow: inset 0 0 0 1px var(--border); pointer-events: none; }
   .asset-preview img { display: block; max-width: 100%; max-height: 176px; width: auto; height: auto; }
-  /* A preview whose file will not load keeps the frame of one that is off, not a 20px strip. */
-  .asset-preview > .asset-noimg { margin: 38px 0; }
   .asset-preview-off { display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 6px; min-height: 96px; padding: 0 20px; text-align: center; font-size: 12px; color: var(--text-3); }
   .asset-preview-off svg { width: 20px; height: 20px; }
   .asset-ident { padding-top: 12px; }
   .asset-ident h4 { margin: 0; font-size: 14px; font-weight: 600; line-height: 1.35; overflow-wrap: anywhere; user-select: text; }
   .asset-meta { margin: 2px 0 0; font-size: 12px; color: var(--text-3); font-variant-numeric: tabular-nums; }
+  /* The jump to the places is a link in the meta's own line, its target the 24px minimum. */
+  .asset-used-jump { min-height: 24px; margin-block: -3px; font-size: 12px; }
+  #asset-uses-title:focus-visible { outline-offset: 2px; }
   /* A camera or export name can be one long word, and is there to be copied. */
   .asset-original { overflow-wrap: anywhere; }
   .asset-original span { white-space: pre-wrap; user-select: text; }
@@ -318,7 +321,12 @@
   .asset-note > div { display: contents; }
   .asset-note > svg { width: 14px; height: 14px; margin-top: 2px; }
   .asset-note .asset-note-actions, .asset-note .asset-missing-actions { grid-column: 1 / -1; }
-  .asset-note b { color: var(--text); font-weight: 600; }
+  /* A note's buttons stay inside it at the narrowest sidebar: a label too long for the note wraps in its button. */
+  .asset-note :is(.asset-note-actions, .asset-missing-actions) .btn { max-width: 100%; height: auto; min-height: 26px; padding-block: 4px; white-space: normal; text-align: left; line-height: 16px; }
+  /* A fact about the file rather than something to do (it records a location): flat, so the notes that ask stand out. */
+  .asset-note.asset-fact { padding: 0; background: none; }
+  .asset-note.asset-fact > svg { color: var(--text-3); }
+  .asset-note b { color: var(--text); font-weight: 600; overflow-wrap: anywhere; }
   .asset-note.asset-missing { background: var(--red-soft); }
   .asset-note.asset-missing > svg { color: var(--red); }
   .asset-note-actions { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 8px; }
@@ -332,7 +340,8 @@
   .asset-tile-id { margin-top: -4px; font-size: 12px; line-height: 16px; color: var(--text-3); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-variant-numeric: tabular-nums; }
   .asset-missing-actions { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 8px; }
   .asset-uses { margin-top: 14px; padding-top: 12px; border-top: 1px solid var(--border); }
-  .asset-uses h5 { margin: 0 0 4px; font-size: 12px; font-weight: 600; color: var(--text); }
+  .asset-uses h5, .asset-fields h5 { margin: 0 0 4px; font-size: 12px; font-weight: 600; color: var(--text); }
+  .asset-fields h5 { margin-bottom: -4px; }
   .asset-uses ul { display: flex; flex-direction: column; margin: 0 -6px; padding: 0; list-style: none; }
   .asset-use { display: flex; align-items: center; gap: 6px; width: 100%; min-height: 28px; padding: 3px 6px; border: 0; border-radius: var(--r-sm); background: none; font-size: 12px; text-align: left; color: var(--text-2); }
   button.asset-use:hover { background: var(--hover); color: var(--text); }
@@ -343,12 +352,18 @@
   .asset-use.static { flex-wrap: wrap; }
   .asset-use-hint { flex-basis: 100%; padding-left: 19px; font-size: 12px; line-height: 16px; color: var(--text-2); }
   .asset-use svg.go { margin-left: auto; color: var(--text-3); }
+  /* In the details and the alt text check, a place wraps rather than cuts: "Gallery · Image 1: Kitchen" is read in full. */
+  :is(.asset-uses, .asset-alt-review) .asset-use { align-items: flex-start; padding-block: 5px; line-height: 18px; }
+  :is(.asset-uses, .asset-alt-review) .asset-use svg { margin-top: 2.5px; }
+  .asset-uses .asset-use :is(.where, .what) { white-space: normal; overflow-wrap: anywhere; }
+  .asset-uses .asset-use .where { flex: 0 1 auto; min-width: 0; max-width: 45%; }
   button.asset-use:hover svg.go { color: var(--text); }
-  .asset-fields { display: flex; flex-direction: column; gap: 12px; margin-top: 12px; padding-top: 14px; border-top: 1px solid var(--border); }
+  .asset-fields { display: flex; flex-direction: column; gap: 12px; margin-top: 14px; padding-top: 12px; border-top: 1px solid var(--border); }
   .asset-actions { display: flex; flex-direction: column; align-items: flex-start; gap: 6px; margin-top: 10px; }
   .asset-place { display: flex; flex-direction: column; align-items: flex-start; gap: 6px; margin-top: 14px; }
+  .asset-place-actions { display: flex; flex-wrap: wrap; gap: 6px; }
   .asset-place b { color: var(--text); font-weight: 600; overflow-wrap: anywhere; }
-  .asset-why { margin: 0; font-size: 12px; line-height: 18px; color: var(--text-2); }
+  .asset-why { margin: 0; font-size: 12px; line-height: 18px; color: var(--text-2); overflow-wrap: anywhere; }
   .asset-replace { display: flex; flex-direction: column; padding-bottom: 8px; }
   .asset-replace-top { flex: none; }
   .asset-replace-top .asset-detail-top { margin-left: 1px; }
@@ -357,7 +372,6 @@
   .asset-replace-head h4 { margin: 0; font-size: 13px; font-weight: 600; overflow-wrap: anywhere; display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 2; overflow: hidden; }
   .asset-replace-head p { margin: 2px 0 0; font-size: 12px; line-height: 18px; color: var(--text-2); }
   .asset-replace-head b { color: var(--text); font-weight: 600; overflow-wrap: anywhere; }
-  .asset-actions .asset-to-chat { margin: 4px 0 0 -8px; }
   .asset-replace { padding-top: 10px; }
   .asset-replace-add { display: flex; flex-direction: column; align-items: flex-start; gap: 4px; padding: 0 10px 10px; }
   .asset-replace-add p { margin: 0; font-size: 12px; line-height: 18px; color: var(--text-3); }

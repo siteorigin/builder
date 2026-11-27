@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useState, type ReactNode } from 'react';
 import { ImageIcon } from 'lucide-react';
 import type { AssetRecord } from '@shared/types';
 import { AssetImage } from './AssetImage';
@@ -12,12 +12,13 @@ export function fitFor(a: AssetRecord): { contain: boolean; alpha: boolean } {
 
 /**
  * The picture, once it has loaded, from the local preview server: it never leaves this computer. The transparency
- * checker waits for it, and a file that will not load (or a preview that is not running yet) shows a glyph.
+ * checker waits for it, and a file that will not load (or a preview that is not running yet) shows a glyph, or
+ * `fallback` where the frame is large enough to say why.
  */
-export function Picture({ a, devUrl, lazy, maxHeight, original }: { a: AssetRecord; devUrl: string | null; lazy?: boolean; maxHeight?: number; original?: boolean }) {
+export function Picture({ a, devUrl, lazy, maxHeight, original, fallback }: { a: AssetRecord; devUrl: string | null; lazy?: boolean; maxHeight?: number; original?: boolean; fallback?: ReactNode }) {
   const [load, setLoad] = useState<'wait' | 'ok' | 'error'>('wait');
   useEffect(() => setLoad('wait'), [a.file, devUrl]);
-  if (!devUrl || load === 'error') return <ImageIcon className="asset-noimg" aria-hidden="true" />;
+  if (!devUrl || load === 'error') return fallback ?? <ImageIcon className="asset-noimg" aria-hidden="true" />;
   // Browsed at the size it is shown: a tile loads a small copy, a framed preview (`maxHeight` is the tallest it
   // gets) a larger one. `original` is for looking closely. The original file is kept either way.
   return (
