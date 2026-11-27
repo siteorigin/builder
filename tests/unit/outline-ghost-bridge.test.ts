@@ -45,7 +45,9 @@ const drawn = () =>
 /** The page scrolled by hand (a wheel turned over it), to `y`; `byHand: false` for a scroll of the page's own. */
 const scrollTo = (y: number, byHand = true) => frame.evaluate(`${byHand ? `window.dispatchEvent(new WheelEvent('wheel', { deltaY: 1 }));` : ''} window.scrollTo(0, ${y})`);
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
-/** Longer than a hand's scroll is taken to go on after the last input (HAND_SCROLL_MS), shorter than a scroll's hold. */
+/** How long after its last input a scroll still counts as the person's (the bridge's HAND_SCROLL_MS). */
+const HAND_SCROLL_MS = 300;
+/** Into a scroll the person started, past nothing: shorter than a scroll's hold (GHOST_HOLD_MS). */
 const HAND_SCROLL_MS_PAST = 120;
 
 describe.skipIf(!browserInstalled)('the outline the preview draws while it scrolls (#1307)', () => {
@@ -74,9 +76,9 @@ describe.skipIf(!browserInstalled)('the outline the preview draws while it scrol
     await post('track', { selected: ONE, hovered: null, slots: [] });
     await scrollTo(0, false);
     await expect.poll(drawn).toBeNull();
-    // The scroll back fires its event at the frame's next rendering, and its burst ends a while after: both before the
-    // case's own scroll, so none of it is the case's.
-    await sleep(250);
+    // The scroll back fires its event at the frame's next rendering, and a hand's scroll in the case before stops
+    // counting as one HAND_SCROLL_MS after its last wheel: both before the case's own scroll, so none of it is the case's.
+    await sleep(HAND_SCROLL_MS + 100);
     await post('outlineGhost', { spec: SPEC });
     await expect.poll(async () => (await lastReport())?.selected[0]?.y).toBe(60);
   });
