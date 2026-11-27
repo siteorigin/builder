@@ -9,6 +9,7 @@ import { prepareCodeForSave } from '../lib/code';
 import { CodeEditor, type CodeEditorHandle } from '../components/CodeEditor';
 import { PropSchemaEditor, hiddenEdits, propertiesFromRows, renamesFromRows, rowsFromProperties, schemaProblems, type SchemaRow } from './PropSchemaEditor';
 import { propertiesHash } from '@shared/ops';
+import { CODE_STARTER, CODE_STARTER_PROPERTIES } from '@shared/code-starter';
 import { pageFile } from '@generator/index';
 
 /** False once the modal has closed; closing also cancels an automatic code fix still running. */
@@ -753,46 +754,13 @@ export function PageSourceModal({ pageId }: { pageId: string }) {
   );
 }
 
-const STARTER = `<script>
-	let { heading = 'Hello', text = 'A custom component.' } = $props();
-	let count = $state(0);
-</script>
-
-<section class="custom">
-	<h2>{heading}</h2>
-	<p>{text}</p>
-	<button type="button" onclick={() => count++}>Clicked {count} times</button>
-</section>
-
-<style>
-	.custom {
-		padding: var(--so-space-section) var(--so-container-gutter);
-		max-width: var(--so-container-content);
-		margin-inline: auto;
-	}
-	h2 {
-		font-family: var(--so-text-h2-family);
-		font-size: var(--so-text-h2-size);
-	}
-	button {
-		margin-top: var(--so-space-md);
-	}
-</style>
-`;
-
-/** The properties the starter source reads; the person edits them in the Properties tab before creating. */
-const STARTER_PROPERTIES = {
-  heading: { type: 'string', label: 'Heading', default: 'Hello' },
-  text: { type: 'string', label: 'Text', default: 'A custom component.', multiline: true }
-} as const;
-
 export function NewCodeComponentModal() {
   const [name, setName] = useState('');
-  const [source, setSource] = useState(STARTER);
+  const [source, setSource] = useState(CODE_STARTER);
   const [tab, setTab] = useState<'source' | 'manifest'>('source');
   // Never saved, so a changed name is a new name, not a rename.
-  const [rows, setRows] = useState<SchemaRow[]>(() => rowsFromProperties(structuredClone(STARTER_PROPERTIES), false));
-  const [initialProps] = useState(() => JSON.stringify(STARTER_PROPERTIES));
+  const [rows, setRows] = useState<SchemaRow[]>(() => rowsFromProperties(structuredClone(CODE_STARTER_PROPERTIES), false));
+  const [initialProps] = useState(() => JSON.stringify(CODE_STARTER_PROPERTIES));
   const [errors, setErrors] = useState<string[]>([]);
   const [status, setStatus] = useState<string | null>(null);
   const [saving, setSaving] = useState(false);
@@ -813,7 +781,7 @@ export function NewCodeComponentModal() {
   const tabNow = useRef(tab);
   tabNow.current = tab;
   useFocusKeeper(body, alive, problemsList, () => (tabNow.current === 'source' ? editor.current?.focus() : document.getElementById('new-code-tab-manifest')?.focus()));
-  const sourceChanged = source !== STARTER;
+  const sourceChanged = source !== CODE_STARTER;
   // Text still being typed in a property field is a change too, before the field commits.
   const [typing, setTyping] = useState(false);
   const propsChanged = typing || hiddenEdits(rows) || JSON.stringify(propertiesFromRows(rows)) !== initialProps;
