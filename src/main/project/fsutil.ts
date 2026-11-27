@@ -305,7 +305,7 @@ export async function renameReplacing(from: string, to: string, opts: RenameRepl
  * `beforeReplace` runs once the new file is ready, immediately before it takes the path; when it says no, nothing
  * is replaced. It says whether the file was replaced.
  */
-export async function atomicWrite(path: string, data: string | Buffer, opts: { mode?: number; durable?: boolean; beforeReplace?: () => Promise<boolean> } = {}): Promise<boolean> {
+export async function atomicWrite(path: string, data: string | Buffer, opts: { mode?: number; durable?: boolean; beforeReplace?: () => Promise<boolean>; retryCheck?: () => Promise<boolean> } = {}): Promise<boolean> {
   const durable = opts.durable !== false;
   const dir = dirname(path);
   await ensureDir(dir, { durable });
@@ -330,8 +330,8 @@ export async function atomicWrite(path: string, data: string | Buffer, opts: { m
       await fs.rm(tmp, { force: true });
       return false;
     }
-    // A rename Windows refuses for a moment is retried; `beforeReplace` is asked again before each try.
-    await renameReplacing(tmp, path, opts.beforeReplace ? { again: opts.beforeReplace } : {});
+    // A rename Windows refuses for a moment is retried; `retryCheck`, when given, is asked again before each try.
+    await renameReplacing(tmp, path, opts.retryCheck ? { again: opts.retryCheck } : {});
   } catch (e) {
     await fs.rm(tmp, { force: true }).catch(() => undefined);
     if (e instanceof RenameWithdrawn) return false;
@@ -395,11 +395,10 @@ export async function stageWrite(path: string, data: string | Buffer, opts: { mo
           await fs.rm(tmp, { force: true });
           return false;
         }
-        await renameReplacing(tmp, path, beforeReplace ? { again: beforeReplace } : {});
+        await renameReplacing(tmp, path);
       } catch (e) {
         state = 'gone';
         await fs.rm(tmp, { force: true }).catch(() => undefined);
-        if (e instanceof RenameWithdrawn) return false;
         throw e;
       }
       state = 'replaced';

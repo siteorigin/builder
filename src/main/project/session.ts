@@ -2357,7 +2357,8 @@ export class ProjectSession extends EventEmitter {
   }
 
   private async writeJournal(j: Omit<Journal, 'schemaVersion'>, beforeReplace?: () => Promise<boolean>): Promise<boolean> {
-    return atomicWrite(this.local('journal.json'), toJson({ schemaVersion: SCHEMA_VERSION, ...j } satisfies Journal), beforeReplace ? { beforeReplace } : {});
+    // Asked again before each Windows rename retry too: the journal is the run's decision, and what decided it must hold.
+    return atomicWrite(this.local('journal.json'), toJson({ schemaVersion: SCHEMA_VERSION, ...j } satisfies Journal), beforeReplace ? { beforeReplace, retryCheck: beforeReplace } : {});
   }
 
   /** Every generated file for `state`, reusing what earlier generations made from inputs that are unchanged. */

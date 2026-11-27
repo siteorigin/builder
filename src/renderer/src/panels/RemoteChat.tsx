@@ -43,7 +43,8 @@ export function RemoteChat() {
   const access = mine?.access ?? NO_AI_ACCESS;
   const running = mine?.activeRunId ? (turns.find((t) => t.runId === mine.activeRunId) ?? null) : null;
   const shared = sharedSelection(selection, pageId);
-  const selectionKey = shared ? refKey(shared) : null;
+  // The whole reference, part and all: another part of the same placement is another target.
+  const selectionKey = shared ? `${refKey(shared)}|${shared.partId ?? ''}` : null;
   const target: 'page' | 'selection' = pinned?.scope ?? (shared ? 'selection' : 'page');
   const pin = (scope: 'page' | 'selection') => setPinned({ scope, pageId, selection: scope === 'selection' ? selectionKey : null });
   // A selection chosen for the request that has gone (the host removed it, say) is never quietly taken for the page,

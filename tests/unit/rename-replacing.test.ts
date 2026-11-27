@@ -58,10 +58,18 @@ describe('renameReplacing', () => {
       return real(from, to);
     });
     let checks = 0;
-    expect(await atomicWrite(path, 'after', { beforeReplace: async () => ++checks === 1 })).toBe(false);
+    const check = async () => ++checks === 1;
+    expect(await atomicWrite(path, 'after', { beforeReplace: check, retryCheck: check })).toBe(false);
     expect(checks).toBe(2);
     expect(readFileSync(path, 'utf8')).toBe('before');
     expect(readdirSync(dir)).toEqual(['journal.json']);
+    // Without one, a write's own check is asked once, never between retries: a file another program holds for a
+    // moment is waited out, not taken for a change.
+    refused = 0;
+    let once = 0;
+    expect(await atomicWrite(path, 'after', { beforeReplace: async () => (++once, true) })).toBe(true);
+    expect(once).toBe(1);
+    expect(readFileSync(path, 'utf8')).toBe('after');
   });
 
   it('retries a rename Windows refuses for a moment, then succeeds', async () => {
