@@ -35,6 +35,29 @@ const BRIDGE = `
   window.builder = any('');
 `;
 
+/**
+ * The bridge with the client review's calls answered (#1134): one edition captured earlier, and every capture and save
+ * held until the test settles it, each call recorded on window.__calls.
+ */
+const REVIEW_BRIDGE = `
+  const any = (path) => new Proxy(function () {}, {
+    get: (_, key) => (key === 'then' || typeof key === 'symbol' ? undefined : any(path ? path + '.' + key : key)),
+    apply: () => any('')
+  });
+  const edition = (id, createdAt) => ({ editionId: id, createdAt, siteName: 'Test Studio', revision: 1, basePath: '', routes: [{ route: '/', title: 'Home' }], widths: [{ label: 'Desktop', width: 1440 }, { label: 'Phone', width: 390 }], captures: [{ route: '/', width: 1440, status: 'captured', file: 'images/001-1440.png', height: 900, sha256: 'a' }, { route: '/', width: 390, status: 'unavailable', reason: 'fonts', detail: 'x' }], siteDigest: 'a', contentDigest: 'b' });
+  window.__editions = [edition('2026-11-20T09-00-00Z-0badc0de', '2026-11-20T09:00:00.000Z')];
+  window.__calls = [];
+  window.__settle = null;
+  const held = (name, args) => new Promise((resolve) => { window.__calls.push([name, ...args]); window.__settle = resolve; });
+  const project = new Proxy({}, { get: (_, key) =>
+    key === 'reviewEditions' ? async () => window.__editions
+    : key === 'captureReviewEdition' ? (...a) => held('capture', a).then((r) => { if (r.ok) window.__editions = [r.edition, ...window.__editions]; return r; })
+    : key === 'exportReviewSheet' ? (...a) => held('save', a)
+    : any('project.' + String(key)) });
+  window.builder = new Proxy({}, { get: (_, key) => (key === 'project' ? project : key === 'then' ? undefined : any(String(key))) });
+  window.__edition = edition;
+`;
+
 /** The search audit with nothing to say, for the dialog alone. */
 const QUIET_SEO = "export const auditForHealth = () => ({ ok: false }); export const seoPreflight = () => ({ total: 0 }); export const seoCountsText = () => '';";
 
@@ -84,7 +107,7 @@ describe.skipIf(!browserInstalled)('Export dialog actions (#1112)', { timeout: 6
   const quietProject = JSON.stringify(createStarterState('blank', 'Test Studio', false)).replace(/</g, '\\u003c');
   const history = JSON.stringify(Array.from({ length: 6 }, (_, i) => ({ kind: 'source', format: 'folder', path: `/exports/test-studio-${i}`, exportedAt: '2026-01-01T00:00:00.000Z', revision: 1, notes: [] })));
 
-  const open = async (width: number, height: number, { quiet = false } = {}) => {
+  const open = async (width: number, height: number, { quiet = false, bridge = BRIDGE } = {}) => {
     page = await (await browser.newContext({ viewport: { width, height }, reducedMotion: 'reduce' })).newPage();
     errors = [];
     page.on('pageerror', (e) => errors.push(e.message));
@@ -92,7 +115,7 @@ describe.skipIf(!browserInstalled)('Export dialog actions (#1112)', { timeout: 6
       const path = new URL(route.request().url()).pathname;
       if (path === '/app.js') return route.fulfill({ contentType: 'text/javascript; charset=utf-8', body: (quiet ? quietBuilt : built).script });
       if (path === '/app.css') return route.fulfill({ contentType: 'text/css; charset=utf-8', body: (quiet ? quietBuilt : built).styles });
-      return route.fulfill({ contentType: 'text/html; charset=utf-8', body: `<!doctype html><meta charset="utf-8"><link rel="stylesheet" href="/app.css"><body><div id="root"></div><script>${BRIDGE}window.__project = ${quiet ? quietProject : project}; window.__recent = ${quiet ? history : '[]'};</script><script src="/app.js"></script>` });
+      return route.fulfill({ contentType: 'text/html; charset=utf-8', body: `<!doctype html><meta charset="utf-8"><link rel="stylesheet" href="/app.css"><body><div id="root"></div><script>${bridge}window.__project = ${quiet ? quietProject : project}; window.__recent = ${quiet ? history : '[]'};</script><script src="/app.js"></script>` });
     });
     await page.goto(`${SITE}/`);
     await page.locator('.export-card').first().waitFor();
@@ -187,5 +210,59 @@ describe.skipIf(!browserInstalled)('Export dialog actions (#1112)', { timeout: 6
     expect(await page.locator('.export-history li').count()).toBe(6);
     expect(await page.evaluate<string>(`document.activeElement.textContent`)).toBe('Folder');
     expect(await page.evaluate<number>(`document.querySelector('.modal-body').scrollTop`)).toBe(0);
+  });
+
+  it('captures chosen pages and saves an earlier edition as one file from a folded Client review section (#1134)', async () => {
+    await open(1100, 900, { quiet: true, bridge: REVIEW_BRIDGE });
+    // Folded, and never where the dialog opens.
+    expect(await page.evaluate<string>(`document.activeElement.textContent`)).toBe('Folder');
+    const toggle = page.getByRole('button', { name: 'Client review pages' });
+    expect(await toggle.getAttribute('aria-expanded')).toBe('false');
+    await toggle.click();
+    // The earlier edition is listed with what it holds, and the home page is chosen to start with.
+    const rows = page.locator('.client-review-editions li');
+    await expect.poll(() => rows.count()).toBe(1);
+    expect(await rows.first().innerText()).toContain('1 page · 1 of 2 pictures taken');
+    expect(await rows.first().innerText()).toContain('2026-11-20T09-00-00Z-0badc0de');
+    const home = page.getByRole('checkbox', { name: /^Home/ });
+    expect(await home.isChecked()).toBe(true);
+    expect(await page.getByRole('checkbox').count()).toBeGreaterThan(0);
+
+    // Saving the earlier edition: everything else waits while the chooser is open.
+    await rows.first().getByRole('button', { name: /Save the edition of/ }).click();
+    await expect.poll(() => page.evaluate(`window.__calls`)).toEqual([['save', '2026-11-20T09-00-00Z-0badc0de']]);
+    for (const card of await page.locator('.export-card').all()) expect(await card.getAttribute('aria-disabled')).toBe('true');
+    expect(await page.locator('.modal-foot > button', { hasText: 'Close' }).isDisabled()).toBe(true);
+    await page.evaluate(`window.__settle({ ok: true, path: '/Users/me/Documents/test-studio-review.html', message: 'Saved the review pages as one file.' })`);
+    const outcome = page.locator('.client-review-outcome');
+    await expect.poll(() => outcome.innerText()).toContain('Saved the review pages as one file.');
+    expect(await outcome.innerText()).toContain('/Users/me/Documents/test-studio-review.html');
+    await expect.poll(() => page.evaluate<boolean>(`document.activeElement === document.querySelector('.client-review-outcome')`)).toBe(true);
+    expect(await outcome.getByRole('button', { name: 'Show in folder' }).count()).toBe(1);
+    expect(await page.locator('.export-card').first().getAttribute('aria-disabled')).toBeNull();
+
+    // A cancelled chooser goes back to its button, saying nothing.
+    const save = rows.first().getByRole('button', { name: /Save the edition of/ });
+    await save.click();
+    await page.evaluate(`window.__settle({ ok: false })`);
+    await expect.poll(() => page.evaluate<boolean>(`document.activeElement?.getAttribute('aria-label')?.startsWith('Save the edition of') ?? false`)).toBe(true);
+
+    // Capturing: with no page chosen it says so and asks for nothing.
+    await home.uncheck();
+    const capture = page.locator('.client-review-actions button');
+    expect(await capture.getAttribute('aria-disabled')).toBe('true');
+    expect(await page.locator('.client-review-hint').innerText()).toBe('Choose at least one page.');
+    await capture.click({ force: true });
+    expect(await page.evaluate(`window.__calls.length`)).toBe(2);
+    await home.check();
+    await capture.click();
+    await expect.poll(() => page.evaluate(`window.__calls.at(-1)`)).toEqual(['capture', { routes: ['/'] }]);
+    await expect.poll(() => page.locator('.client-review-hint').innerText()).toContain('Building the website and picturing each page');
+    expect(await home.isDisabled()).toBe(true);
+    await page.evaluate(`window.__settle({ ok: true, path: '/p', message: 'Captured 2 pictures.', edition: { ...window.__edition('2026-11-27T10-00-00Z-1badc0de', new Date().toISOString()), captures: [{ route: '/', width: 1440, status: 'captured', file: 'images/001-1440.png', height: 900, sha256: 'a' }, { route: '/', width: 390, status: 'captured', file: 'images/001-390.png', height: 900, sha256: 'a' }] } })`);
+    await expect.poll(() => rows.count()).toBe(2);
+    expect(await rows.first().innerText()).toContain('1 page · 2 pictures');
+    expect(await rows.first().getAttribute('class')).toBe('is-latest');
+    expect(await outcome.innerText()).toContain('Captured 2 pictures.');
   });
 });

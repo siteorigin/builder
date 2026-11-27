@@ -21,6 +21,7 @@ import { auditForHealth, seoCountsText, seoPreflight, type SeoAuditResult } from
 import { findingHandoff } from '../lib/seoHandoff';
 import { AiHandoffButton } from '../components/AiHandoff';
 import { BlockedNote, aiAwaiting, aiChanging, readOnlyBlock } from '../components/BlockedNote';
+import { ClientReview, type ReviewBusy } from './ClientReview';
 import './ExportModal.css';
 
 type ExportKind = 'static' | 'source';
@@ -540,6 +541,9 @@ export function ExportModal() {
   // What the website shows now, read once for every note about an earlier export.
   const liveTrees = useMemo(() => (state ? websiteTrees(publishedState(state)) : []), [state]);
   const [busy, setBusy] = useState<ExportKind | null>(null);
+  // Client review pages (#1134) work on their own, in their own section; nothing else starts while they do.
+  const [reviewBusy, setReviewBusy] = useState<ReviewBusy | null>(null);
+  const workspaceKey = useStore((s) => s.snapshot?.workspaceKey);
   // Each report carries its own id, shown on the result (data-report): the same report drawn again after a cancelled
   // retry keeps its id, a new one (even with the same words) gets another, so a test can tell them apart.
   const [result, setResult] = useState<(ExportResult & { report: string; fixesListed?: string[] }) | null>(null);
@@ -549,7 +553,7 @@ export function ExportModal() {
   // A long list, or a window too short to spare the room, folds behind a disclosure; otherwise there is none to focus.
   const shortWindow = useShortWindow();
   const longLinks = draftLinks.length > LONG_LINK_LIST || shortWindow;
-  const close = () => !busy && setState({ modal: null });
+  const close = () => !busy && !reviewBusy && setState({ modal: null });
   const blocked = readOnly || aiBusy || conflicts > 0;
   // The last report stays until a new one replaces it, so cancelling the save picker on a retry keeps it to copy.
   const shown = !busy && result?.message ? result : null;
@@ -589,10 +593,10 @@ export function ExportModal() {
       ...(rootRef.current?.querySelectorAll<HTMLElement>('button:not(:disabled):not([aria-disabled="true"])') ?? []),
       ...(choiceRef.current?.querySelectorAll<HTMLElement>('[role="radio"][aria-checked="true"]:not(:disabled)') ?? []),
       ...(closeButtonRef.current && !closeButtonRef.current.disabled ? [closeButtonRef.current] : [])
-    ].find((b) => !b.closest('.export-history') && b.offsetParent !== null);
+    ].find((b) => !b.closest('.export-history, .client-review') && b.offsetParent !== null);
   // The dialog opens on its first control in the body, which can be a recent export below everything the body says.
   useEffect(() => {
-    if (!document.activeElement?.closest('.export-history')) return;
+    if (!document.activeElement?.closest('.export-history, .client-review')) return;
     firstControl()?.focus();
     rootRef.current?.parentElement?.scrollTo({ top: 0 });
   }, []);
@@ -631,7 +635,7 @@ export function ExportModal() {
     target?.focus();
   }, [busy, result]);
   const run = async (kind: ExportKind) => {
-    if (busy || blocked || (kind === 'static' && draftLinks.length)) return;
+    if (busy || reviewBusy || blocked || (kind === 'static' && draftLinks.length)) return;
     setBusy(kind);
     const opening = getState().snapshot?.workspaceKey;
     try {
@@ -770,7 +774,7 @@ export function ExportModal() {
           </fieldset>
         </div>
       </div>
-      <button ref={(el) => void (buttons.current.static = el)} className={`action-card export-card${cardState('static')}`} aria-disabled={!!busy || blocked || draftLinks.length > 0 || undefined} aria-describedby={websiteBlockedBy.join(' ') || undefined} onClick={() => void run('static')}>
+      <button ref={(el) => void (buttons.current.static = el)} className={`action-card export-card${cardState('static')}`} aria-disabled={!!busy || !!reviewBusy || blocked || draftLinks.length > 0 || undefined} aria-describedby={websiteBlockedBy.join(' ') || undefined} onClick={() => void run('static')}>
         <span className="ico"><Globe size={18} /></span>
         <span className="grow">
           <span className="export-card-title">
@@ -783,7 +787,7 @@ export function ExportModal() {
           </span>
         </span>
       </button>
-      <button ref={(el) => void (buttons.current.source = el)} className={`action-card export-card secondary${cardState('source')}`} aria-disabled={!!busy || blocked || undefined} aria-describedby={blockedBy.join(' ') || undefined} onClick={() => void run('source')}>
+      <button ref={(el) => void (buttons.current.source = el)} className={`action-card export-card secondary${cardState('source')}`} aria-disabled={!!busy || !!reviewBusy || blocked || undefined} aria-describedby={blockedBy.join(' ') || undefined} onClick={() => void run('source')}>
         <span className="ico"><FolderCode size={18} /></span>
         <span className="grow">
           <span className="export-card-title">
@@ -805,7 +809,7 @@ export function ExportModal() {
       icon={<Upload />}
       describedBy={succeeded ? undefined : readOnly ? 'export-blocked-read-only' : aiBusy ? 'export-blocked-ai' : conflicts > 0 ? 'export-blocked-conflict' : draftLinks.length ? 'export-draft-links-summary' : undefined}
       onClose={close}
-      busy={!!busy}
+      busy={!!busy || !!reviewBusy}
       footer={
         <>
           {!succeeded && choice}
@@ -820,7 +824,7 @@ export function ExportModal() {
               Back to export options
             </button>
           )}
-          <button ref={closeButtonRef} className="btn" onClick={close} disabled={!!busy}>
+          <button ref={closeButtonRef} className="btn" onClick={close} disabled={!!busy || !!reviewBusy}>
             Close
           </button>
         </>
@@ -958,6 +962,7 @@ export function ExportModal() {
             {seoAudit && state && <SeoPreflight audit={seoAudit} state={state} disabled={!!busy} folded={shortWindow || !!busy || blocked || draftLinks.length > 0 || (!!shown && !shown.ok)} />}
             {plan && <PagesSummary published={plan.published} drafts={plan.drafts} publishedEntries={plan.publishedEntries} draftEntries={plan.draftEntries} />}
             {history}
+            {state && <ClientReview key={workspaceKey} state={state} workspaceKey={workspaceKey} blocked={blocked} otherBusy={!!busy} busy={reviewBusy} onBusy={setReviewBusy} />}
           </>
         )}
       </div>
