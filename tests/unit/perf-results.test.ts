@@ -156,6 +156,12 @@ describe('benchmark results, at their edges', () => {
     const settled = { ...warm, config: { ...warm.config, settleMs: 0 } };
     expect(compareResults(warm, cold)[0]).toMatchObject({ status: 'protocol-differs', metrics: [] });
     expect(compareResults(warm, settled)[0].status).toBe('protocol-differs');
+    // A second launch after the caches were cleared is neither a first launch nor an everyday one.
+    const second = { ...warm, config: { ...warm.config, second: true } };
+    expect(compareResults(warm, second)[0].status).toBe('protocol-differs');
+    expect(compareResults(cold, second)[0].status).toBe('protocol-differs');
+    expect(compareResults(second, second)[0].status).toBe('compared');
+    expect(changeMarkdown(compareResults(second, second), second, second)).toContain('second launch after an update');
     // Counters that count different things (another version of their definitions) are not compared either.
     const counted = (n: number) => ({ ...warm, build: { ...warm.build, counters: n } });
     expect(compareResults(counted(1), counted(2))[0].status).toBe('protocol-differs');

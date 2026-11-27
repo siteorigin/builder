@@ -1,6 +1,6 @@
 /**
  * The benchmark runner (scripts/perf/README.md): `npm run perf:run -- [--scenario launch,open,edit] [--fixture small,large]
- * [--iterations 5] [--out file.json] [--app <checkout>] [--settle 1500] [--cold]`.
+ * [--iterations 5] [--out file.json] [--app <checkout>] [--settle 1500] [--cold | --second]`.
  *
  * Drives the built app in `out/` of `--app` (this checkout by default) headless through tests/driver, with marks on,
  * once per iteration: each iteration is a fresh launch on the same profile and project files, put back from the state
@@ -40,7 +40,8 @@ function options() {
       out: { type: 'string' },
       app: { type: 'string', default: ROOT },
       settle: { type: 'string', default: '1500' },
-      cold: { type: 'boolean', default: false }
+      cold: { type: 'boolean', default: false },
+      second: { type: 'boolean', default: false }
     }
   });
   const fixtures = values.fixture.split(',').map((f) => f.trim()) as FixtureName[];
@@ -49,12 +50,16 @@ function options() {
   if (!Number.isInteger(iterations) || iterations < 1) throw new Error('--iterations takes a whole number of at least 1.');
   const settleMs = Number(values.settle);
   if (!Number.isInteger(settleMs) || settleMs < 0 || settleMs > 60_000) throw new Error('--settle takes a whole number of milliseconds from 0 to 60000.');
+  if (values.cold && values.second) throw new Error('--cold and --second are different launches: take one or the other.');
   const scenarios = values.scenario.split(',').map((s) => s.trim());
-  return { scenarios, chain: chainFor(scenarios), fixtures, iterations, out: values.out ? resolve(values.out) : null, app: resolve(values.app), settleMs, cold: values.cold };
+  return { scenarios, chain: chainFor(scenarios), fixtures, iterations, out: values.out ? resolve(values.out) : null, app: resolve(values.app), settleMs, cold: values.cold, second: values.second };
 }
 type Options = ReturnType<typeof options>;
 
-/** Chromium's caches in a profile: left out of each iteration's profile with --cold, so its code is compiled afresh. */
+/**
+ * Chromium's caches in a profile: left out of each iteration's profile with --cold, so its code is compiled afresh, and
+ * with --second, before the untimed launch that makes the measured one a second launch.
+ */
 const BROWSER_CACHES = ['Cache', 'Code Cache', 'GPUCache', 'DawnGraphiteCache', 'DawnWebGPUCache', 'Shared Dictionary', 'blob_storage'];
 /** What the preview's tools write inside node_modules (src/main/runtime/stage.ts): put back with the project each time. */
 const TOOL_CACHES = ['.vite', '.vite-temp'];
@@ -249,7 +254,7 @@ async function main() {
   const runDir = join(PERF_DIR, 'runs', stamp);
   mkdirSync(runDir, { recursive: true });
   const out = opts.out ?? join(PERF_DIR, 'results', `${stamp}.json`);
-  console.log(`perf: ${opts.chain.map((s) => s.name).join(' → ')} on ${opts.fixtures.join(', ')}, ${opts.iterations} iterations, ${opts.cold ? 'cold' : 'warm'} profile, app ${relative(ROOT, opts.app) || '.'} (${build.git?.head.slice(0, 10) ?? 'no git'}${build.git?.dirty ? ', dirty' : ''})`);
+  console.log(`perf: ${opts.chain.map((s) => s.name).join(' → ')} on ${opts.fixtures.join(', ')}, ${opts.iterations} iterations, ${opts.cold ? 'cold' : opts.second ? 'second-launch' : 'warm'} profile, app ${relative(ROOT, opts.app) || '.'} (${build.git?.head.slice(0, 10) ?? 'no git'}${build.git?.dirty ? ', dirty' : ''})`);
   const reported = opts.chain.filter((s) => opts.scenarios.includes(s.name));
   const cases: CaseResult[] = [];
   let stamped: { commit: string | null; builtAt: string | null } = { commit: null, builtAt: null };
@@ -323,7 +328,24 @@ async function main() {
         toolCaches(other, join(dir, 'other-tools-start'), true);
       }
       restore(join(dir, 'profile-start'), profile);
-      if (opts.cold) for (const cache of BROWSER_CACHES) rmSync(join(profile, cache), { recursive: true, force: true });
+      if (opts.cold || opts.second) for (const cache of BROWSER_CACHES) rmSync(join(profile, cache), { recursive: true, force: true });
+      if (opts.second) {
+        // The first launch after an update, untimed: it opens the fixture as a person would, and whatever Chromium keeps
+        // of the code it ran stays in the profile. Its project and tools are put back, so the measured launch, the second,
+        // starts from the same files as every other iteration.
+        try {
+          await openUntimed(opts.app, join(dir, 'launch'), profile, project, { cache: true });
+        } catch (e) {
+          // A first launch that failed fails the iteration; one that would not start or end stops the run.
+          if (e instanceof StopRun) stopped = e.message;
+          const error = { stage: 'first launch', message: (e as Error).message.split('\n')[0] };
+          for (const s of opts.chain) perScenario.get(s.name)?.push({ index: i, ok: false, trace: '', error });
+          console.log(`perf: ${name} #${i}: FAILED before the second launch (${error.message})${stopped ? ', stopping the run' : ''}`);
+          continue;
+        }
+        restore(join(dir, 'project-start'), project, ['node_modules']);
+        toolCaches(project, join(dir, 'tools-start'), true);
+      }
       const trace = join(dir, `trace-${i}.ndjson`);
       const rel = relative(dirname(out), trace);
       let outcomes: ChainOutcome[];
@@ -354,7 +376,7 @@ async function main() {
     createdAt: new Date().toISOString(),
     build: { commit: stamped.commit, builtAt: stamped.builtAt, fingerprint: build.fingerprint, head: build.git?.head ?? null, dirty: build.git?.dirty ?? null, appDir: opts.app, counters },
     machine: { platform: platform(), arch: arch(), osRelease: release(), cpu: cpus()[0]?.model ?? null, cores: cpus().length, memoryGiB: Math.round(totalmem() / 2 ** 30), node: process.versions.node, electron },
-    config: { iterations: opts.iterations, scenarios: reported.map((s) => s.name), fixtures: opts.fixtures, settleMs: opts.settleMs, cold: opts.cold, ...(opts.chain.some((s) => s.memory) ? { memoryProtocol: MEMORY_PROTOCOL, memorySource: memorySource() } : {}) },
+    config: { iterations: opts.iterations, scenarios: reported.map((s) => s.name), fixtures: opts.fixtures, settleMs: opts.settleMs, cold: opts.cold, ...(opts.second ? { second: true } : {}), ...(opts.chain.some((s) => s.memory) ? { memoryProtocol: MEMORY_PROTOCOL, memorySource: memorySource() } : {}) },
     cases
   };
   mkdirSync(dirname(out), { recursive: true });

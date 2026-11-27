@@ -58,7 +58,7 @@ export interface RunResult {
   build: { commit: string | null; builtAt: string | null; fingerprint: string; head: string | null; dirty: boolean | null; appDir: string; counters?: number | null };
   machine: Record<string, string | number | null>;
   /** `memoryProtocol` and `memorySource`: how and from what memory was read (memory.ts), on a run of memory scenarios. */
-  config: { iterations: number; scenarios: string[]; fixtures: string[]; settleMs: number; cold?: boolean; memoryProtocol?: number; memorySource?: string };
+  config: { iterations: number; scenarios: string[]; fixtures: string[]; settleMs: number; cold?: boolean; second?: boolean; memoryProtocol?: number; memorySource?: string };
   cases: CaseResult[];
 }
 
@@ -312,6 +312,7 @@ export function compareMetric(metric: string, a: Summary | undefined, b: Summary
 /** Why two results cannot be compared at all (they were measured differently), or null. */
 export function protocolDifference(before: RunResult, after: RunResult): string | null {
   if (!!before.config.cold !== !!after.config.cold) return `one used a cold profile and the other a warm one`;
+  if (!!before.config.second !== !!after.config.second) return `one measured the second launch after its caches were cleared and the other did not`;
   if (before.config.settleMs !== after.config.settleMs) return `they waited ${before.config.settleMs} and ${after.config.settleMs} ms after each scenario`;
   const [a, b] = [before.build.counters ?? null, after.build.counters ?? null];
   if (a !== b) return `their counters count different things (counter versions ${a ?? 'unknown'} and ${b ?? 'unknown'})`;
@@ -420,7 +421,7 @@ export function changeMarkdown(changes: CaseChange[], before: RunResult, after: 
     return m.verdict === 'noise' ? '(noise)' : signed(v);
   };
   const m = after.machine;
-  const profile = (r: RunResult) => (r.config.cold ? 'cold profile' : 'warm profile');
+  const profile = (r: RunResult) => (r.config.cold ? 'cold profile' : r.config.second ? 'second launch after an update' : 'warm profile');
   const footer = (memory: boolean) =>
     [
       `Machine: ${m.cpu ?? '?'}, ${m.platform ?? '?'} ${m.osRelease ?? ''}`.trim() +
