@@ -346,6 +346,9 @@ function publicationFailed(e: unknown): { ok: false; message: string; warnings: 
   return { ok: false, message: e instanceof GitError ? e.message : 'The versions repository could not be used, so the publication was not prepared.', warnings: [] };
 }
 
+/** Why a read-only project's notes are not changed. */
+const READ_ONLY_NOTES = 'This project is open read-only, so its notes can’t be changed.';
+
 export class Controller {
   session: ProjectSession | null = null;
   dev: DevServer | null = null;
@@ -730,7 +733,12 @@ export class Controller {
     const held = this.notesIn(key);
     if (!held) return null;
     const notes = await held.store.list().catch(() => null);
-    return notes && this.notesStore === held ? { notes: [...notes], guestNotes: this.live.guestNotes } : null;
+    return notes && this.notesHeld(key, held) ? { notes: [...notes], guestNotes: this.live.guestNotes } : null;
+  }
+
+  /** Whether the notes read for an opening are still that opening's, and it is still the one open. */
+  private notesHeld(key: unknown, held: { session: ProjectSession; store: NotesStore }): boolean {
+    return this.notesStore === held && typeof key === 'string' && this.openedAs(key) === held.session;
   }
 
   /** Leave a note of the host's own, in the opening `key`. */
@@ -762,10 +770,10 @@ export class Controller {
   /** Make a change to the notes of the opening `key`; once it is kept, the editor and the session's guests are told. */
   private async noteChange(key: string, change: (s: ProjectSession, store: NotesStore, authorize?: () => string | null) => Promise<NotesChange>, authorize?: () => string | null): Promise<NotesChange> {
     const held = this.notesIn(key);
-    if (!held) return { ok: false, message: 'The project is not open.' };
-    if (held.session.readOnly) return { ok: false, message: 'This project is open read-only, so its notes can’t be changed.' };
+    if (!held) return { ok: false, message: 'The project is not open.', unavailable: true };
+    if (held.session.readOnly) return { ok: false, message: READ_ONLY_NOTES };
     const result = await change(held.session, held.store, authorize);
-    if (result.ok && this.notesStore === held) this.notesChanged(result.notes);
+    if (result.ok && this.notesHeld(key, held)) this.notesChanged(result.notes);
     return result;
   }
 
@@ -785,7 +793,14 @@ export class Controller {
     const dir = this.session?.dir;
     const result = await this.noteChange(key, (s, store, a) => change(s, store, a!), authorize);
     if (result.ok) return { ok: true, notes: { notes: [...result.notes], guestNotes: this.live.guestNotes } };
-    const failed: RpcError = refusal ?? { code: 'INVALID_ARGUMENT', message: result.message, recoverable: false };
+    // What went wrong, in the words a guest acts on: its access, the project, a moment's trouble, or the note itself.
+    const failed: RpcError =
+      refusal ??
+      (result.message === READ_ONLY_NOTES
+        ? { code: 'READ_ONLY', message: result.message, recoverable: false }
+        : result.unavailable
+          ? { code: 'UNAVAILABLE', message: result.message, recoverable: true }
+          : { code: 'INVALID_ARGUMENT', message: result.message, recoverable: false });
     // Whatever a guest is told names nothing of this computer.
     return { ok: false, error: { ...failed, message: scrubHostPaths(failed.message, dir ? [dir, homedir()] : [homedir()]).slice(0, MAX_MESSAGE_LENGTH) } };
   }
@@ -2285,6 +2300,8 @@ export class Controller {
     // From here preview work still under way finds the project gone and starts nothing; an install into the folder is
     // cancelled. Close waits for that work (a copy being made, a removal) before letting the lock go.
     if (this.session === s) this.session = null;
+    // Its notes go with it: a change to them still being made ends as it would, but tells nobody (noteChange).
+    if (this.notesStore?.session === s) this.notesStore = null;
     // From here the project is gone, whatever fails while it is put away, so the editor is always told: a project
     // opened next must never be shown over what is left of this one.
     try {

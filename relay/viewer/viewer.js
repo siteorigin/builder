@@ -200,6 +200,12 @@ let shownPath = null;
  */
 let notesList = null;
 let guestNotes = true;
+/** The notes are kept read while the guest is in: set on coming in, so a change told of during the first read counts. */
+let notesWanted = false;
+/** @type {ReturnType<typeof setTimeout> | undefined} */
+let notesRetry;
+/** How long a read of the notes the host refused (busy, or the relay's backlog) waits before it is asked again. */
+const NOTES_RETRY_MS = 1500;
 /** @type {Promise<void> | null} */
 let notesLoading = null;
 let notesAgain = false;
@@ -323,7 +329,9 @@ function onFrame(frame) {
       hostConnected = frame.connected === true;
       // Whatever the frame loaded while the host was away failed; show the host's work again now it is back.
       if (back) refreshFrame();
-      if (back && notesList) void loadNotes();
+      // The host answers nothing asked of the connection it lost: a note on its way may or may not have been kept.
+      if (!hostConnected) failCalls('The host’s connection dropped.', true);
+      if (back && notesWanted) void loadNotes();
       return render();
     }
     case 'room:state':
@@ -350,7 +358,7 @@ function onFrame(frame) {
     }
     case 'rpc:event':
       // The notes changed, or whether guests may leave them: read again, once they have been read at all.
-      if (frame.event === 'notes:changed' && phase === 'admitted' && notesList) void loadNotes();
+      if (frame.event === 'notes:changed' && phase === 'admitted' && notesWanted) void loadNotes();
       return;
   }
 }
@@ -471,7 +479,8 @@ function markLost() {
   }, RECONNECT_FOR_MS);
   // This tab may now miss a revocation, so nothing is loaded into the frame until the relay has let it back in.
   grant++;
-  failCalls('The connection to the live session dropped. Try again once it is back.');
+  failCalls('The connection to the live session dropped.', true);
+  clearTimeout(notesRetry);
   previewReady = false;
   queuedTicket = null;
   redemption?.abort();
@@ -513,6 +522,8 @@ function endAccess() {
   ui.handoff.hidden = true;
   ui.openInBuilder.setAttribute('aria-expanded', 'false');
   failCalls('You are no longer in the live session.');
+  clearTimeout(notesRetry);
+  notesWanted = false;
   notesList = null;
   notesAgain = false;
   guestNotes = true;
@@ -1217,6 +1228,8 @@ function showHandoff(moveFocus = false) {
   clearTimeout(copiedTimer);
   ui.handoff.hidden = false;
   ui.openInBuilder.setAttribute('aria-expanded', 'true');
+  // One panel over the site at a time.
+  if (!ui.notes.hidden) closeNotes(false);
   closeOptions();
   if (moveFocus) ui.handoffTitle.focus();
 }
@@ -1244,14 +1257,15 @@ function closeOptions() {
  * Call the host's editor through the relay; resolves with its answer, or with why there is none (the connection
  * dropped, the guest left, or the host took too long). Never rejects.
  * @param {string} method @param {unknown[]} args
- * @returns {Promise<{ ok: true; result: any } | { ok: false; message: string }>}
+ * `lost`: the call went out, and its answer never came: what it asked for may have been done.
+ * @returns {Promise<{ ok: true; result: any } | { ok: false; message: string; lost?: boolean }>}
  */
 function callHost(method, args) {
   if (phase !== 'admitted' || reconnecting || socket?.readyState !== WebSocket.OPEN) return Promise.resolve({ ok: false, message: 'The connection to the live session is down. Try again once it is back.' });
   const requestId = `v${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 12)}-${++callSeq}`;
   return new Promise((resolve) => {
     const timer = setTimeout(() => {
-      if (calls.delete(requestId)) resolve({ ok: false, message: 'The host did not answer in time.' });
+      if (calls.delete(requestId)) resolve({ ok: false, message: 'The host did not answer in time.', lost: true });
     }, CALL_TIMEOUT_MS);
     calls.set(requestId, { method, resolve, timer });
     send({ type: 'rpc:request', requestId, method, args });
@@ -1259,12 +1273,12 @@ function callHost(method, args) {
 }
 
 /** Every call still waiting is answered with `message`: the relay answers nothing for a socket it let go. */
-function failCalls(/** @type {string} */ message) {
+function failCalls(/** @type {string} */ message, lost = false) {
   const waiting = [...calls.values()];
   calls.clear();
   for (const call of waiting) {
     clearTimeout(call.timer);
-    call.resolve({ ok: false, message });
+    call.resolve({ ok: false, message, lost });
   }
 }
 
@@ -1280,6 +1294,8 @@ function loadNotes() {
     return notesLoading;
   }
   const at = grant;
+  notesWanted = true;
+  clearTimeout(notesRetry);
   notesLoading = (async () => {
     do {
       notesAgain = false;
@@ -1289,6 +1305,12 @@ function loadNotes() {
         notesList = answer.result.notes.filter(isNote);
         guestNotes = answer.result.guestNotes !== false;
         renderNotes();
+      } else if (!notesAgain && hostConnected && !reconnecting) {
+        // Not read (the host was busy, or the relay held it back): asked again shortly, so a change is never missed for
+        // good. While the host or this connection is away, its return asks instead.
+        notesRetry = setTimeout(() => {
+          if (at === grant && phase === 'admitted') void loadNotes();
+        }, NOTES_RETRY_MS);
       }
     } while (notesAgain);
   })().finally(() => {
@@ -1330,6 +1352,8 @@ function renderNotes() {
   ui.noteLength.textContent = `${length}/${config.noteMax}`;
   ui.noteLength.dataset.over = String(length > config.noteMax);
   ui.noteSend.disabled = noteSending || !page || length === 0 || length > config.noteMax;
+  // What is typed while a note is being sent would be lost when the field empties for it.
+  ui.noteText.readOnly = noteSending;
   ui.noteSend.textContent = noteSending ? 'Sending…' : 'Send note';
   const items = open.map((note) => {
     const li = document.createElement('li');
@@ -1357,7 +1381,8 @@ function showNotes() {
   ui.notesButton.setAttribute('aria-expanded', 'true');
   closeOptions();
   if (!ui.handoff.hidden) closeHandoff(false);
-  if (!notesList) void loadNotes();
+  // Read again on opening: whatever the last read missed is shown now.
+  void loadNotes();
   renderNotes();
   ui.notesTitle.focus();
 }
@@ -1393,8 +1418,10 @@ async function sendNote() {
     announce('Note sent to the host.');
     void loadNotes();
   } else {
-    ui.noteError.textContent = answer.message;
+    // An answer that never came may still have been a note kept: the guest looks before sending it again.
+    ui.noteError.textContent = answer.lost ? `${answer.message} Your note may have been sent: look at the notes before sending it again.` : answer.message;
     ui.noteError.hidden = false;
+    if (answer.lost) void loadNotes();
   }
   renderNotes();
 }
@@ -1493,6 +1520,7 @@ for (const query of [narrow, midsize])
 ui.barMore.addEventListener('click', () => {
   const open = ui.bar.dataset.open !== 'true';
   ui.bar.dataset.open = String(open);
+  if (open && !ui.notes.hidden) closeNotes(false);
   delete ui.barMore.dataset.attention;
   ui.barMore.setAttribute('aria-expanded', String(open));
 });

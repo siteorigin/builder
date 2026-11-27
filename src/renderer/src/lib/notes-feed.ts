@@ -30,7 +30,10 @@ export function followNotes(): () => void {
     if (key) load(key);
   };
   const offChanged = api.on('notes:changed', (notes: LiveNotes) => {
-    if (opening) setState({ notes: { ...notes, opening } });
+    if (!opening) return;
+    // Newer than any list still being read: that answer, when it comes, is not taken over this.
+    asked++;
+    setState({ notes: { ...notes, opening } });
   });
   const offStore = useStore.subscribe((s) => follow(s.snapshot?.workspaceKey ?? null));
   follow(getState().snapshot?.workspaceKey ?? null);

@@ -16,6 +16,8 @@ type Handler = (payload: unknown) => void;
 const handlers = new Map<string, Set<Handler>>();
 const emit = (channel: string, payload: unknown) => handlers.get(channel)?.forEach((h) => h(payload));
 const calls = { localApply: 0, remoteApply: [] as unknown[], closes: 0, joins: [] as unknown[], leaves: 0, snapshots: [] as string[], presence: [] as unknown[], notes: [] as unknown[], localNotes: 0 };
+/** Holds the host's answer to the next notes read, while set. */
+let notesHeld: Promise<unknown> | null = null;
 const NOTES = { notes: [{ id: 'n1', text: 'Swap this photo', authorName: 'Ann', authorRole: 'viewer', createdAt: 1, pageId: 'p_home', target: null, resolved: false }], guestNotes: true };
 let closeAnswer = { ok: true };
 /** What the main process says the join is, when the editor asks. */
@@ -122,6 +124,7 @@ beforeAll(async () => {
       remote: {
         notes: async (joinId: string) => {
           calls.notes.push(['list', joinId]);
+          if (notesHeld) await notesHeld;
           return NOTES;
         },
         addNote: async (joinId: string, draft: unknown) => {
@@ -257,6 +260,22 @@ describe('the transport', () => {
 });
 
 describe('pinned notes in the remote shell (#770)', () => {
+  it('never takes an older read of the notes over a change that came after it', async () => {
+    let release!: () => void;
+    notesHeld = new Promise<void>((r) => (release = r));
+    await shown();
+    offs.push(...session.followRemote());
+    offs.push(notesFeed.followNotes());
+    await flush();
+    const newer = { notes: [], guestNotes: false };
+    emit('remote:notes', { joinId: 'join-1', notes: newer });
+    release();
+    notesHeld = null;
+    await flush();
+    await flush();
+    expect(store.getState().notes).toEqual({ ...newer, opening: 'remote:join-1' });
+  });
+
   it('reads and changes the host’s notes, never this computer’s, and follows the host’s changes for the join shown', async () => {
     await shown();
     offs.push(...session.followRemote());

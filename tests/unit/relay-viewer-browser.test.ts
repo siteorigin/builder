@@ -491,6 +491,10 @@ describe.skipIf(!browserInstalled)('the guest’s viewer', { timeout: 30_000 }, 
       expect(await s.tab.textContent('#notes-count')).toBe('1');
       await s.tab.click('#notes-button');
       await s.tab.waitForSelector('#notes:not([hidden])');
+      // Opening the panel reads the notes again, so it never shows what an earlier read missed.
+      const opened = await s.host.next('rpc:request');
+      expect(opened.method).toBe('notes.list');
+      answer(opened.requestId, 'notes.list', { notes: [note('n1', '<b>Check</b> the price'), { ...note('n2', 'Done already'), resolved: true }], guestNotes: true });
       // Other people's words are shown as they wrote them, never as markup; only open notes are listed.
       expect(await s.tab.locator('#note-list li').count()).toBe(1);
       expect(await s.tab.textContent('#note-list .note-text')).toBe('<b>Check</b> the price');
@@ -504,6 +508,9 @@ describe.skipIf(!browserInstalled)('the guest’s viewer', { timeout: 30_000 }, 
       // Going into the site put the panel away, as for any panel over it; it opens again on the page now shown.
       expect(await s.tab.isVisible('#notes')).toBe(false);
       await s.tab.click('#notes-button');
+      const reopened = await s.host.next('rpc:request');
+      expect(reopened.method).toBe('notes.list');
+      answer(reopened.requestId, 'notes.list', { notes: [note('n1', '<b>Check</b> the price')], guestNotes: true });
       await poll(async () => !!(await s.tab.textContent('#note-where'))?.includes('/about/'), 'the note pinned to the page shown');
       await s.tab.fill('#note-text', '  Swap   this hero photo ');
       expect(await s.tab.textContent('#note-length')).toBe('20/280');
@@ -530,6 +537,15 @@ describe.skipIf(!browserInstalled)('the guest’s viewer', { timeout: 30_000 }, 
       await s.tab.waitForSelector('#notes-off:not([hidden])');
       expect(await s.tab.isVisible('#note-form')).toBe(false);
       expect(await s.tab.locator('#note-list li').count()).toBe(1);
+      // A read the host turns away (busy) is asked again by itself, so the change is not missed for good.
+      s.host.send('host-to-relay', { type: 'rpc:event', event: 'notes:changed', payload: { kind: 'notes' } });
+      const busy = await s.host.next('rpc:request');
+      expect(busy.method).toBe('notes.list');
+      s.host.send('host-to-relay', { type: 'rpc:response', guestId, requestId: busy.requestId, method: 'notes.list', ok: false, error: { code: 'BUSY', message: 'Too many requests for the notes. Try again shortly.', recoverable: true } });
+      const retried = await s.host.next('rpc:request');
+      expect(retried.method).toBe('notes.list');
+      answer(retried.requestId, 'notes.list', { notes: [note('n3', 'Swap this hero photo'), note('n4', 'Brighter photo')], guestNotes: false });
+      await poll(async () => (await s.tab.locator('#note-list li').count()) === 2, 'the notes read again after a refusal');
       await s.tab.keyboard.press('Escape');
       expect(await s.tab.isVisible('#notes')).toBe(false);
     } finally {

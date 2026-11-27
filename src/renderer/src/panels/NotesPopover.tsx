@@ -63,10 +63,11 @@ function NotesPopover({ id, trigger }: { id: string; trigger: React.RefObject<HT
     setState({ notesOpen: false });
     if (back) requestAnimationFrame(() => trigger.current?.focus());
   };
-  // The editor's own shortcuts stay out of the way while it is open, as for a menu; focus starts in the note field.
+  // The editor's own shortcuts stay out of the way while it is open, as for a menu; focus starts in the note field, or
+  // on the first thing there is to do (Close at the least), so Escape always reaches it.
   useEffect(() => {
     openMenus.count++;
-    box.current?.querySelector<HTMLElement>('textarea, button:not(.icon-btn)')?.focus({ preventScroll: true });
+    (box.current?.querySelector<HTMLElement>('textarea:not(:disabled), .notes-jump, button:not(:disabled)') ?? box.current)?.focus({ preventScroll: true });
     return () => {
       openMenus.count--;
     };
@@ -114,6 +115,13 @@ function NotesPopover({ id, trigger }: { id: string; trigger: React.RefObject<HT
       aria-labelledby={`${id}-title`}
       tabIndex={-1}
       style={pos ?? { right: 8, top: 52, opacity: 0 }}
+      onBlur={(e) => {
+        const to = e.relatedTarget as Node | null;
+        // Focus that went nowhere (a row resolved or deleted under it) is put back on the popover itself.
+        if (!to) return void requestAnimationFrame(() => box.current && !box.current.contains(document.activeElement) && document.activeElement === document.body && box.current.focus({ preventScroll: true }));
+        // Tabbing or clicking away into the editor puts it away, so the editor's shortcuts work again.
+        if (!e.currentTarget.contains(to) && !trigger.current?.contains(to) && !(to instanceof Element && to.closest('.overlay-backdrop'))) setState({ notesOpen: false });
+      }}
       onKeyDown={(e) => {
         if (e.key !== 'Escape' || e.defaultPrevented) return;
         e.preventDefault();
@@ -190,6 +198,8 @@ function NoteForm() {
         aria-describedby={counterId}
         rows={2}
         value={text}
+        // What is typed while a note is being sent would be lost when the field empties for it.
+        readOnly={sending}
         placeholder={where ? 'Swap this photo, check this price…' : 'Open a page to leave a note on it.'}
         disabled={!where}
         onChange={(e) => setText(e.target.value)}

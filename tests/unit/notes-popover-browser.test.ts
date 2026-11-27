@@ -68,9 +68,13 @@ describe.skipIf(!browserInstalled)('the toolbar’s Notes (#770)', { timeout: 60
   const other = Object.keys(state.pages).find((id) => id !== home)!;
   const node = Object.keys(state.pages[other].nodes)[0];
   const target = { owner: { kind: 'page', id: other }, instancePath: [], nodeId: node };
+  // The page the note is on no longer shows the shared header its element is in.
+  state.pages[other].showHeader = false;
+  const header = { owner: { kind: 'shell', id: 'header' }, instancePath: [], nodeId: Object.keys(state.site.shell.header.nodes)[0] };
   const notes = {
     notes: [
       { id: 'n1', text: 'Swap this hero photo', authorName: 'Ann', authorRole: 'viewer', createdAt: Date.now() - 5 * 60_000, pageId: other, target, resolved: false },
+      { id: 'n5', text: 'Fix the menu', authorName: 'Ann', authorRole: 'viewer', createdAt: Date.now() - 60_000, pageId: other, target: header, resolved: true },
       { id: 'n2', text: 'Fixed the price', authorName: 'Bo', authorRole: 'collaborator', createdAt: Date.now() - 60_000, pageId: home, target: null, resolved: true }
     ],
     guestNotes: true
@@ -120,14 +124,14 @@ describe.skipIf(!browserInstalled)('the toolbar’s Notes (#770)', { timeout: 60
     expect(await page.locator('.notes-list[aria-label="Open notes"] .notes-row').count()).toBe(1);
     expect(await page.textContent('.notes-list[aria-label="Open notes"] .notes-body')).toBe('Swap this hero photo');
     expect(await page.textContent('.notes-list[aria-label="Open notes"] .notes-meta')).toMatch(/^Ann · 5 min ago · .+ on /);
-    expect(await page.textContent('.notes-done summary')).toBe('Resolved (1)');
+    expect(await page.textContent('.notes-done summary')).toBe('Resolved (2)');
     // Pinned to the page shown, since nothing on it is selected.
     expect(await page.textContent('.notes-where')).toBe(`On ${state.pages[home].title}`);
     await page.fill('.notes-form textarea', 'Confirm the pricing copy');
     expect(await page.textContent('.notes-count')).toBe('24/280');
     await page.keyboard.press('Enter');
     await page.locator('.notes-list[aria-label="Open notes"] .notes-row').nth(1).waitFor();
-    expect(await page.evaluate(() => (window as unknown as { __calls: unknown[] }).__calls)).toEqual([['notes.add', 'w1', { text: 'Confirm the pricing copy', pageId: home, target: null }]]);
+    expect(await page.evaluate<unknown[]>('window.__calls')).toEqual([['notes.add', 'w1', { text: 'Confirm the pricing copy', pageId: home, target: null }]]);
     expect(await page.inputValue('.notes-form textarea')).toBe('');
     expect(await page.textContent('.notes-badge')).toBe('2');
   });
@@ -139,15 +143,23 @@ describe.skipIf(!browserInstalled)('the toolbar’s Notes (#770)', { timeout: 60
     // The box follows the host's answer: the note moves to Resolved once it is kept.
     await page.click('.notes-list[aria-label="Open notes"] input[type="checkbox"]');
     await page.locator('.notes-list[aria-label="Open notes"] .notes-empty').waitFor();
-    expect(await page.evaluate(() => (window as unknown as { __calls: unknown[] }).__calls)).toEqual([['notes.resolve', 'w1', 'n1', true]]);
+    expect(await page.evaluate<unknown[]>('window.__calls')).toEqual([['notes.resolve', 'w1', 'n1', true]]);
     // A resolved note still goes where it is about.
     await page.click('.notes-done summary');
     await page.click('.notes-done .notes-jump >> text=Swap this hero photo');
     expect(await page.locator('.notes-popover').count()).toBe(0);
-    const at = await page.evaluate(() => {
-      const s = (window as unknown as { __store: { getState(): { pageId: string; selection: unknown } } }).__store.getState();
-      return { pageId: s.pageId, selection: s.selection };
-    });
+    const at = await page.evaluate<{ pageId: string; selection: unknown }>('(() => { const s = window.__store.getState(); return { pageId: s.pageId, selection: s.selection }; })()');
     expect(at).toEqual({ pageId: other, selection: target });
+  });
+
+  it('opens the page alone, and says so, for an element its page no longer shows', async () => {
+    await open();
+    await page.click('.notes-btn');
+    await page.click('.notes-done summary');
+    expect(await page.textContent('.notes-done .notes-row >> nth=0 >> .notes-meta')).toContain('(element since removed)');
+    await page.click('.notes-done .notes-jump >> text=Fix the menu');
+    const at = await page.evaluate<{ pageId: string; selection: unknown; toasts: string[] }>('(() => { const s = window.__store.getState(); return { pageId: s.pageId, selection: s.selection, toasts: s.toasts.map((t) => t.text) }; })()');
+    expect(at).toMatchObject({ pageId: other, selection: null });
+    expect(at.toasts).toContain('What that note was pinned to is no longer on the page.');
   });
 });

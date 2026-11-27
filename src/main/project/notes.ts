@@ -5,6 +5,7 @@ import type { ElementRef, ProjectState } from '@shared/types';
 import { normalizeRoute } from '@shared/routes';
 import { utf8Length } from '@shared/live/messages';
 import { MAX_NOTES, MAX_NOTES_BYTES, normalizeNoteText, NOTE_TEXT_MAX, NOTE_SCHEMA, type LiveNote, type NoteAuthorRole, type NoteDraft } from '@shared/live/notes';
+import { readRegularFile } from '../packs/files';
 import { atomicWrite, toJson } from './fsutil';
 
 /**
@@ -15,8 +16,11 @@ import { atomicWrite, toJson } from './fsutil';
 
 const FILE_SCHEMA = z.object({ notes: z.array(NOTE_SCHEMA).max(MAX_NOTES) }).strict();
 
-/** A change to the notes, or why it was not made (shown to whoever asked). */
-export type NotesChange = { ok: true; notes: readonly LiveNote[] } | { ok: false; message: string };
+/**
+ * A change to the notes, or why it was not made (shown to whoever asked). `unavailable`: nothing was wrong with the
+ * change; the notes could not be read or saved now.
+ */
+export type NotesChange = { ok: true; notes: readonly LiveNote[] } | { ok: false; message: string; unavailable?: true };
 /**
  * Asked as a change's turn comes, and again just before it is written: null while whoever asked may still make it, or
  * why not now (their access changed while it waited).
@@ -69,16 +73,29 @@ export class NotesStore {
       // Nothing to write: resolving a note already resolved.
       if (changed.length === notes.length && changed.every((n, i) => n === notes[i])) return { ok: true, notes };
       let late: string | null = null;
-      const wrote = await this.whileOwner(async () => {
-        // Asked again with the project's lock held: access taken away while the file was read lands nothing.
-        late = authorize();
-        if (!late) await atomicWrite(this.path, toJson({ notes: changed }));
-      });
-      if (late) return { ok: false, message: late };
-      if (!wrote) return { ok: false, message: 'The project’s notes can’t be saved right now.' };
+      let replaced = false;
+      try {
+        const ran = await this.whileOwner(async () => {
+          // Asked again with the project's lock held, the new file written and about to take the old one's place:
+          // access taken away at any moment before then lands nothing.
+          replaced = await atomicWrite(this.path, toJson({ notes: changed }), {
+            beforeReplace: async () => {
+              late = authorize();
+              return !late;
+            }
+          });
+        });
+        if (late) return { ok: false, message: late };
+        if (!ran || !replaced) return { ok: false, message: 'The project’s notes can’t be saved right now.', unavailable: true };
+      } catch (e) {
+        // The file may or may not have been replaced: it is read again before the next change, never written over
+        // from what was kept before.
+        this.notes = null;
+        throw e;
+      }
       this.notes = changed;
       return { ok: true, notes: changed };
-    }).catch((e: unknown) => ({ ok: false, message: `The project’s notes could not be saved: ${e instanceof Error ? e.message : String(e)}` }));
+    }).catch((e: unknown): NotesChange => ({ ok: false, message: `The project’s notes could not be saved: ${e instanceof Error ? e.message : String(e)}`, unavailable: true }));
   }
 
   private turn<T>(fn: () => Promise<T>): Promise<T> {
@@ -87,30 +104,41 @@ export class NotesStore {
     return run;
   }
 
+  /**
+   * The notes on disk: none while there is no file. A file that is not one this app wrote (a link, too large, not the
+   * notes' shape) is set aside, kept for whoever wants it back, and the list starts again; one that cannot be set aside
+   * is never taken for an empty list, so nothing is written over it.
+   */
   private async load(): Promise<readonly LiveNote[]> {
     if (this.notes) return this.notes;
     let text: string | null = null;
+    let parsed: readonly LiveNote[] | null = null;
     try {
-      text = await fs.readFile(this.path, 'utf8');
+      // A plain file only, never followed through a link to someone else's: what is read is shown to guests.
+      text = (await readRegularFile(this.path, MAX_FILE_BYTES)).toString('utf8');
     } catch (e) {
-      if ((e as NodeJS.ErrnoException).code !== 'ENOENT') throw e;
+      if ((e as NodeJS.ErrnoException).code === 'ENOENT') return (this.notes = []);
     }
-    if (text === null) return (this.notes = []);
-    let parsed: z.infer<typeof FILE_SCHEMA> | null = null;
-    try {
-      const read = FILE_SCHEMA.safeParse(JSON.parse(text));
-      parsed = read.success ? read.data : null;
-    } catch {
-      parsed = null;
+    if (text !== null) {
+      try {
+        const read = FILE_SCHEMA.safeParse(JSON.parse(text));
+        // Held to what a change may leave, so the list always fits in a guest's answer.
+        parsed = read.success && utf8Length(JSON.stringify(read.data.notes)) <= MAX_NOTES_BYTES ? read.data.notes : null;
+      } catch {
+        parsed = null;
+      }
     }
-    if (parsed) return (this.notes = parsed.notes);
-    // Unreadable: kept beside it for whoever wants it back, never written over.
-    await this.whileOwner(() => fs.rename(this.path, `${this.path.replace(/\.json$/, '')}-unreadable-${Date.now()}.json`)).catch(() => undefined);
+    if (parsed) return (this.notes = parsed);
+    const aside = `${this.path.replace(/\.json$/, '')}-unreadable-${Date.now()}.json`;
+    const moved = await this.whileOwner(() => fs.rename(this.path, aside)).catch(() => false);
+    if (!moved) throw new Error('The project’s notes file could not be read.');
     return (this.notes = []);
   }
 }
 
 const GONE = 'That note has already been deleted.';
+/** The most the file may hold as it is written (indented), well past what MAX_NOTES_BYTES of notes takes. */
+const MAX_FILE_BYTES = MAX_NOTES_BYTES * 2;
 const FULL = 'This project has as many notes as it can keep. Delete some before adding more.';
 
 /**

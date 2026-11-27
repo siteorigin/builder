@@ -1,6 +1,6 @@
 import type { ElementRef, ProjectState } from '@shared/types';
 import type { LiveNote, LiveNoteResult, NoteDraft } from '@shared/live/notes';
-import { api, getState, setState, toast, type State } from '../store';
+import { api, getState, setState, showLayer, toast, type State } from '../store';
 import { selectPage, setMode } from './actions';
 import { hostPresenceOf } from './live-host';
 import { admittedRemote, isRemoteShell } from './remote-session';
@@ -83,17 +83,32 @@ export function jumpToNote(note: LiveNote): void {
     toast('That note’s page is no longer in the project.', 'info');
     return;
   }
-  const target = note.target && refExists(st, note.target) ? note.target : null;
+  const target = note.target && targetShown(st, note) ? note.target : null;
   if (target && getState().mode !== 'edit') setMode('edit');
   selectPage(note.pageId, target);
+  if (target) {
+    // Outlined, which Site styles does not do, and scrolled to even when it was selected already and scrolled away.
+    if (getState().rightTab === 'styles') setState({ rightTab: 'inspect' });
+    showLayer(target);
+  }
   if (note.target && !target) toast('What that note was pinned to is no longer on the page.', 'info');
+}
+
+/** Whether a note's element is still on its page as the page shows it: there, and in a header or footer it shows. */
+function targetShown(state: ProjectState, note: Pick<LiveNote, 'pageId' | 'target'>): boolean {
+  const target = note.target;
+  if (!target || !refExists(state, target)) return false;
+  if (target.owner.kind !== 'shell') return true;
+  const page = Object.hasOwn(state.pages, note.pageId) ? state.pages[note.pageId] : null;
+  if (!page) return false;
+  return target.owner.id === 'header' ? page.showHeader !== false : target.owner.id === 'footer' ? page.showFooter !== false : false;
 }
 
 /** Where a note is, in words: the element and its page, or the page. */
 export function notePlaceLabel(state: ProjectState, note: Pick<LiveNote, 'pageId' | 'target'>): string {
   const page = Object.hasOwn(state.pages, note.pageId) ? state.pages[note.pageId].title || 'Untitled page' : 'A page since deleted';
   if (!note.target) return page;
-  return refExists(state, note.target) ? `${refLabel(state, note.target)} on ${page}` : `${page} (element since removed)`;
+  return targetShown(state, note) ? `${refLabel(state, note.target)} on ${page}` : `${page} (element since removed)`;
 }
 
 /** How long ago a note was left: moments, minutes and hours, then the day and time. */

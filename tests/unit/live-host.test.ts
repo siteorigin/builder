@@ -8,7 +8,7 @@ import type { GuestRole } from '../../src/shared/live/limits';
 import type { FrameOf, Participant, Presence } from '../../src/shared/live/messages';
 import type { LiveApplyResult, LiveProjectSnapshot } from '../../src/shared/live/snapshot';
 import { resolveRelayUrl, type ResolvedRelayUrl } from '../../src/shared/live/relay-url';
-import { editTarget, GRANT_CLOCK_MARGIN_MS, GUEST_SNAPSHOT_BURST, LiveHostManager, MAX_GUEST_EDITS_IN_FLIGHT, MAX_GUEST_NOTE_CALLS, MAX_SOCKET_BACKLOG_BYTES, type LiveGuestEdit, type LiveHostContext, type LiveHostTimings, type LiveNotesAnswer } from '../../src/main/live/host';
+import { editTarget, GRANT_CLOCK_MARGIN_MS, GUEST_SNAPSHOT_BURST, LiveHostManager, MAX_GUEST_EDITS_IN_FLIGHT, MAX_GUEST_NOTE_CALLS, MAX_SOCKET_BACKLOG_BYTES, type LiveGuestEdit, type LiveHostContext, type LiveHostNotes, type LiveHostTimings, type LiveNotesAnswer } from '../../src/main/live/host';
 import { GUEST_NOTE_BURST, GUEST_NOTE_LIMIT, NOTE_KEPT, NOTES_CHANGED, type LiveNote, type NoteDraft } from '../../src/shared/live/notes';
 import type { LiveMethod } from '../../src/shared/live/roles';
 import type { RpcError } from '../../src/shared/live/messages';
@@ -1549,16 +1549,14 @@ function noteKeeper(opts: { timings?: Partial<LiveHostTimings> } = {}) {
     changes.push({ kind, args, release, result });
     return result;
   };
-  const h = editor({
-    ...opts,
-    notes: {
+  const notes: LiveHostNotes = {
       list: async () => ({ ok: true, notes: { notes: [...kept], guestNotes: true } }),
       add: (_opening, author, draft, check) =>
         hold('add', [author, draft], check, () => kept.unshift({ id: `n${kept.length + 1}`, text: draft.text, authorName: author.name, authorRole: author.role, createdAt: 1, pageId: 'p_home', target: null, resolved: false })),
       resolve: (_opening, id, resolved, check) => hold('resolve', [id, resolved], check, () => kept.forEach((n) => n.id === id && (n.resolved = resolved))),
       delete: (_opening, id, check) => hold('delete', [id], check, () => kept.splice(kept.findIndex((n) => n.id === id), 1))
-    }
-  } as never);
+  };
+  const h = editor({ ...opts, notes } as never);
   return { ...h, kept, changes };
 }
 

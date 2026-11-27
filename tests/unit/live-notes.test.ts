@@ -1,4 +1,4 @@
-import { existsSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdtempSync, readdirSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
@@ -145,6 +145,48 @@ describe('keeping notes', () => {
     const notOwner = new NotesStore(file, async () => false);
     expect(await notOwner.add(note('c'))).toMatchObject({ ok: false });
     expect(JSON.parse(readFileSync(file, 'utf8')).notes.map((n: LiveNote) => n.id)).toEqual(['b', 'a']);
+  });
+
+  it('never follows a link to another file’s notes, and never writes over a file it could not set aside', async () => {
+    const file = join(tempDir(), 'notes.json');
+    const theirs = join(tempDir(), 'notes.json');
+    writeFileSync(theirs, JSON.stringify({ notes: [note('theirs')] }));
+    symlinkSync(theirs, file);
+    expect(await new NotesStore(file, owner).list()).toEqual([]);
+    expect(readFileSync(theirs, 'utf8')).toContain('theirs');
+    // Unreadable, and not this app's to move (another app holds the project, or it is read-only): left exactly as it is.
+    const broken = join(tempDir(), 'notes.json');
+    writeFileSync(broken, '{"notes": [ broken');
+    const notOwner = new NotesStore(broken, async () => false);
+    await expect(notOwner.list()).rejects.toThrow();
+    expect(await notOwner.add(note('a'))).toMatchObject({ ok: false, unavailable: true });
+    expect(readFileSync(broken, 'utf8')).toBe('{"notes": [ broken');
+  });
+
+  it('sets aside a file holding more than a guest could be sent at once', async () => {
+    const dir = tempDir();
+    const file = join(dir, 'notes.json');
+    const deep = Array.from({ length: 16 }, (_, i) => `${i}`.padEnd(128, 'x'));
+    const target = { owner: { kind: 'page' as const, id: 'p1' }, instancePath: deep, nodeId: 'n', itemPath: deep };
+    writeFileSync(file, JSON.stringify({ notes: Array.from({ length: MAX_NOTES }, (_, i) => note(`n${i}`, { text: 'é'.repeat(NOTE_TEXT_MAX), target })) }));
+    expect(await new NotesStore(file, owner).list()).toEqual([]);
+    expect(readdirSync(dir).some((n) => n.startsWith('notes-unreadable-'))).toBe(true);
+  });
+
+  it('reads the file again after a write that failed part way, so a note that reached the disk is never written over', async () => {
+    const file = join(tempDir(), 'notes.json');
+    let failAfter = false;
+    const store = new NotesStore(file, async (fn) => {
+      await fn();
+      if (failAfter) throw new Error('The folder could not be flushed.');
+      return true;
+    });
+    await store.add(note('a'));
+    failAfter = true;
+    expect(await store.add(note('b'))).toMatchObject({ ok: false, unavailable: true });
+    failAfter = false;
+    expect(await store.add(note('c'))).toMatchObject({ ok: true });
+    expect(JSON.parse(readFileSync(file, 'utf8')).notes.map((n: LiveNote) => n.id)).toEqual(['c', 'b', 'a']);
   });
 
   it('sets an unreadable file aside rather than writing over it', async () => {

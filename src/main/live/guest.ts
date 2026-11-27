@@ -181,8 +181,12 @@ interface Join {
    * for them under way: asked again whenever the host says they changed, and on coming back.
    */
   notes: LiveNotes | null;
+  /** The editor has asked for the notes this join: from then on they are kept read, also after a read that failed. */
+  notesWanted: boolean;
   notesFetch: Promise<LiveNotes | null> | null;
   notesRefetch: boolean;
+  /** Asks again for notes that could not be read (BUSY, the relay's backlog, a host away). */
+  notesTimer: ReturnType<typeof setTimeout> | null;
   tooLarge: boolean;
   hostRuntime: RuntimeState['state'] | null;
   /** The latest project revision the host said its preview serves (preview:reload), or null before it said one. */
@@ -348,8 +352,10 @@ export class LiveGuestManager {
       refetch: false,
       busyTimer: null,
       notes: null,
+      notesWanted: false,
       notesFetch: null,
       notesRefetch: false,
+      notesTimer: null,
       tooLarge: false,
       hostRuntime: null,
       previewRevision: null,
@@ -482,7 +488,7 @@ export class LiveGuestManager {
         // Whatever the host changed while it was away reaches the editor now.
         if (back && join.phase === 'admitted') {
           void this.fetchSnapshot(join);
-          if (join.notes) void this.fetchNotes(join);
+          if (join.notesWanted) void this.fetchNotes(join);
           this.reload(join);
         }
         // A host back, or on a connection that replaced one still open, may not have heard where this app is: told
@@ -589,7 +595,7 @@ export class LiveGuestManager {
         // project is asked for; a role or deadline changing on a live connection needs no new copy.
         if (!returning || back || !join.latest) void this.fetchSnapshot(join);
         // Notes the editor already holds may have changed while the connection was down.
-        if (join.notes && back) void this.fetchNotes(join);
+        if (join.notesWanted && back) void this.fetchNotes(join);
         this.answerJoin(join);
         return this.publish();
       }
@@ -642,7 +648,7 @@ export class LiveGuestManager {
     if (frame.event === 'ai:turn') return this.onAiTurn(join, frame.payload);
     // The notes changed: asked for again, once the editor has wanted them.
     if (frame.event === 'notes:changed') {
-      if (join.notes || join.notesFetch) void this.fetchNotes(join);
+      if (join.notesWanted) void this.fetchNotes(join);
       return;
     }
     if (frame.event === 'runtime:status') {
@@ -887,8 +893,16 @@ export class LiveGuestManager {
         join.notesRefetch = false;
         const answer = await this.call(join, 'notes.list', []);
         if (join.ended || this.current !== join) return null;
-        if (answer.ok && isLiveNotes(answer.result)) this.takeNotes(join, answer.result);
-        if (!join.notesRefetch) return answer.ok ? join.notes : null;
+        const read = answer.ok && isLiveNotes(answer.result);
+        if (read) this.takeNotes(join, answer.result as LiveNotes);
+        // Not read: asked again shortly, so a change the host told of is never missed for good. While the host or this
+        // connection is away, its return asks instead.
+        else if (!join.notesTimer && join.phase === 'admitted' && join.hostConnected && !join.reconnecting)
+          join.notesTimer = setTimeout(() => {
+            join.notesTimer = null;
+            if (!join.ended && this.current === join && join.phase === 'admitted') void this.fetchNotes(join);
+          }, this.timings.busyRetryMs);
+        if (!join.notesRefetch) return read ? join.notes : null;
       }
     })();
     join.notesFetch = run;
@@ -907,6 +921,7 @@ export class LiveGuestManager {
   async notes(joinId: unknown): Promise<LiveNotes | null> {
     const join = this.current;
     if (!join || join.joinId !== joinId || join.phase !== 'admitted') return null;
+    join.notesWanted = true;
     return join.notes ?? (await this.fetchNotes(join));
   }
 
@@ -928,8 +943,15 @@ export class LiveGuestManager {
     if (!join || join.joinId !== joinId || join.phase !== 'admitted') return { ok: false, message: 'You are no longer in that live session.' };
     if (collaborator && join.role !== 'collaborator') return { ok: false, message: 'Only the host and collaborators can resolve or delete notes.' };
     if (!join.hostConnected) return { ok: false, message: 'The host is reconnecting. Try again in a moment.' };
+    join.notesWanted = true;
     const answer = await this.call(join, method, args);
-    if (!answer.ok) return { ok: false, message: answer.error.message };
+    if (!answer.ok) {
+      // A change the host may have made before the connection let go: the notes are read again, and nobody sends a
+      // note twice without looking.
+      if (answer.error.code !== 'UNAVAILABLE') return { ok: false, message: answer.error.message };
+      if (this.current === join) void this.fetchNotes(join);
+      return { ok: false, message: `${answer.error.message.replace(/\s*Try again.*$/, '')} The change may have been made: look at the notes before trying again.` };
+    }
     // The host answers that the change was made; the notes as they are now are read again.
     const notes = this.current === join ? await this.fetchNotes(join) : null;
     return notes ? { ok: true, notes } : { ok: true };
@@ -1121,8 +1143,8 @@ export class LiveGuestManager {
     if (join.ended) return;
     join.ended = true;
     this.closeSocket(join);
-    for (const timer of [join.retryTimer, join.presenceTimer, join.busyTimer, join.endingTimer, join.activityTimer]) if (timer) clearTimeout(timer);
-    join.retryTimer = join.presenceTimer = join.busyTimer = join.endingTimer = join.activityTimer = null;
+    for (const timer of [join.retryTimer, join.presenceTimer, join.busyTimer, join.endingTimer, join.activityTimer, join.notesTimer]) if (timer) clearTimeout(timer);
+    join.retryTimer = join.presenceTimer = join.busyTimer = join.endingTimer = join.activityTimer = join.notesTimer = null;
     this.failCalls(join, reason === 'left' ? 'You left the live session.' : ENDING_MESSAGES[reason]);
     join.preview.abort?.abort();
     join.preview.queued = null;
