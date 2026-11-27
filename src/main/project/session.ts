@@ -1511,6 +1511,8 @@ export class ProjectSession extends EventEmitter {
       await checkSvelteSource(def.source, {
         filename: def.sourcePath,
         contract: { slots: def.slots, parts: def.parts, filled: filledSlots(next, def), variantAxes: def.variantAxes, properties: def.properties },
+        // The design's properties, which the converted file must still take under the keys its design's file did.
+        manifest: { ...def, designFile: true },
         resolve,
         modules: exists
       })

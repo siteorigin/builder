@@ -299,6 +299,7 @@ export function CodeEditor({
       async (v) => {
         const doc = v.state.doc;
         let found: Awaited<ReturnType<typeof api.project.validateSource>>['diagnostics'] = [];
+        const asked = JSON.stringify(held.current ?? null);
         try {
           found = (await api.project.validateSource(doc.toString(), held.current)).diagnostics;
         } catch {
@@ -310,8 +311,8 @@ export function CodeEditor({
           }
           return [];
         }
-        // The text moved on while this ran; the next run reports on it.
-        if (!doc.eq(v.state.doc)) return [];
+        // The text or the manifest moved on while this ran; the next run reports on it.
+        if (!doc.eq(v.state.doc) || asked !== JSON.stringify(held.current ?? null)) return [];
         const diagnostics = found.map((d): Diagnostic => {
           const line = doc.line(Math.min(Math.max(1, d.line ?? 1), doc.lines));
           const from = Math.min(line.from + (d.column ?? 0), line.to);

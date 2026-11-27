@@ -30,6 +30,7 @@ import { CompileCache, compileProject } from './compile';
 import { createCompilePool } from './compile-client';
 import { checkSvelteSource, codeContractNames, componentSources } from './codecheck';
 import { designCalled } from '@generator/index';
+import { normalizeProperties } from '@engine/schema';
 import { renderSiteIconsInWorker, stopMediaWorker } from './project/assets';
 import { setSiteIconRenderer } from './project/site-icons';
 import { setToolsCheck } from './runtime/manager';
@@ -759,7 +760,15 @@ function registerIpc() {
     const given = manifest && typeof manifest === 'object' ? (manifest as SourceManifest) : {};
     const state = controller.session?.state;
     const def = typeof given.definitionId === 'string' && state && Object.hasOwn(state.components, given.definitionId) ? state.components[given.definitionId] : undefined;
-    const properties = given.properties && typeof given.properties === 'object' && !Array.isArray(given.properties) ? (given.properties as ComponentDefinition['properties']) : def?.properties;
+    const draft = given.properties && typeof given.properties === 'object' && !Array.isArray(given.properties) ? (given.properties as Record<string, unknown>) : undefined;
+    // The draft as saving would store it, its defaults filled in; one saving would refuse is checked as it stands.
+    let properties = draft ? (draft as ComponentDefinition['properties']) : def?.properties;
+    if (draft && state)
+      try {
+        properties = normalizeProperties(draft, state);
+      } catch {
+        // Saving refuses the draft and says why; the code is still held to what the draft names.
+      }
     const held = properties ? { manifest: { properties, variantAxes: def?.variantAxes, designFile: !!(state && def && designCalled(state, def)) } } : {};
     const problems = await checkSvelteSource(String(source), { contract, ...held });
     const errors = problems.filter((p) => p.severity === 'error');
