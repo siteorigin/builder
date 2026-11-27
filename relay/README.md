@@ -125,9 +125,11 @@ refuses to open rooms or serve previews. A deployment adds a `production` enviro
 
 ## Deploying and operating
 
-`example.live` stands for your domain throughout. With the domain already **active** on Cloudflare and its Universal SSL
-certificate issued, the steps below take under five minutes. Registering a domain, moving its nameservers and waiting
-for the first certificate take longer, so do those beforehand.
+`example.live` stands for your domain throughout. You need a checkout of this repository, Node (24.15 or newer in the
+24 line, as [CONTRIBUTING.md](../CONTRIBUTING.md) recommends) with npm, and OpenSSL. With those ready, dependencies
+installed, and the domain already **active** on Cloudflare with its Universal SSL certificate issued, the steps below
+take under five minutes. Registering a domain, moving its nameservers and waiting for the first certificate take
+longer, so do those beforehand.
 
 ### Before you start: the domain
 
@@ -222,8 +224,8 @@ room from its sockets' attachments when it wakes.
 openssl rand -base64 32 | npx wrangler secret put SESSION_SIGNING_KEY --config relay/wrangler.toml --env production
 ```
 
-This sends 32 random bytes straight to Cloudflare, so the key is never written to a file. Use a new key for every
-deployment, never the one in `.dev.vars.example`. Pass `--env production`: without it the secret goes to a different
+This sends 32 random bytes straight to Cloudflare, so the key is never written to a file. Give each relay you set up its
+own key, never the one in `.dev.vars.example`. Later deploys keep the secret, so run this again only to rotate it. Pass `--env production`: without it the secret goes to a different
 Worker, and the deployed relay still refuses to open rooms.
 
 ### 4. Check it
@@ -242,32 +244,40 @@ and see that the preview appears. This covers both kinds of host, the WebSockets
 Run the command in step 3 again. The relay holds one key, so there is no period in which the old and new keys both
 work. **Rotate when no sessions are running if you can.**
 
-`wrangler secret put` deploys a new version of the Worker at once, and running rooms then change over like on any other
+`wrangler secret put` deploys a new version of the Worker at once, and running rooms then change over as on any other
 deployment. By default Cloudflare [defers a Durable Object's code
 update](https://developers.cloudflare.com/durable-objects/deployments/durable-objects-code-updates/) for up to five
-minutes, on a best-effort basis, so a room can go on using the old key for that long. What happens next differs from
-room to room:
+minutes, on a best-effort basis, so there is no single moment of cutover: each room can go on using the old key for a
+while. What happens next differs from room to room:
 
 - **The room hibernates first and then picks up the new version.** Its sockets stay open and the room is restored. The
-  signing key signs only preview cookies, so the host's connection, guests' places and resume tokens, and unused preview
-  tickets carry on. Old cookies stop verifying: a guest's next preview request gets `401`. **Try again** in the viewer,
-  or reloading the invite page in the same tab, takes the guest's place back and gets a new cookie.
+  signing key signs only preview cookies, so the host's connection, waiting guests, guests' places and resume tokens
+  carry on, and an unused, unexpired ticket is redeemed with the new key. An admitted guest's old cookie stops
+  verifying, so its next preview request gets `401`. In a browser, **Try again**, where the viewer shows it, takes the
+  guest's place back and gets a new cookie. If part of the preview just stops loading and there is no button, reload the
+  invite page in the same tab. A guest in Builder leaves the session, joins again and is admitted again.
 - **The room is reset before it hibernates.** Its sockets are disconnected, and the room, which lived only in memory and
-  on those sockets, is gone. Nobody can resume it, and its invite link no longer works. The host must stop the session,
-  start a new one and send the new link. Left alone, Builder keeps trying to reconnect for up to 15 minutes, because it
-  cannot tell a room that is gone from a network that is down.
+  on those sockets, is gone for good. The host must stop the session, start a new one and send the new link, and guests
+  must be admitted again. Left alone, the host's Builder keeps trying to reconnect for up to 15 minutes, because it
+  cannot tell a room that is gone from a network that is down. Guests also retry for a few minutes before saying the
+  connection was lost; reconnecting or reloading the old invite cannot bring the room back.
 
-The same applies to every `wrangler deploy`, so deploy between sessions too.
+Any `wrangler deploy` can reset rooms in the same way, so deploy between sessions too.
 
-If the key may have leaked, don't wait for the deferral. Rotate it, then end every running room by deploying with an
-immediate update:
+**If the key may have leaked**, rotate it without waiting for sessions to finish. Until a room picks up the new key,
+someone holding the old one who also knows an admitted guest's current grant (the room and guest IDs, role, end of
+access and grant version) can sign a cookie and fetch the preview as that guest while the host is connected, even if the
+guest's own connection has dropped. To ask Cloudflare to apply the new key without the deferral, upload it as a version
+and deploy that version in immediate mode, in place of `secret put`:
 
 ```sh
-npx wrangler deploy --config relay/wrangler.toml --env production --durable-objects-code-update-mode immediate
+openssl rand -base64 32 | npx wrangler versions secret put SESSION_SIGNING_KEY --config relay/wrangler.toml --env production
+npx wrangler versions deploy --config relay/wrangler.toml --env production --durable-objects-code-update-mode immediate
 ```
 
-A forged cookie is not enough to get in on its own: the relay also checks each cookie against a guest the room has
-admitted, with the same role, end of access and grant version.
+The second command asks which version to deploy: choose the one just uploaded, at 100%. Do not treat this as proof that
+every room has ended or changed over. Where that matters, have the hosts end their sessions; no session lasts more than
+24 hours.
 
 ### Pointing the app at a deployed relay
 
@@ -277,8 +287,10 @@ Builder. The app takes the first of these that is set:
 1. The `SITEORIGIN_LIVE_RELAY_URL` environment variable. From a source checkout:
    `SITEORIGIN_LIVE_RELAY_URL=https://example.live npm run dev`.
 2. `settings.liveRelayUrl` in `settings.json` in the app's user data folder (on macOS,
-   `~/Library/Application Support/SiteOrigin Builder/settings.json`). Settings has no field for it yet, so quit Builder,
-   add `"liveRelayUrl": "https://example.live"` inside the existing `settings` object, and open Builder again.
+   `~/Library/Application Support/SiteOrigin Builder/settings.json` by default; `SITEORIGIN_USER_DATA` moves the
+   folder). Settings has no field for it yet, so quit Builder, set `"liveRelayUrl": "https://example.live"` inside the
+   `settings` object (replacing any value there), and open Builder again. If the file does not exist yet, create it
+   containing `{"settings":{"liveRelayUrl":"https://example.live"}}`.
 3. The built-in default, `DEFAULT_RELAY_URL` in `src/shared/live/relay-url.ts`.
 
 Give the origin only, with no path. A value that is set but unusable stops a session from starting, with a message
@@ -295,16 +307,19 @@ the hosting Builder at your origin. No source change is needed. If your account 
 
 - **No accounts.** A host is the holder of the room's Ed25519 key, made for that session. A guest gives a name and
   waits for the host to let them in.
-- **Nothing about a session is kept.** The relay writes no project content, guest records or names to storage. A room
-  lives in its object's memory and, to survive hibernation, in its open sockets' attachments. Durable Object storage is
-  used only for the room's alarm, and ending a session clears it. The guest's browser keeps the guest's name and resume
-  token in the tab's `sessionStorage`.
+- **The relay keeps no record of a session.** It writes no project content, guest records or names to Durable Object
+  storage, which holds only the room's alarm; ending a session clears it. A room lives in its object's memory and, to
+  survive hibernation, in its open sockets' attachments. Other things can outlast a session outside the relay: the host's
+  Builder saves guests' notes, with their names, alongside the project; a guest's tab can hold the name and resume token
+  in `sessionStorage` (for instance after a lost connection); and a guest's browser can hold the preview cookie, which
+  no longer opens an ended room, until its original expiry.
 - **Not end-to-end encrypted.** TLS protects traffic to and from the relay, but the Worker handles frames and preview
   responses in readable form while it passes them on. Whoever operates a relay is trusted with them, and Cloudflare
   carries them. The rate limiters count by client IP address.
-- **Capabilities are enforced by the host.** The host decides who gets in, with which role and for how long. The relay
-  enforces that decision: it gates the preview on the guest's current grant and refuses calls the role does not allow.
-  The host's Builder then checks each guest's request against the grant again before acting on it, so the relay's check
-  is not the only one standing between a guest and the project.
+- **Capabilities are enforced by the host.** The host decides who gets in, with which role and for how long, and the
+  relay applies that decision: it refuses calls a role does not allow. For editor calls (reading the project, editing,
+  notes, AI requests), the host's Builder checks the guest's grant again before acting, so the relay's check is not the
+  only one. Preview requests are different: the relay alone checks the guest's grant for them, and the host answers what
+  it forwards, within limits on what a preview can reach.
 - **Previews are isolated by origin**, one per room, on a domain with nothing else on it. See
   [why](#why-every-room-has-its-own-preview-origin), and [Access](#access) for the cookie and request rules.
