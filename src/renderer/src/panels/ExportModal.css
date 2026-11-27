@@ -20,14 +20,11 @@
   .modal:has(> .modal-body > .export-dialog) > .modal-foot { flex-wrap: wrap; row-gap: 10px; }
   .modal:has(> .modal-foot > .export-choice) > .modal-foot { background: var(--panel); }
   .modal-foot > .export-choice { flex: 1 0 100%; min-width: 0; }
-  /* Zoomed in far enough, the exports leave the body no room of its own: the whole dialog scrolls instead, so every
-     control stays within reach. */
-  @media (max-height: 560px), (max-height: 720px) and (max-width: 879px) {
-    .modal:has(> .modal-body > .export-dialog) { overflow-y: auto; }
-    .modal:has(> .modal-body > .export-dialog) > * { flex: none; }
-    .modal:has(> .modal-body > .export-dialog) > .modal-body { overflow: visible; }
-    .modal:has(.export-progress:not(:empty)) { scroll-padding-top: 76px; }
-  }
+  /* The body keeps a strip of its own to scroll in. Where the header, that strip and the exports don't all fit (zoomed
+     in, or under a tall stack of notices), the whole dialog scrolls too, so every control stays within reach. */
+  .modal:has(> .modal-body > .export-dialog) { overflow-y: auto; }
+  .modal:has(> .modal-body > .export-dialog) > :is(.modal-head, .modal-foot) { flex: none; }
+  .modal:has(> .modal-body > .export-dialog) > .modal-body { flex: 1 1 auto; min-height: 120px; }
   .export-dialog { display: flex; flex-direction: column; gap: 12px; }
   .export-intro { margin: 0; color: var(--text-2); }
   .export-note-body { display: flex; flex-direction: column; gap: 6px; flex: 1; min-width: 0; }
