@@ -2,7 +2,7 @@ import { z } from 'zod';
 import type { BuilderApi } from '../api';
 import type { ElementRef } from '../types';
 import { validateOperation, type EditOperation, type OperationType, type ToolErrorCode } from '../ops';
-import type { GuestRole } from './limits';
+import { HOST_ONLY_PROPS, LIVE_BATCH_LABEL_MAX, type GuestRole } from './limits';
 import { canCall, LIVE_METHODS } from './roles';
 import type { Presence, RpcError, RpcErrorCode } from './messages';
 
@@ -14,6 +14,7 @@ import type { Presence, RpcError, RpcErrorCode } from './messages';
  */
 
 export { canCall, COLLABORATOR_METHODS, LIVE_METHODS, VIEWER_METHODS, type LiveMethod } from './roles';
+export { HOST_ONLY_PROPS, LIVE_BATCH_LABEL_MAX };
 
 // Every method a guest may call is one the app's API has.
 type ProjectMethod = `project.${keyof BuilderApi['project'] & string}`;
@@ -76,14 +77,6 @@ const OPERATIONS: Record<GuestRole, readonly string[]> = { viewer: [], collabora
 export const GUEST_OWNER_KINDS = ['page', 'shell'] as const;
 
 /**
- * Component properties only the host sets, wherever they are placed: the contact form settings that send the site's
- * messages to someone's own account (the form's FORM_DESTINATIONS). This goes by the property's name only. A project
- * component that passes one of its own properties into a nested form's settings is caught by the host's check against
- * the project as the batch would leave it (engine/guest-edits.ts), which this contract cannot see.
- */
-export const HOST_ONLY_PROPS = ['endpoint', 'accessKey'] as const;
-
-/**
  * The page settings a collaborator may change: its name, address, search text and image, its shared parts, and an
  * article's byline and excerpt (copy the page shows). Whether and when a page is published, indexed, listed in News
  * or dated stays with the host.
@@ -124,7 +117,6 @@ export function canEditOperation(role: GuestRole, type: string): boolean {
 }
 
 export const LIVE_BATCH_MAX_OPERATIONS = 256;
-export const LIVE_BATCH_LABEL_MAX = 120;
 /**
  * Copies a guest's batch may make. Each copy can double what the next one copies (a section copied into itself), so
  * a batch of them could make more than the host's memory holds before anything checks the result.

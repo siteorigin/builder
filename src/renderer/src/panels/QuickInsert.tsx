@@ -6,7 +6,8 @@ import { searchItems } from '../lib/insert-search';
 import { openInsertSearchFor } from '../lib/insert-focus';
 import { openMenus } from '../components/ui';
 import { isImeComposing } from '../lib/ime';
-import { LucideIcon, SectionSketch } from './InsertPanel';
+import { SectionSketch } from './InsertPanel';
+import { LucideIcon } from '../components/InsertIcon';
 
 type Box = { left: number; top: number; width: number; height: number };
 

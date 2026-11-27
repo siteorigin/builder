@@ -31,7 +31,8 @@ import { appliedCount, historyStep } from '../lib/history-steps';
 import { reviewPlan, stepChangeText, turnName } from '../lib/turn-review';
 import { swapChoices, type SwapChoice } from '../lib/swap-choices';
 import { ComponentThumb } from '../components/ComponentThumb';
-import { DesignSketch, LucideIcon, SectionSketch } from './InsertPanel';
+import { DesignSketch, SectionSketch } from './InsertPanel';
+import { LucideIcon } from '../components/InsertIcon';
 
 /** The longest name a component can have. */
 const NAME_MAX = 60;

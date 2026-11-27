@@ -24,6 +24,7 @@ import { isRemoteOpening } from './lib/remote-snapshot';
 import { projectDisplayName, windowTitle } from '@shared/project-name';
 import { perfMarkAtCommit, perfOn, perfWork } from './lib/perf';
 import { editorModule, loadEditor } from './lib/editor-module';
+import { askRecentsEarly, takeEarlyRecents } from './lib/early-recents';
 
 /** What Undo and Redo, and keys forwarded from the preview frame, act on right now. */
 function historyContext(): HistoryContext {
@@ -200,8 +201,11 @@ export function App() {
     // A project already open (the editor reloaded, or a window opened again over it) shows the editor at once, once
     // its code and the catalogue are here: Welcome never shows in between. The changes that follow are made against
     // the copy this reads.
-    void transport
-      .current()
+    const opening = transport.current();
+    // Welcome's recent projects are asked for now, just after the open project (answered first), not once that answer
+    // has come and Welcome has mounted: they do not depend on it.
+    askRecentsEarly(() => api.projects.recents());
+    void opening
       .then(async (snap) => {
         if (unmounted || superseded || !snap) return;
         const runtime = getState().runtime;
@@ -260,6 +264,8 @@ function Failed({ error }: { error: Error }): never {
 }
 
 export function openSnapshot(snap: NonNullable<ReturnType<typeof getState>['snapshot']>) {
+  // Welcome shown again after this project reads its list afresh.
+  takeEarlyRecents();
   const local = snap.localState ?? {};
   forgetKeptDrafts();
   const pageId = local.pageId && Object.hasOwn(snap.state.pages, local.pageId) ? local.pageId : snap.state.site.homePageId;

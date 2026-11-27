@@ -10,6 +10,7 @@ import { AppMark } from './components/AppMark';
 import { switchScheme, useEditorScheme } from './lib/appearance';
 import { perfMark, perfMarkOnce } from './lib/perf';
 import { loadEditor } from './lib/editor-module';
+import { peekEarlyRecents, takeEarlyRecents, type EarlyRecents } from './lib/early-recents';
 import './Welcome.css';
 
 export function BrandMark() {
@@ -114,8 +115,9 @@ const keys = {
 const FILTER_FROM = 8;
 
 export function Welcome() {
-  // null until the first load, so returning users never see a flash of the first-run screen.
-  const [recents, setRecents] = useState<RecentProject[] | null>(null);
+  // null until the first load, so returning users never see a flash of the first-run screen. The list asked for at
+  // launch shows in the first render when it has come by then (taken once Welcome is on screen).
+  const [recents, setRecents] = useState<RecentProject[] | null>(() => peekEarlyRecents()?.settled ?? null);
   // The first time Welcome lists its recent projects in this page (src/shared/perf.ts).
   useEffect(() => {
     if (recents !== null) perfMarkOnce('launch.recentsShown', { count: recents.length });
@@ -168,10 +170,11 @@ export function Welcome() {
   const modal = useStore((s) => s.modal);
   const openingRecent = recents?.find((r) => r.dir === opening);
   const openingNote = openingRecent ? `${openingRecent.missing ? 'Finding' : 'Opening'} ${openingRecent.name}…` : opening ? 'Opening a project…' : '';
-  const refresh = () => {
+  const refresh = (early: EarlyRecents | null = null) => {
     const read = ++reads.current;
-    // Returned, so a change can say which reading shows it.
-    void api.projects.recents().then((list) => {
+    // Returned, so a change can say which reading shows it. The first, at launch, was asked for before Welcome mounted:
+    // if that failed, the list is read again now, as it was before there was one.
+    void (early ? early.list.catch(() => api.projects.recents()) : api.projects.recents()).then((list) => {
       if (read < shownRead.current) return;
       shownRead.current = read;
       setRecents(list);
@@ -179,7 +182,7 @@ export function Welcome() {
     return read;
   };
   useEffect(() => {
-    refresh();
+    refresh(takeEarlyRecents());
     const onCmd = (e: Event) => {
       if (openDialogs.length) return;
       const cmd = (e as CustomEvent).detail;

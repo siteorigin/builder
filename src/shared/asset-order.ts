@@ -14,8 +14,9 @@ export const ASSET_SORTS: ReadonlyArray<{ value: AssetSort; label: string }> = [
 
 export const isAssetSort = (v: unknown): v is AssetSort => ASSET_SORTS.some((s) => s.value === v);
 
-// One fixed locale, so two people sharing a project see the same order.
-const collator = new Intl.Collator('en', { numeric: true, sensitivity: 'base' });
+// One fixed locale, so two people sharing a project see the same order. Made the first time names are compared: making
+// it loads the locale's collation data, a few milliseconds the editor's launch has no use for.
+let collator: Intl.Collator | undefined;
 const raw = (x: string, y: string) => (x < y ? -1 : x > y ? 1 : 0);
 const text = (v: unknown) => (typeof v === 'string' ? v : '');
 /**
@@ -31,7 +32,7 @@ const nameOf = (a: AssetRecord) => clip(text(a.name).trim()).normalize('NFC');
  */
 export function compareAssetNames(a: string, b: string): number {
   if (!a !== !b) return a ? -1 : 1;
-  return collator.compare(a, b) || raw(a, b);
+  return (collator ??= new Intl.Collator('en', { numeric: true, sensitivity: 'base' })).compare(a, b) || raw(a, b);
 }
 
 /**

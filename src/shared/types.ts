@@ -835,7 +835,11 @@ export interface ComponentDefinition {
   provenance?: { pack?: string; packVersion?: string; componentId?: string; forkedFrom?: string; createdBy?: 'user' | 'ai' };
   license?: string;
   examples?: Array<{ description: string; props: Record<string, unknown> }>;
-  /** Icon name used in the insert panel. */
+  /**
+   * The icon Insert, Quick insert and the command menu show for it, by Lucide name (`layout-grid`): one of the app's
+   * Insert icons (src/renderer/src/components/InsertIcon.tsx), which hold every name the shipped packs use. Any other
+   * name shows a box.
+   */
   icon?: string;
   /**
    * A theme section the assistant's page tool lists only on a full run: a small model (grammar-constrained, or a window

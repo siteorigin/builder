@@ -42,6 +42,7 @@ import { createThumbCapturer } from './thumb-capture';
 import { desktopForLaunch, headlessSwitches, launchMode } from './headless-desktop';
 import { installAiJournal } from './ai-journal';
 import { windowIcon } from './window-icon';
+import { createEditorCodeCache, type V8CachePolicy } from './code-cache';
 import { createEditorRecovery, crashQuestion, type EditorRecovery } from './editor-recovery';
 import { createMainErrorReporter, errorText } from './main-errors';
 import { fixComponentSource } from '@agent/fixer';
@@ -957,8 +958,9 @@ async function createWindow() {
   if ((win && !win.isDestroyed()) || windowComing) return;
   windowComing = true;
   let settings: Awaited<ReturnType<typeof loadSettings>>['settings'];
+  let v8CacheOptions: V8CachePolicy;
   try {
-    settings = (await loadSettings()).settings;
+    [{ settings }, v8CacheOptions] = await Promise.all([loadSettings(), editorCodeCache.policy()]);
   } finally {
     // Cleared in the same step the window is created in, so nothing can slip in between.
     windowComing = false;
@@ -984,11 +986,24 @@ async function createWindow() {
       webSecurity: true,
       spellcheck: true,
       backgroundThrottling: !headless,
+      // Until this build's editor has run once, Chromium keeps a script's compiled code from its first run, so the
+      // second launch after an update reuses it (code-cache.ts).
+      v8CacheOptions,
       // Its preload offers the editor a way to send timing marks only while they are on (src/shared/perf.ts).
       ...(perf.on ? { additionalArguments: [PERF_ARG] } : {})
     }
   });
   perf.mark('launch.windowCreated', { window: win.id });
+  // A frame inside the editor (the canvas's preview, a page being measured) means the editor's own code has run here.
+  if (v8CacheOptions !== 'code') {
+    const contents = win.webContents;
+    const editorRan = (_e: unknown, isMainFrame: boolean) => {
+      if (isMainFrame) return;
+      contents.off('did-frame-finish-load', editorRan);
+      void editorCodeCache.ran();
+    };
+    contents.on('did-frame-finish-load', editorRan);
+  }
   // Open maximized: the editor is used with as much room for the site preview as the screen allows.
   win.once('ready-to-show', () => {
     // A headless launch never shows its window, so this is as far as launch timing goes in main.
@@ -1198,6 +1213,8 @@ const BUILD: BuildStamp = {
   commit: typeof __BUILD_COMMIT__ === 'string' ? __BUILD_COMMIT__ : null,
   builtAt: typeof __BUILD_DATE__ === 'string' ? __BUILD_DATE__ : null
 };
+/** Whether this build's editor code is in Chromium's code cache, which decides how the editor window keeps it. */
+const editorCodeCache = createEditorCodeCache(() => app.getPath('userData'), `${app.getVersion()} ${BUILD.commit ?? 'unbundled'} ${BUILD.builtAt ?? ''}`);
 // A trace names the build it timed, so a result always says which tree it measured.
 if (perf.on) perf.mark('launch.build', { commit: BUILD.commit, builtAt: BUILD.builtAt, version: app.getVersion() });
 

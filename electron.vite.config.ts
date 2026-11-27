@@ -65,6 +65,12 @@ export default defineConfig({
     root: resolve('src/renderer'),
     resolve: { alias: { ...alias, '@renderer': resolve('src/renderer/src') } },
     plugins: [react(), notices('renderer')],
-    build: { rollupOptions: { input: { index: resolve('src/renderer/index.html') } } }
+    build: {
+      // The editor's scripts are minified (#958), keeping every function's and class's name, so a stack trace from a
+      // packaged build still names what failed. The stylesheet is left as written.
+      minify: 'oxc',
+      cssMinify: false,
+      rollupOptions: { input: { index: resolve('src/renderer/index.html') }, output: { keepNames: true } }
+    }
   }
 });
