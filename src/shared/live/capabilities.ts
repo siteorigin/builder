@@ -4,6 +4,7 @@ import type { ElementRef } from '../types';
 import { validateOperation, type EditOperation, type OperationType, type ToolErrorCode } from '../ops';
 import { HOST_ONLY_PROPS, LIVE_BATCH_LABEL_MAX, type GuestRole } from './limits';
 import { canCall, LIVE_METHODS } from './roles';
+import { COPY_EDITOR_OPERATIONS, copyEditorOperationProblem } from './copy-editor';
 import type { Presence, RpcError, RpcErrorCode } from './messages';
 
 /**
@@ -13,7 +14,7 @@ import type { Presence, RpcError, RpcErrorCode } from './messages';
  * dialogs, settings, API keys, AI, source code, versions, conflicts and history) appears in no list.
  */
 
-export { canCall, COLLABORATOR_METHODS, LIVE_METHODS, VIEWER_METHODS, type LiveMethod } from './roles';
+export { canCall, COLLABORATOR_METHODS, COPY_EDITOR_METHODS, LIVE_METHODS, VIEWER_METHODS, type LiveMethod } from './roles';
 export { HOST_ONLY_PROPS, LIVE_BATCH_LABEL_MAX };
 
 // Every method a guest may call is one the app's API has.
@@ -67,7 +68,11 @@ export const COLLABORATOR_OPERATIONS = [
   'component.detachInstance'
 ] as const satisfies readonly OperationType[];
 
-const OPERATIONS: Record<GuestRole, readonly string[]> = { viewer: [], collaborator: COLLABORATOR_OPERATIONS };
+// A copy editor makes only edits a collaborator may make too (and fewer of them: engine/copy-editor.ts).
+const _copyEditsCollaborate: readonly (typeof COLLABORATOR_OPERATIONS)[number][] = COPY_EDITOR_OPERATIONS;
+void _copyEditsCollaborate;
+
+const OPERATIONS: Record<GuestRole, readonly string[]> = { viewer: [], 'copy-editor': COPY_EDITOR_OPERATIONS, collaborator: COLLABORATOR_OPERATIONS };
 
 /**
  * Where a guest's edits may land: pages, and the shared header and footer. Component definitions and collection
@@ -161,12 +166,13 @@ const invalid = (message: string, operationIndex?: number): { ok: false; error: 
 
 /**
  * Check a guest's batch before any of it runs: its shape, then each operation's type against the role, then the
- * operation itself, as the local pipeline validates it, then where it lands and what it sets (beyondGuestGrant).
- * One refused operation refuses the whole batch, naming it. Only the parsed operations come back, so what runs is
- * exactly what was checked.
+ * operation itself, as the local pipeline validates it, then where it lands and what it sets (beyondGuestGrant), and
+ * for a copy editor, what the operation alone says of it (copyEditorOperationProblem). One refused operation refuses
+ * the whole batch, naming it. Only the parsed operations come back, so what runs is exactly what was checked. A copy
+ * editor's batch is held to the project as well, as it is saved (engine/copy-editor.ts).
  */
 export function checkEditBatch(role: GuestRole, input: unknown): CapabilityResult<LiveEditBatch> {
-  if (!canCall(role, 'project.apply')) return denied('Only collaborators can edit this project.');
+  if (!canCall(role, 'project.apply')) return denied('Only collaborators and copy editors can edit this project.');
   const batch = BATCH.safeParse(input);
   if (!batch.success) {
     const issue = batch.error.issues[0];
@@ -176,10 +182,10 @@ export function checkEditBatch(role: GuestRole, input: unknown): CapabilityResul
   for (const [index, raw] of batch.data.operations.entries()) {
     const type = raw && typeof raw === 'object' && !Array.isArray(raw) ? (raw as { type?: unknown }).type : undefined;
     if (typeof type !== 'string') return invalid('Each operation needs a type.', index);
-    if (!canEditOperation(role, type)) return denied(`A ${role} cannot make "${type.slice(0, 60)}" edits.`, index);
+    if (!canEditOperation(role, type)) return denied(`A ${role.replace('-', ' ')} cannot make "${type.slice(0, 60)}" edits.`, index);
     const checked = validateOperation(raw);
     if (!checked.ok) return invalid(checked.message, index);
-    const beyond = beyondGuestGrant(checked.op);
+    const beyond = beyondGuestGrant(checked.op) ?? (role === 'copy-editor' ? copyEditorOperationProblem(checked.op) : null);
     if (beyond) return denied(beyond, index);
     if (COPYING.includes(checked.op.type) && operations.filter((o) => COPYING.includes(o.type)).length >= LIVE_BATCH_MAX_COPIES) return invalid(`A batch may copy at most ${LIVE_BATCH_MAX_COPIES} things.`, index);
     operations.push(checked.op);
@@ -197,7 +203,7 @@ export type LiveCall = { method: 'project.snapshot'; args: [] } | { method: 'pro
  * reaches the host's API.
  */
 export function checkRpcRequest(role: GuestRole, method: string, args: readonly unknown[]): CapabilityResult<LiveCall> {
-  if (!canCall(role, method)) return denied(`A ${role} cannot use ${method.slice(0, 80)}.`);
+  if (!canCall(role, method)) return denied(`A ${role.replace('-', ' ')} cannot use ${method.slice(0, 80)}.`);
   if (method === 'project.snapshot') return args.length === 0 ? { ok: true, value: { method, args: [] } } : invalid('project.snapshot takes no arguments.');
   if (args.length !== 1) return invalid('project.apply takes one batch of edits.');
   const batch = checkEditBatch(role, args[0]);

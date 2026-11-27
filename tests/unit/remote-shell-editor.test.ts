@@ -231,6 +231,7 @@ describe('the host’s project as the editor shows it', () => {
   it('is read-only, saying why, whenever the guest cannot edit it now', () => {
     const reason = (remote: Partial<Extract<RemoteState, { phase: 'admitted' }>>, l: Partial<LiveProjectSnapshot> = {}) => snapshots.remoteSnapshot(admitted(remote), live(7, l)).readOnly?.reason;
     expect(reason({ role: 'viewer' })).toMatch(/as a viewer/);
+    expect(reason({ role: 'copy-editor' })).toMatch(/copy editor.*not edit it/);
     expect(reason({ hostConnected: false })).toMatch(/host is reconnecting/);
     expect(reason({ reconnecting: true })).toMatch(/connection to the live session dropped/);
     expect(reason({ tooLarge: true })).toMatch(/too large/);

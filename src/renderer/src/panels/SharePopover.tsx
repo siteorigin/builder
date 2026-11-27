@@ -3,7 +3,7 @@ import { useEffect, useId, useLayoutEffect, useRef, useState, type CSSProperties
 import { createPortal } from 'react-dom';
 import { Check, ChevronDown, Copy, FileText, Lock, Radio, RefreshCw, Users, X } from 'lucide-react';
 import type { LiveHostState, LiveRun } from '@shared/api';
-import { GUEST_ROLES, type GuestRole } from '@shared/live/limits';
+import type { GuestRole } from '@shared/live/limits';
 import { SESSION_DURATIONS, type SessionDuration } from '@shared/live/expiry';
 import { api, confirmDialog, getState, setState, useStore } from '../store';
 import { openMenus, Segmented, Spinner, SwitchRow, useDialogOpen, useMenu } from '../components/ui';
@@ -24,6 +24,7 @@ import {
   hasRoom,
   livePill,
   liveRun,
+  OFFERED_ROLES,
   relayNow,
   remainingMs,
   ROLE_LABELS,
@@ -615,8 +616,9 @@ function GuestRow({ run, live, guest, at, disabled }: { run: LiveRun; live: Live
             });
           }}
         >
-          {GUEST_ROLES.map((role) => (
-            <option key={role} value={role}>
+          {/* A role the host cannot pick shows while the guest holds it, and is never offered back. */}
+          {(OFFERED_ROLES.includes(guest.role) ? OFFERED_ROLES : [...OFFERED_ROLES, guest.role]).map((role) => (
+            <option key={role} value={role} disabled={!OFFERED_ROLES.includes(role)}>
               {ROLE_LABELS[role]}
             </option>
           ))}

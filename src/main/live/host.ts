@@ -5,7 +5,7 @@ import { checkRpcRequest, type LiveEditBatch } from '@shared/live/capabilities';
 import { LIVE_CLOSE_CODES } from '@shared/live/close-codes';
 import { generateHostKeyPair, signHostChallenge, type HostKeyPair } from '@shared/live/crypto';
 import { checkGuestExpiry, checkSessionExpiry, guestAccessEndsAt, isExpired, isSessionDuration, type SessionDuration } from '@shared/live/expiry';
-import { GUEST_ID_RE, GUEST_ROLES, LIVE_PROTOCOL_VERSION, MAX_ID_LENGTH, PROJECT_NAME_MAX, type GuestRole } from '@shared/live/limits';
+import { GUEST_ID_RE, GUEST_ROLES, leastRole, LIVE_PROTOCOL_VERSION, MAX_ID_LENGTH, narrower, PROJECT_NAME_MAX, type GuestRole } from '@shared/live/limits';
 import { encodeFrame, normalizeDisplayName, parseFrame, type ElementTarget, type Frame, type HostToRelay, type Participant, type Presence, type RpcError } from '@shared/live/messages';
 import type { LiveApplyResult, LiveProjectChanged, LiveProjectSnapshot } from '@shared/live/snapshot';
 import { formatInviteLink, HOST_SOCKET_PATH, RELAY_URL_ENV, relaySocketUrl, roomSocketPath, type ResolvedRelayUrl } from '@shared/live/relay-url';
@@ -23,12 +23,15 @@ import { PreviewProxy, type LoopbackPreview } from './preview-proxy';
  */
 
 /**
- * A guest's edit, as the editor is given it: who it is from, and a check the editor asks again as the edit's turn comes
- * and just before it is saved, null while the guest may still make it.
+ * A guest's edit, as the editor is given it: who it is from, the role it was checked as (what the editor holds the
+ * project it would leave to), and a check the editor asks again as the edit's turn comes and just before it is saved,
+ * null while the guest may still make it. The check refuses once the guest's access has narrowed in any way, so the
+ * role the edit was asked with is never more than the guest holds when it is saved.
  */
 export interface LiveGuestEdit {
   guestId: string;
   displayName: string;
+  role: GuestRole;
   check(): RpcError | null;
 }
 
@@ -214,7 +217,10 @@ interface Grant {
    * may have been forwarded before it, so the guest holds the least role among them.
    */
   unconfirmed: GuestRole[];
-  /** Bumped whenever the host takes a role away, so an edit asked for before then never lands, whatever came after. */
+  /**
+   * Bumped whenever the host narrows a guest's role (to a viewer, or a collaborator to a copy editor), so an edit asked
+   * for before then never lands, whatever came after.
+   */
   generation: number;
 }
 
@@ -688,10 +694,17 @@ export class LiveHostManager {
   private onRoster(conn: Connection, participants: Participant[]): void {
     const run = conn.run;
     if (!run.room || (conn.stage !== 'roster' && conn.stage !== 'host')) return;
+    const held = this.heldRoles(run);
     run.room.participants = participants;
     const first = conn.stage === 'roster';
     conn.stage = 'host';
     this.confirmGrants(run, first && conn.kind === 'reclaim' ? conn : null);
+    // A roster that leaves a guest less than it held, with no decision of the host's behind it, ends what it asked for
+    // before as surely as the host's own narrowing does: a later roster giving the role back lands none of it.
+    for (const [guestId, role] of this.heldRoles(run)) {
+      const was = held.get(guestId);
+      if (was && narrower(role, was)) run.grants.get(guestId)!.generation++;
+    }
     // Ending: nobody is let in or told about any more.
     if (run.phase === 'stopping') return;
     if (!first) {
@@ -925,11 +938,11 @@ export class LiveHostManager {
       case 'guest:set-role': {
         const grant = run.grants.get(frame.guestId);
         if (!grant) return;
-        if (frame.role === 'viewer') grant.generation++;
+        if (narrower(frame.role, grant.role)) grant.generation++;
         grant.role = frame.role;
         grant.unconfirmed.push(frame.role);
-        // A viewer shows nobody where it is, but may still point.
-        if (frame.role === 'viewer') this.dropPresence(run, frame.guestId, { keepSpotlight: true });
+        // Only a collaborator shows anybody where it is; a copy editor or a viewer may still point.
+        if (frame.role !== 'collaborator') this.dropPresence(run, frame.guestId, { keepSpotlight: true });
         return;
       }
       case 'guest:set-expiry': {
@@ -1013,8 +1026,17 @@ export class LiveHostManager {
     if (!room || p?.status !== 'admitted' || !grant || run.kicked.has(guestId)) return { code: 'PERMISSION_DENIED', message: 'You are not in this live session.', recoverable: false };
     const ends = Math.min(guestAccessEndsAt(p.guestExpiresAt, room.expiresAt), guestAccessEndsAt(grant.guestExpiresAt, room.expiresAt));
     if (isExpired(ends - GRANT_CLOCK_MARGIN_MS, relayNow(room))) return { code: 'EXPIRED', message: 'Your access to this live session has ended.', recoverable: false };
-    const role: GuestRole = p.role === 'viewer' || grant.role === 'viewer' || grant.unconfirmed.includes('viewer') ? 'viewer' : 'collaborator';
-    return { role, displayName: p.displayName, generation: grant.generation };
+    return { role: leastRole(p.role, grant.role, ...grant.unconfirmed), displayName: p.displayName, generation: grant.generation };
+  }
+
+  /** The role each guest let in holds now, as grantOf works it out, whether or not its access has ended. */
+  private heldRoles(run: Run): Map<string, GuestRole> {
+    const held = new Map<string, GuestRole>();
+    for (const p of run.room?.participants ?? []) {
+      const grant = run.grants.get(p.guestId);
+      if (p.status === 'admitted' && grant) held.set(p.guestId, leastRole(p.role, grant.role, ...grant.unconfirmed));
+    }
+    return held;
   }
 
   /** A guest's grant when it is a collaborator now, or null. */
@@ -1049,18 +1071,19 @@ export class LiveHostManager {
     const edits = run.edits.get(guestId) ?? 0;
     if (edits >= MAX_GUEST_EDITS_IN_FLIGHT) return refuse('BUSY', 'Your earlier edits are still being made. Try again shortly.', true);
     run.edits.set(guestId, edits + 1);
-    const { generation } = grant;
-    // Asked again as the edit's turn comes and just before it is saved: a guest removed, made a viewer, or out of time
-    // since it asked (even one given its role back since) lands nothing, and so does an edit whose connection dropped.
+    const { generation, role } = grant;
+    // Asked again as the edit's turn comes and just before it is saved: a guest removed, given less to do (a viewer, or a
+    // collaborator made a copy editor), or out of time since it asked (even one given its role back since) lands
+    // nothing, and so does an edit whose connection dropped.
     const check = (): RpcError | null => {
       if (this.run !== run || run.phase !== 'active' || run.conn !== conn || conn.closed) return { code: 'UNAVAILABLE', message: 'The live session’s connection dropped before your edit was made.', recoverable: true };
       const now = this.grantOf(run, guestId);
       if ('code' in now) return now;
-      if (now.role !== 'collaborator' || now.generation !== generation) return { code: 'PERMISSION_DENIED', message: 'The host changed your access before your edit was made.', recoverable: false };
+      if (now.generation !== generation || narrower(now.role, role)) return { code: 'PERMISSION_DENIED', message: 'The host changed your access before your edit was made.', recoverable: false };
       return null;
     };
     void this.ctx
-      .applyGuest(run.workspaceKey, { guestId, displayName: grant.displayName, check }, call.value.args[0])
+      .applyGuest(run.workspaceKey, { guestId, displayName: grant.displayName, role, check }, call.value.args[0])
       // A failure the editor did not turn into a refusal may have come after the edit was saved: the guest is told it
       // cannot know, rather than that nothing changed, so it reads the project before trying again.
       .catch((): LiveApplyResult => ({ ok: false, error: { code: 'INTERNAL', message: 'The host could not confirm whether your edit was saved. Fetch the project before trying again.', recoverable: false } }))
@@ -1240,7 +1263,7 @@ export class LiveHostManager {
       if (typeof guest === 'string') return guest;
       if (current.kicked.has(guest.guestId)) return 'That guest has been removed from the live session.';
       if (guest.status !== 'pending') return 'That guest has already been let in.';
-      if (!isRole(role)) return 'Choose whether the guest views or collaborates.';
+      if (!isRole(role)) return 'Choose a role for the guest.';
       const until = checkGuestExpiry(guestExpiresAt ?? null, room.expiresAt, now);
       if (!until.ok) return until.message;
       return { type: 'guest:admit', guestId: guest.guestId, role, guestExpiresAt: until.expiresAt };
@@ -1261,7 +1284,7 @@ export class LiveHostManager {
       const guest = this.guest(room, guestId);
       if (typeof guest === 'string') return guest;
       if (guest.status !== 'admitted') return 'Let that guest in first.';
-      if (!isRole(role)) return 'Choose whether the guest views or collaborates.';
+      if (!isRole(role)) return 'Choose a role for the guest.';
       return { type: 'guest:set-role', guestId: guest.guestId, role };
     });
   }

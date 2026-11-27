@@ -6,6 +6,7 @@ import { LIVE_PROTOCOL_VERSION, type GuestRole } from '@shared/live/limits';
 import { encodeFrame, normalizeDisplayName, parseFrame, type Frame, type FrameOf, type GuestToRelay, type Presence, type RpcError } from '@shared/live/messages';
 import type { LiveApplyResult, LiveProjectChanged, LiveProjectSnapshot } from '@shared/live/snapshot';
 import { parseInviteLink, relaySocketUrl, roomPreviewOrigin, roomSocketPath } from '@shared/live/relay-url';
+import { canCall } from '@shared/live/roles';
 import { GuestPreviewServer, redeemPreviewTicket, REMOTE_PREVIEW_HEADER, type RedeemResult } from './guest-preview';
 import type { LiveSocketFactory } from './host';
 
@@ -542,7 +543,8 @@ export class LiveGuestManager {
         const back = join.reconnecting;
         this.placed(join);
         const returning = join.phase === 'admitted';
-        const demoted = join.role === 'collaborator' && frame.role === 'viewer';
+        // Only a collaborator shares where it is: any other role stops sending it.
+        const demoted = join.role === 'collaborator' && frame.role !== 'collaborator';
         join.phase = 'admitted';
         join.guestId = frame.guestId;
         join.role = frame.role;
@@ -553,7 +555,7 @@ export class LiveGuestManager {
         if (frame.previewTicket) this.queueTicket(join, frame.previewTicket);
         if (demoted) {
           this.clearOwnPresence(join);
-          // A viewer is shown nobody's edits.
+          // Only a collaborator is shown the others' edits.
           if (join.activity.size) {
             join.activity.clear();
             this.publishPresence(join);
@@ -729,11 +731,11 @@ export class LiveGuestManager {
     return join.latest;
   }
 
-  /** Make a collaborator's edit in the host's project. The host checks it again, and it lands through the host's own pipeline. */
+  /** Make a collaborator's or copy editor's edit in the host's project. The host checks it again, and it lands through the host's own pipeline. */
   async apply(joinId: unknown, batch: unknown): Promise<LiveApplyResult> {
     const join = this.current;
     if (!join || join.joinId !== joinId || join.phase !== 'admitted') return { ok: false, error: unavailable('You are no longer in that live session.') };
-    if (join.role !== 'collaborator') return { ok: false, error: { code: 'PERMISSION_DENIED', message: 'The host has made you a viewer: you can watch, but not edit.', recoverable: false } };
+    if (!canCall(join.role, 'project.apply')) return { ok: false, error: { code: 'PERMISSION_DENIED', message: 'The host has made you a viewer: you can watch, but not edit.', recoverable: false } };
     if (!join.hostConnected) return { ok: false, error: unavailable('The host is reconnecting. Try again in a moment.') };
     // An edit to a project this guest cannot see as it is now would land blind.
     if (join.tooLarge) return { ok: false, error: { code: 'TOO_LARGE', message: 'The host’s project is too large to share in a live session right now, so editing is paused.', recoverable: true } };

@@ -19,6 +19,7 @@ export type AdmittedRemote = Extract<RemoteState, { phase: 'admitted' }>;
 
 /** Why this guest cannot edit the host's project right now, or null when it can. */
 export function remoteReadOnly(remote: AdmittedRemote, live: LiveProjectSnapshot): string | null {
+  if (remote.role === 'copy-editor') return 'The host made you a copy editor, and editing copy here is not available yet: you can follow the host’s work, but not edit it. Ask the host to make you a collaborator.';
   if (remote.role !== 'collaborator') return 'You joined this live session as a viewer: you can follow the host’s work, but not edit it. Ask the host to make you a collaborator.';
   if (!remote.hostConnected) return 'The host is reconnecting to the live session. Editing resumes when they are back.';
   if (remote.reconnecting) return 'Your connection to the live session dropped. Editing resumes once it is back.';

@@ -70,6 +70,7 @@ import { MAX_MESSAGE_LENGTH } from '@shared/live/limits';
 import { normalizeDisplayName, RPC_ERROR_CODES, type RpcError } from '@shared/live/messages';
 import { liveSnapshot, scrubHostPaths, type LiveApplyResult, type LiveProjectSnapshot, type LiveSnapshotSource } from '@shared/live/snapshot';
 import { guestEditProblem } from '@engine/guest-edits';
+import { copyEditorBatchProblem } from '@engine/copy-editor';
 import { formDestinationProblems } from '@engine/collection-sources';
 import { displayName } from '@engine/tree';
 import { LiveHostManager, type LiveGuestEdit } from './live/host';
@@ -618,7 +619,8 @@ export class Controller {
    * (shared/live/capabilities.ts), in the opening `opening`: through the same pipeline as the editor's own edits, in
    * turn with them, as a History step of its own that names the guest. Never code, whatever Settings allow. Refused, as
    * local edits are, while the AI is making changes or the project is read-only; and refused whole if, by the time it
-   * would be saved, the guest's access has changed or it would change where a contact form sends its messages.
+   * would be saved, the guest's access has changed or it would change where a contact form sends its messages. A copy
+   * editor's edit is held, as it would be saved, to what a copy editor may change (engine/copy-editor.ts).
    */
   async applyGuest(opening: string, guest: LiveGuestEdit, batch: LiveEditBatch): Promise<LiveApplyResult> {
     const session = this.session;
@@ -631,15 +633,20 @@ export class Controller {
     const shared = (error: RpcError): LiveApplyResult => ({ ok: false, error: { ...error, message: scrubHostPaths(error.message, [session.dir, homedir()]).slice(0, MAX_MESSAGE_LENGTH) } });
     let refusal: RpcError | null = null;
     // The project as the batch would leave it is the same however often the guard asks: checked once.
-    let checked: { next: ProjectState; problem: string | null } | null = null;
+    let checked: { next: ProjectState; problem: { message: string; operationIndex?: number } | null } | null = null;
+    const problem = (next: ProjectState) => {
+      const message = guestEditProblem(session.state, next);
+      if (message) return { message };
+      return guest.role === 'copy-editor' ? copyEditorBatchProblem(session.state, next, batch.operations) : null;
+    };
     const guard = (next: ProjectState | null) => {
       refusal =
         guest.check() ??
         (gone() ? { code: 'UNAVAILABLE', message: 'The host’s project is not open.', recoverable: true } : null) ??
         (this.aiBusy() ? { code: 'BUSY', message: 'The host’s AI is making changes. Try again once it has finished.', recoverable: true } : null);
       if (!refusal && next) {
-        if (checked?.next !== next) checked = { next, problem: guestEditProblem(session.state, next) };
-        if (checked.problem) refusal = { code: 'PERMISSION_DENIED', message: checked.problem, recoverable: false };
+        if (checked?.next !== next) checked = { next, problem: problem(next) };
+        if (checked.problem) refusal = { code: 'PERMISSION_DENIED', message: checked.problem.message, recoverable: false, ...(checked.problem.operationIndex !== undefined ? { operationIndex: checked.problem.operationIndex } : {}) };
       }
       return refusal ? { code: 'CANCELLED' as const, message: refusal.message, recoverable: refusal.recoverable } : null;
     };

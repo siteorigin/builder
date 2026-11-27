@@ -19,12 +19,19 @@ export const ROOM_ID_LENGTH = 24;
 export const ROOM_ID_RE = /^[23456789abcdefghijkmnpqrstuvwxyz]{24}$/;
 
 /**
- * The two roles a guest can hold. A viewer watches the live preview, follows pages and sees where the others are; a
- * collaborator can also make visual edits and shows the others where it is. Nothing the host alone may do is ever
- * granted to either.
+ * The roles a guest can hold, from the least it may do to the most. A viewer watches the live preview, follows pages
+ * and sees where the others are; a copy editor can also change the words and pictures on the site's pages and nothing
+ * else (shared/live/copy-editor.ts); a collaborator can make any visual edit and shows the others where it is. Each
+ * may do all the one before it may, and nothing the host alone may do is ever granted to any.
  */
-export const GUEST_ROLES = ['viewer', 'collaborator'] as const;
+export const GUEST_ROLES = ['viewer', 'copy-editor', 'collaborator'] as const;
 export type GuestRole = (typeof GUEST_ROLES)[number];
+
+/** Whether `role` may do less than `than`: a change from `than` to it takes something away. */
+export const narrower = (role: GuestRole, than: GuestRole): boolean => GUEST_ROLES.indexOf(role) < GUEST_ROLES.indexOf(than);
+
+/** The role that may do least of those given: what a guest holds while any of them may still apply. */
+export const leastRole = (first: GuestRole, ...rest: readonly GuestRole[]): GuestRole => rest.reduce((least, role) => (narrower(role, least) ? role : least), first);
 
 /** A guest's display name, in characters (code points) after trimming: what the host reads in the waiting room. */
 export const DISPLAY_NAME_MAX = 40;
