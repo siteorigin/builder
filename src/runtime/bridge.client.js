@@ -120,7 +120,7 @@ function descOf(el) {
   return { ctx: el.getAttribute('data-so-ctx') || '', node: el.getAttribute('data-so-node') || '', items: el.getAttribute('data-so-items') || '' };
 }
 function sameDesc(a, b) {
-  return a === b || (!!a && !!b && a.ctx === b.ctx && a.node === b.node && a.items === b.items && (a.part || '') === (b.part || '') && a.slot === b.slot);
+  return a === b || (!!a && !!b && a.ctx === b.ctx && a.node === b.node && a.items === b.items && (a.part || '') === (b.part || '') && a.slot === b.slot && (a.bind || '') === (b.bind || ''));
 }
 /**
  * The slot an empty slot's placeholder stands for, as the editor names it: its placement's descriptor and the slot's
@@ -160,6 +160,41 @@ function partIdOf(el) {
   let part = '';
   for (const c of el.classList || []) if (c.startsWith(PART_CLASS) && c.length > PART_CLASS.length) part = c.slice(PART_CLASS.length);
   return part;
+}
+/** The attribute a code component's author marks text with, through the hook only the preview gives it (#1074). */
+const TEXT_ATTR = 'data-so-text';
+/**
+ * The text a code component's author marked at `target`, as the editor names it: its placement's descriptor and the
+ * marker (the property, or a list's field and the item, it shows). Null when the nearest marker is not inside that
+ * placement's own markup (it is in content placed in a slot, or there is none before the editor's own element).
+ */
+function textBindAt(target) {
+  for (let el = target instanceof Element ? target : target?.parentElement; el && el !== document.documentElement; el = el.parentElement) {
+    if (el.hasAttribute('data-so-node') || el.hasAttribute('data-so-slot-empty')) return null;
+    const bind = el.getAttribute(TEXT_ATTR);
+    if (!bind) continue;
+    const owner = partOwner(el);
+    return owner ? { ...descOf(owner), bind } : null;
+  }
+  return null;
+}
+/**
+ * Whether marked text being edited now shows something else: a list shown without keys gives its row to another item,
+ * whose marker Svelte writes in place. What the page writes there then is that item's, never what was typed.
+ */
+const markMoved = (e) => !!e.desc.bind && e.el.getAttribute(TEXT_ATTR) !== e.desc.bind;
+/**
+ * What was typed over marked text, as the last input left it: kept for an edit whose element the page reuses. Its
+ * words are read while the element is still laid out, as a commit reads them (a copy's would run lines together).
+ */
+function keepTyped() {
+  if (editing && editing.desc.bind && !markMoved(editing)) editing.typed = { el: editing.el.cloneNode(true), text: editing.el.innerText };
+}
+/** Whether `el` is the text `desc` names: its marker, inside the markup of the code placement `desc` names. */
+function marksText(el, desc) {
+  if (el.getAttribute(TEXT_ATTR) !== desc.bind) return false;
+  const owner = partOwner(el);
+  return !!owner && sameDesc(descOf(owner), { ctx: desc.ctx, node: desc.node, items: desc.items });
 }
 /** A marked part of a code placement: its placement's descriptor and the part's ID, or null for anything else. */
 function partDesc(el) {
@@ -215,6 +250,8 @@ function findAll(desc) {
   }
   const sel = `[data-so-ctx="${cssEscape(desc.ctx)}"][data-so-node="${cssEscape(desc.node)}"]`;
   const els = [...document.querySelectorAll(sel)].filter((el) => !desc.items || (el.getAttribute('data-so-items') || '') === desc.items);
+  // Text a code placement's author marked: every element of its own markup carrying that marker.
+  if (typeof desc.bind === 'string' && desc.bind) return els.filter((el) => el.hasAttribute('data-so-code')).flatMap((el) => [...el.querySelectorAll(`[${TEXT_ATTR}="${cssEscape(desc.bind)}"]`)].filter((t) => partOwner(t) === el));
   if (typeof desc.part !== 'string' || !desc.part) return els;
   // A marked part of a code placement: every element of that placement's own markup carrying the marker (the
   // author's code can show one more than once), never one in another placement or in content placed in a slot.
@@ -1434,7 +1471,8 @@ document.addEventListener(
     e.preventDefault();
     e.stopPropagation();
     pendingHit = { id: String(++hitCount), target: new WeakRef(e.target), at: textAt(e.clientX, e.clientY) };
-    send('dblclick', { chain: chainFrom(e.target, true), hit: pendingHit.id });
+    const bind = textBindAt(e.target);
+    send('dblclick', { chain: chainFrom(e.target, true), hit: pendingHit.id, ...(bind ? { bind } : {}) });
   },
   true
 );
@@ -1956,7 +1994,7 @@ function wordRange(el, node, at) {
  * selected (or a caret, off a word), as a double-click does in any text. Whole text is for Select All. An answer to
  * an earlier double-click than the last one starts nothing: the author has double-clicked something else since.
  */
-function beginTextEdit(desc, editId, hitId) {
+function beginTextEdit(desc, editId, hitId, wantRich) {
   // An answer to an older double-click leaves the newer one waiting for its own answer.
   const hit = hitId && pendingHit && pendingHit.id === hitId ? pendingHit : null;
   if (hit) pendingHit = null;
@@ -1965,13 +2003,19 @@ function beginTextEdit(desc, editId, hitId) {
   if (hit) {
     const target = hit.target.deref();
     clicked = target && target.isConnected ? (target instanceof Element ? target : target.parentElement) : null;
-    while (clicked && !(clicked.hasAttribute('data-so-node') && sameDesc(descOf(clicked), desc))) clicked = clicked.parentElement;
+    // Text a code placement's author marked is the marked element; anything else, the editor's own element.
+    const named = desc && desc.bind ? (el) => marksText(el, desc) : (el) => el.hasAttribute('data-so-node') && sameDesc(descOf(el), desc);
+    while (clicked && !named(clicked)) clicked = clicked.parentElement;
     // The text double-clicked has been replaced since (the page updated): what the author meant to edit is gone.
     if (!clicked) return send('textCancel', { desc, editId });
   }
   const el = clicked || findAll(desc)[0];
   // The editor is waiting for this edit to end: tell it there is nothing to edit.
   if (!el) return send('textCancel', { desc, editId });
+  // Marked text is typed over only where it is the text alone, shown as its property is: rich text through RichText,
+  // a line of text otherwise. An element holding the editor's own (content placed in a slot) or other marked text,
+  // or one that is not HTML (an SVG's text), would store more, or other, than the property's words.
+  if (desc.bind && (!(el instanceof HTMLElement) || el.querySelector(`[data-so-node], [data-so-slot-empty], [${TEXT_ATTR}]`) || (typeof wantRich === 'boolean' && el.classList.contains('so-rich') !== wantRich))) return send('textCancel', { desc, editId });
   if (editing) commitEdit();
   // Typed text shown there from the inspector gives way to the page's own text, which the edit then works on.
   restoreDraft(el);
@@ -2012,6 +2056,7 @@ function beginTextEdit(desc, editId, hitId) {
   el.addEventListener('input', scheduleRects);
   el.addEventListener('paste', onEditPaste);
   el.addEventListener('drop', onEditDrop);
+  if (desc.bind) el.addEventListener('input', keepTyped);
   if (rich) openToolbar();
   send('textEditStarted', { desc });
 }
@@ -2301,6 +2346,8 @@ function linkChecked(payload) {
       if (newTab) a.setAttribute('target', '_blank');
       if (rels.length) a.setAttribute('rel', rels.join(' '));
     }
+  // The link's options are set after the browser's input: what is kept of the edit has them too.
+  keepTyped();
 }
 /** The part of a text node's words a range covers: a range that only reaches an element's edge covers none of it. */
 function coveredText(range, t) {
@@ -2930,6 +2977,7 @@ function endEdit() {
   el.removeEventListener('input', scheduleRects);
   el.removeEventListener('paste', onEditPaste);
   el.removeEventListener('drop', onEditDrop);
+  el.removeEventListener('input', keepTyped);
   el.removeAttribute('contenteditable');
   el.removeAttribute('spellcheck');
   el.style.outline = '';
@@ -2945,25 +2993,34 @@ const committed = new Map();
 function commitEdit(detached = false) {
   if (!editing) return;
   const { el, desc, editId, rich, original, before } = editing;
+  // Marked text whose element now shows another item is handed over as text the update took away, typed as the last
+  // input left it: the editor checks it against the item it was typed over. The element is that other item's now, so
+  // nothing is put back into it.
+  const moved = markMoved(editing);
+  if (moved) detached = true;
+  const left = moved ? editing.typed && editing.typed.el : el;
   // A destination still being checked in the link field is not applied: the editor is told, as saving does.
   if (linkEditor && linkEditor.check) send('linkDropped', { desc, editId });
   // Nothing changed: end the edit without a commit, so no history entry or rebuild follows.
-  if (el.innerHTML === original) {
+  if (!left || left.innerHTML === original) {
     endEdit();
     return send('textCancel', { desc, editId });
   }
   // Rich text goes back as a small copy of its structure (blocks, lists, breaks, marks, links) for the editor
   // to turn into its stored form; plain text as its words.
-  const payload = rich ? { desc, editId, rich: richCopy(el) } : { desc, editId, text: el.innerText.replace(/\s+/g, ' ').trim() };
+  const payload = rich ? { desc, editId, rich: richCopy(left) } : { desc, editId, text: (moved ? editing.typed.text : el.innerText).replace(/\s+/g, ' ').trim() };
   if (detached) Object.assign(payload, { detached: true }, typeof before === 'string' ? { before } : {});
   // Too much to send or to keep: put the text back and say why, rather than lose the edit on the way.
   if ((rich && !payload.rich) || (!rich && payload.text.length > MAX_TEXT_CHARS) || JSON.stringify(payload).length > MAX_COMMIT_CHARS) {
-    el.innerHTML = original;
+    if (!moved) el.innerHTML = original;
     endEdit();
     return send('textCancel', { desc, editId, reason: 'too-large' });
   }
+  // A row the page gave another item without writing over what was typed (that item's words are the same as the
+  // ones it showed) still shows the typing: it shows the words the page last wrote there again.
+  if (moved && el.innerHTML === left.innerHTML) el.innerHTML = original;
   endEdit();
-  committed.set(editId, { el, original, left: el.innerHTML });
+  if (!moved) committed.set(editId, { el, original, left: el.innerHTML, bind: desc.bind });
   // Only the last few can still be answered: older ones are let go.
   while (committed.size > 8) committed.delete(committed.keys().next().value);
   send('textCommit', payload);
@@ -3004,8 +3061,8 @@ function richCopy(root) {
 function cancelEdit() {
   if (!editing) return;
   const { el, original, desc, editId } = editing;
-  // Untouched text keeps its live nodes, which Svelte still owns.
-  if (el.innerHTML !== original) el.innerHTML = original;
+  // Untouched text keeps its live nodes, which Svelte still owns; marked text the page gave another item is its now.
+  if (el.innerHTML !== original && !markMoved(editing)) el.innerHTML = original;
   endEdit();
   send('textCancel', { desc, editId });
 }
@@ -5142,7 +5199,7 @@ window.addEventListener('message', async (e) => {
       setReveal(m.payload.target);
       break;
     case 'beginTextEdit':
-      beginTextEdit(m.payload.desc, m.payload.editId, m.payload.hit);
+      beginTextEdit(m.payload.desc, m.payload.editId, m.payload.hit, m.payload.rich);
       break;
     case 'linkChecked':
       linkChecked(m.payload);
@@ -5156,7 +5213,9 @@ window.addEventListener('message', async (e) => {
       {
         // Each edit's own record, so a reply for one never answers (or forgets) another.
         const c = committed.get(m.payload.editId);
-        if (c && c.el.isConnected && editing?.el !== c.el && c.el.innerHTML === c.left) c.el.innerHTML = c.original;
+        // Marked text whose row the page has given another item since is that item's now.
+        if (c && c.bind && c.el.getAttribute(TEXT_ATTR) !== c.bind) committed.delete(m.payload.editId);
+        else if (c && c.el.isConnected && editing?.el !== c.el && c.el.innerHTML === c.left) c.el.innerHTML = c.original;
         else if (c && editing?.el === c.el && editing.original === c.left) {
           // Edited again before the answer came, from the text that was not kept: with nothing typed yet the saved
           // text comes back, to edit from; anything typed since is the new edit's, and Escape goes back to the saved text.
@@ -5356,7 +5415,7 @@ new MutationObserver(() => {
   // The page re-rendered the element being edited away (an update arrived): the edit is over. Text typed into it
   // is handed to the editor as it would be on leaving it, never dropped: the editor checks it against what the
   // update changed before it is saved, and keeps it for the author when it cannot be.
-  if (editing && !editing.el.isConnected) {
+  if (editing && (!editing.el.isConnected || markMoved(editing))) {
     // A link still being typed has nowhere to go: say so, as saving does.
     if (linkEditor) {
       closeLinkEditor(false);
@@ -5375,7 +5434,8 @@ new MutationObserver(() => {
   if (revealDirty || selected || pendingScroll || emptySpace || (hovered && mode === 'edit')) scheduleRects();
   // The element held in a state was re-rendered (an update arrived): the new one is marked before it is painted.
   if (forced) markForced();
-}).observe(document.body, { childList: true, subtree: true, characterData: true });
+  // A text marker changing in place is watched too: the row being typed in may now show another list item.
+}).observe(document.body, { childList: true, subtree: true, characterData: true, attributes: true, attributeFilter: [TEXT_ATTR] });
 /**
  * A page error, with where it came from so the editor can name the component that threw (#738): the stack, the
  * file it was thrown in, and the change the page had been told of when it happened.

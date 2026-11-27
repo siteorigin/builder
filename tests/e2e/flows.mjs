@@ -192,6 +192,93 @@ for (const long of ['<p>' + 'x'.repeat(20001) + '</p>', '<p>' + 'x'.repeat(10001
   });
 }
 
+step('a code component’s marked heading and list item title are typed over on the canvas (#1074)');
+{
+  const SOURCE = `<script>
+\tlet { heading = '', features = [], so_text } = $props();
+</script>
+
+<section class="code-services">
+\t<h2 class="code-services__heading" data-so-text={so_text?.('heading')}>{heading}</h2>
+\t<ul>
+\t\t{#each features as feature (feature.id)}
+\t\t\t<li><h3 data-so-text={so_text?.('features.title', feature.id)}>{feature.title}</h3></li>
+\t\t{/each}
+\t</ul>
+</section>
+`;
+  const properties = {
+    heading: { type: 'string', label: 'Heading', default: 'What we do' },
+    features: { type: 'list', label: 'Features', itemLabel: 'Feature', fields: { title: { type: 'string', label: 'Title', default: 'A feature' } }, default: [{ id: 'f1', title: 'Planning' }, { id: 'f2', title: 'Building' }] }
+  };
+  const apply = (operations, label) =>
+    win.evaluate(async ([operations, label]) => {
+      const r = await window.builder.project.apply({ operations, label });
+      if (!r.ok) throw new Error(`${label}: ${r.error?.message}`);
+      return r.results;
+    }, [operations, label]);
+  await win.evaluate(() => window.builder.app.setSettings({ developerMode: true }));
+  const pageId = (await projectSnapshot()).state.site.homePageId;
+  const owner = { kind: 'page', id: pageId };
+  const [{ definitionId }] = await apply([{ type: 'component.createCode', name: 'Code services', source: SOURCE, properties }], 'Create code component');
+  const at = (await projectSnapshot()).state.pages[pageId].rootIds.length;
+  const [{ nodeId: services }] = await apply([{ type: 'node.insert', owner, parentId: null, index: at, definitionId }], 'Insert Code services');
+  const props = async () => (await projectSnapshot()).state.pages[pageId].nodes[services].props;
+  const second = (await props()).features[1].id;
+  const heading = frame.locator('.code-services__heading');
+  const title = frame.locator(`.code-services [data-so-text="features.title#${second}"]`);
+  await eventually(async () => assert.equal(await title.count(), 1, 'the preview marks each item’s title with its item'), 30000);
+  const labels = async () => (await projectSnapshot()).history.entries.map((e) => e.label);
+  /**
+   * A double-click near the start of an element in the page, where the author's pointer would be, scrolled into the
+   * frame's view first (at once: the site scrolls smoothly). The preview is scaled to fit, which Playwright's own boxes
+   * for elements in the frame leave out.
+   */
+  const dblclickOn = async (locator) => {
+    await locator.evaluate((el) => el.scrollIntoView({ block: 'center', behavior: 'instant' }));
+    await win.waitForTimeout(300);
+    const at = await locator.evaluate((el) => {
+      const b = el.getBoundingClientRect();
+      return { x: b.x + Math.min(12, b.width / 2), y: b.y + b.height / 2, vw: window.innerWidth };
+    });
+    const f = await win.locator('.frame-box iframe').boundingBox();
+    const k = f.width / at.vw;
+    await win.mouse.dblclick(f.x + at.x * k, f.y + at.y * k);
+  };
+
+  await dblclickOn(heading);
+  await eventually(async () => assert.equal(await heading.getAttribute('contenteditable'), 'plaintext-only', 'the code component’s heading is being edited'));
+  await win.keyboard.press(`${MOD}+a`);
+  await win.keyboard.type('Services we offer');
+  await win.keyboard.press('Enter');
+  await eventually(async () => assert.equal((await props()).heading, 'Services we offer', 'the heading property holds the words typed'));
+  await eventually(async () => assert.equal(await heading.innerText(), 'Services we offer', 'the preview shows the new heading'));
+
+  await dblclickOn(title);
+  await eventually(async () => assert.equal(await title.getAttribute('contenteditable'), 'plaintext-only', 'the second item’s title is being edited'));
+  await win.keyboard.press(`${MOD}+a`);
+  await win.keyboard.type('Building to last');
+  await win.keyboard.press('Enter');
+  await eventually(async () => assert.deepEqual((await props()).features.map((it) => it.title), ['Planning', 'Building to last'], 'only the second item’s title changes'));
+  await eventually(async () => assert.equal(await title.innerText(), 'Building to last', 'the preview shows the new title'));
+  const [headingStep, titleStep] = (await labels()).slice(-2);
+  assert.equal(headingStep, 'Edit Heading in Code services on Home', 'the heading is one step of History, named as the inspector names it');
+  assert.match(titleStep, /^Edit Title of “Building” in Features \(Code services on Home\)$/, 'the title is the next step, named by its item and list');
+  assert.ok(!read('src/routes/+page.svelte').includes('so_text'), 'the website’s page gives the code no marker hook');
+
+  // One Undo takes back the title alone.
+  await win.locator('[aria-label^="Undo"]').first().click();
+  await eventually(async () => {
+    const p = await props();
+    assert.deepEqual(p.features.map((it) => it.title), ['Planning', 'Building'], 'undo puts the title back');
+    assert.equal(p.heading, 'Services we offer', 'and leaves the heading as typed');
+  });
+  await win.screenshot({ path: join(OUT, '10b-code-text.png') });
+  // The later steps work on Home as it was.
+  await apply([{ type: 'node.remove', owner, nodeId: services }], 'Remove Code services');
+  await win.evaluate(() => window.builder.app.setSettings({ developerMode: false }));
+}
+
 step('insert pricing via Insert panel');
 await win.getByRole('button', { name: 'Insert', exact: true }).click();
 await win.getByRole('button', { name: 'Pricing', exact: true }).click();

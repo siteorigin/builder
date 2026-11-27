@@ -200,8 +200,15 @@ function isDesc(v: unknown): v is BridgeDesc {
     (d.text === undefined || str(d.text, 400)) &&
     (d.code === undefined || typeof d.code === 'boolean') &&
     (d.part === undefined || str(d.part, 200)) &&
-    (d.slot === undefined || str(d.slot, 200))
+    (d.slot === undefined || str(d.slot, 200)) &&
+    (d.bind === undefined || str(d.bind, 600))
   );
+}
+
+/** A code placement's marked text the page says was double-clicked (see the bridge's textBindAt), or null. */
+export function bindDescOf(v: unknown): (BridgeDesc & { bind: string }) | null {
+  if (!isDesc(v) || typeof v.bind !== 'string' || !v.bind) return null;
+  return { ctx: v.ctx, node: v.node, items: v.items, bind: v.bind };
 }
 
 /** The element chain under the pointer, innermost first. A chain with any malformed entry is empty. */

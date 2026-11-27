@@ -12,6 +12,7 @@
 import { posix } from 'node:path';
 import type { ComponentDefinition } from '@shared/types';
 import { isCodeMarker, mentionsCodeMarker } from '@shared/code-markers';
+import { CODE_TEXT_ATTR, CODE_TEXT_HOOK, codeTextField, parseCodeTextPath } from '@shared/code-text';
 import { slotIdent } from '@generator/index';
 import { axesOf } from '@shared/variants';
 
@@ -117,7 +118,8 @@ export interface CheckOptions {
   modules?: (path: string) => boolean;
   /**
    * The code component's contract, when its slots and parts are checked against its code: every declared slot is
-   * rendered from the snippet its placements pass (`slot_<name>`), and every part marked `data-so-part` is declared.
+   * rendered from the snippet its placements pass (`slot_<name>`), every part marked `data-so-part` is declared, and
+   * every text marker (`data-so-text`) is written through the placement's hook and names text the component declares.
    */
   contract?: CodeContract;
 }
@@ -130,6 +132,8 @@ export interface CodeContract {
   filled?: string[];
   /** The variant axes, each arriving in the property it names (`prop`), which the code must take from $props(). */
   variantAxes?: ComponentDefinition['variantAxes'];
+  /** Its properties, which each text marker must name: without them, only how a marker is written is checked. */
+  properties?: ComponentDefinition['properties'];
 }
 
 /** The props a component passes on to places that load a URL, apply CSS or open a link. */
@@ -804,8 +808,117 @@ function contractProblems(ast: Node, contract: CodeContract): Array<{ severity: 
     if (!hooks.has(id)) out.push({ severity: 'warning', message: `Give the element marked “${id}” the part's class (class={so_o?.${id}}), or styles set for it in the editor will not show.`, node: attr });
   }
   for (const id of Object.keys(parts)) if (id !== 'root' && !marked.has(id)) out.push({ severity: 'warning', message: `The “${parts[id]?.label ?? id}” part is not in the code: give its element the part's class (class={so_o?.${id}}) so it can be styled and picked on the page.` });
+  out.push(...textMarkerProblems(ast, locals, contract.properties));
   return out;
 }
+
+/**
+ * Where a code component's text markers (see shared/code-text.ts) go wrong: one not written through the placement's
+ * hook, or a hook with a default of its own, would be written into the published site; one whose path is not written
+ * out cannot be read by the editor; and one naming a property or field the component does not declare, or one that is
+ * not text the page can be typed into, offers nothing to type over. Errors all: each is fixed in the code.
+ */
+function textMarkerProblems(ast: Node, locals: ReturnType<typeof propsLocals>, properties: CodeContract['properties']): Array<{ severity: CodeProblem['severity']; message: string; node?: Node }> {
+  const out: Array<{ severity: CodeProblem['severity']; message: string; node?: Node }> = [];
+  const hook = locals.get(CODE_TEXT_HOOK);
+  const example = `${CODE_TEXT_ATTR}={${hook?.local ?? CODE_TEXT_HOOK}?.('heading')}`;
+  // The hook's calls that mark text, which are the only places its name may appear.
+  const calls = new Set<Node>();
+  if (hook?.defaulted) out.push({ severity: 'error', message: `Give ${CODE_TEXT_HOOK} no default (let { ${CODE_TEXT_HOOK} } = $props()): the published site is given none, so its text carries no marker.` });
+  walkAst(ast.fragment, (n, around) => {
+    const spread = n.type === 'SpreadAttribute' && (n.expression as Node)?.type === 'ObjectExpression' ? (((n.expression as Node).properties as Node[]) ?? []) : [];
+    const keyOf = (k: Node | undefined) => (k?.type === 'Identifier' ? k.name : k?.type === 'Literal' ? k.value : null);
+    const element = around[around.length - 1]?.type === 'RegularElement';
+    if (spread.some((p) => p.type === 'Property' && (element ? String(keyOf(p.key as Node)).toLowerCase() : keyOf(p.key as Node)) === CODE_TEXT_ATTR)) out.push({ severity: 'error', message: `Write ${CODE_TEXT_ATTR} as an attribute of its own (${example}), not in a spread.`, node: n });
+    if (n.type !== 'Attribute' || attrName(n, around[around.length - 1]) !== CODE_TEXT_ATTR) return;
+    const values = n.value === true ? [] : Array.isArray(n.value) ? (n.value as Node[]) : [n.value as Node];
+    let call = values.length === 1 && values[0].type === 'ExpressionTag' ? (values[0].expression as Node) : undefined;
+    let optional = false;
+    if (call?.type === 'ChainExpression') {
+      call = call.expression as Node;
+      optional = true;
+    }
+    const callee = call?.type === 'CallExpression' ? (call.callee as Node) : undefined;
+    if (hook && callee?.type === 'Identifier' && callee.name === hook.local) calls.add(callee);
+    if (!hook || callee?.type !== 'Identifier' || callee.name !== hook.local) {
+      out.push({ severity: 'error', message: `Mark text through the placement's hook (${example}, with ${CODE_TEXT_HOOK} taken from $props()): any other value would be written into the published site.`, node: n });
+      return;
+    }
+    if (!optional || !call!.optional) {
+      out.push({ severity: 'error', message: `Call ${hook.local} with ?. (${example}): the published site is given no hook, and a plain call would fail there.`, node: n });
+      return;
+    }
+    const args = (call!.arguments as Node[]) ?? [];
+    const written = args.some((a) => a.type === 'SpreadElement') ? null : literalText(args[0]);
+    const path = written === null ? null : parseCodeTextPath(written);
+    if (path === null) {
+      out.push({ severity: 'error', message: written === null ? `Name the text marked with its property written out (${example}): the editor cannot tell which property an expression names.` : `“${written}” is not a property (“heading”) or a list's field (“features.title”).`, node: n });
+      return;
+    }
+    const none = (a: Node | undefined) => (a?.type === 'Literal' && a.value === null) || (a?.type === 'Identifier' && a.name === 'undefined');
+    if (path.field !== undefined && (args.length !== 2 || none(args[1]))) {
+      out.push({ severity: 'error', message: `Give the item's ID with a list's field (${hook.local}?.('${written}', item.id)), so the editor knows which item the text is.`, node: n });
+      return;
+    }
+    if (path.field === undefined && args.length !== 1) {
+      out.push({ severity: 'error', message: `“${written}” is a property, not a list's field: mark it without an item (${hook.local}?.('${written}')).`, node: n });
+      return;
+    }
+    if (!properties) return;
+    const field = codeTextField(properties, path);
+    if ('problem' in field) out.push({ severity: 'error', message: `${field.problem} Mark only text the component declares.`, node: n });
+  });
+  // The hook is the preview's, given to this placement alone. Handed on to a component the code places (by name, in a
+  // spread or bound), replaced, or passed to a function or snippet, it could write a marker into the published site,
+  // or have that component's text name this one's properties.
+  const placed = (a: Node | undefined) => /^(Component|SvelteComponent|SvelteSelf)$/.test(String(a?.type));
+  const handOn = `${CODE_TEXT_HOOK} is the editor's hook for this component's own text: use it only to mark text (${example}), never pass it on or replace it.`;
+  walkAst(ast.fragment, (n, around) => {
+    const host = around[around.length - 1];
+    if (!placed(host)) return;
+    const named = (n.type === 'Attribute' || n.type === 'BindDirective') && n.name === CODE_TEXT_HOOK;
+    const spread = n.type === 'SpreadAttribute' && (n.expression as Node)?.type === 'ObjectExpression' && (((n.expression as Node).properties as Node[]) ?? []).some((p) => p.type === 'Property' && ((p.key as Node)?.type === 'Identifier' ? (p.key as Node).name : (p.key as Node)?.value) === CODE_TEXT_HOOK);
+    if (named || spread) out.push({ severity: 'error', message: handOn, node: n });
+  });
+  if (hook) {
+    const props = (a: Node) => a.type === 'VariableDeclarator' && ((a.init as Node | null)?.callee as Node | undefined)?.type === 'Identifier' && ((a.init as Node).callee as Node).name === '$props';
+    for (const root of [ast.instance, ast.fragment])
+      walkAst(root, (n, around) => {
+        if (n.type !== 'Identifier' || n.name !== hook.local || calls.has(n) || around.some(props) || around.some((a) => String(a.type).startsWith('TS'))) return;
+        const parent = around[around.length - 1];
+        // A property of something else (`config.mark`, `{ mark: 1 }`) only shares the name, and so does a name a
+        // function, a list's items or a snippet declares for its own values.
+        if ((parent?.type === 'MemberExpression' && parent.property === n && !parent.computed) || (parent?.type === 'Property' && parent.key === n && !parent.computed && parent.value !== n)) return;
+        if (around.some((a) => declares(a, hook.local))) return;
+        const given = around.some((a, i) => (a.type === 'Attribute' || a.type === 'SpreadAttribute' || a.type === 'BindDirective') && placed(around[i - 1]));
+        const replaced = (parent?.type === 'AssignmentExpression' && parent.left === n) || (parent?.type === 'UpdateExpression' && parent.argument === n);
+        const passed = (parent?.type === 'CallExpression' || parent?.type === 'NewExpression') && ((parent.arguments as Node[]) ?? []).includes(n);
+        if (given || replaced || passed) out.push({ severity: 'error', message: handOn, node: n });
+      });
+  }
+  return out;
+}
+
+/** Whether a function, an {#each} or a snippet declares `name` for its own values, hiding the one around it. */
+function declares(scope: Node, name: string): boolean {
+  const patterns: unknown[] =
+    scope.type === 'ArrowFunctionExpression' || scope.type === 'FunctionExpression' || scope.type === 'FunctionDeclaration'
+      ? (scope.params as Node[])
+      : scope.type === 'EachBlock'
+        ? [scope.context, scope.index]
+        : scope.type === 'SnippetBlock'
+          ? (scope.parameters as Node[])
+          : [];
+  let found = false;
+  for (const p of patterns) {
+    if (typeof p === 'string') found ||= p === name;
+    else walkAst(p, (n) => void (n.type === 'Identifier' && n.name === name && (found = true)));
+  }
+  return found;
+}
+
+/** An attribute's name as it reaches the page: an HTML element's whatever its case, a component's prop as written. */
+const attrName = (attr: Node, host: Node | undefined) => (host?.type === 'RegularElement' ? String(attr.name).toLowerCase() : String(attr.name));
 
 /**
  * A code component's source with every editor marker (see shared/code-markers.ts) taken out, as both exports ship it.
