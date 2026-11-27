@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest';
 import type { PerfRecord } from '../../src/shared/perf';
 import type { ProjectState } from '../../src/shared/types';
 import { Collector, Trace } from '../../scripts/perf/results';
-import { ai, AI_EDIT_CASES, aiEdit, aiMeasurements, batch, BATCH_OPERATIONS, batchOperations, canvas, chainFor, chat, CHAT_CASES, CHAT_REPLY_CHECKPOINTS, CHAT_TYPED, chatReply, chatReplyFirst, chatReplyLast, chatSeed, colour, COLOUR_STEPS, colourPath, copiesProblem, coveredMs, create, createAgain, deepest, drag, edit, editBranded, editFullHistory, edits, namedFaces, EDITS, expect as check, expectedCopies, exportAgain, exportSite, findHeading, type FixtureFacts, importHeic, importOriginals, importPhotos, installedPackages, installsHere, launch, memory, MEMORY_EDITS, noWindow, memoryPanels, PANEL_DOCK_VIEWS, PANEL_EDITS, PANEL_SIDE_TURNS, PANEL_SIDE_VIEWS, open, reopen, REOPEN_CYCLES, PANELS, panels, panelsInUse, runChain, SITE_WORK, type Scenario, type ScenarioContext, SHOWN_PANELS, storedPhotoSize, switchProject, THUMB_WINDOWS, thumbs, toolCallsReply, layers, LAYERS_KINDS, LAYERS_SAMPLES, LAYERS_SIZES, layersAncestors, layersPage, type LayersKind, history, HISTORY_WINDOWS } from '../../scripts/perf/scenarios';
+import { ai, AI_EDIT_CASES, aiEdit, aiMeasurements, aiMemory, AI_MEMORY_RUNS, aiMemoryReply, BATCH_REPLY, batch, BATCH_OPERATIONS, batchOperations, canvas, chainFor, chat, CHAT_CASES, CHAT_REPLY_CHECKPOINTS, CHAT_TYPED, chatReply, chatReplyFirst, chatReplyLast, chatSeed, colour, COLOUR_STEPS, colourPath, copiesProblem, coveredMs, create, createAgain, deepest, drag, edit, editBranded, editFullHistory, edits, namedFaces, EDITS, expect as check, expectedCopies, exportAgain, exportSite, findHeading, type FixtureFacts, importHeic, importOriginals, importPhotos, installedPackages, installsHere, launch, memory, MEMORY_EDITS, noWindow, memoryPanels, PANEL_DOCK_VIEWS, PANEL_EDITS, PANEL_SIDE_TURNS, PANEL_SIDE_VIEWS, open, reopen, REOPEN_CYCLES, PANELS, panels, panelsInUse, runChain, SITE_WORK, type Scenario, type ScenarioContext, SHOWN_PANELS, storedPhotoSize, switchProject, THUMB_WINDOWS, thumbs, toolCallsReply, layers, LAYERS_KINDS, LAYERS_SAMPLES, LAYERS_SIZES, layersAncestors, layersPage, type LayersKind, history, HISTORY_WINDOWS } from '../../scripts/perf/scenarios';
 import type { MemoryProbe, MemoryReading } from '../../scripts/perf/memory';
 import { PHOTO_COUNT, photoSpec } from '../../scripts/perf/photos';
 import { FIXTURES } from '../../scripts/perf/fixtures';
@@ -1997,6 +1997,31 @@ describe('memory', () => {
       ['pg_fx010', '/fixture-010/', 'Card 10'],
       ['pg_fx031', '/fixture-031/', null]
     ]);
+  });
+
+  it('report the AI request’s peak, the rest before and after it and after ten, and both growths', () => {
+    const all = [reading('aiIdle', 200, 'rest', { editor: 150 }), reading('aiRun', 320, 'peak', { editor: 180, buildCheck: 90 }), reading('aiDone', 215, 'rest', { editor: 152 }), reading(`aiDone${AI_MEMORY_RUNS}`, 230, 'rest', { editor: 160 })];
+    const got = aiMemory.measure(new Trace([]), facts, all);
+    expect(got.missing).toEqual([]);
+    const v = (k: string) => got.metrics[k].value / (got.metrics[k].unit === 'memory' ? MiB : 1);
+    expect([v('memory.aiIdle.mem.main'), v('memory.aiIdle.heap.main'), v('memory.aiRun.peak.mem.main'), v('memory.aiRun.peak.mem.buildCheck'), v('memory.aiRun.peak.total'), v('memory.aiDone.heap.main')]).toEqual([200, 10, 320, 90, 590, 10]);
+    expect([v('memory.aiRun.growth.mem.main'), v('memory.aiRun.growth.total'), v('memory.aiRuns.growth.mem.main'), v('memory.aiRuns.growth.mem.editor'), v('memory.aiRuns.growth.heap.main')]).toEqual([15, 17, 15, 8, 0]);
+    // The peak has no heap: it is read from the process table alone.
+    expect(Object.keys(got.metrics).some((k) => k.startsWith('memory.aiRun.peak.heap'))).toBe(false);
+    expect(aiMemory.measure(new Trace([]), facts, all.slice(0, -1)).missing).toEqual([`memory reading aiDone${AI_MEMORY_RUNS}`]);
+    expect(aiMemory.measure(new Trace([]), facts, all.map((r) => (r.label === 'aiRun' ? { ...r, kind: 'rest' as const } : r))).missing).toEqual(['memory reading aiRun']);
+  });
+
+  it('make ten AI requests on their own, after the launch, each answered in its own words', () => {
+    expect(AI_MEMORY_RUNS).toBe(10);
+    expect([aiMemory.memory, aiMemory.after, aiMemory.deadlineMs]).toEqual([true, 'launch', 15 * 60_000]);
+    expect(chainFor(['aiMemory']).map((s) => s.name)).toEqual(['launch', 'aiMemory']);
+    expect(() => chainFor(['aiMemory', 'batch'])).toThrow('Memory scenarios (aiMemory) are run on their own');
+    // Each request's answer is its own, so the log is known to hold the one just made, never the one before.
+    expect(new Set(Array.from({ length: AI_MEMORY_RUNS }, (_, i) => aiMemoryReply(i + 1))).size).toBe(AI_MEMORY_RUNS);
+    expect(aiMemoryReply(2).startsWith(BATCH_REPLY)).toBe(true);
+    // The answer before a request's never reads as that request's.
+    for (let n = 2; n <= AI_MEMORY_RUNS; n++) expect(aiMemoryReply(n - 1).includes(aiMemoryReply(n))).toBe(false);
   });
 
   it('make 50 edits and give itself longer than a timing scenario, as a memory scenario', () => {
