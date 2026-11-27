@@ -6356,6 +6356,43 @@ describe('a theme component’s code changed on a project copy (#1078)', () => {
     expect(defOf(session.state, placed.home, placed.homeTables[0])).not.toBe(placed.theme);
   });
 
+  it('patches the code of a component placed in a collection layout, never its properties, which the layout’s values are kept under', async () => {
+    let session: ProjectSession;
+    let id = '';
+    let inLayout = '';
+    const source = "<script>\n\tlet { label = '', class: className = '' } = $props();\n</script>\n\n<p class={className}>{label}</p>\n";
+    const env = await setup([
+      () => [call('r1', 'read_source', { definitionId: id })],
+      (req) => {
+        const read = resultOf(req) as Read;
+        // Renamed in the code and the properties together, which would move the layout's own value.
+        return [call('p1', 'apply_source_patch', patch(id, read, { source: read.source.replace("let { label = ''", "let { caption = ''").replace('{label}', '{caption}'), properties: { caption: { type: 'string', label: 'Caption', default: '' } }, renames: [{ from: 'label', to: 'caption' }] }))];
+      },
+      () => [call('r2', 'read_source', { definitionId: id })],
+      (req) => {
+        const read = resultOf(req) as Read;
+        return [call('p2', 'apply_source_patch', patch(id, read, { source: read.source.replace('<p class={className}>', '<p class={className} title={label}>') }))];
+      },
+      () => finish('Changed the code only.')
+    ]);
+    session = env.session;
+    const made = await session.apply({ operations: [{ type: 'component.createCode', name: 'Note', source, properties: { label: { type: 'string', label: 'Label', default: '' } } }] }, { label: 'Code', source: 'user' });
+    expect(made.ok).toBe(true);
+    id = (made.results![0] as { definitionId: string }).definitionId;
+    expect((await session.apply({ operations: [{ type: 'collection.create', collectionId: 'posts' }] }, { label: 'Blog', source: 'user' })).ok).toBe(true);
+    const laid = await session.apply({ operations: [{ type: 'node.insert', owner: { kind: 'template', id: 'posts' }, index: 0, definitionId: id }] }, { label: 'Layout', source: 'user' });
+    expect(laid.ok).toBe(true);
+    inLayout = (laid.results![0] as { nodeId: string }).nodeId;
+    expect((await session.apply({ operations: [{ type: 'instance.setProp', owner: { kind: 'template', id: 'posts' }, nodeId: inLayout, prop: 'label', value: 'Filed under' }] }, { label: 'Label', source: 'user' })).ok).toBe(true);
+    await env.run('Call the label a caption');
+    expect(resultOf(env.adapter.requests[2]).error).toMatchObject({ code: 'SCOPE_MISMATCH', message: expect.stringMatching(/placed in a collection layout, whose values only the editor changes/) });
+    expect(resultOf(env.adapter.requests[4])).toMatchObject({ ok: true });
+    const node = session.state.collections.posts.settings.template.nodes[inLayout] as InstanceNode;
+    expect(node.props).toMatchObject({ label: 'Filed under' });
+    expect(Object.keys(session.state.components[id].properties)).toEqual(['label']);
+    expect(sourceOf(session.state, id)).toContain('title={label}');
+  });
+
   it('keeps a fork out of a page run, a selected part and a component’s design, and needs Developer mode for one of code', () => {
     let state = createStarterState('business', 'Test', false);
     const home = state.site.homePageId;
@@ -6397,6 +6434,16 @@ describe('a theme component’s code changed on a project copy (#1078)', () => {
       expect(r.state.components[id].properties.note).toMatchObject({ type: 'string', label: 'Note' });
       expect(r.state.components[id].properties.url).toEqual(def.properties.url);
     }
+  });
+
+  it('limits a text property to at most 4,096 characters, which a web address fits', () => {
+    const state = createStarterState('business', 'Test', false);
+    const made = applyOperations(state, [{ type: 'component.createCode', name: 'Link', source: "<script>\n\tlet { url = '', class: className = '' } = $props();\n</script>\n\n<a class={className} href={url}>Go</a>\n" }]);
+    const id = (made.results[0] as { definitionId: string }).definitionId;
+    const source = made.state.components[id].source!;
+    const limited = (maxLength: number) => () => applyOperations(made.state, [{ type: 'component.updateSource', definitionId: id, source, properties: { url: { type: 'string', label: 'Address', default: '', maxLength } } }]);
+    expect(limited(4096)).not.toThrow();
+    expect(limited(4097)).toThrow(/maxLength must be a whole number from 0 to 4,096/);
   });
 
   it('forks the shared header in a run and patches the copy, which is still held to the strict code check', async () => {

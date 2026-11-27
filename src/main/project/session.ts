@@ -3187,13 +3187,18 @@ export class ProjectSession extends EventEmitter {
       if (ai && !opts.collectionWrite && ops.some(isCollectionOperation))
         return { ok: false, revision: this.revision, error: { code: 'SCOPE_MISMATCH', message: 'Collections, their entries and their layouts can only be changed in the editor, apart from what define_collection and upsert_collection_entry write and a layout edited from a request sent while it is open.', recoverable: true } };
       // A fork of every placement moves a collection layout's too, which is the editor's in the same way: the placements
-      // the request covers are listed instead. Each fork is checked against the project as the batch leaves it then (a
-      // theme switch before it rebinds a layout's placements to the new theme's component).
+      // the request covers are listed instead. So does new code's whole property schema, which renames or drops the values
+      // a layout's placement holds: the code alone may change. Each is checked against the project as the batch leaves it
+      // then (a theme switch before it rebinds a layout's placements to the new theme's component).
+      const reachesLayouts = (o: EditOperation): o is Extract<EditOperation, { type: 'component.fork' | 'component.updateSource' }> => (o.type === 'component.fork' && !o.placements) || (o.type === 'component.updateSource' && o.properties !== undefined);
       const inLayouts =
-        ai && !opts.collectionWrite && ops.some((o) => o.type === 'component.fork' && !o.placements)
+        ai && !opts.collectionWrite && ops.some(reachesLayouts)
           ? walkOperations(this.state, ops, (draft, o) => {
-              if (o.type !== 'component.fork' || o.placements || !instancesOf(draft, o.definitionId).some((u) => u.owner.kind === 'template' || u.owner.kind === 'archive')) return null;
-              return `“${draft.components[o.definitionId]?.name ?? o.definitionId}” is also placed in a collection layout, which only the editor changes. List the placements the copy is for in placements.`;
+              if (!reachesLayouts(o) || !instancesOf(draft, o.definitionId).some((u) => u.owner.kind === 'template' || u.owner.kind === 'archive')) return null;
+              const name = `“${draft.components[o.definitionId]?.name ?? o.definitionId}”`;
+              return o.type === 'component.fork'
+                ? `${name} is also placed in a collection layout, which only the editor changes. List the placements the copy is for in placements.`
+                : `${name} is placed in a collection layout, whose values only the editor changes: change its code alone, or ask the user to change its properties in the editor.`;
             }, context)
           : null;
       if (inLayouts) return { ok: false, revision: this.revision, error: { code: 'SCOPE_MISMATCH', message: inLayouts, recoverable: true } };

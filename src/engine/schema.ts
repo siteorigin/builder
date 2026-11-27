@@ -49,8 +49,9 @@ const count = (v: unknown, label: string): number | undefined => {
   if (n !== undefined && (!Number.isInteger(n) || n < 0 || n > 1000)) fail(`${label} must be a whole number from 0 to 1000.`);
   return n;
 };
-/** The most characters a text property may be limited to: a web address takes up to 2,048, a long text far more. */
-const MAX_TEXT_LENGTH = 20_000;
+/** The most characters a text property may be limited to: a web address takes up to 2,048. A default is held to its
+ *  limit, so a component's whole manifest still fits one tool result for the assistant to read and send back. */
+const MAX_TEXT_LENGTH = 4096;
 const length = (v: unknown, label: string): number | undefined => {
   const n = num(v, label);
   if (n !== undefined && (!Number.isInteger(n) || n < 0 || n > MAX_TEXT_LENGTH)) fail(`${label} must be a whole number from 0 to ${MAX_TEXT_LENGTH.toLocaleString('en')}.`);
