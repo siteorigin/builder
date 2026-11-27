@@ -307,6 +307,18 @@ describe('refused frames', () => {
     expect(encodeFrame('host-to-relay', answer(cycle))).toMatchObject({ ok: false, error: { code: 'INVALID' } });
   });
 
+  it('carry a guest’s AI access and its own AI request to that guest alone, never to everyone (#769)', () => {
+    for (const event of ['ai:access', 'ai:turn'] as const) {
+      expect(encodeFrame('host-to-relay', { type: 'rpc:event', guestId, event, payload: {} }), event).toMatchObject({ ok: true });
+      expect(encodeFrame('host-to-relay', { type: 'rpc:event', event, payload: {} }), event).toMatchObject({ ok: false, error: { code: 'INVALID', path: 'guestId' } });
+      // The relay refuses one that names nobody, whoever wrote it.
+      expect(parseFrame('host-to-relay', json({ type: 'rpc:event', event, payload: {} })), event).toMatchObject({ ok: false, error: { path: 'guestId' } });
+      // A guest reads it as any other event, its payload as sent: the relay has taken the guest's ID off.
+      const payload = { allowed: true, turnsLeft: 2, turn: { runId: 'run-1' } };
+      expect(parseFrame('relay-to-guest', json({ type: 'rpc:event', event, payload })), event).toEqual({ ok: true, frame: { type: 'rpc:event', event, payload } });
+    }
+  });
+
   it('are as large as they are when written again', () => {
     // Fits as sent, but JSON writes each 1e20 out in twenty-one digits.
     const sent = `{"type":"rpc:request","requestId":"r1","method":"project.apply","args":[[${Array(60_000).fill('1e20').join(',')}]]}`;

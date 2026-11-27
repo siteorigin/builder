@@ -73,6 +73,15 @@ const escape = (text: string) => text.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
  * left out. Null when nothing is left to look for.
  */
 function hostPathPattern(paths: readonly string[]): RegExp | null {
+  const forms = hostPathForms(paths);
+  if (!forms.size) return null;
+  // The longest first, so the project folder inside the home folder is matched whole.
+  const alternatives = [...forms].sort((a, b) => b.length - a.length).map(escape);
+  return new RegExp(`(?<![\\w.~%-])(?:${alternatives.join('|')})(?=$|[\\\\/\\s"'”’<>()\`,;:?#!]|\\.(?:$|\\s|[\\\\/"'”’<>)]))`, 'gi');
+}
+
+/** The host's paths as text may write them: either slash, without a trailing one. Too short to tell apart: left out. */
+function hostPathForms(paths: readonly string[]): Set<string> {
   const forms = new Set<string>();
   for (const raw of paths) {
     const path = raw.replace(/[\\/]+$/, '');
@@ -81,10 +90,27 @@ function hostPathPattern(paths: readonly string[]): RegExp | null {
     forms.add(path.replace(/\\/g, '/'));
     forms.add(path.replace(/\//g, '\\'));
   }
-  if (!forms.size) return null;
-  // The longest first, so the project folder inside the home folder is matched whole.
-  const alternatives = [...forms].sort((a, b) => b.length - a.length).map(escape);
-  return new RegExp(`(?<![\\w.~%-])(?:${alternatives.join('|')})(?=$|[\\\\/\\s"'”’<>()\`,;:?#!]|\\.(?:$|\\s|[\\\\/"'”’<>)]))`, 'gi');
+  return forms;
+}
+
+/**
+ * How many characters at the end of `text` could be the start of one of the host's paths, still being written (at
+ * least `min` of them): text that streams is sent only up to there, so no part of a path goes out before it can be
+ * taken out whole (#769). Any case, as hostPathPattern matches.
+ */
+export function hostPathTail(text: string, hostPaths: readonly string[], min = 1): number {
+  const lower = text.toLowerCase();
+  let longest = 0;
+  for (const form of hostPathForms(hostPaths)) {
+    const f = form.toLowerCase();
+    for (let n = Math.min(f.length, lower.length); n > longest; n--) {
+      if (n >= min && lower.endsWith(f.slice(0, n))) {
+        longest = n;
+        break;
+      }
+    }
+  }
+  return longest;
 }
 
 /** `text` with every host path in it (see liveSnapshot) replaced: for anything else a guest is sent, such as an error. */

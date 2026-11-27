@@ -2,7 +2,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import { mkdtempSync, promises as fsp, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { atomicWrite, renameReplacing, stageWrites, syncStaged } from '../../src/main/project/fsutil';
+import { atomicWrite, renameReplacing, RenameWithdrawn, stageWrites, syncStaged } from '../../src/main/project/fsutil';
 
 const dirs: string[] = [];
 const realPlatform = Object.getOwnPropertyDescriptor(process, 'platform')!;
@@ -36,6 +36,42 @@ function harness(codes: string[], platform: NodeJS.Platform = 'win32') {
 }
 
 describe('renameReplacing', () => {
+  it('asks again before each retry, and renames nothing once it is told no (#769)', async () => {
+    const h = harness(['EBUSY', 'EBUSY']);
+    let asked = 0;
+    await expect(renameReplacing('a.tmp', 'a.json', { ...h.opts, again: async () => ++asked < 2 })).rejects.toBeInstanceOf(RenameWithdrawn);
+    // Tried, asked (yes), tried again, asked (no): never a third try.
+    expect(h.calls).toHaveLength(2);
+    expect(asked).toBe(2);
+  });
+
+  it('leaves the file as it was when a write’s check says no between Windows retries (#769)', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'so-rename-'));
+    dirs.push(dir);
+    const path = join(dir, 'journal.json');
+    writeFileSync(path, 'before');
+    Object.defineProperty(process, 'platform', { value: 'win32' });
+    const real = fsp.rename.bind(fsp);
+    let refused = 0;
+    vi.spyOn(fsp, 'rename').mockImplementation(async (from, to) => {
+      if (refused++ === 0) throw fail('EBUSY');
+      return real(from, to);
+    });
+    let checks = 0;
+    const check = async () => ++checks === 1;
+    expect(await atomicWrite(path, 'after', { beforeReplace: check, retryCheck: check })).toBe(false);
+    expect(checks).toBe(2);
+    expect(readFileSync(path, 'utf8')).toBe('before');
+    expect(readdirSync(dir)).toEqual(['journal.json']);
+    // Without one, a write's own check is asked once, never between retries: a file another program holds for a
+    // moment is waited out, not taken for a change.
+    refused = 0;
+    let once = 0;
+    expect(await atomicWrite(path, 'after', { beforeReplace: async () => (++once, true) })).toBe(true);
+    expect(once).toBe(1);
+    expect(readFileSync(path, 'utf8')).toBe('after');
+  });
+
   it('retries a rename Windows refuses for a moment, then succeeds', async () => {
     const h = harness(['EPERM', 'EACCES', 'EBUSY']);
     await renameReplacing('a.tmp', 'a.json', h.opts);

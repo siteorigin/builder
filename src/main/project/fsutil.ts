@@ -248,6 +248,19 @@ export interface RenameReplacingOptions {
   now?: () => number;
   /** How long to keep retrying a rename the system refuses for a moment. */
   budgetMs?: number;
+  /**
+   * Asked again before each retry: what decided the rename may no longer hold by then (a caller's `beforeReplace`).
+   * When it says no, nothing is renamed and RenameWithdrawn is thrown.
+   */
+  again?: () => Promise<boolean>;
+}
+
+/** A rename called off between its tries (RenameReplacingOptions.again): nothing was replaced. */
+export class RenameWithdrawn extends Error {
+  constructor() {
+    super('The rename was called off.');
+    this.name = 'RenameWithdrawn';
+  }
 }
 
 /** The codes Windows gives a rename while something (a sync client, an antivirus scan, the indexer) has a file open. */
@@ -276,6 +289,7 @@ export async function renameReplacing(from: string, to: string, opts: RenameRepl
       const left = deadline - now();
       if (left <= 0) throw e;
       await sleep(Math.min(wait, left));
+      if (opts.again && !(await opts.again())) throw new RenameWithdrawn();
     }
   }
 }
@@ -291,7 +305,7 @@ export async function renameReplacing(from: string, to: string, opts: RenameRepl
  * `beforeReplace` runs once the new file is ready, immediately before it takes the path; when it says no, nothing
  * is replaced. It says whether the file was replaced.
  */
-export async function atomicWrite(path: string, data: string | Buffer, opts: { mode?: number; durable?: boolean; beforeReplace?: () => Promise<boolean> } = {}): Promise<boolean> {
+export async function atomicWrite(path: string, data: string | Buffer, opts: { mode?: number; durable?: boolean; beforeReplace?: () => Promise<boolean>; retryCheck?: () => Promise<boolean> } = {}): Promise<boolean> {
   const durable = opts.durable !== false;
   const dir = dirname(path);
   await ensureDir(dir, { durable });
@@ -316,9 +330,11 @@ export async function atomicWrite(path: string, data: string | Buffer, opts: { m
       await fs.rm(tmp, { force: true });
       return false;
     }
-    await renameReplacing(tmp, path);
+    // A rename Windows refuses for a moment is retried; `retryCheck`, when given, is asked again before each try.
+    await renameReplacing(tmp, path, opts.retryCheck ? { again: opts.retryCheck } : {});
   } catch (e) {
     await fs.rm(tmp, { force: true }).catch(() => undefined);
+    if (e instanceof RenameWithdrawn) return false;
     throw e;
   }
   if (durable) await syncDir(dir);

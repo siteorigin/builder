@@ -36,7 +36,8 @@ export const DEVICE_CHANNELS: ReadonlySet<string> = new Set([
   'remote:state',
   'remote:changed',
   'remote:reload',
-  'remote:presence'
+  'remote:presence',
+  'remote:ai'
 ]);
 
 /** What the remote shell answers, namespace by namespace: anything missing is refused while it is shown. */

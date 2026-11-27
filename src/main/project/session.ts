@@ -351,7 +351,7 @@ export interface HistoryEntry {
    * entry is applied, that run's turn reads as undone. Never on the AI run's own entry, which `runId` names.
    */
   revertsRunId?: string;
-  /** The live-session guest who made this change, by the name the host let them in under (#765). */
+  /** The live-session guest who made this change, by the name the host let them in under (#765); on an AI step, the guest the AI ran for (#769). */
   guestName?: string;
 }
 
@@ -2356,8 +2356,9 @@ export class ProjectSession extends EventEmitter {
     }
   }
 
-  private async writeJournal(j: Omit<Journal, 'schemaVersion'>, beforeReplace?: () => Promise<boolean>) {
-    await atomicWrite(this.local('journal.json'), toJson({ schemaVersion: SCHEMA_VERSION, ...j } satisfies Journal), beforeReplace ? { beforeReplace } : {});
+  private async writeJournal(j: Omit<Journal, 'schemaVersion'>, beforeReplace?: () => Promise<boolean>): Promise<boolean> {
+    // Asked again before each Windows rename retry too: the journal is the run's decision, and what decided it must hold.
+    return atomicWrite(this.local('journal.json'), toJson({ schemaVersion: SCHEMA_VERSION, ...j } satisfies Journal), beforeReplace ? { beforeReplace, retryCheck: beforeReplace } : {});
   }
 
   /** Every generated file for `state`, reusing what earlier generations made from inputs that are unchanged. */
@@ -5151,8 +5152,13 @@ export class ProjectSession extends EventEmitter {
     return false;
   }
 
-  /** Commit the run as one history group. */
-  completeRun(label: string): Promise<boolean> {
+  /**
+   * Commit the run as one history group; `guestName` is the live-session guest it ran for (#769), if any.
+   * `stillWanted` is asked before the run is decided and again as its journal is about to take its place, the moment
+   * it is decided: false keeps the run open, so it is rolled back (abortRun), and throws a cancellation (a guest's access
+   * taken away while it finished).
+   */
+  completeRun(label: string, guestName?: string, stillWanted?: () => boolean): Promise<boolean> {
     return this.serialize(async () => {
       const run = this.activeRun;
       if (!run) return false;
@@ -5171,14 +5177,16 @@ export class ProjectSession extends EventEmitter {
         if (b === a) continue;
         changed[p] = { before: b === undefined ? null : await this.putBlob(b), after: a === undefined ? null : await this.putBlob(a) };
       }
-      const planned = Object.keys(changed).length ? this.planHistory(changed, { label, source: 'ai', runId: run.id }, this.revision) : null;
+      const planned = Object.keys(changed).length ? this.planHistory(changed, { label, source: 'ai', runId: run.id, ...(guestName ? { guestName } : {}) }, this.revision) : null;
+      if (stillWanted && !stillWanted()) throw new Error('Canceled');
       // From here a failure is settled by reopening: recovery either finishes the run or restores its checkpoint.
       this.activeRun = null;
+      let refused = false;
       try {
         if (planned) {
           // The journal is the decision. Before it is on disk, a crash restores the checkpoint (the marker is still
           // there); once it is, recovery records the run's step and clears the marker, so the finished work is kept.
-          await this.writeJournal({ writes: [], deletes: [], history: planned.history, revision: this.revision, finishRun: run.id });
+          refused = !(await this.writeJournal({ writes: [], deletes: [], history: planned.history, revision: this.revision, finishRun: run.id }, stillWanted ? async () => stillWanted() : undefined));
         } else {
           // Nothing changed: restoring the checkpoint and keeping the run are the same thing.
           await removeDurable(this.local('sessions', 'active-run.json'));
@@ -5186,6 +5194,11 @@ export class ProjectSession extends EventEmitter {
       } catch (e) {
         this.unsettled = true;
         throw e;
+      }
+      // Turned away at the moment of decision: nothing replaced the journal, and the run is open again to be rolled back.
+      if (refused) {
+        this.activeRun = run;
+        throw new Error('Canceled');
       }
       if (planned) {
         try {

@@ -51,7 +51,8 @@ import { PANEL_DEFAULTS, PANEL_LIMITS, RAIL_WIDTH, fitPanels, panelMax, resizePa
 import { closeProject, endEditingHold, saveNow } from './lib/leave';
 import { shortcutLabel } from './lib/shortcut-keys';
 import { isAskAiKey } from './lib/ask-ai-key';
-import { confirmLeaveLive, isRemoteShell, LOCAL_PROJECT_COMMANDS, REMOTE_LEFT_TABS, REMOTE_MODALS, REMOTE_RIGHT_TABS, showsRemote } from './lib/remote-session';
+import { admittedRemote, confirmLeaveLive, isRemoteShell, LOCAL_PROJECT_COMMANDS, REMOTE_LEFT_TABS, REMOTE_MODALS, remoteRightTabs, remoteRunStatus, showsRemote } from './lib/remote-session';
+import { RemoteChat } from './panels/RemoteChat';
 import { timedPanel } from './lib/perf-panels';
 import { perfMark } from './lib/perf';
 import { Hideable } from './lib/hideable';
@@ -425,6 +426,8 @@ export function Editor() {
   // Another computer's project, as a guest in its live session (#766): only what a guest may do there is offered,
   // and the views and dialogs that are the host's alone are never mounted.
   const remoteShell = useStore(isRemoteShell);
+  // A collaborator has the AI view too (#769); a viewer has only the Inspector and Site styles.
+  const remoteTabs = useStore((s) => remoteRightTabs(admittedRemote(s)?.role));
   useFirstStepsTracking();
   const leftTab = useStore((s) => s.leftTab);
   const rightTab = useStore((s) => s.rightTab);
@@ -436,20 +439,20 @@ export function Editor() {
   const editMode = useStore((s) => s.mode === 'edit');
   const modal = remoteShell && storedModal && !REMOTE_MODALS.has(storedModal.kind) ? null : storedModal;
   const leftTabs = remoteShell ? LEFT_TABS.filter((t) => REMOTE_LEFT_TABS.has(t.id)) : LEFT_TABS;
-  const rightTabs = remoteShell ? RIGHT_TABS.filter((t) => REMOTE_RIGHT_TABS.has(t)) : RIGHT_TABS;
+  const rightTabs = remoteShell ? RIGHT_TABS.filter((t) => remoteTabs.has(t)) : RIGHT_TABS;
   // A view or dialog of the host's alone, asked for some other way (a command, a shortcut), gives way at once.
   useEffect(() => {
     if (!remoteShell) return;
     const s = getState();
     if (s.leftTab && !REMOTE_LEFT_TABS.has(s.leftTab)) setState({ leftTab: 'pages' });
-    if (!REMOTE_RIGHT_TABS.has(s.rightTab)) setState({ rightTab: 'inspect' });
+    if (!remoteRightTabs(admittedRemote(s)?.role).has(s.rightTab)) setState({ rightTab: 'inspect' });
     if (s.modal && !REMOTE_MODALS.has(s.modal.kind)) setState({ modal: null });
     // Component definitions and collection layouts are the host's: editing one everywhere, or Component Studio, is not
     // a guest's to open, however it was asked for. In Preview, a collection's layout stands for an entry the visitor
     // went to, and stays.
     if (s.definitionMode) setState({ definitionMode: null });
     if (s.templateMode && s.mode === 'edit') setState({ templateMode: null });
-  }, [remoteShell, leftTab, rightTab, storedModal, definitionModeOn, templateModeOn, editMode]);
+  }, [remoteShell, remoteTabs, leftTab, rightTab, storedModal, definitionModeOn, templateModeOn, editMode]);
   const dockOpen = useStore((s) => s.dockOpen);
   const windowWidth = useWindowWidth();
   // The panels are drawn at their preferred widths while the canvas keeps its minimum; in a smaller window
@@ -462,8 +465,10 @@ export function Editor() {
   const writing = workspace === 'write';
   const seoing = workspace === 'seo';
   const covered = canvasCovered(workspace);
-  const aiBusy = useStore((s) => !!s.runStatus);
-  const aiPhase = useStore((s) => runPhase(s.runStatus));
+  // In the remote shell, this collaborator's own request to the host's AI (#769).
+  const aiStatus = useStore((s) => (isRemoteShell(s) ? remoteRunStatus(s) : s.runStatus));
+  const aiBusy = !!aiStatus;
+  const aiPhase = runPhase(aiStatus);
   const aiReading = useStore((s) => s.runMode === 'ask');
   // What the AI tab's mark says while a run goes on: a solid pulse while it works, a ring while it waits for you.
   const aiLabel = aiPhase === 'asking' ? 'Waiting for your answer' : aiPhase === 'checking' ? 'Checking' : aiPhase === 'stopping' ? 'Stopping' : aiReading ? 'Reading the site' : 'Working';
@@ -727,7 +732,13 @@ export function Editor() {
     return prev ? `Finished editing ${name} everywhere` : null;
   });
   const dockViews: Record<RightTab, { label: ReactNode; icon: ReactNode; extra?: ReactNode; panel: () => ReactNode }> = {
-    chat: { label: aiBusy ? <span title={`AI: ${aiLabel}`}>AI</span> : 'AI', icon: <Sparkles />, extra: aiBusy ? <span className={`live${aiPhase === 'asking' ? ' asking' : ''}`} role="img" aria-label={aiLabel} title={`AI: ${aiLabel}`} /> : undefined, panel: () => timedPanel('chat', <Chat />) },
+    chat: {
+      label: aiBusy ? <span title={`AI: ${aiLabel}`}>AI</span> : 'AI',
+      icon: <Sparkles />,
+      extra: aiBusy ? <span className={`live${aiPhase === 'asking' ? ' asking' : ''}`} role="img" aria-label={aiLabel} title={`AI: ${aiLabel}`} /> : undefined,
+      // In the remote shell the AI is the host's, asked for this collaborator's own requests (#769).
+      panel: () => timedPanel('chat', remoteShell ? <RemoteChat /> : <Chat />)
+    },
     inspect: {
       label: 'Inspector',
       icon: <SlidersHorizontal />,

@@ -1,6 +1,6 @@
 import { createContext, useContext } from 'react';
 import { create, useStore as useStoreOf, type StoreApi } from 'zustand';
-import type { AiEvent, AppSettings, BuilderApi, ChatContext, ChatEditScope, ChatMessage, ChatMode, Conversation, ImportReviewRow, LiveHostState, LivePresence, LocalWorkspaceState, PostImportPreview, PackRefusal, ProjectSnapshot, ProviderId, ProviderStatus, SettingsPatch, RemotePresence, RemoteState, RunStatus, RuntimeState } from '@shared/api';
+import type { AiEvent, AppSettings, BuilderApi, ChatContext, ChatEditScope, ChatMessage, ChatMode, Conversation, ImportReviewRow, LiveHostState, LivePresence, LocalWorkspaceState, PostImportPreview, PackRefusal, ProjectSnapshot, ProviderId, ProviderStatus, SettingsPatch, RemoteAi, RemotePresence, RemoteState, RunStatus, RuntimeState } from '@shared/api';
 import type { ApplyResult, EditOperation } from '@shared/ops';
 import type { FirstStepsRecord } from '@shared/first-steps';
 import { refKey, type ElementRef, type OwnerRef, type ResponsiveScope, type StyleState } from '@shared/types';
@@ -265,6 +265,8 @@ export interface State {
   remote: RemoteState;
   /** Where the host and the other collaborators are, for the join shown, as each last said. */
   remotePresence: RemotePresence | null;
+  /** This app's own requests to the host's AI in the join shown (#769), as the main process last said. */
+  remoteAi: RemoteAi | null;
   /**
    * The host's preview changed and the canvas loads its page again: `seq` counts the reloads asked for, and
    * `revision` is the project revision a page loaded now shows (null when the host has not said).
@@ -434,6 +436,7 @@ const live = create<State>((set) => ({
   shareOpen: false,
   remote: { phase: 'idle', ended: null },
   remotePresence: null,
+  remoteAi: null,
   remoteReload: { seq: 0, revision: null },
   joinOpen: false,
   savedRetired: 0,

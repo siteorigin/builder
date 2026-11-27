@@ -1,6 +1,8 @@
 import { randomUUID } from 'node:crypto';
 import { performance } from 'node:perf_hooks';
-import type { LiveActivity, RemoteEnding, RemoteJoinResult, RemoteParticipant, RemotePresence, RemoteState, RuntimeState } from '@shared/api';
+import type { LiveActivity, RemoteAi, RemoteAiSendResult, RemoteEnding, RemoteJoinResult, RemoteParticipant, RemotePresence, RemoteState, RuntimeState } from '@shared/api';
+import { NO_AI_ACCESS, readAiAccess, readAiTurnEvent, type LiveAiAccess, type LiveAiTurn } from '@shared/live/ai';
+import type { LiveMethod } from '@shared/live/roles';
 import { LIVE_CLOSE_CODES } from '@shared/live/close-codes';
 import { LIVE_PROTOCOL_VERSION, type GuestRole } from '@shared/live/limits';
 import { encodeFrame, normalizeDisplayName, parseFrame, type Frame, type FrameOf, type GuestToRelay, type Presence, type RpcError } from '@shared/live/messages';
@@ -15,7 +17,8 @@ import type { LiveSocketFactory } from './host';
  * One outbound WebSocket to the room's socket on the relay carries the guest's place (the waiting room, admission,
  * role changes and every ending), the host's project as it changes, the others' presence, and the guest's calls into
  * the host's editor (`project.snapshot`, and a collaborator's `project.apply`), which the host checks again before
- * anything runs (host.ts). A dropped connection takes the same place back with the relay's resume token for as long
+ * anything runs (host.ts). A collaborator the host allows AI editing also asks the host's AI from here (#769); its own
+ * requests' progress comes back to it alone, and is kept here while the join lasts. A dropped connection takes the same place back with the relay's resume token for as long
  * as the relay keeps it.
  *
  * The host's preview is shown through this computer's own loopback server (guest-preview.ts): each preview ticket the
@@ -25,14 +28,18 @@ import type { LiveSocketFactory } from './host';
  * presence never reach the next.
  */
 
-export type RemoteChannel = 'remote:state' | 'remote:changed' | 'remote:reload' | 'remote:presence';
+export type RemoteChannel = 'remote:state' | 'remote:changed' | 'remote:reload' | 'remote:presence' | 'remote:ai';
 
 export interface LiveGuestContext {
   emit(channel: 'remote:state', payload: RemoteState): void;
   emit(channel: 'remote:changed', payload: { joinId: string; snapshot: LiveProjectSnapshot }): void;
   emit(channel: 'remote:reload', payload: { joinId: string; revision: number | null }): void;
   emit(channel: 'remote:presence', payload: RemotePresence): void;
+  emit(channel: 'remote:ai', payload: RemoteAi): void;
 }
+
+/** How many of its own AI requests a join keeps, newest last. */
+export const REMOTE_AI_TURNS = 50;
 
 export interface LiveGuestTimings {
   /** How long a new connection has to be told its place before it is given up. */
@@ -140,6 +147,8 @@ interface Join {
   handshakeTimer: ReturnType<typeof setTimeout> | null;
   /** What the last join on the current socket ran into, for the close that follows. */
   refusal: 'resume' | 'full' | null;
+  /** This guest's requests to the host's AI (#769): what the host allows, the requests made, and the one running. */
+  ai: { access: LiveAiAccess; turns: LiveAiTurn[]; activeRunId: string | null };
   calls: Map<string, PendingCall>;
   nextCall: number;
   participants: RemoteParticipant[];
@@ -312,6 +321,7 @@ export class LiveGuestManager {
       retryTimer: null,
       handshakeTimer: null,
       refusal: null,
+      ai: { access: NO_AI_ACCESS, turns: [], activeRunId: null },
       calls: new Map(),
       nextCall: 0,
       participants: [],
@@ -560,6 +570,8 @@ export class LiveGuestManager {
             join.activity.clear();
             this.publishPresence(join);
           }
+          // Only a collaborator has AI: the host has stopped this guest's request, and turned AI off until it says otherwise.
+          this.loseAi(join, `The host made you ${frame.role === 'viewer' ? 'a viewer' : 'a copy editor'}, so this request was stopped.`);
         } else this.schedulePresence(join);
         // On first admission, and on taking the place back after a drop (changes may have been missed), the host's
         // project is asked for; a role or deadline changing on a live connection needs no new copy.
@@ -605,6 +617,15 @@ export class LiveGuestManager {
 
   private onEvent(join: Join, frame: Frame<'relay-to-guest', 'rpc:event'>): void {
     if (join.phase !== 'admitted') return;
+    if (frame.event === 'ai:access') {
+      const access = readAiAccess(frame.payload);
+      if (!access) return;
+      // Only a collaborator is ever allowed: one that says otherwise to a viewer is taken as no.
+      if (access.allowed && join.role === 'collaborator') this.setAi(join, { ...join.ai, access });
+      else this.loseAi(join, 'The host turned off AI editing for you, so this request was stopped.');
+      return;
+    }
+    if (frame.event === 'ai:turn') return this.onAiTurn(join, frame.payload);
     if (frame.event === 'runtime:status') {
       const state = (frame.payload as { state?: unknown } | null)?.state;
       if (typeof state === 'string') {
@@ -687,7 +708,7 @@ export class LiveGuestManager {
   // -------------------------------------------------------------------------
   // Calls into the host's editor
 
-  private call(join: Join, method: 'project.snapshot' | 'project.apply', args: unknown[]): Promise<{ ok: true; result: unknown } | { ok: false; error: RpcError }> {
+  private call(join: Join, method: LiveMethod, args: unknown[]): Promise<{ ok: true; result: unknown } | { ok: false; error: RpcError }> {
     if (join.ended || join.phase !== 'admitted') return Promise.resolve({ ok: false, error: unavailable('You are not in the live session.') });
     const requestId = `g${++join.nextCall}`;
     return new Promise((resolve) => {
@@ -744,6 +765,93 @@ export class LiveGuestManager {
     const result = answer.result as { revision?: unknown; results?: unknown } | null;
     if (!result || !Number.isSafeInteger(result.revision)) return { ok: false, error: { code: 'INTERNAL', message: 'The host’s answer could not be read. Check the page before trying again.', recoverable: false } };
     return { ok: true, revision: result.revision as number, results: Array.isArray(result.results) ? (result.results as Array<Record<string, string | string[]>>) : [] };
+  }
+
+  // -------------------------------------------------------------------------
+  // The host's AI (#769)
+
+  /** This app's requests to the host's AI in the join named, or null when not admitted. */
+  ai(joinId: unknown): RemoteAi | null {
+    const join = this.current;
+    if (!join || join.joinId !== joinId || join.phase !== 'admitted') return null;
+    return this.aiState(join);
+  }
+
+  /**
+   * Ask the host's AI to edit the page or selection named. The host checks again whether it allows this guest, and how
+   * many requests it has left; the request runs on the host's computer. Resolves once it is running, or refused.
+   */
+  async aiSend(joinId: unknown, text: unknown, context: unknown): Promise<RemoteAiSendResult> {
+    const join = this.current;
+    if (!join || join.joinId !== joinId || join.phase !== 'admitted') return { ok: false, message: 'You are no longer in that live session.' };
+    if (join.role !== 'collaborator' || !join.ai.access.allowed) return { ok: false, message: 'The host hasn’t allowed you to use its AI.' };
+    if (join.ai.access.turnsLeft === 0) return { ok: false, message: 'You have made all the AI requests the host allowed.' };
+    if (!join.hostConnected) return { ok: false, message: 'The host is reconnecting. Try again in a moment.' };
+    if (join.ai.activeRunId) return { ok: false, message: 'Your last request is still running.' };
+    const answer = await this.call(join, 'ai.send', [text, context]);
+    if (!answer.ok) return { ok: false, message: answer.error.message };
+    const runId = (answer.result as { runId?: unknown } | null)?.runId;
+    if (typeof runId !== 'string' || !runId) return { ok: false, message: 'The host’s answer could not be read.' };
+    // Its turn may already be here; until it ends, it is the request this guest has running.
+    if (this.current === join && !join.ai.turns.find((t) => t.runId === runId)?.result) this.setAi(join, { ...join.ai, activeRunId: runId });
+    return { ok: true, runId };
+  }
+
+  /** Stop this guest's own request, as the host would; false when it was not running. */
+  async aiStop(joinId: unknown, runId: unknown): Promise<boolean> {
+    const join = this.current;
+    if (!join || join.joinId !== joinId || join.phase !== 'admitted' || typeof runId !== 'string') return false;
+    const answer = await this.call(join, 'ai.stop', [runId]);
+    return answer.ok;
+  }
+
+  /** Answer the question this guest's request is waiting on; false when it is no longer waiting. */
+  async aiAnswer(joinId: unknown, runId: unknown, questionId: unknown, text: unknown): Promise<boolean> {
+    const join = this.current;
+    if (!join || join.joinId !== joinId || join.phase !== 'admitted' || typeof runId !== 'string' || typeof questionId !== 'string' || typeof text !== 'string') return false;
+    const answer = await this.call(join, 'ai.answer', [runId, questionId, text]);
+    return answer.ok && answer.result === true;
+  }
+
+  /** The host sent this guest's request as it stands, or a piece of its reply. */
+  private onAiTurn(join: Join, payload: unknown): void {
+    const event = readAiTurnEvent(payload);
+    if (!event) return;
+    const turns = join.ai.turns;
+    const runId = event.kind === 'text' ? event.runId : event.turn.runId;
+    const at = turns.findIndex((t) => t.runId === runId);
+    // A request that has ended here stays ended, whatever late word of it still comes.
+    if (turns[at]?.result && (event.kind === 'text' || !event.turn.result)) return;
+    if (event.kind === 'text') {
+      const turn = turns[at];
+      // A piece that does not follow the reply as held was sent after something missed: the next whole turn mends it.
+      if (!turn || turn.reply.length !== event.at) return;
+      const next = [...turns];
+      next[at] = { ...turn, reply: turn.reply + event.text };
+      return this.setAi(join, { ...join.ai, turns: next });
+    }
+    const turn = event.turn;
+    const next = at >= 0 ? turns.map((t, i) => (i === at ? turn : t)) : [...turns, turn].slice(-REMOTE_AI_TURNS);
+    const activeRunId = turn.result ? (join.ai.activeRunId === turn.runId ? null : join.ai.activeRunId) : turn.runId;
+    this.setAi(join, { ...join.ai, turns: next, activeRunId });
+  }
+
+  /**
+   * The host took this guest's AI away: the request it had running was stopped there, and nothing more of it comes, so
+   * it ends here with why.
+   */
+  private loseAi(join: Join, why: string): void {
+    const turns = join.ai.turns.map((t): LiveAiTurn => (t.result ? t : { ...t, status: 'cancelled', question: null, result: { status: 'cancelled', summary: why, changes: [] } }));
+    this.setAi(join, { access: NO_AI_ACCESS, turns, activeRunId: null });
+  }
+
+  private aiState(join: Join): RemoteAi {
+    return { joinId: join.joinId, access: join.ai.access, turns: join.ai.turns, activeRunId: join.ai.activeRunId };
+  }
+
+  private setAi(join: Join, ai: Join['ai']): void {
+    join.ai = ai;
+    if (this.current === join && !join.ended) this.ctx.emit('remote:ai', this.aiState(join));
   }
 
   // -------------------------------------------------------------------------

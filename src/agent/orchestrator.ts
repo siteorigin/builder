@@ -28,6 +28,8 @@ import { untilStopped } from './validation';
 import { developerModeCheck } from '@engine/developer-mode';
 import { formRoutingGrant, formRoutingQuestion, formRoutingReview, type FormRoutingGrant, type FormRoutingReview } from '@engine/form-routing';
 import { FORM_ROUTING_PROPS } from '@engine/form-destinations';
+import { guestEditProblem } from '@engine/guest-edits';
+import { checkEditBatch } from '@shared/live/capabilities';
 import { walkChecks } from '@engine/apply';
 import { selectionTarget } from './selection';
 import { definitionTarget } from './definition';
@@ -112,7 +114,11 @@ export interface RunSession {
   readOnly?: { reason: string; canUnlock?: boolean } | null;
   local(...parts: string[]): string;
   beginRun(runId: string): Promise<string | null>;
-  completeRun(label: string): Promise<boolean>;
+  /**
+   * `guestName`: the live-session guest the run was for (#769), named on its History step. `stillWanted`: asked last
+   * before the run is decided; false throws a cancellation with the run still open, for it to be rolled back.
+   */
+  completeRun(label: string, guestName?: string, stillWanted?: () => boolean): Promise<boolean>;
   abortRun(): Promise<{ restored: boolean; conflict?: string }>;
   /** Keep a source the run wrote or tried to write in the recovery folder; its project-relative path, or null. */
   keepSourceDraft(runId: string, definitionId: string, source: string, kind: 'rejected' | 'applied'): Promise<string | null>;
@@ -120,10 +126,14 @@ export interface RunSession {
   discardAppliedDrafts(runId: string, paths: string[]): Promise<void>;
   runChanged(): boolean;
   /** `collectionWrite`: the post tool's grant for this one batch, never the model's (see shared/collection-grant). */
-  /** `formRouting`: what the user allowed, when the app asked them, of a batch that changes where a form sends (engine/form-routing). */
+  /**
+   * `formRouting`: what the user allowed, when the app asked them, of a batch that changes where a form sends
+   * (engine/form-routing). `guard`: asked as the batch's turn comes and just before it is saved, with the project as it
+   * would leave it (CommitOptions).
+   */
   apply(
     batch: { operations: EditOperation[]; expectedRevision?: number },
-    opts: { label: string; source: 'ai'; runId: string; history: boolean; idempotencyKey?: string; collectionWrite?: CollectionWriteGrant; sourceWrite?: SourceWriteGrant; formRouting?: FormRoutingGrant }
+    opts: { label: string; source: 'ai'; runId: string; history: boolean; idempotencyKey?: string; collectionWrite?: CollectionWriteGrant; sourceWrite?: SourceWriteGrant; formRouting?: FormRoutingGrant; guard?: (next: ProjectState | null) => ToolError | null }
   ): Promise<{ ok: boolean; revision: number; results?: unknown[]; error?: ToolError }>;
   diagnostics(): Diagnostic[];
   undoGroup(runId: string): Promise<{ ok: boolean; error?: { message: string } }>;
@@ -165,8 +175,35 @@ export interface AgentPerf {
 
 const NO_SPAN = () => {};
 
+/**
+ * A request the host's AI runs for a live-session collaborator (#769), on the host's computer with the host's provider.
+ * Only the host's main process makes one. The run is held to what that collaborator could do by hand: it is always an
+ * edit of the page or selection it sent, with no code, no external sources and no project brief, and every batch it
+ * makes is checked as a collaborator's edit would be (shared/live/capabilities.ts, engine/guest-edits.ts). It hears
+ * only that guest's earlier requests in the conversation, never the host's own, and its turn and History step name the
+ * guest.
+ */
+export interface RunDelegation {
+  /** The guest's name, as the host let it in: shown on its turn and its History step. */
+  guestName: string;
+  /** The admission the request came under: the conversation it hears is that admission's own turns. */
+  grantId: string;
+  /**
+   * Asked once, synchronously, as the run is about to be installed: null takes it (the run is the guest's from here),
+   * and a message refuses the request with nothing added to the conversation.
+   */
+  accept(runId: string): string | null;
+  /** Asked before each of the run's batches lands and as it is saved: a message stops that batch. Null while allowed. */
+  check(): string | null;
+}
+
+/** A History step's label for a request run for a guest. */
+export const guestRunLabel = (label: string, guestName: string) => label.replace(/^AI\b/, `AI for ${guestName}`);
+
 interface ActiveRun {
   id: string;
+  /** The collaborator the run is for (RunDelegation), or null for the author's own. */
+  delegation: RunDelegation | null;
   /** ask: a read-only question, which never holds the project; edit: a request that may change it. */
   mode: ChatMode;
   abort: AbortController;
@@ -1103,8 +1140,11 @@ export class Orchestrator {
     this.deps.emit({ runId: this.run.id, conversationId: this.run.conversationId, kind: 'status', status, mode: this.run.mode });
   }
 
-  /** `conversationId` is the conversation the message was written in; it is sent only if that one is still open. */
-  async send(text: string, context: ChatContext, conversationId?: string, recipient?: unknown): Promise<{ ok: boolean; runId?: string; message?: string }> {
+  /**
+   * `conversationId` is the conversation the message was written in; it is sent only if that one is still open.
+   * `delegation`: the request is a live-session collaborator's (RunDelegation), made by the host's main process alone.
+   */
+  async send(text: string, context: ChatContext, conversationId?: string, recipient?: unknown, delegation?: RunDelegation): Promise<{ ok: boolean; runId?: string; message?: string }> {
     if (this.run) return { ok: false, message: 'The AI is already working on a request.' };
     if (this.closing) return { ok: false, message: 'The project is closing.' };
     const clearing = { ok: false, message: 'The conversation history is being cleared. Send your message again in a moment.' };
@@ -1122,6 +1162,10 @@ export class Orchestrator {
     }
     const conv = this.conversation!;
     if (conversationId !== undefined && conv.id !== conversationId) return { ok: false, message: 'That conversation is no longer open, so your message was not sent. It is still in the message box.' };
+    // A collaborator's request is an edit of the page or the selection it sent, and goes to whichever model the host's
+    // Settings choose: it names no model, component, post, layout or images of its own.
+    if (delegation && (context?.mode !== 'edit' || (context.scope !== 'page' && context.scope !== 'selection') || recipient !== undefined || context.component || context.post || context.template || context.task || context.assetIds?.length))
+      return { ok: false, message: 'That request could not be read.' };
     // The message comes from the renderer: one that cannot be read never joins the conversation (nor starts a run that
     // could not name what it may change).
     if (typeof text !== 'string' || !context || typeof context !== 'object' || Array.isArray(context) || !readableSelection(context.selection) || !readableComponent(context.component))
@@ -1188,25 +1232,37 @@ export class Orchestrator {
     else delete stored.assetIds;
     const userMsg: ChatMessage = { id: newId('m'), role: 'user', text: text.trim(), time: new Date().toISOString(), context: stored, ...(attached.images.length ? { images: attached.images } : {}) };
     const assistant: ChatMessage = { id: newId('m'), role: 'assistant', text: '', time: new Date().toISOString(), runId, activities: [] };
+    // A collaborator's turn says whose it is, in the host's conversation and on the guest's (#769).
+    if (delegation) userMsg.guest = assistant.guest = { name: delegation.guestName, id: delegation.grantId };
     // The conversation before this request: its older messages as the stored summary, extended by any that have
     // left the replayed window since (built once for a conversation that has none), and the recent ones in full.
-    const earlier = conv.messages.slice();
-    const replay = planReplay(earlier, conv.earlierSummary);
-    if (replay.summary) conv.earlierSummary = replay.summary;
-    else delete conv.earlierSummary;
+    // A collaborator's request hears only its own earlier turns, never the author's (nor their summary), which it could
+    // otherwise ask the model to repeat.
+    // Nor does the author's request hear a guest's turns: a guest's words are never replayed as the author's own, to a
+    // run with the author's reach.
+    const earlier = delegation ? conv.messages.filter((m) => m.guest?.id === delegation.grantId) : conv.messages.filter((m) => !m.guest);
+    const replay = delegation ? { summary: null } : planReplay(earlier, conv.earlierSummary);
+    if (!delegation) {
+      if (replay.summary) conv.earlierSummary = replay.summary;
+      else delete conv.earlierSummary;
+    }
     // The request a "continue" carries on with, read from the whole conversation: a long run of "continue"
     // messages can push it out of the history the model sees.
     // A saved request whose text cannot be read is not one to carry on with.
-    const prior = [...conv.messages].reverse().find((m) => m.role === 'user' && typeof m.text === 'string' && !CONTINUE.test(m.text));
+    const prior = [...earlier].reverse().find((m) => m.role === 'user' && typeof m.text === 'string' && !CONTINUE.test(m.text));
     const request = prior?.text;
     // A Create component request goes on building a component, however many times it is told to continue.
     const requestTask = prior?.context?.task === 'component' ? ('component' as const) : undefined;
     // Named by its first request with words in it, unless the author has named it.
     const titled = conv.named || conv.messages.some((m) => m.role === 'user' && typeof m.text === 'string' && m.text.trim());
+    // The last moment the request can be turned away: from here it is the collaborator's run, with nothing awaited
+    // between taking it and installing it, so nothing the host decides meanwhile can slip past.
+    const refusal = delegation?.accept(runId);
+    if (refusal) return { ok: false, message: refusal };
     conv.messages.push(userMsg, assistant);
     if (!titled && text.trim()) conv.title = autoTitle(text);
     const transcript: RunTranscript = { opening: this.opening, session, dir: session.local('sessions', 'chat'), conv, deleted: this.deleted, names: this.names };
-    const active: ActiveRun = { id: runId, mode: context?.mode === 'ask' ? 'ask' : 'edit', abort: new AbortController(), status: 'preparing', pendingQuestion: null, message: assistant, conversationId: conv.id, reached: false, recipient: intended, transcript };
+    const active: ActiveRun = { id: runId, delegation: delegation ?? null, mode: context?.mode === 'ask' ? 'ask' : 'edit', abort: new AbortController(), status: 'preparing', pendingQuestion: null, message: assistant, conversationId: conv.id, reached: false, recipient: intended, transcript };
     this.run = active;
     this.deps.onBusyChange(true);
     this.emitMessage(userMsg, runId);
@@ -1408,7 +1464,14 @@ export class Orchestrator {
     /** History as the request starts: whether each earlier turn's change is in the site it reads. */
     const steps = session.historyInfo();
     /** The project the run reads: as asked about for a question, as it is now for an edit. */
-    const readState = () => (ask ? startState : session.state);
+    // A collaborator's request reads the project as guests are given it in this respect: without the author's brief
+    // and external sources (shared/live/snapshot.ts). Its changes are still checked against the project as it is.
+    let guestRead: { from: ProjectState; view: ProjectState } | null = null;
+    const guestView = (state: ProjectState): ProjectState => {
+      if (guestRead?.from !== state) guestRead = { from: state, view: { ...state, brief: undefined, sources: undefined } };
+      return guestRead.view;
+    };
+    const readState = () => (ask ? startState : run.delegation ? guestView(session.state) : session.state);
     const readRevision = () => (ask ? startRevision : session.revision);
     let authority: Authority = requestAuthority(userMsg.context, session.state);
     const startedOnPage = authority.kind === 'page';
@@ -1428,7 +1491,9 @@ export class Orchestrator {
     // known by where it is (`diagnosticKey`, as the save gate tells them, so a rename is not one) and counted: the same
     // message somewhere new is a new problem.
     // Read with the state a question answers about: nothing has run since it was copied.
-    const startDiagnostics: Diagnostic[] = session.diagnostics();
+    // A collaborator's request hears nothing of the project's external sources, whose problems name them.
+    const projectDiagnostics = (): Diagnostic[] => (run.delegation ? session.diagnostics().filter((d) => !d.code?.startsWith('SOURCE_') && d.owner?.kind !== 'source') : session.diagnostics());
+    const startDiagnostics: Diagnostic[] = projectDiagnostics();
     /** The build's errors as an edit starts (a question compiles nothing). */
     // Stopped meanwhile, the run ends without waiting for the build (it goes on in its workers, its result unused).
     const startBuild: Diagnostic[] = ask ? [] : await untilStopped(this.deps.compileAll(), signal).catch(() => []);
@@ -1452,7 +1517,16 @@ export class Orchestrator {
     /** Reusability warnings the run brought in on the components it made or changed. */
     const freshReusability = (diags: Diagnostic[]) => introducedReusability(startDiagnostics, diags, () => changedComponents(startState, session.state));
 
-    const codeEnabled = (await this.deps.codeEnabled?.()) ?? true;
+    /** A collaborator's request (RunDelegation): held to what that guest could change by hand. */
+    const delegation = run.delegation;
+    // Never code for a collaborator, whatever the host's Developer mode says: code runs on the host's computer.
+    const codeEnabled = delegation ? false : ((await this.deps.codeEnabled?.()) ?? true);
+    /**
+     * The run's History step, which names the guest a collaborator's request was for. Its access is asked once more as
+     * the run is decided: one taken away while it finished leaves nothing of it.
+     */
+    const completeRun = (label: string) =>
+      delegation ? session.completeRun(guestRunLabel(label, delegation.guestName), delegation.guestName, () => !run.abort.signal.aborted && !delegation.check()) : session.completeRun(label);
     const selected = selectionTarget(userMsg.context?.selection);
     /** The component design the run starts limited to, if any: its definition tools address it for the whole turn. */
     const startDefinition = definitionTarget(authority);
@@ -1463,7 +1537,8 @@ export class Orchestrator {
     /** Set on the first turn, before any call, when the model's window cannot hold the request beside the general tools. */
     let onlyFocused = false;
     /** Cleared on the first turn, before any call, when the request fits the model's window only without the brief. */
-    let briefShown = true;
+    // The brief is the author's own, kept from guests (shared/live/snapshot.ts): a collaborator's request never reads it.
+    let briefShown = !delegation;
     /** Re-chosen each turn, because the user can widen a selection run to the whole site part way through. */
     const runTools = (): RunTools =>
       toolsForRun({
@@ -1798,7 +1873,7 @@ export class Orchestrator {
       layoutLimit: () => (authority.kind === 'template' ? { owner: authority.owner, label: authority.label } : null),
       state: readState,
       revision: readRevision,
-      diagnostics: () => session.diagnostics(),
+      diagnostics: () => projectDiagnostics(),
       apply: async (operations, expectedRevision, label, key, grants, requested) => {
         // A question is offered no tool that changes the site; anything that tries anyway is refused here.
         // Nothing in this run can get past these: no corrected call would be applied.
@@ -1807,6 +1882,12 @@ export class Orchestrator {
         // Asset records are created only by the verified importer, never by the model.
         if (operations.some((o) => o.type === 'asset.add' || o.type === 'asset.relink')) return refused('SCOPE_MISMATCH', 'The assistant cannot add images. Ask the user to import them, then use search_assets.', false);
         if (operations.some((o) => o.type === 'component.import')) return refused('SCOPE_MISMATCH', 'The assistant cannot import component packages. Ask the user to import the package from the component library.', false);
+        // A collaborator's request changes only what that collaborator could change by hand, checked as its own edits
+        // are, and first: its limits on copies hold before anything below copies the project to check the batch.
+        if (delegation) {
+          const allowed = checkEditBatch('collaborator', { operations });
+          if (!allowed.ok) return refused('SCOPE_MISMATCH', `${allowed.error.message} This request was sent by a guest in a live session, so it can make only the edits a guest can. Nothing in this batch was applied.`, true);
+        }
         // The scope the call asks for is checked against the run's, never taken as more (spec 13.3): one that reaches
         // further is refused, and a narrower one limits the call on top of the run's own limits.
         const asked = requested ? requestedAuthority(session.state, requested, authority) : null;
@@ -1867,15 +1948,29 @@ export class Orchestrator {
         if (signal.aborted) return refused('CANCELLED', 'Canceled', false);
         const before = session.state;
         const revision = session.revision;
+        // Asked as the batch's turn comes and as it is saved: a guest whose access has gone since lands nothing, and no
+        // batch may change what only the host decides (where a contact form sends its messages).
+        const guard = delegation
+          ? (next: ProjectState | null): ToolError | null => {
+              const gone = delegation.check();
+              if (gone) return { code: 'CANCELLED', message: gone, recoverable: false };
+              const problem = next ? guestEditProblem(session.state, next) : null;
+              return problem ? { code: 'SCOPE_MISMATCH', message: `${problem} Nothing in this batch was applied.`, recoverable: true } : null;
+            }
+          : undefined;
         let res: Awaited<ReturnType<typeof session.apply>>;
         try {
           // A layout's run writes that layout: the grant is the run's own authority, never the model's (see shared/collection-grant).
           const collectionWrite = authority.kind === 'template' ? ({ kind: 'layout', owner: authority.owner } as const) : grants?.collectionWrite;
           const send = (formRouting?: FormRoutingGrant) =>
-            session.apply({ operations, expectedRevision }, { label, source: 'ai', runId, history: false, idempotencyKey: `${runId}:${key}`, ...(collectionWrite ? { collectionWrite } : {}), ...(grants?.sourceWrite ? { sourceWrite: grants.sourceWrite } : {}), ...(formRouting ? { formRouting } : {}) });
+            session.apply(
+              { operations, expectedRevision },
+              { label, source: 'ai', runId, history: false, idempotencyKey: `${runId}:${key}`, ...(collectionWrite ? { collectionWrite } : {}), ...(grants?.sourceWrite ? { sourceWrite: grants.sourceWrite } : {}), ...(formRouting ? { formRouting } : {}), ...(guard ? { guard } : {}) }
+            );
           res = await send();
-          // Asked once: a batch refused again, with the user's say, changes something they were not shown.
-          const review = res.ok ? null : formRoutingReview(res.error);
+          // Asked once: a batch refused again, with the user's say, changes something they were not shown. Never asked of
+          // a guest: where a form sends is the host's alone, and a guest's batch that changes it is refused as it is.
+          const review = res.ok || delegation ? null : formRoutingReview(res.error);
           if (review) res = await approveRouting(review, send);
         } catch (e) {
           // A save that failed part way may have published the source before it threw: the run is undone, so it is kept.
@@ -1898,7 +1993,8 @@ export class Orchestrator {
       ...(this.deps.fileDiagnostics ? { fileDiagnostics: () => this.deps.fileDiagnostics!() } : {}),
       signal,
       ...(this.deps.inspectComponent ? { inspectComponent: (steps: ComponentPreviewStep[]) => this.deps.inspectComponent!(steps, signal) } : {}),
-      ...(this.deps.sources ? { sources: this.deps.sources(signal) } : {}),
+      // A collaborator's request never reaches the project's external sources, whose settings name the host's secrets.
+      ...(this.deps.sources && !delegation ? { sources: this.deps.sources(signal) } : {}),
       ask: (question, choices, widenScope, images) => askUser(question, choices, widenScope, images)
     };
 
@@ -2024,7 +2120,7 @@ export class Orchestrator {
       const v = addActivity('Checking the changes so far', 'validate');
       const links = await connectLinks();
       if (signal.aborted) throw new Error('Canceled');
-      const diags = [...session.diagnostics(), ...(await untilStopped(this.deps.compileAll(), signal))];
+      const diags = [...projectDiagnostics(), ...(await untilStopped(this.deps.compileAll(), signal))];
       if (signal.aborted) throw new Error('Canceled');
       const { fresh } = sortErrors(diags);
       if (fresh.length) {
@@ -2045,7 +2141,7 @@ export class Orchestrator {
       }
       v.status = 'done';
       const changes = describeOps(executedOps, startState, session.state, opResults);
-      const committed = await session.completeRun(`AI (partial): ${requestText.slice(0, 60)}`);
+      const committed = await completeRun(`AI (partial): ${requestText.slice(0, 60)}`);
       msg.text = '';
       // Connecting links can take the project back to how it was: then nothing is kept, and nothing is partial.
       if (!committed) {
@@ -2442,7 +2538,7 @@ export class Orchestrator {
             // Before validating, so a link write is checked with everything else.
             const links = await connectLinks();
             if (signal.aborted) throw new Error('Canceled');
-            const diags = [...session.diagnostics(), ...(await untilStopped(this.deps.compileAll(), signal))];
+            const diags = [...projectDiagnostics(), ...(await untilStopped(this.deps.compileAll(), signal))];
             if (signal.aborted) throw new Error('Canceled');
             const { fresh } = sortErrors(diags);
             if (fresh.length) {
@@ -2513,7 +2609,7 @@ export class Orchestrator {
             const changes = describeOps(executedOps, startState, session.state, opResults);
             const label = (finalText.split(/(?<=[.!?])\s/)[0] || userMsg.text).slice(0, 80);
             // An unfinished request is never labelled with the model's claim that it is done.
-            const committed = await session.completeRun(unfinished.length ? `AI (partial): ${requestText.slice(0, 60)}` : `AI: ${label}`);
+            const committed = await completeRun(unfinished.length ? `AI (partial): ${requestText.slice(0, 60)}` : `AI: ${label}`);
             msg.text = finalText;
             // The model's own summary may call the request done; what is missing is the project's to say.
             // Links left on other pages say how to connect them: Continue would send the same limited request again.
@@ -2525,7 +2621,7 @@ export class Orchestrator {
             const status = !unfinished.length ? 'completed' : committed ? 'partial' : 'no-changes';
             await finish(status, summary, { changes: unfinished.length && !committed ? [] : changes, checks, canUndo: committed, usage, ...(unfinished.length ? { incomplete: true, unfinished: unfinishedPages(), pendingLinks: macros.pendingLinks } : {}) });
           } else {
-            await session.completeRun('AI (no changes)');
+            await completeRun('AI (no changes)');
             msg.text = finalText;
             // Nothing landed, but the request asked for pages that a rejected or skipped change never made.
             const unfinished = [...[...macros.drafts.keys()].map((r) => `The page ${r} was not built.`), ...waiting.map((r) => `Links to ${r} do not go anywhere yet.`), ...(carried?.deferred ?? []).map(leftWaiting), ...missing().map(notCreated)];

@@ -1,4 +1,6 @@
 import { afterEach, beforeAll, describe, expect, it } from 'vitest';
+import { createElement } from 'react';
+import { renderToStaticMarkup } from 'react-dom/server';
 import type { BuilderApi, ProjectSnapshot, RemoteState } from '@shared/api';
 import type { LiveProjectSnapshot } from '@shared/live/snapshot';
 import { createStarterState } from '@catalogue/starters';
@@ -58,7 +60,8 @@ const PATHS = {
   snapshots: '../../src/renderer/src/lib/remote-snapshot',
   view: '../../src/renderer/src/lib/remote-view',
   transports: '../../src/renderer/src/lib/transport',
-  liveHost: '../../src/renderer/src/lib/live-host'
+  liveHost: '../../src/renderer/src/lib/live-host',
+  remoteChat: '../../src/renderer/src/panels/RemoteChat'
 };
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 type Loaded = any;
@@ -118,6 +121,7 @@ beforeAll(async () => {
           calls.remoteApply.push({ joinId, batch });
           return remoteApplyAnswer;
         },
+        ai: async () => null,
         presence: async (joinId: string, presence: unknown) => {
           calls.presence.push({ joinId, presence });
           return true;
@@ -145,7 +149,7 @@ afterEach(() => {
   remoteSnapshot = null;
   remoteStateAnswer = { phase: 'idle', ended: null };
   remoteApplyAnswer = APPLIED;
-  store.setState({ toasts: [], snapshot: null, remote: { phase: 'idle', ended: null }, remotePresence: null, selection: null, pageId: null });
+  store.setState({ toasts: [], snapshot: null, remote: { phase: 'idle', ended: null }, remotePresence: null, remoteAi: null, selection: null, pageId: null });
 });
 
 const flush = () => new Promise((r) => setTimeout(r, 0));
@@ -488,5 +492,59 @@ describe('presence', () => {
     expect(view.remotePill(admitted({ role: 'viewer', sessionExpiresAt: now + 60_000 }), now).text).toBe('Viewer · 1m left');
     expect(view.remotePill(admitted({ hostConnected: false }), now).kind).toBe('away');
     expect(view.remotePill(admitted({ reconnecting: true }), now).kind).toBe('reconnecting');
+  });
+});
+
+describe('the host’s AI (#769)', () => {
+  const ai = (joinId: string, extra: Record<string, unknown> = {}) => ({ joinId, access: { allowed: true, turnsLeft: 2 }, turns: [], activeRunId: null, ...extra });
+
+  it('gives a collaborator the AI view, and a viewer never', () => {
+    expect([...session.remoteRightTabs('collaborator')].sort()).toEqual(['chat', 'inspect', 'styles']);
+    expect([...session.remoteRightTabs('viewer')].sort()).toEqual(['inspect', 'styles']);
+    expect(session.remoteRightTabs(undefined).has('chat')).toBe(false);
+  });
+
+  it('follows this join’s own AI requests, never another join’s, and lets them go when the join ends', async () => {
+    await shown();
+    offs.push(...session.followRemote());
+    emit('remote:ai', ai('join-0'));
+    expect(store.getState().remoteAi).toBeNull();
+    emit('remote:ai', ai('join-1', { activeRunId: 'run-1', turns: [{ runId: 'run-1', request: 'Bigger', reply: '', status: 'awaiting-input', activities: [], question: { id: 'q1', text: 'Which?', choices: [] }, result: null }] }));
+    expect(store.getState().remoteAi).toMatchObject({ joinId: 'join-1', activeRunId: 'run-1' });
+    // The AI tab's mark follows this guest's own request on the host.
+    expect(session.remoteRunStatus(store.getState())).toBe('awaiting-input');
+    emit('remote:ai', ai('join-1', { activeRunId: null, turns: [{ runId: 'run-1', request: 'Bigger', reply: 'Done', status: 'completed', activities: [], question: null, result: { status: 'completed', summary: 'Done', changes: [] } }] }));
+    expect(session.remoteRunStatus(store.getState())).toBeNull();
+    session.applyRemoteState({ phase: 'idle', ended: null });
+    expect(store.getState().remoteAi).toBeNull();
+  });
+
+  it('says AI editing is off until the host allows it, then that requests run on the host’s AI, and shows a viewer nothing', async () => {
+    const { RemoteChat } = await import(/* @vite-ignore */ PATHS.remoteChat);
+    await shown();
+    // Rendered on the server, a store hook reads the store's first state: this view reads the state as it is now.
+    const view = { getState: store.getState, getInitialState: store.getState, subscribe: store.useStore.subscribe };
+    const render = () => renderToStaticMarkup(createElement(store.StoreViewContext.Provider, { value: view }, createElement(RemoteChat)));
+    expect(render()).toContain('AI editing is off');
+    expect(render()).not.toContain('Ask the host’s AI');
+    store.setState({ remoteAi: ai('join-1', { turns: [{ runId: 'run-1', request: 'Make the heading bigger', reply: 'Made it bigger.', status: 'completed', activities: [], question: null, result: { status: 'completed', summary: 'Made it bigger.', changes: ['Heading size'] } }] }) });
+    const html = render();
+    expect(html).toContain('Running on the host’s AI.');
+    expect(html).toContain('2 requests left.');
+    expect(html).toContain('Make the heading bigger');
+    expect(html).toContain('Heading size');
+    expect(html).toContain('aria-label="Ask the host’s AI"');
+    expect(html).toContain('using their AI provider and its quota');
+    // With an element selected on the page, the request is about it by default.
+    store.setState({ selection: { owner: { kind: 'page', id: home }, instancePath: [], nodeId: Object.keys(state.pages[home].nodes)[0] } });
+    expect(render()).toMatch(/checked=""[^>]*>Selection · /);
+    // Made a viewer: no AI view at all.
+    session.applyRemoteState(admitted({ role: 'viewer' }));
+    expect(render()).toBe('');
+  });
+
+  it('never routes the host’s conversations or this computer’s AI runs to the host', async () => {
+    await shown();
+    for (const call of [() => store.api.ai.send('Hi', {}), () => store.api.ai.conversations(), () => store.api.ai.undoTurn('run-1'), () => store.api.ai.stop('run-1'), () => store.api.ai.answer('run-1', 'q1', 'Yes')]) await expect(call()).rejects.toBeInstanceOf(transports.HostOnlyError);
   });
 });
