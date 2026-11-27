@@ -12,6 +12,8 @@ import { atomicWrite, ensureDir, removeDurable, renameReplacing, sha, syncDir, t
 import { isCanonicalPath } from './documents';
 import { SITE_ICON_FILES } from '@shared/site-icons';
 import { isPrivateFileName } from './private-files';
+import { GitError, OID_RE } from '../git/protocol';
+import { advanceVersions, gitSaveProblem, keptOutOfGit, repositoryBytes, versionsGit } from './versions-git';
 
 /** The format of versions.json. A newer one is left alone: nothing is saved, deleted or collected. */
 export const VERSIONS_FORMAT = 1;
@@ -63,6 +65,12 @@ export interface SavedVersion {
    * this version leaves them (Undo of that restore still needs them), and says so while they still hold exactly that.
    */
   filled?: Record<string, string>;
+  /**
+   * A version saved with Git snapshots on (#1153): the commit on the project's versions branch, and the tree of the
+   * whole site it holds. Its documents and media are read from that tree by path and checked against the hashes above;
+   * only external sources' settings and converters (keptOutOfGit) are objects of this store. Absent: every file is one.
+   */
+  git?: { commit: string; tree: string };
 }
 
 interface VersionsFile {
@@ -84,12 +92,19 @@ function validVersion(v: unknown): v is SavedVersion {
   if (!record(v.docs) || !record(v.media)) return false;
   if (!Object.entries(v.docs).every(([p, h]) => isCanonicalPath(p) && typeof h === 'string' && OBJECT_RE.test(h))) return false;
   if (v.filled !== undefined && (!record(v.filled) || !Object.entries(v.filled).every(([p, h]) => isVersionMedia(p) && typeof h === 'string' && OBJECT_RE.test(h)))) return false;
+  if (v.git !== undefined && (!record(v.git) || typeof v.git.commit !== 'string' || !OID_RE.test(v.git.commit) || typeof v.git.tree !== 'string' || !OID_RE.test(v.git.tree))) return false;
   return Object.entries(v.media).every(([p, h]) => isVersionMedia(p) && (h === null || (typeof h === 'string' && OBJECT_RE.test(h))));
 }
 
 /** Every object a version needs. */
 export function objectsOf(v: SavedVersion): Set<string> {
   return new Set([...Object.values(v.docs), ...Object.values(v.media).filter((h): h is string => !!h)]);
+}
+
+/** The objects of this store a version needs: all of them, or for one in Git only what is kept out of it. */
+export function localObjectsOf(v: SavedVersion): Set<string> {
+  if (!v.git) return objectsOf(v);
+  return new Set(Object.entries(v.docs).filter(([p]) => keptOutOfGit(p)).map(([, h]) => h));
 }
 
 /** Whether two versions hold exactly the same documents and media, and record the same files filled. */
@@ -121,7 +136,14 @@ export class VersionStore {
   /** Objects whose bytes were checked against their hash (or written) since the store was loaded: reused as they are. */
   private verified = new Set<string>();
 
-  constructor(readonly root: string) {}
+  /** What the project's versions repository takes on disk, as last measured (load, and each version saved to it). */
+  private gitBytes = 0;
+
+  /** `root` is `.siteorigin/versions` of the project in `project`. */
+  constructor(
+    readonly root: string,
+    readonly project: string
+  ) {}
 
   private get indexPath() {
     return join(this.root, 'versions.json');
@@ -170,6 +192,65 @@ export class VersionStore {
         this.sized++;
       }
     }
+    await this.measureGit();
+  }
+
+  /** Measure the versions repository again: only looked at, never made. */
+  private async measureGit(): Promise<void> {
+    const bytes = await repositoryBytes(this.project).catch(() => this.gitBytes);
+    if (bytes !== this.gitBytes) {
+      this.gitBytes = bytes;
+      this.sized++;
+    }
+  }
+
+  /** The versions repository, for a version in Git. */
+  private repository() {
+    const git = versionsGit();
+    if (!git) throw new Error(VERSION_DAMAGED);
+    return git.repository(this.project);
+  }
+
+  /**
+   * The bytes `v` holds for the file at `path`, whose hash it records as `h`: from its commit when it is in Git (but for
+   * what is kept out of it), otherwise this store's object. Checked against the hash either way, so a damaged or missing
+   * object, or a repository that is not there, is never taken for the file.
+   */
+  async readFile(v: SavedVersion, path: string, h: string): Promise<Buffer> {
+    if (!v.git || keptOutOfGit(path)) return this.read(h);
+    let buf: Buffer;
+    try {
+      const repo = this.repository();
+      // Nothing is made to read a version: a repository that is not there is a version that can't be restored.
+      if (!(await repo.exists())) throw new Error(VERSION_DAMAGED);
+      buf = Buffer.from(await repo.readBlob(v.git.commit, path));
+    } catch {
+      throw new Error(VERSION_DAMAGED);
+    }
+    if (sha(buf) !== h) throw new Error(VERSION_DAMAGED);
+    return buf;
+  }
+
+  /**
+   * Add `v` to the list. A version in Git is put at the tip of the versions branch first (its commit is written by the
+   * capture, the branch moved only now), so the list never names a commit that history does not hold. A move refused or
+   * failing adds nothing. Gives back the row as listed (its commit made again if another save moved the branch).
+   */
+  async add(v: SavedVersion): Promise<SavedVersion> {
+    if (this.problem) throw new Error(this.problem);
+    let row = v;
+    if (v.git) {
+      try {
+        const commit = await advanceVersions(this.repository(), v.git.commit);
+        if (commit !== v.git.commit) row = { ...v, git: { ...v.git, commit } };
+      } catch (e) {
+        throw new Error(e instanceof GitError ? gitSaveProblem(e) : (e as Error).message);
+      } finally {
+        await this.measureGit();
+      }
+    }
+    await this.publish([...this.versions, row]);
+    return row;
   }
 
   /**
@@ -309,7 +390,7 @@ export class VersionStore {
     if (this.problem) return 0;
     // Only this project's own folders: one swapped for a link may hold another project's versions.
     for (const dir of [this.root, this.objectDir]) if (!(await fs.lstat(dir).catch(() => null))?.isDirectory()) return 0;
-    const keep = new Set(this.versions.flatMap((v) => [...objectsOf(v)]));
+    const keep = new Set(this.versions.flatMap((v) => [...localObjectsOf(v)]));
     let freed = 0;
     for (const name of await fs.readdir(this.objectDir).catch(() => [] as string[])) {
       const path = join(this.objectDir, name);
@@ -333,16 +414,28 @@ export class VersionStore {
     return freed;
   }
 
-  /** The bytes every version together holds, each object counted once. */
+  /** The bytes every version together holds, each object counted once, and the versions repository as a whole. */
   totalBytes(): number {
-    return this.usage().total;
+    return this.usage().total + this.gitBytes;
   }
 
-  /** The bytes deleting `v` would free: the objects no other version holds. */
-  exclusiveBytes(v: SavedVersion): number {
+  /**
+   * Of totalBytes, what the versions repository takes: kept for good, since a version deleted from the list stays in
+   * the history it is part of. 0 when the project has no repository.
+   */
+  historyBytes(): number {
+    return this.gitBytes;
+  }
+
+  /**
+   * The bytes deleting `v` would free: the objects no other version holds. Null for a version in Git, whose snapshot
+   * stays in the history when it is deleted from the list, so deleting it frees nothing that could be told.
+   */
+  exclusiveBytes(v: SavedVersion): number | null {
+    if (v.git) return null;
     const kept = this.usage().exclusive?.get(v);
     if (kept !== undefined) return kept;
-    const others = new Set(this.versions.filter((x) => x.id !== v.id).flatMap((x) => [...objectsOf(x)]));
+    const others = new Set(this.versions.filter((x) => x.id !== v.id).flatMap((x) => [...localObjectsOf(x)]));
     let n = 0;
     for (const h of objectsOf(v)) if (!others.has(h)) n += this.sizes.get(h) ?? 0;
     return n;
@@ -356,7 +449,7 @@ export class VersionStore {
   private usage() {
     if (this.used?.versions === this.versions && this.used.sized === this.sized) return this.used;
     const holders = new Map<string, number>();
-    for (const v of this.versions) for (const h of objectsOf(v)) holders.set(h, (holders.get(h) ?? 0) + 1);
+    for (const v of this.versions) for (const h of localObjectsOf(v)) holders.set(h, (holders.get(h) ?? 0) + 1);
     let total = 0;
     for (const h of holders.keys()) total += this.sizes.get(h) ?? 0;
     // By the version itself, so one not in the list (or a copy of one) is worked out on its own.
@@ -369,7 +462,7 @@ export class VersionStore {
       }
       ids.add(v.id);
       let n = 0;
-      for (const h of objectsOf(v)) if (holders.get(h) === 1) n += this.sizes.get(h) ?? 0;
+      for (const h of localObjectsOf(v)) if (holders.get(h) === 1) n += this.sizes.get(h) ?? 0;
       exclusive.set(v, n);
     }
     return (this.used = { versions: this.versions, sized: this.sized, total, exclusive });

@@ -194,6 +194,26 @@ describe('writing and reading versions', () => {
     });
   });
 
+  it('stores a project file only while it holds the bytes the caller hashed (#1153)', async () => {
+    const repo = openRepo(root);
+    await repo.init();
+    mkdirSync(join(root, 'static', 'assets'), { recursive: true });
+    const before = Buffer.from('picture A, as it was hashed');
+    const sha256 = createHash('sha256').update(before).digest('hex');
+    writeFileSync(join(root, 'static', 'assets', 'photo.jpg'), before);
+    const tree = await repo.writeFiles([{ path: 'static/assets/photo.jpg', source: 'static/assets/photo.jpg', sha256 }]);
+    expect(Buffer.from(await repo.readBlob(tree, 'static/assets/photo.jpg')).equals(before)).toBe(true);
+    // Replaced in place by a picture of the same size after it was hashed: refused, and nothing of it stored.
+    const after = Buffer.from('picture B, put there later!');
+    expect(after.length).toBe(before.length);
+    writeFileSync(join(root, 'static', 'assets', 'photo.jpg'), after);
+    const held = objects();
+    await expect(repo.writeFiles([{ path: 'static/assets/photo.jpg', source: 'static/assets/photo.jpg', sha256 }])).rejects.toMatchObject({ code: 'changed' });
+    expect(objects()).toEqual(held);
+    expect(objects()).not.toContain(blobOid(after));
+    await expect(repo.writeFiles([{ path: 'x', source: 'static/assets/photo.jpg', sha256: 'not-a-hash' }])).rejects.toMatchObject({ code: 'invalid' });
+  });
+
   it('publishes commits to a branch, lists them newest first, and keeps a second history with its own root', async () => {
     const repo = openRepo(root, { limits: { maxLogDepth: 3 } });
     await repo.init();

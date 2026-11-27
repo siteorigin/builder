@@ -61,6 +61,12 @@ export interface AppSettings {
   /** Shows code components and source editing. Off by default: most users never need code. */
   developerMode: boolean;
   /**
+   * Saved versions are stored as snapshots of the whole site in a Git repository of the project's own
+   * (`.siteorigin/versions.git/`), written by the bundled Git. Off by default: versions then use the plain store, and no
+   * repository is made. Versions saved either way stay listed and restorable whichever this is.
+   */
+  gitSnapshots: boolean;
+  /**
    * Advanced: the live session relay to use instead of the production one, as a normalized http(s) origin, or null
    * for the default. `SITEORIGIN_LIVE_RELAY_URL` wins over it (see shared/live/relay-url.ts).
    */
@@ -74,6 +80,12 @@ export interface AppSettings {
     sendOnEnter: boolean;
     setupAcknowledged: boolean;
   };
+}
+
+/** What Git the app has for saved versions: the bundled one, which needs nothing installed, and the computer's own. */
+export interface GitRuntimeInfo {
+  bundled: { engine: 'isomorphic-git'; ready: true; version: string } | { engine: 'isomorphic-git'; ready: false; reason: string };
+  system: { status: 'present'; path: string; version: string } | { status: 'missing' } | { status: 'unusable'; path: string; reason: 'failed' | 'timeout' | 'unrecognised' };
 }
 
 /**
@@ -220,8 +232,11 @@ export interface SavedVersionInfo {
   auto: boolean;
   /** How many pages it holds. */
   pages: number;
-  /** What deleting it frees: what no other saved version also holds. */
-  bytes: number;
+  /**
+   * What deleting it frees: what no other saved version also holds. Null for a version saved with Git snapshots on,
+   * whose snapshot stays in the project's version history when it is deleted from the list, so nothing is freed.
+   */
+  bytes: number | null;
   /** Files its documents name that were missing from the project folder when it was saved. */
   missing: string[];
 }
@@ -232,6 +247,11 @@ export interface VersionsInfo {
   list: SavedVersionInfo[];
   /** What all saved versions take together, each file counted once. */
   bytes: number;
+  /**
+   * Of `bytes`, what the project's version history takes (versions saved with Git snapshots on): kept for good, since
+   * deleting a version from the list leaves its snapshot there. Absent when the project has none.
+   */
+  historyBytes?: number;
   /** Why versions can't be saved or deleted (their list could not be read), if so. */
   problem?: string;
 }
@@ -481,8 +501,11 @@ export interface StorageInfo {
   kept: StorageSize;
   /** The saved document versions Undo and Redo restore. */
   history: { steps: number; bytes: number };
-  /** Named versions saved in History, with the documents and files each holds. Only deleting a version frees them. */
-  versions: { count: number; bytes: number };
+  /**
+   * Named versions saved in History, with the documents and files each holds. Only deleting a version frees them, but
+   * for `historyBytes` (as VersionsInfo), which deleting never frees.
+   */
+  versions: { count: number; bytes: number; historyBytes?: number };
   /** What freeing up space would do; null when there is nothing to free. */
   reclaim: ReclaimPlan | null;
   /** Why space cannot be freed right now, if so. */
@@ -1180,6 +1203,8 @@ export interface BuilderApi {
     packPreview(packId: string, file: string): Promise<string | null>;
     getSettings(): Promise<AppSettings>;
     setSettings(patch: SettingsPatch): Promise<AppSettings>;
+    /** The Git saved versions use (#1153): the bundled one, ready or why not, and the computer's own if it has one. */
+    gitRuntime(): Promise<GitRuntimeInfo>;
     openExternal(url: string): Promise<void>;
     /** Which build this is, as Help > Copy Build Details copies it, to quote in a report. */
     buildDetails(): Promise<string>;

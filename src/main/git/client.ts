@@ -80,7 +80,7 @@ interface Job {
 const owned = (b: Uint8Array): Uint8Array => (b instanceof Uint8Array && b.byteOffset === 0 && b.byteLength === b.buffer.byteLength ? b : new Uint8Array(b));
 function ownBytes(op: GitOp): GitOp {
   if (op.op === 'writeBlob' && 'bytes' in op.input) return { ...op, input: { bytes: owned(op.input.bytes) } };
-  if (op.op === 'writeFiles') return { ...op, files: op.files.map((f) => ('bytes' in f ? { path: f.path, bytes: owned(f.bytes) } : { path: f.path, source: f.source })) };
+  if (op.op === 'writeFiles') return { ...op, files: op.files.map((f) => ('bytes' in f ? { path: f.path, bytes: owned(f.bytes) } : { path: f.path, source: f.source, ...(f.sha256 !== undefined ? { sha256: f.sha256 } : {}) })) };
   return op;
 }
 

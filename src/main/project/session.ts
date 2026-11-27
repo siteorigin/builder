@@ -1,6 +1,6 @@
 import { randomBytes } from 'node:crypto';
 import { EventEmitter } from 'node:events';
-import { promises as fs, existsSync, statSync, type BigIntStats, type Dirent } from 'node:fs';
+import { promises as fs, existsSync, statSync, type BigIntStats, type Dirent, type Stats } from 'node:fs';
 import type { FileHandle } from 'node:fs/promises';
 import { hostname } from 'node:os';
 import { basename, dirname, join, resolve as resolvePath } from 'node:path';
@@ -58,6 +58,9 @@ import { absent, handleStamp, isMissing, lookAt, OPEN_READ, readFileAt, stampOf,
 
 export { statTrusted };
 import { heldAsMedia, isVersionMedia, newVersionId, sameContents, VERSION_DAMAGED, VERSION_NAME_MAX, VersionStore, type SavedVersion } from './versions';
+import { gitSaveProblem, keptOutOfGit, versionsGit, writeVersionCommit } from './versions-git';
+import { captureSnapshotInventory } from './snapshot-inventory';
+import type { FileInput } from '../git/protocol';
 
 export const LOCAL_DIR = '.siteorigin';
 
@@ -702,7 +705,7 @@ export class ProjectSession extends EventEmitter {
 
   constructor(public readonly dir: string) {
     super();
-    this.versions = new VersionStore(this.local('versions'));
+    this.versions = new VersionStore(this.local('versions'), dir);
   }
 
   local(...parts: string[]): string {
@@ -3884,7 +3887,7 @@ export class ProjectSession extends EventEmitter {
       media,
       kept,
       history: { steps: h.entries.length, bytes: sum(h.entries.flatMap(entryBlobs)) },
-      versions: { count: this.versions.versions.length, bytes: this.versions.totalBytes() },
+      versions: { count: this.versions.versions.length, bytes: this.versions.totalBytes(), ...(this.versions.historyBytes() ? { historyBytes: this.versions.historyBytes() } : {}) },
       reclaim: null,
       blocked: this.reclaimBlocked()
     };
@@ -4011,6 +4014,7 @@ export class ProjectSession extends EventEmitter {
         missing: Object.keys(v.media).filter((p) => v.media[p] === null)
       })),
       bytes: store.totalBytes(),
+      ...(store.historyBytes() ? { historyBytes: store.historyBytes() } : {}),
       ...(store.problem ? { problem: store.problem } : {})
     };
     timing();
@@ -4083,6 +4087,8 @@ export class ProjectSession extends EventEmitter {
    * one that could not be read stops the save.
    */
   private async captureVersion(name: string, opts: { auto?: boolean; also?: string[]; filled?: Record<string, string> } = {}): Promise<SavedVersion> {
+    const git = versionsGit();
+    if (git && (await git.enabled())) return this.captureGitVersion(name, opts);
     const docs: Record<string, string> = {};
     // A version is of the site: the brief says what the project is for, and a restore keeps the one it has.
     // Nor what has been published: a restore never takes back what the website was exported with.
@@ -4110,6 +4116,81 @@ export class ProjectSession extends EventEmitter {
   }
 
   /**
+   * captureVersion with Git snapshots on (#1153): the whole site (snapshot-inventory.ts) written as a tree and a commit
+   * of it on the versions branch's tip, the branch not moved yet (VersionStore.add moves it). The documents are the
+   * loaded ones, as for any version, so what the row records is what the tree holds; external sources' settings and
+   * converters are objects of the list's store instead, never in Git. The media a restore puts back are recorded as
+   * ever, by their SHA-256, and the worker stores each file only while it still holds the bytes hashed.
+   */
+  private async captureGitVersion(name: string, opts: { auto?: boolean; also?: string[]; filled?: Record<string, string> }): Promise<SavedVersion> {
+    const id = newVersionId();
+    const time = new Date().toISOString();
+    const docs: Record<string, string> = {};
+    const files: FileInput[] = [];
+    for (const [path, content] of this.docs) {
+      if (path === BRIEF_FILE || path === PUBLISHED_FILE) continue;
+      if (keptOutOfGit(path)) docs[path] = await this.versions.putText(content);
+      else {
+        const bytes = Buffer.from(content, 'utf8');
+        docs[path] = sha(bytes);
+        files.push({ path, bytes });
+      }
+    }
+    let inventory: Awaited<ReturnType<typeof captureSnapshotInventory>>;
+    try {
+      inventory = await captureSnapshotInventory(this.dir, { settleMs: this.settleMs });
+    } catch (e) {
+      throw new Error(`${(e as Error).message} Nothing was saved.`);
+    }
+    // Every other file of the site, as it is on disk; the documents on disk are the loaded ones (checked before saving).
+    const hashed = new Map<string, string>();
+    for (const f of inventory.tree) {
+      if (isCanonicalPath(f.path)) continue;
+      hashed.set(f.path, f.sha256);
+      files.push({ path: f.path, source: f.path, sha256: f.sha256 });
+    }
+    const media: Record<string, string | null> = {};
+    for (const rel of new Set([...(await this.versionMediaPaths(this.docs)), ...(opts.also ?? [])])) {
+      let abs: string;
+      try {
+        abs = safeJoin(this.dir, rel);
+      } catch {
+        media[rel] = null;
+        continue;
+      }
+      let st: Stats;
+      try {
+        st = await fs.lstat(abs);
+      } catch (e) {
+        if ((e as NodeJS.ErrnoException).code !== 'ENOENT') throw new Error(`${rel} could not be read, so nothing was saved: ${(e as Error).message}`);
+        media[rel] = null;
+        continue;
+      }
+      if (!st.isFile()) {
+        media[rel] = null;
+        continue;
+      }
+      const h = hashed.get(rel);
+      if (h) {
+        media[rel] = h;
+        continue;
+      }
+      // A file the site names that a snapshot leaves out by its name (a `.tmp` file, say): still held, as it always was.
+      const bytes = await fs.readFile(abs).catch((e: Error) => Promise.reject(new Error(`${rel} could not be read, so nothing was saved: ${e.message}`)));
+      media[rel] = sha(bytes);
+      files.push({ path: rel, source: rel, sha256: media[rel] });
+    }
+    let git: { commit: string; tree: string };
+    try {
+      git = await writeVersionCommit(versionsGit()!.repository(this.dir), files, id, time, !!opts.auto);
+    } catch (e) {
+      throw new Error(gitSaveProblem(e));
+    }
+    const filled = opts.filled && Object.keys(opts.filled).length ? { filled: opts.filled } : {};
+    return { id, name, time, revision: this.revision, schemaVersion: SCHEMA_VERSION, ...(opts.auto ? { auto: true } : {}), docs, media, ...filled, git };
+  }
+
+  /**
    * Save the site as it is now as a named version, kept until the author deletes it. A file its documents name that
    * is missing from the folder does not stop the save: it is listed in `missing`, and the version records it as such.
    */
@@ -4131,7 +4212,7 @@ export class ProjectSession extends EventEmitter {
         const late = await this.unloadedEdit(new Set());
         if (late) return { ok: false, message: `${late} changed outside the app. Try again in a moment.` };
         if (!(await this.stillOwner())) return { ok: false, message: this.readOnly?.reason ?? LOCK_UNCHECKED };
-        await this.versions.publish([...this.versions.versions, v]);
+        v = await this.versions.add(v);
       } catch (e) {
         return { ok: false, message: (e as Error).message };
       }
@@ -4151,7 +4232,7 @@ export class ProjectSession extends EventEmitter {
     const stored = new Map<string, string>();
     try {
       // A version never holds the brief; one that does (saved before that was so) is restored without it.
-      for (const [path, h] of Object.entries(v.docs)) if (path !== BRIEF_FILE && path !== PUBLISHED_FILE) stored.set(path, (await this.versions.read(h)).toString('utf8'));
+      for (const [path, h] of Object.entries(v.docs)) if (path !== BRIEF_FILE && path !== PUBLISHED_FILE) stored.set(path, (await this.versions.readFile(v, path, h)).toString('utf8'));
     } catch (e) {
       return refuse((e as Error).message);
     }
@@ -4192,7 +4273,7 @@ export class ProjectSession extends EventEmitter {
       if (st && !st.isFile()) return refuse(`${path} is not a file, so “${v.name}” can’t put back its own.`);
       if (st && sha(await fs.readFile(abs)) === h) continue;
       try {
-        await this.versions.read(h);
+        await this.versions.readFile(v, path, h);
       } catch (e) {
         return refuse((e as Error).message);
       }
@@ -4302,11 +4383,12 @@ export class ProjectSession extends EventEmitter {
       let backup: SavedVersion;
       try {
         const now = await this.captureVersion(backupName(v.name), { auto: true, also: replaced, filled });
+        // A version that holds exactly what a restore of either kind would put back is the way back, whichever store holds it.
         const kept = this.versions.versions.find((x) => sameContents(x, now));
-        backup = kept ?? now;
-        if (!kept) {
+        if (kept) backup = kept;
+        else {
           if (!(await this.stillOwner())) return { ok: false, message: this.readOnly?.reason ?? LOCK_UNCHECKED };
-          await this.versions.publish([...this.versions.versions, now]);
+          backup = await this.versions.add(now);
         }
       } catch (e) {
         return { ok: false, message: `Your current work could not be saved first, so nothing was restored. ${(e as Error).message}` };
@@ -4331,7 +4413,7 @@ export class ProjectSession extends EventEmitter {
             if (!(await this.stillOwner())) throw new RestoreStopped(this.readOnly?.reason ?? LOCK_UNCHECKED);
             const abs = safeJoin(this.dir, f.path);
             // Read before the file is checked, so as little time as possible passes between the check and the write.
-            const bytes = await this.versions.read(f.hash);
+            const bytes = await this.versions.readFile(v, f.path, f.hash);
             const now = await fs.readFile(abs).then(sha, (e: NodeJS.ErrnoException) => (e.code === 'ENOENT' ? null : Promise.reject(e)));
             if (now !== before) throw new RestoreStopped(`${f.path} changed while the version was being restored, so nothing was restored.`);
             // Noted before writing: a write that lands but fails to report so is still undone.

@@ -36,7 +36,8 @@ import { stopToolsChecks, toolsChecker } from './runtime/tools-process';
 import { readInsertPlace } from './saved-components';
 import { stopPostReads } from './posts-import/process';
 import { stopSourceSyncs } from './sources/process';
-import { stopGitWorker } from './git/process';
+import { gitClient, gitRuntime, stopGitWorker } from './git/process';
+import { useVersionsGit } from './project/versions-git';
 import { canvasPreviewUrl, playerFrameAllowed, previewNavigationAllowed as navigationAllowed, sameOrigin } from './player-frames';
 import { stopPhotoDecoders } from './project/photo-convert';
 import { createThumbCapturer } from './thumb-capture';
@@ -530,6 +531,8 @@ function registerIpc() {
   handle('app:quit', () => app.quit(), { anytime: true });
   handle('packs:preview', (packId: unknown, file: unknown) => packPreview(packId, file));
   handle('app:getSettings', async () => (await loadSettings()).settings);
+  // Asked by Settings only while it shows Git snapshots: the first ask starts the Git worker and looks for the computer's Git.
+  handle('app:gitRuntime', () => gitRuntime());
   handle('app:setSettings', async (patch: SettingsPatch) => {
     const before = (await loadSettings()).settings.ai;
     // Withdrawing permission ends work in progress at once, which would otherwise keep sending to that server. The
@@ -1350,6 +1353,9 @@ app.whenReady().then(async () => {
   });
   // What a new project's website tools need is worked out in a process of its own, never on this one (#961).
   setToolsCheck((req, signal) => toolsChecker.check(req, signal));
+  // Saved versions go to Git while Git snapshots are on in Settings (#1153), asked at each save; a version already in
+  // Git is read through the same worker whatever the setting. Nothing starts the worker until one is.
+  useVersionsGit({ enabled: async () => (await loadSettings()).settings.gitSnapshots, repository: (root) => gitClient.repository(root) });
   // Theme packs are verified once the first window is loading (createWindow): every request waits for them (handle()).
   registerIpc();
   developerModeOn = (await loadSettings()).settings.developerMode;

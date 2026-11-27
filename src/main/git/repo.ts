@@ -60,6 +60,7 @@ const MAX_REF_LENGTH = 200;
  */
 const incompressible = (bytes: Uint8Array) => bytes.byteLength >= SAMPLE_BYTES && deflateSync(bytes.subarray(0, SAMPLE_BYTES), { level: 1 }).byteLength > SAMPLE_BYTES * 0.97;
 
+const SHA256_RE = /^[0-9a-f]{64}$/;
 const isMissing = (e: unknown) => ['ENOENT', 'ENOTDIR'].includes((e as NodeJS.ErrnoException)?.code ?? '');
 const sleep = (ms: number) => new Promise<void>((r) => setTimeout(r, ms));
 const utf8Bytes = (s: string) => Buffer.byteLength(s, 'utf8');
@@ -528,6 +529,7 @@ export function openRepo(root: string, opts: RepoOptions = {}): Repo {
             total += f.bytes.byteLength;
             seen.push(undefined);
           } else if (typeof f?.source === 'string') {
+            if (f.sha256 !== undefined && (typeof f.sha256 !== 'string' || !SHA256_RE.test(f.sha256))) throw new GitError('invalid', `${f.path} has a hash that is not a SHA-256.`);
             const file = await sourceFile(f.source);
             if (file.st.size > BigInt(limits.maxBlobBytes)) throw new GitError('too-large', `${f.source} is too large for a version.`);
             total += Number(file.st.size);
@@ -552,7 +554,9 @@ export function openRepo(root: string, opts: RepoOptions = {}): Repo {
         const oids: Oid[] = [];
         for (const [index, f] of files.entries()) {
           check(token);
-          oids[index] = await blob('bytes' in f ? f.bytes : await readSource(f.source, seen[index]));
+          const bytes = 'bytes' in f ? f.bytes : await readSource(f.source, seen[index]);
+          if ('source' in f && f.sha256 !== undefined && createHash('sha256').update(bytes).digest('hex') !== f.sha256) throw new GitError('changed', `${f.source} changed while the version was being saved.`);
+          oids[index] = await blob(bytes);
           if (opts.fault) await opts.fault('file-written', f.path);
         }
         const writeDir = async (dir: Dir): Promise<Oid> => {
