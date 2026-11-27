@@ -286,12 +286,16 @@ describe('capturing a project', () => {
     write(root, 'static/kit2/.GIT', 'gitdir: elsewhere');
     write(root, 'static/kit2/icon.svg', '<svg/>');
     write(root, 'src/vendor/own.js', 'export const own = 1;');
+    // A bare repository kept in the project, with no `.git` of its own.
+    write(root, 'src/vendor/kept.git/HEAD', 'ref: refs/heads/main\n');
+    write(root, 'src/vendor/kept.git/objects/ab/cdef', 'an old object');
+    write(root, 'src/vendor/kept.git/refs/heads/main', '0'.repeat(40));
     // The project's own repository leaves the project as it is.
     write(root, '.git/HEAD', 'ref: refs/heads/main\n');
     const paths = (await captureSnapshotInventory(root, { settleMs: 0 })).tree.map((f) => f.path);
     expect(paths).toContain('src/vendor/own.js');
     expect(paths).toContain('src/routes/+page.svelte');
-    expect(paths.filter((p) => p.startsWith('src/vendor/lib') || p.startsWith('static/kit'))).toEqual([]);
+    expect(paths.filter((p) => p.startsWith('src/vendor/lib') || p.startsWith('src/vendor/kept.git') || p.startsWith('static/kit'))).toEqual([]);
     expect(paths).toContain('static/assets/photo-1234abcd.jpg');
   });
 

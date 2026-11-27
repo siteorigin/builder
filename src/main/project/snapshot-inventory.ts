@@ -292,6 +292,8 @@ async function listProject(root: string, settleMs: number): Promise<Map<string, 
     // A folder with a `.git` of its own (a submodule, a nested checkout) is another repository's work: none of it is
     // read. The marker itself is never opened. The project's own `.git`, at its top, leaves the project as it is.
     if (rel && names.some(({ name }) => fold(name) === '.git')) return;
+    // Nor a bare repository's folder (a clone kept as Git keeps one): its objects hold whatever it ever held.
+    if (rel && ['head', 'objects', 'refs'].every((n) => names.some(({ name }) => fold(name) === n))) return;
     for (const { name, raw: bytes } of names) {
       const r = rel ? `${rel}/${name}` : name;
       const place = snapshotPlace(r);

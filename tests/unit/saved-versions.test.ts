@@ -1076,6 +1076,53 @@ describe('saved versions in Git (#1153)', () => {
     expect(s.state.site.description).toBe('Two');
   });
 
+  both('never puts a file back through a link inside the project, nor stores versions through a linked folder', async () => {
+    const { dir, s } = await make();
+    const before = () => readdirSync(join(dir, '.git'), { recursive: true }).map(String).sort();
+    mkdirSync(join(dir, '.git', 'objects'), { recursive: true });
+    writeFileSync(join(dir, '.git', 'HEAD'), 'ref: refs/heads/main\n');
+    mkdirSync(join(dir, 'static', 'brand'), { recursive: true });
+    writeFileSync(join(dir, 'static/brand/HEAD'), 'the brand’s own file');
+    await ok(s.apply({ operations: [{ type: 'component.createCode', name: 'Brand', source: '<a href="/brand/HEAD">Brand</a>\n' }] }, { label: 'Add brand' }));
+    const saved = await ok(s.saveVersion('Brand'));
+    const git0 = before();
+    // The folder becomes a link to the developer's repository: restoring would write its HEAD.
+    rmSync(join(dir, 'static', 'brand'), { recursive: true });
+    symlinkSync(join(dir, '.git'), join(dir, 'static', 'brand'));
+    const { review } = await ok(s.reviewVersion(saved.id!));
+    expect(review!.problem).toMatch(/reached through a link/);
+    expect((await s.restoreVersion(saved.id!, review!.revision)).ok).toBe(false);
+    expect(readFileSync(join(dir, '.git', 'HEAD'), 'utf8')).toBe('ref: refs/heads/main\n');
+    // The store's own folder swapped for a link: nothing is saved through it.
+    rmSync(join(dir, 'static', 'brand'));
+    rmSync(join(dir, '.siteorigin/versions/objects'), { recursive: true, force: true });
+    symlinkSync(join(dir, '.git', 'objects'), join(dir, '.siteorigin/versions/objects'));
+    expect(await s.saveVersion('Through the link')).toMatchObject({ ok: false, message: expect.stringMatching(/link/) });
+    expect(before()).toEqual(git0);
+  });
+
+  it('saves the work a restore replaces beside the list when the history’s newest version is damaged', async () => {
+    git.enabled = true;
+    const { dir, s } = await make();
+    await describe1(s, 'One', 'One');
+    const one = await ok(s.saveVersion('One'));
+    await describe1(s, 'Two', 'Two');
+    await ok(s.saveVersion('Two'));
+    const tip = (await openRepo(dir).resolveRef(VERSIONS_BRANCH))!;
+    rmSync(join(gitdir(dir), 'objects', tip.slice(0, 2), tip.slice(2)));
+    await describe1(s, 'Three', 'Three');
+    // A new version can't be added to damaged history, and says what to do.
+    expect(await s.saveVersion('Three')).toMatchObject({ ok: false, message: expect.stringMatching(/damaged.*Turn off Git snapshots/) });
+    // A restore still saves the way back, in the plain store, and the history is left as it is.
+    const r = await ok(s.restoreVersion(one.id!, s.revision));
+    expect(catalogue(dir).find((v) => v.id === r.backup!.id)!.git).toBeUndefined();
+    expect(await openRepo(dir).resolveRef(VERSIONS_BRANCH)).toBe(tip);
+    expect(s.state.site.description).toBe('One');
+    const back = await ok(s.reviewVersion(r.backup!.id));
+    await ok(s.restoreVersion(r.backup!.id, back.review!.revision));
+    expect(s.state.site.description).toBe('Three');
+  });
+
   it('passes the hash a source file was read under through to the worker, which refuses other bytes', async () => {
     const { dir } = await make();
     writeFileSync(join(dir, 'static', 'notes.txt'), 'these bytes');

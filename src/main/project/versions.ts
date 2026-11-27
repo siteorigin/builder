@@ -43,6 +43,7 @@ const LEFTOVER_MS = 10 * 60_000;
 export const VERSIONS_UNREADABLE = 'The list of saved versions could not be read, so versions can’t be saved or deleted. It was left as it is.';
 export const VERSIONS_NEWER = 'The saved versions were made by a newer version of SiteOrigin Builder. Update the app to use them.';
 export const VERSION_DAMAGED = 'Part of this saved version is missing or damaged, so it can’t be restored.';
+export const VERSIONS_LINKED = 'The saved versions folder in .siteorigin is a link rather than a folder of its own, so versions can’t be saved there.';
 
 export interface SavedVersion {
   id: string;
@@ -257,16 +258,20 @@ export class VersionStore {
   async add(v: SavedVersion): Promise<SavedVersion> {
     if (this.problem) throw new Error(this.problem);
     let row = v;
-    if (v.git) {
-      try {
-        const commit = await advanceVersions(this.repository(), v.git.commit);
-        if (commit !== v.git.commit) row = { ...v, git: { ...v.git, commit } };
-      } catch (e) {
-        throw new Error(e instanceof GitError ? gitSaveProblem(e) : (e as Error).message);
+    try {
+      if (v.git) {
+        try {
+          const commit = await advanceVersions(this.repository(), v.git.commit);
+          if (commit !== v.git.commit) row = { ...v, git: { ...v.git, commit } };
+        } catch (e) {
+          throw new Error(e instanceof GitError ? gitSaveProblem(e) : (e as Error).message);
+        }
       }
+      await this.publish([...this.versions, row]);
+    } finally {
+      // After the list, whatever happened: a commit made again on another save's may be there, listed or not.
+      if (v.git) await this.measureGit();
     }
-    await this.publish([...this.versions, row]);
-    if (row.git) await this.measureGit();
     return row;
   }
 
@@ -282,6 +287,17 @@ export class VersionStore {
     const ok = await fs.readFile(this.objectPath(h)).then((b) => sha(b) === h, () => false);
     if (ok) this.verified.add(h);
     return ok;
+  }
+
+  /**
+   * Refuse to write when a folder of this store is not one of its own: a link there could lead anywhere, the project's
+   * own `.git` included. Looked at before a version is captured and before the list is written.
+   */
+  async checkFolders(): Promise<void> {
+    for (const dir of [join(this.root, '..'), this.root, this.objectDir]) {
+      const st = await fs.lstat(dir).catch(() => null);
+      if (st && !st.isDirectory()) throw new Error(VERSIONS_LINKED);
+    }
   }
 
   /** Store `buf` (if not already stored) and return its hash. */
@@ -355,6 +371,7 @@ export class VersionStore {
   /** Replace the index with `next`, durably, then use it. */
   async publish(next: SavedVersion[]): Promise<void> {
     if (this.problem) throw new Error(this.problem);
+    await this.checkFolders();
     try {
       await atomicWrite(this.indexPath, toJson({ format: VERSIONS_FORMAT, versions: next } satisfies VersionsFile));
     } catch (e) {

@@ -163,8 +163,19 @@ export function openRepo(root: string, opts: RepoOptions = {}): Repo {
   const alive = opts.processAlive ?? isAlive;
   /** Whether this worker has cleared its exited predecessors' temporary objects yet. */
   let swept = false;
-  /** Loose objects this worker has read back whole and found to be their names' content: reused as they are. */
-  const intact = new Set<Oid>();
+  /**
+   * Loose objects this worker has read back whole and found to be their names' content, by the file's identity and
+   * stamp then: reused as they are while the file is still that, read back again once it has changed.
+   */
+  const intact = new Map<Oid, string>();
+  const stampOf = (st: { ino: number; size: number; mtimeMs: number; ctimeMs: number }) => `${st.ino}:${st.size}:${st.mtimeMs}:${st.ctimeMs}`;
+  /** Whether the loose object there (`st`) is whole: known from an earlier look while it is unchanged, or read back now. */
+  const wholeAt = async (path: string, oid: Oid, st: Parameters<typeof stampOf>[0]): Promise<boolean> => {
+    if (intact.get(oid) === stampOf(st)) return true;
+    if (!(await holds(path, oid))) return false;
+    intact.set(oid, stampOf(st));
+    return true;
+  };
   // Writes one at a time in this worker: what one stages is flushed or discarded before the next begins.
   let queue: Promise<unknown> = Promise.resolve();
   const serial = <T>(f: () => Promise<T>): Promise<T> => {
@@ -332,8 +343,7 @@ export function openRepo(root: string, opts: RepoOptions = {}): Repo {
     const there = await looseExists(oid);
     // One already there is reused only once it has been read back whole as this content (once per worker): a copy cut
     // short or damaged is written again, so a new version never leans on bytes that would fail its restore.
-    if (there && (intact.has(oid) || (await holds(path, oid)))) {
-      intact.add(oid);
+    if (there && (await wholeAt(path, oid, there))) {
       gfs.reuse(path, there.mtimeMs);
       return oid;
     }
@@ -581,12 +591,10 @@ export function openRepo(root: string, opts: RepoOptions = {}): Repo {
         const writeTree = async (entries: TreeEntry[]): Promise<Oid> => {
           const oid = await git.writeTree({ fs: gfs, gitdir, tree: entries });
           const path = objectPath(oid);
-          if (gfs.staged(path) || intact.has(oid)) return oid;
+          if (gfs.staged(path)) return oid;
           // Not loose (a stock Git packed it): read whole when a version is read, as ever.
-          if (!(await looseExists(oid)) || (await holds(path, oid))) {
-            intact.add(oid);
-            return oid;
-          }
+          const there = await looseExists(oid);
+          if (!there || (await wholeAt(path, oid, there))) return oid;
           await fs.rm(path, { force: true });
           return git.writeTree({ fs: gfs, gitdir, tree: entries });
         };

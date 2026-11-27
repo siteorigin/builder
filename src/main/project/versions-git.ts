@@ -62,7 +62,7 @@ export function gitSaveProblem(e: unknown): string {
     case 'conflict':
       return 'Another copy of SiteOrigin Builder is saving a version of this project. Try again in a moment.';
     case 'corrupt':
-      return 'The project’s version history is damaged, so the version could not be saved.';
+      return 'The project’s version history is damaged, so the version could not be saved. Turn off Git snapshots in Settings to save versions without it.';
     case 'timeout':
     case 'busy':
       return 'Saving the version took too long. Try again in a moment.';
@@ -75,6 +75,11 @@ export function gitSaveProblem(e: unknown): string {
 export async function writeVersionCommit(repo: GitRepository, files: FileInput[], id: string, time: string, auto: boolean): Promise<{ commit: Oid; tree: Oid }> {
   await repo.init();
   const tip = await repo.resolveRef(VERSIONS_BRANCH);
+  // A tip that can't be read is damaged history: nothing is built on it.
+  if (tip)
+    await repo.readCommit(tip).catch((e: unknown) => {
+      throw e instanceof GitError && !['not-found', 'corrupt', 'invalid'].includes(e.code) ? e : new GitError('corrupt', 'The newest version in the history is damaged or gone.');
+    });
   const tree = await repo.writeFiles(files);
   const who = appIdentity(time);
   const commit = await repo.writeCommit({ tree, parents: tip ? [tip] : [], author: who, committer: who, message: commitMessage(id, auto) });

@@ -235,9 +235,10 @@ describe('writing and reading versions', () => {
       ['run.sh', '100755']
     ]);
     await expect(again.writeFiles([{ path: 'x', bytes: text('x'), mode: '120000' as '100644' }])).rejects.toMatchObject({ code: 'invalid' });
-    // Whole, but other content under its name (it inflates, and is still not this object): written again too.
+    // Whole, but other content under its name (it inflates, and is still not this object): written again too, by the
+    // same worker that found it whole before, since the file is not the one it read back then.
     writeFileSync(path, deflateSync(Buffer.from('blob 5\0other')));
-    expect(await openRepo(root).writeFiles([{ path: 'static/photo.jpg', bytes }])).toBe(tree);
+    expect(await again.writeFiles([{ path: 'static/photo.jpg', bytes }])).toBe(tree);
     expect(Buffer.from(await openRepo(root).readBlob(tree, 'static/photo.jpg')).equals(Buffer.from(bytes))).toBe(true);
   });
 

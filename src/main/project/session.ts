@@ -60,7 +60,7 @@ export { statTrusted };
 import { heldAsMedia, isVersionMedia, newVersionId, sameContents, VERSION_DAMAGED, VERSION_NAME_MAX, VersionStore, type SavedVersion } from './versions';
 import { gitSaveProblem, keptOutOfGit, versionsGit, writeVersionCommit, type VersionsGit } from './versions-git';
 import { captureSnapshotInventory, foldName } from './snapshot-inventory';
-import type { FileInput } from '../git/protocol';
+import { GitError, type FileInput } from '../git/protocol';
 
 export const LOCAL_DIR = '.siteorigin';
 
@@ -196,6 +196,9 @@ function namesFile(text: string, file: string): boolean {
 
 /** A restore stopped before its documents were saved: the files it put back are put back as they were. */
 class RestoreStopped extends Error {}
+
+/** A version could not be saved to Git because the project's version history is damaged. */
+class HistoryDamaged extends Error {}
 
 /** The name of the version saved before restoring the one named `name`, kept short however often restores nest. */
 function backupName(name: string): string {
@@ -4086,9 +4089,10 @@ export class ProjectSession extends EventEmitter {
    * something else in), as a version not yet in the list. A file that is not there, or is a link, is kept as missing;
    * one that could not be read stops the save.
    */
-  private async captureVersion(name: string, opts: { auto?: boolean; also?: string[]; filled?: Record<string, string> } = {}): Promise<SavedVersion> {
-    // Asked once per version: the same Git decides and stores it.
-    const git = versionsGit();
+  private async captureVersion(name: string, opts: { auto?: boolean; also?: string[]; filled?: Record<string, string>; plain?: boolean } = {}): Promise<SavedVersion> {
+    await this.versions.checkFolders();
+    // Asked once per version: the same Git decides and stores it. `plain` keeps it to this store whatever the setting.
+    const git = opts.plain ? null : versionsGit();
     if (git && (await git.enabled())) return this.captureGitVersion(git, name, opts);
     const docs: Record<string, string> = {};
     // A version is of the site: the brief says what the project is for, and a restore keeps the one it has.
@@ -4149,11 +4153,17 @@ export class ProjectSession extends EventEmitter {
     // Every other file of the site, as it is on disk (the record of what was published, and code no component claims,
     // included); the documents on disk are the loaded ones, checked before saving.
     const hashed = new Map<string, string>();
-    // By the name a case-insensitive disk would give it: a document loaded under another spelling is that file.
+    // A document loaded under another spelling of a file's name is that file, where the disk ignores case: the same
+    // file under both names. Two files whose names differ only so are two, and the worker refuses the clash.
     const folded = (p: string) => p.split('/').map(foldName).join('/');
-    const inlineNames = new Set([...inline].map(folded));
+    const inlineNames = new Map([...inline].map((p) => [folded(p), p]));
+    const sameFile = async (a: string, b: string) => {
+      const [x, y] = await Promise.all([a, b].map((p) => fs.stat(join(this.dir, p), { bigint: true }).catch(() => null)));
+      return !!x && !!y && x.dev === y.dev && x.ino === y.ino;
+    };
     for (const f of inventory.tree) {
-      if (inlineNames.has(folded(f.path))) continue;
+      const loaded = inlineNames.get(folded(f.path));
+      if (loaded === f.path || (loaded !== undefined && (await sameFile(loaded, f.path)))) continue;
       hashed.set(f.path, f.sha256);
       files.push({ path: f.path, source: f.path, sha256: f.sha256, mode: f.mode });
     }
@@ -4193,6 +4203,7 @@ export class ProjectSession extends EventEmitter {
     try {
       stored = await writeVersionCommit(git.repository(this.dir), files, id, time, !!opts.auto);
     } catch (e) {
+      if (e instanceof GitError && e.code === 'corrupt') throw new HistoryDamaged(gitSaveProblem(e));
       throw new Error(gitSaveProblem(e));
     } finally {
       // Whatever was written counts from now, whether this version is listed or not.
@@ -4283,6 +4294,8 @@ export class ProjectSession extends EventEmitter {
       }
       const st = await fs.lstat(abs).catch(() => null);
       if (st && !st.isFile()) return refuse(`${path} is not a file, so “${v.name}” can’t put back its own.`);
+      // Never through a link inside the project, which could lead into its own `.git` or `.siteorigin`.
+      if (safeJoinLooking(this.dir, path).st === undefined) return refuse(`${path} is reached through a link, so “${v.name}” can’t put it back.`);
       if (st && sha(await fs.readFile(abs)) === h) continue;
       try {
         await this.versions.readFile(v, path, h);
@@ -4394,7 +4407,10 @@ export class ProjectSession extends EventEmitter {
       const filled = Object.fromEntries(plan.files.filter((f) => !prior.get(f.path)).map((f) => [f.path, f.hash]));
       let backup: SavedVersion;
       try {
-        const now = await this.captureVersion(backupName(v.name), { auto: true, also: replaced, filled });
+        // With the version history damaged, the way back is saved in the plain store instead: a restore still has one.
+        const now = await this.captureVersion(backupName(v.name), { auto: true, also: replaced, filled }).catch((e: unknown) =>
+          e instanceof HistoryDamaged ? this.captureVersion(backupName(v.name), { auto: true, also: replaced, filled, plain: true }) : Promise.reject(e)
+        );
         // A version that already holds exactly this is the way back: in the store the work was just saved to (whose objects
         // that save has checked or written again), and with Git snapshots on, of the whole site, its tree the same.
         let kept: SavedVersion | undefined;
