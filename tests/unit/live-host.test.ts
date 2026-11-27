@@ -1024,18 +1024,21 @@ describe('spotlights, edits and connections in the editor (#768)', () => {
   });
 
   it('keeps a demoted guest’s spotlight but not where it was, nor its edit', async () => {
-    const h = editor();
-    const { socket, run } = await letIn(h);
-    socket.receive({ type: 'presence:changed', participant: { kind: 'guest', guestId: 'g1' }, presence: HERE });
-    call(socket, 'q1', 'project.apply', [EDIT]);
-    (await until(() => h.edits[0], 'the edit')).release();
-    await answerTo(socket, 'q1');
-    socket.receive(pointed());
-    expect(Object.keys(last(h).activity)).toEqual(['g1']);
-    h.manager.setRole(run, 'g1', 'viewer');
-    expect(last(h).guests).toEqual({});
-    expect(last(h).activity).toEqual({});
-    expect(Object.keys(last(h).spotlights)).toEqual(['g1']);
+    // Made a viewer or a copy editor: either may still point, and neither shows anybody where it is.
+    for (const role of ['viewer', 'copy-editor'] as const) {
+      const h = editor();
+      const { socket, run } = await letIn(h);
+      socket.receive({ type: 'presence:changed', participant: { kind: 'guest', guestId: 'g1' }, presence: HERE });
+      call(socket, 'q1', 'project.apply', [EDIT]);
+      (await until(() => h.edits[0], 'the edit')).release();
+      await answerTo(socket, 'q1');
+      socket.receive(pointed());
+      expect(Object.keys(last(h).activity)).toEqual(['g1']);
+      h.manager.setRole(run, 'g1', role);
+      expect(last(h).guests, role).toEqual({});
+      expect(last(h).activity, role).toEqual({});
+      expect(Object.keys(last(h).spotlights), role).toEqual(['g1']);
+    }
   });
 
   it('takes each spotlight and edit off at its own time, one after another', async () => {

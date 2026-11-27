@@ -555,7 +555,7 @@ export class LiveGuestManager {
         if (frame.previewTicket) this.queueTicket(join, frame.previewTicket);
         if (demoted) {
           this.clearOwnPresence(join);
-          // A viewer is shown nobody's edits.
+          // Only a collaborator is shown the others' edits.
           if (join.activity.size) {
             join.activity.clear();
             this.publishPresence(join);

@@ -941,7 +941,7 @@ export class LiveHostManager {
         if (narrower(frame.role, grant.role)) grant.generation++;
         grant.role = frame.role;
         grant.unconfirmed.push(frame.role);
-        // Only a collaborator shows where it is; anyone may still point.
+        // Only a collaborator shows anybody where it is; a copy editor or a viewer may still point.
         if (frame.role !== 'collaborator') this.dropPresence(run, frame.guestId, { keepSpotlight: true });
         return;
       }
