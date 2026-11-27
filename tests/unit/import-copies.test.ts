@@ -144,7 +144,7 @@ describe('copies made after an image lands (#979)', () => {
     // The app stops as the fill replaces the library's document: its journal is on disk, nothing else of it is.
     const rename = fsp.rename.bind(fsp);
     vi.spyOn(fsp, 'rename').mockImplementation(async (from, to) => {
-      if (String(to).endsWith(ASSETS)) throw new Error('the app stopped');
+      if (String(to).split('\\').join('/').endsWith(ASSETS)) throw new Error('the app stopped');
       return rename(from, to);
     });
     await expect(s.fillCopies([fillOf(rec)])).rejects.toThrow('the app stopped');

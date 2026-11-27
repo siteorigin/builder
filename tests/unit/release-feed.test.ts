@@ -1,7 +1,7 @@
 import { spawnSync } from 'node:child_process';
-import { mkdtempSync, readFileSync, rmSync } from 'node:fs';
+import { existsSync, mkdtempSync, readFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { join, resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { load } from 'js-yaml';
 import { describe, expect, it } from 'vitest';
@@ -56,9 +56,23 @@ describe('channelOf', () => {
   });
 });
 
+/**
+ * The bash a workflow's `shell: bash` step runs. On Windows that is Git's (Git for Windows' bin/bash.exe, as on GitHub's
+ * runners), not whatever `bash` comes first on the path: on a machine with WSL that is the launcher in
+ * System32/WindowsApps, which runs the script in a Linux distribution, if one is installed at all.
+ */
+function workflowBash(): string {
+  if (process.platform !== 'win32') return 'bash';
+  const core = spawnSync('git', ['--exec-path'], { encoding: 'utf8' }).stdout?.trim();
+  // <Git>/mingw64/libexec/git-core, beside <Git>/bin/bash.exe.
+  const bash = core ? resolve(core, '..', '..', '..', 'bin', 'bash.exe') : '';
+  return bash && existsSync(bash) ? bash : 'bash';
+}
+
 // The release workflows resolve the channel in bash (.github/actions/resolve-update-metadata-prefix); it must agree
 // with channelOf, which the scripts and tests use.
 describe('the resolve-update-metadata-prefix action', () => {
+  const bash = workflowBash();
   const action = load(readFileSync('.github/actions/resolve-update-metadata-prefix/action.yml', 'utf8')) as { runs: { steps: { run: string }[] } };
   const script = action.runs.steps[0].run;
 
@@ -66,7 +80,7 @@ describe('the resolve-update-metadata-prefix action', () => {
     const dir = mkdtempSync(join(tmpdir(), 'so-prefix-'));
     try {
       const env = { ...process.env, GITHUB_REF_TYPE: refType, GITHUB_REF_NAME: refName, GITHUB_ENV: join(dir, 'env'), GITHUB_OUTPUT: join(dir, 'out') };
-      const result = spawnSync('bash', ['-e', '-c', script], { env, encoding: 'utf8' });
+      const result = spawnSync(bash, ['-e', '-c', script], { env, encoding: 'utf8' });
       const out = result.status === 0 ? readFileSync(join(dir, 'out'), 'utf8') : '';
       return { status: result.status ?? -1, prefix: /^prefix=(.*)$/m.exec(out)?.[1] ?? null };
     } finally {

@@ -1,6 +1,6 @@
 import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
-import { windowIcon } from '../../src/main/window-icon';
+import { aboutIcon, windowIcon } from '../../src/main/window-icon';
 
 const here = join('/app', 'out', 'main');
 const resourcesPath = join('/opt', 'SiteOrigin Builder', 'resources');
@@ -29,5 +29,22 @@ describe('the window icon', () => {
 
   it('finds the icon in this checkout for a development run', () => {
     expect(windowIcon({ platform: 'linux', packaged: false, here: join(process.cwd(), 'out', 'main'), resourcesPath })).toBe(join(process.cwd(), 'build', 'icon-flat.png'));
+  });
+});
+
+describe('the icon Help › About shows', () => {
+  it('is the icon shipped beside a packaged Windows or Linux app’s resources, not the generic information sign', () => {
+    expect(aboutIcon({ platform: 'win32', packaged: true, here, resourcesPath, exists: all })).toBe(shippedIcon);
+    expect(aboutIcon({ platform: 'linux', packaged: true, here, resourcesPath, exists: all })).toBe(shippedIcon);
+  });
+
+  it('is the app icon in a Windows or Linux development run', () => {
+    expect(aboutIcon({ platform: 'win32', packaged: false, here, resourcesPath, exists: all })).toBe(devIcon);
+    expect(aboutIcon({ platform: 'linux', packaged: false, here, resourcesPath, exists: all })).toBe(devIcon);
+  });
+
+  it('names nothing on macOS, whose About panel shows the bundle’s icon, or when the icon file is missing', () => {
+    for (const packaged of [true, false]) expect(aboutIcon({ platform: 'darwin', packaged, here, resourcesPath, exists: all })).toBeUndefined();
+    expect(aboutIcon({ platform: 'win32', packaged: true, here, resourcesPath, exists: () => false })).toBeUndefined();
   });
 });

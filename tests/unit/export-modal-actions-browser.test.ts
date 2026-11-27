@@ -2,7 +2,7 @@
  * The Export dialog's two exports in a real browser, with the app's own styles (#1112): however many readiness
  * warnings the dialog lists, both stay in view and in reach while the warnings scroll, down to the smallest window.
  */
-import { existsSync } from 'node:fs';
+import { existsSync, readFileSync } from 'node:fs';
 import { dirname, resolve } from 'node:path';
 import { chromium, type Browser, type Page } from 'playwright';
 import { build, type Rolldown } from 'vite';
@@ -12,6 +12,13 @@ import { createStarterState } from '@catalogue/starters';
 const browserInstalled = existsSync(chromium.executablePath());
 const SITE = 'http://export-modal.test';
 const renderer = (path: string) => JSON.stringify(resolve('src/renderer/src', path));
+/**
+ * The editor's text is the system's own (--font: SF Pro on macOS, Segoe UI on Windows, whatever Linux has), which
+ * set the dialog's lines at different widths, so whether its warnings outgrow a window depended on the computer the
+ * test ran on. The page sets them in one font everywhere, Inter (a dependency of the app already), as wide as SF Pro.
+ */
+const UI_FONT = readFileSync(resolve('node_modules/@fontsource-variable/inter/files/inter-latin-wght-normal.woff2'));
+const UI_FONT_CSS = `<style>@font-face { font-family: 'Test UI'; src: url(/ui-font.woff2) format('woff2'); font-weight: 100 900; } :root { --font: 'Test UI', sans-serif; }</style>`;
 
 const ENTRY = [
   `import ${renderer('styles/index.css')};`,
@@ -118,10 +125,12 @@ describe.skipIf(!browserInstalled)('Export dialog actions (#1112)', { timeout: 6
       const path = new URL(route.request().url()).pathname;
       if (path === '/app.js') return route.fulfill({ contentType: 'text/javascript; charset=utf-8', body: (quiet ? quietBuilt : built).script });
       if (path === '/app.css') return route.fulfill({ contentType: 'text/css; charset=utf-8', body: (quiet ? quietBuilt : built).styles });
-      return route.fulfill({ contentType: 'text/html; charset=utf-8', body: `<!doctype html><meta charset="utf-8"><link rel="stylesheet" href="/app.css"><body><div id="root"></div><script>${bridge}window.__project = ${quiet ? quietProject : project}; window.__recent = ${quiet ? history : '[]'};</script><script src="/app.js"></script>` });
+      if (path === '/ui-font.woff2') return route.fulfill({ contentType: 'font/woff2', body: UI_FONT });
+      return route.fulfill({ contentType: 'text/html; charset=utf-8', body: `<!doctype html><meta charset="utf-8"><link rel="stylesheet" href="/app.css">${UI_FONT_CSS}<body><div id="root"></div><script>${bridge}window.__project = ${quiet ? quietProject : project}; window.__recent = ${quiet ? history : '[]'};</script><script src="/app.js"></script>` });
     });
     await page.goto(`${SITE}/`);
     await page.locator('.export-card').first().waitFor();
+    await page.evaluate(`document.fonts.load("16px 'Test UI'").then(() => document.fonts.ready).then(() => true)`);
     // The dialog pops in: measured once it is where it stays.
     await page.waitForFunction('document.getAnimations().every((a) => a.playState !== "running")');
   };

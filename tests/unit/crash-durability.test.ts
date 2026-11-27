@@ -2,13 +2,16 @@ import { afterEach, describe, expect, it } from 'vitest';
 import { constants, cpSync, mkdirSync, mkdtempSync, promises as fsp, readdirSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { existsSync, readFileSync, statSync, writeFileSync } from 'node:fs';
-import { basename, dirname, join } from 'node:path';
+import { basename, dirname, join, sep } from 'node:path';
 import { createStarterState } from '@catalogue/starters';
 import { SCHEMA_VERSION } from '@shared/types';
 import { sha } from '../../src/main/project/fsutil';
 import { ProjectSession } from '../../src/main/project/session';
 import type { EditOperation } from '@shared/ops';
 import { readFields } from '../../src/renderer/src/lib/held';
+
+/** Where History keeps each version of a document, as the paths written there spell it on this system. */
+const BLOBS = `${sep}history${sep}blobs${sep}`;
 
 const dirs: string[] = [];
 const open: ProjectSession[] = [];
@@ -813,7 +816,7 @@ describe('flush order', () => {
       // journal is renamed into place, and is durable before the journal goes.
       const carried = journals[n].versions ?? {};
       for (const [i, e] of log.entries()) {
-        if (i < from || i > removed || e.op !== 'rename' || !e.to?.includes('/history/blobs/')) continue;
+        if (i < from || i > removed || e.op !== 'rename' || !e.to?.includes(BLOBS)) continue;
         if (i > journalRename) expect(Object.keys(carried)).toContain(basename(e.to, '.json'));
         expect(durableWrite(e.to, from)).toBeLessThan(removed);
       }
@@ -862,7 +865,7 @@ describe('flush order', () => {
     const flushOfTemp = (path: string) => log[at((e) => e.op === 'sync' && e.path === log[renamed(path)].path)];
     const flushOfFolder = (path: string) => log[at((e) => e.op === 'sync' && e.path === dirname(path), renamed(path))];
     const together = (a: Step, b: Step) => a.start! < b.end! && b.start! < a.end!;
-    const blobs = log.filter((e) => e.op === 'rename' && e.to?.includes('/history/blobs/')).map((e) => e.to!);
+    const blobs = log.filter((e) => e.op === 'rename' && e.to?.includes(BLOBS)).map((e) => e.to!);
     expect(blobs).toHaveLength(2);
     // Before the preview's files are published: the journal, then the document, and nothing else of the save.
     expect(log.indexOf(flushOfTemp(journal))).toBeLessThan(log.indexOf(flushOfTemp(page)));

@@ -10,8 +10,8 @@ import { selectArtifacts } from '../../scripts/release/generate-update-metadata'
 const { load } = createRequire(import.meta.url)('js-yaml') as { load(text: string): unknown };
 const config = load(readFileSync('electron-builder.yml', 'utf8')) as {
   mac: { category: string; extendInfo?: Record<string, unknown>; target: string[] };
-  linux: { category: string; target: string[] };
-  win: { target: string[] };
+  linux: { category: string; target: string[]; extraResources?: Array<{ from: string; to: string }> };
+  win: { target: string[]; extraResources?: Array<{ from: string; to: string }> };
   artifactName: string;
   publish: { provider: string; url: string };
 };
@@ -27,6 +27,10 @@ describe('the packaged app’s metadata', () => {
     'NSMicrophoneUsageDescription'
   ])('removes %s from the macOS bundle', (key) => {
     expect(config.mac.extendInfo).toHaveProperty(key, null);
+  });
+
+  it('ships the app icon beside the resources on Windows and Linux, where About and a Linux window read it (window-icon.ts)', () => {
+    for (const platform of [config.win, config.linux]) expect(platform.extraResources).toContainEqual({ from: 'build/icon-flat.png', to: 'icon.png' });
   });
 
   it('files the app under graphics on macOS and Linux, not under developer tools', () => {
