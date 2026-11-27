@@ -65,7 +65,16 @@ export const GENERATED_MANIFEST = 'siteorigin/generated-manifest.json';
 export const SNAPSHOT_SYNC_SCRIPT = 'scripts/sync-sources.mjs';
 const LOCAL_STATE = new Set(['.git', '.siteorigin']);
 const CACHES = new Set(['node_modules', '.svelte-kit', '.vite', '.vite-temp']);
-const CLUTTER = /^(\.ds_store|thumbs\.db|desktop\.ini|\._.*|.*\.tmp)$/i;
+const CLUTTER = /^(\.ds_store|thumbs\.db|desktop\.ini|\._.*|.*\.tmp)$/;
+/** Names Windows gives another meaning: devices (COM¹ too), whatever their extension. */
+const WINDOWS_RESERVED = /^(con|prn|aux|nul|com[0-9¹²³]|lpt[0-9¹²³])(\..*)?$/i;
+
+/**
+ * A name as a case-insensitive disk compares it, near enough: without case, and with compatibility spellings folded
+ * (APFS takes `.ſiteorigin`, with a long s, for `.siteorigin`; `client.Key` with a Kelvin sign is `client.key`). Only
+ * what keeps a file out is compared this way, so folding too much only ever leaves more out.
+ */
+const fold = (name: string) => name.normalize('NFKC').toLowerCase();
 
 const TREE: SnapshotPlace = { kind: 'tree' };
 const excluded = (reason: SnapshotExclusion): SnapshotPlace => ({ kind: 'excluded', reason });
@@ -76,33 +85,48 @@ function unsafePath(rel: string): boolean {
   return !rel || rel.startsWith('/') || /^[a-z]:/i.test(rel) || /[\\\u0000-\u001f\u007f]/.test(rel) || rel.split('/').some((p) => p === '' || p === '.' || p === '..');
 }
 
-/** Why a part of a path (the `i`th) leaves everything under it out, or null. Without case: on a case-insensitive disk, `.GIT` is the same folder. */
+/** Why a part of a path (the `i`th) leaves everything under it out, or null. Folded: on a case-insensitive disk, `.GIT` is the same folder. */
 function partExcluded(part: string, i: number): SnapshotExclusion | null {
-  const p = part.toLowerCase();
+  const p = fold(part);
   if (LOCAL_STATE.has(p)) return 'local-state';
   if (CACHES.has(p) || (i === 0 && p === 'build')) return 'cache';
-  return isPrivateFileName(part) ? 'private' : null;
+  return isPrivateFileName(part) || isPrivateFileName(p) ? 'private' : null;
+}
+
+/**
+ * Whether a path has a part Windows would take for something else, so that restoring it there could write somewhere
+ * other than the file it names: a drive or stream separator (`photo.jpg:preview` is a stream of photo.jpg), a device
+ * name, or a trailing dot or space (dropped, making it another file's name).
+ */
+function unportable(rel: string): boolean {
+  return rel.split('/').some((p) => p.includes(':') || WINDOWS_RESERVED.test(p) || /[. ]$/.test(p));
 }
 
 /**
  * Where the project file at `rel` (relative, with forward slashes, as the disk spells it) goes in a snapshot. The
- * allowlist is spelled exactly; what keeps private files out is matched without case, as a case-insensitive disk would.
- * A path from a snapshot being restored is checked the same way.
+ * allowlist is spelled exactly; what keeps private files out is folded, as a case-insensitive disk compares names. A
+ * path from a snapshot being restored is checked the same way, so a name Windows would read as another is refused.
  */
 export function snapshotPlace(rel: string): SnapshotPlace {
+  const place = placeOf(rel);
+  return place.kind !== 'excluded' && unportable(rel) ? excluded('unsafe-path') : place;
+}
+
+/** snapshotPlace, before a name Windows would read as another is refused: the walk refuses the project instead. */
+function placeOf(rel: string): SnapshotPlace {
   if (unsafePath(rel)) return excluded('unsafe-path');
   const parts = rel.split('/');
   for (let i = 0; i < parts.length; i++) {
     const why = partExcluded(parts[i], i);
     if (why) return excluded(why);
   }
-  const name = parts[parts.length - 1];
+  const name = fold(parts[parts.length - 1]);
   if (CLUTTER.test(name)) return excluded('clutter');
-  if (parts[0].toLowerCase() === 'siteorigin' && parts.length > 1) {
+  if (fold(parts[0]) === 'siteorigin' && parts.length > 1) {
     // The brief, and any copy of it an editor or a file manager left beside it (`brief.json~`, `.#brief.json`,
     // `brief (1).json`), which can hold notes the author has since taken out.
-    if (parts.length === 2 && name.toLowerCase().includes('brief')) return excluded('brief');
-    if (parts[1].toLowerCase() === 'sources') {
+    if (parts.length === 2 && name.includes('brief')) return excluded('brief');
+    if (fold(parts[1]) === 'sources') {
       const settings = sourcePathOf(rel);
       if (settings) return { kind: 'attachment', sourceId: settings, part: 'settings' };
       const converter = converterPathOf(rel);
@@ -115,11 +139,22 @@ export function snapshotPlace(rel: string): SnapshotPlace {
   return rel === SNAPSHOT_SYNC_SCRIPT ? TREE : excluded('outside');
 }
 
-/** Whether a folder at `rel` can hold a file a snapshot takes, so the walk looks inside it. */
+/**
+ * Whether a folder at `rel` can hold a file a snapshot takes, so the walk looks inside it: anywhere in src/ and
+ * static/, only the canonical documents' folders in siteorigin/ (and the sources' own, for their attachments), and
+ * nothing deeper in scripts/.
+ */
 function folderKept(rel: string): boolean {
   if (unsafePath(rel)) return false;
   const parts = rel.split('/');
-  return ROOT_FOLDERS.has(parts[0]) && parts.every((p, i) => !partExcluded(p, i));
+  if (!ROOT_FOLDERS.has(parts[0]) || !parts.every((p, i) => !partExcluded(p, i))) return false;
+  if (parts[0] === 'scripts') return parts.length === 1;
+  if (parts[0] !== 'siteorigin') return true;
+  const [, kind, , sub] = parts;
+  if (parts.length <= 1) return true;
+  if (parts.length === 2) return ['pages', 'components', 'collections'].includes(kind) || fold(kind) === 'sources';
+  if (parts.length === 3) return kind === 'components' || kind === 'collections' || fold(kind) === 'sources';
+  return parts.length === 4 && kind === 'collections' && sub === 'entries';
 }
 
 /** A file of a snapshot, by its project path. */
@@ -152,13 +187,14 @@ export interface SnapshotInventory {
 
 /**
  * Why a project could not be captured: a file `changed` while it was read (edited, replaced, added, removed, swapped for
- * a link), could not be read (`unreadable`), or shares its name with another on a computer that cannot tell them apart
- * (`collision`). `path` is the file's project path.
+ * a link), could not be read (`unreadable`), or has a `name` some computers cannot use: one they cannot tell from
+ * another file's or folder's, one Windows reads as something else, or one that is not valid text. `path` is the file's
+ * project path.
  */
 export class SnapshotCaptureError extends Error {
   constructor(
     readonly path: string,
-    readonly reason: 'changed' | 'unreadable' | 'collision',
+    readonly reason: 'changed' | 'unreadable' | 'name',
     message: string
   ) {
     super(message);
@@ -168,6 +204,9 @@ export class SnapshotCaptureError extends Error {
 
 const changed = (rel: string) => new SnapshotCaptureError(rel, 'changed', `${rel || 'The project folder'} changed while the project was being read. Try again once nothing is changing it.`);
 const unreadable = (rel: string, e: unknown) => new SnapshotCaptureError(rel, 'unreadable', `${rel || 'The project folder'} could not be read: ${(e as Error)?.message ?? e}`);
+const badName = (rel: string, why: string) => new SnapshotCaptureError(rel, 'name', `${rel} ${why}. Rename it, then try again.`);
+/** A SnapshotCaptureError as it is; anything else thrown reading `rel`, as its being unreadable. */
+const asCaptureError = (rel: string, e: unknown) => (e instanceof SnapshotCaptureError ? e : unreadable(rel, e));
 
 /** What a listing saw at a path. */
 interface Listed {
@@ -214,19 +253,22 @@ async function listProject(root: string, settleMs: number): Promise<Map<string, 
   if (!top.isDirectory()) throw unreadable('', new Error('it is not a folder.'));
   record('', root, top, TREE);
   const walk = async (rel: string, abs: string) => {
-    let names: string[];
+    let raw: Buffer[];
     try {
-      names = await fs.readdir(abs);
+      raw = await fs.readdir(abs, { encoding: 'buffer' });
     } catch (e) {
       // A folder listed a moment ago that is gone, or is no folder now, has changed.
       if (isMissing(e)) throw changed(rel);
       throw unreadable(rel, e);
     }
-    for (const name of names.sort()) {
+    const names = raw.map((b) => ({ name: b.toString('utf8'), raw: b })).sort((a, b) => (a.name < b.name ? -1 : a.name > b.name ? 1 : 0));
+    for (const { name, raw: bytes } of names) {
       const r = rel ? `${rel}/${name}` : name;
-      const place = snapshotPlace(r);
+      const place = placeOf(r);
       const descend = folderKept(r);
       if (place.kind === 'excluded' && !descend) continue;
+      // A name that is not valid text could only be looked up by another (decoded) name, and be missed.
+      if (!Buffer.from(name, 'utf8').equals(bytes)) throw badName(r, 'has a name that is not valid text');
       const a = join(abs, name);
       let st: BigIntStats;
       try {
@@ -240,7 +282,10 @@ async function listProject(root: string, settleMs: number): Promise<Map<string, 
         if (!descend) continue;
         record(r, a, st, place);
         await walk(r, a);
-      } else if (st.isFile() && place.kind !== 'excluded') record(r, a, st, place);
+      } else if (st.isFile() && place.kind !== 'excluded') {
+        if (unportable(r)) throw badName(r, 'has a name Windows would read as something else');
+        record(r, a, st, place);
+      }
       // A link, or anything else that is not a plain file (a pipe, a socket, a device), is no file of a snapshot's.
     }
   };
@@ -265,7 +310,7 @@ async function openListed(l: Listed): Promise<{ handle: FileHandle; stamp: strin
     return { handle, stamp: stampOf(st) };
   } catch (e) {
     await handle.close().catch(() => undefined);
-    throw e;
+    throw asCaptureError(l.rel, e);
   }
 }
 
@@ -285,8 +330,7 @@ async function hashListed(l: Listed): Promise<{ sha256: string; stamp: string }>
     if (total !== l.size || stampOf(await handle.stat({ bigint: true })) !== stamp) throw changed(l.rel);
     return { sha256: hash.digest('hex'), stamp };
   } catch (e) {
-    if (e instanceof SnapshotCaptureError) throw e;
-    throw unreadable(l.rel, e);
+    throw asCaptureError(l.rel, e);
   } finally {
     await handle.close().catch(() => undefined);
   }
@@ -297,12 +341,17 @@ async function readCaptured(l: Listed, captured: { sha256: string; stamp: string
   const { handle, stamp } = await openListed(l);
   try {
     if (stamp !== captured.stamp) throw changed(l.rel);
-    const bytes = await handle.readFile();
+    // A piece at a time into one buffer: readFile refuses a file past 2 GiB, which a video in the library can be.
+    const bytes = Buffer.allocUnsafe(Number(l.size));
+    for (let n = 0; n < bytes.length; ) {
+      const { bytesRead } = await handle.read(bytes, n, Math.min(bytes.length - n, 1 << 24), n);
+      if (!bytesRead) throw changed(l.rel);
+      n += bytesRead;
+    }
     if (stampOf(await handle.stat({ bigint: true })) !== stamp || createHash('sha256').update(bytes).digest('hex') !== captured.sha256) throw changed(l.rel);
     return bytes;
   } catch (e) {
-    if (e instanceof SnapshotCaptureError) throw e;
-    throw unreadable(l.rel, e);
+    throw asCaptureError(l.rel, e);
   } finally {
     await handle.close().catch(() => undefined);
   }
@@ -320,14 +369,27 @@ function firstChange(before: Map<string, Listed>, after: Map<string, Listed>): s
   return null;
 }
 
-/** Two paths no case-insensitive or accent-insensitive disk could hold both of, or null. */
-function collision(paths: string[]): [string, string] | null {
-  const seen = new Map<string, string>();
+/**
+ * Two paths of `paths` (files) that no case-insensitive or accent-insensitive disk could hold both of, or null: two
+ * files whose names it takes for one, or a file whose name it takes for a folder another file is in.
+ */
+export function nameClash(paths: readonly string[]): [string, string] | null {
+  // A name as such a disk compares it (`ſ` is `s` to APFS, as `S` is).
+  const key = (p: string) => p.normalize('NFC').toUpperCase().toLowerCase();
+  const files = new Map<string, string>();
   for (const p of paths) {
-    const key = p.normalize('NFC').toLowerCase();
-    const other = seen.get(key);
+    const k = key(p);
+    const other = files.get(k);
     if (other !== undefined) return [other, p];
-    seen.set(key, p);
+    files.set(k, p);
+  }
+  for (const p of paths) {
+    const parts = p.split('/');
+    for (let i = 1; i < parts.length; i++) {
+      const folder = parts.slice(0, i).join('/');
+      const file = files.get(key(folder));
+      if (file !== undefined) return [file, p];
+    }
   }
   return null;
 }
@@ -357,21 +419,22 @@ export async function captureSnapshotInventory(root: string, opts: { settleMs?: 
   const settleMs = opts.settleMs ?? 3000;
   const before = await listProject(root, settleMs);
   const files = [...before.values()].filter((l) => !l.dir);
-  const clash = collision(files.map((l) => l.rel));
-  if (clash) throw new SnapshotCaptureError(clash[1], 'collision', `${clash[0]} and ${clash[1]} have names some computers cannot tell apart. Rename one of them, then try again.`);
+  const clash = nameClash(files.map((l) => l.rel));
+  if (clash) throw badName(clash[1], `and ${clash[0]} have names some computers cannot tell apart`);
   await opts.paused?.('listed');
   const hashed = await settledBatches(files, hashListed);
   await opts.paused?.('hashed');
-  const after = await listProject(root, settleMs);
-  const moved = firstChange(before, after);
-  if (moved !== null) throw changed(moved);
-  // A file whose stamp cannot stand for its bytes could have changed without it: it is hashed again.
+  // A file whose stamp cannot stand for its bytes could have changed without it: it is hashed again. Before the last
+  // listing, so that one also sees what was added, removed or swapped while these were read.
   await settledBatches(
     files.map((l, i) => ({ l, i })).filter(({ l }) => !l.trusted),
     async ({ l, i }) => {
       if ((await hashListed(l)).sha256 !== hashed[i].sha256) throw changed(l.rel);
     }
   );
+  const after = await listProject(root, settleMs);
+  const moved = firstChange(before, after);
+  if (moved !== null) throw changed(moved);
   const tree: SnapshotFile[] = [];
   const attachments: SnapshotAttachment[] = [];
   files.forEach((l, i) => {

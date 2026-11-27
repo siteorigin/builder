@@ -14,7 +14,7 @@ import { createStarterState } from '@catalogue/starters';
 import { generateProject } from '@generator/index';
 import { stateToDocs } from '../../src/main/project/documents';
 import { SYNC_SCRIPT } from '../../src/main/export';
-import { captureSnapshotInventory, GENERATED_MANIFEST, SnapshotCaptureError, snapshotPlace, SNAPSHOT_SYNC_SCRIPT, type SnapshotExclusion } from '../../src/main/project/snapshot-inventory';
+import { captureSnapshotInventory, GENERATED_MANIFEST, nameClash, SnapshotCaptureError, snapshotPlace, SNAPSHOT_SYNC_SCRIPT, type SnapshotExclusion } from '../../src/main/project/snapshot-inventory';
 
 const dirs: string[] = [];
 const temp = () => {
@@ -97,11 +97,13 @@ describe('which files a snapshot holds', () => {
     ])
       expect(snapshotPlace(p), p).toEqual({ kind: 'tree' });
     expect(SNAPSHOT_SYNC_SCRIPT).toBe(SYNC_SCRIPT);
+    expect(GENERATED_MANIFEST).toBe('siteorigin/generated-manifest.json');
   });
 
   it('keeps external sources’ settings and converters apart, as attachments, and nothing else of their folder', () => {
     expect(snapshotPlace('siteorigin/sources/cms/source.json')).toEqual({ kind: 'attachment', sourceId: 'cms', part: 'settings' });
     expect(snapshotPlace('siteorigin/sources/cms/converter.mjs')).toEqual({ kind: 'attachment', sourceId: 'cms', part: 'converter' });
+    expect(snapshotPlace('siteorigin/sources/team-api/source.json')).toEqual({ kind: 'attachment', sourceId: 'team-api', part: 'settings' });
     for (const p of ['siteorigin/sources/cms/source.json~', 'siteorigin/sources/cms/.source.json.swp', 'siteorigin/sources/cms/notes.txt', 'siteorigin/sources/Bad_Id/source.json', 'siteorigin/Sources/cms/source.json', 'siteorigin/SOURCES/cms/converter.mjs', 'siteorigin/sources/source.json'])
       expect(snapshotPlace(p), p).toEqual({ kind: 'excluded', reason: 'source' });
   });
@@ -123,14 +125,34 @@ describe('which files a snapshot holds', () => {
         'siteorigin/source-secrets.json~',
         'siteorigin/pages/.api-keys.json.swp',
         // A folder named like a key leaves everything in it out.
-        'static/id_rsa.d/readme.txt'
+        'static/id_rsa.d/readme.txt',
+        // The same name to a case-insensitive disk: `K` here is a Kelvin sign.
+        'static/client.\u212Aey'
       ],
-      'local-state': ['.siteorigin/history/1.json', '.siteorigin/versions.git/HEAD', '.SiteOrigin/versions/versions.json', '.git/config', '.git', 'src/lib/vendor/.git', 'static/old/.GIT/HEAD', 'src/lib/.siteorigin/x.json'],
+      // `ſ` is a long s, which APFS takes for an s.
+      'local-state': ['.siteorigin/history/1.json', '.siteorigin/versions.git/HEAD', '.SiteOrigin/versions/versions.json', '.git/config', '.git', 'src/lib/vendor/.git', 'static/old/.GIT/HEAD', 'src/lib/.siteorigin/x.json', 'static/.\u017Fiteorigin/history/1.json', '.\uFF47it/config'],
       cache: ['node_modules/svelte/package.json', 'src/node_modules/x.js', '.svelte-kit/output/x.js', 'static/.vite/deps.json', 'build/index.html', 'Build/index.html'],
       clutter: ['static/.DS_Store', 'static/assets/Thumbs.db', 'src/desktop.ini', 'static/._photo.jpg', 'siteorigin/.a1b2c3.tmp', 'static/upload.TMP'],
-      'unsafe-path': ['', '/etc/passwd', '../outside.json', 'static/../../outside.json', 'src/./app.html', 'static//photo.jpg', 'static\\photo.jpg', 'C:/Windows/win.ini', 'static/a\u0000b', 'static/'],
+      'unsafe-path': [
+        '',
+        '/etc/passwd',
+        '../outside.json',
+        'static/../../outside.json',
+        'src/./app.html',
+        'static//photo.jpg',
+        'static\\photo.jpg',
+        'C:/Windows/win.ini',
+        'static/a\u0000b',
+        'static/',
+        // Names Windows reads as something else: a stream of photo.jpg, devices, a name it drops the end of.
+        'static/photo.jpg:preview',
+        'static/con.png',
+        'src/routes/aux/+page.svelte',
+        'static/photo.jpg.',
+        'static/photo.jpg '
+      ],
       source: ['siteorigin/sources/cms/secrets.json'],
-      outside: ['notes.txt', 'tsconfig.json', 'Package.json', 'scripts/deploy.sh', 'scripts/sync-sources.mjs.bak', 'siteorigin/notes.txt', 'siteorigin/site.json~', 'siteorigin/pages/home.json.bak', 'docs/readme.md', 'SRC/app.html']
+      outside: ['notes.txt', 'tsconfig.json', 'Package.json', 'scripts/deploy.sh', 'scripts/sync-sources.mjs.bak', 'scripts/old/sync-sources.mjs', 'siteorigin/notes.txt', 'siteorigin/site.json~', 'siteorigin/pages/home.json.bak', 'docs/readme.md', 'SRC/app.html']
     };
     for (const [reason, list] of Object.entries(cases)) for (const p of list) expect(snapshotPlace(p), p).toEqual({ kind: 'excluded', reason });
   });
@@ -230,6 +252,17 @@ describe('capturing a project', () => {
     expect((await failure(captureSnapshotInventory(join(root, 'missing')))).reason).toBe('unreadable');
   });
 
+  it('tells which names some computers cannot tell apart', () => {
+    expect(nameClash(['static/Logo.png', 'static/logo.png'])).toEqual(['static/Logo.png', 'static/logo.png']);
+    // A file whose name such a disk takes for a folder another file is in.
+    expect(nameClash(['static/Logo', 'static/logo/thumb.png'])).toEqual(['static/Logo', 'static/logo/thumb.png']);
+    expect(nameClash(['static/logo/thumb.png', 'static/LOGO'])).toEqual(['static/LOGO', 'static/logo/thumb.png']);
+    // Accents composed and decomposed, and a long s, are the same names to APFS.
+    expect(nameClash(['static/caf\u00e9.png', 'static/cafe\u0301.png'])).not.toBeNull();
+    expect(nameClash(['static/\u017Fun.png', 'static/sun.png'])).not.toBeNull();
+    expect(nameClash(['static/logo.png', 'static/logo.svg', 'static/Icons/a.png', 'static/icons/b.png', 'src/lib/a.js'])).toBeNull();
+  });
+
   it.runIf(posix)('refuses two files only a case-sensitive disk can tell apart', async () => {
     const root = smallProject();
     write(root, 'static/Logo.png', 'a');
@@ -237,8 +270,44 @@ describe('capturing a project', () => {
     if (existsSync(join(root, 'static', 'logo.png'))) return;
     write(root, 'static/logo.png', 'b');
     const e = await failure(captureSnapshotInventory(root));
-    expect(e.reason).toBe('collision');
-    expect(e.message).toMatch(/static\/Logo\.png and static\/logo\.png/);
+    expect(e).toMatchObject({ reason: 'name', path: 'static/logo.png' });
+  });
+
+  it.runIf(posix)('refuses a file whose name Windows would read as another, rather than leave it out', async () => {
+    for (const name of ['static/photo.jpg:preview', 'static/aux.json', 'static/photo.jpg ']) {
+      const root = smallProject();
+      write(root, name, 'x');
+      expect(await failure(captureSnapshotInventory(root)), name).toMatchObject({ reason: 'name', path: name });
+    }
+  });
+
+  it.runIf(posix)('refuses a file whose name is not valid text, rather than miss it', async () => {
+    const root = smallProject();
+    try {
+      writeFileSync(Buffer.concat([Buffer.from(`${join(root, 'static')}/photo-`), Buffer.from([0xff]), Buffer.from('.jpg')]), 'x');
+    } catch {
+      // APFS refuses such a name itself: nothing to miss.
+      return;
+    }
+    expect(await failure(captureSnapshotInventory(root))).toMatchObject({ reason: 'name', path: 'static/photo-\ufffd.jpg' });
+  });
+
+  it.runIf(posix && process.getuid?.() !== 0)('never looks in a folder that can hold no file of a snapshot’s', async () => {
+    const root = smallProject();
+    for (const dir of ['scripts/archive', 'siteorigin/old', 'siteorigin/pages/old']) {
+      write(root, `${dir}/x.json`, '{}');
+      chmodSync(join(root, dir), 0o000);
+    }
+    try {
+      const inventory = await captureSnapshotInventory(root, {
+        settleMs: 0,
+        // Nor does a folder made in one of those meanwhile count as a change.
+        paused: (at) => void (at === 'hashed' && mkdirSync(join(root, 'siteorigin/notes'))),
+      });
+      expect(inventory.tree.map((f) => f.path)).toContain('siteorigin/pages/home.json');
+    } finally {
+      for (const dir of ['scripts/archive', 'siteorigin/old', 'siteorigin/pages/old']) chmodSync(join(root, dir), 0o755);
+    }
   });
 });
 
@@ -259,6 +328,12 @@ describe('a project that changes while it is captured', () => {
       const root = smallProject();
       const e = await during(root, at, () => writeFileSync(join(root, 'package.json'), '{"name":"cafe","scripts":{"postinstall":"curl evil"}}'));
       expect(e).toMatchObject({ reason: 'changed', path: 'package.json' });
+    });
+
+    it(`fails when a file is edited in place to the same length once the files are ${at}`, async () => {
+      const root = smallProject();
+      const e = await during(root, at, () => writeFileSync(join(root, 'siteorigin/site.json'), '[]'));
+      expect(e).toMatchObject({ reason: 'changed', path: 'siteorigin/site.json' });
     });
 
     it(`fails when an asset is replaced by another of the same size and time once the files are ${at}`, async () => {
@@ -306,7 +381,9 @@ describe('a project that changes while it is captured', () => {
       renameSync(join(root, 'static/assets'), join(root, 'static/assets-old'));
       symlinkSync(elsewhere, join(root, 'static/assets'));
     });
-    expect(e).toMatchObject({ reason: 'changed', path: 'static/assets' });
+    // Seen by the second reading of a file inside it, or else by the last listing.
+    expect(e.reason).toBe('changed');
+    expect(e.path).toMatch(/^static\/assets(\/|$)/);
   });
 
   it.runIf(posix)('fails when a file is swapped for a pipe once the files are listed', async () => {
@@ -318,19 +395,65 @@ describe('a project that changes while it is captured', () => {
     expect(e).toMatchObject({ reason: 'changed', path: 'package.json' });
   });
 
+  /**
+   * Opens of `abs` from the `nth` on (counting from 1) hand back a handle that reads `bytes` in place of the file's own,
+   * its stat untouched: a change no stat can show. `then` runs at that open.
+   */
+  const alteredFrom = (abs: string, nth: number, bytes: Buffer, then?: () => void) => {
+    const real = fsp.open.bind(fsp);
+    let seen = 0;
+    return vi.spyOn(fsp, 'open').mockImplementation((async (path: Parameters<typeof fsp.open>[0], ...rest: unknown[]) => {
+      const handle = await (real as (...a: unknown[]) => ReturnType<typeof fsp.open>)(path, ...rest);
+      if (path !== abs || ++seen < nth) return handle;
+      then?.();
+      // Read from where the last read ended unless told where, as a file handle reads.
+      let offset = 0;
+      return new Proxy(handle, {
+        get(target, key) {
+          if (key === 'read')
+            return async (buf: Buffer, off: number, len: number, pos: number | null) => {
+              const at = pos ?? offset;
+              const n = Math.max(0, Math.min(len, bytes.length - at));
+              bytes.copy(buf, off, at, at + n);
+              if (pos === null || pos === undefined) offset = at + n;
+              return { bytesRead: n, buffer: buf };
+            };
+          const v = Reflect.get(target, key);
+          return typeof v === 'function' ? v.bind(target) : v;
+        }
+      });
+    }) as typeof fsp.open);
+  };
+
   it('hashes again a file changed only just now, so a change its stat cannot show is still caught', async () => {
     const root = smallProject();
+    const pkg = join(root, 'package.json');
     const opened = vi.spyOn(fsp, 'open');
-    const opens = () => opened.mock.calls.filter(([p]) => p === join(root, 'package.json')).length;
+    const opens = () => opened.mock.calls.filter(([p]) => p === pkg).length;
     // Left alone long enough: its stat stands for its bytes, and it is read once.
     await new Promise((r) => setTimeout(r, 50));
     await captureSnapshotInventory(root, { settleMs: 10 });
     expect(opens()).toBe(1);
-    opened.mockClear();
-    // Changed within the time it takes to trust a stat: read again once the project is listed again.
-    await captureSnapshotInventory(root, { settleMs: 60 * 60_000 });
-    expect(opens()).toBe(2);
     opened.mockRestore();
+    // Changed within the time it takes to trust a stat: read again, and bytes that differ under the same stat fail it.
+    const same = readFileSync(pkg);
+    const altered = alteredFrom(pkg, 2, Buffer.from(same.toString().replace('cafe', 'evil')));
+    try {
+      expect(await failure(captureSnapshotInventory(root, { settleMs: 60 * 60_000 }))).toMatchObject({ reason: 'changed', path: 'package.json' });
+    } finally {
+      altered.mockRestore();
+    }
+  });
+
+  it('lists the project again after the second reading, so a file added meanwhile is caught', async () => {
+    const root = smallProject();
+    const pkg = join(root, 'package.json');
+    const added = alteredFrom(pkg, 2, readFileSync(pkg), () => write(root, 'siteorigin/pages/new.json', '{}'));
+    try {
+      expect(await failure(captureSnapshotInventory(root, { settleMs: 60 * 60_000 }))).toMatchObject({ reason: 'changed', path: 'siteorigin/pages/new.json' });
+    } finally {
+      added.mockRestore();
+    }
   });
 
   it('reads a file back only while it is still the one captured', async () => {
@@ -338,7 +461,15 @@ describe('a project that changes while it is captured', () => {
     const inventory = await captureSnapshotInventory(root, { settleMs: 0 });
     const file = (p: string) => inventory.tree.find((f) => f.path === p)!;
     expect((await file('siteorigin/site.json').read()).toString()).toBe('{}');
-    writeFileSync(join(root, 'siteorigin/site.json'), '{}');
+    // Other bytes under the same stat are refused by their hash.
+    const site = join(root, 'siteorigin/site.json');
+    const altered = alteredFrom(site, 1, Buffer.from('[]'));
+    try {
+      await expect(file('siteorigin/site.json').read()).rejects.toMatchObject({ reason: 'changed', path: 'siteorigin/site.json' });
+    } finally {
+      altered.mockRestore();
+    }
+    writeFileSync(site, '{}');
     await expect(file('siteorigin/site.json').read()).rejects.toMatchObject({ reason: 'changed', path: 'siteorigin/site.json' });
     unlinkSync(join(root, 'package.json'));
     await expect(file('package.json').read()).rejects.toMatchObject({ reason: 'changed', path: 'package.json' });
@@ -350,37 +481,80 @@ describe('the starter’s .gitignore', () => {
   const ignored = (list: string[]) => {
     const repo = temp();
     copyFileSync(join(template, '.gitignore'), join(repo, '.gitignore'));
-    expect(spawnSync('git', ['init', '-q'], { cwd: repo }).status).toBe(0);
-    const r = spawnSync('git', ['-c', 'core.ignoreCase=false', 'check-ignore', '--no-index', '--stdin'], { cwd: repo, input: list.join('\n'), encoding: 'utf8' });
+    // No template and no excludes of this computer's own, so only the starter's rules decide.
+    expect(spawnSync('git', ['init', '-q', '--template='], { cwd: repo }).status).toBe(0);
+    const r = spawnSync('git', ['-c', 'core.ignoreCase=false', '-c', 'core.excludesFile=/dev/null', 'check-ignore', '--no-index', '--stdin'], { cwd: repo, input: list.join('\n'), encoding: 'utf8' });
     return new Set(r.stdout.split('\n').filter(Boolean));
   };
 
   it('keeps the brief, external sources’ settings, credentials and local state out of the author’s repository, and the site in', () => {
-    const kept = ['siteorigin.project.json', 'siteorigin/site.json', 'siteorigin/pages/home.json', 'siteorigin/pages/brief.json', 'src/routes/+page.svelte', 'src/lib/siteorigin/custom/Hero.svelte', 'static/assets/photo.jpg', 'package.json', 'package-lock.json', 'vite.config.js', 'README.md', '.gitignore', '.env.example'];
+    const kept = [
+      'siteorigin.project.json',
+      'siteorigin/site.json',
+      'siteorigin/pages/home.json',
+      'siteorigin/pages/brief.json',
+      // A file, not the sources' folder.
+      'siteorigin/sources',
+      'src/routes/+page.svelte',
+      'src/lib/siteorigin/custom/Hero.svelte',
+      'static/assets/photo.jpg',
+      'package.json',
+      'package-lock.json',
+      'vite.config.js',
+      'README.md',
+      '.gitignore',
+      '.env.example',
+      // Public files named after the credential files are none of them.
+      'static/api-keys-guide.json',
+      'static/api-keys.json-diagram.png',
+      'static/api-keys.jsonc',
+      'static/source-secrets-explained.json'
+    ];
     const left = [
       'siteorigin/brief.json',
       'siteorigin/brief.json~',
       'siteorigin/brief.json.bak',
       'siteorigin/.brief.json.swp',
       'siteorigin/#brief.json#',
+      'siteorigin/.#brief.json',
+      'siteorigin/brief (1).json',
+      'siteorigin/Copy of brief.json',
+      'siteorigin/Brief.JSON',
       'siteorigin/sources/cms/source.json',
       'siteorigin/sources/cms/converter.mjs',
       '.siteorigin/versions.git/HEAD',
       '.siteorigin/history/1.json',
       '.env',
+      '.ENV',
       '.env.local',
+      'static/.EnV.local',
       '.npmrc',
       '.NETRC',
       '.git-credentials',
       'src/lib/id_rsa',
       'src/lib/ID_ED25519.pub',
+      'src/lib/Id_Ecdsa',
+      'src/lib/ID_DSA',
       'static/certs/client.PEM',
-      'static/certs/site.key',
-      'static/bundle.p12',
+      'static/certs/site.Key',
+      'static/bundle.P12',
+      'static/bundle.Pfx',
+      'static/putty.PPK',
+      'static/release.KeyStore',
+      'static/release.JKS',
+      'static/signing.ASC',
+      'static/backup.Gpg',
       'static/api-keys.json',
+      'static/API-KEYS.json.bak',
       'static/api-keys (1).json',
+      'static/api-keys copy.json',
+      'static/api-keys - Copy.json',
+      'static/.api-keys.json.swp',
+      'static/.#api-keys.json',
+      'static/#api-keys.json#',
       'Copy of source-secrets.json',
       'siteorigin/Source-Secrets.json~',
+      'src/.source-secrets.json.swp',
       'node_modules/svelte/package.json',
       'build/index.html'
     ];

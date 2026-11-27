@@ -185,7 +185,7 @@ describe('telling ZIP files apart', () => {
     }
     // A manifest only inside another project's state is no project.
     expect(await kind([{ name: '.git/siteorigin.project.json', data: '{}' }])).toBe('other');
-    expect(await kind([{ name: '.siteorigin/versions/siteorigin.project.json', data: '{}' }, { name: 'notes.txt', data: '' }])).toBe('other');
+    expect(await kind([{ name: '.siteorigin/siteorigin.project.json', data: '{}' }, { name: 'index.html', data: '' }, { name: '_app/x.js', data: '' }])).toBe('website');
     expect(await kind([{ name: 'cafe/.siteorigin/siteorigin.project.json', data: '{}' }])).toBe('other');
     // Nor does one there stop a website being recognized as one.
     expect(await kind([{ name: 'cafe/index.html', data: '' }, { name: 'cafe/_app/x.js', data: '' }, { name: 'cafe/.siteorigin/siteorigin.project.json', data: '{}' }])).toBe('website');
@@ -435,28 +435,47 @@ describe('unpacking a project into a new folder', () => {
       { name: 'Cafe/.siteorigin/versions/versions.json', data: '{}' },
       { name: 'Cafe/.siteorigin/versions.git/HEAD', data: 'ref: refs/heads/siteorigin-versions\n' },
       { name: 'Cafe/.siteorigin/versions.git/config', data: '[remote "hosting"]\n' },
-      { name: 'Cafe/.siteorigin/session.lock', data: '' }
+      { name: 'Cafe/.siteorigin/session.lock', data: '' },
+      // Spelled as APFS would take for it, with a long s.
+      { name: 'Cafe/.\u017Fiteorigin/remote.json', data: '{"url":"https://example.com/theirs.git"}' }
     ]);
     const contents = await project(zip);
     expect(contents.root).toBe('Cafe/');
     const kept = ['.gitignore', 'siteorigin.project.json', 'siteorigin/pages/home.json', 'src/lib/.gitkeep', 'src/lib/vendor/index.js'];
-    // The count shown while it unpacks is of the files it writes.
+    // Only what is written is listed, and counted while it unpacks.
+    expect(contents.entries.map((e) => e.path).sort()).toEqual(kept.map((p) => `Cafe/${p}`).sort());
     expect(filesToWrite(contents.entries, contents.root)).toBe(kept.length);
     const parent = temp();
-    const counts: number[] = [];
-    const dest = await unpackProject(zip, contents, parent, 'cafe', { onProgress: (done, total) => counts.push(done, total) });
+    const counts: Array<[number, number]> = [];
+    const dest = await unpackProject(zip, contents, parent, 'cafe', { onProgress: (done, total) => counts.push([done, total]) });
     expect(tree(dest)).toEqual(kept);
-    expect(counts.slice(-2)).toEqual([kept.length, kept.length]);
-    for (const gone of ['.git', '.siteorigin', 'src/lib/vendor/.git', 'static/old']) expect(existsSync(join(dest, gone)), gone).toBe(false);
-    // The extractor leaves them out on its own, given every entry.
+    expect(counts).toEqual(kept.map((_, i) => [i + 1, kept.length]));
+    // The extractor leaves them out on its own, folders too, given every entry, and counts only what it writes.
+    const all = await readZipEntries(zip);
+    expect(filesToWrite(all, 'Cafe/')).toBe(kept.length);
     const raw = temp();
-    await extractEntries(zip, await readZipEntries(zip), 'Cafe/', raw);
+    expect(await extractEntries(zip, all, 'Cafe/', raw)).toBe(kept.length);
     expect(tree(raw)).toEqual(kept);
+    for (const at of [dest, raw]) for (const gone of ['.git', '.siteorigin', '.\u017Fiteorigin', 'src/lib/vendor/.git', 'static/old']) expect(existsSync(join(at, gone)), gone).toBe(false);
+  });
+
+  it('never writes a project from inside another project’s state, even when told to extract from there', async () => {
+    for (const root of ['.git/', '.SiteOrigin/']) {
+      const zip = zipFile([{ name: `${root}siteorigin.project.json`, data: '{}' }, { name: `${root}static/a.png`, data: 'x' }]);
+      expect(await kind([{ name: `${root}siteorigin.project.json`, data: '{}' }])).toBe('other');
+      const all = await readZipEntries(zip);
+      expect(filesToWrite(all, root)).toBe(0);
+      const dest = temp();
+      expect(await extractEntries(zip, all, root, dest)).toBe(0);
+      expect(tree(dest)).toEqual([]);
+    }
   });
 
   it('tells another project’s state from the project’s own files by path, whatever its case', () => {
-    for (const p of ['.git', '.git/HEAD', '.GIT/config', 'src/lib/vendor/.git', 'static/a/.Git/objects/x', '.siteorigin', '.siteorigin/versions.git/HEAD', '.SiteOrigin/history/1.json']) expect(isLocalState(p), p).toBe(true);
-    for (const p of ['.gitignore', '.gitattributes', '.gitmodules', 'src/lib/.gitkeep', 'static/my.git', 'static/.siteorigin', 'siteorigin/site.json', 'static/.siteorigin/x.png', 'siteorigin.project.json']) expect(isLocalState(p), p).toBe(false);
+    for (const p of ['.git', '.git/HEAD', '.GIT/config', 'src/lib/vendor/.git', 'static/a/.Git/objects/x', '.siteorigin', '.siteorigin/versions.git/HEAD', '.SiteOrigin/history/1.json', '.\u017Fiteorigin/versions.git/config', '.\uFF47it/HEAD'])
+      expect(isLocalState(p), p).toBe(true);
+    for (const p of ['.gitignore', '.gitattributes', '.gitmodules', 'src/lib/.gitkeep', 'static/my.git', 'static/.siteorigin', 'siteorigin/site.json', 'static/.siteorigin/x.png', 'siteorigin.project.json', '.siteorigin-preview/index.html', '.gitlab/ci.yml'])
+      expect(isLocalState(p), p).toBe(false);
   });
 
   it('removes what it wrote when a file turns out damaged', async () => {

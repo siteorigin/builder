@@ -367,16 +367,17 @@ export async function readEntryText(file: string, e: ZipEntry, limit = MAX_MANIF
  * Another project's own state, by its path under the project's folder in the archive (#1151): a Git folder or worktree
  * file (`.git`) anywhere in it, which carries that repository's history and remotes, and the project's local state
  * (`.siteorigin/`: its undo history, saved versions and their repositories, locks and remote bindings). Never written:
- * a project opened from a ZIP file starts clean, with no history or remote of anyone else's. Without case: on a
- * case-insensitive disk, `.GIT` is the same folder.
+ * a project opened from a ZIP file starts clean, with no history or remote of anyone else's. Compared as a
+ * case-insensitive disk compares names: `.GIT` is the same folder, and so, to APFS, is `.ſiteorigin` with a long s.
  */
 export function isLocalState(rel: string): boolean {
-  const parts = rel.toLowerCase().split('/');
+  const parts = rel.normalize('NFKC').toLowerCase().split('/');
   return parts[0] === '.siteorigin' || parts.includes('.git');
 }
 
 /** Whether an entry under `root` is one extraction writes (a folder or a file), rather than one it passes over. */
-const extracted = (e: ZipEntry, root: string) => !e.special && !isSystemClutter(e.path) && e.path.startsWith(root) && e.path.length > root.length && !isLocalState(e.path.slice(root.length));
+const extracted = (e: ZipEntry, root: string) =>
+  !e.special && !isSystemClutter(e.path) && e.path.startsWith(root) && e.path.length > root.length && !isLocalState(e.path) && !isLocalState(e.path.slice(root.length));
 
 /** How many files extracting `entries` under `root` writes, so the count of those written can be shown against it. */
 export const filesToWrite = (entries: ZipEntry[], root: string) => entries.filter((e) => !e.directory && extracted(e, root)).length;
