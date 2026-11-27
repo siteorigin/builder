@@ -43,7 +43,7 @@ describe('the dark palette made from the light one', () => {
     // Both error colours turn light and stay red (#1016): one for the dark grounds, one for dark sections.
     for (const id of ['color.error', 'color.error-on-inverse']) {
       const [L, a, b] = rgbToOklab(parseColor(String(dark[id]))!);
-      expect(L, id).toBeGreaterThan(0.65);
+      expect(L, id).toBeCloseTo(0.78, 2);
       expect(Math.hypot(a, b), id).toBeGreaterThan(0.06);
       expect(Math.abs((((Math.atan2(b, a) * 180) / Math.PI - 27 + 540) % 360) - 180), id).toBeLessThan(20);
     }

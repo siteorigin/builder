@@ -67,7 +67,7 @@ const ROLE_LIGHTNESS: Record<string, number> = {
   'color.on-inverse': 0.94,
   'color.border': 0.42,
   'color.focus': 0.8,
-  'color.error': 0.72,
+  'color.error': 0.78,
   'color.error-on-inverse': 0.78
 };
 

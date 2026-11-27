@@ -101,7 +101,8 @@ describe('every pair readable, for any brand and mood (#357)', () => {
   it('sets a red error colour for the light grounds and one for dark sections, readable on each, for any brand, mood and page (#1016)', () => {
     const red = (hex: string) => {
       const c = lch(hex);
-      return c.C > 0.08 && Math.abs(((c.h - 27 + 540) % 360) - 180) < 20;
+      // sRGB takes chroma away, never hue: the red stays within a few degrees of the one asked for.
+      return c.C > 0.08 && Math.abs(((c.h - 27 + 540) % 360) - 180) < 3;
     };
     const pages = new Set<string>();
     for (const themeId of THEMES)
@@ -122,9 +123,13 @@ describe('every pair readable, for any brand and mood (#357)', () => {
         }
     // Dark pages (a yellow brand) are among them: their error colour turns light with their grounds.
     expect([...pages].sort()).toEqual(['dark', 'light']);
-    const yellow = make('#ffff00', 'neutral').values;
-    expect(lch(yellow['color.error']!).L).toBeGreaterThan(0.6);
-    expect(lch(make('#1f5a4c', 'neutral').values['color.error']!).L).toBeLessThan(0.6);
+    // Each page and mood at the lightness it asks for, where every pair allows it (Foundation keeps the targets here).
+    const L = (brand: string, mood: PaletteMood, id: 'color.error' | 'color.error-on-inverse') => lch(make(brand, mood).values[id]!).L;
+    expect(L('#ffff00', 'neutral', 'color.error')).toBeCloseTo(0.72, 2);
+    expect(L('#1f5a4c', 'neutral', 'color.error')).toBeCloseTo(0.5, 2);
+    expect(L('#1f5a4c', 'high-contrast', 'color.error')).toBeCloseTo(0.44, 2);
+    expect(L('#ffff00', 'high-contrast', 'color.error')).toBeCloseTo(0.76, 2);
+    for (const brand of ['#1f5a4c', '#ffff00']) expect(L(brand, 'tinted', 'color.error-on-inverse')).toBeCloseTo(0.78, 2);
   });
 
   it('is deterministic', () => {

@@ -410,6 +410,22 @@ describe('what ships', () => {
     expect(suggestForeground(business({ 'color.inverse': '#707070', 'color.on-inverse': '#ffffff' }), PAIRS, hover as never)).toBeNull();
   });
 
+  it('pairs each error colour with the grounds a form sits on, as text and as a field edge, each warning on its own (#1016)', () => {
+    const errorPairs = PAIRS.filter((p) => p.fg.startsWith('color.error')).map((p) => [p.id, p.fg, p.bg, p.min ?? 4.5, p.group]);
+    expect(errorPairs).toEqual([
+      ['error-background', 'color.error', 'color.background', 4.5, 'error'],
+      ['error-surface', 'color.error', 'color.surface', 4.5, 'error'],
+      ['error-surface-alt', 'color.error', 'color.surface-alt', 4.5, 'error'],
+      ['error-edge-background', 'color.error', 'color.background', 3, 'error-edge'],
+      ['error-edge-surface', 'color.error', 'color.surface', 3, 'error-edge'],
+      ['error-edge-surface-alt', 'color.error', 'color.surface-alt', 3, 'error-edge'],
+      ['dark-error', 'color.error-on-inverse', 'color.inverse', 4.5, 'dark-error'],
+      ['dark-error-edge', 'color.error-on-inverse', 'color.inverse', 3, 'dark-error-edge']
+    ]);
+    // Signal and Editorial draw the same forms, so they check the same pairs.
+    for (const id of ['signal', 'editorial']) expect((getTheme(id).contrastPairs ?? []).filter((p) => p.fg.startsWith('color.error')).map((p) => p.id), id).toEqual(errorPairs.map(([pid]) => pid));
+  });
+
   it('measures error messages at 4.5:1 and the edges of fields to put right at 3:1, on the light grounds and in dark sections (#1016)', () => {
     const errorIds = ['error-background', 'error-surface', 'error-surface-alt', 'error-edge-background', 'error-edge-surface', 'error-edge-surface-alt', 'dark-error', 'dark-error-edge'];
     const status = (results: PairResult[]) => errorIds.map((id) => [id, byId(results, id).status]);

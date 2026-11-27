@@ -461,6 +461,8 @@ ${FIELD_NAME_SOURCE}
 		border: 1px solid var(--so-form-line);
 		border-radius: var(--so-radius-sm);
 		background: var(--so-color-surface);
+		/* The fill stops inside the edge, so the edge is seen over the form's ground, where its contrast is measured. */
+		background-clip: padding-box;
 		color: var(--so-color-text);
 		font: inherit;
 		transition: border-color 160ms ease, box-shadow 160ms ease;
@@ -561,6 +563,7 @@ ${FIELD_NAME_SOURCE}
 		border: 1px solid var(--so-form-line);
 		border-radius: var(--so-radius-sm);
 		background: var(--so-color-surface);
+		background-clip: padding-box;
 		cursor: pointer;
 		transition: background-color 160ms ease, border-color 160ms ease;
 	}
