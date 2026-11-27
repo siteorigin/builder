@@ -298,38 +298,61 @@
   .ss-border > select:last-child { grid-column: 1 / -1; }
   .ss-border .ss-num { grid-template-columns: 44px auto; }
   .ss-lang { max-width: 140px; }
-  /* Your styles: each row starts with a sample (the colour, or a drawing of the size, corner or font), then its name and remove. */
+  /* Your styles: a card of summary rows, as Text styles is. Each row is its sample, name, kind and value, then whether it
+     is used and its remove; it opens to edit, its fields on --panel-2 below. */
   .ss-custom { display: flex; flex-direction: column; gap: 12px; }
   .ss-custom-intro { margin: 0; font-size: 12px; line-height: 1.45; color: var(--text-2); }
-  .ss-custom-list { display: flex; flex-direction: column; }
-  .ss-custom-row { display: grid; gap: 6px; padding: 10px 0 12px; border-bottom: 1px solid var(--border); }
-  .ss-custom-row:first-child { padding-top: 0; }
-  .ss-custom-row > :not(.ss-custom-head) { margin-left: 34px; min-width: 0; }
-  .ss-custom-head { display: flex; align-items: center; gap: 8px; }
-  .ss-custom-name { flex: 1; min-width: 0; text-overflow: ellipsis; }
+  .ss-custom-list { display: flex; flex-direction: column; margin: 0; padding: 0; list-style: none; border-radius: var(--r-md); box-shadow: 0 0 0 1px var(--border-strong); background: var(--raised); overflow: hidden; }
+  .ss-custom-row + .ss-custom-row { border-top: 1px solid var(--border); }
+  .ss-custom-head { display: flex; align-items: flex-start; gap: 2px; padding-right: 8px; }
+  .ss-custom-head:has(.ss-custom-toggle:hover) { background: var(--hover); }
+  /* Just added: brought into view and marked for a moment, since it lands among its own kind. */
+  .ss-custom-row.fresh .ss-custom-head { background: var(--accent-soft); box-shadow: inset 0 0 0 1px var(--accent); }
+  @media (prefers-reduced-motion: no-preference) { .ss-custom-head { transition: background 600ms, box-shadow 600ms; } }
+  .ss-custom-toggle { flex: 1; min-width: 0; display: flex; align-items: center; gap: 8px; min-height: 48px; padding: 6px 4px 6px 10px; border: 0; background: none; text-align: left; color: var(--text); outline-offset: -2px; }
+  .ss-custom-toggle .chev { width: 12px; height: 12px; flex: none; color: var(--text-3); transition: transform 120ms; }
+  .ss-custom-toggle[aria-expanded='true'] .chev { transform: rotate(90deg); }
+  .ss-custom-spec { flex: 1; display: flex; flex-direction: column; gap: 2px; min-width: 0; }
+  /* The name and whether it is used share the first line; the details take the full width under both. */
+  .ss-custom-top { display: flex; align-items: flex-start; gap: 8px; min-width: 0; }
+  .ss-custom-name { flex: 1; min-width: 0; font-size: 13px; font-weight: 500; line-height: 20px; color: var(--text); display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; overflow-wrap: anywhere; }
+  .ss-custom-uses { flex: none; }
+  /* Each detail breaks whole; the dot trails the one before it, so a line never starts with one. */
+  .ss-custom-meta { display: flex; flex-wrap: wrap; column-gap: 4px; font-size: 12px; line-height: 1.4; color: var(--text-3); }
+  .ss-custom-meta > span { max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .ss-custom-meta > span:not(:last-child)::after { content: ' ·'; }
+  .ss-custom-meta .mono { font-size: 11.5px; color: var(--text-2); }
+  /* On the name's first line, beside the badge, however many lines the row takes. */
+  .ss-custom-remove-toggle { flex: none; margin-top: 5px; }
+  .ss-custom-remove-toggle[aria-expanded='true'] { background: var(--red-soft); color: var(--red-ink); }
   .ss-custom-mark { display: grid; place-items: center; width: 26px; height: 26px; flex: none; overflow: hidden; border-radius: var(--r-sm); background: var(--raised); box-shadow: 0 0 0 1px var(--border-strong); font-size: 14px; line-height: 1; color: var(--text); }
+  .ss-custom-mark.color i { width: 100%; height: 100%; }
   /* A measure, |—|, so a size reads as a distance rather than a minus sign. */
   .ss-custom-mark.space i, .ss-custom-mark.container i { width: 14px; height: 8px; border: solid var(--text-2); border-width: 0 2px; background: linear-gradient(var(--text-2), var(--text-2)) center / 100% 2px no-repeat; }
   .ss-custom-mark.radius { place-items: start; }
   .ss-custom-mark.radius i { width: 40px; height: 40px; margin: 7px 0 0 7px; border: 2px solid var(--text-2); }
   .ss-custom-mark.shadow i { width: 14px; height: 10px; border-radius: 3px; background: var(--raised); }
   .ss-custom-mark.border i { width: 16px; height: 12px; border-radius: 3px; color: var(--text-2); }
-  .ss-custom-meta { display: flex; flex-wrap: wrap; gap: 2px 6px; font-size: 12px; color: var(--text-3); }
-  .ss-custom-text { display: flex; align-items: center; gap: 8px; }
-  .ss-custom-summary { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 12px; color: var(--text-2); }
-  .ss-custom-linked { display: block; height: 26px; line-height: 24px; padding: 0 8px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; border: 1px dashed var(--border-control); border-radius: var(--r-sm); font-size: 12px; color: var(--text-2); }
-  .ss-custom-stack { display: flex; flex-direction: column; align-items: flex-start; gap: 4px; }
+  .ss-custom-body:not([hidden]) { display: flex; flex-direction: column; gap: 10px; padding: 10px 12px 12px 30px; border-top: 1px solid var(--border); background: var(--panel-2); }
+  .ss-custom-text { display: flex; flex-direction: column; align-items: flex-start; gap: 6px; }
+  .ss-custom-linked { display: block; padding: 5px 0; line-height: 1.4; overflow-wrap: anywhere; font-size: 12px; color: var(--text-2); }
+  .ss-custom-stack { display: flex; flex-direction: column; align-items: flex-start; gap: 6px; }
   .ss-custom-stack .link-btn { min-height: 24px; font-size: 12px; }
-  .ss-custom-remove-toggle[aria-expanded='true'] { background: var(--red-soft); color: var(--red); }
-  /* Removing a style that is in use: what happens where it is used, then the destructive action, set apart from the edit fields. */
-  .ss-custom-remove { display: flex; flex-direction: column; gap: 8px; padding: 10px 12px; border-radius: var(--r-md); background: var(--panel-2); box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--red) 40%, transparent); }
+  .ss-custom-stack .input { width: 100%; }
+  .ss-custom-value { display: flex; align-items: center; gap: 6px; }
+  .ss-custom-value .input { flex: 1; min-width: 0; }
+  /* Removing a style that is in use: what happens where it is used, then the destructive action, in a card ringed in red. */
+  .ss-custom-remove { display: flex; flex-direction: column; gap: 8px; padding: 10px 12px; border-radius: var(--r-md); background: var(--raised); box-shadow: inset 0 0 0 1px var(--red); }
   .ss-custom-remove-actions { display: flex; gap: 6px; }
   .ss-custom-where { margin: 0; font-size: 12px; line-height: 1.45; color: var(--text); }
   .ss-custom-where strong { font-weight: 600; }
   .ss-new-style { display: flex; flex-direction: column; gap: 8px; padding: 12px; border-radius: var(--r-md); background: var(--panel-2); }
   .ss-new-title { font-size: 12px; font-weight: 600; color: var(--text); }
-  .ss-new-value { display: flex; align-items: center; gap: 6px; }
-  .ss-new-value .input { flex: 1; min-width: 0; }
+  .ss-new-actions { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 10px; }
+  .ss-new-needs, .ss-new-added { font-size: 12px; line-height: 1.4; color: var(--text-2); }
+  .ss-new-added { flex-basis: 100%; }
+  .ss-custom-used-in { margin: 0; }
+  .ss-custom-used-in strong { font-weight: 600; color: var(--text); }
 
   /* ---------- Redirects (RedirectsManager.tsx) ---------- */
   .so-redirects { list-style: none; margin: 4px 0 10px; padding: 0; display: flex; flex-direction: column; gap: 6px; }

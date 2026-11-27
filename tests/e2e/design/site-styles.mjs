@@ -215,7 +215,7 @@ await win.locator(`${PANEL} .insp-jump button`, { hasText: 'Yours' }).click();
 await pause(500);
 await shot('yours', `${PANEL} .ss-custom-row`, { before: () => scrollToEl(`${PANEL} .ss-custom`, 110) });
 const seaRow = win.locator(`${PANEL} .ss-custom-row[data-token-id="color.custom-sea-glass"]`);
-if (/Not used yet/.test(await seaRow.innerText())) throw new Error('the colour meant to be in use reports no uses');
+if (/Not used/.test(await seaRow.innerText())) throw new Error('the colour meant to be in use reports no uses');
 await seaRow.getByRole('button', { name: 'Remove Sea glass' }).click();
 await pause(250);
 await shot('yours-remove', `${PANEL} .ss-custom-row [role="group"]`, { themes: ['light'], before: () => scrollToEl(`${PANEL} .ss-custom-row[data-token-id="color.custom-sea-glass"]`, 110) });
